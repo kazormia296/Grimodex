@@ -507,7 +507,7 @@ fn is_ainoverist_v1(params: &ChatParams<'_>) -> bool {
 /// reasoning トークンが `max_tokens` に課金されるため、4096 では content が空
 /// (finish_reason:length)になりうる。該当モデルを検出して予算に余裕を持たせる
 /// (OpenAI 直叩きの 32k 余裕と同根)。`gpt-5-chat` は非 reasoning なので除外する。
-fn is_openrouter_reasoning_model(model: &str) -> bool {
+pub(crate) fn is_openrouter_reasoning_model(model: &str) -> bool {
     // provider プレフィックス(`openai/` `deepseek/` 等)を剥がして素のモデル名で判定。
     let m = model.rsplit('/').next().unwrap_or(model);
     if m.starts_with("gpt-5-chat") {
@@ -1539,7 +1539,7 @@ pub(crate) async fn send_with_429_retry(
 /// OpenRouter の `provider.order` を固定するため、body に `provider` フィールドを注入する。
 /// `pin` が None / 空文字 / provider が OpenRouter 以外の場合は何もしない。
 /// 同一 provider に毎回ルーティングさせることで Anthropic prompt cache が効きやすくなる。
-fn apply_openrouter_provider_pin(
+pub(crate) fn apply_openrouter_provider_pin(
     body: &mut serde_json::Value,
     provider: &AiProvider,
     pin: Option<&str>,

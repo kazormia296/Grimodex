@@ -33,6 +33,7 @@ import {
   AINOVERIST_V1_BASE_URL,
   AINOVERIST_EXTRA_SAMPLING_KEYS,
   isAinoveristV1Model,
+  isResponsesApiCapableProvider,
   resolveAinoveristApiVariant,
   resolveModelApiVariant,
 } from "@/features/chat/aiNovelist";
@@ -246,15 +247,14 @@ export function AiCategory() {
       // OpenAI 互換に切替時は openaiCompatible 設定を初期化（既存値は保持）
       openaiCompatible:
         localSettings!.openaiCompatible ?? DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
-      // Responses トグルは OpenAI / 互換 gateway 専用。それ以外へ切替えたら
+      // Responses トグルは Responses 対応プロバイダ専用。非対応へ切替えたら
       // "responses" を残さずクリアする(他プロバイダのトグル UI からは消せず、
-      // OpenAI へ戻したとき意図せず再有効化されるのを防ぐ)。
-      modelApiVariant:
-        provider === "openai" || provider === "openai-compatible"
-          ? localSettings!.modelApiVariant
-          : localSettings!.modelApiVariant === "responses"
-            ? null
-            : localSettings!.modelApiVariant,
+      // 対応プロバイダへ戻したとき意図せず再有効化されるのを防ぐ)。
+      modelApiVariant: isResponsesApiCapableProvider(provider)
+        ? localSettings!.modelApiVariant
+        : localSettings!.modelApiVariant === "responses"
+          ? null
+          : localSettings!.modelApiVariant,
     };
     setLocalSettings(updated);
     await saveSettings(updated);
@@ -482,9 +482,8 @@ export function AiCategory() {
           </>
         )}
 
-        {/* OpenAI Responses API トグル (OpenAI 直 / 互換 gateway 両方) */}
-        {(localSettings.provider === "openai" ||
-          localSettings.provider === "openai-compatible") && (
+        {/* Responses API トグル (OpenAI 直 / 互換 gateway / OpenRouter beta) */}
+        {isResponsesApiCapableProvider(localSettings.provider) && (
           <SettingRow
             label={t("settings.ai.responsesApiLabel")}
             description={t("settings.ai.responsesApiDesc")}

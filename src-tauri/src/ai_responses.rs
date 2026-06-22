@@ -36,11 +36,14 @@ use serde_json::{json, Value};
 use std::sync::{atomic::Ordering, Arc};
 
 /// この provider + api_variant の組で Responses API を使うべきか。
-/// `/responses` を持つのは OpenAI 直叩きと、それを公開する OpenAI 互換 gateway
-/// (Azure OpenAI / LiteLLM 等) のみ。OpenRouter は非対応なので含めない。
+/// `/responses` を持つのは OpenAI 直叩き、それを公開する OpenAI 互換 gateway
+/// (Azure OpenAI / LiteLLM 等)、および OpenRouter (beta `/api/v1/responses`)。
 pub fn uses_responses_api(provider: &AiProvider, api_variant: Option<&str>) -> bool {
     api_variant == Some("responses")
-        && matches!(provider, AiProvider::OpenAI | AiProvider::OpenaiCompatible)
+        && matches!(
+            provider,
+            AiProvider::OpenAI | AiProvider::OpenaiCompatible | AiProvider::OpenRouter
+        )
 }
 
 /// Responses は reasoning トークンも `max_output_tokens` に課金されるため、OpenAI 直は
@@ -52,7 +55,12 @@ fn max_output_tokens(provider: &AiProvider, model: &str, reasoning_enabled: Opti
     // (Some(false) でも gpt-5.1+ は minimal を送り、reasoning トークンを消費する)
     let reasoning_active = reasoning_enabled == Some(true)
         || (reasoning_enabled == Some(false)
-            && crate::ai::openai_model_supports_reasoning_none(model));
+            && crate::ai::openai_model_supports_reasoning_none(model))
+        // OpenRouter 経由の reasoning モデル(gpt-5 / o系 / deepseek-r1 等)は hidden
+        // reasoning も max_output_tokens に課金されるため、reasoning_enabled が未指定
+        // でも名前で検出して予算を確保する(/chat/completions の openai_max_tokens と同根)。
+        || (matches!(provider, AiProvider::OpenRouter)
+            && crate::ai::is_openrouter_reasoning_model(model));
     if matches!(provider, AiProvider::OpenAI) || reasoning_active {
         32_000
     } else {
@@ -543,6 +551,12 @@ fn build_request(
     if needs_auth {
         req = req.header("Authorization", format!("Bearer {api_key}"));
     }
+    // OpenRouter は属性表示用ヘッダーを推奨(/chat/completions 経路と対称)。
+    if matches!(provider, AiProvider::OpenRouter) {
+        req = req
+            .header("HTTP-Referer", "https://github.com/kazormia296/Grimodex")
+            .header("X-Title", "Grimodex");
+    }
     req.json(body)
 }
 
@@ -566,6 +580,11 @@ pub async fn send(
         params.reasoning_enabled
     ));
     crate::ai::merge_extra_body(&mut body, &params.extra_body);
+    crate::ai::apply_openrouter_provider_pin(
+        &mut body,
+        params.provider,
+        params.openrouter_provider_pin,
+    );
 
     let result = send_and_parse_json(&client, params, &body).await?;
     parse_output(
@@ -595,10 +614,14 @@ pub async fn send_with_tools(
     let mut body = base_body(params.model, &instructions, input, tools_opt);
     // 推論モデルの reasoning 継続: encrypted_content を受け取り、次ターンで
     // function_call の前に reasoning item を echo できるようにする(store:false
-    // でツールを跨ぐ際の必須要件)。OpenAI 直は未知でも no-op で安全なので常に付与。
-    // 互換 gateway は include を strict 検証する実装が 400 を返しうるので、
-    // reasoning を明示 ON にしたとき(=実際に reasoning が走る)だけ付与する。
-    if matches!(params.provider, AiProvider::OpenAI) || params.reasoning_enabled == Some(true) {
+    // でツールを跨ぐ際の必須要件)。OpenAI 直 / OpenRouter は include を strict 検証せず
+    // 公式サポートするため常に付与する(OpenRouter は reasoning モデルへルーティング
+    // しても encrypted_content の round-trip が必要で、reasoning_enabled 未指定でも
+    // 付けないと2ターン目が HTTP 400 になる)。互換 gateway は未知 include を 400 する
+    // 実装がありうるので reasoning を明示 ON にしたときだけ付与する。
+    if matches!(params.provider, AiProvider::OpenAI | AiProvider::OpenRouter)
+        || params.reasoning_enabled == Some(true)
+    {
         body["include"] = json!(["reasoning.encrypted_content"]);
     }
     apply_reasoning(
@@ -613,6 +636,11 @@ pub async fn send_with_tools(
         params.reasoning_enabled
     ));
     crate::ai::merge_extra_body(&mut body, &params.extra_body);
+    crate::ai::apply_openrouter_provider_pin(
+        &mut body,
+        params.provider,
+        params.openrouter_provider_pin,
+    );
 
     let result = send_and_parse_json(&client, params, &body).await?;
     parse_output(
@@ -702,6 +730,11 @@ pub async fn send_stream(
         params.reasoning_enabled
     ));
     crate::ai::merge_extra_body(&mut body, &params.extra_body);
+    crate::ai::apply_openrouter_provider_pin(
+        &mut body,
+        params.provider,
+        params.openrouter_provider_pin,
+    );
 
     let req = build_request(
         &client,
@@ -835,6 +868,11 @@ pub async fn post_effect(
     } else {
         4096
     });
+    crate::ai::apply_openrouter_provider_pin(
+        &mut body,
+        &settings.provider,
+        settings.openrouter_provider_pin.as_deref(),
+    );
 
     let req = build_request(&client, &settings.provider, api_key, endpoints, &body);
     let resp = req.send().await?.error_for_status()?;
@@ -862,13 +900,15 @@ mod tests {
             &AiProvider::OpenaiCompatible,
             Some("responses")
         ));
-        // 変種違い / provider 違いは false。
-        assert!(!uses_responses_api(&AiProvider::OpenAI, Some("v1")));
-        assert!(!uses_responses_api(&AiProvider::OpenAI, None));
-        assert!(!uses_responses_api(
+        // OpenRouter も beta `/api/v1/responses` を公開しているので対象。
+        assert!(uses_responses_api(
             &AiProvider::OpenRouter,
             Some("responses")
         ));
+        // 変種違い / 非対応 provider は false。
+        assert!(!uses_responses_api(&AiProvider::OpenAI, Some("v1")));
+        assert!(!uses_responses_api(&AiProvider::OpenAI, None));
+        assert!(!uses_responses_api(&AiProvider::OpenRouter, Some("v1")));
         assert!(!uses_responses_api(
             &AiProvider::Anthropic,
             Some("responses")
@@ -1489,6 +1529,36 @@ mod tests {
     }
 
     #[test]
+    fn max_output_tokens_openrouter_reasoning_model_is_32k() {
+        // OpenRouter 経由の reasoning モデルは reasoning_enabled 未指定でも名前で検出して
+        // 予算を広げる(hidden reasoning が max_output_tokens に課金され、4096 では空応答に
+        // なりうるため。/chat/completions の openai_max_tokens と同根)。
+        assert_eq!(
+            max_output_tokens(&AiProvider::OpenRouter, "openai/gpt-5", None),
+            32_000
+        );
+        assert_eq!(
+            max_output_tokens(&AiProvider::OpenRouter, "deepseek/deepseek-r1", None),
+            32_000
+        );
+        // 非推論モデルは 4096 のまま。
+        assert_eq!(
+            max_output_tokens(&AiProvider::OpenRouter, "openai/gpt-4o-mini", None),
+            4096
+        );
+        // gpt-5-chat は非 reasoning なので 4096(is_openrouter_reasoning_model と対称)。
+        assert_eq!(
+            max_output_tokens(&AiProvider::OpenRouter, "openai/gpt-5-chat", None),
+            4096
+        );
+        // 明示 ON は当然 32k。
+        assert_eq!(
+            max_output_tokens(&AiProvider::OpenRouter, "anthropic/claude-3.7", Some(true)),
+            32_000
+        );
+    }
+
+    #[test]
     fn base_body_omits_empty_instructions_sets_store_false() {
         let body = base_body(
             "gpt-5",
@@ -1513,9 +1583,14 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// ライブ検証(実 OpenAI /v1/responses)。既定 SKIP。
-//   OPENAI_API_KEY=sk-... cargo test --no-default-features responses_live -- --nocapture
-//   モデル上書き: OPENAI_RESPONSES_MODEL(既定 gpt-4o-mini)。
+// ライブ検証(実 /v1/responses)。既定 SKIP。
+//   OpenAI 直:
+//     OPENAI_API_KEY=sk-... cargo test --no-default-features responses_live -- --nocapture
+//     モデル上書き: OPENAI_RESPONSES_MODEL(既定 gpt-4o-mini)。
+//   OpenRouter (beta /api/v1/responses):
+//     OPENROUTER_API_KEY=sk-or-... cargo test --no-default-features responses_live_openrouter -- --nocapture
+//     モデル上書き: OPENROUTER_RESPONSES_MODEL(既定 openai/gpt-4o-mini)。
+//   いずれもキー未設定なら個別に [skip] する(CI / sandbox 安全)。
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod responses_live_tests {
@@ -1542,9 +1617,36 @@ mod responses_live_tests {
         }
     }
 
-    fn live_params<'a>(settings: &'a AiSettings, key: &'a str, model: &'a str) -> ChatParams<'a> {
+    // --- OpenRouter ---
+    fn or_live_key() -> Option<String> {
+        std::env::var("OPENROUTER_API_KEY")
+            .or_else(|_| std::env::var("OPEN_ROUTER_API_KEY"))
+            .ok()
+            .filter(|k| !k.is_empty())
+    }
+
+    fn or_live_model() -> String {
+        std::env::var("OPENROUTER_RESPONSES_MODEL")
+            .unwrap_or_else(|_| "openai/gpt-4o-mini".to_string())
+    }
+
+    fn or_live_settings() -> AiSettings {
+        AiSettings {
+            provider: AiProvider::OpenRouter,
+            model: or_live_model(),
+            ..Default::default()
+        }
+    }
+
+    /// provider を引数で受け、Responses 経路の ChatParams を組む(OpenAI / OpenRouter 共通)。
+    fn live_params<'a>(
+        provider: &'a AiProvider,
+        settings: &'a AiSettings,
+        key: &'a str,
+        model: &'a str,
+    ) -> ChatParams<'a> {
         ChatParams {
-            provider: &AiProvider::OpenAI,
+            provider,
             model,
             api_key: key,
             endpoints: settings.endpoints(),
@@ -1564,22 +1666,20 @@ mod responses_live_tests {
         }
     }
 
-    fn rt() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime")
+    fn weather_tool() -> Vec<AgentToolDef> {
+        vec![AgentToolDef {
+            name: "get_weather".to_string(),
+            description: "指定都市の現在の天気を取得する".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"]
+            }),
+        }]
     }
 
-    #[test]
-    fn single_shot_live() {
-        let Some(key) = live_key() else {
-            eprintln!("[skip] single_shot_live: OPENAI_API_KEY 未設定");
-            return;
-        };
-        let settings = live_settings();
-        let model = live_model();
-        let params = live_params(&settings, &key, &model);
+    /// 単発(ツール無し)ライブ: 非空本文 + end_turn を検証して本文を返す。
+    fn run_single_shot(params: &ChatParams<'_>) -> String {
         let messages = [
             ("system", "あなたは簡潔に答えるアシスタントです。"),
             (
@@ -1588,8 +1688,8 @@ mod responses_live_tests {
             ),
         ];
         let resp = rt()
-            .block_on(send(&params, &messages))
-            .unwrap_or_else(|e| panic!("single_shot_live: API 失敗: {e:#}"));
+            .block_on(send(params, &messages))
+            .unwrap_or_else(|e| panic!("single_shot: API 失敗: {e:#}"));
         let text: String = resp
             .blocks
             .iter()
@@ -1600,73 +1700,14 @@ mod responses_live_tests {
             .collect();
         assert!(!text.is_empty(), "本文テキストが空");
         assert_eq!(resp.stop_reason, "end_turn");
-        eprintln!("[ok] single_shot_live: {} chars", text.chars().count());
+        text
     }
 
-    #[test]
-    fn tool_call_live() {
-        let Some(key) = live_key() else {
-            eprintln!("[skip] tool_call_live: OPENAI_API_KEY 未設定");
-            return;
-        };
-        let settings = live_settings();
-        let model = live_model();
-        let params = live_params(&settings, &key, &model);
-        let messages = vec![
-            AgentMessage::System {
-                content: "ユーザーが場所の天気を尋ねたら必ず get_weather ツールを使ってください。"
-                    .to_string(),
-            },
-            AgentMessage::User {
-                content: "東京の天気は？".to_string(),
-            },
-        ];
-        let tools = vec![AgentToolDef {
-            name: "get_weather".to_string(),
-            description: "指定都市の現在の天気を取得する".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": { "city": { "type": "string" } },
-                "required": ["city"]
-            }),
-        }];
-        let resp = rt()
-            .block_on(send_with_tools(&params, &messages, &tools))
-            .unwrap_or_else(|e| panic!("tool_call_live: API 失敗: {e:#}"));
-        let has_tool = resp
-            .blocks
-            .iter()
-            .any(|b| matches!(b, ResponseBlock::ToolUse { name, .. } if name == "get_weather"));
-        assert!(
-            has_tool,
-            "get_weather の tool_use が無い: {:?}",
-            resp.blocks
-        );
-        assert_eq!(resp.stop_reason, "tool_use");
-        eprintln!("[ok] tool_call_live");
-    }
-
-    #[test]
-    fn tool_call_multiturn_live() {
-        // 2ターン継続: tool_use → function_call_output を返して最終回答まで。
-        // 推論モデル(OPENAI_RESPONSES_MODEL=gpt-5-mini 等)では reasoning item の
-        // echo が機能しないと2ターン目が 400 になるため、その回帰ゲートになる。
-        let Some(key) = live_key() else {
-            eprintln!("[skip] tool_call_multiturn_live: OPENAI_API_KEY 未設定");
-            return;
-        };
-        let settings = live_settings();
-        let model = live_model();
-        let params = live_params(&settings, &key, &model);
-        let tools = vec![AgentToolDef {
-            name: "get_weather".to_string(),
-            description: "指定都市の現在の天気を取得する".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": { "city": { "type": "string" } },
-                "required": ["city"]
-            }),
-        }];
+    /// 2ターン継続(tool_use → function_call_output → 最終回答)ライブ: 最終本文を返す。
+    /// 推論モデルでは reasoning item の echo が機能しないと2ターン目が 400 になるため、
+    /// reasoning encrypted_content round-trip の回帰ゲートを兼ねる(OpenAI / OpenRouter 共通)。
+    fn run_tool_multiturn(params: &ChatParams<'_>) -> String {
+        let tools = weather_tool();
         let turn1 = vec![
             AgentMessage::System {
                 content: "天気を聞かれたら get_weather を使い、結果を一言で伝えてください。"
@@ -1677,7 +1718,7 @@ mod responses_live_tests {
             },
         ];
         let r1 = rt()
-            .block_on(send_with_tools(&params, &turn1, &tools))
+            .block_on(send_with_tools(params, &turn1, &tools))
             .unwrap_or_else(|e| panic!("turn1 失敗: {e:#}"));
 
         // response blocks → assistant メッセージ(tool_uses + thinking_blocks)へ復元。
@@ -1722,7 +1763,7 @@ mod responses_live_tests {
             is_error: false,
         });
         let r2 = rt()
-            .block_on(send_with_tools(&params, &turn2, &tools))
+            .block_on(send_with_tools(params, &turn2, &tools))
             .unwrap_or_else(|e| panic!("turn2 失敗(reasoning echo 欠落の疑い): {e:#}"));
         let text: String = r2
             .blocks
@@ -1733,6 +1774,88 @@ mod responses_live_tests {
             })
             .collect();
         assert!(!text.is_empty(), "turn2 の最終回答が空: {:?}", r2.blocks);
+        text
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+    }
+
+    fn post_effect_grader(settings: &AiSettings, key: &str) -> String {
+        rt()
+            .block_on(post_effect(
+                settings,
+                key,
+                "あなたは小説の校閲者です。シーン本文を分析し JSON オブジェクト {\"ok\":true} だけを返してください。説明やコードフェンスは不要。",
+                None,
+                "朱音は棚の奥で古い真鍮の鍵を見つけた。",
+            ))
+            .unwrap_or_else(|e| panic!("post_effect: API 失敗: {e:#}"))
+    }
+
+    // ===== OpenAI 直 =====
+
+    #[test]
+    fn single_shot_live() {
+        let Some(key) = live_key() else {
+            eprintln!("[skip] single_shot_live: OPENAI_API_KEY 未設定");
+            return;
+        };
+        let settings = live_settings();
+        let model = live_model();
+        let params = live_params(&AiProvider::OpenAI, &settings, &key, &model);
+        let text = run_single_shot(&params);
+        eprintln!("[ok] single_shot_live: {} chars", text.chars().count());
+    }
+
+    #[test]
+    fn tool_call_live() {
+        let Some(key) = live_key() else {
+            eprintln!("[skip] tool_call_live: OPENAI_API_KEY 未設定");
+            return;
+        };
+        let settings = live_settings();
+        let model = live_model();
+        let params = live_params(&AiProvider::OpenAI, &settings, &key, &model);
+        let messages = vec![
+            AgentMessage::System {
+                content: "ユーザーが場所の天気を尋ねたら必ず get_weather ツールを使ってください。"
+                    .to_string(),
+            },
+            AgentMessage::User {
+                content: "東京の天気は？".to_string(),
+            },
+        ];
+        let tools = weather_tool();
+        let resp = rt()
+            .block_on(send_with_tools(&params, &messages, &tools))
+            .unwrap_or_else(|e| panic!("tool_call_live: API 失敗: {e:#}"));
+        let has_tool = resp
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ResponseBlock::ToolUse { name, .. } if name == "get_weather"));
+        assert!(
+            has_tool,
+            "get_weather の tool_use が無い: {:?}",
+            resp.blocks
+        );
+        assert_eq!(resp.stop_reason, "tool_use");
+        eprintln!("[ok] tool_call_live");
+    }
+
+    #[test]
+    fn tool_call_multiturn_live() {
+        let Some(key) = live_key() else {
+            eprintln!("[skip] tool_call_multiturn_live: OPENAI_API_KEY 未設定");
+            return;
+        };
+        let settings = live_settings();
+        let model = live_model();
+        let params = live_params(&AiProvider::OpenAI, &settings, &key, &model);
+        let text = run_tool_multiturn(&params);
         eprintln!("[ok] tool_call_multiturn_live: {}", text.trim());
     }
 
@@ -1742,17 +1865,59 @@ mod responses_live_tests {
             eprintln!("[skip] post_effect_live: OPENAI_API_KEY 未設定");
             return;
         };
-        let settings = live_settings();
-        let raw = rt()
-            .block_on(post_effect(
-                &settings,
-                &key,
-                "あなたは小説の校閲者です。シーン本文を分析し JSON オブジェクト {\"ok\":true} だけを返してください。説明やコードフェンスは不要。",
-                None,
-                "朱音は棚の奥で古い真鍮の鍵を見つけた。",
-            ))
-            .unwrap_or_else(|e| panic!("post_effect_live: API 失敗: {e:#}"));
+        let raw = post_effect_grader(&live_settings(), &key);
         assert!(!raw.trim().is_empty(), "応答が空");
         eprintln!("[ok] post_effect_live: {} chars", raw.chars().count());
+    }
+
+    // ===== OpenRouter (beta /api/v1/responses) =====
+    // 実 OpenRouter の Responses 経路(ヘッダー / provider pin / reasoning echo 込み)を、
+    // OpenAI と同一の Rust ビルダー/パーサで叩いて検証する。OPENROUTER_API_KEY が無ければ skip。
+
+    #[test]
+    fn single_shot_live_openrouter() {
+        let Some(key) = or_live_key() else {
+            eprintln!("[skip] single_shot_live_openrouter: OPENROUTER_API_KEY 未設定");
+            return;
+        };
+        let settings = or_live_settings();
+        let model = or_live_model();
+        let params = live_params(&AiProvider::OpenRouter, &settings, &key, &model);
+        let text = run_single_shot(&params);
+        eprintln!(
+            "[ok] single_shot_live_openrouter: {} chars",
+            text.chars().count()
+        );
+    }
+
+    #[test]
+    fn tool_call_multiturn_live_openrouter() {
+        // OpenRouter の2ターンツール継続。reasoning モデル
+        // (OPENROUTER_RESPONSES_MODEL=openai/gpt-5-mini 等)では include
+        // ["reasoning.encrypted_content"] の echo が効かないと2ターン目が 400 になるため、
+        // OpenRouter 経路でも reasoning round-trip の回帰ゲートになる。
+        let Some(key) = or_live_key() else {
+            eprintln!("[skip] tool_call_multiturn_live_openrouter: OPENROUTER_API_KEY 未設定");
+            return;
+        };
+        let settings = or_live_settings();
+        let model = or_live_model();
+        let params = live_params(&AiProvider::OpenRouter, &settings, &key, &model);
+        let text = run_tool_multiturn(&params);
+        eprintln!("[ok] tool_call_multiturn_live_openrouter: {}", text.trim());
+    }
+
+    #[test]
+    fn post_effect_live_openrouter() {
+        let Some(key) = or_live_key() else {
+            eprintln!("[skip] post_effect_live_openrouter: OPENROUTER_API_KEY 未設定");
+            return;
+        };
+        let raw = post_effect_grader(&or_live_settings(), &key);
+        assert!(!raw.trim().is_empty(), "応答が空");
+        eprintln!(
+            "[ok] post_effect_live_openrouter: {} chars",
+            raw.chars().count()
+        );
     }
 }

@@ -88,11 +88,29 @@ export function resolveAinoveristApiVariant(
 }
 
 /**
+ * Responses API (`/responses`) を叩けるプロバイダか。
+ *
+ * `/responses` を公開しているのは OpenAI 直叩き / OpenAI 互換 gateway (Azure OpenAI /
+ * LiteLLM 等) / OpenRouter (beta `/api/v1/responses`)。Responses トグルの表示・
+ * 経路解決・provider 切替時のクリア判定はすべてこの述語に集約する(条件のドリフト防止)。
+ */
+export function isResponsesApiCapableProvider(
+  provider: string | undefined,
+): boolean {
+  return (
+    provider === "openai" ||
+    provider === "openai-compatible" ||
+    provider === "openrouter"
+  );
+}
+
+/**
  * 送信/永続化に使う API 経路 (variant) をプロバイダ込みで解決する。
  *
- * OpenAI 直 / OpenAI 互換 gateway で Responses トグル (modelApiVariant ==
- * "responses") が有効なら最優先で "responses" を返す。それ以外は AI のべりすと用の
- * `resolveAinoveristApiVariant`（legacy/v1 のみ・任意モデルに "legacy" を返す）へ委譲する。
+ * Responses 対応プロバイダ (isResponsesApiCapableProvider) で Responses トグル
+ * (modelApiVariant == "responses") が有効なら最優先で "responses" を返す。それ以外は
+ * AI のべりすと用の `resolveAinoveristApiVariant`（legacy/v1 のみ・任意モデルに "legacy"
+ * を返す）へ委譲する。
  *
  * `resolveAinoveristApiVariant` は "responses" を一切扱わず legacy に潰すため、送信時
  * (getChatApiVariant) やモデル切替時の永続化 (handleSelectModel / handleModelChange) で
@@ -104,10 +122,7 @@ export function resolveModelApiVariant(
   models: Array<{ id: string; apiVariant?: string }>,
   persisted?: string | null,
 ): "legacy" | "v1" | "responses" | undefined {
-  if (
-    (provider === "openai" || provider === "openai-compatible") &&
-    persisted === "responses"
-  ) {
+  if (isResponsesApiCapableProvider(provider) && persisted === "responses") {
     return "responses";
   }
   return resolveAinoveristApiVariant(model, models, persisted);

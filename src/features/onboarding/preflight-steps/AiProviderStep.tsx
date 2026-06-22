@@ -4,7 +4,10 @@ import { Check, CheckCircle } from "lucide-react";
 import { useAiSettingsStore } from "@/features/chat/store";
 import type { AiProvider } from "@/features/chat/types";
 import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
-import { resolveModelApiVariant } from "@/features/chat/aiNovelist";
+import {
+  isResponsesApiCapableProvider,
+  resolveModelApiVariant,
+} from "@/features/chat/aiNovelist";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 
 const PREFLIGHT_PROVIDERS: AiProvider[] = [
@@ -90,13 +93,12 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
       ...localSettings,
       provider,
       model: "",
-      // Responses トグルは OpenAI/互換専用。他へ切替えたら "responses" を残さない。
-      modelApiVariant:
-        provider === "openai" || provider === "openai-compatible"
-          ? localSettings.modelApiVariant
-          : localSettings.modelApiVariant === "responses"
-            ? null
-            : localSettings.modelApiVariant,
+      // Responses トグルは Responses 対応プロバイダ専用。非対応へ切替えたら "responses" を残さない。
+      modelApiVariant: isResponsesApiCapableProvider(provider)
+        ? localSettings.modelApiVariant
+        : localSettings.modelApiVariant === "responses"
+          ? null
+          : localSettings.modelApiVariant,
     };
     setLocalSettings(updated);
     await saveSettings(updated);

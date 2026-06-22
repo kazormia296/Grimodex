@@ -789,7 +789,7 @@
       "allowStructuredTasks": "Allow automatic Codex extraction / synopsis generation",
       "structuredTasksLowAccuracyNote": "Leave this off if structured output (JSON) accuracy is poor.",
       "responsesApiLabel": "Use the Responses API (/v1/responses)",
-      "responsesApiDesc": "Call OpenAI-family models via the Responses API instead of /chat/completions. Supports reasoning summaries and tool calls for reasoning models (o-series / gpt-5). When off, /chat/completions is used as before.",
+      "responsesApiDesc": "Call OpenAI-family or OpenRouter models via the Responses API instead of /chat/completions. Supports reasoning summaries and tool calls for reasoning models (o-series / gpt-5). When off, /chat/completions is used as before.",
       "aiNovelistDescBefore": "Provider specialized for Japanese novels. You can issue an API key at ",
       "aiNovelistDescAfter": ".",
       "multilingualMode": "Multilingual mode",
