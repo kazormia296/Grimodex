@@ -37,12 +37,16 @@ use std::sync::{atomic::Ordering, Arc};
 
 /// この provider + api_variant の組で Responses API を使うべきか。
 /// `/responses` を持つのは OpenAI 直叩き、それを公開する OpenAI 互換 gateway
-/// (Azure OpenAI / LiteLLM 等)、および OpenRouter (beta `/api/v1/responses`)。
+/// (Azure OpenAI / LiteLLM 等)、OpenRouter (beta `/api/v1/responses`)、および
+/// Sakana AI (`api.sakana.ai/v1/responses`・fugu の推奨経路)。
 pub fn uses_responses_api(provider: &AiProvider, api_variant: Option<&str>) -> bool {
     api_variant == Some("responses")
         && matches!(
             provider,
-            AiProvider::OpenAI | AiProvider::OpenaiCompatible | AiProvider::OpenRouter
+            AiProvider::OpenAI
+                | AiProvider::OpenaiCompatible
+                | AiProvider::OpenRouter
+                | AiProvider::Sakana
         )
 }
 
@@ -61,7 +65,8 @@ fn max_output_tokens(provider: &AiProvider, model: &str, reasoning_enabled: Opti
         // でも名前で検出して予算を確保する(/chat/completions の openai_max_tokens と同根)。
         || (matches!(provider, AiProvider::OpenRouter)
             && crate::ai::is_openrouter_reasoning_model(model));
-    if matches!(provider, AiProvider::OpenAI) || reasoning_active {
+    // Sakana の fugu は全モデルが reasoning なので OpenAI 直と同様に常に 32k 確保する。
+    if matches!(provider, AiProvider::OpenAI | AiProvider::Sakana) || reasoning_active {
         32_000
     } else {
         4096
@@ -619,8 +624,10 @@ pub async fn send_with_tools(
     // しても encrypted_content の round-trip が必要で、reasoning_enabled 未指定でも
     // 付けないと2ターン目が HTTP 400 になる)。互換 gateway は未知 include を 400 する
     // 実装がありうるので reasoning を明示 ON にしたときだけ付与する。
-    if matches!(params.provider, AiProvider::OpenAI | AiProvider::OpenRouter)
-        || params.reasoning_enabled == Some(true)
+    if matches!(
+        params.provider,
+        AiProvider::OpenAI | AiProvider::OpenRouter | AiProvider::Sakana
+    ) || params.reasoning_enabled == Some(true)
     {
         body["include"] = json!(["reasoning.encrypted_content"]);
     }
@@ -871,7 +878,12 @@ pub async fn post_effect(
     let input = vec![json!({ "role": "user", "content": parts })];
 
     let mut body = base_body(&settings.model, system_prompt, input, None);
-    body["max_output_tokens"] = json!(if matches!(settings.provider, AiProvider::OpenAI) {
+    // fugu は reasoning なので OpenAI と同列に 32k 確保する(4096 では hidden reasoning で
+    // 枯れて incomplete/空応答になりうる。single-shot/stream の max_output_tokens と整合)。
+    body["max_output_tokens"] = json!(if matches!(
+        settings.provider,
+        AiProvider::OpenAI | AiProvider::Sakana
+    ) {
         32_000
     } else {
         4096
@@ -913,10 +925,13 @@ mod tests {
             &AiProvider::OpenRouter,
             Some("responses")
         ));
+        // Sakana AI (fugu) も `/responses` を公開しているので対象。
+        assert!(uses_responses_api(&AiProvider::Sakana, Some("responses")));
         // 変種違い / 非対応 provider は false。
         assert!(!uses_responses_api(&AiProvider::OpenAI, Some("v1")));
         assert!(!uses_responses_api(&AiProvider::OpenAI, None));
         assert!(!uses_responses_api(&AiProvider::OpenRouter, Some("v1")));
+        assert!(!uses_responses_api(&AiProvider::Sakana, None));
         assert!(!uses_responses_api(
             &AiProvider::Anthropic,
             Some("responses")
@@ -1596,8 +1611,11 @@ mod tests {
 //     OPENAI_API_KEY=sk-... cargo test --no-default-features responses_live -- --nocapture
 //     モデル上書き: OPENAI_RESPONSES_MODEL(既定 gpt-4o-mini)。
 //   OpenRouter (beta /api/v1/responses):
-//     OPENROUTER_API_KEY=sk-or-... cargo test --no-default-features responses_live_openrouter -- --nocapture
+//     OPENROUTER_API_KEY=sk-or-... cargo test --no-default-features live_openrouter -- --nocapture
 //     モデル上書き: OPENROUTER_RESPONSES_MODEL(既定 openai/gpt-4o-mini)。
+//   Sakana AI (api.sakana.ai/v1/responses):
+//     SAKANA_API_KEY=fish_... cargo test --no-default-features live_sakana -- --nocapture
+//     モデル上書き: SAKANA_RESPONSES_MODEL(既定 fugu)。
 //   いずれもキー未設定なら個別に [skip] する(CI / sandbox 安全)。
 // ---------------------------------------------------------------------------
 #[cfg(test)]
@@ -1646,7 +1664,26 @@ mod responses_live_tests {
         }
     }
 
-    /// provider を引数で受け、Responses 経路の ChatParams を組む(OpenAI / OpenRouter 共通)。
+    // --- Sakana AI (fugu) ---
+    fn sk_live_key() -> Option<String> {
+        std::env::var("SAKANA_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+    }
+
+    fn sk_live_model() -> String {
+        std::env::var("SAKANA_RESPONSES_MODEL").unwrap_or_else(|_| "fugu".to_string())
+    }
+
+    fn sk_live_settings() -> AiSettings {
+        AiSettings {
+            provider: AiProvider::Sakana,
+            model: sk_live_model(),
+            ..Default::default()
+        }
+    }
+
+    /// provider を引数で受け、Responses 経路の ChatParams を組む(OpenAI / OpenRouter / Sakana 共通)。
     fn live_params<'a>(
         provider: &'a AiProvider,
         settings: &'a AiSettings,
@@ -1974,6 +2011,55 @@ mod responses_live_tests {
             "[ok] web_search_live_openrouter: {} chars, citations={}",
             text.chars().count(),
             resp.citations.len()
+        );
+    }
+
+    // ===== Sakana AI (fugu, /v1/responses) =====
+    // 実 Sakana の Responses 経路を OpenAI/OpenRouter と同一の Rust ビルダー/パーサで叩く。
+    // SAKANA_API_KEY が無ければ skip。モデル上書き: SAKANA_RESPONSES_MODEL(既定 fugu)。
+
+    #[test]
+    fn single_shot_live_sakana() {
+        let Some(key) = sk_live_key() else {
+            eprintln!("[skip] single_shot_live_sakana: SAKANA_API_KEY 未設定");
+            return;
+        };
+        let settings = sk_live_settings();
+        let model = sk_live_model();
+        let params = live_params(&AiProvider::Sakana, &settings, &key, &model);
+        let text = run_single_shot(&params);
+        eprintln!(
+            "[ok] single_shot_live_sakana: {} chars",
+            text.chars().count()
+        );
+    }
+
+    #[test]
+    fn tool_call_multiturn_live_sakana() {
+        // fugu は reasoning モデルなので、include[reasoning.encrypted_content] の echo が
+        // 効かないと2ターン目が 400 になる。Sakana 経路での reasoning round-trip 回帰ゲート。
+        let Some(key) = sk_live_key() else {
+            eprintln!("[skip] tool_call_multiturn_live_sakana: SAKANA_API_KEY 未設定");
+            return;
+        };
+        let settings = sk_live_settings();
+        let model = sk_live_model();
+        let params = live_params(&AiProvider::Sakana, &settings, &key, &model);
+        let text = run_tool_multiturn(&params);
+        eprintln!("[ok] tool_call_multiturn_live_sakana: {}", text.trim());
+    }
+
+    #[test]
+    fn post_effect_live_sakana() {
+        let Some(key) = sk_live_key() else {
+            eprintln!("[skip] post_effect_live_sakana: SAKANA_API_KEY 未設定");
+            return;
+        };
+        let raw = post_effect_grader(&sk_live_settings(), &key);
+        assert!(!raw.trim().is_empty(), "応答が空");
+        eprintln!(
+            "[ok] post_effect_live_sakana: {} chars",
+            raw.chars().count()
         );
     }
 }

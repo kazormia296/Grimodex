@@ -14,6 +14,7 @@ const PREFLIGHT_PROVIDERS: AiProvider[] = [
   "openrouter",
   "openai",
   "anthropic",
+  "sakana",
   "ollama",
   "cli",
 ];
@@ -22,6 +23,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   openrouter: "OpenRouter",
   openai: "OpenAI",
   anthropic: "Anthropic",
+  sakana: "Sakana (fugu)",
   ollama: "Ollama (local)",
   cli: "CLI Agent",
 };
@@ -93,12 +95,16 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
       ...localSettings,
       provider,
       model: "",
-      // Responses トグルは Responses 対応プロバイダ専用。非対応へ切替えたら "responses" を残さない。
-      modelApiVariant: isResponsesApiCapableProvider(provider)
-        ? localSettings.modelApiVariant
-        : localSettings.modelApiVariant === "responses"
-          ? null
-          : localSettings.modelApiVariant,
+      // Sakana は Responses API が推奨/既定経路なので切替時に "responses" を既定 ON にする。
+      // 他の Responses 対応 provider は現在値を保持、非対応へ切替えたら "responses" を残さない。
+      modelApiVariant:
+        provider === "sakana"
+          ? "responses"
+          : isResponsesApiCapableProvider(provider)
+            ? localSettings.modelApiVariant
+            : localSettings.modelApiVariant === "responses"
+              ? null
+              : localSettings.modelApiVariant,
     };
     setLocalSettings(updated);
     await saveSettings(updated);

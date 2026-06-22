@@ -91,8 +91,9 @@ export function resolveAinoveristApiVariant(
  * Responses API (`/responses`) を叩けるプロバイダか。
  *
  * `/responses` を公開しているのは OpenAI 直叩き / OpenAI 互換 gateway (Azure OpenAI /
- * LiteLLM 等) / OpenRouter (beta `/api/v1/responses`)。Responses トグルの表示・
- * 経路解決・provider 切替時のクリア判定はすべてこの述語に集約する(条件のドリフト防止)。
+ * LiteLLM 等) / OpenRouter (beta `/api/v1/responses`) / Sakana AI (fugu の推奨経路)。
+ * Responses トグルの表示・経路解決・provider 切替時のクリア判定はすべてこの述語に
+ * 集約する(条件のドリフト防止)。
  */
 export function isResponsesApiCapableProvider(
   provider: string | undefined,
@@ -100,7 +101,8 @@ export function isResponsesApiCapableProvider(
   return (
     provider === "openai" ||
     provider === "openai-compatible" ||
-    provider === "openrouter"
+    provider === "openrouter" ||
+    provider === "sakana"
   );
 }
 

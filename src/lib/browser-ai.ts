@@ -39,6 +39,7 @@ function chatEndpoint(provider: AiProvider): string {
     case "ollama":
       return "/api/ollama/v1/chat/completions";
     case "openai-compatible":
+    case "sakana":
     case "ai-novelist":
     case "cli":
       throw new Error(
@@ -58,6 +59,7 @@ function modelsEndpoint(provider: AiProvider): string | null {
     case "ollama":
       return "/api/ollama/api/tags";
     case "openai-compatible":
+    case "sakana":
     case "ai-novelist":
     case "cli":
       return null;

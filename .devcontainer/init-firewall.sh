@@ -151,6 +151,7 @@ for domain in \
     "api.anthropic.com" \
     "openrouter.ai" \
     "console.sakana.ai" \
+    "api.sakana.ai" \
     "sentry.io" \
     "statsig.anthropic.com" \
     "statsig.com" \

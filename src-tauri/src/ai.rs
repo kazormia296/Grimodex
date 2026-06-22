@@ -27,6 +27,10 @@ pub enum AiProvider {
     Ollama,
     #[serde(rename = "openai-compatible")]
     OpenaiCompatible,
+    /// Sakana AI (fugu / fugu-ultra)。固定 base URL の OpenAI 互換 frontier プロバイダで、
+    /// `/responses` (Responses API) を推奨経路として公開する。
+    #[serde(rename = "sakana")]
+    Sakana,
     #[serde(rename = "ai-novelist")]
     AiNovelist,
     #[serde(rename = "cli")]
@@ -67,6 +71,7 @@ pub fn resolve_tool_protocol(
             | AiProvider::OpenAI
             | AiProvider::Ollama
             | AiProvider::OpenaiCompatible
+            | AiProvider::Sakana
             | AiProvider::AiNovelist
     );
     if !http_openai_compat {
@@ -127,6 +132,7 @@ impl AiProvider {
             AiProvider::Anthropic => "grimodex-anthropic",
             AiProvider::Ollama => "grimodex-ollama",
             AiProvider::OpenaiCompatible => "grimodex-openai-compatible",
+            AiProvider::Sakana => "grimodex-sakana",
             AiProvider::AiNovelist => "grimodex-ai-novelist",
             AiProvider::Cli => "grimodex-cli", // 実質未使用 (CLI 側で認証管理)
         }
@@ -144,6 +150,7 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 ep.openai_compat_custom.trim_end_matches('/').to_string()
             }
+            AiProvider::Sakana => "https://api.sakana.ai/v1".to_string(),
             AiProvider::AiNovelist => ai_novelist::BASE_URL.to_string(),
             AiProvider::Cli => String::new(),
         }
@@ -178,6 +185,7 @@ impl AiProvider {
             AiProvider::OpenaiCompatible => {
                 format!("{}/models", ep.openai_compat_custom.trim_end_matches('/'))
             }
+            AiProvider::Sakana => "https://api.sakana.ai/v1/models".to_string(),
             AiProvider::AiNovelist if api_variant == Some("v1") => {
                 ai_novelist::V1_MODELS_URL.to_string()
             }
@@ -195,6 +203,7 @@ impl std::fmt::Display for AiProvider {
             AiProvider::Anthropic => write!(f, "anthropic"),
             AiProvider::Ollama => write!(f, "ollama"),
             AiProvider::OpenaiCompatible => write!(f, "openai-compatible"),
+            AiProvider::Sakana => write!(f, "sakana"),
             AiProvider::AiNovelist => write!(f, "ai-novelist"),
             AiProvider::Cli => write!(f, "cli"),
         }
@@ -523,12 +532,13 @@ pub(crate) fn is_openrouter_reasoning_model(model: &str) -> bool {
 fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
     if is_ainoverist_v1(params) {
         ai_novelist::length_for(params.model)
-    } else if matches!(params.provider, AiProvider::OpenAI)
+    } else if matches!(params.provider, AiProvider::OpenAI | AiProvider::Sakana)
         || is_openrouter_reasoning_model(params.model)
     {
         // reasoning モデルは hidden reasoning も max_tokens / max_completion_tokens に
         // 課金されるため、4096 では content が空 (finish_reason:length) になりうる。
-        // OpenAI 直叩き全般 + OpenRouter 経由の reasoning モデルに余裕を持たせる。
+        // OpenAI 直叩き全般 + Sakana(fugu は reasoning) + OpenRouter 経由の reasoning
+        // モデルに余裕を持たせる。
         32_000
     } else {
         4096
@@ -537,13 +547,14 @@ fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
 
 /// OpenAI-compatible body にトークン上限を挿入する。
 /// OpenAI 直叩きは reasoning モデルが `max_tokens` を 400 拒否するため `max_completion_tokens` を使う。
+/// Sakana も OpenAI 互換の直 API で fugu は reasoning なので同様に `max_completion_tokens`。
 /// OpenRouter は OpenAI モデルでも OpenRouter wire format なので `max_tokens` のままでよい。
 fn insert_chat_completion_token_limit(
     body: &mut serde_json::Value,
     provider: &AiProvider,
     value: u32,
 ) {
-    let key = if matches!(provider, AiProvider::OpenAI) {
+    let key = if matches!(provider, AiProvider::OpenAI | AiProvider::Sakana) {
         "max_completion_tokens"
     } else {
         "max_tokens"
@@ -916,9 +927,9 @@ pub async fn test_connection(
                     { "role": "user", "content": "Reply with exactly: Connection OK" }
                 ]
             });
-            // OpenAI 直叩きは reasoning モデルだと 32 トークンでは hidden reasoning だけで
-            // 枯れる + `max_tokens` を 400 拒否するため、key/予算を分岐する。
-            let probe_limit = if matches!(provider, AiProvider::OpenAI) {
+            // OpenAI 直叩き / Sakana(fugu) は reasoning モデルだと 32 トークンでは hidden
+            // reasoning だけで枯れる + `max_tokens` を 400 拒否するため、key/予算を分岐する。
+            let probe_limit = if matches!(provider, AiProvider::OpenAI | AiProvider::Sakana) {
                 1024
             } else {
                 32
@@ -3111,13 +3122,14 @@ pub async fn call_post_effect_api(
                     { "role": "user",   "content": user_blocks }
                 ]
             });
-            // OpenAI 直叩きは reasoning モデルが max_tokens を 400 拒否するため
-            // max_completion_tokens に切替 + 予算を確保する。
-            let post_effect_limit = if matches!(settings.provider, AiProvider::OpenAI) {
-                32_000
-            } else {
-                4096
-            };
+            // OpenAI 直叩き / Sakana(fugu) は reasoning モデルが max_tokens を 400 拒否する
+            // ため max_completion_tokens に切替 + 予算を確保する(他の reasoning 予算サイトと整合)。
+            let post_effect_limit =
+                if matches!(settings.provider, AiProvider::OpenAI | AiProvider::Sakana) {
+                    32_000
+                } else {
+                    4096
+                };
             insert_chat_completion_token_limit(&mut body, &settings.provider, post_effect_limit);
             apply_openrouter_provider_pin(
                 &mut body,
@@ -3247,7 +3259,7 @@ fn apply_stream_usage_optin(body: &mut serde_json::Value, provider: &AiProvider)
         AiProvider::OpenRouter => {
             body["usage"] = serde_json::json!({ "include": true });
         }
-        AiProvider::OpenAI | AiProvider::OpenaiCompatible => {
+        AiProvider::OpenAI | AiProvider::OpenaiCompatible | AiProvider::Sakana => {
             body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
         _ => {}

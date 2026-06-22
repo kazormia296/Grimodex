@@ -6,6 +6,7 @@ export const AI_PROVIDERS = [
   "anthropic",
   "ollama",
   "openai-compatible",
+  "sakana",
   "ai-novelist",
   "cli",
 ] as const;
