@@ -1,0 +1,95 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const currentProject = { value: "p1" };
+vi.mock("@/features/project/projectStore", () => ({
+  getCurrentProjectId: () => currentProject.value,
+}));
+vi.mock("./api", () => ({
+  listPlotThreads: vi.fn(async () => []),
+  listPlotThreadLinks: vi.fn(async () => []),
+  createPlotThread: vi.fn(),
+  updatePlotThread: vi.fn(async () => {}),
+  deletePlotThread: vi.fn(async () => {}),
+  createPlotThreadLink: vi.fn(),
+  updatePlotThreadLink: vi.fn(async () => {}),
+  deletePlotThreadLink: vi.fn(async () => {}),
+}));
+
+import { listPlotThreads, createPlotThread, type PlotThreadRow } from "./api";
+import { usePlotThreadStore } from "./plotThreadStore";
+
+const row = (id: string, sortOrder: string): PlotThreadRow => ({
+  id,
+  projectId: "p1",
+  name: id,
+  color: null,
+  description: null,
+  sortOrder,
+  createdAt: "",
+  updatedAt: "",
+});
+
+describe("plotThreadStore", () => {
+  beforeEach(() => {
+    usePlotThreadStore.setState({ threads: [], links: [], loading: false });
+    currentProject.value = "p1";
+    vi.clearAllMocks();
+    (listPlotThreads as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  });
+
+  it("loads threads and links for the current project", async () => {
+    (listPlotThreads as ReturnType<typeof vi.fn>).mockResolvedValue([
+      row("t1", "a0"),
+    ]);
+    await usePlotThreadStore.getState().load("p1");
+    expect(usePlotThreadStore.getState().threads).toHaveLength(1);
+    expect(usePlotThreadStore.getState().loading).toBe(false);
+  });
+
+  it("drops a stale load when the project switched mid-flight", async () => {
+    (listPlotThreads as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => {
+        currentProject.value = "p2"; // ロード中にプロジェクト切替
+        return [row("t1", "a0")];
+      },
+    );
+    await usePlotThreadStore.getState().load("p1");
+    // p1 のロード結果は破棄される（現在 p2 のため）
+    expect(usePlotThreadStore.getState().threads).toHaveLength(0);
+  });
+
+  it("appends a new thread with a sortOrder after the last", async () => {
+    usePlotThreadStore.setState({ threads: [row("t1", "a0")], links: [] });
+    (createPlotThread as ReturnType<typeof vi.fn>).mockImplementation(
+      async (data: { sortOrder: string }) => row("t2", data.sortOrder),
+    );
+    await usePlotThreadStore.getState().addThread("p1", "second");
+    const threads = usePlotThreadStore.getState().threads;
+    expect(threads).toHaveLength(2);
+    // 新キーは末尾（"a0" より後）であること
+    expect(threads[1].sortOrder > "a0").toBe(true);
+  });
+
+  it("removes a thread and its links locally on delete", async () => {
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1")],
+      links: [
+        {
+          id: "l1",
+          threadId: "t1",
+          nodeId: "s1",
+          phaseType: "introduce",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    });
+    await usePlotThreadStore.getState().deleteThread("t1");
+    expect(usePlotThreadStore.getState().threads.map((t) => t.id)).toEqual([
+      "t2",
+    ]);
+    expect(usePlotThreadStore.getState().links).toHaveLength(0);
+  });
+});
