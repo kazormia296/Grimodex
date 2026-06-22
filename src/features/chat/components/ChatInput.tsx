@@ -22,7 +22,10 @@ import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { resolveModelCapabilities } from "../agent/modelLimits";
-import { resolveAinoveristApiVariant } from "../aiNovelist";
+import {
+  resolveAinoveristApiVariant,
+  resolveModelApiVariant,
+} from "../aiNovelist";
 import { getChatInputExtensions } from "../extensions/chatInputExtensions";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
@@ -410,12 +413,16 @@ export function ChatInput({
       setModelOpen(false);
       return;
     }
-    // AI のべりすと: model 切替時に apiVariant を再解決して同時に永続化する。
+    // model 切替時に apiVariant を再解決して同時に永続化する。
     // chat 経路は毎送信で動的に再計算するので影響ないが、Inline AI / Beat /
     // foreshadow 等 FE が apiVariant を渡さない経路は settings.modelApiVariant
     // を fallback として読むため、ここで stale 値を残すと legacy モデルが v1
     // エンドポイントへ送られる等のミスルーティングが起きる。
-    const apiVariant = resolveAinoveristApiVariant(
+    // provider 込みの resolveModelApiVariant を使い、OpenAI/互換で Responses
+    // 選択中なら "responses" を保持する(resolveAinoveristApiVariant 直呼びだと
+    // 任意モデルに "legacy" を返し Responses 設定を潰す)。
+    const apiVariant = resolveModelApiVariant(
+      aiSettings.provider,
       modelId,
       models,
       aiSettings.modelApiVariant,

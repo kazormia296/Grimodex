@@ -97,6 +97,56 @@ describe("runAgentLoop", () => {
     expect(sendToLLM).toHaveBeenCalledTimes(2);
   });
 
+  // OpenAI Responses の推論継続: signature 付き thinking ブロックは次ターンの
+  // assistant メッセージに thinkingBlocks として round-trip される(Rust 側で
+  // reasoning item として echo するための土台)。signature 無しは round-trip しない。
+  it("round-trips reasoning thinking blocks (with signature) into the next LLM call", async () => {
+    const sig = JSON.stringify({ id: "rs_1", ec: "ENC==" });
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce({
+        blocks: [
+          { type: "thinking", content: "考え中", signature: sig },
+          { type: "tool_use", id: "tool-1", name: "search_codex", input: {} },
+        ],
+        stopReason: "tool_use",
+      })
+      .mockResolvedValueOnce(endResponse());
+
+    await runAgentLoop(
+      baseOptions({ sendToLLM, executeTool: vi.fn(async () => toolResult()) }),
+    );
+
+    expect(sendToLLM).toHaveBeenCalledTimes(2);
+    const secondCallMessages = sendToLLM.mock.calls[1][0];
+    const assistant = secondCallMessages.find((m) => m.role === "assistant");
+    expect(assistant?.thinkingBlocks).toEqual([
+      { thinking: "考え中", signature: sig },
+    ]);
+  });
+
+  it("drops thinking blocks without a signature (no round-trip)", async () => {
+    const sendToLLM = vi
+      .fn<AgentLoopOptions["sendToLLM"]>()
+      .mockResolvedValueOnce({
+        blocks: [
+          { type: "thinking", content: "x", signature: "" },
+          { type: "tool_use", id: "tool-1", name: "search_codex", input: {} },
+        ],
+        stopReason: "tool_use",
+      })
+      .mockResolvedValueOnce(endResponse());
+
+    await runAgentLoop(
+      baseOptions({ sendToLLM, executeTool: vi.fn(async () => toolResult()) }),
+    );
+
+    const assistant = sendToLLM.mock.calls[1][0].find(
+      (m) => m.role === "assistant",
+    );
+    expect(assistant?.thinkingBlocks).toBeUndefined();
+  });
+
   it("aborts after a tool resolves without firing the next LLM call (runaway guard)", async () => {
     let resolveTool!: (r: ToolResult) => void;
     const pending = new Promise<ToolResult>((res) => {

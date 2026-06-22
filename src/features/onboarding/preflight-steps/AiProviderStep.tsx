@@ -4,7 +4,7 @@ import { Check, CheckCircle } from "lucide-react";
 import { useAiSettingsStore } from "@/features/chat/store";
 import type { AiProvider } from "@/features/chat/types";
 import { DEFAULT_AI_SETTINGS } from "@/features/chat/types";
-import { resolveAinoveristApiVariant } from "@/features/chat/aiNovelist";
+import { resolveModelApiVariant } from "@/features/chat/aiNovelist";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 
 const PREFLIGHT_PROVIDERS: AiProvider[] = [
@@ -67,9 +67,11 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
   }, [hasApiKey, settings?.provider]);
 
   async function handleModelChange(modelId: string) {
-    // AI のべりすと: model と apiVariant を同時に永続化する
-    // (詳細は ChatInput.handleSelectModel コメント参照)
-    const apiVariant = resolveAinoveristApiVariant(
+    // model と apiVariant を同時に永続化する(詳細は ChatInput.handleSelectModel
+    // コメント参照)。provider 込みの resolveModelApiVariant を使い、OpenAI/互換で
+    // Responses 選択中なら "responses" を保持する(直呼びだと "legacy" に潰れる)。
+    const apiVariant = resolveModelApiVariant(
+      localSettings.provider,
       modelId,
       models,
       localSettings.modelApiVariant,
@@ -84,7 +86,18 @@ export function AiProviderStep({ onSetupLater }: AiProviderStepProps) {
   }
 
   async function handleProviderChange(provider: AiProvider) {
-    const updated = { ...localSettings, provider, model: "" };
+    const updated = {
+      ...localSettings,
+      provider,
+      model: "",
+      // Responses トグルは OpenAI/互換専用。他へ切替えたら "responses" を残さない。
+      modelApiVariant:
+        provider === "openai" || provider === "openai-compatible"
+          ? localSettings.modelApiVariant
+          : localSettings.modelApiVariant === "responses"
+            ? null
+            : localSettings.modelApiVariant,
+    };
     setLocalSettings(updated);
     await saveSettings(updated);
     await loadSettings();

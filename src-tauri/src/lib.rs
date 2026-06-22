@@ -1,5 +1,6 @@
 mod ai;
 mod ai_novelist;
+mod ai_responses;
 mod cli_provider;
 mod codex_matching;
 mod commands;

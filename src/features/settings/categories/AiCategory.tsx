@@ -34,6 +34,7 @@ import {
   AINOVERIST_EXTRA_SAMPLING_KEYS,
   isAinoveristV1Model,
   resolveAinoveristApiVariant,
+  resolveModelApiVariant,
 } from "@/features/chat/aiNovelist";
 import { SettingSection } from "../components/SettingSection";
 import { McpIntegrationSection } from "../components/McpIntegrationSection";
@@ -245,6 +246,15 @@ export function AiCategory() {
       // OpenAI 互換に切替時は openaiCompatible 設定を初期化（既存値は保持）
       openaiCompatible:
         localSettings!.openaiCompatible ?? DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
+      // Responses トグルは OpenAI / 互換 gateway 専用。それ以外へ切替えたら
+      // "responses" を残さずクリアする(他プロバイダのトグル UI からは消せず、
+      // OpenAI へ戻したとき意図せず再有効化されるのを防ぐ)。
+      modelApiVariant:
+        provider === "openai" || provider === "openai-compatible"
+          ? localSettings!.modelApiVariant
+          : localSettings!.modelApiVariant === "responses"
+            ? null
+            : localSettings!.modelApiVariant,
     };
     setLocalSettings(updated);
     await saveSettings(updated);
@@ -281,15 +291,20 @@ export function AiCategory() {
   }
 
   async function handleModelChange(model: string) {
-    const apiVariant = resolveAinoveristApiVariant(
-      model,
-      models,
-      localSettings?.modelApiVariant,
-    );
+    // provider 込みで variant を解決(OpenAI/互換で Responses 選択中なら "responses"
+    // を保持)。resolveAinoveristApiVariant 直呼びだと任意モデルに "legacy" を返し
+    // Responses 設定を潰すため、必ず resolveModelApiVariant を通す。
+    const apiVariant =
+      resolveModelApiVariant(
+        localSettings?.provider,
+        model,
+        models,
+        localSettings?.modelApiVariant,
+      ) ?? null;
     const updated = {
       ...localSettings!,
       model,
-      modelApiVariant: apiVariant ?? null,
+      modelApiVariant: apiVariant,
     };
     setLocalSettings(updated);
     await saveSettings(updated);
@@ -465,6 +480,31 @@ export function AiCategory() {
               />
             </SettingRow>
           </>
+        )}
+
+        {/* OpenAI Responses API トグル (OpenAI 直 / 互換 gateway 両方) */}
+        {(localSettings.provider === "openai" ||
+          localSettings.provider === "openai-compatible") && (
+          <SettingRow
+            label={t("settings.ai.responsesApiLabel")}
+            description={t("settings.ai.responsesApiDesc")}
+          >
+            <input
+              type="checkbox"
+              checked={localSettings.modelApiVariant === "responses"}
+              onChange={async (e) => {
+                const updated = {
+                  ...localSettings,
+                  modelApiVariant: e.target.checked
+                    ? ("responses" as const)
+                    : null,
+                };
+                setLocalSettings(updated);
+                await saveSettings(updated);
+              }}
+              className="h-4 w-4"
+            />
+          </SettingRow>
         )}
 
         {/* AI のべりすと: 固定 URL 表示 + サンプリングパラメータ + 構造化出力許可 */}
