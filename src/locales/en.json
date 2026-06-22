@@ -4744,7 +4744,32 @@
       "theme": "Theme"
     }
   },
+  "plotThread": {
+    "viewScenes": "Scenes",
+    "viewThreads": "Threads",
+    "addThread": "Add thread",
+    "newThreadName": "New thread",
+    "unnamed": "(unnamed)",
+    "marker": "Marker",
+    "thread": "Thread",
+    "name": "Name",
+    "phase": "Phase",
+    "note": "Note",
+    "notePlaceholder": "Note for this marker",
+    "noMarkerSelected": "Select a marker",
+    "noSelection": "Select a thread or marker",
+    "deleteMarker": "Delete marker",
+    "deleteThread": "Delete thread",
+    "phaseType": {
+      "introduce": "Introduce",
+      "develop": "Develop",
+      "turn": "Turn",
+      "climax": "Climax",
+      "resolve": "Resolve"
+    }
+  },
   "timeline": {
+    "viewMode": "View mode",
     "ctx": {
       "openInEditor": "Open in editor",
       "openInSide": "Open at side",
