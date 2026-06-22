@@ -16,9 +16,8 @@ use crate::rule::{Diagnostic, Language, LintContext, LintInput, LintRule, Severi
 /// (saw, seen, heard, felt, thought, knew). Regular inflections (-s/-ed/-ing)
 /// are matched by stemming, so they need not be listed.
 const FILTER_WORD_FORMS: &[&str] = &[
-    "see", "saw", "seen", "hear", "heard", "feel", "felt", "notice", "realize",
-    "realise", "wonder", "think", "thought", "know", "knew", "watch", "seem",
-    "decide", "remember",
+    "see", "saw", "seen", "hear", "heard", "feel", "felt", "notice", "realize", "realise",
+    "wonder", "think", "thought", "know", "knew", "watch", "seem", "decide", "remember",
 ];
 
 static WORD_RE: OnceLock<Regex> = OnceLock::new();

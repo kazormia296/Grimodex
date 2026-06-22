@@ -190,9 +190,7 @@ type SceneTokens = (String, String, Vec<MorphToken>, Vec<(usize, usize)>);
 /// 既知名を過分割して生じたフラグメント) なので候補から落とす。より長い別語
 /// (スパンを跨ぐ・はみ出すトークン) は包含されないので残る。
 fn is_fragment_of_known_name(spans: &[(usize, usize)], byte_start: usize, byte_end: usize) -> bool {
-    spans
-        .iter()
-        .any(|&(s, e)| s <= byte_start && byte_end <= e)
+    spans.iter().any(|&(s, e)| s <= byte_start && byte_end <= e)
 }
 
 /// 読書順に並んだ (scene_id, plain, tokens, name_spans) から固有名詞を集約し、既知
