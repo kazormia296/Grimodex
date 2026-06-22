@@ -5,6 +5,11 @@ import { useTimelineStore } from "./timelineStore";
 import { computeAxisLabels } from "./timelineLabels";
 import { ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineContextMenu } from "./TimelineContextMenu";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import {
+  buildPlotLaneModel,
+  LANE_HEIGHT,
+} from "@/features/plot-threads/plotThreadLaneModel";
 import { recordMark } from "@/lib/perfLog";
 
 const DOT_R = 6;
@@ -63,6 +68,8 @@ interface Props {
     toUnscheduled: boolean,
   ) => void;
   onSelectScene: (id: string) => void;
+  /** threads モードでマーカーをクリックしたとき（インスペクタ選択用）。 */
+  onSelectMarker?: (linkId: string) => void;
 }
 
 export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
@@ -74,6 +81,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       unscheduledStartIndex,
       onDropStoryTime,
       onSelectScene,
+      onSelectMarker,
     }: Props,
     forwardedRef,
   ) {
@@ -85,6 +93,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const rangeSelectTo = useTimelineStore((s) => s.rangeSelectTo);
     const display = useTimelineStore((s) => s.display);
     const axisMode = useTimelineStore((s) => s.axisMode);
+    const viewMode = useTimelineStore((s) => s.viewMode);
+    const threads = usePlotThreadStore((s) => s.threads);
+    const links = usePlotThreadStore((s) => s.links);
     const zoom = useTimelineStore((s) => s.zoom);
     const setZoom = useTimelineStore((s) => s.setZoom);
     const scrollOffset = useTimelineStore((s) => s.scrollOffset);
@@ -102,12 +113,23 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
 
     const STEP = STEP_BASE * zoom;
 
+    // プロットスレッドのレーン描画モデル（threads モードでのみ使用）。
+    // x はシーンの index（後段で xOf() により px 化）。
+    const sceneX = new Map<string, number>();
+    scenes.forEach((sc, i) => sceneX.set(sc.id, i));
+    const laneModel = buildPlotLaneModel({ threads, links, sceneX });
+
     // showUnscheduledZone: ドロップゾーンを表示するか
     // story-time モード中は常に表示（全シーンが軸上でも Unscheduled に戻せるよう）
-    const showUnscheduledZone = unscheduledStartIndex !== undefined;
-    const svgHeight = showUnscheduledZone
-      ? SVG_HEIGHT_BASE + 60
-      : SVG_HEIGHT_BASE;
+    // threads モードでは scene のドロップゾーンは出さない。
+    const showUnscheduledZone =
+      viewMode === "scenes" && unscheduledStartIndex !== undefined;
+    const svgHeight =
+      viewMode === "threads"
+        ? Math.max(SVG_HEIGHT_BASE, laneModel.contentHeight + LANE_HEIGHT)
+        : showUnscheduledZone
+          ? SVG_HEIGHT_BASE + 60
+          : SVG_HEIGHT_BASE;
 
     // Compute x positions
     const scheduledCount = unscheduledStartIndex ?? scenes.length;
@@ -412,59 +434,80 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               </>
             )}
 
-            {scenes.map((scene, i) => {
-              const cx = xOf(i);
-              const cy = yOf(i);
-              const fill =
-                STATUS_FILL[scene.status ?? "outline"] ?? STATUS_FILL.outline;
-              const isSelected = selectedNodeIds.includes(scene.id);
-              const isActive = scene.id === activeSceneId;
-              const pins = pinsByNode.get(scene.id) ?? [];
-              const isUnscheduled = i >= scheduledCount;
+            {viewMode === "scenes" &&
+              scenes.map((scene, i) => {
+                const cx = xOf(i);
+                const cy = yOf(i);
+                const fill =
+                  STATUS_FILL[scene.status ?? "outline"] ?? STATUS_FILL.outline;
+                const isSelected = selectedNodeIds.includes(scene.id);
+                const isActive = scene.id === activeSceneId;
+                const pins = pinsByNode.get(scene.id) ?? [];
+                const isUnscheduled = i >= scheduledCount;
 
-              return (
-                <g
-                  key={scene.id}
-                  data-node-id={scene.id}
-                  opacity={isUnscheduled ? 0.55 : 1}
-                >
-                  {/* Vertical stem */}
-                  {(display.showTitles || display.showChapterNumbers) && (
-                    <line
-                      x1={cx}
-                      y1={cy + DOT_R}
-                      x2={cx}
-                      y2={cy + 20}
-                      stroke="currentColor"
-                      strokeOpacity={0.15}
-                      strokeWidth={1}
-                    />
-                  )}
+                return (
+                  <g
+                    key={scene.id}
+                    data-node-id={scene.id}
+                    opacity={isUnscheduled ? 0.55 : 1}
+                  >
+                    {/* Vertical stem */}
+                    {(display.showTitles || display.showChapterNumbers) && (
+                      <line
+                        x1={cx}
+                        y1={cy + DOT_R}
+                        x2={cx}
+                        y2={cy + 20}
+                        stroke="currentColor"
+                        strokeOpacity={0.15}
+                        strokeWidth={1}
+                      />
+                    )}
 
-                  {/* Drag ghost */}
-                  {drag?.nodeId === scene.id &&
-                    (() => {
-                      const locked =
-                        Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD;
-                      const ghostX = drag.currentX;
-                      const ghostY = locked ? LANE_Y : drag.currentY;
-                      return (
-                        <line
-                          x1={cx}
-                          y1={cy}
-                          x2={ghostX}
-                          y2={ghostY}
-                          stroke="currentColor"
-                          strokeOpacity={0.35}
-                          strokeWidth={1}
-                          strokeDasharray="3 3"
-                          pointerEvents="none"
-                        />
-                      );
-                    })()}
+                    {/* Drag ghost */}
+                    {drag?.nodeId === scene.id &&
+                      (() => {
+                        const locked =
+                          Math.abs(drag.currentY - LANE_Y) <
+                          AXIS_LOCK_THRESHOLD;
+                        const ghostX = drag.currentX;
+                        const ghostY = locked ? LANE_Y : drag.currentY;
+                        return (
+                          <line
+                            x1={cx}
+                            y1={cy}
+                            x2={ghostX}
+                            y2={ghostY}
+                            stroke="currentColor"
+                            strokeOpacity={0.35}
+                            strokeWidth={1}
+                            strokeDasharray="3 3"
+                            pointerEvents="none"
+                          />
+                        );
+                      })()}
 
-                  {/* Active scene ring (現在地マーカー) */}
-                  {isActive && (
+                    {/* Active scene ring (現在地マーカー) */}
+                    {isActive && (
+                      <circle
+                        cx={drag?.nodeId === scene.id ? drag.currentX : cx}
+                        cy={
+                          drag?.nodeId === scene.id
+                            ? Math.abs(drag.currentY - LANE_Y) <
+                              AXIS_LOCK_THRESHOLD
+                              ? LANE_Y
+                              : drag.currentY
+                            : cy
+                        }
+                        r={DOT_R + 3}
+                        fill="none"
+                        stroke="var(--primary)"
+                        strokeWidth={1.5}
+                        pointerEvents="none"
+                      />
+                    )}
+
+                    {/* Scene dot */}
                     <circle
                       cx={drag?.nodeId === scene.id ? drag.currentX : cx}
                       cy={
@@ -475,106 +518,137 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                             : drag.currentY
                           : cy
                       }
-                      r={DOT_R + 3}
-                      fill="none"
-                      stroke="var(--primary)"
-                      strokeWidth={1.5}
-                      pointerEvents="none"
-                    />
-                  )}
-
-                  {/* Scene dot */}
-                  <circle
-                    cx={drag?.nodeId === scene.id ? drag.currentX : cx}
-                    cy={
-                      drag?.nodeId === scene.id
-                        ? Math.abs(drag.currentY - LANE_Y) < AXIS_LOCK_THRESHOLD
-                          ? LANE_Y
-                          : drag.currentY
-                        : cy
-                    }
-                    r={DOT_R}
-                    fill={fill}
-                    stroke={isSelected ? "white" : "transparent"}
-                    strokeWidth={2}
-                    className={canDrag ? "cursor-grab" : "cursor-pointer"}
-                    onClick={(e) => {
-                      if (e.shiftKey) {
-                        rangeSelectTo(
-                          scene.id,
-                          scenes.map((sc) => sc.id),
-                        );
-                      } else if (e.ctrlKey || e.metaKey) {
-                        toggleSelect(scene.id);
-                      } else {
-                        onSelectScene(scene.id);
-                      }
-                    }}
-                    onMouseDown={(e) => handleDotMouseDown(e, scene.id, i)}
-                    onContextMenu={(e) => handleDotContextMenu(e, scene)}
-                  >
-                    <title>{scene.title}</title>
-                  </circle>
-
-                  {/* Story-time label (scheduled scenes in story-time mode) */}
-                  {display.showChapterNumbers &&
-                    !isUnscheduled &&
-                    scene.storyTimeLabel && (
-                      <text
-                        x={cx}
-                        y={cy - DOT_R - 4}
-                        textAnchor="middle"
-                        fontSize={9}
-                        fill="currentColor"
-                        fillOpacity={0.5}
-                        className="pointer-events-none"
-                      >
-                        {scene.storyTimeLabel}
-                      </text>
-                    )}
-
-                  {/* Title label */}
-                  {display.showTitles && (
-                    <text
-                      x={cx}
-                      y={cy + 28}
-                      textAnchor="middle"
-                      fontSize={10}
-                      fill="currentColor"
-                      fillOpacity={0.7}
-                      className="pointer-events-none"
+                      r={DOT_R}
+                      fill={fill}
+                      stroke={isSelected ? "white" : "transparent"}
+                      strokeWidth={2}
+                      className={canDrag ? "cursor-grab" : "cursor-pointer"}
+                      onClick={(e) => {
+                        if (e.shiftKey) {
+                          rangeSelectTo(
+                            scene.id,
+                            scenes.map((sc) => sc.id),
+                          );
+                        } else if (e.ctrlKey || e.metaKey) {
+                          toggleSelect(scene.id);
+                        } else {
+                          onSelectScene(scene.id);
+                        }
+                      }}
+                      onMouseDown={(e) => handleDotMouseDown(e, scene.id, i)}
+                      onContextMenu={(e) => handleDotContextMenu(e, scene)}
                     >
-                      {scene.title.length > 8
-                        ? scene.title.slice(0, 7) + "…"
-                        : scene.title}
-                    </text>
-                  )}
+                      <title>{scene.title}</title>
+                    </circle>
 
-                  {/* Phase pins */}
-                  {display.showPhasePins &&
-                    pins.length > 0 &&
-                    !isUnscheduled && (
+                    {/* Story-time label (scheduled scenes in story-time mode) */}
+                    {display.showChapterNumbers &&
+                      !isUnscheduled &&
+                      scene.storyTimeLabel && (
+                        <text
+                          x={cx}
+                          y={cy - DOT_R - 4}
+                          textAnchor="middle"
+                          fontSize={9}
+                          fill="currentColor"
+                          fillOpacity={0.5}
+                          className="pointer-events-none"
+                        >
+                          {scene.storyTimeLabel}
+                        </text>
+                      )}
+
+                    {/* Title label */}
+                    {display.showTitles && (
                       <text
                         x={cx}
-                        y={PHASE_PIN_Y}
+                        y={cy + 28}
                         textAnchor="middle"
                         fontSize={10}
                         fill="currentColor"
-                        fillOpacity={0.55}
+                        fillOpacity={0.7}
+                        className="pointer-events-none"
                       >
-                        {pins.length === 1
-                          ? `⏱ ${pins[0].entryName}`
-                          : `⏱×${pins.length}`}
-                        <title>
-                          {pins
-                            .map((p) => `${p.entryName}: ${p.label}`)
-                            .join("\n")}
-                        </title>
+                        {scene.title.length > 8
+                          ? scene.title.slice(0, 7) + "…"
+                          : scene.title}
                       </text>
                     )}
+
+                    {/* Phase pins */}
+                    {display.showPhasePins &&
+                      pins.length > 0 &&
+                      !isUnscheduled && (
+                        <text
+                          x={cx}
+                          y={PHASE_PIN_Y}
+                          textAnchor="middle"
+                          fontSize={10}
+                          fill="currentColor"
+                          fillOpacity={0.55}
+                        >
+                          {pins.length === 1
+                            ? `⏱ ${pins[0].entryName}`
+                            : `⏱×${pins.length}`}
+                          <title>
+                            {pins
+                              .map((p) => `${p.entryName}: ${p.label}`)
+                              .join("\n")}
+                          </title>
+                        </text>
+                      )}
+                  </g>
+                );
+              })}
+
+            {/* プロットスレッドのレーン（threads モード） */}
+            {viewMode === "threads" &&
+              laneModel.lanes.map((lane) => (
+                <g key={lane.thread.id} data-plot-lane={lane.thread.id}>
+                  {/* レーン背景線 */}
+                  <line
+                    x1={xOf(0)}
+                    y1={lane.y}
+                    x2={
+                      scheduledCount > 0
+                        ? xOf(scheduledCount - 1)
+                        : totalWidth - PAD_RIGHT
+                    }
+                    y2={lane.y}
+                    stroke="currentColor"
+                    strokeOpacity={0.15}
+                    strokeWidth={1}
+                  />
+                  {/* レーン見出し（左固定） */}
+                  <text
+                    x={4}
+                    y={lane.y - 10}
+                    fontSize={11}
+                    fill="currentColor"
+                    fillOpacity={0.8}
+                    className="pointer-events-none select-none"
+                  >
+                    {lane.thread.name || t("plotThread.unnamed", "（無名）")}
+                  </text>
+                  {/* マーカー */}
+                  {lane.markers.map((mk) => (
+                    <circle
+                      key={mk.linkId}
+                      cx={xOf(mk.x)}
+                      cy={lane.y}
+                      r={DOT_R}
+                      fill={lane.thread.color ?? "var(--primary)"}
+                      stroke="var(--background, white)"
+                      strokeWidth={1.5}
+                      data-phase={mk.phaseType}
+                      className="cursor-pointer"
+                      onClick={() => onSelectMarker?.(mk.linkId)}
+                    >
+                      <title>{`${lane.thread.name}: ${mk.phaseType}`}</title>
+                    </circle>
+                  ))}
                 </g>
-              );
-            })}
+              ))}
           </svg>
         </div>
 

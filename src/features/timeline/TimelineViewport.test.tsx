@@ -4,8 +4,9 @@ import { render, fireEvent, act } from "@testing-library/react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { TimelineViewport } from "./TimelineViewport";
 import { useTimelineStore } from "./timelineStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 
-vi.mock("@/lib/tauri", () => ({ invoke: vi.fn() }));
+vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
 
 const mockScene: TreeNodeData = {
   id: "scene-1",
@@ -32,6 +33,7 @@ function resetStore() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
+    viewMode: "scenes",
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -42,6 +44,7 @@ function resetStore() {
       showPhasePins: false,
     },
   });
+  usePlotThreadStore.setState({ threads: [], links: [], loading: false });
 }
 
 describe("TimelineViewport – scroll handling (#2)", () => {
@@ -175,5 +178,65 @@ describe("TimelineViewport – Ctrl/Shift click selection (#4)", () => {
     expect(ids).toContain("s2");
     expect(ids).toContain("s3");
     expect(onSelectScene).not.toHaveBeenCalled();
+  });
+});
+
+describe("TimelineViewport – threads モード", () => {
+  beforeEach(resetStore);
+
+  it("threads モードでプロットスレッドのレーンとマーカーを描画する", () => {
+    useTimelineStore.setState({ viewMode: "threads" });
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "proj-1",
+          name: "復讐の糸",
+          color: "#c33",
+          description: null,
+          sortOrder: "a0",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [
+        {
+          id: "l1",
+          threadId: "t1",
+          nodeId: "scene-1",
+          phaseType: "introduce",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      loading: false,
+    });
+
+    const onSelectMarker = vi.fn();
+    const { container, getByText } = render(
+      <TimelineViewport
+        scenes={[mockScene]}
+        onSelectScene={vi.fn()}
+        onSelectMarker={onSelectMarker}
+      />,
+    );
+
+    // レーン見出しが出る
+    expect(getByText("復讐の糸")).toBeTruthy();
+    // マーカーをクリックすると onSelectMarker(linkId) が呼ばれる
+    const marker = container.querySelector('[data-plot-lane="t1"] circle');
+    expect(marker).toBeTruthy();
+    fireEvent.click(marker!);
+    expect(onSelectMarker).toHaveBeenCalledWith("l1");
+  });
+
+  it("threads モードでは scene のドットを描画しない", () => {
+    useTimelineStore.setState({ viewMode: "threads" });
+    const { container } = render(
+      <TimelineViewport scenes={[mockScene]} onSelectScene={vi.fn()} />,
+    );
+    expect(container.querySelector('[data-node-id="scene-1"]')).toBeNull();
   });
 });
