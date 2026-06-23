@@ -3,6 +3,7 @@ import {
   buildModelCatalog,
   filterCatalog,
   groupCatalogByDeveloper,
+  applyModelWhitelist,
 } from "./chatModelCatalog";
 import type { AiModel } from "./types";
 
@@ -174,5 +175,41 @@ describe("groupCatalogByDeveloper", () => {
     // CatalogModel の型情報(provider/variant)が保持される。
     expect(groups[0][1][0].provider).toBe("openrouter");
     expect(groups[0][1][0].variant).toBeNull();
+  });
+});
+
+describe("applyModelWhitelist", () => {
+  const sections = buildModelCatalog({
+    activeProvider: "openrouter",
+    providerModels: [
+      {
+        provider: "openrouter",
+        models: [m("anthropic/claude-opus-4.8"), m("openai/gpt-5.5")],
+      },
+      { provider: "openai", models: [m("gpt-5.5"), m("gpt-5-mini")] },
+      { provider: "anthropic", models: [m("claude-opus-4.8")] },
+    ],
+  });
+
+  it("空 whitelist は全件そのまま(絞り込み無効)", () => {
+    expect(applyModelWhitelist(sections, [])).toEqual(sections);
+  });
+
+  it("全プロバイダ横断で適用し、未チェックモデルは別プロバイダでも落とす(回帰 gate)", () => {
+    // active(openrouter)の1件と、別プロバイダ(openai)の1件だけをチェック。
+    const out = applyModelWhitelist(sections, [
+      "anthropic/claude-opus-4.8",
+      "gpt-5.5",
+    ]);
+    // active 以外のセクションにも適用される。openai は gpt-5-mini が落ち gpt-5.5 のみ。
+    expect(out.map((s) => s.provider)).toEqual(["openrouter", "openai"]);
+    expect(
+      out.find((s) => s.provider === "openrouter")?.models.map((x) => x.id),
+    ).toEqual(["anthropic/claude-opus-4.8"]);
+    expect(
+      out.find((s) => s.provider === "openai")?.models.map((x) => x.id),
+    ).toEqual(["gpt-5.5"]);
+    // どのモデルもチェックされていない anthropic セクションは丸ごと落ちる。
+    expect(out.find((s) => s.provider === "anthropic")).toBeUndefined();
   });
 });
