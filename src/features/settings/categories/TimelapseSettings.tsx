@@ -30,9 +30,15 @@ export function TimelapseSettings() {
 
   useEffect(() => {
     let cancelled = false;
-    void isTimelapseEnabled(projectId).then((v) => {
-      if (!cancelled) setEnabled(v);
-    });
+    void isTimelapseEnabled(projectId)
+      .then((v) => {
+        if (!cancelled) setEnabled(v);
+      })
+      .catch(() => {
+        // 取得失敗時は無効扱いに確定させる（unhandled rejection を出さず、トグルは
+        // disabled のまま安全側に倒す）。
+        if (!cancelled) setEnabled(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -113,7 +119,7 @@ export function TimelapseSettings() {
           type="button"
           data-testid="timelapse-purge-button"
           onClick={() => void handlePurge()}
-          disabled={busy}
+          disabled={busy || enabled === null}
           className="rounded-md border border-input px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50"
         >
           {t("settings.project.timelapsePurgeButton")}

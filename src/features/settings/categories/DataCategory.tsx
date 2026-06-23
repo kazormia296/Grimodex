@@ -75,6 +75,11 @@ export function DataCategory() {
   const workspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const [stats, setStats] = useState<ProjectStats | null>(null);
   const [isExportingCodex, setIsExportingCodex] = useState(false);
+  // FTS 再構築 / VACUUM / チャット履歴削除 の実行中フラグ。連打で重い操作を多重発火
+  // させないため、ボタンを disabled にし、ハンドラ先頭でも早期 return する。
+  const [isRebuildingFts, setIsRebuildingFts] = useState(false);
+  const [isVacuuming, setIsVacuuming] = useState(false);
+  const [isClearingChat, setIsClearingChat] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [mountDialogOpen, setMountDialogOpen] = useState(false);
@@ -110,20 +115,28 @@ export function DataCategory() {
   }
 
   async function handleRebuildFts() {
+    if (isRebuildingFts) return;
+    setIsRebuildingFts(true);
     try {
       await invoke("fts_rebuild");
       toast.success(t("settings.data.ftsSuccess"));
     } catch {
       toast.error(t("settings.data.ftsFail"));
+    } finally {
+      setIsRebuildingFts(false);
     }
   }
 
   async function handleVacuum() {
+    if (isVacuuming) return;
+    setIsVacuuming(true);
     try {
       await db.run("VACUUM" as never);
       toast.success(t("settings.data.vacuumSuccess"));
     } catch {
       toast.error(t("settings.data.vacuumFail"));
+    } finally {
+      setIsVacuuming(false);
     }
   }
 
@@ -133,6 +146,8 @@ export function DataCategory() {
       setTimeout(() => setConfirmClear(false), 5000);
       return;
     }
+    if (isClearingChat) return;
+    setIsClearingChat(true);
     try {
       const sessions = await db
         .select({ id: chatSessions.id })
@@ -148,6 +163,8 @@ export function DataCategory() {
       setConfirmClear(false);
     } catch {
       toast.error(t("settings.data.clearChatFail"));
+    } finally {
+      setIsClearingChat(false);
     }
   }
 
@@ -278,9 +295,12 @@ export function DataCategory() {
             <button
               type="button"
               onClick={handleRebuildFts}
-              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+              disabled={isRebuildingFts}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
             >
-              {t("settings.data.rebuild")}
+              {isRebuildingFts
+                ? t("settings.data.running")
+                : t("settings.data.rebuild")}
             </button>
           </div>
           <div className="flex items-center justify-between">
@@ -288,9 +308,10 @@ export function DataCategory() {
             <button
               type="button"
               onClick={handleVacuum}
-              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+              disabled={isVacuuming}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
             >
-              VACUUM
+              {isVacuuming ? t("settings.data.running") : "VACUUM"}
             </button>
           </div>
           <div className="flex items-center justify-between">
@@ -303,7 +324,8 @@ export function DataCategory() {
             <button
               type="button"
               onClick={handleClearChatHistory}
-              className={`rounded-md border px-3 py-1.5 text-sm ${
+              disabled={isClearingChat}
+              className={`rounded-md border px-3 py-1.5 text-sm disabled:opacity-50 ${
                 confirmClear
                   ? "border-destructive bg-destructive/10 text-destructive"
                   : "border-border hover:bg-accent"

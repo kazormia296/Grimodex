@@ -461,14 +461,15 @@ export function AiCategory() {
                   setLocalSettings(updated);
                   await saveSettings(updated);
                   // モデル選択時(handleModelChange)と対称に per-provider 記憶も更新し、
-                  // トグル状態が次回の切替→復元でそのまま戻るようにする。
-                  if (localSettings.model) {
+                  // トグル状態が次回の切替→復元でそのまま戻るようにする。await を跨ぐので
+                  // stale な localSettings ではなく直前に作った updated を参照する。
+                  if (updated.model) {
                     const modelMap = rememberModel(
                       readModelByProvider(
                         settingsStore.get(MODEL_BY_PROVIDER_KEY, "{}"),
                       ),
-                      localSettings.provider,
-                      localSettings.model,
+                      updated.provider,
+                      updated.model,
                       variant,
                     );
                     settingsStore.set(

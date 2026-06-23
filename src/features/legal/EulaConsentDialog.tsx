@@ -30,7 +30,12 @@ export function EulaConsentDialog() {
     if (!agreed || isAccepting) return;
     setIsAccepting(true);
     try {
-      await updateGlobalSettings({ acceptedEulaVersion: EULA_VERSION });
+      // updateGlobalSettings は throw せず成否を boolean で返す（失敗時は内部で
+      // リバート済み）。同意が永続化できなければユーザーへ通知する。
+      const ok = await updateGlobalSettings({
+        acceptedEulaVersion: EULA_VERSION,
+      });
+      if (!ok) throw new Error(t("common.saveFailed"));
     } catch (err) {
       toast.error(
         t("legal.eula.saveFailed", {

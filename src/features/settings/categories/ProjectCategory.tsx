@@ -96,9 +96,16 @@ export function ProjectCategory() {
   );
 
   async function handleSaveAsDefaults() {
-    const all = await getAllProjectSettings(PROJECT_ID);
-    await updateProjectDefaults(all);
-    toast.success(t("settings.project.saveAsDefaultsDone"));
+    try {
+      const all = await getAllProjectSettings(PROJECT_ID);
+      const ok = await updateProjectDefaults(all);
+      // updateProjectDefaults は失敗を内部で握りつぶしてリバートするため、成功トースト
+      // を無条件で出すと「保存できていないのに成功表示」になる。戻り値で分岐する。
+      if (ok) toast.success(t("settings.project.saveAsDefaultsDone"));
+      else toast.error(t("common.saveFailed"));
+    } catch {
+      toast.error(t("common.saveFailed"));
+    }
   }
 
   if (isLoading || !project) {

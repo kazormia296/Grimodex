@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
@@ -74,13 +75,30 @@ export function EditorCategory() {
     { value: "hidden", label: t("settings.editor.linearBeatDisplayHidden") },
   ];
 
+  // 「全アニメ無効」は子トグルを false に焼くため、ON にした時点の値を退避し、OFF に
+  // 戻したら復元する（さもないと子の設定が永久に失われ、解除しても OFF のままになる）。
+  const prevAnimRef = useRef<{
+    smoothCaret: boolean;
+    cursorBlink: boolean;
+    fadeIn: boolean;
+    fadeOut: boolean;
+  } | null>(null);
+
   function handleDisableAll(v: boolean) {
     setDisableAll(v);
     if (v) {
+      prevAnimRef.current = { smoothCaret, cursorBlink, fadeIn, fadeOut };
       setSmoothCaret(false);
       setCursorBlink(false);
       setFadeIn(false);
       setFadeOut(false);
+    } else if (prevAnimRef.current) {
+      // この session で退避した値があるときだけ復元（無ければ現状維持＝悪化させない）。
+      setSmoothCaret(prevAnimRef.current.smoothCaret);
+      setCursorBlink(prevAnimRef.current.cursorBlink);
+      setFadeIn(prevAnimRef.current.fadeIn);
+      setFadeOut(prevAnimRef.current.fadeOut);
+      prevAnimRef.current = null;
     }
   }
 

@@ -182,6 +182,12 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // Tree — work-specific (project)
   "tree.folderNaming": "project",
   "tree.numberingScope": "project",
+  // Trash bin — work-specific (project)。Project タブで設定し「既定として保存」で
+  // 新規プロジェクトへ継承させるため project スコープ。未登録だと legacy(appSettings)
+  // へ書かれ getAllProjectSettings の集計から漏れて defaults に乗らなかった。
+  // 既存ユーザーの legacy 値は buildCache の legacy 層マージで引き続き読める(移行安全)。
+  "trashBin.enabled": "project",
+  "trashBin.retentionDays": "project",
   // Map defaults — user preference (global)
   "map.defaultStickyPaletteId": "global",
   "map.defaultStickyColorSlot": "global",

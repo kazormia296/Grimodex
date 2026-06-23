@@ -161,14 +161,23 @@ function EditForm({ type, usedIndices, onSave, onCancel }: EditFormProps) {
   const [paletteIndex, setPaletteIndex] = useState<number | null>(
     type.paletteIndex ?? null,
   );
+  const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
-    if (!label.trim()) return;
-    const updated = await updateCodexType(type.id, {
-      label: label.trim(),
-      ...(paletteIndex !== null ? { paletteIndex } : {}),
-    });
-    if (updated) onSave(updated);
+    if (!label.trim() || saving) return;
+    setSaving(true);
+    try {
+      const updated = await updateCodexType(type.id, {
+        label: label.trim(),
+        ...(paletteIndex !== null ? { paletteIndex } : {}),
+      });
+      if (updated) onSave(updated);
+    } catch {
+      // 失敗時はフォームを開いたまま理由を提示（無言で閉じない/無反応にしない）。
+      toast.error(t("settings.codex.updateError"));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -189,7 +198,8 @@ function EditForm({ type, usedIndices, onSave, onCancel }: EditFormProps) {
           type="button"
           data-testid={`codex-type-save-${type.slug}`}
           onClick={() => void handleSave()}
-          className="rounded p-1.5 text-primary hover:bg-accent"
+          disabled={saving || !label.trim()}
+          className="rounded p-1.5 text-primary hover:bg-accent disabled:opacity-50"
           title={t("common.save")}
         >
           <Check className="h-3.5 w-3.5" />
@@ -236,9 +246,11 @@ function AddForm({
   const [label, setLabel] = useState("");
   const [slug, setSlug] = useState("");
   const [paletteIndex, setPaletteIndex] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
-    if (!label.trim() || !slug.trim()) return;
+    if (!label.trim() || !slug.trim() || saving) return;
+    setSaving(true);
     try {
       const type = await createCodexType({
         projectId: getCurrentProjectId(),
@@ -250,6 +262,8 @@ function AddForm({
       onSave(type);
     } catch {
       toast.error(t("settings.codex.createError"));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -306,7 +320,8 @@ function AddForm({
           type="button"
           data-testid="codex-type-add-save"
           onClick={() => void handleSave()}
-          className="rounded bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90"
+          disabled={saving || !label.trim() || !slug.trim()}
+          className="rounded bg-primary px-3 py-1 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
           {t("common.add")}
         </button>
@@ -379,12 +394,17 @@ export function CodexCategory() {
 
   const handleDeleteConfirm = async () => {
     if (!deletingType) return;
-    await deleteCodexType(deletingType.id);
-    setTypes((prev) => prev.filter((tp) => tp.id !== deletingType.id));
-    setDeletingType(null);
-    toast.success(
-      t("settings.codex.deleteSuccess", { label: deletingType.label }),
-    );
+    try {
+      await deleteCodexType(deletingType.id);
+      setTypes((prev) => prev.filter((tp) => tp.id !== deletingType.id));
+      setDeletingType(null);
+      toast.success(
+        t("settings.codex.deleteSuccess", { label: deletingType.label }),
+      );
+    } catch {
+      // 失敗時は一覧から消さず確認モーダルも閉じない（成功表示も出さない）。
+      toast.error(t("settings.codex.deleteError"));
+    }
   };
 
   const maxSortOrder = Math.max(0, ...types.map((tp) => tp.sortOrder));

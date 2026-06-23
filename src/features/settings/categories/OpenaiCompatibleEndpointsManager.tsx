@@ -49,6 +49,23 @@ export function OpenaiCompatibleEndpointsManager({
   const [testState, setTestState] = useState<Record<string, EndpointTestState>>(
     {},
   );
+  // endpoint.id -> 直近のキー操作（保存/削除/エンドポイント削除）の失敗メッセージ。
+  // 失敗を握りつぶすと「ボタンが無反応」に見えるため、ユーザーへ明示する。
+  const [actionError, setActionError] = useState<Record<string, string>>({});
+
+  const setError = (id: string, message: string | null): void => {
+    setActionError((s) => {
+      if (message === null) {
+        if (!(id in s)) return s;
+        const { [id]: _omit, ...rest } = s;
+        return rest;
+      }
+      return { ...s, [id]: message };
+    });
+  };
+
+  const errMessage = (e: unknown): string =>
+    e instanceof Error ? e.message : String(e);
 
   const refreshKeyPresence = useCallback(async () => {
     const entries = await Promise.all(
@@ -75,26 +92,44 @@ export function OpenaiCompatibleEndpointsManager({
   };
 
   const handleDelete = async (id: string): Promise<void> => {
-    await deleteApiKey(PROVIDER, id);
-    const { list, activeId: nextActive } = removeEndpoint(
-      endpoints,
-      activeId,
-      id,
-    );
-    onChange(list, nextActive);
+    setError(id, null);
+    try {
+      await deleteApiKey(PROVIDER, id);
+      const { list, activeId: nextActive } = removeEndpoint(
+        endpoints,
+        activeId,
+        id,
+      );
+      onChange(list, nextActive);
+    } catch (e) {
+      // 失敗時はエンドポイントを残したままエラーを表示（onChange を呼ばないので
+      // 一覧は不変＝楽観的に消えてしまう不整合を避ける）。
+      setError(id, errMessage(e));
+    }
   };
 
   const handleSaveKey = async (id: string): Promise<void> => {
     const key = (keyInput[id] ?? "").trim();
     if (!key) return;
-    await saveApiKey(PROVIDER, key, id);
-    setKeyInput((s) => ({ ...s, [id]: "" }));
-    await refreshKeyPresence();
+    setError(id, null);
+    try {
+      await saveApiKey(PROVIDER, key, id);
+      setKeyInput((s) => ({ ...s, [id]: "" }));
+      await refreshKeyPresence();
+    } catch (e) {
+      // 入力値は消さずに残し（再試行可能）、失敗理由を明示する。
+      setError(id, errMessage(e));
+    }
   };
 
   const handleDeleteKey = async (id: string): Promise<void> => {
-    await deleteApiKey(PROVIDER, id);
-    await refreshKeyPresence();
+    setError(id, null);
+    try {
+      await deleteApiKey(PROVIDER, id);
+      await refreshKeyPresence();
+    } catch (e) {
+      setError(id, errMessage(e));
+    }
   };
 
   const handleTest = async (
@@ -353,6 +388,15 @@ export function OpenaiCompatibleEndpointsManager({
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {t("settings.ai.apiKeyDescOpenaiCompat")}
                   </p>
+                  {actionError[endpoint.id] && (
+                    <p
+                      role="alert"
+                      className="mt-1.5 flex items-center gap-1 text-sm text-destructive"
+                    >
+                      <X className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span>{actionError[endpoint.id]}</span>
+                    </p>
+                  )}
                 </div>
 
                 {/* per-endpoint 接続テスト */}
