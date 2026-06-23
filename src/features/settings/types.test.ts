@@ -40,3 +40,16 @@ describe("DEFAULT_SETTINGS — Beat Phase C keys", () => {
     );
   });
 });
+
+describe("DEFAULT_SETTINGS / KEY_SCOPE — chat episodic recall toggle", () => {
+  // 回帰: ai.chatRecall は chatStore が getBoolean で読みガード済みだったが
+  // KEY_SCOPE / DEFAULT_SETTINGS に未登録で UI から OFF にできず実質強制 ON
+  // だった。project スコープ + 既定 true で登録し切替可能にする。
+  it("ai.chatRecall は project スコープ", () => {
+    expect(KEY_SCOPE["ai.chatRecall"]).toBe("project");
+  });
+
+  it("ai.chatRecall のデフォルトは true（既定で過去対話を注入）", () => {
+    expect(DEFAULT_SETTINGS["ai.chatRecall"]).toBe("true");
+  });
+});
