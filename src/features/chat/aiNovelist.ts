@@ -5,6 +5,8 @@
  */
 
 import type { ModelCapabilities } from "./agent/modelLimits";
+import type { AiSettings } from "./types";
+import { resolveActiveOpenaiCompatibleEndpoint } from "./types";
 
 /** レガシー Text / Messages API */
 export const AINOVERIST_BASE_URL = "https://api.tringpt.com/api";
@@ -146,4 +148,29 @@ export function overrideApiVariantForProvider(
   provider: string | null | undefined,
 ): "responses" | null {
   return provider?.trim() === "sakana" ? "responses" : null;
+}
+
+/**
+ * 送信経路 (アクティブプロバイダ) の API variant 解決の正本。
+ *
+ * openai-compatible は経路を「グローバル Responses トグル (modelApiVariant)」では
+ * なく、アクティブエンドポイント単位の apiVariant で決める (設定 UI でも互換は
+ * トグルを出さず per-endpoint で指定する設計に追従)。これを怠ると他プロバイダで
+ * ON にした modelApiVariant="responses" が残留して、/responses 非対応の互換サーバ
+ * (PlaMo / LM Studio 等) へ漏れ 404 になる。endpoint 未指定 (auto) は responses に
+ * 乗せず /chat/completions (互換サーバ共通の基準経路) へ解決する。
+ *
+ * 別プロバイダへの一時送信 (provider override) は overrideApiVariantForProvider 側の
+ * 正本で別扱い。ここはアクティブプロバイダの送信/解決にのみ使う。
+ */
+export function resolveSendApiVariant(
+  settings: AiSettings | null | undefined,
+  models: Array<{ id: string; apiVariant?: string }>,
+  model: string,
+): "legacy" | "v1" | "responses" | undefined {
+  const persisted =
+    settings?.provider === "openai-compatible"
+      ? (resolveActiveOpenaiCompatibleEndpoint(settings)?.apiVariant ?? null)
+      : settings?.modelApiVariant;
+  return resolveModelApiVariant(settings?.provider, model, models, persisted);
 }

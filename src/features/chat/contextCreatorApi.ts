@@ -9,7 +9,7 @@ import { executeTool } from "./agent/toolExecutors";
 import { AGENT_TOOLS } from "./agent/toolDefinitions";
 import { buildThinkingParams, getEffortForTask } from "./agent/modelLimits";
 import { sendAgentMessage } from "./chatApi";
-import { resolveModelForPath } from "./modelRouting";
+import { resolveRoleSendOverride } from "./modelRouting";
 import type { AgentMessagePayload } from "./agent/agentTypes";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -57,7 +57,9 @@ export async function runContextCreator(
 
   // agent ロールの override を実モデルとして解決。thinking と usage 記録を実モデルから
   // 導出し、sendAgentMessage に渡す override と一致させる（未設定なら引数の既定モデル）。
-  const effectiveModel = resolveModelForPath("context_creator") ?? model;
+  // 横断割り当て時は provider/endpoint/variant も同じ ov から送信へ流す。
+  const ov = resolveRoleSendOverride("context_creator");
+  const effectiveModel = ov.model ?? model;
   const thinkingParams = buildThinkingParams(
     effectiveModel,
     getEffortForTask("chat"),
@@ -79,10 +81,12 @@ export async function runContextCreator(
         tools,
         thinkingParams,
         undefined,
+        ov.apiVariant,
         undefined,
         undefined,
-        undefined,
-        resolveModelForPath("context_creator"),
+        ov.model,
+        ov.provider,
+        ov.endpointId,
       ),
     executeTool: async (name, toolCallId, params) => {
       const result = await executeTool(name, toolCallId, params);

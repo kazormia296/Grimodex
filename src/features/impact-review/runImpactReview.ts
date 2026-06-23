@@ -12,7 +12,7 @@ import {
   runPostEffectMulti,
   type PostEffectRunCallbacks,
 } from "@/features/post-effect/api";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import {
   computeInputHash,
   normalizeText,
@@ -159,10 +159,9 @@ export async function runImpactReview(
   }
 
   const lang = getCurrentProjectLanguage();
+  const ov = resolveRoleSendOverride("post_effect_impact_review");
   const model =
-    resolveModelForPath("post_effect_impact_review") ??
-    useAiSettingsStore.getState().settings?.model ??
-    "gpt-4o-mini";
+    ov.model ?? useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
   const systemPrompt = getPromptCatalog(lang).postEffect.impactReviewSystem;
 
   const inputHash = await computeInputHash({
@@ -181,7 +180,10 @@ export async function runImpactReview(
       scope_type: "project",
       scope_target_id: null,
       model,
-      model_override: resolveModelForPath("post_effect_impact_review"),
+      model_override: ov.model,
+      provider_override: ov.provider,
+      api_variant_override: ov.apiVariant,
+      endpoint_id_override: ov.endpointId,
       prompt_version: IMPACT_REVIEW_PROMPT_VERSION,
       input_hash: inputHash,
       scenes,

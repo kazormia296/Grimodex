@@ -4,7 +4,11 @@ import i18next from "@/lib/i18n";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import * as chatApi from "./chatApi";
-import { resolveModelForPath } from "./modelRouting";
+import {
+  resolveModelForPath,
+  resolveRolePathConfig,
+  resolveRoleSendOverride,
+} from "./modelRouting";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
 // ---------------------------------------------------------------------------
@@ -89,16 +93,11 @@ import {
   parseWebSearchControls,
 } from "./webSearchConfig";
 import * as cliApi from "./cliApi";
-import { resolveModelApiVariant } from "./aiNovelist";
+import { resolveSendApiVariant } from "./aiNovelist";
 
 function getChatApiVariant(model: string): string | undefined {
   const { settings, models } = useAiSettingsStore.getState();
-  return resolveModelApiVariant(
-    settings?.provider,
-    model,
-    models,
-    settings?.modelApiVariant,
-  );
+  return resolveSendApiVariant(settings, models, model);
 }
 
 /**
@@ -815,16 +814,20 @@ async function maybeRunSummarization(
 
     const summaryText = await runSummarization(
       candidates,
-      // cheap ロール: 要約は injected callback 経由で model override を渡す。
-      (messages, thinkingParams) =>
-        chatApi.sendChatMessageWithThinking(
+      // cheap ロール: 要約は injected callback 経由で model/provider/endpoint override を渡す。
+      (messages, thinkingParams) => {
+        const ov = resolveRoleSendOverride("summarization");
+        return chatApi.sendChatMessageWithThinking(
           messages,
           thinkingParams,
           undefined,
+          ov.apiVariant,
           undefined,
-          undefined,
-          resolveModelForPath("summarization"),
-        ),
+          ov.model,
+          ov.provider,
+          ov.endpointId,
+        );
+      },
       {
         lang,
         previousSummary,
@@ -3437,15 +3440,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // thinking パラメータ / usage 記録を全て実モデルから導出する。これにより
         // send_agent_message に渡す override（resolveModelForPath / 一時モデル）と
         // thinking 等が一致する（未設定なら既定モデル = byte-identical）。
+        // agent ロールの横断割り当て（別プロバイダ/別エンドポイント）。chat_agent_main /
+        // agent_research_subagent は同一 "agent" ロールなので、ここで解決した
+        // provider/endpoint/variant をサブエージェント送信にも流用する。
+        const agentRole = resolveRolePathConfig("chat_agent_main");
         const currentModel = xprov
           ? xprov.model
-          : (resolveModelForPath("chat_agent_main") ??
-            chatModelOverride ??
-            aiSettings?.model ??
-            "");
+          : (agentRole?.model ?? chatModelOverride ?? aiSettings?.model ?? "");
         const agentApiVariant = xprov
           ? xprov.variant
-          : getChatApiVariant(currentModel);
+          : agentRole?.provider
+            ? agentRole.variant
+            : getChatApiVariant(currentModel);
         const tokenBudget = getToolTokenBudget(currentModel);
         // model-aware なツール呼び出し上限。大窓モデルほど多段探索を許す。
         const parentMaxToolCalls = getAgentToolCallBudget(currentModel);
@@ -3583,9 +3589,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     // 調査が既定へサイレントに流れる)。
                     xprov
                       ? xprov.model
-                      : resolveModelForPath("agent_research_subagent"),
-                    xprov ? xprov.provider : null,
-                    xprov ? (xprov.endpointId ?? null) : null,
+                      : (agentRole?.model ??
+                          resolveModelForPath("agent_research_subagent")),
+                    xprov ? xprov.provider : (agentRole?.provider ?? null),
+                    xprov
+                      ? (xprov.endpointId ?? null)
+                      : (agentRole?.endpointId ?? null),
                   ),
                 executeTool: executeReadOnlyTool,
                 onProgress: (p) => set({ subAgentProgress: p }),
@@ -3707,13 +3716,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               // byte-identical(キャッシュ温存)。別プロバイダ override 時はそれが最優先。
               xprov
                 ? xprov.model
-                : (resolveModelForPath("chat_agent_main") ??
-                    chatModelOverride ??
-                    null),
-              // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
-              xprov ? xprov.provider : null,
+                : (agentRole?.model ?? chatModelOverride ?? null),
+              // 別プロバイダ override 時のみ provider を渡す。role に横断割り当てが
+              // あればそれを送る(同一プロバイダは null=既定)。
+              xprov ? xprov.provider : (agentRole?.provider ?? null),
               // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
-              xprov ? (xprov.endpointId ?? null) : null,
+              xprov
+                ? (xprov.endpointId ?? null)
+                : (agentRole?.endpointId ?? null),
             ),
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
@@ -3929,15 +3939,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // conversation ロールの override を実モデルとして解決し、API variant / コンテキスト
       // 予算 / thinking パラメータ / 記録を実モデルから導出する（transport に渡す
       // override と一致。未設定なら既定モデル = byte-identical）。
+      // conversation ロールの横断割り当て（別プロバイダ/別エンドポイント）。provider
+      // 未設定なら従来どおり model のみ（active provider）。composer の一時 override
+      // (xprov) が最優先。
+      const convRole = resolveRolePathConfig("chat_stream_non_agent");
       const chatModel = xprov
         ? xprov.model
-        : (resolveModelForPath("chat_stream_non_agent") ??
-          chatModelOverride ??
-          aiSettings?.model ??
-          "");
+        : (convRole?.model ?? chatModelOverride ?? aiSettings?.model ?? "");
       const chatApiVariant = xprov
         ? xprov.variant
-        : getChatApiVariant(chatModel);
+        : convRole?.provider
+          ? convRole.variant
+          : getChatApiVariant(chatModel);
       const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
         chatModel,
         aiSettings,
@@ -4376,13 +4389,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               // byte-identical(キャッシュ温存)。agent 経路と同契約。別プロバイダ override 最優先。
               xprov
                 ? xprov.model
-                : (resolveModelForPath("chat_stream_non_agent") ??
-                    chatModelOverride ??
-                    null),
+                : (convRole?.model ?? chatModelOverride ?? null),
               // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
-              xprov ? xprov.provider : null,
+              // role に横断割り当てがあればそれを送る。
+              xprov ? xprov.provider : (convRole?.provider ?? null),
               // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
-              xprov ? (xprov.endpointId ?? null) : null,
+              xprov
+                ? (xprov.endpointId ?? null)
+                : (convRole?.endpointId ?? null),
             );
 
         streamPromise

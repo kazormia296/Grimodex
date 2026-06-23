@@ -229,6 +229,14 @@ export interface StartPostEffectRunRequest {
    * 解決は modelRouting.resolveModelForPath が正本。
    */
   model_override?: string | null;
+  /**
+   * 機能別モデルのプロバイダ横断 override（省略 = 既定プロバイダ）。model_override と
+   * 並走し、送信先プロバイダ/API 経路/エンドポイントを差し替える。
+   * 解決は modelRouting.resolveRoleSendOverride が正本。
+   */
+  provider_override?: string | null;
+  api_variant_override?: string | null;
+  endpoint_id_override?: string | null;
   prompt_version: string;
   input_hash: string;
   /** JSON array of CodexPayloadEntry (consistency only; empty for intra_scene) */
@@ -257,6 +265,14 @@ export interface StartPostEffectRunMultiRequest {
    * モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
    */
   model_override?: string | null;
+  /**
+   * 機能別モデルのプロバイダ横断 override（省略 = 既定プロバイダ）。model_override と
+   * 並走し、送信先プロバイダ/API 経路/エンドポイントを差し替える。
+   * 解決は modelRouting.resolveRoleSendOverride が正本。
+   */
+  provider_override?: string | null;
+  api_variant_override?: string | null;
+  endpoint_id_override?: string | null;
   prompt_version: string;
   input_hash: string;
   scenes: Array<{

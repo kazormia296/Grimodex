@@ -4,7 +4,7 @@ import { Info, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -120,8 +120,9 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     if (blockIfPolicyOff("analysis")) return;
     if (blockIfUnlicensed()) return;
     const projectId = useTreeStore.getState().projectId;
+    const ov = resolveRoleSendOverride("post_effect_pseudo_comment");
     const model =
-      resolveModelForPath("post_effect_pseudo_comment") ??
+      ov.model ??
       useAiSettingsStore.getState().settings?.model ??
       "gpt-4o-mini";
     const customKouetsu = useSettingsStore
@@ -155,7 +156,10 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
             scope_type: "scene",
             scope_target_id: sceneId,
             model,
-            model_override: resolveModelForPath("post_effect_pseudo_comment"),
+            model_override: ov.model,
+            provider_override: ov.provider,
+            api_variant_override: ov.apiVariant,
+            endpoint_id_override: ov.endpointId,
             prompt_version: PSEUDO_COMMENT_PROMPT_VERSION,
             input_hash: payload.inputHash,
             codex_payload_json: "[]",

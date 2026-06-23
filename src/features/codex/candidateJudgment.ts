@@ -8,7 +8,7 @@
  * 乗せない (これは Codex 候補の補助情報であって annotation ではない)。
  */
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { getPromptCatalog } from "@/prompts/index";
@@ -84,13 +84,16 @@ export async function judgeCandidates(
 
   let response;
   try {
+    const ov = resolveRoleSendOverride("codex_judgment");
     response = await sendChatMessageWithThinking(
       [{ role: "user", content: prompt }],
       undefined, // thinkingParams
       undefined, // systemCacheSegments
-      undefined, // apiVariant
+      ov.apiVariant, // apiVariant（横断割り当て時のみ）
       undefined, // systemVolatileTail
-      resolveModelForPath("codex_judgment") ?? null,
+      ov.model,
+      ov.provider,
+      ov.endpointId,
     );
   } catch {
     return result;

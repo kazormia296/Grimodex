@@ -4,7 +4,7 @@ import { Info, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -67,8 +67,9 @@ export function ProjectReviewView() {
     const { nodes } = useTreeStore.getState();
     if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
     const lang = getCurrentProjectLanguage();
+    const ov = resolveRoleSendOverride("post_effect_review");
     const model =
-      resolveModelForPath("post_effect_review") ??
+      ov.model ??
       useAiSettingsStore.getState().settings?.model ??
       "gpt-4o-mini";
     const customKouetsu = useSettingsStore
@@ -98,7 +99,10 @@ export function ProjectReviewView() {
               scope_type: "project",
               scope_target_id: null,
               model,
-              model_override: resolveModelForPath("post_effect_review"),
+              model_override: ov.model,
+              provider_override: ov.provider,
+              api_variant_override: ov.apiVariant,
+              endpoint_id_override: ov.endpointId,
               prompt_version: REVIEW_PROMPT_VERSION,
               input_hash: payload.inputHash,
               scenes: payload.scenes,

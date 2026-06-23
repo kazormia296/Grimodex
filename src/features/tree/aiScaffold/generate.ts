@@ -9,7 +9,7 @@
  */
 import { invoke } from "@/lib/tauri";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { cmpKeys } from "../fractionalIndex";
 import type { TreeNodeData, NodeType } from "../treeStore";
 import type { AiTreePlan, AiTreeOp } from "./types";
@@ -387,13 +387,17 @@ export async function generateAiTreePlan(
     { role: "user", content: buildUserPrompt(input) },
   ];
 
+  const ov = resolveRoleSendOverride("tree_scaffold");
   const response = await invoke<LLMResponsePayload>("send_chat_message", {
     messages,
     thinking: null,
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
-    model: resolveModelForPath("tree_scaffold") ?? null,
+    apiVariant: ov.apiVariant,
+    model: ov.model,
+    provider: ov.provider,
+    endpointId: ov.endpointId,
   });
 
   // N4: tree scaffold 生成の usage を台帳に記録する。

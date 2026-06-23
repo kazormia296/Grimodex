@@ -670,7 +670,9 @@
       "sameChatModel": "Same as chat model",
       "roleModel": {
         "title": "Per-Feature Models (by role)",
-        "intro": "Assign a model to each of six semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model.",
+        "intro": "Assign a model to each of six semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model. Each role can also be assigned a model from a different provider (only providers with a saved key are selectable).",
+        "providerLabel": "Provider",
+        "sameProvider": "Same provider as chat",
         "cacheNote": "Note: picking a model from a different provider than your default for a role splits that path's prompt cache, which can raise cost and latency.",
         "conversation": {
           "label": "Conversation (chat)",
@@ -956,6 +958,8 @@
       "aiSemanticRecallDesc": "On chat send, search for excerpts from past scenes semantically related to what you're writing and auto-inject them into the AI context. Nothing is injected for projects without an index.",
       "aiHybridRecall": "Also match proper nouns by keyword (hybrid search)",
       "aiHybridRecallDesc": "Fuse semantic search with full-text search (FTS5/bm25) via rank fusion (RRF) so proper nouns like character and place names help surface related scenes. Disabled when auto-injecting related scenes is off.",
+      "aiChatRecall": "Auto-inject past conversations (episodic memory)",
+      "aiChatRecallDesc": "On chat send, search past conversations (chat history) semantically related to what you're writing and auto-inject them into the AI context. Toggled independently from related-scene injection, so turning it off stops only past-conversation injection while keeping scene injection. Excludes the in-progress session.",
       "trashBin": "Trash bin",
       "trashBinDesc": "Keep deleted text fragments and structure items in the trash bin.",
       "trashRetention": "Retention period",

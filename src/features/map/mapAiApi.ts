@@ -2,7 +2,7 @@ import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { buildVsInstruction, type VsOptions } from "@/lib/verbalizedSampling";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import type { AiBranchCard } from "./mapApi";
 
 interface LLMResponsePayload {
@@ -418,13 +418,17 @@ export async function generateAiBranchCards(
     { role: "user", content: userPrompt },
   ];
 
+  const ov = resolveRoleSendOverride("map_branch");
   const response = await invoke<LLMResponsePayload>("send_chat_message", {
     messages,
     thinking: null,
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
-    model: resolveModelForPath("map_branch") ?? null,
+    apiVariant: ov.apiVariant,
+    model: ov.model,
+    provider: ov.provider,
+    endpointId: ov.endpointId,
   });
 
   // N4: 従来 response の usage は捨てられていた。台帳に記録する。

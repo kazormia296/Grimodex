@@ -4,7 +4,7 @@ import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -104,8 +104,8 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
         useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
       // consistency のみ review ロール対象。intra_scene_consistency は対象外なので
       // baseModel(=model)のまま（input_hash・実呼び出しを汚さない）。
-      const consistencyModel =
-        resolveModelForPath("post_effect_consistency") ?? model;
+      const ov = resolveRoleSendOverride("post_effect_consistency");
+      const consistencyModel = ov.model ?? model;
       const customKouetsu = useSettingsStore
         .getState()
         .get("aiPrompt.custom.kouetsu", "");
@@ -128,9 +128,10 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
                   scope_type: "scene",
                   scope_target_id: sceneId,
                   model: consistencyModel,
-                  model_override: resolveModelForPath(
-                    "post_effect_consistency",
-                  ),
+                  model_override: ov.model,
+                  provider_override: ov.provider,
+                  api_variant_override: ov.apiVariant,
+                  endpoint_id_override: ov.endpointId,
                   prompt_version: CONSISTENCY_PROMPT_VERSION,
                   input_hash: payload.inputHash,
                   codex_payload_json: payload.codexPayloadJson,

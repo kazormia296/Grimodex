@@ -4,7 +4,7 @@ import { AlertTriangle, Info, Loader2, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
@@ -145,10 +145,9 @@ export function ProjectAnnotationsView() {
                 ? CONSISTENCY_PROMPT_VERSION
                 : INTRA_CONSISTENCY_PROMPT_VERSION;
             // consistency のみ review ロール対象。intra は baseModel(=model)のまま。
+            const ov = resolveRoleSendOverride("post_effect_consistency");
             const effectiveModel =
-              effect === "consistency"
-                ? (resolveModelForPath("post_effect_consistency") ?? model)
-                : model;
+              effect === "consistency" ? (ov.model ?? model) : model;
             buildMultiPayload(
               projectId,
               "project",
@@ -174,9 +173,13 @@ export function ProjectAnnotationsView() {
                     scope_target_id: null,
                     model: effectiveModel,
                     model_override:
-                      effectType === "consistency"
-                        ? resolveModelForPath("post_effect_consistency")
-                        : undefined,
+                      effectType === "consistency" ? ov.model : undefined,
+                    provider_override:
+                      effectType === "consistency" ? ov.provider : undefined,
+                    api_variant_override:
+                      effectType === "consistency" ? ov.apiVariant : undefined,
+                    endpoint_id_override:
+                      effectType === "consistency" ? ov.endpointId : undefined,
                     prompt_version: promptVersion,
                     input_hash: payload.inputHash,
                     scenes: payload.scenes,

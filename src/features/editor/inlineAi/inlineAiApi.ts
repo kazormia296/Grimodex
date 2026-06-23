@@ -3,7 +3,7 @@ import { sendInlineAiStream, abortInlineAiStream } from "./inlineAiStreaming";
 import { getPromptCatalog } from "@/prompts/index";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { serializePromptMessages } from "@/features/attribution/generationLogApi";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 
 export function buildSystemPrompt(
   command: InlineAiCommand,
@@ -47,7 +47,9 @@ export async function generateInlineAi(
 
   // 機能別モデル: inline ロールが設定されていればそれを使い、未設定なら
   // 既定モデル（Rust が settings.model に解決）。未設定時 byte-identical。
-  const roleModel = resolveModelForPath("inline_ai_stream");
+  // 横断割り当て時は provider/endpoint/variant も送信へ流す。
+  const ov = resolveRoleSendOverride("inline_ai_stream");
+  const roleModel = ov.model;
 
   let accumulated = "";
   const cleanupRef: { fn: (() => void) | null } = { fn: null };
@@ -90,7 +92,12 @@ export async function generateInlineAi(
           reject(new Error(message));
         },
       },
-      { model: roleModel },
+      {
+        model: roleModel,
+        apiVariant: ov.apiVariant,
+        provider: ov.provider,
+        endpointId: ov.endpointId,
+      },
     )
       .then((c) => {
         cleanupRef.fn = c;

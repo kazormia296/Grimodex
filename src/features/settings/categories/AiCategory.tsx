@@ -27,11 +27,9 @@ import type {
 } from "@/features/chat/types";
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
-import {
-  MODEL_ROLES,
-  roleSettingKey,
-  isModelCapableForRole,
-} from "@/features/chat/modelRouting";
+import { MODEL_ROLES } from "@/features/chat/modelRouting";
+import { useChatModelCatalog } from "@/features/chat/useChatModelCatalog";
+import { RoleModelRow } from "./RoleModelRow";
 import {
   AINOVERIST_BASE_URL,
   AINOVERIST_V1_BASE_URL,
@@ -196,6 +194,10 @@ export function AiCategory() {
   } = useAiSettingsStore();
 
   const settingsStore = useSettingsStore();
+
+  // 機能別モデルのプロバイダ横断ピッカー用に、鍵が設定済みの全プロバイダ/エンドポイントの
+  // モデル一覧を読み込む（チャットの cross-provider ピッカーと同じカタログを再利用）。
+  const roleCatalog = useChatModelCatalog(true);
 
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [localSettings, setLocalSettings] = useState(settings);
@@ -1210,29 +1212,15 @@ export function AiCategory() {
               whitelist.length > 0
                 ? models.filter((m) => whitelist.includes(m.id))
                 : models;
-            return MODEL_ROLES.map((role) => {
-              const key = roleSettingKey(role);
-              const roleModels = inWhitelist.filter((m) =>
-                isModelCapableForRole(m.id, role),
-              );
-              return (
-                <div key={role}>
-                  <div className="mb-1 text-sm">
-                    {t(`settings.ai.roleModel.${role}.label`)}
-                  </div>
-                  <div className="mb-1 text-xs text-muted-foreground">
-                    {t(`settings.ai.roleModel.${role}.description`)}
-                  </div>
-                  <ModelPicker
-                    models={roleModels}
-                    value={settingsStore.get(key, "")}
-                    onChange={(v) => settingsStore.set(key, v)}
-                    isLoading={isLoadingModels}
-                    placeholder={t("settings.ai.sameChatModel")}
-                  />
-                </div>
-              );
-            });
+            return MODEL_ROLES.map((role) => (
+              <RoleModelRow
+                key={role}
+                role={role}
+                activeModels={inWhitelist}
+                sections={roleCatalog.sections}
+                isLoadingModels={isLoadingModels}
+              />
+            ));
           })()}
         </div>
         <p className="mt-3 text-xs text-muted-foreground">

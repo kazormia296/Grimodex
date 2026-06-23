@@ -3,7 +3,9 @@ import {
   isResponsesApiCapableProvider,
   resolveAinoveristApiVariant,
   resolveModelApiVariant,
+  resolveSendApiVariant,
 } from "./aiNovelist";
+import { DEFAULT_AI_SETTINGS, type AiSettings } from "./types";
 
 // resolveModelApiVariant は送信/永続化の variant 解決の正本。
 // OpenAI/互換で Responses 選択を保持し、resolveAinoveristApiVariant の
@@ -63,6 +65,73 @@ describe("resolveModelApiVariant", () => {
     expect(
       resolveModelApiVariant("ai-novelist", "anything", models, "v1"),
     ).toBe("v1");
+  });
+});
+
+// resolveSendApiVariant は「アクティブプロバイダの送信経路」の variant 正本。
+// openai-compatible は経路をエンドポイント単位 apiVariant で決め、グローバル
+// modelApiVariant(Responses トグル)を持ち込まない — この回帰で PlaMo 等
+// /responses 非対応の互換サーバへの送信が 404 していた。
+describe("resolveSendApiVariant", () => {
+  const models: Array<{ id: string; apiVariant?: string }> = [];
+
+  function compatSettings(
+    endpointVariant: "v1" | "responses" | null,
+    globalVariant: AiSettings["modelApiVariant"],
+  ): AiSettings {
+    return {
+      ...DEFAULT_AI_SETTINGS,
+      provider: "openai-compatible",
+      modelApiVariant: globalVariant,
+      openaiCompatibleEndpoints: [
+        {
+          id: "plamo",
+          label: "PlaMo",
+          baseUrl: "https://api.platform.preferredai.jp/v1",
+          apiVariant: endpointVariant,
+        },
+      ],
+      activeOpenaiCompatibleEndpointId: "plamo",
+    };
+  }
+
+  it("互換 auto エンドポイントはグローバル responses 残留を無視し /chat/completions 経路", () => {
+    // endpoint=auto なのに他プロバイダの responses トグルが残留しているケース。
+    const variant = resolveSendApiVariant(
+      compatSettings(null, "responses"),
+      models,
+      "plamo-3.0-prime",
+    );
+    expect(variant).not.toBe("responses");
+  });
+
+  it("互換 endpoint=responses を明示選択したときだけ responses に乗る", () => {
+    expect(
+      resolveSendApiVariant(
+        compatSettings("responses", null),
+        models,
+        "plamo-3.0-prime",
+      ),
+    ).toBe("responses");
+  });
+
+  it("互換 endpoint=v1 はグローバル responses 残留より優先される", () => {
+    expect(
+      resolveSendApiVariant(
+        compatSettings("v1", "responses"),
+        models,
+        "plamo-3.0-prime",
+      ),
+    ).toBe("v1");
+  });
+
+  it("非互換プロバイダ(OpenAI 直)はグローバル responses トグルをそのまま尊重する", () => {
+    const settings: AiSettings = {
+      ...DEFAULT_AI_SETTINGS,
+      provider: "openai",
+      modelApiVariant: "responses",
+    };
+    expect(resolveSendApiVariant(settings, models, "gpt-5")).toBe("responses");
   });
 });
 
