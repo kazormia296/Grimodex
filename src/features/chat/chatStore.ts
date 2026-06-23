@@ -65,6 +65,7 @@ import {
   resolveModelCapabilities,
 } from "./agent/modelLimits";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
+import type { AiProvider } from "./types";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
 import {
@@ -98,6 +99,28 @@ function getChatApiVariant(model: string): string | undefined {
     models,
     settings?.modelApiVariant,
   );
+}
+
+/**
+ * composer のモデルピッカーで「別プロバイダ」のモデルを選んだ場合の override を返す。
+ * cross-provider override は provider/model/variant を一括で決め、per-role routing より
+ * 優先する(明示的かつ即時のユーザー選択で、provider と model の名前空間整合を保つため)。
+ * 同一プロバイダ内の一時モデル(chatProviderOverride==null)や未選択時は null を返し、
+ * 呼び出し側は従来ロジック(role routing / getChatApiVariant)に委ねる(= 回帰なし)。
+ *
+ * variant は選択時に resolveModelApiVariant で確定済みの値(active provider の models へ
+ * 依存しない)。null は backend 既定解決を意味するため undefined に正規化して返す。
+ */
+function getCrossProviderChatOverride(): {
+  provider: AiProvider;
+  model: string;
+  variant: string | undefined;
+} | null {
+  const st = useAiSettingsStore.getState();
+  const provider = st.chatProviderOverride;
+  const model = st.chatModelOverride;
+  if (!provider || !model) return null;
+  return { provider, model, variant: st.chatModelVariantOverride ?? undefined };
 }
 
 /**
@@ -1676,7 +1699,8 @@ async function buildOutgoingScenePrompt(
   // プロバイダ時は agent パスに入り agentMode:true で L0 に agentInstruction を足す。
   // 逆に cli は RAG 非対応かつ agent パス対象外。preview/copy を同じ判定に揃える。
   const aiState = useAiSettingsStore.getState();
-  const aiProvider = aiState.settings?.provider;
+  const xprov = getCrossProviderChatOverride();
+  const aiProvider = xprov?.provider ?? aiState.settings?.provider;
   // openrouter/fusion (マルチモデル合議) はツール呼び出しと両立できない。OpenRouter は
   // tools[] 同梱時にカスタムパネル(analysis_models)を無視して既定パネルに落とすため、
   // fusion 選択時は常にプレーン経路(非エージェント・Web検索なし)に通し、fusion plugin が
@@ -1791,9 +1815,10 @@ async function buildSceneContextPrompt(opts: {
   const aiSettings = useAiSettingsStore.getState().settings;
   // チャット用の一時モデル(あれば)を既定より優先。コンテキスト予算を実際に送る
   // モデルのウィンドウから算出して送信時とずれないようにする。
+  const xprov = getCrossProviderChatOverride();
   const chatModel =
     useAiSettingsStore.getState().chatModelOverride ?? aiSettings?.model ?? "";
-  const chatApiVariant = getChatApiVariant(chatModel);
+  const chatApiVariant = xprov ? xprov.variant : getChatApiVariant(chatModel);
   const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
     chatModel,
     aiSettings,
@@ -3116,7 +3141,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // ユーザーの永続トグルは変更しない。
     const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
     const aiSendState = useAiSettingsStore.getState();
-    const aiProvider = aiSendState.settings?.provider;
+    const xprov = getCrossProviderChatOverride();
+    const aiProvider = xprov?.provider ?? aiSendState.settings?.provider;
     // openrouter/fusion はツール経路に入ると OpenRouter がカスタムパネルを無視して
     // 既定パネルに落とす(合議モデルは tool-calling 不可)。常にプレーン経路へ通し、
     // tools 無し・Web検索なしで fusion plugin(custom analysis_models)を効かせる。
@@ -3240,7 +3266,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const projectCtxLang = projectCtx?.language ?? "ja";
         let agentMessages = prevMessages;
         if (sessionIdForPersist) {
-          const agentApiVariant = getChatApiVariant(chatModelEarly);
+          const agentApiVariant = xprov
+            ? xprov.variant
+            : getChatApiVariant(chatModelEarly);
           const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
             chatModelEarly,
             aiSettingsEarly,
@@ -3398,12 +3426,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // thinking パラメータ / usage 記録を全て実モデルから導出する。これにより
         // send_agent_message に渡す override（resolveModelForPath / 一時モデル）と
         // thinking 等が一致する（未設定なら既定モデル = byte-identical）。
-        const currentModel =
-          resolveModelForPath("chat_agent_main") ??
-          chatModelOverride ??
-          aiSettings?.model ??
-          "";
-        const agentApiVariant = getChatApiVariant(currentModel);
+        const currentModel = xprov
+          ? xprov.model
+          : (resolveModelForPath("chat_agent_main") ??
+            chatModelOverride ??
+            aiSettings?.model ??
+            "");
+        const agentApiVariant = xprov
+          ? xprov.variant
+          : getChatApiVariant(currentModel);
         const tokenBudget = getToolTokenBudget(currentModel);
         // model-aware なツール呼び出し上限。大窓モデルほど多段探索を許す。
         const parentMaxToolCalls = getAgentToolCallBudget(currentModel);
@@ -3534,7 +3565,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     agentApiVariant,
                     null,
                     undefined,
-                    resolveModelForPath("agent_research_subagent"),
+                    // 別プロバイダ override 中はサブエージェントも同じ provider/model/variant に
+                    // 揃える(親 sendToLLM と同契約)。variant(=agentApiVariant)は既に override 値
+                    // なので、provider/model を揃えないと「variant だけ override・送信先は既定」の
+                    // 不整合になる(別プロバイダの調査が既定プロバイダへサイレントに流れる)。
+                    xprov
+                      ? xprov.model
+                      : resolveModelForPath("agent_research_subagent"),
+                    xprov ? xprov.provider : null,
                   ),
                 executeTool: executeReadOnlyTool,
                 onProgress: (p) => set({ subAgentProgress: p }),
@@ -3653,10 +3691,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               webSearchConfig,
               systemVolatileTailForAgent,
               // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
-              // byte-identical(キャッシュ温存)。
-              resolveModelForPath("chat_agent_main") ??
-                chatModelOverride ??
-                null,
+              // byte-identical(キャッシュ温存)。別プロバイダ override 時はそれが最優先。
+              xprov
+                ? xprov.model
+                : (resolveModelForPath("chat_agent_main") ??
+                    chatModelOverride ??
+                    null),
+              // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
+              xprov ? xprov.provider : null,
             ),
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
@@ -3872,12 +3914,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // conversation ロールの override を実モデルとして解決し、API variant / コンテキスト
       // 予算 / thinking パラメータ / 記録を実モデルから導出する（transport に渡す
       // override と一致。未設定なら既定モデル = byte-identical）。
-      const chatModel =
-        resolveModelForPath("chat_stream_non_agent") ??
-        chatModelOverride ??
-        aiSettings?.model ??
-        "";
-      const chatApiVariant = getChatApiVariant(chatModel);
+      const chatModel = xprov
+        ? xprov.model
+        : (resolveModelForPath("chat_stream_non_agent") ??
+          chatModelOverride ??
+          aiSettings?.model ??
+          "");
+      const chatApiVariant = xprov
+        ? xprov.variant
+        : getChatApiVariant(chatModel);
       const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
         chatModel,
         aiSettings,
@@ -4065,7 +4110,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // CLI プロバイダ選択時は subprocess 経由のストリームに切り替える。
       // CLI は単一プロンプトしか受け付けないので、会話履歴は role タグ付きで
       // 平坦化する。
-      const isCliProvider = aiSettings?.provider === "cli";
+      // 別プロバイダ override 中は HTTP 経路(別プロバイダは cli 非対象)に流すため、
+      // active provider が cli でも cli subprocess 経路には落とさない。
+      const isCliProvider = !xprov && aiSettings?.provider === "cli";
       const cliConfig = aiSettings?.cli ?? {
         kind: "claude" as const,
         binaryPath: "",
@@ -4311,10 +4358,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               chatApiVariant,
               systemVolatileTail,
               // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
-              // byte-identical(キャッシュ温存)。agent 経路と同契約。
-              resolveModelForPath("chat_stream_non_agent") ??
-                chatModelOverride ??
-                null,
+              // byte-identical(キャッシュ温存)。agent 経路と同契約。別プロバイダ override 最優先。
+              xprov
+                ? xprov.model
+                : (resolveModelForPath("chat_stream_non_agent") ??
+                    chatModelOverride ??
+                    null),
+              // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
+              xprov ? xprov.provider : null,
             );
 
         streamPromise
@@ -4391,7 +4442,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // CLI はツール無しで非 agent 経路に落ちる（useAgentPath の aiProvider !== "cli"）。
     // CLI で pull 委譲すると outline + 使えない取得ツール指示 + synopsis 皆無となり、
     // pull 委譲前（全 synopsis push）より文脈が悪化する。よって CLI では push を維持する。
-    const aiProvider = useAiSettingsStore.getState().settings?.provider;
+    const xprov = getCrossProviderChatOverride();
+    const aiProvider =
+      xprov?.provider ?? useAiSettingsStore.getState().settings?.provider;
     const agentPullWillRunTools = effectiveAgentMode && aiProvider !== "cli";
     const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
     if (!effectiveSceneId) {
@@ -4976,7 +5029,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // CLI subprocess と HTTP ベースのストリームは別系統なので、
     // 現在のプロバイダに合わせた abort を発火する。両方発火しても害は無いが、
     // CLI 用フラグはアプリ全体で 1 つしかないため不要な reset を避ける。
-    const provider = useAiSettingsStore.getState().settings?.provider;
+    // 別プロバイダ override 中は実送信が HTTP 経路(別プロバイダは cli 非対象)なので、
+    // active provider が cli でも HTTP 側を abort する(誤チャネル abort を防ぐ)。
+    const xprov = getCrossProviderChatOverride();
+    const provider =
+      xprov?.provider ?? useAiSettingsStore.getState().settings?.provider;
     if (provider === "cli") {
       void cliApi.abortCliChatStream().catch(() => {});
     } else {

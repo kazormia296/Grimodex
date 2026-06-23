@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import type { MutableRefObject } from "react";
 import {
@@ -33,6 +33,10 @@ import { ChatCommandPopup } from "./ChatCommandPopup";
 import { ReasoningEffortChip } from "./ReasoningEffortChip";
 import type { ReasoningEffortValue } from "./ReasoningEffortChip";
 import { useAnchoredPopover } from "./useAnchoredPopover";
+import { ChatModelMenu } from "./ChatModelMenu";
+import { useChatModelCatalog } from "../useChatModelCatalog";
+import { getProviderLabel } from "../providerLabels";
+import type { CatalogModel } from "../chatModelCatalog";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { shouldSuggestAgentMode } from "../agentSuggestion";
@@ -148,6 +152,12 @@ export function ChatInput({
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const saveSettings = useAiSettingsStore((s) => s.saveSettings);
   const chatModelOverride = useAiSettingsStore((s) => s.chatModelOverride);
+  const chatProviderOverride = useAiSettingsStore(
+    (s) => s.chatProviderOverride,
+  );
+  const chatModelVariantOverride = useAiSettingsStore(
+    (s) => s.chatModelVariantOverride,
+  );
   const setChatModelOverride = useAiSettingsStore(
     (s) => s.setChatModelOverride,
   );
@@ -168,16 +178,22 @@ export function ChatInput({
 
   // 非 CLI のチャットモデルは「一時オーバーライド(その場限り) → 既定チャットモデル」
   // の順で解決する。チャットパネルでの選択は一時オーバーライドにのみ反映し、保存される
-  // 既定(settings.model)は書き換えない。
-  const currentModel =
-    aiSettings?.provider === "cli"
+  // 既定(settings.model)は書き換えない。別プロバイダ一時送信中は、そのモデルが正(active が
+  // cli でも cli.model でなく override モデルを表示する)。
+  const currentModel = chatProviderOverride
+    ? (chatModelOverride ?? "")
+    : aiSettings?.provider === "cli"
       ? (aiSettings.cli?.model ?? "")
       : (chatModelOverride ?? aiSettings?.model ?? "");
-  const selectedApiVariant = resolveAinoveristApiVariant(
-    currentModel,
-    models,
-    aiSettings?.modelApiVariant,
-  );
+  // 別プロバイダ override 中は選択時に確定済みの variant を使う(active provider の models に
+  // 依存して再解決すると誤った経路になる)。同一プロバイダは従来どおりモデル一覧から解決。
+  const selectedApiVariant = chatProviderOverride
+    ? (chatModelVariantOverride ?? undefined)
+    : resolveAinoveristApiVariant(
+        currentModel,
+        models,
+        aiSettings?.modelApiVariant,
+      );
   const caps = resolveModelCapabilities(
     currentModel,
     aiSettings,
@@ -185,6 +201,28 @@ export function ChatInput({
   );
 
   const [modelOpen, setModelOpen] = useState(false);
+  // 複数プロバイダ横断のモデルカタログ(ピッカーを開いたら設定済みプロバイダを取得)。
+  const { sections: modelSections, loading: catalogLoading } =
+    useChatModelCatalog(modelOpen);
+  // モデル whitelist は active プロバイダにのみ適用する(従来挙動を維持)。別プロバイダの
+  // モデルは whitelist が空でなくても全件出す(whitelist は active プロバイダ向けの絞り込み)。
+  const displaySections = useMemo(() => {
+    let whitelist: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(modelWhitelistRaw || "[]");
+      whitelist = Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      whitelist = [];
+    }
+    if (whitelist.length === 0) return modelSections;
+    return modelSections
+      .map((s) =>
+        s.provider === aiSettings?.provider
+          ? { ...s, models: s.models.filter((m) => whitelist.includes(m.id)) }
+          : s,
+      )
+      .filter((s) => s.models.length > 0);
+  }, [modelSections, modelWhitelistRaw, aiSettings?.provider]);
   // A/B 比較 (③): 現在の下書きプロンプトを 2 構成へ並列送信する専用モーダル。
   // ライブストリーム描画には一切触れない。採用時は会話履歴へ積むため、表示用の
   // 下書き本文 (userDraft) とメンション情報も保持しておく。
@@ -394,7 +432,12 @@ export function ChatInput({
       return t("chat.noModel");
     }
     const parts = currentModel.split("/");
-    return parts[parts.length - 1];
+    const name = parts[parts.length - 1];
+    // 別プロバイダ一時送信中はどのプロバイダ宛てかひと目で分かるよう接頭する。
+    if (chatProviderOverride) {
+      return `${getProviderLabel(chatProviderOverride, t)}: ${name}`;
+    }
+    return name;
   })();
 
   const handleOpenModelMenu = () => {
@@ -402,9 +445,12 @@ export function ChatInput({
     setModelOpen((v) => !v);
   };
 
-  const handleSelectModel = async (modelId: string) => {
+  const handleSelectModel = async (model: CatalogModel) => {
     if (!aiSettings) return;
-    if (aiSettings.provider === "cli") {
+    const isActiveProvider = model.provider === aiSettings.provider;
+    // active が CLI かつ CLI のモデルを選んだ場合のみ、CLI モデルを永続化する
+    // (CLI は subprocess 経路で settings.cli.model を読むため一時 override では効かない)。
+    if (isActiveProvider && aiSettings.provider === "cli") {
       const cli = aiSettings.cli ?? {
         kind: "claude" as const,
         binaryPath: "",
@@ -412,17 +458,23 @@ export function ChatInput({
       };
       await saveSettings({
         ...aiSettings,
-        cli: { ...cli, model: modelId },
+        cli: { ...cli, model: model.id },
       });
       setModelOpen(false);
       return;
     }
-    // チャットパネルでのモデル選択は「その場限りの一時オーバーライド」にする。
-    // 保存される既定チャットモデル(settings.model)は書き換えない(切替が
-    // インライン AI / Beat / 校閲など他経路の既定へ漏れない)。送信時の apiVariant は
-    // チャット送信経路が getChatApiVariant(model) で都度解決するのでここでの永続化は不要。
-    // 既定モデルそのものを選んだ場合はオーバーライドを解除して既定追従に戻す。
-    setChatModelOverride(modelId === aiSettings.model ? null : modelId);
+    if (isActiveProvider) {
+      // 同一プロバイダ内: その場限りの一時オーバーライド。保存される既定チャットモデル
+      // (settings.model)は書き換えない(切替がインライン AI / Beat / 校閲など他経路へ漏れない)。
+      // 既定モデルそのものを選んだ場合はオーバーライドを解除して既定追従に戻す。
+      setChatModelOverride(model.id === aiSettings.model ? null : model.id);
+    } else {
+      // 別プロバイダ: provider + 解決済み variant も一緒に持たせ、その 1 送信だけ別プロバイダへ。
+      setChatModelOverride(model.id, {
+        provider: model.provider,
+        variant: model.variant,
+      });
+    }
     setModelOpen(false);
   };
 
@@ -783,29 +835,17 @@ export function ChatInput({
                 <div
                   ref={modelPopover.popoverRef}
                   style={modelPopover.style}
-                  className="z-[100] max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md"
+                  className="z-[100] overflow-hidden rounded-md border border-border bg-popover shadow-md"
                 >
-                  {models.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-muted-foreground">
-                      {t("chat.loadingModels")}
-                    </p>
-                  ) : (
-                    models.map((m) => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => handleSelectModel(m.id)}
-                        className={[
-                          "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
-                          m.id === currentModel
-                            ? "font-medium text-foreground"
-                            : "text-muted-foreground",
-                        ].join(" ")}
-                      >
-                        {m.name || m.id}
-                      </button>
-                    ))
-                  )}
+                  <ChatModelMenu
+                    sections={displaySections}
+                    loading={catalogLoading}
+                    current={{
+                      provider: chatProviderOverride ?? aiSettings?.provider,
+                      modelId: currentModel,
+                    }}
+                    onSelect={(model) => void handleSelectModel(model)}
+                  />
                 </div>,
                 document.body,
               )}

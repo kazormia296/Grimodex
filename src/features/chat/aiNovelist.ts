@@ -129,3 +129,21 @@ export function resolveModelApiVariant(
   }
   return resolveAinoveristApiVariant(model, models, persisted);
 }
+
+/**
+ * 「別プロバイダへの一時送信(provider override)」で明示すべき API 経路を返す。
+ *
+ * 別プロバイダ送信ではグローバル設定の modelApiVariant を持ち込まない(別プロバイダ向け
+ * 設定ではない)ため、provider 固有に「明示が必要な経路」だけを返す:
+ * - sakana: fugu は固定 base URL で `/responses` が唯一/推奨経路なので必ず "responses"。
+ * - その他: null(= バックエンド既定解決に委ねる。OpenAI 系=/chat/completions、
+ *   AI のべりすと=モデルに応じた v1/legacy を Rust `resolve_api_variant` が決める)。
+ *
+ * 別プロバイダ送信の variant 規則の単一正本。A/B の `resolveSlotApiVariant` と
+ * チャットのモデルピッカー(別プロバイダ選択)はどちらもこれを使う(ドリフト防止)。
+ */
+export function overrideApiVariantForProvider(
+  provider: string | null | undefined,
+): "responses" | null {
+  return provider?.trim() === "sakana" ? "responses" : null;
+}

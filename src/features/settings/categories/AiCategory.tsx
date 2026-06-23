@@ -9,6 +9,7 @@ import {
 } from "@/features/chat/store";
 import { normalizeDomainList } from "@/features/chat/webSearchConfig";
 import { ModelPicker } from "@/features/chat/ModelPicker";
+import { getProviderLabel } from "@/features/chat/providerLabels";
 import { FusionSettingsSection } from "./FusionSettingsSection";
 import {
   AI_PROVIDERS,
@@ -64,17 +65,6 @@ const PROMPT_CUSTOM_SLOTS = [
   "beat",
   "aiBranch",
 ] as const;
-
-const PROVIDER_LABELS: Record<AiProvider, string> = {
-  openrouter: "OpenRouter",
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  ollama: "ollama-local",
-  "openai-compatible": "OpenAI-compatible",
-  sakana: "Sakana (fugu)",
-  "ai-novelist": "AI のべりすと",
-  cli: "CLI agent",
-};
 
 /** AI のべりすと等のサンプリングキーで「数値型」として扱うキー */
 const NUMERIC_SAMPLING_KEYS = new Set([
@@ -390,13 +380,7 @@ export function AiCategory() {
   const budgetTotal = budgetValues.reduce((sum, l) => sum + l.value, 0);
   const budgetError = budgetTotal > 100;
 
-  const providerLabel = (p: AiProvider) => {
-    if (p === "ollama") return t("settings.ai.ollamaLocal");
-    if (p === "openai-compatible")
-      return t("settings.ai.providerOpenaiCompatible");
-    if (p === "cli") return t("settings.ai.providerCli");
-    return PROVIDER_LABELS[p];
-  };
+  const providerLabel = (p: AiProvider) => getProviderLabel(p, t);
 
   if (!localSettings) {
     return (

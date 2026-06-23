@@ -1,5 +1,6 @@
 import type { AbConfig } from "./abHarness";
 import { AI_PROVIDERS, type AiProvider } from "@/features/chat/types";
+import { overrideApiVariantForProvider } from "@/features/chat/aiNovelist";
 
 /**
  * A/B 枠で選べるプロバイダ。`cli` は送信経路 (send_chat_message → ai::send_chat) を
@@ -107,7 +108,8 @@ export function canRunComparison(slots: AbSlot[]): boolean {
  * Sakana は `/responses` が推奨経路 (fugu) なので明示する。他プロバイダの override は
  * バックエンドの既定解決に委ねる (undefined)。基準枠 (provider 未指定) も undefined で、
  * バックエンドがグローバル設定どおりに解決する。
+ * 規則の正本は `overrideApiVariantForProvider`(チャットの別プロバイダ選択と共有)。
  */
 export function resolveSlotApiVariant(config: AbConfig): string | undefined {
-  return config.provider?.trim() === "sakana" ? "responses" : undefined;
+  return overrideApiVariantForProvider(config.provider) ?? undefined;
 }

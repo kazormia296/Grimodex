@@ -185,6 +185,11 @@ export async function sendAgentMessage(
   systemVolatileTail?: string,
   /** agent ロールのモデル override（undefined/null = 既定モデルへフォールバック）。 */
   model?: string | null,
+  /**
+   * Chat の別プロバイダ一時送信: プロバイダ override（null/未指定 = 設定の既定プロバイダ）。
+   * 値は `AiProvider` 文字列。送信モデル(model)と同じプロバイダの名前空間に属していること。
+   */
+  provider?: string | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -198,6 +203,7 @@ export async function sendAgentMessage(
     webSearch: webSearch ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
+    provider: provider ?? null,
   });
 }
 
@@ -314,6 +320,11 @@ export async function sendChatMessageStream(
   apiVariant?: string | null,
   systemVolatileTail?: string,
   model?: string | null,
+  /**
+   * Chat の別プロバイダ一時送信: プロバイダ override（null/未指定 = 設定の既定プロバイダ）。
+   * 値は `AiProvider` 文字列。送信モデル(model)と同じプロバイダの名前空間に属していること。
+   */
+  provider?: string | null,
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -353,6 +364,7 @@ export async function sendChatMessageStream(
     apiVariant: apiVariant ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
+    provider: provider ?? null,
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
     const msg = e instanceof Error ? e.message : String(e);
