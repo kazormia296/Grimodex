@@ -670,7 +670,9 @@
       "sameChatModel": "Same as chat model",
       "roleModel": {
         "title": "Per-Feature Models (by role)",
-        "intro": "Assign a model to each of six semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model.",
+        "intro": "Assign a model to each of six semantic roles. AI paths are grouped into these roles; leave a role empty to fall back to the default chat model. Each role can also be assigned a model from a different provider (only providers with a saved key are selectable).",
+        "providerLabel": "Provider",
+        "sameProvider": "Same provider as chat",
         "cacheNote": "Note: picking a model from a different provider than your default for a role splits that path's prompt cache, which can raise cost and latency.",
         "conversation": {
           "label": "Conversation (chat)",
