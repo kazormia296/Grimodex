@@ -8,7 +8,10 @@ import type {
   AiModel,
   ConnectionTestResult,
 } from "./types";
-import { DEFAULT_AI_SETTINGS } from "./types";
+import {
+  DEFAULT_AI_SETTINGS,
+  resolveActiveOpenaiCompatibleEndpoint,
+} from "./types";
 
 /** API キー不要で接続テストできるプロバイダ。
  * Rust 側 resolve_api_key (commands/ai.rs) のキー省略可否と一致させること。 */
@@ -58,6 +61,12 @@ export interface AiSettingsState {
    * 依存せずこの値を使う — Sakana=responses 等)。null = backend 既定解決。
    */
   chatModelVariantOverride: string | null;
+  /**
+   * OpenAI 互換で別エンドポイントのモデルを一時選択したときの endpoint id override。
+   * provider が同一 "openai-compatible" のままでも、この値で送信先 base_url / API キーを
+   * 切り替える。null = 設定の active エンドポイント。chatModelOverride と対でクリアする。
+   */
+  chatEndpointIdOverride: string | null;
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AiSettings) => Promise<void>;
@@ -73,7 +82,12 @@ export interface AiSettingsState {
    */
   setChatModelOverride: (
     model: string | null,
-    opts?: { provider?: AiProvider | null; variant?: string | null },
+    opts?: {
+      provider?: AiProvider | null;
+      variant?: string | null;
+      /** OpenAI 互換エンドポイント id（別サーバのモデル選択時）。 */
+      endpointId?: string | null;
+    },
   ) => void;
 }
 
@@ -112,10 +126,14 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   chatModelOverride: null,
   chatProviderOverride: null,
   chatModelVariantOverride: null,
+  chatEndpointIdOverride: null,
 
   loadSettings: async () => {
     const settings = await api.getAiSettings();
-    const keyPresent = await api.hasApiKey(settings.provider);
+    const keyPresent = await api.hasApiKey(
+      settings.provider,
+      settings.activeOpenaiCompatibleEndpointId,
+    );
     let cliBinaryAvailable: boolean | null = null;
     if (settings.provider === "cli") {
       const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
@@ -162,6 +180,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
             chatModelOverride: null,
             chatProviderOverride: null,
             chatModelVariantOverride: null,
+            chatEndpointIdOverride: null,
           }
         : {}),
     });
@@ -170,23 +189,31 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   setChatModelOverride: (model, opts) => {
     set({
       chatModelOverride: model,
-      // null(既定へ戻す)時は provider/variant override も必ず解除する。
+      // null(既定へ戻す)時は provider/variant/endpoint override も必ず解除する。
       chatProviderOverride: model == null ? null : (opts?.provider ?? null),
       chatModelVariantOverride: model == null ? null : (opts?.variant ?? null),
+      chatEndpointIdOverride: model == null ? null : (opts?.endpointId ?? null),
     });
   },
 
   saveApiKey: async (key: string) => {
     const { settings } = get();
     if (!settings) return;
-    await api.saveApiKey(settings.provider, key);
+    await api.saveApiKey(
+      settings.provider,
+      key,
+      settings.activeOpenaiCompatibleEndpointId,
+    );
     set({ hasApiKey: true });
   },
 
   deleteApiKey: async () => {
     const { settings } = get();
     if (!settings) return;
-    await api.deleteApiKey(settings.provider);
+    await api.deleteApiKey(
+      settings.provider,
+      settings.activeOpenaiCompatibleEndpointId,
+    );
     set({ hasApiKey: false });
   },
 
@@ -207,6 +234,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         settings.provider,
         settings.model,
         apiVariant,
+        settings.activeOpenaiCompatibleEndpointId,
       );
       set({
         isTestingConnection: false,
@@ -238,8 +266,11 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         return;
       }
       // それ以外は Rust 側 fetch_models に委譲
-      // (Anthropic / AiNovelist は静的リストを返す、OpenAI 互換は API を叩く)
-      const models = await api.listAiModels(settings.provider);
+      // (Anthropic / AiNovelist は静的リストを返す、OpenAI 互換は active エンドポイントを叩く)
+      const models = await api.listAiModels(
+        settings.provider,
+        settings.activeOpenaiCompatibleEndpointId,
+      );
       if (settings.provider === "openrouter") {
         registerDynamicModelCaps(models);
         set({
@@ -280,7 +311,11 @@ export function selectProviderReadiness(s: AiSettingsState): ProviderReadiness {
     case "ai-novelist":
       return hasApiKey ? "ready" : "no-provider";
     case "openai-compatible":
-      return settings.openaiCompatible.baseUrl ? "ready" : "no-provider";
+      // active（または先頭）エンドポイントに baseUrl があれば ready。
+      // ローカル LLM は API キー不要なので baseUrl のみで判定（従来と同基準）。
+      return resolveActiveOpenaiCompatibleEndpoint(settings)?.baseUrl
+        ? "ready"
+        : "no-provider";
     case "ollama":
       return settings.ollamaEndpoint ? "ready" : "no-provider";
     case "cli":

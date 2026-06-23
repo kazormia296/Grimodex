@@ -64,6 +64,7 @@ describe("chat/api", () => {
       expect(mockInvoke).toHaveBeenCalledWith("save_api_key", {
         provider: "openrouter",
         key: "sk-or-test-123",
+        endpointId: null,
       });
     });
   });
@@ -75,6 +76,7 @@ describe("chat/api", () => {
       const result = await hasApiKey("openrouter");
       expect(mockInvoke).toHaveBeenCalledWith("has_api_key", {
         provider: "openrouter",
+        endpointId: null,
       });
       expect(result).toBe(true);
     });
@@ -94,6 +96,7 @@ describe("chat/api", () => {
       await deleteApiKey("anthropic");
       expect(mockInvoke).toHaveBeenCalledWith("delete_api_key", {
         provider: "anthropic",
+        endpointId: null,
       });
     });
   });
@@ -107,6 +110,7 @@ describe("chat/api", () => {
         provider: "openrouter",
         model: "gpt-4",
         apiVariant: null,
+        endpointId: null,
       });
       expect(result).toBe("Hello! Connection successful.");
     });
@@ -131,6 +135,7 @@ describe("chat/api", () => {
       const result = await listAiModels("openrouter");
       expect(mockInvoke).toHaveBeenCalledWith("list_ai_models", {
         provider: "openrouter",
+        endpointId: null,
       });
       expect(result).toEqual(models);
     });

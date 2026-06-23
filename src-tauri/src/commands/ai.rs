@@ -10,14 +10,20 @@ use super::{AiSettingsPath, AppError, InlineAiAbortFlag, StreamAbortFlag};
 /// - OpenaiCompatible: 任意（ローカル LLM サーバ等で API キー不要なケースを許容）
 /// - Cli: 不要（CLI 側で認証管理。送信時はそもそもこのパスを通らない）
 /// - その他 (AiNovelist 含む): 必須（設定されていなければエラー）
-pub(super) fn resolve_api_key(provider: &ai::AiProvider) -> anyhow::Result<String> {
+///
+/// `endpoint_id` は OpenAI 互換プロバイダの per-endpoint キー解決でのみ意味を持つ
+/// （その他のプロバイダでは無視され単一キーを引く）。
+pub(super) fn resolve_api_key(
+    provider: &ai::AiProvider,
+    endpoint_id: Option<&str>,
+) -> anyhow::Result<String> {
     if matches!(provider, ai::AiProvider::Ollama | ai::AiProvider::Cli) {
         return Ok(String::new());
     }
     if matches!(provider, ai::AiProvider::OpenaiCompatible) {
-        return Ok(ai::get_api_key(provider)?.unwrap_or_default());
+        return Ok(ai::get_api_key(provider, endpoint_id)?.unwrap_or_default());
     }
-    ai::get_api_key(provider)?
+    ai::get_api_key(provider, None)?
         .ok_or_else(|| anyhow::anyhow!("No API key configured for {}", provider))
 }
 
@@ -149,11 +155,13 @@ pub(crate) async fn send_chat_message(
     // 解決可能) なので、グローバル設定を変えずに 1 ショットだけ別プロバイダへ投げられる。
     // 後方互換: 既存呼び出しは省略可。
     provider: Option<ai::AiProvider>,
+    // OpenAI 互換: このメッセージだけ別エンドポイントへ向けるための override。
+    // None なら設定の active エンドポイントを使う。provider!=互換 では無視される。
+    endpoint_id: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let provider_overridden = provider.is_some();
     let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
-    let api_key = resolve_api_key(&effective_provider)?;
     let resolved_model = model
         .as_deref()
         .filter(|m| !m.is_empty())
@@ -167,6 +175,20 @@ pub(crate) async fn send_chat_message(
     if provider_overridden {
         settings_for_call.model_api_variant = None;
     }
+    // OpenAI 互換エンドポイント override（指定時のみ上書き、未指定なら設定の active）。
+    // 未知 id（例: 設定で削除済みのエンドポイントを指す stale な override）は黙って
+    // 別サーバへ流さない — 既知の id のときだけ override し、それ以外は設定の active を据え置く。
+    if let Some(eid) = endpoint_id.filter(|s| !s.is_empty()) {
+        if settings_for_call.has_openai_compatible_endpoint(&eid) {
+            settings_for_call.active_openai_compatible_endpoint_id = Some(eid);
+        }
+    }
+    let api_key = resolve_api_key(
+        &settings_for_call.provider,
+        settings_for_call
+            .active_openai_compatible_endpoint_id
+            .as_deref(),
+    )?;
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings_for_call);
@@ -227,6 +249,9 @@ pub(crate) async fn send_chat_message_stream(
     // send_chat_message と同一規則 — 別プロバイダの API キーは keyring から解決され、
     // グローバル設定を変えずにこの 1 ストリームだけ別プロバイダへ流せる。
     provider: Option<ai::AiProvider>,
+    // OpenAI 互換: このストリームだけ別エンドポイントへ向ける override。
+    // None なら設定の active エンドポイント。provider!=互換 では無視される。
+    endpoint_id: Option<String>,
 ) -> Result<(), AppError> {
     abort_flag
         .flag
@@ -235,7 +260,6 @@ pub(crate) async fn send_chat_message_stream(
     let settings = ai::read_ai_settings(&ai_path.path);
     let provider_overridden = provider.is_some();
     let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
-    let api_key = resolve_api_key(&effective_provider)?;
     let flag_clone = Arc::clone(&abort_flag.flag);
     let resolved_model = model
         .as_deref()
@@ -250,6 +274,20 @@ pub(crate) async fn send_chat_message_stream(
     if provider_overridden {
         settings_for_call.model_api_variant = None;
     }
+    // OpenAI 互換エンドポイント override（指定時のみ上書き、未指定なら設定の active）。
+    // 未知 id（例: 設定で削除済みのエンドポイントを指す stale な override）は黙って
+    // 別サーバへ流さない — 既知の id のときだけ override し、それ以外は設定の active を据え置く。
+    if let Some(eid) = endpoint_id.filter(|s| !s.is_empty()) {
+        if settings_for_call.has_openai_compatible_endpoint(&eid) {
+            settings_for_call.active_openai_compatible_endpoint_id = Some(eid);
+        }
+    }
+    let api_key = resolve_api_key(
+        &settings_for_call.provider,
+        settings_for_call
+            .active_openai_compatible_endpoint_id
+            .as_deref(),
+    )?;
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings_for_call);
@@ -323,7 +361,10 @@ pub(crate) async fn send_inline_ai_stream(
         .store(false, std::sync::atomic::Ordering::Relaxed);
 
     let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = resolve_api_key(&settings.provider)?;
+    let api_key = resolve_api_key(
+        &settings.provider,
+        settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
     let flag_clone = Arc::clone(&abort_flag.flag);
     let resolved_model = model
         .as_deref()
@@ -397,11 +438,13 @@ pub(crate) async fn send_agent_message(
     // Chat の別プロバイダ一時送信: プロバイダ override。None なら設定の既定プロバイダ。
     // send_chat_message と同一規則。
     provider: Option<ai::AiProvider>,
+    // OpenAI 互換: この agent 送信だけ別エンドポイントへ向ける override。
+    // None なら設定の active エンドポイント。provider!=互換 では無視される。
+    endpoint_id: Option<String>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
     let provider_overridden = provider.is_some();
     let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
-    let api_key = resolve_api_key(&effective_provider)?;
     let resolved_model = model
         .as_deref()
         .filter(|m| !m.is_empty())
@@ -413,6 +456,20 @@ pub(crate) async fn send_agent_message(
     if provider_overridden {
         settings_for_call.model_api_variant = None;
     }
+    // OpenAI 互換エンドポイント override（指定時のみ上書き、未指定なら設定の active）。
+    // 未知 id（例: 設定で削除済みのエンドポイントを指す stale な override）は黙って
+    // 別サーバへ流さない — 既知の id のときだけ override し、それ以外は設定の active を据え置く。
+    if let Some(eid) = endpoint_id.filter(|s| !s.is_empty()) {
+        if settings_for_call.has_openai_compatible_endpoint(&eid) {
+            settings_for_call.active_openai_compatible_endpoint_id = Some(eid);
+        }
+    }
+    let api_key = resolve_api_key(
+        &settings_for_call.provider,
+        settings_for_call
+            .active_openai_compatible_endpoint_id
+            .as_deref(),
+    )?;
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings_for_call);
@@ -453,8 +510,13 @@ pub(crate) fn save_ai_settings(
 }
 
 #[tauri::command]
-pub(crate) fn save_api_key(provider: ai::AiProvider, key: String) -> Result<(), AppError> {
-    ai::save_api_key(&provider, &key)?;
+pub(crate) fn save_api_key(
+    provider: ai::AiProvider,
+    key: String,
+    // OpenAI 互換の per-endpoint キー。None なら従来の単一キー（または default）。
+    endpoint_id: Option<String>,
+) -> Result<(), AppError> {
+    ai::save_api_key(&provider, endpoint_id.as_deref(), &key)?;
     Ok(())
 }
 
@@ -463,13 +525,19 @@ pub(crate) fn save_api_key(provider: ai::AiProvider, key: String) -> Result<(), 
 /// 実送信のキー解決は Rust 側 `resolve_api_key` が一手に担うため、フロントは
 /// 設定済みかどうかの真偽値しか必要としない。
 #[tauri::command]
-pub(crate) fn has_api_key(provider: ai::AiProvider) -> Result<bool, AppError> {
-    Ok(ai::get_api_key(&provider)?.is_some())
+pub(crate) fn has_api_key(
+    provider: ai::AiProvider,
+    endpoint_id: Option<String>,
+) -> Result<bool, AppError> {
+    Ok(ai::get_api_key(&provider, endpoint_id.as_deref())?.is_some())
 }
 
 #[tauri::command]
-pub(crate) fn delete_api_key(provider: ai::AiProvider) -> Result<(), AppError> {
-    ai::delete_api_key(&provider)?;
+pub(crate) fn delete_api_key(
+    provider: ai::AiProvider,
+    endpoint_id: Option<String>,
+) -> Result<(), AppError> {
+    ai::delete_api_key(&provider, endpoint_id.as_deref())?;
     Ok(())
 }
 
@@ -477,9 +545,21 @@ pub(crate) fn delete_api_key(provider: ai::AiProvider) -> Result<(), AppError> {
 pub(crate) async fn list_ai_models(
     ai_path: tauri::State<'_, AiSettingsPath>,
     provider: ai::AiProvider,
+    // OpenAI 互換: モデル一覧を引く対象エンドポイント。None なら設定の active。
+    endpoint_id: Option<String>,
 ) -> Result<Vec<ai::AiModel>, AppError> {
-    let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = ai::get_api_key(&provider)?.unwrap_or_default();
+    let mut settings = ai::read_ai_settings(&ai_path.path);
+    if let Some(eid) = endpoint_id.as_deref().filter(|s| !s.is_empty()) {
+        // 未知 id は据え置き（別エンドポイントへの無言フォールバック防止）。
+        if settings.has_openai_compatible_endpoint(eid) {
+            settings.active_openai_compatible_endpoint_id = Some(eid.to_string());
+        }
+    }
+    let api_key = ai::get_api_key(
+        &provider,
+        settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?
+    .unwrap_or_default();
     let models = ai::fetch_models(&provider, &api_key, settings.endpoints()).await?;
     Ok(models)
 }
@@ -490,9 +570,22 @@ pub(crate) async fn test_ai_connection(
     provider: ai::AiProvider,
     model: String,
     api_variant: Option<String>,
+    // OpenAI 互換: 接続テスト対象エンドポイント。None なら設定の active。
+    endpoint_id: Option<String>,
 ) -> Result<String, AppError> {
-    let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = resolve_api_key(&provider)?;
+    let mut settings = ai::read_ai_settings(&ai_path.path);
+    // resolve_api_variant の endpoint-default 判定はテスト対象 provider 基準にする。
+    settings.provider = provider.clone();
+    if let Some(eid) = endpoint_id.as_deref().filter(|s| !s.is_empty()) {
+        // 未知 id は据え置き（別エンドポイントへの無言フォールバック防止）。
+        if settings.has_openai_compatible_endpoint(eid) {
+            settings.active_openai_compatible_endpoint_id = Some(eid.to_string());
+        }
+    }
+    let api_key = resolve_api_key(
+        &provider,
+        settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
     let variant = ai::resolve_api_variant(api_variant.as_deref(), &settings, &model);
     let result = ai::test_connection(
         &provider,
@@ -514,13 +607,13 @@ mod tests {
     // 戻すと「API キーが設定されていません」でローカル LLM が全滅する。
     #[test]
     fn resolve_api_key_ollama_requires_no_key() {
-        let key = resolve_api_key(&ai::AiProvider::Ollama).unwrap();
+        let key = resolve_api_key(&ai::AiProvider::Ollama, None).unwrap();
         assert_eq!(key, "");
     }
 
     #[test]
     fn resolve_api_key_cli_requires_no_key() {
-        let key = resolve_api_key(&ai::AiProvider::Cli).unwrap();
+        let key = resolve_api_key(&ai::AiProvider::Cli, None).unwrap();
         assert_eq!(key, "");
     }
 

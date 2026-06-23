@@ -454,6 +454,34 @@ export function getModelCapabilities(model: string): ModelCapabilities {
 }
 
 /**
+ * OpenAI 互換 customMax* の供給元を解決する。複数エンドポイントが設定されていれば
+ * active（または先頭）エンドポイント、未設定なら legacy 単一設定を返す。
+ * loose typed settings（unknown 由来）から安全に取り出す。
+ */
+function resolveCompatCapsSource(settings: {
+  openaiCompatible?: unknown;
+  openaiCompatibleEndpoints?: unknown;
+  activeOpenaiCompatibleEndpointId?: string | null;
+}): { customMaxContext?: number; customMaxOutput?: number } | undefined {
+  const list = Array.isArray(settings.openaiCompatibleEndpoints)
+    ? (settings.openaiCompatibleEndpoints as Array<{
+        id?: string;
+        customMaxContext?: number;
+        customMaxOutput?: number;
+      }>)
+    : [];
+  if (list.length > 0) {
+    const activeId = settings.activeOpenaiCompatibleEndpointId;
+    const found =
+      (activeId ? list.find((e) => e.id === activeId) : undefined) ?? list[0];
+    return found;
+  }
+  return settings.openaiCompatible as
+    | { customMaxContext?: number; customMaxOutput?: number }
+    | undefined;
+}
+
+/**
  * AiSettings を考慮してモデルの能力を解決する。
  * 第二引数を Optional にしているのは、AiSettings が不明な呼び出し場所
  * (synopsis 生成など UI コンテキスト外) からも使えるようにするため。
@@ -463,6 +491,8 @@ export function resolveModelCapabilities(
   settings?: {
     provider?: string;
     openaiCompatible?: unknown;
+    openaiCompatibleEndpoints?: unknown;
+    activeOpenaiCompatibleEndpointId?: string | null;
     aiNovelist?: unknown;
   } | null,
   apiVariant?: string | null,
@@ -561,10 +591,9 @@ export function resolveModelCapabilities(
 
   if (settings.provider !== "openai-compatible") return base;
 
-  // カスタム OpenAI 互換: ユーザー入力の customMax* を反映
-  const oc = settings.openaiCompatible as
-    | { customMaxContext?: number; customMaxOutput?: number }
-    | undefined;
+  // カスタム OpenAI 互換: active（または先頭）エンドポイントの customMax* を反映。
+  // 複数エンドポイント未設定時は legacy 単一設定にフォールバック。
+  const oc = resolveCompatCapsSource(settings);
   return {
     ...base,
     contextWindow: oc?.customMaxContext ?? base.contextWindow,

@@ -234,6 +234,39 @@ pub struct OpenaiCompatibleSettings {
     pub enable_structured_tasks: Option<bool>,
 }
 
+/// legacy 単一設定の移行で合成する既定エンドポイントの固定 ID。
+/// FE (`types.ts`) / Rust / keyring fallback で同じ値を共有する。
+pub const LEGACY_OPENAI_COMPAT_ENDPOINT_ID: &str = "default";
+
+/// 1 つの OpenAI 互換エンドポイント設定。`OpenaiCompatibleSettings`（単一）の複数版。
+/// `id` は keyring user / override 参照キー、`api_variant` はこのエンドポイント既定の
+/// API 経路（未指定ならグローバル / モデル名推論に委ねる）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenaiCompatibleEndpoint {
+    /// 安定 ID（移行既定は `"default"`、新規は UUID）。
+    #[serde(default)]
+    pub id: String,
+    /// 表示用ラベル。空なら UI で base_url を代用。
+    #[serde(default)]
+    pub label: String,
+    /// OpenAI 互換エンドポイント URL。
+    #[serde(default)]
+    pub base_url: String,
+    /// 手動指定するモデルのコンテキスト窓。
+    #[serde(default)]
+    pub custom_max_context: Option<u32>,
+    /// 手動指定するモデルの最大出力。
+    #[serde(default)]
+    pub custom_max_output: Option<u32>,
+    /// AI Codex 自動抽出 / Synopsis 等の構造化タスクでこのエンドポイントを使うか。
+    #[serde(default)]
+    pub enable_structured_tasks: Option<bool>,
+    /// このエンドポイント既定の API 経路 ("v1" | "responses" | "legacy")。任意。
+    #[serde(default)]
+    pub api_variant: Option<String>,
+}
+
 /// AI のべりすと専用の設定。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -295,6 +328,13 @@ pub struct AiSettings {
     pub thinking_enabled: bool,
     #[serde(default)]
     pub openai_compatible: OpenaiCompatibleSettings,
+    /// 複数 OpenAI 互換エンドポイント。空なら legacy `openai_compatible` から
+    /// read 時 normalize で 1 件移行する。
+    #[serde(default)]
+    pub openai_compatible_endpoints: Vec<OpenaiCompatibleEndpoint>,
+    /// 既定（override 無し時）の OpenAI 互換エンドポイント ID。
+    #[serde(default)]
+    pub active_openai_compatible_endpoint_id: Option<String>,
     #[serde(default)]
     pub ai_novelist: AiNovelistSettings,
     #[serde(default)]
@@ -324,8 +364,70 @@ impl AiSettings {
     pub fn endpoints(&self) -> ProviderEndpoints<'_> {
         ProviderEndpoints {
             ollama: &self.ollama_endpoint,
-            openai_compat_custom: &self.openai_compatible.base_url,
+            // 解決済みエンドポイント（active / override id）の base_url。
+            // normalize 前 / 空配列でも legacy base_url にフォールバックする。
+            openai_compat_custom: self
+                .active_openai_compatible_endpoint()
+                .map(|e| e.base_url.as_str())
+                .unwrap_or(self.openai_compatible.base_url.as_str()),
         }
+    }
+
+    /// legacy 単一設定を `openai_compatible_endpoints` へ移行する（read 時に一度呼ぶ）。
+    /// endpoints が空かつ legacy base_url が非空なら `"default"` エンドポイントを合成し、
+    /// active id が未設定 / 不正なら先頭にフォールバックする。冪等。
+    pub fn normalize_openai_compatible(&mut self) {
+        if self.openai_compatible_endpoints.is_empty()
+            && !self.openai_compatible.base_url.trim().is_empty()
+        {
+            self.openai_compatible_endpoints
+                .push(OpenaiCompatibleEndpoint {
+                    id: LEGACY_OPENAI_COMPAT_ENDPOINT_ID.to_string(),
+                    label: String::new(),
+                    base_url: self.openai_compatible.base_url.clone(),
+                    custom_max_context: self.openai_compatible.custom_max_context,
+                    custom_max_output: self.openai_compatible.custom_max_output,
+                    enable_structured_tasks: self.openai_compatible.enable_structured_tasks,
+                    api_variant: None,
+                });
+        }
+        let active_valid = self
+            .active_openai_compatible_endpoint_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|id| self.openai_compatible_endpoints.iter().any(|e| e.id == id))
+            .unwrap_or(false);
+        if !active_valid {
+            self.active_openai_compatible_endpoint_id = self
+                .openai_compatible_endpoints
+                .first()
+                .map(|e| e.id.clone());
+        }
+    }
+
+    /// 指定 id の OpenAI 互換エンドポイントが存在するか。
+    /// 送信コマンドは per-call override をこれで検証し、未知 id で別サーバへ
+    /// 無言フォールバックするのを防ぐ。
+    pub fn has_openai_compatible_endpoint(&self, id: &str) -> bool {
+        self.openai_compatible_endpoints.iter().any(|e| e.id == id)
+    }
+
+    /// `active_openai_compatible_endpoint_id`（送信コマンドが override をここに載せる）→
+    /// 先頭、の順で解決した OpenAI 互換エンドポイント。配列が空なら None。
+    pub fn active_openai_compatible_endpoint(&self) -> Option<&OpenaiCompatibleEndpoint> {
+        if self.openai_compatible_endpoints.is_empty() {
+            return None;
+        }
+        if let Some(id) = self
+            .active_openai_compatible_endpoint_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(found) = self.openai_compatible_endpoints.iter().find(|e| e.id == id) {
+                return Some(found);
+            }
+        }
+        self.openai_compatible_endpoints.first()
     }
 }
 
@@ -337,6 +439,8 @@ impl Default for AiSettings {
             ollama_endpoint: "http://localhost:11434".to_string(),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
+            openai_compatible_endpoints: Vec::new(),
+            active_openai_compatible_endpoint_id: None,
             ai_novelist: AiNovelistSettings::default(),
             cli: None,
             openrouter_provider_pin: None,
@@ -527,6 +631,15 @@ pub fn resolve_api_variant(
             return Some(v.clone());
         }
     }
+    // OpenAI 互換: 解決済みエンドポイント既定の api_variant（あれば）。
+    // 明示指定 / グローバル model_api_variant の次・モデル名推論の前。
+    if matches!(settings.provider, AiProvider::OpenaiCompatible) {
+        if let Some(ep) = settings.active_openai_compatible_endpoint() {
+            if let Some(v) = ep.api_variant.as_deref().filter(|s| !s.is_empty()) {
+                return Some(v.to_string());
+            }
+        }
+    }
     if matches!(settings.provider, AiProvider::AiNovelist) {
         if ai_novelist::is_v1_variant(None, model) {
             return Some("v1".to_string());
@@ -619,10 +732,13 @@ pub(crate) fn openai_model_requires_high_effort(model: &str) -> bool {
 
 /// Read AI settings from the given file path.
 pub fn read_ai_settings(path: &Path) -> AiSettings {
-    match std::fs::read_to_string(path) {
+    let mut settings = match std::fs::read_to_string(path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
         Err(_) => AiSettings::default(),
-    }
+    };
+    // legacy 単一 OpenAI 互換設定を複数エンドポイント配列へ移行（冪等）。
+    settings.normalize_openai_compatible();
+    settings
 }
 
 /// Write AI settings to the given file path.
@@ -637,26 +753,63 @@ pub fn write_ai_settings(path: &Path, settings: &AiSettings) -> anyhow::Result<(
 
 const KEYRING_USER: &str = "grimodex-user";
 
+/// keyring の account (user)。OpenAI 互換は endpoint_id を user に載せて
+/// エンドポイントごとに別キーを保存する（service 名は provider 単位で不変）。
+/// それ以外のプロバイダは従来どおり単一の `KEYRING_USER`。
+fn keyring_user(provider: &AiProvider, endpoint_id: Option<&str>) -> String {
+    match (provider, endpoint_id) {
+        (AiProvider::OpenaiCompatible, Some(id)) if !id.is_empty() => id.to_string(),
+        _ => KEYRING_USER.to_string(),
+    }
+}
+
 /// Save an API key to the OS keyring.
-pub fn save_api_key(provider: &AiProvider, key: &str) -> anyhow::Result<()> {
-    let entry = keyring::Entry::new(provider.keyring_service(), KEYRING_USER)?;
+/// `endpoint_id` は OpenAI 互換プロバイダでのみ意味を持つ（per-endpoint キー）。
+pub fn save_api_key(
+    provider: &AiProvider,
+    endpoint_id: Option<&str>,
+    key: &str,
+) -> anyhow::Result<()> {
+    let user = keyring_user(provider, endpoint_id);
+    let entry = keyring::Entry::new(provider.keyring_service(), &user)?;
     entry.set_password(key)?;
     Ok(())
 }
 
 /// Get an API key from the OS keyring. Returns None if not found.
-pub fn get_api_key(provider: &AiProvider) -> anyhow::Result<Option<String>> {
-    let entry = keyring::Entry::new(provider.keyring_service(), KEYRING_USER)?;
+/// 移行既定エンドポイント (`"default"`) は NoEntry 時のみ旧 user (`grimodex-user`) を
+/// フォールバックで試し、移行ユーザーの既存キーを無入力で継続させる。新規追加した
+/// エンドポイントの欠落キーをマスクしないよう、fallback は `"default"` のみ対象。
+pub fn get_api_key(
+    provider: &AiProvider,
+    endpoint_id: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let user = keyring_user(provider, endpoint_id);
+    let entry = keyring::Entry::new(provider.keyring_service(), &user)?;
     match entry.get_password() {
         Ok(key) => Ok(Some(key)),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::NoEntry) => {
+            if matches!(provider, AiProvider::OpenaiCompatible)
+                && endpoint_id == Some(LEGACY_OPENAI_COMPAT_ENDPOINT_ID)
+            {
+                let legacy = keyring::Entry::new(provider.keyring_service(), KEYRING_USER)?;
+                match legacy.get_password() {
+                    Ok(key) => Ok(Some(key)),
+                    Err(keyring::Error::NoEntry) => Ok(None),
+                    Err(e) => Err(anyhow::anyhow!("Keyring error: {e}")),
+                }
+            } else {
+                Ok(None)
+            }
+        }
         Err(e) => Err(anyhow::anyhow!("Keyring error: {e}")),
     }
 }
 
 /// Delete an API key from the OS keyring.
-pub fn delete_api_key(provider: &AiProvider) -> anyhow::Result<()> {
-    let entry = keyring::Entry::new(provider.keyring_service(), KEYRING_USER)?;
+pub fn delete_api_key(provider: &AiProvider, endpoint_id: Option<&str>) -> anyhow::Result<()> {
+    let user = keyring_user(provider, endpoint_id);
+    let entry = keyring::Entry::new(provider.keyring_service(), &user)?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()), // Already gone
@@ -3820,6 +3973,210 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    // ── 複数 OpenAI 互換エンドポイント (Approach B) ──────────────────────────
+
+    #[test]
+    fn normalize_migrates_legacy_single_endpoint() {
+        let mut s = AiSettings {
+            openai_compatible: OpenaiCompatibleSettings {
+                base_url: "http://localhost:8080/v1".to_string(),
+                custom_max_context: Some(32_000),
+                custom_max_output: Some(4096),
+                enable_structured_tasks: Some(true),
+            },
+            ..Default::default()
+        };
+        s.normalize_openai_compatible();
+        assert_eq!(s.openai_compatible_endpoints.len(), 1);
+        let ep = &s.openai_compatible_endpoints[0];
+        assert_eq!(ep.id, LEGACY_OPENAI_COMPAT_ENDPOINT_ID);
+        assert_eq!(ep.base_url, "http://localhost:8080/v1");
+        assert_eq!(ep.custom_max_context, Some(32_000));
+        assert_eq!(ep.enable_structured_tasks, Some(true));
+        assert_eq!(
+            s.active_openai_compatible_endpoint_id.as_deref(),
+            Some(LEGACY_OPENAI_COMPAT_ENDPOINT_ID)
+        );
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        let mut s = AiSettings {
+            openai_compatible: OpenaiCompatibleSettings {
+                base_url: "http://host/v1".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        s.normalize_openai_compatible();
+        s.normalize_openai_compatible();
+        assert_eq!(s.openai_compatible_endpoints.len(), 1);
+    }
+
+    #[test]
+    fn normalize_empty_legacy_yields_no_endpoints() {
+        let mut s = AiSettings::default();
+        s.normalize_openai_compatible();
+        assert!(s.openai_compatible_endpoints.is_empty());
+        assert_eq!(s.active_openai_compatible_endpoint_id, None);
+    }
+
+    #[test]
+    fn normalize_repairs_invalid_active_id_to_first() {
+        let mut s = AiSettings {
+            openai_compatible_endpoints: vec![
+                OpenaiCompatibleEndpoint {
+                    id: "a".into(),
+                    base_url: "http://a/v1".into(),
+                    ..Default::default()
+                },
+                OpenaiCompatibleEndpoint {
+                    id: "b".into(),
+                    base_url: "http://b/v1".into(),
+                    ..Default::default()
+                },
+            ],
+            active_openai_compatible_endpoint_id: Some("missing".into()),
+            ..Default::default()
+        };
+        s.normalize_openai_compatible();
+        assert_eq!(s.active_openai_compatible_endpoint_id.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn active_endpoint_resolves_by_id_then_first() {
+        let s = AiSettings {
+            openai_compatible_endpoints: vec![
+                OpenaiCompatibleEndpoint {
+                    id: "a".into(),
+                    base_url: "http://a/v1".into(),
+                    ..Default::default()
+                },
+                OpenaiCompatibleEndpoint {
+                    id: "b".into(),
+                    base_url: "http://b/v1".into(),
+                    ..Default::default()
+                },
+            ],
+            active_openai_compatible_endpoint_id: Some("b".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.active_openai_compatible_endpoint().unwrap().id, "b");
+        // 不正 id は先頭にフォールバック。
+        let s2 = AiSettings {
+            active_openai_compatible_endpoint_id: Some("zzz".into()),
+            ..s.clone()
+        };
+        assert_eq!(s2.active_openai_compatible_endpoint().unwrap().id, "a");
+    }
+
+    #[test]
+    fn endpoints_uses_active_endpoint_base_url() {
+        let s = AiSettings {
+            openai_compatible_endpoints: vec![
+                OpenaiCompatibleEndpoint {
+                    id: "a".into(),
+                    base_url: "http://a/v1".into(),
+                    ..Default::default()
+                },
+                OpenaiCompatibleEndpoint {
+                    id: "b".into(),
+                    base_url: "http://b/v1".into(),
+                    ..Default::default()
+                },
+            ],
+            active_openai_compatible_endpoint_id: Some("b".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.endpoints().openai_compat_custom, "http://b/v1");
+    }
+
+    #[test]
+    fn endpoints_falls_back_to_legacy_base_url_when_unnormalized() {
+        // normalize 前でも legacy base_url が拾われる（defense in depth）。
+        let s = AiSettings {
+            openai_compatible: OpenaiCompatibleSettings {
+                base_url: "http://legacy/v1".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(s.endpoints().openai_compat_custom, "http://legacy/v1");
+    }
+
+    #[test]
+    fn has_openai_compatible_endpoint_detects_known_ids() {
+        let s = AiSettings {
+            openai_compatible_endpoints: vec![OpenaiCompatibleEndpoint {
+                id: "a".into(),
+                base_url: "http://a/v1".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(s.has_openai_compatible_endpoint("a"));
+        assert!(!s.has_openai_compatible_endpoint("zzz"));
+        assert!(!s.has_openai_compatible_endpoint(""));
+    }
+
+    #[test]
+    fn keyring_user_uses_endpoint_id_only_for_compatible() {
+        assert_eq!(
+            keyring_user(&AiProvider::OpenaiCompatible, Some("ep1")),
+            "ep1"
+        );
+        assert_eq!(
+            keyring_user(&AiProvider::OpenaiCompatible, None),
+            KEYRING_USER
+        );
+        assert_eq!(
+            keyring_user(&AiProvider::OpenaiCompatible, Some("")),
+            KEYRING_USER
+        );
+        // 互換以外は endpoint_id を無視して単一ユーザー。
+        assert_eq!(keyring_user(&AiProvider::OpenAI, Some("ep1")), KEYRING_USER);
+    }
+
+    #[test]
+    fn resolve_api_variant_uses_endpoint_default_for_compatible() {
+        let s = AiSettings {
+            provider: AiProvider::OpenaiCompatible,
+            openai_compatible_endpoints: vec![OpenaiCompatibleEndpoint {
+                id: "a".into(),
+                base_url: "http://a/v1".into(),
+                api_variant: Some("responses".into()),
+                ..Default::default()
+            }],
+            active_openai_compatible_endpoint_id: Some("a".into()),
+            ..Default::default()
+        };
+        // 明示なし・グローバルなし → エンドポイント既定 "responses"。
+        assert_eq!(
+            resolve_api_variant(None, &s, "gpt-4o").as_deref(),
+            Some("responses")
+        );
+        // 明示指定はエンドポイント既定より優先。
+        assert_eq!(
+            resolve_api_variant(Some("v1"), &s, "gpt-4o").as_deref(),
+            Some("v1")
+        );
+    }
+
+    #[test]
+    fn read_ai_settings_normalizes_legacy_on_load() {
+        let path = temp_path("normalize_on_load");
+        let legacy = r#"{"provider":"openai-compatible","model":"m","ollamaEndpoint":"http://localhost:11434","thinkingEnabled":true,"openaiCompatible":{"baseUrl":"http://legacy/v1"}}"#;
+        fs::write(&path, legacy).unwrap();
+        let loaded = read_ai_settings(&path);
+        assert_eq!(loaded.openai_compatible_endpoints.len(), 1);
+        assert_eq!(
+            loaded.active_openai_compatible_endpoint_id.as_deref(),
+            Some(LEGACY_OPENAI_COMPAT_ENDPOINT_ID)
+        );
+        assert_eq!(loaded.endpoints().openai_compat_custom, "http://legacy/v1");
+        cleanup(&path);
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("grimodex_ai_test_{name}"))
     }
@@ -4337,6 +4694,8 @@ mod tests {
             ollama_endpoint: "http://localhost:11434".to_string(),
             thinking_enabled: true,
             openai_compatible: OpenaiCompatibleSettings::default(),
+            openai_compatible_endpoints: Vec::new(),
+            active_openai_compatible_endpoint_id: None,
             ai_novelist: AiNovelistSettings::default(),
             cli: None,
             openrouter_provider_pin: None,

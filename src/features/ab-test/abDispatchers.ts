@@ -29,11 +29,17 @@ export function createChatAbDispatcher(
     try {
       const provider = config.provider?.trim() || undefined;
       const apiVariant = resolveSlotApiVariant(config);
+      // OpenAI 互換の枠だけ endpoint override を糸通しする (他 provider では backend が無視)。
+      const endpointId =
+        provider === "openai-compatible"
+          ? config.endpointId?.trim() || undefined
+          : undefined;
       const res = await sendChatMessageOnceAb(
         messages,
         config.model,
         provider,
         apiVariant,
+        endpointId,
       );
       void recordAiUsage({
         surface: "chat",

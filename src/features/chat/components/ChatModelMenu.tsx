@@ -13,8 +13,13 @@ import {
 interface ChatModelMenuProps {
   sections: CatalogSection[];
   loading: boolean;
-  /** 現在選択中(プロバイダ + モデル ID)。ハイライト用。 */
-  current: { provider: AiProvider | undefined; modelId: string };
+  /** 現在選択中(プロバイダ + モデル ID + OpenAI 互換エンドポイント)。ハイライト用。 */
+  current: {
+    provider: AiProvider | undefined;
+    modelId: string;
+    /** OpenAI 互換で別エンドポイントを選んでいるときの endpoint id(他は undefined)。 */
+    endpointId?: string | null;
+  };
   onSelect: (model: CatalogModel) => void;
 }
 
@@ -41,11 +46,15 @@ export function ChatModelMenu({
   );
 
   const isCurrent = (model: CatalogModel) =>
-    model.provider === current.provider && model.id === current.modelId;
+    model.provider === current.provider &&
+    model.id === current.modelId &&
+    // OpenAI 互換は同一モデル名が複数エンドポイントに出るため endpointId まで一致を要求する
+    // (他プロバイダは双方 undefined で従来どおり)。
+    (model.endpointId ?? undefined) === (current.endpointId ?? undefined);
 
   const renderModel = (model: CatalogModel) => (
     <button
-      key={`${model.provider}:${model.id}`}
+      key={`${model.provider}:${model.endpointId ?? ""}:${model.id}`}
       type="button"
       onClick={() => onSelect(model)}
       className={[
@@ -110,9 +119,12 @@ export function ChatModelMenu({
           </p>
         ) : (
           filtered.map((section) => (
-            <div key={section.provider}>
+            <div key={section.endpointId ?? section.provider}>
               <div className="px-3 pt-1.5 pb-0.5 text-[11px] font-semibold text-foreground/80">
-                {getProviderLabel(section.provider, t)}
+                {section.provider === "openai-compatible" &&
+                section.endpointLabel
+                  ? `${getProviderLabel(section.provider, t)}: ${section.endpointLabel}`
+                  : getProviderLabel(section.provider, t)}
               </div>
               {renderSectionBody(section)}
             </div>

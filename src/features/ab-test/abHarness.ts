@@ -27,6 +27,13 @@ export interface AbConfig {
   /** モデル override。空 / undefined なら設定の既定モデル。 */
   model?: string | null;
   /**
+   * OpenAI 互換: この枠だけ別エンドポイントへ向ける override (endpoint id)。
+   * provider が "openai-compatible" のときだけ意味を持ち、送信先 base_url / API キーを
+   * 切り替える。それ以外の provider では無視される (backend 側で drop)。
+   * 空 / undefined なら設定の active エンドポイント。
+   */
+  endpointId?: string | null;
+  /**
    * プロンプト追記指示 (自由テキスト)。空 / undefined なら追記なし。
    * v1 ではこの文字列を user メッセージとして末尾に足すだけで自己完結する
    * (prompt-library テーブルへの依存なし)。

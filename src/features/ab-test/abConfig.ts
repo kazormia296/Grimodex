@@ -61,6 +61,12 @@ export function normalizeAbConfig(
   // provider は model とセットでのみ送る (provider 単独だと別プロバイダへ既定モデル名が
   // 漏れて誤動作する = isSlotComplete の不変条件)。model 無しの provider は落とす。
   if (allowProvider && provider && model) out.provider = provider;
+  // endpointId は OpenAI 互換 provider を実際に上書きする枠でのみ運ぶ。provider が
+  // 落ちた / 互換以外 / inline (allowProvider=false) の枠では stale な endpoint を残さない。
+  const endpointId = config.endpointId?.trim();
+  if (out.provider === "openai-compatible" && endpointId) {
+    out.endpointId = endpointId;
+  }
   const promptVariant = config.promptVariant?.trim();
   if (promptVariant) out.promptVariant = promptVariant;
   return out;

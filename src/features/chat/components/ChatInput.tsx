@@ -36,6 +36,7 @@ import { useAnchoredPopover } from "./useAnchoredPopover";
 import { ChatModelMenu } from "./ChatModelMenu";
 import { useChatModelCatalog } from "../useChatModelCatalog";
 import { getProviderLabel } from "../providerLabels";
+import { getOpenaiCompatibleEndpoints } from "../types";
 import { applyModelWhitelist } from "../chatModelCatalog";
 import type { CatalogModel } from "../chatModelCatalog";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
@@ -158,6 +159,9 @@ export function ChatInput({
   );
   const chatModelVariantOverride = useAiSettingsStore(
     (s) => s.chatModelVariantOverride,
+  );
+  const chatEndpointIdOverride = useAiSettingsStore(
+    (s) => s.chatEndpointIdOverride,
   );
   const setChatModelOverride = useAiSettingsStore(
     (s) => s.setChatModelOverride,
@@ -430,6 +434,19 @@ export function ChatInput({
     const name = parts[parts.length - 1];
     // 別プロバイダ一時送信中はどのプロバイダ宛てかひと目で分かるよう接頭する。
     if (chatProviderOverride) {
+      // OpenAI 互換で別エンドポイントを選んでいる場合はエンドポイントのラベルを見せる
+      // (どのサーバ宛てか区別できるように)。ラベル未設定なら baseUrl で代用。
+      if (
+        chatProviderOverride === "openai-compatible" &&
+        chatEndpointIdOverride &&
+        aiSettings
+      ) {
+        const ep = getOpenaiCompatibleEndpoints(aiSettings).find(
+          (e) => e.id === chatEndpointIdOverride,
+        );
+        const epLabel = ep ? ep.label || ep.baseUrl : null;
+        if (epLabel) return `${epLabel}: ${name}`;
+      }
       return `${getProviderLabel(chatProviderOverride, t)}: ${name}`;
     }
     return name;
@@ -458,16 +475,31 @@ export function ChatInput({
       setModelOpen(false);
       return;
     }
-    if (isActiveProvider) {
-      // 同一プロバイダ内: その場限りの一時オーバーライド。保存される既定チャットモデル
-      // (settings.model)は書き換えない(切替がインライン AI / Beat / 校閲など他経路へ漏れない)。
-      // 既定モデルそのものを選んだ場合はオーバーライドを解除して既定追従に戻す。
+    // OpenAI 互換は provider が同じでも「どのエンドポイントのモデルか」で送信先が変わる。
+    // active エンドポイント以外を選んだら、同一プロバイダでも endpoint override を糸通しする
+    // (これを落とすと黙って active エンドポイントへフォールバックする = 別サーバ選択が無効化)。
+    const isCompat = model.provider === "openai-compatible";
+    const activeEndpointId =
+      aiSettings.activeOpenaiCompatibleEndpointId ?? undefined;
+    const selectedEndpointId = model.endpointId ?? undefined;
+    const isCrossEndpoint =
+      isCompat &&
+      selectedEndpointId !== undefined &&
+      selectedEndpointId !== activeEndpointId;
+
+    if (isActiveProvider && !isCrossEndpoint) {
+      // 同一プロバイダ・同一エンドポイント: その場限りの一時オーバーライド。保存される
+      // 既定チャットモデル(settings.model)は書き換えない(切替がインライン AI / Beat /
+      // 校閲など他経路へ漏れない)。既定モデルそのものを選んだ場合はオーバーライドを
+      // 解除して既定追従に戻す。
       setChatModelOverride(model.id === aiSettings.model ? null : model.id);
     } else {
-      // 別プロバイダ: provider + 解決済み variant も一緒に持たせ、その 1 送信だけ別プロバイダへ。
+      // 別プロバイダ、または同一互換プロバイダの別エンドポイント: provider + 解決済み
+      // variant + endpointId を一緒に持たせ、その 1 送信だけ別宛先へ。
       setChatModelOverride(model.id, {
         provider: model.provider,
         variant: model.variant,
+        endpointId: model.endpointId,
       });
     }
     setModelOpen(false);
@@ -838,6 +870,11 @@ export function ChatInput({
                     current={{
                       provider: chatProviderOverride ?? aiSettings?.provider,
                       modelId: currentModel,
+                      // override 無しのときは active エンドポイントが現在値
+                      // (互換以外は両方 undefined で従来どおり)。
+                      endpointId:
+                        chatEndpointIdOverride ??
+                        aiSettings?.activeOpenaiCompatibleEndpointId,
                     }}
                     onSelect={(model) => void handleSelectModel(model)}
                   />
