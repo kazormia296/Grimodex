@@ -626,18 +626,23 @@ pub fn resolve_api_variant(
     if let Some(v) = explicit.filter(|s| !s.is_empty()) {
         return Some(v.to_string());
     }
+    // OpenAI 互換: 経路はエンドポイント単位の api_variant が正本。グローバル
+    // model_api_variant（Responses トグル）は openai-compatible では UI に出さない
+    // 設計（AiCategory: トグル非表示）なので、ここでも持ち込まない。これを怠ると
+    // 他プロバイダで ON にした "responses" が残留して /responses 非対応の互換サーバ
+    // (PlaMo / LM Studio 等) に漏れ 404 になる。endpoint 未指定(auto)は
+    // None=/chat/completions（互換サーバ共通の基準経路）に解決する。
+    if matches!(settings.provider, AiProvider::OpenaiCompatible) {
+        return settings.active_openai_compatible_endpoint().and_then(|ep| {
+            ep.api_variant
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        });
+    }
     if let Some(ref v) = settings.model_api_variant {
         if !v.is_empty() {
             return Some(v.clone());
-        }
-    }
-    // OpenAI 互換: 解決済みエンドポイント既定の api_variant（あれば）。
-    // 明示指定 / グローバル model_api_variant の次・モデル名推論の前。
-    if matches!(settings.provider, AiProvider::OpenaiCompatible) {
-        if let Some(ep) = settings.active_openai_compatible_endpoint() {
-            if let Some(v) = ep.api_variant.as_deref().filter(|s| !s.is_empty()) {
-                return Some(v.to_string());
-            }
         }
     }
     if matches!(settings.provider, AiProvider::AiNovelist) {
@@ -4204,6 +4209,47 @@ mod tests {
         // 明示指定はエンドポイント既定より優先。
         assert_eq!(
             resolve_api_variant(Some("v1"), &s, "gpt-4o").as_deref(),
+            Some("v1")
+        );
+    }
+
+    #[test]
+    fn resolve_api_variant_compatible_ignores_global_responses_toggle() {
+        // 回帰: 他プロバイダ(OpenAI 等)で ON にしたグローバル Responses トグル
+        // (model_api_variant="responses") が残留しても、openai-compatible では
+        // エンドポイント単位 apiVariant が正本。endpoint 未指定(auto)なら経路は
+        // None=/chat/completions に解決し、/responses 非対応の互換サーバ(PlaMo /
+        // LM Studio 等)へ漏らさない。
+        let s = AiSettings {
+            provider: AiProvider::OpenaiCompatible,
+            // グローバル Responses トグルの残留。
+            model_api_variant: Some("responses".into()),
+            openai_compatible_endpoints: vec![OpenaiCompatibleEndpoint {
+                id: "a".into(),
+                base_url: "https://api.platform.preferredai.jp/v1".into(),
+                // endpoint は auto(未指定)。
+                api_variant: None,
+                ..Default::default()
+            }],
+            active_openai_compatible_endpoint_id: Some("a".into()),
+            ..Default::default()
+        };
+        // auto endpoint + グローバル responses 残留 → /chat/completions (None)。
+        assert_eq!(resolve_api_variant(None, &s, "plamo-3.0-prime"), None);
+
+        // endpoint が明示的に "responses" を選んだ場合のみ responses に乗る。
+        let mut s_resp = s.clone();
+        s_resp.openai_compatible_endpoints[0].api_variant = Some("responses".into());
+        assert_eq!(
+            resolve_api_variant(None, &s_resp, "plamo-3.0-prime").as_deref(),
+            Some("responses")
+        );
+
+        // endpoint "v1" はグローバル responses 残留より優先され /chat/completions。
+        let mut s_v1 = s.clone();
+        s_v1.openai_compatible_endpoints[0].api_variant = Some("v1".into());
+        assert_eq!(
+            resolve_api_variant(None, &s_v1, "plamo-3.0-prime").as_deref(),
             Some("v1")
         );
     }

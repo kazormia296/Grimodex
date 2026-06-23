@@ -393,9 +393,16 @@ pub(crate) async fn send_inline_ai_stream(
             .active_openai_compatible_endpoint_id
             .as_deref(),
     )?;
-    let variant = api_variant
-        .as_deref()
-        .or(settings_for_call.model_api_variant.as_deref());
+    // openai-compatible は経路をエンドポイント単位の api_variant で決めるため
+    // (resolve_api_variant 内で解決)、グローバル model_api_variant（Responses トグル）を
+    // インライン AI 経路へ持ち込まない。持ち込むと /responses 非対応の互換サーバ(PlaMo 等)
+    // へ漏れて 404 になる。provider override 時は上で model_api_variant=None 済み。
+    let global_variant = if matches!(settings_for_call.provider, ai::AiProvider::OpenaiCompatible) {
+        None
+    } else {
+        settings_for_call.model_api_variant.as_deref()
+    };
+    let variant = api_variant.as_deref().or(global_variant);
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings_for_call);
     let resolved_variant = ai::resolve_api_variant(variant, &settings_for_call, resolved_model);
