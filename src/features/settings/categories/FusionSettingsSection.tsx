@@ -46,12 +46,19 @@ export function FusionSettingsSection({
   // 黙って無視されると分かりにくいので注意書きを出す (A/B 枠で fusion を選ぶ場合は適用される)。
   const inactive = (activeModel ?? "") !== FUSION_MODEL;
 
+  // パネル / judge の編集 UI は cfg.enabled が true のときだけ描画されるので、ここに
+  // 来る時点で必ず有効。万一 value prop の再レンダ遅延で cfg が EMPTY(enabled:false)に
+  // 落ちても enabled を巻き戻さないよう、更新時は enabled:true を明示する。
   const addPanelModel = (id: string) => {
     if (!id || panel.includes(id) || panel.length >= MAX_PANEL) return;
-    onChange({ ...cfg, analysisModels: [...panel, id] });
+    onChange({ ...cfg, enabled: true, analysisModels: [...panel, id] });
   };
   const removePanelModel = (id: string) => {
-    onChange({ ...cfg, analysisModels: panel.filter((m) => m !== id) });
+    onChange({
+      ...cfg,
+      enabled: true,
+      analysisModels: panel.filter((m) => m !== id),
+    });
   };
 
   return (
@@ -130,7 +137,9 @@ export function FusionSettingsSection({
             <ModelPicker
               models={models}
               value={cfg.judgeModel ?? ""}
-              onChange={(id) => onChange({ ...cfg, judgeModel: id || null })}
+              onChange={(id) =>
+                onChange({ ...cfg, enabled: true, judgeModel: id || null })
+              }
               isLoading={isLoadingModels}
               placeholder={t("settings.ai.fusionJudgeDefault")}
               className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none"

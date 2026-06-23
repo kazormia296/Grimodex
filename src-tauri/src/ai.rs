@@ -763,6 +763,26 @@ fn keyring_user(provider: &AiProvider, endpoint_id: Option<&str>) -> String {
     }
 }
 
+/// 指定 (provider, endpoint_id) のキーを解決する際に試す keyring user を優先順に返す。
+/// OpenAI 互換の移行既定エンドポイント (`"default"`) は、まず自分の user を引き、無ければ
+/// 旧 user (`grimodex-user`) にフォールバックする（移行ユーザーの既存キーを無入力で継続）。
+///
+/// `get_api_key` はこの順で最初に見つかったキーを返し、`delete_api_key` はこのリスト
+/// 全員を削除する。両者を同じ候補列に通すことで、「`"default"` で削除しても legacy が
+/// 残り `has_api_key` が true を返し続ける（＝削除ボタンが無反応に見える）」非対称バグを
+/// 構造的に封じる。新規追加した任意 id のエンドポイントは fallback を持たない。
+fn keyring_user_candidates(provider: &AiProvider, endpoint_id: Option<&str>) -> Vec<String> {
+    let primary = keyring_user(provider, endpoint_id);
+    if matches!(provider, AiProvider::OpenaiCompatible)
+        && endpoint_id == Some(LEGACY_OPENAI_COMPAT_ENDPOINT_ID)
+    {
+        // primary == "default"。legacy user は必ず別名なので重複しない。
+        vec![primary, KEYRING_USER.to_string()]
+    } else {
+        vec![primary]
+    }
+}
+
 /// Save an API key to the OS keyring.
 /// `endpoint_id` は OpenAI 互換プロバイダでのみ意味を持つ（per-endpoint キー）。
 pub fn save_api_key(
@@ -784,37 +804,31 @@ pub fn get_api_key(
     provider: &AiProvider,
     endpoint_id: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    let user = keyring_user(provider, endpoint_id);
-    let entry = keyring::Entry::new(provider.keyring_service(), &user)?;
-    match entry.get_password() {
-        Ok(key) => Ok(Some(key)),
-        Err(keyring::Error::NoEntry) => {
-            if matches!(provider, AiProvider::OpenaiCompatible)
-                && endpoint_id == Some(LEGACY_OPENAI_COMPAT_ENDPOINT_ID)
-            {
-                let legacy = keyring::Entry::new(provider.keyring_service(), KEYRING_USER)?;
-                match legacy.get_password() {
-                    Ok(key) => Ok(Some(key)),
-                    Err(keyring::Error::NoEntry) => Ok(None),
-                    Err(e) => Err(anyhow::anyhow!("Keyring error: {e}")),
-                }
-            } else {
-                Ok(None)
-            }
+    for user in keyring_user_candidates(provider, endpoint_id) {
+        let entry = keyring::Entry::new(provider.keyring_service(), &user)?;
+        match entry.get_password() {
+            Ok(key) => return Ok(Some(key)),
+            Err(keyring::Error::NoEntry) => continue, // 次の候補（legacy fallback）を試す
+            Err(e) => return Err(anyhow::anyhow!("Keyring error: {e}")),
         }
-        Err(e) => Err(anyhow::anyhow!("Keyring error: {e}")),
     }
+    Ok(None)
 }
 
 /// Delete an API key from the OS keyring.
+/// 候補 user を全員削除する。`get_api_key` の legacy フォールバックと対称にすることで、
+/// 移行既定エンドポイント (`"default"`) で削除しても旧 user のキーが残り続ける（削除が
+/// 無反応に見え、しかも実送信では旧キーが使われ続ける）バグを防ぐ。
 pub fn delete_api_key(provider: &AiProvider, endpoint_id: Option<&str>) -> anyhow::Result<()> {
-    let user = keyring_user(provider, endpoint_id);
-    let entry = keyring::Entry::new(provider.keyring_service(), &user)?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()), // Already gone
-        Err(e) => Err(anyhow::anyhow!("Keyring error: {e}")),
+    for user in keyring_user_candidates(provider, endpoint_id) {
+        let entry = keyring::Entry::new(provider.keyring_service(), &user)?;
+        match entry.delete_credential() {
+            Ok(()) => {}
+            Err(keyring::Error::NoEntry) => {} // Already gone
+            Err(e) => return Err(anyhow::anyhow!("Keyring error: {e}")),
+        }
     }
+    Ok(())
 }
 
 /// Fetch available models from the provider.
@@ -4135,6 +4149,38 @@ mod tests {
         );
         // 互換以外は endpoint_id を無視して単一ユーザー。
         assert_eq!(keyring_user(&AiProvider::OpenAI, Some("ep1")), KEYRING_USER);
+    }
+
+    #[test]
+    fn keyring_user_candidates_purge_legacy_for_default_endpoint() {
+        // 移行既定エンドポイント ("default") は自分の user に加えて旧 user も対象。
+        // get はこの順で最初に見つかったものを返し、delete は全員を消すため、
+        // 「default で削除しても legacy が残り has_api_key が true を返し続ける」
+        // 非対称バグが構造的に起こらないことを保証する。
+        assert_eq!(
+            keyring_user_candidates(
+                &AiProvider::OpenaiCompatible,
+                Some(LEGACY_OPENAI_COMPAT_ENDPOINT_ID),
+            ),
+            vec![
+                LEGACY_OPENAI_COMPAT_ENDPOINT_ID.to_string(),
+                KEYRING_USER.to_string(),
+            ],
+        );
+        // 新規追加エンドポイント (任意 id) は legacy フォールバック無し（自分のみ）。
+        assert_eq!(
+            keyring_user_candidates(&AiProvider::OpenaiCompatible, Some("ep1")),
+            vec!["ep1".to_string()],
+        );
+        // endpoint_id 無し / 互換以外は単一の旧 user のみ。
+        assert_eq!(
+            keyring_user_candidates(&AiProvider::OpenaiCompatible, None),
+            vec![KEYRING_USER.to_string()],
+        );
+        assert_eq!(
+            keyring_user_candidates(&AiProvider::OpenAI, Some("ep1")),
+            vec![KEYRING_USER.to_string()],
+        );
     }
 
     #[test]

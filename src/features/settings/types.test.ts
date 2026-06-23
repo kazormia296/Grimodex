@@ -15,6 +15,14 @@ describe("KEY_SCOPE — カバレッジ", () => {
     );
     expect(invalid).toEqual([]);
   });
+
+  // trashBin.* は Project タブの設定で「既定として保存」で新規プロジェクトへ継承させる。
+  // project スコープでないと legacy(appSettings)へ書かれ getAllProjectSettings の集計
+  // から漏れて defaults に乗らない（回帰防止）。
+  it("trashBin.* は project スコープ", () => {
+    expect(KEY_SCOPE["trashBin.enabled"]).toBe("project");
+    expect(KEY_SCOPE["trashBin.retentionDays"]).toBe("project");
+  });
 });
 
 describe("DEFAULT_SETTINGS — Beat Phase C keys", () => {

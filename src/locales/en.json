@@ -263,6 +263,8 @@
     "deleteConfirm": "Delete",
     "other": "Other",
     "snippetSaveFailed": "Failed to save snippet",
+    "saveFailed": "Failed to save settings",
+    "openLinkFailed": "Couldn't open the link",
     "confirmDelete": "Delete?",
     "remove": "Remove",
     "untitled": "(Untitled)",
@@ -1029,6 +1031,8 @@
       "cannotDelete": "Cannot delete: entries exist for type \"{{label}}\"",
       "deleteSuccess": "\"{{label}}\" deleted",
       "createError": "Failed to create type",
+      "updateError": "Failed to update type",
+      "deleteError": "Failed to delete type",
       "colorInUse": "{{label}} (in use by {{usedBy}})"
     },
     "about": {
@@ -1107,6 +1111,7 @@
       "summaryIntro": "Token usage and approximate cost from AI generation in this project.",
       "costDisclaimer": "Cost is an estimate from the pricing table (modelPricing), not the actual amount billed.",
       "noRecords": "No AI generation records yet.",
+      "loadError": "Failed to load usage data.",
       "total": "Total",
       "generationCount": "Generation count",
       "inputTokens": "Input tokens",

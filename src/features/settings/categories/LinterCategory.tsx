@@ -290,7 +290,15 @@ function RuleRow({
           <RotateCcw className="h-3 w-3" />
         </button>
       </div>
-      <RuleOptions ruleId={ruleId} rule={rule} onSetRule={onSetRule} />
+      {/* ルール無効時はオプション入力も編集不可にする（disabled なルールの設定を
+          いじって無駄に永続化させない）。fieldset の disabled は内包する全コント
+          ロールへ伝播するので各 input に個別指定せず一括で無効化できる。 */}
+      <fieldset
+        disabled={!enabled}
+        className="m-0 min-w-0 border-0 p-0 disabled:opacity-50"
+      >
+        <RuleOptions ruleId={ruleId} rule={rule} onSetRule={onSetRule} />
+      </fieldset>
     </div>
   );
 }

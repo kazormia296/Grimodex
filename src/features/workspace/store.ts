@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
+import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
@@ -102,9 +103,11 @@ interface WorkspaceState {
   openRecentWorkspace: (path: string) => Promise<void>;
   trustAndOpen: () => Promise<void>;
   cancelTrust: () => void;
-  updateGlobalSettings: (updates: Partial<GlobalSettings>) => Promise<void>;
-  updateUserPreference: (key: string, value: string) => Promise<void>;
-  updateProjectDefaults: (updates: Record<string, string>) => Promise<void>;
+  // 保存成否を返す（true=永続化成功 / false=失敗してリバート済み）。fire-and-forget
+  // 呼び出し側は戻り値を無視でき、保存失敗をユーザーへ通知したい呼び出し側は false を見る。
+  updateGlobalSettings: (updates: Partial<GlobalSettings>) => Promise<boolean>;
+  updateUserPreference: (key: string, value: string) => Promise<boolean>;
+  updateProjectDefaults: (updates: Record<string, string>) => Promise<boolean>;
   showLauncher: () => void;
   clearError: () => void;
   setShowSampleTour: (show: boolean) => void;
@@ -308,20 +311,27 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
 
   async updateGlobalSettings(updates: Partial<GlobalSettings>) {
     const current = get().globalSettings;
-    if (!current) return;
+    if (!current) return false;
     const updated = { ...current, ...updates };
     set({ globalSettings: updated });
     try {
       await invoke("save_global_settings", { settings: updated });
-    } catch {
+      return true;
+    } catch (e) {
       // Revert on failure
       set({ globalSettings: current });
+      debugLog.error(
+        "workspaceStore",
+        "save_global_settings failed",
+        errorDetail(e),
+      );
+      return false;
     }
   },
 
   async updateUserPreference(key: string, value: string) {
     const current = get().globalSettings;
-    if (!current) return;
+    if (!current) return false;
     const updated = {
       ...current,
       userPreferences: { ...(current.userPreferences ?? {}), [key]: value },
@@ -329,14 +339,21 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     set({ globalSettings: updated });
     try {
       await invoke("save_global_settings", { settings: updated });
-    } catch {
+      return true;
+    } catch (e) {
       set({ globalSettings: current });
+      debugLog.error(
+        "workspaceStore",
+        "save_global_settings (userPreference) failed",
+        errorDetail(e),
+      );
+      return false;
     }
   },
 
   async updateProjectDefaults(updates: Record<string, string>) {
     const current = get().globalSettings;
-    if (!current) return;
+    if (!current) return false;
     const updated = {
       ...current,
       projectDefaults: { ...(current.projectDefaults ?? {}), ...updates },
@@ -344,8 +361,15 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     set({ globalSettings: updated });
     try {
       await invoke("save_global_settings", { settings: updated });
-    } catch {
+      return true;
+    } catch (e) {
       set({ globalSettings: current });
+      debugLog.error(
+        "workspaceStore",
+        "save_global_settings (projectDefaults) failed",
+        errorDetail(e),
+      );
+      return false;
     }
   },
 

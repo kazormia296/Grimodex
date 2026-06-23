@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { GitBranch, ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useLicenseStore } from "@/features/license/store";
@@ -51,7 +52,9 @@ export function AppInfoHeader() {
             href={GITHUB_URL}
             onClick={(e) => {
               e.preventDefault();
-              void openUrl(GITHUB_URL);
+              openUrl(GITHUB_URL).catch(() => {
+                toast.error(t("common.openLinkFailed"));
+              });
             }}
             className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground"
           >

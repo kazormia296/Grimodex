@@ -221,4 +221,39 @@ describe("useWorkspaceStore", () => {
       expect(useWorkspaceStore.getState().view).toBe("launcher");
     });
   });
+
+  // 保存成否を戻り値で返す契約（呼び出し側が失敗をユーザーへ通知できるように）。
+  describe("updateGlobalSettings — 保存成否の戻り値", () => {
+    beforeEach(() => {
+      useWorkspaceStore.setState({
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: null,
+          theme: "system",
+          showLauncherOnStartup: false,
+          uiLanguage: "ja",
+          uiScale: 100,
+        },
+      });
+    });
+
+    it("成功時は true を返し設定を保持する", async () => {
+      mockInvoke.mockResolvedValueOnce(undefined);
+      const ok = await useWorkspaceStore
+        .getState()
+        .updateGlobalSettings({ theme: "dark" });
+      expect(ok).toBe(true);
+      expect(useWorkspaceStore.getState().globalSettings?.theme).toBe("dark");
+    });
+
+    it("失敗時は false を返し楽観的変更をリバートする", async () => {
+      mockInvoke.mockRejectedValueOnce(new Error("save failed"));
+      const ok = await useWorkspaceStore
+        .getState()
+        .updateGlobalSettings({ theme: "dark" });
+      expect(ok).toBe(false);
+      // リバートされ元の "system" に戻る。
+      expect(useWorkspaceStore.getState().globalSettings?.theme).toBe("system");
+    });
+  });
 });

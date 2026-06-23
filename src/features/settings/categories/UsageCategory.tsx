@@ -35,6 +35,9 @@ export function UsageCategory() {
   const { t } = useTranslation();
   const [summary, setSummary] = useState<ProjectUsageSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  // 取得失敗を握りつぶすと、loading=false かつ summary=null でどの描画分岐にも
+  // 当たらず「真っ白」になる（ユーザーは原因が分からない）。明示的に出す。
+  const [error, setError] = useState(false);
   // 集計の読み取りは書き込み側 (recordAiUsage) と同一の projectId 源 (tree store)
   // を使う。別アクセサ (getCurrentProjectId) と取り違えると台帳は埋まるのに UI が
   // 空という silent failure になるため、write/read を 1 つの源に揃える。
@@ -43,12 +46,16 @@ export function UsageCategory() {
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setError(false);
     getProjectUsageSummary(projectId)
       .then((s) => {
         if (alive) setSummary(s);
       })
       .catch(() => {
-        if (alive) setSummary(null);
+        if (alive) {
+          setSummary(null);
+          setError(true);
+        }
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -74,7 +81,13 @@ export function UsageCategory() {
           </div>
         )}
 
-        {!loading && summary && summary.totalCount === 0 && (
+        {!loading && error && (
+          <div role="alert" className="text-sm text-destructive">
+            {t("settings.usage.loadError", "使用状況の読み込みに失敗しました")}
+          </div>
+        )}
+
+        {!loading && !error && summary && summary.totalCount === 0 && (
           <div className="text-sm text-muted-foreground">
             {t("settings.usage.noRecords")}
           </div>

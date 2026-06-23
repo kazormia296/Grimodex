@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle, ControlledToggle } from "../components/SettingToggle";
@@ -46,6 +47,13 @@ export function DisplayCategory() {
   );
   const uiScale = useWorkspaceStore((s) => s.globalSettings?.uiScale ?? 100);
   const updateGlobal = useWorkspaceStore((s) => s.updateGlobalSettings);
+
+  // グローバル設定の保存は楽観的更新→失敗時に黙ってリバートするため、戻り値の false を
+  // 拾ってユーザーへ通知する（無言で元に戻ると「ドロップダウンが効かない」ように見える）。
+  const commitGlobal = async (updates: Parameters<typeof updateGlobal>[0]) => {
+    const ok = await updateGlobal(updates);
+    if (!ok) toast.error(t("common.saveFailed"));
+  };
 
   const uiScaleSliderMax = getUiScaleMaxPercent();
   const clampedUiScale = clampUiScalePercent(uiScale);
@@ -111,7 +119,7 @@ export function DisplayCategory() {
         <SettingRow label={t("settings.display.colorTheme")}>
           <select
             value={colorTheme}
-            onChange={(e) => updateGlobal({ colorTheme: e.target.value })}
+            onChange={(e) => void commitGlobal({ colorTheme: e.target.value })}
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {COLOR_THEME_OPTIONS.map((o) => (
@@ -124,7 +132,7 @@ export function DisplayCategory() {
         <SettingRow label={t("settings.display.lightDark")}>
           <select
             value={theme}
-            onChange={(e) => updateGlobal({ theme: e.target.value })}
+            onChange={(e) => void commitGlobal({ theme: e.target.value })}
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {LIGHT_DARK_OPTIONS.map((o) => (
@@ -143,7 +151,7 @@ export function DisplayCategory() {
         <SettingRow label={t("settings.display.uiLanguage")}>
           <select
             value={uiLanguage}
-            onChange={(e) => updateGlobal({ uiLanguage: e.target.value })}
+            onChange={(e) => void commitGlobal({ uiLanguage: e.target.value })}
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {LANGUAGE_OPTIONS.map((o) => (

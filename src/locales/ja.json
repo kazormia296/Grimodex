@@ -263,6 +263,8 @@
     "deleteConfirm": "削除する",
     "other": "その他",
     "snippetSaveFailed": "スニペットの保存に失敗しました",
+    "saveFailed": "設定の保存に失敗しました",
+    "openLinkFailed": "リンクを開けませんでした",
     "confirmDelete": "削除?",
     "remove": "削除",
     "untitled": "(無題)",
@@ -1029,6 +1031,8 @@
       "cannotDelete": "「{{label}}」タイプのエントリが存在するため削除できません",
       "deleteSuccess": "「{{label}}」を削除しました",
       "createError": "タイプの作成に失敗しました",
+      "updateError": "タイプの更新に失敗しました",
+      "deleteError": "タイプの削除に失敗しました",
       "colorInUse": "{{label}}（{{usedBy}}が使用中）"
     },
     "about": {
@@ -1107,6 +1111,7 @@
       "summaryIntro": "このプロジェクトの AI 生成によるトークン使用量とおおよそのコストです。",
       "costDisclaimer": "コストは料金表 (modelPricing) からの概算で、課金額そのものではありません。",
       "noRecords": "まだ AI 生成の記録がありません。",
+      "loadError": "使用状況の読み込みに失敗しました。",
       "total": "合計",
       "generationCount": "生成回数",
       "inputTokens": "入力トークン",
