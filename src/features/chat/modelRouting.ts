@@ -29,6 +29,8 @@
  */
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getModelCapabilities } from "./agent/modelLimits";
+import { overrideApiVariantForProvider } from "./aiNovelist";
+import type { AiProvider } from "./types";
 
 export type ModelRole =
   | "conversation"
@@ -50,6 +52,46 @@ export const MODEL_ROLES: readonly ModelRole[] = [
 /** ロール設定キー（global スコープ。settings/types.ts に登録）。 */
 export function roleSettingKey(role: ModelRole): string {
   return `aiModel.role.${role}`;
+}
+
+/**
+ * 機能別モデルのプロバイダ横断マップのキー。
+ * 値は JSON `Record<ModelRole, { provider?: string; endpointId?: string }>`。
+ */
+export const ROLE_PROVIDERS_KEY = "aiModel.roleProviders";
+
+/** ロールごとの別プロバイダ/別エンドポイント割り当て（空 = アクティブ provider 据え置き）。 */
+export interface RoleProviderOverride {
+  /** 送信先プロバイダ。空/未設定なら active provider を使う（後方互換）。 */
+  provider?: string;
+  /** openai-compatible で別エンドポイントへ向ける場合の endpoint id。 */
+  endpointId?: string;
+}
+
+/**
+ * ロール解決の結果。`provider` 未設定 = アクティブ provider で `model` を送る
+ * （従来挙動・wire 差分ゼロ）。`provider` 設定時は別プロバイダ送信 override
+ * （composer の cross-provider override と同型: variant は overrideApiVariantForProvider
+ * 由来、openai-compatible の経路は endpointId + Rust 側 endpoint 既定で解決）。
+ */
+export interface RolePathModel {
+  model: string;
+  provider?: AiProvider;
+  endpointId?: string;
+  variant?: string;
+}
+
+/** roleProviders マップを安全にパースする（不正 JSON は空マップ）。 */
+export function parseRoleProviders(
+  raw: string,
+): Partial<Record<ModelRole, RoleProviderOverride>> {
+  if (!raw || raw.trim() === "") return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -136,18 +178,51 @@ export function isModelCapableForRole(model: string, role: ModelRole): boolean {
 }
 
 /**
- * 経路 ID に対して使うべきモデルを解決する。
- * 返り値 undefined = 「ロール未設定 or 能力不適合」= 既定チャットモデルへフォールバック。
- * 呼び出し側はこの値を Tauri command の model 引数（undefined/null 許容）へ渡す。
+ * 経路 ID に対して使うべきモデルと送信先（プロバイダ/エンドポイント/経路）を解決する。
+ *
+ * - 返り値 undefined = 「ロール未設定 or 能力不適合」= 既定チャットモデルへフォールバック。
+ * - `provider` 未設定 = アクティブ provider で `model` を送る（従来挙動・wire 差分ゼロ）。
+ * - `provider` 設定時 = 別プロバイダ送信 override。`variant` は overrideApiVariantForProvider
+ *   由来（sakana→"responses" / 他→null=バックエンド既定解決）。openai-compatible の
+ *   経路は endpointId + Rust 側 endpoint 既定で解決されるため variant は持たせない。
+ *
+ * 呼び出し側はこの値の model/provider/endpointId/variant を Tauri command の
+ * 対応 override 引数へ渡す（composer の cross-provider override と同じ要領）。
  */
-export function resolveModelForPath(
+export function resolveRolePathConfig(
   pathId: string,
   getSetting: SettingGetter = defaultGetter,
-): string | undefined {
+): RolePathModel | undefined {
   const role = PATH_TO_ROLE[pathId];
   if (!role) return undefined;
   const candidate = resolveRoleModel(role, getSetting);
   if (!candidate) return undefined;
   if (!isModelCapableForRole(candidate, role)) return undefined;
-  return candidate;
+
+  const override = parseRoleProviders(getSetting(ROLE_PROVIDERS_KEY) ?? "")[
+    role
+  ];
+  const provider = override?.provider?.trim();
+  if (!provider) return { model: candidate };
+
+  const endpointId = override?.endpointId?.trim() || undefined;
+  const variant = overrideApiVariantForProvider(provider) ?? undefined;
+  return {
+    model: candidate,
+    provider: provider as AiProvider,
+    endpointId,
+    variant,
+  };
+}
+
+/**
+ * 経路 ID に対して使うべきモデル ID のみを解決する（後方互換ヘルパ）。
+ * provider/endpoint 横断を扱わない既存呼び出し向け。横断対応の送信経路は
+ * resolveRolePathConfig を直接使う。
+ */
+export function resolveModelForPath(
+  pathId: string,
+  getSetting: SettingGetter = defaultGetter,
+): string | undefined {
+  return resolveRolePathConfig(pathId, getSetting)?.model;
 }

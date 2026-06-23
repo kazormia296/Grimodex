@@ -5,8 +5,11 @@ import {
   MODEL_ROUTING_EXCLUDED,
   resolveRoleModel,
   resolveModelForPath,
+  resolveRolePathConfig,
   isModelCapableForRole,
   roleSettingKey,
+  ROLE_PROVIDERS_KEY,
+  parseRoleProviders,
 } from "./modelRouting";
 import {
   AI_PATHS,
@@ -115,6 +118,99 @@ describe("能力ガード — structured/review ロールは構造化JSON対応�
     expect(isModelCapableForRole("deepseek-r1", "review")).toBe(false);
     expect(isModelCapableForRole("gpt-4o", "structured")).toBe(true);
     expect(isModelCapableForRole("claude-opus-4-8", "review")).toBe(true);
+  });
+});
+
+describe("resolveRolePathConfig — プロバイダ横断", () => {
+  it("roleProviders 未設定なら model のみ（provider/endpoint/variant なし=後方互換）", () => {
+    const getter = getterFor({ [roleSettingKey("conversation")]: "gpt-4o" });
+    expect(resolveRolePathConfig("chat_stream_non_agent", getter)).toEqual({
+      model: "gpt-4o",
+    });
+  });
+
+  it("ロールに別プロバイダを割り当てると provider 付き override を返す", () => {
+    const getter = getterFor({
+      [roleSettingKey("conversation")]: "openai/gpt-4o",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({
+        conversation: { provider: "openrouter" },
+      }),
+    });
+    expect(resolveRolePathConfig("chat_stream_non_agent", getter)).toEqual({
+      model: "openai/gpt-4o",
+      provider: "openrouter",
+      endpointId: undefined,
+      // openrouter は overrideApiVariantForProvider=null → variant 未指定
+      variant: undefined,
+    });
+  });
+
+  it("sakana 割り当ては variant=responses を導出する（composer と同則）", () => {
+    const getter = getterFor({
+      [roleSettingKey("agent")]: "fugu",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({ agent: { provider: "sakana" } }),
+    });
+    const cfg = resolveRolePathConfig("chat_agent_main", getter);
+    expect(cfg?.provider).toBe("sakana");
+    expect(cfg?.variant).toBe("responses");
+  });
+
+  it("openai-compatible は endpointId を引き継ぎ variant は持たせない（Rust 側 endpoint 既定で解決）", () => {
+    const getter = getterFor({
+      [roleSettingKey("structured")]: "plamo-3.0-prime",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({
+        structured: { provider: "openai-compatible", endpointId: "plamo" },
+      }),
+    });
+    expect(resolveRolePathConfig("synopsis", getter)).toEqual({
+      model: "plamo-3.0-prime",
+      provider: "openai-compatible",
+      endpointId: "plamo",
+      variant: undefined,
+    });
+  });
+
+  it("能力ガードはプロバイダ横断でも効く（agent×tool非対応→override無視で undefined）", () => {
+    const getter = getterFor({
+      [roleSettingKey("agent")]: "deepseek-r1",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({
+        agent: { provider: "openrouter" },
+      }),
+    });
+    expect(resolveRolePathConfig("chat_agent_main", getter)).toBeUndefined();
+  });
+
+  it("provider 空文字はオーバーライド扱いしない（active provider 据え置き）", () => {
+    const getter = getterFor({
+      [roleSettingKey("inline")]: "gpt-4o-mini",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({
+        inline: { provider: "  ", endpointId: "x" },
+      }),
+    });
+    expect(resolveRolePathConfig("inline_ai_stream", getter)).toEqual({
+      model: "gpt-4o-mini",
+    });
+  });
+
+  it("resolveModelForPath は provider 設定時も model のみ返す（後方互換ラッパ）", () => {
+    const getter = getterFor({
+      [roleSettingKey("conversation")]: "openai/gpt-4o",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({
+        conversation: { provider: "openrouter" },
+      }),
+    });
+    expect(resolveModelForPath("chat_stream_non_agent", getter)).toBe(
+      "openai/gpt-4o",
+    );
+  });
+
+  it("parseRoleProviders は不正 JSON を空マップに丸める", () => {
+    expect(parseRoleProviders("")).toEqual({});
+    expect(parseRoleProviders("not json")).toEqual({});
+    expect(parseRoleProviders("null")).toEqual({});
+    expect(parseRoleProviders('{"agent":{"provider":"openai"}}')).toEqual({
+      agent: { provider: "openai" },
+    });
   });
 });
 
