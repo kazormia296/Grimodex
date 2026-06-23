@@ -10,6 +10,7 @@ use super::{AiSettingsPath, AppError, InlineAiAbortFlag, StreamAbortFlag};
 /// - OpenaiCompatible: 任意（ローカル LLM サーバ等で API キー不要なケースを許容）
 /// - Cli: 不要（CLI 側で認証管理。送信時はそもそもこのパスを通らない）
 /// - その他 (AiNovelist 含む): 必須（設定されていなければエラー）
+///
 /// `endpoint_id` は OpenAI 互換プロバイダの per-endpoint キー解決でのみ意味を持つ
 /// （その他のプロバイダでは無視され単一キーを引く）。
 pub(super) fn resolve_api_key(
