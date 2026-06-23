@@ -38,7 +38,7 @@ import {
 import type { CodexEntry } from "@/features/codex/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { sanitizeSceneContent, type LayerBreakdown } from "./contextBuilder";
-import { resolveModelForPath } from "./modelRouting";
+import { resolveRoleSendOverride } from "./modelRouting";
 import { getPromptCatalog } from "@/prompts/index";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
@@ -150,13 +150,17 @@ export async function generateSynopsisFromContent(
       ),
     },
   ];
+  const ov = resolveRoleSendOverride("synopsis");
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
     thinking: null,
     effort: null,
     reasoningEnabled: null,
     reasoningEffort: null,
-    model: resolveModelForPath("synopsis") ?? null,
+    apiVariant: ov.apiVariant,
+    model: ov.model,
+    provider: ov.provider,
+    endpointId: ov.endpointId,
   });
   // N4: あらすじ生成の usage を台帳に記録する。
   void recordAiUsage({
@@ -242,6 +246,16 @@ export async function sendChatMessageWithThinking(
   apiVariant?: string | null,
   systemVolatileTail?: string,
   model?: string | null,
+  /**
+   * 機能別モデルのプロバイダ横断: provider override（null/未指定 = 設定の既定プロバイダ）。
+   * 値は `AiProvider` 文字列。model と同じプロバイダの名前空間に属すること。
+   */
+  provider?: string | null,
+  /**
+   * OpenAI 互換: この送信だけ別エンドポイントへ向ける override。
+   * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
+   */
+  endpointId?: string | null,
 ): Promise<ChatMessageResult> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -253,6 +267,8 @@ export async function sendChatMessageWithThinking(
     apiVariant: apiVariant ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
+    provider: provider ?? null,
+    endpointId: endpointId ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -412,8 +428,8 @@ export async function generateSessionTitle(
     // 呼び出し側が渡した既定モデル(model)へフォールバック（thinking/usage 表示用）。
     // 実生成は invoke の model 引数（roleModel ?? null）で決まり、null は Rust 側で
     // settings.model に解決される＝未設定時 byte-identical。
-    const roleModel = resolveModelForPath("session_title");
-    const effectiveModel = roleModel ?? model;
+    const ov = resolveRoleSendOverride("session_title");
+    const effectiveModel = ov.model ?? model;
     const thinkingParams = buildThinkingParams(
       effectiveModel,
       getEffortForTask("session_title"),
@@ -434,7 +450,10 @@ export async function generateSessionTitle(
       effort: thinkingParams.effort ?? null,
       reasoningEnabled: thinkingParams.reasoningEnabled ?? null,
       reasoningEffort: thinkingParams.reasoningEffort ?? null,
-      model: roleModel ?? null,
+      apiVariant: ov.apiVariant,
+      model: ov.model,
+      provider: ov.provider,
+      endpointId: ov.endpointId,
     });
     // N4: セッションタイトル自動生成の usage を台帳に記録する。
     void recordAiUsage({

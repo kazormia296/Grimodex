@@ -1,5 +1,5 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import type { MentionRole } from "@/features/codex/CodexMentionExtension";
 import { getPromptCatalog } from "@/prompts/index";
@@ -63,13 +63,16 @@ export async function inferMentionRoles(
 
   let responseText: string;
   try {
+    const ov = resolveRoleSendOverride("beat_role");
     const result = await sendChatMessageWithThinking(
       [{ role: "user", content: prompt }],
       undefined, // thinkingParams
       undefined, // systemCacheSegments
-      undefined, // apiVariant
+      ov.apiVariant, // apiVariant（横断割り当て時のみ）
       undefined, // systemVolatileTail
-      resolveModelForPath("beat_role") ?? null,
+      ov.model,
+      ov.provider,
+      ov.endpointId,
     );
     responseText = result.text;
     // N4: 役割推論呼び出しの usage を台帳に記録する。

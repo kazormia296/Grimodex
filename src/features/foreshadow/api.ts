@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
-import { resolveModelForPath } from "@/features/chat/modelRouting";
+import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -1371,13 +1371,16 @@ export async function proposePastSetups(
     customInstruction: getForeshadowCustomInstruction(),
   });
 
+  const ovPropose = resolveRoleSendOverride("foreshadow_propose_past_setups");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
     undefined, // thinkingParams
     undefined, // systemCacheSegments
-    undefined, // apiVariant
+    ovPropose.apiVariant, // apiVariant（横断割り当て時のみ）
     undefined, // systemVolatileTail
-    resolveModelForPath("foreshadow_propose_past_setups") ?? null,
+    ovPropose.model,
+    ovPropose.provider,
+    ovPropose.endpointId,
   );
   // N4: 伏線 setup 提案生成の usage を台帳に記録する。
   void recordAiUsage({
@@ -1423,13 +1426,16 @@ export async function evaluateSetupStrength(
     customInstruction: getForeshadowCustomInstruction(),
   });
 
+  const ovEval = resolveRoleSendOverride("foreshadow_evaluate_setup_strength");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
     undefined, // thinkingParams
     undefined, // systemCacheSegments
-    undefined, // apiVariant
+    ovEval.apiVariant, // apiVariant（横断割り当て時のみ）
     undefined, // systemVolatileTail
-    resolveModelForPath("foreshadow_evaluate_setup_strength") ?? null,
+    ovEval.model,
+    ovEval.provider,
+    ovEval.endpointId,
   );
   // N4: 伏線 setup 評価生成の usage を台帳に記録する。
   void recordAiUsage({
@@ -1517,13 +1523,16 @@ export async function auditChapter(
     customInstruction: getForeshadowCustomInstruction(),
   });
 
+  const ovAudit = resolveRoleSendOverride("foreshadow_audit_chapter");
   const response = await sendChatMessageWithThinking(
     [{ role: "user", content: prompt }],
     undefined, // thinkingParams
     undefined, // systemCacheSegments
-    undefined, // apiVariant
+    ovAudit.apiVariant, // apiVariant（横断割り当て時のみ）
     undefined, // systemVolatileTail
-    resolveModelForPath("foreshadow_audit_chapter") ?? null,
+    ovAudit.model,
+    ovAudit.provider,
+    ovAudit.endpointId,
   );
   // N4: 章監査生成の usage を台帳に記録する。
   void recordAiUsage({

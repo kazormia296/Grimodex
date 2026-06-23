@@ -4,7 +4,11 @@ import i18next from "@/lib/i18n";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import * as chatApi from "./chatApi";
-import { resolveModelForPath, resolveRolePathConfig } from "./modelRouting";
+import {
+  resolveModelForPath,
+  resolveRolePathConfig,
+  resolveRoleSendOverride,
+} from "./modelRouting";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
 // ---------------------------------------------------------------------------
@@ -815,16 +819,20 @@ async function maybeRunSummarization(
 
     const summaryText = await runSummarization(
       candidates,
-      // cheap ロール: 要約は injected callback 経由で model override を渡す。
-      (messages, thinkingParams) =>
-        chatApi.sendChatMessageWithThinking(
+      // cheap ロール: 要約は injected callback 経由で model/provider/endpoint override を渡す。
+      (messages, thinkingParams) => {
+        const ov = resolveRoleSendOverride("summarization");
+        return chatApi.sendChatMessageWithThinking(
           messages,
           thinkingParams,
           undefined,
+          ov.apiVariant,
           undefined,
-          undefined,
-          resolveModelForPath("summarization"),
-        ),
+          ov.model,
+          ov.provider,
+          ov.endpointId,
+        );
+      },
       {
         lang,
         previousSummary,
