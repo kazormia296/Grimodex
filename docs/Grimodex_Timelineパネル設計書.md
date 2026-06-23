@@ -10,6 +10,8 @@ Codexのフェーズ（経時的変化）はTimeline上にピンとして表示�
 
 設計思想: **Timelineはビュー兼story-timeの唯一の編集点。Scenesパネルが reading-order の編集、Timelineが story-time の編集、という責務分離。**
 
+**表示モード（viewMode）**: Timeline は 2 つの表示モードを持つ（2026-06-22 出荷, PR #168 / `d72468c9`）。`scenes`（シーン年表＝本文書 A〜D 章の主対象）と、`threads`（名前付きプロットスレッドのスイムレーン＝Plottr 型）。x 軸（シーンの並び）と軸モード・ズームは両モードで共通。`threads` モードの詳細は後述「プロットスレッド表示（threads ビューモード）」節を参照。
+
 ---
 
 ## パネル構造
@@ -43,7 +45,7 @@ Codexのフェーズ（経時的変化）はTimeline上にピンとして表示�
 └────────────────────────────────────────────────────────────────┘
 ```
 
-パネルの高さが十分ある場合は、将来的にマルチレーン表示（POVキャラクターごとのレーン）に拡張可能。MVPは単一レーンの水平軸。
+パネルの高さが十分ある場合のマルチレーン表示は、`threads` ビューモード（名前付きプロットスレッドのスイムレーン、2026-06-22 出荷。後述「プロットスレッド表示（threads ビューモード）」節）で部分的に実現済み。POV キャラクターごとのレーン分割は引き続き将来拡張。`scenes` モードのMVPは単一レーンの水平軸。
 
 ---
 
@@ -54,6 +56,8 @@ Codexのフェーズ（経時的変化）はTimeline上にピンとして表示�
 | 要素 | 詳細 |
 |------|------|
 | パネルタイトル | 「Timeline」。左寄せ |
+| viewMode トグル | `[シーン｜スレッド]` のセグメント。タイトル直後に常時表示。`scenes`（シーン年表）/ `threads`（プロットスレッド）を切替。永続化される（後述「プロットスレッド表示」節）。2026-06-22 追加 |
+| 「+ スレッドを追加」ボタン | **`threads` モードのときのみ** ヘッダー右側に表示。クリックで「新しいスレッド」を末尾レーンとして追加。2026-06-22 追加 |
 | 軸モードドロップダウン | 現在の時間軸を表示・切替。「Story-time」「Reading-order」「Write-order」 |
 | カバレッジインジケーター | `📍 {story_time設定済み}/{総シーン数}`。軸モード=story時のみ表示。他軸モードでは `{N} scenes`（シーン総数）を表示 |
 | [🔍] 検索ボタン | 展開するとノード名インクリメンタル検索バーが表示される ※ 現状未実装 |
@@ -317,7 +321,7 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 - Anchored phases リストからCodex/Phase編集ダイアログへ遷移
 - パネル幅が狭い場合（Bottom Dockの高さ制約下）、インスペクターは畳まれてノード選択時にポップオーバーで表示
 
-> **現状の実装** (`TimelineInspector.tsx`): タイトル / Status（読み取り専用テキスト） / Story-time label（インライン編集、story-time モード時のみ） / 配置済み・Unscheduled 表示 / Synopsis / Anchored phases / Created at を表示する。Characters・Location 行、`index: #N / M` の参考表示、`[Open in Editor ↗]` ボタン、Status のドロップダウン編集、ポップオーバー化はいずれも未実装（将来拡張）。
+> **現状の実装** (`TimelineInspector.tsx`): タイトル / Status（読み取り専用テキスト） / Story-time label（インライン編集、story-time モード時のみ） / 配置済み・Unscheduled 表示 / Synopsis / Anchored phases / Created at を表示する。Characters・Location 行、`index: #N / M` の参考表示、`[Open in Editor ↗]` ボタン、Status のドロップダウン編集、ポップオーバー化はいずれも未実装（将来拡張）。なお `viewMode === "threads"` のときはインスペクター枠が `TimelineInspector` から `PlotMarkerInspector`（プロットスレッド/マーカー編集）へ差し替わる（後述「プロットスレッド表示」節）。
 
 #### Story-time ラベルのインライン編集
 
@@ -327,6 +331,80 @@ Inspector 上の `story_time_label` フィールドは、クリックで `<input
 - ラベルをすべて消して確定した場合は `story_time_label` を `NULL` に戻す（`""` ではなく `NULL` で保存）
 - `Escape` で編集キャンセル（元の値に戻る）
 - 編集中に軸モードやフィルタが変わっても編集状態は維持する
+
+---
+
+## プロットスレッド表示（threads ビューモード / Plottr 型）
+
+> **2026-06-22 出荷（PR #168 / commit `d72468c9`）**。Reddit ユーザー要望「Plottr 型＝名前付きプロットスレッドがシーンを貫いて走り、各シーンに導入/展開/回収のような段階マーカーを置ける」を実装。詳細設計 spec は `docs/superpowers/specs/2026-06-22-plot-thread-timeline-design.md`、DB 定義は [統合DBスキーマ設計書](./Grimodex_統合DBスキーマ.md)「プロットスレッド・タイムライン」節。
+
+### 位置づけ
+
+ヘッダーの viewMode トグルで Timeline の表示が 2 モード（`scenes` / `threads`）に切り替わる。
+
+| viewMode | 内容 | y 軸の意味 |
+|----------|------|-----------|
+| `scenes`（既定） | これまでのシーン年表。本文書 A〜D 章で説明したシーンノードの時間軸表示 | scheduled / unscheduled の 2 レーン固定 |
+| `threads` | **名前付きプロットスレッドのスイムレーン表示**。各スレッドが横一本のレーンを持ち、シーン上に段階マーカーを置く | スレッドごとに 1 レーン（N レーン） |
+
+x 軸（シーンの並び）は両モードで共通で、ヘッダーの軸モード（Reading / Story / Write）とズームをそのまま流用する。`threads` モードでもシーンの x 位置は `scenes` モードと同一に保たれる。
+
+**設計判断**: 専用 `PanelId` は追加しない（`validateLayoutState` ゲート回避）。`TimelineViewport` の `yOf`（`scenes` モードの 2 レーン固定）を、`plotThreadLaneModel.laneY(index) = LANE_TOP(60) + index * LANE_HEIGHT(56)` の N レーンへ一般化することで実現する。Codex の Phase ピン（キャラ/場所アーク）とは別テーブル・別レーンモードで意味論衝突しない（ユーザーが専用テーブルを選択した恩恵）。
+
+### レーンとマーカーの描画モデル
+
+`buildPlotLaneModel({ threads, links, sceneX })`（純関数 `src/features/plot-threads/plotThreadLaneModel.ts`）がレーン描画モデルを生成する。幾何は純関数で単体テスト gate（SVG 明示座標のため browser test は不要）。
+
+- **レーン縦順**: `plot_threads.sort_order`（base62 fractional-index）昇順。同値は `id` で決定化
+- **レーン見出し**: 左端固定のテキスト（スレッド名、空なら「（無名）」）。クリックでそのスレッドを選択しインスペクタを開く
+- **レーン背景**: 薄い水平線 + レーン全幅の透明クリック領域（`cursor: copy`）
+- **マーカー**: `plot_thread_scene_links` 1 行 = 1 マーカー。アンカーシーンの x（`xOf`）× レーンの y（`laneY`）に円で配置。色は `thread.color ?? var(--primary)`。`<title>` で `{スレッド名}: {phase_type}` をツールチップ表示。存在しないシーンを参照するマーカーは描画しない
+- マーカーのソートは x 昇順 → phase 正準順（`introduce < develop < turn < climax < resolve`）→ `linkId` で決定化
+
+### 操作
+
+| 操作 | 動作 |
+|------|------|
+| ヘッダー `[スレッド]` を選択 | `threads` モードに切替（永続化） |
+| ヘッダー「+ スレッドを追加」 | 「新しいスレッド」を末尾レーンとして追加（`sort_order` は実最大キーの後ろ） |
+| **レーン背景をクリック** | クリック x に**最も近いシーン**（`nearestSceneIndex`）に段階 `develop`（展開）のマーカーを 1 つ追加 |
+| マーカー（円）をクリック | そのマーカーを選択し、インスペクタ（`PlotMarkerInspector`）を自動で開く |
+| レーン見出し（スレッド名）をクリック | そのスレッドを選択し、インスペクタを自動で開く |
+
+### インスペクタ（`PlotMarkerInspector`）
+
+`threads` モードでは、インスペクター枠が `TimelineInspector`（scenes 用）から **`PlotMarkerInspector` に差し替わる**。マーカー選択時はその親スレッドも同時に上部へ表示され、スレッド編集とマーカー編集が縦に並ぶ。
+
+| 選択対象 | 編集できる項目 |
+|----------|---------------|
+| レーン見出し（スレッド） | 名前（`onBlur` でコミット・空文字は無視）／スレッド削除 |
+| マーカー | 段階（5 値 select）／メモ（複数行・`onBlur` コミット・空文字は `NULL`）／マーカー削除 |
+
+### 段階（phase_type）enum
+
+初版固定の 5 値（CHECK 制約・後から広げると table rebuild）。正準順は下記の並び（`PLOT_PHASE_TYPES` / `src/db/schema.ts`）。マーカー追加時の既定は `develop`。
+
+| 値 | 日本語ラベル（i18n `plotThread.phaseType.*`） |
+|----|-----------------------------------------------|
+| `introduce` | 導入 |
+| `develop` | 展開 |
+| `turn` | 転 |
+| `climax` | クライマックス |
+| `resolve` | 回収 |
+
+### データフロー・状態
+
+- 永続化: `plot_threads`（スレッド）+ `plot_thread_scene_links`（マーカー）の 2 テーブル。Tauri CRUD（全 project スコープ、`plot_thread_link_create` は thread と node が同一 project かを XPROJ ガードで強制）。非 Tauri（テスト/ブラウザ）は Drizzle 直 query
+- `plotThreadStore`（Zustand）が `threads` / `links` を保持。`TimelinePanel` は `currentProjectId` 変化で `load(projectId)` を呼ぶ。`load` は開始時に即クリア（切替で前プロジェクトの残骸を見せない）し、非同期取得後に `getCurrentProjectId() !== projectId` なら破棄する stale ガードを持つ（Grimodex 頻出のストア汚染対策）
+- カスケード: シーン削除 → そのシーンを参照するマーカーが CASCADE 削除／スレッド削除 → そのスレッドのマーカーが CASCADE 削除（store でもローカル即時反映）
+
+### v1 の制限（スコープ外）
+
+実装済みは「スレッド CRUD ＋ レーンクリックでマーカー追加 ＋ インスペクタでマーカー/スレッド編集」まで。以下は v1 未実装:
+
+- **マーカー / レーンのドラッグ操作**: 横ドラッグでの別シーン再アンカー、縦ドラッグでの別レーン移動、レーン見出しドラッグでのスレッド並べ替えは未実装（spec §4.2 に将来案として記載）。並べ替えは「追加順（`sort_order` 末尾追加）」のみ
+- **スレッド色の編集 UI**: `setThreadColor` store アクションと `color` カラムは存在するが UI からは設定不可（既定 `var(--primary)`）
+- スレッドの階層ネスト / アーカイブ非表示トグル / マーカー間の因果 DAG / 伏線レーダーからのスレッド候補提案 / CSV エクスポート
 
 ---
 
@@ -609,6 +687,7 @@ Phaseは `anchor_node_id` でシーンに紐づく。Timelineパネル上では:
 | フィールド | 型 | 説明 |
 |-----------|-----|------|
 | `axisMode` | `'story' \| 'reading' \| 'write'` | 現在の軸モード |
+| `viewMode` | `'scenes' \| 'threads'` | 表示モード。`scenes`=シーン年表（既定）/ `threads`=プロットスレッドのレーン表示。永続化される |
 | `spacingMode` | `'proportional' \| 'uniform'` | スペーシング。軸モード変更時に Reading→`uniform` / Story・Write→`proportional` で自動初期化 |
 | `zoom` | `number` | ズーム倍率（1.0 が Fit）。`0.25` 〜 `4.0` にクランプ |
 | `scrollOffset` | `number` | 水平スクロール位置（px）。復元中は `isRestoringRef` で save-back を抑止 |
@@ -617,8 +696,10 @@ Phaseは `anchor_node_id` でシーンに紐づく。Timelineパネル上では:
 | `inspectorOpen` | `boolean` | インスペクター開閉 |
 | `display` | `{ showTitles: boolean, showChapterNumbers: boolean, showPhasePins: boolean }` | 表示設定（フラットキー） |
 | `pendingEditNodeId` | `string \| null` | F2 によるラベル編集ターゲット。Inspector がこの値を読んで該当 input にフォーカスし、消費後に `null` に戻す |
+| `selectedPlotLinkId` | `string \| null` | `threads` モードで選択中のマーカー（`plot_thread_scene_links.id`）。マーカークリックで設定。永続化しない |
+| `selectedPlotThreadId` | `string \| null` | `threads` モードで選択中のスレッド（`plot_threads.id`）。レーン見出しクリックで設定。永続化しない |
 
-永続化: `axisMode` / `spacingMode` / `zoom` / `scrollOffset` / `display` は `global-settings.json` の `timeline` セクションに保存。`selectedNodeIds` / `filter` / `pendingEditNodeId` は永続化しない（セッション限定）。保存は store subscribe での 500ms デバウンス、初期復元時の save-back を抑止する専用ヘルパとして `loadAndSyncTimelineSettings` を提供する。
+永続化: `axisMode` / `viewMode` / `spacingMode` / `zoom` / `scrollOffset` / `display` は `global-settings.json` の `timeline` セクションに保存。`selectedNodeIds` / `filter` / `pendingEditNodeId` / `selectedPlotLinkId` / `selectedPlotThreadId` は永続化しない（セッション限定）。保存は store subscribe での 500ms デバウンス、初期復元時の save-back を抑止する専用ヘルパとして `loadAndSyncTimelineSettings` を提供する。
 
 #### store 型に関する注記
 
