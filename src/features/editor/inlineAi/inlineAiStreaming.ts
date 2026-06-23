@@ -37,7 +37,13 @@ export interface InlineAiStreamCallbacks {
 export async function sendInlineAiStream(
   messages: { role: string; content: string }[],
   callbacks: InlineAiStreamCallbacks,
-  options?: { model?: string; apiVariant?: string | null },
+  options?: {
+    model?: string | null;
+    apiVariant?: string | null;
+    // 機能別モデルのプロバイダ横断 override。
+    provider?: string | null;
+    endpointId?: string | null;
+  },
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("inline-ai:stream-chunk", (event) => {
@@ -71,6 +77,8 @@ export async function sendInlineAiStream(
     reasoningEffort: null,
     model: options?.model ?? null,
     apiVariant: options?.apiVariant ?? null,
+    provider: options?.provider ?? null,
+    endpointId: options?.endpointId ?? null,
   }).catch((e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e);
     callbacks.onError(msg);

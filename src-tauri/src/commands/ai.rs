@@ -355,28 +355,49 @@ pub(crate) async fn send_inline_ai_stream(
     reasoning_effort: Option<String>,
     model: Option<String>,
     api_variant: Option<String>,
+    // 機能別モデルのプロバイダ横断: provider override（None なら設定の既定プロバイダ）。
+    // 別プロバイダのキーは keyring に保存済み。グローバル設定を変えずに送信先を切替える。
+    provider: Option<ai::AiProvider>,
+    // OpenAI 互換: このインライン生成だけ別エンドポイントへ向ける override。
+    // None なら設定の active。provider!=互換 では無視される。
+    endpoint_id: Option<String>,
 ) -> Result<(), AppError> {
     abort_flag
         .flag
         .store(false, std::sync::atomic::Ordering::Relaxed);
 
     let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = resolve_api_key(
-        &settings.provider,
-        settings.active_openai_compatible_endpoint_id.as_deref(),
-    )?;
+    let provider_overridden = provider.is_some();
+    let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
     let flag_clone = Arc::clone(&abort_flag.flag);
     let resolved_model = model
         .as_deref()
         .filter(|m| !m.is_empty())
         .unwrap_or(&settings.model);
+    let mut settings_for_call = settings.clone();
+    settings_for_call.provider = effective_provider;
+    settings_for_call.model = resolved_model.to_string();
+    // provider override 時はグローバルの model_api_variant を別プロバイダへ持ち込まない。
+    if provider_overridden {
+        settings_for_call.model_api_variant = None;
+    }
+    // OpenAI 互換エンドポイント override（既知 id のときだけ・未知は active 据え置き）。
+    if let Some(eid) = endpoint_id.filter(|s| !s.is_empty()) {
+        if settings_for_call.has_openai_compatible_endpoint(&eid) {
+            settings_for_call.active_openai_compatible_endpoint_id = Some(eid);
+        }
+    }
+    let api_key = resolve_api_key(
+        &settings_for_call.provider,
+        settings_for_call
+            .active_openai_compatible_endpoint_id
+            .as_deref(),
+    )?;
     let variant = api_variant
         .as_deref()
-        .or(settings.model_api_variant.as_deref());
-    let mut settings_for_call = settings.clone();
-    settings_for_call.model = resolved_model.to_string();
+        .or(settings_for_call.model_api_variant.as_deref());
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
-    let retry_429 = should_retry_429(&settings);
+    let retry_429 = should_retry_429(&settings_for_call);
     let resolved_variant = ai::resolve_api_variant(variant, &settings_for_call, resolved_model);
     let params = build_chat_params(
         &settings_for_call,
