@@ -36,6 +36,7 @@ import { useAnchoredPopover } from "./useAnchoredPopover";
 import { ChatModelMenu } from "./ChatModelMenu";
 import { useChatModelCatalog } from "../useChatModelCatalog";
 import { getProviderLabel } from "../providerLabels";
+import { applyModelWhitelist } from "../chatModelCatalog";
 import type { CatalogModel } from "../chatModelCatalog";
 import type { MentionItem } from "@/features/codex/CodexMentionExtension";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -204,25 +205,19 @@ export function ChatInput({
   // 複数プロバイダ横断のモデルカタログ(ピッカーを開いたら設定済みプロバイダを取得)。
   const { sections: modelSections, loading: catalogLoading } =
     useChatModelCatalog(modelOpen);
-  // モデル whitelist は active プロバイダにのみ適用する(従来挙動を維持)。別プロバイダの
-  // モデルは whitelist が空でなくても全件出す(whitelist は active プロバイダ向けの絞り込み)。
+  // モデル whitelist は全プロバイダ横断のグローバルな絞り込み(設定でチェックしたモデルだけ
+  // 表示)。アクティブプロバイダだけに適用すると、別プロバイダのセクションに未チェックの
+  // モデルが残ってしまうため、全セクションに適用する。
   const displaySections = useMemo(() => {
-    let whitelist: string[] = [];
+    let whitelist: string[];
     try {
       const parsed: unknown = JSON.parse(modelWhitelistRaw || "[]");
       whitelist = Array.isArray(parsed) ? (parsed as string[]) : [];
     } catch {
       whitelist = [];
     }
-    if (whitelist.length === 0) return modelSections;
-    return modelSections
-      .map((s) =>
-        s.provider === aiSettings?.provider
-          ? { ...s, models: s.models.filter((m) => whitelist.includes(m.id)) }
-          : s,
-      )
-      .filter((s) => s.models.length > 0);
-  }, [modelSections, modelWhitelistRaw, aiSettings?.provider]);
+    return applyModelWhitelist(modelSections, whitelist);
+  }, [modelSections, modelWhitelistRaw]);
   // A/B 比較 (③): 現在の下書きプロンプトを 2 構成へ並列送信する専用モーダル。
   // ライブストリーム描画には一切触れない。採用時は会話履歴へ積むため、表示用の
   // 下書き本文 (userDraft) とメンション情報も保持しておく。

@@ -125,3 +125,28 @@ export function filterCatalog(
   }
   return out;
 }
+
+/**
+ * グローバルなモデル whitelist(設定でチェックしたモデル id の配列)でセクションを絞る。
+ *
+ * `ai.modelWhitelist` は **全プロバイダ横断のグローバルな絞り込み**(設定 UI は
+ * アクティブプロバイダのモデルを見せるが、保存先は単一のグローバル id 配列)。よって
+ * ピッカーでも **全プロバイダのセクションに適用**し、チェックの入っていないモデルは
+ * 出さない(アクティブプロバイダだけ絞ると、別プロバイダのセクションに未チェックの
+ * モデルが残るバグになる)。
+ *
+ * whitelist が空なら絞り込み無効(全件表示=従来挙動)。マッチ 0 件のセクションは落とす。
+ */
+export function applyModelWhitelist(
+  sections: CatalogSection[],
+  whitelist: string[],
+): CatalogSection[] {
+  if (whitelist.length === 0) return sections;
+  const allow = new Set(whitelist);
+  const out: CatalogSection[] = [];
+  for (const section of sections) {
+    const models = section.models.filter((m) => allow.has(m.id));
+    if (models.length > 0) out.push({ ...section, models });
+  }
+  return out;
+}
