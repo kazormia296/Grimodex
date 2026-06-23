@@ -140,6 +140,8 @@ done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
 # lindera.dev から UniDic 辞書を、ort-sys が cdn.pyke.io から ONNX Runtime prebuilt を取得する。
 # huggingface.co / cdn-lfs.huggingface.co: セマンティック検索用 ONNX モデル
 # (ruri-v3-30m / bge-small-en-v1.5) の取得・export スクリプト用。
+# api.platform.preferredai.jp / platform.preferredai.jp / docs.plamo.preferredai.jp:
+# PLaMo API（OpenAI 互換 Chat Completions）と API コンソール・リファレンス。
 # *.polar.sh: ライセンス認証 (Phase 3)。docs = API 仕様の突き合わせ、
 # api = customer-portal 系エンドポイントの応答形実測（認証不要）。
 for domain in \
@@ -152,6 +154,9 @@ for domain in \
     "openrouter.ai" \
     "console.sakana.ai" \
     "api.sakana.ai" \
+    "api.platform.preferredai.jp" \
+    "platform.preferredai.jp" \
+    "docs.plamo.preferredai.jp" \
     "sentry.io" \
     "statsig.anthropic.com" \
     "statsig.com" \
