@@ -223,20 +223,33 @@ pub(crate) async fn send_chat_message_stream(
     system_volatile_tail: Option<String>,
     // A/B 比較 (③): モデル override。None / 空文字なら設定の既定モデルを使う。
     model: Option<String>,
+    // Chat の別プロバイダ一時送信: プロバイダ override。None なら設定の既定プロバイダ。
+    // send_chat_message と同一規則 — 別プロバイダの API キーは keyring から解決され、
+    // グローバル設定を変えずにこの 1 ストリームだけ別プロバイダへ流せる。
+    provider: Option<ai::AiProvider>,
 ) -> Result<(), AppError> {
     abort_flag
         .flag
         .store(false, std::sync::atomic::Ordering::Relaxed);
 
     let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = resolve_api_key(&settings.provider)?;
+    let provider_overridden = provider.is_some();
+    let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
+    let api_key = resolve_api_key(&effective_provider)?;
     let flag_clone = Arc::clone(&abort_flag.flag);
     let resolved_model = model
         .as_deref()
         .filter(|m| !m.is_empty())
         .unwrap_or(&settings.model);
     let mut settings_for_call = settings.clone();
+    settings_for_call.provider = effective_provider;
     settings_for_call.model = resolved_model.to_string();
+    // provider override 時は、グローバルの model_api_variant (Responses トグル等は既定
+    // プロバイダ向け) を別プロバイダへ持ち込まない。経路は明示 api_variant か
+    // effective provider 既定の解決 (resolve_api_variant) に委ねる。
+    if provider_overridden {
+        settings_for_call.model_api_variant = None;
+    }
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings_for_call);
@@ -381,15 +394,25 @@ pub(crate) async fn send_agent_message(
     // 機能別モデル: agent ロールの override。None / 空文字なら設定の既定モデルを
     // 使う（send_chat_message と同一の解決規則）。後方互換: 既存呼び出しは省略可。
     model: Option<String>,
+    // Chat の別プロバイダ一時送信: プロバイダ override。None なら設定の既定プロバイダ。
+    // send_chat_message と同一規則。
+    provider: Option<ai::AiProvider>,
 ) -> Result<ai::ChatResponse, AppError> {
     let settings = ai::read_ai_settings(&ai_path.path);
-    let api_key = resolve_api_key(&settings.provider)?;
+    let provider_overridden = provider.is_some();
+    let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
+    let api_key = resolve_api_key(&effective_provider)?;
     let resolved_model = model
         .as_deref()
         .filter(|m| !m.is_empty())
         .unwrap_or(&settings.model);
     let mut settings_for_call = settings.clone();
+    settings_for_call.provider = effective_provider;
     settings_for_call.model = resolved_model.to_string();
+    // provider override 時は、グローバルの model_api_variant を別プロバイダへ持ち込まない。
+    if provider_overridden {
+        settings_for_call.model_api_variant = None;
+    }
     let variant = api_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings_for_call);

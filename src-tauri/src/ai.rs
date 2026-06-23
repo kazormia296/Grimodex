@@ -1725,12 +1725,14 @@ pub(crate) fn merge_extra_body(body: &mut serde_json::Value, extra: &Option<serd
 /// 既定フィルタ `grimodex_lib=info` で出る(module-path target)。route は実際に通る
 /// API 経路、fusion は plugin が注入される条件を満たすか。
 fn log_ai_route(surface: &str, params: &ChatParams<'_>, tool_count: usize) {
-    let route =
-        if crate::ai_responses::uses_responses_api(params.provider, params.api_variant.as_deref()) {
-            "responses"
-        } else {
-            "chat_completions"
-        };
+    let route = if crate::ai_responses::uses_responses_api(
+        params.provider,
+        params.api_variant.as_deref(),
+    ) {
+        "responses"
+    } else {
+        "chat_completions"
+    };
     let fusion_active = matches!(params.provider, AiProvider::OpenRouter)
         && params.model == "openrouter/fusion"
         && params.fusion.map(|f| f.enabled).unwrap_or(false);
@@ -4051,14 +4053,13 @@ mod tests {
             resolve_api_variant(Some("responses"), &settings, "openrouter/fusion"),
             None
         );
-        assert_eq!(resolve_api_variant(None, &settings, "openrouter/fusion"), None);
+        assert_eq!(
+            resolve_api_variant(None, &settings, "openrouter/fusion"),
+            None
+        );
         // 通常モデルは responses を維持する(回帰防止)。
         assert_eq!(
-            resolve_api_variant(
-                Some("responses"),
-                &settings,
-                "anthropic/claude-4.6-sonnet"
-            ),
+            resolve_api_variant(Some("responses"), &settings, "anthropic/claude-4.6-sonnet"),
             Some("responses".to_string())
         );
     }

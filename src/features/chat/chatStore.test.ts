@@ -260,7 +260,11 @@ describe("useChatStore", () => {
     resetStore();
     vi.clearAllMocks();
     // チャット用一時モデルはテスト間で漏れると後続の送信モデル判定を汚すので初期化。
-    useAiSettingsStore.setState({ chatModelOverride: null });
+    useAiSettingsStore.setState({
+      chatModelOverride: null,
+      chatProviderOverride: null,
+      chatModelVariantOverride: null,
+    });
     // policy 既定はクリア（projects 空 → fail-open=full）。chat ガードを
     // 素通りさせ、既存の sendMessage テストを従来どおり走らせる。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
@@ -667,6 +671,68 @@ describe("useChatStore", () => {
       expect(useAiSettingsStore.getState().settings?.model).toBe(
         "default-model",
       );
+
+      useAiSettingsStore.setState({ settings: null, chatModelOverride: null });
+    });
+
+    it("別プロバイダ override は transport へ provider+variant を糸通しし、設定の既定を書き換えない", async () => {
+      // 別プロバイダのモデルを composer ピッカーで選んだとき、その 1 送信だけ
+      // 別プロバイダ(provider)+解決済み経路(apiVariant)で送る。グローバル設定は不変。
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openai",
+          model: "default-model",
+        },
+        models: [],
+        chatModelOverride: "fugu",
+        chatProviderOverride: "sakana",
+        chatModelVariantOverride: "responses",
+      });
+      mockStreamResponse("ok");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const call = mockSendChatMessageStream.mock.calls.at(-1);
+      // 第7引数(idx6)=model, 第8引数(idx7)=provider, 第5引数(idx4)=apiVariant。
+      expect(call?.[6]).toBe("fugu");
+      expect(call?.[7]).toBe("sakana");
+      expect(call?.[4]).toBe("responses");
+      // 別プロバイダ一時選択は active 設定(provider/model)を書き換えない。
+      expect(useAiSettingsStore.getState().settings?.provider).toBe("openai");
+      expect(useAiSettingsStore.getState().settings?.model).toBe(
+        "default-model",
+      );
+
+      useAiSettingsStore.setState({
+        settings: null,
+        chatModelOverride: null,
+        chatProviderOverride: null,
+        chatModelVariantOverride: null,
+      });
+    });
+
+    it("同一プロバイダの一時モデルは transport の provider 引数を null(既定)に保つ", async () => {
+      // 回帰: 別プロバイダ機能の追加で、同一プロバイダ override が provider を
+      // 渡してしまわない(=従来挙動の byte-identical なキャッシュ温存)ことの gate。
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openai",
+          model: "default-model",
+        },
+        models: [],
+        chatModelOverride: "temp-model",
+        chatProviderOverride: null,
+        chatModelVariantOverride: null,
+      });
+      mockStreamResponse("ok");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const call = mockSendChatMessageStream.mock.calls.at(-1);
+      expect(call?.[6]).toBe("temp-model");
+      expect(call?.[7] ?? null).toBeNull();
 
       useAiSettingsStore.setState({ settings: null, chatModelOverride: null });
     });

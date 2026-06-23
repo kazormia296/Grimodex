@@ -43,6 +43,21 @@ export interface AiSettingsState {
    * - プロバイダ切替時にクリアする(モデル名前空間が変わるため)。
    */
   chatModelOverride: string | null;
+  /**
+   * チャットパネルで「別プロバイダ」のモデルを一時選択したときの provider override。
+   * - null = アクティブプロバイダ(settings.provider)のまま(従来挙動・同一プロバイダ内一時モデル)。
+   * - 非null = その 1 送信だけ別プロバイダへ流す(グローバル設定は変えない。別プロバイダの
+   *   API キーは keyring に保存済み前提)。chatModelOverride と対で持ち、送信経路が
+   *   provider/model/variant を一括で使う(per-role routing より優先)。
+   * - chatModelOverride と同時にプロバイダ切替でクリアする。
+   */
+  chatProviderOverride: AiProvider | null;
+  /**
+   * 別プロバイダ override 時の解決済み API 経路(variant)。選択時に
+   * resolveModelApiVariant で確定して持つ(送信時に active provider の models へ
+   * 依存せずこの値を使う — Sakana=responses 等)。null = backend 既定解決。
+   */
+  chatModelVariantOverride: string | null;
 
   loadSettings: () => Promise<void>;
   saveSettings: (settings: AiSettings) => Promise<void>;
@@ -50,8 +65,16 @@ export interface AiSettingsState {
   deleteApiKey: () => Promise<void>;
   testConnection: () => Promise<void>;
   loadModels: () => Promise<void>;
-  /** チャット用一時モデルを設定する(null で既定に戻す)。 */
-  setChatModelOverride: (model: string | null) => void;
+  /**
+   * チャット用一時モデルを設定する。
+   * - `setChatModelOverride(null)` で既定へ戻す(provider/variant override も解除)。
+   * - 第2引数 `opts.provider` を渡すと別プロバイダ override(別プロバイダのモデル選択)。
+   *   省略時は同一プロバイダ内の一時モデルとして扱い、provider/variant override を解除する。
+   */
+  setChatModelOverride: (
+    model: string | null,
+    opts?: { provider?: AiProvider | null; variant?: string | null },
+  ) => void;
 }
 
 // in-flight ガード（多重発火防止）
@@ -87,6 +110,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
   isLoadingModels: false,
   modelCapsRevision: 0,
   chatModelOverride: null,
+  chatProviderOverride: null,
+  chatModelVariantOverride: null,
 
   loadSettings: async () => {
     const settings = await api.getAiSettings();
@@ -130,13 +155,25 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       cliBinaryAvailable,
       ...(testInvalidated ? { connectionTestResult: null } : {}),
       // チャット用一時モデルはプロバイダ依存(モデル名前空間が違う)なので、
-      // プロバイダが変わったら破棄して新プロバイダの既定に戻す。
-      ...(providerSwitched ? { chatModelOverride: null } : {}),
+      // プロバイダが変わったら破棄して新プロバイダの既定に戻す。別プロバイダ override も
+      // 同時にクリアする(切替後のアクティブ設定と矛盾させない)。
+      ...(providerSwitched
+        ? {
+            chatModelOverride: null,
+            chatProviderOverride: null,
+            chatModelVariantOverride: null,
+          }
+        : {}),
     });
   },
 
-  setChatModelOverride: (model: string | null) => {
-    set({ chatModelOverride: model });
+  setChatModelOverride: (model, opts) => {
+    set({
+      chatModelOverride: model,
+      // null(既定へ戻す)時は provider/variant override も必ず解除する。
+      chatProviderOverride: model == null ? null : (opts?.provider ?? null),
+      chatModelVariantOverride: model == null ? null : (opts?.variant ?? null),
+    });
   },
 
   saveApiKey: async (key: string) => {

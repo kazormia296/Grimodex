@@ -46,6 +46,8 @@ function resetStore() {
     models: [],
     isLoadingModels: false,
     chatModelOverride: null,
+    chatProviderOverride: null,
+    chatModelVariantOverride: null,
   });
 }
 
@@ -161,6 +163,67 @@ describe("useAiSettingsStore", () => {
       expect(useAiSettingsStore.getState().chatModelOverride).toBe(
         "gpt-4o-mini",
       );
+    });
+  });
+
+  describe("cross-provider chat model override", () => {
+    it("setChatModelOverride with opts.provider sets provider + variant override", () => {
+      useAiSettingsStore.getState().setChatModelOverride("fugu", {
+        provider: "sakana",
+        variant: "responses",
+      });
+      const st = useAiSettingsStore.getState();
+      expect(st.chatModelOverride).toBe("fugu");
+      expect(st.chatProviderOverride).toBe("sakana");
+      expect(st.chatModelVariantOverride).toBe("responses");
+    });
+
+    it("same-provider override (no opts) clears any prior provider/variant override", () => {
+      useAiSettingsStore.setState({
+        chatModelOverride: "fugu",
+        chatProviderOverride: "sakana",
+        chatModelVariantOverride: "responses",
+      });
+      // 同一プロバイダ内の一時モデル選択 → 別プロバイダ override は解除される。
+      useAiSettingsStore.getState().setChatModelOverride("openai/gpt-4o");
+      const st = useAiSettingsStore.getState();
+      expect(st.chatModelOverride).toBe("openai/gpt-4o");
+      expect(st.chatProviderOverride).toBeNull();
+      expect(st.chatModelVariantOverride).toBeNull();
+    });
+
+    it("setChatModelOverride(null) clears provider + variant override too", () => {
+      useAiSettingsStore.setState({
+        chatModelOverride: "fugu",
+        chatProviderOverride: "sakana",
+        chatModelVariantOverride: "responses",
+      });
+      useAiSettingsStore.getState().setChatModelOverride(null);
+      const st = useAiSettingsStore.getState();
+      expect(st.chatModelOverride).toBeNull();
+      expect(st.chatProviderOverride).toBeNull();
+      expect(st.chatModelVariantOverride).toBeNull();
+    });
+
+    it("is fully cleared on provider switch", async () => {
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "openai", model: "gpt-4o" },
+        chatModelOverride: "fugu",
+        chatProviderOverride: "sakana",
+        chatModelVariantOverride: "responses",
+      });
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "anthropic",
+        model: "",
+      });
+
+      const st = useAiSettingsStore.getState();
+      expect(st.chatModelOverride).toBeNull();
+      expect(st.chatProviderOverride).toBeNull();
+      expect(st.chatModelVariantOverride).toBeNull();
     });
   });
 

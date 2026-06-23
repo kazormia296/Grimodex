@@ -1483,6 +1483,8 @@
     "noModel": "No model set",
     "loadingModels": "Loading models…",
     "changeModel": "Change model",
+    "searchModelsPlaceholder": "Search models…",
+    "noModelsFound": "No matching models",
     "agentMode": "Agent",
     "agentUnavailable": "This model does not support tools (Agent).",
     "agentSuggestLabel": "Send with Agent mode? (looks like an exploratory question)",

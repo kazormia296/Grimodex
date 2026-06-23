@@ -1483,6 +1483,8 @@
     "noModel": "モデル未設定",
     "loadingModels": "モデルを読み込み中…",
     "changeModel": "モデルを変更",
+    "searchModelsPlaceholder": "モデルを検索…",
+    "noModelsFound": "該当するモデルがありません",
     "agentMode": "Agent",
     "agentUnavailable": "このモデルはツール（Agent）に非対応です",
     "agentSuggestLabel": "Agent modeで送る？（探索が必要そうです）",
