@@ -58,6 +58,69 @@ describe("buildModelCatalog", () => {
     });
     expect(sections[0].models[0].name).toBe("raw-id");
   });
+
+  it("OpenAI 互換は 1 エンドポイント = 1 セクション、endpointId/label を持つ", () => {
+    const sections = buildModelCatalog({
+      activeProvider: "openai-compatible",
+      activeEndpointId: "ep-local",
+      providerModels: [
+        {
+          provider: "openai-compatible",
+          endpointId: "ep-cloud",
+          endpointLabel: "Cloud gateway",
+          models: [m("gpt-4o")],
+        },
+        {
+          provider: "openai-compatible",
+          endpointId: "ep-local",
+          endpointLabel: "Local llama",
+          models: [m("qwen3")],
+        },
+      ],
+    });
+    // active エンドポイント(ep-local)が互換内の先頭。
+    expect(sections.map((s) => s.endpointId)).toEqual(["ep-local", "ep-cloud"]);
+    expect(sections[0].endpointLabel).toBe("Local llama");
+    // モデルに endpointId が伝播する。
+    expect(sections[0].models[0].endpointId).toBe("ep-local");
+    expect(sections[1].models[0].endpointId).toBe("ep-cloud");
+  });
+
+  it("OpenAI 互換エンドポイント既定 variant をモデルへ伝播する", () => {
+    const sections = buildModelCatalog({
+      activeProvider: "openai-compatible",
+      providerModels: [
+        {
+          provider: "openai-compatible",
+          endpointId: "ep-resp",
+          endpointLabel: "Responses gateway",
+          variant: "responses",
+          models: [m("gpt-5.5")],
+        },
+      ],
+    });
+    expect(sections[0].models[0].variant).toBe("responses");
+  });
+
+  it("同一 endpointId が複数来ても最初の非空を採用(冪等)", () => {
+    const sections = buildModelCatalog({
+      activeProvider: "openai-compatible",
+      providerModels: [
+        {
+          provider: "openai-compatible",
+          endpointId: "ep1",
+          models: [m("a")],
+        },
+        {
+          provider: "openai-compatible",
+          endpointId: "ep1",
+          models: [m("b")],
+        },
+      ],
+    });
+    expect(sections).toHaveLength(1);
+    expect(sections[0].models.map((x) => x.id)).toEqual(["a"]);
+  });
 });
 
 describe("filterCatalog", () => {

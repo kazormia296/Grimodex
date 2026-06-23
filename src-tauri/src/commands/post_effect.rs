@@ -1958,7 +1958,10 @@ async fn process_consistency_scene(
     let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     tracing::info!(
         run_id = run_id,
@@ -2416,7 +2419,10 @@ async fn process_intra_scene(
     let ai_settings = read_ai_settings(ai_settings_path);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     tracing::info!(
         run_id = run_id,
@@ -2695,7 +2701,10 @@ async fn process_typo_scene(
     let ai_settings = read_ai_settings(ai_settings_path);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     tracing::info!(
         run_id = run_id,
@@ -2937,7 +2946,10 @@ async fn process_review_scene(
     let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     tracing::info!(
         run_id = run_id,
@@ -3115,7 +3127,10 @@ async fn process_intent_drift_scene(
     let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     tracing::info!(
         run_id = run_id,
@@ -3334,7 +3349,10 @@ async fn process_timeline_scene(
     let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     tracing::info!(
         run_id = run_id,
@@ -3543,7 +3561,10 @@ async fn process_impact_review_scene(
     let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     // 差分ペイロードを寛容にデシリアライズ (欠落キーで hard-fail しない)。
     // entry メタは annotation metadata に転記するため取り出す。
@@ -3836,7 +3857,10 @@ async fn process_pseudo_comment_scene(
     let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     tracing::info!(
         run_id = run_id,
@@ -4024,7 +4048,10 @@ async fn process_meta_structure_scene(
     let ai_settings = read_ai_settings(ai_settings_path);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
-    let api_key = resolve_api_key(&ai_settings.provider)?;
+    let api_key = resolve_api_key(
+        &ai_settings.provider,
+        ai_settings.active_openai_compatible_endpoint_id.as_deref(),
+    )?;
 
     tracing::info!(
         run_id = run_id,

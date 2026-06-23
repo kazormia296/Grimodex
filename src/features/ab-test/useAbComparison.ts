@@ -45,6 +45,7 @@ function sameConfig(a: AbConfig, b: AbConfig): boolean {
   return (
     (a.provider ?? null) === (b.provider ?? null) &&
     (a.model ?? null) === (b.model ?? null) &&
+    (a.endpointId ?? null) === (b.endpointId ?? null) &&
     (a.promptVariant ?? null) === (b.promptVariant ?? null)
   );
 }

@@ -115,12 +115,23 @@ function getCrossProviderChatOverride(): {
   provider: AiProvider;
   model: string;
   variant: string | undefined;
+  /**
+   * OpenAI 互換で別エンドポイントのモデルを選んだ場合の endpoint id。
+   * provider は "openai-compatible" のまま（同一プロバイダの別サーバ）でも、この値で
+   * 送信先 base_url / API キーを切り替える。他プロバイダ選択時は undefined。
+   */
+  endpointId: string | undefined;
 } | null {
   const st = useAiSettingsStore.getState();
   const provider = st.chatProviderOverride;
   const model = st.chatModelOverride;
   if (!provider || !model) return null;
-  return { provider, model, variant: st.chatModelVariantOverride ?? undefined };
+  return {
+    provider,
+    model,
+    variant: st.chatModelVariantOverride ?? undefined,
+    endpointId: st.chatEndpointIdOverride ?? undefined,
+  };
 }
 
 /**
@@ -3565,14 +3576,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     agentApiVariant,
                     null,
                     undefined,
-                    // 別プロバイダ override 中はサブエージェントも同じ provider/model/variant に
-                    // 揃える(親 sendToLLM と同契約)。variant(=agentApiVariant)は既に override 値
-                    // なので、provider/model を揃えないと「variant だけ override・送信先は既定」の
-                    // 不整合になる(別プロバイダの調査が既定プロバイダへサイレントに流れる)。
+                    // 別プロバイダ override 中はサブエージェントも同じ provider/model/variant/
+                    // endpoint に揃える(親 sendToLLM と同契約)。variant(=agentApiVariant)は既に
+                    // override 値なので、provider/model/endpoint を揃えないと「variant だけ
+                    // override・送信先は既定」の不整合になる(別プロバイダ/別エンドポイントの
+                    // 調査が既定へサイレントに流れる)。
                     xprov
                       ? xprov.model
                       : resolveModelForPath("agent_research_subagent"),
                     xprov ? xprov.provider : null,
+                    xprov ? (xprov.endpointId ?? null) : null,
                   ),
                 executeTool: executeReadOnlyTool,
                 onProgress: (p) => set({ subAgentProgress: p }),
@@ -3699,6 +3712,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     null),
               // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
               xprov ? xprov.provider : null,
+              // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
+              xprov ? (xprov.endpointId ?? null) : null,
             ),
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
@@ -4366,6 +4381,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     null),
               // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
               xprov ? xprov.provider : null,
+              // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
+              xprov ? (xprov.endpointId ?? null) : null,
             );
 
         streamPromise

@@ -14,6 +14,7 @@ import { FusionSettingsSection } from "./FusionSettingsSection";
 import {
   AI_PROVIDERS,
   DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
+  getOpenaiCompatibleEndpoints,
   getOpenrouterProviderPins,
   groupModelsByDeveloper,
 } from "@/features/chat/types";
@@ -21,6 +22,7 @@ import type {
   AiProvider,
   CliKind,
   AiModel,
+  OpenaiCompatibleEndpoint,
   ToolProtocolMode,
 } from "@/features/chat/types";
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
@@ -55,6 +57,8 @@ import {
 import { PromptLibrarySection } from "@/features/prompt-library/PromptLibrarySection";
 import { AbTestSection } from "@/features/ab-test/AbTestSection";
 import { useSettingsStore } from "../settingsStore";
+import { OpenaiCompatibleEndpointsManager } from "./OpenaiCompatibleEndpointsManager";
+import { applyEndpointsToSettings } from "./openaiCompatibleEndpointsHelpers";
 
 /** AI プロンプト追記カスタマイズの対象スロット (project_settings の key 末尾)。 */
 const PROMPT_CUSTOM_SLOTS = [
@@ -282,21 +286,16 @@ export function AiCategory() {
     await loadSettings();
   }
 
-  async function handleOpenaiCompatChange<
-    K extends keyof NonNullable<typeof localSettings>["openaiCompatible"],
-  >(key: K, value: NonNullable<typeof localSettings>["openaiCompatible"][K]) {
-    setLocalSettings((s) =>
-      s
-        ? {
-            ...s,
-            openaiCompatible: { ...s.openaiCompatible, [key]: value },
-          }
-        : s,
-    );
-  }
-
-  async function handleSaveOpenaiCompat() {
-    if (localSettings) await saveSettings(localSettings);
+  // 複数 OpenAI 互換エンドポイントの list / activeId 変更を受け、active を legacy
+  // `openaiCompatible` へミラーしてから保存する（旧ビルドへの downgrade 安全性）。
+  async function handleEndpointsChange(
+    list: OpenaiCompatibleEndpoint[],
+    activeId: string | null,
+  ) {
+    if (!localSettings) return;
+    const updated = applyEndpointsToSettings(localSettings, list, activeId);
+    setLocalSettings(updated);
+    await saveSettings(updated);
   }
 
   async function handleSaveKey() {
@@ -426,128 +425,62 @@ export function AiCategory() {
           </SettingRow>
         )}
 
-        {/* OpenAI 互換 (カスタム): Base URL + コンテキスト窓 + 最大出力 */}
+        {/* OpenAI 互換 (カスタム): 複数エンドポイント管理。SettingRow の値列ではなく
+            全幅ブロックとして描画する(値列に full-width block を入れると説明列が 0 幅
+            まで潰れ縦書き化するため)。各エンドポイントの API 経路 / キー / 接続テストは
+            このマネージャ内に閉じる。 */}
         {localSettings.provider === "openai-compatible" && (
-          <>
-            <p className="mb-2 text-xs text-muted-foreground">
-              {t("settings.ai.openaiCompatDesc")}
-            </p>
-            <SettingRow label="Base URL">
-              <input
-                type="text"
-                value={localSettings.openaiCompatible?.baseUrl ?? ""}
-                onChange={(e) =>
-                  handleOpenaiCompatChange("baseUrl", e.target.value)
-                }
-                onBlur={handleSaveOpenaiCompat}
-                className="w-72 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                placeholder="http://localhost:1234/v1"
-              />
-            </SettingRow>
+          <div className="mb-2">
+            <OpenaiCompatibleEndpointsManager
+              endpoints={getOpenaiCompatibleEndpoints(localSettings)}
+              activeId={localSettings.activeOpenaiCompatibleEndpointId ?? null}
+              onChange={handleEndpointsChange}
+            />
+          </div>
+        )}
+
+        {/* Responses API トグル (OpenAI 直 / OpenRouter beta)。openai-compatible は
+            エンドポイント単位の apiVariant で指定するためここでは出さない。 */}
+        {localSettings.provider !== "openai-compatible" &&
+          isResponsesApiCapableProvider(localSettings.provider) && (
             <SettingRow
-              label={t("settings.ai.contextWindowLabel")}
-              description={t("settings.ai.contextWindowDesc")}
-            >
-              <input
-                type="number"
-                min={1}
-                value={localSettings.openaiCompatible?.customMaxContext ?? ""}
-                onChange={(e) =>
-                  handleOpenaiCompatChange(
-                    "customMaxContext",
-                    e.target.value ? Number(e.target.value) : undefined,
-                  )
-                }
-                onBlur={handleSaveOpenaiCompat}
-                className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                placeholder="8000"
-              />
-            </SettingRow>
-            <SettingRow
-              label={t("settings.ai.maxOutputLabel")}
-              description={t("settings.ai.maxOutputDesc")}
-            >
-              <input
-                type="number"
-                min={1}
-                value={localSettings.openaiCompatible?.customMaxOutput ?? ""}
-                onChange={(e) =>
-                  handleOpenaiCompatChange(
-                    "customMaxOutput",
-                    e.target.value ? Number(e.target.value) : undefined,
-                  )
-                }
-                onBlur={handleSaveOpenaiCompat}
-                className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
-                placeholder={t("settings.ai.optionalPlaceholder")}
-              />
-            </SettingRow>
-            <SettingRow
-              label={t("settings.ai.allowStructuredTasks")}
-              description={t("settings.ai.structuredTasksLowAccuracyNote")}
+              label={t("settings.ai.responsesApiLabel")}
+              description={t("settings.ai.responsesApiDesc")}
             >
               <input
                 type="checkbox"
-                checked={
-                  localSettings.openaiCompatible?.enableStructuredTasks ?? false
-                }
+                checked={localSettings.modelApiVariant === "responses"}
                 onChange={async (e) => {
+                  const variant = e.target.checked
+                    ? ("responses" as const)
+                    : null;
                   const updated = {
                     ...localSettings,
-                    openaiCompatible: {
-                      ...localSettings.openaiCompatible,
-                      enableStructuredTasks: e.target.checked,
-                    },
+                    modelApiVariant: variant,
                   };
                   setLocalSettings(updated);
                   await saveSettings(updated);
+                  // モデル選択時(handleModelChange)と対称に per-provider 記憶も更新し、
+                  // トグル状態が次回の切替→復元でそのまま戻るようにする。
+                  if (localSettings.model) {
+                    const modelMap = rememberModel(
+                      readModelByProvider(
+                        settingsStore.get(MODEL_BY_PROVIDER_KEY, "{}"),
+                      ),
+                      localSettings.provider,
+                      localSettings.model,
+                      variant,
+                    );
+                    settingsStore.set(
+                      MODEL_BY_PROVIDER_KEY,
+                      JSON.stringify(modelMap),
+                    );
+                  }
                 }}
                 className="h-4 w-4"
               />
             </SettingRow>
-          </>
-        )}
-
-        {/* Responses API トグル (OpenAI 直 / 互換 gateway / OpenRouter beta) */}
-        {isResponsesApiCapableProvider(localSettings.provider) && (
-          <SettingRow
-            label={t("settings.ai.responsesApiLabel")}
-            description={t("settings.ai.responsesApiDesc")}
-          >
-            <input
-              type="checkbox"
-              checked={localSettings.modelApiVariant === "responses"}
-              onChange={async (e) => {
-                const variant = e.target.checked
-                  ? ("responses" as const)
-                  : null;
-                const updated = {
-                  ...localSettings,
-                  modelApiVariant: variant,
-                };
-                setLocalSettings(updated);
-                await saveSettings(updated);
-                // モデル選択時(handleModelChange)と対称に per-provider 記憶も更新し、
-                // トグル状態が次回の切替→復元でそのまま戻るようにする。
-                if (localSettings.model) {
-                  const modelMap = rememberModel(
-                    readModelByProvider(
-                      settingsStore.get(MODEL_BY_PROVIDER_KEY, "{}"),
-                    ),
-                    localSettings.provider,
-                    localSettings.model,
-                    variant,
-                  );
-                  settingsStore.set(
-                    MODEL_BY_PROVIDER_KEY,
-                    JSON.stringify(modelMap),
-                  );
-                }
-              }}
-              className="h-4 w-4"
-            />
-          </SettingRow>
-        )}
+          )}
 
         {/* AI のべりすと: 固定 URL 表示 + サンプリングパラメータ + 構造化出力許可 */}
         {localSettings.provider === "ai-novelist" && (
@@ -838,17 +771,16 @@ export function AiCategory() {
             );
           })()}
 
-        {/* API Key */}
+        {/* API Key (openai-compatible はエンドポイント単位でマネージャ内に持つ) */}
         {localSettings.provider !== "ollama" &&
-          localSettings.provider !== "cli" && (
+          localSettings.provider !== "cli" &&
+          localSettings.provider !== "openai-compatible" && (
             <SettingRow
               label={t("settings.ai.apiKey")}
               description={
-                localSettings.provider === "openai-compatible"
-                  ? t("settings.ai.apiKeyDescOpenaiCompat")
-                  : localSettings.provider === "ai-novelist"
-                    ? t("settings.ai.apiKeyDescAiNovelist")
-                    : undefined
+                localSettings.provider === "ai-novelist"
+                  ? t("settings.ai.apiKeyDescAiNovelist")
+                  : undefined
               }
             >
               {hasApiKey ? (

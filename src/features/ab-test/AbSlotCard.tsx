@@ -1,8 +1,12 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 import { useAiSettingsStore } from "@/features/chat/store";
-import type { AiProvider } from "@/features/chat/types";
+import {
+  getOpenaiCompatibleEndpoints,
+  type AiProvider,
+} from "@/features/chat/types";
 import type { AbConfig } from "./abHarness";
 import { AB_PROVIDERS, AB_PROVIDER_LABELS } from "./abConfig";
 import { useProviderModels } from "./useProviderModels";
@@ -33,14 +37,32 @@ export function AbSlotCard({
   disabled = false,
 }: AbSlotCardProps) {
   const { t } = useTranslation();
-  const activeProvider = useAiSettingsStore((s) => s.settings?.provider);
+  const settings = useAiSettingsStore((s) => s.settings);
+  const activeProvider = settings?.provider;
 
   // 枠の実効プロバイダ: override があればそれ、なければ既定プロバイダ。
   const overrideProvider = (config.provider?.trim() || undefined) as
     | AiProvider
     | undefined;
   const effectiveProvider = overrideProvider ?? activeProvider;
-  const { models, loading, error } = useProviderModels(effectiveProvider);
+
+  // OpenAI 互換は「どのエンドポイントか」で送信先 / モデル一覧が変わる。
+  const isCompat = effectiveProvider === "openai-compatible";
+  const compatEndpoints = useMemo(
+    () => (settings ? getOpenaiCompatibleEndpoints(settings) : []),
+    [settings],
+  );
+  const activeEndpointId =
+    settings?.activeOpenaiCompatibleEndpointId ?? undefined;
+  // 枠の実効エンドポイント: 枠の上書きがあればそれ、なければ active エンドポイント。
+  const effectiveEndpointId = isCompat
+    ? config.endpointId?.trim() || activeEndpointId
+    : undefined;
+
+  const { models, loading, error } = useProviderModels(
+    effectiveProvider,
+    effectiveEndpointId,
+  );
 
   // モデル一覧が取れない (キー未設定 / ローカル動的 / 取得失敗) → 手入力へ。
   const useManualModel = !loading && models.length === 0;
@@ -74,8 +96,14 @@ export function AbSlotCard({
               disabled={disabled}
               onChange={(e) => {
                 const provider = e.target.value || undefined;
-                // provider を変えるとモデル一覧が変わる → モデルは選び直し (リセット)。
-                onChange({ ...config, provider, model: undefined });
+                // provider を変えるとモデル一覧・送信先が変わる → モデルと endpoint は
+                // 選び直し (リセット)。互換以外へ切り替えたら endpoint は不要なので落とす。
+                onChange({
+                  ...config,
+                  provider,
+                  model: undefined,
+                  endpointId: undefined,
+                });
               }}
               className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none disabled:opacity-40"
             >
@@ -83,6 +111,32 @@ export function AbSlotCard({
               {AB_PROVIDERS.map((p) => (
                 <option key={p} value={p}>
                   {AB_PROVIDER_LABELS[p]}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        {/* OpenAI 互換エンドポイント選択 (chat のみ・互換 provider のとき・登録が 2 件以上)。
+            既定は active エンドポイント。エンドポイントを変えるとモデル一覧が変わるので
+            モデルは選び直し (リセット)。 */}
+        {allowProviderOverride && isCompat && compatEndpoints.length > 1 && (
+          <label className="block">
+            <span className="mb-1 block text-xs text-muted-foreground">
+              {t("abTest.endpoint")}
+            </span>
+            <select
+              value={effectiveEndpointId ?? ""}
+              disabled={disabled}
+              onChange={(e) => {
+                const endpointId = e.target.value || undefined;
+                onChange({ ...config, endpointId, model: undefined });
+              }}
+              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus:outline-none disabled:opacity-40"
+            >
+              {compatEndpoints.map((ep) => (
+                <option key={ep.id} value={ep.id}>
+                  {ep.label || ep.baseUrl}
                 </option>
               ))}
             </select>

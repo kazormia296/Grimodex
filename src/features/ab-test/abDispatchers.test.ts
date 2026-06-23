@@ -47,10 +47,11 @@ describe("createChatAbDispatcher", () => {
     const res = await dispatch(MESSAGES, CONFIG);
 
     expect(res).toEqual({ ok: true, text: "hello" });
-    // provider 未指定 (基準枠相当) → provider/apiVariant は undefined。
+    // provider 未指定 (基準枠相当) → provider/apiVariant/endpointId は undefined。
     expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
       MESSAGES,
       "model-b",
+      undefined,
       undefined,
       undefined,
     );
@@ -81,6 +82,7 @@ describe("createChatAbDispatcher", () => {
       "fugu",
       "sakana",
       "responses",
+      undefined,
     );
     expect(h.recordAiUsage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -98,6 +100,44 @@ describe("createChatAbDispatcher", () => {
       MESSAGES,
       "x/y",
       "openrouter",
+      undefined,
+      undefined,
+    );
+  });
+
+  it("forwards endpointId for an openai-compatible slot", async () => {
+    h.sendChatMessageOnceAb.mockResolvedValue({ text: "hi" });
+    const dispatch = createChatAbDispatcher("p1");
+    await dispatch(MESSAGES, {
+      provider: "openai-compatible",
+      model: "local-model",
+      endpointId: "ep-2",
+    });
+
+    expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
+      MESSAGES,
+      "local-model",
+      "openai-compatible",
+      undefined,
+      "ep-2",
+    );
+  });
+
+  it("drops endpointId when the slot provider is not openai-compatible", async () => {
+    h.sendChatMessageOnceAb.mockResolvedValue({ text: "hi" });
+    const dispatch = createChatAbDispatcher("p1");
+    // endpointId on a non-compat provider must never leak to the backend.
+    await dispatch(MESSAGES, {
+      provider: "openrouter",
+      model: "x/y",
+      endpointId: "ep-2",
+    });
+
+    expect(h.sendChatMessageOnceAb).toHaveBeenCalledWith(
+      MESSAGES,
+      "x/y",
+      "openrouter",
+      undefined,
       undefined,
     );
   });

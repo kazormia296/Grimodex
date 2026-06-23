@@ -16,6 +16,9 @@ vi.mock("@/features/chat/store", () => ({
       model: "claude-sonnet-4-6",
       thinkingEnabled: false,
       ollamaEndpoint: "http://localhost:11434",
+      openaiCompatible: { baseUrl: "" },
+      openaiCompatibleEndpoints: [],
+      activeOpenaiCompatibleEndpointId: null,
     },
     hasApiKey: true,
     isTestingConnection: false,
@@ -35,6 +38,9 @@ vi.mock("@/features/chat/store", () => ({
 vi.mock("@/features/chat/types", () => ({
   AI_PROVIDERS: ["anthropic", "openai"],
   groupModelsByDeveloper: () => [],
+  getOpenaiCompatibleEndpoints: () => [],
+  getOpenrouterProviderPins: () => [],
+  DEFAULT_OPENAI_COMPATIBLE_SETTINGS: { baseUrl: "" },
 }));
 
 vi.mock("@/features/chat/agent/modelLimits", () => ({

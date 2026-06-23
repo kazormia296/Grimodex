@@ -253,9 +253,11 @@ describe("useAiSettingsStore", () => {
 
       await useAiSettingsStore.getState().saveApiKey("sk-or-new-key");
 
+      // openai-compatible 以外は endpoint id を持たない(undefined)。
       expect(mockSaveApiKey).toHaveBeenCalledWith(
         "openrouter",
         "sk-or-new-key",
+        undefined,
       );
       expect(useAiSettingsStore.getState().hasApiKey).toBe(true);
     });
@@ -276,7 +278,7 @@ describe("useAiSettingsStore", () => {
 
       await useAiSettingsStore.getState().deleteApiKey();
 
-      expect(mockDeleteApiKey).toHaveBeenCalledWith("openrouter");
+      expect(mockDeleteApiKey).toHaveBeenCalledWith("openrouter", undefined);
       expect(useAiSettingsStore.getState().hasApiKey).toBe(false);
     });
   });

@@ -55,6 +55,30 @@ export const DEFAULT_OPENAI_COMPATIBLE_SETTINGS: OpenaiCompatibleSettings = {
   baseUrl: "",
 };
 
+/** legacy 単一設定の移行で合成する既定エンドポイントの固定 ID（Rust と共有）。 */
+export const LEGACY_OPENAI_COMPAT_ENDPOINT_ID = "default";
+
+/**
+ * 1 つの OpenAI 互換エンドポイント設定（複数登録対応版）。
+ * `id` は keyring user / override 参照キー。複数のローカル / クラウド互換サーバを
+ * 同時に登録し、チャットピッカー / A-B 枠 / ロール別ルーティングで横断利用する。
+ */
+export interface OpenaiCompatibleEndpoint {
+  /** 安定 ID（移行既定は "default"、新規は crypto.randomUUID()）。 */
+  id: string;
+  /** 表示用ラベル。空なら UI で baseUrl を代用。 */
+  label: string;
+  baseUrl: string;
+  customMaxContext?: number;
+  customMaxOutput?: number;
+  enableStructuredTasks?: boolean;
+  /**
+   * このエンドポイント既定の API 経路（未指定ならグローバル / モデル名推論）。
+   * "legacy" は AI のべりすと専用のため OpenAI 互換エンドポイントでは選べない。
+   */
+  apiVariant?: "v1" | "responses" | null;
+}
+
 /** AI のべりすと専用の設定。 */
 export interface AiNovelistSettings {
   /** KoboldAI 系独自サンプリングパラメータ (top_a / tailfree 等) */
@@ -72,7 +96,12 @@ export interface AiSettings {
   model: string;
   ollamaEndpoint: string;
   thinkingEnabled: boolean;
+  /** legacy 単一 OpenAI 互換設定。複数版へ移行後も round-trip / downgrade 用に保持。 */
   openaiCompatible: OpenaiCompatibleSettings;
+  /** 複数 OpenAI 互換エンドポイント。空なら openaiCompatible から移行（getOpenaiCompatibleEndpoints）。 */
+  openaiCompatibleEndpoints?: OpenaiCompatibleEndpoint[];
+  /** 既定（override 無し時）の OpenAI 互換エンドポイント ID。 */
+  activeOpenaiCompatibleEndpointId?: string | null;
   aiNovelist?: AiNovelistSettings;
   /** CLI プロバイダ選択時のみ意味を持つ */
   cli?: CliSettings;
@@ -142,8 +171,62 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   ollamaEndpoint: "http://localhost:11434",
   thinkingEnabled: true,
   openaiCompatible: DEFAULT_OPENAI_COMPATIBLE_SETTINGS,
+  openaiCompatibleEndpoints: [],
+  activeOpenaiCompatibleEndpointId: null,
   toolProtocolMode: "auto",
 };
+
+/**
+ * 有効な OpenAI 互換エンドポイント一覧を返す（Rust `normalize_openai_compatible` と同論理）。
+ * 配列が空かつ legacy `openaiCompatible.baseUrl` が非空なら `"default"` を 1 件合成する。
+ * Rust は read 時に normalize 済みだが、FE 単体（永続化前の draft 等）でも一貫させる。
+ */
+export function getOpenaiCompatibleEndpoints(
+  settings: Pick<AiSettings, "openaiCompatibleEndpoints" | "openaiCompatible">,
+): OpenaiCompatibleEndpoint[] {
+  const list = settings.openaiCompatibleEndpoints ?? [];
+  if (list.length > 0) return list;
+  const legacy = settings.openaiCompatible?.baseUrl?.trim();
+  if (legacy) {
+    return [
+      {
+        id: LEGACY_OPENAI_COMPAT_ENDPOINT_ID,
+        label: "",
+        baseUrl: settings.openaiCompatible.baseUrl,
+        customMaxContext: settings.openaiCompatible.customMaxContext,
+        customMaxOutput: settings.openaiCompatible.customMaxOutput,
+        enableStructuredTasks: settings.openaiCompatible.enableStructuredTasks,
+      },
+    ];
+  }
+  return [];
+}
+
+/**
+ * `requestedId`（override）→ active id → 先頭、の順で解決した OpenAI 互換エンドポイント。
+ * Rust `active_openai_compatible_endpoint` と同論理。配列が空なら undefined。
+ */
+export function resolveActiveOpenaiCompatibleEndpoint(
+  settings: Pick<
+    AiSettings,
+    | "openaiCompatibleEndpoints"
+    | "openaiCompatible"
+    | "activeOpenaiCompatibleEndpointId"
+  >,
+  requestedId?: string | null,
+): OpenaiCompatibleEndpoint | undefined {
+  const list = getOpenaiCompatibleEndpoints(settings);
+  if (list.length === 0) return undefined;
+  const want =
+    requestedId && requestedId.length > 0
+      ? requestedId
+      : (settings.activeOpenaiCompatibleEndpointId ?? undefined);
+  if (want) {
+    const found = list.find((e) => e.id === want);
+    if (found) return found;
+  }
+  return list[0];
+}
 
 export interface AiModel {
   id: string;

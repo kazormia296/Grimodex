@@ -19,51 +19,100 @@ export interface CatalogModel {
    * (active provider の models 一覧に依存させない)。
    */
   variant: string | null;
+  /**
+   * OpenAI 互換: このモデルが属するエンドポイント id（他プロバイダは undefined）。
+   * 選択時に chatEndpointIdOverride として持たせ、送信先 base_url / API キーを切り替える。
+   */
+  endpointId?: string;
 }
 
-/** プロバイダ 1 つ分のセクション(見出し + モデル列)。 */
+/** プロバイダ(OpenAI 互換はエンドポイント) 1 つ分のセクション(見出し + モデル列)。 */
 export interface CatalogSection {
   provider: AiProvider;
   models: CatalogModel[];
+  /** OpenAI 互換のエンドポイント別セクション識別子（他プロバイダは undefined）。 */
+  endpointId?: string;
+  /** セクション見出しに併記するエンドポイントラベル（他プロバイダは undefined）。 */
+  endpointLabel?: string;
+}
+
+/** buildModelCatalog の 1 入力エントリ。OpenAI 互換は 1 エンドポイント = 1 エントリ。 */
+export interface CatalogProviderInput {
+  provider: AiProvider;
+  models: AiModel[];
+  /** OpenAI 互換: このエントリのエンドポイント id。 */
+  endpointId?: string;
+  /** OpenAI 互換: エンドポイントの表示ラベル。 */
+  endpointLabel?: string;
+  /** OpenAI 互換: エンドポイント既定の variant（未指定なら overrideApiVariantForProvider）。 */
+  variant?: string | null;
 }
 
 /**
- * 1 プロバイダ分の AiModel[] を CatalogModel[] へ変換する。
+ * 1 エントリ分の AiModel[] を CatalogModel[] へ変換する。
  * variant は別プロバイダ送信で「明示が必要な経路」のみ持たせる
  * (overrideApiVariantForProvider: sakana=responses / 他=null=backend 既定解決)。
+ * OpenAI 互換はエンドポイント既定 variant を opts.variant で受け取り、endpointId を付ける。
  * 注意: resolveModelApiVariant は persisted 無しだと任意モデルに "legacy" を返すため
  * 別プロバイダ送信には使えない(sakana が legacy に化け、ai のべりすと以外も legacy 化する)。
  */
 function toCatalogModels(
   provider: AiProvider,
   models: AiModel[],
+  opts?: { endpointId?: string; variant?: string | null },
 ): CatalogModel[] {
-  const variant = overrideApiVariantForProvider(provider);
+  const variant =
+    opts?.variant !== undefined
+      ? opts.variant
+      : overrideApiVariantForProvider(provider);
   return models.map((m) => ({
     id: m.id,
     name: m.name || m.id,
     provider,
     variant,
+    endpointId: opts?.endpointId,
   }));
 }
 
 /**
  * プロバイダ別モデル一覧を整列されたセクション配列にする。
  * - active プロバイダのセクションを先頭に置く(現在の文脈を最優先で見せる)。
+ * - OpenAI 互換は 1 エンドポイント = 1 セクション。active エンドポイントを互換内の先頭に置く。
  * - 残りは AI_PROVIDERS の定義順。
- * - モデルが 0 件のプロバイダはセクションごと落とす(空見出しを出さない)。
+ * - モデルが 0 件のエントリはセクションごと落とす(空見出しを出さない)。
+ * - 同一キー(provider、互換は provider:endpointId)が複数来たら最初の非空を採用(冪等)。
  */
 export function buildModelCatalog(input: {
   activeProvider: AiProvider;
-  providerModels: { provider: AiProvider; models: AiModel[] }[];
+  activeEndpointId?: string | null;
+  providerModels: CatalogProviderInput[];
 }): CatalogSection[] {
-  const { activeProvider, providerModels } = input;
-  const byProvider = new Map<AiProvider, AiModel[]>();
-  for (const { provider, models } of providerModels) {
-    // 同一プロバイダが複数回来ても最初の非空を採用(冪等)。
-    if (!byProvider.has(provider) && models.length > 0) {
-      byProvider.set(provider, models);
-    }
+  const { activeProvider, activeEndpointId, providerModels } = input;
+
+  const keyOf = (e: CatalogProviderInput): string =>
+    e.provider === "openai-compatible"
+      ? `oc:${e.endpointId ?? ""}`
+      : e.provider;
+
+  const seen = new Set<string>();
+  const byProvider = new Map<AiProvider, CatalogProviderInput[]>();
+  for (const entry of providerModels) {
+    if (entry.models.length === 0) continue;
+    const key = keyOf(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!byProvider.has(entry.provider)) byProvider.set(entry.provider, []);
+    byProvider.get(entry.provider)!.push(entry);
+  }
+
+  // OpenAI 互換セクション内は active エンドポイントを先頭に。
+  const ocList = byProvider.get("openai-compatible");
+  if (ocList && activeEndpointId) {
+    ocList.sort((a, b) => {
+      const aRank = a.endpointId === activeEndpointId ? 0 : 1;
+      const bRank = b.endpointId === activeEndpointId ? 0 : 1;
+      return aRank - bRank;
+    });
   }
 
   const order: AiProvider[] = [
@@ -73,9 +122,19 @@ export function buildModelCatalog(input: {
 
   const sections: CatalogSection[] = [];
   for (const provider of order) {
-    const models = byProvider.get(provider);
-    if (!models || models.length === 0) continue;
-    sections.push({ provider, models: toCatalogModels(provider, models) });
+    const entries = byProvider.get(provider);
+    if (!entries) continue;
+    for (const e of entries) {
+      sections.push({
+        provider: e.provider,
+        endpointId: e.endpointId,
+        endpointLabel: e.endpointLabel,
+        models: toCatalogModels(e.provider, e.models, {
+          endpointId: e.endpointId,
+          variant: e.variant,
+        }),
+      });
+    }
   }
   return sections;
 }

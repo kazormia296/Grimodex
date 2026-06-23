@@ -102,6 +102,11 @@ export async function sendChatMessageOnceAb(
    * プロバイダで "responses" を明示するために使う。他は未指定 (= backend 既定解決)。
    */
   apiVariant?: string | null,
+  /**
+   * OpenAI 互換: この枠だけ別エンドポイントへ向ける override。null/未指定なら
+   * 設定の active エンドポイント。provider が openai-compatible 以外なら無視される。
+   */
+  endpointId?: string | null,
 ): Promise<{ text: string; inputTokens?: number; outputTokens?: number }> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -112,6 +117,7 @@ export async function sendChatMessageOnceAb(
     apiVariant: apiVariant ?? null,
     model: model ?? null,
     provider: provider ?? null,
+    endpointId: endpointId ?? null,
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -190,6 +196,11 @@ export async function sendAgentMessage(
    * 値は `AiProvider` 文字列。送信モデル(model)と同じプロバイダの名前空間に属していること。
    */
   provider?: string | null,
+  /**
+   * OpenAI 互換: この agent 送信だけ別エンドポイントへ向ける override。
+   * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
+   */
+  endpointId?: string | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -204,6 +215,7 @@ export async function sendAgentMessage(
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
     provider: provider ?? null,
+    endpointId: endpointId ?? null,
   });
 }
 
@@ -325,6 +337,11 @@ export async function sendChatMessageStream(
    * 値は `AiProvider` 文字列。送信モデル(model)と同じプロバイダの名前空間に属していること。
    */
   provider?: string | null,
+  /**
+   * OpenAI 互換: このストリームだけ別エンドポイントへ向ける override。
+   * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
+   */
+  endpointId?: string | null,
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -365,6 +382,7 @@ export async function sendChatMessageStream(
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
     provider: provider ?? null,
+    endpointId: endpointId ?? null,
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
     const msg = e instanceof Error ? e.message : String(e);
