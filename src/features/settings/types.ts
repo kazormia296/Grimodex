@@ -148,6 +148,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   // Hybrid recall: 意味検索 (dense) に FTS5/bm25 (sparse) を RRF 融合し、
   // 固有名詞 (人名・地名) の recall を補う。semanticRecall が前提 (project)
   "ai.hybridRecall": "project",
+  // Chat episodic recall: 過去の対話 (チャット履歴) を意味検索で自動注入する。
+  // scene RAG (semanticRecall) とは独立トグルで、記憶だけ切れる (project)
+  "ai.chatRecall": "project",
   "ai.contextBudget.l1": "project",
   "ai.contextBudget.l2": "project",
   "ai.contextBudget.l3": "project",
@@ -301,6 +304,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "ai.autoAcceptBodyProposals": "false",
   "ai.semanticRecall": "true",
   "ai.hybridRecall": "true",
+  "ai.chatRecall": "true",
   "ai.contextBudget.l1": "2",
   "ai.contextBudget.l2": "10",
   "ai.contextBudget.l3": "40",

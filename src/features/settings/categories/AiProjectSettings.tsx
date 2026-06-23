@@ -38,6 +38,7 @@ export function AiProjectSettings() {
   const autoAcceptBody = useSettingBoolean("ai.autoAcceptBodyProposals", false);
   const semanticRecall = useSettingBoolean("ai.semanticRecall", true);
   const hybridRecall = useSettingBoolean("ai.hybridRecall", true);
+  const chatRecall = useSettingBoolean("ai.chatRecall", true);
 
   // 多重起動ガードはグローバル store に置く — コンポーネントローカル state だと
   // 設定パネルの閉じ開きやカテゴリ切替（再マウント）でガードが外れ、全件再構築を
@@ -276,6 +277,23 @@ export function AiProjectSettings() {
             disabled={!semanticRecall.value}
             onChange={(e) => hybridRecall.setValue(e.target.checked)}
             className="h-4 w-4 cursor-pointer rounded border-input disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </SettingRow>
+        <SettingRow
+          label={t(
+            "settings.project.aiChatRecall",
+            "過去の対話の自動注入（エピソード記憶）",
+          )}
+          description={t(
+            "settings.project.aiChatRecallDesc",
+            "チャット送信時に、いま書いている内容と意味的に関連する過去の対話（チャット履歴）を検索してAIの文脈に自動注入する。関連シーンの注入とは独立して切り替えられ、オフにするとシーンの注入は残したまま過去対話の注入だけを止められる。進行中のセッションは対象外。",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={chatRecall.value}
+            onChange={(e) => chatRecall.setValue(e.target.checked)}
+            className="h-4 w-4 cursor-pointer rounded border-input"
           />
         </SettingRow>
         {/* 状態表示+再構築ボタン(DEV ではデバッグ用ボタンも並ぶ)は横幅のあるクラスタ。
