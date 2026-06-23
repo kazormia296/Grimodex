@@ -57,6 +57,8 @@ ORM: Drizzle ORM（sqlite-proxy）
 | `foreshadows` | 通常 | Foreshadow | 伏線レジスタ（payoff-anchored） |
 | `foreshadow_setups` | 通常 | Foreshadow | 伏線の撒きアンカー |
 | `foreshadow_codex_links` | 通常 | Foreshadow | 伏線↔Codexエントリのリレーション |
+| `plot_threads` | 通常 | Timeline | 名前付きプロットスレッド（Plottr 型・レーン見出し）。`threads` ビューモードのレーン |
+| `plot_thread_scene_links` | 通常 | Timeline | プロットスレッド × シーンの段階マーカー（`phase_type` CHECK enum: introduce/develop/turn/climax/resolve） |
 | `scene_codex_pins` | 通常 | Matrix / Grid | シーン × Codex の明示的リレーション（Pin to scene の保存先） |
 | `scene_codex_mentions` | 通常 | Matrix | シーン × Codex の言及スキャンキャッシュ（source 別: body/beat/relation、role: mentioned/actor/target） |
 | `scene_beat_pov_cache` | 通常 | Matrix / Beat | Beat レベル POV キャラクターの集約キャッシュ |
@@ -263,6 +265,17 @@ content_versions (1)               （スナップショットからの本文ポ
  └──< project_snapshot_snippets (?)      body_version_id (ON DELETE RESTRICT)
 
 change_events ⇄ state_snapshots    （anchor_sequence で対応。FK ではなく sequence 一致）
+
+# ── 2026-06-22 追加分（プロットスレッド・タイムライン）─────────
+
+projects (1)
+ └──< plot_threads (*)             project_id (ON DELETE CASCADE)
+
+plot_threads (1)
+ └──< plot_thread_scene_links (*)  thread_id (ON DELETE CASCADE)
+
+tree_nodes (1)
+ └──< plot_thread_scene_links (*)  node_id (ON DELETE CASCADE, シーン削除でマーカー消滅)
 ```
 
 ---
@@ -2741,3 +2754,69 @@ CREATE INDEX IF NOT EXISTS idx_ab_comparisons_project_created
 | `chat_message_chunks`（Rust専用） | チャット履歴 RAG（エピソード記憶）の埋め込み（1メッセージ1ベクトル）。過去の対話を scene/codex と同じ意味検索経路で recall。`project_id` / `session_id` を非正規化保持し、hybrid 検索は既存 `chat_messages_fts` を再利用（PR #135） | 2026-06-20 |
 
 `prompt_templates` / `ab_comparisons` は `project_id` を持ち、プロジェクト削除時に `ON DELETE CASCADE`。Drizzle の `promptTemplates` / `abComparisons`（`src/db/schema.ts`）とミラー。`chat_message_chunks` は `codex_chunks` と同じく **Rust 専用**（Drizzle mirror 不要）で、`message_id` を `PRIMARY KEY` とし `chat_messages` 削除時に `ON DELETE CASCADE`。定義の詳細は [セマンティック検索 / RAG ベクトルインデックス](#セマンティック検索--rag-ベクトルインデックス2026-06-18-追記) 節の `chat_message_chunks` を参照。いずれも `migrate()` 内の `CREATE TABLE IF NOT EXISTS` で冪等に導入される。
+
+---
+
+## プロットスレッド・タイムライン（2026-06-22 実装 / 追記）
+
+「プロットスレッド（Plottr 型）を Timeline にレーン表示」（PR #168 / commit `d72468c9`）で追加された 2 テーブル。**名前付きプロットスレッド** が複数シーンを貫いて走り、各シーンに `introduce / develop / turn / climax / resolve` の段階マーカーを置ける。Timeline パネルの `threads` ビューモードで N 本のスイムレーンとして描画される（新 PanelId は追加しない）。既存 `codex_entry_phases`（Codex エントリのフェーズアーク）とは意味論的に分離するためユーザーが専用テーブルを選択した経緯がある。詳細は [Timeline パネル設計書](./Grimodex_Timelineパネル設計書.md)「プロットスレッド表示（threads ビューモード）」および設計 spec `docs/superpowers/specs/2026-06-22-plot-thread-timeline-design.md`。`migrate()` 内の `CREATE TABLE IF NOT EXISTS` で冪等に導入され、Drizzle の `plotThreads` / `plotThreadSceneLinks`（`src/db/schema.ts`）とミラーする。
+
+### plot_threads
+
+プロットスレッド = レーン。1 行 = 1 本の名前付きトラック。`sort_order` はレーン縦順の base62 fractional-index（`@/features/tree/fractionalIndex`、辞書順比較）。`color` はマーカー基調色（任意・null 可、UI からの編集は v1 未提供で既定 `var(--primary)`）。
+
+```sql
+CREATE TABLE IF NOT EXISTS plot_threads (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL DEFAULT '',                    -- スレッド名（レーン見出し）
+    color       TEXT,                                        -- レーン/マーカー基調色（任意・null 可）
+    description TEXT,                                         -- スレッドのメモ（任意）
+    sort_order  TEXT NOT NULL DEFAULT 'a0',                  -- レーン縦順の fractional-index（辞書順）
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_plot_threads_project
+    ON plot_threads(project_id);
+```
+
+### plot_thread_scene_links
+
+スレッドが特定シーンで踏む段階マーカー = レーン上の点。1 行 = 1 マーカー。`phase_type` は **CHECK enum**（後から値を増やすと writable_schema rebuild になるため初版で確定）。`node_id` 経由でシーンに紐づき、**シーン削除でマーカーも CASCADE 削除**される。UNIQUE 制約は付けない（同一シーン × 同一スレッドで複数回 develop する等を意図的に許容）。`sort_order` は同一シーン × スレッドに複数マーカーが付く場合の順序（任意・null 可）。
+
+```sql
+CREATE TABLE IF NOT EXISTS plot_thread_scene_links (
+    id          TEXT PRIMARY KEY,
+    thread_id   TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+    node_id     TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    phase_type  TEXT NOT NULL
+                  CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')),
+    note        TEXT,                                        -- マーカー個別メモ（任意）
+    sort_order  TEXT,                                        -- 同一シーン×スレッドの複数マーカー順序（任意）
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_plot_thread_links_thread
+    ON plot_thread_scene_links(thread_id);
+CREATE INDEX IF NOT EXISTS idx_plot_thread_links_node
+    ON plot_thread_scene_links(node_id);
+```
+
+> **XPROJ ガード**: `plot_thread_link_create`（Rust `src-tauri/src/commands/plot_threads.rs`）は INSERT 前に `thread_id` の所属 project と `node_id` の所属 project が一致することを強制する（不一致は拒否）。スキーマ上は FK だけでクロスプロジェクト紐付けを防げないため、コマンド層で防御する（過去の XPROJ 穴 PR #116 と同型）。
+
+---
+
+## スキーマ更新履歴（2026-06-22）
+
+「プロットスレッド（Plottr 型）を Timeline にレーン表示」（PR #168, `d72468c9`, 2026-06-22）で追加された 2 テーブルを設計書へ反映。前回の追従基準日は 2026-06-20。live スキーマ（`migrate.rs`）を正本に Drizzle（`schema.ts`）と突合した。
+
+### 追加テーブル（設計書に未記載だったもの）
+
+| テーブル | 追加理由 | 実装日 |
+|---------|---------|--------|
+| `plot_threads` | 名前付きプロットスレッド（Plottr 型）。`name` / `color` / `description` / `sort_order`（レーン縦順 fractional-index）を保持。Timeline `threads` ビューモードのレーン見出し | 2026-06-22 |
+| `plot_thread_scene_links` | プロットスレッド × シーンの段階マーカー。`phase_type` は CHECK enum（`introduce` \| `develop` \| `turn` \| `climax` \| `resolve`）。`note` / `sort_order` は任意。`thread_id` / `node_id` いずれも `ON DELETE CASCADE` | 2026-06-22 |
+
+`plot_threads` は `project_id` を持ちプロジェクト削除で `ON DELETE CASCADE`。`plot_thread_scene_links` は `thread_id`（スレッド削除）/ `node_id`（シーン削除）の双方で `ON DELETE CASCADE`。クロスプロジェクト紐付けは `plot_thread_link_create` コマンドの XPROJ ガードで防止する。Drizzle の `plotThreads` / `plotThreadSceneLinks`（`src/db/schema.ts`）とミラー。`PLOT_PHASE_TYPES`（`src/db/schema.ts`）が enum の正準順を保持し、SQL 側 CHECK と一致させる。
