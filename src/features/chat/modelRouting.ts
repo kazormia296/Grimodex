@@ -226,3 +226,34 @@ export function resolveModelForPath(
 ): string | undefined {
   return resolveRolePathConfig(pathId, getSetting)?.model;
 }
+
+/** Tauri invoke の override 引数にそのまま流せる正規化形（未設定は null）。 */
+export interface RoleSendOverride {
+  /** model override（null = Rust が settings.model に解決）。 */
+  model: string | null;
+  /** provider override（null = active provider 据え置き）。 */
+  provider: string | null;
+  /** API 経路 override（null = backend 既定解決）。 */
+  apiVariant: string | null;
+  /** openai-compatible エンドポイント override（null = active）。 */
+  endpointId: string | null;
+}
+
+/**
+ * 経路 ID を Tauri command の override 引数 4 つ
+ * （model / provider / apiVariant / endpointId）へ一発で展開する。
+ * 横断割り当てがなければ provider/apiVariant/endpointId は null（= 従来挙動）。
+ * provider/endpoint override を受ける送信コマンドの呼び出し側はこれを使う。
+ */
+export function resolveRoleSendOverride(
+  pathId: string,
+  getSetting: SettingGetter = defaultGetter,
+): RoleSendOverride {
+  const cfg = resolveRolePathConfig(pathId, getSetting);
+  return {
+    model: cfg?.model ?? null,
+    provider: cfg?.provider ?? null,
+    apiVariant: cfg?.variant ?? null,
+    endpointId: cfg?.endpointId ?? null,
+  };
+}
