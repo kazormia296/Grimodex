@@ -61,6 +61,15 @@ pub(crate) struct StartPostEffectRunArgs {
     /// モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
     #[serde(default)]
     model_override: Option<String>,
+    /// 機能別モデルのプロバイダ横断: provider override（None = 既定プロバイダ）。
+    #[serde(default)]
+    provider_override: Option<crate::ai::AiProvider>,
+    /// API 経路 override（None/空 = backend 既定解決）。
+    #[serde(default)]
+    api_variant_override: Option<String>,
+    /// openai-compatible エンドポイント override（None/空 = active）。
+    #[serde(default)]
+    endpoint_id_override: Option<String>,
     prompt_version: String,
     input_hash: String,
     /// JSON array of CodexPayloadEntry (consistency のみ; intra では空 JSON array を渡す)
@@ -101,6 +110,15 @@ pub(crate) struct StartPostEffectRunMultiArgs {
     /// モデルだけを差し替え、`model`（input_hash / runs.model 記録用）には影響しない。
     #[serde(default)]
     model_override: Option<String>,
+    /// 機能別モデルのプロバイダ横断: provider override（None = 既定プロバイダ）。
+    #[serde(default)]
+    provider_override: Option<crate::ai::AiProvider>,
+    /// API 経路 override（None/空 = backend 既定解決）。
+    #[serde(default)]
+    api_variant_override: Option<String>,
+    /// openai-compatible エンドポイント override（None/空 = active）。
+    #[serde(default)]
+    endpoint_id_override: Option<String>,
     prompt_version: String,
     input_hash: String,
     scenes: Vec<ScenePayload>,
@@ -137,16 +155,45 @@ struct ErrorEvent<'a> {
     error: String,
 }
 
+/// 機能別モデル（review ロール）のプロバイダ横断 override。model_override と並走する
+/// provider / API 経路 / エンドポイントの割り当て。全 None/空なら従来挙動（model だけ
+/// 差し替え or 既定）= wire 差分ゼロ。
+#[derive(Clone, Default)]
+pub(crate) struct RoleProviderOverride {
+    /// 送信先プロバイダ（None = 設定の既定プロバイダ）。
+    pub provider: Option<crate::ai::AiProvider>,
+    /// API 経路 override（None/空 = backend 既定解決）。
+    pub api_variant: Option<String>,
+    /// openai-compatible エンドポイント override（None/空 = active）。
+    pub endpoint_id: Option<String>,
+}
+
 /// 機能別モデル（review ロール）の override を AiSettings に適用する。
 /// `model_override` が Some かつ非空のときだけ実呼び出しの `model` を差し替える。
-/// None / 空文字なら設定の既定モデルのまま（wire 差分ゼロの後方互換）。
+/// `prov` が provider/endpoint/variant の横断割り当てを表す（送信先プロバイダ・キー・
+/// 経路を差し替える。send_chat_message と同契約: provider override 時はグローバル
+/// model_api_variant を持ち込まない）。None / 空文字なら設定の既定のまま（後方互換）。
 /// 既存の `args.model`（input_hash / runs.model 記録用）とは独立した解決軸。
 fn apply_model_override(
     mut settings: crate::ai::AiSettings,
     model_override: Option<&str>,
+    prov: &RoleProviderOverride,
 ) -> crate::ai::AiSettings {
     if let Some(m) = model_override.filter(|m| !m.is_empty()) {
         settings.model = m.to_string();
+    }
+    if let Some(p) = prov.provider.as_ref() {
+        // provider override 時はグローバル Responses トグルを別プロバイダへ持ち込まない。
+        settings.provider = p.clone();
+        settings.model_api_variant = None;
+    }
+    if let Some(v) = prov.api_variant.as_deref().filter(|v| !v.is_empty()) {
+        settings.model_api_variant = Some(v.to_string());
+    }
+    if let Some(eid) = prov.endpoint_id.as_deref().filter(|e| !e.is_empty()) {
+        if settings.has_openai_compatible_endpoint(eid) {
+            settings.active_openai_compatible_endpoint_id = Some(eid.to_string());
+        }
     }
     settings
 }
@@ -1953,9 +2000,11 @@ async fn process_consistency_scene(
     system_prompt: &str,
     ai_settings_path: &std::path::Path,
     model_override: Option<&str>,
+    prov: &RoleProviderOverride,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
-    let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
+    let ai_settings =
+        apply_model_override(read_ai_settings(ai_settings_path), model_override, prov);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
     let api_key = resolve_api_key(
@@ -2370,6 +2419,7 @@ async fn run_consistency_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
     model_override: Option<String>,
+    prov: RoleProviderOverride,
 ) {
     run_effect_task(app, run_id, |app, run_id| async move {
         process_consistency_scene(
@@ -2382,6 +2432,7 @@ async fn run_consistency_task(
             &system_prompt,
             &ai_settings_path,
             model_override.as_deref(),
+            &prov,
             |p, s| {
                 let _ = app.emit(
                     "post_effect:progress",
@@ -2941,9 +2992,11 @@ async fn process_review_scene(
     system_prompt: &str,
     ai_settings_path: &std::path::Path,
     model_override: Option<&str>,
+    prov: &RoleProviderOverride,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
-    let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
+    let ai_settings =
+        apply_model_override(read_ai_settings(ai_settings_path), model_override, prov);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
     let api_key = resolve_api_key(
@@ -3122,9 +3175,11 @@ async fn process_intent_drift_scene(
     system_prompt: &str,
     ai_settings_path: &std::path::Path,
     model_override: Option<&str>,
+    prov: &RoleProviderOverride,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
-    let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
+    let ai_settings =
+        apply_model_override(read_ai_settings(ai_settings_path), model_override, prov);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
     let api_key = resolve_api_key(
@@ -3300,6 +3355,7 @@ async fn run_intent_drift_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
     model_override: Option<String>,
+    prov: RoleProviderOverride,
 ) {
     run_effect_task(app, run_id, |app, run_id| async move {
         process_intent_drift_scene(
@@ -3311,6 +3367,7 @@ async fn run_intent_drift_task(
             &system_prompt,
             &ai_settings_path,
             model_override.as_deref(),
+            &prov,
             |p, s| {
                 let _ = app.emit(
                     "post_effect:progress",
@@ -3344,9 +3401,11 @@ async fn process_timeline_scene(
     system_prompt: &str,
     ai_settings_path: &std::path::Path,
     model_override: Option<&str>,
+    prov: &RoleProviderOverride,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
-    let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
+    let ai_settings =
+        apply_model_override(read_ai_settings(ai_settings_path), model_override, prov);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
     let api_key = resolve_api_key(
@@ -3556,9 +3615,11 @@ async fn process_impact_review_scene(
     system_prompt: &str,
     ai_settings_path: &std::path::Path,
     model_override: Option<&str>,
+    prov: &RoleProviderOverride,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
-    let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
+    let ai_settings =
+        apply_model_override(read_ai_settings(ai_settings_path), model_override, prov);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
     let api_key = resolve_api_key(
@@ -3768,6 +3829,7 @@ async fn run_impact_review_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
     model_override: Option<String>,
+    prov: RoleProviderOverride,
 ) {
     run_effect_task(app, run_id, |app, run_id| async move {
         process_impact_review_scene(
@@ -3780,6 +3842,7 @@ async fn run_impact_review_task(
             &system_prompt,
             &ai_settings_path,
             model_override.as_deref(),
+            &prov,
             |p, s| {
                 let _ = app.emit(
                     "post_effect:progress",
@@ -3807,6 +3870,7 @@ async fn run_review_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
     model_override: Option<String>,
+    prov: RoleProviderOverride,
 ) {
     run_effect_task(app, run_id, |app, run_id| async move {
         process_review_scene(
@@ -3818,6 +3882,7 @@ async fn run_review_task(
             &system_prompt,
             &ai_settings_path,
             model_override.as_deref(),
+            &prov,
             |p, s| {
                 let _ = app.emit(
                     "post_effect:progress",
@@ -3852,9 +3917,11 @@ async fn process_pseudo_comment_scene(
     persona: Option<&str>,
     ai_settings_path: &std::path::Path,
     model_override: Option<&str>,
+    prov: &RoleProviderOverride,
     on_stage: impl Fn(f32, &str) + Send,
 ) -> Result<usize, anyhow::Error> {
-    let ai_settings = apply_model_override(read_ai_settings(ai_settings_path), model_override);
+    let ai_settings =
+        apply_model_override(read_ai_settings(ai_settings_path), model_override, prov);
     // キー要否はプロバイダ依存 (Ollama/Cli は不要、OpenaiCompatible は任意) —
     // チャット経路と同じ resolve_api_key に判定を一元化する。
     let api_key = resolve_api_key(
@@ -3999,6 +4066,7 @@ async fn run_pseudo_comment_task(
     persona: Option<String>,
     ai_settings_path: std::path::PathBuf,
     model_override: Option<String>,
+    prov: RoleProviderOverride,
 ) {
     run_effect_task(app, run_id, |app, run_id| async move {
         process_pseudo_comment_scene(
@@ -4011,6 +4079,7 @@ async fn run_pseudo_comment_task(
             persona.as_deref(),
             &ai_settings_path,
             model_override.as_deref(),
+            &prov,
             |p, s| {
                 let _ = app.emit(
                     "post_effect:progress",
@@ -4179,6 +4248,7 @@ async fn run_multi_task(
     system_prompt: String,
     ai_settings_path: std::path::PathBuf,
     model_override: Option<String>,
+    prov: RoleProviderOverride,
 ) {
     let abort_flag = app.state::<PostEffectAbortFlag>();
     let total = scenes.len();
@@ -4238,6 +4308,7 @@ async fn run_multi_task(
                     &system_prompt,
                     &ai_settings_path,
                     model_override.as_deref(),
+                    &prov,
                     |_p, _s| {},
                 )
                 .await
@@ -4265,6 +4336,7 @@ async fn run_multi_task(
                     &system_prompt,
                     &ai_settings_path,
                     model_override.as_deref(),
+                    &prov,
                     |_p, _s| {},
                 )
                 .await
@@ -4292,6 +4364,7 @@ async fn run_multi_task(
                     &system_prompt,
                     &ai_settings_path,
                     model_override.as_deref(),
+                    &prov,
                     |_p, _s| {},
                 )
                 .await
@@ -4307,6 +4380,7 @@ async fn run_multi_task(
                     &system_prompt,
                     &ai_settings_path,
                     model_override.as_deref(),
+                    &prov,
                     |_p, _s| {},
                 )
                 .await
@@ -4577,6 +4651,11 @@ pub(crate) async fn start_post_effect_run(
     let system_prompt = args.system_prompt.clone();
     let persona = args.persona.clone();
     let model_override = args.model_override.clone();
+    let prov = RoleProviderOverride {
+        provider: args.provider_override.clone(),
+        api_variant: args.api_variant_override.clone(),
+        endpoint_id: args.endpoint_id_override.clone(),
+    };
     let rid = run_id.clone();
 
     tokio::task::spawn(async move {
@@ -4595,6 +4674,7 @@ pub(crate) async fn start_post_effect_run(
                         system_prompt,
                         ai_path,
                         model_override,
+                        prov.clone(),
                     )
                     .await;
                 }
@@ -4609,6 +4689,7 @@ pub(crate) async fn start_post_effect_run(
                         system_prompt,
                         ai_path,
                         model_override,
+                        prov.clone(),
                     )
                     .await;
                 }
@@ -4634,6 +4715,7 @@ pub(crate) async fn start_post_effect_run(
                         system_prompt,
                         ai_path,
                         model_override,
+                        prov.clone(),
                     )
                     .await;
                 }
@@ -4647,6 +4729,7 @@ pub(crate) async fn start_post_effect_run(
                         system_prompt,
                         ai_path,
                         model_override,
+                        prov.clone(),
                     )
                     .await;
                 }
@@ -4661,6 +4744,7 @@ pub(crate) async fn start_post_effect_run(
                         persona,
                         ai_path,
                         model_override,
+                        prov.clone(),
                     )
                     .await;
                 }
@@ -4774,6 +4858,11 @@ pub(crate) async fn start_post_effect_run_multi(
     let scenes = args.scenes;
     let system_prompt = args.system_prompt.clone();
     let model_override = args.model_override.clone();
+    let prov = RoleProviderOverride {
+        provider: args.provider_override.clone(),
+        api_variant: args.api_variant_override.clone(),
+        endpoint_id: args.endpoint_id_override.clone(),
+    };
     let rid = run_id.clone();
 
     tokio::task::spawn(async move {
@@ -4789,6 +4878,7 @@ pub(crate) async fn start_post_effect_run_multi(
                 system_prompt,
                 ai_path,
                 model_override,
+                prov,
             )
             .await;
         })
