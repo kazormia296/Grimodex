@@ -34,6 +34,13 @@ import { ReasoningEffortChip } from "./ReasoningEffortChip";
 import type { ReasoningEffortValue } from "./ReasoningEffortChip";
 import { useAnchoredPopover } from "./useAnchoredPopover";
 import { ChatModelMenu } from "./ChatModelMenu";
+import { motion, AnimatePresence } from "motion/react";
+import {
+  VARIANTS,
+  DURATIONS,
+  EASINGS,
+  useReducedMotion,
+} from "@/lib/animation";
 import { useChatModelCatalog } from "../useChatModelCatalog";
 import { getProviderLabel } from "../providerLabels";
 import { getOpenaiCompatibleEndpoints } from "../types";
@@ -135,6 +142,7 @@ export function ChatInput({
   onHasTextChange,
 }: ChatInputProps) {
   const { t } = useTranslation();
+  const reduced = useReducedMotion();
   const isStreaming = disabled ?? false;
 
   const stopGeneration = useChatStore((s) => s.stopGeneration);
@@ -856,31 +864,45 @@ export function ChatInput({
               <ChevronDown className="h-3 w-3 shrink-0" />
             </button>
 
-            {modelOpen &&
-              modelPopover.style &&
-              createPortal(
-                <div
-                  ref={modelPopover.popoverRef}
-                  style={modelPopover.style}
-                  className="z-[100] overflow-hidden rounded-md border border-border bg-popover shadow-md"
-                >
-                  <ChatModelMenu
-                    sections={displaySections}
-                    loading={catalogLoading}
-                    current={{
-                      provider: chatProviderOverride ?? aiSettings?.provider,
-                      modelId: currentModel,
-                      // override 無しのときは active エンドポイントが現在値
-                      // (互換以外は両方 undefined で従来どおり)。
-                      endpointId:
-                        chatEndpointIdOverride ??
-                        aiSettings?.activeOpenaiCompatibleEndpointId,
+            {createPortal(
+              // spotlight (CodexCommandPalette) と同じ dropdown(fade + 下スライド)で
+              // 開閉する。退場アニメのため AnimatePresence は常時マウントしておく。
+              <AnimatePresence>
+                {modelOpen && modelPopover.style && (
+                  <motion.div
+                    key="chat-model-menu"
+                    ref={modelPopover.popoverRef}
+                    style={modelPopover.style}
+                    className="z-[100] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+                    variants={VARIANTS.dropdown}
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    transition={{
+                      duration: reduced ? 0 : DURATIONS.fast,
+                      ease: EASINGS.easeOut,
                     }}
-                    onSelect={(model) => void handleSelectModel(model)}
-                  />
-                </div>,
-                document.body,
-              )}
+                  >
+                    <ChatModelMenu
+                      sections={displaySections}
+                      loading={catalogLoading}
+                      maxHeight={modelPopover.maxHeight ?? undefined}
+                      current={{
+                        provider: chatProviderOverride ?? aiSettings?.provider,
+                        modelId: currentModel,
+                        // override 無しのときは active エンドポイントが現在値
+                        // (互換以外は両方 undefined で従来どおり)。
+                        endpointId:
+                          chatEndpointIdOverride ??
+                          aiSettings?.activeOpenaiCompatibleEndpointId,
+                      }}
+                      onSelect={(model) => void handleSelectModel(model)}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>,
+              document.body,
+            )}
           </div>
 
           {/* A/B 比較 chip (③): 現在の下書きを 2 構成で並列生成して見比べる */}

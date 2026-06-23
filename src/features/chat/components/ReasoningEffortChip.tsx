@@ -1,8 +1,15 @@
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "motion/react";
 import { ChevronDown, Gauge } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAnchoredPopover } from "./useAnchoredPopover";
+import {
+  VARIANTS,
+  DURATIONS,
+  EASINGS,
+  useReducedMotion,
+} from "@/lib/animation";
 
 export type ReasoningEffortValue = "low" | "medium" | "high";
 
@@ -28,11 +35,12 @@ export function ReasoningEffortChip({
   onChange,
 }: ReasoningEffortChipProps) {
   const { t } = useTranslation();
+  const reduced = useReducedMotion();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // メニューは入力欄上部に開くため上向き。.glass-chat の backdrop-filter が作る
   // stacking context に埋もれないよう document.body へ portal する。
-  const { popoverRef, style } = useAnchoredPopover(
+  const { popoverRef, style, maxHeight } = useAnchoredPopover(
     triggerRef,
     open,
     () => setOpen(false),
@@ -80,36 +88,49 @@ export function ReasoningEffortChip({
         <ChevronDown className="h-3 w-3 shrink-0" />
       </button>
 
-      {open &&
-        style &&
-        createPortal(
-          <div
-            ref={popoverRef}
-            role="listbox"
-            aria-label={t("chat.reasoningEffortTitle")}
-            style={style}
-            className="z-[100] min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-md"
-          >
-            {items.map((item) => (
-              <button
-                key={item ?? "auto"}
-                type="button"
-                role="option"
-                aria-selected={item === value}
-                onClick={() => handleSelect(item)}
-                className={[
-                  "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
-                  item === value
-                    ? "font-medium text-foreground"
-                    : "text-muted-foreground",
-                ].join(" ")}
-              >
-                {item ?? t("chat.reasoningEffortAuto")}
-              </button>
-            ))}
-          </div>,
-          document.body,
-        )}
+      {createPortal(
+        // spotlight (CodexCommandPalette) と同じ dropdown(fade + 下スライド)で
+        // 開閉する。退場アニメのため AnimatePresence は常時マウントしておく。
+        <AnimatePresence>
+          {open && style && (
+            <motion.div
+              key="reasoning-effort-menu"
+              ref={popoverRef}
+              role="listbox"
+              aria-label={t("chat.reasoningEffortTitle")}
+              style={{ ...style, maxHeight: maxHeight ?? undefined }}
+              className="z-[100] min-w-[140px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md"
+              variants={VARIANTS.dropdown}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              transition={{
+                duration: reduced ? 0 : DURATIONS.fast,
+                ease: EASINGS.easeOut,
+              }}
+            >
+              {items.map((item) => (
+                <button
+                  key={item ?? "auto"}
+                  type="button"
+                  role="option"
+                  aria-selected={item === value}
+                  onClick={() => handleSelect(item)}
+                  className={[
+                    "w-full px-3 py-1.5 text-left text-xs hover:bg-accent",
+                    item === value
+                      ? "font-medium text-foreground"
+                      : "text-muted-foreground",
+                  ].join(" ")}
+                >
+                  {item ?? t("chat.reasoningEffortAuto")}
+                </button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
     </div>
   );
 }
