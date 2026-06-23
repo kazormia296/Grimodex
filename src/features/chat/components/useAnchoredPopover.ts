@@ -4,11 +4,25 @@ import type { CSSProperties, RefObject } from "react";
 /** トリガからポップオーバーを開く向き。 */
 export type PopoverPlacement = "bottom-start" | "bottom-end" | "top-start";
 
+interface PopoverLayout {
+  /** createPortal する本体の style に展開する固定配置座標。 */
+  style: CSSProperties;
+  /** ビューポートに収まる本体の最大高さ(px)。 */
+  maxHeight: number;
+}
+
 interface UseAnchoredPopoverResult {
   /** portal するポップオーバー本体に付ける ref（外側クリック判定に使う）。 */
   popoverRef: RefObject<HTMLDivElement | null>;
   /** open の間だけ非 null。createPortal する本体の style に展開する。 */
   style: CSSProperties | null;
+  /**
+   * open の間だけ非 null。ビューポートに収まる本体の最大高さ(px)。
+   * 内部スクロールしたい本体(モデルピッカー等)に明示的に渡す。
+   * `style` に混ぜないのは、呼び出し側が独自に持つ `max-h-*` クラスを
+   * インライン style が上書きしてしまうのを避けるため。
+   */
+  maxHeight: number | null;
 }
 
 /**
@@ -33,34 +47,42 @@ export function useAnchoredPopover(
   placement: PopoverPlacement = "bottom-start",
 ): UseAnchoredPopoverResult {
   const popoverRef = useRef<HTMLDivElement>(null);
-  const [style, setStyle] = useState<CSSProperties | null>(null);
+  const [layout, setLayout] = useState<PopoverLayout | null>(null);
 
   // onClose は inline arrow で毎レンダー変わりがちなので ref 経由で読み、
   // リスナの再購読を open 遷移時だけに抑える。
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // トリガ矩形 + placement から fixed 座標を計算する。
-  const computeStyle = useCallback((): CSSProperties | null => {
+  // トリガ矩形 + placement から fixed 座標 + 可用高さを計算する。
+  const computeLayout = useCallback((): PopoverLayout | null => {
     const el = triggerRef.current;
     if (!el) return null;
     const r = el.getBoundingClientRect();
     const margin = 4;
     const vw = window.innerWidth;
-    const next: CSSProperties = { position: "fixed" };
+    const vh = window.innerHeight;
+    // maxHeight = ビューポートに収まる最大高さ。これを超えるとポップオーバー
+    // 本体が画面外にはみ出す（特にモデル数の多いピッカー）。配置方向ごとに
+    // 利用可能な空間へ clamp し、本体側で内部スクロールさせる。
+    const style: CSSProperties = { position: "fixed" };
+    let maxHeight: number;
     if (placement === "top-start") {
       // 上向き: ポップオーバー下端をトリガ上端に合わせる（高さ不要で配置可能）。
-      next.bottom = window.innerHeight - r.top + margin;
-      next.left = Math.max(margin, r.left);
+      style.bottom = vh - r.top + margin;
+      style.left = Math.max(margin, r.left);
+      maxHeight = Math.max(120, r.top - margin * 2);
     } else if (placement === "bottom-end") {
       // 右揃え: トリガ右端にポップオーバー右端を合わせる。
-      next.top = r.bottom + margin;
-      next.right = Math.max(margin, vw - r.right);
+      style.top = r.bottom + margin;
+      style.right = Math.max(margin, vw - r.right);
+      maxHeight = Math.max(120, vh - r.bottom - margin * 2);
     } else {
-      next.top = r.bottom + margin;
-      next.left = Math.max(margin, r.left);
+      style.top = r.bottom + margin;
+      style.left = Math.max(margin, r.left);
+      maxHeight = Math.max(120, vh - r.bottom - margin * 2);
     }
-    return next;
+    return { style, maxHeight };
   }, [placement, triggerRef]);
 
   // 開いている間はトリガ矩形に追従して配置する。SessionsPanel の overflow-y-auto
@@ -69,20 +91,21 @@ export function useAnchoredPopover(
   // （ポップオーバー自身の内部スクロール等）は再レンダーしない。rAF で間引く。
   useEffect(() => {
     if (!open) {
-      setStyle(null);
+      setLayout(null);
       return;
     }
     let raf = 0;
     const apply = () => {
-      const next = computeStyle();
-      setStyle((prev) => {
+      const next = computeLayout();
+      setLayout((prev) => {
         if (
           prev &&
           next &&
-          prev.top === next.top &&
-          prev.left === next.left &&
-          prev.right === next.right &&
-          prev.bottom === next.bottom
+          prev.style.top === next.style.top &&
+          prev.style.left === next.style.left &&
+          prev.style.right === next.style.right &&
+          prev.style.bottom === next.style.bottom &&
+          prev.maxHeight === next.maxHeight
         ) {
           return prev;
         }
@@ -104,7 +127,7 @@ export function useAnchoredPopover(
       window.removeEventListener("resize", schedule);
       document.removeEventListener("scroll", schedule, true);
     };
-  }, [open, computeStyle]);
+  }, [open, computeLayout]);
 
   // 外側クリック / Escape で閉じる。portal 先（popoverRef）も「内側」扱いする
   // dual-ref 判定にしないと、ポータル化したメニュー内クリックが外側と誤判定され
@@ -131,5 +154,9 @@ export function useAnchoredPopover(
     };
   }, [open, triggerRef]);
 
-  return { popoverRef, style };
+  return {
+    popoverRef,
+    style: layout?.style ?? null,
+    maxHeight: layout?.maxHeight ?? null,
+  };
 }

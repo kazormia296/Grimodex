@@ -21,6 +21,11 @@ interface ChatModelMenuProps {
     endpointId?: string | null;
   };
   onSelect: (model: CatalogModel) => void;
+  /**
+   * ビューポート内に収まる利用可能高さ(px)。アンカーの位置から算出して渡す。
+   * 未指定時は 60vh にフォールバック。これを超える分はリストが内部スクロールする。
+   */
+  maxHeight?: number;
 }
 
 /**
@@ -37,6 +42,7 @@ export function ChatModelMenu({
   loading,
   current,
   onSelect,
+  maxHeight,
 }: ChatModelMenuProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -92,9 +98,14 @@ export function ChatModelMenu({
   };
 
   return (
-    <div className="flex max-h-[60vh] w-72 flex-col">
+    // maxHeight はアンカー(ChatInput)が算出したビューポート可用高さ。
+    // 内部の検索バーは固定(shrink-0)、リストは min-h-0 で縮んで内部スクロールする。
+    <div
+      className="flex w-72 flex-col"
+      style={{ maxHeight: maxHeight != null ? `${maxHeight}px` : "60vh" }}
+    >
       {/* 横断検索 */}
-      <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-1.5">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-2.5 py-1.5">
         <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <input
           type="text"
@@ -108,7 +119,7 @@ export function ChatModelMenu({
         />
       </div>
 
-      <div className="overflow-y-auto py-1">
+      <div className="min-h-0 overflow-y-auto py-1">
         {sections.length === 0 && loading ? (
           <p className="px-3 py-2 text-xs text-muted-foreground">
             {t("chat.loadingModels")}

@@ -7,6 +7,41 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (k: string) => k }),
 }));
 
+// motion/react: テストではアニメーションを無効化し即時に開閉させる。
+// 実機では入場/退場とも dropdown アニメするが、AnimatePresence の exit を待つと
+// 「閉じた直後に listbox が消える」前提が非同期化するため、ここでは即時描画にする
+// (退場アニメ自体は手動 QA で確認)。CodexQuickSection.test.tsx と同じ方針。
+vi.mock("motion/react", async () => {
+  const { forwardRef, createElement } = await import("react");
+  const MOTION_PROPS = new Set([
+    "initial",
+    "animate",
+    "exit",
+    "variants",
+    "transition",
+    "whileHover",
+    "whileTap",
+    "whileFocus",
+    "whileInView",
+    "layout",
+    "layoutId",
+  ]);
+  const make = (tag: string) =>
+    forwardRef(function MotionStub(
+      props: Record<string, unknown>,
+      ref: React.Ref<unknown>,
+    ) {
+      const dom: Record<string, unknown> = {};
+      for (const k in props) if (!MOTION_PROPS.has(k)) dom[k] = props[k];
+      return createElement(tag, { ...dom, ref });
+    });
+  return {
+    motion: { div: make("div"), span: make("span") },
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => children,
+    useReducedMotion: () => false,
+  };
+});
+
 type Props = React.ComponentProps<typeof ReasoningEffortChip>;
 
 function baseProps(over: Partial<Props> = {}): Props {
