@@ -15,7 +15,11 @@ import { eq } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
-import { computeInputHash, normalizeText } from "./canonicalize";
+import {
+  computeInputHash,
+  normalizeText,
+  type HashRoute,
+} from "./canonicalize";
 import { kouetsuScopeSuffix, timelineScopeSuffix } from "./customInstruction";
 
 // v1.1: timelineContext に scene_id を埋め込み、causality finding で LLM に
@@ -123,6 +127,7 @@ export async function buildTimelinePayload(
   scopeTargetId: string | null,
   model: string,
   customInstruction: string = "",
+  route?: HashRoute,
 ): Promise<TimelinePayloadResult> {
   const { nodes } = useTreeStore.getState();
   const placed = getPlacedScenesForScope(nodes, scopeType, scopeTargetId);
@@ -155,6 +160,8 @@ export async function buildTimelinePayload(
     promptVersion: TIMELINE_CONSISTENCY_PROMPT_VERSION,
     model,
     effectType: "timeline_consistency",
+    provider: route?.provider,
+    endpointId: route?.endpointId,
     scene: scenes.map((s) => normalizeText(s.scene_text)).join("|"),
     scope: `${scopeType}:${scopeTargetId ?? "all"}${kouetsuScopeSuffix(
       customInstruction,

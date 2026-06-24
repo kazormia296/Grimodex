@@ -368,3 +368,27 @@ describe("Verbalized Sampling — generateAiBranchCards フルチェーン配線
     );
   });
 });
+
+describe("generateAiBranchCards — per-role 横断の invoke ペイロード配線（finding 10）", () => {
+  it("override 未設定でも send_chat_message に provider/endpointId/apiVariant が正しいキーで載る（欠落/誤キー検出・null=byte-identical）", async () => {
+    (invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      blocks: [{ type: "text", content: "## a\nb" }],
+      stopReason: "end_turn",
+    });
+    const { generateAiBranchCards } = await import("./mapAiApi");
+    await generateAiBranchCards("テスト", 1);
+
+    const calls = (invoke as ReturnType<typeof vi.fn>).mock.calls;
+    const sendCall = [...calls]
+      .reverse()
+      .find((c) => c[0] === "send_chat_message");
+    const payload = sendCall![1] as Record<string, unknown>;
+    // per-role 横断で追加された 4 フィールドが「正しいキー名」で存在すること。
+    // resolveRoleSendOverride の値生成は modelRouting.test で検証済み。ここは
+    // フィールドが invoke 本体に正しいキーで糸通しされている配線を固定する。
+    expect(payload).toHaveProperty("provider", null);
+    expect(payload).toHaveProperty("endpointId", null);
+    expect(payload).toHaveProperty("apiVariant", null);
+    expect(payload).toHaveProperty("model", null);
+  });
+});

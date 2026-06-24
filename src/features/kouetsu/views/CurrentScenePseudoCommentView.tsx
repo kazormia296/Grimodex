@@ -143,6 +143,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
         persona,
         brief,
         customKouetsu,
+        { provider: ov.provider, endpointId: ov.endpointId },
       );
       const outcome = await new Promise<{
         ok: boolean;

@@ -16,7 +16,11 @@ import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { computeInputHash, normalizeText } from "./canonicalize";
+import {
+  computeInputHash,
+  normalizeText,
+  type HashRoute,
+} from "./canonicalize";
 import { kouetsuScopeSuffix } from "./customInstruction";
 
 export const PSEUDO_COMMENT_PROMPT_VERSION = "pseudo_comment_v2.1";
@@ -227,12 +231,15 @@ export async function buildPseudoCommentPayload(
   persona: string,
   brief: string,
   customInstruction: string = "",
+  route?: HashRoute,
 ): Promise<PseudoCommentPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
     promptVersion: PSEUDO_COMMENT_PROMPT_VERSION,
     model,
     effectType: "pseudo_comment",
+    provider: route?.provider,
+    endpointId: route?.endpointId,
     scene: normalizeText(sceneText),
     // brief は genre / 想定読者プロフィールに依存するので scope に畳み込む。
     // これらが変われば別キャッシュになる (設定編集後に古い結果を返さない)。

@@ -140,6 +140,7 @@ export function ProjectTimelineConsistencyView() {
         null,
         model,
         customKouetsu,
+        { provider: ov.provider, endpointId: ov.endpointId },
       );
       if (payload.scenes.length === 0) {
         setRunningAll(false);

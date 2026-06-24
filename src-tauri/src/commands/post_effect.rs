@@ -198,6 +198,156 @@ fn apply_model_override(
     settings
 }
 
+#[cfg(test)]
+mod apply_model_override_tests {
+    use super::*;
+    use crate::ai::{AiProvider, AiSettings, OpenaiCompatibleEndpoint};
+
+    /// "default" + "other" の 2 件を持つ openai-compatible 設定。active は "default"。
+    fn settings_with_endpoints() -> AiSettings {
+        AiSettings {
+            provider: AiProvider::OpenaiCompatible,
+            active_openai_compatible_endpoint_id: Some("default".into()),
+            openai_compatible_endpoints: vec![
+                OpenaiCompatibleEndpoint {
+                    id: "default".into(),
+                    base_url: "http://default/v1".into(),
+                    ..Default::default()
+                },
+                OpenaiCompatibleEndpoint {
+                    id: "other".into(),
+                    base_url: "http://other/v1".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    // 1. all-None override + model_override=Some("m2") => model だけ "m2" に変わり、
+    //    provider / model_api_variant / active endpoint は入力のまま。
+    #[test]
+    fn model_only_override_changes_model_field_only() {
+        let mut input = settings_with_endpoints();
+        input.provider = AiProvider::OpenAI;
+        input.model = "m1".into();
+        input.model_api_variant = Some("responses".into());
+
+        let out = apply_model_override(input.clone(), Some("m2"), &RoleProviderOverride::default());
+
+        assert_eq!(out.model, "m2");
+        assert_eq!(out.provider, AiProvider::OpenAI);
+        assert_eq!(out.model_api_variant, Some("responses".into()));
+        assert_eq!(
+            out.active_openai_compatible_endpoint_id,
+            input.active_openai_compatible_endpoint_id
+        );
+    }
+
+    // 2. model_override=None + all-None prov => 入力と byte-identical（何も変わらない）。
+    #[test]
+    fn all_none_override_is_byte_identical() {
+        let mut input = settings_with_endpoints();
+        input.provider = AiProvider::OpenAI;
+        input.model = "m1".into();
+        input.model_api_variant = Some("responses".into());
+
+        let out = apply_model_override(input.clone(), None, &RoleProviderOverride::default());
+
+        assert_eq!(out.provider, input.provider);
+        assert_eq!(out.model, input.model);
+        assert_eq!(out.model_api_variant, input.model_api_variant);
+        assert_eq!(
+            out.active_openai_compatible_endpoint_id,
+            input.active_openai_compatible_endpoint_id
+        );
+    }
+
+    // 3. provider override Some(P) かつ入力 model_api_variant=Some("responses")
+    //    => provider==P かつ model_api_variant==None（invariant b: 別プロバイダへ
+    //    グローバル Responses トグルを持ち込まない / PlaMo-404 防止）。
+    #[test]
+    fn provider_override_clears_model_api_variant() {
+        let mut input = AiSettings {
+            provider: AiProvider::OpenAI,
+            ..Default::default()
+        };
+        input.model_api_variant = Some("responses".into());
+
+        let prov = RoleProviderOverride {
+            provider: Some(AiProvider::OpenaiCompatible),
+            ..Default::default()
+        };
+        let out = apply_model_override(input, None, &prov);
+
+        assert_eq!(out.provider, AiProvider::OpenaiCompatible);
+        assert_eq!(out.model_api_variant, None);
+    }
+
+    // 4. provider override + api_variant=Some("v1")
+    //    => model_api_variant==Some("v1")。明示 api_variant が provider clearing の
+    //    後に適用される順序を保証（explicit wins）。
+    #[test]
+    fn explicit_api_variant_wins_after_provider_clearing() {
+        let mut input = AiSettings {
+            provider: AiProvider::OpenAI,
+            ..Default::default()
+        };
+        input.model_api_variant = Some("responses".into());
+
+        let prov = RoleProviderOverride {
+            provider: Some(AiProvider::OpenaiCompatible),
+            api_variant: Some("v1".into()),
+            ..Default::default()
+        };
+        let out = apply_model_override(input, None, &prov);
+
+        assert_eq!(out.provider, AiProvider::OpenaiCompatible);
+        assert_eq!(out.model_api_variant, Some("v1".into()));
+    }
+
+    // 5. endpoint_id=Some(<known id>) かつ設定がそのエンドポイントを持つ
+    //    => active_openai_compatible_endpoint_id==Some(known)（invariant c, 正常系）。
+    #[test]
+    fn known_endpoint_id_switches_active() {
+        let input = settings_with_endpoints();
+        assert_eq!(
+            input.active_openai_compatible_endpoint_id,
+            Some("default".into())
+        );
+
+        let prov = RoleProviderOverride {
+            endpoint_id: Some("other".into()),
+            ..Default::default()
+        };
+        let out = apply_model_override(input, None, &prov);
+
+        assert_eq!(
+            out.active_openai_compatible_endpoint_id,
+            Some("other".into())
+        );
+    }
+
+    // 6. endpoint_id=Some(<unknown id>)
+    //    => active_openai_compatible_endpoint_id は入力のまま（invariant c, セキュリティ
+    //    上重要な負例: 未知 id で別サーバへ無言リターゲットしない）。
+    #[test]
+    fn unknown_endpoint_id_leaves_active_unchanged() {
+        let input = settings_with_endpoints();
+
+        let prov = RoleProviderOverride {
+            endpoint_id: Some("does-not-exist".into()),
+            ..Default::default()
+        };
+        let out = apply_model_override(input, None, &prov);
+
+        assert_eq!(
+            out.active_openai_compatible_endpoint_id,
+            Some("default".into())
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // テキスト検索ユーティリティ
 // ---------------------------------------------------------------------------

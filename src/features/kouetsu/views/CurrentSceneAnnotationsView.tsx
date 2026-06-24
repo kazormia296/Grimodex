@@ -119,6 +119,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
               sceneId,
               consistencyModel,
               customKouetsu,
+              { provider: ov.provider, endpointId: ov.endpointId },
             );
             return await new Promise<RunOutcome>((resolve) => {
               runPostEffect(

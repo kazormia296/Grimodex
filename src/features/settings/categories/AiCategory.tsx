@@ -1219,6 +1219,7 @@ export function AiCategory() {
                 activeModels={inWhitelist}
                 sections={roleCatalog.sections}
                 isLoadingModels={isLoadingModels}
+                catalogLoading={roleCatalog.loading}
               />
             ));
           })()}
