@@ -342,6 +342,56 @@ pub(crate) fn abort_inline_ai_stream(
     Ok(())
 }
 
+/// インライン AI（補完）経路の provider/model/endpoint override を AiSettings へ適用する。
+/// send_inline_ai_stream の本体に inline していた変換と byte-identical:
+///   - provider を effective_provider（override 無しなら設定の既定）に差し替え
+///   - model を resolved_model（override 無し or 空なら設定の既定）に差し替え
+///   - provider override 時はグローバル model_api_variant を別プロバイダへ持ち込まない（=None）
+///   - openai-compatible エンドポイント override は既知 id のときだけ active を切替え、
+///     未知 id は active 据え置き（別サーバへの無言リターゲット防止）
+fn apply_inline_provider_override(
+    settings: ai::AiSettings,
+    model: Option<&str>,
+    provider: Option<ai::AiProvider>,
+    endpoint_id: Option<&str>,
+) -> ai::AiSettings {
+    let provider_overridden = provider.is_some();
+    let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
+    let resolved_model = model
+        .filter(|m| !m.is_empty())
+        .unwrap_or(&settings.model)
+        .to_string();
+    let mut settings_for_call = settings;
+    settings_for_call.provider = effective_provider;
+    settings_for_call.model = resolved_model;
+    if provider_overridden {
+        settings_for_call.model_api_variant = None;
+    }
+    if let Some(eid) = endpoint_id.filter(|s| !s.is_empty()) {
+        if settings_for_call.has_openai_compatible_endpoint(eid) {
+            settings_for_call.active_openai_compatible_endpoint_id = Some(eid.to_string());
+        }
+    }
+    settings_for_call
+}
+
+/// インライン AI 経路で実際に送る API 経路 variant を解決する。
+/// openai-compatible はエンドポイント単位の api_variant で経路を決めるため
+/// （resolve_api_variant 内で解決）、グローバル model_api_variant（Responses トグル）を
+/// 持ち込まない。持ち込むと /responses 非対応の互換サーバ(PlaMo 等)へ漏れて 404 になる。
+/// per-call の `api_variant` が最優先で、無いときだけ上記ルールの global_variant に落ちる。
+fn inline_effective_variant(
+    settings: &ai::AiSettings,
+    api_variant: Option<&str>,
+) -> Option<String> {
+    let global_variant = if matches!(settings.provider, ai::AiProvider::OpenaiCompatible) {
+        None
+    } else {
+        settings.model_api_variant.as_deref()
+    };
+    api_variant.or(global_variant).map(|s| s.to_string())
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_inline_ai_stream(
@@ -367,26 +417,14 @@ pub(crate) async fn send_inline_ai_stream(
         .store(false, std::sync::atomic::Ordering::Relaxed);
 
     let settings = ai::read_ai_settings(&ai_path.path);
-    let provider_overridden = provider.is_some();
-    let effective_provider = provider.unwrap_or_else(|| settings.provider.clone());
     let flag_clone = Arc::clone(&abort_flag.flag);
-    let resolved_model = model
-        .as_deref()
-        .filter(|m| !m.is_empty())
-        .unwrap_or(&settings.model);
-    let mut settings_for_call = settings.clone();
-    settings_for_call.provider = effective_provider;
-    settings_for_call.model = resolved_model.to_string();
-    // provider override 時はグローバルの model_api_variant を別プロバイダへ持ち込まない。
-    if provider_overridden {
-        settings_for_call.model_api_variant = None;
-    }
-    // OpenAI 互換エンドポイント override（既知 id のときだけ・未知は active 据え置き）。
-    if let Some(eid) = endpoint_id.filter(|s| !s.is_empty()) {
-        if settings_for_call.has_openai_compatible_endpoint(&eid) {
-            settings_for_call.active_openai_compatible_endpoint_id = Some(eid);
-        }
-    }
+    // provider/model/endpoint override を適用（pure helper・invariant b/c）。
+    let settings_for_call = apply_inline_provider_override(
+        settings,
+        model.as_deref(),
+        provider,
+        endpoint_id.as_deref(),
+    );
     let api_key = resolve_api_key(
         &settings_for_call.provider,
         settings_for_call
@@ -397,15 +435,12 @@ pub(crate) async fn send_inline_ai_stream(
     // (resolve_api_variant 内で解決)、グローバル model_api_variant（Responses トグル）を
     // インライン AI 経路へ持ち込まない。持ち込むと /responses 非対応の互換サーバ(PlaMo 等)
     // へ漏れて 404 になる。provider override 時は上で model_api_variant=None 済み。
-    let global_variant = if matches!(settings_for_call.provider, ai::AiProvider::OpenaiCompatible) {
-        None
-    } else {
-        settings_for_call.model_api_variant.as_deref()
-    };
-    let variant = api_variant.as_deref().or(global_variant);
+    let effective_variant = inline_effective_variant(&settings_for_call, api_variant.as_deref());
+    let variant = effective_variant.as_deref();
     let extra_body = build_ai_novelist_extra_body(&settings_for_call, variant);
     let retry_429 = should_retry_429(&settings_for_call);
-    let resolved_variant = ai::resolve_api_variant(variant, &settings_for_call, resolved_model);
+    let resolved_variant =
+        ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
     let params = build_chat_params(
         &settings_for_call,
         &api_key,
@@ -686,5 +721,158 @@ mod tests {
             ..Default::default()
         };
         assert!(build_ai_novelist_extra_body(&settings, Some("v1")).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_inline_provider_override / inline_effective_variant
+    // send_inline_ai_stream の invariant b/c をカバーする pure helper のテスト。
+    // -----------------------------------------------------------------------
+
+    fn compat_settings_with_endpoints() -> ai::AiSettings {
+        ai::AiSettings {
+            provider: ai::AiProvider::OpenaiCompatible,
+            model: "base-model".into(),
+            active_openai_compatible_endpoint_id: Some("default".into()),
+            openai_compatible_endpoints: vec![
+                ai::OpenaiCompatibleEndpoint {
+                    id: "default".into(),
+                    base_url: "http://default/v1".into(),
+                    ..Default::default()
+                },
+                ai::OpenaiCompatibleEndpoint {
+                    id: "other".into(),
+                    base_url: "http://other/v1".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    // invariant b: provider override 時はグローバル model_api_variant を
+    // 別プロバイダへ持ち込まない（None にクリア）。
+    #[test]
+    fn inline_provider_override_clears_model_api_variant() {
+        let mut input = ai::AiSettings {
+            provider: ai::AiProvider::OpenAI,
+            ..Default::default()
+        };
+        input.model_api_variant = Some("responses".into());
+
+        let out = apply_inline_provider_override(
+            input,
+            None,
+            Some(ai::AiProvider::OpenaiCompatible),
+            None,
+        );
+
+        assert_eq!(out.provider, ai::AiProvider::OpenaiCompatible);
+        assert_eq!(out.model_api_variant, None);
+    }
+
+    // invariant c（負例・セキュリティ）: 未知エンドポイント id は active を据え置く。
+    #[test]
+    fn inline_unknown_endpoint_leaves_active_unchanged() {
+        let input = compat_settings_with_endpoints();
+
+        let out = apply_inline_provider_override(input, None, None, Some("does-not-exist"));
+
+        assert_eq!(
+            out.active_openai_compatible_endpoint_id,
+            Some("default".into())
+        );
+    }
+
+    // invariant c（正例）: 既知エンドポイント id は active を切替える。
+    #[test]
+    fn inline_known_endpoint_switches_active() {
+        let input = compat_settings_with_endpoints();
+
+        let out = apply_inline_provider_override(input, None, None, Some("other"));
+
+        assert_eq!(
+            out.active_openai_compatible_endpoint_id,
+            Some("other".into())
+        );
+    }
+
+    // all-None override: provider/model は設定から解決され、
+    // model_api_variant は触られない（後方互換）。
+    #[test]
+    fn inline_all_none_resolves_from_settings() {
+        let mut input = ai::AiSettings {
+            provider: ai::AiProvider::OpenAI,
+            model: "settings-model".into(),
+            ..Default::default()
+        };
+        input.model_api_variant = Some("responses".into());
+
+        let out = apply_inline_provider_override(input.clone(), None, None, None);
+
+        assert_eq!(out.provider, ai::AiProvider::OpenAI);
+        assert_eq!(out.model, "settings-model");
+        assert_eq!(out.model_api_variant, Some("responses".into()));
+        assert_eq!(
+            out.active_openai_compatible_endpoint_id,
+            input.active_openai_compatible_endpoint_id
+        );
+    }
+
+    // 空文字 model override は設定の既定 model を据え置く（filter(!is_empty) 契約）。
+    #[test]
+    fn inline_empty_model_override_keeps_settings_model() {
+        let input = ai::AiSettings {
+            provider: ai::AiProvider::OpenAI,
+            model: "settings-model".into(),
+            ..Default::default()
+        };
+
+        let out = apply_inline_provider_override(input, Some(""), None, None);
+
+        assert_eq!(out.model, "settings-model");
+    }
+
+    // inline_effective_variant: openai-compatible は per-call variant 無しなら
+    // グローバル model_api_variant=Some("responses") でも None を返す
+    // （/responses 非対応の互換サーバへ Responses トグルを漏らさない・PlaMo-404 防止）。
+    #[test]
+    fn inline_variant_openai_compatible_suppresses_global_responses() {
+        let mut settings = ai::AiSettings {
+            provider: ai::AiProvider::OpenaiCompatible,
+            ..Default::default()
+        };
+        settings.model_api_variant = Some("responses".into());
+
+        assert_eq!(inline_effective_variant(&settings, None), None);
+    }
+
+    // inline_effective_variant: 非互換 provider はグローバル variant を素通しする。
+    #[test]
+    fn inline_variant_non_compatible_passes_global_through() {
+        let mut settings = ai::AiSettings {
+            provider: ai::AiProvider::OpenAI,
+            ..Default::default()
+        };
+        settings.model_api_variant = Some("responses".into());
+
+        assert_eq!(
+            inline_effective_variant(&settings, None),
+            Some("responses".into())
+        );
+    }
+
+    // inline_effective_variant: per-call api_variant が最優先（互換でも勝つ）。
+    #[test]
+    fn inline_variant_per_call_overrides_global() {
+        let mut settings = ai::AiSettings {
+            provider: ai::AiProvider::OpenaiCompatible,
+            ..Default::default()
+        };
+        settings.model_api_variant = Some("responses".into());
+
+        assert_eq!(
+            inline_effective_variant(&settings, Some("v1")),
+            Some("v1".into())
+        );
     }
 }

@@ -10,6 +10,7 @@ import {
   roleSettingKey,
   ROLE_PROVIDERS_KEY,
   parseRoleProviders,
+  resolveRoleSendOverride,
 } from "./modelRouting";
 import {
   AI_PATHS,
@@ -210,6 +211,92 @@ describe("resolveRolePathConfig — プロバイダ横断", () => {
     expect(parseRoleProviders("null")).toEqual({});
     expect(parseRoleProviders('{"agent":{"provider":"openai"}}')).toEqual({
       agent: { provider: "openai" },
+    });
+  });
+});
+
+describe("parseRoleProviders — 不正な内部値の型ガード（破損/旧スキーマ防御）", () => {
+  it("provider が非文字列のエントリは捨てる（resolve 時 .trim() TypeError 防止）", () => {
+    expect(parseRoleProviders('{"agent":{"provider":123}}')).toEqual({});
+    expect(parseRoleProviders('{"agent":{"provider":{"x":1}}}')).toEqual({});
+    expect(parseRoleProviders('{"agent":{"provider":["openai"]}}')).toEqual({});
+  });
+
+  it("トップレベル配列・内部配列は弾く", () => {
+    expect(parseRoleProviders("[]")).toEqual({});
+    expect(parseRoleProviders('{"agent":[]}')).toEqual({});
+  });
+
+  it("endpointId のみ文字列なら保持（provider 無しは resolve で無視される）", () => {
+    expect(parseRoleProviders('{"agent":{"endpointId":"e"}}')).toEqual({
+      agent: { endpointId: "e" },
+    });
+  });
+
+  it("endpointId が非文字列なら provider だけ残す", () => {
+    expect(
+      parseRoleProviders('{"agent":{"provider":"openai","endpointId":5}}'),
+    ).toEqual({ agent: { provider: "openai" } });
+  });
+});
+
+describe("resolveRoleSendOverride — invoke 4 引数への展開", () => {
+  it("未設定ロールは provider/apiVariant/endpointId が null（active・byte-identical）", () => {
+    const getter = getterFor({ [roleSettingKey("structured")]: "gpt-4o" });
+    expect(resolveRoleSendOverride("synopsis", getter)).toEqual({
+      model: "gpt-4o",
+      provider: null,
+      apiVariant: null,
+      endpointId: null,
+    });
+  });
+
+  it("ロール未割当（model も無し）は全 null", () => {
+    expect(resolveRoleSendOverride("synopsis", emptyGetter)).toEqual({
+      model: null,
+      provider: null,
+      apiVariant: null,
+      endpointId: null,
+    });
+  });
+
+  it("別プロバイダ割当を model/provider/apiVariant/endpointId へ展開", () => {
+    const getter = getterFor({
+      [roleSettingKey("structured")]: "plamo-3.0-prime",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({
+        structured: { provider: "openai-compatible", endpointId: "plamo" },
+      }),
+    });
+    expect(resolveRoleSendOverride("synopsis", getter)).toEqual({
+      model: "plamo-3.0-prime",
+      provider: "openai-compatible",
+      apiVariant: null,
+      endpointId: "plamo",
+    });
+  });
+
+  it("sakana 割当は apiVariant=responses を導出する", () => {
+    const getter = getterFor({
+      [roleSettingKey("agent")]: "fugu",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({ agent: { provider: "sakana" } }),
+    });
+    const ov = resolveRoleSendOverride("chat_agent_main", getter);
+    expect(ov.provider).toBe("sakana");
+    expect(ov.apiVariant).toBe("responses");
+  });
+
+  it("能力不適合（agent×非tool）は全 null（override 無視で active へ）", () => {
+    const getter = getterFor({
+      [roleSettingKey("agent")]: "deepseek-r1",
+      [ROLE_PROVIDERS_KEY]: JSON.stringify({
+        agent: { provider: "openrouter" },
+      }),
+    });
+    expect(resolveRoleSendOverride("chat_agent_main", getter)).toEqual({
+      model: null,
+      provider: null,
+      apiVariant: null,
+      endpointId: null,
     });
   });
 });

@@ -7,7 +7,11 @@ import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { computeInputHash, normalizeText } from "./canonicalize";
+import {
+  computeInputHash,
+  normalizeText,
+  type HashRoute,
+} from "./canonicalize";
 import { intentScopeSuffix, kouetsuScopeSuffix } from "./customInstruction";
 
 export const INTENT_DRIFT_PROMPT_VERSION = "intent_drift_v1.1";
@@ -31,12 +35,15 @@ export async function buildIntentDriftPayload(
   model: string,
   intent: string,
   customInstruction: string = "",
+  route?: HashRoute,
 ): Promise<IntentDriftPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
     promptVersion: INTENT_DRIFT_PROMPT_VERSION,
     model,
     effectType: "intent_drift",
+    provider: route?.provider,
+    endpointId: route?.endpointId,
     scene: normalizeText(sceneText),
     scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}${intentScopeSuffix(intent)}`,
   });

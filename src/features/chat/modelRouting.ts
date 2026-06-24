@@ -81,17 +81,40 @@ export interface RolePathModel {
   variant?: string;
 }
 
-/** roleProviders マップを安全にパースする（不正 JSON は空マップ）。 */
+/**
+ * roleProviders マップを安全にパースする（不正 JSON / 不正な形は空マップ）。
+ *
+ * トップレベルが object でない（配列・null・プリミティブ）場合は空。各エントリの
+ * `provider` / `endpointId` は文字列のみ採用する。破損 / 旧スキーマ JSON（provider が
+ * 数値・配列・null 等）をそのまま通すと resolve 時の `.trim()` で TypeError、または
+ * 不正 provider 文字列のキャスト送信を招くため、ここで型を絞って弾く。
+ */
 export function parseRoleProviders(
   raw: string,
 ): Partial<Record<ModelRole, RoleProviderOverride>> {
   if (!raw || raw.trim() === "") return {};
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
+    parsed = JSON.parse(raw);
   } catch {
     return {};
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Partial<Record<ModelRole, RoleProviderOverride>> = {};
+  for (const [role, value] of Object.entries(
+    parsed as Record<string, unknown>,
+  )) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const v = value as Record<string, unknown>;
+    const entry: RoleProviderOverride = {};
+    if (typeof v.provider === "string") entry.provider = v.provider;
+    if (typeof v.endpointId === "string") entry.endpointId = v.endpointId;
+    // provider も endpointId も無いエントリは無意味（resolve でも無視される）。
+    if (entry.provider === undefined && entry.endpointId === undefined)
+      continue;
+    out[role as ModelRole] = entry;
+  }
+  return out;
 }
 
 /**

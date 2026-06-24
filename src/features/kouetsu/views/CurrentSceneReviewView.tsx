@@ -77,6 +77,7 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
         model,
         customKouetsu,
         storyContext,
+        { provider: ov.provider, endpointId: ov.endpointId },
       );
       const outcome = await new Promise<{
         ok: boolean;

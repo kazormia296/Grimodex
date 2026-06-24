@@ -168,6 +168,8 @@ export async function runImpactReview(
     promptVersion: IMPACT_REVIEW_PROMPT_VERSION,
     model,
     effectType: "impact_review",
+    provider: ov.provider,
+    endpointId: ov.endpointId,
     codex: diffPayload,
     scene: scenes.map((s) => normalizeText(s.scene_text)).join("|"),
     scope: `impact:${entryId}:${changeId}`,

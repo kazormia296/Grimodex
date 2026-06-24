@@ -77,6 +77,7 @@ export function CurrentSceneIntentDriftView({ sceneId }: Props) {
         model,
         intent,
         customKouetsu,
+        { provider: ov.provider, endpointId: ov.endpointId },
       );
       const basePrompt = getPromptCatalog(lang).postEffect.intentDriftSystem;
       const systemPrompt = appendIntentGuidance(

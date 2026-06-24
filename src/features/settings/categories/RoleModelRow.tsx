@@ -8,7 +8,7 @@ import {
   parseRoleProviders,
   isModelCapableForRole,
 } from "@/features/chat/modelRouting";
-import type { AiModel } from "@/features/chat/types";
+import type { AiModel, AiProvider } from "@/features/chat/types";
 import type { CatalogSection } from "@/features/chat/chatModelCatalog";
 import { useSettingsStore } from "../settingsStore";
 
@@ -19,6 +19,8 @@ interface RoleModelRowProps {
   /** プロバイダ横断カタログ（鍵が設定済みのプロバイダ/エンドポイントのみ）。 */
   sections: CatalogSection[];
   isLoadingModels: boolean;
+  /** 横断カタログ（sections）の読み込み中フラグ。読み込み中と「失効」を区別する。 */
+  catalogLoading: boolean;
 }
 
 /** 「チャットと同じプロバイダ」を表すセンチネル（roleProviders から role を消す）。 */
@@ -38,12 +40,18 @@ function sectionValue(provider: string, endpointId?: string): string {
  *   - モデル ID → `aiModel.role.{role}`（既存キー）
  *   - 別プロバイダ/エンドポイント → `aiModel.roleProviders` の JSON マップ
  * 「チャットと同じ」を選ぶと roleProviders から当該ロールを除去し従来挙動へ戻す。
+ *
+ * 失効（stale）対応: 横断 override が指すプロバイダ/エンドポイントがカタログから
+ * 消えた（鍵削除・エンドポイント削除）場合、active プロバイダのモデルへ流用すると
+ * 別 namespace のモデルを foreign override 下で永続化＝誤送信を招く。ロード後に
+ * セクションが無ければ「利用不可」を明示し、モデル一覧は空にして、リセット導線を出す。
  */
 export function RoleModelRow({
   role,
   activeModels,
   sections,
   isLoadingModels,
+  catalogLoading,
 }: RoleModelRowProps) {
   const { t } = useTranslation();
   // whole-store 購読: set で再描画される（既存のロール ModelPicker と同契約）。
@@ -52,19 +60,28 @@ export function RoleModelRow({
   const key = roleSettingKey(role);
   const map = parseRoleProviders(settingsStore.get(ROLE_PROVIDERS_KEY) || "");
   const override = map[role];
-  const selected = override?.provider
-    ? sectionValue(override.provider, override.endpointId)
+  const overrideProvider = override?.provider;
+  const selected = overrideProvider
+    ? sectionValue(overrideProvider, override?.endpointId)
     : SAME;
 
   // 横断割り当て時は選択プロバイダ/エンドポイントのモデル一覧、未指定なら active。
-  const section = override?.provider
+  const section = overrideProvider
     ? sections.find(
         (s) =>
-          s.provider === override.provider &&
-          (s.endpointId ?? "") === (override.endpointId ?? ""),
+          s.provider === overrideProvider &&
+          (s.endpointId ?? "") === (override?.endpointId ?? ""),
       )
     : null;
-  const sourceModels: AiModel[] = section ? section.models : activeModels;
+  // override が指すセクションがカタログに無い = 鍵削除/エンドポイント削除。
+  // ただしカタログ読み込み中は判定保留（false positive 防止）。
+  const overrideUnavailable = !!overrideProvider && !section && !catalogLoading;
+  // 失効時は active プロバイダのモデルへ流用しない（誤送信防止）。
+  const sourceModels: AiModel[] = section
+    ? section.models
+    : overrideProvider
+      ? []
+      : activeModels;
   const roleModels = sourceModels.filter((m) =>
     isModelCapableForRole(m.id, role),
   );
@@ -116,16 +133,44 @@ export function RoleModelRow({
               </option>
             );
           })}
+          {/* 失効した override は options に無いため、選択状態が「同じプロバイダ」へ
+              無言で化けて見える（controlled select の desync）。合成 option を足して
+              実際の保存値を「利用不可」として可視化する。 */}
+          {overrideUnavailable && (
+            <option value={selected}>
+              {t("settings.ai.roleModel.unavailableOption", {
+                provider: getProviderLabel(overrideProvider as AiProvider, t),
+                defaultValue: "{{provider}}（利用不可）",
+              })}
+            </option>
+          )}
         </select>
         <ModelPicker
           models={roleModels}
           value={settingsStore.get(key, "")}
           onChange={(v) => settingsStore.set(key, v)}
-          isLoading={isLoadingModels && !override?.provider}
+          isLoading={overrideProvider ? catalogLoading : isLoadingModels}
           placeholder={t("settings.ai.sameChatModel")}
           className="min-w-[12rem]"
         />
       </div>
+      {overrideUnavailable && (
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+          <span>
+            {t(
+              "settings.ai.roleModel.unavailableProvider",
+              "選択中のプロバイダ/エンドポイントは利用できません（鍵削除・エンドポイント削除など）。送信は失敗するか別の宛先になります。",
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => handleProviderChange(SAME)}
+            className="rounded border border-amber-600/40 px-1.5 py-0.5 hover:bg-amber-600/10"
+          >
+            {t("settings.ai.roleModel.reset", "リセット")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

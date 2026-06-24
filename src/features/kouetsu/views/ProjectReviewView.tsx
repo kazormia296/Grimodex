@@ -85,6 +85,7 @@ export function ProjectReviewView() {
         model,
         "review",
         customKouetsu,
+        { provider: ov.provider, endpointId: ov.endpointId },
       );
       if (payload.scenes.length === 0) {
         setRunningAll(false);

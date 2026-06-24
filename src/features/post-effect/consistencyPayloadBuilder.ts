@@ -23,7 +23,11 @@ import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { detailValueToPlainText } from "@/features/codex/detailCleanup";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
-import { computeInputHash, normalizeText } from "./canonicalize";
+import {
+  computeInputHash,
+  normalizeText,
+  type HashRoute,
+} from "./canonicalize";
 import { kouetsuScopeSuffix } from "./customInstruction";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
@@ -225,6 +229,7 @@ export async function buildConsistencyPayload(
   sceneId: string,
   model: string,
   customInstruction: string = "",
+  route?: HashRoute,
 ): Promise<ConsistencyPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const codexPayload = await buildCodexPayload(projectId, sceneText);
@@ -233,6 +238,8 @@ export async function buildConsistencyPayload(
     promptVersion: CONSISTENCY_PROMPT_VERSION,
     model,
     effectType: "consistency",
+    provider: route?.provider,
+    endpointId: route?.endpointId,
     codex: codexPayload,
     scene: normalizeText(sceneText),
     scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}`,
@@ -253,12 +260,15 @@ export async function buildIntraPayload(
   sceneId: string,
   model: string,
   customInstruction: string = "",
+  route?: HashRoute,
 ): Promise<IntraPayloadResult> {
   const sceneText = await getScenePlainText(sceneId);
   const inputHash = await computeInputHash({
     promptVersion: INTRA_CONSISTENCY_PROMPT_VERSION,
     model,
     effectType: "intra_scene_consistency",
+    provider: route?.provider,
+    endpointId: route?.endpointId,
     scene: normalizeText(sceneText),
     scope: `scene:${sceneId}${kouetsuScopeSuffix(customInstruction)}`,
   });
@@ -312,6 +322,7 @@ export async function buildMultiPayload(
     | "review"
     | "meta_structure" = "consistency",
   customInstruction: string = "",
+  route?: HashRoute,
 ): Promise<MultiPayloadResult> {
   const { nodes } = useTreeStore.getState();
   const sceneIds = getSceneIdsForScope(nodes, scopeType, scopeTargetId);
@@ -351,6 +362,8 @@ export async function buildMultiPayload(
     promptVersion,
     model,
     effectType,
+    provider: route?.provider,
+    endpointId: route?.endpointId,
     scene: scenes.map((s) => normalizeText(s.scene_text)).join("|"),
     scope: `${scopeType}:${scopeTargetId ?? "all"}${kouetsuScopeSuffix(customInstruction)}`,
   });

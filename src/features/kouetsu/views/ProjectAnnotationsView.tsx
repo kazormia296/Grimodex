@@ -155,6 +155,9 @@ export function ProjectAnnotationsView() {
               effectiveModel,
               effectType,
               customKouetsu,
+              effectType === "consistency"
+                ? { provider: ov.provider, endpointId: ov.endpointId }
+                : undefined,
             )
               .then((payload) => {
                 if (payload.scenes.length === 0) {

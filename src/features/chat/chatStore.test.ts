@@ -3825,4 +3825,244 @@ describe("useChatStore", () => {
       }
     });
   });
+
+  // --------------------------------------------------------------------------
+  // chat episodic recall トグル (ai.chatRecall) の挙動 gate。
+  // OFF にすると過去対話の意味検索 (fetchChatRecall → chatMessageSearch) は走らず、
+  // scene RAG (fetchSemanticRecall → semanticSearch) はそのまま走る。recall の独立性を
+  // 下位検索 API の call-count で固定する (どちらも @/features/semantic-search/api で
+  // mock 済みの別シーム — fetchChatRecall=chatMessageSearch / fetchSemanticRecall=
+  // semanticSearch を呼ぶ)。
+  // (レビュー所見: 現状インライン guard のみで未テスト)
+  // --------------------------------------------------------------------------
+  describe("ai.chatRecall トグルが episodic recall を独立にゲートする", () => {
+    let useSettingsStore: typeof import("@/features/settings/settingsStore").useSettingsStore;
+    let useTreeStore: typeof import("@/features/tree/treeStore").useTreeStore;
+    let mockTreeState: ReturnType<
+      typeof vi.mocked<typeof useTreeStore.getState>
+    >;
+    // 過去対話 (episodic) recall = chatMessageSearch / scene RAG = semanticSearch。
+    let mockChatMessageSearch: ReturnType<typeof vi.fn>;
+    let mockSemanticSearch: ReturnType<typeof vi.fn>;
+
+    async function setupRecallScene(chatRecall: boolean) {
+      ({ useSettingsStore } =
+        await import("@/features/settings/settingsStore"));
+      ({ useTreeStore } = await import("@/features/tree/treeStore"));
+      const searchApi = await import("@/features/semantic-search/api");
+      mockTreeState = vi.mocked(useTreeStore.getState);
+      mockChatMessageSearch = vi.mocked(searchApi.chatMessageSearch);
+      mockSemanticSearch = vi.mocked(searchApi.semanticSearch);
+      mockChatMessageSearch.mockClear();
+      mockSemanticSearch.mockClear();
+
+      // 両 recall とも projectIdForFs を要求する。既定 mock は projectId 無しで
+      // 早期に空へ落ちるため、ここで projectId を持たせて recall 経路を起動可能にする。
+      mockTreeState.mockReturnValue({
+        nodes: [],
+        projectId: "proj-1",
+        // テスト用 stub: nodes/projectId 以外のフィールドは本経路で未使用。
+      } as unknown as ReturnType<typeof useTreeStore.getState>);
+
+      // scene RAG は常に ON、chat recall だけ test ごとに切替える。
+      useSettingsStore.setState((s) => ({
+        cache: {
+          ...s.cache,
+          "ai.semanticRecall": "true",
+          "ai.chatRecall": chatRecall ? "true" : "false",
+        },
+      }));
+
+      mockStreamResponse("ok");
+    }
+
+    function restoreSettings() {
+      // 後続テストへ漏らさないよう既定 (どちらも ON) へ戻す。
+      useSettingsStore.setState((s) => ({
+        cache: {
+          ...s.cache,
+          "ai.semanticRecall": "true",
+          "ai.chatRecall": "true",
+        },
+      }));
+      mockTreeState.mockReturnValue({
+        nodes: [],
+      } as unknown as ReturnType<typeof useTreeStore.getState>);
+    }
+
+    it("ai.chatRecall=false なら episodic recall は走らず scene RAG は走る", async () => {
+      await setupRecallScene(false);
+      try {
+        await useChatStore.getState().sendMessage("過去の話を思い出して");
+
+        // episodic recall (過去対話の意味検索) は抑止される。
+        expect(mockChatMessageSearch).not.toHaveBeenCalled();
+        // scene RAG (シーンの意味検索) は据え置きで走る。
+        expect(mockSemanticSearch).toHaveBeenCalled();
+      } finally {
+        restoreSettings();
+      }
+    });
+
+    it("ai.chatRecall=true (既定) なら episodic recall も走る", async () => {
+      await setupRecallScene(true);
+      try {
+        await useChatStore.getState().sendMessage("過去の話を思い出して");
+
+        expect(mockChatMessageSearch).toHaveBeenCalled();
+        expect(mockSemanticSearch).toHaveBeenCalled();
+      } finally {
+        restoreSettings();
+      }
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // 送信先 (provider/apiVariant/endpoint) の優先順位を transport payload で固定する:
+  //   composer cross-provider override (xprov) > per-role override > active(null)。
+  // 非エージェント会話ストリーム経路 (sendChatMessageStream) で観測する。
+  // role override は aiModel.role.conversation + aiModel.roleProviders で構成する。
+  // (レビュー所見: インライン三項のみで未テスト)
+  // --------------------------------------------------------------------------
+  describe("送信先 override の優先順位 (xprov > role > active)", () => {
+    let useSettingsStore: typeof import("@/features/settings/settingsStore").useSettingsStore;
+
+    // sendChatMessageStream 引数: [4]=apiVariant, [6]=model, [7]=provider, [8]=endpointId。
+    const A_VARIANT = 4;
+    const A_MODEL = 6;
+    const A_PROVIDER = 7;
+    const A_ENDPOINT = 8;
+
+    async function setConversationRole(
+      model: string | null,
+      provider: string | null,
+      endpointId: string | null,
+    ) {
+      ({ useSettingsStore } =
+        await import("@/features/settings/settingsStore"));
+      const roleProviders =
+        provider || endpointId
+          ? JSON.stringify({
+              conversation: {
+                ...(provider ? { provider } : {}),
+                ...(endpointId ? { endpointId } : {}),
+              },
+            })
+          : "";
+      useSettingsStore.setState((s) => ({
+        cache: {
+          ...s.cache,
+          // conversation ロール (= chat_stream_non_agent) のモデル割り当て。
+          "aiModel.role.conversation": model ?? "",
+          "aiModel.roleProviders": roleProviders,
+        },
+      }));
+    }
+
+    function restoreRole() {
+      useSettingsStore.setState((s) => ({
+        cache: {
+          ...s.cache,
+          "aiModel.role.conversation": "",
+          "aiModel.roleProviders": "",
+        },
+      }));
+    }
+
+    beforeEach(() => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openai",
+          model: "default-model",
+        },
+        models: [],
+        chatModelOverride: null,
+        chatProviderOverride: null,
+        chatModelVariantOverride: null,
+      });
+      // 既存セッションを確立して auto-create (createSession mock=undefined で 3221 throw)
+      // を回避する。session が無いと前テストの stale stream call を拾い flaky 化する。
+      // agentMode/ragEnabled は resetStore で戻されず前テスト (agent 系) から漏れる。
+      // どちらかが true だと agent 経路 (sendAgentMessage) に逸れて非エージェント
+      // ストリーム経路を観測できないため、ここで明示的に false へ固定する。
+      useChatStore.setState({
+        activeSessionId: "session-1",
+        sessions: [session1],
+        agentMode: false,
+        ragEnabled: false,
+      });
+      mockStreamResponse("ok");
+    });
+
+    afterEach(() => {
+      restoreRole();
+      useAiSettingsStore.setState({
+        settings: null,
+        chatModelOverride: null,
+        chatProviderOverride: null,
+        chatModelVariantOverride: null,
+      });
+    });
+
+    it("composer override と role override が両方あれば composer (xprov) が勝つ", async () => {
+      // per-role: openrouter (別経路) を割り当てておく。
+      await setConversationRole("role-model", "openrouter", null);
+      // composer cross-provider: sakana/fugu (variant=responses) を選択。
+      useAiSettingsStore.setState({
+        chatModelOverride: "fugu",
+        chatProviderOverride: "sakana",
+        chatModelVariantOverride: "responses",
+      });
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const call = mockSendChatMessageStream.mock.calls.at(-1);
+      // composer override が provider/model/variant を総取りする。
+      expect(call?.[A_PROVIDER]).toBe("sakana");
+      expect(call?.[A_MODEL]).toBe("fugu");
+      expect(call?.[A_VARIANT]).toBe("responses");
+    });
+
+    it("role override のみなら role の provider/variant/endpoint が乗る", async () => {
+      // openai-compatible + 別エンドポイント。variant は overrideApiVariantForProvider
+      // 由来 (openai-compatible は null=backend 既定)。
+      await setConversationRole(
+        "role-model",
+        "openai-compatible",
+        "endpoint-7",
+      );
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const call = mockSendChatMessageStream.mock.calls.at(-1);
+      expect(call?.[A_PROVIDER]).toBe("openai-compatible");
+      expect(call?.[A_MODEL]).toBe("role-model");
+      expect(call?.[A_ENDPOINT]).toBe("endpoint-7");
+      // openai-compatible は variant override を持たない (null)。
+      expect(call?.[A_VARIANT] ?? null).toBeNull();
+    });
+
+    it("role override が sakana なら variant=responses が解決される", async () => {
+      await setConversationRole("role-model", "sakana", null);
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const call = mockSendChatMessageStream.mock.calls.at(-1);
+      expect(call?.[A_PROVIDER]).toBe("sakana");
+      expect(call?.[A_MODEL]).toBe("role-model");
+      expect(call?.[A_VARIANT]).toBe("responses");
+    });
+
+    it("composer も role も無ければ payload は active (provider/endpoint=null)", async () => {
+      // role モデルだけ割り当てて provider は付けない = active provider 据え置き。
+      await setConversationRole(null, null, null);
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const call = mockSendChatMessageStream.mock.calls.at(-1);
+      expect(call?.[A_PROVIDER] ?? null).toBeNull();
+      expect(call?.[A_ENDPOINT] ?? null).toBeNull();
+    });
+  });
 });

@@ -49,11 +49,29 @@ export interface InputHashPayload {
   codex?: unknown;
   scene: string;
   scope: string;
+  /**
+   * プロバイダ横断（per-role）の送信先 provider。未指定 = ハッシュに含めない。
+   * model 文字列が同一でも別プロバイダなら別キャッシュにするための識別軸。
+   */
+  provider?: string | null;
+  /** OpenAI 互換の送信先エンドポイント。未指定 = ハッシュに含めない。 */
+  endpointId?: string | null;
 }
+
+/**
+ * プロバイダ横断（per-role）の送信先。input_hash のキャッシュ識別キーに混ぜる。
+ * builder / view から computeInputHash へ provider/endpointId を糸通しするための型。
+ */
+export type HashRoute = Pick<InputHashPayload, "provider" | "endpointId">;
 
 /**
  * Compute sha256 input_hash for a post-effect run.
  * Phase ID は入力に含めない（解決後の値が payload に既に反映）。
+ *
+ * provider / endpointId は「設定されているときだけ」キーに混ぜる。未設定（= active
+ * プロバイダ単独運用、従来の大多数のケース）では従来とまったく同じ正規化文字列を
+ * 生成し、既存キャッシュエントリと byte 互換を保つ。横断割り当て時のみ送信先が
+ * キーに反映され、同一 model 名・別プロバイダの衝突（stale 結果の誤返却）を防ぐ。
  */
 export async function computeInputHash(
   payload: InputHashPayload,
@@ -65,6 +83,8 @@ export async function computeInputHash(
     codex: payload.codex ?? null,
     scene: normalizeText(payload.scene),
     scope: payload.scope,
+    ...(payload.provider ? { provider: payload.provider } : {}),
+    ...(payload.endpointId ? { endpoint_id: payload.endpointId } : {}),
   });
   return sha256Hex(canonical);
 }
