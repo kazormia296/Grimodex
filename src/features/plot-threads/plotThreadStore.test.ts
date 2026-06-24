@@ -15,6 +15,7 @@ vi.mock("./api", () => ({
   updatePlotThreadLink: vi.fn(async () => {}),
   deletePlotThreadLink: vi.fn(async () => {}),
   createPlotThreadBranch: vi.fn(),
+  updatePlotThreadBranch: vi.fn(async () => {}),
   deletePlotThreadBranch: vi.fn(async () => {}),
 }));
 
@@ -224,6 +225,16 @@ describe("plotThreadStore", () => {
     });
     expect(createPlotThreadBranch).not.toHaveBeenCalled();
     expect(usePlotThreadStore.getState().branches).toHaveLength(1);
+  });
+
+  it("updateBranch が branches を楽観更新する（at_node・付け替え）", async () => {
+    usePlotThreadStore.setState({ branches: [branchRow("br1", "t1", "t2")] });
+    await usePlotThreadStore
+      .getState()
+      .updateBranch("br1", { toThreadId: "t3", atNodeId: "s9" });
+    const b = usePlotThreadStore.getState().branches[0];
+    expect(b.toThreadId).toBe("t3");
+    expect(b.atNodeId).toBe("s9");
   });
 
   it("deleteBranch が branches から除外する", async () => {

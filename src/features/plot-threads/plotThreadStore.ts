@@ -13,6 +13,7 @@ import {
   updatePlotThreadLink,
   deletePlotThreadLink,
   createPlotThreadBranch,
+  updatePlotThreadBranch,
   deletePlotThreadBranch,
   type PlotThreadRow,
   type PlotThreadLinkRow,
@@ -52,6 +53,12 @@ interface PlotThreadState {
     atNodeId: string;
     kind: PlotBranchKind;
   }) => Promise<void>;
+  updateBranch: (
+    id: string,
+    patch: Partial<
+      Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
+    >,
+  ) => Promise<void>;
   deleteBranch: (id: string) => Promise<void>;
 }
 
@@ -164,6 +171,17 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
     const created = await createPlotThreadBranch(data);
     if (getCurrentProjectId() !== data.projectId) return;
     set({ branches: [...get().branches, created] });
+  },
+
+  updateBranch: async (id, patch) => {
+    const pid = getCurrentProjectId();
+    await updatePlotThreadBranch(id, patch);
+    if (getCurrentProjectId() !== pid) return;
+    set({
+      branches: get().branches.map((b) =>
+        b.id === id ? { ...b, ...patch } : b,
+      ),
+    });
   },
 
   deleteBranch: async (id) => {

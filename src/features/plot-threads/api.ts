@@ -301,6 +301,18 @@ export async function createPlotThreadBranch(data: {
   return normalizeBranch(row);
 }
 
+export async function updatePlotThreadBranch(
+  id: string,
+  patch: Partial<
+    Pick<PlotThreadBranchRow, "fromThreadId" | "toThreadId" | "atNodeId">
+  >,
+): Promise<void> {
+  await db
+    .update(plotThreadBranches)
+    .set({ ...patch, updatedAt: new Date().toISOString() })
+    .where(eq(plotThreadBranches.id, id));
+}
+
 export async function deletePlotThreadBranch(id: string): Promise<void> {
   await db.delete(plotThreadBranches).where(eq(plotThreadBranches.id, id));
 }

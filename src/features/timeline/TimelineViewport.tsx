@@ -30,6 +30,8 @@ const BAND_HEIGHT = 20;
 const CHIP_FONT = 10;
 /** 1シーンあたりの px（STEP）がこれ未満なら、段階チップを円に縮退させる。 */
 const CHIP_MIN_STEP = 72;
+/** subway 風ランプコネクタの水平方向の伸び（px）。 */
+const CONNECTOR_RAMP = 34;
 const LABEL_Y = 16;
 const LANE_Y = 60;
 const AXIS_Y = LANE_Y;
@@ -70,6 +72,8 @@ interface DragState {
 interface MarkerDragState {
   linkId: string;
   threadId: string;
+  /** ドラッグ開始時のマーカーのシーン（branch/merge エッジ追従の判定に使う）。 */
+  nodeId: string;
   color: string | null;
   startX: number;
   startY: number;
@@ -369,6 +373,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       e: React.MouseEvent<SVGElement>,
       linkId: string,
       threadId: string,
+      nodeId: string,
       color: string | null,
     ) {
       if (!showThreads) return;
@@ -379,6 +384,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       setMarkerDrag({
         linkId,
         threadId,
+        nodeId,
         color,
         startX: svgX,
         startY: svgY,
@@ -405,45 +411,95 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         laneHeight: LANE_HEIGHT,
         nearestSceneId,
       });
+      if (action.type === "none") return;
       const store = usePlotThreadStore.getState();
-      switch (action.type) {
-        case "move-scene":
-          void store.updateMarker(d.linkId, { nodeId: action.nodeId });
-          break;
-        case "branch": {
-          // 既存の同一エッジ(from,to,atNode,kind)があるなら何もしない。
-          // （addBranch が dup で no-op になる一方 source だけ移動する非アトミック
-          //   な不整合を防ぐ。）
-          const isDup = store.branches.some(
+
+      const newThread =
+        action.type === "branch" ? action.toThreadId : d.threadId;
+      const newScene =
+        action.type === "move-scene" ? action.nodeId : action.atNodeId;
+      const crossThread = newThread !== d.threadId;
+
+      // このマーカーが既存 branch/merge の構造側アンカーか（branch=to 側 /
+      // merge=from 側、at=ドラッグ開始シーン）。
+      const anchored = store.branches.filter(
+        (b) =>
+          b.atNodeId === d.nodeId &&
+          ((b.kind === "branch" && b.toThreadId === d.threadId) ||
+            (b.kind === "merge" && b.fromThreadId === d.threadId)),
+      );
+
+      if (anchored.length > 0) {
+        // 既存エッジを持つマーカー: マーカーと一緒にエッジを追従／別スレッドへ付け替え
+        // （新規エッジは作らない）。
+        void store.updateMarker(
+          d.linkId,
+          crossThread
+            ? { threadId: newThread, nodeId: newScene }
+            : { nodeId: newScene },
+        );
+        for (const e of anchored) {
+          // 付け替え後の (from,to,at,kind) を求め、自己参照 or 既存エッジと重複に
+          // なるなら rebind せず削除する（新規/手動経路と同じ dedup 不変条件を維持）。
+          const resFrom =
+            crossThread && e.kind === "merge" ? newThread : e.fromThreadId;
+          const resTo =
+            crossThread && e.kind === "branch" ? newThread : e.toThreadId;
+          const isSelf = resFrom === resTo;
+          const isDupOther = store.branches.some(
             (b) =>
-              b.fromThreadId === action.fromThreadId &&
-              b.toThreadId === action.toThreadId &&
-              b.atNodeId === action.atNodeId &&
-              b.kind === action.kind,
+              b.id !== e.id &&
+              b.fromThreadId === resFrom &&
+              b.toThreadId === resTo &&
+              b.atNodeId === newScene &&
+              b.kind === e.kind,
           );
-          if (isDup) break;
-          // 別スレッドへドロップ: 構造的に意味のある片側だけにマーカーを置く。
-          // ドラッグした点を流用し、もう片方には点を作らない（コネクタで関係表現）。
-          if (action.kind === "branch") {
-            // branch: 先(to)に起点マーカー。元(from)には残さない＝点を先へ移動。
-            void store.updateMarker(d.linkId, {
-              threadId: action.toThreadId,
-              nodeId: action.atNodeId,
-            });
-          } else {
-            // merge: 元(from=畳まれる側)に終端マーカーを残す。先(to)には作らない。
-            void store.updateMarker(d.linkId, { nodeId: action.atNodeId });
+          if (isSelf || isDupOther) {
+            void store.deleteBranch(e.id);
+            continue;
           }
-          void store.addBranch({
-            projectId: getCurrentProjectId(),
-            fromThreadId: action.fromThreadId,
-            toThreadId: action.toThreadId,
-            atNodeId: action.atNodeId,
-            kind: action.kind,
-          });
-          break;
+          void store.updateBranch(
+            e.id,
+            crossThread
+              ? e.kind === "branch"
+                ? { toThreadId: newThread, atNodeId: newScene }
+                : { fromThreadId: newThread, atNodeId: newScene }
+              : { atNodeId: newScene },
+          );
         }
+        return;
       }
+
+      // 既存エッジ無し: 従来挙動。
+      if (action.type === "move-scene") {
+        void store.updateMarker(d.linkId, { nodeId: action.nodeId });
+        return;
+      }
+      // 別スレッドへドロップ → 新規 branch/merge（片側のみマーカー）。
+      // 既存の同一エッジがあれば非アトミックを避けるため何もしない。
+      const isDup = store.branches.some(
+        (b) =>
+          b.fromThreadId === action.fromThreadId &&
+          b.toThreadId === action.toThreadId &&
+          b.atNodeId === action.atNodeId &&
+          b.kind === action.kind,
+      );
+      if (isDup) return;
+      if (action.kind === "branch") {
+        void store.updateMarker(d.linkId, {
+          threadId: action.toThreadId,
+          nodeId: action.atNodeId,
+        });
+      } else {
+        void store.updateMarker(d.linkId, { nodeId: action.atNodeId });
+      }
+      void store.addBranch({
+        projectId: getCurrentProjectId(),
+        fromThreadId: action.fromThreadId,
+        toThreadId: action.toThreadId,
+        atNodeId: action.atNodeId,
+        kind: action.kind,
+      });
     }
 
     function handleMarkerContextMenu(
@@ -981,6 +1037,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         e,
                         mk.linkId,
                         lane.thread.id,
+                        mk.nodeId,
                         lane.thread.color,
                       );
                     const onCtx = (e: React.MouseEvent<SVGElement>) =>
@@ -1065,24 +1122,35 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               />
             )}
 
-            {/* 分岐 / 合流コネクタ（reading-order のみ）。あるシーン列で from↔to の
-                レーン間を曲線で繋ぐ。branch=実線 / merge=破線。 */}
+            {/* 分岐 / 合流コネクタ（reading-order のみ）。subway 風のランプで
+                対象レーンへ斜めに流れ込む形にする（branch=親レーンから枝分かれ /
+                merge=畳まれる線が対象レーンへ合流）。branch=実線 / merge=破線。 */}
             {showThreads &&
               axisMode === "reading" &&
-              laneModel.connectors.map((c) => (
-                <path
-                  key={`conn-${c.id}`}
-                  data-testid="plot-thread-connector"
-                  data-kind={c.kind}
-                  d={`M ${xOf(c.x)} ${c.fromY} C ${xOf(c.x) + 14} ${c.fromY}, ${xOf(c.x) + 14} ${c.toY}, ${xOf(c.x)} ${c.toY}`}
-                  fill="none"
-                  stroke={c.color ?? "var(--primary)"}
-                  strokeWidth={2}
-                  strokeOpacity={0.85}
-                  strokeDasharray={c.kind === "merge" ? "4 3" : undefined}
-                  pointerEvents="none"
-                />
-              ))}
+              laneModel.connectors.map((c) => {
+                const X = xOf(c.x);
+                // branch: 親(from)レーンから子(to)レーンへ、分岐シーンの手前から斜めに。
+                // merge : 畳まれる(from)線が対象(to)レーンへ、合流シーンの直後へ斜めに。
+                const d =
+                  c.kind === "branch"
+                    ? `M ${X - CONNECTOR_RAMP} ${c.fromY} C ${X - CONNECTOR_RAMP * 0.4} ${c.fromY}, ${X - CONNECTOR_RAMP * 0.6} ${c.toY}, ${X} ${c.toY}`
+                    : `M ${X} ${c.fromY} C ${X + CONNECTOR_RAMP * 0.6} ${c.fromY}, ${X + CONNECTOR_RAMP * 0.4} ${c.toY}, ${X + CONNECTOR_RAMP} ${c.toY}`;
+                return (
+                  <path
+                    key={`conn-${c.id}`}
+                    data-testid="plot-thread-connector"
+                    data-kind={c.kind}
+                    d={d}
+                    fill="none"
+                    stroke={c.color ?? "var(--primary)"}
+                    strokeWidth={2}
+                    strokeOpacity={0.85}
+                    strokeLinecap="round"
+                    strokeDasharray={c.kind === "merge" ? "4 3" : undefined}
+                    pointerEvents="none"
+                  />
+                );
+              })}
           </svg>
         </div>
 

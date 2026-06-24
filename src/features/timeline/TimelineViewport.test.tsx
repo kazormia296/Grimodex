@@ -776,3 +776,143 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     expect(addBranch).not.toHaveBeenCalled();
   });
 });
+
+describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", () => {
+  beforeEach(resetStore);
+
+  const scenes = [
+    { ...mockScene, id: "s1" },
+    { ...mockScene, id: "s2" },
+  ];
+  const th = (id: string, so: string) => ({
+    id,
+    projectId: "p",
+    name: id,
+    color: null,
+    description: null,
+    sortOrder: so,
+    createdAt: "",
+    updatedAt: "",
+  });
+  const lk = (id: string, threadId: string, nodeId: string) => ({
+    id,
+    threadId,
+    nodeId,
+    phaseType: "introduce" as const,
+    note: null,
+    sortOrder: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+  // lane0=158, lane1=214, lane2=270 / s1 x=48, s2 x=144
+  // branch br1: A→B @ s1。構造側マーカーは B@s1 = lB。
+  function seedBranch() {
+    usePlotThreadStore.setState({
+      threads: [th("A", "a0"), th("B", "a1"), th("C", "a2")],
+      links: [lk("lB", "B", "s1")],
+      branches: [
+        {
+          id: "br1",
+          projectId: "p",
+          fromThreadId: "A",
+          toThreadId: "B",
+          atNodeId: "s1",
+          kind: "branch" as const,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      loading: false,
+    });
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+  }
+
+  it("同レーンでドラッグ → エッジの at_node が追従する", () => {
+    seedBranch();
+    const updateMarker = vi.fn();
+    const updateBranch = vi.fn();
+    const addBranch = vi.fn();
+    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const m = getByTestId("plot-marker-lB"); // B@s1 (x48,y214)
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 }); // 同 B レーンの s2
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    expect(updateMarker).toHaveBeenCalledWith("lB", { nodeId: "s2" });
+    expect(updateBranch).toHaveBeenCalledWith("br1", { atNodeId: "s2" });
+    expect(addBranch).not.toHaveBeenCalled();
+  });
+
+  it("別スレッドへドロップ → エッジの構造側を付け替え（新規作らない）", () => {
+    seedBranch();
+    const updateMarker = vi.fn();
+    const updateBranch = vi.fn();
+    const addBranch = vi.fn();
+    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const m = getByTestId("plot-marker-lB"); // B@s1
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 270 }); // C レーンの s2
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 270 });
+    // マーカーは C へ、branch の to を C へ付け替え＋at_node 追従
+    expect(updateMarker).toHaveBeenCalledWith("lB", {
+      threadId: "C",
+      nodeId: "s2",
+    });
+    expect(updateBranch).toHaveBeenCalledWith("br1", {
+      toThreadId: "C",
+      atNodeId: "s2",
+    });
+    expect(addBranch).not.toHaveBeenCalled();
+  });
+
+  it("付け替えで既存エッジと重複するなら rebind せず削除する", () => {
+    usePlotThreadStore.setState({
+      threads: [th("A", "a0"), th("B", "a1")],
+      links: [lk("lB1", "B", "s1"), lk("lB2", "B", "s2")],
+      branches: [
+        {
+          id: "br1",
+          projectId: "p",
+          fromThreadId: "A",
+          toThreadId: "B",
+          atNodeId: "s1",
+          kind: "branch" as const,
+          createdAt: "",
+          updatedAt: "",
+        },
+        {
+          id: "br2",
+          projectId: "p",
+          fromThreadId: "A",
+          toThreadId: "B",
+          atNodeId: "s2",
+          kind: "branch" as const,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      loading: false,
+    });
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const updateMarker = vi.fn();
+    const updateBranch = vi.fn();
+    const deleteBranch = vi.fn();
+    usePlotThreadStore.setState({ updateMarker, updateBranch, deleteBranch });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const m = getByTestId("plot-marker-lB1"); // B@s1 (x48,y214)
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 }); // B レーンの s2
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    // br1 が A→B@s2 になり br2 と重複 → rebind せず br1 を削除
+    expect(deleteBranch).toHaveBeenCalledWith("br1");
+    expect(updateBranch).not.toHaveBeenCalled();
+    expect(updateMarker).toHaveBeenCalledWith("lB1", { nodeId: "s2" });
+  });
+});

@@ -262,6 +262,20 @@ Phase 5 の「両スレッドに点を打つ」を見直し、**構造的に意�
 
 > 既知（minor・by-design）: branch で先(to)が既にそのシーンに点を持つ場合、移動で同一(thread,scene)の点が2つになりうる。これは「1スレッド×1シーンに複数 phase 可」の既存許容（move-scene も同様）と同種で、収束カウントは thread 単位で1回・データ破損なし。今は据え置き。
 
+## Phase 8: subway ランプコネクタ ＋ エッジのドラッグ追従/付け替え（2026-06-24）
+
+1. **subway 風ランプコネクタ（#1・ランプ方式採用）** — merge/branch のコネクタを短い縦ブリッジから**斜めのランプ**へ。branch=親レーンから子レーンへ枝分かれ、merge=畳まれる線が対象レーンへ合流（`CONNECTOR_RAMP`）。レーンは固定・ラベルそのまま・マーカー衝突なし。フル動的レーン共有は、合流後ビート無しで見た目はランプと同等＋ラベル衝突/行非固定の副作用があるため不採用（相談で決定）。
+2. **エッジのドラッグ追従/付け替え（#2）** — branch/merge の**構造側マーカー**（branch=to / merge=from、at=そのシーン）をドラッグすると、その点が持つエッジが追従:
+   - 同レーン内移動 → エッジの `at_node` を新シーンへ（`updateBranch`）。
+   - 別スレッドへドロップ → エッジの構造側（branch=to / merge=from）を新スレッドへ**付け替え**＋`at_node` 追従（マーカーも移動）。新規エッジは作らない。付け替えが自己参照になる場合はエッジ削除。
+   - `updatePlotThreadBranch`（Drizzle・Rust 不要）＋ store `updateBranch` を追加。`markerDrag` に `nodeId` を保持してアンカー判定。
+   - 既にエッジを持たないマーカーの別スレッドドロップは従来どおり新規 branch/merge 作成。
+
+### Phase 8 敵対的レビュー（2026-06-24）
+
+- **(important・修正済) アンカー追従/付け替えが重複エッジを生む** — `commitMarkerDrop` のアンカー rebind 経路が、`addBranch`/非アンカー新規経路と違って `(from,to,at,kind)` の重複チェックを迂回していた。例: `A→B@s1` と `A→B@s2` が併存し、B レーンの s1 アンカーを s2 へドラッグすると `A→B@s2` が重複。`plot_thread_branches` に UNIQUE が無いため重複行が永続化し、同一コネクタが二重描画される。**修正**: rebind 前に付け替え後タプルが他エッジと一致するか検査し、一致（or 自己参照）なら rebind せずエッジを削除（自己参照削除と同方針）。回帰テスト追加（`TimelineViewport.test.tsx`「付け替えで既存エッジと重複するなら rebind せず削除する」）。
+- **(minor・据え置き by-design) 同一(thread,scene)に複数 phase マーカーがあるとアンカー追従で取り残し** — エッジは特定マーカー(linkId)ではなく `(from,to,at,kind)` 座標で識別される（schema 上 marker を指す列が無い）。同一シーンに introduce＋develop の2点があり片方をドラッグすると、その点とエッジは追従するが他方は残り、どの点がアンカーか曖昧になる。「1スレッド×1シーンに複数 phase 可」の既存許容（Phase 5 の minor と同種）に由来。クラッシュ/データ破損なし。エッジを座標識別から marker 識別へ移すのは schema 変更を伴うため将来課題。
+
 ## 非対象（将来拡張）
 
 - インスペクタの Characters / Location 行、`index #N/M`、`Open in Editor` ボタン、Status ドロップダウン編集、ポップオーバー化（既存設計書の未実装項目のまま）。
