@@ -9,6 +9,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
+import { useCardLayout } from "@/features/layout/cardLayout";
 import { computeAxisLabels } from "./timelineLabels";
 import { ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineContextMenu } from "./TimelineContextMenu";
@@ -150,6 +151,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const setZoom = useTimelineStore((s) => s.setZoom);
     const scrollOffset = useTimelineStore((s) => s.scrollOffset);
     const setScrollOffset = useTimelineStore((s) => s.setScrollOffset);
+    // カードレイアウトでは .gx-panel の 18px 角丸 + overflow-hidden が水平
+    // スクロールバーの左右端を切る。card 時だけ下方向に少し逃がす（角丸を
+    // クリアする。値は実機 QA で微調整可）。
+    const cardLayout = useCardLayout();
     const svgRef = useRef<SVGSVGElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const isRestoringRef = useRef(false);
@@ -629,7 +634,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         <div
           ref={setContainerRef}
           data-testid="timeline-scroll-container"
-          className="flex-1 overflow-x-auto overflow-y-auto"
+          className={`flex-1 overflow-x-auto overflow-y-auto${cardLayout ? " pb-2" : ""}`}
           onScroll={handleScroll}
         >
           <svg

@@ -5,7 +5,13 @@ import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useTimelineStore } from "./timelineStore";
+import { useTranslation } from "react-i18next";
+import {
+  useTimelineStore,
+  INSPECTOR_WIDTH_MIN,
+  INSPECTOR_WIDTH_MAX,
+} from "./timelineStore";
+import { Splitter } from "@/features/layout/Splitter";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
@@ -19,6 +25,7 @@ import { recordMark } from "@/lib/perfLog";
 
 export function TimelinePanel() {
   const __perfStart = performance.now();
+  const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
@@ -28,6 +35,8 @@ export function TimelinePanel() {
   const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
   const inspectorOpen = useTimelineStore((s) => s.inspectorOpen);
   const toggleInspector = useTimelineStore((s) => s.toggleInspector);
+  const inspectorWidth = useTimelineStore((s) => s.inspectorWidth);
+  const setInspectorWidth = useTimelineStore((s) => s.setInspectorWidth);
   const showThreads = useTimelineStore((s) => s.showThreads);
   const selectedPlotLinkId = useTimelineStore((s) => s.selectedPlotLinkId);
   const selectedPlotThreadId = useTimelineStore((s) => s.selectedPlotThreadId);
@@ -418,16 +427,35 @@ export function TimelinePanel() {
           onSelectMarker={handleSelectMarker}
           onSelectThread={handleSelectThread}
         />
+        {inspectorOpen && (
+          <Splitter
+            orientation="horizontal"
+            keyboardResize
+            // deltaPx は先行ペイン(ビューポート)を増やす向きが正。インスペクタは
+            // 後続ペインなので幅 = 現在幅 - dx（getState で増分を正しく累積）。
+            onDrag={(dx) =>
+              setInspectorWidth(useTimelineStore.getState().inspectorWidth - dx)
+            }
+            ariaLabel={t("timeline.inspector.resize", "インスペクター幅を調整")}
+            ariaValueNow={inspectorWidth}
+            ariaValueMin={INSPECTOR_WIDTH_MIN}
+            ariaValueMax={INSPECTOR_WIDTH_MAX}
+          />
+        )}
         {inspectorOpen &&
           // オーバーレイ統合: モードではなく「何を選択しているか」でインスペクタを
           // 切り替える。スレッド表示中にプロットのマーカー/スレッドを選択していれば
           // PlotMarkerInspector、それ以外（シーン選択 / 未選択 / スレッド非表示）は
           // TimelineInspector（スレッドを畳むとシーン用に戻る）。
           (showThreads && (selectedPlotLinkId || selectedPlotThreadId) ? (
-            <PlotMarkerInspector onClose={toggleInspector} />
+            <PlotMarkerInspector
+              width={inspectorWidth}
+              onClose={toggleInspector}
+            />
           ) : (
             // 選択が無くてもパネルを出す（中はプレースホルダー）。
             <TimelineInspector
+              width={inspectorWidth}
               node={selectedNode}
               onClose={toggleInspector}
               onUpdateStoryTimeLabel={handleUpdateStoryTimeLabel}

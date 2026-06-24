@@ -16,12 +16,20 @@ export interface TimelineSettings {
   showThreads: boolean;
   zoom: number;
   scrollOffset: number;
+  /** インスペクタ列の幅(px)。Splitter でドラッグ可変・永続化。 */
+  inspectorWidth: number;
   display: {
     showTitles: boolean;
     showChapterNumbers: boolean;
     showPhasePins: boolean;
   };
 }
+
+export const INSPECTOR_WIDTH_MIN = 160;
+export const INSPECTOR_WIDTH_MAX = 480;
+export const INSPECTOR_WIDTH_DEFAULT = 224;
+const clampInspectorWidth = (px: number): number =>
+  Math.round(Math.max(INSPECTOR_WIDTH_MIN, Math.min(INSPECTOR_WIDTH_MAX, px)));
 
 /** 最後に単一選択したノードの id (rangeSelectTo の基準点) */
 let lastSingleSelectId: string | null = null;
@@ -38,6 +46,7 @@ interface TimelineState {
   showThreads: boolean;
   zoom: number;
   scrollOffset: number;
+  inspectorWidth: number;
   selectedNodeIds: string[];
   inspectorOpen: boolean;
   display: TimelineSettings["display"];
@@ -55,6 +64,7 @@ interface TimelineState {
   setSpacingMode: (mode: SpacingMode) => void;
   setZoom: (zoom: number) => void;
   setScrollOffset: (offset: number) => void;
+  setInspectorWidth: (px: number) => void;
   selectNode: (id: string) => void;
   toggleSelect: (id: string) => void;
   rangeSelectTo: (id: string, orderedIds: string[]) => void;
@@ -71,6 +81,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   showThreads: false,
   zoom: 1,
   scrollOffset: 0,
+  inspectorWidth: INSPECTOR_WIDTH_DEFAULT,
   selectedNodeIds: [],
   inspectorOpen: false,
   display: { ...DEFAULT_DISPLAY },
@@ -90,6 +101,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   setSpacingMode: (spacingMode) => set({ spacingMode }),
   setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(4, zoom)) }),
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
+  setInspectorWidth: (px) => set({ inspectorWidth: clampInspectorWidth(px) }),
   selectNode: (id) => {
     lastSingleSelectId = id;
     set({ selectedNodeIds: [id] });
@@ -137,6 +149,9 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
         (settings as { viewMode?: TimelineViewMode }).viewMode === "threads",
       zoom: Math.max(0.25, Math.min(4, settings.zoom ?? 1)),
       scrollOffset: settings.scrollOffset ?? 0,
+      inspectorWidth: clampInspectorWidth(
+        settings.inspectorWidth ?? INSPECTOR_WIDTH_DEFAULT,
+      ),
       display: settings.display ?? { ...DEFAULT_DISPLAY },
     }),
 }));
@@ -150,6 +165,7 @@ function snapshotPersistent(
     showThreads: state.showThreads,
     zoom: state.zoom,
     scrollOffset: state.scrollOffset,
+    inspectorWidth: state.inspectorWidth,
     display: state.display,
   };
 }

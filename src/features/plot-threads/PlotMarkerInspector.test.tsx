@@ -46,7 +46,9 @@ describe("PlotMarkerInspector", () => {
   it("選択中マーカーの phase 変更で updateMarker を呼ぶ", () => {
     const updateMarker = vi.fn();
     usePlotThreadStore.setState({ updateMarker });
-    const { container } = render(<PlotMarkerInspector onClose={vi.fn()} />);
+    const { container } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
     const select = container.querySelector("select") as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "climax" } });
     expect(updateMarker).toHaveBeenCalledWith("l1", { phaseType: "climax" });
@@ -55,7 +57,9 @@ describe("PlotMarkerInspector", () => {
   it("削除ボタンで deleteMarker を呼び選択を解除する", () => {
     const deleteMarker = vi.fn();
     usePlotThreadStore.setState({ deleteMarker });
-    const { getByText } = render(<PlotMarkerInspector onClose={vi.fn()} />);
+    const { getByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
     fireEvent.click(getByText("マーカーを削除"));
     expect(deleteMarker).toHaveBeenCalledWith("l1");
     expect(useTimelineStore.getState().selectedPlotLinkId).toBeNull();
@@ -69,7 +73,9 @@ describe("PlotMarkerInspector", () => {
       selectedPlotLinkId: null,
       selectedPlotThreadId: "t1",
     });
-    const { getByRole } = render(<PlotMarkerInspector onClose={vi.fn()} />);
+    const { getByRole } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
     const group = getByRole("group", { name: "色" });
     const buttons = within(group).getAllByRole("button");
     // 10 パレット + クリア = 11
@@ -91,7 +97,7 @@ describe("PlotMarkerInspector", () => {
       selectedPlotThreadId: null,
     });
     const { getByTestId, getByText } = render(
-      <PlotMarkerInspector onClose={vi.fn()} />,
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
     );
     // 分岐エディタが出る
     expect(getByTestId("plot-branch-editor")).toBeTruthy();
@@ -112,7 +118,9 @@ describe("PlotMarkerInspector", () => {
       selectedPlotLinkId: null,
       selectedPlotThreadId: null,
     });
-    const { getByText } = render(<PlotMarkerInspector onClose={vi.fn()} />);
+    const { getByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
     expect(getByText("スレッドかマーカーを選択してください")).toBeTruthy();
   });
 
@@ -125,7 +133,7 @@ describe("PlotMarkerInspector", () => {
       selectedPlotThreadId: "t1",
     });
     const { getByText, container } = render(
-      <PlotMarkerInspector onClose={vi.fn()} />,
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
     );
     // 名前入力 onBlur で renameThread
     const input = container.querySelector("input") as HTMLInputElement;

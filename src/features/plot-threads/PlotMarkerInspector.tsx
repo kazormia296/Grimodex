@@ -57,7 +57,14 @@ function NoteEditor({
  * threads モードのインスペクタ。選択中のスレッド（レーン見出しクリック）と
  * 選択中のマーカー（マーカークリック）を編集する。
  */
-export function PlotMarkerInspector({ onClose }: { onClose: () => void }) {
+export function PlotMarkerInspector({
+  width,
+  onClose,
+}: {
+  /** Splitter で可変・永続化された幅(px)。 */
+  width: number;
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
   const linkId = useTimelineStore((s) => s.selectedPlotLinkId);
   const threadId = useTimelineStore((s) => s.selectedPlotThreadId);
@@ -93,7 +100,8 @@ export function PlotMarkerInspector({ onClose }: { onClose: () => void }) {
   return (
     <div
       data-testid="plot-marker-inspector"
-      className="flex w-56 min-h-0 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border p-3 text-xs"
+      style={{ width }}
+      className="flex min-h-0 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border p-3 text-xs"
     >
       <div className="flex items-center justify-between">
         <span className="font-semibold text-foreground">

@@ -131,6 +131,7 @@ describe("timelineStore.loadFromSettings", () => {
       showThreads: true,
       zoom: 2,
       scrollOffset: 120,
+      inspectorWidth: 300,
       display: {
         showTitles: false,
         showChapterNumbers: false,
@@ -144,6 +145,7 @@ describe("timelineStore.loadFromSettings", () => {
     expect(state.showThreads).toBe(true);
     expect(state.zoom).toBe(2);
     expect(state.scrollOffset).toBe(120);
+    expect(state.inspectorWidth).toBe(300);
     expect(state.display.showPhasePins).toBe(true);
     expect(state.display.showTitles).toBe(false);
   });
@@ -161,6 +163,18 @@ describe("timelineStore.loadFromSettings", () => {
       viewMode: "threads",
     } as unknown as Partial<TimelineSettings>);
     expect(useTimelineStore.getState().showThreads).toBe(true);
+  });
+
+  it("setInspectorWidth は [160,480] にクランプし丸める", () => {
+    const set = useTimelineStore.getState().setInspectorWidth;
+    set(300);
+    expect(useTimelineStore.getState().inspectorWidth).toBe(300);
+    set(10); // 下限
+    expect(useTimelineStore.getState().inspectorWidth).toBe(160);
+    set(9999); // 上限
+    expect(useTimelineStore.getState().inspectorWidth).toBe(480);
+    set(223.6); // 丸め
+    expect(useTimelineStore.getState().inspectorWidth).toBe(224);
   });
 
   it("後方互換: 旧 viewMode='scenes' は showThreads=false", () => {
