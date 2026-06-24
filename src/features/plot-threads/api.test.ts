@@ -20,6 +20,8 @@ describe("plot-threads api normalization", () => {
       color: "#c33",
       description: null,
       sortOrder: "a0",
+      startNodeId: null,
+      endNodeId: null,
       createdAt: "2026-06-22T00:00:00Z",
       updatedAt: "2026-06-22T00:00:00Z",
     });
@@ -35,6 +37,16 @@ describe("plot-threads api normalization", () => {
 
   it("falls back to defaults for a missing thread sortOrder", () => {
     expect(normalizeThread({ id: "t1" }).sortOrder).toBe("a0");
+  });
+
+  it("normalizes start/end span override from snake_case and camelCase", () => {
+    expect(
+      normalizeThread({ id: "t1", start_node_id: "s1", end_node_id: "s9" }),
+    ).toMatchObject({ startNodeId: "s1", endNodeId: "s9" });
+    expect(normalizeThread({ id: "t1", startNodeId: "s2" })).toMatchObject({
+      startNodeId: "s2",
+      endNodeId: null,
+    });
   });
 
   it("normalizes a snake_case link row and defaults phaseType", () => {

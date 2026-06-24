@@ -39,6 +39,8 @@ const thread: PlotThreadRow = {
   color: null,
   description: null,
   sortOrder: "a0",
+  startNodeId: null,
+  endNodeId: null,
   createdAt: "",
   updatedAt: "",
 };

@@ -445,6 +445,8 @@ const SCHEMA_DDL = `
     color TEXT,
     description TEXT,
     sort_order TEXT NOT NULL DEFAULT 'a0',
+    start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+    end_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );

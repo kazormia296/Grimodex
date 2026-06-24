@@ -23,6 +23,9 @@ import { PlotMarkerInspector } from "@/features/plot-threads/PlotMarkerInspector
 import type { PhasePinData } from "./TimelineViewport";
 import { recordMark } from "@/lib/perfLog";
 
+/** ビューポート↔インスペクタ間の縦 Splitter 帯の固定幅(px)。 */
+const INSPECTOR_SPLITTER_PX = 8;
+
 export function TimelinePanel() {
   const __perfStart = performance.now();
   const { t } = useTranslation();
@@ -428,19 +431,34 @@ export function TimelinePanel() {
           onSelectThread={handleSelectThread}
         />
         {inspectorOpen && (
-          <Splitter
-            orientation="horizontal"
-            keyboardResize
-            // deltaPx は先行ペイン(ビューポート)を増やす向きが正。インスペクタは
-            // 後続ペインなので幅 = 現在幅 - dx（getState で増分を正しく累積）。
-            onDrag={(dx) =>
-              setInspectorWidth(useTimelineStore.getState().inspectorWidth - dx)
-            }
-            ariaLabel={t("timeline.inspector.resize", "インスペクター幅を調整")}
-            ariaValueNow={inspectorWidth}
-            ariaValueMin={INSPECTOR_WIDTH_MIN}
-            ariaValueMax={INSPECTOR_WIDTH_MAX}
-          />
+          // 固定幅の flex ボックスで Splitter を包む（CenterContent と同じ作法）。
+          // SplitterHandle は w-full(=width:100%) なので、flex-row に直接置くと
+          // flex-basis 100% を主張してビューポート(flex-1/basis 0%)を 0 幅へ潰し
+          // タイムライン全体が空白になる。固定幅 box 内で cross-axis stretch させる。
+          <div
+            className="relative flex shrink-0"
+            style={{ width: INSPECTOR_SPLITTER_PX }}
+          >
+            <Splitter
+              orientation="horizontal"
+              keyboardResize
+              thickness={INSPECTOR_SPLITTER_PX}
+              // deltaPx は先行ペイン(ビューポート)を増やす向きが正。インスペクタは
+              // 後続ペインなので幅 = 現在幅 - dx（getState で増分を正しく累積）。
+              onDrag={(dx) =>
+                setInspectorWidth(
+                  useTimelineStore.getState().inspectorWidth - dx,
+                )
+              }
+              ariaLabel={t(
+                "timeline.inspector.resize",
+                "インスペクター幅を調整",
+              )}
+              ariaValueNow={inspectorWidth}
+              ariaValueMin={INSPECTOR_WIDTH_MIN}
+              ariaValueMax={INSPECTOR_WIDTH_MAX}
+            />
+          </div>
         )}
         {inspectorOpen &&
           // オーバーレイ統合: モードではなく「何を選択しているか」でインスペクタを
@@ -451,6 +469,7 @@ export function TimelinePanel() {
             <PlotMarkerInspector
               width={inspectorWidth}
               onClose={toggleInspector}
+              scenes={scenes}
             />
           ) : (
             // 選択が無くてもパネルを出す（中はプレースホルダー）。

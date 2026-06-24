@@ -132,3 +132,34 @@ per-project 束ね閾値設定。
 ## 非対象（将来）
 
 - story-time での線描画（恒久非対象）。レーン経路最適化の ILP 化。手動グループテーブル。anchor_link_id による座標識別曖昧性の根治。
+
+## 実装時の確定（2026-06-25・MVP 出荷）
+
+設計からの差分を記録する（実装で判明した制約・判断）。
+
+- **束ねは「生存スパンの重なり ≥ MIN_BUNDLE_SPAN」で導出**（厳密な「同一列マーカー共起」ではなく
+  carry-forward 込みの *並走区間* で判定する＝2 本が同じ区間を生きていれば束ねる、の方が
+  「並走を 1 トラック」の直観に合う）。当初案の「分岐/合流エッジも束ね入力」は撤回した。
+  branch/merge は *接続点*（ファンイン/アウト）であってトラック束ねではなく、1 列重なりの
+  エッジまで union すると from/to が同一スロットへ畳まれ分岐そのものが視覚的に消える。
+  エッジは従来どおり connectors（ランプ）で表現する。エッジの directional/partial-span 束ね
+  （merge=X 以降のみ / branch=X 以前のみ）はサブレーン fan-out と一緒に phase 2 へ。
+- **collapsed 束ねの既知の相互作用制限（phase 2 = fan-out で解消）**: 束ねメンバーは区間中
+  同一スロット Y を共有するため、(a) 束ねトラック上へのマーカー DnD は対象/方向が一意に決まらない
+  （`resolveMarkerDrop` は Y 最寄り＋下=branch/上=merge だが、メンバーが重なる Y では区別不能で
+  既定 merge・先頭メンバーへ解決）、(b) 同一初出列のメンバーはレーンヒット矩形が重なり
+  ダブルクリック追加が最前面の 1 本にしか当たらない。サブレーン fan-out（BUNDLE_GAP）で
+  メンバーを薄く広げれば両者解消する。MVP は collapsed のため受容。
+- **共起束ねメンバー間に直接 branch/merge エッジがあるとそのコネクタは点に潰れる**
+  （fromY===toY）。稀（束ね＝並走なのに更にエッジ）で、fan-out 後は自然に分離。MVP 受容。
+- **非生存スレッド（マーカー無し・override 無し）はスロット末尾へ積む**。compaction モデルでは
+  スロット順 ≠ グローバル sortOrder（並走の非重複スレッドが同スロットを共有しうる）ため、
+  「空スレッドが下に沈む」は本モデルの一貫した帰結として受容する（新規作成直後の一時的現象）。
+- **start/end override は Drizzle 直書き（`updatePlotThreadSpan`）で更新**し専用 Rust コマンドは設けない。
+  Rust patch の `Option<Option<String>>` は serde_json で present-null と absent を区別できず
+  「override 解除」が無言 no-op になるため。plot_thread_branches と同じ aux-data 方針。
+  列追加（migrate.rs / schema.ts / browser-mock）は実施。XPROJ は UI がプロジェクト内シーンのみ提示する前提。
+- **幾何 invariant は純関数の単体テストで gate**（モデルが SVG 属性 y を直接駆動するため、
+  happy-dom でも `seg.y1`/`marker.y`/`connector.fromY` の値が検証できる）。専用 browser test は不要と判断。
+- **ラベル衝突は決定的押し下げを実装**（束ねで lane.y が一致するレーンのラベルのみ +12px ずつ退避）。
+- UNIQUE 索引 DDL（branch 重複の DB 不変条件化）は本 PR では未実施（任意・別 PR 可のまま）。

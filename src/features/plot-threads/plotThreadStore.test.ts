@@ -10,6 +10,7 @@ vi.mock("./api", () => ({
   listPlotThreadBranches: vi.fn(async () => []),
   createPlotThread: vi.fn(),
   updatePlotThread: vi.fn(async () => {}),
+  updatePlotThreadSpan: vi.fn(async () => {}),
   deletePlotThread: vi.fn(async () => {}),
   createPlotThreadLink: vi.fn(),
   updatePlotThreadLink: vi.fn(async () => {}),
@@ -38,6 +39,8 @@ const row = (id: string, sortOrder: string): PlotThreadRow => ({
   color: null,
   description: null,
   sortOrder,
+  startNodeId: null,
+  endNodeId: null,
   createdAt: "",
   updatedAt: "",
 });
@@ -135,6 +138,23 @@ describe("plotThreadStore", () => {
       "t2",
     ]);
     expect(usePlotThreadStore.getState().links).toHaveLength(0);
+  });
+
+  it("setThreadSpan が start/end override を楽観更新し解除もできる", async () => {
+    const { updatePlotThreadSpan } = await import("./api");
+    usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
+    await usePlotThreadStore.getState().setThreadSpan("t1", {
+      startNodeId: "s1",
+    });
+    expect(updatePlotThreadSpan).toHaveBeenCalledWith("t1", {
+      startNodeId: "s1",
+    });
+    expect(usePlotThreadStore.getState().threads[0].startNodeId).toBe("s1");
+    // endNodeId は触っていないので維持。start を解除（null）。
+    await usePlotThreadStore.getState().setThreadSpan("t1", {
+      startNodeId: null,
+    });
+    expect(usePlotThreadStore.getState().threads[0].startNodeId).toBeNull();
   });
 
   it("addMarker が作成結果を links に追加する", async () => {

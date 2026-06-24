@@ -1,48 +1,30 @@
 import { describe, it, expect } from "vitest";
 import { resolveMarkerDrop } from "./plotThreadDnd";
 
-// レーン: a(y=100), b(y=156), c(y=212)。laneHeight=56。
-const lanes = [
+// ドロップ列のライブスロット Y(px): a(100), b(156), c(212)。
+const columnSlots = [
   { threadId: "a", y: 100 },
   { threadId: "b", y: 156 },
   { threadId: "c", y: 212 },
 ];
-// xOf: index*96 + 48 → 最寄り scheduled シーン id
-const xOf = (i: number) => 48 + i * 96;
-const sceneIdAt = ["s1", "s2", "s3"];
-const nearestSceneId = (x: number) => {
-  let best = 0;
-  let bestD = Infinity;
-  for (let i = 0; i < 3; i++) {
-    const d = Math.abs(xOf(i) - x);
-    if (d < bestD) {
-      bestD = d;
-      best = i;
-    }
-  }
-  return sceneIdAt[best];
-};
 
-const base = { lanes, laneHeight: 56, nearestSceneId };
-
-describe("resolveMarkerDrop", () => {
-  it("同レーン内ドロップ → シーン移動（最寄りシーン）", () => {
+describe("resolveMarkerDrop（ライブスロット順）", () => {
+  it("同レーン（最寄りスロットが自スレッド）→ シーン移動", () => {
     const r = resolveMarkerDrop({
-      ...base,
-      dropX: 144,
-      dropY: 100,
+      dropY: 102,
       sourceThreadId: "a",
+      nodeId: "s2",
+      columnSlots,
     });
     expect(r).toEqual({ type: "move-scene", nodeId: "s2" });
   });
 
-  it("別レーン(下)へドロップ → その列で branch", () => {
-    // a(index0) を b(index1, y=156) の s2 列(x144)へ
+  it("別レーン(下=y 大)へドロップ → branch", () => {
     const r = resolveMarkerDrop({
-      ...base,
-      dropX: 144,
       dropY: 156,
       sourceThreadId: "a",
+      nodeId: "s2",
+      columnSlots,
     });
     expect(r).toEqual({
       type: "branch",
@@ -53,13 +35,12 @@ describe("resolveMarkerDrop", () => {
     });
   });
 
-  it("別レーン(上)へドロップ → その列で merge", () => {
-    // b(index1) を a(index0, y=100) の s1 列(x48)へ
+  it("別レーン(上=y 小)へドロップ → merge", () => {
     const r = resolveMarkerDrop({
-      ...base,
-      dropX: 48,
       dropY: 100,
       sourceThreadId: "b",
+      nodeId: "s1",
+      columnSlots,
     });
     expect(r).toEqual({
       type: "branch",
@@ -70,41 +51,63 @@ describe("resolveMarkerDrop", () => {
     });
   });
 
-  it("別レーンならマーカーの有無に関わらず drop 列で分岐する", () => {
-    // a を c レーン(y212) の s3 列(x240)へ（c にマーカー無くても branch）
+  it("方向は固定 sortOrder ではなくライブスロット Y で決まる（束ねで反転しても追従）", () => {
+    // ライブ順が c(上), a(下) に再配置された列。a→c へドロップ＝上 → merge。
+    const reordered = [
+      { threadId: "c", y: 100 },
+      { threadId: "a", y: 156 },
+    ];
     const r = resolveMarkerDrop({
-      ...base,
-      dropX: 240,
-      dropY: 212,
+      dropY: 100,
       sourceThreadId: "a",
+      nodeId: "s2",
+      columnSlots: reordered,
     });
-    expect(r).toEqual({
+    expect(r).toMatchObject({
       type: "branch",
       fromThreadId: "a",
       toThreadId: "c",
-      atNodeId: "s3",
-      kind: "branch",
+      kind: "merge",
+    });
+  });
+
+  it("方向は columnSlots の配列順ではなく実 Y で決まる（配列順と逆でも追従）", () => {
+    // columnSlots の配列順は a→b（昇順）だが、ライブ Y は b が上(100)・a が下(200)。
+    // a を b(上, y100) へドロップ → 上 = merge。配列 index 比較なら branch になり誤判定。
+    const inverted = [
+      { threadId: "a", y: 200 },
+      { threadId: "b", y: 100 },
+    ];
+    const r = resolveMarkerDrop({
+      dropY: 100,
+      sourceThreadId: "a",
+      nodeId: "s2",
+      columnSlots: inverted,
+    });
+    expect(r).toMatchObject({
+      type: "branch",
+      fromThreadId: "a",
+      toThreadId: "b",
+      kind: "merge",
     });
   });
 
   it("最寄りシーンが無ければ none", () => {
     const r = resolveMarkerDrop({
-      ...base,
-      nearestSceneId: () => undefined,
-      dropX: 0,
       dropY: 100,
       sourceThreadId: "a",
+      nodeId: undefined,
+      columnSlots,
     });
     expect(r).toEqual({ type: "none" });
   });
 
-  it("レーンが無ければ none", () => {
+  it("列にレーンが無ければ none", () => {
     const r = resolveMarkerDrop({
-      ...base,
-      lanes: [],
-      dropX: 0,
       dropY: 0,
       sourceThreadId: "a",
+      nodeId: "s1",
+      columnSlots: [],
     });
     expect(r).toEqual({ type: "none" });
   });

@@ -8,6 +8,7 @@ import {
   listPlotThreadBranches,
   createPlotThread,
   updatePlotThread,
+  updatePlotThreadSpan,
   deletePlotThread,
   createPlotThreadLink,
   updatePlotThreadLink,
@@ -33,6 +34,11 @@ interface PlotThreadState {
   ) => Promise<void>;
   renameThread: (id: string, name: string) => Promise<void>;
   setThreadColor: (id: string, color: string | null) => Promise<void>;
+  /** 束ねレイアウトの生存スパン override（始端/終端シーン）を設定/解除する。 */
+  setThreadSpan: (
+    id: string,
+    patch: { startNodeId?: string | null; endNodeId?: string | null },
+  ) => Promise<void>;
   deleteThread: (id: string) => Promise<void>;
   addMarker: (
     threadId: string,
@@ -111,6 +117,25 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
     await updatePlotThread(id, { color });
     set({
       threads: get().threads.map((t) => (t.id === id ? { ...t, color } : t)),
+    });
+  },
+
+  setThreadSpan: async (id, patch) => {
+    await updatePlotThreadSpan(id, patch);
+    set({
+      threads: get().threads.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              ...("startNodeId" in patch
+                ? { startNodeId: patch.startNodeId ?? null }
+                : {}),
+              ...("endNodeId" in patch
+                ? { endNodeId: patch.endNodeId ?? null }
+                : {}),
+            }
+          : t,
+      ),
     });
   },
 

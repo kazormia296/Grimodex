@@ -1205,6 +1205,15 @@ export const plotThreads = sqliteTable(
     description: text("description"),
     // レーン縦順の fractional-index（base62、辞書順比較）
     sortOrder: text("sort_order").notNull().default("a0"),
+    // 束ねレイアウトの生存スパン明示指定（NULL=最初/最後のマーカーから導出）。
+    // シーン削除で onDelete:set null → override 解除（スレッド自体は残る）。
+    // src-tauri migrate.rs の plot_threads とミラー。
+    startNodeId: text("start_node_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
+    endNodeId: text("end_node_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),

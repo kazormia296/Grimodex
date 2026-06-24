@@ -200,6 +200,8 @@ describe("TimelineViewport – threads モード", () => {
           color: "#c33",
           description: null,
           sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
           createdAt: "",
           updatedAt: "",
         },
@@ -259,6 +261,8 @@ describe("TimelineViewport – threads モード", () => {
           color: null,
           description: null,
           sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
           createdAt: "",
           updatedAt: "",
         },
@@ -286,6 +290,8 @@ describe("TimelineViewport – threads モード", () => {
           color: null,
           description: null,
           sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
           createdAt: "",
           updatedAt: "",
         },
@@ -414,6 +420,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           color: null,
           description: null,
           sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
           createdAt: "",
           updatedAt: "",
         },
@@ -424,6 +432,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           color: null,
           description: null,
           sortOrder: "a1",
+          startNodeId: null,
+          endNodeId: null,
           createdAt: "",
           updatedAt: "",
         },
@@ -629,6 +639,8 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     color: null,
     description: null,
     sortOrder,
+    startNodeId: null,
+    endNodeId: null,
     createdAt: "",
     updatedAt: "",
   });
@@ -791,6 +803,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     color: null,
     description: null,
     sortOrder: so,
+    startNodeId: null,
+    endNodeId: null,
     createdAt: "",
     updatedAt: "",
   });
@@ -836,10 +850,11 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
-    const m = getByTestId("plot-marker-lB"); // B@s1 (x48,y214)
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 }); // 同 B レーンの s2
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    // B が唯一の生存スレッド → slot0(y158)。A/C はマーカー無しで下へ積まれる。
+    const m = getByTestId("plot-marker-lB"); // B@s1 (x48,y158)
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 158 }); // 同 B レーンの s2
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 158 });
     expect(updateMarker).toHaveBeenCalledWith("lB", { nodeId: "s2" });
     expect(updateBranch).toHaveBeenCalledWith("br1", { atNodeId: "s2" });
     expect(addBranch).not.toHaveBeenCalled();
@@ -906,10 +921,11 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
-    const m = getByTestId("plot-marker-lB1"); // B@s1 (x48,y214)
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 }); // B レーンの s2
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    // B が唯一の生存スレッド → slot0(y158)。A はマーカー無しで下へ積まれる。
+    const m = getByTestId("plot-marker-lB1"); // B@s1 (x48,y158)
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 158 }); // B レーンの s2
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 158 });
     // br1 が A→B@s2 になり br2 と重複 → rebind せず br1 を削除
     expect(deleteBranch).toHaveBeenCalledWith("br1");
     expect(updateBranch).not.toHaveBeenCalled();

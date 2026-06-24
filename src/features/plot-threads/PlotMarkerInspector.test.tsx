@@ -15,6 +15,8 @@ const thread: PlotThreadRow = {
   color: null,
   description: null,
   sortOrder: "a0",
+  startNodeId: null,
+  endNodeId: null,
   createdAt: "",
   updatedAt: "",
 };
@@ -46,10 +48,10 @@ describe("PlotMarkerInspector", () => {
   it("選択中マーカーの phase 変更で updateMarker を呼ぶ", () => {
     const updateMarker = vi.fn();
     usePlotThreadStore.setState({ updateMarker });
-    const { container } = render(
+    const { getByLabelText } = render(
       <PlotMarkerInspector width={224} onClose={vi.fn()} />,
     );
-    const select = container.querySelector("select") as HTMLSelectElement;
+    const select = getByLabelText("段階") as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "climax" } });
     expect(updateMarker).toHaveBeenCalledWith("l1", { phaseType: "climax" });
   });
@@ -111,6 +113,31 @@ describe("PlotMarkerInspector", () => {
         kind: "branch",
       }),
     );
+  });
+
+  it("生存スパンの始端シーン選択で setThreadSpan を呼ぶ", () => {
+    const setThreadSpan = vi.fn();
+    usePlotThreadStore.setState({ setThreadSpan });
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: "t1",
+    });
+    const { getByLabelText } = render(
+      <PlotMarkerInspector
+        width={224}
+        onClose={vi.fn()}
+        scenes={[
+          { id: "s1", title: "S1" },
+          { id: "s2", title: "S2" },
+        ]}
+      />,
+    );
+    const start = getByLabelText("始端シーン") as HTMLSelectElement;
+    fireEvent.change(start, { target: { value: "s2" } });
+    expect(setThreadSpan).toHaveBeenCalledWith("t1", { startNodeId: "s2" });
+    // 「（自動）」を選ぶと解除（null）。
+    fireEvent.change(start, { target: { value: "" } });
+    expect(setThreadSpan).toHaveBeenCalledWith("t1", { startNodeId: null });
   });
 
   it("何も選択していなければプレースホルダーを出す", () => {

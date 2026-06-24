@@ -15,6 +15,9 @@ export interface PlotThreadRow {
   color: string | null;
   description: string | null;
   sortOrder: string;
+  /** 束ねレイアウトの生存スパン明示指定（NULL=最初/最後のマーカーから導出）。 */
+  startNodeId: string | null;
+  endNodeId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +50,8 @@ export function normalizeThread(raw: unknown): PlotThreadRow {
     color: nullable(r.color),
     description: nullable(r.description),
     sortOrder: s(r.sortOrder ?? r.sort_order, "a0"),
+    startNodeId: nullable(r.startNodeId ?? r.start_node_id),
+    endNodeId: nullable(r.endNodeId ?? r.end_node_id),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -125,6 +130,25 @@ export async function updatePlotThread(
     .update(plotThreads)
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(eq(plotThreads.id, id));
+}
+
+/**
+ * 束ねレイアウトの生存スパン override（start_node_id/end_node_id）を更新する。
+ * plot_thread_branches と同様に Drizzle 直書き（db_execute）で行い専用 Rust コマンドは
+ * 設けない（Rust patch の Option<Option> は serde で present-null と absent を区別できず
+ * 「override 解除」が無言で no-op になるため。Drizzle なら null セットで確実に解除できる）。
+ * patch にキーが存在する軸だけ更新する（startNodeId/endNodeId を個別に set/clear 可能）。
+ */
+export async function updatePlotThreadSpan(
+  id: string,
+  patch: { startNodeId?: string | null; endNodeId?: string | null },
+): Promise<void> {
+  const set: Record<string, unknown> = {
+    updatedAt: new Date().toISOString(),
+  };
+  if ("startNodeId" in patch) set.startNodeId = patch.startNodeId ?? null;
+  if ("endNodeId" in patch) set.endNodeId = patch.endNodeId ?? null;
+  await db.update(plotThreads).set(set).where(eq(plotThreads.id, id));
 }
 
 export async function deletePlotThread(id: string): Promise<void> {

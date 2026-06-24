@@ -60,10 +60,13 @@ function NoteEditor({
 export function PlotMarkerInspector({
   width,
   onClose,
+  scenes = [],
 }: {
   /** Splitter で可変・永続化された幅(px)。 */
   width: number;
   onClose: () => void;
+  /** 生存スパン override 用のシーン候補（reading 順。id/title）。 */
+  scenes?: Array<{ id: string; title: string }>;
 }) {
   const { t } = useTranslation();
   const linkId = useTimelineStore((s) => s.selectedPlotLinkId);
@@ -78,6 +81,7 @@ export function PlotMarkerInspector({
   const threads = usePlotThreadStore((s) => s.threads);
   const renameThread = usePlotThreadStore((s) => s.renameThread);
   const setThreadColor = usePlotThreadStore((s) => s.setThreadColor);
+  const setThreadSpan = usePlotThreadStore((s) => s.setThreadSpan);
   const deleteThread = usePlotThreadStore((s) => s.deleteThread);
   const updateMarker = usePlotThreadStore((s) => s.updateMarker);
   const deleteMarker = usePlotThreadStore((s) => s.deleteMarker);
@@ -177,6 +181,51 @@ export function PlotMarkerInspector({
             </div>
           </div>
 
+          {/* 生存スパン override（始端/終端シーン）。NULL=最初/最後のマーカーから
+              自動導出（既定）。subway 束ねの帯の始まり/終わりを明示したいとき使う。 */}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground">
+              {t("plotThread.span", "生存スパン（始端/終端）")}
+            </span>
+            <div className="flex items-center gap-1">
+              <select
+                aria-label={t("plotThread.spanStart", "始端シーン")}
+                value={thread.startNodeId ?? ""}
+                onChange={(e) =>
+                  void setThreadSpan(thread.id, {
+                    startNodeId: e.target.value || null,
+                  })
+                }
+                className="min-w-0 flex-1 rounded border border-border bg-background px-1 py-0.5 text-xs focus:outline-none"
+              >
+                <option value="">{t("plotThread.spanAuto", "（自動）")}</option>
+                {scenes.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.title || s.id}
+                  </option>
+                ))}
+              </select>
+              <span className="text-muted-foreground">→</span>
+              <select
+                aria-label={t("plotThread.spanEnd", "終端シーン")}
+                value={thread.endNodeId ?? ""}
+                onChange={(e) =>
+                  void setThreadSpan(thread.id, {
+                    endNodeId: e.target.value || null,
+                  })
+                }
+                className="min-w-0 flex-1 rounded border border-border bg-background px-1 py-0.5 text-xs focus:outline-none"
+              >
+                <option value="">{t("plotThread.spanAuto", "（自動）")}</option>
+                {scenes.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.title || s.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <button
             onClick={() => {
               void deleteThread(thread.id);
@@ -200,6 +249,7 @@ export function PlotMarkerInspector({
                   {t("plotThread.phase", "段階")}
                 </span>
                 <select
+                  aria-label={t("plotThread.phase", "段階")}
                   value={link.phaseType}
                   onChange={(e) =>
                     void updateMarker(link.id, {

@@ -206,6 +206,24 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       [threads, links, sceneX, threadsTop, branches, scheduledCountForLanes],
     );
 
+    // ラベル衝突の決定的押し下げ: 束ね（共有スロット）で lane.y が一致するレーンの
+    // ラベルが重ならないよう、レーン順に既使用 Y を避けて配置する（線/マーカーは不動）。
+    const plotLabelY = useMemo(() => {
+      const used = new Set<number>();
+      const map = new Map<string, number>();
+      for (const lane of laneModel.lanes) {
+        let y = lane.y - 10;
+        while (used.has(y)) y += 12;
+        used.add(y);
+        map.set(lane.thread.id, y);
+      }
+      return map;
+    }, [laneModel]);
+
+    /** その列でのレーンのスロット Y（px）。slotByColumn は threadsTop 基準。 */
+    const laneSlotY = (lane: (typeof laneModel.lanes)[number], x: number) =>
+      threadsTop + (lane.slotByColumn.get(x) ?? 0) * LANE_HEIGHT;
+
     const svgHeight =
       showThreads && laneModel.lanes.length > 0
         ? Math.max(sceneAreaBottom, laneModel.contentHeight + 16)
@@ -408,16 +426,18 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         onSelectMarker?.(d.linkId);
         return;
       }
+      // ドロップ列のライブスロット順で方向を判定する（固定 sortOrder ではない）。
+      // 各レーンの当該列スロット Y（無ければアンカー lane.y）を渡す。
+      const dropCol = nearestSceneIndex(d.currentX);
+      const dropNodeId = dropCol >= 0 ? scenes[dropCol]?.id : undefined;
       const action = resolveMarkerDrop({
-        dropX: d.currentX,
         dropY: d.currentY,
         sourceThreadId: d.threadId,
-        lanes: laneModel.lanes.map((l) => ({
+        nodeId: dropNodeId,
+        columnSlots: laneModel.lanes.map((l) => ({
           threadId: l.thread.id,
-          y: l.y,
+          y: l.slotByColumn.has(dropCol) ? laneSlotY(l, dropCol) : l.y,
         })),
-        laneHeight: LANE_HEIGHT,
-        nearestSceneId,
       });
       if (action.type === "none") return;
       const store = usePlotThreadStore.getState();
@@ -998,31 +1018,36 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         data-testid={`plot-thread-line-${lane.thread.id}-${i}`}
                         x1={xOf(seg.x1)}
                         x2={xOf(seg.x2)}
-                        y1={lane.y}
-                        y2={lane.y}
+                        y1={seg.y1}
+                        y2={seg.y2}
                         stroke={lane.thread.color ?? "var(--primary)"}
                         strokeWidth={BAND_HEIGHT}
                         strokeOpacity={0.45}
-                        strokeLinecap="round"
+                        // butt 端（round だと水平 run↔斜めブリッジの継ぎ目ごとに
+                        // 半径 BAND_HEIGHT/2 のキャップが重なり太い瘤になる＝束ね時の
+                        // スロット変化で多発）。終端は明示ノブ(terminus)で締める。
+                        strokeLinecap="butt"
                         pointerEvents="none"
                       />
                     ))}
                   {/* 終端キャップ（完結）。自走で終わるスレッドの線端に塗りノブ。
-                      merge で畳まれた終端には付かない（コネクタで表現）。 */}
+                      merge で畳まれた終端には付かない（コネクタで表現）。
+                      Y はその列のスロット由来（束ね/スロット移動を追従）。 */}
                   {axisMode === "reading" && lane.terminusX !== null && (
                     <circle
                       data-testid={`plot-thread-terminus-${lane.thread.id}`}
                       cx={xOf(lane.terminusX)}
-                      cy={lane.y}
+                      cy={laneSlotY(lane, lane.terminusX)}
                       r={BAND_HEIGHT / 2}
                       fill={lane.thread.color ?? "var(--primary)"}
                       pointerEvents="none"
                     />
                   )}
-                  {/* レーン見出し（左固定・クリックでスレッド編集） */}
+                  {/* レーン見出し（左固定・クリックでスレッド編集）。
+                      束ねで lane.y が一致する場合は plotLabelY で押し下げる。 */}
                   <text
                     x={4}
-                    y={lane.y - 10}
+                    y={plotLabelY.get(lane.thread.id) ?? lane.y - 10}
                     fontSize={11}
                     fill="currentColor"
                     fillOpacity={0.8}
@@ -1075,7 +1100,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                           className="cursor-pointer"
                           opacity={dragging ? 0.3 : 1}
                           cx={cx}
-                          cy={lane.y}
+                          cy={mk.y}
                           r={DOT_R}
                           fill={fill}
                           stroke={
@@ -1101,7 +1126,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                       >
                         <rect
                           x={cx - chipW / 2}
-                          y={lane.y - BAND_HEIGHT / 2}
+                          y={mk.y - BAND_HEIGHT / 2}
                           width={chipW}
                           height={BAND_HEIGHT}
                           rx={BAND_HEIGHT / 2}
@@ -1113,7 +1138,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         />
                         <text
                           x={cx}
-                          y={lane.y}
+                          y={mk.y}
                           textAnchor="middle"
                           dominantBaseline="central"
                           fontSize={CHIP_FONT}
