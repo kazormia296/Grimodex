@@ -22,7 +22,15 @@ import { usePlotThreadStore } from "./plotThreadStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import type { PlotThreadRow, PlotThreadLinkRow } from "./api";
 
-vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
+// tauri モジュールを丸ごと差し替えるので、推移的に取り込まれるモジュールが
+// 静的 import する値エクスポート（listen/emit）も漏れなく与える。欠けると
+// "does not provide an export named 'listen'" で suite ごと import 失敗する。
+vi.mock("@/lib/tauri", () => ({
+  invoke: vi.fn(),
+  isTauri: () => false,
+  listen: vi.fn(async () => () => {}),
+  emit: vi.fn(async () => {}),
+}));
 
 const thread: PlotThreadRow = {
   id: "t1",
