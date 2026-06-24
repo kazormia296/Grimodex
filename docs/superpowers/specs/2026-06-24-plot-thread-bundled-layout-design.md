@@ -133,9 +133,32 @@ per-project 束ね閾値設定。
 
 - story-time での線描画（恒久非対象）。レーン経路最適化の ILP 化。手動グループテーブル。anchor_link_id による座標識別曖昧性の根治。
 
-## 実装時の確定（2026-06-25・MVP 出荷）
+## 方針転換（2026-06-25・ユーザー実機フィードバック後）— 束ね collapse 廃止
 
-設計からの差分を記録する（実装で判明した制約・判断）。
+実機で確認したところ、ユーザーの意図は **Plottr 型ストーリーライン図**（xkcd/StoryFlow 風）であり、
+「並走を 1 トラックに畳む（collapse）」ではなかった。畳むと太いバンドで下のスレッドが完全に隠れる。
+正しくは **各スレッドが自分の固定ホーム行を走り、出会う（収束）シーンでだけ線が互いに寄る**。
+
+そこで束ね collapse／交差最小化スロット／union-find を **撤去**し、レイアウトコアを以下へ単純化した
+（出力 px Y 契約・rendering＝太いバンド＋段階チップは不変）:
+
+- **ホーム行**: 各スレッド Y = sortOrder 順の固定行（`laneTop + homeRow*LANE_HEIGHT`）。畳まない。
+- **出会いで寄せない**（ユーザー指定 2026-06-25）: 各線はホーム行を真っ直ぐ走る。収束は
+  `convergences` の淡い縦バンドのみで表す。`yByColumn[c]` は全生存列でホーム行 Y。
+  （一度「中心へ寄せる lean」を入れたが実機確認後に撤去。`MEET_LEAN`/`MEET_MIN_GAP` も削除。）
+- 出力の `slotByColumn`(整数スロット) を `yByColumn`(px Y) へ置換。`bundles`/`bundleId`/`PlotBundle`/
+  `MIN_BUNDLE_SPAN`/8パスmedian/best-snapshot/compaction を全廃。
+- carry-forward(#7)／merge 着地(#5: コネクタ Y は at 列の実 Y)／始端終端 override／終端ノブ／
+  scheduledCount 除外／決定性（sortOrder,id）は維持。
+- DnD 方向はドロップ列のライブ Y(`yByColumn`)順を継続使用。
+- ホーム行順は sortOrder（ユーザーが並べ替えで出会いを隣接させられる Plottr 流）。crossing-min は不要。
+
+→ 以降「束ね/collapse/slot」に関する旧記述（下記）は **撤回済み**。エンジン正本は
+`plotThreadLaneModel.ts`（ホーム行＋出会い lean）、テストは `plotThreadLaneModel.test.ts`。
+
+## 実装時の確定（2026-06-25・初版 MVP・**上記で撤回**）
+
+設計からの差分を記録する（実装で判明した制約・判断）。**※ collapse 束ねは上の方針転換で撤去済み。**
 
 - **束ねは「生存スパンの重なり ≥ MIN_BUNDLE_SPAN」で導出**（厳密な「同一列マーカー共起」ではなく
   carry-forward 込みの *並走区間* で判定する＝2 本が同じ区間を生きていれば束ねる、の方が

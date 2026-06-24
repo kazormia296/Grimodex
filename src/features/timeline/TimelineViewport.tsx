@@ -220,9 +220,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       return map;
     }, [laneModel]);
 
-    /** その列でのレーンのスロット Y（px）。slotByColumn は threadsTop 基準。 */
+    /** その列でのレーンの実 Y（px）。yByColumn は threadsTop 基準の絶対 px。 */
     const laneSlotY = (lane: (typeof laneModel.lanes)[number], x: number) =>
-      threadsTop + (lane.slotByColumn.get(x) ?? 0) * LANE_HEIGHT;
+      lane.yByColumn.get(x) ?? lane.y;
 
     const svgHeight =
       showThreads && laneModel.lanes.length > 0
@@ -436,7 +436,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         nodeId: dropNodeId,
         columnSlots: laneModel.lanes.map((l) => ({
           threadId: l.thread.id,
-          y: l.slotByColumn.has(dropCol) ? laneSlotY(l, dropCol) : l.y,
+          y: l.yByColumn.get(dropCol) ?? l.y,
         })),
       });
       if (action.type === "none") return;
