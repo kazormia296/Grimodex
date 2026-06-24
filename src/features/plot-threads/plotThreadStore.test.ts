@@ -24,6 +24,7 @@ import {
   createPlotThread,
   createPlotThreadLink,
   createPlotThreadBranch,
+  deletePlotThreadBranch,
   type PlotThreadRow,
   type PlotThreadLinkRow,
   type PlotThreadBranchRow,
@@ -259,6 +260,46 @@ describe("plotThreadStore", () => {
     await usePlotThreadStore.getState().deleteThread("t1");
     expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
       "br3",
+    ]);
+  });
+
+  it("deleteMarker がアンカー側エッジをカスケード削除する（#4）", async () => {
+    // br1 = branch(t2→t1)@s1。アンカー側 = to = t1。t1@s1 のマーカー削除で消える。
+    usePlotThreadStore.setState({
+      links: [linkRow("m1")], // t1 / s1
+      branches: [branchRow("br1", "t2", "t1"), branchRow("br2", "t2", "t3")],
+    });
+    await usePlotThreadStore.getState().deleteMarker("m1");
+    expect(deletePlotThreadBranch).toHaveBeenCalledWith("br1");
+    expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
+      "br2",
+    ]);
+    expect(usePlotThreadStore.getState().links).toHaveLength(0);
+  });
+
+  it("deleteMarker は非アンカー側マーカーの削除ではエッジを残す", async () => {
+    // br1 = branch(t1→t2)@s1。アンカー側 = to = t2。from 側(t1)のマーカー削除では消えない。
+    usePlotThreadStore.setState({
+      links: [linkRow("m1")], // t1 / s1（branch の from 側）
+      branches: [branchRow("br1", "t1", "t2")],
+    });
+    await usePlotThreadStore.getState().deleteMarker("m1");
+    expect(deletePlotThreadBranch).not.toHaveBeenCalled();
+    expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
+      "br1",
+    ]);
+  });
+
+  it("deleteMarker は同一(thread,scene)に別 phase が残るならエッジを残す（取り残し防止）", async () => {
+    // m1/m2 とも t1@s1（別 phase）。br1 のアンカーは to=t1@s1。m1 を消しても m2 が残るので維持。
+    usePlotThreadStore.setState({
+      links: [linkRow("m1"), { ...linkRow("m2"), phaseType: "turn" }],
+      branches: [branchRow("br1", "t2", "t1")],
+    });
+    await usePlotThreadStore.getState().deleteMarker("m1");
+    expect(deletePlotThreadBranch).not.toHaveBeenCalled();
+    expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
+      "br1",
     ]);
   });
 });

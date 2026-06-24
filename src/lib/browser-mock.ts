@@ -438,6 +438,37 @@ const SCHEMA_DDL = `
     pov_character_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
     PRIMARY KEY (scene_id, pov_character_id)
   );
+  CREATE TABLE IF NOT EXISTS plot_threads (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL DEFAULT '',
+    color TEXT,
+    description TEXT,
+    sort_order TEXT NOT NULL DEFAULT 'a0',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS plot_thread_scene_links (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    phase_type TEXT NOT NULL
+      CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')),
+    note TEXT,
+    sort_order TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS plot_thread_branches (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    from_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+    to_thread_id TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+    at_node_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('branch','merge')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
   CREATE TABLE IF NOT EXISTS content_versions (
     id TEXT PRIMARY KEY,
     entity_type TEXT NOT NULL CHECK(entity_type IN ('scene','note','codex_entry','snippet')),

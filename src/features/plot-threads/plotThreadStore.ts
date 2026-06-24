@@ -146,9 +146,41 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
 
   deleteMarker: async (id) => {
     const pid = getCurrentProjectId();
+    const link = get().links.find((l) => l.id === id);
     await deletePlotThreadLink(id);
     if (getCurrentProjectId() !== pid) return;
-    set({ links: get().links.filter((l) => l.id !== id) });
+    // アンカー側のエッジをカスケード削除（ユーザー決定=アンカー側のみ:
+    // branch は to 側 / merge は from 側がそのシーンを起点/終端にする）。
+    // ただし同一(thread,scene)に別 phase のマーカーが残るなら、そのエッジは
+    // まだアンカーされているので消さない（複数 phase の取り残し防止）。
+    const orphanIds = new Set<string>();
+    if (link) {
+      const stillAnchored = get().links.some(
+        (l) =>
+          l.id !== id &&
+          l.threadId === link.threadId &&
+          l.nodeId === link.nodeId,
+      );
+      if (!stillAnchored) {
+        for (const b of get().branches) {
+          if (
+            b.atNodeId === link.nodeId &&
+            ((b.kind === "branch" && b.toThreadId === link.threadId) ||
+              (b.kind === "merge" && b.fromThreadId === link.threadId))
+          ) {
+            orphanIds.add(b.id);
+          }
+        }
+        for (const bid of orphanIds) {
+          await deletePlotThreadBranch(bid);
+        }
+        if (getCurrentProjectId() !== pid) return;
+      }
+    }
+    set({
+      links: get().links.filter((l) => l.id !== id),
+      branches: get().branches.filter((b) => !orphanIds.has(b.id)),
+    });
   },
 
   addBranch: async (data) => {

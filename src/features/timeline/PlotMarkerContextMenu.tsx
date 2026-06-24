@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { GitBranch, GitMerge } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTimelineStore } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
@@ -9,6 +10,9 @@ import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
 interface Props {
   linkId: string;
   phaseType: PlotPhaseType;
+  /** このマーカーのシーン/スレッド。ここをアンカーする分岐/合流エッジの削除に使う。 */
+  nodeId: string;
+  threadId: string;
   x: number;
   y: number;
   onClose: () => void;
@@ -21,6 +25,8 @@ interface Props {
 export function PlotMarkerContextMenu({
   linkId,
   phaseType,
+  nodeId,
+  threadId,
   x,
   y,
   onClose,
@@ -29,10 +35,24 @@ export function PlotMarkerContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const updateMarker = usePlotThreadStore((s) => s.updateMarker);
   const deleteMarker = usePlotThreadStore((s) => s.deleteMarker);
+  const deleteBranch = usePlotThreadStore((s) => s.deleteBranch);
+  const branches = usePlotThreadStore((s) => s.branches);
+  const threads = usePlotThreadStore((s) => s.threads);
   const setSelectedPlotLinkId = useTimelineStore(
     (s) => s.setSelectedPlotLinkId,
   );
   const toggleInspector = useTimelineStore((s) => s.toggleInspector);
+
+  // このマーカー(threadId, nodeId)が端点になる分岐/合流エッジ。from/to どちら側でも
+  // 同じシーンに掛かっていれば候補にする（インスペクタの PlotBranchEditor と同条件）。
+  const relatedEdges = branches.filter(
+    (b) =>
+      b.atNodeId === nodeId &&
+      (b.fromThreadId === threadId || b.toThreadId === threadId),
+  );
+  const threadName = (id: string) =>
+    threads.find((tt) => tt.id === id)?.name ||
+    t("plotThread.unnamed", "（無名）");
 
   useEffect(() => {
     function handleMouseDown(e: MouseEvent) {
@@ -113,6 +133,46 @@ export function PlotMarkerContextMenu({
       >
         {t("plotThread.deleteMarker", "マーカーを削除")}
       </button>
+
+      {relatedEdges.length > 0 && (
+        <>
+          <div className="my-1 border-t border-border" />
+          <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {t("plotThread.edges", "分岐 / 合流")}
+          </div>
+          {relatedEdges.map((b) => {
+            const isMerge = b.kind === "merge";
+            const Icon = isMerge ? GitMerge : GitBranch;
+            const pair = `${threadName(b.fromThreadId)} → ${threadName(b.toThreadId)}`;
+            return (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => {
+                  void deleteBranch(b.id);
+                  onClose();
+                }}
+                className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs text-[color:var(--destructive)] hover:bg-destructive/10"
+              >
+                <Icon size={12} className="shrink-0" aria-hidden />
+                <span className="truncate">
+                  {isMerge
+                    ? t("plotThread.deleteMergeEdge", "{{pair}} の合流を削除", {
+                        pair,
+                      })
+                    : t(
+                        "plotThread.deleteBranchEdge",
+                        "{{pair}} の分岐を削除",
+                        {
+                          pair,
+                        },
+                      )}
+                </span>
+              </button>
+            );
+          })}
+        </>
+      )}
     </div>,
     document.body,
   );

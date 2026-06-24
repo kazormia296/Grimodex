@@ -91,6 +91,9 @@ interface ContextMenuState {
 interface MarkerMenuState {
   linkId: string;
   phaseType: PlotPhaseType;
+  /** マーカーのシーン/スレッド。アンカーする分岐/合流エッジの削除に使う。 */
+  nodeId: string;
+  threadId: string;
   x: number;
   y: number;
 }
@@ -506,10 +509,19 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       e: React.MouseEvent<SVGElement>,
       linkId: string,
       phaseType: PlotPhaseType,
+      nodeId: string,
+      threadId: string,
     ) {
       e.preventDefault();
       e.stopPropagation();
-      setMarkerMenu({ linkId, phaseType, x: e.clientX, y: e.clientY });
+      setMarkerMenu({
+        linkId,
+        phaseType,
+        nodeId,
+        threadId,
+        x: e.clientX,
+        y: e.clientY,
+      });
     }
 
     useEffect(() => {
@@ -1041,7 +1053,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         lane.thread.color,
                       );
                     const onCtx = (e: React.MouseEvent<SVGElement>) =>
-                      handleMarkerContextMenu(e, mk.linkId, mk.phaseType);
+                      handleMarkerContextMenu(
+                        e,
+                        mk.linkId,
+                        mk.phaseType,
+                        mk.nodeId,
+                        lane.thread.id,
+                      );
                     // 縮小時は円に縮退（段階テキストは title ツールチップで補う）。
                     if (STEP < CHIP_MIN_STEP) {
                       return (
@@ -1167,6 +1185,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           <PlotMarkerContextMenu
             linkId={markerMenu.linkId}
             phaseType={markerMenu.phaseType}
+            nodeId={markerMenu.nodeId}
+            threadId={markerMenu.threadId}
             x={markerMenu.x}
             y={markerMenu.y}
             onClose={() => setMarkerMenu(null)}
