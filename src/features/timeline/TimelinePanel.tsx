@@ -28,7 +28,12 @@ export function TimelinePanel() {
   const selectedNodeIds = useTimelineStore((s) => s.selectedNodeIds);
   const inspectorOpen = useTimelineStore((s) => s.inspectorOpen);
   const toggleInspector = useTimelineStore((s) => s.toggleInspector);
-  const viewMode = useTimelineStore((s) => s.viewMode);
+  const showThreads = useTimelineStore((s) => s.showThreads);
+  const selectedPlotLinkId = useTimelineStore((s) => s.selectedPlotLinkId);
+  const selectedPlotThreadId = useTimelineStore((s) => s.selectedPlotThreadId);
+  const setSelectedPlotThreadId = useTimelineStore(
+    (s) => s.setSelectedPlotThreadId,
+  );
   const setSelectedPlotLinkId = useTimelineStore(
     (s) => s.setSelectedPlotLinkId,
   );
@@ -155,11 +160,22 @@ export function TimelinePanel() {
 
   const handleSelectScene = useCallback(
     (id: string) => {
+      // 設計書（L415-419）どおり Scenes パネルと同じプレビュー/固定モデル：
+      // シングルクリックは「選択 + プレビュータブで開く」のみ。インスペクタは
+      // 自動オープンしない（⋮ で明示的に開く）。
       selectNode(id);
       useTabStore.getState().openPreview(id);
       setActiveScene(id);
+      // プロット選択を解除し、開いているインスペクタをシーン用に切り替える。
+      setSelectedPlotLinkId(null);
+      setSelectedPlotThreadId(null);
     },
-    [selectNode, setActiveScene],
+    [
+      selectNode,
+      setActiveScene,
+      setSelectedPlotLinkId,
+      setSelectedPlotThreadId,
+    ],
   );
 
   const handleSelectMarker = useCallback(
@@ -403,16 +419,19 @@ export function TimelinePanel() {
           onSelectThread={handleSelectThread}
         />
         {inspectorOpen &&
-          (viewMode === "threads" ? (
+          // オーバーレイ統合: モードではなく「何を選択しているか」でインスペクタを
+          // 切り替える。スレッド表示中にプロットのマーカー/スレッドを選択していれば
+          // PlotMarkerInspector、それ以外（シーン選択 / 未選択 / スレッド非表示）は
+          // TimelineInspector（スレッドを畳むとシーン用に戻る）。
+          (showThreads && (selectedPlotLinkId || selectedPlotThreadId) ? (
             <PlotMarkerInspector onClose={toggleInspector} />
           ) : (
-            selectedNode && (
-              <TimelineInspector
-                node={selectedNode}
-                onClose={toggleInspector}
-                onUpdateStoryTimeLabel={handleUpdateStoryTimeLabel}
-              />
-            )
+            // 選択が無くてもパネルを出す（中はプレースホルダー）。
+            <TimelineInspector
+              node={selectedNode}
+              onClose={toggleInspector}
+              onUpdateStoryTimeLabel={handleUpdateStoryTimeLabel}
+            />
           ))}
       </div>
     </div>

@@ -90,3 +90,21 @@ describe("TimelineInspector – pendingEditNodeId focus wiring", () => {
     expect(useTimelineStore.getState().pendingEditNodeId).toBe("other-id");
   });
 });
+
+describe("TimelineInspector – 未選択時のプレースホルダー", () => {
+  beforeEach(resetStore);
+
+  it("node が null でもパネルを描画しプレースホルダーを出す", () => {
+    const { getByTestId, getByText, queryByRole } = render(
+      <TimelineInspector
+        node={null}
+        onClose={vi.fn()}
+        onUpdateStoryTimeLabel={vi.fn()}
+      />,
+    );
+    expect(getByTestId("timeline-inspector")).toBeTruthy();
+    expect(getByText("シーンを選択すると詳細が表示されます")).toBeTruthy();
+    // 本文フィールド（label input）は出ない
+    expect(queryByRole("textbox")).toBeNull();
+  });
+});

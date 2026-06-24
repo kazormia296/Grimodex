@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { TimelineHeader } from "./TimelineHeader";
 import { useTimelineStore } from "./timelineStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 
 function renderHeader(
   overrides?: Partial<Parameters<typeof TimelineHeader>[0]>,
@@ -22,7 +23,7 @@ function resetStore() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
-    viewMode: "scenes",
+    showThreads: false,
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -105,26 +106,35 @@ describe("TimelineHeader – Spacing mode UI", () => {
   });
 });
 
-describe("TimelineHeader – view mode toggle", () => {
+describe("TimelineHeader – スレッド表示トグル", () => {
   beforeEach(resetStore);
 
-  it("「スレッド」クリックで viewMode が threads になる", () => {
+  it("「スレッド」クリックで showThreads が ON/OFF トグルする", () => {
     renderHeader();
     fireEvent.click(screen.getByText("スレッド"));
-    expect(useTimelineStore.getState().viewMode).toBe("threads");
+    expect(useTimelineStore.getState().showThreads).toBe(true);
+    fireEvent.click(screen.getByText("スレッド"));
+    expect(useTimelineStore.getState().showThreads).toBe(false);
   });
 
-  it("「シーン」クリックで viewMode が scenes に戻る", () => {
-    useTimelineStore.setState({ viewMode: "threads" });
+  it("スレッド追加時に Codex パレットから順番に色を自動割り当てる", () => {
+    const addThread = vi.fn();
+    useTimelineStore.setState({ showThreads: true });
+    usePlotThreadStore.setState({ threads: [], addThread });
     renderHeader();
-    fireEvent.click(screen.getByText("シーン"));
-    expect(useTimelineStore.getState().viewMode).toBe("scenes");
+    fireEvent.click(screen.getByTitle("スレッドを追加"));
+    // simple(既定) light スロット0 = Blue #2045AA を 3 引数目で渡す。
+    expect(addThread).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      "#2045AA",
+    );
   });
 
-  it("threads モードのときだけスレッド追加ボタンが出る", () => {
+  it("スレッド表示中のみスレッド追加ボタンが出る", () => {
     const { rerender } = renderHeader();
     expect(screen.queryByTitle("スレッドを追加")).toBeNull();
-    useTimelineStore.setState({ viewMode: "threads" });
+    useTimelineStore.setState({ showThreads: true });
     rerender(
       <TimelineHeader
         sceneCount={10}

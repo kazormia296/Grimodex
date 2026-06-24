@@ -72,6 +72,7 @@ pub(crate) struct PlotThreadLinkCreatePayload {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PlotThreadLinkPatch {
+    thread_id: Option<String>,
     node_id: Option<String>,
     phase_type: Option<String>,
     note: Option<Option<String>>,
@@ -254,6 +255,38 @@ fn plot_thread_link_update_impl(
     }
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
+    // 別スレッドへ移動する場合は XPROJ ガード: 移動先スレッドと（変更後の）シーンが
+    // 同一 project であることを強制する。node_id が同 patch に無ければ既存値を引く。
+    if let Some(ref new_thread_id) = patch.thread_id {
+        let effective_node_id: Option<String> = match &patch.node_id {
+            Some(n) => Some(n.clone()),
+            None => db
+                .execute(
+                    "SELECT node_id FROM plot_thread_scene_links WHERE id = ?",
+                    &[Value::String(id.clone())],
+                    "get",
+                )?
+                .first()
+                .and_then(|r| r.get("node_id"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        };
+        let thread_project = project_of(db, "plot_threads", new_thread_id)?;
+        let node_project = match &effective_node_id {
+            Some(n) => project_of(db, "tree_nodes", n)?,
+            None => None,
+        };
+        match (thread_project, node_project) {
+            (Some(a), Some(b)) if a == b => {}
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "plot thread link move must stay within the same project"
+                ))
+            }
+        }
+        sets.push("thread_id = ?");
+        params.push(Value::String(new_thread_id.clone()));
+    }
     if let Some(node_id) = patch.node_id {
         sets.push("node_id = ?");
         params.push(Value::String(node_id));
@@ -466,5 +499,87 @@ mod tests {
             },
         );
         assert!(cross.is_err(), "cross-project link must be rejected");
+    }
+
+    #[test]
+    fn link_update_moves_thread_within_project_and_rejects_cross_project() {
+        let d = db();
+        d.execute("INSERT INTO projects (id) VALUES ('p2')", &[], "run")
+            .unwrap();
+        for (id, so) in [("a", "a0"), ("b", "a1")] {
+            d.execute(
+                "INSERT INTO plot_threads (id, project_id, name, sort_order) VALUES (?, 'p1', ?, ?)",
+                &[
+                    Value::String(id.into()),
+                    Value::String(id.into()),
+                    Value::String(so.into()),
+                ],
+                "run",
+            )
+            .unwrap();
+        }
+        d.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s1','p1','scene','S1')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        d.execute(
+            "INSERT INTO plot_threads (id, project_id, name, sort_order) VALUES ('c','p2','c','a0')",
+            &[],
+            "run",
+        )
+        .unwrap();
+        let link = plot_thread_link_create_impl(
+            &d,
+            PlotThreadLinkCreatePayload {
+                thread_id: "a".into(),
+                node_id: "s1".into(),
+                phase_type: "introduce".into(),
+                note: None,
+                sort_order: None,
+            },
+        )
+        .unwrap();
+        let lid = link
+            .as_object()
+            .and_then(|o| o.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+
+        // 同 project の thread b へ移動 → OK & 反映される。
+        let ok = plot_thread_link_update_impl(
+            &d,
+            lid.clone(),
+            PlotThreadLinkPatch {
+                thread_id: Some("b".into()),
+                node_id: None,
+                phase_type: None,
+                note: None,
+                sort_order: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ok.as_object()
+                .and_then(|o| o.get("thread_id"))
+                .and_then(|v| v.as_str()),
+            Some("b")
+        );
+
+        // 別 project の thread c へ移動 → 拒否。
+        let cross = plot_thread_link_update_impl(
+            &d,
+            lid,
+            PlotThreadLinkPatch {
+                thread_id: Some("c".into()),
+                node_id: None,
+                phase_type: None,
+                note: None,
+                sort_order: None,
+            },
+        );
+        assert!(cross.is_err(), "cross-project thread move must be rejected");
     }
 }

@@ -1,4 +1,9 @@
-import { COLOR_THEMES, DEFAULT_COLOR_THEME, PALETTE_SIZE } from "./colorThemes";
+import {
+  COLOR_THEMES,
+  DEFAULT_COLOR_THEME,
+  PALETTE_SIZE,
+  type PaletteSlot,
+} from "./colorThemes";
 
 export interface ResolvedCodexColor {
   hl: string; // highlight background
@@ -30,4 +35,35 @@ export function resolveCodexColor(
   const palette = isDark ? theme.palette.dark : theme.palette.light;
   const slot = palette[paletteIndex % PALETTE_SIZE];
   return { hl: slot.hl, tx: slot.tx, fg: slot.fg };
+}
+
+/**
+ * 背景 hex 色に対して可読なテキスト色（濃 or 白）を返す。YIQ 輝度で判定。
+ * 入力が #RRGGBB でない（CSS 変数など）場合は白を返す。
+ * プロットスレッドのチップ（色付き背景に段階テキスト）の文字色決定に使う。
+ */
+export function contrastTextColor(bg: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(bg.trim());
+  if (!m) return "#ffffff";
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+  return yiq >= 140 ? "#1a1a1a" : "#ffffff";
+}
+
+/**
+ * アクティブなカラーテーマ × モード（light/dark）の Codex タイプ用パレット
+ * スロット一覧（全 PALETTE_SIZE 個）を返す。未知テーマは既定テーマへフォールバック。
+ * Codex タイプの色選択とプロットスレッドの色選択で同じパレットを共有するための入口。
+ */
+export function activeCodexPaletteSlots(
+  themeId: string | undefined,
+  isDark: boolean,
+): PaletteSlot[] {
+  const theme =
+    COLOR_THEMES.find((t) => t.id === (themeId ?? DEFAULT_COLOR_THEME)) ??
+    COLOR_THEMES.find((t) => t.id === DEFAULT_COLOR_THEME)!;
+  return isDark ? theme.palette.dark : theme.palette.light;
 }

@@ -4792,18 +4792,32 @@
     "marker": "マーカー",
     "thread": "スレッド",
     "name": "名前",
+    "color": "色",
+    "colorClear": "色をクリア",
     "phase": "段階",
     "note": "メモ",
     "notePlaceholder": "このマーカーのメモ",
     "noSelection": "スレッドかマーカーを選択してください",
+    "editNote": "メモを編集",
+    "laneHint": "ダブルクリックでマーカーを追加",
     "deleteMarker": "マーカーを削除",
     "deleteThread": "スレッドを削除",
+    "branches": "分岐 / 合流",
+    "addBranch": "追加",
+    "deleteBranch": "分岐を削除",
+    "branchNeedsTwo": "他のスレッドが必要です",
+    "branchKind": "種別",
+    "branchTarget": "対象スレッド",
+    "branchKindLabel": {
+      "branch": "分岐",
+      "merge": "合流"
+    },
     "phaseType": {
-      "introduce": "導入",
-      "develop": "展開",
-      "turn": "転",
+      "introduce": "セットアップ",
+      "develop": "ビルドアップ",
+      "turn": "ターニングポイント",
       "climax": "クライマックス",
-      "resolve": "回収"
+      "resolve": "レゾリューション"
     }
   },
   "timeline": {
@@ -4823,11 +4837,14 @@
     "axisMode": "時間軸モード",
     "spacingMode": "スペーシング",
     "coverage": "{{scheduled}}/{{total}}",
-    "sceneCount": "{{count}} scenes",
+    "sceneCount": "{{count}} シーン",
     "toggleTitles": "タイトル表示",
     "togglePhasePins": "フェーズピン表示",
+    "toggleThreads": "プロットスレッドを表示",
     "toggleInspector": "インスペクター",
     "inspector": {
+      "title": "インスペクター",
+      "empty": "シーンを選択すると詳細が表示されます",
       "close": "インスペクターを閉じる",
       "status": "Status",
       "storyTimeLabel": "Story-time label",

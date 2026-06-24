@@ -11,7 +11,7 @@ function reset() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
-    viewMode: "scenes",
+    showThreads: false,
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -112,10 +112,12 @@ describe("timelineStore", () => {
     expect(useTimelineStore.getState().pendingEditNodeId).toBeNull();
   });
 
-  it("viewMode は scenes が既定で、setViewMode で threads に切り替わる", () => {
-    expect(useTimelineStore.getState().viewMode).toBe("scenes");
-    useTimelineStore.getState().setViewMode("threads");
-    expect(useTimelineStore.getState().viewMode).toBe("threads");
+  it("showThreads は既定 false で、setShowThreads/toggleShowThreads で切り替わる", () => {
+    expect(useTimelineStore.getState().showThreads).toBe(false);
+    useTimelineStore.getState().setShowThreads(true);
+    expect(useTimelineStore.getState().showThreads).toBe(true);
+    useTimelineStore.getState().toggleShowThreads();
+    expect(useTimelineStore.getState().showThreads).toBe(false);
   });
 });
 
@@ -126,7 +128,7 @@ describe("timelineStore.loadFromSettings", () => {
     const s: TimelineSettings = {
       axisMode: "story",
       spacingMode: "proportional",
-      viewMode: "threads",
+      showThreads: true,
       zoom: 2,
       scrollOffset: 120,
       display: {
@@ -139,7 +141,7 @@ describe("timelineStore.loadFromSettings", () => {
     const state = useTimelineStore.getState();
     expect(state.axisMode).toBe("story");
     expect(state.spacingMode).toBe("proportional");
-    expect(state.viewMode).toBe("threads");
+    expect(state.showThreads).toBe(true);
     expect(state.zoom).toBe(2);
     expect(state.scrollOffset).toBe(120);
     expect(state.display.showPhasePins).toBe(true);
@@ -152,6 +154,21 @@ describe("timelineStore.loadFromSettings", () => {
     expect(state.axisMode).toBe("reading");
     expect(state.zoom).toBe(1);
     expect(state.display.showTitles).toBe(true);
+  });
+
+  it("後方互換: 旧 viewMode='threads' を showThreads=true として読む", () => {
+    useTimelineStore.getState().loadFromSettings({
+      viewMode: "threads",
+    } as unknown as Partial<TimelineSettings>);
+    expect(useTimelineStore.getState().showThreads).toBe(true);
+  });
+
+  it("後方互換: 旧 viewMode='scenes' は showThreads=false", () => {
+    useTimelineStore.getState().setShowThreads(true);
+    useTimelineStore.getState().loadFromSettings({
+      viewMode: "scenes",
+    } as unknown as Partial<TimelineSettings>);
+    expect(useTimelineStore.getState().showThreads).toBe(false);
   });
 
   it("zoom は [0.25, 4] にクランプされる", () => {
@@ -222,14 +239,14 @@ describe("timelineStore persistent subscriber", () => {
     );
   });
 
-  it("viewMode 変更で save IPC に viewMode が乗る", async () => {
-    useTimelineStore.getState().setViewMode("threads");
+  it("showThreads 変更で save IPC に showThreads が乗る", async () => {
+    useTimelineStore.getState().setShowThreads(true);
     await vi.runAllTimersAsync();
     expect(invoke).toHaveBeenCalledWith(
       "save_global_settings",
       expect.objectContaining({
         settings: expect.objectContaining({
-          timeline: expect.objectContaining({ viewMode: "threads" }),
+          timeline: expect.objectContaining({ showThreads: true }),
         }),
       }),
     );
