@@ -33,7 +33,7 @@ function resetStore() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
-    viewMode: "scenes",
+    showThreads: false,
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -44,7 +44,12 @@ function resetStore() {
       showPhasePins: false,
     },
   });
-  usePlotThreadStore.setState({ threads: [], links: [], loading: false });
+  usePlotThreadStore.setState({
+    threads: [],
+    links: [],
+    branches: [],
+    loading: false,
+  });
 }
 
 describe("TimelineViewport – scroll handling (#2)", () => {
@@ -185,7 +190,7 @@ describe("TimelineViewport – threads モード", () => {
   beforeEach(resetStore);
 
   it("threads モードでプロットスレッドのレーンとマーカーを描画する", () => {
-    useTimelineStore.setState({ viewMode: "threads" });
+    useTimelineStore.setState({ showThreads: true });
     usePlotThreadStore.setState({
       threads: [
         {
@@ -215,7 +220,7 @@ describe("TimelineViewport – threads モード", () => {
     });
 
     const onSelectMarker = vi.fn();
-    const { container, getByText } = render(
+    const { getByText, getByTestId } = render(
       <TimelineViewport
         scenes={[mockScene]}
         onSelectScene={vi.fn()}
@@ -225,24 +230,26 @@ describe("TimelineViewport – threads モード", () => {
 
     // レーン見出しが出る
     expect(getByText("復讐の糸")).toBeTruthy();
-    // マーカーをクリックすると onSelectMarker(linkId) が呼ばれる
-    const marker = container.querySelector('[data-plot-lane="t1"] circle');
+    // マーカー＝チップ。mousedown→（移動なし）mouseup で選択（クリック相当）。
+    const marker = getByTestId("plot-marker-l1");
     expect(marker).toBeTruthy();
-    fireEvent.click(marker!);
+    fireEvent.mouseDown(marker, { clientX: 50, clientY: 50 });
+    fireEvent.mouseUp(document, { clientX: 50, clientY: 50 });
     expect(onSelectMarker).toHaveBeenCalledWith("l1");
   });
 
-  it("threads モードでは scene のドットを描画しない", () => {
-    useTimelineStore.setState({ viewMode: "threads" });
+  it("オーバーレイ: スレッド表示中でもシーンのドットは描画する", () => {
+    useTimelineStore.setState({ showThreads: true });
     const { container } = render(
       <TimelineViewport scenes={[mockScene]} onSelectScene={vi.fn()} />,
     );
-    expect(container.querySelector('[data-node-id="scene-1"]')).toBeNull();
+    // モード分割を廃止し、シーン行はスレッド表示中も常に出る（オーバーレイ）。
+    expect(container.querySelector('[data-node-id="scene-1"]')).toBeTruthy();
   });
 
-  it("レーンをクリックすると最寄りシーンに develop マーカーを追加する", () => {
+  it("レーンをダブルクリックすると最寄りシーンに develop マーカーを追加する", () => {
     const addMarker = vi.fn();
-    useTimelineStore.setState({ viewMode: "threads" });
+    useTimelineStore.setState({ showThreads: true });
     usePlotThreadStore.setState({
       threads: [
         {
@@ -263,7 +270,509 @@ describe("TimelineViewport – threads モード", () => {
     const { getByTestId } = render(
       <TimelineViewport scenes={[mockScene]} onSelectScene={vi.fn()} />,
     );
-    fireEvent.click(getByTestId("plot-lane-hit-t1"));
+    fireEvent.doubleClick(getByTestId("plot-lane-hit-t1"));
     expect(addMarker).toHaveBeenCalledWith("t1", "scene-1", "develop");
+  });
+
+  it("scheduledCount===0（全シーン未配置）ではダブルクリックで追加しない", () => {
+    const addMarker = vi.fn();
+    useTimelineStore.setState({ showThreads: true, axisMode: "story" });
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "p",
+          name: "t1",
+          color: null,
+          description: null,
+          sortOrder: "a0",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [],
+      branches: [],
+      loading: false,
+      addMarker,
+    });
+    const { getByTestId } = render(
+      <TimelineViewport
+        scenes={[mockScene]}
+        onSelectScene={vi.fn()}
+        unscheduledStartIndex={0}
+      />,
+    );
+    fireEvent.doubleClick(getByTestId("plot-lane-hit-t1"));
+    expect(addMarker).not.toHaveBeenCalled();
+  });
+});
+
+describe("TimelineViewport – マウスホイールでズーム", () => {
+  beforeEach(resetStore);
+
+  function renderViewport() {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={[mockScene]} onSelectScene={vi.fn()} />,
+    );
+    return getByTestId("timeline-scroll-container");
+  }
+
+  it("プレーンなホイール（縦回転 上）でズームインする", () => {
+    const container = renderViewport();
+    act(() => {
+      fireEvent.wheel(container, { deltaY: -100, deltaX: 0 });
+    });
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(1.25);
+  });
+
+  it("プレーンなホイール（縦回転 下）でズームアウトする", () => {
+    const container = renderViewport();
+    act(() => {
+      fireEvent.wheel(container, { deltaY: 100, deltaX: 0 });
+    });
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(1 / 1.25);
+  });
+
+  it("Shift+ホイールはズームせず横スクロールに委ねる", () => {
+    const container = renderViewport();
+    // happy-dom の WheelEvent は init の shiftKey を取り込まないため明示的に付与する。
+    const ev = new WheelEvent("wheel", {
+      deltaY: -100,
+      deltaX: 0,
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(ev, "shiftKey", { value: true, configurable: true });
+    act(() => {
+      container.dispatchEvent(ev);
+    });
+    expect(useTimelineStore.getState().zoom).toBe(1);
+  });
+
+  it("横優位の入力（トラックパッド横スワイプ）はズームしない", () => {
+    const container = renderViewport();
+    act(() => {
+      fireEvent.wheel(container, { deltaY: 5, deltaX: -120 });
+    });
+    expect(useTimelineStore.getState().zoom).toBe(1);
+  });
+
+  it("deltaX=deltaY=0（慣性スクロール終端）でも誤ズームしない", () => {
+    const container = renderViewport();
+    act(() => {
+      fireEvent.wheel(container, { deltaY: 0, deltaX: 0 });
+    });
+    expect(useTimelineStore.getState().zoom).toBe(1);
+  });
+});
+
+describe("TimelineViewport – シーン縦グリッド（threads モード）", () => {
+  beforeEach(resetStore);
+
+  it("threads モードでシーン数ぶんの縦グリッドを描く", () => {
+    useTimelineStore.setState({ showThreads: true });
+    const scenes = [
+      { ...mockScene, id: "s1" },
+      { ...mockScene, id: "s2" },
+      { ...mockScene, id: "s3" },
+    ];
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelectorAll('[data-testid="scene-gridline"]').length,
+    ).toBe(3);
+  });
+
+  it("scenes モードでは縦グリッドを描かない", () => {
+    useTimelineStore.setState({ showThreads: false });
+    const { container } = render(
+      <TimelineViewport scenes={[mockScene]} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelectorAll('[data-testid="scene-gridline"]').length,
+    ).toBe(0);
+  });
+});
+
+describe("TimelineViewport – スレッド線と収束（threads オーバーレイ）", () => {
+  beforeEach(resetStore);
+
+  const scenes = [
+    { ...mockScene, id: "s1" },
+    { ...mockScene, id: "s2" },
+    { ...mockScene, id: "s3" },
+  ];
+
+  function seedThreads() {
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "p",
+          name: "T1",
+          color: null,
+          description: null,
+          sortOrder: "a0",
+          createdAt: "",
+          updatedAt: "",
+        },
+        {
+          id: "t2",
+          projectId: "p",
+          name: "T2",
+          color: null,
+          description: null,
+          sortOrder: "a1",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [
+        {
+          id: "l1",
+          threadId: "t1",
+          nodeId: "s1",
+          phaseType: "introduce",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+        {
+          id: "l2",
+          threadId: "t1",
+          nodeId: "s3",
+          phaseType: "climax",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+        {
+          id: "l3",
+          threadId: "t2",
+          nodeId: "s3",
+          phaseType: "introduce",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      loading: false,
+    });
+  }
+
+  it("reading-order では >=2 マーカーのスレッド線を引く", () => {
+    seedThreads();
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelector('[data-testid^="plot-thread-line-t1"]'),
+    ).toBeTruthy();
+  });
+
+  it("story-time ではスレッド線を引かない（マーカーのみ）", () => {
+    seedThreads();
+    useTimelineStore.setState({ showThreads: true, axisMode: "story" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelector('[data-testid^="plot-thread-line-t1"]'),
+    ).toBeNull();
+  });
+
+  it("収束列（2 本以上が通るシーン）に縦バンドを描く", () => {
+    seedThreads();
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // s3 で t1,t2 が収束 → バンド 1 本
+    expect(
+      container.querySelectorAll('[data-testid="thread-convergence"]').length,
+    ).toBe(1);
+  });
+
+  function seedBranch() {
+    usePlotThreadStore.setState({
+      branches: [
+        {
+          id: "br1",
+          projectId: "p",
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "s2",
+          kind: "branch",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    });
+  }
+
+  it("reading-order では分岐コネクタを描く", () => {
+    seedThreads();
+    seedBranch();
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelectorAll('[data-testid="plot-thread-connector"]')
+        .length,
+    ).toBe(1);
+  });
+
+  it("story-time では分岐コネクタを描かない", () => {
+    seedThreads();
+    seedBranch();
+    useTimelineStore.setState({ showThreads: true, axisMode: "story" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelectorAll('[data-testid="plot-thread-connector"]')
+        .length,
+    ).toBe(0);
+  });
+
+  it("自走完結スレッドに終端キャップ（塗りノブ）を描く", () => {
+    seedThreads(); // t1: l1@s1, l2@s3（最後 s3 は merge でない）→ 終端あり
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelector('[data-testid="plot-thread-terminus-t1"]'),
+    ).toBeTruthy();
+  });
+
+  it("story-time では終端キャップを描かない", () => {
+    seedThreads();
+    useTimelineStore.setState({ showThreads: true, axisMode: "story" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelector('[data-testid="plot-thread-terminus-t1"]'),
+    ).toBeNull();
+  });
+
+  it("マーカーチップに段階テキストを表示する", () => {
+    seedThreads();
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // l1 は introduce → JA ラベル「セットアップ」がチップ内に出る
+    expect(getByTestId("plot-marker-l1").textContent).toContain("セットアップ");
+  });
+
+  it("縮小時(zoom 小)はチップでなく円に縮退する", () => {
+    seedThreads();
+    useTimelineStore.setState({
+      showThreads: true,
+      axisMode: "reading",
+      zoom: 0.5, // STEP=48 < CHIP_MIN_STEP(72)
+    });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const m = getByTestId("plot-marker-l1");
+    // 円に縮退（チップの rect/可視テキストは無い。ラベルは title ツールチップのみ）。
+    expect(m.tagName.toLowerCase()).toBe("circle");
+    expect(m.querySelector("rect")).toBeNull();
+  });
+
+  it("選択中マーカーはチップに選択リングが付く", () => {
+    seedThreads();
+    useTimelineStore.setState({
+      showThreads: true,
+      axisMode: "reading",
+      selectedPlotLinkId: "l1",
+    });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const rect = getByTestId("plot-marker-l1").querySelector("rect");
+    expect(rect?.getAttribute("stroke")).toBe("var(--foreground)");
+  });
+
+  it("スレッドエリアは縦スクロール可能（overflow-y-auto）", () => {
+    seedThreads();
+    useTimelineStore.setState({ showThreads: true });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(getByTestId("timeline-scroll-container").className).toContain(
+      "overflow-y-auto",
+    );
+  });
+});
+
+describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判定）", () => {
+  beforeEach(resetStore);
+
+  const scenes = [
+    { ...mockScene, id: "s1" },
+    { ...mockScene, id: "s2" },
+  ];
+  const t = (id: string, sortOrder: string) => ({
+    id,
+    projectId: "p",
+    name: id,
+    color: null,
+    description: null,
+    sortOrder,
+    createdAt: "",
+    updatedAt: "",
+  });
+  const l = (id: string, threadId: string, nodeId: string) => ({
+    id,
+    threadId,
+    nodeId,
+    phaseType: "introduce" as const,
+    note: null,
+    sortOrder: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+  // threadsTop = SVG_HEIGHT_BASE(130) + LANE_HEIGHT/2(28) = 158 → lane0.y=158, lane1.y=214
+  // s1 x = 48, s2 x = 144（STEP=96, PAD_LEFT=48）
+  function seed() {
+    usePlotThreadStore.setState({
+      threads: [t("t1", "a0"), t("t2", "a1")],
+      links: [l("l1", "t1", "s1"), l("l2", "t2", "s1")],
+      branches: [],
+      loading: false,
+    });
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+  }
+
+  it("同レーンで横ドラッグ → updateMarker でシーン移動", () => {
+    seed();
+    const updateMarker = vi.fn();
+    usePlotThreadStore.setState({ updateMarker });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const m = getByTestId("plot-marker-l1");
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 158 });
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 158 });
+    expect(updateMarker).toHaveBeenCalledWith("l1", { nodeId: "s2" });
+  });
+
+  it("下のレーンへドラッグ → branch: ドラッグ点を先(to)へ移動・元に点は作らない", () => {
+    seed();
+    const updateMarker = vi.fn();
+    const addMarker = vi.fn();
+    const addBranch = vi.fn();
+    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const m = getByTestId("plot-marker-l1"); // t1(上)@s1
+    // t2(下, y214) の s2(x144) へ → branch。点は t2 へ移動、元 t1 には作らない。
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 });
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    expect(updateMarker).toHaveBeenCalledWith("l1", {
+      threadId: "t2",
+      nodeId: "s2",
+    });
+    expect(addMarker).not.toHaveBeenCalled(); // 第2の点は作らない
+    expect(addBranch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromThreadId: "t1",
+        toThreadId: "t2",
+        atNodeId: "s2",
+        kind: "branch",
+      }),
+    );
+  });
+
+  it("上のレーンへドラッグ → merge: ドラッグ点は元(from)に残す・先に点は作らない", () => {
+    seed();
+    const updateMarker = vi.fn();
+    const addMarker = vi.fn();
+    const addBranch = vi.fn();
+    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const m = getByTestId("plot-marker-l2"); // t2(下)@s1
+    // t1(上, y158) の s2(x144) へ → merge。点は t2(元)に残し s2 へ。先 t1 には作らない。
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 158 });
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 158 });
+    expect(updateMarker).toHaveBeenCalledWith("l2", { nodeId: "s2" }); // threadId 不変
+    expect(addMarker).not.toHaveBeenCalled();
+    expect(addBranch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromThreadId: "t2",
+        toThreadId: "t1",
+        atNodeId: "s2",
+        kind: "merge",
+      }),
+    );
+  });
+
+  it("動かさず mousedown→mouseup なら選択（クリック扱い）", () => {
+    seed();
+    const onSelectMarker = vi.fn();
+    const { getByTestId } = render(
+      <TimelineViewport
+        scenes={scenes}
+        onSelectScene={vi.fn()}
+        onSelectMarker={onSelectMarker}
+      />,
+    );
+    const m = getByTestId("plot-marker-l1");
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 158 });
+    fireEvent.mouseUp(document, { clientX: 48, clientY: 158 });
+    expect(onSelectMarker).toHaveBeenCalledWith("l1");
+  });
+
+  it("既存と同一の分岐になるドロップは source を動かさない（非アトミック防止）", () => {
+    usePlotThreadStore.setState({
+      threads: [t("t1", "a0"), t("t2", "a1")],
+      links: [l("l1", "t1", "s2"), l("l2", "t2", "s2")],
+      branches: [
+        {
+          id: "br1",
+          projectId: "p",
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "s2",
+          kind: "branch",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      loading: false,
+    });
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const updateMarker = vi.fn();
+    const addMarker = vi.fn();
+    const addBranch = vi.fn();
+    usePlotThreadStore.setState({ updateMarker, addMarker, addBranch });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // l1 = t1@s2(x144,y158) を t2 レーン(y214) の s2(x144) へ → 同一エッジで dup
+    const m = getByTestId("plot-marker-l1");
+    fireEvent.mouseDown(m, { clientX: 144, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 });
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    // dup なので何も起きない（source も動かない）
+    expect(updateMarker).not.toHaveBeenCalled();
+    expect(addMarker).not.toHaveBeenCalled();
+    expect(addBranch).not.toHaveBeenCalled();
   });
 });

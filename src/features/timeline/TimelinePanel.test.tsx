@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, act } from "@testing-library/react";
+import { render, act, fireEvent } from "@testing-library/react";
 import { TimelinePanel } from "./TimelinePanel";
 import { useTimelineStore } from "./timelineStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -11,6 +11,7 @@ vi.mock("@/lib/tauri", () => ({ invoke: vi.fn() }));
 const mockDeleteNode = vi.fn();
 const mockOpenPinned = vi.fn();
 const mockOpenInSecondaryGroup = vi.fn();
+const mockOpenPreview = vi.fn();
 
 vi.mock("@/features/editor/tabStore", () => ({
   useTabStore: Object.assign(
@@ -18,12 +19,14 @@ vi.mock("@/features/editor/tabStore", () => ({
       sel({
         openPinned: mockOpenPinned,
         openInSecondaryGroup: mockOpenInSecondaryGroup,
+        openPreview: mockOpenPreview,
       }),
     ),
     {
       getState: () => ({
         openPinned: mockOpenPinned,
         openInSecondaryGroup: mockOpenInSecondaryGroup,
+        openPreview: mockOpenPreview,
       }),
     },
   ),
@@ -618,5 +621,108 @@ describe("TimelinePanel – active scene ring (現在地マーカー)", () => {
       'circle[stroke="var(--primary)"][fill="none"]',
     );
     expect(rings.length).toBe(0);
+  });
+});
+
+describe("TimelinePanel – scenes モードのインスペクタ表示", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    mockTreeWith(mockSceneNodes);
+  });
+
+  afterEach(() => {
+    mockTreeWith([]);
+  });
+
+  it("インスペクタを開けば未選択でもパネルが出る（プレースホルダー）", () => {
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: null,
+      inspectorOpen: true,
+      selectedNodeIds: [],
+    });
+    const { getByTestId, getByText } = render(<TimelinePanel />);
+    expect(getByTestId("timeline-inspector")).toBeTruthy();
+    expect(getByText("シーンを選択すると詳細が表示されます")).toBeTruthy();
+  });
+
+  it("シーン選択中はプレースホルダーではなく詳細が出る", () => {
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: null,
+      inspectorOpen: true,
+      selectedNodeIds: ["s1"],
+    });
+    const { getByTestId, queryByText } = render(<TimelinePanel />);
+    expect(getByTestId("timeline-inspector")).toBeTruthy();
+    expect(queryByText("シーンを選択すると詳細が表示されます")).toBeNull();
+  });
+
+  it("インスペクタを閉じていればパネルは出ない", () => {
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: null,
+      inspectorOpen: false,
+      selectedNodeIds: ["s1"],
+    });
+    const { queryByTestId } = render(<TimelinePanel />);
+    expect(queryByTestId("timeline-inspector")).toBeNull();
+  });
+
+  it("シングルクリックは選択のみ（設計書準拠：インスペクタは自動オープンしない）", () => {
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: null,
+      inspectorOpen: false,
+      selectedNodeIds: [],
+    });
+    const { container } = render(<TimelinePanel />);
+    const dot = [...container.querySelectorAll("circle")].find(
+      (c) => c.querySelector("title")?.textContent === "Scene 1",
+    );
+    expect(dot).toBeTruthy();
+    act(() => {
+      fireEvent.click(dot!);
+    });
+    // 選択 + プレビュータブで開く。インスペクタは開かない（⋮ で明示オープン）。
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual(["s1"]);
+    expect(mockOpenPreview).toHaveBeenCalledWith("s1");
+    expect(useTimelineStore.getState().inspectorOpen).toBe(false);
+  });
+});
+
+describe("TimelinePanel – インスペクタのルーティング（オーバーレイ）", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    mockTreeWith(mockSceneNodes);
+  });
+  afterEach(() => {
+    mockTreeWith([]);
+  });
+
+  it("スレッド表示中にマーカー選択でプロット用インスペクタが出る", () => {
+    useTimelineStore.setState({
+      showThreads: true,
+      inspectorOpen: true,
+      selectedPlotLinkId: "l1",
+      selectedPlotThreadId: null,
+    });
+    const { getByTestId, queryByTestId } = render(<TimelinePanel />);
+    expect(getByTestId("plot-marker-inspector")).toBeTruthy();
+    expect(queryByTestId("timeline-inspector")).toBeNull();
+  });
+
+  it("スレッド非表示ならプロット選択が残ってもシーン用インスペクタに戻る", () => {
+    useTimelineStore.setState({
+      showThreads: false,
+      inspectorOpen: true,
+      selectedPlotLinkId: "l1",
+      selectedPlotThreadId: null,
+    });
+    const { getByTestId, queryByTestId } = render(<TimelinePanel />);
+    expect(getByTestId("timeline-inspector")).toBeTruthy();
+    expect(queryByTestId("plot-marker-inspector")).toBeNull();
   });
 });

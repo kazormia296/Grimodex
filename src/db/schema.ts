@@ -1258,6 +1258,47 @@ export const PLOT_PHASE_TYPES = [
 ] as const;
 export type PlotPhaseType = (typeof PLOT_PHASE_TYPES)[number];
 
+/** プロットスレッドの分岐 / 合流エッジ。特定シーン(at_node_id)で from→to の
+ *  スレッド間を繋ぐ。kind の CHECK は SQL 側。src-tauri migrate.rs とミラー。 */
+export const plotThreadBranches = sqliteTable(
+  "plot_thread_branches",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    fromThreadId: text("from_thread_id")
+      .notNull()
+      .references(() => plotThreads.id, { onDelete: "cascade" }),
+    toThreadId: text("to_thread_id")
+      .notNull()
+      .references(() => plotThreads.id, { onDelete: "cascade" }),
+    atNodeId: text("at_node_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    // 'branch' | 'merge'
+    kind: text("kind").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_plot_thread_branches_project").on(table.projectId),
+    index("idx_plot_thread_branches_from").on(table.fromThreadId),
+    index("idx_plot_thread_branches_to").on(table.toThreadId),
+  ],
+);
+
+export type PlotThreadBranch = typeof plotThreadBranches.$inferSelect;
+export type NewPlotThreadBranch = typeof plotThreadBranches.$inferInsert;
+
+/** 分岐/合流の種別。 */
+export const PLOT_BRANCH_KINDS = ["branch", "merge"] as const;
+export type PlotBranchKind = (typeof PLOT_BRANCH_KINDS)[number];
+
 export const mapFrames = sqliteTable(
   "map_frames",
   {

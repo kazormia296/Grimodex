@@ -1,7 +1,11 @@
 import { db } from "@/db/client";
 import { invoke, isTauri } from "@/lib/tauri";
-import { plotThreads, plotThreadSceneLinks } from "@/db/schema";
-import type { PlotPhaseType } from "@/db/schema";
+import {
+  plotThreads,
+  plotThreadSceneLinks,
+  plotThreadBranches,
+} from "@/db/schema";
+import type { PlotPhaseType, PlotBranchKind } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
 
 export interface PlotThreadRow {
@@ -189,11 +193,15 @@ export async function createPlotThreadLink(data: {
 export async function updatePlotThreadLink(
   id: string,
   patch: Partial<
-    Pick<PlotThreadLinkRow, "nodeId" | "phaseType" | "note" | "sortOrder">
+    Pick<
+      PlotThreadLinkRow,
+      "threadId" | "nodeId" | "phaseType" | "note" | "sortOrder"
+    >
   >,
 ): Promise<void> {
   if (isTauri()) {
     const p: Record<string, unknown> = {};
+    if (patch.threadId !== undefined) p.threadId = patch.threadId;
     if (patch.nodeId !== undefined) p.nodeId = patch.nodeId;
     if (patch.phaseType !== undefined) p.phaseType = patch.phaseType;
     if (patch.note !== undefined) p.note = patch.note;
@@ -236,4 +244,73 @@ export async function listPlotThreadLinks(
     .from(plotThreadSceneLinks)
     .where(inArray(plotThreadSceneLinks.threadId, threadIds));
   return rows.map(normalizeLink);
+}
+
+// ───────── branches (分岐 / 合流) ─────────
+// 専用 Rust コマンドは設けず、db_execute 経由の Drizzle で CRUD する
+// （在 Tauri / テスト共通。codexRelationApi など多数の feature と同方針）。
+
+export interface PlotThreadBranchRow {
+  id: string;
+  projectId: string;
+  fromThreadId: string;
+  toThreadId: string;
+  atNodeId: string;
+  kind: PlotBranchKind;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function normalizeBranch(raw: unknown): PlotThreadBranchRow {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  return {
+    id: s(r.id),
+    projectId: s(r.projectId ?? r.project_id),
+    fromThreadId: s(r.fromThreadId ?? r.from_thread_id),
+    toThreadId: s(r.toThreadId ?? r.to_thread_id),
+    atNodeId: s(r.atNodeId ?? r.at_node_id),
+    kind: s(r.kind, "branch") as PlotBranchKind,
+    createdAt: s(r.createdAt ?? r.created_at),
+    updatedAt: s(r.updatedAt ?? r.updated_at),
+  };
+}
+
+export async function createPlotThreadBranch(data: {
+  projectId: string;
+  fromThreadId: string;
+  toThreadId: string;
+  atNodeId: string;
+  kind: PlotBranchKind;
+}): Promise<PlotThreadBranchRow> {
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  await db.insert(plotThreadBranches).values({
+    id,
+    projectId: data.projectId,
+    fromThreadId: data.fromThreadId,
+    toThreadId: data.toThreadId,
+    atNodeId: data.atNodeId,
+    kind: data.kind,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const [row] = await db
+    .select()
+    .from(plotThreadBranches)
+    .where(eq(plotThreadBranches.id, id));
+  return normalizeBranch(row);
+}
+
+export async function deletePlotThreadBranch(id: string): Promise<void> {
+  await db.delete(plotThreadBranches).where(eq(plotThreadBranches.id, id));
+}
+
+export async function listPlotThreadBranches(
+  projectId: string,
+): Promise<PlotThreadBranchRow[]> {
+  const rows = await db
+    .select()
+    .from(plotThreadBranches)
+    .where(eq(plotThreadBranches.projectId, projectId));
+  return rows.map(normalizeBranch);
 }

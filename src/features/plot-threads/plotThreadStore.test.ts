@@ -7,20 +7,25 @@ vi.mock("@/features/project/projectStore", () => ({
 vi.mock("./api", () => ({
   listPlotThreads: vi.fn(async () => []),
   listPlotThreadLinks: vi.fn(async () => []),
+  listPlotThreadBranches: vi.fn(async () => []),
   createPlotThread: vi.fn(),
   updatePlotThread: vi.fn(async () => {}),
   deletePlotThread: vi.fn(async () => {}),
   createPlotThreadLink: vi.fn(),
   updatePlotThreadLink: vi.fn(async () => {}),
   deletePlotThreadLink: vi.fn(async () => {}),
+  createPlotThreadBranch: vi.fn(),
+  deletePlotThreadBranch: vi.fn(async () => {}),
 }));
 
 import {
   listPlotThreads,
   createPlotThread,
   createPlotThreadLink,
+  createPlotThreadBranch,
   type PlotThreadRow,
   type PlotThreadLinkRow,
+  type PlotThreadBranchRow,
 } from "./api";
 import { usePlotThreadStore } from "./plotThreadStore";
 
@@ -46,9 +51,29 @@ const linkRow = (id: string): PlotThreadLinkRow => ({
   updatedAt: "",
 });
 
+const branchRow = (
+  id: string,
+  fromThreadId = "t1",
+  toThreadId = "t2",
+): PlotThreadBranchRow => ({
+  id,
+  projectId: "p1",
+  fromThreadId,
+  toThreadId,
+  atNodeId: "s1",
+  kind: "branch",
+  createdAt: "",
+  updatedAt: "",
+});
+
 describe("plotThreadStore", () => {
   beforeEach(() => {
-    usePlotThreadStore.setState({ threads: [], links: [], loading: false });
+    usePlotThreadStore.setState({
+      threads: [],
+      links: [],
+      branches: [],
+      loading: false,
+    });
     currentProject.value = "p1";
     vi.clearAllMocks();
     (listPlotThreads as ReturnType<typeof vi.fn>).mockResolvedValue([]);
@@ -138,6 +163,91 @@ describe("plotThreadStore", () => {
     await usePlotThreadStore.getState().deleteMarker("l1");
     expect(usePlotThreadStore.getState().links.map((l) => l.id)).toEqual([
       "l2",
+    ]);
+  });
+
+  it("addBranch が作成結果を branches に追加する", async () => {
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1")],
+    });
+    (createPlotThreadBranch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      branchRow("br1"),
+    );
+    await usePlotThreadStore.getState().addBranch({
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t2",
+      atNodeId: "s1",
+      kind: "branch",
+    });
+    expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
+      "br1",
+    ]);
+  });
+
+  it("addBranch は自己参照(from===to)を弾く", async () => {
+    usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
+    await usePlotThreadStore.getState().addBranch({
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t1",
+      atNodeId: "s1",
+      kind: "branch",
+    });
+    expect(createPlotThreadBranch).not.toHaveBeenCalled();
+    expect(usePlotThreadStore.getState().branches).toHaveLength(0);
+  });
+
+  it("addBranch は未知スレッド(別 project 等)を弾く", async () => {
+    usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
+    await usePlotThreadStore.getState().addBranch({
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "ghost", // store に無い
+      atNodeId: "s1",
+      kind: "branch",
+    });
+    expect(createPlotThreadBranch).not.toHaveBeenCalled();
+  });
+
+  it("addBranch は同一(from,to,atNode,kind)の重複を弾く", async () => {
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1")],
+      branches: [branchRow("br1", "t1", "t2")], // atNode=s1, kind=branch
+    });
+    await usePlotThreadStore.getState().addBranch({
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t2",
+      atNodeId: "s1",
+      kind: "branch",
+    });
+    expect(createPlotThreadBranch).not.toHaveBeenCalled();
+    expect(usePlotThreadStore.getState().branches).toHaveLength(1);
+  });
+
+  it("deleteBranch が branches から除外する", async () => {
+    usePlotThreadStore.setState({
+      branches: [branchRow("br1"), branchRow("br2")],
+    });
+    await usePlotThreadStore.getState().deleteBranch("br1");
+    expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
+      "br2",
+    ]);
+  });
+
+  it("deleteThread が from/to に絡む branch も除外する（CASCADE 反映）", async () => {
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1"), row("t3", "a2")],
+      branches: [
+        branchRow("br1", "t1", "t2"), // t1 が from → 消える
+        branchRow("br2", "t3", "t1"), // t1 が to → 消える
+        branchRow("br3", "t2", "t3"), // t1 無関係 → 残る
+      ],
+    });
+    await usePlotThreadStore.getState().deleteThread("t1");
+    expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
+      "br3",
     ]);
   });
 });

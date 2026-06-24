@@ -1675,6 +1675,30 @@ impl Database {
                 ON plot_thread_scene_links(node_id);",
         )?;
 
+        // プロットスレッドの分岐 / 合流エッジ。特定シーン(at_node_id)で from→to の
+        // スレッド間を繋ぐ（'branch'=枝分かれ / 'merge'=収束）。src/db/schema.ts の
+        // plotThreadBranches とミラー。project_id は XPROJ ガード用に非正規化保持し、
+        // from/to スレッド・at シーンのいずれが消えても CASCADE で孤児を残さない。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plot_thread_branches (
+                id              TEXT PRIMARY KEY,
+                project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                from_thread_id  TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+                to_thread_id    TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+                at_node_id      TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                kind            TEXT NOT NULL
+                                  CHECK(kind IN ('branch','merge')),
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_project
+                ON plot_thread_branches(project_id);
+            CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_from
+                ON plot_thread_branches(from_thread_id);
+            CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_to
+                ON plot_thread_branches(to_thread_id);",
+        )?;
+
         Ok(())
     }
 
@@ -2825,11 +2849,15 @@ mod tests {
 
     #[test]
     fn migrate_fresh_db_creates_plot_thread_tables() {
-        // プロットスレッド機能の 2 テーブルが fresh DB で作られていること。
+        // プロットスレッド機能の 3 テーブルが fresh DB で作られていること。
         let db = Database::new(std::path::Path::new(":memory:")).unwrap();
         db.migrate().unwrap();
         db.with_conn(|conn| {
-            for t in ["plot_threads", "plot_thread_scene_links"] {
+            for t in [
+                "plot_threads",
+                "plot_thread_scene_links",
+                "plot_thread_branches",
+            ] {
                 let exists: i64 = conn.query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
                     [t],
@@ -2878,6 +2906,58 @@ mod tests {
             Ok(())
         });
         assert!(bad.is_err(), "invalid phase_type must be rejected by CHECK");
+    }
+
+    #[test]
+    fn plot_thread_branches_enforce_kind_check_and_cascade() {
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id) VALUES ('p1');
+                 INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s1','p1','scene','S1');
+                 INSERT INTO plot_threads (id, project_id, name, sort_order) VALUES ('t1','p1','A','a0');
+                 INSERT INTO plot_threads (id, project_id, name, sort_order) VALUES ('t2','p1','B','a1');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // 正常な branch / merge は挿入できる。
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO plot_thread_branches (id, project_id, from_thread_id, to_thread_id, at_node_id, kind) \
+                 VALUES ('b1','p1','t1','t2','s1','branch')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // 不正な kind は CHECK で弾かれる。
+        let bad = db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO plot_thread_branches (id, project_id, from_thread_id, to_thread_id, at_node_id, kind) \
+                 VALUES ('b2','p1','t1','t2','s1','BOGUS')",
+                [],
+            )?;
+            Ok(())
+        });
+        assert!(bad.is_err(), "invalid kind must be rejected by CHECK");
+
+        // from スレッド削除で branch も CASCADE 削除される。FK を明示的に有効化して
+        // デフォルト設定に依存しないようにする。
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "foreign_keys", true)?;
+            conn.execute("DELETE FROM plot_threads WHERE id='t1'", [])?;
+            let remaining: i64 =
+                conn.query_row("SELECT COUNT(*) FROM plot_thread_branches", [], |r| {
+                    r.get(0)
+                })?;
+            assert_eq!(remaining, 0, "branch should cascade-delete with its thread");
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

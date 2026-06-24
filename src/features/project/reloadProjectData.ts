@@ -21,6 +21,7 @@ import { useLintStore } from "@/features/lint/lintStore";
 import { useTermDictionaryStore } from "@/features/lint/termDictionaryStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
+import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { withProjectLoad } from "./projectLoadGate";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 
@@ -120,6 +121,9 @@ export async function reloadProjectData(projectId: string): Promise<void> {
     });
 
     useGridStore.getState().clearSelection();
+    // Timeline の選択（シーン + プロットのマーカー/スレッド）を破棄。残すと
+    // 新 Project でインスペクタが旧プロジェクトの選択を指したまま開く。
+    useTimelineStore.getState().clearSelection();
     useBarStore.getState().reset();
     usePanelStore.getState().reset();
     useResultsPanelStore.getState().reset();

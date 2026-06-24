@@ -4,13 +4,16 @@ import type { GlobalSettings } from "@/features/workspace/store";
 
 export type AxisMode = "reading" | "story" | "write";
 export type SpacingMode = "uniform" | "proportional";
-/** シーン年表(scenes) か、プロットスレッドのレーン表示(threads) か。 */
+/** 旧: シーン年表(scenes) か、プロットスレッドのレーン表示(threads) か。
+ *  オーバーレイ化（2026-06-24）で showThreads(boolean) に移行。永続化の後方互換
+ *  読み取り（threads → showThreads=true）にのみ残す。 */
 export type TimelineViewMode = "scenes" | "threads";
 
 export interface TimelineSettings {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
-  viewMode: TimelineViewMode;
+  /** シーン年表に加えてプロットスレッドのレーンをオーバーレイ表示するか。 */
+  showThreads: boolean;
   zoom: number;
   scrollOffset: number;
   display: {
@@ -32,7 +35,7 @@ const DEFAULT_DISPLAY: TimelineSettings["display"] = {
 interface TimelineState {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
-  viewMode: TimelineViewMode;
+  showThreads: boolean;
   zoom: number;
   scrollOffset: number;
   selectedNodeIds: string[];
@@ -45,7 +48,8 @@ interface TimelineState {
   /** threads モードで選択中のスレッド(plot_threads.id)。レーン見出しクリックで設定。 */
   selectedPlotThreadId: string | null;
   setAxisMode: (mode: AxisMode) => void;
-  setViewMode: (mode: TimelineViewMode) => void;
+  setShowThreads: (show: boolean) => void;
+  toggleShowThreads: () => void;
   setSelectedPlotLinkId: (id: string | null) => void;
   setSelectedPlotThreadId: (id: string | null) => void;
   setSpacingMode: (mode: SpacingMode) => void;
@@ -64,7 +68,7 @@ interface TimelineState {
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   axisMode: "reading",
   spacingMode: "uniform",
-  viewMode: "scenes",
+  showThreads: false,
   zoom: 1,
   scrollOffset: 0,
   selectedNodeIds: [],
@@ -78,7 +82,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       axisMode: mode,
       spacingMode: mode === "reading" ? "uniform" : "proportional",
     }),
-  setViewMode: (viewMode) => set({ viewMode }),
+  setShowThreads: (showThreads) => set({ showThreads }),
+  toggleShowThreads: () => set((s) => ({ showThreads: !s.showThreads })),
   setSelectedPlotLinkId: (selectedPlotLinkId) => set({ selectedPlotLinkId }),
   setSelectedPlotThreadId: (selectedPlotThreadId) =>
     set({ selectedPlotThreadId }),
@@ -126,7 +131,10 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set({
       axisMode: settings.axisMode ?? "reading",
       spacingMode: settings.spacingMode ?? "uniform",
-      viewMode: settings.viewMode ?? "scenes",
+      // 後方互換: 旧 viewMode==="threads" を showThreads=true として読む。
+      showThreads:
+        settings.showThreads ??
+        (settings as { viewMode?: TimelineViewMode }).viewMode === "threads",
       zoom: Math.max(0.25, Math.min(4, settings.zoom ?? 1)),
       scrollOffset: settings.scrollOffset ?? 0,
       display: settings.display ?? { ...DEFAULT_DISPLAY },
@@ -139,7 +147,7 @@ function snapshotPersistent(
   return {
     axisMode: state.axisMode,
     spacingMode: state.spacingMode,
-    viewMode: state.viewMode,
+    showThreads: state.showThreads,
     zoom: state.zoom,
     scrollOffset: state.scrollOffset,
     display: state.display,

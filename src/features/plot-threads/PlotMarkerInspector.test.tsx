@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, fireEvent } from "@testing-library/react";
+import { render, fireEvent, within } from "@testing-library/react";
 import { PlotMarkerInspector } from "./PlotMarkerInspector";
 import { usePlotThreadStore } from "./plotThreadStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
@@ -34,6 +34,7 @@ describe("PlotMarkerInspector", () => {
     usePlotThreadStore.setState({
       threads: [thread],
       links: [link],
+      branches: [],
       loading: false,
     });
     useTimelineStore.setState({
@@ -58,6 +59,52 @@ describe("PlotMarkerInspector", () => {
     fireEvent.click(getByText("マーカーを削除"));
     expect(deleteMarker).toHaveBeenCalledWith("l1");
     expect(useTimelineStore.getState().selectedPlotLinkId).toBeNull();
+  });
+
+  it("色スウォッチクリックで setThreadColor が Codex パレット色で呼ばれる", () => {
+    const setThreadColor = vi.fn();
+    usePlotThreadStore.setState({ setThreadColor });
+    // レーン見出し選択（マーカー無し）でもスレッド編集部＝色ピッカーが出る。
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: "t1",
+    });
+    const { getByRole } = render(<PlotMarkerInspector onClose={vi.fn()} />);
+    const group = getByRole("group", { name: "色" });
+    const buttons = within(group).getAllByRole("button");
+    // 10 パレット + クリア = 11
+    expect(buttons).toHaveLength(11);
+    // simple(既定) light スロット0 = Blue #2045AA
+    fireEvent.click(buttons[0]);
+    expect(setThreadColor).toHaveBeenCalledWith("t1", "#2045AA");
+    // 末尾はクリア（null）
+    fireEvent.click(buttons[10]);
+    expect(setThreadColor).toHaveBeenCalledWith("t1", null);
+  });
+
+  it("マーカー選択時、別スレッドへの分岐を追加できる", () => {
+    const addBranch = vi.fn();
+    const thread2: PlotThreadRow = { ...thread, id: "t2", name: "恋愛の糸" };
+    usePlotThreadStore.setState({ threads: [thread, thread2], addBranch });
+    useTimelineStore.setState({
+      selectedPlotLinkId: "l1", // thread t1 / scene s1
+      selectedPlotThreadId: null,
+    });
+    const { getByTestId, getByText } = render(
+      <PlotMarkerInspector onClose={vi.fn()} />,
+    );
+    // 分岐エディタが出る
+    expect(getByTestId("plot-branch-editor")).toBeTruthy();
+    // 「追加」で addBranch が from=t1, to=t2, at=s1, kind=branch で呼ばれる
+    fireEvent.click(getByText("追加"));
+    expect(addBranch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromThreadId: "t1",
+        toThreadId: "t2",
+        atNodeId: "s1",
+        kind: "branch",
+      }),
+    );
   });
 
   it("何も選択していなければプレースホルダーを出す", () => {

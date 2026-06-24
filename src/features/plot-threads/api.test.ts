@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeThread, normalizeLink } from "./api";
+import { normalizeThread, normalizeLink, normalizeBranch } from "./api";
 
 describe("plot-threads api normalization", () => {
   it("normalizes a snake_case DB thread row into camelCase", () => {
@@ -55,5 +55,30 @@ describe("plot-threads api normalization", () => {
       sortOrder: null,
     });
     expect(normalizeLink({ id: "l2" }).phaseType).toBe("develop");
+  });
+
+  it("normalizes a snake_case branch row and defaults kind", () => {
+    const row = {
+      id: "b1",
+      project_id: "p1",
+      from_thread_id: "t1",
+      to_thread_id: "t2",
+      at_node_id: "s1",
+      kind: "merge",
+    };
+    expect(normalizeBranch(row)).toEqual({
+      id: "b1",
+      projectId: "p1",
+      fromThreadId: "t1",
+      toThreadId: "t2",
+      atNodeId: "s1",
+      kind: "merge",
+      createdAt: "",
+      updatedAt: "",
+    });
+    // camelCase（invoke 戻り値）も受ける
+    expect(
+      normalizeBranch({ id: "b2", fromThreadId: "tA", toThreadId: "tB" }),
+    ).toMatchObject({ fromThreadId: "tA", toThreadId: "tB", kind: "branch" });
   });
 });

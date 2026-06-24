@@ -284,7 +284,7 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 
 ## D. インスペクター（optional）
 
-ビューポート右側にスプリット可能な詳細ペイン。ノード選択時に詳細を表示する。
+ビューポート右側にスプリット可能な詳細ペイン。`⋮` ボタンで開閉し（`inspectorOpen`）、**開いている間は常に枠を表示する**。シーンを選択していればその詳細を、未選択なら「シーンを選択すると詳細が表示されます」というプレースホルダーを出す（threads モードの `PlotMarkerInspector` と同じ「開いていれば常に表示・未選択はプレースホルダー」挙動に揃える）。シーンのシングルクリックは選択＋プレビュータブを開くのみで、インスペクタは自動オープンしない（明示的に `⋮` で開く）。
 
 ```
 ┌─────────────────────┐
@@ -321,7 +321,7 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 - Anchored phases リストからCodex/Phase編集ダイアログへ遷移
 - パネル幅が狭い場合（Bottom Dockの高さ制約下）、インスペクターは畳まれてノード選択時にポップオーバーで表示
 
-> **現状の実装** (`TimelineInspector.tsx`): タイトル / Status（読み取り専用テキスト） / Story-time label（インライン編集、story-time モード時のみ） / 配置済み・Unscheduled 表示 / Synopsis / Anchored phases / Created at を表示する。Characters・Location 行、`index: #N / M` の参考表示、`[Open in Editor ↗]` ボタン、Status のドロップダウン編集、ポップオーバー化はいずれも未実装（将来拡張）。なお `viewMode === "threads"` のときはインスペクター枠が `TimelineInspector` から `PlotMarkerInspector`（プロットスレッド/マーカー編集）へ差し替わる（後述「プロットスレッド表示」節）。
+> **現状の実装** (`TimelineInspector.tsx`): タイトル / Status（読み取り専用テキスト） / Story-time label（インライン編集、story-time モード時のみ） / 配置済み・Unscheduled 表示 / Synopsis / Anchored phases / Created at を表示する。**`inspectorOpen` の間は `selectedNode` が無くても枠を描画し、未選択時はプレースホルダー（`timeline.inspector.empty`）を出す**（`node: TreeNodeData | null` を受け取り、`TimelinePanel` 側も `selectedNode &&` ガードを外して常時描画）。**root は `min-h-0 overflow-y-auto` で、内容が縦に溢れる場合はインスペクタ内をスクロールできる**（高さ固定の親 row 内でクリップされない）。Characters・Location 行、`index: #N / M` の参考表示、`[Open in Editor ↗]` ボタン、Status のドロップダウン編集、ポップオーバー化はいずれも未実装（将来拡張）。なお `viewMode === "threads"` のときはインスペクター枠が `TimelineInspector` から `PlotMarkerInspector`（プロットスレッド/マーカー編集）へ差し替わる（後述「プロットスレッド表示」節）。
 
 #### Story-time ラベルのインライン編集
 
@@ -342,10 +342,10 @@ Inspector 上の `story_time_label` フィールドは、クリックで `<input
 
 ヘッダーの viewMode トグルで Timeline の表示が 2 モード（`scenes` / `threads`）に切り替わる。
 
-| viewMode | 内容 | y 軸の意味 |
-|----------|------|-----------|
-| `scenes`（既定） | これまでのシーン年表。本文書 A〜D 章で説明したシーンノードの時間軸表示 | scheduled / unscheduled の 2 レーン固定 |
-| `threads` | **名前付きプロットスレッドのスイムレーン表示**。各スレッドが横一本のレーンを持ち、シーン上に段階マーカーを置く | スレッドごとに 1 レーン（N レーン） |
+| viewMode     | 内容                                                        | y 軸の意味                            |
+| ------------ | --------------------------------------------------------- | --------------------------------- |
+| `scenes`（既定） | これまでのシーン年表。本文書 A〜D 章で説明したシーンノードの時間軸表示                     | scheduled / unscheduled の 2 レーン固定 |
+| `threads`    | **名前付きプロットスレッドのスイムレーン表示**。各スレッドが横一本のレーンを持ち、シーン上に段階マーカーを置く | スレッドごとに 1 レーン（N レーン）              |
 
 x 軸（シーンの並び）は両モードで共通で、ヘッダーの軸モード（Reading / Story / Write）とズームをそのまま流用する。`threads` モードでもシーンの x 位置は `scenes` モードと同一に保たれる。
 
@@ -514,10 +514,12 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 
 | 操作 | 動作 |
 |------|------|
-| 水平スクロール | タイムライン上の移動 |
-| `Ctrl+スクロール` | ズームイン/アウト（軸のpx/unit比が変わる） |
+| `ホイール`（縦回転） | ズームイン/アウト（軸のpx/unit比が変わる） |
+| `Shift+ホイール` / トラックパッド横スワイプ / スクロールバー | 水平スクロール（タイムライン上の移動） |
 | `Ctrl+0` | Fit to viewport（全シーンが見える倍率に） |
 | `Ctrl++` / `Ctrl+-` | 段階的ズーム |
+
+> ホイール単体でズームする（旧仕様の `Ctrl+ホイール` 必須は廃止）。横優位の入力（`Shift+ホイール` / トラックパッドの横スワイプ = `|deltaX| > |deltaY|`）はズームせずブラウザ既定の水平スクロールに委ねる。
 
 ズームレベルは Timeline パネルごとに独立して永続化（`global-settings.json`）。
 
@@ -527,7 +529,7 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 
 - `Ctrl+0`（Fit）: Fit 計算後の倍率をクランプしてから適用
 - `Ctrl++` / `Ctrl+-`: 段階的ズーム後にクランプ
-- `Ctrl+wheel`: wheel delta を zoom に反映後にクランプ
+- `ホイール`（縦回転）: wheel delta を zoom に反映後にクランプ
 
 範囲外への入力は端でサチュレートする（エラー表示はしない）。
 
@@ -544,7 +546,7 @@ Editorがすでに該当シーンを固定タブで開いている場合は、�
 
 #### `containerEl` ベースの wheel listener 再登録
 
-シーンが遅延ロードされるとビューポートのコンテナ DOM がアンマウント／再マウントされることがあり、`useEffect(() => ..., [])` の一度きり登録では `Ctrl+wheel` ズームが効かなくなる。これを避けるため、コンテナ要素は `ref` ではなく **`useState<HTMLElement | null>` で保持（`containerEl`）** し、`containerEl` を依存に持つ effect で wheel listener を再登録する:
+シーンが遅延ロードされるとビューポートのコンテナ DOM がアンマウント／再マウントされることがあり、`useEffect(() => ..., [])` の一度きり登録ではホイールズームが効かなくなる。これを避けるため、コンテナ要素は `ref` ではなく **`useState<HTMLElement | null>` で保持（`containerEl`）** し、`containerEl` を依存に持つ effect で wheel listener を再登録する:
 
 ```ts
 const [containerEl, setContainerEl] = useState<HTMLElement | null>(null);
@@ -810,7 +812,7 @@ ALTER TABLE tree_nodes ADD COLUMN emotion_score REAL;
 
 ### ズーム・パン
 
-- `react-zoom-pan-pinch` は過剰。スクロール + `Ctrl+wheel` のイベントハンドリングで十分
+- `react-zoom-pan-pinch` は過剰。スクロール + ホイールズームのイベントハンドリングで十分
 
 ---
 
