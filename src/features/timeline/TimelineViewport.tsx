@@ -20,6 +20,7 @@ import {
   buildPlotLaneModel,
   computeLaneDragTargets,
   LANE_HEIGHT,
+  type PlotLaneModel,
 } from "@/features/plot-threads/plotThreadLaneModel";
 import {
   buildPlotSubwayModel,
@@ -32,7 +33,13 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
 import type { PlotPhaseType } from "@/db/schema";
 import { recordMark } from "@/lib/perfLog";
-import { DURATIONS, easeOutFn, useReducedMotion } from "@/lib/animation";
+import {
+  DURATIONS,
+  CSS_DURATIONS,
+  CSS_EASINGS,
+  easeOutFn,
+  useReducedMotion,
+} from "@/lib/animation";
 
 const DOT_R = 6;
 /** プロットスレッドの太いバンド（線）の高さ。段階テキストを内側に表示する。 */
@@ -201,6 +208,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       null,
     );
     const [markerMenu, setMarkerMenu] = useState<MarkerMenuState | null>(null);
+    // スレッドヘッダー hover で当該スレッド以外を dim する（separated）。
+    const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
     // Track when the scroll container element mounts/unmounts so the wheel
     // listener effect re-runs even if scenes load after the first render.
     const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
@@ -393,6 +402,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         laneYByThread,
       });
     }
+    // マーカードラッグ中のライブ・プレビューは scheduledCount/nearestSceneIndex に依存する
+    // ため、それらが初期化される後段（xOf 群の後）で laneModel を差し替える。
 
     // merge の流入先(to)になっているマーカーの集合。subway と同じ白丸ドーナツで描く。
     // キー = `toThreadId:atNodeId`。
@@ -403,6 +414,61 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       }
       return set;
     }, [branches]);
+
+    // ── hover-dim（ヘッダー hover で当該スレッド以外を淡くする）──
+    const DIM_OPACITY = 0.28;
+    const dimTransition = `opacity ${CSS_DURATIONS.normal} ${CSS_EASINGS.easeOut}`;
+    /** スレッド単位の dim スタイル（hover 中の非対象を淡くしアニメーション）。 */
+    const threadDimStyle = (threadId: string): React.CSSProperties => ({
+      opacity:
+        hoveredThreadId && hoveredThreadId !== threadId ? DIM_OPACITY : 1,
+      transition: reducedMotion ? undefined : dimTransition,
+    });
+    const branchEnds = useMemo(() => {
+      const m = new Map<string, { from: string; to: string }>();
+      for (const b of branches)
+        m.set(b.id, { from: b.fromThreadId, to: b.toThreadId });
+      return m;
+    }, [branches]);
+    const threadColorById = useMemo(() => {
+      const m = new Map<string, string | null>();
+      for (const th of threads) m.set(th.id, th.color);
+      return m;
+    }, [threads]);
+    // コネクタの dim 判定。hover 中のスレッドが出所(from)＝自分の色の線なら対象。
+    // to 側でも色が一致すれば対象。別スレッド由来で色が異なる merge/branch は
+    // 当該スレッドの hover では「自分の線ではない」ので対象に含めない（dim する）。
+    const connectorDimStyle = (
+      connId: string,
+      connColor: string | null,
+    ): React.CSSProperties => {
+      if (!hoveredThreadId)
+        return {
+          opacity: 1,
+          transition: reducedMotion ? undefined : dimTransition,
+        };
+      const ends = branchEnds.get(connId);
+      const hoveredColor = threadColorById.get(hoveredThreadId) ?? null;
+      const lit =
+        !!ends &&
+        (ends.from === hoveredThreadId ||
+          (ends.to === hoveredThreadId && connColor === hoveredColor));
+      return {
+        opacity: lit ? 1 : DIM_OPACITY,
+        transition: reducedMotion ? undefined : dimTransition,
+      };
+    };
+
+    // ── マーカー追加のスケールイン検出（前回 render に無かった linkId だけ animate）──
+    const knownLinkIdsRef = useRef<Set<string> | null>(null);
+    const newMarkerIds = new Set<string>();
+    if (knownLinkIdsRef.current !== null && !reducedMotion) {
+      for (const l of links)
+        if (!knownLinkIdsRef.current.has(l.id)) newMarkerIds.add(l.id);
+    }
+    useEffect(() => {
+      knownLinkIdsRef.current = new Set(links.map((l) => l.id));
+    }, [links]);
 
     // subway レイアウト（AeonTimeline 風）モデル。showThreads かつ subway のときのみ使う。
     const subwayActive = showThreads && plotLayout === "subway";
@@ -490,6 +556,14 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     function nearestSceneId(svgX: number): string | undefined {
       const i = nearestSceneIndex(svgX);
       return i >= 0 ? scenes[i]?.id : undefined;
+    }
+
+    // マーカードラッグ中はドロップ先を解決し、その位置へマーカーを動かしたプレビュー
+    // モデルへ差し替える（帯・コネクタが追従＝ライブ再計算）。nearestSceneIndex /
+    // scheduledCount に依存するためここで適用する。ラベルドラッグ override 中
+    // （laneModel !== homeLaneModel）は両者排他なので行わない。
+    if (markerDrag?.moved && laneModel === homeLaneModel) {
+      laneModel = buildMarkerDragModel(markerDrag) ?? laneModel;
     }
 
     function handleLaneDoubleClick(
@@ -636,6 +710,87 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       });
     }
 
+    /**
+     * マーカードラッグ中の「ライブ・プレビュー」レーンモデルを作る。ドロップ先を
+     * resolveMarkerDrop で解決し、ドラッグ中マーカーをその位置へ移したリンク配列＋
+     * 追従/新規エッジで buildPlotLaneModel を組み直す（commitMarkerDrop と同じ判定）。
+     * 解決不能（none / 列外）なら null（呼び出し側は homeLaneModel にフォールバック）。
+     */
+    function buildMarkerDragModel(d: MarkerDragState): PlotLaneModel | null {
+      const dropCol = nearestSceneIndex(d.currentX);
+      const dropNodeId = dropCol >= 0 ? scenes[dropCol]?.id : undefined;
+      if (!dropNodeId) return null;
+      const action = resolveMarkerDrop({
+        dropY: d.currentY,
+        sourceThreadId: d.threadId,
+        nodeId: dropNodeId,
+        columnSlots: homeLaneModel.lanes.map((l) => ({
+          threadId: l.thread.id,
+          y: l.yByColumn.get(dropCol) ?? l.y,
+        })),
+      });
+      if (action.type === "none") return null;
+      const newThread =
+        action.type === "branch" ? action.toThreadId : d.threadId;
+      const newScene =
+        action.type === "move-scene" ? action.nodeId : action.atNodeId;
+      const crossThread = newThread !== d.threadId;
+      // ドラッグ中マーカーを移動先へ。
+      const previewLinks = links.map((l) =>
+        l.id === d.linkId ? { ...l, threadId: newThread, nodeId: newScene } : l,
+      );
+      // 既存アンカー（to===自スレッド && at===開始シーン）は追従。自己参照は落とす。
+      const anchored = branches.filter(
+        (b) => b.atNodeId === d.nodeId && b.toThreadId === d.threadId,
+      );
+      let previewBranches = branches;
+      if (anchored.length > 0) {
+        previewBranches = branches
+          .map((e) => {
+            if (!(e.atNodeId === d.nodeId && e.toThreadId === d.threadId))
+              return e;
+            const resTo = crossThread ? newThread : e.toThreadId;
+            if (e.fromThreadId === resTo) return null; // 自己参照
+            return crossThread
+              ? { ...e, toThreadId: newThread, atNodeId: newScene }
+              : { ...e, atNodeId: newScene };
+          })
+          .filter((b): b is (typeof branches)[number] => b !== null);
+      } else if (action.type === "branch" && crossThread) {
+        // 別スレッドへ → 新規 branch/merge のコネクタをプレビュー表示（重複時は出さない）。
+        const isDup = branches.some(
+          (b) =>
+            b.fromThreadId === action.fromThreadId &&
+            b.toThreadId === action.toThreadId &&
+            b.atNodeId === action.atNodeId &&
+            b.kind === action.kind,
+        );
+        if (!isDup)
+          previewBranches = [
+            ...branches,
+            {
+              id: "__preview_branch__",
+              projectId: "",
+              fromThreadId: action.fromThreadId,
+              toThreadId: action.toThreadId,
+              atNodeId: action.atNodeId,
+              kind: action.kind,
+              createdAt: "",
+              updatedAt: "",
+            },
+          ];
+      }
+      return buildPlotLaneModel({
+        threads,
+        links: previewLinks,
+        sceneX,
+        laneTop: threadsTop,
+        branches: previewBranches,
+        scheduledCount: scheduledCountForLanes,
+        subwaySort: plotSubwaySort,
+      });
+    }
+
     function commitMarkerDrop(d: MarkerDragState) {
       // 動いていなければクリック扱い＝選択。
       if (!d.moved) {
@@ -650,7 +805,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         dropY: d.currentY,
         sourceThreadId: d.threadId,
         nodeId: dropNodeId,
-        columnSlots: laneModel.lanes.map((l) => ({
+        // ドロップ判定はホーム位置（プレビュー override 後の laneModel ではなく）で行う。
+        columnSlots: homeLaneModel.lanes.map((l) => ({
           threadId: l.thread.id,
           y: l.yByColumn.get(dropCol) ?? l.y,
         })),
@@ -1297,7 +1453,11 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
             {showThreads &&
               !subwayActive &&
               laneModel.lanes.map((lane) => (
-                <g key={lane.thread.id} data-plot-lane={lane.thread.id}>
+                <g
+                  key={lane.thread.id}
+                  data-plot-lane={lane.thread.id}
+                  style={threadDimStyle(lane.thread.id)}
+                >
                   {/* レーン行のヒット領域（ダブルクリックで最寄りシーンにマーカー追加） */}
                   <rect
                     data-testid={`plot-lane-hit-${lane.thread.id}`}
@@ -1318,7 +1478,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                       )}
                     </title>
                   </rect>
-                  {/* レーン背景線 */}
+                  {/* レーン背景線。選択中スレッドはスレッド色で濃く・太く強調する。 */}
                   <line
                     x1={xOf(0)}
                     y1={lane.y}
@@ -1328,10 +1488,23 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         : totalWidth - PAD_RIGHT
                     }
                     y2={lane.y}
-                    stroke="currentColor"
-                    strokeOpacity={0.15}
-                    strokeWidth={1}
+                    stroke={
+                      selectedPlotThreadId === lane.thread.id
+                        ? (lane.thread.color ?? "var(--primary)")
+                        : "currentColor"
+                    }
+                    strokeOpacity={
+                      selectedPlotThreadId === lane.thread.id ? 0.5 : 0.15
+                    }
+                    strokeWidth={
+                      selectedPlotThreadId === lane.thread.id ? 2 : 1
+                    }
                     pointerEvents="none"
+                    style={{
+                      transition: reducedMotion
+                        ? undefined
+                        : `stroke-opacity ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}, stroke-width ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
+                    }}
                   />
                   {/* スレッドの太いバンド（reading-order のみ）。連続線セグメント単位で
                       描く。merge で終わり branch で始まるよう継ぎ目で切れる。
@@ -1406,6 +1579,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     strokeLinecap="butt"
                     strokeLinejoin="round"
                     pointerEvents="none"
+                    style={connectorDimStyle(c.id, c.color)}
                   />
                 );
               })}
@@ -1416,7 +1590,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
             {showThreads &&
               !subwayActive &&
               laneModel.lanes.map((lane) => (
-                <g key={`markers-${lane.thread.id}`}>
+                <g
+                  key={`markers-${lane.thread.id}`}
+                  style={threadDimStyle(lane.thread.id)}
+                >
                   {lane.markers.map((mk) => {
                     const label = t(
                       `plotThread.phaseType.${mk.phaseType}`,
@@ -1428,6 +1605,20 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     const selected = selectedPlotLinkId === mk.linkId;
                     const dragging =
                       markerDrag?.linkId === mk.linkId && markerDrag.moved;
+                    // 選択中はスレッド色の発光で強調（filter で halo）。foreground(黒)は
+                    // ライトテーマで重いため、各スレッド固有の色でやわらかく光らせる。
+                    // 追加直後のマーカーは plot-marker-in でスケールイン。
+                    const markerClass = newMarkerIds.has(mk.linkId)
+                      ? "cursor-pointer plot-marker-in"
+                      : "cursor-pointer";
+                    const markerStyle: React.CSSProperties = {
+                      filter: selected
+                        ? `drop-shadow(0 0 5px ${fill})`
+                        : "none",
+                      transition: reducedMotion
+                        ? undefined
+                        : `filter ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
+                    };
                     const onDown = (e: React.MouseEvent<SVGElement>) =>
                       handleMarkerMouseDown(
                         e,
@@ -1453,7 +1644,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                           data-testid={`plot-marker-${mk.linkId}`}
                           data-phase={mk.phaseType}
                           data-merge-target="true"
-                          className="cursor-pointer"
+                          className={markerClass}
+                          style={markerStyle}
                           opacity={dragging ? 0.3 : 1}
                           cx={cx}
                           cy={mk.y}
@@ -1475,7 +1667,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                           key={mk.linkId}
                           data-testid={`plot-marker-${mk.linkId}`}
                           data-phase={mk.phaseType}
-                          className="cursor-pointer"
+                          className={markerClass}
+                          style={markerStyle}
                           opacity={dragging ? 0.3 : 1}
                           cx={cx}
                           cy={mk.y}
@@ -1497,7 +1690,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         key={mk.linkId}
                         data-testid={`plot-marker-${mk.linkId}`}
                         data-phase={mk.phaseType}
-                        className="cursor-pointer"
+                        className={markerClass}
+                        style={markerStyle}
                         opacity={dragging ? 0.3 : 1}
                         onMouseDown={onDown}
                         onContextMenu={onCtx}
@@ -1592,10 +1786,20 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         key={`label-${lane.thread.id}`}
                         className="cursor-pointer"
                         data-testid={`plot-lane-label-${lane.thread.id}`}
-                        opacity={isDragged ? 0.7 : 1}
+                        style={{
+                          opacity: isDragged
+                            ? 0.7
+                            : hoveredThreadId &&
+                                hoveredThreadId !== lane.thread.id
+                              ? DIM_OPACITY
+                              : 1,
+                          transition: reducedMotion ? undefined : dimTransition,
+                        }}
                         onMouseDown={(e) =>
                           handleLabelMouseDown(e, lane.thread.id)
                         }
+                        onMouseEnter={() => setHoveredThreadId(lane.thread.id)}
+                        onMouseLeave={() => setHoveredThreadId(null)}
                       >
                         <rect
                           x={6}
@@ -1604,11 +1808,18 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                           height={26}
                           rx={13}
                           fill="var(--card, var(--background))"
-                          stroke={
-                            selected ? "var(--foreground)" : "currentColor"
-                          }
+                          // 選択中はスレッド色の枠＋発光で強調（foreground 黒は重いため）。
+                          stroke={selected ? color : "currentColor"}
                           strokeOpacity={selected ? 0.9 : 0.15}
-                          strokeWidth={selected ? 1.5 : 1}
+                          strokeWidth={selected ? 2 : 1}
+                          style={{
+                            filter: selected
+                              ? `drop-shadow(0 0 4px ${color})`
+                              : "none",
+                            transition: reducedMotion
+                              ? undefined
+                              : `filter ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
+                          }}
                         />
                         <circle cx={22} cy={cyL} r={7} fill={color} />
                         <text

@@ -49,6 +49,11 @@ export const CSS_DURATIONS = {
   dialog: `${DURATIONS.dialog * 1000}ms`,
 } as const;
 
+/** CSS timing-function strings aligned with EASINGS（CSS transition 用）。 */
+export const CSS_EASINGS = {
+  easeOut: `cubic-bezier(${EASINGS.easeOut.join(", ")})`,
+} as const;
+
 /**
  * cubic-bezier(x1,y1,x2,y2) を評価する関数を返す。端点は (0,0)-(1,1) 固定。
  * CSS transition と同じ曲線を rAF などの命令的トゥイーンでも使うためのもの

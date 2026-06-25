@@ -797,6 +797,28 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     expect(updateMarker).toHaveBeenCalledWith("l1", { nodeId: "s2" });
   });
 
+  it("マーカードラッグ中はグラフを再計算しプレビューのコネクタが出る（確定前）", () => {
+    seed();
+    usePlotThreadStore.setState({
+      updateMarker: vi.fn(),
+      addMarker: vi.fn(),
+      addBranch: vi.fn(),
+    });
+    const { getByTestId, container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const conns = () =>
+      container.querySelectorAll('[data-testid="plot-thread-connector"]')
+        .length;
+    expect(conns()).toBe(0); // 初期はエッジ無し
+    const m = getByTestId("plot-marker-l1"); // t1(上,y158)@s1
+    // t2(下,y214) の s2(x246) へドラッグ → branch。mouseup 前にコネクタが出る。
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
+    expect(conns()).toBeGreaterThan(0); // ライブ再計算でプレビュー・コネクタ
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
+  });
+
   it("下のレーンへドラッグ → branch: ドラッグ点を先(to)へ移動・元に点は作らない", () => {
     seed();
     const updateMarker = vi.fn();
@@ -1281,5 +1303,77 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     expect(deleteBranch).toHaveBeenCalledWith("br1");
     expect(updateBranch).not.toHaveBeenCalled();
     expect(updateMarker).toHaveBeenCalledWith("lB1", { nodeId: "s2" });
+  });
+});
+
+describe("TimelineViewport – ヘッダー hover dim（色違い merge/branch 除外）", () => {
+  beforeEach(resetStore);
+
+  const scenes = [
+    { ...mockScene, id: "s1" },
+    { ...mockScene, id: "s2" },
+  ];
+  const th = (id: string, so: string, color: string | null) => ({
+    id,
+    projectId: "p",
+    name: id,
+    color,
+    description: null,
+    sortOrder: so,
+    startNodeId: null,
+    endNodeId: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+  const lk = (id: string, threadId: string, nodeId: string) => ({
+    id,
+    threadId,
+    nodeId,
+    phaseType: "introduce" as const,
+    note: null,
+    sortOrder: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+
+  it("from 側 hover はコネクタ点灯・色違いの to 側 hover は dim", () => {
+    usePlotThreadStore.setState({
+      threads: [th("t1", "a0", "#ff0000"), th("t2", "a1", "#00ff00")],
+      links: [lk("l1", "t1", "s1"), lk("l2", "t2", "s2")],
+      branches: [
+        {
+          id: "br1",
+          projectId: "p",
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "s2",
+          kind: "branch" as const,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      loading: false,
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      axisMode: "reading",
+      plotLayout: "separated",
+    });
+    const { getByTestId, container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const conn = () =>
+      container.querySelector(
+        '[data-testid="plot-thread-connector"]',
+      ) as SVGElement;
+    expect(conn()).toBeTruthy();
+    // from=t1（コネクタ色 #ff0000 = t1 色）を hover → 点灯。
+    fireEvent.mouseEnter(getByTestId("plot-lane-label-t1"));
+    const litOp = conn().style.opacity;
+    expect(litOp === "" || Number(litOp) === 1).toBe(true);
+    // to=t2（色 #00ff00 ≠ コネクタ色 #ff0000）を hover → 別スレッド由来なので dim。
+    fireEvent.mouseLeave(getByTestId("plot-lane-label-t1"));
+    fireEvent.mouseEnter(getByTestId("plot-lane-label-t2"));
+    expect(Number(conn().style.opacity)).toBeLessThan(1);
   });
 });
