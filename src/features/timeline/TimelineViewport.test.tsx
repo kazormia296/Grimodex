@@ -877,20 +877,23 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     );
   });
 
-  it("動かさず mousedown→mouseup なら選択（クリック扱い）", () => {
+  it("動かさず mousedown→mouseup なら選択（マーカー＋そのシーン）", () => {
     seed();
     const onSelectMarker = vi.fn();
+    const onSelectScene = vi.fn();
     const { getByTestId } = render(
       <TimelineViewport
         scenes={scenes}
-        onSelectScene={vi.fn()}
+        onSelectScene={onSelectScene}
         onSelectMarker={onSelectMarker}
       />,
     );
-    const m = getByTestId("plot-marker-l1");
+    const m = getByTestId("plot-marker-l1"); // l1 = t1@s1
     fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
     fireEvent.mouseUp(document, { clientX: 150, clientY: 158 });
     expect(onSelectMarker).toHaveBeenCalledWith("l1");
+    // subway と同じくマーカーが乗るシーンも選択する。
+    expect(onSelectScene).toHaveBeenCalledWith("s1");
   });
 
   it("既存と同一の分岐になるドロップは source を動かさない（非アトミック防止）", () => {
@@ -1375,5 +1378,67 @@ describe("TimelineViewport – ヘッダー hover dim（色違い merge/branch �
     fireEvent.mouseLeave(getByTestId("plot-lane-label-t1"));
     fireEvent.mouseEnter(getByTestId("plot-lane-label-t2"));
     expect(Number(conn().style.opacity)).toBeLessThan(1);
+  });
+});
+
+describe("TimelineViewport – フォルダ構造グルーピング帯（X軸）", () => {
+  beforeEach(resetStore);
+
+  const scenes = [
+    { ...mockScene, id: "s1" },
+    { ...mockScene, id: "s2" },
+    { ...mockScene, id: "s3" },
+  ];
+
+  it("folderGroups を渡すと部/章の帯を2段描く", () => {
+    const { container } = render(
+      <TimelineViewport
+        scenes={scenes}
+        onSelectScene={vi.fn()}
+        folderGroups={[
+          [{ startIndex: 0, endIndex: 2, id: "P", label: "部P" }],
+          [
+            { startIndex: 0, endIndex: 1, id: "A", label: "章A" },
+            { startIndex: 2, endIndex: 2, id: "B", label: "章B" },
+          ],
+        ]}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="folder-band-level-0"]'),
+    ).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="folder-band-level-1"]'),
+    ).toBeTruthy();
+    // 部1 + 章2 = 3 本の帯
+    expect(
+      container.querySelectorAll('[data-testid="folder-band"]').length,
+    ).toBe(3);
+  });
+
+  it("folderGroups 未指定（既定）では帯を描かない", () => {
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    expect(
+      container.querySelectorAll('[data-testid="folder-band"]').length,
+    ).toBe(0);
+  });
+
+  it("3段以上でも最大2段までしか描かない", () => {
+    const { container } = render(
+      <TimelineViewport
+        scenes={scenes}
+        onSelectScene={vi.fn()}
+        folderGroups={[
+          [{ startIndex: 0, endIndex: 2, id: "P", label: "部" }],
+          [{ startIndex: 0, endIndex: 2, id: "A", label: "章" }],
+          [{ startIndex: 0, endIndex: 2, id: "X", label: "節" }],
+        ]}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="folder-band-level-2"]'),
+    ).toBeNull();
   });
 });

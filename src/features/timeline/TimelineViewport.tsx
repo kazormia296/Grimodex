@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
 import { useCardLayout } from "@/features/layout/cardLayout";
-import { computeAxisLabels } from "./timelineLabels";
+import { computeAxisLabels, type FolderGroup } from "./timelineLabels";
 import { ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineContextMenu } from "./TimelineContextMenu";
 import { PlotMarkerContextMenu } from "./PlotMarkerContextMenu";
@@ -150,6 +150,8 @@ interface Props {
   onSelectMarker?: (linkId: string) => void;
   /** threads モードでレーン見出しをクリックしたとき（スレッド編集用）。 */
   onSelectThread?: (threadId: string) => void;
+  /** X 軸下に描くフォルダ・グルーピング帯（level 別。level0=部, 以降=章）。 */
+  folderGroups?: FolderGroup[][];
 }
 
 export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
@@ -158,6 +160,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       scenes,
       weights = null,
       phasePins = [],
+      folderGroups = [],
       unscheduledStartIndex,
       onDropStoryTime,
       onSelectScene,
@@ -792,8 +795,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     }
 
     function commitMarkerDrop(d: MarkerDragState) {
-      // 動いていなければクリック扱い＝選択。
+      // 動いていなければクリック扱い＝選択。subway view と同じく、マーカーが乗る
+      // シーンも併せて選択する（インスペクタはマーカー、本文側はそのシーンへ）。
       if (!d.moved) {
+        onSelectScene(d.nodeId);
         onSelectMarker?.(d.linkId);
         return;
       }
@@ -1141,6 +1146,63 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
             className={`block select-none${canDrag ? " cursor-default" : ""}`}
             aria-label={t("timeline.viewport", "タイムライン ビューポート")}
           >
+            {/* フォルダ構造のグルーピング帯（reading 順）。level0=部 を上段、
+                level1=章 を下段に最大2段。チャプター数目盛り(LABEL_Y=16)の下・
+                シーン軸(LANE_Y=60)の上の空き帯に描く。 */}
+            {folderGroups.slice(0, 2).map((groups, level) => {
+              const bandH = 13;
+              const top = 20 + level * (bandH + 3); // 20–33 / 36–49
+              return (
+                <g
+                  key={`folder-level-${level}`}
+                  data-testid={`folder-band-level-${level}`}
+                  pointerEvents="none"
+                >
+                  {groups.map((g) => {
+                    const x1 = xOf(g.startIndex) - DOT_R;
+                    const x2 = xOf(g.endIndex) + DOT_R;
+                    const w = Math.max(0, x2 - x1);
+                    const maxChars = Math.floor((w - 8) / 6);
+                    const text =
+                      g.label.length > maxChars
+                        ? g.label.slice(0, Math.max(1, maxChars - 1)) + "…"
+                        : g.label;
+                    return (
+                      <g key={`${level}-${g.id}-${g.startIndex}`}>
+                        <rect
+                          data-testid="folder-band"
+                          x={x1}
+                          y={top}
+                          width={w}
+                          height={bandH}
+                          rx={3}
+                          fill="currentColor"
+                          fillOpacity={0.06}
+                          stroke="currentColor"
+                          strokeOpacity={0.12}
+                          strokeWidth={1}
+                        />
+                        {maxChars >= 2 && (
+                          <text
+                            x={(x1 + x2) / 2}
+                            y={top + bandH / 2}
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            fontSize={9}
+                            fill="currentColor"
+                            fillOpacity={0.6}
+                            className="select-none"
+                          >
+                            {text}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+
             {/* Axis tick labels */}
             {computeAxisLabels(
               scenes.slice(0, scheduledCount),

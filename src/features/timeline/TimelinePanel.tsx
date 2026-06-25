@@ -2,6 +2,7 @@ import { useCallback, useMemo, useEffect, useRef } from "react";
 import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
+import { computeFolderGroups } from "./timelineLabels";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -123,6 +124,34 @@ export function TimelinePanel() {
         : null;
     return { scenes: sorted, weights: ws };
   }, [axisMode, spacingMode, sceneNodes, nodes]);
+
+  // X 軸下に描くフォルダ・グルーピング帯（部/章）。フォルダは reading 順で連続するため
+  // reading モードのみ。各シーンの祖先フォルダ(root→直近)を辿って level 別レンジに束ねる。
+  const nodeById = useMemo(() => {
+    const m = new Map<string, (typeof nodes)[number]>();
+    for (const n of nodes) m.set(n.id, n);
+    return m;
+  }, [nodes]);
+  const folderGroups = useMemo(() => {
+    if (axisMode !== "reading") return [];
+    const ancestorsOf = (sceneId: string) => {
+      const path: { id: string; label: string }[] = [];
+      const guard = new Set<string>();
+      let pid = nodeById.get(sceneId)?.parentId ?? null;
+      while (pid && !guard.has(pid)) {
+        guard.add(pid);
+        const f = nodeById.get(pid);
+        if (!f || f.nodeType !== "folder") break;
+        path.push({ id: f.id, label: f.title });
+        pid = f.parentId;
+      }
+      return path.reverse(); // root(部) → 直近(章)
+    };
+    return computeFolderGroups(
+      scenes.map((s) => s.id),
+      ancestorsOf,
+    );
+  }, [axisMode, scenes, nodeById]);
 
   // Build phase pins from phaseStore + codexStore
   const phasePins = useMemo<PhasePinData[]>(() => {
@@ -566,6 +595,7 @@ export function TimelinePanel() {
           scenes={scenes}
           weights={weights}
           phasePins={phasePins}
+          folderGroups={folderGroups}
           unscheduledStartIndex={
             axisMode === "story" && scheduledCount !== null
               ? scheduledCount

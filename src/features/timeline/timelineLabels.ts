@@ -60,3 +60,43 @@ export function computeAxisLabels(
 
   return result;
 }
+
+/** X 軸下に描くフォルダ・グルーピング帯の 1 区間。index は表示順シーン配列の位置。 */
+export interface FolderGroup {
+  startIndex: number;
+  endIndex: number;
+  id: string;
+  label: string;
+}
+
+/**
+ * 表示順のシーン配列を、各フォルダ深さ(level)ごとの連続レンジにまとめる純関数。
+ * level 0 = 最上位フォルダ（部）、深いほど直近（章）寄り。
+ * `ancestorsOf` は各シーンの祖先フォルダを **root→直近** の順で返すこと。
+ * 同じフォルダ id が連続するシーンを 1 区間に束ね、フォルダが無いシーンで切れる。
+ */
+export function computeFolderGroups(
+  sceneIds: string[],
+  ancestorsOf: (sceneId: string) => { id: string; label: string }[],
+): FolderGroup[][] {
+  const paths = sceneIds.map((id) => ancestorsOf(id));
+  const maxDepth = paths.reduce((m, p) => Math.max(m, p.length), 0);
+  const levels: FolderGroup[][] = [];
+  for (let d = 0; d < maxDepth; d++) {
+    const groups: FolderGroup[] = [];
+    let cur: FolderGroup | null = null;
+    paths.forEach((path, i) => {
+      const f = path[d];
+      if (f && cur && cur.id === f.id) {
+        cur.endIndex = i;
+      } else if (f) {
+        cur = { startIndex: i, endIndex: i, id: f.id, label: f.label };
+        groups.push(cur);
+      } else {
+        cur = null; // 当該深さにフォルダが無いシーンで区間を切る
+      }
+    });
+    levels.push(groups);
+  }
+  return levels;
+}
