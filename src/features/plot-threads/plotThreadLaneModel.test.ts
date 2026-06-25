@@ -450,31 +450,31 @@ describe("plotThreadLaneModel (ストーリーライン: ホーム行＋出会�
       ]);
     });
 
-    it("branch 後の列に自走マーカーがあれば親線は連続する（並列走行）", () => {
-      // blue は s1, s5 に自走 beat。s3 で red へ branch しても、後ろに自走マーカー(s5)が
-      // あるので blue は分岐点で切れず連続する（red と並列に走る）。
+    it("branch する列に自分のマーカーがあれば親線は連続する（並列走行）", () => {
+      // blue は s1, s3, s5 に自走 beat を持つ。s3 で red へ branch するが、その列(s3)に
+      // blue 自身のマーカーがあるので blue は切れず連続（red が脇へ分岐するだけ）。
       const m = buildPlotLaneModel({
         threads: [thread("blue", "a0"), thread("red", "a1")],
         links: [
           link("lb1", "blue", "s1", "introduce"),
-          link("lb2", "blue", "s5", "resolve"),
-          link("lr", "red", "s3", "develop"),
+          link("lb2", "blue", "s3", "develop"),
+          link("lb3", "blue", "s5", "resolve"),
+          link("lr", "red", "s4", "develop"),
         ],
         sceneX,
         branches: [branch("br", "blue", "red", "s3", "branch")],
       });
       const blue = m.lanes.find((l) => l.thread.id === "blue")!;
-      // s1=0 .. s5=4 を連続（分岐 s3=col2 で切れない・rampOut 無し）。
+      // s1=0 .. s5=4 を連続（分岐 s3=col2 に自分のマーカーがあるので切れない）。
       expect(blue.lineSegments).toEqual([
         { x1: 0, y1: laneY(0), x2: 4, y2: laneY(0) },
       ]);
-      // 自走で完結するので終端ノブが付く。
       expect(blue.terminusX).toBe(4);
     });
 
-    it("branch 後の自走マーカーが merge 再流入のときは連続させない（橋渡ししない）", () => {
-      // 上の並列ケースと唯一の違い: s5 は red→blue の merge 再流入。よって blue は
-      // 分岐点で切れ、s5 は新たな始点（[[grimodex-plot-thread-timeline]] のバトンと同型）。
+    it("branch する列に自分のマーカーが無ければ離脱する（バトン・橋渡ししない）", () => {
+      // blue は s1, s5 のみ。s3 で branch するがその列に blue のマーカーが無いので離脱、
+      // s5 は merge で戻ってくる新たな始点（[[grimodex-plot-thread-timeline]] と同型）。
       const m = buildPlotLaneModel({
         threads: [thread("blue", "a0"), thread("red", "a1")],
         links: [
@@ -493,6 +493,42 @@ describe("plotThreadLaneModel (ストーリーライン: ホーム行＋出会�
         { x1: 0, y1: laneY(0), x2: 2, y2: laneY(0), rampOutEnd: true },
       ]);
       expect(blue.terminusX).toBeNull();
+    });
+
+    it("ジグザグ: branch 列に自分のマーカーがあれば連続・無ければ離脱（実機スクショ再現）", () => {
+      // 実機データを縮約: BLUE が本線、RED が 2回だけ枝へ出て戻る。
+      //  branch BLUE→RED@s2 (BLUE にマーカー有→連続) / merge RED→BLUE@s3
+      //  branch BLUE→RED@s4 (BLUE にマーカー無→離脱) / merge RED→BLUE@s5
+      const m = buildPlotLaneModel({
+        threads: [thread("BLUE", "a0"), thread("RED", "a1")],
+        links: [
+          link("b1", "BLUE", "s1", "introduce"),
+          link("b2", "BLUE", "s2", "develop"), // branch 列に自分のマーカー
+          link("b3", "BLUE", "s3", "develop"), // merge 戻り
+          link("b4", "BLUE", "s5", "resolve"), // 2回目 merge 戻り
+          link("r1", "RED", "s2", "develop"),
+          link("r2", "RED", "s4", "develop"),
+        ],
+        sceneX,
+        branches: [
+          branch("e1", "BLUE", "RED", "s2", "branch"),
+          branch("e2", "RED", "BLUE", "s3", "merge"),
+          branch("e3", "BLUE", "RED", "s4", "branch"),
+          branch("e4", "RED", "BLUE", "s5", "merge"),
+        ],
+      });
+      const BLUE = m.lanes.find((l) => l.thread.id === "BLUE")!;
+      const RED = m.lanes.find((l) => l.thread.id === "RED")!;
+      // BLUE: s2(col1) は自分のマーカー有→連続、s4(col3) は無→離脱。よって [0→3] 連続
+      // （= s2-s3 が繋がる）＋ merge 戻りの s5(col4) は単独点。
+      expect(BLUE.lineSegments).toEqual([
+        { x1: 0, y1: laneY(0), x2: 3, y2: laneY(0), rampOutEnd: true },
+      ]);
+      // RED: 2本の枝 [s2→s3 で離脱] [s4→s5 で離脱]。
+      expect(RED.lineSegments).toEqual([
+        { x1: 1, y1: laneY(1), x2: 2, y2: laneY(1), rampOutEnd: true },
+        { x1: 3, y1: laneY(1), x2: 4, y2: laneY(1), rampOutEnd: true },
+      ]);
     });
   });
 

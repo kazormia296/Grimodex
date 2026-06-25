@@ -283,23 +283,19 @@ export function buildPlotLaneModel(args: {
       y: yByColumn.get(mk.x) ?? yHome,
     }));
 
-    // 離脱列(leaveCols)を確定する。merge の from は必ず離脱。branch の from は「その列より
-    // 後ろに自走マーカーが有る」なら離脱せず連続（並列走行）、無ければ離脱（rampOut で締める）。
-    // 自走マーカー = 再流入列(enterCols=to)でないマーカー列（連れ戻された点は自走の続きでない）。
+    // 離脱列(leaveCols)を確定する。
+    //  - merge の from は必ず離脱（to へ畳まれて消える）。
+    //  - branch の from は「その列に自分のマーカーが無い」ときだけ離脱（線が別レーンへ渡って
+    //    自分はそこに居ない）。自分のマーカーが有る列では離脱せず連続（自分の beat があるので
+    //    本線はそのまま走り、ランプは分岐として脇へ出るだけ）。
     const branchFromCols = branchFromColsByThread.get(thread.id);
     const mergeFromCols = mergeFromColsByThread.get(thread.id);
     const enterCols = enterColsByThread.get(thread.id);
-    let lastSelfMarkerCol = -Infinity;
-    for (const mk of p.markers) {
-      if (!enterCols?.has(mk.x) && mk.x > lastSelfMarkerCol) {
-        lastSelfMarkerCol = mk.x;
-      }
-    }
     const leaveCols = new Set<number>();
     if (mergeFromCols) for (const c of mergeFromCols) leaveCols.add(c);
     if (branchFromCols) {
       for (const c of branchFromCols) {
-        if (lastSelfMarkerCol <= c) leaveCols.add(c);
+        if (!p.markerCols.has(c)) leaveCols.add(c);
       }
     }
 
