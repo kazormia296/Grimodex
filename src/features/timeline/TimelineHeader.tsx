@@ -167,6 +167,18 @@ export function TimelineHeader({
             >
               {t("timeline.togglePhasePins", "フェーズピン表示")}
             </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={display.showThreadGaps}
+              onCheckedChange={() => toggleDisplay("showThreadGaps")}
+            >
+              {t("timeline.toggleThreadGaps", "スレッドの抜けシーンを表示")}
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={display.showStructureAnalysis}
+              onCheckedChange={() => toggleDisplay("showStructureAnalysis")}
+            >
+              {t("timeline.toggleStructureAnalysis", "構造分析パネル")}
+            </DropdownMenuCheckboxItem>
           </DropdownMenuContent>
         </DropdownMenu>
 

@@ -23,6 +23,9 @@ import { TreeContextMenu } from "./TreeContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { LabelDots } from "@/features/labels/LabelDots";
+import { ScenesThreadTrack } from "@/features/plot-threads/ScenesThreadTrack";
+import { TRACK_COL_WIDTH } from "@/features/plot-threads/sceneThreadTracks";
+import type { PlotThreadRow } from "@/features/plot-threads/api";
 import { LensDot } from "./LensDot";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,7 +90,14 @@ interface TreeNodeItemProps {
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
+  showPlotThreadTrack: boolean;
   showAiAttribution: boolean;
+  /** Per-column track state string for this row (buildSceneThreadTracks). */
+  trackCells?: string;
+  /** Branch/merge connector string for this row (buildSceneThreadTracks). */
+  trackConnectors?: string;
+  /** Plot-thread track columns (subway gutter). Stable ref. */
+  trackColumns?: PlotThreadRow[];
   /** Ordered flat list of nodes for Shift+Click range selection.
    *  ref 渡し (クリック時に .current を読む) なのは、filter/expand 毎に
    *  配列参照が変わって memo が全行で破綻するのを防ぐため。 */
@@ -117,7 +127,11 @@ function TreeNodeItemImpl({
   showWordCounts,
   showStatusDots,
   showLabelDots,
+  showPlotThreadTrack,
   showAiAttribution,
+  trackCells,
+  trackConnectors,
+  trackColumns,
   orderedNodesRef,
   dragInProgress,
   viewMode,
@@ -267,6 +281,14 @@ function TreeNodeItemImpl({
     [finishEdit, node.title],
   );
 
+  // 左ガターの「縦版ミニ・タイムライン」幅。スレッド列ぶん content を右へ寄せ、
+  // ガター自体は absolute で固定 x（深さ非依存）に置く＝縦線が全行で整列する。
+  const trackColumnCount = trackColumns?.length ?? 0;
+  const trackWidth =
+    showPlotThreadTrack && trackColumnCount > 0
+      ? trackColumnCount * TRACK_COL_WIDTH
+      : 0;
+
   const __renderResult = (
     <li
       ref={setRef}
@@ -286,13 +308,19 @@ function TreeNodeItemImpl({
               // data-drop-inside も applyDropIndicator が直接トグルする
               "data-[drop-inside=true]:ring-1 data-[drop-inside=true]:ring-primary data-[drop-inside=true]:ring-inset",
               isActive && "bg-accent/70 font-medium",
-              isActive &&
-                (node.nodeType === "scene" || node.nodeType === "note") &&
-                "border-l-2 border-primary",
               isSelected && !isActive && "bg-primary/20",
             )}
             style={{
-              paddingLeft: `${depth * 12 + (isActive && (node.nodeType === "scene" || node.nodeType === "note") ? 2 : 4)}px`,
+              // アクティブの左バーは border ではなく inset box-shadow で描く。
+              // border は padding box を 2px ずらし、absolute の縦トラックガターが
+              // その行だけ右へジャンプする（選択行で線がズレる不具合）。box-shadow は
+              // レイアウトに影響しないため全行でガターの x が揃う。
+              boxShadow:
+                isActive &&
+                (node.nodeType === "scene" || node.nodeType === "note")
+                  ? "inset 2px 0 0 0 var(--primary)"
+                  : undefined,
+              paddingLeft: `${trackWidth + depth * 12 + 4}px`,
             }}
             title={
               viewMode !== "outline" &&
@@ -304,6 +332,14 @@ function TreeNodeItemImpl({
             onClick={dragInProgress ? undefined : (e) => handleClick(e)}
             onDoubleClick={dragInProgress ? undefined : handleDoubleClick}
           >
+            {/* 縦版ミニ・タイムライン（読み取り専用の左ガター・固定 x で整列） */}
+            {trackWidth > 0 && trackColumns && (
+              <ScenesThreadTrack
+                cells={trackCells ?? ""}
+                columns={trackColumns}
+                connectors={trackConnectors}
+              />
+            )}
             {/* Drag handle — always in layout to prevent title shift */}
             <span
               {...(fileBacked ? {} : attributes)}

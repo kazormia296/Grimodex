@@ -21,7 +21,8 @@ export type AiUsageSurface =
   | "session_title" // チャットセッションタイトル自動生成
   | "summarization" // 進行的要約 (L5)
   | "context_creator" // Context Creator (ピン提案エージェント)
-  | "codex_judgment"; // 未確定固有名詞候補の種別判定 (B2)
+  | "codex_judgment" // 未確定固有名詞候補の種別判定 (B2)
+  | "plot_thread_extract"; // プロットスレッド抽出ウィザード (Phase 4a)
 
 export interface RecordAiUsageInput {
   surface: AiUsageSurface;

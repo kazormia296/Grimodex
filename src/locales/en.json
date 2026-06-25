@@ -1149,7 +1149,8 @@
         "session_title": "Session title",
         "summarization": "Summarization",
         "context_creator": "Context Creator",
-        "codex_judgment": "Proper-noun candidate judgment"
+        "codex_judgment": "Proper-noun candidate judgment",
+        "plot_thread_extract": "Plot thread extraction"
       }
     }
   },
@@ -1610,6 +1611,11 @@
       }
     },
     "placeholderFolder": "Ask about this {{kind}}…",
+    "placeholderThread": "Discuss \"{{title}}\"…",
+    "threadFocus": {
+      "label": "Plot thread: {{title}}",
+      "clear": "Clear thread focus"
+    },
     "sessions": "Sessions",
     "newSession": "New session",
     "fallbackSceneTitle": "This scene",
@@ -1729,6 +1735,7 @@
         "L3": "Current scene",
         "FOCUS": "Conversation focus",
         "L4": "Codex & settings",
+        "PLOT_THREAD": "Plot thread structure",
         "RAG": "Related scenes (semantic)",
         "EPISODIC": "Past conversation memory",
         "L5": "Conversation summary",
@@ -4106,12 +4113,16 @@
     "filterByLabelLabel": "Filter by label",
     "filterAllLabels": "Show all",
     "noLabels": "No labels yet",
+    "filterByThreadLabel": "Filter by thread",
+    "filterAllThreads": "Show all",
+    "noThreads": "No threads yet",
     "removeFilter": "Click to remove filter",
     "clearFilters": "Clear all",
     "showLabel": "Show",
     "showWordCount": "Character count",
     "showStatusDots": "Status dots",
     "showLabelDots": "Label dots",
+    "showPlotThreadTrack": "Thread track",
     "showAiBadge": "AI attribution badge",
     "autoRevealActive": "Auto-reveal active",
     "addScene": "Add Scene",
@@ -4798,6 +4809,7 @@
       "colorThread": "Change thread color",
       "spanThread": "Change thread span",
       "deleteThread": "Delete thread",
+      "importThreads": "Import threads",
       "addMarker": "Add marker",
       "moveMarker": "Move marker",
       "phaseMarker": "Change phase",
@@ -4812,6 +4824,7 @@
     "addThread": "Add thread",
     "newThreadName": "New thread",
     "unnamed": "(unnamed)",
+    "discussInChat": "Discuss this thread with AI",
     "marker": "Marker",
     "thread": "Thread",
     "name": "Name",
@@ -4841,6 +4854,49 @@
       "turn": "Turn",
       "climax": "Climax",
       "resolve": "Resolve"
+    },
+    "arc": {
+      "title": "Main characters of this thread",
+      "hint": "Aggregated from appearances, roles, and POV in member scenes",
+      "pov": "POV",
+      "sceneCount": "{{n}} scenes"
+    },
+    "extract": {
+      "button": "Extract",
+      "title": "Extract threads from prose",
+      "hint": "AI reads the prose of the selected chapter/folder and proposes sub-plots (through-lines) with narrative-phase markers. Import is a single, undoable action.",
+      "selectFolder": "Select a chapter/folder…",
+      "analyze": "Analyze",
+      "import": "Import",
+      "imported": "Imported {{n}} thread(s)",
+      "failed": "Extraction failed",
+      "none": "No sub-plots could be extracted."
+    },
+    "structure": {
+      "title": "Structure",
+      "hide": "Hide structure analysis",
+      "empty": "No plot threads",
+      "active": "Now",
+      "dormant": "Dormant +{{n}}",
+      "upcoming": "Upcoming",
+      "upcomingNext": "Upcoming (next +{{n}})",
+      "unplaced": "Unplaced",
+      "tailDistance": "Tail -{{n}}",
+      "tailDistanceHint": "Distance from axis tail",
+      "gap": "Missing {{phase}}",
+      "gapHint": "Story-arc gap"
+    },
+    "export": {
+      "copy": "Copy as Markdown",
+      "copied": "Copied",
+      "clipboardFailed": "Couldn’t copy to clipboard",
+      "heading": "Plot structure",
+      "branchSection": "Branches & merges",
+      "colPhase": "Phase",
+      "colScene": "Scene",
+      "colNote": "Note",
+      "unknownScene": "(unknown scene)",
+      "unknownThread": "(unknown thread)"
     }
   },
   "timeline": {
@@ -4863,6 +4919,7 @@
     "sceneCount": "{{count}} scenes",
     "toggleTitles": "Show titles",
     "togglePhasePins": "Show phase pins",
+    "toggleThreadGaps": "Show thread gaps",
     "toggleInspector": "Inspector",
     "inspector": {
       "title": "Inspector",
@@ -4876,7 +4933,8 @@
       "phases": "Phases anchored ({{n}})",
       "created": "Created",
       "labelPlaceholder": "T1"
-    }
+    },
+    "toggleStructureAnalysis": "Structure analysis panel"
   },
   "matrix": {
     "filters": {

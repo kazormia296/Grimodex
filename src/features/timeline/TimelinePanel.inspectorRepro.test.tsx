@@ -95,6 +95,8 @@ describe("TimelinePanel inspector repro (Phase B)", () => {
         showTitles: true,
         showChapterNumbers: true,
         showPhasePins: false,
+        showThreadGaps: false,
+        showStructureAnalysis: false,
       },
     });
     const th = (

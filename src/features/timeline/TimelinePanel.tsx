@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useEffect, useRef } from "react";
 import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
+import { computeTimelineSceneOrder } from "./timelineSceneOrder";
 import { computeFolderGroups } from "./timelineLabels";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { usePhaseStore } from "@/features/codex/phaseStore";
@@ -26,6 +26,7 @@ import {
 } from "./TimelineViewport";
 import { TimelineInspector } from "./TimelineInspector";
 import { PlotMarkerInspector } from "@/features/plot-threads/PlotMarkerInspector";
+import { PlotStructureAnalysis } from "@/features/plot-threads/PlotStructureAnalysis";
 import type { PhasePinData } from "./TimelineViewport";
 import { recordMark } from "@/lib/perfLog";
 
@@ -47,6 +48,9 @@ export function TimelinePanel() {
   const inspectorWidth = useTimelineStore((s) => s.inspectorWidth);
   const setInspectorWidth = useTimelineStore((s) => s.setInspectorWidth);
   const showThreads = useTimelineStore((s) => s.showThreads);
+  const showStructureAnalysis = useTimelineStore(
+    (s) => s.display.showStructureAnalysis,
+  );
   const selectedPlotLinkId = useTimelineStore((s) => s.selectedPlotLinkId);
   const selectedPlotThreadId = useTimelineStore((s) => s.selectedPlotThreadId);
   const setSelectedPlotThreadId = useTimelineStore(
@@ -80,49 +84,12 @@ export function TimelinePanel() {
     [nodes],
   );
 
-  // Build sorted scene list and optional position weights per axis mode
-  const { scenes, weights } = useMemo(() => {
-    if (axisMode === "reading") {
-      const order = computeGlobalSceneOrder(nodes);
-      const sorted = [...sceneNodes].sort(
-        (a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0),
-      );
-      return { scenes: sorted, weights: null };
-    }
-
-    if (axisMode === "story") {
-      const scheduled = sceneNodes.filter((n) => n.storyTimeOrder !== null);
-      const unscheduled = sceneNodes.filter((n) => n.storyTimeOrder === null);
-      scheduled.sort((a, b) => cmpKeys(a.storyTimeOrder!, b.storyTimeOrder!));
-      // reading-order fallback for unscheduled
-      const readOrder = computeGlobalSceneOrder(nodes);
-      unscheduled.sort(
-        (a, b) => (readOrder.get(a.id) ?? 0) - (readOrder.get(b.id) ?? 0),
-      );
-      const sorted = [...scheduled, ...unscheduled];
-      // For proportional spacing: use index within scheduled portion
-      const ws =
-        spacingMode === "proportional" && scheduled.length > 1
-          ? scheduled.map((_, i) => i / (scheduled.length - 1))
-          : null;
-      return { scenes: sorted, weights: ws, scheduledCount: scheduled.length };
-    }
-
-    // write-order: sort by createdAt
-    const sorted = [...sceneNodes].sort((a, b) =>
-      a.createdAt.localeCompare(b.createdAt),
-    );
-    const ws =
-      spacingMode === "proportional" && sorted.length > 1
-        ? (() => {
-            const t0 = Date.parse(sorted[0].createdAt);
-            const t1 = Date.parse(sorted[sorted.length - 1].createdAt);
-            const span = t1 - t0 || 1;
-            return sorted.map((n) => (Date.parse(n.createdAt) - t0) / span);
-          })()
-        : null;
-    return { scenes: sorted, weights: ws };
-  }, [axisMode, spacingMode, sceneNodes, nodes]);
+  // Build sorted scene list and optional position weights per axis mode.
+  // 並び替えロジックは computeTimelineSceneOrder に集約（構造分析パネルと軸を共有）。
+  const { scenes, weights } = useMemo(
+    () => computeTimelineSceneOrder(nodes, axisMode, spacingMode),
+    [axisMode, spacingMode, nodes],
+  );
 
   // X 軸下に描くフォルダ・グルーピング帯（部/章）。フォルダは reading 順で連続するため
   // reading モードのみ。各シーンの祖先フォルダ(root→直近)を辿って level 別レンジに束ねる。
@@ -384,10 +351,17 @@ export function TimelinePanel() {
           break;
         case "Delete": {
           const ps = useTimelineStore.getState();
-          // プロット(スレッド/マーカー)選択中はシーンに作用させない（最後に選択した
-          // シーンを誤って消さない）。マーカー/スレッド削除はインスペクタ/右クリックで
-          // 確認ダイアログ経由。
-          if (ps.selectedPlotLinkId || ps.selectedPlotThreadId) break;
+          // マーカー選択中は Delete でそのマーカーを削除（undo 可）。スレッドのみ選択時は
+          // 誤操作防止でインスペクタ/右クリックの確認ダイアログに委ね、いずれもシーンには
+          // 作用させない（最後に選択したシーンを誤って消さない）。
+          if (ps.selectedPlotLinkId) {
+            e.preventDefault();
+            const linkId = ps.selectedPlotLinkId;
+            useTimelineStore.getState().setSelectedPlotLinkId(null);
+            void usePlotThreadStore.getState().deleteMarker(linkId);
+            break;
+          }
+          if (ps.selectedPlotThreadId) break;
           const { selectedNodeIds: ids } = ps;
           if (ids.length > 0) {
             e.preventDefault();
@@ -653,6 +627,7 @@ export function TimelinePanel() {
             />
           ))}
       </div>
+      {showStructureAnalysis && <PlotStructureAnalysis />}
     </div>
   );
   recordMark(

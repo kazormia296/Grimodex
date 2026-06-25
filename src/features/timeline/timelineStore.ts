@@ -25,6 +25,10 @@ export interface TimelineSettings {
     showTitles: boolean;
     showChapterNumbers: boolean;
     showPhasePins: boolean;
+    /** スレッドの「抜けシーン」（マーカー無し列）を薄く可視化する。 */
+    showThreadGaps: boolean;
+    /** Timeline 下部に構造分析ドロワー（休眠/起承転結/Markdown）を表示する。 */
+    showStructureAnalysis: boolean;
   };
 }
 
@@ -41,6 +45,8 @@ const DEFAULT_DISPLAY: TimelineSettings["display"] = {
   showTitles: true,
   showChapterNumbers: true,
   showPhasePins: false,
+  showThreadGaps: false,
+  showStructureAnalysis: false,
 };
 
 interface TimelineState {
@@ -157,7 +163,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       inspectorWidth: clampInspectorWidth(
         settings.inspectorWidth ?? INSPECTOR_WIDTH_DEFAULT,
       ),
-      display: settings.display ?? { ...DEFAULT_DISPLAY },
+      display: { ...DEFAULT_DISPLAY, ...settings.display },
     }),
 }));
 

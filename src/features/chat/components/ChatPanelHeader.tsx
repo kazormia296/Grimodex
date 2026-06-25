@@ -15,7 +15,10 @@ import {
   NotepadText,
   Leaf,
   Map as MapIcon,
+  Spline,
+  X,
 } from "lucide-react";
+import { useChatStore } from "../chatStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
@@ -139,6 +142,9 @@ export function ChatPanelHeader({
   const codexEntries = useCodexStore((s) => s.entries);
   const snippetEntries = useSnippetStore((s) => s.entries);
   const ensureSnippetsLoaded = useSnippetStore((s) => s.ensureEntriesLoaded);
+  // Phase 3b: スレッド focus override（補助チップで表示・解除。scope dropdown とは別）。
+  const threadFocus = useChatStore((s) => s.threadFocusOverride);
+  const clearThreadFocus = useChatStore((s) => s.clearThreadFocusOverride);
 
   const rows = useMemo(() => flattenTree(nodes), [nodes]);
 
@@ -460,6 +466,28 @@ export function ChatPanelHeader({
               document.body,
             )}
         </div>
+
+        {/* Phase 3b: スレッド focus 補助チップ（scope dropdown とは別の overlay）。 */}
+        {threadFocus && (
+          <span
+            data-testid="thread-focus-chip"
+            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+            title={t("chat.threadFocus.label", "プロットスレッド: {{title}}", {
+              title: threadFocus.title,
+            })}
+          >
+            <Spline className="h-3 w-3 shrink-0" aria-hidden />
+            <span className="max-w-[140px] truncate">{threadFocus.title}</span>
+            <button
+              type="button"
+              onClick={() => clearThreadFocus()}
+              aria-label={t("chat.threadFocus.clear", "スレッド focus を解除")}
+              className="inline-flex h-4 w-4 items-center justify-center rounded text-primary/80 hover:bg-primary/20 hover:text-primary"
+            >
+              <X className="h-3 w-3" aria-hidden />
+            </button>
+          </span>
+        )}
 
         {/* eco モード相当: 本文を context に含めるかのトグル */}
         <button

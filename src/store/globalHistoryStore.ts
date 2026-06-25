@@ -83,7 +83,17 @@ interface HistoryState {
    * fans out into multiple store mutations.
    */
   runAsTransaction: (
-    meta: { kind: HistoryKind; label: string; entityId?: string },
+    meta: {
+      kind: HistoryKind;
+      label: string;
+      entityId?: string;
+      /**
+       * 完了時にこの述語が false を返したら合成エントリを commit しない（破棄）。
+       * 例: 非同期 bulk 操作中にプロジェクトが切り替わった場合、旧プロジェクトの
+       * 行を参照する undo クロージャを新プロジェクトの履歴へ載せない XPROJ ガード。
+       */
+      shouldCommit?: () => boolean;
+    },
     fn: () => Promise<void>,
   ) => Promise<void>;
 }
@@ -239,6 +249,9 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
     }
     const entries = frame.entries;
     if (entries.length === 0) return;
+    // 完了ガード: 例えば await 中にプロジェクトが切り替わった場合、旧プロジェクトの
+    // 行を参照するクロージャを新プロジェクトの履歴へ commit しない（XPROJ 汚染防止）。
+    if (meta.shouldCommit && !meta.shouldCommit()) return;
     get().push({
       kind: meta.kind,
       label: meta.label,

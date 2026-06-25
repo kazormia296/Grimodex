@@ -1149,7 +1149,8 @@
         "session_title": "セッションタイトル",
         "summarization": "要約",
         "context_creator": "Context Creator",
-        "codex_judgment": "固有名詞候補の判定"
+        "codex_judgment": "固有名詞候補の判定",
+        "plot_thread_extract": "プロットスレッド抽出"
       }
     }
   },
@@ -1610,6 +1611,11 @@
       }
     },
     "placeholderFolder": "この {{kind}} について質問…",
+    "placeholderThread": "「{{title}}」について相談…",
+    "threadFocus": {
+      "label": "プロットスレッド: {{title}}",
+      "clear": "スレッド focus を解除"
+    },
     "sessions": "Sessions",
     "newSession": "新しいセッションを作成",
     "fallbackSceneTitle": "このシーン",
@@ -1729,6 +1735,7 @@
         "L3": "現在のシーン",
         "FOCUS": "会話の焦点",
         "L4": "Codex・設定情報",
+        "PLOT_THREAD": "プロットスレッド構成",
         "RAG": "関連シーン検索",
         "EPISODIC": "過去の対話の記憶",
         "L5": "会話要約",
@@ -4099,12 +4106,16 @@
     "filterByLabelLabel": "Label で絞り込み",
     "filterAllLabels": "すべて表示",
     "noLabels": "Label がありません",
+    "filterByThreadLabel": "スレッドで絞り込み",
+    "filterAllThreads": "すべて表示",
+    "noThreads": "スレッドがありません",
     "removeFilter": "クリックでフィルタ解除",
     "clearFilters": "すべて解除",
     "showLabel": "表示項目",
     "showWordCount": "文字数",
     "showStatusDots": "ステータスドット",
     "showLabelDots": "Label ドット",
+    "showPlotThreadTrack": "スレッドトラック",
     "showAiBadge": "AI帰属バッジ",
     "autoRevealActive": "アクティブを自動表示",
     "addScene": "シーンを追加",
@@ -4791,6 +4802,7 @@
       "colorThread": "スレッド色変更",
       "spanThread": "スレッド範囲変更",
       "deleteThread": "スレッド削除",
+      "importThreads": "スレッド取込",
       "addMarker": "マーカー追加",
       "moveMarker": "マーカー移動",
       "phaseMarker": "段階変更",
@@ -4805,6 +4817,7 @@
     "addThread": "スレッドを追加",
     "newThreadName": "新しいスレッド",
     "unnamed": "（無名）",
+    "discussInChat": "この糸を AI で相談",
     "marker": "マーカー",
     "thread": "スレッド",
     "name": "名前",
@@ -4834,6 +4847,49 @@
       "turn": "ターニングポイント",
       "climax": "クライマックス",
       "resolve": "レゾリューション"
+    },
+    "arc": {
+      "title": "この糸の主要キャラ",
+      "hint": "所属シーンでの登場・役割・POV から集計",
+      "pov": "POV",
+      "sceneCount": "{{n}}シーン"
+    },
+    "extract": {
+      "button": "抽出",
+      "title": "本文からスレッドを抽出",
+      "hint": "選んだ章/フォルダの本文を AI が読み、サブプロット（縦糸）と起承転結マーカーを提案します。取り込みは1回の操作（Undo 可）。",
+      "selectFolder": "章/フォルダを選択…",
+      "analyze": "解析",
+      "import": "取り込む",
+      "imported": "{{n}}本のスレッドを取り込みました",
+      "failed": "抽出に失敗しました",
+      "none": "抽出できるサブプロットが見つかりませんでした。"
+    },
+    "structure": {
+      "title": "構造分析",
+      "hide": "構造分析を閉じる",
+      "empty": "プロットスレッドがありません",
+      "active": "今",
+      "dormant": "休眠 +{{n}}",
+      "upcoming": "未登場",
+      "upcomingNext": "未登場 (次 +{{n}})",
+      "unplaced": "未配置",
+      "tailDistance": "末尾 -{{n}}",
+      "tailDistanceHint": "軸末尾からの距離",
+      "gap": "{{phase}}抜け",
+      "gapHint": "起承転結の型抜け"
+    },
+    "export": {
+      "copy": "Markdown でコピー",
+      "copied": "コピーしました",
+      "clipboardFailed": "クリップボードにコピーできませんでした",
+      "heading": "プロット構成",
+      "branchSection": "分岐・合流",
+      "colPhase": "段階",
+      "colScene": "シーン",
+      "colNote": "メモ",
+      "unknownScene": "（不明なシーン）",
+      "unknownThread": "（不明なスレッド）"
     }
   },
   "timeline": {
@@ -4856,6 +4912,7 @@
     "sceneCount": "{{count}} シーン",
     "toggleTitles": "タイトル表示",
     "togglePhasePins": "フェーズピン表示",
+    "toggleThreadGaps": "スレッドの抜けシーンを表示",
     "toggleInspector": "インスペクター",
     "inspector": {
       "title": "インスペクター",
@@ -4869,7 +4926,8 @@
       "phases": "Phases anchored ({{n}})",
       "created": "Created",
       "labelPlaceholder": "T1"
-    }
+    },
+    "toggleStructureAnalysis": "構造分析パネル"
   },
   "matrix": {
     "filters": {

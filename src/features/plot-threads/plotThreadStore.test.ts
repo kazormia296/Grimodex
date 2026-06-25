@@ -41,6 +41,7 @@ import {
 } from "./api";
 import { usePlotThreadStore } from "./plotThreadStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import type { PlotPhaseType } from "@/db/schema";
 
 const mock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 
@@ -647,6 +648,110 @@ describe("plotThreadStore", () => {
       expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
         "br1",
       ]);
+    });
+
+    it("importPlotThreads bulk-imports as a SINGLE undo (dedup + phase validation)", async () => {
+      let threadSeq = 0;
+      mock(createPlotThread).mockImplementation(
+        async (data: {
+          sortOrder: string;
+          name: string;
+          description?: string | null;
+          projectId: string;
+        }) => ({
+          ...row(`th${++threadSeq}`, data.sortOrder),
+          name: data.name,
+          description: data.description ?? null,
+        }),
+      );
+      let linkSeq = 0;
+      mock(createPlotThreadLink).mockImplementation(
+        async (data: {
+          threadId: string;
+          nodeId: string;
+          phaseType: PlotPhaseType;
+          note?: string | null;
+        }) => ({
+          id: `lk${++linkSeq}`,
+          threadId: data.threadId,
+          nodeId: data.nodeId,
+          phaseType: data.phaseType,
+          note: data.note ?? null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        }),
+      );
+
+      await usePlotThreadStore.getState().importPlotThreads("p1", [
+        {
+          name: "Aの真実",
+          markers: [
+            { nodeId: "s1", phaseType: "introduce" },
+            { nodeId: "s1", phaseType: "introduce" }, // 重複 → skip
+            { nodeId: "s2", phaseType: "bogus" as PlotPhaseType }, // 不正 phase → skip
+            { nodeId: "s3", phaseType: "climax" },
+          ],
+        },
+        // name 空 → skip
+        { name: "  ", markers: [{ nodeId: "s9", phaseType: "develop" }] },
+      ]);
+
+      const st = usePlotThreadStore.getState();
+      expect(st.threads).toHaveLength(1);
+      expect(st.threads[0].name).toBe("Aの真実");
+      expect(st.links.map((l) => `${l.nodeId}:${l.phaseType}`)).toEqual([
+        "s1:introduce",
+        "s3:climax",
+      ]);
+      // 取込全体で履歴エントリは 1 つ。
+      expect(history().past).toHaveLength(1);
+
+      await history().undo();
+      expect(usePlotThreadStore.getState().threads).toHaveLength(0);
+      expect(usePlotThreadStore.getState().links).toHaveLength(0);
+
+      await history().redo();
+      expect(usePlotThreadStore.getState().threads).toHaveLength(1);
+      expect(usePlotThreadStore.getState().links).toHaveLength(2);
+    });
+
+    it("importPlotThreads drops the composite undo when the project switches mid-import (XPROJ)", async () => {
+      mock(createPlotThread).mockImplementation(
+        async (data: { sortOrder: string; name: string }) => ({
+          ...row("th-x", data.sortOrder),
+          name: data.name,
+        }),
+      );
+      // 最初のリンク作成中にプロジェクト切替（reloadProjectData 相当）が起きる。
+      mock(createPlotThreadLink).mockImplementation(
+        async (data: {
+          threadId: string;
+          nodeId: string;
+          phaseType: PlotPhaseType;
+        }) => {
+          currentProject.value = "p2";
+          return {
+            id: "lkx",
+            threadId: data.threadId,
+            nodeId: data.nodeId,
+            phaseType: data.phaseType,
+            note: null,
+            sortOrder: null,
+            createdAt: "",
+            updatedAt: "",
+          };
+        },
+      );
+
+      await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", [
+          { name: "A", markers: [{ nodeId: "s1", phaseType: "introduce" }] },
+        ]);
+
+      // 旧プロジェクトの行を参照する合成エントリは新プロジェクト履歴へ commit されない。
+      expect(history().past).toHaveLength(0);
     });
 
     it("does not push a second entry while replaying (undo closures use the API directly)", async () => {

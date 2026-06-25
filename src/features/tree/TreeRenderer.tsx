@@ -4,6 +4,9 @@ import { TreeNodeItem } from "./TreeNodeItem";
 import type { TreeNodeData } from "./treeStore";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { isNodeVisible } from "./treeVisibility";
+import type { PlotThreadRow } from "@/features/plot-threads/api";
+
+const EMPTY_CELLS: Record<string, string> = {};
 
 export interface TreeRendererProps {
   parentId: string | null;
@@ -17,10 +20,20 @@ export interface TreeRendererProps {
   statusFilter?: string | null;
   labelFilter?: string[];
   nodeLabels?: Record<string, string[]>;
+  threadFilter?: string[];
+  /** nodeId → plot-thread ids (membership). Drives the thread filter. */
+  nodeThreadIds?: Record<string, string[]>;
+  /** Plot-thread track columns (subway gutter). Stable reference. */
+  trackColumns?: PlotThreadRow[];
+  /** nodeId → per-column track state string (buildSceneThreadTracks). */
+  cellByNode?: Record<string, string>;
+  /** nodeId → branch/merge connector string (buildSceneThreadTracks). */
+  connectorByNode?: Record<string, string>;
   viewMode: string;
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
+  showPlotThreadTrack: boolean;
   showAiAttribution: boolean;
   /** For folder ids, the flat list of leaf descendant ids — used by
    *  TreeNodeItem to compute its own running total via per-id selector. */
@@ -43,10 +56,16 @@ export function TreeRenderer({
   statusFilter,
   labelFilter,
   nodeLabels,
+  threadFilter,
+  nodeThreadIds,
+  trackColumns,
+  cellByNode,
+  connectorByNode,
   viewMode,
   showWordCounts,
   showStatusDots,
   showLabelDots,
+  showPlotThreadTrack,
   showAiAttribution,
   leafDescendantsByFolder,
   orderedNodesRef,
@@ -68,6 +87,8 @@ export function TreeRenderer({
           statusFilter,
           labelFilter,
           nodeLabels,
+          threadFilter,
+          nodeThreadIds,
         );
         // フィルタ非表示ノードはここで mount 自体をスキップする。
         // TreeNodeItem 内の return null だと useDraggable/useDroppable 等の
@@ -78,7 +99,11 @@ export function TreeRenderer({
         // isExpanded は folder の開閉と検索時の自動展開にのみ意味がある。
         // 葉にも `!!query && visible` を渡すと検索 1 文字目で全行の props が
         // flip して memo が無効化されるため folder に限定する。
-        const isExpanded = isFolder && (expandedIds.includes(id) || !!query);
+        const isExpanded =
+          isFolder &&
+          (expandedIds.includes(id) ||
+            !!query ||
+            (threadFilter?.length ?? 0) > 0);
         const itemProps = {
           node,
           depth,
@@ -89,7 +114,11 @@ export function TreeRenderer({
           showWordCounts,
           showStatusDots,
           showLabelDots,
+          showPlotThreadTrack,
           showAiAttribution,
+          trackColumns,
+          trackCells: (cellByNode ?? EMPTY_CELLS)[id] ?? "",
+          trackConnectors: (connectorByNode ?? EMPTY_CELLS)[id] ?? "",
           orderedNodesRef,
           dragInProgress,
           viewMode,
@@ -113,10 +142,16 @@ export function TreeRenderer({
                   statusFilter={statusFilter}
                   labelFilter={labelFilter}
                   nodeLabels={nodeLabels}
+                  threadFilter={threadFilter}
+                  nodeThreadIds={nodeThreadIds}
+                  trackColumns={trackColumns}
+                  cellByNode={cellByNode}
+                  connectorByNode={connectorByNode}
                   viewMode={viewMode}
                   showWordCounts={showWordCounts}
                   showStatusDots={showStatusDots}
                   showLabelDots={showLabelDots}
+                  showPlotThreadTrack={showPlotThreadTrack}
                   showAiAttribution={showAiAttribution}
                   leafDescendantsByFolder={leafDescendantsByFolder}
                   orderedNodesRef={orderedNodesRef}

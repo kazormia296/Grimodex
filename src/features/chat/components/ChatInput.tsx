@@ -158,6 +158,7 @@ export function ChatInput({
   const pendingLookupText = useChatStore((s) => s.pendingLookupText);
   const setPendingLookupText = useChatStore((s) => s.setPendingLookupText);
   const chatScope = useChatStore((s) => s.chatScope);
+  const threadFocus = useChatStore((s) => s.threadFocusOverride);
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const saveSettings = useAiSettingsStore((s) => s.saveSettings);
@@ -264,15 +265,17 @@ export function ChatInput({
 
   const placeholder = isStreaming
     ? t("chat.placeholderStreaming")
-    : chatScope === "codex"
-      ? t("chat.placeholderCodex")
-      : chatScope === "snippet"
-        ? t("chat.placeholderSnippet")
-        : chatScope === "project"
-          ? t("chat.placeholderGlobal")
-          : chatScope === "folder"
-            ? t("chat.placeholderFolder", { kind: t("chat.scope.chapter") })
-            : t("chat.placeholderScene");
+    : threadFocus
+      ? t("chat.placeholderThread", { title: threadFocus.title })
+      : chatScope === "codex"
+        ? t("chat.placeholderCodex")
+        : chatScope === "snippet"
+          ? t("chat.placeholderSnippet")
+          : chatScope === "project"
+            ? t("chat.placeholderGlobal")
+            : chatScope === "folder"
+              ? t("chat.placeholderFolder", { kind: t("chat.scope.chapter") })
+              : t("chat.placeholderScene");
 
   // /コマンド選択後の「次の送信」に対して一回限りの指示 (L6) を作る。
   // 読み取り時にクリアするので、送信ごとに高々1回適用される。

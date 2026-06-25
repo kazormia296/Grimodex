@@ -73,6 +73,9 @@ export async function reloadProjectData(projectId: string): Promise<void> {
       activeProjectId: projectId,
       activeSceneId: "",
       error: null,
+      // Phase 3b: 非永続のスレッド focus はプロジェクト跨ぎで持ち越さない
+      // （別プロジェクトの thread id/タイトルが stale 注入されるのを防ぐ）。
+      threadFocusOverride: null,
     });
 
     useChatHistoryStore.setState({

@@ -138,6 +138,12 @@ export const JA_CHAT_SYSTEM = {
     /** chatRecall 配下の各メッセージのラベル行 (役割ベース)。`### ` 始まりで
      * trim (trimRagText) のブロック分割と整合させる。 */
     chatRecallEntry: "### ",
+    /** Phase 3a: 現在シーンが属するプロットスレッドの「構成」セクション。作者が
+     * 明示した縦糸 (thread リンク) の構造 lookup。本文は載せず位置づけのみ。意味検索
+     * (semanticRecall) とは別軸で、cacheSegments には入れず prompt + volatileTail のみ。 */
+    plotThreadScenes: "\n## 同じプロットスレッドの構成 (作者が引いた縦糸)",
+    /** plotThreadScenes 配下の各スレッドのブロック見出し。`### ` 始まりで trim と整合。 */
+    plotThreadScenesThread: "### 糸: ",
   },
 
   /** サンドイッチ・リマインダー: 全データレイヤー注入の終端 (L5 の後・
@@ -160,6 +166,15 @@ export const JA_CHAT_SYSTEM = {
   semanticRecallIntro:
     "以下は現在の執筆内容と意味的に関連する過去シーンの抜粋です（自動検索・断片）。" +
     "呼応や整合性の参考にしてください。設定情報の正本は上記の設定情報セクションです。",
+
+  /** plotThreadScenes セクション冒頭の運用説明。意味検索 (自動) ではなく作者が
+   * 手で引いた縦糸である点と、本文は載せていない (位置づけのみ) 点を明示する。 */
+  plotThreadScenesIntro:
+    "以下は現在のシーンが属するプロットスレッド（作者が手で引いた縦糸）の構成です。" +
+    "このシーンの各糸での位置づけと、同じ糸の他シーン（タイトルと段階のみ・本文なし）を示します。" +
+    "サブプロットの連続性・伏線の呼応の参考にしてください。",
+  /** plotThreadScenes 配下、各糸での現在シーンの位置づけ行の接頭辞。 */
+  plotThreadScenesCurrent: "このシーンの位置づけ: ",
 
   /** chatRecall セクション冒頭の運用説明。これは「いつ何を話し・決め・見送ったか」の
    * エピソード記憶 (柔らかい層) であり、設定の正本ではないことを明示する。古い対話が

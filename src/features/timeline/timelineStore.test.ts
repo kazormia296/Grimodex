@@ -20,6 +20,8 @@ function reset() {
       showTitles: true,
       showChapterNumbers: true,
       showPhasePins: false,
+      showThreadGaps: false,
+      showStructureAnalysis: false,
     },
   });
 }
@@ -66,6 +68,16 @@ describe("timelineStore", () => {
     expect(useTimelineStore.getState().display.showPhasePins).toBe(true);
     useTimelineStore.getState().toggleDisplay("showPhasePins");
     expect(useTimelineStore.getState().display.showPhasePins).toBe(false);
+  });
+
+  it("showStructureAnalysis は既定 false で toggleDisplay で切り替わる", () => {
+    expect(useTimelineStore.getState().display.showStructureAnalysis).toBe(
+      false,
+    );
+    useTimelineStore.getState().toggleDisplay("showStructureAnalysis");
+    expect(useTimelineStore.getState().display.showStructureAnalysis).toBe(
+      true,
+    );
   });
 
   it("toggleInspector flips inspectorOpen", () => {
@@ -140,6 +152,8 @@ describe("timelineStore.loadFromSettings", () => {
         showTitles: false,
         showChapterNumbers: false,
         showPhasePins: true,
+        showThreadGaps: false,
+        showStructureAnalysis: false,
       },
     };
     useTimelineStore.getState().loadFromSettings(s);
@@ -263,6 +277,21 @@ describe("timelineStore persistent subscriber", () => {
     );
   });
 
+  it("showStructureAnalysis 変更で save IPC に display.showStructureAnalysis が乗る", async () => {
+    useTimelineStore.getState().toggleDisplay("showStructureAnalysis");
+    await vi.runAllTimersAsync();
+    expect(invoke).toHaveBeenCalledWith(
+      "save_global_settings",
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          timeline: expect.objectContaining({
+            display: expect.objectContaining({ showStructureAnalysis: true }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("loadAndSyncTimelineSettings 直後は save IPC が発火しない", () => {
     loadAndSyncTimelineSettings({
       axisMode: "story",
@@ -273,6 +302,8 @@ describe("timelineStore persistent subscriber", () => {
         showTitles: false,
         showChapterNumbers: false,
         showPhasePins: true,
+        showThreadGaps: false,
+        showStructureAnalysis: false,
       },
     });
     vi.runAllTimers();

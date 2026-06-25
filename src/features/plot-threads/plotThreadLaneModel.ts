@@ -9,6 +9,11 @@ import type {
   PlotThreadLinkRow,
   PlotThreadBranchRow,
 } from "./api";
+import { computeThreadRuns } from "./plotThreadRuns";
+import {
+  centerOutRows,
+  rankThreadsBySubwayImportance,
+} from "./plotThreadOrder";
 
 /** TimelineViewport の LANE_Y(=60) と整合する scheduled ベースライン。 */
 export const LANE_TOP = 60;
@@ -49,6 +54,9 @@ export interface PlotLane {
   terminusX: number | null;
   /** 生存列ごとの実 Y(px)。ホーム行 or 出会いで寄った値。 */
   yByColumn: Map<number, number>;
+  /** 「抜けシーン」列: スレッドの生存 run 内でマーカーが無い列（branch/merge の
+   *  離脱・流入列は除外）。線は通っているがビートが無い＝サブプロット休止列。昇順。 */
+  gapCols: number[];
 }
 /** 分岐 / 合流のコネクタ。あるシーン x で fromY↔toY のレーン間を繋ぐ。
  *  fromY/toY は at 列の実 Y から取る（#5 = ホーム行固定値ではなく寄った後の Y）。 */
@@ -81,19 +89,6 @@ const PHASE_ORDER: Record<PlotPhaseType, number> = PLOT_PHASE_TYPES.reduce(
 
 function cmpId(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
-}
-
-/** center-out 行割り当て: rank 順(0=最重要)に中心 mid=(n-1)/2 から外へ交互配置した
- *  行 index を返す（重要度ランク順に中央から外へ交互配置する自動整列用）。 */
-function centerOutRows(n: number): number[] {
-  const mid = (n - 1) / 2;
-  return Array.from({ length: n }, (_, row) => row).sort((a, b) => {
-    const da = Math.abs(a - mid);
-    const db = Math.abs(b - mid);
-    if (da !== db) return da - db;
-    if (a !== b) return b - a;
-    return 0;
-  });
 }
 
 /**
@@ -152,13 +147,7 @@ export function buildPlotLaneModel(args: {
       else colsByThread.set(l.threadId, new Set([x]));
     }
     const importanceOf = (id: string) => colsByThread.get(id)?.size ?? 0;
-    const ranked = [...threads].sort((a, b) => {
-      const ia = importanceOf(a.id);
-      const ib = importanceOf(b.id);
-      if (ia !== ib) return ib - ia;
-      const c = cmpKeys(a.sortOrder, b.sortOrder);
-      return c !== 0 ? c : cmpId(a.id, b.id);
-    });
+    const ranked = rankThreadsBySubwayImportance(threads, importanceOf);
     const rows = centerOutRows(ranked.length);
     homeRow = new Map(ranked.map((t, rank) => [t.id, rows[rank]]));
   } else {
@@ -312,6 +301,7 @@ export function buildPlotLaneModel(args: {
         lineSegments: [],
         terminusX: null,
         yByColumn: new Map(),
+        gapCols: [],
       };
     }
     const yByColumn = yByColumnByThread.get(thread.id)!;
@@ -336,29 +326,15 @@ export function buildPlotLaneModel(args: {
       }
     }
 
-    // run 分割（統一遷移モデル）: スレッドは lo で誕生し、離脱列で band が切れて不在になり、
-    // 流入列(enter=to)やマーカー列で再び現れる。離脱→次の流入の間（別レーンを走っている
-    // 区間）は band を空ける＝連続させない。各 run は homeY 水平 1 本。
-    const runs: Array<{ start: number; end: number; rampOutEnd: boolean }> = [];
-    let active = true; // lo で誕生
-    let start = p.lo;
-    for (let c = p.lo; c <= p.hi; c++) {
-      if (active && leaveCols.has(c)) {
-        // 離脱: band はこの列で終わり、ランプの始端へ渡す。
-        runs.push({ start, end: c, rampOutEnd: true });
-        active = false;
-      } else if (!active && (enterCols?.has(c) || p.markerCols.has(c))) {
-        // 流入 / マーカー再出現: この列（マーカー位置）から新しい run。
-        start = c;
-        active = true;
-        // 同一列で流入かつ即離脱（その場で別レーンへ渡る）なら 1 列 run。
-        if (leaveCols.has(c)) {
-          runs.push({ start, end: c, rampOutEnd: true });
-          active = false;
-        }
-      }
-    }
-    if (active) runs.push({ start, end: p.hi, rampOutEnd: false });
+    // run 分割（統一遷移モデル・正本=computeThreadRuns）: スレッドは lo で誕生し、離脱列で
+    // band が切れて不在になり、流入列(enter=to)やマーカー列で再び現れる。各 run は homeY 水平 1 本。
+    const runs = computeThreadRuns(
+      p.lo,
+      p.hi,
+      leaveCols,
+      enterCols ?? new Set<number>(),
+      p.markerCols,
+    );
 
     // 固定ホーム行モデルでは run 内の y は一定なので、各 run = homeY 水平 1 セグメント。
     const lineSegments: PlotLineSegment[] = [];
@@ -381,6 +357,19 @@ export function buildPlotLaneModel(args: {
         ? lastRun.end
         : null;
 
+    // 抜けシーン列: 各 run（=線が実際に走る生存区間）内で、マーカーが無く、かつ
+    // branch/merge の流入(enter)・離脱(leave)でもない列。別レーンへ渡っている空白
+    // 区間は run 自体に含まれないため自動的に除外される（生存判定と一本化）。
+    const gapCols: number[] = [];
+    for (const r of runs) {
+      for (let c = r.start; c <= r.end; c++) {
+        if (p.markerCols.has(c)) continue;
+        if (enterCols?.has(c)) continue;
+        if (leaveCols.has(c)) continue;
+        gapCols.push(c);
+      }
+    }
+
     return {
       thread,
       y: yHome,
@@ -388,6 +377,7 @@ export function buildPlotLaneModel(args: {
       lineSegments,
       terminusX,
       yByColumn,
+      gapCols,
     };
   });
   const laneByThread = new Map(lanes.map((l) => [l.thread.id, l]));

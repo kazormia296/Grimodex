@@ -84,10 +84,14 @@ export function QuickActionStrip({ hidden = false }: QuickActionStripProps) {
   const { t } = useTranslation();
   const chatScope = useChatStore((s) => s.chatScope);
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
+  const threadFocus = useChatStore((s) => s.threadFocusOverride);
   const setPendingLookupText = useChatStore((s) => s.setPendingLookupText);
   const nodes = useTreeStore((s) => s.nodes);
 
   const actions = useMemo<QuickActionItem[]>(() => {
+    // Phase 3b: スレッド focus 中は主題が「縦糸（複数シーンの集約）」なので
+    // 単一シーン前提のアクションでなくプロジェクト相当の安全なアクションに寄せる。
+    if (threadFocus) return PROJECT_ACTIONS;
     if (chatScope === "codex" || chatScope === "snippet") return [];
     if (chatScope === "scene") return SCENE_ACTIONS;
     if (chatScope === "project") return PROJECT_ACTIONS;
@@ -95,7 +99,7 @@ export function QuickActionStrip({ hidden = false }: QuickActionStripProps) {
     const folder = nodes.find((n) => n.id === scopeAnchorId);
     const isAct = !!folder && folder.parentId === null;
     return isAct ? FOLDER_ACT_ACTIONS : FOLDER_CHAPTER_ACTIONS;
-  }, [chatScope, scopeAnchorId, nodes]);
+  }, [chatScope, scopeAnchorId, threadFocus, nodes]);
 
   if (actions.length === 0 || hidden) return null;
 

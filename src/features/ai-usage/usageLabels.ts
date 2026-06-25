@@ -20,6 +20,7 @@ const KNOWN_SURFACES: AiUsageSurface[] = [
   "summarization",
   "context_creator",
   "codex_judgment",
+  "plot_thread_extract",
 ];
 
 const KNOWN_SURFACE_SET = new Set<string>(KNOWN_SURFACES);

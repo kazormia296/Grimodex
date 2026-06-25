@@ -1143,6 +1143,7 @@ describe("useChatStore", () => {
           scopeAnchorId: null,
           activeSceneId: "old-scene",
           activeSessionId: "session-1",
+          threadFocusOverride: null,
         }),
         includeMapBoard: false,
         mapBoardId: null,
@@ -3416,6 +3417,59 @@ describe("useChatStore", () => {
         "snip-1",
       );
       expect(id).toBe("new-snippet-session");
+    });
+
+    // Phase 3b: 非永続スレッド focus は session 保存先（resolveScopeSessionKey 経由）を
+    // 変えてはいけない。下地 scope（scene）の nodeId のまま createSession される。
+    it("threadFocusOverride does not change the session save target (scene scope)", async () => {
+      mockCreateSession.mockResolvedValueOnce({
+        ...session1,
+        id: "new-thread-session",
+        nodeId: "scene-7",
+      });
+      useChatStore.setState({
+        activeSessionId: null,
+        chatScope: "scene",
+        scopeAnchorId: null,
+        activeSceneId: "scene-7",
+        activeProjectId: "proj-1",
+        threadFocusOverride: { threadId: "thread-1", title: "Aの真実" },
+      });
+      await useChatStore.getState().ensureSession();
+      expect(mockCreateSession).toHaveBeenCalledWith(
+        "proj-1",
+        "New session",
+        "scene-7",
+        undefined,
+        undefined,
+      );
+    });
+
+    it("contextPromptKey changes with threadFocusOverride but keeps other fields", () => {
+      const base = {
+        chatScope: "scene" as const,
+        scopeAnchorId: null,
+        activeSceneId: "scene-7",
+        activeSessionId: "session-1",
+      };
+      const without = contextPromptKey({ ...base, threadFocusOverride: null });
+      const withFocus = contextPromptKey({
+        ...base,
+        threadFocusOverride: { threadId: "thread-1", title: "Aの真実" },
+      });
+      expect(withFocus).not.toBe(without);
+      // 下地スコープ識別子は両者で共通（session 保存先は不変）。
+      expect(withFocus.startsWith("scene")).toBe(true);
+      expect(without.startsWith("scene")).toBe(true);
+    });
+
+    it("setChatScope clears a non-persistent threadFocusOverride", () => {
+      useChatStore.setState({
+        chatScope: "scene",
+        threadFocusOverride: { threadId: "thread-1", title: "Aの真実" },
+      });
+      useChatStore.getState().setChatScope("project");
+      expect(useChatStore.getState().threadFocusOverride).toBeNull();
     });
 
     it("setActiveSceneId keeps snippet scope session anchor", async () => {

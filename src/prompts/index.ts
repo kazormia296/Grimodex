@@ -18,6 +18,7 @@ import {
   buildEvaluateSetupStrengthPromptJa,
   buildAuditChapterPromptJa,
 } from "./ja/foreshadow";
+import { buildProposePlotThreadsPromptJa } from "./ja/plotThread";
 import {
   buildSynopsisFromContentPromptJa,
   buildSessionTitlePromptJa,
@@ -41,6 +42,7 @@ import {
   buildEvaluateSetupStrengthPromptEn,
   buildAuditChapterPromptEn,
 } from "./en/foreshadow";
+import { buildProposePlotThreadsPromptEn } from "./en/plotThread";
 import { buildCandidateJudgmentPromptEn } from "./en/codexJudgment";
 import {
   buildSynopsisFromContentPromptEn,
@@ -73,6 +75,9 @@ const JA_CATALOG = {
     buildProposePastSetupsPrompt: buildProposePastSetupsPromptJa,
     buildEvaluateSetupStrengthPrompt: buildEvaluateSetupStrengthPromptJa,
     buildAuditChapterPrompt: buildAuditChapterPromptJa,
+  },
+  plotThread: {
+    buildProposePlotThreadsPrompt: buildProposePlotThreadsPromptJa,
   },
   chatApi: {
     buildSynopsisFromContentPrompt: buildSynopsisFromContentPromptJa,
@@ -119,6 +124,9 @@ const EN_CATALOG: PromptCatalog = {
     buildProposePastSetupsPrompt: buildProposePastSetupsPromptEn,
     buildEvaluateSetupStrengthPrompt: buildEvaluateSetupStrengthPromptEn,
     buildAuditChapterPrompt: buildAuditChapterPromptEn,
+  },
+  plotThread: {
+    buildProposePlotThreadsPrompt: buildProposePlotThreadsPromptEn,
   },
   chatApi: {
     buildSynopsisFromContentPrompt: buildSynopsisFromContentPromptEn,
