@@ -309,6 +309,74 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
     expect(mockDeleteNode).not.toHaveBeenCalled();
   });
 
+  it("panel focused + マーカー選択中 → Delete でそのマーカーを削除し選択解除", () => {
+    const spy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteMarker")
+      .mockResolvedValue(undefined);
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotLinkId: "link-1",
+      selectedPlotThreadId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(spy).toHaveBeenCalledWith("link-1");
+    expect(useTimelineStore.getState().selectedPlotLinkId).toBeNull();
+    spy.mockRestore();
+  });
+
+  it("マーカー選択中の Delete はシーンを消さない", () => {
+    const spy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteMarker")
+      .mockResolvedValue(undefined);
+    useTimelineStore.setState({
+      selectedNodeIds: ["scene-x"],
+      showThreads: true,
+      selectedPlotLinkId: "link-1",
+      selectedPlotThreadId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(mockDeleteNode).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("スレッドのみ選択中（マーカー非選択）の Delete はマーカーを消さない", () => {
+    const spy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteMarker")
+      .mockResolvedValue(undefined);
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
   it("panel focused + selected → Enter calls openPinned", () => {
     useTimelineStore.setState({ selectedNodeIds: ["scene-x"] });
     const { getByTestId } = render(<TimelinePanel />);

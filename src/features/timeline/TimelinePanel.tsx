@@ -351,10 +351,17 @@ export function TimelinePanel() {
           break;
         case "Delete": {
           const ps = useTimelineStore.getState();
-          // プロット(スレッド/マーカー)選択中はシーンに作用させない（最後に選択した
-          // シーンを誤って消さない）。マーカー/スレッド削除はインスペクタ/右クリックで
-          // 確認ダイアログ経由。
-          if (ps.selectedPlotLinkId || ps.selectedPlotThreadId) break;
+          // マーカー選択中は Delete でそのマーカーを削除（undo 可）。スレッドのみ選択時は
+          // 誤操作防止でインスペクタ/右クリックの確認ダイアログに委ね、いずれもシーンには
+          // 作用させない（最後に選択したシーンを誤って消さない）。
+          if (ps.selectedPlotLinkId) {
+            e.preventDefault();
+            const linkId = ps.selectedPlotLinkId;
+            useTimelineStore.getState().setSelectedPlotLinkId(null);
+            void usePlotThreadStore.getState().deleteMarker(linkId);
+            break;
+          }
+          if (ps.selectedPlotThreadId) break;
           const { selectedNodeIds: ids } = ps;
           if (ids.length > 0) {
             e.preventDefault();
