@@ -716,6 +716,44 @@ describe("plotThreadStore", () => {
       expect(usePlotThreadStore.getState().links).toHaveLength(2);
     });
 
+    it("importPlotThreads drops the composite undo when the project switches mid-import (XPROJ)", async () => {
+      mock(createPlotThread).mockImplementation(
+        async (data: { sortOrder: string; name: string }) => ({
+          ...row("th-x", data.sortOrder),
+          name: data.name,
+        }),
+      );
+      // 最初のリンク作成中にプロジェクト切替（reloadProjectData 相当）が起きる。
+      mock(createPlotThreadLink).mockImplementation(
+        async (data: {
+          threadId: string;
+          nodeId: string;
+          phaseType: PlotPhaseType;
+        }) => {
+          currentProject.value = "p2";
+          return {
+            id: "lkx",
+            threadId: data.threadId,
+            nodeId: data.nodeId,
+            phaseType: data.phaseType,
+            note: null,
+            sortOrder: null,
+            createdAt: "",
+            updatedAt: "",
+          };
+        },
+      );
+
+      await usePlotThreadStore
+        .getState()
+        .importPlotThreads("p1", [
+          { name: "A", markers: [{ nodeId: "s1", phaseType: "introduce" }] },
+        ]);
+
+      // 旧プロジェクトの行を参照する合成エントリは新プロジェクト履歴へ commit されない。
+      expect(history().past).toHaveLength(0);
+    });
+
     it("does not push a second entry while replaying (undo closures use the API directly)", async () => {
       mock(createPlotThreadLink).mockResolvedValue(linkRow("l1"));
       await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");

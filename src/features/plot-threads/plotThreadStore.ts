@@ -335,6 +335,9 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
       {
         kind: "plot",
         label: i18next.t("plotThread.history.importThreads", "スレッド取込"),
+        // await 中にプロジェクトが切り替わったら合成 undo エントリを破棄する
+        // （旧プロジェクトの行参照クロージャを新プロジェクト履歴へ載せない）。
+        shouldCommit: () => getCurrentProjectId() === projectId,
       },
       async () => {
         for (const p of valid) {
