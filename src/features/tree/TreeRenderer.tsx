@@ -4,6 +4,9 @@ import { TreeNodeItem } from "./TreeNodeItem";
 import type { TreeNodeData } from "./treeStore";
 import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { isNodeVisible } from "./treeVisibility";
+import type { PlotThreadRow } from "@/features/plot-threads/api";
+
+const EMPTY_THREAD_IDS: string[] = [];
 
 export interface TreeRendererProps {
   parentId: string | null;
@@ -17,10 +20,16 @@ export interface TreeRendererProps {
   statusFilter?: string | null;
   labelFilter?: string[];
   nodeLabels?: Record<string, string[]>;
+  threadFilter?: string[];
+  /** nodeId → plot-thread ids (membership). Drives the thread filter + dots. */
+  nodeThreadIds?: Record<string, string[]>;
+  /** thread id → row, for resolving dot color/name. Stable reference. */
+  threadsById?: Map<string, PlotThreadRow>;
   viewMode: string;
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
+  showPlotThreadDots: boolean;
   showAiAttribution: boolean;
   /** For folder ids, the flat list of leaf descendant ids — used by
    *  TreeNodeItem to compute its own running total via per-id selector. */
@@ -43,10 +52,14 @@ export function TreeRenderer({
   statusFilter,
   labelFilter,
   nodeLabels,
+  threadFilter,
+  nodeThreadIds,
+  threadsById,
   viewMode,
   showWordCounts,
   showStatusDots,
   showLabelDots,
+  showPlotThreadDots,
   showAiAttribution,
   leafDescendantsByFolder,
   orderedNodesRef,
@@ -68,6 +81,8 @@ export function TreeRenderer({
           statusFilter,
           labelFilter,
           nodeLabels,
+          threadFilter,
+          nodeThreadIds,
         );
         // フィルタ非表示ノードはここで mount 自体をスキップする。
         // TreeNodeItem 内の return null だと useDraggable/useDroppable 等の
@@ -89,7 +104,10 @@ export function TreeRenderer({
           showWordCounts,
           showStatusDots,
           showLabelDots,
+          showPlotThreadDots,
           showAiAttribution,
+          threadIdsForNode: nodeThreadIds?.[id] ?? EMPTY_THREAD_IDS,
+          threadsById,
           orderedNodesRef,
           dragInProgress,
           viewMode,
@@ -113,10 +131,14 @@ export function TreeRenderer({
                   statusFilter={statusFilter}
                   labelFilter={labelFilter}
                   nodeLabels={nodeLabels}
+                  threadFilter={threadFilter}
+                  nodeThreadIds={nodeThreadIds}
+                  threadsById={threadsById}
                   viewMode={viewMode}
                   showWordCounts={showWordCounts}
                   showStatusDots={showStatusDots}
                   showLabelDots={showLabelDots}
+                  showPlotThreadDots={showPlotThreadDots}
                   showAiAttribution={showAiAttribution}
                   leafDescendantsByFolder={leafDescendantsByFolder}
                   orderedNodesRef={orderedNodesRef}

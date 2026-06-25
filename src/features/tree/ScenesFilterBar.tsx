@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { resolveLabelColor } from "@/lib/labelPalette";
 import type { Label } from "@/db/schema";
+import type { PlotThreadRow } from "@/features/plot-threads/api";
 import type { SceneStatus } from "./treeStore";
 
 interface ScenesFilterBarProps {
@@ -18,6 +19,10 @@ interface ScenesFilterBarProps {
   toggleLabelFilter: (id: string) => void;
   clearLabelFilter: () => void;
   allLabels: Label[];
+  threadFilter: string[];
+  toggleThreadFilter: (id: string) => void;
+  clearThreadFilter: () => void;
+  allThreads: PlotThreadRow[];
 }
 
 export function ScenesFilterBar({
@@ -30,9 +35,14 @@ export function ScenesFilterBar({
   toggleLabelFilter,
   clearLabelFilter,
   allLabels,
+  threadFilter,
+  toggleThreadFilter,
+  clearThreadFilter,
+  allThreads,
 }: ScenesFilterBarProps) {
   const { t } = useTranslation();
-  const hasActiveFilters = !!statusFilter || labelFilter.length > 0;
+  const hasActiveFilters =
+    !!statusFilter || labelFilter.length > 0 || threadFilter.length > 0;
 
   return (
     <>
@@ -95,6 +105,34 @@ export function ScenesFilterBar({
               </Button>
             );
           })}
+          {threadFilter.map((id) => {
+            const thread = allThreads.find((th) => th.id === id);
+            if (!thread) return null;
+            const color = thread.color ?? "var(--primary)";
+            return (
+              <Button
+                key={id}
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={() => toggleThreadFilter(id)}
+                title={t("scenes.removeFilter")}
+                className="h-auto gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-normal"
+                style={{
+                  borderColor: color,
+                  backgroundColor: `color-mix(in srgb, ${color} 13%, transparent)`,
+                  color,
+                }}
+              >
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ backgroundColor: color }}
+                />
+                <span className="max-w-[100px] truncate">{thread.name}</span>
+                <X className="h-2.5 w-2.5" />
+              </Button>
+            );
+          })}
           <Button
             type="button"
             variant="ghost"
@@ -102,6 +140,7 @@ export function ScenesFilterBar({
             onClick={() => {
               setStatusFilter(null);
               clearLabelFilter();
+              clearThreadFilter();
             }}
             className="ml-auto h-auto px-1 py-0 text-[10px] text-primary hover:bg-transparent hover:underline"
           >

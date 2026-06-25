@@ -33,6 +33,7 @@ function resetStore() {
       showTitles: true,
       showChapterNumbers: true,
       showPhasePins: false,
+      showThreadGaps: false,
     },
   });
 }

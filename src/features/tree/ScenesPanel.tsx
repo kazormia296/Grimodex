@@ -9,6 +9,7 @@ import { useScenesDerivedData } from "./useScenesDerivedData";
 import { useScenesDnd } from "./useScenesDnd";
 import { useScenesKeyboard } from "./useScenesKeyboard";
 import { useLabelStore } from "@/features/labels/labelStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
@@ -58,9 +59,11 @@ export function ScenesPanel() {
   const charCounts = useTreeStore((s) =>
     s.sortMode === "wordcount" ? s.charCounts : EMPTY_CHAR_COUNTS,
   );
+  const threadFilter = useTreeStore((s) => s.threadFilter);
   const showWordCounts = useTreeStore((s) => s.showWordCounts);
   const showStatusDots = useTreeStore((s) => s.showStatusDots);
   const showLabelDots = useTreeStore((s) => s.showLabelDots);
+  const showPlotThreadDots = useTreeStore((s) => s.showPlotThreadDots);
   const showAiAttribution = useTreeStore((s) => s.showAiAttribution);
   const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
   const pendingRevealId = useTreeStore((s) => s.pendingRevealId);
@@ -75,6 +78,9 @@ export function ScenesPanel() {
   const toggleLabelFilter = useTreeStore((s) => s.toggleLabelFilter);
   const clearLabelFilter = useTreeStore((s) => s.clearLabelFilter);
   const setLabelFilter = useTreeStore((s) => s.setLabelFilter);
+  const toggleThreadFilter = useTreeStore((s) => s.toggleThreadFilter);
+  const clearThreadFilter = useTreeStore((s) => s.clearThreadFilter);
+  const setThreadFilter = useTreeStore((s) => s.setThreadFilter);
   const toggleExpand = useTreeStore((s) => s.toggleExpand);
   const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const moveNode = useTreeStore((s) => s.moveNode);
@@ -83,6 +89,24 @@ export function ScenesPanel() {
   const reduced = useReducedMotion();
   const allLabels = useLabelStore((s) => s.labels);
   const nodeLabels = useLabelStore((s) => s.nodeLabels);
+  const allThreads = usePlotThreadStore((s) => s.threads);
+  const plotLinks = usePlotThreadStore((s) => s.links);
+
+  // thread id → row, for resolving dot color/name (stable per threads change).
+  const threadsById = useMemo(
+    () => new Map(allThreads.map((th) => [th.id, th])),
+    [allThreads],
+  );
+  // nodeId → plot-thread ids (membership). Built once from links so per-row
+  // lookups are O(1) instead of filtering all links on every tree render.
+  const nodeThreadIds = useMemo(() => {
+    const m: Record<string, string[]> = {};
+    for (const l of plotLinks) {
+      const arr = m[l.nodeId] ?? (m[l.nodeId] = []);
+      if (!arr.includes(l.threadId)) arr.push(l.threadId);
+    }
+    return m;
+  }, [plotLinks]);
 
   // Drop dangling label IDs when labels are deleted/project changes
   useEffect(() => {
@@ -93,6 +117,16 @@ export function ScenesPanel() {
       setLabelFilter(filtered);
     }
   }, [allLabels, labelFilter, setLabelFilter]);
+
+  // Drop dangling thread IDs when threads are deleted/project changes
+  useEffect(() => {
+    if (threadFilter.length === 0) return;
+    const validIds = new Set(allThreads.map((th) => th.id));
+    const filtered = threadFilter.filter((id) => validIds.has(id));
+    if (filtered.length !== threadFilter.length) {
+      setThreadFilter(filtered);
+    }
+  }, [allThreads, threadFilter, setThreadFilter]);
 
   // meta_structure の lens を読み込み、Outline バッジ (LensDot) に供給する。
   useEffect(() => {
@@ -138,6 +172,8 @@ export function ScenesPanel() {
       statusFilter,
       labelFilter,
       nodeLabels,
+      threadFilter,
+      nodeThreadIds,
     });
 
   // Auto-reveal active scene: scroll it into view when activeSceneId changes
@@ -303,6 +339,10 @@ export function ScenesPanel() {
             toggleLabelFilter={toggleLabelFilter}
             clearLabelFilter={clearLabelFilter}
             allLabels={allLabels}
+            threadFilter={threadFilter}
+            toggleThreadFilter={toggleThreadFilter}
+            clearThreadFilter={clearThreadFilter}
+            allThreads={allThreads}
           />
 
           {/* Tree */}
@@ -354,10 +394,14 @@ export function ScenesPanel() {
                         statusFilter={statusFilter}
                         labelFilter={labelFilter}
                         nodeLabels={nodeLabels}
+                        threadFilter={threadFilter}
+                        nodeThreadIds={nodeThreadIds}
+                        threadsById={threadsById}
                         viewMode={viewMode}
                         showWordCounts={showWordCounts}
                         showStatusDots={showStatusDots}
                         showLabelDots={showLabelDots}
+                        showPlotThreadDots={showPlotThreadDots}
                         showAiAttribution={showAiAttribution}
                         leafDescendantsByFolder={leafDescendantsByFolder}
                         orderedNodesRef={flatNodesRef}

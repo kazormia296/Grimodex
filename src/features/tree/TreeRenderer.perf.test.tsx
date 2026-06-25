@@ -76,6 +76,7 @@ const baseRendererProps = {
   showWordCounts: false,
   showStatusDots: false,
   showLabelDots: false,
+  showPlotThreadDots: false,
   showAiAttribution: false,
   leafDescendantsByFolder: EMPTY_LEAF_MAP,
 } as const;

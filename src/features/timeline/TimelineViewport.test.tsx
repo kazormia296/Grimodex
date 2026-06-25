@@ -52,6 +52,7 @@ function resetStore() {
       showTitles: true,
       showChapterNumbers: true,
       showPhasePins: false,
+      showThreadGaps: false,
     },
   });
   usePlotThreadStore.setState({
@@ -1434,5 +1435,85 @@ describe("TimelineViewport – フォルダ構造グルーピング帯（X軸）
     expect(
       container.querySelector('[data-testid="folder-band-level-2"]'),
     ).toBeNull();
+  });
+});
+
+describe("TimelineViewport – thread gaps (1c)", () => {
+  beforeEach(resetStore);
+
+  const gapScenes: TreeNodeData[] = ["s0", "s1", "s2", "s3"].map((id, i) => ({
+    ...mockScene,
+    id,
+    title: id,
+    sortOrder: `a${i}`,
+  }));
+
+  function setupGapThread() {
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "proj-1",
+          name: "T1",
+          color: "#ff0000",
+          description: null,
+          sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [
+        {
+          id: "l1",
+          threadId: "t1",
+          nodeId: "s0",
+          phaseType: "introduce",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+        {
+          id: "l2",
+          threadId: "t1",
+          nodeId: "s3",
+          phaseType: "resolve",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      branches: [],
+      loading: false,
+    });
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+  }
+
+  it("showThreadGaps ON でマーカー間の抜け列に目印が出る", () => {
+    setupGapThread();
+    useTimelineStore.setState((s) => ({
+      display: { ...s.display, showThreadGaps: true },
+    }));
+    const { container } = render(
+      <TimelineViewport scenes={gapScenes} onSelectScene={vi.fn()} />,
+    );
+    const gaps = container.querySelectorAll(
+      '[data-testid^="plot-thread-gap-t1-"]',
+    );
+    expect(gaps.length).toBe(2); // col1, col2（col0/col3 はマーカー）
+  });
+
+  it("showThreadGaps OFF では目印が出ない", () => {
+    setupGapThread();
+    const { container } = render(
+      <TimelineViewport scenes={gapScenes} onSelectScene={vi.fn()} />,
+    );
+    const gaps = container.querySelectorAll(
+      '[data-testid^="plot-thread-gap-"]',
+    );
+    expect(gaps.length).toBe(0);
   });
 });

@@ -247,6 +247,7 @@ interface TreeState {
   sortMode: SortMode;
   statusFilter: SceneStatus | null; // null = show all
   labelFilter: string[]; // [] = show all; OR semantics
+  threadFilter: string[]; // plot-thread ids; [] = show all; OR semantics
 
   /**
    * Beat preview を nodes[] から分離して保持する。Phase 4 で打鍵中/autosave 時に
@@ -262,6 +263,7 @@ interface TreeState {
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
+  showPlotThreadDots: boolean;
   showAiAttribution: boolean;
   autoRevealActiveScene: boolean;
 
@@ -330,6 +332,9 @@ interface TreeState {
   toggleLabelFilter: (id: string) => void;
   setLabelFilter: (ids: string[]) => void;
   clearLabelFilter: () => void;
+  toggleThreadFilter: (id: string) => void;
+  setThreadFilter: (ids: string[]) => void;
+  clearThreadFilter: () => void;
 
   /**
    * Beat preview を更新する。同値なら set 自体を skip して subscriber 全員への
@@ -347,6 +352,7 @@ interface TreeState {
   setShowWordCounts: (v: boolean) => void;
   setShowStatusDots: (v: boolean) => void;
   setShowLabelDots: (v: boolean) => void;
+  setShowPlotThreadDots: (v: boolean) => void;
   setShowAiAttribution: (v: boolean) => void;
   setAutoRevealActiveScene: (v: boolean) => void;
 
@@ -551,12 +557,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   sortMode: "manual",
   statusFilter: null,
   labelFilter: [],
+  threadFilter: [],
   charCounts: {},
   nodePreviews: {},
   aiRatios: {},
   showWordCounts: true,
   showStatusDots: true,
   showLabelDots: true,
+  showPlotThreadDots: true,
   showAiAttribution: false,
   autoRevealActiveScene: true,
   pinnedCodexIds: [],
@@ -1381,6 +1389,22 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set({ labelFilter: [] });
   },
 
+  toggleThreadFilter(id) {
+    set((state) => ({
+      threadFilter: state.threadFilter.includes(id)
+        ? state.threadFilter.filter((x) => x !== id)
+        : [...state.threadFilter, id],
+    }));
+  },
+
+  setThreadFilter(ids) {
+    set({ threadFilter: ids });
+  },
+
+  clearThreadFilter() {
+    set({ threadFilter: [] });
+  },
+
   async moveNode(id, newParentId, afterId) {
     const { nodes } = get();
     const node = nodes.find((n) => n.id === id);
@@ -1543,6 +1567,10 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   setShowLabelDots(v) {
     set({ showLabelDots: v });
+  },
+
+  setShowPlotThreadDots(v) {
+    set({ showPlotThreadDots: v });
   },
 
   setShowAiAttribution(v) {

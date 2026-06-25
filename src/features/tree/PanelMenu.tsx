@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "./treeStore";
 import { useLabelStore } from "@/features/labels/labelStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { resolveLabelColor } from "@/lib/labelPalette";
 import {
   DropdownMenuContent,
@@ -51,12 +52,17 @@ export function PanelMenu() {
   const labelFilter = useTreeStore((s) => s.labelFilter);
   const toggleLabelFilter = useTreeStore((s) => s.toggleLabelFilter);
   const clearLabelFilter = useTreeStore((s) => s.clearLabelFilter);
+  const threadFilter = useTreeStore((s) => s.threadFilter);
+  const toggleThreadFilter = useTreeStore((s) => s.toggleThreadFilter);
+  const clearThreadFilter = useTreeStore((s) => s.clearThreadFilter);
   const showWordCounts = useTreeStore((s) => s.showWordCounts);
   const setShowWordCounts = useTreeStore((s) => s.setShowWordCounts);
   const showStatusDots = useTreeStore((s) => s.showStatusDots);
   const setShowStatusDots = useTreeStore((s) => s.setShowStatusDots);
   const showLabelDots = useTreeStore((s) => s.showLabelDots);
   const setShowLabelDots = useTreeStore((s) => s.setShowLabelDots);
+  const showPlotThreadDots = useTreeStore((s) => s.showPlotThreadDots);
+  const setShowPlotThreadDots = useTreeStore((s) => s.setShowPlotThreadDots);
   const showAiAttribution = useTreeStore((s) => s.showAiAttribution);
   const setShowAiAttribution = useTreeStore((s) => s.setShowAiAttribution);
   const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
@@ -64,6 +70,7 @@ export function PanelMenu() {
     (s) => s.setAutoRevealActiveScene,
   );
   const allLabels = useLabelStore((s) => s.labels);
+  const allThreads = usePlotThreadStore((s) => s.threads);
 
   return (
     <DropdownMenuContent align="end" className="min-w-[180px]">
@@ -167,6 +174,54 @@ export function PanelMenu() {
 
       <DropdownMenuSub>
         <DropdownMenuSubTrigger inset>
+          {t("scenes.filterByThreadLabel")}
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="min-w-[200px]">
+          {allThreads.length === 0 ? (
+            <div className="px-3 py-1.5 text-xs text-muted-foreground">
+              {t("scenes.noThreads")}
+            </div>
+          ) : (
+            <>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  clearThreadFilter();
+                }}
+                className={
+                  threadFilter.length === 0
+                    ? "bg-accent font-medium"
+                    : undefined
+                }
+              >
+                {t("scenes.filterAllThreads")}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {allThreads.map((thread) => {
+                const checked = threadFilter.includes(thread.id);
+                const color = thread.color ?? "var(--primary)";
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={thread.id}
+                    checked={checked}
+                    onCheckedChange={() => toggleThreadFilter(thread.id)}
+                    onSelect={(e) => e.preventDefault()}
+                  >
+                    <span
+                      className="mr-2 h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: color }}
+                    />
+                    <span className="truncate">{thread.name}</span>
+                  </DropdownMenuCheckboxItem>
+                );
+              })}
+            </>
+          )}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger inset>
           {t("scenes.showLabel")}
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent>
@@ -190,6 +245,13 @@ export function PanelMenu() {
             onSelect={(e) => e.preventDefault()}
           >
             {t("scenes.showLabelDots")}
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuCheckboxItem
+            checked={showPlotThreadDots}
+            onCheckedChange={(v) => setShowPlotThreadDots(v === true)}
+            onSelect={(e) => e.preventDefault()}
+          >
+            {t("scenes.showPlotThreadDots")}
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem
             checked={showAiAttribution}

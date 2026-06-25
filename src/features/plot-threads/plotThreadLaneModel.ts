@@ -49,6 +49,9 @@ export interface PlotLane {
   terminusX: number | null;
   /** 生存列ごとの実 Y(px)。ホーム行 or 出会いで寄った値。 */
   yByColumn: Map<number, number>;
+  /** 「抜けシーン」列: スレッドの生存 run 内でマーカーが無い列（branch/merge の
+   *  離脱・流入列は除外）。線は通っているがビートが無い＝サブプロット休止列。昇順。 */
+  gapCols: number[];
 }
 /** 分岐 / 合流のコネクタ。あるシーン x で fromY↔toY のレーン間を繋ぐ。
  *  fromY/toY は at 列の実 Y から取る（#5 = ホーム行固定値ではなく寄った後の Y）。 */
@@ -312,6 +315,7 @@ export function buildPlotLaneModel(args: {
         lineSegments: [],
         terminusX: null,
         yByColumn: new Map(),
+        gapCols: [],
       };
     }
     const yByColumn = yByColumnByThread.get(thread.id)!;
@@ -381,6 +385,19 @@ export function buildPlotLaneModel(args: {
         ? lastRun.end
         : null;
 
+    // 抜けシーン列: 各 run（=線が実際に走る生存区間）内で、マーカーが無く、かつ
+    // branch/merge の流入(enter)・離脱(leave)でもない列。別レーンへ渡っている空白
+    // 区間は run 自体に含まれないため自動的に除外される（生存判定と一本化）。
+    const gapCols: number[] = [];
+    for (const r of runs) {
+      for (let c = r.start; c <= r.end; c++) {
+        if (p.markerCols.has(c)) continue;
+        if (enterCols?.has(c)) continue;
+        if (leaveCols.has(c)) continue;
+        gapCols.push(c);
+      }
+    }
+
     return {
       thread,
       y: yHome,
@@ -388,6 +405,7 @@ export function buildPlotLaneModel(args: {
       lineSegments,
       terminusX,
       yByColumn,
+      gapCols,
     };
   });
   const laneByThread = new Map(lanes.map((l) => [l.thread.id, l]));

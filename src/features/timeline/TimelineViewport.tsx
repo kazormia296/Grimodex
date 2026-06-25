@@ -1561,6 +1561,25 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         pointerEvents="none"
                       />
                     ))}
+                  {/* 抜けシーン（マーカー無し列）の薄い目印。線は通っているがビートが
+                      無い＝サブプロット休止列。帯と同じ reading-order ゲート。 */}
+                  {display.showThreadGaps &&
+                    axisMode === "reading" &&
+                    lane.gapCols.map((c) => (
+                      <line
+                        key={`gap-${c}`}
+                        data-testid={`plot-thread-gap-${lane.thread.id}-${c}`}
+                        x1={xOf(c)}
+                        x2={xOf(c)}
+                        y1={lane.y - 4}
+                        y2={lane.y + 4}
+                        stroke={lane.thread.color ?? "var(--primary)"}
+                        strokeWidth={2}
+                        strokeOpacity={0.28}
+                        strokeLinecap="round"
+                        pointerEvents="none"
+                      />
+                    ))}
                   {/* 終端キャップ（完結）。自走で終わるスレッドの線端に小さな塗りノブ。
                       merge で畳まれた終端には付かない（コネクタで表現）。 */}
                   {axisMode === "reading" && lane.terminusX !== null && (

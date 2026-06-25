@@ -23,6 +23,8 @@ import { TreeContextMenu } from "./TreeContextMenu";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { LabelDots } from "@/features/labels/LabelDots";
+import { ThreadMembershipDots } from "@/features/plot-threads/ThreadMembershipDots";
+import type { PlotThreadRow } from "@/features/plot-threads/api";
 import { LensDot } from "./LensDot";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,7 +89,12 @@ interface TreeNodeItemProps {
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
+  showPlotThreadDots: boolean;
   showAiAttribution: boolean;
+  /** Plot-thread ids this scene belongs to (stable ref from a memoized record). */
+  threadIdsForNode?: string[];
+  /** thread id → row, for resolving dot color/name. Stable ref. */
+  threadsById?: Map<string, PlotThreadRow>;
   /** Ordered flat list of nodes for Shift+Click range selection.
    *  ref 渡し (クリック時に .current を読む) なのは、filter/expand 毎に
    *  配列参照が変わって memo が全行で破綻するのを防ぐため。 */
@@ -117,7 +124,10 @@ function TreeNodeItemImpl({
   showWordCounts,
   showStatusDots,
   showLabelDots,
+  showPlotThreadDots,
   showAiAttribution,
+  threadIdsForNode,
+  threadsById,
   orderedNodesRef,
   dragInProgress,
   viewMode,
@@ -437,6 +447,17 @@ function TreeNodeItemImpl({
             {showLabelDots && node.nodeType === "scene" && !isEditing && (
               <LabelDots nodeId={node.id} />
             )}
+
+            {/* Plot-thread membership dots */}
+            {showPlotThreadDots &&
+              node.nodeType === "scene" &&
+              !isEditing &&
+              threadsById && (
+                <ThreadMembershipDots
+                  threadIds={threadIdsForNode}
+                  threadsById={threadsById}
+                />
+              )}
 
             {/* AI attribution badge */}
             {showAiAttribution &&

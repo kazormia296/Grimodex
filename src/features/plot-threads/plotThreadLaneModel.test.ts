@@ -788,3 +788,81 @@ describe("computeLaneDragTargets（ヘッダー縦ドラッグの目標 Y）", (
     expect(t.get("c")).toBe(212 - 56);
   });
 });
+
+describe("buildPlotLaneModel gapCols (抜けシーン検出)", () => {
+  const gapsOf = (model: PlotLaneModel, threadId: string) =>
+    model.lanes.find((l) => l.thread.id === threadId)?.gapCols ?? null;
+
+  it("マーカー間の空き列を gap として返す", () => {
+    const model = buildPlotLaneModel({
+      threads: [thread("a", "a0")],
+      links: [
+        link("l1", "a", "s1", "introduce"), // col 0
+        link("l2", "a", "s4", "resolve"), // col 3
+      ],
+      sceneX,
+    });
+    expect(gapsOf(model, "a")).toEqual([1, 2]);
+  });
+
+  it("単独マーカーは gap を生まない", () => {
+    const model = buildPlotLaneModel({
+      threads: [thread("a", "a0")],
+      links: [link("l1", "a", "s3", "develop")], // col 2
+      sceneX,
+    });
+    expect(gapsOf(model, "a")).toEqual([]);
+  });
+
+  it("全列にマーカーがあれば gap は無い", () => {
+    const model = buildPlotLaneModel({
+      threads: [thread("a", "a0")],
+      links: [
+        link("l1", "a", "s1", "introduce"),
+        link("l2", "a", "s2", "develop"),
+        link("l3", "a", "s3", "resolve"),
+      ],
+      sceneX,
+    });
+    expect(gapsOf(model, "a")).toEqual([]);
+  });
+
+  it("branch 離脱列は gap に含めない", () => {
+    // a: marker@col0、col2 で b へ分岐（col2 に a のマーカー無し→離脱）
+    const model = buildPlotLaneModel({
+      threads: [thread("a", "a0"), thread("b", "a1")],
+      links: [
+        link("l1", "a", "s1", "introduce"), // col 0
+        link("l2", "b", "s3", "develop"), // col 2 (b)
+      ],
+      branches: [branch("br1", "a", "b", "s3", "branch")], // at col 2
+      sceneX,
+    });
+    // a の生存 run = [0,2]、col1 のみ gap（col2 は離脱列なので除外）
+    expect(gapsOf(model, "a")).toEqual([1]);
+  });
+
+  it("merge 流入列は gap に含めない", () => {
+    // a が col1 で b へ合流（b の流入列=col1）。b: marker@col3
+    const model = buildPlotLaneModel({
+      threads: [thread("a", "a0"), thread("b", "a1")],
+      links: [
+        link("l1", "a", "s1", "introduce"), // col 0 (a)
+        link("l2", "b", "s4", "resolve"), // col 3 (b)
+      ],
+      branches: [branch("mg1", "a", "b", "s2", "merge")], // at col 1
+      sceneX,
+    });
+    // b の生存 run = [1,3]、col1=流入(除外) / col2=gap / col3=marker
+    expect(gapsOf(model, "b")).toEqual([2]);
+  });
+
+  it("マーカーが無いスレッドは gapCols=[]", () => {
+    const model = buildPlotLaneModel({
+      threads: [thread("a", "a0")],
+      links: [],
+      sceneX,
+    });
+    expect(gapsOf(model, "a")).toEqual([]);
+  });
+});

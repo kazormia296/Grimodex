@@ -37,6 +37,8 @@ export function useScenesDerivedData(args: {
   statusFilter: string | null;
   labelFilter: string[];
   nodeLabels: Record<string, string[]>;
+  threadFilter: string[];
+  nodeThreadIds: Record<string, string[]>;
 }): DerivedData {
   const {
     nodes,
@@ -47,6 +49,8 @@ export function useScenesDerivedData(args: {
     statusFilter,
     labelFilter,
     nodeLabels,
+    threadFilter,
+    nodeThreadIds,
   } = args;
 
   const { childMap, nodeMap } = useMemo(() => {
@@ -117,6 +121,8 @@ export function useScenesDerivedData(args: {
         statusFilter,
         labelFilter,
         nodeLabels,
+        threadFilter,
+        nodeThreadIds,
       ),
     [
       childMap,
@@ -126,6 +132,8 @@ export function useScenesDerivedData(args: {
       statusFilter,
       labelFilter,
       nodeLabels,
+      threadFilter,
+      nodeThreadIds,
     ],
   );
 

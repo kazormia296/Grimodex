@@ -20,6 +20,7 @@ function reset() {
       showTitles: true,
       showChapterNumbers: true,
       showPhasePins: false,
+      showThreadGaps: false,
     },
   });
 }
@@ -140,6 +141,7 @@ describe("timelineStore.loadFromSettings", () => {
         showTitles: false,
         showChapterNumbers: false,
         showPhasePins: true,
+        showThreadGaps: false,
       },
     };
     useTimelineStore.getState().loadFromSettings(s);
@@ -273,6 +275,7 @@ describe("timelineStore persistent subscriber", () => {
         showTitles: false,
         showChapterNumbers: false,
         showPhasePins: true,
+        showThreadGaps: false,
       },
     });
     vi.runAllTimers();
