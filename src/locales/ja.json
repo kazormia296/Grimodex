@@ -4846,6 +4846,12 @@
       "climax": "クライマックス",
       "resolve": "レゾリューション"
     },
+    "arc": {
+      "title": "この糸の主要キャラ",
+      "hint": "所属シーンでの登場・役割・POV から集計",
+      "pov": "POV",
+      "sceneCount": "{{n}}シーン"
+    },
     "structure": {
       "title": "構造分析",
       "hide": "構造分析を閉じる",

@@ -4853,6 +4853,12 @@
       "climax": "Climax",
       "resolve": "Resolve"
     },
+    "arc": {
+      "title": "Main characters of this thread",
+      "hint": "Aggregated from appearances, roles, and POV in member scenes",
+      "pov": "POV",
+      "sceneCount": "{{n}} scenes"
+    },
     "structure": {
       "title": "Structure",
       "hide": "Hide structure analysis",

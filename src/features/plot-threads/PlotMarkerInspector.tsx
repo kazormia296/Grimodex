@@ -5,6 +5,7 @@ import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { activeCodexPaletteSlots } from "@/lib/resolveCodexColors";
 import { usePlotThreadStore } from "./plotThreadStore";
+import { PlotThreadCharacterArc } from "./PlotThreadCharacterArc";
 import { PlotBranchEditor } from "./PlotBranchEditor";
 import { PlotMarkerDeleteConfirmDialog } from "./PlotMarkerDeleteConfirmDialog";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
@@ -324,6 +325,9 @@ export function PlotMarkerInspector({
                   <Trash2 className="h-3.5 w-3.5" />
                   {t("plotThread.deleteThread", "スレッドを削除")}
                 </button>
+
+                {/* Phase 4b: この糸の主要キャラ・ランキング（読み取り専用）。 */}
+                <PlotThreadCharacterArc threadId={thread.id} />
               </>
             )}
           </div>

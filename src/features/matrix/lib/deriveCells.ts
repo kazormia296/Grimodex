@@ -1,13 +1,13 @@
 export type CellSource = "body" | "beat" | "relation";
 export type MentionRole = "mentioned" | "actor" | "target";
 
-const SOURCE_PRIORITY: Record<CellSource, number> = {
+export const SOURCE_PRIORITY: Record<CellSource, number> = {
   body: 2,
   beat: 1,
   relation: 0,
 };
 
-const ROLE_PRIORITY: Record<MentionRole, number> = {
+export const ROLE_PRIORITY: Record<MentionRole, number> = {
   actor: 2,
   target: 1,
   mentioned: 0,
