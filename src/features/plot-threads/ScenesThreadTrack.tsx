@@ -56,9 +56,10 @@ export function ScenesThreadTrack({ cells, columns, connectors }: Props) {
         }
         const color = col.color ?? "var(--primary)";
         const hasLine = ch !== "o";
-        const hasNode = ch !== "|";
-        const lineTop = ch === "t" ? "50%" : "0";
-        const lineBottom = ch === "b" ? "50%" : "0";
+        const hasNode = ch !== "|" && ch !== "T" && ch !== "B";
+        // 下向き半線: 先頭駅 t / 流入端 T。上向き半線: 末尾駅 b / 離脱端 B。
+        const lineTop = ch === "t" || ch === "T" ? "50%" : "0";
+        const lineBottom = ch === "b" || ch === "B" ? "50%" : "0";
         return (
           <span
             key={col.id}

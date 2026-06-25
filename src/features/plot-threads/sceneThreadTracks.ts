@@ -1,19 +1,22 @@
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import type { PlotThreadRow, PlotThreadBranchRow } from "./api";
+import { computeThreadRuns } from "./plotThreadRuns";
 
 /** スレッドトラック 1 列の幅(px)。各スレッドが 1 本の縦トラックを占める。 */
 export const TRACK_COL_WIDTH = 11;
 
 /**
- * 1 ノード × 1 列のセル状態（文字コード）。
- * - `.` 非アクティブ（線なし）
- * - `t` 先頭駅（駅＋下向き半線）
- * - `b` 末尾駅（駅＋上向き半線）
+ * 1 ノード × 1 列のセル状態（文字コード）。run（生存区間）内の (駅, 上半線, 下半線) を符号化。
+ * - `.` 非アクティブ（線なし・run 外）
+ * - `t` 先頭駅（駅＋下向き半線＝run 開始）
+ * - `b` 末尾駅（駅＋上向き半線＝run 終了）
  * - `s` 中間駅（駅＋全高線）
- * - `|` 通過（線のみ＝そのスレッドの区間内だが、このシーンには所属マーカー無し）
- * - `o` 単独駅（駅のみ・線なし＝そのスレッドが 1 シーンだけ）
+ * - `|` 通過（全高線・駅なし＝run 内だがこの行に所属マーカー無し）
+ * - `o` 単独駅（駅のみ・線なし＝長さ 1 の run）
+ * - `T` 流入端（下向き半線・駅なし＝branch/merge の at 行から線が始まる）
+ * - `B` 離脱端（上向き半線・駅なし＝branch/merge の at 行で線が終わる）
  */
-export type TrackCellChar = "." | "t" | "b" | "s" | "|" | "o";
+export type TrackCellChar = "." | "t" | "b" | "s" | "|" | "o" | "T" | "B";
 
 export interface SceneThreadTrackModel {
   /** 列＝可視範囲に所属シーンを持つスレッド（sortOrder 昇順）。 */
@@ -59,48 +62,94 @@ export function buildSceneThreadTracks(
   if (columns.length === 0)
     return { columns, cellByNode: {}, connectorByNode: {} };
 
-  // 各列スレッドの先頭/末尾の所属行 index（可視順）
-  const firstIdx = new Map<string, number>();
-  const lastIdx = new Map<string, number>();
+  const colIndex = new Map<string, number>();
+  columns.forEach((c, j) => colIndex.set(c.id, j));
+
+  // 行 index 解決。
+  const rowOf = new Map<string, number>();
+  orderedNodes.forEach((n, i) => rowOf.set(n.id, i));
+
+  // 列スレッドのマーカー行（所属行）。
+  const markerRows = new Map<string, Set<number>>();
   orderedNodes.forEach((n, i) => {
     for (const tid of nodeThreadIds[n.id] ?? []) {
-      if (!firstIdx.has(tid)) firstIdx.set(tid, i);
-      lastIdx.set(tid, i);
+      if (!colIndex.has(tid)) continue;
+      const s = markerRows.get(tid);
+      if (s) s.add(i);
+      else markerRows.set(tid, new Set([i]));
     }
   });
 
+  // 分岐/合流の離脱/流入/スパン行（両端が列・at 行が可視のものだけ）。Timeline と同契約:
+  //  - merge の from は必ず離脱 / branch の from は「その行に自分のマーカーが無い」ときだけ離脱
+  //  - to は at 行で流入 / from・to 双方の at 行で生存スパンを延ばす（コネクタが帯に接続する）
+  const mergeFromRows = new Map<string, Set<number>>();
+  const branchFromRows = new Map<string, Set<number>>();
+  const enterRows = new Map<string, Set<number>>();
+  const spanRows = new Map<string, number[]>();
+  const addRow = (m: Map<string, Set<number>>, k: string, v: number) => {
+    const s = m.get(k);
+    if (s) s.add(v);
+    else m.set(k, new Set([v]));
+  };
+  const addSpan = (k: string, v: number) => {
+    const a = spanRows.get(k);
+    if (a) a.push(v);
+    else spanRows.set(k, [v]);
+  };
+  for (const b of branches) {
+    if (!colIndex.has(b.fromThreadId) || !colIndex.has(b.toThreadId)) continue;
+    if (b.fromThreadId === b.toThreadId) continue;
+    const at = rowOf.get(b.atNodeId);
+    if (at === undefined) continue;
+    if (b.kind === "merge") addRow(mergeFromRows, b.fromThreadId, at);
+    else addRow(branchFromRows, b.fromThreadId, at);
+    addRow(enterRows, b.toThreadId, at);
+    addSpan(b.fromThreadId, at);
+    addSpan(b.toThreadId, at);
+  }
+
+  // 各列スレッドを run（Timeline と同一の生存区間）に分割し、行ごとのセル文字を確定する。
+  const charByRowByCol = new Map<string, Map<number, string>>();
+  for (const col of columns) {
+    const marks = markerRows.get(col.id) ?? new Set<number>();
+    const edges = spanRows.get(col.id) ?? [];
+    const all = [...marks, ...edges];
+    if (all.length === 0) continue;
+    const lo = Math.min(...all);
+    const hi = Math.max(...all);
+    const leaveSet = new Set<number>();
+    for (const c of mergeFromRows.get(col.id) ?? []) leaveSet.add(c);
+    for (const c of branchFromRows.get(col.id) ?? []) {
+      if (!marks.has(c)) leaveSet.add(c);
+    }
+    const enterSet = enterRows.get(col.id) ?? new Set<number>();
+    const runs = computeThreadRuns(lo, hi, leaveSet, enterSet, marks);
+    const charByRow = new Map<number, string>();
+    for (const r of runs) {
+      for (let i = r.start; i <= r.end; i++) {
+        charByRow.set(i, encodeCell(marks.has(i), i > r.start, i < r.end));
+      }
+    }
+    charByRowByCol.set(col.id, charByRow);
+  }
+
   const cellByNode: Record<string, string> = {};
   orderedNodes.forEach((n, i) => {
-    const members = new Set(nodeThreadIds[n.id] ?? []);
     let s = "";
     for (const col of columns) {
-      const f = firstIdx.get(col.id)!;
-      const l = lastIdx.get(col.id)!;
-      if (i < f || i > l) {
-        s += ".";
-      } else if (f === l) {
-        s += "o"; // 単独駅
-      } else if (i === f) {
-        s += "t";
-      } else if (i === l) {
-        s += "b";
-      } else {
-        s += members.has(col.id) ? "s" : "|";
-      }
+      s += charByRowByCol.get(col.id)?.get(i) ?? ".";
     }
     cellByNode[n.id] = s;
   });
 
-  // 分岐/合流コネクタ: at 列の行で from 列↔to 列を横リンク。両端が列に在るものだけ。
-  const colIndex = new Map<string, number>();
-  columns.forEach((c, j) => colIndex.set(c.id, j));
-  const nodeIds = new Set(orderedNodes.map((n) => n.id));
+  // 分岐/合流コネクタ: at 行で from 列↔to 列を横リンク。両端が列に在るものだけ。
   const connectorByNode: Record<string, string> = {};
   for (const b of branches) {
     const f = colIndex.get(b.fromThreadId);
     const t = colIndex.get(b.toThreadId);
     if (f === undefined || t === undefined || f === t) continue;
-    if (!nodeIds.has(b.atNodeId)) continue;
+    if (!rowOf.has(b.atNodeId)) continue;
     const kind = b.kind === "merge" ? "m" : "b";
     const enc = `${f}>${t}:${kind}`;
     connectorByNode[b.atNodeId] = connectorByNode[b.atNodeId]
@@ -109,4 +158,18 @@ export function buildSceneThreadTracks(
   }
 
   return { columns, cellByNode, connectorByNode };
+}
+
+/** (駅, 上半線, 下半線) → セル文字。 */
+function encodeCell(station: boolean, up: boolean, down: boolean): string {
+  if (station) {
+    if (up && down) return "s";
+    if (down) return "t";
+    if (up) return "b";
+    return "o";
+  }
+  if (up && down) return "|";
+  if (down) return "T";
+  if (up) return "B";
+  return ".";
 }

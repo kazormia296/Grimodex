@@ -113,6 +113,49 @@ describe("buildSceneThreadTracks", () => {
     expect(connectorByNode.n4).toBe("1>0:m"); // t2=列1 → t1=列0 merge
   });
 
+  it("merge した from スレッドは離脱行で線が切れ、再登場は別 run（Timeline と一致）", () => {
+    // 列0=t1(a0), 列1=t2(a1)。t2 は n0,n4 に所属し、n1 で t1 へ merge。
+    // 旧実装は n0..n4 を一本線で繋いでいたが、Timeline では n1 で離脱して途切れる。
+    const { columns, cellByNode } = buildSceneThreadTracks(
+      rows,
+      { n0: ["t2"], n2: ["t1"], n4: ["t2"] },
+      threadsById,
+      [
+        branch({
+          fromThreadId: "t2",
+          toThreadId: "t1",
+          atNodeId: "n1",
+          kind: "merge",
+        }),
+      ],
+    );
+    expect(columns.map((c) => c.id)).toEqual(["t1", "t2"]);
+    // 列1=t2: n0=駅+下半線(t) / n1=離脱(上半線・駅なし=B) / n2,n3=線なし(.) / n4=単独駅(o)
+    expect(cellByNode.n0[1]).toBe("t");
+    expect(cellByNode.n1[1]).toBe("B");
+    expect(cellByNode.n2[1]).toBe(".");
+    expect(cellByNode.n3[1]).toBe(".");
+    expect(cellByNode.n4[1]).toBe("o");
+  });
+
+  it("branch の to スレッドは分岐行から線が始まる（最初のマーカー前でも・Timeline と一致）", () => {
+    // 列0=t1(from), 列1=t2(to)。branch t1→t2 at n1。t2 の所属は n3 のみ。
+    // 旧実装は t2 を n3 単独駅にしてコネクタが宙に浮いたが、Timeline では n1 から線が出る。
+    const { cellByNode } = buildSceneThreadTracks(
+      rows,
+      { n0: ["t1"], n1: ["t1"], n3: ["t2"] },
+      threadsById,
+      [branch({ fromThreadId: "t1", toThreadId: "t2", atNodeId: "n1" })],
+    );
+    // 列1=t2: n1=分岐流入(下半線・駅なし=T) / n2=通過(|) / n3=末尾駅(b)
+    expect(cellByNode.n1[1]).toBe("T");
+    expect(cellByNode.n2[1]).toBe("|");
+    expect(cellByNode.n3[1]).toBe("b");
+    // 列0=t1 は分岐行に自分のマーカーがあるので離脱せず連続（n0=t, n1=b）
+    expect(cellByNode.n0[0]).toBe("t");
+    expect(cellByNode.n1[0]).toBe("b");
+  });
+
   it("列に無いスレッドが絡む branch は無視", () => {
     const { connectorByNode } = buildSceneThreadTracks(
       rows,

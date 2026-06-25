@@ -81,6 +81,25 @@ describe("ScenesThreadTrack", () => {
     ).toBeNull();
   });
 
+  it("T=流入端は下向き半線・駅なし / B=離脱端は上向き半線・駅なし", () => {
+    const { getByTestId, container } = render(
+      <ScenesThreadTrack cells="T" columns={[columns[0]]} />,
+    );
+    expect((getByTestId("scene-track-line-t1") as HTMLElement).style.top).toBe(
+      "50%",
+    );
+    expect(
+      container.querySelector('[data-testid="scene-track-node-t1"]'),
+    ).toBeNull();
+
+    cleanup();
+    const { getByTestId: g2, container: c2 } = render(
+      <ScenesThreadTrack cells="B" columns={[columns[0]]} />,
+    );
+    expect((g2("scene-track-line-t1") as HTMLElement).style.bottom).toBe("50%");
+    expect(c2.querySelector('[data-testid="scene-track-node-t1"]')).toBeNull();
+  });
+
   it("uses thread color, falling back to var(--primary) when null", () => {
     const { getByTestId } = render(
       <ScenesThreadTrack cells="t" columns={[columns[1]]} />,

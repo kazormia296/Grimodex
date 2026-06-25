@@ -9,6 +9,7 @@ import type {
   PlotThreadLinkRow,
   PlotThreadBranchRow,
 } from "./api";
+import { computeThreadRuns } from "./plotThreadRuns";
 
 /** TimelineViewport の LANE_Y(=60) と整合する scheduled ベースライン。 */
 export const LANE_TOP = 60;
@@ -340,29 +341,15 @@ export function buildPlotLaneModel(args: {
       }
     }
 
-    // run 分割（統一遷移モデル）: スレッドは lo で誕生し、離脱列で band が切れて不在になり、
-    // 流入列(enter=to)やマーカー列で再び現れる。離脱→次の流入の間（別レーンを走っている
-    // 区間）は band を空ける＝連続させない。各 run は homeY 水平 1 本。
-    const runs: Array<{ start: number; end: number; rampOutEnd: boolean }> = [];
-    let active = true; // lo で誕生
-    let start = p.lo;
-    for (let c = p.lo; c <= p.hi; c++) {
-      if (active && leaveCols.has(c)) {
-        // 離脱: band はこの列で終わり、ランプの始端へ渡す。
-        runs.push({ start, end: c, rampOutEnd: true });
-        active = false;
-      } else if (!active && (enterCols?.has(c) || p.markerCols.has(c))) {
-        // 流入 / マーカー再出現: この列（マーカー位置）から新しい run。
-        start = c;
-        active = true;
-        // 同一列で流入かつ即離脱（その場で別レーンへ渡る）なら 1 列 run。
-        if (leaveCols.has(c)) {
-          runs.push({ start, end: c, rampOutEnd: true });
-          active = false;
-        }
-      }
-    }
-    if (active) runs.push({ start, end: p.hi, rampOutEnd: false });
+    // run 分割（統一遷移モデル・正本=computeThreadRuns）: スレッドは lo で誕生し、離脱列で
+    // band が切れて不在になり、流入列(enter=to)やマーカー列で再び現れる。各 run は homeY 水平 1 本。
+    const runs = computeThreadRuns(
+      p.lo,
+      p.hi,
+      leaveCols,
+      enterCols ?? new Set<number>(),
+      p.markerCols,
+    );
 
     // 固定ホーム行モデルでは run 内の y は一定なので、各 run = homeY 水平 1 セグメント。
     const lineSegments: PlotLineSegment[] = [];
