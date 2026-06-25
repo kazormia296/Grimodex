@@ -15,6 +15,11 @@ import {
   treeNodes,
   foreshadows,
   foreshadowSetups,
+  plotThreads,
+  plotThreadSceneLinks,
+  plotThreadBranches,
+  PLOT_PHASE_TYPES,
+  type PlotPhaseType,
 } from "@/db/schema";
 import { eq, inArray, and } from "drizzle-orm";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
@@ -1194,6 +1199,226 @@ async function updateCodexEntryTool(
 }
 
 // ---------------------------------------------------------------------------
+// Plot threads (read-only)
+// ---------------------------------------------------------------------------
+
+const THREAD_SCENE_MAX = 8;
+const THREAD_EXCERPT_MAX_CHARS = 800;
+
+/** phaseType の表示順 index（未知値は末尾）。 */
+function phaseRank(p: string): number {
+  const i = (PLOT_PHASE_TYPES as readonly string[]).indexOf(p);
+  return i < 0 ? PLOT_PHASE_TYPES.length : i;
+}
+
+/** 不正な phaseType 文字列を既定値に丸める（CHECK は SQL 側のみ＝混入し得る）。 */
+function normalizePhase(p: string): PlotPhaseType {
+  return (PLOT_PHASE_TYPES as readonly string[]).includes(p)
+    ? (p as PlotPhaseType)
+    : "develop";
+}
+
+async function listPlotThreads(): Promise<Omit<ToolResult, "toolCallId">> {
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "list_plot_threads",
+      content: null,
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
+  const threads = await db
+    .select({
+      id: plotThreads.id,
+      name: plotThreads.name,
+      description: plotThreads.description,
+      sortOrder: plotThreads.sortOrder,
+    })
+    .from(plotThreads)
+    .where(eq(plotThreads.projectId, projectId));
+
+  const threadIds = threads.map((t) => t.id);
+  const links =
+    threadIds.length > 0
+      ? await db
+          .select({
+            threadId: plotThreadSceneLinks.threadId,
+            nodeId: plotThreadSceneLinks.nodeId,
+            phaseType: plotThreadSceneLinks.phaseType,
+          })
+          .from(plotThreadSceneLinks)
+          .where(inArray(plotThreadSceneLinks.threadId, threadIds))
+      : [];
+
+  // thread ごとの distinct scene 数 + 到達 phase 集合。
+  const sceneSets = new Map<string, Set<string>>();
+  const phaseSets = new Map<string, Set<string>>();
+  for (const l of links) {
+    let sc = sceneSets.get(l.threadId);
+    if (!sc) {
+      sc = new Set();
+      sceneSets.set(l.threadId, sc);
+    }
+    sc.add(l.nodeId);
+    let ph = phaseSets.get(l.threadId);
+    if (!ph) {
+      ph = new Set();
+      phaseSets.set(l.threadId, ph);
+    }
+    ph.add(l.phaseType);
+  }
+
+  const ordered = [...threads].sort((a, b) =>
+    cmpKeys(a.sortOrder, b.sortOrder),
+  );
+  const content = ordered.map((t) => ({
+    id: t.id,
+    name: t.name,
+    description: t.description ?? "",
+    sceneCount: sceneSets.get(t.id)?.size ?? 0,
+    phases: PLOT_PHASE_TYPES.filter((p) => phaseSets.get(t.id)?.has(p)),
+  }));
+
+  const json = JSON.stringify(content);
+  return {
+    name: "list_plot_threads",
+    content,
+    summary: `${content.length} plot thread(s)`,
+    tokensUsed: countTokens(json),
+  };
+}
+
+async function getThreadScenes(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const threadId = String(params["threadId"] ?? "").trim();
+  if (!threadId)
+    return {
+      name: "get_thread_scenes",
+      content: null,
+      summary: "No threadId provided",
+      tokensUsed: 0,
+    };
+
+  // XPROJ 1段目: thread_id → plot_threads.project_id を検証。別 project の
+  // スレッド UUID を渡しても、シーン/リンク/本文に触れる前にここで弾く
+  // （nodeId 単独 lookup 禁止＝plot_thread_scene_links は project_id を持たず
+  // 親スレッド経由でしか scope できないため）。
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "get_thread_scenes",
+      content: null,
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
+  const [thread] = await db
+    .select({
+      id: plotThreads.id,
+      name: plotThreads.name,
+      description: plotThreads.description,
+    })
+    .from(plotThreads)
+    .where(
+      and(eq(plotThreads.id, threadId), eq(plotThreads.projectId, projectId)),
+    );
+
+  if (!thread)
+    return {
+      name: "get_thread_scenes",
+      content: null,
+      summary: "Thread not found",
+      tokensUsed: 0,
+    };
+
+  // 2段目: 親スレッド検証済みなので links を threadId で取得。
+  const links = await db
+    .select({
+      nodeId: plotThreadSceneLinks.nodeId,
+      phaseType: plotThreadSceneLinks.phaseType,
+      note: plotThreadSceneLinks.note,
+      sortOrder: plotThreadSceneLinks.sortOrder,
+    })
+    .from(plotThreadSceneLinks)
+    .where(eq(plotThreadSceneLinks.threadId, threadId));
+
+  // PLOT_PHASE_TYPES 順 → 同 phase 内は sortOrder。
+  const orderedLinks = [...links].sort((a, b) => {
+    const pr = phaseRank(a.phaseType) - phaseRank(b.phaseType);
+    if (pr !== 0) return pr;
+    return cmpKeys(a.sortOrder ?? "", b.sortOrder ?? "");
+  });
+
+  // scene title をまとめて解決（active project の treeNodes に限定）。
+  const nodeIds = [...new Set(orderedLinks.map((l) => l.nodeId))];
+  const titleRows =
+    nodeIds.length > 0
+      ? await db
+          .select({ id: treeNodes.id, title: treeNodes.title })
+          .from(treeNodes)
+          .where(
+            and(
+              inArray(treeNodes.id, nodeIds),
+              eq(treeNodes.projectId, projectId),
+            ),
+          )
+      : [];
+  const titleById = new Map(titleRows.map((r) => [r.id, r.title]));
+
+  const capped = orderedLinks.slice(0, THREAD_SCENE_MAX);
+  const scenes: Array<{
+    id: string;
+    title: string;
+    phaseType: PlotPhaseType;
+    note: string;
+    excerpt: string;
+  }> = [];
+  for (const l of capped) {
+    const raw = await loadSceneContent(l.nodeId).catch(() => "");
+    const text = prosemirrorToText(raw ?? "");
+    scenes.push({
+      id: l.nodeId,
+      title: titleById.get(l.nodeId) ?? "",
+      phaseType: normalizePhase(l.phaseType),
+      note: l.note ?? "",
+      excerpt: text.slice(0, THREAD_EXCERPT_MAX_CHARS),
+    });
+  }
+
+  // このスレッドに関わる branch（project でも絞る＝XPROJ）。
+  const branchRows = await db
+    .select({
+      fromThreadId: plotThreadBranches.fromThreadId,
+      toThreadId: plotThreadBranches.toThreadId,
+      atNodeId: plotThreadBranches.atNodeId,
+      kind: plotThreadBranches.kind,
+    })
+    .from(plotThreadBranches)
+    .where(eq(plotThreadBranches.projectId, projectId));
+  const branches = branchRows.filter(
+    (b) => b.fromThreadId === threadId || b.toThreadId === threadId,
+  );
+
+  const content = {
+    id: thread.id,
+    name: thread.name,
+    description: thread.description ?? "",
+    sceneCount: orderedLinks.length,
+    scenes,
+    branches,
+  };
+  const json = JSON.stringify(content);
+  return {
+    name: "get_thread_scenes",
+    content,
+    summary: `Thread '${thread.name}': ${scenes.length}/${orderedLinks.length} scene(s)`,
+    tokensUsed: countTokens(json),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch map
 // ---------------------------------------------------------------------------
 
@@ -1233,6 +1458,8 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   list_open_foreshadows: () => listOpenForeshadows(),
   get_foreshadow_detail: getForeshadowDetail,
   get_scene_timeline_neighbors: getSceneTimelineNeighbors,
+  list_plot_threads: () => listPlotThreads(),
+  get_thread_scenes: getThreadScenes,
 };
 Object.freeze(READ_ONLY_EXECUTORS);
 

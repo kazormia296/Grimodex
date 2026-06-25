@@ -311,6 +311,30 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  // ── Plot threads系 ────────────────────────────────────────────────────────
+  {
+    name: "list_plot_threads",
+    description:
+      "List the author's plot threads (sub-plots / through-lines). Returns each thread's id, name, description, scene count, and which narrative phases (introduce→resolve) it has reached. Use get_thread_scenes to read the scenes on a specific thread.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "get_thread_scenes",
+    description:
+      "Get the scenes the author explicitly linked to a plot thread, in narrative-phase order (introduce→resolve), each with a text excerpt, plus any branch/merge edges. Use the thread id from list_plot_threads. This is the author's hand-drawn sub-plot structure, not a semantic search.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        threadId: { type: "string", description: "Plot thread ID" },
+      },
+      required: ["threadId"],
+    },
+  },
+
   // ── Snippets系 ────────────────────────────────────────────────────────────
   {
     name: "search_snippets",
@@ -499,6 +523,8 @@ export const READ_ONLY_TOOL_NAMES: readonly string[] = [
   "list_chapters",
   "get_scene",
   "search_scenes",
+  "list_plot_threads",
+  "get_thread_scenes",
   "search_snippets",
   "get_chapter_summaries",
   "list_open_foreshadows",

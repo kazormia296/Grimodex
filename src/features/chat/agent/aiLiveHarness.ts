@@ -270,10 +270,18 @@ export interface MockForeshadow {
   payoffConfirmed: boolean;
   abandoned: boolean;
 }
+export interface MockPlotThread {
+  id: string;
+  name: string;
+  description?: string;
+  scenes: Array<{ sceneId: string; phaseType: string }>;
+}
 export interface MockWorld {
   entries: MockEntry[];
   scenes: MockScene[];
   foreshadows: MockForeshadow[];
+  /** Phase 3c: plot threads（省略時は空＝list は 0 件）。 */
+  threads?: MockPlotThread[];
 }
 
 /** 既定の小さな作品世界。カスタムしたい場合は {@link createMockReadOnlyExecutor} に渡す。 */
@@ -344,6 +352,17 @@ export const DEFAULT_MOCK_WORLD: MockWorld = {
       abandoned: false,
     },
   ],
+  threads: [
+    {
+      id: "thread-shrine",
+      name: "古峯神社の謎",
+      description: "芽衣と古峯神社にまつわる縦糸。",
+      scenes: [
+        { sceneId: "scene-2", phaseType: "introduce" },
+        { sceneId: "scene-3", phaseType: "develop" },
+      ],
+    },
+  ],
 };
 
 function okResult(name: string, content: unknown, summary: string): ToolResult {
@@ -367,7 +386,7 @@ function notFound(name: string): ToolResult {
 export function createMockReadOnlyExecutor(
   world: MockWorld = DEFAULT_MOCK_WORLD,
 ): AgentLoopOptions["executeTool"] {
-  const { entries, scenes, foreshadows } = world;
+  const { entries, scenes, foreshadows, threads = [] } = world;
   return async (name, toolCallId, params) => {
     const q = String(params["query"] ?? "").toLowerCase();
     const id = String(params["id"] ?? "");
@@ -504,6 +523,40 @@ export function createMockReadOnlyExecutor(
       case "get_scene_timeline_neighbors":
         r = okResult(name, { before: [], after: [] }, "no neighbors");
         break;
+      case "list_plot_threads": {
+        const list = threads.map((t) => ({
+          id: t.id,
+          name: t.name,
+          description: t.description ?? "",
+          sceneCount: new Set(t.scenes.map((s) => s.sceneId)).size,
+          phases: [...new Set(t.scenes.map((s) => s.phaseType))],
+        }));
+        r = okResult(name, list, `${list.length} plot thread(s)`);
+        break;
+      }
+      case "get_thread_scenes": {
+        const threadId = String(params["threadId"] ?? "");
+        const t = threads.find((x) => x.id === threadId);
+        if (!t) {
+          r = notFound(name);
+          break;
+        }
+        const sceneList = t.scenes.slice(0, 8).map((ts) => {
+          const sc = scenes.find((s) => s.id === ts.sceneId);
+          return {
+            id: ts.sceneId,
+            title: sc?.title ?? "",
+            phaseType: ts.phaseType,
+            excerpt: (sc?.text ?? "").slice(0, 800),
+          };
+        });
+        r = okResult(
+          name,
+          { id: t.id, name: t.name, scenes: sceneList, branches: [] },
+          `Thread '${t.name}': ${sceneList.length} scene(s)`,
+        );
+        break;
+      }
       default:
         r = {
           toolCallId: "",

@@ -80,10 +80,12 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "get_foreshadow_detail",
     "get_scene",
     "get_scene_timeline_neighbors",
+    "get_thread_scenes",
     "list_chapters",
     "list_codex_by_type",
     "list_codex_tags",
     "list_open_foreshadows",
+    "list_plot_threads",
     "search_codex",
     "search_codex_by_tags",
     "search_scenes",
@@ -466,6 +468,8 @@ describe("project scoping — agent read tools (XPROJ-1)", () => {
     { tool: "get_scene", params: { id: "s1" } },
     { tool: "get_foreshadow_detail", params: { id: "f1" } },
     { tool: "get_scene_timeline_neighbors", params: { sceneId: "s1" } },
+    { tool: "list_plot_threads", params: {} },
+    { tool: "get_thread_scenes", params: { threadId: "t1" } },
   ];
 
   it.each(ALL_READ_TOOLS)(
@@ -483,6 +487,25 @@ describe("project scoping — agent read tools (XPROJ-1)", () => {
       expect(dbExecCalls.length).toBe(0);
     },
   );
+
+  // get_thread_scenes は 2 段 XPROJ: まず thread_id → plot_threads.project_id を
+  // 検証し、別 project のスレッドはシーン/リンクに触れる前に弾く（nodeId 単独
+  // lookup 禁止）。共有 db mock は where() を [] で解決するため、アクティブ
+  // project に当該スレッドが無い = 別 project のスレッドを渡したのと同値で、
+  // 「Thread not found」を返し、本文ロード(loadSceneContent)に進まないこと。
+  it("get_thread_scenes gates on the thread's project before touching scenes", async () => {
+    mockTreeProjectId.mockReturnValue("proj-A");
+    const { loadSceneContent } = await import("@/features/tree/api");
+    (loadSceneContent as ReturnType<typeof vi.fn>).mockClear();
+
+    const res = await executeTool("get_thread_scenes", "c", {
+      threadId: "t-foreign",
+    });
+
+    expect(res.error).toBeUndefined();
+    expect(res.summary).toContain("not found");
+    expect(loadSceneContent).not.toHaveBeenCalled();
+  });
 });
 
 // search_codex は段階3で dense(codex_semantic_search) + sparse(codex_fts) を
