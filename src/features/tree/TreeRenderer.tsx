@@ -6,7 +6,7 @@ import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 import { isNodeVisible } from "./treeVisibility";
 import type { PlotThreadRow } from "@/features/plot-threads/api";
 
-const EMPTY_THREAD_IDS: string[] = [];
+const EMPTY_CELLS: Record<string, string> = {};
 
 export interface TreeRendererProps {
   parentId: string | null;
@@ -21,15 +21,19 @@ export interface TreeRendererProps {
   labelFilter?: string[];
   nodeLabels?: Record<string, string[]>;
   threadFilter?: string[];
-  /** nodeId → plot-thread ids (membership). Drives the thread filter + dots. */
+  /** nodeId → plot-thread ids (membership). Drives the thread filter. */
   nodeThreadIds?: Record<string, string[]>;
-  /** thread id → row, for resolving dot color/name. Stable reference. */
-  threadsById?: Map<string, PlotThreadRow>;
+  /** Plot-thread track columns (subway gutter). Stable reference. */
+  trackColumns?: PlotThreadRow[];
+  /** nodeId → per-column track state string (buildSceneThreadTracks). */
+  cellByNode?: Record<string, string>;
+  /** nodeId → branch/merge connector string (buildSceneThreadTracks). */
+  connectorByNode?: Record<string, string>;
   viewMode: string;
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
-  showPlotThreadDots: boolean;
+  showPlotThreadTrack: boolean;
   showAiAttribution: boolean;
   /** For folder ids, the flat list of leaf descendant ids — used by
    *  TreeNodeItem to compute its own running total via per-id selector. */
@@ -54,12 +58,14 @@ export function TreeRenderer({
   nodeLabels,
   threadFilter,
   nodeThreadIds,
-  threadsById,
+  trackColumns,
+  cellByNode,
+  connectorByNode,
   viewMode,
   showWordCounts,
   showStatusDots,
   showLabelDots,
-  showPlotThreadDots,
+  showPlotThreadTrack,
   showAiAttribution,
   leafDescendantsByFolder,
   orderedNodesRef,
@@ -108,10 +114,11 @@ export function TreeRenderer({
           showWordCounts,
           showStatusDots,
           showLabelDots,
-          showPlotThreadDots,
+          showPlotThreadTrack,
           showAiAttribution,
-          threadIdsForNode: nodeThreadIds?.[id] ?? EMPTY_THREAD_IDS,
-          threadsById,
+          trackColumns,
+          trackCells: (cellByNode ?? EMPTY_CELLS)[id] ?? "",
+          trackConnectors: (connectorByNode ?? EMPTY_CELLS)[id] ?? "",
           orderedNodesRef,
           dragInProgress,
           viewMode,
@@ -137,12 +144,14 @@ export function TreeRenderer({
                   nodeLabels={nodeLabels}
                   threadFilter={threadFilter}
                   nodeThreadIds={nodeThreadIds}
-                  threadsById={threadsById}
+                  trackColumns={trackColumns}
+                  cellByNode={cellByNode}
+                  connectorByNode={connectorByNode}
                   viewMode={viewMode}
                   showWordCounts={showWordCounts}
                   showStatusDots={showStatusDots}
                   showLabelDots={showLabelDots}
-                  showPlotThreadDots={showPlotThreadDots}
+                  showPlotThreadTrack={showPlotThreadTrack}
                   showAiAttribution={showAiAttribution}
                   leafDescendantsByFolder={leafDescendantsByFolder}
                   orderedNodesRef={orderedNodesRef}

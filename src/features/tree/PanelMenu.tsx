@@ -61,8 +61,8 @@ export function PanelMenu() {
   const setShowStatusDots = useTreeStore((s) => s.setShowStatusDots);
   const showLabelDots = useTreeStore((s) => s.showLabelDots);
   const setShowLabelDots = useTreeStore((s) => s.setShowLabelDots);
-  const showPlotThreadDots = useTreeStore((s) => s.showPlotThreadDots);
-  const setShowPlotThreadDots = useTreeStore((s) => s.setShowPlotThreadDots);
+  const showPlotThreadTrack = useTreeStore((s) => s.showPlotThreadTrack);
+  const setShowPlotThreadTrack = useTreeStore((s) => s.setShowPlotThreadTrack);
   const showAiAttribution = useTreeStore((s) => s.showAiAttribution);
   const setShowAiAttribution = useTreeStore((s) => s.setShowAiAttribution);
   const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
@@ -247,11 +247,11 @@ export function PanelMenu() {
             {t("scenes.showLabelDots")}
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem
-            checked={showPlotThreadDots}
-            onCheckedChange={(v) => setShowPlotThreadDots(v === true)}
+            checked={showPlotThreadTrack}
+            onCheckedChange={(v) => setShowPlotThreadTrack(v === true)}
             onSelect={(e) => e.preventDefault()}
           >
-            {t("scenes.showPlotThreadDots")}
+            {t("scenes.showPlotThreadTrack")}
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem
             checked={showAiAttribution}

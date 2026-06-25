@@ -4108,7 +4108,7 @@
     "showWordCount": "文字数",
     "showStatusDots": "ステータスドット",
     "showLabelDots": "Label ドット",
-    "showPlotThreadDots": "スレッドドット",
+    "showPlotThreadTrack": "スレッドトラック",
     "showAiBadge": "AI帰属バッジ",
     "autoRevealActive": "アクティブを自動表示",
     "addScene": "シーンを追加",

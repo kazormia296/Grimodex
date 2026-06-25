@@ -32,7 +32,23 @@ Plot Thread の scene↔thread リンク（`plotThreadSceneLinks`）を「表示
 
 ---
 
-## 1a. ThreadMembershipDots（Scenes 行ドット）
+## 1a. ScenesThreadTrack（Scenes 左ガターの縦版ミニ・タイムライン）
+
+> **改訂（2026-06-25）**: 当初の「色ドット」案はラベルドットと見分けがつかないとユーザー指摘。
+> **読み取り専用の縦トラック（subway 風）に変更**。各スレッド＝1 本の縦トラック（列）、所属シーン＝駅、
+> 区間内＝縦線で連結（フォルダ等の非所属行も区間内なら通過線）。並べ替え/DnD は無し（readonly）。
+> - 純関数 `buildSceneThreadTracks(orderedNodes, nodeThreadIds, threadsById)` → `{ columns, cellByNode }`。
+>   `cellByNode[nodeId]` は列順のセル状態**文字列**（`.`/`t`/`b`/`s`/`|`/`o`）＝内容不変なら Object.is 一致で行 memo 維持。
+> - `ScenesThreadTrack.tsx`（absolute inset-y-0 left-0・`pointer-events-none`）。`TRACK_COL_WIDTH=11`。
+>   色は `thread.color ?? var(--primary)`（Timeline レーンと一致）。
+> - `TreeNodeItem` 左ガター（`trackWidth = columns*COLW` を paddingLeft に加算・固定 x で全行整列）。
+>   列は `flatNodes`（可視順）に従う＝`ScenesPanel` で `buildSceneThreadTracks` を useMemo。列参照は colKey で安定化。
+> - トグル名 `showPlotThreadTrack`（旧 showPlotThreadDots）。i18n `scenes.showPlotThreadTrack`。
+> - 幾何 gate=`ScenesThreadTrack.browser.test.tsx`（x 整列・半線・行跨ぎ連続性）。
+>
+> 以下の旧「ドット」記述は obsolete（履歴として残置）。
+
+### （旧案・不採用）ThreadMembershipDots（Scenes 行ドット）
 
 - 新 `src/features/plot-threads/ThreadMembershipDots.tsx`。props `{ threads: PlotThreadRow[] }`（解決済・dedup・`sortOrder` 昇順）。
   空なら `null`。`LabelDots` を雛形に **同寸 `h-1.5 w-1.5`**、`MAX_DOTS=4`、`+N`、`title={thread.name}`、

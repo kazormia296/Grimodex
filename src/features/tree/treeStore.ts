@@ -263,7 +263,7 @@ interface TreeState {
   showWordCounts: boolean;
   showStatusDots: boolean;
   showLabelDots: boolean;
-  showPlotThreadDots: boolean;
+  showPlotThreadTrack: boolean;
   showAiAttribution: boolean;
   autoRevealActiveScene: boolean;
 
@@ -352,7 +352,7 @@ interface TreeState {
   setShowWordCounts: (v: boolean) => void;
   setShowStatusDots: (v: boolean) => void;
   setShowLabelDots: (v: boolean) => void;
-  setShowPlotThreadDots: (v: boolean) => void;
+  setShowPlotThreadTrack: (v: boolean) => void;
   setShowAiAttribution: (v: boolean) => void;
   setAutoRevealActiveScene: (v: boolean) => void;
 
@@ -564,7 +564,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   showWordCounts: true,
   showStatusDots: true,
   showLabelDots: true,
-  showPlotThreadDots: true,
+  showPlotThreadTrack: true,
   showAiAttribution: false,
   autoRevealActiveScene: true,
   pinnedCodexIds: [],
@@ -1569,8 +1569,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     set({ showLabelDots: v });
   },
 
-  setShowPlotThreadDots(v) {
-    set({ showPlotThreadDots: v });
+  setShowPlotThreadTrack(v) {
+    set({ showPlotThreadTrack: v });
   },
 
   setShowAiAttribution(v) {

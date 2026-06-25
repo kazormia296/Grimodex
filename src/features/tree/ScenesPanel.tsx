@@ -10,6 +10,7 @@ import { useScenesDnd } from "./useScenesDnd";
 import { useScenesKeyboard } from "./useScenesKeyboard";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import { buildSceneThreadTracks } from "@/features/plot-threads/sceneThreadTracks";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
@@ -63,7 +64,7 @@ export function ScenesPanel() {
   const showWordCounts = useTreeStore((s) => s.showWordCounts);
   const showStatusDots = useTreeStore((s) => s.showStatusDots);
   const showLabelDots = useTreeStore((s) => s.showLabelDots);
-  const showPlotThreadDots = useTreeStore((s) => s.showPlotThreadDots);
+  const showPlotThreadTrack = useTreeStore((s) => s.showPlotThreadTrack);
   const showAiAttribution = useTreeStore((s) => s.showAiAttribution);
   const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
   const pendingRevealId = useTreeStore((s) => s.pendingRevealId);
@@ -91,6 +92,7 @@ export function ScenesPanel() {
   const nodeLabels = useLabelStore((s) => s.nodeLabels);
   const allThreads = usePlotThreadStore((s) => s.threads);
   const plotLinks = usePlotThreadStore((s) => s.links);
+  const plotBranches = usePlotThreadStore((s) => s.branches);
 
   // thread id → row, for resolving dot color/name (stable per threads change).
   const threadsById = useMemo(
@@ -175,6 +177,26 @@ export function ScenesPanel() {
       threadFilter,
       nodeThreadIds,
     });
+
+  // 縦版ミニ・タイムラインのトラックモデル（可視行の並び flatNodes に従う）。
+  const trackModel = useMemo(
+    () =>
+      buildSceneThreadTracks(
+        flatNodes,
+        nodeThreadIds,
+        threadsById,
+        plotBranches,
+      ),
+    [flatNodes, nodeThreadIds, threadsById, plotBranches],
+  );
+  // 列の内容（id+色）が不変なら trackColumns 参照を保ち、行 memo の破綻を抑える。
+  const trackColKey = trackModel.columns
+    .map((c) => `${c.id}:${c.color ?? ""}`)
+    .join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const trackColumns = useMemo(() => trackModel.columns, [trackColKey]);
+  const trackCellByNode = trackModel.cellByNode;
+  const trackConnectorByNode = trackModel.connectorByNode;
 
   // Auto-reveal active scene: scroll it into view when activeSceneId changes
   useEffect(() => {
@@ -396,12 +418,14 @@ export function ScenesPanel() {
                         nodeLabels={nodeLabels}
                         threadFilter={threadFilter}
                         nodeThreadIds={nodeThreadIds}
-                        threadsById={threadsById}
+                        trackColumns={trackColumns}
+                        cellByNode={trackCellByNode}
+                        connectorByNode={trackConnectorByNode}
                         viewMode={viewMode}
                         showWordCounts={showWordCounts}
                         showStatusDots={showStatusDots}
                         showLabelDots={showLabelDots}
-                        showPlotThreadDots={showPlotThreadDots}
+                        showPlotThreadTrack={showPlotThreadTrack}
                         showAiAttribution={showAiAttribution}
                         leafDescendantsByFolder={leafDescendantsByFolder}
                         orderedNodesRef={flatNodesRef}

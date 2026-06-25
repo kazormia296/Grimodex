@@ -4115,7 +4115,7 @@
     "showWordCount": "Character count",
     "showStatusDots": "Status dots",
     "showLabelDots": "Label dots",
-    "showPlotThreadDots": "Thread dots",
+    "showPlotThreadTrack": "Thread track",
     "showAiBadge": "AI attribution badge",
     "autoRevealActive": "Auto-reveal active",
     "addScene": "Add Scene",
