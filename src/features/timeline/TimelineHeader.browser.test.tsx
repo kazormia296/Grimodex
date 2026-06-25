@@ -36,6 +36,7 @@ function resetStore() {
       showChapterNumbers: true,
       showPhasePins: false,
       showThreadGaps: false,
+      showStructureAnalysis: false,
     },
   });
 }

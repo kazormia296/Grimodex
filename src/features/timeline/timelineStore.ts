@@ -27,6 +27,8 @@ export interface TimelineSettings {
     showPhasePins: boolean;
     /** スレッドの「抜けシーン」（マーカー無し列）を薄く可視化する。 */
     showThreadGaps: boolean;
+    /** Timeline 下部に構造分析ドロワー（休眠/起承転結/Markdown）を表示する。 */
+    showStructureAnalysis: boolean;
   };
 }
 
@@ -44,6 +46,7 @@ const DEFAULT_DISPLAY: TimelineSettings["display"] = {
   showChapterNumbers: true,
   showPhasePins: false,
   showThreadGaps: false,
+  showStructureAnalysis: false,
 };
 
 interface TimelineState {

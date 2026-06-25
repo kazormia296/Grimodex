@@ -4845,6 +4845,32 @@
       "turn": "Turn",
       "climax": "Climax",
       "resolve": "Resolve"
+    },
+    "structure": {
+      "title": "Structure",
+      "hide": "Hide structure analysis",
+      "empty": "No plot threads",
+      "active": "Now",
+      "dormant": "Dormant +{{n}}",
+      "upcoming": "Upcoming",
+      "upcomingNext": "Upcoming (next +{{n}})",
+      "unplaced": "Unplaced",
+      "tailDistance": "Tail -{{n}}",
+      "tailDistanceHint": "Distance from axis tail",
+      "gap": "Missing {{phase}}",
+      "gapHint": "Story-arc gap"
+    },
+    "export": {
+      "copy": "Copy as Markdown",
+      "copied": "Copied",
+      "clipboardFailed": "Couldn’t copy to clipboard",
+      "heading": "Plot structure",
+      "branchSection": "Branches & merges",
+      "colPhase": "Phase",
+      "colScene": "Scene",
+      "colNote": "Note",
+      "unknownScene": "(unknown scene)",
+      "unknownThread": "(unknown thread)"
     }
   },
   "timeline": {
@@ -4881,7 +4907,8 @@
       "phases": "Phases anchored ({{n}})",
       "created": "Created",
       "labelPlaceholder": "T1"
-    }
+    },
+    "toggleStructureAnalysis": "Structure analysis panel"
   },
   "matrix": {
     "filters": {

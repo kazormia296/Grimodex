@@ -4838,6 +4838,32 @@
       "turn": "ターニングポイント",
       "climax": "クライマックス",
       "resolve": "レゾリューション"
+    },
+    "structure": {
+      "title": "構造分析",
+      "hide": "構造分析を閉じる",
+      "empty": "プロットスレッドがありません",
+      "active": "今",
+      "dormant": "休眠 +{{n}}",
+      "upcoming": "未登場",
+      "upcomingNext": "未登場 (次 +{{n}})",
+      "unplaced": "未配置",
+      "tailDistance": "末尾 -{{n}}",
+      "tailDistanceHint": "軸末尾からの距離",
+      "gap": "{{phase}}抜け",
+      "gapHint": "起承転結の型抜け"
+    },
+    "export": {
+      "copy": "Markdown でコピー",
+      "copied": "コピーしました",
+      "clipboardFailed": "クリップボードにコピーできませんでした",
+      "heading": "プロット構成",
+      "branchSection": "分岐・合流",
+      "colPhase": "段階",
+      "colScene": "シーン",
+      "colNote": "メモ",
+      "unknownScene": "（不明なシーン）",
+      "unknownThread": "（不明なスレッド）"
     }
   },
   "timeline": {
@@ -4874,7 +4900,8 @@
       "phases": "Phases anchored ({{n}})",
       "created": "Created",
       "labelPlaceholder": "T1"
-    }
+    },
+    "toggleStructureAnalysis": "構造分析パネル"
   },
   "matrix": {
     "filters": {
