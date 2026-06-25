@@ -32,7 +32,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
 import type { PlotPhaseType } from "@/db/schema";
 import { recordMark } from "@/lib/perfLog";
-import { DURATIONS, useReducedMotion } from "@/lib/animation";
+import { DURATIONS, easeOutFn, useReducedMotion } from "@/lib/animation";
 
 const DOT_R = 6;
 /** プロットスレッドの太いバンド（線）の高さ。段階テキストを内側に表示する。 */
@@ -279,6 +279,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
 
     // 現在表示中の Y（rAF が目標へイージングして書き換える mutable ref）。
     const animatedYRef = useRef<Map<string, number>>(new Map());
+    // 各スレッドの進行中トゥイーン（固定時間の ease-out）。to が変わったら張り直す。
+    const tweenRef = useRef<
+      Map<string, { from: number; to: number; start: number }>
+    >(new Map());
     const [, forceTick] = useReducer((x: number) => x + 1, 0);
     // ループは常に最新の target / dragged を ref から読む（再起動なしで追従）。
     const targetYRef = useRef(targetY);
@@ -305,29 +309,37 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         return;
       }
       let raf = 0;
-      let last = 0;
+      // 固定時間 ease-out トゥイーン（時定数の指数減衰だと末尾が長く「もったり」する。
+      // 明確な終端を持つ DURATIONS.fast の ease-out でキビキビ着地させる）。
+      const durMs = DURATIONS.fast * 1000;
       const step = (now: number) => {
         const cur = animatedYRef.current;
         const tgt = targetYRef.current;
+        const tweens = tweenRef.current;
         const draggedId = draggedIdRef.current;
-        last = last || now;
-        // フレームレート非依存の指数イージング（時定数 = DURATIONS.normal）。
-        const dt = Math.min(0.1, (now - last) / 1000);
-        last = now;
-        const k = 1 - Math.exp(-dt / DURATIONS.normal);
         let moving = false;
         for (const [id, ty] of tgt) {
           if (id === draggedId) {
             cur.set(id, ty); // ドラッグ点は即時追従（ラグなし）
+            tweens.delete(id);
             continue;
           }
           const c = cur.get(id) ?? ty;
-          const d = ty - c;
-          if (Math.abs(d) < 0.5) cur.set(id, ty);
-          else {
-            cur.set(id, c + d * k);
-            moving = true;
+          if (Math.abs(ty - c) < 0.5) {
+            cur.set(id, ty);
+            tweens.delete(id);
+            continue;
           }
+          // 目標が変わったらその時点の表示位置から張り直す。
+          let tw = tweens.get(id);
+          if (!tw || tw.to !== ty) {
+            tw = { from: c, to: ty, start: now };
+            tweens.set(id, tw);
+          }
+          const p = durMs <= 0 ? 1 : Math.min(1, (now - tw.start) / durMs);
+          cur.set(id, tw.from + (tw.to - tw.from) * easeOutFn(p));
+          if (p >= 1) tweens.delete(id);
+          else moving = true;
         }
         forceTick();
         // ドラッグ中は掴んでいる間ループを維持。退避が落ち着いたら停止。
