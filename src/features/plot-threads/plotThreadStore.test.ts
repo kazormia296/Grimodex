@@ -337,6 +337,30 @@ describe("plotThreadStore", () => {
     ]);
   });
 
+  it("deleteMarker は merge も to 側マーカーでカスケード削除する（統一アンカー）", async () => {
+    // br1 = merge(t2→t1)@s1。統一モデルでアンカー = to = t1。t1@s1 のマーカー削除で消える。
+    usePlotThreadStore.setState({
+      links: [linkRow("m1")], // t1 / s1
+      branches: [{ ...branchRow("br1", "t2", "t1"), kind: "merge" }],
+    });
+    await usePlotThreadStore.getState().deleteMarker("m1");
+    expect(deletePlotThreadBranch).toHaveBeenCalledWith("br1");
+    expect(usePlotThreadStore.getState().branches).toHaveLength(0);
+  });
+
+  it("deleteMarker は merge の from 側マーカー削除ではエッジを残す（統一アンカー）", async () => {
+    // br1 = merge(t1→t2)@s1。アンカー = to = t2。from 側(t1)のマーカー削除では消えない。
+    usePlotThreadStore.setState({
+      links: [linkRow("m1")], // t1 / s1（merge の from 側）
+      branches: [{ ...branchRow("br1", "t1", "t2"), kind: "merge" }],
+    });
+    await usePlotThreadStore.getState().deleteMarker("m1");
+    expect(deletePlotThreadBranch).not.toHaveBeenCalled();
+    expect(usePlotThreadStore.getState().branches.map((b) => b.id)).toEqual([
+      "br1",
+    ]);
+  });
+
   // ───────────────────────── Undo / Redo wiring ─────────────────────────
   describe("Undo/Redo (globalHistoryStore wiring)", () => {
     const history = () => useGlobalHistoryStore.getState();

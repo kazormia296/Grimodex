@@ -128,16 +128,27 @@ export function buildPlotLaneModel(args: {
   // 線の継ぎ目（run 分割）に使うため、スレッド別に「列番号」の集合へ落とす。
   const mergeColsByThread = new Map<string, Set<number>>();
   const branchColsByThread = new Map<string, Set<number>>();
+  // エッジが掛かる列では from/to の両スレッドを「生存」させ、両端の帯がコネクタ端点まで
+  // 届くようにする。マーカーがどちら側に乗っていてもコネクタが宙に浮かない＝終端が
+  // なめらかに帯へ接続し、線の位置が経路（D&D / インスペクタ）に依存しなくなる。
+  const spanColsByThread = new Map<string, number[]>();
   const addCol = (m: Map<string, Set<number>>, k: string, v: number) => {
     const s = m.get(k);
     if (s) s.add(v);
     else m.set(k, new Set([v]));
+  };
+  const addSpanCol = (k: string, v: number) => {
+    const a = spanColsByThread.get(k);
+    if (a) a.push(v);
+    else spanColsByThread.set(k, [v]);
   };
   for (const b of branches) {
     const x = sceneX.get(b.atNodeId);
     if (x === undefined || x >= scheduledCount) continue;
     if (b.kind === "merge") addCol(mergeColsByThread, b.fromThreadId, x);
     else addCol(branchColsByThread, b.toThreadId, x);
+    addSpanCol(b.fromThreadId, x);
+    addSpanCol(b.toThreadId, x);
   }
 
   interface Prep {
@@ -147,6 +158,7 @@ export function buildPlotLaneModel(args: {
     lo: number; // 生存スパン開始列（override 反映）
     hi: number; // 生存スパン終了列
     living: boolean;
+    endX?: number; // 終端 override 列（terminus 判定で「実在の終端」に使う）
   }
 
   let maxX = 0;
@@ -189,10 +201,13 @@ export function buildPlotLaneModel(args: {
     const lastMarkerX = markers.length
       ? markers[markers.length - 1].x
       : undefined;
-    const loCands = [firstMarkerX, startX].filter(
+    // branch/merge の at 列も生存スパン候補に含める（from/to 両方を生存させ、
+    // コネクタの両端が帯に接続するようにする）。
+    const edgeCols = spanColsByThread.get(thread.id) ?? [];
+    const loCands = [firstMarkerX, startX, ...edgeCols].filter(
       (v): v is number => v !== undefined,
     );
-    const hiCands = [lastMarkerX, endX].filter(
+    const hiCands = [lastMarkerX, endX, ...edgeCols].filter(
       (v): v is number => v !== undefined,
     );
     let lo = loCands.length ? Math.min(...loCands) : undefined;
@@ -210,6 +225,7 @@ export function buildPlotLaneModel(args: {
       lo: lo ?? 0,
       hi: hi ?? 0,
       living,
+      endX,
     };
   });
 
@@ -297,9 +313,18 @@ export function buildPlotLaneModel(args: {
     }
 
     // 終端キャップ: 最後の run が自走（merge でない）かつ長さを持つなら hi。
+    // ただし「実在の終端」（マーカー列 or 終端 override）のみ。branch/merge の at 列まで
+    // span 延長されただけの列には付けない（親線が分岐点でいきなり完結したように見えるのを防ぐ）。
     const lastRun = runs[runs.length - 1];
+    const reachedEnd = lastRun ? lastRun[1] : undefined;
+    const isRealEnd =
+      reachedEnd !== undefined &&
+      (p.markerCols.has(reachedEnd) || reachedEnd === p.endX);
     const terminusX =
-      lastRun && lastRun[1] > lastRun[0] && !mergeCols?.has(lastRun[1])
+      lastRun &&
+      lastRun[1] > lastRun[0] &&
+      !mergeCols?.has(lastRun[1]) &&
+      isRealEnd
         ? lastRun[1]
         : null;
 

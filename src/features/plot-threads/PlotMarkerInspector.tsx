@@ -288,6 +288,7 @@ export function PlotMarkerInspector({
                 thread={thread}
                 atNodeId={link.nodeId}
                 threads={threads}
+                linkId={link.id}
               />
               <button
                 onClick={() => {

@@ -344,8 +344,9 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
     const link = get().links.find((l) => l.id === id);
     await deletePlotThreadLink(id);
     if (getCurrentProjectId() !== pid) return;
-    // アンカー側のエッジをカスケード削除（ユーザー決定=アンカー側のみ:
-    // branch は to 側 / merge は from 側がそのシーンを起点/終端にする）。
+    // アンカー側のエッジをカスケード削除。統一モデル: branch も merge も
+    // マーカーは移動先 = to 側に乗る（PlotBranchEditor / D&D 共通）。よってアンカー =
+    // to===threadId && atNodeId===nodeId のエッジ。
     // ただし同一(thread,scene)に別 phase のマーカーが残るなら、そのエッジは
     // まだアンカーされているので消さない（複数 phase の取り残し防止）。
     const orphanIds = new Set<string>();
@@ -358,11 +359,7 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
       );
       if (!stillAnchored) {
         for (const b of get().branches) {
-          if (
-            b.atNodeId === link.nodeId &&
-            ((b.kind === "branch" && b.toThreadId === link.threadId) ||
-              (b.kind === "merge" && b.fromThreadId === link.threadId))
-          ) {
+          if (b.atNodeId === link.nodeId && b.toThreadId === link.threadId) {
             orphanIds.add(b.id);
           }
         }

@@ -516,13 +516,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
             action.type === "move-scene" ? action.nodeId : action.atNodeId;
           const crossThread = newThread !== d.threadId;
 
-          // このマーカーが既存 branch/merge の構造側アンカーか（branch=to 側 /
-          // merge=from 側、at=ドラッグ開始シーン）。
+          // このマーカーが既存 branch/merge のアンカーか。統一モデルでは branch も merge も
+          // マーカーは移動先 = to 側に乗るので、アンカー = (to===自スレッド && at===開始シーン)。
           const anchored = store.branches.filter(
-            (b) =>
-              b.atNodeId === d.nodeId &&
-              ((b.kind === "branch" && b.toThreadId === d.threadId) ||
-                (b.kind === "merge" && b.fromThreadId === d.threadId)),
+            (b) => b.atNodeId === d.nodeId && b.toThreadId === d.threadId,
           );
 
           if (anchored.length > 0) {
@@ -537,17 +534,15 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               ),
             );
             for (const e of anchored) {
-              // 付け替え後の (from,to,at,kind) を求め、自己参照 or 既存エッジと重複
-              // になるなら rebind せず削除する（新規/手動経路と同じ dedup 不変条件）。
-              const resFrom =
-                crossThread && e.kind === "merge" ? newThread : e.fromThreadId;
-              const resTo =
-                crossThread && e.kind === "branch" ? newThread : e.toThreadId;
-              const isSelf = resFrom === resTo;
+              // マーカーは to 側アンカー。別スレッドへ移したら to を付け替え、同レーンなら
+              // at_node のみ追従。自己参照 or 既存エッジと重複になるなら rebind せず削除する
+              // （新規/手動経路と同じ dedup 不変条件）。
+              const resTo = crossThread ? newThread : e.toThreadId;
+              const isSelf = e.fromThreadId === resTo;
               const isDupOther = store.branches.some(
                 (b) =>
                   b.id !== e.id &&
-                  b.fromThreadId === resFrom &&
+                  b.fromThreadId === e.fromThreadId &&
                   b.toThreadId === resTo &&
                   b.atNodeId === newScene &&
                   b.kind === e.kind,
@@ -560,9 +555,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 store.updateBranch(
                   e.id,
                   crossThread
-                    ? e.kind === "branch"
-                      ? { toThreadId: newThread, atNodeId: newScene }
-                      : { fromThreadId: newThread, atNodeId: newScene }
+                    ? { toThreadId: newThread, atNodeId: newScene }
                     : { atNodeId: newScene },
                 ),
               );
@@ -586,16 +579,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               b.kind === action.kind,
           );
           if (isDup) return;
-          if (action.kind === "branch") {
-            ops.push(
-              store.updateMarker(d.linkId, {
-                threadId: action.toThreadId,
-                nodeId: action.atNodeId,
-              }),
-            );
-          } else {
-            ops.push(store.updateMarker(d.linkId, { nodeId: action.atNodeId }));
-          }
+          // 統一モデル: branch も merge もマーカーは移動先 = to（ドロップ先レーン）へ移す。
+          ops.push(
+            store.updateMarker(d.linkId, {
+              threadId: action.toThreadId,
+              nodeId: action.atNodeId,
+            }),
+          );
           ops.push(
             store.addBranch({
               projectId: getCurrentProjectId(),
@@ -1256,7 +1246,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
 
             {/* 分岐 / 合流コネクタ（reading-order のみ）。subway 風のランプで
                 対象レーンへ斜めに流れ込む形にする（branch=親レーンから枝分かれ /
-                merge=畳まれる線が対象レーンへ合流）。branch=実線 / merge=破線。 */}
+                merge=畳まれる線が対象レーンへ合流）。線は通常の帯と同じ太さ・色・不透明度で
+                描き、両端を帯にめり込ませて（round cap）なめらかに接続する。破線は使わない
+                （branch/merge の区別はランプ方向で表す）。span 延長で from/to 双方の帯が
+                at 列まで届くので、どちらの経路で作っても両端が帯に接続する。 */}
             {showThreads &&
               !subwayActive &&
               axisMode === "reading" &&
@@ -1276,10 +1269,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     d={d}
                     fill="none"
                     stroke={c.color ?? "var(--primary)"}
-                    strokeWidth={2}
-                    strokeOpacity={0.85}
+                    strokeWidth={BAND_HEIGHT}
+                    strokeOpacity={0.45}
                     strokeLinecap="round"
-                    strokeDasharray={c.kind === "merge" ? "4 3" : undefined}
+                    strokeLinejoin="round"
                     pointerEvents="none"
                   />
                 );

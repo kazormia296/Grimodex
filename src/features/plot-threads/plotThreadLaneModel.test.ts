@@ -350,6 +350,67 @@ describe("plotThreadLaneModel (ストーリーライン: ホーム行＋出会�
     });
   });
 
+  describe("コネクタ端点の生存（両端が帯へ届く / span 延長）", () => {
+    it("branch は from/to 双方を at 列で生存させる（マーカーが to 側だけでも from が届く）", () => {
+      // A(親) は s1,s2 に beat。B は at=s3 のみに beat（D&D branch でマーカーは to=B へ）。
+      const m = buildPlotLaneModel({
+        threads: [thread("A", "a0"), thread("B", "a1")],
+        links: [
+          link("la1", "A", "s1", "introduce"),
+          link("la2", "A", "s2", "develop"),
+          link("lb", "B", "s3", "develop"),
+        ],
+        sceneX,
+        branches: [branch("br1", "A", "B", "s3", "branch")],
+      });
+      const A = m.lanes.find((l) => l.thread.id === "A")!;
+      const B = m.lanes.find((l) => l.thread.id === "B")!;
+      // at=s3=col2。A はマーカー無しでも col2 まで生存し、帯が連続してコネクタ from 端に届く。
+      expect(A.yByColumn.has(2)).toBe(true);
+      expect(B.yByColumn.has(2)).toBe(true);
+      expect(A.lineSegments).toEqual([
+        { x1: 0, y1: laneY(0), x2: 2, y2: laneY(0) },
+      ]);
+      // 分岐点まで span 延長されただけの列に終端ノブは付けない（A は実在 beat 終端ではない）。
+      expect(A.terminusX).toBeNull();
+    });
+
+    it("merge は from を at 列まで生存させ帯を畳む（マーカーが to 側でも from 端が届く）", () => {
+      // B(畳まれる側) は s1,s2、at=s3 で A へ merge。マーカーは to=A 側（B に s3 beat 無し）。
+      const m = buildPlotLaneModel({
+        threads: [thread("A", "a0"), thread("B", "a1")],
+        links: [
+          link("lb1", "B", "s1", "introduce"),
+          link("lb2", "B", "s2", "develop"),
+          link("la", "A", "s3", "develop"),
+        ],
+        sceneX,
+        branches: [branch("m1", "B", "A", "s3", "merge")],
+      });
+      const A = m.lanes.find((l) => l.thread.id === "A")!;
+      const B = m.lanes.find((l) => l.thread.id === "B")!;
+      // at=s3=col2。B はマーカー無しでも col2 まで生存し、merge で帯が col2 で締まる（terminus 無し）。
+      expect(B.yByColumn.has(2)).toBe(true);
+      expect(A.yByColumn.has(2)).toBe(true);
+      expect(B.lineSegments).toEqual([
+        { x1: 0, y1: laneY(1), x2: 2, y2: laneY(1) },
+      ]);
+      expect(B.terminusX).toBeNull();
+    });
+
+    it("マーカーの無いスレッドもエッジ列で生存する", () => {
+      const m = buildPlotLaneModel({
+        threads: [thread("a", "a0"), thread("b", "a1")],
+        links: [],
+        sceneX,
+        branches: [branch("br1", "a", "b", "s2", "branch")],
+      });
+      // s2=col1。a,b とも col1 で生存（マーカー皆無でもコネクタ端点に帯のアンカー）。
+      expect(m.lanes[0].yByColumn.has(1)).toBe(true);
+      expect(m.lanes[1].yByColumn.has(1)).toBe(true);
+    });
+  });
+
   describe("始端/終端 override", () => {
     it("start override で前方へ伸びる", () => {
       const m = buildPlotLaneModel({

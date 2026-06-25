@@ -90,10 +90,15 @@ describe("PlotMarkerInspector", () => {
     expect(setThreadColor).toHaveBeenCalledWith("t1", null);
   });
 
-  it("マーカー選択時、別スレッドへの分岐を追加できる", () => {
+  it("マーカー選択時、別スレッドへの分岐を追加し、マーカーを対象スレッドへ移す", () => {
     const addBranch = vi.fn();
+    const updateMarker = vi.fn();
     const thread2: PlotThreadRow = { ...thread, id: "t2", name: "恋愛の糸" };
-    usePlotThreadStore.setState({ threads: [thread, thread2], addBranch });
+    usePlotThreadStore.setState({
+      threads: [thread, thread2],
+      addBranch,
+      updateMarker,
+    });
     useTimelineStore.setState({
       selectedPlotLinkId: "l1", // thread t1 / scene s1
       selectedPlotThreadId: null,
@@ -113,6 +118,11 @@ describe("PlotMarkerInspector", () => {
         kind: "branch",
       }),
     );
+    // 統一モデル: 選択マーカー l1 は移動先 = 対象(to=t2)スレッドへ移る（D&D と同じ終端状態）。
+    expect(updateMarker).toHaveBeenCalledWith("l1", {
+      threadId: "t2",
+      nodeId: "s1",
+    });
   });
 
   it("生存スパンの始端シーン選択で setThreadSpan を呼ぶ", () => {

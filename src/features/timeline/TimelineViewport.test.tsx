@@ -554,6 +554,51 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
     ).toBe(0);
   });
 
+  it("コネクタは通常の帯と同じ太さ・破線なしで描く（branch / merge とも）", () => {
+    seedThreads(); // t1: l1@s1, l2@s3 → 帯セグメントあり
+    usePlotThreadStore.setState({
+      branches: [
+        {
+          id: "br1",
+          projectId: "p",
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "s2",
+          kind: "branch",
+          createdAt: "",
+          updatedAt: "",
+        },
+        {
+          id: "mg1",
+          projectId: "p",
+          fromThreadId: "t2",
+          toThreadId: "t1",
+          atNodeId: "s3",
+          kind: "merge",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    });
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // 通常の帯（スレッド線）の太さを基準にする。
+    const band = container.querySelector('[data-testid^="plot-thread-line-"]');
+    const bandWidth = band?.getAttribute("stroke-width");
+    expect(bandWidth).toBeTruthy();
+    const conns = container.querySelectorAll(
+      '[data-testid="plot-thread-connector"]',
+    );
+    expect(conns.length).toBe(2);
+    for (const c of conns) {
+      // 通常の線と同じ太さ・破線は使わない（種別はランプ方向で表す）。
+      expect(c.getAttribute("stroke-width")).toBe(bandWidth);
+      expect(c.getAttribute("stroke-dasharray")).toBeNull();
+    }
+  });
+
   it("自走完結スレッドに終端キャップ（塗りノブ）を描く", () => {
     seedThreads(); // t1: l1@s1, l2@s3（最後 s3 は merge でない）→ 終端あり
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
@@ -712,7 +757,7 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     );
   });
 
-  it("上のレーンへドラッグ → merge: ドラッグ点は元(from)に残す・先に点は作らない", () => {
+  it("上のレーンへドラッグ → merge: ドラッグ点を移動先(to)へ移す・元に点は作らない", () => {
     seed();
     const updateMarker = vi.fn();
     const addMarker = vi.fn();
@@ -722,11 +767,14 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
     const m = getByTestId("plot-marker-l2"); // t2(下)@s1
-    // t1(上, y158) の s2(x144) へ → merge。点は t2(元)に残し s2 へ。先 t1 には作らない。
+    // t1(上, y158) の s2(x144) へ → merge。統一モデルで点は移動先 to=t1 へ移す。元 t2 には残さない。
     fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
     fireEvent.mouseMove(document, { clientX: 144, clientY: 158 });
     fireEvent.mouseUp(document, { clientX: 144, clientY: 158 });
-    expect(updateMarker).toHaveBeenCalledWith("l2", { nodeId: "s2" }); // threadId 不変
+    expect(updateMarker).toHaveBeenCalledWith("l2", {
+      threadId: "t1",
+      nodeId: "s2",
+    });
     expect(addMarker).not.toHaveBeenCalled();
     expect(addBranch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -882,6 +930,50 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
       nodeId: "s2",
     });
     expect(updateBranch).toHaveBeenCalledWith("br1", {
+      toThreadId: "C",
+      atNodeId: "s2",
+    });
+    expect(addBranch).not.toHaveBeenCalled();
+  });
+
+  it("merge エッジも to 側マーカーで追従・付け替えする（統一アンカー）", () => {
+    // merge mg1: A→B @s1。統一モデルで構造側マーカーは to=B@s1 = lB。
+    usePlotThreadStore.setState({
+      threads: [th("A", "a0"), th("B", "a1"), th("C", "a2")],
+      links: [lk("lB", "B", "s1")],
+      branches: [
+        {
+          id: "mg1",
+          projectId: "p",
+          fromThreadId: "A",
+          toThreadId: "B",
+          atNodeId: "s1",
+          kind: "merge" as const,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      loading: false,
+    });
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const updateMarker = vi.fn();
+    const updateBranch = vi.fn();
+    const addBranch = vi.fn();
+    usePlotThreadStore.setState({ updateMarker, updateBranch, addBranch });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // ホーム行: A=158, B=214, C=270。lB(B@s1, x48,y214) を C レーン(y270) の s2 へ。
+    const m = getByTestId("plot-marker-lB");
+    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 144, clientY: 270 });
+    fireEvent.mouseUp(document, { clientX: 144, clientY: 270 });
+    // マーカーは C へ、merge の to を C へ付け替え＋at_node 追従（新規作らない）。
+    expect(updateMarker).toHaveBeenCalledWith("lB", {
+      threadId: "C",
+      nodeId: "s2",
+    });
+    expect(updateBranch).toHaveBeenCalledWith("mg1", {
       toThreadId: "C",
       atNodeId: "s2",
     });
