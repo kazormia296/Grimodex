@@ -1,10 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { GitBranch, GitMerge } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTimelineStore } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import { PlotMarkerDeleteConfirmDialog } from "@/features/plot-threads/PlotMarkerDeleteConfirmDialog";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
 
 interface Props {
@@ -42,6 +43,19 @@ export function PlotMarkerContextMenu({
     (s) => s.setSelectedPlotLinkId,
   );
   const toggleInspector = useTimelineStore((s) => s.toggleInspector);
+  // branch/merge アンカーのマーカー削除時は確認ダイアログ（Scene 削除と同型）。
+  const [confirming, setConfirming] = useState(false);
+  // このマーカーを起点(to アンカー)に消える分岐/合流の件数（削除カスケード対象）。
+  const markerEdgeCount = branches.filter(
+    (b) => b.toThreadId === threadId && b.atNodeId === nodeId,
+  ).length;
+  const removeMarkerNow = () => {
+    void deleteMarker(linkId);
+    if (useTimelineStore.getState().selectedPlotLinkId === linkId) {
+      setSelectedPlotLinkId(null);
+    }
+    onClose();
+  };
 
   // このマーカー(threadId, nodeId)が端点になる分岐/合流エッジ。from/to どちら側でも
   // 同じシーンに掛かっていれば候補にする（インスペクタの PlotBranchEditor と同条件）。
@@ -56,9 +70,12 @@ export function PlotMarkerContextMenu({
 
   useEffect(() => {
     function handleMouseDown(e: MouseEvent) {
+      // 確認ダイアログ表示中は外側クリックでメニューを閉じない（ダイアログ操作を優先）。
+      if (confirming) return;
       if (!menuRef.current?.contains(e.target as Node)) onClose();
     }
     function handleKeyDown(e: KeyboardEvent) {
+      if (confirming) return; // Esc はダイアログ側(Radix)が処理。
       if (e.key === "Escape") onClose();
     }
     document.addEventListener("mousedown", handleMouseDown);
@@ -67,7 +84,7 @@ export function PlotMarkerContextMenu({
       document.removeEventListener("mousedown", handleMouseDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onClose]);
+  }, [onClose, confirming]);
 
   const style: React.CSSProperties = {
     position: "fixed",
@@ -123,16 +140,22 @@ export function PlotMarkerContextMenu({
       <button
         type="button"
         onClick={() => {
-          void deleteMarker(linkId);
-          if (useTimelineStore.getState().selectedPlotLinkId === linkId) {
-            setSelectedPlotLinkId(null);
-          }
-          onClose();
+          // branch/merge の起点なら確認ダイアログ。そうでなければ即削除。
+          if (markerEdgeCount > 0) setConfirming(true);
+          else removeMarkerNow();
         }}
         className="flex w-full items-center px-3 py-1.5 text-left text-xs text-[color:var(--destructive)] hover:bg-destructive/10"
       >
         {t("plotThread.deleteMarker", "マーカーを削除")}
       </button>
+
+      {confirming && (
+        <PlotMarkerDeleteConfirmDialog
+          edgeCount={markerEdgeCount}
+          onCancel={onClose}
+          onConfirm={removeMarkerNow}
+        />
+      )}
 
       {relatedEdges.length > 0 && (
         <>

@@ -125,6 +125,60 @@ describe("PlotMarkerInspector", () => {
     });
   });
 
+  it("branch/merge 起点マーカーの削除は確認ダイアログを挟む", () => {
+    const deleteMarker = vi.fn();
+    const thread2: PlotThreadRow = { ...thread, id: "t2", name: "恋愛の糸" };
+    usePlotThreadStore.setState({
+      threads: [thread, thread2],
+      links: [link], // l1 = t1 / s1
+      branches: [
+        {
+          id: "mg1",
+          projectId: "p1",
+          fromThreadId: "t2",
+          toThreadId: "t1", // l1(t1@s1) が merge の流入先＝アンカー
+          atNodeId: "s1",
+          kind: "merge",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      deleteMarker,
+    });
+    useTimelineStore.setState({
+      selectedPlotLinkId: "l1",
+      selectedPlotThreadId: null,
+    });
+    const { getByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    fireEvent.click(getByText("マーカーを削除"));
+    // 即削除されず確認ダイアログ。「削除する」で実削除。
+    expect(deleteMarker).not.toHaveBeenCalled();
+    fireEvent.click(getByText("削除する"));
+    expect(deleteMarker).toHaveBeenCalledWith("l1");
+  });
+
+  it("非アンカーのマーカー削除は確認なしで即実行", () => {
+    const deleteMarker = vi.fn();
+    usePlotThreadStore.setState({
+      threads: [thread],
+      links: [link],
+      branches: [],
+      deleteMarker,
+    });
+    useTimelineStore.setState({
+      selectedPlotLinkId: "l1",
+      selectedPlotThreadId: null,
+    });
+    const { getByText, queryByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    fireEvent.click(getByText("マーカーを削除"));
+    expect(deleteMarker).toHaveBeenCalledWith("l1");
+    expect(queryByText("削除する")).toBeNull();
+  });
+
   it("何も選択していなければプレースホルダーを出す", () => {
     useTimelineStore.setState({
       selectedPlotLinkId: null,

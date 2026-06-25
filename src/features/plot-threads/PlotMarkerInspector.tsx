@@ -6,6 +6,7 @@ import { useWorkspaceStore } from "@/features/workspace/store";
 import { activeCodexPaletteSlots } from "@/lib/resolveCodexColors";
 import { usePlotThreadStore } from "./plotThreadStore";
 import { PlotBranchEditor } from "./PlotBranchEditor";
+import { PlotMarkerDeleteConfirmDialog } from "./PlotMarkerDeleteConfirmDialog";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
 
 /** onBlur でコミットする単一行テキスト編集（毎キーストロークの IPC を避ける）。 */
@@ -78,6 +79,9 @@ export function PlotMarkerInspector({
   );
   const links = usePlotThreadStore((s) => s.links);
   const threads = usePlotThreadStore((s) => s.threads);
+  const branches = usePlotThreadStore((s) => s.branches);
+  // branch/merge アンカーのマーカー削除時に確認ダイアログを出す（Scene 削除と同型）。
+  const [confirmDeleteMarker, setConfirmDeleteMarker] = useState(false);
   const renameThread = usePlotThreadStore((s) => s.renameThread);
   const setThreadColor = usePlotThreadStore((s) => s.setThreadColor);
   const deleteThread = usePlotThreadStore((s) => s.deleteThread);
@@ -98,6 +102,24 @@ export function PlotMarkerInspector({
   const thread = activeThreadId
     ? (threads.find((th) => th.id === activeThreadId) ?? null)
     : null;
+
+  // このマーカーを起点(to アンカー)に消える分岐 / 合流の件数（削除カスケード対象）。
+  const markerEdgeCount = link
+    ? branches.filter(
+        (b) => b.toThreadId === link.threadId && b.atNodeId === link.nodeId,
+      ).length
+    : 0;
+  const removeSelectedMarker = () => {
+    if (!link) return;
+    void deleteMarker(link.id);
+    setSelectedPlotLinkId(null);
+  };
+  const onClickDeleteMarker = () => {
+    if (!link) return;
+    // branch/merge の起点なら確認ダイアログ。そうでなければ即削除。
+    if (markerEdgeCount > 0) setConfirmDeleteMarker(true);
+    else removeSelectedMarker();
+  };
 
   return (
     <div
@@ -176,10 +198,7 @@ export function PlotMarkerInspector({
                 linkId={link.id}
               />
               <button
-                onClick={() => {
-                  void deleteMarker(link.id);
-                  setSelectedPlotLinkId(null);
-                }}
+                onClick={onClickDeleteMarker}
                 className="inline-flex items-center gap-1 self-start rounded px-1.5 py-1 text-destructive hover:bg-destructive/10"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -290,6 +309,17 @@ export function PlotMarkerInspector({
             )}
           </div>
         </>
+      )}
+
+      {confirmDeleteMarker && (
+        <PlotMarkerDeleteConfirmDialog
+          edgeCount={markerEdgeCount}
+          onCancel={() => setConfirmDeleteMarker(false)}
+          onConfirm={() => {
+            removeSelectedMarker();
+            setConfirmDeleteMarker(false);
+          }}
+        />
       )}
     </div>
   );
