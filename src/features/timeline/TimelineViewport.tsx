@@ -25,6 +25,7 @@ import {
 } from "@/features/plot-threads/subwayModel";
 import { resolveMarkerDrop } from "@/features/plot-threads/plotThreadDnd";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
 import type { PlotPhaseType } from "@/db/schema";
 import { recordMark } from "@/lib/perfLog";
@@ -492,94 +493,121 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         })),
       });
       if (action.type === "none") return;
-      const store = usePlotThreadStore.getState();
 
-      const newThread =
-        action.type === "branch" ? action.toThreadId : d.threadId;
-      const newScene =
-        action.type === "move-scene" ? action.nodeId : action.atNodeId;
-      const crossThread = newThread !== d.threadId;
+      // 1 ドラッグ = 1 Undo。マーカー移動とそれに伴うエッジの追従/生成/削除を
+      // ひとつの履歴エントリにまとめる（個別 push だと Ctrl+Z が部分的に戻す）。
+      // ストア mutation は内部で push するので、ここでは await して取りこぼさない。
+      void useGlobalHistoryStore.getState().runAsTransaction(
+        {
+          kind: "plot",
+          label: t("plotThread.history.moveMarker", "マーカー移動"),
+        },
+        async () => {
+          const store = usePlotThreadStore.getState();
+          // mutation は同期的に発火（mock も実呼び出しも即座に呼ぶ＝従来の
+          // fire-and-forget と同じ呼び出しタイミング）し、戻り Promise を集めて
+          // 最後に待つ。await して初めてトランザクションが閉じ、各 mutation 内の
+          // push がこのエントリにまとまる。
+          const ops: Array<Promise<void>> = [];
 
-      // このマーカーが既存 branch/merge の構造側アンカーか（branch=to 側 /
-      // merge=from 側、at=ドラッグ開始シーン）。
-      const anchored = store.branches.filter(
-        (b) =>
-          b.atNodeId === d.nodeId &&
-          ((b.kind === "branch" && b.toThreadId === d.threadId) ||
-            (b.kind === "merge" && b.fromThreadId === d.threadId)),
-      );
+          const newThread =
+            action.type === "branch" ? action.toThreadId : d.threadId;
+          const newScene =
+            action.type === "move-scene" ? action.nodeId : action.atNodeId;
+          const crossThread = newThread !== d.threadId;
 
-      if (anchored.length > 0) {
-        // 既存エッジを持つマーカー: マーカーと一緒にエッジを追従／別スレッドへ付け替え
-        // （新規エッジは作らない）。
-        void store.updateMarker(
-          d.linkId,
-          crossThread
-            ? { threadId: newThread, nodeId: newScene }
-            : { nodeId: newScene },
-        );
-        for (const e of anchored) {
-          // 付け替え後の (from,to,at,kind) を求め、自己参照 or 既存エッジと重複に
-          // なるなら rebind せず削除する（新規/手動経路と同じ dedup 不変条件を維持）。
-          const resFrom =
-            crossThread && e.kind === "merge" ? newThread : e.fromThreadId;
-          const resTo =
-            crossThread && e.kind === "branch" ? newThread : e.toThreadId;
-          const isSelf = resFrom === resTo;
-          const isDupOther = store.branches.some(
+          // このマーカーが既存 branch/merge の構造側アンカーか（branch=to 側 /
+          // merge=from 側、at=ドラッグ開始シーン）。
+          const anchored = store.branches.filter(
             (b) =>
-              b.id !== e.id &&
-              b.fromThreadId === resFrom &&
-              b.toThreadId === resTo &&
-              b.atNodeId === newScene &&
-              b.kind === e.kind,
+              b.atNodeId === d.nodeId &&
+              ((b.kind === "branch" && b.toThreadId === d.threadId) ||
+                (b.kind === "merge" && b.fromThreadId === d.threadId)),
           );
-          if (isSelf || isDupOther) {
-            void store.deleteBranch(e.id);
-            continue;
-          }
-          void store.updateBranch(
-            e.id,
-            crossThread
-              ? e.kind === "branch"
-                ? { toThreadId: newThread, atNodeId: newScene }
-                : { fromThreadId: newThread, atNodeId: newScene }
-              : { atNodeId: newScene },
-          );
-        }
-        return;
-      }
 
-      // 既存エッジ無し: 従来挙動。
-      if (action.type === "move-scene") {
-        void store.updateMarker(d.linkId, { nodeId: action.nodeId });
-        return;
-      }
-      // 別スレッドへドロップ → 新規 branch/merge（片側のみマーカー）。
-      // 既存の同一エッジがあれば非アトミックを避けるため何もしない。
-      const isDup = store.branches.some(
-        (b) =>
-          b.fromThreadId === action.fromThreadId &&
-          b.toThreadId === action.toThreadId &&
-          b.atNodeId === action.atNodeId &&
-          b.kind === action.kind,
+          if (anchored.length > 0) {
+            // 既存エッジを持つマーカー: マーカーと一緒にエッジを追従／別スレッドへ
+            // 付け替え（新規エッジは作らない）。
+            ops.push(
+              store.updateMarker(
+                d.linkId,
+                crossThread
+                  ? { threadId: newThread, nodeId: newScene }
+                  : { nodeId: newScene },
+              ),
+            );
+            for (const e of anchored) {
+              // 付け替え後の (from,to,at,kind) を求め、自己参照 or 既存エッジと重複
+              // になるなら rebind せず削除する（新規/手動経路と同じ dedup 不変条件）。
+              const resFrom =
+                crossThread && e.kind === "merge" ? newThread : e.fromThreadId;
+              const resTo =
+                crossThread && e.kind === "branch" ? newThread : e.toThreadId;
+              const isSelf = resFrom === resTo;
+              const isDupOther = store.branches.some(
+                (b) =>
+                  b.id !== e.id &&
+                  b.fromThreadId === resFrom &&
+                  b.toThreadId === resTo &&
+                  b.atNodeId === newScene &&
+                  b.kind === e.kind,
+              );
+              if (isSelf || isDupOther) {
+                ops.push(store.deleteBranch(e.id));
+                continue;
+              }
+              ops.push(
+                store.updateBranch(
+                  e.id,
+                  crossThread
+                    ? e.kind === "branch"
+                      ? { toThreadId: newThread, atNodeId: newScene }
+                      : { fromThreadId: newThread, atNodeId: newScene }
+                    : { atNodeId: newScene },
+                ),
+              );
+            }
+            await Promise.all(ops);
+            return;
+          }
+
+          // 既存エッジ無し: 従来挙動。
+          if (action.type === "move-scene") {
+            await store.updateMarker(d.linkId, { nodeId: action.nodeId });
+            return;
+          }
+          // 別スレッドへドロップ → 新規 branch/merge（片側のみマーカー）。
+          // 既存の同一エッジがあれば非アトミックを避けるため何もしない。
+          const isDup = store.branches.some(
+            (b) =>
+              b.fromThreadId === action.fromThreadId &&
+              b.toThreadId === action.toThreadId &&
+              b.atNodeId === action.atNodeId &&
+              b.kind === action.kind,
+          );
+          if (isDup) return;
+          if (action.kind === "branch") {
+            ops.push(
+              store.updateMarker(d.linkId, {
+                threadId: action.toThreadId,
+                nodeId: action.atNodeId,
+              }),
+            );
+          } else {
+            ops.push(store.updateMarker(d.linkId, { nodeId: action.atNodeId }));
+          }
+          ops.push(
+            store.addBranch({
+              projectId: getCurrentProjectId(),
+              fromThreadId: action.fromThreadId,
+              toThreadId: action.toThreadId,
+              atNodeId: action.atNodeId,
+              kind: action.kind,
+            }),
+          );
+          await Promise.all(ops);
+        },
       );
-      if (isDup) return;
-      if (action.kind === "branch") {
-        void store.updateMarker(d.linkId, {
-          threadId: action.toThreadId,
-          nodeId: action.atNodeId,
-        });
-      } else {
-        void store.updateMarker(d.linkId, { nodeId: action.atNodeId });
-      }
-      void store.addBranch({
-        projectId: getCurrentProjectId(),
-        fromThreadId: action.fromThreadId,
-        toThreadId: action.toThreadId,
-        atNodeId: action.atNodeId,
-        kind: action.kind,
-      });
     }
 
     function handleMarkerContextMenu(

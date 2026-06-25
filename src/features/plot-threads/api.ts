@@ -159,6 +159,28 @@ export async function deletePlotThread(id: string): Promise<void> {
   await db.delete(plotThreads).where(eq(plotThreads.id, id));
 }
 
+/**
+ * Undo/Redo 専用: 削除/作成した行を **同じ id で** 復元する。create 系は id を
+ * 新規採番する（Rust / Drizzle とも）ため、履歴の逆操作で id を保つには専用の
+ * id 保存 insert が要る。branch CRUD と同じく Drizzle 直書きで Tauri / テスト共通
+ * （単一 DB を db_execute 経由で叩く）。復元データは過去に検証済みの行なので XPROJ
+ * 再検証は行わない（履歴は project 切替で clear される）。
+ */
+export async function restorePlotThread(row: PlotThreadRow): Promise<void> {
+  await db.insert(plotThreads).values({
+    id: row.id,
+    projectId: row.projectId,
+    name: row.name,
+    color: row.color,
+    description: row.description,
+    sortOrder: row.sortOrder,
+    startNodeId: row.startNodeId,
+    endNodeId: row.endNodeId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  });
+}
+
 export async function listPlotThreads(
   projectId: string,
 ): Promise<PlotThreadRow[]> {
@@ -245,6 +267,22 @@ export async function deletePlotThreadLink(id: string): Promise<void> {
     return;
   }
   await db.delete(plotThreadSceneLinks).where(eq(plotThreadSceneLinks.id, id));
+}
+
+/** Undo/Redo 専用: link を同じ id で復元する（{@link restorePlotThread} 参照）。 */
+export async function restorePlotThreadLink(
+  row: PlotThreadLinkRow,
+): Promise<void> {
+  await db.insert(plotThreadSceneLinks).values({
+    id: row.id,
+    threadId: row.threadId,
+    nodeId: row.nodeId,
+    phaseType: row.phaseType,
+    note: row.note,
+    sortOrder: row.sortOrder,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  });
 }
 
 export async function listPlotThreadLinks(
@@ -339,6 +377,22 @@ export async function updatePlotThreadBranch(
 
 export async function deletePlotThreadBranch(id: string): Promise<void> {
   await db.delete(plotThreadBranches).where(eq(plotThreadBranches.id, id));
+}
+
+/** Undo/Redo 専用: branch を同じ id で復元する（{@link restorePlotThread} 参照）。 */
+export async function restorePlotThreadBranch(
+  row: PlotThreadBranchRow,
+): Promise<void> {
+  await db.insert(plotThreadBranches).values({
+    id: row.id,
+    projectId: row.projectId,
+    fromThreadId: row.fromThreadId,
+    toThreadId: row.toThreadId,
+    atNodeId: row.atNodeId,
+    kind: row.kind,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  });
 }
 
 export async function listPlotThreadBranches(

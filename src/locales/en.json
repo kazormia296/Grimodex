@@ -4798,6 +4798,22 @@
       "subway": "Subway",
       "separated": "Separated"
     },
+    "history": {
+      "addThread": "Add thread",
+      "renameThread": "Rename thread",
+      "colorThread": "Change thread color",
+      "spanThread": "Change thread span",
+      "deleteThread": "Delete thread",
+      "addMarker": "Add marker",
+      "moveMarker": "Move marker",
+      "phaseMarker": "Change phase",
+      "editNote": "Edit note",
+      "editMarker": "Edit marker",
+      "deleteMarker": "Delete marker",
+      "addBranch": "Add branch / merge",
+      "updateBranch": "Update branch / merge",
+      "deleteBranch": "Delete branch / merge"
+    },
     "eventUntitled": "(untitled)",
     "addThread": "Add thread",
     "newThreadName": "New thread",

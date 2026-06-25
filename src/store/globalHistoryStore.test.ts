@@ -239,4 +239,112 @@ describe("useGlobalHistoryStore", () => {
     expect(s.canUndo).toBe(false);
     expect(s.canRedo).toBe(false);
   });
+
+  describe("runAsTransaction (batch grouping)", () => {
+    it("collapses multiple pushes during the callback into a single history entry", async () => {
+      await useGlobalHistoryStore
+        .getState()
+        .runAsTransaction({ kind: "plot", label: "複合操作" }, async () => {
+          useGlobalHistoryStore.getState().push({
+            kind: "plot",
+            label: "step-1",
+            undo: async () => {},
+            redo: async () => {},
+          });
+          useGlobalHistoryStore.getState().push({
+            kind: "plot",
+            label: "step-2",
+            undo: async () => {},
+            redo: async () => {},
+          });
+        });
+      const s = useGlobalHistoryStore.getState();
+      expect(s.past).toHaveLength(1);
+      expect(s.past[0].label).toBe("複合操作");
+      expect(s.canUndo).toBe(true);
+    });
+
+    it("undo runs collected undos in reverse order; redo runs them forward", async () => {
+      const order: string[] = [];
+      await useGlobalHistoryStore
+        .getState()
+        .runAsTransaction({ kind: "plot", label: "複合" }, async () => {
+          useGlobalHistoryStore.getState().push({
+            kind: "plot",
+            label: "a",
+            undo: async () => {
+              order.push("undo-a");
+            },
+            redo: async () => {
+              order.push("redo-a");
+            },
+          });
+          useGlobalHistoryStore.getState().push({
+            kind: "plot",
+            label: "b",
+            undo: async () => {
+              order.push("undo-b");
+            },
+            redo: async () => {
+              order.push("redo-b");
+            },
+          });
+        });
+      await useGlobalHistoryStore.getState().undo();
+      await useGlobalHistoryStore.getState().redo();
+      // undo reverses (b then a); redo replays forward (a then b).
+      expect(order).toEqual(["undo-b", "undo-a", "redo-a", "redo-b"]);
+    });
+
+    it("a single push inside a transaction still produces one entry labelled by the transaction", async () => {
+      await useGlobalHistoryStore
+        .getState()
+        .runAsTransaction({ kind: "plot", label: "単一" }, async () => {
+          useGlobalHistoryStore.getState().push({
+            kind: "plot",
+            label: "inner",
+            undo: async () => {},
+            redo: async () => {},
+          });
+        });
+      const s = useGlobalHistoryStore.getState();
+      expect(s.past).toHaveLength(1);
+      expect(s.past[0].label).toBe("単一");
+    });
+
+    it("a transaction with no pushes adds nothing to history", async () => {
+      await useGlobalHistoryStore
+        .getState()
+        .runAsTransaction({ kind: "plot", label: "空" }, async () => {});
+      const s = useGlobalHistoryStore.getState();
+      expect(s.past).toHaveLength(0);
+      expect(s.canUndo).toBe(false);
+    });
+
+    it("nested transactions flatten into the outer entry", async () => {
+      await useGlobalHistoryStore
+        .getState()
+        .runAsTransaction({ kind: "plot", label: "outer" }, async () => {
+          useGlobalHistoryStore.getState().push({
+            kind: "plot",
+            label: "x",
+            undo: async () => {},
+            redo: async () => {},
+          });
+          await useGlobalHistoryStore
+            .getState()
+            .runAsTransaction({ kind: "plot", label: "inner" }, async () => {
+              useGlobalHistoryStore.getState().push({
+                kind: "plot",
+                label: "y",
+                undo: async () => {},
+                redo: async () => {},
+              });
+            });
+        });
+      const s = useGlobalHistoryStore.getState();
+      expect(s.past).toHaveLength(1);
+      expect(s.past[0].label).toBe("outer");
+    });
+  });
 });

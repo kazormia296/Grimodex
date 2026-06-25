@@ -11,7 +11,8 @@ export type HistoryKind =
   | "pins"
   | "phase"
   | "tags"
-  | "foreshadow";
+  | "foreshadow"
+  | "plot";
 
 export interface HistoryCommand {
   kind: HistoryKind;
@@ -46,6 +47,22 @@ function surfaceUndoConflict(cmd: HistoryCommand): void {
   undoConflictHandler?.(cmd);
 }
 
+/**
+ * Active batch frame for {@link HistoryState.runAsTransaction}. When set, `push`
+ * appends into `entries` instead of committing to `past`, so that one user
+ * action made of several store mutations (e.g. dragging a plot marker that
+ * moves the marker AND re-anchors a branch edge) collapses into a SINGLE undo
+ * entry. Kept module-level (not in zustand state) so it never triggers a
+ * re-render and so reentrancy is cheap to detect. Not concurrency-safe across
+ * truly parallel transactions — UI commit handlers run sequentially, which is
+ * the only caller.
+ */
+interface BatchFrame {
+  meta: { kind: HistoryKind; label: string; entityId?: string };
+  entries: HistoryCommand[];
+}
+let activeBatch: BatchFrame | null = null;
+
 interface HistoryState {
   past: HistoryCommand[];
   future: HistoryCommand[];
@@ -58,6 +75,17 @@ interface HistoryState {
   clear: () => void;
   /** Drop history entries targeting an entity after external mutation. */
   invalidateForEntity: (kind: HistoryKind, entityId: string) => void;
+  /**
+   * Run `fn` collecting every `push` it triggers into ONE composite history
+   * entry labelled by `meta`. Undo replays the collected undos in reverse
+   * order; redo replays the redos forward. Zero pushes → nothing is recorded;
+   * any number of pushes → exactly one entry. Use for a single user action that
+   * fans out into multiple store mutations.
+   */
+  runAsTransaction: (
+    meta: { kind: HistoryKind; label: string; entityId?: string },
+    fn: () => Promise<void>,
+  ) => Promise<void>;
 }
 
 export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
@@ -68,12 +96,18 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   isReplaying: false,
 
   push(cmd) {
+    // Safety net: ignore pushes triggered during undo/redo replay so that
+    // a missing call-site guard cannot corrupt the timeline. Call sites
+    // should still guard themselves to skip building closures on the no-op
+    // path (defense in depth).
+    if (get().isReplaying) return;
+    // Inside a transaction, divert into the batch frame instead of committing
+    // so the whole user action becomes one undo entry (see runAsTransaction).
+    if (activeBatch) {
+      activeBatch.entries.push(cmd);
+      return;
+    }
     set((state) => {
-      // Safety net: ignore pushes triggered during undo/redo replay so that
-      // a missing call-site guard cannot corrupt the timeline. Call sites
-      // should still guard themselves to skip building closures on the no-op
-      // path (defense in depth).
-      if (state.isReplaying) return state;
       const past = [...state.past, cmd].slice(-MAX_HISTORY);
       return { past, future: [], canUndo: true, canRedo: false };
     });
@@ -185,6 +219,40 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
         canUndo: past.length > 0,
         canRedo: future.length > 0,
       };
+    });
+  },
+
+  async runAsTransaction(meta, fn) {
+    // During replay or inside another transaction, just run inline: replay
+    // must not record, and a nested transaction's pushes belong to the outer
+    // frame (flatten). The reentrancy guard keeps the single batch frame valid.
+    if (get().isReplaying || activeBatch) {
+      await fn();
+      return;
+    }
+    const frame: BatchFrame = { meta, entries: [] };
+    activeBatch = frame;
+    try {
+      await fn();
+    } finally {
+      activeBatch = null;
+    }
+    const entries = frame.entries;
+    if (entries.length === 0) return;
+    get().push({
+      kind: meta.kind,
+      label: meta.label,
+      entityId: meta.entityId,
+      async undo() {
+        for (let i = entries.length - 1; i >= 0; i--) {
+          await entries[i].undo();
+        }
+      },
+      async redo() {
+        for (const entry of entries) {
+          await entry.redo();
+        }
+      },
     });
   },
 }));
