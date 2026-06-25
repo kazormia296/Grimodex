@@ -762,7 +762,7 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     updatedAt: "",
   });
   // threadsTop = SVG_HEIGHT_BASE(130) + LANE_HEIGHT/2(28) = 158 → lane0.y=158, lane1.y=214
-  // s1 x = 48, s2 x = 144（STEP=96, PAD_LEFT=48）
+  // s1 x = 150, s2 x = 246（STEP=96, padLeft=SUBWAY_LABEL_GUTTER=150）
   function seed() {
     usePlotThreadStore.setState({
       threads: [t("t1", "a0"), t("t2", "a1")],
@@ -781,9 +781,9 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
     const m = getByTestId("plot-marker-l1");
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 158 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 158 });
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 158 });
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 158 });
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 158 });
     expect(updateMarker).toHaveBeenCalledWith("l1", { nodeId: "s2" });
   });
 
@@ -798,9 +798,9 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     );
     const m = getByTestId("plot-marker-l1"); // t1(上)@s1
     // t2(下, y214) の s2(x144) へ → branch。点は t2 へ移動、元 t1 には作らない。
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 158 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 });
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
     expect(updateMarker).toHaveBeenCalledWith("l1", {
       threadId: "t2",
       nodeId: "s2",
@@ -827,9 +827,9 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     );
     const m = getByTestId("plot-marker-l2"); // t2(下)@s1
     // t1(上, y158) の s2(x144) へ → merge。統一モデルで点は移動先 to=t1 へ移す。元 t2 には残さない。
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 158 });
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 158 });
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 158 });
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 158 });
     expect(updateMarker).toHaveBeenCalledWith("l2", {
       threadId: "t1",
       nodeId: "s2",
@@ -856,8 +856,8 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
       />,
     );
     const m = getByTestId("plot-marker-l1");
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 158 });
-    fireEvent.mouseUp(document, { clientX: 48, clientY: 158 });
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
+    fireEvent.mouseUp(document, { clientX: 150, clientY: 158 });
     expect(onSelectMarker).toHaveBeenCalledWith("l1");
   });
 
@@ -889,9 +889,9 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     );
     // l1 = t1@s2(x144,y158) を t2 レーン(y214) の s2(x144) へ → 同一エッジで dup
     const m = getByTestId("plot-marker-l1");
-    fireEvent.mouseDown(m, { clientX: 144, clientY: 158 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 });
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    fireEvent.mouseDown(m, { clientX: 246, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
     // dup なので何も起きない（source も動かない）
     expect(updateMarker).not.toHaveBeenCalled();
     expect(addMarker).not.toHaveBeenCalled();
@@ -928,7 +928,7 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     createdAt: "",
     updatedAt: "",
   });
-  // lane0=158, lane1=214, lane2=270 / s1 x=48, s2 x=144
+  // lane0=158, lane1=214, lane2=270 / s1 x=150, s2 x=246（padLeft=150）
   // branch br1: A→B @ s1。構造側マーカーは B@s1 = lB。
   function seedBranch() {
     usePlotThreadStore.setState({
@@ -962,9 +962,9 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     );
     // ホーム行: A=158, B=214, C=270（sortOrder 順の固定行）。
     const m = getByTestId("plot-marker-lB"); // B@s1 (x48,y214)
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 }); // 同 B レーンの s2
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 214 }); // 同 B レーンの s2
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
     expect(updateMarker).toHaveBeenCalledWith("lB", { nodeId: "s2" });
     expect(updateBranch).toHaveBeenCalledWith("br1", { atNodeId: "s2" });
     expect(addBranch).not.toHaveBeenCalled();
@@ -980,9 +980,9 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
     const m = getByTestId("plot-marker-lB"); // B@s1
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 270 }); // C レーンの s2
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 270 });
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 270 }); // C レーンの s2
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 270 });
     // マーカーは C へ、branch の to を C へ付け替え＋at_node 追従
     expect(updateMarker).toHaveBeenCalledWith("lB", {
       threadId: "C",
@@ -1024,9 +1024,9 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     );
     // ホーム行: A=158, B=214, C=270。lB(B@s1, x48,y214) を C レーン(y270) の s2 へ。
     const m = getByTestId("plot-marker-lB");
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 270 });
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 270 });
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 270 });
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 270 });
     // マーカーは C へ、merge の to を C へ付け替え＋at_node 追従（新規作らない）。
     expect(updateMarker).toHaveBeenCalledWith("lB", {
       threadId: "C",
@@ -1077,9 +1077,9 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     );
     // ホーム行: A=158, B=214（sortOrder 順の固定行）。
     const m = getByTestId("plot-marker-lB1"); // B@s1 (x48,y214)
-    fireEvent.mouseDown(m, { clientX: 48, clientY: 214 });
-    fireEvent.mouseMove(document, { clientX: 144, clientY: 214 }); // B レーンの s2
-    fireEvent.mouseUp(document, { clientX: 144, clientY: 214 });
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 214 }); // B レーンの s2
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
     // br1 が A→B@s2 になり br2 と重複 → rebind せず br1 を削除
     expect(deleteBranch).toHaveBeenCalledWith("br1");
     expect(updateBranch).not.toHaveBeenCalled();

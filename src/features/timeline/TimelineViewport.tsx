@@ -257,28 +257,15 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         }),
       [threads, links, sceneX, subwayTop, scheduledCountForLanes],
     );
-    // subway 時はシーン列を左ラベル列ぶん右へ寄せる（駅がラベルに隠れない）。
-    const padLeft = subwayActive ? SUBWAY_LABEL_GUTTER : PAD_LEFT;
+    // スレッド表示中は左にカプセル型ラベル列（subway と同じガター）を確保し、シーン列を
+    // その分右へ寄せる（separated でもラベルがマーカーに被らない）。
+    const padLeft = showThreads ? SUBWAY_LABEL_GUTTER : PAD_LEFT;
     // nodeId → シーンタイトル（イベント名ラベル用）。
     const sceneTitleById = useMemo(() => {
       const m = new Map<string, string>();
       for (const sc of scenes) m.set(sc.id, sc.title);
       return m;
     }, [scenes]);
-
-    // ラベル衝突の決定的押し下げ: 束ね（共有スロット）で lane.y が一致するレーンの
-    // ラベルが重ならないよう、レーン順に既使用 Y を避けて配置する（線/マーカーは不動）。
-    const plotLabelY = useMemo(() => {
-      const used = new Set<number>();
-      const map = new Map<string, number>();
-      for (const lane of laneModel.lanes) {
-        let y = lane.y - 10;
-        while (used.has(y)) y += 12;
-        used.add(y);
-        map.set(lane.thread.id, y);
-      }
-      return map;
-    }, [laneModel]);
 
     /** その列でのレーンの実 Y（px）。yByColumn は threadsTop 基準の絶対 px。 */
     const laneSlotY = (lane: (typeof laneModel.lanes)[number], x: number) =>
@@ -1156,23 +1143,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                       pointerEvents="none"
                     />
                   )}
-                  {/* レーン見出し（左固定・クリックでスレッド編集）。
-                      束ねで lane.y が一致する場合は plotLabelY で押し下げる。 */}
-                  <text
-                    x={4}
-                    y={plotLabelY.get(lane.thread.id) ?? lane.y - 10}
-                    fontSize={11}
-                    fill="currentColor"
-                    fillOpacity={0.8}
-                    className="cursor-pointer select-none"
-                    data-testid={`plot-lane-label-${lane.thread.id}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectThread?.(lane.thread.id);
-                    }}
-                  >
-                    {lane.thread.name || t("plotThread.unnamed", "（無名）")}
-                  </text>
+                  {/* レーン見出しは下の固定ラベル列（subway と同じカプセル型）で描く。 */}
                 </g>
               ))}
 
@@ -1342,6 +1313,71 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 strokeWidth={1.5}
                 pointerEvents="none"
               />
+            )}
+
+            {/* スレッドヘッダー（separated・左固定のカプセル型ラベル列。subway と同じ見た目）。
+                横スクロールしても残るよう scrollOffset ぶん平行移動。 */}
+            {showThreads && !subwayActive && (
+              <g
+                transform={`translate(${scrollOffset},0)`}
+                data-testid="separated-labels"
+              >
+                <rect
+                  x={0}
+                  y={threadsTop - LANE_HEIGHT / 2}
+                  width={SUBWAY_LABEL_GUTTER - 12}
+                  height={Math.max(
+                    0,
+                    svgHeight - (threadsTop - LANE_HEIGHT / 2),
+                  )}
+                  fill="var(--background)"
+                  pointerEvents="none"
+                />
+                {laneModel.lanes.map((lane) => {
+                  const name =
+                    lane.thread.name || t("plotThread.unnamed", "（無名）");
+                  const color = lane.thread.color ?? "var(--primary)";
+                  const cyL = lane.y;
+                  const display =
+                    name.length > 12 ? name.slice(0, 11) + "…" : name;
+                  const selected = selectedPlotThreadId === lane.thread.id;
+                  return (
+                    <g
+                      key={`label-${lane.thread.id}`}
+                      className="cursor-pointer"
+                      data-testid={`plot-lane-label-${lane.thread.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectThread?.(lane.thread.id);
+                      }}
+                    >
+                      <rect
+                        x={6}
+                        y={cyL - 13}
+                        width={SUBWAY_LABEL_GUTTER - 24}
+                        height={26}
+                        rx={13}
+                        fill="var(--card, var(--background))"
+                        stroke={selected ? "var(--foreground)" : "currentColor"}
+                        strokeOpacity={selected ? 0.9 : 0.15}
+                        strokeWidth={selected ? 1.5 : 1}
+                      />
+                      <circle cx={22} cy={cyL} r={7} fill={color} />
+                      <text
+                        x={36}
+                        y={cyL}
+                        dominantBaseline="central"
+                        fontSize={11}
+                        fill="currentColor"
+                        fillOpacity={0.85}
+                        className="select-none"
+                      >
+                        {display}
+                      </text>
+                    </g>
+                  );
+                })}
+              </g>
             )}
 
             {/* ───────── Subway レイアウト本体（AeonTimeline 風） ───────── */}
