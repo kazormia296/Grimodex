@@ -23,7 +23,8 @@ function resetStore() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
-    showThreads: false,
+    showThreads: true,
+    plotSubwaySort: false,
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -106,20 +107,11 @@ describe("TimelineHeader – Spacing mode UI", () => {
   });
 });
 
-describe("TimelineHeader – スレッド表示トグル", () => {
+describe("TimelineHeader – スレッド追加（常時表示）", () => {
   beforeEach(resetStore);
 
-  it("「スレッド」クリックで showThreads が ON/OFF トグルする", () => {
-    renderHeader();
-    fireEvent.click(screen.getByText("スレッド"));
-    expect(useTimelineStore.getState().showThreads).toBe(true);
-    fireEvent.click(screen.getByText("スレッド"));
-    expect(useTimelineStore.getState().showThreads).toBe(false);
-  });
-
-  it("スレッド追加時に Codex パレットから順番に色を自動割り当てる", () => {
+  it("スレッド追加ボタンは常に表示され、Codex パレットから色を自動割り当てる", () => {
     const addThread = vi.fn();
-    useTimelineStore.setState({ showThreads: true });
     usePlotThreadStore.setState({ threads: [], addThread });
     renderHeader();
     fireEvent.click(screen.getByTitle("スレッドを追加"));
@@ -131,18 +123,33 @@ describe("TimelineHeader – スレッド表示トグル", () => {
     );
   });
 
-  it("スレッド表示中のみスレッド追加ボタンが出る", () => {
-    const { rerender } = renderHeader();
-    expect(screen.queryByTitle("スレッドを追加")).toBeNull();
-    useTimelineStore.setState({ showThreads: true });
-    rerender(
-      <TimelineHeader
-        sceneCount={10}
-        scheduledCount={null}
-        inspectorOpen={false}
-        onToggleInspector={() => {}}
-      />,
-    );
-    expect(screen.getByTitle("スレッドを追加")).toBeTruthy();
+  it("subway/separated 切替トグルは存在しない（撤去済み）", () => {
+    renderHeader();
+    expect(screen.queryByTitle("Subway")).toBeNull();
+    expect(screen.queryByTitle("Separated")).toBeNull();
+    expect(screen.queryByText("スレッド")).toBeNull();
+  });
+});
+
+describe("TimelineHeader – 表示オプション（ケバブ）", () => {
+  beforeEach(resetStore);
+
+  it("ケバブとインスペクタ（サイドペイン）ボタンが別々に存在する", () => {
+    renderHeader();
+    // 表示オプションのケバブ。
+    expect(screen.getByTestId("timeline-display-menu")).toBeTruthy();
+    // インスペクタ開閉は別ボタン（⋮ ではなくサイドペインアイコン）。
+    const inspectorBtn = screen.getByTitle("インスペクター");
+    expect(inspectorBtn).toBeTruthy();
+    expect(inspectorBtn.textContent).not.toContain("⋮");
+  });
+
+  it("インスペクタボタンで onToggleInspector が呼ばれ aria-pressed が状態に追従する", () => {
+    const onToggleInspector = vi.fn();
+    renderHeader({ inspectorOpen: true, onToggleInspector });
+    const btn = screen.getByTitle("インスペクター");
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(btn);
+    expect(onToggleInspector).toHaveBeenCalled();
   });
 });

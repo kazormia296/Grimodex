@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Trash2, GitBranch, GitMerge } from "lucide-react";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { PLOT_BRANCH_KINDS, type PlotBranchKind } from "@/db/schema";
 import { usePlotThreadStore } from "./plotThreadStore";
 import type { PlotThreadRow } from "./api";
@@ -9,20 +10,28 @@ import type { PlotThreadRow } from "./api";
 /**
  * 選択中マーカーのシーン（atNodeId）を起点に、現在のスレッドから別スレッドへの
  * 分岐 / 合流エッジを追加・削除する。reading-order でのみ線が描かれる（描画側ゲート）。
+ *
+ * 統一モデル: branch も merge も「マーカーは移動先 = 対象(to)スレッドへ移す」。D&D と同じ
+ * 終端状態にするため、エッジ追加時に選択中マーカー(linkId)を対象スレッドへ移動し、
+ * その 2 操作を 1 つの Undo エントリにまとめる。
  */
 export function PlotBranchEditor({
   thread,
   atNodeId,
   threads,
+  linkId,
 }: {
   thread: PlotThreadRow;
   atNodeId: string;
   threads: PlotThreadRow[];
+  /** 選択中マーカーの link id。エッジ追加時にこのマーカーを対象スレッドへ移す。 */
+  linkId?: string;
 }) {
   const { t } = useTranslation();
   const branches = usePlotThreadStore((s) => s.branches);
   const addBranch = usePlotThreadStore((s) => s.addBranch);
   const deleteBranch = usePlotThreadStore((s) => s.deleteBranch);
+  const updateMarker = usePlotThreadStore((s) => s.updateMarker);
 
   const others = threads.filter((th) => th.id !== thread.id);
   const [kind, setKind] = useState<PlotBranchKind>("branch");
@@ -109,13 +118,34 @@ export function PlotBranchEditor({
                   b.kind === kind,
               );
               if (dup) return;
-              void addBranch({
-                projectId: getCurrentProjectId(),
-                fromThreadId: thread.id,
-                toThreadId: targetId,
-                atNodeId,
-                kind,
-              });
+              // エッジ追加 + マーカーを対象(to)スレッドへ移動 を 1 Undo にまとめる
+              // （D&D 経路と同じ終端状態・同じ単一履歴エントリにする）。
+              void useGlobalHistoryStore.getState().runAsTransaction(
+                {
+                  kind: "plot",
+                  label: t("plotThread.history.addBranch", "分岐 / 合流を追加"),
+                },
+                async () => {
+                  const ops: Array<Promise<void>> = [
+                    addBranch({
+                      projectId: getCurrentProjectId(),
+                      fromThreadId: thread.id,
+                      toThreadId: targetId,
+                      atNodeId,
+                      kind,
+                    }),
+                  ];
+                  if (linkId) {
+                    ops.push(
+                      updateMarker(linkId, {
+                        threadId: targetId,
+                        nodeId: atNodeId,
+                      }),
+                    );
+                  }
+                  await Promise.all(ops);
+                },
+              );
             }}
             className="shrink-0 rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50"
           >

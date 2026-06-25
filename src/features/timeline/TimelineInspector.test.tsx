@@ -62,6 +62,7 @@ describe("TimelineInspector – pendingEditNodeId focus wiring", () => {
     const { getByRole } = render(
       <TimelineInspector
         node={mockNode}
+        width={224}
         onClose={vi.fn()}
         onUpdateStoryTimeLabel={vi.fn()}
       />,
@@ -78,6 +79,7 @@ describe("TimelineInspector – pendingEditNodeId focus wiring", () => {
     const { getByRole } = render(
       <TimelineInspector
         node={mockNode}
+        width={224}
         onClose={vi.fn()}
         onUpdateStoryTimeLabel={vi.fn()}
       />,
@@ -98,6 +100,7 @@ describe("TimelineInspector – 未選択時のプレースホルダー", () => 
     const { getByTestId, getByText, queryByRole } = render(
       <TimelineInspector
         node={null}
+        width={224}
         onClose={vi.fn()}
         onUpdateStoryTimeLabel={vi.fn()}
       />,

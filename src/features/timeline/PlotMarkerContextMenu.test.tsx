@@ -22,6 +22,8 @@ describe("PlotMarkerContextMenu", () => {
       <PlotMarkerContextMenu
         linkId="l1"
         phaseType="introduce"
+        nodeId="n1"
+        threadId="t1"
         x={10}
         y={10}
         onClose={vi.fn()}
@@ -36,6 +38,8 @@ describe("PlotMarkerContextMenu", () => {
       <PlotMarkerContextMenu
         linkId="l1"
         phaseType="introduce"
+        nodeId="n1"
+        threadId="t1"
         x={10}
         y={10}
         onClose={vi.fn()}
@@ -53,6 +57,8 @@ describe("PlotMarkerContextMenu", () => {
       <PlotMarkerContextMenu
         linkId="l1"
         phaseType="introduce"
+        nodeId="n1"
+        threadId="t1"
         x={10}
         y={10}
         onClose={vi.fn()}
@@ -60,5 +66,79 @@ describe("PlotMarkerContextMenu", () => {
     );
     fireEvent.click(getByText("マーカーを削除"));
     expect(deleteMarker).toHaveBeenCalledWith("l1");
+  });
+
+  it("このシーン/スレッドに掛かる分岐エッジの削除ボタンが出て deleteBranch を呼ぶ", () => {
+    const deleteBranch = vi.fn();
+    const now = "2026-06-24T00:00:00.000Z";
+    usePlotThreadStore.setState({
+      deleteBranch,
+      threads: [
+        {
+          id: "t1",
+          projectId: "p",
+          name: "復讐",
+          color: null,
+          description: null,
+          sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "t2",
+          projectId: "p",
+          name: "恋愛",
+          color: null,
+          description: null,
+          sortOrder: "a1",
+          startNodeId: null,
+          endNodeId: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      branches: [
+        {
+          id: "b1",
+          projectId: "p",
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "n1",
+          kind: "branch",
+          createdAt: now,
+          updatedAt: now,
+        },
+        // 別シーンのエッジは出さない
+        {
+          id: "b2",
+          projectId: "p",
+          fromThreadId: "t1",
+          toThreadId: "t2",
+          atNodeId: "n-other",
+          kind: "merge",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    });
+    const onClose = vi.fn();
+    const { getByText, queryByText } = render(
+      <PlotMarkerContextMenu
+        linkId="l1"
+        phaseType="introduce"
+        nodeId="n1"
+        threadId="t1"
+        x={10}
+        y={10}
+        onClose={onClose}
+      />,
+    );
+    // n1 のエッジ(b1)だけが候補。別シーン n-other の b2 は出ない。
+    expect(queryByText("復讐 → 恋愛 の分岐を削除")).not.toBeNull();
+    fireEvent.click(getByText("復讐 → 恋愛 の分岐を削除"));
+    expect(deleteBranch).toHaveBeenCalledWith("b1");
+    expect(onClose).toHaveBeenCalled();
   });
 });

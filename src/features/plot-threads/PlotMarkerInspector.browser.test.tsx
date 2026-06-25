@@ -39,6 +39,8 @@ const thread: PlotThreadRow = {
   color: null,
   description: null,
   sortOrder: "a0",
+  startNodeId: null,
+  endNodeId: null,
   createdAt: "",
   updatedAt: "",
 };
@@ -64,7 +66,7 @@ function renderInBoundedPanel() {
     >
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1" />
-        <PlotMarkerInspector onClose={() => {}} />
+        <PlotMarkerInspector width={224} onClose={() => {}} />
       </div>
     </div>,
   );

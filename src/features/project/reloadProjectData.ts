@@ -22,6 +22,7 @@ import { useTermDictionaryStore } from "@/features/lint/termDictionaryStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { withProjectLoad } from "./projectLoadGate";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 
@@ -39,6 +40,7 @@ async function loadProjectStoresInBatches(
     () => useTrashBinStore.getState().loadItems(projectId),
     () => useSceneCodexPinsStore.getState().loadAllForProject(projectId),
     () => useSceneBeatPovStore.getState().loadAllForProject(projectId),
+    () => usePlotThreadStore.getState().load(projectId),
   ];
 
   for (let i = 0; i < loaders.length; i += batchSize) {

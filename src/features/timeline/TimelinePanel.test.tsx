@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, act, fireEvent } from "@testing-library/react";
 import { TimelinePanel } from "./TimelinePanel";
 import { useTimelineStore } from "./timelineStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
@@ -77,6 +78,9 @@ function resetStore() {
     selectedNodeIds: [],
     inspectorOpen: false,
     pendingEditNodeId: null,
+    showThreads: false,
+    selectedPlotThreadId: null,
+    selectedPlotLinkId: null,
     display: {
       showTitles: true,
       showChapterNumbers: true,
@@ -282,6 +286,25 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
     expect(mockDeleteNode).toHaveBeenCalledWith("s1");
     expect(mockDeleteNode).toHaveBeenCalledWith("s2");
     expect(mockDeleteNode).toHaveBeenCalledTimes(2);
+  });
+
+  it("プロット(スレッド/マーカー)選択中の Delete はシーンを消さない", () => {
+    useTimelineStore.setState({
+      selectedNodeIds: ["scene-x"],
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(mockDeleteNode).not.toHaveBeenCalled();
   });
 
   it("panel focused + selected → Enter calls openPinned", () => {
@@ -529,6 +552,135 @@ describe("TimelinePanel – arrow key navigation (#3)", () => {
       );
     });
     expect(useTimelineStore.getState().selectedNodeIds).toEqual(["s3"]);
+  });
+
+  const plotThread = (id: string, sortOrder: string) => ({
+    id,
+    projectId: "p",
+    name: id,
+    color: null,
+    description: null,
+    sortOrder,
+    startNodeId: null,
+    endNodeId: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+  const plotLink = (id: string, threadId: string, nodeId: string) => ({
+    id,
+    threadId,
+    nodeId,
+    phaseType: "develop" as const,
+    note: null,
+    sortOrder: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+  const arrow = (key: string) =>
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true }),
+      );
+    });
+
+  it("ArrowRight/Left は同スレッド内のマーカーを移動する", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0")],
+      links: [plotLink("m1", "t1", "s1"), plotLink("m2", "t1", "s2")],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotLinkId: "m1",
+      selectedPlotThreadId: "t1",
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => getByTestId("timeline-panel").focus());
+    arrow("ArrowRight");
+    expect(useTimelineStore.getState().selectedPlotLinkId).toBe("m2");
+    arrow("ArrowLeft");
+    expect(useTimelineStore.getState().selectedPlotLinkId).toBe("m1");
+  });
+
+  it("ArrowDown は隣スレッドの同じ列のマーカーへ移る", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0"), plotThread("t2", "a1")],
+      links: [plotLink("m1", "t1", "s2"), plotLink("m2", "t2", "s2")],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotLinkId: "m1", // t1 / s2(col1)
+      selectedPlotThreadId: "t1",
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => getByTestId("timeline-panel").focus());
+    arrow("ArrowDown");
+    expect(useTimelineStore.getState().selectedPlotLinkId).toBe("m2");
+  });
+
+  it("ArrowDown はスレッド表示中に次のスレッドを選択する", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0"), plotThread("t2", "a1")],
+      links: [],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBe("t2");
+  });
+
+  it("ArrowUp は先頭スレッドで止まる（クランプ）", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0"), plotThread("t2", "a1")],
+      links: [],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBe("t1");
+  });
+
+  it("スレッド非表示中は ArrowUp/Down がスレッド選択を変えない", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0"), plotThread("t2", "a1")],
+      links: [],
+    });
+    useTimelineStore.setState({
+      showThreads: false,
+      selectedPlotThreadId: null,
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBeNull();
   });
 
   it("Shift+ArrowRight extends selection range", () => {

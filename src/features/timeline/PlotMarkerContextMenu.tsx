@@ -1,14 +1,19 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { GitBranch, GitMerge } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTimelineStore } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import { PlotMarkerDeleteConfirmDialog } from "@/features/plot-threads/PlotMarkerDeleteConfirmDialog";
 import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
 
 interface Props {
   linkId: string;
   phaseType: PlotPhaseType;
+  /** このマーカーのシーン/スレッド。ここをアンカーする分岐/合流エッジの削除に使う。 */
+  nodeId: string;
+  threadId: string;
   x: number;
   y: number;
   onClose: () => void;
@@ -21,6 +26,8 @@ interface Props {
 export function PlotMarkerContextMenu({
   linkId,
   phaseType,
+  nodeId,
+  threadId,
   x,
   y,
   onClose,
@@ -29,16 +36,46 @@ export function PlotMarkerContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const updateMarker = usePlotThreadStore((s) => s.updateMarker);
   const deleteMarker = usePlotThreadStore((s) => s.deleteMarker);
+  const deleteBranch = usePlotThreadStore((s) => s.deleteBranch);
+  const branches = usePlotThreadStore((s) => s.branches);
+  const threads = usePlotThreadStore((s) => s.threads);
   const setSelectedPlotLinkId = useTimelineStore(
     (s) => s.setSelectedPlotLinkId,
   );
   const toggleInspector = useTimelineStore((s) => s.toggleInspector);
+  // branch/merge アンカーのマーカー削除時は確認ダイアログ（Scene 削除と同型）。
+  const [confirming, setConfirming] = useState(false);
+  // このマーカーを起点(to アンカー)に消える分岐/合流の件数（削除カスケード対象）。
+  const markerEdgeCount = branches.filter(
+    (b) => b.toThreadId === threadId && b.atNodeId === nodeId,
+  ).length;
+  const removeMarkerNow = () => {
+    void deleteMarker(linkId);
+    if (useTimelineStore.getState().selectedPlotLinkId === linkId) {
+      setSelectedPlotLinkId(null);
+    }
+    onClose();
+  };
+
+  // このマーカー(threadId, nodeId)が端点になる分岐/合流エッジ。from/to どちら側でも
+  // 同じシーンに掛かっていれば候補にする（インスペクタの PlotBranchEditor と同条件）。
+  const relatedEdges = branches.filter(
+    (b) =>
+      b.atNodeId === nodeId &&
+      (b.fromThreadId === threadId || b.toThreadId === threadId),
+  );
+  const threadName = (id: string) =>
+    threads.find((tt) => tt.id === id)?.name ||
+    t("plotThread.unnamed", "（無名）");
 
   useEffect(() => {
     function handleMouseDown(e: MouseEvent) {
+      // 確認ダイアログ表示中は外側クリックでメニューを閉じない（ダイアログ操作を優先）。
+      if (confirming) return;
       if (!menuRef.current?.contains(e.target as Node)) onClose();
     }
     function handleKeyDown(e: KeyboardEvent) {
+      if (confirming) return; // Esc はダイアログ側(Radix)が処理。
       if (e.key === "Escape") onClose();
     }
     document.addEventListener("mousedown", handleMouseDown);
@@ -47,7 +84,7 @@ export function PlotMarkerContextMenu({
       document.removeEventListener("mousedown", handleMouseDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onClose]);
+  }, [onClose, confirming]);
 
   const style: React.CSSProperties = {
     position: "fixed",
@@ -55,6 +92,22 @@ export function PlotMarkerContextMenu({
     top: Math.max(0, Math.min(y, window.innerHeight - 280)),
     zIndex: 9999,
   };
+
+  // 確認ダイアログ表示中はメニュー本体を出さない（ダイアログだけ）。キャンセル/確定で onClose。
+  if (confirming) {
+    return (
+      <PlotMarkerDeleteConfirmDialog
+        title={t("plotThread.deleteMarkerConfirmTitle", "マーカーの削除")}
+        description={t(
+          "plotThread.deleteMarkerConfirmBody",
+          "このマーカーは分岐 / 合流の起点です。削除すると {{count}} 件の分岐 / 合流も削除されます。続行しますか？",
+          { count: markerEdgeCount },
+        )}
+        onCancel={onClose}
+        onConfirm={removeMarkerNow}
+      />
+    );
+  }
 
   return createPortal(
     <div
@@ -103,16 +156,54 @@ export function PlotMarkerContextMenu({
       <button
         type="button"
         onClick={() => {
-          void deleteMarker(linkId);
-          if (useTimelineStore.getState().selectedPlotLinkId === linkId) {
-            setSelectedPlotLinkId(null);
-          }
-          onClose();
+          // branch/merge の起点なら確認ダイアログ。そうでなければ即削除。
+          if (markerEdgeCount > 0) setConfirming(true);
+          else removeMarkerNow();
         }}
         className="flex w-full items-center px-3 py-1.5 text-left text-xs text-[color:var(--destructive)] hover:bg-destructive/10"
       >
         {t("plotThread.deleteMarker", "マーカーを削除")}
       </button>
+
+      {relatedEdges.length > 0 && (
+        <>
+          <div className="my-1 border-t border-border" />
+          <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {t("plotThread.edges", "分岐 / 合流")}
+          </div>
+          {relatedEdges.map((b) => {
+            const isMerge = b.kind === "merge";
+            const Icon = isMerge ? GitMerge : GitBranch;
+            const pair = `${threadName(b.fromThreadId)} → ${threadName(b.toThreadId)}`;
+            return (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => {
+                  void deleteBranch(b.id);
+                  onClose();
+                }}
+                className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs text-[color:var(--destructive)] hover:bg-destructive/10"
+              >
+                <Icon size={12} className="shrink-0" aria-hidden />
+                <span className="truncate">
+                  {isMerge
+                    ? t("plotThread.deleteMergeEdge", "{{pair}} の合流を削除", {
+                        pair,
+                      })
+                    : t(
+                        "plotThread.deleteBranchEdge",
+                        "{{pair}} の分岐を削除",
+                        {
+                          pair,
+                        },
+                      )}
+                </span>
+              </button>
+            );
+          })}
+        </>
+      )}
     </div>,
     document.body,
   );

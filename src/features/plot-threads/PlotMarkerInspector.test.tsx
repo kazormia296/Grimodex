@@ -15,6 +15,8 @@ const thread: PlotThreadRow = {
   color: null,
   description: null,
   sortOrder: "a0",
+  startNodeId: null,
+  endNodeId: null,
   createdAt: "",
   updatedAt: "",
 };
@@ -46,8 +48,10 @@ describe("PlotMarkerInspector", () => {
   it("選択中マーカーの phase 変更で updateMarker を呼ぶ", () => {
     const updateMarker = vi.fn();
     usePlotThreadStore.setState({ updateMarker });
-    const { container } = render(<PlotMarkerInspector onClose={vi.fn()} />);
-    const select = container.querySelector("select") as HTMLSelectElement;
+    const { getByLabelText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    const select = getByLabelText("段階") as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "climax" } });
     expect(updateMarker).toHaveBeenCalledWith("l1", { phaseType: "climax" });
   });
@@ -55,7 +59,9 @@ describe("PlotMarkerInspector", () => {
   it("削除ボタンで deleteMarker を呼び選択を解除する", () => {
     const deleteMarker = vi.fn();
     usePlotThreadStore.setState({ deleteMarker });
-    const { getByText } = render(<PlotMarkerInspector onClose={vi.fn()} />);
+    const { getByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
     fireEvent.click(getByText("マーカーを削除"));
     expect(deleteMarker).toHaveBeenCalledWith("l1");
     expect(useTimelineStore.getState().selectedPlotLinkId).toBeNull();
@@ -69,7 +75,9 @@ describe("PlotMarkerInspector", () => {
       selectedPlotLinkId: null,
       selectedPlotThreadId: "t1",
     });
-    const { getByRole } = render(<PlotMarkerInspector onClose={vi.fn()} />);
+    const { getByRole } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
     const group = getByRole("group", { name: "色" });
     const buttons = within(group).getAllByRole("button");
     // 10 パレット + クリア = 11
@@ -82,16 +90,21 @@ describe("PlotMarkerInspector", () => {
     expect(setThreadColor).toHaveBeenCalledWith("t1", null);
   });
 
-  it("マーカー選択時、別スレッドへの分岐を追加できる", () => {
+  it("マーカー選択時、別スレッドへの分岐を追加し、マーカーを対象スレッドへ移す", () => {
     const addBranch = vi.fn();
+    const updateMarker = vi.fn();
     const thread2: PlotThreadRow = { ...thread, id: "t2", name: "恋愛の糸" };
-    usePlotThreadStore.setState({ threads: [thread, thread2], addBranch });
+    usePlotThreadStore.setState({
+      threads: [thread, thread2],
+      addBranch,
+      updateMarker,
+    });
     useTimelineStore.setState({
       selectedPlotLinkId: "l1", // thread t1 / scene s1
       selectedPlotThreadId: null,
     });
     const { getByTestId, getByText } = render(
-      <PlotMarkerInspector onClose={vi.fn()} />,
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
     );
     // 分岐エディタが出る
     expect(getByTestId("plot-branch-editor")).toBeTruthy();
@@ -105,6 +118,65 @@ describe("PlotMarkerInspector", () => {
         kind: "branch",
       }),
     );
+    // 統一モデル: 選択マーカー l1 は移動先 = 対象(to=t2)スレッドへ移る（D&D と同じ終端状態）。
+    expect(updateMarker).toHaveBeenCalledWith("l1", {
+      threadId: "t2",
+      nodeId: "s1",
+    });
+  });
+
+  it("branch/merge 起点マーカーの削除は確認ダイアログを挟む", () => {
+    const deleteMarker = vi.fn();
+    const thread2: PlotThreadRow = { ...thread, id: "t2", name: "恋愛の糸" };
+    usePlotThreadStore.setState({
+      threads: [thread, thread2],
+      links: [link], // l1 = t1 / s1
+      branches: [
+        {
+          id: "mg1",
+          projectId: "p1",
+          fromThreadId: "t2",
+          toThreadId: "t1", // l1(t1@s1) が merge の流入先＝アンカー
+          atNodeId: "s1",
+          kind: "merge",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      deleteMarker,
+    });
+    useTimelineStore.setState({
+      selectedPlotLinkId: "l1",
+      selectedPlotThreadId: null,
+    });
+    const { getByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    fireEvent.click(getByText("マーカーを削除"));
+    // 即削除されず確認ダイアログ。「削除する」で実削除。
+    expect(deleteMarker).not.toHaveBeenCalled();
+    fireEvent.click(getByText("削除する"));
+    expect(deleteMarker).toHaveBeenCalledWith("l1");
+  });
+
+  it("非アンカーのマーカー削除は確認なしで即実行", () => {
+    const deleteMarker = vi.fn();
+    usePlotThreadStore.setState({
+      threads: [thread],
+      links: [link],
+      branches: [],
+      deleteMarker,
+    });
+    useTimelineStore.setState({
+      selectedPlotLinkId: "l1",
+      selectedPlotThreadId: null,
+    });
+    const { getByText, queryByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    fireEvent.click(getByText("マーカーを削除"));
+    expect(deleteMarker).toHaveBeenCalledWith("l1");
+    expect(queryByText("削除する")).toBeNull();
   });
 
   it("何も選択していなければプレースホルダーを出す", () => {
@@ -112,7 +184,9 @@ describe("PlotMarkerInspector", () => {
       selectedPlotLinkId: null,
       selectedPlotThreadId: null,
     });
-    const { getByText } = render(<PlotMarkerInspector onClose={vi.fn()} />);
+    const { getByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
     expect(getByText("スレッドかマーカーを選択してください")).toBeTruthy();
   });
 
@@ -125,16 +199,38 @@ describe("PlotMarkerInspector", () => {
       selectedPlotThreadId: "t1",
     });
     const { getByText, container } = render(
-      <PlotMarkerInspector onClose={vi.fn()} />,
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
     );
     // 名前入力 onBlur で renameThread
     const input = container.querySelector("input") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "新章" } });
     fireEvent.blur(input);
     expect(renameThread).toHaveBeenCalledWith("t1", "新章");
-    // 削除
+    // 削除: t1 はマーカー(l1)を持つので確認ダイアログ。「削除する」で実削除。
     fireEvent.click(getByText("スレッドを削除"));
+    expect(deleteThread).not.toHaveBeenCalled();
+    fireEvent.click(getByText("削除する"));
     expect(deleteThread).toHaveBeenCalledWith("t1");
     expect(useTimelineStore.getState().selectedPlotThreadId).toBeNull();
+  });
+
+  it("中身のないスレッドの削除は確認なしで即実行", () => {
+    const deleteThread = vi.fn();
+    usePlotThreadStore.setState({
+      threads: [thread],
+      links: [],
+      branches: [],
+      deleteThread,
+    });
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: "t1",
+    });
+    const { getByText, queryByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    fireEvent.click(getByText("スレッドを削除"));
+    expect(deleteThread).toHaveBeenCalledWith("t1");
+    expect(queryByText("削除する")).toBeNull();
   });
 });

@@ -26,7 +26,7 @@ function resetStore() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
-    showThreads: false,
+    showThreads: true,
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -63,8 +63,8 @@ describe("TimelineHeader – 狭幅で文字が縦割れしない", () => {
     const title = screen.getByText("タイムライン");
     expect(title.getBoundingClientRect().height).toBeLessThan(SINGLE_LINE_MAX);
 
-    // スレッド表示トグル
-    const threads = screen.getByText("スレッド");
+    // スレッド追加ボタン（CJK ラベル）
+    const threads = screen.getByText("スレッドを追加");
     expect(threads.getBoundingClientRect().height).toBeLessThan(
       SINGLE_LINE_MAX,
     );
@@ -77,7 +77,7 @@ describe("TimelineHeader – 狭幅で文字が縦割れしない", () => {
   it("極端に狭い 240px でも縦割れしない (折り返しのみ)", () => {
     renderNarrow(240);
 
-    for (const text of ["タイムライン", "スレッド"]) {
+    for (const text of ["タイムライン", "スレッドを追加"]) {
       const el = screen.getByText(text);
       expect(el.getBoundingClientRect().height).toBeLessThan(SINGLE_LINE_MAX);
     }

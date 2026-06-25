@@ -8,12 +8,15 @@ import { useTimelineStore } from "./timelineStore";
 
 interface Props {
   node: TreeNodeData | null;
+  /** Splitter で可変・永続化された幅(px)。 */
+  width: number;
   onClose: () => void;
   onUpdateStoryTimeLabel: (id: string, label: string) => void;
 }
 
 export function TimelineInspector({
   node,
+  width,
   onClose,
   onUpdateStoryTimeLabel,
 }: Props) {
@@ -56,7 +59,8 @@ export function TimelineInspector({
   return (
     <div
       data-testid="timeline-inspector"
-      className="flex w-52 min-h-0 shrink-0 flex-col gap-2 overflow-y-auto border-l border-border bg-background px-3 py-2 text-xs"
+      style={{ width }}
+      className="flex min-h-0 shrink-0 flex-col gap-2 overflow-y-auto border-l border-border bg-background px-3 py-2 text-xs"
     >
       {/* Header */}
       <div className="flex items-center justify-between">

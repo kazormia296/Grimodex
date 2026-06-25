@@ -5,23 +5,34 @@ import type { GlobalSettings } from "@/features/workspace/store";
 export type AxisMode = "reading" | "story" | "write";
 export type SpacingMode = "uniform" | "proportional";
 /** 旧: シーン年表(scenes) か、プロットスレッドのレーン表示(threads) か。
- *  オーバーレイ化（2026-06-24）で showThreads(boolean) に移行。永続化の後方互換
- *  読み取り（threads → showThreads=true）にのみ残す。 */
+ *  オーバーレイ化（2026-06-24）で showThreads(boolean) に移行。さらに subway/separated
+ *  レイアウト切替を撤去し（2026-06-25）スレッドは常時 separated で表示する。
+ *  永続化の後方互換読み取りにのみ残す。 */
 export type TimelineViewMode = "scenes" | "threads";
 
 export interface TimelineSettings {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
-  /** シーン年表に加えてプロットスレッドのレーンをオーバーレイ表示するか。 */
+  /** プロットスレッドのレーンを常に表示する（常時 true。後方互換のため残す）。 */
   showThreads: boolean;
+  /** スレッドの並びを重要度＋center-out 自動整列にするか（false = sortOrder 線形）。 */
+  plotSubwaySort?: boolean;
   zoom: number;
   scrollOffset: number;
+  /** インスペクタ列の幅(px)。Splitter でドラッグ可変・永続化。 */
+  inspectorWidth: number;
   display: {
     showTitles: boolean;
     showChapterNumbers: boolean;
     showPhasePins: boolean;
   };
 }
+
+export const INSPECTOR_WIDTH_MIN = 160;
+export const INSPECTOR_WIDTH_MAX = 480;
+export const INSPECTOR_WIDTH_DEFAULT = 224;
+const clampInspectorWidth = (px: number): number =>
+  Math.round(Math.max(INSPECTOR_WIDTH_MIN, Math.min(INSPECTOR_WIDTH_MAX, px)));
 
 /** 最後に単一選択したノードの id (rangeSelectTo の基準点) */
 let lastSingleSelectId: string | null = null;
@@ -35,9 +46,13 @@ const DEFAULT_DISPLAY: TimelineSettings["display"] = {
 interface TimelineState {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
+  /** プロットスレッドのレーンを表示するか。常時 true（切替 UI は撤去）。 */
   showThreads: boolean;
+  /** スレッド並びを「重要度＋center-out」で自動整列するか。false = sortOrder 線形。 */
+  plotSubwaySort: boolean;
   zoom: number;
   scrollOffset: number;
+  inspectorWidth: number;
   selectedNodeIds: string[];
   inspectorOpen: boolean;
   display: TimelineSettings["display"];
@@ -48,13 +63,13 @@ interface TimelineState {
   /** threads モードで選択中のスレッド(plot_threads.id)。レーン見出しクリックで設定。 */
   selectedPlotThreadId: string | null;
   setAxisMode: (mode: AxisMode) => void;
-  setShowThreads: (show: boolean) => void;
-  toggleShowThreads: () => void;
+  togglePlotSubwaySort: () => void;
   setSelectedPlotLinkId: (id: string | null) => void;
   setSelectedPlotThreadId: (id: string | null) => void;
   setSpacingMode: (mode: SpacingMode) => void;
   setZoom: (zoom: number) => void;
   setScrollOffset: (offset: number) => void;
+  setInspectorWidth: (px: number) => void;
   selectNode: (id: string) => void;
   toggleSelect: (id: string) => void;
   rangeSelectTo: (id: string, orderedIds: string[]) => void;
@@ -68,9 +83,11 @@ interface TimelineState {
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   axisMode: "reading",
   spacingMode: "uniform",
-  showThreads: false,
+  showThreads: true,
+  plotSubwaySort: false,
   zoom: 1,
   scrollOffset: 0,
+  inspectorWidth: INSPECTOR_WIDTH_DEFAULT,
   selectedNodeIds: [],
   inspectorOpen: false,
   display: { ...DEFAULT_DISPLAY },
@@ -82,14 +99,15 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       axisMode: mode,
       spacingMode: mode === "reading" ? "uniform" : "proportional",
     }),
-  setShowThreads: (showThreads) => set({ showThreads }),
-  toggleShowThreads: () => set((s) => ({ showThreads: !s.showThreads })),
+  togglePlotSubwaySort: () =>
+    set((s) => ({ plotSubwaySort: !s.plotSubwaySort })),
   setSelectedPlotLinkId: (selectedPlotLinkId) => set({ selectedPlotLinkId }),
   setSelectedPlotThreadId: (selectedPlotThreadId) =>
     set({ selectedPlotThreadId }),
   setSpacingMode: (spacingMode) => set({ spacingMode }),
   setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(4, zoom)) }),
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
+  setInspectorWidth: (px) => set({ inspectorWidth: clampInspectorWidth(px) }),
   selectNode: (id) => {
     lastSingleSelectId = id;
     set({ selectedNodeIds: [id] });
@@ -131,12 +149,14 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set({
       axisMode: settings.axisMode ?? "reading",
       spacingMode: settings.spacingMode ?? "uniform",
-      // 後方互換: 旧 viewMode==="threads" を showThreads=true として読む。
-      showThreads:
-        settings.showThreads ??
-        (settings as { viewMode?: TimelineViewMode }).viewMode === "threads",
+      // スレッドは常時表示（切替 UI 撤去）。旧 plotLayout は読み捨てる。
+      showThreads: true,
+      plotSubwaySort: settings.plotSubwaySort ?? false,
       zoom: Math.max(0.25, Math.min(4, settings.zoom ?? 1)),
       scrollOffset: settings.scrollOffset ?? 0,
+      inspectorWidth: clampInspectorWidth(
+        settings.inspectorWidth ?? INSPECTOR_WIDTH_DEFAULT,
+      ),
       display: settings.display ?? { ...DEFAULT_DISPLAY },
     }),
 }));
@@ -148,8 +168,10 @@ function snapshotPersistent(
     axisMode: state.axisMode,
     spacingMode: state.spacingMode,
     showThreads: state.showThreads,
+    plotSubwaySort: state.plotSubwaySort,
     zoom: state.zoom,
     scrollOffset: state.scrollOffset,
+    inspectorWidth: state.inspectorWidth,
     display: state.display,
   };
 }

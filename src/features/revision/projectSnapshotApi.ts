@@ -580,6 +580,15 @@ async function restoreStructural(
       params: [PROJECT_ID],
       method: "run",
     });
+    // plot_threads FK projects (NOT tree_nodes), so the tree_nodes wipe does
+    // not clear them — and re-inserting captured threads would PK-collide.
+    // Explicitly wipe them here; this also cascades plot_thread_scene_links
+    // and plot_thread_branches (so the body-scope capture==wipe set holds).
+    pushStmt({
+      sql: "DELETE FROM plot_threads WHERE project_id = ?",
+      params: [PROJECT_ID],
+      method: "run",
+    });
   }
   if (scopes.has("codex")) {
     pushStmt({
@@ -801,6 +810,18 @@ async function restoreStructural(
         continue;
       }
       pushStmt(buildInsert("scene_beat_pov_cache", row));
+    }
+    // plot threads → scene-links → branches (parent-first; markers/branches FK
+    // tree_nodes which are inserted above + threads inserted just here, so the
+    // order satisfies FKs even without deferral). Threads were wiped above.
+    for (const row of auxByScope.get("plot_threads") ?? []) {
+      pushStmt(buildInsert("plot_threads", row));
+    }
+    for (const row of auxByScope.get("plot_thread_scene_links") ?? []) {
+      pushStmt(buildInsert("plot_thread_scene_links", row));
+    }
+    for (const row of auxByScope.get("plot_thread_branches") ?? []) {
+      pushStmt(buildInsert("plot_thread_branches", row));
     }
   }
 

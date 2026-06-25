@@ -24,6 +24,9 @@ async function resetSnapshotTables() {
     treeNodes,
     codexEntries,
     snippets,
+    plotThreads,
+    plotThreadSceneLinks,
+    plotThreadBranches,
   } = await import("@/db/schema");
   await db.delete(projectSnapshotEntries);
   await db.delete(projectSnapshotTreeNodes);
@@ -32,6 +35,10 @@ async function resetSnapshotTables() {
   await db.delete(projectSnapshotAux);
   await db.delete(projectSnapshots);
   await db.delete(contentVersions);
+  // plot tables child-first (branches/links FK threads + tree_nodes).
+  await db.delete(plotThreadBranches);
+  await db.delete(plotThreadSceneLinks);
+  await db.delete(plotThreads);
   await db.delete(treeNodes);
   await db.delete(codexEntries);
   await db.delete(snippets);
@@ -701,5 +708,61 @@ describe("projectSnapshotApi", () => {
 
     await db.delete(authorshipSpans);
     await db.delete(codexEntries);
+  });
+
+  it("body restore preserves plot-thread markers and branches (regression #1)", async () => {
+    const { db } = await import("@/db/client");
+    const { treeNodes, plotThreads, plotThreadSceneLinks, plotThreadBranches } =
+      await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+
+    // Two scenes, two threads, a marker on each, and a branch A→B at S1.
+    await seedScene('{"type":"doc","content":[]}', {
+      id: "s1",
+      sortOrder: "a0",
+    });
+    await seedScene('{"type":"doc","content":[]}', {
+      id: "s2",
+      sortOrder: "a1",
+    });
+    await db.insert(plotThreads).values([
+      { id: "t-a", projectId: PROJECT_ID, name: "A", sortOrder: "a0" },
+      { id: "t-b", projectId: PROJECT_ID, name: "B", sortOrder: "a1" },
+    ]);
+    await db.insert(plotThreadSceneLinks).values([
+      { id: "m-a", threadId: "t-a", nodeId: "s1", phaseType: "develop" },
+      { id: "m-b", threadId: "t-b", nodeId: "s2", phaseType: "develop" },
+    ]);
+    await db.insert(plotThreadBranches).values({
+      id: "br-1",
+      projectId: PROJECT_ID,
+      fromThreadId: "t-a",
+      toThreadId: "t-b",
+      atNodeId: "s1",
+      kind: "branch",
+    });
+
+    const snap = await createProjectSnapshot({ name: "plot-checkpoint" });
+
+    // Edit after snapshot: delete s1 → CASCADE removes marker m-a and branch
+    // br-1 (both FK tree_nodes). This is the data-loss surface.
+    await db.delete(treeNodes).where(eq(treeNodes.id, "s1"));
+    expect(
+      await db
+        .select()
+        .from(plotThreadBranches)
+        .where(eq(plotThreadBranches.id, "br-1")),
+    ).toHaveLength(0);
+
+    // Body restore must bring back the scene AND its plot markers/branches.
+    await restoreProjectSnapshot(snap.id, "plot-checkpoint");
+
+    const links = await db.select().from(plotThreadSceneLinks);
+    const branches = await db.select().from(plotThreadBranches);
+    const threads = await db.select().from(plotThreads);
+    expect(threads.map((t) => t.id).sort()).toEqual(["t-a", "t-b"]);
+    expect(links.map((l) => l.id).sort()).toEqual(["m-a", "m-b"]);
+    expect(branches.map((b) => b.id)).toEqual(["br-1"]);
+    expect(branches[0]?.atNodeId).toBe("s1");
   });
 });

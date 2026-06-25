@@ -11,7 +11,7 @@ function reset() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
-    showThreads: false,
+    showThreads: true,
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -112,12 +112,16 @@ describe("timelineStore", () => {
     expect(useTimelineStore.getState().pendingEditNodeId).toBeNull();
   });
 
-  it("showThreads は既定 false で、setShowThreads/toggleShowThreads で切り替わる", () => {
-    expect(useTimelineStore.getState().showThreads).toBe(false);
-    useTimelineStore.getState().setShowThreads(true);
+  it("showThreads は既定 true（スレッドは常時表示・切替 UI 撤去）", () => {
     expect(useTimelineStore.getState().showThreads).toBe(true);
-    useTimelineStore.getState().toggleShowThreads();
-    expect(useTimelineStore.getState().showThreads).toBe(false);
+  });
+
+  it("plotSubwaySort を togglePlotSubwaySort で切り替える", () => {
+    expect(useTimelineStore.getState().plotSubwaySort).toBe(false);
+    useTimelineStore.getState().togglePlotSubwaySort();
+    expect(useTimelineStore.getState().plotSubwaySort).toBe(true);
+    useTimelineStore.getState().togglePlotSubwaySort();
+    expect(useTimelineStore.getState().plotSubwaySort).toBe(false);
   });
 });
 
@@ -131,6 +135,7 @@ describe("timelineStore.loadFromSettings", () => {
       showThreads: true,
       zoom: 2,
       scrollOffset: 120,
+      inspectorWidth: 300,
       display: {
         showTitles: false,
         showChapterNumbers: false,
@@ -144,6 +149,7 @@ describe("timelineStore.loadFromSettings", () => {
     expect(state.showThreads).toBe(true);
     expect(state.zoom).toBe(2);
     expect(state.scrollOffset).toBe(120);
+    expect(state.inspectorWidth).toBe(300);
     expect(state.display.showPhasePins).toBe(true);
     expect(state.display.showTitles).toBe(false);
   });
@@ -156,19 +162,24 @@ describe("timelineStore.loadFromSettings", () => {
     expect(state.display.showTitles).toBe(true);
   });
 
-  it("後方互換: 旧 viewMode='threads' を showThreads=true として読む", () => {
+  it("showThreads は常時 true で読み込まれる（旧 plotLayout/viewMode は読み捨て）", () => {
     useTimelineStore.getState().loadFromSettings({
-      viewMode: "threads",
+      showThreads: false,
+      viewMode: "scenes",
     } as unknown as Partial<TimelineSettings>);
     expect(useTimelineStore.getState().showThreads).toBe(true);
   });
 
-  it("後方互換: 旧 viewMode='scenes' は showThreads=false", () => {
-    useTimelineStore.getState().setShowThreads(true);
-    useTimelineStore.getState().loadFromSettings({
-      viewMode: "scenes",
-    } as unknown as Partial<TimelineSettings>);
-    expect(useTimelineStore.getState().showThreads).toBe(false);
+  it("setInspectorWidth は [160,480] にクランプし丸める", () => {
+    const set = useTimelineStore.getState().setInspectorWidth;
+    set(300);
+    expect(useTimelineStore.getState().inspectorWidth).toBe(300);
+    set(10); // 下限
+    expect(useTimelineStore.getState().inspectorWidth).toBe(160);
+    set(9999); // 上限
+    expect(useTimelineStore.getState().inspectorWidth).toBe(480);
+    set(223.6); // 丸め
+    expect(useTimelineStore.getState().inspectorWidth).toBe(224);
   });
 
   it("zoom は [0.25, 4] にクランプされる", () => {
@@ -239,14 +250,14 @@ describe("timelineStore persistent subscriber", () => {
     );
   });
 
-  it("showThreads 変更で save IPC に showThreads が乗る", async () => {
-    useTimelineStore.getState().setShowThreads(true);
+  it("plotSubwaySort 変更で save IPC に plotSubwaySort が乗る", async () => {
+    useTimelineStore.getState().togglePlotSubwaySort();
     await vi.runAllTimersAsync();
     expect(invoke).toHaveBeenCalledWith(
       "save_global_settings",
       expect.objectContaining({
         settings: expect.objectContaining({
-          timeline: expect.objectContaining({ showThreads: true }),
+          timeline: expect.objectContaining({ plotSubwaySort: true }),
         }),
       }),
     );

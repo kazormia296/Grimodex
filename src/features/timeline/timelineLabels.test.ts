@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeAxisLabels } from "./timelineLabels";
+import { computeAxisLabels, computeFolderGroups } from "./timelineLabels";
 import type { AxisLabelInput } from "./timelineLabels";
 
 function makeScene(overrides: Partial<AxisLabelInput> = {}): AxisLabelInput {
@@ -115,5 +115,59 @@ describe("computeAxisLabels", () => {
         expect(labels[i].index).toBeGreaterThan(labels[i - 1].index);
       }
     });
+  });
+});
+
+describe("computeFolderGroups", () => {
+  // 部P > 章A {s1,s2}, 章B {s3} / 部Q > 章C {s4}
+  const anc: Record<string, { id: string; label: string }[]> = {
+    s1: [
+      { id: "P", label: "部P" },
+      { id: "A", label: "章A" },
+    ],
+    s2: [
+      { id: "P", label: "部P" },
+      { id: "A", label: "章A" },
+    ],
+    s3: [
+      { id: "P", label: "部P" },
+      { id: "B", label: "章B" },
+    ],
+    s4: [
+      { id: "Q", label: "部Q" },
+      { id: "C", label: "章C" },
+    ],
+  };
+  const ancestorsOf = (id: string) => anc[id] ?? [];
+
+  it("level0=部 / level1=章 の連続レンジにまとめる", () => {
+    const levels = computeFolderGroups(["s1", "s2", "s3", "s4"], ancestorsOf);
+    expect(levels).toHaveLength(2);
+    // 部: P が s1..s3、Q が s4
+    expect(levels[0]).toEqual([
+      { startIndex: 0, endIndex: 2, id: "P", label: "部P" },
+      { startIndex: 3, endIndex: 3, id: "Q", label: "部Q" },
+    ]);
+    // 章: A=s1..s2, B=s3, C=s4
+    expect(levels[1]).toEqual([
+      { startIndex: 0, endIndex: 1, id: "A", label: "章A" },
+      { startIndex: 2, endIndex: 2, id: "B", label: "章B" },
+      { startIndex: 3, endIndex: 3, id: "C", label: "章C" },
+    ]);
+  });
+
+  it("フォルダ直下（章なし）のシーンで章レベルが切れる", () => {
+    const a2 = (id: string) =>
+      id === "x" ? [{ id: "P", label: "部P" }] : (anc[id] ?? []);
+    // s1(章A) → x(部直下) → s2(章A)。章レベルは x で切れ A が2区間。
+    const levels = computeFolderGroups(["s1", "x", "s2"], a2);
+    expect(levels[1]).toEqual([
+      { startIndex: 0, endIndex: 0, id: "A", label: "章A" },
+      { startIndex: 2, endIndex: 2, id: "A", label: "章A" },
+    ]);
+  });
+
+  it("フォルダ未所属のみなら空", () => {
+    expect(computeFolderGroups(["a", "b"], () => [])).toEqual([]);
   });
 });

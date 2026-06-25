@@ -99,6 +99,12 @@ export const AUX_SCOPES = [
   "scene_codex_pins",
   "scene_codex_mentions",
   "scene_beat_pov_cache",
+  // owned by `body` (plot threads are scene-anchored: markers/branches FK
+  // tree_nodes ON DELETE CASCADE, so a body wipe cascade-deletes them; they
+  // must be re-inserted on body restore or they are lost permanently).
+  "plot_threads",
+  "plot_thread_scene_links",
+  "plot_thread_branches",
 ] as const;
 
 export type AuxScope = (typeof AUX_SCOPES)[number];
@@ -135,6 +141,9 @@ export const AUX_SCOPE_OWNER: Record<AuxScope, RestoreScope> = {
   scene_codex_pins: "body",
   scene_codex_mentions: "body",
   scene_beat_pov_cache: "body",
+  plot_threads: "body",
+  plot_thread_scene_links: "body",
+  plot_thread_branches: "body",
 };
 
 /**
@@ -174,6 +183,9 @@ export const AUX_TABLE: Record<AuxScope, string> = {
   scene_codex_pins: "scene_codex_pins",
   scene_codex_mentions: "scene_codex_mentions",
   scene_beat_pov_cache: "scene_beat_pov_cache",
+  plot_threads: "plot_threads",
+  plot_thread_scene_links: "plot_thread_scene_links",
+  plot_thread_branches: "plot_thread_branches",
 };
 
 /**
@@ -315,6 +327,21 @@ export const AUX_PROJECT_FILTER: Record<
     binds: 5,
   },
   lint_term_dictionary: { where: "project_id = ?", binds: 1 },
+  // Plot threads: direct project_id; wiped by an explicit
+  // `DELETE FROM plot_threads WHERE project_id=?` in the body restore (threads
+  // FK projects, NOT tree_nodes, so the body tree_nodes wipe does NOT clear
+  // them — the explicit DELETE both clears them and cascades links/branches).
+  plot_threads: { where: "project_id = ?", binds: 1 },
+  // Branches carry denormalized project_id; cascade-wiped via plot_threads
+  // (from/to) and tree_nodes (at_node). project_id mirrors that set exactly.
+  plot_thread_branches: { where: "project_id = ?", binds: 1 },
+  // Scene-links have NO project_id; scope via their thread. Every in-project
+  // link's thread is in-project (XPROJ guard), so this equals the cascade
+  // wipe set (plot_threads CASCADE + tree_nodes CASCADE).
+  plot_thread_scene_links: {
+    where: "thread_id IN (SELECT id FROM plot_threads WHERE project_id = ?)",
+    binds: 1,
+  },
 };
 
 /**

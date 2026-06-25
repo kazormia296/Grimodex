@@ -1641,17 +1641,35 @@ impl Database {
         // sort_order はレーン縦順の base62 fractional-index (treeNodes.sort_order と同 idiom)。
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS plot_threads (
-                id          TEXT PRIMARY KEY,
-                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                name        TEXT NOT NULL DEFAULT '',
-                color       TEXT,
-                description TEXT,
-                sort_order  TEXT NOT NULL DEFAULT 'a0',
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                id            TEXT PRIMARY KEY,
+                project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                name          TEXT NOT NULL DEFAULT '',
+                color         TEXT,
+                description   TEXT,
+                sort_order    TEXT NOT NULL DEFAULT 'a0',
+                -- 束ねレイアウトの生存スパン明示指定 (NULL=最初/最後のマーカーから導出)。
+                -- シーン削除で ON DELETE SET NULL → override 解除 (スレッド自体は残る)。
+                start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                end_node_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_plot_threads_project
                 ON plot_threads(project_id);",
+        )?;
+        // 束ねレイアウト (Phase B): 既存 DB の plot_threads に生存スパン override 列を
+        // 追加 (新 DB は上の CREATE TABLE で済)。ON DELETE SET NULL の FK 付き。
+        Self::add_column_if_missing(
+            &conn,
+            "plot_threads",
+            "start_node_id",
+            "TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "plot_threads",
+            "end_node_id",
+            "TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL",
         )?;
 
         // プロットスレッドが特定シーンで踏む段階マーカー。phase_type は CHECK enum
@@ -2864,6 +2882,17 @@ mod tests {
                     |row| row.get(0),
                 )?;
                 assert_eq!(exists, 1, "{t} table should exist on a fresh DB");
+            }
+            // 束ねレイアウトの生存スパン override 列 (start/end) も存在すること。
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(plot_threads)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            for c in ["start_node_id", "end_node_id"] {
+                assert!(
+                    cols.iter().any(|n| n == c),
+                    "plot_threads.{c} column should exist on a fresh DB"
+                );
             }
             Ok(())
         })
