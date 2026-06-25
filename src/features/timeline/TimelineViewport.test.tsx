@@ -602,6 +602,31 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
     }
   });
 
+  it("マーカーはスレッド線（帯・コネクタ）より後＝前面に描画される", () => {
+    seedThreads(); // t1: l1@s1, l2@s3
+    seedBranch(); // branch t1→t2 @s2（コネクタ 1 本）
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const { container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // SVG は document 順 = 描画順。マーカーが帯・コネクタより後ろにあれば前面。
+    const els = Array.from(container.querySelectorAll("svg *"));
+    const idxOf = (pred: (el: Element) => boolean) => els.findIndex(pred);
+    const bandIdx = idxOf((el) =>
+      (el.getAttribute("data-testid") ?? "").startsWith("plot-thread-line-"),
+    );
+    const connIdx = idxOf(
+      (el) => el.getAttribute("data-testid") === "plot-thread-connector",
+    );
+    const markerIdx = idxOf((el) =>
+      (el.getAttribute("data-testid") ?? "").startsWith("plot-marker-"),
+    );
+    expect(bandIdx).toBeGreaterThanOrEqual(0);
+    expect(connIdx).toBeGreaterThanOrEqual(0);
+    expect(markerIdx).toBeGreaterThan(bandIdx);
+    expect(markerIdx).toBeGreaterThan(connIdx);
+  });
+
   it("自走完結スレッドに終端キャップ（塗りノブ）を描く", () => {
     seedThreads(); // t1: l1@s1, l2@s3（最後 s3 は merge でない）→ 終端あり
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });

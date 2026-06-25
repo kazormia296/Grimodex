@@ -1093,9 +1093,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         x1={xOf(seg.x1)}
                         // rampOutEnd の区間は右端を CONNECTOR_RAMP だけ手前で止め、
                         // ランプ（コネクタ）の始端へなめらかに渡す（帯がランプに重ならない）。
+                        // 低ズームで列幅 < RAMP のとき逆向きに伸びないよう x1 で下限クランプ。
                         x2={
                           seg.rampOutEnd
-                            ? xOf(seg.x2) - CONNECTOR_RAMP
+                            ? Math.max(
+                                xOf(seg.x1),
+                                xOf(seg.x2) - CONNECTOR_RAMP,
+                              )
                             : xOf(seg.x2)
                         }
                         y1={seg.y1}
@@ -1139,9 +1143,45 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   >
                     {lane.thread.name || t("plotThread.unnamed", "（無名）")}
                   </text>
-                  {/* マーカー。拡大時(STEP>=CHIP_MIN_STEP)は段階テキストのチップ、
-                      縮小時は円に縮退する。mousedown=ドラッグ開始 / 動かなければ
-                      click=選択、右クリック=メニュー。選択中はリング、ドラッグ中は薄く。 */}
+                </g>
+              ))}
+
+            {/* 分岐 / 合流コネクタ（reading-order のみ）。統一モデル: branch も merge も
+                「from レーンから to レーンへ線が移る」遷移点として同じ形で描く。ランプは
+                常にマーカー（at 列 X）の手前 (X-RAMP→X) から流れ込む。from 帯はランプ始端
+                (X-RAMP) で止まり、to 帯はマーカー (X) から始まるので、帯↔ランプ↔帯が
+                butt 端どうしの縦シームでなめらかに繋がる。線は通常の帯と同じ太さ・色・不透過。 */}
+            {showThreads &&
+              !subwayActive &&
+              axisMode === "reading" &&
+              laneModel.connectors.map((c) => {
+                const X = xOf(c.x);
+                // from レーン(X-RAMP) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
+                const d = `M ${X - CONNECTOR_RAMP} ${c.fromY} C ${X - CONNECTOR_RAMP * 0.4} ${c.fromY}, ${X - CONNECTOR_RAMP * 0.6} ${c.toY}, ${X} ${c.toY}`;
+                return (
+                  <path
+                    key={`conn-${c.id}`}
+                    data-testid="plot-thread-connector"
+                    data-kind={c.kind}
+                    d={d}
+                    fill="none"
+                    stroke={c.color ?? "var(--primary)"}
+                    strokeWidth={BAND_HEIGHT}
+                    // 不透過・butt 端: 帯の butt 端と縦シームで揃え、重なり混色を避ける。
+                    strokeLinecap="butt"
+                    strokeLinejoin="round"
+                    pointerEvents="none"
+                  />
+                );
+              })}
+
+            {/* スレッドマーカー（separated）。帯・コネクタより後＝最前面に描く
+                （線がマーカーへ被らないよう描画順序を最後にする）。ドラッグ / 右クリック /
+                選択リングはここで処理する。axisMode に依らず常に描く。 */}
+            {showThreads &&
+              !subwayActive &&
+              laneModel.lanes.map((lane) => (
+                <g key={`markers-${lane.thread.id}`}>
                   {lane.markers.map((mk) => {
                     const label = t(
                       `plotThread.phaseType.${mk.phaseType}`,
@@ -1234,7 +1274,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 </g>
               ))}
 
-            {/* マーカードラッグ中のゴースト（カーソル追従） */}
+            {/* マーカードラッグ中のゴースト（カーソル追従・最前面） */}
             {markerDrag?.moved && (
               <circle
                 data-testid="plot-marker-ghost"
@@ -1248,35 +1288,6 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 pointerEvents="none"
               />
             )}
-
-            {/* 分岐 / 合流コネクタ（reading-order のみ）。統一モデル: branch も merge も
-                「from レーンから to レーンへ線が移る」遷移点として同じ形で描く。ランプは
-                常にマーカー（at 列 X）の手前 (X-RAMP→X) から流れ込む。from 帯はランプ始端
-                (X-RAMP) で止まり、to 帯はマーカー (X) から始まるので、帯↔ランプ↔帯が
-                butt 端どうしの縦シームでなめらかに繋がる。線は通常の帯と同じ太さ・色・不透過。 */}
-            {showThreads &&
-              !subwayActive &&
-              axisMode === "reading" &&
-              laneModel.connectors.map((c) => {
-                const X = xOf(c.x);
-                // from レーン(X-RAMP) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
-                const d = `M ${X - CONNECTOR_RAMP} ${c.fromY} C ${X - CONNECTOR_RAMP * 0.4} ${c.fromY}, ${X - CONNECTOR_RAMP * 0.6} ${c.toY}, ${X} ${c.toY}`;
-                return (
-                  <path
-                    key={`conn-${c.id}`}
-                    data-testid="plot-thread-connector"
-                    data-kind={c.kind}
-                    d={d}
-                    fill="none"
-                    stroke={c.color ?? "var(--primary)"}
-                    strokeWidth={BAND_HEIGHT}
-                    // 不透過・butt 端: 帯の butt 端と縦シームで揃え、重なり混色を避ける。
-                    strokeLinecap="butt"
-                    strokeLinejoin="round"
-                    pointerEvents="none"
-                  />
-                );
-              })}
 
             {/* ───────── Subway レイアウト本体（AeonTimeline 風） ───────── */}
             {subwayActive && (
