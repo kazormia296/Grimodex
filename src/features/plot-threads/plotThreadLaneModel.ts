@@ -127,13 +127,18 @@ export function buildPlotLaneModel(args: {
     else linksByThread.set(l.threadId, [l]);
   }
 
-  // 統一モデル: branch も merge も「線が from レーンから to レーンへ移る」遷移点。
-  //  - from スレッドはその列で **離脱**（band がそこで終わる。ランプの始端で締める=rampOut）。
-  //  - to スレッドはその列で **流入**（band はその列＝マーカー位置から新たに始まる）。
+  // 統一モデル: branch / merge は「線が from レーンから to レーンへ移る」遷移点。離脱は
+  // 種別で非対称:
+  //  - merge の from: 必ず離脱（to へ畳まれて消える）。band はランプ始端で終わる(rampOut)。
+  //  - branch の from: その列より後ろに「自走マーカー」が有れば離脱せず連続（並列走行:
+  //    分岐しても親線は走り続ける／branch 後の列にマーカーがあれば繋ぐ）。無ければ離脱。
+  //  - to（再流入）: 不在中にこの列へ来たら新しい run（その列=マーカー位置）から始まる。
+  // 「自走マーカー」= 再流入列(enterCols=to)でないマーカー列。他線のエッジで連れ戻された点
+  // （別レーンへ渡って戻ってきた合流/分岐入り）は自走の続きではないので除外する。
   // span: at 列を from/to 双方の生存スパン候補に入れ、帯がランプ端へ届くようにする。
-  // ただし離脱→流入の間（別レーンを走っている区間）は band を空ける（連続させない）。
-  const leaveColsByThread = new Map<string, Set<number>>(); // from 側（離脱列）
-  const enterColsByThread = new Map<string, Set<number>>(); // to 側（流入列）
+  const branchFromColsByThread = new Map<string, Set<number>>(); // branch の from
+  const mergeFromColsByThread = new Map<string, Set<number>>(); // merge の from（必離脱）
+  const enterColsByThread = new Map<string, Set<number>>(); // to（再流入列）
   const spanColsByThread = new Map<string, number[]>();
   const addCol = (m: Map<string, Set<number>>, k: string, v: number) => {
     const s = m.get(k);
@@ -148,7 +153,8 @@ export function buildPlotLaneModel(args: {
   for (const b of branches) {
     const x = sceneX.get(b.atNodeId);
     if (x === undefined || x >= scheduledCount) continue;
-    addCol(leaveColsByThread, b.fromThreadId, x);
+    if (b.kind === "merge") addCol(mergeFromColsByThread, b.fromThreadId, x);
+    else addCol(branchFromColsByThread, b.fromThreadId, x);
     addCol(enterColsByThread, b.toThreadId, x);
     addSpanCol(b.fromThreadId, x);
     addSpanCol(b.toThreadId, x);
@@ -277,16 +283,34 @@ export function buildPlotLaneModel(args: {
       y: yByColumn.get(mk.x) ?? yHome,
     }));
 
-    // run 分割（統一遷移モデル）: スレッドは lo で誕生し、離脱列(leave=from)で band が
-    // 切れて不在になり、流入列(enter=to)やマーカー列で再び現れる。離脱→次の流入の間
-    // （別レーンを走っている区間）は band を空ける＝連続させない。各 run は homeY 水平 1 本。
-    const leaveCols = leaveColsByThread.get(thread.id);
+    // 離脱列(leaveCols)を確定する。merge の from は必ず離脱。branch の from は「その列より
+    // 後ろに自走マーカーが有る」なら離脱せず連続（並列走行）、無ければ離脱（rampOut で締める）。
+    // 自走マーカー = 再流入列(enterCols=to)でないマーカー列（連れ戻された点は自走の続きでない）。
+    const branchFromCols = branchFromColsByThread.get(thread.id);
+    const mergeFromCols = mergeFromColsByThread.get(thread.id);
     const enterCols = enterColsByThread.get(thread.id);
+    let lastSelfMarkerCol = -Infinity;
+    for (const mk of p.markers) {
+      if (!enterCols?.has(mk.x) && mk.x > lastSelfMarkerCol) {
+        lastSelfMarkerCol = mk.x;
+      }
+    }
+    const leaveCols = new Set<number>();
+    if (mergeFromCols) for (const c of mergeFromCols) leaveCols.add(c);
+    if (branchFromCols) {
+      for (const c of branchFromCols) {
+        if (lastSelfMarkerCol <= c) leaveCols.add(c);
+      }
+    }
+
+    // run 分割（統一遷移モデル）: スレッドは lo で誕生し、離脱列で band が切れて不在になり、
+    // 流入列(enter=to)やマーカー列で再び現れる。離脱→次の流入の間（別レーンを走っている
+    // 区間）は band を空ける＝連続させない。各 run は homeY 水平 1 本。
     const runs: Array<{ start: number; end: number; rampOutEnd: boolean }> = [];
     let active = true; // lo で誕生
     let start = p.lo;
     for (let c = p.lo; c <= p.hi; c++) {
-      if (active && leaveCols?.has(c)) {
+      if (active && leaveCols.has(c)) {
         // 離脱: band はこの列で終わり、ランプの始端へ渡す。
         runs.push({ start, end: c, rampOutEnd: true });
         active = false;
@@ -295,7 +319,7 @@ export function buildPlotLaneModel(args: {
         start = c;
         active = true;
         // 同一列で流入かつ即離脱（その場で別レーンへ渡る）なら 1 列 run。
-        if (leaveCols?.has(c)) {
+        if (leaveCols.has(c)) {
           runs.push({ start, end: c, rampOutEnd: true });
           active = false;
         }
