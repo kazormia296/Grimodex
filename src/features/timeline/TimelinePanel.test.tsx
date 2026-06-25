@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, act, fireEvent } from "@testing-library/react";
 import { TimelinePanel } from "./TimelinePanel";
 import { useTimelineStore } from "./timelineStore";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 
@@ -529,6 +530,85 @@ describe("TimelinePanel – arrow key navigation (#3)", () => {
       );
     });
     expect(useTimelineStore.getState().selectedNodeIds).toEqual(["s3"]);
+  });
+
+  const plotThread = (id: string, sortOrder: string) => ({
+    id,
+    projectId: "p",
+    name: id,
+    color: null,
+    description: null,
+    sortOrder,
+    startNodeId: null,
+    endNodeId: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+
+  it("ArrowDown はスレッド表示中に次のスレッドを選択する", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0"), plotThread("t2", "a1")],
+      links: [],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBe("t2");
+  });
+
+  it("ArrowUp は先頭スレッドで止まる（クランプ）", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0"), plotThread("t2", "a1")],
+      links: [],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBe("t1");
+  });
+
+  it("スレッド非表示中は ArrowUp/Down がスレッド選択を変えない", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0"), plotThread("t2", "a1")],
+      links: [],
+    });
+    useTimelineStore.setState({
+      showThreads: false,
+      selectedPlotThreadId: null,
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+      );
+    });
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBeNull();
   });
 
   it("Shift+ArrowRight extends selection range", () => {

@@ -240,6 +240,8 @@ export function TimelinePanel() {
         case "Escape":
           e.preventDefault();
           clearSelection();
+          useTimelineStore.getState().setSelectedPlotThreadId(null);
+          useTimelineStore.getState().setSelectedPlotLinkId(null);
           break;
         case "1":
           e.preventDefault();
@@ -326,6 +328,41 @@ export function TimelinePanel() {
             } else {
               selectNode(prevId);
             }
+          }
+          break;
+        }
+        case "ArrowUp":
+        case "ArrowDown": {
+          // スレッド表示中は ↑/↓ でレーン(スレッド)選択を上下に移動。シーンは ←/→ のまま。
+          const tl = useTimelineStore.getState();
+          if (!tl.showThreads) break;
+          const ts = usePlotThreadStore.getState().threads;
+          if (ts.length === 0) break;
+          e.preventDefault();
+          // 表示順(sortOrder→id)。separated のホーム行順に一致。
+          const ordered = [...ts].sort((a, b) => {
+            const c = cmpKeys(a.sortOrder, b.sortOrder);
+            return c !== 0 ? c : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+          });
+          // 基準スレッド = マーカー選択中はその親、無ければ選択中スレッド。
+          const ls = usePlotThreadStore.getState().links;
+          const baseId = tl.selectedPlotLinkId
+            ? (ls.find((l) => l.id === tl.selectedPlotLinkId)?.threadId ??
+              tl.selectedPlotThreadId)
+            : tl.selectedPlotThreadId;
+          const idx = baseId ? ordered.findIndex((t) => t.id === baseId) : -1;
+          const dir = e.key === "ArrowDown" ? 1 : -1;
+          const nextIdx =
+            idx === -1
+              ? dir === 1
+                ? 0
+                : ordered.length - 1
+              : Math.min(ordered.length - 1, Math.max(0, idx + dir));
+          const next = ordered[nextIdx];
+          if (next) {
+            tl.setSelectedPlotThreadId(next.id);
+            tl.setSelectedPlotLinkId(null);
+            if (!tl.inspectorOpen) toggleInspector();
           }
           break;
         }

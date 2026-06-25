@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Trash2, Ban } from "lucide-react";
+import { X, Trash2, Ban, ChevronDown, ChevronUp } from "lucide-react";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { activeCodexPaletteSlots } from "@/lib/resolveCodexColors";
@@ -66,6 +66,8 @@ export function PlotMarkerInspector({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  // スレッド情報はマーカーの下に折りたたむ（マーカー選択中は既定で畳む）。
+  const [threadExpanded, setThreadExpanded] = useState(false);
   const linkId = useTimelineStore((s) => s.selectedPlotLinkId);
   const threadId = useTimelineStore((s) => s.selectedPlotThreadId);
   const setSelectedPlotLinkId = useTimelineStore(
@@ -105,7 +107,9 @@ export function PlotMarkerInspector({
     >
       <div className="flex items-center justify-between">
         <span className="font-semibold text-foreground">
-          {t("plotThread.thread", "スレッド")}
+          {link
+            ? t("plotThread.marker", "マーカー")
+            : t("plotThread.thread", "スレッド")}
         </span>
         <button
           onClick={onClose}
@@ -122,79 +126,9 @@ export function PlotMarkerInspector({
         </p>
       ) : (
         <>
-          {/* スレッド編集 */}
-          <label className="flex flex-col gap-1">
-            <span className="text-muted-foreground">
-              {t("plotThread.name", "名前")}
-            </span>
-            <InlineText
-              key={thread.id}
-              value={thread.name}
-              placeholder={t("plotThread.newThreadName", "新しいスレッド")}
-              onCommit={(next) => {
-                const v = next.trim();
-                if (v && v !== thread.name) void renameThread(thread.id, v);
-              }}
-            />
-          </label>
-
-          {/* スレッド色（Codex タイプと同じパレット） */}
-          <div className="flex flex-col gap-1">
-            <span className="text-muted-foreground">
-              {t("plotThread.color", "色")}
-            </span>
-            <div
-              className="flex flex-wrap items-center gap-1"
-              role="group"
-              aria-label={t("plotThread.color", "色")}
-            >
-              {paletteSlots.map((slot, i) => {
-                const selected = thread.color === slot.fg;
-                return (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => void setThreadColor(thread.id, slot.fg)}
-                    aria-label={slot.label}
-                    aria-pressed={selected}
-                    title={slot.label}
-                    className={`h-5 w-5 rounded-full border ${selected ? "ring-2 ring-ring ring-offset-1" : "border-border"}`}
-                    style={{ backgroundColor: slot.fg }}
-                  />
-                );
-              })}
-              {/* 色をクリア（既定色 var(--primary) に戻す） */}
-              <button
-                type="button"
-                onClick={() => void setThreadColor(thread.id, null)}
-                aria-label={t("plotThread.colorClear", "色をクリア")}
-                aria-pressed={thread.color === null}
-                title={t("plotThread.colorClear", "色をクリア")}
-                className={`flex h-5 w-5 items-center justify-center rounded-full border text-muted-foreground ${thread.color === null ? "ring-2 ring-ring ring-offset-1" : "border-border"}`}
-              >
-                <Ban className="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-
-          <button
-            onClick={() => {
-              void deleteThread(thread.id);
-              setSelectedPlotThreadId(null);
-              setSelectedPlotLinkId(null);
-            }}
-            className="inline-flex items-center gap-1 self-start rounded px-1.5 py-1 text-destructive hover:bg-destructive/10"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t("plotThread.deleteThread", "スレッドを削除")}
-          </button>
-
-          {/* マーカー編集（マーカー選択時のみ） */}
+          {/* マーカー編集（マーカー選択時のみ・最上部） */}
           {link && (
-            <div className="flex flex-col gap-3 border-t border-border pt-3">
-              <span className="font-semibold text-foreground">
-                {t("plotThread.marker", "マーカー")}
-              </span>
+            <div className="flex flex-col gap-3">
               <label className="flex flex-col gap-1">
                 <span className="text-muted-foreground">
                   {t("plotThread.phase", "段階")}
@@ -253,6 +187,108 @@ export function PlotMarkerInspector({
               </button>
             </div>
           )}
+
+          {/* スレッド編集（マーカーの下・折りたたみ可能）。マーカー未選択時はスレッドが
+              主役なので常に展開する。 */}
+          <div
+            className={`flex flex-col gap-3 ${link ? "border-t border-border pt-3" : ""}`}
+          >
+            {link ? (
+              <button
+                type="button"
+                onClick={() => setThreadExpanded((v) => !v)}
+                aria-expanded={threadExpanded}
+                className="flex w-full items-center justify-between text-left font-semibold text-foreground"
+              >
+                <span>{t("plotThread.thread", "スレッド")}</span>
+                {threadExpanded ? (
+                  <ChevronUp className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                )}
+              </button>
+            ) : (
+              <span className="font-semibold text-foreground">
+                {t("plotThread.thread", "スレッド")}
+              </span>
+            )}
+
+            {(!link || threadExpanded) && (
+              <>
+                <label className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">
+                    {t("plotThread.name", "名前")}
+                  </span>
+                  <InlineText
+                    key={thread.id}
+                    value={thread.name}
+                    placeholder={t(
+                      "plotThread.newThreadName",
+                      "新しいスレッド",
+                    )}
+                    onCommit={(next) => {
+                      const v = next.trim();
+                      if (v && v !== thread.name)
+                        void renameThread(thread.id, v);
+                    }}
+                  />
+                </label>
+
+                {/* スレッド色（Codex タイプと同じパレット） */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">
+                    {t("plotThread.color", "色")}
+                  </span>
+                  <div
+                    className="flex flex-wrap items-center gap-1"
+                    role="group"
+                    aria-label={t("plotThread.color", "色")}
+                  >
+                    {paletteSlots.map((slot, i) => {
+                      const selected = thread.color === slot.fg;
+                      return (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() =>
+                            void setThreadColor(thread.id, slot.fg)
+                          }
+                          aria-label={slot.label}
+                          aria-pressed={selected}
+                          title={slot.label}
+                          className={`h-5 w-5 rounded-full border ${selected ? "ring-2 ring-ring ring-offset-1" : "border-border"}`}
+                          style={{ backgroundColor: slot.fg }}
+                        />
+                      );
+                    })}
+                    {/* 色をクリア（既定色 var(--primary) に戻す） */}
+                    <button
+                      type="button"
+                      onClick={() => void setThreadColor(thread.id, null)}
+                      aria-label={t("plotThread.colorClear", "色をクリア")}
+                      aria-pressed={thread.color === null}
+                      title={t("plotThread.colorClear", "色をクリア")}
+                      className={`flex h-5 w-5 items-center justify-center rounded-full border text-muted-foreground ${thread.color === null ? "ring-2 ring-ring ring-offset-1" : "border-border"}`}
+                    >
+                      <Ban className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    void deleteThread(thread.id);
+                    setSelectedPlotThreadId(null);
+                    setSelectedPlotLinkId(null);
+                  }}
+                  className="inline-flex items-center gap-1 self-start rounded px-1.5 py-1 text-destructive hover:bg-destructive/10"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {t("plotThread.deleteThread", "スレッドを削除")}
+                </button>
+              </>
+            )}
+          </div>
         </>
       )}
     </div>
