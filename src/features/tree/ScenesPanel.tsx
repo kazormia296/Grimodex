@@ -11,6 +11,7 @@ import { useScenesKeyboard } from "./useScenesKeyboard";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { buildSceneThreadTracks } from "@/features/plot-threads/sceneThreadTracks";
+import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
 import { ScenesPanelContext } from "./ScenesPanelContext";
@@ -93,6 +94,8 @@ export function ScenesPanel() {
   const allThreads = usePlotThreadStore((s) => s.threads);
   const plotLinks = usePlotThreadStore((s) => s.links);
   const plotBranches = usePlotThreadStore((s) => s.branches);
+  // Timeline の「重要度順に整列」をトラックの列順にも反映する（共有 display 設定）。
+  const plotSubwaySort = useTimelineStore((s) => s.plotSubwaySort);
 
   // thread id → row, for resolving dot color/name (stable per threads change).
   const threadsById = useMemo(
@@ -186,8 +189,9 @@ export function ScenesPanel() {
         nodeThreadIds,
         threadsById,
         plotBranches,
+        plotSubwaySort,
       ),
-    [flatNodes, nodeThreadIds, threadsById, plotBranches],
+    [flatNodes, nodeThreadIds, threadsById, plotBranches, plotSubwaySort],
   );
   // 列の内容（id+色）が不変なら trackColumns 参照を保ち、行 memo の破綻を抑える。
   const trackColKey = trackModel.columns

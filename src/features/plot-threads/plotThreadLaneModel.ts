@@ -10,6 +10,10 @@ import type {
   PlotThreadBranchRow,
 } from "./api";
 import { computeThreadRuns } from "./plotThreadRuns";
+import {
+  centerOutRows,
+  rankThreadsBySubwayImportance,
+} from "./plotThreadOrder";
 
 /** TimelineViewport の LANE_Y(=60) と整合する scheduled ベースライン。 */
 export const LANE_TOP = 60;
@@ -87,19 +91,6 @@ function cmpId(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** center-out 行割り当て: rank 順(0=最重要)に中心 mid=(n-1)/2 から外へ交互配置した
- *  行 index を返す（重要度ランク順に中央から外へ交互配置する自動整列用）。 */
-function centerOutRows(n: number): number[] {
-  const mid = (n - 1) / 2;
-  return Array.from({ length: n }, (_, row) => row).sort((a, b) => {
-    const da = Math.abs(a - mid);
-    const db = Math.abs(b - mid);
-    if (da !== db) return da - db;
-    if (a !== b) return b - a;
-    return 0;
-  });
-}
-
 /**
  * プロットスレッドの「ストーリーライン図」レイアウト（Plottr 型）を生成する純関数。
  *
@@ -156,13 +147,7 @@ export function buildPlotLaneModel(args: {
       else colsByThread.set(l.threadId, new Set([x]));
     }
     const importanceOf = (id: string) => colsByThread.get(id)?.size ?? 0;
-    const ranked = [...threads].sort((a, b) => {
-      const ia = importanceOf(a.id);
-      const ib = importanceOf(b.id);
-      if (ia !== ib) return ib - ia;
-      const c = cmpKeys(a.sortOrder, b.sortOrder);
-      return c !== 0 ? c : cmpId(a.id, b.id);
-    });
+    const ranked = rankThreadsBySubwayImportance(threads, importanceOf);
     const rows = centerOutRows(ranked.length);
     homeRow = new Map(ranked.map((t, rank) => [t.id, rows[rank]]));
   } else {

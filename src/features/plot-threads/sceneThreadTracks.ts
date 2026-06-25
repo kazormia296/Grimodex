@@ -1,6 +1,7 @@
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import type { PlotThreadRow, PlotThreadBranchRow } from "./api";
 import { computeThreadRuns } from "./plotThreadRuns";
+import { orderThreadsBySubwayImportance } from "./plotThreadOrder";
 
 /** スレッドトラック 1 列の幅(px)。各スレッドが 1 本の縦トラックを占める。 */
 export const TRACK_COL_WIDTH = 11;
@@ -48,16 +49,30 @@ export function buildSceneThreadTracks(
   nodeThreadIds: Record<string, string[]>,
   threadsById: Map<string, PlotThreadRow>,
   branches: PlotThreadBranchRow[] = [],
+  /** Timeline の「重要度順に整列」(plotSubwaySort) を列順に反映するか。
+   *  true = 重要度(distinct 所属シーン数)＋center-out（Timeline の行と一致）/ false = sortOrder 線形。 */
+  subwaySort = false,
 ): SceneThreadTrackModel {
-  // 列 = 可視行のいずれかに所属するスレッド
+  // 列 = 可視行のいずれかに所属するスレッド。memberCount = distinct 所属シーン数（＝重要度）。
   const memberThreadIds = new Set<string>();
+  const memberCount = new Map<string, number>();
   for (const n of orderedNodes) {
-    for (const tid of nodeThreadIds[n.id] ?? []) memberThreadIds.add(tid);
+    for (const tid of nodeThreadIds[n.id] ?? []) {
+      memberThreadIds.add(tid);
+      memberCount.set(tid, (memberCount.get(tid) ?? 0) + 1);
+    }
   }
-  const columns = [...memberThreadIds]
+  const memberThreads = [...memberThreadIds]
     .map((id) => threadsById.get(id))
-    .filter((t): t is PlotThreadRow => Boolean(t))
-    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder) || cmpId(a.id, b.id));
+    .filter((t): t is PlotThreadRow => Boolean(t));
+  const columns = subwaySort
+    ? orderThreadsBySubwayImportance(
+        memberThreads,
+        (id) => memberCount.get(id) ?? 0,
+      )
+    : [...memberThreads].sort(
+        (a, b) => cmpKeys(a.sortOrder, b.sortOrder) || cmpId(a.id, b.id),
+      );
 
   if (columns.length === 0)
     return { columns, cellByNode: {}, connectorByNode: {} };

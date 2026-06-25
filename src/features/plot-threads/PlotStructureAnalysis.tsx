@@ -14,6 +14,7 @@ import {
   type PlotBranchKind,
 } from "@/db/schema";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { orderThreadsBySubwayImportance } from "./plotThreadOrder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import {
@@ -42,6 +43,7 @@ export function PlotStructureAnalysis() {
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const axisMode = useTimelineStore((s) => s.axisMode);
   const spacingMode = useTimelineStore((s) => s.spacingMode);
+  const plotSubwaySort = useTimelineStore((s) => s.plotSubwaySort);
   const toggleDisplay = useTimelineStore((s) => s.toggleDisplay);
 
   const [collapsed, setCollapsed] = useState(false);
@@ -75,10 +77,25 @@ export function PlotStructureAnalysis() {
   }, [nodes, axisMode, spacingMode, activeSceneId]);
 
   const rows = useMemo(() => {
-    const sorted = [...threads].sort((a, b) =>
-      cmpKeys(a.sortOrder, b.sortOrder),
-    );
-    return sorted.map((thread) => ({
+    // plotSubwaySort 連動: Timeline / Scene トラックと同じ重要度(distinct 軸シーン数)
+    // center-out 順（最重要が中央）。OFF=sortOrder。
+    let ordered: typeof threads;
+    if (plotSubwaySort) {
+      const byThread = new Map<string, Set<string>>();
+      for (const l of links) {
+        if (!maps.indexById.has(l.nodeId)) continue;
+        const s = byThread.get(l.threadId);
+        if (s) s.add(l.nodeId);
+        else byThread.set(l.threadId, new Set([l.nodeId]));
+      }
+      ordered = orderThreadsBySubwayImportance(
+        threads,
+        (id) => byThread.get(id)?.size ?? 0,
+      );
+    } else {
+      ordered = [...threads].sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
+    }
+    return ordered.map((thread) => ({
       thread,
       dormancy: computeThreadDormancy(
         links,
@@ -93,7 +110,7 @@ export function PlotStructureAnalysis() {
         maps.statusByNodeId,
       ),
     }));
-  }, [threads, links, maps]);
+  }, [threads, links, maps, plotSubwaySort]);
 
   async function handleCopy() {
     const md = buildPlotThreadsMarkdown({

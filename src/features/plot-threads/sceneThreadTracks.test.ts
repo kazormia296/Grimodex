@@ -167,6 +167,29 @@ describe("buildSceneThreadTracks", () => {
     expect(connectorByNode.n2).toBeUndefined();
   });
 
+  it("subwaySort=true で列を重要度 center-out 順に並べる（Timeline の行と一致）", () => {
+    const tById = new Map<string, PlotThreadRow>([
+      ["t1", thread({ id: "t1", sortOrder: "a0" })],
+      ["t2", thread({ id: "t2", sortOrder: "a1" })],
+      ["t3", thread({ id: "t3", sortOrder: "a2" })],
+    ]);
+    const sixRows = ["n0", "n1", "n2", "n3", "n4", "n5"].map((id) => ({ id }));
+    const membership = {
+      n0: ["t1"],
+      n1: ["t1"],
+      n2: ["t1"], // t1 = 3 シーン（最重要）
+      n3: ["t2"], // t2 = 1 シーン
+      n4: ["t3"],
+      n5: ["t3"], // t3 = 2 シーン
+    };
+    // 既定（sortOrder 線形）
+    const def = buildSceneThreadTracks(sixRows, membership, tById, []);
+    expect(def.columns.map((c) => c.id)).toEqual(["t1", "t2", "t3"]);
+    // subwaySort: 重要度 t1>t3>t2 → rank[t1,t3,t2] → center-out 視覚順 [t2,t1,t3]
+    const sub = buildSceneThreadTracks(sixRows, membership, tById, [], true);
+    expect(sub.columns.map((c) => c.id)).toEqual(["t2", "t1", "t3"]);
+  });
+
   it("所属シーンが無ければ列は空", () => {
     const { columns, cellByNode } = buildSceneThreadTracks(
       rows,

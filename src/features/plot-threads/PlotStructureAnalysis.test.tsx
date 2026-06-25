@@ -76,7 +76,11 @@ describe("PlotStructureAnalysis", () => {
     vi.clearAllMocks();
     usePlotThreadStore.setState({ threads: [], links: [], branches: [] });
     useTreeStore.setState({ nodes: [], activeSceneId: "" });
-    useTimelineStore.setState({ axisMode: "reading", spacingMode: "uniform" });
+    useTimelineStore.setState({
+      axisMode: "reading",
+      spacingMode: "uniform",
+      plotSubwaySort: false,
+    });
   });
 
   it("スレッド0件で空状態を表示", () => {
@@ -98,6 +102,43 @@ describe("PlotStructureAnalysis", () => {
     expect(screen.getByText("復讐")).toBeTruthy();
     expect(screen.getByTestId("plot-structure-row-t1")).toBeTruthy();
     expect(screen.getByTestId("phase-stepper-t1")).toBeTruthy();
+  });
+
+  it("plotSubwaySort=true で行を重要度 center-out 順に並べる（Scene トラックと一致）", () => {
+    useTreeStore.setState({
+      nodes: [
+        node("s1", "S1"),
+        node("s2", "S2"),
+        node("s3", "S3"),
+        node("s4", "S4"),
+        node("s5", "S5"),
+        node("s6", "S6"),
+      ],
+      activeSceneId: "s1",
+    });
+    usePlotThreadStore.setState({
+      threads: [thread("t1", "T1"), thread("t2", "T2"), thread("t3", "T3")],
+      links: [
+        link("t1", "s1", "introduce"),
+        link("t1", "s2", "develop"),
+        link("t1", "s3", "turn"), // t1 = 3 シーン（最重要）
+        link("t2", "s4", "introduce"), // t2 = 1 シーン
+        link("t3", "s5", "introduce"),
+        link("t3", "s6", "develop"), // t3 = 2 シーン
+      ],
+      branches: [],
+    });
+    useTimelineStore.setState({ plotSubwaySort: true });
+    const { container } = render(<PlotStructureAnalysis />);
+    const ids = Array.from(
+      container.querySelectorAll('[data-testid^="plot-structure-row-"]'),
+    ).map((el) => el.getAttribute("data-testid"));
+    // 重要度 t1>t3>t2 → rank[t1,t3,t2] → center-out 行[1,2,0] → 視覚順 [t2,t1,t3]
+    expect(ids).toEqual([
+      "plot-structure-row-t2",
+      "plot-structure-row-t1",
+      "plot-structure-row-t3",
+    ]);
   });
 
   it("コピーで thread の Markdown を clipboard に書き込む", async () => {
