@@ -228,6 +228,16 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       [threads, links, sceneX, threadsTop, branches, scheduledCountForLanes],
     );
 
+    // merge の流入先(to)になっているマーカーの集合。subway と同じ白丸ドーナツで描く。
+    // キー = `toThreadId:atNodeId`。
+    const mergeTargetKeys = useMemo(() => {
+      const set = new Set<string>();
+      for (const b of branches) {
+        if (b.kind === "merge") set.add(`${b.toThreadId}:${b.atNodeId}`);
+      }
+      return set;
+    }, [branches]);
+
     // subway レイアウト（AeonTimeline 風）モデル。showThreads かつ subway のときのみ使う。
     const subwayActive = showThreads && plotLayout === "subway";
     // subway 本体の開始 Y。story-time の未配置ゾーン(UNSCHEDULED_Y)があるときは
@@ -1105,23 +1115,22 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         y1={seg.y1}
                         y2={seg.y2}
                         stroke={lane.thread.color ?? "var(--primary)"}
-                        strokeWidth={BAND_HEIGHT}
-                        // 不透過（重なりによる濃淡差/混色を避ける。ユーザー指定）。
-                        // butt 端（round だと継ぎ目ごとに半径 BAND_HEIGHT/2 のキャップが
-                        // 重なり瘤になる）。終端は明示ノブ(terminus)で締める。
+                        // 線は subway の路線と同じ細さ（TRACK_WIDTH）。段階チップは別途
+                        // BAND_HEIGHT のピルで線の上に載る。
+                        strokeWidth={TRACK_WIDTH}
+                        // 不透過（重なりによる濃淡差/混色を避ける）。butt 端で継ぎ目を揃える。
                         strokeLinecap="butt"
                         pointerEvents="none"
                       />
                     ))}
-                  {/* 終端キャップ（完結）。自走で終わるスレッドの線端に塗りノブ。
-                      merge で畳まれた終端には付かない（コネクタで表現）。
-                      Y はその列のスロット由来（束ね/スロット移動を追従）。 */}
+                  {/* 終端キャップ（完結）。自走で終わるスレッドの線端に小さな塗りノブ。
+                      merge で畳まれた終端には付かない（コネクタで表現）。 */}
                   {axisMode === "reading" && lane.terminusX !== null && (
                     <circle
                       data-testid={`plot-thread-terminus-${lane.thread.id}`}
                       cx={xOf(lane.terminusX)}
                       cy={laneSlotY(lane, lane.terminusX)}
-                      r={BAND_HEIGHT / 2}
+                      r={NODE_R_SINGLE}
                       fill={lane.thread.color ?? "var(--primary)"}
                       pointerEvents="none"
                     />
@@ -1166,7 +1175,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     d={d}
                     fill="none"
                     stroke={c.color ?? "var(--primary)"}
-                    strokeWidth={BAND_HEIGHT}
+                    // 線(帯)と同じ subway 路線幅（TRACK_WIDTH）。
+                    strokeWidth={TRACK_WIDTH}
                     // 不透過・butt 端: 帯の butt 端と縦シームで揃え、重なり混色を避ける。
                     strokeLinecap="butt"
                     strokeLinejoin="round"
@@ -1209,6 +1219,30 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         mk.nodeId,
                         lane.thread.id,
                       );
+                    // merge の流入先マーカーは subway と同じ白丸ドーナツ（白塗り＋色リング）
+                    // で描く（ズームに依らず・チップにしない）。
+                    if (mergeTargetKeys.has(`${lane.thread.id}:${mk.nodeId}`)) {
+                      return (
+                        <circle
+                          key={mk.linkId}
+                          data-testid={`plot-marker-${mk.linkId}`}
+                          data-phase={mk.phaseType}
+                          data-merge-target="true"
+                          className="cursor-pointer"
+                          opacity={dragging ? 0.3 : 1}
+                          cx={cx}
+                          cy={mk.y}
+                          r={NODE_R_MULTI}
+                          fill="var(--background, white)"
+                          stroke={selected ? "var(--foreground)" : fill}
+                          strokeWidth={selected ? 2.5 : NODE_RING}
+                          onMouseDown={onDown}
+                          onContextMenu={onCtx}
+                        >
+                          <title>{`${lane.thread.name}: ${label}`}</title>
+                        </circle>
+                      );
+                    }
                     // 縮小時は円に縮退（段階テキストは title ツールチップで補う）。
                     if (STEP < CHIP_MIN_STEP) {
                       return (

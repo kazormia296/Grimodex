@@ -627,6 +627,37 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
     expect(markerIdx).toBeGreaterThan(connIdx);
   });
 
+  it("merge の流入先マーカーは subway 風の白丸ドーナツで描く", () => {
+    seedThreads(); // t1: l1@s1, l2@s3
+    usePlotThreadStore.setState({
+      branches: [
+        {
+          id: "mg1",
+          projectId: "p",
+          fromThreadId: "t2",
+          toThreadId: "t1",
+          atNodeId: "s3", // t1@s3 = l2 が merge の流入先
+          kind: "merge",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    });
+    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // 流入先(l2)は白丸ドーナツ（circle・白塗り・data-merge-target）。
+    const merge = getByTestId("plot-marker-l2");
+    expect(merge.tagName.toLowerCase()).toBe("circle");
+    expect(merge.getAttribute("data-merge-target")).toBe("true");
+    expect(merge.getAttribute("fill")).toContain("background");
+    // 非 merge マーカー(l1)は通常描画（ドーナツでない）。
+    expect(
+      getByTestId("plot-marker-l1").getAttribute("data-merge-target"),
+    ).toBeNull();
+  });
+
   it("自走完結スレッドに終端キャップ（塗りノブ）を描く", () => {
     seedThreads(); // t1: l1@s1, l2@s3（最後 s3 は merge でない）→ 終端あり
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
