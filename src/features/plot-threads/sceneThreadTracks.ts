@@ -1,7 +1,71 @@
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import type { PlotThreadRow, PlotThreadBranchRow } from "./api";
+import type { PlotPhaseType } from "@/db/schema";
+import type {
+  PlotThreadRow,
+  PlotThreadBranchRow,
+  PlotThreadLinkRow,
+} from "./api";
 import { computeThreadRuns } from "./plotThreadRuns";
 import { orderThreadsBySubwayImportance } from "./plotThreadOrder";
+
+/** Phase 3a: スレッド上のマーカー 1 件（シーン id ＋ 段階）。 */
+export interface SceneThreadMarker {
+  nodeId: string;
+  phaseType: PlotPhaseType;
+}
+
+/** Phase 3a: 現在シーンが 1 本の糸で持つ「位置づけ」と、同じ糸の他シーン。 */
+export interface SceneThreadMembership {
+  threadId: string;
+  /** 現在シーンがこの糸で踏む段階（複数 link なら複数・出現順）。 */
+  currentPhases: PlotPhaseType[];
+  /** 同じ糸の他シーン（現在シーン除く・nodeId dedup・links 走査順）。 */
+  others: SceneThreadMarker[];
+}
+
+/**
+ * 指定シーンが属する各スレッドでの「位置づけ」と同じ糸の他シーンを返す純関数。
+ * 意味検索でなく作者が明示した縦糸（thread リンク）の構造 lookup（Phase 3a）。
+ * 本文は載せない＝AI 文脈には「縦糸の構成（タイトルと段階）」だけを渡す。
+ * - 現在シーンの自リンクは currentPhases に集約（others からは除外）。
+ * - others は nodeId で dedup（同シーンが複数段階を踏むなら最初の段階を採用）。
+ * - スレッド順・others 順とも links 走査順で安定＝決定的。
+ */
+export function computeSceneThreadContext(
+  links: PlotThreadLinkRow[],
+  sceneId: string,
+): SceneThreadMembership[] {
+  // 1st pass: 現在シーンが属するスレッド（first-encounter 順）と currentPhases。
+  const order: string[] = [];
+  const byThread = new Map<string, SceneThreadMembership>();
+  for (const l of links) {
+    if (l.nodeId !== sceneId) continue;
+    let m = byThread.get(l.threadId);
+    if (!m) {
+      m = { threadId: l.threadId, currentPhases: [], others: [] };
+      byThread.set(l.threadId, m);
+      order.push(l.threadId);
+    }
+    if (!m.currentPhases.includes(l.phaseType))
+      m.currentPhases.push(l.phaseType);
+  }
+  if (order.length === 0) return [];
+  // 2nd pass: 同じ糸の他シーン（nodeId dedup）。
+  const seenOther = new Map<string, Set<string>>();
+  for (const l of links) {
+    const m = byThread.get(l.threadId);
+    if (!m || l.nodeId === sceneId) continue;
+    let seen = seenOther.get(l.threadId);
+    if (!seen) {
+      seen = new Set();
+      seenOther.set(l.threadId, seen);
+    }
+    if (seen.has(l.nodeId)) continue;
+    seen.add(l.nodeId);
+    m.others.push({ nodeId: l.nodeId, phaseType: l.phaseType });
+  }
+  return order.map((id) => byThread.get(id)!);
+}
 
 /** スレッドトラック 1 列の幅(px)。各スレッドが 1 本の縦トラックを占める。 */
 export const TRACK_COL_WIDTH = 11;

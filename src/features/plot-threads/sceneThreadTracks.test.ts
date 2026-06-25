@@ -1,6 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { buildSceneThreadTracks } from "./sceneThreadTracks";
-import type { PlotThreadRow, PlotThreadBranchRow } from "./api";
+import {
+  buildSceneThreadTracks,
+  computeSceneThreadContext,
+} from "./sceneThreadTracks";
+import type {
+  PlotThreadRow,
+  PlotThreadBranchRow,
+  PlotThreadLinkRow,
+} from "./api";
+
+function link(
+  over: Partial<PlotThreadLinkRow> & { threadId: string; nodeId: string },
+): PlotThreadLinkRow {
+  return {
+    id: `${over.threadId}-${over.nodeId}`,
+    phaseType: "develop",
+    note: null,
+    sortOrder: null,
+    createdAt: "",
+    updatedAt: "",
+    ...over,
+  };
+}
 
 function branch(
   over: Partial<PlotThreadBranchRow> & {
@@ -208,5 +229,54 @@ describe("buildSceneThreadTracks", () => {
       threadsById,
     );
     expect(cellByNode.n1).toBe("|");
+  });
+});
+
+describe("computeSceneThreadContext", () => {
+  it("groups the scene's threads with current phase and other markers", () => {
+    const links: PlotThreadLinkRow[] = [
+      link({ threadId: "t1", nodeId: "s0", phaseType: "introduce" }),
+      link({ threadId: "t1", nodeId: "s1", phaseType: "develop" }),
+      link({ threadId: "t1", nodeId: "s2", phaseType: "climax" }),
+      link({ threadId: "t2", nodeId: "s1", phaseType: "introduce" }),
+      link({ threadId: "t2", nodeId: "s3", phaseType: "resolve" }),
+    ];
+    // s1 は t1(develop) と t2(introduce) に属する
+    const ctx = computeSceneThreadContext(links, "s1");
+    expect(ctx.map((c) => c.threadId)).toEqual(["t1", "t2"]);
+    expect(ctx[0].currentPhases).toEqual(["develop"]);
+    expect(ctx[0].others).toEqual([
+      { nodeId: "s0", phaseType: "introduce" },
+      { nodeId: "s2", phaseType: "climax" },
+    ]);
+    expect(ctx[1].currentPhases).toEqual(["introduce"]);
+    expect(ctx[1].others).toEqual([{ nodeId: "s3", phaseType: "resolve" }]);
+  });
+
+  it("collects all current phases when the scene has multiple links on one thread", () => {
+    const links: PlotThreadLinkRow[] = [
+      link({ threadId: "t1", nodeId: "s0", phaseType: "introduce" }),
+      link({ threadId: "t1", nodeId: "s0", phaseType: "develop" }),
+      link({ threadId: "t1", nodeId: "s1", phaseType: "climax" }),
+    ];
+    const ctx = computeSceneThreadContext(links, "s0");
+    expect(ctx).toHaveLength(1);
+    expect(ctx[0].currentPhases).toEqual(["introduce", "develop"]);
+    expect(ctx[0].others).toEqual([{ nodeId: "s1", phaseType: "climax" }]);
+  });
+
+  it("dedups other markers by nodeId (keeps first phase)", () => {
+    const links: PlotThreadLinkRow[] = [
+      link({ threadId: "t1", nodeId: "s0", phaseType: "introduce" }),
+      link({ threadId: "t1", nodeId: "s1", phaseType: "develop" }),
+      link({ threadId: "t1", nodeId: "s1", phaseType: "climax" }),
+    ];
+    const ctx = computeSceneThreadContext(links, "s0");
+    expect(ctx[0].others).toEqual([{ nodeId: "s1", phaseType: "develop" }]);
+  });
+
+  it("returns [] when the scene belongs to no thread", () => {
+    const links: PlotThreadLinkRow[] = [link({ threadId: "t1", nodeId: "s0" })];
+    expect(computeSceneThreadContext(links, "sX")).toEqual([]);
   });
 });

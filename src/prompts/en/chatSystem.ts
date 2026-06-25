@@ -141,6 +141,14 @@ export const EN_CHAT_SYSTEM = {
     /** label line of each message under chatRecall (role-based). Starts with `### `
      * to stay consistent with the trim block split (trimRagText). */
     chatRecallEntry: "### ",
+    /** Phase 3a: section for the STRUCTURE of the plot threads the current scene
+     * belongs to. A structural lookup of the author's hand-drawn through-line
+     * (thread links), no body text, distinct from semanticRecall; kept out of
+     * cacheSegments. */
+    plotThreadScenes:
+      "\n## Structure of the Current Scene's Plot Threads (author's through-line)",
+    /** block heading of each thread under plotThreadScenes. Starts with `### `. */
+    plotThreadScenesThread: "### Thread: ",
   },
 
   /** Sandwich reminder: placed at the end of all data-layer injection (after L5 and
@@ -166,6 +174,17 @@ export const EN_CHAT_SYSTEM = {
     "The following are excerpts of past scenes semantically related to the current writing " +
     "(auto-searched fragments). Use them as references for callbacks and consistency. The canonical " +
     "source of setting information is the codex-entries section above.",
+
+  /** Operating note at the top of the plotThreadScenes section. Makes clear this is
+   * the author's hand-drawn through-line (not an auto semantic search) and that no body
+   * text is included (positioning only). */
+  plotThreadScenesIntro:
+    "The following is the structure of the plot threads (through-lines the author drew by hand) " +
+    "that the current scene belongs to: the scene's role on each thread and the other scenes on " +
+    "the same thread (titles and phases only, no body text). Use it as a reference for sub-plot " +
+    "continuity and foreshadowing callbacks.",
+  /** Prefix of the current-scene role line under each thread in plotThreadScenes. */
+  plotThreadScenesCurrent: "This scene's role: ",
 
   /** Operating note at the top of the chatRecall section. These are episodic memory
    * (what was discussed, decided, or set aside) — a soft layer, NOT the canonical

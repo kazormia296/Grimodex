@@ -32,55 +32,58 @@
 
 ---
 
-## 3a. 同じ糸の他シーンを構造注入
+## 3a. 同じ糸の「構成」を構造注入（**本文なし・構造メタのみ**）
 
-### 設計判断
-- **トグル無し・自動注入**。roadmap が「確実に」と言い、上限が固定（最大 8 シーン × 800 文字）で
-  バウンドしているため。スレッドを引くのは作者の明示的行為＝引いた時点で注入したいのが自然。
-  Phase 1c/2 がトグルを明記したのと対照的に 3a はトグル記載が無い＝自動が意図。token コストが
-  問題化したらトグルは安価な follow-up。
-- **発火条件**: scene スコープ（`effectiveSceneId` 非 null）かつ現在シーンに thread peer が 1 件以上ある時のみ。
-- **順序**: `computeTimelineSceneOrder`（timelineStore.axisMode）の scene index で近傍優先。
-  距離 = `|idx(peer) - idx(current)|` 昇順、同距離は reading 順（=axis index 昇順）タイブレーク。上位 8 件。
-  軸 index Map に無い peer（軸外）は末尾扱い。
-- **excerpt**: 各 peer 本文を `loadSceneContent`→`prosemirrorToText`→先頭 800 文字。空本文はスキップ。
-- **二重注入回避**: peer の sceneId を `fetchSemanticRecall` の `excludeSceneIds` に追加（chatStore.ts:2366）。
-  exclude は peer を実際に注入する時のみ（=自動発火と同条件）かけるので穴は空かない。
+### 設計判断（2026-06-26 改訂＝本文注入を却下）
+当初案「他シーン本文を最大 8 件 × 800 文字で常時注入」は過剰と判断し却下。理由:
+- **トークンコスト**: 数千トークンを scene スコープで毎ターン上乗せ → budget 圧迫・他層を trim で押し出す。
+- **差別化は構造であって本文ではない**: 3a の唯一の価値は「作者が明示した縦糸の*位置づけ*」。本文は RAG が
+  意味的に拾うべきもの。構造で本文を先取りすると(a)RAG と食い合い exclude 配線が必要になる循環的複雑性、
+  (b)相談に無関係な近傍シーン本文で文脈を埋める、の二重の損。
+- **本文はオンデマンドで足りる**: Agent は同 PR の 3c `get_thread_scenes` で必要時に本文取得できる。常時注入不要。
+
+→ **既定 = 構造メタのみ・本文ゼロ**。各糸での位置づけ＋同じ糸の他シーン（タイトル＋段階）だけを注入。
+本文 excerpt は「メタでは足りない」と実機確認後の follow-up（トグル制）に回す。
+- **トグル無し・自動注入**（構造メタは数十〜数百トークンと安価でバウンド）。
+- **発火条件**: scene スコープで現在シーンが 1 本以上のスレッドに属する時のみ。
+- **exclude 不要**: 本文を載せないので semanticRecall と食い合わない（二重注入問題が消滅）。
+- **本文 I/O 不要**: `loadSceneContent` を呼ばない＝送信が軽い。全て in-memory store から導出。
 
 ### 新規 pure fn
 `src/features/plot-threads/sceneThreadTracks.ts`（Phase 1a 純関数の隣）:
 ```ts
-export function computeThreadPeerSceneIds(
-  links: PlotThreadLinkRow[],
-  sceneId: string,
-): string[]
+export interface SceneThreadMembership {
+  threadId: string;
+  currentPhases: PlotPhaseType[];          // 現在シーンが踏む段階（複数 link 可）
+  others: { nodeId: string; phaseType: PlotPhaseType }[];  // 同じ糸の他シーン（dedup）
+}
+export function computeSceneThreadContext(
+  links: PlotThreadLinkRow[], sceneId: string,
+): SceneThreadMembership[]
 ```
-- `link.nodeId === sceneId` の threadId 集合 → その threadId 群に属する distinct `nodeId`（`!== sceneId`）。
-- 決定的（Set で dedup・出現順安定）。`PlotThreadLinkRow` を `./api` から import type。
+- 自リンクは currentPhases に集約・others から除外。others は nodeId で dedup（最初の段階）。
+- スレッド順・others 順とも links 走査順で安定＝決定的。
 
 ### contextBuilder.ts 配線（新タグ `plot_thread_scenes`）
-RAG 層を手本に **全サイト** をミラー（漏れるとタグ不整合 or トークン誤差でテスト落ち）:
-- `PROMPT_DATA_TAGS`: `plotThreadScenes: "plot_thread_scenes"` 追加。
-- `RESERVED_TAG_RE`: `plot_thread_scenes` を alternation に追加（**値は PROMPT_DATA_TAGS と一致必須**）。
-- 入力型 `BuildSystemPromptInput`: `plotThreadScenes?: Array<{ sceneTitle: string; phaseLabel?: string; excerpt: string }>`。
-- 本文組立: `plotThreadText` を RAG と同型（ヘッダ + intro + 各 `### {title}` ブロック）で構築。
-  **`### ` サブヘッダ形式にする**ことで trim 関数を RAG と共有できる。
-- `TrimInput`: `plotThreadScenesText?: string` 追加 → `sumTokens` に加算 → `trimOrder` に挿入。
-  **trim 順 = EPISODIC → RAG → PLOT_THREAD → L5 → L4 → L2 → L3 → L1**（構造＞意味検索なので RAG より後に犠牲。
-  ただしユーザー明示の L1-5 より先に犠牲）。trim fn = `trimRagText` 流用（`### ` 形式前提・trimEpisodicText と同じ）。
-- trim 結果抽出 → `wrapDataLayer(effectivePlotThread, PROMPT_DATA_TAGS.plotThreadScenes)`（trim/stripL4 後）。
-- `hasDataLayers` 配列 / per-layer token 計上 / `layers.push({layer:"PLOT_THREAD", ...})` /
-  `prompt` 配列（**L4 の後・rag の前**）/ `volatileTail`（rag の前、cacheSegments には**入れない**） / `totalTokens`。
-- **totalTokens 固定要素カウント更新**: prompt 配列要素が 10→11 になるので末尾 `(reminderText ? 10 : 9)` を `(reminderText ? 11 : 10)` に。
-- i18n: `chat.context.layer.PLOT_THREAD`（ja/en locale）+ chatSystem.ts（ja/en）に `headers.plotThreadScenes` /
-  `plotThreadScenesIntro` / `headers.plotThreadScenesScene`。
+RAG 層を手本に **全サイト** をミラー:
+- `PROMPT_DATA_TAGS`: `plotThreadScenes: "plot_thread_scenes"` / `RESERVED_TAG_RE` に追加（値一致必須）。
+- 入力型 `BuildSystemPromptInput.plotThreadScenes?: Array<{ threadName; currentPhases: string[]; markers: {title; phaseLabel}[] }>`
+  （**ラベルは呼び出し側で局所化済みを渡す**＝contextBuilder は純粋）。
+- 本文組立: 糸ごとに `### 糸: {threadName}` ブロック → `このシーンの位置づけ: {phases}` 行 → `- {title}: {phase}` 行。
+  **糸 = `### ` ブロック**にすることで trim（trimRagText 流用）が糸単位で末尾から落とす。
+- `TrimInput.plotThreadScenesText?` 追加 → `sumTokens` 加算 → `trimOrder` に挿入。
+  **trim 順 = EPISODIC → RAG → PLOT_THREAD → L5 → L4 → L2 → L3 → L1**。trim fn = `trimRagText` 流用。
+- wrap/hasDataLayers/token 計上/`layers.push({layer:"PLOT_THREAD"})`/`prompt`（L4 の後・rag の前）/
+  `volatileTail`（rag の前・cacheSegments には**入れない**）/`totalTokens`。
+- **totalTokens 固定要素カウント 10→11**（`reminderText ? 10:9` → `11:10`）。
+- i18n: `chat.context.layer.PLOT_THREAD`（locale）+ chatSystem.ts（ja/en）に `headers.plotThreadScenes` /
+  `headers.plotThreadScenesThread` / `plotThreadScenesIntro` / `plotThreadScenesCurrent`。
 
-### chatStore.ts（buildSceneCtx, ~2313-2499）
-- `usePlotThreadStore.getState().links` から `computeThreadPeerSceneIds(links, sceneCtx.id)` を計算。
-- peer があれば `computeTimelineSceneOrder` で軸 index 取得 → 距離ソート → 上位 8 → `loadSceneContent`+`prosemirrorToText` で
-  excerpt 構築（800 文字）→ `plotThreadScenes` 入力に渡す。phaseLabel は当該 peer の link.phaseType を i18n ラベル化（任意）。
-- `fetchSemanticRecall` の `excludeSceneIds` に peer ids を append（peer 注入時のみ）。
-- XPROJ: `links` は project ごと eager。await を挟むので snapshot 読みは送信時点値で可（build は per-send）。
+### chatStore.ts（`buildPlotThreadScenesInput` + buildSceneCtx）
+- module-local `buildPlotThreadScenesInput(sceneId)`（同期・I/O なし）: `usePlotThreadStore.getState().{threads,links}` +
+  `computeSceneThreadContext` → threadName（threads・空は `plotThread.unnamed`）・title（treeStore nodes）・
+  phaseLabel（`plotThread.phaseType.*`）を解決。スレッド順=sortOrder、他シーンは段階順、上限 24/糸。所属無しは undefined。
+- buildSystemPrompt 入力に `plotThreadScenes: buildPlotThreadScenesInput(sceneCtx.id)`。**exclude/本文 I/O は無し**。
 
 ---
 
@@ -163,7 +166,8 @@ focusSubject?:
 - `npx tsc --noEmit` / `pnpm lint:fix` / `pnpm test`（vitest 全）。
 - `contextBuilder.test.ts`: 新タグの順序配列・偽装エスケープ・空レイヤー・volatileTail/cacheSegments 分配。
 - `chatStore.test.ts`: threadFocusOverride が `resolveScopeSessionKey` 出力 / createSession 引数を変えないこと（session 保存先不変）。
-- `sceneThreadTracks.test.ts`: `computeThreadPeerSceneIds`（複数スレッド・自己除外・dedup）。
+- `sceneThreadTracks.test.ts`: `computeSceneThreadContext`（複数スレッド・自己除外・dedup・複数段階）。
+- `contextBuilder.test.ts`: `plot_thread_scenes` が prompt+volatileTail に乗り cacheSegments には乗らない・偽装エスケープ。
 - `toolExecutors.test.ts`: XPROJ（他 project の thread_id / fail-closed）。
 - 残（実機/ライブ）: `aiLiveHarness.ts` で 3a/3b injection 経路・3c ツール（キー無し CI は skip 安全）。実機 GUI QA。
 

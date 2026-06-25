@@ -1729,6 +1729,7 @@
         "L3": "Current scene",
         "FOCUS": "Conversation focus",
         "L4": "Codex & settings",
+        "PLOT_THREAD": "Plot thread structure",
         "RAG": "Related scenes (semantic)",
         "EPISODIC": "Past conversation memory",
         "L5": "Conversation summary",

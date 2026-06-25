@@ -45,6 +45,7 @@ import type {
   CodexContext,
   LayerBreakdown,
   NoteContext,
+  BuildSystemPromptInput,
 } from "./contextBuilder";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { fetchProjectContext as fetchProjectContextAtom } from "@/features/project/contextAtoms";
@@ -176,6 +177,9 @@ import {
 } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent, loadScenesFull, getNode } from "@/features/tree/api";
+import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import { computeSceneThreadContext } from "@/features/plot-threads/sceneThreadTracks";
+import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -1783,6 +1787,57 @@ async function buildOutgoingScenePrompt(
   return { prompt, layers, totalTokens };
 }
 
+/** 糸ごとに表示する他シーンの最大数（構造行は安価だが念のため上限）。 */
+const PLOT_THREAD_MAX_MARKERS = 24;
+
+/**
+ * Phase 3a: 現在シーンが属するプロットスレッドの「構成」を AI 文脈用に組む。
+ * 本文は載せず、各糸での位置づけ＋同じ糸の他シーン（タイトル＋段階）だけ。
+ * 全て in-memory store から導出（DB I/O なし）。意味検索と食い合わないので
+ * semanticRecall の exclude は不要。所属が無ければ undefined。
+ */
+function buildPlotThreadScenesInput(
+  sceneId: string,
+): BuildSystemPromptInput["plotThreadScenes"] {
+  const { threads, links } = usePlotThreadStore.getState();
+  const memberships = computeSceneThreadContext(links, sceneId);
+  if (memberships.length === 0) return undefined;
+
+  const nodes = useTreeStore.getState().nodes;
+  const titleById = new Map(nodes.map((n) => [n.id, n.title] as const));
+  const threadById = new Map(threads.map((t) => [t.id, t] as const));
+  const phaseLabel = (p: PlotPhaseType) =>
+    i18next.t(`plotThread.phaseType.${p}`);
+  const phaseRank = (p: PlotPhaseType) =>
+    (PLOT_PHASE_TYPES as readonly string[]).indexOf(p);
+  const unnamed = i18next.t("plotThread.unnamed", "（無名）");
+
+  // スレッド順は sortOrder（Timeline / Scene トラックと一致）。
+  const ordered = [...memberships].sort((a, b) =>
+    cmpKeys(
+      threadById.get(a.threadId)?.sortOrder ?? "",
+      threadById.get(b.threadId)?.sortOrder ?? "",
+    ),
+  );
+
+  return ordered.map((m) => {
+    const thread = threadById.get(m.threadId);
+    // 他シーンは段階順（introduce→resolve）に並べて縦糸の弧を見せる。
+    const markers = [...m.others]
+      .sort((a, b) => phaseRank(a.phaseType) - phaseRank(b.phaseType))
+      .slice(0, PLOT_THREAD_MAX_MARKERS)
+      .map((o) => ({
+        title: titleById.get(o.nodeId) ?? unnamed,
+        phaseLabel: phaseLabel(o.phaseType),
+      }));
+    return {
+      threadName: thread?.name?.trim() || unnamed,
+      currentPhases: m.currentPhases.map(phaseLabel),
+      markers,
+    };
+  });
+}
+
 async function buildSceneContextPrompt(opts: {
   sceneCtx: SceneContext;
   projectCtx: ProjectContext | null;
@@ -2495,6 +2550,8 @@ async function buildSceneContextPrompt(opts: {
       chatRecallMessages.length > 0
         ? chatRecallMessages.map((m) => ({ label: m.label, text: m.text }))
         : undefined,
+    // Phase 3a: 現在シーンが属する縦糸の構成（本文なし・位置づけのみ）。
+    plotThreadScenes: buildPlotThreadScenesInput(sceneCtx.id),
   });
   markEnd("buildSceneCtx.buildSystemPrompt");
 
