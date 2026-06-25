@@ -47,7 +47,6 @@ export function TimelinePanel() {
   const inspectorWidth = useTimelineStore((s) => s.inspectorWidth);
   const setInspectorWidth = useTimelineStore((s) => s.setInspectorWidth);
   const showThreads = useTimelineStore((s) => s.showThreads);
-  const plotLayout = useTimelineStore((s) => s.plotLayout);
   const selectedPlotLinkId = useTimelineStore((s) => s.selectedPlotLinkId);
   const selectedPlotThreadId = useTimelineStore((s) => s.selectedPlotThreadId);
   const setSelectedPlotThreadId = useTimelineStore(
@@ -536,12 +535,9 @@ export function TimelinePanel() {
                 : scenes.length;
             const baseCount =
               weights != null ? visibleForFit * 2 : scenes.length;
-            // subway は左ラベルガター分だけ content を右へ寄せる。fit がそのぶんを
+            // スレッド表示時は左ラベルガター分だけ content を右へ寄せる。fit がそのぶんを
             // 確保しないと過ズームで右端がはみ出す。
-            const padLeftForFit =
-              showThreads && plotLayout === "subway"
-                ? SUBWAY_LABEL_GUTTER
-                : PAD_LEFT;
+            const padLeftForFit = showThreads ? SUBWAY_LABEL_GUTTER : PAD_LEFT;
             setZoom(
               computeFitZoom(
                 baseCount,
@@ -573,7 +569,6 @@ export function TimelinePanel() {
     scheduledCount,
     setActiveScene,
     showThreads,
-    plotLayout,
   ]);
 
   const __renderResult = (

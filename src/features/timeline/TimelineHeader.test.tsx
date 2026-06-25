@@ -23,8 +23,7 @@ function resetStore() {
   useTimelineStore.setState({
     axisMode: "reading",
     spacingMode: "uniform",
-    showThreads: false,
-    plotLayout: "subway",
+    showThreads: true,
     plotSubwaySort: false,
     zoom: 1,
     scrollOffset: 0,
@@ -108,20 +107,11 @@ describe("TimelineHeader – Spacing mode UI", () => {
   });
 });
 
-describe("TimelineHeader – スレッド表示トグル", () => {
+describe("TimelineHeader – スレッド追加（常時表示）", () => {
   beforeEach(resetStore);
 
-  it("「スレッド」クリックで showThreads が ON/OFF トグルする", () => {
-    renderHeader();
-    fireEvent.click(screen.getByText("スレッド"));
-    expect(useTimelineStore.getState().showThreads).toBe(true);
-    fireEvent.click(screen.getByText("スレッド"));
-    expect(useTimelineStore.getState().showThreads).toBe(false);
-  });
-
-  it("スレッド追加時に Codex パレットから順番に色を自動割り当てる", () => {
+  it("スレッド追加ボタンは常に表示され、Codex パレットから色を自動割り当てる", () => {
     const addThread = vi.fn();
-    useTimelineStore.setState({ showThreads: true });
     usePlotThreadStore.setState({ threads: [], addThread });
     renderHeader();
     fireEvent.click(screen.getByTitle("スレッドを追加"));
@@ -133,58 +123,33 @@ describe("TimelineHeader – スレッド表示トグル", () => {
     );
   });
 
-  it("スレッド表示中のみスレッド追加ボタンが出る", () => {
-    const { rerender } = renderHeader();
-    expect(screen.queryByTitle("スレッドを追加")).toBeNull();
-    useTimelineStore.setState({ showThreads: true });
-    rerender(
-      <TimelineHeader
-        sceneCount={10}
-        scheduledCount={null}
-        inspectorOpen={false}
-        onToggleInspector={() => {}}
-      />,
-    );
-    expect(screen.getByTitle("スレッドを追加")).toBeTruthy();
+  it("subway/separated 切替トグルは存在しない（撤去済み）", () => {
+    renderHeader();
+    expect(screen.queryByTitle("Subway")).toBeNull();
+    expect(screen.queryByTitle("Separated")).toBeNull();
+    expect(screen.queryByText("スレッド")).toBeNull();
   });
 });
 
-describe("TimelineHeader – レイアウト(subway/separated)トグル", () => {
+describe("TimelineHeader – 表示オプション（ケバブ）", () => {
   beforeEach(resetStore);
 
-  it("スレッド非表示のときレイアウトトグルは出ない", () => {
+  it("ケバブとインスペクタ（サイドペイン）ボタンが別々に存在する", () => {
     renderHeader();
-    expect(screen.queryByRole("group", { name: /レイアウト/ })).toBeNull();
+    // 表示オプションのケバブ。
+    expect(screen.getByTestId("timeline-display-menu")).toBeTruthy();
+    // インスペクタ開閉は別ボタン（⋮ ではなくサイドペインアイコン）。
+    const inspectorBtn = screen.getByTitle("インスペクター");
+    expect(inspectorBtn).toBeTruthy();
+    expect(inspectorBtn.textContent).not.toContain("⋮");
   });
 
-  it("スレッド表示中にトグルが出て、Separated クリックで plotLayout が切替＋aria-pressed 更新", () => {
-    useTimelineStore.setState({ showThreads: true, plotLayout: "subway" });
-    renderHeader();
-    const group = screen.getByRole("group", { name: /レイアウト/ });
-    expect(group).toBeTruthy();
-    const subwayBtn = screen.getByTitle("Subway");
-    const separatedBtn = screen.getByTitle("Separated");
-    // 既定は subway が押下状態。
-    expect(subwayBtn.getAttribute("aria-pressed")).toBe("true");
-    expect(separatedBtn.getAttribute("aria-pressed")).toBe("false");
-    fireEvent.click(separatedBtn);
-    expect(useTimelineStore.getState().plotLayout).toBe("separated");
-    expect(separatedBtn.getAttribute("aria-pressed")).toBe("true");
-    expect(subwayBtn.getAttribute("aria-pressed")).toBe("false");
-  });
-
-  it("subway順トグルは separated のときだけ出て plotSubwaySort を切り替える", () => {
-    // subway レイアウトでは出ない。
-    useTimelineStore.setState({ showThreads: true, plotLayout: "subway" });
-    const { unmount } = renderHeader();
-    expect(screen.queryByText("subway順")).toBeNull();
-    unmount();
-    // separated に切替えると出る。
-    useTimelineStore.setState({ plotLayout: "separated" });
-    renderHeader();
-    const btn = screen.getByText("subway順");
-    expect(btn.getAttribute("aria-pressed")).toBe("false");
+  it("インスペクタボタンで onToggleInspector が呼ばれ aria-pressed が状態に追従する", () => {
+    const onToggleInspector = vi.fn();
+    renderHeader({ inspectorOpen: true, onToggleInspector });
+    const btn = screen.getByTitle("インスペクター");
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(btn);
-    expect(useTimelineStore.getState().plotSubwaySort).toBe(true);
+    expect(onToggleInspector).toHaveBeenCalled();
   });
 });

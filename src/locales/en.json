@@ -4791,13 +4791,7 @@
     }
   },
   "plotThread": {
-    "viewScenes": "Scenes",
-    "viewThreads": "Threads",
-    "layout": {
-      "label": "Thread layout",
-      "subway": "Subway",
-      "separated": "Separated"
-    },
+    "autoArrange": "Arrange by importance",
     "history": {
       "addThread": "Add thread",
       "renameThread": "Rename thread",
@@ -4850,7 +4844,7 @@
     }
   },
   "timeline": {
-    "viewMode": "View mode",
+    "displayMenu": "Display options",
     "ctx": {
       "openInEditor": "Open in editor",
       "openInSide": "Open at side",
@@ -4869,7 +4863,6 @@
     "sceneCount": "{{count}} scenes",
     "toggleTitles": "Show titles",
     "togglePhasePins": "Show phase pins",
-    "toggleThreads": "Show plot threads",
     "toggleInspector": "Inspector",
     "inspector": {
       "title": "Inspector",

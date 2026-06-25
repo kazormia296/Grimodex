@@ -84,7 +84,7 @@ function cmpId(a: string, b: string): number {
 }
 
 /** center-out 行割り当て: rank 順(0=最重要)に中心 mid=(n-1)/2 から外へ交互配置した
- *  行 index を返す。subwayModel.centerOutRows と同一仕様（循環 import を避けるため複製）。 */
+ *  行 index を返す（重要度ランク順に中央から外へ交互配置する自動整列用）。 */
 function centerOutRows(n: number): number[] {
   const mid = (n - 1) / 2;
   return Array.from({ length: n }, (_, row) => row).sort((a, b) => {

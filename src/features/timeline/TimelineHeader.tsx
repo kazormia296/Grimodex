@@ -1,11 +1,19 @@
-import { Clock, MapPin, Plus, TrainFront, Rows3, Network } from "lucide-react";
+import { MapPin, Plus, EllipsisVertical, PanelRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTimelineStore } from "./timelineStore";
-import type { AxisMode, SpacingMode, PlotLayout } from "./timelineStore";
+import type { AxisMode, SpacingMode } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { activeCodexPaletteSlots } from "@/lib/resolveCodexColors";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 
 const SPACING_LABELS: Record<SpacingMode, string> = {
   proportional: "Proportional",
@@ -38,10 +46,6 @@ export function TimelineHeader({
   const setSpacingMode = useTimelineStore((s) => s.setSpacingMode);
   const display = useTimelineStore((s) => s.display);
   const toggleDisplay = useTimelineStore((s) => s.toggleDisplay);
-  const showThreads = useTimelineStore((s) => s.showThreads);
-  const toggleShowThreads = useTimelineStore((s) => s.toggleShowThreads);
-  const plotLayout = useTimelineStore((s) => s.plotLayout);
-  const setPlotLayout = useTimelineStore((s) => s.setPlotLayout);
   const plotSubwaySort = useTimelineStore((s) => s.plotSubwaySort);
   const togglePlotSubwaySort = useTimelineStore((s) => s.togglePlotSubwaySort);
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
@@ -54,71 +58,6 @@ export function TimelineHeader({
       <span className="shrink-0 whitespace-nowrap font-semibold text-foreground">
         {t("layout.panel.timeline", "Timeline")}
       </span>
-
-      {/* スレッドのオーバーレイ表示トグル（シーン年表の上にレーンを重ねる） */}
-      <button
-        onClick={toggleShowThreads}
-        aria-pressed={showThreads}
-        className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 text-xs ${showThreads ? "border-accent bg-accent text-accent-foreground" : "border-border text-muted-foreground hover:bg-accent/50"}`}
-        title={t("timeline.toggleThreads", "プロットスレッドを表示")}
-      >
-        {t("plotThread.viewThreads", "スレッド")}
-      </button>
-
-      {/* レイアウト切替（subway = 路線図 / separated = 独立行）。スレッド表示時のみ。 */}
-      {showThreads && (
-        <div
-          className="flex shrink-0 items-center overflow-hidden rounded border border-border"
-          role="group"
-          aria-label={t("plotThread.layout.label", "スレッド レイアウト")}
-        >
-          {(
-            [
-              ["subway", TrainFront, t("plotThread.layout.subway", "Subway")],
-              [
-                "separated",
-                Rows3,
-                t("plotThread.layout.separated", "Separated"),
-              ],
-            ] as [PlotLayout, typeof TrainFront, string][]
-          ).map(([mode, Icon, label]) => (
-            <button
-              key={mode}
-              onClick={() => setPlotLayout(mode)}
-              aria-pressed={plotLayout === mode}
-              title={label}
-              className={`inline-flex items-center gap-1 whitespace-nowrap px-1.5 py-0.5 text-xs ${
-                plotLayout === mode
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:bg-accent/50"
-              }`}
-            >
-              <Icon className="h-3 w-3" aria-hidden />
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* subway 式ソート（重要度＋center-out）。separated のときだけ有効（subway は常時 ON）。 */}
-      {showThreads && plotLayout === "separated" && (
-        <button
-          onClick={togglePlotSubwaySort}
-          aria-pressed={plotSubwaySort}
-          title={t(
-            "plotThread.subwaySort",
-            "subway 式に並べる（重要度＋中央寄せ）",
-          )}
-          className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-xs ${
-            plotSubwaySort
-              ? "border-accent bg-accent text-accent-foreground"
-              : "border-border text-muted-foreground hover:bg-accent/50"
-          }`}
-        >
-          <Network className="h-3 w-3" aria-hidden />
-          {t("plotThread.subwaySortShort", "subway順")}
-        </button>
-      )}
 
       {/* Axis mode selector */}
       <select
@@ -170,54 +109,75 @@ export function TimelineHeader({
       )}
 
       <div className="ml-auto flex shrink-0 items-center gap-1">
-        {/* Add plot thread (スレッド表示時のみ) */}
-        {showThreads && (
-          <button
-            onClick={() => {
-              // Codex パレットから順番に色を自動割り当て（既存本数で round-robin）。
-              const palette = activeCodexPaletteSlots(
-                colorTheme,
-                typeof document !== "undefined" &&
-                  document.documentElement.classList.contains("dark"),
+        {/* Add plot thread（スレッドは常時表示） */}
+        <button
+          onClick={() => {
+            // Codex パレットから順番に色を自動割り当て（既存本数で round-robin）。
+            const palette = activeCodexPaletteSlots(
+              colorTheme,
+              typeof document !== "undefined" &&
+                document.documentElement.classList.contains("dark"),
+            );
+            const count = usePlotThreadStore.getState().threads.length;
+            const color = palette[count % palette.length]?.fg ?? null;
+            void usePlotThreadStore
+              .getState()
+              .addThread(
+                getCurrentProjectId(),
+                t("plotThread.newThreadName", "新しいスレッド"),
+                color,
               );
-              const count = usePlotThreadStore.getState().threads.length;
-              const color = palette[count % palette.length]?.fg ?? null;
-              void usePlotThreadStore
-                .getState()
-                .addThread(
-                  getCurrentProjectId(),
-                  t("plotThread.newThreadName", "新しいスレッド"),
-                  color,
-                );
-            }}
-            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50"
-            title={t("plotThread.addThread", "スレッドを追加")}
+          }}
+          className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50"
+          title={t("plotThread.addThread", "スレッドを追加")}
+        >
+          <Plus className="h-3 w-3" aria-hidden />
+          {t("plotThread.addThread", "スレッドを追加")}
+        </button>
+
+        {/* 表示オプション（ケバブ）: 自動整列・タイトル・フェーズピン */}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            data-testid="timeline-display-menu"
+            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 focus:outline-none data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
+            title={t("timeline.displayMenu", "表示オプション")}
           >
-            <Plus className="h-3 w-3" aria-hidden />
-            {t("plotThread.addThread", "スレッドを追加")}
-          </button>
-        )}
-        {/* Display toggles */}
-        <button
-          onClick={() => toggleDisplay("showTitles")}
-          className={`rounded px-1.5 py-0.5 text-xs ${display.showTitles ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
-          title={t("timeline.toggleTitles", "タイトル表示")}
-        >
-          T
-        </button>
-        <button
-          onClick={() => toggleDisplay("showPhasePins")}
-          className={`rounded px-1.5 py-0.5 text-xs ${display.showPhasePins ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
-          title={t("timeline.togglePhasePins", "フェーズピン表示")}
-        >
-          <Clock className="h-3 w-3" aria-hidden />
-        </button>
+            <EllipsisVertical className="h-3.5 w-3.5" aria-hidden />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-44 text-xs">
+            <DropdownMenuLabel>
+              {t("timeline.displayMenu", "表示オプション")}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuCheckboxItem
+              checked={plotSubwaySort}
+              onCheckedChange={() => togglePlotSubwaySort()}
+            >
+              {t("plotThread.autoArrange", "重要度順に整列")}
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={display.showTitles}
+              onCheckedChange={() => toggleDisplay("showTitles")}
+            >
+              {t("timeline.toggleTitles", "タイトル表示")}
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={display.showPhasePins}
+              onCheckedChange={() => toggleDisplay("showPhasePins")}
+            >
+              {t("timeline.togglePhasePins", "フェーズピン表示")}
+            </DropdownMenuCheckboxItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* インスペクタ開閉（サイドペイン） */}
         <button
           onClick={onToggleInspector}
+          aria-pressed={inspectorOpen}
           className={`rounded px-1.5 py-0.5 text-xs ${inspectorOpen ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
           title={t("timeline.toggleInspector", "インスペクター")}
         >
-          ⋮
+          <PanelRight className="h-3.5 w-3.5" aria-hidden />
         </button>
       </div>
     </div>

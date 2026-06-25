@@ -43,9 +43,6 @@ function resetStore() {
     axisMode: "reading",
     spacingMode: "uniform",
     showThreads: false,
-    // 既存スイートは separated レイアウト（チップ/バンド/コネクタ）を gate する。
-    // subway レイアウトは subwayModel.test.ts と TimelineViewport.subway.test.tsx で検証。
-    plotLayout: "separated",
     plotSubwaySort: false,
     zoom: 1,
     scrollOffset: 0,
@@ -974,7 +971,6 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     useTimelineStore.setState({
       showThreads: true,
       axisMode: "reading",
-      plotLayout: "separated",
       plotSubwaySort: false,
     });
   }
@@ -1102,7 +1098,6 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
       useTimelineStore.setState({
         showThreads: true,
         axisMode: "reading",
-        plotLayout: "separated",
         plotSubwaySort: false,
       });
       const { getByTestId } = render(
@@ -1360,7 +1355,6 @@ describe("TimelineViewport – ヘッダー hover dim（色違い merge/branch �
     useTimelineStore.setState({
       showThreads: true,
       axisMode: "reading",
-      plotLayout: "separated",
     });
     const { getByTestId, container } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,

@@ -4784,13 +4784,7 @@
     }
   },
   "plotThread": {
-    "viewScenes": "シーン",
-    "viewThreads": "スレッド",
-    "layout": {
-      "label": "スレッド レイアウト",
-      "subway": "Subway",
-      "separated": "Separated"
-    },
+    "autoArrange": "重要度順に整列",
     "history": {
       "addThread": "スレッド追加",
       "renameThread": "スレッド名変更",
@@ -4843,7 +4837,7 @@
     }
   },
   "timeline": {
-    "viewMode": "表示モード",
+    "displayMenu": "表示オプション",
     "ctx": {
       "openInEditor": "Editor で開く",
       "openInSide": "サイドで開く",
@@ -4862,7 +4856,6 @@
     "sceneCount": "{{count}} シーン",
     "toggleTitles": "タイトル表示",
     "togglePhasePins": "フェーズピン表示",
-    "toggleThreads": "プロットスレッドを表示",
     "toggleInspector": "インスペクター",
     "inspector": {
       "title": "インスペクター",

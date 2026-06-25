@@ -4,23 +4,18 @@ import type { GlobalSettings } from "@/features/workspace/store";
 
 export type AxisMode = "reading" | "story" | "write";
 export type SpacingMode = "uniform" | "proportional";
-/** プロットスレッドの描画レイアウト。
- *  subway = AeonTimeline 風（1イベント1駅・路線が合流分岐・重要度センター配置）。
- *  separated = 各スレッド独立ホーム行・段階チップ（従来）。 */
-export type PlotLayout = "subway" | "separated";
 /** 旧: シーン年表(scenes) か、プロットスレッドのレーン表示(threads) か。
- *  オーバーレイ化（2026-06-24）で showThreads(boolean) に移行。永続化の後方互換
- *  読み取り（threads → showThreads=true）にのみ残す。 */
+ *  オーバーレイ化（2026-06-24）で showThreads(boolean) に移行。さらに subway/separated
+ *  レイアウト切替を撤去し（2026-06-25）スレッドは常時 separated で表示する。
+ *  永続化の後方互換読み取りにのみ残す。 */
 export type TimelineViewMode = "scenes" | "threads";
 
 export interface TimelineSettings {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
-  /** シーン年表に加えてプロットスレッドのレーンをオーバーレイ表示するか。 */
+  /** プロットスレッドのレーンを常に表示する（常時 true。後方互換のため残す）。 */
   showThreads: boolean;
-  /** プロットスレッドの描画レイアウト（subway / separated）。 */
-  plotLayout: PlotLayout;
-  /** separated の並びを subway 式（重要度＋center-out）にするか。 */
+  /** スレッドの並びを重要度＋center-out 自動整列にするか（false = sortOrder 線形）。 */
   plotSubwaySort?: boolean;
   zoom: number;
   scrollOffset: number;
@@ -51,10 +46,9 @@ const DEFAULT_DISPLAY: TimelineSettings["display"] = {
 interface TimelineState {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
+  /** プロットスレッドのレーンを表示するか。常時 true（切替 UI は撤去）。 */
   showThreads: boolean;
-  plotLayout: PlotLayout;
-  /** separated レイアウトのスレッド並びを subway と同じ「重要度＋center-out」にするか。
-   *  false = sortOrder の線形（既定）。 */
+  /** スレッド並びを「重要度＋center-out」で自動整列するか。false = sortOrder 線形。 */
   plotSubwaySort: boolean;
   zoom: number;
   scrollOffset: number;
@@ -69,9 +63,6 @@ interface TimelineState {
   /** threads モードで選択中のスレッド(plot_threads.id)。レーン見出しクリックで設定。 */
   selectedPlotThreadId: string | null;
   setAxisMode: (mode: AxisMode) => void;
-  setShowThreads: (show: boolean) => void;
-  toggleShowThreads: () => void;
-  setPlotLayout: (layout: PlotLayout) => void;
   togglePlotSubwaySort: () => void;
   setSelectedPlotLinkId: (id: string | null) => void;
   setSelectedPlotThreadId: (id: string | null) => void;
@@ -92,8 +83,7 @@ interface TimelineState {
 export const useTimelineStore = create<TimelineState>((set, get) => ({
   axisMode: "reading",
   spacingMode: "uniform",
-  showThreads: false,
-  plotLayout: "subway",
+  showThreads: true,
   plotSubwaySort: false,
   zoom: 1,
   scrollOffset: 0,
@@ -109,9 +99,6 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       axisMode: mode,
       spacingMode: mode === "reading" ? "uniform" : "proportional",
     }),
-  setShowThreads: (showThreads) => set({ showThreads }),
-  toggleShowThreads: () => set((s) => ({ showThreads: !s.showThreads })),
-  setPlotLayout: (plotLayout) => set({ plotLayout }),
   togglePlotSubwaySort: () =>
     set((s) => ({ plotSubwaySort: !s.plotSubwaySort })),
   setSelectedPlotLinkId: (selectedPlotLinkId) => set({ selectedPlotLinkId }),
@@ -162,11 +149,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set({
       axisMode: settings.axisMode ?? "reading",
       spacingMode: settings.spacingMode ?? "uniform",
-      // 後方互換: 旧 viewMode==="threads" を showThreads=true として読む。
-      showThreads:
-        settings.showThreads ??
-        (settings as { viewMode?: TimelineViewMode }).viewMode === "threads",
-      plotLayout: settings.plotLayout ?? "subway",
+      // スレッドは常時表示（切替 UI 撤去）。旧 plotLayout は読み捨てる。
+      showThreads: true,
       plotSubwaySort: settings.plotSubwaySort ?? false,
       zoom: Math.max(0.25, Math.min(4, settings.zoom ?? 1)),
       scrollOffset: settings.scrollOffset ?? 0,
@@ -184,7 +168,6 @@ function snapshotPersistent(
     axisMode: state.axisMode,
     spacingMode: state.spacingMode,
     showThreads: state.showThreads,
-    plotLayout: state.plotLayout,
     plotSubwaySort: state.plotSubwaySort,
     zoom: state.zoom,
     scrollOffset: state.scrollOffset,
