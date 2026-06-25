@@ -3,7 +3,11 @@ import i18next from "i18next";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import type { PlotPhaseType, PlotBranchKind } from "@/db/schema";
+import {
+  PLOT_PHASE_TYPES,
+  type PlotPhaseType,
+  type PlotBranchKind,
+} from "@/db/schema";
 import {
   listPlotThreads,
   listPlotThreadLinks,
@@ -64,6 +68,23 @@ interface PlotThreadState {
     threadId: string,
     nodeId: string,
     phaseType: PlotPhaseType,
+  ) => Promise<void>;
+  /**
+   * Phase 4a: 抽出ウィザードの提案を一括取り込み（**1 undo**）。各提案 = 新規
+   * スレッド + マーカー群。全体を runAsTransaction で 1 history エントリにまとめる。
+   * 不正 phase / 重複 (threadId,nodeId,phaseType) はスキップ。プロジェクト切替で中断。
+   */
+  importPlotThreads: (
+    projectId: string,
+    proposals: Array<{
+      name: string;
+      description?: string | null;
+      markers: Array<{
+        nodeId: string;
+        phaseType: PlotPhaseType;
+        note?: string | null;
+      }>;
+    }>,
   ) => Promise<void>;
   updateMarker: (
     id: string,
@@ -300,6 +321,112 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
         set({ links: [...get().links, captured] });
       },
     });
+  },
+
+  importPlotThreads: async (projectId, proposals) => {
+    const valid = proposals.filter(
+      (p) => p.name.trim().length > 0 && p.markers.length > 0,
+    );
+    if (valid.length === 0) return;
+    // 全提案を 1 history エントリにまとめる（各 create 内の push が activeBatch へ
+    // 集約される＝1 confirm = 1 undo）。各 mutation を await してから fn を抜けるのが
+    // グルーピングの生命線（fire-and-forget だと push が frame 外に零れる）。
+    await useGlobalHistoryStore.getState().runAsTransaction(
+      {
+        kind: "plot",
+        label: i18next.t("plotThread.history.importThreads", "スレッド取込"),
+      },
+      async () => {
+        for (const p of valid) {
+          if (getCurrentProjectId() !== projectId) return;
+          // --- thread ---
+          let thread: PlotThreadRow;
+          try {
+            const maxKey = get().threads.reduce<string | null>(
+              (m, t) =>
+                m === null || cmpKeys(t.sortOrder, m) > 0 ? t.sortOrder : m,
+              null,
+            );
+            const sortOrder = generateKeyBetween(maxKey, null);
+            thread = await createPlotThread({
+              projectId,
+              name: p.name.trim(),
+              color: null,
+              description: p.description?.trim() || null,
+              sortOrder,
+            });
+          } catch {
+            continue; // このスレッドは諦めて次へ（batch は壊さない）
+          }
+          if (getCurrentProjectId() !== projectId) return;
+          set({ threads: [...get().threads, thread] });
+          const capturedThread = { ...thread };
+          recordPlotHistory({
+            label: i18next.t("plotThread.history.addThread", "スレッド追加"),
+            entityId: capturedThread.id,
+            undo: async () => {
+              await deletePlotThread(capturedThread.id);
+              set({
+                threads: get().threads.filter(
+                  (t) => t.id !== capturedThread.id,
+                ),
+              });
+            },
+            redo: async () => {
+              await restorePlotThread(capturedThread);
+              set({ threads: [...get().threads, capturedThread] });
+            },
+          });
+          // --- markers（phase 検証 + dedup）---
+          const seen = new Set<string>();
+          for (const mk of p.markers) {
+            if (!(PLOT_PHASE_TYPES as readonly string[]).includes(mk.phaseType))
+              continue;
+            if (!mk.nodeId) continue;
+            const key = `${mk.nodeId}::${mk.phaseType}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            if (
+              get().links.some(
+                (l) =>
+                  l.threadId === thread.id &&
+                  l.nodeId === mk.nodeId &&
+                  l.phaseType === mk.phaseType,
+              )
+            )
+              continue;
+            let link: PlotThreadLinkRow;
+            try {
+              link = await createPlotThreadLink({
+                threadId: thread.id,
+                nodeId: mk.nodeId,
+                phaseType: mk.phaseType,
+                note: mk.note?.trim() || null,
+              });
+            } catch {
+              continue;
+            }
+            if (getCurrentProjectId() !== projectId) return;
+            set({ links: [...get().links, link] });
+            const capturedLink = { ...link };
+            recordPlotHistory({
+              label: i18next.t("plotThread.history.addMarker", "マーカー追加"),
+              entityId: capturedLink.id,
+              undo: async () => {
+                await deletePlotThreadLink(capturedLink.id);
+                set({
+                  links: get().links.filter((l) => l.id !== capturedLink.id),
+                });
+              },
+              redo: async () => {
+                await restorePlotThreadLink(capturedLink);
+                set({ links: [...get().links, capturedLink] });
+              },
+            });
+          }
+        }
+      },
+    );
   },
 
   updateMarker: async (id, patch) => {

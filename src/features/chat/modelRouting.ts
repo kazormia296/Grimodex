@@ -140,6 +140,7 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   foreshadow_audit_chapter: "structured",
   foreshadow_propose_past_setups: "structured",
   foreshadow_evaluate_setup_strength: "structured",
+  plot_thread_propose: "structured",
   map_branch: "structured",
   tree_scaffold: "structured",
   codex_judgment: "structured",

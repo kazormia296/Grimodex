@@ -134,6 +134,24 @@ describe.skipIf(!KEY)(
     );
 
     it(
+      "plot_thread_propose: 本番ビルダー+extractJsonObject で threads 配列",
+      async () => {
+        const prompt = cat.plotThread.buildProposePlotThreadsPrompt({
+          existingList: "(なし)",
+          sceneTexts:
+            "--- sceneId=scene-1, title=出会い, order=0 ---\n朱音は古書店で蓮と再会し、剣道の大会の話を聞いた。\n\n" +
+            "--- sceneId=scene-2, title=決意, order=1 ---\n蓮は大会に向けて朱音に応援を頼み、朱音は支えると約束した。",
+        });
+        const { text } = await runLiveSingleShot(prompt);
+        const json = extractJsonObject(text);
+        expect(json, `JSON 抽出失敗: ${text.slice(0, 150)}`).not.toBeNull();
+        const parsed = JSON.parse(json as string) as { threads?: unknown };
+        expect(Array.isArray(parsed.threads)).toBe(true);
+      },
+      LIVE_TIMEOUT,
+    );
+
+    it(
       "foreshadow.proposePastSetups: 本番ビルダー+extractJsonObject で candidates 配列",
       async () => {
         const prompt = cat.foreshadow.buildProposePastSetupsPrompt({

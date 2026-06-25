@@ -1149,7 +1149,8 @@
         "session_title": "Session title",
         "summarization": "Summarization",
         "context_creator": "Context Creator",
-        "codex_judgment": "Proper-noun candidate judgment"
+        "codex_judgment": "Proper-noun candidate judgment",
+        "plot_thread_extract": "Plot thread extraction"
       }
     }
   },
@@ -4808,6 +4809,7 @@
       "colorThread": "Change thread color",
       "spanThread": "Change thread span",
       "deleteThread": "Delete thread",
+      "importThreads": "Import threads",
       "addMarker": "Add marker",
       "moveMarker": "Move marker",
       "phaseMarker": "Change phase",
@@ -4858,6 +4860,17 @@
       "hint": "Aggregated from appearances, roles, and POV in member scenes",
       "pov": "POV",
       "sceneCount": "{{n}} scenes"
+    },
+    "extract": {
+      "button": "Extract",
+      "title": "Extract threads from prose",
+      "hint": "AI reads the prose of the selected chapter/folder and proposes sub-plots (through-lines) with narrative-phase markers. Import is a single, undoable action.",
+      "selectFolder": "Select a chapter/folder…",
+      "analyze": "Analyze",
+      "import": "Import",
+      "imported": "Imported {{n}} thread(s)",
+      "failed": "Extraction failed",
+      "none": "No sub-plots could be extracted."
     },
     "structure": {
       "title": "Structure",

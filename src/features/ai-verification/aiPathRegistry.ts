@@ -177,6 +177,17 @@ export const AI_PATHS: AiPathEntry[] = [
     note: "本番ビルダー foreshadow.buildAuditChapterPrompt + 本番パーサ extractJsonObject。candidates 形を assert。",
   },
   {
+    id: "plot_thread_propose",
+    label: "プロットスレッド抽出（Phase 4a）",
+    surface: "plot-threads/extractThreadsApi.ts proposePlotThreads",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    verifier: "js-live",
+    testRef: SINGLE_SHOT_TEST,
+    testName: "plot_thread_propose:",
+    note: "本番ビルダー plotThread.buildProposePlotThreadsPrompt + 本番パーサ extractJsonObject。threads 形を assert。",
+  },
+  {
     id: "foreshadow_propose_past_setups",
     label: "伏線 setup 候補提案",
     surface: "foreshadow/api.ts proposePastSetups",

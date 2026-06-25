@@ -1149,7 +1149,8 @@
         "session_title": "セッションタイトル",
         "summarization": "要約",
         "context_creator": "Context Creator",
-        "codex_judgment": "固有名詞候補の判定"
+        "codex_judgment": "固有名詞候補の判定",
+        "plot_thread_extract": "プロットスレッド抽出"
       }
     }
   },
@@ -4801,6 +4802,7 @@
       "colorThread": "スレッド色変更",
       "spanThread": "スレッド範囲変更",
       "deleteThread": "スレッド削除",
+      "importThreads": "スレッド取込",
       "addMarker": "マーカー追加",
       "moveMarker": "マーカー移動",
       "phaseMarker": "段階変更",
@@ -4851,6 +4853,17 @@
       "hint": "所属シーンでの登場・役割・POV から集計",
       "pov": "POV",
       "sceneCount": "{{n}}シーン"
+    },
+    "extract": {
+      "button": "抽出",
+      "title": "本文からスレッドを抽出",
+      "hint": "選んだ章/フォルダの本文を AI が読み、サブプロット（縦糸）と起承転結マーカーを提案します。取り込みは1回の操作（Undo 可）。",
+      "selectFolder": "章/フォルダを選択…",
+      "analyze": "解析",
+      "import": "取り込む",
+      "imported": "{{n}}本のスレッドを取り込みました",
+      "failed": "抽出に失敗しました",
+      "none": "抽出できるサブプロットが見つかりませんでした。"
     },
     "structure": {
       "title": "構造分析",

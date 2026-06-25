@@ -5,6 +5,7 @@ import {
   ChevronRight,
   ClipboardCopy,
   Check,
+  Sparkles,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -28,6 +29,7 @@ import {
 } from "./plotThreadAnalysis";
 import { buildPlotThreadsMarkdown } from "./plotThreadMarkdown";
 import { PlotThreadAnalysisRow } from "./PlotThreadAnalysisRow";
+import { PlotThreadExtractDialog } from "./PlotThreadExtractDialog";
 
 /**
  * Timeline 下部の構造分析ドロワー（読み取り専用）。
@@ -48,6 +50,7 @@ export function PlotStructureAnalysis() {
 
   const [collapsed, setCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [extractOpen, setExtractOpen] = useState(false);
 
   const phaseLabels = useMemo(() => {
     const m = {} as Record<PlotPhaseType, string>;
@@ -172,6 +175,15 @@ export function PlotStructureAnalysis() {
 
         <div className="ml-auto flex items-center gap-1">
           <button
+            data-testid="plot-structure-extract"
+            onClick={() => setExtractOpen(true)}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent/50 focus:outline-none"
+            title={t("plotThread.extract.title", "本文からスレッドを抽出")}
+          >
+            <Sparkles className="h-3.5 w-3.5" aria-hidden />
+            {t("plotThread.extract.button", "抽出")}
+          </button>
+          <button
             data-testid="plot-structure-copy"
             onClick={handleCopy}
             disabled={threads.length === 0}
@@ -218,6 +230,11 @@ export function PlotStructureAnalysis() {
             ))}
           </div>
         ))}
+
+      <PlotThreadExtractDialog
+        open={extractOpen}
+        onOpenChange={setExtractOpen}
+      />
     </div>
   );
 }
