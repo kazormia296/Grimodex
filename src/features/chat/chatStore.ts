@@ -518,6 +518,18 @@ interface ChatState {
     | { kind: "codex"; id: string; name: string }
     | { kind: "snippet"; id: string; title: string }
     | null;
+  /**
+   * Phase 3b: スレッド focus override（**非永続**）。設定すると chatScope を変えずに
+   * effectiveSceneId を null へ落とし、当該スレッドの所属シーンを集約した body を
+   * <focus_subject> として注入する。`chatScope` / `resolveScopeSessionKey` /
+   * chat_sessions は一切触らない＝session 保存先は下地スコープのまま（migration ゼロ）。
+   * スコープ/セッション/プロジェクト切替でクリアされる（leak 防止）。
+   */
+  threadFocusOverride: { threadId: string; title: string } | null;
+  setThreadFocusOverride: (
+    v: { threadId: string; title: string } | null,
+  ) => void;
+  clearThreadFocusOverride: () => void;
   /** ユーザーが × で auto 注入から除外したエントリ ID（セッション内のみ保持、
    * セッション切替・新規作成でクリア）。always 再収集のフィルタに使う。 */
   excludedAutoEntryIds: string[];
@@ -2600,7 +2612,11 @@ async function buildSceneContextPrompt(opts: {
 export function contextPromptKey(
   s: Pick<
     ChatState,
-    "chatScope" | "scopeAnchorId" | "activeSceneId" | "activeSessionId"
+    | "chatScope"
+    | "scopeAnchorId"
+    | "activeSceneId"
+    | "activeSessionId"
+    | "threadFocusOverride"
   >,
 ): string {
   return [
@@ -2608,6 +2624,8 @@ export function contextPromptKey(
     s.scopeAnchorId ?? "",
     s.activeSceneId,
     s.activeSessionId ?? "",
+    // Phase 3b: スレッド focus が変わったら stale 判定で再構築させる。
+    s.threadFocusOverride?.threadId ?? "",
   ].join("\u0000");
 }
 
@@ -2639,6 +2657,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   detectedEntries: [],
   alwaysEntries: [],
   scopeAnchor: null,
+  threadFocusOverride: null,
   excludedAutoEntryIds: [],
   inputPinnedEntryIds: [],
   agentMode: false,
@@ -2722,6 +2741,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
         excludedAutoEntryIds: [],
+        threadFocusOverride: null,
       }));
       if (ref) {
         const linkMsg = await chatApi.addMessage(
@@ -2803,6 +2823,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   setPendingLookupText: (text) => set({ pendingLookupText: text }),
 
+  // Phase 3b: スレッド focus override。設定/解除で即座にプロンプトを再構築する
+  // （chatScope は変えないので ChatPanel の scope-deps effect では拾えないため）。
+  setThreadFocusOverride: (v) => {
+    set({ threadFocusOverride: v });
+    void get().refreshContextLayers();
+  },
+  clearThreadFocusOverride: () => {
+    if (!get().threadFocusOverride) return;
+    set({ threadFocusOverride: null });
+    void get().refreshContextLayers();
+  },
+
   // --- Session management ---
 
   loadSessions: async (
@@ -2843,6 +2875,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionStableCodexIds: [],
         sessionAgentToolsSnapshot: null,
         excludedAutoEntryIds: [],
+        threadFocusOverride: null,
         chatRecallPromoteSuggestion: null,
         // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
         agentContinuation: null,
@@ -2877,6 +2910,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
         excludedAutoEntryIds: [],
+        threadFocusOverride: null,
       });
     } catch (e) {
       set({ isLoadingMessages: false });
@@ -2910,6 +2944,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
         excludedAutoEntryIds: [],
+        threadFocusOverride: null,
       }));
     } catch (e) {
       toast.error(i18next.t("chat.createSessionFailed"));
@@ -2964,6 +2999,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               // auto 除外をクリアする。残すと削除直後の refresh や送信時の
               // auto-create セッションに前セッションの除外がリークする。
               excludedAutoEntryIds: [],
+              threadFocusOverride: null,
             }
           : {}),
       }));
@@ -3063,9 +3099,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     options?: { mentionedSceneIds?: string[] },
   ): Promise<string> => {
     await ensureTokenizer();
-    const { activeSceneId, chatScope, messages: prevMessages } = get();
+    const {
+      activeSceneId,
+      chatScope,
+      threadFocusOverride,
+      messages: prevMessages,
+    } = get();
+    // Phase 3b: スレッド focus 中は scene 経路を使わない（refreshContextLayers と整合）。
     const effectiveSceneId =
-      chatScope === "scene" && activeSceneId ? activeSceneId : null;
+      chatScope === "scene" && activeSceneId && !threadFocusOverride
+        ? activeSceneId
+        : null;
 
     const parts: string[] = [];
     let contextLoaded = false;
@@ -3166,6 +3210,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSessionId,
       chatScope,
       scopeAnchorId,
+      threadFocusOverride,
     } = get();
     if (isStreaming) return;
     await ensureTokenizer();
@@ -3207,7 +3252,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }
     set({ _lastCachedModel: chatModelEarly });
 
-    const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
+    // Phase 3b: スレッド focus 中は scene を主題にしない（非 scene 枝へ）。
+    const effectiveSceneId =
+      chatScope === "scene" && !threadFocusOverride ? activeSceneId : null;
     // 一回限りの Agent mode override (サジェストチップ / 再試行ボタンから)
     // ユーザーの永続トグルは変更しない。
     const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
@@ -4515,6 +4562,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSessionId,
       chatScope,
       scopeAnchorId,
+      threadFocusOverride,
     } = get();
     // 構築開始時点のスコープ構成キー。完了時に lastSystemPrompt とペアで保存し、
     // 送信側の stale 判定（構成が変わったプロンプトの流用防止）に使う。
@@ -4523,6 +4571,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       scopeAnchorId,
       activeSceneId,
       activeSessionId,
+      threadFocusOverride,
     });
     // 一回限りの Agent mode override（送信経路から渡る）を優先。無ければ永続トグル。
     const effectiveAgentMode = opts?.agentModeOverride ?? get().agentMode;
@@ -4534,7 +4583,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const aiProvider =
       xprov?.provider ?? useAiSettingsStore.getState().settings?.provider;
     const agentPullWillRunTools = effectiveAgentMode && aiProvider !== "cli";
-    const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
+    // Phase 3b: スレッド focus 中は scene を主題にしない（縦糸を <focus_subject>
+    // へ載せる非 scene 枝へ落とす）。chatScope は変えない＝session 保存先不変。
+    const effectiveSceneId =
+      chatScope === "scene" && !threadFocusOverride ? activeSceneId : null;
     if (!effectiveSceneId) {
       // @scene mention の per-message pin (sendMessage 経由でのみ渡される)。
       // 通常の context bar 更新では undefined のままで従来挙動。
@@ -4569,8 +4621,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           listCodexEntries(getCurrentProjectId()),
         ]);
 
+        // Phase 3b: スレッド focus 中は焦点が「縦糸」なので codex/snippet の
+        // focus 取得はスキップ（thread が <focus_subject> を占有する）。
         const codexBlocks =
-          chatScope === "codex" && scopeAnchorId
+          chatScope === "codex" && scopeAnchorId && !threadFocusOverride
             ? await buildCodexScopeBlocks({
                 selectedEntryId: scopeAnchorId,
                 allEntries,
@@ -4581,7 +4635,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Snippet スコープ: anchor snippet を取得して L4 pinnedSnippets の
         // 先頭へ注入する（下の globalPinnedSnippets マージ参照）。
         let snippetAnchor: Snippet | undefined;
-        if (chatScope === "snippet" && scopeAnchorId) {
+        if (chatScope === "snippet" && scopeAnchorId && !threadFocusOverride) {
           try {
             snippetAnchor = await getSnippet(
               getCurrentProjectId(),
@@ -4605,7 +4659,35 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         } | null = null;
         let aggregatedDetected: CodexEntry[] = [];
         const includeBodies = get().includeBodies;
-        if (chatScope === "folder" && scopeAnchorId) {
+        if (threadFocusOverride) {
+          // Phase 3b: スレッド所属シーンを集約して <focus_subject> へ。folder/project
+          // 集約とは排他（thread が最優先）。所属シーンは tree(reading)順に並べる。
+          const { links } = usePlotThreadStore.getState();
+          const memberIds = new Set(
+            links
+              .filter((l) => l.threadId === threadFocusOverride.threadId)
+              .map((l) => l.nodeId),
+          );
+          const descendants = allNodesForScope.filter(
+            (n) => n.nodeType === "scene" && memberIds.has(n.id),
+          );
+          if (descendants.length > 0) {
+            const result = await buildAggregatedScene({
+              anchorId: threadFocusOverride.threadId,
+              anchorTitle: threadFocusOverride.title,
+              descendants,
+              includeBodies,
+              activeSceneId,
+              prefacePolicy: "folder",
+              allEntries,
+              agentMode: agentPullWillRunTools,
+            });
+            if (result) {
+              aggregatedScene = result.aggregatedScene;
+              aggregatedDetected = result.aggregatedDetected;
+            }
+          }
+        } else if (chatScope === "folder" && scopeAnchorId) {
           const anchorFolder = allNodesForScope.find(
             (n) => n.id === scopeAnchorId,
           );
@@ -4831,9 +4913,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         let focusSubject:
           | { kind: "codex"; entry: import("./contextBuilder").CodexContext }
           | { kind: "snippet"; name: string; body: string }
+          | { kind: "thread"; name: string; body: string }
           | undefined;
         let scopeAnchorState: ChatState["scopeAnchor"] = null;
-        if (codexBlocks?.selectedPinned) {
+        if (threadFocusOverride) {
+          // Phase 3b: スレッド所属シーンの集約を <focus_subject> へ（scene L3 には
+          // 載せない＝下の scene スロットは空にして二重注入を防ぐ）。ContextBar 固定
+          // チップは使わず header の補助チップで表示するため scopeAnchorState は null。
+          focusSubject = {
+            kind: "thread",
+            name: threadFocusOverride.title,
+            body: aggregatedScene?.content ?? "",
+          };
+        } else if (codexBlocks?.selectedPinned) {
           // selectedPinned は enrichWithCustomDetails 済みのフル PinnedCodexContext。
           // Spotlight (pinned) 相当の構造化レンダリングで <focus_subject> へ渡す。
           const sel = codexBlocks.selectedPinned;
@@ -4853,13 +4945,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
 
         const promptResult = buildSystemPrompt({
-          scene: aggregatedScene
-            ? {
-                id: aggregatedScene.id,
-                title: aggregatedScene.title,
-                content: aggregatedScene.content,
-              }
-            : { id: "", title: "", content: "" },
+          // Phase 3b: スレッド focus 時は集約本文を focus_subject に載せたので
+          // scene(L3) は空にして二重注入を防ぐ。
+          scene:
+            aggregatedScene && !threadFocusOverride
+              ? {
+                  id: aggregatedScene.id,
+                  title: aggregatedScene.title,
+                  content: aggregatedScene.content,
+                }
+              : { id: "", title: "", content: "" },
           project: projectCtx ?? undefined,
           codexEntries:
             globalCodexEntries.length > 0 ? globalCodexEntries : undefined,
@@ -4959,6 +5054,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const {
       activeSceneId,
       chatScope,
+      threadFocusOverride,
       lastSystemPrompt,
       contextLayers,
       contextTokenCount,
@@ -4980,7 +5076,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       userMessage: draft.markdown,
     };
     // semantic recall は scene スコープ限定。それ以外はライブ値が実送信と一致。
-    const effectiveSceneId = chatScope === "scene" ? activeSceneId : null;
+    // Phase 3b: スレッド focus 中はライブ値（非 scene 枝で構築済み）を使う。
+    const effectiveSceneId =
+      chatScope === "scene" && !threadFocusOverride ? activeSceneId : null;
     if (!effectiveSceneId) return live;
 
     try {
@@ -5074,15 +5172,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // scope === "folder" / "codex" / "snippet" のとき anchorId 必須。空指定なら scene に fallback。
     // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, それ以外=false。
     // project では本文集約しないので値自体は影響しないが false に揃える。
+    // スコープ切替で非永続のスレッド focus はクリア（別スコープへ leak させない）。
     if (scope === "folder" || scope === "codex" || scope === "snippet") {
       if (!anchorId) {
-        set({ chatScope: "scene", scopeAnchorId: null, includeBodies: true });
+        set({
+          chatScope: "scene",
+          scopeAnchorId: null,
+          includeBodies: true,
+          threadFocusOverride: null,
+        });
         return;
       }
       set({
         chatScope: scope,
         scopeAnchorId: anchorId,
         includeBodies: false,
+        threadFocusOverride: null,
       });
       return;
     }
@@ -5090,6 +5195,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       chatScope: scope,
       scopeAnchorId: null,
       includeBodies: scope === "scene",
+      threadFocusOverride: null,
     });
   },
   setIncludeBodies: (on: boolean) => set({ includeBodies: on }),

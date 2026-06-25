@@ -1610,6 +1610,11 @@
       }
     },
     "placeholderFolder": "この {{kind}} について質問…",
+    "placeholderThread": "「{{title}}」について相談…",
+    "threadFocus": {
+      "label": "プロットスレッド: {{title}}",
+      "clear": "スレッド focus を解除"
+    },
     "sessions": "Sessions",
     "newSession": "新しいセッションを作成",
     "fallbackSceneTitle": "このシーン",
@@ -4810,6 +4815,7 @@
     "addThread": "スレッドを追加",
     "newThreadName": "新しいスレッド",
     "unnamed": "（無名）",
+    "discussInChat": "この糸を AI で相談",
     "marker": "マーカー",
     "thread": "スレッド",
     "name": "名前",

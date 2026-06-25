@@ -149,7 +149,9 @@ export interface BuildSystemPromptInput {
    */
   focusSubject?:
     | { kind: "codex"; entry: CodexContext }
-    | { kind: "snippet"; name: string; body: string };
+    | { kind: "snippet"; name: string; body: string }
+    // Phase 3b: スレッド focus override。所属シーンを集約した body を主題として注入。
+    | { kind: "thread"; name: string; body: string };
   /** C-3: 「予定ビート」セクション文字列（buildPendingBeatsSection の結果）。Synopsis 後・本文前に注入。 */
   pendingBeatsSection?: string;
   /** Phase 1: 現在シーンに紐づくラベル名一覧。L3 のタイトル行に
@@ -1305,6 +1307,21 @@ export function buildSystemPrompt(
         s.focusSubjectIntro,
         ...buildCodexEntryLines(fs.entry, true),
       ].join("\n");
+    } else if (fs.kind === "thread") {
+      // Phase 3b: スレッド focus。種別トークンは Snippet と同じく英語固定
+      // ("Plot Thread")。body は所属シーン集約テキスト (buildAggregatedScene)。
+      if (fs.name.trim() || fs.body.trim()) {
+        const focusLines = [
+          s.headers.focusSubject,
+          s.focusSubjectIntro,
+          `${s.labels.contentType}: Plot Thread`,
+          `${s.labels.contentTitle}: ${fs.name}`,
+        ];
+        if (fs.body.trim()) {
+          focusLines.push(`${s.labels.contentBody}:\n${fs.body.trim()}`);
+        }
+        focusText = focusLines.join("\n");
+      }
     } else if (fs.name.trim() || fs.body.trim()) {
       const focusLines = [
         s.headers.focusSubject,

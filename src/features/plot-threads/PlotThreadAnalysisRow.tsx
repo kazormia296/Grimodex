@@ -1,9 +1,11 @@
 import { useTranslation } from "react-i18next";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, MessageSquarePlus } from "lucide-react";
 import type { PlotPhaseType } from "@/db/schema";
 import type { PlotThreadRow } from "./api";
 import type { ThreadDormancy, ThreadPhaseProgress } from "./plotThreadAnalysis";
 import { PhaseStepper } from "./PhaseStepper";
+import { useChatStore } from "@/features/chat/chatStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 
 interface Props {
   thread: PlotThreadRow;
@@ -21,6 +23,16 @@ export function PlotThreadAnalysisRow({
 }: Props) {
   const { t } = useTranslation();
   const color = thread.color ?? "var(--primary)";
+  const threadTitle =
+    thread.name || t("plotThread.unnamed", "（無題のスレッド）");
+
+  // Phase 3b: この糸を主題に AI 相談（非永続 focus override）。
+  const handleDiscussInChat = () => {
+    useChatStore
+      .getState()
+      .setThreadFocusOverride({ threadId: thread.id, title: threadTitle });
+    useLayoutStore.getState().showPanel("chat");
+  };
 
   let dormancyText: string;
   let dormancyTone = "text-muted-foreground";
@@ -60,8 +72,18 @@ export function PlotThreadAnalysisRow({
         className="min-w-0 flex-1 truncate font-medium text-foreground"
         title={thread.name}
       >
-        {thread.name || t("plotThread.unnamed", "（無題のスレッド）")}
+        {threadTitle}
       </span>
+
+      <button
+        type="button"
+        onClick={handleDiscussInChat}
+        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+        title={t("plotThread.discussInChat", "この糸を AI で相談")}
+        aria-label={t("plotThread.discussInChat", "この糸を AI で相談")}
+      >
+        <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden />
+      </button>
 
       <span
         className={`shrink-0 whitespace-nowrap tabular-nums ${dormancyTone}`}

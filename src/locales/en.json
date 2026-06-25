@@ -1610,6 +1610,11 @@
       }
     },
     "placeholderFolder": "Ask about this {{kind}}…",
+    "placeholderThread": "Discuss \"{{title}}\"…",
+    "threadFocus": {
+      "label": "Plot thread: {{title}}",
+      "clear": "Clear thread focus"
+    },
     "sessions": "Sessions",
     "newSession": "New session",
     "fallbackSceneTitle": "This scene",
@@ -4817,6 +4822,7 @@
     "addThread": "Add thread",
     "newThreadName": "New thread",
     "unnamed": "(unnamed)",
+    "discussInChat": "Discuss this thread with AI",
     "marker": "Marker",
     "thread": "Thread",
     "name": "Name",
