@@ -210,4 +210,22 @@ describe("treeVisibility threadFilter", () => {
     expect(ids).not.toContain("s3");
     expect(ids).not.toContain("s4");
   });
+
+  it("auto-expands matching folders even when collapsed (reveals subplot scenes)", () => {
+    const flat = flattenVisible(
+      null,
+      childMap,
+      nodeMap,
+      [], // nothing expanded
+      "",
+      null,
+      [],
+      {},
+      ["t2"],
+      nodeThreadIds,
+    );
+    const ids = flat.map((n) => n.id);
+    // folderA(s2) and folderB(s3) both contain t2; collapsed but auto-expanded
+    expect(ids).toEqual(["folderA", "s2", "folderB", "s3"]);
+  });
 });

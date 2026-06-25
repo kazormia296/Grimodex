@@ -1516,4 +1516,19 @@ describe("TimelineViewport – thread gaps (1c)", () => {
     );
     expect(gaps.length).toBe(0);
   });
+
+  it("reading-order 以外（story/write）では gap を描かない", () => {
+    setupGapThread();
+    useTimelineStore.setState((s) => ({
+      axisMode: "story",
+      display: { ...s.display, showThreadGaps: true },
+    }));
+    const { container } = render(
+      <TimelineViewport scenes={gapScenes} onSelectScene={vi.fn()} />,
+    );
+    const gaps = container.querySelectorAll(
+      '[data-testid^="plot-thread-gap-"]',
+    );
+    expect(gaps.length).toBe(0);
+  });
 });

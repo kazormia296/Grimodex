@@ -93,7 +93,11 @@ export function TreeRenderer({
         // isExpanded は folder の開閉と検索時の自動展開にのみ意味がある。
         // 葉にも `!!query && visible` を渡すと検索 1 文字目で全行の props が
         // flip して memo が無効化されるため folder に限定する。
-        const isExpanded = isFolder && (expandedIds.includes(id) || !!query);
+        const isExpanded =
+          isFolder &&
+          (expandedIds.includes(id) ||
+            !!query ||
+            (threadFilter?.length ?? 0) > 0);
         const itemProps = {
           node,
           depth,

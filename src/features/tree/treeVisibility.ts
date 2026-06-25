@@ -143,8 +143,12 @@ export function flattenVisible(
       continue;
     result.push(node);
     const isContainer = node.nodeType === "folder";
+    // Thread filter hides non-matching folders, so auto-expand the survivors to
+    // reveal the subplot's scenes (same spirit as search auto-expand).
+    const threadFilterActive = !!threadFilter && threadFilter.length > 0;
     const expanded =
       expandedIds.includes(id) ||
+      threadFilterActive ||
       (!!query &&
         isNodeVisible(
           node,

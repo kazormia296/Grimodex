@@ -18,9 +18,14 @@ interface Props {
 export function ThreadMembershipDots({ threadIds, threadsById }: Props) {
   if (!threadIds || threadIds.length === 0) return null;
 
+  const seen = new Set<string>();
   const threads = threadIds
     .map((id) => threadsById.get(id))
-    .filter((t): t is PlotThreadRow => Boolean(t));
+    .filter((t): t is PlotThreadRow => {
+      if (!t || seen.has(t.id)) return false;
+      seen.add(t.id);
+      return true;
+    });
 
   if (threads.length === 0) return null;
 
