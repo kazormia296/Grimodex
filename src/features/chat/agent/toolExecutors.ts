@@ -1222,8 +1222,9 @@ async function listPlotThreads(): Promise<Omit<ToolResult, "toolCallId">> {
   const projectId = useTreeStore.getState().projectId;
   if (!projectId)
     return {
+      // 他の list_* ツールと揃えて空配列を返す（null だと「列挙失敗」に見える）。
       name: "list_plot_threads",
-      content: null,
+      content: [],
       summary: "No active project",
       tokensUsed: 0,
     };
@@ -1367,7 +1368,17 @@ async function getThreadScenes(
       : [];
   const titleById = new Map(titleRows.map((r) => [r.id, r.title]));
 
-  const capped = orderedLinks.slice(0, THREAD_SCENE_MAX);
+  // 1 シーンが複数 phase マーカーを持ち得るので nodeId で dedup（最初＝最も早い
+  // phase を採用）。list_plot_threads の distinct scene 数と一貫させ、同一シーンが
+  // 重複出力されるのを防ぐ。
+  const seenNodes = new Set<string>();
+  const dedupedLinks = orderedLinks.filter((l) => {
+    if (seenNodes.has(l.nodeId)) return false;
+    seenNodes.add(l.nodeId);
+    return true;
+  });
+
+  const capped = dedupedLinks.slice(0, THREAD_SCENE_MAX);
   const scenes: Array<{
     id: string;
     title: string;
@@ -1405,7 +1416,7 @@ async function getThreadScenes(
     id: thread.id,
     name: thread.name,
     description: thread.description ?? "",
-    sceneCount: orderedLinks.length,
+    sceneCount: dedupedLinks.length,
     scenes,
     branches,
   };
@@ -1413,7 +1424,7 @@ async function getThreadScenes(
   return {
     name: "get_thread_scenes",
     content,
-    summary: `Thread '${thread.name}': ${scenes.length}/${orderedLinks.length} scene(s)`,
+    summary: `Thread '${thread.name}': ${scenes.length}/${dedupedLinks.length} scene(s)`,
     tokensUsed: countTokens(json),
   };
 }

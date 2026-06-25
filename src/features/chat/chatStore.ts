@@ -4676,7 +4676,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               anchorId: threadFocusOverride.threadId,
               anchorTitle: threadFocusOverride.title,
               descendants,
-              includeBodies,
+              // スレッド focus の主題は「この糸そのもの」なので本文を必ず注入する
+              // （下地スコープの eco includeBodies に引きずられて synopsis/空にしない）。
+              // buildAggregatedScene の scene/char 上限が過大スレッドを Tier2 へ守る。
+              includeBodies: true,
               activeSceneId,
               prefacePolicy: "folder",
               allEntries,
