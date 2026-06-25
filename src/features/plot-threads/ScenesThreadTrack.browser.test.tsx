@@ -58,10 +58,12 @@ describe("ScenesThreadTrack geometry (real DOM)", () => {
     const l1 = lines[1].getBoundingClientRect(); // 通過: 全高
     const l2 = lines[2].getBoundingClientRect(); // 末尾駅: 上→中央
 
-    // 先頭行の線は行の上半分には無い（中央付近から始まる）
-    expect(l0.top).toBeGreaterThan(l1.top + ROW_H * 0.3);
-    // 末尾行の線は行の下半分には無い（中央付近で終わる）
-    expect(l2.bottom).toBeLessThan(l1.bottom - ROW_H * 0.3);
+    // 先頭駅の線は自分の行の中央から始まる（上半分には無い）。
+    // 行0 の中央 = 行1 の上端 (= 行0 の下端) から ROW_H/2 上。
+    expect(Math.abs(l0.top - (l1.top - ROW_H / 2))).toBeLessThan(1.5);
+    // 末尾駅の線は自分の行の中央で終わる（下半分には無い）。
+    // 行2 の中央 = 行1 の下端 (= 行2 の上端) から ROW_H/2 下。
+    expect(Math.abs(l2.bottom - (l1.bottom + ROW_H / 2))).toBeLessThan(1.5);
     // 行をまたぐ連続性: 行0 の線の下端 ≈ 行1 の線の上端
     expect(Math.abs(l0.bottom - l1.top)).toBeLessThan(1.5);
     // 線も列の x に整列
