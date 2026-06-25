@@ -78,6 +78,9 @@ function resetStore() {
     selectedNodeIds: [],
     inspectorOpen: false,
     pendingEditNodeId: null,
+    showThreads: false,
+    selectedPlotThreadId: null,
+    selectedPlotLinkId: null,
     display: {
       showTitles: true,
       showChapterNumbers: true,
@@ -283,6 +286,25 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
     expect(mockDeleteNode).toHaveBeenCalledWith("s1");
     expect(mockDeleteNode).toHaveBeenCalledWith("s2");
     expect(mockDeleteNode).toHaveBeenCalledTimes(2);
+  });
+
+  it("プロット(スレッド/マーカー)選択中の Delete はシーンを消さない", () => {
+    useTimelineStore.setState({
+      selectedNodeIds: ["scene-x"],
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(mockDeleteNode).not.toHaveBeenCalled();
   });
 
   it("panel focused + selected → Enter calls openPinned", () => {

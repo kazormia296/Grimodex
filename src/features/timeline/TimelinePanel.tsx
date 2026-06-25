@@ -355,7 +355,12 @@ export function TimelinePanel() {
           setAxisMode("write");
           break;
         case "Delete": {
-          const { selectedNodeIds: ids } = useTimelineStore.getState();
+          const ps = useTimelineStore.getState();
+          // プロット(スレッド/マーカー)選択中はシーンに作用させない（最後に選択した
+          // シーンを誤って消さない）。マーカー/スレッド削除はインスペクタ/右クリックで
+          // 確認ダイアログ経由。
+          if (ps.selectedPlotLinkId || ps.selectedPlotThreadId) break;
+          const { selectedNodeIds: ids } = ps;
           if (ids.length > 0) {
             e.preventDefault();
             for (const id of [...ids]) void deleteNode(id);
@@ -363,7 +368,9 @@ export function TimelinePanel() {
           break;
         }
         case "Enter": {
-          const { selectedNodeIds: ids } = useTimelineStore.getState();
+          const ps = useTimelineStore.getState();
+          if (ps.selectedPlotLinkId || ps.selectedPlotThreadId) break;
+          const { selectedNodeIds: ids } = ps;
           if (ids.length > 0) {
             e.preventDefault();
             useTabStore.getState().openPinned(ids[0]);
@@ -376,7 +383,10 @@ export function TimelinePanel() {
             axisMode: curMode,
             selectedNodeIds: ids,
             inspectorOpen: isOpen,
+            selectedPlotLinkId: pl,
+            selectedPlotThreadId: pt,
           } = useTimelineStore.getState();
+          if (pl || pt) break;
           if (curMode === "story" && ids.length > 0) {
             const targetId = ids[0];
             if (!nodes.some((n) => n.id === targetId)) break;

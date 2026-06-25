@@ -166,6 +166,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const showThreads = useTimelineStore((s) => s.showThreads);
     const plotLayout = useTimelineStore((s) => s.plotLayout);
     const selectedPlotLinkId = useTimelineStore((s) => s.selectedPlotLinkId);
+    const selectedPlotThreadId = useTimelineStore(
+      (s) => s.selectedPlotThreadId,
+    );
     const threads = usePlotThreadStore((s) => s.threads);
     const links = usePlotThreadStore((s) => s.links);
     const branches = usePlotThreadStore((s) => s.branches);
@@ -679,6 +682,24 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       const el = containerRef.current;
       if (el) setScrollOffset(el.scrollLeft);
     }, [setScrollOffset]);
+
+    // 選択中のマーカー / スレッドをビューへスクロールして見せる（キーボードナビや
+    // クリック選択で画面外に出ているとき）。横（シーン列）と縦（レーン）両方。
+    useEffect(() => {
+      if (!showThreads) return;
+      const sel = selectedPlotLinkId
+        ? `[data-testid="plot-marker-${selectedPlotLinkId}"]`
+        : selectedPlotThreadId
+          ? `[data-testid="plot-lane-label-${selectedPlotThreadId}"]`
+          : null;
+      if (!sel) return;
+      const el = svgRef.current?.querySelector(sel) as
+        | (Element & { scrollIntoView?: (opts?: unknown) => void })
+        | null;
+      if (el && typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    }, [selectedPlotLinkId, selectedPlotThreadId, showThreads]);
 
     // マウスホイール（縦回転）でズーム。横スクロールしたいときは Shift+ホイール、
     // またはトラックパッドの横スワイプ（横優位の入力）をブラウザ既定の横スクロール
