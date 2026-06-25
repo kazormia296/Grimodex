@@ -544,6 +544,56 @@ describe("TimelinePanel – arrow key navigation (#3)", () => {
     createdAt: "",
     updatedAt: "",
   });
+  const plotLink = (id: string, threadId: string, nodeId: string) => ({
+    id,
+    threadId,
+    nodeId,
+    phaseType: "develop" as const,
+    note: null,
+    sortOrder: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+  const arrow = (key: string) =>
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true }),
+      );
+    });
+
+  it("ArrowRight/Left は同スレッド内のマーカーを移動する", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0")],
+      links: [plotLink("m1", "t1", "s1"), plotLink("m2", "t1", "s2")],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotLinkId: "m1",
+      selectedPlotThreadId: "t1",
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => getByTestId("timeline-panel").focus());
+    arrow("ArrowRight");
+    expect(useTimelineStore.getState().selectedPlotLinkId).toBe("m2");
+    arrow("ArrowLeft");
+    expect(useTimelineStore.getState().selectedPlotLinkId).toBe("m1");
+  });
+
+  it("ArrowDown は隣スレッドの同じ列のマーカーへ移る", () => {
+    usePlotThreadStore.setState({
+      threads: [plotThread("t1", "a0"), plotThread("t2", "a1")],
+      links: [plotLink("m1", "t1", "s2"), plotLink("m2", "t2", "s2")],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotLinkId: "m1", // t1 / s2(col1)
+      selectedPlotThreadId: "t1",
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => getByTestId("timeline-panel").focus());
+    arrow("ArrowDown");
+    expect(useTimelineStore.getState().selectedPlotLinkId).toBe("m2");
+  });
 
   it("ArrowDown はスレッド表示中に次のスレッドを選択する", () => {
     usePlotThreadStore.setState({

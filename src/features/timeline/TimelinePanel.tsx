@@ -239,6 +239,102 @@ export function TimelinePanel() {
       )
         return;
 
+      // プロットスレッド表示中の 2D マーカーナビ。↑/↓=スレッド(行)移動・列は維持して
+      // 最寄りマーカーへ / ←/→=同スレッド内のマーカー(列)移動。plot 選択中のみ ←/→ を
+      // 横取りする（未選択なら false を返しシーンナビに委ねる）。handled なら true。
+      function plotNav(dir: "up" | "down" | "left" | "right"): boolean {
+        const tl = useTimelineStore.getState();
+        if (!tl.showThreads) return false;
+        const ts = usePlotThreadStore.getState().threads;
+        const ls = usePlotThreadStore.getState().links;
+        if (ts.length === 0) return false;
+        const horizontal = dir === "left" || dir === "right";
+        const hasSel = !!(tl.selectedPlotLinkId || tl.selectedPlotThreadId);
+        if (horizontal && !hasSel) return false; // ←/→ はシーンナビに任せる
+        const ordered = [...ts].sort((a, b) => {
+          const c = cmpKeys(a.sortOrder, b.sortOrder);
+          return c !== 0 ? c : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
+        const colOf = (nodeId: string) =>
+          scenes.findIndex((s) => s.id === nodeId);
+        const markersOf = (tid: string) =>
+          ls
+            .filter((l) => l.threadId === tid && colOf(l.nodeId) >= 0)
+            .sort((a, b) => colOf(a.nodeId) - colOf(b.nodeId));
+        const select = (next: { threadId?: string; linkId?: string }) => {
+          if (next.linkId) {
+            const t = ls.find((l) => l.id === next.linkId)?.threadId ?? null;
+            tl.setSelectedPlotThreadId(t);
+            tl.setSelectedPlotLinkId(next.linkId);
+          } else {
+            tl.setSelectedPlotThreadId(next.threadId ?? null);
+            tl.setSelectedPlotLinkId(null);
+          }
+          if (!tl.inspectorOpen) toggleInspector();
+          // インスペクタ再描画でフォーカスが移っても次キーが効くようパネルへ戻す。
+          containerRef.current?.focus();
+        };
+        const curLink = tl.selectedPlotLinkId
+          ? ls.find((l) => l.id === tl.selectedPlotLinkId)
+          : undefined;
+        const curThreadId = curLink?.threadId ?? tl.selectedPlotThreadId;
+        const curCol = curLink ? colOf(curLink.nodeId) : null;
+
+        if (horizontal) {
+          if (!curThreadId) return false;
+          const ms = markersOf(curThreadId);
+          if (ms.length === 0) return true;
+          if (!curLink) {
+            select({
+              linkId: dir === "right" ? ms[0].id : ms[ms.length - 1].id,
+            });
+            return true;
+          }
+          const i = ms.findIndex((m) => m.id === curLink.id);
+          const ni = Math.min(
+            ms.length - 1,
+            Math.max(0, i + (dir === "right" ? 1 : -1)),
+          );
+          select({ linkId: ms[ni].id });
+          return true;
+        }
+
+        // up / down: スレッド(行)を移動。
+        const ci = curThreadId
+          ? ordered.findIndex((t) => t.id === curThreadId)
+          : -1;
+        const d = dir === "down" ? 1 : -1;
+        const ni =
+          ci === -1
+            ? d === 1
+              ? 0
+              : ordered.length - 1
+            : Math.min(ordered.length - 1, Math.max(0, ci + d));
+        const nt = ordered[ni];
+        if (!nt) return true;
+        const ms = markersOf(nt.id);
+        if (ms.length === 0) {
+          select({ threadId: nt.id });
+          return true;
+        }
+        if (curCol == null) {
+          select({ linkId: ms[0].id });
+          return true;
+        }
+        // 同じ列、無ければ最寄り列のマーカーを選ぶ。
+        let best = ms[0];
+        let bestD = Math.abs(colOf(best.nodeId) - curCol);
+        for (const m of ms) {
+          const dd = Math.abs(colOf(m.nodeId) - curCol);
+          if (dd < bestD) {
+            best = m;
+            bestD = dd;
+          }
+        }
+        select({ linkId: best.id });
+        return true;
+      }
+
       switch (e.key) {
         case "Escape":
           e.preventDefault();
@@ -291,6 +387,10 @@ export function TimelinePanel() {
           break;
         }
         case "ArrowRight": {
+          if (plotNav("right")) {
+            e.preventDefault();
+            break;
+          }
           const { selectedNodeIds: ids } = useTimelineStore.getState();
           e.preventDefault();
           if (ids.length === 0 && scenes.length > 0) {
@@ -313,6 +413,10 @@ export function TimelinePanel() {
           break;
         }
         case "ArrowLeft": {
+          if (plotNav("left")) {
+            e.preventDefault();
+            break;
+          }
           const { selectedNodeIds: ids } = useTimelineStore.getState();
           e.preventDefault();
           if (ids.length === 0 && scenes.length > 0) {
@@ -334,41 +438,12 @@ export function TimelinePanel() {
           }
           break;
         }
-        case "ArrowUp":
+        case "ArrowUp": {
+          if (plotNav("up")) e.preventDefault();
+          break;
+        }
         case "ArrowDown": {
-          // スレッド表示中は ↑/↓ でレーン(スレッド)選択を上下に移動。シーンは ←/→ のまま。
-          const tl = useTimelineStore.getState();
-          if (!tl.showThreads) break;
-          const ts = usePlotThreadStore.getState().threads;
-          if (ts.length === 0) break;
-          e.preventDefault();
-          // 表示順(sortOrder→id)。separated のホーム行順に一致。
-          const ordered = [...ts].sort((a, b) => {
-            const c = cmpKeys(a.sortOrder, b.sortOrder);
-            return c !== 0 ? c : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-          });
-          // 基準スレッド = マーカー選択中はその親、無ければ選択中スレッド。
-          const ls = usePlotThreadStore.getState().links;
-          const baseId = tl.selectedPlotLinkId
-            ? (ls.find((l) => l.id === tl.selectedPlotLinkId)?.threadId ??
-              tl.selectedPlotThreadId)
-            : tl.selectedPlotThreadId;
-          const idx = baseId ? ordered.findIndex((t) => t.id === baseId) : -1;
-          const dir = e.key === "ArrowDown" ? 1 : -1;
-          const nextIdx =
-            idx === -1
-              ? dir === 1
-                ? 0
-                : ordered.length - 1
-              : Math.min(ordered.length - 1, Math.max(0, idx + dir));
-          const next = ordered[nextIdx];
-          if (next) {
-            tl.setSelectedPlotThreadId(next.id);
-            tl.setSelectedPlotLinkId(null);
-            if (!tl.inspectorOpen) toggleInspector();
-            // インスペクタ再描画でフォーカスが移っても次の↑↓が効くようパネルへ戻す。
-            containerRef.current?.focus();
-          }
+          if (plotNav("down")) e.preventDefault();
           break;
         }
       }
