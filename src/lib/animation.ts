@@ -49,6 +49,11 @@ export const CSS_DURATIONS = {
   dialog: `${DURATIONS.dialog * 1000}ms`,
 } as const;
 
+/** CSS timing-function strings aligned with EASINGS（CSS transition 用）。 */
+export const CSS_EASINGS = {
+  easeOut: `cubic-bezier(${EASINGS.easeOut.join(", ")})`,
+} as const;
+
 export function useReducedMotion(): boolean {
   const osReduced = useOsReducedMotion();
   const appReduced = useSettingsStore((s) =>

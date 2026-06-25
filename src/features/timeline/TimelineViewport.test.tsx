@@ -965,6 +965,27 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     expect(cmpKeys(key, "a1")).toBeGreaterThan(0);
   });
 
+  it("ドラッグ中は他の行が退避し、入替えアニメーション(transform transition)が走る", () => {
+    seed();
+    usePlotThreadStore.setState({ reorderThread: vi.fn() });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const l1 = getByTestId("plot-lane-label-t1");
+    // t1(行0,y158) を行1(y214)へドラッグ。mouseup する前の途中状態を検証。
+    fireEvent.mouseDown(l1, { clientX: 70, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 70, clientY: 214 });
+    const t1 = getByTestId("plot-lane-label-t1");
+    const t2 = getByTestId("plot-lane-label-t2");
+    // ドラッグ点はカーソル追従(+56)で transition なし（即時）。
+    expect(t1.style.transform).toBe("translate(0px, 56px)");
+    expect(t1.style.transition).toBe("none");
+    // 退避する t2 は隙間を埋めるよう上へ(-56)＋transform の transition が付く。
+    expect(t2.style.transform).toBe("translate(0px, -56px)");
+    expect(t2.style.transition).toContain("transform");
+    fireEvent.mouseUp(document, { clientX: 70, clientY: 214 });
+  });
+
   it("動かさず mousedown→mouseup なら選択（並べ替えしない）", () => {
     seed();
     const reorderThread = vi.fn();
@@ -984,7 +1005,7 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     expect(reorderThread).not.toHaveBeenCalled();
   });
 
-  it("subwaySort ON のときはドラッグしても並べ替えない（自動配置）", () => {
+  it("subwaySort ON のときはドラッグしても並べ替えない＋入替えプレビューも出ない", () => {
     seed();
     useTimelineStore.setState({ plotSubwaySort: true });
     const reorderThread = vi.fn();
@@ -995,6 +1016,14 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     const label = getByTestId("plot-lane-label-t1");
     fireEvent.mouseDown(label, { clientX: 70, clientY: 158 });
     fireEvent.mouseMove(document, { clientX: 70, clientY: 214 });
+    // commit は早期 return（自動配置）なので、プレビューも抑止される＝
+    // ドラッグ点はカーソル追従せず、他行も退避しない（「動いたのに戻る」嘘を防ぐ）。
+    expect(getByTestId("plot-lane-label-t1").style.transform).toBe(
+      "translate(0px, 0px)",
+    );
+    expect(getByTestId("plot-lane-label-t2").style.transform).toBe(
+      "translate(0px, 0px)",
+    );
     fireEvent.mouseUp(document, { clientX: 70, clientY: 214 });
     expect(reorderThread).not.toHaveBeenCalled();
   });

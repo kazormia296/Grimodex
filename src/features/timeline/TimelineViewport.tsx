@@ -30,6 +30,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
 import type { PlotPhaseType } from "@/db/schema";
 import { recordMark } from "@/lib/perfLog";
+import { CSS_DURATIONS, CSS_EASINGS, useReducedMotion } from "@/lib/animation";
 
 const DOT_R = 6;
 /** プロットスレッドの太いバンド（線）の高さ。段階テキストを内側に表示する。 */
@@ -201,6 +202,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // Track when the scroll container element mounts/unmounts so the wheel
     // listener effect re-runs even if scenes load after the first render.
     const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
+    const reducedMotion = useReducedMotion();
 
     const STEP = STEP_BASE * zoom;
 
@@ -1421,53 +1423,124 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   fill="var(--background)"
                   pointerEvents="none"
                 />
-                {laneModel.lanes.map((lane) => {
-                  const name =
-                    lane.thread.name || t("plotThread.unnamed", "（無名）");
-                  const color = lane.thread.color ?? "var(--primary)";
-                  const dragging =
-                    labelDrag?.threadId === lane.thread.id && labelDrag.moved;
-                  // ドラッグ中は Y のみカーソル追従（X 固定）。
-                  const cyL = dragging ? labelDrag!.currentY : lane.y;
-                  const display =
-                    name.length > 12 ? name.slice(0, 11) + "…" : name;
-                  const selected = selectedPlotThreadId === lane.thread.id;
-                  return (
-                    <g
-                      key={`label-${lane.thread.id}`}
-                      className="cursor-pointer"
-                      data-testid={`plot-lane-label-${lane.thread.id}`}
-                      opacity={dragging ? 0.7 : 1}
-                      onMouseDown={(e) =>
-                        handleLabelMouseDown(e, lane.thread.id)
-                      }
-                    >
-                      <rect
-                        x={6}
-                        y={cyL - 13}
-                        width={SUBWAY_LABEL_GUTTER - 24}
-                        height={26}
-                        rx={13}
-                        fill="var(--card, var(--background))"
-                        stroke={selected ? "var(--foreground)" : "currentColor"}
-                        strokeOpacity={selected ? 0.9 : 0.15}
-                        strokeWidth={selected ? 1.5 : 1}
-                      />
-                      <circle cx={22} cy={cyL} r={7} fill={color} />
-                      <text
-                        x={36}
-                        y={cyL}
-                        dominantBaseline="central"
-                        fontSize={11}
-                        fill="currentColor"
-                        fillOpacity={0.85}
-                        className="select-none"
-                      >
-                        {display}
-                      </text>
-                    </g>
+                {(() => {
+                  const lanes = laneModel.lanes;
+                  const n = lanes.length;
+                  // ドラッグ確定（threshold 越え）したスレッドのみ並べ替えプレビュー対象。
+                  // subwaySort ON 時は commitLabelDrop が早期 return で並べ替えないため、
+                  // プレビューも抑止する（出すと「動いたのに戻る」嘘＋ホーム行が
+                  // center-out 配置で線形でないため shift 計算も破綻する）。
+                  const drag =
+                    labelDrag?.moved && !plotSubwaySort ? labelDrag : null;
+                  // 元の行 index（sortOrder 順）の引き当て表。O(n^2) 回避。
+                  const indexById = new Map(
+                    lanes.map((l, idx) => [l.thread.id, idx] as const),
                   );
-                })}
+                  const dragIndex = drag
+                    ? (indexById.get(drag.threadId) ?? -1)
+                    : -1;
+                  // ドラッグ点を挿す行（commitLabelDrop と同一の丸め）。
+                  const targetRow =
+                    drag && dragIndex >= 0
+                      ? Math.max(
+                          0,
+                          Math.min(
+                            n - 1,
+                            Math.round(
+                              (drag.currentY - threadsTop) / LANE_HEIGHT,
+                            ),
+                          ),
+                        )
+                      : -1;
+                  // ドラッグ中のスレッドを最後に描画＝最前面に重ねる。
+                  const renderOrder =
+                    drag && dragIndex >= 0
+                      ? [...lanes].sort(
+                          (a, b) =>
+                            Number(a.thread.id === drag.threadId) -
+                            Number(b.thread.id === drag.threadId),
+                        )
+                      : lanes;
+                  return renderOrder.map((lane) => {
+                    const i = indexById.get(lane.thread.id) ?? 0; // 元の行 index
+                    const name =
+                      lane.thread.name || t("plotThread.unnamed", "（無名）");
+                    const color = lane.thread.color ?? "var(--primary)";
+                    const isDragged =
+                      !!drag && lane.thread.id === drag.threadId;
+                    // ドラッグ点を targetRow に挿すと、隙間を埋めるよう中間行が 1 段ずれる。
+                    let shift = 0;
+                    if (drag && dragIndex >= 0 && !isDragged) {
+                      if (
+                        dragIndex < targetRow &&
+                        i > dragIndex &&
+                        i <= targetRow
+                      )
+                        shift = -1;
+                      else if (
+                        dragIndex > targetRow &&
+                        i >= targetRow &&
+                        i < dragIndex
+                      )
+                        shift = 1;
+                    }
+                    // 子要素はホーム行に固定描画し、Y 移動は <g> の transform で行う
+                    // ＝CSS transition で滑らかに入替えアニメーションさせる。
+                    const baseY = lane.y;
+                    const displayY = isDragged
+                      ? drag!.currentY
+                      : baseY + shift * LANE_HEIGHT;
+                    const dy = displayY - baseY;
+                    // ドラッグ点自身は即時追従（transition なし）。他行は滑らかに退避。
+                    const animate = !!drag && !isDragged && !reducedMotion;
+                    const display =
+                      name.length > 12 ? name.slice(0, 11) + "…" : name;
+                    const selected = selectedPlotThreadId === lane.thread.id;
+                    return (
+                      <g
+                        key={`label-${lane.thread.id}`}
+                        className="cursor-pointer"
+                        data-testid={`plot-lane-label-${lane.thread.id}`}
+                        opacity={isDragged ? 0.7 : 1}
+                        style={{
+                          transform: `translate(0px, ${dy}px)`,
+                          transition: animate
+                            ? `transform ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`
+                            : "none",
+                        }}
+                        onMouseDown={(e) =>
+                          handleLabelMouseDown(e, lane.thread.id)
+                        }
+                      >
+                        <rect
+                          x={6}
+                          y={baseY - 13}
+                          width={SUBWAY_LABEL_GUTTER - 24}
+                          height={26}
+                          rx={13}
+                          fill="var(--card, var(--background))"
+                          stroke={
+                            selected ? "var(--foreground)" : "currentColor"
+                          }
+                          strokeOpacity={selected ? 0.9 : 0.15}
+                          strokeWidth={selected ? 1.5 : 1}
+                        />
+                        <circle cx={22} cy={baseY} r={7} fill={color} />
+                        <text
+                          x={36}
+                          y={baseY}
+                          dominantBaseline="central"
+                          fontSize={11}
+                          fill="currentColor"
+                          fillOpacity={0.85}
+                          className="select-none"
+                        >
+                          {display}
+                        </text>
+                      </g>
+                    );
+                  });
+                })()}
               </g>
             )}
 
