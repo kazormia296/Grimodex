@@ -176,6 +176,40 @@ describe("plotThreadStore", () => {
     expect(usePlotThreadStore.getState().links[0].phaseType).toBe("climax");
   });
 
+  it("reorderThread は IPC 完了前に threads の sortOrder を楽観更新する", async () => {
+    usePlotThreadStore.setState({
+      threads: [row("t1", "a0"), row("t2", "a1")],
+    });
+    let resolveIpc: () => void = () => {};
+    mock(updatePlotThread).mockImplementationOnce(
+      () => new Promise<void>((r) => (resolveIpc = r)),
+    );
+    // await せずに発火（ドロップ時の void 呼び出しと同じ）。
+    const p = usePlotThreadStore.getState().reorderThread("t1", "a2");
+    // IPC 未完了でも store の sortOrder は即時反映されている。
+    expect(
+      usePlotThreadStore.getState().threads.find((t) => t.id === "t1")
+        ?.sortOrder,
+    ).toBe("a2");
+    resolveIpc();
+    await p;
+    expect(mock(updatePlotThread)).toHaveBeenCalledWith("t1", {
+      sortOrder: "a2",
+    });
+  });
+
+  it("reorderThread は IPC 失敗時に sortOrder を元へ戻す", async () => {
+    usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
+    mock(updatePlotThread).mockRejectedValueOnce(new Error("ipc fail"));
+    await expect(
+      usePlotThreadStore.getState().reorderThread("t1", "a9"),
+    ).rejects.toThrow();
+    expect(
+      usePlotThreadStore.getState().threads.find((t) => t.id === "t1")
+        ?.sortOrder,
+    ).toBe("a0");
+  });
+
   it("deleteMarker が links から除外する", async () => {
     usePlotThreadStore.setState({ links: [linkRow("l1"), linkRow("l2")] });
     await usePlotThreadStore.getState().deleteMarker("l1");

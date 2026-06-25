@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildPlotLaneModel,
+  computeLaneDragTargets,
   laneY,
   LANE_HEIGHT,
   LANE_TOP,
@@ -636,5 +637,154 @@ describe("laneY / 定数", () => {
   it("laneY は LANE_TOP + index*LANE_HEIGHT", () => {
     expect(laneY(0)).toBe(LANE_TOP);
     expect(laneY(2)).toBe(LANE_TOP + 2 * LANE_HEIGHT);
+  });
+});
+
+describe("buildPlotLaneModel: laneYByThread 上書き（アニメーション用）", () => {
+  it("帯・マーカー・終端・コネクタの Y がすべて override 値に追従する", () => {
+    const threads = [thread("a", "a0"), thread("b", "a1")];
+    const links = [
+      link("la1", "a", "s1", "introduce"),
+      link("la2", "a", "s3", "develop"),
+      link("lb1", "b", "s2", "introduce"),
+    ];
+    const branches = [branch("br1", "a", "b", "s2", "branch")];
+    // a を 1000、b を 2000 に置く（線形ホームとは無関係な任意 Y）。
+    const laneYByThread = new Map([
+      ["a", 1000],
+      ["b", 2000],
+    ]);
+    const m = buildPlotLaneModel({
+      threads,
+      links,
+      sceneX,
+      branches,
+      laneYByThread,
+    });
+    const a = m.lanes.find((l) => l.thread.id === "a")!;
+    const b = m.lanes.find((l) => l.thread.id === "b")!;
+    expect(a.y).toBe(1000);
+    expect(b.y).toBe(2000);
+    // 帯セグメント・マーカー・yByColumn もすべて override 値。
+    for (const seg of a.lineSegments) {
+      expect(seg.y1).toBe(1000);
+      expect(seg.y2).toBe(1000);
+    }
+    expect(a.markers.every((mk) => mk.y === 1000)).toBe(true);
+    expect(b.markers.every((mk) => mk.y === 2000)).toBe(true);
+    // コネクタ端点も override 値（a→b の branch）。
+    const conn = m.connectors.find((c) => c.id === "br1")!;
+    expect(conn.fromY).toBe(1000);
+    expect(conn.toY).toBe(2000);
+  });
+
+  it("override に無いスレッドはホーム行 Y にフォールバック", () => {
+    const threads = [thread("a", "a0"), thread("b", "a1")];
+    const links = [link("la1", "a", "s1", "introduce")];
+    const m = buildPlotLaneModel({
+      threads,
+      links,
+      sceneX,
+      laneYByThread: new Map([["a", 999]]),
+    });
+    expect(m.lanes.find((l) => l.thread.id === "a")!.y).toBe(999);
+    // b は線形ホーム（index 1）。
+    expect(m.lanes.find((l) => l.thread.id === "b")!.y).toBe(laneY(1));
+  });
+
+  it("構造（順序・セグメント有無）は override で変わらない＝Y だけ動く", () => {
+    const threads = [thread("a", "a0"), thread("b", "a1")];
+    const links = [
+      link("la1", "a", "s1", "introduce"),
+      link("la2", "a", "s3", "develop"),
+      link("lb1", "b", "s2", "introduce"),
+    ];
+    const base = buildPlotLaneModel({ threads, links, sceneX });
+    const moved = buildPlotLaneModel({
+      threads,
+      links,
+      sceneX,
+      laneYByThread: new Map([
+        ["a", 500],
+        ["b", 700],
+      ]),
+    });
+    // セグメント本数・lanes 順序は不変（Y のみ差し替え）。
+    expect(moved.lanes.map((l) => l.thread.id)).toEqual(
+      base.lanes.map((l) => l.thread.id),
+    );
+    moved.lanes.forEach((l, i) => {
+      expect(l.lineSegments.length).toBe(base.lanes[i].lineSegments.length);
+    });
+  });
+});
+
+describe("computeLaneDragTargets（ヘッダー縦ドラッグの目標 Y）", () => {
+  // 3 行、ホーム = laneTop + i*H（laneTop=100, H=56 → 100,156,212）。
+  const order = [
+    { id: "a", homeY: 100 },
+    { id: "b", homeY: 156 },
+    { id: "c", homeY: 212 },
+  ];
+  const opts = { laneTop: 100, laneHeight: 56 };
+
+  it("ドラッグ点はカーソル Y に一致する", () => {
+    const t = computeLaneDragTargets({
+      order,
+      draggedId: "a",
+      currentY: 175,
+      ...opts,
+    });
+    expect(t.get("a")).toBe(175);
+  });
+
+  it("下方向（行0→行2）: 間の行が 1 段ずつ上へ退避する", () => {
+    // currentY=212 → targetRow=round((212-100)/56)=2。a を行2へ。
+    const t = computeLaneDragTargets({
+      order,
+      draggedId: "a",
+      currentY: 212,
+      ...opts,
+    });
+    expect(t.get("a")).toBe(212); // カーソル
+    expect(t.get("b")).toBe(156 - 56); // 上へ 1 段
+    expect(t.get("c")).toBe(212 - 56); // 上へ 1 段
+  });
+
+  it("上方向（行2→行0）: 間の行が 1 段ずつ下へ退避する", () => {
+    // currentY=100 → targetRow=0。c を行0へ。
+    const t = computeLaneDragTargets({
+      order,
+      draggedId: "c",
+      currentY: 100,
+      ...opts,
+    });
+    expect(t.get("c")).toBe(100); // カーソル
+    expect(t.get("a")).toBe(100 + 56); // 下へ 1 段
+    expect(t.get("b")).toBe(156 + 56); // 下へ 1 段
+  });
+
+  it("同じ行内（移動なし）では他行は退避しない", () => {
+    // currentY=110 → targetRow=0 = dragIndex。シフト 0。
+    const t = computeLaneDragTargets({
+      order,
+      draggedId: "a",
+      currentY: 110,
+      ...opts,
+    });
+    expect(t.get("b")).toBe(156);
+    expect(t.get("c")).toBe(212);
+  });
+
+  it("カーソルが端を超えても targetRow は [0, n-1] にクランプされる", () => {
+    const t = computeLaneDragTargets({
+      order,
+      draggedId: "a",
+      currentY: 99999,
+      ...opts,
+    });
+    // 最下行へ。b,c は上へ 1 段。
+    expect(t.get("b")).toBe(156 - 56);
+    expect(t.get("c")).toBe(212 - 56);
   });
 });

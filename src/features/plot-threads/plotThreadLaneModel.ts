@@ -115,6 +115,11 @@ export function buildPlotLaneModel(args: {
   /** ホーム行の割り当て方式。subway と同じ「重要度(distinct 列数)降順 → center-out」に
    *  する場合 true。既定 false = sortOrder の線形。 */
   subwaySort?: boolean;
+  /** スレッドごとの Y(px) を外から上書きする。ドラッグ並べ替え／subway順トグルの
+   *  アニメーションで、ホーム行の代わりに「いま表示すべき Y」を流し込むために使う。
+   *  指定が無いスレッドはホーム行 Y にフォールバック。これは構造（セグメント/コネクタの
+   *  有無・順序）には影響せず、垂直座標だけを動かす（homeY が全垂直位置の単一の源）。 */
+  laneYByThread?: Map<string, number>;
 }): PlotLaneModel {
   const {
     threads,
@@ -124,6 +129,7 @@ export function buildPlotLaneModel(args: {
     branches = [],
     scheduledCount = Infinity,
     subwaySort = false,
+    laneYByThread,
   } = args;
 
   // ───────── PREP: 順序・ホーム行 ─────────
@@ -159,6 +165,7 @@ export function buildPlotLaneModel(args: {
     homeRow = new Map<string, number>(orderedThreads.map((t, i) => [t.id, i]));
   }
   const homeY = (threadId: string) =>
+    laneYByThread?.get(threadId) ??
     laneTop + (homeRow.get(threadId) ?? 0) * LANE_HEIGHT;
 
   const linksByThread = new Map<string, PlotThreadLinkRow[]>();
@@ -413,4 +420,46 @@ export function buildPlotLaneModel(args: {
     convergences,
     connectors,
   };
+}
+
+/**
+ * ヘッダー縦ドラッグ並べ替え中の「各スレッドが向かうべき Y(px)」を算出する純関数。
+ * ドラッグ点はカーソル Y へ即時追従、それ以外の行はドロップ位置に挿し込んだとき
+ * 隙間を埋めるよう 1 段ぶん退避する。buildPlotLaneModel の laneYByThread 上書きへ流す。
+ *
+ * 決定性: 乱数/時刻なし。order は表示行順（index = 行）で渡すこと。
+ */
+export function computeLaneDragTargets(params: {
+  /** 表示行順（index が行番号）。homeY は各スレッドのホーム行 Y(px)。 */
+  order: { id: string; homeY: number }[];
+  draggedId: string;
+  currentY: number;
+  /** 先頭行の Y(px)（= threadsTop）。 */
+  laneTop: number;
+  laneHeight: number;
+}): Map<string, number> {
+  const { order, draggedId, currentY, laneTop, laneHeight } = params;
+  const n = order.length;
+  const out = new Map<string, number>();
+  const dragIndex = order.findIndex((o) => o.id === draggedId);
+  if (dragIndex < 0 || n === 0) {
+    for (const o of order) out.set(o.id, o.homeY);
+    return out;
+  }
+  const targetRow = Math.max(
+    0,
+    Math.min(n - 1, Math.round((currentY - laneTop) / laneHeight)),
+  );
+  order.forEach((o, i) => {
+    if (i === dragIndex) {
+      out.set(o.id, currentY); // ドラッグ点はカーソル追従
+      return;
+    }
+    let shift = 0;
+    if (dragIndex < targetRow && i > dragIndex && i <= targetRow) shift = -1;
+    else if (dragIndex > targetRow && i >= targetRow && i < dragIndex)
+      shift = 1;
+    out.set(o.id, o.homeY + shift * laneHeight);
+  });
+  return out;
 }

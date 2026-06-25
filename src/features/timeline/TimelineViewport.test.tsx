@@ -6,6 +6,14 @@ import { TimelineViewport } from "./TimelineViewport";
 import { useTimelineStore } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+
+/** reduced-motion を強制（アニメ無し＝即時確定）して toggle/settled を決定的に検証する。 */
+function setReduceMotion(on: boolean) {
+  useSettingsStore.setState((s) => ({
+    cache: { ...s.cache, "display.reduceMotion": on ? "true" : "false" },
+  }));
+}
 
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
 
@@ -965,25 +973,41 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     expect(cmpKeys(key, "a1")).toBeGreaterThan(0);
   });
 
-  it("ドラッグ中は他の行が退避し、入替えアニメーション(transform transition)が走る", () => {
+  it("ドラッグ中はラベルとグラフが一緒にカーソル Y へ即時追従する（X固定）", () => {
     seed();
     usePlotThreadStore.setState({ reorderThread: vi.fn() });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
     const l1 = getByTestId("plot-lane-label-t1");
-    // t1(行0,y158) を行1(y214)へドラッグ。mouseup する前の途中状態を検証。
+    // t1(行0,y158) を y200 へドラッグ（2スレッドの帯 [158,214] 内）。mouseup 前を検証。
     fireEvent.mouseDown(l1, { clientX: 70, clientY: 158 });
-    fireEvent.mouseMove(document, { clientX: 70, clientY: 214 });
-    const t1 = getByTestId("plot-lane-label-t1");
-    const t2 = getByTestId("plot-lane-label-t2");
-    // ドラッグ点はカーソル追従(+56)で transition なし（即時）。
-    expect(t1.style.transform).toBe("translate(0px, 56px)");
-    expect(t1.style.transition).toBe("none");
-    // 退避する t2 は隙間を埋めるよう上へ(-56)＋transform の transition が付く。
-    expect(t2.style.transform).toBe("translate(0px, -56px)");
-    expect(t2.style.transition).toContain("transform");
-    fireEvent.mouseUp(document, { clientX: 70, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 70, clientY: 200 });
+    // 左ガターのラベルの丸がカーソル Y へ即時追従。
+    const circle = getByTestId("plot-lane-label-t1").querySelector("circle");
+    expect(circle?.getAttribute("cy")).toBe("200");
+    // グラフ側のレーン（ヒット領域 = lane.y - LANE_HEIGHT/2 = 200-28）も一緒に動く。
+    expect(getByTestId("plot-lane-hit-t1").getAttribute("y")).toBe("172");
+    fireEvent.mouseUp(document, { clientX: 70, clientY: 200 });
+  });
+
+  it("ドラッグ点を列の外（下端より下）へ動かしても帯内にクランプされ見切れない", () => {
+    seed();
+    usePlotThreadStore.setState({ reorderThread: vi.fn() });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const l1 = getByTestId("plot-lane-label-t1");
+    // 2スレッドの最終行 Y = 158 + 56 = 214。はるか下(2000)へドラッグ。
+    fireEvent.mouseDown(l1, { clientX: 70, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 70, clientY: 2000 });
+    const cy = Number(
+      getByTestId("plot-lane-label-t1")
+        .querySelector("circle")
+        ?.getAttribute("cy"),
+    );
+    expect(cy).toBe(214); // 最終行へクランプ（2000 まで追従しない）
+    fireEvent.mouseUp(document, { clientX: 70, clientY: 2000 });
   });
 
   it("動かさず mousedown→mouseup なら選択（並べ替えしない）", () => {
@@ -1005,7 +1029,7 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     expect(reorderThread).not.toHaveBeenCalled();
   });
 
-  it("subwaySort ON のときはドラッグしても並べ替えない＋入替えプレビューも出ない", () => {
+  it("subwaySort ON のときはドラッグしても並べ替えない＋カーソル追従もしない", () => {
     seed();
     useTimelineStore.setState({ plotSubwaySort: true });
     const reorderThread = vi.fn();
@@ -1015,17 +1039,60 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     );
     const label = getByTestId("plot-lane-label-t1");
     fireEvent.mouseDown(label, { clientX: 70, clientY: 158 });
-    fireEvent.mouseMove(document, { clientX: 70, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 70, clientY: 400 });
     // commit は早期 return（自動配置）なので、プレビューも抑止される＝
-    // ドラッグ点はカーソル追従せず、他行も退避しない（「動いたのに戻る」嘘を防ぐ）。
-    expect(getByTestId("plot-lane-label-t1").style.transform).toBe(
-      "translate(0px, 0px)",
+    // t1 はカーソル(400)へ追従せずホーム行に留まる（「動いたのに戻る」嘘を防ぐ）。
+    const cy = Number(
+      getByTestId("plot-lane-label-t1")
+        .querySelector("circle")
+        ?.getAttribute("cy"),
     );
-    expect(getByTestId("plot-lane-label-t2").style.transform).toBe(
-      "translate(0px, 0px)",
-    );
-    fireEvent.mouseUp(document, { clientX: 70, clientY: 214 });
+    expect(cy).toBeLessThan(300); // ホーム行（158 or 214）であって 400 ではない
+    fireEvent.mouseUp(document, { clientX: 70, clientY: 400 });
     expect(reorderThread).not.toHaveBeenCalled();
+  });
+
+  it("subway順トグルで実際にレーンの並び（Y）が変わる（reduced-motion で即確定）", () => {
+    // アニメ完了後の確定状態を決定的に検証（rAF を回さない）。
+    setReduceMotion(true);
+    try {
+      const scenes3 = [
+        { ...mockScene, id: "s1" },
+        { ...mockScene, id: "s2" },
+        { ...mockScene, id: "s3" },
+      ];
+      usePlotThreadStore.setState({
+        threads: [th("t1", "a0"), th("t2", "a1"), th("t3", "a2")],
+        // t2 は 3 列 = 重要度最大、t1/t3 は 1 列。
+        links: [
+          lk("l1", "t1", "s1"),
+          lk("l2a", "t2", "s1"),
+          lk("l2b", "t2", "s2"),
+          lk("l2c", "t2", "s3"),
+          lk("l3", "t3", "s2"),
+        ],
+        branches: [],
+        loading: false,
+      });
+      useTimelineStore.setState({
+        showThreads: true,
+        axisMode: "reading",
+        plotLayout: "separated",
+        plotSubwaySort: false,
+      });
+      const { getByTestId } = render(
+        <TimelineViewport scenes={scenes3} onSelectScene={vi.fn()} />,
+      );
+      // 線形: t1 は行0（hit y = 158-28 = 130）。
+      expect(getByTestId("plot-lane-hit-t1").getAttribute("y")).toBe("130");
+      // subway順 ON: t1 は重要度最下位で行2（hit y = 270-28 = 242）へ。
+      act(() => {
+        useTimelineStore.getState().togglePlotSubwaySort();
+      });
+      expect(getByTestId("plot-lane-hit-t1").getAttribute("y")).toBe("242");
+    } finally {
+      setReduceMotion(false);
+    }
   });
 });
 

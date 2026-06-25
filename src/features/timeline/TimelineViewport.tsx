@@ -1,6 +1,7 @@
 import {
   useRef,
   useState,
+  useReducer,
   useEffect,
   useCallback,
   useMemo,
@@ -17,6 +18,7 @@ import { PlotMarkerContextMenu } from "./PlotMarkerContextMenu";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import {
   buildPlotLaneModel,
+  computeLaneDragTargets,
   LANE_HEIGHT,
 } from "@/features/plot-threads/plotThreadLaneModel";
 import {
@@ -30,7 +32,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
 import type { PlotPhaseType } from "@/db/schema";
 import { recordMark } from "@/lib/perfLog";
-import { CSS_DURATIONS, CSS_EASINGS, useReducedMotion } from "@/lib/animation";
+import { DURATIONS, useReducedMotion } from "@/lib/animation";
 
 const DOT_R = 6;
 /** プロットスレッドの太いバンド（線）の高さ。段階テキストを内側に表示する。 */
@@ -228,8 +230,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const scheduledCountForLanes = unscheduledStartIndex ?? scenes.length;
 
     // プロットスレッドのレーン描画モデル（showThreads のときのみ使用）。
-    // laneTop をシーン行の下に下げてオーバーレイする。
-    const laneModel = useMemo(
+    // laneTop をシーン行の下に下げてオーバーレイする。確定順のホーム Y を持つ基準モデル。
+    const homeLaneModel = useMemo(
       () =>
         buildPlotLaneModel({
           threads,
@@ -250,6 +252,135 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         plotSubwaySort,
       ],
     );
+
+    // ── レーン Y アニメーション（ドラッグ並べ替え／subway順トグルで滑らかに再配置）──
+    // homeLaneModel のホーム Y を「いま表示すべき Y(displayY)」へ差し替えて毎フレーム
+    // 再計算する。Y を動かすだけで帯・マーカー・コネクタが homeY 経由で一括追従する。
+    // subwaySort 中は並べ替え無効なのでドラッグ・プレビューも出さない（commit と整合）。
+    const labelDragActive =
+      labelDrag?.moved && !plotSubwaySort ? labelDrag : null;
+    // 各スレッドの目標 Y（ホーム or ドラッグ退避）。純関数で算出（テスト可能）。
+    const targetY = useMemo(() => {
+      const order = homeLaneModel.lanes.map((l) => ({
+        id: l.thread.id,
+        homeY: l.y,
+      }));
+      if (labelDragActive) {
+        return computeLaneDragTargets({
+          order,
+          draggedId: labelDragActive.threadId,
+          currentY: labelDragActive.currentY,
+          laneTop: threadsTop,
+          laneHeight: LANE_HEIGHT,
+        });
+      }
+      return new Map(order.map((o) => [o.id, o.homeY]));
+    }, [homeLaneModel, labelDragActive, threadsTop]);
+
+    // 現在表示中の Y（rAF が目標へイージングして書き換える mutable ref）。
+    const animatedYRef = useRef<Map<string, number>>(new Map());
+    const [, forceTick] = useReducer((x: number) => x + 1, 0);
+    // ループは常に最新の target / dragged を ref から読む（再起動なしで追従）。
+    const targetYRef = useRef(targetY);
+    targetYRef.current = targetY;
+    const draggedIdRef = useRef<string | null>(null);
+    draggedIdRef.current = labelDragActive?.threadId ?? null;
+
+    // 目標が変わったらイージングループを（再）起動。raf id はエフェクト closure ローカルに
+    // 持ち、cleanup で必ず cancel する（共有 ref を残さない＝StrictMode の mount/unmount/
+    // remount でループが二度と起動しなくなる事故を防ぐ）。
+    const targetKey = useMemo(
+      () => [...targetY].map(([id, y]) => `${id}:${Math.round(y)}`).join("|"),
+      [targetY],
+    );
+    useEffect(() => {
+      const a = animatedYRef.current;
+      // 新規スレッドは目標位置で初期化（外から飛んでこない）。消えたスレッドは破棄。
+      for (const [id, ty] of targetYRef.current) if (!a.has(id)) a.set(id, ty);
+      for (const id of [...a.keys()])
+        if (!targetYRef.current.has(id)) a.delete(id);
+      if (reducedMotion) {
+        for (const [id, ty] of targetYRef.current) a.set(id, ty);
+        forceTick();
+        return;
+      }
+      let raf = 0;
+      let last = 0;
+      const step = (now: number) => {
+        const cur = animatedYRef.current;
+        const tgt = targetYRef.current;
+        const draggedId = draggedIdRef.current;
+        last = last || now;
+        // フレームレート非依存の指数イージング（時定数 = DURATIONS.normal）。
+        const dt = Math.min(0.1, (now - last) / 1000);
+        last = now;
+        const k = 1 - Math.exp(-dt / DURATIONS.normal);
+        let moving = false;
+        for (const [id, ty] of tgt) {
+          if (id === draggedId) {
+            cur.set(id, ty); // ドラッグ点は即時追従（ラグなし）
+            continue;
+          }
+          const c = cur.get(id) ?? ty;
+          const d = ty - c;
+          if (Math.abs(d) < 0.5) cur.set(id, ty);
+          else {
+            cur.set(id, c + d * k);
+            moving = true;
+          }
+        }
+        forceTick();
+        // ドラッグ中は掴んでいる間ループを維持。退避が落ち着いたら停止。
+        raf = moving || draggedId ? requestAnimationFrame(step) : 0;
+      };
+      raf = requestAnimationFrame(step);
+      return () => {
+        if (raf) cancelAnimationFrame(raf);
+      };
+    }, [targetKey, reducedMotion]);
+
+    // 表示モデル: animatedYRef がホームから乖離している（イージング中）か、ドラッグ中なら
+    // ホーム Y を displayY で上書きして再計算する。乖離が無ければ homeLaneModel をそのまま
+    // 使う（毎 render の再計算を避ける）。判定は実状態（乖離 / drag）に基づき、rAF id の
+    // ような揮発フラグは見ない＝ループが止まっても順序が固まらない。
+    let needsOverride = !!labelDragActive;
+    if (!needsOverride) {
+      for (const l of homeLaneModel.lanes) {
+        const a = animatedYRef.current.get(l.thread.id);
+        if (a !== undefined && Math.abs(a - l.y) > 0.5) {
+          needsOverride = true;
+          break;
+        }
+      }
+    }
+    let laneModel = homeLaneModel;
+    if (needsOverride) {
+      // ドラッグ点の表示 Y はレーン帯 [先頭行, 最終行] にクランプする。ドロップ先
+      // (targetRow) も同じ範囲にクランプ済みなので、列の外までは追従させない
+      // （contentHeight は件数ベースで cursorY に追従しないため、外へ出すと
+      //   ドラッグ中レーン/ラベルが SVG 下端で見切れる）。
+      const lastRowY =
+        threadsTop + Math.max(0, homeLaneModel.lanes.length - 1) * LANE_HEIGHT;
+      const laneYByThread = new Map<string, number>();
+      for (const l of homeLaneModel.lanes) {
+        const id = l.thread.id;
+        const y =
+          labelDragActive && id === labelDragActive.threadId
+            ? Math.max(threadsTop, Math.min(lastRowY, labelDragActive.currentY)) // ドラッグ点は即時追従（帯内にクランプ）
+            : (animatedYRef.current.get(id) ?? l.y);
+        laneYByThread.set(id, y);
+      }
+      laneModel = buildPlotLaneModel({
+        threads,
+        links,
+        sceneX,
+        laneTop: threadsTop,
+        branches,
+        scheduledCount: scheduledCountForLanes,
+        subwaySort: plotSubwaySort,
+        laneYByThread,
+      });
+    }
 
     // merge の流入先(to)になっているマーカーの集合。subway と同じ白丸ドーナツで描く。
     // キー = `toThreadId:atNodeId`。
@@ -1424,75 +1555,23 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   pointerEvents="none"
                 />
                 {(() => {
+                  // lane.y は既にアニメーション後の displayY（override モデル）。
+                  // ドラッグ中のスレッドだけ最後に描画＝最前面に重ねる。
                   const lanes = laneModel.lanes;
-                  const n = lanes.length;
-                  // ドラッグ確定（threshold 越え）したスレッドのみ並べ替えプレビュー対象。
-                  // subwaySort ON 時は commitLabelDrop が早期 return で並べ替えないため、
-                  // プレビューも抑止する（出すと「動いたのに戻る」嘘＋ホーム行が
-                  // center-out 配置で線形でないため shift 計算も破綻する）。
-                  const drag =
-                    labelDrag?.moved && !plotSubwaySort ? labelDrag : null;
-                  // 元の行 index（sortOrder 順）の引き当て表。O(n^2) 回避。
-                  const indexById = new Map(
-                    lanes.map((l, idx) => [l.thread.id, idx] as const),
-                  );
-                  const dragIndex = drag
-                    ? (indexById.get(drag.threadId) ?? -1)
-                    : -1;
-                  // ドラッグ点を挿す行（commitLabelDrop と同一の丸め）。
-                  const targetRow =
-                    drag && dragIndex >= 0
-                      ? Math.max(
-                          0,
-                          Math.min(
-                            n - 1,
-                            Math.round(
-                              (drag.currentY - threadsTop) / LANE_HEIGHT,
-                            ),
-                          ),
-                        )
-                      : -1;
-                  // ドラッグ中のスレッドを最後に描画＝最前面に重ねる。
-                  const renderOrder =
-                    drag && dragIndex >= 0
-                      ? [...lanes].sort(
-                          (a, b) =>
-                            Number(a.thread.id === drag.threadId) -
-                            Number(b.thread.id === drag.threadId),
-                        )
-                      : lanes;
+                  const draggedId = labelDragActive?.threadId ?? null;
+                  const renderOrder = draggedId
+                    ? [...lanes].sort(
+                        (a, b) =>
+                          Number(a.thread.id === draggedId) -
+                          Number(b.thread.id === draggedId),
+                      )
+                    : lanes;
                   return renderOrder.map((lane) => {
-                    const i = indexById.get(lane.thread.id) ?? 0; // 元の行 index
                     const name =
                       lane.thread.name || t("plotThread.unnamed", "（無名）");
                     const color = lane.thread.color ?? "var(--primary)";
-                    const isDragged =
-                      !!drag && lane.thread.id === drag.threadId;
-                    // ドラッグ点を targetRow に挿すと、隙間を埋めるよう中間行が 1 段ずれる。
-                    let shift = 0;
-                    if (drag && dragIndex >= 0 && !isDragged) {
-                      if (
-                        dragIndex < targetRow &&
-                        i > dragIndex &&
-                        i <= targetRow
-                      )
-                        shift = -1;
-                      else if (
-                        dragIndex > targetRow &&
-                        i >= targetRow &&
-                        i < dragIndex
-                      )
-                        shift = 1;
-                    }
-                    // 子要素はホーム行に固定描画し、Y 移動は <g> の transform で行う
-                    // ＝CSS transition で滑らかに入替えアニメーションさせる。
-                    const baseY = lane.y;
-                    const displayY = isDragged
-                      ? drag!.currentY
-                      : baseY + shift * LANE_HEIGHT;
-                    const dy = displayY - baseY;
-                    // ドラッグ点自身は即時追従（transition なし）。他行は滑らかに退避。
-                    const animate = !!drag && !isDragged && !reducedMotion;
+                    const isDragged = lane.thread.id === draggedId;
+                    const cyL = lane.y;
                     const display =
                       name.length > 12 ? name.slice(0, 11) + "…" : name;
                     const selected = selectedPlotThreadId === lane.thread.id;
@@ -1502,19 +1581,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         className="cursor-pointer"
                         data-testid={`plot-lane-label-${lane.thread.id}`}
                         opacity={isDragged ? 0.7 : 1}
-                        style={{
-                          transform: `translate(0px, ${dy}px)`,
-                          transition: animate
-                            ? `transform ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`
-                            : "none",
-                        }}
                         onMouseDown={(e) =>
                           handleLabelMouseDown(e, lane.thread.id)
                         }
                       >
                         <rect
                           x={6}
-                          y={baseY - 13}
+                          y={cyL - 13}
                           width={SUBWAY_LABEL_GUTTER - 24}
                           height={26}
                           rx={13}
@@ -1525,10 +1598,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                           strokeOpacity={selected ? 0.9 : 0.15}
                           strokeWidth={selected ? 1.5 : 1}
                         />
-                        <circle cx={22} cy={baseY} r={7} fill={color} />
+                        <circle cx={22} cy={cyL} r={7} fill={color} />
                         <text
                           x={36}
-                          y={baseY}
+                          y={cyL}
                           dominantBaseline="central"
                           fontSize={11}
                           fill="currentColor"

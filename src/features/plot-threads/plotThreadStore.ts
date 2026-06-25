@@ -198,12 +198,26 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
 
   reorderThread: async (id, sortOrder) => {
     const before = get().threads.find((t) => t.id === id)?.sortOrder;
-    await updatePlotThread(id, { sortOrder });
+    // 楽観更新: ドロップ直後にアニメの目標が新ホーム順になるよう、IPC await の前に
+    // store の順序を先に反映する（失敗時のみ元へ戻す）。これをしないと await の間
+    // homeLaneModel が旧順序のままで、掴んでいたスレッドが旧位置へ逆向きにイージング
+    // してから新位置へ飛ぶチラつきが出る。
     set({
       threads: get().threads.map((t) =>
         t.id === id ? { ...t, sortOrder } : t,
       ),
     });
+    try {
+      await updatePlotThread(id, { sortOrder });
+    } catch (e) {
+      if (before !== undefined)
+        set({
+          threads: get().threads.map((t) =>
+            t.id === id ? { ...t, sortOrder: before } : t,
+          ),
+        });
+      throw e;
+    }
     if (before === undefined) return;
     recordPlotHistory({
       label: i18next.t("plotThread.history.reorderThread", "スレッド並べ替え"),
