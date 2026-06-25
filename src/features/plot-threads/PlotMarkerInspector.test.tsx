@@ -206,9 +206,31 @@ describe("PlotMarkerInspector", () => {
     fireEvent.change(input, { target: { value: "新章" } });
     fireEvent.blur(input);
     expect(renameThread).toHaveBeenCalledWith("t1", "新章");
-    // 削除
+    // 削除: t1 はマーカー(l1)を持つので確認ダイアログ。「削除する」で実削除。
     fireEvent.click(getByText("スレッドを削除"));
+    expect(deleteThread).not.toHaveBeenCalled();
+    fireEvent.click(getByText("削除する"));
     expect(deleteThread).toHaveBeenCalledWith("t1");
     expect(useTimelineStore.getState().selectedPlotThreadId).toBeNull();
+  });
+
+  it("中身のないスレッドの削除は確認なしで即実行", () => {
+    const deleteThread = vi.fn();
+    usePlotThreadStore.setState({
+      threads: [thread],
+      links: [],
+      branches: [],
+      deleteThread,
+    });
+    useTimelineStore.setState({
+      selectedPlotLinkId: null,
+      selectedPlotThreadId: "t1",
+    });
+    const { getByText, queryByText } = render(
+      <PlotMarkerInspector width={224} onClose={vi.fn()} />,
+    );
+    fireEvent.click(getByText("スレッドを削除"));
+    expect(deleteThread).toHaveBeenCalledWith("t1");
+    expect(queryByText("削除する")).toBeNull();
   });
 });

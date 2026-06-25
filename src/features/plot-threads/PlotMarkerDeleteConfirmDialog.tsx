@@ -10,17 +10,18 @@ import {
 import { Button } from "@/components/ui/button";
 
 /**
- * branch/merge の起点（アンカー）になっているマーカーを削除するときの確認ダイアログ。
- * Scene パネルの削除確認（DeleteConfirmDialog）と同じ Dialog パターン。削除すると
- * 紐づく分岐 / 合流エッジも一緒に消えるため、その件数を提示して確認を取る。
+ * プロット（マーカー / スレッド）の削除確認ダイアログ。Scene パネルの削除確認
+ * （DeleteConfirmDialog）と同じ Dialog パターン。削除すると紐づく分岐 / 合流やマーカーも
+ * 一緒に消えるため、呼び出し側が件数を織り込んだ title / description を渡す。
  */
 export function PlotMarkerDeleteConfirmDialog({
-  edgeCount,
+  title,
+  description,
   onCancel,
   onConfirm,
 }: {
-  /** このマーカーを起点に消える分岐 / 合流エッジの件数。 */
-  edgeCount: number;
+  title: string;
+  description: string;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -34,16 +35,8 @@ export function PlotMarkerDeleteConfirmDialog({
     >
       <DialogContent className="max-w-xs">
         <DialogHeader>
-          <DialogTitle>
-            {t("plotThread.deleteMarkerConfirmTitle", "マーカーの削除")}
-          </DialogTitle>
-          <DialogDescription>
-            {t(
-              "plotThread.deleteMarkerConfirmBody",
-              "このマーカーは分岐 / 合流の起点です。削除すると {{count}} 件の分岐 / 合流も削除されます。続行しますか？",
-              { count: edgeCount },
-            )}
-          </DialogDescription>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button type="button" variant="outline" size="xs" onClick={onCancel}>

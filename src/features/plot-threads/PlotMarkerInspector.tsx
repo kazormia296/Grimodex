@@ -80,8 +80,9 @@ export function PlotMarkerInspector({
   const links = usePlotThreadStore((s) => s.links);
   const threads = usePlotThreadStore((s) => s.threads);
   const branches = usePlotThreadStore((s) => s.branches);
-  // branch/merge アンカーのマーカー削除時に確認ダイアログを出す（Scene 削除と同型）。
+  // branch/merge アンカーのマーカー削除時／中身のあるスレッド削除時に確認ダイアログ。
   const [confirmDeleteMarker, setConfirmDeleteMarker] = useState(false);
+  const [confirmDeleteThread, setConfirmDeleteThread] = useState(false);
   const renameThread = usePlotThreadStore((s) => s.renameThread);
   const setThreadColor = usePlotThreadStore((s) => s.setThreadColor);
   const deleteThread = usePlotThreadStore((s) => s.deleteThread);
@@ -119,6 +120,28 @@ export function PlotMarkerInspector({
     // branch/merge の起点なら確認ダイアログ。そうでなければ即削除。
     if (markerEdgeCount > 0) setConfirmDeleteMarker(true);
     else removeSelectedMarker();
+  };
+
+  // スレッド削除で一緒に消えるマーカー数・分岐/合流数（中身があれば確認を挟む）。
+  const threadMarkerCount = thread
+    ? links.filter((l) => l.threadId === thread.id).length
+    : 0;
+  const threadEdgeCount = thread
+    ? branches.filter(
+        (b) => b.fromThreadId === thread.id || b.toThreadId === thread.id,
+      ).length
+    : 0;
+  const removeSelectedThread = () => {
+    if (!thread) return;
+    void deleteThread(thread.id);
+    setSelectedPlotThreadId(null);
+    setSelectedPlotLinkId(null);
+  };
+  const onClickDeleteThread = () => {
+    if (!thread) return;
+    if (threadMarkerCount > 0 || threadEdgeCount > 0)
+      setConfirmDeleteThread(true);
+    else removeSelectedThread();
   };
 
   return (
@@ -295,11 +318,7 @@ export function PlotMarkerInspector({
                 </div>
 
                 <button
-                  onClick={() => {
-                    void deleteThread(thread.id);
-                    setSelectedPlotThreadId(null);
-                    setSelectedPlotLinkId(null);
-                  }}
+                  onClick={onClickDeleteThread}
                   className="inline-flex items-center gap-1 self-start rounded px-1.5 py-1 text-destructive hover:bg-destructive/10"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -313,11 +332,36 @@ export function PlotMarkerInspector({
 
       {confirmDeleteMarker && (
         <PlotMarkerDeleteConfirmDialog
-          edgeCount={markerEdgeCount}
+          title={t("plotThread.deleteMarkerConfirmTitle", "マーカーの削除")}
+          description={t(
+            "plotThread.deleteMarkerConfirmBody",
+            "このマーカーは分岐 / 合流の起点です。削除すると {{count}} 件の分岐 / 合流も削除されます。続行しますか？",
+            { count: markerEdgeCount },
+          )}
           onCancel={() => setConfirmDeleteMarker(false)}
           onConfirm={() => {
             removeSelectedMarker();
             setConfirmDeleteMarker(false);
+          }}
+        />
+      )}
+
+      {confirmDeleteThread && thread && (
+        <PlotMarkerDeleteConfirmDialog
+          title={t("plotThread.deleteThreadConfirmTitle", "スレッドの削除")}
+          description={t(
+            "plotThread.deleteThreadConfirmBody",
+            "「{{name}}」を削除すると、マーカー {{markers}} 個と分岐 / 合流 {{edges}} 件も削除されます。続行しますか？",
+            {
+              name: thread.name || t("plotThread.unnamed", "（無名）"),
+              markers: threadMarkerCount,
+              edges: threadEdgeCount,
+            },
+          )}
+          onCancel={() => setConfirmDeleteThread(false)}
+          onConfirm={() => {
+            removeSelectedThread();
+            setConfirmDeleteThread(false);
           }}
         />
       )}

@@ -93,6 +93,22 @@ export function PlotMarkerContextMenu({
     zIndex: 9999,
   };
 
+  // 確認ダイアログ表示中はメニュー本体を出さない（ダイアログだけ）。キャンセル/確定で onClose。
+  if (confirming) {
+    return (
+      <PlotMarkerDeleteConfirmDialog
+        title={t("plotThread.deleteMarkerConfirmTitle", "マーカーの削除")}
+        description={t(
+          "plotThread.deleteMarkerConfirmBody",
+          "このマーカーは分岐 / 合流の起点です。削除すると {{count}} 件の分岐 / 合流も削除されます。続行しますか？",
+          { count: markerEdgeCount },
+        )}
+        onCancel={onClose}
+        onConfirm={removeMarkerNow}
+      />
+    );
+  }
+
   return createPortal(
     <div
       ref={menuRef}
@@ -148,14 +164,6 @@ export function PlotMarkerContextMenu({
       >
         {t("plotThread.deleteMarker", "マーカーを削除")}
       </button>
-
-      {confirming && (
-        <PlotMarkerDeleteConfirmDialog
-          edgeCount={markerEdgeCount}
-          onCancel={onClose}
-          onConfirm={removeMarkerNow}
-        />
-      )}
 
       {relatedEdges.length > 0 && (
         <>

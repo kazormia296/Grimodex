@@ -200,6 +200,8 @@ export function TimelinePanel() {
     (linkId: string) => {
       setSelectedPlotLinkId(linkId);
       if (!useTimelineStore.getState().inspectorOpen) toggleInspector();
+      // キーボード(↑↓)ナビ用にフォーカスをパネルへ戻す（インスペクタに吸われない）。
+      containerRef.current?.focus();
     },
     [setSelectedPlotLinkId, toggleInspector],
   );
@@ -209,6 +211,7 @@ export function TimelinePanel() {
       useTimelineStore.getState().setSelectedPlotThreadId(threadId);
       setSelectedPlotLinkId(null);
       if (!useTimelineStore.getState().inspectorOpen) toggleInspector();
+      containerRef.current?.focus();
     },
     [setSelectedPlotLinkId, toggleInspector],
   );
@@ -363,6 +366,8 @@ export function TimelinePanel() {
             tl.setSelectedPlotThreadId(next.id);
             tl.setSelectedPlotLinkId(null);
             if (!tl.inspectorOpen) toggleInspector();
+            // インスペクタ再描画でフォーカスが移っても次の↑↓が効くようパネルへ戻す。
+            containerRef.current?.focus();
           }
           break;
         }
