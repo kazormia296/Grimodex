@@ -57,6 +57,8 @@ interface PlotThreadState {
   ) => Promise<void>;
   renameThread: (id: string, name: string) => Promise<void>;
   setThreadColor: (id: string, color: string | null) => Promise<void>;
+  /** ヘッダーのドラッグ並べ替え用。sortOrder を更新して行順を変える。 */
+  reorderThread: (id: string, sortOrder: string) => Promise<void>;
   deleteThread: (id: string) => Promise<void>;
   addMarker: (
     threadId: string,
@@ -188,6 +190,37 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
         set({
           threads: get().threads.map((t) =>
             t.id === id ? { ...t, color } : t,
+          ),
+        });
+      },
+    });
+  },
+
+  reorderThread: async (id, sortOrder) => {
+    const before = get().threads.find((t) => t.id === id)?.sortOrder;
+    await updatePlotThread(id, { sortOrder });
+    set({
+      threads: get().threads.map((t) =>
+        t.id === id ? { ...t, sortOrder } : t,
+      ),
+    });
+    if (before === undefined) return;
+    recordPlotHistory({
+      label: i18next.t("plotThread.history.reorderThread", "スレッド並べ替え"),
+      entityId: id,
+      undo: async () => {
+        await updatePlotThread(id, { sortOrder: before });
+        set({
+          threads: get().threads.map((t) =>
+            t.id === id ? { ...t, sortOrder: before } : t,
+          ),
+        });
+      },
+      redo: async () => {
+        await updatePlotThread(id, { sortOrder });
+        set({
+          threads: get().threads.map((t) =>
+            t.id === id ? { ...t, sortOrder } : t,
           ),
         });
       },

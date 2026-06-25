@@ -24,6 +24,7 @@ import {
   roundedPath,
 } from "@/features/plot-threads/subwayModel";
 import { resolveMarkerDrop } from "@/features/plot-threads/plotThreadDnd";
+import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
@@ -186,6 +187,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const isRestoringRef = useRef(false);
     const [drag, setDrag] = useState<DragState | null>(null);
     const [markerDrag, setMarkerDrag] = useState<MarkerDragState | null>(null);
+    // スレッドヘッダー(separated・手動順)の縦ドラッグ並べ替え。X は固定（Y のみ）。
+    const [labelDrag, setLabelDrag] = useState<{
+      threadId: string;
+      startY: number;
+      currentY: number;
+      moved: boolean;
+    } | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(
       null,
     );
@@ -660,6 +668,76 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       // markerDrag 変化のたびに再登録されるため最新クロージャを参照する。
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [markerDrag]);
+
+    // スレッドヘッダーの縦ドラッグ並べ替え（手動順=subwaySort OFF のときのみ並べ替え）。
+    function handleLabelMouseDown(
+      e: React.MouseEvent<SVGElement>,
+      threadId: string,
+    ) {
+      e.stopPropagation();
+      const rect = svgRef.current?.getBoundingClientRect();
+      const svgY = e.clientY - (rect?.top ?? 0);
+      setLabelDrag({ threadId, startY: svgY, currentY: svgY, moved: false });
+    }
+
+    function commitLabelDrop(d: {
+      threadId: string;
+      moved: boolean;
+      currentY: number;
+    }) {
+      // 動いていなければクリック扱い＝スレッド選択。
+      if (!d.moved) {
+        onSelectThread?.(d.threadId);
+        return;
+      }
+      // subwaySort 中は自動配置なので並べ替えしない（クリック選択のみ）。
+      if (plotSubwaySort) return;
+      const ordered = [...threads].sort((a, b) => {
+        const c = cmpKeys(a.sortOrder, b.sortOrder);
+        return c !== 0 ? c : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+      const n = ordered.length;
+      // ドロップ Y → 行 index（home 行 = threadsTop + row*LANE_HEIGHT）。
+      const targetRow = Math.max(
+        0,
+        Math.min(n - 1, Math.round((d.currentY - threadsTop) / LANE_HEIGHT)),
+      );
+      const cur = ordered.findIndex((t) => t.id === d.threadId);
+      if (cur === -1 || targetRow === cur) return; // 移動なし
+      // 自分を除いた並びの targetRow 位置へ挿入（= その視覚行へ移動）。
+      const without = ordered.filter((t) => t.id !== d.threadId);
+      const idx = Math.max(0, Math.min(targetRow, without.length));
+      const newKey = generateKeyBetween(
+        without[idx - 1] ? without[idx - 1].sortOrder : null,
+        without[idx] ? without[idx].sortOrder : null,
+      );
+      void usePlotThreadStore.getState().reorderThread(d.threadId, newKey);
+    }
+
+    useEffect(() => {
+      if (!labelDrag) return;
+      function onMove(e: MouseEvent) {
+        const rect = svgRef.current?.getBoundingClientRect();
+        const svgY = e.clientY - (rect?.top ?? 0);
+        setLabelDrag((d) => {
+          if (!d) return null;
+          const moved =
+            d.moved || Math.abs(svgY - d.startY) > MARKER_DRAG_THRESHOLD;
+          return { ...d, currentY: svgY, moved };
+        });
+      }
+      function onUp() {
+        if (labelDrag) commitLabelDrop(labelDrag);
+        setLabelDrag(null);
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      return () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [labelDrag]);
 
     // Restore scroll position when scrollOffset changes from the store (e.g. after settings load).
     // isRestoringRef prevents the scroll event from writing back the same value.
@@ -1347,7 +1425,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   const name =
                     lane.thread.name || t("plotThread.unnamed", "（無名）");
                   const color = lane.thread.color ?? "var(--primary)";
-                  const cyL = lane.y;
+                  const dragging =
+                    labelDrag?.threadId === lane.thread.id && labelDrag.moved;
+                  // ドラッグ中は Y のみカーソル追従（X 固定）。
+                  const cyL = dragging ? labelDrag!.currentY : lane.y;
                   const display =
                     name.length > 12 ? name.slice(0, 11) + "…" : name;
                   const selected = selectedPlotThreadId === lane.thread.id;
@@ -1356,10 +1437,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                       key={`label-${lane.thread.id}`}
                       className="cursor-pointer"
                       data-testid={`plot-lane-label-${lane.thread.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectThread?.(lane.thread.id);
-                      }}
+                      opacity={dragging ? 0.7 : 1}
+                      onMouseDown={(e) =>
+                        handleLabelMouseDown(e, lane.thread.id)
+                      }
                     >
                       <rect
                         x={6}

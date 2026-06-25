@@ -5,6 +5,7 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { TimelineViewport } from "./TimelineViewport";
 import { useTimelineStore } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import { cmpKeys } from "@/features/tree/fractionalIndex";
 
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
 
@@ -37,6 +38,7 @@ function resetStore() {
     // 既存スイートは separated レイアウト（チップ/バンド/コネクタ）を gate する。
     // subway レイアウトは subwayModel.test.ts と TimelineViewport.subway.test.tsx で検証。
     plotLayout: "separated",
+    plotSubwaySort: false,
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -896,6 +898,105 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     expect(updateMarker).not.toHaveBeenCalled();
     expect(addMarker).not.toHaveBeenCalled();
     expect(addBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X固定）", () => {
+  beforeEach(resetStore);
+
+  const scenes = [
+    { ...mockScene, id: "s1" },
+    { ...mockScene, id: "s2" },
+  ];
+  const th = (id: string, so: string) => ({
+    id,
+    projectId: "p",
+    name: id,
+    color: null,
+    description: null,
+    sortOrder: so,
+    startNodeId: null,
+    endNodeId: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+  const lk = (id: string, threadId: string, nodeId: string) => ({
+    id,
+    threadId,
+    nodeId,
+    phaseType: "introduce" as const,
+    note: null,
+    sortOrder: null,
+    createdAt: "",
+    updatedAt: "",
+  });
+  // lane0=158, lane1=214（threadsTop=158, LANE_HEIGHT=56）
+  function seed() {
+    usePlotThreadStore.setState({
+      threads: [th("t1", "a0"), th("t2", "a1")],
+      links: [lk("l1", "t1", "s1"), lk("l2", "t2", "s1")],
+      branches: [],
+      loading: false,
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      axisMode: "reading",
+      plotLayout: "separated",
+      plotSubwaySort: false,
+    });
+  }
+
+  it("ヘッダーを下の行へドラッグ → reorderThread で a1 より後ろのキーに並べ替え", () => {
+    seed();
+    const reorderThread = vi.fn();
+    usePlotThreadStore.setState({ reorderThread });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const label = getByTestId("plot-lane-label-t1");
+    // y158(行0) から y214(行1) へドラッグ。
+    fireEvent.mouseDown(label, { clientX: 70, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 70, clientY: 214 });
+    fireEvent.mouseUp(document, { clientX: 70, clientY: 214 });
+    expect(reorderThread).toHaveBeenCalledTimes(1);
+    const [id, key] = reorderThread.mock.calls[0];
+    expect(id).toBe("t1");
+    // t2(a1) より後ろへ＝キーは a1 より大きい。
+    expect(cmpKeys(key, "a1")).toBeGreaterThan(0);
+  });
+
+  it("動かさず mousedown→mouseup なら選択（並べ替えしない）", () => {
+    seed();
+    const reorderThread = vi.fn();
+    const onSelectThread = vi.fn();
+    usePlotThreadStore.setState({ reorderThread });
+    const { getByTestId } = render(
+      <TimelineViewport
+        scenes={scenes}
+        onSelectScene={vi.fn()}
+        onSelectThread={onSelectThread}
+      />,
+    );
+    const label = getByTestId("plot-lane-label-t1");
+    fireEvent.mouseDown(label, { clientX: 70, clientY: 158 });
+    fireEvent.mouseUp(document, { clientX: 70, clientY: 158 });
+    expect(onSelectThread).toHaveBeenCalledWith("t1");
+    expect(reorderThread).not.toHaveBeenCalled();
+  });
+
+  it("subwaySort ON のときはドラッグしても並べ替えない（自動配置）", () => {
+    seed();
+    useTimelineStore.setState({ plotSubwaySort: true });
+    const reorderThread = vi.fn();
+    usePlotThreadStore.setState({ reorderThread });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const label = getByTestId("plot-lane-label-t1");
+    fireEvent.mouseDown(label, { clientX: 70, clientY: 158 });
+    fireEvent.mouseMove(document, { clientX: 70, clientY: 214 });
+    fireEvent.mouseUp(document, { clientX: 70, clientY: 214 });
+    expect(reorderThread).not.toHaveBeenCalled();
   });
 });
 
