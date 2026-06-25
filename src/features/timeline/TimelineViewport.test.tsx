@@ -588,14 +588,17 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
     const band = container.querySelector('[data-testid^="plot-thread-line-"]');
     const bandWidth = band?.getAttribute("stroke-width");
     expect(bandWidth).toBeTruthy();
+    // 帯は不透過（重なり混色を避ける）。strokeOpacity を指定しない（既定=1）。
+    expect(band?.getAttribute("stroke-opacity")).toBeNull();
     const conns = container.querySelectorAll(
       '[data-testid="plot-thread-connector"]',
     );
     expect(conns.length).toBe(2);
     for (const c of conns) {
-      // 通常の線と同じ太さ・破線は使わない（種別はランプ方向で表す）。
+      // 通常の線と同じ太さ・不透過・破線なし（種別はランプ方向で表す）。
       expect(c.getAttribute("stroke-width")).toBe(bandWidth);
       expect(c.getAttribute("stroke-dasharray")).toBeNull();
+      expect(c.getAttribute("stroke-opacity")).toBeNull();
     }
   });
 

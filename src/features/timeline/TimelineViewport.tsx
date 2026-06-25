@@ -1091,15 +1091,20 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         key={`band-${i}`}
                         data-testid={`plot-thread-line-${lane.thread.id}-${i}`}
                         x1={xOf(seg.x1)}
-                        x2={xOf(seg.x2)}
+                        // rampOutEnd の区間は右端を CONNECTOR_RAMP だけ手前で止め、
+                        // ランプ（コネクタ）の始端へなめらかに渡す（帯がランプに重ならない）。
+                        x2={
+                          seg.rampOutEnd
+                            ? xOf(seg.x2) - CONNECTOR_RAMP
+                            : xOf(seg.x2)
+                        }
                         y1={seg.y1}
                         y2={seg.y2}
                         stroke={lane.thread.color ?? "var(--primary)"}
                         strokeWidth={BAND_HEIGHT}
-                        strokeOpacity={0.45}
-                        // butt 端（round だと水平 run↔斜めブリッジの継ぎ目ごとに
-                        // 半径 BAND_HEIGHT/2 のキャップが重なり太い瘤になる＝束ね時の
-                        // スロット変化で多発）。終端は明示ノブ(terminus)で締める。
+                        // 不透過（重なりによる濃淡差/混色を避ける。ユーザー指定）。
+                        // butt 端（round だと継ぎ目ごとに半径 BAND_HEIGHT/2 のキャップが
+                        // 重なり瘤になる）。終端は明示ノブ(terminus)で締める。
                         strokeLinecap="butt"
                         pointerEvents="none"
                       />
@@ -1244,23 +1249,18 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               />
             )}
 
-            {/* 分岐 / 合流コネクタ（reading-order のみ）。subway 風のランプで
-                対象レーンへ斜めに流れ込む形にする（branch=親レーンから枝分かれ /
-                merge=畳まれる線が対象レーンへ合流）。線は通常の帯と同じ太さ・色・不透明度で
-                描き、両端を帯にめり込ませて（round cap）なめらかに接続する。破線は使わない
-                （branch/merge の区別はランプ方向で表す）。span 延長で from/to 双方の帯が
-                at 列まで届くので、どちらの経路で作っても両端が帯に接続する。 */}
+            {/* 分岐 / 合流コネクタ（reading-order のみ）。統一モデル: branch も merge も
+                「from レーンから to レーンへ線が移る」遷移点として同じ形で描く。ランプは
+                常にマーカー（at 列 X）の手前 (X-RAMP→X) から流れ込む。from 帯はランプ始端
+                (X-RAMP) で止まり、to 帯はマーカー (X) から始まるので、帯↔ランプ↔帯が
+                butt 端どうしの縦シームでなめらかに繋がる。線は通常の帯と同じ太さ・色・不透過。 */}
             {showThreads &&
               !subwayActive &&
               axisMode === "reading" &&
               laneModel.connectors.map((c) => {
                 const X = xOf(c.x);
-                // branch: 親(from)レーンから子(to)レーンへ、分岐シーンの手前から斜めに。
-                // merge : 畳まれる(from)線が対象(to)レーンへ、合流シーンの直後へ斜めに。
-                const d =
-                  c.kind === "branch"
-                    ? `M ${X - CONNECTOR_RAMP} ${c.fromY} C ${X - CONNECTOR_RAMP * 0.4} ${c.fromY}, ${X - CONNECTOR_RAMP * 0.6} ${c.toY}, ${X} ${c.toY}`
-                    : `M ${X} ${c.fromY} C ${X + CONNECTOR_RAMP * 0.6} ${c.fromY}, ${X + CONNECTOR_RAMP * 0.4} ${c.toY}, ${X + CONNECTOR_RAMP} ${c.toY}`;
+                // from レーン(X-RAMP) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
+                const d = `M ${X - CONNECTOR_RAMP} ${c.fromY} C ${X - CONNECTOR_RAMP * 0.4} ${c.fromY}, ${X - CONNECTOR_RAMP * 0.6} ${c.toY}, ${X} ${c.toY}`;
                 return (
                   <path
                     key={`conn-${c.id}`}
@@ -1270,8 +1270,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     fill="none"
                     stroke={c.color ?? "var(--primary)"}
                     strokeWidth={BAND_HEIGHT}
-                    strokeOpacity={0.45}
-                    strokeLinecap="round"
+                    // 不透過・butt 端: 帯の butt 端と縦シームで揃え、重なり混色を避ける。
+                    strokeLinecap="butt"
                     strokeLinejoin="round"
                     pointerEvents="none"
                   />

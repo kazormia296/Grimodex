@@ -34,6 +34,9 @@ export interface PlotLineSegment {
   y1: number;
   x2: number;
   y2: number;
+  /** この区間の右端が branch/merge の「離脱（ramp out）」列。true のとき viewport は
+   *  右端を CONNECTOR_RAMP だけ手前で止め、ランプの始端へなめらかに渡す。 */
+  rampOutEnd?: boolean;
 }
 export interface PlotLane {
   thread: PlotThreadRow;
@@ -124,13 +127,13 @@ export function buildPlotLaneModel(args: {
     else linksByThread.set(l.threadId, [l]);
   }
 
-  // merge(from→to)@X = from が X で畳まれる / branch(from→to)@X = to が X で生まれる。
-  // 線の継ぎ目（run 分割）に使うため、スレッド別に「列番号」の集合へ落とす。
-  const mergeColsByThread = new Map<string, Set<number>>();
-  const branchColsByThread = new Map<string, Set<number>>();
-  // エッジが掛かる列では from/to の両スレッドを「生存」させ、両端の帯がコネクタ端点まで
-  // 届くようにする。マーカーがどちら側に乗っていてもコネクタが宙に浮かない＝終端が
-  // なめらかに帯へ接続し、線の位置が経路（D&D / インスペクタ）に依存しなくなる。
+  // 統一モデル: branch も merge も「線が from レーンから to レーンへ移る」遷移点。
+  //  - from スレッドはその列で **離脱**（band がそこで終わる。ランプの始端で締める=rampOut）。
+  //  - to スレッドはその列で **流入**（band はその列＝マーカー位置から新たに始まる）。
+  // span: at 列を from/to 双方の生存スパン候補に入れ、帯がランプ端へ届くようにする。
+  // ただし離脱→流入の間（別レーンを走っている区間）は band を空ける（連続させない）。
+  const leaveColsByThread = new Map<string, Set<number>>(); // from 側（離脱列）
+  const enterColsByThread = new Map<string, Set<number>>(); // to 側（流入列）
   const spanColsByThread = new Map<string, number[]>();
   const addCol = (m: Map<string, Set<number>>, k: string, v: number) => {
     const s = m.get(k);
@@ -145,8 +148,8 @@ export function buildPlotLaneModel(args: {
   for (const b of branches) {
     const x = sceneX.get(b.atNodeId);
     if (x === undefined || x >= scheduledCount) continue;
-    if (b.kind === "merge") addCol(mergeColsByThread, b.fromThreadId, x);
-    else addCol(branchColsByThread, b.toThreadId, x);
+    addCol(leaveColsByThread, b.fromThreadId, x);
+    addCol(enterColsByThread, b.toThreadId, x);
     addSpanCol(b.fromThreadId, x);
     addSpanCol(b.toThreadId, x);
   }
@@ -274,58 +277,53 @@ export function buildPlotLaneModel(args: {
       y: yByColumn.get(mk.x) ?? yHome,
     }));
 
-    // run 分割（生存スパン上で merge-out 後 / branch-in 前に切る）。
-    const mergeCols = mergeColsByThread.get(thread.id);
-    const branchCols = branchColsByThread.get(thread.id);
-    const runs: Array<[number, number]> = [];
-    let runStart = p.lo;
+    // run 分割（統一遷移モデル）: スレッドは lo で誕生し、離脱列(leave=from)で band が
+    // 切れて不在になり、流入列(enter=to)やマーカー列で再び現れる。離脱→次の流入の間
+    // （別レーンを走っている区間）は band を空ける＝連続させない。各 run は homeY 水平 1 本。
+    const leaveCols = leaveColsByThread.get(thread.id);
+    const enterCols = enterColsByThread.get(thread.id);
+    const runs: Array<{ start: number; end: number; rampOutEnd: boolean }> = [];
+    let active = true; // lo で誕生
+    let start = p.lo;
     for (let c = p.lo; c <= p.hi; c++) {
-      const isLast = c === p.hi;
-      let breakHere = isLast;
-      if (!isLast && (mergeCols?.has(c) || branchCols?.has(c + 1))) {
-        breakHere = true;
-      }
-      if (breakHere) {
-        runs.push([runStart, c]);
-        runStart = c + 1;
+      if (active && leaveCols?.has(c)) {
+        // 離脱: band はこの列で終わり、ランプの始端へ渡す。
+        runs.push({ start, end: c, rampOutEnd: true });
+        active = false;
+      } else if (!active && (enterCols?.has(c) || p.markerCols.has(c))) {
+        // 流入 / マーカー再出現: この列（マーカー位置）から新しい run。
+        start = c;
+        active = true;
+        // 同一列で流入かつ即離脱（その場で別レーンへ渡る）なら 1 列 run。
+        if (leaveCols?.has(c)) {
+          runs.push({ start, end: c, rampOutEnd: true });
+          active = false;
+        }
       }
     }
+    if (active) runs.push({ start, end: p.hi, rampOutEnd: false });
 
+    // 固定ホーム行モデルでは run 内の y は一定なので、各 run = homeY 水平 1 セグメント。
     const lineSegments: PlotLineSegment[] = [];
-    for (const [rs, re] of runs) {
-      if (re === rs) continue; // 単一列 run は点（ゼロ長線は描かない）
-      let i = rs;
-      while (i < re) {
-        const y = yByColumn.get(i) ?? yHome;
-        let j = i;
-        while (j + 1 <= re && (yByColumn.get(j + 1) ?? yHome) === y) j++;
-        if (j > i) {
-          lineSegments.push({ x1: i, y1: y, x2: j, y2: y });
-        }
-        if (j < re) {
-          const yNext = yByColumn.get(j + 1) ?? yHome;
-          lineSegments.push({ x1: j, y1: y, x2: j + 1, y2: yNext });
-          i = j + 1;
-        } else {
-          i = j + 1;
-        }
-      }
+    for (const r of runs) {
+      if (r.end === r.start) continue; // 単一列 run は点（マーカー / コネクタで表す）
+      lineSegments.push(
+        r.rampOutEnd
+          ? { x1: r.start, y1: yHome, x2: r.end, y2: yHome, rampOutEnd: true }
+          : { x1: r.start, y1: yHome, x2: r.end, y2: yHome },
+      );
     }
 
-    // 終端キャップ: 最後の run が自走（merge でない）かつ長さを持つなら hi。
-    // ただし「実在の終端」（マーカー列 or 終端 override）のみ。branch/merge の at 列まで
-    // span 延長されただけの列には付けない（親線が分岐点でいきなり完結したように見えるのを防ぐ）。
+    // 終端キャップ: 最後の run が「離脱でなく」「長さを持ち」「実在の終端」（マーカー列
+    // or 終端 override）で終わるなら付ける。離脱(rampOut)や span 延長だけの列には付けない
+    // （別レーンへ渡る点／分岐点で線がいきなり完結したように見えるのを防ぐ）。
     const lastRun = runs[runs.length - 1];
-    const reachedEnd = lastRun ? lastRun[1] : undefined;
     const isRealEnd =
-      reachedEnd !== undefined &&
-      (p.markerCols.has(reachedEnd) || reachedEnd === p.endX);
+      lastRun !== undefined &&
+      (p.markerCols.has(lastRun.end) || lastRun.end === p.endX);
     const terminusX =
-      lastRun &&
-      lastRun[1] > lastRun[0] &&
-      !mergeCols?.has(lastRun[1]) &&
-      isRealEnd
-        ? lastRun[1]
+      lastRun && lastRun.end > lastRun.start && !lastRun.rampOutEnd && isRealEnd
+        ? lastRun.end
         : null;
 
     return {

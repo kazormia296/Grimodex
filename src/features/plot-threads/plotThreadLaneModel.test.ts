@@ -365,13 +365,14 @@ describe("plotThreadLaneModel (ストーリーライン: ホーム行＋出会�
       });
       const A = m.lanes.find((l) => l.thread.id === "A")!;
       const B = m.lanes.find((l) => l.thread.id === "B")!;
-      // at=s3=col2。A はマーカー無しでも col2 まで生存し、帯が連続してコネクタ from 端に届く。
+      // at=s3=col2。A はマーカー無しでも col2 まで生存。離脱列なので帯は rampOutEnd（右端を
+      // ランプ始端で締める）として col2 まで届く。
       expect(A.yByColumn.has(2)).toBe(true);
       expect(B.yByColumn.has(2)).toBe(true);
       expect(A.lineSegments).toEqual([
-        { x1: 0, y1: laneY(0), x2: 2, y2: laneY(0) },
+        { x1: 0, y1: laneY(0), x2: 2, y2: laneY(0), rampOutEnd: true },
       ]);
-      // 分岐点まで span 延長されただけの列に終端ノブは付けない（A は実在 beat 終端ではない）。
+      // 分岐点（離脱列）で線がいきなり完結したように見えないよう終端ノブは付けない。
       expect(A.terminusX).toBeNull();
     });
 
@@ -389,11 +390,11 @@ describe("plotThreadLaneModel (ストーリーライン: ホーム行＋出会�
       });
       const A = m.lanes.find((l) => l.thread.id === "A")!;
       const B = m.lanes.find((l) => l.thread.id === "B")!;
-      // at=s3=col2。B はマーカー無しでも col2 まで生存し、merge で帯が col2 で締まる（terminus 無し）。
+      // at=s3=col2。B はマーカー無しでも col2 まで生存し、離脱列で帯が rampOut で締まる。
       expect(B.yByColumn.has(2)).toBe(true);
       expect(A.yByColumn.has(2)).toBe(true);
       expect(B.lineSegments).toEqual([
-        { x1: 0, y1: laneY(1), x2: 2, y2: laneY(1) },
+        { x1: 0, y1: laneY(1), x2: 2, y2: laneY(1), rampOutEnd: true },
       ]);
       expect(B.terminusX).toBeNull();
     });
@@ -408,6 +409,45 @@ describe("plotThreadLaneModel (ストーリーライン: ホーム行＋出会�
       // s2=col1。a,b とも col1 で生存（マーカー皆無でもコネクタ端点に帯のアンカー）。
       expect(m.lanes[0].yByColumn.has(1)).toBe(true);
       expect(m.lanes[1].yByColumn.has(1)).toBe(true);
+    });
+
+    it("branch して別レーンを走り merge で戻る: 元レーンの帯は分岐点で切れ、合流点は新たな始点（橋渡ししない）", () => {
+      // バトンリレー: blue→(branch s3)→red→(merge s5)→blue。
+      // blue: s1, s5(合流で乗る)。red: s3(分岐で乗る)。
+      const m = buildPlotLaneModel({
+        threads: [thread("blue", "a0"), thread("red", "a1")],
+        links: [
+          link("lb1", "blue", "s1", "introduce"),
+          link("lr", "red", "s3", "develop"),
+          link("lb2", "blue", "s5", "resolve"),
+        ],
+        sceneX,
+        branches: [
+          branch("br", "blue", "red", "s3", "branch"),
+          branch("mg", "red", "blue", "s5", "merge"),
+        ],
+      });
+      const blue = m.lanes.find((l) => l.thread.id === "blue")!;
+      const red = m.lanes.find((l) => l.thread.id === "red")!;
+      // blue: [s1..s3] で分岐離脱(rampOut)。s3〜s5 は別レーン(red)なので帯は無し。
+      // s5 は合流で乗った新たな始点 → 単独マーカー（帯セグメント無し）。橋渡ししない。
+      expect(blue.lineSegments).toEqual([
+        { x1: 0, y1: laneY(0), x2: 2, y2: laneY(0), rampOutEnd: true },
+      ]);
+      expect(blue.markers.map((mk) => mk.x).sort((a, b) => a - b)).toEqual([
+        0, 4,
+      ]);
+      expect(blue.terminusX).toBeNull();
+      // red: [s3..s5] を走り s5 で合流離脱(rampOut)。
+      expect(red.lineSegments).toEqual([
+        { x1: 2, y1: laneY(1), x2: 4, y2: laneY(1), rampOutEnd: true },
+      ]);
+      expect(red.terminusX).toBeNull();
+      // コネクタは 2 本（branch@s3 / merge@s5）。
+      expect(m.connectors.map((c) => c.kind).sort()).toEqual([
+        "branch",
+        "merge",
+      ]);
     });
   });
 
