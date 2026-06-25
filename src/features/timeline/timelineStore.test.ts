@@ -129,6 +129,7 @@ describe("timelineStore.loadFromSettings", () => {
       axisMode: "story",
       spacingMode: "proportional",
       showThreads: true,
+      plotLayout: "separated",
       zoom: 2,
       scrollOffset: 120,
       inspectorWidth: 300,
@@ -143,6 +144,7 @@ describe("timelineStore.loadFromSettings", () => {
     expect(state.axisMode).toBe("story");
     expect(state.spacingMode).toBe("proportional");
     expect(state.showThreads).toBe(true);
+    expect(state.plotLayout).toBe("separated");
     expect(state.zoom).toBe(2);
     expect(state.scrollOffset).toBe(120);
     expect(state.inspectorWidth).toBe(300);

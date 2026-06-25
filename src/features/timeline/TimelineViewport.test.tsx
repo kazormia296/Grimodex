@@ -34,6 +34,9 @@ function resetStore() {
     axisMode: "reading",
     spacingMode: "uniform",
     showThreads: false,
+    // 既存スイートは separated レイアウト（チップ/バンド/コネクタ）を gate する。
+    // subway レイアウトは subwayModel.test.ts と TimelineViewport.subway.test.tsx で検証。
+    plotLayout: "separated",
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],

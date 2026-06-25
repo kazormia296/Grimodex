@@ -4,6 +4,10 @@ import type { GlobalSettings } from "@/features/workspace/store";
 
 export type AxisMode = "reading" | "story" | "write";
 export type SpacingMode = "uniform" | "proportional";
+/** プロットスレッドの描画レイアウト。
+ *  subway = AeonTimeline 風（1イベント1駅・路線が合流分岐・重要度センター配置）。
+ *  separated = 各スレッド独立ホーム行・段階チップ（従来）。 */
+export type PlotLayout = "subway" | "separated";
 /** 旧: シーン年表(scenes) か、プロットスレッドのレーン表示(threads) か。
  *  オーバーレイ化（2026-06-24）で showThreads(boolean) に移行。永続化の後方互換
  *  読み取り（threads → showThreads=true）にのみ残す。 */
@@ -14,6 +18,8 @@ export interface TimelineSettings {
   spacingMode: SpacingMode;
   /** シーン年表に加えてプロットスレッドのレーンをオーバーレイ表示するか。 */
   showThreads: boolean;
+  /** プロットスレッドの描画レイアウト（subway / separated）。 */
+  plotLayout: PlotLayout;
   zoom: number;
   scrollOffset: number;
   /** インスペクタ列の幅(px)。Splitter でドラッグ可変・永続化。 */
@@ -44,6 +50,7 @@ interface TimelineState {
   axisMode: AxisMode;
   spacingMode: SpacingMode;
   showThreads: boolean;
+  plotLayout: PlotLayout;
   zoom: number;
   scrollOffset: number;
   inspectorWidth: number;
@@ -59,6 +66,7 @@ interface TimelineState {
   setAxisMode: (mode: AxisMode) => void;
   setShowThreads: (show: boolean) => void;
   toggleShowThreads: () => void;
+  setPlotLayout: (layout: PlotLayout) => void;
   setSelectedPlotLinkId: (id: string | null) => void;
   setSelectedPlotThreadId: (id: string | null) => void;
   setSpacingMode: (mode: SpacingMode) => void;
@@ -79,6 +87,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   axisMode: "reading",
   spacingMode: "uniform",
   showThreads: false,
+  plotLayout: "subway",
   zoom: 1,
   scrollOffset: 0,
   inspectorWidth: INSPECTOR_WIDTH_DEFAULT,
@@ -95,6 +104,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     }),
   setShowThreads: (showThreads) => set({ showThreads }),
   toggleShowThreads: () => set((s) => ({ showThreads: !s.showThreads })),
+  setPlotLayout: (plotLayout) => set({ plotLayout }),
   setSelectedPlotLinkId: (selectedPlotLinkId) => set({ selectedPlotLinkId }),
   setSelectedPlotThreadId: (selectedPlotThreadId) =>
     set({ selectedPlotThreadId }),
@@ -147,6 +157,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       showThreads:
         settings.showThreads ??
         (settings as { viewMode?: TimelineViewMode }).viewMode === "threads",
+      plotLayout: settings.plotLayout ?? "subway",
       zoom: Math.max(0.25, Math.min(4, settings.zoom ?? 1)),
       scrollOffset: settings.scrollOffset ?? 0,
       inspectorWidth: clampInspectorWidth(
@@ -163,6 +174,7 @@ function snapshotPersistent(
     axisMode: state.axisMode,
     spacingMode: state.spacingMode,
     showThreads: state.showThreads,
+    plotLayout: state.plotLayout,
     zoom: state.zoom,
     scrollOffset: state.scrollOffset,
     inspectorWidth: state.inspectorWidth,

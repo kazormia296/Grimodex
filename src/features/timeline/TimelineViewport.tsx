@@ -19,6 +19,10 @@ import {
   buildPlotLaneModel,
   LANE_HEIGHT,
 } from "@/features/plot-threads/plotThreadLaneModel";
+import {
+  buildPlotSubwayModel,
+  roundedPath,
+} from "@/features/plot-threads/subwayModel";
 import { resolveMarkerDrop } from "@/features/plot-threads/plotThreadDnd";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
@@ -33,6 +37,22 @@ const CHIP_FONT = 10;
 const CHIP_MIN_STEP = 72;
 /** subway 風ランプコネクタの水平方向の伸び（px）。 */
 const CONNECTOR_RAMP = 34;
+
+// ───────── Subway レイアウト（AeonTimeline 風）の定数 ─────────
+/** 路線（細い実線）の太さ。 */
+const TRACK_WIDTH = 5;
+/** 単一トラック駅（小さい塗りつぶし円）の半径。 */
+const NODE_R_SINGLE = 5;
+/** 複数トラック駅（大きい白抜きドーナツ）の半径とリング太さ。 */
+const NODE_R_MULTI = 8;
+const NODE_RING = 3;
+/** 路線の角丸半径。 */
+const SUBWAY_CORNER_R = 10;
+/** 左に固定するトラックラベル列の幅（px）。subway 時はここまで content を右へ寄せる。
+ *  fit-zoom（Ctrl+0）が subway の左ガターを正しく確保できるよう export する。 */
+export const SUBWAY_LABEL_GUTTER = 150;
+/** イベント名ラベルをこの STEP 未満では出さない（重なり防止）。 */
+const EVENT_LABEL_MIN_STEP = 64;
 const LABEL_Y = 16;
 const LANE_Y = 60;
 const AXIS_Y = LANE_Y;
@@ -143,6 +163,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const display = useTimelineStore((s) => s.display);
     const axisMode = useTimelineStore((s) => s.axisMode);
     const showThreads = useTimelineStore((s) => s.showThreads);
+    const plotLayout = useTimelineStore((s) => s.plotLayout);
     const selectedPlotLinkId = useTimelineStore((s) => s.selectedPlotLinkId);
     const threads = usePlotThreadStore((s) => s.threads);
     const links = usePlotThreadStore((s) => s.links);
@@ -206,6 +227,31 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       [threads, links, sceneX, threadsTop, branches, scheduledCountForLanes],
     );
 
+    // subway レイアウト（AeonTimeline 風）モデル。showThreads かつ subway のときのみ使う。
+    const subwayActive = showThreads && plotLayout === "subway";
+    // subway 本体の開始 Y。story-time の未配置ゾーン(UNSCHEDULED_Y)があるときは
+    // それと衝突しないよう threadsTop（ゾーン下）に置き、無いときはヘッダー直下へ寄せる。
+    const subwayTop = showUnscheduledZone ? threadsTop : LANE_Y + 52;
+    const subwayModel = useMemo(
+      () =>
+        buildPlotSubwayModel({
+          threads,
+          links,
+          sceneX,
+          laneTop: subwayTop,
+          scheduledCount: scheduledCountForLanes,
+        }),
+      [threads, links, sceneX, subwayTop, scheduledCountForLanes],
+    );
+    // subway 時はシーン列を左ラベル列ぶん右へ寄せる（駅がラベルに隠れない）。
+    const padLeft = subwayActive ? SUBWAY_LABEL_GUTTER : PAD_LEFT;
+    // nodeId → シーンタイトル（イベント名ラベル用）。
+    const sceneTitleById = useMemo(() => {
+      const m = new Map<string, string>();
+      for (const sc of scenes) m.set(sc.id, sc.title);
+      return m;
+    }, [scenes]);
+
     // ラベル衝突の決定的押し下げ: 束ね（共有スロット）で lane.y が一致するレーンの
     // ラベルが重ならないよう、レーン順に既使用 Y を避けて配置する（線/マーカーは不動）。
     const plotLabelY = useMemo(() => {
@@ -224,9 +270,15 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const laneSlotY = (lane: (typeof laneModel.lanes)[number], x: number) =>
       lane.yByColumn.get(x) ?? lane.y;
 
+    const plotContentHeight = subwayActive
+      ? subwayModel.contentHeight
+      : laneModel.contentHeight;
+    const plotHasLanes = subwayActive
+      ? subwayModel.tracks.length > 0
+      : laneModel.lanes.length > 0;
     const svgHeight =
-      showThreads && laneModel.lanes.length > 0
-        ? Math.max(sceneAreaBottom, laneModel.contentHeight + 16)
+      showThreads && plotHasLanes
+        ? Math.max(sceneAreaBottom, plotContentHeight + 16)
         : sceneAreaBottom;
 
     // Compute x positions
@@ -234,18 +286,18 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const visibleForWidth = Math.max(scheduledCount, 1);
     const totalWidth =
       weights && weights.length > 0
-        ? PAD_LEFT + visibleForWidth * STEP * 2 + PAD_RIGHT
-        : PAD_LEFT + scenes.length * STEP + PAD_RIGHT;
+        ? padLeft + visibleForWidth * STEP * 2 + PAD_RIGHT
+        : padLeft + scenes.length * STEP + PAD_RIGHT;
 
     function xOf(i: number): number {
       if (i >= scheduledCount) {
         // Unscheduled: place below in a separate lane at same x step
-        return PAD_LEFT + (i - scheduledCount) * STEP;
+        return padLeft + (i - scheduledCount) * STEP;
       }
       if (weights && weights.length > i) {
-        return PAD_LEFT + weights[i] * (visibleForWidth * STEP * 2);
+        return padLeft + weights[i] * (visibleForWidth * STEP * 2);
       }
-      return PAD_LEFT + i * STEP;
+      return padLeft + i * STEP;
     }
 
     function yOf(i: number): number {
@@ -687,7 +739,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
 
             {/* Main axis line */}
             <line
-              x1={PAD_LEFT - DOT_R}
+              x1={padLeft - DOT_R}
               y1={AXIS_Y}
               x2={
                 scheduledCount > 0
@@ -725,9 +777,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 {/* ドラッグ中はゾーンをハイライト */}
                 {drag && (
                   <rect
-                    x={PAD_LEFT - DOT_R}
+                    x={padLeft - DOT_R}
                     y={UNSCHEDULED_Y - 20}
-                    width={totalWidth - PAD_LEFT - PAD_RIGHT + DOT_R}
+                    width={totalWidth - padLeft - PAD_RIGHT + DOT_R}
                     height={40}
                     fill="currentColor"
                     fillOpacity={0.05}
@@ -736,7 +788,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   />
                 )}
                 <line
-                  x1={PAD_LEFT - DOT_R}
+                  x1={padLeft - DOT_R}
                   y1={UNSCHEDULED_Y - 16}
                   x2={totalWidth - PAD_RIGHT}
                   y2={UNSCHEDULED_Y - 16}
@@ -746,7 +798,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   strokeDasharray="4 4"
                 />
                 <text
-                  x={PAD_LEFT - DOT_R}
+                  x={padLeft - DOT_R}
                   y={UNSCHEDULED_Y - 4}
                   fontSize={9}
                   fill="currentColor"
@@ -884,8 +936,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                       </text>
                     )}
 
-                  {/* Title label */}
-                  {display.showTitles && (
+                  {/* Title label。subway では駅のイベント名ラベルと重複するので隠す
+                      （上段のシーンドットは時間ルーラーとして残す）。 */}
+                  {display.showTitles && !subwayActive && (
                     <text
                       x={cx}
                       y={cy + 28}
@@ -950,8 +1003,10 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   />
                 ))}
 
-            {/* 収束ハイライト: 2 本以上のスレッドが通るシーン列を淡い縦バンドで強調 */}
+            {/* 収束ハイライト: 2 本以上のスレッドが通るシーン列を淡い縦バンドで強調
+                （separated レイアウトのみ。subway は共有駅で表現するため不要） */}
             {showThreads &&
+              !subwayActive &&
               laneModel.convergences.map((x) => (
                 <rect
                   key={`conv-${x}`}
@@ -969,8 +1024,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 />
               ))}
 
-            {/* プロットスレッドのレーン（threads モード） */}
+            {/* プロットスレッドのレーン（separated レイアウト） */}
             {showThreads &&
+              !subwayActive &&
               laneModel.lanes.map((lane) => (
                 <g key={lane.thread.id} data-plot-lane={lane.thread.id}>
                   {/* レーン行のヒット領域（ダブルクリックで最寄りシーンにマーカー追加） */}
@@ -1174,6 +1230,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 対象レーンへ斜めに流れ込む形にする（branch=親レーンから枝分かれ /
                 merge=畳まれる線が対象レーンへ合流）。branch=実線 / merge=破線。 */}
             {showThreads &&
+              !subwayActive &&
               axisMode === "reading" &&
               laneModel.connectors.map((c) => {
                 const X = xOf(c.x);
@@ -1199,6 +1256,234 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   />
                 );
               })}
+
+            {/* ───────── Subway レイアウト本体（AeonTimeline 風） ───────── */}
+            {subwayActive && (
+              <g data-testid="plot-subway">
+                {/* 各トラックのホーム行の淡い背景線＋行ヒット領域（ダブルクリックで追加） */}
+                {subwayModel.tracks.map((track) => (
+                  <g key={`row-${track.threadId}`}>
+                    <line
+                      x1={xOf(0)}
+                      x2={
+                        scheduledCount > 0
+                          ? xOf(scheduledCount - 1)
+                          : totalWidth - PAD_RIGHT
+                      }
+                      y1={track.homeY}
+                      y2={track.homeY}
+                      stroke={track.color ?? "currentColor"}
+                      strokeOpacity={0.12}
+                      strokeWidth={1}
+                      pointerEvents="none"
+                    />
+                    <rect
+                      data-testid={`plot-lane-hit-${track.threadId}`}
+                      x={padLeft - DOT_R}
+                      y={track.homeY - LANE_HEIGHT / 2}
+                      width={totalWidth}
+                      height={LANE_HEIGHT}
+                      fill="transparent"
+                      className="cursor-copy"
+                      onDoubleClick={(e) =>
+                        handleLaneDoubleClick(e, track.threadId)
+                      }
+                    >
+                      <title>
+                        {t(
+                          "plotThread.laneHint",
+                          "ダブルクリックでマーカーを追加",
+                        )}
+                      </title>
+                    </rect>
+                  </g>
+                ))}
+
+                {/* 路線（細い実線・角丸）。点列を px 化し、進入/退出アンカーにだけ px スタブを
+                    付与して斜入させる。スタブ幅は隣接列の実 px 間隔にクランプ（proportional/
+                    write 軸で列が詰まっても前後列へはみ出さない）。anchor 判定はモデル契約由来で、
+                    「ホーム行に乗った実駅」を誤って寄せない（駅と線の分離防止）。 */}
+                {subwayModel.tracks.map((track) => {
+                  if (track.points.length < 2) return null;
+                  const baseStub = STEP * 0.42;
+                  const pxPts = track.points.map((p) => {
+                    let X = xOf(p.x);
+                    if (p.anchor) {
+                      // 進入(先頭)は左、退出(末尾)は右へ。隣接列との実距離の 0.45 にクランプ。
+                      const isEntry = p === track.points[0];
+                      if (isEntry) {
+                        const gap = p.x > 0 ? xOf(p.x) - xOf(p.x - 1) : STEP;
+                        X -= Math.min(baseStub, gap * 0.45);
+                      } else {
+                        const gap =
+                          p.x + 1 < scheduledCount
+                            ? xOf(p.x + 1) - xOf(p.x)
+                            : STEP;
+                        X += Math.min(baseStub, gap * 0.45);
+                      }
+                    }
+                    return { x: X, y: p.y };
+                  });
+                  return (
+                    <path
+                      key={track.threadId}
+                      data-testid={`subway-track-${track.threadId}`}
+                      d={roundedPath(pxPts, SUBWAY_CORNER_R)}
+                      fill="none"
+                      stroke={track.color ?? "var(--primary)"}
+                      strokeWidth={TRACK_WIDTH}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      pointerEvents="none"
+                    />
+                  );
+                })}
+
+                {/* イベント名ラベル（駅の上）。STEP が狭いと省く。無題はスケルトン帯。 */}
+                {STEP >= EVENT_LABEL_MIN_STEP &&
+                  subwayModel.nodes.map((node) => {
+                    const cx = xOf(node.x);
+                    const title = sceneTitleById.get(node.nodeId) ?? "";
+                    const ly =
+                      node.y - (node.multi ? NODE_R_MULTI : NODE_R_SINGLE) - 8;
+                    if (!title) {
+                      return (
+                        <rect
+                          key={`evlbl-${node.nodeId}`}
+                          x={cx - 22}
+                          y={ly - 7}
+                          width={44}
+                          height={7}
+                          rx={3.5}
+                          fill="currentColor"
+                          fillOpacity={0.12}
+                          pointerEvents="none"
+                        />
+                      );
+                    }
+                    const text =
+                      title.length > 22 ? title.slice(0, 21) + "…" : title;
+                    // 左寄せ（駅から右へ伸ばす）。中央寄せだと左端の駅でラベル列に
+                    // 食い込み見切れるため。参照(AeonTimeline)も駅から右へ伸ばす。
+                    return (
+                      <text
+                        key={`evlbl-${node.nodeId}`}
+                        data-testid={`subway-event-label-${node.nodeId}`}
+                        x={cx - NODE_R_MULTI}
+                        y={ly}
+                        textAnchor="start"
+                        fontSize={10}
+                        fill="currentColor"
+                        fillOpacity={0.78}
+                        pointerEvents="none"
+                        className="select-none"
+                      >
+                        {text}
+                      </text>
+                    );
+                  })}
+
+                {/* 駅（ノード）。単一トラック=小さい塗り / 複数=大きい白抜きドーナツ。
+                    クリック=そのイベント(シーン)を選択。 */}
+                {subwayModel.nodes.map((node) => {
+                  const cx = xOf(node.x);
+                  const color = node.color ?? "var(--primary)";
+                  // 選択リングは現在地シーン（activeSceneId）で点灯。クリックで
+                  // そのシーンへナビゲートし、単一トラック駅はマーカーも選択して
+                  // インスペクタで段階編集できるようにする（複数駅は曖昧なのでシーン選択のみ）。
+                  const selected = node.nodeId === activeSceneId;
+                  const r = node.multi ? NODE_R_MULTI : NODE_R_SINGLE;
+                  const title = sceneTitleById.get(node.nodeId) ?? "";
+                  return (
+                    <circle
+                      key={node.nodeId}
+                      data-testid={`subway-node-${node.nodeId}`}
+                      data-multi={node.multi}
+                      cx={cx}
+                      cy={node.y}
+                      r={r}
+                      fill={node.multi ? "var(--background, white)" : color}
+                      stroke={selected ? "var(--foreground)" : color}
+                      strokeWidth={
+                        node.multi ? NODE_RING : selected ? 2.5 : 1.5
+                      }
+                      className="cursor-pointer"
+                      onClick={() => {
+                        onSelectScene(node.nodeId);
+                        if (!node.multi && node.markers[0])
+                          onSelectMarker?.(node.markers[0].linkId);
+                      }}
+                    >
+                      <title>
+                        {title || t("plotThread.eventUntitled", "（無題）")}
+                      </title>
+                    </circle>
+                  );
+                })}
+
+                {/* 左に固定するトラックラベル列（横スクロールしても残る）。
+                    scrollOffset ぶん平行移動し、背景で路線の左端をマスクする。 */}
+                <g
+                  transform={`translate(${scrollOffset},0)`}
+                  data-testid="subway-labels"
+                >
+                  <rect
+                    x={0}
+                    y={subwayTop - LANE_HEIGHT / 2}
+                    width={SUBWAY_LABEL_GUTTER - 12}
+                    height={Math.max(
+                      0,
+                      svgHeight - (subwayTop - LANE_HEIGHT / 2),
+                    )}
+                    fill="var(--background)"
+                    pointerEvents="none"
+                  />
+                  {subwayModel.tracks.map((track) => {
+                    const name =
+                      track.thread.name || t("plotThread.unnamed", "（無名）");
+                    const color = track.color ?? "var(--primary)";
+                    const cyL = track.homeY;
+                    const display =
+                      name.length > 12 ? name.slice(0, 11) + "…" : name;
+                    return (
+                      <g
+                        key={`label-${track.threadId}`}
+                        className="cursor-pointer"
+                        data-testid={`plot-lane-label-${track.threadId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectThread?.(track.threadId);
+                        }}
+                      >
+                        <rect
+                          x={6}
+                          y={cyL - 13}
+                          width={SUBWAY_LABEL_GUTTER - 24}
+                          height={26}
+                          rx={13}
+                          fill="var(--card, var(--background))"
+                          stroke="currentColor"
+                          strokeOpacity={0.15}
+                          strokeWidth={1}
+                        />
+                        <circle cx={22} cy={cyL} r={7} fill={color} />
+                        <text
+                          x={36}
+                          y={cyL}
+                          dominantBaseline="central"
+                          fontSize={11}
+                          fill="currentColor"
+                          fillOpacity={0.85}
+                          className="select-none"
+                        >
+                          {display}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </g>
+              </g>
+            )}
           </svg>
         </div>
 

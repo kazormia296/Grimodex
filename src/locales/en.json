@@ -4793,6 +4793,12 @@
   "plotThread": {
     "viewScenes": "Scenes",
     "viewThreads": "Threads",
+    "layout": {
+      "label": "Thread layout",
+      "subway": "Subway",
+      "separated": "Separated"
+    },
+    "eventUntitled": "(untitled)",
     "addThread": "Add thread",
     "newThreadName": "New thread",
     "unnamed": "(unnamed)",

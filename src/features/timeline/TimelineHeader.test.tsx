@@ -24,6 +24,7 @@ function resetStore() {
     axisMode: "reading",
     spacingMode: "uniform",
     showThreads: false,
+    plotLayout: "subway",
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -144,5 +145,30 @@ describe("TimelineHeader – スレッド表示トグル", () => {
       />,
     );
     expect(screen.getByTitle("スレッドを追加")).toBeTruthy();
+  });
+});
+
+describe("TimelineHeader – レイアウト(subway/separated)トグル", () => {
+  beforeEach(resetStore);
+
+  it("スレッド非表示のときレイアウトトグルは出ない", () => {
+    renderHeader();
+    expect(screen.queryByRole("group", { name: /レイアウト/ })).toBeNull();
+  });
+
+  it("スレッド表示中にトグルが出て、Separated クリックで plotLayout が切替＋aria-pressed 更新", () => {
+    useTimelineStore.setState({ showThreads: true, plotLayout: "subway" });
+    renderHeader();
+    const group = screen.getByRole("group", { name: /レイアウト/ });
+    expect(group).toBeTruthy();
+    const subwayBtn = screen.getByTitle("Subway");
+    const separatedBtn = screen.getByTitle("Separated");
+    // 既定は subway が押下状態。
+    expect(subwayBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(separatedBtn.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(separatedBtn);
+    expect(useTimelineStore.getState().plotLayout).toBe("separated");
+    expect(separatedBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(subwayBtn.getAttribute("aria-pressed")).toBe("false");
   });
 });

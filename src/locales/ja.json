@@ -4786,6 +4786,12 @@
   "plotThread": {
     "viewScenes": "シーン",
     "viewThreads": "スレッド",
+    "layout": {
+      "label": "スレッド レイアウト",
+      "subway": "Subway",
+      "separated": "Separated"
+    },
+    "eventUntitled": "（無題）",
     "addThread": "スレッドを追加",
     "newThreadName": "新しいスレッド",
     "unnamed": "（無名）",

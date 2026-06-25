@@ -1,7 +1,7 @@
-import { Clock, MapPin, Plus } from "lucide-react";
+import { Clock, MapPin, Plus, TrainFront, Rows3 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTimelineStore } from "./timelineStore";
-import type { AxisMode, SpacingMode } from "./timelineStore";
+import type { AxisMode, SpacingMode, PlotLayout } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -40,6 +40,8 @@ export function TimelineHeader({
   const toggleDisplay = useTimelineStore((s) => s.toggleDisplay);
   const showThreads = useTimelineStore((s) => s.showThreads);
   const toggleShowThreads = useTimelineStore((s) => s.toggleShowThreads);
+  const plotLayout = useTimelineStore((s) => s.plotLayout);
+  const setPlotLayout = useTimelineStore((s) => s.setPlotLayout);
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
 
   return (
@@ -60,6 +62,41 @@ export function TimelineHeader({
       >
         {t("plotThread.viewThreads", "スレッド")}
       </button>
+
+      {/* レイアウト切替（subway = 路線図 / separated = 独立行）。スレッド表示時のみ。 */}
+      {showThreads && (
+        <div
+          className="flex shrink-0 items-center overflow-hidden rounded border border-border"
+          role="group"
+          aria-label={t("plotThread.layout.label", "スレッド レイアウト")}
+        >
+          {(
+            [
+              ["subway", TrainFront, t("plotThread.layout.subway", "Subway")],
+              [
+                "separated",
+                Rows3,
+                t("plotThread.layout.separated", "Separated"),
+              ],
+            ] as [PlotLayout, typeof TrainFront, string][]
+          ).map(([mode, Icon, label]) => (
+            <button
+              key={mode}
+              onClick={() => setPlotLayout(mode)}
+              aria-pressed={plotLayout === mode}
+              title={label}
+              className={`inline-flex items-center gap-1 whitespace-nowrap px-1.5 py-0.5 text-xs ${
+                plotLayout === mode
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-accent/50"
+              }`}
+            >
+              <Icon className="h-3 w-3" aria-hidden />
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Axis mode selector */}
       <select
