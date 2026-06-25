@@ -165,6 +165,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const axisMode = useTimelineStore((s) => s.axisMode);
     const showThreads = useTimelineStore((s) => s.showThreads);
     const plotLayout = useTimelineStore((s) => s.plotLayout);
+    const plotSubwaySort = useTimelineStore((s) => s.plotSubwaySort);
     const selectedPlotLinkId = useTimelineStore((s) => s.selectedPlotLinkId);
     const selectedPlotThreadId = useTimelineStore(
       (s) => s.selectedPlotThreadId,
@@ -227,8 +228,17 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           laneTop: threadsTop,
           branches,
           scheduledCount: scheduledCountForLanes,
+          subwaySort: plotSubwaySort,
         }),
-      [threads, links, sceneX, threadsTop, branches, scheduledCountForLanes],
+      [
+        threads,
+        links,
+        sceneX,
+        threadsTop,
+        branches,
+        scheduledCountForLanes,
+        plotSubwaySort,
+      ],
     );
 
     // merge の流入先(to)になっているマーカーの集合。subway と同じ白丸ドーナツで描く。

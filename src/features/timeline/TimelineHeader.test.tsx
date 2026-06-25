@@ -25,6 +25,7 @@ function resetStore() {
     spacingMode: "uniform",
     showThreads: false,
     plotLayout: "subway",
+    plotSubwaySort: false,
     zoom: 1,
     scrollOffset: 0,
     selectedNodeIds: [],
@@ -170,5 +171,20 @@ describe("TimelineHeader – レイアウト(subway/separated)トグル", () => 
     expect(useTimelineStore.getState().plotLayout).toBe("separated");
     expect(separatedBtn.getAttribute("aria-pressed")).toBe("true");
     expect(subwayBtn.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("subway順トグルは separated のときだけ出て plotSubwaySort を切り替える", () => {
+    // subway レイアウトでは出ない。
+    useTimelineStore.setState({ showThreads: true, plotLayout: "subway" });
+    const { unmount } = renderHeader();
+    expect(screen.queryByText("subway順")).toBeNull();
+    unmount();
+    // separated に切替えると出る。
+    useTimelineStore.setState({ plotLayout: "separated" });
+    renderHeader();
+    const btn = screen.getByText("subway順");
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(btn);
+    expect(useTimelineStore.getState().plotSubwaySort).toBe(true);
   });
 });

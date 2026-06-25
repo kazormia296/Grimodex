@@ -20,6 +20,8 @@ export interface TimelineSettings {
   showThreads: boolean;
   /** プロットスレッドの描画レイアウト（subway / separated）。 */
   plotLayout: PlotLayout;
+  /** separated の並びを subway 式（重要度＋center-out）にするか。 */
+  plotSubwaySort?: boolean;
   zoom: number;
   scrollOffset: number;
   /** インスペクタ列の幅(px)。Splitter でドラッグ可変・永続化。 */
@@ -51,6 +53,9 @@ interface TimelineState {
   spacingMode: SpacingMode;
   showThreads: boolean;
   plotLayout: PlotLayout;
+  /** separated レイアウトのスレッド並びを subway と同じ「重要度＋center-out」にするか。
+   *  false = sortOrder の線形（既定）。 */
+  plotSubwaySort: boolean;
   zoom: number;
   scrollOffset: number;
   inspectorWidth: number;
@@ -67,6 +72,7 @@ interface TimelineState {
   setShowThreads: (show: boolean) => void;
   toggleShowThreads: () => void;
   setPlotLayout: (layout: PlotLayout) => void;
+  togglePlotSubwaySort: () => void;
   setSelectedPlotLinkId: (id: string | null) => void;
   setSelectedPlotThreadId: (id: string | null) => void;
   setSpacingMode: (mode: SpacingMode) => void;
@@ -88,6 +94,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   spacingMode: "uniform",
   showThreads: false,
   plotLayout: "subway",
+  plotSubwaySort: false,
   zoom: 1,
   scrollOffset: 0,
   inspectorWidth: INSPECTOR_WIDTH_DEFAULT,
@@ -105,6 +112,8 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   setShowThreads: (showThreads) => set({ showThreads }),
   toggleShowThreads: () => set((s) => ({ showThreads: !s.showThreads })),
   setPlotLayout: (plotLayout) => set({ plotLayout }),
+  togglePlotSubwaySort: () =>
+    set((s) => ({ plotSubwaySort: !s.plotSubwaySort })),
   setSelectedPlotLinkId: (selectedPlotLinkId) => set({ selectedPlotLinkId }),
   setSelectedPlotThreadId: (selectedPlotThreadId) =>
     set({ selectedPlotThreadId }),
@@ -158,6 +167,7 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
         settings.showThreads ??
         (settings as { viewMode?: TimelineViewMode }).viewMode === "threads",
       plotLayout: settings.plotLayout ?? "subway",
+      plotSubwaySort: settings.plotSubwaySort ?? false,
       zoom: Math.max(0.25, Math.min(4, settings.zoom ?? 1)),
       scrollOffset: settings.scrollOffset ?? 0,
       inspectorWidth: clampInspectorWidth(
@@ -175,6 +185,7 @@ function snapshotPersistent(
     spacingMode: state.spacingMode,
     showThreads: state.showThreads,
     plotLayout: state.plotLayout,
+    plotSubwaySort: state.plotSubwaySort,
     zoom: state.zoom,
     scrollOffset: state.scrollOffset,
     inspectorWidth: state.inspectorWidth,

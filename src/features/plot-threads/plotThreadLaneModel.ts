@@ -83,6 +83,19 @@ function cmpId(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** center-out 行割り当て: rank 順(0=最重要)に中心 mid=(n-1)/2 から外へ交互配置した
+ *  行 index を返す。subwayModel.centerOutRows と同一仕様（循環 import を避けるため複製）。 */
+function centerOutRows(n: number): number[] {
+  const mid = (n - 1) / 2;
+  return Array.from({ length: n }, (_, row) => row).sort((a, b) => {
+    const da = Math.abs(a - mid);
+    const db = Math.abs(b - mid);
+    if (da !== db) return da - db;
+    if (a !== b) return b - a;
+    return 0;
+  });
+}
+
 /**
  * プロットスレッドの「ストーリーライン図」レイアウト（Plottr 型）を生成する純関数。
  *
@@ -99,6 +112,9 @@ export function buildPlotLaneModel(args: {
   branches?: PlotThreadBranchRow[];
   /** scheduled シーン数。これ以上の x（story-time の未配置）は描かない。既定 Infinity。 */
   scheduledCount?: number;
+  /** ホーム行の割り当て方式。subway と同じ「重要度(distinct 列数)降順 → center-out」に
+   *  する場合 true。既定 false = sortOrder の線形。 */
+  subwaySort?: boolean;
 }): PlotLaneModel {
   const {
     threads,
@@ -107,16 +123,41 @@ export function buildPlotLaneModel(args: {
     laneTop = LANE_TOP,
     branches = [],
     scheduledCount = Infinity,
+    subwaySort = false,
   } = args;
 
   // ───────── PREP: 順序・ホーム行 ─────────
+  // 出力順（lanes 配列・ラベル列）の基準は常に sortOrder→id。ホーム行 Y の割り当てだけ
+  // subwaySort で切り替える。
   const orderedThreads = [...threads].sort((a, b) => {
     const c = cmpKeys(a.sortOrder, b.sortOrder);
     return c !== 0 ? c : cmpId(a.id, b.id);
   });
-  const homeRow = new Map<string, number>(
-    orderedThreads.map((t, i) => [t.id, i]),
-  );
+  // ホーム行: 既定は sortOrder の線形。subwaySort のときは subway と同じ
+  // 「重要度(distinct 列数)降順 → sortOrder → id」ランク＋center-out 行割り当て。
+  let homeRow: Map<string, number>;
+  if (subwaySort) {
+    const colsByThread = new Map<string, Set<number>>();
+    for (const l of links) {
+      const x = sceneX.get(l.nodeId);
+      if (x === undefined || x >= scheduledCount) continue;
+      const s = colsByThread.get(l.threadId);
+      if (s) s.add(x);
+      else colsByThread.set(l.threadId, new Set([x]));
+    }
+    const importanceOf = (id: string) => colsByThread.get(id)?.size ?? 0;
+    const ranked = [...threads].sort((a, b) => {
+      const ia = importanceOf(a.id);
+      const ib = importanceOf(b.id);
+      if (ia !== ib) return ib - ia;
+      const c = cmpKeys(a.sortOrder, b.sortOrder);
+      return c !== 0 ? c : cmpId(a.id, b.id);
+    });
+    const rows = centerOutRows(ranked.length);
+    homeRow = new Map(ranked.map((t, rank) => [t.id, rows[rank]]));
+  } else {
+    homeRow = new Map<string, number>(orderedThreads.map((t, i) => [t.id, i]));
+  }
   const homeY = (threadId: string) =>
     laneTop + (homeRow.get(threadId) ?? 0) * LANE_HEIGHT;
 

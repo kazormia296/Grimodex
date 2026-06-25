@@ -148,6 +148,46 @@ describe("plotThreadLaneModel (ストーリーライン: ホーム行＋出会�
     });
   });
 
+  describe("subwaySort（重要度＋center-out 行割り当て）", () => {
+    it("subwaySort=true で重要度(列数)降順を中央寄せの行に割り当てる", () => {
+      const m = buildPlotLaneModel({
+        threads: [thread("a", "a0"), thread("b", "a1"), thread("c", "a2")],
+        links: [
+          link("la1", "a", "s1", "introduce"),
+          link("la2", "a", "s2", "develop"),
+          link("la3", "a", "s3", "climax"), // a: 3 列 = 最重要
+          link("lb", "b", "s1", "introduce"), // b: 1 列
+          link("lc", "c", "s2", "develop"), // c: 1 列
+        ],
+        sceneX,
+        subwaySort: true,
+      });
+      const y = (id: string) => m.lanes.find((l) => l.thread.id === id)!.y;
+      // ranked=[a,b,c]、centerOutRows(3)=[1,2,0] → a:row1(中央) / b:row2 / c:row0。
+      expect(y("a")).toBe(laneY(1));
+      expect(y("b")).toBe(laneY(2));
+      expect(y("c")).toBe(laneY(0));
+    });
+
+    it("subwaySort=false（既定）は sortOrder の線形ホーム行", () => {
+      const m = buildPlotLaneModel({
+        threads: [thread("a", "a0"), thread("b", "a1"), thread("c", "a2")],
+        links: [
+          link("la1", "a", "s1", "introduce"),
+          link("la2", "a", "s2", "develop"),
+          link("la3", "a", "s3", "climax"),
+          link("lb", "b", "s1", "introduce"),
+          link("lc", "c", "s2", "develop"),
+        ],
+        sceneX,
+      });
+      const y = (id: string) => m.lanes.find((l) => l.thread.id === id)!.y;
+      expect(y("a")).toBe(laneY(0));
+      expect(y("b")).toBe(laneY(1));
+      expect(y("c")).toBe(laneY(2));
+    });
+  });
+
   describe("被っても畳まない・寄らない（固定ホーム行）", () => {
     it("被るスレッドは別ホーム行で重ならず、線は真っ直ぐ（斜め無し）", () => {
       const m = buildPlotLaneModel({

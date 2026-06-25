@@ -1,4 +1,4 @@
-import { Clock, MapPin, Plus, TrainFront, Rows3 } from "lucide-react";
+import { Clock, MapPin, Plus, TrainFront, Rows3, Network } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTimelineStore } from "./timelineStore";
 import type { AxisMode, SpacingMode, PlotLayout } from "./timelineStore";
@@ -42,6 +42,8 @@ export function TimelineHeader({
   const toggleShowThreads = useTimelineStore((s) => s.toggleShowThreads);
   const plotLayout = useTimelineStore((s) => s.plotLayout);
   const setPlotLayout = useTimelineStore((s) => s.setPlotLayout);
+  const plotSubwaySort = useTimelineStore((s) => s.plotSubwaySort);
+  const togglePlotSubwaySort = useTimelineStore((s) => s.togglePlotSubwaySort);
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
 
   return (
@@ -96,6 +98,26 @@ export function TimelineHeader({
             </button>
           ))}
         </div>
+      )}
+
+      {/* subway 式ソート（重要度＋center-out）。separated のときだけ有効（subway は常時 ON）。 */}
+      {showThreads && plotLayout === "separated" && (
+        <button
+          onClick={togglePlotSubwaySort}
+          aria-pressed={plotSubwaySort}
+          title={t(
+            "plotThread.subwaySort",
+            "subway 式に並べる（重要度＋中央寄せ）",
+          )}
+          className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-xs ${
+            plotSubwaySort
+              ? "border-accent bg-accent text-accent-foreground"
+              : "border-border text-muted-foreground hover:bg-accent/50"
+          }`}
+        >
+          <Network className="h-3 w-3" aria-hidden />
+          {t("plotThread.subwaySortShort", "subway順")}
+        </button>
       )}
 
       {/* Axis mode selector */}
