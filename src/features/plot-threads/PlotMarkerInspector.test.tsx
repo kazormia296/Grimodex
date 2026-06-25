@@ -125,31 +125,6 @@ describe("PlotMarkerInspector", () => {
     });
   });
 
-  it("生存スパンの始端シーン選択で setThreadSpan を呼ぶ", () => {
-    const setThreadSpan = vi.fn();
-    usePlotThreadStore.setState({ setThreadSpan });
-    useTimelineStore.setState({
-      selectedPlotLinkId: null,
-      selectedPlotThreadId: "t1",
-    });
-    const { getByLabelText } = render(
-      <PlotMarkerInspector
-        width={224}
-        onClose={vi.fn()}
-        scenes={[
-          { id: "s1", title: "S1" },
-          { id: "s2", title: "S2" },
-        ]}
-      />,
-    );
-    const start = getByLabelText("始端シーン") as HTMLSelectElement;
-    fireEvent.change(start, { target: { value: "s2" } });
-    expect(setThreadSpan).toHaveBeenCalledWith("t1", { startNodeId: "s2" });
-    // 「（自動）」を選ぶと解除（null）。
-    fireEvent.change(start, { target: { value: "" } });
-    expect(setThreadSpan).toHaveBeenCalledWith("t1", { startNodeId: null });
-  });
-
   it("何も選択していなければプレースホルダーを出す", () => {
     useTimelineStore.setState({
       selectedPlotLinkId: null,

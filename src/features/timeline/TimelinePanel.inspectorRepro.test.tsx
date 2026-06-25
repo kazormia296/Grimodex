@@ -164,7 +164,7 @@ describe("TimelinePanel inspector repro (Phase B)", () => {
     const inspector = getByTestId("plot-marker-inspector");
     expect(inspector).toBeTruthy();
     // インスペクタにスレッド編集 UI が出ている（空でない）
-    expect(inspector.textContent).toContain("生存スパン");
+    expect(inspector.textContent).toContain("名前");
     // 名前入力に thread 名が入っている（input value は textContent に出ないため value で確認）
     const nameInput = inspector.querySelector("input") as HTMLInputElement;
     expect(nameInput.value).toBe("復讐の糸");

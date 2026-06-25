@@ -532,60 +532,6 @@ describe("plotThreadLaneModel (ストーリーライン: ホーム行＋出会�
     });
   });
 
-  describe("始端/終端 override", () => {
-    it("start override で前方へ伸びる", () => {
-      const m = buildPlotLaneModel({
-        threads: [thread("a", "a0", { startNodeId: "s1" })],
-        links: [
-          link("l1", "a", "s3", "develop"),
-          link("l2", "a", "s4", "climax"),
-        ],
-        sceneX,
-      });
-      const a = m.lanes[0];
-      expect([...a.yByColumn.keys()].sort((x, y) => x - y)).toEqual([
-        0, 1, 2, 3,
-      ]);
-    });
-
-    it("start がマーカーより後でもマーカーを切り捨てない", () => {
-      const m = buildPlotLaneModel({
-        threads: [thread("a", "a0", { startNodeId: "s3" })],
-        links: [
-          link("l1", "a", "s1", "introduce"),
-          link("l2", "a", "s5", "climax"),
-        ],
-        sceneX,
-      });
-      const a = m.lanes[0];
-      expect(a.yByColumn.has(0)).toBe(true);
-      expect(a.markers.map((mk) => mk.x)).toEqual([0, 4]);
-    });
-
-    it("end override で terminus が end 列", () => {
-      const m = buildPlotLaneModel({
-        threads: [thread("a", "a0", { endNodeId: "s5" })],
-        links: [
-          link("l1", "a", "s1", "introduce"),
-          link("l2", "a", "s2", "develop"),
-        ],
-        sceneX,
-      });
-      expect(m.lanes[0].terminusX).toBe(4);
-    });
-
-    it("scheduledCount 外の override は無視", () => {
-      const m = buildPlotLaneModel({
-        threads: [thread("a", "a0", { endNodeId: "s5" })],
-        links: [link("l1", "a", "s1", "introduce")],
-        sceneX,
-        scheduledCount: 3,
-      });
-      expect(m.lanes[0].yByColumn.has(4)).toBe(false);
-      expect(m.lanes[0].terminusX).toBeNull();
-    });
-  });
-
   describe("scheduledCount 除外", () => {
     it("x>=scheduledCount のマーカー・収束・コネクタを外す", () => {
       const m = buildPlotLaneModel({

@@ -10,7 +10,6 @@ vi.mock("./api", () => ({
   listPlotThreadBranches: vi.fn(async () => []),
   createPlotThread: vi.fn(),
   updatePlotThread: vi.fn(async () => {}),
-  updatePlotThreadSpan: vi.fn(async () => {}),
   deletePlotThread: vi.fn(async () => {}),
   restorePlotThread: vi.fn(async () => {}),
   createPlotThreadLink: vi.fn(),
@@ -152,23 +151,6 @@ describe("plotThreadStore", () => {
       "t2",
     ]);
     expect(usePlotThreadStore.getState().links).toHaveLength(0);
-  });
-
-  it("setThreadSpan が start/end override を楽観更新し解除もできる", async () => {
-    const { updatePlotThreadSpan } = await import("./api");
-    usePlotThreadStore.setState({ threads: [row("t1", "a0")] });
-    await usePlotThreadStore.getState().setThreadSpan("t1", {
-      startNodeId: "s1",
-    });
-    expect(updatePlotThreadSpan).toHaveBeenCalledWith("t1", {
-      startNodeId: "s1",
-    });
-    expect(usePlotThreadStore.getState().threads[0].startNodeId).toBe("s1");
-    // endNodeId は触っていないので維持。start を解除（null）。
-    await usePlotThreadStore.getState().setThreadSpan("t1", {
-      startNodeId: null,
-    });
-    expect(usePlotThreadStore.getState().threads[0].startNodeId).toBeNull();
   });
 
   it("addMarker が作成結果を links に追加する", async () => {
@@ -545,17 +527,6 @@ describe("plotThreadStore", () => {
 
       await history().undo();
       expect(usePlotThreadStore.getState().threads[0].color).toBeNull();
-    });
-
-    it("setThreadSpan undo restores the previous span override", async () => {
-      usePlotThreadStore.setState({ threads: [row("t1", "a0")] }); // start=null
-      await usePlotThreadStore
-        .getState()
-        .setThreadSpan("t1", { startNodeId: "s5" });
-      expect(usePlotThreadStore.getState().threads[0].startNodeId).toBe("s5");
-
-      await history().undo();
-      expect(usePlotThreadStore.getState().threads[0].startNodeId).toBeNull();
     });
 
     it("deleteThread undo restores thread + its links + its branches (CASCADE)", async () => {

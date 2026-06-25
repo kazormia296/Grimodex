@@ -132,25 +132,6 @@ export async function updatePlotThread(
     .where(eq(plotThreads.id, id));
 }
 
-/**
- * 束ねレイアウトの生存スパン override（start_node_id/end_node_id）を更新する。
- * plot_thread_branches と同様に Drizzle 直書き（db_execute）で行い専用 Rust コマンドは
- * 設けない（Rust patch の Option<Option> は serde で present-null と absent を区別できず
- * 「override 解除」が無言で no-op になるため。Drizzle なら null セットで確実に解除できる）。
- * patch にキーが存在する軸だけ更新する（startNodeId/endNodeId を個別に set/clear 可能）。
- */
-export async function updatePlotThreadSpan(
-  id: string,
-  patch: { startNodeId?: string | null; endNodeId?: string | null },
-): Promise<void> {
-  const set: Record<string, unknown> = {
-    updatedAt: new Date().toISOString(),
-  };
-  if ("startNodeId" in patch) set.startNodeId = patch.startNodeId ?? null;
-  if ("endNodeId" in patch) set.endNodeId = patch.endNodeId ?? null;
-  await db.update(plotThreads).set(set).where(eq(plotThreads.id, id));
-}
-
 export async function deletePlotThread(id: string): Promise<void> {
   if (isTauri()) {
     await invoke("plot_thread_delete", { id });

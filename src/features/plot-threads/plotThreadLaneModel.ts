@@ -164,10 +164,9 @@ export function buildPlotLaneModel(args: {
     thread: PlotThreadRow;
     markers: PlotLaneMarker[]; // y は後で埋める
     markerCols: Set<number>; // マーカーを持つ列（出会い判定用）
-    lo: number; // 生存スパン開始列（override 反映）
+    lo: number; // 生存スパン開始列
     hi: number; // 生存スパン終了列
     living: boolean;
-    endX?: number; // 終端 override 列（terminus 判定で「実在の終端」に使う）
   }
 
   let maxX = 0;
@@ -197,26 +196,17 @@ export function buildPlotLaneModel(args: {
       });
     const markerCols = new Set(markers.map((m) => m.x));
 
-    // 生存スパン = [min(firstMarkerX,start), max(lastMarkerX,end)]。override は延長であり
-    // マーカーを切り捨てない。override は scheduled 内のみ採用。
-    const validOverride = (id: string | null): number | undefined => {
-      if (!id) return undefined;
-      const x = sceneX.get(id);
-      return x !== undefined && x < scheduledCount ? x : undefined;
-    };
-    const startX = validOverride(thread.startNodeId ?? null);
-    const endX = validOverride(thread.endNodeId ?? null);
+    // 生存スパン = [firstMarkerX, lastMarkerX]。branch/merge の at 列も候補に含める
+    // （from/to 双方を生存させ、コネクタの両端が帯に接続するようにする）。
     const firstMarkerX = markers.length ? markers[0].x : undefined;
     const lastMarkerX = markers.length
       ? markers[markers.length - 1].x
       : undefined;
-    // branch/merge の at 列も生存スパン候補に含める（from/to 両方を生存させ、
-    // コネクタの両端が帯に接続するようにする）。
     const edgeCols = spanColsByThread.get(thread.id) ?? [];
-    const loCands = [firstMarkerX, startX, ...edgeCols].filter(
+    const loCands = [firstMarkerX, ...edgeCols].filter(
       (v): v is number => v !== undefined,
     );
-    const hiCands = [lastMarkerX, endX, ...edgeCols].filter(
+    const hiCands = [lastMarkerX, ...edgeCols].filter(
       (v): v is number => v !== undefined,
     );
     let lo = loCands.length ? Math.min(...loCands) : undefined;
@@ -234,7 +224,6 @@ export function buildPlotLaneModel(args: {
       lo: lo ?? 0,
       hi: hi ?? 0,
       living,
-      endX,
     };
   });
 
@@ -334,13 +323,11 @@ export function buildPlotLaneModel(args: {
       );
     }
 
-    // 終端キャップ: 最後の run が「離脱でなく」「長さを持ち」「実在の終端」（マーカー列
-    // or 終端 override）で終わるなら付ける。離脱(rampOut)や span 延長だけの列には付けない
-    // （別レーンへ渡る点／分岐点で線がいきなり完結したように見えるのを防ぐ）。
+    // 終端キャップ: 最後の run が「離脱でなく」「長さを持ち」「実在の終端」（=マーカー列）
+    // で終わるなら付ける。離脱(rampOut)や span 延長だけの列には付けない（別レーンへ渡る点
+    // ／分岐点で線がいきなり完結したように見えるのを防ぐ）。
     const lastRun = runs[runs.length - 1];
-    const isRealEnd =
-      lastRun !== undefined &&
-      (p.markerCols.has(lastRun.end) || lastRun.end === p.endX);
+    const isRealEnd = lastRun !== undefined && p.markerCols.has(lastRun.end);
     const terminusX =
       lastRun && lastRun.end > lastRun.start && !lastRun.rampOutEnd && isRealEnd
         ? lastRun.end

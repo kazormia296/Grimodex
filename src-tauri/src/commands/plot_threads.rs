@@ -583,7 +583,6 @@ mod tests {
         assert!(cross.is_err(), "cross-project thread move must be rejected");
     }
 
-    // 生存スパン override (start_node_id/end_node_id) は plot_thread_branches と同じく
-    // フロント側 Drizzle 直書き (db_execute) で更新する設計のため専用 Rust コマンドは設けない。
-    // 列追加と ON DELETE SET NULL は migrate.rs の plot_thread 生成テストとフロント側で gate する。
+    // 生存スパン機能は廃止済み。start_node_id / end_node_id 列は migrate.rs に
+    // 不活性な legacy 列として残る（アプリからは読み書きしない）。専用 Rust コマンドも無い。
 }

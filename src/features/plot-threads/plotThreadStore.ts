@@ -10,7 +10,6 @@ import {
   listPlotThreadBranches,
   createPlotThread,
   updatePlotThread,
-  updatePlotThreadSpan,
   deletePlotThread,
   restorePlotThread,
   createPlotThreadLink,
@@ -58,11 +57,6 @@ interface PlotThreadState {
   ) => Promise<void>;
   renameThread: (id: string, name: string) => Promise<void>;
   setThreadColor: (id: string, color: string | null) => Promise<void>;
-  /** 束ねレイアウトの生存スパン override（始端/終端シーン）を設定/解除する。 */
-  setThreadSpan: (
-    id: string,
-    patch: { startNodeId?: string | null; endNodeId?: string | null },
-  ) => Promise<void>;
   deleteThread: (id: string) => Promise<void>;
   addMarker: (
     threadId: string,
@@ -196,49 +190,6 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
             t.id === id ? { ...t, color } : t,
           ),
         });
-      },
-    });
-  },
-
-  setThreadSpan: async (id, patch) => {
-    const applySpan = (p: {
-      startNodeId?: string | null;
-      endNodeId?: string | null;
-    }) =>
-      set({
-        threads: get().threads.map((t) =>
-          t.id === id
-            ? {
-                ...t,
-                ...("startNodeId" in p
-                  ? { startNodeId: p.startNodeId ?? null }
-                  : {}),
-                ...("endNodeId" in p ? { endNodeId: p.endNodeId ?? null } : {}),
-              }
-            : t,
-        ),
-      });
-    const before = get().threads.find((t) => t.id === id);
-    await updatePlotThreadSpan(id, patch);
-    applySpan(patch);
-    if (!before) return;
-    // patch で触れた軸だけを元値へ戻す before patch を組む。
-    const beforePatch: {
-      startNodeId?: string | null;
-      endNodeId?: string | null;
-    } = {};
-    if ("startNodeId" in patch) beforePatch.startNodeId = before.startNodeId;
-    if ("endNodeId" in patch) beforePatch.endNodeId = before.endNodeId;
-    recordPlotHistory({
-      label: i18next.t("plotThread.history.spanThread", "スレッド範囲変更"),
-      entityId: id,
-      undo: async () => {
-        await updatePlotThreadSpan(id, beforePatch);
-        applySpan(beforePatch);
-      },
-      redo: async () => {
-        await updatePlotThreadSpan(id, patch);
-        applySpan(patch);
       },
     });
   },

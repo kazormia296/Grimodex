@@ -490,7 +490,6 @@ export function TimelinePanel() {
             <PlotMarkerInspector
               width={inspectorWidth}
               onClose={toggleInspector}
-              scenes={scenes}
             />
           ) : (
             // 選択が無くてもパネルを出す（中はプレースホルダー）。
