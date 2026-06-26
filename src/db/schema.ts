@@ -1308,6 +1308,107 @@ export type NewPlotThreadBranch = typeof plotThreadBranches.$inferInsert;
 export const PLOT_BRANCH_KINDS = ["branch", "merge"] as const;
 export type PlotBranchKind = (typeof PLOT_BRANCH_KINDS)[number];
 
+// ───────── Chronicle（作中年表） ─────────
+// Scene-anchored ではない独立した「出来事」。point(end_time=null)/interval 両対応。
+// reading-order の plot-thread とは別概念（作中時間=fabula 軸）。
+// CRUD は plot_thread_branches 同様 db_execute Drizzle 直書き（Rust コマンド無し）。
+// src-tauri migrate.rs とミラー。
+
+/** 出来事の時刻 precision の正準 enum。 */
+export const EVENT_PRECISIONS = ["exact", "approx", "unknown"] as const;
+export type EventPrecision = (typeof EVENT_PRECISIONS)[number];
+
+export const events = sqliteTable(
+  "events",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    title: text("title").notNull().default(""),
+    note: text("note"),
+    // 年表 x 軸順の fractional-index（base62・辞書順比較・storyTimeOrder と同 idiom）。
+    ordinal: text("ordinal").notNull().default("a0"),
+    // ホームレーン（人物 codex）。null=未割当。codex 削除で set null（出来事は残す）。
+    primaryCodexId: text("primary_codex_id").references(() => codexEntries.id, {
+      onDelete: "set null",
+    }),
+    // 暦ライト数値時刻（紀元からの日数）。null=ordinal のみ（連続間隔/季節は出ない）。
+    startTime: integer("start_time"),
+    // interval 終端（紀元からの日数）。null=point。
+    endTime: integer("end_time"),
+    // 'exact' | 'approx' | 'unknown'（CHECK は SQL 側）。
+    precision: text("precision").notNull().default("exact"),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_events_project").on(table.projectId),
+    index("idx_events_ordinal").on(table.projectId, table.ordinal),
+  ],
+);
+
+/** 出来事に参加する codex エンティティ（多対多）。主参加は events.primaryCodexId。 */
+export const eventParticipants = sqliteTable(
+  "event_participants",
+  {
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    codexEntryId: text("codex_entry_id")
+      .notNull()
+      .references(() => codexEntries.id, { onDelete: "cascade" }),
+    role: text("role"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.eventId, table.codexEntryId] }),
+    index("idx_event_participants_codex").on(table.codexEntryId),
+  ],
+);
+
+/** scene↔event 0..N 橋（0=オフページ）。シーン/出来事いずれ削除でも CASCADE。 */
+export const sceneEvents = sqliteTable(
+  "scene_events",
+  {
+    sceneId: text("scene_id")
+      .notNull()
+      .references(() => treeNodes.id, { onDelete: "cascade" }),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.sceneId, table.eventId] }),
+    index("idx_scene_events_event").on(table.eventId),
+  ],
+);
+
+/** 1プロジェクト1暦（暦ライト・任意）。未設定=季節チェック無効。 */
+export const projectCalendar = sqliteTable("project_calendar", {
+  projectId: text("project_id")
+    .primaryKey()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  daysPerYear: integer("days_per_year").notNull().default(360),
+  // JSON: SeasonBoundary[] = [{name, startDayOfYear}]（4季想定）。
+  seasonBoundaries: text("season_boundaries").notNull().default("[]"),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+  updatedAt: text("updated_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export type ChronicleEvent = typeof events.$inferSelect;
+export type NewChronicleEvent = typeof events.$inferInsert;
+export type EventParticipant = typeof eventParticipants.$inferSelect;
+export type SceneEvent = typeof sceneEvents.$inferSelect;
+export type ProjectCalendar = typeof projectCalendar.$inferSelect;
+
 export const mapFrames = sqliteTable(
   "map_frames",
   {

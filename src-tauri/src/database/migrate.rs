@@ -1717,6 +1717,68 @@ impl Database {
                 ON plot_thread_branches(to_thread_id);",
         )?;
 
+        // 作中年表(Chronicle)の出来事。Scene-anchored ではない独立エンティティ。
+        // point(end_time=NULL)/interval 両対応。precision は CHECK enum。
+        // primary_codex_id=ホームレーン(人物)。codex 削除で SET NULL（出来事は残す）。
+        // src/db/schema.ts の events とミラー。project 削除で CASCADE。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS events (
+                id               TEXT PRIMARY KEY,
+                project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title            TEXT NOT NULL DEFAULT '',
+                note             TEXT,
+                ordinal          TEXT NOT NULL DEFAULT 'a0',
+                primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                start_time       INTEGER,
+                end_time         INTEGER,
+                precision        TEXT NOT NULL DEFAULT 'exact'
+                                   CHECK(precision IN ('exact','approx','unknown')),
+                created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_project
+                ON events(project_id);
+            CREATE INDEX IF NOT EXISTS idx_events_ordinal
+                ON events(project_id, ordinal);",
+        )?;
+
+        // 出来事への参加 codex（多対多）。主参加は events.primary_codex_id。
+        // src/db/schema.ts の eventParticipants とミラー。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS event_participants (
+                event_id        TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                role            TEXT,
+                PRIMARY KEY (event_id, codex_entry_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_participants_codex
+                ON event_participants(codex_entry_id);",
+        )?;
+
+        // scene↔event 0..N 橋（0=オフページ）。scene/event いずれ削除でも CASCADE。
+        // src/db/schema.ts の sceneEvents とミラー。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS scene_events (
+                scene_id  TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                event_id  TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                PRIMARY KEY (scene_id, event_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_scene_events_event
+                ON scene_events(event_id);",
+        )?;
+
+        // 1プロジェクト1暦（暦ライト・任意）。season_boundaries は JSON。
+        // src/db/schema.ts の projectCalendar とミラー。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS project_calendar (
+                project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                days_per_year     INTEGER NOT NULL DEFAULT 360,
+                season_boundaries TEXT NOT NULL DEFAULT '[]',
+                created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )?;
+
         Ok(())
     }
 
