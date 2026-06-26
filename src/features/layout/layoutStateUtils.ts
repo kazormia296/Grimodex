@@ -83,10 +83,53 @@ export function migrateLayoutStateV2toV3(state: LayoutStateV2): LayoutState {
 export function ensureLayoutStateV3(
   state: LayoutState | LayoutStateV2,
 ): LayoutState {
-  if (isLayoutStateV2(state)) {
-    return stripUnknownPanels(migrateLayoutStateV2toV3(state));
+  const v3 = isLayoutStateV2(state)
+    ? stripUnknownPanels(migrateLayoutStateV2toV3(state))
+    : stripUnknownPanels(cloneLayoutState(state));
+  return ensureRegisteredPanels(v3);
+}
+
+/**
+ * 新しく登録されたが保存済みレイアウト/カスタムプリセットに含まれないパネルを、
+ * その既定リージョンの slot へ注入する。`validateLayoutState` は全
+ * `TOOL_WINDOW_PANEL_IDS` がどこかの slot に登録されていることを必須とするため、
+ * これが無いと新パネル追加で既存ユーザーのレイアウトが invalid → builtin:default
+ * へリセット（カスタム配置喪失）になる。汎用＝将来の新パネルにも効く。冪等。
+ *
+ * `stripUnknownPanels` と対の関係: あちらは未知パネルを除去し、こちらは未登録の
+ * 既知パネルを補充する。`ensureLayoutStateV3` で strip の後に必ず呼ぶこと。
+ * builtin プリセット解決（layoutPresets）でも、新パネルが全プリセットに自動で
+ * 現れるよう同関数を通す。
+ */
+export function ensureRegisteredPanels(state: LayoutState): LayoutState {
+  const seen = new Set<string>();
+  for (const regionId of ALL_REGIONS)
+    for (const slot of state.regions[regionId]?.slots ?? [])
+      for (const p of slot.panels) seen.add(p);
+  for (const seg of state.center.segments)
+    if (seg.kind === "tool") for (const p of seg.panels) seen.add(p);
+
+  for (const panelId of TOOL_WINDOW_PANEL_IDS) {
+    if (seen.has(panelId)) continue;
+    const regionId = DEFAULT_REGION_MAP[panelId];
+    const region = state.regions[regionId];
+    if (!region) continue;
+    const idx = DEFAULT_INDEX_MAP[panelId];
+    let target = region.slots[idx] ?? region.slots[0];
+    if (!target) {
+      target = {
+        id: `auto-${panelId}`,
+        sizeRatio: 1,
+        panels: [] as ToolWindowPanelId[],
+        activePanel: null,
+      };
+      region.slots.push(target);
+    }
+    target.panels.push(panelId);
+    region.slots = normalizeSlotRatios(region.slots);
+    seen.add(panelId);
   }
-  return stripUnknownPanels(cloneLayoutState(state));
+  return state;
 }
 
 /**

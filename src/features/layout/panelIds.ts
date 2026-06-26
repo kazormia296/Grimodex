@@ -9,6 +9,7 @@ export type PanelId =
   | "attribution"
   | "codex-quick"
   | "timeline"
+  | "chronicle"
   | "map"
   | "kouetsu"
   | "foreshadow"

@@ -10,6 +10,7 @@ import {
 import {
   clampLayoutStateForViewport,
   cloneLayoutState,
+  ensureRegisteredPanels,
 } from "./layoutStateUtils";
 import type {
   BuiltinPresetOverride,
@@ -519,7 +520,14 @@ export function getBuiltinPresetState(
 ): LayoutState | undefined {
   const definition = PRESET_DEFINITIONS[id as BuiltinPresetId];
   if (!definition) return undefined;
-  return clampLayoutStateForViewport(definition.state, viewport);
+  // 新規登録パネル（例 chronicle）を curated プリセットへ自動補充する。これが無いと
+  // PRESET_DEFINITIONS 未記載のパネルが欠け、適用時に validateLayoutState が invalid
+  // 判定→fallback する。clampLayoutStateForViewport は内部で fresh clone を返すので、
+  // その出力を ensureRegisteredPanels で in-place 補充する（余分な clone を足さない＝
+  // applyPreset の structuredClone 回数の perf 契約を保つ）。
+  return ensureRegisteredPanels(
+    clampLayoutStateForViewport(definition.state, viewport),
+  );
 }
 
 export function getBuiltinPresetHiddenPanels(id: string): ToolWindowPanelId[] {
@@ -538,7 +546,8 @@ export function resolveBuiltinPresetState(
   override?: BuiltinPresetOverride,
 ): LayoutState | undefined {
   if (override) {
-    return cloneLayoutState(override.state);
+    // ユーザー保存の override も、保存後に追加された新パネルを補充する。
+    return ensureRegisteredPanels(cloneLayoutState(override.state));
   }
   return getBuiltinPresetState(id, viewport);
 }

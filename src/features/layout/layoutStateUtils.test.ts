@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildDefaultLayoutState,
   buildCenterSegmentsWithTools,
+  ensureLayoutStateV3,
   findPanelLocation,
   isRegionOpen,
   normalizeSlotRatios,
@@ -496,5 +497,42 @@ describe("reorderPanelInSlot", () => {
     const nextSlot = nextSlots.find((s) => s.id === slot.id)!;
     expect(nextSlot.panels.at(-1)).toBe(panel);
     expect(nextSlot.activePanel).toBe(slot.activePanel);
+  });
+});
+
+describe("ensureLayoutStateV3 auto-injects newly registered panels", () => {
+  it("未登録パネルを既定リージョンへ注入し validateLayoutState を通す", () => {
+    const base = buildDefaultLayoutState();
+    const victim = TOOL_WINDOW_PANEL_IDS[TOOL_WINDOW_PANEL_IDS.length - 1];
+    // 全 slot から victim を除去して「保存済みレイアウトに新パネルが無い」状況を作る
+    for (const region of Object.values(base.regions)) {
+      for (const slot of region.slots) {
+        slot.panels = slot.panels.filter((p) => p !== victim);
+        if (slot.activePanel === victim)
+          slot.activePanel = slot.panels[0] ?? null;
+      }
+      region.slots = region.slots.filter((s) => s.panels.length > 0);
+    }
+    expect(validateLayoutState(base).valid).toBe(false);
+
+    const fixed = ensureLayoutStateV3(base);
+    const seen = new Set<string>();
+    for (const region of Object.values(fixed.regions))
+      for (const slot of region.slots) for (const p of slot.panels) seen.add(p);
+    expect(seen.has(victim)).toBe(true);
+    expect(validateLayoutState(fixed).valid).toBe(true);
+  });
+
+  it("全パネル登録済みなら何も足さない（冪等）", () => {
+    const base = buildDefaultLayoutState();
+    const before = Object.values(base.regions).flatMap((r) =>
+      r.slots.flatMap((s) => s.panels),
+    ).length;
+    const fixed = ensureLayoutStateV3(base);
+    const after = Object.values(fixed.regions).flatMap((r) =>
+      r.slots.flatMap((s) => s.panels),
+    ).length;
+    expect(after).toBe(before);
+    expect(validateLayoutState(fixed).valid).toBe(true);
   });
 });

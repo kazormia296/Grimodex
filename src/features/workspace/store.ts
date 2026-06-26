@@ -6,6 +6,8 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
 import type { TimelineSettings } from "@/features/timeline/timelineStore";
+import { loadAndSyncChronicleSettings } from "@/features/chronicle/chronicleStore";
+import type { ChronicleSettings } from "@/features/chronicle/chronicleStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { useGridStore } from "@/features/grid/gridStore";
 import { useProjectStore } from "@/features/project/projectStore";
@@ -58,6 +60,8 @@ export interface GlobalSettings {
   acceptedEulaVersion?: string;
   /** Persisted timeline panel state */
   timeline?: TimelineSettings;
+  /** Persisted chronicle (作中年表) panel state */
+  chronicle?: ChronicleSettings;
   /** Persisted map panel state */
   map?: unknown;
   /** Persisted grid panel display settings */
@@ -232,6 +236,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       useLintConfigStore.getState().load();
       if (settings.timeline) {
         loadAndSyncTimelineSettings(settings.timeline);
+      }
+      if (settings.chronicle) {
+        loadAndSyncChronicleSettings(settings.chronicle);
       }
       useMapStore.getState().loadFromSettings(settings);
       useGridStore.getState().loadFromSettings(settings);
