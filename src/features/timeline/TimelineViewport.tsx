@@ -3,6 +3,7 @@ import {
   useState,
   useReducer,
   useEffect,
+  useLayoutEffect,
   useCallback,
   useMemo,
   forwardRef,
@@ -12,7 +13,7 @@ import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
 import { useCardLayout } from "@/features/layout/cardLayout";
 import { computeAxisLabels, type FolderGroup } from "./timelineLabels";
-import { ZOOM_STEP, STEP_BASE } from "./timelineZoom";
+import { ZOOM_STEP, STEP_BASE, computeZoomScrollLeft } from "./timelineZoom";
 import { TimelineContextMenu } from "./TimelineContextMenu";
 import { PlotMarkerContextMenu } from "./PlotMarkerContextMenu";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
@@ -179,7 +180,6 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const links = usePlotThreadStore((s) => s.links);
     const branches = usePlotThreadStore((s) => s.branches);
     const zoom = useTimelineStore((s) => s.zoom);
-    const setZoom = useTimelineStore((s) => s.setZoom);
     const scrollOffset = useTimelineStore((s) => s.scrollOffset);
     const setScrollOffset = useTimelineStore((s) => s.setScrollOffset);
     // カードレイアウトでは .gx-panel の 18px 角丸 + overflow-hidden が水平
@@ -189,6 +189,11 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     const svgRef = useRef<SVGSVGElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const isRestoringRef = useRef(false);
+    // ホイールズーム（zoom-to-cursor）用。カーソル下の点を固定する新しい scrollLeft を
+    // ホイールハンドラで算出してここに退避し、ズームで SVG 幅が更新された後（layout
+    // effect）に適用する。幅更新前に scrollLeft をセットすると旧 scrollWidth でクランプ
+    // されて位置がずれるため、適用は render 後に行う。
+    const pendingZoomScrollRef = useRef<number | null>(null);
     const [drag, setDrag] = useState<DragState | null>(null);
     const [markerDrag, setMarkerDrag] = useState<MarkerDragState | null>(null);
     // スレッドヘッダー(separated・手動順)の縦ドラッグ並べ替え。X は固定（Y のみ）。
@@ -1060,12 +1065,49 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         // を確実にズーム対象外にする（誤ズームアウト防止）。
         if (e.shiftKey || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
         e.preventDefault();
+        const store = useTimelineStore.getState();
+        const prevZoom = store.zoom;
         const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
-        setZoom(useTimelineStore.getState().zoom * factor);
+        store.setZoom(prevZoom * factor);
+        const nextZoom = useTimelineStore.getState().zoom;
+        // ズーム限界でクランプされ倍率が変わらないなら、スクロール調整は不要。
+        if (nextZoom === prevZoom) return;
+        // zoom-to-cursor: カーソル下の点を画面上の同じ位置に保つ新しい scrollLeft を
+        // 算出して退避する（適用は幅更新後の layout effect で）。
+        // base はバースト連鎖に対応するため、未適用の pending があればそれを起点にする
+        // （前イベントの nextZoom == 今回の prevZoom なので連鎖が一貫する）。
+        const rect = containerEl.getBoundingClientRect();
+        const cursorX = e.clientX - rect.left;
+        const padLeft = store.showThreads ? SUBWAY_LABEL_GUTTER : PAD_LEFT;
+        const base = pendingZoomScrollRef.current ?? containerEl.scrollLeft;
+        pendingZoomScrollRef.current = computeZoomScrollLeft(
+          base,
+          cursorX,
+          padLeft,
+          prevZoom,
+          nextZoom,
+        );
       };
       containerEl.addEventListener("wheel", onWheel, { passive: false });
       return () => containerEl.removeEventListener("wheel", onWheel);
-    }, [containerEl, setZoom]);
+    }, [containerEl]);
+
+    // ズームで SVG 幅が更新された後に、退避した scrollLeft を適用してカーソル下の点を
+    // 固定する。幅更新後なので scrollWidth は新しい値になっており、正しくクランプされる。
+    useLayoutEffect(() => {
+      const target = pendingZoomScrollRef.current;
+      if (target === null) return;
+      pendingZoomScrollRef.current = null;
+      const el = containerRef.current;
+      if (!el) return;
+      const max = el.scrollWidth - el.clientWidth;
+      const clamped = Math.max(0, Math.min(max, target));
+      el.scrollLeft = clamped;
+      // 固定ラベルの translate(scrollOffset) を同フレームで一致させ、ズーム中の
+      // 一フレームのラベルずれを防ぐ（通常スクロールは scroll イベント経由で
+      // 同期されるが、ズームは位置がジャンプするため即時に揃える）。
+      setScrollOffset(clamped);
+    }, [zoom, setScrollOffset]);
 
     const setContainerRef = useCallback(
       (el: HTMLDivElement | null) => {

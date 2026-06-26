@@ -21,3 +21,35 @@ export function computeFitZoom(
   const raw = usable / (sceneCount * baseStep);
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, raw));
 }
+
+/**
+ * ホイールズーム後に「カーソル下のコンテンツ点を画面上の同じ位置に保つ」ための
+ * 新しい scrollLeft を計算する（zoom-to-cursor）。
+ *
+ * コンテンツの x レイアウトは `padLeft + (ズームに比例して伸縮する部分)` の形をしており、
+ * 左の固定ガター/パディング（padLeft）はズームで伸縮しない。したがって、ある content x の
+ * うちスケールするのは `(x - padLeft)` の部分だけで、`(x - padLeft)` は zoom に正比例する。
+ *
+ * カーソル下の content 座標 = `scrollLeft + cursorX`。ズーム後もそれが同じ画面 px
+ * （cursorX）に来るよう scrollLeft を解くと下式になる。
+ *
+ * @param scrollLeft  ズーム前の scrollLeft（px）
+ * @param cursorX     スクロールコンテナ左端からのカーソル X（px）= clientX - rect.left
+ * @param padLeft     ズームで伸縮しない左固定オフセット（px）
+ * @param prevZoom    ズーム前の倍率
+ * @param nextZoom    クランプ後の新しい倍率
+ * @returns カーソル下の点を固定する新しい scrollLeft（実際の適用時にブラウザがクランプ）
+ */
+export function computeZoomScrollLeft(
+  scrollLeft: number,
+  cursorX: number,
+  padLeft: number,
+  prevZoom: number,
+  nextZoom: number,
+): number {
+  if (prevZoom <= 0) return scrollLeft;
+  const ratio = nextZoom / prevZoom;
+  // カーソル下の content 座標のうち、ズームでスケールする部分（padLeft 超過分）。
+  const scaled = scrollLeft + cursorX - padLeft;
+  return padLeft + scaled * ratio - cursorX;
+}

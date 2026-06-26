@@ -382,6 +382,111 @@ describe("TimelineViewport – マウスホイールでズーム", () => {
     });
     expect(useTimelineStore.getState().zoom).toBe(1);
   });
+
+  /**
+   * happy-dom は実寸レイアウトを測らないため、コンテナの矩形・scrollWidth/clientWidth・
+   * scrollLeft を stub し、ホイールズーム後に scrollLeft が「カーソル下の点を固定する」
+   * 値へ調整されることを検証する（zoom-to-cursor の配線ゲート。算術自体は
+   * timelineZoom.test.ts の computeZoomScrollLeft で別途検証）。
+   */
+  function stubScrollGeometry(
+    container: HTMLElement,
+    initialScrollLeft: number,
+  ) {
+    container.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 200,
+        width: 800,
+        height: 200,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    Object.defineProperty(container, "clientWidth", {
+      configurable: true,
+      value: 800,
+    });
+    Object.defineProperty(container, "scrollWidth", {
+      configurable: true,
+      value: 100000,
+    });
+    let sl = initialScrollLeft;
+    Object.defineProperty(container, "scrollLeft", {
+      configurable: true,
+      get: () => sl,
+      set: (v: number) => {
+        sl = v;
+      },
+    });
+  }
+
+  /** init を無視する happy-dom の WheelEvent 制約を避け、必要プロパティを直接定義する。 */
+  function dispatchWheel(
+    container: HTMLElement,
+    { deltaY, clientX }: { deltaY: number; clientX: number },
+  ) {
+    const ev = new WheelEvent("wheel", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "deltaY", { value: deltaY, configurable: true });
+    Object.defineProperty(ev, "deltaX", { value: 0, configurable: true });
+    Object.defineProperty(ev, "clientX", {
+      value: clientX,
+      configurable: true,
+    });
+    act(() => {
+      container.dispatchEvent(ev);
+    });
+  }
+
+  function manyScenes() {
+    return Array.from({ length: 20 }, (_, i) => ({
+      ...mockScene,
+      id: `s${i}`,
+      sortOrder: `a${i}`,
+    }));
+  }
+
+  it("ズームイン後 scrollLeft はカーソル下の点を固定する値へ調整される", () => {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={manyScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScrollGeometry(container, 100);
+    // padLeft=PAD_LEFT=48（showThreads=false）, cursorX=400, zoom 1→1.25。
+    dispatchWheel(container, { deltaY: -100, clientX: 400 });
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(1.25);
+    // computeZoomScrollLeft(100,400,48,1,1.25) = 213。
+    expect(container.scrollLeft).toBeCloseTo(213, 4);
+  });
+
+  it("ズームアウトでもカーソル基準で scrollLeft を調整する", () => {
+    useTimelineStore.setState({ zoom: 2 });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={manyScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScrollGeometry(container, 600);
+    // zoom 2 → 2/1.25 = 1.6。cursorX=300, pad=48。
+    dispatchWheel(container, { deltaY: 100, clientX: 300 });
+    const z = useTimelineStore.getState().zoom;
+    expect(z).toBeCloseTo(1.6);
+    // scaled = 600+300-48 = 852, 48 + 852*(1.6/2) - 300 = 48 + 681.6 - 300 = 429.6
+    expect(container.scrollLeft).toBeCloseTo(429.6, 3);
+  });
+
+  it("ズーム限界（クランプで倍率不変）では scrollLeft を変えない", () => {
+    useTimelineStore.setState({ zoom: 4 }); // ZOOM_MAX
+    const { getByTestId } = render(
+      <TimelineViewport scenes={manyScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScrollGeometry(container, 777);
+    dispatchWheel(container, { deltaY: -100, clientX: 400 }); // さらにズームイン不可
+    expect(useTimelineStore.getState().zoom).toBe(4);
+    expect(container.scrollLeft).toBe(777); // 不変
+  });
 });
 
 describe("TimelineViewport – シーン縦グリッド（threads モード）", () => {
