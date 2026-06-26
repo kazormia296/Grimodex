@@ -6,7 +6,7 @@ import {
   projectCalendar,
   eventRelations,
 } from "@/db/schema";
-import type { EventPrecision } from "@/db/schema";
+import type { EventPrecision, EventKind } from "@/db/schema";
 import { and, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
 
@@ -20,6 +20,7 @@ export interface EventRow {
   startTime: number | null;
   endTime: number | null;
   precision: EventPrecision;
+  kind: EventKind;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +48,7 @@ export function normalizeEvent(raw: unknown): EventRow {
     startTime: nullableNum(r.startTime ?? r.start_time),
     endTime: nullableNum(r.endTime ?? r.end_time),
     precision: s(r.precision, "exact") as EventPrecision,
+    kind: s(r.kind, "generic") as EventKind,
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -69,6 +71,7 @@ export async function createEvent(data: {
   startTime?: number | null;
   endTime?: number | null;
   precision?: EventPrecision;
+  kind?: EventKind;
 }): Promise<EventRow> {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
@@ -87,6 +90,7 @@ export async function createEvent(data: {
     startTime: data.startTime ?? null,
     endTime: data.endTime ?? null,
     precision: data.precision ?? "exact",
+    kind: data.kind ?? "generic",
     createdAt: now,
     updatedAt: now,
   });
@@ -106,6 +110,7 @@ export async function updateEvent(
       | "startTime"
       | "endTime"
       | "precision"
+      | "kind"
     >
   >,
 ): Promise<void> {

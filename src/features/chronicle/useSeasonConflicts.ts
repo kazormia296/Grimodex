@@ -11,11 +11,21 @@ import {
   conflictingEventIds,
   type SeasonConflict,
 } from "./seasonCheck";
+import {
+  findAgeConflicts,
+  ageConflictEventIds,
+  type AgeConflict,
+} from "./ageCheck";
 import { getProjectCalendar, upsertProjectCalendar } from "./api";
 
 interface UseSeasonConflictsArgs {
   projectId: string | null;
-  events: { id: string; startTime: number | null }[];
+  events: {
+    id: string;
+    startTime: number | null;
+    primaryCodexId: string | null;
+    kind: string;
+  }[];
   links: { sceneId: string; eventId: string }[];
 }
 
@@ -31,6 +41,7 @@ export function useSeasonConflicts({
 }: UseSeasonConflictsArgs) {
   const [calendar, setCalendar] = useState<ChronicleCalendar | null>(null);
   const [conflicts, setConflicts] = useState<SeasonConflict[]>([]);
+  const [ageConflicts, setAgeConflicts] = useState<AgeConflict[]>([]);
   const [calVersion, setCalVersion] = useState(0);
 
   useEffect(() => {
@@ -66,8 +77,10 @@ export function useSeasonConflicts({
   }, [projectId, calVersion]);
 
   useEffect(() => {
-    if (!calendar || calendar.seasonBoundaries.length === 0) {
+    // 季節は seasonBoundaries が要るが、年齢は daysPerYear>0 だけで動く。
+    if (!calendar || calendar.daysPerYear <= 0) {
       setConflicts([]);
+      setAgeConflicts([]);
       return;
     }
     const checkable = new Set(
@@ -80,6 +93,7 @@ export function useSeasonConflicts({
     ];
     if (sceneIds.length === 0) {
       setConflicts([]);
+      setAgeConflicts([]);
       return;
     }
     let cancelled = false;
@@ -91,17 +105,19 @@ export function useSeasonConflicts({
     )
       .then((pairs) => {
         if (cancelled) return;
+        const sceneTexts = new Map(pairs);
         setConflicts(
-          findSeasonConflicts({
-            events,
-            calendar,
-            links,
-            sceneTexts: new Map(pairs),
-          }),
+          findSeasonConflicts({ events, calendar, links, sceneTexts }),
+        );
+        setAgeConflicts(
+          findAgeConflicts({ events, calendar, links, sceneTexts }),
         );
       })
       .catch(() => {
-        if (!cancelled) setConflicts([]);
+        if (!cancelled) {
+          setConflicts([]);
+          setAgeConflicts([]);
+        }
       });
     return () => {
       cancelled = true;
@@ -134,12 +150,18 @@ export function useSeasonConflicts({
     () => conflictingEventIds(conflicts),
     [conflicts],
   );
+  const ageConflictIds = useMemo(
+    () => ageConflictEventIds(ageConflicts),
+    [ageConflicts],
+  );
 
   return {
     hasCalendar: !!calendar && calendar.seasonBoundaries.length > 0,
     calendar,
     conflicts,
     conflictIds,
+    ageConflicts,
+    ageConflictIds,
     ensureDefaultCalendar,
     saveCalendar,
   };

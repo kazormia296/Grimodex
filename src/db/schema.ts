@@ -1318,6 +1318,10 @@ export type PlotBranchKind = (typeof PLOT_BRANCH_KINDS)[number];
 export const EVENT_PRECISIONS = ["exact", "approx", "unknown"] as const;
 export type EventPrecision = (typeof EVENT_PRECISIONS)[number];
 
+/** 出来事の種別。birth/death は年齢計算の基準点。 */
+export const EVENT_KINDS = ["generic", "birth", "death"] as const;
+export type EventKind = (typeof EVENT_KINDS)[number];
+
 export const events = sqliteTable(
   "events",
   {
@@ -1339,6 +1343,8 @@ export const events = sqliteTable(
     endTime: integer("end_time"),
     // 'exact' | 'approx' | 'unknown'（CHECK は SQL 側）。
     precision: text("precision").notNull().default("exact"),
+    // 'generic' | 'birth' | 'death'。birth は年齢計算の基準点。
+    kind: text("kind").notNull().default("generic"),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),

@@ -113,8 +113,15 @@ export function ChroniclePanel() {
 
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
-  const { hasCalendar, calendar, conflicts, conflictIds, saveCalendar } =
-    useSeasonConflicts({ projectId, events, links: sceneLinks });
+  const {
+    hasCalendar,
+    calendar,
+    conflicts,
+    conflictIds,
+    ageConflicts,
+    ageConflictIds,
+    saveCalendar,
+  } = useSeasonConflicts({ projectId, events, links: sceneLinks });
   const [calendarEditorOpen, setCalendarEditorOpen] = useState(false);
 
   // 因果矛盾（効果が原因より前）。
@@ -122,10 +129,15 @@ export function ChroniclePanel() {
     () => findCausalityConflicts({ events, relations }),
     [events, relations],
   );
-  // 季節 + 因果の矛盾を統合した警告対象 eventId 集合。
+  // 季節 + 年齢 + 因果の矛盾を統合した警告対象 eventId 集合。
   const issueIds = useMemo(
-    () => new Set([...conflictIds, ...causalIssueEventIds(causalConflicts)]),
-    [conflictIds, causalConflicts],
+    () =>
+      new Set([
+        ...conflictIds,
+        ...ageConflictIds,
+        ...causalIssueEventIds(causalConflicts),
+      ]),
+    [conflictIds, ageConflictIds, causalConflicts],
   );
 
   const model = useMemo(
@@ -377,6 +389,7 @@ export function ChroniclePanel() {
           event={selected}
           people={people}
           conflicts={conflicts.filter((c) => c.eventId === selected.id)}
+          ageConflicts={ageConflicts.filter((c) => c.eventId === selected.id)}
           linkedSceneCount={selectedSceneIds.length}
           allEvents={events}
           causeIds={selectedCauseIds}
