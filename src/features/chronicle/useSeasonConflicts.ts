@@ -1,20 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { loadSceneContent } from "@/features/tree/api";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
-import type { ChronicleCalendar, SeasonBoundary } from "./chronicleTime";
+import {
+  DEFAULT_SEASON_BOUNDARIES,
+  type ChronicleCalendar,
+  type SeasonBoundary,
+} from "./chronicleTime";
 import {
   findSeasonConflicts,
   conflictingEventIds,
   type SeasonConflict,
 } from "./seasonCheck";
 import { getProjectCalendar, upsertProjectCalendar } from "./api";
-
-const DEFAULT_SEASONS: SeasonBoundary[] = [
-  { name: "春", startDayOfYear: 0 },
-  { name: "夏", startDayOfYear: 90 },
-  { name: "秋", startDayOfYear: 180 },
-  { name: "冬", startDayOfYear: 270 },
-];
 
 interface UseSeasonConflictsArgs {
   projectId: string | null;
@@ -111,15 +108,27 @@ export function useSeasonConflicts({
     };
   }, [calendar, events, links]);
 
-  const ensureDefaultCalendar = useCallback(async () => {
-    if (!projectId) return;
-    await upsertProjectCalendar({
-      projectId,
-      daysPerYear: 360,
-      seasonBoundaries: JSON.stringify(DEFAULT_SEASONS),
-    });
-    setCalVersion((v) => v + 1);
-  }, [projectId]);
+  const saveCalendar = useCallback(
+    async (cal: ChronicleCalendar) => {
+      if (!projectId) return;
+      await upsertProjectCalendar({
+        projectId,
+        daysPerYear: cal.daysPerYear,
+        seasonBoundaries: JSON.stringify(cal.seasonBoundaries),
+      });
+      setCalVersion((v) => v + 1);
+    },
+    [projectId],
+  );
+
+  const ensureDefaultCalendar = useCallback(
+    () =>
+      saveCalendar({
+        daysPerYear: 360,
+        seasonBoundaries: DEFAULT_SEASON_BOUNDARIES,
+      }),
+    [saveCalendar],
+  );
 
   const conflictIds = useMemo(
     () => conflictingEventIds(conflicts),
@@ -128,8 +137,10 @@ export function useSeasonConflicts({
 
   return {
     hasCalendar: !!calendar && calendar.seasonBoundaries.length > 0,
+    calendar,
     conflicts,
     conflictIds,
     ensureDefaultCalendar,
+    saveCalendar,
   };
 }

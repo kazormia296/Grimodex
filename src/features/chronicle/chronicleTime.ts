@@ -14,6 +14,14 @@ export interface ChronicleCalendar {
   seasonBoundaries: SeasonBoundary[];
 }
 
+/** 既定の 360日・春夏秋冬 4季暦（新規作成/エディタの初期値）。 */
+export const DEFAULT_SEASON_BOUNDARIES: SeasonBoundary[] = [
+  { name: "春", startDayOfYear: 0 },
+  { name: "夏", startDayOfYear: 90 },
+  { name: "秋", startDayOfYear: 180 },
+  { name: "冬", startDayOfYear: 270 },
+];
+
 /**
  * 数値時刻（紀元からの日数）→ その日の作中季節名。
  * 境界は startDayOfYear 昇順に並べた循環区間。最初の境界より前の通日は

@@ -5,7 +5,7 @@ import {
   ZoomIn,
   ZoomOut,
   CalendarRange,
-  CalendarPlus,
+  CalendarCog,
   AlertTriangle,
 } from "lucide-react";
 import { useProjectStore } from "@/features/project/projectStore";
@@ -26,6 +26,7 @@ import { buildChronicleLaneModel } from "./chronicleLaneModel";
 import { scaleEvents } from "./chronicleTimeScale";
 import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleInspector } from "./ChronicleInspector";
+import { ChronicleCalendarEditor } from "./ChronicleCalendarEditor";
 import { useSeasonConflicts } from "./useSeasonConflicts";
 
 const GUTTER_X = 120;
@@ -97,8 +98,9 @@ export function ChroniclePanel() {
 
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
-  const { hasCalendar, conflicts, conflictIds, ensureDefaultCalendar } =
+  const { hasCalendar, calendar, conflicts, conflictIds, saveCalendar } =
     useSeasonConflicts({ projectId, events, links: sceneLinks });
+  const [calendarEditorOpen, setCalendarEditorOpen] = useState(false);
 
   const model = useMemo(
     () =>
@@ -220,16 +222,18 @@ export function ChroniclePanel() {
         <span className="text-xs text-muted-foreground">
           {t("chronicle.count", "{{count}} 件", { count: n })}
         </span>
-        {!hasCalendar ? (
-          <button
-            type="button"
-            onClick={() => void ensureDefaultCalendar()}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
-          >
-            <CalendarPlus className="size-3.5" />
-            {t("chronicle.setupCalendar", "暦を設定")}
-          </button>
-        ) : conflicts.length > 0 ? (
+        <button
+          type="button"
+          onClick={() => setCalendarEditorOpen((o) => !o)}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+          title={t("chronicle.calendarEditor", "暦の設定")}
+        >
+          <CalendarCog className="size-3.5" />
+          {hasCalendar
+            ? t("chronicle.calendar", "暦")
+            : t("chronicle.setupCalendar", "暦を設定")}
+        </button>
+        {hasCalendar && conflicts.length > 0 ? (
           <span className="inline-flex items-center gap-1 text-xs text-amber-600">
             <AlertTriangle className="size-3.5" />
             {t("chronicle.conflictCount", "季節矛盾 {{count}} 件", {
@@ -263,6 +267,14 @@ export function ChroniclePanel() {
           </button>
         </div>
       </div>
+
+      {calendarEditorOpen && (
+        <ChronicleCalendarEditor
+          initial={calendar}
+          onSave={(cal) => void saveCalendar(cal)}
+          onClose={() => setCalendarEditorOpen(false)}
+        />
+      )}
 
       <div className="flex-1 overflow-auto">
         {n === 0 ? (
