@@ -4893,6 +4893,29 @@
       "unknownThread": "（不明なスレッド）"
     }
   },
+  "chronicle": {
+    "newEvent": "新しい出来事",
+    "untitled": "無題の出来事",
+    "add": "追加",
+    "delete": "削除",
+    "count": "{{count}} 件",
+    "empty": "出来事がまだありません。「追加」で作成できます。",
+    "noProject": "プロジェクトを開いてください",
+    "zoomIn": "拡大",
+    "zoomOut": "縮小",
+    "unassigned": "未割当",
+    "viewportLabel": "作中年表",
+    "startTime": "開始",
+    "endTime": "終了",
+    "precisionLabel": "確度",
+    "primaryCodex": "主人物",
+    "none": "なし",
+    "precision": {
+      "exact": "確定",
+      "approx": "おおよそ",
+      "unknown": "不明"
+    }
+  },
   "timeline": {
     "displayMenu": "表示オプション",
     "ctx": {

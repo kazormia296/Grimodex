@@ -4900,6 +4900,29 @@
       "unknownThread": "(unknown thread)"
     }
   },
+  "chronicle": {
+    "newEvent": "New event",
+    "untitled": "Untitled event",
+    "add": "Add",
+    "delete": "Delete",
+    "count": "{{count}} events",
+    "empty": "No events yet. Use \"Add\" to create one.",
+    "noProject": "Open a project",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "unassigned": "Unassigned",
+    "viewportLabel": "Story chronicle",
+    "startTime": "Start",
+    "endTime": "End",
+    "precisionLabel": "Precision",
+    "primaryCodex": "Main",
+    "none": "None",
+    "precision": {
+      "exact": "Exact",
+      "approx": "Approx",
+      "unknown": "Unknown"
+    }
+  },
   "timeline": {
     "displayMenu": "Display options",
     "ctx": {
