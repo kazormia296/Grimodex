@@ -1,0 +1,254 @@
+import { db } from "@/db/client";
+import {
+  events,
+  eventParticipants,
+  sceneEvents,
+  projectCalendar,
+} from "@/db/schema";
+import type { EventPrecision } from "@/db/schema";
+import { and, eq, inArray } from "drizzle-orm";
+import { nextEventOrdinal } from "./chronicleTime";
+
+export interface EventRow {
+  id: string;
+  projectId: string;
+  title: string;
+  note: string | null;
+  ordinal: string;
+  primaryCodexId: string | null;
+  startTime: number | null;
+  endTime: number | null;
+  precision: EventPrecision;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function s(v: unknown, fallback = ""): string {
+  return v == null ? fallback : String(v);
+}
+function nullableStr(v: unknown): string | null {
+  return v == null ? null : String(v);
+}
+function nullableNum(v: unknown): number | null {
+  return v == null ? null : Number(v);
+}
+
+/** DB 行（snake_case）/ invoke 戻り値（camelCase）双方を EventRow へ正規化。 */
+export function normalizeEvent(raw: unknown): EventRow {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  return {
+    id: s(r.id),
+    projectId: s(r.projectId ?? r.project_id),
+    title: s(r.title),
+    note: nullableStr(r.note),
+    ordinal: s(r.ordinal, "a0"),
+    primaryCodexId: nullableStr(r.primaryCodexId ?? r.primary_codex_id),
+    startTime: nullableNum(r.startTime ?? r.start_time),
+    endTime: nullableNum(r.endTime ?? r.end_time),
+    precision: s(r.precision, "exact") as EventPrecision,
+    createdAt: s(r.createdAt ?? r.created_at),
+    updatedAt: s(r.updatedAt ?? r.updated_at),
+  };
+}
+
+export async function listEvents(projectId: string): Promise<EventRow[]> {
+  const rows = await db
+    .select()
+    .from(events)
+    .where(eq(events.projectId, projectId));
+  return rows.map(normalizeEvent);
+}
+
+export async function createEvent(data: {
+  projectId: string;
+  title?: string;
+  note?: string | null;
+  ordinal?: string;
+  primaryCodexId?: string | null;
+  startTime?: number | null;
+  endTime?: number | null;
+  precision?: EventPrecision;
+}): Promise<EventRow> {
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  let ordinal = data.ordinal;
+  if (ordinal === undefined) {
+    const existing = await listEvents(data.projectId);
+    ordinal = nextEventOrdinal(existing.map((e) => e.ordinal));
+  }
+  await db.insert(events).values({
+    id,
+    projectId: data.projectId,
+    title: data.title ?? "",
+    note: data.note ?? null,
+    ordinal,
+    primaryCodexId: data.primaryCodexId ?? null,
+    startTime: data.startTime ?? null,
+    endTime: data.endTime ?? null,
+    precision: data.precision ?? "exact",
+    createdAt: now,
+    updatedAt: now,
+  });
+  const [row] = await db.select().from(events).where(eq(events.id, id));
+  return normalizeEvent(row);
+}
+
+export async function updateEvent(
+  id: string,
+  patch: Partial<
+    Pick<
+      EventRow,
+      | "title"
+      | "note"
+      | "ordinal"
+      | "primaryCodexId"
+      | "startTime"
+      | "endTime"
+      | "precision"
+    >
+  >,
+): Promise<void> {
+  await db
+    .update(events)
+    .set({ ...patch, updatedAt: new Date().toISOString() })
+    .where(eq(events.id, id));
+}
+
+export async function deleteEvent(id: string): Promise<void> {
+  await db.delete(events).where(eq(events.id, id));
+}
+
+// ───────── participants ─────────
+export interface ParticipantRow {
+  eventId: string;
+  codexEntryId: string;
+  role: string | null;
+}
+
+export async function listEventParticipants(
+  eventId: string,
+): Promise<ParticipantRow[]> {
+  const rows = await db
+    .select()
+    .from(eventParticipants)
+    .where(eq(eventParticipants.eventId, eventId));
+  return rows.map((raw) => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    return {
+      eventId: s(r.eventId ?? r.event_id),
+      codexEntryId: s(r.codexEntryId ?? r.codex_entry_id),
+      role: nullableStr(r.role),
+    };
+  });
+}
+
+/** 参加者集合を置き換える（全削除→再挿入）。role は当面 null 固定で良い。 */
+export async function setEventParticipants(
+  eventId: string,
+  codexEntryIds: string[],
+): Promise<void> {
+  await db
+    .delete(eventParticipants)
+    .where(eq(eventParticipants.eventId, eventId));
+  if (codexEntryIds.length === 0) return;
+  await db
+    .insert(eventParticipants)
+    .values(codexEntryIds.map((codexEntryId) => ({ eventId, codexEntryId })));
+}
+
+// ───────── scene_events 橋 ─────────
+export interface SceneEventRow {
+  sceneId: string;
+  eventId: string;
+}
+
+export async function listSceneEvents(
+  eventIds: string[],
+): Promise<SceneEventRow[]> {
+  if (eventIds.length === 0) return [];
+  const rows = await db
+    .select()
+    .from(sceneEvents)
+    .where(inArray(sceneEvents.eventId, eventIds));
+  return rows.map((raw) => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    return {
+      sceneId: s(r.sceneId ?? r.scene_id),
+      eventId: s(r.eventId ?? r.event_id),
+    };
+  });
+}
+
+export async function linkSceneToEvent(
+  sceneId: string,
+  eventId: string,
+): Promise<void> {
+  await db
+    .insert(sceneEvents)
+    .values({ sceneId, eventId })
+    .onConflictDoNothing();
+}
+
+export async function unlinkSceneFromEvent(
+  sceneId: string,
+  eventId: string,
+): Promise<void> {
+  await db
+    .delete(sceneEvents)
+    .where(
+      and(eq(sceneEvents.sceneId, sceneId), eq(sceneEvents.eventId, eventId)),
+    );
+}
+
+// ───────── project_calendar ─────────
+export interface CalendarRow {
+  projectId: string;
+  daysPerYear: number;
+  /** 生 JSON 文字列（SeasonBoundary[]）。パースは chronicleTime 利用側で。 */
+  seasonBoundaries: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getProjectCalendar(
+  projectId: string,
+): Promise<CalendarRow | null> {
+  const [raw] = await db
+    .select()
+    .from(projectCalendar)
+    .where(eq(projectCalendar.projectId, projectId));
+  if (!raw) return null;
+  const r = raw as Record<string, unknown>;
+  return {
+    projectId: s(r.projectId ?? r.project_id),
+    daysPerYear: Number(r.daysPerYear ?? r.days_per_year ?? 360),
+    seasonBoundaries: s(r.seasonBoundaries ?? r.season_boundaries, "[]"),
+    createdAt: s(r.createdAt ?? r.created_at),
+    updatedAt: s(r.updatedAt ?? r.updated_at),
+  };
+}
+
+export async function upsertProjectCalendar(data: {
+  projectId: string;
+  daysPerYear: number;
+  seasonBoundaries: string;
+}): Promise<void> {
+  const now = new Date().toISOString();
+  await db
+    .insert(projectCalendar)
+    .values({
+      projectId: data.projectId,
+      daysPerYear: data.daysPerYear,
+      seasonBoundaries: data.seasonBoundaries,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: projectCalendar.projectId,
+      set: {
+        daysPerYear: data.daysPerYear,
+        seasonBoundaries: data.seasonBoundaries,
+        updatedAt: now,
+      },
+    });
+}
