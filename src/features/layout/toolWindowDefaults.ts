@@ -48,6 +48,7 @@ export const DEFAULT_SLOT_MAP: Record<
   "chat-history": "RT",
   attribution: "RB",
   timeline: "BL",
+  chronicle: "BL",
   map: "BL",
   grid: "BL",
   matrix: "BL",

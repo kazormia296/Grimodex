@@ -98,8 +98,10 @@ export function ensureLayoutStateV3(
  *
  * `stripUnknownPanels` と対の関係: あちらは未知パネルを除去し、こちらは未登録の
  * 既知パネルを補充する。`ensureLayoutStateV3` で strip の後に必ず呼ぶこと。
+ * builtin プリセット解決（layoutPresets）でも、新パネルが全プリセットに自動で
+ * 現れるよう同関数を通す。
  */
-function ensureRegisteredPanels(state: LayoutState): LayoutState {
+export function ensureRegisteredPanels(state: LayoutState): LayoutState {
   const seen = new Set<string>();
   for (const regionId of ALL_REGIONS)
     for (const slot of state.regions[regionId]?.slots ?? [])

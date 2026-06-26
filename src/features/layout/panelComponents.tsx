@@ -8,6 +8,7 @@ import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
 import { SnippetPanel } from "@/features/snippets/SnippetPanel";
 import { AttributionReport } from "@/features/attribution/AttributionReport";
 import { TimelinePanel } from "@/features/timeline/TimelinePanel";
+import { ChroniclePanel } from "@/features/chronicle/ChroniclePanel";
 import { MapPanel } from "@/features/map/MapPanel";
 import { KouetsuPanel } from "@/features/kouetsu/KouetsuPanel";
 import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
@@ -36,6 +37,7 @@ export const PANEL_COMPONENT_MAP: Record<
   attribution: AttributionReport,
   "codex-quick": CodexQuickPanel,
   timeline: TimelinePanel,
+  chronicle: ChroniclePanel,
   map: MapPanel,
   kouetsu: KouetsuPanel,
   foreshadow: ForeshadowPanel,
