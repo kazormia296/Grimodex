@@ -1,5 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { Trash2, AlertTriangle } from "lucide-react";
+import {
+  Trash2,
+  AlertTriangle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+} from "lucide-react";
 import { EVENT_PRECISIONS } from "@/db/schema";
 import type { EventRow } from "./api";
 import type { SeasonConflict } from "./seasonCheck";
@@ -8,15 +13,22 @@ export interface ChronicleInspectorProps {
   event: EventRow;
   people: { id: string; name: string }[];
   conflicts?: SeasonConflict[];
+  /** この出来事が参照するシーン数（pull/stamp の可否）。 */
+  linkedSceneCount?: number;
+  onStamp?: () => void;
+  onPull?: () => void;
   onPatch: (patch: Partial<EventRow>) => void;
   onDelete: () => void;
 }
 
-/** 選択中の出来事を編集する小パネル（時刻/precision/主人物/削除）。 */
+/** 選択中の出来事を編集する小パネル（時刻/precision/主人物/Timeline同期/削除）。 */
 export function ChronicleInspector({
   event,
   people,
   conflicts,
+  linkedSceneCount = 0,
+  onStamp,
+  onPull,
   onPatch,
   onDelete,
 }: ChronicleInspectorProps) {
@@ -104,6 +116,34 @@ export function ChronicleInspector({
             ))}
           </select>
         </label>
+        {linkedSceneCount > 0 && onStamp && (
+          <button
+            type="button"
+            onClick={onStamp}
+            title={t(
+              "chronicle.stampHint",
+              "この時刻を参照シーンの作中時間へ刻む",
+            )}
+            className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 hover:bg-accent"
+          >
+            <ArrowDownToLine className="size-3.5" />
+            {t("chronicle.stamp", "シーンへ刻む")}
+          </button>
+        )}
+        {linkedSceneCount > 0 && onPull && (
+          <button
+            type="button"
+            onClick={onPull}
+            title={t(
+              "chronicle.pullHint",
+              "参照シーンの作中時間をこの出来事へ取り込む",
+            )}
+            className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 hover:bg-accent"
+          >
+            <ArrowUpFromLine className="size-3.5" />
+            {t("chronicle.pull", "シーンから取込")}
+          </button>
+        )}
         <button
           type="button"
           onClick={onDelete}

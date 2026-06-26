@@ -125,3 +125,21 @@ describe("ChronicleViewport conflict ring", () => {
     expect(container.querySelector('[data-conflict="m2"]')).toBeNull();
   });
 });
+
+describe("ChronicleViewport related highlight", () => {
+  it("relatedIds の event に関連ハイライト([data-related])を描く", () => {
+    const { container } = render(
+      <ChronicleViewport
+        model={model}
+        scaled={scaled}
+        width={400}
+        gutterX={60}
+        selectedEventId={null}
+        onSelectEvent={() => {}}
+        relatedIds={new Set(["m2"])}
+      />,
+    );
+    expect(container.querySelector('[data-related="m2"]')).not.toBeNull();
+    expect(container.querySelector('[data-related="m1"]')).toBeNull();
+  });
+});

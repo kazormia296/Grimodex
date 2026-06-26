@@ -15,6 +15,8 @@ export interface ChronicleViewportProps {
   onSelectEvent: (eventId: string) => void;
   /** 季節整合などの矛盾を持つ eventId 集合（警告リング表示）。 */
   conflictIds?: Set<string>;
+  /** Timeline で選択中のシーンに紐づく eventId 集合（関連ハイライト）。 */
+  relatedIds?: Set<string>;
 }
 
 /**
@@ -30,6 +32,7 @@ export function ChronicleViewport({
   selectedEventId,
   onSelectEvent,
   conflictIds,
+  relatedIds,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const hasUnassigned = model.unassigned.length > 0;
@@ -44,8 +47,18 @@ export function ChronicleViewport({
       const s = scaled.get(m.eventId);
       if (!s) return null;
       const conflict = conflictIds?.has(m.eventId) ?? false;
+      const related = relatedIds?.has(m.eventId) ?? false;
       return (
         <g key={m.eventId}>
+          {related && (
+            <circle
+              cx={s.x}
+              cy={y}
+              r={11}
+              className="fill-primary/15"
+              data-related={m.eventId}
+            />
+          )}
           {conflict && (
             <circle
               cx={s.x}
