@@ -1409,6 +1409,29 @@ export type EventParticipant = typeof eventParticipants.$inferSelect;
 export type SceneEvent = typeof sceneEvents.$inferSelect;
 export type ProjectCalendar = typeof projectCalendar.$inferSelect;
 
+/** 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。 */
+export const eventRelations = sqliteTable(
+  "event_relations",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    causeEventId: text("cause_event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    effectEventId: text("effect_event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.causeEventId, table.effectEventId] }),
+    index("idx_event_relations_project").on(table.projectId),
+    index("idx_event_relations_effect").on(table.effectEventId),
+  ],
+);
+
+export type EventRelation = typeof eventRelations.$inferSelect;
+
 export const mapFrames = sqliteTable(
   "map_frames",
   {

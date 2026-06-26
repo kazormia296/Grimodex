@@ -1779,6 +1779,21 @@ impl Database {
             );",
         )?;
 
+        // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。
+        // src/db/schema.ts の eventRelations とミラー。event 削除で CASCADE。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS event_relations (
+                project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                cause_event_id  TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                effect_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                PRIMARY KEY (cause_event_id, effect_event_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_relations_project
+                ON event_relations(project_id);
+            CREATE INDEX IF NOT EXISTS idx_event_relations_effect
+                ON event_relations(effect_event_id);",
+        )?;
+
         Ok(())
     }
 

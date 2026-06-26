@@ -15,24 +15,41 @@ export interface ChronicleInspectorProps {
   conflicts?: SeasonConflict[];
   /** この出来事が参照するシーン数（pull/stamp の可否）。 */
   linkedSceneCount?: number;
+  /** 原因セレクト用の全出来事（自分自身は除外して表示）。 */
+  allEvents?: { id: string; title: string }[];
+  /** この出来事の原因 event id 群。 */
+  causeIds?: string[];
+  /** 因果矛盾（効果が原因より前）に関与しているか。 */
+  hasCausalIssue?: boolean;
+  onAddCause?: (causeId: string) => void;
+  onRemoveCause?: (causeId: string) => void;
   onStamp?: () => void;
   onPull?: () => void;
   onPatch: (patch: Partial<EventRow>) => void;
   onDelete: () => void;
 }
 
-/** 選択中の出来事を編集する小パネル（時刻/precision/主人物/Timeline同期/削除）。 */
+/** 選択中の出来事を編集する小パネル（時刻/precision/主人物/原因/Timeline同期/削除）。 */
 export function ChronicleInspector({
   event,
   people,
   conflicts,
   linkedSceneCount = 0,
+  allEvents = [],
+  causeIds = [],
+  hasCausalIssue = false,
+  onAddCause,
+  onRemoveCause,
   onStamp,
   onPull,
   onPatch,
   onDelete,
 }: ChronicleInspectorProps) {
   const { t } = useTranslation();
+  const titleById = new Map(allEvents.map((e) => [e.id, e.title]));
+  const causeOptions = allEvents.filter(
+    (e) => e.id !== event.id && !causeIds.includes(e.id),
+  );
 
   const numOrNull = (v: string): number | null => {
     const n = Number(v);
@@ -62,6 +79,61 @@ export function ChronicleInspector({
               },
             )}
           </span>
+        </div>
+      )}
+      {hasCausalIssue && (
+        <div className="flex items-start gap-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            {t(
+              "chronicle.causalConflict",
+              "因果の矛盾: 結果が原因より前にある",
+            )}
+          </span>
+        </div>
+      )}
+      {(causeIds.length > 0 || onAddCause) && (
+        <div className="flex flex-wrap items-center gap-1 text-xs">
+          <span className="text-muted-foreground">
+            {t("chronicle.causes", "原因")}
+          </span>
+          {causeIds.map((cid) => (
+            <span
+              key={cid}
+              className="inline-flex items-center gap-1 rounded bg-accent px-1.5 py-0.5"
+            >
+              {titleById.get(cid) || t("chronicle.untitled", "無題の出来事")}
+              {onRemoveCause && (
+                <button
+                  type="button"
+                  onClick={() => onRemoveCause(cid)}
+                  aria-label={t("chronicle.removeCause", "原因を外す")}
+                  className="opacity-60 hover:opacity-100"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+          {onAddCause && causeOptions.length > 0 && (
+            <select
+              value=""
+              onChange={(e) => {
+                if (e.target.value) onAddCause(e.target.value);
+              }}
+              aria-label={t("chronicle.addCause", "原因を追加")}
+              className="rounded border bg-transparent px-1 py-0.5"
+            >
+              <option value="">
+                {t("chronicle.addCause", "＋原因を追加")}
+              </option>
+              {causeOptions.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.title || t("chronicle.untitled", "無題の出来事")}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2 text-xs">

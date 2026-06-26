@@ -16,12 +16,17 @@ import { useChronicleStore } from "./chronicleStore";
 import {
   listEvents,
   listSceneEvents,
+  listEventRelations,
+  addEventRelation,
+  removeEventRelation,
   createEvent,
   updateEvent,
   deleteEvent,
   type EventRow,
   type SceneEventRow,
+  type EventRelationRow,
 } from "./api";
+import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { buildChronicleLaneModel } from "./chronicleLaneModel";
 import { scaleEvents } from "./chronicleTimeScale";
 import { ChronicleViewport } from "./ChronicleViewport";
@@ -50,6 +55,7 @@ export function ChroniclePanel() {
 
   const [events, setEvents] = useState<EventRow[]>([]);
   const [sceneLinks, setSceneLinks] = useState<SceneEventRow[]>([]);
+  const [relations, setRelations] = useState<EventRelationRow[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
 
   const scenedEventIds = useMemo(
@@ -75,6 +81,7 @@ export function ChroniclePanel() {
     if (!projectId) {
       setEvents([]);
       setSceneLinks([]);
+      setRelations([]);
       return;
     }
     let cancelled = false;
@@ -82,13 +89,20 @@ export function ChroniclePanel() {
       .then(async (rows) => {
         if (cancelled) return;
         setEvents(rows);
-        const links = await listSceneEvents(rows.map((e) => e.id));
-        if (!cancelled) setSceneLinks(links);
+        const [links, rels] = await Promise.all([
+          listSceneEvents(rows.map((e) => e.id)),
+          listEventRelations(projectId),
+        ]);
+        if (!cancelled) {
+          setSceneLinks(links);
+          setRelations(rels);
+        }
       })
       .catch(() => {
         if (!cancelled) {
           setEvents([]);
           setSceneLinks([]);
+          setRelations([]);
         }
       });
     return () => {
@@ -101,6 +115,17 @@ export function ChroniclePanel() {
   const { hasCalendar, calendar, conflicts, conflictIds, saveCalendar } =
     useSeasonConflicts({ projectId, events, links: sceneLinks });
   const [calendarEditorOpen, setCalendarEditorOpen] = useState(false);
+
+  // 因果矛盾（効果が原因より前）。
+  const causalConflicts = useMemo(
+    () => findCausalityConflicts({ events, relations }),
+    [events, relations],
+  );
+  // 季節 + 因果の矛盾を統合した警告対象 eventId 集合。
+  const issueIds = useMemo(
+    () => new Set([...conflictIds, ...causalIssueEventIds(causalConflicts)]),
+    [conflictIds, causalConflicts],
+  );
 
   const model = useMemo(
     () =>
@@ -204,6 +229,43 @@ export function ChroniclePanel() {
     void updateEvent(selected.id, { ordinal: order });
   }, [selected, selectedSceneIds, nodes]);
 
+  // 選択 event の原因（この event を効果とする関係の cause）。
+  const selectedCauseIds = useMemo(
+    () =>
+      selected
+        ? relations
+            .filter((r) => r.effectId === selected.id)
+            .map((r) => r.causeId)
+        : [],
+    [selected, relations],
+  );
+  const selectedHasCausalIssue = useMemo(
+    () =>
+      selected
+        ? causalConflicts.some(
+            (c) => c.causeId === selected.id || c.effectId === selected.id,
+          )
+        : false,
+    [selected, causalConflicts],
+  );
+
+  const handleAddCause = useCallback(
+    async (causeId: string) => {
+      if (!selected || !projectId) return;
+      await addEventRelation(projectId, causeId, selected.id);
+      refresh();
+    },
+    [selected, projectId, refresh],
+  );
+  const handleRemoveCause = useCallback(
+    async (causeId: string) => {
+      if (!selected) return;
+      await removeEventRelation(causeId, selected.id);
+      refresh();
+    },
+    [selected, refresh],
+  );
+
   if (!projectId) {
     return (
       <div className="p-4 text-sm text-muted-foreground">
@@ -292,7 +354,7 @@ export function ChroniclePanel() {
             gutterX={GUTTER_X}
             selectedEventId={selectedEventId}
             onSelectEvent={setSelectedEventId}
-            conflictIds={conflictIds}
+            conflictIds={issueIds}
             relatedIds={relatedIds}
           />
         )}
@@ -304,6 +366,11 @@ export function ChroniclePanel() {
           people={people}
           conflicts={conflicts.filter((c) => c.eventId === selected.id)}
           linkedSceneCount={selectedSceneIds.length}
+          allEvents={events}
+          causeIds={selectedCauseIds}
+          hasCausalIssue={selectedHasCausalIssue}
+          onAddCause={handleAddCause}
+          onRemoveCause={handleRemoveCause}
           onStamp={handleStamp}
           onPull={handlePull}
           onPatch={handlePatch}
