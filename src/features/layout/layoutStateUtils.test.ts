@@ -518,8 +518,7 @@ describe("ensureLayoutStateV3 auto-injects newly registered panels", () => {
     const fixed = ensureLayoutStateV3(base);
     const seen = new Set<string>();
     for (const region of Object.values(fixed.regions))
-      for (const slot of region.slots)
-        for (const p of slot.panels) seen.add(p);
+      for (const slot of region.slots) for (const p of slot.panels) seen.add(p);
     expect(seen.has(victim)).toBe(true);
     expect(validateLayoutState(fixed).valid).toBe(true);
   });
