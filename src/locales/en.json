@@ -4913,6 +4913,9 @@
     "zoomOut": "Zoom out",
     "unassigned": "Unassigned",
     "viewportLabel": "Story chronicle",
+    "tieView": "Reading × story time",
+    "readingOrder": "Reading order",
+    "storyTime": "Story time",
     "extractShort": "Extract",
     "unnamed": "(unnamed)",
     "extract": {

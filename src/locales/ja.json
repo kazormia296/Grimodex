@@ -4906,6 +4906,9 @@
     "zoomOut": "縮小",
     "unassigned": "未割当",
     "viewportLabel": "作中年表",
+    "tieView": "読む順×作中時間",
+    "readingOrder": "読む順",
+    "storyTime": "作中時間",
     "extractShort": "抽出",
     "unnamed": "（無名）",
     "extract": {
