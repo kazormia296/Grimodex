@@ -1,11 +1,13 @@
 import { useTranslation } from "react-i18next";
-import { Trash2 } from "lucide-react";
+import { Trash2, AlertTriangle } from "lucide-react";
 import { EVENT_PRECISIONS } from "@/db/schema";
 import type { EventRow } from "./api";
+import type { SeasonConflict } from "./seasonCheck";
 
 export interface ChronicleInspectorProps {
   event: EventRow;
   people: { id: string; name: string }[];
+  conflicts?: SeasonConflict[];
   onPatch: (patch: Partial<EventRow>) => void;
   onDelete: () => void;
 }
@@ -14,6 +16,7 @@ export interface ChronicleInspectorProps {
 export function ChronicleInspector({
   event,
   people,
+  conflicts,
   onPatch,
   onDelete,
 }: ChronicleInspectorProps) {
@@ -32,6 +35,23 @@ export function ChronicleInspector({
         placeholder={t("chronicle.untitled", "無題の出来事")}
         className="w-full bg-transparent font-medium outline-none"
       />
+      {conflicts && conflicts.length > 0 && (
+        <div className="flex items-start gap-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            {t(
+              "chronicle.seasonConflictDetail",
+              "季節の矛盾: 時刻は{{eventSeason}}だが本文に{{sceneSeasons}}",
+              {
+                eventSeason: conflicts[0].eventSeason,
+                sceneSeasons: [
+                  ...new Set(conflicts.flatMap((c) => c.sceneSeasons)),
+                ].join("・"),
+              },
+            )}
+          </span>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <label className="flex items-center gap-1">
           {t("chronicle.startTime", "開始")}

@@ -104,3 +104,24 @@ describe("ChronicleViewport", () => {
     expect(lane.querySelector("line")).not.toBeNull();
   });
 });
+
+describe("ChronicleViewport conflict ring", () => {
+  it("conflictIds の event に警告リング([data-conflict])を描く", () => {
+    const { container } = render(
+      <ChronicleViewport
+        model={model}
+        scaled={scaled}
+        width={400}
+        gutterX={60}
+        selectedEventId={null}
+        onSelectEvent={() => {}}
+        conflictIds={new Set(["m1"])}
+      />,
+    );
+    const ring = container.querySelector('[data-conflict="m1"]')!;
+    expect(ring).not.toBeNull();
+    expect(ring.tagName.toLowerCase()).toBe("circle");
+    // 矛盾なしの m2 にはリングが無い
+    expect(container.querySelector('[data-conflict="m2"]')).toBeNull();
+  });
+});

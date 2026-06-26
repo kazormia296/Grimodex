@@ -13,6 +13,8 @@ export interface ChronicleViewportProps {
   gutterX: number;
   selectedEventId: string | null;
   onSelectEvent: (eventId: string) => void;
+  /** 季節整合などの矛盾を持つ eventId 集合（警告リング表示）。 */
+  conflictIds?: Set<string>;
 }
 
 /**
@@ -27,6 +29,7 @@ export function ChronicleViewport({
   gutterX,
   selectedEventId,
   onSelectEvent,
+  conflictIds,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const hasUnassigned = model.unassigned.length > 0;
@@ -40,16 +43,31 @@ export function ChronicleViewport({
     markers.map((m) => {
       const s = scaled.get(m.eventId);
       if (!s) return null;
+      const conflict = conflictIds?.has(m.eventId) ?? false;
       return (
-        <EventMarker
-          key={m.eventId}
-          marker={m}
-          x={s.x}
-          xEnd={s.xEnd}
-          y={y}
-          selected={selectedEventId === m.eventId}
-          onSelect={() => onSelectEvent(m.eventId)}
-        />
+        <g key={m.eventId}>
+          {conflict && (
+            <circle
+              cx={s.x}
+              cy={y}
+              r={9}
+              fill="none"
+              className="stroke-amber-500"
+              strokeWidth={1.5}
+              data-conflict={m.eventId}
+            >
+              <title>{t("chronicle.seasonConflict", "季節の矛盾")}</title>
+            </circle>
+          )}
+          <EventMarker
+            marker={m}
+            x={s.x}
+            xEnd={s.xEnd}
+            y={y}
+            selected={selectedEventId === m.eventId}
+            onSelect={() => onSelectEvent(m.eventId)}
+          />
+        </g>
       );
     });
 
