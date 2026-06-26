@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, fireEvent, act } from "@testing-library/react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { TimelineViewport } from "./TimelineViewport";
+import { zoomFactorFromWheel, computeZoomScrollLeft } from "./timelineZoom";
 import { useTimelineStore } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
@@ -335,20 +336,37 @@ describe("TimelineViewport – マウスホイールでズーム", () => {
     return getByTestId("timeline-scroll-container");
   }
 
-  it("プレーンなホイール（縦回転 上）でズームインする", () => {
+  it("プレーンなホイール（縦回転 上）でズームインする（連続係数）", () => {
     const container = renderViewport();
     act(() => {
       fireEvent.wheel(container, { deltaY: -100, deltaX: 0 });
     });
-    expect(useTimelineStore.getState().zoom).toBeCloseTo(1.25);
+    // 固定 1.25x ではなく deltaY 量ベースの連続係数で拡大する。
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(
+      zoomFactorFromWheel(-100),
+    );
   });
 
-  it("プレーンなホイール（縦回転 下）でズームアウトする", () => {
+  it("プレーンなホイール（縦回転 下）でズームアウトする（連続係数）", () => {
     const container = renderViewport();
     act(() => {
       fireEvent.wheel(container, { deltaY: 100, deltaX: 0 });
     });
-    expect(useTimelineStore.getState().zoom).toBeCloseTo(1 / 1.25);
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(
+      zoomFactorFromWheel(100),
+    );
+  });
+
+  it("小さな deltaY（トラックパッド）は細かい連続ステップでズームする", () => {
+    const container = renderViewport();
+    act(() => {
+      fireEvent.wheel(container, { deltaY: -8, deltaX: 0 });
+    });
+    const z = useTimelineStore.getState().zoom;
+    // 旧実装は符号だけ見て 1.25x 固定だった。連続化で微小ステップになる。
+    expect(z).toBeGreaterThan(1);
+    expect(z).toBeLessThan(1.05);
+    expect(z).toBeCloseTo(zoomFactorFromWheel(-8));
   });
 
   it("Shift+ホイールはズームせず横スクロールに委ねる", () => {
@@ -454,11 +472,15 @@ describe("TimelineViewport – マウスホイールでズーム", () => {
     );
     const container = getByTestId("timeline-scroll-container");
     stubScrollGeometry(container, 100);
-    // padLeft=PAD_LEFT=48（showThreads=false）, cursorX=400, zoom 1→1.25。
+    // padLeft=PAD_LEFT=48（showThreads=false）, cursorX=400, zoom 1→連続係数。
+    const nextZoom = zoomFactorFromWheel(-100);
     dispatchWheel(container, { deltaY: -100, clientX: 400 });
-    expect(useTimelineStore.getState().zoom).toBeCloseTo(1.25);
-    // computeZoomScrollLeft(100,400,48,1,1.25) = 213。
-    expect(container.scrollLeft).toBeCloseTo(213, 4);
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(nextZoom);
+    // scrollLeft はカーソル下の点を固定する値（算術は computeZoomScrollLeft で検証済）。
+    expect(container.scrollLeft).toBeCloseTo(
+      computeZoomScrollLeft(100, 400, 48, 1, nextZoom),
+      4,
+    );
   });
 
   it("ズームアウトでもカーソル基準で scrollLeft を調整する", () => {
@@ -468,12 +490,15 @@ describe("TimelineViewport – マウスホイールでズーム", () => {
     );
     const container = getByTestId("timeline-scroll-container");
     stubScrollGeometry(container, 600);
-    // zoom 2 → 2/1.25 = 1.6。cursorX=300, pad=48。
+    // zoom 2 → 2×連続係数。cursorX=300, pad=48。
+    const nextZoom = 2 * zoomFactorFromWheel(100);
     dispatchWheel(container, { deltaY: 100, clientX: 300 });
     const z = useTimelineStore.getState().zoom;
-    expect(z).toBeCloseTo(1.6);
-    // scaled = 600+300-48 = 852, 48 + 852*(1.6/2) - 300 = 48 + 681.6 - 300 = 429.6
-    expect(container.scrollLeft).toBeCloseTo(429.6, 3);
+    expect(z).toBeCloseTo(nextZoom);
+    expect(container.scrollLeft).toBeCloseTo(
+      computeZoomScrollLeft(600, 300, 48, 2, nextZoom),
+      3,
+    );
   });
 
   it("ズーム限界（クランプで倍率不変）では scrollLeft を変えない", () => {
@@ -486,6 +511,198 @@ describe("TimelineViewport – マウスホイールでズーム", () => {
     dispatchWheel(container, { deltaY: -100, clientX: 400 }); // さらにズームイン不可
     expect(useTimelineStore.getState().zoom).toBe(4);
     expect(container.scrollLeft).toBe(777); // 不変
+  });
+});
+
+describe("TimelineViewport – 中ボタン(ホイール)ドラッグでパン", () => {
+  beforeEach(resetStore);
+
+  /** scrollLeft/scrollTop を観測可能な可変ストレージに差し替える（happy-dom は実寸
+   *  レイアウトを測らずデフォルト 0 のため）。 */
+  function stubScroll(el: HTMLElement, left = 0, top = 0) {
+    let sl = left;
+    let st = top;
+    Object.defineProperty(el, "scrollLeft", {
+      configurable: true,
+      get: () => sl,
+      set: (v: number) => {
+        sl = v;
+      },
+    });
+    Object.defineProperty(el, "scrollTop", {
+      configurable: true,
+      get: () => st,
+      set: (v: number) => {
+        st = v;
+      },
+    });
+  }
+
+  /** init を無視する happy-dom の制約を避け、button/clientX/clientY を直接定義する。 */
+  function mouse(
+    target: EventTarget,
+    type: string,
+    {
+      button = 0,
+      clientX = 0,
+      clientY = 0,
+    }: { button?: number; clientX?: number; clientY?: number },
+  ) {
+    const ev = new MouseEvent(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "button", { value: button, configurable: true });
+    Object.defineProperty(ev, "clientX", {
+      value: clientX,
+      configurable: true,
+    });
+    Object.defineProperty(ev, "clientY", {
+      value: clientY,
+      configurable: true,
+    });
+    act(() => {
+      target.dispatchEvent(ev);
+    });
+    return ev;
+  }
+
+  function panScenes() {
+    return Array.from({ length: 20 }, (_, i) => ({
+      ...mockScene,
+      id: `s${i}`,
+      sortOrder: `a${i}`,
+    }));
+  }
+
+  it("中ボタンドラッグで scrollLeft/scrollTop がドラッグ量ぶん動く", () => {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScroll(container, 0, 0);
+    mouse(container, "mousedown", { button: 1, clientX: 500, clientY: 300 });
+    // マウスを左上へ（dx=-50, dy=-20）→ コンテンツを掴んで動かす＝scroll は +50/+20。
+    mouse(document, "mousemove", { button: 1, clientX: 450, clientY: 280 });
+    expect(container.scrollLeft).toBe(50);
+    expect(container.scrollTop).toBe(20);
+    mouse(document, "mouseup", { button: 1, clientX: 450, clientY: 280 });
+  });
+
+  it("ドラッグ終了後の mousemove はパンしない（リスナ解除）", () => {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScroll(container, 0, 0);
+    mouse(container, "mousedown", { button: 1, clientX: 500, clientY: 300 });
+    mouse(document, "mousemove", { button: 1, clientX: 450, clientY: 300 });
+    expect(container.scrollLeft).toBe(50);
+    mouse(document, "mouseup", { button: 1, clientX: 450, clientY: 300 });
+    // 解除後の move は無視される。
+    mouse(document, "mousemove", { button: 1, clientX: 100, clientY: 300 });
+    expect(container.scrollLeft).toBe(50);
+  });
+
+  it("左ボタンの mousedown ではパンしない（中ボタン専用）", () => {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScroll(container, 0, 0);
+    mouse(container, "mousedown", { button: 0, clientX: 500, clientY: 300 });
+    mouse(document, "mousemove", { button: 0, clientX: 400, clientY: 250 });
+    expect(container.scrollLeft).toBe(0);
+    expect(container.scrollTop).toBe(0);
+  });
+
+  it("中ボタンをドット上で押してもシーンドラッグを起動せずパンする（button ガード）", () => {
+    const onDrop = vi.fn();
+    const { container, getByTestId } = render(
+      <TimelineViewport
+        scenes={panScenes()}
+        onSelectScene={vi.fn()}
+        onDropStoryTime={onDrop}
+      />,
+    );
+    const scroll = getByTestId("timeline-scroll-container");
+    stubScroll(scroll, 0, 0);
+    // タイトル付き circle = シーンのドット（canDrag=true でドラッグ可能）。
+    const dot = [...container.querySelectorAll("circle")].find((c) =>
+      c.querySelector("title"),
+    ) as SVGCircleElement;
+    expect(dot).toBeTruthy();
+    const cxBefore = dot.getAttribute("cx");
+    mouse(dot, "mousedown", { button: 1, clientX: 500, clientY: 200 });
+    mouse(document, "mousemove", { button: 1, clientX: 460, clientY: 200 });
+    // ドラッグ未起動＝ドット位置(cx)は不変。パンだけ起きる。
+    expect(dot.getAttribute("cx")).toBe(cxBefore);
+    expect(scroll.scrollLeft).toBe(40);
+    mouse(document, "mouseup", { button: 1, clientX: 460, clientY: 200 });
+    expect(onDrop).not.toHaveBeenCalled(); // シーンの並べ替えは起きない
+  });
+
+  it("パン中に左ボタンを離してもパンは終了しない（中ボタン release のみで終了）", () => {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScroll(container, 0, 0);
+    mouse(container, "mousedown", { button: 1, clientX: 500, clientY: 300 });
+    mouse(document, "mouseup", { button: 0, clientX: 500, clientY: 300 }); // 左 release は無視
+    mouse(document, "mousemove", { button: 1, clientX: 450, clientY: 300 });
+    expect(container.scrollLeft).toBe(50); // パン継続中
+    mouse(document, "mouseup", { button: 1, clientX: 450, clientY: 300 });
+  });
+
+  it("window blur でパンが中断する", () => {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScroll(container, 0, 0);
+    mouse(container, "mousedown", { button: 1, clientX: 500, clientY: 300 });
+    mouse(document, "mousemove", { button: 1, clientX: 470, clientY: 300 });
+    expect(container.scrollLeft).toBe(30);
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+    });
+    // 中断後の move は無視される。
+    mouse(document, "mousemove", { button: 1, clientX: 100, clientY: 300 });
+    expect(container.scrollLeft).toBe(30);
+  });
+
+  it("パン中はコンテナに cursor-grabbing クラスが付き、終了で外れる", () => {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScroll(container, 0, 0);
+    mouse(container, "mousedown", { button: 1, clientX: 500, clientY: 300 });
+    expect(container.className).toContain("cursor-grabbing");
+    mouse(document, "mouseup", { button: 1, clientX: 500, clientY: 300 });
+    expect(container.className).not.toContain("cursor-grabbing");
+  });
+
+  it("mouseup でドキュメントの mousemove/mouseup(capture) リスナを解除する", () => {
+    const add = vi.spyOn(document, "addEventListener");
+    const remove = vi.spyOn(document, "removeEventListener");
+    const { getByTestId } = render(
+      <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScroll(container, 0, 0);
+    mouse(container, "mousedown", { button: 1, clientX: 500, clientY: 300 });
+    const moveFn = add.mock.calls.find(
+      ([type, , opt]) => type === "mousemove" && opt === true,
+    )?.[1];
+    const upFn = add.mock.calls.find(
+      ([type, , opt]) => type === "mouseup" && opt === true,
+    )?.[1];
+    expect(moveFn).toBeTruthy();
+    expect(upFn).toBeTruthy();
+    mouse(document, "mouseup", { button: 1, clientX: 500, clientY: 300 });
+    expect(remove).toHaveBeenCalledWith("mousemove", moveFn, true);
+    expect(remove).toHaveBeenCalledWith("mouseup", upFn, true);
+    add.mockRestore();
+    remove.mockRestore();
   });
 });
 

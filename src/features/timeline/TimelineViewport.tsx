@@ -13,7 +13,11 @@ import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
 import { useCardLayout } from "@/features/layout/cardLayout";
 import { computeAxisLabels, type FolderGroup } from "./timelineLabels";
-import { ZOOM_STEP, STEP_BASE, computeZoomScrollLeft } from "./timelineZoom";
+import {
+  STEP_BASE,
+  computeZoomScrollLeft,
+  zoomFactorFromWheel,
+} from "./timelineZoom";
 import { TimelineContextMenu } from "./TimelineContextMenu";
 import { PlotMarkerContextMenu } from "./PlotMarkerContextMenu";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
@@ -28,6 +32,7 @@ import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
+import { fitLabelToWidth } from "./threadLabelFit";
 import type { PlotPhaseType } from "@/db/schema";
 import { recordMark } from "@/lib/perfLog";
 import {
@@ -62,6 +67,9 @@ const NODE_RING = 3;
 /** 左に固定するスレッドラベル列の幅（px）。ここまで content を右へ寄せる。
  *  fit-zoom（Ctrl+0）が左ガターを正しく確保できるよう export する。 */
 export const SUBWAY_LABEL_GUTTER = 150;
+/** スレッドヘッダー（カプセル型ラベル）でテキストが使える幅(px)。
+ *  カプセル内側右端(6 + GUTTER-24) − テキスト開始 x(36) − 右余白(10)。 */
+const SUBWAY_LABEL_TEXT_WIDTH = SUBWAY_LABEL_GUTTER - 24 + 6 - 36 - 10;
 const LABEL_Y = 16;
 const LANE_Y = 60;
 const AXIS_Y = LANE_Y;
@@ -216,7 +224,14 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // Track when the scroll container element mounts/unmounts so the wheel
     // listener effect re-runs even if scenes load after the first render.
     const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
+    // 中ボタン(ホイール)ドラッグでのハンドツール・パン中フラグ（カーソル表示用）。
+    const [isPanning, setIsPanning] = useState(false);
     const reducedMotion = useReducedMotion();
+
+    // 左ボタンドラッグ（dot/マーカー/ラベル）進行中はパンを開始しない。
+    // 同時押しでドラッグ座標が飛ぶ/誤コミットするのを防ぐ（ネイティブ pan 用の即時参照）。
+    const dragActiveRef = useRef(false);
+    dragActiveRef.current = !!(drag || markerDrag || labelDrag);
 
     const STEP = STEP_BASE * zoom;
 
@@ -585,6 +600,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       originIndex: number,
     ) {
       if (!canDrag) return;
+      if (e.button !== 0) return; // 左ボタンのみ（中ボタンはパンへ）
       e.preventDefault();
       const rect = svgRef.current?.getBoundingClientRect();
       const svgX = e.clientX - (rect?.left ?? 0);
@@ -660,6 +676,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       }
 
       function onUp(e: MouseEvent) {
+        if (e.button !== 0) return; // 左ボタン release のみ確定（中/右 release は無視）
         commitDrop(e.clientX, e.clientY);
       }
 
@@ -683,6 +700,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       color: string | null,
     ) {
       if (!showThreads) return;
+      if (e.button !== 0) return; // 左ボタンのみ（中ボタンはパンへ）
       e.stopPropagation();
       const rect = svgRef.current?.getBoundingClientRect();
       const svgX = e.clientX - (rect?.left ?? 0);
@@ -945,7 +963,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           return { ...d, currentX: svgX, currentY: svgY, moved };
         });
       }
-      function onUp() {
+      function onUp(e: MouseEvent) {
+        if (e.button !== 0) return; // 左ボタン release のみ確定（中/右 release は無視）
         // 副作用は updater の外で実行する（StrictMode の二重 invoke で
         // addBranch/updateMarker が重複発火するのを防ぐ。scene drag の onUp と同型）。
         if (markerDrag) commitMarkerDrop(markerDrag);
@@ -967,6 +986,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       e: React.MouseEvent<SVGElement>,
       threadId: string,
     ) {
+      if (e.button !== 0) return; // 左ボタンのみ（中ボタンはパンへ）
       e.stopPropagation();
       const rect = svgRef.current?.getBoundingClientRect();
       const svgY = e.clientY - (rect?.top ?? 0);
@@ -1019,7 +1039,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
           return { ...d, currentY: svgY, moved };
         });
       }
-      function onUp() {
+      function onUp(e: MouseEvent) {
+        if (e.button !== 0) return; // 左ボタン release のみ確定（中/右 release は無視）
         if (labelDrag) commitLabelDrop(labelDrag);
         setLabelDrag(null);
       }
@@ -1084,7 +1105,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         e.preventDefault();
         const store = useTimelineStore.getState();
         const prevZoom = store.zoom;
-        const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+        // deltaY 量に比例した連続係数（旧 固定 1.25x 刻みのカクつきを解消）。
+        const factor = zoomFactorFromWheel(e.deltaY, e.deltaMode);
         store.setZoom(prevZoom * factor);
         const nextZoom = useTimelineStore.getState().zoom;
         // ズーム限界でクランプされ倍率が変わらないなら、スクロール調整は不要。
@@ -1107,6 +1129,63 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       };
       containerEl.addEventListener("wheel", onWheel, { passive: false });
       return () => containerEl.removeEventListener("wheel", onWheel);
+    }, [containerEl]);
+
+    // 中ボタン(ホイール)ドラッグでハンドツール・パン。capture 段で button===1 を
+    // 横取りし、子（dot/ラベル）の左ボタンドラッグや OS の autoscroll を抑止する。
+    // 横・縦の両 overflow をドラッグ量ぶんスクロール（scroll イベント経由で
+    // scrollOffset も同期され固定ラベルが追従する）。
+    useEffect(() => {
+      if (!containerEl) return;
+      let panning = false;
+      let startX = 0;
+      let startY = 0;
+      let startScrollLeft = 0;
+      let startScrollTop = 0;
+
+      const onMove = (e: MouseEvent) => {
+        if (!panning) return;
+        e.preventDefault();
+        // コンテンツを掴んで動かす感覚＝マウス移動と逆向きにスクロールさせる。
+        containerEl.scrollLeft = startScrollLeft - (e.clientX - startX);
+        containerEl.scrollTop = startScrollTop - (e.clientY - startY);
+      };
+      const endPan = () => {
+        if (!panning) return;
+        panning = false;
+        setIsPanning(false);
+        document.removeEventListener("mousemove", onMove, true);
+        document.removeEventListener("mouseup", onUp, true);
+        window.removeEventListener("blur", endPan);
+      };
+      const onUp = (e: MouseEvent) => {
+        if (e.button !== 1) return; // 中ボタン release のみでパン終了
+        e.preventDefault();
+        endPan();
+      };
+      const onDown = (e: MouseEvent) => {
+        if (e.button !== 1) return; // 中ボタンのみ
+        // 左ボタンドラッグ進行中はパンを始めない（座標飛び/誤コミット防止）。
+        if (dragActiveRef.current) return;
+        e.preventDefault(); // OS の autoscroll を抑止
+        // stopPropagation はしない: 子ドラッグは button ガードで無効化済みで、
+        // mousedown を document まで通すことで外側クリックで閉じる系メニューを正しく閉じる。
+        panning = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        startScrollLeft = containerEl.scrollLeft;
+        startScrollTop = containerEl.scrollTop;
+        setIsPanning(true);
+        document.addEventListener("mousemove", onMove, true);
+        document.addEventListener("mouseup", onUp, true);
+        window.addEventListener("blur", endPan);
+      };
+
+      containerEl.addEventListener("mousedown", onDown, true);
+      return () => {
+        containerEl.removeEventListener("mousedown", onDown, true);
+        endPan();
+      };
     }, [containerEl]);
 
     // ズームで SVG 幅が更新された後に、退避した scrollLeft を適用してカーソル下の点を
@@ -1160,7 +1239,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         <div
           ref={setContainerRef}
           data-testid="timeline-scroll-container"
-          className={`flex-1 overflow-x-auto overflow-y-auto${cardLayout ? " pb-2" : ""}`}
+          className={`flex-1 overflow-x-auto overflow-y-auto${cardLayout ? " pb-2" : ""}${
+            isPanning ? " cursor-grabbing [&_*]:!cursor-grabbing" : ""
+          }`}
           onScroll={handleScroll}
         >
           <svg
@@ -1918,8 +1999,12 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     const color = lane.thread.color ?? "var(--primary)";
                     const isDragged = lane.thread.id === draggedId;
                     const cyL = lane.y;
-                    const display =
-                      name.length > 12 ? name.slice(0, 11) + "…" : name;
+                    // 全角/半角の実幅を見てカプセル内に収める（CJK 名で溢れる回避）。
+                    const display = fitLabelToWidth(
+                      name,
+                      SUBWAY_LABEL_TEXT_WIDTH,
+                      11,
+                    );
                     const selected = selectedPlotThreadId === lane.thread.id;
                     return (
                       <g

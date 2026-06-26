@@ -179,6 +179,9 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
     resetStore();
     vi.clearAllMocks();
     mockTreeWith([]);
+    // プロットストアのデータをクリア（テスト間の links/branches リークで
+    // 「空スレッド = 即削除」判定がずれるのを防ぐ）。
+    usePlotThreadStore.setState({ threads: [], links: [], branches: [] });
   });
 
   afterEach(() => {
@@ -291,6 +294,9 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
   });
 
   it("プロット(スレッド/マーカー)選択中の Delete はシーンを消さない", () => {
+    const threadSpy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteThread")
+      .mockResolvedValue(undefined);
     useTimelineStore.setState({
       selectedNodeIds: ["scene-x"],
       showThreads: true,
@@ -307,6 +313,7 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
       );
     });
     expect(mockDeleteNode).not.toHaveBeenCalled();
+    threadSpy.mockRestore();
   });
 
   it("panel focused + マーカー選択中 → Delete でそのマーカーを削除し選択解除", () => {
@@ -359,6 +366,9 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
     const spy = vi
       .spyOn(usePlotThreadStore.getState(), "deleteMarker")
       .mockResolvedValue(undefined);
+    const threadSpy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteThread")
+      .mockResolvedValue(undefined);
     useTimelineStore.setState({
       showThreads: true,
       selectedPlotThreadId: "t1",
@@ -374,6 +384,265 @@ describe("TimelinePanel – plain-key shortcuts (#3)", () => {
       );
     });
     expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+    threadSpy.mockRestore();
+  });
+
+  it("中身のないスレッドのみ選択中 → Delete は確認なしで即削除し選択解除", () => {
+    const spy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteThread")
+      .mockResolvedValue(undefined);
+    // links/branches は空（beforeEach でクリア済）= 中身なし。
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId, queryByText } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(spy).toHaveBeenCalledWith("t1");
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBeNull();
+    expect(queryByText("削除する")).toBeNull(); // 確認 DLG は出ない
+    spy.mockRestore();
+  });
+
+  it("シーン+空スレッド共存中の Delete 連打でシーンを消さない（回帰）", () => {
+    // 回帰: 空スレッド即削除が選択を中途半端にクリアし、次の Delete が
+    // 残ったシーン選択を消していた。clearSelection で全クリアし防ぐ。
+    const threadSpy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteThread")
+      .mockResolvedValue(undefined);
+    useTimelineStore.setState({
+      selectedNodeIds: ["scene-x"],
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    // 1回目: 空スレッド t1 を即削除し、選択を全クリア。
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(threadSpy).toHaveBeenCalledWith("t1");
+    expect(useTimelineStore.getState().selectedNodeIds).toEqual([]);
+    // 2回目（別押下・e.repeat=false）: 選択は全クリア済 → シーン削除に落ちない。
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    expect(mockDeleteNode).not.toHaveBeenCalled();
+    threadSpy.mockRestore();
+  });
+
+  it("Delete のオートリピート(e.repeat)は破壊的削除を起こさない", () => {
+    const threadSpy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteThread")
+      .mockResolvedValue(undefined);
+    useTimelineStore.setState({
+      selectedNodeIds: ["scene-x"],
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Delete",
+          repeat: true,
+          bubbles: true,
+        }),
+      );
+    });
+    expect(threadSpy).not.toHaveBeenCalled();
+    expect(mockDeleteNode).not.toHaveBeenCalled();
+    threadSpy.mockRestore();
+  });
+
+  it("中身のあるスレッド選択中 → Delete は確認 DLG を出し、確定で削除し選択解除", () => {
+    const spy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteThread")
+      .mockResolvedValue(undefined);
+    // t1 にマーカー(l1)を持たせる＝中身あり → 確認を挟む。
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "p1",
+          name: "主筋",
+          color: null,
+          description: null,
+          sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [
+        {
+          id: "l1",
+          threadId: "t1",
+          nodeId: "s1",
+          phaseType: "develop",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      branches: [],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId, getByText, queryByText } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    // 確認 DLG が出る間は未削除・選択も保持。
+    expect(spy).not.toHaveBeenCalled();
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBe("t1");
+    // 「削除する」確定で実削除＋選択解除＋DLG クローズ。
+    act(() => {
+      fireEvent.click(getByText("削除する"));
+    });
+    expect(spy).toHaveBeenCalledWith("t1");
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBeNull();
+    expect(queryByText("削除する")).toBeNull(); // 確定後 DLG は閉じる
+    spy.mockRestore();
+  });
+
+  it("分岐/合流のみ持つスレッド（マーカー0）選択中 → Delete も確認 DLG を出す", () => {
+    const spy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteThread")
+      .mockResolvedValue(undefined);
+    // links は空・branches を1件＝markerCount=0, edgeCount=1（merge/branch アンカー）。
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "p1",
+          name: "支線",
+          color: null,
+          description: null,
+          sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [],
+      branches: [
+        {
+          id: "b1",
+          projectId: "p1",
+          fromThreadId: "t2",
+          toThreadId: "t1",
+          atNodeId: "s1",
+          kind: "merge",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId, getByText } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    // edge>0 でも確認を挟む（即削除しない）。
+    expect(spy).not.toHaveBeenCalled();
+    expect(getByText("削除する")).toBeTruthy();
+    spy.mockRestore();
+  });
+
+  it("中身のあるスレッドの Delete 確認 DLG をキャンセルすると削除しない", () => {
+    const spy = vi
+      .spyOn(usePlotThreadStore.getState(), "deleteThread")
+      .mockResolvedValue(undefined);
+    usePlotThreadStore.setState({
+      threads: [
+        {
+          id: "t1",
+          projectId: "p1",
+          name: "主筋",
+          color: null,
+          description: null,
+          sortOrder: "a0",
+          startNodeId: null,
+          endNodeId: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      links: [
+        {
+          id: "l1",
+          threadId: "t1",
+          nodeId: "s1",
+          phaseType: "develop",
+          note: null,
+          sortOrder: null,
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+      branches: [],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      selectedPlotThreadId: "t1",
+      selectedPlotLinkId: null,
+    });
+    const { getByTestId, getByText, queryByText } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Delete", bubbles: true }),
+      );
+    });
+    act(() => {
+      fireEvent.click(getByText("キャンセル"));
+    });
+    expect(spy).not.toHaveBeenCalled();
+    expect(useTimelineStore.getState().selectedPlotThreadId).toBe("t1");
+    expect(queryByText("削除する")).toBeNull(); // DLG は閉じる
     spy.mockRestore();
   });
 

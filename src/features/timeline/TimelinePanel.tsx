@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useEffect, useRef } from "react";
+import { useCallback, useMemo, useEffect, useRef, useState } from "react";
 import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { computeTimelineSceneOrder } from "./timelineSceneOrder";
@@ -26,6 +26,7 @@ import {
 } from "./TimelineViewport";
 import { TimelineInspector } from "./TimelineInspector";
 import { PlotMarkerInspector } from "@/features/plot-threads/PlotMarkerInspector";
+import { PlotMarkerDeleteConfirmDialog } from "@/features/plot-threads/PlotMarkerDeleteConfirmDialog";
 import { PlotStructureAnalysis } from "@/features/plot-threads/PlotStructureAnalysis";
 import type { PhasePinData } from "./TimelineViewport";
 import { recordMark } from "@/lib/perfLog";
@@ -68,6 +69,15 @@ export function TimelinePanel() {
   const deleteNode = useTreeStore((s) => s.deleteNode);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  // Delete キーでのスレッド削除確認（インスペクタ/右クリックと同じ確認 DLG を共有）。
+  // 中身（マーカー/分岐）があるスレッドのみ確認を挟み、空スレッドは即削除。開いた時点の
+  // 件数スナップショットを持つ（モーダル中は store 変化に追従不要）。
+  const [pendingThreadDelete, setPendingThreadDelete] = useState<{
+    id: string;
+    name: string;
+    markerCount: number;
+    edgeCount: number;
+  } | null>(null);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const entries = useCodexStore((s) => s.entries);
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
@@ -350,10 +360,16 @@ export function TimelinePanel() {
           setAxisMode("write");
           break;
         case "Delete": {
+          // オートリピート（長押し）で破壊的削除が連鎖しないよう、最初の押下のみ処理。
+          // 空スレッド即削除→選択クリア後にリピートがシーン削除分岐へ落ちる回帰を防ぐ。
+          if (e.repeat) {
+            e.preventDefault();
+            break;
+          }
           const ps = useTimelineStore.getState();
-          // マーカー選択中は Delete でそのマーカーを削除（undo 可）。スレッドのみ選択時は
-          // 誤操作防止でインスペクタ/右クリックの確認ダイアログに委ね、いずれもシーンには
-          // 作用させない（最後に選択したシーンを誤って消さない）。
+          // マーカー選択中は Delete でそのマーカーを削除。スレッドのみ選択中は
+          // そのスレッド（＋所属マーカー/分岐は CASCADE）を削除。いずれも undo 可で、
+          // シーンには作用させない（最後に選択したシーンを誤って消さない）。
           if (ps.selectedPlotLinkId) {
             e.preventDefault();
             const linkId = ps.selectedPlotLinkId;
@@ -361,7 +377,34 @@ export function TimelinePanel() {
             void usePlotThreadStore.getState().deleteMarker(linkId);
             break;
           }
-          if (ps.selectedPlotThreadId) break;
+          if (ps.selectedPlotThreadId) {
+            e.preventDefault();
+            const threadId = ps.selectedPlotThreadId;
+            const pts = usePlotThreadStore.getState();
+            // スレッド削除で一緒に消えるマーカー数・分岐/合流数（インスペクタと同条件）。
+            const markerCount = pts.links.filter(
+              (l) => l.threadId === threadId,
+            ).length;
+            const edgeCount = pts.branches.filter(
+              (b) => b.fromThreadId === threadId || b.toThreadId === threadId,
+            ).length;
+            if (markerCount > 0 || edgeCount > 0) {
+              // 中身があれば確認 DLG（他経路と同じく）。name は描画時に fallback。
+              const th = pts.threads.find((x) => x.id === threadId);
+              setPendingThreadDelete({
+                id: threadId,
+                name: th?.name ?? "",
+                markerCount,
+                edgeCount,
+              });
+            } else {
+              // 空スレッドは確認なしで即削除（インスペクタの removeSelectedThread と同じ）。
+              // 選択を全クリア（シーン選択が残ると後続 Delete が誤ってシーンを消す）。
+              clearSelection();
+              void pts.deleteThread(threadId);
+            }
+            break;
+          }
           const { selectedNodeIds: ids } = ps;
           if (ids.length > 0) {
             e.preventDefault();
@@ -628,6 +671,30 @@ export function TimelinePanel() {
           ))}
       </div>
       {showStructureAnalysis && <PlotStructureAnalysis />}
+      {pendingThreadDelete && (
+        <PlotMarkerDeleteConfirmDialog
+          title={t("plotThread.deleteThreadConfirmTitle", "スレッドの削除")}
+          description={t(
+            "plotThread.deleteThreadConfirmBody",
+            "「{{name}}」を削除すると、マーカー {{markers}} 個と分岐 / 合流 {{edges}} 件も削除されます。続行しますか？",
+            {
+              name:
+                pendingThreadDelete.name || t("plotThread.unnamed", "（無名）"),
+              markers: pendingThreadDelete.markerCount,
+              edges: pendingThreadDelete.edgeCount,
+            },
+          )}
+          onCancel={() => setPendingThreadDelete(null)}
+          onConfirm={() => {
+            const id = pendingThreadDelete.id;
+            // 選択を全クリア（残ったシーン選択が DLG クローズ後の Delete で
+            // 誤って消えるのを防ぐ）。インスペクタ経路と同じく削除は undo 可。
+            clearSelection();
+            void usePlotThreadStore.getState().deleteThread(id);
+            setPendingThreadDelete(null);
+          }}
+        />
+      )}
     </div>
   );
   recordMark(
