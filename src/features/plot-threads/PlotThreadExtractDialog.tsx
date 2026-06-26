@@ -10,12 +10,14 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { type PlotPhaseType } from "@/db/schema";
 import { usePlotThreadStore } from "./plotThreadStore";
+import { spreadThreadColors } from "./threadColors";
 import {
   proposePlotThreads,
   type PlotThreadProposal,
@@ -36,6 +38,8 @@ export function PlotThreadExtractDialog({
   const nodes = useTreeStore((s) => s.nodes);
   const threads = usePlotThreadStore((s) => s.threads);
   const importPlotThreads = usePlotThreadStore((s) => s.importPlotThreads);
+  // 取り込むスレッドの色は Codex タイプと同じパレットから割り当てる（アクティブテーマ）。
+  const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
 
   const folders = useMemo(
     () => nodes.filter((n) => n.nodeType === "folder"),
@@ -99,11 +103,21 @@ export function PlotThreadExtractDialog({
     if (!projectId) return;
     setImporting(true);
     try {
+      // 色を散らして割り当てる（全部 null だと描画時に同一の --primary へ潰れて
+      // 見分けが付かないため）。既存スレッド数を起点にバッチ内で重複しない色を配る。
+      const colors = spreadThreadColors(
+        candidates.length,
+        usePlotThreadStore.getState().threads.length,
+        colorTheme,
+        typeof document !== "undefined" &&
+          document.documentElement.classList.contains("dark"),
+      );
       await importPlotThreads(
         projectId,
-        candidates.map((c) => ({
+        candidates.map((c, i) => ({
           name: c.name,
           description: c.description ?? null,
+          color: colors[i] ?? null,
           markers: c.markers.map((m) => ({
             nodeId: m.sceneId,
             phaseType: m.phaseType,

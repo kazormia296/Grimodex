@@ -79,6 +79,7 @@ interface PlotThreadState {
     proposals: Array<{
       name: string;
       description?: string | null;
+      color?: string | null;
       markers: Array<{
         nodeId: string;
         phaseType: PlotPhaseType;
@@ -354,7 +355,7 @@ export const usePlotThreadStore = create<PlotThreadState>((set, get) => ({
             thread = await createPlotThread({
               projectId,
               name: p.name.trim(),
-              color: null,
+              color: p.color ?? null,
               description: p.description?.trim() || null,
               sortOrder,
             });

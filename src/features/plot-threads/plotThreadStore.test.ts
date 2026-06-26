@@ -716,6 +716,40 @@ describe("plotThreadStore", () => {
       expect(usePlotThreadStore.getState().links).toHaveLength(2);
     });
 
+    it("importPlotThreads forwards the per-proposal color to createPlotThread", async () => {
+      const seenColors: Array<string | null | undefined> = [];
+      mock(createPlotThread).mockImplementation(
+        async (data: {
+          sortOrder: string;
+          name: string;
+          color?: string | null;
+        }) => {
+          seenColors.push(data.color);
+          return {
+            ...row(`th-${seenColors.length}`, data.sortOrder),
+            name: data.name,
+          };
+        },
+      );
+
+      await usePlotThreadStore.getState().importPlotThreads("p1", [
+        {
+          name: "Blue",
+          color: "#2045AA",
+          markers: [{ nodeId: "s1", phaseType: "introduce" }],
+        },
+        {
+          name: "Red",
+          color: "#AA2020",
+          markers: [{ nodeId: "s2", phaseType: "introduce" }],
+        },
+        // color 未指定 → null にフォールバック
+        { name: "Plain", markers: [{ nodeId: "s3", phaseType: "introduce" }] },
+      ]);
+
+      expect(seenColors).toEqual(["#2045AA", "#AA2020", null]);
+    });
+
     it("importPlotThreads drops the composite undo when the project switches mid-import (XPROJ)", async () => {
       mock(createPlotThread).mockImplementation(
         async (data: { sortOrder: string; name: string }) => ({
