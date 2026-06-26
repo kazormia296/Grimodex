@@ -741,8 +741,7 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
     expect(markerIdx).toBeGreaterThan(connIdx);
   });
 
-  it("merge の流入先マーカーは subway 風の白丸ドーナツで描く", () => {
-    seedThreads(); // t1: l1@s1, l2@s3
+  function seedMergeBranch() {
     usePlotThreadStore.setState({
       branches: [
         {
@@ -757,7 +756,16 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
         },
       ],
     });
-    useTimelineStore.setState({ showThreads: true, axisMode: "reading" });
+  }
+
+  it("縮小時、merge の流入先マーカーは subway 風の白丸ドーナツで描く", () => {
+    seedThreads(); // t1: l1@s1, l2@s3
+    seedMergeBranch();
+    useTimelineStore.setState({
+      showThreads: true,
+      axisMode: "reading",
+      zoom: 0.5, // STEP=48 < CHIP_MIN_STEP(72) → 縮小表示
+    });
     const { getByTestId } = render(
       <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
     );
@@ -770,6 +778,34 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
     expect(
       getByTestId("plot-marker-l1").getAttribute("data-merge-target"),
     ).toBeNull();
+  });
+
+  it("拡大時、merge の流入先マーカーは白抜きチップで段階テキストを表示する", () => {
+    seedThreads(); // t1: l1@s1, l2@s3（l2 = climax, color=null → var(--primary)）
+    seedMergeBranch();
+    useTimelineStore.setState({
+      showThreads: true,
+      axisMode: "reading",
+      zoom: 1, // STEP=96 >= CHIP_MIN_STEP(72) → 拡大表示
+    });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // 拡大時はドーナツ(circle)でなくチップ(<g>+rect+text)。段階ラベルが見える。
+    const merge = getByTestId("plot-marker-l2");
+    expect(merge.tagName.toLowerCase()).toBe("g");
+    expect(merge.getAttribute("data-merge-target")).toBe("true");
+    expect(merge.textContent).toContain("クライマックス");
+    // 白抜き: 背景塗り＋スレッド色リング＋色文字。
+    const rect = merge.querySelector("rect");
+    expect(rect?.getAttribute("fill")).toContain("background");
+    expect(rect?.getAttribute("stroke")).toBe("var(--primary)");
+    expect(merge.querySelector("text")?.getAttribute("fill")).toBe(
+      "var(--primary)",
+    );
+    // 対照: 非 merge チップ(l1)は塗りつぶし（背景塗りでない）。
+    const plain = getByTestId("plot-marker-l1").querySelector("rect");
+    expect(plain?.getAttribute("fill")).not.toContain("background");
   });
 
   it("自走完結スレッドに終端キャップ（塗りノブ）を描く", () => {

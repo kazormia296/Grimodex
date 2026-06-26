@@ -1718,9 +1718,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         mk.nodeId,
                         lane.thread.id,
                       );
-                    // merge の流入先マーカーは subway と同じ白丸ドーナツ（白塗り＋色リング）
-                    // で描く（ズームに依らず・チップにしない）。
-                    if (mergeTargetKeys.has(`${lane.thread.id}:${mk.nodeId}`)) {
+                    const isMergeTarget = mergeTargetKeys.has(
+                      `${lane.thread.id}:${mk.nodeId}`,
+                    );
+                    // merge の流入先マーカーは縮小時のみ subway と同じ白丸ドーナツ
+                    // （白塗り＋色リング）で描く。拡大時（STEP >= CHIP_MIN_STEP）は通常
+                    // マーカー同様に段階テキストのチップを表示する（merge はコネクタが示す）。
+                    if (isMergeTarget && STEP < CHIP_MIN_STEP) {
                       return (
                         <circle
                           key={mk.linkId}
@@ -1768,11 +1772,14 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                         </circle>
                       );
                     }
+                    // merge の流入先チップは「白抜き」（背景塗り＋スレッド色リング＋色文字）
+                    // で描き、合流点であることを拡大時のチップ上でも示す。
                     return (
                       <g
                         key={mk.linkId}
                         data-testid={`plot-marker-${mk.linkId}`}
                         data-phase={mk.phaseType}
+                        data-merge-target={isMergeTarget ? "true" : undefined}
                         className={markerClass}
                         style={markerStyle}
                         opacity={dragging ? 0.3 : 1}
@@ -1785,11 +1792,19 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                           width={chipW}
                           height={BAND_HEIGHT}
                           rx={BAND_HEIGHT / 2}
-                          fill={fill}
-                          stroke={
-                            selected ? "var(--foreground)" : "var(--background)"
+                          fill={
+                            isMergeTarget ? "var(--background, white)" : fill
                           }
-                          strokeWidth={selected ? 2.5 : 1}
+                          stroke={
+                            selected
+                              ? "var(--foreground)"
+                              : isMergeTarget
+                                ? fill
+                                : "var(--background)"
+                          }
+                          strokeWidth={
+                            selected ? 2.5 : isMergeTarget ? NODE_RING : 1
+                          }
                         />
                         <text
                           x={cx}
@@ -1797,7 +1812,7 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                           textAnchor="middle"
                           dominantBaseline="central"
                           fontSize={CHIP_FONT}
-                          fill={contrastTextColor(fill)}
+                          fill={isMergeTarget ? fill : contrastTextColor(fill)}
                           pointerEvents="none"
                           className="select-none"
                         >
