@@ -1150,7 +1150,8 @@
         "summarization": "Summarization",
         "context_creator": "Context Creator",
         "codex_judgment": "Proper-noun candidate judgment",
-        "plot_thread_extract": "Plot thread extraction"
+        "plot_thread_extract": "Plot thread extraction",
+        "chronicle_extract": "Chronicle event extraction"
       }
     }
   },
@@ -4912,6 +4913,18 @@
     "zoomOut": "Zoom out",
     "unassigned": "Unassigned",
     "viewportLabel": "Story chronicle",
+    "extractShort": "Extract",
+    "unnamed": "(unnamed)",
+    "extract": {
+      "title": "Extract events from prose",
+      "hint": "AI reads the chapter/folder's prose and proposes in-story events. Importing adds them to the chronicle.",
+      "selectFolder": "Select chapter/folder…",
+      "analyze": "Analyze",
+      "none": "No events could be extracted.",
+      "import": "Import",
+      "imported": "Imported {{n}} events",
+      "failed": "Extraction failed"
+    },
     "setupCalendar": "Set up calendar",
     "calendar": "Calendar",
     "calendarEditor": "Calendar settings",
