@@ -1733,6 +1733,8 @@ impl Database {
                 end_time         INTEGER,
                 precision        TEXT NOT NULL DEFAULT 'exact'
                                    CHECK(precision IN ('exact','approx','unknown')),
+                kind             TEXT NOT NULL DEFAULT 'generic'
+                                   CHECK(kind IN ('generic','birth','death')),
                 created_at       TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -1741,6 +1743,8 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_events_ordinal
                 ON events(project_id, ordinal);",
         )?;
+        // 既存 DB（P0 で events 作成済）への kind 列追加。CHECK 無しの素 ALTER。
+        Self::add_column_if_missing(&conn, "events", "kind", "TEXT NOT NULL DEFAULT 'generic'")?;
 
         // 出来事への参加 codex（多対多）。主参加は events.primary_codex_id。
         // src/db/schema.ts の eventParticipants とミラー。

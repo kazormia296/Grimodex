@@ -8,11 +8,13 @@ import {
 import { EVENT_PRECISIONS } from "@/db/schema";
 import type { EventRow } from "./api";
 import type { SeasonConflict } from "./seasonCheck";
+import type { AgeConflict } from "./ageCheck";
 
 export interface ChronicleInspectorProps {
   event: EventRow;
   people: { id: string; name: string }[];
   conflicts?: SeasonConflict[];
+  ageConflicts?: AgeConflict[];
   /** この出来事が参照するシーン数（pull/stamp の可否）。 */
   linkedSceneCount?: number;
   /** 原因セレクト用の全出来事（自分自身は除外して表示）。 */
@@ -34,6 +36,7 @@ export function ChronicleInspector({
   event,
   people,
   conflicts,
+  ageConflicts,
   linkedSceneCount = 0,
   allEvents = [],
   causeIds = [],
@@ -88,6 +91,21 @@ export function ChronicleInspector({
             {t(
               "chronicle.causalConflict",
               "因果の矛盾: 結果が原因より前にある",
+            )}
+          </span>
+        </div>
+      )}
+      {ageConflicts && ageConflicts.length > 0 && (
+        <div className="flex items-start gap-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            {t(
+              "chronicle.ageConflictDetail",
+              "年齢の矛盾: 算出{{age}}歳だが本文に「{{word}}」",
+              {
+                age: ageConflicts[0].computedAge,
+                word: ageConflicts[0].ageWord,
+              },
             )}
           </span>
         </div>
@@ -187,6 +205,19 @@ export function ChronicleInspector({
               </option>
             ))}
           </select>
+        </label>
+        <label
+          className="flex items-center gap-1"
+          title={t("chronicle.birthHint", "主人物の出生。年齢計算の基準点")}
+        >
+          <input
+            type="checkbox"
+            checked={event.kind === "birth"}
+            onChange={(e) =>
+              onPatch({ kind: e.target.checked ? "birth" : "generic" })
+            }
+          />
+          {t("chronicle.birth", "出生")}
         </label>
         {linkedSceneCount > 0 && onStamp && (
           <button
