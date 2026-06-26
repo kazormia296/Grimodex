@@ -79,8 +79,8 @@ export function PlotThreadAnalysisRow({
         type="button"
         onClick={handleDiscussInChat}
         className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-        title={t("plotThread.discussInChat", "この糸を AI で相談")}
-        aria-label={t("plotThread.discussInChat", "この糸を AI で相談")}
+        title={t("plotThread.discussInChat", "このスレッドを AI で相談")}
+        aria-label={t("plotThread.discussInChat", "このスレッドを AI で相談")}
       >
         <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden />
       </button>

@@ -135,7 +135,7 @@ export function PlotThreadExtractDialog({
           <p className="text-xs text-muted-foreground">
             {t(
               "plotThread.extract.hint",
-              "選んだ章/フォルダの本文を AI が読み、サブプロット（縦糸）と起承転結マーカーを提案します。取り込みは1回の操作（Undo 可）。",
+              "選んだ章/フォルダの本文を AI が読み、サブプロット（スレッド）と起承転結マーカーを提案します。取り込みは1回の操作（Undo 可）。",
             )}
           </p>
 

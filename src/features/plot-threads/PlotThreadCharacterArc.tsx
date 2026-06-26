@@ -97,7 +97,7 @@ export function PlotThreadCharacterArc({ threadId }: { threadId: string }) {
       className="flex flex-col gap-1 border-t border-border pt-3"
     >
       <span className="font-semibold text-foreground">
-        {t("plotThread.arc.title", "この糸の主要キャラ")}
+        {t("plotThread.arc.title", "このスレッドの主要キャラ")}
       </span>
       <span className="text-[10px] text-muted-foreground">
         {t("plotThread.arc.hint", "所属シーンでの登場・役割・POV から集計")}
