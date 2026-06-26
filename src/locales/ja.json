@@ -1150,7 +1150,8 @@
         "summarization": "要約",
         "context_creator": "Context Creator",
         "codex_judgment": "固有名詞候補の判定",
-        "plot_thread_extract": "プロットスレッド抽出"
+        "plot_thread_extract": "プロットスレッド抽出",
+        "chronicle_extract": "作中年表 出来事抽出"
       }
     }
   },
@@ -4905,6 +4906,18 @@
     "zoomOut": "縮小",
     "unassigned": "未割当",
     "viewportLabel": "作中年表",
+    "extractShort": "抽出",
+    "unnamed": "（無名）",
+    "extract": {
+      "title": "本文から出来事を抽出",
+      "hint": "選んだ章/フォルダの本文を AI が読み、作中の出来事を提案します。取り込むと年表に追加されます。",
+      "selectFolder": "章/フォルダを選択…",
+      "analyze": "解析",
+      "none": "抽出できる出来事が見つかりませんでした。",
+      "import": "取り込む",
+      "imported": "{{n}}件の出来事を取り込みました",
+      "failed": "抽出に失敗しました"
+    },
     "setupCalendar": "暦を設定",
     "calendar": "暦",
     "calendarEditor": "暦の設定",

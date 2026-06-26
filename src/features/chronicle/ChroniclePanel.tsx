@@ -7,6 +7,7 @@ import {
   CalendarRange,
   CalendarCog,
   AlertTriangle,
+  Sparkles,
 } from "lucide-react";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -34,6 +35,7 @@ import { scaleEvents } from "./chronicleTimeScale";
 import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleInspector } from "./ChronicleInspector";
 import { ChronicleCalendarEditor } from "./ChronicleCalendarEditor";
+import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { useSeasonConflicts } from "./useSeasonConflicts";
 
 const GUTTER_X = 120;
@@ -124,6 +126,7 @@ export function ChroniclePanel() {
     saveCalendar,
   } = useSeasonConflicts({ projectId, events, links: sceneLinks });
   const [calendarEditorOpen, setCalendarEditorOpen] = useState(false);
+  const [extractOpen, setExtractOpen] = useState(false);
 
   // 因果矛盾（効果が原因より前）。
   const causalConflicts = useMemo(
@@ -352,6 +355,15 @@ export function ChroniclePanel() {
           </button>
           <button
             type="button"
+            onClick={() => setExtractOpen(true)}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent"
+            title={t("chronicle.extract.title", "本文から出来事を抽出")}
+          >
+            <Sparkles className="size-3.5" />{" "}
+            {t("chronicle.extractShort", "抽出")}
+          </button>
+          <button
+            type="button"
             onClick={handleAdd}
             className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent"
           >
@@ -412,6 +424,12 @@ export function ChroniclePanel() {
           onDelete={handleDelete}
         />
       )}
+
+      <ChronicleExtractDialog
+        open={extractOpen}
+        onOpenChange={setExtractOpen}
+        onImported={refresh}
+      />
     </div>
   );
 }
