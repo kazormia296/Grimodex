@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   computeFitZoom,
   computeZoomScrollLeft,
+  zoomFactorFromWheel,
+  WHEEL_DELTA_CLAMP,
+  WHEEL_ZOOM_SENSITIVITY,
   ZOOM_STEP,
   ZOOM_MIN,
   ZOOM_MAX,
@@ -99,6 +102,55 @@ describe("computeZoomScrollLeft（zoom-to-cursor）", () => {
     // z0→z2 を 1 回で計算したものと一致するはず（連鎖 == 直接）。
     const direct = computeZoomScrollLeft(s0, cursorX, PAD, z0, z2);
     expect(s2).toBeCloseTo(direct, 6);
+  });
+});
+
+describe("zoomFactorFromWheel（連続ホイールズーム）", () => {
+  it("上スクロール(deltaY<0)は拡大(>1)・下スクロール(deltaY>0)は縮小(<1)", () => {
+    expect(zoomFactorFromWheel(-100)).toBeGreaterThan(1);
+    expect(zoomFactorFromWheel(100)).toBeLessThan(1);
+  });
+
+  it("deltaY=0 は等倍（ズームしない）", () => {
+    expect(zoomFactorFromWheel(0)).toBe(1);
+  });
+
+  it("上下対称（factor(-d) × factor(d) = 1）", () => {
+    expect(zoomFactorFromWheel(-80) * zoomFactorFromWheel(80)).toBeCloseTo(
+      1,
+      6,
+    );
+  });
+
+  it("deltaY が大きいほど倍率の振れも大きい（連続・単調）", () => {
+    // 小さい delta = 1 に近い（=細かい刻み）/ 大きい delta = より拡大。
+    expect(zoomFactorFromWheel(-5)).toBeGreaterThan(1);
+    expect(zoomFactorFromWheel(-5)).toBeLessThan(zoomFactorFromWheel(-40));
+    expect(zoomFactorFromWheel(-40)).toBeLessThan(zoomFactorFromWheel(-100));
+  });
+
+  it("小さな delta（トラックパッド）はほぼ等倍＝滑らかな微小ステップ", () => {
+    const f = zoomFactorFromWheel(-4);
+    expect(f).toBeGreaterThan(1);
+    expect(f).toBeLessThan(1.02);
+  });
+
+  it("1イベントの効きは WHEEL_DELTA_CLAMP で頭打ち（慣性/暴れ対策）", () => {
+    const capped = Math.exp(WHEEL_DELTA_CLAMP * WHEEL_ZOOM_SENSITIVITY);
+    expect(zoomFactorFromWheel(-100000)).toBeCloseTo(capped, 6);
+    expect(zoomFactorFromWheel(100000)).toBeCloseTo(1 / capped, 6);
+  });
+
+  it("行モード(deltaMode=1)はピクセル換算され、同じ数値でも効きが強い", () => {
+    expect(zoomFactorFromWheel(-3, 1)).toBeGreaterThan(
+      zoomFactorFromWheel(-3, 0),
+    );
+  });
+
+  it("マウス1ノッチ(≈100px)は旧 1.25x 刻みに近い体感", () => {
+    // 連続化しても1ノッチの拡大量が極端に変わらないことを担保（回帰ガード）。
+    expect(zoomFactorFromWheel(-100)).toBeGreaterThan(1.1);
+    expect(zoomFactorFromWheel(-100)).toBeLessThan(1.35);
   });
 });
 

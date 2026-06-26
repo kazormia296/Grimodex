@@ -13,7 +13,11 @@ import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "./timelineStore";
 import { useCardLayout } from "@/features/layout/cardLayout";
 import { computeAxisLabels, type FolderGroup } from "./timelineLabels";
-import { ZOOM_STEP, STEP_BASE, computeZoomScrollLeft } from "./timelineZoom";
+import {
+  STEP_BASE,
+  computeZoomScrollLeft,
+  zoomFactorFromWheel,
+} from "./timelineZoom";
 import { TimelineContextMenu } from "./TimelineContextMenu";
 import { PlotMarkerContextMenu } from "./PlotMarkerContextMenu";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
@@ -1088,7 +1092,8 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         e.preventDefault();
         const store = useTimelineStore.getState();
         const prevZoom = store.zoom;
-        const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+        // deltaY 量に比例した連続係数（旧 固定 1.25x 刻みのカクつきを解消）。
+        const factor = zoomFactorFromWheel(e.deltaY, e.deltaMode);
         store.setZoom(prevZoom * factor);
         const nextZoom = useTimelineStore.getState().zoom;
         // ズーム限界でクランプされ倍率が変わらないなら、スクロール調整は不要。

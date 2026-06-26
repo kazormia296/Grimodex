@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, fireEvent, act } from "@testing-library/react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { TimelineViewport } from "./TimelineViewport";
+import { zoomFactorFromWheel, computeZoomScrollLeft } from "./timelineZoom";
 import { useTimelineStore } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
@@ -335,20 +336,37 @@ describe("TimelineViewport – マウスホイールでズーム", () => {
     return getByTestId("timeline-scroll-container");
   }
 
-  it("プレーンなホイール（縦回転 上）でズームインする", () => {
+  it("プレーンなホイール（縦回転 上）でズームインする（連続係数）", () => {
     const container = renderViewport();
     act(() => {
       fireEvent.wheel(container, { deltaY: -100, deltaX: 0 });
     });
-    expect(useTimelineStore.getState().zoom).toBeCloseTo(1.25);
+    // 固定 1.25x ではなく deltaY 量ベースの連続係数で拡大する。
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(
+      zoomFactorFromWheel(-100),
+    );
   });
 
-  it("プレーンなホイール（縦回転 下）でズームアウトする", () => {
+  it("プレーンなホイール（縦回転 下）でズームアウトする（連続係数）", () => {
     const container = renderViewport();
     act(() => {
       fireEvent.wheel(container, { deltaY: 100, deltaX: 0 });
     });
-    expect(useTimelineStore.getState().zoom).toBeCloseTo(1 / 1.25);
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(
+      zoomFactorFromWheel(100),
+    );
+  });
+
+  it("小さな deltaY（トラックパッド）は細かい連続ステップでズームする", () => {
+    const container = renderViewport();
+    act(() => {
+      fireEvent.wheel(container, { deltaY: -8, deltaX: 0 });
+    });
+    const z = useTimelineStore.getState().zoom;
+    // 旧実装は符号だけ見て 1.25x 固定だった。連続化で微小ステップになる。
+    expect(z).toBeGreaterThan(1);
+    expect(z).toBeLessThan(1.05);
+    expect(z).toBeCloseTo(zoomFactorFromWheel(-8));
   });
 
   it("Shift+ホイールはズームせず横スクロールに委ねる", () => {
@@ -454,11 +472,15 @@ describe("TimelineViewport – マウスホイールでズーム", () => {
     );
     const container = getByTestId("timeline-scroll-container");
     stubScrollGeometry(container, 100);
-    // padLeft=PAD_LEFT=48（showThreads=false）, cursorX=400, zoom 1→1.25。
+    // padLeft=PAD_LEFT=48（showThreads=false）, cursorX=400, zoom 1→連続係数。
+    const nextZoom = zoomFactorFromWheel(-100);
     dispatchWheel(container, { deltaY: -100, clientX: 400 });
-    expect(useTimelineStore.getState().zoom).toBeCloseTo(1.25);
-    // computeZoomScrollLeft(100,400,48,1,1.25) = 213。
-    expect(container.scrollLeft).toBeCloseTo(213, 4);
+    expect(useTimelineStore.getState().zoom).toBeCloseTo(nextZoom);
+    // scrollLeft はカーソル下の点を固定する値（算術は computeZoomScrollLeft で検証済）。
+    expect(container.scrollLeft).toBeCloseTo(
+      computeZoomScrollLeft(100, 400, 48, 1, nextZoom),
+      4,
+    );
   });
 
   it("ズームアウトでもカーソル基準で scrollLeft を調整する", () => {
@@ -468,12 +490,15 @@ describe("TimelineViewport – マウスホイールでズーム", () => {
     );
     const container = getByTestId("timeline-scroll-container");
     stubScrollGeometry(container, 600);
-    // zoom 2 → 2/1.25 = 1.6。cursorX=300, pad=48。
+    // zoom 2 → 2×連続係数。cursorX=300, pad=48。
+    const nextZoom = 2 * zoomFactorFromWheel(100);
     dispatchWheel(container, { deltaY: 100, clientX: 300 });
     const z = useTimelineStore.getState().zoom;
-    expect(z).toBeCloseTo(1.6);
-    // scaled = 600+300-48 = 852, 48 + 852*(1.6/2) - 300 = 48 + 681.6 - 300 = 429.6
-    expect(container.scrollLeft).toBeCloseTo(429.6, 3);
+    expect(z).toBeCloseTo(nextZoom);
+    expect(container.scrollLeft).toBeCloseTo(
+      computeZoomScrollLeft(600, 300, 48, 2, nextZoom),
+      3,
+    );
   });
 
   it("ズーム限界（クランプで倍率不変）では scrollLeft を変えない", () => {
