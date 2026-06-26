@@ -28,6 +28,7 @@ import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
+import { fitLabelToWidth } from "./threadLabelFit";
 import type { PlotPhaseType } from "@/db/schema";
 import { recordMark } from "@/lib/perfLog";
 import {
@@ -62,6 +63,9 @@ const NODE_RING = 3;
 /** 左に固定するスレッドラベル列の幅（px）。ここまで content を右へ寄せる。
  *  fit-zoom（Ctrl+0）が左ガターを正しく確保できるよう export する。 */
 export const SUBWAY_LABEL_GUTTER = 150;
+/** スレッドヘッダー（カプセル型ラベル）でテキストが使える幅(px)。
+ *  カプセル内側右端(6 + GUTTER-24) − テキスト開始 x(36) − 右余白(10)。 */
+const SUBWAY_LABEL_TEXT_WIDTH = SUBWAY_LABEL_GUTTER - 24 + 6 - 36 - 10;
 const LABEL_Y = 16;
 const LANE_Y = 60;
 const AXIS_Y = LANE_Y;
@@ -1918,8 +1922,12 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     const color = lane.thread.color ?? "var(--primary)";
                     const isDragged = lane.thread.id === draggedId;
                     const cyL = lane.y;
-                    const display =
-                      name.length > 12 ? name.slice(0, 11) + "…" : name;
+                    // 全角/半角の実幅を見てカプセル内に収める（CJK 名で溢れる回避）。
+                    const display = fitLabelToWidth(
+                      name,
+                      SUBWAY_LABEL_TEXT_WIDTH,
+                      11,
+                    );
                     const selected = selectedPlotThreadId === lane.thread.id;
                     return (
                       <g
