@@ -4936,6 +4936,8 @@
     "ageConflictDetail": "Age conflict: computed {{age}}y but text says \"{{word}}\"",
     "birth": "Birth",
     "birthHint": "Birth of the main character; reference for age",
+    "twoPlacesConflict": "Two-places conflict: same character is in two places at once",
+    "location": "Location",
     "startTime": "Start",
     "endTime": "End",
     "precisionLabel": "Precision",

@@ -28,6 +28,7 @@ import {
 } from "./api";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { eventPositions, buildCausalEdges } from "./chronicleEdges";
+import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
 import { buildChronicleLaneModel } from "./chronicleLaneModel";
 import { scaleEvents } from "./chronicleTimeScale";
 import { ChronicleViewport } from "./ChronicleViewport";
@@ -129,15 +130,21 @@ export function ChroniclePanel() {
     () => findCausalityConflicts({ events, relations }),
     [events, relations],
   );
-  // 季節 + 年齢 + 因果の矛盾を統合した警告対象 eventId 集合。
+  // 2か所同時（同一人物が同時刻に別場所）。
+  const twoPlacesConflicts = useMemo(
+    () => findTwoPlacesConflicts({ events }),
+    [events],
+  );
+  // 季節 + 年齢 + 因果 + 2か所同時 の矛盾を統合した警告対象 eventId 集合。
   const issueIds = useMemo(
     () =>
       new Set([
         ...conflictIds,
         ...ageConflictIds,
         ...causalIssueEventIds(causalConflicts),
+        ...twoPlacesEventIds(twoPlacesConflicts),
       ]),
-    [conflictIds, ageConflictIds, causalConflicts],
+    [conflictIds, ageConflictIds, causalConflicts, twoPlacesConflicts],
   );
 
   const model = useMemo(
@@ -390,6 +397,9 @@ export function ChroniclePanel() {
           people={people}
           conflicts={conflicts.filter((c) => c.eventId === selected.id)}
           ageConflicts={ageConflicts.filter((c) => c.eventId === selected.id)}
+          hasTwoPlacesIssue={twoPlacesConflicts.some(
+            (c) => c.eventA === selected.id || c.eventB === selected.id,
+          )}
           linkedSceneCount={selectedSceneIds.length}
           allEvents={events}
           causeIds={selectedCauseIds}

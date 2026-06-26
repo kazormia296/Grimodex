@@ -17,6 +17,7 @@ export interface EventRow {
   note: string | null;
   ordinal: string;
   primaryCodexId: string | null;
+  locationCodexId: string | null;
   startTime: number | null;
   endTime: number | null;
   precision: EventPrecision;
@@ -45,6 +46,7 @@ export function normalizeEvent(raw: unknown): EventRow {
     note: nullableStr(r.note),
     ordinal: s(r.ordinal, "a0"),
     primaryCodexId: nullableStr(r.primaryCodexId ?? r.primary_codex_id),
+    locationCodexId: nullableStr(r.locationCodexId ?? r.location_codex_id),
     startTime: nullableNum(r.startTime ?? r.start_time),
     endTime: nullableNum(r.endTime ?? r.end_time),
     precision: s(r.precision, "exact") as EventPrecision,
@@ -68,6 +70,7 @@ export async function createEvent(data: {
   note?: string | null;
   ordinal?: string;
   primaryCodexId?: string | null;
+  locationCodexId?: string | null;
   startTime?: number | null;
   endTime?: number | null;
   precision?: EventPrecision;
@@ -87,6 +90,7 @@ export async function createEvent(data: {
     note: data.note ?? null,
     ordinal,
     primaryCodexId: data.primaryCodexId ?? null,
+    locationCodexId: data.locationCodexId ?? null,
     startTime: data.startTime ?? null,
     endTime: data.endTime ?? null,
     precision: data.precision ?? "exact",
@@ -107,6 +111,7 @@ export async function updateEvent(
       | "note"
       | "ordinal"
       | "primaryCodexId"
+      | "locationCodexId"
       | "startTime"
       | "endTime"
       | "precision"

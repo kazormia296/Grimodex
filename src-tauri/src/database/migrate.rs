@@ -1728,7 +1728,8 @@ impl Database {
                 title            TEXT NOT NULL DEFAULT '',
                 note             TEXT,
                 ordinal          TEXT NOT NULL DEFAULT 'a0',
-                primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                primary_codex_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                 start_time       INTEGER,
                 end_time         INTEGER,
                 precision        TEXT NOT NULL DEFAULT 'exact'
@@ -1743,8 +1744,14 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_events_ordinal
                 ON events(project_id, ordinal);",
         )?;
-        // 既存 DB（P0 で events 作成済）への kind 列追加。CHECK 無しの素 ALTER。
+        // 既存 DB（P0 で events 作成済）への列追加。CHECK 無しの素 ALTER。
         Self::add_column_if_missing(&conn, "events", "kind", "TEXT NOT NULL DEFAULT 'generic'")?;
+        Self::add_column_if_missing(
+            &conn,
+            "events",
+            "location_codex_id",
+            "TEXT REFERENCES codex_entries(id) ON DELETE SET NULL",
+        )?;
 
         // 出来事への参加 codex（多対多）。主参加は events.primary_codex_id。
         // src/db/schema.ts の eventParticipants とミラー。

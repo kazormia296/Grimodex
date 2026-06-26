@@ -1337,6 +1337,11 @@ export const events = sqliteTable(
     primaryCodexId: text("primary_codex_id").references(() => codexEntries.id, {
       onDelete: "set null",
     }),
+    // 出来事の場所（codex）。2か所同時チェックの基準。null=未指定。
+    locationCodexId: text("location_codex_id").references(
+      () => codexEntries.id,
+      { onDelete: "set null" },
+    ),
     // 暦ライト数値時刻（紀元からの日数）。null=ordinal のみ（連続間隔/季節は出ない）。
     startTime: integer("start_time"),
     // interval 終端（紀元からの日数）。null=point。

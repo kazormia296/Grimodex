@@ -15,6 +15,7 @@ export interface ChronicleInspectorProps {
   people: { id: string; name: string }[];
   conflicts?: SeasonConflict[];
   ageConflicts?: AgeConflict[];
+  hasTwoPlacesIssue?: boolean;
   /** この出来事が参照するシーン数（pull/stamp の可否）。 */
   linkedSceneCount?: number;
   /** 原因セレクト用の全出来事（自分自身は除外して表示）。 */
@@ -37,6 +38,7 @@ export function ChronicleInspector({
   people,
   conflicts,
   ageConflicts,
+  hasTwoPlacesIssue = false,
   linkedSceneCount = 0,
   allEvents = [],
   causeIds = [],
@@ -106,6 +108,17 @@ export function ChronicleInspector({
                 age: ageConflicts[0].computedAge,
                 word: ageConflicts[0].ageWord,
               },
+            )}
+          </span>
+        </div>
+      )}
+      {hasTwoPlacesIssue && (
+        <div className="flex items-start gap-1 rounded bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            {t(
+              "chronicle.twoPlacesConflict",
+              "2か所同時の矛盾: 同一人物が同時刻に別の場所にいる",
             )}
           </span>
         </div>
@@ -195,6 +208,23 @@ export function ChronicleInspector({
             value={event.primaryCodexId ?? ""}
             onChange={(e) =>
               onPatch({ primaryCodexId: e.target.value || null })
+            }
+            className="max-w-32 rounded border bg-transparent px-1 py-0.5"
+          >
+            <option value="">{t("chronicle.none", "なし")}</option>
+            {people.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1">
+          {t("chronicle.location", "場所")}
+          <select
+            value={event.locationCodexId ?? ""}
+            onChange={(e) =>
+              onPatch({ locationCodexId: e.target.value || null })
             }
             className="max-w-32 rounded border bg-transparent px-1 py-0.5"
           >
