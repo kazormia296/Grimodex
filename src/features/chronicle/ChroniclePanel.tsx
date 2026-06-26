@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, ZoomIn, ZoomOut, CalendarRange } from "lucide-react";
+import {
+  Plus,
+  ZoomIn,
+  ZoomOut,
+  CalendarRange,
+  CalendarPlus,
+  AlertTriangle,
+} from "lucide-react";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useChronicleStore } from "./chronicleStore";
@@ -11,11 +18,13 @@ import {
   updateEvent,
   deleteEvent,
   type EventRow,
+  type SceneEventRow,
 } from "./api";
 import { buildChronicleLaneModel } from "./chronicleLaneModel";
 import { scaleEvents } from "./chronicleTimeScale";
 import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleInspector } from "./ChronicleInspector";
+import { useSeasonConflicts } from "./useSeasonConflicts";
 
 const GUTTER_X = 120;
 const STEP_BASE = 120;
@@ -34,8 +43,13 @@ export function ChroniclePanel() {
   const setSelectedEventId = useChronicleStore((s) => s.setSelectedEventId);
 
   const [events, setEvents] = useState<EventRow[]>([]);
-  const [scenedEventIds, setScenedEventIds] = useState<Set<string>>(new Set());
+  const [sceneLinks, setSceneLinks] = useState<SceneEventRow[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+
+  const scenedEventIds = useMemo(
+    () => new Set(sceneLinks.map((l) => l.eventId)),
+    [sceneLinks],
+  );
 
   const people = useMemo(
     () => entries.map((e) => ({ id: e.id, name: e.name })),
@@ -45,7 +59,7 @@ export function ChroniclePanel() {
   useEffect(() => {
     if (!projectId) {
       setEvents([]);
-      setScenedEventIds(new Set());
+      setSceneLinks([]);
       return;
     }
     let cancelled = false;
@@ -54,12 +68,12 @@ export function ChroniclePanel() {
         if (cancelled) return;
         setEvents(rows);
         const links = await listSceneEvents(rows.map((e) => e.id));
-        if (!cancelled) setScenedEventIds(new Set(links.map((l) => l.eventId)));
+        if (!cancelled) setSceneLinks(links);
       })
       .catch(() => {
         if (!cancelled) {
           setEvents([]);
-          setScenedEventIds(new Set());
+          setSceneLinks([]);
         }
       });
     return () => {
@@ -68,6 +82,9 @@ export function ChroniclePanel() {
   }, [projectId, reloadKey]);
 
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
+
+  const { hasCalendar, conflicts, conflictIds, ensureDefaultCalendar } =
+    useSeasonConflicts({ projectId, events, links: sceneLinks });
 
   const model = useMemo(
     () =>
@@ -154,6 +171,23 @@ export function ChroniclePanel() {
         <span className="text-xs text-muted-foreground">
           {t("chronicle.count", "{{count}} 件", { count: n })}
         </span>
+        {!hasCalendar ? (
+          <button
+            type="button"
+            onClick={() => void ensureDefaultCalendar()}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+          >
+            <CalendarPlus className="size-3.5" />
+            {t("chronicle.setupCalendar", "暦を設定")}
+          </button>
+        ) : conflicts.length > 0 ? (
+          <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+            <AlertTriangle className="size-3.5" />
+            {t("chronicle.conflictCount", "季節矛盾 {{count}} 件", {
+              count: conflicts.length,
+            })}
+          </span>
+        ) : null}
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
@@ -197,6 +231,7 @@ export function ChroniclePanel() {
             gutterX={GUTTER_X}
             selectedEventId={selectedEventId}
             onSelectEvent={setSelectedEventId}
+            conflictIds={conflictIds}
           />
         )}
       </div>
@@ -205,6 +240,7 @@ export function ChroniclePanel() {
         <ChronicleInspector
           event={selected}
           people={people}
+          conflicts={conflicts.filter((c) => c.eventId === selected.id)}
           onPatch={handlePatch}
           onDelete={handleDelete}
         />
