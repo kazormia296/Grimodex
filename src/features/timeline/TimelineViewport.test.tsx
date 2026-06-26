@@ -808,6 +808,91 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
     expect(plain?.getAttribute("fill")).not.toContain("background");
   });
 
+  it("拡大時、from列にチップがあるとランプ根本をチップ左へ逃がす", () => {
+    seedThreads(); // t1: l1@s1(introduce), l2@s3(climax) / t2: l3@s3
+    usePlotThreadStore.setState({
+      branches: [
+        {
+          id: "br-s3",
+          projectId: "p",
+          fromThreadId: "t1", // from(t1) は s3 に climax チップ(l2)を持つ
+          toThreadId: "t2",
+          atNodeId: "s3",
+          kind: "branch",
+          createdAt: "",
+          updatedAt: "",
+        },
+      ],
+    });
+    useTimelineStore.setState({
+      showThreads: true,
+      axisMode: "reading",
+      zoom: 1, // STEP=96 >= CHIP_MIN_STEP(72) → チップ表示
+    });
+    const { getByTestId, container } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    // from チップ(l2)の左端 x。
+    const rect = getByTestId("plot-marker-l2").querySelector("rect");
+    const chipLeft = parseFloat(rect?.getAttribute("x") ?? "NaN");
+    // コネクタ path 始点 x（= ランプ根本）。"M <x> <y> C ..."
+    const conn = container.querySelector(
+      '[data-testid="plot-thread-connector"]',
+    );
+    const startX = parseFloat((conn?.getAttribute("d") ?? "").split(" ")[1]);
+    // 根本がチップ左端より左に出る（旧実装の X-RAMP はチップ下に隠れていた）。
+    expect(Number.isNaN(startX)).toBe(false);
+    expect(startX).toBeLessThan(chipLeft);
+  });
+
+  it("拡大時、ランプの逃がし量（余白）は倍率に応じて大きくなる", () => {
+    // 余白 = chipLeft - startX = chipW/2 は一定なので、X に依らず CONNECTOR_RAMP_MARGIN*zoom。
+    const gapAt = (zoom: number) => {
+      seedThreads();
+      usePlotThreadStore.setState({
+        branches: [
+          {
+            id: "br-s3",
+            projectId: "p",
+            fromThreadId: "t1",
+            toThreadId: "t2",
+            atNodeId: "s3",
+            kind: "branch",
+            createdAt: "",
+            updatedAt: "",
+          },
+        ],
+      });
+      useTimelineStore.setState({
+        showThreads: true,
+        axisMode: "reading",
+        zoom,
+      });
+      const { getByTestId, container, unmount } = render(
+        <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+      );
+      const chipLeft = parseFloat(
+        getByTestId("plot-marker-l2")
+          .querySelector("rect")
+          ?.getAttribute("x") ?? "NaN",
+      );
+      const startX = parseFloat(
+        (
+          container
+            .querySelector('[data-testid="plot-thread-connector"]')
+            ?.getAttribute("d") ?? ""
+        ).split(" ")[1],
+      );
+      unmount();
+      return chipLeft - startX;
+    };
+    const gap1 = gapAt(1);
+    const gap2 = gapAt(2);
+    expect(gap1).toBeGreaterThan(0);
+    // 倍率2倍で余白も約2倍（chipW/2 は一定、CONNECTOR_RAMP_MARGIN*zoom 部分が伸びる）。
+    expect(gap2).toBeGreaterThan(gap1 * 1.5);
+  });
+
   it("自走完結スレッドに終端キャップ（塗りノブ）を描く", () => {
     seedThreads(); // t1: l1@s1, l2@s3（最後 s3 は merge でない）→ 終端あり
     useTimelineStore.setState({ showThreads: true, axisMode: "reading" });

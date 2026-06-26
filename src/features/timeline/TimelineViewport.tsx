@@ -46,6 +46,10 @@ const CHIP_FONT = 10;
 const CHIP_MIN_STEP = 72;
 /** subway 風ランプコネクタの水平方向の伸び（px）。 */
 const CONNECTOR_RAMP = 34;
+/** from 列にチップ（マーカー）がある時、ランプ始点をチップ左端からさらに左へ逃がす余白
+ *  （px）。根本がチップ下に隠れず左に出る。chipW/2 + これ ぶん左から立ち上げる。
+ *  実測チップ幅が算出値より広い場合（長ラベル）でも確実にクリアするよう余裕を持たせる。 */
+const CONNECTOR_RAMP_MARGIN = 24;
 
 // ───────── Subway レイアウト（AeonTimeline 風）の定数 ─────────
 /** 路線（細い実線）の太さ。 */
@@ -537,6 +541,19 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // （laneModel !== homeLaneModel）は両者排他なので行わない。
     if (markerDrag?.moved && laneModel === homeLaneModel) {
       laneModel = buildMarkerDragModel(markerDrag) ?? laneModel;
+    }
+
+    // from 列にチップ（マーカー）があるコネクタは、ランプ根本がそのチップの下に隠れる。
+    // スレッドごとに「列 → phaseType」を引けるようにして、ランプ始点をチップ幅ぶん左へ
+    // 逃がす判定に使う（描画は下の connectors マップ）。
+    const markerPhaseByThreadCol = new Map<
+      string,
+      Map<number, PlotPhaseType>
+    >();
+    for (const lane of laneModel.lanes) {
+      const cols = new Map<number, PlotPhaseType>();
+      for (const mk of lane.markers) cols.set(mk.x, mk.phaseType);
+      markerPhaseByThreadCol.set(lane.thread.id, cols);
     }
 
     function handleLaneDoubleClick(
@@ -1647,8 +1664,33 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
               axisMode === "reading" &&
               laneModel.connectors.map((c) => {
                 const X = xOf(c.x);
-                // from レーン(X-RAMP) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
-                const d = `M ${X - CONNECTOR_RAMP} ${c.fromY} C ${X - CONNECTOR_RAMP * 0.4} ${c.fromY}, ${X - CONNECTOR_RAMP * 0.6} ${c.toY}, ${X} ${c.toY}`;
+                // from 列に拡大チップ（マーカー）があると、ランプ根本がチップ下に隠れる。
+                // その時はランプ始点を「チップ左端 - 余白」まで左へ逃がして根本を見せる。
+                // チップが無い（帯のまま渡る）/縮小時（点）は従来どおり CONNECTOR_RAMP。
+                const fromPhase = markerPhaseByThreadCol
+                  .get(c.fromThreadId)
+                  ?.get(c.x);
+                let ramp = CONNECTOR_RAMP;
+                if (fromPhase && STEP >= CHIP_MIN_STEP) {
+                  const fromLabel = t(
+                    `plotThread.phaseType.${fromPhase}`,
+                    fromPhase,
+                  );
+                  const fromChipW = Math.max(
+                    28,
+                    fromLabel.length * CHIP_FONT + 12,
+                  );
+                  // 余白（根本の出っ張り）は倍率に応じてスケールさせる。チップ幅は
+                  // ズーム非依存の固定 px なので chipW/2（チップ下に隠れない最低限）は
+                  // 常に確保し、追加の逃がし量だけ zoom 倍にする（拡大ほど大きく逃がす／
+                  // チップ表示下限の低ズームでは前の列へ食い込みにくくする）。
+                  ramp = Math.max(
+                    CONNECTOR_RAMP,
+                    fromChipW / 2 + CONNECTOR_RAMP_MARGIN * zoom,
+                  );
+                }
+                // from レーン(X-ramp) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
+                const d = `M ${X - ramp} ${c.fromY} C ${X - ramp * 0.4} ${c.fromY}, ${X - ramp * 0.6} ${c.toY}, ${X} ${c.toY}`;
                 return (
                   <path
                     key={`conn-${c.id}`}
