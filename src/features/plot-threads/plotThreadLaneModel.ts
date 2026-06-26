@@ -67,6 +67,8 @@ export interface PlotConnector {
   toY: number;
   kind: PlotBranchKind;
   color: string | null;
+  /** 分岐元スレッド。描画側で from 列のマーカー（チップ）有無を引くのに使う。 */
+  fromThreadId: string;
 }
 export interface PlotLaneModel {
   lanes: PlotLane[];
@@ -399,6 +401,7 @@ export function buildPlotLaneModel(args: {
         toY,
         kind: b.kind,
         color: from.thread.color,
+        fromThreadId: b.fromThreadId,
       },
     ];
   });
