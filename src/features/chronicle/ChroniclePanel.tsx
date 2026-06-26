@@ -8,6 +8,7 @@ import {
   CalendarCog,
   AlertTriangle,
   Sparkles,
+  Spline,
 } from "lucide-react";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -36,6 +37,9 @@ import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleInspector } from "./ChronicleInspector";
 import { ChronicleCalendarEditor } from "./ChronicleCalendarEditor";
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
+import { ChronicleTieView } from "./ChronicleTieView";
+import { buildTieView } from "./tieView";
+import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { useSeasonConflicts } from "./useSeasonConflicts";
 
 const GUTTER_X = 120;
@@ -127,6 +131,7 @@ export function ChroniclePanel() {
   } = useSeasonConflicts({ projectId, events, links: sceneLinks });
   const [calendarEditorOpen, setCalendarEditorOpen] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
+  const [tieMode, setTieMode] = useState(false);
 
   // 因果矛盾（効果が原因より前）。
   const causalConflicts = useMemo(
@@ -192,6 +197,41 @@ export function ChroniclePanel() {
     );
     return buildCausalEdges(relations, positions, conflictKeys);
   }, [scaled, model, relations, causalConflicts]);
+
+  // タイ線複合ビュー（reading 順 scene ↔ 作中時間 event）。tieMode のときだけ算出。
+  const tieView = useMemo(() => {
+    if (!tieMode) return null;
+    const readingOrder = computeGlobalSceneOrder(nodes);
+    const linked = new Set(sceneLinks.map((l) => l.sceneId));
+    const sceneById = new Map(nodes.map((nd) => [nd.id, nd]));
+    const tieScenes = [...linked]
+      .filter((sid) => sceneById.has(sid))
+      .sort((a, b) => (readingOrder.get(a) ?? 0) - (readingOrder.get(b) ?? 0))
+      .map((sid) => ({ id: sid, title: sceneById.get(sid)!.title }));
+    const tieEvents = events.map((e) => ({
+      id: e.id,
+      title: e.title,
+      ordinal: e.ordinal,
+    }));
+    const maxCount = Math.max(tieScenes.length, tieEvents.length, 1);
+    const TIE_PAD = 40;
+    const width = 2 * TIE_PAD + Math.max(1, maxCount - 1) * STEP_BASE * zoom;
+    return {
+      model: buildTieView({
+        scenes: tieScenes,
+        events: tieEvents,
+        links: sceneLinks.map((l) => ({
+          sceneId: l.sceneId,
+          eventId: l.eventId,
+        })),
+        width,
+        padX: TIE_PAD,
+        topY: 30,
+        bottomY: 150,
+      }),
+      width,
+    };
+  }, [tieMode, nodes, sceneLinks, events, zoom]);
 
   const selected = useMemo(
     () => events.find((e) => e.id === selectedEventId) ?? null,
@@ -339,6 +379,15 @@ export function ChroniclePanel() {
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
+            onClick={() => setTieMode((m) => !m)}
+            className={`rounded p-1 hover:bg-accent ${tieMode ? "text-primary" : ""}`}
+            aria-label={t("chronicle.tieView", "読む順×作中時間")}
+            title={t("chronicle.tieView", "読む順×作中時間")}
+          >
+            <Spline className="size-3.5" />
+          </button>
+          <button
+            type="button"
             onClick={() => setZoom(zoom / 1.25)}
             className="rounded p-1 hover:bg-accent"
             aria-label={t("chronicle.zoomOut", "縮小")}
@@ -388,6 +437,12 @@ export function ChroniclePanel() {
               "出来事がまだありません。「追加」で作成できます。",
             )}
           </div>
+        ) : tieMode && tieView ? (
+          <ChronicleTieView
+            model={tieView.model}
+            width={tieView.width}
+            height={180}
+          />
         ) : (
           <ChronicleViewport
             model={model}
