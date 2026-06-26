@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useChronicleStore } from "./chronicleStore";
 import {
   listEvents,
@@ -41,6 +43,9 @@ export function ChroniclePanel() {
   const setZoom = useChronicleStore((s) => s.setZoom);
   const selectedEventId = useChronicleStore((s) => s.selectedEventId);
   const setSelectedEventId = useChronicleStore((s) => s.setSelectedEventId);
+  const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
+  const nodes = useTreeStore((s) => s.nodes);
+  const timelineSelected = useTimelineStore((s) => s.selectedNodeIds);
 
   const [events, setEvents] = useState<EventRow[]>([]);
   const [sceneLinks, setSceneLinks] = useState<SceneEventRow[]>([]);
@@ -50,6 +55,15 @@ export function ChroniclePanel() {
     () => new Set(sceneLinks.map((l) => l.eventId)),
     [sceneLinks],
   );
+
+  // Timeline で選択中のシーンに紐づく event（関連ハイライト）。
+  const relatedIds = useMemo(() => {
+    if (timelineSelected.length === 0) return new Set<string>();
+    const sel = new Set(timelineSelected);
+    return new Set(
+      sceneLinks.filter((l) => sel.has(l.sceneId)).map((l) => l.eventId),
+    );
+  }, [timelineSelected, sceneLinks]);
 
   const people = useMemo(
     () => entries.map((e) => ({ id: e.id, name: e.name })),
@@ -153,6 +167,41 @@ export function ChroniclePanel() {
     refresh();
   }, [selected, refresh, setSelectedEventId]);
 
+  // 選択 event に紐づくシーン id（pull/stamp 対象）。
+  const selectedSceneIds = useMemo(
+    () =>
+      selected
+        ? sceneLinks
+            .filter((l) => l.eventId === selected.id)
+            .map((l) => l.sceneId)
+        : [],
+    [selected, sceneLinks],
+  );
+
+  // stamp: event の ordinal を参照シーンの storyTimeOrder へ刻む（片方向・非破壊）。
+  const handleStamp = useCallback(async () => {
+    if (!selected) return;
+    await Promise.all(
+      selectedSceneIds.map((sceneId) =>
+        updateStoryTime(sceneId, selected.ordinal),
+      ),
+    );
+  }, [selected, selectedSceneIds, updateStoryTime]);
+
+  // pull: 参照シーンの storyTimeOrder を event の ordinal へ取り込む。
+  const handlePull = useCallback(async () => {
+    if (!selected) return;
+    const nodeById = new Map(nodes.map((nd) => [nd.id, nd]));
+    const order = selectedSceneIds
+      .map((sid) => nodeById.get(sid)?.storyTimeOrder ?? null)
+      .find((o): o is string => o != null);
+    if (!order) return;
+    setEvents((evs) =>
+      evs.map((e) => (e.id === selected.id ? { ...e, ordinal: order } : e)),
+    );
+    void updateEvent(selected.id, { ordinal: order });
+  }, [selected, selectedSceneIds, nodes]);
+
   if (!projectId) {
     return (
       <div className="p-4 text-sm text-muted-foreground">
@@ -232,6 +281,7 @@ export function ChroniclePanel() {
             selectedEventId={selectedEventId}
             onSelectEvent={setSelectedEventId}
             conflictIds={conflictIds}
+            relatedIds={relatedIds}
           />
         )}
       </div>
@@ -241,6 +291,9 @@ export function ChroniclePanel() {
           event={selected}
           people={people}
           conflicts={conflicts.filter((c) => c.eventId === selected.id)}
+          linkedSceneCount={selectedSceneIds.length}
+          onStamp={handleStamp}
+          onPull={handlePull}
           onPatch={handlePatch}
           onDelete={handleDelete}
         />
