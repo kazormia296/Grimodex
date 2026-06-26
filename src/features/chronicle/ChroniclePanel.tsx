@@ -27,6 +27,7 @@ import {
   type EventRelationRow,
 } from "./api";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
+import { eventPositions, buildCausalEdges } from "./chronicleEdges";
 import { buildChronicleLaneModel } from "./chronicleLaneModel";
 import { scaleEvents } from "./chronicleTimeScale";
 import { ChronicleViewport } from "./ChronicleViewport";
@@ -159,6 +160,16 @@ export function ChroniclePanel() {
     );
     return new Map(pts.map((p) => [p.eventId, p]));
   }, [events, contentW]);
+
+  // 因果エッジの描画幾何（原因→結果・矛盾は赤）。
+  const causalEdges = useMemo(() => {
+    const xById = new Map([...scaled].map(([k, v]) => [k, v.x]));
+    const positions = eventPositions(model, xById);
+    const conflictKeys = new Set(
+      causalConflicts.map((c) => `${c.causeId}|${c.effectId}`),
+    );
+    return buildCausalEdges(relations, positions, conflictKeys);
+  }, [scaled, model, relations, causalConflicts]);
 
   const selected = useMemo(
     () => events.find((e) => e.id === selectedEventId) ?? null,
@@ -356,6 +367,7 @@ export function ChroniclePanel() {
             onSelectEvent={setSelectedEventId}
             conflictIds={issueIds}
             relatedIds={relatedIds}
+            causalEdges={causalEdges}
           />
         )}
       </div>
