@@ -143,3 +143,35 @@ describe("ChronicleViewport related highlight", () => {
     expect(container.querySelector('[data-related="m1"]')).toBeNull();
   });
 });
+
+describe("ChronicleViewport causal edges", () => {
+  it("causalEdges を線で描き conflict は赤系クラス", () => {
+    const { container } = render(
+      <ChronicleViewport
+        model={model}
+        scaled={scaled}
+        width={400}
+        gutterX={60}
+        selectedEventId={null}
+        onSelectEvent={() => {}}
+        causalEdges={[
+          {
+            causeId: "m1",
+            effectId: "m2",
+            x1: 100,
+            y1: 30,
+            x2: 200,
+            y2: 30,
+            conflict: true,
+          },
+        ]}
+      />,
+    );
+    const edge = container.querySelector('[data-causal-edge="m1|m2"]')!;
+    expect(edge).not.toBeNull();
+    expect(edge.tagName.toLowerCase()).toBe("line");
+    expect(edge.getAttribute("x1")).toBe("100");
+    expect(edge.getAttribute("x2")).toBe("200");
+    expect(edge.getAttribute("class")).toContain("stroke-red-500");
+  });
+});

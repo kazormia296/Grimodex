@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { ChronicleLaneModel } from "./chronicleLaneModel";
 import type { ScaledPoint } from "./chronicleTimeScale";
+import type { CausalEdgeGeom } from "./chronicleEdges";
 import { EventMarker } from "./EventMarker";
 
 export interface ChronicleViewportProps {
@@ -17,6 +18,8 @@ export interface ChronicleViewportProps {
   conflictIds?: Set<string>;
   /** Timeline で選択中のシーンに紐づく eventId 集合（関連ハイライト）。 */
   relatedIds?: Set<string>;
+  /** 因果エッジ（原因→結果）の描画幾何。conflict は赤で描く。 */
+  causalEdges?: CausalEdgeGeom[];
 }
 
 /**
@@ -33,6 +36,7 @@ export function ChronicleViewport({
   onSelectEvent,
   conflictIds,
   relatedIds,
+  causalEdges,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const hasUnassigned = model.unassigned.length > 0;
@@ -92,6 +96,25 @@ export function ChronicleViewport({
       aria-label={t("chronicle.viewportLabel", "作中年表")}
       className="text-foreground"
     >
+      {causalEdges && causalEdges.length > 0 && (
+        <g data-layer="causal-edges">
+          {causalEdges.map((e) => (
+            <line
+              key={`${e.causeId}|${e.effectId}`}
+              x1={e.x1}
+              y1={e.y1}
+              x2={e.x2}
+              y2={e.y2}
+              data-causal-edge={`${e.causeId}|${e.effectId}`}
+              className={
+                e.conflict ? "stroke-red-500" : "stroke-muted-foreground/40"
+              }
+              strokeWidth={e.conflict ? 1.5 : 1}
+              strokeDasharray={e.conflict ? undefined : "4 3"}
+            />
+          ))}
+        </g>
+      )}
       {model.lanes.map((lane) => (
         <g key={lane.codexId} data-lane-id={lane.codexId}>
           <line
