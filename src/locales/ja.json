@@ -4929,6 +4929,8 @@
     "ageConflictDetail": "年齢の矛盾: 算出{{age}}歳だが本文に「{{word}}」",
     "birth": "出生",
     "birthHint": "主人物の出生。年齢計算の基準点",
+    "twoPlacesConflict": "2か所同時の矛盾: 同一人物が同時刻に別の場所にいる",
+    "location": "場所",
     "startTime": "開始",
     "endTime": "終了",
     "precisionLabel": "確度",
