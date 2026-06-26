@@ -4,6 +4,7 @@ import {
   eventParticipants,
   sceneEvents,
   projectCalendar,
+  eventRelations,
 } from "@/db/schema";
 import type { EventPrecision } from "@/db/schema";
 import { and, eq, inArray } from "drizzle-orm";
@@ -251,4 +252,56 @@ export async function upsertProjectCalendar(data: {
         updatedAt: now,
       },
     });
+}
+
+// ───────── event_relations（因果エッジ） ─────────
+export interface EventRelationRow {
+  causeId: string;
+  effectId: string;
+}
+
+export async function listEventRelations(
+  projectId: string,
+): Promise<EventRelationRow[]> {
+  const rows = await db
+    .select()
+    .from(eventRelations)
+    .where(eq(eventRelations.projectId, projectId));
+  return rows.map((raw) => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    return {
+      causeId: s(r.causeEventId ?? r.cause_event_id),
+      effectId: s(r.effectEventId ?? r.effect_event_id),
+    };
+  });
+}
+
+export async function addEventRelation(
+  projectId: string,
+  causeId: string,
+  effectId: string,
+): Promise<void> {
+  if (causeId === effectId) return; // 自己因果は無効
+  await db
+    .insert(eventRelations)
+    .values({
+      projectId,
+      causeEventId: causeId,
+      effectEventId: effectId,
+    })
+    .onConflictDoNothing();
+}
+
+export async function removeEventRelation(
+  causeId: string,
+  effectId: string,
+): Promise<void> {
+  await db
+    .delete(eventRelations)
+    .where(
+      and(
+        eq(eventRelations.causeEventId, causeId),
+        eq(eventRelations.effectEventId, effectId),
+      ),
+    );
 }
