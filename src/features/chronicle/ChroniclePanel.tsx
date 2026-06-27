@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import {
   Plus,
   ZoomIn,
@@ -85,13 +86,21 @@ export function ChroniclePanel() {
     [entries],
   );
 
+  const loadedProjectIdRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (!projectId) {
+    // プロジェクト切替時（reloadKey だけの refresh は除く）は、前プロジェクトの
+    // events/links/relations が画面と編集可能な Inspector に残らないよう、await の
+    // 前に同期的に local state と選択を捨てる。async gap 中に他プロジェクトの出来事を
+    // 誤って編集できないよう selectedEventId も即 null にする。
+    if (loadedProjectIdRef.current !== projectId) {
+      loadedProjectIdRef.current = projectId;
       setEvents([]);
       setSceneLinks([]);
       setRelations([]);
-      return;
+      setSelectedEventId(null);
     }
+    if (!projectId) return;
     let cancelled = false;
     listEvents(projectId)
       .then(async (rows) => {
@@ -116,7 +125,7 @@ export function ChroniclePanel() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, reloadKey]);
+  }, [projectId, reloadKey, setSelectedEventId]);
 
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -238,34 +247,53 @@ export function ChroniclePanel() {
     [events, selectedEventId],
   );
 
+  const [creating, setCreating] = useState(false);
   const handleAdd = useCallback(async () => {
-    if (!projectId) return;
-    const ev = await createEvent({
-      projectId,
-      title: t("chronicle.newEvent", "新しい出来事"),
-    });
-    setSelectedEventId(ev.id);
-    refresh();
-  }, [projectId, t, refresh, setSelectedEventId]);
+    // 二重発火ガード: 連打しても ordinal 採番が競合しないよう in-flight 中は弾く。
+    if (!projectId || creating) return;
+    setCreating(true);
+    try {
+      const ev = await createEvent({
+        projectId,
+        title: t("chronicle.newEvent", "新しい出来事"),
+      });
+      setSelectedEventId(ev.id);
+      refresh();
+    } catch {
+      toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+    } finally {
+      setCreating(false);
+    }
+  }, [projectId, creating, t, refresh, setSelectedEventId]);
 
   const handlePatch = useCallback(
-    (patch: Partial<EventRow>) => {
-      if (!selected) return;
+    async (patch: Partial<EventRow>) => {
+      if (!selected || !projectId) return;
       const id = selected.id;
+      const prev = selected; // 楽観適用前のスナップショット（失敗時に巻き戻す）
       setEvents((evs) =>
         evs.map((e) => (e.id === id ? { ...e, ...patch } : e)),
       );
-      void updateEvent(id, patch);
+      try {
+        await updateEvent(id, projectId, patch);
+      } catch {
+        setEvents((evs) => evs.map((e) => (e.id === id ? prev : e)));
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
     },
-    [selected],
+    [selected, projectId, t],
   );
 
   const handleDelete = useCallback(async () => {
-    if (!selected) return;
-    await deleteEvent(selected.id);
-    setSelectedEventId(null);
-    refresh();
-  }, [selected, refresh, setSelectedEventId]);
+    if (!selected || !projectId) return;
+    try {
+      await deleteEvent(selected.id, projectId);
+      setSelectedEventId(null);
+      refresh();
+    } catch {
+      toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+    }
+  }, [selected, projectId, refresh, setSelectedEventId, t]);
 
   // 選択 event に紐づくシーン id（pull/stamp 対象）。
   const selectedSceneIds = useMemo(
@@ -281,26 +309,38 @@ export function ChroniclePanel() {
   // stamp: event の ordinal を参照シーンの storyTimeOrder へ刻む（片方向・非破壊）。
   const handleStamp = useCallback(async () => {
     if (!selected) return;
-    await Promise.all(
-      selectedSceneIds.map((sceneId) =>
-        updateStoryTime(sceneId, selected.ordinal),
-      ),
-    );
-  }, [selected, selectedSceneIds, updateStoryTime]);
+    // ストア更新（楽観 state なし）。失敗はエラー通知のみ。
+    try {
+      await Promise.all(
+        selectedSceneIds.map((sceneId) =>
+          updateStoryTime(sceneId, selected.ordinal),
+        ),
+      );
+    } catch {
+      toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+    }
+  }, [selected, selectedSceneIds, updateStoryTime, t]);
 
   // pull: 参照シーンの storyTimeOrder を event の ordinal へ取り込む。
   const handlePull = useCallback(async () => {
-    if (!selected) return;
+    if (!selected || !projectId) return;
     const nodeById = new Map(nodes.map((nd) => [nd.id, nd]));
     const order = selectedSceneIds
       .map((sid) => nodeById.get(sid)?.storyTimeOrder ?? null)
       .find((o): o is string => o != null);
     if (!order) return;
+    const id = selected.id;
+    const prev = selected; // 失敗時に巻き戻すスナップショット
     setEvents((evs) =>
-      evs.map((e) => (e.id === selected.id ? { ...e, ordinal: order } : e)),
+      evs.map((e) => (e.id === id ? { ...e, ordinal: order } : e)),
     );
-    void updateEvent(selected.id, { ordinal: order });
-  }, [selected, selectedSceneIds, nodes]);
+    try {
+      await updateEvent(id, projectId, { ordinal: order });
+    } catch {
+      setEvents((evs) => evs.map((e) => (e.id === id ? prev : e)));
+      toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+    }
+  }, [selected, projectId, selectedSceneIds, nodes, t]);
 
   // 選択 event の原因（この event を効果とする関係の cause）。
   const selectedCauseIds = useMemo(
@@ -332,11 +372,11 @@ export function ChroniclePanel() {
   );
   const handleRemoveCause = useCallback(
     async (causeId: string) => {
-      if (!selected) return;
-      await removeEventRelation(causeId, selected.id);
+      if (!selected || !projectId) return;
+      await removeEventRelation(projectId, causeId, selected.id);
       refresh();
     },
-    [selected, refresh],
+    [selected, projectId, refresh],
   );
 
   if (!projectId) {
@@ -414,7 +454,8 @@ export function ChroniclePanel() {
           <button
             type="button"
             onClick={handleAdd}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent"
+            disabled={creating}
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Plus className="size-3.5" /> {t("chronicle.add", "追加")}
           </button>

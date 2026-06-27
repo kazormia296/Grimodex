@@ -80,6 +80,12 @@ export function getCommands(): CommandDef[] {
       panel: "timeline",
     },
     {
+      id: "focusChronicle",
+      label: i18next.t("keys.focusChronicle"),
+      defaultBinding: "Mod+Alt+K",
+      panel: "chronicle",
+    },
+    {
       id: "focusMap",
       label: i18next.t("keys.focusMap"),
       defaultBinding: "Mod+Alt+M",

@@ -32,8 +32,10 @@ function countSkipped(r: SkipReport): number {
     r.sceneCodexPins +
     r.sceneCodexMentions +
     r.sceneBeatPovCache +
+    r.eventParticipants +
     r.foreshadowPayoffSceneCleared +
-    r.mapNodePositionsLinkCleared
+    r.mapNodePositionsLinkCleared +
+    r.eventCodexRefCleared
   );
 }
 

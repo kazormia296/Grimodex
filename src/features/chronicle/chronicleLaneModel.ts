@@ -61,7 +61,7 @@ function toMarker(e: LaneInputEvent): ChronicleLaneMarker {
 /**
  * 出来事と人物 codex から「人物レーン年表」モデルを組む純関数。
  * - primary に1件以上ある人物だけレーン化（空レーンを作らない）。
- * - レーン順は (name, id) 昇順で決定的。marker は ordinal 昇順。
+ * - レーン順は (name, id) 昇順で決定的。marker は ordinal 昇順（同値は eventId 昇順）。
  * - primaryCodexId が null/未知の出来事は unassigned 行へ。
  * 決定性: 乱数/時刻なし。
  */
@@ -101,8 +101,8 @@ export function buildChronicleLaneModel(args: {
     });
 
   const lanes: ChronicleLane[] = orderedPeople.map((p, i) => {
-    const markers = (markersByPerson.get(p.id) ?? []).sort((a, b) =>
-      cmpKeys(a.ordinal, b.ordinal),
+    const markers = (markersByPerson.get(p.id) ?? []).sort(
+      (a, b) => cmpKeys(a.ordinal, b.ordinal) || cmpId(a.eventId, b.eventId),
     );
     return {
       codexId: p.id,
@@ -112,7 +112,9 @@ export function buildChronicleLaneModel(args: {
     };
   });
 
-  unassigned.sort((a, b) => cmpKeys(a.ordinal, b.ordinal));
+  unassigned.sort(
+    (a, b) => cmpKeys(a.ordinal, b.ordinal) || cmpId(a.eventId, b.eventId),
+  );
 
   return {
     lanes,

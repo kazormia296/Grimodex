@@ -105,6 +105,19 @@ export const AUX_SCOPES = [
   "plot_threads",
   "plot_thread_scene_links",
   "plot_thread_branches",
+  // owned by `body` (作中年表 / Chronicle). events FK projects; scene_events FK
+  // tree_nodes ON DELETE CASCADE (so a body wipe cascade-deletes scene links)
+  // and event_participants FK codex_entries ON DELETE CASCADE (so a codex wipe
+  // cascade-deletes participants). events/event_relations/project_calendar FK
+  // projects (NOT tree_nodes), so the tree_nodes wipe leaves them as orphans —
+  // they need an explicit DELETE + re-insert on body restore or they are lost /
+  // never reverted. events MUST precede its children so restore re-inserts the
+  // parent rows first.
+  "events",
+  "event_relations",
+  "scene_events",
+  "event_participants",
+  "project_calendar",
 ] as const;
 
 export type AuxScope = (typeof AUX_SCOPES)[number];
@@ -144,6 +157,11 @@ export const AUX_SCOPE_OWNER: Record<AuxScope, RestoreScope> = {
   plot_threads: "body",
   plot_thread_scene_links: "body",
   plot_thread_branches: "body",
+  events: "body",
+  event_relations: "body",
+  scene_events: "body",
+  event_participants: "body",
+  project_calendar: "body",
 };
 
 /**
@@ -186,6 +204,11 @@ export const AUX_TABLE: Record<AuxScope, string> = {
   plot_threads: "plot_threads",
   plot_thread_scene_links: "plot_thread_scene_links",
   plot_thread_branches: "plot_thread_branches",
+  events: "events",
+  event_relations: "event_relations",
+  scene_events: "scene_events",
+  event_participants: "event_participants",
+  project_calendar: "project_calendar",
 };
 
 /**
@@ -342,6 +365,22 @@ export const AUX_PROJECT_FILTER: Record<
     where: "thread_id IN (SELECT id FROM plot_threads WHERE project_id = ?)",
     binds: 1,
   },
+  // Chronicle (作中年表). events/event_relations/project_calendar carry a
+  // direct project_id and are wiped by explicit DELETEs in the body restore
+  // (events cascades scene_events/event_participants/event_relations; calendar
+  // is wiped on its own). scene_events/event_participants have NO project_id;
+  // scope them via their event so the captured set equals the cascade wipe set.
+  events: { where: "project_id = ?", binds: 1 },
+  event_relations: { where: "project_id = ?", binds: 1 },
+  project_calendar: { where: "project_id = ?", binds: 1 },
+  scene_events: {
+    where: "event_id IN (SELECT id FROM events WHERE project_id = ?)",
+    binds: 1,
+  },
+  event_participants: {
+    where: "event_id IN (SELECT id FROM events WHERE project_id = ?)",
+    binds: 1,
+  },
 };
 
 /**
@@ -375,6 +414,13 @@ export const AUX_CODEX_DEPENDENCY: Partial<
 > = {
   foreshadow_codex_links: { skip: true },
   map_node_positions: { nullColumns: ["codex_entry_id"] },
+  // events.primary_codex_id / location_codex_id are nullable FKs (ON DELETE SET
+  // NULL); when codex is excluded and the referenced entry is gone, keep the
+  // event but NULL its codex refs.
+  events: { nullColumns: ["primary_codex_id", "location_codex_id"] },
+  // event_participants.codex_entry_id is NOT NULL — it cannot be NULLed, so a
+  // participant whose codex is absent is dropped entirely.
+  event_participants: { skip: true },
 };
 
 // ---- payload wire format --------------------------------------------------
@@ -417,8 +463,10 @@ export interface SkipReport {
   sceneCodexPins: number;
   sceneCodexMentions: number;
   sceneBeatPovCache: number;
+  eventParticipants: number;
   foreshadowPayoffSceneCleared: number;
   mapNodePositionsLinkCleared: number;
+  eventCodexRefCleared: number;
 }
 
 export function emptySkipReport(): SkipReport {
@@ -433,8 +481,10 @@ export function emptySkipReport(): SkipReport {
     sceneCodexPins: 0,
     sceneCodexMentions: 0,
     sceneBeatPovCache: 0,
+    eventParticipants: 0,
     foreshadowPayoffSceneCleared: 0,
     mapNodePositionsLinkCleared: 0,
+    eventCodexRefCleared: 0,
   };
 }
 
@@ -450,8 +500,10 @@ export function skipReportIsEmpty(r: SkipReport): boolean {
       r.sceneCodexPins +
       r.sceneCodexMentions +
       r.sceneBeatPovCache +
+      r.eventParticipants +
       r.foreshadowPayoffSceneCleared +
-      r.mapNodePositionsLinkCleared ===
+      r.mapNodePositionsLinkCleared +
+      r.eventCodexRefCleared ===
     0
   );
 }

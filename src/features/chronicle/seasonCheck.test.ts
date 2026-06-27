@@ -1,10 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   findSeasonConflicts,
   conflictingEventIds,
   type SeasonCheckInput,
 } from "./seasonCheck";
 import type { ChronicleCalendar } from "./chronicleTime";
+
+// useSeasonConflicts は db/client につながる api モジュールを取り込むため、
+// 純関数 collectFulfilledSceneTexts だけを安全に import できるようにモックする。
+vi.mock("@/features/tree/api", () => ({ loadSceneContent: vi.fn() }));
+vi.mock("./api", () => ({
+  getProjectCalendar: vi.fn(),
+  upsertProjectCalendar: vi.fn(),
+}));
+import { collectFulfilledSceneTexts } from "./useSeasonConflicts";
 
 const calendar: ChronicleCalendar = {
   daysPerYear: 360,
@@ -109,5 +118,42 @@ describe("findSeasonConflicts", () => {
     const ids = conflictingEventIds(conflicts);
     expect(ids.has("e1")).toBe(true);
     expect(ids.has("e2")).toBe(false);
+  });
+
+  it("自季節を含む回想シーン(両季節)は矛盾にしない", () => {
+    const conflicts = findSeasonConflicts(
+      input({
+        events: [{ id: "e1", startTime: 300 }], // 冬
+        links: [{ sceneId: "s1", eventId: "e1" }],
+        // 冬(自季節)が出ている上での蝉(夏)は回想/比喩 → 矛盾にしない。
+        sceneTexts: new Map([
+          ["s1", "雪が降る中、彼は去年の蝉の声を思い出した"],
+        ]),
+      }),
+    );
+    expect(conflicts).toHaveLength(0);
+  });
+});
+
+describe("collectFulfilledSceneTexts (allSettled degradation)", () => {
+  it("1 シーンのロード失敗でも成功分の警告は残る", () => {
+    const results: PromiseSettledResult<readonly [string, string]>[] = [
+      { status: "fulfilled", value: ["s1", "真夜中に蝉が鳴いていた"] },
+      { status: "rejected", reason: new Error("load failed") },
+    ];
+    const sceneTexts = collectFulfilledSceneTexts(results);
+    expect(sceneTexts.size).toBe(1);
+    expect(sceneTexts.has("s1")).toBe(true);
+
+    // 失敗シーンを除いた本文で、残った s1 の矛盾は引き続き検出される。
+    const conflicts = findSeasonConflicts(
+      input({
+        events: [{ id: "e1", startTime: 300 }], // 冬
+        links: [{ sceneId: "s1", eventId: "e1" }],
+        sceneTexts,
+      }),
+    );
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].eventSeason).toBe("冬");
   });
 });

@@ -471,6 +471,45 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT '',
+    note TEXT,
+    ordinal TEXT NOT NULL DEFAULT 'a0',
+    primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+    location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+    start_time INTEGER,
+    end_time INTEGER,
+    precision TEXT NOT NULL DEFAULT 'exact',
+    kind TEXT NOT NULL DEFAULT 'generic',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS event_participants (
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    role TEXT,
+    PRIMARY KEY (event_id, codex_entry_id)
+  );
+  CREATE TABLE IF NOT EXISTS scene_events (
+    scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    PRIMARY KEY (scene_id, event_id)
+  );
+  CREATE TABLE IF NOT EXISTS project_calendar (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    days_per_year INTEGER NOT NULL DEFAULT 360,
+    season_boundaries TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS event_relations (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    cause_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    effect_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    PRIMARY KEY (cause_event_id, effect_event_id)
+  );
   CREATE TABLE IF NOT EXISTS content_versions (
     id TEXT PRIMARY KEY,
     entity_type TEXT NOT NULL CHECK(entity_type IN ('scene','note','codex_entry','snippet')),

@@ -73,6 +73,49 @@ describe("scaleEvents", () => {
   it("空配列は空", () => {
     expect(scaleEvents([], params)).toEqual([]);
   });
+
+  it("ordinal 順 != startTime 順（フラッシュバック）でも全 x/xEnd が帯内", () => {
+    // ordinal は a0<a1<a2 だが startTime は 50,0,100 と前後する。
+    const events = [
+      ev({ id: "a", ordinal: "a0", startTime: 50, endTime: 70 }),
+      ev({ id: "b", ordinal: "a1", startTime: 0 }),
+      ev({ id: "c", ordinal: "a2", startTime: 100 }),
+    ];
+    const out = scaleEvents(events, params);
+    // inner=900: band は [50, 950]
+    const lo = params.padX;
+    const hi = params.padX + 900;
+    for (const p of out) {
+      expect(p.x).toBeGreaterThanOrEqual(lo);
+      expect(p.x).toBeLessThanOrEqual(hi);
+      if (p.xEnd != null) {
+        expect(p.xEnd).toBeGreaterThanOrEqual(lo);
+        expect(p.xEnd).toBeLessThanOrEqual(hi);
+      }
+    }
+  });
+
+  it("末尾 interval の endTime が最大 startTime を超えても xEnd は帯内", () => {
+    const events = [
+      ev({ id: "a", ordinal: "a0", startTime: 0 }),
+      ev({ id: "b", ordinal: "a1", startTime: 100, endTime: 150 }),
+    ];
+    const out = scaleEvents(events, params);
+    const hi = params.padX + 900;
+    // t0=0, t1=150(endTime), span=150 → b.xEnd=(150/150)*900+50=950
+    expect(out[1].xEnd).toBe(950);
+    expect(out[1].xEnd as number).toBeLessThanOrEqual(hi);
+  });
+
+  it("重複 ordinal は id で決定的に並ぶ", () => {
+    const events = [
+      ev({ id: "z", ordinal: "a0" }),
+      ev({ id: "a", ordinal: "a0" }),
+      ev({ id: "m", ordinal: "a0" }),
+    ];
+    const out = scaleEvents(events, params);
+    expect(out.map((p) => p.eventId)).toEqual(["a", "m", "z"]);
+  });
 });
 
 describe("precisionStyle", () => {

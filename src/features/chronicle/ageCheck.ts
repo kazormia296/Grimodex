@@ -10,7 +10,8 @@ export interface AgeWordEntry {
 export const DEFAULT_AGE_WORDS: AgeWordEntry[] = [
   { words: ["赤ん坊", "赤ちゃん", "嬰児", "baby", "infant"], min: 0, max: 2 },
   { words: ["幼児", "toddler"], min: 1, max: 6 },
-  { words: ["子供", "子ども", "童", "child"], min: 0, max: 12 },
+  // 「童」は単独だと童話/児童/童謡 に誤反応するため不採用（子供/子ども で十分）。
+  { words: ["子供", "子ども", "child"], min: 0, max: 12 },
   { words: ["少年", "少女", "boy", "girl"], min: 7, max: 17 },
   { words: ["青年", "若者", "youth"], min: 16, max: 35 },
   { words: ["中年", "middle-aged"], min: 40, max: 65 },
@@ -36,17 +37,53 @@ export interface AgeWordHit {
   max: number;
 }
 
-/** テキスト中の年齢語を範囲付きで検出する純関数（ASCII 大小無視）。 */
+/** 大人 の直後にこの送り仮名が来ると別語(大人しい/大人しく)なので年齢語にしない。 */
+const OTONA_OKURIGANA = new Set(["し", "く"]);
+
+/** ASCII(ラテン)語か。語境界(\b)一致を使うかどうかの判定。 */
+function isAsciiWord(w: string): boolean {
+  return /^[\x20-\x7e]+$/.test(w);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * CJK 年齢語が「別語の接頭辞」でなく現れているか。
+ * 大人 は直後が送り仮名(し/く)の occurrence を除外し、大人しい/大人しく を弾く。
+ * 他の語は単純な substring 一致（単漢字には語境界が無いため）。
+ */
+function cjkAgeWordPresent(text: string, needle: string): boolean {
+  if (needle !== "大人") return text.includes(needle);
+  let from = 0;
+  for (;;) {
+    const idx = text.indexOf(needle, from);
+    if (idx === -1) return false;
+    const next = text[idx + needle.length];
+    // 直後が送り仮名でなければ「大人(adult)」の正当な用例とみなす。
+    if (next === undefined || !OTONA_OKURIGANA.has(next)) return true;
+    from = idx + needle.length;
+  }
+}
+
+/**
+ * テキスト中の年齢語を範囲付きで検出する純関数。
+ * - ASCII/ラテン語は語境界(\b)一致・大小無視（adult が adults/adulthood に誤反応しない）。
+ * - CJK 語は substring 一致。大人 は送り仮名ガードで大人しい等を除外。
+ */
 export function detectAgeWords(
   text: string,
   dict: AgeWordEntry[] = DEFAULT_AGE_WORDS,
 ): AgeWordHit[] {
   if (!text) return [];
-  const lower = text.toLowerCase();
   const hits: AgeWordHit[] = [];
   for (const entry of dict) {
     for (const w of entry.words) {
-      if (text.includes(w) || lower.includes(w.toLowerCase())) {
+      const matched = isAsciiWord(w)
+        ? new RegExp(`\\b${escapeRegExp(w)}\\b`, "i").test(text)
+        : cjkAgeWordPresent(text, w);
+      if (matched) {
         hits.push({ word: w, min: entry.min, max: entry.max });
         break;
       }
@@ -114,20 +151,32 @@ export function findAgeConflicts(input: AgeCheckInput): AgeConflict[] {
     const birth = birthByCodex.get(e.primaryCodexId);
     if (birth == null) continue;
     const age = Math.floor((e.startTime - birth) / calendar.daysPerYear);
+    // 出生前(回想/前日譚)の出来事は負の年齢になる。年齢チェックの対象外。
+    if (age < 0) continue;
     const sceneIds = [...(linksByEvent.get(e.id) ?? [])].sort();
     for (const sceneId of sceneIds) {
       const text = sceneTexts.get(sceneId);
       if (text === undefined) continue;
-      for (const hit of detectAgeWords(text, ageWords)) {
-        if (age < hit.min || age > hit.max) {
-          conflicts.push({
-            eventId: e.id,
-            sceneId,
-            codexId: e.primaryCodexId,
-            computedAge: age,
-            ageWord: hit.word,
-            expectedRange: [hit.min, hit.max],
-          });
+      const hits = detectAgeWords(text, ageWords);
+      if (hits.length === 0) continue;
+      // 検出した年齢語が複数あり、レンジが重ならない(=一人を指せない)場合は
+      // 帰属が曖昧なので矛盾を出さない。重なる(=互いに矛盾しない)場合のみ、
+      // その共通レンジ[lo,hi]から算出年齢が外れているかを判定する。
+      const lo = Math.max(...hits.map((h) => h.min));
+      const hi = Math.min(...hits.map((h) => h.max));
+      if (lo > hi) continue; // 非重複レンジ → 曖昧な帰属
+      if (age < lo || age > hi) {
+        for (const hit of hits) {
+          if (age < hit.min || age > hit.max) {
+            conflicts.push({
+              eventId: e.id,
+              sceneId,
+              codexId: e.primaryCodexId,
+              computedAge: age,
+              ageWord: hit.word,
+              expectedRange: [hit.min, hit.max],
+            });
+          }
         }
       }
     }
