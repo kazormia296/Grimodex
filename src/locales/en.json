@@ -3419,6 +3419,7 @@
   },
   "inlineAi": {
     "generateFailed": "Generation failed",
+    "pendingBlocked": "You have an unconfirmed AI generation. Press Tab to accept or Esc to discard before continuing.",
     "additionalPrompt": "Additional instructions (optional)",
     "commands": {
       "continue": {

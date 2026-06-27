@@ -4,6 +4,7 @@ import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import {
   createProjectSnapshot,
   listProjectSnapshots,
@@ -145,6 +146,9 @@ export function ProjectSnapshotModal({
 
   async function handleRestoreConfirm() {
     if (!confirmRestoreId) return;
+    // 復元は DB 書き換え + window.location.reload() で全エディタを破棄するため、
+    // 未確定の inline-AI diff があれば止める。
+    if (guardInlineAiPending()) return;
     const snap = snapshots.find((s) => s.id === confirmRestoreId);
     if (!snap) return;
     setIsRestoring(true);

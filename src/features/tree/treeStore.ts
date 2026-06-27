@@ -10,6 +10,10 @@ import type { TreeNode as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import {
+  guardInlineAiPending,
+  isInlineAiPending,
+} from "@/features/editor/inlineAi/pendingGuard";
 import { markStart, markEnd } from "@/lib/perfLog";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureSceneDeletion } from "@/features/trash-bin/captureHooks";
@@ -753,6 +757,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   setActiveScene(id) {
+    // 二重防御。TabBar 系の主防御 (tabStore guard) を素通りした直接呼び出しや、
+    // activeSceneId 起点の ensure-tab → openPreview 経路を pending 中に止める。
+    if (id !== get().activeSceneId && guardInlineAiPending()) return;
     markStart("treeStore.setActiveScene");
     try {
       set({ activeSceneId: id });
@@ -763,6 +770,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   // --- Multi-selection ---
   selectNode(id, extend) {
+    // selectNode は activeSceneId=id を必ずセットする (= owner エディタが reload)。
+    if (id !== get().activeSceneId && guardInlineAiPending()) return;
     if (extend) {
       set((state) => {
         const already = state.selectedIds.includes(id);
@@ -858,7 +867,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       return {
         nodes: updated,
         scenes: newScenes,
-        activeSceneId: nodeType === "scene" ? newNode.id : state.activeSceneId,
+        // pending 中は新規シーンへ activeScene を切り替えない。切り替えると
+        // ensure-tab → openPreview(新ID) が guard で弾かれて activeSceneId と
+        // activeTabId が乖離する。ノードは作るが focus は据え置き、pending 解消後に
+        // 開けるようにする (owner エディタの未確定 diff を守る)。
+        activeSceneId:
+          nodeType === "scene" && !isInlineAiPending()
+            ? newNode.id
+            : state.activeSceneId,
         expandedIds,
         pendingRenameId: newNode.id,
         // Folders don't open a tab, so trigger reveal explicitly to scroll
@@ -978,6 +994,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async deleteNode(id) {
+    // pending 中の削除は active scene を作り替え owner エディタを破棄しうる。
+    if (guardInlineAiPending()) return;
     const { nodes, activeSceneId } = get();
     // Collect all descendants to delete
     const toDelete = new Set<string>();

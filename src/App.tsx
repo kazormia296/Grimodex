@@ -34,6 +34,10 @@ import { initializeExternalMounts } from "@/features/external-mount/mountManager
 import { useLicenseStore } from "@/features/license/store";
 import { useLicenseStateListener } from "@/features/license/useLicenseStateListener";
 import { useDebugLogStore } from "@/lib/debugLog";
+import {
+  isInlineAiPending,
+  guardInlineAiPending,
+} from "@/features/editor/inlineAi/pendingGuard";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
@@ -151,6 +155,39 @@ function App() {
       void i18next.changeLanguage(uiLanguage);
     }
   }, [uiLanguage]);
+
+  // 未確定の inline-AI diff があるままアプリを終了させない。Tauri の
+  // onCloseRequested は OS / ネイティブタイトルバー / カスタム閉じるボタンの
+  // すべての close を捕捉できる唯一の安全網 (Mac は WindowControls 非表示)。
+  // veto + toast でユーザーに Accept/Reject を促す。web ビルドは beforeunload。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const un = await getCurrentWindow().onCloseRequested((event) => {
+          if (guardInlineAiPending()) event.preventDefault();
+        });
+        if (disposed) un();
+        else unlisten = un;
+      } catch {
+        // 非 Tauri / API 不在: beforeunload に任せる
+      }
+    })();
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isInlineAiPending()) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, []);
 
   // Apply theme reactively — globalSettings is loaded from global-settings.json
   // (no workspace DB needed), so this works before any workspace is opened.

@@ -9,9 +9,11 @@ import { useTabStore } from "@/features/editor/tabStore";
 import {
   useGlobalHistoryStore,
   setUndoConflictHandler,
+  setHistoryReplayGuard,
   type HistoryCommand,
   type HistoryKind,
 } from "@/store/globalHistoryStore";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { useExternalWriteStore } from "./externalWriteStore";
 import {
   useProseStagingStore,
@@ -80,6 +82,13 @@ function handleUndoConflict(cmd: HistoryCommand): void {
 }
 
 setUndoConflictHandler(handleUndoConflict);
+
+// Veto global undo/redo while an inline-AI diff is pending. Replaying history
+// would rebuild the active editor doc out from under the un-accepted generated
+// text (data loss). Registered at module load alongside the conflict handler so
+// it is wired before any undo can run. Same leaf-DI rationale: globalHistoryStore
+// must not import the inline-AI layer directly.
+setHistoryReplayGuard(() => guardInlineAiPending());
 
 interface PollerState {
   projectId: string | null;

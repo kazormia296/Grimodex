@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { getSetting, setSetting } from "@/features/settings/api";
 import { markStart, markEnd } from "@/lib/perfLog";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { guardInlineAiPending } from "./inlineAi/pendingGuard";
 
 // Editor タブを開く全経路で Editor パネルを可視化する。Map / Grid /
 // Matrix / Timeline / ChatHistory / Lint 等のあちこちで openPinned が
@@ -284,6 +285,9 @@ export const useTabStore = create<TabState>()((set, get) => {
     // ---- Primary group ----
 
     openPreview(nodeId) {
+      // EditorPane は activeTabId で本文をロードする。pending 中に別 node へ
+      // 切り替えると owner エディタが reload され未確定/未保存テキストが喪失する。
+      if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
       markStart("tabStore.openPreview");
       try {
         const { tabs } = get();
@@ -319,6 +323,7 @@ export const useTabStore = create<TabState>()((set, get) => {
     },
 
     openPinned(nodeId) {
+      if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
       ensureEditorVisible();
       const { tabs } = get();
       const existing = tabs.find((t) => t.nodeId === nodeId);
@@ -361,6 +366,8 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     closeTab(nodeId) {
       const { tabs, activeTabId } = get();
+      // 表示中 (= owner エディタ) のタブを閉じると本文が切り替わり pending 喪失。
+      if (nodeId === activeTabId && guardInlineAiPending()) return;
       const idx = tabs.findIndex((t) => t.nodeId === nodeId);
       if (idx === -1) return;
 
@@ -382,10 +389,12 @@ export const useTabStore = create<TabState>()((set, get) => {
     setActiveTab(nodeId) {
       const { tabs } = get();
       if (!tabs.find((t) => t.nodeId === nodeId)) return;
+      if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
       set({ activeTabId: nodeId, activeGroupIndex: 0 });
     },
 
     ensureTab(nodeId) {
+      if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
       const { tabs } = get();
       if (tabs.find((t) => t.nodeId === nodeId)) {
         set({ activeTabId: nodeId });
@@ -398,6 +407,7 @@ export const useTabStore = create<TabState>()((set, get) => {
     },
 
     openCodexTab(entryId, phaseId) {
+      if (entryId !== get().activeTabId && guardInlineAiPending()) return;
       ensureEditorVisible();
       const { tabs } = get();
       const existing = tabs.find((t) => t.nodeId === entryId);
@@ -432,6 +442,7 @@ export const useTabStore = create<TabState>()((set, get) => {
     },
 
     openSnippetTab(snippetId) {
+      if (snippetId !== get().activeTabId && guardInlineAiPending()) return;
       const { tabs } = get();
       const existing = tabs.find((t) => t.nodeId === snippetId);
       if (existing) {
@@ -453,6 +464,8 @@ export const useTabStore = create<TabState>()((set, get) => {
     // ---- Secondary group ----
 
     openInSecondaryGroup(nodeId) {
+      if (nodeId !== get().secondaryActiveTabId && guardInlineAiPending())
+        return;
       const { secondaryTabs } = get();
       const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
 
@@ -486,6 +499,7 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     closeSecondaryTab(nodeId) {
       const { secondaryTabs, secondaryActiveTabId } = get();
+      if (nodeId === secondaryActiveTabId && guardInlineAiPending()) return;
       const idx = secondaryTabs.findIndex((t) => t.nodeId === nodeId);
       if (idx === -1) return;
 
@@ -509,6 +523,7 @@ export const useTabStore = create<TabState>()((set, get) => {
     },
 
     closeSecondaryGroup() {
+      if (guardInlineAiPending()) return;
       set({
         secondaryTabs: [],
         secondaryActiveTabId: null,
@@ -520,6 +535,8 @@ export const useTabStore = create<TabState>()((set, get) => {
     setSecondaryActiveTab(nodeId) {
       const { secondaryTabs } = get();
       if (!secondaryTabs.find((t) => t.nodeId === nodeId)) return;
+      if (nodeId !== get().secondaryActiveTabId && guardInlineAiPending())
+        return;
       set({ secondaryActiveTabId: nodeId });
     },
 
@@ -565,6 +582,7 @@ export const useTabStore = create<TabState>()((set, get) => {
       insertIndex,
       createDirection,
     ) {
+      if (guardInlineAiPending()) return;
       const { tabs, secondaryTabs, activeTabId, secondaryActiveTabId } = get();
       const srcArr = fromGroup === 0 ? tabs : secondaryTabs;
       const dstArr = toGroup === 0 ? tabs : secondaryTabs;
@@ -709,6 +727,8 @@ export const useTabStore = create<TabState>()((set, get) => {
     // ---- Directional split ----
 
     openInSecondaryGroupDirectional(nodeId, direction) {
+      if (nodeId !== get().secondaryActiveTabId && guardInlineAiPending())
+        return;
       const { secondaryTabs } = get();
       const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
       if (existing) {

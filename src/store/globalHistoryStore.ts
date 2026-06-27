@@ -48,6 +48,21 @@ function surfaceUndoConflict(cmd: HistoryCommand): void {
 }
 
 /**
+ * Pending-navigation guard injected by the inline-AI layer (pendingGuard). Same
+ * dependency-injection rationale as {@link setUndoConflictHandler}: this
+ * low-level store must not import feature stores (inlineAiStore) directly or it
+ * forms a module-init cycle. When registered and it returns `true`, undo/redo is
+ * vetoed — replaying history while an inline-AI diff is pending would rebuild the
+ * active editor doc out from under the un-accepted generated text (data loss).
+ * Unregistered → always allowed.
+ */
+let replayGuard: (() => boolean) | null = null;
+
+export function setHistoryReplayGuard(guard: (() => boolean) | null): void {
+  replayGuard = guard;
+}
+
+/**
  * Active batch frame for {@link HistoryState.runAsTransaction}. When set, `push`
  * appends into `entries` instead of committing to `past`, so that one user
  * action made of several store mutations (e.g. dragging a plot marker that
@@ -126,6 +141,8 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   async undo() {
     const { past, isReplaying } = get();
     if (past.length === 0 || isReplaying) return;
+    // Veto while an inline-AI diff is pending (would destroy un-accepted text).
+    if (replayGuard?.()) return;
     const cmd = past[past.length - 1];
     set({ isReplaying: true });
     let versionConflict = false;
@@ -168,6 +185,8 @@ export const useGlobalHistoryStore = create<HistoryState>()((set, get) => ({
   async redo() {
     const { future, isReplaying } = get();
     if (future.length === 0 || isReplaying) return;
+    // Veto while an inline-AI diff is pending (would destroy un-accepted text).
+    if (replayGuard?.()) return;
     const cmd = future[0];
     set({ isReplaying: true });
     let versionConflict = false;

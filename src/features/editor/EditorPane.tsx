@@ -635,7 +635,12 @@ export function EditorPane({
         // インライン AI の生成中・diff 表示中はオートセーブを止める。
         // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
         // 再度 onUpdate が走り、その時に通常の schedule が実行される。
-        if (useInlineAiStore.getState().status !== "idle") return;
+        // owner 判定 (activeEditor === e) なので、分割ビューで別ペインが生成中でも
+        // このペインの通常編集は保存される (LinearSceneBlock.onUpdate と同契約)。
+        {
+          const ai = useInlineAiStore.getState();
+          if (ai.status !== "idle" && ai.activeEditor === e) return;
+        }
         if (loadFailedRef.current) {
           // 調査ログ: 未ロード窓 (mount〜コンテンツ適用成功の間) で doc を
           // 変更している犯人の特定用。保存自体は saveFn 側 guard で skip される。
@@ -876,6 +881,25 @@ export function EditorPane({
   const dbNativeEditor = mountedEditor && !isFileBacked ? mountedEditor : null;
 
   editorRef.current = editor;
+
+  // B3: owner エディタ unmount 時の安全網。通常の離脱は pendingGuard が unmount
+  // 自体を止めるが、レイアウト remount 等でこのペインの editor が破棄される際、
+  // このエディタが所有する未確定 inline-AI セッションが残っていれば reset する
+  // (stale な activeEditor / generatedRange が別 doc に幽霊 diff を出し、Accept/
+  // Reject が別シーンを壊すのを防ぐ)。reset は editor に触れないので破棄順に依存
+  // せず安全 (useLinearInlineAi の cleanup と同契約)。
+  useEffect(() => {
+    return () => {
+      const ai = useInlineAiStore.getState();
+      if (ai.status !== "idle" && ai.activeEditor === editor) {
+        ai.reset();
+      }
+    };
+    // nodeId も依存に含める: EditorPane は activeTabId 変更で remount せず同じ
+    // editor インスタンスに別 doc をロードしうる。通常はナビゲーションガードが
+    // pending 中の nodeId 変更を止めるが、万一すり抜けても stale な activeEditor /
+    // generatedRange を残さないよう、doc swap 時にも owner セッションを畳む。
+  }, [editor, nodeId]);
 
   // Wrap view.dispatch to time the full TipTap dispatch cycle: state.apply +
   // plugin.appendTransactions + view.updateState (DOM patching) + listeners.
@@ -1139,6 +1163,11 @@ export function EditorPane({
   }, [verticalMode]);
   const inlineAiDiff = useInlineAiDiff(dbNativeEditor);
   const { generate, retry, showProvidedText } = inlineAiDiff;
+  // 分割ビューで両ペインが同じツールバーを二重表示しないよう、pending セッションを
+  // 所有するペイン (activeEditor === このペインの editor) でだけ Toolbar を出す。
+  const inlineAiOwnerEditor = useInlineAiStore((s) => s.activeEditor);
+  const isInlineAiOwner =
+    inlineAiOwnerEditor != null && inlineAiOwnerEditor === editor;
   const { acceptWithStaging, rejectWithStaging } = useAgentProseStaging(
     dbNativeEditor,
     nodeId,
@@ -2101,6 +2130,8 @@ export function EditorPane({
         onAccept={acceptWithStaging}
         onReject={rejectWithStaging}
         onRetry={retry}
+        anchorRef={editorContainerRef}
+        isOwner={isInlineAiOwner}
       />
       <SlashCommandPopup />
       {mentionPopup &&

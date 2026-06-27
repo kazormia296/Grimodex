@@ -83,15 +83,35 @@ export function createInlineAIDiffPlugin(ownerEditor?: Editor): Plugin {
       },
     },
     /**
-     * ストリーミング中はユーザー由来の入力を握りつぶす。
-     * - `inlineAiInsert` meta を付けた chunk 挿入は通す
-     * - `addToHistory:false` 付きのプログラマティックな tr は通す
-     * - `docChanged === false`（選択変更等）は通す（クリック操作は邪魔しない）
+     * 生成中 (generating) と diff 表示中 (diffShown) は owner エディタの **ユーザー
+     * 由来の本文編集** を握りつぶす。diffShown でも止めるのは、Accept 待ちの間に
+     * 手動入力・ペーストを通すと、autosave 抑止下 (onUpdate が status!==idle で
+     * schedule を飛ばす) で未保存のまま溜まり、離脱で喪失するため (= B1)。
+     *
+     * 通すもの (= プログラマティック / 非破壊):
+     * - `docChanged === false`（選択変更・`inlineAiDiffUpdate` 強制更新等）
+     * - `inlineAiInsert` meta（AI chunk 挿入。実際は generating 中しか来ない）
+     * - `addToHistory:false`（**真にプログラマティックな chunk streaming**: AI / Beat
+     *   の逐次挿入。これを止めると Beat 生成が無音で落ちる回帰になる）。
+     *
+     * 握りつぶすもの: ユーザーのタイプ入力・ペースト・Fix 系 insertContentAt は
+     * addToHistory が立つ通常 tr。Fix 系はさらに各ハンドラの guardInlineAiPending()
+     * で先に弾く。
+     *
+     * 補足: peer-pane live sync の `setContent` は addToHistory:false を立てない通常
+     * tr なので diffShown 中は **意図的に握りつぶす**。同一シーンを別ペインで開いて
+     * いる場合、peer の全文置換は owner の未確定 generatedRange を破壊するため、
+     * 適用せず diff を保護する (peer 側は自前 autosave で保存される)。
+     *
+     * accept/reject は先に reset()→idle してから tr を投げるので status!==pending と
+     * なり、この関数の先頭で素通りする。
      */
     filterTransaction(tr) {
       const aiState = useInlineAiStore.getState();
-      if (aiState.status !== "generating") return true;
-      // 生成中なのが「別エディタ」なら、このエディタの入力は握りつぶさない
+      if (aiState.status !== "generating" && aiState.status !== "diffShown") {
+        return true;
+      }
+      // ペンディングなのが「別エディタ」なら、このエディタの入力は握りつぶさない
       // (リニアで隣のシーンへのタイプがサイレントに落ちるのを防ぐ)。
       if (isForeignEditor(ownerEditor)) return true;
       if (!tr.docChanged) return true;
