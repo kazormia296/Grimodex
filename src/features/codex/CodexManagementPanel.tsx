@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Search, Plus } from "lucide-react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -911,47 +912,46 @@ export function CodexManagementPanel({
 
   // --- Header ---
   const header = (
-    <div
-      data-testid="codex-header"
-      data-panel-header
-      className="flex items-center justify-between border-b border-border px-3 py-2"
-    >
-      <span data-testid="codex-header-title" className="text-sm font-semibold">
-        Codex
-      </span>
-      <div className="flex items-center gap-1">
-        <span
-          data-testid="codex-entry-count"
-          className="text-xs text-muted-foreground"
-        >
-          {entries.length}
-        </span>
-        <select
-          data-testid="codex-sort-selector"
-          value={sortOrder}
-          onChange={(e) => setSort(e.target.value as CodexSortOrder)}
-          className="rounded border border-input bg-background px-1 py-0.5 text-[10px]"
-          title={t("codex.sortOrderTitle")}
-          aria-label={t("codex.sortOrderTitle")}
-        >
-          {SORT_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          data-testid="codex-new-entry-button"
-          onClick={() => void handleNewEntry()}
-          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          title={t("codex.newEntry")}
-          aria-label={t("codex.newEntry")}
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-      </div>
-    </div>
+    <PanelHeader
+      panelId="codex"
+      title={
+        <span data-testid="codex-header-title">{t("layout.panel.codex")}</span>
+      }
+      actions={
+        <>
+          <span
+            data-testid="codex-entry-count"
+            className="text-muted-foreground"
+          >
+            {entries.length}
+          </span>
+          <select
+            data-testid="codex-sort-selector"
+            value={sortOrder}
+            onChange={(e) => setSort(e.target.value as CodexSortOrder)}
+            className="rounded border border-input bg-background px-1 py-0.5 text-[10px]"
+            title={t("codex.sortOrderTitle")}
+            aria-label={t("codex.sortOrderTitle")}
+          >
+            {SORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            data-testid="codex-new-entry-button"
+            onClick={() => void handleNewEntry()}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            title={t("codex.newEntry")}
+            aria-label={t("codex.newEntry")}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </>
+      }
+    />
   );
 
   // --- Search bar ---

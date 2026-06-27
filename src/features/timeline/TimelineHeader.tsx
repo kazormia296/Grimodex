@@ -1,4 +1,10 @@
-import { MapPin, Plus, EllipsisVertical, PanelRight } from "lucide-react";
+import {
+  MapPin,
+  Plus,
+  EllipsisVertical,
+  PanelRight,
+  CalendarClock,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTimelineStore } from "./timelineStore";
 import type { AxisMode, SpacingMode } from "./timelineStore";
@@ -55,7 +61,8 @@ export function TimelineHeader({
       data-panel-header
       className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3 py-1.5 text-xs"
     >
-      <span className="shrink-0 whitespace-nowrap font-semibold text-foreground">
+      <CalendarClock className="size-3.5 shrink-0 opacity-70" aria-hidden />
+      <span className="shrink-0 whitespace-nowrap font-medium text-foreground">
         {t("layout.panel.timeline", "Timeline")}
       </span>
 

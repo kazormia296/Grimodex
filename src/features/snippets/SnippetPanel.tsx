@@ -13,6 +13,7 @@ import type { SnippetSourceFilter, SnippetSortOrder } from "./snippetStore";
 import { SnippetDetailContent } from "./SnippetDetailContent";
 import { SnippetContextMenu } from "./SnippetContextMenu";
 import { SnippetCardBody } from "./components/SnippetCardBody";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -387,20 +388,14 @@ export function SnippetPanel() {
             className="flex h-full flex-col"
           >
             {/* Header */}
-            <div
-              data-panel-header
-              className="flex items-center justify-between border-b border-border px-3 py-2"
-            >
-              <span className="text-sm font-semibold">
-                {t("layout.panel.snippets")}
-              </span>
-              <div className="flex items-center gap-1">
-                <span
-                  data-testid="snippet-count"
-                  className="text-xs text-muted-foreground"
-                >
+            <PanelHeader
+              panelId="snippets"
+              count={
+                <span data-testid="snippet-count">
                   {filteredEntries.length}
                 </span>
+              }
+              actions={
                 <button
                   type="button"
                   data-testid="snippet-new-button"
@@ -411,8 +406,8 @@ export function SnippetPanel() {
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </button>
-              </div>
-            </div>
+              }
+            />
 
             {/* Search */}
             <div className="border-b border-border p-2">

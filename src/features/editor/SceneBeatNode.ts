@@ -74,6 +74,36 @@ export const SceneBeatNode = Node.create({
         renderHTML: (attrs) =>
           attrs.model ? { "data-beat-model": attrs.model } : {},
       },
+      // マルチプロバイダ対応: model だけでなく送信先プロバイダ / API 経路 /
+      // OpenAI 互換エンドポイントも beat ごとに永続化する。null = 既定(設定の
+      // アクティブプロバイダ)へ継承。旧 beat は model のみ持つ(これらは null)。
+      modelProvider: {
+        default: null as string | null,
+        parseHTML: (element) =>
+          element.getAttribute("data-beat-model-provider") || null,
+        renderHTML: (attrs) =>
+          attrs.modelProvider
+            ? { "data-beat-model-provider": attrs.modelProvider }
+            : {},
+      },
+      modelVariant: {
+        default: null as string | null,
+        parseHTML: (element) =>
+          element.getAttribute("data-beat-model-variant") || null,
+        renderHTML: (attrs) =>
+          attrs.modelVariant
+            ? { "data-beat-model-variant": attrs.modelVariant }
+            : {},
+      },
+      modelEndpointId: {
+        default: null as string | null,
+        parseHTML: (element) =>
+          element.getAttribute("data-beat-model-endpoint") || null,
+        renderHTML: (attrs) =>
+          attrs.modelEndpointId
+            ? { "data-beat-model-endpoint": attrs.modelEndpointId }
+            : {},
+      },
     };
   },
 

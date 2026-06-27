@@ -455,6 +455,56 @@ describe("removePanelFromSlot", () => {
     expect(next[0].panels).toEqual(["codex"]);
     expect(next[0].activePanel).toBe("codex");
   });
+
+  it("promotes the previous visible panel when the last active panel is removed", () => {
+    const slots = [
+      {
+        id: "b0",
+        sizeRatio: 1,
+        panels: ["map", "grid", "matrix"] as ToolWindowPanelId[],
+        activePanel: "matrix" as ToolWindowPanelId,
+      },
+    ];
+    const isVisible = (panel: ToolWindowPanelId) => panel !== "map";
+
+    const { slots: next } = removePanelFromSlot(slots, 0, "matrix", isVisible);
+
+    expect(next[0].panels).toEqual(["map", "grid"]);
+    expect(next[0].activePanel).toBe("grid");
+  });
+
+  it("promotes the panel before the removed one when all panels are visible", () => {
+    const slots = [
+      {
+        id: "b0",
+        sizeRatio: 1,
+        panels: ["map", "grid", "matrix"] as ToolWindowPanelId[],
+        activePanel: "matrix" as ToolWindowPanelId,
+      },
+    ];
+
+    const { slots: next } = removePanelFromSlot(slots, 0, "matrix");
+
+    expect(next[0].panels).toEqual(["map", "grid"]);
+    expect(next[0].activePanel).toBe("grid");
+  });
+
+  it("does not activate a hidden panel when the last visible panel is removed", () => {
+    const slots = [
+      {
+        id: "b0",
+        sizeRatio: 1,
+        panels: ["chronicle", "grid"] as ToolWindowPanelId[],
+        activePanel: "grid" as ToolWindowPanelId,
+      },
+    ];
+    const isVisible = (panel: ToolWindowPanelId) => panel !== "chronicle";
+
+    const { slots: next } = removePanelFromSlot(slots, 0, "grid", isVisible);
+
+    expect(next[0].panels).toEqual(["chronicle"]);
+    expect(next[0].activePanel).toBeNull();
+  });
 });
 
 describe("removePanelFromCenterSegment", () => {

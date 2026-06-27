@@ -22,6 +22,12 @@ export interface BeatGenerationContext {
   instructions: string;
   beatType: BeatType;
   beatModel: string | null;
+  /** 送信先プロバイダ override（null = 設定のアクティブプロバイダへ継承）。 */
+  beatModelProvider: string | null;
+  /** 別プロバイダ送信時の解決済み API 経路（variant）。 */
+  beatModelVariant: string | null;
+  /** OpenAI 互換で別エンドポイントを選んでいるときの endpoint id。 */
+  beatModelEndpointId: string | null;
   projectTitle: string;
   sceneTitle: string;
   sceneTextSoFar: string;
@@ -91,6 +97,12 @@ export async function buildBeatContextForGeneration(
   const beatType = (beatNode.attrs.beatType ?? "free") as BeatType;
   const beatPov = (beatNode.attrs.pov ?? null) as string | null;
   const beatModel = (beatNode.attrs.model as string | null) ?? null;
+  const beatModelProvider =
+    (beatNode.attrs.modelProvider as string | null) ?? null;
+  const beatModelVariant =
+    (beatNode.attrs.modelVariant as string | null) ?? null;
+  const beatModelEndpointId =
+    (beatNode.attrs.modelEndpointId as string | null) ?? null;
 
   const node = useTreeStore.getState().nodes.find((n) => n.id === sceneId);
   const projectTitle = useWorkspaceStore.getState().activeWorkspaceName ?? "";
@@ -134,6 +146,9 @@ export async function buildBeatContextForGeneration(
       instructions,
       beatType,
       beatModel,
+      beatModelProvider,
+      beatModelVariant,
+      beatModelEndpointId,
       projectTitle,
       sceneTitle,
       sceneTextSoFar,

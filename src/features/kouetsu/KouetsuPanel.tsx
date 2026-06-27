@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { SpellCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useKouetsuStore, type KouetsuTab } from "./kouetsuStore";
 import { IssuesTab } from "./IssuesTab";
@@ -32,8 +33,12 @@ export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
     <div className="flex h-full flex-col" data-testid="kouetsu-panel">
       <div
         data-panel-header
-        className="flex shrink-0 items-center gap-0.5 border-b border-border bg-muted/20 px-2 py-1"
+        className="flex shrink-0 items-center gap-0.5 border-b border-border bg-muted/20 px-3 py-1 text-xs"
       >
+        <SpellCheck className="size-3.5 shrink-0 opacity-70" aria-hidden />
+        <span className="mr-1 shrink-0 font-medium text-foreground">
+          {t("layout.panel.kouetsu")}
+        </span>
         {TABS.map(({ id, labelKey }) => (
           <button
             key={id}

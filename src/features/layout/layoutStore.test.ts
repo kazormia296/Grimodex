@@ -289,6 +289,53 @@ describe("useLayoutStore", () => {
       expect(slotOrder()[0]).toBe("chat");
       assertValidLayout(useLayoutStore.getState().layout);
     });
+
+    it("opens a visible panel in the source bottom slot after moving the active panel away", () => {
+      useLayoutStore.getState().showPanel("timeline");
+      useLayoutStore.setState({
+        hiddenStripePanels: new Set<ToolWindowPanelId>(["chronicle"]),
+      });
+
+      useLayoutStore.getState().movePanelToNewSlot("timeline", "bottom", 1);
+
+      const sourceSlot = useLayoutStore
+        .getState()
+        .layout.regions.bottom.slots.find((slot) => slot.id === "b0");
+      expect(sourceSlot?.panels).toEqual([
+        "chronicle",
+        "map",
+        "grid",
+        "matrix",
+      ]);
+      expect(sourceSlot?.activePanel).toBe("map");
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
+
+    it("does not open a hidden panel when the last visible panel leaves the source slot", () => {
+      useLayoutStore.getState().showPanel("grid");
+      useLayoutStore.setState({
+        hiddenStripePanels: new Set<ToolWindowPanelId>([
+          "timeline",
+          "chronicle",
+          "map",
+          "matrix",
+        ]),
+      });
+
+      useLayoutStore.getState().movePanelToNewSlot("grid", "bottom", 1);
+
+      const sourceSlot = useLayoutStore
+        .getState()
+        .layout.regions.bottom.slots.find((slot) => slot.id === "b0");
+      expect(sourceSlot?.panels).toEqual([
+        "timeline",
+        "chronicle",
+        "map",
+        "matrix",
+      ]);
+      expect(sourceSlot?.activePanel).toBeNull();
+      assertValidLayout(useLayoutStore.getState().layout);
+    });
   });
 
   describe("reorderPanelInSlot", () => {
@@ -446,6 +493,7 @@ describe("useLayoutStore", () => {
       ).toEqual([
         "map",
         "matrix",
+        "chronicle",
         "trash-bin",
         "writing-stats",
         "related-scenes",

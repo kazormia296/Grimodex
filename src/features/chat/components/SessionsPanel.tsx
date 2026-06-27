@@ -10,7 +10,7 @@ import { resolveScopeSessionKey } from "../chatScope";
 import * as chatApi from "@/features/chat/chatApi";
 import type { ChatSession } from "@/features/chat/chatTypes";
 import { SessionRowSkeletonList } from "@/components/ui/skeleton-patterns";
-import { useAnchoredPopover } from "./useAnchoredPopover";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 
 interface SessionsPanelProps {
   sceneTitle: string;

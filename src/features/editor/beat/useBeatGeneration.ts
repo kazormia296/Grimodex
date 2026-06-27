@@ -230,6 +230,17 @@ export function useBeatGeneration(
 
     const beatModel = ctx.beatModel;
     const resolvedModel = beatModel || null;
+    // マルチプロバイダ: beat がモデルを持つときは provider / variant / endpoint も
+    // 一緒に送る(別プロバイダのモデルがアクティブプロバイダの API へ誤送出される
+    // のを防ぐ)。継承(model=null)時は options 自体を渡さず backend 既定に委ねる。
+    const inlineAiOptions = resolvedModel
+      ? {
+          model: resolvedModel,
+          apiVariant: ctx.beatModelVariant,
+          provider: ctx.beatModelProvider,
+          endpointId: ctx.beatModelEndpointId,
+        }
+      : undefined;
 
     const traceId = crypto.randomUUID();
     // One timestamp for the whole generation so streamed chunks share an
@@ -300,7 +311,7 @@ export function useBeatGeneration(
             setState({ status: "error", error: message, cleanup: null });
           },
         },
-        resolvedModel ? { model: resolvedModel } : undefined,
+        inlineAiOptions,
       );
       cleanupRef.current = cleanup;
       // If onDone fired between sendInlineAiStream resolving and us assigning

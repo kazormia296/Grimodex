@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { History, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { requestSceneChunkJump } from "@/features/semantic-search/sceneChunkJump";
@@ -72,18 +73,14 @@ export function RelatedScenesPanel({ isActive = true }: SlotPanelProps = {}) {
 
   return (
     <div className="flex h-full flex-col">
-      <div
-        data-panel-header
-        className="flex flex-shrink-0 items-center gap-1.5 border-b border-border px-2 py-1.5"
-      >
-        <History className="h-3.5 w-3.5 text-muted-foreground" />
-        <span className="flex-1 text-xs font-semibold text-foreground">
-          {t("layout.panel.related-scenes")}
-        </span>
-        {loading && (
-          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-        )}
-      </div>
+      <PanelHeader
+        panelId="related-scenes"
+        actions={
+          loading ? (
+            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+          ) : null
+        }
+      />
       <div className="flex-1 overflow-y-auto py-1">
         {!activeSceneId ? (
           <p className="px-3 py-2 text-[11px] text-muted-foreground">

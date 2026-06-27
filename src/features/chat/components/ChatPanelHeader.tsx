@@ -15,6 +15,7 @@ import {
   NotepadText,
   Leaf,
   Map as MapIcon,
+  MessageSquare,
   Spline,
   X,
 } from "lucide-react";
@@ -28,7 +29,7 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import type { ChatScope } from "../chatScope";
 import { CodexScopePickerSection } from "./CodexScopePickerSection";
 import { SnippetScopePickerSection } from "./SnippetScopePickerSection";
-import { useAnchoredPopover } from "./useAnchoredPopover";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 
 type PickerTab = "scene" | "codex" | "snippet";
 
@@ -277,8 +278,9 @@ export function ChatPanelHeader({
       className="flex items-center justify-between border-b border-border px-3 py-1.5"
     >
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="shrink-0 text-sm font-semibold text-foreground">
-          {t("chat.title")}
+        <MessageSquare className="size-3.5 shrink-0 opacity-70" aria-hidden />
+        <span className="shrink-0 text-xs font-medium text-foreground">
+          {t("layout.panel.chat")}
         </span>
 
         <div className="relative min-w-0">

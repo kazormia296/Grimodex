@@ -8,6 +8,7 @@ import {
   type PhysicsViewHandle,
 } from "./TrashBinPhysicsView";
 import { TrashBinStirButton } from "./TrashBinStirButton";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { pruneTrashItems } from "./api";
 import { useReducedMotion } from "@/lib/animation";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -136,49 +137,47 @@ export function TrashBinPanel() {
   return (
     <div className="flex h-full flex-col" aria-label={t("trashBin.title")}>
       {confirmDialog}
-      <header
-        data-panel-header
-        className="flex items-center gap-2 border-b border-border px-3 py-2"
-      >
-        <h2 className="text-sm font-semibold">{t("trashBin.title")}</h2>
-        <span className="text-xs text-muted-foreground">
-          {t("trashBin.count", { count: sortedItems.length })}
-        </span>
-        <div className="flex-1" />
-        <TrashBinStirButton
-          onStir={handleStir}
-          disabled={sortedItems.length === 0}
-        />
-        <button
-          type="button"
-          onClick={() => setCapturing(!isCapturing)}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
-          title={t("trashBin.pauseToggle")}
-          aria-label={t("trashBin.pauseToggle")}
-          aria-pressed={!isCapturing}
-        >
-          <Circle
-            className={`h-2.5 w-2.5 ${
-              isCapturing
-                ? "fill-red-500 text-red-500"
-                : "fill-muted-foreground/40 text-muted-foreground/40"
-            }`}
-          />
-          <span>
-            {isCapturing ? t("trashBin.recording") : t("trashBin.paused")}
-          </span>
-        </button>
-        <button
-          type="button"
-          onClick={handleClearAll}
-          disabled={sortedItems.length === 0}
-          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-          title={t("trashBin.clearAll")}
-          aria-label={t("trashBin.clearAll")}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </header>
+      <PanelHeader
+        panelId="trash-bin"
+        count={t("trashBin.count", { count: sortedItems.length })}
+        actions={
+          <>
+            <TrashBinStirButton
+              onStir={handleStir}
+              disabled={sortedItems.length === 0}
+            />
+            <button
+              type="button"
+              onClick={() => setCapturing(!isCapturing)}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+              title={t("trashBin.pauseToggle")}
+              aria-label={t("trashBin.pauseToggle")}
+              aria-pressed={!isCapturing}
+            >
+              <Circle
+                className={`h-2.5 w-2.5 ${
+                  isCapturing
+                    ? "fill-red-500 text-red-500"
+                    : "fill-muted-foreground/40 text-muted-foreground/40"
+                }`}
+              />
+              <span>
+                {isCapturing ? t("trashBin.recording") : t("trashBin.paused")}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleClearAll}
+              disabled={sortedItems.length === 0}
+              className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              title={t("trashBin.clearAll")}
+              aria-label={t("trashBin.clearAll")}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </>
+        }
+      />
 
       <div className="flex-1 overflow-hidden">
         {reducedMotion ? (
