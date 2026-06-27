@@ -37,7 +37,11 @@ export function createInlineAIDiffPlugin(ownerEditor?: Editor): Plugin {
       apply(tr, _oldDecos, _oldState, newState) {
         const aiState = useInlineAiStore.getState();
 
-        if (aiState.status !== "generating" && aiState.status !== "diffShown") {
+        if (
+          aiState.status !== "generating" &&
+          aiState.status !== "diffShown" &&
+          aiState.status !== "error"
+        ) {
           return DecorationSet.empty;
         }
         // 他エディタのセッション中は装飾しない (別 doc の同一オフセットに
@@ -108,7 +112,11 @@ export function createInlineAIDiffPlugin(ownerEditor?: Editor): Plugin {
      */
     filterTransaction(tr) {
       const aiState = useInlineAiStore.getState();
-      if (aiState.status !== "generating" && aiState.status !== "diffShown") {
+      if (
+        aiState.status !== "generating" &&
+        aiState.status !== "diffShown" &&
+        aiState.status !== "error"
+      ) {
         return true;
       }
       // ペンディングなのが「別エディタ」なら、このエディタの入力は握りつぶさない

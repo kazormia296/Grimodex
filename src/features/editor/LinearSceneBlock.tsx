@@ -54,6 +54,7 @@ import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useLinearInlineAi } from "./useLinearInlineAi";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
@@ -383,6 +384,7 @@ function MountedSceneBlock({
         .detail;
       const ed = editorRef.current;
       if (detail.sceneId !== sceneId || !ed) return;
+      if (guardInlineAiPending()) return;
       cancel();
       isApplyingExternalUpdate.current = true;
       try {

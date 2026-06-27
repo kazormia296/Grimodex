@@ -15,9 +15,14 @@ vi.mock("@/lib/tauri", () => ({
 }));
 
 import { invoke } from "@/lib/tauri";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 const mockInvoke = vi.mocked(invoke);
 
 const VIEWPORT = { width: 1200, height: 800 };
+
+afterEach(() => {
+  useInlineAiStore.getState().reset();
+});
 
 function resetStore() {
   useLayoutStore.setState({
@@ -51,6 +56,7 @@ function collectPanels(state: LayoutState): ToolWindowPanelId[] {
 describe("useLayoutStore", () => {
   beforeEach(() => {
     resetStore();
+    useInlineAiStore.getState().reset();
     vi.clearAllMocks();
   });
 
@@ -808,6 +814,34 @@ describe("layout store property invariants", () => {
           expect(segment.activePanel).toBeNull();
         }
       }
+    });
+
+    it("pending inline AI 中の center collapse は tool も editor も変更しない", () => {
+      useLayoutStore.getState().setEditorOpen(true);
+      useLayoutStore.getState().movePanelToNewSlot("grid", "center", 1);
+      useLayoutStore.getState().showPanel("grid");
+      expect(
+        useLayoutStore
+          .getState()
+          .layout.center.segments.some(
+            (segment) =>
+              segment.kind === "tool" && segment.activePanel === "grid",
+          ),
+      ).toBe(true);
+      useInlineAiStore.getState().startGeneration({
+        commandId: "continue",
+        mode: "insert",
+        originalRange: null,
+        originalText: "",
+        insertPos: 1,
+        abortController: new AbortController(),
+      });
+      useInlineAiStore.getState().finishGeneration("m");
+
+      const before = useLayoutStore.getState().layout.center;
+      useLayoutStore.getState().collapseLayoutRegion("center");
+
+      expect(useLayoutStore.getState().layout.center).toEqual(before);
     });
   });
 

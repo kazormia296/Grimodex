@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle } from "lucide-react";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 
 interface Props {
   nodeId: string;
@@ -18,6 +19,7 @@ export function ExternalEditConflictBanner({ nodeId }: Props) {
   if (!conflict) return null;
 
   const handleReload = () => {
+    if (guardInlineAiPending()) return;
     useTabStore.getState().setTabDirty(nodeId, false);
     bumpReloadNonce(nodeId);
     shiftConflict(nodeId);

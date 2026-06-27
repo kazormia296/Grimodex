@@ -194,6 +194,15 @@ describe("InlineAIDiffPlugin: diffShown 編集ロック (B1)", () => {
     expect(next.doc.textContent).toBe("hello world");
   });
 
+  it("error 中の owner エディタへの手動入力も握りつぶす", () => {
+    const state = makeState("hello world", OWNER_A);
+    startSession(OWNER_A);
+    useInlineAiStore.getState().setError("boom");
+    expect(useInlineAiStore.getState().status).toBe("error");
+    const next = state.apply(state.tr.insertText("X", 1));
+    expect(next.doc.textContent).toBe("hello world");
+  });
+
   it("diffShown 中、addToHistory:false の真にプログラマティックな tr (Beat chunk 等) は通す", () => {
     // insertBeatStream は addToHistory:false で chunk を挿入する。ユーザー入力
     // ではないので diffShown 中でも握りつぶしてはいけない (回帰防止)。

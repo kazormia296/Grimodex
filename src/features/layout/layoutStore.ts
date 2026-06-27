@@ -916,6 +916,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   collapseLayoutRegion: (region) => {
     if (region === "center") {
       const wasEditorOpen = get().layout.center.editorOpen;
+      if (wasEditorOpen && guardInlineAiPending()) return;
       set((state) => {
         const next = updateCenter(state.layout, (center) => ({
           ...center,

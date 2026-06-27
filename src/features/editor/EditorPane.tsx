@@ -105,6 +105,7 @@ import type { AbMessage } from "@/features/ab-test/abHarness";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTabStore } from "@/features/editor/tabStore";
 import {
@@ -1708,6 +1709,7 @@ export function EditorPane({
       const detail = (e as CustomEvent<{ sceneId: string; content: string }>)
         .detail;
       if (detail.sceneId !== nodeId || !editorRef.current) return;
+      if (guardInlineAiPending()) return;
       isApplyingExternalUpdate.current = true;
       try {
         const parsed =
