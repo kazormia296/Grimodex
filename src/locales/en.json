@@ -1027,6 +1027,9 @@
       "running": "Running…"
     },
     "codex": {
+      "titleFontSection": "Title appearance",
+      "entryTitleFont": "Entry title font",
+      "entryTitleFontDesc": "Font for the entry name in the Codex detail panel. Defaults to the project language's font when unset.",
       "typeManagement": "Codex Type Management",
       "typeManagementDesc": "Manage Codex entry types. Built-in types can only have their label and color changed.",
       "addCustomType": "Add custom type",

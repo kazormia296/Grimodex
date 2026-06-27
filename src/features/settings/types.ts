@@ -117,6 +117,8 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "display.codexHighlight": "global",
   "display.codexHighlightStyle": "global",
   "display.attributionHighlightOpacity": "global",
+  // Codex — user preference (global)
+  "codex.entryTitleFont": "global",
   // AI — user preference (global)
   "ai.inlineModel": "global",
   "ai.sessionTitleModel": "global",
@@ -285,6 +287,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "display.codexHighlight": "true",
   "display.codexHighlightStyle": "color-text",
   "display.attributionHighlightOpacity": "10",
+  // Codex — エントリタイトル(名称欄)のフォント。既定は ja=駅名標 Toaru Eki Sign、
+  // en は LANGUAGE_DEFAULT_OVERRIDES で TeX Gyre Heros に差し替わる (editor.fontFamily と同流儀)。
+  "codex.entryTitleFont": '"Toaru Eki Sign"',
   // AI
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",
@@ -384,5 +389,8 @@ export const LANGUAGE_DEFAULT_OVERRIDES: Record<
     "editor.spellCheck": "true", // browser dict via document.lang=en
     "editor.paragraphIndent": "1", // first-line indent (em), English convention
     "editor.paragraphSpacing": "0", // indent instead of blank-line spacing
+    // 名称欄の英語既定は駅名標ではなく Helvetica 系 (公共サイン定番)。Heros は CJK
+    // グリフを持たないため言語別デフォルトで分ける (codexNameFont.ts 参照)。
+    "codex.entryTitleFont": '"TeX Gyre Heros"',
   },
 };

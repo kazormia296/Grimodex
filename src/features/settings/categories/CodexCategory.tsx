@@ -4,6 +4,8 @@ import { Plus, Pencil, Trash2, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
+import { SettingRow } from "../components/SettingRow";
+import { FontFamilySelect } from "../components/FontFamilySelect";
 import type { CodexType } from "@/features/codex/typeApi";
 import {
   listCodexTypes,
@@ -430,6 +432,17 @@ export function CodexCategory() {
 
   return (
     <div className="space-y-6 p-6" data-testid="codex-category">
+      <SettingSection title={t("settings.codex.titleFontSection")}>
+        <SettingRow
+          label={t("settings.codex.entryTitleFont")}
+          description={t("settings.codex.entryTitleFontDesc")}
+        >
+          <FontFamilySelect
+            settingKey="codex.entryTitleFont"
+            defaultValue={'"Toaru Eki Sign"'}
+          />
+        </SettingRow>
+      </SettingSection>
       <SettingSection title={t("settings.codex.typeManagement")}>
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">

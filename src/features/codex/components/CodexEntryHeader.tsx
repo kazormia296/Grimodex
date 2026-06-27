@@ -13,6 +13,7 @@ import { useFitsInline } from "@/hooks/useFitsInline";
 import { useFitFontSize } from "@/hooks/useFitFontSize";
 import { useAutoGrowHeight } from "@/hooks/useAutoGrowHeight";
 import { useCurrentProject } from "@/features/project/projectStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { codexNameFontStyle } from "./codexNameFont";
 import { AliasesChip } from "./AliasesChip";
 import { AliasesField } from "./AliasesField";
@@ -77,13 +78,18 @@ export function CodexEntryHeader({
   const KickerIcon = KICKER_ICON[type] ?? UserIcon;
   const originalName = useRef(name);
 
-  // 名称欄の表示用スタイル (font/weight/字間)。英語プロジェクトでは駅名標フォントを
-  // Helvetica 系 (TeX Gyre Heros) の Bold・やや詰め字間に差し替える。名前は作品の
-  // 内容なので、UI 言語ではなくプロジェクト言語で判定する (editor-en-typography と
-  // 同じ流儀。Heros は CJK グリフを持たないため、UI 言語で切り替えると日本語名が
-  // 壊れる)。計測 span と可視 textarea で必ず同じ値を使う (字幅に効く weight/字間も
-  // 含め採寸の整合のため — codexNameFont.ts 参照)。
-  const nameFontStyle = codexNameFontStyle(useCurrentProject()?.language);
+  // 名称欄の表示用スタイル (font/weight/字間)。フォントは設定 codex.entryTitleFont で
+  // 変更可 (既定は言語別: 英語プロジェクトは駅名標フォントを Helvetica 系 TeX Gyre Heros
+  // の Bold・やや詰め字間に差し替える)。名前は作品の内容なので、フォント既定の言語判定は
+  // UI 言語ではなくプロジェクト言語で行う (editor-en-typography と同流儀。Heros は CJK
+  // グリフを持たないため、UI 言語で切り替えると日本語名が壊れる)。計測 span と可視
+  // textarea で必ず同じ値を使う (字幅に効く weight/字間も含め採寸の整合のため —
+  // codexNameFont.ts 参照)。
+  const entryTitleFont = useSettingsStore((s) => s.get("codex.entryTitleFont"));
+  const nameFontStyle = codexNameFontStyle(
+    useCurrentProject()?.language,
+    entryTitleFont,
+  );
 
   // 名前を 1 行に収まるよう自動縮小 (収まる時は NAME_BASE_PX のまま)。下限を割ると
   // textarea の soft-wrap で折り返す。
