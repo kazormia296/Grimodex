@@ -237,3 +237,78 @@ export function buildBenefitCorpus(): RelationInjectionCorpus {
     seedEntryIds: ["alice"],
   };
 }
+
+/**
+ * intra-context surfacing シナリオ用コーパス（phase 無し）。
+ *
+ * benefit との違いは **bob も seed（両方が文脈にいる）** こと。alice と bob が両方
+ * シーンに登場するが、二人の主従（bob は alice の家臣）は **本文にも各 summary にも
+ * 書かれていない**。重要: summary に身分を書くと off でも階層が分かってしまい測定に
+ * ならない。そこで summary は身分を伏せ、見た目の手がかりはむしろ逆（alice＝旅の若者
+ * ／bob＝歴戦の騎士）にして、関係を surfacing しないと「老騎士が若者を率いる」と
+ * 取り違えやすくする。両端とも seed なので discovery では引き込まれず surfacing でのみ
+ * 関係が出る。関係は向きを持つ（alice→bob via 家臣）ため向き保持も同時に検証できる。
+ */
+export function buildIntraContextCorpus(): RelationInjectionCorpus {
+  const nodes = [mkScene("i1", "a0")];
+  const entries = [
+    mkEntry({ id: "alice", name: "アリス", summary: "アリスは旅をする若者。" }),
+    mkEntry({ id: "bob", name: "ボブ", summary: "ボブは歴戦の騎士。" }),
+  ];
+  const relations = [
+    mkRelation({
+      id: "ri1",
+      fromCodexId: "alice",
+      toCodexId: "bob",
+      relationType: "vassal",
+      label: "家臣",
+    }),
+  ];
+  return {
+    nodes,
+    entries,
+    relations,
+    phasesByEntry: new Map(),
+    targetSceneId: "i1",
+    seedEntryIds: ["alice", "bob"],
+  };
+}
+
+/**
+ * intra-context surfacing **対称関係**シナリオ用コーパス（phase 無し）。
+ *
+ * directional 版が「向きを当てる」難所だったのに対し、こちらは向きを間違えようがない
+ * 対称関係（幼馴染）で純粋に「隠れた関係を surfacing すると描写に反映されるか」を測る。
+ * alice（警備隊長）と bob（裏町の軽業師）は立場が対立し、二人が幼馴染である事実は
+ * **概要にもシーン本文にも書かれていない**。関係を知らなければ「赤の他人の追跡劇」に
+ * なるが、surfacing すれば旧知の friction（名前呼び・ためらい等）を織り込める。
+ * 両端とも seed なので discovery では出ず、surfacing でのみ関係が現れる。
+ */
+export function buildIntraSymmetricCorpus(): RelationInjectionCorpus {
+  const nodes = [mkScene("s1", "a0")];
+  const entries = [
+    mkEntry({
+      id: "alice",
+      name: "アリス",
+      summary: "アリスは王都警備隊の隊長。",
+    }),
+    mkEntry({ id: "bob", name: "ボブ", summary: "ボブは裏町に生きる軽業師。" }),
+  ];
+  const relations = [
+    mkRelation({
+      id: "rs1",
+      fromCodexId: "alice",
+      toCodexId: "bob",
+      relationType: "childhood_friend",
+      label: "幼馴染",
+    }),
+  ];
+  return {
+    nodes,
+    entries,
+    relations,
+    phasesByEntry: new Map(),
+    targetSceneId: "s1",
+    seedEntryIds: ["alice", "bob"],
+  };
+}

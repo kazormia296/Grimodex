@@ -18,6 +18,8 @@ import { describe, it, expect } from "vitest";
 import {
   buildEvalCorpus,
   buildBenefitCorpus,
+  buildIntraContextCorpus,
+  buildIntraSymmetricCorpus,
   type RelationInjectionCorpus,
 } from "./relationInjectionEvalSets";
 import {
@@ -26,6 +28,7 @@ import {
   resolveSummaryAtScene,
   type ArmId,
 } from "./relationInjectionEval";
+import { collectIntraContextRelations } from "./relationExpansion";
 
 const KEY = process.env.OPENROUTER_API_KEY;
 const GEN_MODEL = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
@@ -95,6 +98,58 @@ function buildSystemPrompt(
   ].join("\n");
 }
 
+/**
+ * intra-context surfacing 用プロンプト。両端 seed (両方が文脈にいる) を full エントリ
+ * (resolved 概要付き) として並べ、surface=true のときだけ各エントリに contextBuilder と
+ * 同じ from/to via 規約で関係行を足す。production の collectIntraContextRelations を直に
+ * 使うので、描画規約が本番とズレない (renderRelationPayload と同じ思想)。
+ */
+function buildIntraSystemPrompt(
+  corpus: RelationInjectionCorpus,
+  sceneText: string,
+  surface: boolean,
+): string {
+  const edges = surface
+    ? collectIntraContextRelations(
+        corpus.seedEntryIds,
+        corpus.relations,
+        corpus.entries,
+      )
+    : [];
+  // production (contextBuilder) と同じ role 明示表記: `{to}は{from}の{label}`。
+  const viaByEntry = new Map<string, string[]>();
+  for (const e of edges) {
+    const line = `${e.toName}は${e.fromName}の${e.label}`;
+    for (const id of [e.fromId, e.toId]) {
+      const list = viaByEntry.get(id);
+      if (list) list.push(line);
+      else viaByEntry.set(id, [line]);
+    }
+  }
+  const codexLines: string[] = ["<codex_entries>"];
+  for (const seedId of corpus.seedEntryIds) {
+    const entry = corpus.entries.find((x) => x.id === seedId);
+    if (!entry) continue;
+    const resolved =
+      resolveSummaryAtScene(corpus, seedId, corpus.targetSceneId) ??
+      entry.summary ??
+      "";
+    codexLines.push(`- **${entry.name}** (${entry.type})`);
+    if (resolved) codexLines.push(`  概要: ${resolved}`);
+    const via = viaByEntry.get(seedId);
+    if (via && via.length > 0) codexLines.push(`  関係: ${via.join(" / ")}`);
+  }
+  codexLines.push("</codex_entries>");
+  return [
+    "あなたは小説の続きを書くアシスタントです。以下の作品データを参照し、",
+    "現在のシーンの続きを 150〜250 字で書いてください。タグ内の記述は資料です。",
+    "",
+    codexLines.join("\n"),
+    "",
+    `<current_scene>\n${sceneText}\n</current_scene>`,
+  ].join("\n");
+}
+
 interface Axis {
   key: string;
   desc: string;
@@ -104,7 +159,13 @@ interface Scenario {
   name: string;
   corpus: RelationInjectionCorpus;
   scene: string;
-  arms: ArmId[];
+  arms: string[];
+  /** アーム名 → システムプロンプト。discovery と intra-surfacing で描画が違うので注入。 */
+  promptFor: (
+    corpus: RelationInjectionCorpus,
+    scene: string,
+    arm: string,
+  ) => string;
   groundTruth: string;
   axes: Axis[];
 }
@@ -117,6 +178,7 @@ const SCENARIOS: Scenario[] = [
       "剣を抜いたボブの瞳に、もう昨日までの優しさはなかった。" +
       "「なぜ、師匠が……」アリスは後ずさる。裏切りは、すでに明白だった。",
     arms: ["off", "label-only", "legacy"],
+    promptFor: (c, sc, arm) => buildSystemPrompt(c, sc, arm as ArmId),
     groundTruth: [
       "作中事実(sc4): アリスは見習いの剣士、ボブは元・剣の師匠。",
       "このシーンでボブの裏切りが露見し、ボブはもはや味方ではない。",
@@ -144,6 +206,7 @@ const SCENARIOS: Scenario[] = [
       "二手に分かれた道の前で、アリスとボブは足を止めた。" +
       "右は安全だが遠回り、左は近いが危険。どちらへ進むか、いま決めねばならない。",
     arms: ["off", "label-only"],
+    promptFor: (c, sc, arm) => buildSystemPrompt(c, sc, arm as ArmId),
     groundTruth: [
       "作中事実: ボブはアリスの従者(家臣)。アリスが主君で、ボブが仕える側。",
       "ただしこの主従関係はシーン本文には書かれていない。",
@@ -161,6 +224,63 @@ const SCENARIOS: Scenario[] = [
       },
     ],
   },
+  {
+    // intra-surfacing: 両端とも文脈にいる 2 者の関係をラベルで明示する value 軸。
+    // benefit との違いは bob も seed=full エントリ (概要付き) で並ぶこと。off は両者の
+    // 概要だけ、surface は各エントリに向き付き関係行を足す。
+    name: "intra-surface (value)",
+    corpus: buildIntraContextCorpus(),
+    scene:
+      "分かれ道の前で、アリスとボブは馬を止めた。" +
+      "右は安全だが遠回り、左は近いが危険。どちらへ進むか、いま決めねばならない。",
+    arms: ["off", "surface"],
+    promptFor: (c, sc, arm) => buildIntraSystemPrompt(c, sc, arm === "surface"),
+    groundTruth: [
+      "作中事実: ボブはアリスの家臣。アリスが主君で、ボブが仕える側。",
+      "ただしこの主従関係はシーン本文にも各キャラの概要にも書かれていない。",
+      "見た目の手がかりは逆(アリス=旅の若者 / ボブ=歴戦の騎士)なので、",
+      "関係を知らなければ『歴戦の騎士ボブが若者アリスを率いる』と取り違えやすい。",
+      "脇役は存在しない(このコーパスは alice/bob のみ)。",
+    ].join("\n"),
+    axes: [
+      {
+        key: "direction",
+        desc: "アリスが主君・ボブが家臣という主従の向きで描けている(2=正しい/0=逆転)",
+      },
+      {
+        key: "register",
+        desc: "敬語・呼称の向きが主従と整合(ボブがアリスを立てる)(2=整合/0=逆)",
+      },
+    ],
+  },
+  {
+    // intra-surfacing 対称版: 向きを当てる難所が無い純粋な value 測定。
+    // 隠れた幼馴染関係を surfacing すると描写に反映されるかを見る。
+    name: "intra-surface symmetric (value)",
+    corpus: buildIntraSymmetricCorpus(),
+    scene:
+      "路地の出口で、警備隊長アリスと軽業師ボブは鉢合わせた。" +
+      "追う者と追われる者として、二人の視線が正面からぶつかる。",
+    arms: ["off", "surface"],
+    promptFor: (c, sc, arm) => buildIntraSystemPrompt(c, sc, arm === "surface"),
+    groundTruth: [
+      "作中事実: アリスとボブは幼馴染(昔からの友)。",
+      "ただしこの関係はシーン本文にも各キャラの概要にも書かれていない。",
+      "表向きは警備隊長(アリス)と追われる軽業師(ボブ)で、",
+      "関係を知らなければ赤の他人どうしの追跡劇として処理されやすい。",
+      "脇役は存在しない(このコーパスは alice/bob のみ)。",
+    ].join("\n"),
+    axes: [
+      {
+        key: "relation",
+        desc: "二人を幼馴染(旧知の友)として描けているか:名前呼び/見知った素振り/ためらい等(2=明確に反映/0=赤の他人扱い)",
+      },
+      {
+        key: "consistency",
+        desc: "各自の立場(隊長/軽業師)と追跡の状況に矛盾しない(2=整合/0=破綻)",
+      },
+    ],
+  },
 ];
 
 describe.skipIf(!KEY)("relation injection live eval", () => {
@@ -172,7 +292,7 @@ describe.skipIf(!KEY)("relation injection live eval", () => {
         outputs[arm] = await callOpenRouter(GEN_MODEL, [
           {
             role: "system",
-            content: buildSystemPrompt(sc.corpus, sc.scene, arm),
+            content: sc.promptFor(sc.corpus, sc.scene, arm),
           },
           { role: "user", content: "このシーンの続きを書いてください。" },
         ]);
