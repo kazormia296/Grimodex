@@ -41,6 +41,13 @@ export const VARIANTS = {
   },
 } as const;
 
+/**
+ * 注意喚起の横揺れ (attention shake) の x キーフレーム。pending 中に離脱系操作が
+ * ブロックされたとき InlineAIToolbar を一瞬揺らして視線を誘導する。べた書きを避け
+ * 正本としてここに置く (Reduced Motion 時は呼び出し側で無効化する)。
+ */
+export const SHAKE_KEYFRAMES: number[] = [0, -6, 6, -5, 5, -3, 3, 0];
+
 /** CSS transition-duration strings aligned with DURATIONS. */
 export const CSS_DURATIONS = {
   fast: `${DURATIONS.fast * 1000}ms`,

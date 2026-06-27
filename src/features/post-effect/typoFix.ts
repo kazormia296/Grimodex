@@ -1,5 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { aiAuthorshipAttrs } from "@/features/attribution/aiAuthorship";
 import { resolveAnnotationRange } from "./resolveAnnotationRange";
@@ -33,6 +34,9 @@ export async function applyTypoFixAndResolve(
   ann: PostEffectAnnotation,
 ): Promise<ApplyTypoFixResult> {
   if (!editor) return { applied: false };
+  // 未確定の inline-AI diff があるなら本文置換を弾く (B1 plugin lock の上の明示ガード
+  // ＝ owner 以外/将来の DB 直経路も含め toast 付きで止める)。
+  if (guardInlineAiPending()) return { applied: false };
   // AI 提案テキストの本文適用は bodyWrite アクション。policy=off のプロジェクト
   // では弾く (security audit AI-1)。決定論的な「ローカル検出」の applyFix は
   // AI 出力ではないため別経路として gate しない。

@@ -16,6 +16,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useLintStore } from "@/features/lint/lintStore";
@@ -224,6 +225,8 @@ function LocalTypoList() {
 
   const applyFix = (d: Diagnostic) => {
     if (!editor || !d.fix) return;
+    // 未確定の inline-AI diff 中に本文を置換すると pending 範囲とズレて壊れる。
+    if (guardInlineAiPending()) return;
     const map = buildOffsetMap(editor.state.doc);
     const from = strOffsetToPmPos(map, d.fix.range.start);
     const to = strOffsetToPmPos(map, d.fix.range.end);

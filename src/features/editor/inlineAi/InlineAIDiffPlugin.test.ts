@@ -163,3 +163,98 @@ describe("InlineAIDiffPlugin: owner ゲート (複数エディタ共有)", () =>
     expect(next.doc.textContent).toBe("hello world");
   });
 });
+
+// B1: diffShown (Accept 待ち) の間も本文編集をロックする。手動編集が autosave
+// 抑止下で未保存のまま溜まり、離脱で喪失するのを原理的に防ぐ。accept/reject は
+// 先に reset()→idle してから tr を投げるので素通りする (本文編集ロックの対象外)。
+describe("InlineAIDiffPlugin: diffShown 編集ロック (B1)", () => {
+  beforeEach(() => {
+    useInlineAiStore.getState().reset();
+  });
+
+  function startSession(activeEditor: Editor) {
+    useInlineAiStore.getState().startGeneration({
+      commandId: "continue",
+      mode: "insert",
+      originalRange: null,
+      originalText: "",
+      insertPos: 6,
+      abortController: new AbortController(),
+      activeEditor,
+    });
+    useInlineAiStore.getState().setGeneratedRange({ from: 6, to: 11 });
+  }
+
+  it("diffShown 中の owner エディタへの手動入力を握りつぶす", () => {
+    const state = makeState("hello world", OWNER_A);
+    startSession(OWNER_A);
+    useInlineAiStore.getState().finishGeneration("m");
+    expect(useInlineAiStore.getState().status).toBe("diffShown");
+    const next = state.apply(state.tr.insertText("X", 1));
+    expect(next.doc.textContent).toBe("hello world");
+  });
+
+  it("diffShown 中、addToHistory:false の真にプログラマティックな tr (Beat chunk 等) は通す", () => {
+    // insertBeatStream は addToHistory:false で chunk を挿入する。ユーザー入力
+    // ではないので diffShown 中でも握りつぶしてはいけない (回帰防止)。
+    const state = makeState("hello world", OWNER_A);
+    startSession(OWNER_A);
+    useInlineAiStore.getState().finishGeneration("m");
+    const tr = state.tr.insertText("Z", 6).setMeta("addToHistory", false);
+    const next = state.apply(tr);
+    expect(next.doc.textContent).toContain("Z");
+  });
+
+  it("diffShown 中、addToHistory が立つ通常 tr (手動ペースト/Fix の insertContentAt 相当) は握りつぶす", () => {
+    // ペーストや Fix 系 insertContentAt は addToHistory:false を立てない通常 tr。
+    // ユーザー由来の本文変更なのでロック対象。
+    const state = makeState("hello world", OWNER_A);
+    startSession(OWNER_A);
+    useInlineAiStore.getState().finishGeneration("m");
+    const tr = state.tr
+      .insertText("X", 1)
+      .setMeta("programmaticInsert", true)
+      .setMeta("paste", true);
+    const next = state.apply(tr);
+    expect(next.doc.textContent).toBe("hello world");
+  });
+
+  it("diffShown 中でも docChanged=false の tr (選択/強制更新) は通す", () => {
+    const state = makeState("hello world", OWNER_A);
+    startSession(OWNER_A);
+    useInlineAiStore.getState().finishGeneration("m");
+    const next = forceUpdate(state);
+    expect(decoSet(next).find()).toHaveLength(1);
+  });
+
+  it("inlineAiInsert chunk は generating / diffShown どちらでも通す", () => {
+    const state = makeState("hello world", OWNER_A);
+    startSession(OWNER_A);
+    const gen = state.apply(
+      state.tr.insertText("Z", 6).setMeta("inlineAiInsert", true),
+    );
+    expect(gen.doc.textContent).toContain("Z");
+    useInlineAiStore.getState().finishGeneration("m");
+    const shown = gen.apply(
+      gen.tr.insertText("Q", 7).setMeta("inlineAiInsert", true),
+    );
+    expect(shown.doc.textContent).toContain("Q");
+  });
+
+  it("reset()→idle 後の編集 (accept/reject 本体) は通す", () => {
+    const state = makeState("hello world", OWNER_A);
+    startSession(OWNER_A);
+    useInlineAiStore.getState().finishGeneration("m");
+    useInlineAiStore.getState().reset();
+    const next = state.apply(state.tr.insertText("X", 1));
+    expect(next.doc.textContent).toContain("X");
+  });
+
+  it("別エディタは diffShown 中でも編集を通す (foreign 非ブロック維持)", () => {
+    const state = makeState("hello world", OWNER_A);
+    startSession(OWNER_B);
+    useInlineAiStore.getState().finishGeneration("m");
+    const next = state.apply(state.tr.insertText("X", 1));
+    expect(next.doc.textContent).toContain("X");
+  });
+});

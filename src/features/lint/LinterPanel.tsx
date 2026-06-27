@@ -18,6 +18,7 @@ import {
 
 import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { saveTextFile } from "@/lib/exportFile";
@@ -366,6 +367,7 @@ function CurrentLinterView() {
   const applyFix = useCallback(
     (d: Diagnostic) => {
       if (!editor || !d.fix) return;
+      if (guardInlineAiPending()) return;
       const before = buildOffsetMap(editor.state.doc);
       const from = strOffsetToPmPos(before, d.fix.range.start);
       const to = strOffsetToPmPos(before, d.fix.range.end);
@@ -419,6 +421,7 @@ function CurrentLinterView() {
    */
   const applyAllFixes = useCallback(() => {
     if (!editor) return;
+    if (guardInlineAiPending()) return;
     const withFix = filtered.filter((d) => d.fix);
     if (withFix.length === 0) return;
     const map = buildOffsetMap(editor.state.doc);
@@ -1191,6 +1194,7 @@ function ProjectLinterView() {
     (scene: ScannedScene, d: Diagnostic) => {
       if (!editor || !d.fix) return;
       if (currentSceneId !== scene.sceneId) return;
+      if (guardInlineAiPending()) return;
       const map = buildOffsetMap(editor.state.doc);
       const beforeDisableCount = map.disables.length;
       const from = strOffsetToPmPos(map, d.fix.range.start);

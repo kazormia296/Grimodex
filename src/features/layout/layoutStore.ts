@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { GlobalSettings } from "@/features/workspace/store";
 import {
   getScreenshotCaptureId,
@@ -667,6 +668,15 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   maximizedPanelId: null,
 
   setEditorOpen: (open) => {
+    // editor を閉じる正本。togglePanel("editor") / collapseLayoutRegion("center")
+    // / preset 適用後の close もここに集約されるため、pending 中のエディタ消失を
+    // 一括で止める。開く側 (open===true) は安全なのでブロックしない。
+    if (
+      open === false &&
+      get().layout.center.editorOpen &&
+      guardInlineAiPending()
+    )
+      return;
     const vp = getViewport();
     set((state) => {
       const wasOpen = state.layout.center.editorOpen;
@@ -1503,6 +1513,8 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   // 全量書き込みに含まれるため、即時の persistActivePresetId は冗長な
   // settings 二重書き込み (= get/save 全量 round-trip ×2) で廃止。
   applyPreset: (presetId) => {
+    // preset は editor segment を消す/閉じる可能性があるため pending 中は全ブロック。
+    if (guardInlineAiPending()) return;
     const vp = getViewport();
     if (isBuiltinPresetId(presetId)) {
       const override = get().builtinPresetOverrides[presetId];

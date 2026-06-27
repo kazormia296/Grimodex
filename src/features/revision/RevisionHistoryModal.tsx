@@ -9,6 +9,7 @@ import { useRevisionStore } from "./revisionStore";
 import { createRevision } from "./api";
 import { saveSceneContent } from "@/features/tree/api";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { getReadonlyEditorExtensions } from "@/features/editor/extensions";
 import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
 import { RevisionRowSkeletonList } from "@/components/ui/skeleton-patterns";
@@ -374,6 +375,9 @@ export function RevisionHistoryModal() {
 
   const handleRestoreConfirm = useCallback(async () => {
     if (!selectedContent || !entityId || !entityType || !mainEditor) return;
+    // 復元は mainEditor.setContent で doc 全体を置換するため、未確定の inline-AI
+    // diff があれば止める。
+    if (guardInlineAiPending()) return;
 
     setIsRestoring(true);
     try {

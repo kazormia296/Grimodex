@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { useGlobalHistoryStore } from "./globalHistoryStore";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import {
+  useGlobalHistoryStore,
+  setHistoryReplayGuard,
+} from "./globalHistoryStore";
 
 describe("useGlobalHistoryStore", () => {
   beforeEach(() => {
@@ -238,6 +241,69 @@ describe("useGlobalHistoryStore", () => {
     expect(s.future).toEqual([]);
     expect(s.canUndo).toBe(false);
     expect(s.canRedo).toBe(false);
+  });
+
+  describe("replay guard (inline-AI pending veto)", () => {
+    afterEach(() => setHistoryReplayGuard(null));
+
+    it("vetoes undo without running cmd.undo when the guard returns true", async () => {
+      let undoCalled = false;
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "X",
+        undo: async () => {
+          undoCalled = true;
+        },
+        redo: async () => {},
+      });
+      setHistoryReplayGuard(() => true);
+      await useGlobalHistoryStore.getState().undo();
+      expect(undoCalled).toBe(false);
+      // History is untouched — the entry stays in past for later replay.
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+    });
+
+    it("vetoes redo without running cmd.redo when the guard returns true", async () => {
+      let redoCalled = false;
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "X",
+        undo: async () => {},
+        redo: async () => {
+          redoCalled = true;
+        },
+      });
+      await useGlobalHistoryStore.getState().undo(); // move to future
+      setHistoryReplayGuard(() => true);
+      await useGlobalHistoryStore.getState().redo();
+      expect(redoCalled).toBe(false);
+      expect(useGlobalHistoryStore.getState().future).toHaveLength(1);
+    });
+
+    it("does not fire the guard when there is nothing to undo", () => {
+      let calls = 0;
+      setHistoryReplayGuard(() => {
+        calls++;
+        return true;
+      });
+      void useGlobalHistoryStore.getState().undo();
+      expect(calls).toBe(0);
+    });
+
+    it("allows undo when the guard returns false", async () => {
+      let undoCalled = false;
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "X",
+        undo: async () => {
+          undoCalled = true;
+        },
+        redo: async () => {},
+      });
+      setHistoryReplayGuard(() => false);
+      await useGlobalHistoryStore.getState().undo();
+      expect(undoCalled).toBe(true);
+    });
   });
 
   describe("runAsTransaction (batch grouping)", () => {

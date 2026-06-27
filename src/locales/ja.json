@@ -3414,6 +3414,7 @@
   },
   "inlineAi": {
     "generateFailed": "生成に失敗しました",
+    "pendingBlocked": "未確定のAI生成があります。Tab で反映 / Esc で破棄してから操作できます",
     "additionalPrompt": "追加の指示（省略可）",
     "commands": {
       "continue": {

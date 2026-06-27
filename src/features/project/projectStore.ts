@@ -9,6 +9,7 @@ import {
 } from "./api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { ensureBuiltinTypes } from "@/features/codex/typeApi";
+import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
@@ -73,6 +74,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   },
 
   loadProject: async (projectId) => {
+    // プロジェクト切替は reloadProjectData で tab/chat/map 等の in-memory 状態を
+    // 破棄し owner エディタを作り替えるため、pending 中は止める (唯一の入口)。
+    if (guardInlineAiPending()) return;
     const generation = ++loadProjectGeneration;
     const previousId = get().currentProjectId;
     if (

@@ -16,6 +16,14 @@ interface InlineAiStoreState extends InlineAiState {
    * 永続化対象外。
    */
   activeEditor: Editor | null;
+  /**
+   * ペンディング中 (生成中/diff表示中) に離脱系操作がブロックされたとき増える
+   * ワンショットの注意喚起カウンタ。InlineAIToolbar が購読して shake する。
+   * 永続化対象外。reset では戻さない (単調増加の UI ping)。
+   */
+  attentionNonce: number;
+  /** attentionNonce を +1 して Toolbar の注意喚起アニメを発火する。 */
+  requestAttention: () => void;
   startGeneration: (params: {
     commandId: string;
     mode: InlineAiMode;
@@ -56,6 +64,11 @@ export const useInlineAiStore = create<InlineAiStoreState>()((set, get) => ({
   ...INITIAL_STATE,
   abortController: null,
   activeEditor: null,
+  attentionNonce: 0,
+
+  requestAttention() {
+    set((s) => ({ attentionNonce: s.attentionNonce + 1 }));
+  },
 
   startGeneration({
     commandId,

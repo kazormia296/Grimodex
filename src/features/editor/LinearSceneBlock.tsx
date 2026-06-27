@@ -633,6 +633,8 @@ function MountedSceneBlock({
           onAccept={inlineAi.onAccept}
           onReject={inlineAi.onReject}
           onRetry={inlineAi.onRetry}
+          anchorRef={containerRef}
+          isOwner={inlineAi.isOwner}
         />
       )}
     </div>
