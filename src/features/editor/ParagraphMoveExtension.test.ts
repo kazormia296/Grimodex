@@ -99,4 +99,27 @@ describe("ParagraphMoveExtension", () => {
     editor.commands.moveLineUp(); // キャレットは A 内 -> B,A,C -> A,B,C
     expect(blockTexts(editor)).toEqual(["A", "B", "C"]);
   });
+
+  it("異なるサイズのブロック間 swap でもキャレットのブロック内オフセットを保つ", () => {
+    // 長い段落(9文字)と短い段落(1文字)。隣ブロックのサイズに依らず、移動した
+    // ブロック内の相対オフセットが保たれることを検証 (currentStartAfter が隣の
+    // nodeSize を正しく織り込む)。
+    editor.destroy();
+    editor = createEditor("<p>123456789</p><p>x</p>");
+    editor.commands.setTextSelection(4); // 長い段落の text offset 3
+    expect(editor.state.selection.$from.parentOffset).toBe(3);
+
+    const ok = editor.commands.moveLineDown();
+    expect(ok).toBe(true);
+    expect(editor.state.selection.$from.parent.textContent).toBe("123456789");
+    // 隣が短いブロックでもオフセットは 3 を維持 (キャレットは同じ文字間)。
+    expect(editor.state.selection.$from.parentOffset).toBe(3);
+  });
+
+  it("複数ブロックに跨る選択 (A内〜B内) では false で無変化", () => {
+    editor.commands.setTextSelection({ from: 1, to: 4 }); // A の中〜B の中
+    const ok = editor.commands.moveLineUp();
+    expect(ok).toBe(false);
+    expect(blockTexts(editor)).toEqual(["A", "B", "C"]);
+  });
 });
