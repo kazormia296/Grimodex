@@ -395,7 +395,9 @@ describe("縦書きMODE: Beat ノードの縦書き表示", () => {
     ) as HTMLElement;
     fireEvent.click(chip);
     const menu = await waitFor(() => {
-      const el = beat.querySelector(".beat-popover") as HTMLElement | null;
+      // 8141a19a 以降ポップオーバーは AnimatedDropdown で document.body へ portal
+      // されるため beat の内側ではなく document から取得する。
+      const el = document.querySelector(".beat-popover") as HTMLElement | null;
       expect(el).toBeTruthy();
       return el!;
     });
@@ -423,14 +425,20 @@ describe("縦書きMODE: Beat ノードの縦書き表示", () => {
     ) as HTMLElement;
     fireEvent.click(chip);
     const menu = await waitFor(() => {
-      const el = beat.querySelector(".beat-popover") as HTMLElement | null;
+      // 8141a19a 以降ポップオーバーは AnimatedDropdown で document.body へ portal
+      // されるため beat の内側ではなく document から取得する。
+      const el = document.querySelector(".beat-popover") as HTMLElement | null;
       expect(el).toBeTruthy();
       return el!;
     });
-    const menuRect = menu.getBoundingClientRect();
     const chipRect = chip.getBoundingClientRect();
-    // top-6 (= トリガー直下) に開く。mount アニメ (y:-4) のぶん緩めに見る
-    expect(menuRect.top).toBeGreaterThanOrEqual(chipRect.top + 18);
+    // トリガー直下(block-start)に開く。入場アニメ(y:-4→0)の落ち着き後の最終位置で
+    // 測る（誤った placement なら settle しても満たさず timeout で fail する）。
+    await waitFor(() => {
+      expect(menu.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+        chipRect.top + 18,
+      );
+    });
   });
 });
 

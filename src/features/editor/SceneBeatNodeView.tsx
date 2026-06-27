@@ -134,6 +134,15 @@ export function SceneBeatNodeView({
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
 
+  // 縦書き(.editor-vertical 配下)では Beat ヘッダーのポップオーバーを portal 化しても
+  // block-end(=左)側へ開く。判定は設定ストアではなく DOM クラスで行う: 縦書きの真実は
+  // `.editor-vertical` クラスにあり(ImeDiagnosticsPlugin と同じ流儀)、テストもストアを
+  // 介さずこのクラスだけを付けるため。メニューを開く瞬間に判定すれば DOM は attach 済み。
+  const [isVertical, setIsVertical] = useState(false);
+  const syncVertical = useCallback((el: HTMLElement | null) => {
+    setIsVertical(!!el?.closest(".editor-vertical"));
+  }, []);
+
   const aiSettings = useAiSettingsStore((s) => s.settings);
   const loadModels = useAiSettingsStore((s) => s.loadModels);
   const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
@@ -303,7 +312,10 @@ export function SceneBeatNodeView({
             type="button"
             data-testid="beat-type-chip"
             data-beat-type={beatType}
-            onClick={() => setTypeMenuOpen((v) => !v)}
+            onClick={() => {
+              syncVertical(typeBtnRef.current);
+              setTypeMenuOpen((v) => !v);
+            }}
             className="rounded bg-muted px-1 py-0.5 text-[10px] uppercase tracking-wide hover:bg-muted/80"
           >
             {t(`editor.beat.types.${beatType}`, beatType)}
@@ -312,7 +324,7 @@ export function SceneBeatNodeView({
             open={typeMenuOpen}
             onClose={() => setTypeMenuOpen(false)}
             anchorRef={typeBtnRef}
-            placement="bottom-start"
+            placement={isVertical ? "left-start" : "bottom-start"}
             className="beat-popover z-[100] min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">
@@ -340,7 +352,10 @@ export function SceneBeatNodeView({
             ref={povBtnRef}
             type="button"
             data-testid="beat-pov-btn"
-            onClick={() => setPovMenuOpen((v) => !v)}
+            onClick={() => {
+              syncVertical(povBtnRef.current);
+              setPovMenuOpen((v) => !v);
+            }}
             className={`rounded px-1 py-0.5 text-[10px] ${
               povId && povId !== scenePovCharId
                 ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
@@ -359,7 +374,7 @@ export function SceneBeatNodeView({
             open={povMenuOpen}
             onClose={() => setPovMenuOpen(false)}
             anchorRef={povBtnRef}
-            placement="bottom-start"
+            placement={isVertical ? "left-start" : "bottom-start"}
             className="beat-popover z-[100] min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">
@@ -409,7 +424,10 @@ export function SceneBeatNodeView({
             aria-label={t("editor.beat.menu")}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((v) => !v)}
+            onClick={() => {
+              syncVertical(menuBtnRef.current);
+              setMenuOpen((v) => !v);
+            }}
             disabled={!beatId || !editor}
             className="rounded p-0.5 hover:bg-muted disabled:opacity-50"
           >
@@ -419,7 +437,7 @@ export function SceneBeatNodeView({
             open={menuOpen}
             onClose={() => setMenuOpen(false)}
             anchorRef={menuBtnRef}
-            placement="bottom-end"
+            placement={isVertical ? "left-start" : "bottom-end"}
             className="beat-popover z-[100] min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">

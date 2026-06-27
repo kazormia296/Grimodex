@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 
 /** トリガからポップオーバーを開く向き。 */
-export type PopoverPlacement = "bottom-start" | "bottom-end" | "top-start";
+export type PopoverPlacement =
+  | "bottom-start"
+  | "bottom-end"
+  | "top-start"
+  | "left-start";
 
 interface PopoverLayout {
   /** createPortal する本体の style に展開する固定配置座標。 */
@@ -77,6 +81,12 @@ export function useAnchoredPopover(
       style.top = r.bottom + margin;
       style.right = Math.max(margin, vw - r.right);
       maxHeight = Math.max(120, vh - r.bottom - margin * 2);
+    } else if (placement === "left-start") {
+      // 左向き: ポップオーバー右端をトリガ左端に合わせ、上端をトリガ上端へ揃える。
+      // 縦書き(vertical-rl)の Beat ヘッダーでメニューを block-end(左)側へ開くのに使う。
+      style.top = Math.max(margin, r.top);
+      style.right = Math.max(margin, vw - r.left + margin);
+      maxHeight = Math.max(120, vh - r.top - margin * 2);
     } else {
       style.top = r.bottom + margin;
       style.left = Math.max(margin, r.left);
