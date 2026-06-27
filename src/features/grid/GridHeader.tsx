@@ -6,6 +6,7 @@ import {
   ChevronsUpDown,
   ChevronDown,
   ChevronUp,
+  Columns3,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -74,10 +75,14 @@ export function GridHeader({
   }
 
   return (
-    <div className="shrink-0 border-b">
-      <div data-panel-header className="flex items-center gap-2 px-3 py-2">
-        <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-          {t("grid.header.kicker", "Grid")}
+    <div className="shrink-0 border-b border-border">
+      <div
+        data-panel-header
+        className="flex h-8 items-center gap-2 px-3 text-xs"
+      >
+        <Columns3 className="size-3.5 shrink-0 opacity-70" aria-hidden />
+        <span className="shrink-0 font-medium text-foreground">
+          {t("layout.panel.grid")}
         </span>
         <span className="text-muted-foreground/40">/</span>
 
@@ -87,7 +92,7 @@ export function GridHeader({
           onSelect={onContainerChange}
         />
 
-        <span className="ml-1 font-mono text-[10px] text-muted-foreground">
+        <span className="ml-1 whitespace-nowrap text-muted-foreground">
           {t("grid.header.chapterCount", "{{count}} 章", {
             count: chapterCount,
           })}

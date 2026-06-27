@@ -13,7 +13,14 @@ import {
 } from "./mapApi";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ChevronDown, MoreVertical, Pencil, Copy, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  MoreVertical,
+  Pencil,
+  Copy,
+  Trash2,
+  Map as MapIcon,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -151,7 +158,7 @@ export function MapHeader() {
         display: "flex",
         alignItems: "center",
         gap: 6,
-        padding: "4px 10px",
+        padding: "4px 12px",
         borderBottom: "1px solid var(--border)",
         background: "var(--sidebar-background)",
         color: "var(--foreground)",
@@ -160,8 +167,9 @@ export function MapHeader() {
         fontSize: 12,
       }}
     >
-      <span style={{ fontWeight: 600, marginRight: 4, fontSize: 13 }}>
-        {t("map.header.title")}
+      <MapIcon className="size-3.5 shrink-0 opacity-70" aria-hidden />
+      <span style={{ fontWeight: 500, marginRight: 4 }}>
+        {t("layout.panel.map")}
       </span>
 
       {/* Board selector */}

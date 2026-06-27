@@ -59,21 +59,48 @@ import { PanelHeader } from "@/features/layout/PanelHeader";
 
 ## 移行状況（2026-06-28）
 
-`PanelHeader` 採用済み（単一行タイトルヘッダー）:
-scenes / codex / chat-history / snippets / attribution / foreshadow /
-trash-bin / related-scenes / chronicle / writing-stats
+### `PanelHeader` 採用済み（単一行タイトルヘッダー）
 
-### 例外（標準コンポーネント非適用・カスタムヘッダーを維持）
+scenes / codex / codex-quick / chat-history / snippets / attribution /
+foreshadow / trash-bin / related-scenes / chronicle / writing-stats
 
-固定 `h-8` 単一行に収まらない密なヘッダーは独自実装を維持する。ただし
-**`data-panel-header`・先頭の `PANEL_ICON_MAP` アイコン・`text-xs`/`border-b`
-トークン・コンパクト高さ**は揃える（順次対応）。
+（codex-quick は title + sort select のみのため本コンポーネントへ全面移行した。）
 
-- **toolbar 型**（コントロールが折り返す）: map / timeline / grid
-- **tab 型ヘッダー**: kouetsu / codex-quick
-- **複数行**: matrix
-- **動的タイトル**: command-center-results
-- **スコープタブ付き**: chat
+### アイコン＋トークン統一済み（密なヘッダーはカスタム実装を維持）
 
-これらは `data-panel-header` を既に持つため最大化・コンテキストメニューは機能する。
-残りの「アイコン＋トークン統一」は追従タスク。
+固定 `h-8` 単一行に収まらない密なヘッダーは独自実装を維持しつつ、共通項を揃えた:
+**`data-panel-header`・先頭の `PANEL_ICON_MAP` アイコン（`size-3.5` opacity-70・
+ストライプと同一）・`text-xs`・`border-b border-border`・横 `px-3`・コンパクト高さ**。
+タイトルを持つパネルは `font-medium`（旧 `font-semibold`/`text-sm` から統一）。
+`border-b border-border` の 2 クラス併記はガラスモードの枠色差し替え
+（`src/index.css` の `.border-b.border-border` ルール）に必要なので、片方だけの
+`border-b` は使わない。
+
+- **timeline**: flex-wrap toolbar。`CalendarClock` ＋ `font-medium` タイトル。
+- **matrix**: 複数行。`Table2` ＋ `font-medium` タイトル。境界は外側ラッパに
+  `border-b border-border`。
+- **chat**: スコープタブ付き。`MessageSquare` ＋ `font-medium` タイトル
+  （`chat.title` → `layout.panel.chat`）。
+- **map**: インラインスタイル主体の既存実装を維持（全面 Tailwind 化はスコープ外）。
+  `Map` アイコン ＋ `layout.panel.map` タイトル、横パディングを 12px（`px-3` 相当）へ。
+- **grid**: 旧 mono kicker（`font-mono text-[10px]`）を標準書体へ統一。`Columns3`
+  アイコン ＋ `layout.panel.grid` の `font-medium` タイトル、行を `h-8`／`text-xs`／
+  `px-3` に揃え、外側ラッパは `border-b border-border`。`/` 以降のパンくず
+  （コンテナ選択・章数）は機能としてそのまま残す。
+- **kouetsu**: タブ型。タブ行先頭に `SpellCheck` アイコン ＋ `layout.panel.kouetsu`
+  （「校閲」）の `font-medium` タイトルを置き、その後ろにタブを並べる。
+- **editor**（パンくず）: エディタ最上段のパンくず帯（`Breadcrumb.tsx`・TabBar の上）が
+  実質的なエディタのヘッダー。既に `data-panel-header`／`text-xs`／`border-b border-border`
+  ／`px-3` を持つので、先頭に `FileText` アイコン（`size-3.5` opacity-70）を足し、高さを
+  `h-8` に揃え、現在地（末尾セグメント）を `font-medium` にした。`editor` は
+  `PANEL_ICON_MAP`（ストライプが消費＝ツールパネル専用）から除外されているため、
+  共有マップへは追加せず `Breadcrumb.tsx` ローカルでアイコンを描画する。
+
+### 例外（タイトルヘッダーを持たないため対象外）
+
+- **command-center-results**: ヘッダー帯そのものがライブ検索入力欄（旧「動的タイトル」）。
+  先頭の `PANEL_ICON_MAP` アイコン（= Search）は入力欄内に既出のため、独立した
+  タイトル行は設けない。`data-panel-header`・`border-b border-border` は具備。
+
+全パネルが `data-panel-header` を持つため、ヘッダーのダブルクリック最大化・
+右クリックメニューは全パネルで機能する。

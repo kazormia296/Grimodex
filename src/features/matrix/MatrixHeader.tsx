@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Pencil, Search, X, MoreVertical } from "lucide-react";
+import { Check, Pencil, Search, X, MoreVertical, Table2 } from "lucide-react";
 import i18next from "@/lib/i18n";
 import { useMatrixStore } from "./matrixStore";
 import type { ShowMode } from "./lib/deriveColumns";
@@ -125,10 +125,14 @@ export function MatrixHeader({ availableTags, onExportCsv }: Props) {
   }
 
   return (
-    <div className="shrink-0 border-b">
+    <div className="shrink-0 border-b border-border">
       {/* Main row */}
-      <div data-panel-header className="flex items-center gap-2 px-3 py-2">
-        <span className="text-sm font-semibold">
+      <div
+        data-panel-header
+        className="flex items-center gap-2 px-3 py-2 text-xs"
+      >
+        <Table2 className="size-3.5 shrink-0 opacity-70" aria-hidden />
+        <span className="font-medium text-foreground">
           {t("layout.panel.matrix")}
         </span>
         <div className="flex-1" />

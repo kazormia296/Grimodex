@@ -5,6 +5,7 @@ import {
   type CodexSortOrder,
 } from "@/features/codex/codexStore";
 import { CODEX_SORT_OPTIONS } from "@/features/codex/codexSort";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { recordMark } from "@/lib/perfLog";
 
 /**
@@ -24,27 +25,23 @@ export function CodexQuickPanel() {
 
   const __renderResult = (
     <div className="flex h-full flex-col">
-      {/* Toolbar */}
-      <div
-        data-panel-header
-        className="flex flex-shrink-0 items-center gap-1 border-b border-border px-2 py-1.5"
-      >
-        <span className="flex-1 text-xs font-semibold text-foreground">
-          Codex Quick
-        </span>
-        <select
-          value={sortOrder === "most-referenced" ? "category" : sortOrder}
-          onChange={(e) => setSort(e.target.value as CodexSortOrder)}
-          className="rounded border border-input bg-background px-1 py-0.5 text-[10px]"
-          title={t("codex.sortOrderTitle")}
-        >
-          {sortOptions.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      <PanelHeader
+        panelId="codex-quick"
+        actions={
+          <select
+            value={sortOrder === "most-referenced" ? "category" : sortOrder}
+            onChange={(e) => setSort(e.target.value as CodexSortOrder)}
+            className="rounded border border-input bg-background px-1 py-0.5 text-[10px]"
+            title={t("codex.sortOrderTitle")}
+          >
+            {sortOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        }
+      />
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         <CodexQuickSection />

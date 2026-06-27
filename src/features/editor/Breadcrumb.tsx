@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "./tabStore";
@@ -155,8 +155,9 @@ export function Breadcrumb() {
     // ジェスチャ対象はパンくず行に限定する。
     <div
       data-panel-header
-      className="flex min-w-0 items-center border-b border-border px-3 py-1 text-xs text-muted-foreground"
+      className="flex h-8 min-w-0 items-center border-b border-border px-3 text-xs text-muted-foreground"
     >
+      <FileText className="mr-1.5 size-3.5 shrink-0 opacity-70" aria-hidden />
       {path.map((segment, i) => {
         const isLast = i === path.length - 1;
         const isFirst = i === 0;
@@ -179,7 +180,7 @@ export function Breadcrumb() {
                 title={segment.title}
                 className={cn(
                   "block max-w-full truncate rounded px-1 py-0.5 hover:bg-accent hover:text-foreground",
-                  isLast && "text-foreground",
+                  isLast && "font-medium text-foreground",
                 )}
                 onClick={() =>
                   setOpenSegmentId(
