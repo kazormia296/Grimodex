@@ -42,6 +42,9 @@ interface SwapPlan {
   currentAfter: number;
   neighborBefore: number;
   neighborAfter: number;
+  /** doc 順で先・後のブロックの nodeSize (Codex 装飾の reorder remap 用)。 */
+  firstSize: number;
+  secondSize: number;
 }
 
 /** カーソル直下の最上位ブロックと隣ブロックを入れ替える計画を組む。不可なら null。 */
@@ -81,6 +84,8 @@ function planSwap(state: EditorState, dir: -1 | 1): SwapPlan | null {
     currentAfter,
     neighborBefore,
     neighborAfter,
+    firstSize: first.nodeSize,
+    secondSize: second.nodeSize,
   };
 }
 
@@ -95,9 +100,17 @@ function applySwap(
   if (!plan) return false;
   if (!dispatch) return true;
   tr.replaceWith(plan.start, plan.end, plan.fragment);
+  // CodexHighlightPlugin に「これは reorder」と伝え、置換で落ちる装飾を per-block
+  // オフセットで再構築させて保持する (移動中の折り返しズレ・ちらつきを防ぐ)。
+  tr.setMeta("codexHighlightReorder", {
+    start: plan.start,
+    firstSize: plan.firstSize,
+    secondSize: plan.secondSize,
+  });
   const caretPos = Math.min(Math.max(plan.caretPos, 0), tr.doc.content.size);
   tr.setSelection(TextSelection.near(tr.doc.resolve(caretPos)));
-  tr.scrollIntoView();
+  // scrollIntoView しない: 隣接ブロックの 1 つ移動では行は視界に残る。FLIP 中に
+  // スクロール補正が走ると視覚的に煩いため省く。
   dispatch(tr);
   return true;
 }

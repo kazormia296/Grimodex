@@ -67,13 +67,19 @@ export function mapMatchesToDecorations(
       // outer DOM element (span.ruby-atom). ProseMirror's patchOuterDeco
       // applies class/style/data-* attributes to the NodeView's dom.
       decos.push(
-        Decoration.node(pmFrom, pmFrom + 1, {
-          class: "codex-highlight",
-          style: inlineStyle,
-          "data-codex-entry-id": String(m.entryId),
-          "data-codex-entry-type": m.entryType,
-          "data-codex-entry-name": m.entryName,
-        }),
+        Decoration.node(
+          pmFrom,
+          pmFrom + 1,
+          {
+            class: "codex-highlight",
+            style: inlineStyle,
+            "data-codex-entry-id": String(m.entryId),
+            "data-codex-entry-type": m.entryType,
+            "data-codex-entry-name": m.entryName,
+          },
+          // 段落移動 (reorder) 時に装飾を再構築するため kind を spec に残す。
+          { codexKind: "node" },
+        ),
       );
       continue;
     }
@@ -83,17 +89,70 @@ export function mapMatchesToDecorations(
     if (pmLastChar - pmFrom !== m.to - m.from - 1) continue;
 
     decos.push(
-      Decoration.inline(pmFrom, pmTo, {
-        class: "codex-highlight",
-        style: inlineStyle,
-        "data-codex-entry-id": String(m.entryId),
-        "data-codex-entry-type": m.entryType,
-        "data-codex-entry-name": m.entryName,
-      }),
+      Decoration.inline(
+        pmFrom,
+        pmTo,
+        {
+          class: "codex-highlight",
+          style: inlineStyle,
+          "data-codex-entry-id": String(m.entryId),
+          "data-codex-entry-type": m.entryType,
+          "data-codex-entry-name": m.entryName,
+        },
+        // 段落移動 (reorder) 時に装飾を再構築するため kind を spec に残す。
+        { codexKind: "inline" },
+      ),
     );
   }
 
   return decos;
+}
+
+interface CodexReorderInfo {
+  /** 入れ替えた 2 ブロックの先頭位置 (= 前ブロックの開始)。 */
+  start: number;
+  /** 前ブロック (doc 順で先) の nodeSize。 */
+  firstSize: number;
+  /** 後ブロック (doc 順で後) の nodeSize。 */
+  secondSize: number;
+}
+
+/**
+ * 段落移動 (ParagraphMoveExtension の隣接ブロック swap) では tr.replaceWith が置換
+ * 範囲内の装飾を DecorationSet.map で落としてしまう。そのため移動の transaction が
+ * 運ぶ codexHighlightReorder meta を見て、装飾を **per-block オフセットで手動再構築**し、
+ * 消失 (= ハイライトの padding 消えで折り返しズレ + 色消えでちらつき) を防ぐ。
+ *
+ * codex 装飾は単一 text run / ruby atom 内に収まるので from/to は同一ブロック内。
+ */
+export function remapCodexDecosForReorder(
+  oldDecos: DecorationSet,
+  doc: ProseMirrorNode,
+  reorder: CodexReorderInfo,
+): DecorationSet {
+  const { start, firstSize, secondSize } = reorder;
+  const mid = start + firstSize;
+  const end = mid + secondSize;
+  const rebuilt: Decoration[] = [];
+  for (const d of oldDecos.find()) {
+    let shift = 0;
+    if (d.from >= start && d.from < mid)
+      shift = secondSize; // 前ブロック → 後ろへ
+    else if (d.from >= mid && d.from < end) shift = -firstSize; // 後ブロック → 前へ
+    const attrs = (d as unknown as { type: { attrs: Record<string, string> } })
+      .type.attrs;
+    const spec = d.spec as { codexKind?: string } | undefined;
+    if (spec?.codexKind === "node") {
+      rebuilt.push(
+        Decoration.node(d.from + shift, d.to + shift, attrs, d.spec),
+      );
+    } else {
+      rebuilt.push(
+        Decoration.inline(d.from + shift, d.to + shift, attrs, d.spec),
+      );
+    }
+  }
+  return DecorationSet.create(doc, rebuilt);
 }
 
 export function createCodexHighlightPlugin(): Plugin {
@@ -125,6 +184,16 @@ export function createCodexHighlightPlugin(): Plugin {
                 highlightStyle,
               ),
             );
+          }
+
+          // 段落移動 (隣接ブロック swap) は replaceWith で装飾を落とすため、移動が
+          // 運ぶ reorder meta を見て per-block オフセットで装飾を手動再構築し保持する。
+          // これで移動中もハイライトの padding/色が消えず、折り返しズレ・ちらつきが出ない。
+          const reorder = tr.getMeta("codexHighlightReorder") as
+            | CodexReorderInfo
+            | undefined;
+          if (reorder) {
+            return remapCodexDecosForReorder(oldDecos, newState.doc, reorder);
           }
 
           // Doc changed or forced update → remap existing decoration positions
