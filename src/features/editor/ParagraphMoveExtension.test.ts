@@ -6,12 +6,36 @@
 //   - 移動後もキャレットが「動かしたブロック」内に追従すること
 // キーバインド (Alt+↑/↓) → コマンドの配線は addKeyboardShortcuts の 1 行委譲のため
 // 非 gate (コマンド挙動を gate すれば十分)。
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { ParagraphMoveExtension } from "./ParagraphMoveExtension";
 
+// 縦書き判定 (editor.verticalMode) を制御するため settingsStore を最小モック。
+const h = vi.hoisted(() => ({ verticalMode: false }));
+vi.mock("@/features/settings/settingsStore", () => ({
+  useSettingsStore: {
+    getState: () => ({
+      getBoolean: (key: string, def: boolean) =>
+        key === "editor.verticalMode" ? h.verticalMode : def,
+    }),
+  },
+}));
+
 let editor: Editor;
+
+/** keymap (addKeyboardShortcuts) を handleKeyDown 経由で発火させる。 */
+function pressKey(
+  ed: Editor,
+  key: string,
+  opts: KeyboardEventInit = {},
+): boolean {
+  const event = new KeyboardEvent("keydown", { key, ...opts });
+  return (
+    ed.view.someProp("handleKeyDown", (handler) => handler(ed.view, event)) ??
+    false
+  );
+}
 
 function createEditor(content: string) {
   return new Editor({
@@ -40,6 +64,7 @@ function placeCaretIn(ed: Editor, text: string) {
 }
 
 beforeEach(() => {
+  h.verticalMode = false;
   editor = createEditor("<p>A</p><p>B</p><p>C</p>");
 });
 
@@ -121,5 +146,35 @@ describe("ParagraphMoveExtension", () => {
     const ok = editor.commands.moveLineUp();
     expect(ok).toBe(false);
     expect(blockTexts(editor)).toEqual(["A", "B", "C"]);
+  });
+
+  describe("writing-mode 別キーバインド", () => {
+    it("横書き: Alt+↑/↓ で移動、Alt+→/← は無視", () => {
+      placeCaretIn(editor, "B");
+      pressKey(editor, "ArrowRight", { altKey: true }); // 横書きでは無効
+      pressKey(editor, "ArrowLeft", { altKey: true }); // 横書きでは無効
+      expect(blockTexts(editor)).toEqual(["A", "B", "C"]);
+
+      pressKey(editor, "ArrowUp", { altKey: true }); // = moveLineUp
+      expect(blockTexts(editor)).toEqual(["B", "A", "C"]);
+    });
+
+    it("縦書き: Alt+→ で前方(上)移動、Alt+↑/↓ は無視", () => {
+      h.verticalMode = true;
+      placeCaretIn(editor, "B");
+      pressKey(editor, "ArrowUp", { altKey: true }); // 縦書きでは無効
+      pressKey(editor, "ArrowDown", { altKey: true }); // 縦書きでは無効
+      expect(blockTexts(editor)).toEqual(["A", "B", "C"]);
+
+      pressKey(editor, "ArrowRight", { altKey: true }); // = moveLineUp (前方)
+      expect(blockTexts(editor)).toEqual(["B", "A", "C"]);
+    });
+
+    it("縦書き: Alt+← で後方(下)移動", () => {
+      h.verticalMode = true;
+      placeCaretIn(editor, "B");
+      pressKey(editor, "ArrowLeft", { altKey: true }); // = moveLineDown (後方)
+      expect(blockTexts(editor)).toEqual(["A", "C", "B"]);
+    });
   });
 });

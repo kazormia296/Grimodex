@@ -2,6 +2,12 @@ import { Extension, type RawCommands } from "@tiptap/core";
 import { Fragment } from "prosemirror-model";
 import { TextSelection } from "prosemirror-state";
 import type { EditorState, Transaction } from "prosemirror-state";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+
+/** 縦書き (editor.verticalMode = vertical-rl) かどうか。キーの向きを切り替える。 */
+function isVerticalWriting(): boolean {
+  return useSettingsStore.getState().getBoolean("editor.verticalMode", false);
+}
 
 /**
  * ParagraphMoveExtension — 現在の段落（最上位ブロック）を上下に入れ替えるアクション。
@@ -75,9 +81,19 @@ export const ParagraphMoveExtension = Extension.create({
   },
 
   addKeyboardShortcuts() {
+    // 横書きは Alt+↑/↓。縦書き (vertical-rl) は行が左右に積まれるので Alt+←/→ に
+    // する: → = 前の行 (上方向/前方) = moveLineUp、← = 次の行 (下方向/後方) =
+    // moveLineDown (CursorOverlayPlugin の writing-mode 規約と一致)。モードに
+    // 合わない向きのキーは false を返して素通しする。
     return {
-      "Alt-ArrowUp": () => this.editor.commands.moveLineUp(),
-      "Alt-ArrowDown": () => this.editor.commands.moveLineDown(),
+      "Alt-ArrowUp": () =>
+        !isVerticalWriting() && this.editor.commands.moveLineUp(),
+      "Alt-ArrowDown": () =>
+        !isVerticalWriting() && this.editor.commands.moveLineDown(),
+      "Alt-ArrowRight": () =>
+        isVerticalWriting() && this.editor.commands.moveLineUp(),
+      "Alt-ArrowLeft": () =>
+        isVerticalWriting() && this.editor.commands.moveLineDown(),
     };
   },
 });
