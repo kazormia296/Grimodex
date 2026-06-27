@@ -3209,6 +3209,47 @@ def seed(db_path: Path, scale: str = "default") -> None:
             (uid(), scene1_id, fp, tp, source, model, now, msg_id),
         )
 
+    # scene1 以外の「実本文」シーンにも provenance を付与する。これがないと
+    # authorship_spans が scene1 にしか無く、AI比率 / 帰属バッジ / 帰属レポートが
+    # 他シーンで 0% のままになる（昔のサンプルがまさにこの状態だった）。
+    # アウトライン（chapter two / three）は計画メモなので未付与＝100% human のまま正しい。
+    _AI_MODEL = "anthropic/claude-sonnet-4.6"
+
+    def _attribute_paragraphs(node_id, ranges, plan):
+        """段落単位の (index, source, model, chat_msg_id) プランで span を挿入。
+        ranges は _DocBuilder.paras または _doc_para_ranges() の結果。範囲外 index と
+        空段落はスキップする。"""
+        for idx, source, model, msg_id in plan:
+            if idx >= len(ranges):
+                continue
+            fp, tp = ranges[idx]
+            if fp >= tp:
+                continue
+            conn.execute(
+                """INSERT INTO authorship_spans
+                   (id,node_id,from_pos,to_pos,source,model,timestamp,chat_msg_id)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (uid(), node_id, fp, tp, source, model, now, msg_id),
+            )
+
+    # Flashback scene（_DocBuilder・7段落）— 情景描写を AI 補助で起こした想定
+    _attribute_paragraphs(scene_flashback_id, flashback_builder.paras, [
+        (1, "human", None, None),
+        (2, "ai", _AI_MODEL, chat_msg_ids[1]),
+        (3, "human", None, None),
+        (4, "human", None, None),
+        (5, "ai", _AI_MODEL, chat_msg_ids[1]),
+        (6, "unknown", None, None),
+    ])
+    # Interlude / payoff scene（_DocBuilder・5段落）— 下書きを AI で起こした想定
+    _attribute_paragraphs(scene_payoff_id, payoff_builder.paras, [
+        (0, "human", None, None),
+        (1, "ai", _AI_MODEL, chat_msg_ids[1]),
+        (2, "ai", _AI_MODEL, chat_msg_ids[1]),
+        (3, "human", None, None),
+        (4, "human", None, None),
+    ])
+
     def _attribute_doc(owner_col: str, owner_id: str, content_text: str,
                        source: str, model: str | None, msg_id: str | None,
                        phase_col_id: str | None = None,
@@ -3535,6 +3576,27 @@ def seed(db_path: Path, scale: str = "default") -> None:
              now, now),
         )
 
+    # 番外シーン（doc_nodes 構築）にも provenance を付与。content から段落範囲を
+    # 再計算して付ける（_attribute_paragraphs / _doc_para_ranges は authorship 節で定義済み）。
+    _bangai_attribution = {
+        "complete": [(0, "ai", _AI_MODEL, chat_msg_ids[1]),
+                     (1, "ai", _AI_MODEL, chat_msg_ids[1])],
+        "revision": [(0, "ai", _AI_MODEL, chat_msg_ids[1]),
+                     (1, "human", None, None),
+                     (2, "unknown", None, None)],  # [revision note] 段落は出所不明扱い
+        "final": [(0, "human", None, None),
+                  (1, "ai", _AI_MODEL, chat_msg_ids[1])],
+    }
+    for _st, _plan in _bangai_attribution.items():
+        _sid = status_variant_ids.get(_st)
+        if _sid is None:
+            continue
+        _row = conn.execute(
+            "SELECT content FROM tree_nodes WHERE id=?", (_sid,)
+        ).fetchone()
+        if _row and _row[0]:
+            _attribute_paragraphs(_sid, _doc_para_ranges(_row[0]), _plan)
+
     # ================================================================
     # New-feature samples: Beat / Mention / Pin / POV cache / Label
     # ================================================================
@@ -3686,10 +3748,15 @@ def seed(db_path: Path, scale: str = "default") -> None:
     )
 
     # ---- char_count (recursively sum text nodes in the body) ----
-    for sid in (scene1_id, scene2_id, scene3_id,
-                scene_flashback_id, scene_payoff_id):
+    # 全 scene/note を対象にする。以前は固定リストで status バリアント（番外章）が
+    # 漏れて char_count=0 のままになり、帰属の project ビュー/開示エクスポートが
+    # human = char_count - ai - unknown を total=0 から導出して human 0%/AI 過大表示に
+    # なっていた（loadProjectAttributionStats）。
+    for (sid,) in conn.execute(
+        "SELECT id FROM tree_nodes WHERE node_type IN ('scene','note')"
+    ).fetchall():
         row = conn.execute("SELECT content FROM tree_nodes WHERE id=?", (sid,)).fetchone()
-        if row is not None:
+        if row is not None and row[0]:
             conn.execute("UPDATE tree_nodes SET char_count=? WHERE id=?",
                          (_count_doc_chars(row[0]), sid))
 

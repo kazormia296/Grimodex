@@ -26,6 +26,41 @@ fn select_seed(language: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// Count body characters in a scene's ProseMirror-JSON `content`, excluding
+/// `sceneBeat` subtrees. Mirrors the frontend `countSceneBodyCharsFromJson`
+/// (charCountForBody.ts) so the seeded `char_count` equals what the live save
+/// cascade would compute. This matters for attribution: the project-scope view
+/// (`loadProjectAttributionStats`) uses `char_count` as the denominator and
+/// derives `human = char_count - ai - unknown`. If `char_count` stays 0 (its
+/// column default), `human` collapses to 0 % and the disclosure export
+/// over-reports AI — so the sample must seed a real count alongside its spans.
+/// Uses UTF-16 length to match JS `String.length`.
+fn count_scene_body_chars(content: &str) -> i64 {
+    fn walk(node: &serde_json::Value, parent_type: Option<&str>, count: &mut i64) {
+        let node_type = node.get("type").and_then(|t| t.as_str());
+        if node_type == Some("sceneBeat") {
+            return; // skip the whole sceneBeat subtree (it is a prompt, not body)
+        }
+        if node_type == Some("text") && parent_type != Some("sceneBeat") {
+            if let Some(text) = node.get("text").and_then(|t| t.as_str()) {
+                *count += text.encode_utf16().count() as i64;
+            }
+        }
+        if let Some(children) = node.get("content").and_then(|c| c.as_array()) {
+            for child in children {
+                walk(child, node_type, count);
+            }
+        }
+    }
+    let doc: serde_json::Value = match serde_json::from_str(content) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let mut count = 0;
+    walk(&doc, None, &mut count);
+    count
+}
+
 // ---------------------------------------------------------------------------
 // JSON seed data shapes
 // ---------------------------------------------------------------------------
@@ -128,6 +163,28 @@ struct SeedForeshadowSetup {
     attribution: String,
 }
 
+/// Per-span authorship provenance for a sample scene. Seeded directly into
+/// `authorship_spans` (like `foreshadow_setups`) because the sample is written
+/// straight to the DB and never goes through the live editor save cascade
+/// (`persistSceneBody` → `saveAuthorshipSpans`) that normally populates this
+/// table. Without it, every attribution surface (AI ratio badge, attribution
+/// report, body overlay) reads an empty table and shows 0% AI for the bundled
+/// sample even though some passages are AI-authored. `from_pos`/`to_pos` are
+/// ProseMirror positions into the owning scene's body; the
+/// `seed_authorship_spans_anchor_expected_text` test guards them against drift.
+#[derive(Deserialize)]
+struct SeedAuthorshipSpan {
+    id: String,
+    node_id: String,
+    from_pos: i64,
+    to_pos: i64,
+    source: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    timestamp: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct SeedData {
     project: SeedProject,
@@ -140,6 +197,8 @@ struct SeedData {
     snippets: Vec<SeedSnippet>,
     #[serde(default)]
     foreshadow_setups: Vec<SeedForeshadowSetup>,
+    #[serde(default)]
+    authorship_spans: Vec<SeedAuthorshipSpan>,
 }
 
 // ---------------------------------------------------------------------------
@@ -220,10 +279,11 @@ pub(crate) fn seed_sample_workspace(
                 .content
                 .clone()
                 .unwrap_or_else(|| r#"{"type":"doc","content":[]}"#.to_string());
+            let char_count = count_scene_body_chars(&content);
             conn.execute(
                 "INSERT INTO tree_nodes
-                    (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, story_time_order, story_time_label, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                    (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, char_count, story_time_order, story_time_label, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
                 rusqlite::params![
                     node.id,
                     project_id,
@@ -234,6 +294,7 @@ pub(crate) fn seed_sample_workspace(
                     node.sort_order,
                     node.status,
                     content,
+                    char_count,
                     node.story_time_order,
                     node.story_time_label,
                     now_dt,
@@ -349,6 +410,27 @@ pub(crate) fn seed_sample_workspace(
                     setup.strength,
                     setup.attribution,
                     now_ms,
+                ],
+            )?;
+        }
+
+        // Authorship spans — provenance for sample scenes. Seeded directly so the
+        // attribution surfaces (AI ratio badge / report / overlay) are populated
+        // on first open; see `SeedAuthorshipSpan`. Only `node_id` is set among the
+        // owner columns, satisfying the table's "exactly one owner" CHECK.
+        for span in &seed.authorship_spans {
+            conn.execute(
+                "INSERT INTO authorship_spans
+                    (id, node_id, from_pos, to_pos, source, model, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    span.id,
+                    span.node_id,
+                    span.from_pos,
+                    span.to_pos,
+                    span.source,
+                    span.model,
+                    span.timestamp,
                 ],
             )?;
         }
@@ -567,9 +649,10 @@ mod tests {
 
             for node in &seed.tree_nodes {
                 let content = node.content.clone().unwrap_or_else(|| r#"{"type":"doc","content":[]}"#.to_string());
+                let char_count = count_scene_body_chars(&content);
                 conn.execute(
-                    "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, story_time_order, story_time_label, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
-                    rusqlite::params![node.id, project_id, node.parent_id, node.node_type, node.title, node.synopsis, node.sort_order, node.status, content, node.story_time_order, node.story_time_label, now_dt],
+                    "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, char_count, story_time_order, story_time_label, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+                    rusqlite::params![node.id, project_id, node.parent_id, node.node_type, node.title, node.synopsis, node.sort_order, node.status, content, char_count, node.story_time_order, node.story_time_label, now_dt],
                 )?;
             }
 
@@ -614,6 +697,13 @@ mod tests {
                 conn.execute(
                     "INSERT INTO foreshadow_setups (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength, attribution, is_orphan, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)",
                     rusqlite::params![setup.id, setup.foreshadow_id, setup.scene_id, setup.from_pos, setup.to_pos, setup.kind, setup.strength, setup.attribution, now_ms],
+                )?;
+            }
+
+            for span in &seed.authorship_spans {
+                conn.execute(
+                    "INSERT INTO authorship_spans (id, node_id, from_pos, to_pos, source, model, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![span.id, span.node_id, span.from_pos, span.to_pos, span.source, span.model, span.timestamp],
                 )?;
             }
 
@@ -680,8 +770,210 @@ mod tests {
                 "foreshadow_setups"
             );
 
+            let span_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM authorship_spans", [], |r| r.get(0))?;
+            assert_eq!(
+                span_count,
+                seed.authorship_spans.len() as i64,
+                "authorship_spans"
+            );
+
+            // The whole point of seeding spans: the sample must have AI-attributed
+            // length so the AI-ratio surfaces show a non-zero percentage. This
+            // mirrors `loadBatchAiRatio` (api.ts), which sums span lengths per node.
+            let ai_len: i64 = conn.query_row(
+                "SELECT COALESCE(SUM(to_pos - from_pos), 0) FROM authorship_spans WHERE source = 'ai'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert!(ai_len > 0, "sample must seed some AI-authored span length");
+
             Ok(())
         })
         .expect("verify counts");
+    }
+
+    /// Helper: parse a seed and return its authorship spans plus a scene-content
+    /// lookup, used by the AI-provenance tests below.
+    fn ai_span_count(seed: &SeedData) -> usize {
+        seed.authorship_spans
+            .iter()
+            .filter(|s| s.source == "ai")
+            .count()
+    }
+
+    #[test]
+    fn seed_v1_has_ai_authorship_spans() {
+        // Regression guard: the Japanese sample must ship per-span provenance so
+        // AI比率 / 帰属バッジ / 帰属レポート are non-zero on first open. Before this,
+        // the sample seeded zero authorship_spans and every attribution surface
+        // read 0% even though passages are AI-authored.
+        let seed: SeedData = serde_json::from_str(SEED_V1).unwrap();
+        assert!(
+            !seed.authorship_spans.is_empty(),
+            "JP sample must seed authorship_spans"
+        );
+        assert!(
+            ai_span_count(&seed) > 0,
+            "JP sample must include at least one source='ai' span"
+        );
+        for s in &seed.authorship_spans {
+            assert!(
+                s.from_pos < s.to_pos,
+                "{}: from_pos must precede to_pos",
+                s.id
+            );
+            assert!(
+                matches!(s.source.as_str(), "human" | "ai" | "unknown"),
+                "{}: invalid source '{}'",
+                s.id,
+                s.source
+            );
+            // Every seeded span must own a real scene node (satisfies the
+            // authorship_spans "exactly one owner" CHECK on insert).
+            assert!(
+                seed.tree_nodes
+                    .iter()
+                    .any(|n| n.id == s.node_id && n.node_type == "scene"),
+                "{}: node_id '{}' is not a sample scene",
+                s.id,
+                s.node_id
+            );
+        }
+    }
+
+    #[test]
+    fn seed_v1_en_has_ai_authorship_spans() {
+        // English-sample parity for the attribution feature. Exact span COUNT is
+        // intentionally not locked to the JP sample (prose structure differs), but
+        // both samples must demonstrate AI authorship so the feature is visible in
+        // either language.
+        let seed: SeedData = serde_json::from_str(SEED_V1_EN).unwrap();
+        assert!(
+            !seed.authorship_spans.is_empty(),
+            "EN sample must seed authorship_spans"
+        );
+        assert!(
+            ai_span_count(&seed) > 0,
+            "EN sample must include at least one source='ai' span"
+        );
+        for s in &seed.authorship_spans {
+            assert!(s.from_pos < s.to_pos, "{}: from_pos<to_pos", s.id);
+            assert!(
+                seed.tree_nodes
+                    .iter()
+                    .any(|n| n.id == s.node_id && n.node_type == "scene"),
+                "{}: node_id '{}' is not a sample scene",
+                s.id,
+                s.node_id
+            );
+        }
+    }
+
+    #[test]
+    fn seed_authorship_spans_anchor_expected_text() {
+        // Guards against prose edits that shift text without re-tuning the baked
+        // from_pos/to_pos (same contract as the foreshadow-setup anchor test).
+        // Each checked AI/unknown span must still cover the exact passage it was
+        // planted on, in both languages.
+        let check = |src: &str, expected: &[(&str, &str, &str)]| {
+            let seed: SeedData = serde_json::from_str(src).unwrap();
+            let scene_content = |id: &str| -> String {
+                seed.tree_nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .and_then(|n| n.content.clone())
+                    .unwrap_or_else(|| panic!("scene {id} missing"))
+            };
+            for (span_id, source, text) in expected {
+                let span = seed
+                    .authorship_spans
+                    .iter()
+                    .find(|s| &s.id == span_id)
+                    .unwrap_or_else(|| panic!("span {span_id} missing"));
+                assert_eq!(&span.source, source, "{span_id} source");
+                let got =
+                    pm_text_between(&scene_content(&span.node_id), span.from_pos, span.to_pos);
+                assert_eq!(&got, text, "{span_id} anchor text drifted");
+            }
+        };
+
+        check(
+            SEED_V1,
+            &[
+                (
+                    "sample-authorship-ja-9",
+                    "ai",
+                    "城門に近づくにつれ、空気が変わった。",
+                ),
+                (
+                    "sample-authorship-ja-8",
+                    "unknown",
+                    "旅立ちの朝は、こうして始まった。",
+                ),
+            ],
+        );
+
+        check(
+            SEED_V1_EN,
+            &[
+                (
+                    "sample-authorship-en-6",
+                    "ai",
+                    "The fire came from inside the house. \"Get back,\" a voice said — whose, Eleanor still cannot say — and she ran, the compass shut tight in her hand.",
+                ),
+                (
+                    "sample-authorship-en-4",
+                    "unknown",
+                    "Something had been left on the old hearthstone. A compass.",
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn seed_attribution_project_scope_keeps_human_nonzero() {
+        // Regression guard for the project-scope attribution view + disclosure
+        // export (loadProjectAttributionStats / buildProjectAuthorshipReport).
+        // Those use `char_count` as the denominator and DERIVE human =
+        // char_count - ai - unknown. If char_count is left at its column default
+        // (0), human collapses to 0 % and AI is over-reported (~91 %) — silently
+        // erasing the human contribution the spans represent. This replicates
+        // that exact math against the seeded char_count to prove human stays
+        // positive for an attributed mixed scene in both languages.
+        let check = |src: &str, scene_id: &str| {
+            let seed: SeedData = serde_json::from_str(src).unwrap();
+            let node = seed
+                .tree_nodes
+                .iter()
+                .find(|n| n.id == scene_id)
+                .unwrap_or_else(|| panic!("scene {scene_id} missing"));
+            let total = count_scene_body_chars(node.content.as_deref().unwrap_or(""));
+            assert!(total > 0, "{scene_id}: char_count must be seeded (> 0)");
+
+            let mut ai = 0i64;
+            let mut unknown = 0i64;
+            for s in seed
+                .authorship_spans
+                .iter()
+                .filter(|s| s.node_id == scene_id)
+            {
+                match s.source.as_str() {
+                    "ai" => ai += s.to_pos - s.from_pos,
+                    "unknown" => unknown += s.to_pos - s.from_pos,
+                    _ => {}
+                }
+            }
+            // Mirror projectStats.ts:67-68 (clamp then derive human).
+            let total = total.max(ai + unknown);
+            let human = (total - ai - unknown).max(0);
+            assert!(ai > 0, "{scene_id}: expected some AI-authored text");
+            assert!(
+                human > 0,
+                "{scene_id}: human collapsed to 0 (char_count not seeded?) — ai={ai} unknown={unknown} total={total}"
+            );
+        };
+        check(SEED_V1, "sample-scene-1");
+        check(SEED_V1_EN, "sample-scene-1");
     }
 }

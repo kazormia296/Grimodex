@@ -218,5 +218,58 @@
       "strength": "moderate",
       "attribution": "human"
     }
+  ],
+  "authorship_spans": [
+    {
+      "id": "sample-authorship-en-1",
+      "node_id": "sample-scene-1",
+      "from_pos": 1,
+      "to_pos": 70,
+      "source": "human",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-en-2",
+      "node_id": "sample-scene-1",
+      "from_pos": 72,
+      "to_pos": 240,
+      "source": "human",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-en-3",
+      "node_id": "sample-scene-1",
+      "from_pos": 242,
+      "to_pos": 415,
+      "source": "ai",
+      "model": "anthropic/claude-opus-4",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-en-4",
+      "node_id": "sample-scene-1",
+      "from_pos": 417,
+      "to_pos": 475,
+      "source": "unknown",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-en-5",
+      "node_id": "sample-scene-1",
+      "from_pos": 477,
+      "to_pos": 634,
+      "source": "ai",
+      "model": "anthropic/claude-opus-4",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-en-6",
+      "node_id": "sample-scene-3",
+      "from_pos": 1,
+      "to_pos": 147,
+      "source": "ai",
+      "model": "anthropic/claude-opus-4",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    }
   ]
 }
