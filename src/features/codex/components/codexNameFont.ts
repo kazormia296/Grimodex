@@ -11,6 +11,12 @@
  * typography と同じ流儀)。Heros は CJK グリフを持たないので、UI 言語で切り替えると
  * 日本語名がフォールバックして駅名標の雰囲気が壊れる。
  *
+ * フォントは設定 `codex.entryTitleFont` でユーザーが変更できる (既定は言語別。global
+ * スコープ・言語別デフォルトは editor.fontFamily と同流儀)。override が空なら言語別
+ * 既定にフォールバックする。fontWeight / letterSpacing はフォント変更とは独立に
+ * 言語別固定 — 字幅に効き採寸整合に関わるため、フォントだけ替えても両 surface で同じ
+ * 値を使い続けてレンダリングと採寸を一致させる。
+ *
  * 重要: 名称欄は計測用 hidden span と可視 textarea の 2 surface で構成され、
  * useFitFontSize が前者の幅で採寸して後者のサイズを決める。fontFamily だけでなく
  * fontWeight と letterSpacing も字幅に効くため、両 surface で必ず同じ値を使うこと
@@ -19,6 +25,7 @@
  * px ではなく em で持つ (computeFitFontSize の線形スケール前提)。
  *
  * @param language プロジェクト言語 (`useCurrentProject()?.language`)。
+ * @param fontFamilyOverride ユーザー設定の fontFamily (空/未指定で言語別既定)。
  */
 export interface CodexNameFontStyle {
   fontFamily: string;
@@ -26,19 +33,23 @@ export interface CodexNameFontStyle {
   letterSpacing: string;
 }
 
+// 同梱フォント未解決時の保険。選択フォントの後ろに必ず付ける。
+const NAME_FONT_FALLBACK = "ui-sans-serif, system-ui, sans-serif";
+
 export function codexNameFontStyle(
   language: string | undefined,
+  fontFamilyOverride?: string,
 ): CodexNameFontStyle {
-  if (language?.startsWith("en")) {
-    return {
-      fontFamily: '"TeX Gyre Heros", ui-sans-serif, system-ui, sans-serif',
-      fontWeight: 700,
-      letterSpacing: "-0.04em",
-    };
+  const isEn = language?.startsWith("en");
+  const primary =
+    fontFamilyOverride && fontFamilyOverride.trim()
+      ? fontFamilyOverride.trim()
+      : isEn
+        ? '"TeX Gyre Heros"'
+        : '"Toaru Eki Sign"';
+  const fontFamily = `${primary}, ${NAME_FONT_FALLBACK}`;
+  if (isEn) {
+    return { fontFamily, fontWeight: 700, letterSpacing: "-0.04em" };
   }
-  return {
-    fontFamily: '"Toaru Eki Sign", ui-sans-serif, system-ui, sans-serif',
-    fontWeight: 400,
-    letterSpacing: "0.05em",
-  };
+  return { fontFamily, fontWeight: 400, letterSpacing: "0.05em" };
 }

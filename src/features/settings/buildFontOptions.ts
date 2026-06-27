@@ -34,6 +34,12 @@ export interface BuildFontOptionsInput {
   /** 現在保存されている editor.fontFamily の値 */
   storedValue: string;
   labels: { basicDefault: string; basicMono: string };
+  /**
+   * basic グループ先頭「デフォルト」選択肢の値。既定は CSS generic の "serif"。
+   * Codex タイトルのように「デフォルト＝言語別の既定に追従」を空文字センチネルで
+   * 表したいピッカーは "" を渡す（ラベルは labels.basicDefault 側で実フォント名にする）。
+   */
+  defaultOptionValue?: string;
 }
 
 /** CSS の font-family 値（スタック可）から先頭の family を取り出し、引用符を除く。 */
@@ -48,10 +54,16 @@ function quoteFamily(family: string): string {
 }
 
 export function buildFontOptions(input: BuildFontOptionsInput): FontOption[] {
-  const { systemFonts, bundledFonts = [], storedValue, labels } = input;
+  const {
+    systemFonts,
+    bundledFonts = [],
+    storedValue,
+    labels,
+    defaultOptionValue = "serif",
+  } = input;
 
   const basic: FontOption[] = [
-    { value: "serif", label: labels.basicDefault, group: "basic" },
+    { value: defaultOptionValue, label: labels.basicDefault, group: "basic" },
     { value: "monospace", label: labels.basicMono, group: "basic" },
   ];
 

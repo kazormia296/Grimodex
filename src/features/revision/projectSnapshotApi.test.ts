@@ -993,4 +993,124 @@ describe("projectSnapshotApi", () => {
       await run(`DELETE FROM ${t}`);
     }
   });
+
+  it("Chronicle scope を持たない古い structural snapshot の body restore は現在の Chronicle を消さない", async () => {
+    const { invoke } = await import("@/lib/tauri");
+    const now = new Date().toISOString();
+
+    type Rows<T> = { rows: T[] };
+    const run = (sql: string, params: (string | number | null)[] = []) =>
+      invoke("db_execute", { sql, params, method: "run" });
+    const all = <T>(sql: string, params: (string | number | null)[] = []) =>
+      invoke("db_execute", { sql, params, method: "all" }) as Promise<Rows<T>>;
+
+    await run(`CREATE TABLE IF NOT EXISTS events (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT '',
+      note TEXT,
+      ordinal TEXT NOT NULL DEFAULT 'a0',
+      primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+      location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+      start_time INTEGER,
+      end_time INTEGER,
+      precision TEXT NOT NULL DEFAULT 'exact',
+      kind TEXT NOT NULL DEFAULT 'generic',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    await run(`CREATE TABLE IF NOT EXISTS event_relations (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      cause_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      effect_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      PRIMARY KEY (cause_event_id, effect_event_id)
+    )`);
+    await run(`CREATE TABLE IF NOT EXISTS scene_events (
+      scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+      event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      PRIMARY KEY (scene_id, event_id)
+    )`);
+    await run(`CREATE TABLE IF NOT EXISTS event_participants (
+      event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+      role TEXT,
+      PRIMARY KEY (event_id, codex_entry_id)
+    )`);
+    await run(`CREATE TABLE IF NOT EXISTS project_calendar (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      days_per_year INTEGER NOT NULL DEFAULT 360,
+      season_boundaries TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+
+    for (const t of [
+      "scene_events",
+      "event_participants",
+      "event_relations",
+      "project_calendar",
+      "events",
+    ]) {
+      await run(`DELETE FROM ${t}`);
+    }
+
+    await seedScene('{"type":"doc","content":[]}', {
+      id: "old-scope-scene",
+      sortOrder: "b0",
+    });
+    const snap = await createProjectSnapshot({ name: "pre-chronicle-struct" });
+
+    // Simulate a structural snapshot created before Chronicle scopes existed:
+    // keep other aux rows so the snapshot remains structural, but remove the
+    // Chronicle aux rows that old builds could not have captured.
+    await run(
+      `DELETE FROM project_snapshot_aux
+       WHERE snapshot_id = ?
+         AND scope IN ('events','event_relations','scene_events','event_participants','project_calendar')`,
+      [snap.id],
+    );
+
+    await run(
+      "INSERT INTO events (id, project_id, title, note, ordinal, primary_codex_id, location_codex_id, start_time, end_time, precision, kind, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      [
+        "live-after-old-snapshot",
+        PROJECT_ID,
+        "古いCP後に作った出来事",
+        null,
+        "z0",
+        null,
+        null,
+        1,
+        null,
+        "exact",
+        "generic",
+        now,
+        now,
+      ],
+    );
+    await run(
+      "INSERT INTO project_calendar (project_id, days_per_year, season_boundaries, created_at, updated_at) VALUES (?,?,?,?,?)",
+      [PROJECT_ID, 360, "[]", now, now],
+    );
+
+    await restoreProjectSnapshot(snap.id, "pre-chronicle-struct", {
+      scopes: new Set(["body"]),
+    });
+
+    const ev = await all<{ id: string }>(
+      "SELECT id FROM events WHERE project_id = ?",
+      [PROJECT_ID],
+    );
+    expect(ev.rows.map((r) => r.id)).toContain("live-after-old-snapshot");
+
+    for (const t of [
+      "scene_events",
+      "event_participants",
+      "event_relations",
+      "project_calendar",
+      "events",
+    ]) {
+      await run(`DELETE FROM ${t}`);
+    }
+  });
 });

@@ -46,6 +46,7 @@ import {
 } from "./externalWriteFeed";
 import { useExternalWriteStore } from "./externalWriteStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 
 const ev = (
   partial: Partial<{
@@ -81,6 +82,7 @@ describe("externalWriteFeed fan-out", () => {
     h.loadSnippets.mockClear();
     h.dirtyTabs = new Set();
     useExternalWriteStore.getState().clear();
+    useInlineAiStore.getState().reset();
   });
 
   it("reloads codex store on codex domain events", async () => {
@@ -141,6 +143,42 @@ describe("externalWriteFeed fan-out", () => {
       "p1",
     );
     expect(useExternalWriteStore.getState().reloadNonce["scene-2"]).toBe(1);
+  });
+
+  it("pushes conflict instead of reloading clean editor scene while inline AI is pending", async () => {
+    useInlineAiStore.getState().startGeneration({
+      commandId: "continue",
+      mode: "insert",
+      originalRange: null,
+      originalText: "",
+      insertPos: 1,
+      abortController: new AbortController(),
+    });
+    useInlineAiStore.getState().finishGeneration("m");
+
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "editor",
+          sceneId: "scene-pending",
+          entityType: "scene",
+          entityId: "scene-pending",
+          opType: "body.update",
+        }),
+      ],
+      "p1",
+    );
+
+    expect(useExternalWriteStore.getState().conflicts).toHaveLength(1);
+    expect(useExternalWriteStore.getState().conflicts[0]).toMatchObject({
+      sceneId: "scene-pending",
+      domain: "editor",
+      opType: "body.update",
+      entityId: "scene-pending",
+    });
+    expect(
+      useExternalWriteStore.getState().reloadNonce["scene-pending"],
+    ).toBeUndefined();
   });
 
   it("pushes conflict for dirty snippet tab", async () => {

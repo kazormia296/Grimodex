@@ -117,6 +117,8 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "display.codexHighlight": "global",
   "display.codexHighlightStyle": "global",
   "display.attributionHighlightOpacity": "global",
+  // Codex — user preference (global)
+  "codex.entryTitleFont": "global",
   // AI — user preference (global)
   "ai.inlineModel": "global",
   "ai.sessionTitleModel": "global",
@@ -285,6 +287,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "display.codexHighlight": "true",
   "display.codexHighlightStyle": "color-text",
   "display.attributionHighlightOpacity": "10",
+  // Codex — エントリタイトル(名称欄)のフォント。空 = 言語別の既定に追従
+  // (codexNameFont が ja=駅名標 / en=Helvetica系 を解決)。ユーザーが明示選択した
+  // 値が勝つ。ピッカーでは空が「デフォルト (<言語の既定フォント名>)」として表示される。
+  "codex.entryTitleFont": "",
   // AI
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",

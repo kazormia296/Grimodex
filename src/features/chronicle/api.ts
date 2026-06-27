@@ -5,6 +5,7 @@ import {
   sceneEvents,
   projectCalendar,
   eventRelations,
+  treeNodes,
 } from "@/db/schema";
 import type { EventPrecision, EventKind } from "@/db/schema";
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -217,9 +218,20 @@ export async function listSceneEvents(
 }
 
 export async function linkSceneToEvent(
+  projectId: string,
   sceneId: string,
   eventId: string,
 ): Promise<void> {
+  const [scene] = await db
+    .select({ id: treeNodes.id })
+    .from(treeNodes)
+    .where(and(eq(treeNodes.id, sceneId), eq(treeNodes.projectId, projectId)));
+  if (!scene) return;
+  const [event] = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
+  if (!event) return;
   await db
     .insert(sceneEvents)
     .values({ sceneId, eventId })
@@ -318,6 +330,17 @@ export async function addEventRelation(
   effectId: string,
 ): Promise<void> {
   if (causeId === effectId) return; // 自己因果は無効
+  const scopedEvents = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(
+      and(
+        eq(events.projectId, projectId),
+        inArray(events.id, [causeId, effectId]),
+      ),
+    );
+  const ids = new Set(scopedEvents.map((e) => e.id));
+  if (!ids.has(causeId) || !ids.has(effectId)) return;
   await db
     .insert(eventRelations)
     .values({

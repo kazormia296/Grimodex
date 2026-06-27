@@ -142,6 +142,13 @@ class CursorOverlayView {
    */
   private pendingVertical: "up" | "down" | null = null;
 
+  /**
+   * One-shot flag: the next cursor update should snap (no slide) instead of
+   * the 80ms transition. Set for Alt+Arrow (paragraph move) where the caret
+   * jumps to a relocated block and a slide would read as a flicker.
+   */
+  private pendingSnap = false;
+
   constructor(
     private view: EditorView,
     private getEnabled: () => boolean,
@@ -188,6 +195,13 @@ class CursorOverlayView {
   }
 
   updateBiasFromKey(event: KeyboardEvent) {
+    // Alt+矢印は段落移動ショートカット (ParagraphMoveExtension) で、行内/行跨ぎの
+    // カーソル移動ではない。bias を変えず、キャレットが別ブロックへ大きく飛ぶので
+    // スライド遷移を 1 回抑止 (snap) して「飛ぶ」ちらつきを防ぐ。
+    if (event.altKey && event.key.startsWith("Arrow")) {
+      this.pendingSnap = true;
+      return;
+    }
     // 行を跨ぐキーと行内移動キーは writing-mode で入れ替わる:
     // 横書きは ↑/↓ が行跨ぎ・←/→ が行内、縦書き (vertical-rl) は ←/→ が
     // 行跨ぎ (← = 次の行 = 前方)・↑/↓ が行内。
@@ -250,15 +264,18 @@ class CursorOverlayView {
       return;
     }
 
-    // Disable slide transition during rapid typing/deletion.
+    // Disable slide transition during rapid typing/deletion, and when a
+    // paragraph move (Alt+Arrow) relocated the caret to a moved block —
+    // sliding the caret across the editor reads as a flicker.
     const docSize = view.state.doc.content.size;
-    if (docSize !== this.prevDocSize) {
+    if (docSize !== this.prevDocSize || this.pendingSnap) {
       this.el.classList.add("no-transition");
       clearTimeout(this.noTransitionTimer);
       this.noTransitionTimer = window.setTimeout(() => {
         this.el.classList.remove("no-transition");
       }, 200);
     }
+    this.pendingSnap = false;
     this.prevDocSize = docSize;
 
     const { from } = view.state.selection;

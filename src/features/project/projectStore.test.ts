@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import { projects } from "@/db/schema";
 import { useProjectStore } from "./projectStore";
 import { PROJECT_ID } from "./constants";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 vi.mock("./reloadProjectData", () => ({
   reloadProjectData: vi.fn().mockResolvedValue(undefined),
@@ -41,6 +42,7 @@ beforeEach(async () => {
     currentProjectId: null,
     projects: [],
   });
+  useGlobalHistoryStore.getState().clear();
   await db.delete(projects);
   const now = new Date().toISOString();
   await db.insert(projects).values({
@@ -78,6 +80,29 @@ describe("useProjectStore", () => {
       expect(useProjectStore.getState().currentProjectId).toBe("proj-b");
       expect(document.documentElement.lang).toBe("en");
       expect(mockedReload).toHaveBeenCalledWith("proj-b");
+    });
+
+    it("switching project clears undo history even when reloadProjectData is mocked", async () => {
+      const now = new Date().toISOString();
+      await db.insert(projects).values({
+        id: "proj-b",
+        title: "Second Novel",
+        createdAt: now,
+        updatedAt: now,
+      });
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: "old project edit",
+        entityId: "scene-a",
+        undo: async () => {},
+        redo: async () => {},
+      });
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
+
+      await useProjectStore.getState().loadProject("proj-b");
+
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+      expect(useGlobalHistoryStore.getState().future).toHaveLength(0);
     });
   });
 

@@ -230,6 +230,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // Load persisted editor settings and apply to runtime stores
       await useSettingsStore.getState().loadAll();
       useCursorSettingsStore.getState().initFromSettings();
+      {
+        const { useCodexHighlightStore } =
+          await import("@/features/editor/codexHighlightStore");
+        useCodexHighlightStore.getState().initFromSettings();
+      }
       // Lint config depends on settings being loaded first.
       const { useLintConfigStore } =
         await import("@/features/lint/lintConfigStore");

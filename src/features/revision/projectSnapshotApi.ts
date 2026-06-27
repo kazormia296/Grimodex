@@ -594,16 +594,20 @@ async function restoreStructural(
     // Explicitly wipe them; deleting events cascades scene_events,
     // event_participants and event_relations (so the body-scope capture==wipe
     // set holds), and project_calendar is wiped on its own.
-    pushStmt({
-      sql: "DELETE FROM events WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
-    pushStmt({
-      sql: "DELETE FROM project_calendar WHERE project_id = ?",
-      params: [PROJECT_ID],
-      method: "run",
-    });
+    if (auxByScope.has("events")) {
+      pushStmt({
+        sql: "DELETE FROM events WHERE project_id = ?",
+        params: [PROJECT_ID],
+        method: "run",
+      });
+    }
+    if (auxByScope.has("project_calendar")) {
+      pushStmt({
+        sql: "DELETE FROM project_calendar WHERE project_id = ?",
+        params: [PROJECT_ID],
+        method: "run",
+      });
+    }
   }
   if (scopes.has("codex")) {
     pushStmt({

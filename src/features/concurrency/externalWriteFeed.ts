@@ -13,7 +13,10 @@ import {
   type HistoryCommand,
   type HistoryKind,
 } from "@/store/globalHistoryStore";
-import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import {
+  guardInlineAiPending,
+  isInlineAiPending,
+} from "@/features/editor/inlineAi/pendingGuard";
 import { useExternalWriteStore } from "./externalWriteStore";
 import {
   useProseStagingStore,
@@ -69,7 +72,7 @@ function handleUndoConflict(cmd: HistoryCommand): void {
   if (!entityId || !domain) return;
   const extStore = useExternalWriteStore.getState();
   const dirtyTabIds = useTabStore.getState().dirtyTabIds;
-  if (dirtyTabIds.has(entityId)) {
+  if (dirtyTabIds.has(entityId) || isInlineAiPending()) {
     extStore.pushConflict({
       sceneId: entityId,
       domain,
@@ -161,11 +164,12 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   );
   const dirtyTabIds = useTabStore.getState().dirtyTabIds;
   const extStore = useExternalWriteStore.getState();
+  const inlineAiPending = isInlineAiPending();
 
   for (const ev of editorEvents) {
     const sceneId = ev.sceneId!;
     invalidateHistoryForEntity(ev.entityType, ev.entityId);
-    if (dirtyTabIds.has(sceneId)) {
+    if (dirtyTabIds.has(sceneId) || inlineAiPending) {
       extStore.pushConflict({
         sceneId,
         domain: ev.domain,
@@ -204,7 +208,7 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   for (const ev of events) {
     if (ev.entityType === "codex_entry" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);
-      if (dirtyTabIds.has(ev.entityId)) {
+      if (dirtyTabIds.has(ev.entityId) || inlineAiPending) {
         extStore.pushConflict({
           sceneId: ev.entityId,
           domain: ev.domain,
@@ -217,7 +221,7 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
     }
     if (ev.entityType === "snippet" && ev.entityId) {
       invalidateHistoryForEntity(ev.entityType, ev.entityId);
-      if (dirtyTabIds.has(ev.entityId)) {
+      if (dirtyTabIds.has(ev.entityId) || inlineAiPending) {
         extStore.pushConflict({
           sceneId: ev.entityId,
           domain: ev.domain,

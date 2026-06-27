@@ -1027,6 +1027,10 @@
       "running": "Running…"
     },
     "codex": {
+      "titleFontSection": "Title appearance",
+      "entryTitleFont": "Entry title font",
+      "entryTitleFontDesc": "Font for the entry name in the Codex detail panel. \"Default\" follows the project language's font (Japanese = station-sign, English = Helvetica-like).",
+      "entryTitleFontDefault": "Default ({{font}})",
       "typeManagement": "Codex Type Management",
       "typeManagementDesc": "Manage Codex entry types. Built-in types can only have their label and color changed.",
       "addCustomType": "Add custom type",

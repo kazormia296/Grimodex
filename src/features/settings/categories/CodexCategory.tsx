@@ -4,6 +4,18 @@ import { Plus, Pencil, Trash2, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
+import { SettingRow } from "../components/SettingRow";
+import { FontFamilySelect } from "../components/FontFamilySelect";
+import type { BundledFont } from "../buildFontOptions";
+
+// Codex タイトル用の表示フォント（@font-face で同梱。src/index.css）。共通の
+// BUNDLED_FONTS（本文/UI 用）には混ぜず、Codex 設定でのみ選べるようにする。
+// これらが選択肢に無いと、既定値が「現在の設定」グループに注入表示され、
+// 反対言語の既定（例: ja から TeX Gyre Heros）を選び直せない。
+const CODEX_TITLE_FONTS: BundledFont[] = [
+  { family: "Toaru Eki Sign", label: "Toaru Eki Sign（駅名標）" },
+  { family: "TeX Gyre Heros", label: "TeX Gyre Heros（Helvetica系）" },
+];
 import type { CodexType } from "@/features/codex/typeApi";
 import {
   listCodexTypes,
@@ -334,6 +346,16 @@ function AddForm({
 
 export function CodexCategory() {
   const { t } = useTranslation();
+  // タイトルフォントの言語別既定（空センチネル "" が追従する実フォント）。codexNameFont
+  // と同じ流儀: 英語は Helvetica 系 (TeX Gyre Heros)、それ以外は駅名標 (Toaru Eki Sign)。
+  // ピッカーの「デフォルト」ラベルとプレビューのフォールバックに使う。
+  const codexTitleIsEn = getCurrentProjectLanguage()?.startsWith("en") ?? false;
+  const codexTitleFontDefault = codexTitleIsEn
+    ? '"TeX Gyre Heros"'
+    : '"Toaru Eki Sign"';
+  const codexTitleFontName = codexTitleIsEn
+    ? "TeX Gyre Heros"
+    : "Toaru Eki Sign";
   const [types, setTypes] = useState<CodexType[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -430,6 +452,22 @@ export function CodexCategory() {
 
   return (
     <div className="space-y-6 p-6" data-testid="codex-category">
+      <SettingSection title={t("settings.codex.titleFontSection")}>
+        <SettingRow
+          label={t("settings.codex.entryTitleFont")}
+          description={t("settings.codex.entryTitleFontDesc")}
+        >
+          <FontFamilySelect
+            settingKey="codex.entryTitleFont"
+            defaultValue={codexTitleFontDefault}
+            defaultOptionValue=""
+            defaultOptionLabel={t("settings.codex.entryTitleFontDefault", {
+              font: codexTitleFontName,
+            })}
+            extraBundledFonts={CODEX_TITLE_FONTS}
+          />
+        </SettingRow>
+      </SettingSection>
       <SettingSection title={t("settings.codex.typeManagement")}>
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">

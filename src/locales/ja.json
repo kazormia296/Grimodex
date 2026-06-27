@@ -1027,6 +1027,10 @@
       "running": "実行中…"
     },
     "codex": {
+      "titleFontSection": "タイトルの見た目",
+      "entryTitleFont": "エントリタイトルのフォント",
+      "entryTitleFontDesc": "Codex詳細パネルのエントリ名に使うフォント。「デフォルト」はプロジェクト言語の既定（日本語=駅名標、英語=Helvetica系）に追従します。",
+      "entryTitleFontDefault": "デフォルト ({{font}})",
       "typeManagement": "Codexタイプ管理",
       "typeManagementDesc": "Codexエントリのタイプを管理します。ビルトインタイプはラベルと色のみ変更できます。",
       "addCustomType": "カスタムタイプを追加",

@@ -103,4 +103,45 @@ describe("buildFontOptions", () => {
     });
     expect(opts.filter((o) => o.group === "current")).toEqual([]);
   });
+
+  // Codex タイトルフォント: 既定値 (Toaru Eki Sign) が bundledFonts に含まれていれば
+  // 「現在の設定 (current)」グループへ注入されず、正規の同梱オプションとして選択でき、
+  // 反対言語の既定も選び直せる (ドロップダウン既定が「間違っている」問題の回帰)。
+  it("stored default present in bundledFonts shows as bundled, not 'current'", () => {
+    const opts = buildFontOptions({
+      systemFonts: [],
+      bundledFonts: [
+        { family: "Toaru Eki Sign", label: "Toaru Eki Sign（駅名標）" },
+        { family: "TeX Gyre Heros", label: "TeX Gyre Heros（Helvetica系）" },
+      ],
+      storedValue: '"Toaru Eki Sign"',
+      labels,
+    });
+    expect(opts.filter((o) => o.group === "current")).toEqual([]);
+    const match = opts.find((o) => o.value === '"Toaru Eki Sign"');
+    expect(match?.group).toBe("bundled");
+    expect(match?.label).toBe("Toaru Eki Sign（駅名標）");
+    // 反対言語の既定も選択肢として存在する。
+    expect(opts.some((o) => o.value === '"TeX Gyre Heros"')).toBe(true);
+  });
+
+  // Codex タイトル: 「デフォルト」選択肢を空センチネル "" + 実フォント名ラベルにできる。
+  // 空 storedValue はこの先頭オプションに一致し、current 注入もされない。
+  it("defaultOptionValue overrides the basic 'default' option value/label", () => {
+    const opts = buildFontOptions({
+      systemFonts: [],
+      storedValue: "",
+      defaultOptionValue: "",
+      labels: {
+        basicDefault: "デフォルト (Toaru Eki Sign)",
+        basicMono: "Monospace",
+      },
+    });
+    expect(opts[0]).toEqual({
+      value: "",
+      label: "デフォルト (Toaru Eki Sign)",
+      group: "basic",
+    });
+    expect(opts.filter((o) => o.group === "current")).toEqual([]);
+  });
 });

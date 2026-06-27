@@ -291,6 +291,12 @@ export function createCodexMentionExtension(
             });
           },
           onKeyDown({ event }: { event: KeyboardEvent }) {
+            // 修飾キー (Alt/Ctrl/Meta) 付きの矢印・Enter は段落移動 (Alt+↑/↓) 等の
+            // 別ショートカット用。popup ナビは修飾なしの矢印/Enter のみ扱うので、
+            // 修飾付きは握り潰さず素通しして他のキーマップへ委ねる。
+            if (event.altKey || event.ctrlKey || event.metaKey) {
+              return false;
+            }
             if (
               event.key === "ArrowDown" ||
               event.key === "ArrowUp" ||
