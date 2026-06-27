@@ -16,6 +16,7 @@ import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
 import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
+import { ParagraphMoveExtension } from "@/features/editor/ParagraphMoveExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
 import { getTypographyExtensions } from "@/features/editor/TypographySettingsExtension";
@@ -178,6 +179,8 @@ export function getEditorExtensions(
     TableHeader,
     TableCell,
     ToolbarShortcutsExtension,
+    // 段落(最上位ブロック)を Alt+↑/↓ で上下移動
+    ParagraphMoveExtension,
     // Custom marks/nodes
     AuthorshipMark,
     EmphasisDotsMark,
