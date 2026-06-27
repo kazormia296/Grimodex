@@ -10,6 +10,7 @@ import {
 } from "./chatHistoryStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { SessionCard } from "./components/SessionCard";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -206,17 +207,14 @@ export function ChatHistoryPanel() {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div
-        data-panel-header
-        className="flex flex-shrink-0 items-center justify-between border-b border-border px-3 py-2"
-      >
-        <span className="text-xs font-semibold text-foreground">
-          Chat history
-        </span>
-        <span className="text-[10px] text-muted-foreground">
-          {isSearchMode ? `${totalHits} hits` : `${totalCount} sessions`}
-        </span>
-      </div>
+      <PanelHeader
+        panelId="chat-history"
+        actions={
+          <span className="text-[10px] text-muted-foreground">
+            {isSearchMode ? `${totalHits} hits` : `${totalCount} sessions`}
+          </span>
+        }
+      />
 
       {/* Search bar */}
       <div className="flex-shrink-0 border-b border-border px-2 py-1.5">

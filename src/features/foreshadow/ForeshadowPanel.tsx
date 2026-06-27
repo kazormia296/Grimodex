@@ -13,6 +13,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "./foreshadowStore";
@@ -404,28 +405,21 @@ export function ForeshadowPanel() {
       data-droptarget-id="foreshadow-panel"
       className="flex h-full flex-col data-[trash-drop-hover=true]:ring-2 data-[trash-drop-hover=true]:ring-primary/60 data-[trash-drop-hover=true]:ring-inset"
     >
-      <div
-        data-panel-header
-        className="flex items-center justify-between border-b border-border px-3 py-2"
-      >
-        <span className="text-xs font-semibold text-foreground">
-          {t("foreshadow.panel.title")}
-          {items.length > 0 && (
-            <span className="ml-1.5 text-muted-foreground">
-              ({items.length})
-            </span>
-          )}
-        </span>
-        <button
-          type="button"
-          data-testid="foreshadow-new-button"
-          onClick={() => setDialogOpen(true)}
-          className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          title={t("foreshadow.panel.newButton")}
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-      </div>
+      <PanelHeader
+        panelId="foreshadow"
+        count={items.length > 0 ? `(${items.length})` : undefined}
+        actions={
+          <button
+            type="button"
+            data-testid="foreshadow-new-button"
+            onClick={() => setDialogOpen(true)}
+            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            title={t("foreshadow.panel.newButton")}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        }
+      />
 
       {/* Tab switcher */}
       <div className="flex border-b border-border">

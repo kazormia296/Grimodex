@@ -446,6 +446,7 @@ describe("useLayoutStore", () => {
       ).toEqual([
         "map",
         "matrix",
+        "chronicle",
         "trash-bin",
         "writing-stats",
         "related-scenes",

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { Download } from "lucide-react";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -170,26 +171,19 @@ export function AttributionReport({ isActive = true }: SlotPanelProps = {}) {
       className="flex h-full min-h-0 flex-col"
       data-testid="attribution-report"
     >
-      <div
-        data-panel-header
-        className="flex items-center justify-between border-b border-border px-3 py-2"
-      >
-        <h3 className="text-sm font-semibold">{t("attribution.report")}</h3>
-        <div className="flex gap-1">
-          {(["scene", "project"] as const).map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setScope(s)}
-              className={`rounded px-2 py-0.5 text-xs transition-colors ${scope === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
-            >
-              {s === "scene"
-                ? t("attribution.scene")
-                : t("attribution.project")}
-            </button>
-          ))}
-        </div>
-      </div>
+      <PanelHeader
+        panelId="attribution"
+        actions={(["scene", "project"] as const).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setScope(s)}
+            className={`rounded px-2 py-0.5 text-xs transition-colors ${scope === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
+          >
+            {s === "scene" ? t("attribution.scene") : t("attribution.project")}
+          </button>
+        ))}
+      />
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
         {scope === "project" ? (

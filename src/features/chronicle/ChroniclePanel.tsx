@@ -5,12 +5,12 @@ import {
   Plus,
   ZoomIn,
   ZoomOut,
-  CalendarRange,
   CalendarCog,
   AlertTriangle,
   Sparkles,
   Spline,
 } from "lucide-react";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -389,18 +389,60 @@ export function ChroniclePanel() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-        <CalendarRange className="size-4 opacity-70" />
-        <span className="text-sm font-medium">
-          {t("layout.panel.chronicle", "年表")}
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {t("chronicle.count", "{{count}} 件", { count: n })}
-        </span>
+      <PanelHeader
+        panelId="chronicle"
+        count={t("chronicle.count", "{{count}} 件", { count: n })}
+        actions={
+          <>
+            <button
+              type="button"
+              onClick={() => setTieMode((m) => !m)}
+              className={`rounded p-1 hover:bg-accent ${tieMode ? "text-primary" : ""}`}
+              aria-label={t("chronicle.tieView", "読む順×作中時間")}
+              title={t("chronicle.tieView", "読む順×作中時間")}
+            >
+              <Spline className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(zoom / 1.25)}
+              className="rounded p-1 hover:bg-accent"
+              aria-label={t("chronicle.zoomOut", "縮小")}
+            >
+              <ZoomOut className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(zoom * 1.25)}
+              className="rounded p-1 hover:bg-accent"
+              aria-label={t("chronicle.zoomIn", "拡大")}
+            >
+              <ZoomIn className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setExtractOpen(true)}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent"
+              title={t("chronicle.extract.title", "本文から出来事を抽出")}
+            >
+              <Sparkles className="size-3.5" />{" "}
+              {t("chronicle.extractShort", "抽出")}
+            </button>
+            <button
+              type="button"
+              onClick={handleAdd}
+              disabled={creating}
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus className="size-3.5" /> {t("chronicle.add", "追加")}
+            </button>
+          </>
+        }
+      >
         <button
           type="button"
           onClick={() => setCalendarEditorOpen((o) => !o)}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent"
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground hover:bg-accent"
           title={t("chronicle.calendarEditor", "暦の設定")}
         >
           <CalendarCog className="size-3.5" />
@@ -409,58 +451,14 @@ export function ChroniclePanel() {
             : t("chronicle.setupCalendar", "暦を設定")}
         </button>
         {hasCalendar && conflicts.length > 0 ? (
-          <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+          <span className="inline-flex items-center gap-1 text-amber-600">
             <AlertTriangle className="size-3.5" />
             {t("chronicle.conflictCount", "季節矛盾 {{count}} 件", {
               count: conflicts.length,
             })}
           </span>
         ) : null}
-        <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setTieMode((m) => !m)}
-            className={`rounded p-1 hover:bg-accent ${tieMode ? "text-primary" : ""}`}
-            aria-label={t("chronicle.tieView", "読む順×作中時間")}
-            title={t("chronicle.tieView", "読む順×作中時間")}
-          >
-            <Spline className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoom(zoom / 1.25)}
-            className="rounded p-1 hover:bg-accent"
-            aria-label={t("chronicle.zoomOut", "縮小")}
-          >
-            <ZoomOut className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoom(zoom * 1.25)}
-            className="rounded p-1 hover:bg-accent"
-            aria-label={t("chronicle.zoomIn", "拡大")}
-          >
-            <ZoomIn className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setExtractOpen(true)}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent"
-            title={t("chronicle.extract.title", "本文から出来事を抽出")}
-          >
-            <Sparkles className="size-3.5" />{" "}
-            {t("chronicle.extractShort", "抽出")}
-          </button>
-          <button
-            type="button"
-            onClick={handleAdd}
-            disabled={creating}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Plus className="size-3.5" /> {t("chronicle.add", "追加")}
-          </button>
-        </div>
-      </div>
+      </PanelHeader>
 
       {calendarEditorOpen && (
         <ChronicleCalendarEditor
