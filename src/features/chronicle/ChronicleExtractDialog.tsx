@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Loader2, Sparkles } from "lucide-react";
@@ -9,7 +9,10 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { useTreeStore } from "@/features/tree/treeStore";
+import {
+  useTreeStore,
+  getDescendantScenesInOrder,
+} from "@/features/tree/treeStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { loadSceneContent } from "@/features/tree/api";
@@ -51,6 +54,16 @@ export function ChronicleExtractDialog({
   const [importing, setImporting] = useState(false);
   const [candidates, setCandidates] = useState<EventProposal[] | null>(null);
 
+  // ダイアログは親側で常時マウントされるため、開く（再オープン含む）たびに
+  // 選択フォルダと抽出候補を初期化する。これをしないと前回の候補が残り、
+  // 再度「取り込む」を押すと同じ出来事が UUID 違いで二重生成されてしまう。
+  useEffect(() => {
+    if (open) {
+      setFolderId("");
+      setCandidates(null);
+    }
+  }, [open]);
+
   const handleSelectFolder = (id: string) => {
     setFolderId(id);
     setCandidates(null);
@@ -66,10 +79,13 @@ export function ChronicleExtractDialog({
       const activeId = useTreeStore.getState().activeSceneId;
       if (activeId) await saveScene(activeId);
 
-      const sceneNodes = useTreeStore
-        .getState()
-        .nodes.filter((n) => n.nodeType === "scene" && n.parentId === folderId)
-        .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : 1));
+      // 直下のシーンだけでなく、配下の全シーン（部>章>シーン等の入れ子も）を
+      // DFS pre-order（ツリー表示順）で収集する。直下フィルタだと入れ子構造で
+      // 候補が黙って空になる。
+      const sceneNodes = getDescendantScenesInOrder(
+        useTreeStore.getState().nodes,
+        folderId,
+      );
       const scenes = await Promise.all(
         sceneNodes.map(async (n, i) => ({
           sceneId: n.id,
@@ -99,12 +115,17 @@ export function ChronicleExtractDialog({
     try {
       const n = await importExtractedEvents(projectId, candidates);
       toast.success(
-        t("chronicle.extract.imported", "{{n}}件の出来事を取り込みました", {
-          n,
+        t("chronicle.extract.imported", "{{count}}件の出来事を取り込みました", {
+          count: n,
         }),
       );
+      // 取り込み成功後は候補を即クリアして、再オープン時の二重取り込みを防ぐ。
+      setCandidates(null);
       onImported?.();
       onOpenChange(false);
+    } catch {
+      // 失敗時はダイアログを閉じず候補も保持し、再試行できる状態を保つ。
+      toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
     } finally {
       setImporting(false);
     }

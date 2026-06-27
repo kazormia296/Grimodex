@@ -18,6 +18,20 @@ import {
 } from "./ageCheck";
 import { getProjectCalendar, upsertProjectCalendar } from "./api";
 
+/**
+ * Promise.allSettled の結果から成功したシーン本文だけを Map に集める純関数。
+ * 1 シーンのロード失敗で全警告が消える退行を防ぐ（fail-silent ではなく graceful）。
+ */
+export function collectFulfilledSceneTexts(
+  results: PromiseSettledResult<readonly [string, string]>[],
+): Map<string, string> {
+  const sceneTexts = new Map<string, string>();
+  for (const r of results) {
+    if (r.status === "fulfilled") sceneTexts.set(r.value[0], r.value[1]);
+  }
+  return sceneTexts;
+}
+
 interface UseSeasonConflictsArgs {
   projectId: string | null;
   events: {
@@ -97,15 +111,16 @@ export function useSeasonConflicts({
       return;
     }
     let cancelled = false;
-    Promise.all(
+    // allSettled: 1 シーンのロード失敗で全警告を消さない。成功分だけで判定する。
+    Promise.allSettled(
       sceneIds.map(
         async (sid) =>
           [sid, extractPlainText(await loadSceneContent(sid))] as const,
       ),
     )
-      .then((pairs) => {
+      .then((results) => {
         if (cancelled) return;
-        const sceneTexts = new Map(pairs);
+        const sceneTexts = collectFulfilledSceneTexts(results);
         setConflicts(
           findSeasonConflicts({ events, calendar, links, sceneTexts }),
         );

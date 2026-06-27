@@ -7,7 +7,7 @@ import {
   eventRelations,
 } from "@/db/schema";
 import type { EventPrecision, EventKind } from "@/db/schema";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
 
 export interface EventRow {
@@ -57,10 +57,13 @@ export function normalizeEvent(raw: unknown): EventRow {
 }
 
 export async function listEvents(projectId: string): Promise<EventRow[]> {
+  // ordinal,id の二段ソートで決定論的な並び（ordinal 重複でもリロード間で順序が
+  // 揺れない）を保証する。年表 x 軸順の安定性が下流の座標算出に効く。
   const rows = await db
     .select()
     .from(events)
-    .where(eq(events.projectId, projectId));
+    .where(eq(events.projectId, projectId))
+    .orderBy(asc(events.ordinal), asc(events.id));
   return rows.map(normalizeEvent);
 }
 
@@ -79,24 +82,34 @@ export async function createEvent(data: {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   let ordinal = data.ordinal;
-  if (ordinal === undefined) {
-    const existing = await listEvents(data.projectId);
-    ordinal = nextEventOrdinal(existing.map((e) => e.ordinal));
-  }
-  await db.insert(events).values({
-    id,
-    projectId: data.projectId,
-    title: data.title ?? "",
-    note: data.note ?? null,
-    ordinal,
-    primaryCodexId: data.primaryCodexId ?? null,
-    locationCodexId: data.locationCodexId ?? null,
-    startTime: data.startTime ?? null,
-    endTime: data.endTime ?? null,
-    precision: data.precision ?? "exact",
-    kind: data.kind ?? "generic",
-    createdAt: now,
-    updatedAt: now,
+  // ordinal 自動採番（max の次）は read→insert の競合に弱い。max 読取と insert を
+  // 1 transaction に閉じることで、二重発火時の ordinal 衝突を防ぐ。
+  await db.transaction(async (tx) => {
+    if (ordinal === undefined) {
+      const existing = await tx
+        .select()
+        .from(events)
+        .where(eq(events.projectId, data.projectId))
+        .orderBy(asc(events.ordinal), asc(events.id));
+      ordinal = nextEventOrdinal(
+        existing.map((e) => normalizeEvent(e).ordinal),
+      );
+    }
+    await tx.insert(events).values({
+      id,
+      projectId: data.projectId,
+      title: data.title ?? "",
+      note: data.note ?? null,
+      ordinal,
+      primaryCodexId: data.primaryCodexId ?? null,
+      locationCodexId: data.locationCodexId ?? null,
+      startTime: data.startTime ?? null,
+      endTime: data.endTime ?? null,
+      precision: data.precision ?? "exact",
+      kind: data.kind ?? "generic",
+      createdAt: now,
+      updatedAt: now,
+    });
   });
   const [row] = await db.select().from(events).where(eq(events.id, id));
   return normalizeEvent(row);
@@ -104,6 +117,7 @@ export async function createEvent(data: {
 
 export async function updateEvent(
   id: string,
+  projectId: string,
   patch: Partial<
     Pick<
       EventRow,
@@ -119,14 +133,22 @@ export async function updateEvent(
     >
   >,
 ): Promise<void> {
+  // projectId を WHERE に AND して fail-closed にする（他プロジェクトの id を
+  // 渡されても no-op で、cross-project の書込みを構造的に遮断）。
   await db
     .update(events)
     .set({ ...patch, updatedAt: new Date().toISOString() })
-    .where(eq(events.id, id));
+    .where(and(eq(events.id, id), eq(events.projectId, projectId)));
 }
 
-export async function deleteEvent(id: string): Promise<void> {
-  await db.delete(events).where(eq(events.id, id));
+export async function deleteEvent(
+  id: string,
+  projectId: string,
+): Promise<void> {
+  // fail-closed: id と projectId の両方一致でのみ削除（cross-project 遮断）。
+  await db
+    .delete(events)
+    .where(and(eq(events.id, id), eq(events.projectId, projectId)));
 }
 
 // ───────── participants ─────────
@@ -158,13 +180,17 @@ export async function setEventParticipants(
   eventId: string,
   codexEntryIds: string[],
 ): Promise<void> {
-  await db
-    .delete(eventParticipants)
-    .where(eq(eventParticipants.eventId, eventId));
-  if (codexEntryIds.length === 0) return;
-  await db
-    .insert(eventParticipants)
-    .values(codexEntryIds.map((codexEntryId) => ({ eventId, codexEntryId })));
+  // 全削除→再挿入を 1 transaction に閉じ、insert 失敗時に delete を巻き戻して
+  // 参加者集合が中途半端に空になるのを防ぐ（atomic な置換）。
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(eventParticipants)
+      .where(eq(eventParticipants.eventId, eventId));
+    if (codexEntryIds.length === 0) return;
+    await tx
+      .insert(eventParticipants)
+      .values(codexEntryIds.map((codexEntryId) => ({ eventId, codexEntryId })));
+  });
 }
 
 // ───────── scene_events 橋 ─────────
@@ -303,13 +329,17 @@ export async function addEventRelation(
 }
 
 export async function removeEventRelation(
+  projectId: string,
   causeId: string,
   effectId: string,
 ): Promise<void> {
+  // fail-closed: projectId も AND し、他プロジェクトのエッジを消せないようにする
+  // （addEventRelation と同じ projectId-first シグネチャに揃える）。
   await db
     .delete(eventRelations)
     .where(
       and(
+        eq(eventRelations.projectId, projectId),
         eq(eventRelations.causeEventId, causeId),
         eq(eventRelations.effectEventId, effectId),
       ),

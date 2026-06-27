@@ -1,7 +1,39 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockSend = vi.hoisted(() => vi.fn());
+const mockBlock = vi.hoisted(() => vi.fn(() => false));
+const mockRecord = vi.hoisted(() => vi.fn());
+const mockOverride = vi.hoisted(() => vi.fn());
+const mockCreateEvent = vi.hoisted(() => vi.fn());
+const mockLinkScene = vi.hoisted(() => vi.fn());
+const mockListEvents = vi.hoisted(() => vi.fn());
+
+vi.mock("@/features/chat/chatApi", () => ({
+  sendChatMessageWithThinking: mockSend,
+}));
+vi.mock("@/features/chat/modelRouting", () => ({
+  resolveRoleSendOverride: mockOverride,
+}));
+vi.mock("@/features/ai-usage/recordAiUsage", () => ({
+  recordAiUsage: mockRecord,
+}));
+vi.mock("@/features/ai-policy/policyGuard", () => ({
+  blockIfPolicyOff: mockBlock,
+}));
+vi.mock("@/features/settings/settingsStore", () => ({
+  useSettingsStore: { getState: () => ({ get: () => "" }) },
+}));
+vi.mock("./api", () => ({
+  createEvent: mockCreateEvent,
+  linkSceneToEvent: mockLinkScene,
+  listEvents: mockListEvents,
+}));
+
 import {
   parseEventProposals,
   buildExtractEventsPrompt,
+  proposeEvents,
+  importExtractedEvents,
 } from "./extractEventsApi";
 
 const allowed = new Set(["s1", "s2"]);
@@ -54,5 +86,190 @@ describe("buildExtractEventsPrompt", () => {
     expect(p).toContain("簡潔に");
     // 期待する JSON 形を明示している
     expect(p).toContain("evidenceSceneIds");
+  });
+});
+
+describe("proposeEvents", () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockBlock.mockReset();
+    mockBlock.mockReturnValue(false);
+    mockRecord.mockReset();
+    mockRecord.mockResolvedValue(undefined);
+    mockOverride.mockReset();
+    mockOverride.mockReturnValue({
+      model: "gpt-x",
+      provider: "openrouter",
+      apiVariant: "chat_completions",
+      endpointId: null,
+    });
+  });
+
+  it("policy off なら送信も記録もせず空", async () => {
+    mockBlock.mockReturnValue(true);
+    const out = await proposeEvents({
+      scenes: [
+        { sceneId: "s1", title: "場面", bodyText: "本文", orderIndex: 0 },
+      ],
+      existingTitles: [],
+    });
+    expect(out).toEqual([]);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it("本文が空のシーンだけなら短絡して送信しない", async () => {
+    const out = await proposeEvents({
+      scenes: [
+        { sceneId: "s1", title: "空1", bodyText: "   ", orderIndex: 0 },
+        { sceneId: "s2", title: "空2", bodyText: "", orderIndex: 1 },
+      ],
+      existingTitles: [],
+    });
+    expect(out).toEqual([]);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it("override の model/provider で送信し、usage を 1 回そのモデルで記録、allowedSceneIds は本文ありシーンのみ", async () => {
+    // s2 は本文空 → allowedSceneIds から外れ、参照は落ちる。ghost は元から許可外。
+    mockSend.mockResolvedValue({
+      text: JSON.stringify({
+        events: [{ title: "決戦", evidenceSceneIds: ["s1", "s2", "ghost"] }],
+      }),
+      inputTokens: 12,
+      outputTokens: 34,
+    });
+
+    const out = await proposeEvents({
+      scenes: [
+        { sceneId: "s1", title: "場面1", bodyText: "本文A", orderIndex: 0 },
+        { sceneId: "s2", title: "場面2", bodyText: "  ", orderIndex: 1 },
+      ],
+      existingTitles: ["既存"],
+    });
+
+    // 許可シーンは本文ありの s1 のみ（s2/ghost は除外）
+    expect(out).toEqual([{ title: "決戦", evidenceSceneIds: ["s1"] }]);
+
+    // 送信は 1 回・override 引数が正しい位置で渡る
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const args = mockSend.mock.calls[0];
+    expect(args[3]).toBe("chat_completions"); // apiVariant
+    expect(args[5]).toBe("gpt-x"); // model
+    expect(args[6]).toBe("openrouter"); // provider
+    expect(args[7]).toBeNull(); // endpointId
+
+    // usage は override のモデル/プロバイダで 1 回だけ記録
+    expect(mockRecord).toHaveBeenCalledTimes(1);
+    expect(mockRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        surface: "chronicle_extract",
+        model: "gpt-x",
+        provider: "openrouter",
+        tokensIn: 12,
+        tokensOut: 34,
+      }),
+    );
+  });
+});
+
+describe("importExtractedEvents", () => {
+  beforeEach(() => {
+    mockCreateEvent.mockReset();
+    mockCreateEvent.mockImplementation(async (d: { title: string }) => ({
+      id: `ev-${d.title}`,
+    }));
+    mockLinkScene.mockReset();
+    mockLinkScene.mockResolvedValue(undefined);
+    mockListEvents.mockReset();
+    mockListEvents.mockResolvedValue([]);
+  });
+
+  it("候補を events 化しシーンを結び、件数を返す", async () => {
+    const n = await importExtractedEvents(
+      "p1",
+      [
+        { title: "新事件A", evidenceSceneIds: ["s1", "s2"] },
+        { title: "新事件B", evidenceSceneIds: [] },
+      ],
+      [],
+    );
+    expect(n).toBe(2);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    // A の根拠 2 シーンのみ link（B は 0）
+    expect(mockLinkScene).toHaveBeenCalledTimes(2);
+    expect(mockLinkScene).toHaveBeenCalledWith("s1", "ev-新事件A");
+    expect(mockLinkScene).toHaveBeenCalledWith("s2", "ev-新事件A");
+  });
+
+  it("既存タイトルと重複する候補は正規化一致でスキップ（大小・前後空白を吸収）", async () => {
+    const n = await importExtractedEvents(
+      "p1",
+      [
+        { title: "新事件", evidenceSceneIds: ["s1"] },
+        { title: "  Existing Event  ", evidenceSceneIds: ["s1"] }, // 重複
+      ],
+      ["existing event"],
+    );
+    expect(n).toBe(1);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+    expect(mockCreateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "新事件" }),
+    );
+  });
+
+  it("existingTitles 省略時は DB(listEvents) を参照して重複をスキップ", async () => {
+    mockListEvents.mockResolvedValue([{ title: "既存" }]);
+    const n = await importExtractedEvents("p1", [
+      { title: "既存", evidenceSceneIds: ["s1"] }, // 重複
+      { title: "新規", evidenceSceneIds: ["s1"] },
+    ]);
+    expect(n).toBe(1);
+    expect(mockListEvents).toHaveBeenCalledTimes(1);
+    expect(mockListEvents).toHaveBeenCalledWith("p1");
+    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+    expect(mockCreateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "新規" }),
+    );
+  });
+
+  it("同一バッチ内の重複は先勝ちで 1 件のみ作成", async () => {
+    const n = await importExtractedEvents(
+      "p1",
+      [
+        { title: "同じ", evidenceSceneIds: ["s1"] },
+        { title: "同じ", evidenceSceneIds: ["s2"] },
+      ],
+      [],
+    );
+    expect(n).toBe(1);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("途中の createEvent 失敗は握りつぶさず伝播（部分適用＝先行分は作成済み）", async () => {
+    // A 成功 → B 失敗。C には到達しない（現状の partial-failure 挙動を固定）。
+    mockCreateEvent.mockReset();
+    mockCreateEvent
+      .mockResolvedValueOnce({ id: "ev-A" })
+      .mockRejectedValueOnce(new Error("boom"));
+
+    await expect(
+      importExtractedEvents(
+        "p1",
+        [
+          { title: "A", evidenceSceneIds: ["s1"] },
+          { title: "B", evidenceSceneIds: ["s2"] },
+          { title: "C", evidenceSceneIds: ["s3"] },
+        ],
+        [],
+      ),
+    ).rejects.toThrow("boom");
+
+    // A=成功, B=失敗で停止, C=未試行
+    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    // A の link のみ実行済み（B は createEvent で落ちるため link されない）
+    expect(mockLinkScene).toHaveBeenCalledTimes(1);
+    expect(mockLinkScene).toHaveBeenCalledWith("s1", "ev-A");
   });
 });

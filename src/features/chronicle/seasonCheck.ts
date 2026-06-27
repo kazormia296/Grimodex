@@ -55,6 +55,9 @@ export function findSeasonConflicts(input: SeasonCheckInput): SeasonConflict[] {
       const text = sceneTexts.get(sceneId);
       if (text === undefined) continue;
       const detected = detectSeasons(text, seasonNames, synonyms);
+      // シーン本文に「出来事自身の季節」が現れているなら、別季節への言及は
+      // 回想/伏線/比喩とみなして矛盾にしない（設定が正しい強い証拠）。
+      if (detected.has(evSeason)) continue;
       const conflicting = [...detected].filter((s) => s !== evSeason).sort();
       if (conflicting.length > 0) {
         conflicts.push({

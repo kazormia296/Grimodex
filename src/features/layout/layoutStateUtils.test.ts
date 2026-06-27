@@ -19,7 +19,11 @@ import {
   removePanelFromCenterSegment,
   DEFAULT_EDITOR_SEGMENT_ID,
 } from "./layoutStateUtils";
-import { TOOL_WINDOW_PANEL_IDS } from "./toolWindowDefaults";
+import {
+  DEFAULT_INDEX_MAP,
+  DEFAULT_REGION_MAP,
+  TOOL_WINDOW_PANEL_IDS,
+} from "./toolWindowDefaults";
 import type { LayoutState, RegionId, ToolWindowPanelId } from "./layoutTypes";
 import {
   DEFAULT_REGION_SIZES,
@@ -533,6 +537,68 @@ describe("ensureLayoutStateV3 auto-injects newly registered panels", () => {
       r.slots.flatMap((s) => s.panels),
     ).length;
     expect(after).toBe(before);
+    expect(validateLayoutState(fixed).valid).toBe(true);
+  });
+
+  // データ整合の回帰ガード: chronicle 追加前 (= TOOL_WINDOW_PANEL_IDS に
+  // chronicle が無かった時代) に保存された v3 カスタムレイアウトは、chronicle
+  // 未登録のままだと validateLayoutState に弾かれ、loadLayout が builtin:default
+  // へリセット (= カスタム配置の永久喪失) してしまう。修正後の load 経路が通す
+  // ensureLayoutStateV3 が、ユーザーのカスタムスロットを保持したまま chronicle
+  // を既定位置 (DEFAULT_REGION_MAP/DEFAULT_INDEX_MAP) へ自己修復注入することを
+  // 名指しで検証する (末尾 id 任せにしない)。
+  it("chronicle 追加前の v3 カスタムレイアウトに chronicle を既定位置へ注入しつつカスタム配置を保持する", () => {
+    const base = buildDefaultLayoutState();
+
+    // --- ユーザーのカスタム配置を再現 ---
+    // attribution を right 領域から外し、left 領域の独自スロットへ移す。
+    const right = base.regions.right;
+    for (const slot of right.slots) {
+      slot.panels = slot.panels.filter((p) => p !== "attribution");
+      if (slot.activePanel === "attribution") {
+        slot.activePanel = slot.panels[0] ?? null;
+      }
+    }
+    right.slots = right.slots.filter((s) => s.panels.length > 0);
+    base.regions.left.slots.push({
+      id: "custom-attr",
+      sizeRatio: 1,
+      panels: ["attribution"],
+      activePanel: "attribution",
+    });
+    // この時点では全パネル登録済みなので valid。
+    expect(validateLayoutState(base).valid).toBe(true);
+
+    // --- chronicle 追加前の保存状態を再現: chronicle を全 slot から除去 ---
+    for (const region of Object.values(base.regions)) {
+      for (const slot of region.slots) {
+        slot.panels = slot.panels.filter((p) => p !== "chronicle");
+        if (slot.activePanel === "chronicle") {
+          slot.activePanel = slot.panels[0] ?? null;
+        }
+      }
+      region.slots = region.slots.filter((s) => s.panels.length > 0);
+    }
+    // chronicle 欠落で validate に弾かれる (= リセット対象になるバグの起点)。
+    expect(validateLayoutState(base).valid).toBe(false);
+
+    // --- 修正後の load 経路が通す自己修復 ---
+    const fixed = ensureLayoutStateV3(base);
+
+    // (a) ユーザーのカスタムスロットが生き残る。
+    const customSlot = fixed.regions.left.slots.find(
+      (s) => s.id === "custom-attr",
+    );
+    expect(customSlot?.panels).toEqual(["attribution"]);
+
+    // (b) chronicle が DEFAULT_REGION_MAP/DEFAULT_INDEX_MAP の既定位置へ注入。
+    const chronicleRegion = DEFAULT_REGION_MAP.chronicle;
+    const chronicleIndex = DEFAULT_INDEX_MAP.chronicle;
+    expect(
+      fixed.regions[chronicleRegion].slots[chronicleIndex].panels,
+    ).toContain("chronicle");
+
+    // 自己修復後は validate を通る (リセットされない)。
     expect(validateLayoutState(fixed).valid).toBe(true);
   });
 });

@@ -589,6 +589,21 @@ async function restoreStructural(
       params: [PROJECT_ID],
       method: "run",
     });
+    // Chronicle (作中年表): events / event_relations / project_calendar FK
+    // projects (NOT tree_nodes), so the tree_nodes wipe leaves them as orphans.
+    // Explicitly wipe them; deleting events cascades scene_events,
+    // event_participants and event_relations (so the body-scope capture==wipe
+    // set holds), and project_calendar is wiped on its own.
+    pushStmt({
+      sql: "DELETE FROM events WHERE project_id = ?",
+      params: [PROJECT_ID],
+      method: "run",
+    });
+    pushStmt({
+      sql: "DELETE FROM project_calendar WHERE project_id = ?",
+      params: [PROJECT_ID],
+      method: "run",
+    });
   }
   if (scopes.has("codex")) {
     pushStmt({
@@ -822,6 +837,60 @@ async function restoreStructural(
     }
     for (const row of auxByScope.get("plot_thread_branches") ?? []) {
       pushStmt(buildInsert("plot_thread_branches", row));
+    }
+    // Chronicle (作中年表): events → scene_events / event_participants /
+    // event_relations → project_calendar. events is parent-first; its children
+    // FK events (and tree_nodes / codex_entries), all inserted above or here.
+    // events were wiped above. primary_codex_id / location_codex_id are
+    // nullable FKs: when codex is excluded and the referenced entry is gone,
+    // NULL them rather than dropping the event.
+    for (const row of auxByScope.get("events") ?? []) {
+      let primaryCodexId = (row.primary_codex_id as string | null) ?? null;
+      let locationCodexId = (row.location_codex_id as string | null) ?? null;
+      if (
+        !scopes.has("codex") &&
+        typeof primaryCodexId === "string" &&
+        !liveCodexIds.has(primaryCodexId)
+      ) {
+        primaryCodexId = null;
+        skipped.eventCodexRefCleared++;
+      }
+      if (
+        !scopes.has("codex") &&
+        typeof locationCodexId === "string" &&
+        !liveCodexIds.has(locationCodexId)
+      ) {
+        locationCodexId = null;
+        skipped.eventCodexRefCleared++;
+      }
+      pushStmt(
+        buildInsert("events", {
+          ...row,
+          primary_codex_id: primaryCodexId,
+          location_codex_id: locationCodexId,
+        }),
+      );
+    }
+    for (const row of auxByScope.get("scene_events") ?? []) {
+      pushStmt(buildInsert("scene_events", row));
+    }
+    for (const row of auxByScope.get("event_participants") ?? []) {
+      // codex_entry_id is NOT NULL FK. Codex unselected and entry missing → skip.
+      if (
+        !scopes.has("codex") &&
+        typeof row.codex_entry_id === "string" &&
+        !liveCodexIds.has(row.codex_entry_id)
+      ) {
+        skipped.eventParticipants++;
+        continue;
+      }
+      pushStmt(buildInsert("event_participants", row));
+    }
+    for (const row of auxByScope.get("event_relations") ?? []) {
+      pushStmt(buildInsert("event_relations", row));
+    }
+    for (const row of auxByScope.get("project_calendar") ?? []) {
+      pushStmt(buildInsert("project_calendar", row));
     }
   }
 

@@ -1414,8 +1414,15 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
       const rawLayout = settings.layout;
       if (isPersistedLayoutV3(rawLayout)) {
+        // chronicle 等の新パネルが TOOL_WINDOW_PANEL_IDS に追加されると、それ
+        // 以前に保存された v3 カスタムレイアウトは新パネル未登録で
+        // validateLayoutState に弾かれ、applyValidatedLayout が builtin:default
+        // へリセット (= カスタム配置の永久喪失) してしまう。custom/preset 経路
+        // (applyPreset / parseBuiltinOverrides / loadPresets) と同じく、ここでも
+        // ensureLayoutStateV3 を通して新パネルを既定スロットへ自己修復注入して
+        // から validate する。
         const validated = applyValidatedLayout(
-          cloneLayoutState(rawLayout.state),
+          ensureLayoutStateV3(rawLayout.state),
           resetLayoutStateToDefault(),
         );
         set({
@@ -1438,7 +1445,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           activePresetId?: string;
           hiddenStripePanels?: ToolWindowPanelId[];
         };
-        const migrated = migrateLayoutStateV2toV3(v2Persisted.state);
+        // custom/preset 経路と同じ ensureLayoutStateV3 を使う。v2→v3 移行 +
+        // 未知パネル除去に加え、新パネル (chronicle 等) の自己修復注入も同時に
+        // 行うため、active な v2→v3 アップグレード経路でも chronicle が
+        // 注入され validate に弾かれない。
+        const migrated = ensureLayoutStateV3(v2Persisted.state);
         const validated = applyValidatedLayout(
           migrated,
           resetLayoutStateToDefault(),

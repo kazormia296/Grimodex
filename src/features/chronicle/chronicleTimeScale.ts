@@ -38,7 +38,12 @@ export function scaleEvents(
   params: ScaleParams,
 ): ScaledPoint[] {
   const { width, padX, zoom, scrollOffset } = params;
-  const sorted = [...events].sort((a, b) => cmpKeys(a.ordinal, b.ordinal));
+  // ordinal 昇順で並べる。等しい ordinal は id で安定タイブレーク
+  // （handlePull はシーンの storyTimeOrder をそのまま複製するため重複しうる）。
+  const sorted = [...events].sort(
+    (a, b) =>
+      cmpKeys(a.ordinal, b.ordinal) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
   const n = sorted.length;
   if (n === 0) return [];
   const inner = Math.max(1, width - 2 * padX) * zoom;
@@ -46,8 +51,21 @@ export function scaleEvents(
 
   const haveAllTimes = sorted.every((e) => e.startTime != null);
   if (haveAllTimes) {
-    const t0 = sorted[0].startTime as number;
-    const t1 = sorted[n - 1].startTime as number;
+    // 真の時間レンジを全 time（startTime + 非 null の endTime）から求める。
+    // ordinal 順 != 時系列順（フラッシュバック）や末尾 interval の超過があっても、
+    // 全 x / xEnd が [padX, padX+inner] に収まることを保証する。
+    // 大配列でも安全なよう Math.min(...spread) ではなくループで畳む。
+    let t0 = sorted[0].startTime as number;
+    let t1 = t0;
+    for (const e of sorted) {
+      const s = e.startTime as number;
+      if (s < t0) t0 = s;
+      if (s > t1) t1 = s;
+      if (e.endTime != null) {
+        if (e.endTime < t0) t0 = e.endTime;
+        if (e.endTime > t1) t1 = e.endTime;
+      }
+    }
     const span = t1 - t0 || 1;
     return sorted.map((e) => ({
       eventId: e.id,

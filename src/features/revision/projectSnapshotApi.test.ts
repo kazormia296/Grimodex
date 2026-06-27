@@ -765,4 +765,232 @@ describe("projectSnapshotApi", () => {
     expect(branches.map((b) => b.id)).toEqual(["br-1"]);
     expect(branches[0]?.atNodeId).toBe("s1");
   });
+
+  it("registers all five Chronicle tables as body-owned aux scopes (data-loss fix)", async () => {
+    const { AUX_SCOPES, AUX_SCOPE_OWNER, AUX_TABLE, AUX_PROJECT_FILTER } =
+      await import("./projectSnapshotScopes");
+    const chronicle = [
+      "events",
+      "event_relations",
+      "scene_events",
+      "event_participants",
+      "project_calendar",
+    ] as const;
+    for (const scope of chronicle) {
+      expect(AUX_SCOPES).toContain(scope);
+      expect(AUX_SCOPE_OWNER[scope]).toBe("body");
+      expect(AUX_TABLE[scope]).toBe(scope);
+      // capture predicate must scope to the current project (one bound id).
+      expect(AUX_PROJECT_FILTER[scope]?.where).toContain("?");
+      expect(AUX_PROJECT_FILTER[scope]?.binds).toBe(1);
+    }
+    // events must precede its children so restore re-inserts parents first.
+    const idx = (s: string) => (AUX_SCOPES as readonly string[]).indexOf(s);
+    expect(idx("events")).toBeLessThan(idx("scene_events"));
+    expect(idx("events")).toBeLessThan(idx("event_participants"));
+    expect(idx("events")).toBeLessThan(idx("event_relations"));
+  });
+
+  it("body+codex restore brings back Chronicle events, scene links, relations and calendar (regression)", async () => {
+    const { invoke } = await import("@/lib/tauri");
+    const { db } = await import("@/db/client");
+    const { codexEntries } = await import("@/db/schema");
+    const now = new Date().toISOString();
+
+    type Rows<T> = { rows: T[] };
+    const run = (sql: string, params: (string | number | null)[] = []) =>
+      invoke("db_execute", { sql, params, method: "run" });
+    const all = <T>(sql: string, params: (string | number | null)[] = []) =>
+      invoke("db_execute", { sql, params, method: "all" }) as Promise<Rows<T>>;
+
+    // browser-mock omits the Chronicle tables; create them here so the
+    // capture→restore round-trip exercises the real path (FKs mirror schema.ts).
+    await run(`CREATE TABLE IF NOT EXISTS events (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT '',
+      note TEXT,
+      ordinal TEXT NOT NULL DEFAULT 'a0',
+      primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+      location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+      start_time INTEGER,
+      end_time INTEGER,
+      precision TEXT NOT NULL DEFAULT 'exact',
+      kind TEXT NOT NULL DEFAULT 'generic',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    await run(`CREATE TABLE IF NOT EXISTS event_relations (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      cause_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      effect_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      PRIMARY KEY (cause_event_id, effect_event_id)
+    )`);
+    await run(`CREATE TABLE IF NOT EXISTS scene_events (
+      scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+      event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      PRIMARY KEY (scene_id, event_id)
+    )`);
+    await run(`CREATE TABLE IF NOT EXISTS event_participants (
+      event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      codex_entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+      role TEXT,
+      PRIMARY KEY (event_id, codex_entry_id)
+    )`);
+    await run(`CREATE TABLE IF NOT EXISTS project_calendar (
+      project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      days_per_year INTEGER NOT NULL DEFAULT 360,
+      season_boundaries TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+
+    // Start clean (resetSnapshotTables does not know the Chronicle tables).
+    // Child-first so FK CASCADE order is irrelevant.
+    for (const t of [
+      "scene_events",
+      "event_participants",
+      "event_relations",
+      "project_calendar",
+      "events",
+    ]) {
+      await run(`DELETE FROM ${t}`);
+    }
+
+    // Seed: a scene, a codex character, two events (e1 has a codex home lane),
+    // a scene↔event link, a participant, a causal edge e1→e2, and a calendar.
+    await seedScene('{"type":"doc","content":[]}', {
+      id: "s1",
+      sortOrder: "a0",
+    });
+    await db.insert(codexEntries).values({
+      id: "cx-1",
+      projectId: PROJECT_ID,
+      type: "character",
+      name: "Hero",
+      contextMode: "mentioned",
+      childrenBudget: "compact",
+      content: "{}",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await run(
+      "INSERT INTO events (id, project_id, title, note, ordinal, primary_codex_id, location_codex_id, start_time, end_time, precision, kind, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      [
+        "e1",
+        PROJECT_ID,
+        "誕生",
+        null,
+        "a0",
+        "cx-1",
+        null,
+        0,
+        null,
+        "exact",
+        "birth",
+        now,
+        now,
+      ],
+    );
+    await run(
+      "INSERT INTO events (id, project_id, title, note, ordinal, primary_codex_id, location_codex_id, start_time, end_time, precision, kind, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      [
+        "e2",
+        PROJECT_ID,
+        "旅立ち",
+        null,
+        "a1",
+        null,
+        null,
+        10,
+        null,
+        "exact",
+        "generic",
+        now,
+        now,
+      ],
+    );
+    await run("INSERT INTO scene_events (scene_id, event_id) VALUES (?,?)", [
+      "s1",
+      "e1",
+    ]);
+    await run(
+      "INSERT INTO event_participants (event_id, codex_entry_id, role) VALUES (?,?,?)",
+      ["e1", "cx-1", "protagonist"],
+    );
+    await run(
+      "INSERT INTO event_relations (project_id, cause_event_id, effect_event_id) VALUES (?,?,?)",
+      [PROJECT_ID, "e1", "e2"],
+    );
+    await run(
+      "INSERT INTO project_calendar (project_id, days_per_year, season_boundaries, created_at, updated_at) VALUES (?,?,?,?,?)",
+      [PROJECT_ID, 400, "[]", now, now],
+    );
+
+    const snap = await createProjectSnapshot({ name: "chronicle-checkpoint" });
+
+    // Data loss after snapshot: deleting events cascades scene_events /
+    // event_participants / event_relations; calendar wiped on its own.
+    await run("DELETE FROM events WHERE project_id = ?", [PROJECT_ID]);
+    await run("DELETE FROM project_calendar WHERE project_id = ?", [
+      PROJECT_ID,
+    ]);
+    expect(
+      (
+        await all<{ id: string }>(
+          "SELECT id FROM events WHERE project_id = ?",
+          [PROJECT_ID],
+        )
+      ).rows,
+    ).toHaveLength(0);
+
+    // Restore with body (owns Chronicle) + codex (so primary_codex_id is kept).
+    await restoreProjectSnapshot(snap.id, "chronicle-checkpoint", {
+      scopes: new Set(["body", "codex"]),
+    });
+
+    const ev = await all<{ id: string; primary_codex_id: string | null }>(
+      "SELECT id, primary_codex_id FROM events WHERE project_id = ? ORDER BY id",
+      [PROJECT_ID],
+    );
+    expect(ev.rows.map((r) => r.id)).toEqual(["e1", "e2"]);
+    expect(ev.rows.find((r) => r.id === "e1")?.primary_codex_id).toBe("cx-1");
+
+    const links = await all<{ scene_id: string; event_id: string }>(
+      "SELECT scene_id, event_id FROM scene_events WHERE event_id IN (SELECT id FROM events WHERE project_id = ?)",
+      [PROJECT_ID],
+    );
+    expect(links.rows).toEqual([{ scene_id: "s1", event_id: "e1" }]);
+
+    const rels = await all<{ cause_event_id: string; effect_event_id: string }>(
+      "SELECT cause_event_id, effect_event_id FROM event_relations WHERE project_id = ?",
+      [PROJECT_ID],
+    );
+    expect(rels.rows).toEqual([
+      { cause_event_id: "e1", effect_event_id: "e2" },
+    ]);
+
+    const parts = await all<{ event_id: string; codex_entry_id: string }>(
+      "SELECT event_id, codex_entry_id FROM event_participants WHERE event_id IN (SELECT id FROM events WHERE project_id = ?)",
+      [PROJECT_ID],
+    );
+    expect(parts.rows).toEqual([{ event_id: "e1", codex_entry_id: "cx-1" }]);
+
+    const cal = await all<{ days_per_year: number }>(
+      "SELECT days_per_year FROM project_calendar WHERE project_id = ?",
+      [PROJECT_ID],
+    );
+    expect(cal.rows[0]?.days_per_year).toBe(400);
+
+    // Cleanup (child-first) so other tests / re-runs start fresh.
+    for (const t of [
+      "scene_events",
+      "event_participants",
+      "event_relations",
+      "project_calendar",
+      "events",
+    ]) {
+      await run(`DELETE FROM ${t}`);
+    }
+  });
 });

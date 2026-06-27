@@ -15,11 +15,21 @@ export const DEFAULT_SEASON_SYNONYMS: Record<string, string[]> = {
   winter: ["snow", "frost", "blizzard"],
 };
 
+/** ASCII(ラテン)語か。語境界(\b)一致を使うかどうかの判定。 */
+function isAsciiNeedle(w: string): boolean {
+  return /^[\x20-\x7e]+$/.test(w);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * テキスト中に現れる季節を検出する純関数。
- * - seasonNames(暦の季節名)の substring 一致。
+ * - seasonNames(暦の季節名)の一致。
  * - synonyms[seasonName] の各語が現れ、かつその seasonName が seasonNames にあれば加える。
- * 大文字小文字は ASCII のみ無視（日本語はそのまま）。決定性: 乱数/時刻なし。
+ * - ASCII/ラテン語は語境界(\b)一致・大小無視（fall が waterfall/fallen、snow が
+ *   Snowden 等に誤反応しない）。CJK(単漢字含む)は substring 一致。決定性: 乱数/時刻なし。
  */
 export function detectSeasons(
   text: string,
@@ -28,9 +38,12 @@ export function detectSeasons(
 ): Set<string> {
   const found = new Set<string>();
   if (!text) return found;
-  const lower = text.toLowerCase();
-  const has = (needle: string) =>
-    text.includes(needle) || lower.includes(needle.toLowerCase());
+  const has = (needle: string) => {
+    if (isAsciiNeedle(needle)) {
+      return new RegExp(`\\b${escapeRegExp(needle)}\\b`, "i").test(text);
+    }
+    return text.includes(needle);
+  };
 
   for (const name of seasonNames) {
     if (has(name)) found.add(name);

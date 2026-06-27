@@ -92,6 +92,48 @@ describe("buildChronicleLaneModel", () => {
     expect(m.precision).toBe("approx");
   });
 
+  it("ordinal 同値の marker は eventId 昇順で決定的（入力順に依存しない）", () => {
+    const forward = buildChronicleLaneModel({
+      events: [
+        ev({ id: "eb", ordinal: "a0", primaryCodexId: "alice" }),
+        ev({ id: "ea", ordinal: "a0", primaryCodexId: "alice" }), // 同じ ordinal
+      ],
+      people,
+    });
+    const reversed = buildChronicleLaneModel({
+      events: [
+        ev({ id: "ea", ordinal: "a0", primaryCodexId: "alice" }),
+        ev({ id: "eb", ordinal: "a0", primaryCodexId: "alice" }),
+      ],
+      people,
+    });
+    const ids = (m: typeof forward) =>
+      m.lanes[0].markers.map((mk) => mk.eventId);
+    expect(ids(forward)).toEqual(["ea", "eb"]);
+    expect(ids(reversed)).toEqual(ids(forward));
+  });
+
+  it("ordinal 同値の unassigned も eventId 昇順で決定的", () => {
+    const forward = buildChronicleLaneModel({
+      events: [
+        ev({ id: "u2", ordinal: "a0", primaryCodexId: null }),
+        ev({ id: "u1", ordinal: "a0", primaryCodexId: null }), // 同じ ordinal
+      ],
+      people,
+    });
+    const reversed = buildChronicleLaneModel({
+      events: [
+        ev({ id: "u1", ordinal: "a0", primaryCodexId: null }),
+        ev({ id: "u2", ordinal: "a0", primaryCodexId: null }),
+      ],
+      people,
+    });
+    expect(forward.unassigned.map((m) => m.eventId)).toEqual(["u1", "u2"]);
+    expect(reversed.unassigned.map((m) => m.eventId)).toEqual(
+      forward.unassigned.map((m) => m.eventId),
+    );
+  });
+
   it("空入力は空モデル", () => {
     const model = buildChronicleLaneModel({ events: [], people });
     expect(model.lanes).toEqual([]);

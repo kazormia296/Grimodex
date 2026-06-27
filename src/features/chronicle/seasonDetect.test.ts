@@ -33,4 +33,18 @@ describe("detectSeasons", () => {
   it("空テキストは空", () => {
     expect(detectSeasons("", NAMES).size).toBe(0);
   });
+
+  it("英語季節名/synonym は語境界一致(waterfall/fallen を秋と誤検出しない)", () => {
+    // 'fall' が waterfall/fallen の一部でも秋(fall)を付けない。
+    expect(detectSeasons("The waterfall roared", ["fall"]).size).toBe(0);
+    expect(detectSeasons("leaves had fallen", ["fall"]).size).toBe(0);
+    // 単独の 'fall' は引き続き検出する(語境界の正当一致)。
+    expect(detectSeasons("it was fall", ["fall"]).has("fall")).toBe(true);
+  });
+
+  it("synonym 'snow' は Snowden(人名) を冬と誤検出しない", () => {
+    expect(detectSeasons("Mr. Snowden arrived", ["winter"]).size).toBe(0);
+    // 単独の snow は冬として検出。
+    expect(detectSeasons("snow fell", ["winter"]).has("winter")).toBe(true);
+  });
 });

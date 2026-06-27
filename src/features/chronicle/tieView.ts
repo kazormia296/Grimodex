@@ -53,13 +53,16 @@ function placeDots(
 /**
  * reading 順 scene トラック ↔ 作中時間順 event トラックを結ぶタイ線ビューの幾何を組む純関数。
  * 「読む順では前なのに作中では後」のズレが線の交差として現れる。
- * 決定性: scene は与えられた reading 順、event は ordinal 昇順。
+ * 決定性: scene は与えられた reading 順、event は ordinal 昇順（同値は id 昇順）。
  */
 export function buildTieView(input: TieViewInput): TieViewModel {
   const { scenes, events, links, width, padX, topY, bottomY } = input;
   const sceneDots = placeDots(scenes, width, padX);
-  const orderedEvents = [...events].sort((a, b) =>
-    cmpKeys(a.ordinal, b.ordinal),
+  // ordinal が同値のときは id で安定タイブレーク（listEvents は ORDER BY 無しのため
+  // 入力順に依存させない＝決定的な x 配置を保証する）。
+  const orderedEvents = [...events].sort(
+    (a, b) =>
+      cmpKeys(a.ordinal, b.ordinal) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
   const eventDots = placeDots(orderedEvents, width, padX);
 

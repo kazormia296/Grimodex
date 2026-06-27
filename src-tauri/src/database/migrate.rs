@@ -2928,6 +2928,66 @@ mod tests {
     }
 
     #[test]
+    fn migrate_backfills_chronicle_columns_on_legacy_events() {
+        // Regression: a P0-era Chronicle install has events WITHOUT the
+        // kind / location_codex_id columns. migrate() must backfill both via
+        // add_column_if_missing — the fresh-DB CREATE TABLE already includes
+        // them, so the legacy ALTER path is otherwise never exercised.
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.with_conn(|conn| {
+            // P0 events table (pre kind / location_codex_id).
+            conn.execute_batch(
+                "CREATE TABLE events (
+                    id               TEXT PRIMARY KEY,
+                    project_id       TEXT NOT NULL,
+                    title            TEXT NOT NULL DEFAULT '',
+                    note             TEXT,
+                    ordinal          TEXT NOT NULL DEFAULT 'a0',
+                    primary_codex_id TEXT,
+                    start_time       INTEGER,
+                    end_time         INTEGER,
+                    precision        TEXT NOT NULL DEFAULT 'exact'
+                                       CHECK(precision IN ('exact','approx','unknown')),
+                    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO events (id, project_id) VALUES ('e1', 'p1');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // Must not error on the legacy (pre-kind / pre-location) table.
+        db.migrate().unwrap();
+
+        db.with_conn(|conn| {
+            let cols: Vec<String> = conn
+                .prepare("PRAGMA table_info(events)")?
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<_, _>>()?;
+            assert!(
+                cols.iter().any(|c| c == "kind"),
+                "kind column should be backfilled"
+            );
+            assert!(
+                cols.iter().any(|c| c == "location_codex_id"),
+                "location_codex_id column should be backfilled"
+            );
+            // The pre-existing legacy row picks up the DEFAULT backfill value.
+            let kind: String =
+                conn.query_row("SELECT kind FROM events WHERE id = 'e1'", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(
+                kind, "generic",
+                "legacy row kind should default to 'generic'"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn migrate_fresh_db_creates_ai_usage_cache_columns() {
         // Regression: migrate_ai_usage_cache_tokens は CREATE TABLE ai_usage の
         // 直後で呼ぶ必要がある。CREATE より前で呼ぶと fresh DB では
