@@ -71,6 +71,73 @@ describe("SceneBeatNode", () => {
     round.destroy();
   });
 
+  it("declares the multi-provider model routing attrs with null defaults", () => {
+    const editor = createTestEditor();
+    const attrs = editor.schema.nodes["sceneBeat"].spec.attrs!;
+    expect(attrs.model.default).toBeNull();
+    expect(attrs.modelProvider.default).toBeNull();
+    expect(attrs.modelVariant.default).toBeNull();
+    expect(attrs.modelEndpointId.default).toBeNull();
+    editor.destroy();
+  });
+
+  it("round-trips multi-provider model routing attrs through HTML", () => {
+    const editor = createTestEditor();
+    editor
+      .chain()
+      .focus()
+      .insertContent({
+        type: "sceneBeat",
+        attrs: {
+          id: "beat-2",
+          model: "gpt-4o",
+          modelProvider: "openai",
+          modelVariant: "v1",
+          modelEndpointId: "ep-1",
+        },
+        content: [{ type: "text", text: "x" }],
+      })
+      .run();
+
+    const html = editor.getHTML();
+    expect(html).toContain('data-beat-model="gpt-4o"');
+    expect(html).toContain('data-beat-model-provider="openai"');
+    expect(html).toContain('data-beat-model-variant="v1"');
+    expect(html).toContain('data-beat-model-endpoint="ep-1"');
+
+    const round = createTestEditor(html);
+    let found = false;
+    round.state.doc.descendants((node) => {
+      if (node.type.name === "sceneBeat") {
+        found = true;
+        expect(node.attrs.model).toBe("gpt-4o");
+        expect(node.attrs.modelProvider).toBe("openai");
+        expect(node.attrs.modelVariant).toBe("v1");
+        expect(node.attrs.modelEndpointId).toBe("ep-1");
+      }
+    });
+    expect(found).toBe(true);
+    editor.destroy();
+    round.destroy();
+  });
+
+  it("omits model routing attributes from HTML when null (legacy beats)", () => {
+    const editor = createTestEditor();
+    editor
+      .chain()
+      .focus()
+      .insertContent({
+        type: "sceneBeat",
+        attrs: { id: "beat-3" },
+        content: [{ type: "text", text: "y" }],
+      })
+      .run();
+    const html = editor.getHTML();
+    expect(html).not.toContain("data-beat-model");
+    expect(html).not.toContain("data-beat-model-provider");
+    editor.destroy();
+  });
+
   it("falls back to free beatType when value is unknown", () => {
     const editor = createTestEditor(
       '<div data-type="scene-beat" data-beat-type="bogus">x</div>',

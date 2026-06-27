@@ -20,6 +20,12 @@ export function streamInlineAiText(
   messages: { role: string; content: string }[],
   options?: {
     model?: string;
+    /** 別プロバイダ送信時の解決済み API 経路（variant）。 */
+    apiVariant?: string | null;
+    /** 機能別モデルのプロバイダ横断 override。 */
+    provider?: string | null;
+    /** OpenAI 互換で別エンドポイントを選んでいるときの endpoint id。 */
+    endpointId?: string | null;
     usageSurface?: AiUsageSurface;
     /** usage 台帳の project スコープ明示。省略時は active project にフォールバック。 */
     projectId?: string | null;
@@ -60,7 +66,12 @@ export function streamInlineAiText(
         },
         onError: (message) => settle({ ok: false, error: message }),
       },
-      { model: options?.model },
+      {
+        model: options?.model,
+        apiVariant: options?.apiVariant,
+        provider: options?.provider,
+        endpointId: options?.endpointId,
+      },
     )
       .then((c) => {
         if (settled) c();

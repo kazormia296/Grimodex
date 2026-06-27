@@ -17,6 +17,13 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { AnimatedDropdown } from "@/components/ui/animated-dropdown";
+import { ChatModelMenu } from "@/features/chat/components/ChatModelMenu";
+import { useChatModelCatalog } from "@/features/chat/useChatModelCatalog";
+import {
+  applyModelWhitelist,
+  type CatalogModel,
+} from "@/features/chat/chatModelCatalog";
+import type { AiProvider } from "@/features/chat/types";
 import type { BeatType } from "./SceneBeatNode";
 import { BEAT_TYPES } from "./SceneBeatNode";
 import { useSceneBeatEditorContext } from "./beat/SceneBeatEditorContext";
@@ -46,6 +53,9 @@ export function SceneBeatNodeView({
   const povId = (node.attrs.pov ?? null) as string | null;
   const beatId = (node.attrs.id ?? null) as string | null;
   const beatModel = (node.attrs.model as string | null) ?? null;
+  const beatModelProvider = (node.attrs.modelProvider as string | null) ?? null;
+  const beatModelEndpointId =
+    (node.attrs.modelEndpointId as string | null) ?? null;
 
   const ctx = useSceneBeatEditorContext();
   const sceneId = ctx?.sceneId ?? null;
@@ -115,37 +125,59 @@ export function SceneBeatNodeView({
         ? t("editor.beat.generating")
         : t("editor.beat.generate"));
 
-  const allModels = useAiSettingsStore((s) => s.models);
-  const loadModels = useAiSettingsStore((s) => s.loadModels);
-  // 動的 capability レジストリ更新時に再レンダリングをトリガーする
-  useAiSettingsStore((s) => s.modelCapsRevision);
-  const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
-  const availableModels = useMemo(() => {
-    try {
-      const whitelist: string[] = JSON.parse(modelWhitelistRaw || "[]");
-      if (whitelist.length === 0) return allModels;
-      return allModels.filter((m) => whitelist.includes(m.id));
-    } catch {
-      return allModels;
-    }
-  }, [modelWhitelistRaw, allModels]);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const [povMenuOpen, setPovMenuOpen] = useState(false);
+  const povBtnRef = useRef<HTMLButtonElement>(null);
+  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
+  const typeBtnRef = useRef<HTMLButtonElement>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const modelBtnRef = useRef<HTMLButtonElement>(null);
 
-  const handleModelSelect = useCallback(
-    (model: string | null) => {
-      updateAttributes({ model });
+  const aiSettings = useAiSettingsStore((s) => s.settings);
+  const loadModels = useAiSettingsStore((s) => s.loadModels);
+  const modelWhitelistRaw = useSettingsStore((s) => s.get("ai.modelWhitelist"));
+  // チャット入力欄と同じ「複数プロバイダ横断」モデルカタログ。ピッカーを開いた
+  // ときに設定済みプロバイダのモデルを取得する(useChatModelCatalog がアクティブ
+  // プロバイダ + 他プロバイダ + OpenAI 互換エンドポイントをまとめてセクション化)。
+  const { sections: modelSections, loading: catalogLoading } =
+    useChatModelCatalog(modelMenuOpen);
+  // モデル whitelist は全プロバイダ横断のグローバル絞り込み(チャット側と同じ規則)。
+  const displaySections = useMemo(() => {
+    let whitelist: string[];
+    try {
+      const parsed: unknown = JSON.parse(modelWhitelistRaw || "[]");
+      whitelist = Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      whitelist = [];
+    }
+    return applyModelWhitelist(modelSections, whitelist);
+  }, [modelSections, modelWhitelistRaw]);
+
+  const handleModelCatalogSelect = useCallback(
+    (model: CatalogModel) => {
+      // model だけでなく provider / variant / endpoint も永続化する(別プロバイダの
+      // モデルがアクティブプロバイダの API へ誤送出されるのを防ぐ)。
+      updateAttributes({
+        model: model.id,
+        modelProvider: model.provider,
+        modelVariant: model.variant,
+        modelEndpointId: model.endpointId ?? null,
+      });
       setModelMenuOpen(false);
     },
     [updateAttributes],
   );
 
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuContainerRef = useRef<HTMLDivElement>(null);
-  const [povMenuOpen, setPovMenuOpen] = useState(false);
-  const povMenuRef = useRef<HTMLDivElement>(null);
-  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
-  const typeMenuRef = useRef<HTMLDivElement>(null);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const handleModelInherit = useCallback(() => {
+    updateAttributes({
+      model: null,
+      modelProvider: null,
+      modelVariant: null,
+      modelEndpointId: null,
+    });
+    setModelMenuOpen(false);
+  }, [updateAttributes]);
 
   const runMenuAction = (fn: () => void) => {
     setMenuOpen(false);
@@ -265,8 +297,9 @@ export function SceneBeatNodeView({
           )}
         </button>
         <span className="font-medium">{t("editor.beat.label")}</span>
-        <div ref={typeMenuRef} className="relative">
+        <div className="relative">
           <button
+            ref={typeBtnRef}
             type="button"
             data-testid="beat-type-chip"
             data-beat-type={beatType}
@@ -278,8 +311,9 @@ export function SceneBeatNodeView({
           <AnimatedDropdown
             open={typeMenuOpen}
             onClose={() => setTypeMenuOpen(false)}
-            containerRef={typeMenuRef}
-            className="beat-popover absolute left-0 top-6 z-50 min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
+            anchorRef={typeBtnRef}
+            placement="bottom-start"
+            className="beat-popover z-[100] min-w-[120px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">
               {BEAT_TYPES.map((bt) => (
@@ -301,8 +335,9 @@ export function SceneBeatNodeView({
             </ul>
           </AnimatedDropdown>
         </div>
-        <div ref={povMenuRef} className="relative">
+        <div className="relative">
           <button
+            ref={povBtnRef}
             type="button"
             data-testid="beat-pov-btn"
             onClick={() => setPovMenuOpen((v) => !v)}
@@ -323,8 +358,9 @@ export function SceneBeatNodeView({
           <AnimatedDropdown
             open={povMenuOpen}
             onClose={() => setPovMenuOpen(false)}
-            containerRef={povMenuRef}
-            className="beat-popover absolute left-0 top-6 z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
+            anchorRef={povBtnRef}
+            placement="bottom-start"
+            className="beat-popover z-[100] min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">
               <li>
@@ -365,8 +401,9 @@ export function SceneBeatNodeView({
         {editor && beatId && (
           <RoleSuggestionBadges editor={editor} beatId={beatId} />
         )}
-        <div ref={menuContainerRef} className="relative ms-auto">
+        <div className="relative ms-auto">
           <button
+            ref={menuBtnRef}
             type="button"
             data-testid="beat-menu-btn"
             aria-label={t("editor.beat.menu")}
@@ -381,8 +418,9 @@ export function SceneBeatNodeView({
           <AnimatedDropdown
             open={menuOpen}
             onClose={() => setMenuOpen(false)}
-            containerRef={menuContainerRef}
-            className="beat-popover absolute right-0 top-6 z-50 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
+            anchorRef={menuBtnRef}
+            placement="bottom-end"
+            className="beat-popover z-[100] min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md font-sans"
           >
             <ul role="menu" className="m-0! list-none! p-0! text-xs">
               <li>
@@ -547,50 +585,50 @@ export function SceneBeatNodeView({
           contentEditable={false}
           className="beat-divider flex select-none items-center gap-1.5 border-yellow-200/50 px-2 py-1 font-sans text-xs text-muted-foreground dark:border-yellow-800/30"
         >
-          <div ref={modelMenuRef} className="relative">
+          <div className="relative">
             <button
+              ref={modelBtnRef}
               type="button"
               data-testid="beat-model-btn"
               onClick={() => {
                 if (!modelMenuOpen) loadModels();
                 setModelMenuOpen((v) => !v);
               }}
-              className="rounded px-1 py-0.5 text-[10px] text-muted-foreground/70 hover:bg-muted"
+              className="flex max-w-[180px] items-center rounded px-1 py-0.5 text-[10px] text-muted-foreground/70 hover:bg-muted"
             >
-              {beatModel ?? t("editor.beat.modelInherit")}
+              <span className="truncate">
+                {beatModel ?? t("editor.beat.modelInherit")}
+              </span>
             </button>
             <AnimatedDropdown
               open={modelMenuOpen}
               onClose={() => setModelMenuOpen(false)}
-              containerRef={modelMenuRef}
-              className="beat-popover absolute bottom-6 left-0 z-50 max-h-48 min-w-[200px] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md font-sans"
+              anchorRef={modelBtnRef}
+              placement="top-start"
+              className="beat-popover z-[100] overflow-hidden rounded-md border border-border bg-popover shadow-md font-sans"
             >
-              <ul role="menu" className="m-0! list-none! p-0! text-xs">
-                <li>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    data-testid="beat-model-inherit"
-                    onClick={() => handleModelSelect(null)}
-                    className={`block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground ${beatModel === null ? "font-medium" : ""}`}
-                  >
-                    {t("editor.beat.modelInherit")}
-                  </button>
-                </li>
-                {availableModels.map((m) => (
-                  <li key={m.id}>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      data-testid={`beat-model-option-${m.id}`}
-                      onClick={() => handleModelSelect(m.id)}
-                      className={`block w-full px-3 py-1.5 text-left hover:bg-primary hover:text-primary-foreground ${m.id === beatModel ? "font-medium" : ""}`}
-                    >
-                      {m.name || m.id}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              {(maxHeight) => (
+                <ChatModelMenu
+                  sections={displaySections}
+                  loading={catalogLoading}
+                  maxHeight={maxHeight ?? undefined}
+                  current={{
+                    provider: beatModelProvider
+                      ? (beatModelProvider as AiProvider)
+                      : aiSettings?.provider,
+                    modelId: beatModel ?? "",
+                    endpointId:
+                      beatModelEndpointId ??
+                      aiSettings?.activeOpenaiCompatibleEndpointId,
+                  }}
+                  onSelect={handleModelCatalogSelect}
+                  inheritOption={{
+                    label: t("editor.beat.modelInherit"),
+                    active: beatModel === null,
+                    onSelect: handleModelInherit,
+                  }}
+                />
+              )}
             </AnimatedDropdown>
           </div>
           {/* bodyWrite がポリシーで OFF のときは生成ボタンを隠す（モード扱い）。

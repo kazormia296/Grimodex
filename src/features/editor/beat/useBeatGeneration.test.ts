@@ -432,6 +432,109 @@ describe("useBeatGeneration", () => {
     expect(invokeMock).not.toHaveBeenCalled();
     editor.destroy();
   });
+
+  it("beat のモデル属性(provider/variant/endpoint)を send_inline_ai_stream に渡す", async () => {
+    const editor = new Editor({
+      extensions: [
+        StarterKit,
+        AuthorshipMark,
+        SceneBeatNode,
+        GeneratedProseBlockNode,
+      ],
+      content: "<p>シーン冒頭の文。</p>",
+    });
+    editor
+      .chain()
+      .focus("end")
+      .insertContent({
+        type: "sceneBeat",
+        attrs: {
+          id: "b1",
+          beatType: "free",
+          pov: null,
+          collapsed: false,
+          // 別プロバイダ(OpenAI)のモデルを beat に固定。アクティブプロバイダが
+          // 何であれ provider/variant/endpoint がそのまま backend に渡るべき。
+          model: "gpt-4o",
+          modelProvider: "openai",
+          modelVariant: "v1",
+          modelEndpointId: null,
+        },
+        content: [{ type: "text", text: "雨の夜、廃社の前で立ち止まる朱音" }],
+      })
+      .run();
+    editor.commands.insertContentAt(editor.state.doc.content.size, {
+      type: "paragraph",
+    });
+
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+
+    let pending: Promise<void>;
+    await act(async () => {
+      pending = result.current.generate();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("generating"));
+
+    const call = invokeMock.mock.calls.find(
+      (c) => c[0] === "send_inline_ai_stream",
+    );
+    expect(call).toBeDefined();
+    expect(call![1]).toMatchObject({
+      model: "gpt-4o",
+      provider: "openai",
+      apiVariant: "v1",
+      endpointId: null,
+    });
+
+    await act(async () => {
+      emit("inline-ai:stream-done", {
+        stop_reason: "end_turn",
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      await pending!;
+    });
+    editor.destroy();
+  });
+
+  it("モデル未選択(継承)時は provider override なしで送る", async () => {
+    const editor = createEditorWithBeat("b1");
+    const { result } = renderHook(() =>
+      useBeatGeneration(editor, "b1", "scene-1"),
+    );
+
+    let pending: Promise<void>;
+    await act(async () => {
+      pending = result.current.generate();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.state.status).toBe("generating"));
+
+    const call = invokeMock.mock.calls.find(
+      (c) => c[0] === "send_inline_ai_stream",
+    );
+    expect(call).toBeDefined();
+    // 継承時は options 自体を渡さない → backend 既定(provider=null 等)に委ねる。
+    expect(call![1]).toMatchObject({
+      model: null,
+      provider: null,
+      apiVariant: null,
+      endpointId: null,
+    });
+
+    await act(async () => {
+      emit("inline-ai:stream-done", {
+        stop_reason: "end_turn",
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      await pending!;
+    });
+    editor.destroy();
+  });
 });
 
 // Helper: run a full generate → stream-chunk → stream-done cycle.

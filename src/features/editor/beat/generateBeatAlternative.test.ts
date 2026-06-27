@@ -188,6 +188,61 @@ describe("generateBeatAlternative", () => {
     editor.destroy();
   });
 
+  it("beat のモデル属性(provider/variant/endpoint)を send_inline_ai_stream に渡す", async () => {
+    const editor = new Editor({
+      extensions: [
+        StarterKit,
+        AuthorshipMark,
+        SceneBeatNode,
+        GeneratedProseBlockNode,
+      ],
+      content: "<p>冒頭文。</p>",
+    });
+    editor
+      .chain()
+      .focus("end")
+      .insertContent({
+        type: "sceneBeat",
+        attrs: {
+          id: "b1",
+          beatType: "free",
+          pov: null,
+          collapsed: false,
+          model: "gpt-4o",
+          modelProvider: "openai",
+          modelVariant: "v1",
+          modelEndpointId: "ep-2",
+        },
+        content: [{ type: "text", text: "主人公が決断する" }],
+      })
+      .run();
+    editor.commands.insertContentAt(editor.state.doc.content.size, {
+      type: "paragraph",
+    });
+
+    const promise = generateBeatAlternative(editor, "b1", "scene-1");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const call = invokeMock.mock.calls.find(
+      (c) => c[0] === "send_inline_ai_stream",
+    );
+    expect(call).toBeDefined();
+    expect(call![1]).toMatchObject({
+      model: "gpt-4o",
+      provider: "openai",
+      apiVariant: "v1",
+      endpointId: "ep-2",
+    });
+
+    emit("inline-ai:stream-done", {
+      stop_reason: "end_turn",
+      input_tokens: 0,
+      output_tokens: 0,
+    });
+    await promise;
+    editor.destroy();
+  });
+
   it("beat が存在しない場合は何もしない", async () => {
     const editor = createEditorWithBeat("b1");
     await generateBeatAlternative(editor, "ghost", "scene-1");

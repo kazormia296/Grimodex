@@ -32,7 +32,7 @@ function BadgeItem({
 }: BadgeItemProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const markStatus = useRoleSuggestionsStore((s) => s.markStatus);
 
   const handleAccept = () => {
@@ -54,8 +54,9 @@ function BadgeItem({
   const pct = Math.round(confidence * 100);
 
   return (
-    <div ref={containerRef} className="relative">
+    <div className="relative">
       <button
+        ref={buttonRef}
         type="button"
         title={t("editor.beat.roleSuggestion.badgeTooltip", {
           name,
@@ -71,8 +72,9 @@ function BadgeItem({
       <AnimatedDropdown
         open={open}
         onClose={() => setOpen(false)}
-        containerRef={containerRef}
-        className="beat-popover absolute left-0 top-6 z-50 min-w-[200px] rounded-md border border-border bg-popover p-2 shadow-md"
+        anchorRef={buttonRef}
+        placement="bottom-start"
+        className="beat-popover z-[100] min-w-[200px] rounded-md border border-border bg-popover p-2 shadow-md"
       >
         <p className="mb-2 text-xs text-muted-foreground">
           {t("editor.beat.roleSuggestion.prompt", {

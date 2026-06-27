@@ -26,6 +26,15 @@ interface ChatModelMenuProps {
    * 未指定時は 60vh にフォールバック。これを超える分はリストが内部スクロールする。
    */
   maxHeight?: number;
+  /**
+   * 任意: リスト先頭に固定する「継承 / 既定」行(beat ブロックのモデルピッカー用)。
+   * チャット入力欄では使わない(省略)。検索クエリには影響されず常に先頭に出す。
+   */
+  inheritOption?: {
+    label: string;
+    active: boolean;
+    onSelect: () => void;
+  };
 }
 
 /**
@@ -43,6 +52,7 @@ export function ChatModelMenu({
   current,
   onSelect,
   maxHeight,
+  inheritOption,
 }: ChatModelMenuProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -120,6 +130,27 @@ export function ChatModelMenu({
       </div>
 
       <div className="min-h-0 overflow-y-auto py-1">
+        {inheritOption && (
+          <button
+            type="button"
+            data-testid="model-inherit-option"
+            onClick={inheritOption.onSelect}
+            className={[
+              "flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs hover:bg-accent",
+              inheritOption.active
+                ? "font-medium text-foreground"
+                : "text-muted-foreground",
+            ].join(" ")}
+          >
+            <Check
+              className={[
+                "h-3 w-3 shrink-0",
+                inheritOption.active ? "opacity-100" : "opacity-0",
+              ].join(" ")}
+            />
+            <span className="truncate">{inheritOption.label}</span>
+          </button>
+        )}
         {sections.length === 0 && loading ? (
           <p className="px-3 py-2 text-xs text-muted-foreground">
             {t("chat.loadingModels")}

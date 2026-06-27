@@ -11,7 +11,7 @@ import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { toast } from "sonner";
-import { useAnchoredPopover } from "./useAnchoredPopover";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 
 /**
  * B-10: storySoFar coverage warning pill.

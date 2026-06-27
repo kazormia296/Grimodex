@@ -32,7 +32,7 @@ import { MentionPopup } from "./MentionPopup";
 import { ChatCommandPopup } from "./ChatCommandPopup";
 import { ReasoningEffortChip } from "./ReasoningEffortChip";
 import type { ReasoningEffortValue } from "./ReasoningEffortChip";
-import { useAnchoredPopover } from "./useAnchoredPopover";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 import { ChatModelMenu } from "./ChatModelMenu";
 import { motion, AnimatePresence } from "motion/react";
 import {

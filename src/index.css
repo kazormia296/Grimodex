@@ -1174,8 +1174,9 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
  * vertical-rl — resetting it made AI-drafted scenes render horizontally
  * in vertical linear mode.
  * scene-beat も島ではない: Beat ノードは縦書きフローに参加する（wrapper /
- * header / footer / content が vertical-rl を継承し縦帯になる）。ポップ
- * オーバーだけ下の .beat-popover 規則で横書きに戻す。 */
+ * header / footer / content が vertical-rl を継承し縦帯になる）。操作
+ * ポップオーバーは document.body へ portal される（useAnchoredPopover）ため
+ * 縦書きフロー外で、既定の横書き・トリガー矩形基準の fixed 配置で描画される。 */
 .editor-vertical .tiptap .scene-break,
 .editor-vertical .tiptap table,
 .editor-vertical .tiptap pre,
@@ -1191,15 +1192,6 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 .tiptap [data-type="scene-beat"] .beat-divider {
   border-block-start-width: 1px;
-}
-
-/* Beat の操作ポップオーバー（タイプ/POV/メニュー/モデル/ロールサジェスト）
- * は縦書きフローの中でも横書き UI のまま、トリガーの block-end 側
- * （vertical-rl では左 = 未読側）に開く。コンポーネント側の物理
- * ユーティリティ (left-0 top-6 等) をモード限定で上書きする。 */
-.editor-vertical .tiptap [data-type="scene-beat"] .beat-popover {
-  writing-mode: horizontal-tb;
-  inset: 0 calc(100% + 0.25rem) auto auto;
 }
 
 /* Typewriter cursor effect */

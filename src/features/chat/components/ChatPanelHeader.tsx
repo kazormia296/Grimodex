@@ -28,7 +28,7 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import type { ChatScope } from "../chatScope";
 import { CodexScopePickerSection } from "./CodexScopePickerSection";
 import { SnippetScopePickerSection } from "./SnippetScopePickerSection";
-import { useAnchoredPopover } from "./useAnchoredPopover";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 
 type PickerTab = "scene" | "codex" | "snippet";
 

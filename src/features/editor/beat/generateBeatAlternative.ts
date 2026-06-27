@@ -37,7 +37,14 @@ export async function generateBeatAlternative(
   );
   if (!ctxResult.ok) return;
   const ctx = ctxResult.ctx;
-  const { instructions, beatType, beatModel } = ctx;
+  const {
+    instructions,
+    beatType,
+    beatModel,
+    beatModelProvider,
+    beatModelVariant,
+    beatModelEndpointId,
+  } = ctx;
 
   const messages = buildBeatMessages({
     instructions,
@@ -57,6 +64,11 @@ export async function generateBeatAlternative(
 
   const result = await streamInlineAiText(messages, {
     model: beatModel ?? undefined,
+    // 別プロバイダのモデルを選んでいるときは provider / variant / endpoint も
+    // 渡す(アクティブプロバイダの API へ誤送出させない)。継承時は全て null。
+    apiVariant: beatModel ? beatModelVariant : undefined,
+    provider: beatModel ? beatModelProvider : undefined,
+    endpointId: beatModel ? beatModelEndpointId : undefined,
     usageSurface: "beat",
   });
   if (!result.ok) {

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { ChevronDown, Gauge } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useAnchoredPopover } from "./useAnchoredPopover";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 import {
   VARIANTS,
   DURATIONS,

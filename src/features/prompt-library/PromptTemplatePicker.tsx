@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { BookMarked } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useAnchoredPopover } from "@/features/chat/components/useAnchoredPopover";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 import { usePromptLibraryStore } from "./promptLibraryStore";
 import type { PromptTemplate } from "./api";
 
