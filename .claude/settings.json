@@ -16,10 +16,10 @@
       "Bash(cd src-tauri && cargo fmt *)",
       "Bash(gh issue *)",
       "Bash(gh pr *)",
+      "Bash(git push *)",
       "WebFetch(domain:openrouter.ai)"
     ],
     "ask": [
-      "Bash(git push *)",
       "Bash(npm install *)",
       "Bash(npm i *)",
       "Bash(pnpm install *)",
