@@ -322,10 +322,13 @@ export function RegionStripe({
       ? leadingCluster.segments.reduce((sum, seg) => sum + seg.panels.length, 0)
       : 0;
   // h-7 w-7 = 28px / gap-0.5 = 2px / 末尾に小さい呼吸を確保。
-  const leadingPaddingPx =
+  const leadingClusterIconSpanPx =
     leadingClusterIconCount > 0
       ? leadingClusterIconCount * 28 + (leadingClusterIconCount - 1) * 2 + 4
       : 0;
+  // 先頭 open band は corner toggle (reserveStartPx) と先頭 collapsed overlay
+  // (leadingClusterIconSpanPx) の両方を避けて absolute シフトする。
+  const firstOpenBandLeadingPx = leadingClusterIconSpanPx + reserveStartPx;
 
   const slotIndexOf = (slotId: string): number => {
     const i = slotIds.indexOf(slotId);
@@ -385,7 +388,8 @@ export function RegionStripe({
     // 隣の content (lcontent) には padding が無いため flex 配分域の高さ/幅が
     // ズレ、side が bottom 角を取る (lstripe と lcontent が同じ高さ) 構成で
     // バンドと slot の位置が下方向にズレる。padding は使わず、コーナートグル
-    // 回避は先頭/末尾 CollapsedCluster の anchor 側 offset として吸収する。
+    // 回避は先頭/末尾 CollapsedCluster の anchor 側 offset と、先頭 open band
+    // の absolute シフト (firstOpenBandLeadingPx) として吸収する。
     <div
       data-stripe-root
       data-stripe-region={region}
@@ -518,7 +522,7 @@ export function RegionStripe({
                 orientation={orientation}
                 region={region}
                 flexGrow={openRatioSum > 0 ? seg.sizeRatio / openRatioSum : 1}
-                leadingPaddingPx={isFirstOpenBand ? leadingPaddingPx : 0}
+                leadingPaddingPx={isFirstOpenBand ? firstOpenBandLeadingPx : 0}
               />
             </Fragment>
           );

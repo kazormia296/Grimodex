@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { LayoutShell } from "./LayoutShell";
+import { BOTTOM_CORNER_TOGGLE_CLEARANCE_PX } from "./BottomCornerToggle";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
 import type { PanelId } from "./panelIds";
@@ -100,6 +101,15 @@ function setLeftAndBottom(opts: {
     hiddenStripePanels: new Set(),
     initialized: true,
   });
+}
+
+function rectsOverlap(a: DOMRect, b: DOMRect): boolean {
+  return !(
+    a.right <= b.left + 0.5 ||
+    a.left >= b.right - 0.5 ||
+    a.bottom <= b.top + 0.5 ||
+    a.top >= b.bottom - 0.5
+  );
 }
 
 function renderShell() {
@@ -277,6 +287,104 @@ describe("layout geometry invariants (real Chromium)", () => {
     const band2Top = band2!.getBoundingClientRect().top;
     const slot2Top = slot2!.getBoundingClientRect().top;
     expect(Math.abs(band2Top - slot2Top)).toBeLessThan(2);
+  });
+
+  it("bottom stripe icons do not overlap the left corner toggle when bottom owns the corner and the first group is open", async () => {
+    setLeftAndBottom({
+      leftSlots: [{ id: "l0", panels: ["scenes"], activePanel: "scenes" }],
+      bottomSlots: [
+        { id: "b0", panels: ["timeline"], activePanel: "timeline" },
+        { id: "b1", panels: ["chat"], activePanel: null },
+      ],
+      bottomCornersLeft: true,
+    });
+    const { container } = renderShell();
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+    const toggle = container.querySelector<HTMLElement>(
+      '[data-bottom-corner-toggle="left"]',
+    );
+    const firstIcon = container.querySelector<HTMLElement>(
+      '[data-stripe-region="bottom"] [data-stripe-icon="timeline"]',
+    );
+    expect(toggle).not.toBeNull();
+    expect(firstIcon).not.toBeNull();
+    expect(
+      rectsOverlap(
+        toggle!.getBoundingClientRect(),
+        firstIcon!.getBoundingClientRect(),
+      ),
+    ).toBe(false);
+    expect(firstIcon!.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      toggle!.getBoundingClientRect().right - 0.5,
+    );
+  });
+
+  it("bottom stripe collapsed and adjacent open icons do not overlap when bottom owns the corner", async () => {
+    setLeftAndBottom({
+      leftSlots: [{ id: "l0", panels: ["scenes"], activePanel: "scenes" }],
+      bottomSlots: [
+        { id: "b0", panels: ["timeline"], activePanel: null },
+        { id: "b1", panels: ["chat"], activePanel: "chat" },
+      ],
+      bottomCornersLeft: true,
+    });
+    const { container } = renderShell();
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+    const collapsedIcon = container.querySelector<HTMLElement>(
+      '[data-stripe-region="bottom"] [data-stripe-icon="timeline"]',
+    );
+    const openIcon = container.querySelector<HTMLElement>(
+      '[data-stripe-region="bottom"] [data-stripe-icon="chat"]',
+    );
+    expect(collapsedIcon).not.toBeNull();
+    expect(openIcon).not.toBeNull();
+    expect(
+      rectsOverlap(
+        collapsedIcon!.getBoundingClientRect(),
+        openIcon!.getBoundingClientRect(),
+      ),
+    ).toBe(false);
+    expect(openIcon!.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      collapsedIcon!.getBoundingClientRect().right - 0.5,
+    );
+  });
+
+  it("bottom stripe leading icon clears the left corner toggle by at least clearance px", async () => {
+    setLeftAndBottom({
+      leftSlots: [{ id: "l0", panels: ["scenes"], activePanel: "scenes" }],
+      bottomSlots: [
+        { id: "b0", panels: ["timeline"], activePanel: "timeline" },
+      ],
+      bottomCornersLeft: true,
+    });
+    const { container } = renderShell();
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+
+    const toggle = container.querySelector<HTMLElement>(
+      '[data-bottom-corner-toggle="left"]',
+    );
+    const bottomStripe = container.querySelector<HTMLElement>(
+      '[data-stripe-region="bottom"]',
+    );
+    const firstIcon = container.querySelector<HTMLElement>(
+      '[data-stripe-region="bottom"] [data-stripe-icon="timeline"]',
+    );
+    expect(toggle).not.toBeNull();
+    expect(bottomStripe).not.toBeNull();
+    expect(firstIcon).not.toBeNull();
+
+    const stripeLeft = bottomStripe!.getBoundingClientRect().left;
+    expect(
+      firstIcon!.getBoundingClientRect().left - stripeLeft,
+    ).toBeGreaterThanOrEqual(BOTTOM_CORNER_TOGGLE_CLEARANCE_PX - 0.5);
+    expect(
+      rectsOverlap(
+        toggle!.getBoundingClientRect(),
+        firstIcon!.getBoundingClientRect(),
+      ),
+    ).toBe(false);
   });
 
   it("bands align with content slots when side owns the bottom corner", async () => {

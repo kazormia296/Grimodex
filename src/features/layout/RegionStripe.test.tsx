@@ -345,6 +345,72 @@ describe("RegionStripe", () => {
     expect(trailingOverlay!.style.right).toBe("28px");
   });
 
+  it("offsets the first open band when reserveStartPx clears a corner toggle", () => {
+    const leadingOpen: RegionSegment[] = [
+      {
+        key: "b0",
+        slotId: "b0",
+        sizeRatio: 1,
+        open: true,
+        panels: [{ id: "timeline", active: true }],
+      },
+    ];
+    const { container } = render(
+      <RegionStripe
+        region="bottom"
+        orientation="horizontal"
+        segments={leadingOpen}
+        reserveStartPx={28}
+      />,
+    );
+    const openGroup = container.querySelector<HTMLElement>(
+      "[data-drop-segment='b0']",
+    );
+    expect(openGroup).not.toBeNull();
+    const shift = openGroup!.querySelector<HTMLElement>(
+      "[data-stripe-leading-shift]",
+    );
+    expect(shift).not.toBeNull();
+    expect(parseFloat(shift!.style.left)).toBe(28);
+  });
+
+  it("includes reserveStartPx in the first open band shift after a leading collapsed cluster", () => {
+    const leadingCollapsed: RegionSegment[] = [
+      {
+        key: "b0",
+        slotId: "b0",
+        sizeRatio: 1,
+        open: false,
+        panels: [{ id: "scenes", active: false }],
+      },
+      {
+        key: "b1",
+        slotId: "b1",
+        sizeRatio: 1,
+        open: true,
+        panels: [{ id: "chat", active: true }],
+      },
+    ];
+    const { container } = render(
+      <RegionStripe
+        region="bottom"
+        orientation="horizontal"
+        segments={leadingCollapsed}
+        reserveStartPx={28}
+      />,
+    );
+    const openGroup = container.querySelector<HTMLElement>(
+      "[data-drop-segment='b1']",
+    );
+    expect(openGroup).not.toBeNull();
+    const shift = openGroup!.querySelector<HTMLElement>(
+      "[data-stripe-leading-shift]",
+    );
+    expect(shift).not.toBeNull();
+    // 1 collapsed icon span (28 + 4) + corner clearance (28).
+    expect(parseFloat(shift!.style.left)).toBe(60);
+  });
+
   it("exposes a full-cover drop zone on an empty stripe while dragging", async () => {
     useLayoutStore.setState({ draggingPanel: "codex" });
     const { container } = render(
