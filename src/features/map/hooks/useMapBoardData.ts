@@ -109,7 +109,13 @@ export function useMapBoardData(projectId: string) {
       // Guard against a board id carried over from another project (can happen
       // for one render during a project switch). Never hydrate another
       // project's board data into this project's canvas.
-      if (!board || board.projectId !== projectId) return;
+      if (!board || board.projectId !== projectId) {
+        // setActiveBoardId が張った可能性のある board 設定の保存タイマーをクリア＆
+        // baseline をリセットし、旧プロジェクトの viewport/mode が誤って別ボードへ
+        // 保存されるのを防ぐ (hydrate 経路の syncBoardPersistenceSnapshot 相当)。
+        syncBoardPersistenceSnapshot();
+        return;
+      }
 
       const [pos, ue, fr, st, ai] = await Promise.all([
         listNodePositions(boardId),
