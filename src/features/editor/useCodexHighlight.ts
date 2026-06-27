@@ -141,7 +141,9 @@ export function useCodexHighlight(
     };
   }, [editor, setMatchedEntryIds]);
 
-  // Rebuild Rust matcher + initial match when entries or highlight style change
+  // Rebuild Rust matcher + initial match when entries / highlight style /
+  // enabled が変わったとき。enabled を deps に入れないと「Codexハイライトを有効化」
+  // トグルの ON/OFF が即座に反映されない (装飾の clear/rebuild dispatch が走らない)。
   useEffect(() => {
     if (!editor || editor.isDestroyed || !editor.state) return;
     const targets = targetsRef.current;
@@ -161,7 +163,14 @@ export function useCodexHighlight(
     );
     const tr = editor.state.tr.setMeta("codexHighlightUpdate", true);
     editor.view.dispatch(tr);
-  }, [editor, entries, highlightStyle, skipMatchedIds, setMatchedEntryIds]);
+  }, [
+    editor,
+    entries,
+    highlightStyle,
+    enabled,
+    skipMatchedIds,
+    setMatchedEntryIds,
+  ]);
 
   // Schedule async match on doc changes only
   useEffect(() => {
