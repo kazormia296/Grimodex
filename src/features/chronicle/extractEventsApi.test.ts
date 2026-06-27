@@ -7,6 +7,7 @@ const mockOverride = vi.hoisted(() => vi.fn());
 const mockCreateEvent = vi.hoisted(() => vi.fn());
 const mockLinkScene = vi.hoisted(() => vi.fn());
 const mockListEvents = vi.hoisted(() => vi.fn());
+const mockDeleteEvent = vi.hoisted(() => vi.fn());
 
 vi.mock("@/features/chat/chatApi", () => ({
   sendChatMessageWithThinking: mockSend,
@@ -27,6 +28,7 @@ vi.mock("./api", () => ({
   createEvent: mockCreateEvent,
   linkSceneToEvent: mockLinkScene,
   listEvents: mockListEvents,
+  deleteEvent: mockDeleteEvent,
 }));
 
 import {
@@ -184,6 +186,8 @@ describe("importExtractedEvents", () => {
     mockLinkScene.mockResolvedValue(undefined);
     mockListEvents.mockReset();
     mockListEvents.mockResolvedValue([]);
+    mockDeleteEvent.mockReset();
+    mockDeleteEvent.mockResolvedValue(undefined);
   });
 
   it("候補を events 化しシーンを結び、件数を返す", async () => {
@@ -199,8 +203,8 @@ describe("importExtractedEvents", () => {
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
     // A の根拠 2 シーンのみ link（B は 0）
     expect(mockLinkScene).toHaveBeenCalledTimes(2);
-    expect(mockLinkScene).toHaveBeenCalledWith("s1", "ev-新事件A");
-    expect(mockLinkScene).toHaveBeenCalledWith("s2", "ev-新事件A");
+    expect(mockLinkScene).toHaveBeenCalledWith("p1", "s1", "ev-新事件A");
+    expect(mockLinkScene).toHaveBeenCalledWith("p1", "s2", "ev-新事件A");
   });
 
   it("既存タイトルと重複する候補は正規化一致でスキップ（大小・前後空白を吸収）", async () => {
@@ -247,8 +251,8 @@ describe("importExtractedEvents", () => {
     expect(mockCreateEvent).toHaveBeenCalledTimes(1);
   });
 
-  it("途中の createEvent 失敗は握りつぶさず伝播（部分適用＝先行分は作成済み）", async () => {
-    // A 成功 → B 失敗。C には到達しない（現状の partial-failure 挙動を固定）。
+  it("途中で失敗したら先行作成分を削除して部分適用を残さない", async () => {
+    // A 成功 → B 失敗。C には到達しない。A は rollback 削除する。
     mockCreateEvent.mockReset();
     mockCreateEvent
       .mockResolvedValueOnce({ id: "ev-A" })
@@ -270,6 +274,7 @@ describe("importExtractedEvents", () => {
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
     // A の link のみ実行済み（B は createEvent で落ちるため link されない）
     expect(mockLinkScene).toHaveBeenCalledTimes(1);
-    expect(mockLinkScene).toHaveBeenCalledWith("s1", "ev-A");
+    expect(mockLinkScene).toHaveBeenCalledWith("p1", "s1", "ev-A");
+    expect(mockDeleteEvent).toHaveBeenCalledWith("ev-A", "p1");
   });
 });

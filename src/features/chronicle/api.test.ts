@@ -41,6 +41,39 @@ vi.mock("@/db/client", async () => {
       role TEXT,
       PRIMARY KEY (event_id, codex_entry_id)
     );
+    CREATE TABLE tree_nodes (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      parent_id TEXT,
+      node_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      synopsis TEXT,
+      intent TEXT,
+      sort_order TEXT NOT NULL,
+      story_time_order TEXT,
+      story_time_label TEXT,
+      pov_character_id TEXT,
+      location_id TEXT,
+      status TEXT,
+      content TEXT NOT NULL,
+      unplaced_beats_doc TEXT NOT NULL,
+      char_count INTEGER NOT NULL,
+      unplaced_beat_preview TEXT,
+      placed_beat_preview TEXT,
+      source_uri TEXT,
+      source_mtime INTEGER,
+      archived_at TEXT,
+      context_mode TEXT,
+      aliases TEXT,
+      excluded_aliases TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE scene_events (
+      scene_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      PRIMARY KEY (scene_id, event_id)
+    );
   `);
   const db = drizzle<typeof schema>(
     async (sql, params, method) => {
@@ -58,7 +91,13 @@ vi.mock("@/db/client", async () => {
 });
 
 import { db } from "@/db/client";
-import { events, eventParticipants, eventRelations } from "@/db/schema";
+import {
+  events,
+  eventParticipants,
+  eventRelations,
+  sceneEvents,
+  treeNodes,
+} from "@/db/schema";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import {
   normalizeEvent,
@@ -67,6 +106,8 @@ import {
   updateEvent,
   deleteEvent,
   addEventRelation,
+  linkSceneToEvent,
+  listSceneEvents,
   listEventRelations,
 } from "./api";
 
@@ -81,6 +122,8 @@ beforeEach(async () => {
   await db.delete(events);
   await db.delete(eventRelations);
   await db.delete(eventParticipants);
+  await db.delete(sceneEvents);
+  await db.delete(treeNodes);
 });
 
 describe("normalizeEvent", () => {
@@ -239,10 +282,57 @@ describe("addEventRelation", () => {
   });
 
   it("同一エッジの重複はデデュープされる", async () => {
+    await seed("c", "p1", "a0");
+    await seed("e", "p1", "a1");
     await addEventRelation("p1", "c", "e");
     await addEventRelation("p1", "c", "e");
     const rels = await listEventRelations("p1");
     expect(rels.length).toBe(1);
     expect(rels[0]).toEqual({ causeId: "c", effectId: "e" });
+  });
+
+  it("cause/effect が projectId に属さない因果エッジは挿入しない", async () => {
+    await seed("p1-cause", "p1", "a0");
+    await seed("p2-effect", "p2", "a0");
+
+    await addEventRelation("p1", "p1-cause", "p2-effect");
+
+    expect(await listEventRelations("p1")).toEqual([]);
+    expect(await listEventRelations("p2")).toEqual([]);
+  });
+});
+
+describe("linkSceneToEvent", () => {
+  async function seedScene(id: string, projectId: string): Promise<void> {
+    await db.insert(treeNodes).values({
+      id,
+      projectId,
+      nodeType: "scene",
+      title: id,
+      sortOrder: "a0",
+      content: "{}",
+      unplacedBeatsDoc: "[]",
+      charCount: 0,
+    });
+  }
+
+  it("scene と event が同じ project に属する場合だけ link する", async () => {
+    await seedScene("s1", "p1");
+    await seed("e1", "p1", "a0");
+
+    await linkSceneToEvent("p1", "s1", "e1");
+
+    expect(await listSceneEvents(["e1"])).toEqual([
+      { sceneId: "s1", eventId: "e1" },
+    ]);
+  });
+
+  it("scene と event の project が不一致なら link しない", async () => {
+    await seedScene("s2", "p2");
+    await seed("e1", "p1", "a0");
+
+    await linkSceneToEvent("p1", "s2", "e1");
+
+    expect(await listSceneEvents(["e1"])).toEqual([]);
   });
 });

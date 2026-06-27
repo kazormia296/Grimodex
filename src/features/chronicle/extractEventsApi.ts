@@ -4,7 +4,7 @@ import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { createEvent, linkSceneToEvent, listEvents } from "./api";
+import { createEvent, deleteEvent, linkSceneToEvent, listEvents } from "./api";
 
 export interface ExtractEventsRequest {
   scenes: Array<{
@@ -169,19 +169,28 @@ export async function importExtractedEvents(
     existingTitles ?? (await listEvents(projectId)).map((e) => e.title);
   const seen = new Set(baseTitles.map(normalizeEventTitle));
   let count = 0;
-  for (const p of proposals) {
-    const norm = normalizeEventTitle(p.title);
-    if (seen.has(norm)) continue; // 既存（または本バッチ内）と重複 → スキップ
-    seen.add(norm);
-    const ev = await createEvent({
-      projectId,
-      title: p.title,
-      note: p.note ?? null,
-    });
-    for (const sid of p.evidenceSceneIds) {
-      await linkSceneToEvent(sid, ev.id);
+  const createdIds: string[] = [];
+  try {
+    for (const p of proposals) {
+      const norm = normalizeEventTitle(p.title);
+      if (seen.has(norm)) continue; // 既存（または本バッチ内）と重複 → スキップ
+      seen.add(norm);
+      const ev = await createEvent({
+        projectId,
+        title: p.title,
+        note: p.note ?? null,
+      });
+      createdIds.push(ev.id);
+      for (const sid of p.evidenceSceneIds) {
+        await linkSceneToEvent(projectId, sid, ev.id);
+      }
+      count++;
     }
-    count++;
+    return count;
+  } catch (err) {
+    await Promise.allSettled(
+      createdIds.map((id) => deleteEvent(id, projectId)),
+    );
+    throw err;
   }
-  return count;
 }
