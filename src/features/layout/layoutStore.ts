@@ -123,9 +123,12 @@ function scheduleEditorFocus() {
 function removePanelFromSource(
   layout: LayoutState,
   panel: ToolWindowPanelId,
+  hiddenStripePanels?: ReadonlySet<ToolWindowPanelId>,
 ): LayoutState {
   const source = findPanelLocation(layout, panel);
   if (!source) return layout;
+  const isVisibleInStripe = (candidate: ToolWindowPanelId) =>
+    !hiddenStripePanels?.has(candidate);
 
   if (source.region === "center") {
     return updateCenter(layout, (center) => ({
@@ -135,13 +138,19 @@ function removePanelFromSource(
         source.slotIndex,
         panel,
         center.editorOpen,
+        isVisibleInStripe,
       ),
     }));
   }
 
   return updateRegion(layout, source.region, (region) => ({
     ...region,
-    slots: removePanelFromSlot(region.slots, source.slotIndex, panel).slots,
+    slots: removePanelFromSlot(
+      region.slots,
+      source.slotIndex,
+      panel,
+      isVisibleInStripe,
+    ).slots,
   }));
 }
 
@@ -189,6 +198,7 @@ function movePanelInLayout(
   targetRegion: LayoutRegionId,
   targetSlotId: string | null,
   insertIndex: number | null,
+  hiddenStripePanels?: ReadonlySet<ToolWindowPanelId>,
 ): LayoutState {
   const source = findPanelLocation(layout, panel);
 
@@ -219,7 +229,7 @@ function movePanelInLayout(
     source.slot.panels.filter((p) => p !== panel).length === 0;
 
   if (source) {
-    next = removePanelFromSource(next, panel);
+    next = removePanelFromSource(next, panel, hiddenStripePanels);
   }
 
   if (targetRegion === "center") {
@@ -845,7 +855,14 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     const toolPanel = panel as ToolWindowPanelId;
     set((state) => ({
       layout: applyValidatedLayout(
-        movePanelInLayout(state.layout, toolPanel, region, slotId, null),
+        movePanelInLayout(
+          state.layout,
+          toolPanel,
+          region,
+          slotId,
+          null,
+          state.hiddenStripePanels,
+        ),
         state.layout,
       ),
     }));
@@ -866,6 +883,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           region,
           lastSlot?.id ?? null,
           lastSlot ? null : targetSlots.length,
+          state.hiddenStripePanels,
         ),
         state.layout,
       ),
@@ -1029,7 +1047,14 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
     set((state) => ({
       layout: applyValidatedLayout(
-        movePanelInLayout(state.layout, toolPanel, region, slotId, null),
+        movePanelInLayout(
+          state.layout,
+          toolPanel,
+          region,
+          slotId,
+          null,
+          state.hiddenStripePanels,
+        ),
         state.layout,
       ),
       hiddenStripePanels: unhideStripePanel(
@@ -1059,6 +1084,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         "center",
         null,
         index,
+        state.hiddenStripePanels,
       );
       if (moved.center.editorOpen) {
         const clamped = clampLayoutStateForViewport(moved, vp);
@@ -1091,6 +1117,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         region,
         null,
         insertIndex,
+        state.hiddenStripePanels,
       );
       // 分割で editor が最低幅(MIN_EDITOR_SIZE)を割り込む場合は追加を拒否する。
       if (region === "center" && moved.center.editorOpen) {

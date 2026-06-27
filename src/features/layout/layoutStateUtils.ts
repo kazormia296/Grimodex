@@ -834,21 +834,35 @@ function nextActivePanelAfterRemoval(
   panels: ToolWindowPanelId[],
   removedPanel: ToolWindowPanelId,
   remainingPanels: ToolWindowPanelId[],
-): ToolWindowPanelId {
+  isPreferredPanel?: (panel: ToolWindowPanelId) => boolean,
+): ToolWindowPanelId | null {
   const removedIdx = panels.indexOf(removedPanel);
+
+  const isVisibleCandidate = (candidate: ToolWindowPanelId): boolean =>
+    remainingPanels.includes(candidate) &&
+    (!isPreferredPanel || isPreferredPanel(candidate));
+
   for (let i = removedIdx + 1; i < panels.length; i++) {
     const candidate = panels[i];
-    if (remainingPanels.includes(candidate)) {
-      return candidate;
-    }
+    if (isVisibleCandidate(candidate)) return candidate;
   }
-  return remainingPanels[0];
+  for (let i = removedIdx - 1; i >= 0; i--) {
+    const candidate = panels[i];
+    if (isVisibleCandidate(candidate)) return candidate;
+  }
+
+  if (isPreferredPanel) {
+    return null;
+  }
+
+  return remainingPanels[0] ?? null;
 }
 
 export function removePanelFromSlot(
   slots: SlotState[],
   slotIndex: number,
   panel: ToolWindowPanelId,
+  isPreferredActivePanel?: (panel: ToolWindowPanelId) => boolean,
 ): { slots: SlotState[] } {
   const slot = slots[slotIndex];
   const removedActive = slot.activePanel === panel;
@@ -866,7 +880,12 @@ export function removePanelFromSlot(
   }
 
   const nextActivePanel = removedActive
-    ? nextActivePanelAfterRemoval(slot.panels, panel, nextPanels)
+    ? nextActivePanelAfterRemoval(
+        slot.panels,
+        panel,
+        nextPanels,
+        isPreferredActivePanel,
+      )
     : slot.activePanel;
 
   return {
@@ -887,6 +906,7 @@ export function removePanelFromCenterSegment(
   segmentIndex: number,
   panel: ToolWindowPanelId,
   editorOpen: boolean,
+  isPreferredActivePanel?: (panel: ToolWindowPanelId) => boolean,
 ): CenterSegment[] {
   const segment = segments[segmentIndex];
   if (segment.kind !== "tool") return segments;
@@ -905,7 +925,12 @@ export function removePanelFromCenterSegment(
   }
 
   const nextActivePanel = removedActive
-    ? nextActivePanelAfterRemoval(segment.panels, panel, nextPanels)
+    ? nextActivePanelAfterRemoval(
+        segment.panels,
+        panel,
+        nextPanels,
+        isPreferredActivePanel,
+      )
     : segment.activePanel;
 
   return segments.map((s, i) => {
