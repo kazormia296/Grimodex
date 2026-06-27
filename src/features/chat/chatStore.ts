@@ -255,7 +255,11 @@ import {
 } from "@/features/foreshadow/api";
 import { listNodeLabels } from "@/features/labels/labelApi";
 import { listCodexRelations } from "@/features/codex/codexRelationApi";
-import { expandCodexRelationsBFS } from "@/features/codex/relationExpansion";
+import {
+  expandCodexRelationsBFS,
+  collectIntraContextRelations,
+  type IntraContextRelationEdge,
+} from "@/features/codex/relationExpansion";
 
 // フェーズ解決ヘルパー: エントリ配列に対してフェーズを一括解決する
 async function resolveEntriesForContext(
@@ -2487,6 +2491,7 @@ async function buildSceneContextPrompt(opts: {
   // Phase Cb: BFS-expand formal Codex relations from entries already in L4.
   const projectIdForRel = useTreeStore.getState().projectId;
   let relationCodexEntries: CodexContext[] | undefined;
+  let intraContextRelations: IntraContextRelationEdge[] | undefined;
   if (projectIdForRel) {
     const l4SeedIds = new Set([
       ...codexEntries.map((e) => e.id),
@@ -2513,6 +2518,14 @@ async function buildSceneContextPrompt(opts: {
         { maxDepth: 1 },
       );
       relationCodexEntries = expanded.length > 0 ? expanded : undefined;
+      // surfacing: 両端とも seed (両方が文脈にいる) の関係はラベルのみ各エントリへ。
+      // discovery (片側 seed → 相手を引き込む) とは別軸で、無関係ノイズを増やさない。
+      const intra = collectIntraContextRelations(
+        [...l4SeedIds],
+        relations,
+        allEntries,
+      );
+      intraContextRelations = intra.length > 0 ? intra : undefined;
     }
   }
 
@@ -2551,6 +2564,7 @@ async function buildSceneContextPrompt(opts: {
     noteEntries,
     alwaysNoteIds,
     relationCodexEntries,
+    intraContextRelations,
     semanticRecall:
       semanticRecallChunks.length > 0
         ? semanticRecallChunks.map((c) => ({

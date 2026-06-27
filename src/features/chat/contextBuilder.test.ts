@@ -264,6 +264,69 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("概要: 物語の舞台");
     });
 
+    it("surfaces intra-context relations on both endpoint entries", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "太郎が花子に話しかけた。",
+      };
+      const codexEntries: CodexContext[] = [
+        { id: "codex-1", type: "character", name: "太郎", summary: "主人公" },
+        { id: "codex-2", type: "character", name: "花子", summary: "幼馴染" },
+      ];
+
+      const result = buildSystemPrompt({
+        scene,
+        codexEntries,
+        intraContextRelations: [
+          {
+            fromId: "codex-1",
+            toId: "codex-2",
+            fromName: "太郎",
+            toName: "花子",
+            label: "恋人",
+          },
+        ],
+      });
+
+      // 役割明示 ({to}は{from}の{label}) で向きを伝える。canonical な同一行を両端へ。
+      // from=太郎(codex-1) / to=花子(codex-2) / label=恋人 → 「花子は太郎の恋人」。
+      expect(result.prompt).toContain("関係: 花子は太郎の恋人");
+      // 太郎ブロックと花子ブロックの 2 箇所に同じ行が出る。
+      expect(result.prompt.split("花子は太郎の恋人").length - 1).toBe(2);
+    });
+
+    it("does not surface intra relations when the entry has none", () => {
+      const scene: SceneContext = {
+        id: "scene-1",
+        title: "シーン1",
+        content: "本文",
+      };
+      const codexEntries: CodexContext[] = [
+        { id: "codex-1", type: "character", name: "太郎", summary: "主人公" },
+        { id: "codex-2", type: "character", name: "花子", summary: "幼馴染" },
+      ];
+
+      const result = buildSystemPrompt({
+        scene,
+        codexEntries,
+        // 太郎-花子 間のみ。第三者 codex-9 への関係は出ないこと。
+        intraContextRelations: [
+          {
+            fromId: "codex-1",
+            toId: "codex-2",
+            fromName: "太郎",
+            toName: "花子",
+            label: "恋人",
+          },
+        ],
+      });
+
+      // 関係行は太郎ブロック + 花子ブロックの 2 回だけ。第三者へ波及しない。
+      const occurrences = result.prompt.split("花子は太郎の恋人").length - 1;
+      expect(occurrences).toBe(2);
+    });
+
     it("includes pinned codex entries in the system prompt", () => {
       const scene: SceneContext = {
         id: "scene-1",

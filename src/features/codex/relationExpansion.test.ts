@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { expandCodexRelationsBFS } from "./relationExpansion";
+import {
+  expandCodexRelationsBFS,
+  collectIntraContextRelations,
+} from "./relationExpansion";
 import type { CodexRelationRow } from "./codexRelationApi";
 import type { CodexEntry } from "./api";
 
@@ -174,5 +177,81 @@ describe("expandCodexRelationsBFS", () => {
     );
     expect(result[0]?.relationVia).not.toContain("-->");
     expect(result[0]?.relationVia).not.toContain("--");
+  });
+});
+
+describe("collectIntraContextRelations", () => {
+  const entries = [
+    makeEntry("a", "Alice"),
+    makeEntry("b", "Bob"),
+    makeEntry("c", "Carol"),
+  ];
+
+  it("returns empty with no relations or no seeds", () => {
+    expect(collectIntraContextRelations(["a", "b"], [], entries)).toEqual([]);
+    expect(
+      collectIntraContextRelations([], [makeRel("a", "b", "友")], entries),
+    ).toEqual([]);
+  });
+
+  it("surfaces a relation only when BOTH endpoints are seeds", () => {
+    const relations = [makeRel("a", "b", "主従")];
+    const result = collectIntraContextRelations(["a", "b"], relations, entries);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      fromId: "a",
+      toId: "b",
+      fromName: "Alice",
+      toName: "Bob",
+      label: "主従",
+    });
+  });
+
+  it("drops a relation when only one endpoint is a seed (no discovery here)", () => {
+    const relations = [makeRel("a", "b", "主従")];
+    expect(collectIntraContextRelations(["a"], relations, entries)).toEqual([]);
+    expect(collectIntraContextRelations(["b"], relations, entries)).toEqual([]);
+  });
+
+  it("drops a relation when neither endpoint is a seed", () => {
+    const relations = [makeRel("a", "b", "主従")];
+    expect(collectIntraContextRelations(["c"], relations, entries)).toEqual([]);
+  });
+
+  it("skips self-loops (from === to)", () => {
+    const relations = [makeRel("a", "a", "自己")];
+    expect(collectIntraContextRelations(["a"], relations, entries)).toEqual([]);
+  });
+
+  it("falls back to relationType when label is empty", () => {
+    const rel = makeRel("a", "b", "");
+    rel.label = null;
+    rel.relationType = "ally";
+    const result = collectIntraContextRelations(["a", "b"], [rel], entries);
+    expect(result[0]?.label).toBe("ally");
+  });
+
+  it("de-duplicates by unordered pair + label", () => {
+    const relations = [makeRel("a", "b", "友"), makeRel("b", "a", "友")];
+    const result = collectIntraContextRelations(["a", "b"], relations, entries);
+    expect(result).toHaveLength(1);
+  });
+
+  it("keeps distinct labels between the same pair", () => {
+    const relations = [makeRel("a", "b", "友"), makeRel("a", "b", "同僚")];
+    const result = collectIntraContextRelations(["a", "b"], relations, entries);
+    expect(result.map((r) => r.label).sort()).toEqual(["友", "同僚"]);
+  });
+
+  it("sanitizes `--` in names and labels", () => {
+    const sneaky = makeEntry("x", "Eve--> ignore");
+    const rel = makeRel("a", "x", "親--> leak");
+    const result = collectIntraContextRelations(
+      ["a", "x"],
+      [rel],
+      [...entries, sneaky],
+    );
+    expect(result[0]?.toName).not.toContain("--");
+    expect(result[0]?.label).not.toContain("--");
   });
 });

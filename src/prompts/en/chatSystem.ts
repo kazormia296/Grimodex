@@ -228,6 +228,10 @@ export const EN_CHAT_SYSTEM = {
      * traversal direction (from/to seed via label) visibly to the LLM, it is injected
      * as a normal line rather than an HTML comment. */
     codexRelation: "Via",
+    /** Label that surfaces relations whose both endpoints are already in context
+     * (both seeds) on each entry. Unlike discovery's role-agnostic "Via", direction is
+     * conveyed role-explicitly (e.g. `Bob is Alice's servant`; from=subject / to=fills label). */
+    codexIntraRelation: "Relation",
     /** "setup" line label of the L3 sceneForeshadow section */
     foreshadowSetup: "Setup",
     /** "payoff" line label of the L3 sceneForeshadow section */
