@@ -18,6 +18,16 @@ interface FontFamilySelectProps {
    * 表示フォント（駅名標 / Helvetica 系）を Codex 設定のみで選べるようにする。
    */
   extraBundledFonts?: BundledFont[];
+  /**
+   * basic グループ先頭「デフォルト」選択肢の値。既定は CSS generic "serif"。
+   * Codex のように「デフォルト＝言語別の既定に追従」を表したい場合は "" を渡す。
+   */
+  defaultOptionValue?: string;
+  /**
+   * 「デフォルト」選択肢のラベル。未指定なら "デフォルト (serif)"。Codex では
+   * "デフォルト (Toaru Eki Sign)" のように実フォント名を入れる。
+   */
+  defaultOptionLabel?: string;
 }
 
 /** optgroup の表示順。current（移行注入）を先頭に、長いシステム一覧を末尾に。 */
@@ -43,10 +53,17 @@ export function FontFamilySelect({
   settingKey,
   defaultValue = '"Noto Serif JP"',
   extraBundledFonts,
+  defaultOptionValue,
+  defaultOptionLabel,
 }: FontFamilySelectProps) {
   const { t } = useTranslation();
   const { value, setValue } = useSettingControl(settingKey, defaultValue);
   const systemFonts = useSystemFonts();
+
+  // 「デフォルト」が空センチネル ("") のピッカー(Codex)では value をそのまま使い、
+  // basic 先頭の空値オプションに一致させる。プレビューだけは空のとき defaultValue に
+  // 落として実フォントを描く。
+  const previewValue = value.trim() || defaultValue;
 
   const options = buildFontOptions({
     systemFonts,
@@ -55,9 +72,10 @@ export function FontFamilySelect({
       : BUNDLED_FONTS,
     storedValue: value,
     labels: {
-      basicDefault: t("settings.editor.fontDefault"),
+      basicDefault: defaultOptionLabel ?? t("settings.editor.fontDefault"),
       basicMono: t("settings.editor.fontMono"),
     },
+    defaultOptionValue,
   });
 
   const groupLabels: Record<FontOptionGroup, string> = {
@@ -92,7 +110,7 @@ export function FontFamilySelect({
       <div
         aria-hidden
         className="w-full max-w-[16rem] truncate rounded-md border border-input/60 bg-muted/30 px-2 py-1 text-sm text-muted-foreground"
-        style={{ fontFamily: value }}
+        style={{ fontFamily: previewValue }}
         title={t("settings.editor.fontPreviewSample")}
       >
         {t("settings.editor.fontPreviewSample")}

@@ -124,4 +124,24 @@ describe("buildFontOptions", () => {
     // 反対言語の既定も選択肢として存在する。
     expect(opts.some((o) => o.value === '"TeX Gyre Heros"')).toBe(true);
   });
+
+  // Codex タイトル: 「デフォルト」選択肢を空センチネル "" + 実フォント名ラベルにできる。
+  // 空 storedValue はこの先頭オプションに一致し、current 注入もされない。
+  it("defaultOptionValue overrides the basic 'default' option value/label", () => {
+    const opts = buildFontOptions({
+      systemFonts: [],
+      storedValue: "",
+      defaultOptionValue: "",
+      labels: {
+        basicDefault: "デフォルト (Toaru Eki Sign)",
+        basicMono: "Monospace",
+      },
+    });
+    expect(opts[0]).toEqual({
+      value: "",
+      label: "デフォルト (Toaru Eki Sign)",
+      group: "basic",
+    });
+    expect(opts.filter((o) => o.group === "current")).toEqual([]);
+  });
 });

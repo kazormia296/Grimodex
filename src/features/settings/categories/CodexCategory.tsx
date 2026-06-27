@@ -346,6 +346,16 @@ function AddForm({
 
 export function CodexCategory() {
   const { t } = useTranslation();
+  // タイトルフォントの言語別既定（空センチネル "" が追従する実フォント）。codexNameFont
+  // と同じ流儀: 英語は Helvetica 系 (TeX Gyre Heros)、それ以外は駅名標 (Toaru Eki Sign)。
+  // ピッカーの「デフォルト」ラベルとプレビューのフォールバックに使う。
+  const codexTitleIsEn = getCurrentProjectLanguage()?.startsWith("en") ?? false;
+  const codexTitleFontDefault = codexTitleIsEn
+    ? '"TeX Gyre Heros"'
+    : '"Toaru Eki Sign"';
+  const codexTitleFontName = codexTitleIsEn
+    ? "TeX Gyre Heros"
+    : "Toaru Eki Sign";
   const [types, setTypes] = useState<CodexType[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -449,7 +459,11 @@ export function CodexCategory() {
         >
           <FontFamilySelect
             settingKey="codex.entryTitleFont"
-            defaultValue={'"Toaru Eki Sign"'}
+            defaultValue={codexTitleFontDefault}
+            defaultOptionValue=""
+            defaultOptionLabel={t("settings.codex.entryTitleFontDefault", {
+              font: codexTitleFontName,
+            })}
             extraBundledFonts={CODEX_TITLE_FONTS}
           />
         </SettingRow>
