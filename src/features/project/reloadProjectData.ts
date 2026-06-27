@@ -142,10 +142,11 @@ export async function reloadProjectData(projectId: string): Promise<void> {
       loading: false,
     });
 
-    // Map の board 選択 / transient UI を破棄。board データ自体は
-    // useMapBoardData が currentProjectId 変化を検知して読み直す。
+    // Map の transient UI のみ破棄。board 選択 (activeBoardId) は
+    // useMapBoardData が projectId 変化を検知して「このプロジェクトのボード」へ
+    // 再解決する唯一の権威。ここで null にすると切替中に init effect と競合し、
+    // 旧プロジェクトのボード/データが残る (または選択が消える) ため触らない。
     useMapStore.setState({
-      activeBoardId: null,
       focusedNodeId: null,
       searchVisible: false,
       pendingAutoArrange: null,
