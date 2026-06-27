@@ -14,6 +14,7 @@ import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
 interface CreateProjectInput {
   title: string;
@@ -91,6 +92,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         await import("@/features/concurrency/externalWriteFeed");
       stopExternalWriteFeed();
     }
+    useGlobalHistoryStore.getState().clear();
     // reloadProjectData 内の各ストアは getCurrentProjectId() を読むため、
     // 再ロード前に currentProjectId を確定させておく必要がある。
     set({ currentProjectId: projectId });
