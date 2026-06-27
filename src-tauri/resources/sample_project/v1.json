@@ -218,5 +218,82 @@
       "strength": "moderate",
       "attribution": "human"
     }
+  ],
+  "authorship_spans": [
+    {
+      "id": "sample-authorship-ja-1",
+      "node_id": "sample-scene-1",
+      "from_pos": 1,
+      "to_pos": 105,
+      "source": "human",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-ja-2",
+      "node_id": "sample-scene-1",
+      "from_pos": 107,
+      "to_pos": 180,
+      "source": "human",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-ja-3",
+      "node_id": "sample-scene-1",
+      "from_pos": 182,
+      "to_pos": 210,
+      "source": "human",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-ja-4",
+      "node_id": "sample-scene-1",
+      "from_pos": 212,
+      "to_pos": 221,
+      "source": "human",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-ja-5",
+      "node_id": "sample-scene-1",
+      "from_pos": 223,
+      "to_pos": 292,
+      "source": "human",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-ja-6",
+      "node_id": "sample-scene-1",
+      "from_pos": 294,
+      "to_pos": 354,
+      "source": "ai",
+      "model": "anthropic/claude-opus-4",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-ja-7",
+      "node_id": "sample-scene-1",
+      "from_pos": 356,
+      "to_pos": 454,
+      "source": "ai",
+      "model": "anthropic/claude-opus-4",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-ja-8",
+      "node_id": "sample-scene-1",
+      "from_pos": 506,
+      "to_pos": 522,
+      "source": "unknown",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    },
+    {
+      "id": "sample-authorship-ja-9",
+      "node_id": "sample-scene-3",
+      "from_pos": 1,
+      "to_pos": 19,
+      "source": "ai",
+      "model": "anthropic/claude-opus-4",
+      "timestamp": "2026-05-01T09:00:00.000Z"
+    }
   ]
 }
