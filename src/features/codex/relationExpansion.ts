@@ -134,4 +134,61 @@ export function expandCodexRelationsBFS(
   return results;
 }
 
+/**
+ * 両端が「文脈内 (L4 seed = 言及/pin/always)」に揃っている typed relation を 1 本ずつ
+ * 抽出する。expandCodexRelationsBFS が discovery (片側 seed → 相手を引き込む) を担うのに
+ * 対し、こちらは surfacing — 既に両者とも文脈にいるペアの関係ラベルだけを明示する。
+ *
+ * relation には方向があるが、両者とも文脈に summary 付きで存在するため「誰と何の関係か」が
+ * 分かれば十分で、ここでは from/to を保持しつつ向きの語 (from/to via) は付けない。注入側
+ * (contextBuilder) が各エントリのブロックに「相手名 (label)」として両視点で出す。
+ *
+ * 重複排除は無向ペア + label 単位。self-loop (from === to) は除外する。
+ */
+export interface IntraContextRelationEdge {
+  fromId: string;
+  toId: string;
+  fromName: string;
+  toName: string;
+  label: string;
+}
+
+export function collectIntraContextRelations(
+  seedEntryIds: string[],
+  relations: CodexRelationRow[],
+  allEntries: CodexEntry[],
+): IntraContextRelationEdge[] {
+  const seeds = new Set(seedEntryIds);
+  if (seeds.size === 0 || relations.length === 0) return [];
+
+  const entryById = new Map(allEntries.map((e) => [e.id, e]));
+  const seen = new Set<string>();
+  const out: IntraContextRelationEdge[] = [];
+
+  for (const rel of relations) {
+    if (!seeds.has(rel.fromCodexId) || !seeds.has(rel.toCodexId)) continue;
+    if (rel.fromCodexId === rel.toCodexId) continue;
+
+    const label = sanitizeForHtmlComment(rel.label?.trim() || rel.relationType);
+    const pairKey =
+      [rel.fromCodexId, rel.toCodexId].sort().join("|") + "|" + label;
+    if (seen.has(pairKey)) continue;
+    seen.add(pairKey);
+
+    out.push({
+      fromId: rel.fromCodexId,
+      toId: rel.toCodexId,
+      fromName: sanitizeForHtmlComment(
+        entryById.get(rel.fromCodexId)?.name ?? rel.fromCodexId,
+      ),
+      toName: sanitizeForHtmlComment(
+        entryById.get(rel.toCodexId)?.name ?? rel.toCodexId,
+      ),
+      label,
+    });
+  }
+
+  return out;
+}
+
 export { slugifyRelationType };

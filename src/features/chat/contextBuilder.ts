@@ -9,6 +9,7 @@ import {
 } from "@/prompts/ja/chatSystem";
 import { getPromptCatalog } from "@/prompts/index";
 import { recordMark } from "@/lib/perfLog";
+import type { IntraContextRelationEdge } from "@/features/codex/relationExpansion";
 
 export interface SceneContext {
   id: string;
@@ -243,6 +244,12 @@ export interface BuildSystemPromptInput {
   alwaysNoteIds?: string[];
   /** Phase Cb: Codex entries discovered via relation BFS (L4 pri 1). */
   relationCodexEntries?: CodexContext[];
+  /**
+   * 両端とも L4 seed (言及/pin/always) に揃っている typed relation。discovery で相手を
+   * 引き込む relationCodexEntries とは別軸で、既に文脈にいる 2 者の関係ラベルだけを
+   * 各 seed エントリのブロックに「相手名 (label)」として surfacing する (phase-stale 無し)。
+   */
+  intraContextRelations?: IntraContextRelationEdge[];
   /**
    * semantic recall (Layer4 RAG): 意味検索で見つけた過去シーンの抜粋。
    * クエリ (直近ユーザー発話 + 現在シーン本文末尾) 依存で毎ターン変わるため、
@@ -1047,6 +1054,24 @@ export function buildSystemPrompt(
   // Codex エントリ 1 件分の本文行を組む共通ロジック。L4 (mentioned/pinned/always)
   // と <focus_subject> (codex スコープのアンカー = Spotlight 相当) の両方で使う。
   // includePinnedExtras=true で Spotlight 専用の追加情報 (タグ / カスタム詳細) も出す。
+  // 両端とも文脈内 (両方 seed) の関係を index 化する。surfacing は両者とも本体付きで
+  // 意図的に張られた直接関係なので、discovery の役割非断定 (from/to via) と違い「役割明示」
+  // で向きを伝える: from=主語・to=label 役 という手動 relation UI (outgoing=自分→相手) の
+  // 規約に合わせ、`{to}は{from}の{label}` (en: `{to} is {from}'s {label}`) と書く。cryptic な
+  // from/to via が逆読みされる問題への対処。canonical な 1 行を両端のブロックに同じく出す。
+  const intraEn = (input.lang ?? "ja") === "en";
+  const intraRelationsByEntryId = new Map<string, string[]>();
+  for (const edge of input.intraContextRelations ?? []) {
+    const line = intraEn
+      ? `${edge.toName} is ${edge.fromName}'s ${edge.label}`
+      : `${edge.toName}は${edge.fromName}の${edge.label}`;
+    for (const id of [edge.fromId, edge.toId]) {
+      const list = intraRelationsByEntryId.get(id);
+      if (list) list.push(line);
+      else intraRelationsByEntryId.set(id, [line]);
+    }
+  }
+
   const buildCodexEntryLines = (
     entry: CodexContext,
     includePinnedExtras: boolean,
@@ -1073,6 +1098,14 @@ export function buildSystemPrompt(
     }
     if (displaySummary) {
       out.push(`  ${s.labels.codexSummary}: ${displaySummary}`);
+    }
+    // surfacing: 両端とも文脈内の関係のみラベルで明示する。relationVia (discovery で
+    // 引き込まれた相手) には付けない — そちらは「経由」行が既に関係を担っている。
+    if (!entry.relationVia) {
+      const intra = intraRelationsByEntryId.get(entry.id);
+      if (intra && intra.length > 0) {
+        out.push(`  ${s.labels.codexIntraRelation}: ${intra.join(" / ")}`);
+      }
     }
     if (includePinnedExtras && entry.tags?.length) {
       out.push(`  ${s.labels.codexTags}: ${entry.tags.join(", ")}`);

@@ -217,6 +217,10 @@ export const JA_CHAT_SYSTEM = {
      * LLM に traversal 方向 (from/to seed via label) を可視で伝えるため、
      * HTML コメントではなく通常行として注入する。 */
     codexRelation: "経由",
+    /** 両端とも文脈内 (両方 seed) の関係を各エントリに surfacing するラベル。
+     * discovery の役割非断定「経由」と違い role 明示で向きを伝える
+     * (例: `ボブはアリスの従者`。from=主語 / to=label 役)。 */
+    codexIntraRelation: "関係",
     /** L3 sceneForeshadow セクションの「仕込み」行ラベル */
     foreshadowSetup: "仕込み",
     /** L3 sceneForeshadow セクションの「回収」行ラベル */
