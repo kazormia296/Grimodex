@@ -3,6 +3,7 @@ import { useSettingControl } from "../useSettingControl";
 import { useSystemFonts } from "../hooks/useSystemFonts";
 import {
   buildFontOptions,
+  type BundledFont,
   type FontOption,
   type FontOptionGroup,
 } from "../buildFontOptions";
@@ -11,6 +12,12 @@ import { BUNDLED_FONTS } from "../bundledFonts";
 interface FontFamilySelectProps {
   settingKey: string;
   defaultValue?: string;
+  /**
+   * このピッカー固有の追加同梱フォント。共通の BUNDLED_FONTS（本文/UI 用）に
+   * 混ぜず、ここで渡したものだけ「同梱」グループに足す。例: Codex タイトル用の
+   * 表示フォント（駅名標 / Helvetica 系）を Codex 設定のみで選べるようにする。
+   */
+  extraBundledFonts?: BundledFont[];
 }
 
 /** optgroup の表示順。current（移行注入）を先頭に、長いシステム一覧を末尾に。 */
@@ -35,6 +42,7 @@ const GROUP_ORDER: FontOptionGroup[] = [
 export function FontFamilySelect({
   settingKey,
   defaultValue = '"Noto Serif JP"',
+  extraBundledFonts,
 }: FontFamilySelectProps) {
   const { t } = useTranslation();
   const { value, setValue } = useSettingControl(settingKey, defaultValue);
@@ -42,7 +50,9 @@ export function FontFamilySelect({
 
   const options = buildFontOptions({
     systemFonts,
-    bundledFonts: BUNDLED_FONTS,
+    bundledFonts: extraBundledFonts
+      ? [...BUNDLED_FONTS, ...extraBundledFonts]
+      : BUNDLED_FONTS,
     storedValue: value,
     labels: {
       basicDefault: t("settings.editor.fontDefault"),

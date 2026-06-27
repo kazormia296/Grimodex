@@ -6,6 +6,16 @@ import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { FontFamilySelect } from "../components/FontFamilySelect";
+import type { BundledFont } from "../buildFontOptions";
+
+// Codex タイトル用の表示フォント（@font-face で同梱。src/index.css）。共通の
+// BUNDLED_FONTS（本文/UI 用）には混ぜず、Codex 設定でのみ選べるようにする。
+// これらが選択肢に無いと、既定値が「現在の設定」グループに注入表示され、
+// 反対言語の既定（例: ja から TeX Gyre Heros）を選び直せない。
+const CODEX_TITLE_FONTS: BundledFont[] = [
+  { family: "Toaru Eki Sign", label: "Toaru Eki Sign（駅名標）" },
+  { family: "TeX Gyre Heros", label: "TeX Gyre Heros（Helvetica系）" },
+];
 import type { CodexType } from "@/features/codex/typeApi";
 import {
   listCodexTypes,
@@ -440,6 +450,7 @@ export function CodexCategory() {
           <FontFamilySelect
             settingKey="codex.entryTitleFont"
             defaultValue={'"Toaru Eki Sign"'}
+            extraBundledFonts={CODEX_TITLE_FONTS}
           />
         </SettingRow>
       </SettingSection>
