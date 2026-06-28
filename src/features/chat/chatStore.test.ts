@@ -2456,6 +2456,7 @@ describe("useChatStore", () => {
       useChatStore.getState().registerInputDraftProvider(() => ({
         markdown: "入力中のテキスト",
         mentionedSceneIds: [],
+        mentionedCodexIds: [],
       }));
 
       const result = await useChatStore.getState().buildPreviewPrompt();
@@ -2512,6 +2513,7 @@ describe("useChatStore", () => {
       useChatStore.getState().registerInputDraftProvider(() => ({
         markdown: "共通入力",
         mentionedSceneIds: [],
+        mentionedCodexIds: [],
       }));
 
       mockBuildSystemPrompt.mockClear();
@@ -2561,6 +2563,7 @@ describe("useChatStore", () => {
       useChatStore.getState().registerInputDraftProvider(() => ({
         markdown: "質問",
         mentionedSceneIds: [],
+        mentionedCodexIds: [],
       }));
 
       await useChatStore.getState().buildPreviewPrompt();
@@ -2621,6 +2624,7 @@ describe("useChatStore", () => {
       useChatStore.getState().registerInputDraftProvider(() => ({
         markdown: "質問",
         mentionedSceneIds: [],
+        mentionedCodexIds: [],
       }));
 
       await useChatStore.getState().buildPreviewPrompt();

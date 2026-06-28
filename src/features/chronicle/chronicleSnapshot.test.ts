@@ -480,6 +480,41 @@ describe("pickSnapshotCharacters", () => {
     expect(new Set(ids)).toEqual(new Set(["sceneChar", "c1", "c2"]));
     expect(ids).not.toContain("cFuture"); // anchor 超のイベントは拾わない
   });
+
+  it("@mention された人物は recent/scene に居なくても必ず含める", () => {
+    const ids = pickSnapshotCharacters({
+      anchor: stamped("a5", null),
+      events: [mkEvent({ id: "e1", primaryCodexId: "c1", ordinal: "a2" })],
+      participants: [],
+      sceneCodexIds: [],
+      mentionedCodexIds: ["mentioned"],
+    });
+    expect(ids).toContain("mentioned");
+  });
+
+  it("@mention 人物は cap が一杯でも優先的に残る（最優先 seed）", () => {
+    const ids = pickSnapshotCharacters({
+      anchor: stamped("a5", null),
+      events: [],
+      participants: [],
+      sceneCodexIds: ["s1", "s2"],
+      mentionedCodexIds: ["mentioned"],
+      max: 2,
+    });
+    expect(ids.length).toBe(2);
+    expect(ids).toContain("mentioned"); // mention は cap を超えて捨てられない
+  });
+
+  it("none アンカーでは @mention 人物も含めない（D1: オフページのみ）", () => {
+    const ids = pickSnapshotCharacters({
+      anchor: { ordinal: "", startTime: null, source: "none" },
+      events: [],
+      participants: [],
+      sceneCodexIds: [],
+      mentionedCodexIds: ["mentioned"],
+    });
+    expect(ids).toEqual([]);
+  });
 });
 
 describe("assembleChronicleSnapshotText", () => {

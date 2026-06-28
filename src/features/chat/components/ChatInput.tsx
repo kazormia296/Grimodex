@@ -66,6 +66,8 @@ interface ChatInputProps {
       overrideAgentMode?: boolean;
       /** @ で指定された scene ID 一覧（送信時に context へ一時 pin される） */
       mentionedSceneIds?: string[];
+      /** @ で指定された人物(codex) ID 一覧（作中年表スナップショットの人物 seed） */
+      mentionedCodexIds?: string[];
       /** スラッシュコマンド由来の一回限りの指示 (L6 へ注入)。例: /brainstorm の VS。 */
       commandInstruction?: string;
     },
@@ -587,10 +589,25 @@ export function ChatInput({
     return sceneIdSet.size > 0 ? Array.from(sceneIdSet) : undefined;
   }, [editor]);
 
+  // 現在の doc から `@人物名`(codex) メンションされた codex ID 群を抽出する。
+  // collectMentionedSceneIds と対で、年表スナップショットの人物 seed に使う。
+  const collectMentionedCodexIds = useCallback((): string[] | undefined => {
+    if (!editor) return undefined;
+    const codexIdSet = new Set<string>();
+    editor.state.doc.descendants((node) => {
+      if (node.type.name !== "mention") return;
+      const kind = node.attrs.kind as string | undefined;
+      const id = node.attrs.id as string | undefined;
+      if (kind === "codex" && id) codexIdSet.add(id);
+    });
+    return codexIdSet.size > 0 ? Array.from(codexIdSet) : undefined;
+  }, [editor]);
+
   // プレビュー(ContextBar)が seed / 表示に使う入力中テキストを on-demand 提供する。
   useEffect(() => {
     registerInputDraftProvider(() => {
-      if (!editor) return { markdown: "", mentionedSceneIds: [] };
+      if (!editor)
+        return { markdown: "", mentionedSceneIds: [], mentionedCodexIds: [] };
       const markdownStorage = editor.storage as unknown as Record<
         string,
         { getMarkdown?: () => string } | undefined
@@ -600,10 +617,16 @@ export function ChatInput({
       return {
         markdown,
         mentionedSceneIds: collectMentionedSceneIds() ?? [],
+        mentionedCodexIds: collectMentionedCodexIds() ?? [],
       };
     });
     return () => registerInputDraftProvider(null);
-  }, [editor, registerInputDraftProvider, collectMentionedSceneIds]);
+  }, [
+    editor,
+    registerInputDraftProvider,
+    collectMentionedSceneIds,
+    collectMentionedCodexIds,
+  ]);
 
   const handleSendClick = (options?: { overrideAgentMode?: boolean }) => {
     if (!editor || isStreaming) return;
@@ -615,9 +638,11 @@ export function ChatInput({
     >;
     const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
     const mentionedSceneIds = collectMentionedSceneIds();
+    const mentionedCodexIds = collectMentionedCodexIds();
     onSend(markdown, {
       ...options,
       mentionedSceneIds,
+      mentionedCodexIds,
       commandInstruction: consumePendingCommandInstruction(),
     });
     editor.commands.clearContent();
@@ -639,9 +664,11 @@ export function ChatInput({
       const markdown: string =
         markdownStorage.markdown?.getMarkdown?.() ?? text;
       const mentionedSceneIds = collectMentionedSceneIds();
+      const mentionedCodexIds = collectMentionedCodexIds();
       try {
         const prompt = await buildPromptForCopy(markdown, {
           mentionedSceneIds,
+          mentionedCodexIds,
         });
         await navigator.clipboard.writeText(prompt);
         toast.success(t("chat.promptCopied"));
@@ -649,7 +676,13 @@ export function ChatInput({
         toast.error(t("chat.copyFailed"));
       }
     },
-    [editor, buildPromptForCopy, collectMentionedSceneIds, t],
+    [
+      editor,
+      buildPromptForCopy,
+      collectMentionedSceneIds,
+      collectMentionedCodexIds,
+      t,
+    ],
   );
 
   // A/B 比較を起動: 現在の下書き + 文脈から buildPromptForCopy で基底プロンプトを
@@ -667,8 +700,12 @@ export function ChatInput({
     }
     const markdown: string = markdownStorage.markdown?.getMarkdown?.() ?? text;
     const mentionedSceneIds = collectMentionedSceneIds();
+    const mentionedCodexIds = collectMentionedCodexIds();
     try {
-      const prompt = await buildPromptForCopy(markdown, { mentionedSceneIds });
+      const prompt = await buildPromptForCopy(markdown, {
+        mentionedSceneIds,
+        mentionedCodexIds,
+      });
       setAbChat({
         basePrompt: prompt,
         userDraft: markdown,
@@ -678,7 +715,14 @@ export function ChatInput({
     } catch {
       toast.error(t("abTest.buildPromptFailed"));
     }
-  }, [editor, isStreaming, buildPromptForCopy, collectMentionedSceneIds, t]);
+  }, [
+    editor,
+    isStreaming,
+    buildPromptForCopy,
+    collectMentionedSceneIds,
+    collectMentionedCodexIds,
+    t,
+  ]);
 
   // A/B 採用: 採用列の応答を、そのチャットの会話履歴へ 1 往復として積む
   // (下書き = user / 採用応答 = assistant)。clipboard コピーの置き換え。

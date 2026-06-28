@@ -685,16 +685,25 @@ interface ChatState {
        * (per-message surgical override)。folder/project スコープの eco
        * モードでも本文注入の対象になる。 */
       mentionedSceneIds?: string[];
+      /** Chat 入力で `@人物名`(codex) メンションされた codex ID 一覧。
+       * 作中年表スナップショットの人物プールへ最優先 seed として渡す。 */
+      mentionedCodexIds?: string[];
     },
   ) => Promise<void>;
   buildPromptForCopy: (
     userInput: string,
-    options?: { mentionedSceneIds?: string[] },
+    options?: { mentionedSceneIds?: string[]; mentionedCodexIds?: string[] },
   ) => Promise<string>;
   /** ChatInput の入力中テキスト getter を登録 / 解除(null で解除)。
    * buildPreviewPrompt が seed と表示に使う。 */
   registerInputDraftProvider: (
-    provider: (() => { markdown: string; mentionedSceneIds: string[] }) | null,
+    provider:
+      | (() => {
+          markdown: string;
+          mentionedSceneIds: string[];
+          mentionedCodexIds: string[];
+        })
+      | null,
   ) => void;
   stopGeneration: () => void;
   deleteMessage: (messageId: string) => Promise<void>;
@@ -713,6 +722,8 @@ interface ChatState {
      * UI 表示用の context bar 更新（プリビュー）には渡さず、sendMessage
      * 内部から folder/project スコープのプロンプト再構築時にだけ使う。 */
     mentionedSceneIds?: string[];
+    /** @人物(codex) mention 由来の年表スナップショット人物 seed (per-send-only)。 */
+    mentionedCodexIds?: string[];
     /**
      * 一回限りの Agent mode override（サジェストチップ / 再試行ボタン）。
      * 永続トグル get().agentMode と異なる agentMode で送信する経路から渡す。
@@ -1598,7 +1609,11 @@ let _agentAborted = false;
 // で取得する DI。打鍵毎にストアへ書かず、プレビューを開いた瞬間だけ読む。
 // ChatInput が mount 時に登録し unmount で null 解除する。
 let _inputDraftProvider:
-  | (() => { markdown: string; mentionedSceneIds: string[] })
+  | (() => {
+      markdown: string;
+      mentionedSceneIds: string[];
+      mentionedCodexIds: string[];
+    })
   | null = null;
 
 // ---------------------------------------------------------------------------
@@ -1722,7 +1737,11 @@ async function loadMapBoardMarkdown(
 async function buildOutgoingScenePrompt(
   get: () => ChatState,
   effectiveSceneId: string,
-  opts: { inputText: string; mentionedSceneIds?: string[] },
+  opts: {
+    inputText: string;
+    mentionedSceneIds?: string[];
+    mentionedCodexIds?: string[];
+  },
 ): Promise<{
   prompt: string;
   layers: LayerBreakdown[];
@@ -1808,6 +1827,7 @@ async function buildOutgoingScenePrompt(
     conversationMessages,
     agentMode: effectiveAgentMode,
     mentionedSceneIds: opts.mentionedSceneIds,
+    mentionedCodexIds: opts.mentionedCodexIds,
     excludedAutoEntryIds,
     semanticRecallSeedMessage: seed,
   });
@@ -1828,6 +1848,7 @@ async function buildChronicleSnapshotTextForScene(
   lang: string,
   codexNames: Map<string, string>,
   sceneCodexIds: string[],
+  mentionedCodexIds: string[],
 ): Promise<string | undefined> {
   const enabled = useSettingsStore
     .getState()
@@ -1871,6 +1892,7 @@ async function buildChronicleSnapshotTextForScene(
     readingOrder,
     codexNames,
     sceneCodexIds,
+    mentionedCodexIds,
     lang,
   });
 }
@@ -1937,6 +1959,10 @@ async function buildSceneContextPrompt(opts: {
    * tree から本文を読み込み、buildSystemPrompt の mentionedScenes として
    * 注入される (eco モードでも必ず注入)。 */
   mentionedSceneIds?: string[];
+  /** @scene と同様に @codex(人物) mention で per-message に指定された codex ID 群。
+   * 作中年表スナップショットの人物プールへ最優先 seed として渡す（言及した人物の
+   * 状態/年表を必ず載せる）。本文 L4 注入とは独立。 */
+  mentionedCodexIds?: string[];
   sessionStableCodexIds?: string[];
   /** semantic recall (Layer4 RAG) のクエリ seed に使う「これから送る本文」。
    * 送信 (sendMessage) は content、プレビュー / コピーは buildOutgoingScenePrompt
@@ -2607,6 +2633,7 @@ async function buildSceneContextPrompt(opts: {
         projectCtx?.language ?? "ja",
         new Map(allEntries.map((e) => [e.id, e.name] as const)),
         codexEntries.map((e) => e.id),
+        opts.mentionedCodexIds ?? [],
       )
     : undefined;
 
@@ -3195,7 +3222,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   buildPromptForCopy: async (
     userInput: string,
-    options?: { mentionedSceneIds?: string[] },
+    options?: { mentionedSceneIds?: string[]; mentionedCodexIds?: string[] },
   ): Promise<string> => {
     await ensureTokenizer();
     const {
@@ -3219,6 +3246,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const built = await buildOutgoingScenePrompt(get, effectiveSceneId, {
           inputText: userInput,
           mentionedSceneIds: options?.mentionedSceneIds,
+          mentionedCodexIds: options?.mentionedCodexIds,
         });
         if (built) {
           parts.push(`[system]\n${built.prompt}`);
@@ -3300,6 +3328,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     options?: {
       overrideAgentMode?: boolean;
       mentionedSceneIds?: string[];
+      mentionedCodexIds?: string[];
     },
   ) => {
     const {
@@ -3528,6 +3557,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             prefetchedEntries: allEntriesForCtx,
             agentMode: true,
             mentionedSceneIds: options?.mentionedSceneIds,
+            mentionedCodexIds: options?.mentionedCodexIds,
             sessionStableCodexIds: get().sessionStableCodexIds,
             semanticRecallSeedMessage: content,
             excludedAutoEntryIds: get().excludedAutoEntryIds,
@@ -3556,6 +3586,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           // @scene mention は per-send の一時 pin として渡す。
           await get().refreshContextLayers({
             mentionedSceneIds: options?.mentionedSceneIds,
+            mentionedCodexIds: options?.mentionedCodexIds,
             // 一回限り override で送るときも、その agentMode で集約 tier を組む
             // （永続トグル基準で組むと pull 委譲が override 送信に効かない）。
             agentModeOverride: agentModeForThisSend,
@@ -4246,6 +4277,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           commandInstruction,
           prefetchedEntries: allEntries,
           mentionedSceneIds: options?.mentionedSceneIds,
+          mentionedCodexIds: options?.mentionedCodexIds,
           sessionStableCodexIds: get().sessionStableCodexIds,
           semanticRecallSeedMessage: content,
           excludedAutoEntryIds: get().excludedAutoEntryIds,
@@ -4298,7 +4330,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         if (hasMentions || promptStale) {
           await get().refreshContextLayers(
             hasMentions
-              ? { mentionedSceneIds: options?.mentionedSceneIds }
+              ? {
+                  mentionedSceneIds: options?.mentionedSceneIds,
+                  mentionedCodexIds: options?.mentionedCodexIds,
+                }
               : undefined,
           );
         }
@@ -5132,6 +5167,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         conversationMessages: get().messages.filter((m) => !m.isSummarized),
         agentMode: get().agentMode,
         mentionedSceneIds: opts?.mentionedSceneIds,
+        mentionedCodexIds: opts?.mentionedCodexIds,
         excludedAutoEntryIds: get().excludedAutoEntryIds,
       });
 
@@ -5161,9 +5197,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       contextLayers,
       contextTokenCount,
     } = get();
-    let draft: { markdown: string; mentionedSceneIds: string[] } = {
+    let draft: {
+      markdown: string;
+      mentionedSceneIds: string[];
+      mentionedCodexIds: string[];
+    } = {
       markdown: "",
       mentionedSceneIds: [],
+      mentionedCodexIds: [],
     };
     try {
       draft = _inputDraftProvider?.() ?? draft;
@@ -5187,6 +5228,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const built = await buildOutgoingScenePrompt(get, effectiveSceneId, {
         inputText: draft.markdown,
         mentionedSceneIds: draft.mentionedSceneIds,
+        mentionedCodexIds: draft.mentionedCodexIds,
       });
       if (!built) return live;
       return {
