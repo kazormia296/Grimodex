@@ -23,6 +23,7 @@ import {
   panelWindowLabel,
   buildPanelWindowOptions,
   openPanelWindow,
+  canOpenPanelWindow,
 } from "./panelWindow";
 
 beforeEach(() => {
@@ -56,6 +57,25 @@ describe("parsePanelWindowTarget", () => {
   });
 });
 
+describe("canOpenPanelWindow", () => {
+  it("toggleable パネルは別窓で開ける", () => {
+    expect(canOpenPanelWindow("codex")).toBe(true);
+    expect(canOpenPanelWindow("foreshadow")).toBe(true);
+  });
+  it("editor は別窓対象外(中央執筆面) → false", () => {
+    expect(canOpenPanelWindow("editor")).toBe(false);
+  });
+  it("受理判定は route 側(parsePanelWindowTarget)と対称", () => {
+    // 別窓で開ける ⇔ その窓が単独描画対象として受理される。
+    expect(canOpenPanelWindow("editor")).toBe(
+      parsePanelWindowTarget("?window=panel&panel=editor") !== null,
+    );
+    expect(canOpenPanelWindow("codex")).toBe(
+      parsePanelWindowTarget("?window=panel&panel=codex") !== null,
+    );
+  });
+});
+
 describe("panelWindowLabel / buildPanelWindowOptions", () => {
   it("label は panel-<id>(capability glob panel-* と一致)", () => {
     expect(panelWindowLabel("codex")).toBe("panel-codex");
@@ -78,6 +98,13 @@ describe("openPanelWindow", () => {
   it("非 Tauri は no-op", async () => {
     isTauriMock.mockReturnValue(false);
     await openPanelWindow("codex");
+    expect(getByLabelMock).not.toHaveBeenCalled();
+    expect(ctorSpy).not.toHaveBeenCalled();
+  });
+  it("editor は no-op(別窓対象外＝全アプリ窓の複製を防ぐ)", async () => {
+    isTauriMock.mockReturnValue(true);
+    getByLabelMock.mockResolvedValue(null);
+    await openPanelWindow("editor");
     expect(getByLabelMock).not.toHaveBeenCalled();
     expect(ctorSpy).not.toHaveBeenCalled();
   });
