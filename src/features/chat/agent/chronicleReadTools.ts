@@ -127,6 +127,10 @@ export async function getEventDetailTool(
     ordinal: ev.ordinal,
     startTime: ev.startTime,
     endTime: ev.endTime,
+    startMinute: ev.startMinute,
+    endMinute: ev.endMinute,
+    startGranularity: ev.startGranularity,
+    endGranularity: ev.endGranularity,
     precision: ev.precision,
     primaryCharacter: ev.primaryCodexId
       ? (names.get(ev.primaryCodexId) ?? null)
