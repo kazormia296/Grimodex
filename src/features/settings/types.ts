@@ -179,6 +179,8 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "aiPrompt.custom.inline": "project",
   "aiPrompt.custom.beat": "project",
   "aiPrompt.custom.aiBranch": "project",
+  // 作中年表スナップショットを AI チャット文脈に注入するか (project)
+  "aiPrompt.chronicle.enabled": "project",
   // Keys — user preference (global)
   "keys.bindings": "global",
   // Data — user preference (global)
@@ -333,6 +335,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "aiPrompt.custom.inline": "",
   "aiPrompt.custom.beat": "",
   "aiPrompt.custom.aiBranch": "",
+  "aiPrompt.chronicle.enabled": "true",
   // Keys
   "keys.bindings": "{}",
   // Data

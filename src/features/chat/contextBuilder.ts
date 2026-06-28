@@ -88,6 +88,9 @@ export interface TrimInput {
    * 保護されるが (trim 順で RAG の次)、ユーザー明示の L1-5 より先に削る。
    * 未指定は空文字と等価。 */
   plotThreadScenesText?: string;
+  /** 作中年表スナップショット (render 済)。plotThread の次・L5 より先に削る。
+   * L3 cache segment に同梱されるが trim key としては独立。未指定は空文字と等価。 */
+  chronicleSnapshotText?: string;
   /** chat episodic recall (エピソード記憶) セクション。最も投機的な層なので
    * 予算超過時は RAG よりさらに先に削られる (trim 順の先頭)。未指定は空文字と等価。 */
   episodicText?: string;
@@ -273,6 +276,14 @@ export interface BuildSystemPromptInput {
     /** 同じ糸の他シーン (局所化済タイトル＋段階ラベル)。 */
     markers: Array<{ title: string; phaseLabel: string }>;
   }>;
+  /**
+   * 作中年表 (Chronicle) スナップショット: 現在シーンの作中時刻における派生状態
+   * (生死/年齢/季節/直近イベント/未回収因果/オフページ背景) を render 済みテキストで
+   * 受け取る (contextBuilder は純粋に保つ)。plot-thread と違い scene アンカー固定の
+   * 静的メタなので L3 cache segment に同梱する (volatileTail には入れない)。
+   * trim では PLOT_THREAD の次・L5 より先に削られる。空文字 / undefined は省略。
+   */
+  chronicleSnapshotText?: string;
   /**
    * chat episodic recall (エピソード記憶): 意味検索で見つけた過去の対話の抜粋。
    * semanticRecall と同じくクエリ依存で毎ターン変わるため cacheSegments には混ぜず、
@@ -473,6 +484,7 @@ export const PROMPT_DATA_TAGS = {
   focus: "focus_subject",
   l4: "codex_entries",
   plotThreadScenes: "plot_thread_scenes",
+  chronicle: "chronicle_snapshot",
   rag: "related_scenes",
   episodic: "chat_history",
   l5: "conversation_summary",
@@ -483,7 +495,7 @@ export const PROMPT_DATA_TAGS = {
 // 直後に `\` を挿入して無害化する。挿入後は `<` の次が `\` になり再マッチ
 // しない (冪等)。`<note>` `<sticky>` `<map>` は予約外なので素通しになる。
 const RESERVED_TAG_RE =
-  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|focus_subject|codex_entries|plot_thread_scenes|related_scenes|chat_history|conversation_summary)\b)/gi;
+  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|focus_subject|codex_entries|plot_thread_scenes|chronicle_snapshot|related_scenes|chat_history|conversation_summary)\b)/gi;
 
 /** データ内の予約タグ偽装をエスケープする (`</current_scene>` → `<\/current_scene>`)。 */
 export function escapeReservedTags(text: string): string {
@@ -737,6 +749,13 @@ function trimPlotThreadText(text: string, targetTokens: number): string {
   return trimRagText(text, targetTokens);
 }
 
+/** 作中年表スナップショット: header+intro ＋ 本文の 1 ブロック。`### ` 分割が無いため
+ * trimRagText 流用では予算超過時に丸ごと落ちる (C1 render が内部で ≤600 に収めるので
+ * contextBuilder 側は二次安全)。 */
+function trimChronicleText(text: string, targetTokens: number): string {
+  return trimRagText(text, targetTokens);
+}
+
 /** semantic recall (RAG): 末尾 (低スコア側) の抜粋ブロックから丸ごと削る。
  * 抜粋が 1 つも残らない場合はヘッダだけ残しても無意味なので空にする。 */
 function trimRagText(text: string, targetTokens: number): string {
@@ -776,6 +795,7 @@ export function trimToFit(
     countTokens(t.l6Text) +
     countTokens(t.ragText ?? "") +
     countTokens(t.plotThreadScenesText ?? "") +
+    countTokens(t.chronicleSnapshotText ?? "") +
     countTokens(t.episodicText ?? "");
 
   const total = sumTokens(layers);
@@ -786,7 +806,9 @@ export function trimToFit(
   const trimmedLayers: string[] = [];
   const texts = { ...layers };
 
-  // Trim order: EPISODIC → RAG → PLOT_THREAD → L5 → L4 → L2 → L3 → L1
+  // Trim order: EPISODIC → RAG → PLOT_THREAD → CHRONICLE → L5 → L4 → L2 → L3 → L1
+  // 作中年表 (CHRONICLE) は scene アンカー固定メタだが投機的注入なので、ユーザー明示の
+  // L1-5 より先・PLOT_THREAD の次に削る (L3 同梱だが trim key は独立)。
   // chat episodic recall (エピソード記憶) は最も投機的な層 (会話の柔らかい記憶) なので
   // scene RAG よりさらに先に犠牲にする。RAG (semantic recall) も自動検索の投機的文脈
   // なので、ユーザーが明示的に構成した既存レイヤーより先に犠牲にする。
@@ -801,6 +823,11 @@ export function trimToFit(
       key: "plotThreadScenesText",
       name: "PLOT_THREAD",
       fn: trimPlotThreadText,
+    },
+    {
+      key: "chronicleSnapshotText",
+      name: "CHRONICLE",
+      fn: trimChronicleText,
     },
     { key: "l5Text", name: "L5", fn: trimL5Text },
     { key: "l4Text", name: "L4", fn: trimL4Text },
@@ -1302,6 +1329,17 @@ export function buildSystemPrompt(
     plotThreadText = lines.join("\n");
   }
 
+  // 作中年表スナップショット: render 済テキスト (C1 renderChronicleSnapshot) を
+  // header+intro で枠付け。scene アンカー固定の静的メタなので L3 cache segment に同梱。
+  let chronicleText = "";
+  if (input.chronicleSnapshotText && input.chronicleSnapshotText.trim()) {
+    chronicleText = [
+      s.headers.chronicleState,
+      s.chronicleSnapshotIntro,
+      input.chronicleSnapshotText.trim(),
+    ].join("\n");
+  }
+
   // chat episodic recall (エピソード記憶): 意味検索による過去の対話抜粋。semanticRecall
   // と同じくクエリ依存で毎ターン変わるため cacheSegments には入れず prompt + volatileTail
   // のみ。順序は Codex / scene RAG の後ろに置き、古い対話が正典を上書きしないようにする。
@@ -1378,6 +1416,7 @@ export function buildSystemPrompt(
   let effectiveL6 = l6Text;
   let effectiveRag = ragText;
   let effectivePlotThread = plotThreadText;
+  let effectiveChronicle = chronicleText;
   let effectiveEpisodic = episodicText;
   const exclude = input.excludeLayers ?? [];
   if (exclude.includes("L1")) effectiveL1 = "";
@@ -1393,6 +1432,7 @@ export function buildSystemPrompt(
   if (exclude.includes("L6")) effectiveL6 = "";
   if (exclude.includes("RAG")) effectiveRag = "";
   if (exclude.includes("PLOT_THREAD")) effectivePlotThread = "";
+  if (exclude.includes("CHRONICLE")) effectiveChronicle = "";
   if (exclude.includes("EPISODIC")) effectiveEpisodic = "";
 
   let trimmedLayers: string[] | undefined;
@@ -1449,6 +1489,7 @@ export function buildSystemPrompt(
       l6Text: effectiveL6,
       ragText: effectiveRag,
       plotThreadScenesText: effectivePlotThread,
+      chronicleSnapshotText: effectiveChronicle,
       episodicText: effectiveEpisodic,
     };
     // 言語別 trim マーカーを渡す: en では L1/L3 のヘッダが英語になるため、
@@ -1462,6 +1503,7 @@ export function buildSystemPrompt(
     effectiveL6 = result.trimmedTexts.l6Text;
     effectiveRag = result.trimmedTexts.ragText ?? "";
     effectivePlotThread = result.trimmedTexts.plotThreadScenesText ?? "";
+    effectiveChronicle = result.trimmedTexts.chronicleSnapshotText ?? "";
     effectiveEpisodic = result.trimmedTexts.episodicText ?? "";
     if (result.trimmedLayers.length > 0) {
       trimmedLayers = result.trimmedLayers;
@@ -1504,6 +1546,10 @@ export function buildSystemPrompt(
     effectivePlotThread,
     PROMPT_DATA_TAGS.plotThreadScenes,
   );
+  effectiveChronicle = wrapDataLayer(
+    effectiveChronicle,
+    PROMPT_DATA_TAGS.chronicle,
+  );
   effectiveRag = wrapDataLayer(effectiveRag, PROMPT_DATA_TAGS.rag);
   effectiveEpisodic = wrapDataLayer(
     effectiveEpisodic,
@@ -1523,6 +1569,7 @@ export function buildSystemPrompt(
     effectiveL4,
     l4StableSegment,
     effectivePlotThread,
+    effectiveChronicle,
     effectiveRag,
     effectiveEpisodic,
     effectiveL5,
@@ -1538,6 +1585,9 @@ export function buildSystemPrompt(
   const l4Tokens = countTokens(effectiveL4);
   const plotThreadTokens = effectivePlotThread
     ? countTokens(effectivePlotThread)
+    : 0;
+  const chronicleTokens = effectiveChronicle
+    ? countTokens(effectiveChronicle)
     : 0;
   const ragTokens = effectiveRag ? countTokens(effectiveRag) : 0;
   const episodicTokens = effectiveEpisodic ? countTokens(effectiveEpisodic) : 0;
@@ -1578,6 +1628,13 @@ export function buildSystemPrompt(
       used: plotThreadTokens,
     });
   }
+  if (effectiveChronicle) {
+    layers.push({
+      layer: "CHRONICLE",
+      label: i18next.t("chat.context.layer.CHRONICLE"),
+      used: chronicleTokens,
+    });
+  }
   if (effectiveRag) {
     layers.push({
       layer: "RAG",
@@ -1613,6 +1670,7 @@ export function buildSystemPrompt(
     effectiveL2,
     effectiveL3,
     effectiveFocus,
+    effectiveChronicle,
     effectiveL4,
     effectivePlotThread,
     effectiveRag,
@@ -1626,7 +1684,7 @@ export function buildSystemPrompt(
   // しか張れない (ai.rs build_system_payload) ため、別セグメントにせず L3 スロットへ
   // 統合する。実運用では effectiveL3 (scene スコープ) と effectiveFocus
   // (codex/snippet スコープ) は排他だが、両在しても 1 セグメントに収めて上限を守る。
-  const l3CacheSegment = [effectiveL3, effectiveFocus]
+  const l3CacheSegment = [effectiveL3, effectiveFocus, effectiveChronicle]
     .filter((seg) => seg.trim().length > 0)
     .join("\n");
   const cacheSegments = [
@@ -1661,6 +1719,7 @@ export function buildSystemPrompt(
     l2Tokens +
     l3Tokens +
     focusTokens +
+    chronicleTokens +
     l4Tokens +
     plotThreadTokens +
     ragTokens +
@@ -1668,9 +1727,9 @@ export function buildSystemPrompt(
     l5Tokens +
     l6Tokens +
     reminderTokens +
-    // prompt 配列の固定要素は baseText/L1/L2/L3/focus/L4/plot_thread/rag/episodic/L5/L6 = 11。
+    // prompt 配列の固定要素は baseText/L1/L2/L3/focus/chronicle/L4/plot_thread/rag/episodic/L5/L6 = 12。
     // join("\n") の区切りは要素数 -1。reminder が入ると要素が 1 増える。
-    (reminderText ? 11 : 10);
+    (reminderText ? 12 : 11);
 
   return {
     prompt,

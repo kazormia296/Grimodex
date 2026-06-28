@@ -149,6 +149,9 @@ export const EN_CHAT_SYSTEM = {
       "\n## Structure of the Current Scene's Plot Threads (author's through-line)",
     /** block heading of each thread under plotThreadScenes. Starts with `### `. */
     plotThreadScenesThread: "### Thread: ",
+    /** Section heading of the story-timeline (chronicle) snapshot. */
+    chronicleState:
+      "\n## Story Timeline Snapshot (state at the current story time)",
   },
 
   /** Sandwich reminder: placed at the end of all data-layer injection (after L5 and
@@ -185,6 +188,13 @@ export const EN_CHAT_SYSTEM = {
     "continuity and foreshadowing callbacks.",
   /** Prefix of the current-scene role line under each thread in plotThreadScenes. */
   plotThreadScenesCurrent: "This scene's role: ",
+  /** Operating note at the top of the story-timeline (chronicle) snapshot. */
+  chronicleSnapshotIntro:
+    "The following is the state of the story world at the current scene's story time " +
+    "(characters' life/death, age and whereabouts, season, recent events, unresolved causes, " +
+    "and off-page background). Use it to avoid reviving dead characters, season or age " +
+    "contradictions, and references to events that have not happened yet. The canonical source " +
+    "of settings is the codex-entries section above.",
 
   /** Operating note at the top of the chatRecall section. These are episodic memory
    * (what was discussed, decided, or set aside) — a soft layer, NOT the canonical

@@ -185,6 +185,17 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { listCodexEntries } from "@/features/codex/api";
+import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
+import {
+  listEvents,
+  listEventParticipantsForProject,
+  listSceneEventsForProject,
+  getProjectCalendar,
+  listEventRelations,
+} from "@/features/chronicle/api";
+import { assembleChronicleSnapshotText } from "@/features/chronicle/chronicleSnapshot";
+import { useChronicleStore } from "@/features/chronicle/chronicleStore";
+import type { ChronicleCalendar } from "@/features/chronicle/chronicleTime";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { markStart, markEnd } from "@/lib/perfLog";
@@ -1807,6 +1818,64 @@ async function buildOutgoingScenePrompt(
 const PLOT_THREAD_MAX_MARKERS = 24;
 
 /**
+ * 作中年表 (Chronicle) スナップショットを AI 文脈用に組む（push）。
+ * project-scoped bulk API (XPROJ 安全) で取得 → アンカー解決 → derive → render。
+ * トグル OFF / events 0 件 / 出力空 は undefined（注入スキップ）。
+ */
+async function buildChronicleSnapshotTextForScene(
+  projectId: string,
+  sceneId: string,
+  lang: string,
+  codexNames: Map<string, string>,
+  sceneCodexIds: string[],
+): Promise<string | undefined> {
+  const enabled = useSettingsStore
+    .getState()
+    .getBoolean("aiPrompt.chronicle.enabled", true);
+  if (!enabled) return undefined;
+  const events = await listEvents(projectId);
+  if (events.length === 0) return undefined; // fast path
+
+  const [participants, sceneEvents, calendarRow, relations] = await Promise.all(
+    [
+      listEventParticipantsForProject(projectId),
+      listSceneEventsForProject(projectId),
+      getProjectCalendar(projectId),
+      listEventRelations(projectId),
+    ],
+  );
+
+  let calendar: ChronicleCalendar | null = null;
+  if (calendarRow) {
+    let boundaries: ChronicleCalendar["seasonBoundaries"] = [];
+    try {
+      const parsed = JSON.parse(calendarRow.seasonBoundaries);
+      if (Array.isArray(parsed)) boundaries = parsed;
+    } catch {
+      boundaries = [];
+    }
+    calendar = {
+      daysPerYear: calendarRow.daysPerYear,
+      seasonBoundaries: boundaries,
+    };
+  }
+
+  const readingOrder = computeGlobalSceneOrder(useTreeStore.getState().nodes);
+  return assembleChronicleSnapshotText({
+    sceneId,
+    events,
+    participants,
+    relations,
+    sceneEvents,
+    calendar,
+    readingOrder,
+    codexNames,
+    sceneCodexIds,
+    lang,
+  });
+}
+
+/**
  * Phase 3a: 現在シーンが属するプロットスレッドの「構成」を AI 文脈用に組む。
  * 本文は載せず、各糸での位置づけ＋同じ糸の他シーン（タイトル＋段階）だけ。
  * 全て in-memory store から導出（DB I/O なし）。意味検索と食い合わないので
@@ -2529,6 +2598,18 @@ async function buildSceneContextPrompt(opts: {
     }
   }
 
+  // 作中年表スナップショット（push・L3 cache 同梱）。codexNames は全 project codex
+  // (allEntries) から、sceneCodexIds は L4 注入済み codex から。
+  const chronicleSnapshotText = projectIdForFs
+    ? await buildChronicleSnapshotTextForScene(
+        projectIdForFs,
+        sceneCtx.id,
+        projectCtx?.language ?? "ja",
+        new Map(allEntries.map((e) => [e.id, e.name] as const)),
+        codexEntries.map((e) => e.id),
+      )
+    : undefined;
+
   markStart("buildSceneCtx.buildSystemPrompt");
   const promptResult = buildSystemPrompt({
     scene: sceneCtx,
@@ -2578,6 +2659,8 @@ async function buildSceneContextPrompt(opts: {
         : undefined,
     // Phase 3a: 現在シーンが属する縦糸の構成（本文なし・位置づけのみ）。
     plotThreadScenes: buildPlotThreadScenesInput(sceneCtx.id),
+    // Phase 1: 作中年表スナップショット（作中時刻の世界状態・矛盾防止）。
+    chronicleSnapshotText,
   });
   markEnd("buildSceneCtx.buildSystemPrompt");
 
@@ -2640,6 +2723,8 @@ export function contextPromptKey(
     s.activeSessionId ?? "",
     // Phase 3b: スレッド focus が変わったら stale 判定で再構築させる。
     s.threadFocusOverride?.threadId ?? "",
+    // Phase 1 (chronicle): 年表編集後に preview/送信の stale prompt 流用を防ぐ。
+    String(useChronicleStore.getState().revisionCounter),
   ].join("\u0000");
 }
 
