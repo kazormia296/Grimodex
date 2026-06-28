@@ -11,6 +11,7 @@ import type { EventPrecision, EventKind } from "@/db/schema";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
+import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 
 /**
  * 年表 mutation 後に AI コンテキストの鮮度カウンタを上げる（C3 prompt 鮮度）。
@@ -124,6 +125,8 @@ export async function createEvent(data: {
   });
   const [row] = await db.select().from(events).where(eq(events.id, id));
   bumpChronicleRevision();
+  // 作中年表 RAG (Phase 3): 新出来事をデバウンス付きで意味検索 index に投入。
+  scheduleEventIndex(id);
   return normalizeEvent(row);
 }
 
@@ -152,6 +155,8 @@ export async function updateEvent(
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(and(eq(events.id, id), eq(events.projectId, projectId)));
   bumpChronicleRevision();
+  // 作中年表 RAG (Phase 3): 出来事更新をデバウンス付きで意味検索 index に反映。
+  scheduleEventIndex(id);
 }
 
 export async function deleteEvent(

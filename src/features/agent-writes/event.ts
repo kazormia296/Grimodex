@@ -5,6 +5,7 @@ import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
+import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 import { applyUndoJournal } from "./undoJournal";
 import type { EventKind, EventPrecision } from "@/db/schema";
 
@@ -55,6 +56,16 @@ async function trackedEventWrite(
     },
   });
   bump();
+  // 作中年表 RAG (Phase 3): 出来事の本文/参加者を変える書き込みのみ意味検索
+  // index に投入する。delete / scene 橋 / relation は埋め込み対象フィールドを
+  // 変えないので index しない (relation/scene は別エンティティ)。
+  if (
+    command === "agent_event_create" ||
+    command === "agent_event_update" ||
+    command === "agent_event_set_participants"
+  ) {
+    scheduleEventIndex(result.entityId);
+  }
   if (!useGlobalHistoryStore.getState().isReplaying) {
     const journalId = result.undoJournalId;
     useGlobalHistoryStore.getState().push({

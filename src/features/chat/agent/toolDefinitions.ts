@@ -19,6 +19,25 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
   {
+    name: "search_events",
+    description:
+      "Semantic search of the chronicle (in-world fabula timeline) events by *meaning*, not keywords. Embeds the query and matches it against each event's title, note, primary character, location, and participant names. Use for natural-language questions like 'when does the protagonist first betray someone', 'events at the shrine', 'the battle where the king dies'. Returns eventId, title, kind, and score (cosine similarity), best matches first. Follow up with get_event_detail for full detail. Complements list_events (which lists in chronicle order without ranking).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Natural-language description of the event(s) to find",
+        },
+        limit: {
+          type: "number",
+          description: "Max results to return (default 10)",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "list_codex_by_type",
     description:
       "List all Codex entries of a specific type. Returns id, name, summary, and tags. Useful for cross-cutting queries (e.g. 'list every character', 'find all lore entries'). Common types: character, location, item, lore. Custom types are also supported.",
@@ -728,6 +747,7 @@ export const READ_ONLY_TOOL_NAMES: readonly string[] = [
   "get_event_detail",
   "get_character_timeline",
   "get_chronicle_state",
+  "search_events",
 ];
 
 /**

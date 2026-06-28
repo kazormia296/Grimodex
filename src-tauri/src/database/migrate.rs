@@ -1369,6 +1369,28 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_codex_chunks_model
                 ON codex_chunks(model_id);
 
+            -- Chronicle event semantic index (Phase 3): 1 event = 1 embedding row.
+            -- Event records (title + note + primary/location/participant names) are
+            -- short, so no chunking — PK=event_id enforces one vector per event.
+            -- Brand-new table, so IF NOT EXISTS covers both fresh and existing DBs
+            -- (no separate migration helper needed). FK cascade requires
+            -- PRAGMA foreign_keys=ON (already set; codex cascade test passes).
+            CREATE TABLE IF NOT EXISTS event_chunks (
+                event_id         TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+                event_title      TEXT NOT NULL,
+                event_kind       TEXT NOT NULL,
+                text             TEXT NOT NULL,
+                embedding        BLOB NOT NULL,
+                embedding_dim    INTEGER NOT NULL,
+                model_id         TEXT NOT NULL,
+                content_hash     TEXT NOT NULL,
+                chunker_version  TEXT NOT NULL,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_chunks_model
+                ON event_chunks(model_id);
+
             -- Chat episodic-memory index: 1 chat_message = 1 embedding row.
             -- エピソード記憶 (過去の対話) を scene/codex と同じ意味検索経路で recall
             -- するための埋め込み表。chat_messages には project_id が無いので、検索の

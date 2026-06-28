@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::database::Database;
 use crate::semantic::chat_search::ChatSearchCache;
 use crate::semantic::codex_search::CodexSearchCache;
+use crate::semantic::events_search::EventsSearchCache;
 use crate::semantic::search::SearchCache;
 use crate::workspace::{self, GlobalSettings};
 
@@ -131,6 +132,7 @@ pub(crate) fn open_workspace(
     gs_path: tauri::State<'_, GlobalSettingsPath>,
     semantic_cache: tauri::State<'_, SearchCache>,
     codex_semantic_cache: tauri::State<'_, CodexSearchCache>,
+    events_semantic_cache: tauri::State<'_, EventsSearchCache>,
     chat_semantic_cache: tauri::State<'_, ChatSearchCache>,
     path: String,
 ) -> Result<OpenWorkspaceResult, AppError> {
@@ -161,6 +163,7 @@ pub(crate) fn open_workspace(
     // 切替時に必ず捨てる (UUID 衝突は起きないが、安全側に倒す)。
     semantic_cache.clear()?;
     codex_semantic_cache.clear()?;
+    events_semantic_cache.clear()?;
     chat_semantic_cache.clear()?;
 
     // Update global settings

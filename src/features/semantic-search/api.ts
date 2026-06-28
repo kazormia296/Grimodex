@@ -108,6 +108,57 @@ export function codexReindexAll(projectId: string): Promise<number> {
 }
 
 /**
+ * Chronicle event の dense セマンティック検索 (作中年表 RAG, Phase 3)。
+ * Rust 側 `events_semantic_search` (semantic-embedding feature gate) を叩く。
+ * 1 出来事 1 ベクトル (title+note+主役名+場所名+参加者名 を埋め込み)。score は cosine。
+ * dense のみ (FTS 融合なし)。型は Rust 側 `EventSearchHit` (serde camelCase) と一致。
+ */
+export interface EventSearchHit {
+  eventId: string;
+  title: string;
+  kind: string;
+  score: number;
+}
+
+export function eventsSemanticSearch(args: {
+  projectId: string;
+  query: string;
+  limit: number;
+}): Promise<EventSearchHit[]> {
+  return invoke<EventSearchHit[]>("events_semantic_search", {
+    projectId: args.projectId,
+    query: args.query,
+    limit: args.limit,
+  });
+}
+
+/** Chronicle event 1 件を index 再構築。戻り値は投入ベクトル数 (0 = race/欠落)。 */
+export function eventsIndexEntry(eventId: string): Promise<number> {
+  return invoke<number>("events_index_entry", { eventId });
+}
+
+/**
+ * Phase 3: project 内の event index 充足状況。Embedder ロード不要の軽量クエリ。
+ * indexedEventCount < totalEventCount なら未 index の既存出来事がある
+ * (= bulk back-index が必要)。型は Rust 側 `EventsIndexStatus` (camelCase) と一致。
+ */
+export interface EventsIndexStatus {
+  indexedEventCount: number;
+  totalEventCount: number;
+}
+
+export function eventsIndexStatus(
+  projectId: string,
+): Promise<EventsIndexStatus> {
+  return invoke<EventsIndexStatus>("events_index_status", { projectId });
+}
+
+/** project 内の全 Chronicle event を一括再 index。戻り値は投入ベクトル総数。 */
+export function eventsReindexAll(projectId: string): Promise<number> {
+  return invoke<number>("events_reindex_all", { projectId });
+}
+
+/**
  * Chat episodic recall の dense 検索 (過去対話の意味検索)。Rust 側
  * `chat_message_search` を叩く。1 メッセージ 1 ベクトル。**生 cosine** を `score` に、
  * 重み付けの材料 (role / insertedToEditor / extractedCount) を併せて返す

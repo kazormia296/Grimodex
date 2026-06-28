@@ -1,6 +1,11 @@
 import { debugLog } from "@/lib/debugLog";
 import { errorDetail } from "@/lib/debugLog";
-import { semanticIndexScene, codexIndexEntry, chatIndexMessage } from "./api";
+import {
+  semanticIndexScene,
+  codexIndexEntry,
+  chatIndexMessage,
+  eventsIndexEntry,
+} from "./api";
 
 /**
  * シーン保存後にデバウンス付きでセマンティックインデックスを走らせるスケジューラ。
@@ -20,6 +25,7 @@ const INDEX_DEBOUNCE_MS = 2500;
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const codexTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const eventTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const chatTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function scheduleSceneIndex(sceneId: string): void {
@@ -80,6 +86,37 @@ export function cancelCodexIndex(entryId: string): void {
 }
 
 /**
+ * Chronicle event 保存後にデバウンス付きで `events_index_entry` を走らせる
+ * (作中年表 RAG, Phase 3)。scene/codex 版と同型: title/note/参加者/主役/場所 変更時に
+ * 呼び、2.5s 後 1 度だけ invoke。UI 経路 (chronicle/api.ts) と agent 経路
+ * (agent_event_*) の両方から呼ぶこと。Rust の content_hash 再検証が正しさを担保。
+ */
+export function scheduleEventIndex(eventId: string): void {
+  if (!eventId) return;
+  const existing = eventTimers.get(eventId);
+  if (existing !== undefined) clearTimeout(existing);
+  const t = setTimeout(() => {
+    eventTimers.delete(eventId);
+    eventsIndexEntry(eventId).catch((e) => {
+      debugLog.warn(
+        "semantic-search",
+        `events_index_entry failed: ${eventId}`,
+        errorDetail(e),
+      );
+    });
+  }, INDEX_DEBOUNCE_MS);
+  eventTimers.set(eventId, t);
+}
+
+export function cancelEventIndex(eventId: string): void {
+  const t = eventTimers.get(eventId);
+  if (t !== undefined) {
+    clearTimeout(t);
+    eventTimers.delete(eventId);
+  }
+}
+
+/**
  * チャットメッセージ確定後にデバウンス付きで `chat_index_message` を走らせる
  * (エピソード記憶の index)。scene/codex 版と同型。
  * - addMessage (user/assistant の確定 1 回) と updateMessageMetadata
@@ -118,11 +155,13 @@ export function _resetSchedulerForTests(): void {
   timers.clear();
   for (const t of codexTimers.values()) clearTimeout(t);
   codexTimers.clear();
+  for (const t of eventTimers.values()) clearTimeout(t);
+  eventTimers.clear();
   for (const t of chatTimers.values()) clearTimeout(t);
   chatTimers.clear();
 }
 
-/** テスト用: 現在保持しているタイマー件数 (scene + codex + chat)。 */
+/** テスト用: 現在保持しているタイマー件数 (scene + codex + event + chat)。 */
 export function _pendingCount(): number {
-  return timers.size + codexTimers.size + chatTimers.size;
+  return timers.size + codexTimers.size + eventTimers.size + chatTimers.size;
 }
