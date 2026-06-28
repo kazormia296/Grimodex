@@ -9,27 +9,40 @@
 
 ---
 
-## 1. 背景・現状（recon ground-truth, 2026-06-28 監査）
+## 1. 背景・現状（recon ground-truth, 2026-06-28 監査 → **2026-06-28 docs 同期で更新**）
 
-並列エージェント監査（2 ワークフロー・敵対 verify=injected:no/high）で確定した事実：
+> **読み方:** 当初 recon（6/28 朝）で「未実装」と確定した項目のうち、**Phase 1（静的注入）・Phase 2a（agent tools）・Phase 2b（MCP read/write）の大部分は同一ブランチで出荷済み**。以下は **✅ 出荷済み** / **⏳ 残タスク** に分離する。
 
-1. **年表は AI 文脈に一切注入されていない。** `buildSystemPrompt`（`src/features/chat/contextBuilder.ts:828`）の L0〜L6＋FOCUS＋RAG/EPISODIC/PLOT_THREAD のどの層にも events 系は無く、`BuildSystemPromptInput`（同 L101-277）に年表フィールドが存在しない。年表 API（`listEvents` 等）の呼び出し元は chronicle feature 内（パネル描画・季節矛盾・抽出ダイアログ重複判定）に限定。
-2. **AI と年表の唯一の接点は抽出ウィザード（P4f）**。これは **本文テキスト → events（抽出）の一方向**で、独自 `buildExtractEventsPrompt`＋`sendChatMessageWithThinking` 直叩き（`extractEventsApi.ts:107-147`）。`buildSystemPrompt` 経路は通らない。
+### ✅ 出荷済み（2026-06-28 時点）
+
+1. **静的スナップショット注入（Phase 1）** — `buildSceneCtx`（`chatStore.ts`）が `assembleChronicleSnapshotText` → `buildSystemPrompt({ chronicleSnapshotText })` を配線。`contextBuilder.ts` に `chronicleSnapshotText` / CHRONICLE trim key / `<chronicle_snapshot>` ラッパー / L3 cache 同梱。設定 `aiPrompt.chronicle.enabled`（既定 ON、Settings → AI）。
+2. **derive + render 正本** — `src/features/chronicle/chronicleSnapshot.ts`（`deriveChronicleSnapshot`, `renderChronicleSnapshot`, `resolveSceneAnchor`）。
+3. **project-scoped bulk API（C0）** — `listEventParticipantsForProject`, `listSceneEventsForProject` 等（`chronicle/api.ts` + テスト）。
+4. **アプリ内 agent tools（Phase 2a）** — read: `list_events`, `get_event_detail`, `get_character_timeline`, `get_chronicle_state`。write: `create_event`, `update_event`, `delete_event`, stamp/unstamp, participants, relations（`toolDefinitions.ts` / `chronicleReadTools.ts` / `chronicleWriteTools.ts`）。
+5. **外部 MCP parity（Phase 2b）** — `grimodex-mcp/src/tools/chronicle.rs` + `db.rs` に events 系 SQL。TS↔Rust fixture parity test で drift gate。
+6. **抽出ウィザード（P4f）** — 従来どおり `extractEventsApi.ts` 経由（`buildSystemPrompt` 非経由の一方向抽出）。
+
+### ⏳ 残タスク（本 spec の未完了範囲）
+
+1. **`chronicleRevision` による prompt 鮮度 key** — spec C3 要求の monotonic bump + `contextPromptKey` join は **未実装**。年表編集後に stale `lastSystemPrompt` が流用されうる。
+2. **tracked-write / undo（C6）** — 年表 CRUD は依然 **change_event / undo_journal 非発火**（UI 編集も Ctrl+Z 対象外）。agent/MCP write は別経路。
+3. **Phase 3: events RAG 索引化** — 後回し（本 spec スコープ外のまま）。
+4. **`get_scene_timeline_neighbors` 命名** — 依然 Timeline story-time 隣接。Chronicle とは別物（ドキュメントで明示済み、`CONTEXT_INJECTION.md` 参照）。
+
+### 参考: 当初 recon の確定事実（履歴）
+
+並列エージェント監査（2 ワークフロー・敵対 verify=injected:no/high）時点では以下だった（**上記 ✅ で解消済みの項目は打ち消し線相当**）:
+
+1. ~~年表は AI 文脈に一切注入されていない。~~ → **解消**（`chronicleSnapshotText` 配線済み）
+2. AI と年表の唯一の接点は抽出ウィザード → **解消**（静的注入 + agent/MCP tools 追加）
 3. **buildSystemPrompt の呼び出しは 2 経路**（plot-thread phase3 recon と同）:
    - `buildSceneCtx`（`chatStore.ts` scene 枝, **scene スコープ**。`semanticRecall` 入力もここ）→ **スナップショット注入の置き場**。
    - `refreshContextLayers` 非 scene 枝（folder/project/codex/snippet＋`focusSubject`）。
-4. **cacheSegments = `[L0+L1, L2, L3+focus, L4stable]`**（`contextBuilder.ts:1599-1604`）、`volatileTail`（同 1610-1620, cache_control 無し末尾）。毎ターン変わる層（RAG/episodic/plot-thread）は cacheSegments に**絶対入れない**契約。
-5. **ツール表面は 2 つ・両方とも年表ツール ゼロ**:
-   - アプリ内 chat agent（TS）: `toolDefinitions.ts` の `AGENT_TOOLS`(30+)・`READ_ONLY_TOOL_NAMES`(16)・`MUTATING_TOOL_NAMES`（`toolProtocolParse.ts:111-119`, Hermes write block）。dispatch=`executeTool`/`executeReadOnlyTool`、`READ_ONLY_EXECUTORS`/`MUTATING_EXECUTORS`。
-   - **Context Creator** は `CREATOR_TOOLS` 固定 4 件（`contextCreatorApi.ts:28-35`）のみ。**年表 tool は Phase 2a でも載せない**（chat agent / research subagent のみ）。
-   - 外部 MCP `grimodex-mcp`（Rust 別クレート）: `server.rs` に 28 tools/21 read。`db.rs` に **SQL 再実装**（src-tauri import 不可）。events 表は db.rs スキーマに**存在すらしない**。
-   - ⚠️ 両表面の `get_scene_timeline_neighbors` は `tree_nodes.story_time_order/label`（Codex 物語フェーズ＝reading-order 寄り）であって**作中年表(events) ではない**。
-6. **agent executor はフィーチャ store を使わず** `useTreeStore.getState().projectId`＋Drizzle / `invoke("db_execute")` で実データに到達。store は UI ライフサイクルでアクティブ project とずれ得るため、**XPROJ は executor 側で必須**。
-7. **年表 CRUD は change_event / undo_journal を一切発火していない**（`createEvent` / `updateEvent` / `deleteEvent` / `setEventParticipants` / `removeEventRelation` / `importExtractedEvents` すべてプレーン Drizzle 直書き）。＝現状は **UI の年表編集すら undo(Ctrl+Z) にも Linter 変更検知にも乗らない**。※ スナップショット scope には登録済（復元は安全, [[grimodex-snapshot-scope-registration]]）。
-8. **既存 chronicle API の XPROJ ギャップ**（§5/C0 で解消必須）:
-   - `listEventParticipants(eventId)` — projectId なし、`event_id` のみ WHERE。
-   - `setEventParticipants` / `unlinkSceneFromEvent` — projectId gate なし。
-   - `event_participants` / `scene_events` は `project_id` 列を持たない（JOIN scope 必須）。
+4. **cacheSegments = `[L0+L1, L2, L3+focus+chronicle, L4stable]`**、`volatileTail` に RAG/episodic/plot-thread。毎ターン変わる層は cacheSegments に**入れない**契約。
+5. ~~ツール表面は年表ツール ゼロ~~ → **解消**（agent 11 tools + MCP chronicle.rs）
+6. **agent executor はフィーチャ store を使わず** `useTreeStore.getState().projectId`＋Drizzle / `invoke("db_execute")` で実データに到達。**XPROJ は executor 側で必須**（bulk API で大部分解消、JOIN テーブルは引き続き注意）。
+7. **年表 CRUD は change_event / undo_journal を一切発火していない** — **⏳ 残タスク（C6）**
+8. ~~既存 chronicle API の XPROJ ギャップ~~ → **bulk API で大部分解消**（`listEventParticipantsForProject` 等）
 
 ### 年表 5 表スキーマ（`src/db/schema.ts:1325-1442`, XPROJ 評価の基礎）
 
@@ -196,8 +209,8 @@ export function resolveSceneAnchor(
 - `BuildSystemPromptInput.chronicleSnapshotText?: string`（render 済み文字列。contextBuilder は純粋）。
 - 本文組立: `### {headers.chronicleState}` ＋ snapshot 本文。**セクション = `### ` ブロック**で trim がブロック単位末尾落とし可能に。
 - `TrimInput.chronicleSnapshotText?` → `sumTokens` 加算 → `trimOrder` 挿入。
-  - **trim 順 = EPISODIC → RAG → PLOT_THREAD → L5 → L4 → L2 → L3（chronicle は L3 本文と同梱）→ L1**。
-  - chronicle は **L3 セグメント内**に連結（独立 trim key だが L3 と同じ運命＝scene 文脈の一部）。budget 逼迫時は L3 本文より先に chronicle ブロック末尾から落とす（`trimChronicleText` = `trimRagText` 流用）。
+  - **trim 順 = EPISODIC → RAG → PLOT_THREAD → CHRONICLE → L5 → L4 → L2 → L3 → L1**（`contextBuilder.ts` `trimToFit`）。
+  - CHRONICLE は **L3 cache セグメントに同梱**するが、trim では **独立 key**（PLOT_THREAD の次・L5 より先に削る）。L3 本文とは別ブロックとして末尾から落とす（`trimChronicleText`）。
 - wrap/hasDataLayers/token 計上/`layers.push({ layer: "CHRONICLE" })`。
 - **cache 配置（D2 確定）**: `effectiveL3` に chronicle を連結 → `l3CacheSegment` 同梱。plot-thread が volatileTail なのは「毎ターン query 依存」だが、chronicle は scene アンカー依存で **scene 文脈と一体**のため L3 が自然。年表編集時は `chronicleRevision` bump で cache 無効化（下記）。
 - **totalTokens** 固定要素カウント +1（chronicle 層追加）。
@@ -276,7 +289,7 @@ const chronicleSnapshotText = renderChronicleSnapshot(snapshot, lang);
 - `create_event` / `update_event` / `delete_event`
 - `stamp_scene_event(sceneId, eventId)` / `unstamp_scene_event`
 - `set_event_participants(eventId, [{codexId, role}])`
-- `create_event_relation(causeId, effectId)` / `remove_event_relation`
+- `add_event_relation(causeId, effectId)` / `remove_event_relation`
 
 **書き込み様式（D3 確定）**: 直接コミット型＋tracked/undo。propose 型は将来オプション。
 

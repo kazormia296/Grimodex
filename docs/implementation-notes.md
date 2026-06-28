@@ -1,7 +1,10 @@
 # 実装補足資料
 
 > 作成日: 2026-04-03
+> **最終棚卸し: 2026-06-28**
 > 対象: implementation-workflow.md のタスクのうち、設計書だけでは実装方針が不明確な項目
+
+> ⚠️ **読む前に:** 本書の §1.1 / §4 は **2026-04 時点のスナップショット**から部分的に更新した。TipTap・レイアウト・Chronicle 等は大幅に進んでいる。**現行の正本**は各 `Grimodex_*` 設計書、`SPEC.md`（0.9.0）、[`CONTEXT_INJECTION.md`](CONTEXT_INJECTION.md)。本書は **未解消ギャップ（deferred 項目）** の参照用に残す。
 
 本文書は、横断的タスク・TipTap拡張・クリップボードMIMEについて
 **現状のコード** と **設計書の仕様** のギャップを明示し、
@@ -11,23 +14,24 @@
 
 ## 1. TipTap 拡張: 現状 vs 設計書
 
-### 1.1 現状のエディタ構成
+### 1.1 現状のエディタ構成（2026-06-28 更新）
 
-**`src/features/editor/extensions.ts`**（エントリポイント）:
-```typescript
-// 現在: 4 extension のみ
-[StarterKit, Markdown.configure({ html: true }), AuthorshipMark, RubyNode]
-```
+**`src/features/editor/extensions.ts`**（エントリポイント）の主要構成:
+
+- **StarterKit**（Underline / Link 含む）+ **ParagraphWithEmptyLineSupport** + **Markdown**
+- **Placeholder**, **CharacterCount**, **Typography**（設定連動）
+- **Table** 系、**ToolbarShortcutsExtension**
+- **カスタム Mark/Node:** AuthorshipMark, EmphasisDotsMark, RubyNode, SceneBreakNode, SceneBeatNode, GeneratedProseBlockNode, CommentMark, LintDisableMark, ForeshadowSetup/PayoffMark, AnnotationMark
+- **拡張機能:** FindReplace, ParagraphMove, InlineAtomNavigation, SlashCommand, Codex @mention（条件付き）
+- **ProseMirror Plugin 経由:** Lint デコレーション、Comment デコレーション、Annotation
 
 **動的プラグイン**（React hooks 経由で `editor.registerPlugin()`）:
-- `CodexHighlightPlugin` — Codex エントリ名のデコレーション
-- `AttributionPlugin` — 帰属ソースの色分けデコレーション
-- `AiEditedPlugin` — AI テキスト内のユーザー編集でマーク分割
-- `InsertHighlight` — 挿入直後の一時ハイライト
+- `CodexHighlightPlugin`, `AttributionPlugin`, `AiEditedPlugin`, `InsertHighlight`, `FocusModePlugin`
 
 **Toolbar**（`src/features/editor/Toolbar.tsx`）:
-- 現在 4 ボタンのみ: Bold, Italic, Heading(H2), BulletList
-- `extraSlots` プロップで外部ボタン追加可能（cursor, attribution トグル等）
+- 書式・見出し・リスト・小説用（Ruby 等）・右寄せトグル群。`extraSlots` で外部ボタン追加可能
+
+> 以下 §1.2 以降の「設計書が要求する追加拡張」は、**2026-04 時点のギャップ一覧**。EmphasisDots / CommentMark / SceneBreak 等は **実装済み**。未解消項目のみ **deferred** として残す。
 
 ### 1.2 設計書が要求する追加拡張
 
@@ -492,7 +496,9 @@ export function parseClipboardHtml(
 
 ## 4. 横断タスク: Left Dock 移行（A-3）
 
-### 4.1 現状のレイアウト構造
+> **注（2026-06-28）:** 本節は **2026-04 時点の移行前** の構造メモ。**IntelliJ 式レイアウト（`layoutStore` / RegionStripe / center-bottom Chronicle 等）は移行完了**。現行の正本は [`Grimodex_レイアウトシステム置換設計書.md`](Grimodex_レイアウトシステム置換設計書.md)。以下は履歴参照用。
+
+### 4.1 現状のレイアウト構造（移行前・履歴）
 
 ```
 App.tsx

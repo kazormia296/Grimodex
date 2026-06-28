@@ -8,7 +8,18 @@ Codexのフェーズ（経時的変化）はTimeline上にピンとして表示�
 
 デフォルト位置: Bottom Dock（非表示）。オプトイン機能であり、線形物語では必須ではない。
 
-設計思想: **Timelineはビュー兼story-timeの唯一の編集点。Scenesパネルが reading-order の編集、Timelineが story-time の編集、という責務分離。**
+設計思想: **Timeline は reading-order / story-time 上のシーン配置と Codex Phase ピンの編集点。Scenes パネルが reading-order（ツリー順）の編集を担う。**
+
+> **注（2026-06-28・Chronicle 出荷後）:** **作中時間（fabula）の Event 軸**は Timeline とは別概念の **Chronicle パネル**（`chronicle`）が担う。Timeline の `scenes` モードは「シーンを軸にした年表ビュー」、Chronicle は「Scene 非依存の出来事（オフページ含む）」——用語上どちらも「年表」と呼ばれうるが、本設計書の「シーン年表」は **Timeline scenes モード**を指す。Chronicle との責務分離:
+>
+> | | Timeline | Chronicle |
+> |---|---|---|
+> | atom | Scene ノード | Event（独立エンティティ） |
+> | 時間軸 | story-time / reading / write | ordinal + 暦ライト（`start_time`） |
+> | オフページ | 不可（シーン必須） | 可（scene 参照 0） |
+> | AI 注入 | Phase 解決（L4）、plot-thread（PLOT_THREAD 層） | 世界状態スナップショット（CHRONICLE 層） |
+>
+> 詳細: [`docs/superpowers/specs/2026-06-26-chronicle-timeline-design.md`](superpowers/specs/2026-06-26-chronicle-timeline-design.md)、[`CONTEXT_INJECTION.md`](CONTEXT_INJECTION.md)。
 
 **表示モード（viewMode）**: Timeline は 2 つの表示モードを持つ（2026-06-22 出荷, PR #168 / `d72468c9`）。`scenes`（シーン年表＝本文書 A〜D 章の主対象）と、`threads`（名前付きプロットスレッドのスイムレーン＝Plottr 型）。x 軸（シーンの並び）と軸モード・ズームは両モードで共通。`threads` モードの詳細は後述「プロットスレッド表示（threads ビューモード）」節を参照。
 

@@ -1,5 +1,10 @@
 # Grimodex レイアウトシステム設計書
 
+> ⚠️ **アーカイブ（2026-06-28）:** 本書は `docs/archive/` に移管した旧版。現行の正本は [`Grimodex_レイアウトシステム置換設計書.md`](../Grimodex_レイアウトシステム置換設計書.md)。ショートカットは旧版のまま残っている:
+> - **`Ctrl+Alt+K`** — 本書では Command Center Results だが、0.9 以降は **Chronicle（作中年表）**（`panelRegions.ts`）
+> - **`Ctrl+Shift+F`** — 本書では Command Center バーだが、0.9 以降は **検索結果パネル**（Command Center Results）
+> - **`Ctrl+Shift+P`** — 0.9 以降は **Command Center バー**（コマンドモード起動）
+
 ## 設計思想
 
 採用モデル: **IntelliJ 式ツールウィンドウ Stripe + VS Code (Dockview) 式 Dock の hybrid**

@@ -1857,6 +1857,17 @@ DBスキーマの正規版は [統合DBスキーマ設計書](./Grimodex_統合D
 - `context_mode_override`: NULL = 変更なし。値は `always` / `mentioned` / `suppress` / `hidden`。
 - `anchor_node_id`: `ON DELETE SET NULL` — アンカーシーン削除時はNULLになり、Phaseは無効化（UIで警告表示）。
 
+**AI 露出 vs Wiki 限定（2026-06-28 追記）:**
+
+Phase の effective `context_mode` が `suppress` または `hidden` のとき、UI では **「Wiki 限定 / AI に見せない」** と表示する（`phaseResolver.ts` の `aiVisible` 分解）。意味:
+
+| 区分 | effective context_mode | AI 文脈 | 用途 |
+|------|------------------------|---------|------|
+| **AI 露出** | `always` / `mentioned` | Phase summary 等が注入対象 | 物語上の状態変化を AI に覚えさせる |
+| **Wiki 限定** | `suppress` / `hidden` | **注入しない**（prompt 重量に無影響） | 設計メモ・純粋な記録・AI に見せたくない下書き |
+
+Timeline タブの exposure バッジ（`exposureWikiCount` / `exposureAiCount`）と `maxAiVisibleSummaryChars` 警告は、この分解を可視化する。Base entry の `context_mode` も Phase override と同様に Wiki 限定判定に使う。
+
 **Phase と時間軸の関係（設計不変条件）**:
 - **Phase の anchor は常に Scene**。「作中時間」への切り替えは、アンカーを書き換えるのではなく、同じアンカーを異なる軸で並べ替えることで行う。
 - **Phase 解決で使う時間軸は 2 つのみ**: 読者順（`tree_nodes.sort_order` の DFS 展開）、作中時間（`tree_nodes.story_time_order`）。
