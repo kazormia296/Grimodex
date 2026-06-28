@@ -109,6 +109,17 @@
 6. browser-mock SCHEMA_DDL を migrate.rs と一致させないとテスト DB 崩れ。
 7. CHECK 制約と EVENT_GRANULARITIES/EVENT_KINDS の値ずれ→INSERT 失敗。
 
+## 実装完了状況（2026-06-28・branch `feat/chronicle-full-calendar`）
+全フェーズ実装・各フェーズ green でコミット済（未 PR）。
+- **P1**(78b75a1a) schema/migration＋暦・日付エンジン（chronicleTime TDD）。
+- **P2**(adc2ef4a) UI=CodexEntryPicker(種別フィルタ)・EventDateEditor(暦駆動 粒度別 年/月/日/季節/時刻)・kind ドロップダウン・暦エディタ(月/曜日/開始年)・people/locations 分割。
+- **P3**(0f2aca2a) 日付の確度を snapshot へ注入（TS↔Rust parity・fixtures exact/approx/unknown/null・intro 明記）。
+- **P4**(055ab18c) 新フィールドを tracked-write(agent_writes 全SQL)＋agent ツール(create/update/get_event_detail)へ配線・kind→EVENT_KINDS。
+  - **重要**: UI 手動編集(uiUpdateEvent)も Rust agent_event_update を通るため、P4 の配線がないと粒度/時刻編集が永続化されない（P2 の潜在ギャップを P4 で解消）。
+
+**機械検証（全 green）**: tsc / chronicle+revision+agent-writes / chat(agent+contextBuilder) / cargo test agent_writes(round-trip)+grimodex-mcp(128) / fixtures parity(TS+Rust) / eslint / clippy --all-targets。
+**残（非ゲート・要別作業）**: フル vitest スイート＋browser test＋ライブ LLM QA（実機・API キー必須）。MCP(grimodex-mcp)の write/detail への minute/granularity 露出（in-app 専用で出荷・MCP は snapshot 確度のみ parity）。`statBuilder` 等の formatChronicleDate を Rust へ移植した完全日付注入（現状は season＋確度のみ注入・日付整形は UI/TS 専用）。
+
 ## 確定したギャップ既定（critic gaps への回答）
 - **kind 初期セット** = `generic`/`birth`/`death`/`accession(即位)`（最小・EVENT_KINDS 定数経由で後付け拡張可）。
 - **weekday 意味論** = 独立参照配列。週長=配列長、`weekdayOf(dayNum)=((dayNum%wl)+wl)%wl`。daysPerYear と割り切れる必要なし。day 0=index 0。
