@@ -6,7 +6,7 @@ import {
   assembleChronicleSnapshotText,
   type ChronicleSnapshotInput,
 } from "./chronicleSnapshot";
-import type { ChronicleAnchor } from "./resolveSceneAnchor";
+import type { ChronicleAnchor, SceneChronicle } from "./resolveSceneAnchor";
 import type { EventRow, EventRelationRow } from "./api";
 import type { ChronicleCalendar } from "./chronicleTime";
 import { countTokens } from "@/features/chat/contextBuilder";
@@ -62,9 +62,13 @@ const stamped = (
   ordinal: string,
   startTime: number | null,
   precision: ChronicleAnchor["precision"] = "exact",
+  startMinute: number | null = null,
+  startGranularity: string = "none",
 ): ChronicleAnchor => ({
   ordinal,
   startTime,
+  startMinute,
+  startGranularity,
   precision,
   source: "stamped",
 });
@@ -362,6 +366,8 @@ describe("deriveChronicleSnapshot — none mode", () => {
         anchor: {
           ordinal: "",
           startTime: null,
+          startMinute: null,
+          startGranularity: "none",
           precision: null,
           source: "none",
         },
@@ -390,6 +396,117 @@ describe("deriveChronicleSnapshot — time/season", () => {
       input({ anchor: stamped("a5", null), calendar: CAL, characterIds: [] }),
     );
     expect(snap.time.season).toBeNull();
+  });
+});
+
+// 月＋開始年つき暦（formattedDate 用）。12ヶ月×30日=360 で CAL と dpy 整合。
+const CAL_MONTHS: ChronicleCalendar = {
+  daysPerYear: 360,
+  startYear: 1000,
+  seasonBoundaries: CAL.seasonBoundaries,
+  months: Array.from({ length: 12 }, (_, i) => ({
+    name: `${i + 1}月`,
+    days: 30,
+  })),
+  weekdayNames: ["日", "月", "火", "水", "木", "金", "土"],
+};
+
+describe("deriveChronicleSnapshot — formattedDate", () => {
+  it("暦＋粒度(time)＋startTime が揃うと整形済み日付を出す（ja）", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 96212, "exact", 540, "time"),
+        calendar: CAL_MONTHS,
+        characterIds: [],
+      }),
+      "ja",
+    );
+    // 1000 + floor(96212/360)=1267年, dayOfYear 92 → 4月3日, 540分 → 09:00
+    expect(snap.time.formattedDate).toBe("1267年4月3日 09:00");
+  });
+
+  it("粒度 day は時刻を付けない", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 96212, "exact", 540, "day"),
+        calendar: CAL_MONTHS,
+        characterIds: [],
+      }),
+      "ja",
+    );
+    expect(snap.time.formattedDate).toBe("1267年4月3日");
+  });
+
+  it("lang=en は英語整形", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 96212, "exact", 540, "time"),
+        calendar: CAL_MONTHS,
+        characterIds: [],
+      }),
+      "en",
+    );
+    expect(snap.time.formattedDate).toBe("4月 3, 1267 09:00");
+  });
+
+  it("粒度 none は formattedDate=null", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 96212, "exact", null, "none"),
+        calendar: CAL_MONTHS,
+        characterIds: [],
+      }),
+      "ja",
+    );
+    expect(snap.time.formattedDate).toBeNull();
+  });
+
+  it("暦未設定なら formattedDate=null", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 96212, "exact", 540, "time"),
+        calendar: null,
+        characterIds: [],
+      }),
+      "ja",
+    );
+    expect(snap.time.formattedDate).toBeNull();
+  });
+
+  it("startTime=null なら formattedDate=null", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", null, "exact", 540, "time"),
+        calendar: CAL_MONTHS,
+        characterIds: [],
+      }),
+      "ja",
+    );
+    expect(snap.time.formattedDate).toBeNull();
+  });
+
+  it("既定 lang（引数省略）は ja 整形", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 96212, "exact", 540, "time"),
+        calendar: CAL_MONTHS,
+        characterIds: [],
+      }),
+    );
+    expect(snap.time.formattedDate).toBe("1267年4月3日 09:00");
+  });
+
+  it("render の時刻行は formattedDate を載せる（ja）", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 96212, "exact", 540, "time"),
+        calendar: CAL_MONTHS,
+        characterIds: [],
+      }),
+      "ja",
+    );
+    const text = renderChronicleSnapshot(snap, "ja");
+    expect(text).toContain("作中時刻: 1267年4月3日 09:00");
   });
 });
 
@@ -455,6 +572,8 @@ describe("renderChronicleSnapshot", () => {
         anchor: {
           ordinal: "",
           startTime: null,
+          startMinute: null,
+          startGranularity: "none",
           precision: null,
           source: "none",
         },
@@ -506,7 +625,14 @@ describe("renderChronicleSnapshot", () => {
 describe("pickSnapshotCharacters", () => {
   it("none アンカーは空（オフページのみ）", () => {
     const ids = pickSnapshotCharacters({
-      anchor: { ordinal: "", startTime: null, precision: null, source: "none" },
+      anchor: {
+        ordinal: "",
+        startTime: null,
+        startMinute: null,
+        startGranularity: "none",
+        precision: null,
+        source: "none",
+      },
       events: [mkEvent({ id: "e1", primaryCodexId: "c1", ordinal: "a1" })],
       participants: [],
       sceneCodexIds: ["sceneChar"],
@@ -554,7 +680,14 @@ describe("pickSnapshotCharacters", () => {
 
   it("none アンカーでは @mention 人物も含めない（D1: オフページのみ）", () => {
     const ids = pickSnapshotCharacters({
-      anchor: { ordinal: "", startTime: null, precision: null, source: "none" },
+      anchor: {
+        ordinal: "",
+        startTime: null,
+        startMinute: null,
+        startGranularity: "none",
+        precision: null,
+        source: "none",
+      },
       events: [],
       participants: [],
       sceneCodexIds: [],
@@ -604,5 +737,109 @@ describe("assembleChronicleSnapshotText", () => {
       lang: "ja",
     });
     expect(text).toBeUndefined();
+  });
+
+  it("scene-own: sceneChronicle の暦日付で source=scene の時刻行(formattedDate)を出す", () => {
+    const sceneChronicle = new Map<string, SceneChronicle>([
+      [
+        "s1",
+        {
+          startTime: 96212,
+          startMinute: 540,
+          startGranularity: "time",
+          precision: "exact",
+        },
+      ],
+    ]);
+    const text = assembleChronicleSnapshotText({
+      sceneId: "s1",
+      events: [
+        mkEvent({ id: "e1", title: "邂逅", ordinal: "a1", startTime: 96000 }),
+      ],
+      participants: [],
+      relations: [],
+      sceneEvents: [], // stamp なし → scene-own が発火する条件
+      calendar: CAL_MONTHS,
+      readingOrder: new Map([["s1", 0]]),
+      codexNames: new Map(),
+      sceneChronicle,
+      lang: "ja",
+    });
+    expect(text).toContain("作中時刻: 1267年4月3日 09:00");
+    expect(text).toContain("邂逅"); // synthetic ordinal 経由で recent も出る
+  });
+
+  it("events 0件でも現在シーンに暦日付があれば注入する（source=scene）", () => {
+    const sceneChronicle = new Map<string, SceneChronicle>([
+      [
+        "s1",
+        {
+          startTime: 96212,
+          startMinute: null,
+          startGranularity: "day",
+          precision: "exact",
+        },
+      ],
+    ]);
+    const text = assembleChronicleSnapshotText({
+      sceneId: "s1",
+      events: [],
+      participants: [],
+      relations: [],
+      sceneEvents: [],
+      calendar: CAL_MONTHS,
+      readingOrder: new Map([["s1", 0]]),
+      codexNames: new Map(),
+      sceneChronicle,
+      lang: "ja",
+    });
+    expect(text).toBeDefined();
+    expect(text).toContain("作中時刻: 1267年4月3日");
+  });
+
+  it("暦日付が全 event より前のシーン: 時刻行は出るが未来の出来事は背景に漏らさない（source=scene, synthetic ordinal=''）", () => {
+    // scene の startTime(0) が全 event(>=96000)より前 → syntheticOrdinal="".
+    // recent/offpage/causal は空（まだ何も起きていない＝正しい）が、時刻行は注入される。
+    // 未来の出来事を offpage に出すと「既に起きた背景」と誤読させる spoiler になるため出さない。
+    const sceneChronicle = new Map<string, SceneChronicle>([
+      [
+        "s1",
+        {
+          startTime: 0,
+          startMinute: null,
+          startGranularity: "day",
+          precision: "exact",
+        },
+      ],
+    ]);
+    const text = assembleChronicleSnapshotText({
+      sceneId: "s1",
+      events: [
+        mkEvent({
+          id: "e1",
+          title: "未来の出立",
+          ordinal: "a1",
+          startTime: 96000,
+        }),
+        mkEvent({
+          id: "e3",
+          title: "未来の決戦",
+          ordinal: "a3",
+          startTime: 96500,
+        }),
+      ],
+      participants: [],
+      relations: [],
+      sceneEvents: [],
+      calendar: CAL_MONTHS,
+      readingOrder: new Map([["s1", 0]]),
+      codexNames: new Map(),
+      sceneChronicle,
+      lang: "ja",
+    });
+    expect(text).toBeDefined();
+    expect(text).toContain("作中時刻: 1000年1月1日"); // barren ではない＝日付は注入される
+    expect(text).not.toContain("未来の出立"); // 未来の出来事は背景に漏らさない
+    expect(text).not.toContain("未来の決戦");
   });
 });

@@ -18,7 +18,7 @@
     "codexNames": { "hero": "Hero" }
   },
   "expected": {
-    "time": { "source": "proxy", "startTime": 100, "season": null, "precision": "unknown" },
+    "time": { "source": "proxy", "startTime": 100, "season": null, "precision": "unknown", "formattedDate": null },
     "characters": [
       { "codexId": "hero", "name": "Hero", "status": "unknown", "age": null, "location": null }
     ],

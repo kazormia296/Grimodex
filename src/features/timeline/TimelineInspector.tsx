@@ -4,6 +4,7 @@ import { Clock, X } from "lucide-react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { SceneDateEditor } from "@/features/chronicle/SceneDateEditor";
 import { useTimelineStore } from "./timelineStore";
 
 interface Props {
@@ -133,6 +134,13 @@ export function TimelineInspector({
               <p className="text-foreground/80 leading-relaxed">
                 {node.synopsis}
               </p>
+            </div>
+          )}
+
+          {/* Story-date (作中暦日付) — scene のみ。SceneMetaPanel と同じ編集 UI を再利用。 */}
+          {node.nodeType === "scene" && (
+            <div className="-mx-3">
+              <SceneDateEditor node={node} />
             </div>
           )}
 

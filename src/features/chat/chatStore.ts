@@ -194,8 +194,10 @@ import {
   listEventRelations,
 } from "@/features/chronicle/api";
 import { assembleChronicleSnapshotText } from "@/features/chronicle/chronicleSnapshot";
+import type { SceneChronicle } from "@/features/chronicle/resolveSceneAnchor";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
 import type { ChronicleCalendar } from "@/features/chronicle/chronicleTime";
+import type { EventPrecision } from "@/db/schema";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { markStart, markEnd } from "@/lib/perfLog";
@@ -1855,7 +1857,25 @@ async function buildChronicleSnapshotTextForScene(
     .getBoolean("aiPrompt.chronicle.enabled", true);
   if (!enabled) return undefined;
   const events = await listEvents(projectId);
-  if (events.length === 0) return undefined; // fast path
+
+  // シーン自身の暦日付（scene-own アンカー源）を tree store から構築。
+  const nodes = useTreeStore.getState().nodes;
+  const sceneChronicle = new Map<string, SceneChronicle>();
+  for (const n of nodes) {
+    if (n.nodeType !== "scene") continue;
+    sceneChronicle.set(n.id, {
+      startTime: n.chronicleStartTime ?? null,
+      startMinute: n.chronicleStartMinute ?? null,
+      startGranularity: n.chronicleStartGranularity ?? "none",
+      precision: (n.chroniclePrecision ?? "exact") as EventPrecision,
+    });
+  }
+  // fast path: events 0 件でも、現在シーンが暦日付を持つなら scene-own アンカーで
+  // 作中時刻を注入する。両方無いときのみスキップ。
+  const cur = sceneChronicle.get(sceneId);
+  const currentHasDate =
+    !!cur && cur.startGranularity !== "none" && cur.startTime != null;
+  if (events.length === 0 && !currentHasDate) return undefined;
 
   const [participants, sceneEvents, calendarRow, relations] = await Promise.all(
     [
@@ -1875,13 +1895,30 @@ async function buildChronicleSnapshotTextForScene(
     } catch {
       boundaries = [];
     }
+    let months: ChronicleCalendar["months"] = [];
+    try {
+      const parsed = JSON.parse(calendarRow.months);
+      if (Array.isArray(parsed)) months = parsed;
+    } catch {
+      months = [];
+    }
+    let weekdayNames: ChronicleCalendar["weekdayNames"] = [];
+    try {
+      const parsed = JSON.parse(calendarRow.weekdayNames);
+      if (Array.isArray(parsed)) weekdayNames = parsed;
+    } catch {
+      weekdayNames = [];
+    }
     calendar = {
       daysPerYear: calendarRow.daysPerYear,
       seasonBoundaries: boundaries,
+      startYear: calendarRow.startYear,
+      months,
+      weekdayNames,
     };
   }
 
-  const readingOrder = computeGlobalSceneOrder(useTreeStore.getState().nodes);
+  const readingOrder = computeGlobalSceneOrder(nodes);
   return assembleChronicleSnapshotText({
     sceneId,
     events,
@@ -1893,6 +1930,7 @@ async function buildChronicleSnapshotTextForScene(
     codexNames,
     sceneCodexIds,
     mentionedCodexIds,
+    sceneChronicle,
     lang,
   });
 }

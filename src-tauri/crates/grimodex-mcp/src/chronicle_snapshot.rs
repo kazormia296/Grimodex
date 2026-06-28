@@ -43,6 +43,10 @@ pub struct EventInput {
     pub location_codex_id: Option<String>,
     #[serde(default)]
     pub start_time: Option<i64>,
+    #[serde(default)]
+    pub start_minute: Option<i64>,
+    #[serde(default = "default_granularity")]
+    pub start_granularity: String,
     #[serde(default = "default_kind")]
     pub kind: String,
     #[serde(default = "default_precision")]
@@ -55,6 +59,10 @@ fn default_kind() -> String {
 
 fn default_precision() -> String {
     "exact".to_string()
+}
+
+fn default_granularity() -> String {
+    "none".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -85,15 +93,37 @@ pub struct SeasonBoundary {
     pub start_day_of_year: i64,
 }
 
+/// 暦の月定義（`chronicleTime.ts::MonthDef` の移植）。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthDef {
+    #[serde(default)]
+    pub name: String,
+    pub days: i64,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarInput {
     pub days_per_year: i64,
     #[serde(default)]
     pub season_boundaries: Vec<SeasonBoundary>,
+    /// 暦の開始年ラベル（day 0 = start_year の最初の月の1日）。未指定=0。
+    #[serde(default)]
+    pub start_year: i64,
+    /// 月定義。空なら月概念なし（年内通日のみ扱う）。
+    #[serde(default)]
+    pub months: Vec<MonthDef>,
+    /// 曜日名。空なら曜日概念なし。週長=配列長。
+    /// TS `ChronicleCalendar.weekdayNames` とのカレンダー契約のため受理するが、
+    /// `formatChronicleDate` は曜日を出力に使わないため本 derive では未参照。
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub weekday_names: Vec<String>,
 }
 
-/// A tree node, reduced to the fields `computeGlobalSceneOrder` reads.
+/// A tree node, reduced to the fields the derive reads: `computeGlobalSceneOrder`
+/// (reading order) plus the scene-own chronicle date (scene-anchor source).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneNode {
@@ -103,6 +133,17 @@ pub struct SceneNode {
     pub node_type: String,
     #[serde(default)]
     pub sort_order: String,
+    /// シーン自身の暦日付（events と同じ日付モデルをシーンへ共有）。end_* は
+    /// アンカー不使用なので持たない。`startGranularity != "none" && startTime
+    /// != null` のとき scene-own アンカーが発火する。
+    #[serde(default)]
+    pub chronicle_start_time: Option<i64>,
+    #[serde(default)]
+    pub chronicle_start_minute: Option<i64>,
+    #[serde(default = "default_granularity")]
+    pub chronicle_start_granularity: String,
+    #[serde(default = "default_precision")]
+    pub chronicle_precision: String,
 }
 
 // ───────── anchor + snapshot output types ─────────
@@ -112,6 +153,10 @@ pub struct SceneNode {
 pub struct ChronicleAnchor {
     pub ordinal: String,
     pub start_time: Option<i64>,
+    #[serde(default)]
+    pub start_minute: Option<i64>,
+    #[serde(default = "default_granularity")]
+    pub start_granularity: String,
     #[serde(default)]
     pub precision: Option<String>,
     pub source: String, // "stamped" | "proxy" | "none"
@@ -126,6 +171,8 @@ pub struct SnapshotTime {
     pub start_time: Option<i64>,
     pub season: Option<String>,
     pub precision: Option<String>,
+    /// 暦駆動の整形済み日付（`formatChronicleDate`）。揃わなければ None。
+    pub formatted_date: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -216,6 +263,166 @@ pub fn season_of(time: i64, calendar: &CalendarInput) -> Option<String> {
     current.map(|b| b.name)
 }
 
+// ───────── 暦駆動の整形済み日付（`chronicleTime.ts` の移植） ─────────
+
+/// 暦の day 番号から導出した作中日付の構成要素（`ChronicleDate` の移植）。
+struct ChronicleDate {
+    year: i64,
+    /// 月インデックス(0-based)。月未定義なら None。
+    month_index: Option<usize>,
+    /// 月内日(1-based)。月未定義なら None。
+    day_of_month: Option<i64>,
+    /// 年内通日(0-based)。
+    day_of_year: i64,
+}
+
+/// 暦の実効「1年の日数」（`calendarDaysPerYear` の移植）。months があれば
+/// 月長合計（各 max(1)）、無ければ stored days_per_year。
+fn calendar_days_per_year(cal: &CalendarInput) -> i64 {
+    if !cal.months.is_empty() {
+        let sum: i64 = cal.months.iter().map(|m| m.days.max(1)).sum();
+        if sum > 0 {
+            return sum;
+        }
+    }
+    cal.days_per_year
+}
+
+/// day 番号 → 作中日付の構成要素（`dayNumberToDate` の移植）。
+fn day_number_to_date(day_number: i64, cal: &CalendarInput) -> ChronicleDate {
+    let d = day_number;
+    let dpy = calendar_days_per_year(cal);
+    let start_year = cal.start_year;
+    if dpy <= 0 {
+        return ChronicleDate {
+            year: start_year,
+            month_index: None,
+            day_of_month: None,
+            day_of_year: 0,
+        };
+    }
+    let year = start_year + d.div_euclid(dpy);
+    let day_of_year = d.rem_euclid(dpy);
+    let mut month_index: Option<usize> = None;
+    let mut day_of_month: Option<i64> = None;
+    if !cal.months.is_empty() {
+        let mut rem = day_of_year;
+        for (i, m) in cal.months.iter().enumerate() {
+            let len = m.days.max(1);
+            if rem < len {
+                month_index = Some(i);
+                day_of_month = Some(rem + 1);
+                break;
+            }
+            rem -= len;
+        }
+        // months 合計 < day_of_year の防御（stored daysPerYear が月長合計超過時）。
+        if month_index.is_none() {
+            let last = cal.months.len() - 1;
+            month_index = Some(last);
+            day_of_month = Some(cal.months[last].days.max(1));
+        }
+    }
+    ChronicleDate {
+        year,
+        month_index,
+        day_of_month,
+        day_of_year,
+    }
+}
+
+/// 分(0..1439) → "HH:MM"（`formatTimeOfDay` の移植）。None は None。
+fn format_time_of_day(minute: Option<i64>) -> Option<String> {
+    let minute = minute?;
+    let m = minute.rem_euclid(24 * 60);
+    let hh = m / 60;
+    let mm = m % 60;
+    Some(format!("{hh:02}:{mm:02}"))
+}
+
+/// day 番号＋分＋粒度 → 表示文字列（`formatChronicleDate` の移植）。
+/// none/None は空文字。lang は "ja" のみ日本語、それ以外は英語整形（呼出側で正規化）。
+pub fn format_chronicle_date(
+    day_number: Option<i64>,
+    minute: Option<i64>,
+    granularity: &str,
+    cal: &CalendarInput,
+    lang: &str,
+) -> String {
+    if granularity == "none" {
+        return String::new();
+    }
+    let Some(day_number) = day_number else {
+        return String::new();
+    };
+    let ja = lang == "ja";
+    let date = day_number_to_date(day_number, cal);
+    let month_name: Option<String> = match date.month_index {
+        Some(mi) => match cal.months.get(mi) {
+            Some(m) => Some(m.name.clone()),
+            None => Some((mi + 1).to_string()),
+        },
+        None => None,
+    };
+
+    if granularity == "year" {
+        return if ja {
+            format!("{}年", date.year)
+        } else {
+            format!("Year {}", date.year)
+        };
+    }
+    if granularity == "season" {
+        let s = season_of(day_number, cal).unwrap_or_else(|| "?".to_string());
+        return if ja {
+            format!("{}年・{}", date.year, s)
+        } else {
+            format!("{} {}", s, date.year)
+        };
+    }
+    if granularity == "month" {
+        let mn = month_name.clone().unwrap_or_default();
+        return if ja {
+            format!("{}年{}", date.year, mn)
+        } else {
+            format!("{} {}", mn, date.year).trim().to_string()
+        };
+    }
+
+    // day / time
+    let day_part = match date.day_of_month {
+        Some(dom) => {
+            if ja {
+                format!("{dom}日")
+            } else {
+                format!("{dom}")
+            }
+        }
+        None => {
+            if ja {
+                format!("第{}日", date.day_of_year + 1)
+            } else {
+                format!("{}", date.day_of_year + 1)
+            }
+        }
+    };
+    let mn = month_name.unwrap_or_default();
+    let day_str = if ja {
+        format!("{}年{}{}", date.year, mn, day_part)
+    } else {
+        format!("{} {}, {}", mn, day_part, date.year)
+            .trim()
+            .to_string()
+    };
+    if granularity == "time" {
+        return match format_time_of_day(minute) {
+            Some(tod) => format!("{day_str} {tod}"),
+            None => day_str,
+        };
+    }
+    day_str
+}
+
 /// `computeGlobalSceneOrder` の移植: ツリーを DFS し scene にグローバル順序
 /// index を割り当てる。folder は index を消費せず再帰、note はスキップ。
 pub fn compute_global_scene_order(nodes: &[SceneNode]) -> HashMap<String, i64> {
@@ -260,15 +467,67 @@ pub fn compute_global_scene_order(nodes: &[SceneNode]) -> HashMap<String, i64> {
     result
 }
 
-/// `resolveSceneAnchor` の移植。
+/// シーンが暦日付を持つか（scene-own アンカー発火条件）。
+fn node_has_date(n: &SceneNode) -> bool {
+    n.chronicle_start_granularity != "none" && n.chronicle_start_time.is_some()
+}
+
+/// `syntheticOrdinal(t)` の移植: `start_time != null && start_time <= t` の event の
+/// うち start_time 最大（同点は ordinal 最大）の ordinal。該当なしは ""。
+fn synthetic_ordinal(events: &[EventInput], t: i64) -> String {
+    let mut best: Option<&EventInput> = None;
+    for e in events {
+        let Some(st) = e.start_time else { continue };
+        if st > t {
+            continue;
+        }
+        match best {
+            None => best = Some(e),
+            Some(b) => {
+                let bst = b.start_time.unwrap_or(i64::MIN);
+                if st > bst || (st == bst && cmp_keys(&e.ordinal, &b.ordinal) == Ordering::Greater)
+                {
+                    best = Some(e);
+                }
+            }
+        }
+    }
+    best.map(|e| e.ordinal.clone()).unwrap_or_default()
+}
+
+/// stamped event 群の ordinal 最大を ChronicleAnchor へ（source は呼出側で設定）。
+fn max_ordinal_anchor(evs: &[&EventInput]) -> Option<ChronicleAnchor> {
+    let best = evs.iter().copied().reduce(|best, e| {
+        if cmp_keys(&e.ordinal, &best.ordinal) == Ordering::Greater {
+            e
+        } else {
+            best
+        }
+    })?;
+    Some(ChronicleAnchor {
+        ordinal: best.ordinal.clone(),
+        start_time: best.start_time,
+        start_minute: best.start_minute,
+        start_granularity: best.start_granularity.clone(),
+        precision: Some(best.precision.clone()),
+        source: String::new(),
+        proxy_scene_id: None,
+    })
+}
+
+/// `resolveSceneAnchor` の移植（v2: scene-own → stamped → proxy → none）。
 pub fn resolve_scene_anchor(
     scene_id: &str,
+    nodes: &[SceneNode],
     scene_events: &[SceneEventInput],
     events: &[EventInput],
     reading_order: &HashMap<String, i64>,
 ) -> ChronicleAnchor {
     let event_by_id: HashMap<&str, &EventInput> =
         events.iter().map(|e| (e.id.as_str(), e)).collect();
+
+    // sceneId → そのシーン自身の暦日付（scene-own アンカー源）。
+    let scene_chron: HashMap<&str, &SceneNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
 
     // sceneId → 紐づく(実在 event)群。挿入順を保つため Vec<(scene, Vec<event>)>。
     let mut stamped_by_scene: Vec<(String, Vec<&EventInput>)> = Vec::new();
@@ -285,56 +544,67 @@ pub fn resolve_scene_anchor(
         }
     }
 
-    let max_ordinal = |evs: &[&EventInput]| -> ChronicleAnchor {
-        let best = evs
-            .iter()
-            .copied()
-            .reduce(|best, e| {
-                if cmp_keys(&e.ordinal, &best.ordinal) == Ordering::Greater {
-                    e
-                } else {
-                    best
+    // シーンの directAnchor（scene-own → stamped）。無ければ None。
+    let direct_anchor = |sid: &str| -> Option<ChronicleAnchor> {
+        // 1. scene-own
+        if let Some(n) = scene_chron.get(sid) {
+            if let Some(st) = n.chronicle_start_time {
+                if n.chronicle_start_granularity != "none" {
+                    return Some(ChronicleAnchor {
+                        ordinal: synthetic_ordinal(events, st),
+                        start_time: Some(st),
+                        start_minute: n.chronicle_start_minute,
+                        start_granularity: n.chronicle_start_granularity.clone(),
+                        precision: Some(n.chronicle_precision.clone()),
+                        source: "scene".to_string(),
+                        proxy_scene_id: None,
+                    });
                 }
-            })
-            .expect("non-empty");
-        ChronicleAnchor {
-            ordinal: best.ordinal.clone(),
-            start_time: best.start_time,
-            precision: Some(best.precision.clone()),
-            source: String::new(),
-            proxy_scene_id: None,
+            }
         }
+        // 2. stamped
+        if let Some(&i) = scene_index.get(sid) {
+            let mut a = max_ordinal_anchor(&stamped_by_scene[i].1)?;
+            a.source = "stamped".to_string();
+            return Some(a);
+        }
+        None
     };
 
-    // 1. stamped
-    if let Some(&i) = scene_index.get(scene_id) {
-        let own = &stamped_by_scene[i].1;
-        if !own.is_empty() {
-            let mut a = max_ordinal(own);
-            a.source = "stamped".to_string();
-            return a;
-        }
+    // 1. 現在シーンの directAnchor（"scene" か "stamped"）。
+    if let Some(a) = direct_anchor(scene_id) {
+        return a;
     }
 
-    // 2. proxy — 前方(index 小)で最も近い stamp 済シーン
+    // 2. proxy — 前方(index 小)で最も近い「directAnchor を持つシーン」。
     if let Some(&current_index) = reading_order.get(scene_id) {
         let mut best_scene: Option<&str> = None;
         let mut best_index: i64 = -1;
+        // 候補 = stamp 済シーン ∪ 暦日付を持つシーン。
         for (cand_scene, _) in &stamped_by_scene {
-            let Some(&idx) = reading_order.get(cand_scene) else {
-                continue;
-            };
-            if idx < current_index && idx > best_index {
-                best_index = idx;
-                best_scene = Some(cand_scene.as_str());
+            if let Some(&idx) = reading_order.get(cand_scene) {
+                if idx < current_index && idx > best_index {
+                    best_index = idx;
+                    best_scene = Some(cand_scene.as_str());
+                }
+            }
+        }
+        for n in nodes {
+            if node_has_date(n) {
+                if let Some(&idx) = reading_order.get(&n.id) {
+                    if idx < current_index && idx > best_index {
+                        best_index = idx;
+                        best_scene = Some(n.id.as_str());
+                    }
+                }
             }
         }
         if let Some(bs) = best_scene {
-            let i = scene_index[bs];
-            let mut a = max_ordinal(&stamped_by_scene[i].1);
-            a.source = "proxy".to_string();
-            a.proxy_scene_id = Some(bs.to_string());
-            return a;
+            if let Some(mut a) = direct_anchor(bs) {
+                a.source = "proxy".to_string();
+                a.proxy_scene_id = Some(bs.to_string());
+                return a;
+            }
         }
     }
 
@@ -342,6 +612,8 @@ pub fn resolve_scene_anchor(
     ChronicleAnchor {
         ordinal: String::new(),
         start_time: None,
+        start_minute: None,
+        start_granularity: "none".to_string(),
         precision: None,
         source: "none".to_string(),
         proxy_scene_id: None,
@@ -557,12 +829,34 @@ pub struct DeriveInput<'a> {
     pub calendar: Option<&'a CalendarInput>,
     pub character_ids: &'a [String],
     pub codex_names: &'a HashMap<String, String>,
+    /// formattedDate（暦駆動整形）のロケール。"en" 以外は ja 扱い。
+    pub lang: &'a str,
 }
 
 /// `deriveChronicleSnapshot` の移植。
 pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
     let season = match (input.anchor.start_time, input.calendar) {
         (Some(t), Some(cal)) => season_of(t, cal),
+        _ => None,
+    };
+
+    // 暦＋粒度(≠none)＋start_time が揃うときのみ整形済み日付を確定。空文字は None。
+    let lang = if input.lang == "en" { "en" } else { "ja" };
+    let formatted_date = match (input.calendar, input.anchor.start_time) {
+        (Some(cal), Some(st)) if input.anchor.start_granularity != "none" => {
+            let s = format_chronicle_date(
+                Some(st),
+                input.anchor.start_minute,
+                &input.anchor.start_granularity,
+                cal,
+                lang,
+            );
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
         _ => None,
     };
 
@@ -611,6 +905,7 @@ pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
             start_time: input.anchor.start_time,
             season,
             precision: input.anchor.precision.clone(),
+            formatted_date,
         },
         characters,
         recent_events: derive_recent_events(input.anchor, input.events),
@@ -639,6 +934,9 @@ pub struct AssembleInput {
     pub calendar: Option<CalendarInput>,
     #[serde(default)]
     pub codex_names: HashMap<String, String>,
+    /// formattedDate ロケール（既定 "ja"）。TS fixtures の input.lang と対称。
+    #[serde(default)]
+    pub lang: Option<String>,
 }
 
 /// resolveSceneAnchor → pickSnapshotCharacters → deriveChronicleSnapshot を一括
@@ -647,6 +945,7 @@ pub fn assemble_snapshot(input: &AssembleInput) -> ChronicleSnapshot {
     let reading_order = compute_global_scene_order(&input.nodes);
     let anchor = resolve_scene_anchor(
         &input.scene_id,
+        &input.nodes,
         &input.scene_events,
         &input.events,
         &reading_order,
@@ -666,6 +965,7 @@ pub fn assemble_snapshot(input: &AssembleInput) -> ChronicleSnapshot {
         calendar: input.calendar.as_ref(),
         character_ids: &character_ids,
         codex_names: &input.codex_names,
+        lang: input.lang.as_deref().unwrap_or("ja"),
     })
 }
 
@@ -729,6 +1029,9 @@ mod tests {
                     start_day_of_year: 270,
                 },
             ],
+            start_year: 0,
+            months: vec![],
+            weekday_names: vec![],
         };
         assert_eq!(season_of(0, &cal).as_deref(), Some("春"));
         assert_eq!(season_of(95, &cal).as_deref(), Some("夏"));
@@ -737,11 +1040,197 @@ mod tests {
         assert_eq!(season_of(720, &cal).as_deref(), Some("春"));
     }
 
+    fn ev(id: &str, ordinal: &str, start_time: Option<i64>) -> EventInput {
+        EventInput {
+            id: id.to_string(),
+            title: String::new(),
+            note: None,
+            ordinal: ordinal.to_string(),
+            primary_codex_id: None,
+            location_codex_id: None,
+            start_time,
+            start_minute: None,
+            start_granularity: "none".to_string(),
+            kind: "generic".to_string(),
+            precision: "exact".to_string(),
+        }
+    }
+
+    fn scene_node(id: &str, sort: &str, start_time: Option<i64>, gran: &str) -> SceneNode {
+        SceneNode {
+            id: id.to_string(),
+            parent_id: None,
+            node_type: "scene".to_string(),
+            sort_order: sort.to_string(),
+            chronicle_start_time: start_time,
+            chronicle_start_minute: None,
+            chronicle_start_granularity: gran.to_string(),
+            chronicle_precision: "exact".to_string(),
+        }
+    }
+
+    #[test]
+    fn resolve_scene_anchor_scene_own_uses_synthetic_ordinal() {
+        let nodes = vec![scene_node("s1", "a0", Some(100), "day")];
+        let events = vec![
+            ev("e1", "a1", Some(10)),
+            ev("e2", "a2", Some(50)),
+            ev("e3", "a3", Some(200)),
+        ];
+        let order = compute_global_scene_order(&nodes);
+        let a = resolve_scene_anchor("s1", &nodes, &[], &events, &order);
+        assert_eq!(a.source, "scene");
+        assert_eq!(a.start_time, Some(100));
+        // startTime<=100 のうち最大=50(e2 a2) → synthetic ordinal=a2
+        assert_eq!(a.ordinal, "a2");
+    }
+
+    #[test]
+    fn resolve_scene_anchor_scene_own_beats_stamped() {
+        let nodes = vec![scene_node("s1", "a0", Some(100), "day")];
+        let events = vec![ev("e1", "a9", Some(5))];
+        let scene_events = vec![SceneEventInput {
+            scene_id: "s1".to_string(),
+            event_id: "e1".to_string(),
+        }];
+        let order = compute_global_scene_order(&nodes);
+        let a = resolve_scene_anchor("s1", &nodes, &scene_events, &events, &order);
+        assert_eq!(a.source, "scene");
+        assert_eq!(a.start_time, Some(100));
+    }
+
+    #[test]
+    fn resolve_scene_anchor_none_granularity_does_not_fire_scene_own() {
+        let nodes = vec![scene_node("s1", "a0", Some(100), "none")];
+        let events = vec![ev("e1", "a3", Some(30))];
+        let scene_events = vec![SceneEventInput {
+            scene_id: "s1".to_string(),
+            event_id: "e1".to_string(),
+        }];
+        let order = compute_global_scene_order(&nodes);
+        let a = resolve_scene_anchor("s1", &nodes, &scene_events, &events, &order);
+        assert_eq!(a.source, "stamped");
+        assert_eq!(a.start_time, Some(30));
+    }
+
+    #[test]
+    fn resolve_scene_anchor_proxy_considers_scene_own_scene() {
+        let nodes = vec![
+            scene_node("s1", "a0", Some(100), "day"),
+            scene_node("s2", "a1", None, "none"),
+        ];
+        let events = vec![ev("e1", "a1", Some(10)), ev("e2", "a2", Some(80))];
+        let order = compute_global_scene_order(&nodes);
+        let a = resolve_scene_anchor("s2", &nodes, &[], &events, &order);
+        assert_eq!(a.source, "proxy");
+        assert_eq!(a.proxy_scene_id.as_deref(), Some("s1"));
+        assert_eq!(a.start_time, Some(100));
+        // s1 の scene-own anchor の synthetic ordinal=a2(e2 startTime80<=100)
+        assert_eq!(a.ordinal, "a2");
+    }
+
     #[test]
     fn at_or_before_none_anchor_is_false() {
         assert!(!at_or_before("a0", ""));
         assert!(at_or_before("a0", "a0"));
         assert!(at_or_before("a0", "a1"));
         assert!(!at_or_before("a2", "a1"));
+    }
+
+    fn cal_months() -> CalendarInput {
+        CalendarInput {
+            days_per_year: 360,
+            season_boundaries: vec![
+                SeasonBoundary {
+                    name: "春".into(),
+                    start_day_of_year: 0,
+                },
+                SeasonBoundary {
+                    name: "夏".into(),
+                    start_day_of_year: 90,
+                },
+                SeasonBoundary {
+                    name: "秋".into(),
+                    start_day_of_year: 180,
+                },
+                SeasonBoundary {
+                    name: "冬".into(),
+                    start_day_of_year: 270,
+                },
+            ],
+            start_year: 1000,
+            months: (1..=12)
+                .map(|i| MonthDef {
+                    name: format!("{i}月"),
+                    days: 30,
+                })
+                .collect(),
+            weekday_names: vec![],
+        }
+    }
+
+    #[test]
+    fn format_chronicle_date_branches() {
+        let cal = cal_months();
+        // 1000 + floor(96212/360)=1267年, dayOfYear 92 → 4月3日, 540分 → 09:00。
+        assert_eq!(
+            format_chronicle_date(Some(96212), Some(540), "time", &cal, "ja"),
+            "1267年4月3日 09:00"
+        );
+        assert_eq!(
+            format_chronicle_date(Some(96212), Some(540), "day", &cal, "ja"),
+            "1267年4月3日"
+        );
+        assert_eq!(
+            format_chronicle_date(Some(96212), None, "month", &cal, "ja"),
+            "1267年4月"
+        );
+        assert_eq!(
+            format_chronicle_date(Some(96212), None, "season", &cal, "ja"),
+            "1267年・夏"
+        );
+        assert_eq!(
+            format_chronicle_date(Some(96212), None, "year", &cal, "ja"),
+            "1267年"
+        );
+        // en 整形。
+        assert_eq!(
+            format_chronicle_date(Some(96212), Some(540), "time", &cal, "en"),
+            "4月 3, 1267 09:00"
+        );
+        assert_eq!(
+            format_chronicle_date(Some(96212), None, "year", &cal, "en"),
+            "Year 1267"
+        );
+        // none / null は空文字。
+        assert_eq!(
+            format_chronicle_date(Some(96212), Some(540), "none", &cal, "ja"),
+            ""
+        );
+        assert_eq!(
+            format_chronicle_date(None, Some(540), "time", &cal, "ja"),
+            ""
+        );
+    }
+
+    #[test]
+    fn format_chronicle_date_monthless() {
+        // 月定義なし暦: dayPart は「第N日」/dayOfYear+1。
+        let cal = CalendarInput {
+            days_per_year: 100,
+            season_boundaries: vec![],
+            start_year: 0,
+            months: vec![],
+            weekday_names: vec![],
+        };
+        // day 205 → year 2, dayOfYear 5 → 第6日。
+        assert_eq!(
+            format_chronicle_date(Some(205), None, "day", &cal, "ja"),
+            "2年第6日"
+        );
+        assert_eq!(
+            format_chronicle_date(Some(205), None, "day", &cal, "en"),
+            "6, 2"
+        );
     }
 }

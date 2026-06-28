@@ -10,6 +10,11 @@ import {
 import type { EventPrecision, EventKind, EventGranularity } from "@/db/schema";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
+import type {
+  ChronicleCalendar,
+  SeasonBoundary,
+  MonthDef,
+} from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 
@@ -410,6 +415,28 @@ export async function getProjectCalendar(
     weekdayNames: s(r.weekdayNames ?? r.weekday_names, "[]"),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
+  };
+}
+
+/**
+ * CalendarRow（生 JSON 文字列を持つ DB 行）を UI が使う ChronicleCalendar に整形する。
+ * months/seasonBoundaries/weekdayNames を JSON parse し、不正なら空配列にフォールバック。
+ * useSeasonConflicts / useProjectCalendar 双方の重複パースをここに集約する。
+ */
+export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
+  const parse = <T>(raw: string, fallback: T): T => {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  };
+  return {
+    daysPerYear: row.daysPerYear,
+    seasonBoundaries: parse<SeasonBoundary[]>(row.seasonBoundaries, []),
+    startYear: row.startYear,
+    months: parse<MonthDef[]>(row.months, []),
+    weekdayNames: parse<string[]>(row.weekdayNames, []),
   };
 }
 

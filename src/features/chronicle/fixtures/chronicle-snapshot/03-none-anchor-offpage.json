@@ -19,7 +19,7 @@
     "codexNames": { "hero": "Hero" }
   },
   "expected": {
-    "time": { "source": "none", "startTime": null, "season": null, "precision": null },
+    "time": { "source": "none", "startTime": null, "season": null, "precision": null, "formattedDate": null },
     "characters": [],
     "recentEvents": [],
     "unresolvedCausal": [],

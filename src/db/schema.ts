@@ -81,6 +81,27 @@ export const treeNodes = sqliteTable(
     locationId: text("location_id").references((): any => codexEntries.id, {
       onDelete: "set null",
     }),
+    // ── Chronicle（作中暦日付）─────────────────────────────────────────
+    // Event エンティティと同じ chronicleTime 日付モデルをシーンにも共有する
+    // （events とは統合しない）。読む順 (sortOrder) とは独立した作中時間軸。
+    // granularity= EVENT_GRANULARITIES / precision= EventPrecision を再利用。
+    // アンカー解決・AI 注入・UI は別タスク（このフィールドは永続化のみ）。
+    // 暦ライト数値時刻（紀元からの日数）。null=日付未指定。
+    chronicleStartTime: integer("chronicle_start_time"),
+    // 開始時刻（24h時計の分 0..1439）。null=時刻未指定。
+    chronicleStartMinute: integer("chronicle_start_minute"),
+    // 開始の粒度（EVENT_GRANULARITIES）。CHECK は付けない（events 列追加と同流儀）。
+    chronicleStartGranularity: text("chronicle_start_granularity")
+      .notNull()
+      .default("none"),
+    // interval 終端（紀元からの日数）。null=point（瞬間）。
+    chronicleEndTime: integer("chronicle_end_time"),
+    chronicleEndMinute: integer("chronicle_end_minute"),
+    chronicleEndGranularity: text("chronicle_end_granularity")
+      .notNull()
+      .default("none"),
+    // 日付の確度（EventPrecision = 'exact' | 'approx' | 'unknown'）。
+    chroniclePrecision: text("chronicle_precision").notNull().default("exact"),
     status: text("status").default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
     content: text("content").notNull().default("{}"), // Scene/Note body (ProseMirror JSON)
     // Unplaced beats (Beat system Phase A): JSON array of { id, beatType, pov, collapsed, content }.
@@ -813,6 +834,18 @@ export const projectSnapshotTreeNodes = sqliteTable(
     storyTimeLabel: text("story_time_label"),
     povCharacterId: text("pov_character_id"),
     locationId: text("location_id"),
+    // Chronicle（作中暦日付）— tree_nodes と同じ型・既定値でミラー。
+    chronicleStartTime: integer("chronicle_start_time"),
+    chronicleStartMinute: integer("chronicle_start_minute"),
+    chronicleStartGranularity: text("chronicle_start_granularity")
+      .notNull()
+      .default("none"),
+    chronicleEndTime: integer("chronicle_end_time"),
+    chronicleEndMinute: integer("chronicle_end_minute"),
+    chronicleEndGranularity: text("chronicle_end_granularity")
+      .notNull()
+      .default("none"),
+    chroniclePrecision: text("chronicle_precision").notNull().default("exact"),
     status: text("status"),
     bodyVersionId: text("body_version_id").references(
       () => contentVersions.id,

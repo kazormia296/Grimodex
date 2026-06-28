@@ -1837,6 +1837,10 @@ pub struct ChronicleEventRow {
     pub location_codex_id: Option<String>,
     pub start_time: Option<i64>,
     pub end_time: Option<i64>,
+    pub start_minute: Option<i64>,
+    pub end_minute: Option<i64>,
+    pub start_granularity: String,
+    pub end_granularity: String,
     pub precision: String,
     pub kind: String,
 }
@@ -1865,6 +1869,12 @@ pub struct ChronicleCalendarRaw {
     pub days_per_year: i64,
     /// Raw JSON string (`SeasonBoundary[]`).
     pub season_boundaries: String,
+    /// Calendar start-year label (day 0 = first month/day of start_year).
+    pub start_year: i64,
+    /// Raw JSON string (`MonthDef[]`). '[]' = no month concept.
+    pub months: String,
+    /// Raw JSON string (`string[]` weekday names). '[]' = no weekday concept.
+    pub weekday_names: String,
 }
 
 /// camelCase write result (same shape as foreshadow/codex `AgentWriteResult`).
@@ -1886,8 +1896,12 @@ fn map_chronicle_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChronicleEve
         location_codex_id: row.get(5)?,
         start_time: row.get(6)?,
         end_time: row.get(7)?,
-        precision: row.get(8)?,
-        kind: row.get(9)?,
+        start_minute: row.get(8)?,
+        end_minute: row.get(9)?,
+        start_granularity: row.get(10)?,
+        end_granularity: row.get(11)?,
+        precision: row.get(12)?,
+        kind: row.get(13)?,
     })
 }
 
@@ -1900,7 +1914,8 @@ pub fn chronicle_list_events(
 ) -> Result<Vec<ChronicleEventRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, note, ordinal, primary_codex_id, location_codex_id,
-                start_time, end_time, precision, kind
+                start_time, end_time, start_minute, end_minute,
+                start_granularity, end_granularity, precision, kind
          FROM events WHERE project_id = ?1
          ORDER BY ordinal ASC, id ASC",
     )?;
@@ -1989,13 +2004,17 @@ pub fn chronicle_get_calendar(
 ) -> Result<Option<ChronicleCalendarRaw>> {
     use rusqlite::OptionalExtension;
     conn.query_row(
-        "SELECT days_per_year, season_boundaries FROM project_calendar
+        "SELECT days_per_year, season_boundaries, start_year, months, weekday_names
+         FROM project_calendar
          WHERE project_id = ?1",
         params![project_id],
         |row| {
             Ok(ChronicleCalendarRaw {
                 days_per_year: row.get(0)?,
                 season_boundaries: row.get(1)?,
+                start_year: row.get(2)?,
+                months: row.get(3)?,
+                weekday_names: row.get(4)?,
             })
         },
     )
@@ -2039,8 +2058,10 @@ pub fn chronicle_scene_nodes(
     project_id: &str,
 ) -> Result<Vec<crate::chronicle_snapshot::SceneNode>> {
     let mut stmt = conn.prepare(
-        "SELECT id, parent_id, node_type, sort_order FROM tree_nodes
-         WHERE project_id = ?1",
+        "SELECT id, parent_id, node_type, sort_order,
+                chronicle_start_time, chronicle_start_minute,
+                chronicle_start_granularity, chronicle_precision
+         FROM tree_nodes WHERE project_id = ?1",
     )?;
     let rows = stmt
         .query_map(params![project_id], |row| {
@@ -2049,6 +2070,10 @@ pub fn chronicle_scene_nodes(
                 parent_id: row.get(1)?,
                 node_type: row.get(2)?,
                 sort_order: row.get(3)?,
+                chronicle_start_time: row.get(4)?,
+                chronicle_start_minute: row.get(5)?,
+                chronicle_start_granularity: row.get(6)?,
+                chronicle_precision: row.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
@@ -2088,7 +2113,9 @@ fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<s
             'id', id, 'projectId', project_id, 'title', title, 'note', note,
             'ordinal', ordinal, 'primaryCodexId', primary_codex_id,
             'locationCodexId', location_codex_id, 'startTime', start_time,
-            'endTime', end_time, 'precision', precision, 'kind', kind,
+            'endTime', end_time, 'startMinute', start_minute,
+            'endMinute', end_minute, 'startGranularity', start_granularity,
+            'endGranularity', end_granularity, 'precision', precision, 'kind', kind,
             'createdAt', created_at, 'updatedAt', updated_at
          ) FROM events WHERE id = ?1",
         params![event_id],
@@ -2193,6 +2220,12 @@ pub struct ChronicleCreateInput<'a> {
     pub location_codex_id: Option<&'a str>,
     pub start_time: Option<i64>,
     pub end_time: Option<i64>,
+    pub start_minute: Option<i64>,
+    pub end_minute: Option<i64>,
+    /// Defaults to "none" when omitted (matches `agent_event_create_impl`).
+    pub start_granularity: Option<&'a str>,
+    /// Defaults to "none" when omitted (matches `agent_event_create_impl`).
+    pub end_granularity: Option<&'a str>,
     pub precision: Option<&'a str>,
     pub kind: Option<&'a str>,
     pub participant_codex_ids: &'a [String],
@@ -2217,14 +2250,17 @@ pub fn chronicle_create_event(
     let ordinal = input.ordinal.unwrap_or("a0");
     let precision = input.precision.unwrap_or("exact");
     let kind = input.kind.unwrap_or("generic");
+    let start_granularity = input.start_granularity.unwrap_or("none");
+    let end_granularity = input.end_granularity.unwrap_or("none");
 
     in_immediate_tx(conn, |conn| {
         conn.execute(
             "INSERT INTO events
              (id, project_id, title, note, ordinal, primary_codex_id,
-              location_codex_id, start_time, end_time, precision, kind,
+              location_codex_id, start_time, end_time, start_minute, end_minute,
+              start_granularity, end_granularity, precision, kind,
               created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
             params![
                 event_id,
                 input.project_id,
@@ -2235,6 +2271,10 @@ pub fn chronicle_create_event(
                 input.location_codex_id,
                 input.start_time,
                 input.end_time,
+                input.start_minute,
+                input.end_minute,
+                start_granularity,
+                end_granularity,
                 precision,
                 kind,
                 now,
@@ -2303,6 +2343,10 @@ pub struct ChroniclePatch<'a> {
     pub location_codex_id: Option<&'a str>,
     pub start_time: Option<i64>,
     pub end_time: Option<i64>,
+    pub start_minute: Option<i64>,
+    pub end_minute: Option<i64>,
+    pub start_granularity: Option<&'a str>,
+    pub end_granularity: Option<&'a str>,
     pub precision: Option<&'a str>,
     pub kind: Option<&'a str>,
 }
@@ -2368,6 +2412,26 @@ pub fn chronicle_update_event(
             sets.push("end_time = ?".into());
             vals.push(V::Integer(v));
             fields.push("endTime");
+        }
+        if let Some(v) = patch.start_minute {
+            sets.push("start_minute = ?".into());
+            vals.push(V::Integer(v));
+            fields.push("startMinute");
+        }
+        if let Some(v) = patch.end_minute {
+            sets.push("end_minute = ?".into());
+            vals.push(V::Integer(v));
+            fields.push("endMinute");
+        }
+        if let Some(v) = patch.start_granularity {
+            sets.push("start_granularity = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("startGranularity");
+        }
+        if let Some(v) = patch.end_granularity {
+            sets.push("end_granularity = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("endGranularity");
         }
         if let Some(v) = patch.precision {
             sets.push("precision = ?".into());
@@ -2848,6 +2912,10 @@ pub(crate) mod tests {
                 content TEXT NOT NULL DEFAULT '{}',
                 version INTEGER NOT NULL DEFAULT 1,
                 source_uri TEXT,
+                chronicle_start_time INTEGER,
+                chronicle_start_minute INTEGER,
+                chronicle_start_granularity TEXT NOT NULL DEFAULT 'none',
+                chronicle_precision TEXT NOT NULL DEFAULT 'exact',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -3028,6 +3096,10 @@ pub(crate) mod tests {
                 location_codex_id TEXT,
                 start_time INTEGER,
                 end_time INTEGER,
+                start_minute INTEGER,
+                end_minute INTEGER,
+                start_granularity TEXT NOT NULL DEFAULT 'none',
+                end_granularity TEXT NOT NULL DEFAULT 'none',
                 precision TEXT NOT NULL DEFAULT 'exact',
                 kind TEXT NOT NULL DEFAULT 'generic',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -3054,6 +3126,9 @@ pub(crate) mod tests {
                 project_id TEXT PRIMARY KEY,
                 days_per_year INTEGER NOT NULL DEFAULT 360,
                 season_boundaries TEXT NOT NULL DEFAULT '[]',
+                start_year INTEGER NOT NULL DEFAULT 0,
+                months TEXT NOT NULL DEFAULT '[]',
+                weekday_names TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );",

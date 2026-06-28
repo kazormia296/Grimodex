@@ -4968,6 +4968,7 @@
     "startTime": "開始",
     "endTime": "終了",
     "precisionLabel": "日付の確度",
+    "sceneDate": "作中日付",
     "primaryCodex": "主人物",
     "none": "なし",
     "kindLabel": "種別",

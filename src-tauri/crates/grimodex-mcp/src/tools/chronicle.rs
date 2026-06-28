@@ -148,6 +148,10 @@ struct EventDetail {
     ordinal: String,
     start_time: Option<i64>,
     end_time: Option<i64>,
+    start_minute: Option<i64>,
+    end_minute: Option<i64>,
+    start_granularity: String,
+    end_granularity: String,
     precision: String,
     primary_character: Option<String>,
     location: Option<String>,
@@ -195,6 +199,10 @@ pub async fn get_event_detail(
         ordinal: ev.ordinal.clone(),
         start_time: ev.start_time,
         end_time: ev.end_time,
+        start_minute: ev.start_minute,
+        end_minute: ev.end_minute,
+        start_granularity: ev.start_granularity.clone(),
+        end_granularity: ev.end_granularity.clone(),
         precision: ev.precision.clone(),
         primary_character: name_or_null(&names, &ev.primary_codex_id),
         location: name_or_null(&names, &ev.location_codex_id),
@@ -336,9 +344,14 @@ fn parse_calendar(raw: Option<db::ChronicleCalendarRaw>) -> Option<snap::Calenda
     let season_boundaries =
         serde_json::from_str::<Vec<snap::SeasonBoundary>>(&raw.season_boundaries)
             .unwrap_or_default();
+    let months = serde_json::from_str::<Vec<snap::MonthDef>>(&raw.months).unwrap_or_default();
+    let weekday_names = serde_json::from_str::<Vec<String>>(&raw.weekday_names).unwrap_or_default();
     Some(snap::CalendarInput {
         days_per_year: raw.days_per_year,
         season_boundaries,
+        start_year: raw.start_year,
+        months,
+        weekday_names,
     })
 }
 
@@ -382,6 +395,8 @@ pub async fn get_chronicle_state(
                 primary_codex_id: e.primary_codex_id,
                 location_codex_id: e.location_codex_id,
                 start_time: e.start_time,
+                start_minute: e.start_minute,
+                start_granularity: e.start_granularity,
                 kind: e.kind,
                 precision: e.precision,
             })
@@ -409,6 +424,8 @@ pub async fn get_chronicle_state(
             .collect(),
         calendar: parse_calendar(calendar),
         codex_names,
+        // MCP has no app i18n; default to ja (matches AssembleInput default).
+        lang: None,
     };
     let snapshot = snap::assemble_snapshot(&input);
     ok_json(&snapshot)
@@ -442,6 +459,14 @@ pub struct CreateEventParams {
     pub start_time: Option<i64>,
     /// Interval end time (optional).
     pub end_time: Option<i64>,
+    /// Time of day for the start, in minutes (0-1439, 24h clock; optional).
+    pub start_minute: Option<i64>,
+    /// Time of day for the end, in minutes (0-1439, 24h clock; optional).
+    pub end_minute: Option<i64>,
+    /// How precise the start date is: 'none'|'season'|'year'|'month'|'day'|'time' (default 'none').
+    pub start_granularity: Option<String>,
+    /// How precise the end date is: 'none'|'season'|'year'|'month'|'day'|'time' (default 'none').
+    pub end_granularity: Option<String>,
     /// Participant codex ids to attach (optional).
     pub participant_codex_ids: Option<Vec<String>>,
     /// Scene ids to stamp this event onto (optional).
@@ -485,6 +510,10 @@ pub async fn create_event(
             location_codex_id: params.location_codex_id.as_deref(),
             start_time: params.start_time,
             end_time: params.end_time,
+            start_minute: params.start_minute,
+            end_minute: params.end_minute,
+            start_granularity: params.start_granularity.as_deref(),
+            end_granularity: params.end_granularity.as_deref(),
             precision: None,
             kind,
             participant_codex_ids: &participants,
@@ -509,6 +538,14 @@ pub struct UpdateEventParams {
     pub location_codex_id: Option<String>,
     pub start_time: Option<i64>,
     pub end_time: Option<i64>,
+    /// Start time of day in minutes (0-1439, 24h clock).
+    pub start_minute: Option<i64>,
+    /// End time of day in minutes (0-1439, 24h clock).
+    pub end_minute: Option<i64>,
+    /// Start date precision: 'none'|'season'|'year'|'month'|'day'|'time'.
+    pub start_granularity: Option<String>,
+    /// End date precision: 'none'|'season'|'year'|'month'|'day'|'time'.
+    pub end_granularity: Option<String>,
 }
 
 pub async fn update_event(
@@ -558,6 +595,10 @@ pub async fn update_event(
             location_codex_id: params.location_codex_id.as_deref(),
             start_time: params.start_time,
             end_time: params.end_time,
+            start_minute: params.start_minute,
+            end_minute: params.end_minute,
+            start_granularity: params.start_granularity.as_deref(),
+            end_granularity: params.end_granularity.as_deref(),
             precision: None,
             kind: params.kind.as_deref(),
         },
@@ -890,6 +931,10 @@ mod tests {
                 location_codex_id: None,
                 start_time: Some(10),
                 end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
                 participant_codex_ids: None,
                 scene_ids: None,
             },
@@ -927,6 +972,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_event_round_trips_calendar_fields() {
+        let server = make_server(false);
+        let res = create_event(
+            &server,
+            CreateEventParams {
+                title: "Dawn raid".to_string(),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: Some(3),
+                end_time: Some(4),
+                start_minute: Some(540),
+                end_minute: Some(600),
+                start_granularity: Some("time".to_string()),
+                end_granularity: Some("day".to_string()),
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .await
+        .unwrap();
+        let id = result_json(&res)["id"].as_str().unwrap().to_string();
+
+        // detail round-trip (camelCase keys)
+        let detail = get_event_detail(
+            &server,
+            GetEventDetailParams {
+                event_id: id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let json = result_json(&detail);
+        assert_eq!(json["startMinute"], 540);
+        assert_eq!(json["endMinute"], 600);
+        assert_eq!(json["startGranularity"], "time");
+        assert_eq!(json["endGranularity"], "day");
+
+        // collect_event_snapshot round-trip via undo_journal.after_json
+        let conn = server.conn.lock().unwrap();
+        let after: String = conn
+            .query_row(
+                "SELECT after_json FROM undo_journal WHERE op_kind = 'create'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let snap: serde_json::Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(snap["eventData"]["startMinute"], 540);
+        assert_eq!(snap["eventData"]["endMinute"], 600);
+        assert_eq!(snap["eventData"]["startGranularity"], "time");
+        assert_eq!(snap["eventData"]["endGranularity"], "day");
+    }
+
+    #[tokio::test]
+    async fn create_event_defaults_granularity_to_none() {
+        let server = make_server(false);
+        let res = create_event(
+            &server,
+            CreateEventParams {
+                title: "Vague".to_string(),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .await
+        .unwrap();
+        let id = result_json(&res)["id"].as_str().unwrap().to_string();
+        let detail = get_event_detail(&server, GetEventDetailParams { event_id: id })
+            .await
+            .unwrap();
+        let json = result_json(&detail);
+        assert_eq!(json["startGranularity"], "none");
+        assert_eq!(json["endGranularity"], "none");
+        assert!(json["startMinute"].is_null());
+        assert!(json["endMinute"].is_null());
+    }
+
+    #[tokio::test]
+    async fn update_event_changes_calendar_fields() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "E1", "a0");
+        update_event(
+            &server,
+            UpdateEventParams {
+                event_id: "e1".to_string(),
+                title: None,
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: Some(720),
+                end_minute: None,
+                start_granularity: Some("month".to_string()),
+                end_granularity: None,
+            },
+        )
+        .await
+        .unwrap();
+        let detail = get_event_detail(
+            &server,
+            GetEventDetailParams {
+                event_id: "e1".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let json = result_json(&detail);
+        assert_eq!(json["startMinute"], 720);
+        assert_eq!(json["startGranularity"], "month");
+        // untouched end_* keep the seeded defaults
+        assert_eq!(json["endGranularity"], "none");
+        assert!(json["endMinute"].is_null());
+    }
+
+    #[tokio::test]
     async fn delete_event_cascades_and_snapshots_associations() {
         let server = make_server(false);
         seed_scene(&server, "p1", "s1");
@@ -943,6 +1117,10 @@ mod tests {
                 location_codex_id: None,
                 start_time: None,
                 end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
                 participant_codex_ids: Some(vec!["alice".to_string()]),
                 scene_ids: Some(vec!["s1".to_string()]),
             },
@@ -1159,6 +1337,10 @@ mod tests {
                 location_codex_id: None,
                 start_time: None,
                 end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
             },
         )
         .await;
@@ -1189,6 +1371,10 @@ mod tests {
                 location_codex_id: None,
                 start_time: None,
                 end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
                 participant_codex_ids: None,
                 scene_ids: None,
             },

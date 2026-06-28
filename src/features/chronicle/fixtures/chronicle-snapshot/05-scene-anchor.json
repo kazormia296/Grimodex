@@ -1,0 +1,125 @@
+{
+  "name": "scene-own anchor (scene carries a calendar date, not stamped) → source=scene + synthetic ordinal",
+  "input": {
+    "lang": "ja",
+    "sceneId": "s1",
+    "nodes": [
+      {
+        "id": "s1",
+        "parentId": null,
+        "nodeType": "scene",
+        "sortOrder": "a0",
+        "chronicleStartTime": 96212,
+        "chronicleStartMinute": 540,
+        "chronicleStartGranularity": "time",
+        "chroniclePrecision": "exact"
+      }
+    ],
+    "events": [
+      {
+        "id": "eb",
+        "title": "勇者誕生",
+        "note": null,
+        "ordinal": "a0",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 89012,
+        "kind": "birth"
+      },
+      {
+        "id": "e1",
+        "title": "出立",
+        "note": "故郷を発つ",
+        "ordinal": "a1",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 96000,
+        "kind": "generic"
+      },
+      {
+        "id": "e2",
+        "title": "邂逅",
+        "note": null,
+        "ordinal": "a2",
+        "primaryCodexId": "mentor",
+        "locationCodexId": null,
+        "startTime": 96212,
+        "kind": "generic"
+      },
+      {
+        "id": "e3",
+        "title": "決戦",
+        "note": null,
+        "ordinal": "a3",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 96500,
+        "kind": "generic"
+      }
+    ],
+    "participants": [],
+    "relations": [{ "causeId": "e1", "effectId": "e3" }],
+    "sceneEvents": [],
+    "calendar": {
+      "daysPerYear": 360,
+      "startYear": 1000,
+      "seasonBoundaries": [
+        { "name": "春", "startDayOfYear": 0 },
+        { "name": "夏", "startDayOfYear": 90 },
+        { "name": "秋", "startDayOfYear": 180 },
+        { "name": "冬", "startDayOfYear": 270 }
+      ],
+      "months": [
+        { "name": "1月", "days": 30 },
+        { "name": "2月", "days": 30 },
+        { "name": "3月", "days": 30 },
+        { "name": "4月", "days": 30 },
+        { "name": "5月", "days": 30 },
+        { "name": "6月", "days": 30 },
+        { "name": "7月", "days": 30 },
+        { "name": "8月", "days": 30 },
+        { "name": "9月", "days": 30 },
+        { "name": "10月", "days": 30 },
+        { "name": "11月", "days": 30 },
+        { "name": "12月", "days": 30 }
+      ],
+      "weekdayNames": ["日", "月", "火", "水", "木", "金", "土"]
+    },
+    "codexNames": { "hero": "勇者", "mentor": "師匠" }
+  },
+  "expected": {
+    "time": {
+      "source": "scene",
+      "startTime": 96212,
+      "season": "夏",
+      "precision": "exact",
+      "formattedDate": "1267年4月3日 09:00"
+    },
+    "characters": [
+      {
+        "codexId": "mentor",
+        "name": "師匠",
+        "status": "unknown",
+        "age": null,
+        "location": null
+      },
+      {
+        "codexId": "hero",
+        "name": "勇者",
+        "status": "alive",
+        "age": 20,
+        "location": null
+      }
+    ],
+    "recentEvents": [
+      { "eventId": "e2", "title": "邂逅", "note": null },
+      { "eventId": "e1", "title": "出立", "note": "故郷を発つ" }
+    ],
+    "unresolvedCausal": [{ "causeTitle": "出立", "effectTitle": "決戦" }],
+    "offpage": [
+      { "eventId": "eb", "title": "勇者誕生", "note": null },
+      { "eventId": "e2", "title": "邂逅", "note": null },
+      { "eventId": "e1", "title": "出立", "note": "故郷を発つ" }
+    ]
+  }
+}

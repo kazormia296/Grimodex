@@ -37,7 +37,7 @@
     "codexNames": { "hero": "Hero", "mentor": "Mentor", "castle": "Castle" }
   },
   "expected": {
-    "time": { "source": "stamped", "startTime": 7200, "season": "Spring", "precision": "approx" },
+    "time": { "source": "stamped", "startTime": 7200, "season": "Spring", "precision": "approx", "formattedDate": null },
     "characters": [
       { "codexId": "hero", "name": "Hero", "status": "alive", "age": 20, "location": "Castle" },
       { "codexId": "mentor", "name": "Mentor", "status": "unknown", "age": null, "location": "Castle" }
