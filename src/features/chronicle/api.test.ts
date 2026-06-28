@@ -107,6 +107,9 @@ import {
   deleteEvent,
   addEventRelation,
   linkSceneToEvent,
+  unlinkSceneFromEvent,
+  setEventParticipants,
+  listEventParticipants,
   listSceneEvents,
   listEventRelations,
   listEventParticipantsForProject,
@@ -336,6 +339,81 @@ describe("linkSceneToEvent", () => {
     await linkSceneToEvent("p1", "s2", "e1");
 
     expect(await listSceneEvents(["e1"])).toEqual([]);
+  });
+});
+
+describe("unlinkSceneFromEvent (fail-closed scoping)", () => {
+  async function seedScene(id: string, projectId: string): Promise<void> {
+    await db.insert(treeNodes).values({
+      id,
+      projectId,
+      nodeType: "scene",
+      title: id,
+      sortOrder: "a0",
+      content: "{}",
+      unplacedBeatsDoc: "[]",
+      charCount: 0,
+    });
+  }
+
+  it("event が projectId に属していれば link を解除する", async () => {
+    await seedScene("s1", "p1");
+    await seed("e1", "p1", "a0");
+    await db.insert(sceneEvents).values({ sceneId: "s1", eventId: "e1" });
+
+    await unlinkSceneFromEvent("p1", "s1", "e1");
+
+    expect(await listSceneEvents(["e1"])).toEqual([]);
+  });
+
+  it("他プロジェクトの projectId では解除されない(XPROJ 遮断)", async () => {
+    await seedScene("s1", "p1");
+    await seed("e1", "p1", "a0");
+    await db.insert(sceneEvents).values({ sceneId: "s1", eventId: "e1" });
+
+    await unlinkSceneFromEvent("p2", "s1", "e1");
+
+    expect(await listSceneEvents(["e1"])).toEqual([
+      { sceneId: "s1", eventId: "e1" },
+    ]);
+  });
+});
+
+describe("setEventParticipants (fail-closed scoping)", () => {
+  it("event が projectId に属していれば参加者集合を置き換える", async () => {
+    await seed("e1", "p1", "a0");
+    await db
+      .insert(eventParticipants)
+      .values({ eventId: "e1", codexEntryId: "old" });
+
+    await setEventParticipants("e1", "p1", ["c1", "c2"]);
+
+    const rows = await listEventParticipants("e1");
+    expect(rows.map((r) => r.codexEntryId).sort()).toEqual(["c1", "c2"]);
+  });
+
+  it("空配列を渡すと全参加者を削除する", async () => {
+    await seed("e1", "p1", "a0");
+    await db
+      .insert(eventParticipants)
+      .values({ eventId: "e1", codexEntryId: "c1" });
+
+    await setEventParticipants("e1", "p1", []);
+
+    expect(await listEventParticipants("e1")).toEqual([]);
+  });
+
+  it("他プロジェクトの projectId では参加者を変更しない(XPROJ 遮断)", async () => {
+    await seed("e1", "p1", "a0");
+    await db
+      .insert(eventParticipants)
+      .values({ eventId: "e1", codexEntryId: "keep" });
+
+    await setEventParticipants("e1", "p2", ["hacked"]);
+
+    expect(await listEventParticipants("e1")).toEqual([
+      { eventId: "e1", codexEntryId: "keep", role: null },
+    ]);
   });
 });
 

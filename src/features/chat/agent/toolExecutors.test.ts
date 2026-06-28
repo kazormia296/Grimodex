@@ -92,6 +92,7 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "list_plot_threads",
     "search_codex",
     "search_codex_by_tags",
+    "search_events",
     "search_scenes",
     "search_snippets",
   ];

@@ -154,6 +154,10 @@ pub fn run() {
             // cleared on workspace open, invalidated per-entry on codex_index_entry.
             // Non-gated so workspace.rs (also non-gated) can clear it.
             app.manage(semantic::codex_search::CodexSearchCache::new());
+            // Chronicle event semantic search cache (event_id -> embedding). Same
+            // lifecycle: cleared on workspace open, invalidated per-event on
+            // events_index_entry. Non-gated so workspace.rs can clear it.
+            app.manage(semantic::events_search::EventsSearchCache::new());
             // Chat episodic recall cache (message_id -> embedding). Same lifecycle:
             // cleared on workspace open, invalidated per-message on chat_index_message.
             app.manage(semantic::chat_search::ChatSearchCache::new());
@@ -295,6 +299,14 @@ pub fn run() {
             commands::semantic::codex_index_status,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::codex_reindex_all,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::events_index_entry,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::events_semantic_search,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::events_index_status,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::events_reindex_all,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::chat_index_message,
             #[cfg(feature = "semantic-embedding")]

@@ -60,6 +60,8 @@ import type { AiTreePlan } from "@/features/tree/aiScaffold/types";
 import {
   codexSemanticSearch,
   type CodexSearchHit,
+  eventsSemanticSearch,
+  type EventSearchHit,
 } from "@/features/semantic-search/api";
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -237,6 +239,64 @@ async function searchCodex(
     name: "search_codex",
     content,
     summary: `${content.length} entries found`,
+    tokensUsed: countTokens(json),
+  };
+}
+
+/**
+ * 作中年表 (Chronicle) 出来事の dense セマンティック検索 (Phase 3)。
+ * `events_semantic_search` を叩く dense-only ツール (codex のような FTS 融合なし)。
+ * feature 無効ビルド / 未 index / モデル不在では reject → 空配列にグレースフルに退避。
+ */
+async function searchEvents(
+  params: Record<string, unknown>,
+): Promise<Omit<ToolResult, "toolCallId">> {
+  const query = String(params["query"] ?? "").trim();
+  if (!query)
+    return {
+      name: "search_events",
+      content: [],
+      summary: "0 events found",
+      tokensUsed: 0,
+    };
+
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId)
+    return {
+      name: "search_events",
+      content: [],
+      summary: "No active project",
+      tokensUsed: 0,
+    };
+
+  const rawLimit = Number(params["limit"]);
+  const limit =
+    Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(Math.floor(rawLimit), 30)
+      : 10;
+
+  const hits = await eventsSemanticSearch({ projectId, query, limit }).catch(
+    (e) => {
+      debugLog.warn(
+        "search_events",
+        "dense events search failed (empty fallback)",
+        errorDetail(e),
+      );
+      return [] as EventSearchHit[];
+    },
+  );
+
+  const content = hits.map((h) => ({
+    eventId: h.eventId,
+    title: h.title,
+    kind: h.kind,
+    score: h.score,
+  }));
+  const json = JSON.stringify(content);
+  return {
+    name: "search_events",
+    content,
+    summary: `${content.length} events found`,
     tokensUsed: countTokens(json),
   };
 }
@@ -1491,6 +1551,7 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   get_event_detail: getEventDetailTool,
   get_character_timeline: getCharacterTimelineTool,
   get_chronicle_state: getChronicleStateTool,
+  search_events: searchEvents,
 };
 Object.freeze(READ_ONLY_EXECUTORS);
 

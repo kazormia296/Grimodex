@@ -250,19 +250,28 @@ const MAX_PICK_CHARACTERS = 10;
 
 /**
  * スナップショットに載せる人物 codexId を選ぶ（Phase 1 固定ルール・純粋）。
+ * 0. ユーザーが @mention で明示した人物（mentionedCodexIds）= 最優先 seed。
+ *    cap が一杯でも捨てない（「この人物について聞きたい」という明示意図のため）。
  * 1. 現在シーンに L4 注入済みの codex（sceneCodexIds）
  * 2. anchor 以前の直近 K=8 イベントの primaryCodexId と participants
- * none アンカーは状態が定まらないため空（D1: オフページのみ）。
+ * none アンカーは状態が定まらないため空（D1: オフページのみ）。@mention 人物も
+ * 状態が導出できないので含めない（off-page は別レイヤで扱う）。
  */
 export function pickSnapshotCharacters(args: {
   anchor: ChronicleAnchor;
   events: EventRow[];
   participants: ParticipantRow[];
   sceneCodexIds?: string[];
+  mentionedCodexIds?: string[];
   max?: number;
 }): string[] {
   if (args.anchor.source === "none") return [];
-  const ids = new Set<string>(args.sceneCodexIds ?? []);
+  // @mention 人物を最初に積むことで、Set の挿入順 → 末尾 slice の cap でも
+  // 確実に生き残る（明示意図 > scene L4 > recent の優先度）。
+  const ids = new Set<string>([
+    ...(args.mentionedCodexIds ?? []),
+    ...(args.sceneCodexIds ?? []),
+  ]);
   const recent = args.events
     .filter((e) => atOrBefore(e.ordinal, args.anchor.ordinal))
     .sort((a, b) => cmpKeys(b.ordinal, a.ordinal))
@@ -289,6 +298,8 @@ export function assembleChronicleSnapshotText(args: {
   readingOrder: Map<string, number>;
   codexNames: Map<string, string>;
   sceneCodexIds?: string[];
+  /** @mention で明示された人物 codexId（最優先で snapshot に含める）。 */
+  mentionedCodexIds?: string[];
   lang: string;
 }): string | undefined {
   const anchor = resolveSceneAnchor(args.sceneId, {
@@ -301,6 +312,7 @@ export function assembleChronicleSnapshotText(args: {
     events: args.events,
     participants: args.participants,
     sceneCodexIds: args.sceneCodexIds,
+    mentionedCodexIds: args.mentionedCodexIds,
   });
   const snapshot = deriveChronicleSnapshot({
     anchor,

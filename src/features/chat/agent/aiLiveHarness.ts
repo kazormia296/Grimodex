@@ -581,6 +581,10 @@ export function createMockReadOnlyExecutor(
           "chronicle state (none)",
         );
         break;
+      case "search_events":
+        // MockWorld に年表データを持たないため空のスタブ。
+        r = okResult(name, [], "0 events found");
+        break;
       default:
         r = {
           toolCallId: "",

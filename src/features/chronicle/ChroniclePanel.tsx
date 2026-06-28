@@ -20,15 +20,19 @@ import {
   listEvents,
   listSceneEvents,
   listEventRelations,
-  addEventRelation,
-  removeEventRelation,
-  createEvent,
-  updateEvent,
-  deleteEvent,
   type EventRow,
   type SceneEventRow,
   type EventRelationRow,
 } from "./api";
+// 手動 CRUD は tracked-write（undo/Linter 連動・surface="manual"）経由で書き込む。
+// 素の Drizzle mutation（api.ts）は抽出ウィザード等の非 tracked 経路用に残す。
+import {
+  uiCreateEvent,
+  uiUpdateEvent,
+  uiDeleteEvent,
+  uiAddEventRelation,
+  uiRemoveEventRelation,
+} from "@/features/agent-writes/event";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { eventPositions, buildCausalEdges } from "./chronicleEdges";
 import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
@@ -253,8 +257,7 @@ export function ChroniclePanel() {
     if (!projectId || creating) return;
     setCreating(true);
     try {
-      const ev = await createEvent({
-        projectId,
+      const ev = await uiCreateEvent({
         title: t("chronicle.newEvent", "新しい出来事"),
       });
       setSelectedEventId(ev.id);
@@ -275,7 +278,7 @@ export function ChroniclePanel() {
         evs.map((e) => (e.id === id ? { ...e, ...patch } : e)),
       );
       try {
-        await updateEvent(id, projectId, patch);
+        await uiUpdateEvent({ eventId: id, ...patch });
       } catch {
         setEvents((evs) => evs.map((e) => (e.id === id ? prev : e)));
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
@@ -287,7 +290,7 @@ export function ChroniclePanel() {
   const handleDelete = useCallback(async () => {
     if (!selected || !projectId) return;
     try {
-      await deleteEvent(selected.id, projectId);
+      await uiDeleteEvent(selected.id);
       setSelectedEventId(null);
       refresh();
     } catch {
@@ -335,7 +338,7 @@ export function ChroniclePanel() {
       evs.map((e) => (e.id === id ? { ...e, ordinal: order } : e)),
     );
     try {
-      await updateEvent(id, projectId, { ordinal: order });
+      await uiUpdateEvent({ eventId: id, ordinal: order });
     } catch {
       setEvents((evs) => evs.map((e) => (e.id === id ? prev : e)));
       toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
@@ -365,7 +368,7 @@ export function ChroniclePanel() {
   const handleAddCause = useCallback(
     async (causeId: string) => {
       if (!selected || !projectId) return;
-      await addEventRelation(projectId, causeId, selected.id);
+      await uiAddEventRelation(causeId, selected.id);
       refresh();
     },
     [selected, projectId, refresh],
@@ -373,7 +376,7 @@ export function ChroniclePanel() {
   const handleRemoveCause = useCallback(
     async (causeId: string) => {
       if (!selected || !projectId) return;
-      await removeEventRelation(projectId, causeId, selected.id);
+      await uiRemoveEventRelation(causeId, selected.id);
       refresh();
     },
     [selected, projectId, refresh],

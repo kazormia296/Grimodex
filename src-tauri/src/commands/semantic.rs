@@ -41,6 +41,12 @@ use crate::semantic::codex_index::{
 };
 use crate::semantic::codex_search::{run_codex_search, CodexSearchCache, CodexSearchHit};
 use crate::semantic::embedding::Embedder;
+use crate::semantic::events_index::{
+    collect_events_index_status, embed_event_text, list_event_ids_in_project,
+    project_language_for_event, read_event_for_index, upsert_event_chunk, EventUpsertOutcome,
+    EventsIndexStatus,
+};
+use crate::semantic::events_search::{run_events_search, EventSearchHit, EventsSearchCache};
 use crate::semantic::index::{
     collect_index_status, embed_scene_payloads, list_scene_ids_in_project, project_language,
     project_language_for_scene, read_scene_for_index, upsert_scene_chunks, IndexStatusReport,
@@ -462,6 +468,203 @@ pub(crate) async fn codex_reindex_all(
             let outcome = codex_index_split_lock(&ws_state, embedder, entry_id, &model_id, spec)?;
             if let CodexUpsertOutcome::Indexed(n) = outcome {
                 cache.invalidate(entry_id)?;
+                total += n;
+            }
+        }
+        Ok(total)
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chronicle event semantic search (作中年表 RAG, Phase 3) — codex 経路と同型
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Chronicle event 1 件の埋め込みを再構築する (Phase 3)。
+///
+/// codex の `codex_index_split_lock` と同型: 読み出し → embed → upsert を分割し、
+/// workspace lock を ONNX 推論中に保持しない。推論中の event 変更は upsert 側の
+/// hash 再確認が race を吸収する。
+fn events_index_split_lock(
+    ws_state: &tauri::State<'_, WorkspaceState>,
+    embedder: &mut Embedder,
+    event_id: &str,
+    model_id: &str,
+    spec: &'static EmbeddingModelSpec,
+) -> Result<EventUpsertOutcome, AppError> {
+    let Some((text, initial_hash)) = with_db(ws_state, |db| read_event_for_index(db, event_id))?
+    else {
+        return Ok(EventUpsertOutcome::SkippedMissing);
+    };
+    // lock 外: 推論中も他コマンドの DB アクセスを止めない。
+    let embedding = embed_event_text(embedder, &text)?;
+    let embedding_dim = embedder.embedding_dim();
+    let outcome = with_db(ws_state, |db| {
+        upsert_event_chunk(
+            db,
+            event_id,
+            &initial_hash,
+            &embedding,
+            &text,
+            model_id,
+            embedding_dim,
+            spec.chunker_version,
+        )
+    })?;
+    Ok(outcome)
+}
+
+/// Chronicle event 1 件をセマンティック index に投入/更新する。
+///
+/// 戻り値: 投入したベクトル数 (1)。event 不在や古い hash で破棄された場合は 0。
+/// 成功時は `EventsSearchCache` の該当 event を invalidate する。
+#[tauri::command]
+pub(crate) async fn events_index_entry(
+    app: tauri::AppHandle,
+    event_id: String,
+) -> Result<usize, AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        let emb_state = app.state::<SemanticEmbedderState>();
+        let cache = app.state::<EventsSearchCache>();
+
+        let language = with_db(&ws_state, |db| project_language_for_event(db, &event_id))?;
+        let spec = spec_for_language(&language);
+        let model_id = spec.full_model_id();
+
+        let mut guard = emb_state
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+        let embedder = ensure_embedder(&app, spec, &mut guard)?;
+
+        let outcome = events_index_split_lock(&ws_state, embedder, &event_id, &model_id, spec)?;
+
+        let n = match outcome {
+            EventUpsertOutcome::Indexed(n) => {
+                cache.invalidate(&event_id)?;
+                n
+            }
+            EventUpsertOutcome::SkippedHashMismatch | EventUpsertOutcome::SkippedMissing => 0,
+        };
+        Ok(n)
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// Chronicle event のセマンティック検索 (Phase 3)。クエリを埋め込み、project 配下の
+/// event_chunks に総当たりコサイン → Top-K。dense のみ (FTS 融合なし)。JS 側
+/// `search_events` agent ツールが叩く。
+#[tauri::command]
+pub(crate) async fn events_semantic_search(
+    app: tauri::AppHandle,
+    project_id: String,
+    query: String,
+    limit: usize,
+) -> Result<Vec<EventSearchHit>, AppError> {
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<EventSearchHit>, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let emb_state = app.state::<SemanticEmbedderState>();
+            let cache = app.state::<EventsSearchCache>();
+
+            let language = with_db(&ws_state, |db| project_language(db, &project_id))?;
+            let spec = spec_for_language(&language);
+            let model_id = spec.full_model_id();
+
+            let mut guard = emb_state
+                .inner
+                .lock()
+                .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+            let embedder = ensure_embedder(&app, spec, &mut guard)?;
+            let query_embedding = embedder.embed_query(&query)?;
+            let embedding_dim = embedder.embedding_dim();
+            drop(guard);
+
+            let hits = with_db(&ws_state, |db| {
+                run_events_search(
+                    db,
+                    &cache,
+                    &query_embedding,
+                    &project_id,
+                    limit,
+                    &model_id,
+                    embedding_dim,
+                    spec.chunker_version,
+                )
+            })?;
+            Ok(hits)
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// Chronicle event の index 充足状況 (Phase 3)。Embedder 不要の cheap クエリ。JS 側が
+/// `indexedEventCount < totalEventCount` を見て bulk back-index の要否を判定する。
+#[tauri::command]
+pub(crate) async fn events_index_status(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<EventsIndexStatus, AppError> {
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<EventsIndexStatus, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let report = with_db(&ws_state, |db| {
+                let language = project_language(db, &project_id)?;
+                let spec = spec_for_language(&language);
+                collect_events_index_status(
+                    db,
+                    &project_id,
+                    &spec.full_model_id(),
+                    spec.embedding_dim,
+                    spec.chunker_version,
+                )
+            })?;
+            Ok(report)
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
+}
+
+/// project 配下の全 Chronicle event を一括再 index する (Phase 3 bulk back-index)。
+///
+/// `codex_reindex_all` の event 版。既存出来事 (機能追加前 / 未編集) は逐次 index が
+/// 走らず未 index のままなので、初回構築用に全件回す。Embedder を 1 度 load し各 event を
+/// `events_index_split_lock` で index、成功ごとに `EventsSearchCache` を invalidate、
+/// 投入ベクトル総数を返す。event は件数が少なく短時間なので progress event は出さない。
+#[tauri::command]
+pub(crate) async fn events_reindex_all(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<usize, AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<usize, AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        let emb_state = app.state::<SemanticEmbedderState>();
+        let cache = app.state::<EventsSearchCache>();
+
+        let language = with_db(&ws_state, |db| project_language(db, &project_id))?;
+        let spec = spec_for_language(&language);
+        let model_id = spec.full_model_id();
+        let event_ids: Vec<String> =
+            with_db(&ws_state, |db| list_event_ids_in_project(db, &project_id))?;
+
+        let mut guard = emb_state
+            .inner
+            .lock()
+            .map_err(|e| anyhow::anyhow!("embedder lock poisoned: {e}"))?;
+        let embedder = ensure_embedder(&app, spec, &mut guard)?;
+
+        let mut total: usize = 0;
+        for event_id in &event_ids {
+            let outcome = events_index_split_lock(&ws_state, embedder, event_id, &model_id, spec)?;
+            if let EventUpsertOutcome::Indexed(n) = outcome {
+                cache.invalidate(event_id)?;
                 total += n;
             }
         }
