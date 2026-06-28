@@ -4,12 +4,13 @@ import { render, fireEvent, screen } from "@testing-library/react";
 import { PanelChromeMenu, isPanelChromeGestureTarget } from "./PanelChromeMenu";
 import { useLayoutStore } from "./layoutStore";
 
+const { isTauriMock } = vi.hoisted(() => ({ isTauriMock: vi.fn(() => false) }));
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
-  isTauri: () => false,
+  isTauri: isTauriMock,
 }));
 
-function setup() {
+function setup(panelId: "scenes" | "editor" = "scenes") {
   const toggleMaximizePanel = vi.fn();
   const togglePanel = vi.fn();
   useLayoutStore.setState({
@@ -18,7 +19,7 @@ function setup() {
     maximizedPanelId: null,
   });
   const utils = render(
-    <PanelChromeMenu panelId="scenes">
+    <PanelChromeMenu panelId={panelId}>
       <div data-testid="panel-root">
         <div data-panel-header data-testid="header">
           <span data-testid="title">Scenes</span>
@@ -91,5 +92,21 @@ describe("PanelChromeMenu", () => {
     const { getByTestId } = setup();
     fireEvent.contextMenu(getByTestId("header-button"));
     expect(screen.queryByTestId("panel-ctx-maximize-scenes")).toBeNull();
+  });
+
+  it("Tauri では toggleable パネルに『別ウィンドウで開く』を出す", () => {
+    isTauriMock.mockReturnValue(true);
+    const { getByTestId } = setup("scenes");
+    fireEvent.contextMenu(getByTestId("title"));
+    expect(screen.queryByTestId("panel-ctx-open-window-scenes")).not.toBeNull();
+  });
+
+  it("editor では『別ウィンドウで開く』を出さない(全アプリ窓の複製防止)", () => {
+    isTauriMock.mockReturnValue(true);
+    const { getByTestId } = setup("editor");
+    fireEvent.contextMenu(getByTestId("title"));
+    // メニュー自体は開く(最大化/折りたたみは出る)が、別窓項目は無い。
+    expect(screen.queryByTestId("panel-ctx-maximize-editor")).not.toBeNull();
+    expect(screen.queryByTestId("panel-ctx-open-window-editor")).toBeNull();
   });
 });

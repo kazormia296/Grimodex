@@ -21,6 +21,17 @@ export function panelWindowLabel(panelId: PanelId): string {
   return `${PANEL_WINDOW_LABEL_PREFIX}${panelId}`;
 }
 
+/**
+ * その panel を別窓に切り出してよいか（= 単独描画対象として受理されるか）。
+ * 受理判定の正本。`parsePanelWindowTarget` の受理条件と必ず対称にする
+ * （ここで true ⇔ `?panel=<id>` の窓が solo 描画される）。editor のような
+ * 非 toggleable / 未知 panel を別窓化すると、生成窓は target=null となり
+ * メイン窓扱い＝アプリ全体の複製窓を生むため弾く。
+ */
+export function canOpenPanelWindow(panelId: PanelId): boolean {
+  return TOGGLEABLE_SET.has(panelId);
+}
+
 /** location.search 相当から、この窓が単独表示すべき panel を返す純関数。main 窓は null。 */
 export function parsePanelWindowTarget(search: string): PanelId | null {
   const params = new URLSearchParams(search);
@@ -71,6 +82,10 @@ export function buildPanelWindowOptions(panelId: PanelId): PanelWindowOptions {
  */
 export async function openPanelWindow(panelId: PanelId): Promise<void> {
   if (!isTauri()) return;
+  // 別窓対象外（editor／未知 panel）は no-op。これが無いと生成窓は
+  // target=null でアプリ全体を描く複製窓になる（呼び出し側 UI も項目を
+  // 隠すが、ここを最終防衛線にして経路を問わず複製窓を不可能にする）。
+  if (!canOpenPanelWindow(panelId)) return;
   const label = panelWindowLabel(panelId);
   const existing = await WebviewWindow.getByLabel(label);
   if (existing) {
