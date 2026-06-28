@@ -2625,7 +2625,10 @@ async function buildSceneContextPrompt(opts: {
   }
 
   // 作中年表スナップショット（push・L3 cache 同梱）。codexNames は全 project codex
-  // (allEntries) から、sceneCodexIds は L4 注入済み codex から。
+  // (allEntries) から、sceneCodexIds は自動検出された L4 codex から。
+  // mentionedCodexIds（最優先 seed・cap でも生存）には @mention 人物に加え、
+  // Spotlight（ピン留め）した人物も足す。Spotlight は @mention より強い明示フォーカス
+  // 信号なので、その人物の年表（生死/年齢/所在/関連イベント）も必ず載せる。
   const chronicleSnapshotText = projectIdForFs
     ? await buildChronicleSnapshotTextForScene(
         projectIdForFs,
@@ -2633,7 +2636,12 @@ async function buildSceneContextPrompt(opts: {
         projectCtx?.language ?? "ja",
         new Map(allEntries.map((e) => [e.id, e.name] as const)),
         codexEntries.map((e) => e.id),
-        opts.mentionedCodexIds ?? [],
+        Array.from(
+          new Set([
+            ...(opts.mentionedCodexIds ?? []),
+            ...pinnedCodexEntries.map((e) => e.id),
+          ]),
+        ),
       )
     : undefined;
 
