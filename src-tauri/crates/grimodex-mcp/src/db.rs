@@ -1815,6 +1815,971 @@ pub fn get_project_stats(conn: &Connection, project_id: &str) -> Result<ProjectS
     })
 }
 
+// ─── Chronicle (作中年表) ─────────────────────────────────────────────────────
+//
+// Mirrors `src/features/chronicle/api.ts`. All reads are scoped to the active
+// project: `events` carries `project_id`, and the association tables
+// (event_participants / scene_events) do not, so they INNER JOIN `events` and
+// gate on `events.project_id` (XPROJ read defense — single grimodex.db holds
+// every project). Writes are tracked the same way the in-app agent tools are
+// (`commands/agent_writes.rs::agent_event_*`): one BEGIN IMMEDIATE tx writes the
+// entity rows + undo_journal + change_events(domain "event"), surface = "mcp".
+
+/// Full event row (camelCase JSON), enough for list/detail/timeline shaping.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChronicleEventRow {
+    pub id: String,
+    pub title: String,
+    pub note: Option<String>,
+    pub ordinal: String,
+    pub primary_codex_id: Option<String>,
+    pub location_codex_id: Option<String>,
+    pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
+    pub precision: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChronicleParticipant {
+    pub event_id: String,
+    pub codex_entry_id: String,
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChronicleSceneEvent {
+    pub scene_id: String,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChronicleRelation {
+    pub cause_id: String,
+    pub effect_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChronicleCalendarRaw {
+    pub days_per_year: i64,
+    /// Raw JSON string (`SeasonBoundary[]`).
+    pub season_boundaries: String,
+}
+
+/// camelCase write result (same shape as foreshadow/codex `AgentWriteResult`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventWriteResult {
+    pub entity_id: String,
+    pub change_event_uid: String,
+    pub undo_journal_id: String,
+}
+
+fn map_chronicle_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChronicleEventRow> {
+    Ok(ChronicleEventRow {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        note: row.get(2)?,
+        ordinal: row.get(3)?,
+        primary_codex_id: row.get(4)?,
+        location_codex_id: row.get(5)?,
+        start_time: row.get(6)?,
+        end_time: row.get(7)?,
+        precision: row.get(8)?,
+        kind: row.get(9)?,
+    })
+}
+
+/// All events for the project, ordered `ordinal ASC, id ASC` (matches
+/// `listEvents`). The deterministic order is the contract the stable snapshot
+/// sorts rely on.
+pub fn chronicle_list_events(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<ChronicleEventRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, note, ordinal, primary_codex_id, location_codex_id,
+                start_time, end_time, precision, kind
+         FROM events WHERE project_id = ?1
+         ORDER BY ordinal ASC, id ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], map_chronicle_event)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("chronicle_list_events failed")?;
+    Ok(rows)
+}
+
+/// Project-scoped participants (INNER JOIN events for project gate).
+pub fn chronicle_list_participants(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<ChronicleParticipant>> {
+    let mut stmt = conn.prepare(
+        "SELECT ep.event_id, ep.codex_entry_id, ep.role
+         FROM event_participants ep
+         JOIN events e ON e.id = ep.event_id
+         WHERE e.project_id = ?1
+         ORDER BY ep.event_id, ep.codex_entry_id",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok(ChronicleParticipant {
+                event_id: row.get(0)?,
+                codex_entry_id: row.get(1)?,
+                role: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("chronicle_list_participants failed")?;
+    Ok(rows)
+}
+
+/// Project-scoped scene↔event bridge (INNER JOIN events for project gate).
+pub fn chronicle_list_scene_events(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<ChronicleSceneEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT se.scene_id, se.event_id
+         FROM scene_events se
+         JOIN events e ON e.id = se.event_id
+         WHERE e.project_id = ?1
+         ORDER BY se.event_id, se.scene_id",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok(ChronicleSceneEvent {
+                scene_id: row.get(0)?,
+                event_id: row.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("chronicle_list_scene_events failed")?;
+    Ok(rows)
+}
+
+/// Causal edges for the project (event_relations carries project_id directly).
+pub fn chronicle_list_relations(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<ChronicleRelation>> {
+    let mut stmt = conn.prepare(
+        "SELECT cause_event_id, effect_event_id FROM event_relations
+         WHERE project_id = ?1
+         ORDER BY cause_event_id, effect_event_id",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok(ChronicleRelation {
+                cause_id: row.get(0)?,
+                effect_id: row.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("chronicle_list_relations failed")?;
+    Ok(rows)
+}
+
+/// 1-project-1-calendar (optional). None = no calendar configured.
+pub fn chronicle_get_calendar(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Option<ChronicleCalendarRaw>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT days_per_year, season_boundaries FROM project_calendar
+         WHERE project_id = ?1",
+        params![project_id],
+        |row| {
+            Ok(ChronicleCalendarRaw {
+                days_per_year: row.get(0)?,
+                season_boundaries: row.get(1)?,
+            })
+        },
+    )
+    .optional()
+    .context("chronicle_get_calendar failed")
+}
+
+/// codex id → display name for the project (XPROJ scoped).
+pub fn chronicle_codex_names(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT id, name FROM codex_entries WHERE project_id = ?1")?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().collect())
+}
+
+/// scene id → title for the project (used to label scene links in detail).
+pub fn chronicle_scene_titles(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title FROM tree_nodes WHERE project_id = ?1 AND node_type = 'scene'",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Tree nodes reduced to the reading-order fields (`computeGlobalSceneOrder`).
+pub fn chronicle_scene_nodes(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<crate::chronicle_snapshot::SceneNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, parent_id, node_type, sort_order FROM tree_nodes
+         WHERE project_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok(crate::chronicle_snapshot::SceneNode {
+                id: row.get(0)?,
+                parent_id: row.get(1)?,
+                node_type: row.get(2)?,
+                sort_order: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("chronicle_scene_nodes failed")?;
+    Ok(rows)
+}
+
+// ─── Chronicle writes (tracked, surface="mcp") ───────────────────────────────
+
+/// Run `f` inside a BEGIN IMMEDIATE transaction; COMMIT on Ok, ROLLBACK on Err.
+fn in_immediate_tx<T>(
+    conn: &Connection,
+    f: impl FnOnce(&Connection) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match f(conn) {
+        Ok(v) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(v)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// Self-contained snapshot of an event row + participants + scene links +
+/// relations (both directions). Byte-identical shape to
+/// `agent_writes.rs::collect_event_snapshot` so undo payloads are cross-surface
+/// portable.
+fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<serde_json::Value> {
+    use serde_json::json;
+    let event_json: String = conn.query_row(
+        "SELECT json_object(
+            'id', id, 'projectId', project_id, 'title', title, 'note', note,
+            'ordinal', ordinal, 'primaryCodexId', primary_codex_id,
+            'locationCodexId', location_codex_id, 'startTime', start_time,
+            'endTime', end_time, 'precision', precision, 'kind', kind,
+            'createdAt', created_at, 'updatedAt', updated_at
+         ) FROM events WHERE id = ?1",
+        params![event_id],
+        |row| row.get(0),
+    )?;
+    let event_data: serde_json::Value = serde_json::from_str(&event_json)?;
+
+    let participants = {
+        let mut stmt = conn.prepare(
+            "SELECT codex_entry_id, role FROM event_participants
+             WHERE event_id = ?1 ORDER BY codex_entry_id",
+        )?;
+        let rows = stmt.query_map(params![event_id], |row| {
+            let codex_entry_id: String = row.get(0)?;
+            let role: Option<String> = row.get(1)?;
+            Ok(json!({ "codexEntryId": codex_entry_id, "role": role }))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let scene_links = {
+        let mut stmt = conn
+            .prepare("SELECT scene_id FROM scene_events WHERE event_id = ?1 ORDER BY scene_id")?;
+        let rows = stmt.query_map(params![event_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let relations_as_cause = {
+        let mut stmt = conn.prepare(
+            "SELECT project_id, effect_event_id FROM event_relations
+             WHERE cause_event_id = ?1 ORDER BY effect_event_id",
+        )?;
+        let rows = stmt.query_map(params![event_id], |row| {
+            let project_id: String = row.get(0)?;
+            let effect_event_id: String = row.get(1)?;
+            Ok(json!({ "projectId": project_id, "effectEventId": effect_event_id }))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let relations_as_effect = {
+        let mut stmt = conn.prepare(
+            "SELECT project_id, cause_event_id FROM event_relations
+             WHERE effect_event_id = ?1 ORDER BY cause_event_id",
+        )?;
+        let rows = stmt.query_map(params![event_id], |row| {
+            let project_id: String = row.get(0)?;
+            let cause_event_id: String = row.get(1)?;
+            Ok(json!({ "projectId": project_id, "causeEventId": cause_event_id }))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    Ok(json!({
+        "eventData": event_data,
+        "participants": participants,
+        "sceneLinks": scene_links,
+        "relations": {
+            "asCause": relations_as_cause,
+            "asEffect": relations_as_effect,
+        },
+    }))
+}
+
+fn collect_participants_json(
+    conn: &Connection,
+    event_id: &str,
+) -> anyhow::Result<serde_json::Value> {
+    use serde_json::json;
+    let mut stmt = conn.prepare(
+        "SELECT codex_entry_id, role FROM event_participants
+         WHERE event_id = ?1 ORDER BY codex_entry_id",
+    )?;
+    let rows = stmt.query_map(params![event_id], |row| {
+        let codex_entry_id: String = row.get(0)?;
+        let role: Option<String> = row.get(1)?;
+        Ok(json!({ "codexEntryId": codex_entry_id, "role": role }))
+    })?;
+    let participants = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(json!({ "eventId": event_id, "participants": participants }))
+}
+
+fn event_exists(conn: &Connection, project_id: &str, event_id: &str) -> anyhow::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+        params![event_id, project_id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// Parameters for `chronicle_create_event` (defaults match
+/// `agent_event_create_impl`: title="", ordinal="a0", precision="exact",
+/// kind="generic"). XPROJ: the event's `project_id` is the server scope.
+pub struct ChronicleCreateInput<'a> {
+    pub project_id: &'a str,
+    pub session_id: &'a str,
+    pub title: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub ordinal: Option<&'a str>,
+    pub primary_codex_id: Option<&'a str>,
+    pub location_codex_id: Option<&'a str>,
+    pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
+    pub precision: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub participant_codex_ids: &'a [String],
+    pub scene_ids: &'a [String],
+}
+
+pub fn chronicle_create_event(
+    conn: &Connection,
+    input: ChronicleCreateInput<'_>,
+) -> Result<EventWriteResult> {
+    use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use grimodex_core::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+    use serde_json::json;
+
+    let event_id = uuid::Uuid::new_v4().to_string();
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    let title = input.title.unwrap_or("");
+    let ordinal = input.ordinal.unwrap_or("a0");
+    let precision = input.precision.unwrap_or("exact");
+    let kind = input.kind.unwrap_or("generic");
+
+    in_immediate_tx(conn, |conn| {
+        conn.execute(
+            "INSERT INTO events
+             (id, project_id, title, note, ordinal, primary_codex_id,
+              location_codex_id, start_time, end_time, precision, kind,
+              created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+            params![
+                event_id,
+                input.project_id,
+                title,
+                input.note,
+                ordinal,
+                input.primary_codex_id,
+                input.location_codex_id,
+                input.start_time,
+                input.end_time,
+                precision,
+                kind,
+                now,
+            ],
+        )?;
+        for codex_id in input.participant_codex_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+                 VALUES (?1, ?2, NULL)",
+                params![event_id, codex_id],
+            )?;
+        }
+        for scene_id in input.scene_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+                params![scene_id, event_id],
+            )?;
+        }
+
+        let after = collect_event_snapshot(conn, &event_id)?.to_string();
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id: input.project_id,
+                surface: "mcp",
+                entity_kind: "event",
+                entity_id: &event_id,
+                op_kind: "create",
+                before_json: None,
+                after_json: Some(&after),
+                base_version: 0,
+                result_version: 1,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+        append_change_events_in_tx(
+            conn,
+            input.project_id,
+            input.session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.create".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(event_id.clone()),
+                payload: json!({ "title": title, "kind": kind }).to_string(),
+                timestamp,
+            }],
+        )?;
+        Ok(EventWriteResult {
+            entity_id: event_id.clone(),
+            change_event_uid: event_uid.clone(),
+            undo_journal_id: undo_id.clone(),
+        })
+    })
+}
+
+#[derive(Default)]
+pub struct ChroniclePatch<'a> {
+    pub title: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub ordinal: Option<&'a str>,
+    pub primary_codex_id: Option<&'a str>,
+    pub location_codex_id: Option<&'a str>,
+    pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
+    pub precision: Option<&'a str>,
+    pub kind: Option<&'a str>,
+}
+
+/// `Ok(None)` = event not found in this project (XPROJ-safe; nothing written).
+pub fn chronicle_update_event(
+    conn: &Connection,
+    project_id: &str,
+    session_id: &str,
+    event_id: &str,
+    patch: ChroniclePatch<'_>,
+) -> Result<Option<EventWriteResult>> {
+    use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use grimodex_core::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+    use rusqlite::types::Value as V;
+    use serde_json::json;
+
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    in_immediate_tx(conn, |conn| {
+        if !event_exists(conn, project_id, event_id)? {
+            return Ok(None);
+        }
+        let before = collect_event_snapshot(conn, event_id)?.to_string();
+
+        let mut sets: Vec<String> = vec!["updated_at = ?".to_string()];
+        let mut vals: Vec<V> = vec![V::Text(now.clone())];
+        let mut fields: Vec<&str> = Vec::new();
+        if let Some(v) = patch.title {
+            sets.push("title = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("title");
+        }
+        if let Some(v) = patch.note {
+            sets.push("note = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("note");
+        }
+        if let Some(v) = patch.ordinal {
+            sets.push("ordinal = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("ordinal");
+        }
+        if let Some(v) = patch.primary_codex_id {
+            sets.push("primary_codex_id = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("primaryCodexId");
+        }
+        if let Some(v) = patch.location_codex_id {
+            sets.push("location_codex_id = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("locationCodexId");
+        }
+        if let Some(v) = patch.start_time {
+            sets.push("start_time = ?".into());
+            vals.push(V::Integer(v));
+            fields.push("startTime");
+        }
+        if let Some(v) = patch.end_time {
+            sets.push("end_time = ?".into());
+            vals.push(V::Integer(v));
+            fields.push("endTime");
+        }
+        if let Some(v) = patch.precision {
+            sets.push("precision = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("precision");
+        }
+        if let Some(v) = patch.kind {
+            sets.push("kind = ?".into());
+            vals.push(V::Text(v.to_string()));
+            fields.push("kind");
+        }
+        vals.push(V::Text(event_id.to_string()));
+        vals.push(V::Text(project_id.to_string()));
+        let sql = format!(
+            "UPDATE events SET {} WHERE id = ? AND project_id = ?",
+            sets.join(", ")
+        );
+        let updated = conn.execute(&sql, rusqlite::params_from_iter(vals.iter()))?;
+        anyhow::ensure!(updated == 1, "event row vanished mid-transaction");
+
+        let after = collect_event_snapshot(conn, event_id)?.to_string();
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id,
+                surface: "mcp",
+                entity_kind: "event",
+                entity_id: event_id,
+                op_kind: "update",
+                before_json: Some(&before),
+                after_json: Some(&after),
+                base_version: 1,
+                result_version: 1,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+        append_change_events_in_tx(
+            conn,
+            project_id,
+            session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.update".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(event_id.to_string()),
+                payload: json!({ "fields": fields }).to_string(),
+                timestamp,
+            }],
+        )?;
+        Ok(Some(EventWriteResult {
+            entity_id: event_id.to_string(),
+            change_event_uid: event_uid.clone(),
+            undo_journal_id: undo_id.clone(),
+        }))
+    })
+}
+
+/// `Ok(None)` = event not found in this project. Cascade snapshot is captured
+/// BEFORE the DELETE fires ON DELETE CASCADE so undo can fully restore.
+pub fn chronicle_delete_event(
+    conn: &Connection,
+    project_id: &str,
+    session_id: &str,
+    event_id: &str,
+) -> Result<Option<EventWriteResult>> {
+    use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use grimodex_core::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+    use serde_json::json;
+
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    in_immediate_tx(conn, |conn| {
+        if !event_exists(conn, project_id, event_id)? {
+            return Ok(None);
+        }
+        let before_value = collect_event_snapshot(conn, event_id)?;
+        let title = before_value["eventData"]["title"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let before = before_value.to_string();
+
+        let deleted = conn.execute(
+            "DELETE FROM events WHERE id = ?1 AND project_id = ?2",
+            params![event_id, project_id],
+        )?;
+        anyhow::ensure!(deleted == 1, "event vanished mid-delete");
+
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id,
+                surface: "mcp",
+                entity_kind: "event",
+                entity_id: event_id,
+                op_kind: "delete",
+                before_json: Some(&before),
+                after_json: None,
+                base_version: 1,
+                result_version: 0,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+        append_change_events_in_tx(
+            conn,
+            project_id,
+            session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.delete".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(event_id.to_string()),
+                payload: json!({ "title": title }).to_string(),
+                timestamp,
+            }],
+        )?;
+        Ok(Some(EventWriteResult {
+            entity_id: event_id.to_string(),
+            change_event_uid: event_uid.clone(),
+            undo_journal_id: undo_id.clone(),
+        }))
+    })
+}
+
+/// Replace the participant set (delete-all → insert). `Ok(None)` = not found.
+pub fn chronicle_set_participants(
+    conn: &Connection,
+    project_id: &str,
+    session_id: &str,
+    event_id: &str,
+    codex_entry_ids: &[String],
+) -> Result<Option<EventWriteResult>> {
+    use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use grimodex_core::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+    use serde_json::json;
+
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    in_immediate_tx(conn, |conn| {
+        if !event_exists(conn, project_id, event_id)? {
+            return Ok(None);
+        }
+        let before = collect_participants_json(conn, event_id)?.to_string();
+        conn.execute(
+            "DELETE FROM event_participants WHERE event_id = ?1",
+            params![event_id],
+        )?;
+        for codex_id in codex_entry_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+                 VALUES (?1, ?2, NULL)",
+                params![event_id, codex_id],
+            )?;
+        }
+        let after = collect_participants_json(conn, event_id)?.to_string();
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id,
+                surface: "mcp",
+                entity_kind: "event",
+                entity_id: event_id,
+                op_kind: "update",
+                before_json: Some(&before),
+                after_json: Some(&after),
+                base_version: 1,
+                result_version: 1,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+        append_change_events_in_tx(
+            conn,
+            project_id,
+            session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.participants".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(event_id.to_string()),
+                payload: json!({ "eventId": event_id, "codexEntryIds": codex_entry_ids })
+                    .to_string(),
+                timestamp,
+            }],
+        )?;
+        Ok(Some(EventWriteResult {
+            entity_id: event_id.to_string(),
+            change_event_uid: event_uid.clone(),
+            undo_journal_id: undo_id.clone(),
+        }))
+    })
+}
+
+/// Stamp/unstamp a scene↔event link. `Ok(None)` = scene or event not found in
+/// this project (XPROJ: both must belong to the active project).
+pub fn chronicle_scene_event(
+    conn: &Connection,
+    project_id: &str,
+    session_id: &str,
+    scene_id: &str,
+    event_id: &str,
+    link: bool,
+) -> Result<Option<EventWriteResult>> {
+    use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use grimodex_core::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+    use serde_json::json;
+
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    in_immediate_tx(conn, |conn| {
+        let scene_ok: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+            params![scene_id, project_id],
+            |r| r.get(0),
+        )?;
+        if scene_ok == 0 {
+            return Ok(None);
+        }
+        if !event_exists(conn, project_id, event_id)? {
+            return Ok(None);
+        }
+        let existed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
+            params![scene_id, event_id],
+            |r| r.get(0),
+        )?;
+        let before = json!({
+            "sceneId": scene_id, "eventId": event_id, "linked": existed > 0,
+        })
+        .to_string();
+
+        if link {
+            conn.execute(
+                "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+                params![scene_id, event_id],
+            )?;
+        } else {
+            conn.execute(
+                "DELETE FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
+                params![scene_id, event_id],
+            )?;
+        }
+        let after = json!({
+            "sceneId": scene_id, "eventId": event_id, "linked": link,
+        })
+        .to_string();
+        let op_type = if link { "event.stamp" } else { "event.unstamp" };
+
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id,
+                surface: "mcp",
+                entity_kind: "event",
+                entity_id: event_id,
+                op_kind: "update",
+                before_json: Some(&before),
+                after_json: Some(&after),
+                base_version: 1,
+                result_version: 1,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+        append_change_events_in_tx(
+            conn,
+            project_id,
+            session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: Some(scene_id.to_string()),
+                domain: "event".to_string(),
+                op_type: op_type.to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(event_id.to_string()),
+                payload: json!({ "sceneId": scene_id, "eventId": event_id }).to_string(),
+                timestamp,
+            }],
+        )?;
+        Ok(Some(EventWriteResult {
+            entity_id: event_id.to_string(),
+            change_event_uid: event_uid.clone(),
+            undo_journal_id: undo_id.clone(),
+        }))
+    })
+}
+
+/// Add/remove a causal edge. `Ok(None)` = either event missing in this project.
+/// Self-loop (cause == effect) must be rejected by the caller before this runs.
+pub fn chronicle_event_relation(
+    conn: &Connection,
+    project_id: &str,
+    session_id: &str,
+    cause_event_id: &str,
+    effect_event_id: &str,
+    add: bool,
+) -> Result<Option<EventWriteResult>> {
+    use grimodex_core::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use grimodex_core::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
+    use serde_json::json;
+
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    in_immediate_tx(conn, |conn| {
+        anyhow::ensure!(
+            cause_event_id != effect_event_id,
+            "self-loop event relation forbidden"
+        );
+        if !event_exists(conn, project_id, cause_event_id)?
+            || !event_exists(conn, project_id, effect_event_id)?
+        {
+            return Ok(None);
+        }
+        let existed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM event_relations
+             WHERE cause_event_id = ?1 AND effect_event_id = ?2",
+            params![cause_event_id, effect_event_id],
+            |r| r.get(0),
+        )?;
+        let before = json!({
+            "projectId": project_id,
+            "causeEventId": cause_event_id,
+            "effectEventId": effect_event_id,
+            "linked": existed > 0,
+        })
+        .to_string();
+
+        if add {
+            conn.execute(
+                "INSERT OR IGNORE INTO event_relations
+                 (project_id, cause_event_id, effect_event_id) VALUES (?1, ?2, ?3)",
+                params![project_id, cause_event_id, effect_event_id],
+            )?;
+        } else {
+            conn.execute(
+                "DELETE FROM event_relations
+                 WHERE cause_event_id = ?1 AND effect_event_id = ?2",
+                params![cause_event_id, effect_event_id],
+            )?;
+        }
+        let after = json!({
+            "projectId": project_id,
+            "causeEventId": cause_event_id,
+            "effectEventId": effect_event_id,
+            "linked": add,
+        })
+        .to_string();
+        let op_type = if add {
+            "event.relation_add"
+        } else {
+            "event.relation_remove"
+        };
+
+        insert_undo_journal_in_tx(
+            conn,
+            UndoJournalInsert {
+                id: &undo_id,
+                project_id,
+                surface: "mcp",
+                entity_kind: "event",
+                entity_id: cause_event_id,
+                op_kind: "update",
+                before_json: Some(&before),
+                after_json: Some(&after),
+                base_version: 1,
+                result_version: 1,
+                change_event_uid: Some(&event_uid),
+            },
+        )?;
+        append_change_events_in_tx(
+            conn,
+            project_id,
+            session_id,
+            &[AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: op_type.to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(cause_event_id.to_string()),
+                payload: json!({
+                    "causeEventId": cause_event_id,
+                    "effectEventId": effect_event_id,
+                })
+                .to_string(),
+                timestamp,
+            }],
+        )?;
+        Ok(Some(EventWriteResult {
+            entity_id: cause_event_id.to_string(),
+            change_event_uid: event_uid.clone(),
+            undo_journal_id: undo_id.clone(),
+        }))
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -2052,9 +3017,51 @@ pub(crate) mod tests {
                 is_orphan INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE events (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                note TEXT,
+                ordinal TEXT NOT NULL DEFAULT 'a0',
+                primary_codex_id TEXT,
+                location_codex_id TEXT,
+                start_time INTEGER,
+                end_time INTEGER,
+                precision TEXT NOT NULL DEFAULT 'exact',
+                kind TEXT NOT NULL DEFAULT 'generic',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE event_participants (
+                event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                codex_entry_id TEXT NOT NULL,
+                role TEXT,
+                PRIMARY KEY (event_id, codex_entry_id)
+            );
+            CREATE TABLE scene_events (
+                scene_id TEXT NOT NULL,
+                event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                PRIMARY KEY (scene_id, event_id)
+            );
+            CREATE TABLE event_relations (
+                project_id TEXT NOT NULL,
+                cause_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                effect_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+                PRIMARY KEY (cause_event_id, effect_event_id)
+            );
+            CREATE TABLE project_calendar (
+                project_id TEXT PRIMARY KEY,
+                days_per_year INTEGER NOT NULL DEFAULT 360,
+                season_boundaries TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );",
         )
         .unwrap();
+        // Chronicle cascade tests need FK enforcement (ON DELETE CASCADE);
+        // production open_db enables it. The other tests are FK-agnostic.
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         conn
     }
 

@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod chronicle;
 pub mod codex;
 pub mod context;
 pub mod foreshadow;

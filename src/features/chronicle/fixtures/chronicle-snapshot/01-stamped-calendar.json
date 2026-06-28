@@ -1,0 +1,57 @@
+{
+  "name": "stamped anchor with calendar: age, location, recent, causal, offpage",
+  "input": {
+    "sceneId": "s1",
+    "nodes": [
+      { "id": "f1", "parentId": null, "nodeType": "folder", "sortOrder": "a0" },
+      { "id": "s1", "parentId": "f1", "nodeType": "scene", "sortOrder": "a0" },
+      { "id": "s2", "parentId": "f1", "nodeType": "scene", "sortOrder": "a1" }
+    ],
+    "events": [
+      { "id": "eb", "title": "Hero born", "note": null, "ordinal": "a0", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 0, "kind": "birth" },
+      { "id": "eoff", "title": "Rumor spreads", "note": "spread fast", "ordinal": "a0G", "primaryCodexId": "mentor", "locationCodexId": null, "startTime": 100, "kind": "generic" },
+      { "id": "e1", "title": "Departure", "note": "leaves home", "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": "castle", "startTime": 7200, "kind": "generic" },
+      { "id": "e2", "title": "Training", "note": null, "ordinal": "a2", "primaryCodexId": "mentor", "locationCodexId": null, "startTime": 7250, "kind": "generic" },
+      { "id": "e3", "title": "Final battle", "note": null, "ordinal": "a3", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 7300, "kind": "generic" }
+    ],
+    "participants": [
+      { "eventId": "e1", "codexEntryId": "mentor", "role": null }
+    ],
+    "relations": [
+      { "causeId": "e1", "effectId": "e3" },
+      { "causeId": "e2", "effectId": "e3" }
+    ],
+    "sceneEvents": [
+      { "sceneId": "s1", "eventId": "e1" },
+      { "sceneId": "s2", "eventId": "e2" }
+    ],
+    "calendar": {
+      "daysPerYear": 360,
+      "seasonBoundaries": [
+        { "name": "Spring", "startDayOfYear": 0 },
+        { "name": "Summer", "startDayOfYear": 90 },
+        { "name": "Autumn", "startDayOfYear": 180 },
+        { "name": "Winter", "startDayOfYear": 270 }
+      ]
+    },
+    "codexNames": { "hero": "Hero", "mentor": "Mentor", "castle": "Castle" }
+  },
+  "expected": {
+    "time": { "source": "stamped", "startTime": 7200, "season": "Spring" },
+    "characters": [
+      { "codexId": "hero", "name": "Hero", "status": "alive", "age": 20, "location": "Castle" },
+      { "codexId": "mentor", "name": "Mentor", "status": "unknown", "age": null, "location": "Castle" }
+    ],
+    "recentEvents": [
+      { "eventId": "e1", "title": "Departure", "note": "leaves home" },
+      { "eventId": "eoff", "title": "Rumor spreads", "note": "spread fast" }
+    ],
+    "unresolvedCausal": [
+      { "causeTitle": "Departure", "effectTitle": "Final battle" }
+    ],
+    "offpage": [
+      { "eventId": "eb", "title": "Hero born", "note": null },
+      { "eventId": "eoff", "title": "Rumor spreads", "note": "spread fast" }
+    ]
+  }
+}

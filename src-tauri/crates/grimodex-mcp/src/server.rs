@@ -409,6 +409,140 @@ impl GrimodexServer {
     ) -> Result<CallToolResult, ErrorData> {
         tools::scene::propose_scene_body(self, params.0).await
     }
+
+    // ─── Chronicle (作中年表) ─────────────────────────────────────────────────
+
+    /// List chronicle events in story (ordinal) order. Optional kind filter.
+    #[tool(
+        description = "List chronicle (作中年表) events in story order (ordinal). Each item: id, title, kind, ordinal, startTime, primaryCharacter (resolved codex name). Optional kind filter: 'birth'|'death'|'generic'."
+    )]
+    async fn list_events(
+        &self,
+        params: Parameters<tools::chronicle::ListEventsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::list_events(self, params.0).await
+    }
+
+    /// Get one event's full detail: participants, scene links, causal relations.
+    #[tool(
+        description = "Get a chronicle event's full detail by event_id: title, note, kind, ordinal, start/end time, precision, primaryCharacter and location (resolved names), participants (codexId/name/role), stamped scenes (sceneId/title), and causal relations (cause/effect titles). Returns null if the event is not in this project."
+    )]
+    async fn get_event_detail(
+        &self,
+        params: Parameters<tools::chronicle::GetEventDetailParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::get_event_detail(self, params.0).await
+    }
+
+    /// Get a character's in-story career: involved events in order, with ages.
+    #[tool(
+        description = "Get a character's chronicle timeline by codex_id: the events they are primary in or participate in, in story order, each with ageAtEvent (computed from their birth event and the project calendar when both are known)."
+    )]
+    async fn get_character_timeline(
+        &self,
+        params: Parameters<tools::chronicle::GetCharacterTimelineParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::get_character_timeline(self, params.0).await
+    }
+
+    /// Derive the world-state snapshot at a scene's story time (structured JSON).
+    #[tool(
+        description = "Get the chronicle world-state snapshot anchored at a scene (scene_id required): time (source/startTime/season), character statuses (alive/dead/unborn/unknown, age, last-known location), recent events, unresolved causal pairs, and off-page background. Identical structured JSON to the in-app get_chronicle_state tool. Returns null if there are no events or no scene_id."
+    )]
+    async fn get_chronicle_state(
+        &self,
+        params: Parameters<tools::chronicle::GetChronicleStateParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::get_chronicle_state(self, params.0).await
+    }
+
+    /// Create a chronicle event (tracked; undo-able). knowledgeWrite gate.
+    #[tool(
+        description = "Create a chronicle event: title (required), note, kind ('generic'|'birth'|'death', default generic), primary_codex_id, location_codex_id, start_time/end_time (days from epoch), participant_codex_ids, scene_ids. Tracked (undo_journal + change_event). Disabled in readonly mode."
+    )]
+    async fn create_event(
+        &self,
+        params: Parameters<tools::chronicle::CreateEventParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::create_event(self, params.0).await
+    }
+
+    /// Update a chronicle event (only provided fields). knowledgeWrite gate.
+    #[tool(
+        description = "Update a chronicle event by event_id. Only provided fields change (title, note, kind, primary_codex_id, location_codex_id, start_time, end_time). Scoped to the active project. Tracked. Disabled in readonly mode."
+    )]
+    async fn update_event(
+        &self,
+        params: Parameters<tools::chronicle::UpdateEventParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::update_event(self, params.0).await
+    }
+
+    /// Delete a chronicle event (cascade snapshot; undo restores). knowledgeWrite gate.
+    #[tool(
+        description = "Delete a chronicle event by event_id. Its participants, scene links, and causal relations cascade; a full snapshot is captured first so undo restores everything. Scoped to the active project. Tracked. Disabled in readonly mode."
+    )]
+    async fn delete_event(
+        &self,
+        params: Parameters<tools::chronicle::EventIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::delete_event(self, params.0).await
+    }
+
+    /// Stamp an event onto a scene (scene↔event link). knowledgeWrite gate.
+    #[tool(
+        description = "Stamp a chronicle event onto a scene (scene_id + event_id; both must belong to the active project). Tracked. Disabled in readonly mode."
+    )]
+    async fn stamp_scene_event(
+        &self,
+        params: Parameters<tools::chronicle::SceneEventParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::stamp_scene_event(self, params.0).await
+    }
+
+    /// Remove a scene↔event stamp. knowledgeWrite gate.
+    #[tool(
+        description = "Remove a chronicle scene↔event stamp (scene_id + event_id). Tracked. Disabled in readonly mode."
+    )]
+    async fn unstamp_scene_event(
+        &self,
+        params: Parameters<tools::chronicle::SceneEventParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::unstamp_scene_event(self, params.0).await
+    }
+
+    /// Replace an event's participant set. knowledgeWrite gate.
+    #[tool(
+        description = "Replace a chronicle event's participant set with codex_entry_ids (full replacement). Tracked. Disabled in readonly mode."
+    )]
+    async fn set_event_participants(
+        &self,
+        params: Parameters<tools::chronicle::SetParticipantsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::set_event_participants(self, params.0).await
+    }
+
+    /// Add a causal edge between two events. knowledgeWrite gate.
+    #[tool(
+        description = "Add a causal edge between two chronicle events (cause_event_id → effect_event_id; both must be in the active project; self-loops rejected). Tracked. Disabled in readonly mode."
+    )]
+    async fn add_event_relation(
+        &self,
+        params: Parameters<tools::chronicle::EventRelationParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::add_event_relation(self, params.0).await
+    }
+
+    /// Remove a causal edge between two events. knowledgeWrite gate.
+    #[tool(
+        description = "Remove a causal edge between two chronicle events (cause_event_id → effect_event_id). Tracked. Disabled in readonly mode."
+    )]
+    async fn remove_event_relation(
+        &self,
+        params: Parameters<tools::chronicle::EventRelationParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tools::chronicle::remove_event_relation(self, params.0).await
+    }
 }
 
 #[tool_handler]
