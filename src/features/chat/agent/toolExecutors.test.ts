@@ -76,7 +76,10 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
   const EXPECTED_READ_ONLY_NAMES = [
     "find_related_entries",
     "get_chapter_summaries",
+    "get_character_timeline",
+    "get_chronicle_state",
     "get_codex_entry",
+    "get_event_detail",
     "get_foreshadow_detail",
     "get_scene",
     "get_scene_timeline_neighbors",
@@ -84,6 +87,7 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "list_chapters",
     "list_codex_by_type",
     "list_codex_tags",
+    "list_events",
     "list_open_foreshadows",
     "list_plot_threads",
     "search_codex",

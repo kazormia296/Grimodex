@@ -557,6 +557,30 @@ export function createMockReadOnlyExecutor(
         );
         break;
       }
+      // 作中年表 (Chronicle) read ツール: MockWorld に年表データを持たないため
+      // 空のスタブを返す（live harness のツールループ検証では空でも形式は満たす）。
+      case "list_events":
+        r = okResult(name, { events: [] }, "0 events");
+        break;
+      case "get_event_detail":
+        r = notFound(name);
+        break;
+      case "get_character_timeline":
+        r = okResult(name, { character: id, events: [] }, "0 events");
+        break;
+      case "get_chronicle_state":
+        r = okResult(
+          name,
+          {
+            time: { source: "none", startTime: null, season: null },
+            characters: [],
+            recentEvents: [],
+            unresolvedCausal: [],
+            offpage: [],
+          },
+          "chronicle state (none)",
+        );
+        break;
       default:
         r = {
           toolCallId: "",

@@ -37,6 +37,12 @@ import {
   agentUpdateForeshadow,
   type AgentForeshadowLoadBearing,
 } from "@/features/agent-writes/foreshadow";
+import {
+  listEventsTool,
+  getEventDetailTool,
+  getCharacterTimelineTool,
+  getChronicleStateTool,
+} from "./chronicleReadTools";
 import { agentApplyTreePlan } from "@/features/agent-writes/tree";
 import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
@@ -1471,6 +1477,10 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   get_scene_timeline_neighbors: getSceneTimelineNeighbors,
   list_plot_threads: () => listPlotThreads(),
   get_thread_scenes: getThreadScenes,
+  list_events: listEventsTool,
+  get_event_detail: getEventDetailTool,
+  get_character_timeline: getCharacterTimelineTool,
+  get_chronicle_state: getChronicleStateTool,
 };
 Object.freeze(READ_ONLY_EXECUTORS);
 

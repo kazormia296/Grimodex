@@ -406,6 +406,64 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  // ── 作中年表 (Chronicle) — fabula timeline of in-world events ──────────────
+  {
+    name: "list_events",
+    description:
+      "List the story-chronicle events (the in-world fabula timeline, distinct from reading order) of the current project, in chronicle order. Optionally filter by kind ('birth' | 'death' | 'generic'). Each event returns id, title, kind, ordinal, startTime (days from the in-world epoch; may be null when only the order is known), and the primary character's name. Use to answer 'when did X happen' or to survey the timeline.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          description:
+            "Optional filter: 'birth', 'death', or 'generic'. Omit for all events.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_event_detail",
+    description:
+      "Given a chronicle event id, return its full detail: title, note, kind, ordinal, startTime/endTime, primary character, location, participant characters (names + roles), the scenes the event is stamped to (id + title), and its causal relations (cause→effect titles). Use after list_events to inspect one event.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string", description: "Chronicle event id" },
+      },
+      required: ["eventId"],
+    },
+  },
+  {
+    name: "get_character_timeline",
+    description:
+      "Given a character's Codex id, return the chronicle events that character takes part in (as primary or participant), in chronicle order, each with title, kind, startTime, and the character's age at that event when derivable (requires a birth event and a calendar). Use to answer 'how old is X now' or 'what has happened to X'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        codexId: { type: "string", description: "Character Codex entry id" },
+      },
+      required: ["codexId"],
+    },
+  },
+  {
+    name: "get_chronicle_state",
+    description:
+      "Return the world-state snapshot at a scene's story time: which of the relevant characters are alive/dead/unborn and their ages, the current season, the most recent events, unresolved cause→effect pairs (cause has happened, effect has not yet), and off-page background events. If sceneId is omitted, the current scene is used. Use to check temporal/seasonal/age consistency before writing. Returns structured JSON.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sceneId: {
+          type: "string",
+          description:
+            "Scene node id to anchor on. Omit to use the current scene.",
+        },
+      },
+      required: [],
+    },
+  },
+
   // ── サブエージェント委譲 ──────────────────────────────────────────────────
   {
     name: "run_research",
@@ -530,6 +588,10 @@ export const READ_ONLY_TOOL_NAMES: readonly string[] = [
   "list_open_foreshadows",
   "get_foreshadow_detail",
   "get_scene_timeline_neighbors",
+  "list_events",
+  "get_event_detail",
+  "get_character_timeline",
+  "get_chronicle_state",
 ];
 
 /**
