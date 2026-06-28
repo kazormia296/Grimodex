@@ -37,7 +37,7 @@ interface PanelDef {
 const PANEL_COMMANDS: PanelDef[] = [
   { panelId: "scenes", keywords: "scenes tree" },
   { panelId: "codex", keywords: "codex glossary" },
-  { panelId: "codex-quick", keywords: "codex quick" },
+  { panelId: "codex-quick", keywords: "scene context codex quick" },
   {
     panelId: "command-center-results",
     keywords: "search panel results",

@@ -18,7 +18,7 @@ vi.mock("./fetchRelatedScenes", () => ({
 }));
 
 import { fetchRelatedPastScenes } from "./fetchRelatedScenes";
-import { RelatedScenesPanel } from "./RelatedScenesPanel";
+import { RelatedScenesSection } from "./RelatedScenesSection";
 
 const mockFetch = vi.mocked(fetchRelatedPastScenes);
 
@@ -42,17 +42,17 @@ afterEach(() => {
   cleanup();
 });
 
-describe("RelatedScenesPanel", () => {
+describe("RelatedScenesSection", () => {
   it("アクティブシーンが無いときは検索せず、行を出さない", async () => {
     setActive("");
-    render(<RelatedScenesPanel isActive />);
+    render(<RelatedScenesSection enabled />);
     expect(mockFetch).not.toHaveBeenCalled();
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryAllByTestId("related-scene-row")).toHaveLength(0);
   });
 
-  it("非表示 (isActive=false) のときは検索しない", () => {
+  it("無効 (enabled=false) のときは検索しない", () => {
     setActive("s2");
-    render(<RelatedScenesPanel isActive={false} />);
+    render(<RelatedScenesSection enabled={false} />);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -67,7 +67,7 @@ describe("RelatedScenesPanel", () => {
     ];
     mockFetch.mockResolvedValue(scenes);
     setActive("s2");
-    render(<RelatedScenesPanel isActive />);
+    render(<RelatedScenesSection enabled />);
 
     await waitFor(() => {
       expect(screen.getByText("井戸端の密談")).toBeTruthy();
@@ -75,6 +75,31 @@ describe("RelatedScenesPanel", () => {
     expect(mockFetch).toHaveBeenCalledWith("s2");
     expect(screen.getByText("92%")).toBeTruthy();
     expect(screen.getByText("エリカが鍵を渡した場面")).toBeTruthy();
+  });
+
+  it("折りたたむ (見出しクリック) と検索が止まり行が消える", async () => {
+    const scenes: RelatedScene[] = [
+      {
+        sceneId: "s1",
+        sceneTitle: "井戸端の密談",
+        chunkText: "エリカが鍵を渡した場面",
+        score: 0.92,
+      },
+    ];
+    mockFetch.mockResolvedValue(scenes);
+    setActive("s2");
+    render(<RelatedScenesSection enabled />);
+
+    const row = await screen.findByText("井戸端の密談");
+    expect(row).toBeTruthy();
+
+    // 見出し(aria-expanded ボタン)をクリックして折りたたむ
+    const header = screen.getByRole("button", { expanded: true });
+    fireEvent.click(header);
+
+    await waitFor(() => {
+      expect(screen.queryAllByTestId("related-scene-row")).toHaveLength(0);
+    });
   });
 
   it("行クリックで requestJump + setActiveScene が走る (ジャンプ配線)", async () => {
@@ -89,7 +114,7 @@ describe("RelatedScenesPanel", () => {
     mockFetch.mockResolvedValue(scenes);
     seedNodes(["s1", "s2"]);
     setActive("s2");
-    render(<RelatedScenesPanel isActive />);
+    render(<RelatedScenesSection enabled />);
 
     const row = await screen.findByText("井戸端の密談");
     fireEvent.click(row);
@@ -113,7 +138,7 @@ describe("RelatedScenesPanel", () => {
     mockFetch.mockResolvedValue(scenes);
     seedNodes(["s2"]); // "deleted" は tree に無い
     setActive("s2");
-    render(<RelatedScenesPanel isActive />);
+    render(<RelatedScenesSection enabled />);
 
     const row = await screen.findByText("消えた章");
     fireEvent.click(row);

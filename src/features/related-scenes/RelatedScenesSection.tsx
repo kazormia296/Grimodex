@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import type { SlotPanelProps } from "@/features/layout/layoutTypes";
-import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { requestSceneChunkJump } from "@/features/semantic-search/sceneChunkJump";
+import { CollapsibleSection } from "@/features/layout/CollapsibleSection";
 import { fetchRelatedPastScenes } from "./fetchRelatedScenes";
 import type { RelatedScene } from "./selectRelatedScenes";
 
@@ -29,24 +28,37 @@ function navigateToScene(scene: RelatedScene): void {
   requestSceneChunkJump(scene.sceneId, scene.chunkText);
 }
 
+interface RelatedScenesSectionProps {
+  /**
+   * 親パネルがアクティブ(表示中)か。非表示パネルや折りたたみ時は意味検索を
+   * 打たない (keepalive)。`enabled && open` の時だけ取得する。
+   */
+  enabled?: boolean;
+}
+
 /**
- * 「関連する過去シーン」パネル。
- * 現在編集中シーンに意味的に関連する、読書順で前の (既読) シーンを提示し、
+ * 「関連する過去シーン」セクション。Scene Context パネルの一部として、
+ * 現在編集中シーンに意味的に関連する読書順で前の (既読) シーンを提示し、
  * クリックで該当箇所へジャンプできる。TALK→EXTRACT→RECALL ループの RECALL を
- * 人間向け UI として出す read-only パネル。
+ * 人間向け UI として出す read-only セクション。
  */
-export function RelatedScenesPanel({ isActive = true }: SlotPanelProps = {}) {
+export function RelatedScenesSection({
+  enabled = true,
+}: RelatedScenesSectionProps = {}) {
   const { t } = useTranslation();
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   // 順序軸 (reading/story/auto) が変わったら関連シーンを取り直す。fetchRelatedPastScenes が
-  // この mode に従って既読境界を計算するので、Settings での切替を即パネルへ反映させる。
+  // この mode に従って既読境界を計算するので、Settings での切替を即反映させる。
   const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const [scenes, setScenes] = useState<RelatedScene[]>([]);
   const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(true);
+
+  // 折りたたみ中・非表示中は検索しない。
+  const shouldFetch = enabled && open;
 
   useEffect(() => {
-    // 非表示パネルでは検索しない (keepalive)。
-    if (!isActive || !activeSceneId) {
+    if (!shouldFetch || !activeSceneId) {
       setScenes([]);
       setLoading(false);
       return;
@@ -69,19 +81,20 @@ export function RelatedScenesPanel({ isActive = true }: SlotPanelProps = {}) {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [isActive, activeSceneId, resolutionMode]);
+  }, [shouldFetch, activeSceneId, resolutionMode]);
 
   return (
-    <div className="flex h-full flex-col">
-      <PanelHeader
-        panelId="related-scenes"
-        actions={
-          loading ? (
-            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-          ) : null
-        }
-      />
-      <div className="flex-1 overflow-y-auto py-1">
+    <CollapsibleSection
+      title={t("sceneContext.scenesSection")}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+      actions={
+        loading ? (
+          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+        ) : null
+      }
+    >
+      <div className="py-1">
         {!activeSceneId ? (
           <p className="px-3 py-2 text-[11px] text-muted-foreground">
             {t("relatedScenes.noActiveScene")}
@@ -95,6 +108,7 @@ export function RelatedScenesPanel({ isActive = true }: SlotPanelProps = {}) {
             <button
               type="button"
               key={scene.sceneId}
+              data-testid="related-scene-row"
               onClick={() => navigateToScene(scene)}
               className="flex w-full cursor-pointer flex-col gap-0.5 px-2 py-1.5 text-left hover:bg-accent/50"
             >
@@ -113,6 +127,6 @@ export function RelatedScenesPanel({ isActive = true }: SlotPanelProps = {}) {
           ))
         )}
       </div>
-    </div>
+    </CollapsibleSection>
   );
 }

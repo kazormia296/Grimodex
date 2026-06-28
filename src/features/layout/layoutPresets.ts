@@ -134,7 +134,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin", "writing-stats", "related-scenes"],
+              panels: ["trash-bin", "writing-stats"],
               activePanel: null,
             },
           ],
@@ -152,7 +152,6 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
       "chronicle",
       "trash-bin",
       "writing-stats",
-      "related-scenes",
     ],
   },
   "builtin:plan": {
@@ -217,7 +216,6 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
                 "timeline",
                 "chronicle",
                 "writing-stats",
-                "related-scenes",
               ],
               activePanel: null,
             },
@@ -243,7 +241,6 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
       "kouetsu",
       "attribution",
       "writing-stats",
-      "related-scenes",
     ],
   },
   "builtin:chat-main": {
@@ -302,7 +299,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin", "writing-stats", "related-scenes"],
+              panels: ["trash-bin", "writing-stats"],
               activePanel: null,
             },
           ],
@@ -330,7 +327,6 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
       "trash-bin",
       "attribution",
       "writing-stats",
-      "related-scenes",
     ],
   },
   "builtin:review": {
@@ -395,7 +391,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin", "writing-stats", "related-scenes"],
+              panels: ["trash-bin", "writing-stats"],
               activePanel: null,
             },
           ],
@@ -422,7 +418,6 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
       "chronicle",
       "trash-bin",
       "writing-stats",
-      "related-scenes",
     ],
   },
   "builtin:codex-main": {
@@ -487,7 +482,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: ["trash-bin", "writing-stats", "related-scenes"],
+              panels: ["trash-bin", "writing-stats"],
               activePanel: null,
             },
           ],
@@ -514,7 +509,6 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
       "chronicle",
       "trash-bin",
       "writing-stats",
-      "related-scenes",
     ],
   },
 };

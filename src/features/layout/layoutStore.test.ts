@@ -496,7 +496,6 @@ describe("useLayoutStore", () => {
         "chronicle",
         "trash-bin",
         "writing-stats",
-        "related-scenes",
         "chat",
       ]);
 

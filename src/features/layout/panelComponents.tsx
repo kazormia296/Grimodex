@@ -1,7 +1,7 @@
 import type { FunctionComponent } from "react";
 
 import { Sidebar } from "@/features/tree/Sidebar";
-import { CodexQuickPanel } from "@/features/tree/CodexQuickPanel";
+import { SceneContextPanel } from "@/features/tree/SceneContextPanel";
 import { CodexManagementPanel } from "@/features/codex/CodexManagementPanel";
 import { ChatPanel } from "@/features/chat/ChatPanel";
 import { ChatHistoryPanel } from "@/features/chat/ChatHistoryPanel";
@@ -15,7 +15,6 @@ import { ForeshadowPanel } from "@/features/foreshadow/ForeshadowPanel";
 import { GridPanel } from "@/features/grid/GridPanel";
 import { MatrixPanel } from "@/features/matrix/MatrixPanel";
 import { WritingStatsPanel } from "@/features/writing-stats/WritingStatsPanel";
-import { RelatedScenesPanel } from "@/features/related-scenes/RelatedScenesPanel";
 import { TrashBinPanel } from "@/features/trash-bin/TrashBinPanel";
 import { CommandCenterResultsPanel } from "@/features/commandCenter/CommandCenterResultsPanel";
 import { SceneEditor } from "@/features/tree/SceneEditor";
@@ -35,7 +34,7 @@ export const PANEL_COMPONENT_MAP: Record<
   chat: ChatPanel,
   snippets: SnippetPanel,
   attribution: AttributionReport,
-  "codex-quick": CodexQuickPanel,
+  "codex-quick": SceneContextPanel,
   timeline: TimelinePanel,
   chronicle: ChroniclePanel,
   map: MapPanel,
@@ -44,7 +43,6 @@ export const PANEL_COMPONENT_MAP: Record<
   grid: GridPanel,
   matrix: MatrixPanel,
   "writing-stats": WritingStatsPanel,
-  "related-scenes": RelatedScenesPanel,
   "trash-bin": TrashBinPanel,
   "command-center-results": CommandCenterResultsPanel,
 };
