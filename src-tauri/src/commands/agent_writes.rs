@@ -1338,6 +1338,9 @@ pub(crate) fn agent_foreshadow_update(
 pub(crate) struct AgentEventCreatePayload {
     project_id: String,
     session_id: String,
+    /// 書き込み元の表面: "in-app-agent"(AI) / "mcp" / "manual"(UI手動編集)。
+    /// 省略時(既存JS経路)は in-app-agent 互換。undo_journal の provenance に使う。
+    surface: Option<String>,
     title: Option<String>,
     note: Option<String>,
     ordinal: Option<String>,
@@ -1359,6 +1362,8 @@ pub(crate) struct AgentEventCreatePayload {
 pub(crate) struct AgentEventUpdatePayload {
     project_id: String,
     session_id: String,
+    /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
+    surface: Option<String>,
     event_id: String,
     title: Option<String>,
     note: Option<String>,
@@ -1376,6 +1381,8 @@ pub(crate) struct AgentEventUpdatePayload {
 pub(crate) struct AgentEventIdPayload {
     project_id: String,
     session_id: String,
+    /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
+    surface: Option<String>,
     event_id: String,
 }
 
@@ -1384,6 +1391,8 @@ pub(crate) struct AgentEventIdPayload {
 pub(crate) struct AgentEventParticipantsPayload {
     project_id: String,
     session_id: String,
+    /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
+    surface: Option<String>,
     event_id: String,
     codex_entry_ids: Vec<String>,
 }
@@ -1393,6 +1402,8 @@ pub(crate) struct AgentEventParticipantsPayload {
 pub(crate) struct AgentSceneEventPayload {
     project_id: String,
     session_id: String,
+    /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
+    surface: Option<String>,
     scene_id: String,
     event_id: String,
 }
@@ -1402,6 +1413,8 @@ pub(crate) struct AgentSceneEventPayload {
 pub(crate) struct AgentEventRelationPayload {
     project_id: String,
     session_id: String,
+    /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
+    surface: Option<String>,
     cause_event_id: String,
     effect_event_id: String,
 }
@@ -1835,7 +1848,7 @@ fn agent_event_create_impl(
                 UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
+                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
                     entity_kind: "event",
                     entity_id: &event_id,
                     op_kind: "create",
@@ -1999,7 +2012,7 @@ fn agent_event_update_impl(
                 UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
+                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
                     entity_kind: "event",
                     entity_id: &payload.event_id,
                     op_kind: "update",
@@ -2096,7 +2109,7 @@ fn agent_event_delete_impl(db: &Database, payload: AgentEventIdPayload) -> anyho
                 UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
+                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
                     entity_kind: "event",
                     entity_id: &payload.event_id,
                     op_kind: "delete",
@@ -2191,7 +2204,7 @@ fn agent_event_set_participants_impl(
                 UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
+                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
                     entity_kind: "event",
                     entity_id: &payload.event_id,
                     op_kind: "update",
@@ -2320,7 +2333,7 @@ fn agent_scene_event_mutate_impl(
                 UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
+                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
                     entity_kind: "event",
                     entity_id: &payload.event_id,
                     op_kind: "update",
@@ -2465,7 +2478,7 @@ fn agent_event_relation_mutate_impl(
                 UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
+                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
                     entity_kind: "event",
                     entity_id: &payload.cause_event_id,
                     op_kind: "update",
@@ -3028,6 +3041,7 @@ mod tests {
         AgentEventRelationPayload {
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
+            surface: None,
             cause_event_id: cause.to_string(),
             effect_event_id: effect.to_string(),
         }
@@ -3037,6 +3051,7 @@ mod tests {
         AgentSceneEventPayload {
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
+            surface: None,
             scene_id: scene_id.to_string(),
             event_id: event_id.to_string(),
         }
@@ -3046,6 +3061,7 @@ mod tests {
         AgentEventUpdatePayload {
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
+            surface: None,
             event_id: event_id.to_string(),
             title: None,
             note: None,
@@ -3072,6 +3088,7 @@ mod tests {
             AgentEventCreatePayload {
                 project_id: project_id.to_string(),
                 session_id: "sess".to_string(),
+                surface: None,
                 title: Some(title.to_string()),
                 note: None,
                 ordinal: None,
@@ -3093,6 +3110,53 @@ mod tests {
                 .expect("undoJournalId")
                 .to_string(),
         )
+    }
+
+    fn journal_surface(db: &Database, journal_id: &str) -> String {
+        db.with_conn(|conn| {
+            let s: String = conn.query_row(
+                "SELECT surface FROM undo_journal WHERE id = ?1",
+                rusqlite::params![journal_id],
+                |r| r.get(0),
+            )?;
+            Ok(s)
+        })
+        .expect("journal_surface")
+    }
+
+    #[test]
+    fn event_write_records_surface_from_payload() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+
+        // surface 省略（既存 AI/JS 経路）→ in-app-agent 互換にフォールバック。
+        let (_id, journal_default) = create_event(&db, &project_id, "auto", vec![], vec![]);
+        assert_eq!(journal_surface(&db, &journal_default), "in-app-agent");
+
+        // surface = "manual"（UI 手動編集）→ そのまま undo_journal へ記録される
+        // （AI 書き込みと混同されない provenance）。
+        let res = agent_event_create_impl(
+            &db,
+            AgentEventCreatePayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: Some("manual".to_string()),
+                title: Some("手動作成".to_string()),
+                note: None,
+                ordinal: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                precision: None,
+                kind: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .expect("create with manual surface");
+        let journal_manual = res["undoJournalId"].as_str().unwrap().to_string();
+        assert_eq!(journal_surface(&db, &journal_manual), "manual");
     }
 
     fn scalar_count(db: &Database, sql: &str, a: &str, b: Option<&str>) -> i64 {
@@ -3278,6 +3342,7 @@ mod tests {
             AgentEventIdPayload {
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
+                surface: None,
                 event_id: main_id.clone(),
             },
         )
@@ -3361,6 +3426,7 @@ mod tests {
             AgentEventParticipantsPayload {
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
+                surface: None,
                 event_id: event_id.clone(),
                 codex_entry_ids: vec![codex_b.clone(), codex_c.clone()],
             },

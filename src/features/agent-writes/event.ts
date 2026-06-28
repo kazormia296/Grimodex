@@ -22,6 +22,15 @@ interface AgentWriteResult {
   undoJournalId: string;
 }
 
+/** tracked-write の経路差分。AI/MCP は既定（in-app-agent・policy gate あり）、
+ * UI 手動編集は surface="manual" かつ knowledgeWrite policy 非対象。 */
+export interface TrackedWriteOpts {
+  /** undo_journal に記録する書き込み元の表面。省略時は in-app-agent（AI）。 */
+  surface?: string;
+  /** AI 書き込みポリシー(knowledgeWrite)の対象外にする（UI 手動編集など）。 */
+  skipPolicyGate?: boolean;
+}
+
 function bump(): void {
   useChronicleStore.getState().bumpRevision();
 }
@@ -31,14 +40,17 @@ async function trackedEventWrite(
   command: string,
   payload: Record<string, unknown>,
   historyLabelKey: string,
+  opts?: TrackedWriteOpts,
 ): Promise<AgentWriteResult> {
-  if (blockIfPolicyOff("knowledgeWrite")) {
+  // 手動 UI 編集はユーザーの直接操作なので AI 書き込みポリシーで弾かない。
+  if (!opts?.skipPolicyGate && blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
   }
   const result = await invoke<AgentWriteResult>(command, {
     payload: {
       projectId: getCurrentProjectId(),
       sessionId: getRecorderSessionId(),
+      ...(opts?.surface ? { surface: opts.surface } : {}),
       ...payload,
     },
   });
@@ -78,6 +90,7 @@ export interface AgentEventCreateInput {
 
 export async function agentCreateEvent(
   input: AgentEventCreateInput,
+  opts?: TrackedWriteOpts,
 ): Promise<{ id: string; title: string }> {
   const result = await trackedEventWrite(
     "agent_event_create",
@@ -95,6 +108,7 @@ export async function agentCreateEvent(
       sceneIds: input.sceneIds ?? [],
     },
     "chronicle.agentHistoryCreate",
+    opts,
   );
   return { id: result.entityId, title: input.title ?? "" };
 }
@@ -114,20 +128,26 @@ export interface AgentEventUpdateInput {
 
 export async function agentUpdateEvent(
   input: AgentEventUpdateInput,
+  opts?: TrackedWriteOpts,
 ): Promise<void> {
   const { eventId, ...patch } = input;
   await trackedEventWrite(
     "agent_event_update",
     { eventId, ...patch },
     "chronicle.agentHistoryUpdate",
+    opts,
   );
 }
 
-export async function agentDeleteEvent(eventId: string): Promise<void> {
+export async function agentDeleteEvent(
+  eventId: string,
+  opts?: TrackedWriteOpts,
+): Promise<void> {
   await trackedEventWrite(
     "agent_event_delete",
     { eventId },
     "chronicle.agentHistoryDelete",
+    opts,
   );
 }
 
@@ -167,21 +187,62 @@ export async function agentUnlinkSceneEvent(
 export async function agentAddEventRelation(
   causeEventId: string,
   effectEventId: string,
+  opts?: TrackedWriteOpts,
 ): Promise<void> {
   await trackedEventWrite(
     "agent_event_relation_add",
     { causeEventId, effectEventId },
     "chronicle.agentHistoryUpdate",
+    opts,
   );
 }
 
 export async function agentRemoveEventRelation(
   causeEventId: string,
   effectEventId: string,
+  opts?: TrackedWriteOpts,
 ): Promise<void> {
   await trackedEventWrite(
     "agent_event_relation_remove",
     { causeEventId, effectEventId },
     "chronicle.agentHistoryUpdate",
+    opts,
   );
+}
+
+// ───────── UI 手動編集用 tracked-write ─────────
+// ChroniclePanel の手動 CRUD はこの ui* ラッパ経由で書き込む。AI 経路と同じ
+// undo_journal / change_events を発火させつつ surface="manual" で provenance を
+// 分け、knowledgeWrite policy（AI 書き込み制御）の対象外にする。
+const UI_WRITE_OPTS: TrackedWriteOpts = {
+  surface: "manual",
+  skipPolicyGate: true,
+};
+
+export function uiCreateEvent(
+  input: AgentEventCreateInput,
+): Promise<{ id: string; title: string }> {
+  return agentCreateEvent(input, UI_WRITE_OPTS);
+}
+
+export function uiUpdateEvent(input: AgentEventUpdateInput): Promise<void> {
+  return agentUpdateEvent(input, UI_WRITE_OPTS);
+}
+
+export function uiDeleteEvent(eventId: string): Promise<void> {
+  return agentDeleteEvent(eventId, UI_WRITE_OPTS);
+}
+
+export function uiAddEventRelation(
+  causeEventId: string,
+  effectEventId: string,
+): Promise<void> {
+  return agentAddEventRelation(causeEventId, effectEventId, UI_WRITE_OPTS);
+}
+
+export function uiRemoveEventRelation(
+  causeEventId: string,
+  effectEventId: string,
+): Promise<void> {
+  return agentRemoveEventRelation(causeEventId, effectEventId, UI_WRITE_OPTS);
 }

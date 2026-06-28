@@ -9,18 +9,23 @@ import {
 } from "@testing-library/react";
 import type { EventRow } from "./api";
 
-// ── ./api を丸ごとモック（DB に触らせない） ──
+// ── ./api を丸ごとモック（DB に触らせない）。読み取りのみ。 ──
 const apiMocks = vi.hoisted(() => ({
   listEvents: vi.fn(),
   listSceneEvents: vi.fn(),
   listEventRelations: vi.fn(),
-  createEvent: vi.fn(),
-  updateEvent: vi.fn(),
-  deleteEvent: vi.fn(),
-  addEventRelation: vi.fn(),
-  removeEventRelation: vi.fn(),
 }));
 vi.mock("./api", () => apiMocks);
+
+// ── 手動 CRUD は tracked-write（ui* ラッパ）経由になったのでこちらをモック ──
+const eventMocks = vi.hoisted(() => ({
+  uiCreateEvent: vi.fn(),
+  uiUpdateEvent: vi.fn(),
+  uiDeleteEvent: vi.fn(),
+  uiAddEventRelation: vi.fn(),
+  uiRemoveEventRelation: vi.fn(),
+}));
+vi.mock("@/features/agent-writes/event", () => eventMocks);
 
 // ── toast（sonner）をモックしてエラー通知の発火だけ検証 ──
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
@@ -110,6 +115,11 @@ beforeEach(() => {
   useTreeStore.setState({ nodes: [] });
   apiMocks.listSceneEvents.mockResolvedValue([]);
   apiMocks.listEventRelations.mockResolvedValue([]);
+  eventMocks.uiCreateEvent.mockResolvedValue({ id: "new", title: "" });
+  eventMocks.uiUpdateEvent.mockResolvedValue(undefined);
+  eventMocks.uiDeleteEvent.mockResolvedValue(undefined);
+  eventMocks.uiAddEventRelation.mockResolvedValue(undefined);
+  eventMocks.uiRemoveEventRelation.mockResolvedValue(undefined);
 });
 
 describe("ChroniclePanel project switch", () => {
@@ -156,11 +166,11 @@ describe("ChroniclePanel project switch", () => {
 });
 
 describe("ChroniclePanel optimistic patch", () => {
-  it("updateEvent 失敗時に楽観更新を巻き戻し、エラーを通知する", async () => {
+  it("uiUpdateEvent 失敗時に楽観更新を巻き戻し、エラーを通知する", async () => {
     apiMocks.listEvents.mockResolvedValue([
       makeEvent({ id: "ea", title: "原題" }),
     ]);
-    apiMocks.updateEvent.mockRejectedValueOnce(new Error("boom"));
+    eventMocks.uiUpdateEvent.mockRejectedValueOnce(new Error("boom"));
 
     useProjectStore.setState({ currentProjectId: "p1" });
     render(<ChroniclePanel />);
@@ -179,7 +189,8 @@ describe("ChroniclePanel optimistic patch", () => {
     await waitFor(() => {
       expect(screen.getByTestId("insp-title").textContent).toBe("原題");
     });
-    expect(apiMocks.updateEvent).toHaveBeenCalledWith("ea", "p1", {
+    expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith({
+      eventId: "ea",
       title: "新題",
     });
     expect(toastMocks.error).toHaveBeenCalledTimes(1);
