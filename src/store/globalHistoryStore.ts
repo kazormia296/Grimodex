@@ -12,7 +12,8 @@ export type HistoryKind =
   | "phase"
   | "tags"
   | "foreshadow"
-  | "plot";
+  | "plot"
+  | "chronicle";
 
 export interface HistoryCommand {
   kind: HistoryKind;

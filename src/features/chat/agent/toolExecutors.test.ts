@@ -97,12 +97,20 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
   ];
 
   const EXPECTED_MUTATING_NAMES = [
+    "add_event_relation",
     "apply_ai_tree_plan",
     "create_codex_entry",
+    "create_event",
     "create_foreshadow",
     "create_snippet",
+    "delete_event",
     "propose_scene_body",
+    "remove_event_relation",
+    "set_event_participants",
+    "stamp_scene_event",
+    "unstamp_scene_event",
     "update_codex_entry",
+    "update_event",
     "update_foreshadow",
   ];
 

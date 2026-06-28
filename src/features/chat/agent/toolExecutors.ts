@@ -43,6 +43,16 @@ import {
   getCharacterTimelineTool,
   getChronicleStateTool,
 } from "./chronicleReadTools";
+import {
+  createEventTool,
+  updateEventTool,
+  deleteEventTool,
+  stampSceneEventTool,
+  unstampSceneEventTool,
+  setEventParticipantsTool,
+  addEventRelationTool,
+  removeEventRelationTool,
+} from "./chronicleWriteTools";
 import { agentApplyTreePlan } from "@/features/agent-writes/tree";
 import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
@@ -1732,6 +1742,14 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
   create_snippet: createSnippetTool,
   apply_ai_tree_plan: applyAiTreePlanTool,
   propose_scene_body: proposeSceneBodyTool,
+  create_event: createEventTool,
+  update_event: updateEventTool,
+  delete_event: deleteEventTool,
+  stamp_scene_event: stampSceneEventTool,
+  unstamp_scene_event: unstampSceneEventTool,
+  set_event_participants: setEventParticipantsTool,
+  add_event_relation: addEventRelationTool,
+  remove_event_relation: removeEventRelationTool,
 };
 Object.freeze(MUTATING_EXECUTORS);
 
