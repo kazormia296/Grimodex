@@ -198,6 +198,14 @@ export async function createProjectSnapshot(params: {
       storyTimeLabel: node.storyTimeLabel ?? null,
       povCharacterId: node.povCharacterId ?? null,
       locationId: node.locationId ?? null,
+      // Chronicle（作中暦日付）: events と同じ日付モデルをシーンにも保存。
+      chronicleStartTime: node.chronicleStartTime ?? null,
+      chronicleStartMinute: node.chronicleStartMinute ?? null,
+      chronicleStartGranularity: node.chronicleStartGranularity ?? "none",
+      chronicleEndTime: node.chronicleEndTime ?? null,
+      chronicleEndMinute: node.chronicleEndMinute ?? null,
+      chronicleEndGranularity: node.chronicleEndGranularity ?? "none",
+      chroniclePrecision: node.chroniclePrecision ?? "exact",
       status: node.status ?? null,
       bodyVersionId,
       unplacedBeatsDoc: node.unplacedBeatsDoc,
@@ -772,6 +780,21 @@ async function restoreStructural(
           story_time_label: (row.story_time_label as string | null) ?? null,
           pov_character_id: safePov,
           location_id: safeLoc,
+          // Chronicle（作中暦日付）— 復元でシーン日付が消えないこと。
+          // granularity / precision は NOT NULL のため coalesce で既定値を満たす。
+          chronicle_start_time:
+            (row.chronicle_start_time as number | null) ?? null,
+          chronicle_start_minute:
+            (row.chronicle_start_minute as number | null) ?? null,
+          chronicle_start_granularity:
+            (row.chronicle_start_granularity as string | null) ?? "none",
+          chronicle_end_time: (row.chronicle_end_time as number | null) ?? null,
+          chronicle_end_minute:
+            (row.chronicle_end_minute as number | null) ?? null,
+          chronicle_end_granularity:
+            (row.chronicle_end_granularity as string | null) ?? "none",
+          chronicle_precision:
+            (row.chronicle_precision as string | null) ?? "exact",
           status: (row.status as string | null) ?? null,
           content,
           unplaced_beats_doc: (row.unplaced_beats_doc as string | null) ?? "[]",

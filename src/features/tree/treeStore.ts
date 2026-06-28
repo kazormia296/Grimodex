@@ -51,6 +51,15 @@ export interface TreeNodeData {
   storyTimeLabel: string | null;
   povCharacterId: string | null;
   locationId: string | null;
+  /** Chronicle（作中暦日付）— events と同じ日付モデルをシーンに共有（永続化のみ）。
+   * 既存の非コア列 (sourceUri 等) と同様 optional。load 時に toNodeData が常に埋める。 */
+  chronicleStartTime?: number | null;
+  chronicleStartMinute?: number | null;
+  chronicleStartGranularity?: string;
+  chronicleEndTime?: number | null;
+  chronicleEndMinute?: number | null;
+  chronicleEndGranularity?: string;
+  chroniclePrecision?: string;
   charCount: number;
   /** File-backed scene location (null = DB-native). */
   sourceUri?: string | null;
@@ -67,6 +76,20 @@ export interface TreeNodeData {
   createdAt: string;
   updatedAt: string;
 }
+
+/** シーンの作中暦日付（chronicle*）への部分更新パッチ。 */
+export type ChronicleDatePatch = Partial<
+  Pick<
+    TreeNodeData,
+    | "chronicleStartTime"
+    | "chronicleStartMinute"
+    | "chronicleStartGranularity"
+    | "chronicleEndTime"
+    | "chronicleEndMinute"
+    | "chronicleEndGranularity"
+    | "chroniclePrecision"
+  >
+>;
 
 /** Returns true when a node type can hold children */
 export function canHaveChildren(type: NodeType): boolean {
@@ -197,6 +220,13 @@ function toNodeData(n: ApiNode): TreeNodeData {
     storyTimeLabel: n.storyTimeLabel ?? null,
     povCharacterId: n.povCharacterId ?? null,
     locationId: n.locationId ?? null,
+    chronicleStartTime: n.chronicleStartTime ?? null,
+    chronicleStartMinute: n.chronicleStartMinute ?? null,
+    chronicleStartGranularity: n.chronicleStartGranularity ?? "none",
+    chronicleEndTime: n.chronicleEndTime ?? null,
+    chronicleEndMinute: n.chronicleEndMinute ?? null,
+    chronicleEndGranularity: n.chronicleEndGranularity ?? "none",
+    chroniclePrecision: n.chroniclePrecision ?? "exact",
     charCount: n.charCount,
     sourceUri: n.sourceUri ?? null,
     sourceMtime: n.sourceMtime ?? null,
@@ -319,6 +349,8 @@ interface TreeState {
     codexEntryId: string | null,
   ) => Promise<void>;
   updateLocation: (id: string, codexEntryId: string | null) => Promise<void>;
+  /** シーンの作中暦日付（chronicle*）を永続化＋store 楽観更新する。 */
+  updateChronicleDate: (id: string, patch: ChronicleDatePatch) => Promise<void>;
 
   // Multi-selection
   selectNode: (id: string, extend: boolean) => void;
@@ -1354,6 +1386,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       nodes: state.nodes.map((n) =>
         n.id === id ? { ...n, locationId: codexEntryId } : n,
       ),
+    }));
+  },
+
+  async updateChronicleDate(id, patch) {
+    // POV/場所の保存と同じ経路（api.updateNode 直叩き＋楽観 set）。二重 state は持たない。
+    await api.updateNode(id, patch);
+    set((state) => ({
+      nodes: state.nodes.map((n) => (n.id === id ? { ...n, ...patch } : n)),
     }));
   },
 

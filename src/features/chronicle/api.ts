@@ -7,9 +7,14 @@ import {
   eventRelations,
   treeNodes,
 } from "@/db/schema";
-import type { EventPrecision, EventKind } from "@/db/schema";
+import type { EventPrecision, EventKind, EventGranularity } from "@/db/schema";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
+import type {
+  ChronicleCalendar,
+  SeasonBoundary,
+  MonthDef,
+} from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 
@@ -32,6 +37,10 @@ export interface EventRow {
   locationCodexId: string | null;
   startTime: number | null;
   endTime: number | null;
+  startMinute: number | null;
+  endMinute: number | null;
+  startGranularity: EventGranularity;
+  endGranularity: EventGranularity;
   precision: EventPrecision;
   kind: EventKind;
   createdAt: string;
@@ -61,6 +70,16 @@ export function normalizeEvent(raw: unknown): EventRow {
     locationCodexId: nullableStr(r.locationCodexId ?? r.location_codex_id),
     startTime: nullableNum(r.startTime ?? r.start_time),
     endTime: nullableNum(r.endTime ?? r.end_time),
+    startMinute: nullableNum(r.startMinute ?? r.start_minute),
+    endMinute: nullableNum(r.endMinute ?? r.end_minute),
+    startGranularity: s(
+      r.startGranularity ?? r.start_granularity,
+      "none",
+    ) as EventGranularity,
+    endGranularity: s(
+      r.endGranularity ?? r.end_granularity,
+      "none",
+    ) as EventGranularity,
     precision: s(r.precision, "exact") as EventPrecision,
     kind: s(r.kind, "generic") as EventKind,
     createdAt: s(r.createdAt ?? r.created_at),
@@ -88,6 +107,10 @@ export async function createEvent(data: {
   locationCodexId?: string | null;
   startTime?: number | null;
   endTime?: number | null;
+  startMinute?: number | null;
+  endMinute?: number | null;
+  startGranularity?: EventGranularity;
+  endGranularity?: EventGranularity;
   precision?: EventPrecision;
   kind?: EventKind;
 }): Promise<EventRow> {
@@ -117,6 +140,10 @@ export async function createEvent(data: {
       locationCodexId: data.locationCodexId ?? null,
       startTime: data.startTime ?? null,
       endTime: data.endTime ?? null,
+      startMinute: data.startMinute ?? null,
+      endMinute: data.endMinute ?? null,
+      startGranularity: data.startGranularity ?? "none",
+      endGranularity: data.endGranularity ?? "none",
       precision: data.precision ?? "exact",
       kind: data.kind ?? "generic",
       createdAt: now,
@@ -143,6 +170,10 @@ export async function updateEvent(
       | "locationCodexId"
       | "startTime"
       | "endTime"
+      | "startMinute"
+      | "endMinute"
+      | "startGranularity"
+      | "endGranularity"
       | "precision"
       | "kind"
     >
@@ -356,6 +387,12 @@ export interface CalendarRow {
   daysPerYear: number;
   /** 生 JSON 文字列（SeasonBoundary[]）。パースは chronicleTime 利用側で。 */
   seasonBoundaries: string;
+  /** 暦の開始年ラベル。 */
+  startYear: number;
+  /** 生 JSON 文字列（MonthDef[]）。'[]'=月概念なし。 */
+  months: string;
+  /** 生 JSON 文字列（string[] 曜日名）。'[]'=曜日概念なし。 */
+  weekdayNames: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -373,8 +410,33 @@ export async function getProjectCalendar(
     projectId: s(r.projectId ?? r.project_id),
     daysPerYear: Number(r.daysPerYear ?? r.days_per_year ?? 360),
     seasonBoundaries: s(r.seasonBoundaries ?? r.season_boundaries, "[]"),
+    startYear: Number(r.startYear ?? r.start_year ?? 0),
+    months: s(r.months, "[]"),
+    weekdayNames: s(r.weekdayNames ?? r.weekday_names, "[]"),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
+  };
+}
+
+/**
+ * CalendarRow（生 JSON 文字列を持つ DB 行）を UI が使う ChronicleCalendar に整形する。
+ * months/seasonBoundaries/weekdayNames を JSON parse し、不正なら空配列にフォールバック。
+ * useSeasonConflicts / useProjectCalendar 双方の重複パースをここに集約する。
+ */
+export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
+  const parse = <T>(raw: string, fallback: T): T => {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  };
+  return {
+    daysPerYear: row.daysPerYear,
+    seasonBoundaries: parse<SeasonBoundary[]>(row.seasonBoundaries, []),
+    startYear: row.startYear,
+    months: parse<MonthDef[]>(row.months, []),
+    weekdayNames: parse<string[]>(row.weekdayNames, []),
   };
 }
 
@@ -382,14 +444,23 @@ export async function upsertProjectCalendar(data: {
   projectId: string;
   daysPerYear: number;
   seasonBoundaries: string;
+  startYear?: number;
+  months?: string;
+  weekdayNames?: string;
 }): Promise<void> {
   const now = new Date().toISOString();
+  const startYear = data.startYear ?? 0;
+  const months = data.months ?? "[]";
+  const weekdayNames = data.weekdayNames ?? "[]";
   await db
     .insert(projectCalendar)
     .values({
       projectId: data.projectId,
       daysPerYear: data.daysPerYear,
       seasonBoundaries: data.seasonBoundaries,
+      startYear,
+      months,
+      weekdayNames,
       createdAt: now,
       updatedAt: now,
     })
@@ -398,6 +469,9 @@ export async function upsertProjectCalendar(data: {
       set: {
         daysPerYear: data.daysPerYear,
         seasonBoundaries: data.seasonBoundaries,
+        startYear,
+        months,
+        weekdayNames,
         updatedAt: now,
       },
     });

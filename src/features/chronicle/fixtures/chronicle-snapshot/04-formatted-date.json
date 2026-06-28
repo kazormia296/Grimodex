@@ -1,0 +1,75 @@
+{
+  "name": "stamped anchor with month/year calendar + time granularity → formattedDate",
+  "input": {
+    "lang": "ja",
+    "sceneId": "s1",
+    "nodes": [
+      { "id": "s1", "parentId": null, "nodeType": "scene", "sortOrder": "a0" }
+    ],
+    "events": [
+      {
+        "id": "e1",
+        "title": "祝祭",
+        "note": null,
+        "ordinal": "a0",
+        "primaryCodexId": "hero",
+        "locationCodexId": null,
+        "startTime": 96212,
+        "startMinute": 540,
+        "startGranularity": "time",
+        "kind": "generic",
+        "precision": "exact"
+      }
+    ],
+    "participants": [],
+    "relations": [],
+    "sceneEvents": [{ "sceneId": "s1", "eventId": "e1" }],
+    "calendar": {
+      "daysPerYear": 360,
+      "startYear": 1000,
+      "seasonBoundaries": [
+        { "name": "春", "startDayOfYear": 0 },
+        { "name": "夏", "startDayOfYear": 90 },
+        { "name": "秋", "startDayOfYear": 180 },
+        { "name": "冬", "startDayOfYear": 270 }
+      ],
+      "months": [
+        { "name": "1月", "days": 30 },
+        { "name": "2月", "days": 30 },
+        { "name": "3月", "days": 30 },
+        { "name": "4月", "days": 30 },
+        { "name": "5月", "days": 30 },
+        { "name": "6月", "days": 30 },
+        { "name": "7月", "days": 30 },
+        { "name": "8月", "days": 30 },
+        { "name": "9月", "days": 30 },
+        { "name": "10月", "days": 30 },
+        { "name": "11月", "days": 30 },
+        { "name": "12月", "days": 30 }
+      ],
+      "weekdayNames": ["日", "月", "火", "水", "木", "金", "土"]
+    },
+    "codexNames": { "hero": "勇者" }
+  },
+  "expected": {
+    "time": {
+      "source": "stamped",
+      "startTime": 96212,
+      "season": "夏",
+      "precision": "exact",
+      "formattedDate": "1267年4月3日 09:00"
+    },
+    "characters": [
+      {
+        "codexId": "hero",
+        "name": "勇者",
+        "status": "unknown",
+        "age": null,
+        "location": null
+      }
+    ],
+    "recentEvents": [{ "eventId": "e1", "title": "祝祭", "note": null }],
+    "unresolvedCausal": [],
+    "offpage": []
+  }
+}

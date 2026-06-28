@@ -1,3 +1,4 @@
+import i18next from "@/lib/i18n";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { listCodexEntries } from "@/features/codex/api";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
@@ -15,8 +16,12 @@ import {
   deriveChronicleSnapshot,
   pickSnapshotCharacters,
 } from "@/features/chronicle/chronicleSnapshot";
-import { resolveSceneAnchor } from "@/features/chronicle/resolveSceneAnchor";
+import {
+  resolveSceneAnchor,
+  type SceneChronicle,
+} from "@/features/chronicle/resolveSceneAnchor";
 import type { ChronicleCalendar } from "@/features/chronicle/chronicleTime";
+import type { EventPrecision } from "@/db/schema";
 import type { ToolResult } from "./agentTypes";
 
 type ToolReturn = Omit<ToolResult, "toolCallId">;
@@ -42,7 +47,27 @@ function parseCalendar(row: CalendarRow | null): ChronicleCalendar | null {
   } catch {
     boundaries = [];
   }
-  return { daysPerYear: row.daysPerYear, seasonBoundaries: boundaries };
+  let months: ChronicleCalendar["months"] = [];
+  try {
+    const parsed = JSON.parse(row.months);
+    if (Array.isArray(parsed)) months = parsed;
+  } catch {
+    months = [];
+  }
+  let weekdayNames: ChronicleCalendar["weekdayNames"] = [];
+  try {
+    const parsed = JSON.parse(row.weekdayNames);
+    if (Array.isArray(parsed)) weekdayNames = parsed;
+  } catch {
+    weekdayNames = [];
+  }
+  return {
+    daysPerYear: row.daysPerYear,
+    seasonBoundaries: boundaries,
+    startYear: row.startYear,
+    months,
+    weekdayNames,
+  };
 }
 
 const result = (
@@ -127,6 +152,10 @@ export async function getEventDetailTool(
     ordinal: ev.ordinal,
     startTime: ev.startTime,
     endTime: ev.endTime,
+    startMinute: ev.startMinute,
+    endMinute: ev.endMinute,
+    startGranularity: ev.startGranularity,
+    endGranularity: ev.endGranularity,
     precision: ev.precision,
     primaryCharacter: ev.primaryCodexId
       ? (names.get(ev.primaryCodexId) ?? null)
@@ -253,23 +282,40 @@ export async function getChronicleStateTool(
       listEventRelations(projectId),
       loadCodexNames(projectId),
     ]);
-  const readingOrder = computeGlobalSceneOrder(useTreeStore.getState().nodes);
+  const nodes = useTreeStore.getState().nodes;
+  const readingOrder = computeGlobalSceneOrder(nodes);
+  // push (buildChronicleSnapshotTextForScene) と同じアンカー結果になるよう、
+  // シーン自身の暦日付（scene-own アンカー源）を tree ノードから構築する。
+  const sceneChronicle = new Map<string, SceneChronicle>();
+  for (const n of nodes) {
+    if (n.nodeType !== "scene") continue;
+    sceneChronicle.set(n.id, {
+      startTime: n.chronicleStartTime ?? null,
+      startMinute: n.chronicleStartMinute ?? null,
+      startGranularity: n.chronicleStartGranularity ?? "none",
+      precision: (n.chroniclePrecision ?? "exact") as EventPrecision,
+    });
+  }
   const anchor = resolveSceneAnchor(sceneId, {
     sceneEvents,
     events,
     readingOrder,
+    sceneChronicle,
   });
   const characterIds = pickSnapshotCharacters({ anchor, events, participants });
-  const snapshot = deriveChronicleSnapshot({
-    anchor,
-    events,
-    participants,
-    relations,
-    sceneEvents,
-    calendar: parseCalendar(calendarRow),
-    characterIds,
-    codexNames: names,
-  });
+  const snapshot = deriveChronicleSnapshot(
+    {
+      anchor,
+      events,
+      participants,
+      relations,
+      sceneEvents,
+      calendar: parseCalendar(calendarRow),
+      characterIds,
+      codexNames: names,
+    },
+    i18next.language === "en" ? "en" : "ja",
+  );
   return result(
     "get_chronicle_state",
     snapshot,

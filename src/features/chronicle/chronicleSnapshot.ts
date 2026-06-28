@@ -1,6 +1,15 @@
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import { seasonOf, type ChronicleCalendar } from "./chronicleTime";
-import { resolveSceneAnchor, type ChronicleAnchor } from "./resolveSceneAnchor";
+import type { EventPrecision } from "@/db/schema";
+import {
+  seasonOf,
+  formatChronicleDate,
+  type ChronicleCalendar,
+} from "./chronicleTime";
+import {
+  resolveSceneAnchor,
+  type ChronicleAnchor,
+  type SceneChronicle,
+} from "./resolveSceneAnchor";
 import type {
   EventRow,
   ParticipantRow,
@@ -43,6 +52,13 @@ export interface ChronicleSnapshot {
     source: ChronicleAnchor["source"];
     startTime: number | null;
     season: string | null;
+    /** アンカー出来事の日付の確度。none アンカーは null。 */
+    precision: EventPrecision | null;
+    /**
+     * 暦駆動の整形済み日付（例「1267年4月3日 09:00」）。暦＋粒度(≠none)＋
+     * startTime が揃うときのみ。無ければ null（render は season へフォールバック）。
+     */
+    formattedDate: string | null;
   };
   characters: CharacterState[];
   recentEvents: SnapshotEvent[];
@@ -67,7 +83,13 @@ function truncate(s: string, cap: number): string {
   return s.length > cap ? s.slice(0, cap) + "…" : s;
 }
 
-/** ordinal が anchor 以前か（anchor.source=none は ordinal "" のため常に false）。 */
+/**
+ * ordinal が anchor 以前か。anchor.ordinal="" は常に false。これは source=none
+ * （暦アンカー無し）のほか、source=scene でシーンの暦日付が全 event より前＝
+ * syntheticOrdinal が "" になるケースでも起きる。後者では recent/offpage/causal
+ * が空になるが「その時点ではまだ何も起きていない」という意味で正しい（未来の
+ * 出来事を背景に出さない）。
+ */
 function atOrBefore(ordinal: string, anchorOrdinal: string): boolean {
   if (anchorOrdinal === "") return false;
   return cmpKeys(ordinal, anchorOrdinal) <= 0;
@@ -192,9 +214,13 @@ function deriveOffpageEvents(
     }));
 }
 
-/** 構造化スナップショット（正本）を導出。LLM 文字列は renderChronicleSnapshot()。 */
+/**
+ * 構造化スナップショット（正本）を導出。LLM 文字列は renderChronicleSnapshot()。
+ * lang は formattedDate（暦駆動整形）のロケール（任意・既定 ja で既存呼出を壊さない）。
+ */
 export function deriveChronicleSnapshot(
   input: ChronicleSnapshotInput,
+  lang: string = "ja",
 ): ChronicleSnapshot {
   const { anchor, events, participants, relations, sceneEvents, calendar } =
     input;
@@ -202,6 +228,19 @@ export function deriveChronicleSnapshot(
   const season =
     anchor.startTime != null && calendar
       ? seasonOf(anchor.startTime, calendar)
+      : null;
+
+  // 暦＋粒度(≠none)＋startTime が揃うときのみ整形済み日付を確定する。
+  // 空文字は null に正規化（none/未確定の防御）。
+  const formattedDate =
+    calendar && anchor.startGranularity !== "none" && anchor.startTime != null
+      ? formatChronicleDate(
+          anchor.startTime,
+          anchor.startMinute,
+          anchor.startGranularity,
+          calendar,
+          lang === "en" ? "en" : "ja",
+        ) || null
       : null;
 
   // characterId → 参加 eventId 集合
@@ -238,7 +277,13 @@ export function deriveChronicleSnapshot(
     });
 
   return {
-    time: { source: anchor.source, startTime: anchor.startTime, season },
+    time: {
+      source: anchor.source,
+      startTime: anchor.startTime,
+      season,
+      precision: anchor.precision,
+      formattedDate,
+    },
     characters,
     recentEvents: deriveRecentEvents(anchor, events),
     unresolvedCausal: deriveUnresolvedCausal(anchor, events, relations),
@@ -300,12 +345,15 @@ export function assembleChronicleSnapshotText(args: {
   sceneCodexIds?: string[];
   /** @mention で明示された人物 codexId（最優先で snapshot に含める）。 */
   mentionedCodexIds?: string[];
+  /** sceneId → シーン自身の暦日付（scene-own アンカー源）。 */
+  sceneChronicle?: Map<string, SceneChronicle>;
   lang: string;
 }): string | undefined {
   const anchor = resolveSceneAnchor(args.sceneId, {
     sceneEvents: args.sceneEvents,
     events: args.events,
     readingOrder: args.readingOrder,
+    sceneChronicle: args.sceneChronicle,
   });
   const characterIds = pickSnapshotCharacters({
     anchor,
@@ -314,16 +362,19 @@ export function assembleChronicleSnapshotText(args: {
     sceneCodexIds: args.sceneCodexIds,
     mentionedCodexIds: args.mentionedCodexIds,
   });
-  const snapshot = deriveChronicleSnapshot({
-    anchor,
-    events: args.events,
-    participants: args.participants,
-    relations: args.relations,
-    sceneEvents: args.sceneEvents,
-    calendar: args.calendar,
-    characterIds,
-    codexNames: args.codexNames,
-  });
+  const snapshot = deriveChronicleSnapshot(
+    {
+      anchor,
+      events: args.events,
+      participants: args.participants,
+      relations: args.relations,
+      sceneEvents: args.sceneEvents,
+      calendar: args.calendar,
+      characterIds,
+      codexNames: args.codexNames,
+    },
+    args.lang,
+  );
   const text = renderChronicleSnapshot(snapshot, args.lang);
   return text.trim() ? text : undefined;
 }
@@ -333,6 +384,7 @@ interface Labels {
   timeSeason: (season: string) => string;
   timeOrderOnly: string;
   timeProxySuffix: string;
+  precisionSuffix: (p: "approx" | "unknown") => string;
   charactersHeader: string;
   status: Record<CharacterStatus, string>;
   age: (n: number) => string;
@@ -348,6 +400,8 @@ const LABELS: Record<"ja" | "en", Labels> = {
     timeSeason: (s) => `作中時刻: ${s}`,
     timeOrderOnly: "作中時刻: 作中順序のみ（暦未設定）",
     timeProxySuffix: "（近傍シーンから推定）",
+    precisionSuffix: (p) =>
+      p === "approx" ? "（日付はおおよそ）" : "（日付は不確実）",
     charactersHeader: "登場人物の状況:",
     status: { alive: "存命", dead: "故人", unborn: "未誕生", unknown: "不明" },
     age: (n) => `${n}歳`,
@@ -361,6 +415,8 @@ const LABELS: Record<"ja" | "en", Labels> = {
     timeSeason: (s) => `Story time: ${s}`,
     timeOrderOnly: "Story time: narrative order only (no calendar)",
     timeProxySuffix: " (estimated from a nearby scene)",
+    precisionSuffix: (p) =>
+      p === "approx" ? " (date approximate)" : " (date uncertain)",
     charactersHeader: "Character status:",
     status: {
       alive: "alive",
@@ -416,11 +472,21 @@ function renderAtLevel(
   const lines: string[] = [];
 
   // 時刻（none は出さない）
+  // 整形済み日付があればそれを基底に（proxy/precision suffix は従来通り付与）。
+  // 無ければ season → 暦未設定なら順序のみ、の従来フォールバック。
   if (snapshot.time.source !== "none") {
-    let timeLine = snapshot.time.season
-      ? L.timeSeason(snapshot.time.season)
-      : L.timeOrderOnly;
+    let timeLine = snapshot.time.formattedDate
+      ? L.timeSeason(snapshot.time.formattedDate)
+      : snapshot.time.season
+        ? L.timeSeason(snapshot.time.season)
+        : L.timeOrderOnly;
     if (snapshot.time.source === "proxy") timeLine += L.timeProxySuffix;
+    if (
+      snapshot.time.precision === "approx" ||
+      snapshot.time.precision === "unknown"
+    ) {
+      timeLine += L.precisionSuffix(snapshot.time.precision);
+    }
     lines.push(timeLine);
   }
 

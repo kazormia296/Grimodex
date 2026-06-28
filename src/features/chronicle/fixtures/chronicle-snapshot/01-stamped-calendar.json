@@ -10,7 +10,7 @@
     "events": [
       { "id": "eb", "title": "Hero born", "note": null, "ordinal": "a0", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 0, "kind": "birth" },
       { "id": "eoff", "title": "Rumor spreads", "note": "spread fast", "ordinal": "a0G", "primaryCodexId": "mentor", "locationCodexId": null, "startTime": 100, "kind": "generic" },
-      { "id": "e1", "title": "Departure", "note": "leaves home", "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": "castle", "startTime": 7200, "kind": "generic" },
+      { "id": "e1", "title": "Departure", "note": "leaves home", "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": "castle", "startTime": 7200, "kind": "generic", "precision": "approx" },
       { "id": "e2", "title": "Training", "note": null, "ordinal": "a2", "primaryCodexId": "mentor", "locationCodexId": null, "startTime": 7250, "kind": "generic" },
       { "id": "e3", "title": "Final battle", "note": null, "ordinal": "a3", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 7300, "kind": "generic" }
     ],
@@ -37,7 +37,7 @@
     "codexNames": { "hero": "Hero", "mentor": "Mentor", "castle": "Castle" }
   },
   "expected": {
-    "time": { "source": "stamped", "startTime": 7200, "season": "Spring" },
+    "time": { "source": "stamped", "startTime": 7200, "season": "Spring", "precision": "approx", "formattedDate": null },
     "characters": [
       { "codexId": "hero", "name": "Hero", "status": "alive", "age": 20, "location": "Castle" },
       { "codexId": "mentor", "name": "Mentor", "status": "unknown", "age": null, "location": "Castle" }

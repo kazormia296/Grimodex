@@ -4,7 +4,6 @@ import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import {
   DEFAULT_SEASON_BOUNDARIES,
   type ChronicleCalendar,
-  type SeasonBoundary,
 } from "./chronicleTime";
 import {
   findSeasonConflicts,
@@ -16,7 +15,11 @@ import {
   ageConflictEventIds,
   type AgeConflict,
 } from "./ageCheck";
-import { getProjectCalendar, upsertProjectCalendar } from "./api";
+import {
+  getProjectCalendar,
+  upsertProjectCalendar,
+  calendarFromRow,
+} from "./api";
 
 /**
  * Promise.allSettled の結果から成功したシーン本文だけを Map に集める純関数。
@@ -71,16 +74,7 @@ export function useSeasonConflicts({
           setCalendar(null);
           return;
         }
-        let boundaries: SeasonBoundary[];
-        try {
-          boundaries = JSON.parse(row.seasonBoundaries) as SeasonBoundary[];
-        } catch {
-          boundaries = [];
-        }
-        setCalendar({
-          daysPerYear: row.daysPerYear,
-          seasonBoundaries: boundaries,
-        });
+        setCalendar(calendarFromRow(row));
       })
       .catch(() => {
         if (!cancelled) setCalendar(null);
@@ -146,6 +140,9 @@ export function useSeasonConflicts({
         projectId,
         daysPerYear: cal.daysPerYear,
         seasonBoundaries: JSON.stringify(cal.seasonBoundaries),
+        startYear: cal.startYear ?? 0,
+        months: JSON.stringify(cal.months ?? []),
+        weekdayNames: JSON.stringify(cal.weekdayNames ?? []),
       });
       setCalVersion((v) => v + 1);
     },

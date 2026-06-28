@@ -7,7 +7,7 @@ import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
 import { applyUndoJournal } from "./undoJournal";
-import type { EventKind, EventPrecision } from "@/db/schema";
+import type { EventKind, EventPrecision, EventGranularity } from "@/db/schema";
 
 /**
  * 作中年表 (Chronicle) の tracked-write（undo_journal + change_events）。
@@ -93,6 +93,10 @@ export interface AgentEventCreateInput {
   locationCodexId?: string | null;
   startTime?: number | null;
   endTime?: number | null;
+  startMinute?: number | null;
+  endMinute?: number | null;
+  startGranularity?: EventGranularity;
+  endGranularity?: EventGranularity;
   precision?: EventPrecision;
   kind?: EventKind;
   participantCodexIds?: string[];
@@ -113,6 +117,10 @@ export async function agentCreateEvent(
       locationCodexId: input.locationCodexId ?? null,
       startTime: input.startTime ?? null,
       endTime: input.endTime ?? null,
+      startMinute: input.startMinute ?? null,
+      endMinute: input.endMinute ?? null,
+      startGranularity: input.startGranularity ?? "none",
+      endGranularity: input.endGranularity ?? "none",
       precision: input.precision ?? "exact",
       kind: input.kind ?? "generic",
       participantCodexIds: input.participantCodexIds ?? [],
@@ -133,6 +141,10 @@ export interface AgentEventUpdateInput {
   locationCodexId?: string | null;
   startTime?: number | null;
   endTime?: number | null;
+  startMinute?: number | null;
+  endMinute?: number | null;
+  startGranularity?: EventGranularity;
+  endGranularity?: EventGranularity;
   precision?: EventPrecision;
   kind?: EventKind;
 }

@@ -7,11 +7,210 @@ export interface SeasonBoundary {
   startDayOfYear: number;
 }
 
+/** 暦の月定義（名前＋日数）。 */
+export interface MonthDef {
+  name: string;
+  /** その月の日数（正整数）。 */
+  days: number;
+}
+
 export interface ChronicleCalendar {
-  /** 1年の日数（作中暦。グレゴリオなら 365）。 */
+  /**
+   * 1年の日数（作中暦。グレゴリオなら 365）。
+   * months がある場合は月長合計が正本（calendarDaysPerYear で導出）で、この
+   * stored 値は months 未定義時のフォールバックとして使う。
+   */
   daysPerYear: number;
   /** 季節境界。startDayOfYear 昇順の循環区間として解釈する。 */
   seasonBoundaries: SeasonBoundary[];
+  /** 暦の開始年ラベル。day番号 0 = startYear の最初の月の1日。未指定=0。 */
+  startYear?: number;
+  /** 月定義。空/未指定なら月概念なし（年内通日のみ扱う）。 */
+  months?: MonthDef[];
+  /** 曜日名。空/未指定なら曜日概念なし。週長=配列長。 */
+  weekdayNames?: string[];
+}
+
+/** day番号から導出した作中日付の構成要素。 */
+export interface ChronicleDate {
+  /** 暦上の年（startYear 基準）。 */
+  year: number;
+  /** 月インデックス(0-based)。月未定義なら null。 */
+  monthIndex: number | null;
+  /** 月内日(1-based)。月未定義なら null。 */
+  dayOfMonth: number | null;
+  /** 年内通日(0-based)。 */
+  dayOfYear: number;
+  /** 曜日インデックス(0-based)。曜日未定義なら null。 */
+  weekdayIndex: number | null;
+}
+
+/** 表示ロケール（日付整形用）。 */
+export type DateLang = "ja" | "en";
+
+const MINUTES_PER_DAY = 24 * 60;
+
+/** 正の剰余（負の被除数でも 0..b-1 を返す）。 */
+function mod(a: number, b: number): number {
+  return ((a % b) + b) % b;
+}
+
+/** 暦の実効「1年の日数」。months があれば月長合計、無ければ stored daysPerYear。 */
+export function calendarDaysPerYear(cal: ChronicleCalendar): number {
+  if (cal.months && cal.months.length > 0) {
+    const sum = cal.months.reduce(
+      (acc, m) => acc + Math.max(1, Math.floor(m.days)),
+      0,
+    );
+    if (sum > 0) return sum;
+  }
+  return cal.daysPerYear;
+}
+
+/** day番号 → 曜日インデックス。weekdayNames 未定義なら null。 */
+export function weekdayOf(
+  dayNumber: number,
+  cal: ChronicleCalendar,
+): number | null {
+  const wl = cal.weekdayNames?.length ?? 0;
+  if (wl <= 0) return null;
+  return mod(Math.floor(dayNumber), wl);
+}
+
+/**
+ * day番号（紀元からの通日）→ 作中日付の構成要素。
+ * day 0 = startYear の最初の月の1日。負の day も floor 除算で前年へ循環。
+ * 決定性: 乱数/時刻なし。
+ */
+export function dayNumberToDate(
+  dayNumber: number,
+  cal: ChronicleCalendar,
+): ChronicleDate {
+  const d = Math.floor(dayNumber);
+  const dpy = calendarDaysPerYear(cal);
+  const startYear = cal.startYear ?? 0;
+  const weekdayIndex = weekdayOf(d, cal);
+  if (dpy <= 0) {
+    return {
+      year: startYear,
+      monthIndex: null,
+      dayOfMonth: null,
+      dayOfYear: 0,
+      weekdayIndex,
+    };
+  }
+  const year = startYear + Math.floor(d / dpy);
+  const dayOfYear = mod(d, dpy);
+  let monthIndex: number | null = null;
+  let dayOfMonth: number | null = null;
+  if (cal.months && cal.months.length > 0) {
+    let rem = dayOfYear;
+    for (let i = 0; i < cal.months.length; i++) {
+      const len = Math.max(1, Math.floor(cal.months[i].days));
+      if (rem < len) {
+        monthIndex = i;
+        dayOfMonth = rem + 1;
+        break;
+      }
+      rem -= len;
+    }
+    // months 合計 < dayOfYear（stored daysPerYear が月長合計を超える場合の防御）。
+    if (monthIndex === null) {
+      monthIndex = cal.months.length - 1;
+      dayOfMonth = Math.max(1, Math.floor(cal.months[monthIndex].days));
+    }
+  }
+  return { year, monthIndex, dayOfMonth, dayOfYear, weekdayIndex };
+}
+
+/**
+ * 作中日付 → day番号。dayNumberToDate の逆。
+ * monthIndex/dayOfMonth が無い（年だけ・年月だけ）場合は当該期間の先頭日を返す。
+ */
+export function dateToDayNumber(
+  date: {
+    year: number;
+    monthIndex?: number | null;
+    dayOfMonth?: number | null;
+  },
+  cal: ChronicleCalendar,
+): number {
+  const dpy = calendarDaysPerYear(cal);
+  const startYear = cal.startYear ?? 0;
+  const base = (date.year - startYear) * dpy;
+  let dayOfYear = 0;
+  if (cal.months && cal.months.length > 0 && date.monthIndex != null) {
+    const mi = Math.max(0, Math.min(cal.months.length - 1, date.monthIndex));
+    for (let i = 0; i < mi; i++) {
+      dayOfYear += Math.max(1, Math.floor(cal.months[i].days));
+    }
+    dayOfYear += Math.max(0, (date.dayOfMonth ?? 1) - 1);
+  } else if (date.dayOfMonth != null) {
+    dayOfYear = Math.max(0, date.dayOfMonth - 1);
+  }
+  return base + dayOfYear;
+}
+
+/** 分(0..1439) → "HH:MM"（24h・ゼロ詰め）。null は null。 */
+export function formatTimeOfDay(minute: number | null): string | null {
+  if (minute == null) return null;
+  const m = mod(Math.floor(minute), MINUTES_PER_DAY);
+  const hh = Math.floor(m / 60);
+  const mm = m % 60;
+  const p2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${p2(hh)}:${p2(mm)}`;
+}
+
+/**
+ * day番号＋分＋粒度 → 表示文字列。粒度に応じて段階的に省略する。
+ * none/null は空文字。season は seasonOf を用いる。time は HH:MM を付す。
+ */
+export function formatChronicleDate(
+  dayNumber: number | null,
+  minute: number | null,
+  granularity: string,
+  cal: ChronicleCalendar,
+  lang: DateLang = "ja",
+): string {
+  if (granularity === "none" || dayNumber == null) return "";
+  const ja = lang === "ja";
+  const date = dayNumberToDate(dayNumber, cal);
+  const monthName =
+    date.monthIndex != null && cal.months?.[date.monthIndex]
+      ? cal.months[date.monthIndex].name
+      : date.monthIndex != null
+        ? `${date.monthIndex + 1}`
+        : null;
+
+  if (granularity === "year")
+    return ja ? `${date.year}年` : `Year ${date.year}`;
+  if (granularity === "season") {
+    const s = seasonOf(dayNumber, cal) ?? "?";
+    return ja ? `${date.year}年・${s}` : `${s} ${date.year}`;
+  }
+  if (granularity === "month") {
+    return ja
+      ? `${date.year}年${monthName ?? ""}`
+      : `${monthName ?? ""} ${date.year}`.trim();
+  }
+
+  // day / time
+  const dayPart =
+    date.dayOfMonth != null
+      ? ja
+        ? `${date.dayOfMonth}日`
+        : `${date.dayOfMonth}`
+      : ja
+        ? `第${date.dayOfYear + 1}日`
+        : `${date.dayOfYear + 1}`;
+  const dayStr = ja
+    ? `${date.year}年${monthName ?? ""}${dayPart}`
+    : `${monthName ?? ""} ${dayPart}, ${date.year}`.trim();
+  if (granularity === "time") {
+    const tod = formatTimeOfDay(minute);
+    return tod ? `${dayStr} ${tod}` : dayStr;
+  }
+  return dayStr;
 }
 
 /** 既定の 360日・春夏秋冬 4季暦（新規作成/エディタの初期値）。 */

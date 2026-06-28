@@ -1348,6 +1348,10 @@ pub(crate) struct AgentEventCreatePayload {
     location_codex_id: Option<String>,
     start_time: Option<i64>,
     end_time: Option<i64>,
+    start_minute: Option<i64>,
+    end_minute: Option<i64>,
+    start_granularity: Option<String>,
+    end_granularity: Option<String>,
     precision: Option<String>,
     kind: Option<String>,
     participant_codex_ids: Option<Vec<String>>,
@@ -1372,6 +1376,10 @@ pub(crate) struct AgentEventUpdatePayload {
     location_codex_id: Option<String>,
     start_time: Option<i64>,
     end_time: Option<i64>,
+    start_minute: Option<i64>,
+    end_minute: Option<i64>,
+    start_granularity: Option<String>,
+    end_granularity: Option<String>,
     precision: Option<String>,
     kind: Option<String>,
 }
@@ -1428,7 +1436,9 @@ fn collect_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> anyhow
             'id', id, 'projectId', project_id, 'title', title, 'note', note,
             'ordinal', ordinal, 'primaryCodexId', primary_codex_id,
             'locationCodexId', location_codex_id, 'startTime', start_time,
-            'endTime', end_time, 'precision', precision, 'kind', kind,
+            'endTime', end_time, 'startMinute', start_minute,
+            'endMinute', end_minute, 'startGranularity', start_granularity,
+            'endGranularity', end_granularity, 'precision', precision, 'kind', kind,
             'createdAt', created_at, 'updatedAt', updated_at
          ) FROM events WHERE id = ?1",
         rusqlite::params![event_id],
@@ -1531,13 +1541,17 @@ fn apply_event_composite_snapshot(
     conn.execute(
         "INSERT INTO events
          (id, project_id, title, note, ordinal, primary_codex_id, location_codex_id,
-          start_time, end_time, precision, kind, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+          start_time, end_time, start_minute, end_minute, start_granularity,
+          end_granularity, precision, kind, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title, note = excluded.note, ordinal = excluded.ordinal,
             primary_codex_id = excluded.primary_codex_id,
             location_codex_id = excluded.location_codex_id,
             start_time = excluded.start_time, end_time = excluded.end_time,
+            start_minute = excluded.start_minute, end_minute = excluded.end_minute,
+            start_granularity = excluded.start_granularity,
+            end_granularity = excluded.end_granularity,
             precision = excluded.precision, kind = excluded.kind,
             updated_at = excluded.updated_at",
         rusqlite::params![
@@ -1550,6 +1564,10 @@ fn apply_event_composite_snapshot(
             ed["locationCodexId"].as_str(),
             ed["startTime"].as_i64(),
             ed["endTime"].as_i64(),
+            ed["startMinute"].as_i64(),
+            ed["endMinute"].as_i64(),
+            ed["startGranularity"].as_str().unwrap_or("none"),
+            ed["endGranularity"].as_str().unwrap_or("none"),
             ed["precision"].as_str().unwrap_or("exact"),
             ed["kind"].as_str().unwrap_or("generic"),
             ed["createdAt"].as_str().unwrap_or(&now),
@@ -1797,6 +1815,12 @@ fn agent_event_create_impl(
     let ordinal = payload.ordinal.unwrap_or_else(|| "a0".to_string());
     let precision = payload.precision.unwrap_or_else(|| "exact".to_string());
     let kind = payload.kind.unwrap_or_else(|| "generic".to_string());
+    let start_granularity = payload
+        .start_granularity
+        .unwrap_or_else(|| "none".to_string());
+    let end_granularity = payload
+        .end_granularity
+        .unwrap_or_else(|| "none".to_string());
     let participants = payload.participant_codex_ids.unwrap_or_default();
     let scene_ids = payload.scene_ids.unwrap_or_default();
 
@@ -1807,9 +1831,10 @@ fn agent_event_create_impl(
             conn.execute(
                 "INSERT INTO events
                  (id, project_id, title, note, ordinal, primary_codex_id,
-                  location_codex_id, start_time, end_time, precision, kind,
+                  location_codex_id, start_time, end_time, start_minute, end_minute,
+                  start_granularity, end_granularity, precision, kind,
                   created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
                 rusqlite::params![
                     event_id,
                     payload.project_id,
@@ -1820,6 +1845,10 @@ fn agent_event_create_impl(
                     payload.location_codex_id,
                     payload.start_time,
                     payload.end_time,
+                    payload.start_minute,
+                    payload.end_minute,
+                    start_granularity,
+                    end_granularity,
                     precision,
                     kind,
                     now,
@@ -1971,6 +2000,30 @@ fn agent_event_update_impl(
                 params.push(Box::new(v));
                 param_idx += 1;
                 fields.push("endTime");
+            }
+            if let Some(v) = payload.start_minute {
+                sets.push(format!("start_minute = ?{param_idx}"));
+                params.push(Box::new(v));
+                param_idx += 1;
+                fields.push("startMinute");
+            }
+            if let Some(v) = payload.end_minute {
+                sets.push(format!("end_minute = ?{param_idx}"));
+                params.push(Box::new(v));
+                param_idx += 1;
+                fields.push("endMinute");
+            }
+            if let Some(ref v) = payload.start_granularity {
+                sets.push(format!("start_granularity = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("startGranularity");
+            }
+            if let Some(ref v) = payload.end_granularity {
+                sets.push(format!("end_granularity = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("endGranularity");
             }
             if let Some(ref v) = payload.precision {
                 sets.push(format!("precision = ?{param_idx}"));
@@ -3070,6 +3123,10 @@ mod tests {
             location_codex_id: None,
             start_time: None,
             end_time: None,
+            start_minute: None,
+            end_minute: None,
+            start_granularity: None,
+            end_granularity: None,
             precision: None,
             kind: None,
         }
@@ -3096,6 +3153,10 @@ mod tests {
                 location_codex_id: None,
                 start_time: None,
                 end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
                 precision: None,
                 kind: None,
                 participant_codex_ids: (!participants.is_empty()).then_some(participants),
@@ -3148,6 +3209,10 @@ mod tests {
                 location_codex_id: None,
                 start_time: None,
                 end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
                 precision: None,
                 kind: None,
                 participant_codex_ids: None,

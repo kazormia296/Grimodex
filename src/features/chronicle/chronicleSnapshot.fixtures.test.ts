@@ -18,7 +18,7 @@ import {
   pickSnapshotCharacters,
   type ChronicleSnapshot,
 } from "./chronicleSnapshot";
-import { resolveSceneAnchor } from "./resolveSceneAnchor";
+import { resolveSceneAnchor, type SceneChronicle } from "./resolveSceneAnchor";
 import type {
   EventRow,
   ParticipantRow,
@@ -26,6 +26,7 @@ import type {
   SceneEventRow,
 } from "./api";
 import type { ChronicleCalendar } from "./chronicleTime";
+import type { EventPrecision } from "@/db/schema";
 
 interface FixtureInput {
   sceneId: string;
@@ -36,6 +37,8 @@ interface FixtureInput {
   sceneEvents: SceneEventRow[];
   calendar: ChronicleCalendar | null;
   codexNames: Record<string, string>;
+  /** formattedDate ロケール（既定 ja）。Rust AssembleInput.lang と対称。 */
+  lang?: string;
 }
 
 interface Fixture {
@@ -46,26 +49,41 @@ interface Fixture {
 
 function runPipeline(input: FixtureInput): ChronicleSnapshot {
   const readingOrder = computeGlobalSceneOrder(input.nodes as TreeNodeData[]);
+  // scene-own アンカー源: input.nodes の scene ノードから暦日付を構築（push と同じ）。
+  const sceneChronicle = new Map<string, SceneChronicle>();
+  for (const n of input.nodes) {
+    if (n.nodeType !== "scene" || !n.id) continue;
+    sceneChronicle.set(n.id, {
+      startTime: n.chronicleStartTime ?? null,
+      startMinute: n.chronicleStartMinute ?? null,
+      startGranularity: n.chronicleStartGranularity ?? "none",
+      precision: (n.chroniclePrecision ?? "exact") as EventPrecision,
+    });
+  }
   const anchor = resolveSceneAnchor(input.sceneId, {
     sceneEvents: input.sceneEvents,
     events: input.events,
     readingOrder,
+    sceneChronicle,
   });
   const characterIds = pickSnapshotCharacters({
     anchor,
     events: input.events,
     participants: input.participants,
   });
-  return deriveChronicleSnapshot({
-    anchor,
-    events: input.events,
-    participants: input.participants,
-    relations: input.relations,
-    sceneEvents: input.sceneEvents,
-    calendar: input.calendar,
-    characterIds,
-    codexNames: new Map(Object.entries(input.codexNames)),
-  });
+  return deriveChronicleSnapshot(
+    {
+      anchor,
+      events: input.events,
+      participants: input.participants,
+      relations: input.relations,
+      sceneEvents: input.sceneEvents,
+      calendar: input.calendar,
+      characterIds,
+      codexNames: new Map(Object.entries(input.codexNames)),
+    },
+    input.lang ?? "ja",
+  );
 }
 
 const fixturesDir = join(

@@ -135,6 +135,66 @@ describe("projectSnapshotApi", () => {
     expect(rows[0]?.intent).toBe("読者に緊張を与える");
   });
 
+  it("create→restore preserves scene chronicle (作中暦日付) fields", async () => {
+    await seedScene('{"type":"doc","content":[]}');
+    const { db } = await import("@/db/client");
+    const { treeNodes } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    // interval 日付 + 時刻 + 粒度 + 確度をシーンに設定。
+    await db
+      .update(treeNodes)
+      .set({
+        chronicleStartTime: 1234,
+        chronicleStartMinute: 615,
+        chronicleStartGranularity: "time",
+        chronicleEndTime: 1240,
+        chronicleEndMinute: 720,
+        chronicleEndGranularity: "day",
+        chroniclePrecision: "approx",
+      })
+      .where(eq(treeNodes.id, SCENE_ID));
+
+    const snap = await createProjectSnapshot({ name: "with-chronicle" });
+
+    // スナップショット後に別状態へ変更（日付を消す）。
+    await db
+      .update(treeNodes)
+      .set({
+        chronicleStartTime: null,
+        chronicleStartMinute: null,
+        chronicleStartGranularity: "none",
+        chronicleEndTime: null,
+        chronicleEndMinute: null,
+        chronicleEndGranularity: "none",
+        chroniclePrecision: "exact",
+      })
+      .where(eq(treeNodes.id, SCENE_ID));
+
+    await restoreProjectSnapshot(snap.id, "with-chronicle");
+
+    const rows = await db
+      .select({
+        chronicleStartTime: treeNodes.chronicleStartTime,
+        chronicleStartMinute: treeNodes.chronicleStartMinute,
+        chronicleStartGranularity: treeNodes.chronicleStartGranularity,
+        chronicleEndTime: treeNodes.chronicleEndTime,
+        chronicleEndMinute: treeNodes.chronicleEndMinute,
+        chronicleEndGranularity: treeNodes.chronicleEndGranularity,
+        chroniclePrecision: treeNodes.chroniclePrecision,
+      })
+      .from(treeNodes)
+      .where(eq(treeNodes.id, SCENE_ID));
+    expect(rows[0]).toEqual({
+      chronicleStartTime: 1234,
+      chronicleStartMinute: 615,
+      chronicleStartGranularity: "time",
+      chronicleEndTime: 1240,
+      chronicleEndMinute: 720,
+      chronicleEndGranularity: "day",
+      chroniclePrecision: "approx",
+    });
+  });
+
   it("restores a snapshot and writes a safety snapshot", async () => {
     await seedScene('{"type":"doc","content":[{"type":"text","text":"v1"}]}');
     const target = await createProjectSnapshot({ name: "checkpoint" });

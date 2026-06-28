@@ -81,6 +81,27 @@ export const treeNodes = sqliteTable(
     locationId: text("location_id").references((): any => codexEntries.id, {
       onDelete: "set null",
     }),
+    // ── Chronicle（作中暦日付）─────────────────────────────────────────
+    // Event エンティティと同じ chronicleTime 日付モデルをシーンにも共有する
+    // （events とは統合しない）。読む順 (sortOrder) とは独立した作中時間軸。
+    // granularity= EVENT_GRANULARITIES / precision= EventPrecision を再利用。
+    // アンカー解決・AI 注入・UI は別タスク（このフィールドは永続化のみ）。
+    // 暦ライト数値時刻（紀元からの日数）。null=日付未指定。
+    chronicleStartTime: integer("chronicle_start_time"),
+    // 開始時刻（24h時計の分 0..1439）。null=時刻未指定。
+    chronicleStartMinute: integer("chronicle_start_minute"),
+    // 開始の粒度（EVENT_GRANULARITIES）。CHECK は付けない（events 列追加と同流儀）。
+    chronicleStartGranularity: text("chronicle_start_granularity")
+      .notNull()
+      .default("none"),
+    // interval 終端（紀元からの日数）。null=point（瞬間）。
+    chronicleEndTime: integer("chronicle_end_time"),
+    chronicleEndMinute: integer("chronicle_end_minute"),
+    chronicleEndGranularity: text("chronicle_end_granularity")
+      .notNull()
+      .default("none"),
+    // 日付の確度（EventPrecision = 'exact' | 'approx' | 'unknown'）。
+    chroniclePrecision: text("chronicle_precision").notNull().default("exact"),
     status: text("status").default("outline"), // 'outline' | 'draft' | 'complete' | 'revision' | 'final'
     content: text("content").notNull().default("{}"), // Scene/Note body (ProseMirror JSON)
     // Unplaced beats (Beat system Phase A): JSON array of { id, beatType, pov, collapsed, content }.
@@ -813,6 +834,18 @@ export const projectSnapshotTreeNodes = sqliteTable(
     storyTimeLabel: text("story_time_label"),
     povCharacterId: text("pov_character_id"),
     locationId: text("location_id"),
+    // Chronicle（作中暦日付）— tree_nodes と同じ型・既定値でミラー。
+    chronicleStartTime: integer("chronicle_start_time"),
+    chronicleStartMinute: integer("chronicle_start_minute"),
+    chronicleStartGranularity: text("chronicle_start_granularity")
+      .notNull()
+      .default("none"),
+    chronicleEndTime: integer("chronicle_end_time"),
+    chronicleEndMinute: integer("chronicle_end_minute"),
+    chronicleEndGranularity: text("chronicle_end_granularity")
+      .notNull()
+      .default("none"),
+    chroniclePrecision: text("chronicle_precision").notNull().default("exact"),
     status: text("status"),
     bodyVersionId: text("body_version_id").references(
       () => contentVersions.id,
@@ -1322,6 +1355,21 @@ export type EventPrecision = (typeof EVENT_PRECISIONS)[number];
 export const EVENT_KINDS = ["generic", "birth", "death"] as const;
 export type EventKind = (typeof EVENT_KINDS)[number];
 
+/**
+ * 出来事の開始/終了時刻の粒度（どこまで判明しているか）。
+ * none=時刻未指定 / season=季節のみ / year=年 / month=年月 / day=年月日 / time=年月日＋時分。
+ * 確度(precision)＝確からしさとは独立（粒度＝判明範囲）。
+ */
+export const EVENT_GRANULARITIES = [
+  "none",
+  "season",
+  "year",
+  "month",
+  "day",
+  "time",
+] as const;
+export type EventGranularity = (typeof EVENT_GRANULARITIES)[number];
+
 export const events = sqliteTable(
   "events",
   {
@@ -1346,7 +1394,13 @@ export const events = sqliteTable(
     startTime: integer("start_time"),
     // interval 終端（紀元からの日数）。null=point。
     endTime: integer("end_time"),
-    // 'exact' | 'approx' | 'unknown'（CHECK は SQL 側）。
+    // 時刻（24h時計の分 0..1439）。null=時刻未指定。startTime/endTime と対。
+    startMinute: integer("start_minute"),
+    endMinute: integer("end_minute"),
+    // 開始/終了の粒度（EVENT_GRANULARITIES・CHECK は SQL 側）。
+    startGranularity: text("start_granularity").notNull().default("none"),
+    endGranularity: text("end_granularity").notNull().default("none"),
+    // 'exact' | 'approx' | 'unknown'（CHECK は SQL 側）。日付の確度。
     precision: text("precision").notNull().default("exact"),
     // 'generic' | 'birth' | 'death'。birth は年齢計算の基準点。
     kind: text("kind").notNull().default("generic"),
@@ -1406,6 +1460,12 @@ export const projectCalendar = sqliteTable("project_calendar", {
   daysPerYear: integer("days_per_year").notNull().default(360),
   // JSON: SeasonBoundary[] = [{name, startDayOfYear}]（4季想定）。
   seasonBoundaries: text("season_boundaries").notNull().default("[]"),
+  // 暦の開始年ラベル（day番号0 = startYear の最初の月の1日）。
+  startYear: integer("start_year").notNull().default(0),
+  // JSON: MonthDef[] = [{name, days}]。'[]'=月概念なし（年内通日のみ）。
+  months: text("months").notNull().default("[]"),
+  // JSON: string[]（曜日名）。'[]'=曜日概念なし。週長=配列長。
+  weekdayNames: text("weekday_names").notNull().default("[]"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

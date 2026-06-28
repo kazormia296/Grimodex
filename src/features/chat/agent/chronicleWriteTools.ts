@@ -10,7 +10,8 @@ import {
   agentRemoveEventRelation,
   type AgentEventCreateInput,
 } from "@/features/agent-writes/event";
-import type { EventKind } from "@/db/schema";
+import { EVENT_KINDS, EVENT_GRANULARITIES } from "@/db/schema";
+import type { EventKind, EventGranularity } from "@/db/schema";
 import type { ToolResult } from "./agentTypes";
 
 type ToolReturn = Omit<ToolResult, "toolCallId">;
@@ -36,6 +37,20 @@ function strArray(v: unknown): string[] {
 function optNum(v: unknown): number | null {
   return typeof v === "number" ? v : null;
 }
+/** kind 文字列を正準 enum に正規化（不正は undefined）。EVENT_KINDS が正本。 */
+function coerceKind(v: unknown): EventKind | undefined {
+  const s = str(v);
+  return (EVENT_KINDS as readonly string[]).includes(s)
+    ? (s as EventKind)
+    : undefined;
+}
+/** granularity 文字列を正準 enum に正規化（不正は undefined）。 */
+function coerceGranularity(v: unknown): EventGranularity | undefined {
+  const s = str(v);
+  return (EVENT_GRANULARITIES as readonly string[]).includes(s)
+    ? (s as EventGranularity)
+    : undefined;
+}
 
 /** 作中年表に出来事を作成（tracked-write・undo 可）。 */
 export async function createEventTool(
@@ -47,9 +62,7 @@ export async function createEventTool(
     const input: AgentEventCreateInput = {
       title,
       note: params["note"] ? str(params["note"]) : null,
-      kind: (["birth", "death", "generic"].includes(str(params["kind"]))
-        ? str(params["kind"])
-        : "generic") as EventKind,
+      kind: coerceKind(params["kind"]) ?? "generic",
       primaryCodexId: params["primaryCodexId"]
         ? str(params["primaryCodexId"])
         : null,
@@ -58,6 +71,10 @@ export async function createEventTool(
         : null,
       startTime: optNum(params["startTime"]),
       endTime: optNum(params["endTime"]),
+      startMinute: optNum(params["startMinute"]),
+      endMinute: optNum(params["endMinute"]),
+      startGranularity: coerceGranularity(params["startGranularity"]),
+      endGranularity: coerceGranularity(params["endGranularity"]),
       participantCodexIds: strArray(params["participantCodexIds"]),
       sceneIds: strArray(params["sceneIds"]),
     };
@@ -84,10 +101,7 @@ export async function updateEventTool(
       title: params["title"] ? str(params["title"]) : undefined,
       note: params["note"] !== undefined ? str(params["note"]) : undefined,
       kind:
-        params["kind"] &&
-        ["birth", "death", "generic"].includes(str(params["kind"]))
-          ? (str(params["kind"]) as EventKind)
-          : undefined,
+        params["kind"] !== undefined ? coerceKind(params["kind"]) : undefined,
       primaryCodexId: params["primaryCodexId"]
         ? str(params["primaryCodexId"])
         : undefined,
@@ -100,6 +114,22 @@ export async function updateEventTool(
           : undefined,
       endTime:
         params["endTime"] !== undefined ? optNum(params["endTime"]) : undefined,
+      startMinute:
+        params["startMinute"] !== undefined
+          ? optNum(params["startMinute"])
+          : undefined,
+      endMinute:
+        params["endMinute"] !== undefined
+          ? optNum(params["endMinute"])
+          : undefined,
+      startGranularity:
+        params["startGranularity"] !== undefined
+          ? coerceGranularity(params["startGranularity"])
+          : undefined,
+      endGranularity:
+        params["endGranularity"] !== undefined
+          ? coerceGranularity(params["endGranularity"])
+          : undefined,
     });
     return ok("update_event", { id: eventId }, `Updated event ${eventId}`);
   } catch (e) {

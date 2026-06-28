@@ -36,6 +36,15 @@ impl Database {
                 story_time_label  TEXT,
                 pov_character_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                 location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+                -- Chronicle（作中暦日付）: events と同じ chronicleTime 日付モデルを
+                -- シーンにも共有（events とは統合しない）。読む順とは独立した作中時間軸。
+                chronicle_start_time        INTEGER,
+                chronicle_start_minute      INTEGER,
+                chronicle_start_granularity TEXT NOT NULL DEFAULT 'none',
+                chronicle_end_time          INTEGER,
+                chronicle_end_minute        INTEGER,
+                chronicle_end_granularity   TEXT NOT NULL DEFAULT 'none',
+                chronicle_precision         TEXT NOT NULL DEFAULT 'exact',
                 status            TEXT DEFAULT 'outline'
                                     CHECK(status IS NULL OR status IN ('outline','draft','complete','revision','final')),
                 content           TEXT NOT NULL DEFAULT '{}',
@@ -449,6 +458,14 @@ impl Database {
                 story_time_label   TEXT,
                 pov_character_id   TEXT,
                 location_id        TEXT,
+                -- Chronicle（作中暦日付）— tree_nodes と同じ型・既定値でミラー。
+                chronicle_start_time        INTEGER,
+                chronicle_start_minute      INTEGER,
+                chronicle_start_granularity TEXT NOT NULL DEFAULT 'none',
+                chronicle_end_time          INTEGER,
+                chronicle_end_minute        INTEGER,
+                chronicle_end_granularity   TEXT NOT NULL DEFAULT 'none',
+                chronicle_precision         TEXT NOT NULL DEFAULT 'exact',
                 status             TEXT,
                 body_version_id    TEXT REFERENCES content_versions(id) ON DELETE RESTRICT,
                 unplaced_beats_doc TEXT NOT NULL DEFAULT '[]',
@@ -1087,6 +1104,8 @@ impl Database {
         // Note AI context injection (Phase A): context_mode / aliases on tree_nodes.
         Self::migrate_tree_nodes_note_context(&conn)?;
         Self::migrate_tree_nodes_intent(&conn)?;
+        // 本格暦化: Chronicle（作中暦日付）列を tree_nodes と snapshot ミラーへ追加。
+        Self::migrate_tree_nodes_chronicle(&conn)?;
 
         // Chat session pins: extend codex/snippet CHECK to include sticky (Phase D).
         Self::migrate_chat_session_pinned_add_sticky(&conn)?;
@@ -1754,6 +1773,12 @@ impl Database {
                 location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                 start_time       INTEGER,
                 end_time         INTEGER,
+                start_minute     INTEGER,
+                end_minute       INTEGER,
+                start_granularity TEXT NOT NULL DEFAULT 'none'
+                                   CHECK(start_granularity IN ('none','season','year','month','day','time')),
+                end_granularity  TEXT NOT NULL DEFAULT 'none'
+                                   CHECK(end_granularity IN ('none','season','year','month','day','time')),
                 precision        TEXT NOT NULL DEFAULT 'exact'
                                    CHECK(precision IN ('exact','approx','unknown')),
                 kind             TEXT NOT NULL DEFAULT 'generic'
@@ -1773,6 +1798,21 @@ impl Database {
             "events",
             "location_codex_id",
             "TEXT REFERENCES codex_entries(id) ON DELETE SET NULL",
+        )?;
+        // 本格暦化: 時刻（分）＋粒度。既存 DB へは CHECK 無しの素 ALTER で追加。
+        Self::add_column_if_missing(&conn, "events", "start_minute", "INTEGER")?;
+        Self::add_column_if_missing(&conn, "events", "end_minute", "INTEGER")?;
+        Self::add_column_if_missing(
+            &conn,
+            "events",
+            "start_granularity",
+            "TEXT NOT NULL DEFAULT 'none'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "events",
+            "end_granularity",
+            "TEXT NOT NULL DEFAULT 'none'",
         )?;
 
         // 出来事への参加 codex（多対多）。主参加は events.primary_codex_id。
@@ -1807,9 +1847,31 @@ impl Database {
                 project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
                 days_per_year     INTEGER NOT NULL DEFAULT 360,
                 season_boundaries TEXT NOT NULL DEFAULT '[]',
+                start_year        INTEGER NOT NULL DEFAULT 0,
+                months            TEXT NOT NULL DEFAULT '[]',
+                weekday_names     TEXT NOT NULL DEFAULT '[]',
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
+        )?;
+        // 本格暦化: 開始年・月定義・曜日名。既存 DB（暦ライト時代に作成済）へ追加。
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "start_year",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "months",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "weekday_names",
+            "TEXT NOT NULL DEFAULT '[]'",
         )?;
 
         // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。
@@ -2379,6 +2441,38 @@ impl Database {
     pub(super) fn migrate_tree_nodes_intent(conn: &Connection) -> anyhow::Result<()> {
         Self::add_column_if_missing(conn, "tree_nodes", "intent", "TEXT")?;
         Self::add_column_if_missing(conn, "project_snapshot_tree_nodes", "intent", "TEXT")?;
+        Ok(())
+    }
+
+    /// One-shot migration: 本格暦化 — add Chronicle（作中暦日付）columns to
+    /// tree_nodes and its snapshot mirror. events と同じ chronicleTime 日付モデルを
+    /// シーンに共有する（events とは統合しない）。CHECK 無しの素 ALTER（events 列追加
+    /// と同流儀）。granularity= 'none' / precision= 'exact' で NOT NULL を満たす。
+    pub(super) fn migrate_tree_nodes_chronicle(conn: &Connection) -> anyhow::Result<()> {
+        for table in ["tree_nodes", "project_snapshot_tree_nodes"] {
+            Self::add_column_if_missing(conn, table, "chronicle_start_time", "INTEGER")?;
+            Self::add_column_if_missing(conn, table, "chronicle_start_minute", "INTEGER")?;
+            Self::add_column_if_missing(
+                conn,
+                table,
+                "chronicle_start_granularity",
+                "TEXT NOT NULL DEFAULT 'none'",
+            )?;
+            Self::add_column_if_missing(conn, table, "chronicle_end_time", "INTEGER")?;
+            Self::add_column_if_missing(conn, table, "chronicle_end_minute", "INTEGER")?;
+            Self::add_column_if_missing(
+                conn,
+                table,
+                "chronicle_end_granularity",
+                "TEXT NOT NULL DEFAULT 'none'",
+            )?;
+            Self::add_column_if_missing(
+                conn,
+                table,
+                "chronicle_precision",
+                "TEXT NOT NULL DEFAULT 'exact'",
+            )?;
+        }
         Ok(())
     }
 
@@ -3004,6 +3098,88 @@ mod tests {
                 kind, "generic",
                 "legacy row kind should default to 'generic'"
             );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_backfills_chronicle_columns_on_legacy_tree_nodes() {
+        // Regression: 本格暦化 — a pre-chronicle install has tree_nodes (and the
+        // snapshot mirror) WITHOUT the chronicle_* columns. migrate() must
+        // backfill all 7 on both tables via add_column_if_missing — the fresh-DB
+        // CREATE TABLE already includes them, so the legacy ALTER path is
+        // otherwise never exercised. Restore relies on these being present.
+        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.with_conn(|conn| {
+            // Pre-chronicle tree_nodes / project_snapshot_tree_nodes (no chronicle_*).
+            conn.execute_batch(
+                "CREATE TABLE tree_nodes (
+                    id               TEXT PRIMARY KEY,
+                    project_id       TEXT NOT NULL,
+                    parent_id        TEXT,
+                    node_type        TEXT NOT NULL,
+                    title            TEXT NOT NULL DEFAULT 'Untitled',
+                    sort_order       TEXT NOT NULL DEFAULT 'a0',
+                    story_time_order TEXT,
+                    pov_character_id TEXT,
+                    location_id      TEXT,
+                    content          TEXT NOT NULL DEFAULT '{}',
+                    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO tree_nodes (id, project_id, node_type)
+                   VALUES ('n1', 'p1', 'scene');
+                 CREATE TABLE project_snapshot_tree_nodes (
+                    snapshot_id     TEXT NOT NULL,
+                    node_id         TEXT NOT NULL,
+                    node_type       TEXT NOT NULL,
+                    title           TEXT NOT NULL,
+                    sort_order      TEXT NOT NULL,
+                    body_version_id TEXT,
+                    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (snapshot_id, node_id)
+                 );",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // Must not error on the legacy (pre-chronicle) tables.
+        db.migrate().unwrap();
+
+        db.with_conn(|conn| {
+            let chronicle_cols = [
+                "chronicle_start_time",
+                "chronicle_start_minute",
+                "chronicle_start_granularity",
+                "chronicle_end_time",
+                "chronicle_end_minute",
+                "chronicle_end_granularity",
+                "chronicle_precision",
+            ];
+            for table in ["tree_nodes", "project_snapshot_tree_nodes"] {
+                let cols: Vec<String> = conn
+                    .prepare(&format!("PRAGMA table_info({table})"))?
+                    .query_map([], |row| row.get::<_, String>("name"))?
+                    .collect::<Result<_, _>>()?;
+                for expected in chronicle_cols {
+                    assert!(
+                        cols.iter().any(|c| c == expected),
+                        "{table}.{expected} should be backfilled"
+                    );
+                }
+            }
+            // The pre-existing legacy row picks up the NOT NULL DEFAULT backfill.
+            let (start_gran, precision): (String, String) = conn.query_row(
+                "SELECT chronicle_start_granularity, chronicle_precision
+                 FROM tree_nodes WHERE id = 'n1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(start_gran, "none", "legacy granularity should default");
+            assert_eq!(precision, "exact", "legacy precision should default");
             Ok(())
         })
         .unwrap();

@@ -458,7 +458,7 @@ impl GrimodexServer {
 
     /// Create a chronicle event (tracked; undo-able). knowledgeWrite gate.
     #[tool(
-        description = "Create a chronicle event: title (required), note, kind ('generic'|'birth'|'death', default generic), primary_codex_id, location_codex_id, start_time/end_time (days from epoch), participant_codex_ids, scene_ids. Tracked (undo_journal + change_event). Disabled in readonly mode."
+        description = "Create a chronicle event: title (required), note, kind ('generic'|'birth'|'death', default generic), primary_codex_id, location_codex_id, start_time/end_time (days from epoch), start_minute/end_minute (time of day, 0-1439, 24h clock), start_granularity/end_granularity ('none'|'season'|'year'|'month'|'day'|'time', default 'none'), participant_codex_ids, scene_ids. Tracked (undo_journal + change_event). Disabled in readonly mode."
     )]
     async fn create_event(
         &self,
@@ -469,7 +469,7 @@ impl GrimodexServer {
 
     /// Update a chronicle event (only provided fields). knowledgeWrite gate.
     #[tool(
-        description = "Update a chronicle event by event_id. Only provided fields change (title, note, kind, primary_codex_id, location_codex_id, start_time, end_time). Scoped to the active project. Tracked. Disabled in readonly mode."
+        description = "Update a chronicle event by event_id. Only provided fields change (title, note, kind, primary_codex_id, location_codex_id, start_time, end_time, start_minute/end_minute (0-1439, 24h clock), start_granularity/end_granularity ('none'|'season'|'year'|'month'|'day'|'time')). Scoped to the active project. Tracked. Disabled in readonly mode."
     )]
     async fn update_event(
         &self,

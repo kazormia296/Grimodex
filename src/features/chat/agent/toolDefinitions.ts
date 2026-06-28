@@ -504,6 +504,26 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
           description: "Days from the in-world epoch",
         },
         endTime: { type: "number", description: "Interval end (days)" },
+        startMinute: {
+          type: "number",
+          description:
+            "Time of day for the start, in minutes (0-1439, 24h clock)",
+        },
+        endMinute: {
+          type: "number",
+          description:
+            "Time of day for the end, in minutes (0-1439, 24h clock)",
+        },
+        startGranularity: {
+          type: "string",
+          description:
+            "How precise the start date is: 'none' | 'season' | 'year' | 'month' | 'day' | 'time'",
+        },
+        endGranularity: {
+          type: "string",
+          description:
+            "How precise the end date is: 'none' | 'season' | 'year' | 'month' | 'day' | 'time'",
+        },
         participantCodexIds: {
           type: "array",
           items: { type: "string" },
@@ -533,6 +553,24 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         locationCodexId: { type: "string" },
         startTime: { type: "number" },
         endTime: { type: "number" },
+        startMinute: {
+          type: "number",
+          description: "Start time of day in minutes (0-1439, 24h clock)",
+        },
+        endMinute: {
+          type: "number",
+          description: "End time of day in minutes (0-1439, 24h clock)",
+        },
+        startGranularity: {
+          type: "string",
+          description:
+            "Start date precision: 'none' | 'season' | 'year' | 'month' | 'day' | 'time'",
+        },
+        endGranularity: {
+          type: "string",
+          description:
+            "End date precision: 'none' | 'season' | 'year' | 'month' | 'day' | 'time'",
+        },
       },
       required: ["eventId"],
     },

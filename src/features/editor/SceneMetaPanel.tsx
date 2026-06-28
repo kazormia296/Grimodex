@@ -2,6 +2,8 @@ import type { Editor } from "@tiptap/core";
 import type { CodexMentionPopupState } from "@/features/codex/CodexMentionExtension";
 import { SynopsisHeader } from "@/features/editor/SynopsisHeader";
 import { BeatsHeader } from "@/features/editor/BeatsHeader";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { SceneDateEditor } from "@/features/chronicle/SceneDateEditor";
 
 interface SceneMetaPanelProps {
   sceneId: string;
@@ -14,12 +16,14 @@ export function SceneMetaPanel({
   editor,
   setMentionPopup,
 }: SceneMetaPanelProps) {
+  const node = useTreeStore((s) => s.nodes.find((n) => n.id === sceneId));
   return (
     <div
       data-testid="scene-meta-panel"
       className="flex h-full w-full flex-col overflow-y-auto border-l border-border bg-muted/20"
     >
       <SynopsisHeader sceneId={sceneId} editor={editor} />
+      {node && node.nodeType === "scene" && <SceneDateEditor node={node} />}
       <BeatsHeader
         sceneId={sceneId}
         editor={editor}
