@@ -192,11 +192,20 @@ export async function listEventParticipants(
 /** 参加者集合を置き換える（全削除→再挿入）。role は当面 null 固定で良い。 */
 export async function setEventParticipants(
   eventId: string,
+  projectId: string,
   codexEntryIds: string[],
 ): Promise<void> {
   // 全削除→再挿入を 1 transaction に閉じ、insert 失敗時に delete を巻き戻して
   // 参加者集合が中途半端に空になるのを防ぐ（atomic な置換）。
+  // event_participants は project_id 列を持たないため、まず対象 event が
+  // projectId に属するかを検証してから書き換える（XPROJ fail-closed：他
+  // プロジェクトの event の参加者は触れない。linkSceneToEvent と同じ流儀）。
   await db.transaction(async (tx) => {
+    const [ev] = await tx
+      .select({ id: events.id })
+      .from(events)
+      .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
+    if (!ev) return;
     await tx
       .delete(eventParticipants)
       .where(eq(eventParticipants.eventId, eventId));
@@ -316,9 +325,18 @@ export async function linkSceneToEvent(
 }
 
 export async function unlinkSceneFromEvent(
+  projectId: string,
   sceneId: string,
   eventId: string,
 ): Promise<void> {
+  // scene_events は project_id 列を持たないため、対象 event が projectId に
+  // 属する時のみ削除する（XPROJ fail-closed：他プロジェクトの id を渡されても
+  // no-op。linkSceneToEvent と対称な projectId-first シグネチャ）。
+  const [event] = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
+  if (!event) return;
   await db
     .delete(sceneEvents)
     .where(
