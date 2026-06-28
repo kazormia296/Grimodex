@@ -1754,6 +1754,12 @@ impl Database {
                 location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                 start_time       INTEGER,
                 end_time         INTEGER,
+                start_minute     INTEGER,
+                end_minute       INTEGER,
+                start_granularity TEXT NOT NULL DEFAULT 'none'
+                                   CHECK(start_granularity IN ('none','season','year','month','day','time')),
+                end_granularity  TEXT NOT NULL DEFAULT 'none'
+                                   CHECK(end_granularity IN ('none','season','year','month','day','time')),
                 precision        TEXT NOT NULL DEFAULT 'exact'
                                    CHECK(precision IN ('exact','approx','unknown')),
                 kind             TEXT NOT NULL DEFAULT 'generic'
@@ -1773,6 +1779,21 @@ impl Database {
             "events",
             "location_codex_id",
             "TEXT REFERENCES codex_entries(id) ON DELETE SET NULL",
+        )?;
+        // 本格暦化: 時刻（分）＋粒度。既存 DB へは CHECK 無しの素 ALTER で追加。
+        Self::add_column_if_missing(&conn, "events", "start_minute", "INTEGER")?;
+        Self::add_column_if_missing(&conn, "events", "end_minute", "INTEGER")?;
+        Self::add_column_if_missing(
+            &conn,
+            "events",
+            "start_granularity",
+            "TEXT NOT NULL DEFAULT 'none'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "events",
+            "end_granularity",
+            "TEXT NOT NULL DEFAULT 'none'",
         )?;
 
         // 出来事への参加 codex（多対多）。主参加は events.primary_codex_id。
@@ -1807,9 +1828,31 @@ impl Database {
                 project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
                 days_per_year     INTEGER NOT NULL DEFAULT 360,
                 season_boundaries TEXT NOT NULL DEFAULT '[]',
+                start_year        INTEGER NOT NULL DEFAULT 0,
+                months            TEXT NOT NULL DEFAULT '[]',
+                weekday_names     TEXT NOT NULL DEFAULT '[]',
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
+        )?;
+        // 本格暦化: 開始年・月定義・曜日名。既存 DB（暦ライト時代に作成済）へ追加。
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "start_year",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "months",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "weekday_names",
+            "TEXT NOT NULL DEFAULT '[]'",
         )?;
 
         // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。

@@ -481,6 +481,10 @@ const SCHEMA_DDL = `
     location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
     start_time INTEGER,
     end_time INTEGER,
+    start_minute INTEGER,
+    end_minute INTEGER,
+    start_granularity TEXT NOT NULL DEFAULT 'none',
+    end_granularity TEXT NOT NULL DEFAULT 'none',
     precision TEXT NOT NULL DEFAULT 'exact',
     kind TEXT NOT NULL DEFAULT 'generic',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -501,6 +505,9 @@ const SCHEMA_DDL = `
     project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     days_per_year INTEGER NOT NULL DEFAULT 360,
     season_boundaries TEXT NOT NULL DEFAULT '[]',
+    start_year INTEGER NOT NULL DEFAULT 0,
+    months TEXT NOT NULL DEFAULT '[]',
+    weekday_names TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
