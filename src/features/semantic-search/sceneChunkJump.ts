@@ -9,8 +9,8 @@ import { useSemanticNavStore } from "./semanticNavStore";
  * EditorPane の switchScene 経路が同一 microtask で `consumeJump(sceneId)` するため、
  * pendingJump を setActiveScene より先に積んでおく必要がある。
  *
- * 意味検索ダイアログ (`semanticSearchProvider`) と「関連する過去シーン」パネル
- * (`RelatedScenesPanel`) が共有し、この順序契約を 1 箇所に集約する。
+ * 意味検索ダイアログ (`semanticSearchProvider`) と「関連する過去シーン」セクション
+ * (`RelatedScenesSection`) が共有し、この順序契約を 1 箇所に集約する。
  */
 export function requestSceneChunkJump(
   sceneId: string,

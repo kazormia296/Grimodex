@@ -651,4 +651,53 @@ describe("ensureLayoutStateV3 auto-injects newly registered panels", () => {
     // 自己修復後は validate を通る (リセットされない)。
     expect(validateLayoutState(fixed).valid).toBe(true);
   });
+
+  // 回帰ガード: Scene Context 統合で削除された related-scenes id を含む保存済み
+  // レイアウトは、stripUnknownPanels が黙って除去し ensureRegisteredPanels も
+  // 再注入しない。同時に codex-quick (= Scene Context) のカスタム配置は保持される。
+  it("削除済み related-scenes を strip しつつ codex-quick のカスタム配置を保持する", () => {
+    const base = buildDefaultLayoutState();
+
+    // codex-quick を既定 left から外し、bottom の独自スロットへ移したカスタム配置を再現。
+    for (const region of Object.values(base.regions)) {
+      for (const slot of region.slots) {
+        slot.panels = slot.panels.filter((p) => p !== "codex-quick");
+        if (slot.activePanel === "codex-quick") {
+          slot.activePanel = slot.panels[0] ?? null;
+        }
+      }
+      region.slots = region.slots.filter((s) => s.panels.length > 0);
+    }
+    base.regions.bottom.slots.push({
+      id: "custom-cq",
+      sizeRatio: 1,
+      panels: ["codex-quick"],
+      activePanel: "codex-quick",
+    });
+
+    // 旧 related-scenes が残った保存状態を再現 (型から消えた id を持つ古い JSON)。
+    base.regions.bottom.slots.push({
+      id: "stale-related",
+      sizeRatio: 1,
+      panels: ["related-scenes" as ToolWindowPanelId],
+      activePanel: "related-scenes" as ToolWindowPanelId,
+    });
+
+    const fixed = ensureLayoutStateV3(base);
+
+    // (a) related-scenes はどこにも残らない。
+    const all = Object.values(fixed.regions).flatMap((r) =>
+      r.slots.flatMap((s) => s.panels),
+    );
+    expect(all).not.toContain("related-scenes");
+
+    // (b) codex-quick のカスタムスロットは生き残る。
+    const customSlot = fixed.regions.bottom.slots.find(
+      (s) => s.id === "custom-cq",
+    );
+    expect(customSlot?.panels).toContain("codex-quick");
+
+    // (c) 自己修復後は validate を通る。
+    expect(validateLayoutState(fixed).valid).toBe(true);
+  });
 });

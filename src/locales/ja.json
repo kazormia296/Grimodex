@@ -1222,7 +1222,7 @@
       "chat": "チャット",
       "snippets": "Snippets",
       "attribution": "帰属",
-      "codex-quick": "Codex Quick",
+      "codex-quick": "Scene Context",
       "stats": "統計",
       "timeline": "タイムライン",
       "chronicle": "年表",
@@ -1232,7 +1232,6 @@
       "grid": "グリッド",
       "matrix": "マトリクス",
       "writing-stats": "執筆統計",
-      "related-scenes": "関連する過去シーン",
       "trash-bin": "ゴミ箱",
       "command-center-results": "検索"
     },
@@ -3492,6 +3491,10 @@
     "empty": "関連する過去シーンは見つかりませんでした",
     "untitled": "(無題)"
   },
+  "sceneContext": {
+    "codexSection": "Codex",
+    "scenesSection": "関連する過去シーン"
+  },
   "keys": {
     "focusScenes": "Scenes パネルにフォーカス",
     "focusChat": "Chat パネルにフォーカス",
@@ -3499,7 +3502,7 @@
     "focusSnippets": "Snippets パネルにフォーカス",
     "focusAttribution": "Attribution パネルにフォーカス",
     "focusChatHistory": "Chat History パネルにフォーカス",
-    "focusCodexQuick": "Codex Quick パネルにフォーカス",
+    "focusCodexQuick": "Scene Context パネルにフォーカス",
     "focusTimeline": "Timeline パネルにフォーカス",
     "focusChronicle": "作中年表 パネルにフォーカス",
     "focusMap": "Map パネルにフォーカス",
@@ -3509,7 +3512,6 @@
     "focusGrid": "Grid パネルにフォーカス",
     "focusMatrix": "Matrix パネルにフォーカス",
     "focusWritingStats": "執筆統計パネルにフォーカス",
-    "focusRelatedScenes": "関連する過去シーンパネルにフォーカス",
     "openSettings": "Settings を開く",
     "splitVertical": "エディタを縦分割",
     "splitHorizontal": "エディタを横分割",

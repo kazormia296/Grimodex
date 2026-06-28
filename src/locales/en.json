@@ -1222,7 +1222,7 @@
       "chat": "Chat",
       "snippets": "Snippets",
       "attribution": "Attribution",
-      "codex-quick": "Codex Quick",
+      "codex-quick": "Scene Context",
       "stats": "Stats",
       "timeline": "Timeline",
       "chronicle": "Chronicle",
@@ -1232,7 +1232,6 @@
       "grid": "Grid",
       "matrix": "Matrix",
       "writing-stats": "Writing Stats",
-      "related-scenes": "Related Scenes",
       "trash-bin": "Trash Bin",
       "command-center-results": "Search"
     },
@@ -3497,6 +3496,10 @@
     "empty": "No related earlier scenes found.",
     "untitled": "(Untitled)"
   },
+  "sceneContext": {
+    "codexSection": "Codex",
+    "scenesSection": "Related Scenes"
+  },
   "keys": {
     "focusScenes": "Focus Scenes panel",
     "focusChat": "Focus Chat panel",
@@ -3504,7 +3507,7 @@
     "focusSnippets": "Focus Snippets panel",
     "focusAttribution": "Focus Attribution panel",
     "focusChatHistory": "Focus Chat History panel",
-    "focusCodexQuick": "Focus Codex Quick panel",
+    "focusCodexQuick": "Focus Scene Context panel",
     "focusTimeline": "Focus Timeline panel",
     "focusChronicle": "Focus Chronicle panel",
     "focusMap": "Focus Map panel",
@@ -3514,7 +3517,6 @@
     "focusGrid": "Focus Grid panel",
     "focusMatrix": "Focus Matrix panel",
     "focusWritingStats": "Focus Writing Stats panel",
-    "focusRelatedScenes": "Focus Related Scenes panel",
     "openSettings": "Open Settings",
     "splitVertical": "Split editor vertically",
     "splitHorizontal": "Split editor horizontally",

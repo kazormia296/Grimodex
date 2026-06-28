@@ -1,7 +1,7 @@
 import {
   FolderTree,
   BookOpen,
-  Pin,
+  ScanSearch,
   MessageSquare,
   MessagesSquare,
   Search,
@@ -16,7 +16,6 @@ import {
   Table2,
   Trash2,
   BarChart3,
-  History,
   type LucideIcon,
 } from "lucide-react";
 
@@ -29,7 +28,7 @@ import type { PanelId } from "./layoutStore";
 export const PANEL_ICON_MAP: Record<Exclude<PanelId, "editor">, LucideIcon> = {
   scenes: FolderTree,
   codex: BookOpen,
-  "codex-quick": Pin,
+  "codex-quick": ScanSearch,
   chat: MessageSquare,
   "chat-history": MessagesSquare,
   "command-center-results": Search,
@@ -43,6 +42,5 @@ export const PANEL_ICON_MAP: Record<Exclude<PanelId, "editor">, LucideIcon> = {
   grid: Columns3,
   matrix: Table2,
   "writing-stats": BarChart3,
-  "related-scenes": History,
   "trash-bin": Trash2,
 };
