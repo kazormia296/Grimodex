@@ -757,6 +757,13 @@
           "description": "Only show suggestions above this confidence level"
         }
       },
+      "chronicle": {
+        "title": "Story Timeline (AI context)",
+        "enabled": {
+          "label": "Feed the timeline to AI",
+          "description": "Injects the world state at the current scene's story time (characters' life/death, age and whereabouts, season, recent events, unresolved causes, and off-page background) into AI chat to prevent timeline, season, and age contradictions."
+        }
+      },
       "promptCustom": {
         "title": "AI Prompt Customization (append)",
         "intro": "Appends your instructions after the built-in prompt. Leave blank for default behavior (for proofreading, text is inserted before the output-format spec, so the JSON structure stays fixed).",
@@ -1742,6 +1749,7 @@
         "FOCUS": "Conversation focus",
         "L4": "Codex & settings",
         "PLOT_THREAD": "Plot thread structure",
+        "CHRONICLE": "Story timeline snapshot",
         "RAG": "Related scenes (semantic)",
         "EPISODIC": "Past conversation memory",
         "L5": "Conversation summary",
@@ -4913,6 +4921,9 @@
     "add": "Add",
     "delete": "Delete",
     "actionFailed": "Operation failed",
+    "agentHistoryCreate": "Add chronicle event",
+    "agentHistoryUpdate": "Update chronicle",
+    "agentHistoryDelete": "Delete chronicle event",
     "count": "{{count}} events",
     "count_one": "{{count}} event",
     "count_other": "{{count}} events",

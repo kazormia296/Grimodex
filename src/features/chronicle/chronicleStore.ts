@@ -20,10 +20,18 @@ interface ChronicleState {
   showOffpage: boolean;
   /** 選択中の出来事(events.id)。Inspector が読む。 */
   selectedEventId: string | null;
+  /**
+   * 年表データが変わるたびに単調増加するカウンタ（session-only・非永続）。
+   * AI コンテキストの `contextPromptKey` に join され、年表編集後に preview/送信の
+   * stale な lastSystemPrompt 流用を防ぐ（C3 prompt 鮮度）。
+   */
+  revisionCounter: number;
   setZoom: (zoom: number) => void;
   setScrollOffset: (offset: number) => void;
   toggleShowOffpage: () => void;
   setSelectedEventId: (id: string | null) => void;
+  /** 年表 mutation 後に呼ぶ。全 CRUD 経路から発火させる。 */
+  bumpRevision: () => void;
   loadFromSettings: (settings: Partial<ChronicleSettings>) => void;
 }
 
@@ -32,10 +40,12 @@ export const useChronicleStore = create<ChronicleState>((set) => ({
   scrollOffset: 0,
   showOffpage: true,
   selectedEventId: null,
+  revisionCounter: 0,
   setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
   toggleShowOffpage: () => set((s) => ({ showOffpage: !s.showOffpage })),
   setSelectedEventId: (selectedEventId) => set({ selectedEventId }),
+  bumpRevision: () => set((s) => ({ revisionCounter: s.revisionCounter + 1 })),
   loadFromSettings: (settings) =>
     set({
       zoom: clampZoom(settings.zoom ?? 1),

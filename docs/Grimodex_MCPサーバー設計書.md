@@ -769,21 +769,37 @@ Codex エントリの詳細を取得する。
 | `update_foreshadow` | W | o | 伏線更新（knowledgeWrite gate・project スコープ・tracked 同上。undo は updated_at 楽観ガードの versionless 設計） |
 | `get_scene_timeline_neighbors` | R | o | story-time 前後シーン（最大各3件） |
 | `get_writing_context` | R | o | curated context 一発集約（project / 章outline / storySoFar / シーン本文MD+intent / timeline近傍 / シーン伏線+未回収伏線(secret除外) / codex mention+always。cap超過はdropped数で報告） |
+| `list_events` | R | o | 作中年表イベント一覧（作中順・kind フィルタ可・primaryCharacter は codex 名解決） |
+| `get_event_detail` | R | o | 単一イベント詳細（参加者 / 紐づきシーン / 因果。XPROJ=project の events に在ること） |
+| `get_character_timeline` | R | o | 人物の作中経歴（primary/participant 関与イベントを作中順・各時点の ageAtEvent） |
+| `get_chronicle_state` | R | o | シーン作中時刻の世界状態スナップショット（resolveSceneAnchor→pick→derive を Rust 移植。**in-app と同一 JSON schema**・fixture で TS↔Rust drift を gate） |
+| `create_event` | W | o | 作中年表イベント作成（knowledgeWrite gate・tracked: change_event domain='event' + undo_journal surface='mcp'） |
+| `update_event` | W | o | イベント更新（渡したフィールドのみ・project スコープ・tracked。XPROJ=他プロジェクト id は no-op→not found） |
+| `delete_event` | W | o | イベント削除（participants/scene/relation を cascade・削除前スナップショットを undo before に格納） |
+| `stamp_scene_event` | W | o | シーンにイベントを stamp（scene/event とも active project 必須） |
+| `unstamp_scene_event` | W | o | scene↔event の stamp 解除 |
+| `set_event_participants` | W | o | イベント参加者集合を置換（全削除→再挿入） |
+| `add_event_relation` | W | o | 因果エッジ追加（cause→effect。自己ループ禁止・両端 active project 必須） |
+| `remove_event_relation` | W | o | 因果エッジ削除 |
 | `write_scene` | W | v2 | シーン本文書き込み |
 | `create_scene` | W | v2 | シーン新規作成 |
 | `update_scene_metadata` | W | v2 | シーンメタデータ更新 |
 | `semantic_search` | R | defer | セマンティック検索（§3.11・モデルパス解決が前提） |
 
 **`tools/list` 件数（現行）**: プロジェクト管理 2（`list_projects` / `select_project`）
-+ 読み取り 20 + 書き込み 6 = **28 ツール**
-（write 6 = create_codex_entry / update_codex_entry / create_snippet / propose_scene_body
-/ create_foreshadow / update_foreshadow。
++ 読み取り 24 + 書き込み 14 = **40 ツール**
+（write 14 = create_codex_entry / update_codex_entry / create_snippet / propose_scene_body
+/ create_foreshadow / update_foreshadow / create_event / update_event / delete_event /
+stamp_scene_event / unstamp_scene_event / set_event_participants / add_event_relation /
+remove_event_relation。うち年表 8 種が 2026-06 追加（in-app agent の `agent_event_*` と
+tracked-write parity）。read 24 = 従来 20 + 年表 read 4（list_events / get_event_detail /
+get_character_timeline / get_chronicle_state）。
 `select_project` は DB を書かずセッションの current project を切替えるだけ。
 write_scene 等の scene 書き込みは v2 で未実装ゆえ tools/list に出ない。
 `semantic_search` は defer（§3.11）ゆえ tools/list に出ない）。
 クラウド LLM クライアント（Claude Desktop / Claude Code / Hermes Agent 等）では
 **`--readonly` 付きで起動する**ことを推奨。ただし `--readonly` は **call-time gate** であり、
-write 6 ツールは tools/list には**載る**が、呼び出すと「readonly mode」エラーを返す
+write 14 ツールは tools/list には**載る**が、呼び出すと「readonly mode」エラーを返す
 （list-time で隠れるわけではない）。
 
 ### 3.9 In-app チャット executor との能力パリティ
@@ -808,6 +824,16 @@ Grimodex 内蔵 Agent の read-only executor 14 種のうち、専用 MCP ツー
 | `list_open_foreshadows` | `list_open_foreshadows`（同名・新規） |
 | `get_foreshadow_detail` | `get_foreshadow_detail`（同名・新規） |
 | `get_scene_timeline_neighbors` | `get_scene_timeline_neighbors`（同名・新規） |
+| `list_events`（chronicle read） | `list_events`（同名・新規） |
+| `get_event_detail`（chronicle read） | `get_event_detail`（同名・新規） |
+| `get_character_timeline`（chronicle read） | `get_character_timeline`（同名・新規） |
+| `get_chronicle_state`（chronicle read） | `get_chronicle_state`（同名・新規） |
+
+加えて in-app の **chronicle write 8 種**（`agent_event_*`）に対応する
+`create_event` / `update_event` / `delete_event` / `stamp_scene_event` /
+`unstamp_scene_event` / `set_event_participants` / `add_event_relation` /
+`remove_event_relation` を追加し、tracked-write parity（change_event domain='event'
++ undo_journal、surface のみ in-app=`in-app-agent` / MCP=`mcp` で差異）を達成した。
 
 **既知ドリフト（byte-for-byte 一致は要求しない）:**
 
@@ -824,6 +850,17 @@ Grimodex 内蔵 Agent の read-only executor 14 種のうち、専用 MCP ツー
   MCP は `story_time_order COLLATE BINARY` の SQL 近傍クエリ（fractional key 文字列順は同等）。
   なお **target scene は `server.project_id` で必ず絞る**（単一 DB に全プロジェクトを持つため、
   他プロジェクトの scene_id でタイムラインを読まれないようにする XPROJ 防御）。
+- **`get_chronicle_state`**: TS の `resolveSceneAnchor → pickSnapshotCharacters →
+  deriveChronicleSnapshot` を Rust に移植（`grimodex-mcp/src/chronicle_snapshot.rs`）。
+  **構造化 JSON は in-app と同一 schema** を要求し、両者が読む共有 fixture
+  （`src/features/chronicle/fixtures/chronicle-snapshot/*.json`）で TS 側
+  （`chronicleSnapshot.fixtures.test.ts`）・Rust 側（`chronicle_snapshot::tests`）が
+  expected と deep-equal を assert する＝ derive drift を CI が gate する。
+  **唯一の理論差分**: `truncate` の文字数カウントが JS=UTF-16 code unit / Rust=Unicode
+  scalar value で、アストラル文字（絵文字等）でのみ乖離しうる。fixture は cap 内の
+  title/note のみ使い truncation を発火させないため parity gate には現れない。
+  MCP は in-app と違い「active scene」概念が無いため `scene_id` は実質必須
+  （未指定 / events 0 件は `null` を返す）。
 
 ### 3.10 Linter 連携（Phase 1 で型のみ凍結）
 
@@ -981,7 +1018,7 @@ cargo run -- mcp --workspace /abs/ws --readonly
 
 ### .mcp.json（Claude Code / Desktop）
 
-**クラウド LLM では `--readonly` を必ず付ける**（write 6 ツールを call-time で無効化）。
+**クラウド LLM では `--readonly` を必ず付ける**（write 14 ツールを call-time で無効化）。
 
 ```json
 {
@@ -1023,7 +1060,7 @@ mcp_servers:
     env: {}
 ```
 
-接続後 `tools/list` が **28 ツール**（プロジェクト管理 2 + read 20 + write 6）を返すことを確認する。write 6 種は
+接続後 `tools/list` が **40 ツール**（プロジェクト管理 2 + read 24 + write 14）を返すことを確認する。write 14 種は
 `--readonly` でも list には載るが、呼び出すと call-time でエラー応答する（list-time では隠れない）。
 
 ### .mcp.json（standalone dev bin / readonly なし・非推奨例）
@@ -1115,9 +1152,11 @@ DB スキーマの詳細は `docs/Grimodex_統合DBスキーマ.md` を参照。
 ### ライセンスゲート (Phase 2 / 2026-06-11)
 
 write 系ツールはライセンス状態でも制限する（`--readonly` とは独立した別ゲート）。
-`GrimodexServer::ensure_license_allows_write()`（`server.rs`）が、6 つの write ツール
+`GrimodexServer::ensure_license_allows_write()`（`server.rs`）が、14 の write ツール
 （`create_codex_entry` / `update_codex_entry` / `create_snippet` / `propose_scene_body`
-/ `create_foreshadow` / `update_foreshadow`）の冒頭で呼ばれ、制限状態なら
+/ `create_foreshadow` / `update_foreshadow` / `create_event` / `update_event` /
+`delete_event` / `stamp_scene_event` / `unstamp_scene_event` / `set_event_participants`
+/ `add_event_relation` / `remove_event_relation`）の冒頭で呼ばれ、制限状態なら
 `invalid_params` エラーで一括ブロックする。read 系ツールは常時許可（Phase 2 決定）。
 
 - **制限状態**: `grimodex_core::license::LicenseStatus::is_write_restricted()` が

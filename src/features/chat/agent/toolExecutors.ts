@@ -37,6 +37,22 @@ import {
   agentUpdateForeshadow,
   type AgentForeshadowLoadBearing,
 } from "@/features/agent-writes/foreshadow";
+import {
+  listEventsTool,
+  getEventDetailTool,
+  getCharacterTimelineTool,
+  getChronicleStateTool,
+} from "./chronicleReadTools";
+import {
+  createEventTool,
+  updateEventTool,
+  deleteEventTool,
+  stampSceneEventTool,
+  unstampSceneEventTool,
+  setEventParticipantsTool,
+  addEventRelationTool,
+  removeEventRelationTool,
+} from "./chronicleWriteTools";
 import { agentApplyTreePlan } from "@/features/agent-writes/tree";
 import { agentProposeSceneBody } from "@/features/agent-writes/prose";
 import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
@@ -1471,6 +1487,10 @@ export const READ_ONLY_EXECUTORS: Record<string, Executor> = {
   get_scene_timeline_neighbors: getSceneTimelineNeighbors,
   list_plot_threads: () => listPlotThreads(),
   get_thread_scenes: getThreadScenes,
+  list_events: listEventsTool,
+  get_event_detail: getEventDetailTool,
+  get_character_timeline: getCharacterTimelineTool,
+  get_chronicle_state: getChronicleStateTool,
 };
 Object.freeze(READ_ONLY_EXECUTORS);
 
@@ -1722,6 +1742,14 @@ export const MUTATING_EXECUTORS: Record<string, Executor> = {
   create_snippet: createSnippetTool,
   apply_ai_tree_plan: applyAiTreePlanTool,
   propose_scene_body: proposeSceneBodyTool,
+  create_event: createEventTool,
+  update_event: updateEventTool,
+  delete_event: deleteEventTool,
+  stamp_scene_event: stampSceneEventTool,
+  unstamp_scene_event: unstampSceneEventTool,
+  set_event_participants: setEventParticipantsTool,
+  add_event_relation: addEventRelationTool,
+  remove_event_relation: removeEventRelationTool,
 };
 Object.freeze(MUTATING_EXECUTORS);
 

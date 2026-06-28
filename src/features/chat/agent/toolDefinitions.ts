@@ -406,6 +406,200 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
     },
   },
 
+  // ── 作中年表 (Chronicle) — fabula timeline of in-world events ──────────────
+  {
+    name: "list_events",
+    description:
+      "List the story-chronicle events (the in-world fabula timeline, distinct from reading order) of the current project, in chronicle order. Optionally filter by kind ('birth' | 'death' | 'generic'). Each event returns id, title, kind, ordinal, startTime (days from the in-world epoch; may be null when only the order is known), and the primary character's name. Use to answer 'when did X happen' or to survey the timeline.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          description:
+            "Optional filter: 'birth', 'death', or 'generic'. Omit for all events.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_event_detail",
+    description:
+      "Given a chronicle event id, return its full detail: title, note, kind, ordinal, startTime/endTime, primary character, location, participant characters (names + roles), the scenes the event is stamped to (id + title), and its causal relations (cause→effect titles). Use after list_events to inspect one event.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string", description: "Chronicle event id" },
+      },
+      required: ["eventId"],
+    },
+  },
+  {
+    name: "get_character_timeline",
+    description:
+      "Given a character's Codex id, return the chronicle events that character takes part in (as primary or participant), in chronicle order, each with title, kind, startTime, and the character's age at that event when derivable (requires a birth event and a calendar). Use to answer 'how old is X now' or 'what has happened to X'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        codexId: { type: "string", description: "Character Codex entry id" },
+      },
+      required: ["codexId"],
+    },
+  },
+  {
+    name: "get_chronicle_state",
+    description:
+      "Return the world-state snapshot at a scene's story time: which of the relevant characters are alive/dead/unborn and their ages, the current season, the most recent events, unresolved cause→effect pairs (cause has happened, effect has not yet), and off-page background events. If sceneId is omitted, the current scene is used. Use to check temporal/seasonal/age consistency before writing. Returns structured JSON.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sceneId: {
+          type: "string",
+          description:
+            "Scene node id to anchor on. Omit to use the current scene.",
+        },
+      },
+      required: [],
+    },
+  },
+
+  // ── 作中年表 (Chronicle) 書き込み — tracked-write (undo 可) ────────────────
+  {
+    name: "create_event",
+    description:
+      "Create a new chronicle event (an in-world fabula event). Requires knowledgeWrite policy. kind is 'birth', 'death', or 'generic' (default). startTime is days from the in-world epoch (optional). primaryCodexId is the home-lane character; participantCodexIds are other involved characters; sceneIds stamps the event onto scenes. Returns the new event id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Event title" },
+        note: { type: "string", description: "Optional note" },
+        kind: { type: "string", description: "'birth' | 'death' | 'generic'" },
+        primaryCodexId: {
+          type: "string",
+          description: "Home-lane character Codex id",
+        },
+        locationCodexId: { type: "string", description: "Location Codex id" },
+        startTime: {
+          type: "number",
+          description: "Days from the in-world epoch",
+        },
+        endTime: { type: "number", description: "Interval end (days)" },
+        participantCodexIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Participating character Codex ids",
+        },
+        sceneIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Scene ids to stamp the event onto",
+        },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    name: "update_event",
+    description:
+      "Update a chronicle event. Only the fields you pass are changed; omitted fields are left as-is (there is no way to clear a field back to null). Requires knowledgeWrite policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string", description: "Event id to update" },
+        title: { type: "string" },
+        note: { type: "string" },
+        kind: { type: "string", description: "'birth' | 'death' | 'generic'" },
+        primaryCodexId: { type: "string" },
+        locationCodexId: { type: "string" },
+        startTime: { type: "number" },
+        endTime: { type: "number" },
+      },
+      required: ["eventId"],
+    },
+  },
+  {
+    name: "delete_event",
+    description:
+      "Delete a chronicle event (its participants, scene stamps, and causal relations are removed too; the deletion is undoable). Requires knowledgeWrite policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string", description: "Event id to delete" },
+      },
+      required: ["eventId"],
+    },
+  },
+  {
+    name: "stamp_scene_event",
+    description:
+      "Stamp a chronicle event onto a scene (record that the scene depicts the event). Requires knowledgeWrite policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sceneId: { type: "string", description: "Scene id" },
+        eventId: { type: "string", description: "Event id" },
+      },
+      required: ["sceneId", "eventId"],
+    },
+  },
+  {
+    name: "unstamp_scene_event",
+    description:
+      "Remove the link between a scene and a chronicle event. Requires knowledgeWrite policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sceneId: { type: "string", description: "Scene id" },
+        eventId: { type: "string", description: "Event id" },
+      },
+      required: ["sceneId", "eventId"],
+    },
+  },
+  {
+    name: "set_event_participants",
+    description:
+      "Replace the full set of participant characters of a chronicle event with the given Codex ids. Requires knowledgeWrite policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        eventId: { type: "string", description: "Event id" },
+        codexEntryIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Participant character Codex ids (replaces the set)",
+        },
+      },
+      required: ["eventId", "codexEntryIds"],
+    },
+  },
+  {
+    name: "add_event_relation",
+    description:
+      "Add a causal relation between two chronicle events (cause → effect). Self-loops are rejected. Requires knowledgeWrite policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        causeEventId: { type: "string", description: "Cause event id" },
+        effectEventId: { type: "string", description: "Effect event id" },
+      },
+      required: ["causeEventId", "effectEventId"],
+    },
+  },
+  {
+    name: "remove_event_relation",
+    description:
+      "Remove a causal relation (cause → effect) between two chronicle events. Requires knowledgeWrite policy.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        causeEventId: { type: "string", description: "Cause event id" },
+        effectEventId: { type: "string", description: "Effect event id" },
+      },
+      required: ["causeEventId", "effectEventId"],
+    },
+  },
+
   // ── サブエージェント委譲 ──────────────────────────────────────────────────
   {
     name: "run_research",
@@ -530,6 +724,10 @@ export const READ_ONLY_TOOL_NAMES: readonly string[] = [
   "list_open_foreshadows",
   "get_foreshadow_detail",
   "get_scene_timeline_neighbors",
+  "list_events",
+  "get_event_detail",
+  "get_character_timeline",
+  "get_chronicle_state",
 ];
 
 /**

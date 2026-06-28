@@ -1,0 +1,31 @@
+{
+  "name": "proxy anchor (scene unstamped, prior scene stamped) without calendar",
+  "input": {
+    "sceneId": "s2",
+    "nodes": [
+      { "id": "s1", "parentId": null, "nodeType": "scene", "sortOrder": "a0" },
+      { "id": "s2", "parentId": null, "nodeType": "scene", "sortOrder": "a1" }
+    ],
+    "events": [
+      { "id": "e1", "title": "Meeting", "note": null, "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 100, "kind": "generic" }
+    ],
+    "participants": [],
+    "relations": [],
+    "sceneEvents": [
+      { "sceneId": "s1", "eventId": "e1" }
+    ],
+    "calendar": null,
+    "codexNames": { "hero": "Hero" }
+  },
+  "expected": {
+    "time": { "source": "proxy", "startTime": 100, "season": null },
+    "characters": [
+      { "codexId": "hero", "name": "Hero", "status": "unknown", "age": null, "location": null }
+    ],
+    "recentEvents": [
+      { "eventId": "e1", "title": "Meeting", "note": null }
+    ],
+    "unresolvedCausal": [],
+    "offpage": []
+  }
+}

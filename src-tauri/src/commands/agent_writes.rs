@@ -1104,11 +1104,22 @@ fn undo_journal_change_event(
             "foreshadow.delete",
             "foreshadow.update",
         ),
+        "event" => (
+            "event",
+            "event",
+            "event.create",
+            "event.delete",
+            "event.update",
+        ),
         other => anyhow::bail!("undo_journal_change_event: unsupported entity_kind '{other}'"),
     };
     let op_type = match (direction, row.op_kind.as_str()) {
         ("undo", "create") => delete_op,
         ("redo", "create") => create_op,
+        // Tracked deletes (currently only `event`): undoing a delete re-creates,
+        // redoing it deletes again.
+        ("undo", "delete") => create_op,
+        ("redo", "delete") => delete_op,
         ("undo", "update") | ("redo", "update") => update_op,
         (dir, op) => anyhow::bail!("undo_journal_change_event: unsupported {dir}/{op}"),
     };
@@ -1133,18 +1144,30 @@ fn agent_undo_journal_impl(
                 &payload.project_id,
                 &payload.journal_id,
             )?;
-            match payload.direction.as_str() {
-                "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
-                    conn,
-                    &payload.project_id,
-                    &payload.journal_id,
-                )?,
-                "redo" => grimodex_core::undo_journal::apply_undo_journal_in_tx(
-                    conn,
-                    &payload.project_id,
-                    &payload.journal_id,
-                )?,
-                other => anyhow::bail!("invalid undo direction: {other}"),
+            // Chronicle events carry a composite snapshot (eventData +
+            // participants + sceneLinks + relations) that the single-table
+            // grimodex-core restorers don't understand, so they're handled by
+            // the local event restorers; everything else delegates to core.
+            if row.entity_kind == "event" {
+                match payload.direction.as_str() {
+                    "undo" => revert_event_undo_in_tx(conn, &payload.project_id, &row)?,
+                    "redo" => apply_event_redo_in_tx(conn, &payload.project_id, &row)?,
+                    other => anyhow::bail!("invalid undo direction: {other}"),
+                }
+            } else {
+                match payload.direction.as_str() {
+                    "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &payload.journal_id,
+                    )?,
+                    "redo" => grimodex_core::undo_journal::apply_undo_journal_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &payload.journal_id,
+                    )?,
+                    other => anyhow::bail!("invalid undo direction: {other}"),
+                }
             }
             let (domain, entity_type, op_type, entity_id) =
                 undo_journal_change_event(&row, &payload.direction)?;
@@ -1300,6 +1323,1273 @@ pub(crate) fn agent_foreshadow_update(
     payload: AgentForeshadowUpdatePayload,
 ) -> Result<Value, AppError> {
     with_db(&ws_state, |db| agent_foreshadow_update_impl(db, payload))
+}
+
+// ---------------------------------------------------------------------------
+// Chronicle (作中年表) writes — events + participants + scene links + relations.
+// Mirrors the codex create/update/delete transaction shape. `events` has no
+// version column, so undo_journal versions are fixed: create=0/1, update=1/1,
+// delete=1/0. Association mutations (participants / scene links / relations)
+// are modelled as op_kind="update" on the host event (base=1, result=1).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentEventCreatePayload {
+    project_id: String,
+    session_id: String,
+    title: Option<String>,
+    note: Option<String>,
+    ordinal: Option<String>,
+    primary_codex_id: Option<String>,
+    location_codex_id: Option<String>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    precision: Option<String>,
+    kind: Option<String>,
+    participant_codex_ids: Option<Vec<String>>,
+    scene_ids: Option<Vec<String>>,
+}
+
+/// Patch-style update. Each field is set-if-present (a missing field is left
+/// untouched). Clearing a nullable column to NULL is not expressible here —
+/// matches the codex update contract.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentEventUpdatePayload {
+    project_id: String,
+    session_id: String,
+    event_id: String,
+    title: Option<String>,
+    note: Option<String>,
+    ordinal: Option<String>,
+    primary_codex_id: Option<String>,
+    location_codex_id: Option<String>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    precision: Option<String>,
+    kind: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentEventIdPayload {
+    project_id: String,
+    session_id: String,
+    event_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentEventParticipantsPayload {
+    project_id: String,
+    session_id: String,
+    event_id: String,
+    codex_entry_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentSceneEventPayload {
+    project_id: String,
+    session_id: String,
+    scene_id: String,
+    event_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentEventRelationPayload {
+    project_id: String,
+    session_id: String,
+    cause_event_id: String,
+    effect_event_id: String,
+}
+
+/// Full self-contained snapshot of an event row + its participants, scene
+/// links, and causal relations (both directions). Used as the undo `before`
+/// for delete (cascade-restorable) and before/after for create/update.
+fn collect_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> anyhow::Result<Value> {
+    let event_json: String = conn.query_row(
+        "SELECT json_object(
+            'id', id, 'projectId', project_id, 'title', title, 'note', note,
+            'ordinal', ordinal, 'primaryCodexId', primary_codex_id,
+            'locationCodexId', location_codex_id, 'startTime', start_time,
+            'endTime', end_time, 'precision', precision, 'kind', kind,
+            'createdAt', created_at, 'updatedAt', updated_at
+         ) FROM events WHERE id = ?1",
+        rusqlite::params![event_id],
+        |row| row.get(0),
+    )?;
+    let event_data: Value = serde_json::from_str(&event_json)?;
+
+    let participants = {
+        let mut stmt = conn.prepare(
+            "SELECT codex_entry_id, role FROM event_participants
+             WHERE event_id = ?1 ORDER BY codex_entry_id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![event_id], |row| {
+            let codex_entry_id: String = row.get(0)?;
+            let role: Option<String> = row.get(1)?;
+            Ok(json!({ "codexEntryId": codex_entry_id, "role": role }))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let scene_links = {
+        let mut stmt = conn
+            .prepare("SELECT scene_id FROM scene_events WHERE event_id = ?1 ORDER BY scene_id")?;
+        let rows = stmt.query_map(rusqlite::params![event_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let relations_as_cause = {
+        let mut stmt = conn.prepare(
+            "SELECT project_id, effect_event_id FROM event_relations
+             WHERE cause_event_id = ?1 ORDER BY effect_event_id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![event_id], |row| {
+            let project_id: String = row.get(0)?;
+            let effect_event_id: String = row.get(1)?;
+            Ok(json!({ "projectId": project_id, "effectEventId": effect_event_id }))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let relations_as_effect = {
+        let mut stmt = conn.prepare(
+            "SELECT project_id, cause_event_id FROM event_relations
+             WHERE effect_event_id = ?1 ORDER BY cause_event_id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![event_id], |row| {
+            let project_id: String = row.get(0)?;
+            let cause_event_id: String = row.get(1)?;
+            Ok(json!({ "projectId": project_id, "causeEventId": cause_event_id }))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    Ok(json!({
+        "eventData": event_data,
+        "participants": participants,
+        "sceneLinks": scene_links,
+        "relations": {
+            "asCause": relations_as_cause,
+            "asEffect": relations_as_effect,
+        },
+    }))
+}
+
+fn collect_participants_json(conn: &rusqlite::Connection, event_id: &str) -> anyhow::Result<Value> {
+    let mut stmt = conn.prepare(
+        "SELECT codex_entry_id, role FROM event_participants
+         WHERE event_id = ?1 ORDER BY codex_entry_id",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![event_id], |row| {
+        let codex_entry_id: String = row.get(0)?;
+        let role: Option<String> = row.get(1)?;
+        Ok(json!({ "codexEntryId": codex_entry_id, "role": role }))
+    })?;
+    let participants = rows.collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({ "eventId": event_id, "participants": participants }))
+}
+
+// ---------------------------------------------------------------------------
+// Chronicle undo/redo restorers. The forward writers store either a composite
+// snapshot (`{eventData, participants, sceneLinks, relations}` for
+// create/delete/event-update) or an association-only snapshot
+// (set_participants / scene link / relation). Restore is idempotent
+// (DELETE → INSERT OR IGNORE) and always scoped to `project_id` (XPROJ).
+// ---------------------------------------------------------------------------
+
+/// Make the DB match a composite event snapshot exactly: UPSERT the event row
+/// and replace its participants, scene links, and relations (both directions).
+fn apply_event_composite_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    snap: &Value,
+) -> anyhow::Result<()> {
+    let ed = &snap["eventData"];
+    let id = ed["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("event snapshot missing eventData.id"))?;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO events
+         (id, project_id, title, note, ordinal, primary_codex_id, location_codex_id,
+          start_time, end_time, precision, kind, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title, note = excluded.note, ordinal = excluded.ordinal,
+            primary_codex_id = excluded.primary_codex_id,
+            location_codex_id = excluded.location_codex_id,
+            start_time = excluded.start_time, end_time = excluded.end_time,
+            precision = excluded.precision, kind = excluded.kind,
+            updated_at = excluded.updated_at",
+        rusqlite::params![
+            id,
+            project_id,
+            ed["title"].as_str().unwrap_or(""),
+            ed["note"].as_str(),
+            ed["ordinal"].as_str().unwrap_or("a0"),
+            ed["primaryCodexId"].as_str(),
+            ed["locationCodexId"].as_str(),
+            ed["startTime"].as_i64(),
+            ed["endTime"].as_i64(),
+            ed["precision"].as_str().unwrap_or("exact"),
+            ed["kind"].as_str().unwrap_or("generic"),
+            ed["createdAt"].as_str().unwrap_or(&now),
+            ed["updatedAt"].as_str().unwrap_or(&now),
+        ],
+    )?;
+
+    conn.execute(
+        "DELETE FROM event_participants WHERE event_id = ?1",
+        rusqlite::params![id],
+    )?;
+    if let Some(arr) = snap["participants"].as_array() {
+        for p in arr {
+            if let Some(codex_id) = p["codexEntryId"].as_str() {
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, codex_id, p["role"].as_str()],
+                )?;
+            }
+        }
+    }
+
+    conn.execute(
+        "DELETE FROM scene_events WHERE event_id = ?1",
+        rusqlite::params![id],
+    )?;
+    if let Some(arr) = snap["sceneLinks"].as_array() {
+        for s in arr {
+            if let Some(scene_id) = s.as_str() {
+                conn.execute(
+                    "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+                    rusqlite::params![scene_id, id],
+                )?;
+            }
+        }
+    }
+
+    conn.execute(
+        "DELETE FROM event_relations WHERE cause_event_id = ?1 OR effect_event_id = ?1",
+        rusqlite::params![id],
+    )?;
+    if let Some(arr) = snap["relations"]["asCause"].as_array() {
+        for r in arr {
+            if let Some(effect) = r["effectEventId"].as_str() {
+                let proj = r["projectId"].as_str().unwrap_or(project_id);
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_relations
+                     (project_id, cause_event_id, effect_event_id) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![proj, id, effect],
+                )?;
+            }
+        }
+    }
+    if let Some(arr) = snap["relations"]["asEffect"].as_array() {
+        for r in arr {
+            if let Some(cause) = r["causeEventId"].as_str() {
+                let proj = r["projectId"].as_str().unwrap_or(project_id);
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_relations
+                     (project_id, cause_event_id, effect_event_id) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![proj, cause, id],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restore_event_participants_snapshot(
+    conn: &rusqlite::Connection,
+    snap: &Value,
+) -> anyhow::Result<()> {
+    let event_id = snap["eventId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("participants snapshot missing eventId"))?;
+    conn.execute(
+        "DELETE FROM event_participants WHERE event_id = ?1",
+        rusqlite::params![event_id],
+    )?;
+    if let Some(arr) = snap["participants"].as_array() {
+        for p in arr {
+            if let Some(codex_id) = p["codexEntryId"].as_str() {
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![event_id, codex_id, p["role"].as_str()],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restore_event_scene_snapshot(conn: &rusqlite::Connection, snap: &Value) -> anyhow::Result<()> {
+    let scene_id = snap["sceneId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("scene snapshot missing sceneId"))?;
+    let event_id = snap["eventId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("scene snapshot missing eventId"))?;
+    if snap["linked"].as_bool().unwrap_or(false) {
+        conn.execute(
+            "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+            rusqlite::params![scene_id, event_id],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
+            rusqlite::params![scene_id, event_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn restore_event_relation_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    snap: &Value,
+) -> anyhow::Result<()> {
+    let cause = snap["causeEventId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("relation snapshot missing causeEventId"))?;
+    let effect = snap["effectEventId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("relation snapshot missing effectEventId"))?;
+    let proj = snap["projectId"].as_str().unwrap_or(project_id);
+    if snap["linked"].as_bool().unwrap_or(false) {
+        conn.execute(
+            "INSERT OR IGNORE INTO event_relations
+             (project_id, cause_event_id, effect_event_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params![proj, cause, effect],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM event_relations WHERE cause_event_id = ?1 AND effect_event_id = ?2",
+            rusqlite::params![cause, effect],
+        )?;
+    }
+    Ok(())
+}
+
+/// Restore an `update` op (event-update / participants / scene / relation) to a
+/// target snapshot, discriminating by snapshot shape.
+fn restore_event_update_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    snap: &Value,
+) -> anyhow::Result<()> {
+    if snap.get("eventData").is_some() {
+        apply_event_composite_snapshot(conn, project_id, snap)
+    } else if snap.get("causeEventId").is_some() {
+        restore_event_relation_snapshot(conn, project_id, snap)
+    } else if snap.get("sceneId").is_some() {
+        restore_event_scene_snapshot(conn, snap)
+    } else if snap.get("participants").is_some() {
+        restore_event_participants_snapshot(conn, snap)
+    } else {
+        anyhow::bail!("restore_event_update_snapshot: unrecognized event snapshot shape")
+    }
+}
+
+fn delete_event_cascade(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+) -> anyhow::Result<()> {
+    let deleted = conn.execute(
+        "DELETE FROM events WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![event_id, project_id],
+    )?;
+    if deleted == 0 {
+        anyhow::bail!("event '{event_id}' not found in project '{project_id}' during restore");
+    }
+    Ok(())
+}
+
+/// Undo path (global-history): invert the recorded op.
+fn revert_event_undo_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+) -> anyhow::Result<()> {
+    match row.op_kind.as_str() {
+        "create" => delete_event_cascade(conn, project_id, &row.entity_id),
+        "delete" => {
+            let before = row
+                .before_json
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("revert event delete: missing before_json"))?;
+            let snap: Value = serde_json::from_str(before)?;
+            apply_event_composite_snapshot(conn, project_id, &snap)
+        }
+        "update" => {
+            let before = row
+                .before_json
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("revert event update: missing before_json"))?;
+            let snap: Value = serde_json::from_str(before)?;
+            restore_event_update_snapshot(conn, project_id, &snap)
+        }
+        other => anyhow::bail!("revert event: unsupported op_kind '{other}'"),
+    }
+}
+
+/// Redo path (global-history): re-apply the recorded op.
+fn apply_event_redo_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+) -> anyhow::Result<()> {
+    match row.op_kind.as_str() {
+        "create" => {
+            let after = row
+                .after_json
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("apply event create: missing after_json"))?;
+            let snap: Value = serde_json::from_str(after)?;
+            apply_event_composite_snapshot(conn, project_id, &snap)
+        }
+        "delete" => delete_event_cascade(conn, project_id, &row.entity_id),
+        "update" => {
+            let after = row
+                .after_json
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("apply event update: missing after_json"))?;
+            let snap: Value = serde_json::from_str(after)?;
+            restore_event_update_snapshot(conn, project_id, &snap)
+        }
+        other => anyhow::bail!("apply event: unsupported op_kind '{other}'"),
+    }
+}
+
+fn agent_event_create_impl(
+    db: &Database,
+    payload: AgentEventCreatePayload,
+) -> anyhow::Result<Value> {
+    let event_id = uuid::Uuid::new_v4().to_string();
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    let title = payload.title.unwrap_or_default();
+    let ordinal = payload.ordinal.unwrap_or_else(|| "a0".to_string());
+    let precision = payload.precision.unwrap_or_else(|| "exact".to_string());
+    let kind = payload.kind.unwrap_or_else(|| "generic".to_string());
+    let participants = payload.participant_codex_ids.unwrap_or_default();
+    let scene_ids = payload.scene_ids.unwrap_or_default();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            conn.execute(
+                "INSERT INTO events
+                 (id, project_id, title, note, ordinal, primary_codex_id,
+                  location_codex_id, start_time, end_time, precision, kind,
+                  created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                rusqlite::params![
+                    event_id,
+                    payload.project_id,
+                    title,
+                    payload.note,
+                    ordinal,
+                    payload.primary_codex_id,
+                    payload.location_codex_id,
+                    payload.start_time,
+                    payload.end_time,
+                    precision,
+                    kind,
+                    now,
+                ],
+            )?;
+
+            for codex_id in &participants {
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+                     VALUES (?1, ?2, NULL)",
+                    rusqlite::params![event_id, codex_id],
+                )?;
+            }
+            for scene_id in &scene_ids {
+                conn.execute(
+                    "INSERT OR IGNORE INTO scene_events (scene_id, event_id)
+                     VALUES (?1, ?2)",
+                    rusqlite::params![scene_id, event_id],
+                )?;
+            }
+
+            let after = collect_event_snapshot(conn, &event_id)?.to_string();
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: "in-app-agent",
+                    entity_kind: "event",
+                    entity_id: &event_id,
+                    op_kind: "create",
+                    before_json: None,
+                    after_json: Some(&after),
+                    base_version: 0,
+                    result_version: 1,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: None,
+                    domain: "event".to_string(),
+                    op_type: "event.create".to_string(),
+                    entity_type: Some("event".to_string()),
+                    entity_id: Some(event_id.clone()),
+                    payload: json!({ "title": title, "kind": kind }).to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: event_id.clone(),
+                version: 1,
+                change_event_uid: event_uid,
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+fn agent_event_update_impl(
+    db: &Database,
+    payload: AgentEventUpdatePayload,
+) -> anyhow::Result<Value> {
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.event_id, payload.project_id],
+                |r| r.get(0),
+            )?;
+            if exists == 0 {
+                anyhow::bail!(
+                    "event '{}' not found in project '{}'",
+                    payload.event_id,
+                    payload.project_id
+                );
+            }
+
+            let before = collect_event_snapshot(conn, &payload.event_id)?.to_string();
+
+            let mut sets = vec!["updated_at = ?1".to_string()];
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now.clone())];
+            let mut param_idx = 2;
+            let mut fields: Vec<&str> = Vec::new();
+
+            if let Some(ref v) = payload.title {
+                sets.push(format!("title = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("title");
+            }
+            if let Some(ref v) = payload.note {
+                sets.push(format!("note = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("note");
+            }
+            if let Some(ref v) = payload.ordinal {
+                sets.push(format!("ordinal = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("ordinal");
+            }
+            if let Some(ref v) = payload.primary_codex_id {
+                sets.push(format!("primary_codex_id = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("primaryCodexId");
+            }
+            if let Some(ref v) = payload.location_codex_id {
+                sets.push(format!("location_codex_id = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("locationCodexId");
+            }
+            if let Some(v) = payload.start_time {
+                sets.push(format!("start_time = ?{param_idx}"));
+                params.push(Box::new(v));
+                param_idx += 1;
+                fields.push("startTime");
+            }
+            if let Some(v) = payload.end_time {
+                sets.push(format!("end_time = ?{param_idx}"));
+                params.push(Box::new(v));
+                param_idx += 1;
+                fields.push("endTime");
+            }
+            if let Some(ref v) = payload.precision {
+                sets.push(format!("precision = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("precision");
+            }
+            if let Some(ref v) = payload.kind {
+                sets.push(format!("kind = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("kind");
+            }
+
+            let sql = format!(
+                "UPDATE events SET {} WHERE id = ?{param_idx} AND project_id = ?{}",
+                sets.join(", "),
+                param_idx + 1
+            );
+            params.push(Box::new(payload.event_id.clone()));
+            params.push(Box::new(payload.project_id.clone()));
+
+            let updated = conn.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p as &dyn rusqlite::types::ToSql)),
+            )?;
+            if updated == 0 {
+                anyhow::bail!(
+                    "event '{}' not found in project '{}'",
+                    payload.event_id,
+                    payload.project_id
+                );
+            }
+
+            let after = collect_event_snapshot(conn, &payload.event_id)?.to_string();
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: "in-app-agent",
+                    entity_kind: "event",
+                    entity_id: &payload.event_id,
+                    op_kind: "update",
+                    before_json: Some(&before),
+                    after_json: Some(&after),
+                    base_version: 1,
+                    result_version: 1,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: None,
+                    domain: "event".to_string(),
+                    op_type: "event.update".to_string(),
+                    entity_type: Some("event".to_string()),
+                    entity_id: Some(payload.event_id.clone()),
+                    payload: json!({ "fields": fields }).to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: payload.event_id.clone(),
+                version: 1,
+                change_event_uid: event_uid,
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+fn agent_event_delete_impl(db: &Database, payload: AgentEventIdPayload) -> anyhow::Result<Value> {
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.event_id, payload.project_id],
+                |r| r.get(0),
+            )?;
+            if exists == 0 {
+                anyhow::bail!(
+                    "event '{}' not found in project '{}'",
+                    payload.event_id,
+                    payload.project_id
+                );
+            }
+
+            // Capture the full cascade snapshot BEFORE the DELETE fires the
+            // ON DELETE CASCADE on participants / scene_events / relations.
+            let before_value = collect_event_snapshot(conn, &payload.event_id)?;
+            let title = before_value["eventData"]["title"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            let before = before_value.to_string();
+
+            let deleted = conn.execute(
+                "DELETE FROM events WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.event_id, payload.project_id],
+            )?;
+            if deleted == 0 {
+                anyhow::bail!(
+                    "event '{}' not found in project '{}'",
+                    payload.event_id,
+                    payload.project_id
+                );
+            }
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: "in-app-agent",
+                    entity_kind: "event",
+                    entity_id: &payload.event_id,
+                    op_kind: "delete",
+                    before_json: Some(&before),
+                    after_json: None,
+                    base_version: 1,
+                    result_version: 0,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: None,
+                    domain: "event".to_string(),
+                    op_type: "event.delete".to_string(),
+                    entity_type: Some("event".to_string()),
+                    entity_id: Some(payload.event_id.clone()),
+                    payload: json!({ "title": title }).to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: payload.event_id.clone(),
+                version: 0,
+                change_event_uid: event_uid,
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+fn agent_event_set_participants_impl(
+    db: &Database,
+    payload: AgentEventParticipantsPayload,
+) -> anyhow::Result<Value> {
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.event_id, payload.project_id],
+                |r| r.get(0),
+            )?;
+            if exists == 0 {
+                anyhow::bail!(
+                    "event '{}' not found in project '{}'",
+                    payload.event_id,
+                    payload.project_id
+                );
+            }
+
+            let before = collect_participants_json(conn, &payload.event_id)?.to_string();
+
+            conn.execute(
+                "DELETE FROM event_participants WHERE event_id = ?1",
+                rusqlite::params![payload.event_id],
+            )?;
+            for codex_id in &payload.codex_entry_ids {
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+                     VALUES (?1, ?2, NULL)",
+                    rusqlite::params![payload.event_id, codex_id],
+                )?;
+            }
+
+            let after = collect_participants_json(conn, &payload.event_id)?.to_string();
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: "in-app-agent",
+                    entity_kind: "event",
+                    entity_id: &payload.event_id,
+                    op_kind: "update",
+                    before_json: Some(&before),
+                    after_json: Some(&after),
+                    base_version: 1,
+                    result_version: 1,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: None,
+                    domain: "event".to_string(),
+                    op_type: "event.participants".to_string(),
+                    entity_type: Some("event".to_string()),
+                    entity_id: Some(payload.event_id.clone()),
+                    payload: json!({
+                        "eventId": payload.event_id,
+                        "codexEntryIds": payload.codex_entry_ids,
+                    })
+                    .to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: payload.event_id.clone(),
+                version: 1,
+                change_event_uid: event_uid,
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+fn agent_scene_event_mutate_impl(
+    db: &Database,
+    payload: AgentSceneEventPayload,
+    link: bool,
+) -> anyhow::Result<Value> {
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            let scene_ok: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.scene_id, payload.project_id],
+                |r| r.get(0),
+            )?;
+            if scene_ok == 0 {
+                anyhow::bail!(
+                    "scene '{}' not found in project '{}'",
+                    payload.scene_id,
+                    payload.project_id
+                );
+            }
+            let event_ok: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.event_id, payload.project_id],
+                |r| r.get(0),
+            )?;
+            if event_ok == 0 {
+                anyhow::bail!(
+                    "event '{}' not found in project '{}'",
+                    payload.event_id,
+                    payload.project_id
+                );
+            }
+
+            let existed: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
+                rusqlite::params![payload.scene_id, payload.event_id],
+                |r| r.get(0),
+            )?;
+            let before = json!({
+                "sceneId": payload.scene_id,
+                "eventId": payload.event_id,
+                "linked": existed > 0,
+            })
+            .to_string();
+
+            if link {
+                conn.execute(
+                    "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
+                    rusqlite::params![payload.scene_id, payload.event_id],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM scene_events WHERE scene_id = ?1 AND event_id = ?2",
+                    rusqlite::params![payload.scene_id, payload.event_id],
+                )?;
+            }
+
+            let after = json!({
+                "sceneId": payload.scene_id,
+                "eventId": payload.event_id,
+                "linked": link,
+            })
+            .to_string();
+
+            let op_type = if link { "event.stamp" } else { "event.unstamp" };
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: "in-app-agent",
+                    entity_kind: "event",
+                    entity_id: &payload.event_id,
+                    op_kind: "update",
+                    before_json: Some(&before),
+                    after_json: Some(&after),
+                    base_version: 1,
+                    result_version: 1,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: Some(payload.scene_id.clone()),
+                    domain: "event".to_string(),
+                    op_type: op_type.to_string(),
+                    entity_type: Some("event".to_string()),
+                    entity_id: Some(payload.event_id.clone()),
+                    payload: json!({
+                        "sceneId": payload.scene_id,
+                        "eventId": payload.event_id,
+                    })
+                    .to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: payload.event_id.clone(),
+                version: 1,
+                change_event_uid: event_uid,
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+fn agent_event_relation_mutate_impl(
+    db: &Database,
+    payload: AgentEventRelationPayload,
+    add: bool,
+) -> anyhow::Result<Value> {
+    let undo_id = uuid::Uuid::new_v4().to_string();
+    let event_uid = uuid::Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
+
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if payload.cause_event_id == payload.effect_event_id {
+                anyhow::bail!("self-loop event relation forbidden");
+            }
+            let cause_ok: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.cause_event_id, payload.project_id],
+                |r| r.get(0),
+            )?;
+            if cause_ok == 0 {
+                anyhow::bail!(
+                    "cause event '{}' not found in project '{}'",
+                    payload.cause_event_id,
+                    payload.project_id
+                );
+            }
+            let effect_ok: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![payload.effect_event_id, payload.project_id],
+                |r| r.get(0),
+            )?;
+            if effect_ok == 0 {
+                anyhow::bail!(
+                    "effect event '{}' not found in project '{}'",
+                    payload.effect_event_id,
+                    payload.project_id
+                );
+            }
+
+            let existed: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM event_relations
+                 WHERE cause_event_id = ?1 AND effect_event_id = ?2",
+                rusqlite::params![payload.cause_event_id, payload.effect_event_id],
+                |r| r.get(0),
+            )?;
+            let before = json!({
+                "projectId": payload.project_id,
+                "causeEventId": payload.cause_event_id,
+                "effectEventId": payload.effect_event_id,
+                "linked": existed > 0,
+            })
+            .to_string();
+
+            if add {
+                conn.execute(
+                    "INSERT OR IGNORE INTO event_relations
+                     (project_id, cause_event_id, effect_event_id) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![
+                        payload.project_id,
+                        payload.cause_event_id,
+                        payload.effect_event_id
+                    ],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM event_relations
+                     WHERE cause_event_id = ?1 AND effect_event_id = ?2",
+                    rusqlite::params![payload.cause_event_id, payload.effect_event_id],
+                )?;
+            }
+
+            let after = json!({
+                "projectId": payload.project_id,
+                "causeEventId": payload.cause_event_id,
+                "effectEventId": payload.effect_event_id,
+                "linked": add,
+            })
+            .to_string();
+
+            let op_type = if add {
+                "event.relation_add"
+            } else {
+                "event.relation_remove"
+            };
+
+            insert_undo_journal_in_tx(
+                conn,
+                UndoJournalInsert {
+                    id: &undo_id,
+                    project_id: &payload.project_id,
+                    surface: "in-app-agent",
+                    entity_kind: "event",
+                    entity_id: &payload.cause_event_id,
+                    op_kind: "update",
+                    before_json: Some(&before),
+                    after_json: Some(&after),
+                    base_version: 1,
+                    result_version: 1,
+                    change_event_uid: Some(&event_uid),
+                },
+            )?;
+
+            append_change_events_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &[AppendChangeEvent {
+                    event_uid: event_uid.clone(),
+                    scene_id: None,
+                    domain: "event".to_string(),
+                    op_type: op_type.to_string(),
+                    entity_type: Some("event".to_string()),
+                    entity_id: Some(payload.cause_event_id.clone()),
+                    payload: json!({
+                        "causeEventId": payload.cause_event_id,
+                        "effectEventId": payload.effect_event_id,
+                    })
+                    .to_string(),
+                    timestamp,
+                }],
+            )?;
+
+            Ok(AgentWriteResult {
+                entity_id: payload.cause_event_id.clone(),
+                version: 1,
+                change_event_uid: event_uid,
+                undo_journal_id: undo_id,
+            })
+        })();
+
+        match result {
+            Ok(res) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(serde_json::to_value(res)?)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    })
+}
+
+#[tauri::command]
+pub(crate) fn agent_event_create(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentEventCreatePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_event_create_impl(db, payload))
+}
+
+#[tauri::command]
+pub(crate) fn agent_event_update(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentEventUpdatePayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_event_update_impl(db, payload))
+}
+
+#[tauri::command]
+pub(crate) fn agent_event_delete(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentEventIdPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| agent_event_delete_impl(db, payload))
+}
+
+#[tauri::command]
+pub(crate) fn agent_event_set_participants(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentEventParticipantsPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        agent_event_set_participants_impl(db, payload)
+    })
+}
+
+#[tauri::command]
+pub(crate) fn agent_scene_event_link(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentSceneEventPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        agent_scene_event_mutate_impl(db, payload, true)
+    })
+}
+
+#[tauri::command]
+pub(crate) fn agent_scene_event_unlink(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentSceneEventPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        agent_scene_event_mutate_impl(db, payload, false)
+    })
+}
+
+#[tauri::command]
+pub(crate) fn agent_event_relation_add(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentEventRelationPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        agent_event_relation_mutate_impl(db, payload, true)
+    })
+}
+
+#[tauri::command]
+pub(crate) fn agent_event_relation_remove(
+    ws_state: tauri::State<'_, WorkspaceState>,
+    payload: AgentEventRelationPayload,
+) -> Result<Value, AppError> {
+    with_db(&ws_state, |db| {
+        agent_event_relation_mutate_impl(db, payload, false)
+    })
 }
 
 #[cfg(test)]
@@ -1700,5 +2990,531 @@ mod tests {
         )
         .expect("insert foreshadow");
         id
+    }
+
+    // ---- Chronicle (event) round-trip helpers -----------------------------
+
+    fn insert_codex(db: &Database, project_id: &str, name: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO codex_entries
+             (id, project_id, type, name, summary, content, version, created_at, updated_at)
+             VALUES (?, ?, 'character', ?, '', '{}', 1, datetime('now'), datetime('now'))",
+            &[
+                Value::String(id.clone()),
+                Value::String(project_id.to_string()),
+                Value::String(name.to_string()),
+            ],
+            "run",
+        )
+        .expect("insert codex");
+        id
+    }
+
+    fn undo_payload(
+        project_id: &str,
+        journal_id: &str,
+        direction: &str,
+    ) -> AgentUndoJournalPayload {
+        AgentUndoJournalPayload {
+            project_id: project_id.to_string(),
+            session_id: "sess".to_string(),
+            journal_id: journal_id.to_string(),
+            direction: direction.to_string(),
+        }
+    }
+
+    fn relation_payload(project_id: &str, cause: &str, effect: &str) -> AgentEventRelationPayload {
+        AgentEventRelationPayload {
+            project_id: project_id.to_string(),
+            session_id: "sess".to_string(),
+            cause_event_id: cause.to_string(),
+            effect_event_id: effect.to_string(),
+        }
+    }
+
+    fn scene_payload(project_id: &str, scene_id: &str, event_id: &str) -> AgentSceneEventPayload {
+        AgentSceneEventPayload {
+            project_id: project_id.to_string(),
+            session_id: "sess".to_string(),
+            scene_id: scene_id.to_string(),
+            event_id: event_id.to_string(),
+        }
+    }
+
+    fn empty_update(project_id: &str, event_id: &str) -> AgentEventUpdatePayload {
+        AgentEventUpdatePayload {
+            project_id: project_id.to_string(),
+            session_id: "sess".to_string(),
+            event_id: event_id.to_string(),
+            title: None,
+            note: None,
+            ordinal: None,
+            primary_codex_id: None,
+            location_codex_id: None,
+            start_time: None,
+            end_time: None,
+            precision: None,
+            kind: None,
+        }
+    }
+
+    /// Create an event and return (event_id, undo_journal_id).
+    fn create_event(
+        db: &Database,
+        project_id: &str,
+        title: &str,
+        participants: Vec<String>,
+        scenes: Vec<String>,
+    ) -> (String, String) {
+        let res = agent_event_create_impl(
+            db,
+            AgentEventCreatePayload {
+                project_id: project_id.to_string(),
+                session_id: "sess".to_string(),
+                title: Some(title.to_string()),
+                note: None,
+                ordinal: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                precision: None,
+                kind: None,
+                participant_codex_ids: (!participants.is_empty()).then_some(participants),
+                scene_ids: (!scenes.is_empty()).then_some(scenes),
+            },
+        )
+        .expect("create event");
+        (
+            res["entityId"].as_str().expect("entityId").to_string(),
+            res["undoJournalId"]
+                .as_str()
+                .expect("undoJournalId")
+                .to_string(),
+        )
+    }
+
+    fn scalar_count(db: &Database, sql: &str, a: &str, b: Option<&str>) -> i64 {
+        db.with_conn(|conn| {
+            let n: i64 = match b {
+                Some(b) => conn.query_row(sql, rusqlite::params![a, b], |r| r.get(0))?,
+                None => conn.query_row(sql, rusqlite::params![a], |r| r.get(0))?,
+            };
+            Ok(n)
+        })
+        .expect("scalar_count")
+    }
+
+    fn event_count(db: &Database, event_id: &str) -> i64 {
+        scalar_count(
+            db,
+            "SELECT COUNT(*) FROM events WHERE id = ?1",
+            event_id,
+            None,
+        )
+    }
+
+    fn participant_count(db: &Database, event_id: &str) -> i64 {
+        scalar_count(
+            db,
+            "SELECT COUNT(*) FROM event_participants WHERE event_id = ?1",
+            event_id,
+            None,
+        )
+    }
+
+    fn scene_link_count(db: &Database, event_id: &str) -> i64 {
+        scalar_count(
+            db,
+            "SELECT COUNT(*) FROM scene_events WHERE event_id = ?1",
+            event_id,
+            None,
+        )
+    }
+
+    fn relation_count(db: &Database, cause: &str, effect: &str) -> i64 {
+        scalar_count(
+            db,
+            "SELECT COUNT(*) FROM event_relations WHERE cause_event_id = ?1 AND effect_event_id = ?2",
+            cause,
+            Some(effect),
+        )
+    }
+
+    fn participant_has(db: &Database, event_id: &str, codex_id: &str) -> bool {
+        scalar_count(
+            db,
+            "SELECT COUNT(*) FROM event_participants WHERE event_id = ?1 AND codex_entry_id = ?2",
+            event_id,
+            Some(codex_id),
+        ) > 0
+    }
+
+    fn participant_role(db: &Database, event_id: &str, codex_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            let r: Option<String> = conn.query_row(
+                "SELECT role FROM event_participants WHERE event_id = ?1 AND codex_entry_id = ?2",
+                rusqlite::params![event_id, codex_id],
+                |row| row.get(0),
+            )?;
+            Ok(r)
+        })
+        .expect("participant_role")
+    }
+
+    fn event_title(db: &Database, event_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            match conn.query_row(
+                "SELECT title FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| row.get::<_, String>(0),
+            ) {
+                Ok(t) => Ok(Some(t)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        })
+        .expect("event_title")
+    }
+
+    fn event_start(db: &Database, event_id: &str) -> Option<i64> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT start_time FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )?)
+        })
+        .expect("event_start")
+    }
+
+    fn set_role(db: &Database, event_id: &str, codex_id: &str, role: &str) {
+        db.execute(
+            "UPDATE event_participants SET role = ? WHERE event_id = ? AND codex_entry_id = ?",
+            &[
+                Value::String(role.to_string()),
+                Value::String(event_id.to_string()),
+                Value::String(codex_id.to_string()),
+            ],
+            "run",
+        )
+        .expect("set role");
+    }
+
+    // ---- Round-trip tests -------------------------------------------------
+
+    #[test]
+    fn event_create_undo_redo_round_trip() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex_id = insert_codex(&db, &project_id, "Alice");
+        let scene_id = insert_scene(&db, &project_id);
+
+        let (event_id, journal_id) = create_event(
+            &db,
+            &project_id,
+            "戦い",
+            vec![codex_id.clone()],
+            vec![scene_id.clone()],
+        );
+        assert_eq!(event_count(&db, &event_id), 1);
+        assert_eq!(participant_count(&db, &event_id), 1);
+        assert_eq!(scene_link_count(&db, &event_id), 1);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        assert_eq!(event_count(&db, &event_id), 0, "undo create deletes event");
+        assert_eq!(
+            participant_count(&db, &event_id),
+            0,
+            "cascade clears participants"
+        );
+        assert_eq!(
+            scene_link_count(&db, &event_id),
+            0,
+            "cascade clears scene links"
+        );
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
+        assert_eq!(event_count(&db, &event_id), 1, "redo recreates event");
+        assert_eq!(participant_count(&db, &event_id), 1);
+        assert_eq!(scene_link_count(&db, &event_id), 1);
+    }
+
+    #[test]
+    fn event_delete_undo_restores_full_cascade() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex_a = insert_codex(&db, &project_id, "A");
+        let scene_id = insert_scene(&db, &project_id);
+
+        let (main_id, _) = create_event(
+            &db,
+            &project_id,
+            "main",
+            vec![codex_a.clone()],
+            vec![scene_id.clone()],
+        );
+        let (other_id, _) = create_event(&db, &project_id, "other", vec![], vec![]);
+        set_role(&db, &main_id, &codex_a, "hero");
+
+        agent_event_relation_mutate_impl(
+            &db,
+            relation_payload(&project_id, &main_id, &other_id),
+            true,
+        )
+        .unwrap();
+        agent_event_relation_mutate_impl(
+            &db,
+            relation_payload(&project_id, &other_id, &main_id),
+            true,
+        )
+        .unwrap();
+        assert_eq!(relation_count(&db, &main_id, &other_id), 1);
+        assert_eq!(relation_count(&db, &other_id, &main_id), 1);
+
+        let del = agent_event_delete_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                event_id: main_id.clone(),
+            },
+        )
+        .unwrap();
+        let journal_id = del["undoJournalId"].as_str().unwrap().to_string();
+
+        assert_eq!(event_count(&db, &main_id), 0);
+        assert_eq!(event_count(&db, &other_id), 1, "sibling event survives");
+        assert_eq!(participant_count(&db, &main_id), 0);
+        assert_eq!(scene_link_count(&db, &main_id), 0);
+        assert_eq!(relation_count(&db, &main_id, &other_id), 0);
+        assert_eq!(relation_count(&db, &other_id, &main_id), 0);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        assert_eq!(event_count(&db, &main_id), 1, "undo delete restores event");
+        assert_eq!(participant_count(&db, &main_id), 1);
+        assert_eq!(
+            participant_role(&db, &main_id, &codex_a),
+            Some("hero".to_string()),
+            "participant role restored from cascade snapshot"
+        );
+        assert_eq!(scene_link_count(&db, &main_id), 1);
+        assert_eq!(
+            relation_count(&db, &main_id, &other_id),
+            1,
+            "asCause relation restored"
+        );
+        assert_eq!(
+            relation_count(&db, &other_id, &main_id),
+            1,
+            "asEffect relation restored"
+        );
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
+        assert_eq!(event_count(&db, &main_id), 0, "redo delete removes again");
+        assert_eq!(relation_count(&db, &main_id, &other_id), 0);
+        assert_eq!(relation_count(&db, &other_id, &main_id), 0);
+    }
+
+    #[test]
+    fn event_update_undo_restores_old_values() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "seed", vec![], vec![]);
+
+        let mut p1 = empty_update(&project_id, &event_id);
+        p1.title = Some("old".to_string());
+        p1.start_time = Some(100);
+        agent_event_update_impl(&db, p1).unwrap();
+
+        let mut p2 = empty_update(&project_id, &event_id);
+        p2.title = Some("new".to_string());
+        p2.start_time = Some(200);
+        let res = agent_event_update_impl(&db, p2).unwrap();
+        let journal_id = res["undoJournalId"].as_str().unwrap().to_string();
+
+        assert_eq!(event_title(&db, &event_id), Some("new".to_string()));
+        assert_eq!(event_start(&db, &event_id), Some(200));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        assert_eq!(event_title(&db, &event_id), Some("old".to_string()));
+        assert_eq!(event_start(&db, &event_id), Some(100));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
+        assert_eq!(event_title(&db, &event_id), Some("new".to_string()));
+        assert_eq!(event_start(&db, &event_id), Some(200));
+    }
+
+    #[test]
+    fn event_set_participants_undo_restores_set_and_roles() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex_a = insert_codex(&db, &project_id, "A");
+        let codex_b = insert_codex(&db, &project_id, "B");
+        let codex_c = insert_codex(&db, &project_id, "C");
+        let (event_id, _) = create_event(&db, &project_id, "e", vec![codex_a.clone()], vec![]);
+        set_role(&db, &event_id, &codex_a, "hero");
+
+        let res = agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                event_id: event_id.clone(),
+                codex_entry_ids: vec![codex_b.clone(), codex_c.clone()],
+            },
+        )
+        .unwrap();
+        let journal_id = res["undoJournalId"].as_str().unwrap().to_string();
+
+        assert_eq!(participant_count(&db, &event_id), 2);
+        assert!(participant_has(&db, &event_id, &codex_b));
+        assert!(participant_has(&db, &event_id, &codex_c));
+        assert!(!participant_has(&db, &event_id, &codex_a));
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        assert_eq!(participant_count(&db, &event_id), 1);
+        assert!(participant_has(&db, &event_id, &codex_a));
+        assert_eq!(
+            participant_role(&db, &event_id, &codex_a),
+            Some("hero".to_string()),
+            "old role restored"
+        );
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
+        assert_eq!(participant_count(&db, &event_id), 2);
+        assert!(participant_has(&db, &event_id, &codex_b));
+        assert!(!participant_has(&db, &event_id, &codex_a));
+    }
+
+    #[test]
+    fn scene_event_link_and_unlink_round_trip() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(&db, &project_id, "e", vec![], vec![]);
+
+        let res = agent_scene_event_mutate_impl(
+            &db,
+            scene_payload(&project_id, &scene_id, &event_id),
+            true,
+        )
+        .unwrap();
+        let link_journal = res["undoJournalId"].as_str().unwrap().to_string();
+        assert_eq!(scene_link_count(&db, &event_id), 1);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &link_journal, "undo")).unwrap();
+        assert_eq!(scene_link_count(&db, &event_id), 0, "undo link removes");
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &link_journal, "redo")).unwrap();
+        assert_eq!(scene_link_count(&db, &event_id), 1, "redo link restores");
+
+        // Now unlink and round-trip the unlink.
+        let res2 = agent_scene_event_mutate_impl(
+            &db,
+            scene_payload(&project_id, &scene_id, &event_id),
+            false,
+        )
+        .unwrap();
+        let unlink_journal = res2["undoJournalId"].as_str().unwrap().to_string();
+        assert_eq!(scene_link_count(&db, &event_id), 0);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &unlink_journal, "undo")).unwrap();
+        assert_eq!(
+            scene_link_count(&db, &event_id),
+            1,
+            "undo unlink restores link"
+        );
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &unlink_journal, "redo")).unwrap();
+        assert_eq!(
+            scene_link_count(&db, &event_id),
+            0,
+            "redo unlink removes again"
+        );
+    }
+
+    #[test]
+    fn event_relation_add_and_remove_round_trip() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (e1, _) = create_event(&db, &project_id, "e1", vec![], vec![]);
+        let (e2, _) = create_event(&db, &project_id, "e2", vec![], vec![]);
+
+        let res =
+            agent_event_relation_mutate_impl(&db, relation_payload(&project_id, &e1, &e2), true)
+                .unwrap();
+        let add_journal = res["undoJournalId"].as_str().unwrap().to_string();
+        assert_eq!(relation_count(&db, &e1, &e2), 1);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &add_journal, "undo")).unwrap();
+        assert_eq!(
+            relation_count(&db, &e1, &e2),
+            0,
+            "undo add removes relation"
+        );
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &add_journal, "redo")).unwrap();
+        assert_eq!(
+            relation_count(&db, &e1, &e2),
+            1,
+            "redo add restores relation"
+        );
+
+        let res2 =
+            agent_event_relation_mutate_impl(&db, relation_payload(&project_id, &e1, &e2), false)
+                .unwrap();
+        let remove_journal = res2["undoJournalId"].as_str().unwrap().to_string();
+        assert_eq!(relation_count(&db, &e1, &e2), 0);
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &remove_journal, "undo")).unwrap();
+        assert_eq!(
+            relation_count(&db, &e1, &e2),
+            1,
+            "undo remove restores relation"
+        );
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &remove_journal, "redo")).unwrap();
+        assert_eq!(
+            relation_count(&db, &e1, &e2),
+            0,
+            "redo remove removes again"
+        );
+    }
+
+    #[test]
+    fn event_writes_enforce_xproj_and_self_loop() {
+        let db = test_db();
+        let p1 = insert_project(&db);
+        let p2 = insert_project(&db);
+        let (event_p1, _) = create_event(&db, &p1, "p1-event", vec![], vec![]);
+        let scene_p2 = insert_scene(&db, &p2);
+        let (event_p2, _) = create_event(&db, &p2, "p2-event", vec![], vec![]);
+
+        // Update claiming the wrong project: error, no mutation.
+        let mut bad_update = empty_update(&p2, &event_p1);
+        bad_update.title = Some("hacked".to_string());
+        assert!(agent_event_update_impl(&db, bad_update).is_err());
+        assert_eq!(event_title(&db, &event_p1), Some("p1-event".to_string()));
+
+        // Scene link with a scene from another project: error, no link.
+        let cross =
+            agent_scene_event_mutate_impl(&db, scene_payload(&p1, &scene_p2, &event_p1), true);
+        assert!(cross.is_err(), "cross-project scene link must fail");
+        assert_eq!(scene_link_count(&db, &event_p1), 0);
+
+        // Self-loop relation: forbidden.
+        assert!(agent_event_relation_mutate_impl(
+            &db,
+            relation_payload(&p1, &event_p1, &event_p1),
+            true
+        )
+        .is_err());
+
+        // Relation whose effect lives in another project: error, no edge.
+        assert!(agent_event_relation_mutate_impl(
+            &db,
+            relation_payload(&p1, &event_p1, &event_p2),
+            true
+        )
+        .is_err());
+        assert_eq!(relation_count(&db, &event_p1, &event_p2), 0);
     }
 }

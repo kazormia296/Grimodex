@@ -10,6 +10,16 @@ import {
 import type { EventPrecision, EventKind } from "@/db/schema";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { nextEventOrdinal } from "./chronicleTime";
+import { useChronicleStore } from "./chronicleStore";
+
+/**
+ * 年表 mutation 後に AI コンテキストの鮮度カウンタを上げる（C3 prompt 鮮度）。
+ * UI / 抽出ウィザード / 将来の agent・MCP write が全てこの API を通るため、ここを
+ * 単一チョークポイントにすれば全経路で contextPromptKey が更新される。
+ */
+function bumpChronicleRevision(): void {
+  useChronicleStore.getState().bumpRevision();
+}
 
 export interface EventRow {
   id: string;
@@ -113,6 +123,7 @@ export async function createEvent(data: {
     });
   });
   const [row] = await db.select().from(events).where(eq(events.id, id));
+  bumpChronicleRevision();
   return normalizeEvent(row);
 }
 
@@ -140,6 +151,7 @@ export async function updateEvent(
     .update(events)
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(and(eq(events.id, id), eq(events.projectId, projectId)));
+  bumpChronicleRevision();
 }
 
 export async function deleteEvent(
@@ -150,6 +162,7 @@ export async function deleteEvent(
   await db
     .delete(events)
     .where(and(eq(events.id, id), eq(events.projectId, projectId)));
+  bumpChronicleRevision();
 }
 
 // ───────── participants ─────────
@@ -192,6 +205,40 @@ export async function setEventParticipants(
       .insert(eventParticipants)
       .values(codexEntryIds.map((codexEntryId) => ({ eventId, codexEntryId })));
   });
+  bumpChronicleRevision();
+}
+
+/**
+ * project スコープで参加者を一括取得（XPROJ 安全）。
+ * event_participants は project_id 列を持たないため events へ INNER JOIN し
+ * events.project_id でスコープする。AI / MCP / write 経路はこの API のみ使う
+ * （素の listEventParticipants(eventId) は project gate が無いため AI 経路では禁止）。
+ * @param eventIds undefined=project 全件 / [] = 0 件（フィルタ対象なし）。
+ */
+export async function listEventParticipantsForProject(
+  projectId: string,
+  eventIds?: string[],
+): Promise<ParticipantRow[]> {
+  if (eventIds && eventIds.length === 0) return [];
+  const conds = [eq(events.projectId, projectId)];
+  if (eventIds) conds.push(inArray(eventParticipants.eventId, eventIds));
+  const rows = await db
+    .select({
+      eventId: eventParticipants.eventId,
+      codexEntryId: eventParticipants.codexEntryId,
+      role: eventParticipants.role,
+    })
+    .from(eventParticipants)
+    .innerJoin(events, eq(eventParticipants.eventId, events.id))
+    .where(and(...conds));
+  return rows.map((raw) => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    return {
+      eventId: s(r.eventId ?? r.event_id),
+      codexEntryId: s(r.codexEntryId ?? r.codex_entry_id),
+      role: nullableStr(r.role),
+    };
+  });
 }
 
 // ───────── scene_events 橋 ─────────
@@ -208,6 +255,35 @@ export async function listSceneEvents(
     .select()
     .from(sceneEvents)
     .where(inArray(sceneEvents.eventId, eventIds));
+  return rows.map((raw) => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    return {
+      sceneId: s(r.sceneId ?? r.scene_id),
+      eventId: s(r.eventId ?? r.event_id),
+    };
+  });
+}
+
+/**
+ * project スコープで scene↔event 橋を一括取得（XPROJ 安全）。
+ * scene_events は project_id 列を持たないため events へ INNER JOIN し
+ * events.project_id でスコープする。AI / MCP 経路はこの API のみ使う。
+ * @param opts.eventIds / opts.sceneIds いずれも [] は 0 件（フィルタ対象なし）。
+ */
+export async function listSceneEventsForProject(
+  projectId: string,
+  opts?: { eventIds?: string[]; sceneIds?: string[] },
+): Promise<SceneEventRow[]> {
+  if (opts?.eventIds && opts.eventIds.length === 0) return [];
+  if (opts?.sceneIds && opts.sceneIds.length === 0) return [];
+  const conds = [eq(events.projectId, projectId)];
+  if (opts?.eventIds) conds.push(inArray(sceneEvents.eventId, opts.eventIds));
+  if (opts?.sceneIds) conds.push(inArray(sceneEvents.sceneId, opts.sceneIds));
+  const rows = await db
+    .select({ sceneId: sceneEvents.sceneId, eventId: sceneEvents.eventId })
+    .from(sceneEvents)
+    .innerJoin(events, eq(sceneEvents.eventId, events.id))
+    .where(and(...conds));
   return rows.map((raw) => {
     const r = (raw ?? {}) as Record<string, unknown>;
     return {
@@ -236,6 +312,7 @@ export async function linkSceneToEvent(
     .insert(sceneEvents)
     .values({ sceneId, eventId })
     .onConflictDoNothing();
+  bumpChronicleRevision();
 }
 
 export async function unlinkSceneFromEvent(
@@ -247,6 +324,7 @@ export async function unlinkSceneFromEvent(
     .where(
       and(eq(sceneEvents.sceneId, sceneId), eq(sceneEvents.eventId, eventId)),
     );
+  bumpChronicleRevision();
 }
 
 // ───────── project_calendar ─────────
@@ -300,6 +378,7 @@ export async function upsertProjectCalendar(data: {
         updatedAt: now,
       },
     });
+  bumpChronicleRevision();
 }
 
 // ───────── event_relations（因果エッジ） ─────────
@@ -349,6 +428,7 @@ export async function addEventRelation(
       effectEventId: effectId,
     })
     .onConflictDoNothing();
+  bumpChronicleRevision();
 }
 
 export async function removeEventRelation(
@@ -367,4 +447,5 @@ export async function removeEventRelation(
         eq(eventRelations.effectEventId, effectId),
       ),
     );
+  bumpChronicleRevision();
 }

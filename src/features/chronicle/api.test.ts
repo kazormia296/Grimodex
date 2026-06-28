@@ -109,6 +109,8 @@ import {
   linkSceneToEvent,
   listSceneEvents,
   listEventRelations,
+  listEventParticipantsForProject,
+  listSceneEventsForProject,
 } from "./api";
 
 const NOW = "2026-06-27T00:00:00.000Z";
@@ -334,5 +336,89 @@ describe("linkSceneToEvent", () => {
     await linkSceneToEvent("p1", "s2", "e1");
 
     expect(await listSceneEvents(["e1"])).toEqual([]);
+  });
+});
+
+// ───────── C0: project-scoped bulk read API ─────────
+async function seedParticipant(
+  eventId: string,
+  codexEntryId: string,
+  role: string | null = null,
+): Promise<void> {
+  await db.insert(eventParticipants).values({ eventId, codexEntryId, role });
+}
+async function seedSceneEvent(sceneId: string, eventId: string): Promise<void> {
+  await db.insert(sceneEvents).values({ sceneId, eventId });
+}
+
+describe("listEventParticipantsForProject (XPROJ via events JOIN)", () => {
+  it("照会 project の event に属する参加者だけを返す(他 project は除外)", async () => {
+    await seed("e1", "p1", "a0");
+    await seed("x1", "p2", "a0");
+    await seedParticipant("e1", "c1", "主役");
+    await seedParticipant("x1", "c9"); // 別 project の event の参加者
+
+    const rows = await listEventParticipantsForProject("p1");
+    expect(rows).toEqual([{ eventId: "e1", codexEntryId: "c1", role: "主役" }]);
+  });
+
+  it("eventIds 指定でその event 群の参加者に絞る", async () => {
+    await seed("e1", "p1", "a0");
+    await seed("e2", "p1", "a1");
+    await seedParticipant("e1", "c1");
+    await seedParticipant("e2", "c2");
+
+    const rows = await listEventParticipantsForProject("p1", ["e2"]);
+    expect(rows).toEqual([{ eventId: "e2", codexEntryId: "c2", role: null }]);
+  });
+
+  it("eventIds=[] は何も返さない(undefined=全件 とは区別)", async () => {
+    await seed("e1", "p1", "a0");
+    await seedParticipant("e1", "c1");
+    expect(await listEventParticipantsForProject("p1", [])).toEqual([]);
+    expect((await listEventParticipantsForProject("p1")).length).toBe(1);
+  });
+
+  it("孤児 participant(events に対応 event が無い)は JOIN で落ちる", async () => {
+    await seedParticipant("ghost", "c1"); // 対応 event 無し
+    expect(await listEventParticipantsForProject("p1")).toEqual([]);
+  });
+});
+
+describe("listSceneEventsForProject (XPROJ via events JOIN)", () => {
+  it("照会 project の event に紐づく scene_events だけを返す", async () => {
+    await seed("e1", "p1", "a0");
+    await seed("x1", "p2", "a0");
+    await seedSceneEvent("s1", "e1");
+    await seedSceneEvent("sx", "x1"); // 別 project
+
+    const rows = await listSceneEventsForProject("p1");
+    expect(rows).toEqual([{ sceneId: "s1", eventId: "e1" }]);
+  });
+
+  it("opts.eventIds で絞る", async () => {
+    await seed("e1", "p1", "a0");
+    await seed("e2", "p1", "a1");
+    await seedSceneEvent("s1", "e1");
+    await seedSceneEvent("s2", "e2");
+
+    const rows = await listSceneEventsForProject("p1", { eventIds: ["e1"] });
+    expect(rows).toEqual([{ sceneId: "s1", eventId: "e1" }]);
+  });
+
+  it("opts.sceneIds で絞る", async () => {
+    await seed("e1", "p1", "a0");
+    await seedSceneEvent("s1", "e1");
+    await seedSceneEvent("s2", "e1");
+
+    const rows = await listSceneEventsForProject("p1", { sceneIds: ["s2"] });
+    expect(rows).toEqual([{ sceneId: "s2", eventId: "e1" }]);
+  });
+
+  it("空フィルタ配列は何も返さない", async () => {
+    await seed("e1", "p1", "a0");
+    await seedSceneEvent("s1", "e1");
+    expect(await listSceneEventsForProject("p1", { eventIds: [] })).toEqual([]);
+    expect(await listSceneEventsForProject("p1", { sceneIds: [] })).toEqual([]);
   });
 });

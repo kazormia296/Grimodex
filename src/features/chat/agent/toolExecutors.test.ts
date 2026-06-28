@@ -76,7 +76,10 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
   const EXPECTED_READ_ONLY_NAMES = [
     "find_related_entries",
     "get_chapter_summaries",
+    "get_character_timeline",
+    "get_chronicle_state",
     "get_codex_entry",
+    "get_event_detail",
     "get_foreshadow_detail",
     "get_scene",
     "get_scene_timeline_neighbors",
@@ -84,6 +87,7 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
     "list_chapters",
     "list_codex_by_type",
     "list_codex_tags",
+    "list_events",
     "list_open_foreshadows",
     "list_plot_threads",
     "search_codex",
@@ -93,12 +97,20 @@ describe("EXECUTORS — read-only allowlist invariant", () => {
   ];
 
   const EXPECTED_MUTATING_NAMES = [
+    "add_event_relation",
     "apply_ai_tree_plan",
     "create_codex_entry",
+    "create_event",
     "create_foreshadow",
     "create_snippet",
+    "delete_event",
     "propose_scene_body",
+    "remove_event_relation",
+    "set_event_participants",
+    "stamp_scene_event",
+    "unstamp_scene_event",
     "update_codex_entry",
+    "update_event",
     "update_foreshadow",
   ];
 

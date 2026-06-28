@@ -1,3 +1,4 @@
+mod chronicle_snapshot;
 mod convert;
 mod db;
 mod license_gate;

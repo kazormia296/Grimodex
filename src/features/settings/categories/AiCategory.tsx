@@ -1468,6 +1468,19 @@ export function AiCategory() {
         </div>
       </SettingSection>
 
+      {/* 作中年表スナップショットの AI 文脈注入 (Phase 1) */}
+      <SettingSection title={t("settings.ai.chronicle.title")}>
+        <SettingRow
+          label={t("settings.ai.chronicle.enabled.label")}
+          description={t("settings.ai.chronicle.enabled.description")}
+        >
+          <SettingToggle
+            settingKey="aiPrompt.chronicle.enabled"
+            defaultValue={true}
+          />
+        </SettingRow>
+      </SettingSection>
+
       {/* AI プロンプト追記カスタマイズ (Phase 0) — 各機能の組み込みプロンプトに追記 */}
       <SettingSection title={t("settings.ai.promptCustom.title")}>
         <p className="mb-3 text-xs text-muted-foreground">

@@ -116,6 +116,14 @@ export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   "create_snippet",
   "apply_ai_tree_plan",
   "propose_scene_body",
+  "create_event",
+  "update_event",
+  "delete_event",
+  "stamp_scene_event",
+  "unstamp_scene_event",
+  "set_event_participants",
+  "add_event_relation",
+  "remove_event_relation",
 ]);
 
 /** Hermes allow-list = declared tool names minus mutating ones (write block). */

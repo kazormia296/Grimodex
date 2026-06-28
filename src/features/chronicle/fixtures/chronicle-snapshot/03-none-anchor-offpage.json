@@ -1,0 +1,30 @@
+{
+  "name": "none anchor (no reachable stamp): off-page background only",
+  "input": {
+    "sceneId": "s1",
+    "nodes": [
+      { "id": "s1", "parentId": null, "nodeType": "scene", "sortOrder": "a0" },
+      { "id": "s2", "parentId": null, "nodeType": "scene", "sortOrder": "a1" }
+    ],
+    "events": [
+      { "id": "eb", "title": "Born", "note": null, "ordinal": "a0", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 0, "kind": "birth" },
+      { "id": "e1", "title": "Secret meeting", "note": "offpage", "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 50, "kind": "generic" }
+    ],
+    "participants": [],
+    "relations": [],
+    "sceneEvents": [
+      { "sceneId": "s2", "eventId": "e1" }
+    ],
+    "calendar": null,
+    "codexNames": { "hero": "Hero" }
+  },
+  "expected": {
+    "time": { "source": "none", "startTime": null, "season": null },
+    "characters": [],
+    "recentEvents": [],
+    "unresolvedCausal": [],
+    "offpage": [
+      { "eventId": "eb", "title": "Born", "note": null }
+    ]
+  }
+}
