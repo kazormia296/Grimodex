@@ -1,7 +1,7 @@
 # Grimodex - 製品仕様書
 
-> バージョン: 0.8.0
-> 最終更新: 2026-06-18
+> バージョン: 0.9.0
+> 最終更新: 2026-06-28
 
 ## 1. 製品概要
 
@@ -887,13 +887,19 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 - `Mod+Alt+N`: Snippets、`Mod+Alt+A`: Attribution
 
 **拡張パネル:**
-- `Mod+Alt+L`: Timeline、`Mod+Alt+M`: Map、`Mod+Alt+T`: Kouetsu
+- `Mod+Alt+L`: Timeline、`Mod+Alt+K`: Chronicle（作中年表）、`Mod+Alt+M`: Map、`Mod+Alt+T`: Kouetsu
 - `Mod+Alt+F`: Foreshadow、`Mod+Alt+B`: TrashBin
 - `Mod+Alt+G`: Grid、`Mod+Alt+R`: Matrix、`Mod+Alt+W`: WritingStats
 - `Mod+Alt+P`: RelatedScenes
 
+**検索:**
+- `Mod+Shift+F`: Command Center Results（検索結果パネルを開いてフォーカス）
+- `Mod+Shift+P`: Command Center バー（コマンドモード起動）
+
 **グローバル:**
 - `Mod+Alt+,`: Settings
+
+> **注（2026-06-28）:** レイアウトは IntelliJ 式の region/stripe モデル（left / right / center-bottom）に移行済み。上記 ASCII 図は旧 Dock ゾーン表現の参考用。正本は [`Grimodex_レイアウトシステム置換設計書.md`](Grimodex_レイアウトシステム置換設計書.md)。Chronicle は center-bottom に Timeline と同居可能（別タブ）。
 
 注：Dock トグルバインディングは現在実装されていません。
 
@@ -1065,6 +1071,20 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 | **ラベル / ゴミ箱** | ツリーノードのラベル付けと削除アイテムの復元 | `labels`, `tree_node_labels`, `trash_items` |
 | **AI 使用ポリシー** | プロジェクト単位の AI 権限トグル（4.5 参照） | `projects.ai_policy` |
 | **外部ファイルマウント** | 外部 Markdown を実体とする file-backed シーン（2.6 参照） | `tree_nodes.source_uri/source_mtime` |
+
+### 14.2 v0.9 で追加された主要機能
+
+> **注（2026-06-28 追記）:** v0.8 以降に出荷した機能ドメイン。
+
+| 機能ドメイン | 概要 | 主なテーブル / 実装 |
+|------------|------|-------------------|
+| **Chronicle（作中年表）** | 作中時間（fabula）の Event 軸。Scene 非依存の出来事・オフページ参照・季節/年齢整合 | `events`, `event_participants`, `scene_events`, `event_relations`, `project_calendar` |
+| **Timeline プロットスレッド** | reading-order 上の through-line。`threads` ビューで Plottr 型スイムレーン | `plot_threads`, `plot_thread_scene_links` |
+| **Plot-thread AI 注入** | 現在シーンが属する縦糸の構成を `<plot_thread_scenes>` で静的注入 | `contextBuilder.ts` |
+| **Chronicle AI 注入** | 作中時刻の世界状態スナップショットを `<chronicle_snapshot>` で注入（設定 `aiPrompt.chronicle.enabled`） | `chronicleSnapshot.ts`, agent read/write tools |
+| **Phase AI 露出 / Wiki 限定** | Phase の effective `context_mode` が suppress/hidden のとき AI 文脈から除外（設計メモ用途） | `phaseResolver.ts` |
+
+詳細: [`docs/superpowers/specs/2026-06-26-chronicle-timeline-design.md`](superpowers/specs/2026-06-26-chronicle-timeline-design.md)、[`CONTEXT_INJECTION.md`](CONTEXT_INJECTION.md)。
 
 ---
 

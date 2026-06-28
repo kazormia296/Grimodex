@@ -27,7 +27,7 @@
 
 設計: `ensureRegisteredPanels(state)` は、どの slot/segment にも現れない `TOOL_WINDOW_PANEL_IDS` を、その `DEFAULT_REGION_MAP` の slot（`DEFAULT_INDEX_MAP` 優先、無ければ region 先頭 slot、slot 無ければ新規作成）へ append する。`activePanel` は変えない（折りたたみのまま）。`ensureLayoutStateV3` 内で `stripUnknownPanels` の後に呼ぶ。
 
-- [ ] **Step 1: 失敗するテストを書く**（`layoutStateUtils.test.ts` に追記）
+- [x] **Step 1: 失敗するテストを書く**（`layoutStateUtils.test.ts` に追記）
 
 ```typescript
 import { ensureLayoutStateV3, validateLayoutState } from "./layoutStateUtils";
@@ -57,9 +57,9 @@ it("ensureLayoutStateV3: 未登録パネルを注入し validateLayoutState を�
 ```
 （`buildDefaultLayoutState` は同ファイル export 済み。import に追加。）
 
-- [ ] **Step 2: 失敗確認** `pnpm test --run src/features/layout/layoutStateUtils.test.ts`（victim 注入されず FAIL）
+- [x] **Step 2: 失敗確認** `pnpm test --run src/features/layout/layoutStateUtils.test.ts`（victim 注入されず FAIL）
 
-- [ ] **Step 3: 実装**
+- [x] **Step 3: 実装**
 
 ```typescript
 // layoutStateUtils.ts: ensureLayoutStateV3 を書き換え
@@ -105,9 +105,9 @@ function ensureRegisteredPanels(state: LayoutState): LayoutState {
 }
 ```
 
-- [ ] **Step 4: 通過確認** 同上コマンド → PASS。既存 layoutStateUtils テストも回帰なし。
+- [x] **Step 4: 通過確認** 同上コマンド → PASS。既存 layoutStateUtils テストも回帰なし。
 
-- [ ] **Step 5: コミット** `git commit -m "feat(layout): 新規登録パネルを既存レイアウトへ自動注入する移行を追加"`
+- [x] **Step 5: コミット** `git commit -m "feat(layout): 新規登録パネルを既存レイアウトへ自動注入する移行を追加"`
 
 ---
 
@@ -124,11 +124,11 @@ function ensureRegisteredPanels(state: LayoutState): LayoutState {
 
 注: `DEFAULT_REGION_MAP`/`DEFAULT_INDEX_MAP`/`TOOL_WINDOW_PANEL_IDS` は `DEFAULT_SLOT_MAP` から自動導出のため編集不要。`PANEL_COMPONENT_MAP` への登録は ChroniclePanel が無いと型エラーなので Task 3 と同時に通す。
 
-- [ ] Step 1: 上記レジストリ編集（panelComponents 以外）
-- [ ] Step 2: 5プリセットへ `"chronicle"` 追加（各 bottom の map/grid/matrix slot へ）
-- [ ] Step 3: `npx tsc --noEmit`（PANEL_COMPONENT_MAP 未登録で chronicle が `Record<PanelId>` に欠ける→ Task 3 とまとめて解消）
-- [ ] Step 4: 期待値テスト更新後 `pnpm test --run src/features/layout/`
-- [ ] Step 5: Task 3 とまとめてコミット
+- [x] Step 1: 上記レジストリ編集（panelComponents 以外）
+- [x] Step 2: 5プリセットへ `"chronicle"` 追加（各 bottom の map/grid/matrix slot へ）
+- [x] Step 3: `npx tsc --noEmit`（PANEL_COMPONENT_MAP 未登録で chronicle が `Record<PanelId>` に欠ける→ Task 3 とまとめて解消）
+- [x] Step 4: 期待値テスト更新後 `pnpm test --run src/features/layout/`
+- [x] Step 5: Task 3 とまとめてコミット
 
 ---
 
@@ -144,20 +144,20 @@ function ensureRegisteredPanels(state: LayoutState): LayoutState {
 
 注: GlobalSettings 型の現状は実装時に読んで確認。永続化は `settings.chronicle = snapshot`。
 
-- [ ] Step 1: chronicleStore（+test）→ 失敗→実装→PASS
-- [ ] Step 2: GlobalSettings に chronicle 追加（型のみ）
-- [ ] Step 3: ChroniclePanel（リスト＋CRUD ボタン。SVG なし）
-- [ ] Step 4: panelComponents へ登録 → `npx tsc --noEmit` 全解決
-- [ ] Step 5: i18n キー追加
-- [ ] Step 6: `pnpm test --run src/features/chronicle/ src/features/layout/` → green
-- [ ] Step 7: コミット（Task 2 と合わせて「chronicle パネル登録＋基本パネル」）
+- [x] Step 1: chronicleStore（+test）→ 失敗→実装→PASS
+- [x] Step 2: GlobalSettings に chronicle 追加（型のみ）
+- [x] Step 3: ChroniclePanel（リスト＋CRUD ボタン。SVG なし）
+- [x] Step 4: panelComponents へ登録 → `npx tsc --noEmit` 全解決
+- [x] Step 5: i18n キー追加
+- [x] Step 6: `pnpm test --run src/features/chronicle/ src/features/layout/` → green
+- [x] Step 7: コミット（Task 2 と合わせて「chronicle パネル登録＋基本パネル」）
 
 ---
 
 ### Task 4: 全体検証
 
-- [ ] `npx tsc --noEmit` / `pnpm lint` / `pnpm test --run src/features/chronicle/ src/features/layout/` / `cargo check --no-default-features`
-- [ ] パネルが各プリセットで invalid 化しないこと（layout テスト）
+- [x] `npx tsc --noEmit` / `pnpm lint` / `pnpm test --run src/features/chronicle/ src/features/layout/` / `cargo check --no-default-features`
+- [x] パネルが各プリセットで invalid 化しないこと（layout テスト）
 
 ## 後続
 - P1b: `ChronicleViewport`（SVG 人物レーン・連続ordinal軸・point/interval・オフページ中空）＋ browser geometry test。

@@ -315,9 +315,9 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 - @ボタン/ /ボタン : 後述の特殊入力のポップオーバー表示
 - 🛠️ボタン: AIのオプションをポップオーバーリスト表示。全て対応モデルのみ活性化。対応機能が一つもない場合はこのボタン自体非活性マウスカーソル🚫(コンテキストバーのAIボタンと同じ)。ポップオーバー内の各トグル状態は `ai_settings` テーブルに永続化され、セッション・再起動をまたいで保持される。
 	- **🔧 Agent mode トグル（スタンドアロン実行モード）**: Tool Use を有効化し、LLM がプロジェクトデータを能動的に検索・取得できるモードに切り替える。ON にすると送信時に `runAgentLoop` が起動し、LLM のツール呼び出しをループ実行する:
-		- **利用可能ツール（23 種 = 読み取り 14 + 書き込み 7 + 委譲/質問 2）**: 正本は `src/features/chat/agent/toolDefinitions.ts` の `AGENT_TOOLS`。
-		  - 読み取り（14 種、`READ_ONLY_EXECUTORS`）: `search_codex` / `list_codex_by_type` / `get_codex_entry` / `list_codex_tags` / `search_codex_by_tags` / `find_related_entries` / `list_chapters` / `get_scene` / `search_scenes` / `search_snippets` / `get_chapter_summaries` / `list_open_foreshadows` / `get_foreshadow_detail` / `get_scene_timeline_neighbors`。`list_open_foreshadows` は未回収伏線の一覧、`get_foreshadow_detail` は単一伏線の詳細（出現／回収シーン、関連 Codex）、`get_scene_timeline_neighbors` は指定シーンのストーリー時間軸での前後シーンの synopsis を返す
-		  - 書き込み（7 種、`MUTATING_EXECUTORS`、AiPolicy ゲート付き）: `create_codex_entry` / `update_codex_entry`（`knowledgeWrite`）／`create_foreshadow` / `update_foreshadow`（`knowledgeWrite`、伏線レジスタの起票・更新）／`create_snippet`（`knowledgeWrite`）／`apply_ai_tree_plan`（`structureWrite`、synopsis 付きは `bodyWrite` も）／`propose_scene_body`（`bodyWrite`、staged accept/reject の本文提案）
+		- **利用可能ツール（37 種 = 読み取り 20 + 書き込み 15 + 委譲/質問 2）**: 正本は `toolExecutors.ts` の `READ_ONLY_EXECUTORS` / `MUTATING_EXECUTORS` と `toolDefinitions.ts` の `AGENT_TOOLS`（`toolDefinitions.test.ts` が drift を gate）。
+		  - 読み取り（20 種、`READ_ONLY_EXECUTORS`）: 従来 14 種に加え **`list_plot_threads` / `get_thread_scenes`**（プロットスレッド）と **`list_events` / `get_event_detail` / `get_character_timeline` / `get_chronicle_state`**（作中年表）
+		  - 書き込み（15 種、`MUTATING_EXECUTORS`、AiPolicy ゲート付き）: 従来 7 種（Codex / 伏線 / Snippet / ツリー / 本文提案）に加え **年表 8 種**（`create_event` / `update_event` / `delete_event` / `stamp_scene_event` / `unstamp_scene_event` / `set_event_participants` / `add_event_relation` / `remove_event_relation`）
 		  - 委譲／質問（2 種、`EXECUTORS` 外で chatStore が intercept）: `run_research`（独立予算を持つ読み取り専用サブエージェントへ調査を委譲し要約のみ返す。再帰深さは構造的に depth=1 固定）／`ask_user`（ユーザーへ質問してインライン回答を待機）
 		- **呼び出し上限（model-aware）**: 1 ターンあたりのデータ取得ツール呼び出し上限は `getAgentToolCallBudget(model)` がコンテキスト窓に応じて段階的に決める（< 64k = 10、≥ 64k = 12、≥ 200k = 16、≥ 400k = 25）。上限超過時はループ打ち切りで最終応答生成に遷移し、「続行」アフォーダンスで追加ターンに伸ばせる。`ask_user` はこのデータ取得予算を消費せず別枠でカウントする
 		- **トークン予算制御**: ツール結果の累計トークンが予算を超えそうになった時点で追加ツール呼び出しを抑止し、既取得の結果のみで応答を合成する
@@ -444,6 +444,15 @@ AIメッセージ内のテキストを選択すると、選択範囲の近くに
 | L3 Current scene | ✅ | ❌ |
 | L4 Codex entries | ✅ (自動検出+Spotlight、フェーズ解決済み) | ✅ (Spotlightのみ、タイムライン注入) |
 | L5 Conversation history | ✅ | ✅ |
+
+> **派生メタ層（2026-06-28 追記）:** L0〜L6 以外に、シーンスコープ Chat で以下が注入される。詳細は [`CONTEXT_INJECTION.md`](CONTEXT_INJECTION.md)。
+>
+> | 層 | 内容 | シーンスコープ |
+> |----|------|:----------:|
+> | RAG | 意味検索による関連過去シーン抜粋 | ✅ |
+> | EPISODIC | チャット履歴の意味検索 recall | ✅ |
+> | PLOT_THREAD | 現在シーンが属するプロットスレッドの位置づけ（本文なし） | ✅ |
+> | CHRONICLE | 作中年表スナップショット（`aiPrompt.chronicle.enabled`、既定 ON） | ✅ |
 
 - プロジェクトスコープではシーンが存在しないため、シーン依存のL2・L3は省略される
 - L4はシーン本文からの自動検出ができないため、Spotlight されたエントリのみ注入

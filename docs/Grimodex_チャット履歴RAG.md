@@ -39,8 +39,8 @@
 ### 3. プロンプト注入（contextBuilder）
 
 - 新入力 `chatRecall?: Array<{label; text}>`、新タグ `chat_history`、新レイヤー `EPISODIC`。
-- **cacheSegments には絶対に入れない**（クエリ依存で毎ターン変わる → Anthropic prompt cache が壊れる）。`prompt` + `volatileTail` のみ。`l4Volatile → scene RAG → episodic → L5` の順で配置。
-- trim 順は **EPISODIC → RAG → L5 → …**（最も投機的な層を最初に削る）。
+- **cacheSegments には絶対に入れない**（クエリ依存で毎ターン変わる → Anthropic prompt cache が壊れる）。`prompt` + `volatileTail` のみ。`l4Volatile → PLOT_THREAD → scene RAG → EPISODIC → L5` の順で配置（`contextBuilder.ts` 1701–1708）。
+- trim 順は **EPISODIC → RAG → PLOT_THREAD → CHRONICLE → L5 → …**（最も投機的な層を最初に削る）。
 
 ### 4. 「Codex に昇格しますか？」プロンプト（柔→硬の橋渡し）
 

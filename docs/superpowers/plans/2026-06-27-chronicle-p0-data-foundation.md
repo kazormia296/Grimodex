@@ -1,6 +1,6 @@
 # Chronicle P0（作中年表 データ基盤）Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax.
 
 **Goal:** 作中年表(Chronicle)の永続データ基盤（Event/参加者/scene参照/暦）と季節判定の純関数を、UI 無しで完全にテスト可能な形で追加する。
 
@@ -43,7 +43,7 @@
   - `seasonOf(time: number, calendar: ChronicleCalendar): string | null`
   - `nextEventOrdinal(existing: string[]): string`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 ```typescript
 // src/features/chronicle/chronicleTime.test.ts
@@ -114,12 +114,12 @@ describe("nextEventOrdinal", () => {
 });
 ```
 
-- [ ] **Step 2: テストが失敗するのを確認**
+- [x] **Step 2: テストが失敗するのを確認**
 
 Run: `pnpm test --run src/features/chronicle/chronicleTime.test.ts`
 Expected: FAIL（`chronicleTime` モジュールが無い）
 
-- [ ] **Step 3: 最小実装を書く**
+- [x] **Step 3: 最小実装を書く**
 
 ```typescript
 // src/features/chronicle/chronicleTime.ts
@@ -173,12 +173,12 @@ export function nextEventOrdinal(existing: string[]): string {
 }
 ```
 
-- [ ] **Step 4: テストが通るのを確認**
+- [x] **Step 4: テストが通るのを確認**
 
 Run: `pnpm test --run src/features/chronicle/chronicleTime.test.ts`
 Expected: PASS（全ケース green）
 
-- [ ] **Step 5: コミット**
+- [x] **Step 5: コミット**
 
 ```bash
 git add src/features/chronicle/chronicleTime.ts src/features/chronicle/chronicleTime.test.ts
@@ -196,7 +196,7 @@ git commit -m "feat(chronicle): 暦/季節判定とordinal生成の純関数を�
 - Consumes: 既存 `projects`, `codexEntries`, `treeNodes`, `sqliteTable/text/integer/index/primaryKey`。
 - Produces: `events`, `eventParticipants`, `sceneEvents`, `projectCalendar` テーブル、`ChronicleEvent`/`NewChronicleEvent` 型、`EVENT_PRECISIONS`/`EventPrecision`。
 
-- [ ] **Step 1: 実装を書く（plotThreadBranches 型群の直後に追記）**
+- [x] **Step 1: 実装を書く（plotThreadBranches 型群の直後に追記）**
 
 `src/db/schema.ts` の `export type PlotThreadBranch = ...` と `PLOT_BRANCH_KINDS` 定義の直後に以下を追加:
 
@@ -303,12 +303,12 @@ export type SceneEvent = typeof sceneEvents.$inferSelect;
 export type ProjectCalendar = typeof projectCalendar.$inferSelect;
 ```
 
-- [ ] **Step 2: 型チェック**
+- [x] **Step 2: 型チェック**
 
 Run: `npx tsc --noEmit`
 Expected: PASS（新テーブル/型がエラー無く解決。`codexEntries`/`treeNodes`/`projects` は同ファイル既定義で参照可能）
 
-- [ ] **Step 3: コミット**
+- [x] **Step 3: コミット**
 
 ```bash
 git add src/db/schema.ts
@@ -326,7 +326,7 @@ git commit -m "feat(chronicle): events/event_participants/scene_events/project_c
 - Consumes: `conn`（migrate() 内の既存接続）。
 - Produces: SQLite テーブル `events` / `event_participants` / `scene_events` / `project_calendar`（schema.ts と完全ミラー）。
 
-- [ ] **Step 1: 実装を書く（plot_thread_branches の CREATE 直後に追記）**
+- [x] **Step 1: 実装を書く（plot_thread_branches の CREATE 直後に追記）**
 
 `migrate.rs` の plot_thread_branches を作る `conn.execute_batch(...)?;` の直後に以下を追加:
 
@@ -394,12 +394,12 @@ git commit -m "feat(chronicle): events/event_participants/scene_events/project_c
         )?;
 ```
 
-- [ ] **Step 2: Rust チェック**
+- [x] **Step 2: Rust チェック**
 
 Run: `cd src-tauri && cargo check`
 Expected: PASS（構文/借用エラー無し。`conn` は既存スコープ）
 
-- [ ] **Step 3: コミット**
+- [x] **Step 3: コミット**
 
 ```bash
 git add src-tauri/src/database/migrate.rs
@@ -417,7 +417,7 @@ git commit -m "feat(chronicle): 4テーブルのマイグレーション(Rust mi
 - Consumes: `db`(`@/db/client`), `events/eventParticipants/sceneEvents/projectCalendar`(`@/db/schema`), `EventPrecision`, `eq`/`inArray`(`drizzle-orm`), `nextEventOrdinal`(`./chronicleTime`)。
 - Produces: `EventRow`/`SceneEventRow`/`ParticipantRow`/`CalendarRow` 型、`createEvent`/`updateEvent`/`deleteEvent`/`listEvents`、`setEventParticipants`/`listEventParticipants`、`linkSceneToEvent`/`unlinkSceneFromEvent`/`listSceneEvents`、`getProjectCalendar`/`upsertProjectCalendar`。
 
-- [ ] **Step 1: 実装を書く**
+- [x] **Step 1: 実装を書く**
 
 ```typescript
 // src/features/chronicle/api.ts
@@ -675,17 +675,17 @@ export async function upsertProjectCalendar(data: {
 }
 ```
 
-- [ ] **Step 2: 型チェック**
+- [x] **Step 2: 型チェック**
 
 Run: `npx tsc --noEmit`
 Expected: PASS
 
-- [ ] **Step 3: Lint**
+- [x] **Step 3: Lint**
 
 Run: `pnpm lint:fix`
 Expected: エラー無し（未使用 import 等あれば自動修正）
 
-- [ ] **Step 4: コミット**
+- [x] **Step 4: コミット**
 
 ```bash
 git add src/features/chronicle/api.ts
@@ -696,7 +696,7 @@ git commit -m "feat(chronicle): events/participants/scene_events/calendar の CR
 
 ### Task 5: 全体検証
 
-- [ ] **Step 1: 型・lint・該当テスト・Rust を通す**
+- [x] **Step 1: 型・lint・該当テスト・Rust を通す**
 
 ```bash
 npx tsc --noEmit
@@ -706,7 +706,7 @@ cd src-tauri && cargo check && cd ..
 ```
 Expected: 全て PASS。
 
-- [ ] **Step 2: スモーク（既存テスト退行が無いこと）**
+- [x] **Step 2: スモーク（既存テスト退行が無いこと）**
 
 Run: `pnpm test --run src/db` （schema を import する周辺が壊れていないこと）
 Expected: PASS（または該当無しで skip）
