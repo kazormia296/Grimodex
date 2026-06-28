@@ -1,4 +1,5 @@
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import type { EventPrecision } from "@/db/schema";
 import { seasonOf, type ChronicleCalendar } from "./chronicleTime";
 import { resolveSceneAnchor, type ChronicleAnchor } from "./resolveSceneAnchor";
 import type {
@@ -43,6 +44,8 @@ export interface ChronicleSnapshot {
     source: ChronicleAnchor["source"];
     startTime: number | null;
     season: string | null;
+    /** アンカー出来事の日付の確度。none アンカーは null。 */
+    precision: EventPrecision | null;
   };
   characters: CharacterState[];
   recentEvents: SnapshotEvent[];
@@ -238,7 +241,12 @@ export function deriveChronicleSnapshot(
     });
 
   return {
-    time: { source: anchor.source, startTime: anchor.startTime, season },
+    time: {
+      source: anchor.source,
+      startTime: anchor.startTime,
+      season,
+      precision: anchor.precision,
+    },
     characters,
     recentEvents: deriveRecentEvents(anchor, events),
     unresolvedCausal: deriveUnresolvedCausal(anchor, events, relations),
@@ -333,6 +341,7 @@ interface Labels {
   timeSeason: (season: string) => string;
   timeOrderOnly: string;
   timeProxySuffix: string;
+  precisionSuffix: (p: "approx" | "unknown") => string;
   charactersHeader: string;
   status: Record<CharacterStatus, string>;
   age: (n: number) => string;
@@ -348,6 +357,8 @@ const LABELS: Record<"ja" | "en", Labels> = {
     timeSeason: (s) => `作中時刻: ${s}`,
     timeOrderOnly: "作中時刻: 作中順序のみ（暦未設定）",
     timeProxySuffix: "（近傍シーンから推定）",
+    precisionSuffix: (p) =>
+      p === "approx" ? "（日付はおおよそ）" : "（日付は不確実）",
     charactersHeader: "登場人物の状況:",
     status: { alive: "存命", dead: "故人", unborn: "未誕生", unknown: "不明" },
     age: (n) => `${n}歳`,
@@ -361,6 +372,8 @@ const LABELS: Record<"ja" | "en", Labels> = {
     timeSeason: (s) => `Story time: ${s}`,
     timeOrderOnly: "Story time: narrative order only (no calendar)",
     timeProxySuffix: " (estimated from a nearby scene)",
+    precisionSuffix: (p) =>
+      p === "approx" ? " (date approximate)" : " (date uncertain)",
     charactersHeader: "Character status:",
     status: {
       alive: "alive",
@@ -421,6 +434,12 @@ function renderAtLevel(
       ? L.timeSeason(snapshot.time.season)
       : L.timeOrderOnly;
     if (snapshot.time.source === "proxy") timeLine += L.timeProxySuffix;
+    if (
+      snapshot.time.precision === "approx" ||
+      snapshot.time.precision === "unknown"
+    ) {
+      timeLine += L.precisionSuffix(snapshot.time.precision);
+    }
     lines.push(timeLine);
   }
 

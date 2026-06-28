@@ -383,6 +383,7 @@ pub async fn get_chronicle_state(
                 location_codex_id: e.location_codex_id,
                 start_time: e.start_time,
                 kind: e.kind,
+                precision: e.precision,
             })
             .collect(),
         participants: participants

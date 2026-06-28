@@ -2,13 +2,14 @@ import { describe, it, expect } from "vitest";
 import { resolveSceneAnchor } from "./resolveSceneAnchor";
 import type { EventRow, SceneEventRow } from "./api";
 
-/** テスト用の最小 event 行。resolveSceneAnchor は id/ordinal/startTime のみ使う。 */
+/** テスト用の最小 event 行。resolveSceneAnchor は id/ordinal/startTime/precision を使う。 */
 function ev(
   id: string,
   ordinal: string,
   startTime: number | null = null,
-): Pick<EventRow, "id" | "ordinal" | "startTime"> {
-  return { id, ordinal, startTime };
+  precision: EventRow["precision"] = "exact",
+): Pick<EventRow, "id" | "ordinal" | "startTime" | "precision"> {
+  return { id, ordinal, startTime, precision };
 }
 function link(sceneId: string, eventId: string): SceneEventRow {
   return { sceneId, eventId };
@@ -25,7 +26,12 @@ describe("resolveSceneAnchor", () => {
       events: [ev("e1", "a0", 10), ev("e2", "a5", 30)],
       readingOrder: order("s1", "s2"),
     });
-    expect(a).toEqual({ ordinal: "a5", startTime: 30, source: "stamped" });
+    expect(a).toEqual({
+      ordinal: "a5",
+      startTime: 30,
+      precision: "exact",
+      source: "stamped",
+    });
   });
 
   it("stamped: startTime=null の event でも ordinal は採用（暦系のみ null）", () => {
@@ -34,7 +40,12 @@ describe("resolveSceneAnchor", () => {
       events: [ev("e1", "a3", null)],
       readingOrder: order("s1"),
     });
-    expect(a).toEqual({ ordinal: "a3", startTime: null, source: "stamped" });
+    expect(a).toEqual({
+      ordinal: "a3",
+      startTime: null,
+      precision: "exact",
+      source: "stamped",
+    });
   });
 
   it("proxy: 現在シーンに stamp 無し → 前方で最も近い stamp 済シーンを代理採用", () => {
@@ -47,6 +58,7 @@ describe("resolveSceneAnchor", () => {
     expect(a).toEqual({
       ordinal: "a2",
       startTime: 20,
+      precision: "exact",
       source: "proxy",
       proxySceneId: "s2",
     });
@@ -71,7 +83,12 @@ describe("resolveSceneAnchor", () => {
       events: [ev("e3", "a5", 50)],
       readingOrder: order("s1", "s2", "s3"),
     });
-    expect(a).toEqual({ ordinal: "", startTime: null, source: "none" });
+    expect(a).toEqual({
+      ordinal: "",
+      startTime: null,
+      precision: null,
+      source: "none",
+    });
   });
 
   it("none: プロジェクト内に stamp が皆無", () => {
@@ -80,7 +97,12 @@ describe("resolveSceneAnchor", () => {
       events: [ev("e1", "a0", 5)],
       readingOrder: order("s1", "s2"),
     });
-    expect(a).toEqual({ ordinal: "", startTime: null, source: "none" });
+    expect(a).toEqual({
+      ordinal: "",
+      startTime: null,
+      precision: null,
+      source: "none",
+    });
   });
 
   it("none: 現在シーンが reading-order に無く（削除済等）stamp も無いと proxy 不能", () => {

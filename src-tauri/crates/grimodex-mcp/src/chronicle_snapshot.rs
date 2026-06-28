@@ -45,10 +45,16 @@ pub struct EventInput {
     pub start_time: Option<i64>,
     #[serde(default = "default_kind")]
     pub kind: String,
+    #[serde(default = "default_precision")]
+    pub precision: String,
 }
 
 fn default_kind() -> String {
     "generic".to_string()
+}
+
+fn default_precision() -> String {
+    "exact".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -106,6 +112,8 @@ pub struct SceneNode {
 pub struct ChronicleAnchor {
     pub ordinal: String,
     pub start_time: Option<i64>,
+    #[serde(default)]
+    pub precision: Option<String>,
     pub source: String, // "stamped" | "proxy" | "none"
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub proxy_scene_id: Option<String>,
@@ -117,6 +125,7 @@ pub struct SnapshotTime {
     pub source: String,
     pub start_time: Option<i64>,
     pub season: Option<String>,
+    pub precision: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -291,6 +300,7 @@ pub fn resolve_scene_anchor(
         ChronicleAnchor {
             ordinal: best.ordinal.clone(),
             start_time: best.start_time,
+            precision: Some(best.precision.clone()),
             source: String::new(),
             proxy_scene_id: None,
         }
@@ -332,6 +342,7 @@ pub fn resolve_scene_anchor(
     ChronicleAnchor {
         ordinal: String::new(),
         start_time: None,
+        precision: None,
         source: "none".to_string(),
         proxy_scene_id: None,
     }
@@ -599,6 +610,7 @@ pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
             source: input.anchor.source.clone(),
             start_time: input.anchor.start_time,
             season,
+            precision: input.anchor.precision.clone(),
         },
         characters,
         recent_events: derive_recent_events(input.anchor, input.events),

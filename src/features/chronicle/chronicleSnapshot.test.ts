@@ -61,9 +61,11 @@ function input(
 const stamped = (
   ordinal: string,
   startTime: number | null,
+  precision: ChronicleAnchor["precision"] = "exact",
 ): ChronicleAnchor => ({
   ordinal,
   startTime,
+  precision,
   source: "stamped",
 });
 
@@ -357,7 +359,12 @@ describe("deriveChronicleSnapshot — none mode", () => {
   it("source=none は offpage のみ（全 event 対象）、recent/causal は空", () => {
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: { ordinal: "", startTime: null, source: "none" },
+        anchor: {
+          ordinal: "",
+          startTime: null,
+          precision: null,
+          source: "none",
+        },
         events: [
           mkEvent({ id: "e1", title: "背景A", ordinal: "a1" }),
           mkEvent({ id: "e2", title: "背景B", ordinal: "a2" }),
@@ -411,10 +418,46 @@ describe("renderChronicleSnapshot", () => {
     expect(text).toContain("戴冠式");
   });
 
+  it("確度 approx/unknown は時刻行に確度注記を付す（ja）", () => {
+    const approx = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 100, "approx"),
+        events: [],
+        calendar: CAL,
+        characterIds: [],
+      }),
+    );
+    expect(renderChronicleSnapshot(approx, "ja")).toContain("日付はおおよそ");
+    const unknown = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 100, "unknown"),
+        events: [],
+        calendar: CAL,
+        characterIds: [],
+      }),
+    );
+    expect(renderChronicleSnapshot(unknown, "ja")).toContain("日付は不確実");
+    // exact は注記なし。
+    const exact = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a5", 100, "exact"),
+        events: [],
+        calendar: CAL,
+        characterIds: [],
+      }),
+    );
+    expect(renderChronicleSnapshot(exact, "ja")).not.toContain("日付は");
+  });
+
   it("none モードはオフページ背景のみを描画", () => {
     const snap = deriveChronicleSnapshot(
       input({
-        anchor: { ordinal: "", startTime: null, source: "none" },
+        anchor: {
+          ordinal: "",
+          startTime: null,
+          precision: null,
+          source: "none",
+        },
         events: [mkEvent({ id: "e1", title: "古の大戦", ordinal: "a1" })],
         characterIds: [],
       }),
@@ -463,7 +506,7 @@ describe("renderChronicleSnapshot", () => {
 describe("pickSnapshotCharacters", () => {
   it("none アンカーは空（オフページのみ）", () => {
     const ids = pickSnapshotCharacters({
-      anchor: { ordinal: "", startTime: null, source: "none" },
+      anchor: { ordinal: "", startTime: null, precision: null, source: "none" },
       events: [mkEvent({ id: "e1", primaryCodexId: "c1", ordinal: "a1" })],
       participants: [],
       sceneCodexIds: ["sceneChar"],
@@ -511,7 +554,7 @@ describe("pickSnapshotCharacters", () => {
 
   it("none アンカーでは @mention 人物も含めない（D1: オフページのみ）", () => {
     const ids = pickSnapshotCharacters({
-      anchor: { ordinal: "", startTime: null, source: "none" },
+      anchor: { ordinal: "", startTime: null, precision: null, source: "none" },
       events: [],
       participants: [],
       sceneCodexIds: [],

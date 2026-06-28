@@ -1,4 +1,5 @@
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import type { EventPrecision } from "@/db/schema";
 import type { EventRow, SceneEventRow } from "./api";
 
 /**
@@ -10,13 +11,15 @@ export interface ChronicleAnchor {
   ordinal: string;
   /** 紀元からの日数。null=暦未設定/未確定 → 季節・年齢セクションは省略。 */
   startTime: number | null;
+  /** アンカー出来事の日付の確度。none アンカーは null。 */
+  precision: EventPrecision | null;
   /** stamped=シーン直結 / proxy=前方最近シーンの代理 / none=未確定（オフページのみ）。 */
   source: "stamped" | "proxy" | "none";
   /** source=proxy のとき、代理元シーン。 */
   proxySceneId?: string;
 }
 
-type MinEvent = Pick<EventRow, "id" | "ordinal" | "startTime">;
+type MinEvent = Pick<EventRow, "id" | "ordinal" | "startTime" | "precision">;
 
 /**
  * シーンの作中時刻アンカーを解決する（純関数）。
@@ -55,7 +58,12 @@ export function resolveSceneAnchor(
   const own = stampedByScene.get(sceneId);
   if (own && own.length > 0) {
     const e = maxOrdinal(own);
-    return { ordinal: e.ordinal, startTime: e.startTime, source: "stamped" };
+    return {
+      ordinal: e.ordinal,
+      startTime: e.startTime,
+      precision: e.precision,
+      source: "stamped",
+    };
   }
 
   // 2. proxy — 前方(index 小)で最も近い stamp 済シーン
@@ -76,6 +84,7 @@ export function resolveSceneAnchor(
       return {
         ordinal: e.ordinal,
         startTime: e.startTime,
+        precision: e.precision,
         source: "proxy",
         proxySceneId: bestScene,
       };
@@ -83,5 +92,5 @@ export function resolveSceneAnchor(
   }
 
   // 3. none
-  return { ordinal: "", startTime: null, source: "none" };
+  return { ordinal: "", startTime: null, precision: null, source: "none" };
 }

@@ -7,7 +7,7 @@
       { "id": "s2", "parentId": null, "nodeType": "scene", "sortOrder": "a1" }
     ],
     "events": [
-      { "id": "e1", "title": "Meeting", "note": null, "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 100, "kind": "generic" }
+      { "id": "e1", "title": "Meeting", "note": null, "ordinal": "a1", "primaryCodexId": "hero", "locationCodexId": null, "startTime": 100, "kind": "generic", "precision": "unknown" }
     ],
     "participants": [],
     "relations": [],
@@ -18,7 +18,7 @@
     "codexNames": { "hero": "Hero" }
   },
   "expected": {
-    "time": { "source": "proxy", "startTime": 100, "season": null },
+    "time": { "source": "proxy", "startTime": 100, "season": null, "precision": "unknown" },
     "characters": [
       { "codexId": "hero", "name": "Hero", "status": "unknown", "age": null, "location": null }
     ],
