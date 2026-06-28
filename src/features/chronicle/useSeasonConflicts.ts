@@ -5,6 +5,7 @@ import {
   DEFAULT_SEASON_BOUNDARIES,
   type ChronicleCalendar,
   type SeasonBoundary,
+  type MonthDef,
 } from "./chronicleTime";
 import {
   findSeasonConflicts,
@@ -77,9 +78,24 @@ export function useSeasonConflicts({
         } catch {
           boundaries = [];
         }
+        let months: MonthDef[];
+        try {
+          months = JSON.parse(row.months) as MonthDef[];
+        } catch {
+          months = [];
+        }
+        let weekdayNames: string[];
+        try {
+          weekdayNames = JSON.parse(row.weekdayNames) as string[];
+        } catch {
+          weekdayNames = [];
+        }
         setCalendar({
           daysPerYear: row.daysPerYear,
           seasonBoundaries: boundaries,
+          startYear: row.startYear,
+          months,
+          weekdayNames,
         });
       })
       .catch(() => {
@@ -146,6 +162,9 @@ export function useSeasonConflicts({
         projectId,
         daysPerYear: cal.daysPerYear,
         seasonBoundaries: JSON.stringify(cal.seasonBoundaries),
+        startYear: cal.startYear ?? 0,
+        months: JSON.stringify(cal.months ?? []),
+        weekdayNames: JSON.stringify(cal.weekdayNames ?? []),
       });
       setCalVersion((v) => v + 1);
     },

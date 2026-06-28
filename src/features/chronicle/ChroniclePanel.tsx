@@ -89,6 +89,22 @@ export function ChroniclePanel() {
     () => entries.map((e) => ({ id: e.id, name: e.name })),
     [entries],
   );
+  // 主人物ピッカーは character、場所ピッカーは location に種別フィルタする
+  // （レーン主軸の people は任意 Codex 可なので全件のまま）。
+  const characters = useMemo(
+    () =>
+      entries
+        .filter((e) => e.type === "character")
+        .map((e) => ({ id: e.id, name: e.name })),
+    [entries],
+  );
+  const locations = useMemo(
+    () =>
+      entries
+        .filter((e) => e.type === "location")
+        .map((e) => ({ id: e.id, name: e.name })),
+    [entries],
+  );
 
   const loadedProjectIdRef = useRef<string | null>(null);
 
@@ -503,7 +519,9 @@ export function ChroniclePanel() {
       {selected && (
         <ChronicleInspector
           event={selected}
-          people={people}
+          characters={characters}
+          locations={locations}
+          calendar={calendar ?? { daysPerYear: 360, seasonBoundaries: [] }}
           conflicts={conflicts.filter((c) => c.eventId === selected.id)}
           ageConflicts={ageConflicts.filter((c) => c.eventId === selected.id)}
           hasTwoPlacesIssue={twoPlacesConflicts.some(

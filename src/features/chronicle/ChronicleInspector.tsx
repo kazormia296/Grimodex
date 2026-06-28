@@ -5,14 +5,22 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
 } from "lucide-react";
-import { EVENT_PRECISIONS } from "@/db/schema";
+import { EVENT_PRECISIONS, EVENT_KINDS } from "@/db/schema";
 import type { EventRow } from "./api";
 import type { SeasonConflict } from "./seasonCheck";
 import type { AgeConflict } from "./ageCheck";
+import type { ChronicleCalendar } from "./chronicleTime";
+import { CodexEntryPicker } from "./CodexEntryPicker";
+import { EventDateEditor, type EventDatePatch } from "./EventDateEditor";
 
 export interface ChronicleInspectorProps {
   event: EventRow;
-  people: { id: string; name: string }[];
+  /** 主人物候補（character 種別で絞り込み済み）。 */
+  characters: { id: string; name: string }[];
+  /** 場所候補（location 種別で絞り込み済み）。 */
+  locations: { id: string; name: string }[];
+  /** 暦（日付エディタの年/月/日/季節変換に使う）。 */
+  calendar: ChronicleCalendar;
   conflicts?: SeasonConflict[];
   ageConflicts?: AgeConflict[];
   hasTwoPlacesIssue?: boolean;
@@ -35,7 +43,9 @@ export interface ChronicleInspectorProps {
 /** 選択中の出来事を編集する小パネル（時刻/precision/主人物/原因/Timeline同期/削除）。 */
 export function ChronicleInspector({
   event,
-  people,
+  characters,
+  locations,
+  calendar,
   conflicts,
   ageConflicts,
   hasTwoPlacesIssue = false,
@@ -55,11 +65,6 @@ export function ChronicleInspector({
   const causeOptions = allEvents.filter(
     (e) => e.id !== event.id && !causeIds.includes(e.id),
   );
-
-  const numOrNull = (v: string): number | null => {
-    const n = Number(v);
-    return v.trim() === "" || Number.isNaN(n) ? null : n;
-  };
 
   return (
     <div className="shrink-0 space-y-2 border-t p-3 text-sm">
@@ -167,27 +172,19 @@ export function ChronicleInspector({
           )}
         </div>
       )}
+      <EventDateEditor
+        calendar={calendar}
+        startTime={event.startTime}
+        startMinute={event.startMinute}
+        startGranularity={event.startGranularity}
+        endTime={event.endTime}
+        endMinute={event.endMinute}
+        endGranularity={event.endGranularity}
+        onPatch={(p: EventDatePatch) => onPatch(p)}
+      />
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <label className="flex items-center gap-1">
-          {t("chronicle.startTime", "開始")}
-          <input
-            type="number"
-            value={event.startTime ?? ""}
-            onChange={(e) => onPatch({ startTime: numOrNull(e.target.value) })}
-            className="w-20 rounded border bg-transparent px-1 py-0.5"
-          />
-        </label>
-        <label className="flex items-center gap-1">
-          {t("chronicle.endTime", "終了")}
-          <input
-            type="number"
-            value={event.endTime ?? ""}
-            onChange={(e) => onPatch({ endTime: numOrNull(e.target.value) })}
-            className="w-20 rounded border bg-transparent px-1 py-0.5"
-          />
-        </label>
-        <label className="flex items-center gap-1">
-          {t("chronicle.precisionLabel", "確度")}
+          {t("chronicle.precisionLabel", "日付の確度")}
           <select
             value={event.precision}
             onChange={(e) =>
@@ -204,50 +201,37 @@ export function ChronicleInspector({
         </label>
         <label className="flex items-center gap-1">
           {t("chronicle.primaryCodex", "主人物")}
-          <select
-            value={event.primaryCodexId ?? ""}
-            onChange={(e) =>
-              onPatch({ primaryCodexId: e.target.value || null })
-            }
-            className="max-w-32 rounded border bg-transparent px-1 py-0.5"
-          >
-            <option value="">{t("chronicle.none", "なし")}</option>
-            {people.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+          <CodexEntryPicker
+            value={event.primaryCodexId}
+            options={characters}
+            onChange={(id) => onPatch({ primaryCodexId: id })}
+            ariaLabel={t("chronicle.primaryCodex", "主人物")}
+          />
         </label>
         <label className="flex items-center gap-1">
           {t("chronicle.location", "場所")}
+          <CodexEntryPicker
+            value={event.locationCodexId}
+            options={locations}
+            onChange={(id) => onPatch({ locationCodexId: id })}
+            ariaLabel={t("chronicle.location", "場所")}
+          />
+        </label>
+        <label className="flex items-center gap-1">
+          {t("chronicle.kindLabel", "種別")}
           <select
-            value={event.locationCodexId ?? ""}
+            value={event.kind}
             onChange={(e) =>
-              onPatch({ locationCodexId: e.target.value || null })
+              onPatch({ kind: e.target.value as EventRow["kind"] })
             }
-            className="max-w-32 rounded border bg-transparent px-1 py-0.5"
+            className="rounded border bg-transparent px-1 py-0.5"
           >
-            <option value="">{t("chronicle.none", "なし")}</option>
-            {people.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
+            {EVENT_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {t(`chronicle.kind.${k}`, k)}
               </option>
             ))}
           </select>
-        </label>
-        <label
-          className="flex items-center gap-1"
-          title={t("chronicle.birthHint", "主人物の出生。年齢計算の基準点")}
-        >
-          <input
-            type="checkbox"
-            checked={event.kind === "birth"}
-            onChange={(e) =>
-              onPatch({ kind: e.target.checked ? "birth" : "generic" })
-            }
-          />
-          {t("chronicle.birth", "出生")}
         </label>
         {linkedSceneCount > 0 && onStamp && (
           <button
