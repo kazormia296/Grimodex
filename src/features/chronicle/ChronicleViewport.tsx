@@ -1,166 +1,323 @@
+import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { ChronicleLaneModel } from "./chronicleLaneModel";
-import type { ScaledPoint } from "./chronicleTimeScale";
-import type { CausalEdgeGeom } from "./chronicleEdges";
-import { EventMarker } from "./EventMarker";
+import {
+  panByPx,
+  viewStartFromThumb,
+  zoomAt,
+  type View,
+} from "./chronicleAxis";
+import type { ChronicleLayout } from "./chronicleLayout";
+import { ChronicleRuler } from "./ChronicleRuler";
+import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
+import { EventMarker, type MarkerEvent } from "./EventMarker";
 
 export interface ChronicleViewportProps {
-  model: ChronicleLaneModel;
-  /** eventId → 射影済み x/xEnd（chronicleTimeScale.scaleEvents の結果 Map）。 */
-  scaled: Map<string, ScaledPoint>;
-  /** SVG 幅(px)。 */
-  width: number;
-  /** 左ラベルガター幅(px)。scaleEvents の padX と一致させること。 */
-  gutterX: number;
+  view: View;
+  onViewChange: (v: View) => void;
+  onMeasureTrack: (w: number) => void;
+  layout: ChronicleLayout;
+  eventsById: Map<string, MarkerEvent>;
   selectedEventId: string | null;
-  onSelectEvent: (eventId: string) => void;
-  /** 季節整合などの矛盾を持つ eventId 集合（警告リング表示）。 */
-  conflictIds?: Set<string>;
-  /** Timeline で選択中のシーンに紐づく eventId 集合（関連ハイライト）。 */
-  relatedIds?: Set<string>;
-  /** 因果エッジ（原因→結果）の描画幾何。conflict は赤で描く。 */
-  causalEdges?: CausalEdgeGeom[];
+  activeLaneKey: string | null;
+  conflictIds: Set<string>;
+  /** Timeline で選択中のシーンに紐づく出来事（淡いリング強調）。 */
+  relatedIds: Set<string>;
+  showEdges: boolean;
+  labelsOn: boolean;
+  onSelectEvent: (id: string) => void;
 }
 
 /**
- * 人物レーン×作中時間軸の SVG 年表（presentational）。
- * 座標数学は親が chronicleTimeScale/chronicleLaneModel で算出して渡す。
- * このコンポーネントは描画のみ（200行規約・モノリス複製禁止）。
+ * 作中年表ビューポート（DOM ベースの pan/zoom 水平タイムライン）。
+ * ルーラー＋（左ガター＋トラック）＋スクロールバーを積む。トラックの
+ * ホイール=ズーム / ドラッグ=パン / ResizeObserver=幅計測 を司り、座標は
+ * 親が buildChronicleLayout（純関数）で算出した layout から描く。
  */
 export function ChronicleViewport({
-  model,
-  scaled,
-  width,
-  gutterX,
+  view,
+  onViewChange,
+  onMeasureTrack,
+  layout,
+  eventsById,
   selectedEventId,
-  onSelectEvent,
+  activeLaneKey,
   conflictIds,
   relatedIds,
-  causalEdges,
+  showEdges,
+  labelsOn,
+  onSelectEvent,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
-  const hasUnassigned = model.unassigned.length > 0;
-  const unassignedY = model.contentHeight + model.laneHeight / 2;
-  const height = model.contentHeight + (hasUnassigned ? model.laneHeight : 0);
+  const trackElRef = useRef<HTMLDivElement | null>(null);
+  // ネイティブ wheel / pointer ハンドラから最新値を読むための ref。
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const draggedRef = useRef(false);
+  const onViewChangeRef = useRef(onViewChange);
+  onViewChangeRef.current = onViewChange;
+  const onMeasureRef = useRef(onMeasureTrack);
+  onMeasureRef.current = onMeasureTrack;
+  const cleanupRef = useRef<(() => void) | null>(null);
+  // 進行中のドラッグの document リスナ撤去関数（アンマウント時の取りこぼし防止）。
+  const dragCleanupRef = useRef<(() => void) | null>(null);
 
-  const renderMarkers = (
-    markers: ChronicleLaneModel["lanes"][number]["markers"],
-    y: number,
-  ) =>
-    markers.map((m) => {
-      const s = scaled.get(m.eventId);
-      if (!s) return null;
-      const conflict = conflictIds?.has(m.eventId) ?? false;
-      const related = relatedIds?.has(m.eventId) ?? false;
-      return (
-        <g key={m.eventId}>
-          {related && (
-            <circle
-              cx={s.x}
-              cy={y}
-              r={11}
-              className="fill-primary/15"
-              data-related={m.eventId}
-            />
-          )}
-          {conflict && (
-            <circle
-              cx={s.x}
-              cy={y}
-              r={9}
-              fill="none"
-              className="stroke-amber-500"
-              strokeWidth={1.5}
-              data-conflict={m.eventId}
-            >
-              <title>{t("chronicle.seasonConflict", "季節の矛盾")}</title>
-            </circle>
-          )}
-          <EventMarker
-            marker={m}
-            x={s.x}
-            xEnd={s.xEnd}
-            y={y}
-            selected={selectedEventId === m.eventId}
-            onSelect={() => onSelectEvent(m.eventId)}
-          />
-        </g>
+  // wheel（passive:false で preventDefault）と ResizeObserver を track へ装着。
+  const setTrackEl = useCallback((el: HTMLDivElement | null) => {
+    if (!el) {
+      cleanupRef.current?.();
+      cleanupRef.current = null;
+      trackElRef.current = null;
+      return;
+    }
+    trackElRef.current = el;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const pivotPx = e.clientX - rect.left;
+      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+      onViewChangeRef.current(
+        zoomAt({ view: viewRef.current, pivotPx, factor }),
       );
-    });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            const w = el.clientWidth;
+            if (w > 0) onMeasureRef.current(w);
+          })
+        : null;
+    ro?.observe(el);
+    if (el.clientWidth > 0) onMeasureRef.current(el.clientWidth);
+    cleanupRef.current = () => {
+      el.removeEventListener("wheel", onWheel);
+      ro?.disconnect();
+    };
+  }, []);
+  useEffect(
+    () => () => {
+      cleanupRef.current?.();
+      dragCleanupRef.current?.();
+    },
+    [],
+  );
+
+  // トラックドラッグ＝横パン。3px 超移動でクリック（選択）を抑止する。
+  const onTrackPointerDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const startX = e.clientX;
+    const startView = viewRef.current;
+    draggedRef.current = false;
+    const move = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX;
+      if (Math.abs(dx) > 3) draggedRef.current = true;
+      onViewChangeRef.current(panByPx({ view: startView, dx }));
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      dragCleanupRef.current = null;
+      // クリックハンドラが走った後に false へ戻す。
+      setTimeout(() => {
+        draggedRef.current = false;
+      }, 0);
+    };
+    dragCleanupRef.current = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+
+  // スクロールバーつまみドラッグ＝横スクロール。
+  const onThumbPointerDown = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const geom = layoutRef.current.scroll;
+    const startX = e.clientX;
+    const startLeft = geom.thumbLeft;
+    const move = (ev: MouseEvent) => {
+      const nextLeft = startLeft + (ev.clientX - startX);
+      const vs = viewStartFromThumb(layoutRef.current.scroll, nextLeft);
+      onViewChangeRef.current({
+        pxPerDay: viewRef.current.pxPerDay,
+        viewStartDay: vs,
+      });
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      dragCleanupRef.current = null;
+    };
+    dragCleanupRef.current = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+
+  const handleSelect = (id: string) => {
+    if (draggedRef.current) return;
+    onSelectEvent(id);
+  };
+
+  const {
+    spacing,
+    pack,
+    ticks,
+    edges,
+    scroll,
+    contentHeight,
+    minorGridX,
+    majorGridX,
+    markerById,
+  } = layout;
 
   return (
-    <svg
-      width={width}
-      height={Math.max(height, model.laneHeight)}
-      role="img"
-      aria-label={t("chronicle.viewportLabel", "作中年表")}
-      className="text-foreground"
-    >
-      {causalEdges && causalEdges.length > 0 && (
-        <g data-layer="causal-edges">
-          {causalEdges.map((e) => (
-            <line
-              key={`${e.causeId}|${e.effectId}`}
-              x1={e.x1}
-              y1={e.y1}
-              x2={e.x2}
-              y2={e.y2}
-              data-causal-edge={`${e.causeId}|${e.effectId}`}
-              className={
-                e.conflict ? "stroke-red-500" : "stroke-muted-foreground/40"
-              }
-              strokeWidth={e.conflict ? 1.5 : 1}
-              strokeDasharray={e.conflict ? undefined : "4 3"}
+    <div className="relative flex min-h-0 flex-1 flex-col bg-card">
+      <ChronicleRuler
+        gutterX={spacing.gutterX}
+        unitLabel={ticks.unitLabel}
+        ticks={ticks}
+      />
+
+      <div className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+        <ChronicleLaneGutter
+          lanes={pack.lanes}
+          gutterX={spacing.gutterX}
+          activeLaneKey={activeLaneKey}
+        />
+
+        <div
+          id="chronicle-track"
+          ref={setTrackEl}
+          onMouseDown={onTrackPointerDown}
+          className="relative flex-1 cursor-grab select-none"
+          style={{ height: contentHeight }}
+          role="application"
+          aria-label={t("chronicle.viewportLabel", "作中年表")}
+        >
+          {/* グリッド線 */}
+          {minorGridX.map((x, i) => (
+            <div
+              key={`gmin-${i}`}
+              className="absolute top-0 z-[2]"
+              style={{
+                left: x,
+                width: 1,
+                height: contentHeight,
+                background:
+                  "color-mix(in oklch, var(--border) 45%, transparent)",
+              }}
             />
           ))}
-        </g>
-      )}
-      {model.lanes.map((lane) => (
-        <g key={lane.codexId} data-lane-id={lane.codexId}>
-          <line
-            x1={gutterX}
-            y1={lane.y}
-            x2={width}
-            y2={lane.y}
-            className="stroke-border"
-            strokeWidth={1}
-            opacity={0.4}
-          />
-          <text
-            x={6}
-            y={lane.y}
-            dominantBaseline="middle"
-            className="fill-muted-foreground text-xs"
-          >
-            {lane.name}
-          </text>
-          {renderMarkers(lane.markers, lane.y)}
-        </g>
-      ))}
+          {majorGridX.map((x, i) => (
+            <div
+              key={`gmaj-${i}`}
+              className="absolute top-0 z-[2] bg-border"
+              style={{ left: x, width: 1, height: contentHeight }}
+            />
+          ))}
+          {pack.laneSepTops.map((top, i) =>
+            top > 0 ? (
+              <div
+                key={`sep-${i}`}
+                className="absolute left-0 z-[2] bg-border/60"
+                style={{ top, width: "100%", height: 1 }}
+              />
+            ) : null,
+          )}
 
-      {hasUnassigned && (
-        <g data-lane-id="__unassigned">
-          <line
-            x1={gutterX}
-            y1={unassignedY}
-            x2={width}
-            y2={unassignedY}
-            className="stroke-border"
-            strokeWidth={1}
-            strokeDasharray="2 3"
-            opacity={0.4}
+          {/* 因果エッジ */}
+          {showEdges && edges.length > 0 && (
+            <svg
+              className="pointer-events-none absolute left-0 top-0 z-[3]"
+              style={{
+                width: "100%",
+                height: contentHeight,
+                overflow: "visible",
+              }}
+            >
+              {edges.map((e) => (
+                <g key={`${e.causeId}|${e.effectId}`}>
+                  <path
+                    d={e.d}
+                    fill="none"
+                    className={
+                      e.conflict
+                        ? "stroke-red-500"
+                        : "stroke-muted-foreground/50"
+                    }
+                    strokeWidth={e.conflict ? 2 : 1.4}
+                    strokeDasharray={e.conflict ? undefined : "4 3"}
+                    data-causal-edge={`${e.causeId}|${e.effectId}`}
+                  />
+                  <polygon
+                    points={e.arrowPoints}
+                    className={
+                      e.conflict ? "fill-red-500" : "fill-muted-foreground/60"
+                    }
+                  />
+                </g>
+              ))}
+            </svg>
+          )}
+
+          {/* マーカー */}
+          {pack.lanes.flatMap((lane) =>
+            lane.markers.map((m) => {
+              const ev = eventsById.get(m.eventId);
+              const render = markerById.get(m.eventId);
+              if (!ev || !render) return null;
+              return (
+                <EventMarker
+                  key={m.eventId}
+                  event={ev}
+                  left={render.left}
+                  top={render.top}
+                  tokenH={spacing.tokenH}
+                  maxTok={spacing.maxTok}
+                  isInterval={render.isInterval}
+                  barWidth={render.barWidth}
+                  selected={selectedEventId === m.eventId}
+                  conflict={conflictIds.has(m.eventId)}
+                  related={relatedIds.has(m.eventId)}
+                  labelsOn={labelsOn}
+                  onSelect={() => handleSelect(m.eventId)}
+                />
+              );
+            }),
+          )}
+        </div>
+      </div>
+
+      {/* スクロールバー */}
+      <div className="flex h-4 flex-none border-t border-border/60 bg-card">
+        <div
+          className="flex-none border-r border-border"
+          style={{ width: spacing.gutterX }}
+        />
+        <div className="relative flex-1">
+          <div
+            onMouseDown={onThumbPointerDown}
+            tabIndex={0}
+            className="absolute cursor-grab rounded-full bg-muted-foreground/40"
+            style={{
+              top: 3,
+              left: scroll.thumbLeft,
+              width: scroll.thumbW,
+              height: 10,
+            }}
+            role="scrollbar"
+            aria-controls="chronicle-track"
+            aria-orientation="horizontal"
+            aria-valuenow={Math.round(scroll.thumbLeft)}
           />
-          <text
-            x={6}
-            y={unassignedY}
-            dominantBaseline="middle"
-            className="fill-muted-foreground text-xs italic"
-          >
-            {t("chronicle.unassigned", "未割当")}
-          </text>
-          {renderMarkers(model.unassigned, unassignedY)}
-        </g>
-      )}
-    </svg>
+        </div>
+      </div>
+    </div>
   );
 }

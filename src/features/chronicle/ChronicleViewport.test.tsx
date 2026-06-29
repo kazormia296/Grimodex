@@ -1,177 +1,149 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { ChronicleViewport } from "./ChronicleViewport";
-import type { ChronicleLaneModel } from "./chronicleLaneModel";
-import type { ScaledPoint } from "./chronicleTimeScale";
+import {
+  buildChronicleLayout,
+  type LayoutEventInput,
+  type LayoutLane,
+} from "./chronicleLayout";
+import type { ChronicleCalendar } from "./chronicleTime";
+import type { MarkerEvent } from "./EventMarker";
 
-const model: ChronicleLaneModel = {
-  laneHeight: 40,
-  contentHeight: 48,
-  lanes: [
-    {
-      codexId: "alice",
-      name: "Alice",
-      y: 30,
-      markers: [
-        {
-          eventId: "m1",
-          ordinal: "a0",
-          precision: "exact",
-          isOffpage: false,
-          isInterval: false,
-        },
-        {
-          eventId: "m2",
-          ordinal: "a1",
-          precision: "exact",
-          isOffpage: false,
-          isInterval: true,
-        },
-      ],
-    },
-  ],
-  unassigned: [
-    {
-      eventId: "u1",
-      ordinal: "a2",
-      precision: "exact",
-      isOffpage: true,
-      isInterval: false,
-    },
-  ],
+const cal: ChronicleCalendar = {
+  daysPerYear: 360,
+  seasonBoundaries: [],
+  startYear: 0,
 };
 
-const scaled = new Map<string, ScaledPoint>([
-  ["m1", { eventId: "m1", x: 100, xEnd: null }],
-  ["m2", { eventId: "m2", x: 200, xEnd: 260 }],
-  ["u1", { eventId: "u1", x: 150, xEnd: null }],
-]);
+const events: LayoutEventInput[] = [
+  {
+    id: "e1",
+    title: "A",
+    primaryCodexId: "c1",
+    kind: "generic",
+    precision: "exact",
+    secret: false,
+    sceneLinked: true,
+    startDay: 10,
+    endDay: null,
+  },
+  {
+    id: "e2",
+    title: "B",
+    primaryCodexId: "c1",
+    kind: "generic",
+    precision: "exact",
+    secret: false,
+    sceneLinked: true,
+    startDay: 200,
+    endDay: 260,
+  },
+  {
+    id: "e3",
+    title: "C",
+    primaryCodexId: null,
+    kind: "generic",
+    precision: "unknown",
+    secret: false,
+    sceneLinked: false,
+    startDay: 120,
+    endDay: null,
+  },
+];
 
-function renderViewport(selectedEventId: string | null = null) {
+const lanes: LayoutLane[] = [
+  {
+    codexId: "c1",
+    name: "アヤ",
+    kind: "character",
+    unassigned: false,
+    eventIds: ["e1", "e2"],
+  },
+  {
+    codexId: null,
+    name: "未割当",
+    kind: "unassigned",
+    unassigned: true,
+    eventIds: ["e3"],
+  },
+];
+
+const view = { pxPerDay: 2, viewStartDay: 0 };
+
+function layout() {
+  return buildChronicleLayout({
+    events,
+    lanes,
+    view,
+    trackW: 800,
+    density: "standard",
+    labelsOn: true,
+    calendar: cal,
+    hasCalendarAxis: true,
+    dataStart: 10,
+    dataEnd: 260,
+    relations: [],
+    causalConflictPairs: new Set(),
+    lang: "ja",
+  });
+}
+
+function eventsById() {
+  const m = new Map<string, MarkerEvent>();
+  for (const e of events) {
+    m.set(e.id, {
+      id: e.id,
+      title: e.title,
+      kind: e.kind,
+      precision: e.precision,
+      secret: e.secret,
+      sceneLinked: e.sceneLinked,
+      primaryCodexId: e.primaryCodexId,
+    });
+  }
+  return m;
+}
+
+function renderViewport(over: { onSelectEvent?: (id: string) => void } = {}) {
   return render(
     <ChronicleViewport
-      model={model}
-      scaled={scaled}
-      width={400}
-      gutterX={60}
-      selectedEventId={selectedEventId}
-      onSelectEvent={() => {}}
+      view={view}
+      onViewChange={() => {}}
+      onMeasureTrack={() => {}}
+      layout={layout()}
+      eventsById={eventsById()}
+      selectedEventId={null}
+      activeLaneKey={null}
+      conflictIds={new Set()}
+      relatedIds={new Set()}
+      showEdges
+      labelsOn
+      onSelectEvent={over.onSelectEvent ?? (() => {})}
     />,
   );
 }
 
 describe("ChronicleViewport", () => {
-  it("point マーカーは scaled.x の位置に円で描く", () => {
+  it("全 event のマーカーとレーンガターを描く", () => {
+    const { container, getByText } = renderViewport();
+    expect(container.querySelector('[data-event-id="e1"]')).toBeTruthy();
+    expect(container.querySelector('[data-event-id="e2"]')).toBeTruthy();
+    expect(container.querySelector('[data-event-id="e3"]')).toBeTruthy();
+    expect(getByText("アヤ")).toBeTruthy();
+  });
+
+  it("interval マーカー(e2)は帯幅を持つ", () => {
     const { container } = renderViewport();
-    const m1 = container.querySelector('[data-event-id="m1"]')!;
-    expect(m1.tagName.toLowerCase()).toBe("circle");
-    expect(m1.getAttribute("cx")).toBe("100");
-    expect(m1.getAttribute("cy")).toBe("30");
+    const el = container.querySelector('[data-event-id="e2"]') as HTMLElement;
+    // (260-200)*2 = 120px
+    expect(el.style.width).toBe("120px");
   });
 
-  it("interval マーカーは start..end 幅の矩形", () => {
-    const { container } = renderViewport();
-    const m2 = container.querySelector('[data-event-id="m2"]')!;
-    expect(m2.tagName.toLowerCase()).toBe("rect");
-    expect(m2.getAttribute("x")).toBe("200");
-    expect(m2.getAttribute("width")).toBe("60"); // 260-200
-  });
-
-  it("オフページは中空（fill=none）", () => {
-    const { container } = renderViewport();
-    const u1 = container.querySelector('[data-event-id="u1"]')!;
-    expect(u1.getAttribute("fill")).toBe("none");
-  });
-
-  it("未割当マーカーは __unassigned グループに入る", () => {
-    const { container } = renderViewport();
-    const group = container.querySelector('[data-lane-id="__unassigned"]')!;
-    expect(group).not.toBeNull();
-    expect(group.querySelector('[data-event-id="u1"]')).not.toBeNull();
-  });
-
-  it("選択中マーカーに selected クラスが付く", () => {
-    const { container } = renderViewport("m1");
-    const m1 = container.querySelector('[data-event-id="m1"]')!;
-    expect(m1.getAttribute("class")).toContain("chronicle-marker--selected");
-  });
-
-  it("人物レーンに name ラベルとレーン線", () => {
-    const { container } = renderViewport();
-    const lane = container.querySelector('[data-lane-id="alice"]')!;
-    expect(lane.textContent).toContain("Alice");
-    expect(lane.querySelector("line")).not.toBeNull();
-  });
-});
-
-describe("ChronicleViewport conflict ring", () => {
-  it("conflictIds の event に警告リング([data-conflict])を描く", () => {
-    const { container } = render(
-      <ChronicleViewport
-        model={model}
-        scaled={scaled}
-        width={400}
-        gutterX={60}
-        selectedEventId={null}
-        onSelectEvent={() => {}}
-        conflictIds={new Set(["m1"])}
-      />,
-    );
-    const ring = container.querySelector('[data-conflict="m1"]')!;
-    expect(ring).not.toBeNull();
-    expect(ring.tagName.toLowerCase()).toBe("circle");
-    // 矛盾なしの m2 にはリングが無い
-    expect(container.querySelector('[data-conflict="m2"]')).toBeNull();
-  });
-});
-
-describe("ChronicleViewport related highlight", () => {
-  it("relatedIds の event に関連ハイライト([data-related])を描く", () => {
-    const { container } = render(
-      <ChronicleViewport
-        model={model}
-        scaled={scaled}
-        width={400}
-        gutterX={60}
-        selectedEventId={null}
-        onSelectEvent={() => {}}
-        relatedIds={new Set(["m2"])}
-      />,
-    );
-    expect(container.querySelector('[data-related="m2"]')).not.toBeNull();
-    expect(container.querySelector('[data-related="m1"]')).toBeNull();
-  });
-});
-
-describe("ChronicleViewport causal edges", () => {
-  it("causalEdges を線で描き conflict は赤系クラス", () => {
-    const { container } = render(
-      <ChronicleViewport
-        model={model}
-        scaled={scaled}
-        width={400}
-        gutterX={60}
-        selectedEventId={null}
-        onSelectEvent={() => {}}
-        causalEdges={[
-          {
-            causeId: "m1",
-            effectId: "m2",
-            x1: 100,
-            y1: 30,
-            x2: 200,
-            y2: 30,
-            conflict: true,
-          },
-        ]}
-      />,
-    );
-    const edge = container.querySelector('[data-causal-edge="m1|m2"]')!;
-    expect(edge).not.toBeNull();
-    expect(edge.tagName.toLowerCase()).toBe("line");
-    expect(edge.getAttribute("x1")).toBe("100");
-    expect(edge.getAttribute("x2")).toBe("200");
-    expect(edge.getAttribute("class")).toContain("stroke-red-500");
+  it("マーカークリックで onSelectEvent が呼ばれる", () => {
+    const onSelectEvent = vi.fn();
+    const { container } = renderViewport({ onSelectEvent });
+    (container.querySelector('[data-event-id="e1"]') as HTMLElement).click();
+    expect(onSelectEvent).toHaveBeenCalledWith("e1");
   });
 });

@@ -47,10 +47,11 @@ vi.mock("./useSeasonConflicts", () => ({
 
 // ── 重い子コンポーネントは観測しやすいテストダブルへ差し替える ──
 vi.mock("./ChronicleViewport", () => ({
-  ChronicleViewport: ({ scaled }: { scaled: Map<string, unknown> }) => (
-    <div data-testid="viewport" data-n={scaled.size} />
+  ChronicleViewport: ({ eventsById }: { eventsById: Map<string, unknown> }) => (
+    <div data-testid="viewport" data-n={eventsById.size} />
   ),
 }));
+vi.mock("./ChronicleToolbar", () => ({ ChronicleToolbar: () => null }));
 vi.mock("./ChronicleInspector", () => ({
   ChronicleInspector: ({
     event,

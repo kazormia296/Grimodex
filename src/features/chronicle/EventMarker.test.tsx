@@ -1,90 +1,89 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
-import { EventMarker } from "./EventMarker";
-import type { ChronicleLaneMarker } from "./chronicleLaneModel";
+import {
+  EventMarker,
+  type MarkerEvent,
+  type EventMarkerProps,
+} from "./EventMarker";
 
-function marker(o: Partial<ChronicleLaneMarker> = {}): ChronicleLaneMarker {
+function ev(o: Partial<MarkerEvent> = {}): MarkerEvent {
   return {
-    eventId: "m1",
-    ordinal: "a0",
+    id: "m1",
+    title: "出来事A",
+    kind: "generic",
     precision: "exact",
-    isOffpage: false,
-    isInterval: false,
+    secret: false,
+    sceneLinked: true,
+    primaryCodexId: "c1",
     ...o,
   };
 }
 
-// EventMarker は <rect>/<circle> を直接返すので SVG 親でラップして描く（Viewport harness と同形）。
-function renderMarker(props: {
-  marker?: ChronicleLaneMarker;
-  x?: number;
-  xEnd?: number | null;
-}) {
+function renderMarker(props: Partial<EventMarkerProps> = {}) {
   return render(
-    <svg>
-      <EventMarker
-        marker={props.marker ?? marker()}
-        x={props.x ?? 100}
-        xEnd={props.xEnd ?? null}
-        y={30}
-        selected={false}
-        onSelect={() => {}}
-      />
-    </svg>,
+    <EventMarker
+      event={props.event ?? ev()}
+      left={props.left ?? 100}
+      top={props.top ?? 10}
+      tokenH={props.tokenH ?? 26}
+      maxTok={props.maxTok ?? 218}
+      isInterval={props.isInterval ?? false}
+      barWidth={props.barWidth ?? null}
+      selected={props.selected ?? false}
+      conflict={props.conflict ?? false}
+      labelsOn={props.labelsOn ?? true}
+      onSelect={props.onSelect ?? (() => {})}
+    />,
   );
 }
 
-describe("EventMarker", () => {
-  it("interval でも xEnd=null なら円で描く（rank モード）", () => {
-    const { container } = renderMarker({
-      marker: marker({ isInterval: true }),
-      x: 100,
-      xEnd: null,
-    });
+describe("EventMarker (DOM token)", () => {
+  it("point は data-event-id 付きのボタンを描く", () => {
+    const { container } = renderMarker();
     const el = container.querySelector('[data-event-id="m1"]')!;
-    expect(el.tagName.toLowerCase()).toBe("circle");
+    expect(el.tagName.toLowerCase()).toBe("button");
+    expect(el.getAttribute("title")).toBe("出来事A");
   });
 
-  it("xEnd<=x の interval は円にフォールバック（負幅 rect を出さない）", () => {
-    // ゼロ/負の duration（xEnd === x や xEnd < x）でも rect を描かない。
-    const zero = renderMarker({
-      marker: marker({ isInterval: true }),
-      x: 100,
-      xEnd: 100,
-    });
-    const zEl = zero.container.querySelector('[data-event-id="m1"]')!;
-    expect(zEl.tagName.toLowerCase()).toBe("circle");
-
-    const negative = renderMarker({
-      marker: marker({ isInterval: true }),
-      x: 100,
-      xEnd: 80,
-    });
-    const nEl = negative.container.querySelector('[data-event-id="m1"]')!;
-    expect(nEl.tagName.toLowerCase()).toBe("circle");
-    // 念のため負幅 rect が描かれていないこと
-    expect(negative.container.querySelector("rect")).toBeNull();
+  it("interval は barWidth の幅で帯を描く", () => {
+    const { container } = renderMarker({ isInterval: true, barWidth: 120 });
+    const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    expect(el.style.width).toBe("120px");
   });
 
-  it("正の duration の interval は rect で描く", () => {
-    const { container } = renderMarker({
-      marker: marker({ isInterval: true }),
-      x: 100,
-      xEnd: 160,
-    });
-    const el = container.querySelector('[data-event-id="m1"]')!;
-    expect(el.tagName.toLowerCase()).toBe("rect");
-    expect(el.getAttribute("width")).toBe("60");
+  it("オフページ(point)は破線ボーダー", () => {
+    const { container } = renderMarker({ event: ev({ sceneLinked: false }) });
+    const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    expect(el.style.borderStyle).toBe("dashed");
   });
 
-  it("オフページは中空（fill=none）", () => {
-    const { container } = renderMarker({
-      marker: marker({ isOffpage: true }),
-      x: 100,
-      xEnd: null,
-    });
-    const el = container.querySelector('[data-event-id="m1"]')!;
-    expect(el.getAttribute("fill")).toBe("none");
+  it("secret は秘匿タグを描く", () => {
+    const { getByTestId } = renderMarker({ event: ev({ secret: true }) });
+    expect(getByTestId("secret-tag")).toBeTruthy();
+  });
+
+  it("conflict は警告バッジ(!)を描く", () => {
+    const { getByTestId } = renderMarker({ conflict: true });
+    expect(getByTestId("conflict-badge").textContent).toBe("!");
+  });
+
+  it("birth は種別タグを描く", () => {
+    const { getByTestId } = renderMarker({ event: ev({ kind: "birth" }) });
+    expect(getByTestId("kind-tag")).toBeTruthy();
+  });
+
+  it("labelsOn=false ではタイトル本文を描かない（title 属性は残す）", () => {
+    const { container } = renderMarker({ labelsOn: false });
+    const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    expect(el.textContent).not.toContain("出来事A");
+    expect(el.getAttribute("title")).toBe("出来事A");
+  });
+
+  it("クリックで onSelect が発火する", () => {
+    const onSelect = vi.fn();
+    const { container } = renderMarker({ onSelect });
+    (container.querySelector('[data-event-id="m1"]') as HTMLElement).click();
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });

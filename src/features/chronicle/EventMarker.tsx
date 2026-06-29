@@ -1,54 +1,257 @@
-import type { ChronicleLaneMarker } from "./chronicleLaneModel";
-import { precisionStyle } from "./chronicleTimeScale";
+import type { CSSProperties } from "react";
+import { useTranslation } from "react-i18next";
+import type { EventKind, EventPrecision } from "@/db/schema";
+import { laneColorFor } from "./laneColor";
 
-const POINT_R = 6;
-const INTERVAL_H = 10;
+/** マーカー描画に必要な出来事の表示情報。 */
+export interface MarkerEvent {
+  id: string;
+  title: string;
+  kind: EventKind;
+  precision: EventPrecision;
+  secret: boolean;
+  /** scene 参照あり=実線/中身あり、なし=オフページ（中空グリフ）。 */
+  sceneLinked: boolean;
+  primaryCodexId: string | null;
+}
+
+export interface EventMarkerProps {
+  event: MarkerEvent;
+  /** 絶対配置 left（lanePack 由来＝point は startX-9）。 */
+  left: number;
+  top: number;
+  tokenH: number;
+  maxTok: number;
+  isInterval: boolean;
+  barWidth: number | null;
+  selected: boolean;
+  conflict: boolean;
+  /** Timeline で選択中のシーンに紐づく出来事（淡いリング強調）。 */
+  related?: boolean;
+  labelsOn: boolean;
+  onSelect: () => void;
+}
+
+const BIRTH = "oklch(0.6 0.14 150)";
+const DEATH = "oklch(0.5 0.07 25)";
+const AMBER = "#e0a23a";
+const ACCENT = "var(--primary)";
+
+const mix = (c: string, pct: number, to: string) =>
+  `color-mix(in oklch, ${c} ${pct}%, ${to})`;
 
 /**
- * 年表上の出来事マーカー1個。point=円 / interval=角丸矩形 / オフページ=中空(塗り無し)。
- * precision で不透明度と破線を切替（chronicleTimeScale.precisionStyle）。
- * 座標は親(ChronicleViewport)が scaled から渡す。
+ * 1 出来事を DOM トークンとして描く（point=ピル / interval=帯）。
+ * 色は lane（primaryCodexId 由来の安定 oklch）＋種別の意味色。テーマ非依存に
+ * するため塗りは transparent への color-mix で重ねる（ダークでも破綻しない）。
  */
 export function EventMarker({
-  marker,
-  x,
-  xEnd,
-  y,
+  event,
+  left,
+  top,
+  tokenH,
+  maxTok,
+  isInterval,
+  barWidth,
   selected,
+  conflict,
+  related = false,
+  labelsOn,
   onSelect,
-}: {
-  marker: ChronicleLaneMarker;
-  x: number;
-  xEnd: number | null;
-  y: number;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const { opacity, dashed } = precisionStyle(marker.precision);
-  const stroke = "currentColor";
-  const fill = marker.isOffpage ? "none" : "currentColor";
-  const common = {
-    "data-event-id": marker.eventId,
-    opacity,
-    onClick: onSelect,
-    stroke,
-    strokeWidth: 1.5,
-    strokeDasharray: dashed ? "3 2" : undefined,
-    className: `cursor-pointer ${selected ? "chronicle-marker--selected text-primary" : "text-foreground/70"}`,
-  } as const;
+}: EventMarkerProps) {
+  const { t } = useTranslation();
+  const lc = laneColorFor(event.primaryCodexId);
+  const ring = selected
+    ? `0 0 0 3px ${mix(ACCENT, 16, "transparent")},0 2px 7px rgba(0,0,0,.12)`
+    : related
+      ? `0 0 0 3px ${mix(ACCENT, 12, "transparent")}`
+      : undefined;
+  const border = conflict ? AMBER : selected ? ACCENT : null;
 
-  if (marker.isInterval && xEnd != null && xEnd > x) {
-    return (
-      <rect
-        {...common}
-        x={x}
-        y={y - INTERVAL_H / 2}
-        width={xEnd - x}
-        height={INTERVAL_H}
-        rx={3}
-        fill={fill}
-      />
-    );
+  let container: CSSProperties;
+  if (isInterval) {
+    container = {
+      position: "absolute",
+      left,
+      top,
+      width: Math.max(barWidth ?? 52, 52),
+      height: tokenH,
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "0 9px",
+      background: mix(lc, 14, "transparent"),
+      border: `1px solid ${border ?? mix(lc, 34, "transparent")}`,
+      borderRadius: 7,
+      overflow: "hidden",
+      whiteSpace: "nowrap",
+      boxShadow: ring,
+      zIndex: selected ? 9 : 5,
+    };
+  } else {
+    container = {
+      position: "absolute",
+      left,
+      top,
+      height: tokenH,
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "0 10px 0 8px",
+      background: event.sceneLinked
+        ? "var(--card)"
+        : mix("var(--card)", 96, "var(--foreground)"),
+      border: `1px solid ${border ?? mix(lc, 50, "transparent")}`,
+      borderStyle:
+        !event.sceneLinked || event.precision === "unknown"
+          ? "dashed"
+          : "solid",
+      borderRadius: tokenH / 2,
+      boxShadow: ring ?? "0 1px 2px rgba(0,0,0,.07)",
+      maxWidth: maxTok,
+      whiteSpace: "nowrap",
+      zIndex: selected ? 9 : 5,
+    };
   }
-  return <circle {...common} cx={x} cy={y} r={POINT_R} fill={fill} />;
+  if (event.precision === "approx") container.opacity = 0.94;
+
+  let glyph: CSSProperties;
+  if (isInterval) {
+    glyph = {
+      flex: "none",
+      width: 4,
+      height: 14,
+      borderRadius: 2,
+      background: lc,
+    };
+  } else if (!event.sceneLinked) {
+    glyph = {
+      flex: "none",
+      width: 11,
+      height: 11,
+      borderRadius: "50%",
+      border: `2px solid ${lc}`,
+      background: "var(--card)",
+      boxSizing: "border-box",
+    };
+  } else if (event.kind === "birth") {
+    glyph = {
+      flex: "none",
+      width: 0,
+      height: 0,
+      borderLeft: "5px solid transparent",
+      borderRight: "5px solid transparent",
+      borderBottom: `10px solid ${BIRTH}`,
+    };
+  } else if (event.kind === "death") {
+    glyph = {
+      flex: "none",
+      width: 8,
+      height: 8,
+      background: DEATH,
+      transform: "rotate(45deg)",
+    };
+  } else {
+    glyph = {
+      flex: "none",
+      width: 9,
+      height: 9,
+      borderRadius: "50%",
+      background: lc,
+    };
+  }
+
+  const kindTag =
+    event.kind === "birth"
+      ? { label: t("chronicle.kind.birth", "出生"), color: BIRTH }
+      : event.kind === "death"
+        ? { label: t("chronicle.kind.death", "死亡"), color: DEATH }
+        : null;
+
+  return (
+    <button
+      type="button"
+      data-event-id={event.id}
+      data-selected={selected || undefined}
+      onClick={onSelect}
+      title={event.title || t("chronicle.untitled", "無題の出来事")}
+      style={{
+        ...container,
+        cursor: "pointer",
+        font: "inherit",
+        color: "var(--foreground)",
+        textAlign: "left",
+      }}
+    >
+      <span style={glyph} />
+      {labelsOn && (
+        <span
+          style={{
+            flex: "0 1 auto",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            fontSize: 12,
+            lineHeight: 1,
+          }}
+        >
+          {event.title || t("chronicle.untitled", "無題の出来事")}
+        </span>
+      )}
+      {kindTag && (
+        <span
+          data-testid="kind-tag"
+          style={{
+            flex: "none",
+            fontSize: 10,
+            lineHeight: 1,
+            padding: "2px 5px",
+            borderRadius: 4,
+            background: mix(kindTag.color, 16, "transparent"),
+            color: kindTag.color,
+          }}
+        >
+          {kindTag.label}
+        </span>
+      )}
+      {event.secret && (
+        <span
+          data-testid="secret-tag"
+          style={{
+            flex: "none",
+            fontSize: 10,
+            lineHeight: 1,
+            padding: "2px 5px",
+            borderRadius: 4,
+            background: mix(AMBER, 18, "transparent"),
+            color: mix(AMBER, 72, "var(--foreground)"),
+          }}
+        >
+          {t("chronicle.secretTag", "秘匿")}
+        </span>
+      )}
+      {conflict && (
+        <span
+          data-testid="conflict-badge"
+          style={{
+            position: "absolute",
+            top: -6,
+            right: -6,
+            width: 14,
+            height: 14,
+            borderRadius: "50%",
+            background: AMBER,
+            color: "#fff",
+            fontSize: 10,
+            lineHeight: "14px",
+            textAlign: "center",
+            fontWeight: 700,
+            boxShadow: "0 0 0 1.5px var(--card)",
+          }}
+        >
+          !
+        </span>
+      )}
+    </button>
+  );
 }

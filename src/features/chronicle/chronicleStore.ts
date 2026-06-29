@@ -7,6 +7,12 @@ export interface ChronicleSettings {
   scrollOffset: number;
   /** オフページ（scene 参照0）の出来事を中空マーカーで表示するか。 */
   showOffpage: boolean;
+  /**
+   * pan/zoom ビューの永続値（日番号タイムライン）。null=未設定（初回は全体に
+   * フィット）。ユーザーがパン/ズームした時点で値が入り、再オープン時に復元する。
+   */
+  pxPerDay: number | null;
+  viewStartDay: number | null;
 }
 
 const ZOOM_MIN = 0.25;
@@ -18,6 +24,9 @@ interface ChronicleState {
   zoom: number;
   scrollOffset: number;
   showOffpage: boolean;
+  /** pan/zoom ビューの永続値（null=未設定＝初回フィット）。 */
+  pxPerDay: number | null;
+  viewStartDay: number | null;
   /** 選択中の出来事(events.id)。Inspector が読む。 */
   selectedEventId: string | null;
   /**
@@ -28,6 +37,8 @@ interface ChronicleState {
   revisionCounter: number;
   setZoom: (zoom: number) => void;
   setScrollOffset: (offset: number) => void;
+  /** pan/zoom ビューを永続値へ反映する（drag/zoom/fit の各操作で呼ぶ）。 */
+  setChronicleView: (pxPerDay: number, viewStartDay: number) => void;
   toggleShowOffpage: () => void;
   setSelectedEventId: (id: string | null) => void;
   /** 年表 mutation 後に呼ぶ。全 CRUD 経路から発火させる。 */
@@ -39,10 +50,13 @@ export const useChronicleStore = create<ChronicleState>((set) => ({
   zoom: 1,
   scrollOffset: 0,
   showOffpage: true,
+  pxPerDay: null,
+  viewStartDay: null,
   selectedEventId: null,
   revisionCounter: 0,
   setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
+  setChronicleView: (pxPerDay, viewStartDay) => set({ pxPerDay, viewStartDay }),
   toggleShowOffpage: () => set((s) => ({ showOffpage: !s.showOffpage })),
   setSelectedEventId: (selectedEventId) => set({ selectedEventId }),
   bumpRevision: () => set((s) => ({ revisionCounter: s.revisionCounter + 1 })),
@@ -51,6 +65,8 @@ export const useChronicleStore = create<ChronicleState>((set) => ({
       zoom: clampZoom(settings.zoom ?? 1),
       scrollOffset: settings.scrollOffset ?? 0,
       showOffpage: settings.showOffpage ?? true,
+      pxPerDay: settings.pxPerDay ?? null,
+      viewStartDay: settings.viewStartDay ?? null,
     }),
 }));
 
@@ -61,6 +77,8 @@ function snapshotPersistent(
     zoom: state.zoom,
     scrollOffset: state.scrollOffset,
     showOffpage: state.showOffpage,
+    pxPerDay: state.pxPerDay,
+    viewStartDay: state.viewStartDay,
   };
 }
 
