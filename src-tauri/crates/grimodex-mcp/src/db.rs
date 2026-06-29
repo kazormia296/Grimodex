@@ -1912,11 +1912,14 @@ pub fn chronicle_list_events(
     conn: &Connection,
     project_id: &str,
 ) -> Result<Vec<ChronicleEventRow>> {
+    // AI 秘匿(fail-closed): MCP は現在シーン(読む順)を持てないため secret=1 を一律除外。
+    // 全 read ツール(list/detail/timeline/state)はこの list を唯一のソースにするので、
+    // ここで除外すれば全経路が塞がる(伏線 list_open_foreshadows と同型)。
     let mut stmt = conn.prepare(
         "SELECT id, title, note, ordinal, primary_codex_id, location_codex_id,
                 start_time, end_time, start_minute, end_minute,
                 start_granularity, end_granularity, precision, kind
-         FROM events WHERE project_id = ?1
+         FROM events WHERE project_id = ?1 AND secret = 0
          ORDER BY ordinal ASC, id ASC",
     )?;
     let rows = stmt
@@ -2116,6 +2119,7 @@ fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<s
             'endTime', end_time, 'startMinute', start_minute,
             'endMinute', end_minute, 'startGranularity', start_granularity,
             'endGranularity', end_granularity, 'precision', precision, 'kind', kind,
+            'secret', secret, 'revealSceneId', reveal_scene_id,
             'createdAt', created_at, 'updatedAt', updated_at
          ) FROM events WHERE id = ?1",
         params![event_id],
@@ -2198,9 +2202,12 @@ fn collect_participants_json(
     Ok(json!({ "eventId": event_id, "participants": participants }))
 }
 
+/// 書込み対象 event の存在ゲート。AI 秘匿(fail-closed): MCP は現在シーンを持てない
+/// ため secret=1 を「存在しない」扱いにし、update/delete/stamp/participants/relation
+/// すべての write-by-id を一律遮断する(存在 oracle 化を防ぐ・spec §2.4.4)。
 fn event_exists(conn: &Connection, project_id: &str, event_id: &str) -> anyhow::Result<bool> {
     let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2",
+        "SELECT COUNT(*) FROM events WHERE id = ?1 AND project_id = ?2 AND secret = 0",
         params![event_id, project_id],
         |r| r.get(0),
     )?;
@@ -2228,6 +2235,10 @@ pub struct ChronicleCreateInput<'a> {
     pub end_granularity: Option<&'a str>,
     pub precision: Option<&'a str>,
     pub kind: Option<&'a str>,
+    /// AI 秘匿（reveal アンカー方式）。省略時 false=表示。
+    pub secret: Option<bool>,
+    /// 読む順の開示アンカー（明示上書き・空/None=自動導出 or 恒久秘匿）。
+    pub reveal_scene_id: Option<&'a str>,
     pub participant_codex_ids: &'a [String],
     pub scene_ids: &'a [String],
 }
@@ -2252,6 +2263,9 @@ pub fn chronicle_create_event(
     let kind = input.kind.unwrap_or("generic");
     let start_granularity = input.start_granularity.unwrap_or("none");
     let end_granularity = input.end_granularity.unwrap_or("none");
+    let secret = input.secret.unwrap_or(false);
+    // 空文字の reveal は NULL（自動導出/恒久秘匿）に正規化。
+    let reveal_scene_id = input.reveal_scene_id.filter(|s| !s.is_empty());
 
     in_immediate_tx(conn, |conn| {
         conn.execute(
@@ -2259,8 +2273,8 @@ pub fn chronicle_create_event(
              (id, project_id, title, note, ordinal, primary_codex_id,
               location_codex_id, start_time, end_time, start_minute, end_minute,
               start_granularity, end_granularity, precision, kind,
-              created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
+              secret, reveal_scene_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18)",
             params![
                 event_id,
                 input.project_id,
@@ -2277,6 +2291,8 @@ pub fn chronicle_create_event(
                 end_granularity,
                 precision,
                 kind,
+                secret,
+                reveal_scene_id,
                 now,
             ],
         )?;
@@ -2349,6 +2365,10 @@ pub struct ChroniclePatch<'a> {
     pub end_granularity: Option<&'a str>,
     pub precision: Option<&'a str>,
     pub kind: Option<&'a str>,
+    /// AI 秘匿（reveal アンカー方式）。set-if-present。
+    pub secret: Option<bool>,
+    /// 読む順の開示アンカー（set-if-present・空文字は NULL=自動導出へ戻す）。
+    pub reveal_scene_id: Option<&'a str>,
 }
 
 /// `Ok(None)` = event not found in this project (XPROJ-safe; nothing written).
@@ -2442,6 +2462,21 @@ pub fn chronicle_update_event(
             sets.push("kind = ?".into());
             vals.push(V::Text(v.to_string()));
             fields.push("kind");
+        }
+        if let Some(v) = patch.secret {
+            sets.push("secret = ?".into());
+            vals.push(V::Integer(if v { 1 } else { 0 }));
+            fields.push("secret");
+        }
+        if let Some(v) = patch.reveal_scene_id {
+            // 空文字は NULL（自動導出/恒久秘匿）に正規化。
+            sets.push("reveal_scene_id = ?".into());
+            vals.push(if v.is_empty() {
+                V::Null
+            } else {
+                V::Text(v.to_string())
+            });
+            fields.push("revealSceneId");
         }
         vals.push(V::Text(event_id.to_string()));
         vals.push(V::Text(project_id.to_string()));
@@ -3102,6 +3137,8 @@ pub(crate) mod tests {
                 end_granularity TEXT NOT NULL DEFAULT 'none',
                 precision TEXT NOT NULL DEFAULT 'exact',
                 kind TEXT NOT NULL DEFAULT 'generic',
+                secret INTEGER NOT NULL DEFAULT 0,
+                reveal_scene_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );

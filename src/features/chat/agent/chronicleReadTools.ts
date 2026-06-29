@@ -17,6 +17,11 @@ import {
   pickSnapshotCharacters,
 } from "@/features/chronicle/chronicleSnapshot";
 import {
+  isEventHiddenFromAi,
+  projectVisibleChronicle,
+} from "@/features/chronicle/chronicleSecrecy";
+import type { EventRow } from "@/features/chronicle/api";
+import {
   resolveSceneAnchor,
   type SceneChronicle,
 } from "@/features/chronicle/resolveSceneAnchor";
@@ -81,6 +86,33 @@ const result = (
   tokensUsed: countTokens(JSON.stringify(content)),
 });
 
+/**
+ * AI 秘匿: 現在シーン文脈で「可視」イベント id 集合を算出（spec §2.5）。
+ * read ツールには chat の scene 文脈が無いため activeSceneId を現在シーンとする
+ * （get_chronicle_state と同じ fallback）。activeSceneId 空 → 現在位置不明として
+ * isEventHiddenFromAi 側で fail-closed（secret=true を一律隠す）。
+ */
+async function visibleEventIds(
+  projectId: string,
+  events: EventRow[],
+): Promise<Set<string>> {
+  const nodes = useTreeStore.getState().nodes;
+  const readingOrder = computeGlobalSceneOrder(nodes);
+  const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
+  const sceneEvents = await listSceneEventsForProject(projectId);
+  return new Set(
+    events
+      .filter(
+        (e) =>
+          !isEventHiddenFromAi(e, currentSceneId, {
+            readingOrder,
+            sceneEvents,
+          }),
+      )
+      .map((e) => e.id),
+  );
+}
+
 /** 作中順イベント一覧（kind フィルタ可）。XPROJ=listEvents が project gate。 */
 export async function listEventsTool(
   params: Record<string, unknown>,
@@ -90,10 +122,13 @@ export async function listEventsTool(
   const kind = String(params["kind"] ?? "").trim();
   const events = await listEvents(projectId);
   const names = await loadCodexNames(projectId);
+  // AI 秘匿: 現在シーンで hidden な secret イベントを除外。
+  const visible = await visibleEventIds(projectId, events);
+  const shown = events.filter((e) => visible.has(e.id));
   const filtered =
     kind === "birth" || kind === "death" || kind === "generic"
-      ? events.filter((e) => e.kind === kind)
-      : events;
+      ? shown.filter((e) => e.kind === kind)
+      : shown;
   const content = {
     events: filtered.map((e) => ({
       id: e.id,
@@ -125,8 +160,10 @@ export async function getEventDetailTool(
     };
 
   const events = await listEvents(projectId);
+  // AI 秘匿: hidden な event は「存在しない」扱い（generic not found・存在 oracle 化を防ぐ）。
+  const visible = await visibleEventIds(projectId, events);
   const ev = events.find((e) => e.id === eventId);
-  if (!ev)
+  if (!ev || !visible.has(eventId))
     return {
       name: "get_event_detail",
       content: null,
@@ -173,7 +210,12 @@ export async function getEventDetailTool(
       title: titleByScene.get(s.sceneId) ?? null,
     })),
     relations: allRelations
-      .filter((r) => r.causeId === eventId || r.effectId === eventId)
+      .filter(
+        (r) =>
+          (r.causeId === eventId || r.effectId === eventId) &&
+          visible.has(r.causeId) &&
+          visible.has(r.effectId),
+      )
       .map((r) => ({
         cause: titleByEvent.get(r.causeId) ?? null,
         effect: titleByEvent.get(r.effectId) ?? null,
@@ -204,20 +246,23 @@ export async function getCharacterTimelineTool(
     loadCodexNames(projectId),
   ]);
   const calendar = parseCalendar(calendarRow);
+  // AI 秘匿: hidden な secret イベントを除外（秘匿された生年・死亡・経歴の漏洩防止）。
+  const visible = await visibleEventIds(projectId, events);
+  const visibleEvents = events.filter((e) => visible.has(e.id));
   const participantEventIds = new Set(
     participants
       .filter((p) => p.codexEntryId === codexId)
       .map((p) => p.eventId),
   );
-  const involved = events
+  const involved = visibleEvents
     .filter(
       (e) => e.primaryCodexId === codexId || participantEventIds.has(e.id),
     )
     .sort((a, b) => cmpKeys(a.ordinal, b.ordinal));
 
-  // 誕生時刻（年齢算出基準）。
+  // 誕生時刻（年齢算出基準）。秘匿された birth は基準に含めない。
   let birthTime: number | null = null;
-  for (const e of events)
+  for (const e of visibleEvents)
     if (
       e.primaryCodexId === codexId &&
       e.kind === "birth" &&
@@ -296,20 +341,33 @@ export async function getChronicleStateTool(
       precision: (n.chroniclePrecision ?? "exact") as EventPrecision,
     });
   }
-  const anchor = resolveSceneAnchor(sceneId, {
-    sceneEvents,
+  // AI 秘匿: anchor/pick/derive の前段で hidden な secret イベントを除外（spec §2.4.1）。
+  const vis = projectVisibleChronicle({
     events,
+    sceneEvents,
+    participants,
+    relations,
+    currentSceneId: sceneId,
+    readingOrder,
+  });
+  const anchor = resolveSceneAnchor(sceneId, {
+    sceneEvents: vis.sceneEvents,
+    events: vis.events,
     readingOrder,
     sceneChronicle,
   });
-  const characterIds = pickSnapshotCharacters({ anchor, events, participants });
+  const characterIds = pickSnapshotCharacters({
+    anchor,
+    events: vis.events,
+    participants: vis.participants,
+  });
   const snapshot = deriveChronicleSnapshot(
     {
       anchor,
-      events,
-      participants,
-      relations,
-      sceneEvents,
+      events: vis.events,
+      participants: vis.participants,
+      relations: vis.relations,
+      sceneEvents: vis.sceneEvents,
       calendar: parseCalendar(calendarRow),
       characterIds,
       codexNames: names,

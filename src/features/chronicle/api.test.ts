@@ -30,6 +30,8 @@ vi.mock("@/db/client", async () => {
       end_granularity TEXT NOT NULL DEFAULT 'none',
       precision TEXT NOT NULL DEFAULT 'exact',
       kind TEXT NOT NULL DEFAULT 'generic',
+      secret INTEGER NOT NULL DEFAULT 0,
+      reveal_scene_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -160,6 +162,8 @@ describe("normalizeEvent", () => {
       end_granularity: "day",
       precision: "approx",
       kind: "birth",
+      secret: 1,
+      reveal_scene_id: "s3",
       created_at: NOW,
       updated_at: NOW,
     };
@@ -179,6 +183,8 @@ describe("normalizeEvent", () => {
       endGranularity: "day",
       precision: "approx",
       kind: "birth",
+      secret: true,
+      revealSceneId: "s3",
       createdAt: NOW,
       updatedAt: NOW,
     });

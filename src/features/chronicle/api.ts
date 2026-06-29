@@ -43,6 +43,10 @@ export interface EventRow {
   endGranularity: EventGranularity;
   precision: EventPrecision;
   kind: EventKind;
+  /** AI 秘匿フラグ（reveal アンカー方式）。true=条件付きで AI 文脈から除外。 */
+  secret: boolean;
+  /** 読む順の開示アンカー（明示上書き専用）。null=自動導出 or 恒久秘匿。 */
+  revealSceneId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -55,6 +59,13 @@ function nullableStr(v: unknown): string | null {
 }
 function nullableNum(v: unknown): number | null {
   return v == null ? null : Number(v);
+}
+/** DB 整数(0/1)・boolean・文字列("1"/"true") いずれの secret 表現も真偽へ正規化。 */
+function boolFrom(v: unknown): boolean {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") return v === "1" || v.toLowerCase() === "true";
+  return false;
 }
 
 /** DB 行（snake_case）/ invoke 戻り値（camelCase）双方を EventRow へ正規化。 */
@@ -82,6 +93,8 @@ export function normalizeEvent(raw: unknown): EventRow {
     ) as EventGranularity,
     precision: s(r.precision, "exact") as EventPrecision,
     kind: s(r.kind, "generic") as EventKind,
+    secret: boolFrom(r.secret),
+    revealSceneId: nullableStr(r.revealSceneId ?? r.reveal_scene_id),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -113,6 +126,8 @@ export async function createEvent(data: {
   endGranularity?: EventGranularity;
   precision?: EventPrecision;
   kind?: EventKind;
+  secret?: boolean;
+  revealSceneId?: string | null;
 }): Promise<EventRow> {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
@@ -146,6 +161,8 @@ export async function createEvent(data: {
       endGranularity: data.endGranularity ?? "none",
       precision: data.precision ?? "exact",
       kind: data.kind ?? "generic",
+      secret: data.secret ?? false,
+      revealSceneId: data.revealSceneId ?? null,
       createdAt: now,
       updatedAt: now,
     });
@@ -176,6 +193,8 @@ export async function updateEvent(
       | "endGranularity"
       | "precision"
       | "kind"
+      | "secret"
+      | "revealSceneId"
     >
   >,
 ): Promise<void> {

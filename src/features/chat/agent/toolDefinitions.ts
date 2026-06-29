@@ -524,6 +524,16 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
           description:
             "How precise the end date is: 'none' | 'season' | 'year' | 'month' | 'day' | 'time'",
         },
+        secret: {
+          type: "boolean",
+          description:
+            "Hide this event from AI context until disclosed in-story (spoiler protection; default false). A secret event is excluded from chronicle context/reads while writing scenes before its reveal point.",
+        },
+        revealSceneId: {
+          type: "string",
+          description:
+            "Optional reading-order disclosure anchor: scene id where this secret event becomes visible to the AI. Empty/omitted auto-derives from the earliest stamped scene (or stays permanently hidden if never stamped).",
+        },
         participantCodexIds: {
           type: "array",
           items: { type: "string" },
@@ -570,6 +580,16 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
           type: "string",
           description:
             "End date precision: 'none' | 'season' | 'year' | 'month' | 'day' | 'time'",
+        },
+        secret: {
+          type: "boolean",
+          description:
+            "Hide/unhide this event from AI context (spoiler protection).",
+        },
+        revealSceneId: {
+          type: "string",
+          description:
+            "Reading-order disclosure anchor scene id. Pass an empty string to clear the override (back to auto-derive from the earliest stamped scene).",
         },
       },
       required: ["eventId"],

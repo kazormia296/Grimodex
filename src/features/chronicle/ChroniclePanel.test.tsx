@@ -104,6 +104,8 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
     endGranularity: "none",
     precision: "exact",
     kind: "generic",
+    secret: false,
+    revealSceneId: null,
     createdAt: NOW,
     updatedAt: NOW,
     ...over,

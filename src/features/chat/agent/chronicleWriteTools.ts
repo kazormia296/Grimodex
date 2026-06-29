@@ -12,6 +12,13 @@ import {
 } from "@/features/agent-writes/event";
 import { EVENT_KINDS, EVENT_GRANULARITIES } from "@/db/schema";
 import type { EventKind, EventGranularity } from "@/db/schema";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
+import {
+  listEvents as listChronicleEvents,
+  listSceneEventsForProject,
+} from "@/features/chronicle/api";
+import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
 import type { ToolResult } from "./agentTypes";
 
 type ToolReturn = Omit<ToolResult, "toolCallId">;
@@ -37,6 +44,31 @@ function strArray(v: unknown): string[] {
 function optNum(v: unknown): number | null {
   return typeof v === "number" ? v : null;
 }
+/**
+ * AI 秘匿: 既存 event への write-by-id ゲート（spec §2.4.4）。現在シーン(activeSceneId)
+ * で hidden な secret event、または存在しない event を区別せず false にし、呼び出し側は
+ * generic not found を返す（存在 oracle 化／秘匿内容の漏洩を防ぐ）。create は対象外。
+ */
+async function isEventVisibleForWrite(eventId: string): Promise<boolean> {
+  const projectId = useTreeStore.getState().projectId;
+  if (!projectId) return false;
+  const events = await listChronicleEvents(projectId);
+  const ev = events.find((e) => e.id === eventId);
+  if (!ev) return false;
+  if (!ev.secret) return true;
+  const readingOrder = computeGlobalSceneOrder(useTreeStore.getState().nodes);
+  const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
+  const sceneEvents = await listSceneEventsForProject(projectId, {
+    eventIds: [eventId],
+  });
+  return !isEventHiddenFromAi(ev, currentSceneId, {
+    readingOrder,
+    sceneEvents,
+  });
+}
+
+const NOT_FOUND = "Event not found";
+
 /** kind 文字列を正準 enum に正規化（不正は undefined）。EVENT_KINDS が正本。 */
 function coerceKind(v: unknown): EventKind | undefined {
   const s = str(v);
@@ -75,6 +107,9 @@ export async function createEventTool(
       endMinute: optNum(params["endMinute"]),
       startGranularity: coerceGranularity(params["startGranularity"]),
       endGranularity: coerceGranularity(params["endGranularity"]),
+      secret: params["secret"] === true,
+      // 空白のみ入力も null（自動導出）へ正規化（TS 層で契約を明示）。
+      revealSceneId: str(params["revealSceneId"]) || null,
       participantCodexIds: strArray(params["participantCodexIds"]),
       sceneIds: strArray(params["sceneIds"]),
     };
@@ -95,6 +130,8 @@ export async function updateEventTool(
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("update_event", "eventId is required");
+  if (!(await isEventVisibleForWrite(eventId)))
+    return fail("update_event", NOT_FOUND);
   try {
     await agentUpdateEvent({
       eventId,
@@ -130,6 +167,12 @@ export async function updateEventTool(
         params["endGranularity"] !== undefined
           ? coerceGranularity(params["endGranularity"])
           : undefined,
+      secret:
+        params["secret"] !== undefined ? params["secret"] === true : undefined,
+      revealSceneId:
+        params["revealSceneId"] !== undefined
+          ? str(params["revealSceneId"])
+          : undefined,
     });
     return ok("update_event", { id: eventId }, `Updated event ${eventId}`);
   } catch (e) {
@@ -143,6 +186,8 @@ export async function deleteEventTool(
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("delete_event", "eventId is required");
+  if (!(await isEventVisibleForWrite(eventId)))
+    return fail("delete_event", NOT_FOUND);
   try {
     await agentDeleteEvent(eventId);
     return ok("delete_event", { id: eventId }, `Deleted event ${eventId}`);
@@ -159,6 +204,8 @@ export async function stampSceneEventTool(
   const eventId = str(params["eventId"]);
   if (!sceneId || !eventId)
     return fail("stamp_scene_event", "sceneId and eventId are required");
+  if (!(await isEventVisibleForWrite(eventId)))
+    return fail("stamp_scene_event", NOT_FOUND);
   try {
     await agentLinkSceneEvent(sceneId, eventId);
     return ok(
@@ -182,6 +229,8 @@ export async function unstampSceneEventTool(
   const eventId = str(params["eventId"]);
   if (!sceneId || !eventId)
     return fail("unstamp_scene_event", "sceneId and eventId are required");
+  if (!(await isEventVisibleForWrite(eventId)))
+    return fail("unstamp_scene_event", NOT_FOUND);
   try {
     await agentUnlinkSceneEvent(sceneId, eventId);
     return ok(
@@ -203,6 +252,8 @@ export async function setEventParticipantsTool(
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("set_event_participants", "eventId is required");
+  if (!(await isEventVisibleForWrite(eventId)))
+    return fail("set_event_participants", NOT_FOUND);
   try {
     const codexIds = strArray(params["codexEntryIds"]);
     await agentSetEventParticipants(eventId, codexIds);
@@ -230,6 +281,11 @@ export async function addEventRelationTool(
       "add_event_relation",
       "causeEventId and effectEventId are required",
     );
+  if (
+    !(await isEventVisibleForWrite(causeId)) ||
+    !(await isEventVisibleForWrite(effectId))
+  )
+    return fail("add_event_relation", NOT_FOUND);
   try {
     await agentAddEventRelation(causeId, effectId);
     return ok(
@@ -256,6 +312,11 @@ export async function removeEventRelationTool(
       "remove_event_relation",
       "causeEventId and effectEventId are required",
     );
+  if (
+    !(await isEventVisibleForWrite(causeId)) ||
+    !(await isEventVisibleForWrite(effectId))
+  )
+    return fail("remove_event_relation", NOT_FOUND);
   try {
     await agentRemoveEventRelation(causeId, effectId);
     return ok(

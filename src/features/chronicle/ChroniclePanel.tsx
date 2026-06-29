@@ -105,6 +105,19 @@ export function ChroniclePanel() {
         .map((e) => ({ id: e.id, name: e.name })),
     [entries],
   );
+  // AI 秘匿の reveal アンカー候補（読む順に並べたシーン）。
+  const scenes = useMemo(() => {
+    const order = computeGlobalSceneOrder(nodes);
+    return nodes
+      .filter((n) => n.nodeType === "scene")
+      .map((n) => ({
+        id: n.id,
+        title: n.title,
+        pos: order.get(n.id) ?? Number.POSITIVE_INFINITY,
+      }))
+      .sort((a, b) => a.pos - b.pos)
+      .map(({ id, title }) => ({ id, title }));
+  }, [nodes]);
 
   const loadedProjectIdRef = useRef<string | null>(null);
 
@@ -521,6 +534,7 @@ export function ChroniclePanel() {
           event={selected}
           characters={characters}
           locations={locations}
+          scenes={scenes}
           calendar={calendar ?? { daysPerYear: 360, seasonBoundaries: [] }}
           conflicts={conflicts.filter((c) => c.eventId === selected.id)}
           ageConflicts={ageConflicts.filter((c) => c.eventId === selected.id)}

@@ -12,6 +12,23 @@ const m = vi.hoisted(() => ({
 }));
 vi.mock("@/features/agent-writes/event", () => m);
 
+// write-by-id ゲート(isEventVisibleForWrite)の依存をモック。対象 event は
+// 非 secret として可視扱いにし、既存の「対応関数を呼ぶ」契約を維持する。
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: {
+    getState: () => ({ projectId: "p1", nodes: [], activeSceneId: "s1" }),
+  },
+}));
+const apiMock = vi.hoisted(() => ({
+  listEvents: vi.fn(async () => [
+    { id: "e1", secret: false, revealSceneId: null as string | null },
+    { id: "a", secret: false, revealSceneId: null as string | null },
+    { id: "b", secret: false, revealSceneId: null as string | null },
+  ]),
+  listSceneEventsForProject: vi.fn(async () => []),
+}));
+vi.mock("@/features/chronicle/api", () => apiMock);
+
 import {
   createEventTool,
   updateEventTool,
@@ -114,5 +131,23 @@ describe("participants / relations", () => {
     expect(m.agentAddEventRelation).toHaveBeenCalledWith("a", "b");
     await removeEventRelationTool({ causeEventId: "a", effectEventId: "b" });
     expect(m.agentRemoveEventRelation).toHaveBeenCalledWith("a", "b");
+  });
+});
+
+describe("AI 秘匿 write-by-id ゲート", () => {
+  it("hidden な secret event への update/delete は呼ばず generic not found", async () => {
+    apiMock.listEvents.mockResolvedValueOnce([
+      { id: "sec", secret: true, revealSceneId: null },
+    ]);
+    const r = await updateEventTool({ eventId: "sec", title: "leak" });
+    expect(r.error).toBe("Event not found");
+    expect(m.agentUpdateEvent).not.toHaveBeenCalled();
+
+    apiMock.listEvents.mockResolvedValueOnce([
+      { id: "sec", secret: true, revealSceneId: null },
+    ]);
+    const d = await deleteEventTool({ eventId: "sec" });
+    expect(d.error).toBe("Event not found");
+    expect(m.agentDeleteEvent).not.toHaveBeenCalled();
   });
 });

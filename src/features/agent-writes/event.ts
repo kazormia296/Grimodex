@@ -99,6 +99,10 @@ export interface AgentEventCreateInput {
   endGranularity?: EventGranularity;
   precision?: EventPrecision;
   kind?: EventKind;
+  /** AI 秘匿（reveal アンカー方式）。既定 false=表示。 */
+  secret?: boolean;
+  /** 読む順の開示アンカー（明示上書き・""=自動導出へ戻す・null/undefined=未指定）。 */
+  revealSceneId?: string | null;
   participantCodexIds?: string[];
   sceneIds?: string[];
 }
@@ -123,6 +127,8 @@ export async function agentCreateEvent(
       endGranularity: input.endGranularity ?? "none",
       precision: input.precision ?? "exact",
       kind: input.kind ?? "generic",
+      secret: input.secret ?? false,
+      revealSceneId: input.revealSceneId ?? null,
       participantCodexIds: input.participantCodexIds ?? [],
       sceneIds: input.sceneIds ?? [],
     },
@@ -147,6 +153,10 @@ export interface AgentEventUpdateInput {
   endGranularity?: EventGranularity;
   precision?: EventPrecision;
   kind?: EventKind;
+  /** AI 秘匿（reveal アンカー方式）。 */
+  secret?: boolean;
+  /** 読む順の開示アンカー（""=自動導出へ戻す・undefined=未指定で不変）。 */
+  revealSceneId?: string | null;
 }
 
 export async function agentUpdateEvent(
