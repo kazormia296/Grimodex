@@ -137,6 +137,11 @@ export function ChroniclePanel() {
   const [extractOpen, setExtractOpen] = useState(false);
   // インスペクタ高さ（上端グリップでリサイズ。選択をまたいで保持）。
   const [inspectorHeight, setInspectorHeight] = useState(340);
+  // ピン留め空レーン（「レーンを追加」で増やす。codexId=null は未割当の新規プレースホルダ）。
+  const pinCounterRef = useRef(0);
+  const [pinnedLanes, setPinnedLanes] = useState<
+    { key: string; codexId: string | null }[]
+  >([]);
 
   const scenedEventIds = useMemo(
     () => new Set(sceneLinks.map((l) => l.eventId)),
@@ -190,6 +195,7 @@ export function ChroniclePanel() {
       // 位置選択(ephemeral)も捨てる。残すと handleAdd が他プロジェクトの
       // codexId/日を新規イベントへ書き込みクロスプロジェクト参照を作る。
       setSelectedPosition(null);
+      setPinnedLanes([]);
       // 永続ビューがあれば維持（再フィットしない）、無ければ新規プロジェクトに
       // 合わせて全体フィットし直す。
       fittedRef.current = useChronicleStore.getState().pxPerDay != null;
@@ -355,8 +361,22 @@ export function ChroniclePanel() {
         eventIds: unassignedIds,
       });
     }
+    // ピン留め空レーン（末尾）。既にイベントありの codex は表示済みなのでスキップ。
+    for (const pin of pinnedLanes) {
+      const entry = pin.codexId ? entryById.get(pin.codexId) : null;
+      if (entry && laneMap.has(entry.id)) continue;
+      out.push({
+        codexId: entry ? entry.id : `__pin_${pin.key}`,
+        name: entry ? entry.name : t("chronicle.newLane", "（新しいレーン）"),
+        kind: entry ? entry.type : "pinned",
+        unassigned: false,
+        eventIds: [],
+        keepEmpty: true,
+        pinKey: pin.key,
+      });
+    }
     return out;
-  }, [events, entries, t, participantsByEvent]);
+  }, [events, entries, t, participantsByEvent, pinnedLanes]);
 
   const layoutEvents: LayoutEventInput[] = useMemo(() => {
     const entryIds = new Set(entries.map((e) => e.id));
@@ -678,31 +698,23 @@ export function ChroniclePanel() {
     [setSelectedEventId, setSelectedPosition],
   );
 
-  // レーンガターの「追加」: 選択 Codex に新規出来事を作りレーンを出して編集状態へ。
-  // 暦モード中は既定時刻を付与して並び順モードへ落ちないようにする。
-  const handleAddLane = useCallback(
-    async (codexId: string) => {
-      if (!projectId || creating) return;
-      const day = defaultCreateDay();
-      setCreating(true);
-      try {
-        const ev = await uiCreateEvent({
-          title: t("chronicle.newEvent", "新しい出来事"),
-          primaryCodexId: codexId,
-          ...(day != null
-            ? { startTime: Math.round(day), startGranularity: "day" as const }
-            : {}),
-        });
-        setSelectedEventId(ev.id);
-        refresh();
-      } catch {
-        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
-      } finally {
-        setCreating(false);
-      }
+  // レーンガターの「追加」ボタン: 空のレーンをピン留めする（出来事は作らない＝
+  // 未割当に積まれない）。割り当ては空レーン側の Codex ピッカーで行う。
+  const handleAddLane = useCallback(() => {
+    const key = `pin${pinCounterRef.current++}`;
+    setPinnedLanes((p) => [...p, { key, codexId: null }]);
+  }, []);
+  const handleAssignPinnedLane = useCallback(
+    (pinKey: string, codexId: string | null) => {
+      setPinnedLanes((p) =>
+        p.map((l) => (l.key === pinKey ? { ...l, codexId } : l)),
+      );
     },
-    [projectId, creating, t, refresh, setSelectedEventId, defaultCreateDay],
+    [],
   );
+  const handleRemovePinnedLane = useCallback((pinKey: string) => {
+    setPinnedLanes((p) => p.filter((l) => l.key !== pinKey));
+  }, []);
 
   const handlePatch = useCallback(
     async (patch: Partial<EventRow>) => {
@@ -986,6 +998,8 @@ export function ChroniclePanel() {
               );
           }}
           onAddLane={handleAddLane}
+          onAssignPinnedLane={handleAssignPinnedLane}
+          onRemovePinnedLane={handleRemovePinnedLane}
           selectedDay={selectedDay}
           hasCalendarAxis={eff.hasCalendarAxis}
           onMoveEvent={handleMoveEvent}

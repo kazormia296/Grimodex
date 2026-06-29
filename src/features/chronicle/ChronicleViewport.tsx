@@ -47,7 +47,10 @@ export interface ChronicleViewportProps {
   laneOptions?: { id: string; name: string; type: string }[];
   locked?: boolean;
   onAssignLane?: (codexId: string) => void;
-  onAddLane?: (codexId: string) => void;
+  onAddLane?: () => void;
+  /** ピン留め空レーンへ Codex を割り当て/解除。 */
+  onAssignPinnedLane?: (pinKey: string, codexId: string | null) => void;
+  onRemovePinnedLane?: (pinKey: string) => void;
   // ── グラフ操作（任意・ロック時は呼ばれない） ──
   /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
   selectedDay?: number | null;
@@ -94,6 +97,8 @@ export function ChronicleViewport({
   locked,
   onAssignLane,
   onAddLane,
+  onAssignPinnedLane,
+  onRemovePinnedLane,
   selectedDay,
   hasCalendarAxis = true,
   onMoveEvent,
@@ -178,7 +183,10 @@ export function ChronicleViewport({
   };
   const laneCodexAt = (clientY: number, rect: DOMRect): string | null => {
     const lane = laneAtY(layoutRef.current.pack.lanes, clientY - rect.top);
-    return lane ? laneTargetCodexId(lane) : null;
+    if (!lane) return null;
+    const c = laneTargetCodexId(lane);
+    // 未割当プレースホルダ(__pin_)は実在しない codexId なので割り当てない。
+    return c && c.startsWith("__pin_") ? null : c;
   };
 
   // document ドラッグの登録/撤去（move + up を1組で）。
@@ -498,6 +506,8 @@ export function ChronicleViewport({
           locked={locked}
           onAssignLane={onAssignLane}
           onAddLane={onAddLane}
+          onAssignPinnedLane={onAssignPinnedLane}
+          onRemovePinnedLane={onRemovePinnedLane}
         />
 
         <div

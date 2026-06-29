@@ -106,6 +106,10 @@ export interface LayoutLane {
   unassigned: boolean;
   /** このレーンに属する eventId（描画順は startX でソートされる）。 */
   eventIds: string[];
+  /** 出来事 0 でも残すピン留め空レーンか。 */
+  keepEmpty?: boolean;
+  /** ピン留めレーンの識別キー。 */
+  pinKey?: string;
 }
 
 /** マーカー 1 個の確定描画情報（left は lanePack 由来＝point は startX-9）。 */
@@ -190,6 +194,8 @@ export function buildChronicleLayout(args: BuildLayoutArgs): ChronicleLayout {
       });
       return [{ id, startX, isInterval, barWidth, estWidth }];
     }),
+    keepEmpty: lane.keepEmpty,
+    pinKey: lane.pinKey,
   }));
 
   const pack = packLanes({ lanes: packInput, spacing });

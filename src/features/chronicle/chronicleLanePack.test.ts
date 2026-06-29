@@ -28,6 +28,8 @@ function lane(
     kind: extra.kind ?? "character",
     unassigned: extra.unassigned ?? false,
     events,
+    keepEmpty: extra.keepEmpty,
+    pinKey: extra.pinKey,
   };
 }
 
@@ -81,6 +83,24 @@ describe("packLanes", () => {
     expect(result.laneSepTops).toHaveLength(1);
   });
 
+  it("(4b) keepEmpty の空レーンは残す（ピン留め空レーン）", () => {
+    const result = packLanes({
+      lanes: [
+        lane("pin", [], { keepEmpty: true, pinKey: "p1" }),
+        lane("full", [ev("a", 10, 20)]),
+      ],
+      spacing,
+    });
+    expect(result.lanes).toHaveLength(2);
+    const pin = result.lanes.find((l) => l.codexId === "pin")!;
+    expect(pin.keepEmpty).toBe(true);
+    expect(pin.pinKey).toBe("p1");
+    expect(pin.count).toBe(0);
+    expect(pin.markers).toHaveLength(0);
+    // 1 行分の高さ（laneVPad*2 + tokenH）。
+    expect(pin.height).toBe(spacing.laneVPad * 2 + spacing.tokenH);
+  });
+
   it("(5) multiple lanes stack and laneSepTops match each lane top", () => {
     const result = packLanes({
       lanes: [
@@ -127,6 +147,7 @@ describe("laneAtY", () => {
       height: 50,
       rows: 1,
       markers: [],
+      keepEmpty: false,
     },
     {
       codexId: "b",
@@ -138,6 +159,7 @@ describe("laneAtY", () => {
       height: 60,
       rows: 1,
       markers: [],
+      keepEmpty: false,
     },
   ];
   it("範囲内の y は該当レーン", () => {
