@@ -18,6 +18,8 @@ import { EventMarker, type MarkerEvent } from "./EventMarker";
 
 const SNAP_PX = 12;
 const DRAG_THRESHOLD = 3;
+// Y のデッドゾーン: これ未満の縦移動はレーン変更せず横スライドのみ（Grid のシーン同様）。
+const LANE_DEADZONE = 28;
 
 /** レーンの表示キー（codexId or "__unassigned"）→ 割当用 codexId（null=未割当）。 */
 function laneTargetCodexId(lane: {
@@ -333,6 +335,7 @@ export function ChronicleViewport({
     // ── マーカー: ドラッグで移動、別マーカーへ落とすと因果エッジ（ロック時は選択のみ） ──
     if (markerEl && eventId) {
       if (!cb.locked && (cb.onMoveEvent || cb.onCreateEdge)) {
+        const startLaneCodex = laneCodexAt(startY, rect);
         bindDrag(
           (ev) => {
             if (
@@ -340,12 +343,12 @@ export function ChronicleViewport({
               Math.abs(ev.clientY - startY) > DRAG_THRESHOLD
             ) {
               draggedRef.current = true;
+              // Y はデッドゾーン分を差し引いて追従（一定までは横スライドのみ）。
+              const rawDy = ev.clientY - startY;
+              const dy =
+                Math.sign(rawDy) * Math.max(0, Math.abs(rawDy) - LANE_DEADZONE);
               // マーカーをポインタへ追従（見た目を動かす）。ゴースト縦線は吸着先を示す。
-              setDragPreview({
-                id: eventId,
-                dx: ev.clientX - startX,
-                dy: ev.clientY - startY,
-              });
+              setDragPreview({ id: eventId, dx: ev.clientX - startX, dy });
               setGhostX(
                 cb.hasCalendarAxis
                   ? dayToX(viewRef.current, snappedDayAt(ev.clientX, rect))
@@ -371,7 +374,12 @@ export function ChronicleViewport({
                 const newDay = cb.hasCalendarAxis
                   ? snappedDayAt(ev.clientX, rect)
                   : null;
-                cb.onMoveEvent(eventId, newDay, laneCodexAt(ev.clientY, rect));
+                // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
+                const newCodex =
+                  Math.abs(ev.clientY - startY) < LANE_DEADZONE
+                    ? startLaneCodex
+                    : laneCodexAt(ev.clientY, rect);
+                cb.onMoveEvent(eventId, newDay, newCodex);
               }
             }
             setTimeout(() => {

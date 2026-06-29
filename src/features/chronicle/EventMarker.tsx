@@ -78,17 +78,16 @@ export function EventMarker({
     : related
       ? `0 0 0 3px ${mix(ACCENT, 12, "transparent")}`
       : undefined;
-  // 確度の外周線（point/interval 共通・選択中でも視認可。差を明確にするため
-  // solid=確定 / dotted=おおよそ / dashed=不明 と線種を3分し、非確定は太く＋減光する。
-  // オフページ(scene 未参照)も dashed。
-  const offpage = !event.sceneLinked;
+  // 確度の外周線は**確度のみ**で決める（オフページは glyph の中空表現で別途示すので
+  // border は奪わない＝確度の差を常に視認できる）。solid=確定 / dashed=おおよそ /
+  // dotted=不明。線種に加え確度チップ（後述）で確実に判別できるようにする。
   const borderStyle: CSSProperties["borderStyle"] =
-    offpage || event.precision === "unknown"
+    event.precision === "unknown"
       ? "dashed"
       : event.precision === "approx"
         ? "dotted"
         : "solid";
-  const borderWidth = event.precision === "exact" && !offpage ? 1 : 1.6;
+  const borderWidth = event.precision === "exact" ? 1 : 1.6;
   // ボーダー色: 矛盾=AMBER（最優先）。選択は ring で示し色は奪わない（確度を隠さない）。
   const baseBorder = conflict
     ? AMBER
@@ -206,6 +205,14 @@ export function EventMarker({
         ? { label: t("chronicle.kind.death", "死亡"), color: DEATH }
         : null;
 
+  // 確度チップ（確定は無印・おおよそ/不明のみ明示）。線種だけでは判別しづらい問題への対策。
+  const precisionTag =
+    event.precision === "approx"
+      ? { label: t("chronicle.precisionShort.approx", "約"), color: AMBER }
+      : event.precision === "unknown"
+        ? { label: t("chronicle.precisionShort.unknown", "?"), color: AMBER }
+        : null;
+
   return (
     <button
       type="button"
@@ -268,7 +275,7 @@ export function EventMarker({
           }}
         />
       )}
-      <span style={glyph} />
+      <span data-testid="marker-glyph" style={glyph} />
       {labelsOn && (
         <span
           style={{
@@ -297,6 +304,24 @@ export function EventMarker({
           }}
         >
           {kindTag.label}
+        </span>
+      )}
+      {precisionTag && (
+        <span
+          data-testid="precision-tag"
+          title={t(`chronicle.precision.${event.precision}`, event.precision)}
+          style={{
+            flex: "none",
+            fontSize: 10,
+            lineHeight: 1,
+            padding: "2px 5px",
+            borderRadius: 4,
+            background: mix(precisionTag.color, 16, "transparent"),
+            color: mix(precisionTag.color, 72, "var(--foreground)"),
+            fontWeight: 700,
+          }}
+        >
+          {precisionTag.label}
         </span>
       )}
       {event.secret && (

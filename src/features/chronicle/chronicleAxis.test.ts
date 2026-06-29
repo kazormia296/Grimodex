@@ -46,6 +46,28 @@ describe("effectiveDays", () => {
     expect(r.dataEnd).toBe(20);
   });
 
+  it("時刻(minute)を分数日へ畳み込み横軸位置へ反映する", () => {
+    const r = effectiveDays([
+      // 14:30 = 870分 → 0.604... 日。
+      {
+        id: "a",
+        ordinal: "a0",
+        startTime: 100,
+        endTime: 102,
+        startMinute: 870,
+        endMinute: 360,
+      },
+    ]);
+    const d = r.byId.get("a")!;
+    expect(d.startDay).toBeCloseTo(100 + 870 / 1440, 6);
+    expect(d.endDay).toBeCloseTo(102 + 360 / 1440, 6);
+  });
+
+  it("minute 未指定は従来どおり整数日（畳み込み 0）", () => {
+    const r = effectiveDays([ev("a", "a0", 10, 12)]);
+    expect(r.byId.get("a")).toEqual({ startDay: 10, endDay: 12 });
+  });
+
   it("dataStart/dataEnd account for interval endDay extending the range", () => {
     const r = effectiveDays([
       ev("a", "a0", 0, 100), // long interval

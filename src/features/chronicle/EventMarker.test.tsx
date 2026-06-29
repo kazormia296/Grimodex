@@ -52,10 +52,37 @@ describe("EventMarker (DOM token)", () => {
     expect(el.style.width).toBe("120px");
   });
 
-  it("オフページ(point)は破線ボーダー", () => {
-    const { container } = renderMarker({ event: ev({ sceneLinked: false }) });
+  it("オフページでも border は確度専用（exact は実線・オフページが破線を強制しない）", () => {
+    // 以前はオフページが dashed を強制し確度差が潰れていた回帰の gate。
+    const { container, getByTestId } = renderMarker({
+      event: ev({ sceneLinked: false, precision: "exact" }),
+    });
+    expect(getByTestId("marker-glyph")).toBeTruthy(); // 中空グリフは描画される
     const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
-    expect(el.style.borderStyle).toBe("dashed");
+    expect(el.style.borderStyle).toBe("solid");
+  });
+
+  it("オフページでも確度の差が出る（exact=実線 / approx=点線 / unknown=破線）", () => {
+    const sty = (p: "exact" | "approx" | "unknown") => {
+      const { container } = renderMarker({
+        event: ev({ sceneLinked: false, precision: p }),
+      });
+      return (container.querySelector('[data-event-id="m1"]') as HTMLElement)
+        .style.borderStyle;
+    };
+    expect(sty("exact")).toBe("solid");
+    expect(sty("approx")).toBe("dotted");
+    expect(sty("unknown")).toBe("dashed");
+  });
+
+  it("approx/unknown は確度チップを描く（確定は無印）", () => {
+    const chip = (p: "exact" | "approx" | "unknown") =>
+      renderMarker({ event: ev({ precision: p }) }).container.querySelector(
+        '[data-testid="precision-tag"]',
+      );
+    expect(chip("approx")).toBeTruthy();
+    expect(chip("unknown")).toBeTruthy();
+    expect(chip("exact")).toBeNull();
   });
 
   it("確度 unknown は point/interval ともに破線（確度が外周線へ反映）", () => {

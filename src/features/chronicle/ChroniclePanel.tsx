@@ -57,6 +57,24 @@ import { useSeasonConflicts } from "./useSeasonConflicts";
 
 const TIE_PAD = 40;
 const TIE_STEP = 120;
+const MIN_PER_DAY = 1440;
+
+/**
+ * 分数日（時刻込み）を day 番号＋時刻に分解する。
+ * subDay=true（時/分 zoom）なら時刻も吸着先へ更新。false（日以上 zoom）なら
+ * day だけ動かし時刻(keepMinute)は保持する（=ドラッグで 0:00 にリセットしない）。
+ */
+function splitDayMinute(
+  fracDay: number,
+  subDay: boolean,
+  keepMinute: number | null,
+): { time: number; minute: number | null } {
+  if (subDay) {
+    const day = Math.floor(fracDay);
+    return { time: day, minute: Math.round((fracDay - day) * MIN_PER_DAY) };
+  }
+  return { time: Math.round(fracDay), minute: keepMinute };
+}
 
 /**
  * 作中年表(Chronicle)パネル — 人物/場所レーン×作中時間軸の pan/zoom 年表。
@@ -256,6 +274,8 @@ export function ChroniclePanel() {
           ordinal: e.ordinal,
           startTime: e.startTime,
           endTime: e.endTime,
+          startMinute: e.startMinute,
+          endMinute: e.endMinute,
         })),
       ),
     [events],
@@ -406,6 +426,9 @@ export function ChroniclePanel() {
       lang,
     ],
   );
+  // ドラッグ書き戻し時に現在のルーラー解像度（時刻 zoom か否か）を参照する。
+  const rulerLevelRef = useRef<string>("day");
+  rulerLevelRef.current = layout.ticks.level;
 
   const eventsById = useMemo(() => {
     const m = new Map<string, MarkerEvent>();
@@ -523,31 +546,48 @@ export function ChroniclePanel() {
   );
 
   // マーカー再配置（横=startTime / 縦=レーン再割当。interval は期間維持）。
+  // 時刻 zoom 中は時刻も吸着先へ、日以上 zoom では時刻を保持して day だけ動かす。
   const handleMoveEvent = useCallback(
     (id: string, newStartDay: number | null, newCodexId: string | null) => {
       const e = events.find((x) => x.id === id);
       if (!e) return;
       const patch: Partial<EventRow> = { primaryCodexId: newCodexId };
       if (newStartDay != null && e.startTime != null) {
-        const day = Math.round(newStartDay);
-        patch.startTime = day;
-        if (e.endTime != null) patch.endTime = day + (e.endTime - e.startTime);
+        const subDay =
+          rulerLevelRef.current === "hour" ||
+          rulerLevelRef.current === "minute";
+        const s = splitDayMinute(newStartDay, subDay, e.startMinute);
+        patch.startTime = s.time;
+        if (subDay) patch.startMinute = s.minute;
+        if (e.endTime != null)
+          patch.endTime = s.time + (e.endTime - e.startTime);
       }
       void patchById(id, patch);
     },
     [events, patchById],
   );
 
-  // 期間端の伸縮（開始/終了を吸着日へ。start<=end を保つ）。
+  // 期間端の伸縮（開始/終了を吸着位置へ。start<=end を保つ。時刻 zoom は時刻も更新）。
   const handleResizeEvent = useCallback(
     (id: string, edge: "start" | "end", newDay: number) => {
       const e = events.find((x) => x.id === id);
       if (!e || e.startTime == null) return;
-      const day = Math.round(newDay);
+      const subDay =
+        rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
       if (edge === "start") {
-        void patchById(id, { startTime: Math.min(day, e.endTime ?? day) });
+        const s = splitDayMinute(newDay, subDay, e.startMinute);
+        const patch: Partial<EventRow> = {
+          startTime: Math.min(s.time, e.endTime ?? s.time),
+        };
+        if (subDay) patch.startMinute = s.minute;
+        void patchById(id, patch);
       } else {
-        void patchById(id, { endTime: Math.max(day, e.startTime) });
+        const s = splitDayMinute(newDay, subDay, e.endMinute);
+        const patch: Partial<EventRow> = {
+          endTime: Math.max(s.time, e.startTime),
+        };
+        if (subDay) patch.endMinute = s.minute;
+        void patchById(id, patch);
       }
     },
     [events, patchById],

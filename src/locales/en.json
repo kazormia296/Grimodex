@@ -5046,6 +5046,7 @@
     "participants": "Lanes (multi-membership)",
     "addParticipant": "+ Lane",
     "removeParticipant": "Remove",
+    "precisionShort": { "approx": "~", "unknown": "?" },
     "legendCausal": "Causal",
     "exactHint": "The date is fixed",
     "approxHint": "Order is certain but the date is approximate",

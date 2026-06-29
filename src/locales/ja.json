@@ -5033,6 +5033,7 @@
     "participants": "参加レーン（複数所属）",
     "addParticipant": "＋参加レーン",
     "removeParticipant": "外す",
+    "precisionShort": { "approx": "約", "unknown": "?" },
     "legendCausal": "因果",
     "exactHint": "日付が確定している",
     "approxHint": "順序は確実だが日付は概算",

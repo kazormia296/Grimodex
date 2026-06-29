@@ -13,6 +13,15 @@ export interface AxisEventInput {
   ordinal: string;
   startTime: number | null;
   endTime: number | null;
+  /** 時刻(0..1439)。日番号へ分数日として畳み込み、時刻を横軸に反映する。 */
+  startMinute?: number | null;
+  endMinute?: number | null;
+}
+
+const MINUTES_PER_DAY = 24 * 60;
+/** 日番号＋時刻 → 分数日（time granularity を横軸位置へ反映）。 */
+function foldMinute(day: number, minute: number | null | undefined): number {
+  return day + (minute ?? 0) / MINUTES_PER_DAY;
 }
 
 export interface EffectiveDay {
@@ -50,8 +59,11 @@ export function effectiveDays(events: AxisEventInput[]): EffectiveDaysResult {
     let dataStart = Infinity;
     let dataEnd = -Infinity;
     for (const e of events) {
-      const startDay = e.startTime as number;
-      const endDay = e.endTime != null ? Math.max(e.endTime, startDay) : null;
+      const startDay = foldMinute(e.startTime as number, e.startMinute);
+      const endDay =
+        e.endTime != null
+          ? Math.max(foldMinute(e.endTime, e.endMinute), startDay)
+          : null;
       byId.set(e.id, { startDay, endDay });
       if (startDay < dataStart) dataStart = startDay;
       if (startDay > dataEnd) dataEnd = startDay;
