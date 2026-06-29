@@ -1,22 +1,48 @@
 # Grimodex 関連する過去シーンパネル設計書
 
-## 概要
+> **このパネルは Scene Context パネルへ統合されました（PR#215・2026-06-29）。**
+> 「関連する過去シーン」は現在 Scene Context パネル内の**「関連過去シーンセクション」**として
+> 存在します。**旧 `related-scenes` パネル id は削除**（`stripUnknownPanels` が保存レイアウト
+> から自動除去）。パネル全体の設計（登録・配置・ヘッダー・プリセット）は
+> [[Grimodex_SceneContextパネル設計書]] を参照。
+>
+> 本書は**関連過去シーンセクション固有の振る舞い詳細**（検索・ランキング・時間軸・ジャンプ）
+> のリファレンスとして残す。独立 tool window としての記述（パネル登録・Dock 配置・ショートカット）
+> はすべて廃止扱い。
+
+## 廃止された記述（独立パネル前提）
+
+統合に伴い、以下は**もはや有効でない**。Scene Context パネル側に責任が移った。
+
+- **独立 tool window 登録**: 旧 `related-scenes` パネル id・`panelIds` / `panelComponents` /
+  `panelIcons`（`History`）/ `panelRegions` / `toolWindowDefaults` / `layoutPresets`（5 プリセット）/
+  `keybindings` / locale の 8 系統登録は撤去。保存レイアウトに残る旧 id は `stripUnknownPanels` が
+  起動時に自動除去する。
+- **専用ショートカット `Ctrl+Alt+P`（既定 `Mod+Alt+P`、`focusRelatedScenes`）**: 廃止。
+  セクションは Scene Context パネル内に常駐するため単独トグルを持たない。
+- **既定 region/slot `BR`・stripe 既定非表示（`hiddenStripePanels`）**: Scene Context パネルの
+  配置・プリセットに従う（[[Grimodex_SceneContextパネル設計書]]）。
+- **「独立パネル」「tool window」前提の文言**全般。
+
+実装も `RelatedScenesPanel.tsx`（パネル UI）→ `RelatedScenesSection.tsx`（Scene Context 内
+セクション）へ改名・降格した。
+
+## 概要（セクションとして残る役割）
 
 「関連する過去シーン」は、いま編集中のシーンに意味的に関連する**「前の」シーン**（既定＝
-読書順で前＝既読。`phase_resolution_mode` が story/auto なら作中時系列で前）を一覧する専用
-tool window パネル（`src/features/related-scenes/RelatedScenesPanel.tsx`、tool window id
-`related-scenes`）。クリックでそのシーンの一致箇所へジャンプできる。
+読書順で前＝既読。`phase_resolution_mode` が story/auto なら作中時系列で前）を一覧する。
+クリックでそのシーンの一致箇所へジャンプできる。
 
 Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL（過去に書いた／
-抽出した知識を執筆中に引き戻す）を**初めて人間向け UI として出した read-only パネル**。
+抽出した知識を執筆中に引き戻す）を**人間向け UI として出した read-only セクション**。
 従来 scene のセマンティック検索は「AI のための recall」（Layer 4 RAG＝チャット文脈への
-自動注入、`features/chat/semanticRecall.ts`）にしか使われていなかった。本パネルは同じ
-`semantic_search` を人間向けに転用する（セマンティック検索設計書 §「関連する過去シーン
-パネル」参照）。2026-06-18 出荷。
+自動注入、`features/chat/semanticRecall.ts`）にしか使われていなかった。本セクションは同じ
+`semantic_search` を人間向けに転用する（[[Grimodex_セマンティック検索設計書]] §「関連する
+過去シーンパネル」参照）。2026-06-18 初出荷、2026-06-29 に Scene Context へ統合（PR#215）。
 
 ```
 ┌─────────────────────────────────────┐
-│ 🕘 関連する過去シーン           ⟳   │  ← ヘッダー（右端に loading スピナー）
+│ 🕘 関連する過去シーン           ⟳   │  ← セクション見出し（右端に loading スピナー）
 ├─────────────────────────────────────┤
 │ 井戸端の密談                  92% │  ← 章タイトル + スコア(%)
 │   …エリカが鍵を渡した場面          │  ← 一致チャンク（2 行クランプ）
@@ -39,15 +65,15 @@ Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL
     前に起きた」。読書順では後ろの回想シーンでも作中時系列で前なら「過去」に入る。
   いずれも現在シーンより**前**だけを出し、現在シーン自身・現在以降・順序外（folder/削除済）は
   除外する。順序軸は `selectRelatedPastScenes` には透過で、渡された index map の前後だけで判定する。
-  これが「単なる関連シーン（相関図領域）」との違い。Settings での mode 切替はパネルが購読して即時
-  取り直す（`RelatedScenesPanel` が `resolutionMode` を effect 依存に持つ）。
+  これが「単なる関連シーン（相関図領域）」との違い。Settings での mode 切替はセクションが購読して即時
+  取り直す（`resolutionMode` を fetch effect 依存に持つ）。
 - 各行は **1 シーン**（最良スコアのチャンクを代表に集約）。並び順は hybrid の RRF 融合＋
   dense 勝者アンカー（下記「検索とランキング」）、純 dense 時のみ cosine 降順、同点は sceneId で
   安定ソート。最大 `RELATED_SCENES_MAX = 8` 件。
 - スコアは cosine 類似度を `%` 表示（例 0.92 → `92%`）。`primary` 色のピル。
 - 床（足切り）は**言語別 gate 値**（`recallParamsForLang().gateScore` = ja 0.85 / en 0.51）を
   **per-scene floor** として使う。チャット注入の top-1 ゲート（「明確な勝者が無ければ全部
-  隠す」all-or-nothing）は使わない — 人間が関連性を判断できるパネルなので、各シーンが単独で
+  隠す」all-or-nothing）は使わない — 人間が関連性を判断できるセクションなので、各シーンが単独で
   「明確に関連」のバーを越えるものだけを出し、ruri の団子（無関係散文が ~0.79 に座る高
   ベースライン）混入を防ぐ。
 - 状態別の表示:
@@ -60,13 +86,16 @@ Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL
 | 操作 | 動作 |
 |------|------|
 | 行をクリック | そのシーンを開き、一致チャンク位置へスクロール+選択。`requestJump → setActiveScene → showPanel("editor")` の順（順序は不変条件。`semanticNavStore` を EditorPane がシーンロード後に一度だけ consume する。意味検索ダイアログと同一機構） |
-| `Ctrl+Alt+P` | パネルの表示トグル＋フォーカス（`focusRelatedScenes` キーバインド、既定 `Mod+Alt+P`） |
+
+（旧 `Ctrl+Alt+P` トグルは廃止。Scene Context パネル自体の開閉に従う。）
 
 ## データフロー
 
 ```
 アクティブシーン (useTreeStore.activeSceneId) が変化
-  → 400ms debounce（連打抑制。非表示 isActive=false なら検索しない＝keepalive）
+  → fetch gate: enabled（feature 有効）&& open（Scene Context パネルが可視）でのみ検索
+      （非可視＝閉じている／別タブなら検索しない＝keepalive。旧 isActive 可視ゲートを継承）
+  → 400ms debounce（連打抑制）
   → loadSceneContent(sceneId)（DB の PM JSON）→ prosemirrorToText で plain text 化
   → buildSemanticRecallQuery({ userMessage: "", sceneBody })（本文末尾 最大 500 文字 = dense seed）
   → buildSparseQuery(query, body)（本文全体から固有名詞 seed を抽出し sparse 用に拡張＝③）
@@ -77,7 +106,7 @@ Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL
       （reading=読書順 / story・auto=作中時系列。reading は computeGlobalSceneOrder と同義）
   → selectRelatedPastScenes(hits, { currentSceneId, sceneOrder, minScore=gate, maxScenes=8,
       sparseSceneIds, rescueMargin=0.05, relativeRescue:{ gap=0.05 } })
-  → パネルに行として描画（RRF 融合＋dense 勝者アンカーで順位付け、下記「検索とランキング」）
+  → セクションに行として描画（RRF 融合＋dense 勝者アンカーで順位付け、下記「検索とランキング」）
 ```
 
 実装ファイル:
@@ -91,14 +120,15 @@ Grimodex のコア体験 **TALK→EXTRACT→RECALL** ループのうち、RECALL
 - `fetchRelatedScenes.ts` — `fetchRelatedPastScenes`。本文取得→クエリ組み立て→dense/sparse 並列
   取得→`computeSceneTimeIndex` で順序軸算出（`phase_resolution_mode` に従う）→選別の取得
   オーケストレーション。失敗は空配列／dense 単独フォールバック。
-- `RelatedScenesPanel.tsx` — パネル UI（debounce fetch・loading/empty 状態・行クリック
-  ジャンプ）。`usePhaseStore.resolutionMode` を購読し、順序軸の切替で再取得する。
+- `RelatedScenesSection.tsx` — Scene Context 内セクション UI（fetch gate・debounce fetch・
+  loading/empty 状態・行クリックジャンプ）。`usePhaseStore.resolutionMode` を購読し、順序軸の
+  切替で再取得する。旧 `RelatedScenesPanel.tsx` を改名・降格したもの。
 
 ## 検索とランキング（hybrid + dense 勝者アンカー）
 
 固有名詞（人名・地名）は密ベクトルだと過小評価されがちで、小説では強い手がかりなのに
 dense 単独だと recall を落とす。そこで Layer 4 RAG（チャット注入）と同じ **dense + sparse
-(FTS5/bm25) の RRF 融合**を人間向けパネルにも適用する（2026-06-19, PR#126）。
+(FTS5/bm25) の RRF 融合**を人間向けセクションにも適用する（2026-06-19, PR#126）。
 
 - **admit（どのシーンを出すか）= recall**:
   - `denseConfident`: cosine ≥ 床（言語別 gate）。明確に関連。
@@ -107,13 +137,13 @@ dense 単独だと recall を落とす。そこで Layer 4 RAG（チャット注
   - `relativeRescue`（②, browse 向けの recall 追加）: **二段ガード**で床下を救済。(a) cosine ≥
     床 − nearFloorMargin かつ (b) pool に明確な勝者（最大 cosine ≥ 床）が居る かつ (c) cosine が
     pool 中央値より `gap(0.05)` 以上際立つ — 3 条件全てで初めて admit。絶対床を撤廃しないので
-    「勝者不在クエリの団子最上位を過大評価」を避ける（`docs/Grimodex_セマンティック検索の閾値と
-    モデル特性.md` の二段ガード方式。ruri は無関係散文でも cosine が ~0.79 に座る高ベースライン）。
-    注入用途では使わない（precision 優先）。誤検出コストの低い browse パネルだけで許容する。
+    「勝者不在クエリの団子最上位を過大評価」を避ける（[[Grimodex_セマンティック検索の閾値と
+    モデル特性]] の二段ガード方式。ruri は無関係散文でも cosine が ~0.79 に座る高ベースライン）。
+    注入用途では使わない（precision 優先）。誤検出コストの低い browse セクションだけで許容する。
 - **rank（どの順に並べるか）= RRF 融合 + dense 勝者アンカー**:
   - `rrf(s) = 1/(k+rank_dense) + 1/(k+rank_sparse)`（k=`RRF_K`=60、sparse 不一致は dense 項のみ）。
   - **dense 勝者アンカー**（2026-06-19, PR#129）: RRF 純ソートは語彙一致の弱関連を「意味的に
-    最も近い既読シーン（= dense 勝者）」の上へ押し上げ、パネル先頭の体験を劣化させる
+    最も近い既読シーン（= dense 勝者）」の上へ押し上げ、セクション先頭の体験を劣化させる
     （R@1/MRR ↓）。そこで RRF ソート後、pool 最大 cosine のシーンが confident（床 ≥ gate）なら
     **その 1 件だけ rank1 に固定**する。固定は先頭のみで 2 位以降は RRF のまま残すので、固有名詞
     recall の押し上げ（R@3/recall の伸び）は維持される。勝者不在（rescue-only: 最大 cosine が床
@@ -123,7 +153,7 @@ dense 単独だと recall を落とす。そこで Layer 4 RAG（チャット注
     既に使う confidence 床（gate）を再利用するだけ。
 - **チャット注入との差**: チャット recall（`selectHybridRecallChunks`）も同じ RRF を使うが、
   precision-first（top-1 ゲートで「明確な勝者が無ければ何も注入しない」all-or-nothing）かつ
-  **dense 勝者アンカーは意図的に持ち込まない**。パネルは人間が判断する read-only なので recall
+  **dense 勝者アンカーは意図的に持ち込まない**。セクションは人間が判断する read-only なので recall
   寄り（per-scene 床 + 救済 + アンカー）にする。融合・救済・アンカーは `selectRelatedPastScenes`
   （純関数）に集約。
 
@@ -145,24 +175,39 @@ dense/hybrid/+seed/+rel の Recall@k・Precision・MRR を実測し、`hybrid R@
   本文末尾だけ。sparse seed だけは本文全体の固有名詞で拡張する（末尾 500 字に主題が無い長い
   シーン対策、③）。本文が空（新規シーン等）ならクエリ空＝結果なし。
 - **「過去」の時間軸は専用設定を増やさず `phase_resolution_mode` を再利用する**（2026-06-20）:
-  当初は読書順固定だったが、Codex フェーズ解決が既に持つ reading/story/auto 設定にパネルも従わせる
+  当初は読書順固定だったが、Codex フェーズ解決が既に持つ reading/story/auto 設定にセクションも従わせる
   （`computeSceneTimeIndex`）。reading が既定かつ `computeGlobalSceneOrder` と同義なので既存
-  プロジェクトの挙動は不変。**パネル独自の reading/story トグルは意図的に作らない** — 同一概念の
+  プロジェクトの挙動は不変。**独自の reading/story トグルは意図的に作らない** — 同一概念の
   2 つ目の設定を増やさず、プロジェクト全体の時間軸を 1 設定に統一するため。story モードでは「過去」が
   「既読」ではなく「作中で前に起きた」に変わる点に注意（回想の扱いが変わる。`storyTimeOrder` 未設定
   シーンは読書順末尾＝ほぼ未来扱い）。
 - **未 index / feature 無効**: `semantic_search` は `semantic-embedding` feature gate 内。
   無効ビルドや未 index プロジェクトでは静かに空配列へフォールバックし、`empty` 表示になる
   （チャット recall と同契約）。
+- **fetch gate（enabled && open）**: 検索は feature 有効かつ Scene Context パネルが可視のときだけ
+  走る。閉じている／別タブで非可視のときは検索しない（keepalive）。旧パネルの `isActive` 可視ゲートを
+  そのままセクションのマウント／可視状態へ引き継いだもの。
 - **ジャンプの順序契約は共有**: 行クリックの `requestJump → setActiveScene → showPanel`
   は `features/semantic-search/sceneChunkJump.ts` の `requestSceneChunkJump` に集約し、
   意味検索ダイアログ（`semanticSearchProvider`）と 1 実装を共有する。
 - **list は取得時点のスナップショット（既知の軽微な stale）**: 取得後に tree が変化しても
-  パネルはアクティブシーン変更まで再取得しない。(a) クリック先シーンが削除済みなら
+  セクションはアクティブシーン変更まで再取得しない。(a) クリック先シーンが削除済みなら
   `navigateToScene` が tree 存在チェックで弾く（空エディタ誤生成を防ぐ）。(b) 並び替え後の
   「既読」境界ズレは表示上のみで、次のシーン切替で自己修復するため許容。tree 変更への即時
   追従は過剰フェッチを招くので MVP では行わない。
-- **パネル登録**: 既定 region/slot は `BR`（center-bottom）、全 5 ビルトインプリセットで
-  stripe 既定非表示（`hiddenStripePanels`、執筆統計と同様の「必要時に開く」運用）。
-  登録は `panelIds` / `panelComponents` / `panelIcons`（`History`）/ `panelRegions` /
-  `toolWindowDefaults` / `layoutPresets`（5 プリセット）/ `keybindings` / locale の 8 系統。
+
+## 関連設計書
+
+- [[Grimodex_SceneContextパネル設計書]] — 統合先パネル全体（登録・配置・ヘッダー・プリセット・
+  CodexQuick／関連過去シーン／他セクションの構成）。**パネルとしての正本**。
+- [[Grimodex_セマンティック検索設計書]] — `semantic_search` 基盤・hybrid 融合・gate 値の正本。
+  本書の「検索とランキング」はここからの深掘り先。
+
+## 改訂履歴
+
+| 日付 | 内容 |
+|------|------|
+| 2026-06-18 | 新規作成（dense 単独 MVP 出荷の追従文書化）。 |
+| 2026-06-19 | hybrid（dense+sparse RRF）＋固有名詞 seed＋二段ガード相対救済＋dense 勝者アンカー（PR#126/#129）。 |
+| 2026-06-20 | 「過去」の時間軸を `phase_resolution_mode`（reading/story/auto）再利用へ統一。 |
+| 2026-06-29 | **Scene Context パネルへ統合（PR#215）**。本書をリダイレクト stub 化。独立 tool window 登録・`Ctrl+Alt+P`・Dock 配置記述を廃止。`RelatedScenesPanel.tsx`→`RelatedScenesSection.tsx` 改名。セクション固有の振る舞い詳細（検索・ランキング・時間軸・ジャンプ・fetch gate）は深掘り先として保持。 |

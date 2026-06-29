@@ -15,13 +15,15 @@ Codexのフェーズ（経時的変化）はTimeline上にピンとして表示�
 > | | Timeline | Chronicle |
 > |---|---|---|
 > | atom | Scene ノード | Event（独立エンティティ） |
-> | 時間軸 | story-time / reading / write | ordinal + 暦ライト（`start_time`） |
+> | 時間軸 | story-time / reading / write | ordinal + 本格暦（月/曜日・開始年・粒度 none〜time・`start_minute`） |
 > | オフページ | 不可（シーン必須） | 可（scene 参照 0） |
-> | AI 注入 | Phase 解決（L4）、plot-thread（PLOT_THREAD 層） | 世界状態スナップショット（CHRONICLE 層） |
+> | AI 注入 | Phase 解決（L4）、plot-thread（PLOT_THREAD 層） | 世界状態スナップショット（CHRONICLE 層）＋ reveal アンカー方式のイベント秘匿 |
 >
-> 詳細: [`docs/superpowers/specs/2026-06-26-chronicle-timeline-design.md`](superpowers/specs/2026-06-26-chronicle-timeline-design.md)、[`CONTEXT_INJECTION.md`](CONTEXT_INJECTION.md)。
+> 詳細: [`docs/superpowers/specs/2026-06-26-chronicle-timeline-design.md`](superpowers/specs/2026-06-26-chronicle-timeline-design.md)、[`2026-06-28-chronicle-full-calendar-design.md`](superpowers/specs/2026-06-28-chronicle-full-calendar-design.md)（本格暦化）、[`2026-06-29-chronicle-event-secrecy-design.md`](superpowers/specs/2026-06-29-chronicle-event-secrecy-design.md)（イベント秘匿）、[`CONTEXT_INJECTION.md`](CONTEXT_INJECTION.md)。公式パネル設計書は [`Grimodex_Chronicleパネル設計書.md`](Grimodex_Chronicleパネル設計書.md) を参照（2026-06-29 追記）。
 
 **表示モード（viewMode）**: Timeline は 2 つの表示モードを持つ（2026-06-22 出荷, PR #168 / `d72468c9`）。`scenes`（シーン年表＝本文書 A〜D 章の主対象）と、`threads`（名前付きプロットスレッドのスイムレーン＝Plottr 型）。x 軸（シーンの並び）と軸モード・ズームは両モードで共通。`threads` モードの詳細は後述「プロットスレッド表示（threads ビューモード）」節を参照。
+
+> **更新（2026-06-24・現状）**: その後、viewMode の 2 モード切替 UI は撤去された（`timelineStore.ts` 冒頭コメント「オーバーレイ化（2026-06-24）で showThreads(boolean) に移行」）。プロットスレッドのレーンは `scenes` ビューに**常時オーバーレイ表示**され、`timelineStore.showThreads` が常時 `true`（`TimelineViewMode` 型と `viewMode` 永続化キーは後方互換読み取りのためにのみ残る）。本節以降の「viewMode」「`threads` モード」の記述は、現状ではこの常時オーバーレイ表示を指す（独立した切替 UI は存在しない）。
 
 ---
 
@@ -67,8 +69,8 @@ Codexのフェーズ（経時的変化）はTimeline上にピンとして表示�
 | 要素 | 詳細 |
 |------|------|
 | パネルタイトル | 「Timeline」。左寄せ |
-| viewMode トグル | `[シーン｜スレッド]` のセグメント。タイトル直後に常時表示。`scenes`（シーン年表）/ `threads`（プロットスレッド）を切替。永続化される（後述「プロットスレッド表示」節）。2026-06-22 追加 |
-| 「+ スレッドを追加」ボタン | **`threads` モードのときのみ** ヘッダー右側に表示。クリックで「新しいスレッド」を末尾レーンとして追加。2026-06-22 追加 |
+| viewMode トグル（**2026-06-24 撤去**） | 旧: `[シーン｜スレッド]` セグメントで `scenes` / `threads` を切替・永続化（2026-06-22 追加）。現状は切替 UI を撤去し、プロットスレッドのレーンを常時オーバーレイ表示（`showThreads` 常時 true）。`viewMode` 永続化キーは後方互換読み取りのみ |
+| 「+ スレッドを追加」ボタン | ヘッダー右側に**常時表示**（スレッドは常時オーバーレイ表示のため。旧設計は `threads` モード時のみだったが 2026-06-24 に常時表示化）。クリックで「新しいスレッド」を末尾レーンとして追加。2026-06-22 追加 |
 | 軸モードドロップダウン | 現在の時間軸を表示・切替。「Story-time」「Reading-order」「Write-order」 |
 | カバレッジインジケーター | `📍 {story_time設定済み}/{総シーン数}`。軸モード=story時のみ表示。他軸モードでは `{N} scenes`（シーン総数）を表示 |
 | [🔍] 検索ボタン | 展開するとノード名インクリメンタル検索バーが表示される ※ 現状未実装 |
@@ -333,6 +335,8 @@ Codex Phaseのアンカーシーンに対して、シーンノードの直下に
 - パネル幅が狭い場合（Bottom Dockの高さ制約下）、インスペクターは畳まれてノード選択時にポップオーバーで表示
 
 > **現状の実装** (`TimelineInspector.tsx`): タイトル / Status（読み取り専用テキスト） / Story-time label（インライン編集、story-time モード時のみ） / 配置済み・Unscheduled 表示 / Synopsis / Anchored phases / Created at を表示する。**`inspectorOpen` の間は `selectedNode` が無くても枠を描画し、未選択時はプレースホルダー（`timeline.inspector.empty`）を出す**（`node: TreeNodeData | null` を受け取り、`TimelinePanel` 側も `selectedNode &&` ガードを外して常時描画）。**root は `min-h-0 overflow-y-auto` で、内容が縦に溢れる場合はインスペクタ内をスクロールできる**（高さ固定の親 row 内でクリップされない）。Characters・Location 行、`index: #N / M` の参考表示、`[Open in Editor ↗]` ボタン、Status のドロップダウン編集、ポップオーバー化はいずれも未実装（将来拡張）。なお `viewMode === "threads"` のときはインスペクター枠が `TimelineInspector` から `PlotMarkerInspector`（プロットスレッド/マーカー編集）へ差し替わる（後述「プロットスレッド表示」節）。
+>
+> **更新（2026-06-29 追記・Story-date 編集 UI 統合）:** 上記に加え、`node.nodeType === "scene"` のとき Inspector 内に **`SceneDateEditor`（Chronicle パネルと同じコンポーネントを再利用）を描画**する（`TimelineInspector.tsx:140-143`）。これにより Timeline Inspector 上で作中暦の Story-date（年/月/日・季節・粒度・時刻）を手動編集できる。保存は `tree_nodes` の story-date 関連カラムを経由し、scene が参照する Event 群には波及しない（Chronicle と共有する独立軸）。
 
 #### Story-time ラベルのインライン編集
 
@@ -898,10 +902,12 @@ Timelineパネルのデフォルト位置はBottom Dock（非表示）。`Ctrl+A
 
 ### i18n の注記
 
-- Header の **axis ラベル**（Story-time / Reading-order / Write-order）と **spacing ラベル**（Proportional / Uniform）は、現時点で英語ハードコード
-- その他のラベル（パネルメニュー項目、コンテキストメニュー項目、空状態プレースホルダー等）は `t(...)` 経由で翻訳リソースを参照する
-- このハードコード / `t(...)` のギャップは、**将来の i18n 整理フェーズでまとめて翻訳キー化**して揃える方針
-- 当面は日本語 UI 上でも axis / spacing ラベルのみ英語が残ることを許容する
+- Header の **axis ラベル**（Story-time / Reading-order / Write-order）と **spacing ラベル**（Proportional / Uniform）は、現時点で英語ハードコード（`TimelineHeader.tsx` の `AXIS_LABELS` / `SPACING_LABELS`）
+- **コンテキストメニューの Set status ラベル**（Outline / Draft / Complete / Revision / Final）も英語ハードコード（`TimelineContextMenu.tsx` の `STATUS_LABELS`）。「Set status」見出し自体は `t("tree.setStatus")` 経由だが、5 ステータスのラベルは未翻訳
+- **ビューポートの時間軸ラベル接頭辞**（story-time の `T{N}`・reading-order の `Ch.{N}`）も `timelineLabels.ts` の `computeAxisLabels` 内で英語ハードコード（関数が i18n コンテキストを受け取らないため）。write-order の日付フォーマットも同様にロケール非依存
+- 上記以外のラベル（コンテキストメニューの動作項目、空状態プレースホルダー等）は `t(...)` 経由で翻訳リソースを参照する
+- これらのハードコード / `t(...)` のギャップは、**将来の i18n 整理フェーズでまとめて翻訳キー化**して揃える方針
+- 当面は日本語 UI 上でも上記ラベルのみ英語が残ることを許容する
 
 ---
 
