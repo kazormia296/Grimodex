@@ -75,6 +75,16 @@ describe("EventMarker (DOM token)", () => {
     ).toBe("dashed");
   });
 
+  it("border は shorthand を使わず longhand のみ（border/borderStyle 混在の React 警告回避）", () => {
+    const { container } = renderMarker();
+    const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    const style = el.getAttribute("style") ?? "";
+    // 'border:' shorthand を含まない（'border-style:' 等の longhand は可）。
+    expect(/(^|;)\s*border\s*:/.test(style)).toBe(false);
+    expect(el.style.borderStyle).toBeTruthy();
+    expect(el.style.borderWidth).toBeTruthy();
+  });
+
   it("確度 exact は実線（interval も）", () => {
     const iv = renderMarker({
       event: ev({ precision: "exact" }),

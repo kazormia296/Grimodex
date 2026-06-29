@@ -107,8 +107,9 @@ export function EventMarker({
       gap: 6,
       padding: "0 9px",
       background: mix(lc, 14, "transparent"),
-      border: `${borderWidth}px solid ${baseBorder}`,
+      borderWidth,
       borderStyle,
+      borderColor: baseBorder,
       borderRadius: 7,
       overflow: "hidden",
       whiteSpace: "nowrap",
@@ -128,8 +129,9 @@ export function EventMarker({
       background: event.sceneLinked
         ? "var(--card)"
         : mix("var(--card)", 96, "var(--foreground)"),
-      border: `${borderWidth}px solid ${baseBorder}`,
+      borderWidth,
       borderStyle,
+      borderColor: baseBorder,
       borderRadius: tokenH / 2,
       boxShadow: ring ?? "0 1px 2px rgba(0,0,0,.07)",
       maxWidth: maxTok,
