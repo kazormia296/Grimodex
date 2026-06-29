@@ -62,6 +62,30 @@ describe("EventMarker (DOM token)", () => {
     expect(g.style.borderRadius).toBe("3.5px");
   });
 
+  it("interval も scene 未参照はオフページ＝中空で示す（点 ●/◯ と同様）", () => {
+    // 各 render の container 内で引く（共有 document の多重一致を避ける）。
+    const on = renderMarker({
+      isInterval: true,
+      barWidth: 100,
+      event: ev({ sceneLinked: true }),
+    });
+    const gOn = on.container.querySelector(
+      '[data-testid="marker-glyph"]',
+    ) as HTMLElement;
+    const off = renderMarker({
+      isInterval: true,
+      barWidth: 100,
+      event: ev({ sceneLinked: false }),
+    });
+    const gOff = off.container.querySelector(
+      '[data-testid="marker-glyph"]',
+    ) as HTMLElement;
+    // off-page=中空（card 地）/ on-page=塗り（card 地ではない）。
+    // ※ tint は color-mix(in oklch) で happy-dom が getter を落とすため、card 地で判別。
+    expect(gOff.style.background).toContain("card");
+    expect(gOn.style.background).not.toContain("card");
+  });
+
   it("オフページでも border は確度専用（exact は実線・オフページが破線を強制しない）", () => {
     // 以前はオフページが dashed を強制し確度差が潰れていた回帰の gate。
     const { container, getByTestId } = renderMarker({
