@@ -2090,6 +2090,32 @@ fn agent_event_update_impl(
                 fields.push("revealSceneId");
             }
 
+            // 粒度 "none" は「その端点の時刻が存在しない」を意味する。UI の「点にする」/
+            // 粒度=none は endTime/startTime:null を送るが、Option<i64> では null と未指定を
+            // 区別できず end_time が SET 句に乗らずクリアされない（点へ変更しても期間に戻る）。
+            // 粒度をシグナルに、対応する time/minute を明示的に NULL へ落とす（時刻値が
+            // 同時指定された場合はそちらを優先＝二重 SET しない）。
+            if payload.end_granularity.as_deref() == Some("none") {
+                if !fields.contains(&"endTime") {
+                    sets.push("end_time = NULL".to_string());
+                    fields.push("endTime");
+                }
+                if !fields.contains(&"endMinute") {
+                    sets.push("end_minute = NULL".to_string());
+                    fields.push("endMinute");
+                }
+            }
+            if payload.start_granularity.as_deref() == Some("none") {
+                if !fields.contains(&"startTime") {
+                    sets.push("start_time = NULL".to_string());
+                    fields.push("startTime");
+                }
+                if !fields.contains(&"startMinute") {
+                    sets.push("start_minute = NULL".to_string());
+                    fields.push("startMinute");
+                }
+            }
+
             let sql = format!(
                 "UPDATE events SET {} WHERE id = ?{param_idx} AND project_id = ?{}",
                 sets.join(", "),
@@ -3374,6 +3400,40 @@ mod tests {
             )?)
         })
         .expect("event_start")
+    }
+
+    fn event_end(db: &Database, event_id: &str) -> Option<i64> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT end_time FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )?)
+        })
+        .expect("event_end")
+    }
+
+    #[test]
+    fn event_update_end_granularity_none_clears_end_time() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "interval", vec![], vec![]);
+        // 期間化: start/end に値を入れる。
+        let mut mk = empty_update(&project_id, &event_id);
+        mk.start_time = Some(100);
+        mk.start_granularity = Some("day".to_string());
+        mk.end_time = Some(160);
+        mk.end_granularity = Some("day".to_string());
+        agent_event_update_impl(&db, mk).unwrap();
+        assert_eq!(event_end(&db, &event_id), Some(160));
+        // 「点にする」: UI と同じく end_time:null(=None) ＋ end_granularity:"none"。
+        // Option<i64> では null と未指定を区別できないが、粒度 none をシグナルに end_time を
+        // クリアする（期間→点が永続し、点へ変更後に期間へ戻らない）。
+        let mut pt = empty_update(&project_id, &event_id);
+        pt.end_time = None;
+        pt.end_granularity = Some("none".to_string());
+        agent_event_update_impl(&db, pt).unwrap();
+        assert_eq!(event_end(&db, &event_id), None);
     }
 
     fn set_role(db: &Database, event_id: &str, codex_id: &str, role: &str) {
