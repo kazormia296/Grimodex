@@ -383,6 +383,7 @@ export function ChroniclePanel() {
       entries.some((e) => e.id === selected.primaryCodexId);
     return known ? selected.primaryCodexId : "__unassigned";
   }, [selected, entries]);
+  const selectedUnassigned = !!selected && activeLaneKey === "__unassigned";
 
   // ── 表示操作（いずれも applyView で永続化する） ───────────
   const handleFit = useCallback(() => {
@@ -425,6 +426,27 @@ export function ChroniclePanel() {
       setCreating(false);
     }
   }, [projectId, creating, t, refresh, setSelectedEventId]);
+
+  // レーンガターの「追加」: 選択 Codex に新規出来事を作りレーンを出して編集状態へ。
+  const handleAddLane = useCallback(
+    async (codexId: string) => {
+      if (!projectId || creating) return;
+      setCreating(true);
+      try {
+        const ev = await uiCreateEvent({
+          title: t("chronicle.newEvent", "新しい出来事"),
+          primaryCodexId: codexId,
+        });
+        setSelectedEventId(ev.id);
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      } finally {
+        setCreating(false);
+      }
+    },
+    [projectId, creating, t, refresh, setSelectedEventId],
+  );
 
   const handlePatch = useCallback(
     async (patch: Partial<EventRow>) => {
@@ -639,6 +661,11 @@ export function ChroniclePanel() {
           showEdges={showEdges}
           labelsOn={labelsOn}
           onSelectEvent={setSelectedEventId}
+          laneOptions={laneOptions}
+          locked={locked}
+          selectedUnassigned={selectedUnassigned}
+          onAssignLane={(codexId) => handlePatch({ primaryCodexId: codexId })}
+          onAddLane={handleAddLane}
         />
       )}
 

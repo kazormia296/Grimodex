@@ -25,6 +25,12 @@ export interface ChronicleViewportProps {
   showEdges: boolean;
   labelsOn: boolean;
   onSelectEvent: (id: string) => void;
+  /** レーンガター用（任意 Codex 候補・割当/追加・ロック）。 */
+  laneOptions?: { id: string; name: string; type: string }[];
+  locked?: boolean;
+  selectedUnassigned?: boolean;
+  onAssignLane?: (codexId: string) => void;
+  onAddLane?: (codexId: string) => void;
 }
 
 /**
@@ -46,6 +52,11 @@ export function ChronicleViewport({
   showEdges,
   labelsOn,
   onSelectEvent,
+  laneOptions,
+  locked,
+  selectedUnassigned,
+  onAssignLane,
+  onAddLane,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const trackElRef = useRef<HTMLDivElement | null>(null);
@@ -189,6 +200,11 @@ export function ChronicleViewport({
           lanes={pack.lanes}
           gutterX={spacing.gutterX}
           activeLaneKey={activeLaneKey}
+          laneOptions={laneOptions}
+          locked={locked}
+          selectedUnassigned={selectedUnassigned}
+          onAssignLane={onAssignLane}
+          onAddLane={onAddLane}
         />
 
         <div
