@@ -188,7 +188,7 @@ export function ChronicleInspector({
             type="button"
             onClick={onClose}
             aria-label={t("chronicle.close", "閉じる")}
-            className="grid size-[26px] place-items-center rounded-md border border-border bg-card text-muted-foreground hover:bg-accent"
+            className="grid size-[26px] flex-none place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             ×
           </button>
@@ -238,256 +238,268 @@ export function ChronicleInspector({
           </Banner>
         )}
 
-        {/* 4 列フィールド */}
-        <div className="grid grid-cols-2 gap-x-3.5 gap-y-2.5 sm:grid-cols-4">
-          <label className={labelCls}>
-            {t("chronicle.lane", "レーン")}
-            <select
-              value={event.primaryCodexId ?? ""}
-              onChange={(e) =>
-                onPatch({ primaryCodexId: e.target.value || null })
-              }
-              className={selectCls}
-            >
-              <option value="">
-                {t("chronicle.laneUnassigned", "（未割当）")}
-              </option>
-              {laneOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.type && o.type !== "character"
-                    ? `${o.name}（${t(`chronicle.laneType.${o.type}`, o.type)}）`
-                    : o.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={labelCls}>
-            {t("chronicle.location", "場所")}
-            <select
-              value={event.locationCodexId ?? ""}
-              onChange={(e) =>
-                onPatch({ locationCodexId: e.target.value || null })
-              }
-              className={selectCls}
-            >
-              <option value="">{t("chronicle.none", "なし")}</option>
-              {locations.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={labelCls}>
-            {t("chronicle.kindLabel", "種別")}
-            <select
-              value={event.kind}
-              onChange={(e) =>
-                onPatch({ kind: e.target.value as EventRow["kind"] })
-              }
-              className={selectCls}
-            >
-              {EVENT_KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {t(`chronicle.kind.${k}`, k)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={labelCls}>
-            {t("chronicle.precisionLabel", "日付の確度")}
-            <select
-              value={event.precision}
-              onChange={(e) =>
-                onPatch({ precision: e.target.value as EventRow["precision"] })
-              }
-              className={selectCls}
-            >
-              {EVENT_PRECISIONS.map((p) => (
-                <option key={p} value={p}>
-                  {t(`chronicle.precision.${p}`, p)}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        {/* 開始 / 終了 日時 */}
-        <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="w-7 flex-none text-[11px] text-muted-foreground">
-              {t("chronicle.startTime", "開始")}
-            </span>
-            <select
-              value={event.startGranularity}
-              onChange={(e) =>
-                setGran("start", e.target.value as EventGranularity)
-              }
-              aria-label={t("chronicle.startGranularity", "開始の粒度")}
-              className={selectCls}
-            >
-              {EVENT_GRANULARITIES.map((g) => (
-                <option key={g} value={g}>
-                  {t(`chronicle.granularity.${g}`, g)}
-                </option>
-              ))}
-            </select>
-            {event.startGranularity !== "none" ? (
-              <button
-                type="button"
-                onClick={(e) => openPicker("start", e.currentTarget)}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
-                style={{ fontFeatureSettings: "'tnum'" }}
+        {/* 横幅があれば2カラムに流すカードグリッド（間延び解消） */}
+        <div
+          className="grid gap-3"
+          style={{
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            alignItems: "start",
+          }}
+        >
+          {/* 基本フィールド（レーン/場所/種別/確度） */}
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
+            <label className={labelCls}>
+              {t("chronicle.lane", "レーン")}
+              <select
+                value={event.primaryCodexId ?? ""}
+                onChange={(e) =>
+                  onPatch({ primaryCodexId: e.target.value || null })
+                }
+                className={selectCls}
               >
-                <CalendarDays className="size-3.5 opacity-70" />
-                {startResolved}
-              </button>
-            ) : (
-              <span className="text-xs text-muted-foreground">
-                {t("chronicle.timeUnset", "時刻は未指定（並び順のみ）")}
-              </span>
-            )}
+                <option value="">
+                  {t("chronicle.laneUnassigned", "（未割当）")}
+                </option>
+                {laneOptions.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.type && o.type !== "character"
+                      ? `${o.name}（${t(`chronicle.laneType.${o.type}`, o.type)}）`
+                      : o.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={labelCls}>
+              {t("chronicle.location", "場所")}
+              <select
+                value={event.locationCodexId ?? ""}
+                onChange={(e) =>
+                  onPatch({ locationCodexId: e.target.value || null })
+                }
+                className={selectCls}
+              >
+                <option value="">{t("chronicle.none", "なし")}</option>
+                {locations.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={labelCls}>
+              {t("chronicle.kindLabel", "種別")}
+              <select
+                value={event.kind}
+                onChange={(e) =>
+                  onPatch({ kind: e.target.value as EventRow["kind"] })
+                }
+                className={selectCls}
+              >
+                {EVENT_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {t(`chronicle.kind.${k}`, k)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={labelCls}>
+              {t("chronicle.precisionLabel", "日付の確度")}
+              <select
+                value={event.precision}
+                onChange={(e) =>
+                  onPatch({
+                    precision: e.target.value as EventRow["precision"],
+                  })
+                }
+                className={selectCls}
+              >
+                {EVENT_PRECISIONS.map((p) => (
+                  <option key={p} value={p}>
+                    {t(`chronicle.precision.${p}`, p)}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="w-7 flex-none text-[11px] text-muted-foreground">
-              {t("chronicle.endTime", "終了")}
-            </span>
-            {isInterval ? (
-              <>
+
+          {/* 開始 / 終了 日時 */}
+          <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="w-7 flex-none text-[11px] text-muted-foreground">
+                {t("chronicle.startTime", "開始")}
+              </span>
+              <select
+                value={event.startGranularity}
+                onChange={(e) =>
+                  setGran("start", e.target.value as EventGranularity)
+                }
+                aria-label={t("chronicle.startGranularity", "開始の粒度")}
+                className={selectCls}
+              >
+                {EVENT_GRANULARITIES.map((g) => (
+                  <option key={g} value={g}>
+                    {t(`chronicle.granularity.${g}`, g)}
+                  </option>
+                ))}
+              </select>
+              {event.startGranularity !== "none" ? (
                 <button
                   type="button"
-                  onClick={(e) => openPicker("end", e.currentTarget)}
+                  onClick={(e) => openPicker("start", e.currentTarget)}
                   className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
                   style={{ fontFeatureSettings: "'tnum'" }}
                 >
                   <CalendarDays className="size-3.5 opacity-70" />
-                  {endResolved}
+                  {startResolved}
                 </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onPatch({
-                      endTime: null,
-                      endGranularity: "none",
-                      endMinute: null,
-                    })
-                  }
-                  className="h-[26px] rounded-md border border-border bg-card px-2 text-[11px] text-muted-foreground hover:bg-accent"
-                >
-                  {t("chronicle.makePoint", "点にする")}
-                </button>
-              </>
-            ) : (
-              <>
+              ) : (
                 <span className="text-xs text-muted-foreground">
-                  {t("chronicle.unset", "未指定")}
+                  {t("chronicle.timeUnset", "時刻は未指定（並び順のみ）")}
                 </span>
-                {event.startGranularity !== "none" && (
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="w-7 flex-none text-[11px] text-muted-foreground">
+                {t("chronicle.endTime", "終了")}
+              </span>
+              {isInterval ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => openPicker("end", e.currentTarget)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
+                    style={{ fontFeatureSettings: "'tnum'" }}
+                  >
+                    <CalendarDays className="size-3.5 opacity-70" />
+                    {endResolved}
+                  </button>
                   <button
                     type="button"
                     onClick={() =>
                       onPatch({
-                        endTime: (event.startTime ?? 0) + 60,
-                        endGranularity: "day",
-                        endMinute: 0,
+                        endTime: null,
+                        endGranularity: "none",
+                        endMinute: null,
                       })
                     }
                     className="h-[26px] rounded-md border border-border bg-card px-2 text-[11px] text-muted-foreground hover:bg-accent"
                   >
-                    {t("chronicle.makeInterval", "期間にする")}
+                    {t("chronicle.makePoint", "点にする")}
                   </button>
-                )}
-              </>
-            )}
+                </>
+              ) : (
+                <>
+                  <span className="text-xs text-muted-foreground">
+                    {t("chronicle.unset", "未指定")}
+                  </span>
+                  {event.startGranularity !== "none" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onPatch({
+                          endTime: (event.startTime ?? 0) + 60,
+                          endGranularity: "day",
+                          endMinute: 0,
+                        })
+                      }
+                      className="h-[26px] rounded-md border border-border bg-card px-2 text-[11px] text-muted-foreground hover:bg-accent"
+                    >
+                      {t("chronicle.makeInterval", "期間にする")}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
           </div>
-        </div>
 
-        {/* 原因 */}
-        {(causeIds.length > 0 || onAddCause) && (
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="flex-none text-[11px] text-muted-foreground">
-              {t("chronicle.causes", "原因")}
-            </span>
-            {causeIds.map((cid) => (
-              <span
-                key={cid}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-accent/60 py-0.5 pl-2.5 pr-1.5 text-xs"
-              >
-                {titleById.get(cid) || t("chronicle.untitled", "無題の出来事")}
-                {onRemoveCause && (
-                  <button
-                    type="button"
-                    onClick={() => onRemoveCause(cid)}
-                    aria-label={t("chronicle.removeCause", "原因を外す")}
-                    className="text-muted-foreground hover:text-foreground"
-                  >
-                    ×
-                  </button>
-                )}
+          {/* 原因 */}
+          {(causeIds.length > 0 || onAddCause) && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="flex-none text-[11px] text-muted-foreground">
+                {t("chronicle.causes", "原因")}
               </span>
-            ))}
-            {onAddCause && causeOptions.length > 0 && (
-              <select
-                value=""
-                onChange={(e) => {
-                  if (e.target.value) onAddCause(e.target.value);
-                }}
-                aria-label={t("chronicle.addCause", "原因を追加")}
-                className={selectCls}
-              >
-                <option value="">
-                  {t("chronicle.addCause", "＋原因を追加")}
-                </option>
-                {causeOptions.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.title || t("chronicle.untitled", "無題の出来事")}
+              {causeIds.map((cid) => (
+                <span
+                  key={cid}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-accent/60 py-0.5 pl-2.5 pr-1.5 text-xs"
+                >
+                  {titleById.get(cid) ||
+                    t("chronicle.untitled", "無題の出来事")}
+                  {onRemoveCause && (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveCause(cid)}
+                      aria-label={t("chronicle.removeCause", "原因を外す")}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      ×
+                    </button>
+                  )}
+                </span>
+              ))}
+              {onAddCause && causeOptions.length > 0 && (
+                <select
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) onAddCause(e.target.value);
+                  }}
+                  aria-label={t("chronicle.addCause", "原因を追加")}
+                  className={selectCls}
+                >
+                  <option value="">
+                    {t("chronicle.addCause", "＋原因を追加")}
                   </option>
-                ))}
-              </select>
-            )}
-          </div>
-        )}
-
-        {/* AI 秘匿 */}
-        <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
-          <label className="flex items-center gap-2 text-xs text-foreground">
-            <input
-              type="checkbox"
-              checked={event.secret}
-              onChange={(e) => onPatch({ secret: e.target.checked })}
-              style={{ accentColor: "var(--primary)" }}
-              className="size-4"
-            />
-            {t("chronicle.secretLabel", "AI に秘匿（ネタバレ防止）")}
-          </label>
-          {event.secret && (
-            <div className="flex flex-wrap items-center gap-2 pl-6">
-              <span className="text-[11px] text-muted-foreground">
-                {t("chronicle.revealSceneLabel", "開示シーン")}
-              </span>
-              <select
-                value={event.revealSceneId ?? ""}
-                onChange={(e) => onPatch({ revealSceneId: e.target.value })}
-                aria-label={t("chronicle.revealSceneLabel", "開示シーン")}
-                className={selectCls}
-              >
-                <option value="">
-                  {t("chronicle.revealSceneAuto", "自動（初出シーン）")}
-                </option>
-                {scenes.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.title || t("chronicle.untitledScene", "無題のシーン")}
-                  </option>
-                ))}
-              </select>
-              <span className="min-w-40 flex-1 text-[11px] text-muted-foreground">
-                {t(
-                  "chronicle.secretDescShort",
-                  "開示シーン以降を書くときのみ AI に渡されます。",
-                )}
-              </span>
+                  {causeOptions.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.title || t("chronicle.untitled", "無題の出来事")}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           )}
+
+          {/* AI 秘匿 */}
+          <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
+            <label className="flex items-center gap-2 text-xs text-foreground">
+              <input
+                type="checkbox"
+                checked={event.secret}
+                onChange={(e) => onPatch({ secret: e.target.checked })}
+                style={{ accentColor: "var(--primary)" }}
+                className="size-4"
+              />
+              {t("chronicle.secretLabel", "AI に秘匿（ネタバレ防止）")}
+            </label>
+            {event.secret && (
+              <div className="flex flex-wrap items-center gap-2 pl-6">
+                <span className="text-[11px] text-muted-foreground">
+                  {t("chronicle.revealSceneLabel", "開示シーン")}
+                </span>
+                <select
+                  value={event.revealSceneId ?? ""}
+                  onChange={(e) => onPatch({ revealSceneId: e.target.value })}
+                  aria-label={t("chronicle.revealSceneLabel", "開示シーン")}
+                  className={selectCls}
+                >
+                  <option value="">
+                    {t("chronicle.revealSceneAuto", "自動（初出シーン）")}
+                  </option>
+                  {scenes.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.title || t("chronicle.untitledScene", "無題のシーン")}
+                    </option>
+                  ))}
+                </select>
+                <span className="min-w-40 flex-1 text-[11px] text-muted-foreground">
+                  {t(
+                    "chronicle.secretDescShort",
+                    "開示シーン以降を書くときのみ AI に渡されます。",
+                  )}
+                </span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* アクション */}
