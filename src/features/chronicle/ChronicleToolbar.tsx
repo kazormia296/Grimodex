@@ -240,7 +240,20 @@ function ChronicleLegend() {
     <div className="flex h-[34px] flex-none flex-wrap items-center gap-3.5 border-b border-border bg-muted/30 px-4 text-[11px] text-muted-foreground">
       {item(
         <span className="size-[9px] rounded-full bg-muted-foreground" />,
-        t("chronicle.legendEvent", "出来事"),
+        t("chronicle.legendEvent", "イベント"),
+      )}
+      {item(
+        <span
+          className="rounded-full border-2"
+          style={{
+            width: 11,
+            height: 11,
+            borderColor: "var(--muted-foreground)",
+            background: "var(--card)",
+            boxSizing: "border-box",
+          }}
+        />,
+        t("chronicle.legendOffpage", "オフページ"),
       )}
       {item(
         <span

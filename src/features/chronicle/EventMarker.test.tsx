@@ -150,9 +150,20 @@ describe("EventMarker (DOM token)", () => {
     expect(getByTestId("conflict-badge").textContent).toBe("!");
   });
 
-  it("birth は種別タグを描く", () => {
-    const { getByTestId } = renderMarker({ event: ev({ kind: "birth" }) });
-    expect(getByTestId("kind-tag")).toBeTruthy();
+  it("種別は先頭グリフ（凡例と同じ）で示し文字タグは描かない", () => {
+    const r = renderMarker({ event: ev({ kind: "birth" }) });
+    // 文字タグ(kind-tag)は廃止。先頭グリフの title が種別を伝える。
+    expect(r.container.querySelector('[data-testid="kind-tag"]')).toBeNull();
+    expect(r.getByTestId("marker-glyph").getAttribute("title")).toBe("出生");
+  });
+
+  it("オフページの birth/death も種別グリフ（中空丸に潰れない）", () => {
+    const birth = renderMarker({
+      event: ev({ kind: "birth", sceneLinked: false }),
+    });
+    expect(birth.getByTestId("marker-glyph").getAttribute("title")).toBe(
+      "出生",
+    );
   });
 
   it("labelsOn=false ではタイトル本文を描かない（title 属性は残す）", () => {

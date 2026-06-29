@@ -152,6 +152,8 @@ export function EventMarker({
     container.opacity = 0.96;
   }
 
+  // 先頭グリフ＝種別を凡例と同じ表現で示す（出生=三角 / 死亡=菱形 / 出来事=丸 / 期間=帯）。
+  // 種別を優先するためオフページ判定より前に置く（オフページ birth/death も三角/菱形）。
   let glyph: CSSProperties;
   if (isInterval) {
     glyph = {
@@ -160,16 +162,6 @@ export function EventMarker({
       height: 14,
       borderRadius: 2,
       background: lc,
-    };
-  } else if (!event.sceneLinked) {
-    glyph = {
-      flex: "none",
-      width: 11,
-      height: 11,
-      borderRadius: "50%",
-      border: `2px solid ${lc}`,
-      background: "var(--card)",
-      boxSizing: "border-box",
     };
   } else if (event.kind === "birth") {
     glyph = {
@@ -188,7 +180,19 @@ export function EventMarker({
       background: DEATH,
       transform: "rotate(45deg)",
     };
+  } else if (!event.sceneLinked) {
+    // 汎用のオフページ（scene 未参照）＝中空丸 ◯（凡例で明示）。
+    glyph = {
+      flex: "none",
+      width: 11,
+      height: 11,
+      borderRadius: "50%",
+      border: `2px solid ${lc}`,
+      background: "var(--card)",
+      boxSizing: "border-box",
+    };
   } else {
+    // 汎用＝塗りつぶしの丸 ●（凡例の「イベント」）。
     glyph = {
       flex: "none",
       width: 9,
@@ -198,13 +202,7 @@ export function EventMarker({
     };
   }
 
-  const kindTag =
-    event.kind === "birth"
-      ? { label: t("chronicle.kind.birth", "出生"), color: BIRTH }
-      : event.kind === "death"
-        ? { label: t("chronicle.kind.death", "死亡"), color: DEATH }
-        : null;
-
+  // 種別は先頭グリフ（凡例と同じ三角/菱形/丸）で示すため、文字タグは廃止。
   // 確度チップ（確定は無印・おおよそ/不明のみ明示）。線種だけでは判別しづらい問題への対策。
   const precisionTag =
     event.precision === "approx"
@@ -275,7 +273,17 @@ export function EventMarker({
           }}
         />
       )}
-      <span data-testid="marker-glyph" style={glyph} />
+      <span
+        data-testid="marker-glyph"
+        title={
+          event.kind === "birth"
+            ? t("chronicle.kind.birth", "出生")
+            : event.kind === "death"
+              ? t("chronicle.kind.death", "死亡")
+              : undefined
+        }
+        style={glyph}
+      />
       {labelsOn && (
         <span
           style={{
@@ -288,22 +296,6 @@ export function EventMarker({
           }}
         >
           {event.title || t("chronicle.untitled", "無題の出来事")}
-        </span>
-      )}
-      {kindTag && (
-        <span
-          data-testid="kind-tag"
-          style={{
-            flex: "none",
-            fontSize: 10,
-            lineHeight: 1,
-            padding: "2px 5px",
-            borderRadius: 4,
-            background: mix(kindTag.color, 16, "transparent"),
-            color: kindTag.color,
-          }}
-        >
-          {kindTag.label}
         </span>
       )}
       {precisionTag && (
