@@ -1,4 +1,4 @@
-import type { ChronicleCalendar } from "./chronicleTime";
+import { computeAge, type ChronicleCalendar } from "./chronicleTime";
 
 export interface AgeWordEntry {
   words: string[];
@@ -150,7 +150,8 @@ export function findAgeConflicts(input: AgeCheckInput): AgeConflict[] {
     if (!e.primaryCodexId || e.startTime == null) continue;
     const birth = birthByCodex.get(e.primaryCodexId);
     if (birth == null) continue;
-    const age = Math.floor((e.startTime - birth) / calendar.daysPerYear);
+    // 暦の年齢表記（満年齢/数え年）と可変年長（閏年）に追従する。
+    const age = computeAge(birth, e.startTime, calendar);
     // 出生前(回想/前日譚)の出来事は負の年齢になる。年齢チェックの対象外。
     if (age < 0) continue;
     const sceneIds = [...(linksByEvent.get(e.id) ?? [])].sort();

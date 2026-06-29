@@ -1474,6 +1474,10 @@ export const projectCalendar = sqliteTable("project_calendar", {
   months: text("months").notNull().default("[]"),
   // JSON: string[]（曜日名）。'[]'=曜日概念なし。週長=配列長。
   weekdayNames: text("weekday_names").notNull().default("[]"),
+  // JSON: LeapRule。'{"kind":"none"}'=閏年なし（年長一定）。gregorian で 4/100/400。
+  leapRule: text("leap_rule").notNull().default('{"kind":"none"}'),
+  // 年齢の数え方。'full'=満年齢（既定）/ 'counting'=数え年。
+  ageReckoning: text("age_reckoning").notNull().default("full"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

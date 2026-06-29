@@ -229,3 +229,150 @@ describe("formatChronicleDate", () => {
     expect(formatChronicleDate(null, null, "day", GREG, "ja")).toBe("");
   });
 });
+
+import {
+  isLeapYear,
+  daysInYear,
+  monthLength,
+  computeAge,
+  GREGORIAN_MONTH_DAYS,
+  GREGORIAN_LEAP,
+} from "./chronicleTime";
+
+// 現実準拠グレゴリオ暦（startYear=2000, 閏2月）。
+const GREGORIAN: ChronicleCalendar = {
+  daysPerYear: 365,
+  seasonBoundaries: [],
+  startYear: 2000,
+  months: GREGORIAN_MONTH_DAYS.map((days, i) => ({ name: `${i + 1}`, days })),
+  weekdayNames: ["日", "月", "火", "水", "木", "金", "土"],
+  leap: GREGORIAN_LEAP,
+};
+
+describe("グレゴリオ閏年エンジン", () => {
+  it("isLeapYear が 4/100/400 ルール", () => {
+    expect(isLeapYear(2000, GREGORIAN)).toBe(true); // /400
+    expect(isLeapYear(2004, GREGORIAN)).toBe(true); // /4
+    expect(isLeapYear(2001, GREGORIAN)).toBe(false);
+    expect(isLeapYear(1900, GREGORIAN)).toBe(false); // /100 not /400
+    expect(isLeapYear(2100, GREGORIAN)).toBe(false);
+  });
+
+  it("daysInYear が閏年で 366", () => {
+    expect(daysInYear(2000, GREGORIAN)).toBe(366);
+    expect(daysInYear(2001, GREGORIAN)).toBe(365);
+    expect(daysInYear(1900, GREGORIAN)).toBe(365);
+  });
+
+  it("monthLength: 2月は閏年29・平年28、他は固定", () => {
+    expect(monthLength(2000, 1, GREGORIAN)).toBe(29);
+    expect(monthLength(2001, 1, GREGORIAN)).toBe(28);
+    expect(monthLength(2000, 0, GREGORIAN)).toBe(31);
+    expect(monthLength(2000, 11, GREGORIAN)).toBe(31);
+  });
+
+  it("day 0 = startYear 1月1日", () => {
+    const d = dayNumberToDate(0, GREGORIAN);
+    expect(d.year).toBe(2000);
+    expect(d.monthIndex).toBe(0);
+    expect(d.dayOfMonth).toBe(1);
+  });
+
+  it("閏年（2000）は 366 日で翌年初へ", () => {
+    // 2000-12-31 は day 365（0..365 の 366 日目）。
+    const dec31 = dayNumberToDate(365, GREGORIAN);
+    expect(dec31.year).toBe(2000);
+    expect(dec31.monthIndex).toBe(11);
+    expect(dec31.dayOfMonth).toBe(31);
+    // 翌日 day 366 = 2001-01-01。
+    const jan1 = dayNumberToDate(366, GREGORIAN);
+    expect(jan1.year).toBe(2001);
+    expect(jan1.monthIndex).toBe(0);
+    expect(jan1.dayOfMonth).toBe(1);
+  });
+
+  it("2000-02-29 が存在し day 番号が round-trip", () => {
+    const feb29 = dateToDayNumber(
+      { year: 2000, monthIndex: 1, dayOfMonth: 29 },
+      GREGORIAN,
+    );
+    const back = dayNumberToDate(feb29, GREGORIAN);
+    expect(back.year).toBe(2000);
+    expect(back.monthIndex).toBe(1);
+    expect(back.dayOfMonth).toBe(29);
+  });
+
+  it("平年 2001 に 2月29日は無い（3月1日へ繰上げず 3/1 相当へ）", () => {
+    // 2001-03-01 の day から逆算で 3月1日。
+    const mar1 = dateToDayNumber(
+      { year: 2001, monthIndex: 2, dayOfMonth: 1 },
+      GREGORIAN,
+    );
+    const d = dayNumberToDate(mar1, GREGORIAN);
+    expect(d.monthIndex).toBe(2);
+    expect(d.dayOfMonth).toBe(1);
+  });
+
+  it("100年スパンの round-trip（閏日累積が正しい）", () => {
+    for (const y of [2000, 2050, 2099, 2100, 2400]) {
+      const dn = dateToDayNumber(
+        { year: y, monthIndex: 6, dayOfMonth: 15 },
+        GREGORIAN,
+      );
+      const d = dayNumberToDate(dn, GREGORIAN);
+      expect([d.year, d.monthIndex, d.dayOfMonth]).toEqual([y, 6, 15]);
+    }
+  });
+
+  it("負の day（startYear より前）も round-trip", () => {
+    const dn = dateToDayNumber(
+      { year: 1996, monthIndex: 1, dayOfMonth: 29 },
+      GREGORIAN,
+    );
+    expect(dn).toBeLessThan(0);
+    const d = dayNumberToDate(dn, GREGORIAN);
+    expect([d.year, d.monthIndex, d.dayOfMonth]).toEqual([1996, 1, 29]);
+  });
+});
+
+describe("年齢（満年齢/数え年）", () => {
+  const birth = dateToDayNumber(
+    { year: 2000, monthIndex: 5, dayOfMonth: 15 },
+    GREGORIAN,
+  );
+  it("満年齢: 誕生日前は据え置き、誕生日以降で+1", () => {
+    const beforeBday = dateToDayNumber(
+      { year: 2020, monthIndex: 5, dayOfMonth: 14 },
+      GREGORIAN,
+    );
+    const onBday = dateToDayNumber(
+      { year: 2020, monthIndex: 5, dayOfMonth: 15 },
+      GREGORIAN,
+    );
+    expect(computeAge(birth, beforeBday, GREGORIAN, "full")).toBe(19);
+    expect(computeAge(birth, onBday, GREGORIAN, "full")).toBe(20);
+  });
+  it("数え年: 暦年差+1", () => {
+    const ev = dateToDayNumber(
+      { year: 2020, monthIndex: 0, dayOfMonth: 1 },
+      GREGORIAN,
+    );
+    expect(computeAge(birth, ev, GREGORIAN, "counting")).toBe(21);
+  });
+  it("既定 reckoning は cal.ageReckoning を尊重", () => {
+    const cal = { ...GREGORIAN, ageReckoning: "counting" as const };
+    const ev = dateToDayNumber(
+      { year: 2010, monthIndex: 0, dayOfMonth: 1 },
+      GREGORIAN,
+    );
+    expect(computeAge(birth, ev, cal)).toBe(11);
+  });
+});
+
+describe("閏なし暦は従来挙動を維持", () => {
+  it("CAL(360日) の day↔date が線形のまま", () => {
+    expect(dateToDayNumber({ year: 2, monthIndex: null }, CAL)).toBe(720);
+    expect(dayNumberToDate(720, CAL).year).toBe(2);
+    expect(dayNumberToDate(365, CAL).year).toBe(1);
+  });
+});

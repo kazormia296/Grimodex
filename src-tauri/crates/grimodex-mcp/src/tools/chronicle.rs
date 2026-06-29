@@ -301,6 +301,7 @@ pub async fn get_character_timeline(
         }
     }
     let days_per_year = calendar.as_ref().map_or(0, |c| c.days_per_year);
+    let cal_input = parse_calendar(calendar);
 
     // events come ordered (ordinal asc, id asc) == the stable cmpKeys(ordinal) order.
     let involved: Vec<TimelineEvent> = events
@@ -315,9 +316,9 @@ pub async fn get_character_timeline(
             kind: e.kind.clone(),
             ordinal: e.ordinal.clone(),
             start_time: e.start_time,
-            age_at_event: match (birth_time, e.start_time) {
-                (Some(b), Some(st)) if days_per_year > 0 => {
-                    Some((st - b).div_euclid(days_per_year))
+            age_at_event: match (birth_time, e.start_time, cal_input.as_ref()) {
+                (Some(b), Some(st), Some(c)) if days_per_year > 0 => {
+                    Some(snap::compute_age(b, st, c))
                 }
                 _ => None,
             },
@@ -346,12 +347,15 @@ fn parse_calendar(raw: Option<db::ChronicleCalendarRaw>) -> Option<snap::Calenda
             .unwrap_or_default();
     let months = serde_json::from_str::<Vec<snap::MonthDef>>(&raw.months).unwrap_or_default();
     let weekday_names = serde_json::from_str::<Vec<String>>(&raw.weekday_names).unwrap_or_default();
+    let leap = serde_json::from_str::<snap::LeapRule>(&raw.leap_rule).unwrap_or_default();
     Some(snap::CalendarInput {
         days_per_year: raw.days_per_year,
         season_boundaries,
         start_year: raw.start_year,
         months,
         weekday_names,
+        leap,
+        age_reckoning: raw.age_reckoning,
     })
 }
 
