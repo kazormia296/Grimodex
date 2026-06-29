@@ -117,8 +117,28 @@ import { laneAtY } from "./chronicleLanePack";
 
 describe("laneAtY", () => {
   const lanes = [
-    { codexId: "a", name: "A", kind: "character", unassigned: false, count: 1, top: 0, height: 50, rows: 1, markers: [] },
-    { codexId: "b", name: "B", kind: "character", unassigned: false, count: 1, top: 50, height: 60, rows: 1, markers: [] },
+    {
+      codexId: "a",
+      name: "A",
+      kind: "character",
+      unassigned: false,
+      count: 1,
+      top: 0,
+      height: 50,
+      rows: 1,
+      markers: [],
+    },
+    {
+      codexId: "b",
+      name: "B",
+      kind: "character",
+      unassigned: false,
+      count: 1,
+      top: 50,
+      height: 60,
+      rows: 1,
+      markers: [],
+    },
   ];
   it("範囲内の y は該当レーン", () => {
     expect(laneAtY(lanes, 10)?.codexId).toBe("a");

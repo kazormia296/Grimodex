@@ -172,7 +172,11 @@ describe("adaptiveTicks — sequence mode", () => {
   });
 });
 
-import { dateToDayNumber, GREGORIAN_MONTH_DAYS, GREGORIAN_LEAP } from "./chronicleTime";
+import {
+  dateToDayNumber,
+  GREGORIAN_MONTH_DAYS,
+  GREGORIAN_LEAP,
+} from "./chronicleTime";
 
 /** 現実準拠グレゴリオ暦（startYear=2000, 閏2月, 非均等月長）。 */
 const gregCal: ChronicleCalendar = {
