@@ -275,7 +275,8 @@ export function ChronicleViewport({
     // ── 因果エッジ接続ハンドルからの D&D（別マーカーへ落とすと cause→effect） ──
     if (edgeHandleEl && eventId && !cb.locked && cb.onCreateEdge) {
       const center = layoutRef.current.pack.centers.get(eventId);
-      const fromX = center?.cx ?? e.clientX - rect.left;
+      // ガイドはハンドル(末尾の●)位置＝末尾 outX から引く（描画エッジと整合）。
+      const fromX = center?.outX ?? center?.cx ?? e.clientX - rect.left;
       const fromY = center?.cy ?? e.clientY - rect.top;
       bindDrag(
         (ev) => {

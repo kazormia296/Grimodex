@@ -52,7 +52,11 @@ export interface PackedLane {
 export interface LanePackResult {
   lanes: PackedLane[];
   totalHeight: number;
-  centers: Map<string, { cx: number; cy: number }>;
+  /**
+   * eventId → アンカー座標。cx=先頭（開始）/ cy=縦中心 / outX=末尾（右端）。
+   * 因果エッジは入力(結果側)を cx、出力(原因側)を outX に取る。
+   */
+  centers: Map<string, { cx: number; cy: number; outX: number }>;
   laneSepTops: number[];
 }
 
@@ -86,7 +90,7 @@ export function packLanes(args: {
   const { spacing } = args;
 
   const lanes: PackedLane[] = [];
-  const centers = new Map<string, { cx: number; cy: number }>();
+  const centers = new Map<string, { cx: number; cy: number; outX: number }>();
   const laneSepTops: number[] = [];
 
   let top = 0;
@@ -131,7 +135,12 @@ export function packLanes(args: {
         p.row * (spacing.tokenH + spacing.rowGap) +
         spacing.tokenH / 2;
       markers.push({ eventId: p.ev.id, left: p.left, row: p.row, cy });
-      centers.set(p.ev.id, { cx: p.ev.startX, cy });
+      // 末尾(右端): interval は帯幅（描画と同じ max(barWidth,52)）、point は
+      // 推定トークン幅 estWidth（パック footprint と一致）。left は配置左端。
+      const tailW = p.ev.isInterval
+        ? Math.max(p.ev.barWidth ?? 52, 52)
+        : p.ev.estWidth;
+      centers.set(p.ev.id, { cx: p.ev.startX, cy, outX: p.left + tailW });
     }
 
     lanes.push({

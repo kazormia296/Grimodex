@@ -69,6 +69,26 @@ describe("packLanes", () => {
     expect(result.centers.get("a")!.cx).toBe(137);
   });
 
+  it("(3b) point の outX は末尾（left + estWidth）。left=startX-9", () => {
+    const a = ev("a", 137, 40); // point, estWidth=40
+    const result = packLanes({ lanes: [lane("c1", [a])], spacing });
+    // left = 137 - 9 = 128, outX = 128 + 40 = 168
+    expect(result.centers.get("a")!.outX).toBe(168);
+  });
+
+  it("(3c) interval の outX は末尾（startX + max(barWidth,52)）", () => {
+    const bar: PackEventInput = {
+      id: "iv",
+      startX: 200,
+      isInterval: true,
+      barWidth: 80,
+      estWidth: 80,
+    };
+    const result = packLanes({ lanes: [lane("c1", [bar])], spacing });
+    // interval は left=startX=200, outX = 200 + max(80,52) = 280
+    expect(result.centers.get("iv")!.outX).toBe(280);
+  });
+
   it("(4) lanes with no events are dropped", () => {
     const result = packLanes({
       lanes: [

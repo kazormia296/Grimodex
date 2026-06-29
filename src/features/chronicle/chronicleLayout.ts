@@ -112,15 +112,17 @@ export function estMarkerWidth(args: {
   barWidth: number;
   labelsOn: boolean;
 }): number {
-  const { title, kind, secret, isInterval, barWidth, labelsOn } = args;
+  const { title, secret, isInterval, barWidth, labelsOn } = args;
   if (!labelsOn) return isInterval ? Math.max(barWidth, 30) : 26;
   const t = title.length;
   if (isInterval) {
     const lab = 24 + Math.min(t * 13, 150) + (secret ? 32 : 0);
     return Math.max(barWidth, lab, 52);
   }
-  const kindExtra = kind === "birth" || kind === "death" ? 40 : 0;
-  return 17 + 6 + Math.min(t * 13, 150) + kindExtra + (secret ? 34 : 0) + 14;
+  // 種別は先頭グリフ（三角/菱形/丸＝ほぼ同幅）で示すため種別ごとの幅加算は無い。
+  // 旧 kindExtra=40 は廃止済みの種別「文字」タグ用の死んだ予約だったため除去
+  // （birth/death point の outX が可視ピル末尾より ~38px 右へ突き出していた）。
+  return 17 + 6 + Math.min(t * 13, 150) + (secret ? 34 : 0) + 14;
 }
 
 export interface LayoutEventInput {
