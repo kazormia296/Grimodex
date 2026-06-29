@@ -1,8 +1,9 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, X } from "lucide-react";
+import { Plus, X, GripVertical } from "lucide-react";
 import type { PackedLane } from "./chronicleLanePack";
 import { GROUP_PREFIX } from "./chronicleLayout";
+import { reorderLaneOrder, dropAfter } from "./chronicleLaneOrder";
 import { laneColorFor } from "./laneColor";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { CodexEntryPicker } from "./CodexEntryPicker";
@@ -22,6 +23,8 @@ export interface ChronicleLaneGutterProps {
   onAddLane?: () => void;
   /** 空の未割当（追加）レーンを隠す（×）。 */
   onHideGroup?: (groupId: string) => void;
+  /** codex レーンの並べ替え（新しい全 codex 順を返す）。 */
+  onReorderLanes?: (newOrder: string[]) => void;
 }
 
 // 未割当レーンはグループ別に一意キー（base=__unassigned、追加群=__group_<g>）。
@@ -47,9 +50,81 @@ export function ChronicleLaneGutter({
   onAssignGroup,
   onAddLane,
   onHideGroup,
+  onReorderLanes,
 }: ChronicleLaneGutterProps) {
   const { t } = useTranslation();
   const [gutterEl, setGutterEl] = useState<HTMLDivElement | null>(null);
+
+  // ── codex レーンの並べ替え（grip ハンドルの pointer ドラッグ） ──
+  // drag 中の対象とドロップ先（overKey=codexId or null(末尾) / after=下半分）。
+  const [drag, setDrag] = useState<{
+    codexId: string;
+    overKey: string | null;
+    after: boolean;
+  } | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const reorderable = !locked && !!onReorderLanes;
+
+  const startReorder = (codexId: string, e: React.MouseEvent) => {
+    if (e.button !== 0 || !onReorderLanes) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragCleanupRef.current?.();
+    const startY = e.clientY;
+    // 現在表示中の codex レーン順（未割当は対象外）。
+    const codexOrder = lanes
+      .filter((l) => !l.unassigned && l.codexId)
+      .map((l) => l.codexId as string);
+    let moved = false;
+    let over: { key: string | null; after: boolean } = {
+      key: codexId,
+      after: false,
+    };
+    const move = (ev: MouseEvent) => {
+      if (!moved && Math.abs(ev.clientY - startY) < 3) return;
+      moved = true;
+      const el = document.elementFromPoint(
+        ev.clientX,
+        ev.clientY,
+      ) as HTMLElement | null;
+      const cell = el?.closest("[data-lane-id]") as HTMLElement | null;
+      const key = cell?.getAttribute("data-lane-id") ?? null;
+      if (!cell || !key || key.startsWith("__")) {
+        // ガター外/未割当レーン上 → codex 順の末尾へ。
+        over = { key: null, after: true };
+      } else {
+        over = {
+          key,
+          after: dropAfter(ev.clientY, cell.getBoundingClientRect()),
+        };
+      }
+      setDrag({ codexId, overKey: over.key, after: over.after });
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      dragCleanupRef.current = null;
+      setDrag(null);
+      if (moved && over.key !== codexId) {
+        const next = reorderLaneOrder(
+          codexOrder,
+          codexId,
+          over.key,
+          over.after,
+        );
+        if (next.join("\n") !== codexOrder.join("\n")) onReorderLanes(next);
+      }
+    };
+    dragCleanupRef.current = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+
+  // アンマウント時に進行中ドラッグの document リスナを撤去（取りこぼし防止）。
+  useEffect(() => () => dragCleanupRef.current?.(), []);
 
   const typeJa = (type: string): string =>
     t(`chronicle.laneType.${type}`, type);
@@ -63,6 +138,11 @@ export function ChronicleLaneGutter({
     id: o.id,
     name: optionLabel(o),
   }));
+
+  // 末尾ドロップ（overKey=null）の指標を出すため最後の codex レーンを特定。
+  const lastCodexId =
+    [...lanes].reverse().find((l) => !l.unassigned && l.codexId)?.codexId ??
+    null;
 
   return (
     <div
@@ -114,19 +194,52 @@ export function ChronicleLaneGutter({
             : "");
         // 空でも表示する未割当（=空）レーンは × で隠せる。
         const isEmptyUnassigned = lane.unassigned && lane.keepEmpty;
+        const isCodexLane = !lane.unassigned && !!lane.codexId;
+        const isDragged =
+          !!drag && drag.codexId === lane.codexId && isCodexLane;
+        const isOver = !!drag && isCodexLane && drag.overKey === lane.codexId;
+        const showTop = isOver && !drag.after;
+        const showBottom =
+          (isOver && drag.after) ||
+          (!!drag && drag.overKey === null && lane.codexId === lastCodexId);
         return (
           <div
             key={laneKeyOf(lane)}
             data-lane-id={laneKeyOf(lane)}
-            className="flex items-center gap-2.5 border-b border-border/60 px-3.5"
+            className="relative flex items-center gap-2.5 border-b border-border/60 px-3.5"
             style={{
               height: lane.height,
               boxSizing: "border-box",
+              opacity: isDragged ? 0.4 : undefined,
+              // ドラッグ中の自セルは hit-test から除外（elementFromPoint が
+              // 下層の本来のレーンを返すように＝視覚と判定を一致させる）。
+              pointerEvents: isDragged ? "none" : undefined,
               background: active
                 ? "color-mix(in oklch, var(--primary) 5%, transparent)"
                 : undefined,
             }}
           >
+            {(showTop || showBottom) && (
+              <div
+                className="pointer-events-none absolute left-0 z-10 h-0.5 w-full bg-primary"
+                style={{
+                  top: showTop ? -1 : undefined,
+                  bottom: showBottom ? -1 : undefined,
+                }}
+              />
+            )}
+            {isCodexLane && reorderable && (
+              <span
+                data-reorder-grip={lane.codexId ?? undefined}
+                onMouseDown={(e) => startReorder(lane.codexId!, e)}
+                title={t("chronicle.reorderLane", "ドラッグでレーンを並べ替え")}
+                // p-1 で不可視ヒット域を拡大（タッチ/精密操作の命中率向上）。
+                className="absolute top-1/2 z-10 -translate-y-1/2 cursor-grab p-1 text-muted-foreground/45 hover:text-foreground"
+                style={{ left: -3, touchAction: "none" }}
+              >
+                <GripVertical className="size-3.5" />
+              </span>
+            )}
             <div style={avatarStyle}>{lane.unassigned ? "·" : initial}</div>
             <div className="flex min-w-0 flex-1 flex-col gap-px">
               {lane.unassigned && onAssignGroup && !locked ? (

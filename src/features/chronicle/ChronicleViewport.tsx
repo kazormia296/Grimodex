@@ -54,6 +54,8 @@ export interface ChronicleViewportProps {
   onAddLane?: () => void;
   /** 空の未割当（追加）レーンを隠す（× で）。 */
   onHideGroup?: (groupId: string) => void;
+  /** codex レーンの並べ替え（新しい全 codex 順を返す）。 */
+  onReorderLanes?: (newOrder: string[]) => void;
   // ── グラフ操作（任意・ロック時は呼ばれない） ──
   /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
   selectedDay?: number | null;
@@ -102,6 +104,7 @@ export function ChronicleViewport({
   onAssignGroup,
   onAddLane,
   onHideGroup,
+  onReorderLanes,
   selectedDay,
   hasCalendarAxis = true,
   onMoveEvent,
@@ -502,6 +505,7 @@ export function ChronicleViewport({
           onAssignGroup={onAssignGroup}
           onAddLane={onAddLane}
           onHideGroup={onHideGroup}
+          onReorderLanes={onReorderLanes}
         />
 
         <div

@@ -5041,6 +5041,8 @@
     "bulkDelete": "Delete",
     "clearSelection": "Clear selection",
     "addLane": "Add lane",
+    "reorderLane": "Drag to reorder lane",
+    "reorderSaveFailed": "Failed to save lane order",
     "selectLane": "Select lane",
     "newLane": "(new lane)",
     "removeLane": "Remove lane",

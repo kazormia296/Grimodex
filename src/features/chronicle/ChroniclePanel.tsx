@@ -46,6 +46,12 @@ import {
   type LayoutLane,
 } from "./chronicleLayout";
 import { nextSelection } from "./chronicleSelection";
+import {
+  loadLaneOrder,
+  saveLaneOrder,
+  orderIndexMap,
+  compareByLaneOrder,
+} from "./chronicleLaneOrder";
 import { formatChronicleDate } from "./chronicleTime";
 import type { ChronicleCalendar, DateLang } from "./chronicleTime";
 import type { MarkerEvent } from "./EventMarker";
@@ -146,6 +152,11 @@ export function ChroniclePanel() {
   // 「レーンを追加」で増やす空の未割当レーン群（id）。出来事を入れると laneGroup で永続。
   const groupCounterRef = useRef(0);
   const [emptyGroups, setEmptyGroups] = useState<string[]>([]);
+  // codex レーンの表示順（codexId[]）。per-project に projectSettings で永続。
+  const [laneOrder, setLaneOrder] = useState<string[]>([]);
+  // ロールバック用に最新 laneOrder を ref で保持（更新子へ副作用を入れない）。
+  const laneOrderRef = useRef<string[]>([]);
+  laneOrderRef.current = laneOrder;
 
   const scenedEventIds = useMemo(
     () => new Set(sceneLinks.map((l) => l.eventId)),
@@ -200,6 +211,7 @@ export function ChroniclePanel() {
       // codexId/日を新規イベントへ書き込みクロスプロジェクト参照を作る。
       setSelectedPosition(null);
       setEmptyGroups([]);
+      setLaneOrder([]);
       // 永続ビューがあれば維持（再フィットしない）、無ければ新規プロジェクトに
       // 合わせて全体フィットし直す。
       fittedRef.current = useChronicleStore.getState().pxPerDay != null;
@@ -245,6 +257,18 @@ export function ChroniclePanel() {
   ]);
 
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
+
+  // codex レーン順を per-project でロード（projectSettings）。
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    void loadLaneOrder(projectId).then((order) => {
+      if (!cancelled) setLaneOrder(order);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   const {
     calendar,
@@ -349,19 +373,11 @@ export function ChroniclePanel() {
         }
       }
     }
+    // カスタム順(laneOrder)→ 残りは name 昇順。
+    const oi = orderIndexMap(laneOrder);
     const ordered = [...laneMap.keys()]
       .map((id) => entryById.get(id)!)
-      .sort((a, b) =>
-        a.name < b.name
-          ? -1
-          : a.name > b.name
-            ? 1
-            : a.id < b.id
-              ? -1
-              : a.id > b.id
-                ? 1
-                : 0,
-      );
+      .sort((a, b) => compareByLaneOrder(a, b, oi));
     const out: LayoutLane[] = ordered.map((e) => ({
       codexId: e.id,
       name: e.name,
@@ -388,7 +404,7 @@ export function ChroniclePanel() {
       });
     });
     return out;
-  }, [events, entries, t, participantsByEvent, emptyGroups]);
+  }, [events, entries, t, participantsByEvent, emptyGroups, laneOrder]);
 
   const layoutEvents: LayoutEventInput[] = useMemo(() => {
     const entryIds = new Set(entries.map((e) => e.id));
@@ -764,6 +780,27 @@ export function ChroniclePanel() {
     setEmptyGroups((g) => g.filter((x) => x !== groupId));
   }, []);
 
+  // codex レーンの並べ替え（ガターの D&D）。可視 codex の新順 + 既存 laneOrder の
+  // うち今回不可視（出来事0 等）だった id を後置マージして永続（順序設定の消失防止）。
+  // 保存失敗時は楽観更新をロールバックして通知。
+  const handleReorderLanes = useCallback(
+    (newOrder: string[]) => {
+      const prev = laneOrderRef.current;
+      const preserved = prev.filter((id) => !newOrder.includes(id));
+      const merged = [...newOrder, ...preserved];
+      setLaneOrder(merged);
+      if (projectId) {
+        void saveLaneOrder(projectId, merged).catch(() => {
+          setLaneOrder(prev);
+          toast.error(
+            t("chronicle.reorderSaveFailed", "レーン順の保存に失敗しました"),
+          );
+        });
+      }
+    },
+    [projectId, t],
+  );
+
   // 未割当レーンのピッカーで群ごと Codex へ割り当てる（その群の未割当出来事を一括）。
   // groupId=null は基底未割当（laneGroup 無し）の出来事すべてが対象。
   const handleAssignGroup = useCallback(
@@ -1104,6 +1141,7 @@ export function ChroniclePanel() {
           onAssignGroup={handleAssignGroup}
           onAddLane={handleAddLane}
           onHideGroup={handleHideGroup}
+          onReorderLanes={handleReorderLanes}
           selectedDay={selectedDay}
           hasCalendarAxis={eff.hasCalendarAxis}
           onMoveEvent={handleMoveEvent}

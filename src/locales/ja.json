@@ -5028,6 +5028,8 @@
     "bulkDelete": "削除",
     "clearSelection": "選択解除",
     "addLane": "レーンを追加",
+    "reorderLane": "ドラッグでレーンを並べ替え",
+    "reorderSaveFailed": "レーン順の保存に失敗しました",
     "selectLane": "レーンを選択",
     "newLane": "（新しいレーン）",
     "removeLane": "レーンを外す",
