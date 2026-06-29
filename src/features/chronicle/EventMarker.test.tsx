@@ -58,6 +58,50 @@ describe("EventMarker (DOM token)", () => {
     expect(el.style.borderStyle).toBe("dashed");
   });
 
+  it("確度 unknown は point/interval ともに破線（確度が外周線へ反映）", () => {
+    const p = renderMarker({ event: ev({ precision: "unknown" }) });
+    expect(
+      (p.container.querySelector('[data-event-id="m1"]') as HTMLElement).style
+        .borderStyle,
+    ).toBe("dashed");
+    const iv = renderMarker({
+      event: ev({ precision: "unknown" }),
+      isInterval: true,
+      barWidth: 120,
+    });
+    expect(
+      (iv.container.querySelector('[data-event-id="m1"]') as HTMLElement).style
+        .borderStyle,
+    ).toBe("dashed");
+  });
+
+  it("確度 exact は実線（interval も）", () => {
+    const iv = renderMarker({
+      event: ev({ precision: "exact" }),
+      isInterval: true,
+      barWidth: 120,
+    });
+    expect(
+      (iv.container.querySelector('[data-event-id="m1"]') as HTMLElement).style
+        .borderStyle,
+    ).toBe("solid");
+  });
+
+  it("選択中でも確度の破線が見える（選択は色を奪わない）", () => {
+    const { container } = renderMarker({
+      event: ev({ precision: "unknown" }),
+      selected: true,
+    });
+    const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    expect(el.style.borderStyle).toBe("dashed");
+  });
+
+  it("確度 approx はやや減光（opacity<1）", () => {
+    const { container } = renderMarker({ event: ev({ precision: "approx" }) });
+    const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    expect(Number(el.style.opacity)).toBeLessThan(1);
+  });
+
   it("secret は秘匿タグを描く", () => {
     const { getByTestId } = renderMarker({ event: ev({ secret: true }) });
     expect(getByTestId("secret-tag")).toBeTruthy();

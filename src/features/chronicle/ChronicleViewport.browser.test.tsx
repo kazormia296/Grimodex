@@ -158,4 +158,95 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
     expect(marker.left).toBeGreaterThanOrEqual(track.left - 1);
     expect(marker.left).toBeLessThanOrEqual(track.right + 1);
   });
+
+  it("選択マーカーがガターへ左はみ出ししてもレーンヘッダーが上に来る（z順）", () => {
+    // 左端付近の点マーカーを選択。left=startX-9 が負になりガター域へ侵入する状況。
+    const ev2: LayoutEventInput[] = [
+      {
+        id: "z1",
+        title: "起点",
+        primaryCodexId: "c1",
+        kind: "generic",
+        precision: "exact",
+        secret: false,
+        sceneLinked: true,
+        startDay: -10, // == viewStartDay → startX=0 → left=-9（負）
+        endDay: null,
+      },
+    ];
+    const lane2: LayoutLane[] = [
+      {
+        codexId: "c1",
+        name: "アヤ",
+        kind: "character",
+        unassigned: false,
+        eventIds: ["z1"],
+      },
+    ];
+    const view = { pxPerDay: 1.4, viewStartDay: -10 };
+    const width = 900;
+    const trackW = width - densitySpacing("standard").gutterX;
+    const layout = buildChronicleLayout({
+      events: ev2,
+      lanes: lane2,
+      view,
+      trackW,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: -10,
+      dataEnd: 100,
+      relations: [],
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const m = new Map<string, MarkerEvent>([
+      [
+        "z1",
+        {
+          id: "z1",
+          title: "起点",
+          kind: "generic",
+          precision: "exact",
+          secret: false,
+          sceneLinked: true,
+          primaryCodexId: "c1",
+        },
+      ],
+    ]);
+    const host = document.createElement("div");
+    host.style.cssText =
+      "width:900px;height:420px;display:flex;flex-direction:column";
+    document.body.appendChild(host);
+    const { getByTestId, container } = render(
+      <ChronicleViewport
+        view={view}
+        onViewChange={() => {}}
+        onMeasureTrack={() => {}}
+        layout={layout}
+        eventsById={m}
+        selectedEventId="z1"
+        activeLaneKey="c1"
+        conflictIds={new Set()}
+        relatedIds={new Set()}
+        showEdges
+        labelsOn
+        onSelectEvent={() => {}}
+      />,
+      { container: host },
+    );
+    const gutter = getByTestId("chronicle-lane-gutter");
+    const marker = container.querySelector(
+      '[data-event-id="z1"]',
+    ) as HTMLElement;
+    const gz = Number(getComputedStyle(gutter).zIndex);
+    const mz = Number(getComputedStyle(marker).zIndex);
+    // ガターは選択マーカー(z=9)より高い z で前面に来る。
+    expect(gz).toBeGreaterThan(mz);
+    // 実際に左はみ出し（負 left）が起きていることも確認（テストの前提保証）。
+    const gRect = gutter.getBoundingClientRect();
+    const mRect = marker.getBoundingClientRect();
+    expect(mRect.left).toBeLessThan(gRect.right);
+  });
 });

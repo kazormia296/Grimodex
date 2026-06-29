@@ -249,10 +249,9 @@ export function ChronicleViewport({
                     className={
                       e.conflict
                         ? "stroke-red-500"
-                        : "stroke-muted-foreground/50"
+                        : "stroke-muted-foreground/60"
                     }
                     strokeWidth={e.conflict ? 2 : 1.4}
-                    strokeDasharray={e.conflict ? undefined : "4 3"}
                     data-causal-edge={`${e.causeId}|${e.effectId}`}
                   />
                   <polygon

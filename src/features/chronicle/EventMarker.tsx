@@ -66,7 +66,13 @@ export function EventMarker({
     : related
       ? `0 0 0 3px ${mix(ACCENT, 12, "transparent")}`
       : undefined;
-  const border = conflict ? AMBER : selected ? ACCENT : null;
+  // 確度/オフページの外周線スタイルは point/interval 共通で、選択中でも視認できる
+  // よう border 色（=選択リングと独立）に載せる。dashed=不明 or オフページ。
+  const dashed = !event.sceneLinked || event.precision === "unknown";
+  // ボーダー色: 矛盾=AMBER（最優先）。選択は ring で示し色は奪わない（確度を隠さない）。
+  const baseBorder = conflict
+    ? AMBER
+    : mix(lc, isInterval ? 34 : 50, "transparent");
 
   let container: CSSProperties;
   if (isInterval) {
@@ -81,7 +87,8 @@ export function EventMarker({
       gap: 6,
       padding: "0 9px",
       background: mix(lc, 14, "transparent"),
-      border: `1px solid ${border ?? mix(lc, 34, "transparent")}`,
+      border: `1px solid ${baseBorder}`,
+      borderStyle: dashed ? "dashed" : "solid",
       borderRadius: 7,
       overflow: "hidden",
       whiteSpace: "nowrap",
@@ -101,11 +108,8 @@ export function EventMarker({
       background: event.sceneLinked
         ? "var(--card)"
         : mix("var(--card)", 96, "var(--foreground)"),
-      border: `1px solid ${border ?? mix(lc, 50, "transparent")}`,
-      borderStyle:
-        !event.sceneLinked || event.precision === "unknown"
-          ? "dashed"
-          : "solid",
+      border: `1px solid ${baseBorder}`,
+      borderStyle: dashed ? "dashed" : "solid",
       borderRadius: tokenH / 2,
       boxShadow: ring ?? "0 1px 2px rgba(0,0,0,.07)",
       maxWidth: maxTok,
@@ -113,7 +117,8 @@ export function EventMarker({
       zIndex: selected ? 9 : 5,
     };
   }
-  if (event.precision === "approx") container.opacity = 0.94;
+  // おおよそ=やや減光（確定との差を出す）。不明は破線で表現済み。
+  if (event.precision === "approx") container.opacity = 0.9;
 
   let glyph: CSSProperties;
   if (isInterval) {

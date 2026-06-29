@@ -30,7 +30,8 @@ export function ChronicleLaneGutter({
   return (
     <div
       data-testid="chronicle-lane-gutter"
-      className="z-[6] flex-none border-r border-border bg-card"
+      // z-20: 選択マーカー(z-9)が左端で負 left にはみ出してもガターを覆わせない。
+      className="z-20 flex-none border-r border-border bg-card"
       style={{ width: gutterX }}
     >
       {lanes.map((lane) => {
