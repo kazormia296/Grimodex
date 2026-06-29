@@ -1,13 +1,52 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Trash2, X } from "lucide-react";
+import { Plus, Trash2, X, CalendarRange } from "lucide-react";
 import {
   DEFAULT_SEASON_BOUNDARIES,
+  GREGORIAN_MONTH_DAYS,
+  GREGORIAN_LEAP,
   calendarDaysPerYear,
   type ChronicleCalendar,
   type SeasonBoundary,
   type MonthDef,
+  type LeapRule,
+  type AgeReckoning,
 } from "./chronicleTime";
+
+const GREGORIAN_MONTH_NAMES: Record<"ja" | "en", string[]> = {
+  ja: [
+    "1月",
+    "2月",
+    "3月",
+    "4月",
+    "5月",
+    "6月",
+    "7月",
+    "8月",
+    "9月",
+    "10月",
+    "11月",
+    "12月",
+  ],
+  en: [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ],
+};
+const GREGORIAN_WEEKDAYS: Record<"ja" | "en", string[]> = {
+  ja: ["日", "月", "火", "水", "木", "金", "土"],
+  en: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+};
 
 export interface ChronicleCalendarEditorProps {
   initial: ChronicleCalendar | null;
@@ -24,7 +63,8 @@ export function ChronicleCalendarEditor({
   onSave,
   onClose,
 }: ChronicleCalendarEditorProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const lang: "ja" | "en" = i18n.language?.startsWith("en") ? "en" : "ja";
   const [daysPerYear, setDaysPerYear] = useState(initial?.daysPerYear ?? 360);
   const [startYear, setStartYear] = useState(initial?.startYear ?? 0);
   const [months, setMonths] = useState<MonthDef[]>(initial?.months ?? []);
@@ -36,6 +76,24 @@ export function ChronicleCalendarEditor({
       ? initial.seasonBoundaries
       : DEFAULT_SEASON_BOUNDARIES,
   );
+  const [leap, setLeap] = useState<LeapRule>(initial?.leap ?? { kind: "none" });
+  const [ageReckoning, setAgeReckoning] = useState<AgeReckoning>(
+    initial?.ageReckoning ?? "full",
+  );
+
+  // 現実準拠グレゴリオ暦プリセット（12ヶ月・閏2月・7曜・365日）を一括適用。
+  const applyGregorian = () => {
+    setMonths(
+      GREGORIAN_MONTH_DAYS.map((days, i) => ({
+        name: GREGORIAN_MONTH_NAMES[lang][i],
+        days,
+      })),
+    );
+    setWeekdays(GREGORIAN_WEEKDAYS[lang].join(", "));
+    setDaysPerYear(365);
+    setLeap(GREGORIAN_LEAP);
+    setSeasons((s) => (s.length ? s : DEFAULT_SEASON_BOUNDARIES));
+  };
 
   const updateSeason = (i: number, patch: Partial<SeasonBoundary>) =>
     setSeasons((s) => s.map((b, idx) => (idx === i ? { ...b, ...patch } : b)));
@@ -69,12 +127,25 @@ export function ChronicleCalendarEditor({
       .map((w) => w.trim())
       .filter((w) => w !== "");
     // months があれば 1年の日数は月長合計を正本にする（手入力 daysPerYear は無視）。
+    // 閏（gregorian）は月概念が前提。月が無ければ none に落とし、monthIndex は範囲内へ。
+    const effectiveLeap: LeapRule =
+      leap.kind === "gregorian" && cleanedMonths.length > 0
+        ? {
+            kind: "gregorian",
+            monthIndex: Math.max(
+              0,
+              Math.min(cleanedMonths.length - 1, leap.monthIndex),
+            ),
+          }
+        : { kind: "none" };
     const cal: ChronicleCalendar = {
       daysPerYear: Math.max(1, Math.floor(daysPerYear)),
       seasonBoundaries: cleaned,
       startYear: Math.floor(startYear),
       months: cleanedMonths,
       weekdayNames,
+      leap: effectiveLeap,
+      ageReckoning,
     };
     onSave({ ...cal, daysPerYear: calendarDaysPerYear(cal) });
     onClose();
@@ -82,7 +153,7 @@ export function ChronicleCalendarEditor({
 
   return (
     <div
-      className="shrink-0 space-y-2 border-b bg-muted/30 p-3 text-sm"
+      className="space-y-2 p-3 text-sm"
       data-testid="chronicle-calendar-editor"
     >
       <div className="flex items-center gap-2">
@@ -91,8 +162,20 @@ export function ChronicleCalendarEditor({
         </span>
         <button
           type="button"
+          onClick={applyGregorian}
+          className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          title={t(
+            "chronicle.gregorianHint",
+            "現実準拠の暦（12ヶ月・閏2月・7曜・365日）を適用",
+          )}
+        >
+          <CalendarRange className="size-3.5" />
+          {t("chronicle.gregorianPreset", "グレゴリオ暦")}
+        </button>
+        <button
+          type="button"
           onClick={onClose}
-          className="ml-auto rounded p-1 hover:bg-accent"
+          className="rounded p-1 hover:bg-accent"
           aria-label={t("chronicle.close", "閉じる")}
         >
           <X className="size-3.5" />
@@ -144,6 +227,71 @@ export function ChronicleCalendarEditor({
           className="w-56 rounded border bg-transparent px-1 py-0.5"
         />
       </label>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+        <label
+          className="flex items-center gap-1.5"
+          title={t(
+            "chronicle.leapHint",
+            "グレゴリオ閏年（4/100/400）。月定義が必要です。",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={leap.kind === "gregorian"}
+            onChange={(e) =>
+              setLeap(
+                e.target.checked ? { ...GREGORIAN_LEAP } : { kind: "none" },
+              )
+            }
+            disabled={months.length === 0}
+            style={{ accentColor: "var(--primary)" }}
+            className="size-3.5"
+          />
+          {t("chronicle.leapEnable", "閏年（グレゴリオ式）")}
+          {leap.kind === "gregorian" && months.length > 0 && (
+            <select
+              value={leap.monthIndex}
+              onChange={(e) =>
+                setLeap({
+                  kind: "gregorian",
+                  monthIndex: Number(e.target.value),
+                })
+              }
+              aria-label={t("chronicle.leapMonth", "閏を加える月")}
+              className="ml-1 rounded border bg-transparent px-1 py-0.5"
+            >
+              {months.map((m, i) => (
+                <option key={i} value={i}>
+                  {m.name || `${i + 1}`}
+                </option>
+              ))}
+            </select>
+          )}
+        </label>
+
+        <span className="flex items-center gap-1.5">
+          {t("chronicle.ageReckoningLabel", "年齢表記")}
+          <span className="inline-flex overflow-hidden rounded border border-border">
+            {(["full", "counting"] as const).map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => setAgeReckoning(r)}
+                className={`px-2 py-0.5 ${
+                  ageReckoning === r
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                {r === "full"
+                  ? t("chronicle.ageFull", "満年齢")
+                  : t("chronicle.ageCounting", "数え年")}
+              </button>
+            ))}
+          </span>
+        </span>
+      </div>
 
       <div className="space-y-1">
         <div className="text-xs text-muted-foreground">

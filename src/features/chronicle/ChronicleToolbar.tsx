@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Plus,
@@ -10,8 +11,12 @@ import {
   Maximize2,
   Tags,
   GitBranch,
+  Lock,
+  LockOpen,
 } from "lucide-react";
 import type { LaneDensity } from "./chronicleLayout";
+import type { ChronicleCalendar } from "./chronicleTime";
+import { ChronicleCalendarPopover } from "./ChronicleCalendarPopover";
 
 export interface ChronicleToolbarProps {
   issueCount: number;
@@ -20,12 +25,14 @@ export interface ChronicleToolbarProps {
   tieMode: boolean;
   density: LaneDensity;
   labelsOn: boolean;
-  hasCalendar: boolean;
+  locked: boolean;
+  calendar: ChronicleCalendar | null;
   creating: boolean;
   onNew: () => void;
   onExtract: () => void;
-  onCalendar: () => void;
+  onSaveCalendar: (cal: ChronicleCalendar) => void;
   onToggleTie: () => void;
+  onToggleLock: () => void;
   onGotoConflict: () => void;
   onToggleEdges: () => void;
   onZoomIn: () => void;
@@ -36,40 +43,40 @@ export interface ChronicleToolbarProps {
   onToggleLabels: () => void;
 }
 
+// 他パネル準拠の枠なし意匠。アクション=ghost、トグル=active で bg-accent+text-primary。
 const ghost =
-  "inline-flex h-8 items-center gap-1 rounded-lg border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent";
+  "inline-flex h-8 items-center gap-1 rounded px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground";
 const toggleCls = (active: boolean) =>
-  `inline-flex h-[30px] items-center gap-1 rounded-lg px-2.5 text-xs ${
+  `inline-flex h-8 items-center gap-1 rounded px-2 text-xs ${
     active
-      ? "border text-primary"
-      : "border border-border bg-card text-muted-foreground hover:bg-accent"
+      ? "bg-accent text-primary"
+      : "text-muted-foreground hover:bg-accent hover:text-foreground"
   }`;
-const toggleStyle = (active: boolean) =>
-  active
-    ? {
-        borderColor: "color-mix(in oklch, var(--primary) 45%, transparent)",
-        background: "color-mix(in oklch, var(--primary) 9%, transparent)",
-      }
-    : undefined;
+const iconBtn =
+  "grid size-7 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground";
 
 const DENSITIES: LaneDensity[] = ["compact", "standard", "roomy"];
 
-/** ツールバー（左: 新規/抽出/暦/タイ線・右: 整合警告/因果/密度/ラベル/ズーム/凡例）＋凡例ストリップ。 */
+/** ツールバー（左: 新規/抽出/暦/タイ線/ロック・右: 整合警告/因果/密度/ラベル/ズーム/凡例）＋凡例。 */
 export function ChronicleToolbar(props: ChronicleToolbarProps) {
   const { t } = useTranslation();
+  const calBtnRef = useRef<HTMLButtonElement>(null);
+  const [calOpen, setCalOpen] = useState(false);
   const nextDensity = () =>
     props.onSetDensity(
       DENSITIES[(DENSITIES.indexOf(props.density) + 1) % DENSITIES.length],
     );
+  const hasCalendar =
+    !!props.calendar && props.calendar.seasonBoundaries.length > 0;
 
   return (
     <>
-      <div className="flex h-12 flex-none items-center gap-1.5 border-b border-border bg-card px-3">
+      <div className="flex h-12 flex-none items-center gap-1 border-b border-border bg-card px-3">
         <button
           type="button"
           onClick={props.onNew}
           disabled={props.creating}
-          className="inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs font-medium disabled:opacity-50"
+          className="inline-flex h-8 items-center gap-1 rounded-md px-3 text-xs font-medium disabled:opacity-50"
           style={{
             background: "var(--primary)",
             color: "var(--primary-foreground)",
@@ -83,32 +90,60 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           {t("chronicle.aiExtract", "AI 抽出")}
         </button>
         <div className="mx-0.5 h-5 w-px bg-border" />
-        <button type="button" onClick={props.onCalendar} className={ghost}>
+        <button
+          type="button"
+          ref={calBtnRef}
+          onClick={() => setCalOpen((o) => !o)}
+          className={toggleCls(calOpen)}
+        >
           <CalendarCog className="size-3.5" />
-          {props.hasCalendar
+          {hasCalendar
             ? t("chronicle.calendarEditor", "暦の設定")
             : t("chronicle.setupCalendar", "暦を設定")}
         </button>
+        <ChronicleCalendarPopover
+          triggerRef={calBtnRef}
+          open={calOpen}
+          initial={props.calendar}
+          onSave={props.onSaveCalendar}
+          onClose={() => setCalOpen(false)}
+        />
         <button
           type="button"
           onClick={props.onToggleTie}
           className={toggleCls(props.tieMode)}
-          style={toggleStyle(props.tieMode)}
           title={t("chronicle.tieView", "読む順×作中時間")}
         >
           <Spline className="size-3.5" /> {t("chronicle.tie", "タイ線")}
         </button>
+        <button
+          type="button"
+          onClick={props.onToggleLock}
+          className={toggleCls(props.locked)}
+          title={t(
+            "chronicle.lockHint",
+            "編集ロック（ドラッグ移動・作成・端伸縮・エッジ作成を無効化）",
+          )}
+        >
+          {props.locked ? (
+            <Lock className="size-3.5" />
+          ) : (
+            <LockOpen className="size-3.5" />
+          )}
+          {props.locked
+            ? t("chronicle.locked", "ロック中")
+            : t("chronicle.lock", "ロック")}
+        </button>
 
-        <div className="ms-auto flex items-center gap-1.5">
+        <div className="ms-auto flex items-center gap-1">
           {props.issueCount > 0 && (
             <button
               type="button"
               onClick={props.onGotoConflict}
-              className="inline-flex h-[30px] items-center gap-1.5 rounded-lg border px-2.5 text-xs"
+              className="inline-flex h-8 items-center gap-1.5 rounded px-2 text-xs"
               style={{
-                borderColor: "color-mix(in oklch, #e0a23a 50%, transparent)",
                 background: "color-mix(in oklch, #e0a23a 14%, transparent)",
-                color: "color-mix(in oklch, #e0a23a 75%, var(--foreground))",
+                color: "color-mix(in oklch, #e0a23a 78%, var(--foreground))",
               }}
             >
               <AlertTriangle className="size-3.5" />
@@ -119,7 +154,6 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
             type="button"
             onClick={props.onToggleEdges}
             className={toggleCls(props.showEdges)}
-            style={toggleStyle(props.showEdges)}
             title={t("chronicle.causalEdges", "因果エッジ")}
           >
             <GitBranch className="size-3.5" /> {t("chronicle.causal", "因果")}
@@ -136,16 +170,15 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
             type="button"
             onClick={props.onToggleLabels}
             className={toggleCls(props.labelsOn)}
-            style={toggleStyle(props.labelsOn)}
             title={t("chronicle.markerLabels", "ラベル表示")}
           >
-            <Tags className="size-3.5" />
+            <Tags className="size-3.5" /> {t("chronicle.labels", "ラベル")}
           </button>
           <div className="mx-0.5 h-5 w-px bg-border" />
           <button
             type="button"
             onClick={props.onZoomOut}
-            className="grid size-7 place-items-center rounded-md border border-border bg-card text-muted-foreground hover:bg-accent"
+            className={iconBtn}
             aria-label={t("chronicle.zoomOut", "縮小")}
           >
             <ZoomOut className="size-3.5" />
@@ -153,7 +186,7 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           <button
             type="button"
             onClick={props.onZoomIn}
-            className="grid size-7 place-items-center rounded-md border border-border bg-card text-muted-foreground hover:bg-accent"
+            className={iconBtn}
             aria-label={t("chronicle.zoomIn", "拡大")}
           >
             <ZoomIn className="size-3.5" />
@@ -170,7 +203,6 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
             type="button"
             onClick={props.onToggleLegend}
             className={toggleCls(props.showLegend)}
-            style={toggleStyle(props.showLegend)}
           >
             {t("chronicle.legend", "凡例")}
           </button>
@@ -184,14 +216,28 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
 
 function ChronicleLegend() {
   const { t } = useTranslation();
-  const item = (swatch: React.ReactNode, label: string) => (
-    <span className="flex items-center gap-1.5">
+  const item = (swatch: React.ReactNode, label: string, title?: string) => (
+    <span className="flex items-center gap-1.5" title={title}>
       {swatch}
       {label}
     </span>
   );
+  // 出来事の外周線サンプル（確度）。確定=実線 / おおよそ=実線+減光 / 不明=破線。
+  const confSwatch = (style: "solid" | "dashed", faded = false) => (
+    <span
+      className="rounded-sm"
+      style={{
+        width: 16,
+        height: 10,
+        background: "var(--card)",
+        border: "1px solid var(--muted-foreground)",
+        borderStyle: style,
+        opacity: faded ? 0.55 : 1,
+      }}
+    />
+  );
   return (
-    <div className="flex h-[34px] flex-none flex-wrap items-center gap-4 border-b border-border bg-muted/30 px-4 text-[11px] text-muted-foreground">
+    <div className="flex h-[34px] flex-none flex-wrap items-center gap-3.5 border-b border-border bg-muted/30 px-4 text-[11px] text-muted-foreground">
       {item(
         <span className="size-[9px] rounded-full bg-muted-foreground" />,
         t("chronicle.legendEvent", "出来事"),
@@ -232,28 +278,23 @@ function ChronicleLegend() {
         />,
         t("chronicle.legendInterval", "期間"),
       )}
+      <span className="mx-0.5 h-3.5 w-px bg-border" />
       {item(
-        <span
-          className="rounded-full border-2"
-          style={{
-            width: 10,
-            height: 10,
-            borderColor: "var(--muted-foreground)",
-            background: "var(--card)",
-          }}
-        />,
-        t("chronicle.legendOffpage", "背景（オフページ）"),
+        confSwatch("solid"),
+        t("chronicle.precision.exact", "確定"),
+        t("chronicle.exactHint", "日付が確定している"),
       )}
       {item(
-        <span
-          style={{
-            width: 18,
-            height: 0,
-            borderTop: "1.5px dashed var(--muted-foreground)",
-          }}
-        />,
-        t("chronicle.legendUncertain", "不確定"),
+        confSwatch("solid", true),
+        t("chronicle.precision.approx", "おおよそ"),
+        t("chronicle.approxHint", "順序は確実だが日付は概算"),
       )}
+      {item(
+        confSwatch("dashed"),
+        t("chronicle.precision.unknown", "不明"),
+        t("chronicle.unknownHint", "日付の時点そのものが不確実"),
+      )}
+      <span className="mx-0.5 h-3.5 w-px bg-border" />
       {item(
         <span
           className="grid place-items-center rounded-full text-[9px] font-bold text-white"
@@ -262,6 +303,16 @@ function ChronicleLegend() {
           !
         </span>,
         t("chronicle.legendConflict", "整合警告"),
+      )}
+      {item(
+        <span
+          style={{
+            width: 20,
+            height: 0,
+            borderTop: "1.5px solid var(--muted-foreground)",
+          }}
+        />,
+        t("chronicle.legendCausal", "因果"),
       )}
       {item(
         <span

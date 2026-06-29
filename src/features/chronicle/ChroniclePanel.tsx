@@ -44,7 +44,6 @@ import type { MarkerEvent } from "./EventMarker";
 import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleToolbar } from "./ChronicleToolbar";
 import { ChronicleInspector } from "./ChronicleInspector";
-import { ChronicleCalendarEditor } from "./ChronicleCalendarEditor";
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { ChronicleTieView } from "./ChronicleTieView";
 import { buildTieView } from "./tieView";
@@ -67,6 +66,8 @@ export function ChroniclePanel() {
   const selectedEventId = useChronicleStore((s) => s.selectedEventId);
   const setSelectedEventId = useChronicleStore((s) => s.setSelectedEventId);
   const setChronicleView = useChronicleStore((s) => s.setChronicleView);
+  const locked = useChronicleStore((s) => s.locked);
+  const toggleLock = useChronicleStore((s) => s.toggleLock);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
   const nodes = useTreeStore((s) => s.nodes);
   const timelineSelected = useTimelineStore((s) => s.selectedNodeIds);
@@ -103,7 +104,6 @@ export function ChroniclePanel() {
   const [showLegend, setShowLegend] = useState(true);
   const [showEdges, setShowEdges] = useState(true);
   const [tieMode, setTieMode] = useState(false);
-  const [calendarEditorOpen, setCalendarEditorOpen] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
 
   const scenedEventIds = useMemo(
@@ -188,7 +188,6 @@ export function ChroniclePanel() {
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
   const {
-    hasCalendar,
     calendar,
     conflicts,
     conflictIds,
@@ -593,12 +592,14 @@ export function ChroniclePanel() {
         tieMode={tieMode}
         density={density}
         labelsOn={labelsOn}
-        hasCalendar={hasCalendar}
+        locked={locked}
+        calendar={calendar}
         creating={creating}
         onNew={handleAdd}
         onExtract={() => setExtractOpen(true)}
-        onCalendar={() => setCalendarEditorOpen((o) => !o)}
+        onSaveCalendar={(c) => void saveCalendar(c)}
         onToggleTie={() => setTieMode((m) => !m)}
+        onToggleLock={toggleLock}
         onGotoConflict={handleGotoConflict}
         onToggleEdges={() => setShowEdges((s) => !s)}
         onZoomIn={() => handleZoom(1.5)}
@@ -608,14 +609,6 @@ export function ChroniclePanel() {
         onSetDensity={setDensity}
         onToggleLabels={() => setLabelsOn((s) => !s)}
       />
-
-      {calendarEditorOpen && (
-        <ChronicleCalendarEditor
-          initial={calendar}
-          onSave={(c) => void saveCalendar(c)}
-          onClose={() => setCalendarEditorOpen(false)}
-        />
-      )}
 
       {n === 0 ? (
         <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">

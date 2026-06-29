@@ -1,0 +1,49 @@
+import { createPortal } from "react-dom";
+import type { RefObject } from "react";
+import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
+import { ChronicleCalendarEditor } from "./ChronicleCalendarEditor";
+import type { ChronicleCalendar } from "./chronicleTime";
+
+export interface ChronicleCalendarPopoverProps {
+  triggerRef: RefObject<HTMLElement | null>;
+  open: boolean;
+  initial: ChronicleCalendar | null;
+  onSave: (cal: ChronicleCalendar) => void;
+  onClose: () => void;
+}
+
+/**
+ * 暦設定エディタを、暦ボタン基準で body へ portal する固定配置ポップオーバーに包む。
+ * 旧来の inline パネル（border-b 全幅）からポップオーバー化する要望対応。
+ * 位置計算・外側クリック/Escape 閉じは useAnchoredPopover に委譲。
+ */
+export function ChronicleCalendarPopover({
+  triggerRef,
+  open,
+  initial,
+  onSave,
+  onClose,
+}: ChronicleCalendarPopoverProps) {
+  const { popoverRef, style, maxHeight } = useAnchoredPopover(
+    triggerRef,
+    open,
+    onClose,
+    "bottom-start",
+  );
+  if (!open || !style) return null;
+  return createPortal(
+    <div
+      ref={popoverRef}
+      style={{ ...style, maxHeight: maxHeight ?? undefined }}
+      className="z-50 w-[380px] overflow-auto rounded-lg border border-border bg-card shadow-lg"
+      role="dialog"
+    >
+      <ChronicleCalendarEditor
+        initial={initial}
+        onSave={onSave}
+        onClose={onClose}
+      />
+    </div>,
+    document.body,
+  );
+}
