@@ -9,7 +9,7 @@ import {
   zoomAt,
   type View,
 } from "./chronicleAxis";
-import type { ChronicleLayout } from "./chronicleLayout";
+import { realEventId, type ChronicleLayout } from "./chronicleLayout";
 import { laneAtY } from "./chronicleLanePack";
 import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
@@ -617,10 +617,11 @@ export function ChronicleViewport({
             </svg>
           )}
 
-          {/* マーカー */}
+          {/* マーカー（参加レーンの複製は合成 id。本物の eventId に解決して扱う） */}
           {pack.lanes.flatMap((lane) =>
             lane.markers.map((m) => {
-              const ev = eventsById.get(m.eventId);
+              const realId = realEventId(m.eventId);
+              const ev = eventsById.get(realId);
               const render = markerById.get(m.eventId);
               if (!ev || !render) return null;
               return (
@@ -633,21 +634,21 @@ export function ChronicleViewport({
                   maxTok={spacing.maxTok}
                   isInterval={render.isInterval}
                   barWidth={render.barWidth}
-                  selected={selectedEventId === m.eventId}
-                  conflict={conflictIds.has(m.eventId)}
-                  related={relatedIds.has(m.eventId)}
+                  selected={selectedEventId === realId}
+                  conflict={conflictIds.has(realId)}
+                  related={relatedIds.has(realId)}
                   labelsOn={labelsOn}
                   resizable={!locked && render.isInterval}
                   cursor={locked ? "default" : "pointer"}
                   edgeHandle={
-                    selectedEventId === m.eventId && !locked && !!onCreateEdge
+                    selectedEventId === realId && !locked && !!onCreateEdge
                   }
                   dragOffset={
-                    dragPreview?.id === m.eventId
+                    dragPreview?.id === realId
                       ? { dx: dragPreview.dx, dy: dragPreview.dy }
                       : null
                   }
-                  onSelect={() => handleSelect(m.eventId)}
+                  onSelect={() => handleSelect(realId)}
                 />
               );
             }),

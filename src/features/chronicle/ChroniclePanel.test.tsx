@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   listEvents: vi.fn(),
   listSceneEvents: vi.fn(),
   listEventRelations: vi.fn(),
+  listEventParticipantsForProject: vi.fn(),
 }));
 vi.mock("./api", () => apiMocks);
 
@@ -24,6 +25,7 @@ const eventMocks = vi.hoisted(() => ({
   uiDeleteEvent: vi.fn(),
   uiAddEventRelation: vi.fn(),
   uiRemoveEventRelation: vi.fn(),
+  uiSetEventParticipants: vi.fn(),
 }));
 vi.mock("@/features/agent-writes/event", () => eventMocks);
 
@@ -122,6 +124,7 @@ beforeEach(() => {
   useTreeStore.setState({ nodes: [] });
   apiMocks.listSceneEvents.mockResolvedValue([]);
   apiMocks.listEventRelations.mockResolvedValue([]);
+  apiMocks.listEventParticipantsForProject.mockResolvedValue([]);
   eventMocks.uiCreateEvent.mockResolvedValue({ id: "new", title: "" });
   eventMocks.uiUpdateEvent.mockResolvedValue(undefined);
   eventMocks.uiDeleteEvent.mockResolvedValue(undefined);

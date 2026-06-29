@@ -27,6 +27,20 @@ import type { ChronicleCalendar, DateLang } from "./chronicleTime";
 
 export type LaneDensity = "compact" | "standard" | "roomy";
 
+/**
+ * マルチレーン（複数 Codex 所属）対応: 1 出来事を所属レーンごとに描くため、
+ * 参加レーンの複製マーカーは合成 id `${eventId}::${codexId}` をキーにする。
+ * 本物の eventId（選択/ドラッグ/因果エッジ用）は realEventId で復元する。
+ */
+export const LANE_DUP_SEP = "::";
+export function laneDupId(eventId: string, codexId: string): string {
+  return `${eventId}${LANE_DUP_SEP}${codexId}`;
+}
+export function realEventId(id: string): string {
+  const i = id.indexOf(LANE_DUP_SEP);
+  return i === -1 ? id : id.slice(0, i);
+}
+
 export interface DensitySpacing {
   /** 左レーンガター幅(px)。 */
   gutterX: number;

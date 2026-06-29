@@ -24,6 +24,7 @@ import {
 } from "./chronicleTime";
 import { laneColorFor } from "./laneColor";
 import { ChronicleDatePicker } from "./ChronicleDatePicker";
+import { CodexEntryPicker } from "./CodexEntryPicker";
 
 export interface ChronicleInspectorProps {
   event: EventRow;
@@ -52,6 +53,9 @@ export interface ChronicleInspectorProps {
   /** 現在の高さ(px)。上端グリップでリサイズ。 */
   height?: number;
   onHeightChange?: (h: number) => void;
+  /** 参加レーン（追加の複数 Codex 所属）。primaryCodexId 以外の codexId。 */
+  participantIds?: string[];
+  onSetParticipants?: (codexEntryIds: string[]) => void;
 }
 
 const selectCls =
@@ -92,8 +96,23 @@ export function ChronicleInspector({
   lang,
   height = 340,
   onHeightChange,
+  participantIds = [],
+  onSetParticipants,
 }: ChronicleInspectorProps) {
   const { t } = useTranslation();
+  const laneLabel = (o: { name: string; type: string }) =>
+    o.type && o.type !== "character"
+      ? `${o.name}（${t(`chronicle.laneType.${o.type}`, o.type)}）`
+      : o.name;
+  const lanePickerOptions = laneOptions.map((o) => ({
+    id: o.id,
+    name: laneLabel(o),
+  }));
+  const laneNameById = new Map(laneOptions.map((o) => [o.id, laneLabel(o)]));
+  // 参加レーン追加候補（primary・既存参加を除外）。
+  const participantAddOptions = lanePickerOptions.filter(
+    (o) => o.id !== event.primaryCodexId && !participantIds.includes(o.id),
+  );
 
   // 上端グリップのドラッグで高さを変える（上=高く）。clamp [180, 720]。
   const onResizeStart = (e: React.MouseEvent) => {
@@ -289,24 +308,13 @@ export function ChronicleInspector({
             <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
               <label className={labelCls}>
                 {t("chronicle.lane", "レーン")}
-                <select
-                  value={event.primaryCodexId ?? ""}
-                  onChange={(e) =>
-                    onPatch({ primaryCodexId: e.target.value || null })
-                  }
-                  className={selectCls}
-                >
-                  <option value="">
-                    {t("chronicle.laneUnassigned", "（未割当）")}
-                  </option>
-                  {laneOptions.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.type && o.type !== "character"
-                        ? `${o.name}（${t(`chronicle.laneType.${o.type}`, o.type)}）`
-                        : o.name}
-                    </option>
-                  ))}
-                </select>
+                <CodexEntryPicker
+                  value={event.primaryCodexId}
+                  options={lanePickerOptions}
+                  onChange={(id) => onPatch({ primaryCodexId: id })}
+                  ariaLabel={t("chronicle.lane", "レーン")}
+                  placeholder={t("chronicle.laneUnassigned", "（未割当）")}
+                />
               </label>
               <label className={labelCls}>
                 {t("chronicle.location", "場所")}
@@ -360,6 +368,55 @@ export function ChronicleInspector({
                 </select>
               </label>
             </div>
+
+            {/* 参加レーン（複数 Codex 所属＝マルチレーン描画） */}
+            {onSetParticipants && (
+              <div className="flex flex-col gap-1.5 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
+                <span className="text-[11px] text-muted-foreground">
+                  {t("chronicle.participants", "参加レーン（複数所属）")}
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {participantIds.map((cid) => (
+                    <span
+                      key={cid}
+                      className="inline-flex items-center gap-1 rounded-md border border-border bg-accent/60 py-0.5 pl-2 pr-1 text-xs"
+                    >
+                      {laneNameById.get(cid) ??
+                        t("chronicle.unnamed", "（無名）")}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onSetParticipants(
+                            participantIds.filter((x) => x !== cid),
+                          )
+                        }
+                        aria-label={t("chronicle.removeParticipant", "外す")}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  {participantAddOptions.length > 0 && (
+                    <CodexEntryPicker
+                      value={null}
+                      options={participantAddOptions}
+                      onChange={(id) => {
+                        if (id) onSetParticipants([...participantIds, id]);
+                      }}
+                      ariaLabel={t(
+                        "chronicle.addParticipant",
+                        "参加レーンを追加",
+                      )}
+                      placeholder={t(
+                        "chronicle.addParticipant",
+                        "＋参加レーン",
+                      )}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* 開始 / 終了 日時 */}
             <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">

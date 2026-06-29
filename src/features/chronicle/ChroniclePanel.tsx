@@ -12,9 +12,11 @@ import {
   listEvents,
   listSceneEvents,
   listEventRelations,
+  listEventParticipantsForProject,
   type EventRow,
   type SceneEventRow,
   type EventRelationRow,
+  type ParticipantRow,
 } from "./api";
 // 手動 CRUD は tracked-write（undo/Linter 連動・surface="manual"）経由で書き込む。
 import {
@@ -23,6 +25,7 @@ import {
   uiDeleteEvent,
   uiAddEventRelation,
   uiRemoveEventRelation,
+  uiSetEventParticipants,
 } from "@/features/agent-writes/event";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
@@ -35,6 +38,7 @@ import {
 import {
   buildChronicleLayout,
   causalConflictPairSet,
+  laneDupId,
   type LaneDensity,
   type LayoutEventInput,
   type LayoutLane,
@@ -81,6 +85,8 @@ export function ChroniclePanel() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [sceneLinks, setSceneLinks] = useState<SceneEventRow[]>([]);
   const [relations, setRelations] = useState<EventRelationRow[]>([]);
+  // 参加者（追加レーン=複数 Codex 所属）。primaryCodexId に加え参加レーンへ描く。
+  const [participants, setParticipants] = useState<ParticipantRow[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
 
   // ビュー状態（pan/zoom）はローカル。永続値が chronicleStore にあれば復元し、
@@ -161,6 +167,7 @@ export function ChroniclePanel() {
       setEvents([]);
       setSceneLinks([]);
       setRelations([]);
+      setParticipants([]);
       setSelectedEventId(null);
       // 位置選択(ephemeral)も捨てる。残すと handleAdd が他プロジェクトの
       // codexId/日を新規イベントへ書き込みクロスプロジェクト参照を作る。
@@ -175,13 +182,15 @@ export function ChroniclePanel() {
       .then(async (rows) => {
         if (cancelled) return;
         setEvents(rows);
-        const [links, rels] = await Promise.all([
+        const [links, rels, parts] = await Promise.all([
           listSceneEvents(rows.map((e) => e.id)),
           listEventRelations(projectId),
+          listEventParticipantsForProject(projectId),
         ]);
         if (!cancelled) {
           setSceneLinks(links);
           setRelations(rels);
+          setParticipants(parts);
         }
       })
       .catch(() => {
@@ -189,6 +198,7 @@ export function ChroniclePanel() {
           setEvents([]);
           setSceneLinks([]);
           setRelations([]);
+          setParticipants([]);
         }
       });
     return () => {
@@ -261,19 +271,39 @@ export function ChroniclePanel() {
     }
   }, [trackW, events.length, eff.dataStart, eff.dataEnd]);
 
-  // レーン構築（primaryCodexId ごと・null/未知は __unassigned）。
+  // 参加者（追加レーン所属）の eventId → codexId[]。
+  const participantsByEvent = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const p of participants) {
+      const arr = m.get(p.eventId);
+      if (arr) arr.push(p.codexEntryId);
+      else m.set(p.eventId, [p.codexEntryId]);
+    }
+    return m;
+  }, [participants]);
+
+  // レーン構築（primaryCodexId=本物 id。参加レーンは合成 id で複製描画。null/未知は __unassigned）。
   const lanes: LayoutLane[] = useMemo(() => {
     const entryById = new Map(entries.map((e) => [e.id, e]));
     const laneMap = new Map<string, string[]>();
     const unassignedIds: string[] = [];
+    const pushLane = (codexId: string, id: string) => {
+      const arr = laneMap.get(codexId);
+      if (arr) arr.push(id);
+      else laneMap.set(codexId, [id]);
+    };
     for (const ev of events) {
       const pid = ev.primaryCodexId;
       if (pid && entryById.has(pid)) {
-        const arr = laneMap.get(pid);
-        if (arr) arr.push(ev.id);
-        else laneMap.set(pid, [ev.id]);
+        pushLane(pid, ev.id);
       } else {
         unassignedIds.push(ev.id);
+      }
+      // 参加レーン（primary と重複せず既知の Codex）は合成 id で複製。
+      for (const cid of participantsByEvent.get(ev.id) ?? []) {
+        if (cid !== pid && entryById.has(cid)) {
+          pushLane(cid, laneDupId(ev.id, cid));
+        }
       }
     }
     const ordered = [...laneMap.keys()]
@@ -306,29 +336,34 @@ export function ChroniclePanel() {
       });
     }
     return out;
-  }, [events, entries, t]);
+  }, [events, entries, t, participantsByEvent]);
 
-  const layoutEvents: LayoutEventInput[] = useMemo(
-    () =>
-      events.flatMap((e) => {
-        const ed = eff.byId.get(e.id);
-        if (!ed) return [];
-        return [
-          {
-            id: e.id,
-            title: e.title,
-            primaryCodexId: e.primaryCodexId,
-            kind: e.kind,
-            precision: e.precision,
-            secret: e.secret,
-            sceneLinked: scenedEventIds.has(e.id),
-            startDay: ed.startDay,
-            endDay: ed.endDay,
-          },
-        ];
-      }),
-    [events, eff, scenedEventIds],
-  );
+  const layoutEvents: LayoutEventInput[] = useMemo(() => {
+    const entryIds = new Set(entries.map((e) => e.id));
+    return events.flatMap((e) => {
+      const ed = eff.byId.get(e.id);
+      if (!ed) return [];
+      const base = {
+        title: e.title,
+        kind: e.kind,
+        precision: e.precision,
+        secret: e.secret,
+        sceneLinked: scenedEventIds.has(e.id),
+        startDay: ed.startDay,
+        endDay: ed.endDay,
+      };
+      // 本物 id（home レーン）＋参加レーンごとの合成 id 複製。
+      const out: LayoutEventInput[] = [
+        { id: e.id, primaryCodexId: e.primaryCodexId, ...base },
+      ];
+      for (const cid of participantsByEvent.get(e.id) ?? []) {
+        if (cid !== e.primaryCodexId && entryIds.has(cid)) {
+          out.push({ id: laneDupId(e.id, cid), primaryCodexId: cid, ...base });
+        }
+      }
+      return out;
+    });
+  }, [events, entries, eff, scenedEventIds, participantsByEvent]);
 
   const causalPairs = useMemo(
     () => causalConflictPairSet(causalConflicts),
@@ -737,6 +772,24 @@ export function ChroniclePanel() {
     [selected, projectId, refresh],
   );
 
+  // 選択中イベントの参加レーン（複数 Codex 所属）。
+  const selectedParticipants = useMemo(
+    () => (selected ? (participantsByEvent.get(selected.id) ?? []) : []),
+    [selected, participantsByEvent],
+  );
+  const handleSetParticipants = useCallback(
+    async (codexEntryIds: string[]) => {
+      if (!selected || !projectId) return;
+      try {
+        await uiSetEventParticipants(selected.id, codexEntryIds);
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+    },
+    [selected, projectId, refresh, t],
+  );
+
   // タイ線複合ビュー（reading 順 scene ↔ 作中時間 event）。
   const tieView = useMemo(() => {
     if (!tieMode) return null;
@@ -942,6 +995,8 @@ export function ChroniclePanel() {
           linkedSceneCount={selectedSceneIds.length}
           allEvents={events}
           causeIds={selectedCauseIds}
+          participantIds={selectedParticipants}
+          onSetParticipants={handleSetParticipants}
           onAddCause={handleAddCause}
           onRemoveCause={handleRemoveCause}
           onStamp={handleStamp}

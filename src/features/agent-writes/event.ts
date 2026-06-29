@@ -266,6 +266,14 @@ export function uiDeleteEvent(eventId: string): Promise<void> {
   return agentDeleteEvent(eventId, UI_WRITE_OPTS);
 }
 
+/** 出来事の参加者（追加レーン=複数 Codex 所属）を置換する。tracked-write。 */
+export function uiSetEventParticipants(
+  eventId: string,
+  codexEntryIds: string[],
+): Promise<void> {
+  return agentSetEventParticipants(eventId, codexEntryIds);
+}
+
 export function uiAddEventRelation(
   causeEventId: string,
   effectEventId: string,
