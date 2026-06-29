@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { render, fireEvent } from "@testing-library/react";
 import { ChronicleViewport } from "./ChronicleViewport";
 import {
   buildChronicleLayout,
@@ -144,6 +144,31 @@ describe("ChronicleViewport", () => {
     const onSelectEvent = vi.fn();
     const { container } = renderViewport({ onSelectEvent });
     (container.querySelector('[data-event-id="e1"]') as HTMLElement).click();
-    expect(onSelectEvent).toHaveBeenCalledWith("e1");
+    // 修飾なしクリック＝単一選択（toggle/range とも false）。
+    expect(onSelectEvent).toHaveBeenCalledWith("e1", {
+      toggle: false,
+      range: false,
+    });
+  });
+
+  it("Ctrl/Shift クリックで toggle/range フラグが渡る", () => {
+    const onSelectEvent = vi.fn();
+    const { container } = renderViewport({ onSelectEvent });
+    const el = container.querySelector('[data-event-id="e1"]') as HTMLElement;
+    fireEvent.click(el, { ctrlKey: true });
+    expect(onSelectEvent).toHaveBeenLastCalledWith("e1", {
+      toggle: true,
+      range: false,
+    });
+    fireEvent.click(el, { shiftKey: true });
+    expect(onSelectEvent).toHaveBeenLastCalledWith("e1", {
+      toggle: false,
+      range: true,
+    });
+    fireEvent.click(el, { metaKey: true });
+    expect(onSelectEvent).toHaveBeenLastCalledWith("e1", {
+      toggle: true,
+      range: false,
+    });
   });
 });

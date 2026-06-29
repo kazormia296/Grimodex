@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Plus } from "lucide-react";
+import { Plus, Trash2, X } from "lucide-react";
 import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -45,12 +45,14 @@ import {
   type LayoutEventInput,
   type LayoutLane,
 } from "./chronicleLayout";
+import { nextSelection } from "./chronicleSelection";
 import { formatChronicleDate } from "./chronicleTime";
 import type { ChronicleCalendar, DateLang } from "./chronicleTime";
 import type { MarkerEvent } from "./EventMarker";
 import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleToolbar } from "./ChronicleToolbar";
 import { ChronicleInspector } from "./ChronicleInspector";
+import { CodexEntryPicker } from "./CodexEntryPicker";
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { ChronicleTieView } from "./ChronicleTieView";
 import { buildTieView } from "./tieView";
@@ -89,7 +91,9 @@ export function ChroniclePanel() {
   const projectId = useProjectStore((s) => s.currentProjectId);
   const entries = useCodexStore((s) => s.entries);
   const selectedEventId = useChronicleStore((s) => s.selectedEventId);
+  const selectedEventIds = useChronicleStore((s) => s.selectedEventIds);
   const setSelectedEventId = useChronicleStore((s) => s.setSelectedEventId);
+  const setSelection = useChronicleStore((s) => s.setSelection);
   const setChronicleView = useChronicleStore((s) => s.setChronicleView);
   const locked = useChronicleStore((s) => s.locked);
   const toggleLock = useChronicleStore((s) => s.toggleLock);
@@ -206,6 +210,10 @@ export function ChroniclePanel() {
       .then(async (rows) => {
         if (cancelled) return;
         setEvents(rows);
+        // 削除/undo/redo 後の stale な選択 id を実 event に整合（全削除経路を覆う）。
+        useChronicleStore
+          .getState()
+          .sanitizeSelection(new Set(rows.map((e) => e.id)));
         const [links, rels, parts] = await Promise.all([
           listSceneEvents(rows.map((e) => e.id)),
           listEventRelations(projectId),
@@ -475,6 +483,13 @@ export function ChroniclePanel() {
     [events, selectedEventId],
   );
 
+  // 複数選択集合（存在する出来事のみ＝削除済み id を除く）。ハイライト/一括操作に使う。
+  const selectedIdSet = useMemo(() => {
+    const existing = new Set(events.map((e) => e.id));
+    return new Set(selectedEventIds.filter((id) => existing.has(id)));
+  }, [events, selectedEventIds]);
+  const multiCount = selectedIdSet.size;
+
   const activeLaneKey = useMemo(() => {
     if (!selected) return null;
     const known =
@@ -693,9 +708,26 @@ export function ChroniclePanel() {
     [projectId, refresh, setSelectedEventId, t],
   );
 
-  // 出来事を選択したら、その開始位置に縦ライン（ステータスバーが日時を表示）。
+  // 範囲選択(Shift)用の時間順 id 列（startDay 昇順, 同値は id）。
+  const timeOrderedIds = useMemo(
+    () =>
+      events
+        .map((e) => ({ id: e.id, d: eff.byId.get(e.id)?.startDay ?? 0 }))
+        .sort((a, b) => a.d - b.d || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .map((x) => x.id),
+    [events, eff],
+  );
+
+  // 出来事クリック。修飾なし=単一選択（＋位置の縦ライン）, Ctrl/⌘=トグル, Shift=範囲。
   const handleSelectEvent = useCallback(
-    (id: string) => {
+    (id: string, mods?: { toggle: boolean; range: boolean }) => {
+      if (mods?.toggle || mods?.range) {
+        const st = useChronicleStore.getState();
+        const { ids, primary } = nextSelection(st, id, mods, timeOrderedIds);
+        setSelection(ids, primary);
+        return;
+      }
+      // 単一選択（＋開始位置に縦ライン）。
       setSelectedEventId(id);
       const e = events.find((x) => x.id === id);
       setSelectedPosition(
@@ -703,7 +735,13 @@ export function ChroniclePanel() {
         e?.primaryCodexId ?? null,
       );
     },
-    [events, setSelectedEventId, setSelectedPosition],
+    [
+      events,
+      timeOrderedIds,
+      setSelection,
+      setSelectedEventId,
+      setSelectedPosition,
+    ],
   );
 
   // 空白クリックで位置選択（出来事選択は外す）。
@@ -753,6 +791,43 @@ export function ChroniclePanel() {
       }
     },
     [projectId, events, entries, handleHideGroup, refresh, t],
+  );
+
+  // ── 複数選択の一括操作（multiCount>1 のとき下部バーに表示） ──
+  const clearSelection = useCallback(
+    () => setSelectedEventId(null),
+    [setSelectedEventId],
+  );
+
+  // 選択中をまとめて削除。
+  const handleBulkDelete = useCallback(async () => {
+    if (!projectId || selectedIdSet.size === 0) return;
+    try {
+      for (const id of selectedIdSet) await uiDeleteEvent(id);
+      setSelectedEventId(null);
+      refresh();
+    } catch {
+      toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+    }
+  }, [projectId, selectedIdSet, setSelectedEventId, refresh, t]);
+
+  // 選択中をまとめて指定 Codex レーンへ割当（""=未割当へ戻す）。
+  const handleBulkAssign = useCallback(
+    async (codexId: string) => {
+      if (!projectId || selectedIdSet.size === 0) return;
+      try {
+        for (const id of selectedIdSet)
+          await uiUpdateEvent({
+            eventId: id,
+            primaryCodexId: codexId,
+            laneGroup: "",
+          });
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+    },
+    [projectId, selectedIdSet, refresh, t],
   );
 
   const handlePatch = useCallback(
@@ -1017,6 +1092,7 @@ export function ChroniclePanel() {
           layout={layout}
           eventsById={eventsById}
           selectedEventId={selectedEventId}
+          selectedIds={selectedIdSet}
           activeLaneKey={activeLaneKey}
           conflictIds={issueIds}
           relatedIds={relatedIds}
@@ -1059,7 +1135,48 @@ export function ChroniclePanel() {
         </div>
       )}
 
-      {selected ? (
+      {multiCount > 1 ? (
+        <div className="flex h-[60px] flex-none items-center gap-2.5 border-t border-border bg-card px-4.5">
+          <span className="text-[13px] font-medium text-foreground">
+            {t("chronicle.multiSelected", "{{count}} 件を選択中", {
+              count: multiCount,
+            })}
+          </span>
+          <div className="w-56">
+            <CodexEntryPicker
+              value={null}
+              options={laneOptions.map((o) => ({ id: o.id, name: o.name }))}
+              onChange={(id) => {
+                if (id) void handleBulkAssign(id);
+              }}
+              ariaLabel={t("chronicle.assignLane", "レーンへ割当")}
+              placeholder={t("chronicle.bulkAssignLane", "レーンへ一括割当")}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleBulkAssign("")}
+            className="inline-flex h-8 items-center rounded-lg px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            {t("chronicle.bulkUnassign", "未割当へ")}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleBulkDelete()}
+            className="inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs text-destructive hover:bg-destructive/10"
+          >
+            <Trash2 className="size-3.5" /> {t("chronicle.bulkDelete", "削除")}
+          </button>
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="ms-auto inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-3.5" />{" "}
+            {t("chronicle.clearSelection", "選択解除")}
+          </button>
+        </div>
+      ) : selected ? (
         <ChronicleInspector
           event={selected}
           height={inspectorHeight}

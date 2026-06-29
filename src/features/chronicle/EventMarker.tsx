@@ -1,4 +1,8 @@
-import type { CSSProperties, ReactNode } from "react";
+import type {
+  CSSProperties,
+  ReactNode,
+  MouseEvent as ReactMouseEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
 import type { EventKind, EventPrecision } from "@/db/schema";
 import { laneColorFor } from "./laneColor";
@@ -37,7 +41,8 @@ export interface EventMarkerProps {
   edgeHandle?: boolean;
   /** ホバー時カーソル（非ロック=pointer/手、ロック=default）。 */
   cursor?: CSSProperties["cursor"];
-  onSelect: () => void;
+  /** クリック選択（修飾キー判定のため MouseEvent を渡す）。 */
+  onSelect: (e: ReactMouseEvent) => void;
 }
 
 const BIRTH = "oklch(0.6 0.14 150)";

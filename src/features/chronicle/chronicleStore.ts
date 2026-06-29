@@ -33,8 +33,16 @@ interface ChronicleState {
   /** pan/zoom ビューの永続値（null=未設定＝初回フィット）。 */
   pxPerDay: number | null;
   viewStartDay: number | null;
-  /** 選択中の出来事(events.id)。Inspector が読む。 */
+  /**
+   * 選択中の出来事(events.id)＝プライマリ（最後にクリック＝範囲選択のアンカー）。
+   * Inspector が読む（単一選択時のみ詳細編集を出す）。
+   */
   selectedEventId: string | null;
+  /**
+   * 複数選択中の出来事 id 群（プライマリを含む）。Ctrl/⌘=トグル, Shift=範囲。
+   * 単一選択時は [selectedEventId]、未選択は []。ephemeral（非永続）。
+   */
+  selectedEventIds: string[];
   /** 編集ロック（永続）。 */
   locked: boolean;
   /**
@@ -55,7 +63,15 @@ interface ChronicleState {
   /** pan/zoom ビューを永続値へ反映する（drag/zoom/fit の各操作で呼ぶ）。 */
   setChronicleView: (pxPerDay: number, viewStartDay: number) => void;
   toggleShowOffpage: () => void;
+  /** 単一選択（複数選択も [id] に畳む）。null で全解除。 */
   setSelectedEventId: (id: string | null) => void;
+  /** 複数選択を明示設定（ids=選択集合・primary=アンカー/Inspector 対象）。 */
+  setSelection: (ids: string[], primary: string | null) => void;
+  /**
+   * 選択集合を実在する出来事 id に整合させる（削除/undo/redo 後の stale 除去）。
+   * ロード effect から呼ぶ。変化が無ければ参照を保ち再レンダを避ける。
+   */
+  sanitizeSelection: (existing: Set<string>) => void;
   toggleLock: () => void;
   /** 位置選択を設定/解除する（空白クリック=設定、選択解除=null）。 */
   setSelectedPosition: (day: number | null, laneKey?: string | null) => void;
@@ -71,6 +87,7 @@ export const useChronicleStore = create<ChronicleState>((set) => ({
   pxPerDay: null,
   viewStartDay: null,
   selectedEventId: null,
+  selectedEventIds: [],
   locked: false,
   selectedDay: null,
   selectedLaneKey: null,
@@ -79,7 +96,24 @@ export const useChronicleStore = create<ChronicleState>((set) => ({
   setScrollOffset: (scrollOffset) => set({ scrollOffset }),
   setChronicleView: (pxPerDay, viewStartDay) => set({ pxPerDay, viewStartDay }),
   toggleShowOffpage: () => set((s) => ({ showOffpage: !s.showOffpage })),
-  setSelectedEventId: (selectedEventId) => set({ selectedEventId }),
+  setSelectedEventId: (selectedEventId) =>
+    set({
+      selectedEventId,
+      selectedEventIds: selectedEventId ? [selectedEventId] : [],
+    }),
+  setSelection: (selectedEventIds, primary) =>
+    set({ selectedEventIds, selectedEventId: primary }),
+  sanitizeSelection: (existing) =>
+    set((s) => {
+      const ids = s.selectedEventIds.filter((id) => existing.has(id));
+      // 何も落ちなければ参照を据え置き（無駄な再レンダ回避）。
+      if (ids.length === s.selectedEventIds.length) return {};
+      const primary =
+        s.selectedEventId && existing.has(s.selectedEventId)
+          ? s.selectedEventId
+          : (ids[ids.length - 1] ?? null);
+      return { selectedEventIds: ids, selectedEventId: primary };
+    }),
   toggleLock: () => set((s) => ({ locked: !s.locked })),
   setSelectedPosition: (selectedDay, selectedLaneKey = null) =>
     set({ selectedDay, selectedLaneKey }),

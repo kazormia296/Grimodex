@@ -31,14 +31,21 @@ export interface ChronicleViewportProps {
   onMeasureTrack: (w: number) => void;
   layout: ChronicleLayout;
   eventsById: Map<string, MarkerEvent>;
+  /** プライマリ選択（アンカー＝因果エッジ作成ハンドルを出す対象）。 */
   selectedEventId: string | null;
+  /** 複数選択集合（リング強調の対象。未指定時は selectedEventId のみ）。 */
+  selectedIds?: Set<string>;
   activeLaneKey: string | null;
   conflictIds: Set<string>;
   /** Timeline で選択中のシーンに紐づく出来事（淡いリング強調）。 */
   relatedIds: Set<string>;
   showEdges: boolean;
   labelsOn: boolean;
-  onSelectEvent: (id: string) => void;
+  /** 出来事選択。mods.toggle=Ctrl/⌘ トグル, mods.range=Shift 範囲。 */
+  onSelectEvent: (
+    id: string,
+    mods?: { toggle: boolean; range: boolean },
+  ) => void;
   /** レーンガター用（任意 Codex 候補・割当/追加・ロック）。 */
   laneOptions?: { id: string; name: string; type: string }[];
   locked?: boolean;
@@ -83,6 +90,7 @@ export function ChronicleViewport({
   layout,
   eventsById,
   selectedEventId,
+  selectedIds,
   activeLaneKey,
   conflictIds,
   relatedIds,
@@ -455,9 +463,13 @@ export function ChronicleViewport({
     document.addEventListener("mouseup", up);
   };
 
-  const handleSelect = (id: string) => {
+  const handleSelect = (id: string, e: React.MouseEvent) => {
     if (draggedRef.current) return;
-    onSelectEvent(id);
+    // Ctrl/⌘=トグル, Shift=範囲, 修飾なし=単一。
+    onSelectEvent(id, {
+      toggle: e.ctrlKey || e.metaKey,
+      range: e.shiftKey,
+    });
   };
 
   const {
@@ -634,21 +646,29 @@ export function ChronicleViewport({
                   maxTok={spacing.maxTok}
                   isInterval={render.isInterval}
                   barWidth={render.barWidth}
-                  selected={selectedEventId === realId}
+                  selected={
+                    selectedIds
+                      ? selectedIds.has(realId)
+                      : selectedEventId === realId
+                  }
                   conflict={conflictIds.has(realId)}
                   related={relatedIds.has(realId)}
                   labelsOn={labelsOn}
                   resizable={!locked && render.isInterval}
                   cursor={locked ? "default" : "pointer"}
                   edgeHandle={
-                    selectedEventId === realId && !locked && !!onCreateEdge
+                    // 因果エッジハンドルは単一選択時のプライマリのみ。
+                    selectedEventId === realId &&
+                    (!selectedIds || selectedIds.size <= 1) &&
+                    !locked &&
+                    !!onCreateEdge
                   }
                   dragOffset={
                     dragPreview?.id === realId
                       ? { dx: dragPreview.dx, dy: dragPreview.dy }
                       : null
                   }
-                  onSelect={() => handleSelect(realId)}
+                  onSelect={(e) => handleSelect(realId, e)}
                 />
               );
             }),
@@ -703,7 +723,10 @@ export function ChronicleViewport({
                     type="button"
                     className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
                     onClick={() => {
-                      onSelectEvent(menu.eventId!);
+                      onSelectEvent(menu.eventId!, {
+                        toggle: false,
+                        range: false,
+                      });
                       setMenu(null);
                     }}
                   >
