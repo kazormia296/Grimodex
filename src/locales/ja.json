@@ -5028,6 +5028,8 @@
     "edgeHandleHint": "ドラッグで因果エッジを作成",
     "statusLine": "位置",
     "statusEvent": "選択",
+    "assignNeedsSelection": "未割当の出来事を選んでから割り当ててください",
+    "resizeInspector": "インスペクタの高さを変更",
     "legendCausal": "因果",
     "exactHint": "日付が確定している",
     "approxHint": "順序は確実だが日付は概算",

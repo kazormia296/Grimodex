@@ -111,6 +111,8 @@ export function ChroniclePanel() {
   const [showEdges, setShowEdges] = useState(true);
   const [tieMode, setTieMode] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
+  // インスペクタ高さ（上端グリップでリサイズ。選択をまたいで保持）。
+  const [inspectorHeight, setInspectorHeight] = useState(340);
 
   const scenedEventIds = useMemo(
     () => new Set(sceneLinks.map((l) => l.eventId)),
@@ -879,8 +881,17 @@ export function ChroniclePanel() {
           onSelectEvent={handleSelectEvent}
           laneOptions={laneOptions}
           locked={locked}
-          selectedUnassigned={selectedUnassigned}
-          onAssignLane={(codexId) => handlePatch({ primaryCodexId: codexId })}
+          onAssignLane={(codexId) => {
+            // 未割当ピッカーは常時表示。選択中の未割当出来事のみ割当（誤操作防止）。
+            if (selectedUnassigned) handlePatch({ primaryCodexId: codexId });
+            else
+              toast(
+                t(
+                  "chronicle.assignNeedsSelection",
+                  "未割当の出来事を選んでから割り当ててください",
+                ),
+              );
+          }}
           onAddLane={handleAddLane}
           selectedDay={selectedDay}
           hasCalendarAxis={eff.hasCalendarAxis}
@@ -916,6 +927,8 @@ export function ChroniclePanel() {
       {selected ? (
         <ChronicleInspector
           event={selected}
+          height={inspectorHeight}
+          onHeightChange={setInspectorHeight}
           laneOptions={laneOptions}
           locations={locations}
           scenes={scenes}

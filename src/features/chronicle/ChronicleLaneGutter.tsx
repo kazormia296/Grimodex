@@ -4,6 +4,7 @@ import { Plus } from "lucide-react";
 import type { PackedLane } from "./chronicleLanePack";
 import { laneColorFor } from "./laneColor";
 import { CodexPopover } from "@/features/editor/CodexPopover";
+import { CodexEntryPicker } from "./CodexEntryPicker";
 
 export interface ChronicleLaneGutterProps {
   lanes: PackedLane[];
@@ -14,9 +15,7 @@ export interface ChronicleLaneGutterProps {
   laneOptions?: { id: string; name: string; type: string }[];
   /** 編集ロック中は追加/割当 UI を隠す。 */
   locked?: boolean;
-  /** 選択中の出来事が未割当レーンに属する（=割当ドロップダウンを出す）。 */
-  selectedUnassigned?: boolean;
-  /** 未割当→Codex 割当（選択中の出来事に適用）。 */
+  /** 未割当→Codex 割当（選択中の未割当出来事に適用。ガード是非は呼び出し側）。 */
   onAssignLane?: (codexId: string) => void;
   /** レーン追加（選択 Codex に新規出来事を作成してレーンを出す）。 */
   onAddLane?: (codexId: string) => void;
@@ -24,9 +23,6 @@ export interface ChronicleLaneGutterProps {
 
 const laneKeyOf = (lane: PackedLane) =>
   lane.unassigned ? "__unassigned" : (lane.codexId ?? "__unassigned");
-
-const miniSelect =
-  "h-6 max-w-[150px] rounded border border-border bg-card px-1 text-[11px] text-foreground";
 
 /**
  * 左レーンガター（アバター＋名前＋件数）。各セルは pack の lane.height に
@@ -40,7 +36,6 @@ export function ChronicleLaneGutter({
   activeLaneKey,
   laneOptions = [],
   locked = false,
-  selectedUnassigned = false,
   onAssignLane,
   onAddLane,
 }: ChronicleLaneGutterProps) {
@@ -54,6 +49,11 @@ export function ChronicleLaneGutter({
     o.type && o.type !== "character"
       ? `${o.name}（${typeJa(o.type)}）`
       : o.name;
+  // Spotlight 風ピッカー（Chat と同じ CodexEntryPicker）に渡す候補。
+  const pickerOptions = laneOptions.map((o) => ({
+    id: o.id,
+    name: optionLabel(o),
+  }));
 
   return (
     <div
@@ -118,50 +118,42 @@ export function ChronicleLaneGutter({
           >
             <div style={avatarStyle}>{lane.unassigned ? "·" : initial}</div>
             <div className="flex min-w-0 flex-col gap-px">
-              <span
-                // Codex 連携レーンは Editor 本文と同じ codex-highlight ポップオーバー対象。
-                className={`truncate text-[13px] font-medium ${
-                  !lane.unassigned && lane.codexId ? "codex-highlight" : ""
-                }`}
-                data-codex-entry-id={
-                  !lane.unassigned && lane.codexId ? lane.codexId : undefined
-                }
-                style={{
-                  color: lane.unassigned
-                    ? "var(--muted-foreground)"
-                    : "var(--foreground)",
-                  fontStyle: lane.unassigned ? "italic" : undefined,
-                }}
-              >
-                {lane.unassigned
-                  ? t("chronicle.unassigned", "未割当")
-                  : lane.name || t("chronicle.unnamed", "（無名）")}
-              </span>
+              {lane.unassigned && onAssignLane && !locked ? (
+                // 「未割当」ラベル自体を Spotlight ピッカーに（常時表示）。選択中の
+                // 未割当出来事を選んだ Codex レーンへ割り当てる。
+                <CodexEntryPicker
+                  value={null}
+                  options={pickerOptions}
+                  onChange={(id) => {
+                    if (id) onAssignLane(id);
+                  }}
+                  ariaLabel={t("chronicle.assignLane", "レーンへ割当")}
+                  placeholder={t("chronicle.unassigned", "未割当")}
+                />
+              ) : (
+                <span
+                  // Codex 連携レーンは Editor 本文と同じ codex-highlight ポップオーバー対象。
+                  className={`truncate text-[13px] font-medium ${
+                    !lane.unassigned && lane.codexId ? "codex-highlight" : ""
+                  }`}
+                  data-codex-entry-id={
+                    !lane.unassigned && lane.codexId ? lane.codexId : undefined
+                  }
+                  style={{
+                    color: lane.unassigned
+                      ? "var(--muted-foreground)"
+                      : "var(--foreground)",
+                    fontStyle: lane.unassigned ? "italic" : undefined,
+                  }}
+                >
+                  {lane.unassigned
+                    ? t("chronicle.unassigned", "未割当")
+                    : lane.name || t("chronicle.unnamed", "（無名）")}
+                </span>
+              )}
               <span className="text-[10px] text-muted-foreground">
                 {countText}
               </span>
-              {lane.unassigned &&
-                selectedUnassigned &&
-                onAssignLane &&
-                !locked && (
-                  <select
-                    value=""
-                    onChange={(e) => {
-                      if (e.target.value) onAssignLane(e.target.value);
-                    }}
-                    aria-label={t("chronicle.assignLane", "レーンへ割当")}
-                    className={`mt-1 ${miniSelect}`}
-                  >
-                    <option value="">
-                      {t("chronicle.assignLaneShort", "→ レーンへ割当")}
-                    </option>
-                    {laneOptions.map((o) => (
-                      <option key={o.id} value={o.id}>
-                        {optionLabel(o)}
-                      </option>
-                    ))}
-                  </select>
-                )}
             </div>
           </div>
         );
@@ -170,21 +162,15 @@ export function ChronicleLaneGutter({
       {onAddLane && !locked && laneOptions.length > 0 && (
         <div className="flex items-center gap-2 border-b border-border/60 px-3.5 py-2">
           <Plus className="size-3.5 flex-none text-muted-foreground" />
-          <select
-            value=""
-            onChange={(e) => {
-              if (e.target.value) onAddLane(e.target.value);
+          <CodexEntryPicker
+            value={null}
+            options={pickerOptions}
+            onChange={(id) => {
+              if (id) onAddLane(id);
             }}
-            aria-label={t("chronicle.addLane", "レーンを追加")}
-            className={miniSelect}
-          >
-            <option value="">{t("chronicle.addLane", "＋レーンを追加")}</option>
-            {laneOptions.map((o) => (
-              <option key={o.id} value={o.id}>
-                {optionLabel(o)}
-              </option>
-            ))}
-          </select>
+            ariaLabel={t("chronicle.addLane", "レーンを追加")}
+            placeholder={t("chronicle.addLane", "＋レーンを追加")}
+          />
         </div>
       )}
 

@@ -44,7 +44,6 @@ export interface ChronicleViewportProps {
   /** レーンガター用（任意 Codex 候補・割当/追加・ロック）。 */
   laneOptions?: { id: string; name: string; type: string }[];
   locked?: boolean;
-  selectedUnassigned?: boolean;
   onAssignLane?: (codexId: string) => void;
   onAddLane?: (codexId: string) => void;
   // ── グラフ操作（任意・ロック時は呼ばれない） ──
@@ -91,7 +90,6 @@ export function ChronicleViewport({
   onSelectEvent,
   laneOptions,
   locked,
-  selectedUnassigned,
   onAssignLane,
   onAddLane,
   selectedDay,
@@ -490,7 +488,6 @@ export function ChronicleViewport({
           activeLaneKey={activeLaneKey}
           laneOptions={laneOptions}
           locked={locked}
-          selectedUnassigned={selectedUnassigned}
           onAssignLane={onAssignLane}
           onAddLane={onAddLane}
         />
