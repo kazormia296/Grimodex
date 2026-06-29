@@ -280,10 +280,10 @@ function ChronicleLegend() {
       )}
       {item(
         <span
-          className="rounded-sm"
           style={{
             width: 18,
             height: 9,
+            borderRadius: 3.5,
             background: "color-mix(in oklch, var(--primary) 22%, transparent)",
             border:
               "1px solid color-mix(in oklch, var(--primary) 40%, transparent)",

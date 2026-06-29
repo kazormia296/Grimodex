@@ -156,12 +156,15 @@ export function EventMarker({
   // 種別を優先するためオフページ判定より前に置く（オフページ birth/death も三角/菱形）。
   let glyph: CSSProperties;
   if (isInterval) {
+    // 期間＝凡例の「期間」スウォッチと同形（横長の角丸帯＝塗り+枠）。色はレーン色。
     glyph = {
       flex: "none",
-      width: 4,
-      height: 14,
-      borderRadius: 2,
-      background: lc,
+      width: 14,
+      height: 8,
+      borderRadius: 3.5,
+      background: mix(lc, 30, "transparent"),
+      border: `1px solid ${mix(lc, 55, "transparent")}`,
+      boxSizing: "border-box",
     };
   } else if (event.kind === "birth") {
     glyph = {

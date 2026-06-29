@@ -52,6 +52,16 @@ describe("EventMarker (DOM token)", () => {
     expect(el.style.width).toBe("120px");
   });
 
+  it("interval の先頭グリフは凡例「期間」と同形＝横長の角丸帯（縦棒に退行しない）", () => {
+    const { getByTestId } = renderMarker({ isInterval: true, barWidth: 120 });
+    const g = getByTestId("marker-glyph") as HTMLElement;
+    const w = parseFloat(g.style.width);
+    const h = parseFloat(g.style.height);
+    // 横長（幅 > 高さ）であること。旧実装は width:4/height:14 の縦棒だった。
+    expect(w).toBeGreaterThan(h);
+    expect(g.style.borderRadius).toBe("3.5px");
+  });
+
   it("オフページでも border は確度専用（exact は実線・オフページが破線を強制しない）", () => {
     // 以前はオフページが dashed を強制し確度差が潰れていた回帰の gate。
     const { container, getByTestId } = renderMarker({
