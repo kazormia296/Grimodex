@@ -121,6 +121,19 @@ export function ChronicleViewport({
 
   // ドラッグ中の縦ガイド（content px）とコンテキストメニュー。
   const [ghostX, setGhostX] = useState<number | null>(null);
+  // ドラッグ中のマーカー追従プレビュー（見た目を動かす）。dx/dy は px オフセット。
+  const [dragPreview, setDragPreview] = useState<{
+    id: string;
+    dx: number;
+    dy: number;
+  } | null>(null);
+  // 因果エッジ接続ハンドルのドラッグガイド（content px）。
+  const [edgeDrag, setEdgeDrag] = useState<{
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+  } | null>(null);
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -148,9 +161,16 @@ export function ChronicleViewport({
   };
 
   // ── 座標ヘルパ（track rect 基準） ──
-  const snappedDayAt = (clientX: number, rect: DOMRect): number => {
+  // always=true（位置選択クリック）は距離に関わらず見えている目盛りへ必ず吸着する。
+  const snappedDayAt = (
+    clientX: number,
+    rect: DOMRect,
+    always = false,
+  ): number => {
     const raw = xToDay(viewRef.current, clientX - rect.left);
-    const maxDist = SNAP_PX / Math.max(viewRef.current.pxPerDay, 1e-9);
+    const maxDist = always
+      ? Infinity
+      : SNAP_PX / Math.max(viewRef.current.pxPerDay, 1e-9);
     const tickDays = layoutRef.current.ticks.minor.map((tk) =>
       xToDay(viewRef.current, tk.x),
     );
@@ -243,6 +263,7 @@ export function ChronicleViewport({
     const rect = el.getBoundingClientRect();
     const targetEl = e.target as HTMLElement;
     const resizeEl = targetEl.closest("[data-resize]");
+    const edgeHandleEl = targetEl.closest("[data-edge-handle]");
     const markerEl = targetEl.closest("[data-event-id]");
     const eventId = markerEl?.getAttribute("data-event-id") ?? null;
     const cb = cbRef.current;
@@ -250,6 +271,39 @@ export function ChronicleViewport({
     const startY = e.clientY;
     draggedRef.current = false;
     if (menu) setMenu(null);
+
+    // ── 因果エッジ接続ハンドルからの D&D（別マーカーへ落とすと cause→effect） ──
+    if (edgeHandleEl && eventId && !cb.locked && cb.onCreateEdge) {
+      const center = layoutRef.current.pack.centers.get(eventId);
+      const fromX = center?.cx ?? e.clientX - rect.left;
+      const fromY = center?.cy ?? e.clientY - rect.top;
+      bindDrag(
+        (ev) => {
+          draggedRef.current = true;
+          setEdgeDrag({
+            fromX,
+            fromY,
+            toX: ev.clientX - rect.left,
+            toY: ev.clientY - rect.top,
+          });
+        },
+        (ev) => {
+          setEdgeDrag(null);
+          const overEl = document.elementFromPoint(
+            ev.clientX,
+            ev.clientY,
+          ) as HTMLElement | null;
+          const overId =
+            overEl?.closest("[data-event-id]")?.getAttribute("data-event-id") ??
+            null;
+          if (overId && overId !== eventId) cb.onCreateEdge!(eventId, overId);
+          setTimeout(() => {
+            draggedRef.current = false;
+          }, 0);
+        },
+      );
+      return;
+    }
 
     // ── 期間端の伸縮 ──
     if (
@@ -288,11 +342,22 @@ export function ChronicleViewport({
               Math.abs(ev.clientY - startY) > DRAG_THRESHOLD
             ) {
               draggedRef.current = true;
-              setGhostX(ev.clientX - rect.left);
+              // マーカーをポインタへ追従（見た目を動かす）。ゴースト縦線は吸着先を示す。
+              setDragPreview({
+                id: eventId,
+                dx: ev.clientX - startX,
+                dy: ev.clientY - startY,
+              });
+              setGhostX(
+                cb.hasCalendarAxis
+                  ? dayToX(viewRef.current, snappedDayAt(ev.clientX, rect))
+                  : ev.clientX - rect.left,
+              );
             }
           },
           (ev) => {
             setGhostX(null);
+            setDragPreview(null);
             if (draggedRef.current) {
               const overEl = document.elementFromPoint(
                 ev.clientX,
@@ -331,8 +396,9 @@ export function ChronicleViewport({
       },
       (ev) => {
         if (!draggedRef.current && cb.onSelectPosition) {
+          // 位置選択の縦ラインは表示中ルーラー解像度のグリッドへ必ず吸着。
           const day = cb.hasCalendarAxis
-            ? snappedDayAt(ev.clientX, rect)
+            ? snappedDayAt(ev.clientX, rect, true)
             : null;
           cb.onSelectPosition(day, laneCodexAt(ev.clientY, rect));
         }
@@ -435,8 +501,9 @@ export function ChronicleViewport({
           onMouseDown={onTrackPointerDown}
           onDoubleClick={onTrackDoubleClick}
           onContextMenu={onTrackContextMenu}
-          className="relative flex-1 cursor-grab select-none"
-          style={{ height: contentHeight }}
+          className="relative flex-1 select-none"
+          // minHeight=コンテンツ高、flex stretch で残り高さまで伸ばしレーン外も操作可能に。
+          style={{ minHeight: contentHeight }}
           role="application"
           aria-label={t("chronicle.viewportLabel", "作中年表")}
         >
@@ -531,6 +598,28 @@ export function ChronicleViewport({
             </svg>
           )}
 
+          {/* 因果エッジ接続ドラッグのガイド線 */}
+          {edgeDrag && (
+            <svg
+              className="pointer-events-none absolute left-0 top-0 z-[10]"
+              style={{
+                width: "100%",
+                height: contentHeight,
+                overflow: "visible",
+              }}
+            >
+              <line
+                x1={edgeDrag.fromX}
+                y1={edgeDrag.fromY}
+                x2={edgeDrag.toX}
+                y2={edgeDrag.toY}
+                className="stroke-primary"
+                strokeWidth={1.6}
+                strokeDasharray="4 3"
+              />
+            </svg>
+          )}
+
           {/* マーカー */}
           {pack.lanes.flatMap((lane) =>
             lane.markers.map((m) => {
@@ -552,6 +641,15 @@ export function ChronicleViewport({
                   related={relatedIds.has(m.eventId)}
                   labelsOn={labelsOn}
                   resizable={!locked && render.isInterval}
+                  cursor={locked ? "default" : "pointer"}
+                  edgeHandle={
+                    selectedEventId === m.eventId && !locked && !!onCreateEdge
+                  }
+                  dragOffset={
+                    dragPreview?.id === m.eventId
+                      ? { dx: dragPreview.dx, dy: dragPreview.dy }
+                      : null
+                  }
                   onSelect={() => handleSelect(m.eventId)}
                 />
               );

@@ -31,6 +31,12 @@ export interface EventMarkerProps {
   labelsOn: boolean;
   /** 期間端の伸縮ハンドルを出すか（interval かつ非ロック時）。 */
   resizable?: boolean;
+  /** ドラッグ中の追従オフセット（px）。設定中はマーカーを translate して持ち上げる。 */
+  dragOffset?: { dx: number; dy: number } | null;
+  /** 因果エッジ接続用ハンドルを出すか（選択中＆非ロック）。D&D で別マーカーへ接続。 */
+  edgeHandle?: boolean;
+  /** ホバー時カーソル（非ロック=pointer/手、ロック=default）。 */
+  cursor?: CSSProperties["cursor"];
   onSelect: () => void;
 }
 
@@ -60,6 +66,9 @@ export function EventMarker({
   related = false,
   labelsOn,
   resizable = false,
+  dragOffset = null,
+  edgeHandle = false,
+  cursor = "pointer",
   onSelect,
 }: EventMarkerProps) {
   const { t } = useTranslation();
@@ -132,6 +141,16 @@ export function EventMarker({
   if (event.precision === "unknown") container.opacity = 0.8;
   else if (event.precision === "approx") container.opacity = 0.92;
 
+  // ドラッグ追従: ポインタへ translate し前面へ。pointer-events を切り落下先（別マーカー）を
+  // elementFromPoint で拾えるようにする。
+  if (dragOffset) {
+    container.transform = `translate(${dragOffset.dx}px, ${dragOffset.dy}px)`;
+    container.zIndex = 30;
+    container.pointerEvents = "none";
+    container.boxShadow = "0 4px 12px rgba(0,0,0,.18)";
+    container.opacity = 0.96;
+  }
+
   let glyph: CSSProperties;
   if (isInterval) {
     glyph = {
@@ -194,7 +213,7 @@ export function EventMarker({
       title={event.title || t("chronicle.untitled", "無題の出来事")}
       style={{
         ...container,
-        cursor: "pointer",
+        cursor,
         font: "inherit",
         color: "var(--foreground)",
         textAlign: "left",
@@ -227,6 +246,25 @@ export function EventMarker({
             }}
           />
         </>
+      )}
+      {edgeHandle && (
+        <span
+          data-edge-handle
+          title={t("chronicle.edgeHandleHint", "ドラッグで因果エッジを作成")}
+          style={{
+            position: "absolute",
+            right: 3,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 9,
+            height: 9,
+            borderRadius: "50%",
+            background: ACCENT,
+            border: "1.5px solid var(--card)",
+            cursor: "crosshair",
+            zIndex: 3,
+          }}
+        />
       )}
       <span style={glyph} />
       {labelsOn && (

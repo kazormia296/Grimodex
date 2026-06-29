@@ -196,6 +196,46 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onCreateAt).toHaveBeenCalledTimes(1);
   });
 
+  it("ドラッグ中はマーカーが追従 transform を持つ（見た目が動く）", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 150, clientY: 26 });
+    const moved = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    expect(moved.style.transform).toContain("translate");
+    fireEvent.mouseUp(document, { clientX: 150, clientY: 26 });
+    // 解放後はプレビュー解除（transform なし）。
+    const after = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    expect(after.style.transform).toBe("");
+  });
+
+  it("選択中マーカーの因果エッジハンドルから D&D で onCreateEdge", () => {
+    const props = makeProps({ selectedEventId: "e1" });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const handle = container.querySelector(
+      '[data-event-id="e1"] [data-edge-handle]',
+    ) as HTMLElement;
+    expect(handle).toBeTruthy();
+    const e2 = container.querySelector('[data-event-id="e2"]') as HTMLElement;
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(e2);
+    fireEvent.mouseDown(handle, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 250, clientY: 20 });
+    fireEvent.mouseUp(document, { clientX: 250, clientY: 20 });
+    expect(props.onCreateEdge).toHaveBeenCalledWith("e1", "e2");
+    expect(props.onMoveEvent).not.toHaveBeenCalled();
+  });
+
   it("期間端ハンドルのドラッグで onResizeEvent", () => {
     const props = makeProps();
     const { container } = render(

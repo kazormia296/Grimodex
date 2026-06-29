@@ -65,7 +65,8 @@ export function laneAtY(lanes: PackedLane[], y: number): PackedLane | null {
     if (y >= lane.top && y < lane.top + lane.height) return lane;
   }
   if (y < lanes[0].top) return lanes[0];
-  return lanes[lanes.length - 1];
+  // 最終レーンより下＝レーン外（未割当領域）。グラフエリアはここまで有効。
+  return null;
 }
 
 export function packLanes(args: {

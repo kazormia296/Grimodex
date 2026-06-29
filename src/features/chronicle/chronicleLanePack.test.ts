@@ -145,9 +145,9 @@ describe("laneAtY", () => {
     expect(laneAtY(lanes, 80)?.codexId).toBe("b");
     expect(laneAtY(lanes, 50)?.codexId).toBe("b"); // 境界は下側レーン
   });
-  it("範囲外は最近傍へクランプ", () => {
+  it("上端より上は先頭、最終レーンより下は null（未割当領域）", () => {
     expect(laneAtY(lanes, -10)?.codexId).toBe("a");
-    expect(laneAtY(lanes, 999)?.codexId).toBe("b");
+    expect(laneAtY(lanes, 999)).toBeNull();
   });
   it("空なら null", () => {
     expect(laneAtY([], 10)).toBeNull();

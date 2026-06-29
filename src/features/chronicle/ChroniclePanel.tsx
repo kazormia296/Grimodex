@@ -39,6 +39,7 @@ import {
   type LayoutEventInput,
   type LayoutLane,
 } from "./chronicleLayout";
+import { formatChronicleDate } from "./chronicleTime";
 import type { ChronicleCalendar, DateLang } from "./chronicleTime";
 import type { MarkerEvent } from "./EventMarker";
 import { ChronicleViewport } from "./ChronicleViewport";
@@ -578,13 +579,17 @@ export function ChroniclePanel() {
     [projectId, refresh, setSelectedEventId, t],
   );
 
-  // 出来事を選択したら位置ガイドは消す。
+  // 出来事を選択したら、その開始位置に縦ライン（ステータスバーが日時を表示）。
   const handleSelectEvent = useCallback(
     (id: string) => {
       setSelectedEventId(id);
-      setSelectedPosition(null);
+      const e = events.find((x) => x.id === id);
+      setSelectedPosition(
+        e && e.startTime != null ? e.startTime : null,
+        e?.primaryCodexId ?? null,
+      );
     },
-    [setSelectedEventId, setSelectedPosition],
+    [events, setSelectedEventId, setSelectedPosition],
   );
 
   // 空白クリックで位置選択（出来事選択は外す）。
@@ -766,6 +771,43 @@ export function ChroniclePanel() {
 
   const n = events.length;
 
+  // ── ステータスバー（縦ライン位置＝ルーラー解像度依存 / 選択イベント開始終了＝設定解像度依存）──
+  const rulerLevel = layout.ticks.level;
+  const lineGran =
+    rulerLevel === "year"
+      ? "year"
+      : rulerLevel === "month"
+        ? "month"
+        : rulerLevel === "hour" || rulerLevel === "minute"
+          ? "time"
+          : "day";
+  const linePosLabel =
+    selectedDay != null && eff.hasCalendarAxis
+      ? formatChronicleDate(selectedDay, 0, lineGran, cal, lang)
+      : null;
+  const selStartLabel =
+    selected && selected.startGranularity !== "none"
+      ? formatChronicleDate(
+          selected.startTime,
+          selected.startMinute,
+          selected.startGranularity,
+          cal,
+          lang,
+        )
+      : null;
+  const selEndLabel =
+    selected && selected.endTime != null
+      ? formatChronicleDate(
+          selected.endTime,
+          selected.endMinute,
+          selected.endGranularity === "none" ? "day" : selected.endGranularity,
+          cal,
+          lang,
+        )
+      : null;
+  const showStatusBar =
+    n > 0 && !tieMode && (linePosLabel != null || selected != null);
+
   if (!projectId) {
     return (
       <div className="p-4 text-sm text-muted-foreground">
@@ -849,6 +891,26 @@ export function ChroniclePanel() {
           onSelectPosition={handleSelectPosition}
           onDeleteEvent={handleDeleteById}
         />
+      )}
+
+      {showStatusBar && (
+        <div
+          data-testid="chronicle-status-bar"
+          className="flex h-7 flex-none items-center gap-4 border-t border-border bg-muted/20 px-3.5 text-[11px] text-muted-foreground"
+          style={{ fontFeatureSettings: "'tnum'" }}
+        >
+          {linePosLabel != null && (
+            <span>
+              {t("chronicle.statusLine", "位置")}: {linePosLabel}
+            </span>
+          )}
+          {selStartLabel != null && (
+            <span>
+              {t("chronicle.statusEvent", "選択")}: {selStartLabel}
+              {selEndLabel != null ? ` 〜 ${selEndLabel}` : ""}
+            </span>
+          )}
+        </div>
       )}
 
       {selected ? (
