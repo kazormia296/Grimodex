@@ -13,7 +13,11 @@ export interface ChronicleSettings {
    */
   pxPerDay: number | null;
   viewStartDay: number | null;
-  /** 編集ロック。on でドラッグ移動・作成・端伸縮・因果エッジ作成を無効化。 */
+  /**
+   * 編集ロック。on でグラフ上の直接操作（マーカーのドラッグ移動・期間端の伸縮・
+   * D&D による因果エッジ作成・空白のダブルクリック/右クリック作成）を無効化する。
+   * インスペクタやレーンガターからの明示的な編集は対象外（誤操作防止が目的）。
+   */
   locked: boolean;
 }
 

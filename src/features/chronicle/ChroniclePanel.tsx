@@ -156,6 +156,9 @@ export function ChroniclePanel() {
       setSceneLinks([]);
       setRelations([]);
       setSelectedEventId(null);
+      // 位置選択(ephemeral)も捨てる。残すと handleAdd が他プロジェクトの
+      // codexId/日を新規イベントへ書き込みクロスプロジェクト参照を作る。
+      setSelectedPosition(null);
       // 永続ビューがあれば維持（再フィットしない）、無ければ新規プロジェクトに
       // 合わせて全体フィットし直す。
       fittedRef.current = useChronicleStore.getState().pxPerDay != null;
@@ -185,7 +188,7 @@ export function ChroniclePanel() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, reloadKey, setSelectedEventId]);
+  }, [projectId, reloadKey, setSelectedEventId, setSelectedPosition]);
 
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 

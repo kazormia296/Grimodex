@@ -3,6 +3,9 @@ import { useTranslation } from "react-i18next";
 import type { EventGranularity } from "@/db/schema";
 import {
   calendarDaysPerYear,
+  dateToDayNumber,
+  dayNumberToDate,
+  monthLength,
   formatChronicleDate,
   seasonOf,
   type ChronicleCalendar,
@@ -54,10 +57,11 @@ export function ChronicleDatePicker({
   const monthDefs =
     calendar.months && calendar.months.length ? calendar.months : null;
   const monthCount = monthDefs ? monthDefs.length : 12;
-  const monthLen = (mi: number) =>
-    monthDefs
-      ? Math.max(1, Math.floor(monthDefs[mi].days))
-      : Math.max(1, Math.floor(dpy / monthCount));
+  // 月長は閏（gregorian）に追従させる必要があるため year を取る。
+  // 月概念なし暦は閏なし・均等なので擬似月長で線形に扱う。
+  const pseudoMonthLen = Math.max(1, Math.floor(dpy / monthCount));
+  const monthLenY = (year: number, mi: number) =>
+    monthDefs ? monthLength(year, mi, calendar) : pseudoMonthLen;
   const monthName = (mi: number) =>
     monthDefs ? monthDefs[mi].name : ja ? `${mi + 1}月` : `${mi + 1}`;
   const weekNames =
@@ -72,22 +76,25 @@ export function ChronicleDatePicker({
       ? calendar.seasonBoundaries
       : [];
 
-  const monthStartDoy = (mi: number) => {
-    let s = 0;
-    for (let i = 0; i < mi; i++) s += monthLen(i);
-    return s;
-  };
+  // 暦定義あり=閏対応エンジンへ委譲（ルーラー/表示と一致させ data 破損を防ぐ）。
+  // 月概念なし=従来の線形（均等擬似月）。
   const toDay = (year: number, mi: number, dom: number) =>
-    (year - startYear) * dpy + monthStartDoy(mi) + (dom - 1);
+    monthDefs
+      ? dateToDayNumber({ year, monthIndex: mi, dayOfMonth: dom }, calendar)
+      : (year - startYear) * dpy + mi * pseudoMonthLen + (dom - 1);
   const fromDay = (d: number) => {
-    const year = startYear + Math.floor(d / dpy);
-    let doy = mod(Math.floor(d), dpy);
-    let mi = 0;
-    while (mi < monthCount - 1 && doy >= monthLen(mi)) {
-      doy -= monthLen(mi);
-      mi++;
+    if (monthDefs) {
+      const dt = dayNumberToDate(d, calendar);
+      return {
+        year: dt.year,
+        monthIndex: dt.monthIndex ?? 0,
+        dayOfMonth: dt.dayOfMonth ?? 1,
+      };
     }
-    return { year, monthIndex: mi, dayOfMonth: doy + 1 };
+    const year = startYear + Math.floor(d / dpy);
+    const doy = mod(Math.floor(d), dpy);
+    const mi = Math.min(monthCount - 1, Math.floor(doy / pseudoMonthLen));
+    return { year, monthIndex: mi, dayOfMonth: doy - mi * pseudoMonthLen + 1 };
   };
   const weekdayOfDay = (d: number) => mod(Math.floor(d), weekLen);
 
@@ -101,7 +108,7 @@ export function ChronicleDatePicker({
   // 月/年を移動するとき、現在の日付が遷移先の月日数を超えると toDay が翌月へ
   // 桁あふれする（例: 31日→28日の月）。遷移先の月長へクランプしてから確定する。
   const clampDom = (mi: number) =>
-    Math.min(fromDay(day).dayOfMonth, monthLen(mi));
+    Math.min(fromDay(day).dayOfMonth, monthLenY(view.year, mi));
   const pkYear = (delta: number) => {
     const year = view.year + delta;
     setView((v) => ({ ...v, year }));
@@ -128,7 +135,7 @@ export function ChronicleDatePicker({
     commitDay(toDay(view.year, i, clampDom(i)));
   };
   const pkPickSeason = (startDayOfYear: number) =>
-    commitDay((view.year - startYear) * dpy + startDayOfYear);
+    commitDay(dateToDayNumber({ year: view.year }, calendar) + startDayOfYear);
   const pkPickHour = (h: number) => onCommitMinute(h * 60 + (minute % 60));
   const pkPickMin = (m: number) =>
     onCommitMinute(Math.floor(minute / 60) * 60 + m);
@@ -178,7 +185,7 @@ export function ChronicleDatePicker({
   // 日グリッド（先頭曜日オフセット＋当月日数）。
   const firstDay = toDay(view.year, view.monthIndex, 1);
   const offset = weekdayOfDay(firstDay);
-  const daysInMonth = monthLen(view.monthIndex);
+  const daysInMonth = monthLenY(view.year, view.monthIndex);
 
   const curHour = Math.floor(mod(minute, 1440) / 60);
   const curMin = mod(minute, 60);

@@ -5024,7 +5024,7 @@
     "labels": "Labels",
     "lock": "Lock",
     "locked": "Locked",
-    "lockHint": "Lock editing (disable drag-move, create, edge-resize, edge creation)",
+    "lockHint": "Lock editing (disable graph drag-move, edge-resize, drag-to-link, blank create. Inspector editing stays available)",
     "gregorianPreset": "Gregorian",
     "gregorianHint": "Apply a real-world calendar (12 months, leap Feb, 7 weekdays, 365 days)",
     "leapEnable": "Leap years (Gregorian)",

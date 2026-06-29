@@ -122,7 +122,7 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           className={toggleCls(props.locked)}
           title={t(
             "chronicle.lockHint",
-            "編集ロック（ドラッグ移動・作成・端伸縮・エッジ作成を無効化）",
+            "編集ロック（グラフ上のドラッグ移動・端の伸縮・D&D因果エッジ・空白作成を無効化。インスペクタ編集は可）",
           )}
         >
           {props.locked ? (

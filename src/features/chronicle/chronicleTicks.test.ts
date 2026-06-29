@@ -243,3 +243,22 @@ describe("adaptiveTicks — 暦境界の正確さ（バグ修正）", () => {
     expect(mar1_2001).toBe(425);
   });
 });
+
+describe("adaptiveTicks — 退行データ防御", () => {
+  it("dpy<=0 の暦でも無限ループせず空目盛りを返す", () => {
+    const bad: ChronicleCalendar = {
+      daysPerYear: 0,
+      seasonBoundaries: [],
+      startYear: 0,
+    };
+    const r = adaptiveTicks({
+      pxPerDay: 1,
+      viewStartDay: 0,
+      trackW: 800,
+      calendar: bad,
+      hasCalendarAxis: true,
+    });
+    expect(r.minor).toEqual([]);
+    expect(r.major).toEqual([]);
+  });
+});

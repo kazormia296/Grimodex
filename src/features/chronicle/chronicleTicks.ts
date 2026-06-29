@@ -87,6 +87,16 @@ export function adaptiveTicks(args: {
 
   // --- CALENDAR MODE ---
   const dpy = calendarDaysPerYear(calendar);
+  // 退行データ防御: dpy<=0 だと年/月ステップが 0 になり everyN=NaN で目盛り生成が
+  // 無限ループ（render を凍結）する。他の暦関数と同様に空目盛りへフォールバック。
+  if (!(dpy > 0)) {
+    return {
+      minor: [],
+      major: [],
+      unitLabel: ja ? "作中時間" : "time",
+      level: "year",
+    };
+  }
   const weekLen = calendar.weekdayNames?.length || 7;
   const monthCount = calendar.months?.length || 12;
   const monthDays = dpy / monthCount;
