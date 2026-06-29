@@ -171,3 +171,71 @@ describe("adaptiveTicks — sequence mode", () => {
     expect(r.unitLabel).toBe("order");
   });
 });
+
+import { dateToDayNumber, GREGORIAN_MONTH_DAYS, GREGORIAN_LEAP } from "./chronicleTime";
+
+/** 現実準拠グレゴリオ暦（startYear=2000, 閏2月, 非均等月長）。 */
+const gregCal: ChronicleCalendar = {
+  daysPerYear: 365,
+  seasonBoundaries: [],
+  startYear: 2000,
+  months: GREGORIAN_MONTH_DAYS.map((days, i) => ({ name: `${i + 1}月`, days })),
+  weekdayNames: ["日", "月", "火", "水", "木", "金", "土"],
+  leap: GREGORIAN_LEAP,
+};
+
+describe("adaptiveTicks — 暦境界の正確さ（バグ修正）", () => {
+  it("週ズーム時に月境界が実際の累積位置に並ぶ（均等 dpy/12 ではない）", () => {
+    // pxPerDay を週目盛り（level=day, 7日）に入る程度に。
+    const r = adaptiveTicks({
+      pxPerDay: 14,
+      viewStartDay: 0,
+      trackW: 1400,
+      calendar: gregCal,
+      hasCalendarAxis: true,
+    });
+    expect(r.level).toBe("day");
+    // 月境界 major が出る（= 月サブ目盛り）。
+    expect(r.major.length).toBeGreaterThanOrEqual(2);
+    // 2000-02-01 は day 31（1月=31日）。均等 365/12≈30.4 ではなく実値 31。
+    const feb1 = dateToDayNumber(
+      { year: 2000, monthIndex: 1, dayOfMonth: 1 },
+      gregCal,
+    );
+    expect(feb1).toBe(31);
+    const feb1x = feb1 * 14;
+    const hit = r.major.find((t) => Math.abs(t.x - feb1x) < 0.5);
+    expect(hit).toBeTruthy();
+  });
+
+  it("月 major ラベルは年を毎月繰り返さない（1月のみ年付き）", () => {
+    const r = adaptiveTicks({
+      pxPerDay: 14,
+      viewStartDay: 0,
+      trackW: 1400,
+      calendar: gregCal,
+      hasCalendarAxis: true,
+    });
+    const withYear = r.major.filter((t) => t.label.includes("年"));
+    const monthOnly = r.major.filter((t) => !t.label.includes("年"));
+    // 1月（年付き）は表示窓に1個程度、他の月は年なし。
+    expect(withYear.length).toBeLessThanOrEqual(2);
+    expect(monthOnly.length).toBeGreaterThanOrEqual(1);
+    expect(monthOnly[0].label).not.toContain("年");
+  });
+
+  it("閏年 2000 の 2月29日が day 59 に存在し境界がずれない", () => {
+    const mar1_2000 = dateToDayNumber(
+      { year: 2000, monthIndex: 2, dayOfMonth: 1 },
+      gregCal,
+    );
+    // 1月31 + 2月29 = 60 → 3月1日 = day 60。
+    expect(mar1_2000).toBe(60);
+    const mar1_2001 = dateToDayNumber(
+      { year: 2001, monthIndex: 2, dayOfMonth: 1 },
+      gregCal,
+    );
+    // 2001は平年: 366(2000) + 31 + 28 = 425。
+    expect(mar1_2001).toBe(425);
+  });
+});

@@ -1,6 +1,7 @@
 import {
   calendarDaysPerYear,
   dayNumberToDate,
+  dateToDayNumber,
   type ChronicleCalendar,
   type ChronicleDate,
   type DateLang,
@@ -186,28 +187,94 @@ export function adaptiveTicks(args: {
     }
   };
 
-  // --- minor ---
+  const hasMonths = (calendar.months?.length ?? 0) > 0;
+  const inX = (d: number): number => (d - viewStartDay) * pxPerDay;
+  const startYearAt = (off = 0): number =>
+    dayNumberToDate(Math.floor(viewStartDay), calendar).year + off;
+
+  // --- minor（年/月は実暦境界で生成。均等 monthDays は非均等月/閏でずれるため。
+  //      日/時/分は固定ステップ） ---
   const minor: Tick[] = [];
-  const first = Math.ceil(viewStartDay / stepDays - 1e-9) * stepDays;
-  const n = Math.floor((ve - first) / stepDays) + 2;
-  for (let i = 0; i <= n; i++) {
-    const d = first + i * stepDays;
-    const x = (d - viewStartDay) * pxPerDay;
-    if (x < -2 || x > trackW + 2) continue;
-    minor.push({ x, label: tickLabel(d, step.level) });
+  if (step.level === "year") {
+    const everyN = Math.max(1, Math.round(stepDays / dpy));
+    let y = Math.floor(startYearAt() / everyN) * everyN - everyN;
+    for (; ; y += everyN) {
+      const d = dateToDayNumber({ year: y }, calendar);
+      const x = inX(d);
+      if (x > trackW + 2) break;
+      if (x >= -2) minor.push({ x, label: tickLabel(d, "year") });
+    }
+  } else if (step.level === "month" && hasMonths) {
+    const everyN = Math.max(1, Math.round(stepDays / monthDays));
+    let done = false;
+    for (let y = startYearAt(-1); !done; y++) {
+      for (let mi = 0; mi < monthCount; mi += everyN) {
+        const d = dateToDayNumber(
+          { year: y, monthIndex: mi, dayOfMonth: 1 },
+          calendar,
+        );
+        const x = inX(d);
+        if (x > trackW + 2) {
+          done = true;
+          break;
+        }
+        if (x >= -2) minor.push({ x, label: tickLabel(d, "month") });
+      }
+    }
+  } else {
+    // day/hour/minute、または月概念なし暦の month: 固定日ステップ。
+    const first = Math.ceil(viewStartDay / stepDays - 1e-9) * stepDays;
+    const n = Math.floor((ve - first) / stepDays) + 2;
+    for (let i = 0; i <= n; i++) {
+      const d = first + i * stepDays;
+      const x = inX(d);
+      if (x < -2 || x > trackW + 2) continue;
+      minor.push({ x, label: tickLabel(d, step.level) });
+    }
   }
 
-  // --- major ---
+  // --- major（実暦境界。月 major は年重複を避け 1 月（先頭月）にのみ年を前置） ---
   const major: Tick[] = [];
   const majorUnit = MAJOR_UNIT_OF[step.level] ?? null;
-  if (majorUnit) {
-    const mStep =
-      majorUnit === "year" ? dpy : majorUnit === "month" ? monthDays : 1;
-    const mFirst = Math.floor(viewStartDay / mStep) * mStep;
-    for (let d = mFirst; d <= ve + mStep; d += mStep) {
-      const x = (d - viewStartDay) * pxPerDay;
+  const pushYearMajor = () => {
+    for (let y = startYearAt(-1); ; y++) {
+      const d = dateToDayNumber({ year: y }, calendar);
+      const x = inX(d);
       if (x > trackW + 2) break;
-      major.push({ x, label: majorLabel(d, majorUnit) });
+      if (x >= -2) major.push({ x, label: majorLabel(d, "year") });
+    }
+  };
+  if (majorUnit === "year") {
+    pushYearMajor();
+  } else if (majorUnit === "month" && hasMonths) {
+    let done = false;
+    for (let y = startYearAt(-1); !done; y++) {
+      for (let mi = 0; mi < monthCount; mi++) {
+        const d = dateToDayNumber(
+          { year: y, monthIndex: mi, dayOfMonth: 1 },
+          calendar,
+        );
+        const x = inX(d);
+        if (x > trackW + 2) {
+          done = true;
+          break;
+        }
+        if (x < -2) continue;
+        const label =
+          mi === 0
+            ? majorLabel(d, "month")
+            : monthName(dayNumberToDate(d, calendar));
+        major.push({ x, label });
+      }
+    }
+  } else if (majorUnit === "month") {
+    // 月概念なし暦: 年境界を major に。
+    pushYearMajor();
+  } else if (majorUnit === "day") {
+    for (let d = Math.floor(viewStartDay); ; d += 1) {
+      const x = inX(d);
+      if (x > trackW + 2) break;
+      if (x >= -2) major.push({ x, label: majorLabel(d, "day") });
     }
   }
 
