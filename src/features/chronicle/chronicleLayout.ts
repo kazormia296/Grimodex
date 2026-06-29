@@ -41,6 +41,45 @@ export function realEventId(id: string): string {
   return i === -1 ? id : id.slice(0, i);
 }
 
+/**
+ * 未割当グループレーンを「割当先 codexId」文字列チャンネルに載せる接頭辞。
+ * viewport/gutter は移動・作成先を 1 本の codexId 文字列で受け渡すので、
+ * 未割当の別レーン（laneGroup）は `__group_<id>` で表し panel 側で解く。
+ */
+export const GROUP_PREFIX = "__group_";
+export function groupLaneKey(groupId: string): string {
+  return `${GROUP_PREFIX}${groupId}`;
+}
+
+/**
+ * レーン→移動/作成先キー。実 codex は codexId、未割当の追加群は `__group_<g>`、
+ * 基底未割当は null。viewport が D&D/作成の落下先レーンから求める。
+ */
+export function laneTargetKey(lane: {
+  unassigned: boolean;
+  codexId: string | null;
+  groupId?: string;
+}): string | null {
+  if (lane.unassigned) return lane.groupId ? groupLaneKey(lane.groupId) : null;
+  return lane.codexId;
+}
+
+/**
+ * laneTargetKey の逆。割当先キーを primaryCodexId / laneGroup に解く。
+ * - `__group_<g>` → laneGroup=g（未割当のまま別レーンへ）。
+ * - 実 codexId    → primaryCodexId=codexId。
+ * - null（基底未割当） → 両方 ""（backend が NULL クリア）。
+ */
+export function decodeLaneTarget(target: string | null): {
+  primaryCodexId: string;
+  laneGroup: string;
+} {
+  if (target == null) return { primaryCodexId: "", laneGroup: "" };
+  if (target.startsWith(GROUP_PREFIX))
+    return { primaryCodexId: "", laneGroup: target.slice(GROUP_PREFIX.length) };
+  return { primaryCodexId: target, laneGroup: "" };
+}
+
 export interface DensitySpacing {
   /** 左レーンガター幅(px)。 */
   gutterX: number;
@@ -106,10 +145,10 @@ export interface LayoutLane {
   unassigned: boolean;
   /** このレーンに属する eventId（描画順は startX でソートされる）。 */
   eventIds: string[];
-  /** 出来事 0 でも残すピン留め空レーンか。 */
+  /** 出来事 0 でも残す空の未割当レーンか。 */
   keepEmpty?: boolean;
-  /** ピン留めレーンの識別キー。 */
-  pinKey?: string;
+  /** 未割当グループ id。 */
+  groupId?: string;
 }
 
 /** マーカー 1 個の確定描画情報（left は lanePack 由来＝point は startX-9）。 */
@@ -195,7 +234,7 @@ export function buildChronicleLayout(args: BuildLayoutArgs): ChronicleLayout {
       return [{ id, startX, isInterval, barWidth, estWidth }];
     }),
     keepEmpty: lane.keepEmpty,
-    pinKey: lane.pinKey,
+    groupId: lane.groupId,
   }));
 
   const pack = packLanes({ lanes: packInput, spacing });

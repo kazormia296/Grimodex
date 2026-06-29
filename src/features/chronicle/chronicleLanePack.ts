@@ -14,10 +14,10 @@ export interface PackLaneInput {
   kind: LaneKind;
   unassigned: boolean;
   events: PackEventInput[];
-  /** 出来事が無くてもレーンを残す（ピン留めした空レーン）。 */
+  /** 出来事が無くてもレーンを残す（空の未割当レーン）。 */
   keepEmpty?: boolean;
-  /** ピン留めレーンの識別キー（割当/解除用）。 */
-  pinKey?: string;
+  /** 未割当グループ id（複数の未割当レーンの識別。移動/割当/解除に使う）。 */
+  groupId?: string;
 }
 
 export interface PackSpacing {
@@ -43,10 +43,10 @@ export interface PackedLane {
   height: number;
   rows: number;
   markers: PackedMarker[];
-  /** ピン留めした空レーンか（出来事 0 でも表示）。 */
+  /** 空でも表示する未割当レーンか（出来事 0 でも表示）。 */
   keepEmpty: boolean;
-  /** ピン留めレーンの識別キー。 */
-  pinKey?: string;
+  /** 未割当グループ id。 */
+  groupId?: string;
 }
 
 export interface LanePackResult {
@@ -145,7 +145,7 @@ export function packLanes(args: {
       rows,
       markers,
       keepEmpty: lane.keepEmpty ?? false,
-      pinKey: lane.pinKey,
+      groupId: lane.groupId,
     });
 
     top += height;

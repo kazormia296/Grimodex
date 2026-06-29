@@ -39,6 +39,8 @@ import {
   buildChronicleLayout,
   causalConflictPairSet,
   laneDupId,
+  decodeLaneTarget,
+  GROUP_PREFIX,
   type LaneDensity,
   type LayoutEventInput,
   type LayoutLane,
@@ -137,8 +139,9 @@ export function ChroniclePanel() {
   const [extractOpen, setExtractOpen] = useState(false);
   // インスペクタ高さ（上端グリップでリサイズ。選択をまたいで保持）。
   const [inspectorHeight, setInspectorHeight] = useState(340);
-  // 「レーンを追加」で未割当（=空）レーンを空でも常時表示する。空レーンと未割当は同一。
-  const [pinEmptyLane, setPinEmptyLane] = useState(false);
+  // 「レーンを追加」で増やす空の未割当レーン群（id）。出来事を入れると laneGroup で永続。
+  const groupCounterRef = useRef(0);
+  const [emptyGroups, setEmptyGroups] = useState<string[]>([]);
 
   const scenedEventIds = useMemo(
     () => new Set(sceneLinks.map((l) => l.eventId)),
@@ -192,7 +195,7 @@ export function ChroniclePanel() {
       // 位置選択(ephemeral)も捨てる。残すと handleAdd が他プロジェクトの
       // codexId/日を新規イベントへ書き込みクロスプロジェクト参照を作る。
       setSelectedPosition(null);
-      setPinEmptyLane(false);
+      setEmptyGroups([]);
       // 永続ビューがあれば維持（再フィットしない）、無ければ新規プロジェクトに
       // 合わせて全体フィットし直す。
       fittedRef.current = useChronicleStore.getState().pxPerDay != null;
@@ -305,22 +308,31 @@ export function ChroniclePanel() {
     return m;
   }, [participants]);
 
-  // レーン構築（primaryCodexId=本物 id。参加レーンは合成 id で複製描画。null/未知は __unassigned）。
+  // レーン構築（primaryCodexId=本物 id。参加レーンは合成 id で複製描画。null/未知は未割当）。
+  // 未割当出来事は laneGroup でグルーピングして複数の未割当レーンに分ける（基底=null/""）。
   const lanes: LayoutLane[] = useMemo(() => {
     const entryById = new Map(entries.map((e) => [e.id, e]));
     const laneMap = new Map<string, string[]>();
-    const unassignedIds: string[] = [];
+    // 未割当グループ: キー BASE は基底（laneGroup 無し）、それ以外は laneGroup 値。
+    const BASE = "";
+    const groupMap = new Map<string, string[]>();
     const pushLane = (codexId: string, id: string) => {
       const arr = laneMap.get(codexId);
       if (arr) arr.push(id);
       else laneMap.set(codexId, [id]);
+    };
+    const pushGroup = (g: string, id: string) => {
+      const arr = groupMap.get(g);
+      if (arr) arr.push(id);
+      else groupMap.set(g, [id]);
     };
     for (const ev of events) {
       const pid = ev.primaryCodexId;
       if (pid && entryById.has(pid)) {
         pushLane(pid, ev.id);
       } else {
-        unassignedIds.push(ev.id);
+        const g = ev.laneGroup && ev.laneGroup.length ? ev.laneGroup : BASE;
+        pushGroup(g, ev.id);
       }
       // 参加レーン（primary と重複せず既知の Codex）は合成 id で複製。
       for (const cid of participantsByEvent.get(ev.id) ?? []) {
@@ -349,19 +361,26 @@ export function ChroniclePanel() {
       unassigned: false,
       eventIds: laneMap.get(e.id)!,
     }));
-    // 未割当レーン（空レーンと同一）。出来事があるか、「レーンを追加」で空でも表示。
-    if (unassignedIds.length > 0 || pinEmptyLane) {
+    // 未割当レーン群: 基底（出来事あれば）→ laneGroup を持つ群（出現順）→ 空の追加群。
+    const groupKeys: string[] = [];
+    if (groupMap.has(BASE)) groupKeys.push(BASE);
+    for (const g of groupMap.keys()) if (g !== BASE) groupKeys.push(g);
+    for (const g of emptyGroups) if (!groupMap.has(g)) groupKeys.push(g);
+    const unassignedLabel = t("chronicle.unassigned", "未割当");
+    groupKeys.forEach((g, idx) => {
+      const eventIds = groupMap.get(g) ?? [];
       out.push({
         codexId: null,
-        name: t("chronicle.unassigned", "未割当"),
+        name: idx === 0 ? unassignedLabel : `${unassignedLabel} ${idx + 1}`,
         kind: "unassigned",
         unassigned: true,
-        eventIds: unassignedIds,
-        keepEmpty: unassignedIds.length === 0,
+        eventIds,
+        keepEmpty: eventIds.length === 0,
+        groupId: g === BASE ? undefined : g,
       });
-    }
+    });
     return out;
-  }, [events, entries, t, participantsByEvent, pinEmptyLane]);
+  }, [events, entries, t, participantsByEvent, emptyGroups]);
 
   const layoutEvents: LayoutEventInput[] = useMemo(() => {
     const entryIds = new Set(entries.map((e) => e.id));
@@ -461,9 +480,14 @@ export function ChroniclePanel() {
     const known =
       selected.primaryCodexId &&
       entries.some((e) => e.id === selected.primaryCodexId);
-    return known ? selected.primaryCodexId : "__unassigned";
+    if (known) return selected.primaryCodexId;
+    // 未割当はグループ別に強調（基底=__unassigned、追加群=__group_<g>）。
+    const g =
+      selected.laneGroup && selected.laneGroup.length
+        ? selected.laneGroup
+        : null;
+    return g ? `${GROUP_PREFIX}${g}` : "__unassigned";
   }, [selected, entries]);
-  const selectedUnassigned = !!selected && activeLaneKey === "__unassigned";
 
   // ── 表示操作（いずれも applyView で永続化する） ───────────
   const handleFit = useCallback(() => {
@@ -506,9 +530,13 @@ export function ChroniclePanel() {
     try {
       const st = useChronicleStore.getState();
       const day = st.selectedDay ?? defaultCreateDay();
+      const { primaryCodexId, laneGroup } = decodeLaneTarget(
+        st.selectedLaneKey,
+      );
       const ev = await uiCreateEvent({
         title: t("chronicle.newEvent", "新しい出来事"),
-        ...(st.selectedLaneKey ? { primaryCodexId: st.selectedLaneKey } : {}),
+        ...(primaryCodexId ? { primaryCodexId } : {}),
+        ...(laneGroup ? { laneGroup } : {}),
         ...(day != null
           ? { startTime: Math.round(day), startGranularity: "day" as const }
           : {}),
@@ -556,10 +584,9 @@ export function ChroniclePanel() {
     (id: string, newStartDay: number | null, newCodexId: string | null) => {
       const e = events.find((x) => x.id === id);
       if (!e) return;
-      // newCodexId=null（未割当へ）は backend で NULL クリアできるよう "" で送る。
-      const patch: Partial<EventRow> = {
-        primaryCodexId: newCodexId ?? "",
-      };
+      // 移動先レーンを実 codex 割当 or 未割当グループに解く。""=NULL クリア。
+      const { primaryCodexId, laneGroup } = decodeLaneTarget(newCodexId);
+      const patch: Partial<EventRow> = { primaryCodexId, laneGroup };
       if (newStartDay != null && e.startTime != null) {
         const subDay =
           rulerLevelRef.current === "hour" ||
@@ -620,11 +647,13 @@ export function ChroniclePanel() {
     async (day: number | null, codexId: string | null) => {
       if (!projectId || creating) return;
       const d = day ?? defaultCreateDay();
+      const { primaryCodexId, laneGroup } = decodeLaneTarget(codexId);
       setCreating(true);
       try {
         const ev = await uiCreateEvent({
           title: t("chronicle.newEvent", "新しい出来事"),
-          ...(codexId ? { primaryCodexId: codexId } : {}),
+          ...(primaryCodexId ? { primaryCodexId } : {}),
+          ...(laneGroup ? { laneGroup } : {}),
           ...(d != null
             ? { startTime: Math.round(d), startGranularity: "day" as const }
             : {}),
@@ -686,10 +715,45 @@ export function ChroniclePanel() {
     [setSelectedEventId, setSelectedPosition],
   );
 
-  // 「レーンを追加」: 空でも未割当レーンを表示する（出来事は作らない＝未割当に積まれない）。
-  // 空レーン＝未割当。ここへ D&D/ダブルクリックで未割当の出来事を置き、後で割り当てる。
-  const handleAddLane = useCallback(() => setPinEmptyLane(true), []);
-  const handleHideEmptyLane = useCallback(() => setPinEmptyLane(false), []);
+  // 「レーンを追加」: 空の未割当レーンを 1 本増やす（複数可）。出来事を入れると
+  // その laneGroup が DB に焼かれて永続。空のままなら emptyGroups(セッション)に留まる。
+  const handleAddLane = useCallback(() => {
+    const id = `g${groupCounterRef.current++}`;
+    setEmptyGroups((g) => [...g, id]);
+  }, []);
+  // 空の未割当レーン（× ボタン）を畳む。出来事が入っている群は呼ばれない。
+  const handleHideGroup = useCallback((groupId: string) => {
+    setEmptyGroups((g) => g.filter((x) => x !== groupId));
+  }, []);
+
+  // 未割当レーンのピッカーで群ごと Codex へ割り当てる（その群の未割当出来事を一括）。
+  // groupId=null は基底未割当（laneGroup 無し）の出来事すべてが対象。
+  const handleAssignGroup = useCallback(
+    async (groupId: string | null, codexId: string) => {
+      if (!projectId || !codexId) return;
+      const targets = events.filter((e) => {
+        const assigned =
+          e.primaryCodexId && entries.some((x) => x.id === e.primaryCodexId);
+        if (assigned) return false;
+        const g = e.laneGroup && e.laneGroup.length ? e.laneGroup : null;
+        return groupId == null ? g == null : g === groupId;
+      });
+      try {
+        for (const e of targets) {
+          await uiUpdateEvent({
+            eventId: e.id,
+            primaryCodexId: codexId,
+            laneGroup: "",
+          });
+        }
+        if (groupId) handleHideGroup(groupId);
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+    },
+    [projectId, events, entries, handleHideGroup, refresh, t],
+  );
 
   const handlePatch = useCallback(
     async (patch: Partial<EventRow>) => {
@@ -961,19 +1025,9 @@ export function ChroniclePanel() {
           onSelectEvent={handleSelectEvent}
           laneOptions={laneOptions}
           locked={locked}
-          onAssignLane={(codexId) => {
-            // 未割当ピッカーは常時表示。選択中の未割当出来事のみ割当（誤操作防止）。
-            if (selectedUnassigned) handlePatch({ primaryCodexId: codexId });
-            else
-              toast(
-                t(
-                  "chronicle.assignNeedsSelection",
-                  "未割当の出来事を選んでから割り当ててください",
-                ),
-              );
-          }}
+          onAssignGroup={handleAssignGroup}
           onAddLane={handleAddLane}
-          onHideEmptyLane={handleHideEmptyLane}
+          onHideGroup={handleHideGroup}
           selectedDay={selectedDay}
           hasCalendarAxis={eff.hasCalendarAxis}
           onMoveEvent={handleMoveEvent}

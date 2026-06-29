@@ -1345,6 +1345,8 @@ pub(crate) struct AgentEventCreatePayload {
     note: Option<String>,
     ordinal: Option<String>,
     primary_codex_id: Option<String>,
+    /// 未割当の整理用サブレーン id。
+    lane_group: Option<String>,
     location_codex_id: Option<String>,
     start_time: Option<i64>,
     end_time: Option<i64>,
@@ -1377,6 +1379,8 @@ pub(crate) struct AgentEventUpdatePayload {
     note: Option<String>,
     ordinal: Option<String>,
     primary_codex_id: Option<String>,
+    /// 未割当の整理用サブレーン id（空文字は NULL=既定の未割当レーンへ）。
+    lane_group: Option<String>,
     location_codex_id: Option<String>,
     start_time: Option<i64>,
     end_time: Option<i64>,
@@ -1443,6 +1447,7 @@ fn collect_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> anyhow
         "SELECT json_object(
             'id', id, 'projectId', project_id, 'title', title, 'note', note,
             'ordinal', ordinal, 'primaryCodexId', primary_codex_id,
+            'laneGroup', lane_group,
             'locationCodexId', location_codex_id, 'startTime', start_time,
             'endTime', end_time, 'startMinute', start_minute,
             'endMinute', end_minute, 'startGranularity', start_granularity,
@@ -1569,14 +1574,15 @@ fn apply_event_composite_snapshot(
 
     conn.execute(
         "INSERT INTO events
-         (id, project_id, title, note, ordinal, primary_codex_id, location_codex_id,
+         (id, project_id, title, note, ordinal, primary_codex_id, lane_group, location_codex_id,
           start_time, end_time, start_minute, end_minute, start_granularity,
           end_granularity, precision, kind, secret, reveal_scene_id,
           created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title, note = excluded.note, ordinal = excluded.ordinal,
             primary_codex_id = excluded.primary_codex_id,
+            lane_group = excluded.lane_group,
             location_codex_id = excluded.location_codex_id,
             start_time = excluded.start_time, end_time = excluded.end_time,
             start_minute = excluded.start_minute, end_minute = excluded.end_minute,
@@ -1592,6 +1598,7 @@ fn apply_event_composite_snapshot(
             ed["note"].as_str(),
             ed["ordinal"].as_str().unwrap_or("a0"),
             ed["primaryCodexId"].as_str(),
+            ed["laneGroup"].as_str(),
             ed["locationCodexId"].as_str(),
             ed["startTime"].as_i64(),
             ed["endTime"].as_i64(),
@@ -1869,8 +1876,8 @@ fn agent_event_create_impl(
                  (id, project_id, title, note, ordinal, primary_codex_id,
                   location_codex_id, start_time, end_time, start_minute, end_minute,
                   start_granularity, end_granularity, precision, kind,
-                  secret, reveal_scene_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18)",
+                  secret, reveal_scene_id, lane_group, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?19)",
                 rusqlite::params![
                     event_id,
                     payload.project_id,
@@ -1889,6 +1896,7 @@ fn agent_event_create_impl(
                     kind,
                     secret,
                     reveal_scene_id,
+                    payload.lane_group,
                     now,
                 ],
             )?;
@@ -2023,6 +2031,14 @@ fn agent_event_update_impl(
                 params.push(Box::new(val));
                 param_idx += 1;
                 fields.push("primaryCodexId");
+            }
+            if let Some(ref v) = payload.lane_group {
+                // 空文字は NULL（既定の未割当レーンへ）に正規化。
+                let val: Option<String> = if v.is_empty() { None } else { Some(v.clone()) };
+                sets.push(format!("lane_group = ?{param_idx}"));
+                params.push(Box::new(val));
+                param_idx += 1;
+                fields.push("laneGroup");
             }
             if let Some(ref v) = payload.location_codex_id {
                 // 空文字は NULL（場所なし）に正規化。
@@ -3203,6 +3219,7 @@ mod tests {
             note: None,
             ordinal: None,
             primary_codex_id: None,
+            lane_group: None,
             location_codex_id: None,
             start_time: None,
             end_time: None,
@@ -3235,6 +3252,7 @@ mod tests {
                 note: None,
                 ordinal: None,
                 primary_codex_id: None,
+                lane_group: None,
                 location_codex_id: None,
                 start_time: None,
                 end_time: None,
@@ -3293,6 +3311,7 @@ mod tests {
                 note: None,
                 ordinal: None,
                 primary_codex_id: None,
+                lane_group: None,
                 location_codex_id: None,
                 start_time: None,
                 end_time: None,

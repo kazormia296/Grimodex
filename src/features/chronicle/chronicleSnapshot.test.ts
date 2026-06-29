@@ -30,6 +30,7 @@ function mkEvent(p: Partial<EventRow> & { id: string }): EventRow {
     kind: p.kind ?? "generic",
     secret: p.secret ?? false,
     revealSceneId: p.revealSceneId ?? null,
+    laneGroup: p.laneGroup ?? null,
     createdAt: "",
     updatedAt: "",
   };

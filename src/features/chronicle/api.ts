@@ -36,6 +36,8 @@ export interface EventRow {
   note: string | null;
   ordinal: string;
   primaryCodexId: string | null;
+  /** 未割当の整理用サブレーン id（null=既定の未割当レーン）。 */
+  laneGroup: string | null;
   locationCodexId: string | null;
   startTime: number | null;
   endTime: number | null;
@@ -80,6 +82,7 @@ export function normalizeEvent(raw: unknown): EventRow {
     note: nullableStr(r.note),
     ordinal: s(r.ordinal, "a0"),
     primaryCodexId: nullableStr(r.primaryCodexId ?? r.primary_codex_id),
+    laneGroup: nullableStr(r.laneGroup ?? r.lane_group),
     locationCodexId: nullableStr(r.locationCodexId ?? r.location_codex_id),
     startTime: nullableNum(r.startTime ?? r.start_time),
     endTime: nullableNum(r.endTime ?? r.end_time),

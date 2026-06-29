@@ -1884,6 +1884,8 @@ impl Database {
             "weekday_names",
             "TEXT NOT NULL DEFAULT '[]'",
         )?;
+        // 未割当出来事の整理用サブレーン id（複数の未割当レーンに振り分ける）。
+        Self::add_column_if_missing(&conn, "events", "lane_group", "TEXT")?;
         // グレゴリオ閏＋年齢表記（満/数え）。既存 DB（暦ライト/本格暦化時代）へ追加。
         Self::add_column_if_missing(
             &conn,

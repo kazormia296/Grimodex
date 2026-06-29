@@ -9,7 +9,11 @@ import {
   zoomAt,
   type View,
 } from "./chronicleAxis";
-import { realEventId, type ChronicleLayout } from "./chronicleLayout";
+import {
+  realEventId,
+  laneTargetKey,
+  type ChronicleLayout,
+} from "./chronicleLayout";
 import { laneAtY } from "./chronicleLanePack";
 import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
@@ -20,14 +24,6 @@ const SNAP_PX = 12;
 const DRAG_THRESHOLD = 3;
 // Y のデッドゾーン: これ未満の縦移動はレーン変更せず横スライドのみ（Grid のシーン同様）。
 const LANE_DEADZONE = 28;
-
-/** レーンの表示キー（codexId or "__unassigned"）→ 割当用 codexId（null=未割当）。 */
-function laneTargetCodexId(lane: {
-  unassigned: boolean;
-  codexId: string | null;
-}): string | null {
-  return lane.unassigned ? null : lane.codexId;
-}
 
 export interface ChronicleViewportProps {
   view: View;
@@ -46,10 +42,11 @@ export interface ChronicleViewportProps {
   /** レーンガター用（任意 Codex 候補・割当/追加・ロック）。 */
   laneOptions?: { id: string; name: string; type: string }[];
   locked?: boolean;
-  onAssignLane?: (codexId: string) => void;
+  /** 未割当レーンを群ごと Codex へ割当（groupId=null は基底未割当）。 */
+  onAssignGroup?: (groupId: string | null, codexId: string) => void;
   onAddLane?: () => void;
-  /** 空の未割当レーンを隠す（× で）。 */
-  onHideEmptyLane?: () => void;
+  /** 空の未割当（追加）レーンを隠す（× で）。 */
+  onHideGroup?: (groupId: string) => void;
   // ── グラフ操作（任意・ロック時は呼ばれない） ──
   /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
   selectedDay?: number | null;
@@ -94,9 +91,9 @@ export function ChronicleViewport({
   onSelectEvent,
   laneOptions,
   locked,
-  onAssignLane,
+  onAssignGroup,
   onAddLane,
-  onHideEmptyLane,
+  onHideGroup,
   selectedDay,
   hasCalendarAxis = true,
   onMoveEvent,
@@ -181,7 +178,7 @@ export function ChronicleViewport({
   };
   const laneCodexAt = (clientY: number, rect: DOMRect): string | null => {
     const lane = laneAtY(layoutRef.current.pack.lanes, clientY - rect.top);
-    return lane ? laneTargetCodexId(lane) : null;
+    return lane ? laneTargetKey(lane) : null;
   };
 
   // document ドラッグの登録/撤去（move + up を1組で）。
@@ -489,9 +486,9 @@ export function ChronicleViewport({
           activeLaneKey={activeLaneKey}
           laneOptions={laneOptions}
           locked={locked}
-          onAssignLane={onAssignLane}
+          onAssignGroup={onAssignGroup}
           onAddLane={onAddLane}
-          onHideEmptyLane={onHideEmptyLane}
+          onHideGroup={onHideGroup}
         />
 
         <div

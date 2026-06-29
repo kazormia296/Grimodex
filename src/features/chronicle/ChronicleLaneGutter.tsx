@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, X } from "lucide-react";
 import type { PackedLane } from "./chronicleLanePack";
+import { GROUP_PREFIX } from "./chronicleLayout";
 import { laneColorFor } from "./laneColor";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { CodexEntryPicker } from "./CodexEntryPicker";
@@ -15,16 +16,21 @@ export interface ChronicleLaneGutterProps {
   laneOptions?: { id: string; name: string; type: string }[];
   /** 編集ロック中は追加/割当 UI を隠す。 */
   locked?: boolean;
-  /** 未割当→Codex 割当（選択中の未割当出来事に適用。ガード是非は呼び出し側）。 */
-  onAssignLane?: (codexId: string) => void;
-  /** レーン追加（空でも未割当レーンを表示）。 */
+  /** 未割当レーンを群ごと Codex へ割当（groupId=null は基底未割当）。 */
+  onAssignGroup?: (groupId: string | null, codexId: string) => void;
+  /** レーン追加（空の未割当レーンを増やす）。 */
   onAddLane?: () => void;
-  /** 空の未割当レーンを隠す（×）。 */
-  onHideEmptyLane?: () => void;
+  /** 空の未割当（追加）レーンを隠す（×）。 */
+  onHideGroup?: (groupId: string) => void;
 }
 
+// 未割当レーンはグループ別に一意キー（base=__unassigned、追加群=__group_<g>）。
 const laneKeyOf = (lane: PackedLane) =>
-  lane.unassigned ? "__unassigned" : (lane.codexId ?? "__unassigned");
+  lane.unassigned
+    ? lane.groupId
+      ? `${GROUP_PREFIX}${lane.groupId}`
+      : "__unassigned"
+    : (lane.codexId ?? "__unassigned");
 
 /**
  * 左レーンガター（アバター＋名前＋件数）。各セルは pack の lane.height に
@@ -38,9 +44,9 @@ export function ChronicleLaneGutter({
   activeLaneKey,
   laneOptions = [],
   locked = false,
-  onAssignLane,
+  onAssignGroup,
   onAddLane,
-  onHideEmptyLane,
+  onHideGroup,
 }: ChronicleLaneGutterProps) {
   const { t } = useTranslation();
   const [gutterEl, setGutterEl] = useState<HTMLDivElement | null>(null);
@@ -111,7 +117,7 @@ export function ChronicleLaneGutter({
         return (
           <div
             key={laneKeyOf(lane)}
-            data-lane-id={lane.codexId ?? "__unassigned"}
+            data-lane-id={laneKeyOf(lane)}
             className="flex items-center gap-2.5 border-b border-border/60 px-3.5"
             style={{
               height: lane.height,
@@ -123,14 +129,14 @@ export function ChronicleLaneGutter({
           >
             <div style={avatarStyle}>{lane.unassigned ? "·" : initial}</div>
             <div className="flex min-w-0 flex-1 flex-col gap-px">
-              {lane.unassigned && onAssignLane && !locked ? (
-                // 「未割当」ラベル自体を Spotlight ピッカーに（常時表示）。選択中の
-                // 未割当出来事を選んだ Codex レーンへ割り当てる。
+              {lane.unassigned && onAssignGroup && !locked ? (
+                // 「未割当」ラベル自体を Spotlight ピッカーに（常時表示）。この未割当
+                // レーンの出来事をまとめて選んだ Codex レーンへ割り当てる。
                 <CodexEntryPicker
                   value={null}
                   options={pickerOptions}
                   onChange={(id) => {
-                    if (id) onAssignLane(id);
+                    if (id) onAssignGroup(lane.groupId ?? null, id);
                   }}
                   ariaLabel={t("chronicle.assignLane", "レーンへ割当")}
                   placeholder={t("chronicle.unassigned", "未割当")}
@@ -160,10 +166,10 @@ export function ChronicleLaneGutter({
                 {countText}
               </span>
             </div>
-            {isEmptyUnassigned && onHideEmptyLane && !locked && (
+            {isEmptyUnassigned && lane.groupId && onHideGroup && !locked && (
               <button
                 type="button"
-                onClick={() => onHideEmptyLane()}
+                onClick={() => onHideGroup(lane.groupId!)}
                 aria-label={t("chronicle.removeLane", "レーンを隠す")}
                 className="flex-none rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >

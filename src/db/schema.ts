@@ -1385,6 +1385,9 @@ export const events = sqliteTable(
     primaryCodexId: text("primary_codex_id").references(() => codexEntries.id, {
       onDelete: "set null",
     }),
+    // 未割当（primaryCodexId=null）出来事の整理用サブレーン id。null=既定の未割当レーン。
+    // codex 未割当のまま複数レーンへ振り分けるためのクライアント定義 id（FK なし）。
+    laneGroup: text("lane_group"),
     // 出来事の場所（codex）。2か所同時チェックの基準。null=未指定。
     locationCodexId: text("location_codex_id").references(
       () => codexEntries.id,

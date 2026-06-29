@@ -109,6 +109,7 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
     kind: "generic",
     secret: false,
     revealSceneId: null,
+    laneGroup: null,
     createdAt: NOW,
     updatedAt: NOW,
     ...over,

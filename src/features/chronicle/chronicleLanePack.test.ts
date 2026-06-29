@@ -29,7 +29,7 @@ function lane(
     unassigned: extra.unassigned ?? false,
     events,
     keepEmpty: extra.keepEmpty,
-    pinKey: extra.pinKey,
+    groupId: extra.groupId,
   };
 }
 
@@ -86,7 +86,7 @@ describe("packLanes", () => {
   it("(4b) keepEmpty の空レーンは残す（ピン留め空レーン）", () => {
     const result = packLanes({
       lanes: [
-        lane("pin", [], { keepEmpty: true, pinKey: "p1" }),
+        lane("pin", [], { keepEmpty: true, groupId: "p1" }),
         lane("full", [ev("a", 10, 20)]),
       ],
       spacing,
@@ -94,7 +94,7 @@ describe("packLanes", () => {
     expect(result.lanes).toHaveLength(2);
     const pin = result.lanes.find((l) => l.codexId === "pin")!;
     expect(pin.keepEmpty).toBe(true);
-    expect(pin.pinKey).toBe("p1");
+    expect(pin.groupId).toBe("p1");
     expect(pin.count).toBe(0);
     expect(pin.markers).toHaveLength(0);
     // 1 行分の高さ（laneVPad*2 + tokenH）。

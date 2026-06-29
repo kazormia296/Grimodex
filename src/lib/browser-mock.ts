@@ -485,6 +485,7 @@ const SCHEMA_DDL = `
     note TEXT,
     ordinal TEXT NOT NULL DEFAULT 'a0',
     primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+    lane_group TEXT,
     location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
     start_time INTEGER,
     end_time INTEGER,
