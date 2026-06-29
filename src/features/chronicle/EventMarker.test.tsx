@@ -200,6 +200,24 @@ describe("EventMarker (DOM token)", () => {
     );
   });
 
+  it("出生/死亡も scene 未参照はオフページ＝中空(outline)で示す（点 ●/◯ と同様）", () => {
+    for (const kind of ["birth", "death"] as const) {
+      const on = renderMarker({ event: ev({ kind, sceneLinked: true }) });
+      const off = renderMarker({ event: ev({ kind, sceneLinked: false }) });
+      const pOn = on.container.querySelector(
+        '[data-testid="marker-glyph"] polygon',
+      ) as SVGPolygonElement;
+      const pOff = off.container.querySelector(
+        '[data-testid="marker-glyph"] polygon',
+      ) as SVGPolygonElement;
+      expect(pOn).toBeTruthy();
+      expect(pOff).toBeTruthy();
+      // on-page=塗り（stroke 幅 0）/ off-page=中空（stroke 幅 > 0）。
+      expect(parseFloat(pOn.style.strokeWidth) || 0).toBe(0);
+      expect(parseFloat(pOff.style.strokeWidth)).toBeGreaterThan(0);
+    }
+  });
+
   it("labelsOn=false ではタイトル本文を描かない（title 属性は残す）", () => {
     const { container } = renderMarker({ labelsOn: false });
     const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;

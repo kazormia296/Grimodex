@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { EventKind, EventPrecision } from "@/db/schema";
 import { laneColorFor } from "./laneColor";
@@ -152,68 +152,97 @@ export function EventMarker({
     container.opacity = 0.96;
   }
 
-  // 先頭グリフ＝種別を凡例と同じ表現で示す（出生=三角 / 死亡=菱形 / 出来事=丸 / 期間=帯）。
-  // 種別を優先するためオフページ判定より前に置く（オフページ birth/death も三角/菱形）。
-  let glyph: CSSProperties;
-  if (isInterval) {
-    // 期間＝凡例の「期間」スウォッチと同形（横長の角丸帯）。色はレーン色。
-    // 点(●/◯)と同様に scene 未参照はオフページ＝中空（card 地+枠）で示す。
-    glyph = event.sceneLinked
-      ? {
-          flex: "none",
-          width: 14,
-          height: 8,
-          borderRadius: 3.5,
-          background: mix(lc, 30, "transparent"),
-          border: `1px solid ${mix(lc, 55, "transparent")}`,
-          boxSizing: "border-box",
-        }
-      : {
-          flex: "none",
-          width: 14,
-          height: 8,
-          borderRadius: 3.5,
-          background: "var(--card)",
-          border: `1.5px solid ${lc}`,
-          boxSizing: "border-box",
-        };
-  } else if (event.kind === "birth") {
-    glyph = {
-      flex: "none",
-      width: 0,
-      height: 0,
-      borderLeft: "5px solid transparent",
-      borderRight: "5px solid transparent",
-      borderBottom: `10px solid ${BIRTH}`,
-    };
-  } else if (event.kind === "death") {
-    glyph = {
-      flex: "none",
-      width: 8,
-      height: 8,
-      background: DEATH,
-      transform: "rotate(45deg)",
-    };
-  } else if (!event.sceneLinked) {
-    // 汎用のオフページ（scene 未参照）＝中空丸 ◯（凡例で明示）。
-    glyph = {
-      flex: "none",
-      width: 11,
-      height: 11,
-      borderRadius: "50%",
-      border: `2px solid ${lc}`,
-      background: "var(--card)",
-      boxSizing: "border-box",
-    };
+  // 先頭グリフ＝凡例と同形（出生=三角 / 死亡=菱形 / 出来事=丸 / 期間=帯）。
+  // 点(●/◯)・期間(▬/▭)と同様、出生/死亡も scene 未参照はオフページ＝中空(outline)で示す。
+  // 三角の中空は単一 span の CSS border トリックでは描けないため、出生/死亡は SVG（塗り/枠）で描く。
+  const kindTitle =
+    event.kind === "birth"
+      ? t("chronicle.kind.birth", "出生")
+      : event.kind === "death"
+        ? t("chronicle.kind.death", "死亡")
+        : undefined;
+
+  let glyphNode: ReactNode;
+  if (event.kind === "birth" || event.kind === "death") {
+    const isBirth = event.kind === "birth";
+    const shapeColor = isBirth ? BIRTH : DEATH;
+    const points = isBirth
+      ? "6,1 11,10 1,10" // 上向き三角
+      : "5.5,1 10,5.5 5.5,10 1,5.5"; // 菱形
+    glyphNode = (
+      // testid/title は span に載せる（React の SVG 型は title 属性を持たないため）。
+      <span
+        data-testid="marker-glyph"
+        title={kindTitle}
+        style={{ flex: "none", display: "flex" }}
+      >
+        <svg
+          width={isBirth ? 12 : 11}
+          height={11}
+          viewBox={isBirth ? "0 0 12 11" : "0 0 11 11"}
+          style={{ display: "block", overflow: "visible" }}
+        >
+          <polygon
+            points={points}
+            strokeLinejoin="round"
+            style={{
+              // on-page=塗り / off-page=中空（card 地＋枠）。
+              fill: event.sceneLinked ? shapeColor : "var(--card)",
+              stroke: shapeColor,
+              strokeWidth: event.sceneLinked ? 0 : 1.5,
+            }}
+          />
+        </svg>
+      </span>
+    );
   } else {
-    // 汎用＝塗りつぶしの丸 ●（凡例の「イベント」）。
-    glyph = {
-      flex: "none",
-      width: 9,
-      height: 9,
-      borderRadius: "50%",
-      background: lc,
-    };
+    // 点(●/◯)・期間(▬/▭)は CSS span。
+    let glyph: CSSProperties;
+    if (isInterval) {
+      // 期間＝凡例「期間」と同形（横長の角丸帯）。on-page=塗り / off-page=中空。
+      glyph = event.sceneLinked
+        ? {
+            flex: "none",
+            width: 14,
+            height: 8,
+            borderRadius: 3.5,
+            background: mix(lc, 30, "transparent"),
+            border: `1px solid ${mix(lc, 55, "transparent")}`,
+            boxSizing: "border-box",
+          }
+        : {
+            flex: "none",
+            width: 14,
+            height: 8,
+            borderRadius: 3.5,
+            background: "var(--card)",
+            border: `1.5px solid ${lc}`,
+            boxSizing: "border-box",
+          };
+    } else if (!event.sceneLinked) {
+      // 汎用のオフページ（scene 未参照）＝中空丸 ◯（凡例で明示）。
+      glyph = {
+        flex: "none",
+        width: 11,
+        height: 11,
+        borderRadius: "50%",
+        border: `2px solid ${lc}`,
+        background: "var(--card)",
+        boxSizing: "border-box",
+      };
+    } else {
+      // 汎用＝塗りつぶしの丸 ●（凡例の「イベント」）。
+      glyph = {
+        flex: "none",
+        width: 9,
+        height: 9,
+        borderRadius: "50%",
+        background: lc,
+      };
+    }
+    glyphNode = (
+      <span data-testid="marker-glyph" title={kindTitle} style={glyph} />
+    );
   }
 
   // 種別は先頭グリフ（凡例と同じ三角/菱形/丸）で示すため、文字タグは廃止。
@@ -287,17 +316,7 @@ export function EventMarker({
           }}
         />
       )}
-      <span
-        data-testid="marker-glyph"
-        title={
-          event.kind === "birth"
-            ? t("chronicle.kind.birth", "出生")
-            : event.kind === "death"
-              ? t("chronicle.kind.death", "死亡")
-              : undefined
-        }
-        style={glyph}
-      />
+      {glyphNode}
       {labelsOn && (
         <span
           style={{
