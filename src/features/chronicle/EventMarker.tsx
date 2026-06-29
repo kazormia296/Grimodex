@@ -37,6 +37,8 @@ export interface EventMarkerProps {
   resizable?: boolean;
   /** ドラッグ中の追従オフセット（px）。設定中はマーカーを translate して持ち上げる。 */
   dragOffset?: { dx: number; dy: number } | null;
+  /** レーン入れ替えアニメの縦オフセット（px）。translateY で旧位置→新位置へ。 */
+  offsetY?: number;
   /** 因果エッジ接続用ハンドルを出すか（選択中＆非ロック）。D&D で別マーカーへ接続。 */
   edgeHandle?: boolean;
   /** ホバー時カーソル（非ロック=pointer/手、ロック=default）。 */
@@ -72,6 +74,7 @@ export function EventMarker({
   labelsOn,
   resizable = false,
   dragOffset = null,
+  offsetY = 0,
   edgeHandle = false,
   cursor = "pointer",
   onSelect,
@@ -155,6 +158,9 @@ export function EventMarker({
     container.pointerEvents = "none";
     container.boxShadow = "0 4px 12px rgba(0,0,0,.18)";
     container.opacity = 0.96;
+  } else if (offsetY) {
+    // レーン入れ替えアニメ（ドラッグ追従と排他。GPU フレンドリな transform のみ）。
+    container.transform = `translateY(${offsetY}px)`;
   }
 
   // 先頭グリフ＝凡例と同形（出生=三角 / 死亡=菱形 / 出来事=丸 / 期間=帯）。

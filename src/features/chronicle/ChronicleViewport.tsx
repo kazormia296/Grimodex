@@ -12,9 +12,12 @@ import {
 import {
   realEventId,
   laneTargetKey,
+  laneKeyOf,
   type ChronicleLayout,
 } from "./chronicleLayout";
 import { laneAtY } from "./chronicleLanePack";
+import { useLaneReorderTween } from "./chronicleLaneAnim";
+import { useReducedMotion } from "@/lib/animation";
 import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
 import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
@@ -54,8 +57,8 @@ export interface ChronicleViewportProps {
   onAddLane?: () => void;
   /** 空の未割当（追加）レーンを隠す（× で）。 */
   onHideGroup?: (groupId: string) => void;
-  /** codex レーンの並べ替え（新しい全 codex 順を返す）。 */
-  onReorderLanes?: (newOrder: string[]) => void;
+  /** codex レーンの並べ替え（commit=false=ドラッグ中の表示更新 / true=確定＝永続）。 */
+  onReorderLanes?: (newOrder: string[], commit: boolean) => void;
   // ── グラフ操作（任意・ロック時は呼ばれない） ──
   /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
   selectedDay?: number | null;
@@ -487,6 +490,13 @@ export function ChronicleViewport({
     markerById,
   } = layout;
 
+  // 並べ替えの入れ替えアニメ（Timeline Thread と同方式の手動 FLIP）。
+  const reducedMotion = useReducedMotion();
+  const laneOffsets = useLaneReorderTween(
+    pack.lanes.map((l) => ({ key: laneKeyOf(l), top: l.top })),
+    reducedMotion,
+  );
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col bg-card">
       <ChronicleRuler
@@ -506,6 +516,7 @@ export function ChronicleViewport({
           onAddLane={onAddLane}
           onHideGroup={onHideGroup}
           onReorderLanes={onReorderLanes}
+          laneOffsets={laneOffsets}
         />
 
         <div
@@ -567,15 +578,26 @@ export function ChronicleViewport({
               style={{ left: x, width: 1, height: contentHeight }}
             />
           ))}
-          {pack.laneSepTops.map((top, i) =>
-            top > 0 ? (
+          {pack.laneSepTops.map((top, i) => {
+            if (top <= 0) return null;
+            // 区切り線は対応レーン（同 index）の入れ替えオフセットで追従。
+            const sepLane = pack.lanes[i];
+            const off = sepLane
+              ? (laneOffsets.get(laneKeyOf(sepLane)) ?? 0)
+              : 0;
+            return (
               <div
                 key={`sep-${i}`}
                 className="absolute left-0 z-[2] bg-border/60"
-                style={{ top, width: "100%", height: 1 }}
+                style={{
+                  top,
+                  width: "100%",
+                  height: 1,
+                  transform: off ? `translateY(${off}px)` : undefined,
+                }}
               />
-            ) : null,
-          )}
+            );
+          })}
 
           {/* 因果エッジ */}
           {showEdges && edges.length > 0 && (
@@ -634,8 +656,9 @@ export function ChronicleViewport({
           )}
 
           {/* マーカー（参加レーンの複製は合成 id。本物の eventId に解決して扱う） */}
-          {pack.lanes.flatMap((lane) =>
-            lane.markers.map((m) => {
+          {pack.lanes.flatMap((lane) => {
+            const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
+            return lane.markers.map((m) => {
               const realId = realEventId(m.eventId);
               const ev = eventsById.get(realId);
               const render = markerById.get(m.eventId);
@@ -646,6 +669,7 @@ export function ChronicleViewport({
                   event={ev}
                   left={render.left}
                   top={render.top}
+                  offsetY={laneOffsetY}
                   tokenH={spacing.tokenH}
                   maxTok={spacing.maxTok}
                   isInterval={render.isInterval}
@@ -675,8 +699,8 @@ export function ChronicleViewport({
                   onSelect={(e) => handleSelect(realId, e)}
                 />
               );
-            }),
-          )}
+            });
+          })}
         </div>
       </div>
 

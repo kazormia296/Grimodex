@@ -51,6 +51,19 @@ export function groupLaneKey(groupId: string): string {
   return `${GROUP_PREFIX}${groupId}`;
 }
 
+/** レーンの一意キー（codex=codexId / 基底未割当=__unassigned / 追加群=__group_<g>）。 */
+export function laneKeyOf(lane: {
+  unassigned: boolean;
+  codexId: string | null;
+  groupId?: string;
+}): string {
+  return lane.unassigned
+    ? lane.groupId
+      ? groupLaneKey(lane.groupId)
+      : "__unassigned"
+    : (lane.codexId ?? "__unassigned");
+}
+
 /**
  * レーン→移動/作成先キー。実 codex は codexId、未割当の追加群は `__group_<g>`、
  * 基底未割当は null。viewport が D&D/作成の落下先レーンから求める。

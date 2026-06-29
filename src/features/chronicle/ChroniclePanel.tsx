@@ -51,6 +51,7 @@ import {
   saveLaneOrder,
   orderIndexMap,
   compareByLaneOrder,
+  mergeLaneOrder,
 } from "./chronicleLaneOrder";
 import { formatChronicleDate } from "./chronicleTime";
 import type { ChronicleCalendar, DateLang } from "./chronicleTime";
@@ -157,6 +158,11 @@ export function ChroniclePanel() {
   // ロールバック用に最新 laneOrder を ref で保持（更新子へ副作用を入れない）。
   const laneOrderRef = useRef<string[]>([]);
   laneOrderRef.current = laneOrder;
+  // 永続済み（=並べ替え前）の順序。保存失敗時の同期ロールバック先。
+  const lastPersistedOrderRef = useRef<string[]>([]);
+  // codex 存在判定を dep 汚染なしで読むための ref（並べ替えマージで使う）。
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
 
   const scenedEventIds = useMemo(
     () => new Set(sceneLinks.map((l) => l.eventId)),
@@ -212,6 +218,7 @@ export function ChroniclePanel() {
       setSelectedPosition(null);
       setEmptyGroups([]);
       setLaneOrder([]);
+      lastPersistedOrderRef.current = [];
       // 永続ビューがあれば維持（再フィットしない）、無ければ新規プロジェクトに
       // 合わせて全体フィットし直す。
       fittedRef.current = useChronicleStore.getState().pxPerDay != null;
@@ -263,7 +270,10 @@ export function ChroniclePanel() {
     if (!projectId) return;
     let cancelled = false;
     void loadLaneOrder(projectId).then((order) => {
-      if (!cancelled) setLaneOrder(order);
+      if (!cancelled) {
+        setLaneOrder(order);
+        lastPersistedOrderRef.current = order;
+      }
     });
     return () => {
       cancelled = true;
@@ -780,22 +790,27 @@ export function ChroniclePanel() {
     setEmptyGroups((g) => g.filter((x) => x !== groupId));
   }, []);
 
-  // codex レーンの並べ替え（ガターの D&D）。可視 codex の新順 + 既存 laneOrder の
-  // うち今回不可視（出来事0 等）だった id を後置マージして永続（順序設定の消失防止）。
-  // 保存失敗時は楽観更新をロールバックして通知。
+  // codex レーンの並べ替え（ガターの順次入替え）。commit=false はドラッグ中の表示更新
+  // （順次入替えの live reorder、永続しない）、commit=true はドロップ時の確定＝永続。
+  // mergeLaneOrder で不可視 codex（出来事0 等）の絶対位置を保ちつつ削除済み id を一掃。
+  // 保存失敗時は永続済みスナップショットへ同期復帰（DB 再読込せず＝多タブ競合も回避）。
   const handleReorderLanes = useCallback(
-    (newOrder: string[]) => {
-      const prev = laneOrderRef.current;
-      const preserved = prev.filter((id) => !newOrder.includes(id));
-      const merged = [...newOrder, ...preserved];
+    (newOrder: string[], commit: boolean) => {
+      const merged = mergeLaneOrder(laneOrderRef.current, newOrder, (id) =>
+        entriesRef.current.some((e) => e.id === id),
+      );
       setLaneOrder(merged);
-      if (projectId) {
-        void saveLaneOrder(projectId, merged).catch(() => {
-          setLaneOrder(prev);
-          toast.error(
-            t("chronicle.reorderSaveFailed", "レーン順の保存に失敗しました"),
-          );
-        });
+      if (commit && projectId) {
+        void saveLaneOrder(projectId, merged)
+          .then(() => {
+            lastPersistedOrderRef.current = merged;
+          })
+          .catch(() => {
+            toast.error(
+              t("chronicle.reorderSaveFailed", "レーン順の保存に失敗しました"),
+            );
+            setLaneOrder(lastPersistedOrderRef.current);
+          });
       }
     },
     [projectId, t],

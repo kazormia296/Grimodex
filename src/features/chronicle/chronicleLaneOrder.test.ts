@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   orderIndexMap,
   compareByLaneOrder,
-  reorderLaneOrder,
-  dropAfter,
+  dropIndexByMidpoints,
+  moveToIndex,
+  mergeLaneOrder,
 } from "./chronicleLaneOrder";
 
 const sortBy = (
@@ -42,77 +43,78 @@ describe("compareByLaneOrder", () => {
   });
 });
 
-describe("reorderLaneOrder", () => {
-  const cur = ["a", "b", "c", "d"];
+describe("dropIndexByMidpoints", () => {
+  // active 除く兄弟の midpoint（表示順）。例: 3 兄弟が 20/60/100。
+  const mids = [20, 60, 100];
+  it("全 midpoint より上 → index 0", () => {
+    expect(dropIndexByMidpoints(10, mids)).toBe(0);
+  });
+  it("1つ越える → index 1", () => {
+    expect(dropIndexByMidpoints(40, mids)).toBe(1);
+  });
+  it("2つ越える → index 2", () => {
+    expect(dropIndexByMidpoints(80, mids)).toBe(2);
+  });
+  it("全部越える → index 3（末尾）", () => {
+    expect(dropIndexByMidpoints(120, mids)).toBe(3);
+  });
+  it("ちょうど midpoint は越えない（> 判定）", () => {
+    expect(dropIndexByMidpoints(60, mids)).toBe(1);
+  });
+});
 
-  it("target の前へ挿入", () => {
-    expect(reorderLaneOrder(cur, "d", "b", false)).toEqual([
-      "a",
-      "d",
-      "b",
-      "c",
+describe("mergeLaneOrder", () => {
+  const allExist = () => true;
+
+  it("不可視 codex は絶対位置を維持し可視だけ並べ替わる", () => {
+    // prev: A(可視) X(不可視) B(可視)。可視を [B,A] に → [B, X, A]（X 中央維持）。
+    expect(mergeLaneOrder(["A", "X", "B"], ["B", "A"], allExist)).toEqual([
+      "B",
+      "X",
+      "A",
     ]);
   });
 
-  it("target の後へ挿入", () => {
-    expect(reorderLaneOrder(cur, "a", "c", true)).toEqual(["b", "c", "a", "d"]);
-  });
-
-  it("target=null は末尾へ", () => {
-    expect(reorderLaneOrder(cur, "a", null, false)).toEqual([
-      "b",
-      "c",
-      "d",
-      "a",
+  it("可視のみなら newOrder と一致", () => {
+    expect(mergeLaneOrder(["A", "B"], ["B", "A"], allExist)).toEqual([
+      "B",
+      "A",
     ]);
   });
 
-  it("同一 target は末尾扱い（no-op に近い）", () => {
-    expect(reorderLaneOrder(cur, "b", "b", false)).toEqual([
-      "a",
-      "c",
-      "d",
-      "b",
+  it("prev に無い新規可視は後置", () => {
+    expect(mergeLaneOrder(["A", "B"], ["C", "B", "A"], allExist)).toEqual([
+      "C",
+      "B",
+      "A",
     ]);
   });
 
-  it("dragged が無ければそのまま", () => {
-    expect(reorderLaneOrder(cur, "z", "b", false)).toBe(cur);
-  });
-
-  it("先頭へ挿入（insertAt=0）", () => {
-    expect(reorderLaneOrder(["a", "b", "c"], "c", "a", false)).toEqual([
-      "c",
-      "a",
-      "b",
-    ]);
-  });
-
-  it("隣接スワップ（after で1つ後ろへ）", () => {
-    expect(reorderLaneOrder(["a", "b", "c"], "a", "b", true)).toEqual([
-      "b",
-      "a",
-      "c",
-    ]);
-  });
-
-  it("target 不在は末尾へ", () => {
-    expect(reorderLaneOrder(["a", "b"], "a", "ghost", false)).toEqual([
-      "b",
-      "a",
+  it("削除済み（非存在）の不可視 id は捨てる", () => {
+    // X は存在しない → ドロップ。
+    const exists = (id: string) => id !== "X";
+    expect(mergeLaneOrder(["A", "X", "B"], ["B", "A"], exists)).toEqual([
+      "B",
+      "A",
     ]);
   });
 });
 
-describe("dropAfter", () => {
-  const rect = { top: 100, height: 40 }; // 中点 120
-  it("上半分は前（false）", () => {
-    expect(dropAfter(110, rect)).toBe(false);
+describe("moveToIndex", () => {
+  const order = ["a", "b", "c", "d"];
+  it("index 0 へ", () => {
+    expect(moveToIndex(order, "c", 0)).toEqual(["c", "a", "b", "d"]);
   });
-  it("下半分は後（true）", () => {
-    expect(dropAfter(130, rect)).toBe(true);
+  it("中間へ（除去後の index）", () => {
+    expect(moveToIndex(order, "a", 2)).toEqual(["b", "c", "a", "d"]);
   });
-  it("ちょうど中点は前（境界は前寄せ）", () => {
-    expect(dropAfter(120, rect)).toBe(false);
+  it("末尾へ（クランプ）", () => {
+    expect(moveToIndex(order, "a", 99)).toEqual(["b", "c", "d", "a"]);
+  });
+  it("同位置は実質 no-op", () => {
+    expect(moveToIndex(order, "b", 1)).toEqual(["a", "b", "c", "d"]);
+  });
+  it("id が無ければそのまま", () => {
+    expect(moveToIndex(order, "z", 0)).toBe(order);
   });
 });

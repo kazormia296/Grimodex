@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, X, GripVertical } from "lucide-react";
 import type { PackedLane } from "./chronicleLanePack";
-import { GROUP_PREFIX } from "./chronicleLayout";
-import { reorderLaneOrder, dropAfter } from "./chronicleLaneOrder";
+import { laneKeyOf } from "./chronicleLayout";
+import { dropIndexByMidpoints, moveToIndex } from "./chronicleLaneOrder";
 import { laneColorFor } from "./laneColor";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { CodexEntryPicker } from "./CodexEntryPicker";
@@ -23,17 +23,14 @@ export interface ChronicleLaneGutterProps {
   onAddLane?: () => void;
   /** 空の未割当（追加）レーンを隠す（×）。 */
   onHideGroup?: (groupId: string) => void;
-  /** codex レーンの並べ替え（新しい全 codex 順を返す）。 */
-  onReorderLanes?: (newOrder: string[]) => void;
+  /**
+   * codex レーンの並べ替え。ドラッグ中は commit=false（表示のみ更新で順次入替え）、
+   * ドロップ時に commit=true（永続化）。新しい全 codex 順を渡す。
+   */
+  onReorderLanes?: (newOrder: string[], commit: boolean) => void;
+  /** レーン入れ替えアニメの縦オフセット（key→px）。translateY で旧→新へ。 */
+  laneOffsets?: Map<string, number>;
 }
-
-// 未割当レーンはグループ別に一意キー（base=__unassigned、追加群=__group_<g>）。
-const laneKeyOf = (lane: PackedLane) =>
-  lane.unassigned
-    ? lane.groupId
-      ? `${GROUP_PREFIX}${lane.groupId}`
-      : "__unassigned"
-    : (lane.codexId ?? "__unassigned");
 
 /**
  * 左レーンガター（アバター＋名前＋件数）。各セルは pack の lane.height に
@@ -51,68 +48,66 @@ export function ChronicleLaneGutter({
   onAddLane,
   onHideGroup,
   onReorderLanes,
+  laneOffsets,
 }: ChronicleLaneGutterProps) {
   const { t } = useTranslation();
   const [gutterEl, setGutterEl] = useState<HTMLDivElement | null>(null);
 
-  // ── codex レーンの並べ替え（grip ハンドルの pointer ドラッグ） ──
-  // drag 中の対象とドロップ先（overKey=codexId or null(末尾) / after=下半分）。
-  const [drag, setDrag] = useState<{
-    codexId: string;
-    overKey: string | null;
-    after: boolean;
-  } | null>(null);
+  // ── codex レーンの並べ替え（Grid 方式の順次入替え） ──
+  // drag 中は対象 codexId のみ保持（dim 用）。位置は live reorder＋FLIP アニメで示す。
+  const [drag, setDrag] = useState<{ codexId: string } | null>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const reorderable = !locked && !!onReorderLanes;
 
   const startReorder = (codexId: string, e: React.MouseEvent) => {
-    if (e.button !== 0 || !onReorderLanes) return;
+    if (e.button !== 0 || !onReorderLanes || !gutterEl) return;
     e.preventDefault();
-    e.stopPropagation();
-    dragCleanupRef.current?.();
+    const onReorder = onReorderLanes;
     const startY = e.clientY;
-    // 現在表示中の codex レーン順（未割当は対象外）。
-    const codexOrder = lanes
-      .filter((l) => !l.unassigned && l.codexId)
-      .map((l) => l.codexId as string);
+    // ドラッグ開始時に固定スナップショットを取る（Grid 同様、以後は再計測しない）。
+    // 中点を固定することで live reorder 中も hit-test が単調＝振動しない。FLIP 中は
+    // 画面位置と中点が一時的にズレ得るが 150ms で収束し、確定は mouseup の py で行う。
+    // 対象 codex 兄弟（active 含む）の表示順 id と client 中点。
+    const baseOrder: string[] = [];
+    const baseMids: number[] = []; // baseOrder と同 index の中点（active 含む）
+    for (const cell of gutterEl.querySelectorAll<HTMLElement>(
+      "[data-lane-id]",
+    )) {
+      const key = cell.getAttribute("data-lane-id");
+      if (!key || key.startsWith("__")) continue; // 未割当は対象外
+      const r = cell.getBoundingClientRect();
+      baseOrder.push(key);
+      baseMids.push((r.top + r.bottom) / 2);
+    }
+    // active を除いた兄弟中点（挿入 index 算出に使う・固定）。
+    const siblingMids = baseMids.filter((_, i) => baseOrder[i] !== codexId);
+    // スクロール補正（ドラッグ中スクロールでも中点基準を保つ）。
+    const scrollEl = gutterEl.closest<HTMLElement>(".overflow-y-auto");
+    const initialScrollTop = scrollEl?.scrollTop ?? 0;
+
+    dragCleanupRef.current?.();
+    setDrag({ codexId });
     let moved = false;
-    let over: { key: string | null; after: boolean } = {
-      key: codexId,
-      after: false,
-    };
+    let lastOrder = baseOrder;
     const move = (ev: MouseEvent) => {
       if (!moved && Math.abs(ev.clientY - startY) < 3) return;
       moved = true;
-      const el = document.elementFromPoint(
-        ev.clientX,
-        ev.clientY,
-      ) as HTMLElement | null;
-      const cell = el?.closest("[data-lane-id]") as HTMLElement | null;
-      const key = cell?.getAttribute("data-lane-id") ?? null;
-      if (!cell || !key || key.startsWith("__")) {
-        // ガター外/未割当レーン上 → codex 順の末尾へ。
-        over = { key: null, after: true };
-      } else {
-        over = {
-          key,
-          after: dropAfter(ev.clientY, cell.getBoundingClientRect()),
-        };
+      const scrollDelta = (scrollEl?.scrollTop ?? 0) - initialScrollTop;
+      const py = ev.clientY + scrollDelta;
+      const idx = dropIndexByMidpoints(py, siblingMids);
+      const next = moveToIndex(baseOrder, codexId, idx);
+      if (next.join("\n") !== lastOrder.join("\n")) {
+        lastOrder = next;
+        onReorder(next, false); // 表示のみ（順次入替え）。永続化はドロップ時。
       }
-      setDrag({ codexId, overKey: over.key, after: over.after });
     };
     const up = () => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", up);
       dragCleanupRef.current = null;
       setDrag(null);
-      if (moved && over.key !== codexId) {
-        const next = reorderLaneOrder(
-          codexOrder,
-          codexId,
-          over.key,
-          over.after,
-        );
-        if (next.join("\n") !== codexOrder.join("\n")) onReorderLanes(next);
+      if (moved && lastOrder.join("\n") !== baseOrder.join("\n")) {
+        onReorder(lastOrder, true); // 確定＝永続化。
       }
     };
     dragCleanupRef.current = () => {
@@ -138,11 +133,6 @@ export function ChronicleLaneGutter({
     id: o.id,
     name: optionLabel(o),
   }));
-
-  // 末尾ドロップ（overKey=null）の指標を出すため最後の codex レーンを特定。
-  const lastCodexId =
-    [...lanes].reverse().find((l) => !l.unassigned && l.codexId)?.codexId ??
-    null;
 
   return (
     <div
@@ -197,11 +187,8 @@ export function ChronicleLaneGutter({
         const isCodexLane = !lane.unassigned && !!lane.codexId;
         const isDragged =
           !!drag && drag.codexId === lane.codexId && isCodexLane;
-        const isOver = !!drag && isCodexLane && drag.overKey === lane.codexId;
-        const showTop = isOver && !drag.after;
-        const showBottom =
-          (isOver && drag.after) ||
-          (!!drag && drag.overKey === null && lane.codexId === lastCodexId);
+        // 順次入替え＋整定アニメの縦オフセット（FLIP, translateY で旧→新へ減衰）。
+        const laneOff = laneOffsets?.get(laneKeyOf(lane)) ?? 0;
         return (
           <div
             key={laneKeyOf(lane)}
@@ -210,24 +197,14 @@ export function ChronicleLaneGutter({
             style={{
               height: lane.height,
               boxSizing: "border-box",
+              // ドラッグ中の対象レーンは半透明（active の明示）。位置は live reorder。
               opacity: isDragged ? 0.4 : undefined,
-              // ドラッグ中の自セルは hit-test から除外（elementFromPoint が
-              // 下層の本来のレーンを返すように＝視覚と判定を一致させる）。
-              pointerEvents: isDragged ? "none" : undefined,
+              transform: laneOff ? `translateY(${laneOff}px)` : undefined,
               background: active
                 ? "color-mix(in oklch, var(--primary) 5%, transparent)"
                 : undefined,
             }}
           >
-            {(showTop || showBottom) && (
-              <div
-                className="pointer-events-none absolute left-0 z-10 h-0.5 w-full bg-primary"
-                style={{
-                  top: showTop ? -1 : undefined,
-                  bottom: showBottom ? -1 : undefined,
-                }}
-              />
-            )}
             {isCodexLane && reorderable && (
               <span
                 data-reorder-grip={lane.codexId ?? undefined}

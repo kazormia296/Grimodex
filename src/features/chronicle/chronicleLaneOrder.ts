@@ -57,33 +57,57 @@ export function compareByLaneOrder(
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-/** ポインタ Y が対象セルの下半分にあるか（true=後ろへ挿入）。純関数。 */
-export function dropAfter(
-  clientY: number,
-  rect: { top: number; height: number },
-): boolean {
-  return clientY > rect.top + rect.height / 2;
+/**
+ * Grid 方式の順次入替え用: ポインタ Y が、並べ替え対象（active 除く）兄弟の
+ * midpoint をいくつ越えたか＝挿入 index。midpoints は表示順の固定スナップショット。
+ * 純関数（決定性・単調）。
+ */
+export function dropIndexByMidpoints(
+  py: number,
+  siblingMids: number[],
+): number {
+  let idx = 0;
+  for (const mid of siblingMids) if (py > mid) idx++;
+  return idx;
 }
 
 /**
- * draggedId を targetId の前/後へ移動した新しい順序を返す。
- * targetId=null は末尾へ。draggedId が無ければ current をそのまま。
- * 注意: 渡す current は「現在可視の codex 順」のスナップショット。可視外（出来事0
- * 等）の codex は含まれないため、呼び出し側で既存 laneOrder とマージして保存する。
+ * 並べ替え結果のマージ。prev（全 codexId・旧順）の可視スロットを newOrder（可視の新順）で
+ * 順に詰め直し、不可視だが存在する id は元の絶対位置を維持、存在しない（削除済み）id は捨てる。
+ * prev に無い新規可視 id は後置。これで不可視 codex（出来事0 等）の位置を保ち、削除 id の
+ * laneOrder 蓄積も防ぐ。決定性: 純関数。
  */
-export function reorderLaneOrder(
-  current: string[],
-  draggedId: string,
-  targetId: string | null,
-  after: boolean,
+export function mergeLaneOrder(
+  prev: string[],
+  newOrder: string[],
+  exists: (id: string) => boolean,
 ): string[] {
-  if (!current.includes(draggedId)) return current;
-  const without = current.filter((id) => id !== draggedId);
-  if (targetId == null || targetId === draggedId) {
-    return [...without, draggedId];
+  const visible = new Set(newOrder);
+  const merged: string[] = [];
+  let vi = 0;
+  for (const id of prev) {
+    if (visible.has(id)) {
+      if (vi < newOrder.length) merged.push(newOrder[vi++]); // 可視スロット
+    } else if (exists(id)) {
+      merged.push(id); // 不可視だが存在＝元位置を維持
+    }
+    // 存在しない（削除済み）不可視 id は捨てる
   }
-  const ti = without.indexOf(targetId);
-  if (ti === -1) return [...without, draggedId];
-  const insertAt = after ? ti + 1 : ti;
-  return [...without.slice(0, insertAt), draggedId, ...without.slice(insertAt)];
+  while (vi < newOrder.length) merged.push(newOrder[vi++]); // prev に無い新規可視
+  return merged;
+}
+
+/**
+ * order（全 codexId・表示順）から id を取り除き index 位置へ挿入した新順序。
+ * index は [0, length-1] にクランプ。id が無ければ order をそのまま返す。
+ */
+export function moveToIndex(
+  order: string[],
+  id: string,
+  index: number,
+): string[] {
+  if (!order.includes(id)) return order;
+  const without = order.filter((x) => x !== id);
+  const i = Math.max(0, Math.min(index, without.length));
+  return [...without.slice(0, i), id, ...without.slice(i)];
 }
