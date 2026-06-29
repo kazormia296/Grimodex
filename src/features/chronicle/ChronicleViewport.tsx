@@ -166,6 +166,9 @@ export function ChronicleViewport({
     move: (ev: MouseEvent) => void,
     up: (ev: MouseEvent) => void,
   ) => {
+    // 直前のドラッグの取りこぼし（mouseup 欠落）でリスナが漏れると以後の操作が
+    // 壊れる（draggedRef が張り付く/勝手にパン）。新規ドラッグ前に必ず撤去する。
+    dragCleanupRef.current?.();
     const onUp = (ev: MouseEvent) => {
       document.removeEventListener("mousemove", move);
       document.removeEventListener("mouseup", onUp);
@@ -191,6 +194,13 @@ export function ChronicleViewport({
     trackElRef.current = el;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      // Shift+ホイール=横スクロール（トラックパッドの deltaX も拾う）。
+      if (e.shiftKey) {
+        const delta =
+          Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        onViewChangeRef.current(panByPx({ view: viewRef.current, dx: -delta }));
+        return;
+      }
       const rect = el.getBoundingClientRect();
       const pivotPx = e.clientX - rect.left;
       const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
@@ -225,6 +235,9 @@ export function ChronicleViewport({
   // 別マーカーへ落として因果エッジ）/ 空白パン＋位置選択。3px 超でクリック抑止。
   const onTrackPointerDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
+    // ドラッグ中に本文/ラベルのテキストが選択されるのを防ぐ（select-none だけでは
+    // ドラッグ起点の選択を抑止できない）。クリック選択は onClick が別途担う。
+    e.preventDefault();
     const el = trackElRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();

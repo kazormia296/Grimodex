@@ -96,9 +96,10 @@ describe("EventMarker (DOM token)", () => {
     expect(el.style.borderStyle).toBe("dashed");
   });
 
-  it("確度 approx はやや減光（opacity<1）", () => {
+  it("確度 approx は点線＋やや減光（確定=実線と明確に差をつける）", () => {
     const { container } = renderMarker({ event: ev({ precision: "approx" }) });
     const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    expect(el.style.borderStyle).toBe("dotted");
     expect(Number(el.style.opacity)).toBeLessThan(1);
   });
 

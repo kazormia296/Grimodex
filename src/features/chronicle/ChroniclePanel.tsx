@@ -70,6 +70,9 @@ export function ChroniclePanel() {
   const toggleLock = useChronicleStore((s) => s.toggleLock);
   const selectedDay = useChronicleStore((s) => s.selectedDay);
   const setSelectedPosition = useChronicleStore((s) => s.setSelectedPosition);
+  // 年表 mutation/undo/redo で単調増加。これを load effect の依存に入れることで
+  // Undo/Redo（bumpRevision のみ呼ぶ）後も DB から再取得して表示を更新する。
+  const revisionCounter = useChronicleStore((s) => s.revisionCounter);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
   const nodes = useTreeStore((s) => s.nodes);
   const timelineSelected = useTimelineStore((s) => s.selectedNodeIds);
@@ -188,7 +191,13 @@ export function ChroniclePanel() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, reloadKey, setSelectedEventId, setSelectedPosition]);
+  }, [
+    projectId,
+    reloadKey,
+    revisionCounter,
+    setSelectedEventId,
+    setSelectedPosition,
+  ]);
 
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -416,20 +425,26 @@ export function ChroniclePanel() {
 
   // ── CRUD ──────────────────────────────────────────────────
   const [creating, setCreating] = useState(false);
-  // 新規作成は「選択中の位置」（空白クリック/ダブルクリック由来）に置く。
+  // 暦モード中は新規イベントに既定の時刻（現在ビュー中央）を付与する。無時刻イベントを
+  // 作ると hasCalendarAxis が false に倒れて全体が並び順(#1)へ落ち、期間が点に化ける。
+  const defaultCreateDay = useCallback((): number | null => {
+    if (!eff.hasCalendarAxis || trackW <= 0 || !(view.pxPerDay > 0))
+      return null;
+    return Math.round(view.viewStartDay + trackW / 2 / view.pxPerDay);
+  }, [eff.hasCalendarAxis, trackW, view]);
+
+  // 新規作成は「選択中の位置」（空白クリック/ダブルクリック由来）、無ければビュー中央へ置く。
   const handleAdd = useCallback(async () => {
     if (!projectId || creating) return;
     setCreating(true);
     try {
       const st = useChronicleStore.getState();
+      const day = st.selectedDay ?? defaultCreateDay();
       const ev = await uiCreateEvent({
         title: t("chronicle.newEvent", "新しい出来事"),
         ...(st.selectedLaneKey ? { primaryCodexId: st.selectedLaneKey } : {}),
-        ...(st.selectedDay != null
-          ? {
-              startTime: Math.round(st.selectedDay),
-              startGranularity: "day" as const,
-            }
+        ...(day != null
+          ? { startTime: Math.round(day), startGranularity: "day" as const }
           : {}),
       });
       setSelectedEventId(ev.id);
@@ -447,6 +462,7 @@ export function ChroniclePanel() {
     refresh,
     setSelectedEventId,
     setSelectedPosition,
+    defaultCreateDay,
   ]);
 
   // id 指定の楽観パッチ（ドラッグ移動/伸縮で使う。handlePatch は選択中専用）。
@@ -517,16 +533,14 @@ export function ChroniclePanel() {
   const handleCreateAt = useCallback(
     async (day: number | null, codexId: string | null) => {
       if (!projectId || creating) return;
+      const d = day ?? defaultCreateDay();
       setCreating(true);
       try {
         const ev = await uiCreateEvent({
           title: t("chronicle.newEvent", "新しい出来事"),
           ...(codexId ? { primaryCodexId: codexId } : {}),
-          ...(day != null
-            ? {
-                startTime: Math.round(day),
-                startGranularity: "day" as const,
-              }
+          ...(d != null
+            ? { startTime: Math.round(d), startGranularity: "day" as const }
             : {}),
         });
         setSelectedEventId(ev.id);
@@ -538,7 +552,15 @@ export function ChroniclePanel() {
         setCreating(false);
       }
     },
-    [projectId, creating, t, refresh, setSelectedEventId, setSelectedPosition],
+    [
+      projectId,
+      creating,
+      t,
+      refresh,
+      setSelectedEventId,
+      setSelectedPosition,
+      defaultCreateDay,
+    ],
   );
 
   const handleDeleteById = useCallback(
@@ -575,14 +597,19 @@ export function ChroniclePanel() {
   );
 
   // レーンガターの「追加」: 選択 Codex に新規出来事を作りレーンを出して編集状態へ。
+  // 暦モード中は既定時刻を付与して並び順モードへ落ちないようにする。
   const handleAddLane = useCallback(
     async (codexId: string) => {
       if (!projectId || creating) return;
+      const day = defaultCreateDay();
       setCreating(true);
       try {
         const ev = await uiCreateEvent({
           title: t("chronicle.newEvent", "新しい出来事"),
           primaryCodexId: codexId,
+          ...(day != null
+            ? { startTime: Math.round(day), startGranularity: "day" as const }
+            : {}),
         });
         setSelectedEventId(ev.id);
         refresh();
@@ -592,7 +619,7 @@ export function ChroniclePanel() {
         setCreating(false);
       }
     },
-    [projectId, creating, t, refresh, setSelectedEventId],
+    [projectId, creating, t, refresh, setSelectedEventId, defaultCreateDay],
   );
 
   const handlePatch = useCallback(

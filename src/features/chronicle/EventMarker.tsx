@@ -69,9 +69,17 @@ export function EventMarker({
     : related
       ? `0 0 0 3px ${mix(ACCENT, 12, "transparent")}`
       : undefined;
-  // 確度/オフページの外周線スタイルは point/interval 共通で、選択中でも視認できる
-  // よう border 色（=選択リングと独立）に載せる。dashed=不明 or オフページ。
-  const dashed = !event.sceneLinked || event.precision === "unknown";
+  // 確度の外周線（point/interval 共通・選択中でも視認可。差を明確にするため
+  // solid=確定 / dotted=おおよそ / dashed=不明 と線種を3分し、非確定は太く＋減光する。
+  // オフページ(scene 未参照)も dashed。
+  const offpage = !event.sceneLinked;
+  const borderStyle: CSSProperties["borderStyle"] =
+    offpage || event.precision === "unknown"
+      ? "dashed"
+      : event.precision === "approx"
+        ? "dotted"
+        : "solid";
+  const borderWidth = event.precision === "exact" && !offpage ? 1 : 1.6;
   // ボーダー色: 矛盾=AMBER（最優先）。選択は ring で示し色は奪わない（確度を隠さない）。
   const baseBorder = conflict
     ? AMBER
@@ -90,8 +98,8 @@ export function EventMarker({
       gap: 6,
       padding: "0 9px",
       background: mix(lc, 14, "transparent"),
-      border: `1px solid ${baseBorder}`,
-      borderStyle: dashed ? "dashed" : "solid",
+      border: `${borderWidth}px solid ${baseBorder}`,
+      borderStyle,
       borderRadius: 7,
       overflow: "hidden",
       whiteSpace: "nowrap",
@@ -111,8 +119,8 @@ export function EventMarker({
       background: event.sceneLinked
         ? "var(--card)"
         : mix("var(--card)", 96, "var(--foreground)"),
-      border: `1px solid ${baseBorder}`,
-      borderStyle: dashed ? "dashed" : "solid",
+      border: `${borderWidth}px solid ${baseBorder}`,
+      borderStyle,
       borderRadius: tokenH / 2,
       boxShadow: ring ?? "0 1px 2px rgba(0,0,0,.07)",
       maxWidth: maxTok,
@@ -120,8 +128,9 @@ export function EventMarker({
       zIndex: selected ? 9 : 5,
     };
   }
-  // おおよそ=やや減光（確定との差を出す）。不明は破線で表現済み。
-  if (event.precision === "approx") container.opacity = 0.9;
+  // 不明=破線＋減光、おおよそ=点線＋わずか減光（確定との差を視覚化）。
+  if (event.precision === "unknown") container.opacity = 0.8;
+  else if (event.precision === "approx") container.opacity = 0.92;
 
   let glyph: CSSProperties;
   if (isInterval) {
