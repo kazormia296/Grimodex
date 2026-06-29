@@ -494,6 +494,8 @@ const SCHEMA_DDL = `
     end_granularity TEXT NOT NULL DEFAULT 'none',
     precision TEXT NOT NULL DEFAULT 'exact',
     kind TEXT NOT NULL DEFAULT 'generic',
+    secret INTEGER NOT NULL DEFAULT 0,
+    reveal_scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );

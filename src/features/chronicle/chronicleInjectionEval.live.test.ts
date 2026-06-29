@@ -147,6 +147,8 @@ function mkEvent(
     endGranularity: e.endGranularity ?? "none",
     precision: e.precision ?? "exact",
     kind: e.kind ?? "generic",
+    secret: e.secret ?? false,
+    revealSceneId: e.revealSceneId ?? null,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
   };

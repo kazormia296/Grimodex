@@ -1783,6 +1783,8 @@ impl Database {
                                    CHECK(precision IN ('exact','approx','unknown')),
                 kind             TEXT NOT NULL DEFAULT 'generic'
                                    CHECK(kind IN ('generic','birth','death')),
+                secret           INTEGER NOT NULL DEFAULT 0,
+                reveal_scene_id  TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
                 created_at       TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -1813,6 +1815,15 @@ impl Database {
             "events",
             "end_granularity",
             "TEXT NOT NULL DEFAULT 'none'",
+        )?;
+        // AI 秘匿（reveal アンカー方式）。既存 DB へは CHECK 無しの素 ALTER で追加。
+        // secret 既定 0=表示・reveal_scene_id 既定 NULL（後方互換・挙動不変）。
+        Self::add_column_if_missing(&conn, "events", "secret", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::add_column_if_missing(
+            &conn,
+            "events",
+            "reveal_scene_id",
+            "TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL",
         )?;
 
         // 出来事への参加 codex（多対多）。主参加は events.primary_codex_id。

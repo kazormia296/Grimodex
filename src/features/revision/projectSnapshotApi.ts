@@ -890,11 +890,24 @@ async function restoreStructural(
         locationCodexId = null;
         skipped.eventCodexRefCleared++;
       }
+      // reveal_scene_id は tree_nodes(scene) を参照する FK。body 未選択かつ参照先
+      // シーンが復元ツリーに無いと COMMIT 時 FK 失敗で復元全体が巻き戻る。codex/
+      // payoffSceneId と同流儀で null 化（effectiveRevealSceneId が自動導出へ戻る）。
+      let revealSceneId = (row.reveal_scene_id as string | null) ?? null;
+      if (
+        !scopes.has("body") &&
+        typeof revealSceneId === "string" &&
+        !liveTreeNodeIds.has(revealSceneId)
+      ) {
+        revealSceneId = null;
+        skipped.eventRevealSceneCleared++;
+      }
       pushStmt(
         buildInsert("events", {
           ...row,
           primary_codex_id: primaryCodexId,
           location_codex_id: locationCodexId,
+          reveal_scene_id: revealSceneId,
         }),
       );
     }

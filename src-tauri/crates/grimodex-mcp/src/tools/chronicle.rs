@@ -467,6 +467,13 @@ pub struct CreateEventParams {
     pub start_granularity: Option<String>,
     /// How precise the end date is: 'none'|'season'|'year'|'month'|'day'|'time' (default 'none').
     pub end_granularity: Option<String>,
+    /// Hide this event from AI context (spoiler protection; default false).
+    /// Like a foreshadow's secret flag — a secret event is excluded from MCP
+    /// reads until disclosed in-story. From MCP it is always hidden once set.
+    pub secret: Option<bool>,
+    /// Reading-order disclosure anchor scene id (optional override). Empty/None
+    /// auto-derives from the earliest stamped scene, or stays permanently hidden.
+    pub reveal_scene_id: Option<String>,
     /// Participant codex ids to attach (optional).
     pub participant_codex_ids: Option<Vec<String>>,
     /// Scene ids to stamp this event onto (optional).
@@ -516,6 +523,8 @@ pub async fn create_event(
             end_granularity: params.end_granularity.as_deref(),
             precision: None,
             kind,
+            secret: params.secret,
+            reveal_scene_id: params.reveal_scene_id.as_deref(),
             participant_codex_ids: &participants,
             scene_ids: &scene_ids,
         },
@@ -546,6 +555,11 @@ pub struct UpdateEventParams {
     pub start_granularity: Option<String>,
     /// End date precision: 'none'|'season'|'year'|'month'|'day'|'time'.
     pub end_granularity: Option<String>,
+    /// Hide/unhide this event from AI context (spoiler protection).
+    pub secret: Option<bool>,
+    /// Reading-order disclosure anchor scene id. Empty string clears the
+    /// override (back to auto-derive from the earliest stamped scene).
+    pub reveal_scene_id: Option<String>,
 }
 
 pub async fn update_event(
@@ -601,6 +615,8 @@ pub async fn update_event(
             end_granularity: params.end_granularity.as_deref(),
             precision: None,
             kind: params.kind.as_deref(),
+            secret: params.secret,
+            reveal_scene_id: params.reveal_scene_id.as_deref(),
         },
     );
     map_write(outcome, "Event not found in this project")
@@ -854,6 +870,132 @@ mod tests {
         conn.query_row(sql, params![p], |r| r.get(0)).unwrap()
     }
 
+    fn set_secret(server: &GrimodexServer, id: &str) {
+        let conn = server.conn.lock().unwrap();
+        conn.execute("UPDATE events SET secret = 1 WHERE id = ?1", params![id])
+            .unwrap();
+    }
+
+    // ── AI secrecy (fail-closed: MCP has no current-scene context) ────────────
+
+    #[tokio::test]
+    async fn secret_event_hidden_from_reads_and_writes() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "pub", "Public", "a0");
+        seed_event(&server, "p1", "sec", "Secret poisoning", "a1");
+        set_secret(&server, "sec");
+
+        // read: list_events excludes the secret event.
+        let listed = list_events(&server, ListEventsParams { kind: None })
+            .await
+            .unwrap();
+        let ids: Vec<String> = result_json(&listed)["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap().to_string())
+            .collect();
+        assert!(ids.contains(&"pub".to_string()));
+        assert!(
+            !ids.contains(&"sec".to_string()),
+            "secret event must not be listed"
+        );
+
+        // read: get_event_detail on the secret event → null (not found).
+        let detail = get_event_detail(
+            &server,
+            GetEventDetailParams {
+                event_id: "sec".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            result_json(&detail).is_null(),
+            "secret detail must be null (generic not found)"
+        );
+
+        // write-by-id: update / delete on the secret event → error (fail-closed).
+        let upd = update_event(
+            &server,
+            UpdateEventParams {
+                event_id: "sec".into(),
+                title: Some("leaked".into()),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
+            },
+        )
+        .await;
+        assert!(upd.is_err(), "update on a secret event must fail-closed");
+        let del = delete_event(
+            &server,
+            EventIdParams {
+                event_id: "sec".into(),
+            },
+        )
+        .await;
+        assert!(del.is_err(), "delete on a secret event must fail-closed");
+
+        // the secret row is untouched (title not leaked-overwritten, not deleted).
+        assert_eq!(
+            scalar(
+                &server,
+                "SELECT COUNT(*) FROM events WHERE id = ?1 AND title = 'Secret poisoning'",
+                "sec",
+            ),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn create_event_persists_secret_and_reveal() {
+        let server = make_server(false);
+        seed_scene(&server, "p1", "s1");
+        let res = create_event(
+            &server,
+            CreateEventParams {
+                title: "Hidden".into(),
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: Some(true),
+                reveal_scene_id: Some("s1".into()),
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .await
+        .unwrap();
+        let id = result_json(&res)["id"].as_str().unwrap().to_string();
+        let conn = server.conn.lock().unwrap();
+        let (secret, reveal): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT secret, reveal_scene_id FROM events WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(secret, 1, "create must persist secret flag");
+        assert_eq!(reveal.as_deref(), Some("s1"), "create must persist reveal");
+    }
+
     // ── XPROJ read regression ────────────────────────────────────────────────
 
     #[tokio::test]
@@ -935,6 +1077,8 @@ mod tests {
                 end_minute: None,
                 start_granularity: None,
                 end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
                 participant_codex_ids: None,
                 scene_ids: None,
             },
@@ -988,6 +1132,8 @@ mod tests {
                 end_minute: Some(600),
                 start_granularity: Some("time".to_string()),
                 end_granularity: Some("day".to_string()),
+                secret: None,
+                reveal_scene_id: None,
                 participant_codex_ids: None,
                 scene_ids: None,
             },
@@ -1044,6 +1190,8 @@ mod tests {
                 end_minute: None,
                 start_granularity: None,
                 end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
                 participant_codex_ids: None,
                 scene_ids: None,
             },
@@ -1080,6 +1228,8 @@ mod tests {
                 end_minute: None,
                 start_granularity: Some("month".to_string()),
                 end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
             },
         )
         .await
@@ -1121,6 +1271,8 @@ mod tests {
                 end_minute: None,
                 start_granularity: None,
                 end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
                 participant_codex_ids: Some(vec!["alice".to_string()]),
                 scene_ids: Some(vec!["s1".to_string()]),
             },
@@ -1341,6 +1493,8 @@ mod tests {
                 end_minute: None,
                 start_granularity: None,
                 end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
             },
         )
         .await;
@@ -1375,6 +1529,8 @@ mod tests {
                 end_minute: None,
                 start_granularity: None,
                 end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
                 participant_codex_ids: None,
                 scene_ids: None,
             },

@@ -1404,6 +1404,14 @@ export const events = sqliteTable(
     precision: text("precision").notNull().default("exact"),
     // 'generic' | 'birth' | 'death'。birth は年齢計算の基準点。
     kind: text("kind").notNull().default("generic"),
+    // AI 秘匿（伏線 foreshadows.secret と同 idiom・reveal アンカー方式）。
+    // default false=表示。隠すのはオプトイン（年表注入の存在意義＝AI に背景を渡す）。
+    secret: integer("secret", { mode: "boolean" }).notNull().default(false),
+    // 読む順の開示アンカー（明示上書き専用・null=自動導出 or 恒久秘匿）。シーン削除で
+    // set null → effectiveRevealSceneId が自動導出（スタンプ最小シーン）へフォールバック。
+    revealSceneId: text("reveal_scene_id").references(() => treeNodes.id, {
+      onDelete: "set null",
+    }),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),

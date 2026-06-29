@@ -1354,6 +1354,10 @@ pub(crate) struct AgentEventCreatePayload {
     end_granularity: Option<String>,
     precision: Option<String>,
     kind: Option<String>,
+    /// AI 秘匿（reveal アンカー方式）。省略時 false=表示。
+    secret: Option<bool>,
+    /// 読む順の開示アンカー（明示上書き・空/None=自動導出 or 恒久秘匿）。
+    reveal_scene_id: Option<String>,
     participant_codex_ids: Option<Vec<String>>,
     scene_ids: Option<Vec<String>>,
 }
@@ -1382,6 +1386,10 @@ pub(crate) struct AgentEventUpdatePayload {
     end_granularity: Option<String>,
     precision: Option<String>,
     kind: Option<String>,
+    /// AI 秘匿（reveal アンカー方式）。set-if-present。
+    secret: Option<bool>,
+    /// 読む順の開示アンカー（set-if-present・空文字は NULL=自動導出へ戻す）。
+    reveal_scene_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1439,6 +1447,7 @@ fn collect_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> anyhow
             'endTime', end_time, 'startMinute', start_minute,
             'endMinute', end_minute, 'startGranularity', start_granularity,
             'endGranularity', end_granularity, 'precision', precision, 'kind', kind,
+            'secret', secret, 'revealSceneId', reveal_scene_id,
             'createdAt', created_at, 'updatedAt', updated_at
          ) FROM events WHERE id = ?1",
         rusqlite::params![event_id],
@@ -1538,12 +1547,33 @@ fn apply_event_composite_snapshot(
         .ok_or_else(|| anyhow::anyhow!("event snapshot missing eventData.id"))?;
     let now = chrono::Utc::now().to_rfc3339();
 
+    // reveal_scene_id は tree_nodes(scene) 参照。undo/redo の間に reveal シーンが
+    // 削除されていると、古いスナップショットの id を UPSERT すると FK 失敗で undo が
+    // bail する。参照先が無ければ NULL へフォールバック（spec §2.1・ON DELETE SET
+    // NULL と同じ「自動導出へ戻す」挙動）。
+    let reveal_scene_id: Option<String> = match ed["revealSceneId"].as_str() {
+        Some(sid) => {
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![sid, project_id],
+                |r| r.get(0),
+            )?;
+            if n > 0 {
+                Some(sid.to_string())
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+
     conn.execute(
         "INSERT INTO events
          (id, project_id, title, note, ordinal, primary_codex_id, location_codex_id,
           start_time, end_time, start_minute, end_minute, start_granularity,
-          end_granularity, precision, kind, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+          end_granularity, precision, kind, secret, reveal_scene_id,
+          created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
          ON CONFLICT(id) DO UPDATE SET
             title = excluded.title, note = excluded.note, ordinal = excluded.ordinal,
             primary_codex_id = excluded.primary_codex_id,
@@ -1553,6 +1583,7 @@ fn apply_event_composite_snapshot(
             start_granularity = excluded.start_granularity,
             end_granularity = excluded.end_granularity,
             precision = excluded.precision, kind = excluded.kind,
+            secret = excluded.secret, reveal_scene_id = excluded.reveal_scene_id,
             updated_at = excluded.updated_at",
         rusqlite::params![
             id,
@@ -1570,6 +1601,8 @@ fn apply_event_composite_snapshot(
             ed["endGranularity"].as_str().unwrap_or("none"),
             ed["precision"].as_str().unwrap_or("exact"),
             ed["kind"].as_str().unwrap_or("generic"),
+            ed["secret"].as_i64().unwrap_or(0),
+            reveal_scene_id,
             ed["createdAt"].as_str().unwrap_or(&now),
             ed["updatedAt"].as_str().unwrap_or(&now),
         ],
@@ -1823,6 +1856,9 @@ fn agent_event_create_impl(
         .unwrap_or_else(|| "none".to_string());
     let participants = payload.participant_codex_ids.unwrap_or_default();
     let scene_ids = payload.scene_ids.unwrap_or_default();
+    let secret = payload.secret.unwrap_or(false);
+    // 空文字の reveal は NULL（自動導出/恒久秘匿）に正規化。
+    let reveal_scene_id = payload.reveal_scene_id.filter(|s| !s.is_empty());
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -1833,8 +1869,8 @@ fn agent_event_create_impl(
                  (id, project_id, title, note, ordinal, primary_codex_id,
                   location_codex_id, start_time, end_time, start_minute, end_minute,
                   start_granularity, end_granularity, precision, kind,
-                  created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
+                  secret, reveal_scene_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18)",
                 rusqlite::params![
                     event_id,
                     payload.project_id,
@@ -1851,6 +1887,8 @@ fn agent_event_create_impl(
                     end_granularity,
                     precision,
                     kind,
+                    secret,
+                    reveal_scene_id,
                     now,
                 ],
             )?;
@@ -2036,6 +2074,20 @@ fn agent_event_update_impl(
                 params.push(Box::new(v.clone()));
                 param_idx += 1;
                 fields.push("kind");
+            }
+            if let Some(v) = payload.secret {
+                sets.push(format!("secret = ?{param_idx}"));
+                params.push(Box::new(v));
+                param_idx += 1;
+                fields.push("secret");
+            }
+            if let Some(ref v) = payload.reveal_scene_id {
+                // 空文字は NULL（自動導出/恒久秘匿）に正規化。
+                let val: Option<String> = if v.is_empty() { None } else { Some(v.clone()) };
+                sets.push(format!("reveal_scene_id = ?{param_idx}"));
+                params.push(Box::new(val));
+                param_idx += 1;
+                fields.push("revealSceneId");
             }
 
             let sql = format!(
@@ -3129,6 +3181,8 @@ mod tests {
             end_granularity: None,
             precision: None,
             kind: None,
+            secret: None,
+            reveal_scene_id: None,
         }
     }
 
@@ -3159,6 +3213,8 @@ mod tests {
                 end_granularity: None,
                 precision: None,
                 kind: None,
+                secret: None,
+                reveal_scene_id: None,
                 participant_codex_ids: (!participants.is_empty()).then_some(participants),
                 scene_ids: (!scenes.is_empty()).then_some(scenes),
             },
@@ -3215,6 +3271,8 @@ mod tests {
                 end_granularity: None,
                 precision: None,
                 kind: None,
+                secret: None,
+                reveal_scene_id: None,
                 participant_codex_ids: None,
                 scene_ids: None,
             },

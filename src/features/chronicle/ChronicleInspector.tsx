@@ -19,6 +19,8 @@ export interface ChronicleInspectorProps {
   characters: { id: string; name: string }[];
   /** 場所候補（location 種別で絞り込み済み）。 */
   locations: { id: string; name: string }[];
+  /** AI 秘匿の reveal アンカー候補（読む順に並んだシーン）。 */
+  scenes?: { id: string; title: string }[];
   /** 暦（日付エディタの年/月/日/季節変換に使う）。 */
   calendar: ChronicleCalendar;
   conflicts?: SeasonConflict[];
@@ -45,6 +47,7 @@ export function ChronicleInspector({
   event,
   characters,
   locations,
+  scenes = [],
   calendar,
   conflicts,
   ageConflicts,
@@ -182,6 +185,46 @@ export function ChronicleInspector({
         endGranularity={event.endGranularity}
         onPatch={(p: EventDatePatch) => onPatch(p)}
       />
+      <div className="space-y-1 rounded bg-muted/40 px-2 py-1.5 text-xs">
+        <label className="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={event.secret}
+            onChange={(e) => onPatch({ secret: e.target.checked })}
+          />
+          <span>{t("chronicle.secretLabel", "AI に秘匿（ネタバレ防止）")}</span>
+        </label>
+        {event.secret && (
+          <>
+            <label className="flex items-center gap-1">
+              <span className="text-muted-foreground">
+                {t("chronicle.revealSceneLabel", "開示シーン")}
+              </span>
+              <select
+                value={event.revealSceneId ?? ""}
+                onChange={(e) => onPatch({ revealSceneId: e.target.value })}
+                aria-label={t("chronicle.revealSceneLabel", "開示シーン")}
+                className="min-w-0 flex-1 rounded border bg-transparent px-1 py-0.5"
+              >
+                <option value="">
+                  {t("chronicle.revealSceneAuto", "自動（初出シーン）")}
+                </option>
+                {scenes.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.title || t("chronicle.untitledScene", "無題のシーン")}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="text-[11px] text-muted-foreground">
+              {t(
+                "chronicle.secretDesc",
+                "開示シーン以降を書くときのみ AI に渡されます。スタンプも開示シーン指定も無ければ恒久的に秘匿します。",
+              )}
+            </p>
+          </>
+        )}
+      </div>
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <label className="flex items-center gap-1">
           {t("chronicle.precisionLabel", "日付の確度")}

@@ -65,6 +65,12 @@ import {
 } from "@/features/semantic-search/api";
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import {
+  listEvents as listChronicleEvents,
+  listSceneEventsForProject,
+} from "@/features/chronicle/api";
+import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
+import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 
 interface QueryResult<T = Record<string, unknown>> {
   rows: T[];
@@ -275,23 +281,44 @@ async function searchEvents(
       ? Math.min(Math.floor(rawLimit), 30)
       : 10;
 
-  const hits = await eventsSemanticSearch({ projectId, query, limit }).catch(
-    (e) => {
-      debugLog.warn(
-        "search_events",
-        "dense events search failed (empty fallback)",
-        errorDetail(e),
-      );
-      return [] as EventSearchHit[];
-    },
+  // AI 秘匿: hidden な secret イベントは hit から除外するため over-fetch（≤30=backendMax）→
+  // visible filter → slice(limit)。索引自体は全件のまま（title 漏洩を返却段で防ぐ）。
+  const fetchLimit = Math.min(limit * 3, 30);
+  const hits = await eventsSemanticSearch({
+    projectId,
+    query,
+    limit: fetchLimit,
+  }).catch((e) => {
+    debugLog.warn(
+      "search_events",
+      "dense events search failed (empty fallback)",
+      errorDetail(e),
+    );
+    return [] as EventSearchHit[];
+  });
+
+  // 現在シーン（activeSceneId）文脈で hidden な event id 集合を算出（spec §2.5）。
+  const allEvents = await listChronicleEvents(projectId);
+  const sceneEvents = await listSceneEventsForProject(projectId);
+  const readingOrder = computeGlobalSceneOrder(useTreeStore.getState().nodes);
+  const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
+  const hidden = new Set(
+    allEvents
+      .filter((e) =>
+        isEventHiddenFromAi(e, currentSceneId, { readingOrder, sceneEvents }),
+      )
+      .map((e) => e.id),
   );
 
-  const content = hits.map((h) => ({
-    eventId: h.eventId,
-    title: h.title,
-    kind: h.kind,
-    score: h.score,
-  }));
+  const content = hits
+    .filter((h) => !hidden.has(h.eventId))
+    .slice(0, limit)
+    .map((h) => ({
+      eventId: h.eventId,
+      title: h.title,
+      kind: h.kind,
+      score: h.score,
+    }));
   const json = JSON.stringify(content);
   return {
     name: "search_events",

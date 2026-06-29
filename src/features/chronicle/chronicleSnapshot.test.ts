@@ -28,6 +28,8 @@ function mkEvent(p: Partial<EventRow> & { id: string }): EventRow {
     endGranularity: p.endGranularity ?? "none",
     precision: p.precision ?? "exact",
     kind: p.kind ?? "generic",
+    secret: p.secret ?? false,
+    revealSceneId: p.revealSceneId ?? null,
     createdAt: "",
     updatedAt: "",
   };
@@ -722,6 +724,39 @@ describe("assembleChronicleSnapshotText", () => {
     });
     expect(text).toContain("戴冠式");
     expect(text).toContain("アリス");
+  });
+
+  it("AI 秘匿: secret イベントは reveal シーン前で隠れ reveal シーン以降で出る", () => {
+    const events = [
+      mkEvent({ id: "e1", title: "戴冠式", ordinal: "a2" }),
+      mkEvent({
+        id: "sec",
+        title: "毒殺の真相",
+        ordinal: "a1",
+        secret: true,
+        revealSceneId: "s2",
+      }),
+    ];
+    const base = {
+      events,
+      participants: [],
+      relations: [],
+      sceneEvents: [{ sceneId: "s1", eventId: "e1" }],
+      calendar: CAL,
+      readingOrder: new Map<string, number>([
+        ["s1", 0],
+        ["s2", 1],
+      ]),
+      codexNames: new Map<string, string>(),
+      lang: "ja",
+    };
+    // s1（reveal s2 より前）: 秘匿イベントは出ない。
+    const before = assembleChronicleSnapshotText({ ...base, sceneId: "s1" });
+    expect(before).toContain("戴冠式");
+    expect(before ?? "").not.toContain("毒殺");
+    // s2（reveal 以降）: 秘匿イベントが背景に出る。
+    const after = assembleChronicleSnapshotText({ ...base, sceneId: "s2" });
+    expect(after).toContain("毒殺");
   });
 
   it("events 空・全 none で出力が空なら undefined", () => {
