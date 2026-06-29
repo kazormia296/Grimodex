@@ -112,3 +112,24 @@ describe("packLanes", () => {
     expect(empty.totalHeight).toBe(80);
   });
 });
+
+import { laneAtY } from "./chronicleLanePack";
+
+describe("laneAtY", () => {
+  const lanes = [
+    { codexId: "a", name: "A", kind: "character", unassigned: false, count: 1, top: 0, height: 50, rows: 1, markers: [] },
+    { codexId: "b", name: "B", kind: "character", unassigned: false, count: 1, top: 50, height: 60, rows: 1, markers: [] },
+  ];
+  it("範囲内の y は該当レーン", () => {
+    expect(laneAtY(lanes, 10)?.codexId).toBe("a");
+    expect(laneAtY(lanes, 80)?.codexId).toBe("b");
+    expect(laneAtY(lanes, 50)?.codexId).toBe("b"); // 境界は下側レーン
+  });
+  it("範囲外は最近傍へクランプ", () => {
+    expect(laneAtY(lanes, -10)?.codexId).toBe("a");
+    expect(laneAtY(lanes, 999)?.codexId).toBe("b");
+  });
+  it("空なら null", () => {
+    expect(laneAtY([], 10)).toBeNull();
+  });
+});

@@ -1,15 +1,31 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
+  dayToX,
   panByPx,
   viewStartFromThumb,
+  xToDay,
   zoomAt,
   type View,
 } from "./chronicleAxis";
 import type { ChronicleLayout } from "./chronicleLayout";
+import { laneAtY } from "./chronicleLanePack";
+import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
 import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
 import { EventMarker, type MarkerEvent } from "./EventMarker";
+
+const SNAP_PX = 12;
+const DRAG_THRESHOLD = 3;
+
+/** レーンの表示キー（codexId or "__unassigned"）→ 割当用 codexId（null=未割当）。 */
+function laneTargetCodexId(lane: {
+  unassigned: boolean;
+  codexId: string | null;
+}): string | null {
+  return lane.unassigned ? null : lane.codexId;
+}
 
 export interface ChronicleViewportProps {
   view: View;
@@ -31,6 +47,27 @@ export interface ChronicleViewportProps {
   selectedUnassigned?: boolean;
   onAssignLane?: (codexId: string) => void;
   onAddLane?: (codexId: string) => void;
+  // ── グラフ操作（任意・ロック時は呼ばれない） ──
+  /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
+  selectedDay?: number | null;
+  /** 暦軸モードか（false=並び順モードでは時間ドラッグ/位置作成を抑止）。 */
+  hasCalendarAxis?: boolean;
+  /** マーカー再配置（newStartDay=null は時間変更なし。newCodexId でレーン再割当）。 */
+  onMoveEvent?: (
+    id: string,
+    newStartDay: number | null,
+    newCodexId: string | null,
+  ) => void;
+  /** 期間端の伸縮（edge=start/end の日を更新）。 */
+  onResizeEvent?: (id: string, edge: "start" | "end", newDay: number) => void;
+  /** D&D 因果エッジ作成（cause→effect）。 */
+  onCreateEdge?: (causeId: string, effectId: string) => void;
+  /** 空白の位置に新規作成（day=null は時間なし）。 */
+  onCreateAt?: (day: number | null, codexId: string | null) => void;
+  /** 位置選択（縦ガイド）。 */
+  onSelectPosition?: (day: number | null, codexId: string | null) => void;
+  /** 出来事削除（コンテキストメニュー）。 */
+  onDeleteEvent?: (id: string) => void;
 }
 
 /**
@@ -57,6 +94,14 @@ export function ChronicleViewport({
   selectedUnassigned,
   onAssignLane,
   onAddLane,
+  selectedDay,
+  hasCalendarAxis = true,
+  onMoveEvent,
+  onResizeEvent,
+  onCreateEdge,
+  onCreateAt,
+  onSelectPosition,
+  onDeleteEvent,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const trackElRef = useRef<HTMLDivElement | null>(null);
@@ -73,6 +118,67 @@ export function ChronicleViewport({
   const cleanupRef = useRef<(() => void) | null>(null);
   // 進行中のドラッグの document リスナ撤去関数（アンマウント時の取りこぼし防止）。
   const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  // ドラッグ中の縦ガイド（content px）とコンテキストメニュー。
+  const [ghostX, setGhostX] = useState<number | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    eventId: string | null;
+  } | null>(null);
+
+  // document リスナから最新の callback/flag を読むための ref。
+  const cbRef = useRef({
+    locked: false,
+    hasCalendarAxis: true,
+    onMoveEvent,
+    onResizeEvent,
+    onCreateEdge,
+    onCreateAt,
+    onSelectPosition,
+  });
+  cbRef.current = {
+    locked: !!locked,
+    hasCalendarAxis,
+    onMoveEvent,
+    onResizeEvent,
+    onCreateEdge,
+    onCreateAt,
+    onSelectPosition,
+  };
+
+  // ── 座標ヘルパ（track rect 基準） ──
+  const snappedDayAt = (clientX: number, rect: DOMRect): number => {
+    const raw = xToDay(viewRef.current, clientX - rect.left);
+    const maxDist = SNAP_PX / Math.max(viewRef.current.pxPerDay, 1e-9);
+    const tickDays = layoutRef.current.ticks.minor.map((tk) =>
+      xToDay(viewRef.current, tk.x),
+    );
+    return snapDayToTicks(raw, tickDays, maxDist);
+  };
+  const laneCodexAt = (clientY: number, rect: DOMRect): string | null => {
+    const lane = laneAtY(layoutRef.current.pack.lanes, clientY - rect.top);
+    return lane ? laneTargetCodexId(lane) : null;
+  };
+
+  // document ドラッグの登録/撤去（move + up を1組で）。
+  const bindDrag = (
+    move: (ev: MouseEvent) => void,
+    up: (ev: MouseEvent) => void,
+  ) => {
+    const onUp = (ev: MouseEvent) => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", onUp);
+      dragCleanupRef.current = null;
+      up(ev);
+    };
+    dragCleanupRef.current = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", onUp);
+  };
 
   // wheel（passive:false で preventDefault）と ResizeObserver を track へ装着。
   const setTrackEl = useCallback((el: HTMLDivElement | null) => {
@@ -115,32 +221,135 @@ export function ChronicleViewport({
     [],
   );
 
-  // トラックドラッグ＝横パン。3px 超移動でクリック（選択）を抑止する。
+  // トラック pointerdown を一元処理: 期間端伸縮 / マーカードラッグ（移動 or
+  // 別マーカーへ落として因果エッジ）/ 空白パン＋位置選択。3px 超でクリック抑止。
   const onTrackPointerDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
+    const el = trackElRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const targetEl = e.target as HTMLElement;
+    const resizeEl = targetEl.closest("[data-resize]");
+    const markerEl = targetEl.closest("[data-event-id]");
+    const eventId = markerEl?.getAttribute("data-event-id") ?? null;
+    const cb = cbRef.current;
     const startX = e.clientX;
-    const startView = viewRef.current;
+    const startY = e.clientY;
     draggedRef.current = false;
-    const move = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX;
-      if (Math.abs(dx) > 3) draggedRef.current = true;
-      onViewChangeRef.current(panByPx({ view: startView, dx }));
-    };
-    const up = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-      dragCleanupRef.current = null;
-      // クリックハンドラが走った後に false へ戻す。
-      setTimeout(() => {
-        draggedRef.current = false;
-      }, 0);
-    };
-    dragCleanupRef.current = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-    };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
+    if (menu) setMenu(null);
+
+    // ── 期間端の伸縮 ──
+    if (
+      resizeEl &&
+      eventId &&
+      !cb.locked &&
+      cb.onResizeEvent &&
+      cb.hasCalendarAxis
+    ) {
+      const edge = resizeEl.getAttribute("data-resize") as "start" | "end";
+      bindDrag(
+        (ev) => {
+          if (Math.abs(ev.clientX - startX) > DRAG_THRESHOLD)
+            draggedRef.current = true;
+          setGhostX(ev.clientX - rect.left);
+        },
+        (ev) => {
+          setGhostX(null);
+          if (draggedRef.current)
+            cb.onResizeEvent!(eventId, edge, snappedDayAt(ev.clientX, rect));
+          setTimeout(() => {
+            draggedRef.current = false;
+          }, 0);
+        },
+      );
+      return;
+    }
+
+    // ── マーカー: ドラッグで移動、別マーカーへ落とすと因果エッジ（ロック時は選択のみ） ──
+    if (markerEl && eventId) {
+      if (!cb.locked && (cb.onMoveEvent || cb.onCreateEdge)) {
+        bindDrag(
+          (ev) => {
+            if (
+              Math.abs(ev.clientX - startX) > DRAG_THRESHOLD ||
+              Math.abs(ev.clientY - startY) > DRAG_THRESHOLD
+            ) {
+              draggedRef.current = true;
+              setGhostX(ev.clientX - rect.left);
+            }
+          },
+          (ev) => {
+            setGhostX(null);
+            if (draggedRef.current) {
+              const overEl = document.elementFromPoint(
+                ev.clientX,
+                ev.clientY,
+              ) as HTMLElement | null;
+              const overId =
+                overEl
+                  ?.closest("[data-event-id]")
+                  ?.getAttribute("data-event-id") ?? null;
+              if (overId && overId !== eventId && cb.onCreateEdge) {
+                cb.onCreateEdge(eventId, overId);
+              } else if (cb.onMoveEvent) {
+                const newDay = cb.hasCalendarAxis
+                  ? snappedDayAt(ev.clientX, rect)
+                  : null;
+                cb.onMoveEvent(eventId, newDay, laneCodexAt(ev.clientY, rect));
+              }
+            }
+            setTimeout(() => {
+              draggedRef.current = false;
+            }, 0);
+          },
+        );
+      }
+      // ロック時/ハンドラ無しでもパンはさせない（クリックで選択させる）。
+      return;
+    }
+
+    // ── 空白: 横パン＋（非ドラッグ時）位置選択 ──
+    const startView = viewRef.current;
+    bindDrag(
+      (ev) => {
+        const dx = ev.clientX - startX;
+        if (Math.abs(dx) > DRAG_THRESHOLD) draggedRef.current = true;
+        onViewChangeRef.current(panByPx({ view: startView, dx }));
+      },
+      (ev) => {
+        if (!draggedRef.current && cb.onSelectPosition) {
+          const day = cb.hasCalendarAxis
+            ? snappedDayAt(ev.clientX, rect)
+            : null;
+          cb.onSelectPosition(day, laneCodexAt(ev.clientY, rect));
+        }
+        setTimeout(() => {
+          draggedRef.current = false;
+        }, 0);
+      },
+    );
+  };
+
+  // 空白ダブルクリック=その位置に新規作成。
+  const onTrackDoubleClick = (e: React.MouseEvent) => {
+    const cb = cbRef.current;
+    const el = trackElRef.current;
+    if (cb.locked || !cb.onCreateAt || !el) return;
+    if ((e.target as HTMLElement).closest("[data-event-id]")) return;
+    const rect = el.getBoundingClientRect();
+    const day = cb.hasCalendarAxis ? snappedDayAt(e.clientX, rect) : null;
+    cb.onCreateAt(day, laneCodexAt(e.clientY, rect));
+  };
+
+  // 右クリック=コンテキストメニュー（マーカー上なら編集/削除、空白なら作成）。
+  const onTrackContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const markerEl = (e.target as HTMLElement).closest("[data-event-id]");
+    setMenu({
+      x: e.clientX,
+      y: e.clientY,
+      eventId: markerEl?.getAttribute("data-event-id") ?? null,
+    });
   };
 
   // スクロールバーつまみドラッグ＝横スクロール。
@@ -211,11 +420,39 @@ export function ChronicleViewport({
           id="chronicle-track"
           ref={setTrackEl}
           onMouseDown={onTrackPointerDown}
+          onDoubleClick={onTrackDoubleClick}
+          onContextMenu={onTrackContextMenu}
           className="relative flex-1 cursor-grab select-none"
           style={{ height: contentHeight }}
           role="application"
           aria-label={t("chronicle.viewportLabel", "作中年表")}
         >
+          {/* 選択位置ガイド（accent 実線）＋ドラッグ中ガイド（破線） */}
+          {selectedDay != null && hasCalendarAxis && (
+            <div
+              data-testid="chronicle-position-guide"
+              className="pointer-events-none absolute top-0 z-[4]"
+              style={{
+                left: dayToX(view, selectedDay),
+                width: 0,
+                height: contentHeight,
+                borderLeft: "1.5px solid var(--primary)",
+                opacity: 0.7,
+              }}
+            />
+          )}
+          {ghostX != null && (
+            <div
+              className="pointer-events-none absolute top-0 z-[8]"
+              style={{
+                left: ghostX,
+                width: 0,
+                height: contentHeight,
+                borderLeft: "1.5px dashed var(--primary)",
+              }}
+            />
+          )}
+
           {/* グリッド線 */}
           {minorGridX.map((x, i) => (
             <div
@@ -301,6 +538,7 @@ export function ChronicleViewport({
                   conflict={conflictIds.has(m.eventId)}
                   related={relatedIds.has(m.eventId)}
                   labelsOn={labelsOn}
+                  resizable={!locked && render.isInterval}
                   onSelect={() => handleSelect(m.eventId)}
                 />
               );
@@ -333,6 +571,74 @@ export function ChronicleViewport({
           />
         </div>
       </div>
+
+      {menu &&
+        createPortal(
+          <>
+            <div
+              className="fixed inset-0 z-[60]"
+              onMouseDown={() => setMenu(null)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setMenu(null);
+              }}
+            />
+            <div
+              data-testid="chronicle-context-menu"
+              className="fixed z-[61] min-w-[170px] rounded-md border border-border bg-popover py-1 text-xs shadow-md"
+              style={{ left: menu.x, top: menu.y }}
+            >
+              {menu.eventId ? (
+                <>
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                    onClick={() => {
+                      onSelectEvent(menu.eventId!);
+                      setMenu(null);
+                    }}
+                  >
+                    {t("chronicle.ctxEdit", "編集")}
+                  </button>
+                  {!locked && onDeleteEvent && (
+                    <button
+                      type="button"
+                      className="flex w-full items-center px-3 py-1.5 text-destructive hover:bg-destructive/10"
+                      onClick={() => {
+                        onDeleteEvent(menu.eventId!);
+                        setMenu(null);
+                      }}
+                    >
+                      {t("chronicle.delete", "削除")}
+                    </button>
+                  )}
+                </>
+              ) : (
+                !locked &&
+                onCreateAt && (
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                    onClick={() => {
+                      const el = trackElRef.current;
+                      if (el) {
+                        const rect = el.getBoundingClientRect();
+                        onCreateAt(
+                          hasCalendarAxis ? snappedDayAt(menu.x, rect) : null,
+                          laneCodexAt(menu.y, rect),
+                        );
+                      }
+                      setMenu(null);
+                    }}
+                  >
+                    {t("chronicle.ctxCreateHere", "ここに出来事を作成")}
+                  </button>
+                )
+              )}
+            </div>
+          </>,
+          document.body,
+        )}
     </div>
   );
 }

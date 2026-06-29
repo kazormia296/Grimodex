@@ -68,6 +68,8 @@ export function ChroniclePanel() {
   const setChronicleView = useChronicleStore((s) => s.setChronicleView);
   const locked = useChronicleStore((s) => s.locked);
   const toggleLock = useChronicleStore((s) => s.toggleLock);
+  const selectedDay = useChronicleStore((s) => s.selectedDay);
+  const setSelectedPosition = useChronicleStore((s) => s.setSelectedPosition);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
   const nodes = useTreeStore((s) => s.nodes);
   const timelineSelected = useTimelineStore((s) => s.selectedNodeIds);
@@ -411,21 +413,163 @@ export function ChroniclePanel() {
 
   // ── CRUD ──────────────────────────────────────────────────
   const [creating, setCreating] = useState(false);
+  // 新規作成は「選択中の位置」（空白クリック/ダブルクリック由来）に置く。
   const handleAdd = useCallback(async () => {
     if (!projectId || creating) return;
     setCreating(true);
     try {
+      const st = useChronicleStore.getState();
       const ev = await uiCreateEvent({
         title: t("chronicle.newEvent", "新しい出来事"),
+        ...(st.selectedLaneKey ? { primaryCodexId: st.selectedLaneKey } : {}),
+        ...(st.selectedDay != null
+          ? {
+              startTime: Math.round(st.selectedDay),
+              startGranularity: "day" as const,
+            }
+          : {}),
       });
       setSelectedEventId(ev.id);
+      setSelectedPosition(null);
       refresh();
     } catch {
       toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
     } finally {
       setCreating(false);
     }
-  }, [projectId, creating, t, refresh, setSelectedEventId]);
+  }, [
+    projectId,
+    creating,
+    t,
+    refresh,
+    setSelectedEventId,
+    setSelectedPosition,
+  ]);
+
+  // id 指定の楽観パッチ（ドラッグ移動/伸縮で使う。handlePatch は選択中専用）。
+  const patchById = useCallback(
+    async (id: string, patch: Partial<EventRow>) => {
+      if (!projectId) return;
+      const prev = events.find((e) => e.id === id);
+      if (!prev) return;
+      setEvents((evs) =>
+        evs.map((e) => (e.id === id ? { ...e, ...patch } : e)),
+      );
+      try {
+        await uiUpdateEvent({ eventId: id, ...patch });
+      } catch {
+        setEvents((evs) => evs.map((e) => (e.id === id ? prev : e)));
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+    },
+    [projectId, events, t],
+  );
+
+  // マーカー再配置（横=startTime / 縦=レーン再割当。interval は期間維持）。
+  const handleMoveEvent = useCallback(
+    (id: string, newStartDay: number | null, newCodexId: string | null) => {
+      const e = events.find((x) => x.id === id);
+      if (!e) return;
+      const patch: Partial<EventRow> = { primaryCodexId: newCodexId };
+      if (newStartDay != null && e.startTime != null) {
+        const day = Math.round(newStartDay);
+        patch.startTime = day;
+        if (e.endTime != null) patch.endTime = day + (e.endTime - e.startTime);
+      }
+      void patchById(id, patch);
+    },
+    [events, patchById],
+  );
+
+  // 期間端の伸縮（開始/終了を吸着日へ。start<=end を保つ）。
+  const handleResizeEvent = useCallback(
+    (id: string, edge: "start" | "end", newDay: number) => {
+      const e = events.find((x) => x.id === id);
+      if (!e || e.startTime == null) return;
+      const day = Math.round(newDay);
+      if (edge === "start") {
+        void patchById(id, { startTime: Math.min(day, e.endTime ?? day) });
+      } else {
+        void patchById(id, { endTime: Math.max(day, e.startTime) });
+      }
+    },
+    [events, patchById],
+  );
+
+  // D&D 因果エッジ作成（ドラッグ元=原因→落下先=結果）。
+  const handleCreateEdge = useCallback(
+    async (causeId: string, effectId: string) => {
+      if (!projectId) return;
+      try {
+        await uiAddEventRelation(causeId, effectId);
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+    },
+    [projectId, refresh, t],
+  );
+
+  // 位置にイベント作成（ダブルクリック/コンテキストメニュー）。
+  const handleCreateAt = useCallback(
+    async (day: number | null, codexId: string | null) => {
+      if (!projectId || creating) return;
+      setCreating(true);
+      try {
+        const ev = await uiCreateEvent({
+          title: t("chronicle.newEvent", "新しい出来事"),
+          ...(codexId ? { primaryCodexId: codexId } : {}),
+          ...(day != null
+            ? {
+                startTime: Math.round(day),
+                startGranularity: "day" as const,
+              }
+            : {}),
+        });
+        setSelectedEventId(ev.id);
+        setSelectedPosition(null);
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      } finally {
+        setCreating(false);
+      }
+    },
+    [projectId, creating, t, refresh, setSelectedEventId, setSelectedPosition],
+  );
+
+  const handleDeleteById = useCallback(
+    async (id: string) => {
+      if (!projectId) return;
+      try {
+        await uiDeleteEvent(id);
+        if (useChronicleStore.getState().selectedEventId === id)
+          setSelectedEventId(null);
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+    },
+    [projectId, refresh, setSelectedEventId, t],
+  );
+
+  // 出来事を選択したら位置ガイドは消す。
+  const handleSelectEvent = useCallback(
+    (id: string) => {
+      setSelectedEventId(id);
+      setSelectedPosition(null);
+    },
+    [setSelectedEventId, setSelectedPosition],
+  );
+
+  // 空白クリックで位置選択（出来事選択は外す）。
+  const handleSelectPosition = useCallback(
+    (day: number | null, codexId: string | null) => {
+      setSelectedEventId(null);
+      setSelectedPosition(day, codexId);
+    },
+    [setSelectedEventId, setSelectedPosition],
+  );
 
   // レーンガターの「追加」: 選択 Codex に新規出来事を作りレーンを出して編集状態へ。
   const handleAddLane = useCallback(
@@ -660,12 +804,20 @@ export function ChroniclePanel() {
           relatedIds={relatedIds}
           showEdges={showEdges}
           labelsOn={labelsOn}
-          onSelectEvent={setSelectedEventId}
+          onSelectEvent={handleSelectEvent}
           laneOptions={laneOptions}
           locked={locked}
           selectedUnassigned={selectedUnassigned}
           onAssignLane={(codexId) => handlePatch({ primaryCodexId: codexId })}
           onAddLane={handleAddLane}
+          selectedDay={selectedDay}
+          hasCalendarAxis={eff.hasCalendarAxis}
+          onMoveEvent={handleMoveEvent}
+          onResizeEvent={handleResizeEvent}
+          onCreateEdge={handleCreateEdge}
+          onCreateAt={handleCreateAt}
+          onSelectPosition={handleSelectPosition}
+          onDeleteEvent={handleDeleteById}
         />
       )}
 

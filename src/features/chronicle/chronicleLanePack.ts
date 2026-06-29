@@ -54,6 +54,20 @@ interface PlacedEvent {
   row: number;
 }
 
+/**
+ * y(px) が属するレーンを返す（pack の top..top+height 範囲）。範囲外は最近傍へ
+ * クランプ（上端より上=先頭、下端より下=末尾）。レーンが無ければ null。
+ * ドラッグでのレーン跨ぎ再割当に使う。決定性: 純関数。
+ */
+export function laneAtY(lanes: PackedLane[], y: number): PackedLane | null {
+  if (lanes.length === 0) return null;
+  for (const lane of lanes) {
+    if (y >= lane.top && y < lane.top + lane.height) return lane;
+  }
+  if (y < lanes[0].top) return lanes[0];
+  return lanes[lanes.length - 1];
+}
+
 export function packLanes(args: {
   lanes: PackLaneInput[];
   spacing: PackSpacing;

@@ -29,6 +29,8 @@ export interface EventMarkerProps {
   /** Timeline で選択中のシーンに紐づく出来事（淡いリング強調）。 */
   related?: boolean;
   labelsOn: boolean;
+  /** 期間端の伸縮ハンドルを出すか（interval かつ非ロック時）。 */
+  resizable?: boolean;
   onSelect: () => void;
 }
 
@@ -57,6 +59,7 @@ export function EventMarker({
   conflict,
   related = false,
   labelsOn,
+  resizable = false,
   onSelect,
 }: EventMarkerProps) {
   const { t } = useTranslation();
@@ -188,6 +191,34 @@ export function EventMarker({
         textAlign: "left",
       }}
     >
+      {isInterval && resizable && (
+        <>
+          <span
+            data-resize="start"
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              width: 7,
+              height: "100%",
+              cursor: "ew-resize",
+              zIndex: 2,
+            }}
+          />
+          <span
+            data-resize="end"
+            style={{
+              position: "absolute",
+              right: 0,
+              top: 0,
+              width: 7,
+              height: "100%",
+              cursor: "ew-resize",
+              zIndex: 2,
+            }}
+          />
+        </>
+      )}
       <span style={glyph} />
       {labelsOn && (
         <span
