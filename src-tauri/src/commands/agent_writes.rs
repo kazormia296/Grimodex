@@ -2016,14 +2016,19 @@ fn agent_event_update_impl(
                 fields.push("ordinal");
             }
             if let Some(ref v) = payload.primary_codex_id {
+                // 空文字は NULL（未割当へ戻す）に正規化。Option<String> では null と
+                // 未指定を区別できないため、UI は未割当化に "" を送る（reveal_scene_id と同流儀）。
+                let val: Option<String> = if v.is_empty() { None } else { Some(v.clone()) };
                 sets.push(format!("primary_codex_id = ?{param_idx}"));
-                params.push(Box::new(v.clone()));
+                params.push(Box::new(val));
                 param_idx += 1;
                 fields.push("primaryCodexId");
             }
             if let Some(ref v) = payload.location_codex_id {
+                // 空文字は NULL（場所なし）に正規化。
+                let val: Option<String> = if v.is_empty() { None } else { Some(v.clone()) };
                 sets.push(format!("location_codex_id = ?{param_idx}"));
-                params.push(Box::new(v.clone()));
+                params.push(Box::new(val));
                 param_idx += 1;
                 fields.push("locationCodexId");
             }
@@ -3411,6 +3416,35 @@ mod tests {
             )?)
         })
         .expect("event_end")
+    }
+
+    fn event_primary_codex(db: &Database, event_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT primary_codex_id FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?)
+        })
+        .expect("event_primary_codex")
+    }
+
+    #[test]
+    fn event_update_empty_primary_codex_clears_to_null() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex = insert_codex(&db, &project_id, "Alice");
+        let (event_id, _) = create_event(&db, &project_id, "e", vec![], vec![]);
+        // レーン割当。
+        let mut p1 = empty_update(&project_id, &event_id);
+        p1.primary_codex_id = Some(codex.clone());
+        agent_event_update_impl(&db, p1).unwrap();
+        assert_eq!(event_primary_codex(&db, &event_id), Some(codex));
+        // "" で未割当へ戻す（D&D で未割当レーンへ移動）。NULL クリアされる。
+        let mut p2 = empty_update(&project_id, &event_id);
+        p2.primary_codex_id = Some(String::new());
+        agent_event_update_impl(&db, p2).unwrap();
+        assert_eq!(event_primary_codex(&db, &event_id), None);
     }
 
     #[test]

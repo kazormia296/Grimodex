@@ -17,11 +17,10 @@ export interface ChronicleLaneGutterProps {
   locked?: boolean;
   /** 未割当→Codex 割当（選択中の未割当出来事に適用。ガード是非は呼び出し側）。 */
   onAssignLane?: (codexId: string) => void;
-  /** レーン追加（空のレーンをピン留め）。 */
+  /** レーン追加（空でも未割当レーンを表示）。 */
   onAddLane?: () => void;
-  /** ピン留め空レーンへ Codex を割り当て/解除。 */
-  onAssignPinnedLane?: (pinKey: string, codexId: string | null) => void;
-  onRemovePinnedLane?: (pinKey: string) => void;
+  /** 空の未割当レーンを隠す（×）。 */
+  onHideEmptyLane?: () => void;
 }
 
 const laneKeyOf = (lane: PackedLane) =>
@@ -41,8 +40,7 @@ export function ChronicleLaneGutter({
   locked = false,
   onAssignLane,
   onAddLane,
-  onAssignPinnedLane,
-  onRemovePinnedLane,
+  onHideEmptyLane,
 }: ChronicleLaneGutterProps) {
   const { t } = useTranslation();
   const [gutterEl, setGutterEl] = useState<HTMLDivElement | null>(null);
@@ -108,9 +106,8 @@ export function ChronicleLaneGutter({
           (lane.kind && lane.kind !== "character" && !lane.unassigned
             ? ` ・${typeJa(lane.kind)}`
             : "");
-        const isPin = lane.keepEmpty && !!lane.pinKey;
-        const isPlaceholder =
-          isPin && (lane.codexId ?? "").startsWith("__pin_");
+        // 空でも表示する未割当（=空）レーンは × で隠せる。
+        const isEmptyUnassigned = lane.unassigned && lane.keepEmpty;
         return (
           <div
             key={laneKeyOf(lane)}
@@ -124,36 +121,9 @@ export function ChronicleLaneGutter({
                 : undefined,
             }}
           >
-            {isPlaceholder ? (
-              <div
-                style={{
-                  width: 28,
-                  height: 28,
-                  flex: "none",
-                  borderRadius: "50%",
-                  border: "1.5px dashed var(--border)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--muted-foreground)",
-                }}
-              >
-                <Plus className="size-3.5" />
-              </div>
-            ) : (
-              <div style={avatarStyle}>{lane.unassigned ? "·" : initial}</div>
-            )}
+            <div style={avatarStyle}>{lane.unassigned ? "·" : initial}</div>
             <div className="flex min-w-0 flex-1 flex-col gap-px">
-              {isPlaceholder && onAssignPinnedLane && !locked ? (
-                // 空のピン留めレーン＝Codex を選んで割り当てる（出来事は作らない）。
-                <CodexEntryPicker
-                  value={null}
-                  options={pickerOptions}
-                  onChange={(id) => onAssignPinnedLane(lane.pinKey!, id)}
-                  ariaLabel={t("chronicle.assignLane", "レーンへ割当")}
-                  placeholder={t("chronicle.selectLane", "レーンを選択")}
-                />
-              ) : lane.unassigned && onAssignLane && !locked ? (
+              {lane.unassigned && onAssignLane && !locked ? (
                 // 「未割当」ラベル自体を Spotlight ピッカーに（常時表示）。選択中の
                 // 未割当出来事を選んだ Codex レーンへ割り当てる。
                 <CodexEntryPicker
@@ -190,11 +160,11 @@ export function ChronicleLaneGutter({
                 {countText}
               </span>
             </div>
-            {isPin && onRemovePinnedLane && !locked && (
+            {isEmptyUnassigned && onHideEmptyLane && !locked && (
               <button
                 type="button"
-                onClick={() => onRemovePinnedLane(lane.pinKey!)}
-                aria-label={t("chronicle.removeLane", "レーンを外す")}
+                onClick={() => onHideEmptyLane()}
+                aria-label={t("chronicle.removeLane", "レーンを隠す")}
                 className="flex-none rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 <X className="size-3.5" />

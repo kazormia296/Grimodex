@@ -311,7 +311,7 @@ export function ChronicleInspector({
                 <CodexEntryPicker
                   value={event.primaryCodexId}
                   options={lanePickerOptions}
-                  onChange={(id) => onPatch({ primaryCodexId: id })}
+                  onChange={(id) => onPatch({ primaryCodexId: id ?? "" })}
                   ariaLabel={t("chronicle.lane", "レーン")}
                   placeholder={t("chronicle.laneUnassigned", "（未割当）")}
                 />
@@ -320,9 +320,7 @@ export function ChronicleInspector({
                 {t("chronicle.location", "場所")}
                 <select
                   value={event.locationCodexId ?? ""}
-                  onChange={(e) =>
-                    onPatch({ locationCodexId: e.target.value || null })
-                  }
+                  onChange={(e) => onPatch({ locationCodexId: e.target.value })}
                   className={selectCls}
                 >
                   <option value="">{t("chronicle.none", "なし")}</option>

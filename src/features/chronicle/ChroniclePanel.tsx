@@ -137,11 +137,8 @@ export function ChroniclePanel() {
   const [extractOpen, setExtractOpen] = useState(false);
   // インスペクタ高さ（上端グリップでリサイズ。選択をまたいで保持）。
   const [inspectorHeight, setInspectorHeight] = useState(340);
-  // ピン留め空レーン（「レーンを追加」で増やす。codexId=null は未割当の新規プレースホルダ）。
-  const pinCounterRef = useRef(0);
-  const [pinnedLanes, setPinnedLanes] = useState<
-    { key: string; codexId: string | null }[]
-  >([]);
+  // 「レーンを追加」で未割当（=空）レーンを空でも常時表示する。空レーンと未割当は同一。
+  const [pinEmptyLane, setPinEmptyLane] = useState(false);
 
   const scenedEventIds = useMemo(
     () => new Set(sceneLinks.map((l) => l.eventId)),
@@ -195,7 +192,7 @@ export function ChroniclePanel() {
       // 位置選択(ephemeral)も捨てる。残すと handleAdd が他プロジェクトの
       // codexId/日を新規イベントへ書き込みクロスプロジェクト参照を作る。
       setSelectedPosition(null);
-      setPinnedLanes([]);
+      setPinEmptyLane(false);
       // 永続ビューがあれば維持（再フィットしない）、無ければ新規プロジェクトに
       // 合わせて全体フィットし直す。
       fittedRef.current = useChronicleStore.getState().pxPerDay != null;
@@ -352,31 +349,19 @@ export function ChroniclePanel() {
       unassigned: false,
       eventIds: laneMap.get(e.id)!,
     }));
-    if (unassignedIds.length > 0) {
+    // 未割当レーン（空レーンと同一）。出来事があるか、「レーンを追加」で空でも表示。
+    if (unassignedIds.length > 0 || pinEmptyLane) {
       out.push({
         codexId: null,
         name: t("chronicle.unassigned", "未割当"),
         kind: "unassigned",
         unassigned: true,
         eventIds: unassignedIds,
-      });
-    }
-    // ピン留め空レーン（末尾）。既にイベントありの codex は表示済みなのでスキップ。
-    for (const pin of pinnedLanes) {
-      const entry = pin.codexId ? entryById.get(pin.codexId) : null;
-      if (entry && laneMap.has(entry.id)) continue;
-      out.push({
-        codexId: entry ? entry.id : `__pin_${pin.key}`,
-        name: entry ? entry.name : t("chronicle.newLane", "（新しいレーン）"),
-        kind: entry ? entry.type : "pinned",
-        unassigned: false,
-        eventIds: [],
-        keepEmpty: true,
-        pinKey: pin.key,
+        keepEmpty: unassignedIds.length === 0,
       });
     }
     return out;
-  }, [events, entries, t, participantsByEvent, pinnedLanes]);
+  }, [events, entries, t, participantsByEvent, pinEmptyLane]);
 
   const layoutEvents: LayoutEventInput[] = useMemo(() => {
     const entryIds = new Set(entries.map((e) => e.id));
@@ -571,7 +556,10 @@ export function ChroniclePanel() {
     (id: string, newStartDay: number | null, newCodexId: string | null) => {
       const e = events.find((x) => x.id === id);
       if (!e) return;
-      const patch: Partial<EventRow> = { primaryCodexId: newCodexId };
+      // newCodexId=null（未割当へ）は backend で NULL クリアできるよう "" で送る。
+      const patch: Partial<EventRow> = {
+        primaryCodexId: newCodexId ?? "",
+      };
       if (newStartDay != null && e.startTime != null) {
         const subDay =
           rulerLevelRef.current === "hour" ||
@@ -698,23 +686,10 @@ export function ChroniclePanel() {
     [setSelectedEventId, setSelectedPosition],
   );
 
-  // レーンガターの「追加」ボタン: 空のレーンをピン留めする（出来事は作らない＝
-  // 未割当に積まれない）。割り当ては空レーン側の Codex ピッカーで行う。
-  const handleAddLane = useCallback(() => {
-    const key = `pin${pinCounterRef.current++}`;
-    setPinnedLanes((p) => [...p, { key, codexId: null }]);
-  }, []);
-  const handleAssignPinnedLane = useCallback(
-    (pinKey: string, codexId: string | null) => {
-      setPinnedLanes((p) =>
-        p.map((l) => (l.key === pinKey ? { ...l, codexId } : l)),
-      );
-    },
-    [],
-  );
-  const handleRemovePinnedLane = useCallback((pinKey: string) => {
-    setPinnedLanes((p) => p.filter((l) => l.key !== pinKey));
-  }, []);
+  // 「レーンを追加」: 空でも未割当レーンを表示する（出来事は作らない＝未割当に積まれない）。
+  // 空レーン＝未割当。ここへ D&D/ダブルクリックで未割当の出来事を置き、後で割り当てる。
+  const handleAddLane = useCallback(() => setPinEmptyLane(true), []);
+  const handleHideEmptyLane = useCallback(() => setPinEmptyLane(false), []);
 
   const handlePatch = useCallback(
     async (patch: Partial<EventRow>) => {
@@ -998,8 +973,7 @@ export function ChroniclePanel() {
               );
           }}
           onAddLane={handleAddLane}
-          onAssignPinnedLane={handleAssignPinnedLane}
-          onRemovePinnedLane={handleRemovePinnedLane}
+          onHideEmptyLane={handleHideEmptyLane}
           selectedDay={selectedDay}
           hasCalendarAxis={eff.hasCalendarAxis}
           onMoveEvent={handleMoveEvent}

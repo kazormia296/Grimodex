@@ -144,7 +144,7 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onViewChange).not.toHaveBeenCalled(); // パンしない
   });
 
-  it("別マーカーへ落とすと onCreateEdge(cause→effect)", () => {
+  it("本体ドラッグは別マーカーへ落としても因果エッジを作らない（移動のみ）", () => {
     const props = makeProps();
     const { container } = render(
       <ChronicleViewport {...(props as unknown as VP)} />,
@@ -155,8 +155,9 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     fireEvent.mouseDown(e1, { button: 0, clientX: 100, clientY: 20 });
     fireEvent.mouseMove(document, { clientX: 250, clientY: 20 });
     fireEvent.mouseUp(document, { clientX: 250, clientY: 20 });
-    expect(props.onCreateEdge).toHaveBeenCalledWith("e1", "e2");
-    expect(props.onMoveEvent).not.toHaveBeenCalled();
+    expect(props.onCreateEdge).not.toHaveBeenCalled();
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(props.onMoveEvent.mock.calls[0][0]).toBe("e1");
   });
 
   it("空白クリック（移動なし）で onSelectPosition", () => {

@@ -48,9 +48,8 @@ export interface ChronicleViewportProps {
   locked?: boolean;
   onAssignLane?: (codexId: string) => void;
   onAddLane?: () => void;
-  /** ピン留め空レーンへ Codex を割り当て/解除。 */
-  onAssignPinnedLane?: (pinKey: string, codexId: string | null) => void;
-  onRemovePinnedLane?: (pinKey: string) => void;
+  /** 空の未割当レーンを隠す（× で）。 */
+  onHideEmptyLane?: () => void;
   // ── グラフ操作（任意・ロック時は呼ばれない） ──
   /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
   selectedDay?: number | null;
@@ -97,8 +96,7 @@ export function ChronicleViewport({
   locked,
   onAssignLane,
   onAddLane,
-  onAssignPinnedLane,
-  onRemovePinnedLane,
+  onHideEmptyLane,
   selectedDay,
   hasCalendarAxis = true,
   onMoveEvent,
@@ -183,10 +181,7 @@ export function ChronicleViewport({
   };
   const laneCodexAt = (clientY: number, rect: DOMRect): string | null => {
     const lane = laneAtY(layoutRef.current.pack.lanes, clientY - rect.top);
-    if (!lane) return null;
-    const c = laneTargetCodexId(lane);
-    // 未割当プレースホルダ(__pin_)は実在しない codexId なので割り当てない。
-    return c && c.startsWith("__pin_") ? null : c;
+    return lane ? laneTargetCodexId(lane) : null;
   };
 
   // document ドラッグの登録/撤去（move + up を1組で）。
@@ -340,9 +335,9 @@ export function ChronicleViewport({
       return;
     }
 
-    // ── マーカー: ドラッグで移動、別マーカーへ落とすと因果エッジ（ロック時は選択のみ） ──
+    // ── マーカー: 本体ドラッグ＝移動（ロック時は選択のみ。因果エッジは末尾●ハンドル） ──
     if (markerEl && eventId) {
-      if (!cb.locked && (cb.onMoveEvent || cb.onCreateEdge)) {
+      if (!cb.locked && cb.onMoveEvent) {
         const startLaneCodex = laneCodexAt(startY, rect);
         bindDrag(
           (ev) => {
@@ -367,28 +362,18 @@ export function ChronicleViewport({
           (ev) => {
             setGhostX(null);
             setDragPreview(null);
-            if (draggedRef.current) {
-              const overEl = document.elementFromPoint(
-                ev.clientX,
-                ev.clientY,
-              ) as HTMLElement | null;
-              const overId =
-                overEl
-                  ?.closest("[data-event-id]")
-                  ?.getAttribute("data-event-id") ?? null;
-              if (overId && overId !== eventId && cb.onCreateEdge) {
-                cb.onCreateEdge(eventId, overId);
-              } else if (cb.onMoveEvent) {
-                const newDay = cb.hasCalendarAxis
-                  ? snappedDayAt(ev.clientX, rect)
-                  : null;
-                // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
-                const newCodex =
-                  Math.abs(ev.clientY - startY) < LANE_DEADZONE
-                    ? startLaneCodex
-                    : laneCodexAt(ev.clientY, rect);
-                cb.onMoveEvent(eventId, newDay, newCodex);
-              }
+            // 本体ドラッグは常に移動（別マーカーへ落としても因果エッジは作らない。
+            // 因果エッジは選択時の末尾●ハンドル D&D のみ）。
+            if (draggedRef.current && cb.onMoveEvent) {
+              const newDay = cb.hasCalendarAxis
+                ? snappedDayAt(ev.clientX, rect)
+                : null;
+              // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
+              const newCodex =
+                Math.abs(ev.clientY - startY) < LANE_DEADZONE
+                  ? startLaneCodex
+                  : laneCodexAt(ev.clientY, rect);
+              cb.onMoveEvent(eventId, newDay, newCodex);
             }
             setTimeout(() => {
               draggedRef.current = false;
@@ -506,8 +491,7 @@ export function ChronicleViewport({
           locked={locked}
           onAssignLane={onAssignLane}
           onAddLane={onAddLane}
-          onAssignPinnedLane={onAssignPinnedLane}
-          onRemovePinnedLane={onRemovePinnedLane}
+          onHideEmptyLane={onHideEmptyLane}
         />
 
         <div
