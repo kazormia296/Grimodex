@@ -89,7 +89,7 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           }}
         >
           <Plus className="size-3.5" />{" "}
-          {t("chronicle.newEvent", "新しい出来事")}
+          {t("chronicle.newEvent", "新しいイベント")}
         </button>
         <button type="button" onClick={props.onExtract} className={ghost}>
           <Sparkles className="size-3.5" />{" "}

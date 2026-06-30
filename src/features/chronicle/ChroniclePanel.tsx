@@ -614,7 +614,7 @@ export function ChroniclePanel() {
         st.selectedLaneKey,
       );
       const ev = await uiCreateEvent({
-        title: t("chronicle.newEvent", "新しい出来事"),
+        title: t("chronicle.newEvent", "新しいイベント"),
         ...(primaryCodexId ? { primaryCodexId } : {}),
         ...(laneGroup ? { laneGroup } : {}),
         ...(day != null
@@ -776,7 +776,7 @@ export function ChroniclePanel() {
       setCreating(true);
       try {
         const ev = await uiCreateEvent({
-          title: t("chronicle.newEvent", "新しい出来事"),
+          title: t("chronicle.newEvent", "新しいイベント"),
           ...(primaryCodexId ? { primaryCodexId } : {}),
           ...(laneGroup ? { laneGroup } : {}),
           ...(d != null
@@ -1233,7 +1233,7 @@ export function ChroniclePanel() {
           <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
             {t(
               "chronicle.empty",
-              "出来事がまだありません。「追加」で作成できます。",
+              "イベントがまだありません。「追加」で作成できます。",
             )}
           </div>
         ) : tieMode && tieView ? (

@@ -180,7 +180,7 @@ export function ChronicleEventList({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
           <div className="px-3 py-6 text-center text-[11px] text-muted-foreground">
-            {t("chronicle.eventListEmpty", "該当する出来事がありません")}
+            {t("chronicle.eventListEmpty", "該当するイベントがありません")}
           </div>
         ) : (
           filtered.map((it) => (
@@ -197,7 +197,7 @@ export function ChronicleEventList({
               <div className="flex items-center gap-2">
                 <span style={dotStyle(it)} />
                 <span className="min-w-0 flex-1 truncate text-xs text-foreground">
-                  {it.title || t("chronicle.untitled", "無題の出来事")}
+                  {it.title || t("chronicle.untitled", "無題のイベント")}
                 </span>
                 {it.dateLabel && (
                   <span

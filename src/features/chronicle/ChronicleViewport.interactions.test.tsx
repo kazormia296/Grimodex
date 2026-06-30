@@ -219,7 +219,7 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     );
     fireEvent.contextMenu(track(container), { clientX: 200, clientY: 20 });
     expect(getByTestId("chronicle-context-menu")).toBeTruthy();
-    fireEvent.click(getByText("ここに出来事を作成"));
+    fireEvent.click(getByText("ここにイベントを作成"));
     expect(props.onCreateAt).toHaveBeenCalledTimes(1);
   });
 
