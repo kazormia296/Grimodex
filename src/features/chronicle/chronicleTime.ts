@@ -14,11 +14,22 @@ export interface MonthDef {
   days: number;
 }
 
+/**
+ * 閏年ルール。none=年長一定（既定）。gregorian=暦年（startYear 基準の絶対年）に
+ * 対し 4/100/400 で閏判定し、monthIndex の月へ +1 日（既定は 2 月相当 index 1）。
+ */
+export type LeapRule =
+  | { kind: "none" }
+  | { kind: "gregorian"; monthIndex: number };
+
+/** 年齢の数え方。full=満年齢（既定）。counting=数え年（暦年差+1）。 */
+export type AgeReckoning = "full" | "counting";
+
 export interface ChronicleCalendar {
   /**
-   * 1年の日数（作中暦。グレゴリオなら 365）。
-   * months がある場合は月長合計が正本（calendarDaysPerYear で導出）で、この
-   * stored 値は months 未定義時のフォールバックとして使う。
+   * 1年の「基準」日数（作中暦。グレゴリオなら 365）。閏年でも本値は基準のまま
+   * （閏日は daysInYear で加算）。months がある場合は月長合計が正本
+   * （calendarDaysPerYear で導出）で、この stored 値は months 未定義時のフォールバック。
    */
   daysPerYear: number;
   /** 季節境界。startDayOfYear 昇順の循環区間として解釈する。 */
@@ -29,6 +40,10 @@ export interface ChronicleCalendar {
   months?: MonthDef[];
   /** 曜日名。空/未指定なら曜日概念なし。週長=配列長。 */
   weekdayNames?: string[];
+  /** 閏年ルール。未指定=none（年長一定）。 */
+  leap?: LeapRule;
+  /** 年齢の数え方。未指定=full（満年齢）。 */
+  ageReckoning?: AgeReckoning;
 }
 
 /** day番号から導出した作中日付の構成要素。 */
@@ -55,7 +70,7 @@ function mod(a: number, b: number): number {
   return ((a % b) + b) % b;
 }
 
-/** 暦の実効「1年の日数」。months があれば月長合計、無ければ stored daysPerYear。 */
+/** 暦の実効「基準1年の日数」。months があれば月長合計、無ければ stored daysPerYear（閏日は含まない）。 */
 export function calendarDaysPerYear(cal: ChronicleCalendar): number {
   if (cal.months && cal.months.length > 0) {
     const sum = cal.months.reduce(
@@ -65,6 +80,73 @@ export function calendarDaysPerYear(cal: ChronicleCalendar): number {
     if (sum > 0) return sum;
   }
   return cal.daysPerYear;
+}
+
+/** グレゴリオ閏年判定（暦年 year に対する 4/100/400 ルール）。 */
+function isGregorianLeap(year: number): boolean {
+  const y = Math.floor(year);
+  return y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+}
+
+/** 暦年 year が閏年か（leap ルール非グレゴリオなら常に false）。 */
+export function isLeapYear(year: number, cal: ChronicleCalendar): boolean {
+  return cal.leap?.kind === "gregorian" && isGregorianLeap(year);
+}
+
+/** 暦年 year の総日数（基準＋閏日）。 */
+export function daysInYear(year: number, cal: ChronicleCalendar): number {
+  return calendarDaysPerYear(cal) + (isLeapYear(year, cal) ? 1 : 0);
+}
+
+/** 暦年 year・monthIndex の月の日数（閏月なら +1）。月未定義なら 0。 */
+export function monthLength(
+  year: number,
+  monthIndex: number,
+  cal: ChronicleCalendar,
+): number {
+  const m = cal.months?.[monthIndex];
+  if (!m) return 0;
+  const base = Math.max(1, Math.floor(m.days));
+  const leap = cal.leap;
+  if (
+    leap?.kind === "gregorian" &&
+    monthIndex === leap.monthIndex &&
+    isLeapYear(year, cal)
+  ) {
+    return base + 1;
+  }
+  return base;
+}
+
+/** 半開区間 [lo, hi) 内で m の倍数の個数（負数対応・floor 一貫）。 */
+function divisibleCount(lo: number, hi: number, m: number): number {
+  if (hi <= lo) return 0;
+  return Math.floor((hi - 1) / m) - Math.floor((lo - 1) / m);
+}
+
+/** 半開区間 [lo, hi) 内のグレゴリオ閏年数。 */
+function gregLeapsIn(lo: number, hi: number): number {
+  return (
+    divisibleCount(lo, hi, 4) -
+    divisibleCount(lo, hi, 100) +
+    divisibleCount(lo, hi, 400)
+  );
+}
+
+/**
+ * 暦年 year の「年内通日 0」が載る day 番号（startYear の年初=day0 基準）。
+ * 閏なしは線形。グレゴリオは基準年長×年差＋区間内閏日数で O(1) 算出。
+ */
+function yearStartDay(year: number, cal: ChronicleCalendar): number {
+  const startYear = cal.startYear ?? 0;
+  const base = calendarDaysPerYear(cal);
+  const y = Math.floor(year);
+  let extra = 0;
+  if (cal.leap?.kind === "gregorian") {
+    extra =
+      y >= startYear ? gregLeapsIn(startYear, y) : -gregLeapsIn(y, startYear);
+  }
+  return (y - startYear) * base + extra;
 }
 
 /** day番号 → 曜日インデックス。weekdayNames 未定義なら null。 */
@@ -99,14 +181,24 @@ export function dayNumberToDate(
       weekdayIndex,
     };
   }
-  const year = startYear + Math.floor(d / dpy);
-  const dayOfYear = mod(d, dpy);
+  let year: number;
+  let dayOfYear: number;
+  if (cal.leap?.kind === "gregorian") {
+    // 平均年長より基準年長は短いので推定 year は真値以上。while で前後補正（数回）。
+    year = startYear + Math.floor(d / dpy);
+    while (yearStartDay(year, cal) > d) year--;
+    while (yearStartDay(year + 1, cal) <= d) year++;
+    dayOfYear = d - yearStartDay(year, cal);
+  } else {
+    year = startYear + Math.floor(d / dpy);
+    dayOfYear = mod(d, dpy);
+  }
   let monthIndex: number | null = null;
   let dayOfMonth: number | null = null;
   if (cal.months && cal.months.length > 0) {
     let rem = dayOfYear;
     for (let i = 0; i < cal.months.length; i++) {
-      const len = Math.max(1, Math.floor(cal.months[i].days));
+      const len = monthLength(year, i, cal);
       if (rem < len) {
         monthIndex = i;
         dayOfMonth = rem + 1;
@@ -117,7 +209,7 @@ export function dayNumberToDate(
     // months 合計 < dayOfYear（stored daysPerYear が月長合計を超える場合の防御）。
     if (monthIndex === null) {
       monthIndex = cal.months.length - 1;
-      dayOfMonth = Math.max(1, Math.floor(cal.months[monthIndex].days));
+      dayOfMonth = monthLength(year, monthIndex, cal);
     }
   }
   return { year, monthIndex, dayOfMonth, dayOfYear, weekdayIndex };
@@ -135,14 +227,13 @@ export function dateToDayNumber(
   },
   cal: ChronicleCalendar,
 ): number {
-  const dpy = calendarDaysPerYear(cal);
-  const startYear = cal.startYear ?? 0;
-  const base = (date.year - startYear) * dpy;
+  // yearStartDay は閏なしなら (year-startYear)*dpy と一致（従来挙動を保存）。
+  const base = yearStartDay(date.year, cal);
   let dayOfYear = 0;
   if (cal.months && cal.months.length > 0 && date.monthIndex != null) {
     const mi = Math.max(0, Math.min(cal.months.length - 1, date.monthIndex));
     for (let i = 0; i < mi; i++) {
-      dayOfYear += Math.max(1, Math.floor(cal.months[i].days));
+      dayOfYear += monthLength(date.year, i, cal);
     }
     dayOfYear += Math.max(0, (date.dayOfMonth ?? 1) - 1);
   } else if (date.dayOfMonth != null) {
@@ -245,6 +336,38 @@ export function seasonOf(
   }
   return current.name;
 }
+
+/**
+ * 出生日→出来事日の年齢。reckoning 既定は cal.ageReckoning（未指定=満年齢）。
+ * full=満年齢（誕生日の記念日を過ぎた回数）。counting=数え年（暦年差+1）。
+ * 出生前（負）はそのまま負を返す（呼び元で対象外判定）。決定性: 純関数。
+ */
+export function computeAge(
+  birthDay: number,
+  eventDay: number,
+  cal: ChronicleCalendar,
+  reckoning: AgeReckoning = cal.ageReckoning ?? "full",
+): number {
+  const b = dayNumberToDate(birthDay, cal);
+  const e = dayNumberToDate(eventDay, cal);
+  if (reckoning === "counting") return e.year - b.year + 1;
+  let age = e.year - b.year;
+  const beforeAnniversary =
+    e.monthIndex != null && b.monthIndex != null
+      ? e.monthIndex < b.monthIndex ||
+        (e.monthIndex === b.monthIndex &&
+          (e.dayOfMonth ?? 0) < (b.dayOfMonth ?? 0))
+      : e.dayOfYear < b.dayOfYear;
+  if (beforeAnniversary) age -= 1;
+  return age;
+}
+
+/** 現実準拠グレゴリオ暦の月長（1〜12月、2月は平年28）。閏は GREGORIAN_LEAP が +1。 */
+export const GREGORIAN_MONTH_DAYS: readonly number[] = [
+  31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+];
+/** グレゴリオ閏ルール（2月=index 1 に +1 日）。 */
+export const GREGORIAN_LEAP: LeapRule = { kind: "gregorian", monthIndex: 1 };
 
 /**
  * 既存の ordinal 群の「最後」に挿す新しい fractional-index を返す。

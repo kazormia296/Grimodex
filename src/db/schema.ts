@@ -1385,6 +1385,9 @@ export const events = sqliteTable(
     primaryCodexId: text("primary_codex_id").references(() => codexEntries.id, {
       onDelete: "set null",
     }),
+    // 未割当（primaryCodexId=null）出来事の整理用サブレーン id。null=既定の未割当レーン。
+    // codex 未割当のまま複数レーンへ振り分けるためのクライアント定義 id（FK なし）。
+    laneGroup: text("lane_group"),
     // 出来事の場所（codex）。2か所同時チェックの基準。null=未指定。
     locationCodexId: text("location_codex_id").references(
       () => codexEntries.id,
@@ -1474,6 +1477,10 @@ export const projectCalendar = sqliteTable("project_calendar", {
   months: text("months").notNull().default("[]"),
   // JSON: string[]（曜日名）。'[]'=曜日概念なし。週長=配列長。
   weekdayNames: text("weekday_names").notNull().default("[]"),
+  // JSON: LeapRule。'{"kind":"none"}'=閏年なし（年長一定）。gregorian で 4/100/400。
+  leapRule: text("leap_rule").notNull().default('{"kind":"none"}'),
+  // 年齢の数え方。'full'=満年齢（既定）/ 'counting'=数え年。
+  ageReckoning: text("age_reckoning").notNull().default("full"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

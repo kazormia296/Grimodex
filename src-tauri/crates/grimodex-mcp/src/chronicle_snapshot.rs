@@ -102,6 +102,19 @@ pub struct MonthDef {
     pub days: i64,
 }
 
+/// 閏年ルール（TS `LeapRule` の移植）。none=年長一定。gregorian=4/100/400 で
+/// month_index の月へ +1 日。
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum LeapRule {
+    #[default]
+    None,
+    Gregorian {
+        #[serde(rename = "monthIndex", default)]
+        month_index: usize,
+    },
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarInput {
@@ -120,6 +133,12 @@ pub struct CalendarInput {
     #[serde(default)]
     #[allow(dead_code)]
     pub weekday_names: Vec<String>,
+    /// 閏年ルール（未指定=none）。
+    #[serde(default)]
+    pub leap: LeapRule,
+    /// 年齢の数え方（'full'=満年齢 / 'counting'=数え年）。未指定=full。
+    #[serde(default)]
+    pub age_reckoning: String,
 }
 
 /// A tree node, reduced to the fields the derive reads: `computeGlobalSceneOrder`
@@ -288,6 +307,59 @@ fn calendar_days_per_year(cal: &CalendarInput) -> i64 {
     cal.days_per_year
 }
 
+/// グレゴリオ閏年判定（`isGregorianLeap` の移植）。
+fn is_gregorian_leap(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// 暦年 year が閏年か（leap 非グレゴリオなら false）。`isLeapYear` の移植。
+fn is_leap_year(year: i64, cal: &CalendarInput) -> bool {
+    matches!(cal.leap, LeapRule::Gregorian { .. }) && is_gregorian_leap(year)
+}
+
+/// 暦年 year・month_index の月の日数（閏月なら +1）。`monthLength` の移植。
+fn month_length(year: i64, month_index: usize, cal: &CalendarInput) -> i64 {
+    let Some(m) = cal.months.get(month_index) else {
+        return 0;
+    };
+    let base = m.days.max(1);
+    if let LeapRule::Gregorian { month_index: li } = cal.leap {
+        if month_index == li && is_leap_year(year, cal) {
+            return base + 1;
+        }
+    }
+    base
+}
+
+/// 半開区間 [lo, hi) 内で m の倍数の個数（負数対応・floor 一貫）。`divisibleCount` の移植。
+fn divisible_count(lo: i64, hi: i64, m: i64) -> i64 {
+    if hi <= lo {
+        return 0;
+    }
+    (hi - 1).div_euclid(m) - (lo - 1).div_euclid(m)
+}
+
+/// 半開区間 [lo, hi) 内のグレゴリオ閏年数。`gregLeapsIn` の移植。
+fn greg_leaps_in(lo: i64, hi: i64) -> i64 {
+    divisible_count(lo, hi, 4) - divisible_count(lo, hi, 100) + divisible_count(lo, hi, 400)
+}
+
+/// 暦年 year の「年内通日 0」が載る day 番号。`yearStartDay` の移植。
+fn year_start_day(year: i64, cal: &CalendarInput) -> i64 {
+    let start_year = cal.start_year;
+    let base = calendar_days_per_year(cal);
+    let extra = if matches!(cal.leap, LeapRule::Gregorian { .. }) {
+        if year >= start_year {
+            greg_leaps_in(start_year, year)
+        } else {
+            -greg_leaps_in(year, start_year)
+        }
+    } else {
+        0
+    };
+    (year - start_year) * base + extra
+}
+
 /// day 番号 → 作中日付の構成要素（`dayNumberToDate` の移植）。
 fn day_number_to_date(day_number: i64, cal: &CalendarInput) -> ChronicleDate {
     let d = day_number;
@@ -301,14 +373,24 @@ fn day_number_to_date(day_number: i64, cal: &CalendarInput) -> ChronicleDate {
             day_of_year: 0,
         };
     }
-    let year = start_year + d.div_euclid(dpy);
-    let day_of_year = d.rem_euclid(dpy);
+    let (year, day_of_year) = if matches!(cal.leap, LeapRule::Gregorian { .. }) {
+        let mut y = start_year + d.div_euclid(dpy);
+        while year_start_day(y, cal) > d {
+            y -= 1;
+        }
+        while year_start_day(y + 1, cal) <= d {
+            y += 1;
+        }
+        (y, d - year_start_day(y, cal))
+    } else {
+        (start_year + d.div_euclid(dpy), d.rem_euclid(dpy))
+    };
     let mut month_index: Option<usize> = None;
     let mut day_of_month: Option<i64> = None;
     if !cal.months.is_empty() {
         let mut rem = day_of_year;
-        for (i, m) in cal.months.iter().enumerate() {
-            let len = m.days.max(1);
+        for i in 0..cal.months.len() {
+            let len = month_length(year, i, cal);
             if rem < len {
                 month_index = Some(i);
                 day_of_month = Some(rem + 1);
@@ -320,7 +402,7 @@ fn day_number_to_date(day_number: i64, cal: &CalendarInput) -> ChronicleDate {
         if month_index.is_none() {
             let last = cal.months.len() - 1;
             month_index = Some(last);
-            day_of_month = Some(cal.months[last].days.max(1));
+            day_of_month = Some(month_length(year, last, cal));
         }
     }
     ChronicleDate {
@@ -329,6 +411,26 @@ fn day_number_to_date(day_number: i64, cal: &CalendarInput) -> ChronicleDate {
         day_of_month,
         day_of_year,
     }
+}
+
+/// 出生日→出来事日の年齢（`computeAge` の移植）。full=満年齢 / counting=数え年。
+pub fn compute_age(birth_day: i64, event_day: i64, cal: &CalendarInput) -> i64 {
+    let b = day_number_to_date(birth_day, cal);
+    let e = day_number_to_date(event_day, cal);
+    if cal.age_reckoning == "counting" {
+        return e.year - b.year + 1;
+    }
+    let mut age = e.year - b.year;
+    let before_anniversary = match (e.month_index, b.month_index) {
+        (Some(em), Some(bm)) => {
+            em < bm || (em == bm && e.day_of_month.unwrap_or(0) < b.day_of_month.unwrap_or(0))
+        }
+        _ => e.day_of_year < b.day_of_year,
+    };
+    if before_anniversary {
+        age -= 1;
+    }
+    age
 }
 
 /// 分(0..1439) → "HH:MM"（`formatTimeOfDay` の移植）。None は None。
@@ -650,11 +752,9 @@ pub fn derive_character_state_at(
     }
     let dead = death_time.is_some_and(|d| d <= t);
     let ref_time = if dead { death_time.unwrap() } else { t };
-    let days_per_year = calendar.map_or(0, |c| c.days_per_year);
-    let age = if days_per_year > 0 {
-        Some((ref_time - birth).div_euclid(days_per_year))
-    } else {
-        None
+    let age = match calendar {
+        Some(c) if calendar_days_per_year(c) > 0 => Some(compute_age(birth, ref_time, c)),
+        _ => None,
     };
     (if dead { "dead" } else { "alive" }.to_string(), age)
 }
@@ -1032,6 +1132,8 @@ mod tests {
             start_year: 0,
             months: vec![],
             weekday_names: vec![],
+            leap: LeapRule::None,
+            age_reckoning: String::new(),
         };
         assert_eq!(season_of(0, &cal).as_deref(), Some("春"));
         assert_eq!(season_of(95, &cal).as_deref(), Some("夏"));
@@ -1166,6 +1268,8 @@ mod tests {
                 })
                 .collect(),
             weekday_names: vec![],
+            leap: LeapRule::None,
+            age_reckoning: String::new(),
         }
     }
 
@@ -1222,6 +1326,8 @@ mod tests {
             start_year: 0,
             months: vec![],
             weekday_names: vec![],
+            leap: LeapRule::None,
+            age_reckoning: String::new(),
         };
         // day 205 → year 2, dayOfYear 5 → 第6日。
         assert_eq!(
@@ -1232,5 +1338,54 @@ mod tests {
             format_chronicle_date(Some(205), None, "day", &cal, "en"),
             "6, 2"
         );
+    }
+
+    fn gregorian() -> CalendarInput {
+        CalendarInput {
+            days_per_year: 365,
+            season_boundaries: vec![],
+            start_year: 2000,
+            months: [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                .iter()
+                .enumerate()
+                .map(|(i, &days)| MonthDef {
+                    name: format!("{}", i + 1),
+                    days,
+                })
+                .collect(),
+            weekday_names: vec![],
+            leap: LeapRule::Gregorian { month_index: 1 },
+            age_reckoning: String::new(),
+        }
+    }
+
+    #[test]
+    fn gregorian_leap_parity_with_ts() {
+        let cal = gregorian();
+        // day 0 = 2000-01-01。閏年 2000 は 366 日 → day 366 = 2001-01-01。
+        let d = day_number_to_date(366, &cal);
+        assert_eq!(
+            (d.year, d.month_index, d.day_of_month),
+            (2001, Some(0), Some(1))
+        );
+        // 2000-02-29 が存在。
+        assert_eq!(month_length(2000, 1, &cal), 29);
+        assert_eq!(month_length(2001, 1, &cal), 28);
+        // 4/100/400。
+        assert!(is_leap_year(2000, &cal));
+        assert!(!is_leap_year(1900, &cal));
+        assert!(is_leap_year(2004, &cal));
+    }
+
+    #[test]
+    fn compute_age_full_and_counting() {
+        let mut cal = gregorian();
+        // 誕生日 2000-06-15、出来事 2020-06-14（誕生日前）→ 満19。
+        let birth = year_start_day(2000, &cal) + 31 + 29 + 31 + 30 + 31 + 14; // 6/15
+        let before = year_start_day(2020, &cal) + 31 + 28 + 31 + 30 + 31 + 13; // 6/14 (2020 閏)
+        assert_eq!(compute_age(birth, before, &cal), 19);
+        cal.age_reckoning = "counting".to_string();
+        // 数え年 = 暦年差+1 = 2020-2000+1 = 21。
+        assert_eq!(compute_age(birth, before, &cal), 21);
     }
 }

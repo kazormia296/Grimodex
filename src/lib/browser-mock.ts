@@ -485,6 +485,7 @@ const SCHEMA_DDL = `
     note TEXT,
     ordinal TEXT NOT NULL DEFAULT 'a0',
     primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+    lane_group TEXT,
     location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
     start_time INTEGER,
     end_time INTEGER,
@@ -517,6 +518,8 @@ const SCHEMA_DDL = `
     start_year INTEGER NOT NULL DEFAULT 0,
     months TEXT NOT NULL DEFAULT '[]',
     weekday_names TEXT NOT NULL DEFAULT '[]',
+    leap_rule TEXT NOT NULL DEFAULT '{"kind":"none"}',
+    age_reckoning TEXT NOT NULL DEFAULT 'full',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );

@@ -27,6 +27,7 @@ function ev(partial: Partial<EventRow> & { id: string }): EventRow {
     kind: partial.kind ?? "generic",
     secret: partial.secret ?? false,
     revealSceneId: partial.revealSceneId ?? null,
+    laneGroup: partial.laneGroup ?? null,
     createdAt: "",
     updatedAt: "",
   };

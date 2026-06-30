@@ -545,11 +545,11 @@ runner-up 床方式にする。bge は related↔unrelated の分離マージン
 Recall@1/@3・MRR・閾値跨ぎ・閾値 sweep・miss/junk を集計する dev 専用ツール。
 `recallParamsForLang` を共有する。
 
-### 「関連する過去シーン」パネル（人間向け recall）（2026-06-18 追記）
+### 「関連する過去シーン」パネル（人間向け recall）（2026-06-18 追記 / 2026-06-29 Scene Context へ統合 PR#215）
 
 実装: `src/features/related-scenes/`（`fetchRelatedScenes.ts` 取得 +
-`selectRelatedScenes.ts` 選別純関数 + `RelatedScenesPanel.tsx` UI）。tool window
-`related-scenes`（パネル設計書 `docs/Grimodex_関連する過去シーンパネル設計書.md`）。
+`selectRelatedScenes.ts` 選別純関数 + `RelatedScenesSection.tsx` UI）。Scene Context
+パネル内のセクション（パネル設計書 `docs/Grimodex_関連する過去シーンパネル設計書.md`）。
 
 Layer 4 RAG が「AI のための recall（チャット文脈へ自動注入）」なのに対し、本パネルは
 **同じ scene semantic search を人間向け UI に転用**したもの。現在編集中シーンに意味的に
@@ -825,7 +825,7 @@ chat/agent/codexHybridSearch.ts … codex dense(codex_semantic_search)+sparse �
 related-scenes/                … 「関連する過去シーン」パネル (人間向け recall)
 ├── selectRelatedScenes.ts     … 既読フィルタ+1シーン集約+件数 cap の選別 pure
 ├── fetchRelatedScenes.ts      … loadSceneContent→semanticSearch→selectRelatedPastScenes
-└── RelatedScenesPanel.tsx     … パネル UI (debounce fetch + クリックで chunk jump)
+└── RelatedScenesSection.tsx   … Scene Context 内セクション UI (debounce fetch + クリックで chunk jump)
 App.tsx                        … listener 起動 + Toast マウント + SearchDialog 配線
                                   + open 時 ensureSemanticIndexesOnOpen
 features/editor/EditorPane.tsx … coreSave 末尾で scheduleSceneIndex、

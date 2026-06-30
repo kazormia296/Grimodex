@@ -90,6 +90,8 @@ export interface AgentEventCreateInput {
   note?: string | null;
   ordinal?: string;
   primaryCodexId?: string | null;
+  /** 未割当の整理用サブレーン id。 */
+  laneGroup?: string | null;
   locationCodexId?: string | null;
   startTime?: number | null;
   endTime?: number | null;
@@ -118,6 +120,7 @@ export async function agentCreateEvent(
       note: input.note ?? null,
       ordinal: input.ordinal ?? undefined,
       primaryCodexId: input.primaryCodexId ?? null,
+      laneGroup: input.laneGroup ?? null,
       locationCodexId: input.locationCodexId ?? null,
       startTime: input.startTime ?? null,
       endTime: input.endTime ?? null,
@@ -141,6 +144,7 @@ export async function agentCreateEvent(
 export interface AgentEventUpdateInput {
   eventId: string;
   title?: string;
+  laneGroup?: string | null;
   note?: string | null;
   ordinal?: string;
   primaryCodexId?: string | null;
@@ -264,6 +268,14 @@ export function uiUpdateEvent(input: AgentEventUpdateInput): Promise<void> {
 
 export function uiDeleteEvent(eventId: string): Promise<void> {
   return agentDeleteEvent(eventId, UI_WRITE_OPTS);
+}
+
+/** 出来事の参加者（追加レーン=複数 Codex 所属）を置換する。tracked-write。 */
+export function uiSetEventParticipants(
+  eventId: string,
+  codexEntryIds: string[],
+): Promise<void> {
+  return agentSetEventParticipants(eventId, codexEntryIds);
 }
 
 export function uiAddEventRelation(

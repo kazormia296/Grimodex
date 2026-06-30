@@ -30,6 +30,8 @@ export interface CodexEntryPickerProps {
   onChange: (id: string | null) => void;
   /** トリガーボタンの aria-label。 */
   ariaLabel: string;
+  /** 未選択時にトリガーへ出す文言（既定="なし"）。 */
+  placeholder?: string;
 }
 
 /**
@@ -41,6 +43,7 @@ export function CodexEntryPicker({
   options,
   onChange,
   ariaLabel,
+  placeholder,
 }: CodexEntryPickerProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -73,7 +76,9 @@ export function CodexEntryPicker({
           className="inline-flex max-w-36 items-center gap-1 rounded border bg-transparent px-1.5 py-0.5 text-xs hover:bg-accent"
         >
           <span className="truncate">
-            {selected ? selected.name : t("chronicle.none", "なし")}
+            {selected
+              ? selected.name
+              : (placeholder ?? t("chronicle.none", "なし"))}
           </span>
           <ChevronsUpDown className="size-3 shrink-0 opacity-50" />
         </button>

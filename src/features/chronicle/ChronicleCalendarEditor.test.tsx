@@ -44,6 +44,8 @@ describe("ChronicleCalendarEditor", () => {
       startYear: 0,
       months: [],
       weekdayNames: [],
+      leap: { kind: "none" },
+      ageReckoning: "full",
     });
     expect(onClose).toHaveBeenCalled();
   });
@@ -82,6 +84,8 @@ describe("ChronicleCalendarEditor", () => {
         { name: "二月", days: 28 },
       ],
       weekdayNames: ["月", "火"],
+      leap: { kind: "none" },
+      ageReckoning: "full",
     });
   });
 
@@ -98,5 +102,49 @@ describe("ChronicleCalendarEditor", () => {
     fireEvent.click(getByText("キャンセル"));
     expect(onSave).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("ChronicleCalendarEditor — グレゴリオ/年齢表記", () => {
+  it("「グレゴリオ暦」適用→保存で 12ヶ月＋閏2月＋数え年が onSave に乗る", () => {
+    const onSave = vi.fn();
+    const { getByText } = render(
+      <ChronicleCalendarEditor
+        initial={null}
+        onSave={onSave}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(getByText("グレゴリオ暦"));
+    fireEvent.click(getByText("数え年"));
+    fireEvent.click(getByText("保存"));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const cal = onSave.mock.calls[0][0];
+    expect(cal.months).toHaveLength(12);
+    expect(cal.daysPerYear).toBe(365);
+    expect(cal.leap).toEqual({ kind: "gregorian", monthIndex: 1 });
+    expect(cal.ageReckoning).toBe("counting");
+    expect(cal.weekdayNames).toHaveLength(7);
+  });
+
+  it("月が無ければ閏は none に落ちる（gregorian は月前提）", () => {
+    const onSave = vi.fn();
+    const { getByText } = render(
+      <ChronicleCalendarEditor
+        initial={{
+          daysPerYear: 365,
+          seasonBoundaries: [{ name: "春", startDayOfYear: 0 }],
+          startYear: 0,
+          months: [],
+          weekdayNames: [],
+          leap: { kind: "gregorian", monthIndex: 1 },
+          ageReckoning: "full",
+        }}
+        onSave={onSave}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(getByText("保存"));
+    expect(onSave.mock.calls[0][0].leap).toEqual({ kind: "none" });
   });
 });

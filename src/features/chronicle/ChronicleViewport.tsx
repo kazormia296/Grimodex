@@ -1,166 +1,804 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import type { ChronicleLaneModel } from "./chronicleLaneModel";
-import type { ScaledPoint } from "./chronicleTimeScale";
-import type { CausalEdgeGeom } from "./chronicleEdges";
-import { EventMarker } from "./EventMarker";
+import {
+  dayToX,
+  panByPx,
+  viewStartFromThumb,
+  xToDay,
+  zoomAt,
+  type View,
+} from "./chronicleAxis";
+import {
+  realEventId,
+  laneTargetKey,
+  laneKeyOf,
+  type ChronicleLayout,
+} from "./chronicleLayout";
+import { laneAtY } from "./chronicleLanePack";
+import { useLaneReorderTween } from "./chronicleLaneAnim";
+import { useReducedMotion } from "@/lib/animation";
+import { snapDayToTicks } from "./chronicleSnap";
+import { ChronicleRuler } from "./ChronicleRuler";
+import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
+import { EventMarker, type MarkerEvent } from "./EventMarker";
+
+const SNAP_PX = 12;
+const DRAG_THRESHOLD = 3;
+// Y のデッドゾーン: これ未満の縦移動はレーン変更せず横スライドのみ（Grid のシーン同様）。
+const LANE_DEADZONE = 28;
 
 export interface ChronicleViewportProps {
-  model: ChronicleLaneModel;
-  /** eventId → 射影済み x/xEnd（chronicleTimeScale.scaleEvents の結果 Map）。 */
-  scaled: Map<string, ScaledPoint>;
-  /** SVG 幅(px)。 */
-  width: number;
-  /** 左ラベルガター幅(px)。scaleEvents の padX と一致させること。 */
-  gutterX: number;
+  view: View;
+  onViewChange: (v: View) => void;
+  onMeasureTrack: (w: number) => void;
+  layout: ChronicleLayout;
+  eventsById: Map<string, MarkerEvent>;
+  /** プライマリ選択（アンカー＝因果エッジ作成ハンドルを出す対象）。 */
   selectedEventId: string | null;
-  onSelectEvent: (eventId: string) => void;
-  /** 季節整合などの矛盾を持つ eventId 集合（警告リング表示）。 */
-  conflictIds?: Set<string>;
-  /** Timeline で選択中のシーンに紐づく eventId 集合（関連ハイライト）。 */
-  relatedIds?: Set<string>;
-  /** 因果エッジ（原因→結果）の描画幾何。conflict は赤で描く。 */
-  causalEdges?: CausalEdgeGeom[];
+  /** 複数選択集合（リング強調の対象。未指定時は selectedEventId のみ）。 */
+  selectedIds?: Set<string>;
+  activeLaneKey: string | null;
+  conflictIds: Set<string>;
+  /** Timeline で選択中のシーンに紐づく出来事（淡いリング強調）。 */
+  relatedIds: Set<string>;
+  showEdges: boolean;
+  labelsOn: boolean;
+  /** 出来事選択。mods.toggle=Ctrl/⌘ トグル, mods.range=Shift 範囲。 */
+  onSelectEvent: (
+    id: string,
+    mods?: { toggle: boolean; range: boolean },
+  ) => void;
+  /** レーンガター用（任意 Codex 候補・割当/追加・ロック）。 */
+  laneOptions?: { id: string; name: string; type: string }[];
+  locked?: boolean;
+  /** 未割当レーンを群ごと Codex へ割当（groupId=null は基底未割当）。 */
+  onAssignGroup?: (groupId: string | null, codexId: string) => void;
+  onAddLane?: () => void;
+  /** 空の未割当（追加）レーンを隠す（× で）。 */
+  onHideGroup?: (groupId: string) => void;
+  /** codex レーンの並べ替え（commit=false=ドラッグ中の表示更新 / true=確定＝永続）。 */
+  onReorderLanes?: (newOrder: string[], commit: boolean) => void;
+  // ── グラフ操作（任意・ロック時は呼ばれない） ──
+  /** 選択中の位置（縦ガイド表示。空白クリックで設定）。 */
+  selectedDay?: number | null;
+  /** 暦軸モードか（false=並び順モードでは時間ドラッグ/位置作成を抑止）。 */
+  hasCalendarAxis?: boolean;
+  /** マーカー再配置（newStartDay=null は時間変更なし。newCodexId でレーン再割当）。 */
+  onMoveEvent?: (
+    id: string,
+    newStartDay: number | null,
+    newCodexId: string | null,
+  ) => void;
+  /** 期間端の伸縮（edge=start/end の日を更新）。 */
+  onResizeEvent?: (id: string, edge: "start" | "end", newDay: number) => void;
+  /** D&D 因果エッジ作成（cause→effect）。 */
+  onCreateEdge?: (causeId: string, effectId: string) => void;
+  /** 空白の位置に新規作成（day=null は時間なし）。 */
+  onCreateAt?: (day: number | null, codexId: string | null) => void;
+  /** 位置選択（縦ガイド）。 */
+  onSelectPosition?: (day: number | null, codexId: string | null) => void;
+  /** 出来事削除（コンテキストメニュー）。 */
+  onDeleteEvent?: (id: string) => void;
 }
 
 /**
- * 人物レーン×作中時間軸の SVG 年表（presentational）。
- * 座標数学は親が chronicleTimeScale/chronicleLaneModel で算出して渡す。
- * このコンポーネントは描画のみ（200行規約・モノリス複製禁止）。
+ * 作中年表ビューポート（DOM ベースの pan/zoom 水平タイムライン）。
+ * ルーラー＋（左ガター＋トラック）＋スクロールバーを積む。トラックの
+ * ホイール=ズーム / ドラッグ=パン / ResizeObserver=幅計測 を司り、座標は
+ * 親が buildChronicleLayout（純関数）で算出した layout から描く。
  */
 export function ChronicleViewport({
-  model,
-  scaled,
-  width,
-  gutterX,
+  view,
+  onViewChange,
+  onMeasureTrack,
+  layout,
+  eventsById,
   selectedEventId,
-  onSelectEvent,
+  selectedIds,
+  activeLaneKey,
   conflictIds,
   relatedIds,
-  causalEdges,
+  showEdges,
+  labelsOn,
+  onSelectEvent,
+  laneOptions,
+  locked,
+  onAssignGroup,
+  onAddLane,
+  onHideGroup,
+  onReorderLanes,
+  selectedDay,
+  hasCalendarAxis = true,
+  onMoveEvent,
+  onResizeEvent,
+  onCreateEdge,
+  onCreateAt,
+  onSelectPosition,
+  onDeleteEvent,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
-  const hasUnassigned = model.unassigned.length > 0;
-  const unassignedY = model.contentHeight + model.laneHeight / 2;
-  const height = model.contentHeight + (hasUnassigned ? model.laneHeight : 0);
+  const trackElRef = useRef<HTMLDivElement | null>(null);
+  // ネイティブ wheel / pointer ハンドラから最新値を読むための ref。
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const draggedRef = useRef(false);
+  const onViewChangeRef = useRef(onViewChange);
+  onViewChangeRef.current = onViewChange;
+  const onMeasureRef = useRef(onMeasureTrack);
+  onMeasureRef.current = onMeasureTrack;
+  const cleanupRef = useRef<(() => void) | null>(null);
+  // 進行中のドラッグの document リスナ撤去関数（アンマウント時の取りこぼし防止）。
+  const dragCleanupRef = useRef<(() => void) | null>(null);
 
-  const renderMarkers = (
-    markers: ChronicleLaneModel["lanes"][number]["markers"],
-    y: number,
-  ) =>
-    markers.map((m) => {
-      const s = scaled.get(m.eventId);
-      if (!s) return null;
-      const conflict = conflictIds?.has(m.eventId) ?? false;
-      const related = relatedIds?.has(m.eventId) ?? false;
-      return (
-        <g key={m.eventId}>
-          {related && (
-            <circle
-              cx={s.x}
-              cy={y}
-              r={11}
-              className="fill-primary/15"
-              data-related={m.eventId}
-            />
-          )}
-          {conflict && (
-            <circle
-              cx={s.x}
-              cy={y}
-              r={9}
-              fill="none"
-              className="stroke-amber-500"
-              strokeWidth={1.5}
-              data-conflict={m.eventId}
-            >
-              <title>{t("chronicle.seasonConflict", "季節の矛盾")}</title>
-            </circle>
-          )}
-          <EventMarker
-            marker={m}
-            x={s.x}
-            xEnd={s.xEnd}
-            y={y}
-            selected={selectedEventId === m.eventId}
-            onSelect={() => onSelectEvent(m.eventId)}
-          />
-        </g>
+  // ドラッグ中の縦ガイド（content px）とコンテキストメニュー。
+  const [ghostX, setGhostX] = useState<number | null>(null);
+  // ドラッグ中のマーカー追従プレビュー（見た目を動かす）。dx/dy は px オフセット。
+  const [dragPreview, setDragPreview] = useState<{
+    id: string;
+    dx: number;
+    dy: number;
+  } | null>(null);
+  // 因果エッジ接続ハンドルのドラッグガイド（content px）。
+  const [edgeDrag, setEdgeDrag] = useState<{
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+  } | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    eventId: string | null;
+  } | null>(null);
+
+  // document リスナから最新の callback/flag を読むための ref。
+  const cbRef = useRef({
+    locked: false,
+    hasCalendarAxis: true,
+    onMoveEvent,
+    onResizeEvent,
+    onCreateEdge,
+    onCreateAt,
+    onSelectPosition,
+  });
+  cbRef.current = {
+    locked: !!locked,
+    hasCalendarAxis,
+    onMoveEvent,
+    onResizeEvent,
+    onCreateEdge,
+    onCreateAt,
+    onSelectPosition,
+  };
+
+  // ── 座標ヘルパ（track rect 基準） ──
+  // always=true（位置選択クリック）は距離に関わらず見えている目盛りへ必ず吸着する。
+  const snappedDayAt = (
+    clientX: number,
+    rect: DOMRect,
+    always = false,
+  ): number => {
+    const raw = xToDay(viewRef.current, clientX - rect.left);
+    const maxDist = always
+      ? Infinity
+      : SNAP_PX / Math.max(viewRef.current.pxPerDay, 1e-9);
+    const tickDays = layoutRef.current.ticks.minor.map((tk) =>
+      xToDay(viewRef.current, tk.x),
+    );
+    return snapDayToTicks(raw, tickDays, maxDist);
+  };
+  const laneCodexAt = (clientY: number, rect: DOMRect): string | null => {
+    const lane = laneAtY(layoutRef.current.pack.lanes, clientY - rect.top);
+    return lane ? laneTargetKey(lane) : null;
+  };
+
+  // document ドラッグの登録/撤去（move + up を1組で）。
+  const bindDrag = (
+    move: (ev: MouseEvent) => void,
+    up: (ev: MouseEvent) => void,
+  ) => {
+    // 直前のドラッグの取りこぼし（mouseup 欠落）でリスナが漏れると以後の操作が
+    // 壊れる（draggedRef が張り付く/勝手にパン）。新規ドラッグ前に必ず撤去する。
+    dragCleanupRef.current?.();
+    const onUp = (ev: MouseEvent) => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", onUp);
+      dragCleanupRef.current = null;
+      up(ev);
+    };
+    dragCleanupRef.current = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", onUp);
+  };
+
+  // wheel（passive:false で preventDefault）と ResizeObserver を track へ装着。
+  const setTrackEl = useCallback((el: HTMLDivElement | null) => {
+    if (!el) {
+      cleanupRef.current?.();
+      cleanupRef.current = null;
+      trackElRef.current = null;
+      return;
+    }
+    trackElRef.current = el;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      // Shift+ホイール=横スクロール（トラックパッドの deltaX も拾う）。
+      if (e.shiftKey) {
+        const delta =
+          Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        onViewChangeRef.current(panByPx({ view: viewRef.current, dx: -delta }));
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      const pivotPx = e.clientX - rect.left;
+      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+      onViewChangeRef.current(
+        zoomAt({ view: viewRef.current, pivotPx, factor }),
       );
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            const w = el.clientWidth;
+            if (w > 0) onMeasureRef.current(w);
+          })
+        : null;
+    ro?.observe(el);
+    if (el.clientWidth > 0) onMeasureRef.current(el.clientWidth);
+    cleanupRef.current = () => {
+      el.removeEventListener("wheel", onWheel);
+      ro?.disconnect();
+    };
+  }, []);
+  useEffect(
+    () => () => {
+      cleanupRef.current?.();
+      dragCleanupRef.current?.();
+    },
+    [],
+  );
+
+  // トラック pointerdown を一元処理: 期間端伸縮 / マーカードラッグ（移動 or
+  // 別マーカーへ落として因果エッジ）/ 空白パン＋位置選択。3px 超でクリック抑止。
+  const onTrackPointerDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    // ドラッグ中に本文/ラベルのテキストが選択されるのを防ぐ（select-none だけでは
+    // ドラッグ起点の選択を抑止できない）。クリック選択は onClick が別途担う。
+    e.preventDefault();
+    const el = trackElRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const targetEl = e.target as HTMLElement;
+    const resizeEl = targetEl.closest("[data-resize]");
+    const edgeHandleEl = targetEl.closest("[data-edge-handle]");
+    const markerEl = targetEl.closest("[data-event-id]");
+    const eventId = markerEl?.getAttribute("data-event-id") ?? null;
+    const cb = cbRef.current;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    draggedRef.current = false;
+    if (menu) setMenu(null);
+
+    // ── 因果エッジ接続ハンドルからの D&D（別マーカーへ落とすと cause→effect） ──
+    if (edgeHandleEl && eventId && !cb.locked && cb.onCreateEdge) {
+      const center = layoutRef.current.pack.centers.get(eventId);
+      // ガイドはハンドル(末尾の●)位置＝末尾 outX から引く（描画エッジと整合）。
+      const fromX = center?.outX ?? center?.cx ?? e.clientX - rect.left;
+      const fromY = center?.cy ?? e.clientY - rect.top;
+      bindDrag(
+        (ev) => {
+          draggedRef.current = true;
+          setEdgeDrag({
+            fromX,
+            fromY,
+            toX: ev.clientX - rect.left,
+            toY: ev.clientY - rect.top,
+          });
+        },
+        (ev) => {
+          setEdgeDrag(null);
+          const overEl = document.elementFromPoint(
+            ev.clientX,
+            ev.clientY,
+          ) as HTMLElement | null;
+          const overId =
+            overEl?.closest("[data-event-id]")?.getAttribute("data-event-id") ??
+            null;
+          if (overId && overId !== eventId) cb.onCreateEdge!(eventId, overId);
+          setTimeout(() => {
+            draggedRef.current = false;
+          }, 0);
+        },
+      );
+      return;
+    }
+
+    // ── 期間端の伸縮 ──
+    if (
+      resizeEl &&
+      eventId &&
+      !cb.locked &&
+      cb.onResizeEvent &&
+      cb.hasCalendarAxis
+    ) {
+      const edge = resizeEl.getAttribute("data-resize") as "start" | "end";
+      bindDrag(
+        (ev) => {
+          if (Math.abs(ev.clientX - startX) > DRAG_THRESHOLD)
+            draggedRef.current = true;
+          setGhostX(ev.clientX - rect.left);
+        },
+        (ev) => {
+          setGhostX(null);
+          if (draggedRef.current)
+            cb.onResizeEvent!(eventId, edge, snappedDayAt(ev.clientX, rect));
+          setTimeout(() => {
+            draggedRef.current = false;
+          }, 0);
+        },
+      );
+      return;
+    }
+
+    // ── マーカー: 本体ドラッグ＝移動（ロック時は選択のみ。因果エッジは末尾●ハンドル） ──
+    if (markerEl && eventId) {
+      if (!cb.locked && cb.onMoveEvent) {
+        const startLaneCodex = laneCodexAt(startY, rect);
+        bindDrag(
+          (ev) => {
+            if (
+              Math.abs(ev.clientX - startX) > DRAG_THRESHOLD ||
+              Math.abs(ev.clientY - startY) > DRAG_THRESHOLD
+            ) {
+              draggedRef.current = true;
+              // Y はデッドゾーン分を差し引いて追従（一定までは横スライドのみ）。
+              const rawDy = ev.clientY - startY;
+              const dy =
+                Math.sign(rawDy) * Math.max(0, Math.abs(rawDy) - LANE_DEADZONE);
+              // マーカーをポインタへ追従（見た目を動かす）。ゴースト縦線は吸着先を示す。
+              setDragPreview({ id: eventId, dx: ev.clientX - startX, dy });
+              setGhostX(
+                cb.hasCalendarAxis
+                  ? dayToX(viewRef.current, snappedDayAt(ev.clientX, rect))
+                  : ev.clientX - rect.left,
+              );
+            }
+          },
+          (ev) => {
+            setGhostX(null);
+            setDragPreview(null);
+            // 本体ドラッグは常に移動（別マーカーへ落としても因果エッジは作らない。
+            // 因果エッジは選択時の末尾●ハンドル D&D のみ）。
+            if (draggedRef.current && cb.onMoveEvent) {
+              const newDay = cb.hasCalendarAxis
+                ? snappedDayAt(ev.clientX, rect)
+                : null;
+              // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
+              const newCodex =
+                Math.abs(ev.clientY - startY) < LANE_DEADZONE
+                  ? startLaneCodex
+                  : laneCodexAt(ev.clientY, rect);
+              cb.onMoveEvent(eventId, newDay, newCodex);
+            }
+            setTimeout(() => {
+              draggedRef.current = false;
+            }, 0);
+          },
+        );
+      }
+      // ロック時/ハンドラ無しでもパンはさせない（クリックで選択させる）。
+      return;
+    }
+
+    // ── 空白: 横パン＋（非ドラッグ時）位置選択 ──
+    const startView = viewRef.current;
+    bindDrag(
+      (ev) => {
+        const dx = ev.clientX - startX;
+        if (Math.abs(dx) > DRAG_THRESHOLD) draggedRef.current = true;
+        onViewChangeRef.current(panByPx({ view: startView, dx }));
+      },
+      (ev) => {
+        if (!draggedRef.current && cb.onSelectPosition) {
+          // 位置選択の縦ラインは表示中ルーラー解像度のグリッドへ必ず吸着。
+          const day = cb.hasCalendarAxis
+            ? snappedDayAt(ev.clientX, rect, true)
+            : null;
+          cb.onSelectPosition(day, laneCodexAt(ev.clientY, rect));
+        }
+        setTimeout(() => {
+          draggedRef.current = false;
+        }, 0);
+      },
+    );
+  };
+
+  // 空白ダブルクリック=その位置に新規作成。
+  const onTrackDoubleClick = (e: React.MouseEvent) => {
+    const cb = cbRef.current;
+    const el = trackElRef.current;
+    if (cb.locked || !cb.onCreateAt || !el) return;
+    if ((e.target as HTMLElement).closest("[data-event-id]")) return;
+    const rect = el.getBoundingClientRect();
+    const day = cb.hasCalendarAxis ? snappedDayAt(e.clientX, rect) : null;
+    cb.onCreateAt(day, laneCodexAt(e.clientY, rect));
+  };
+
+  // 右クリック=コンテキストメニュー（マーカー上なら編集/削除、空白なら作成）。
+  const onTrackContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const markerEl = (e.target as HTMLElement).closest("[data-event-id]");
+    setMenu({
+      x: e.clientX,
+      y: e.clientY,
+      eventId: markerEl?.getAttribute("data-event-id") ?? null,
     });
+  };
+
+  // スクロールバーつまみドラッグ＝横スクロール。
+  const onThumbPointerDown = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const geom = layoutRef.current.scroll;
+    const startX = e.clientX;
+    const startLeft = geom.thumbLeft;
+    const move = (ev: MouseEvent) => {
+      const nextLeft = startLeft + (ev.clientX - startX);
+      const vs = viewStartFromThumb(layoutRef.current.scroll, nextLeft);
+      onViewChangeRef.current({
+        pxPerDay: viewRef.current.pxPerDay,
+        viewStartDay: vs,
+      });
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      dragCleanupRef.current = null;
+    };
+    dragCleanupRef.current = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+
+  const handleSelect = (id: string, e: React.MouseEvent) => {
+    if (draggedRef.current) return;
+    // Ctrl/⌘=トグル, Shift=範囲, 修飾なし=単一。
+    onSelectEvent(id, {
+      toggle: e.ctrlKey || e.metaKey,
+      range: e.shiftKey,
+    });
+  };
+
+  const {
+    spacing,
+    pack,
+    ticks,
+    edges,
+    scroll,
+    contentHeight,
+    minorGridX,
+    majorGridX,
+    markerById,
+  } = layout;
+
+  // 並べ替えの入れ替えアニメ（Timeline Thread と同方式の手動 FLIP）。
+  const reducedMotion = useReducedMotion();
+  const laneOffsets = useLaneReorderTween(
+    pack.lanes.map((l) => ({ key: laneKeyOf(l), top: l.top })),
+    reducedMotion,
+  );
 
   return (
-    <svg
-      width={width}
-      height={Math.max(height, model.laneHeight)}
-      role="img"
-      aria-label={t("chronicle.viewportLabel", "作中年表")}
-      className="text-foreground"
-    >
-      {causalEdges && causalEdges.length > 0 && (
-        <g data-layer="causal-edges">
-          {causalEdges.map((e) => (
-            <line
-              key={`${e.causeId}|${e.effectId}`}
-              x1={e.x1}
-              y1={e.y1}
-              x2={e.x2}
-              y2={e.y2}
-              data-causal-edge={`${e.causeId}|${e.effectId}`}
-              className={
-                e.conflict ? "stroke-red-500" : "stroke-muted-foreground/40"
-              }
-              strokeWidth={e.conflict ? 1.5 : 1}
-              strokeDasharray={e.conflict ? undefined : "4 3"}
+    <div className="relative flex min-h-0 flex-1 flex-col bg-card">
+      <ChronicleRuler
+        gutterX={spacing.gutterX}
+        unitLabel={ticks.unitLabel}
+        ticks={ticks}
+      />
+
+      <div className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+        <ChronicleLaneGutter
+          lanes={pack.lanes}
+          gutterX={spacing.gutterX}
+          activeLaneKey={activeLaneKey}
+          laneOptions={laneOptions}
+          locked={locked}
+          onAssignGroup={onAssignGroup}
+          onAddLane={onAddLane}
+          onHideGroup={onHideGroup}
+          onReorderLanes={onReorderLanes}
+          laneOffsets={laneOffsets}
+        />
+
+        <div
+          id="chronicle-track"
+          ref={setTrackEl}
+          onMouseDown={onTrackPointerDown}
+          onDoubleClick={onTrackDoubleClick}
+          onContextMenu={onTrackContextMenu}
+          className="relative flex-1 select-none"
+          // minHeight=コンテンツ高、flex stretch で残り高さまで伸ばしレーン外も操作可能に。
+          style={{ minHeight: contentHeight }}
+          role="application"
+          aria-label={t("chronicle.viewportLabel", "作中年表")}
+        >
+          {/* 選択位置ガイド（accent 実線）＋ドラッグ中ガイド（破線） */}
+          {selectedDay != null && hasCalendarAxis && (
+            <div
+              data-testid="chronicle-position-guide"
+              className="pointer-events-none absolute top-0 z-[4]"
+              style={{
+                left: dayToX(view, selectedDay),
+                width: 0,
+                height: contentHeight,
+                borderLeft: "1.5px solid var(--primary)",
+                opacity: 0.7,
+              }}
+            />
+          )}
+          {ghostX != null && (
+            <div
+              className="pointer-events-none absolute top-0 z-[8]"
+              style={{
+                left: ghostX,
+                width: 0,
+                height: contentHeight,
+                borderLeft: "1.5px dashed var(--primary)",
+              }}
+            />
+          )}
+
+          {/* グリッド線 */}
+          {minorGridX.map((x, i) => (
+            <div
+              key={`gmin-${i}`}
+              className="absolute top-0 z-[2]"
+              style={{
+                left: x,
+                width: 1,
+                height: contentHeight,
+                background:
+                  "color-mix(in oklch, var(--border) 45%, transparent)",
+              }}
             />
           ))}
-        </g>
-      )}
-      {model.lanes.map((lane) => (
-        <g key={lane.codexId} data-lane-id={lane.codexId}>
-          <line
-            x1={gutterX}
-            y1={lane.y}
-            x2={width}
-            y2={lane.y}
-            className="stroke-border"
-            strokeWidth={1}
-            opacity={0.4}
-          />
-          <text
-            x={6}
-            y={lane.y}
-            dominantBaseline="middle"
-            className="fill-muted-foreground text-xs"
-          >
-            {lane.name}
-          </text>
-          {renderMarkers(lane.markers, lane.y)}
-        </g>
-      ))}
+          {majorGridX.map((x, i) => (
+            <div
+              key={`gmaj-${i}`}
+              className="absolute top-0 z-[2] bg-border"
+              style={{ left: x, width: 1, height: contentHeight }}
+            />
+          ))}
+          {pack.laneSepTops.map((top, i) => {
+            if (top <= 0) return null;
+            // 区切り線は対応レーン（同 index）の入れ替えオフセットで追従。
+            const sepLane = pack.lanes[i];
+            const off = sepLane
+              ? (laneOffsets.get(laneKeyOf(sepLane)) ?? 0)
+              : 0;
+            return (
+              <div
+                key={`sep-${i}`}
+                className="absolute left-0 z-[2] bg-border/60"
+                style={{
+                  top,
+                  width: "100%",
+                  height: 1,
+                  transform: off ? `translateY(${off}px)` : undefined,
+                }}
+              />
+            );
+          })}
 
-      {hasUnassigned && (
-        <g data-lane-id="__unassigned">
-          <line
-            x1={gutterX}
-            y1={unassignedY}
-            x2={width}
-            y2={unassignedY}
-            className="stroke-border"
-            strokeWidth={1}
-            strokeDasharray="2 3"
-            opacity={0.4}
+          {/* 因果エッジ */}
+          {showEdges && edges.length > 0 && (
+            <svg
+              className="pointer-events-none absolute left-0 top-0 z-[3]"
+              style={{
+                width: "100%",
+                height: contentHeight,
+                overflow: "visible",
+              }}
+            >
+              {edges.map((e) => (
+                <g key={`${e.causeId}|${e.effectId}`}>
+                  <path
+                    d={e.d}
+                    fill="none"
+                    className={
+                      e.conflict
+                        ? "stroke-red-500"
+                        : "stroke-muted-foreground/60"
+                    }
+                    strokeWidth={e.conflict ? 2 : 1.4}
+                    data-causal-edge={`${e.causeId}|${e.effectId}`}
+                  />
+                  <polygon
+                    points={e.arrowPoints}
+                    className={
+                      e.conflict ? "fill-red-500" : "fill-muted-foreground/60"
+                    }
+                  />
+                </g>
+              ))}
+            </svg>
+          )}
+
+          {/* 因果エッジ接続ドラッグのガイド線 */}
+          {edgeDrag && (
+            <svg
+              className="pointer-events-none absolute left-0 top-0 z-[10]"
+              style={{
+                width: "100%",
+                height: contentHeight,
+                overflow: "visible",
+              }}
+            >
+              <line
+                x1={edgeDrag.fromX}
+                y1={edgeDrag.fromY}
+                x2={edgeDrag.toX}
+                y2={edgeDrag.toY}
+                className="stroke-primary"
+                strokeWidth={1.6}
+                strokeDasharray="4 3"
+              />
+            </svg>
+          )}
+
+          {/* マーカー（参加レーンの複製は合成 id。本物の eventId に解決して扱う） */}
+          {pack.lanes.flatMap((lane) => {
+            const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
+            return lane.markers.map((m) => {
+              const realId = realEventId(m.eventId);
+              const ev = eventsById.get(realId);
+              const render = markerById.get(m.eventId);
+              if (!ev || !render) return null;
+              return (
+                <EventMarker
+                  key={m.eventId}
+                  event={ev}
+                  left={render.left}
+                  top={render.top}
+                  offsetY={laneOffsetY}
+                  tokenH={spacing.tokenH}
+                  maxTok={spacing.maxTok}
+                  isInterval={render.isInterval}
+                  barWidth={render.barWidth}
+                  selected={
+                    selectedIds
+                      ? selectedIds.has(realId)
+                      : selectedEventId === realId
+                  }
+                  conflict={conflictIds.has(realId)}
+                  related={relatedIds.has(realId)}
+                  labelsOn={labelsOn}
+                  resizable={!locked && render.isInterval}
+                  cursor={locked ? "default" : "pointer"}
+                  edgeHandle={
+                    // 因果エッジハンドルは単一選択時のプライマリのみ。
+                    selectedEventId === realId &&
+                    (!selectedIds || selectedIds.size <= 1) &&
+                    !locked &&
+                    !!onCreateEdge
+                  }
+                  dragOffset={
+                    dragPreview?.id === realId
+                      ? { dx: dragPreview.dx, dy: dragPreview.dy }
+                      : null
+                  }
+                  onSelect={(e) => handleSelect(realId, e)}
+                />
+              );
+            });
+          })}
+        </div>
+      </div>
+
+      {/* スクロールバー */}
+      <div className="flex h-4 flex-none border-t border-border/60 bg-card">
+        <div
+          className="flex-none border-r border-border"
+          style={{ width: spacing.gutterX }}
+        />
+        <div className="relative flex-1">
+          <div
+            onMouseDown={onThumbPointerDown}
+            tabIndex={0}
+            className="absolute cursor-grab rounded-full bg-muted-foreground/40"
+            style={{
+              top: 3,
+              left: scroll.thumbLeft,
+              width: scroll.thumbW,
+              height: 10,
+            }}
+            role="scrollbar"
+            aria-controls="chronicle-track"
+            aria-orientation="horizontal"
+            aria-valuenow={Math.round(scroll.thumbLeft)}
           />
-          <text
-            x={6}
-            y={unassignedY}
-            dominantBaseline="middle"
-            className="fill-muted-foreground text-xs italic"
-          >
-            {t("chronicle.unassigned", "未割当")}
-          </text>
-          {renderMarkers(model.unassigned, unassignedY)}
-        </g>
-      )}
-    </svg>
+        </div>
+      </div>
+
+      {menu &&
+        createPortal(
+          <>
+            <div
+              className="fixed inset-0 z-[60]"
+              onMouseDown={() => setMenu(null)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setMenu(null);
+              }}
+            />
+            <div
+              data-testid="chronicle-context-menu"
+              className="fixed z-[61] min-w-[170px] rounded-md border border-border bg-popover py-1 text-xs shadow-md"
+              style={{ left: menu.x, top: menu.y }}
+            >
+              {menu.eventId ? (
+                <>
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                    onClick={() => {
+                      onSelectEvent(menu.eventId!, {
+                        toggle: false,
+                        range: false,
+                      });
+                      setMenu(null);
+                    }}
+                  >
+                    {t("chronicle.ctxEdit", "編集")}
+                  </button>
+                  {!locked && onDeleteEvent && (
+                    <button
+                      type="button"
+                      className="flex w-full items-center px-3 py-1.5 text-destructive hover:bg-destructive/10"
+                      onClick={() => {
+                        onDeleteEvent(menu.eventId!);
+                        setMenu(null);
+                      }}
+                    >
+                      {t("chronicle.delete", "削除")}
+                    </button>
+                  )}
+                </>
+              ) : (
+                !locked &&
+                onCreateAt && (
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                    onClick={() => {
+                      const el = trackElRef.current;
+                      if (el) {
+                        const rect = el.getBoundingClientRect();
+                        onCreateAt(
+                          hasCalendarAxis ? snappedDayAt(menu.x, rect) : null,
+                          laneCodexAt(menu.y, rect),
+                        );
+                      }
+                      setMenu(null);
+                    }}
+                  >
+                    {t("chronicle.ctxCreateHere", "ここに出来事を作成")}
+                  </button>
+                )
+              )}
+            </div>
+          </>,
+          document.body,
+        )}
+    </div>
   );
 }

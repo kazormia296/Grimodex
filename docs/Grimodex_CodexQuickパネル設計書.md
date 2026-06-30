@@ -1,30 +1,39 @@
 # Grimodex Codex Quickパネル設計書
 
+> **このパネルは Scene Context パネルへ統合されました（PR#215・2026-06-29）。** Codex Quick は現在 Scene Context パネル内の『Codex セクション』として存在します。パネル全体の設計（パネル登録・配置・ヘッダー・他セクションとの統合）は [[Grimodex_SceneContextパネル設計書]] を参照。
+
+このドキュメントは Codex Quick **セクション固有の挙動**（本文マッチング・表示ルール・ピン留め・split mode）を記録するための深掘り先として残す。独立パネルとしての登録・配置に関する記述は **旧設計（統合前）** であり、現行ではない。
+
 ## 概要
 
-Codex QuickはScenesパネルとは独立した専用パネル（`src/features/tree/CodexQuickPanel.tsx`、内容は `CodexQuickSection.tsx`）。**現状の実装**: Dockview 上で `codex-quick` パネルとして登録され、レイアウト解決規則（`src/features/layout/layoutStore.ts` の `PANEL_INSERT_REGISTRY`）によりデフォルトは Codex パネルと同じグループ（タブ内）にdock、Codex が無ければ Scenes パネルの下に挿入される。**現在エディタでアクティブなコンテンツ**（シーン・Note・Codexエントリのcontent）に関連するCodexエントリを自動表示する。
+Codex Quick は Scene Context パネル内の『Codex セクション』として、**現在エディタでアクティブなコンテンツ**（シーン・Note・Codex エントリの content）に関連する Codex エントリを自動表示する。内容コンポーネントは `CodexQuickSection.tsx`。
+
+> **旧設計（統合前・廃止）**: かつては Scenes パネルとは独立した専用パネル（`CodexQuickPanel.tsx`）として Dockview 上で `codex-quick` パネル ID で登録され、レイアウト解決規則（`src/features/layout/layoutStore.ts` の `PANEL_INSERT_REGISTRY`）でデフォルトは Codex パネルと同じグループ（タブ内）に dock、Codex が無ければ Scenes パネルの下に挿入される構成だった。**現行ではこの独立パネル登録・Dock 配置は廃止**され、Scene Context パネルの 1 セクションへ統合されている。パネル ID `codex-quick` は統合後の Scene Context パネルに引き継がれた（後方互換のレイアウト復元のため）。
 
 ```
+（旧・独立パネル時のレイアウト。現行は [[Grimodex_SceneContextパネル設計書]] のセクション図を参照）
 ┌─────────────────────────────────────┐
 │ Scenes                          … ⋮ │  ← Scenesパネル（上）
 │   ▶ Chapter 1                       │
 │     • Scene 1                       │
 │     • Scene 2                       │
 ├─────────────────────────────────────┤
-│ Codex Quick                         │  ← Codex Quickパネル（下・独立）
+│ Codex Quick                         │  ← 旧・独立パネル（現在はScene Context内のCodexセクション）
 │   ● Elara (protagonist)   character │
 │   ● The Obsidian Tower     location │
 │   ● Soulbind Amulet            item │
 └─────────────────────────────────────┘
 ```
 
-## 表示ルール
+## Codex セクションの表示ルール
 
-- エディタ本文中に出現するCodexエントリ名を自動検出し、一覧表示（`useCodexHighlightStore.matchedEntryIds` を購読）
+Scene Context パネルの Codex セクション内での表示挙動は以下のとおり（統合後も不変）。
+
+- エディタ本文中に出現する Codex エントリ名を自動検出し、一覧表示（`useCodexHighlightStore.matchedEntryIds` を購読）
 - 各エントリの左にカテゴリ別カラードット（色は `useCodexHighlightStore.typeColorMap` から動的取得。Character: パープル、Location: ティール、Item: アンバー、Lore: コーラル等は組み込み既定値）
 - 各エントリの右にカテゴリラベル（小さいテキスト）
-- 手動で「ピン留め」したCodexエントリも表示（自動検出に漏れた場合の補完。自動検出と重複した場合はマッチ側を優先して重複排除）
-- パネル上部にツールバーがあり、ソート順を `category` / `name-asc` / `name-desc` / `updated` / `created` から選択可能（`most-referenced` は参照数データを持たないため除外）。ソート状態は `useCodexStore.sortOrder` を共有し、Codex 管理パネルと同期する
+- 手動で「ピン留め」した Codex エントリも表示（自動検出に漏れた場合の補完。自動検出と重複した場合はマッチ側を優先して重複排除）
+- セクション上部のツールバーで、ソート順を `category` / `name-asc` / `name-desc` / `updated` / `created` から選択可能（`most-referenced` は参照数データを持たないため除外）。ソート状態は `useCodexStore.sortOrder` を共有し、Codex 管理パネルと同期する
 
 ### 「今の真実」バッジと未開示伏線警告（2026-06-18 追記）
 
@@ -36,11 +45,12 @@ Codex QuickはScenesパネルとは独立した専用パネル（`src/features/t
 
 | 操作 | 動作 |
 |------|------|
-| エントリをクリック | Codexパネルを表示し（`useLayoutStore.showPanel("codex")`）、`useCodexStore.requestSelectEntry(id)` でそのエントリの詳細を選択 |
-| エントリをホバー | ポップオーバーでCodexエントリのプレビューを表示（`CodexQuickPopover` → `CodexEntryPopoverContent` を使用）。行と同じく「今の真実」バッジ（`phaseLabel`）、フェーズ解決後の summary（`resolvedSummary`、未設定時は Base の `summary`）、未開示伏線の警告文（`spoilerNote`）も併せて表示する |
+| エントリをクリック | Codex パネルを表示し（`useLayoutStore.showPanel("codex")`）、`useCodexStore.requestSelectEntry(id)` でそのエントリの詳細を選択 |
+| エントリをホバー | ポップオーバーで Codex エントリのプレビューを表示（`CodexQuickPopover` → `CodexEntryPopoverContent` を使用）。行と同じく「今の真実」バッジ（`phaseLabel`）、フェーズ解決後の summary（`resolvedSummary`、未設定時は Base の `summary`）、未開示伏線の警告文（`spoilerNote`）も併せて表示する |
 | 行ホバー時に出現するピンアイコン | クリックでピン留め／解除をトグル（`togglePinnedCodex`、ピン済みエントリでは PinOff アイコンを常時表示） |
 | [+ Pin Codex entry] | `CodexCommandPalette`（`src/features/codex/components/CodexCommandPalette.tsx`）を開き、検索してエントリを選択するとピン留め |
-| `Ctrl+Alt+Q` | Codex Quickパネルの表示トグル＋フォーカス（`src/App.tsx` のグローバルショートカット、表示後 `requestAnimationFrame` で `panel.api.setActive()` を呼ぶ） |
+
+> **旧設計（統合前・廃止）**: 独立パネル時は `Ctrl+Alt+Q` で Codex Quick パネルの表示トグル＋フォーカス（`src/App.tsx` のグローバルショートカット）を提供していた。統合後のショートカット／フォーカス挙動は Scene Context パネル側で扱う（[[Grimodex_SceneContextパネル設計書]] 参照）。
 
 ※ 設計書当初の「ピン留めエントリの右の × 」は実装されておらず、現状は行ホバー時のピン／PinOff アイコンによるトグル UI に置き換えられている。
 
@@ -51,10 +61,10 @@ Codex QuickはScenesパネルとは独立した専用パネル（`src/features/t
   → 本文テキストを取得
   → Codexエントリ名のマッチング（Rustマッチャー）
   → マッチ結果 + 手動ピン留めを結合
-  → Codex Quickパネルを更新
+  → Codex セクションを更新
 ```
 
-このマッチングはエディタ内のCodexハイライト（Pure Decorations）と同じパイプライン（`useCodexHighlight` → `codexMatchOrchestrator`）を使い、`useCodexHighlightStore.matchedEntryIds` を共有する。
+このマッチングはエディタ内の Codex ハイライト（Pure Decorations）と同じパイプライン（`useCodexHighlight` → `codexMatchOrchestrator`）を使い、`useCodexHighlightStore.matchedEntryIds` を共有する。
 
 ### ピン留めの永続化
 
@@ -62,7 +72,7 @@ Codex QuickはScenesパネルとは独立した専用パネル（`src/features/t
 
 ### タブ種別ごとの挙動
 
-| タブ種別 | Codex Quickへの反映 | 自己参照の扱い |
+| タブ種別 | Codex セクションへの反映 | 自己参照の扱い |
 |---------|---------------------|---------------|
 | シーン / Note | 反映する | — |
 | Codexエントリ（content編集） | 反映する | 編集中のエントリ自身は除外 |
@@ -70,6 +80,11 @@ Codex QuickはScenesパネルとは独立した専用パネル（`src/features/t
 
 ### Split mode（2グループ表示時）
 
-エディタがSplit modeの場合、**フォーカスされているグループ**（`activeGroupIndex`）のコンテンツのみがCodexQuickを更新する。非アクティブグループは `skipMatchedIds: true` で動作し、視覚デコレーション（ハイライト）は機能するがCodexQuickには影響しない。
+エディタが Split mode の場合、**フォーカスされているグループ**（`activeGroupIndex`）のコンテンツのみが Codex セクションを更新する。非アクティブグループは `skipMatchedIds: true` で動作し、視覚デコレーション（ハイライト）は機能するが Codex セクションには影響しない。
 
-グループをクリックしてフォーカスを切り替えると、即座にそのグループのコンテンツで再マッチングが走りCodexQuickが更新される。
+グループをクリックしてフォーカスを切り替えると、即座にそのグループのコンテンツで再マッチングが走り Codex セクションが更新される。
+
+## 関連設計書
+
+- [[Grimodex_SceneContextパネル設計書]] — 統合先パネル全体の設計（登録・配置・ヘッダー・他セクション統合）。本書の上位。
+- [[Grimodex_Codexパネル設計書]] — Codex エントリ管理本体（ソート順共有・`codex_quick_pins` 参照・フェーズ解決の正本）。

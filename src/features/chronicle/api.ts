@@ -14,6 +14,8 @@ import type {
   ChronicleCalendar,
   SeasonBoundary,
   MonthDef,
+  LeapRule,
+  AgeReckoning,
 } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
@@ -34,6 +36,8 @@ export interface EventRow {
   note: string | null;
   ordinal: string;
   primaryCodexId: string | null;
+  /** 未割当の整理用サブレーン id（null=既定の未割当レーン）。 */
+  laneGroup: string | null;
   locationCodexId: string | null;
   startTime: number | null;
   endTime: number | null;
@@ -78,6 +82,7 @@ export function normalizeEvent(raw: unknown): EventRow {
     note: nullableStr(r.note),
     ordinal: s(r.ordinal, "a0"),
     primaryCodexId: nullableStr(r.primaryCodexId ?? r.primary_codex_id),
+    laneGroup: nullableStr(r.laneGroup ?? r.lane_group),
     locationCodexId: nullableStr(r.locationCodexId ?? r.location_codex_id),
     startTime: nullableNum(r.startTime ?? r.start_time),
     endTime: nullableNum(r.endTime ?? r.end_time),
@@ -412,6 +417,10 @@ export interface CalendarRow {
   months: string;
   /** 生 JSON 文字列（string[] 曜日名）。'[]'=曜日概念なし。 */
   weekdayNames: string;
+  /** 生 JSON 文字列（LeapRule）。'{"kind":"none"}'=閏年なし。 */
+  leapRule: string;
+  /** 年齢の数え方。'full'=満年齢 / 'counting'=数え年。 */
+  ageReckoning: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -432,6 +441,8 @@ export async function getProjectCalendar(
     startYear: Number(r.startYear ?? r.start_year ?? 0),
     months: s(r.months, "[]"),
     weekdayNames: s(r.weekdayNames ?? r.weekday_names, "[]"),
+    leapRule: s(r.leapRule ?? r.leap_rule, '{"kind":"none"}'),
+    ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -450,12 +461,17 @@ export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
       return fallback;
     }
   };
+  const leap = parse<LeapRule>(row.leapRule, { kind: "none" });
+  const ageReckoning: AgeReckoning =
+    row.ageReckoning === "counting" ? "counting" : "full";
   return {
     daysPerYear: row.daysPerYear,
     seasonBoundaries: parse<SeasonBoundary[]>(row.seasonBoundaries, []),
     startYear: row.startYear,
     months: parse<MonthDef[]>(row.months, []),
     weekdayNames: parse<string[]>(row.weekdayNames, []),
+    leap: leap && leap.kind === "gregorian" ? leap : { kind: "none" },
+    ageReckoning,
   };
 }
 
@@ -466,11 +482,15 @@ export async function upsertProjectCalendar(data: {
   startYear?: number;
   months?: string;
   weekdayNames?: string;
+  leapRule?: string;
+  ageReckoning?: string;
 }): Promise<void> {
   const now = new Date().toISOString();
   const startYear = data.startYear ?? 0;
   const months = data.months ?? "[]";
   const weekdayNames = data.weekdayNames ?? "[]";
+  const leapRule = data.leapRule ?? '{"kind":"none"}';
+  const ageReckoning = data.ageReckoning ?? "full";
   await db
     .insert(projectCalendar)
     .values({
@@ -480,6 +500,8 @@ export async function upsertProjectCalendar(data: {
       startYear,
       months,
       weekdayNames,
+      leapRule,
+      ageReckoning,
       createdAt: now,
       updatedAt: now,
     })
@@ -491,6 +513,8 @@ export async function upsertProjectCalendar(data: {
         startYear,
         months,
         weekdayNames,
+        leapRule,
+        ageReckoning,
         updatedAt: now,
       },
     });

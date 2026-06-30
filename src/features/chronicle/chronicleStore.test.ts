@@ -66,3 +66,55 @@ describe("chronicleStore persistent subscriber", () => {
     expect(useChronicleStore.getState().zoom).toBe(0.25);
   });
 });
+
+describe("chronicleStore 選択（単一/複数）", () => {
+  beforeEach(() => {
+    useChronicleStore.setState({ selectedEventId: null, selectedEventIds: [] });
+  });
+
+  it("setSelectedEventId は集合 [id] と同期、null で全解除", () => {
+    useChronicleStore.getState().setSelectedEventId("a");
+    expect(useChronicleStore.getState().selectedEventIds).toEqual(["a"]);
+    useChronicleStore.getState().setSelectedEventId(null);
+    expect(useChronicleStore.getState().selectedEventId).toBeNull();
+    expect(useChronicleStore.getState().selectedEventIds).toEqual([]);
+  });
+
+  it("setSelection は集合とプライマリを明示設定", () => {
+    useChronicleStore.getState().setSelection(["a", "b", "c"], "b");
+    expect(useChronicleStore.getState().selectedEventIds).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+    expect(useChronicleStore.getState().selectedEventId).toBe("b");
+  });
+
+  it("sanitizeSelection は実在 id へ整合（プライマリ生存なら維持）", () => {
+    useChronicleStore.getState().setSelection(["a", "b", "c"], "b");
+    useChronicleStore.getState().sanitizeSelection(new Set(["a", "b"]));
+    expect(useChronicleStore.getState().selectedEventIds).toEqual(["a", "b"]);
+    expect(useChronicleStore.getState().selectedEventId).toBe("b");
+  });
+
+  it("sanitizeSelection はプライマリが消えたら残りの末尾へ", () => {
+    useChronicleStore.getState().setSelection(["a", "b", "c"], "b");
+    useChronicleStore.getState().sanitizeSelection(new Set(["a", "c"]));
+    expect(useChronicleStore.getState().selectedEventIds).toEqual(["a", "c"]);
+    expect(useChronicleStore.getState().selectedEventId).toBe("c");
+  });
+
+  it("sanitizeSelection は全消失で空・null", () => {
+    useChronicleStore.getState().setSelection(["a", "b"], "a");
+    useChronicleStore.getState().sanitizeSelection(new Set(["z"]));
+    expect(useChronicleStore.getState().selectedEventIds).toEqual([]);
+    expect(useChronicleStore.getState().selectedEventId).toBeNull();
+  });
+
+  it("sanitizeSelection は変化なしなら配列参照を据え置く", () => {
+    useChronicleStore.getState().setSelection(["a", "b"], "a");
+    const before = useChronicleStore.getState().selectedEventIds;
+    useChronicleStore.getState().sanitizeSelection(new Set(["a", "b"]));
+    expect(useChronicleStore.getState().selectedEventIds).toBe(before);
+  });
+});
