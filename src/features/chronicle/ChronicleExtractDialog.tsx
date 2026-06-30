@@ -115,9 +115,13 @@ export function ChronicleExtractDialog({
     try {
       const n = await importExtractedEvents(projectId, candidates);
       toast.success(
-        t("chronicle.extract.imported", "{{count}}件の出来事を取り込みました", {
-          count: n,
-        }),
+        t(
+          "chronicle.extract.imported",
+          "{{count}}件のイベントを取り込みました",
+          {
+            count: n,
+          },
+        ),
       );
       // 取り込み成功後は候補を即クリアして、再オープン時の二重取り込みを防ぐ。
       setCandidates(null);
@@ -136,7 +140,7 @@ export function ChronicleExtractDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {t("chronicle.extract.title", "本文から出来事を抽出")}
+            {t("chronicle.extract.title", "本文からイベントを抽出")}
           </DialogTitle>
         </DialogHeader>
 
@@ -144,7 +148,7 @@ export function ChronicleExtractDialog({
           <p className="text-xs text-muted-foreground">
             {t(
               "chronicle.extract.hint",
-              "選んだ章/フォルダの本文を AI が読み、作中の出来事を提案します。取り込むと年表に追加されます。",
+              "選んだ章/フォルダの本文を AI が読み、作中のイベントを提案します。取り込むと年表に追加されます。",
             )}
           </p>
 
@@ -184,7 +188,7 @@ export function ChronicleExtractDialog({
                 <div className="px-3 py-3 text-xs text-muted-foreground">
                   {t(
                     "chronicle.extract.none",
-                    "抽出できる出来事が見つかりませんでした。",
+                    "抽出できるイベントが見つかりませんでした。",
                   )}
                 </div>
               ) : (

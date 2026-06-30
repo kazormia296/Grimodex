@@ -291,7 +291,7 @@ export function EventMarker({
       data-event-id={event.id}
       data-selected={selected || undefined}
       onClick={onSelect}
-      title={event.title || t("chronicle.untitled", "無題の出来事")}
+      title={event.title || t("chronicle.untitled", "無題のイベント")}
       className="group"
       style={{
         ...container,
@@ -380,7 +380,7 @@ export function EventMarker({
             lineHeight: 1,
           }}
         >
-          {event.title || t("chronicle.untitled", "無題の出来事")}
+          {event.title || t("chronicle.untitled", "無題のイベント")}
         </span>
       )}
       {precisionTag && (

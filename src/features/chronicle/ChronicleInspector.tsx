@@ -253,7 +253,7 @@ export function ChronicleInspector({
             <input
               value={event.title}
               onChange={(e) => onPatch({ title: e.target.value })}
-              placeholder={t("chronicle.untitled", "無題の出来事")}
+              placeholder={t("chronicle.untitled", "無題のイベント")}
               className="min-w-0 flex-1 bg-transparent text-base font-semibold text-foreground outline-none"
             />
             <button
@@ -593,7 +593,7 @@ export function ChronicleInspector({
                     className="inline-flex items-center gap-1.5 rounded-md border border-border bg-accent/60 py-0.5 pl-2.5 pr-1.5 text-xs"
                   >
                     {titleById.get(cid) ||
-                      t("chronicle.untitled", "無題の出来事")}
+                      t("chronicle.untitled", "無題のイベント")}
                     {onRemoveCause && (
                       <button
                         type="button"
@@ -620,7 +620,7 @@ export function ChronicleInspector({
                     </option>
                     {causeOptions.map((e) => (
                       <option key={e.id} value={e.id}>
-                        {e.title || t("chronicle.untitled", "無題の出来事")}
+                        {e.title || t("chronicle.untitled", "無題のイベント")}
                       </option>
                     ))}
                   </select>
@@ -694,7 +694,7 @@ export function ChronicleInspector({
                 onClick={onPull}
                 title={t(
                   "chronicle.pullHint",
-                  "参照シーンの作中時間をこの出来事へ取り込む",
+                  "参照シーンの作中時間をこのイベントへ取り込む",
                 )}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs hover:bg-accent"
               >

@@ -125,7 +125,7 @@ describe("ChronicleEventList", () => {
       target: { value: "存在しない語" },
     });
     expect(ids()).toEqual([]);
-    expect(getByText("該当する出来事がありません")).toBeTruthy();
+    expect(getByText("該当するイベントがありません")).toBeTruthy();
   });
 
   it("選択行は data-selected で印付け", () => {

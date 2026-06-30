@@ -947,7 +947,7 @@ export function ChronicleViewport({
                       setMenu(null);
                     }}
                   >
-                    {t("chronicle.ctxCreateHere", "ここに出来事を作成")}
+                    {t("chronicle.ctxCreateHere", "ここにイベントを作成")}
                   </button>
                 )
               )}
