@@ -5004,6 +5004,8 @@
     "startYear": "Start year",
     "weekdayNames": "Weekday names",
     "weekdayPlaceholder": "Mon, Tue, Wed, …",
+    "weekdayStartIndex": "Day 0 weekday",
+    "weekdayStartHint": "Index of the weekday name that corresponds to day number 0. Zero-based.",
     "months": "Months (name / days)",
     "monthName": "Month name",
     "daysInMonth": "Days",

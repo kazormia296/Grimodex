@@ -42,6 +42,7 @@ describe("ChronicleCalendarEditor", () => {
     expect(cal.months).toHaveLength(12);
     expect(cal.daysPerYear).toBe(365);
     expect(cal.weekdayNames).toHaveLength(7);
+    expect(cal.weekdayStartIndex).toBe(0);
     expect(cal.leap).toEqual({ kind: "gregorian", monthIndex: 1 });
     expect(cal.seasonBoundaries).toHaveLength(4);
     expect(cal.ageReckoning).toBe("full");
@@ -74,6 +75,7 @@ describe("ChronicleCalendarEditor", () => {
       startYear: 0,
       months: [],
       weekdayNames: [],
+      weekdayStartIndex: 0,
       leap: { kind: "none" },
       ageReckoning: "full",
     });
@@ -114,6 +116,7 @@ describe("ChronicleCalendarEditor", () => {
         { name: "二月", days: 28 },
       ],
       weekdayNames: ["月", "火"],
+      weekdayStartIndex: 0,
       leap: { kind: "none" },
       ageReckoning: "full",
     });
@@ -166,6 +169,7 @@ describe("ChronicleCalendarEditor — リセット/年齢表記", () => {
     expect(cal.leap).toEqual({ kind: "gregorian", monthIndex: 1 });
     expect(cal.ageReckoning).toBe("counting");
     expect(cal.weekdayNames).toHaveLength(7);
+    expect(cal.weekdayStartIndex).toBe(0);
     expect(cal.seasonBoundaries).toHaveLength(4);
     expect(cal.startYear).toBe(0);
   });
@@ -189,5 +193,30 @@ describe("ChronicleCalendarEditor — リセット/年齢表記", () => {
     );
     fireEvent.click(getByText("保存"));
     expect(onSave.mock.calls[0][0].leap).toEqual({ kind: "none" });
+  });
+
+  it("day0曜日 index を保存し、曜日数で正規化する", () => {
+    const onSave = vi.fn();
+    const { getByText, getByLabelText } = render(
+      <ChronicleCalendarEditor
+        initial={{
+          daysPerYear: 365,
+          seasonBoundaries: [],
+          startYear: 2000,
+          months: [],
+          weekdayNames: ["日", "月", "火", "水", "木", "金", "土"],
+          weekdayStartIndex: 8,
+          leap: { kind: "none" },
+          ageReckoning: "full",
+        }}
+        onSave={onSave}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.change(getByLabelText("day0曜日"), {
+      target: { value: "9" },
+    });
+    fireEvent.click(getByText("保存"));
+    expect(onSave.mock.calls[0][0].weekdayStartIndex).toBe(2);
   });
 });

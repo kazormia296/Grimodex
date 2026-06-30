@@ -4991,6 +4991,8 @@
     "startYear": "開始年",
     "weekdayNames": "曜日名",
     "weekdayPlaceholder": "月, 火, 水, …",
+    "weekdayStartIndex": "day0曜日",
+    "weekdayStartHint": "day番号0に対応する曜日名のindexです。0始まり。",
     "months": "月（名前・日数）",
     "monthName": "月名",
     "daysInMonth": "日数",

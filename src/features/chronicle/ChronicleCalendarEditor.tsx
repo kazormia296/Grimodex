@@ -66,6 +66,7 @@ interface CalendarFormState {
   startYear: number;
   months: MonthDef[];
   weekdays: string;
+  weekdayStartIndex: number;
   seasons: SeasonBoundary[];
   leap: LeapRule;
   ageReckoning: AgeReckoning;
@@ -84,6 +85,7 @@ function gregorianFormState(lang: "ja" | "en"): CalendarFormState {
       days,
     })),
     weekdays: GREGORIAN_WEEKDAYS[lang].join(", "),
+    weekdayStartIndex: 0,
     seasons: localizedDefaultSeasons(lang),
     leap: { ...GREGORIAN_LEAP },
     ageReckoning: "full",
@@ -100,6 +102,7 @@ function formStateFromCalendar(
     startYear: cal.startYear ?? 0,
     months: cal.months ?? [],
     weekdays: (cal.weekdayNames ?? []).join(", "),
+    weekdayStartIndex: cal.weekdayStartIndex ?? 0,
     seasons: cal.seasonBoundaries.length
       ? cal.seasonBoundaries
       : localizedDefaultSeasons(lang),
@@ -133,6 +136,9 @@ export function ChronicleCalendarEditor({
   const [startYear, setStartYear] = useState(init.startYear);
   const [months, setMonths] = useState<MonthDef[]>(init.months);
   const [weekdays, setWeekdays] = useState<string>(init.weekdays);
+  const [weekdayStartIndex, setWeekdayStartIndex] = useState(
+    init.weekdayStartIndex,
+  );
   const [seasons, setSeasons] = useState<SeasonBoundary[]>(init.seasons);
   const [leap, setLeap] = useState<LeapRule>(init.leap);
   const [ageReckoning, setAgeReckoning] = useState<AgeReckoning>(
@@ -146,6 +152,7 @@ export function ChronicleCalendarEditor({
     setStartYear(g.startYear);
     setMonths(g.months);
     setWeekdays(g.weekdays);
+    setWeekdayStartIndex(g.weekdayStartIndex);
     setSeasons(g.seasons);
     setLeap(g.leap);
     setAgeReckoning(g.ageReckoning);
@@ -182,6 +189,12 @@ export function ChronicleCalendarEditor({
       .split(",")
       .map((w) => w.trim())
       .filter((w) => w !== "");
+    const normalizedWeekdayStartIndex =
+      weekdayNames.length > 0
+        ? ((Math.floor(weekdayStartIndex) % weekdayNames.length) +
+            weekdayNames.length) %
+          weekdayNames.length
+        : 0;
     // months があれば 1年の日数は月長合計を正本にする（手入力 daysPerYear は無視）。
     // 閏（gregorian）は月概念が前提。月が無ければ none に落とし、monthIndex は範囲内へ。
     const effectiveLeap: LeapRule =
@@ -200,6 +213,7 @@ export function ChronicleCalendarEditor({
       startYear: Math.floor(startYear),
       months: cleanedMonths,
       weekdayNames,
+      weekdayStartIndex: normalizedWeekdayStartIndex,
       leap: effectiveLeap,
       ageReckoning,
     };
@@ -274,15 +288,34 @@ export function ChronicleCalendarEditor({
         </label>
       </div>
 
-      <label className="flex items-center gap-2 text-xs">
-        {t("chronicle.weekdayNames", "曜日名")}
-        <input
-          value={weekdays}
-          onChange={(e) => setWeekdays(e.target.value)}
-          placeholder={t("chronicle.weekdayPlaceholder", "月, 火, 水, …")}
-          className="w-56 rounded border bg-transparent px-1 py-0.5"
-        />
-      </label>
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        <label className="flex items-center gap-2">
+          {t("chronicle.weekdayNames", "曜日名")}
+          <input
+            value={weekdays}
+            onChange={(e) => setWeekdays(e.target.value)}
+            placeholder={t("chronicle.weekdayPlaceholder", "月, 火, 水, …")}
+            className="w-56 rounded border bg-transparent px-1 py-0.5"
+          />
+        </label>
+        <label
+          className="flex items-center gap-2"
+          title={t(
+            "chronicle.weekdayStartHint",
+            "day番号0に対応する曜日名のindexです。0始まり。",
+          )}
+        >
+          {t("chronicle.weekdayStartIndex", "day0曜日")}
+          <input
+            type="number"
+            min={0}
+            max={Math.max(0, weekdays.split(",").filter(Boolean).length - 1)}
+            value={weekdayStartIndex}
+            onChange={(e) => setWeekdayStartIndex(Number(e.target.value))}
+            className="w-16 rounded border bg-transparent px-1 py-0.5"
+          />
+        </label>
+      </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
         <label

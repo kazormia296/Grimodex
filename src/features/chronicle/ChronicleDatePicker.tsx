@@ -5,6 +5,7 @@ import {
   calendarDaysPerYear,
   dateToDayNumber,
   dayNumberToDate,
+  weekdayOf,
   monthLength,
   formatChronicleDate,
   seasonOf,
@@ -92,7 +93,8 @@ export function ChronicleDatePicker({
     const mi = Math.min(monthCount - 1, Math.floor(doy / pseudoMonthLen));
     return { year, monthIndex: mi, dayOfMonth: doy - mi * pseudoMonthLen + 1 };
   };
-  const weekdayOfDay = (d: number) => mod(Math.floor(d), weekLen);
+  const weekdayOfDay = (d: number) =>
+    weekdayOf(d, { ...calendar, weekdayNames: weekNames }) ?? 0;
 
   const cur = fromDay(day);
   const [view, setView] = useState(() => ({

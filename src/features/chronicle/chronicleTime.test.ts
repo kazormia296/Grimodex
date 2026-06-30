@@ -89,6 +89,7 @@ const GREG: ChronicleCalendar = {
     { name: "十二月", days: 31 },
   ],
   weekdayNames: ["月", "火", "水", "木", "金", "土", "日"],
+  weekdayStartIndex: 0,
   seasonBoundaries: [
     { name: "春", startDayOfYear: 0 },
     { name: "夏", startDayOfYear: 90 },
@@ -173,6 +174,12 @@ describe("weekdayOf", () => {
   });
   it("weekdayNames が空なら null", () => {
     expect(weekdayOf(3, { daysPerYear: 360, seasonBoundaries: [] })).toBeNull();
+  });
+  it("weekdayStartIndex で day0 の曜日を指定できる", () => {
+    const cal = { ...GREG, weekdayStartIndex: 5 };
+    expect(weekdayOf(0, cal)).toBe(5);
+    expect(weekdayOf(2, cal)).toBe(0);
+    expect(weekdayOf(-1, cal)).toBe(4);
   });
 });
 
@@ -332,6 +339,45 @@ describe("グレゴリオ閏年エンジン", () => {
     expect(dn).toBeLessThan(0);
     const d = dayNumberToDate(dn, GREGORIAN);
     expect([d.year, d.monthIndex, d.dayOfMonth]).toEqual([1996, 1, 29]);
+  });
+
+  it("seasonOf は閏日累積後も年内通日に基づいて季節を判定する", () => {
+    const seasonal: ChronicleCalendar = {
+      ...GREGORIAN,
+      seasonBoundaries: [
+        { name: "春", startDayOfYear: 0 },
+        { name: "夏", startDayOfYear: 90 },
+        { name: "秋", startDayOfYear: 180 },
+        { name: "冬", startDayOfYear: 270 },
+      ],
+    };
+    const dec31_2001 = dateToDayNumber(
+      { year: 2001, monthIndex: 11, dayOfMonth: 31 },
+      seasonal,
+    );
+    expect(dayNumberToDate(dec31_2001, seasonal).dayOfYear).toBe(364);
+    expect(seasonOf(dec31_2001, seasonal)).toBe("冬");
+  });
+
+  it("dateToDayNumber は存在しない月内日をその月の末日にクランプする", () => {
+    const feb29_2001 = dateToDayNumber(
+      { year: 2001, monthIndex: 1, dayOfMonth: 29 },
+      GREGORIAN,
+    );
+    expect(dayNumberToDate(feb29_2001, GREGORIAN)).toMatchObject({
+      year: 2001,
+      monthIndex: 1,
+      dayOfMonth: 28,
+    });
+    const apr31_2000 = dateToDayNumber(
+      { year: 2000, monthIndex: 3, dayOfMonth: 31 },
+      GREGORIAN,
+    );
+    expect(dayNumberToDate(apr31_2000, GREGORIAN)).toMatchObject({
+      year: 2000,
+      monthIndex: 3,
+      dayOfMonth: 30,
+    });
   });
 });
 

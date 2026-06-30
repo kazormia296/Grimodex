@@ -66,12 +66,22 @@ function parseCalendar(row: CalendarRow | null): ChronicleCalendar | null {
   } catch {
     weekdayNames = [];
   }
+  let leap: ChronicleCalendar["leap"] = { kind: "none" };
+  try {
+    const parsed = JSON.parse(row.leapRule) as ChronicleCalendar["leap"];
+    if (parsed?.kind === "gregorian") leap = parsed;
+  } catch {
+    leap = { kind: "none" };
+  }
   return {
     daysPerYear: row.daysPerYear,
     seasonBoundaries: boundaries,
     startYear: row.startYear,
     months,
     weekdayNames,
+    weekdayStartIndex: row.weekdayStartIndex,
+    leap,
+    ageReckoning: row.ageReckoning === "counting" ? "counting" : "full",
   };
 }
 

@@ -40,6 +40,8 @@ export interface ChronicleCalendar {
   months?: MonthDef[];
   /** 曜日名。空/未指定なら曜日概念なし。週長=配列長。 */
   weekdayNames?: string[];
+  /** day番号0に対応する weekdayNames の index。未指定なら 0。 */
+  weekdayStartIndex?: number;
   /** 閏年ルール。未指定=none（年長一定）。 */
   leap?: LeapRule;
   /** 年齢の数え方。未指定=full（満年齢）。 */
@@ -156,7 +158,7 @@ export function weekdayOf(
 ): number | null {
   const wl = cal.weekdayNames?.length ?? 0;
   if (wl <= 0) return null;
-  return mod(Math.floor(dayNumber), wl);
+  return mod(Math.floor(dayNumber) + (cal.weekdayStartIndex ?? 0), wl);
 }
 
 /**
@@ -235,7 +237,9 @@ export function dateToDayNumber(
     for (let i = 0; i < mi; i++) {
       dayOfYear += monthLength(date.year, i, cal);
     }
-    dayOfYear += Math.max(0, (date.dayOfMonth ?? 1) - 1);
+    const len = monthLength(date.year, mi, cal);
+    const dom = Math.max(1, Math.min(len, date.dayOfMonth ?? 1));
+    dayOfYear += dom - 1;
   } else if (date.dayOfMonth != null) {
     dayOfYear = Math.max(0, date.dayOfMonth - 1);
   }
@@ -322,10 +326,11 @@ export function seasonOf(
   time: number,
   calendar: ChronicleCalendar,
 ): string | null {
-  const { daysPerYear, seasonBoundaries } = calendar;
-  if (daysPerYear <= 0 || seasonBoundaries.length === 0) return null;
-  const dayOfYear =
-    ((Math.floor(time) % daysPerYear) + daysPerYear) % daysPerYear;
+  const { seasonBoundaries } = calendar;
+  if (calendarDaysPerYear(calendar) <= 0 || seasonBoundaries.length === 0) {
+    return null;
+  }
+  const dayOfYear = dayNumberToDate(time, calendar).dayOfYear;
   const sorted = [...seasonBoundaries].sort(
     (a, b) => a.startDayOfYear - b.startDayOfYear,
   );

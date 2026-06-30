@@ -1861,6 +1861,7 @@ impl Database {
                 start_year        INTEGER NOT NULL DEFAULT 0,
                 months            TEXT NOT NULL DEFAULT '[]',
                 weekday_names     TEXT NOT NULL DEFAULT '[]',
+                weekday_start_index INTEGER NOT NULL DEFAULT 0,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
@@ -1883,6 +1884,12 @@ impl Database {
             "project_calendar",
             "weekday_names",
             "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "weekday_start_index",
+            "INTEGER NOT NULL DEFAULT 0",
         )?;
         // 未割当出来事の整理用サブレーン id（複数の未割当レーンに振り分ける）。
         Self::add_column_if_missing(&conn, "events", "lane_group", "TEXT")?;

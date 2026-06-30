@@ -1909,12 +1909,25 @@ async function buildChronicleSnapshotTextForScene(
     } catch {
       weekdayNames = [];
     }
+    let leap: ChronicleCalendar["leap"] = { kind: "none" };
+    try {
+      const parsed = JSON.parse(
+        calendarRow.leapRule,
+      ) as ChronicleCalendar["leap"];
+      if (parsed?.kind === "gregorian") leap = parsed;
+    } catch {
+      leap = { kind: "none" };
+    }
     calendar = {
       daysPerYear: calendarRow.daysPerYear,
       seasonBoundaries: boundaries,
       startYear: calendarRow.startYear,
       months,
       weekdayNames,
+      weekdayStartIndex: calendarRow.weekdayStartIndex,
+      leap,
+      ageReckoning:
+        calendarRow.ageReckoning === "counting" ? "counting" : "full",
     };
   }
 

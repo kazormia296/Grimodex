@@ -143,6 +143,7 @@ export function useSeasonConflicts({
         startYear: cal.startYear ?? 0,
         months: JSON.stringify(cal.months ?? []),
         weekdayNames: JSON.stringify(cal.weekdayNames ?? []),
+        weekdayStartIndex: cal.weekdayStartIndex ?? 0,
         leapRule: JSON.stringify(cal.leap ?? { kind: "none" }),
         ageReckoning: cal.ageReckoning ?? "full",
       });

@@ -354,6 +354,7 @@ fn parse_calendar(raw: Option<db::ChronicleCalendarRaw>) -> Option<snap::Calenda
         start_year: raw.start_year,
         months,
         weekday_names,
+        weekday_start_index: raw.weekday_start_index,
         leap,
         age_reckoning: raw.age_reckoning,
     })

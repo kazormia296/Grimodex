@@ -417,6 +417,8 @@ export interface CalendarRow {
   months: string;
   /** 生 JSON 文字列（string[] 曜日名）。'[]'=曜日概念なし。 */
   weekdayNames: string;
+  /** day番号0に対応する weekdayNames の index。 */
+  weekdayStartIndex: number;
   /** 生 JSON 文字列（LeapRule）。'{"kind":"none"}'=閏年なし。 */
   leapRule: string;
   /** 年齢の数え方。'full'=満年齢 / 'counting'=数え年。 */
@@ -441,6 +443,9 @@ export async function getProjectCalendar(
     startYear: Number(r.startYear ?? r.start_year ?? 0),
     months: s(r.months, "[]"),
     weekdayNames: s(r.weekdayNames ?? r.weekday_names, "[]"),
+    weekdayStartIndex: Number(
+      r.weekdayStartIndex ?? r.weekday_start_index ?? 0,
+    ),
     leapRule: s(r.leapRule ?? r.leap_rule, '{"kind":"none"}'),
     ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
     createdAt: s(r.createdAt ?? r.created_at),
@@ -470,6 +475,7 @@ export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
     startYear: row.startYear,
     months: parse<MonthDef[]>(row.months, []),
     weekdayNames: parse<string[]>(row.weekdayNames, []),
+    weekdayStartIndex: row.weekdayStartIndex,
     leap: leap && leap.kind === "gregorian" ? leap : { kind: "none" },
     ageReckoning,
   };
@@ -482,6 +488,7 @@ export async function upsertProjectCalendar(data: {
   startYear?: number;
   months?: string;
   weekdayNames?: string;
+  weekdayStartIndex?: number;
   leapRule?: string;
   ageReckoning?: string;
 }): Promise<void> {
@@ -489,6 +496,7 @@ export async function upsertProjectCalendar(data: {
   const startYear = data.startYear ?? 0;
   const months = data.months ?? "[]";
   const weekdayNames = data.weekdayNames ?? "[]";
+  const weekdayStartIndex = data.weekdayStartIndex ?? 0;
   const leapRule = data.leapRule ?? '{"kind":"none"}';
   const ageReckoning = data.ageReckoning ?? "full";
   await db
@@ -500,6 +508,7 @@ export async function upsertProjectCalendar(data: {
       startYear,
       months,
       weekdayNames,
+      weekdayStartIndex,
       leapRule,
       ageReckoning,
       createdAt: now,
@@ -513,6 +522,7 @@ export async function upsertProjectCalendar(data: {
         startYear,
         months,
         weekdayNames,
+        weekdayStartIndex,
         leapRule,
         ageReckoning,
         updatedAt: now,
