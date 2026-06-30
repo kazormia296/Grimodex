@@ -1863,6 +1863,7 @@ impl Database {
                 weekday_names     TEXT NOT NULL DEFAULT '[]',
                 weekday_start_index INTEGER NOT NULL DEFAULT 0,
                 eras              TEXT NOT NULL DEFAULT '[]',
+                reform            TEXT NOT NULL DEFAULT 'null',
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
@@ -1913,6 +1914,13 @@ impl Database {
             "project_calendar",
             "eras",
             "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        // ユリウス→グレゴリオ改暦（JSON）。既存 DB へ追加。
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "reform",
+            "TEXT NOT NULL DEFAULT 'null'",
         )?;
 
         // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。

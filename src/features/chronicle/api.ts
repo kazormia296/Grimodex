@@ -17,6 +17,7 @@ import type {
   LeapRule,
   AgeReckoning,
   EraDef,
+  CalendarReform,
 } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
@@ -426,6 +427,8 @@ export interface CalendarRow {
   ageReckoning: string;
   /** 生 JSON 文字列（EraDef[] 元号/年号）。'[]'=元号なし。 */
   eras: string;
+  /** 生 JSON 文字列（CalendarReform | null 改暦）。'null'=改暦なし。 */
+  reform: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -452,6 +455,7 @@ export async function getProjectCalendar(
     leapRule: s(r.leapRule ?? r.leap_rule, '{"kind":"none"}'),
     ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
     eras: s(r.eras, "[]"),
+    reform: s(r.reform, "null"),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -483,6 +487,7 @@ export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
     leap: leap && leap.kind === "gregorian" ? leap : { kind: "none" },
     ageReckoning,
     eras: parse<EraDef[]>(row.eras, []),
+    reform: parse<CalendarReform | null>(row.reform, null) ?? undefined,
   };
 }
 
@@ -497,6 +502,7 @@ export async function upsertProjectCalendar(data: {
   leapRule?: string;
   ageReckoning?: string;
   eras?: string;
+  reform?: string;
 }): Promise<void> {
   const now = new Date().toISOString();
   const startYear = data.startYear ?? 0;
@@ -506,6 +512,7 @@ export async function upsertProjectCalendar(data: {
   const leapRule = data.leapRule ?? '{"kind":"none"}';
   const ageReckoning = data.ageReckoning ?? "full";
   const eras = data.eras ?? "[]";
+  const reform = data.reform ?? "null";
   await db
     .insert(projectCalendar)
     .values({
@@ -519,6 +526,7 @@ export async function upsertProjectCalendar(data: {
       leapRule,
       ageReckoning,
       eras,
+      reform,
       createdAt: now,
       updatedAt: now,
     })
@@ -534,6 +542,7 @@ export async function upsertProjectCalendar(data: {
         leapRule,
         ageReckoning,
         eras,
+        reform,
         updatedAt: now,
       },
     });

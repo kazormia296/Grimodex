@@ -237,6 +237,10 @@ describe("calendarFromRow", () => {
       leapRule: JSON.stringify({ kind: "gregorian", monthIndex: 0 }),
       ageReckoning: "counting",
       eras: JSON.stringify([{ name: "明治", startYear: 1868 }]),
+      reform: JSON.stringify({
+        gregorianStart: { year: 1582, monthIndex: 9, dayOfMonth: 15 },
+        region: "gregorian1582",
+      }),
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -245,6 +249,7 @@ describe("calendarFromRow", () => {
     expect(cal.leap).toEqual({ kind: "gregorian", monthIndex: 0 });
     expect(cal.ageReckoning).toBe("counting");
     expect(cal.eras).toEqual([{ name: "明治", startYear: 1868 }]);
+    expect(cal.reform?.region).toBe("gregorian1582");
   });
 });
 

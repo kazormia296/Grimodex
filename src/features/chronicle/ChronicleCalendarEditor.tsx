@@ -13,7 +13,9 @@ import {
   type LeapRule,
   type AgeReckoning,
   type EraDef,
+  type CalendarReform,
 } from "./chronicleTime";
+import { REFORM_PRESETS } from "./chronicleReform";
 
 const GREGORIAN_MONTH_NAMES: Record<"ja" | "en", string[]> = {
   ja: [
@@ -73,6 +75,7 @@ interface CalendarFormState {
   leap: LeapRule;
   ageReckoning: AgeReckoning;
   eras: EraDef[];
+  reform: CalendarReform | undefined;
 }
 
 /**
@@ -93,6 +96,7 @@ function gregorianFormState(lang: "ja" | "en"): CalendarFormState {
     leap: { ...GREGORIAN_LEAP },
     ageReckoning: "full",
     eras: [],
+    reform: undefined,
   };
 }
 
@@ -113,6 +117,7 @@ function formStateFromCalendar(
     leap: cal.leap ?? { kind: "none" },
     ageReckoning: cal.ageReckoning ?? "full",
     eras: cal.eras ?? [],
+    reform: cal.reform,
   };
 }
 
@@ -150,6 +155,7 @@ export function ChronicleCalendarEditor({
     init.ageReckoning,
   );
   const [eras, setEras] = useState<EraDef[]>(init.eras);
+  const [reform, setReform] = useState<CalendarReform | undefined>(init.reform);
 
   // 全フィールドをグレゴリオ暦の既定値へ戻す（リセット）。
   const resetToDefault = () => {
@@ -163,6 +169,7 @@ export function ChronicleCalendarEditor({
     setLeap(g.leap);
     setAgeReckoning(g.ageReckoning);
     setEras(g.eras);
+    setReform(g.reform);
   };
 
   const updateEra = (i: number, patch: Partial<EraDef>) =>
@@ -235,6 +242,7 @@ export function ChronicleCalendarEditor({
       leap: effectiveLeap,
       ageReckoning,
       eras: cleanedEras,
+      reform,
     };
     onSave({ ...cal, daysPerYear: calendarDaysPerYear(cal) });
     onClose();
@@ -411,6 +419,38 @@ export function ChronicleCalendarEditor({
             ))}
           </span>
         </span>
+
+        <label
+          className="flex items-center gap-1.5"
+          title={t(
+            "chronicle.reformHint",
+            "ユリウス暦→グレゴリオ暦の改暦。切替前はユリウス閏(4年毎)、後はグレゴリオ閏、切替で日飛ばし（実暦12ヶ月暦が前提）。",
+          )}
+        >
+          {t("chronicle.reformLabel", "改暦")}
+          <select
+            value={reform?.region ?? "none"}
+            onChange={(e) =>
+              setReform(
+                e.target.value === "none"
+                  ? undefined
+                  : REFORM_PRESETS[e.target.value],
+              )
+            }
+            className="rounded border bg-transparent px-1 py-0.5"
+          >
+            <option value="none">{t("chronicle.reformNone", "なし")}</option>
+            <option value="gregorian1582">
+              {t("chronicle.reform1582", "1582 (カトリック圏・10日)")}
+            </option>
+            <option value="britain1752">
+              {t("chronicle.reform1752", "1752 (イギリス・11日)")}
+            </option>
+            <option value="russia1918">
+              {t("chronicle.reform1918", "1918 (ロシア・13日)")}
+            </option>
+          </select>
+        </label>
       </div>
 
       <div className="space-y-1">

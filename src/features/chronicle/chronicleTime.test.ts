@@ -12,6 +12,7 @@ import {
   formatChronicleDate,
   type ChronicleCalendar,
 } from "./chronicleTime";
+import { REFORM_PRESETS } from "./chronicleReform";
 
 describe("gregorianWeekdayIndex（実暦グレゴリオ曜日, 0=日）", () => {
   it("既知の元日曜日に一致（先発グレゴリオ）", () => {
@@ -20,6 +21,45 @@ describe("gregorianWeekdayIndex（実暦グレゴリオ曜日, 0=日）", () => 
     expect(gregorianWeekdayIndex(2024)).toBe(1); // 2024-01-01 月
     expect(gregorianWeekdayIndex(1)).toBe(1); // 0001-01-01 月（proleptic）
     expect(gregorianWeekdayIndex(1970)).toBe(4); // 1970-01-01 木
+  });
+});
+
+describe("改暦（reform）統合: chronicleTime 経由", () => {
+  const cal: ChronicleCalendar = {
+    daysPerYear: 365,
+    seasonBoundaries: [],
+    startYear: 1582,
+    weekdayNames: ["日", "月", "火", "水", "木", "金", "土"],
+    // day0 = 1582-01-01(ユリウス) は月曜 → weekdayStartIndex=1 で実暦曜日に一致。
+    weekdayStartIndex: 1,
+    reform: REFORM_PRESETS.gregorian1582,
+  };
+  it("ユリウス Oct4 の翌日がグレゴリオ Oct15（日付スキップ）", () => {
+    const oct4 = dateToDayNumber(
+      { year: 1582, monthIndex: 9, dayOfMonth: 4 },
+      cal,
+    );
+    const next = dayNumberToDate(oct4 + 1, cal);
+    expect([next.year, next.monthIndex, next.dayOfMonth]).toEqual([
+      1582, 9, 15,
+    ]);
+  });
+  it("曜日はスキップを跨いでも連続（Oct4=木 → Oct15=金）", () => {
+    const oct4 = dateToDayNumber(
+      { year: 1582, monthIndex: 9, dayOfMonth: 4 },
+      cal,
+    );
+    // 4=木(實:1582-10-04 ユリウス=木), 5=金(1582-10-15 グレゴリオ=金)。
+    expect(weekdayOf(oct4, cal)).toBe(4);
+    expect(weekdayOf(oct4 + 1, cal)).toBe(5);
+  });
+  it("date↔day 往復（改暦後の任意日）", () => {
+    const d = dateToDayNumber(
+      { year: 1700, monthIndex: 2, dayOfMonth: 1 },
+      cal,
+    );
+    const back = dayNumberToDate(d, cal);
+    expect([back.year, back.monthIndex, back.dayOfMonth]).toEqual([1700, 2, 1]);
   });
 });
 

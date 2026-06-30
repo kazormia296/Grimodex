@@ -1,4 +1,12 @@
 import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
+import {
+  type CalendarReform,
+  reformDayToDate,
+  reformDateToDay,
+  reformDaysInYear,
+  reformMonthLength,
+} from "./chronicleReform";
+export type { CalendarReform } from "./chronicleReform";
 
 export interface SeasonBoundary {
   /** 季節名（例「冬」）。 */
@@ -58,6 +66,11 @@ export interface ChronicleCalendar {
   ageReckoning?: AgeReckoning;
   /** 元号/年号（年粒度のラベル区間）。空/未指定なら元号なし。 */
   eras?: EraDef[];
+  /**
+   * ユリウス→グレゴリオ改暦。指定時は date↔day/月長/年長を JDN ベースの実暦変換へ委譲し、
+   * 切替前ユリウス閏・後グレゴリオ閏・切替の日飛ばしを反映する（実暦12ヶ月暦が前提）。
+   */
+  reform?: CalendarReform;
 }
 
 /** day番号から導出した作中日付の構成要素。 */
@@ -107,8 +120,9 @@ export function isLeapYear(year: number, cal: ChronicleCalendar): boolean {
   return cal.leap?.kind === "gregorian" && isGregorianLeap(year);
 }
 
-/** 暦年 year の総日数（基準＋閏日）。 */
+/** 暦年 year の総日数（基準＋閏日）。改暦時は実暦の年長（切替年は短縮）。 */
 export function daysInYear(year: number, cal: ChronicleCalendar): number {
+  if (cal.reform) return reformDaysInYear(year, cal.reform);
   return calendarDaysPerYear(cal) + (isLeapYear(year, cal) ? 1 : 0);
 }
 
@@ -118,6 +132,7 @@ export function monthLength(
   monthIndex: number,
   cal: ChronicleCalendar,
 ): number {
+  if (cal.reform) return reformMonthLength(year, monthIndex, cal.reform);
   const m = cal.months?.[monthIndex];
   if (!m) return 0;
   const base = Math.max(1, Math.floor(m.days));
@@ -186,6 +201,17 @@ export function dayNumberToDate(
   const dpy = calendarDaysPerYear(cal);
   const startYear = cal.startYear ?? 0;
   const weekdayIndex = weekdayOf(d, cal);
+  if (cal.reform) {
+    const r = reformDayToDate(d, startYear, cal.reform);
+    const yearStart = reformDateToDay(r.year, 0, 1, startYear, cal.reform);
+    return {
+      year: r.year,
+      monthIndex: r.monthIndex,
+      dayOfMonth: r.dayOfMonth,
+      dayOfYear: d - yearStart,
+      weekdayIndex,
+    };
+  }
   if (dpy <= 0) {
     return {
       year: startYear,
@@ -241,6 +267,15 @@ export function dateToDayNumber(
   },
   cal: ChronicleCalendar,
 ): number {
+  if (cal.reform) {
+    return reformDateToDay(
+      date.year,
+      date.monthIndex ?? 0,
+      date.dayOfMonth ?? 1,
+      cal.startYear ?? 0,
+      cal.reform,
+    );
+  }
   // yearStartDay は閏なしなら (year-startYear)*dpy と一致（従来挙動を保存）。
   const base = yearStartDay(date.year, cal);
   let dayOfYear = 0;

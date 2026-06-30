@@ -1485,6 +1485,8 @@ export const projectCalendar = sqliteTable("project_calendar", {
   ageReckoning: text("age_reckoning").notNull().default("full"),
   // JSON: EraDef[] = [{name, startYear}]（元号/年号・年粒度）。'[]'=元号なし。
   eras: text("eras").notNull().default("[]"),
+  // JSON: CalendarReform | null（ユリウス→グレゴリオ改暦）。'null'=改暦なし。
+  reform: text("reform").notNull().default("null"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
