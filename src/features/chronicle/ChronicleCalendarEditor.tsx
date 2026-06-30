@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Trash2, X, RotateCcw } from "lucide-react";
+import { Plus, Trash2, X, RotateCcw, CalendarCheck } from "lucide-react";
 import {
   DEFAULT_SEASON_BOUNDARIES,
   GREGORIAN_MONTH_DAYS,
   GREGORIAN_LEAP,
+  gregorianWeekdayIndex,
   calendarDaysPerYear,
   type ChronicleCalendar,
   type SeasonBoundary,
@@ -315,6 +316,18 @@ export function ChronicleCalendarEditor({
             className="w-16 rounded border bg-transparent px-1 py-0.5"
           />
         </label>
+        <button
+          type="button"
+          onClick={() => setWeekdayStartIndex(gregorianWeekdayIndex(startYear))}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          title={t(
+            "chronicle.weekdayMatchRealHint",
+            "開始年1月1日(=day0)の実暦グレゴリオ曜日に合わせる（週=日曜始まり前提）。1582年以前はユリウス暦とずれます。",
+          )}
+        >
+          <CalendarCheck className="size-3.5" />
+          {t("chronicle.weekdayMatchReal", "実暦に合わせる")}
+        </button>
       </div>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">

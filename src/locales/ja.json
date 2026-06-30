@@ -4993,6 +4993,8 @@
     "weekdayPlaceholder": "月, 火, 水, …",
     "weekdayStartIndex": "day0曜日",
     "weekdayStartHint": "day番号0に対応する曜日名のindexです。0始まり。",
+    "weekdayMatchReal": "実暦に合わせる",
+    "weekdayMatchRealHint": "開始年1月1日(=day0)の実暦グレゴリオ曜日に合わせる（週=日曜始まり前提）。1582年以前はユリウス暦とずれます。",
     "months": "月（名前・日数）",
     "monthName": "月名",
     "daysInMonth": "日数",

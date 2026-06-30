@@ -6,10 +6,21 @@ import {
   dayNumberToDate,
   dateToDayNumber,
   weekdayOf,
+  gregorianWeekdayIndex,
   formatTimeOfDay,
   formatChronicleDate,
   type ChronicleCalendar,
 } from "./chronicleTime";
+
+describe("gregorianWeekdayIndex（実暦グレゴリオ曜日, 0=日）", () => {
+  it("既知の元日曜日に一致（先発グレゴリオ）", () => {
+    expect(gregorianWeekdayIndex(2000)).toBe(6); // 2000-01-01 土
+    expect(gregorianWeekdayIndex(2001)).toBe(1); // 2001-01-01 月
+    expect(gregorianWeekdayIndex(2024)).toBe(1); // 2024-01-01 月
+    expect(gregorianWeekdayIndex(1)).toBe(1); // 0001-01-01 月（proleptic）
+    expect(gregorianWeekdayIndex(1970)).toBe(4); // 1970-01-01 木
+  });
+});
 
 const CAL: ChronicleCalendar = {
   daysPerYear: 360,

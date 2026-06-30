@@ -375,6 +375,29 @@ export const GREGORIAN_MONTH_DAYS: readonly number[] = [
 export const GREGORIAN_LEAP: LeapRule = { kind: "gregorian", monthIndex: 1 };
 
 /**
+ * 先発（proleptic）グレゴリオ暦で year年1月1日の曜日（0=日曜..6=土曜）。
+ * 全整数年（0・負含む天文学的年番号）に対応。JDN 経由で算出する純関数。
+ * 用途: グレゴリオ暦プリセット（day番号0 = startYear-01-01・週=日曜始まり）の
+ * weekdayStartIndex を実暦に合わせて自動算出し、「○年○月○日=何曜日」を一致させる。
+ * 注: 1582年以前は実史のユリウス暦日付とはずれる（改暦=#1 で別途対応）。
+ */
+export function gregorianWeekdayIndex(year: number): number {
+  const y = Math.floor(year);
+  // (year,1月,1日) の通算日(JDN)。month=1 なので a=1, m=10 固定。
+  const yy = y + 4800 - 1;
+  const jdn =
+    1 +
+    Math.floor((153 * 10 + 2) / 5) +
+    365 * yy +
+    Math.floor(yy / 4) -
+    Math.floor(yy / 100) +
+    Math.floor(yy / 400) -
+    32045;
+  // JDN 0 = 月曜。0=日曜へ正規化: (jdn + 1) mod 7。
+  return mod(jdn + 1, 7);
+}
+
+/**
  * 既存の ordinal 群の「最後」に挿す新しい fractional-index を返す。
  * storyTimeOrder と同 idiom（base62・cmpKeys 辞書順）。
  */

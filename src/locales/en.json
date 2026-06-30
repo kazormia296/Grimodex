@@ -5006,6 +5006,8 @@
     "weekdayPlaceholder": "Mon, Tue, Wed, …",
     "weekdayStartIndex": "Day 0 weekday",
     "weekdayStartHint": "Index of the weekday name that corresponds to day number 0. Zero-based.",
+    "weekdayMatchReal": "Match real calendar",
+    "weekdayMatchRealHint": "Set day 0 (= Jan 1 of the start year) to its real proleptic-Gregorian weekday (assumes a Sunday-first week). Differs from the Julian calendar before 1582.",
     "months": "Months (name / days)",
     "monthName": "Month name",
     "daysInMonth": "Days",
