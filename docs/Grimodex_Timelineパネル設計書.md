@@ -10,7 +10,7 @@ Codexのフェーズ（経時的変化）はTimeline上にピンとして表示�
 
 設計思想: **Timeline は reading-order / story-time 上のシーン配置と Codex Phase ピンの編集点。Scenes パネルが reading-order（ツリー順）の編集を担う。**
 
-> **注（2026-06-28・Chronicle 出荷後）:** **作中時間（fabula）の Event 軸**は Timeline とは別概念の **Chronicle パネル**（`chronicle`）が担う。Timeline の `scenes` モードは「シーンを軸にした年表ビュー」、Chronicle は「Scene 非依存の出来事（オフページ含む）」——用語上どちらも「年表」と呼ばれうるが、本設計書の「シーン年表」は **Timeline scenes モード**を指す。Chronicle との責務分離:
+> **注（2026-06-28・Chronicle 出荷後）:** **作中時間（fabula）の Event 軸**は Timeline とは別概念の **Chronicle パネル**（`chronicle`）が担う。Timeline の `scenes` モードは「シーンを軸にした年表ビュー」、Chronicle は「Scene 非依存のイベント（オフページ含む）」——用語上どちらも「年表」と呼ばれうるが、本設計書の「シーン年表」は **Timeline scenes モード**を指す。Chronicle との責務分離:
 >
 > | | Timeline | Chronicle |
 > |---|---|---|

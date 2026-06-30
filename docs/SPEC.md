@@ -1078,7 +1078,7 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 
 | 機能ドメイン | 概要 | 主なテーブル / 実装 |
 |------------|------|-------------------|
-| **Chronicle（作中年表）** | 作中時間（fabula）の Event 軸。Scene 非依存の出来事・オフページ参照・季節/年齢整合 | `events`, `event_participants`, `scene_events`, `event_relations`, `project_calendar` |
+| **Chronicle（作中年表）** | 作中時間（fabula）の Event 軸。Scene 非依存のイベント・オフページ参照・季節/年齢整合 | `events`, `event_participants`, `scene_events`, `event_relations`, `project_calendar` |
 | **Timeline プロットスレッド** | reading-order 上の through-line。`threads` ビューで Plottr 型スイムレーン | `plot_threads`, `plot_thread_scene_links` |
 | **Plot-thread AI 注入** | 現在シーンが属する縦糸の構成を `<plot_thread_scenes>` で静的注入 | `contextBuilder.ts` |
 | **Chronicle AI 注入** | 作中時刻の世界状態スナップショットを `<chronicle_snapshot>` で注入（設定 `aiPrompt.chronicle.enabled`） | `chronicleSnapshot.ts`, agent read/write tools |

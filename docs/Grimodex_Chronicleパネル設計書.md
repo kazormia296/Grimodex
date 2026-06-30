@@ -2,12 +2,12 @@
 
 ## 概要
 
-Chronicle パネル（作中年表）は、物語の **作中時間（fabula＝出来事が世界の中で「いつ」起きたか）** を軸に出来事（Event）を並べて俯瞰・整合検査するビュー。Timeline パネルが扱う **reading-order（読む順＝plot-thread / scene index）** とは別概念の時間軸を持ち、両者は意図的に完全分離されている。
+Chronicle パネル（作中年表）は、物語の **作中時間（fabula＝イベントが世界の中で「いつ」起きたか）** を軸にイベント（Event）を並べて俯瞰・整合検査するビュー。Timeline パネルが扱う **reading-order（読む順＝plot-thread / scene index）** とは別概念の時間軸を持ち、両者は意図的に完全分離されている。
 
 - Timeline の x 軸 = reading-order の scene index（不変）。
-- Chronicle の x 軸 = 各出来事の「実効日(effectiveDays)」を `pxPerDay` で px へ射影する連続 pan/zoom 軸（`chronicleAxis`）。全 event に `startTime` が揃えば実暦の日数距離、揃わなければ ordinal 序列（**sequence モード**）にフォールバックする。
+- Chronicle の x 軸 = 各イベントの「実効日(effectiveDays)」を `pxPerDay` で px へ射影する連続 pan/zoom 軸（`chronicleAxis`）。全 event に `startTime` が揃えば実暦の日数距離、揃わなければ ordinal 序列（**sequence モード**）にフォールバックする。
 
-コア体験「TALK → EXTRACT → RECALL」のうち **構造化（EXTRACT）と整合（一貫性検査）** を担う。年表の原子単位は **「出来事(Event)」で、シーンに紐づかない独立エンティティ**である。Event はシーン参照 0（オフページ＝本編に書かれていない背景）でも成立し、Scene との関係は many-to-many の `scene_events` ブリッジで表現する。この「非 scene-anchored」設計が、本パネルを Timeline（scene 主軸）から分けている最大の根拠であり、Timeline 本体（モノリス）は本機能で一切改変していない（pull/stamp による明示的な片方向リンクのみ）。
+コア体験「TALK → EXTRACT → RECALL」のうち **構造化（EXTRACT）と整合（一貫性検査）** を担う。年表の原子単位は **「イベント(Event)」で、シーンに紐づかない独立エンティティ**である。Event はシーン参照 0（オフページ＝本編に書かれていない背景）でも成立し、Scene との関係は many-to-many の `scene_events` ブリッジで表現する。この「非 scene-anchored」設計が、本パネルを Timeline（scene 主軸）から分けている最大の根拠であり、Timeline 本体（モノリス）は本機能で一切改変していない（pull/stamp による明示的な片方向リンクのみ）。
 
 レーンの主軸は **人物（任意 Codex エントリ）**。1 人物 = 1 レーン、`primaryCodexId` が主レーンを決め、`primaryCodexId = null` は `__unassigned` レーン（点線背景）に落ちる。
 
@@ -40,7 +40,7 @@ Chronicle パネル（作中年表）は、物語の **作中時間（fabula＝�
 ├─────────────────────────────────────────────────────────────┤
 │ B. ChronicleToolbar                                          │
 │  [+新規][AI抽出] │[暦][↔タイ線]  …  [⚠整合n][因果][密度][ﾗﾍﾞﾙ][-z+][全体][凡例] │
-│ （任意）凡例ストリップ: 出来事/誕生/死亡/期間/オフページ/不確定/警告/因果矛盾 │
+│ （任意）凡例ストリップ: イベント/誕生/死亡/期間/オフページ/不確定/警告/因果矛盾 │
 ├─────────────────────────────────────────────────────────────┤
 │ C. ChronicleViewport（DOM pan/zoom · 暦スケール）            │
 │  作中時間│  ◀ 適応ルーラー（年/月/日/時/分 · major+minor） ▶ │
@@ -76,7 +76,7 @@ Chronicle パネル（作中年表）は、物語の **作中時間（fabula＝�
 
 - **PanelHeader**: タイトル「作中年表」、アイコン `CalendarRange`（`panelIcons.ts:38`）。最大化・メニューは `data-panel-header` 標準（[[Grimodex_パネルヘッダー設計書]]）。
 - **ツールバー操作**（`ChronicleToolbar.tsx` ← `ChroniclePanel.tsx` がハンドラを供給）:
-  - `[+ 新規出来事]`: `uiCreateEvent`（tracked-write）を採番（`nextEventOrdinal` で既存 ordinal の max の次）して空 Event を追加。
+  - `[+ 新規イベント]`: `uiCreateEvent`（tracked-write）を採番（`nextEventOrdinal` で既存 ordinal の max の次）して空 Event を追加。
   - `[AI 抽出]`: `ChronicleExtractDialog` を開く（AI 抽出ウィザード、後述 I）。
   - `[暦の設定]`: `ChronicleCalendarEditor` を開く（後述 G）。
   - `[↔ タイ線]`: `tieMode` をトグルして `ChronicleTieView` を表示（後述 D）。
@@ -217,7 +217,7 @@ interface ChronicleCalendar {
 
 API（`extractEventsApi.ts`）:
 
-- `proposeEvents({scenes:[{sceneId,title,bodyText,orderIndex}], existingTitles})` → `EventProposal[]`。`existingTitles` を LLM に注入して既存出来事との重複を排除。
+- `proposeEvents({scenes:[{sceneId,title,bodyText,orderIndex}], existingTitles})` → `EventProposal[]`。`existingTitles` を LLM に注入して既存イベントとの重複を排除。
 - `importExtractedEvents(projectId, candidates)` → number。**1 トランザクションに纏めて insert**（ordinal 採番競合防止＋composite undo）。`importPlotThreads` パターンの流用。
 
 ---
@@ -276,7 +276,7 @@ Event の時刻系は次の対で持つ（`schema.ts:1394-1406`）:
 
 ## イベントAI秘匿（#216・reveal アンカー方式）
 
-伏線（foreshadows.secret）と同 idiom で、出来事を **オプトインで AI から隠す**。default は表示（年表注入の存在意義＝AI に背景を渡すこと）。
+伏線（foreshadows.secret）と同 idiom で、イベントを **オプトインで AI から隠す**。default は表示（年表注入の存在意義＝AI に背景を渡すこと）。
 
 ### データ（2 列）
 
@@ -334,7 +334,7 @@ Event とは統合せず、**同じ `chronicleTime` 日付モデルをシーン�
 
 ## RAG 索引（event_chunks・dense のみ）
 
-- **索引**（`events_index.rs`）: `event_chunks`（PK=event_id・1 出来事 1 ベクトル）。`build_event_embed_text(title, note, primary_name, location_name, participants)` を埋め込み、`content_hash` は title/kind/note/名前ベース（id ではない）で決定的。TX 内 re-SELECT・再 hash で race 対策。参加者／場所 codex のリネームは当該 Event が次に mutate されるまで反映されない（cross-entity eventual consistency）。
+- **索引**（`events_index.rs`）: `event_chunks`（PK=event_id・1 イベント 1 ベクトル）。`build_event_embed_text(title, note, primary_name, location_name, participants)` を埋め込み、`content_hash` は title/kind/note/名前ベース（id ではない）で決定的。TX 内 re-SELECT・再 hash で race 対策。参加者／場所 codex のリネームは当該 Event が次に mutate されるまで反映されない（cross-entity eventual consistency）。
 - **検索**（`events_search.rs`）: `run_events_search()` は **dense のみ**（FTS hybrid なし）。秘匿は over-fetch（limit×3）→ hidden filter → slice(limit) で title を漏らさない。
 - **制約**: indexer はアプリ内（Tauri）限定。**MCP は embedder 非搭載のため RAG parity なし**（read/write の parity のみ）。
 
@@ -437,7 +437,7 @@ CREATE INDEX idx_event_relations_effect  ON event_relations(effect_event_id);
 ### event_chunks（`migrate.rs:1397-1411`・Rust 専用・Drizzle 非定義）
 
 ```sql
-CREATE TABLE event_chunks (        -- RAG dense索引・PK=event_id(1出来事1ベクトル)
+CREATE TABLE event_chunks (        -- RAG dense索引・PK=event_id(1イベント1ベクトル)
   event_id         TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
   event_title      TEXT NOT NULL,
   event_kind       TEXT NOT NULL,
