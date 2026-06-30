@@ -11,6 +11,7 @@ import {
   type ChronicleCalendar,
   type DateLang,
 } from "./chronicleTime";
+import { ChronicleTimeDial } from "./ChronicleTimeDial";
 
 export interface ChronicleDatePickerProps {
   which: "start" | "end";
@@ -29,8 +30,6 @@ export interface ChronicleDatePickerProps {
 }
 
 const mod = (a: number, b: number) => ((a % b) + b) % b;
-const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-const MINUTES = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
 
 /**
  * 暦駆動の日付/時刻ピッカー popover。粒度に応じて年ナビ・季節/月グリッド・
@@ -158,18 +157,6 @@ export function ChronicleDatePicker({
     fontSize: 12,
     cursor: "pointer",
     fontWeight: sel ? 600 : 400,
-  });
-  const tcell = (sel: boolean): CSSProperties => ({
-    height: 24,
-    borderRadius: 6,
-    border: `1px solid ${sel ? "var(--primary)" : "var(--border)"}`,
-    background: sel
-      ? "color-mix(in oklch, var(--primary) 12%, transparent)"
-      : "var(--card)",
-    color: sel ? "var(--primary)" : "var(--muted-foreground)",
-    fontSize: 11,
-    cursor: "pointer",
-    padding: 0,
   });
   const navBtn: CSSProperties = {
     width: 30,
@@ -326,30 +313,12 @@ export function ChronicleDatePicker({
             <div className="mb-1.5 text-[10px] text-muted-foreground">
               {t("chronicle.timeOfDay", "時刻")}
             </div>
-            <div className="mb-1.5 grid grid-cols-8 gap-[3px]">
-              {Array.from({ length: 24 }, (_, h) => (
-                <button
-                  key={h}
-                  type="button"
-                  style={tcell(curHour === h)}
-                  onClick={() => pkPickHour(h)}
-                >
-                  {h}
-                </button>
-              ))}
-            </div>
-            <div className="grid grid-cols-6 gap-[3px]">
-              {MINUTES.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  style={tcell(curMin === m)}
-                  onClick={() => pkPickMin(m)}
-                >
-                  {pad2(m)}
-                </button>
-              ))}
-            </div>
+            <ChronicleTimeDial
+              hour={curHour}
+              minute={curMin}
+              onHour={pkPickHour}
+              onMinute={pkPickMin}
+            />
           </div>
         )}
       </div>

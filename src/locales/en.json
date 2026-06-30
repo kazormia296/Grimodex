@@ -5094,6 +5094,8 @@
     "eventListShort": "List",
     "inspector": "Inspector",
     "inspectorShort": "Details",
+    "dialHour": "Hour",
+    "dialMinute": "Minute",
     "eventListSearch": "Search by title",
     "eventListEmpty": "No matching events",
     "filterLane": "Filter by lane",

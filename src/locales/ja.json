@@ -5081,6 +5081,8 @@
     "eventListShort": "一覧",
     "inspector": "詳細パネル",
     "inspectorShort": "詳細",
+    "dialHour": "時",
+    "dialMinute": "分",
     "eventListSearch": "タイトルで検索",
     "eventListEmpty": "該当する出来事がありません",
     "filterLane": "レーンで絞り込み",
