@@ -47,6 +47,18 @@ const GREGORIAN_WEEKDAYS: Record<"ja" | "en", string[]> = {
   ja: ["日", "月", "火", "水", "木", "金", "土"],
   en: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
 };
+const DEFAULT_SEASON_NAMES: Record<"ja" | "en", string[]> = {
+  ja: ["春", "夏", "秋", "冬"],
+  en: ["Spring", "Summer", "Autumn", "Winter"],
+};
+
+/** 既定季節境界をロケールの季節名で返す（startDayOfYear は既定のまま）。 */
+export function localizedDefaultSeasons(lang: "ja" | "en"): SeasonBoundary[] {
+  return DEFAULT_SEASON_BOUNDARIES.map((b, i) => ({
+    ...b,
+    name: DEFAULT_SEASON_NAMES[lang][i] ?? b.name,
+  }));
+}
 
 /** エディタの内部フォーム状態（weekdays は表示用のカンマ区切り文字列）。 */
 interface CalendarFormState {
@@ -72,14 +84,17 @@ function gregorianFormState(lang: "ja" | "en"): CalendarFormState {
       days,
     })),
     weekdays: GREGORIAN_WEEKDAYS[lang].join(", "),
-    seasons: DEFAULT_SEASON_BOUNDARIES,
+    seasons: localizedDefaultSeasons(lang),
     leap: { ...GREGORIAN_LEAP },
     ageReckoning: "full",
   };
 }
 
 /** 既存暦をフォーム状態へ展開（初期値）。未指定フィールドは素朴な既定へ。 */
-function formStateFromCalendar(cal: ChronicleCalendar): CalendarFormState {
+function formStateFromCalendar(
+  cal: ChronicleCalendar,
+  lang: "ja" | "en",
+): CalendarFormState {
   return {
     daysPerYear: cal.daysPerYear,
     startYear: cal.startYear ?? 0,
@@ -87,7 +102,7 @@ function formStateFromCalendar(cal: ChronicleCalendar): CalendarFormState {
     weekdays: (cal.weekdayNames ?? []).join(", "),
     seasons: cal.seasonBoundaries.length
       ? cal.seasonBoundaries
-      : DEFAULT_SEASON_BOUNDARIES,
+      : localizedDefaultSeasons(lang),
     leap: cal.leap ?? { kind: "none" },
     ageReckoning: cal.ageReckoning ?? "full",
   };
@@ -112,7 +127,7 @@ export function ChronicleCalendarEditor({
   const lang: "ja" | "en" = i18n.language?.startsWith("en") ? "en" : "ja";
   // 既存暦があればそれを、無ければグレゴリオ暦を既定とする（新規作成のデフォルト）。
   const init = initial
-    ? formStateFromCalendar(initial)
+    ? formStateFromCalendar(initial, lang)
     : gregorianFormState(lang);
   const [daysPerYear, setDaysPerYear] = useState(init.daysPerYear);
   const [startYear, setStartYear] = useState(init.startYear);

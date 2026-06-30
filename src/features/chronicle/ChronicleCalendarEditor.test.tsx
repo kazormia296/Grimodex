@@ -1,7 +1,31 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
-import { ChronicleCalendarEditor } from "./ChronicleCalendarEditor";
+import {
+  ChronicleCalendarEditor,
+  localizedDefaultSeasons,
+} from "./ChronicleCalendarEditor";
+
+describe("localizedDefaultSeasons", () => {
+  it("既定季節名はロケールでローカライズ（ja=春夏秋冬 / en=Spring..）", () => {
+    expect(localizedDefaultSeasons("ja").map((s) => s.name)).toEqual([
+      "春",
+      "夏",
+      "秋",
+      "冬",
+    ]);
+    expect(localizedDefaultSeasons("en").map((s) => s.name)).toEqual([
+      "Spring",
+      "Summer",
+      "Autumn",
+      "Winter",
+    ]);
+    // startDayOfYear は既定のまま（ロケール非依存）。
+    expect(localizedDefaultSeasons("en").map((s) => s.startDayOfYear)).toEqual([
+      0, 90, 180, 270,
+    ]);
+  });
+});
 
 describe("ChronicleCalendarEditor", () => {
   it("initial=null ならグレゴリオ暦が既定で読み込まれる（12ヶ月・7曜・閏2月）", () => {
