@@ -432,6 +432,8 @@ export interface CalendarRow {
   reform: string;
   /** 生 JSON 文字列（TimeZoneDef | null タイムゾーン）。'null'=なし。 */
   timezone: string;
+  /** 旧暦の節気判定 UTC オフセット分（480=中国 / 540=日本）。 */
+  lunarTzMinutes: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -460,6 +462,7 @@ export async function getProjectCalendar(
     eras: s(r.eras, "[]"),
     reform: s(r.reform, "null"),
     timezone: s(r.timezone, "null"),
+    lunarTzMinutes: Number(r.lunarTzMinutes ?? r.lunar_tz_minutes ?? 480),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -493,6 +496,7 @@ export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
     eras: parse<EraDef[]>(row.eras, []),
     reform: parse<CalendarReform | null>(row.reform, null) ?? undefined,
     timezone: parse<TimeZoneDef | null>(row.timezone, null) ?? undefined,
+    lunarTzMinutes: row.lunarTzMinutes,
   };
 }
 
@@ -509,6 +513,7 @@ export async function upsertProjectCalendar(data: {
   eras?: string;
   reform?: string;
   timezone?: string;
+  lunarTzMinutes?: number;
 }): Promise<void> {
   const now = new Date().toISOString();
   const startYear = data.startYear ?? 0;
@@ -520,6 +525,7 @@ export async function upsertProjectCalendar(data: {
   const eras = data.eras ?? "[]";
   const reform = data.reform ?? "null";
   const timezone = data.timezone ?? "null";
+  const lunarTzMinutes = data.lunarTzMinutes ?? 480;
   await db
     .insert(projectCalendar)
     .values({
@@ -535,6 +541,7 @@ export async function upsertProjectCalendar(data: {
       eras,
       reform,
       timezone,
+      lunarTzMinutes,
       createdAt: now,
       updatedAt: now,
     })
@@ -552,6 +559,7 @@ export async function upsertProjectCalendar(data: {
         eras,
         reform,
         timezone,
+        lunarTzMinutes,
         updatedAt: now,
       },
     });

@@ -1489,6 +1489,8 @@ export const projectCalendar = sqliteTable("project_calendar", {
   reform: text("reform").notNull().default("null"),
   // JSON: TimeZoneDef | null（時刻表示のTZラベル/オフセット・夏時間）。'null'=なし。
   timezone: text("timezone").notNull().default("null"),
+  // 旧暦の節気判定 UTC オフセット分。480=中国農暦(既定) / 540=日本。節気のみ再ビン。
+  lunarTzMinutes: integer("lunar_tz_minutes").notNull().default(480),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

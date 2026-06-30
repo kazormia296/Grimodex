@@ -5052,6 +5052,8 @@
     "dstRange": "day-of-year",
     "dstStart": "DST start day-of-year",
     "dstEnd": "DST end day-of-year",
+    "lunarJapan": "Solar terms in Japan time (UTC+9)",
+    "lunarJapanHint": "Determine the lunar solar terms in Japan Standard Time (UTC+9) (default = Chinese nongli, UTC+8). The lunar month/day and rokuyo stay on the Chinese nongli (lunar-typescript does not expose the new-moon instant for an exact re-derivation).",
     "leapHint": "Gregorian leap years (4/100/400). Requires month definitions.",
     "leapMonth": "Leap month",
     "ageReckoningLabel": "Age reckoning",

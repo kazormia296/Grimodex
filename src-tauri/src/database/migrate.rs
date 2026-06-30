@@ -1865,6 +1865,7 @@ impl Database {
                 eras              TEXT NOT NULL DEFAULT '[]',
                 reform            TEXT NOT NULL DEFAULT 'null',
                 timezone          TEXT NOT NULL DEFAULT 'null',
+                lunar_tz_minutes  INTEGER NOT NULL DEFAULT 480,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
@@ -1929,6 +1930,13 @@ impl Database {
             "project_calendar",
             "timezone",
             "TEXT NOT NULL DEFAULT 'null'",
+        )?;
+        // 旧暦の節気判定 UTC オフセット分（480=中国 / 540=日本）。既存 DB へ追加。
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "lunar_tz_minutes",
+            "INTEGER NOT NULL DEFAULT 480",
         )?;
 
         // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。

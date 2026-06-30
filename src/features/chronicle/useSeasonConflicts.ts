@@ -149,6 +149,7 @@ export function useSeasonConflicts({
         eras: JSON.stringify(cal.eras ?? []),
         reform: JSON.stringify(cal.reform ?? null),
         timezone: JSON.stringify(cal.timezone ?? null),
+        lunarTzMinutes: cal.lunarTzMinutes ?? 480,
       });
       setCalVersion((v) => v + 1);
     },

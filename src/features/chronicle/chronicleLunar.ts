@@ -28,6 +28,52 @@ const JIEQI_JP: Record<string, string> = {
   处暑: "処暑",
 };
 
+/**
+ * getJieQiTable のキーは大半が中国字体だが、年境界（冬至/春先）の項のみ pinyin enum
+ * （DA_XUE 等）になる。これらを中国字体へ正規化する（実測で現れる7種のみで十分）。
+ */
+const JIEQI_PINYIN_CN: Record<string, string> = {
+  DA_XUE: "大雪",
+  DONG_ZHI: "冬至",
+  XIAO_HAN: "小寒",
+  DA_HAN: "大寒",
+  LI_CHUN: "立春",
+  YU_SHUI: "雨水",
+  JING_ZHE: "惊蛰",
+};
+
+/** 中国農暦の既定 UTC オフセット分（UTC+8）。 */
+const CHINA_TZ_MIN = 480;
+
+/**
+ * lunarTzMinutes（UTC オフセット）で節気を再ビンし、その日の節気名（中国字体）を返す。
+ * lunar-typescript の節気は瞬間(時刻付き, UTC+8)で公開されるので、JD を (offset-480) 分
+ * シフトして対象タイムゾーンの civil 日付に割り当て直す。該当なしは null。
+ */
+function solarTermRebinned(
+  solar: ReturnType<typeof Solar.fromYmd>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  lunar: any,
+  tzMinutes: number,
+): string | null {
+  const shiftDays = (tzMinutes - CHINA_TZ_MIN) / 1440;
+  const table = lunar.getJieQiTable() as Record<
+    string,
+    ReturnType<typeof Solar.fromYmd>
+  >;
+  for (const key of Object.keys(table)) {
+    const d = Solar.fromJulianDay(table[key].getJulianDay() + shiftDays);
+    if (
+      d.getYear() === solar.getYear() &&
+      d.getMonth() === solar.getMonth() &&
+      d.getDay() === solar.getDay()
+    ) {
+      return JIEQI_PINYIN_CN[key] ?? key;
+    }
+  }
+  return null;
+}
+
 export interface LunarInfo {
   /** 旧暦月（1..12）。 */
   month: number;
@@ -74,16 +120,22 @@ export function lunarInfoForDay(
   const g = gregorianYmd(day, cal);
   if (!g) return null;
   try {
-    const lunar = Solar.fromYmd(g.y, g.m, g.d).getLunar();
+    const solar = Solar.fromYmd(g.y, g.m, g.d);
+    const lunar = solar.getLunar();
     const lm = lunar.getMonth(); // 閏月は負
-    const term = lunar.getJieQi();
     const liuyao = lunar.getLiuYao();
+    // 節気は lunarTzMinutes で再ビン（既定=中国農暦 UTC+8）。旧暦月日・六曜は中国農暦のまま。
+    const tz = cal.lunarTzMinutes ?? CHINA_TZ_MIN;
+    const termCn =
+      tz === CHINA_TZ_MIN
+        ? lunar.getJieQi() || null
+        : solarTermRebinned(solar, lunar, tz);
     return {
       month: Math.abs(lm),
       isLeapMonth: lm < 0,
       day: lunar.getDay(),
       rokuyo: ROKUYO_JP[liuyao] ?? liuyao,
-      solarTerm: term ? (JIEQI_JP[term] ?? term) : null,
+      solarTerm: termCn ? (JIEQI_JP[termCn] ?? termCn) : null,
     };
   } catch {
     return null;

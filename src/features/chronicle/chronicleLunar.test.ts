@@ -54,6 +54,33 @@ describe("lunarInfoForDay（旧暦・六曜・節気, 日本表記）", () => {
     );
   });
 
+  it("節気の日本(UTC+9)オフセット: 大雪2024 は中国Dec6→日本Dec7へ移る", () => {
+    // 大雪2024 の瞬間 = 2024-12-06 23:17 (UTC+8) → 日本(UTC+9)では Dec7。
+    const china = gregorian(2023); // 既定=中国農暦(UTC+8)
+    expect(lunarInfoForDay(dayOf(2024, 12, 6, china), china)?.solarTerm).toBe(
+      "大雪",
+    );
+    expect(
+      lunarInfoForDay(dayOf(2024, 12, 7, china), china)?.solarTerm,
+    ).toBeNull();
+
+    const japan: ChronicleCalendar = { ...china, lunarTzMinutes: 540 };
+    expect(
+      lunarInfoForDay(dayOf(2024, 12, 6, japan), japan)?.solarTerm,
+    ).toBeNull();
+    expect(lunarInfoForDay(dayOf(2024, 12, 7, japan), japan)?.solarTerm).toBe(
+      "大雪",
+    );
+    // 旧暦月日・六曜は中国農暦のまま（オフセットの影響を受けない）。
+    const d = dayOf(2024, 12, 6, japan);
+    expect(lunarInfoForDay(d, japan)?.month).toBe(
+      lunarInfoForDay(d, china)?.month,
+    );
+    expect(lunarInfoForDay(d, japan)?.rokuyo).toBe(
+      lunarInfoForDay(d, china)?.rokuyo,
+    );
+  });
+
   it("ファンタジー暦（実暦12ヶ月でない）は null", () => {
     const fantasy: ChronicleCalendar = {
       daysPerYear: 360,

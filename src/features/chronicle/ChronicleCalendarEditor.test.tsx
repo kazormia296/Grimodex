@@ -79,6 +79,7 @@ describe("ChronicleCalendarEditor", () => {
       leap: { kind: "none" },
       ageReckoning: "full",
       eras: [],
+      lunarTzMinutes: 480,
     });
     expect(onClose).toHaveBeenCalled();
   });
@@ -121,6 +122,7 @@ describe("ChronicleCalendarEditor", () => {
       leap: { kind: "none" },
       ageReckoning: "full",
       eras: [],
+      lunarTzMinutes: 480,
     });
   });
 

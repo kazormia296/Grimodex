@@ -5039,6 +5039,8 @@
     "dstRange": "通日",
     "dstStart": "夏時間開始通日",
     "dstEnd": "夏時間終了通日",
+    "lunarJapan": "節気を日本(UTC+9)で判定",
+    "lunarJapanHint": "旧暦の節気判定を日本標準時(UTC+9)で行う（既定=中国農暦 UTC+8）。旧暦の月日・六曜は中国農暦のまま（lunar-typescript が朔の瞬間を公開せず正確な再導出ができないため）。",
     "leapHint": "グレゴリオ閏年（4/100/400）。月定義が必要です。",
     "leapMonth": "閏を加える月",
     "ageReckoningLabel": "年齢表記",

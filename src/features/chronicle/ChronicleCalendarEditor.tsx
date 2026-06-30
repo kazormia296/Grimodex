@@ -78,6 +78,7 @@ interface CalendarFormState {
   eras: EraDef[];
   reform: CalendarReform | undefined;
   timezone: TimeZoneDef | undefined;
+  lunarTzMinutes: number;
 }
 
 /**
@@ -100,6 +101,7 @@ function gregorianFormState(lang: "ja" | "en"): CalendarFormState {
     eras: [],
     reform: undefined,
     timezone: undefined,
+    lunarTzMinutes: 480,
   };
 }
 
@@ -122,6 +124,7 @@ function formStateFromCalendar(
     eras: cal.eras ?? [],
     reform: cal.reform,
     timezone: cal.timezone,
+    lunarTzMinutes: cal.lunarTzMinutes ?? 480,
   };
 }
 
@@ -163,6 +166,7 @@ export function ChronicleCalendarEditor({
   const [timezone, setTimezone] = useState<TimeZoneDef | undefined>(
     init.timezone,
   );
+  const [lunarTzMinutes, setLunarTzMinutes] = useState(init.lunarTzMinutes);
 
   // 全フィールドをグレゴリオ暦の既定値へ戻す（リセット）。
   const resetToDefault = () => {
@@ -178,6 +182,7 @@ export function ChronicleCalendarEditor({
     setEras(g.eras);
     setReform(g.reform);
     setTimezone(g.timezone);
+    setLunarTzMinutes(g.lunarTzMinutes);
   };
 
   // タイムゾーン編集（label を空にすると TZ 自体を解除）。
@@ -276,6 +281,7 @@ export function ChronicleCalendarEditor({
       eras: cleanedEras,
       reform,
       timezone: timezone && timezone.label.trim() !== "" ? timezone : undefined,
+      lunarTzMinutes,
     };
     onSave({ ...cal, daysPerYear: calendarDaysPerYear(cal) });
     onClose();
@@ -698,6 +704,23 @@ export function ChronicleCalendarEditor({
           </div>
         )}
       </div>
+
+      <label
+        className="flex items-center gap-1.5 text-xs"
+        title={t(
+          "chronicle.lunarJapanHint",
+          "旧暦の節気判定を日本標準時(UTC+9)で行う（既定=中国農暦 UTC+8）。旧暦の月日・六曜は中国農暦のまま（lunar-typescript が朔の瞬間を公開せず正確な再導出ができないため）。",
+        )}
+      >
+        <input
+          type="checkbox"
+          checked={lunarTzMinutes === 540}
+          onChange={(e) => setLunarTzMinutes(e.target.checked ? 540 : 480)}
+          style={{ accentColor: "var(--primary)" }}
+          className="size-3.5"
+        />
+        {t("chronicle.lunarJapan", "節気を日本(UTC+9)で判定")}
+      </label>
 
       <div className="flex justify-end gap-2">
         <button
