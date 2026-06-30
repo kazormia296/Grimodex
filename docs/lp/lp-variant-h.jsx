@@ -3349,7 +3349,7 @@ function LPVariantH() {
             style={{ display: "flex", justifyContent: "center", marginTop: 40 }}
           >
             <a
-              href="https://t.co/XFWKaSPfmu"
+              href="https://discord.gg/ufPXC48kfX"
               target="_blank"
               rel="noreferrer"
               className="hz-shadow"
@@ -3484,7 +3484,7 @@ function LPVariantH() {
                   t: "WIKI ↗",
                   href: "https://github.com/kazormia296/Grimodex/wiki",
                 },
-                { t: "DISCORD ↗", href: "https://t.co/XFWKaSPfmu" },
+                { t: "DISCORD ↗", href: "https://discord.gg/ufPXC48kfX" },
                 { t: "© 2026", hl: true },
               ]}
             />
