@@ -3397,7 +3397,8 @@
       "noteEditing": "Editing Note",
       "noteDescription": "This file is a note, not a scene",
       "codexEditing": "Editing Codex Entry",
-      "snippetEditing": "Editing Snippet"
+      "snippetEditing": "Editing Snippet",
+      "chronicleEditing": "Editing event detail"
     },
     "noteContext": {
       "title": "AI Context Settings"
@@ -4920,6 +4921,10 @@
   "chronicle": {
     "newEvent": "New event",
     "untitled": "Untitled event",
+    "detail": {
+      "label": "Detail",
+      "openInEditor": "Open in Editor"
+    },
     "add": "Add",
     "delete": "Delete",
     "actionFailed": "Operation failed",

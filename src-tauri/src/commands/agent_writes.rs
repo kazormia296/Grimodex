@@ -1343,6 +1343,8 @@ pub(crate) struct AgentEventCreatePayload {
     surface: Option<String>,
     title: Option<String>,
     note: Option<String>,
+    /// 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。
+    detail: Option<String>,
     ordinal: Option<String>,
     primary_codex_id: Option<String>,
     /// 未割当の整理用サブレーン id。
@@ -1377,6 +1379,8 @@ pub(crate) struct AgentEventUpdatePayload {
     event_id: String,
     title: Option<String>,
     note: Option<String>,
+    /// 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。set-if-present。
+    detail: Option<String>,
     ordinal: Option<String>,
     primary_codex_id: Option<String>,
     /// 未割当の整理用サブレーン id（空文字は NULL=既定の未割当レーンへ）。
@@ -1446,6 +1450,7 @@ fn collect_event_snapshot(conn: &rusqlite::Connection, event_id: &str) -> anyhow
     let event_json: String = conn.query_row(
         "SELECT json_object(
             'id', id, 'projectId', project_id, 'title', title, 'note', note,
+            'detail', detail,
             'ordinal', ordinal, 'primaryCodexId', primary_codex_id,
             'laneGroup', lane_group,
             'locationCodexId', location_codex_id, 'startTime', start_time,
@@ -1577,10 +1582,11 @@ fn apply_event_composite_snapshot(
          (id, project_id, title, note, ordinal, primary_codex_id, lane_group, location_codex_id,
           start_time, end_time, start_minute, end_minute, start_granularity,
           end_granularity, precision, kind, secret, reveal_scene_id,
-          created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+          created_at, updated_at, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
          ON CONFLICT(id) DO UPDATE SET
-            title = excluded.title, note = excluded.note, ordinal = excluded.ordinal,
+            title = excluded.title, note = excluded.note, detail = excluded.detail,
+            ordinal = excluded.ordinal,
             primary_codex_id = excluded.primary_codex_id,
             lane_group = excluded.lane_group,
             location_codex_id = excluded.location_codex_id,
@@ -1612,6 +1618,7 @@ fn apply_event_composite_snapshot(
             reveal_scene_id,
             ed["createdAt"].as_str().unwrap_or(&now),
             ed["updatedAt"].as_str().unwrap_or(&now),
+            ed["detail"].as_str(),
         ],
     )?;
 
@@ -1873,16 +1880,17 @@ fn agent_event_create_impl(
         let result = (|| -> anyhow::Result<AgentWriteResult> {
             conn.execute(
                 "INSERT INTO events
-                 (id, project_id, title, note, ordinal, primary_codex_id,
+                 (id, project_id, title, note, detail, ordinal, primary_codex_id,
                   location_codex_id, start_time, end_time, start_minute, end_minute,
                   start_granularity, end_granularity, precision, kind,
                   secret, reveal_scene_id, lane_group, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?19)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?20)",
                 rusqlite::params![
                     event_id,
                     payload.project_id,
                     title,
                     payload.note,
+                    payload.detail,
                     ordinal,
                     payload.primary_codex_id,
                     payload.location_codex_id,
@@ -2016,6 +2024,12 @@ fn agent_event_update_impl(
                 params.push(Box::new(v.clone()));
                 param_idx += 1;
                 fields.push("note");
+            }
+            if let Some(ref v) = payload.detail {
+                sets.push(format!("detail = ?{param_idx}"));
+                params.push(Box::new(v.clone()));
+                param_idx += 1;
+                fields.push("detail");
             }
             if let Some(ref v) = payload.ordinal {
                 sets.push(format!("ordinal = ?{param_idx}"));
@@ -3217,6 +3231,7 @@ mod tests {
             event_id: event_id.to_string(),
             title: None,
             note: None,
+            detail: None,
             ordinal: None,
             primary_codex_id: None,
             lane_group: None,
@@ -3250,6 +3265,7 @@ mod tests {
                 surface: None,
                 title: Some(title.to_string()),
                 note: None,
+                detail: None,
                 ordinal: None,
                 primary_codex_id: None,
                 lane_group: None,
@@ -3309,6 +3325,7 @@ mod tests {
                 surface: Some("manual".to_string()),
                 title: Some("手動作成".to_string()),
                 note: None,
+                detail: None,
                 ordinal: None,
                 primary_codex_id: None,
                 lane_group: None,
@@ -3446,6 +3463,44 @@ mod tests {
             )?)
         })
         .expect("event_primary_codex")
+    }
+
+    fn event_detail(db: &Database, event_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT detail FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?)
+        })
+        .expect("event_detail")
+    }
+
+    #[test]
+    fn event_detail_create_update_and_undo_round_trip() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "e", vec![], vec![]);
+        // 新規作成時は detail 未指定 → NULL。
+        assert_eq!(event_detail(&db, &event_id), None);
+
+        // 詳細をセット（ProseMirror JSON 文字列）。
+        let doc_a = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"詳細A"}]}]}"#;
+        let mut p1 = empty_update(&project_id, &event_id);
+        p1.detail = Some(doc_a.to_string());
+        agent_event_update_impl(&db, p1).unwrap();
+        assert_eq!(event_detail(&db, &event_id).as_deref(), Some(doc_a));
+
+        // 別の詳細へ更新し、戻りスナップショットで undo すると detailA に戻る。
+        let doc_b = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"詳細B"}]}]}"#;
+        let mut p2 = empty_update(&project_id, &event_id);
+        p2.detail = Some(doc_b.to_string());
+        let res = agent_event_update_impl(&db, p2).unwrap();
+        assert_eq!(event_detail(&db, &event_id).as_deref(), Some(doc_b));
+
+        let journal_id = res["undoJournalId"].as_str().unwrap().to_string();
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        assert_eq!(event_detail(&db, &event_id).as_deref(), Some(doc_a));
     }
 
     #[test]

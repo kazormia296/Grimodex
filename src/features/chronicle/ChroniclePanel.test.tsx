@@ -96,6 +96,7 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
     projectId: "p1",
     title: "原題",
     note: null,
+    detail: null,
     ordinal: "a0",
     primaryCodexId: null,
     locationCodexId: null,

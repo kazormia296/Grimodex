@@ -19,6 +19,7 @@ vi.mock("@/db/client", async () => {
       project_id TEXT NOT NULL,
       title TEXT NOT NULL DEFAULT '',
       note TEXT,
+      detail TEXT,
       ordinal TEXT NOT NULL DEFAULT 'a0',
       primary_codex_id TEXT,
       lane_group TEXT,
@@ -116,6 +117,7 @@ import { cmpKeys } from "@/features/tree/fractionalIndex";
 import {
   normalizeEvent,
   listEvents,
+  getEvent,
   createEvent,
   updateEvent,
   deleteEvent,
@@ -153,6 +155,7 @@ describe("normalizeEvent", () => {
       project_id: "p1",
       title: "戴冠",
       note: "脚注",
+      detail: '{"type":"doc","content":[]}',
       ordinal: "a3",
       primary_codex_id: "c1",
       location_codex_id: "loc1",
@@ -174,6 +177,7 @@ describe("normalizeEvent", () => {
       projectId: "p1",
       title: "戴冠",
       note: "脚注",
+      detail: '{"type":"doc","content":[]}',
       ordinal: "a3",
       primaryCodexId: "c1",
       laneGroup: null,
@@ -302,6 +306,35 @@ describe("updateEvent (fail-closed scoping)", () => {
     await updateEvent("e1", "p1", { title: "ok" });
     const [row] = await listEvents("p1");
     expect(row.title).toBe("ok");
+  });
+});
+
+describe("detail（出来事の詳細・ProseMirror JSON）", () => {
+  const DOC = '{"type":"doc","content":[{"type":"paragraph"}]}';
+
+  it("createEvent は detail を保存し、listEvents で読み戻せる", async () => {
+    const ev = await createEvent({ projectId: "p1", detail: DOC });
+    expect(ev.detail).toBe(DOC);
+    const [row] = await listEvents("p1");
+    expect(row.detail).toBe(DOC);
+  });
+
+  it("detail 未指定の createEvent は null", async () => {
+    const ev = await createEvent({ projectId: "p1" });
+    expect(ev.detail).toBeNull();
+  });
+
+  it("updateEvent で detail を更新できる", async () => {
+    await seed("e1", "p1", "a0");
+    await updateEvent("e1", "p1", { detail: DOC });
+    const ev = await getEvent("p1", "e1");
+    expect(ev?.detail).toBe(DOC);
+  });
+
+  it("getEvent は projectId 不一致で null（fail-closed）", async () => {
+    await seed("e1", "p1", "a0");
+    expect(await getEvent("p2", "e1")).toBeNull();
+    expect(await getEvent("p1", "e1")).not.toBeNull();
   });
 });
 

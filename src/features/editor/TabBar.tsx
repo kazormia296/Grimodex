@@ -10,6 +10,7 @@ import {
   Files,
   StickyNote,
   BookOpen,
+  CalendarDays,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
@@ -352,8 +353,9 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
           {tabs.map((tab) => {
             const isCodex = tab.contentType === "codex";
             const isSnippet = tab.contentType === "snippet";
+            const isChronicle = tab.contentType === "chronicle_event";
             const node =
-              isCodex || isSnippet
+              isCodex || isSnippet || isChronicle
                 ? null
                 : nodes.find((n) => n.id === tab.nodeId);
             const codexEntry = isCodex
@@ -364,7 +366,11 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               : null;
             const isActive = tab.nodeId === activeTabId;
             const title =
-              node?.title ?? codexEntry?.name ?? snippetEntry?.title ?? "…";
+              node?.title ??
+              codexEntry?.name ??
+              snippetEntry?.title ??
+              tab.label ??
+              "…";
             const phaseLabel = getTabPhaseLabel(
               tab,
               phasesByEntry,
@@ -472,6 +478,12 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   {isSnippet && (
                     <Files
                       className="mr-1 h-3 w-3 shrink-0 text-amber-500"
+                      aria-hidden
+                    />
+                  )}
+                  {isChronicle && (
+                    <CalendarDays
+                      className="mr-1 h-3 w-3 shrink-0 text-sky-500"
                       aria-hidden
                     />
                   )}
@@ -608,8 +620,10 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
               {tabs.map((tab) => {
                 const isOverflowCodex = tab.contentType === "codex";
                 const isOverflowSnippet = tab.contentType === "snippet";
+                const isOverflowChronicle =
+                  tab.contentType === "chronicle_event";
                 const node =
-                  isOverflowCodex || isOverflowSnippet
+                  isOverflowCodex || isOverflowSnippet || isOverflowChronicle
                     ? null
                     : nodes.find((n) => n.id === tab.nodeId);
                 const overflowCodexEntry = isOverflowCodex
@@ -623,6 +637,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                   node?.title ??
                   overflowCodexEntry?.name ??
                   overflowSnippetEntry?.title ??
+                  tab.label ??
                   "…";
                 const overflowPhaseLabel = getTabPhaseLabel(
                   tab,
@@ -657,6 +672,12 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                     {isOverflowSnippet && (
                       <Files
                         className="mr-1 h-3 w-3 shrink-0 text-amber-500"
+                        aria-hidden
+                      />
+                    )}
+                    {isOverflowChronicle && (
+                      <CalendarDays
+                        className="mr-1 h-3 w-3 shrink-0 text-sky-500"
                         aria-hidden
                       />
                     )}

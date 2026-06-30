@@ -24,6 +24,7 @@ import {
 } from "./chronicleTime";
 import { laneColorFor } from "./laneColor";
 import { ChronicleDatePicker } from "./ChronicleDatePicker";
+import { ChronicleDetailField } from "./ChronicleDetailField";
 import { CodexEntryPicker } from "./CodexEntryPicker";
 import { lunarInfoForDay } from "./chronicleLunar";
 import {
@@ -671,6 +672,13 @@ export function ChronicleInspector({
               )}
             </div>
           </div>
+
+          {/* 詳細（リッチテキスト） */}
+          <ChronicleDetailField
+            key={event.id}
+            event={event}
+            onPatchDetail={(detail) => onPatch({ detail })}
+          />
 
           {/* アクション */}
           <div className="flex items-center gap-2">

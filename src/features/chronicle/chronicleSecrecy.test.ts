@@ -14,6 +14,7 @@ function ev(partial: Partial<EventRow> & { id: string }): EventRow {
     projectId: "p1",
     title: partial.title ?? partial.id,
     note: partial.note ?? null,
+    detail: partial.detail ?? null,
     ordinal: partial.ordinal ?? "a0",
     primaryCodexId: partial.primaryCodexId ?? null,
     locationCodexId: partial.locationCodexId ?? null,

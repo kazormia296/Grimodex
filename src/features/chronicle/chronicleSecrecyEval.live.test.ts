@@ -115,6 +115,7 @@ function mkEvent(
     projectId: PROJECT,
     title: e.title,
     note: e.note ?? null,
+    detail: e.detail ?? null,
     ordinal: e.ordinal,
     primaryCodexId: e.primaryCodexId ?? null,
     locationCodexId: e.locationCodexId ?? null,

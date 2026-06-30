@@ -21,6 +21,10 @@ interface CodexContentEditorProps {
   content: string;
   onContentChange: (content: string) => void;
   entryId?: string;
+  /** どのエンティティの本文か。Codex 説明欄以外（Chronicle 出来事の詳細など）でも
+   *  Codex ハイライト付きミニエディタとして再利用する。Trash Bin 捕捉と
+   *  focusedContentEditorStore 登録は "codex" のときだけ行う（id↔kind 不整合回避）。 */
+  entryKind?: "codex" | "chronicle_event";
   /** Called when the EditorPane pushes a change here so the parent can keep its contentRef in sync */
   onExternalSync?: (content: string) => void;
   /** フェーズプレビュー用: 非nullの場合このコンテンツをエディタに適用（読み取り専用） */
@@ -44,11 +48,13 @@ export function CodexContentEditor({
   content,
   onContentChange,
   entryId,
+  entryKind = "codex",
   onExternalSync,
   externalContent,
   compact = false,
   readOnly = false,
 }: CodexContentEditorProps) {
+  const isCodexEntry = entryKind === "codex";
   const isApplyingExternalUpdate = useRef(false);
   const onExternalSyncRef = useRef(onExternalSync);
   onExternalSyncRef.current = onExternalSync;
@@ -90,16 +96,18 @@ export function CodexContentEditor({
   });
 
   // ゴミ箱キャプチャ (副次経路)。externalContent プレビュー中は paused で停止。
+  // Codex 説明欄のみ（chronicle 詳細など他用途は id↔kind 不整合になるため除外）。
   useTrashBinCapture(
     editor,
-    entryId ? { kind: "codex", id: entryId } : null,
+    isCodexEntry && entryId ? { kind: "codex", id: entryId } : null,
     externalContent != null,
   );
 
   // Trash Bin の挿入ターゲットとして「フォーカス中のミニエディタ」を共有。
   // EditorPane の codex タブが開いているとき主経路はそちらが優先される。
+  // Codex 説明欄のみ登録（chronicle 詳細は復元ターゲット対象外）。
   useEffect(() => {
-    if (!editor || !entryId) return;
+    if (!editor || !entryId || !isCodexEntry) return;
     // テスト等で mock された Editor は on/off を持たないことがあるためガード。
     if (typeof editor.on !== "function") return;
     const handleFocus = () => {
@@ -111,7 +119,7 @@ export function CodexContentEditor({
     return () => {
       if (typeof editor.off === "function") editor.off("focus", handleFocus);
     };
-  }, [editor, entryId]);
+  }, [editor, entryId, isCodexEntry]);
 
   // externalContent（フェーズプレビュー）変化時にエディタ内容を更新
   useEffect(() => {

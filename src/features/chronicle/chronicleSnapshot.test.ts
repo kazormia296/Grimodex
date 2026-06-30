@@ -17,6 +17,7 @@ function mkEvent(p: Partial<EventRow> & { id: string }): EventRow {
     projectId: p.projectId ?? "p1",
     title: p.title ?? p.id,
     note: p.note ?? null,
+    detail: p.detail ?? null,
     ordinal: p.ordinal ?? "a0",
     primaryCodexId: p.primaryCodexId ?? null,
     locationCodexId: p.locationCodexId ?? null,

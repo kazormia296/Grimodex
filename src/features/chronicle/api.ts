@@ -37,6 +37,8 @@ export interface EventRow {
   projectId: string;
   title: string;
   note: string | null;
+  /** 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。null/空 = 未入力。 */
+  detail: string | null;
   ordinal: string;
   primaryCodexId: string | null;
   /** 未割当の整理用サブレーン id（null=既定の未割当レーン）。 */
@@ -83,6 +85,7 @@ export function normalizeEvent(raw: unknown): EventRow {
     projectId: s(r.projectId ?? r.project_id),
     title: s(r.title),
     note: nullableStr(r.note),
+    detail: nullableStr(r.detail),
     ordinal: s(r.ordinal, "a0"),
     primaryCodexId: nullableStr(r.primaryCodexId ?? r.primary_codex_id),
     laneGroup: nullableStr(r.laneGroup ?? r.lane_group),
@@ -119,10 +122,23 @@ export async function listEvents(projectId: string): Promise<EventRow[]> {
   return rows.map(normalizeEvent);
 }
 
+/** 単一の出来事を取得（fail-closed: projectId 一致のみ）。EditorPane の詳細ロード用。 */
+export async function getEvent(
+  projectId: string,
+  id: string,
+): Promise<EventRow | null> {
+  const [row] = await db
+    .select()
+    .from(events)
+    .where(and(eq(events.id, id), eq(events.projectId, projectId)));
+  return row ? normalizeEvent(row) : null;
+}
+
 export async function createEvent(data: {
   projectId: string;
   title?: string;
   note?: string | null;
+  detail?: string | null;
   ordinal?: string;
   primaryCodexId?: string | null;
   locationCodexId?: string | null;
@@ -158,6 +174,7 @@ export async function createEvent(data: {
       projectId: data.projectId,
       title: data.title ?? "",
       note: data.note ?? null,
+      detail: data.detail ?? null,
       ordinal,
       primaryCodexId: data.primaryCodexId ?? null,
       locationCodexId: data.locationCodexId ?? null,
@@ -190,6 +207,7 @@ export async function updateEvent(
       EventRow,
       | "title"
       | "note"
+      | "detail"
       | "ordinal"
       | "primaryCodexId"
       | "locationCodexId"

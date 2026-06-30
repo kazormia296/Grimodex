@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Clock, BookOpen, Files } from "lucide-react";
+import { Clock, BookOpen, Files, CalendarDays } from "lucide-react";
 import { tiptapContentFromDb } from "@/lib/prosemirror";
 import { useEditor } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
@@ -24,6 +24,8 @@ import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatP
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { getCodexEntry } from "@/features/codex/api";
+import { getEvent } from "@/features/chronicle/api";
+import { uiUpdateEvent } from "@/features/agent-writes/event";
 import type {
   CodexMentionPopupState,
   MentionItem,
@@ -213,6 +215,13 @@ export function EditorPane({
   const { t } = useTranslation();
   const isCodexMode = contentType === "codex";
   const isSnippetMode = contentType === "snippet";
+  const isChronicleEventMode = contentType === "chronicle_event";
+  // DB-backed entry rather than a tree scene/note. Codex/Snippet/Chronicle-event
+  // tabs share the "not a scene" behavior (no revisions, synopsis, beats, tree
+  // sync, scene-meta panel, authorship/foreshadow anchor loads, …).
+  const isEntryMode = isCodexMode || isSnippetMode || isChronicleEventMode;
+  // Chronicle event tabs: title is loaded on demand (events have no global store).
+  const [chronicleEventTitle, setChronicleEventTitle] = useState("");
   const prevSceneIdRef = useRef(nodeId);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   // Per-scene editor state: cursor position + scroll (session-only, no persistence).
@@ -243,7 +252,7 @@ export function EditorPane({
   const statusBadgeRef = useRef<HTMLButtonElement>(null);
 
   const activeNode = useTreeStore((s) =>
-    isCodexMode || isSnippetMode ? null : s.nodes.find((n) => n.id === nodeId),
+    isEntryMode ? null : s.nodes.find((n) => n.id === nodeId),
   );
   const activeCodexEntry = useCodexStore((s) =>
     isCodexMode ? s.entries.find((e) => e.id === nodeId) : null,
@@ -357,7 +366,7 @@ export function EditorPane({
   // Synopsis suggestion: track previous status to detect transitions (scene only)
   const prevStatusRef = useRef<SceneStatus | null>(activeStatus);
   useEffect(() => {
-    if (isCodexMode || isSnippetMode) return;
+    if (isEntryMode) return;
     const prev = prevStatusRef.current;
     prevStatusRef.current = activeStatus;
     const synopsis = useTreeStore
@@ -366,7 +375,7 @@ export function EditorPane({
     if (shouldPromptSynopsis(prev, activeStatus, synopsis)) {
       useSynopsisSuggestionStore.getState().propose(nodeId);
     }
-  }, [activeStatus, nodeId, isCodexMode, isSnippetMode]);
+  }, [activeStatus, nodeId, isEntryMode]);
 
   const coreSave = useCallback(async () => {
     const id = saveSceneIdRef.current;
@@ -402,6 +411,11 @@ export function EditorPane({
       const content = ed.getHTML();
       await updateSnippet(getCurrentProjectId(), id, { content });
       useSnippetStore.getState().update(id, { content });
+    } else if (ctx === "chronicle_event") {
+      // 出来事の詳細（ProseMirror JSON）。インスペクタと同じ tracked-write 経路
+      // （uiUpdateEvent）で保存し、undo/redo・鮮度カウンタを一貫させる。
+      const content = JSON.stringify(ed.getJSON());
+      await uiUpdateEvent({ eventId: id, detail: content });
     } else {
       // 本文保存の全副作用カスケードは persistSceneBody が正本。
       // ライブエディタもエージェントの off-screen 自動適用も同じ経路を通す。
@@ -490,7 +504,7 @@ export function EditorPane({
   const filterSource = useAttributionStore((s) => s.filterSource);
   const showAttribution = useAttributionStore((s) => s.showAttribution);
   const aiRatio = useTreeStore((s) =>
-    isCodexMode ? 0 : (s.aiRatios[nodeId] ?? 0),
+    isCodexMode || isChronicleEventMode ? 0 : (s.aiRatios[nodeId] ?? 0),
   );
   const togglePanel = useLayoutStore((s) => s.togglePanel);
 
@@ -675,7 +689,7 @@ export function EditorPane({
           // Auto-transition outline → draft on first keystroke in empty scene.
           // Only walk the doc text while wasEmptyRef is still true — once we've
           // seen any content, this branch is skipped permanently.
-          if (!isCodexMode && !isSnippetMode && wasEmptyRef.current) {
+          if (!isEntryMode && wasEmptyRef.current) {
             const count = getDocText(e.state.doc).length;
             if (count > 0) {
               wasEmptyRef.current = false;
@@ -729,7 +743,9 @@ export function EditorPane({
         // 逐次 capture。AI の insertText/delete は実 step で、これを飛ばすと後続
         // step の position がズレて replay (step.apply) が壊れる。AI insert/reject
         // は両方 step として残り「AI が X を提案→ユーザーが削除」と忠実に再現される。
-        if (sid && !isApplyingExternalUpdate.current) {
+        // Chronicle event detail は執筆タイムラプスの対象外（scene/codex/snippet の
+        // body ではないメタデータ）。誤った entityType で記録しないよう skip。
+        if (sid && !isApplyingExternalUpdate.current && !isChronicleEventMode) {
           try {
             const steps = transaction.steps.map((s) => s.toJSON());
             const domain = isCodexMode
@@ -745,7 +761,7 @@ export function EditorPane({
             recordChangeEvent({
               domain,
               opType: "doc.step",
-              sceneId: !isCodexMode && !isSnippetMode ? sid : null,
+              sceneId: !isEntryMode ? sid : null,
               entityType,
               entityId: sid,
               payload: { steps },
@@ -755,7 +771,7 @@ export function EditorPane({
             console.warn("[timelapse] editor capture failed", err);
           }
         }
-        if (isCodexMode || isSnippetMode) return;
+        if (isEntryMode) return;
         if (!sid) return;
         markStart("editor.onTransaction");
 
@@ -839,7 +855,8 @@ export function EditorPane({
         onFocus();
         // Trash bin の D&D 復元先として「最後にフォーカスしていたエディタ」を共有。
         // editor 参照も渡し、text-fragment 挿入時に直接 chain().insertContent を呼べるように。
-        if (nodeId) {
+        // Chronicle event detail は Trash Bin 復元ターゲット対象外（kind 不整合回避）。
+        if (nodeId && !isChronicleEventMode) {
           const kind = isSnippetMode
             ? "snippet"
             : isCodexMode
@@ -942,17 +959,17 @@ export function EditorPane({
   }, [mountedEditor, setGlobalEditor, groupIndex, phaseIdOverride]);
 
   // Linter — scene-only, primary group only.
-  const lintSceneId =
-    groupIndex === 0 && !isCodexMode && !isSnippetMode ? nodeId : null;
+  const lintSceneId = groupIndex === 0 && !isEntryMode ? nodeId : null;
   useLinter(mountedEditor, lintSceneId);
 
-  // ゴミ箱キャプチャ。Snippet タブは origin = null で skip、
+  // ゴミ箱キャプチャ。Snippet / Chronicle event タブは origin = null で skip、
   // Scene/Codex は対応する種別で記録する。
-  const trashOrigin: TrashOrigin | null = isSnippetMode
-    ? null
-    : nodeId
-      ? { kind: isCodexMode ? "codex" : "scene", id: nodeId }
-      : null;
+  const trashOrigin: TrashOrigin | null =
+    isSnippetMode || isChronicleEventMode
+      ? null
+      : nodeId
+        ? { kind: isCodexMode ? "codex" : "scene", id: nodeId }
+        : null;
   useTrashBinCapture(mountedEditor, trashOrigin);
 
   // 同シーン内の伏線ジャンプ要求を処理する。
@@ -1030,7 +1047,7 @@ export function EditorPane({
   // Ctrl+S / Ctrl+F / Ctrl+H / Ctrl+Shift+H key handlers
   const handleManualSave = useCallback(async () => {
     await flush();
-    if (isCodexMode || isSnippetMode) return; // Codex/snippet entries: no revision on manual save
+    if (isEntryMode) return; // Codex/snippet entries: no revision on manual save
     // 未ロード doc は手動保存リビジョンにも残さない (空 doc 汚染防止)
     if (loadFailedRef.current) return;
     const id = saveSceneIdRef.current;
@@ -1043,7 +1060,7 @@ export function EditorPane({
       content,
       snapshotType: "manual",
     });
-  }, [flush, isCodexMode, isSnippetMode]);
+  }, [flush, isEntryMode]);
 
   useEditorKeyboard({
     paneRef,
@@ -1079,7 +1096,9 @@ export function EditorPane({
   useGhostPreview(editor);
   useCodexHighlight(
     editor,
-    isSnippetMode
+    // Snippet / Chronicle-event は補助コンテンツなので Codex ハイライトは見せるが
+    // matchedEntryIds（シーン単位の CodexQuick が参照するグローバル集合）は更新しない。
+    isSnippetMode || isChronicleEventMode
       ? { skipMatchedIds: true }
       : isCodexMode
         ? { excludeEntryIds: [nodeId], skipMatchedIds: !isActiveGroup }
@@ -1096,8 +1115,7 @@ export function EditorPane({
   const focusModeHideBeats = editorSettings.focusModeHideBeats;
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
-  const isPanelVisible =
-    sceneMetaPanelOpen && !focusMode && !isCodexMode && !isSnippetMode;
+  const isPanelVisible = sceneMetaPanelOpen && !focusMode && !isEntryMode;
   const handleTogglePanel = useCallback(() => {
     useSettingsStore
       .getState()
@@ -1253,7 +1271,7 @@ export function EditorPane({
   // Subscribe to unplaced beats changes → mark dirty and schedule save,
   // and live-sync the Grid preview cache for immediate UI feedback.
   useEffect(() => {
-    if (!nodeId || isCodexMode || isSnippetMode) return;
+    if (!nodeId || isEntryMode) return;
     const unsubscribe = useUnplacedBeatsStore
       .getState()
       .subscribe(nodeId, () => {
@@ -1273,7 +1291,7 @@ export function EditorPane({
         });
       });
     return unsubscribe;
-  }, [nodeId, isCodexMode, isSnippetMode, schedule]);
+  }, [nodeId, isEntryMode, schedule]);
 
   // Load content when nodeId changes
   useEffect(() => {
@@ -1396,6 +1414,16 @@ export function EditorPane({
               emitUpdate: false,
             });
             markEnd("sceneLoad.setContent.snippet");
+          } else if (isChronicleEventMode) {
+            // 出来事の詳細（ProseMirror JSON）をロード。タイトルはリボン表示用。
+            const ev = await getEvent(getCurrentProjectId(), nodeId);
+            if (cancelled) return;
+            setChronicleEventTitle(ev?.title ?? "");
+            markStart("sceneLoad.setContent.chronicle");
+            editor!.commands.setContent(tiptapContentFromDb(ev?.detail), {
+              emitUpdate: false,
+            });
+            markEnd("sceneLoad.setContent.chronicle");
           } else {
             // Load scene/note content + unplaced beats in one query
             markStart("sceneLoad.loadSceneFull");
@@ -1459,7 +1487,7 @@ export function EditorPane({
           setIsDirty(false);
           wasEmptyRef.current = count === 0;
 
-          if (!isCodexMode && !isSnippetMode) {
+          if (!isEntryMode) {
             // 帰属/伏線/疑似コメントは互いにデータ依存の無い独立リード。直列 await
             // だと各 IPC 往復 + drizzle warmed microtask(~150ms/件)が積み上がるので
             // 並列化して往復レイテンシを重ねる（所見#4）。SQLite 実行自体は単一
@@ -1699,6 +1727,7 @@ export function EditorPane({
     cancel,
     isCodexMode,
     isSnippetMode,
+    isChronicleEventMode,
     overridePhaseId,
     groupIndex,
     externalReloadNonce,
@@ -1730,14 +1759,15 @@ export function EditorPane({
       );
   }, [nodeId]);
 
-  const isNote =
-    !isCodexMode && !isSnippetMode && activeNode?.nodeType === "note";
+  const isNote = !isEntryMode && activeNode?.nodeType === "note";
 
   const editorTitle = isCodexMode
     ? (activeCodexEntry?.name ?? "")
     : isSnippetMode
       ? (activeSnippetEntry?.title ?? "")
-      : (activeNode?.title ?? "");
+      : isChronicleEventMode
+        ? chronicleEventTitle
+        : (activeNode?.title ?? "");
 
   // Phase label for display in banner and title (null = no active phase / base content)
   const loadedPhaseLabel =
@@ -1757,6 +1787,9 @@ export function EditorPane({
         updateCodexEntryStore(nodeId, { name: trimmed }).catch(() => {});
       } else if (isSnippetMode) {
         updateSnippetEntryStore(nodeId, { title: trimmed }).catch(() => {});
+      } else if (isChronicleEventMode) {
+        setChronicleEventTitle(trimmed);
+        uiUpdateEvent({ eventId: nodeId, title: trimmed }).catch(() => {});
       } else {
         updateNodeTitle(nodeId, trimmed).catch(() => {});
       }
@@ -1801,13 +1834,11 @@ export function EditorPane({
         actionsRef={toolbarActionsRef}
         panelOpen={sceneMetaPanelOpen}
         onTogglePanel={handleTogglePanel}
-        sceneId={isCodexMode || isSnippetMode ? undefined : nodeId}
+        sceneId={isEntryMode ? undefined : nodeId}
         nodeType={activeNode?.nodeType}
       />
       <LicenseRestrictionBanner />
-      {isFileBacked && !isCodexMode && !isSnippetMode && (
-        <FileBackedSceneBanner />
-      )}
+      {isFileBacked && !isEntryMode && <FileBackedSceneBanner />}
       <ExternalEditConflictBanner nodeId={nodeId} />
       {isNote && (
         <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
@@ -1846,6 +1877,17 @@ export function EditorPane({
             <span className="text-emerald-500/60">
               — {activeSnippetEntry.title}
             </span>
+          )}
+        </div>
+      )}
+      {isChronicleEventMode && (
+        <div className="flex items-center gap-1.5 border-b border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs text-sky-600 dark:text-sky-400">
+          <span className="flex items-center gap-1 font-medium">
+            <CalendarDays className="h-3 w-3" aria-hidden />
+            {t("editor.ribbon.chronicleEditing")}
+          </span>
+          {chronicleEventTitle && (
+            <span className="text-sky-500/60">— {chronicleEventTitle}</span>
           )}
         </div>
       )}
@@ -2015,7 +2057,7 @@ export function EditorPane({
           <EditorStatsFooter
             editor={editor}
             getSyncSceneId={getStatsSceneId}
-            syncToTree={!isCodexMode && !isSnippetMode}
+            syncToTree={!isEntryMode}
             isLoading={isSceneContentLoading}
           />
           {isSaving ? (

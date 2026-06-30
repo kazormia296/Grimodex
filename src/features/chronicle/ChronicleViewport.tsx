@@ -469,10 +469,19 @@ export function ChronicleViewport({
 
   // 空白ダブルクリック=その位置に新規作成。
   const onTrackDoubleClick = (e: React.MouseEvent) => {
+    // 出来事上のダブルクリック: インスペクタ（サイドペイン）を開いて編集する。
+    // onEditEvent が showInspector を ON にするので、サイドペインが畳まれていても開く。
+    // ロック中でも閲覧/編集のため開けるよう、新規作成(onCreateAt)の判定より前に処理する。
+    const eventEl = (e.target as HTMLElement).closest("[data-event-id]");
+    if (eventEl) {
+      const rawId = eventEl.getAttribute("data-event-id");
+      // レーンは複製マーカー(`id::codex`)を含むため実 id へ正規化。
+      if (rawId && onEditEvent) onEditEvent(realEventId(rawId));
+      return;
+    }
     const cb = cbRef.current;
     const el = trackElRef.current;
     if (cb.locked || !cb.onCreateAt || !el) return;
-    if ((e.target as HTMLElement).closest("[data-event-id]")) return;
     const rect = el.getBoundingClientRect();
     const day = cb.hasCalendarAxis ? snappedDayAt(e.clientX, rect) : null;
     cb.onCreateAt(day, laneCodexAt(e.clientY, rect));
