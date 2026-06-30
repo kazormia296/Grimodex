@@ -188,6 +188,9 @@ importers:
       lucide-react:
         specifier: ^1.18.0
         version: 1.18.0(react@19.2.6)
+      lunar-typescript:
+        specifier: ^1.8.6
+        version: 1.8.6
       matter-js:
         specifier: ^0.20.0
         version: 0.20.0
@@ -3985,6 +3988,9 @@ packages:
     resolution: {integrity: sha512-LZDb7H/0YfM+RJncD0hDQRCAu+vSGODqpe35TuVI8EuXaRjkczbsx7p8dY4J87F/MUSj6bpYqeI8nw8qXaAdmA==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  lunar-typescript@1.8.6:
+    resolution: {integrity: sha512-5Eo4T/cnuXfrgO4k5LCpOGHIUOuz5hCF/IfNv0T29WY2shR36Hiz+ecN9WjnUuxUKhql9gbOkPaQoqLFKtPRNA==}
 
   lz-string@1.5.0:
     resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
@@ -8493,6 +8499,8 @@ snapshots:
   lucide-react@1.18.0(react@19.2.6):
     dependencies:
       react: 19.2.6
+
+  lunar-typescript@1.8.6: {}
 
   lz-string@1.5.0: {}
 

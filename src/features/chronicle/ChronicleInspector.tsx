@@ -25,6 +25,7 @@ import {
 import { laneColorFor } from "./laneColor";
 import { ChronicleDatePicker } from "./ChronicleDatePicker";
 import { CodexEntryPicker } from "./CodexEntryPicker";
+import { lunarInfoForDay } from "./chronicleLunar";
 import {
   Popover,
   PopoverTrigger,
@@ -544,6 +545,41 @@ export function ChronicleInspector({
                 )}
               </div>
             </div>
+
+            {/* 旧暦・六曜・節気（実暦12ヶ月暦のみ。中国農暦 UTC+8 ベース） */}
+            {(() => {
+              const lunar =
+                event.startGranularity !== "none" && event.startTime != null
+                  ? lunarInfoForDay(event.startTime, calendar)
+                  : null;
+              if (!lunar) return null;
+              return (
+                <div
+                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground"
+                  title={t(
+                    "chronicle.lunarHint",
+                    "中国農暦(UTC+8)ベース。新月・節気が深夜にかかる境界日などで日本の旧暦・六曜と数日ずれることがあります。",
+                  )}
+                >
+                  <span>
+                    {t("chronicle.lunarLabel", "旧暦")}{" "}
+                    {lunar.isLeapMonth ? t("chronicle.lunarLeap", "閏") : ""}
+                    {lunar.month}
+                    {t("chronicle.lunarMonthUnit", "月")}
+                    {lunar.day}
+                    {t("chronicle.lunarDayUnit", "日")}
+                  </span>
+                  <span>
+                    ・ {t("chronicle.rokuyo", "六曜")}: {lunar.rokuyo}
+                  </span>
+                  {lunar.solarTerm && (
+                    <span>
+                      ・ {t("chronicle.solarTerm", "節気")}: {lunar.solarTerm}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* 原因 */}
             {(causeIds.length > 0 || onAddCause) && (
