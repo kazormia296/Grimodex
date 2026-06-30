@@ -73,6 +73,10 @@ export function ChronicleTimeDial({
   const { t } = useTranslation();
   const reduced = useReducedMotion();
   const [mode, setMode] = useState<"hour" | "minute">("hour");
+  // 手入力中のフィールドと文字列（未編集時は null＝現在値を表示）。
+  const [edit, setEdit] = useState<{ f: "hour" | "minute"; v: string } | null>(
+    null,
+  );
   const ref = useRef<HTMLDivElement | null>(null);
   const dragging = useRef(false);
 
@@ -82,9 +86,30 @@ export function ChronicleTimeDial({
     const r = el.getBoundingClientRect();
     const dx = e.clientX - r.left - CENTER;
     const dy = e.clientY - r.top - CENTER;
+    setEdit(null); // 盤面操作で手入力状態を解除
     if (mode === "hour") onHour(hourFromPoint(dx, dy));
     else onMinute(minuteFromPoint(dx, dy));
   };
+
+  // 手入力（数値）: フォーカスで編集開始＋モード切替、確定(blur/Enter)で clamp して反映。
+  const startEdit = (f: "hour" | "minute") => {
+    setMode(f);
+    setEdit({ f, v: String(f === "hour" ? hour : minute) });
+  };
+  const typeEdit = (f: "hour" | "minute", raw: string) =>
+    setEdit({ f, v: raw.replace(/\D/g, "").slice(0, 2) });
+  const commitEdit = (f: "hour" | "minute") => {
+    if (edit && edit.f === f && edit.v !== "") {
+      const n = parseInt(edit.v, 10);
+      if (!Number.isNaN(n)) {
+        if (f === "hour") onHour(Math.max(0, Math.min(23, n)));
+        else onMinute(Math.max(0, Math.min(59, n)));
+      }
+    }
+    setEdit(null);
+  };
+  const hhText = edit?.f === "hour" ? edit.v : pad2(hour);
+  const mmText = edit?.f === "minute" ? edit.v : pad2(minute);
   const onDown = (e: RPointerEvent) => {
     dragging.current = true;
     ref.current?.setPointerCapture?.(e.pointerId);
@@ -115,14 +140,15 @@ export function ChronicleTimeDial({
     : `transform ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}, width ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}, left ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}, top ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`;
 
   const readout = (active: boolean): CSSProperties => ({
-    minWidth: 34,
+    width: 44,
     borderRadius: 7,
-    padding: "2px 6px",
+    padding: "2px 4px",
     fontSize: 20,
     fontVariantNumeric: "tabular-nums",
     fontWeight: 600,
-    cursor: "pointer",
-    border: "1px solid var(--border)",
+    textAlign: "center",
+    outline: "none",
+    border: `1px solid ${active ? "var(--primary)" : "var(--border)"}`,
     background: active
       ? "color-mix(in oklch, var(--primary) 14%, transparent)"
       : "var(--card)",
@@ -169,27 +195,41 @@ export function ChronicleTimeDial({
   return (
     <div>
       <div className="mb-2 flex items-center justify-center gap-1">
-        <button
-          type="button"
+        <input
+          type="text"
+          inputMode="numeric"
           data-testid="chronicle-dial-hh"
-          onClick={() => setMode("hour")}
-          aria-pressed={mode === "hour"}
+          value={hhText}
+          onFocus={(e) => {
+            startEdit("hour");
+            e.currentTarget.select?.();
+          }}
+          onChange={(e) => typeEdit("hour", e.target.value)}
+          onBlur={() => commitEdit("hour")}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
           aria-label={t("chronicle.dialHour", "時")}
           style={readout(mode === "hour")}
-        >
-          {pad2(hour)}
-        </button>
+        />
         <span className="text-lg font-semibold text-muted-foreground">:</span>
-        <button
-          type="button"
+        <input
+          type="text"
+          inputMode="numeric"
           data-testid="chronicle-dial-mm"
-          onClick={() => setMode("minute")}
-          aria-pressed={mode === "minute"}
+          value={mmText}
+          onFocus={(e) => {
+            startEdit("minute");
+            e.currentTarget.select?.();
+          }}
+          onChange={(e) => typeEdit("minute", e.target.value)}
+          onBlur={() => commitEdit("minute")}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
           aria-label={t("chronicle.dialMinute", "分")}
           style={readout(mode === "minute")}
-        >
-          {pad2(minute)}
-        </button>
+        />
       </div>
 
       <div
@@ -222,8 +262,10 @@ export function ChronicleTimeDial({
           cursor: "pointer",
         }}
       >
-        {/* 針 */}
+        {/* 針（key=mode で時↔分の切替時は再マウント＝アニメさせず瞬間移動。
+            同一モード内の値変更時のみ transition で滑らかに動かす） */}
         <div
+          key={`hand-${mode}`}
           style={{
             position: "absolute",
             left: CENTER,
@@ -239,6 +281,7 @@ export function ChronicleTimeDial({
         />
         {/* 選択ノブ */}
         <div
+          key={`knob-${mode}`}
           style={{
             position: "absolute",
             left: end.x - 15,

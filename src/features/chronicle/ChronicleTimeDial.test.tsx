@@ -46,10 +46,32 @@ describe("ChronicleTimeDial", () => {
     return { ...r, onHour, onMinute };
   };
 
-  it("デジタル表示に時:分（03:15）", () => {
+  it("デジタル入力欄に時:分（03:15）", () => {
     const { getByTestId } = setup();
-    expect(getByTestId("chronicle-dial-hh").textContent).toBe("03");
-    expect(getByTestId("chronicle-dial-mm").textContent).toBe("15");
+    expect((getByTestId("chronicle-dial-hh") as HTMLInputElement).value).toBe(
+      "03",
+    );
+    expect((getByTestId("chronicle-dial-mm") as HTMLInputElement).value).toBe(
+      "15",
+    );
+  });
+
+  it("時の手入力（数値）→ blur で clamp して onHour", () => {
+    const { getByTestId, onHour } = setup();
+    const hh = getByTestId("chronicle-dial-hh");
+    fireEvent.focus(hh);
+    fireEvent.change(hh, { target: { value: "21" } });
+    fireEvent.blur(hh);
+    expect(onHour).toHaveBeenLastCalledWith(21);
+  });
+
+  it("分の手入力は 0..59 へ clamp（99→59）", () => {
+    const { getByTestId, onMinute } = setup();
+    const mm = getByTestId("chronicle-dial-mm");
+    fireEvent.focus(mm);
+    fireEvent.change(mm, { target: { value: "99" } });
+    fireEvent.blur(mm);
+    expect(onMinute).toHaveBeenLastCalledWith(59);
   });
 
   it("盤面クリックで onHour（右・外周→3時）", () => {
@@ -76,9 +98,9 @@ describe("ChronicleTimeDial", () => {
     expect(onHour).toHaveBeenCalledWith(0);
   });
 
-  it("分モードへ切替→盤面クリックで onMinute（上→0分）", () => {
+  it("分入力欄フォーカスで分モードへ→盤面クリックで onMinute（上→0分）", () => {
     const { getByTestId, onMinute } = setup();
-    fireEvent.click(getByTestId("chronicle-dial-mm")); // MM 表示クリックで分モード
+    fireEvent.focus(getByTestId("chronicle-dial-mm")); // MM 入力欄フォーカスで分モード
     fireEvent.pointerDown(getByTestId("chronicle-time-dial"), {
       clientX: CENTER,
       clientY: CENTER - R_OUT,
