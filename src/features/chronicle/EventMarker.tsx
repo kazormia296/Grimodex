@@ -5,6 +5,7 @@ import type {
 } from "react";
 import { useTranslation } from "react-i18next";
 import type { EventKind, EventPrecision } from "@/db/schema";
+import { CSS_DURATIONS, CSS_EASINGS } from "@/lib/animation";
 import { laneColorFor } from "./laneColor";
 
 /** マーカー描画に必要な出来事の表示情報。 */
@@ -54,6 +55,20 @@ const ACCENT = "var(--primary)";
 
 const mix = (c: string, pct: number, to: string) =>
   `color-mix(in oklch, ${c} ${pct}%, ${to})`;
+
+/**
+ * 期間（interval）の両端にホバー時だけ出すリサイズグリップ（縦の小バー）。
+ * 既定は opacity-0 で、親ボタンの group-hover で淡くフェードイン（duration/easing は
+ * animation.ts の正本から）。pointer-events は親の data-resize 帯に委ねる（none）。
+ */
+const RESIZE_GRIP: CSSProperties = {
+  width: 3,
+  height: "58%",
+  borderRadius: 2,
+  background: mix("var(--foreground)", 42, "transparent"),
+  pointerEvents: "none",
+  transition: `opacity ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
+};
 
 /**
  * 1 出来事を DOM トークンとして描く（point=ピル / interval=帯）。
@@ -265,6 +280,11 @@ export function EventMarker({
         ? { label: t("chronicle.precisionShort.unknown", "?"), color: AMBER }
         : null;
 
+  // ホバー＝open hand（grab）/ ドラッグ追従中＝grab hand（grabbing）。ロック時は cursor=default。
+  const effectiveCursor: CSSProperties["cursor"] = dragOffset
+    ? "grabbing"
+    : cursor;
+
   return (
     <button
       type="button"
@@ -272,9 +292,10 @@ export function EventMarker({
       data-selected={selected || undefined}
       onClick={onSelect}
       title={event.title || t("chronicle.untitled", "無題の出来事")}
+      className="group"
       style={{
         ...container,
-        cursor,
+        cursor: effectiveCursor,
         font: "inherit",
         color: "var(--foreground)",
         textAlign: "left",
@@ -292,8 +313,18 @@ export function EventMarker({
               height: "100%",
               cursor: "ew-resize",
               zIndex: 2,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
             }}
-          />
+          >
+            <span
+              aria-hidden
+              data-testid="resize-grip"
+              className="opacity-0 group-hover:opacity-100"
+              style={RESIZE_GRIP}
+            />
+          </span>
           <span
             data-resize="end"
             style={{
@@ -304,8 +335,18 @@ export function EventMarker({
               height: "100%",
               cursor: "ew-resize",
               zIndex: 2,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
             }}
-          />
+          >
+            <span
+              aria-hidden
+              data-testid="resize-grip"
+              className="opacity-0 group-hover:opacity-100"
+              style={RESIZE_GRIP}
+            />
+          </span>
         </>
       )}
       {edgeHandle && (

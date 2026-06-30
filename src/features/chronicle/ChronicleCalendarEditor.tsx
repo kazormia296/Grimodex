@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Trash2, X, CalendarRange } from "lucide-react";
+import { Plus, Trash2, X, RotateCcw } from "lucide-react";
 import {
   DEFAULT_SEASON_BOUNDARIES,
   GREGORIAN_MONTH_DAYS,
@@ -48,6 +48,51 @@ const GREGORIAN_WEEKDAYS: Record<"ja" | "en", string[]> = {
   en: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
 };
 
+/** エディタの内部フォーム状態（weekdays は表示用のカンマ区切り文字列）。 */
+interface CalendarFormState {
+  daysPerYear: number;
+  startYear: number;
+  months: MonthDef[];
+  weekdays: string;
+  seasons: SeasonBoundary[];
+  leap: LeapRule;
+  ageReckoning: AgeReckoning;
+}
+
+/**
+ * 現実準拠グレゴリオ暦（12ヶ月・閏2月・7曜・365日・春夏秋冬4季）の既定フォーム状態。
+ * 新規作成時の初期値と「リセット」ボタンの両方で使う。
+ */
+function gregorianFormState(lang: "ja" | "en"): CalendarFormState {
+  return {
+    daysPerYear: 365,
+    startYear: 0,
+    months: GREGORIAN_MONTH_DAYS.map((days, i) => ({
+      name: GREGORIAN_MONTH_NAMES[lang][i],
+      days,
+    })),
+    weekdays: GREGORIAN_WEEKDAYS[lang].join(", "),
+    seasons: DEFAULT_SEASON_BOUNDARIES,
+    leap: { ...GREGORIAN_LEAP },
+    ageReckoning: "full",
+  };
+}
+
+/** 既存暦をフォーム状態へ展開（初期値）。未指定フィールドは素朴な既定へ。 */
+function formStateFromCalendar(cal: ChronicleCalendar): CalendarFormState {
+  return {
+    daysPerYear: cal.daysPerYear,
+    startYear: cal.startYear ?? 0,
+    months: cal.months ?? [],
+    weekdays: (cal.weekdayNames ?? []).join(", "),
+    seasons: cal.seasonBoundaries.length
+      ? cal.seasonBoundaries
+      : DEFAULT_SEASON_BOUNDARIES,
+    leap: cal.leap ?? { kind: "none" },
+    ageReckoning: cal.ageReckoning ?? "full",
+  };
+}
+
 export interface ChronicleCalendarEditorProps {
   initial: ChronicleCalendar | null;
   onSave: (cal: ChronicleCalendar) => void;
@@ -65,34 +110,30 @@ export function ChronicleCalendarEditor({
 }: ChronicleCalendarEditorProps) {
   const { t, i18n } = useTranslation();
   const lang: "ja" | "en" = i18n.language?.startsWith("en") ? "en" : "ja";
-  const [daysPerYear, setDaysPerYear] = useState(initial?.daysPerYear ?? 360);
-  const [startYear, setStartYear] = useState(initial?.startYear ?? 0);
-  const [months, setMonths] = useState<MonthDef[]>(initial?.months ?? []);
-  const [weekdays, setWeekdays] = useState<string>(
-    (initial?.weekdayNames ?? []).join(", "),
-  );
-  const [seasons, setSeasons] = useState<SeasonBoundary[]>(
-    initial && initial.seasonBoundaries.length
-      ? initial.seasonBoundaries
-      : DEFAULT_SEASON_BOUNDARIES,
-  );
-  const [leap, setLeap] = useState<LeapRule>(initial?.leap ?? { kind: "none" });
+  // 既存暦があればそれを、無ければグレゴリオ暦を既定とする（新規作成のデフォルト）。
+  const init = initial
+    ? formStateFromCalendar(initial)
+    : gregorianFormState(lang);
+  const [daysPerYear, setDaysPerYear] = useState(init.daysPerYear);
+  const [startYear, setStartYear] = useState(init.startYear);
+  const [months, setMonths] = useState<MonthDef[]>(init.months);
+  const [weekdays, setWeekdays] = useState<string>(init.weekdays);
+  const [seasons, setSeasons] = useState<SeasonBoundary[]>(init.seasons);
+  const [leap, setLeap] = useState<LeapRule>(init.leap);
   const [ageReckoning, setAgeReckoning] = useState<AgeReckoning>(
-    initial?.ageReckoning ?? "full",
+    init.ageReckoning,
   );
 
-  // 現実準拠グレゴリオ暦プリセット（12ヶ月・閏2月・7曜・365日）を一括適用。
-  const applyGregorian = () => {
-    setMonths(
-      GREGORIAN_MONTH_DAYS.map((days, i) => ({
-        name: GREGORIAN_MONTH_NAMES[lang][i],
-        days,
-      })),
-    );
-    setWeekdays(GREGORIAN_WEEKDAYS[lang].join(", "));
-    setDaysPerYear(365);
-    setLeap(GREGORIAN_LEAP);
-    setSeasons((s) => (s.length ? s : DEFAULT_SEASON_BOUNDARIES));
+  // 全フィールドをグレゴリオ暦の既定値へ戻す（リセット）。
+  const resetToDefault = () => {
+    const g = gregorianFormState(lang);
+    setDaysPerYear(g.daysPerYear);
+    setStartYear(g.startYear);
+    setMonths(g.months);
+    setWeekdays(g.weekdays);
+    setSeasons(g.seasons);
+    setLeap(g.leap);
+    setAgeReckoning(g.ageReckoning);
   };
 
   const updateSeason = (i: number, patch: Partial<SeasonBoundary>) =>
@@ -162,15 +203,15 @@ export function ChronicleCalendarEditor({
         </span>
         <button
           type="button"
-          onClick={applyGregorian}
+          onClick={resetToDefault}
           className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
           title={t(
-            "chronicle.gregorianHint",
-            "現実準拠の暦（12ヶ月・閏2月・7曜・365日）を適用",
+            "chronicle.resetCalendarHint",
+            "暦をグレゴリオ暦の既定値（12ヶ月・閏2月・7曜・365日）に戻す",
           )}
         >
-          <CalendarRange className="size-3.5" />
-          {t("chronicle.gregorianPreset", "グレゴリオ暦")}
+          <RotateCcw className="size-3.5" />
+          {t("chronicle.resetCalendar", "リセット")}
         </button>
         <button
           type="button"

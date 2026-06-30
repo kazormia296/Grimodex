@@ -13,6 +13,7 @@ import {
   GitBranch,
   Lock,
   LockOpen,
+  List,
 } from "lucide-react";
 import type { LaneDensity } from "./chronicleLayout";
 import type { ChronicleCalendar } from "./chronicleTime";
@@ -21,6 +22,7 @@ import { ChronicleCalendarPopover } from "./ChronicleCalendarPopover";
 export interface ChronicleToolbarProps {
   issueCount: number;
   showLegend: boolean;
+  showEventList: boolean;
   showEdges: boolean;
   tieMode: boolean;
   density: LaneDensity;
@@ -39,6 +41,7 @@ export interface ChronicleToolbarProps {
   onZoomOut: () => void;
   onFit: () => void;
   onToggleLegend: () => void;
+  onToggleEventList: () => void;
   onSetDensity: (d: LaneDensity) => void;
   onToggleLabels: () => void;
 }
@@ -136,6 +139,16 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
         </button>
 
         <div className="ms-auto flex items-center gap-1">
+          <button
+            type="button"
+            onClick={props.onToggleEventList}
+            className={toggleCls(props.showEventList)}
+            title={t("chronicle.eventList", "イベント一覧")}
+          >
+            <List className="size-3.5" />{" "}
+            {t("chronicle.eventListShort", "一覧")}
+          </button>
+          <div className="mx-0.5 h-5 w-px bg-border" />
           {props.issueCount > 0 && (
             <button
               type="button"

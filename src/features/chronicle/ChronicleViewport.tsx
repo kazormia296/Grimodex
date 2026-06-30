@@ -351,6 +351,12 @@ export function ChronicleViewport({
     if (markerEl && eventId) {
       if (!cb.locked && cb.onMoveEvent) {
         const startLaneCodex = laneCodexAt(startY, rect);
+        // 挿入位置はカーソルではなくイベントの先端（開始＝centers.cx）を基準にする。
+        // バー中ほどを掴むとカーソルへ開始が飛びドラッグ中とドロップ後がズレる問題への対策。
+        // grabOffsetX=掴んだ点と先端の距離。マーカー追従(dx)と整合し、先端が吸着先になる。
+        const startAnchorX = layoutRef.current.pack.centers.get(eventId)?.cx;
+        const grabOffsetX =
+          startAnchorX != null ? startX - rect.left - startAnchorX : 0;
         bindDrag(
           (ev) => {
             if (
@@ -366,7 +372,10 @@ export function ChronicleViewport({
               setDragPreview({ id: eventId, dx: ev.clientX - startX, dy });
               setGhostX(
                 cb.hasCalendarAxis
-                  ? dayToX(viewRef.current, snappedDayAt(ev.clientX, rect))
+                  ? dayToX(
+                      viewRef.current,
+                      snappedDayAt(ev.clientX - grabOffsetX, rect),
+                    )
                   : ev.clientX - rect.left,
               );
             }
@@ -378,7 +387,7 @@ export function ChronicleViewport({
             // 因果エッジは選択時の末尾●ハンドル D&D のみ）。
             if (draggedRef.current && cb.onMoveEvent) {
               const newDay = cb.hasCalendarAxis
-                ? snappedDayAt(ev.clientX, rect)
+                ? snappedDayAt(ev.clientX - grabOffsetX, rect)
                 : null;
               // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
               const newCodex =
@@ -527,7 +536,11 @@ export function ChronicleViewport({
           onContextMenu={onTrackContextMenu}
           className="relative flex-1 select-none"
           // minHeight=コンテンツ高、flex stretch で残り高さまで伸ばしレーン外も操作可能に。
-          style={{ minHeight: contentHeight }}
+          // 本体ドラッグ追従中（dragPreview）はトラック全体を grab hand（grabbing）に。
+          style={{
+            minHeight: contentHeight,
+            cursor: dragPreview ? "grabbing" : undefined,
+          }}
           role="application"
           aria-label={t("chronicle.viewportLabel", "作中年表")}
         >
@@ -683,7 +696,7 @@ export function ChronicleViewport({
                   related={relatedIds.has(realId)}
                   labelsOn={labelsOn}
                   resizable={!locked && render.isInterval}
-                  cursor={locked ? "default" : "pointer"}
+                  cursor={locked ? "default" : "grab"}
                   edgeHandle={
                     // 因果エッジハンドルは単一選択時のプライマリのみ。
                     selectedEventId === realId &&

@@ -59,6 +59,10 @@ import type { MarkerEvent } from "./EventMarker";
 import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleToolbar } from "./ChronicleToolbar";
 import { ChronicleInspector } from "./ChronicleInspector";
+import {
+  ChronicleEventList,
+  type ChronicleEventListItem,
+} from "./ChronicleEventList";
 import { CodexEntryPicker } from "./CodexEntryPicker";
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { ChronicleTieView } from "./ChronicleTieView";
@@ -145,6 +149,7 @@ export function ChroniclePanel() {
   const [density, setDensity] = useState<LaneDensity>("standard");
   const [labelsOn, setLabelsOn] = useState(true);
   const [showLegend, setShowLegend] = useState(true);
+  const [showEventList, setShowEventList] = useState(false);
   const [showEdges, setShowEdges] = useState(true);
   const [tieMode, setTieMode] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
@@ -553,6 +558,56 @@ export function ChroniclePanel() {
       });
     }
   }, [issueIds, eff, trackW, view, applyView, setSelectedEventId]);
+
+  // 一覧クリック＝ナビゲーション（選択＋当該イベントをビュー中央へ寄せる）。
+  // 暦軸/並び順どちらのモードでも ed.startDay へ寄せる（handleGotoConflict と同じ挙動）。
+  const handleGotoEvent = useCallback(
+    (id: string) => {
+      setSelectedEventId(id);
+      const ed = eff.byId.get(id);
+      if (ed && view.pxPerDay > 0 && trackW > 0) {
+        applyView({
+          pxPerDay: view.pxPerDay,
+          viewStartDay: ed.startDay - trackW / 2 / view.pxPerDay,
+        });
+      }
+    },
+    [eff, view, trackW, applyView, setSelectedEventId],
+  );
+
+  // サイドペイン一覧の表示用データ（純データに畳んでコンポーネントへ渡す）。
+  const laneNameById = useMemo(
+    () => new Map(laneOptions.map((o) => [o.id, o.name])),
+    [laneOptions],
+  );
+  const eventListItems = useMemo<ChronicleEventListItem[]>(
+    () =>
+      events.map((e) => ({
+        id: e.id,
+        title: e.title,
+        kind: e.kind,
+        precision: e.precision,
+        secret: e.secret,
+        isInterval: e.endTime != null,
+        primaryCodexId: e.primaryCodexId,
+        laneName: e.primaryCodexId
+          ? (laneNameById.get(e.primaryCodexId) ?? null)
+          : null,
+        dateLabel:
+          eff.hasCalendarAxis && e.startGranularity !== "none"
+            ? formatChronicleDate(
+                e.startTime,
+                e.startMinute,
+                e.startGranularity,
+                cal,
+                lang,
+              )
+            : null,
+        startDay: eff.byId.get(e.id)?.startDay ?? null,
+        hasIssue: issueIds.has(e.id),
+      })),
+    [events, eff, laneNameById, cal, lang, issueIds],
+  );
 
   // ── CRUD ──────────────────────────────────────────────────
   const [creating, setCreating] = useState(false);
@@ -1099,6 +1154,7 @@ export function ChroniclePanel() {
       <ChronicleToolbar
         issueCount={issueCount}
         showLegend={showLegend}
+        showEventList={showEventList}
         showEdges={showEdges}
         tieMode={tieMode}
         density={density}
@@ -1117,56 +1173,68 @@ export function ChroniclePanel() {
         onZoomOut={() => handleZoom(1 / 1.5)}
         onFit={handleFit}
         onToggleLegend={() => setShowLegend((s) => !s)}
+        onToggleEventList={() => setShowEventList((s) => !s)}
         onSetDensity={setDensity}
         onToggleLabels={() => setLabelsOn((s) => !s)}
       />
 
-      {n === 0 ? (
-        <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
-          {t(
-            "chronicle.empty",
-            "出来事がまだありません。「追加」で作成できます。",
-          )}
-        </div>
-      ) : tieMode && tieView ? (
-        <div className="flex-1 overflow-auto bg-card">
-          <ChronicleTieView
-            model={tieView.model}
-            width={tieView.width}
-            height={180}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {showEventList && (
+          <ChronicleEventList
+            items={eventListItems}
+            selectedId={selectedEventId}
+            laneOptions={laneOptions}
+            onSelect={handleGotoEvent}
+            onClose={() => setShowEventList(false)}
           />
-        </div>
-      ) : (
-        <ChronicleViewport
-          view={view}
-          onViewChange={applyView}
-          onMeasureTrack={setTrackW}
-          layout={layout}
-          eventsById={eventsById}
-          selectedEventId={selectedEventId}
-          selectedIds={selectedIdSet}
-          activeLaneKey={activeLaneKey}
-          conflictIds={issueIds}
-          relatedIds={relatedIds}
-          showEdges={showEdges}
-          labelsOn={labelsOn}
-          onSelectEvent={handleSelectEvent}
-          laneOptions={laneOptions}
-          locked={locked}
-          onAssignGroup={handleAssignGroup}
-          onAddLane={handleAddLane}
-          onHideGroup={handleHideGroup}
-          onReorderLanes={handleReorderLanes}
-          selectedDay={selectedDay}
-          hasCalendarAxis={eff.hasCalendarAxis}
-          onMoveEvent={handleMoveEvent}
-          onResizeEvent={handleResizeEvent}
-          onCreateEdge={handleCreateEdge}
-          onCreateAt={handleCreateAt}
-          onSelectPosition={handleSelectPosition}
-          onDeleteEvent={handleDeleteById}
-        />
-      )}
+        )}
+        {n === 0 ? (
+          <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
+            {t(
+              "chronicle.empty",
+              "出来事がまだありません。「追加」で作成できます。",
+            )}
+          </div>
+        ) : tieMode && tieView ? (
+          <div className="flex-1 overflow-auto bg-card">
+            <ChronicleTieView
+              model={tieView.model}
+              width={tieView.width}
+              height={180}
+            />
+          </div>
+        ) : (
+          <ChronicleViewport
+            view={view}
+            onViewChange={applyView}
+            onMeasureTrack={setTrackW}
+            layout={layout}
+            eventsById={eventsById}
+            selectedEventId={selectedEventId}
+            selectedIds={selectedIdSet}
+            activeLaneKey={activeLaneKey}
+            conflictIds={issueIds}
+            relatedIds={relatedIds}
+            showEdges={showEdges}
+            labelsOn={labelsOn}
+            onSelectEvent={handleSelectEvent}
+            laneOptions={laneOptions}
+            locked={locked}
+            onAssignGroup={handleAssignGroup}
+            onAddLane={handleAddLane}
+            onHideGroup={handleHideGroup}
+            onReorderLanes={handleReorderLanes}
+            selectedDay={selectedDay}
+            hasCalendarAxis={eff.hasCalendarAxis}
+            onMoveEvent={handleMoveEvent}
+            onResizeEvent={handleResizeEvent}
+            onCreateEdge={handleCreateEdge}
+            onCreateAt={handleCreateAt}
+            onSelectPosition={handleSelectPosition}
+            onDeleteEvent={handleDeleteById}
+          />
+        )}
+      </div>
 
       {showStatusBar && (
         <div

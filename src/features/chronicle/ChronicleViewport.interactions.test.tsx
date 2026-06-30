@@ -144,6 +144,32 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onViewChange).not.toHaveBeenCalled(); // パンしない
   });
 
+  it("本体ドラッグの挿入位置はイベント先端基準（掴む位置に依存しない）", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = () =>
+      container.querySelector('[data-event-id="e2"]') as HTMLElement;
+    // e2=期間 startDay120, pxPerDay2 → 先端 x=240（バー 240..360）。
+    // 先端(240)を掴んで +120px 移動 → 先端は x=360。
+    fireEvent.mouseDown(marker(), { button: 0, clientX: 240, clientY: 30 });
+    fireEvent.mouseMove(document, { clientX: 360, clientY: 30 });
+    fireEvent.mouseUp(document, { clientX: 360, clientY: 30 });
+    const dayFromStart = props.onMoveEvent.mock.calls[0][1] as number;
+
+    props.onMoveEvent.mockClear();
+    // バー中ほど(300)を掴んで 同じ +120px 移動 → 先端は同じ x=360 に着地。
+    fireEvent.mouseDown(marker(), { button: 0, clientX: 300, clientY: 30 });
+    fireEvent.mouseMove(document, { clientX: 420, clientY: 30 });
+    fireEvent.mouseUp(document, { clientX: 420, clientY: 30 });
+    const dayFromMiddle = props.onMoveEvent.mock.calls[0][1] as number;
+
+    // 同じピクセル移動なら掴んだ位置に関係なく同じ挿入日（=先端基準。旧カーソル基準では不一致）。
+    expect(dayFromStart).toBe(dayFromMiddle);
+    expect(dayFromStart).toBeGreaterThan(120); // 右へ移動している
+  });
+
   it("本体ドラッグは別マーカーへ落としても因果エッジを作らない（移動のみ）", () => {
     const props = makeProps();
     const { container } = render(
@@ -235,6 +261,43 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     fireEvent.mouseUp(document, { clientX: 250, clientY: 20 });
     expect(props.onCreateEdge).toHaveBeenCalledWith("e1", "e2");
     expect(props.onMoveEvent).not.toHaveBeenCalled();
+  });
+
+  it("非ロックのマーカーはホバーカーソル grab（open hand）", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    expect(marker.style.cursor).toBe("grab");
+  });
+
+  it("ロック中のマーカーカーソルは default（grab にしない）", () => {
+    const props = makeProps({ locked: true });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    expect(marker.style.cursor).toBe("default");
+  });
+
+  it("本体ドラッグ追従中はトラックが grabbing（grab hand）、解放で戻る", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 160, clientY: 20 });
+    expect(track(container).style.cursor).toBe("grabbing");
+    fireEvent.mouseUp(document, { clientX: 160, clientY: 20 });
+    expect(track(container).style.cursor).not.toBe("grabbing");
   });
 
   it("期間端ハンドルのドラッグで onResizeEvent", () => {
