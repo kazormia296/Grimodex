@@ -854,6 +854,16 @@ export function ChroniclePanel() {
     ],
   );
 
+  // コンテキストメニュー「編集」: 単独選択し、詳細パネル(インスペクタ)を必ず開く。
+  // トグルで詳細を畳んでいても「編集」なら編集欄が出るよう showInspector を ON にする。
+  const handleEditEvent = useCallback(
+    (id: string) => {
+      setShowInspector(true);
+      handleSelectEvent(id);
+    },
+    [handleSelectEvent],
+  );
+
   // 空白クリックで位置選択（出来事選択は外す）。
   const handleSelectPosition = useCallback(
     (day: number | null, codexId: string | null) => {
@@ -1263,6 +1273,7 @@ export function ChroniclePanel() {
             onCreateAt={handleCreateAt}
             onSelectPosition={handleSelectPosition}
             onDeleteEvent={handleDeleteById}
+            onEditEvent={handleEditEvent}
             onMoveSelected={handleMoveSelected}
             onNudgeSelected={shiftSelectedBy}
             onDeleteSelected={handleBulkDelete}

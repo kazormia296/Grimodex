@@ -223,6 +223,20 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onCreateAt).toHaveBeenCalledTimes(1);
   });
 
+  it("マーカー右クリック→「編集」で onEditEvent(id)（選択＋詳細パネルを開く）", () => {
+    const onEditEvent = vi.fn();
+    const props = makeProps({ onEditEvent });
+    const { container, getByText } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.contextMenu(marker, { clientX: 100, clientY: 20 });
+    fireEvent.click(getByText("編集"));
+    expect(onEditEvent).toHaveBeenCalledWith("e1");
+  });
+
   it("ドラッグ中はマーカーが追従 transform を持つ（見た目が動く）", () => {
     const props = makeProps();
     const { container } = render(

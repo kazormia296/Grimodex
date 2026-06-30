@@ -80,6 +80,8 @@ export interface ChronicleViewportProps {
   onSelectPosition?: (day: number | null, codexId: string | null) => void;
   /** 出来事削除（コンテキストメニュー）。 */
   onDeleteEvent?: (id: string) => void;
+  /** コンテキストメニュー「編集」: 単独選択＋詳細パネルを開く（未指定時は単独選択のみ）。 */
+  onEditEvent?: (id: string) => void;
   /** 複数選択の一括移動（primaryId の吸着先 newStartDay 差分を全選択へ。レーンは保持）。 */
   onMoveSelected?: (primaryId: string, newStartDay: number) => void;
   /** 選択中をまとめて時間方向に nudge（キーボード ←/→）。日数の符号付き差分。 */
@@ -124,6 +126,7 @@ export function ChronicleViewport({
   onCreateAt,
   onSelectPosition,
   onDeleteEvent,
+  onEditEvent,
   onMoveSelected,
   onNudgeSelected,
   onDeleteSelected,
@@ -900,10 +903,14 @@ export function ChronicleViewport({
                     type="button"
                     className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
                     onClick={() => {
-                      onSelectEvent(menu.eventId!, {
-                        toggle: false,
-                        range: false,
-                      });
+                      // 「編集」は単独選択＋詳細パネルを開く（onEditEvent）。
+                      // 未配線時は従来どおり単独選択のみへフォールバック。
+                      if (onEditEvent) onEditEvent(menu.eventId!);
+                      else
+                        onSelectEvent(menu.eventId!, {
+                          toggle: false,
+                          range: false,
+                        });
                       setMenu(null);
                     }}
                   >
