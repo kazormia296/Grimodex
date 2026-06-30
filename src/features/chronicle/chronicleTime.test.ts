@@ -7,6 +7,7 @@ import {
   dateToDayNumber,
   weekdayOf,
   gregorianWeekdayIndex,
+  eraOf,
   formatTimeOfDay,
   formatChronicleDate,
   type ChronicleCalendar,
@@ -19,6 +20,33 @@ describe("gregorianWeekdayIndex（実暦グレゴリオ曜日, 0=日）", () => 
     expect(gregorianWeekdayIndex(2024)).toBe(1); // 2024-01-01 月
     expect(gregorianWeekdayIndex(1)).toBe(1); // 0001-01-01 月（proleptic）
     expect(gregorianWeekdayIndex(1970)).toBe(4); // 1970-01-01 木
+  });
+});
+
+describe("eraOf（元号・年号）", () => {
+  const cal: ChronicleCalendar = {
+    daysPerYear: 365,
+    seasonBoundaries: [],
+    startYear: 1868,
+    eras: [
+      { name: "明治", startYear: 1868 },
+      { name: "大正", startYear: 1912 },
+    ],
+  };
+  it("該当元号の元号年（startYear=元号1年）", () => {
+    expect(eraOf(1868, cal)).toEqual({ name: "明治", year: 1 });
+    expect(eraOf(1869, cal)).toEqual({ name: "明治", year: 2 });
+    expect(eraOf(1912, cal)).toEqual({ name: "大正", year: 1 });
+  });
+  it("元号開始前・元号なしは null", () => {
+    expect(eraOf(1867, cal)).toBeNull();
+    expect(eraOf(1900, { daysPerYear: 365, seasonBoundaries: [] })).toBeNull();
+  });
+  it("formatChronicleDate は西暦年を元号年に置換", () => {
+    expect(formatChronicleDate(0, null, "year", cal, "ja")).toBe("明治1年");
+    expect(formatChronicleDate(365, null, "year", cal, "ja")).toBe("明治2年");
+    // 元号外の年（1867=day -365）は西暦のまま。
+    expect(formatChronicleDate(-365, null, "year", cal, "ja")).toBe("1867年");
   });
 });
 

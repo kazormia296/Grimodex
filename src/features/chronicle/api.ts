@@ -16,6 +16,7 @@ import type {
   MonthDef,
   LeapRule,
   AgeReckoning,
+  EraDef,
 } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
@@ -423,6 +424,8 @@ export interface CalendarRow {
   leapRule: string;
   /** 年齢の数え方。'full'=満年齢 / 'counting'=数え年。 */
   ageReckoning: string;
+  /** 生 JSON 文字列（EraDef[] 元号/年号）。'[]'=元号なし。 */
+  eras: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -448,6 +451,7 @@ export async function getProjectCalendar(
     ),
     leapRule: s(r.leapRule ?? r.leap_rule, '{"kind":"none"}'),
     ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
+    eras: s(r.eras, "[]"),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -478,6 +482,7 @@ export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
     weekdayStartIndex: row.weekdayStartIndex,
     leap: leap && leap.kind === "gregorian" ? leap : { kind: "none" },
     ageReckoning,
+    eras: parse<EraDef[]>(row.eras, []),
   };
 }
 
@@ -491,6 +496,7 @@ export async function upsertProjectCalendar(data: {
   weekdayStartIndex?: number;
   leapRule?: string;
   ageReckoning?: string;
+  eras?: string;
 }): Promise<void> {
   const now = new Date().toISOString();
   const startYear = data.startYear ?? 0;
@@ -499,6 +505,7 @@ export async function upsertProjectCalendar(data: {
   const weekdayStartIndex = data.weekdayStartIndex ?? 0;
   const leapRule = data.leapRule ?? '{"kind":"none"}';
   const ageReckoning = data.ageReckoning ?? "full";
+  const eras = data.eras ?? "[]";
   await db
     .insert(projectCalendar)
     .values({
@@ -511,6 +518,7 @@ export async function upsertProjectCalendar(data: {
       weekdayStartIndex,
       leapRule,
       ageReckoning,
+      eras,
       createdAt: now,
       updatedAt: now,
     })
@@ -525,6 +533,7 @@ export async function upsertProjectCalendar(data: {
         weekdayStartIndex,
         leapRule,
         ageReckoning,
+        eras,
         updatedAt: now,
       },
     });

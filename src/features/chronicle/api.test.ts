@@ -236,6 +236,7 @@ describe("calendarFromRow", () => {
       weekdayStartIndex: 6,
       leapRule: JSON.stringify({ kind: "gregorian", monthIndex: 0 }),
       ageReckoning: "counting",
+      eras: JSON.stringify([{ name: "明治", startYear: 1868 }]),
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -243,6 +244,7 @@ describe("calendarFromRow", () => {
     expect(cal.weekdayStartIndex).toBe(6);
     expect(cal.leap).toEqual({ kind: "gregorian", monthIndex: 0 });
     expect(cal.ageReckoning).toBe("counting");
+    expect(cal.eras).toEqual([{ name: "明治", startYear: 1868 }]);
   });
 });
 

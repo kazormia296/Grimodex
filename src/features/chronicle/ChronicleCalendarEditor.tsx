@@ -12,6 +12,7 @@ import {
   type MonthDef,
   type LeapRule,
   type AgeReckoning,
+  type EraDef,
 } from "./chronicleTime";
 
 const GREGORIAN_MONTH_NAMES: Record<"ja" | "en", string[]> = {
@@ -71,6 +72,7 @@ interface CalendarFormState {
   seasons: SeasonBoundary[];
   leap: LeapRule;
   ageReckoning: AgeReckoning;
+  eras: EraDef[];
 }
 
 /**
@@ -90,6 +92,7 @@ function gregorianFormState(lang: "ja" | "en"): CalendarFormState {
     seasons: localizedDefaultSeasons(lang),
     leap: { ...GREGORIAN_LEAP },
     ageReckoning: "full",
+    eras: [],
   };
 }
 
@@ -109,6 +112,7 @@ function formStateFromCalendar(
       : localizedDefaultSeasons(lang),
     leap: cal.leap ?? { kind: "none" },
     ageReckoning: cal.ageReckoning ?? "full",
+    eras: cal.eras ?? [],
   };
 }
 
@@ -145,6 +149,7 @@ export function ChronicleCalendarEditor({
   const [ageReckoning, setAgeReckoning] = useState<AgeReckoning>(
     init.ageReckoning,
   );
+  const [eras, setEras] = useState<EraDef[]>(init.eras);
 
   // 全フィールドをグレゴリオ暦の既定値へ戻す（リセット）。
   const resetToDefault = () => {
@@ -157,7 +162,15 @@ export function ChronicleCalendarEditor({
     setSeasons(g.seasons);
     setLeap(g.leap);
     setAgeReckoning(g.ageReckoning);
+    setEras(g.eras);
   };
+
+  const updateEra = (i: number, patch: Partial<EraDef>) =>
+    setEras((e) => e.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
+  const addEra = () =>
+    setEras((e) => [...e, { name: "", startYear: Math.floor(startYear) }]);
+  const removeEra = (i: number) =>
+    setEras((e) => e.filter((_, idx) => idx !== i));
 
   const updateSeason = (i: number, patch: Partial<SeasonBoundary>) =>
     setSeasons((s) => s.map((b, idx) => (idx === i ? { ...b, ...patch } : b)));
@@ -208,6 +221,10 @@ export function ChronicleCalendarEditor({
             ),
           }
         : { kind: "none" };
+    const cleanedEras = eras
+      .filter((e) => e.name.trim() !== "")
+      .map((e) => ({ name: e.name.trim(), startYear: Math.floor(e.startYear) }))
+      .sort((a, b) => a.startYear - b.startYear);
     const cal: ChronicleCalendar = {
       daysPerYear: Math.max(1, Math.floor(daysPerYear)),
       seasonBoundaries: cleaned,
@@ -217,6 +234,7 @@ export function ChronicleCalendarEditor({
       weekdayStartIndex: normalizedWeekdayStartIndex,
       leap: effectiveLeap,
       ageReckoning,
+      eras: cleanedEras,
     };
     onSave({ ...cal, daysPerYear: calendarDaysPerYear(cal) });
     onClose();
@@ -471,6 +489,50 @@ export function ChronicleCalendarEditor({
         >
           <Plus className="size-3.5" />
           {t("chronicle.addSeason", "季節を追加")}
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        <div className="text-xs text-muted-foreground">
+          {t("chronicle.eras", "元号・年号（名前・開始年）")}
+        </div>
+        {eras.map((e, i) => (
+          <div key={i} className="flex items-center gap-2 text-xs">
+            <input
+              value={e.name}
+              onChange={(ev) => updateEra(i, { name: ev.target.value })}
+              placeholder={t("chronicle.eraName", "元号名（例: 明治）")}
+              className="w-28 rounded border bg-transparent px-1 py-0.5"
+            />
+            <input
+              type="number"
+              value={e.startYear}
+              onChange={(ev) =>
+                updateEra(i, { startYear: Number(ev.target.value) })
+              }
+              aria-label={t("chronicle.eraStartYear", "開始年")}
+              className="w-24 rounded border bg-transparent px-1 py-0.5"
+            />
+            <span className="text-muted-foreground">
+              {t("chronicle.eraStartYearSuffix", "年〜=元号1年")}
+            </span>
+            <button
+              type="button"
+              onClick={() => removeEra(i)}
+              className="rounded p-1 hover:bg-destructive/10"
+              aria-label={t("chronicle.delete", "削除")}
+            >
+              <Trash2 className="size-3.5 opacity-60" />
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={addEra}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:bg-accent"
+        >
+          <Plus className="size-3.5" />
+          {t("chronicle.addEra", "元号を追加")}
         </button>
       </div>
 

@@ -15,6 +15,16 @@ export interface MonthDef {
 }
 
 /**
+ * 元号/年号（明治・令和 等）。暦年(startYear 基準の絶対年)で区間を切る年粒度のラベル。
+ * eraYear = 対象の暦年 - startYear + 1（例: 明治 startYear=1868 → 1869 は明治2年）。
+ */
+export interface EraDef {
+  name: string;
+  /** この元号が始まる暦年（その年 = 元号1年）。 */
+  startYear: number;
+}
+
+/**
  * 閏年ルール。none=年長一定（既定）。gregorian=暦年（startYear 基準の絶対年）に
  * 対し 4/100/400 で閏判定し、monthIndex の月へ +1 日（既定は 2 月相当 index 1）。
  */
@@ -46,6 +56,8 @@ export interface ChronicleCalendar {
   leap?: LeapRule;
   /** 年齢の数え方。未指定=full（満年齢）。 */
   ageReckoning?: AgeReckoning;
+  /** 元号/年号（年粒度のラベル区間）。空/未指定なら元号なし。 */
+  eras?: EraDef[];
 }
 
 /** day番号から導出した作中日付の構成要素。 */
@@ -257,8 +269,27 @@ export function formatTimeOfDay(minute: number | null): string | null {
 }
 
 /**
+ * 暦年に該当する元号と元号年（明治N年のN）。該当が無ければ null。
+ * 同年に複数該当するときは startYear 最大（=直近に始まった元号）を採用。決定性: 純関数。
+ */
+export function eraOf(
+  year: number,
+  cal: ChronicleCalendar,
+): { name: string; year: number } | null {
+  const eras = cal.eras;
+  if (!eras || eras.length === 0) return null;
+  let best: EraDef | null = null;
+  for (const e of eras) {
+    if (year >= e.startYear && (!best || e.startYear > best.startYear))
+      best = e;
+  }
+  return best ? { name: best.name, year: year - best.startYear + 1 } : null;
+}
+
+/**
  * day番号＋分＋粒度 → 表示文字列。粒度に応じて段階的に省略する。
  * none/null は空文字。season は seasonOf を用いる。time は HH:MM を付す。
+ * 元号(eras)が暦年を覆う場合は西暦年の代わりに「明治N年」等で表示する。
  */
 export function formatChronicleDate(
   dayNumber: number | null,
@@ -277,16 +308,18 @@ export function formatChronicleDate(
         ? `${date.monthIndex + 1}`
         : null;
 
-  if (granularity === "year")
-    return ja ? `${date.year}年` : `Year ${date.year}`;
+  // 元号があれば西暦年トークンを元号年トークンへ置換。
+  const era = eraOf(date.year, cal);
+  const yJa = era ? `${era.name}${era.year}年` : `${date.year}年`;
+  const yEn = era ? `${era.name} ${era.year}` : `${date.year}`;
+
+  if (granularity === "year") return ja ? yJa : era ? yEn : `Year ${date.year}`;
   if (granularity === "season") {
     const s = seasonOf(dayNumber, cal) ?? "?";
-    return ja ? `${date.year}年・${s}` : `${s} ${date.year}`;
+    return ja ? `${yJa}・${s}` : `${s} ${yEn}`;
   }
   if (granularity === "month") {
-    return ja
-      ? `${date.year}年${monthName ?? ""}`
-      : `${monthName ?? ""} ${date.year}`.trim();
+    return ja ? `${yJa}${monthName ?? ""}` : `${monthName ?? ""} ${yEn}`.trim();
   }
 
   // day / time
@@ -299,8 +332,8 @@ export function formatChronicleDate(
         ? `第${date.dayOfYear + 1}日`
         : `${date.dayOfYear + 1}`;
   const dayStr = ja
-    ? `${date.year}年${monthName ?? ""}${dayPart}`
-    : `${monthName ?? ""} ${dayPart}, ${date.year}`.trim();
+    ? `${yJa}${monthName ?? ""}${dayPart}`
+    : `${monthName ?? ""} ${dayPart}, ${yEn}`.trim();
   if (granularity === "time") {
     const tod = formatTimeOfDay(minute);
     return tod ? `${dayStr} ${tod}` : dayStr;

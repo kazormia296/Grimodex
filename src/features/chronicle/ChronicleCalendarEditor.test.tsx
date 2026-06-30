@@ -78,6 +78,7 @@ describe("ChronicleCalendarEditor", () => {
       weekdayStartIndex: 0,
       leap: { kind: "none" },
       ageReckoning: "full",
+      eras: [],
     });
     expect(onClose).toHaveBeenCalled();
   });
@@ -119,6 +120,7 @@ describe("ChronicleCalendarEditor", () => {
       weekdayStartIndex: 0,
       leap: { kind: "none" },
       ageReckoning: "full",
+      eras: [],
     });
   });
 

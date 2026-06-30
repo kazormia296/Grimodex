@@ -1483,6 +1483,8 @@ export const projectCalendar = sqliteTable("project_calendar", {
   leapRule: text("leap_rule").notNull().default('{"kind":"none"}'),
   // 年齢の数え方。'full'=満年齢（既定）/ 'counting'=数え年。
   ageReckoning: text("age_reckoning").notNull().default("full"),
+  // JSON: EraDef[] = [{name, startYear}]（元号/年号・年粒度）。'[]'=元号なし。
+  eras: text("eras").notNull().default("[]"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
