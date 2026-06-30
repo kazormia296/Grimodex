@@ -25,6 +25,12 @@ import {
 import { laneColorFor } from "./laneColor";
 import { ChronicleDatePicker } from "./ChronicleDatePicker";
 import { CodexEntryPicker } from "./CodexEntryPicker";
+import { lunarInfoForDay } from "./chronicleLunar";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
 
 export interface ChronicleInspectorProps {
   event: EventRow;
@@ -50,9 +56,9 @@ export interface ChronicleInspectorProps {
   onDelete: () => void;
   onClose: () => void;
   lang?: DateLang;
-  /** 現在の高さ(px)。上端グリップでリサイズ。 */
-  height?: number;
-  onHeightChange?: (h: number) => void;
+  /** 現在の幅(px)。右サイド配置・左端グリップでリサイズ。 */
+  width?: number;
+  onWidthChange?: (w: number) => void;
   /** 参加レーン（追加の複数 Codex 所属）。primaryCodexId 以外の codexId。 */
   participantIds?: string[];
   onSetParticipants?: (codexEntryIds: string[]) => void;
@@ -94,8 +100,8 @@ export function ChronicleInspector({
   onDelete,
   onClose,
   lang,
-  height = 340,
-  onHeightChange,
+  width = 360,
+  onWidthChange,
   participantIds = [],
   onSetParticipants,
 }: ChronicleInspectorProps) {
@@ -114,15 +120,15 @@ export function ChronicleInspector({
     (o) => o.id !== event.primaryCodexId && !participantIds.includes(o.id),
   );
 
-  // 上端グリップのドラッグで高さを変える（上=高く）。clamp [180, 720]。
+  // 左端グリップのドラッグで幅を変える（左へ引く=広く）。clamp [280, 640]。
   const onResizeStart = (e: React.MouseEvent) => {
-    if (!onHeightChange) return;
+    if (!onWidthChange) return;
     e.preventDefault();
-    const startY = e.clientY;
-    const startH = height;
+    const startX = e.clientX;
+    const startW = width;
     const move = (ev: MouseEvent) => {
-      const next = Math.max(180, Math.min(720, startH - (ev.clientY - startY)));
-      onHeightChange(next);
+      const next = Math.max(280, Math.min(640, startW - (ev.clientX - startX)));
+      onWidthChange(next);
     };
     const up = () => {
       document.removeEventListener("mousemove", move);
@@ -131,10 +137,7 @@ export function ChronicleInspector({
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
   };
-  const [picker, setPicker] = useState<{
-    which: "start" | "end";
-    anchor: { left: number; bottom: number };
-  } | null>(null);
+  const [pickerOpen, setPickerOpen] = useState<"start" | "end" | null>(null);
 
   const titleById = new Map(allEvents.map((e) => [e.id, e.title]));
   const causeOptions = allEvents.filter(
@@ -144,13 +147,41 @@ export function ChronicleInspector({
   const isInterval = event.endTime != null;
   const lc = laneColorFor(event.primaryCodexId);
 
-  const openPicker = (which: "start" | "end", el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - 308));
-    setPicker({
-      which,
-      anchor: { left, bottom: window.innerHeight - r.top + 8 },
-    });
+  // 日時ピッカー本体（Radix PopoverContent 内に描画。配置/衝突回避/アニメは Radix 側）。
+  const pickerContentFor = (which: "start" | "end") => {
+    const gran =
+      which === "start"
+        ? event.startGranularity
+        : event.endGranularity === "none"
+          ? "day"
+          : event.endGranularity;
+    const day =
+      which === "start"
+        ? (event.startTime ?? dateToDayNumber({ year: startYear }, calendar))
+        : (event.endTime ??
+          event.startTime ??
+          dateToDayNumber({ year: startYear }, calendar));
+    const minute =
+      which === "start" ? (event.startMinute ?? 0) : (event.endMinute ?? 0);
+    return (
+      <ChronicleDatePicker
+        which={which}
+        granularity={gran as EventGranularity}
+        calendar={calendar}
+        day={day}
+        minute={minute}
+        lang={lang}
+        onCommitDay={(d) => {
+          if (which === "start") onPatch({ startTime: d });
+          else onPatch({ endTime: Math.max(d, event.startTime ?? d) });
+        }}
+        onCommitMinute={(m) => {
+          if (which === "start") onPatch({ startMinute: m });
+          else onPatch({ endMinute: m });
+        }}
+        onClose={() => setPickerOpen(null)}
+      />
+    );
   };
 
   const setGran = (which: "start" | "end", g: EventGranularity) => {
@@ -189,39 +220,22 @@ export function ChronicleInspector({
       )
     : "";
 
-  const pickerDay =
-    picker?.which === "start"
-      ? (event.startTime ?? dateToDayNumber({ year: startYear }, calendar))
-      : (event.endTime ??
-        event.startTime ??
-        dateToDayNumber({ year: startYear }, calendar));
-  const pickerMinute =
-    picker?.which === "start"
-      ? (event.startMinute ?? 0)
-      : (event.endMinute ?? 0);
-  const pickerGran =
-    picker?.which === "start"
-      ? event.startGranularity
-      : event.endGranularity === "none"
-        ? "day"
-        : event.endGranularity;
-
   return (
     <div
-      className="flex shrink-0 flex-col border-t border-border bg-card"
-      style={{ height }}
+      className="flex h-full shrink-0 flex-row border-l border-border bg-card"
+      style={{ width }}
     >
-      {/* リサイズグリップ（上端ドラッグで高さ変更） */}
+      {/* リサイズグリップ（左端ドラッグで幅変更） */}
       <div
         onMouseDown={onResizeStart}
-        className="group flex h-2 shrink-0 cursor-ns-resize items-center justify-center hover:bg-accent/40"
+        className="group flex w-2 shrink-0 cursor-ew-resize items-center justify-center hover:bg-accent/40"
         role="separator"
-        aria-orientation="horizontal"
-        aria-label={t("chronicle.resizeInspector", "インスペクタの高さを変更")}
+        aria-orientation="vertical"
+        aria-label={t("chronicle.resizeInspector", "インスペクタの幅を変更")}
       >
-        <span className="h-[3px] w-8 rounded-full bg-border group-hover:bg-muted-foreground/60" />
+        <span className="h-8 w-[3px] rounded-full bg-border group-hover:bg-muted-foreground/60" />
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="flex flex-col gap-3 p-3.5">
           {/* タイトル */}
           <div className="flex items-center gap-2.5">
@@ -437,15 +451,28 @@ export function ChronicleInspector({
                   ))}
                 </select>
                 {event.startGranularity !== "none" ? (
-                  <button
-                    type="button"
-                    onClick={(e) => openPicker("start", e.currentTarget)}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
-                    style={{ fontFeatureSettings: "'tnum'" }}
+                  <Popover
+                    open={pickerOpen === "start"}
+                    onOpenChange={(o) => setPickerOpen(o ? "start" : null)}
                   >
-                    <CalendarDays className="size-3.5 opacity-70" />
-                    {startResolved}
-                  </button>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
+                        style={{ fontFeatureSettings: "'tnum'" }}
+                      >
+                        <CalendarDays className="size-3.5 opacity-70" />
+                        {startResolved}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="start"
+                      side="top"
+                      className="w-[296px]"
+                    >
+                      {pickerContentFor("start")}
+                    </PopoverContent>
+                  </Popover>
                 ) : (
                   <span className="text-xs text-muted-foreground">
                     {t("chronicle.timeUnset", "時刻は未指定（並び順のみ）")}
@@ -458,15 +485,28 @@ export function ChronicleInspector({
                 </span>
                 {isInterval ? (
                   <>
-                    <button
-                      type="button"
-                      onClick={(e) => openPicker("end", e.currentTarget)}
-                      className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
-                      style={{ fontFeatureSettings: "'tnum'" }}
+                    <Popover
+                      open={pickerOpen === "end"}
+                      onOpenChange={(o) => setPickerOpen(o ? "end" : null)}
                     >
-                      <CalendarDays className="size-3.5 opacity-70" />
-                      {endResolved}
-                    </button>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
+                          style={{ fontFeatureSettings: "'tnum'" }}
+                        >
+                          <CalendarDays className="size-3.5 opacity-70" />
+                          {endResolved}
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="start"
+                        side="top"
+                        className="w-[296px]"
+                      >
+                        {pickerContentFor("end")}
+                      </PopoverContent>
+                    </Popover>
                     <button
                       type="button"
                       onClick={() =>
@@ -505,6 +545,41 @@ export function ChronicleInspector({
                 )}
               </div>
             </div>
+
+            {/* 旧暦・六曜・節気（実暦12ヶ月暦のみ。中国農暦 UTC+8 ベース） */}
+            {(() => {
+              const lunar =
+                event.startGranularity !== "none" && event.startTime != null
+                  ? lunarInfoForDay(event.startTime, calendar)
+                  : null;
+              if (!lunar) return null;
+              return (
+                <div
+                  className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground"
+                  title={t(
+                    "chronicle.lunarHint",
+                    "中国農暦(UTC+8)ベース。新月・節気が深夜にかかる境界日などで日本の旧暦・六曜と数日ずれることがあります。",
+                  )}
+                >
+                  <span>
+                    {t("chronicle.lunarLabel", "旧暦")}{" "}
+                    {lunar.isLeapMonth ? t("chronicle.lunarLeap", "閏") : ""}
+                    {lunar.month}
+                    {t("chronicle.lunarMonthUnit", "月")}
+                    {lunar.day}
+                    {t("chronicle.lunarDayUnit", "日")}
+                  </span>
+                  <span>
+                    ・ {t("chronicle.rokuyo", "六曜")}: {lunar.rokuyo}
+                  </span>
+                  {lunar.solarTerm && (
+                    <span>
+                      ・ {t("chronicle.solarTerm", "節気")}: {lunar.solarTerm}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* 原因 */}
             {(causeIds.length > 0 || onAddCause) && (
@@ -637,27 +712,6 @@ export function ChronicleInspector({
           </div>
         </div>
       </div>
-
-      {picker && (
-        <ChronicleDatePicker
-          which={picker.which}
-          granularity={pickerGran as EventGranularity}
-          calendar={calendar}
-          day={pickerDay}
-          minute={pickerMinute}
-          anchor={picker.anchor}
-          lang={lang}
-          onCommitDay={(d) => {
-            if (picker.which === "start") onPatch({ startTime: d });
-            else onPatch({ endTime: Math.max(d, event.startTime ?? d) });
-          }}
-          onCommitMinute={(m) => {
-            if (picker.which === "start") onPatch({ startMinute: m });
-            else onPatch({ endMinute: m });
-          }}
-          onClose={() => setPicker(null)}
-        />
-      )}
     </div>
   );
 }

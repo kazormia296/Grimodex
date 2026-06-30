@@ -35,7 +35,6 @@ describe("ChronicleDatePicker — グレゴリオ閏整合（data 破損回帰�
         calendar={gregorian}
         day={day2004}
         minute={0}
-        anchor={{ left: 10, bottom: 10 }}
         onCommitDay={onCommitDay}
         onCommitMinute={() => {}}
         onClose={() => {}}
@@ -64,7 +63,6 @@ describe("ChronicleDatePicker — グレゴリオ閏整合（data 破損回帰�
         calendar={gregorian}
         day={feb2004}
         minute={0}
-        anchor={{ left: 10, bottom: 10 }}
         onCommitDay={() => {}}
         onCommitMinute={() => {}}
         onClose={() => {}}

@@ -80,6 +80,16 @@ export interface ChronicleViewportProps {
   onSelectPosition?: (day: number | null, codexId: string | null) => void;
   /** 出来事削除（コンテキストメニュー）。 */
   onDeleteEvent?: (id: string) => void;
+  /** コンテキストメニュー「編集」: 単独選択＋詳細パネルを開く（未指定時は単独選択のみ）。 */
+  onEditEvent?: (id: string) => void;
+  /** 複数選択の一括移動（primaryId の吸着先 newStartDay 差分を全選択へ。レーンは保持）。 */
+  onMoveSelected?: (primaryId: string, newStartDay: number) => void;
+  /** 選択中をまとめて時間方向に nudge（キーボード ←/→）。日数の符号付き差分。 */
+  onNudgeSelected?: (deltaDays: number) => void;
+  /** 選択中をまとめて削除（キーボード Delete/Backspace）。 */
+  onDeleteSelected?: () => void;
+  /** 選択解除（キーボード Escape）。 */
+  onClearSelection?: () => void;
 }
 
 /**
@@ -116,6 +126,11 @@ export function ChronicleViewport({
   onCreateAt,
   onSelectPosition,
   onDeleteEvent,
+  onEditEvent,
+  onMoveSelected,
+  onNudgeSelected,
+  onDeleteSelected,
+  onClearSelection,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const trackElRef = useRef<HTMLDivElement | null>(null);
@@ -136,8 +151,9 @@ export function ChronicleViewport({
   // ドラッグ中の縦ガイド（content px）とコンテキストメニュー。
   const [ghostX, setGhostX] = useState<number | null>(null);
   // ドラッグ中のマーカー追従プレビュー（見た目を動かす）。dx/dy は px オフセット。
+  // ids=追従させる全 eventId（単独ドラッグ=1件、複数選択の一括ドラッグ=選択全件）。
   const [dragPreview, setDragPreview] = useState<{
-    id: string;
+    ids: string[];
     dx: number;
     dy: number;
   } | null>(null);
@@ -158,20 +174,24 @@ export function ChronicleViewport({
   const cbRef = useRef({
     locked: false,
     hasCalendarAxis: true,
+    selectedIds: undefined as Set<string> | undefined,
     onMoveEvent,
     onResizeEvent,
     onCreateEdge,
     onCreateAt,
     onSelectPosition,
+    onMoveSelected,
   });
   cbRef.current = {
     locked: !!locked,
     hasCalendarAxis,
+    selectedIds,
     onMoveEvent,
     onResizeEvent,
     onCreateEdge,
     onCreateAt,
     onSelectPosition,
+    onMoveSelected,
   };
 
   // ── 座標ヘルパ（track rect 基準） ──
@@ -349,8 +369,24 @@ export function ChronicleViewport({
 
     // ── マーカー: 本体ドラッグ＝移動（ロック時は選択のみ。因果エッジは末尾●ハンドル） ──
     if (markerEl && eventId) {
+      // pointerdown は preventDefault 済みでフォーカスが乗らないため、トラックへ明示フォーカス。
+      // これでキーボード操作（←/→ nudge・Delete・Esc）が選択直後から効く。
+      el.focus({ preventScroll: true });
       if (!cb.locked && cb.onMoveEvent) {
         const startLaneCodex = laneCodexAt(startY, rect);
+        // 挿入位置はカーソルではなくイベントの先端（開始＝centers.cx）を基準にする。
+        // バー中ほどを掴むとカーソルへ開始が飛びドラッグ中とドロップ後がズレる問題への対策。
+        // grabOffsetX=掴んだ点と先端の距離。マーカー追従(dx)と整合し、先端が吸着先になる。
+        const startAnchorX = layoutRef.current.pack.centers.get(eventId)?.cx;
+        const grabOffsetX =
+          startAnchorX != null ? startX - rect.left - startAnchorX : 0;
+        // 掴んだマーカーが複数選択の一部なら選択全件を一括移動（=先端の差分を全件へ）。
+        // それ以外は単独移動（従来どおりレーン再割当も可）。一括は時間方向の平行移動なので
+        // 暦軸モード限定（並び順モードは時間移動できず prevew が空振りになるため単独扱い）。
+        const sel = cb.selectedIds;
+        const bulk =
+          !!sel && sel.has(eventId) && sel.size > 1 && cb.hasCalendarAxis;
+        const dragIds = bulk ? [...sel] : [eventId];
         bindDrag(
           (ev) => {
             if (
@@ -359,14 +395,20 @@ export function ChronicleViewport({
             ) {
               draggedRef.current = true;
               // Y はデッドゾーン分を差し引いて追従（一定までは横スライドのみ）。
+              // 一括移動はレーン保持なので縦追従しない（時間方向のみ）。
               const rawDy = ev.clientY - startY;
-              const dy =
-                Math.sign(rawDy) * Math.max(0, Math.abs(rawDy) - LANE_DEADZONE);
+              const dy = bulk
+                ? 0
+                : Math.sign(rawDy) *
+                  Math.max(0, Math.abs(rawDy) - LANE_DEADZONE);
               // マーカーをポインタへ追従（見た目を動かす）。ゴースト縦線は吸着先を示す。
-              setDragPreview({ id: eventId, dx: ev.clientX - startX, dy });
+              setDragPreview({ ids: dragIds, dx: ev.clientX - startX, dy });
               setGhostX(
                 cb.hasCalendarAxis
-                  ? dayToX(viewRef.current, snappedDayAt(ev.clientX, rect))
+                  ? dayToX(
+                      viewRef.current,
+                      snappedDayAt(ev.clientX - grabOffsetX, rect),
+                    )
                   : ev.clientX - rect.left,
               );
             }
@@ -378,14 +420,19 @@ export function ChronicleViewport({
             // 因果エッジは選択時の末尾●ハンドル D&D のみ）。
             if (draggedRef.current && cb.onMoveEvent) {
               const newDay = cb.hasCalendarAxis
-                ? snappedDayAt(ev.clientX, rect)
+                ? snappedDayAt(ev.clientX - grabOffsetX, rect)
                 : null;
-              // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
-              const newCodex =
-                Math.abs(ev.clientY - startY) < LANE_DEADZONE
-                  ? startLaneCodex
-                  : laneCodexAt(ev.clientY, rect);
-              cb.onMoveEvent(eventId, newDay, newCodex);
+              if (bulk && newDay != null && cb.onMoveSelected) {
+                // 一括: 先端の差分を選択全件へ適用（レーンは各自保持）。
+                cb.onMoveSelected(eventId, newDay);
+              } else {
+                // Y デッドゾーン未満ならレーン変更しない（横スライド扱い）。
+                const newCodex =
+                  Math.abs(ev.clientY - startY) < LANE_DEADZONE
+                    ? startLaneCodex
+                    : laneCodexAt(ev.clientY, rect);
+                cb.onMoveEvent(eventId, newDay, newCodex);
+              }
             }
             setTimeout(() => {
               draggedRef.current = false;
@@ -429,6 +476,105 @@ export function ChronicleViewport({
     const rect = el.getBoundingClientRect();
     const day = cb.hasCalendarAxis ? snappedDayAt(e.clientX, rect) : null;
     cb.onCreateAt(day, laneCodexAt(e.clientY, rect));
+  };
+
+  // 矢印キーで選択を空間移動（←/→=同レーン内で時間前後 / ↑/↓=隣レーンの時間最近傍）。
+  // レーンは複製マーカー(`id::codex`)を含むため realEventId で実 id に正規化して選択する。
+  const navigateSelection = (dir: "left" | "right" | "up" | "down") => {
+    const cur = selectedEventId;
+    if (!cur) return;
+    const lanes = layout.pack.lanes;
+    const centers = layout.pack.centers;
+    const cxOf = (id: string) => centers.get(id)?.cx ?? 0;
+    let curLaneIdx = -1;
+    let curMarkerId = "";
+    for (let i = 0; i < lanes.length; i++) {
+      const m = lanes[i].markers.find((mk) => realEventId(mk.eventId) === cur);
+      if (m) {
+        curLaneIdx = i;
+        curMarkerId = m.eventId;
+        break;
+      }
+    }
+    if (curLaneIdx < 0) return;
+    let target: string | null = null;
+    if (dir === "left" || dir === "right") {
+      const sorted = lanes[curLaneIdx].markers
+        .map((mk) => mk.eventId)
+        .sort((a, b) => cxOf(a) - cxOf(b) || a.localeCompare(b));
+      const idx = sorted.indexOf(curMarkerId);
+      const nIdx = dir === "left" ? idx - 1 : idx + 1;
+      if (nIdx >= 0 && nIdx < sorted.length) target = sorted[nIdx];
+    } else {
+      const curCx = cxOf(curMarkerId);
+      const step = dir === "up" ? -1 : 1;
+      for (let i = curLaneIdx + step; i >= 0 && i < lanes.length; i += step) {
+        const ms = lanes[i].markers;
+        if (ms.length === 0) continue;
+        let best: string | null = null;
+        let bestD = Infinity;
+        for (const mk of ms) {
+          const d = Math.abs(cxOf(mk.eventId) - curCx);
+          if (d < bestD) {
+            bestD = d;
+            best = mk.eventId;
+          }
+        }
+        target = best;
+        break;
+      }
+    }
+    if (target) {
+      const realTarget = realEventId(target);
+      if (realTarget !== cur) onSelectEvent(realTarget);
+    }
+  };
+
+  // キーボード操作（トラックフォーカス時）: 矢印=選択移動 / Alt+矢印=時間ナッジ(Alt+Shift=1週間) /
+  // Delete=削除 / Esc=選択解除。検索欄・インスペクタ入力は別 DOM なのでここへは来ない。
+  const onTrackKeyDown = (e: React.KeyboardEvent) => {
+    const hasSel = (selectedIds && selectedIds.size > 0) || !!selectedEventId;
+    if (!hasSel) return;
+    if (e.key === "Escape") {
+      onClearSelection?.();
+      return;
+    }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      onDeleteSelected?.();
+      return;
+    }
+    const dir =
+      e.key === "ArrowLeft"
+        ? "left"
+        : e.key === "ArrowRight"
+          ? "right"
+          : e.key === "ArrowUp"
+            ? "up"
+            : e.key === "ArrowDown"
+              ? "down"
+              : null;
+    if (!dir) return;
+    e.preventDefault();
+    if (e.altKey) {
+      // Alt+矢印=ナッジ移動（時間方向のみ）。移動量は現在のズームグリッド由来:
+      // Alt=細グリッド1目盛り / Alt+Shift=粗グリッド(major)1目盛り。↑/↓ は対象外。
+      if (locked || !hasCalendarAxis || !onNudgeSelected) return;
+      if (dir === "left" || dir === "right") {
+        const spanDays = (ticks: { x: number }[], fallback: number) =>
+          ticks.length >= 2 && view.pxPerDay > 0
+            ? Math.abs(ticks[1].x - ticks[0].x) / view.pxPerDay
+            : fallback;
+        const minorStep = spanDays(layout.ticks.minor, 1);
+        const step = e.shiftKey
+          ? spanDays(layout.ticks.major, minorStep * 4)
+          : minorStep;
+        onNudgeSelected(dir === "left" ? -step : step);
+      }
+      return;
+    }
+    // 修飾なし=選択ナビゲーション。
+    navigateSelection(dir);
   };
 
   // 右クリック=コンテキストメニュー（マーカー上なら編集/削除、空白なら作成）。
@@ -498,7 +644,7 @@ export function ChronicleViewport({
   );
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col bg-card">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card">
       <ChronicleRuler
         gutterX={spacing.gutterX}
         unitLabel={ticks.unitLabel}
@@ -525,9 +671,15 @@ export function ChronicleViewport({
           onMouseDown={onTrackPointerDown}
           onDoubleClick={onTrackDoubleClick}
           onContextMenu={onTrackContextMenu}
-          className="relative flex-1 select-none"
+          onKeyDown={onTrackKeyDown}
+          tabIndex={0}
+          className="relative flex-1 select-none outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           // minHeight=コンテンツ高、flex stretch で残り高さまで伸ばしレーン外も操作可能に。
-          style={{ minHeight: contentHeight }}
+          // 本体ドラッグ追従中（dragPreview）はトラック全体を grab hand（grabbing）に。
+          style={{
+            minHeight: contentHeight,
+            cursor: dragPreview ? "grabbing" : undefined,
+          }}
           role="application"
           aria-label={t("chronicle.viewportLabel", "作中年表")}
         >
@@ -683,7 +835,7 @@ export function ChronicleViewport({
                   related={relatedIds.has(realId)}
                   labelsOn={labelsOn}
                   resizable={!locked && render.isInterval}
-                  cursor={locked ? "default" : "pointer"}
+                  cursor={locked ? "default" : "grab"}
                   edgeHandle={
                     // 因果エッジハンドルは単一選択時のプライマリのみ。
                     selectedEventId === realId &&
@@ -692,7 +844,7 @@ export function ChronicleViewport({
                     !!onCreateEdge
                   }
                   dragOffset={
-                    dragPreview?.id === realId
+                    dragPreview?.ids.includes(realId)
                       ? { dx: dragPreview.dx, dy: dragPreview.dy }
                       : null
                   }
@@ -751,10 +903,14 @@ export function ChronicleViewport({
                     type="button"
                     className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
                     onClick={() => {
-                      onSelectEvent(menu.eventId!, {
-                        toggle: false,
-                        range: false,
-                      });
+                      // 「編集」は単独選択＋詳細パネルを開く（onEditEvent）。
+                      // 未配線時は従来どおり単独選択のみへフォールバック。
+                      if (onEditEvent) onEditEvent(menu.eventId!);
+                      else
+                        onSelectEvent(menu.eventId!, {
+                          toggle: false,
+                          range: false,
+                        });
                       setMenu(null);
                     }}
                   >

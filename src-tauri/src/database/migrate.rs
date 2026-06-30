@@ -1861,6 +1861,11 @@ impl Database {
                 start_year        INTEGER NOT NULL DEFAULT 0,
                 months            TEXT NOT NULL DEFAULT '[]',
                 weekday_names     TEXT NOT NULL DEFAULT '[]',
+                weekday_start_index INTEGER NOT NULL DEFAULT 0,
+                eras              TEXT NOT NULL DEFAULT '[]',
+                reform            TEXT NOT NULL DEFAULT 'null',
+                timezone          TEXT NOT NULL DEFAULT 'null',
+                lunar_tz_minutes  INTEGER NOT NULL DEFAULT 480,
                 created_at        TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
             );",
@@ -1884,6 +1889,12 @@ impl Database {
             "weekday_names",
             "TEXT NOT NULL DEFAULT '[]'",
         )?;
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "weekday_start_index",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         // 未割当出来事の整理用サブレーン id（複数の未割当レーンに振り分ける）。
         Self::add_column_if_missing(&conn, "events", "lane_group", "TEXT")?;
         // グレゴリオ閏＋年齢表記（満/数え）。既存 DB（暦ライト/本格暦化時代）へ追加。
@@ -1898,6 +1909,34 @@ impl Database {
             "project_calendar",
             "age_reckoning",
             "TEXT NOT NULL DEFAULT 'full'",
+        )?;
+        // 元号/年号（年粒度ラベル）。既存 DB へ追加。
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "eras",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        // ユリウス→グレゴリオ改暦（JSON）。既存 DB へ追加。
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "reform",
+            "TEXT NOT NULL DEFAULT 'null'",
+        )?;
+        // タイムゾーン/夏時間（JSON）。既存 DB へ追加。
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "timezone",
+            "TEXT NOT NULL DEFAULT 'null'",
+        )?;
+        // 旧暦の節気判定 UTC オフセット分（480=中国 / 540=日本）。既存 DB へ追加。
+        Self::add_column_if_missing(
+            &conn,
+            "project_calendar",
+            "lunar_tz_minutes",
+            "INTEGER NOT NULL DEFAULT 480",
         )?;
 
         // 出来事間の因果エッジ（cause→effect）。効果が原因より前なら整合チェックで矛盾。

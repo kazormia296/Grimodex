@@ -1875,6 +1875,8 @@ pub struct ChronicleCalendarRaw {
     pub months: String,
     /// Raw JSON string (`string[]` weekday names). '[]' = no weekday concept.
     pub weekday_names: String,
+    /// Weekday index corresponding to day number 0.
+    pub weekday_start_index: i64,
     /// Raw JSON string (`LeapRule`). '{"kind":"none"}' = no leap years.
     pub leap_rule: String,
     /// Age reckoning. 'full' = 満年齢 (default) / 'counting' = 数え年.
@@ -2012,7 +2014,7 @@ pub fn chronicle_get_calendar(
     use rusqlite::OptionalExtension;
     conn.query_row(
         "SELECT days_per_year, season_boundaries, start_year, months, weekday_names, \
-                leap_rule, age_reckoning
+                weekday_start_index, leap_rule, age_reckoning
          FROM project_calendar
          WHERE project_id = ?1",
         params![project_id],
@@ -2023,8 +2025,9 @@ pub fn chronicle_get_calendar(
                 start_year: row.get(2)?,
                 months: row.get(3)?,
                 weekday_names: row.get(4)?,
-                leap_rule: row.get(5)?,
-                age_reckoning: row.get(6)?,
+                weekday_start_index: row.get(5)?,
+                leap_rule: row.get(6)?,
+                age_reckoning: row.get(7)?,
             })
         },
     )
@@ -3173,6 +3176,7 @@ pub(crate) mod tests {
                 start_year INTEGER NOT NULL DEFAULT 0,
                 months TEXT NOT NULL DEFAULT '[]',
                 weekday_names TEXT NOT NULL DEFAULT '[]',
+                weekday_start_index INTEGER NOT NULL DEFAULT 0,
                 leap_rule TEXT NOT NULL DEFAULT '{\"kind\":\"none\"}',
                 age_reckoning TEXT NOT NULL DEFAULT 'full',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),

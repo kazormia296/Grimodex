@@ -16,6 +16,9 @@ import type {
   MonthDef,
   LeapRule,
   AgeReckoning,
+  EraDef,
+  CalendarReform,
+  TimeZoneDef,
 } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
@@ -417,10 +420,20 @@ export interface CalendarRow {
   months: string;
   /** 生 JSON 文字列（string[] 曜日名）。'[]'=曜日概念なし。 */
   weekdayNames: string;
+  /** day番号0に対応する weekdayNames の index。 */
+  weekdayStartIndex: number;
   /** 生 JSON 文字列（LeapRule）。'{"kind":"none"}'=閏年なし。 */
   leapRule: string;
   /** 年齢の数え方。'full'=満年齢 / 'counting'=数え年。 */
   ageReckoning: string;
+  /** 生 JSON 文字列（EraDef[] 元号/年号）。'[]'=元号なし。 */
+  eras: string;
+  /** 生 JSON 文字列（CalendarReform | null 改暦）。'null'=改暦なし。 */
+  reform: string;
+  /** 生 JSON 文字列（TimeZoneDef | null タイムゾーン）。'null'=なし。 */
+  timezone: string;
+  /** 旧暦の節気判定 UTC オフセット分（480=中国 / 540=日本）。 */
+  lunarTzMinutes: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -441,8 +454,15 @@ export async function getProjectCalendar(
     startYear: Number(r.startYear ?? r.start_year ?? 0),
     months: s(r.months, "[]"),
     weekdayNames: s(r.weekdayNames ?? r.weekday_names, "[]"),
+    weekdayStartIndex: Number(
+      r.weekdayStartIndex ?? r.weekday_start_index ?? 0,
+    ),
     leapRule: s(r.leapRule ?? r.leap_rule, '{"kind":"none"}'),
     ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
+    eras: s(r.eras, "[]"),
+    reform: s(r.reform, "null"),
+    timezone: s(r.timezone, "null"),
+    lunarTzMinutes: Number(r.lunarTzMinutes ?? r.lunar_tz_minutes ?? 480),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -470,8 +490,13 @@ export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
     startYear: row.startYear,
     months: parse<MonthDef[]>(row.months, []),
     weekdayNames: parse<string[]>(row.weekdayNames, []),
+    weekdayStartIndex: row.weekdayStartIndex,
     leap: leap && leap.kind === "gregorian" ? leap : { kind: "none" },
     ageReckoning,
+    eras: parse<EraDef[]>(row.eras, []),
+    reform: parse<CalendarReform | null>(row.reform, null) ?? undefined,
+    timezone: parse<TimeZoneDef | null>(row.timezone, null) ?? undefined,
+    lunarTzMinutes: row.lunarTzMinutes,
   };
 }
 
@@ -482,15 +507,25 @@ export async function upsertProjectCalendar(data: {
   startYear?: number;
   months?: string;
   weekdayNames?: string;
+  weekdayStartIndex?: number;
   leapRule?: string;
   ageReckoning?: string;
+  eras?: string;
+  reform?: string;
+  timezone?: string;
+  lunarTzMinutes?: number;
 }): Promise<void> {
   const now = new Date().toISOString();
   const startYear = data.startYear ?? 0;
   const months = data.months ?? "[]";
   const weekdayNames = data.weekdayNames ?? "[]";
+  const weekdayStartIndex = data.weekdayStartIndex ?? 0;
   const leapRule = data.leapRule ?? '{"kind":"none"}';
   const ageReckoning = data.ageReckoning ?? "full";
+  const eras = data.eras ?? "[]";
+  const reform = data.reform ?? "null";
+  const timezone = data.timezone ?? "null";
+  const lunarTzMinutes = data.lunarTzMinutes ?? 480;
   await db
     .insert(projectCalendar)
     .values({
@@ -500,8 +535,13 @@ export async function upsertProjectCalendar(data: {
       startYear,
       months,
       weekdayNames,
+      weekdayStartIndex,
       leapRule,
       ageReckoning,
+      eras,
+      reform,
+      timezone,
+      lunarTzMinutes,
       createdAt: now,
       updatedAt: now,
     })
@@ -513,8 +553,13 @@ export async function upsertProjectCalendar(data: {
         startYear,
         months,
         weekdayNames,
+        weekdayStartIndex,
         leapRule,
         ageReckoning,
+        eras,
+        reform,
+        timezone,
+        lunarTzMinutes,
         updatedAt: now,
       },
     });

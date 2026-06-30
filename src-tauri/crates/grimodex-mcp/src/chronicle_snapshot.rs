@@ -133,6 +133,11 @@ pub struct CalendarInput {
     #[serde(default)]
     #[allow(dead_code)]
     pub weekday_names: Vec<String>,
+    /// day番号0に対応する weekday_names の index。現在の snapshot 出力では未使用だが、
+    /// TS の ChronicleCalendar と同じ入力契約を保つ。
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub weekday_start_index: i64,
     /// 閏年ルール（未指定=none）。
     #[serde(default)]
     pub leap: LeapRule,
@@ -263,11 +268,10 @@ fn truncate(s: &str, cap: usize) -> String {
 
 ///数値時刻 → 作中季節名（`chronicleTime.ts::seasonOf` の移植）。
 pub fn season_of(time: i64, calendar: &CalendarInput) -> Option<String> {
-    let days_per_year = calendar.days_per_year;
-    if days_per_year <= 0 || calendar.season_boundaries.is_empty() {
+    if calendar_days_per_year(calendar) <= 0 || calendar.season_boundaries.is_empty() {
         return None;
     }
-    let day_of_year = time.rem_euclid(days_per_year);
+    let day_of_year = day_number_to_date(time, calendar).day_of_year;
     let mut sorted = calendar.season_boundaries.clone();
     sorted.sort_by_key(|b| b.start_day_of_year);
     // 巻き戻し既定値（年末→年初の循環）= 最後の境界。
@@ -1132,6 +1136,7 @@ mod tests {
             start_year: 0,
             months: vec![],
             weekday_names: vec![],
+            weekday_start_index: 0,
             leap: LeapRule::None,
             age_reckoning: String::new(),
         };
@@ -1268,6 +1273,7 @@ mod tests {
                 })
                 .collect(),
             weekday_names: vec![],
+            weekday_start_index: 0,
             leap: LeapRule::None,
             age_reckoning: String::new(),
         }
@@ -1326,6 +1332,7 @@ mod tests {
             start_year: 0,
             months: vec![],
             weekday_names: vec![],
+            weekday_start_index: 0,
             leap: LeapRule::None,
             age_reckoning: String::new(),
         };
@@ -1354,6 +1361,7 @@ mod tests {
                 })
                 .collect(),
             weekday_names: vec![],
+            weekday_start_index: 0,
             leap: LeapRule::Gregorian { month_index: 1 },
             age_reckoning: String::new(),
         }
@@ -1375,6 +1383,32 @@ mod tests {
         assert!(is_leap_year(2000, &cal));
         assert!(!is_leap_year(1900, &cal));
         assert!(is_leap_year(2004, &cal));
+    }
+
+    #[test]
+    fn season_of_uses_leap_aware_day_of_year() {
+        let mut cal = gregorian();
+        cal.season_boundaries = vec![
+            SeasonBoundary {
+                name: "春".to_string(),
+                start_day_of_year: 0,
+            },
+            SeasonBoundary {
+                name: "夏".to_string(),
+                start_day_of_year: 90,
+            },
+            SeasonBoundary {
+                name: "秋".to_string(),
+                start_day_of_year: 180,
+            },
+            SeasonBoundary {
+                name: "冬".to_string(),
+                start_day_of_year: 270,
+            },
+        ];
+        // 2000 の閏日を跨いだ 2001-12-31。単純 days_per_year mod だと春へ誤判定する。
+        let dec31_2001 = year_start_day(2001, &cal) + 364;
+        assert_eq!(season_of(dec31_2001, &cal).as_deref(), Some("冬"));
     }
 
     #[test]

@@ -128,6 +128,7 @@ import {
   listEventRelations,
   listEventParticipantsForProject,
   listSceneEventsForProject,
+  calendarFromRow,
 } from "./api";
 
 const NOW = "2026-06-27T00:00:00.000Z";
@@ -220,6 +221,39 @@ describe("normalizeEvent", () => {
     expect(out.ordinal).toBe("a0");
     expect(out.precision).toBe("exact");
     expect(out.kind).toBe("generic");
+  });
+});
+
+describe("calendarFromRow", () => {
+  it("閏ルール・曜日起点・年齢表記を CalendarRow から復元する", () => {
+    const cal = calendarFromRow({
+      projectId: "p1",
+      daysPerYear: 365,
+      seasonBoundaries: JSON.stringify([{ name: "冬", startDayOfYear: 270 }]),
+      startYear: 2000,
+      months: JSON.stringify([{ name: "2月", days: 28 }]),
+      weekdayNames: JSON.stringify(["日", "月", "火", "水", "木", "金", "土"]),
+      weekdayStartIndex: 6,
+      leapRule: JSON.stringify({ kind: "gregorian", monthIndex: 0 }),
+      ageReckoning: "counting",
+      eras: JSON.stringify([{ name: "明治", startYear: 1868 }]),
+      reform: JSON.stringify({
+        gregorianStart: { year: 1582, monthIndex: 9, dayOfMonth: 15 },
+        region: "gregorian1582",
+      }),
+      timezone: JSON.stringify({ label: "JST", offsetMinutes: 540 }),
+      lunarTzMinutes: 540,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    expect(cal.weekdayStartIndex).toBe(6);
+    expect(cal.leap).toEqual({ kind: "gregorian", monthIndex: 0 });
+    expect(cal.ageReckoning).toBe("counting");
+    expect(cal.eras).toEqual([{ name: "明治", startYear: 1868 }]);
+    expect(cal.reform?.region).toBe("gregorian1582");
+    expect(cal.timezone?.label).toBe("JST");
+    expect(cal.lunarTzMinutes).toBe(540);
   });
 });
 

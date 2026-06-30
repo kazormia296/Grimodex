@@ -1477,10 +1477,20 @@ export const projectCalendar = sqliteTable("project_calendar", {
   months: text("months").notNull().default("[]"),
   // JSON: string[]（曜日名）。'[]'=曜日概念なし。週長=配列長。
   weekdayNames: text("weekday_names").notNull().default("[]"),
+  // day番号0に対応する weekdayNames の index。既定0で従来の相対曜日を維持。
+  weekdayStartIndex: integer("weekday_start_index").notNull().default(0),
   // JSON: LeapRule。'{"kind":"none"}'=閏年なし（年長一定）。gregorian で 4/100/400。
   leapRule: text("leap_rule").notNull().default('{"kind":"none"}'),
   // 年齢の数え方。'full'=満年齢（既定）/ 'counting'=数え年。
   ageReckoning: text("age_reckoning").notNull().default("full"),
+  // JSON: EraDef[] = [{name, startYear}]（元号/年号・年粒度）。'[]'=元号なし。
+  eras: text("eras").notNull().default("[]"),
+  // JSON: CalendarReform | null（ユリウス→グレゴリオ改暦）。'null'=改暦なし。
+  reform: text("reform").notNull().default("null"),
+  // JSON: TimeZoneDef | null（時刻表示のTZラベル/オフセット・夏時間）。'null'=なし。
+  timezone: text("timezone").notNull().default("null"),
+  // 旧暦の節気判定 UTC オフセット分。480=中国農暦(既定) / 540=日本。節気のみ再ビン。
+  lunarTzMinutes: integer("lunar_tz_minutes").notNull().default(480),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

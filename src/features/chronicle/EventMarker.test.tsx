@@ -33,6 +33,9 @@ function renderMarker(props: Partial<EventMarkerProps> = {}) {
       selected={props.selected ?? false}
       conflict={props.conflict ?? false}
       labelsOn={props.labelsOn ?? true}
+      resizable={props.resizable}
+      cursor={props.cursor}
+      dragOffset={props.dragOffset}
       onSelect={props.onSelect ?? (() => {})}
     />,
   );
@@ -230,5 +233,67 @@ describe("EventMarker (DOM token)", () => {
     const { container } = renderMarker({ onSelect });
     (container.querySelector('[data-event-id="m1"]') as HTMLElement).click();
     expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("EventMarker — リサイズグリップ / カーソル", () => {
+  it("interval+resizable は両端にリサイズグリップを描く（既定は隠れ group-hover で表示）", () => {
+    const { container } = renderMarker({
+      isInterval: true,
+      barWidth: 120,
+      resizable: true,
+    });
+    const grips = container.querySelectorAll('[data-testid="resize-grip"]');
+    expect(grips.length).toBe(2);
+    // 既定は非表示(opacity-0)、ホバー(group-hover)でフェードイン。
+    for (const g of grips) {
+      expect(g.className).toContain("opacity-0");
+      expect(g.className).toContain("group-hover:opacity-100");
+    }
+    // 両端の data-resize 帯の中に居る（クリック判定は帯側が担う）。
+    expect(
+      container.querySelector(
+        '[data-resize="start"] [data-testid="resize-grip"]',
+      ),
+    ).toBeTruthy();
+    expect(
+      container.querySelector(
+        '[data-resize="end"] [data-testid="resize-grip"]',
+      ),
+    ).toBeTruthy();
+    // 親ボタンは group（group-hover の起点）。
+    const btn = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    expect(btn.className).toContain("group");
+  });
+
+  it("resizable でない期間・点にはグリップを描かない", () => {
+    const iv = renderMarker({
+      isInterval: true,
+      barWidth: 120,
+      resizable: false,
+    });
+    expect(
+      iv.container.querySelectorAll('[data-testid="resize-grip"]').length,
+    ).toBe(0);
+    const pt = renderMarker({ isInterval: false, resizable: true });
+    expect(
+      pt.container.querySelectorAll('[data-testid="resize-grip"]').length,
+    ).toBe(0);
+  });
+
+  it("ホバーカーソルは渡された cursor（grab）、ドラッグ追従中は grabbing", () => {
+    const hover = renderMarker({ cursor: "grab" });
+    expect(
+      (hover.container.querySelector('[data-event-id="m1"]') as HTMLElement)
+        .style.cursor,
+    ).toBe("grab");
+    const dragging = renderMarker({
+      cursor: "grab",
+      dragOffset: { dx: 12, dy: 0 },
+    });
+    expect(
+      (dragging.container.querySelector('[data-event-id="m1"]') as HTMLElement)
+        .style.cursor,
+    ).toBe("grabbing");
   });
 });

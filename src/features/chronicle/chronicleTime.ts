@@ -1,4 +1,12 @@
 import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
+import {
+  type CalendarReform,
+  reformDayToDate,
+  reformDateToDay,
+  reformDaysInYear,
+  reformMonthLength,
+} from "./chronicleReform";
+export type { CalendarReform } from "./chronicleReform";
 
 export interface SeasonBoundary {
   /** 季節名（例「冬」）。 */
@@ -12,6 +20,34 @@ export interface MonthDef {
   name: string;
   /** その月の日数（正整数）。 */
   days: number;
+}
+
+/**
+ * 元号/年号（明治・令和 等）。暦年(startYear 基準の絶対年)で区間を切る年粒度のラベル。
+ * eraYear = 対象の暦年 - startYear + 1（例: 明治 startYear=1868 → 1869 は明治2年）。
+ */
+export interface EraDef {
+  name: string;
+  /** この元号が始まる暦年（その年 = 元号1年）。 */
+  startYear: number;
+}
+
+/**
+ * タイムゾーン（作中時刻の表示ラベル＋UTC オフセット）。作中分時刻は壁時計のまま保持し、
+ * ラベル/オフセットだけを付す。dst 期間（年内通日 start..end）はラベル/オフセットを差し替える。
+ */
+export interface TimeZoneDef {
+  /** 標準時ラベル（例 "JST"）。 */
+  label: string;
+  /** UTC からのオフセット分（例 540 = UTC+9）。表示専用。 */
+  offsetMinutes: number;
+  /** 夏時間（任意）。startDayOfYear..endDayOfYear の期間中はこちらを使う。 */
+  dst?: {
+    label: string;
+    offsetMinutes: number;
+    startDayOfYear: number;
+    endDayOfYear: number;
+  };
 }
 
 /**
@@ -40,10 +76,27 @@ export interface ChronicleCalendar {
   months?: MonthDef[];
   /** 曜日名。空/未指定なら曜日概念なし。週長=配列長。 */
   weekdayNames?: string[];
+  /** day番号0に対応する weekdayNames の index。未指定なら 0。 */
+  weekdayStartIndex?: number;
   /** 閏年ルール。未指定=none（年長一定）。 */
   leap?: LeapRule;
   /** 年齢の数え方。未指定=full（満年齢）。 */
   ageReckoning?: AgeReckoning;
+  /** 元号/年号（年粒度のラベル区間）。空/未指定なら元号なし。 */
+  eras?: EraDef[];
+  /** タイムゾーン（時刻表示のラベル＋オフセット、夏時間）。未指定なら無し。 */
+  timezone?: TimeZoneDef;
+  /**
+   * 旧暦の節気判定に使う UTC オフセット分。未指定/480=中国農暦(UTC+8 既定)、
+   * 540=日本(UTC+9)。**節気のみ**再ビンし、旧暦月日・六曜は中国農暦のまま
+   * （lunar-typescript は朔の瞬間を公開せず正確な再導出が不可能なため）。
+   */
+  lunarTzMinutes?: number;
+  /**
+   * ユリウス→グレゴリオ改暦。指定時は date↔day/月長/年長を JDN ベースの実暦変換へ委譲し、
+   * 切替前ユリウス閏・後グレゴリオ閏・切替の日飛ばしを反映する（実暦12ヶ月暦が前提）。
+   */
+  reform?: CalendarReform;
 }
 
 /** day番号から導出した作中日付の構成要素。 */
@@ -93,8 +146,9 @@ export function isLeapYear(year: number, cal: ChronicleCalendar): boolean {
   return cal.leap?.kind === "gregorian" && isGregorianLeap(year);
 }
 
-/** 暦年 year の総日数（基準＋閏日）。 */
+/** 暦年 year の総日数（基準＋閏日）。改暦時は実暦の年長（切替年は短縮）。 */
 export function daysInYear(year: number, cal: ChronicleCalendar): number {
+  if (cal.reform) return reformDaysInYear(year, cal.reform);
   return calendarDaysPerYear(cal) + (isLeapYear(year, cal) ? 1 : 0);
 }
 
@@ -104,6 +158,7 @@ export function monthLength(
   monthIndex: number,
   cal: ChronicleCalendar,
 ): number {
+  if (cal.reform) return reformMonthLength(year, monthIndex, cal.reform);
   const m = cal.months?.[monthIndex];
   if (!m) return 0;
   const base = Math.max(1, Math.floor(m.days));
@@ -156,7 +211,7 @@ export function weekdayOf(
 ): number | null {
   const wl = cal.weekdayNames?.length ?? 0;
   if (wl <= 0) return null;
-  return mod(Math.floor(dayNumber), wl);
+  return mod(Math.floor(dayNumber) + (cal.weekdayStartIndex ?? 0), wl);
 }
 
 /**
@@ -172,6 +227,17 @@ export function dayNumberToDate(
   const dpy = calendarDaysPerYear(cal);
   const startYear = cal.startYear ?? 0;
   const weekdayIndex = weekdayOf(d, cal);
+  if (cal.reform) {
+    const r = reformDayToDate(d, startYear, cal.reform);
+    const yearStart = reformDateToDay(r.year, 0, 1, startYear, cal.reform);
+    return {
+      year: r.year,
+      monthIndex: r.monthIndex,
+      dayOfMonth: r.dayOfMonth,
+      dayOfYear: d - yearStart,
+      weekdayIndex,
+    };
+  }
   if (dpy <= 0) {
     return {
       year: startYear,
@@ -227,6 +293,15 @@ export function dateToDayNumber(
   },
   cal: ChronicleCalendar,
 ): number {
+  if (cal.reform) {
+    return reformDateToDay(
+      date.year,
+      date.monthIndex ?? 0,
+      date.dayOfMonth ?? 1,
+      cal.startYear ?? 0,
+      cal.reform,
+    );
+  }
   // yearStartDay は閏なしなら (year-startYear)*dpy と一致（従来挙動を保存）。
   const base = yearStartDay(date.year, cal);
   let dayOfYear = 0;
@@ -235,7 +310,9 @@ export function dateToDayNumber(
     for (let i = 0; i < mi; i++) {
       dayOfYear += monthLength(date.year, i, cal);
     }
-    dayOfYear += Math.max(0, (date.dayOfMonth ?? 1) - 1);
+    const len = monthLength(date.year, mi, cal);
+    const dom = Math.max(1, Math.min(len, date.dayOfMonth ?? 1));
+    dayOfYear += dom - 1;
   } else if (date.dayOfMonth != null) {
     dayOfYear = Math.max(0, date.dayOfMonth - 1);
   }
@@ -253,8 +330,47 @@ export function formatTimeOfDay(minute: number | null): string | null {
 }
 
 /**
+ * day に有効なタイムゾーン（DST 期間中は DST 側、それ以外は標準時）。未設定なら null。
+ * DST 期間は年内通日の閉区間 [start, end]（start>end は年跨ぎ＝南半球型）。決定性: 純関数。
+ */
+export function activeTimeZone(
+  day: number,
+  cal: ChronicleCalendar,
+): { label: string; offsetMinutes: number } | null {
+  const tz = cal.timezone;
+  if (!tz) return null;
+  if (tz.dst) {
+    const doy = dayNumberToDate(day, cal).dayOfYear;
+    const { startDayOfYear: s, endDayOfYear: e } = tz.dst;
+    const inDst = s <= e ? doy >= s && doy <= e : doy >= s || doy <= e;
+    if (inDst)
+      return { label: tz.dst.label, offsetMinutes: tz.dst.offsetMinutes };
+  }
+  return { label: tz.label, offsetMinutes: tz.offsetMinutes };
+}
+
+/**
+ * 暦年に該当する元号と元号年（明治N年のN）。該当が無ければ null。
+ * 同年に複数該当するときは startYear 最大（=直近に始まった元号）を採用。決定性: 純関数。
+ */
+export function eraOf(
+  year: number,
+  cal: ChronicleCalendar,
+): { name: string; year: number } | null {
+  const eras = cal.eras;
+  if (!eras || eras.length === 0) return null;
+  let best: EraDef | null = null;
+  for (const e of eras) {
+    if (year >= e.startYear && (!best || e.startYear > best.startYear))
+      best = e;
+  }
+  return best ? { name: best.name, year: year - best.startYear + 1 } : null;
+}
+
+/**
  * day番号＋分＋粒度 → 表示文字列。粒度に応じて段階的に省略する。
  * none/null は空文字。season は seasonOf を用いる。time は HH:MM を付す。
+ * 元号(eras)が暦年を覆う場合は西暦年の代わりに「明治N年」等で表示する。
  */
 export function formatChronicleDate(
   dayNumber: number | null,
@@ -273,16 +389,18 @@ export function formatChronicleDate(
         ? `${date.monthIndex + 1}`
         : null;
 
-  if (granularity === "year")
-    return ja ? `${date.year}年` : `Year ${date.year}`;
+  // 元号があれば西暦年トークンを元号年トークンへ置換。
+  const era = eraOf(date.year, cal);
+  const yJa = era ? `${era.name}${era.year}年` : `${date.year}年`;
+  const yEn = era ? `${era.name} ${era.year}` : `${date.year}`;
+
+  if (granularity === "year") return ja ? yJa : era ? yEn : `Year ${date.year}`;
   if (granularity === "season") {
     const s = seasonOf(dayNumber, cal) ?? "?";
-    return ja ? `${date.year}年・${s}` : `${s} ${date.year}`;
+    return ja ? `${yJa}・${s}` : `${s} ${yEn}`;
   }
   if (granularity === "month") {
-    return ja
-      ? `${date.year}年${monthName ?? ""}`
-      : `${monthName ?? ""} ${date.year}`.trim();
+    return ja ? `${yJa}${monthName ?? ""}` : `${monthName ?? ""} ${yEn}`.trim();
   }
 
   // day / time
@@ -295,11 +413,13 @@ export function formatChronicleDate(
         ? `第${date.dayOfYear + 1}日`
         : `${date.dayOfYear + 1}`;
   const dayStr = ja
-    ? `${date.year}年${monthName ?? ""}${dayPart}`
-    : `${monthName ?? ""} ${dayPart}, ${date.year}`.trim();
+    ? `${yJa}${monthName ?? ""}${dayPart}`
+    : `${monthName ?? ""} ${dayPart}, ${yEn}`.trim();
   if (granularity === "time") {
     const tod = formatTimeOfDay(minute);
-    return tod ? `${dayStr} ${tod}` : dayStr;
+    const base = tod ? `${dayStr} ${tod}` : dayStr;
+    const tz = activeTimeZone(dayNumber, cal);
+    return tz ? `${base} ${tz.label}` : base;
   }
   return dayStr;
 }
@@ -322,10 +442,11 @@ export function seasonOf(
   time: number,
   calendar: ChronicleCalendar,
 ): string | null {
-  const { daysPerYear, seasonBoundaries } = calendar;
-  if (daysPerYear <= 0 || seasonBoundaries.length === 0) return null;
-  const dayOfYear =
-    ((Math.floor(time) % daysPerYear) + daysPerYear) % daysPerYear;
+  const { seasonBoundaries } = calendar;
+  if (calendarDaysPerYear(calendar) <= 0 || seasonBoundaries.length === 0) {
+    return null;
+  }
+  const dayOfYear = dayNumberToDate(time, calendar).dayOfYear;
   const sorted = [...seasonBoundaries].sort(
     (a, b) => a.startDayOfYear - b.startDayOfYear,
   );
@@ -368,6 +489,29 @@ export const GREGORIAN_MONTH_DAYS: readonly number[] = [
 ];
 /** グレゴリオ閏ルール（2月=index 1 に +1 日）。 */
 export const GREGORIAN_LEAP: LeapRule = { kind: "gregorian", monthIndex: 1 };
+
+/**
+ * 先発（proleptic）グレゴリオ暦で year年1月1日の曜日（0=日曜..6=土曜）。
+ * 全整数年（0・負含む天文学的年番号）に対応。JDN 経由で算出する純関数。
+ * 用途: グレゴリオ暦プリセット（day番号0 = startYear-01-01・週=日曜始まり）の
+ * weekdayStartIndex を実暦に合わせて自動算出し、「○年○月○日=何曜日」を一致させる。
+ * 注: 1582年以前は実史のユリウス暦日付とはずれる（改暦=#1 で別途対応）。
+ */
+export function gregorianWeekdayIndex(year: number): number {
+  const y = Math.floor(year);
+  // (year,1月,1日) の通算日(JDN)。month=1 なので a=1, m=10 固定。
+  const yy = y + 4800 - 1;
+  const jdn =
+    1 +
+    Math.floor((153 * 10 + 2) / 5) +
+    365 * yy +
+    Math.floor(yy / 4) -
+    Math.floor(yy / 100) +
+    Math.floor(yy / 400) -
+    32045;
+  // JDN 0 = 月曜。0=日曜へ正規化: (jdn + 1) mod 7。
+  return mod(jdn + 1, 7);
+}
 
 /**
  * 既存の ordinal 群の「最後」に挿す新しい fractional-index を返す。

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Plus, Trash2, X } from "lucide-react";
+import { Trash2, X } from "lucide-react";
 import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -55,10 +55,15 @@ import {
 } from "./chronicleLaneOrder";
 import { formatChronicleDate } from "./chronicleTime";
 import type { ChronicleCalendar, DateLang } from "./chronicleTime";
+import { MIN_PER_DAY, splitDayMinute, shiftEventPatch } from "./chronicleShift";
 import type { MarkerEvent } from "./EventMarker";
 import { ChronicleViewport } from "./ChronicleViewport";
 import { ChronicleToolbar } from "./ChronicleToolbar";
 import { ChronicleInspector } from "./ChronicleInspector";
+import {
+  ChronicleEventList,
+  type ChronicleEventListItem,
+} from "./ChronicleEventList";
 import { CodexEntryPicker } from "./CodexEntryPicker";
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { ChronicleTieView } from "./ChronicleTieView";
@@ -68,24 +73,6 @@ import { useSeasonConflicts } from "./useSeasonConflicts";
 
 const TIE_PAD = 40;
 const TIE_STEP = 120;
-const MIN_PER_DAY = 1440;
-
-/**
- * 分数日（時刻込み）を day 番号＋時刻に分解する。
- * subDay=true（時/分 zoom）なら時刻も吸着先へ更新。false（日以上 zoom）なら
- * day だけ動かし時刻(keepMinute)は保持する（=ドラッグで 0:00 にリセットしない）。
- */
-function splitDayMinute(
-  fracDay: number,
-  subDay: boolean,
-  keepMinute: number | null,
-): { time: number; minute: number | null } {
-  if (subDay) {
-    const day = Math.floor(fracDay);
-    return { time: day, minute: Math.round((fracDay - day) * MIN_PER_DAY) };
-  }
-  return { time: Math.round(fracDay), minute: keepMinute };
-}
 
 /**
  * 作中年表(Chronicle)パネル — 人物/場所レーン×作中時間軸の pan/zoom 年表。
@@ -145,11 +132,13 @@ export function ChroniclePanel() {
   const [density, setDensity] = useState<LaneDensity>("standard");
   const [labelsOn, setLabelsOn] = useState(true);
   const [showLegend, setShowLegend] = useState(true);
+  const [showEventList, setShowEventList] = useState(false);
+  const [showInspector, setShowInspector] = useState(true);
   const [showEdges, setShowEdges] = useState(true);
   const [tieMode, setTieMode] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
   // インスペクタ高さ（上端グリップでリサイズ。選択をまたいで保持）。
-  const [inspectorHeight, setInspectorHeight] = useState(340);
+  const [inspectorWidth, setInspectorWidth] = useState(360);
   // 「レーンを追加」で増やす空の未割当レーン群（id）。出来事を入れると laneGroup で永続。
   const groupCounterRef = useRef(0);
   const [emptyGroups, setEmptyGroups] = useState<string[]>([]);
@@ -554,6 +543,56 @@ export function ChroniclePanel() {
     }
   }, [issueIds, eff, trackW, view, applyView, setSelectedEventId]);
 
+  // 一覧クリック＝ナビゲーション（選択＋当該イベントをビュー中央へ寄せる）。
+  // 暦軸/並び順どちらのモードでも ed.startDay へ寄せる（handleGotoConflict と同じ挙動）。
+  const handleGotoEvent = useCallback(
+    (id: string) => {
+      setSelectedEventId(id);
+      const ed = eff.byId.get(id);
+      if (ed && view.pxPerDay > 0 && trackW > 0) {
+        applyView({
+          pxPerDay: view.pxPerDay,
+          viewStartDay: ed.startDay - trackW / 2 / view.pxPerDay,
+        });
+      }
+    },
+    [eff, view, trackW, applyView, setSelectedEventId],
+  );
+
+  // サイドペイン一覧の表示用データ（純データに畳んでコンポーネントへ渡す）。
+  const laneNameById = useMemo(
+    () => new Map(laneOptions.map((o) => [o.id, o.name])),
+    [laneOptions],
+  );
+  const eventListItems = useMemo<ChronicleEventListItem[]>(
+    () =>
+      events.map((e) => ({
+        id: e.id,
+        title: e.title,
+        kind: e.kind,
+        precision: e.precision,
+        secret: e.secret,
+        isInterval: e.endTime != null,
+        primaryCodexId: e.primaryCodexId,
+        laneName: e.primaryCodexId
+          ? (laneNameById.get(e.primaryCodexId) ?? null)
+          : null,
+        dateLabel:
+          eff.hasCalendarAxis && e.startGranularity !== "none"
+            ? formatChronicleDate(
+                e.startTime,
+                e.startMinute,
+                e.startGranularity,
+                cal,
+                lang,
+              )
+            : null,
+        startDay: eff.byId.get(e.id)?.startDay ?? null,
+        hasIssue: issueIds.has(e.id),
+      })),
+    [events, eff, laneNameById, cal, lang, issueIds],
+  );
+
   // ── CRUD ──────────────────────────────────────────────────
   const [creating, setCreating] = useState(false);
   // 暦モード中は新規イベントに既定の時刻（現在ビュー中央）を付与する。無時刻イベントを
@@ -641,6 +680,51 @@ export function ChroniclePanel() {
       void patchById(id, patch);
     },
     [events, patchById],
+  );
+
+  // 選択中の全イベントを同じ「日数差分(端数可)」だけ平行移動（レーン・期間長は保持）。
+  // deltaDays はズームグリッド由来の端数を含みうる。日グリッド以上(subDay=false)は
+  // 差分を整数日へ丸めて一律平行移動する（各イベントの分端数で相対ズレが出るのを防ぐ。
+  // 分は保持）。hour/minute ズーム(subDay=true)は端数を分まで反映して平行移動する。
+  // キーボード nudge（Alt+←/→）と複数選択の一括ドラッグ移動の共通処理。
+  const shiftSelectedBy = useCallback(
+    (deltaDays: number) => {
+      if (!Number.isFinite(deltaDays) || deltaDays === 0) return;
+      const subDay =
+        rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
+      if (!subDay && Math.round(deltaDays) === 0) return;
+      for (const id of selectedIdSet) {
+        const e = events.find((x) => x.id === id);
+        if (!e || e.startTime == null) continue;
+        void patchById(
+          id,
+          shiftEventPatch(
+            {
+              startTime: e.startTime,
+              startMinute: e.startMinute,
+              endTime: e.endTime,
+              endMinute: e.endMinute,
+            },
+            deltaDays,
+            subDay,
+          ),
+        );
+      }
+    },
+    [selectedIdSet, events, patchById],
+  );
+
+  // 一括ドラッグ: primary の吸着先(newStartDay=グリッド吸着済)と元の先端の差分を全選択へ。
+  // 端数(サブデイ/月端数)も保ったまま shiftSelectedBy へ渡す（Math.round しない）。
+  const handleMoveSelected = useCallback(
+    (primaryId: string, newStartDay: number) => {
+      const primary = events.find((e) => e.id === primaryId);
+      if (!primary || primary.startTime == null) return;
+      const fracStart =
+        primary.startTime + (primary.startMinute ?? 0) / MIN_PER_DAY;
+      shiftSelectedBy(newStartDay - fracStart);
+    },
+    [events, shiftSelectedBy],
   );
 
   // 期間端の伸縮（開始/終了を吸着位置へ。start<=end を保つ。時刻 zoom は時刻も更新）。
@@ -768,6 +852,16 @@ export function ChroniclePanel() {
       setSelectedEventId,
       setSelectedPosition,
     ],
+  );
+
+  // コンテキストメニュー「編集」: 単独選択し、詳細パネル(インスペクタ)を必ず開く。
+  // トグルで詳細を畳んでいても「編集」なら編集欄が出るよう showInspector を ON にする。
+  const handleEditEvent = useCallback(
+    (id: string) => {
+      setShowInspector(true);
+      handleSelectEvent(id);
+    },
+    [handleSelectEvent],
   );
 
   // 空白クリックで位置選択（出来事選択は外す）。
@@ -1099,6 +1193,8 @@ export function ChroniclePanel() {
       <ChronicleToolbar
         issueCount={issueCount}
         showLegend={showLegend}
+        showEventList={showEventList}
+        showInspector={showInspector}
         showEdges={showEdges}
         tieMode={tieMode}
         density={density}
@@ -1117,56 +1213,104 @@ export function ChroniclePanel() {
         onZoomOut={() => handleZoom(1 / 1.5)}
         onFit={handleFit}
         onToggleLegend={() => setShowLegend((s) => !s)}
+        onToggleEventList={() => setShowEventList((s) => !s)}
+        onToggleInspector={() => setShowInspector((s) => !s)}
         onSetDensity={setDensity}
         onToggleLabels={() => setLabelsOn((s) => !s)}
       />
 
-      {n === 0 ? (
-        <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
-          {t(
-            "chronicle.empty",
-            "出来事がまだありません。「追加」で作成できます。",
-          )}
-        </div>
-      ) : tieMode && tieView ? (
-        <div className="flex-1 overflow-auto bg-card">
-          <ChronicleTieView
-            model={tieView.model}
-            width={tieView.width}
-            height={180}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {showEventList && (
+          <ChronicleEventList
+            items={eventListItems}
+            selectedId={selectedEventId}
+            laneOptions={laneOptions}
+            onSelect={handleGotoEvent}
+            onClose={() => setShowEventList(false)}
           />
-        </div>
-      ) : (
-        <ChronicleViewport
-          view={view}
-          onViewChange={applyView}
-          onMeasureTrack={setTrackW}
-          layout={layout}
-          eventsById={eventsById}
-          selectedEventId={selectedEventId}
-          selectedIds={selectedIdSet}
-          activeLaneKey={activeLaneKey}
-          conflictIds={issueIds}
-          relatedIds={relatedIds}
-          showEdges={showEdges}
-          labelsOn={labelsOn}
-          onSelectEvent={handleSelectEvent}
-          laneOptions={laneOptions}
-          locked={locked}
-          onAssignGroup={handleAssignGroup}
-          onAddLane={handleAddLane}
-          onHideGroup={handleHideGroup}
-          onReorderLanes={handleReorderLanes}
-          selectedDay={selectedDay}
-          hasCalendarAxis={eff.hasCalendarAxis}
-          onMoveEvent={handleMoveEvent}
-          onResizeEvent={handleResizeEvent}
-          onCreateEdge={handleCreateEdge}
-          onCreateAt={handleCreateAt}
-          onSelectPosition={handleSelectPosition}
-          onDeleteEvent={handleDeleteById}
-        />
-      )}
+        )}
+        {n === 0 ? (
+          <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
+            {t(
+              "chronicle.empty",
+              "出来事がまだありません。「追加」で作成できます。",
+            )}
+          </div>
+        ) : tieMode && tieView ? (
+          <div className="flex-1 overflow-auto bg-card">
+            <ChronicleTieView
+              model={tieView.model}
+              width={tieView.width}
+              height={180}
+            />
+          </div>
+        ) : (
+          <ChronicleViewport
+            view={view}
+            onViewChange={applyView}
+            onMeasureTrack={setTrackW}
+            layout={layout}
+            eventsById={eventsById}
+            selectedEventId={selectedEventId}
+            selectedIds={selectedIdSet}
+            activeLaneKey={activeLaneKey}
+            conflictIds={issueIds}
+            relatedIds={relatedIds}
+            showEdges={showEdges}
+            labelsOn={labelsOn}
+            onSelectEvent={handleSelectEvent}
+            laneOptions={laneOptions}
+            locked={locked}
+            onAssignGroup={handleAssignGroup}
+            onAddLane={handleAddLane}
+            onHideGroup={handleHideGroup}
+            onReorderLanes={handleReorderLanes}
+            selectedDay={selectedDay}
+            hasCalendarAxis={eff.hasCalendarAxis}
+            onMoveEvent={handleMoveEvent}
+            onResizeEvent={handleResizeEvent}
+            onCreateEdge={handleCreateEdge}
+            onCreateAt={handleCreateAt}
+            onSelectPosition={handleSelectPosition}
+            onDeleteEvent={handleDeleteById}
+            onEditEvent={handleEditEvent}
+            onMoveSelected={handleMoveSelected}
+            onNudgeSelected={shiftSelectedBy}
+            onDeleteSelected={handleBulkDelete}
+            onClearSelection={clearSelection}
+          />
+        )}
+        {showInspector && selected && multiCount <= 1 && (
+          <ChronicleInspector
+            event={selected}
+            width={inspectorWidth}
+            onWidthChange={setInspectorWidth}
+            laneOptions={laneOptions}
+            locations={locations}
+            scenes={scenes}
+            calendar={cal}
+            conflicts={conflicts.filter((c) => c.eventId === selected.id)}
+            ageConflicts={ageConflicts.filter((c) => c.eventId === selected.id)}
+            hasTwoPlacesIssue={twoPlacesConflicts.some(
+              (c) => c.eventA === selected.id || c.eventB === selected.id,
+            )}
+            hasCausalIssue={selectedHasCausalIssue}
+            linkedSceneCount={selectedSceneIds.length}
+            allEvents={events}
+            causeIds={selectedCauseIds}
+            participantIds={selectedParticipants}
+            onSetParticipants={handleSetParticipants}
+            onAddCause={handleAddCause}
+            onRemoveCause={handleRemoveCause}
+            onStamp={handleStamp}
+            onPull={handlePull}
+            onPatch={handlePatch}
+            onDelete={handleDelete}
+            onClose={() => setSelectedEventId(null)}
+            lang={lang}
+          />
+        )}
+      </div>
 
       {showStatusBar && (
         <div
@@ -1188,7 +1332,7 @@ export function ChroniclePanel() {
         </div>
       )}
 
-      {multiCount > 1 ? (
+      {multiCount > 1 && (
         <div className="flex h-[60px] flex-none items-center gap-2.5 border-t border-border bg-card px-4.5">
           <span className="text-[13px] font-medium text-foreground">
             {t("chronicle.multiSelected", "{{count}} 件を選択中", {
@@ -1229,77 +1373,6 @@ export function ChroniclePanel() {
             {t("chronicle.clearSelection", "選択解除")}
           </button>
         </div>
-      ) : selected ? (
-        <ChronicleInspector
-          event={selected}
-          height={inspectorHeight}
-          onHeightChange={setInspectorHeight}
-          laneOptions={laneOptions}
-          locations={locations}
-          scenes={scenes}
-          calendar={cal}
-          conflicts={conflicts.filter((c) => c.eventId === selected.id)}
-          ageConflicts={ageConflicts.filter((c) => c.eventId === selected.id)}
-          hasTwoPlacesIssue={twoPlacesConflicts.some(
-            (c) => c.eventA === selected.id || c.eventB === selected.id,
-          )}
-          hasCausalIssue={selectedHasCausalIssue}
-          linkedSceneCount={selectedSceneIds.length}
-          allEvents={events}
-          causeIds={selectedCauseIds}
-          participantIds={selectedParticipants}
-          onSetParticipants={handleSetParticipants}
-          onAddCause={handleAddCause}
-          onRemoveCause={handleRemoveCause}
-          onStamp={handleStamp}
-          onPull={handlePull}
-          onPatch={handlePatch}
-          onDelete={handleDelete}
-          onClose={() => setSelectedEventId(null)}
-          lang={lang}
-        />
-      ) : (
-        n > 0 && (
-          <div className="flex h-[60px] flex-none items-center gap-3.5 border-t border-border bg-card px-4.5">
-            <span className="text-[13px] text-muted-foreground">
-              {t(
-                "chronicle.selectHint",
-                "出来事をクリックすると、ここで詳細を編集できます。",
-              )}
-            </span>
-            <span className="rounded-md bg-accent px-2.5 py-1 text-xs text-foreground/70">
-              {t("chronicle.totalCount", "全 {{count}} 件", { count: n })}
-            </span>
-            {issueCount > 0 && (
-              <span
-                className="rounded-md px-2.5 py-1 text-xs"
-                style={{
-                  background: "color-mix(in oklch, #e0a23a 14%, transparent)",
-                  border:
-                    "1px solid color-mix(in oklch, #e0a23a 40%, transparent)",
-                  color: "color-mix(in oklch, #e0a23a 75%, var(--foreground))",
-                }}
-              >
-                {t("chronicle.issueCount", "整合警告 {{count}} 件", {
-                  count: issueCount,
-                })}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={handleAdd}
-              disabled={creating}
-              className="ms-auto inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs font-medium disabled:opacity-50"
-              style={{
-                background: "var(--primary)",
-                color: "var(--primary-foreground)",
-              }}
-            >
-              <Plus className="size-3.5" />{" "}
-              {t("chronicle.newEvent", "新しい出来事")}
-            </button>
-          </div>
-        )
       )}
 
       <ChronicleExtractDialog

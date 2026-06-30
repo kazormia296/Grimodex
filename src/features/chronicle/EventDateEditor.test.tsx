@@ -58,6 +58,16 @@ describe("EventDateEditor", () => {
     expect(onPatch).toHaveBeenCalledWith({ startTime: 59 });
   });
 
+  it("月長を超える日付入力は翌月へ桁あふれさせず月末へクランプ", () => {
+    const { onPatch, getByLabelText } = renderEditor({
+      startGranularity: "day",
+      startTime: 31, // 1247年二月1日
+    });
+    fireEvent.change(getByLabelText("日"), { target: { value: "31" } });
+    // 二月は28日なので day31+27 = 58（3月相当へ流さない）。
+    expect(onPatch).toHaveBeenCalledWith({ startTime: 58 });
+  });
+
   it("粒度 day→none で時刻系を全クリア", () => {
     const { onPatch, getByLabelText } = renderEditor({
       startGranularity: "day",

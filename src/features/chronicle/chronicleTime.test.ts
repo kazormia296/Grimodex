@@ -6,10 +6,143 @@ import {
   dayNumberToDate,
   dateToDayNumber,
   weekdayOf,
+  gregorianWeekdayIndex,
+  eraOf,
+  activeTimeZone,
   formatTimeOfDay,
   formatChronicleDate,
   type ChronicleCalendar,
 } from "./chronicleTime";
+
+describe("activeTimeZone / 時刻ラベル（TZ・DST）", () => {
+  const cal: ChronicleCalendar = {
+    daysPerYear: 360,
+    seasonBoundaries: [],
+    startYear: 0,
+    timezone: {
+      label: "JST",
+      offsetMinutes: 540,
+      dst: {
+        label: "JDT",
+        offsetMinutes: 600,
+        startDayOfYear: 90,
+        endDayOfYear: 270,
+      },
+    },
+  };
+  it("DST 期間内は DST 側、外は標準時", () => {
+    expect(activeTimeZone(100, cal)).toEqual({
+      label: "JDT",
+      offsetMinutes: 600,
+    });
+    expect(activeTimeZone(10, cal)).toEqual({
+      label: "JST",
+      offsetMinutes: 540,
+    });
+    expect(activeTimeZone(300, cal)).toEqual({
+      label: "JST",
+      offsetMinutes: 540,
+    });
+  });
+  it("年跨ぎ DST（start>end・南半球型）", () => {
+    const south: ChronicleCalendar = {
+      ...cal,
+      timezone: {
+        ...cal.timezone!,
+        dst: { ...cal.timezone!.dst!, startDayOfYear: 300, endDayOfYear: 90 },
+      },
+    };
+    expect(activeTimeZone(10, south)?.label).toBe("JDT"); // 年初は DST
+    expect(activeTimeZone(150, south)?.label).toBe("JST"); // 年央は標準
+  });
+  it("formatChronicleDate(time) に TZ ラベルを付す", () => {
+    expect(formatChronicleDate(10, 540, "time", cal, "ja")).toContain("JST");
+    expect(formatChronicleDate(100, 540, "time", cal, "ja")).toContain("JDT");
+  });
+  it("TZ 未設定なら時刻にラベルなし", () => {
+    const plain: ChronicleCalendar = { daysPerYear: 360, seasonBoundaries: [] };
+    expect(formatChronicleDate(10, 540, "time", plain, "ja")).not.toContain(
+      "JST",
+    );
+  });
+});
+import { REFORM_PRESETS } from "./chronicleReform";
+
+describe("gregorianWeekdayIndex（実暦グレゴリオ曜日, 0=日）", () => {
+  it("既知の元日曜日に一致（先発グレゴリオ）", () => {
+    expect(gregorianWeekdayIndex(2000)).toBe(6); // 2000-01-01 土
+    expect(gregorianWeekdayIndex(2001)).toBe(1); // 2001-01-01 月
+    expect(gregorianWeekdayIndex(2024)).toBe(1); // 2024-01-01 月
+    expect(gregorianWeekdayIndex(1)).toBe(1); // 0001-01-01 月（proleptic）
+    expect(gregorianWeekdayIndex(1970)).toBe(4); // 1970-01-01 木
+  });
+});
+
+describe("改暦（reform）統合: chronicleTime 経由", () => {
+  const cal: ChronicleCalendar = {
+    daysPerYear: 365,
+    seasonBoundaries: [],
+    startYear: 1582,
+    weekdayNames: ["日", "月", "火", "水", "木", "金", "土"],
+    // day0 = 1582-01-01(ユリウス) は月曜 → weekdayStartIndex=1 で実暦曜日に一致。
+    weekdayStartIndex: 1,
+    reform: REFORM_PRESETS.gregorian1582,
+  };
+  it("ユリウス Oct4 の翌日がグレゴリオ Oct15（日付スキップ）", () => {
+    const oct4 = dateToDayNumber(
+      { year: 1582, monthIndex: 9, dayOfMonth: 4 },
+      cal,
+    );
+    const next = dayNumberToDate(oct4 + 1, cal);
+    expect([next.year, next.monthIndex, next.dayOfMonth]).toEqual([
+      1582, 9, 15,
+    ]);
+  });
+  it("曜日はスキップを跨いでも連続（Oct4=木 → Oct15=金）", () => {
+    const oct4 = dateToDayNumber(
+      { year: 1582, monthIndex: 9, dayOfMonth: 4 },
+      cal,
+    );
+    // 4=木(實:1582-10-04 ユリウス=木), 5=金(1582-10-15 グレゴリオ=金)。
+    expect(weekdayOf(oct4, cal)).toBe(4);
+    expect(weekdayOf(oct4 + 1, cal)).toBe(5);
+  });
+  it("date↔day 往復（改暦後の任意日）", () => {
+    const d = dateToDayNumber(
+      { year: 1700, monthIndex: 2, dayOfMonth: 1 },
+      cal,
+    );
+    const back = dayNumberToDate(d, cal);
+    expect([back.year, back.monthIndex, back.dayOfMonth]).toEqual([1700, 2, 1]);
+  });
+});
+
+describe("eraOf（元号・年号）", () => {
+  const cal: ChronicleCalendar = {
+    daysPerYear: 365,
+    seasonBoundaries: [],
+    startYear: 1868,
+    eras: [
+      { name: "明治", startYear: 1868 },
+      { name: "大正", startYear: 1912 },
+    ],
+  };
+  it("該当元号の元号年（startYear=元号1年）", () => {
+    expect(eraOf(1868, cal)).toEqual({ name: "明治", year: 1 });
+    expect(eraOf(1869, cal)).toEqual({ name: "明治", year: 2 });
+    expect(eraOf(1912, cal)).toEqual({ name: "大正", year: 1 });
+  });
+  it("元号開始前・元号なしは null", () => {
+    expect(eraOf(1867, cal)).toBeNull();
+    expect(eraOf(1900, { daysPerYear: 365, seasonBoundaries: [] })).toBeNull();
+  });
+  it("formatChronicleDate は西暦年を元号年に置換", () => {
+    expect(formatChronicleDate(0, null, "year", cal, "ja")).toBe("明治1年");
+    expect(formatChronicleDate(365, null, "year", cal, "ja")).toBe("明治2年");
+    // 元号外の年（1867=day -365）は西暦のまま。
+    expect(formatChronicleDate(-365, null, "year", cal, "ja")).toBe("1867年");
+  });
+});
 
 const CAL: ChronicleCalendar = {
   daysPerYear: 360,
@@ -89,6 +222,7 @@ const GREG: ChronicleCalendar = {
     { name: "十二月", days: 31 },
   ],
   weekdayNames: ["月", "火", "水", "木", "金", "土", "日"],
+  weekdayStartIndex: 0,
   seasonBoundaries: [
     { name: "春", startDayOfYear: 0 },
     { name: "夏", startDayOfYear: 90 },
@@ -173,6 +307,12 @@ describe("weekdayOf", () => {
   });
   it("weekdayNames が空なら null", () => {
     expect(weekdayOf(3, { daysPerYear: 360, seasonBoundaries: [] })).toBeNull();
+  });
+  it("weekdayStartIndex で day0 の曜日を指定できる", () => {
+    const cal = { ...GREG, weekdayStartIndex: 5 };
+    expect(weekdayOf(0, cal)).toBe(5);
+    expect(weekdayOf(2, cal)).toBe(0);
+    expect(weekdayOf(-1, cal)).toBe(4);
   });
 });
 
@@ -332,6 +472,45 @@ describe("グレゴリオ閏年エンジン", () => {
     expect(dn).toBeLessThan(0);
     const d = dayNumberToDate(dn, GREGORIAN);
     expect([d.year, d.monthIndex, d.dayOfMonth]).toEqual([1996, 1, 29]);
+  });
+
+  it("seasonOf は閏日累積後も年内通日に基づいて季節を判定する", () => {
+    const seasonal: ChronicleCalendar = {
+      ...GREGORIAN,
+      seasonBoundaries: [
+        { name: "春", startDayOfYear: 0 },
+        { name: "夏", startDayOfYear: 90 },
+        { name: "秋", startDayOfYear: 180 },
+        { name: "冬", startDayOfYear: 270 },
+      ],
+    };
+    const dec31_2001 = dateToDayNumber(
+      { year: 2001, monthIndex: 11, dayOfMonth: 31 },
+      seasonal,
+    );
+    expect(dayNumberToDate(dec31_2001, seasonal).dayOfYear).toBe(364);
+    expect(seasonOf(dec31_2001, seasonal)).toBe("冬");
+  });
+
+  it("dateToDayNumber は存在しない月内日をその月の末日にクランプする", () => {
+    const feb29_2001 = dateToDayNumber(
+      { year: 2001, monthIndex: 1, dayOfMonth: 29 },
+      GREGORIAN,
+    );
+    expect(dayNumberToDate(feb29_2001, GREGORIAN)).toMatchObject({
+      year: 2001,
+      monthIndex: 1,
+      dayOfMonth: 28,
+    });
+    const apr31_2000 = dateToDayNumber(
+      { year: 2000, monthIndex: 3, dayOfMonth: 31 },
+      GREGORIAN,
+    );
+    expect(dayNumberToDate(apr31_2000, GREGORIAN)).toMatchObject({
+      year: 2000,
+      monthIndex: 3,
+      dayOfMonth: 30,
+    });
   });
 });
 

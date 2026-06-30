@@ -143,8 +143,13 @@ export function useSeasonConflicts({
         startYear: cal.startYear ?? 0,
         months: JSON.stringify(cal.months ?? []),
         weekdayNames: JSON.stringify(cal.weekdayNames ?? []),
+        weekdayStartIndex: cal.weekdayStartIndex ?? 0,
         leapRule: JSON.stringify(cal.leap ?? { kind: "none" }),
         ageReckoning: cal.ageReckoning ?? "full",
+        eras: JSON.stringify(cal.eras ?? []),
+        reform: JSON.stringify(cal.reform ?? null),
+        timezone: JSON.stringify(cal.timezone ?? null),
+        lunarTzMinutes: cal.lunarTzMinutes ?? 480,
       });
       setCalVersion((v) => v + 1);
     },
