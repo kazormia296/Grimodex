@@ -25,6 +25,11 @@ import {
 import { laneColorFor } from "./laneColor";
 import { ChronicleDatePicker } from "./ChronicleDatePicker";
 import { CodexEntryPicker } from "./CodexEntryPicker";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
 
 export interface ChronicleInspectorProps {
   event: EventRow;
@@ -131,10 +136,7 @@ export function ChronicleInspector({
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
   };
-  const [picker, setPicker] = useState<{
-    which: "start" | "end";
-    anchor: { left: number; bottom: number };
-  } | null>(null);
+  const [pickerOpen, setPickerOpen] = useState<"start" | "end" | null>(null);
 
   const titleById = new Map(allEvents.map((e) => [e.id, e.title]));
   const causeOptions = allEvents.filter(
@@ -144,13 +146,41 @@ export function ChronicleInspector({
   const isInterval = event.endTime != null;
   const lc = laneColorFor(event.primaryCodexId);
 
-  const openPicker = (which: "start" | "end", el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - 308));
-    setPicker({
-      which,
-      anchor: { left, bottom: window.innerHeight - r.top + 8 },
-    });
+  // 日時ピッカー本体（Radix PopoverContent 内に描画。配置/衝突回避/アニメは Radix 側）。
+  const pickerContentFor = (which: "start" | "end") => {
+    const gran =
+      which === "start"
+        ? event.startGranularity
+        : event.endGranularity === "none"
+          ? "day"
+          : event.endGranularity;
+    const day =
+      which === "start"
+        ? (event.startTime ?? dateToDayNumber({ year: startYear }, calendar))
+        : (event.endTime ??
+          event.startTime ??
+          dateToDayNumber({ year: startYear }, calendar));
+    const minute =
+      which === "start" ? (event.startMinute ?? 0) : (event.endMinute ?? 0);
+    return (
+      <ChronicleDatePicker
+        which={which}
+        granularity={gran as EventGranularity}
+        calendar={calendar}
+        day={day}
+        minute={minute}
+        lang={lang}
+        onCommitDay={(d) => {
+          if (which === "start") onPatch({ startTime: d });
+          else onPatch({ endTime: Math.max(d, event.startTime ?? d) });
+        }}
+        onCommitMinute={(m) => {
+          if (which === "start") onPatch({ startMinute: m });
+          else onPatch({ endMinute: m });
+        }}
+        onClose={() => setPickerOpen(null)}
+      />
+    );
   };
 
   const setGran = (which: "start" | "end", g: EventGranularity) => {
@@ -188,23 +218,6 @@ export function ChronicleInspector({
         lang,
       )
     : "";
-
-  const pickerDay =
-    picker?.which === "start"
-      ? (event.startTime ?? dateToDayNumber({ year: startYear }, calendar))
-      : (event.endTime ??
-        event.startTime ??
-        dateToDayNumber({ year: startYear }, calendar));
-  const pickerMinute =
-    picker?.which === "start"
-      ? (event.startMinute ?? 0)
-      : (event.endMinute ?? 0);
-  const pickerGran =
-    picker?.which === "start"
-      ? event.startGranularity
-      : event.endGranularity === "none"
-        ? "day"
-        : event.endGranularity;
 
   return (
     <div
@@ -437,15 +450,28 @@ export function ChronicleInspector({
                   ))}
                 </select>
                 {event.startGranularity !== "none" ? (
-                  <button
-                    type="button"
-                    onClick={(e) => openPicker("start", e.currentTarget)}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
-                    style={{ fontFeatureSettings: "'tnum'" }}
+                  <Popover
+                    open={pickerOpen === "start"}
+                    onOpenChange={(o) => setPickerOpen(o ? "start" : null)}
                   >
-                    <CalendarDays className="size-3.5 opacity-70" />
-                    {startResolved}
-                  </button>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
+                        style={{ fontFeatureSettings: "'tnum'" }}
+                      >
+                        <CalendarDays className="size-3.5 opacity-70" />
+                        {startResolved}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="start"
+                      side="top"
+                      className="w-[296px]"
+                    >
+                      {pickerContentFor("start")}
+                    </PopoverContent>
+                  </Popover>
                 ) : (
                   <span className="text-xs text-muted-foreground">
                     {t("chronicle.timeUnset", "時刻は未指定（並び順のみ）")}
@@ -458,15 +484,28 @@ export function ChronicleInspector({
                 </span>
                 {isInterval ? (
                   <>
-                    <button
-                      type="button"
-                      onClick={(e) => openPicker("end", e.currentTarget)}
-                      className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
-                      style={{ fontFeatureSettings: "'tnum'" }}
+                    <Popover
+                      open={pickerOpen === "end"}
+                      onOpenChange={(o) => setPickerOpen(o ? "end" : null)}
                     >
-                      <CalendarDays className="size-3.5 opacity-70" />
-                      {endResolved}
-                    </button>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
+                          style={{ fontFeatureSettings: "'tnum'" }}
+                        >
+                          <CalendarDays className="size-3.5 opacity-70" />
+                          {endResolved}
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="start"
+                        side="top"
+                        className="w-[296px]"
+                      >
+                        {pickerContentFor("end")}
+                      </PopoverContent>
+                    </Popover>
                     <button
                       type="button"
                       onClick={() =>
@@ -637,27 +676,6 @@ export function ChronicleInspector({
           </div>
         </div>
       </div>
-
-      {picker && (
-        <ChronicleDatePicker
-          which={picker.which}
-          granularity={pickerGran as EventGranularity}
-          calendar={calendar}
-          day={pickerDay}
-          minute={pickerMinute}
-          anchor={picker.anchor}
-          lang={lang}
-          onCommitDay={(d) => {
-            if (picker.which === "start") onPatch({ startTime: d });
-            else onPatch({ endTime: Math.max(d, event.startTime ?? d) });
-          }}
-          onCommitMinute={(m) => {
-            if (picker.which === "start") onPatch({ startMinute: m });
-            else onPatch({ endMinute: m });
-          }}
-          onClose={() => setPicker(null)}
-        />
-      )}
     </div>
   );
 }

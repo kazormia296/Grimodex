@@ -21,8 +21,6 @@ export interface ChronicleDatePickerProps {
   day: number;
   /** この端点の現在の分(0..1439)。 */
   minute: number;
-  /** 固定配置のアンカー（left＝左端 px、bottom＝下端からの px）。 */
-  anchor: { left: number; bottom: number };
   onCommitDay: (day: number) => void;
   onCommitMinute: (minute: number) => void;
   onClose: () => void;
@@ -42,7 +40,6 @@ export function ChronicleDatePicker({
   calendar,
   day,
   minute,
-  anchor,
   onCommitDay,
   onCommitMinute,
   onClose,
@@ -178,150 +175,146 @@ export function ChronicleDatePicker({
   const curMin = mod(minute, 60);
   const curSeason = seasonOf(day, calendar);
 
+  // 配置・スクロール衝突回避・開閉アニメーションは Radix PopoverContent 側が担う。
+  // ここは中身（ヘッダ＋ナビ＋グリッド/ダイヤル）のみを返す。
   return (
-    <>
-      <div className="fixed inset-0 z-[60]" onClick={onClose} />
-      <div
-        className="fixed z-[61] w-[296px] rounded-xl border border-border bg-card p-3 shadow-xl"
-        style={{ left: anchor.left, bottom: anchor.bottom }}
-      >
-        <div className="mb-2.5 flex items-center">
-          <span className="text-xs font-semibold text-foreground">
-            {which === "start"
-              ? t("chronicle.startDateTime", "開始日時")
-              : t("chronicle.endDateTime", "終了日時")}
+    <div className="text-sm text-foreground">
+      <div className="mb-2.5 flex items-center">
+        <span className="text-xs font-semibold text-foreground">
+          {which === "start"
+            ? t("chronicle.startDateTime", "開始日時")
+            : t("chronicle.endDateTime", "終了日時")}
+        </span>
+        <span
+          className="ml-auto text-xs text-muted-foreground"
+          style={{ fontFeatureSettings: "'tnum'" }}
+        >
+          {formatChronicleDate(day, minute, granularity, calendar, lang)}
+        </span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={t("chronicle.close", "閉じる")}
+          className="ml-2 size-[22px] rounded-md border border-border bg-card text-xs text-muted-foreground"
+        >
+          ×
+        </button>
+      </div>
+
+      {showYearNav && (
+        <div className="mb-2 flex items-center gap-2">
+          <button type="button" style={navBtn} onClick={() => pkYear(-1)}>
+            ◀
+          </button>
+          <span className="flex-1 text-center text-[13px] font-semibold text-foreground">
+            {ja ? `${view.year}年` : `Y${view.year}`}
           </span>
-          <span
-            className="ml-auto text-xs text-muted-foreground"
-            style={{ fontFeatureSettings: "'tnum'" }}
-          >
-            {formatChronicleDate(day, minute, granularity, calendar, lang)}
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t("chronicle.close", "閉じる")}
-            className="ml-2 size-[22px] rounded-md border border-border bg-card text-xs text-muted-foreground"
-          >
-            ×
+          <button type="button" style={navBtn} onClick={() => pkYear(1)}>
+            ▶
           </button>
         </div>
+      )}
 
-        {showYearNav && (
-          <div className="mb-2 flex items-center gap-2">
-            <button type="button" style={navBtn} onClick={() => pkYear(-1)}>
-              ◀
-            </button>
-            <span className="flex-1 text-center text-[13px] font-semibold text-foreground">
-              {ja ? `${view.year}年` : `Y${view.year}`}
-            </span>
-            <button type="button" style={navBtn} onClick={() => pkYear(1)}>
-              ▶
-            </button>
-          </div>
-        )}
+      {showMonthNav && (
+        <div className="mb-2 flex items-center gap-2">
+          <button type="button" style={navBtn} onClick={() => pkMonth(-1)}>
+            ◀
+          </button>
+          <span className="flex-1 text-center text-[13px] text-foreground/80">
+            {monthName(view.monthIndex)}
+          </span>
+          <button type="button" style={navBtn} onClick={() => pkMonth(1)}>
+            ▶
+          </button>
+        </div>
+      )}
 
-        {showMonthNav && (
-          <div className="mb-2 flex items-center gap-2">
-            <button type="button" style={navBtn} onClick={() => pkMonth(-1)}>
-              ◀
+      {showSeason && (
+        <div className="grid grid-cols-4 gap-1.5">
+          {seasons.map((s) => (
+            <button
+              key={s.startDayOfYear}
+              type="button"
+              style={cellBase(curSeason === s.name)}
+              onClick={() => pkPickSeason(s.startDayOfYear)}
+            >
+              {s.name}
             </button>
-            <span className="flex-1 text-center text-[13px] text-foreground/80">
-              {monthName(view.monthIndex)}
-            </span>
-            <button type="button" style={navBtn} onClick={() => pkMonth(1)}>
-              ▶
+          ))}
+        </div>
+      )}
+
+      {showMonthGrid && (
+        <div className="grid grid-cols-3 gap-1.5">
+          {Array.from({ length: monthCount }, (_, i) => (
+            <button
+              key={i}
+              type="button"
+              style={cellBase(i === cur.monthIndex && view.year === cur.year)}
+              onClick={() => pkPickMonth(i)}
+            >
+              {monthName(i)}
             </button>
-          </div>
-        )}
+          ))}
+        </div>
+      )}
 
-        {showSeason && (
-          <div className="grid grid-cols-4 gap-1.5">
-            {seasons.map((s) => (
-              <button
-                key={s.startDayOfYear}
-                type="button"
-                style={cellBase(curSeason === s.name)}
-                onClick={() => pkPickSeason(s.startDayOfYear)}
-              >
-                {s.name}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {showMonthGrid && (
-          <div className="grid grid-cols-3 gap-1.5">
-            {Array.from({ length: monthCount }, (_, i) => (
-              <button
+      {showDayGrid && (
+        <>
+          <div
+            className="mb-1 grid gap-[3px]"
+            style={{ gridTemplateColumns: `repeat(${weekLen}, 1fr)` }}
+          >
+            {weekNames.map((w, i) => (
+              <div
                 key={i}
-                type="button"
-                style={cellBase(i === cur.monthIndex && view.year === cur.year)}
-                onClick={() => pkPickMonth(i)}
+                className="py-0.5 text-center text-[10px] text-muted-foreground"
               >
-                {monthName(i)}
-              </button>
+                {w}
+              </div>
             ))}
           </div>
-        )}
-
-        {showDayGrid && (
-          <>
-            <div
-              className="mb-1 grid gap-[3px]"
-              style={{ gridTemplateColumns: `repeat(${weekLen}, 1fr)` }}
-            >
-              {weekNames.map((w, i) => (
-                <div
-                  key={i}
-                  className="py-0.5 text-center text-[10px] text-muted-foreground"
+          <div
+            className="grid gap-[3px]"
+            style={{ gridTemplateColumns: `repeat(${weekLen}, 1fr)` }}
+          >
+            {Array.from({ length: offset }, (_, i) => (
+              <div key={`b${i}`} />
+            ))}
+            {Array.from({ length: daysInMonth }, (_, i) => {
+              const d = i + 1;
+              const sel =
+                view.year === cur.year &&
+                view.monthIndex === cur.monthIndex &&
+                d === cur.dayOfMonth;
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  style={cellBase(sel)}
+                  onClick={() => pkPickDay(d)}
                 >
-                  {w}
-                </div>
-              ))}
-            </div>
-            <div
-              className="grid gap-[3px]"
-              style={{ gridTemplateColumns: `repeat(${weekLen}, 1fr)` }}
-            >
-              {Array.from({ length: offset }, (_, i) => (
-                <div key={`b${i}`} />
-              ))}
-              {Array.from({ length: daysInMonth }, (_, i) => {
-                const d = i + 1;
-                const sel =
-                  view.year === cur.year &&
-                  view.monthIndex === cur.monthIndex &&
-                  d === cur.dayOfMonth;
-                return (
-                  <button
-                    key={d}
-                    type="button"
-                    style={cellBase(sel)}
-                    onClick={() => pkPickDay(d)}
-                  >
-                    {d}
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        )}
-
-        {showTime && (
-          <div className="mt-2.5 border-t border-border pt-2.5">
-            <div className="mb-1.5 text-[10px] text-muted-foreground">
-              {t("chronicle.timeOfDay", "時刻")}
-            </div>
-            <ChronicleTimeDial
-              hour={curHour}
-              minute={curMin}
-              onHour={pkPickHour}
-              onMinute={pkPickMin}
-            />
+                  {d}
+                </button>
+              );
+            })}
           </div>
-        )}
-      </div>
-    </>
+        </>
+      )}
+
+      {showTime && (
+        <div className="mt-2.5 border-t border-border pt-2.5">
+          <div className="mb-1.5 text-[10px] text-muted-foreground">
+            {t("chronicle.timeOfDay", "時刻")}
+          </div>
+          <ChronicleTimeDial
+            hour={curHour}
+            minute={curMin}
+            onHour={pkPickHour}
+            onMinute={pkPickMin}
+          />
+        </div>
+      )}
+    </div>
   );
 }
