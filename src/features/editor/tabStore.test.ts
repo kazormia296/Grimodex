@@ -269,4 +269,60 @@ describe("tabStore", () => {
       expect(notifications).toBe(2);
     });
   });
+
+  // --- openChronicleEventTab ---
+  describe("openChronicleEventTab", () => {
+    it("adds a pinned chronicle_event tab carrying the display label", () => {
+      useTabStore.getState().openChronicleEventTab("ev-1", "戴冠式");
+      const { tabs, activeTabId } = useTabStore.getState();
+      expect(tabs).toHaveLength(1);
+      expect(tabs[0]).toEqual({
+        nodeId: "ev-1",
+        isPreview: false,
+        contentType: "chronicle_event",
+        label: "戴冠式",
+      });
+      expect(activeTabId).toBe("ev-1");
+    });
+
+    it("refreshes the label and activates when re-opened", () => {
+      useTabStore.getState().openChronicleEventTab("ev-1", "旧題");
+      useTabStore.getState().openPinned("scene-1");
+      useTabStore.getState().openChronicleEventTab("ev-1", "新題");
+      const { tabs, activeTabId } = useTabStore.getState();
+      expect(tabs).toHaveLength(2);
+      const evTab = tabs.find((t) => t.nodeId === "ev-1");
+      expect(evTab?.label).toBe("新題");
+      expect(evTab?.contentType).toBe("chronicle_event");
+      expect(activeTabId).toBe("ev-1");
+    });
+
+    it("replaces a stale preview tab rather than stacking it", () => {
+      useTabStore.getState().openPreview("scene-1");
+      useTabStore.getState().openChronicleEventTab("ev-1", "題");
+      const { tabs } = useTabStore.getState();
+      // preview scene tab is dropped, only the pinned chronicle tab remains
+      expect(tabs).toHaveLength(1);
+      expect(tabs[0].nodeId).toBe("ev-1");
+    });
+
+    it("splitting a chronicle tab to the secondary group preserves its contentType/label (not 'scene')", () => {
+      useTabStore.getState().openChronicleEventTab("ev-1", "戴冠式");
+      useTabStore.getState().openInSecondaryGroupDirectional("ev-1", "right");
+      const sec = useTabStore
+        .getState()
+        .secondaryTabs.find((t) => t.nodeId === "ev-1");
+      expect(sec?.contentType).toBe("chronicle_event");
+      expect(sec?.label).toBe("戴冠式");
+    });
+
+    it("openInSecondaryGroup preserves an existing tab's contentType", () => {
+      useTabStore.getState().openChronicleEventTab("ev-1", "題");
+      useTabStore.getState().openInSecondaryGroup("ev-1");
+      const sec = useTabStore
+        .getState()
+        .secondaryTabs.find((t) => t.nodeId === "ev-1");
+      expect(sec?.contentType).toBe("chronicle_event");
+    });
+  });
 });

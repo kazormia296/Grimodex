@@ -125,6 +125,22 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(codexId).toBe("c1");
   });
 
+  it("出来事のダブルクリックで onEditEvent(realId)（インスペクタを開く・新規作成しない）", () => {
+    const onEditEvent = vi.fn();
+    const props = makeProps({ onEditEvent });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.doubleClick(marker, { clientX: 100, clientY: 20 });
+    expect(onEditEvent).toHaveBeenCalledTimes(1);
+    expect(onEditEvent).toHaveBeenCalledWith("e1");
+    // 出来事上のダブルクリックは新規作成を発火しない。
+    expect(props.onCreateAt).not.toHaveBeenCalled();
+  });
+
   it("マーカードラッグで onMoveEvent（横=日 / レーン codexId）", () => {
     const props = makeProps();
     const { container } = render(

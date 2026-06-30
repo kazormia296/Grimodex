@@ -1379,6 +1379,9 @@ export const events = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     title: text("title").notNull().default(""),
     note: text("note"),
+    // 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。codexEntries.content と
+    // 同 idiom。null/空 = 未入力。プレーン文字列の note とは別物（note は LLM 抽出が使う）。
+    detail: text("detail"),
     // 年表 x 軸順の fractional-index（base62・辞書順比較・storyTimeOrder と同 idiom）。
     ordinal: text("ordinal").notNull().default("a0"),
     // ホームレーン（人物 codex）。null=未割当。codex 削除で set null（出来事は残す）。

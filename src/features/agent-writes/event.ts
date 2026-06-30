@@ -88,6 +88,8 @@ async function trackedEventWrite(
 export interface AgentEventCreateInput {
   title?: string;
   note?: string | null;
+  /** 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。 */
+  detail?: string | null;
   ordinal?: string;
   primaryCodexId?: string | null;
   /** 未割当の整理用サブレーン id。 */
@@ -118,6 +120,7 @@ export async function agentCreateEvent(
     {
       title: input.title ?? "",
       note: input.note ?? null,
+      detail: input.detail ?? null,
       ordinal: input.ordinal ?? undefined,
       primaryCodexId: input.primaryCodexId ?? null,
       laneGroup: input.laneGroup ?? null,
@@ -146,6 +149,8 @@ export interface AgentEventUpdateInput {
   title?: string;
   laneGroup?: string | null;
   note?: string | null;
+  /** 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。set-if-present。 */
+  detail?: string | null;
   ordinal?: string;
   primaryCodexId?: string | null;
   locationCodexId?: string | null;

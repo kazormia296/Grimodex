@@ -1768,6 +1768,7 @@ impl Database {
                 project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 title            TEXT NOT NULL DEFAULT '',
                 note             TEXT,
+                detail           TEXT,
                 ordinal          TEXT NOT NULL DEFAULT 'a0',
                 primary_codex_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
                 location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
@@ -1825,6 +1826,8 @@ impl Database {
             "reveal_scene_id",
             "TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL",
         )?;
+        // 出来事の詳細（リッチテキスト = ProseMirror JSON）。既存 DB へは素 ALTER で追加。
+        Self::add_column_if_missing(&conn, "events", "detail", "TEXT")?;
 
         // 出来事への参加 codex（多対多）。主参加は events.primary_codex_id。
         // src/db/schema.ts の eventParticipants とミラー。

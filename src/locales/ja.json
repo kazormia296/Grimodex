@@ -3392,7 +3392,8 @@
       "noteEditing": "ノート編集中",
       "noteDescription": "このファイルはシーンではなくノートです",
       "codexEditing": "Codex エントリ編集中",
-      "snippetEditing": "スニペット編集中"
+      "snippetEditing": "スニペット編集中",
+      "chronicleEditing": "イベントの詳細を編集中"
     },
     "noteContext": {
       "title": "AI コンテキスト設定"
@@ -4913,6 +4914,10 @@
   "chronicle": {
     "newEvent": "新しいイベント",
     "untitled": "無題のイベント",
+    "detail": {
+      "label": "詳細",
+      "openInEditor": "エディタで開く"
+    },
     "add": "追加",
     "delete": "削除",
     "actionFailed": "操作に失敗しました",

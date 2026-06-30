@@ -483,6 +483,7 @@ const SCHEMA_DDL = `
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT '',
     note TEXT,
+    detail TEXT,
     ordinal TEXT NOT NULL DEFAULT 'a0',
     primary_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
     lane_group TEXT,

@@ -19,12 +19,16 @@ function ensureEditorVisible(): void {
 const TAB_STATE_KEY = "editor.tabState";
 const SAVE_DEBOUNCE_MS = 500;
 
-export type TabContentType = "scene" | "codex" | "snippet";
+export type TabContentType = "scene" | "codex" | "snippet" | "chronicle_event";
 
 export interface TabEntry {
   nodeId: string;
   isPreview: boolean;
   contentType: TabContentType;
+  /** Chronicle event tabs only: display label resolved at open time.
+   *  Events are not held in a global store (loaded into ChroniclePanel local
+   *  state), so the tab caches the title here for TabBar to render. */
+  label?: string;
   /** Codex tabs only: which phase's content to show/edit.
    *  - undefined/null → auto-resolve from active scene
    *  - "__base__"     → show base entry content (ignore active phase)
@@ -109,6 +113,13 @@ interface TabState {
    * If already open, just activate.
    */
   openSnippetTab: (snippetId: string) => void;
+
+  /**
+   * Open a chronicle event's detail (rich text) as a pinned tab in the primary
+   * group. If already open, refresh its label and activate.
+   * @param label display title resolved at open time (events have no global store)
+   */
+  openChronicleEventTab: (eventId: string, label?: string) => void;
 
   // ---- Secondary group operations ----
 
@@ -240,6 +251,26 @@ interface TabState {
 
   /** Stop auto-saving (cleanup subscription). */
   disposeAutoSave?: () => void;
+}
+
+/** Secondary group へ追加するエントリを、既存タブ(primary/secondary)の
+ *  contentType/label を引き継いで生成する。codex/snippet/chronicle_event の
+ *  タブを split したとき contentType が "scene" に化けて EditorPane が
+ *  loadSceneFull(非シーン id) で空ロード→誤保存するのを防ぐ。 */
+function secondaryEntryFor(
+  tabs: TabEntry[],
+  secondaryTabs: TabEntry[],
+  nodeId: string,
+): TabEntry {
+  const src =
+    tabs.find((t) => t.nodeId === nodeId) ??
+    secondaryTabs.find((t) => t.nodeId === nodeId);
+  return {
+    nodeId,
+    isPreview: false,
+    contentType: src?.contentType ?? "scene",
+    ...(src?.label !== undefined ? { label: src.label } : {}),
+  };
 }
 
 export const useTabStore = create<TabState>()((set, get) => {
@@ -461,6 +492,37 @@ export const useTabStore = create<TabState>()((set, get) => {
       });
     },
 
+    openChronicleEventTab(eventId, label) {
+      if (eventId !== get().activeTabId && guardInlineAiPending()) return;
+      ensureEditorVisible();
+      const { tabs } = get();
+      const existing = tabs.find((t) => t.nodeId === eventId);
+      if (existing) {
+        // Refresh the cached label (title may have changed) and activate.
+        set({
+          tabs: tabs.map((t) => (t.nodeId === eventId ? { ...t, label } : t)),
+          activeTabId: eventId,
+          activeGroupIndex: 0,
+        });
+        return;
+      }
+      // Remove any stale preview tab before adding the chronicle event tab
+      const withoutPreview = tabs.filter((t) => !t.isPreview);
+      set({
+        tabs: [
+          ...withoutPreview,
+          {
+            nodeId: eventId,
+            isPreview: false,
+            contentType: "chronicle_event",
+            label,
+          },
+        ],
+        activeTabId: eventId,
+        activeGroupIndex: 0,
+      });
+    },
+
     // ---- Secondary group ----
 
     openInSecondaryGroup(nodeId) {
@@ -481,7 +543,7 @@ export const useTabStore = create<TabState>()((set, get) => {
       set({
         secondaryTabs: [
           ...secondaryTabs,
-          { nodeId, isPreview: false, contentType: "scene" },
+          secondaryEntryFor(get().tabs, secondaryTabs, nodeId),
         ],
         secondaryActiveTabId: nodeId,
         activeGroupIndex: 1,
@@ -743,7 +805,7 @@ export const useTabStore = create<TabState>()((set, get) => {
       set({
         secondaryTabs: [
           ...secondaryTabs,
-          { nodeId, isPreview: false, contentType: "scene" },
+          secondaryEntryFor(get().tabs, secondaryTabs, nodeId),
         ],
         secondaryActiveTabId: nodeId,
         activeGroupIndex: 1,
@@ -800,18 +862,17 @@ export const useTabStore = create<TabState>()((set, get) => {
         })) as TabEntry[];
 
         if (validNodeIds) {
-          // Only filter scene/note tabs against tree node IDs; codex/snippet tabs are validated lazily
+          // Only filter scene/note tabs against tree node IDs; codex/snippet/
+          // chronicle_event tabs reference non-tree entities and are validated lazily.
+          const isLazyEntity = (t: TabEntry) =>
+            t.contentType === "codex" ||
+            t.contentType === "snippet" ||
+            t.contentType === "chronicle_event";
           tabs = tabs.filter(
-            (t) =>
-              t.contentType === "codex" ||
-              t.contentType === "snippet" ||
-              validNodeIds.has(t.nodeId),
+            (t) => isLazyEntity(t) || validNodeIds.has(t.nodeId),
           );
           secondaryTabs = secondaryTabs.filter(
-            (t) =>
-              t.contentType === "codex" ||
-              t.contentType === "snippet" ||
-              validNodeIds.has(t.nodeId),
+            (t) => isLazyEntity(t) || validNodeIds.has(t.nodeId),
           );
         }
 
