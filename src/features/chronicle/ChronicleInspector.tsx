@@ -50,9 +50,9 @@ export interface ChronicleInspectorProps {
   onDelete: () => void;
   onClose: () => void;
   lang?: DateLang;
-  /** 現在の高さ(px)。上端グリップでリサイズ。 */
-  height?: number;
-  onHeightChange?: (h: number) => void;
+  /** 現在の幅(px)。右サイド配置・左端グリップでリサイズ。 */
+  width?: number;
+  onWidthChange?: (w: number) => void;
   /** 参加レーン（追加の複数 Codex 所属）。primaryCodexId 以外の codexId。 */
   participantIds?: string[];
   onSetParticipants?: (codexEntryIds: string[]) => void;
@@ -94,8 +94,8 @@ export function ChronicleInspector({
   onDelete,
   onClose,
   lang,
-  height = 340,
-  onHeightChange,
+  width = 360,
+  onWidthChange,
   participantIds = [],
   onSetParticipants,
 }: ChronicleInspectorProps) {
@@ -114,15 +114,15 @@ export function ChronicleInspector({
     (o) => o.id !== event.primaryCodexId && !participantIds.includes(o.id),
   );
 
-  // 上端グリップのドラッグで高さを変える（上=高く）。clamp [180, 720]。
+  // 左端グリップのドラッグで幅を変える（左へ引く=広く）。clamp [280, 640]。
   const onResizeStart = (e: React.MouseEvent) => {
-    if (!onHeightChange) return;
+    if (!onWidthChange) return;
     e.preventDefault();
-    const startY = e.clientY;
-    const startH = height;
+    const startX = e.clientX;
+    const startW = width;
     const move = (ev: MouseEvent) => {
-      const next = Math.max(180, Math.min(720, startH - (ev.clientY - startY)));
-      onHeightChange(next);
+      const next = Math.max(280, Math.min(640, startW - (ev.clientX - startX)));
+      onWidthChange(next);
     };
     const up = () => {
       document.removeEventListener("mousemove", move);
@@ -208,20 +208,20 @@ export function ChronicleInspector({
 
   return (
     <div
-      className="flex shrink-0 flex-col border-t border-border bg-card"
-      style={{ height }}
+      className="flex h-full shrink-0 flex-row border-l border-border bg-card"
+      style={{ width }}
     >
-      {/* リサイズグリップ（上端ドラッグで高さ変更） */}
+      {/* リサイズグリップ（左端ドラッグで幅変更） */}
       <div
         onMouseDown={onResizeStart}
-        className="group flex h-2 shrink-0 cursor-ns-resize items-center justify-center hover:bg-accent/40"
+        className="group flex w-2 shrink-0 cursor-ew-resize items-center justify-center hover:bg-accent/40"
         role="separator"
-        aria-orientation="horizontal"
-        aria-label={t("chronicle.resizeInspector", "インスペクタの高さを変更")}
+        aria-orientation="vertical"
+        aria-label={t("chronicle.resizeInspector", "インスペクタの幅を変更")}
       >
-        <span className="h-[3px] w-8 rounded-full bg-border group-hover:bg-muted-foreground/60" />
+        <span className="h-8 w-[3px] rounded-full bg-border group-hover:bg-muted-foreground/60" />
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="flex flex-col gap-3 p-3.5">
           {/* タイトル */}
           <div className="flex items-center gap-2.5">

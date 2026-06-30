@@ -14,6 +14,7 @@ import {
   Lock,
   LockOpen,
   List,
+  PanelRight,
 } from "lucide-react";
 import type { LaneDensity } from "./chronicleLayout";
 import type { ChronicleCalendar } from "./chronicleTime";
@@ -23,6 +24,7 @@ export interface ChronicleToolbarProps {
   issueCount: number;
   showLegend: boolean;
   showEventList: boolean;
+  showInspector: boolean;
   showEdges: boolean;
   tieMode: boolean;
   density: LaneDensity;
@@ -42,6 +44,7 @@ export interface ChronicleToolbarProps {
   onFit: () => void;
   onToggleLegend: () => void;
   onToggleEventList: () => void;
+  onToggleInspector: () => void;
   onSetDensity: (d: LaneDensity) => void;
   onToggleLabels: () => void;
 }
@@ -147,6 +150,15 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           >
             <List className="size-3.5" />{" "}
             {t("chronicle.eventListShort", "一覧")}
+          </button>
+          <button
+            type="button"
+            onClick={props.onToggleInspector}
+            className={toggleCls(props.showInspector)}
+            title={t("chronicle.inspector", "詳細パネル")}
+          >
+            <PanelRight className="size-3.5" />{" "}
+            {t("chronicle.inspectorShort", "詳細")}
           </button>
           <div className="mx-0.5 h-5 w-px bg-border" />
           {props.issueCount > 0 && (

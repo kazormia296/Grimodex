@@ -5092,6 +5092,8 @@
     "issueCount": "{{count}} issue(s)",
     "eventList": "Event list",
     "eventListShort": "List",
+    "inspector": "Inspector",
+    "inspectorShort": "Details",
     "eventListSearch": "Search by title",
     "eventListEmpty": "No matching events",
     "filterLane": "Filter by lane",

@@ -316,4 +316,293 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(props.onResizeEvent.mock.calls[0][0]).toBe("e2");
     expect(props.onResizeEvent.mock.calls[0][1]).toBe("end");
   });
+
+  it("複数選択中のマーカー本体ドラッグは onMoveSelected（一括移動・全件追従）", () => {
+    const onMoveSelected = vi.fn();
+    const props = makeProps({
+      selectedIds: new Set(["e1", "e2"]),
+      selectedEventId: "e1",
+      onMoveSelected,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 200, clientY: 20 });
+    // 一括ドラッグ中は選択全件が translate 追従する。
+    expect(
+      (container.querySelector('[data-event-id="e1"]') as HTMLElement).style
+        .transform,
+    ).toContain("translate");
+    expect(
+      (container.querySelector('[data-event-id="e2"]') as HTMLElement).style
+        .transform,
+    ).toContain("translate");
+    fireEvent.mouseUp(document, { clientX: 200, clientY: 20 });
+    expect(onMoveSelected).toHaveBeenCalledTimes(1);
+    expect(onMoveSelected.mock.calls[0][0]).toBe("e1"); // primaryId
+    expect(typeof onMoveSelected.mock.calls[0][1]).toBe("number"); // newStartDay
+    expect(props.onMoveEvent).not.toHaveBeenCalled(); // 単独移動は呼ばれない
+  });
+
+  it("並び順モード(暦軸なし)では一括移動しない（単独扱い・全件追従しない）", () => {
+    const onMoveSelected = vi.fn();
+    const props = makeProps({
+      hasCalendarAxis: false,
+      selectedIds: new Set(["e1", "e2"]),
+      selectedEventId: "e1",
+      onMoveSelected,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 200, clientY: 20 });
+    // e2 は追従しない（bulk 非成立）。
+    expect(
+      (container.querySelector('[data-event-id="e2"]') as HTMLElement).style
+        .transform,
+    ).toBe("");
+    fireEvent.mouseUp(document, { clientX: 200, clientY: 20 });
+    expect(onMoveSelected).not.toHaveBeenCalled();
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("非選択マーカーのドラッグは単独移動のまま（onMoveEvent）", () => {
+    const onMoveSelected = vi.fn();
+    // e2 だけ選択した状態で e1 を掴む → e1 は選択外なので単独移動。
+    const props = makeProps({
+      selectedIds: new Set(["e2"]),
+      selectedEventId: "e2",
+      onMoveSelected,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 200, clientY: 20 });
+    fireEvent.mouseUp(document, { clientX: 200, clientY: 20 });
+    expect(onMoveSelected).not.toHaveBeenCalled();
+    expect(props.onMoveEvent).toHaveBeenCalledTimes(1);
+    expect(props.onMoveEvent.mock.calls[0][0]).toBe("e1");
+  });
+
+  it("修飾なし矢印で選択を移動（→=同レーンの次イベント / ←=前）", () => {
+    // e1(startDay50) と e2(startDay120) は同じレーン c1（時間順 e1→e2）。
+    const p1 = makeProps({
+      selectedEventId: "e1",
+      selectedIds: new Set(["e1"]),
+    });
+    const r1 = render(<ChronicleViewport {...(p1 as unknown as VP)} />);
+    fireEvent.keyDown(track(r1.container), { key: "ArrowRight" });
+    expect(p1.onSelectEvent).toHaveBeenCalledWith("e2");
+
+    const p2 = makeProps({
+      selectedEventId: "e2",
+      selectedIds: new Set(["e2"]),
+    });
+    const r2 = render(<ChronicleViewport {...(p2 as unknown as VP)} />);
+    fireEvent.keyDown(track(r2.container), { key: "ArrowLeft" });
+    expect(p2.onSelectEvent).toHaveBeenCalledWith("e1");
+  });
+
+  it("修飾なし矢印はナッジしない（nudge は呼ばれない）", () => {
+    const onNudgeSelected = vi.fn();
+    const props = makeProps({
+      selectedEventId: "e1",
+      selectedIds: new Set(["e1"]),
+      onNudgeSelected,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    fireEvent.keyDown(track(container), { key: "ArrowRight" });
+    expect(onNudgeSelected).not.toHaveBeenCalled();
+  });
+
+  it("↑/↓で隣レーンの時間最近傍へ移動", () => {
+    const ev2: LayoutEventInput[] = [
+      {
+        id: "a1",
+        title: "A1",
+        primaryCodexId: "c1",
+        kind: "generic",
+        precision: "exact",
+        secret: false,
+        sceneLinked: true,
+        startDay: 100,
+        endDay: null,
+      },
+      {
+        id: "b1",
+        title: "B1",
+        primaryCodexId: "c2",
+        kind: "generic",
+        precision: "exact",
+        secret: false,
+        sceneLinked: true,
+        startDay: 104,
+        endDay: null,
+      },
+    ];
+    const lanes2: LayoutLane[] = [
+      {
+        codexId: "c1",
+        name: "アヤ",
+        kind: "character",
+        unassigned: false,
+        eventIds: ["a1"],
+      },
+      {
+        codexId: "c2",
+        name: "ボロ",
+        kind: "character",
+        unassigned: false,
+        eventIds: ["b1"],
+      },
+    ];
+    const view = { pxPerDay: 2, viewStartDay: 0 };
+    const layout = buildChronicleLayout({
+      events: ev2,
+      lanes: lanes2,
+      view,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 100,
+      dataEnd: 104,
+      relations: [],
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const m = new Map<string, MarkerEvent>(
+      ev2.map((e) => [
+        e.id,
+        {
+          id: e.id,
+          title: e.title,
+          kind: e.kind,
+          precision: e.precision,
+          secret: e.secret,
+          sceneLinked: e.sceneLinked,
+          primaryCodexId: e.primaryCodexId,
+        },
+      ]),
+    );
+    const props = makeProps({
+      layout,
+      eventsById: m,
+      selectedEventId: "a1",
+      selectedIds: new Set(["a1"]),
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    fireEvent.keyDown(track(container), { key: "ArrowDown" });
+    expect(props.onSelectEvent).toHaveBeenCalledWith("b1");
+  });
+
+  it("↑/↓は隣レーンが無ければ無反応（単一レーン）", () => {
+    const props = makeProps({
+      selectedEventId: "e1",
+      selectedIds: new Set(["e1"]),
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    fireEvent.keyDown(track(container), { key: "ArrowUp" });
+    fireEvent.keyDown(track(container), { key: "ArrowDown" });
+    expect(props.onSelectEvent).not.toHaveBeenCalled();
+  });
+
+  it("Alt+矢印=ズームグリッド単位でナッジ（向き符号・Alt+Shiftは粗グリッドで大）", () => {
+    const onNudgeSelected = vi.fn();
+    const props = makeProps({
+      selectedIds: new Set(["e1"]),
+      selectedEventId: "e1",
+      onNudgeSelected,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    const last = () => onNudgeSelected.mock.calls.at(-1)![0] as number;
+    fireEvent.keyDown(tr, { key: "ArrowRight", altKey: true });
+    const right = last();
+    expect(right).toBeGreaterThan(0); // 右=正
+    // グリッド単位（=日単位固定ではない）。pxPerDay=2 のこの layout は月グリッド(~30日)。
+    expect(right).toBeGreaterThan(1);
+    fireEvent.keyDown(tr, { key: "ArrowLeft", altKey: true });
+    expect(last()).toBeCloseTo(-right); // 左=同量の負
+    fireEvent.keyDown(tr, { key: "ArrowRight", altKey: true, shiftKey: true });
+    expect(last()).toBeGreaterThan(right); // Alt+Shift=粗グリッドでより大きく
+    // ナビゲーション（選択移動）は起きない。
+    expect(props.onSelectEvent).not.toHaveBeenCalled();
+  });
+
+  it("Delete/Backspace で一括削除、Escape で選択解除", () => {
+    const onDeleteSelected = vi.fn();
+    const onClearSelection = vi.fn();
+    const props = makeProps({
+      selectedIds: new Set(["e1", "e2"]),
+      selectedEventId: "e1",
+      onDeleteSelected,
+      onClearSelection,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.keyDown(tr, { key: "Backspace" });
+    expect(onDeleteSelected).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(tr, { key: "Escape" });
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it("選択なしならキーボードは無反応", () => {
+    const onDeleteSelected = vi.fn();
+    const onNudgeSelected = vi.fn();
+    const props = makeProps({ onDeleteSelected, onNudgeSelected });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.keyDown(tr, { key: "Delete" });
+    fireEvent.keyDown(tr, { key: "ArrowRight" });
+    fireEvent.keyDown(tr, { key: "ArrowRight", altKey: true });
+    expect(onDeleteSelected).not.toHaveBeenCalled();
+    expect(onNudgeSelected).not.toHaveBeenCalled();
+    expect(props.onSelectEvent).not.toHaveBeenCalled();
+  });
+
+  it("ロック中は Alt+矢印のナッジをしない（Delete は可）", () => {
+    const onNudgeSelected = vi.fn();
+    const onDeleteSelected = vi.fn();
+    const props = makeProps({
+      locked: true,
+      selectedIds: new Set(["e1"]),
+      selectedEventId: "e1",
+      onNudgeSelected,
+      onDeleteSelected,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.keyDown(tr, { key: "ArrowRight", altKey: true });
+    expect(onNudgeSelected).not.toHaveBeenCalled();
+    fireEvent.keyDown(tr, { key: "Delete" });
+    expect(onDeleteSelected).toHaveBeenCalledTimes(1);
+  });
 });
