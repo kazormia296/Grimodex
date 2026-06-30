@@ -142,6 +142,8 @@ done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
 # (ruri-v3-30m / bge-small-en-v1.5) の取得・export スクリプト用。
 # api.platform.preferredai.jp / platform.preferredai.jp / docs.plamo.preferredai.jp:
 # PLaMo API（OpenAI 互換 Chat Completions）と API コンソール・リファレンス。
+# generativelanguage.googleapis.com / aiplatform.googleapis.com / oauth2.googleapis.com / ai.google.dev:
+# Google Gemini API（Google AI Studio API key）、Vertex AI、OAuth2 トークン取得、API リファレンス。
 # *.polar.sh: ライセンス認証 (Phase 3)。docs = API 仕様の突き合わせ、
 # api = customer-portal 系エンドポイントの応答形実測（認証不要）。
 for domain in \
@@ -157,6 +159,10 @@ for domain in \
     "api.platform.preferredai.jp" \
     "platform.preferredai.jp" \
     "docs.plamo.preferredai.jp" \
+    "generativelanguage.googleapis.com" \
+    "aiplatform.googleapis.com" \
+    "oauth2.googleapis.com" \
+    "ai.google.dev" \
     "sentry.io" \
     "statsig.anthropic.com" \
     "statsig.com" \
