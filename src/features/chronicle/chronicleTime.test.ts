@@ -8,10 +8,64 @@ import {
   weekdayOf,
   gregorianWeekdayIndex,
   eraOf,
+  activeTimeZone,
   formatTimeOfDay,
   formatChronicleDate,
   type ChronicleCalendar,
 } from "./chronicleTime";
+
+describe("activeTimeZone / 時刻ラベル（TZ・DST）", () => {
+  const cal: ChronicleCalendar = {
+    daysPerYear: 360,
+    seasonBoundaries: [],
+    startYear: 0,
+    timezone: {
+      label: "JST",
+      offsetMinutes: 540,
+      dst: {
+        label: "JDT",
+        offsetMinutes: 600,
+        startDayOfYear: 90,
+        endDayOfYear: 270,
+      },
+    },
+  };
+  it("DST 期間内は DST 側、外は標準時", () => {
+    expect(activeTimeZone(100, cal)).toEqual({
+      label: "JDT",
+      offsetMinutes: 600,
+    });
+    expect(activeTimeZone(10, cal)).toEqual({
+      label: "JST",
+      offsetMinutes: 540,
+    });
+    expect(activeTimeZone(300, cal)).toEqual({
+      label: "JST",
+      offsetMinutes: 540,
+    });
+  });
+  it("年跨ぎ DST（start>end・南半球型）", () => {
+    const south: ChronicleCalendar = {
+      ...cal,
+      timezone: {
+        ...cal.timezone!,
+        dst: { ...cal.timezone!.dst!, startDayOfYear: 300, endDayOfYear: 90 },
+      },
+    };
+    expect(activeTimeZone(10, south)?.label).toBe("JDT"); // 年初は DST
+    expect(activeTimeZone(150, south)?.label).toBe("JST"); // 年央は標準
+  });
+  it("formatChronicleDate(time) に TZ ラベルを付す", () => {
+    expect(formatChronicleDate(10, 540, "time", cal, "ja")).toContain("JST");
+    expect(formatChronicleDate(100, 540, "time", cal, "ja")).toContain("JDT");
+  });
+  it("TZ 未設定なら時刻にラベルなし", () => {
+    const plain: ChronicleCalendar = { daysPerYear: 360, seasonBoundaries: [] };
+    expect(formatChronicleDate(10, 540, "time", plain, "ja")).not.toContain(
+      "JST",
+    );
+  });
+});
 import { REFORM_PRESETS } from "./chronicleReform";
 
 describe("gregorianWeekdayIndex（実暦グレゴリオ曜日, 0=日）", () => {

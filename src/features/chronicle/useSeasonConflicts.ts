@@ -148,6 +148,7 @@ export function useSeasonConflicts({
         ageReckoning: cal.ageReckoning ?? "full",
         eras: JSON.stringify(cal.eras ?? []),
         reform: JSON.stringify(cal.reform ?? null),
+        timezone: JSON.stringify(cal.timezone ?? null),
       });
       setCalVersion((v) => v + 1);
     },

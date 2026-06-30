@@ -33,6 +33,24 @@ export interface EraDef {
 }
 
 /**
+ * タイムゾーン（作中時刻の表示ラベル＋UTC オフセット）。作中分時刻は壁時計のまま保持し、
+ * ラベル/オフセットだけを付す。dst 期間（年内通日 start..end）はラベル/オフセットを差し替える。
+ */
+export interface TimeZoneDef {
+  /** 標準時ラベル（例 "JST"）。 */
+  label: string;
+  /** UTC からのオフセット分（例 540 = UTC+9）。表示専用。 */
+  offsetMinutes: number;
+  /** 夏時間（任意）。startDayOfYear..endDayOfYear の期間中はこちらを使う。 */
+  dst?: {
+    label: string;
+    offsetMinutes: number;
+    startDayOfYear: number;
+    endDayOfYear: number;
+  };
+}
+
+/**
  * 閏年ルール。none=年長一定（既定）。gregorian=暦年（startYear 基準の絶対年）に
  * 対し 4/100/400 で閏判定し、monthIndex の月へ +1 日（既定は 2 月相当 index 1）。
  */
@@ -66,6 +84,8 @@ export interface ChronicleCalendar {
   ageReckoning?: AgeReckoning;
   /** 元号/年号（年粒度のラベル区間）。空/未指定なら元号なし。 */
   eras?: EraDef[];
+  /** タイムゾーン（時刻表示のラベル＋オフセット、夏時間）。未指定なら無し。 */
+  timezone?: TimeZoneDef;
   /**
    * ユリウス→グレゴリオ改暦。指定時は date↔day/月長/年長を JDN ベースの実暦変換へ委譲し、
    * 切替前ユリウス閏・後グレゴリオ閏・切替の日飛ばしを反映する（実暦12ヶ月暦が前提）。
@@ -304,6 +324,26 @@ export function formatTimeOfDay(minute: number | null): string | null {
 }
 
 /**
+ * day に有効なタイムゾーン（DST 期間中は DST 側、それ以外は標準時）。未設定なら null。
+ * DST 期間は年内通日の閉区間 [start, end]（start>end は年跨ぎ＝南半球型）。決定性: 純関数。
+ */
+export function activeTimeZone(
+  day: number,
+  cal: ChronicleCalendar,
+): { label: string; offsetMinutes: number } | null {
+  const tz = cal.timezone;
+  if (!tz) return null;
+  if (tz.dst) {
+    const doy = dayNumberToDate(day, cal).dayOfYear;
+    const { startDayOfYear: s, endDayOfYear: e } = tz.dst;
+    const inDst = s <= e ? doy >= s && doy <= e : doy >= s || doy <= e;
+    if (inDst)
+      return { label: tz.dst.label, offsetMinutes: tz.dst.offsetMinutes };
+  }
+  return { label: tz.label, offsetMinutes: tz.offsetMinutes };
+}
+
+/**
  * 暦年に該当する元号と元号年（明治N年のN）。該当が無ければ null。
  * 同年に複数該当するときは startYear 最大（=直近に始まった元号）を採用。決定性: 純関数。
  */
@@ -371,7 +411,9 @@ export function formatChronicleDate(
     : `${monthName ?? ""} ${dayPart}, ${yEn}`.trim();
   if (granularity === "time") {
     const tod = formatTimeOfDay(minute);
-    return tod ? `${dayStr} ${tod}` : dayStr;
+    const base = tod ? `${dayStr} ${tod}` : dayStr;
+    const tz = activeTimeZone(dayNumber, cal);
+    return tz ? `${base} ${tz.label}` : base;
   }
   return dayStr;
 }

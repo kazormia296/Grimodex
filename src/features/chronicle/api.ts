@@ -18,6 +18,7 @@ import type {
   AgeReckoning,
   EraDef,
   CalendarReform,
+  TimeZoneDef,
 } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
@@ -429,6 +430,8 @@ export interface CalendarRow {
   eras: string;
   /** 生 JSON 文字列（CalendarReform | null 改暦）。'null'=改暦なし。 */
   reform: string;
+  /** 生 JSON 文字列（TimeZoneDef | null タイムゾーン）。'null'=なし。 */
+  timezone: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -456,6 +459,7 @@ export async function getProjectCalendar(
     ageReckoning: s(r.ageReckoning ?? r.age_reckoning, "full"),
     eras: s(r.eras, "[]"),
     reform: s(r.reform, "null"),
+    timezone: s(r.timezone, "null"),
     createdAt: s(r.createdAt ?? r.created_at),
     updatedAt: s(r.updatedAt ?? r.updated_at),
   };
@@ -488,6 +492,7 @@ export function calendarFromRow(row: CalendarRow): ChronicleCalendar {
     ageReckoning,
     eras: parse<EraDef[]>(row.eras, []),
     reform: parse<CalendarReform | null>(row.reform, null) ?? undefined,
+    timezone: parse<TimeZoneDef | null>(row.timezone, null) ?? undefined,
   };
 }
 
@@ -503,6 +508,7 @@ export async function upsertProjectCalendar(data: {
   ageReckoning?: string;
   eras?: string;
   reform?: string;
+  timezone?: string;
 }): Promise<void> {
   const now = new Date().toISOString();
   const startYear = data.startYear ?? 0;
@@ -513,6 +519,7 @@ export async function upsertProjectCalendar(data: {
   const ageReckoning = data.ageReckoning ?? "full";
   const eras = data.eras ?? "[]";
   const reform = data.reform ?? "null";
+  const timezone = data.timezone ?? "null";
   await db
     .insert(projectCalendar)
     .values({
@@ -527,6 +534,7 @@ export async function upsertProjectCalendar(data: {
       ageReckoning,
       eras,
       reform,
+      timezone,
       createdAt: now,
       updatedAt: now,
     })
@@ -543,6 +551,7 @@ export async function upsertProjectCalendar(data: {
         ageReckoning,
         eras,
         reform,
+        timezone,
         updatedAt: now,
       },
     });

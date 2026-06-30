@@ -241,6 +241,7 @@ describe("calendarFromRow", () => {
         gregorianStart: { year: 1582, monthIndex: 9, dayOfMonth: 15 },
         region: "gregorian1582",
       }),
+      timezone: JSON.stringify({ label: "JST", offsetMinutes: 540 }),
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -250,6 +251,7 @@ describe("calendarFromRow", () => {
     expect(cal.ageReckoning).toBe("counting");
     expect(cal.eras).toEqual([{ name: "明治", startYear: 1868 }]);
     expect(cal.reform?.region).toBe("gregorian1582");
+    expect(cal.timezone?.label).toBe("JST");
   });
 });
 

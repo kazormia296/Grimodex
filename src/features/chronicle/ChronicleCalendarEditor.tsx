@@ -14,6 +14,7 @@ import {
   type AgeReckoning,
   type EraDef,
   type CalendarReform,
+  type TimeZoneDef,
 } from "./chronicleTime";
 import { REFORM_PRESETS } from "./chronicleReform";
 
@@ -76,6 +77,7 @@ interface CalendarFormState {
   ageReckoning: AgeReckoning;
   eras: EraDef[];
   reform: CalendarReform | undefined;
+  timezone: TimeZoneDef | undefined;
 }
 
 /**
@@ -97,6 +99,7 @@ function gregorianFormState(lang: "ja" | "en"): CalendarFormState {
     ageReckoning: "full",
     eras: [],
     reform: undefined,
+    timezone: undefined,
   };
 }
 
@@ -118,6 +121,7 @@ function formStateFromCalendar(
     ageReckoning: cal.ageReckoning ?? "full",
     eras: cal.eras ?? [],
     reform: cal.reform,
+    timezone: cal.timezone,
   };
 }
 
@@ -156,6 +160,9 @@ export function ChronicleCalendarEditor({
   );
   const [eras, setEras] = useState<EraDef[]>(init.eras);
   const [reform, setReform] = useState<CalendarReform | undefined>(init.reform);
+  const [timezone, setTimezone] = useState<TimeZoneDef | undefined>(
+    init.timezone,
+  );
 
   // 全フィールドをグレゴリオ暦の既定値へ戻す（リセット）。
   const resetToDefault = () => {
@@ -170,7 +177,32 @@ export function ChronicleCalendarEditor({
     setAgeReckoning(g.ageReckoning);
     setEras(g.eras);
     setReform(g.reform);
+    setTimezone(g.timezone);
   };
+
+  // タイムゾーン編集（label を空にすると TZ 自体を解除）。
+  const updateTz = (patch: Partial<TimeZoneDef>) =>
+    setTimezone((tz) => ({ label: "", offsetMinutes: 0, ...tz, ...patch }));
+  const toggleDst = (on: boolean) =>
+    setTimezone((tz) =>
+      tz
+        ? {
+            ...tz,
+            dst: on
+              ? (tz.dst ?? {
+                  label: "",
+                  offsetMinutes: tz.offsetMinutes + 60,
+                  startDayOfYear: 0,
+                  endDayOfYear: 0,
+                })
+              : undefined,
+          }
+        : tz,
+    );
+  const updateDst = (patch: Partial<NonNullable<TimeZoneDef["dst"]>>) =>
+    setTimezone((tz) =>
+      tz && tz.dst ? { ...tz, dst: { ...tz.dst, ...patch } } : tz,
+    );
 
   const updateEra = (i: number, patch: Partial<EraDef>) =>
     setEras((e) => e.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
@@ -243,6 +275,7 @@ export function ChronicleCalendarEditor({
       ageReckoning,
       eras: cleanedEras,
       reform,
+      timezone: timezone && timezone.label.trim() !== "" ? timezone : undefined,
     };
     onSave({ ...cal, daysPerYear: calendarDaysPerYear(cal) });
     onClose();
@@ -574,6 +607,96 @@ export function ChronicleCalendarEditor({
           <Plus className="size-3.5" />
           {t("chronicle.addEra", "元号を追加")}
         </button>
+      </div>
+
+      <div className="space-y-1">
+        <div className="text-xs text-muted-foreground">
+          {t("chronicle.timezone", "タイムゾーン（時刻表示）")}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <input
+            value={timezone?.label ?? ""}
+            onChange={(e) =>
+              e.target.value.trim() === ""
+                ? setTimezone(undefined)
+                : updateTz({ label: e.target.value })
+            }
+            placeholder={t("chronicle.tzLabel", "標準時 (例: JST)")}
+            className="w-32 rounded border bg-transparent px-1 py-0.5"
+          />
+          <label className="flex items-center gap-1">
+            {t("chronicle.tzOffset", "UTC")}
+            <input
+              type="number"
+              value={timezone?.offsetMinutes ?? 0}
+              onChange={(e) =>
+                updateTz({ offsetMinutes: Number(e.target.value) })
+              }
+              disabled={!timezone}
+              aria-label={t("chronicle.tzOffset", "UTCオフセット(分)")}
+              className="w-20 rounded border bg-transparent px-1 py-0.5 disabled:opacity-50"
+            />
+            {t("chronicle.tzOffsetUnit", "分")}
+          </label>
+          {timezone && (
+            <label className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={!!timezone.dst}
+                onChange={(e) => toggleDst(e.target.checked)}
+                style={{ accentColor: "var(--primary)" }}
+                className="size-3.5"
+              />
+              {t("chronicle.dst", "夏時間")}
+            </label>
+          )}
+        </div>
+        {timezone?.dst && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <input
+              value={timezone.dst.label}
+              onChange={(e) => updateDst({ label: e.target.value })}
+              placeholder={t("chronicle.dstLabel", "夏時間 (例: JDT)")}
+              className="w-32 rounded border bg-transparent px-1 py-0.5"
+            />
+            <label className="flex items-center gap-1">
+              {t("chronicle.tzOffset", "UTC")}
+              <input
+                type="number"
+                value={timezone.dst.offsetMinutes}
+                onChange={(e) =>
+                  updateDst({ offsetMinutes: Number(e.target.value) })
+                }
+                className="w-20 rounded border bg-transparent px-1 py-0.5"
+              />
+              {t("chronicle.tzOffsetUnit", "分")}
+            </label>
+            <label className="flex items-center gap-1">
+              {t("chronicle.dstRange", "通日")}
+              <input
+                type="number"
+                min={0}
+                value={timezone.dst.startDayOfYear}
+                onChange={(e) =>
+                  updateDst({ startDayOfYear: Number(e.target.value) })
+                }
+                aria-label={t("chronicle.dstStart", "夏時間開始通日")}
+                className="w-16 rounded border bg-transparent px-1 py-0.5"
+              />
+              〜
+              <input
+                type="number"
+                min={0}
+                value={timezone.dst.endDayOfYear}
+                onChange={(e) =>
+                  updateDst({ endDayOfYear: Number(e.target.value) })
+                }
+                aria-label={t("chronicle.dstEnd", "夏時間終了通日")}
+                className="w-16 rounded border bg-transparent px-1 py-0.5"
+              />
+            </label>
+          </div>
+        )}
       </div>
 
       <div className="flex justify-end gap-2">

@@ -1487,6 +1487,8 @@ export const projectCalendar = sqliteTable("project_calendar", {
   eras: text("eras").notNull().default("[]"),
   // JSON: CalendarReform | null（ユリウス→グレゴリオ改暦）。'null'=改暦なし。
   reform: text("reform").notNull().default("null"),
+  // JSON: TimeZoneDef | null（時刻表示のTZラベル/オフセット・夏時間）。'null'=なし。
+  timezone: text("timezone").notNull().default("null"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
