@@ -19,8 +19,10 @@ vi.mock("@/features/editor/extensions", () => ({
 }));
 
 import { loadProjectChangeEvents } from "./queryEvents";
+import { loadLatestSnapshot } from "./snapshots";
 
 const load = vi.mocked(loadProjectChangeEvents);
+const loadSnap = vi.mocked(loadLatestSnapshot);
 
 function ev(partial: Partial<ChangeEvent> & { sequence: number }): ChangeEvent {
   return {
@@ -133,6 +135,11 @@ describe("buildCompositeTimelapsePlan", () => {
     });
     expect(plan.cursors.has("codex:c1")).toBe(true);
     expect(plan.schedule.length).toBe(4);
+    // buildCursors must seek a codex baseline under domain "codex" (not "editor"),
+    // matching the domain the codex doc.step carries.
+    expect(loadSnap).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: "codex", entityId: "c1" }),
+    );
   });
 
   it("includes chrome captions in frameCaptions for chat events", async () => {

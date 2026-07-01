@@ -17,7 +17,10 @@ import { createRevision } from "./api";
 import type { EntityType } from "./api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import {
+  rebaselineEntitiesAtTail,
+  type EntityBaselineRef,
+} from "@/features/timelapse/toggle";
 import {
   AUX_SCOPES,
   AUX_SCOPE_OWNER,
@@ -1154,8 +1157,12 @@ async function recordRestoreAndRebaseline(
     entityId: snapshotId,
     payload: { snapshotId, format, restoredCount, scopes: [...scopes] },
   });
-  // legacy snapshots are always content-only; structural ones only rewrite
-  // body when the "body" scope is selected.
+  // Re-anchor the baseline of every entity whose body this restore rewrote.
+  // legacy snapshots are content-only (scene bodies); structural ones rewrite a
+  // scope's body only when that scope is selected (scene→"body",
+  // codex→"codex", snippet→"snippet"). A stale codex/snippet baseline throws the
+  // same post-restore RangeError as scenes once the entity is edited again.
+  const refs: EntityBaselineRef[] = [];
   if (format === "legacy" || scopes.has("body")) {
     const sceneRows = await db
       .select({ id: treeNodes.id })
@@ -1166,11 +1173,25 @@ async function recordRestoreAndRebaseline(
           eq(treeNodes.nodeType, "scene"),
         ),
       );
-    await rebaselineScenesAtTail(
-      projectId,
-      sceneRows.map((r) => r.id),
+    refs.push(...sceneRows.map((r) => ({ kind: "scene" as const, id: r.id })));
+  }
+  if (format === "structural" && scopes.has("codex")) {
+    const codexRows = await db
+      .select({ id: codexEntries.id })
+      .from(codexEntries)
+      .where(eq(codexEntries.projectId, projectId));
+    refs.push(...codexRows.map((r) => ({ kind: "codex" as const, id: r.id })));
+  }
+  if (format === "structural" && scopes.has("snippet")) {
+    const snippetRows = await db
+      .select({ id: snippets.id })
+      .from(snippets)
+      .where(eq(snippets.projectId, projectId));
+    refs.push(
+      ...snippetRows.map((r) => ({ kind: "snippet" as const, id: r.id })),
     );
   }
+  await rebaselineEntitiesAtTail(projectId, refs);
 }
 
 export async function restoreProjectSnapshot(
