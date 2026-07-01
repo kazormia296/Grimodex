@@ -258,14 +258,6 @@ function ChronicleLegend() {
         t("chronicle.legendEvent", "イベント"),
       )}
       {item(
-        <Link className="size-3 opacity-60" />,
-        t("chronicle.legendOnpage", "シーンに登場"),
-        t(
-          "chronicle.legendOnpageHint",
-          "シーンに紐づく（オンページ）。無印はオフページ（背景）。",
-        ),
-      )}
-      {item(
         <span
           style={{
             width: 0,
@@ -300,6 +292,14 @@ function ChronicleLegend() {
           }}
         />,
         t("chronicle.legendInterval", "期間"),
+      )}
+      {item(
+        <Link className="size-3 opacity-60" />,
+        t("chronicle.legendOnpage", "シーンに登場"),
+        t(
+          "chronicle.legendOnpageHint",
+          "シーンに紐づく（オンページ）。無印はオフページ（背景）。",
+        ),
       )}
       <span className="mx-0.5 h-3.5 w-px bg-border" />
       {item(
