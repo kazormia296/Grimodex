@@ -133,7 +133,9 @@ export function EventMarker({
       borderStyle,
       borderColor: baseBorder,
       borderRadius: 7,
-      overflow: "hidden",
+      // overflow:hidden はコンテナに置かない。角外(top:-6/right:-6)に浮く conflict
+      // バッジまで切り取ってしまうため、内容クリップは下の marker-content 層に委ねる。
+      // 背景の角丸は border-radius が自動でクリップするので overflow は不要。
       whiteSpace: "nowrap",
       boxShadow: ring,
       zIndex: selected ? 9 : 5,
@@ -285,6 +287,63 @@ export function EventMarker({
     ? "grabbing"
     : cursor;
 
+  // 帯/ピルの中身（グリフ＋ラベル＋確度/秘匿チップ）。interval は固定幅なので
+  // marker-content 層でクリップする。conflict バッジはこの層の外（button 直下）に
+  // 置くため、角外(top:-6/right:-6)に浮いてもクリップされない。
+  const flowContent = (
+    <>
+      {glyphNode}
+      {labelsOn && (
+        <span
+          style={{
+            flex: "0 1 auto",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            fontSize: 12,
+            lineHeight: 1,
+          }}
+        >
+          {event.title || t("chronicle.untitled", "無題のイベント")}
+        </span>
+      )}
+      {precisionTag && (
+        <span
+          data-testid="precision-tag"
+          title={t(`chronicle.precision.${event.precision}`, event.precision)}
+          style={{
+            flex: "none",
+            fontSize: 10,
+            lineHeight: 1,
+            padding: "2px 5px",
+            borderRadius: 4,
+            background: mix(precisionTag.color, 16, "transparent"),
+            color: mix(precisionTag.color, 72, "var(--foreground)"),
+            fontWeight: 700,
+          }}
+        >
+          {precisionTag.label}
+        </span>
+      )}
+      {event.secret && (
+        <span
+          data-testid="secret-tag"
+          style={{
+            flex: "none",
+            fontSize: 10,
+            lineHeight: 1,
+            padding: "2px 5px",
+            borderRadius: 4,
+            background: mix(AMBER, 18, "transparent"),
+            color: mix(AMBER, 72, "var(--foreground)"),
+          }}
+        >
+          {t("chronicle.secretTag", "秘匿")}
+        </span>
+      )}
+    </>
+  );
+
   return (
     <button
       type="button"
@@ -368,54 +427,23 @@ export function EventMarker({
           }}
         />
       )}
-      {glyphNode}
-      {labelsOn && (
+      {isInterval ? (
         <span
+          data-testid="marker-content"
           style={{
-            flex: "0 1 auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flex: 1,
             minWidth: 0,
+            height: "100%",
             overflow: "hidden",
-            textOverflow: "ellipsis",
-            fontSize: 12,
-            lineHeight: 1,
           }}
         >
-          {event.title || t("chronicle.untitled", "無題のイベント")}
+          {flowContent}
         </span>
-      )}
-      {precisionTag && (
-        <span
-          data-testid="precision-tag"
-          title={t(`chronicle.precision.${event.precision}`, event.precision)}
-          style={{
-            flex: "none",
-            fontSize: 10,
-            lineHeight: 1,
-            padding: "2px 5px",
-            borderRadius: 4,
-            background: mix(precisionTag.color, 16, "transparent"),
-            color: mix(precisionTag.color, 72, "var(--foreground)"),
-            fontWeight: 700,
-          }}
-        >
-          {precisionTag.label}
-        </span>
-      )}
-      {event.secret && (
-        <span
-          data-testid="secret-tag"
-          style={{
-            flex: "none",
-            fontSize: 10,
-            lineHeight: 1,
-            padding: "2px 5px",
-            borderRadius: 4,
-            background: mix(AMBER, 18, "transparent"),
-            color: mix(AMBER, 72, "var(--foreground)"),
-          }}
-        >
-          {t("chronicle.secretTag", "秘匿")}
-        </span>
+      ) : (
+        flowContent
       )}
       {conflict && (
         <span

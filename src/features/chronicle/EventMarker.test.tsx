@@ -187,6 +187,40 @@ describe("EventMarker (DOM token)", () => {
     expect(getByTestId("conflict-badge").textContent).toBe("!");
   });
 
+  it("interval の警告バッジは overflow:hidden の先祖に切り取られない（角に浮くバッジが期間ボックスに埋もれる退行の gate）", () => {
+    // 期間ボックスは固定幅帯の内容クリップで overflow:hidden を持つ。
+    // 角外(top:-6/right:-6)に浮く警告バッジがそれに切られると視認不能になる。
+    const { container, getByTestId } = renderMarker({
+      isInterval: true,
+      barWidth: 120,
+      conflict: true,
+    });
+    const badge = getByTestId("conflict-badge");
+    const root = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    const clippers: string[] = [];
+    let node: HTMLElement | null = badge.parentElement;
+    while (node) {
+      if (node.style.overflow === "hidden") {
+        clippers.push(node.getAttribute("data-testid") ?? node.tagName);
+      }
+      if (node === root) break;
+      node = node.parentElement;
+    }
+    expect(clippers).toEqual([]);
+  });
+
+  it("interval の内容(グリフ/ラベル/タグ)は専用クリップ層で切り取る（固定幅帯のはみ出し防止・バッジはその外）", () => {
+    const { getByTestId } = renderMarker({
+      isInterval: true,
+      barWidth: 60,
+      conflict: true,
+    });
+    const content = getByTestId("marker-content");
+    expect(content.style.overflow).toBe("hidden");
+    // 警告バッジはクリップ層の外（兄弟）に置く＝切り取られない。
+    expect(content.querySelector('[data-testid="conflict-badge"]')).toBeNull();
+  });
+
   it("種別は先頭グリフ（凡例と同じ）で示し文字タグは描かない", () => {
     const r = renderMarker({ event: ev({ kind: "birth" }) });
     // 文字タグ(kind-tag)は廃止。先頭グリフの title が種別を伝える。
