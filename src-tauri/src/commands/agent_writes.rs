@@ -1848,6 +1848,46 @@ fn apply_event_redo_in_tx(
     }
 }
 
+/// Verify a codex entry belongs to `project_id`; bail otherwise. Prevents a
+/// caller (AI agent / MCP / renderer) from planting a cross-project row in
+/// `event_participants` — a project-A event pointing at a project-B codex entry.
+/// Mirrors the scope guard already enforced by `agent_scene_event_mutate_impl`
+/// and `agent_event_relation_mutate_impl` for their FK targets.
+fn ensure_codex_in_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    codex_id: &str,
+) -> anyhow::Result<()> {
+    let ok: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![codex_id, project_id],
+        |r| r.get(0),
+    )?;
+    if ok == 0 {
+        anyhow::bail!("codex entry '{codex_id}' not found in project '{project_id}'");
+    }
+    Ok(())
+}
+
+/// Verify a scene tree-node belongs to `project_id`; bail otherwise. Prevents a
+/// caller from planting a cross-project row in `scene_events` — a project-A event
+/// linked to a project-B scene. Mirrors `agent_scene_event_mutate_impl`'s guard.
+fn ensure_scene_in_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> anyhow::Result<()> {
+    let ok: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![scene_id, project_id],
+        |r| r.get(0),
+    )?;
+    if ok == 0 {
+        anyhow::bail!("scene '{scene_id}' not found in project '{project_id}'");
+    }
+    Ok(())
+}
+
 fn agent_event_create_impl(
     db: &Database,
     payload: AgentEventCreatePayload,
@@ -1910,6 +1950,10 @@ fn agent_event_create_impl(
             )?;
 
             for codex_id in &participants {
+                // Scope guard: reject participants from another project so the
+                // event↔codex link can never cross the project boundary. The
+                // transaction rolls back the already-inserted event row on bail.
+                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
                 conn.execute(
                     "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
                      VALUES (?1, ?2, NULL)",
@@ -1917,6 +1961,8 @@ fn agent_event_create_impl(
                 )?;
             }
             for scene_id in &scene_ids {
+                // Scope guard: reject scenes from another project (see above).
+                ensure_scene_in_project(conn, &payload.project_id, scene_id)?;
                 conn.execute(
                     "INSERT OR IGNORE INTO scene_events (scene_id, event_id)
                      VALUES (?1, ?2)",
@@ -2356,6 +2402,10 @@ fn agent_event_set_participants_impl(
                 rusqlite::params![payload.event_id],
             )?;
             for codex_id in &payload.codex_entry_ids {
+                // Scope guard: the event is already confirmed in this project
+                // above, but each participant must be too — otherwise a P1 event
+                // could be linked to a P2 codex entry. Bail rolls back the tx.
+                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
                 conn.execute(
                     "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
                      VALUES (?1, ?2, NULL)",
@@ -3743,6 +3793,166 @@ mod tests {
         assert_eq!(participant_count(&db, &event_id), 2);
         assert!(participant_has(&db, &event_id, &codex_b));
         assert!(!participant_has(&db, &event_id, &codex_a));
+    }
+
+    #[test]
+    fn event_create_rejects_cross_project_participant_and_writes_nothing() {
+        let db = test_db();
+        let p1 = insert_project(&db);
+        let p2 = insert_project(&db);
+        // A codex entry that lives in a *different* project.
+        let foreign_codex = insert_codex(&db, &p2, "Foreign");
+
+        // Attempt to create a P1 event whose participant belongs to P2.
+        let res = agent_event_create_impl(
+            &db,
+            AgentEventCreatePayload {
+                project_id: p1.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                title: Some("xproj".to_string()),
+                note: None,
+                detail: None,
+                ordinal: None,
+                primary_codex_id: None,
+                lane_group: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                precision: None,
+                kind: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: Some(vec![foreign_codex.clone()]),
+                scene_ids: None,
+            },
+        );
+
+        assert!(res.is_err(), "cross-project participant must be rejected");
+        // Transaction rolled back: no event row, no cross-project link, no
+        // change-event side effects leaked.
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM events WHERE project_id = ?1",
+                &p1,
+                None
+            ),
+            0,
+            "event row rolled back"
+        );
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM event_participants WHERE codex_entry_id = ?1",
+                &foreign_codex,
+                None
+            ),
+            0,
+            "no cross-project participant link written"
+        );
+        db.with_conn(|conn| {
+            let changes: i64 =
+                conn.query_row("SELECT COUNT(*) FROM change_events", [], |r| r.get(0))?;
+            assert_eq!(changes, 0, "no change events leaked");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn event_create_rejects_cross_project_scene_link() {
+        let db = test_db();
+        let p1 = insert_project(&db);
+        let p2 = insert_project(&db);
+        let foreign_scene = insert_scene(&db, &p2);
+
+        let res = agent_event_create_impl(
+            &db,
+            AgentEventCreatePayload {
+                project_id: p1.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                title: Some("xproj-scene".to_string()),
+                note: None,
+                detail: None,
+                ordinal: None,
+                primary_codex_id: None,
+                lane_group: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                precision: None,
+                kind: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: Some(vec![foreign_scene.clone()]),
+            },
+        );
+
+        assert!(res.is_err(), "cross-project scene link must be rejected");
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM events WHERE project_id = ?1",
+                &p1,
+                None
+            ),
+            0,
+            "event row rolled back"
+        );
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1",
+                &foreign_scene,
+                None
+            ),
+            0,
+            "no cross-project scene link written"
+        );
+    }
+
+    #[test]
+    fn set_participants_rejects_cross_project_codex_and_preserves_existing() {
+        let db = test_db();
+        let p1 = insert_project(&db);
+        let p2 = insert_project(&db);
+        let local = insert_codex(&db, &p1, "Local");
+        let foreign = insert_codex(&db, &p2, "Foreign");
+        let (event_id, _) = create_event(&db, &p1, "e", vec![local.clone()], vec![]);
+
+        // Replace the participant set with one containing a foreign-project codex.
+        let res = agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: p1.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                codex_entry_ids: vec![foreign.clone()],
+            },
+        );
+
+        assert!(res.is_err(), "cross-project participant must be rejected");
+        // Rollback preserves the pre-existing valid participant — the DELETE that
+        // precedes the re-insert is inside the same rolled-back transaction.
+        assert_eq!(
+            participant_count(&db, &event_id),
+            1,
+            "existing set preserved on rollback"
+        );
+        assert!(participant_has(&db, &event_id, &local));
+        assert!(!participant_has(&db, &event_id, &foreign));
     }
 
     #[test]
