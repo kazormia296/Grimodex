@@ -26,7 +26,7 @@ import { laneColorFor } from "./laneColor";
 import { ChronicleDatePicker } from "./ChronicleDatePicker";
 import { ChronicleDetailField } from "./ChronicleDetailField";
 import { CodexEntryPicker } from "./CodexEntryPicker";
-import { SceneLinkField } from "./SceneLinkField";
+import { SceneLinkField, type SceneLinkMode } from "./SceneLinkField";
 import { lunarInfoForDay } from "./chronicleLunar";
 import {
   Popover,
@@ -53,8 +53,9 @@ export interface ChronicleInspectorProps {
   linkedSceneCount?: number;
   /** このイベントにリンク済みのシーン id（参照シーンの手動編集用）。 */
   linkedSceneIds?: string[];
-  /** シーンをこのイベントへリンク／解除する（未指定なら参照シーン節を出さない）。 */
-  onLinkScene?: (sceneId: string) => void;
+  /** シーンをこのイベントへリンク／解除する（未指定なら参照シーン節を出さない）。
+   * mode=イベント優先ならこのイベントの日付/POV/場所をシーンへ同期する。 */
+  onLinkScene?: (sceneId: string, mode: SceneLinkMode) => void;
   onUnlinkScene?: (sceneId: string) => void;
   allEvents?: { id: string; title: string }[];
   causeIds?: string[];

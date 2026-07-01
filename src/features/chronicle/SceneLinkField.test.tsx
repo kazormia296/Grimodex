@@ -101,7 +101,16 @@ describe("SceneLinkField", () => {
     expect(candidates.length).toBe(1);
     expect(candidates[0].getAttribute("data-scene-id")).toBe("s2");
     fireEvent.click(candidates[0]);
-    expect(onLink).toHaveBeenCalledWith("s2");
+    // 既定はイベント優先。
+    expect(onLink).toHaveBeenCalledWith("s2", "event");
+  });
+
+  it("シーン優先トグルに切り替えると mode=scene でリンクする", () => {
+    const { getByTestId, getAllByTestId, onLink } = setup([]);
+    fireEvent.click(getByTestId("link-scene-toggle"));
+    fireEvent.click(getByTestId("link-mode-scene"));
+    fireEvent.click(getAllByTestId("link-scene-candidate")[0]);
+    expect(onLink.mock.calls[0][1]).toBe("scene");
   });
 
   it("候補が無ければ該当なし表示", () => {

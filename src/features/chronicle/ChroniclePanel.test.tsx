@@ -94,7 +94,7 @@ vi.mock("./ChronicleInspector", () => ({
     isScene?: boolean;
     onPatch: (patch: Partial<EventRow>) => void;
     onDelete: () => void;
-    onLinkScene?: (sceneId: string) => void;
+    onLinkScene?: (sceneId: string, mode: "event" | "scene") => void;
     onUnlinkScene?: (sceneId: string) => void;
   }) => (
     <div>
@@ -109,8 +109,17 @@ vi.mock("./ChronicleInspector", () => ({
       <button data-testid="delete-btn" onClick={() => onDelete()}>
         delete
       </button>
-      <button data-testid="link-btn" onClick={() => onLinkScene?.("s1")}>
+      <button
+        data-testid="link-btn"
+        onClick={() => onLinkScene?.("s1", "scene")}
+      >
         link
+      </button>
+      <button
+        data-testid="link-event-btn"
+        onClick={() => onLinkScene?.("s1", "event")}
+      >
+        link-event
       </button>
       <button data-testid="unlink-btn" onClick={() => onUnlinkScene?.("s1")}>
         unlink
@@ -286,6 +295,44 @@ describe("ChroniclePanel scene link", () => {
       );
     });
     expect(toastMocks.error).not.toHaveBeenCalled();
+    // scene 優先: シーン側プロパティへは書き戻さない。
+    expect(useTreeStore.getState().updateChronicleDate).not.toHaveBeenCalled();
+  });
+
+  it("イベント優先リンクはイベントの日付/POV/場所をシーンへ同期する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        startTime: 50,
+        startGranularity: "day",
+        primaryCodexId: "c1",
+        locationCodexId: "loc1",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+
+    fireEvent.click(screen.getByTestId("link-event-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiLinkSceneEvent).toHaveBeenCalledWith("s1", "ea");
+    });
+    expect(useTreeStore.getState().updateChronicleDate).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ chronicleStartTime: 50 }),
+    );
+    expect(useTreeStore.getState().updatePovCharacter).toHaveBeenCalledWith(
+      "s1",
+      "c1",
+    );
+    expect(useTreeStore.getState().updateLocation).toHaveBeenCalledWith(
+      "s1",
+      "loc1",
+    );
   });
 
   it("onUnlinkScene 失敗時はエラーを通知する", async () => {

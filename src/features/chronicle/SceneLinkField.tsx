@@ -7,12 +7,19 @@ export interface SceneOption {
   title: string;
 }
 
+/**
+ * リンク時のプロパティ優先方向。
+ * - "event": イベントの日付/POV/場所をシーンへ写して合わせる（イベント優先）。
+ * - "scene": 関連付けのみ。シーン側のプロパティはそのまま保持（シーン優先）。
+ */
+export type SceneLinkMode = "event" | "scene";
+
 export interface SceneLinkFieldProps {
   /** プロジェクトの全シーン（読み順）。候補ピッカーの母集合。 */
   scenes: SceneOption[];
   /** このイベントに現在リンク済みのシーン id。 */
   linkedSceneIds: string[];
-  onLink: (sceneId: string) => void;
+  onLink: (sceneId: string, mode: SceneLinkMode) => void;
   onUnlink: (sceneId: string) => void;
 }
 
@@ -48,6 +55,8 @@ export function SceneLinkField({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  // 既定は「イベント優先」（このイベントの日付/POV/場所をシーンへ合わせる）。
+  const [mode, setMode] = useState<SceneLinkMode>("event");
 
   const titleOf = useMemo(() => {
     const m = new Map(scenes.map((s) => [s.id, s.title]));
@@ -113,6 +122,32 @@ export function SceneLinkField({
 
         {open && (
           <div className="flex flex-col gap-1 rounded-lg border border-border bg-card p-1.5">
+            {/* リンク時のプロパティ優先方向（既定=イベント優先で日付/POV/場所を合わせる）。 */}
+            <div
+              className="flex items-center gap-1 text-[11px]"
+              role="radiogroup"
+              aria-label={t("chronicle.linkModeLabel", "リンク時の優先")}
+            >
+              {(["event", "scene"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  data-testid={`link-mode-${m}`}
+                  role="radio"
+                  aria-checked={mode === m}
+                  onClick={() => setMode(m)}
+                  className={`rounded px-1.5 py-0.5 ${
+                    mode === m
+                      ? "bg-primary/15 text-foreground"
+                      : "text-muted-foreground hover:bg-accent"
+                  }`}
+                >
+                  {m === "event"
+                    ? t("chronicle.linkModeEvent", "イベント優先")
+                    : t("chronicle.linkModeScene", "シーン優先")}
+                </button>
+              ))}
+            </div>
             <input
               data-testid="link-scene-search"
               type="text"
@@ -137,7 +172,7 @@ export function SceneLinkField({
                       type="button"
                       data-testid="link-scene-candidate"
                       data-scene-id={s.id}
-                      onClick={() => onLink(s.id)}
+                      onClick={() => onLink(s.id, mode)}
                       className="flex w-full items-center rounded-md px-2 py-1 text-start text-xs hover:bg-accent"
                     >
                       <span className="truncate">

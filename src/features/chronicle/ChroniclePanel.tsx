@@ -37,6 +37,7 @@ import {
   isSceneEventId,
   sceneIdFromEventId,
 } from "./sceneEventAdapter";
+import type { SceneLinkMode } from "./SceneLinkField";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
 import {
@@ -1234,17 +1235,41 @@ export function ChroniclePanel() {
   );
 
   const handleLinkScene = useCallback(
-    async (sceneId: string) => {
+    async (sceneId: string, mode: SceneLinkMode = "scene") => {
       // scene:* は events テーブルに行が無く Rust 側 event_ok 検査で弾かれるため不可。
       if (!selected || !projectId || isSceneEventId(selected.id)) return;
       try {
         await uiLinkSceneEvent(sceneId, selected.id);
+        // イベント優先: このイベントの日付/POV/場所をシーンへ写して合わせる。
+        if (mode === "event") {
+          await updateChronicleDate(sceneId, {
+            chronicleStartTime: selected.startTime,
+            chronicleStartMinute: selected.startMinute,
+            chronicleStartGranularity: selected.startGranularity,
+            chronicleEndTime: selected.endTime,
+            chronicleEndMinute: selected.endMinute,
+            chronicleEndGranularity: selected.endGranularity,
+            chroniclePrecision: selected.precision,
+          });
+          if (selected.primaryCodexId)
+            await updatePovCharacter(sceneId, selected.primaryCodexId);
+          if (selected.locationCodexId)
+            await updateLocation(sceneId, selected.locationCodexId);
+        }
         refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [selected, projectId, refresh, t],
+    [
+      selected,
+      projectId,
+      refresh,
+      t,
+      updateChronicleDate,
+      updatePovCharacter,
+      updateLocation,
+    ],
   );
   const handleUnlinkScene = useCallback(
     async (sceneId: string) => {
