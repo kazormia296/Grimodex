@@ -72,14 +72,10 @@ export function useZoomReveal(
     const last = el.getBoundingClientRect();
     if (last.width <= 0 || last.height <= 0) return;
 
-    // 左右リージョンは横方向にだけ開く（縦は元からフル高）。縦もクリップすると
-    // 展開演出中にパネル上部の PanelHeader（最大化中は「元に戻す」ボタン）が
-    // 一瞬隠れて崩れて見えるため、side は top/bottom をクリップしない。
-    const sideRegion = zoomRegion === "left" || zoomRegion === "right";
     const from = {
-      top: sideRegion ? 0 : Math.max(0, first.top - last.top),
+      top: Math.max(0, first.top - last.top),
       right: Math.max(0, last.right - first.right),
-      bottom: sideRegion ? 0 : Math.max(0, last.bottom - first.bottom),
+      bottom: Math.max(0, last.bottom - first.bottom),
       left: Math.max(0, first.left - last.left),
     };
     const ease = cubicBezier(...EASINGS.easeOut);

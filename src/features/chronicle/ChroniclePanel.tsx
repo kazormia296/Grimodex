@@ -370,15 +370,29 @@ export function ChroniclePanel() {
     [renderEvents],
   );
 
+  // フィット時の中心日（開始日の中央値）。遠い外れ値でスパンが最小ズームに収まらない
+  // ときに、外れ値へ張り付かず主要イベント群を中心に映すために使う。
+  const fitFocusDay = useMemo(() => {
+    const days = [...eff.byId.values()]
+      .map((v) => v.startDay)
+      .sort((a, b) => a - b);
+    return days.length ? days[Math.floor(days.length / 2)] : 0;
+  }, [eff]);
+
   // trackW 計測後に未フィットなら全体表示にフィット。
   useEffect(() => {
     if (trackW > 0 && !fittedRef.current && renderEvents.length > 0) {
       fittedRef.current = true;
       setView(
-        fitAll({ dataStart: eff.dataStart, dataEnd: eff.dataEnd, trackW }),
+        fitAll({
+          dataStart: eff.dataStart,
+          dataEnd: eff.dataEnd,
+          trackW,
+          focusDay: fitFocusDay,
+        }),
       );
     }
-  }, [trackW, renderEvents.length, eff.dataStart, eff.dataEnd]);
+  }, [trackW, renderEvents.length, eff.dataStart, eff.dataEnd, fitFocusDay]);
 
   // 参加者（追加レーン所属）の eventId → codexId[]。
   const participantsByEvent = useMemo(() => {
@@ -581,9 +595,14 @@ export function ChroniclePanel() {
     // インスペクタ領域を除いた実表示域にフィットさせる（トラックは flex sibling で縮む）。
     const liveW = trackElRef.current?.clientWidth || trackW;
     applyView(
-      fitAll({ dataStart: eff.dataStart, dataEnd: eff.dataEnd, trackW: liveW }),
+      fitAll({
+        dataStart: eff.dataStart,
+        dataEnd: eff.dataEnd,
+        trackW: liveW,
+        focusDay: fitFocusDay,
+      }),
     );
-  }, [eff.dataStart, eff.dataEnd, trackW, applyView]);
+  }, [eff.dataStart, eff.dataEnd, trackW, applyView, fitFocusDay]);
   const handleZoom = useCallback(
     (factor: number) => applyView(zoomByCenter({ view, trackW, factor })),
     [view, trackW, applyView],

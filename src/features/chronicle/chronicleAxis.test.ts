@@ -141,6 +141,35 @@ describe("fitAll", () => {
     expect(view.pxPerDay).toBeGreaterThan(0);
     expect(Number.isFinite(view.viewStartDay)).toBe(true);
   });
+
+  it("外れ値でスパンが最小ズームに収まらない時は focusDay を中心に据える", () => {
+    // 実測: 20件が ~11000 に集中、1件だけ -29026 の外れ値。
+    const dataStart = -29026;
+    const dataEnd = 11135;
+    const trackW = 826;
+    const focusDay = 11000; // クラスタ中央値
+    const view = fitAll({ dataStart, dataEnd, trackW, focusDay });
+    // 全域が入りきらず最小ズームへクランプ。
+    expect(view.pxPerDay).toBe(0.06);
+    const visibleDays = trackW / view.pxPerDay;
+    // focusDay を中心に据える（左端の外れ値へ張り付かない）。
+    expect(view.viewStartDay).toBeCloseTo(focusDay - visibleDays / 2, 3);
+    expect(view.viewStartDay).toBeGreaterThan(dataStart);
+    // クラスタ(focusDay)が可視範囲内。
+    const xFocus = dayToX(view, focusDay);
+    expect(xFocus).toBeGreaterThan(0);
+    expect(xFocus).toBeLessThan(trackW);
+  });
+
+  it("収まる範囲では focusDay 指定でも従来どおり左寄せ", () => {
+    const view = fitAll({
+      dataStart: 0,
+      dataEnd: 100,
+      trackW: 800,
+      focusDay: 50,
+    });
+    expect(view.viewStartDay).toBeCloseTo(0 - 100 * 0.03, 6);
+  });
 });
 
 describe("zoomAt", () => {
