@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Plus, Trash2, X } from "lucide-react";
 import {
@@ -67,18 +67,26 @@ export function OpenaiCompatibleEndpointsManager({
   const errMessage = (e: unknown): string =>
     e instanceof Error ? e.message : String(e);
 
-  const refreshKeyPresence = useCallback(async () => {
-    const entries = await Promise.all(
-      endpoints.map(
-        async (e) => [e.id, await hasApiKey(PROVIDER, e.id)] as const,
-      ),
-    );
-    setKeyPresent(Object.fromEntries(entries));
-  }, [endpoints]);
+  // キー有無は未取得の id だけ IPC で問い合わせる。endpoints は label 入力などの
+  // per-keystroke で参照が変わるため、id 集合を安定キー化して effect の再発火を
+  // 抑える（同じ id 集合なら再取得しない）。保存/削除の成功時はローカルで直接
+  // keyPresent を更新する。
+  const fetchedIdsRef = useRef<Set<string>>(new Set());
+  const idsKey = endpoints.map((e) => e.id).join("\n");
 
   useEffect(() => {
-    void refreshKeyPresence();
-  }, [refreshKeyPresence]);
+    const targets = (idsKey ? idsKey.split("\n") : []).filter(
+      (id) => !fetchedIdsRef.current.has(id),
+    );
+    if (targets.length === 0) return;
+    for (const id of targets) fetchedIdsRef.current.add(id);
+    void (async () => {
+      const entries = await Promise.all(
+        targets.map(async (id) => [id, await hasApiKey(PROVIDER, id)] as const),
+      );
+      setKeyPresent((s) => ({ ...s, ...Object.fromEntries(entries) }));
+    })();
+  }, [idsKey]);
 
   const patch = (id: string, p: Partial<OpenaiCompatibleEndpoint>): void => {
     onChange(updateEndpoint(endpoints, id, p), activeId);
@@ -101,6 +109,14 @@ export function OpenaiCompatibleEndpointsManager({
         id,
       );
       onChange(list, nextActive);
+      // 消えた endpoint のローカル状態を掃除（次に同 id が来ることはないが、
+      // keyPresent を現存 endpoint のみに保つ）。
+      fetchedIdsRef.current.delete(id);
+      setKeyPresent((s) => {
+        if (!(id in s)) return s;
+        const { [id]: _omit, ...rest } = s;
+        return rest;
+      });
     } catch (e) {
       // 失敗時はエンドポイントを残したままエラーを表示（onChange を呼ばないので
       // 一覧は不変＝楽観的に消えてしまう不整合を避ける）。
@@ -115,7 +131,8 @@ export function OpenaiCompatibleEndpointsManager({
     try {
       await saveApiKey(PROVIDER, key, id);
       setKeyInput((s) => ({ ...s, [id]: "" }));
-      await refreshKeyPresence();
+      // 保存成功＝キー有りが確定しているので、全件 hasApiKey を撃ち直さない。
+      setKeyPresent((s) => ({ ...s, [id]: true }));
     } catch (e) {
       // 入力値は消さずに残し（再試行可能）、失敗理由を明示する。
       setError(id, errMessage(e));
@@ -126,7 +143,7 @@ export function OpenaiCompatibleEndpointsManager({
     setError(id, null);
     try {
       await deleteApiKey(PROVIDER, id);
-      await refreshKeyPresence();
+      setKeyPresent((s) => ({ ...s, [id]: false }));
     } catch (e) {
       setError(id, errMessage(e));
     }
