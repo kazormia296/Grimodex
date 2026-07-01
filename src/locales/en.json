@@ -3109,6 +3109,9 @@
       "intentUpdated": "Update intent",
       "statusChanged": "Change status",
       "storyTimeChanged": "Change chronological order",
+      "chronicleDateChanged": "Change story date",
+      "povCharacterChanged": "Change POV character",
+      "locationChanged": "Change location",
       "moved": "Move"
     },
     "errors": {

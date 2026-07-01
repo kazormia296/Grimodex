@@ -1368,33 +1368,164 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async updatePovCharacter(id, codexEntryId) {
-    await api.updateNode(id, {
-      povCharacterId: codexEntryId,
-    });
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node) return;
+    const old = node.povCharacterId ?? null;
+    if (old === codexEntryId) return; // 同値は書込み・履歴とも no-op（ドラッグ等の空振り対策）
+    await api.updateNode(id, { povCharacterId: codexEntryId });
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id ? { ...n, povCharacterId: codexEntryId } : n,
       ),
     }));
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: i18next.t("tree.undo.povCharacterChanged"),
+        entityId: id,
+        async undo() {
+          await api.updateNode(id, { povCharacterId: old });
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, povCharacterId: old } : n,
+            ),
+          }));
+        },
+        async redo() {
+          await api.updateNode(id, { povCharacterId: codexEntryId });
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, povCharacterId: codexEntryId } : n,
+            ),
+          }));
+        },
+      });
+    }
   },
 
   async updateLocation(id, codexEntryId) {
-    await api.updateNode(id, {
-      locationId: codexEntryId,
-    });
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node) return;
+    const old = node.locationId ?? null;
+    if (old === codexEntryId) return; // 同値は no-op
+    await api.updateNode(id, { locationId: codexEntryId });
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id ? { ...n, locationId: codexEntryId } : n,
       ),
     }));
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: i18next.t("tree.undo.locationChanged"),
+        entityId: id,
+        async undo() {
+          await api.updateNode(id, { locationId: old });
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, locationId: old } : n,
+            ),
+          }));
+        },
+        async redo() {
+          await api.updateNode(id, { locationId: codexEntryId });
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, locationId: codexEntryId } : n,
+            ),
+          }));
+        },
+      });
+    }
   },
 
   async updateChronicleDate(id, patch) {
-    // POV/場所の保存と同じ経路（api.updateNode 直叩き＋楽観 set）。二重 state は持たない。
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node) return;
+    // 変更キーの旧値を集め、実変更が無ければ no-op（履歴を汚さない）。
+    // 時刻/分は nullable → null 復元、粒度/確度は NOT NULL → 既定へ復元。
+    const restore: ChronicleDatePatch = {};
+    let changed = false;
+    if ("chronicleStartTime" in patch) {
+      restore.chronicleStartTime = node.chronicleStartTime ?? null;
+      if (
+        (node.chronicleStartTime ?? null) !== (patch.chronicleStartTime ?? null)
+      )
+        changed = true;
+    }
+    if ("chronicleStartMinute" in patch) {
+      restore.chronicleStartMinute = node.chronicleStartMinute ?? null;
+      if (
+        (node.chronicleStartMinute ?? null) !==
+        (patch.chronicleStartMinute ?? null)
+      )
+        changed = true;
+    }
+    if ("chronicleStartGranularity" in patch) {
+      restore.chronicleStartGranularity =
+        node.chronicleStartGranularity ?? "none";
+      if (
+        (node.chronicleStartGranularity ?? "none") !==
+        (patch.chronicleStartGranularity ?? "none")
+      )
+        changed = true;
+    }
+    if ("chronicleEndTime" in patch) {
+      restore.chronicleEndTime = node.chronicleEndTime ?? null;
+      if ((node.chronicleEndTime ?? null) !== (patch.chronicleEndTime ?? null))
+        changed = true;
+    }
+    if ("chronicleEndMinute" in patch) {
+      restore.chronicleEndMinute = node.chronicleEndMinute ?? null;
+      if (
+        (node.chronicleEndMinute ?? null) !== (patch.chronicleEndMinute ?? null)
+      )
+        changed = true;
+    }
+    if ("chronicleEndGranularity" in patch) {
+      restore.chronicleEndGranularity = node.chronicleEndGranularity ?? "none";
+      if (
+        (node.chronicleEndGranularity ?? "none") !==
+        (patch.chronicleEndGranularity ?? "none")
+      )
+        changed = true;
+    }
+    if ("chroniclePrecision" in patch) {
+      restore.chroniclePrecision = node.chroniclePrecision ?? "exact";
+      if (
+        (node.chroniclePrecision ?? "exact") !==
+        (patch.chroniclePrecision ?? "exact")
+      )
+        changed = true;
+    }
+    if (!changed) return;
     await api.updateNode(id, patch);
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? { ...n, ...patch } : n)),
     }));
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      useGlobalHistoryStore.getState().push({
+        kind: "scenes",
+        label: i18next.t("tree.undo.chronicleDateChanged"),
+        entityId: id,
+        async undo() {
+          await api.updateNode(id, restore);
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, ...restore } : n,
+            ),
+          }));
+        },
+        async redo() {
+          await api.updateNode(id, patch);
+          set((state) => ({
+            nodes: state.nodes.map((n) =>
+              n.id === id ? { ...n, ...patch } : n,
+            ),
+          }));
+        },
+      });
+    }
   },
 
   // --- UI state ---

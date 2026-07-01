@@ -3104,6 +3104,9 @@
       "intentUpdated": "intent 更新",
       "statusChanged": "ステータス変更",
       "storyTimeChanged": "時系列順変更",
+      "chronicleDateChanged": "作中日付の変更",
+      "povCharacterChanged": "視点人物の変更",
+      "locationChanged": "場所の変更",
       "moved": "移動"
     },
     "errors": {
