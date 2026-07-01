@@ -4,6 +4,7 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "lucide-react";
 import type { EventKind, EventPrecision } from "@/db/schema";
 import { CSS_DURATIONS, CSS_EASINGS } from "@/lib/animation";
 import { laneColorFor } from "./laneColor";
@@ -182,9 +183,9 @@ export function EventMarker({
     container.transform = `translateY(${offsetY}px)`;
   }
 
-  // 先頭グリフ＝凡例と同形（出生=三角 / 死亡=菱形 / 出来事=丸 / 期間=帯）。
-  // 点(●/◯)・期間(▬/▭)と同様、出生/死亡も scene 未参照はオフページ＝中空(outline)で示す。
-  // 三角の中空は単一 span の CSS border トリックでは描けないため、出生/死亡は SVG（塗り/枠）で描く。
+  // 先頭グリフは**種別のみ**で形が決まる（出生=三角 / 死亡=菱形 / 出来事=丸 / 期間=帯）。
+  // 常に塗り。scene リンク有無（オンページ/オフページ）は形では表さず、右隣の Link
+  // アイコン（後述 linkGlyph）で示す。これで点・期間・シーンイベントの見た目が揃う。
   const kindTitle =
     event.kind === "birth"
       ? t("chronicle.kind.birth", "出生")
@@ -215,71 +216,30 @@ export function EventMarker({
           <polygon
             points={points}
             strokeLinejoin="round"
-            style={{
-              // on-page=塗り / off-page=中空（card 地＋枠）。
-              fill: event.sceneLinked ? shapeColor : "var(--card)",
-              stroke: shapeColor,
-              strokeWidth: event.sceneLinked ? 0 : 1.5,
-            }}
+            style={{ fill: shapeColor }}
           />
         </svg>
       </span>
     );
   } else {
-    // 点(●/◯)・期間(▬/▭)は CSS span。
-    let glyph: CSSProperties;
-    if (isInterval) {
-      // 期間＝凡例「期間」と同形（横長の角丸帯）。on-page=塗り / off-page=中空。
-      glyph = event.sceneLinked
-        ? {
-            flex: "none",
-            width: 14,
-            height: 8,
-            borderRadius: 3.5,
-            background: mix(lc, 30, "transparent"),
-            border: `1px solid ${mix(lc, 55, "transparent")}`,
-            boxSizing: "border-box",
-          }
-        : {
-            flex: "none",
-            width: 14,
-            height: 8,
-            borderRadius: 3.5,
-            background: "var(--card)",
-            border: `1.5px solid ${lc}`,
-            boxSizing: "border-box",
-          };
-    } else if (event.isScene) {
-      // シーン由来トークン＝角丸スクエア（■）。丸(●=イベント)と一目で区別する。
-      glyph = {
-        flex: "none",
-        width: 10,
-        height: 10,
-        borderRadius: 3,
-        background: lc,
-        boxSizing: "border-box",
-      };
-    } else if (!event.sceneLinked) {
-      // 汎用のオフページ（scene 未参照）＝中空丸 ◯（凡例で明示）。
-      glyph = {
-        flex: "none",
-        width: 11,
-        height: 11,
-        borderRadius: "50%",
-        border: `2px solid ${lc}`,
-        background: "var(--card)",
-        boxSizing: "border-box",
-      };
-    } else {
-      // 汎用＝塗りつぶしの丸 ●（凡例の「イベント」）。
-      glyph = {
-        flex: "none",
-        width: 9,
-        height: 9,
-        borderRadius: "50%",
-        background: lc,
-      };
-    }
+    // 点(●)・期間(▬)は CSS span。いずれも塗り（オフページでも中空にしない）。
+    const glyph: CSSProperties = isInterval
+      ? {
+          flex: "none",
+          width: 14,
+          height: 8,
+          borderRadius: 3.5,
+          background: mix(lc, 30, "transparent"),
+          border: `1px solid ${mix(lc, 55, "transparent")}`,
+          boxSizing: "border-box",
+        }
+      : {
+          flex: "none",
+          width: 9,
+          height: 9,
+          borderRadius: "50%",
+          background: lc,
+        };
     glyphNode = (
       <span data-testid="marker-glyph" title={kindTitle} style={glyph} />
     );
@@ -305,6 +265,16 @@ export function EventMarker({
   const flowContent = (
     <>
       {glyphNode}
+      {event.sceneLinked && (
+        // オンページ（シーンに登場／シーンイベント）を種別グリフの右に Link アイコンで示す。
+        // 形は種別専用にして、点・期間・シーンイベントで見た目を揃える。
+        <Link
+          data-testid="scene-link-icon"
+          aria-label={t("chronicle.onPageHint", "シーンに登場（オンページ）")}
+          size={11}
+          style={{ flex: "none", opacity: 0.6 }}
+        />
+      )}
       {labelsOn && (
         <span
           style={{

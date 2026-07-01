@@ -49,17 +49,40 @@ describe("EventMarker (DOM token)", () => {
     expect(el.getAttribute("title")).toBe("出来事A");
   });
 
-  it("シーンイベント(isScene)の点グリフは角丸スクエア（丸=イベントと区別）", () => {
-    const { getByTestId } = renderMarker({ event: ev({ isScene: true }) });
+  it("シーンイベント(sceneLinked)もグリフは丸(●)のまま。区別は Link アイコンで示す（■にしない）", () => {
+    const { getByTestId, container } = renderMarker({
+      event: ev({ isScene: true, sceneLinked: true }),
+    });
     const g = getByTestId("marker-glyph") as HTMLElement;
-    expect(g.style.borderRadius).not.toBe("50%"); // 丸ではない
-    expect(g.style.borderRadius).toBe("3px"); // 角丸スクエア
+    expect(g.style.borderRadius).toBe("50%"); // 丸のまま（角丸スクエアに退行しない）
+    expect(
+      container.querySelector('[data-testid="scene-link-icon"]'),
+    ).toBeTruthy();
   });
 
-  it("通常イベント(非 isScene)の点グリフは丸のまま", () => {
-    const { getByTestId } = renderMarker({ event: ev({ isScene: false }) });
-    const g = getByTestId("marker-glyph") as HTMLElement;
-    expect(g.style.borderRadius).toBe("50%");
+  it("点は sceneLinked で Link アイコンの有無だけが変わる（形は常に丸）", () => {
+    const on = renderMarker({ event: ev({ sceneLinked: true }) });
+    expect(
+      (
+        on.container.querySelector(
+          '[data-testid="marker-glyph"]',
+        ) as HTMLElement
+      ).style.borderRadius,
+    ).toBe("50%");
+    expect(
+      on.container.querySelector('[data-testid="scene-link-icon"]'),
+    ).toBeTruthy();
+    const off = renderMarker({ event: ev({ sceneLinked: false }) });
+    expect(
+      (
+        off.container.querySelector(
+          '[data-testid="marker-glyph"]',
+        ) as HTMLElement
+      ).style.borderRadius,
+    ).toBe("50%");
+    expect(
+      off.container.querySelector('[data-testid="scene-link-icon"]'),
+    ).toBeNull();
   });
 
   it("interval は barWidth の幅で帯を描く", () => {
@@ -78,8 +101,7 @@ describe("EventMarker (DOM token)", () => {
     expect(g.style.borderRadius).toBe("3.5px");
   });
 
-  it("interval も scene 未参照はオフページ＝中空で示す（点 ●/◯ と同様）", () => {
-    // 各 render の container 内で引く（共有 document の多重一致を避ける）。
+  it("interval はオン/オフページとも塗り（中空にしない）。リンクは Link アイコンで示す", () => {
     const on = renderMarker({
       isInterval: true,
       barWidth: 100,
@@ -88,6 +110,10 @@ describe("EventMarker (DOM token)", () => {
     const gOn = on.container.querySelector(
       '[data-testid="marker-glyph"]',
     ) as HTMLElement;
+    expect(gOn.style.background).not.toContain("card"); // 塗り
+    expect(
+      on.container.querySelector('[data-testid="scene-link-icon"]'),
+    ).toBeTruthy();
     const off = renderMarker({
       isInterval: true,
       barWidth: 100,
@@ -96,10 +122,10 @@ describe("EventMarker (DOM token)", () => {
     const gOff = off.container.querySelector(
       '[data-testid="marker-glyph"]',
     ) as HTMLElement;
-    // off-page=中空（card 地）/ on-page=塗り（card 地ではない）。
-    // ※ tint は color-mix(in oklch) で happy-dom が getter を落とすため、card 地で判別。
-    expect(gOff.style.background).toContain("card");
-    expect(gOn.style.background).not.toContain("card");
+    expect(gOff.style.background).not.toContain("card"); // オフページも塗り
+    expect(
+      off.container.querySelector('[data-testid="scene-link-icon"]'),
+    ).toBeNull(); // オフページはアイコン無し
   });
 
   it("オフページでも border は確度専用（exact は実線・オフページが破線を強制しない）", () => {
@@ -250,7 +276,7 @@ describe("EventMarker (DOM token)", () => {
     );
   });
 
-  it("出生/死亡も scene 未参照はオフページ＝中空(outline)で示す（点 ●/◯ と同様）", () => {
+  it("出生/死亡はオン/オフページとも塗り（strokeWidth 0）。リンクは Link アイコンで示す", () => {
     for (const kind of ["birth", "death"] as const) {
       const on = renderMarker({ event: ev({ kind, sceneLinked: true }) });
       const off = renderMarker({ event: ev({ kind, sceneLinked: false }) });
@@ -260,11 +286,16 @@ describe("EventMarker (DOM token)", () => {
       const pOff = off.container.querySelector(
         '[data-testid="marker-glyph"] polygon',
       ) as SVGPolygonElement;
-      expect(pOn).toBeTruthy();
-      expect(pOff).toBeTruthy();
-      // on-page=塗り（stroke 幅 0）/ off-page=中空（stroke 幅 > 0）。
+      // どちらも塗り（中空にしない）。
       expect(parseFloat(pOn.style.strokeWidth) || 0).toBe(0);
-      expect(parseFloat(pOff.style.strokeWidth)).toBeGreaterThan(0);
+      expect(parseFloat(pOff.style.strokeWidth) || 0).toBe(0);
+      // オンページのみ Link アイコン。
+      expect(
+        on.container.querySelector('[data-testid="scene-link-icon"]'),
+      ).toBeTruthy();
+      expect(
+        off.container.querySelector('[data-testid="scene-link-icon"]'),
+      ).toBeNull();
     }
   });
 

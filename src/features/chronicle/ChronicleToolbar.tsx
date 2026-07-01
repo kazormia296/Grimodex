@@ -4,6 +4,7 @@ import {
   Plus,
   Sparkles,
   CalendarCog,
+  Link,
   AlertTriangle,
   ZoomIn,
   ZoomOut,
@@ -257,17 +258,12 @@ function ChronicleLegend() {
         t("chronicle.legendEvent", "イベント"),
       )}
       {item(
-        <span
-          className="rounded-full border-2"
-          style={{
-            width: 11,
-            height: 11,
-            borderColor: "var(--muted-foreground)",
-            background: "var(--card)",
-            boxSizing: "border-box",
-          }}
-        />,
-        t("chronicle.legendOffpage", "オフページ"),
+        <Link className="size-3 opacity-60" />,
+        t("chronicle.legendOnpage", "シーンに登場"),
+        t(
+          "chronicle.legendOnpageHint",
+          "シーンに紐づく（オンページ）。無印はオフページ（背景）。",
+        ),
       )}
       {item(
         <span
