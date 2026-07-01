@@ -1188,6 +1188,78 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       };
     }, [containerEl]);
 
+    // 何も無いところ（背景）を左ボタンでドラッグしてもパン（Chronicle と同挙動）。
+    // 中ボタンパンはそのまま。ドット/マーカー/ラベルの左ドラッグを壊さないため
+    // bubble 段で購読する（マーカー/ラベルは stopPropagation 済みなのでここへ来ない）。
+    // ドットは stopPropagation しないので arm はするが、最初の move で dragActiveRef
+    // （ドラッグ状態）が立っていれば pan を中止し、子ドラッグに委ねる。閾値超え＆子
+    // ドラッグ非発火のときだけ実際にパンを始めるので、素のクリック（選択）も壊さない。
+    useEffect(() => {
+      if (!containerEl) return;
+      let armed = false;
+      let panning = false;
+      let startX = 0;
+      let startY = 0;
+      let startScrollLeft = 0;
+      let startScrollTop = 0;
+      const THRESH = 4;
+
+      const disarm = () => {
+        if (!armed) return;
+        armed = false;
+        if (panning) {
+          panning = false;
+          setIsPanning(false);
+        }
+        document.removeEventListener("mousemove", onMove, true);
+        document.removeEventListener("mouseup", onUp, true);
+        window.removeEventListener("blur", disarm);
+      };
+      const onMove = (e: MouseEvent) => {
+        if (!armed) return;
+        if (!panning) {
+          // 子（ドット等）のドラッグが始まっていたら委譲してパンしない。
+          if (dragActiveRef.current) {
+            disarm();
+            return;
+          }
+          if (
+            Math.abs(e.clientX - startX) < THRESH &&
+            Math.abs(e.clientY - startY) < THRESH
+          )
+            return;
+          panning = true;
+          setIsPanning(true);
+        }
+        e.preventDefault();
+        containerEl.scrollLeft = startScrollLeft - (e.clientX - startX);
+        containerEl.scrollTop = startScrollTop - (e.clientY - startY);
+      };
+      const onUp = (e: MouseEvent) => {
+        if (e.button !== 0) return;
+        disarm();
+      };
+      const onDown = (e: MouseEvent) => {
+        if (e.button !== 0) return; // 左ボタンのみ
+        if (dragActiveRef.current) return; // 既に子ドラッグ中
+        armed = true;
+        panning = false;
+        startX = e.clientX;
+        startY = e.clientY;
+        startScrollLeft = containerEl.scrollLeft;
+        startScrollTop = containerEl.scrollTop;
+        document.addEventListener("mousemove", onMove, true);
+        document.addEventListener("mouseup", onUp, true);
+        window.addEventListener("blur", disarm);
+      };
+
+      containerEl.addEventListener("mousedown", onDown);
+      return () => {
+        containerEl.removeEventListener("mousedown", onDown);
+        disarm();
+      };
+    }, [containerEl]);
+
     // ズームで SVG 幅が更新された後に、退避した scrollLeft を適用してカーソル下の点を
     // 固定する。幅更新後なので scrollWidth は新しい値になっており、正しくクランプされる。
     useLayoutEffect(() => {

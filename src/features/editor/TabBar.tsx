@@ -98,6 +98,14 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const tabs = isPrimary ? primaryTabs : secondaryTabs;
   const activeTabId = isPrimary ? primaryActiveTabId : secondaryActiveTabId;
 
+  // リニアモード（複数シーンの連続スクロール）は本文 = scene タブ専用の体験。
+  // Codex / snippet / 年表イベント等の非エディタタブがアクティブなときは
+  // トグルしても意味が無いのでボタンを無効化する。ただし既にリニアモード中は
+  // 抜け出せるよう常に有効のままにする。
+  const activeTab = tabs.find((tb) => tb.nodeId === activeTabId);
+  const linearDisabled =
+    !isLinearMode && !!activeTab && activeTab.contentType !== "scene";
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const [hasOverflow, setHasOverflow] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -527,19 +535,34 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
         </AnimatePresence>
       </div>
 
-      {/* Linear mode toggle: primary group only */}
+      {/* Linear mode toggle: primary group only。title は hover 可能な span 側に持たせる:
+          disabled(+pointer-events-none)なボタンは hover を受けず native tooltip が出ない
+          ため、なぜ無効かの説明を span のツールチップで担保する。 */}
       {isPrimary && (
-        <button
-          type="button"
-          title={t("editor.tabBar.linearMode")}
-          onClick={() => useTabStore.getState().toggleLinearMode()}
-          className={cn(
-            "flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
-            isLinearMode && "bg-accent text-foreground",
-          )}
+        <span
+          className="flex h-full flex-shrink-0"
+          title={
+            linearDisabled
+              ? t(
+                  "editor.tabBar.linearModeUnavailable",
+                  "リニアモードは本文タブでのみ使えます",
+                )
+              : t("editor.tabBar.linearMode")
+          }
         >
-          <ScrollText className="h-3.5 w-3.5" />
-        </button>
+          <button
+            type="button"
+            disabled={linearDisabled}
+            onClick={() => useTabStore.getState().toggleLinearMode()}
+            className={cn(
+              "flex h-full flex-shrink-0 items-center border-l border-border px-2 text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] transition-transform duration-75",
+              isLinearMode && "bg-accent text-foreground",
+              "disabled:pointer-events-none disabled:opacity-40 disabled:active:scale-100",
+            )}
+          >
+            <ScrollText className="h-3.5 w-3.5" />
+          </button>
+        </span>
       )}
 
       {/* Split dropdown button: primary group only, when no secondary group and not in linear mode */}

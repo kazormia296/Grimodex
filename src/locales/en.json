@@ -3338,7 +3338,8 @@
       "splitBelow": "Split below",
       "closeGroup": "Close group",
       "tabList": "Tab list",
-      "linearMode": "Linear mode"
+      "linearMode": "Linear mode",
+      "linearModeUnavailable": "Linear mode is only available on manuscript tabs"
     },
     "contextMenu": {
       "cut": "Cut",

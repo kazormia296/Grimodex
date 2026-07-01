@@ -59,6 +59,8 @@ const BIRTH = "oklch(0.6 0.14 150)";
 const DEATH = "oklch(0.5 0.07 25)";
 const AMBER = "#e0a23a";
 const ACCENT = "var(--primary)";
+/** 選択強調リング色（中立トークンより視認性の高い専用の青。index.css で定義）。 */
+const SELECTION = "var(--chronicle-selection)";
 
 const mix = (c: string, pct: number, to: string) =>
   `color-mix(in oklch, ${c} ${pct}%, ${to})`;
@@ -105,10 +107,12 @@ export function EventMarker({
 }: EventMarkerProps) {
   const { t } = useTranslation();
   const lc = laneColorFor(event.primaryCodexId);
+  // 選択: card 色の隙間リング → 実線の青リング → 淡い外周グロー、の三層で
+  // マーカー枠から独立した「ハロー」を作り、確度ボーダーを隠さず強く目立たせる。
   const ring = selected
-    ? `0 0 0 3px ${mix(ACCENT, 16, "transparent")},0 2px 7px rgba(0,0,0,.12)`
+    ? `0 0 0 2px var(--card),0 0 0 4px ${SELECTION},0 2px 10px ${mix(SELECTION, 45, "transparent")}`
     : related
-      ? `0 0 0 3px ${mix(ACCENT, 12, "transparent")}`
+      ? `0 0 0 3px ${mix(SELECTION, 22, "transparent")}`
       : undefined;
   // 確度の外周線は**確度のみ**で決める（オフページは glyph の中空表現で別途示すので
   // border は奪わない＝確度の差を常に視認できる）。solid=確定 / dashed=おおよそ /

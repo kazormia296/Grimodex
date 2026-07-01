@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "motion/react";
 import { useTranslation } from "react-i18next";
 import {
   dayToX,
@@ -15,9 +16,10 @@ import {
   laneKeyOf,
   type ChronicleLayout,
 } from "./chronicleLayout";
+import { buildCausalBezier } from "./chronicleCausalBezier";
 import { laneAtY } from "./chronicleLanePack";
 import { useLaneReorderTween } from "./chronicleLaneAnim";
-import { useReducedMotion } from "@/lib/animation";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
 import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
@@ -107,6 +109,11 @@ export interface ChronicleViewportProps {
   onSelectCauses?: (eventId: string) => void;
   /** コンテキスト「結果を選択」（1 世代下・複数可）。 */
   onSelectEffects?: (eventId: string) => void;
+  /**
+   * ドラッグ/期間端伸縮中に表示する日時バブルの文言を、現在のルーラー解像度に
+   * 応じた精度で返す（暦軸なし＝空文字で非表示）。panel が calendar/level から生成する。
+   */
+  formatDayLabel?: (day: number) => string;
 }
 
 /**
@@ -154,9 +161,12 @@ export function ChronicleViewport({
   relations,
   onSelectCauses,
   onSelectEffects,
+  formatDayLabel,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const trackElRef = useRef<HTMLDivElement | null>(null);
+  // 縦スクロール領域（中ボタンドラッグの縦パン用に scrollTop を直接いじる）。
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   // 因果ホバー強調: ホバー中の出来事に連なるチェーン以外を dim する。
   const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
   const causalChain = useMemo(() => {
@@ -195,6 +205,14 @@ export function ChronicleViewport({
     toX: number;
     toY: number;
   } | null>(null);
+  // ドラッグ/期間端伸縮中に挿入先の日時を示すバブル（client px。body へ portal）。
+  const [dragBubble, setDragBubble] = useState<{
+    x: number;
+    y: number;
+    text: string;
+  } | null>(null);
+  // 中ボタンドラッグ（ハンドツール）中フラグ。カーソルを grabbing にする。
+  const [middlePanning, setMiddlePanning] = useState(false);
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -212,6 +230,7 @@ export function ChronicleViewport({
     onCreateAt,
     onSelectPosition,
     onMoveSelected,
+    formatDayLabel,
   });
   cbRef.current = {
     locked: !!locked,
@@ -223,6 +242,7 @@ export function ChronicleViewport({
     onCreateAt,
     onSelectPosition,
     onMoveSelected,
+    formatDayLabel,
   };
 
   // ── 座標ヘルパ（track rect 基準） ──
@@ -326,6 +346,31 @@ export function ChronicleViewport({
   // トラック pointerdown を一元処理: 期間端伸縮 / マーカードラッグ（移動 or
   // 別マーカーへ落として因果エッジ）/ 空白パン＋位置選択。3px 超でクリック抑止。
   const onTrackPointerDown = (e: React.MouseEvent) => {
+    // ── 中ボタンドラッグ = ハンドツール（対象に関わらずパン。Timeline と同挙動） ──
+    // 横は view（panByPx）、縦はスクロール領域の scrollTop を直接移動。
+    // OS の autoscroll は preventDefault で抑止する。
+    if (e.button === 1) {
+      e.preventDefault();
+      const trackEl = trackElRef.current;
+      if (!trackEl) return;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startView = viewRef.current;
+      const scrollEl = scrollAreaRef.current;
+      const startScrollTop = scrollEl?.scrollTop ?? 0;
+      setMiddlePanning(true);
+      bindDrag(
+        (ev) => {
+          onViewChangeRef.current(
+            panByPx({ view: startView, dx: ev.clientX - startX }),
+          );
+          if (scrollEl)
+            scrollEl.scrollTop = startScrollTop - (ev.clientY - startY);
+        },
+        () => setMiddlePanning(false),
+      );
+      return;
+    }
     if (e.button !== 0) return;
     // ドラッグ中に本文/ラベルのテキストが選択されるのを防ぐ（select-none だけでは
     // ドラッグ起点の選択を抑止できない）。クリック選択は onClick が別途担う。
@@ -391,10 +436,23 @@ export function ChronicleViewport({
         (ev) => {
           if (Math.abs(ev.clientX - startX) > DRAG_THRESHOLD)
             draggedRef.current = true;
-          setGhostX(ev.clientX - rect.left);
+          // 吸着先の日にゴースト線とバブルを合わせる（マーカー移動と同じ精度表示）。
+          const snappedDay = snappedDayAt(ev.clientX, rect);
+          setGhostX(dayToX(viewRef.current, snappedDay));
+          const text = cb.formatDayLabel?.(snappedDay) ?? "";
+          setDragBubble(
+            text
+              ? {
+                  x: rect.left + dayToX(viewRef.current, snappedDay),
+                  y: ev.clientY,
+                  text,
+                }
+              : null,
+          );
         },
         (ev) => {
           setGhostX(null);
+          setDragBubble(null);
           if (draggedRef.current)
             cb.onResizeEvent!(eventId, edge, snappedDayAt(ev.clientX, rect));
           setTimeout(() => {
@@ -441,18 +499,28 @@ export function ChronicleViewport({
                   Math.max(0, Math.abs(rawDy) - LANE_DEADZONE);
               // マーカーをポインタへ追従（見た目を動かす）。ゴースト縦線は吸着先を示す。
               setDragPreview({ ids: dragIds, dx: ev.clientX - startX, dy });
-              setGhostX(
-                cb.hasCalendarAxis
-                  ? dayToX(
-                      viewRef.current,
-                      snappedDayAt(ev.clientX - grabOffsetX, rect),
-                    )
-                  : ev.clientX - rect.left,
-              );
+              if (cb.hasCalendarAxis) {
+                const snappedDay = snappedDayAt(ev.clientX - grabOffsetX, rect);
+                setGhostX(dayToX(viewRef.current, snappedDay));
+                // 挿入先の日時を現在のルーラー解像度でバブル表示。
+                const text = cb.formatDayLabel?.(snappedDay) ?? "";
+                setDragBubble(
+                  text
+                    ? {
+                        x: rect.left + dayToX(viewRef.current, snappedDay),
+                        y: ev.clientY,
+                        text,
+                      }
+                    : null,
+                );
+              } else {
+                setGhostX(ev.clientX - rect.left);
+              }
             }
           },
           (ev) => {
             setGhostX(null);
+            setDragBubble(null);
             setDragPreview(null);
             // 本体ドラッグは常に移動（別マーカーへ落としても因果エッジは作らない。
             // 因果エッジは選択時の末尾●ハンドル D&D のみ）。
@@ -690,6 +758,43 @@ export function ChronicleViewport({
     reducedMotion,
   );
 
+  // ドラッグ中は、動いたマーカーに繋がる因果エッジをその場で引き直す（静的 layout.edges
+  // はドロップ後にしか更新されないため）。動いた端点の center を追従オフセット(dx,dy)で
+  // ずらして bezier を再計算し、無関係なエッジは元のまま流用する（毎フレーム軽量）。
+  const liveEdges = useMemo(() => {
+    if (!dragPreview || !relations || relations.length === 0) return edges;
+    const moved = new Set(dragPreview.ids);
+    const affected = relations.filter(
+      (r) => moved.has(r.causeId) || moved.has(r.effectId),
+    );
+    if (affected.length === 0) return edges;
+    const shifted = new Map(pack.centers);
+    for (const id of moved) {
+      const c = pack.centers.get(id);
+      if (c)
+        shifted.set(id, {
+          cx: c.cx + dragPreview.dx,
+          cy: c.cy + dragPreview.dy,
+          outX: c.outX + dragPreview.dx,
+        });
+    }
+    const conflictPairs = new Set(
+      edges.filter((e) => e.conflict).map((e) => `${e.causeId}|${e.effectId}`),
+    );
+    const recomputed = buildCausalBezier({
+      relations: affected,
+      centers: shifted,
+      conflictPairs,
+    });
+    const affectedKeys = new Set(
+      affected.map((r) => `${r.causeId}|${r.effectId}`),
+    );
+    const kept = edges.filter(
+      (e) => !affectedKeys.has(`${e.causeId}|${e.effectId}`),
+    );
+    return [...kept, ...recomputed];
+  }, [edges, dragPreview, pack.centers, relations]);
+
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-card">
       <ChronicleRuler
@@ -698,7 +803,10 @@ export function ChronicleViewport({
         ticks={ticks}
       />
 
-      <div className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+      <div
+        ref={scrollAreaRef}
+        className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
+      >
         <ChronicleLaneGutter
           lanes={pack.lanes}
           gutterX={spacing.gutterX}
@@ -722,10 +830,10 @@ export function ChronicleViewport({
           tabIndex={0}
           className="relative flex-1 select-none outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           // minHeight=コンテンツ高、flex stretch で残り高さまで伸ばしレーン外も操作可能に。
-          // 本体ドラッグ追従中（dragPreview）はトラック全体を grab hand（grabbing）に。
+          // 本体ドラッグ追従中（dragPreview）/ 中ボタンパン中はトラック全体を grabbing に。
           style={{
             minHeight: contentHeight,
-            cursor: dragPreview ? "grabbing" : undefined,
+            cursor: dragPreview || middlePanning ? "grabbing" : undefined,
           }}
           role="application"
           aria-label={t("chronicle.viewportLabel", "作中年表")}
@@ -798,8 +906,8 @@ export function ChronicleViewport({
             );
           })}
 
-          {/* 因果エッジ */}
-          {showEdges && edges.length > 0 && (
+          {/* 因果エッジ（ドラッグ中は liveEdges で動いた端点に追従） */}
+          {showEdges && liveEdges.length > 0 && (
             <svg
               className="pointer-events-none absolute left-0 top-0 z-[3]"
               style={{
@@ -808,7 +916,7 @@ export function ChronicleViewport({
                 overflow: "visible",
               }}
             >
-              {edges.map((e) => (
+              {liveEdges.map((e) => (
                 <g key={`${e.causeId}|${e.effectId}`}>
                   <path
                     d={e.d}
@@ -854,60 +962,89 @@ export function ChronicleViewport({
             </svg>
           )}
 
-          {/* マーカー（参加レーンの複製は合成 id。本物の eventId に解決して扱う） */}
-          {pack.lanes.flatMap((lane) => {
-            const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
-            return lane.markers.map((m) => {
-              const realId = realEventId(m.eventId);
-              const ev = eventsById.get(realId);
-              const render = markerById.get(m.eventId);
-              if (!ev || !render) return null;
-              return (
-                <EventMarker
-                  key={m.eventId}
-                  event={ev}
-                  left={render.left}
-                  top={render.top}
-                  offsetY={laneOffsetY}
-                  tokenH={spacing.tokenH}
-                  maxTok={spacing.maxTok}
-                  isInterval={render.isInterval}
-                  barWidth={render.barWidth}
-                  selected={
-                    selectedIds
-                      ? selectedIds.has(realId)
-                      : selectedEventId === realId
-                  }
-                  conflict={conflictIds.has(realId)}
-                  related={relatedIds.has(realId)}
-                  labelsOn={labelsOn}
-                  resizable={!locked && render.isInterval}
-                  cursor={locked ? "default" : "grab"}
-                  dimmed={causalChain ? !causalChain.has(realId) : false}
-                  onHover={
-                    relations && relations.length > 0
-                      ? (h) => setHoveredEventId(h ? realId : null)
-                      : undefined
-                  }
-                  edgeHandle={
-                    // 因果エッジハンドルは単一選択時のプライマリのみ。
-                    // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
-                    selectedEventId === realId &&
-                    !ev.isScene &&
-                    (!selectedIds || selectedIds.size <= 1) &&
-                    !locked &&
-                    !!onCreateEdge
-                  }
-                  dragOffset={
-                    dragPreview?.ids.includes(realId)
-                      ? { dx: dragPreview.dx, dy: dragPreview.dy }
-                      : null
-                  }
-                  onSelect={(e) => handleSelect(realId, e)}
-                />
-              );
-            });
-          })}
+          {/* マーカー（参加レーンの複製は合成 id。本物の eventId に解決して扱う）。
+              挿入/削除は AnimatePresence の opacity フェードで見せる。追従(dragOffset)や
+              レーン入れ替え(offsetY)の transform は EventMarker 側の inline のままなので、
+              ラッパーの opacity は座標系(containing block)や静止時 z-index に干渉しない。 */}
+          <AnimatePresence initial={false}>
+            {pack.lanes.flatMap((lane) => {
+              const laneOffsetY = laneOffsets.get(laneKeyOf(lane)) ?? 0;
+              return lane.markers.map((m) => {
+                const realId = realEventId(m.eventId);
+                const ev = eventsById.get(realId);
+                const render = markerById.get(m.eventId);
+                if (!ev || !render) return null;
+                const isSelected = selectedIds
+                  ? selectedIds.has(realId)
+                  : selectedEventId === realId;
+                const isDragging = !!dragPreview?.ids.includes(realId);
+                // フェード中は wrapper の opacity<1 が stacking context を作り、子の
+                // z-index が wrapper 内に閉じてしまう。wrapper 自身に実効 z（ドラッグ30/
+                // 選択9/通常5）を持たせ、エッジ(z3)やグリッド(z2)より前面を保つ。position:
+                // relative でも wrapper は (0,0) の 0 高ブロックなので絶対配置の子は動かない。
+                return (
+                  <motion.div
+                    key={m.eventId}
+                    style={{
+                      position: "relative",
+                      zIndex: isDragging ? 30 : isSelected ? 9 : 5,
+                    }}
+                    initial={reducedMotion ? false : { opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{
+                      opacity: 0,
+                      transition: reducedMotion
+                        ? { duration: 0 }
+                        : { duration: DURATIONS.fast, ease: EASINGS.easeOut },
+                    }}
+                    transition={
+                      reducedMotion
+                        ? { duration: 0 }
+                        : { duration: DURATIONS.normal, ease: EASINGS.easeOut }
+                    }
+                  >
+                    <EventMarker
+                      event={ev}
+                      left={render.left}
+                      top={render.top}
+                      offsetY={laneOffsetY}
+                      tokenH={spacing.tokenH}
+                      maxTok={spacing.maxTok}
+                      isInterval={render.isInterval}
+                      barWidth={render.barWidth}
+                      selected={isSelected}
+                      conflict={conflictIds.has(realId)}
+                      related={relatedIds.has(realId)}
+                      labelsOn={labelsOn}
+                      resizable={!locked && render.isInterval}
+                      cursor={locked ? "default" : "grab"}
+                      dimmed={causalChain ? !causalChain.has(realId) : false}
+                      onHover={
+                        relations && relations.length > 0
+                          ? (h) => setHoveredEventId(h ? realId : null)
+                          : undefined
+                      }
+                      edgeHandle={
+                        // 因果エッジハンドルは単一選択時のプライマリのみ。
+                        // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
+                        selectedEventId === realId &&
+                        !ev.isScene &&
+                        (!selectedIds || selectedIds.size <= 1) &&
+                        !locked &&
+                        !!onCreateEdge
+                      }
+                      dragOffset={
+                        isDragging && dragPreview
+                          ? { dx: dragPreview.dx, dy: dragPreview.dy }
+                          : null
+                      }
+                      onSelect={(e) => handleSelect(realId, e)}
+                    />
+                  </motion.div>
+                );
+              });
+            })}
+          </AnimatePresence>
         </div>
       </div>
 
@@ -935,6 +1072,25 @@ export function ChronicleViewport({
           />
         </div>
       </div>
+
+      {/* ドラッグ/期間端伸縮中の日時バブル（吸着先を現在のルーラー精度で表示）。
+          overflow でクリップされないよう body へ portal し fixed 配置。 */}
+      {dragBubble &&
+        dragBubble.text &&
+        createPortal(
+          <div
+            data-testid="chronicle-drag-date-bubble"
+            className="pointer-events-none fixed z-[70] whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-[11px] font-medium text-popover-foreground shadow-md"
+            style={{
+              left: dragBubble.x,
+              top: dragBubble.y - 14,
+              transform: "translate(-50%, -100%)",
+            }}
+          >
+            {dragBubble.text}
+          </div>,
+          document.body,
+        )}
 
       {menu &&
         createPortal(

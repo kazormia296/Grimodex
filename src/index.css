@@ -44,6 +44,9 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  /* 作中年表(Chronicle)の選択強調リング色。中立トークンだと視認しづらいので
+   * 彩度のある青を専用に持つ（ライト/ダークで明度を出し分ける）。 */
+  --chronicle-selection: oklch(0.55 0.2 258);
   --radius: 0.625rem;
   --sidebar-background: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -165,6 +168,8 @@
   --border: oklch(0.269 0 0);
   --input: oklch(0.269 0 0);
   --ring: oklch(0.439 0 0);
+  /* ダーク背景では明るめの青に。 */
+  --chronicle-selection: oklch(0.72 0.16 258);
   --sidebar-background: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);

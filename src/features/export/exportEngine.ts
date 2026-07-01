@@ -16,8 +16,8 @@ import type {
 import { defaultRubyStyle, defaultEmphasisDotsStyle } from "./types";
 import { renderRubyText } from "./rubyFormats";
 import {
-  runLengthAllowed,
-  TATE_CHU_YOKO_DIGIT_RUN,
+  tateChuYokoRunAllowed,
+  TATE_CHU_YOKO_RUN,
   type TateChuYokoPolicy,
 } from "@/features/editor/tateChuYokoPolicy";
 
@@ -539,14 +539,15 @@ function renderEmphasisDots(text: string, style: EmphasisDotsStyle): string {
 }
 
 /**
- * 本文テキスト中の半角数字 run に、投稿先サイトの縦中横記法を付与する。
+ * 本文テキスト中の縦中横候補 run（半角数字・！？等の記号クラスタ・ローマ数字）に、
+ * 投稿先サイトの縦中横記法を付与する。
  *
  * 対象 run は `ctx.tateChuYokoPolicy`（= editor.tateChuYoko 由来 off/2/all）で決まり、
- * エディタの縦書きプレビューが結合する run と一致する。`settings.tateChuYoko === "none"`
- * か policy が `"off"` のときは何もしない（半角数字をそのまま残す）。
+ * エディタの縦書きプレビューが結合する run と一致する（判定は tateChuYokoRunAllowed に
+ * 集約）。`settings.tateChuYoko === "none"` か policy が `"off"` のときは何もしない。
  *
  * 注意（per-text-node の限界）: text node 単位で適用するため、`20<b>26</b>` のように
- * mark 境界で割れた数字 run は個別の run として扱う。実データではほぼ起きず、対象出力は
+ * mark 境界で割れた run は個別の run として扱う。実データではほぼ起きず、対象出力は
  * すべて plaintext なので実害は無い。エディタ装飾（TateChuYokoPlugin）は PM 位置整合の
  * ため flatten 経由で結合するが、エクスポートは位置制約が無いので単純化している。
  */
@@ -555,12 +556,12 @@ function applyTateChuYoko(text: string, ctx: RenderCtx): string {
   if (style === "none") return text;
   const policy = ctx.tateChuYokoPolicy;
   if (policy === "off") return text;
-  return text.replace(TATE_CHU_YOKO_DIGIT_RUN, (run) =>
-    runLengthAllowed(run.length, policy) ? wrapTateChuYoko(run, style) : run,
+  return text.replace(TATE_CHU_YOKO_RUN, (run) =>
+    tateChuYokoRunAllowed(run, policy) ? wrapTateChuYoko(run, style) : run,
   );
 }
 
-/** 1 つの数字 run を縦中横記法で包む（style ごとの書式）。 */
+/** 1 つの run を縦中横記法で包む（style ごとの書式）。 */
 function wrapTateChuYoko(run: string, style: TateChuYokoExportStyle): string {
   switch (style) {
     case "aozora-forward":
