@@ -22,6 +22,28 @@ import type {
 } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+
+/**
+ * Timelapse record for a chronicle (作中年表) mutation. Uses the SAME `event`
+ * domain the Rust AI-write path emits (`agent_writes.rs`) so the human UI path
+ * and the AI path land in one timeline — they are disjoint callers, not a
+ * double-record. sceneId stays null (events have no scene FK; scene links live
+ * in the `sceneEvents` join table).
+ */
+function recordEvent(
+  opType: string,
+  entityId: string | null,
+  payload: Record<string, unknown>,
+): void {
+  recordChangeEvent({
+    domain: "event",
+    opType,
+    entityType: "event",
+    entityId,
+    payload,
+  });
+}
 
 /**
  * 年表 mutation 後に AI コンテキストの鮮度カウンタを上げる（C3 prompt 鮮度）。
@@ -194,6 +216,12 @@ export async function createEvent(data: {
   });
   const [row] = await db.select().from(events).where(eq(events.id, id));
   bumpChronicleRevision();
+  recordEvent("event.create", id, {
+    eventId: id,
+    title: row?.title ?? data.title ?? "",
+    ordinal,
+    kind: data.kind ?? "generic",
+  });
   // 作中年表 RAG (Phase 3): 新出来事をデバウンス付きで意味検索 index に投入。
   scheduleEventIndex(id);
   return normalizeEvent(row);
@@ -231,6 +259,7 @@ export async function updateEvent(
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(and(eq(events.id, id), eq(events.projectId, projectId)));
   bumpChronicleRevision();
+  recordEvent("event.update", id, { eventId: id, fields: Object.keys(patch) });
   // 作中年表 RAG (Phase 3): 出来事更新をデバウンス付きで意味検索 index に反映。
   scheduleEventIndex(id);
 }
@@ -244,6 +273,7 @@ export async function deleteEvent(
     .delete(events)
     .where(and(eq(events.id, id), eq(events.projectId, projectId)));
   bumpChronicleRevision();
+  recordEvent("event.delete", id, { eventId: id });
 }
 
 // ───────── participants ─────────
@@ -296,6 +326,10 @@ export async function setEventParticipants(
       .values(codexEntryIds.map((codexEntryId) => ({ eventId, codexEntryId })));
   });
   bumpChronicleRevision();
+  recordEvent("participants.set", eventId, {
+    eventId,
+    codexEntryIds,
+  });
 }
 
 /**
@@ -403,6 +437,15 @@ export async function linkSceneToEvent(
     .values({ sceneId, eventId })
     .onConflictDoNothing();
   bumpChronicleRevision();
+  // sceneId is verified to be a real tree_nodes row above, so it is a safe FK.
+  recordChangeEvent({
+    domain: "event",
+    opType: "sceneLink.add",
+    entityType: "event",
+    entityId: eventId,
+    sceneId,
+    payload: { eventId, sceneId },
+  });
 }
 
 export async function unlinkSceneFromEvent(
@@ -424,6 +467,7 @@ export async function unlinkSceneFromEvent(
       and(eq(sceneEvents.sceneId, sceneId), eq(sceneEvents.eventId, eventId)),
     );
   bumpChronicleRevision();
+  recordEvent("sceneLink.remove", eventId, { eventId, sceneId });
 }
 
 // ───────── project_calendar ─────────
@@ -582,6 +626,10 @@ export async function upsertProjectCalendar(data: {
       },
     });
   bumpChronicleRevision();
+  recordEvent("calendar.update", null, {
+    projectId: data.projectId,
+    daysPerYear: data.daysPerYear,
+  });
 }
 
 // ───────── event_relations（因果エッジ） ─────────
@@ -632,6 +680,7 @@ export async function addEventRelation(
     })
     .onConflictDoNothing();
   bumpChronicleRevision();
+  recordEvent("edge.add", causeId, { causeId, effectId });
 }
 
 export async function removeEventRelation(
@@ -651,4 +700,5 @@ export async function removeEventRelation(
       ),
     );
   bumpChronicleRevision();
+  recordEvent("edge.remove", causeId, { causeId, effectId });
 }

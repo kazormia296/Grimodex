@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { promptTemplates } from "@/db/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 export type PromptTemplate = typeof promptTemplates.$inferSelect;
 export type NewPromptTemplate = typeof promptTemplates.$inferInsert;
@@ -45,6 +46,13 @@ export async function createPromptTemplate(
     .insert(promptTemplates)
     .values({ ...data, createdAt: now, updatedAt: now })
     .returning();
+  recordChangeEvent({
+    domain: "prompt",
+    opType: "template.create",
+    entityType: "prompt_template",
+    entityId: data.id,
+    payload: { templateId: data.id, title: data.title },
+  });
   return rows[0];
 }
 
@@ -63,6 +71,13 @@ export async function updatePromptTemplate(
       and(eq(promptTemplates.id, id), eq(promptTemplates.projectId, projectId)),
     )
     .returning();
+  recordChangeEvent({
+    domain: "prompt",
+    opType: "template.update",
+    entityType: "prompt_template",
+    entityId: id,
+    payload: { templateId: id, fields: Object.keys(data) },
+  });
   return rows[0];
 }
 
@@ -78,6 +93,13 @@ export async function deletePromptTemplate(
     .where(
       and(eq(promptTemplates.id, id), eq(promptTemplates.projectId, projectId)),
     );
+  recordChangeEvent({
+    domain: "prompt",
+    opType: "template.delete",
+    entityType: "prompt_template",
+    entityId: id,
+    payload: { templateId: id },
+  });
 }
 
 /**
@@ -93,4 +115,11 @@ export async function incrementPromptTemplateUsage(
     .where(
       and(eq(promptTemplates.id, id), eq(promptTemplates.projectId, projectId)),
     );
+  recordChangeEvent({
+    domain: "prompt",
+    opType: "template.use",
+    entityType: "prompt_template",
+    entityId: id,
+    payload: { templateId: id },
+  });
 }

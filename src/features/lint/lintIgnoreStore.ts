@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@/lib/tauri";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import type { Diagnostic } from "./types";
 
 /**
@@ -176,6 +177,15 @@ export const useLintIgnoreStore = create<LintIgnoreState>()((set, get) => ({
         [sceneId]: [entry, ...(s.bySceneId[sceneId] ?? [])],
       },
     }));
+    recordChangeEvent({
+      domain: "lint",
+      opType: "ignore.add",
+      entityType: "lint_ignore",
+      entityId: entry.id,
+      // sceneId kept in payload (not the FK column) — scene_id may not be a
+      // live tree_nodes row and a bad FK would wedge the flush loop.
+      payload: { ignoreId: entry.id, ruleId: entry.rule_id, sceneId },
+    });
     return entry;
   },
 
@@ -191,6 +201,13 @@ export const useLintIgnoreStore = create<LintIgnoreState>()((set, get) => ({
         next[k] = arr.filter((e) => e.id !== id);
       }
       return { bySceneId: next };
+    });
+    recordChangeEvent({
+      domain: "lint",
+      opType: "ignore.delete",
+      entityType: "lint_ignore",
+      entityId: id,
+      payload: { ignoreId: id },
     });
   },
 

@@ -4,8 +4,12 @@ import { RefreshCw, ShieldCheck, ShieldAlert } from "lucide-react";
 import type { ChangeEvent } from "@/db/schema";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { loadProjectChangeEvents } from "./queryEvents";
+import type { Domain } from "./recorder";
 import { verifyChain, type VerifyResult } from "./hashChain";
 
+// Kept in sync with the canonical `Domain` union in recorder.ts. The
+// `satisfies readonly Domain[]` check makes tsc fail if a stale/invalid name is
+// left here (element must be a Domain); new members should be appended.
 const ALL_DOMAINS = [
   "editor",
   "codex",
@@ -15,9 +19,25 @@ const ALL_DOMAINS = [
   "synopsis",
   "intent",
   "beat",
-] as const;
-
-type Domain = (typeof ALL_DOMAINS)[number];
+  "chat",
+  "layout",
+  "event",
+  "plot",
+  "foreshadow",
+  "review",
+  "labels",
+  "abtest",
+  "prompt",
+  "import",
+  "mount",
+  "trash",
+  "settings",
+  "project",
+  "lint",
+  "attribution",
+  "revision",
+  "prose",
+] as const satisfies readonly Domain[];
 
 /**
  * 執筆タイムラプス Player (P5 minimum-viable).

@@ -16,6 +16,68 @@ const base = {
   payload: "{}",
 };
 
+describe("formatEventCaption — new metadata domains", () => {
+  it("summarizes a chronicle (event) create with its title", () => {
+    const cap = formatEventCaption({
+      domain: "event",
+      opType: "event.create",
+      entityId: "ev1",
+      payload: JSON.stringify({ title: "序章の事件" }),
+    });
+    expect(cap?.segments[0].kind).toBe("meta");
+    expect(cap?.segments[0].text).toContain("序章の事件");
+  });
+
+  it("summarizes a revision snapshot.restore (verb=restore)", () => {
+    const cap = formatEventCaption({
+      domain: "revision",
+      opType: "snapshot.restore",
+      entityId: null,
+      payload: JSON.stringify({ snapshotId: "snap1" }),
+    });
+    expect(cap?.segments[0].text).toBeTruthy();
+  });
+
+  it("summarizes a label create and trims when no name field", () => {
+    const cap = formatEventCaption({
+      domain: "labels",
+      opType: "label.create",
+      entityId: "l1",
+      payload: JSON.stringify({ name: "重要" }),
+    });
+    expect(cap?.segments[0].text).toContain("重要");
+    // trailing-space trim when name is absent
+    const empty = formatEventCaption({
+      domain: "labels",
+      opType: "label.delete",
+      entityId: "l1",
+      payload: "{}",
+    });
+    expect(empty?.segments[0].text).toBe(empty?.segments[0].text.trim());
+  });
+
+  it("handles the Rust-recorded prose domain for parity", () => {
+    const cap = formatEventCaption({
+      domain: "prose",
+      opType: "prose.accept",
+      entityId: "s1",
+      payload: "{}",
+    });
+    expect(cap).not.toBeNull();
+  });
+
+  it("still returns null for an unknown domain", () => {
+    expect(
+      formatEventCaption({
+        domain: "totally-unknown",
+        opType: "whatever",
+        entityId: null,
+        payload: "{}",
+      }),
+    ).toBeNull();
+  });
+});
+
 describe("formatEventCaption", () => {
   it("returns null for editor scene doc.step", () => {
     expect(

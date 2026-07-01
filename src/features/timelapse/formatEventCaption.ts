@@ -139,6 +139,97 @@ function truncateChat(text: string): string {
 }
 
 /**
+ * Caption dispatch for the planning / annotation / version / per-project-config
+ * domains added in the record-all-domains expansion. These are metadata-only
+ * (no doc.step), so a compact "<label> <verb> <name>" summary is enough for the
+ * chrome band. Keeping one generic i18n key + per-domain labels + verbs avoids a
+ * key explosion across ~16 domains × their op types. Also covers the
+ * Rust-recorded `event` / `prose` / `foreshadow` events for parity.
+ */
+const NEW_DOMAIN_LABEL_KEY: Record<string, string> = {
+  event: "timelapse.caption.domain.event",
+  plot: "timelapse.caption.domain.plot",
+  foreshadow: "timelapse.caption.domain.foreshadow",
+  review: "timelapse.caption.domain.review",
+  labels: "timelapse.caption.domain.labels",
+  abtest: "timelapse.caption.domain.abtest",
+  prompt: "timelapse.caption.domain.prompt",
+  import: "timelapse.caption.domain.import",
+  mount: "timelapse.caption.domain.mount",
+  trash: "timelapse.caption.domain.trash",
+  settings: "timelapse.caption.domain.settings",
+  project: "timelapse.caption.domain.project",
+  lint: "timelapse.caption.domain.lint",
+  attribution: "timelapse.caption.domain.attribution",
+  revision: "timelapse.caption.domain.revision",
+  prose: "timelapse.caption.domain.prose",
+};
+
+const VERB_KEY: Record<string, string> = {
+  create: "timelapse.caption.verb.create",
+  add: "timelapse.caption.verb.create",
+  update: "timelapse.caption.verb.update",
+  set: "timelapse.caption.verb.update",
+  rename: "timelapse.caption.verb.update",
+  color: "timelapse.caption.verb.update",
+  reorder: "timelapse.caption.verb.update",
+  upsert: "timelapse.caption.verb.update",
+  status: "timelapse.caption.verb.update",
+  positions: "timelapse.caption.verb.update",
+  save: "timelapse.caption.verb.update",
+  evaluate: "timelapse.caption.verb.update",
+  setup: "timelapse.caption.verb.update",
+  meta: "timelapse.caption.verb.update",
+  delete: "timelapse.caption.verb.delete",
+  remove: "timelapse.caption.verb.delete",
+  restore: "timelapse.caption.verb.restore",
+  chosen: "timelapse.caption.verb.chosen",
+  use: "timelapse.caption.verb.use",
+  propose: "timelapse.caption.verb.propose",
+  accept: "timelapse.caption.verb.accept",
+  discard: "timelapse.caption.verb.discard",
+  import: "timelapse.caption.verb.import",
+  mark: "timelapse.caption.verb.update",
+};
+
+function verbFor(opType: string): string {
+  const tail = opType.split(".").pop() ?? opType;
+  return t(VERB_KEY[tail] ?? "timelapse.caption.verb.update");
+}
+
+function pickName(payload: ParsedPayload): string {
+  for (const k of [
+    "label",
+    "title",
+    "name",
+    "preferred",
+    "key",
+    "kind",
+    "id",
+  ]) {
+    const v = payload[k];
+    if (typeof v === "string" && v) return v;
+  }
+  return "";
+}
+
+function formatNewDomainCaption(
+  domain: string,
+  opType: string,
+  payload: ParsedPayload,
+): FormattedCaption | null {
+  const labelKey = NEW_DOMAIN_LABEL_KEY[domain];
+  if (!labelKey) return null;
+  return metaLine(
+    t("timelapse.caption.newDomain", {
+      label: t(labelKey),
+      verb: verbFor(opType),
+      name: pickName(payload),
+    }).trim(),
+  );
+}
+
+/**
  * Format a single change_event for the video chrome band. Returns null for
  * events that should not appear as captions (editor scene doc.step, unknown ops).
  */
@@ -288,6 +379,11 @@ export function formatEventCaption(
   if (domain === "map") {
     return metaLine(t("timelapse.caption.mapOp", { op: opType }));
   }
+
+  // Planning / annotation / version / per-project-config domains (+ the
+  // Rust-recorded event/prose/foreshadow events).
+  const newDomain = formatNewDomainCaption(domain, opType, payload);
+  if (newDomain) return newDomain;
 
   return null;
 }

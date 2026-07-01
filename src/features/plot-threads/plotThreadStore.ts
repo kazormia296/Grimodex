@@ -3,6 +3,7 @@ import i18next from "i18next";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
   PLOT_PHASE_TYPES,
   type PlotPhaseType,
@@ -46,6 +47,16 @@ function recordPlotHistory(cmd: {
   const history = useGlobalHistoryStore.getState();
   if (history.isReplaying) return;
   history.push({ kind: "plot", ...cmd });
+  // Single timelapse chokepoint for every plot mutation (thread / marker /
+  // branch). `label` is already the human-readable action string, so it doubles
+  // as the caption. Metadata domain — no rebaseline. no-op when recording off.
+  recordChangeEvent({
+    domain: "plot",
+    opType: "change",
+    entityType: "plot",
+    entityId: cmd.entityId ?? null,
+    payload: { label: cmd.label },
+  });
 }
 
 interface PlotThreadState {

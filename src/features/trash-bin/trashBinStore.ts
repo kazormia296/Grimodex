@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import * as trashApi from "./api";
 import {
   isInterestingStructureItem,
@@ -195,6 +196,17 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
       };
     }
     if (!result.ok) return result;
+
+    // The delete side was already recorded (grid.node.delete etc.); the restore
+    // is a distinct durable event that would otherwise be invisible. Metadata
+    // domain — no rebaseline (the restored body re-enters via its own path).
+    recordChangeEvent({
+      domain: "trash",
+      opType: "restore",
+      entityType: "trash_item",
+      entityId: itemId,
+      payload: { itemId, kind: item.kind },
+    });
 
     // 復元成功 → trash 側から削除 (DB + store)。失敗時は trash に残す。
     try {

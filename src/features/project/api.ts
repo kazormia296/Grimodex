@@ -2,6 +2,7 @@ import { db } from "@/db/client";
 import { projects, lintTermDictionary } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -67,6 +68,15 @@ export async function updateProject(
   if (data.language !== undefined) {
     await invoke("fts_rebuild_en").catch(() => {});
   }
+  // Records under the currently-bound project (meta edits target the active
+  // project). recordChangeEvent no-ops when that isn't the recording project.
+  recordChangeEvent({
+    domain: "project",
+    opType: "meta.update",
+    entityType: "project",
+    entityId: id,
+    payload: { projectId: id, fields: Object.keys(data) },
+  });
   return rows[0];
 }
 

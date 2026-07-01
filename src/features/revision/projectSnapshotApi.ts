@@ -16,6 +16,8 @@ import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { createRevision } from "./api";
 import type { EntityType } from "./api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
 import {
   AUX_SCOPES,
   AUX_SCOPE_OWNER,
@@ -1125,6 +1127,52 @@ async function restoreStructural(
  * legacy snapshots `options.scopes` is ignored because legacy snapshots
  * only capture content.
  */
+/**
+ * A project-snapshot restore rewrites tree_nodes/codex_entries/snippets content
+ * directly in the DB — the editor never issues the corresponding doc.steps, so
+ * the timelapse chain has NO record of the jump and the genesis baseline goes
+ * stale (a subsequent doc.step then replays on the pre-restore doc and throws
+ * `RangeError: Position out of range`). Fix: record the restore as a
+ * `revision`/`snapshot.restore` event and re-anchor every scene's editor
+ * baseline at the new chain tail so post-restore edits replay on the restored
+ * doc. Runs BEFORE the caller's `window.location.reload()` while the recorder
+ * is still bound to this project. Only touches editor baselines when body was
+ * actually restored.
+ */
+async function recordRestoreAndRebaseline(
+  snapshotId: string,
+  format: "legacy" | "structural",
+  restoredCount: number,
+  scopes: Set<RestoreScope>,
+): Promise<void> {
+  const projectId = getCurrentProjectId();
+  if (!projectId) return;
+  recordChangeEvent({
+    domain: "revision",
+    opType: "snapshot.restore",
+    entityType: "project_snapshot",
+    entityId: snapshotId,
+    payload: { snapshotId, format, restoredCount, scopes: [...scopes] },
+  });
+  // legacy snapshots are always content-only; structural ones only rewrite
+  // body when the "body" scope is selected.
+  if (format === "legacy" || scopes.has("body")) {
+    const sceneRows = await db
+      .select({ id: treeNodes.id })
+      .from(treeNodes)
+      .where(
+        and(
+          eq(treeNodes.projectId, projectId),
+          eq(treeNodes.nodeType, "scene"),
+        ),
+      );
+    await rebaselineScenesAtTail(
+      projectId,
+      sceneRows.map((r) => r.id),
+    );
+  }
+}
+
 export async function restoreProjectSnapshot(
   snapshotId: string,
   snapshotName: string,
@@ -1151,6 +1199,12 @@ export async function restoreProjectSnapshot(
 
   if (structural.length === 0) {
     const restoredCount = await restoreLegacyContentOnly(snapshotId);
+    await recordRestoreAndRebaseline(
+      snapshotId,
+      "legacy",
+      restoredCount,
+      scopes,
+    );
     return {
       restoredCount,
       safetySnapshotId: safety.id,
@@ -1161,6 +1215,12 @@ export async function restoreProjectSnapshot(
 
   const { restoredCount, skipped } = await restoreStructural(
     snapshotId,
+    scopes,
+  );
+  await recordRestoreAndRebaseline(
+    snapshotId,
+    "structural",
+    restoredCount,
     scopes,
   );
   // Silence: AUX_SCOPE_OWNER / AUX_BODY_DEPENDENCY / AUX_CODEX_DEPENDENCY

@@ -4,6 +4,7 @@
  */
 
 import { invoke, listen } from "@/lib/tauri";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import type {
   PostEffectRun,
   PostEffectAnnotation,
@@ -140,11 +141,22 @@ export async function updateAnnotationStatus(
   status: PostEffectStatus,
   projectId: string,
 ): Promise<PostEffectAnnotation> {
-  return invoke<PostEffectAnnotation>("update_annotation_status", {
-    annotationId,
-    status,
-    projectId,
+  const result = await invoke<PostEffectAnnotation>(
+    "update_annotation_status",
+    {
+      annotationId,
+      status,
+      projectId,
+    },
+  );
+  recordChangeEvent({
+    domain: "review",
+    opType: "annotation.status",
+    entityType: "post_effect_annotation",
+    entityId: annotationId,
+    payload: { annotationId, status },
   });
+  return result;
 }
 
 export async function updateRelationStatus(
@@ -152,11 +164,22 @@ export async function updateRelationStatus(
   status: PostEffectStatus,
   projectId: string,
 ): Promise<PostEffectAnnotationRelation> {
-  return invoke<PostEffectAnnotationRelation>("update_relation_status", {
-    relationId,
-    status,
-    projectId,
+  const result = await invoke<PostEffectAnnotationRelation>(
+    "update_relation_status",
+    {
+      relationId,
+      status,
+      projectId,
+    },
+  );
+  recordChangeEvent({
+    domain: "review",
+    opType: "relation.status",
+    entityType: "post_effect_relation",
+    entityId: relationId,
+    payload: { relationId, status },
   });
+  return result;
 }
 
 /** 疑似コメントへの返信を追加する (親の run_id / persona を継承)。 */
@@ -166,7 +189,7 @@ export async function replyToAnnotation(params: {
   authorRole?: "user" | "ai" | "system";
   projectId: string;
 }): Promise<PostEffectAnnotation> {
-  return invoke<PostEffectAnnotation>("reply_to_annotation", {
+  const result = await invoke<PostEffectAnnotation>("reply_to_annotation", {
     args: {
       parent_id: params.parentId,
       content: params.content,
@@ -174,6 +197,14 @@ export async function replyToAnnotation(params: {
       project_id: params.projectId,
     },
   });
+  recordChangeEvent({
+    domain: "review",
+    opType: "annotation.reply",
+    entityType: "post_effect_annotation",
+    entityId: params.parentId,
+    payload: { parentId: params.parentId },
+  });
+  return result;
 }
 
 /** scene 保存時に AnnotationMark の位置を DB に同期する。 */

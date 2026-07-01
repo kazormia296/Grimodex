@@ -12,6 +12,7 @@ import { abComparisonRuns } from "@/db/schema";
 import { eq, and, desc } from "drizzle-orm";
 import type { AbComparisonRun } from "@/db/schema";
 import type { AbSurface } from "./abHarness";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 /** 1 枠の記録 (構成 + 応答/エラー)。 */
 export interface AbRunSlotRecord {
@@ -53,6 +54,18 @@ export async function createAbRun(
     chosen: input.chosen ?? null,
     createdAt: now,
   });
+  recordChangeEvent({
+    domain: "abtest",
+    opType: "run.create",
+    entityType: "ab_run",
+    entityId: id,
+    payload: {
+      runId: id,
+      surface: input.surface,
+      slotCount: input.slots.length,
+      chosen: input.chosen ?? null,
+    },
+  });
   return { id };
 }
 
@@ -82,4 +95,11 @@ export async function setAbRunChosen(
         eq(abComparisonRuns.projectId, projectId),
       ),
     );
+  recordChangeEvent({
+    domain: "abtest",
+    opType: "run.chosen",
+    entityType: "ab_run",
+    entityId: id,
+    payload: { runId: id, chosenSlotId },
+  });
 }

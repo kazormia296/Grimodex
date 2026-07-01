@@ -3727,7 +3727,38 @@
       "layoutPreset": "Layout preset: {{preset}}",
       "layoutState": "Panels: {{panels}}",
       "gridOp": "Grid {{op}}{{title}}",
-      "aiTreeOp": "AI structure: +{{created}} moved {{moved}} renamed {{renamed}}"
+      "aiTreeOp": "AI structure: +{{created}} moved {{moved}} renamed {{renamed}}",
+      "newDomain": "{{label}}: {{verb}} {{name}}",
+      "domain": {
+        "event": "Chronicle",
+        "plot": "Plot",
+        "foreshadow": "Foreshadow",
+        "review": "Impact review",
+        "labels": "Labels",
+        "abtest": "A/B",
+        "prompt": "Prompt",
+        "import": "Import",
+        "mount": "External sync",
+        "trash": "Trash",
+        "settings": "Settings",
+        "project": "Project",
+        "lint": "Lint dict",
+        "attribution": "Attribution",
+        "revision": "Revision",
+        "prose": "Prose draft"
+      },
+      "verb": {
+        "create": "create",
+        "update": "update",
+        "delete": "delete",
+        "restore": "restore",
+        "chosen": "chosen",
+        "use": "use",
+        "propose": "propose",
+        "accept": "accept",
+        "discard": "discard",
+        "import": "import"
+      }
     }
   },
   "phase": {

@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { listCodexEntries } from "@/features/codex/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { LintTermEntry, Severity } from "./types";
@@ -314,6 +315,13 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
             .rows.map((r) => (r.id === existingId ? updated : r))
             .sort(compareRows(get().sortBy)),
         });
+        recordChangeEvent({
+          domain: "lint",
+          opType: "term.upsert",
+          entityType: "lint_term",
+          entityId: existingId,
+          payload: { termId: existingId, preferred: cleaned.preferred },
+        });
         return { ok: true, row: updated };
       }
       const id = crypto.randomUUID();
@@ -351,6 +359,13 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
       set({
         rows: [...get().rows, row].sort(compareRows(get().sortBy)),
       });
+      recordChangeEvent({
+        domain: "lint",
+        opType: "term.upsert",
+        entityType: "lint_term",
+        entityId: id,
+        payload: { termId: id, preferred: cleaned.preferred },
+      });
       return { ok: true, row };
     },
 
@@ -375,6 +390,13 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
         "run",
       );
       set({ rows: get().rows.filter((r) => r.id !== id) });
+      recordChangeEvent({
+        domain: "lint",
+        opType: "term.delete",
+        entityType: "lint_term",
+        entityId: id,
+        payload: { termId: id },
+      });
     },
 
     duplicate: async (id) => {
