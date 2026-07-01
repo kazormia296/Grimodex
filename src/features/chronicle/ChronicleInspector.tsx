@@ -6,6 +6,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   CalendarDays,
+  ExternalLink,
 } from "lucide-react";
 import {
   EVENT_PRECISIONS,
@@ -57,6 +58,10 @@ export interface ChronicleInspectorProps {
    * mode=イベント優先ならこのイベントの日付/POV/場所をシーンへ同期する。 */
   onLinkScene?: (sceneId: string, mode: SceneLinkMode) => void;
   onUnlinkScene?: (sceneId: string) => void;
+  /** このイベントの主シーンをエディタで開く（scene-event/リンク済みのとき）。 */
+  onOpenScene?: () => void;
+  /** 参照シーンのピルクリックで該当シーンを開く。 */
+  onOpenSceneById?: (sceneId: string) => void;
   allEvents?: { id: string; title: string }[];
   causeIds?: string[];
   onAddCause?: (causeId: string) => void;
@@ -105,6 +110,8 @@ export function ChronicleInspector({
   linkedSceneIds = [],
   onLinkScene,
   onUnlinkScene,
+  onOpenScene,
+  onOpenSceneById,
   allEvents = [],
   causeIds = [],
   onAddCause,
@@ -727,11 +734,26 @@ export function ChronicleInspector({
               linkedSceneIds={linkedSceneIds}
               onLink={onLinkScene}
               onUnlink={onUnlinkScene}
+              onOpenScene={onOpenSceneById}
             />
           )}
 
           {/* アクション */}
           <div className="flex items-center gap-2">
+            {onOpenScene && (
+              <button
+                type="button"
+                onClick={onOpenScene}
+                title={t(
+                  "chronicle.openSceneHint",
+                  "該当シーンをエディタで開く",
+                )}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs hover:bg-accent"
+              >
+                <ExternalLink className="size-3.5" />
+                {t("chronicle.openScene", "シーンを開く")}
+              </button>
+            )}
             {!isScene && linkedSceneCount > 0 && onStamp && (
               <button
                 type="button"

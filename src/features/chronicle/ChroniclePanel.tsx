@@ -10,6 +10,7 @@ import {
   type ChronicleDatePatch,
 } from "@/features/tree/treeStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import { useChronicleStore } from "./chronicleStore";
 import {
   listEvents,
@@ -1165,6 +1166,46 @@ export function ChroniclePanel() {
     [selected, sceneLinks],
   );
 
+  // イベント → 開くべきシーン id。scene-event は自分自身、リンク済み実イベントは初出リンク先。
+  const sceneIdForEvent = useCallback(
+    (eventId: string): string | null => {
+      if (isSceneEventId(eventId)) return sceneIdFromEventId(eventId);
+      return sceneLinks.find((l) => l.eventId === eventId)?.sceneId ?? null;
+    },
+    [sceneLinks],
+  );
+  // 「該当シーンを開く」導線を出せるイベント id 集合（scene-event＋リンク済み実イベント）。
+  const openableSceneEventIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const l of sceneLinks) s.add(l.eventId);
+    for (const se of sceneEventRows) s.add(se.id);
+    return s;
+  }, [sceneLinks, sceneEventRows]);
+
+  // シーンをエディタで開く（ピン留めタブ）。
+  const handleOpenScene = useCallback((sceneId: string) => {
+    useTabStore.getState().openPinned(sceneId);
+  }, []);
+  const handleOpenSceneForEvent = useCallback(
+    (eventId: string) => {
+      const sid = sceneIdForEvent(eventId);
+      if (sid) handleOpenScene(sid);
+    },
+    [sceneIdForEvent, handleOpenScene],
+  );
+
+  // 選択中イベントに結び付くシーン（scene-event は自分自身 / 実イベントは初出リンク先）。
+  const primaryLinkedSceneId = useMemo(
+    () => (selected ? sceneIdForEvent(selected.id) : null),
+    [selected, sceneIdForEvent],
+  );
+  // scene 紐付けイベント選択時、Timeline と Chat/エディタの現在シーンも同期する。
+  useEffect(() => {
+    if (!primaryLinkedSceneId) return;
+    useTimelineStore.getState().selectNode(primaryLinkedSceneId);
+    useTreeStore.getState().setActiveScene(primaryLinkedSceneId);
+  }, [primaryLinkedSceneId]);
+
   const handleStamp = useCallback(async () => {
     if (!selected || isSceneEventId(selected.id)) return;
     try {
@@ -1429,6 +1470,8 @@ export function ChroniclePanel() {
             onSelectPosition={handleSelectPosition}
             onDeleteEvent={handleDeleteById}
             onEditEvent={handleEditEvent}
+            onOpenScene={handleOpenSceneForEvent}
+            openableSceneEventIds={openableSceneEventIds}
             onMoveSelected={handleMoveSelected}
             onNudgeSelected={shiftSelectedBy}
             onDeleteSelected={handleBulkDelete}
@@ -1455,6 +1498,12 @@ export function ChroniclePanel() {
             linkedSceneIds={selectedSceneIds}
             onLinkScene={handleLinkScene}
             onUnlinkScene={handleUnlinkScene}
+            onOpenScene={
+              primaryLinkedSceneId
+                ? () => handleOpenScene(primaryLinkedSceneId)
+                : undefined
+            }
+            onOpenSceneById={handleOpenScene}
             allEvents={events}
             causeIds={selectedCauseIds}
             participantIds={selectedParticipants}

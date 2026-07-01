@@ -21,6 +21,8 @@ export interface SceneLinkFieldProps {
   linkedSceneIds: string[];
   onLink: (sceneId: string, mode: SceneLinkMode) => void;
   onUnlink: (sceneId: string) => void;
+  /** ピル(タイトル)クリックで該当シーンを開く。未指定ならクリック不可の表示のみ。 */
+  onOpenScene?: (sceneId: string) => void;
 }
 
 /**
@@ -51,6 +53,7 @@ export function SceneLinkField({
   linkedSceneIds,
   onLink,
   onUnlink,
+  onOpenScene,
 }: SceneLinkFieldProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -90,7 +93,23 @@ export function SceneLinkField({
               data-testid="linked-scene"
               className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-card py-0.5 pe-0.5 ps-2 text-xs"
             >
-              <span className="truncate">{titleOf(id)}</span>
+              {onOpenScene ? (
+                <button
+                  type="button"
+                  data-testid="open-linked-scene"
+                  data-scene-id={id}
+                  onClick={() => onOpenScene(id)}
+                  title={t(
+                    "chronicle.openSceneHint",
+                    "該当シーンをエディタで開く",
+                  )}
+                  className="truncate rounded text-start hover:text-primary hover:underline"
+                >
+                  {titleOf(id)}
+                </button>
+              ) : (
+                <span className="truncate">{titleOf(id)}</span>
+              )}
               <button
                 type="button"
                 data-testid="unlink-scene"

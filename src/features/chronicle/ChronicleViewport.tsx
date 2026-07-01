@@ -82,6 +82,10 @@ export interface ChronicleViewportProps {
   onDeleteEvent?: (id: string) => void;
   /** コンテキストメニュー「編集」: 単独選択＋詳細パネルを開く（未指定時は単独選択のみ）。 */
   onEditEvent?: (id: string) => void;
+  /** コンテキストメニュー「該当シーンを開く」。 */
+  onOpenScene?: (eventId: string) => void;
+  /** 「該当シーンを開く」を出せるイベント id 集合（scene-event＋リンク済み実イベント）。 */
+  openableSceneEventIds?: Set<string>;
   /** 複数選択の一括移動（primaryId の吸着先 newStartDay 差分を全選択へ。レーンは保持）。 */
   onMoveSelected?: (primaryId: string, newStartDay: number) => void;
   /** 選択中をまとめて時間方向に nudge（キーボード ←/→）。日数の符号付き差分。 */
@@ -127,6 +131,8 @@ export function ChronicleViewport({
   onSelectPosition,
   onDeleteEvent,
   onEditEvent,
+  onOpenScene,
+  openableSceneEventIds,
   onMoveSelected,
   onNudgeSelected,
   onDeleteSelected,
@@ -927,6 +933,18 @@ export function ChronicleViewport({
                   >
                     {t("chronicle.ctxEdit", "編集")}
                   </button>
+                  {onOpenScene && openableSceneEventIds?.has(menu.eventId) && (
+                    <button
+                      type="button"
+                      className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                      onClick={() => {
+                        onOpenScene(menu.eventId!);
+                        setMenu(null);
+                      }}
+                    >
+                      {t("chronicle.ctxOpenScene", "該当シーンを開く")}
+                    </button>
+                  )}
                   {!locked && onDeleteEvent && (
                     <button
                       type="button"

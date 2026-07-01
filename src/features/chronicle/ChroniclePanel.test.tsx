@@ -35,6 +35,12 @@ vi.mock("@/features/agent-writes/event", () => eventMocks);
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 vi.mock("sonner", () => ({ toast: toastMocks }));
 
+// ── tabStore.openPinned（シーンを開く）をモック ──
+const tabMocks = vi.hoisted(() => ({ openPinned: vi.fn() }));
+vi.mock("@/features/editor/tabStore", () => ({
+  useTabStore: { getState: () => tabMocks },
+}));
+
 // ── 暦/季節フックは DB と本文ロードに依存するのでスタブ化 ──
 vi.mock("./useSeasonConflicts", () => ({
   useSeasonConflicts: () => ({
@@ -89,6 +95,7 @@ vi.mock("./ChronicleInspector", () => ({
     onDelete,
     onLinkScene,
     onUnlinkScene,
+    onOpenScene,
   }: {
     event: EventRow;
     isScene?: boolean;
@@ -96,10 +103,15 @@ vi.mock("./ChronicleInspector", () => ({
     onDelete: () => void;
     onLinkScene?: (sceneId: string, mode: "event" | "scene") => void;
     onUnlinkScene?: (sceneId: string) => void;
+    onOpenScene?: () => void;
   }) => (
     <div>
       <span data-testid="insp-title">{event.title}</span>
       <span data-testid="insp-is-scene">{isScene ? "yes" : "no"}</span>
+      <span data-testid="insp-can-open">{onOpenScene ? "yes" : "no"}</span>
+      <button data-testid="open-scene-btn" onClick={() => onOpenScene?.()}>
+        open-scene
+      </button>
       <button
         data-testid="patch-btn"
         onClick={() => onPatch({ title: "新題" })}
@@ -525,5 +537,67 @@ describe("ChroniclePanel scene-event union", () => {
       useChronicleStore.setState({ selectedEventId: "ea" });
     });
     expect(screen.getByTestId("insp-is-scene").textContent).toBe("no");
+  });
+});
+
+describe("ChroniclePanel シーンを開く / 選択伝播", () => {
+  it("scene-event 選択で Timeline とアクティブシーンが該当シーンへ同期する", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "scene:sc1" });
+    });
+    await waitFor(() => {
+      expect(useTimelineStore.getState().selectedNodeIds).toContain("sc1");
+    });
+    expect(useTreeStore.getState().activeSceneId).toBe("sc1");
+  });
+
+  it("scene-event はインスペクタの「シーンを開く」で openPinned する", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "scene:sc1" });
+    });
+    expect(screen.getByTestId("insp-can-open").textContent).toBe("yes");
+    fireEvent.click(screen.getByTestId("open-scene-btn"));
+    expect(tabMocks.openPinned).toHaveBeenCalledWith("sc1");
+  });
+
+  it("リンク済み実イベントも該当シーンを開け、選択で同期する", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    apiMocks.listSceneEvents.mockResolvedValue([
+      { sceneId: "scLinked", eventId: "ea" },
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("insp-can-open").textContent).toBe("yes");
+    });
+    fireEvent.click(screen.getByTestId("open-scene-btn"));
+    expect(tabMocks.openPinned).toHaveBeenCalledWith("scLinked");
+    expect(useTreeStore.getState().activeSceneId).toBe("scLinked");
+  });
+
+  it("scene 紐付けの無いイベントは「シーンを開く」を出さない", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    apiMocks.listSceneEvents.mockResolvedValue([]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+    expect(screen.getByTestId("insp-can-open").textContent).toBe("no");
   });
 });
