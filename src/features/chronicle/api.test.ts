@@ -123,6 +123,7 @@ import {
   deleteEvent,
   addEventRelation,
   linkSceneToEvent,
+  linkScenesToEvent,
   unlinkSceneFromEvent,
   setEventParticipants,
   listEventParticipants,
@@ -432,6 +433,61 @@ describe("linkSceneToEvent", () => {
 
     await linkSceneToEvent("p1", "s2", "e1");
 
+    expect(await listSceneEvents(["e1"])).toEqual([]);
+  });
+});
+
+describe("linkScenesToEvent (一括リンク)", () => {
+  async function seedScene(id: string, projectId: string): Promise<void> {
+    await db.insert(treeNodes).values({
+      id,
+      projectId,
+      nodeType: "scene",
+      title: id,
+      sortOrder: "a0",
+      content: "{}",
+      unplacedBeatsDoc: "[]",
+      charCount: 0,
+    });
+  }
+
+  it("同一 project のシーンだけをまとめて link する（不正/他プロジェクトはスキップ）", async () => {
+    await seedScene("s1", "p1");
+    await seedScene("s2", "p1");
+    await seedScene("sx", "p2"); // 他プロジェクト
+    await seed("e1", "p1", "a0");
+
+    await linkScenesToEvent("p1", ["s1", "s2", "sx", "ghost"], "e1");
+
+    expect(
+      (await listSceneEvents(["e1"])).map((l) => l.sceneId).sort(),
+    ).toEqual(["s1", "s2"]);
+  });
+
+  it("event が projectId に属さなければ何も link しない（fail-closed）", async () => {
+    await seedScene("s1", "p1");
+    await seed("e1", "p2", "a0");
+
+    await linkScenesToEvent("p1", ["s1"], "e1");
+
+    expect(await listSceneEvents(["e1"])).toEqual([]);
+  });
+
+  it("重複 sceneId・既存リンクはデデュープされる（onConflictDoNothing）", async () => {
+    await seedScene("s1", "p1");
+    await seed("e1", "p1", "a0");
+    await db.insert(sceneEvents).values({ sceneId: "s1", eventId: "e1" });
+
+    await linkScenesToEvent("p1", ["s1", "s1"], "e1");
+
+    expect(await listSceneEvents(["e1"])).toEqual([
+      { sceneId: "s1", eventId: "e1" },
+    ]);
+  });
+
+  it("空配列は no-op", async () => {
+    await seed("e1", "p1", "a0");
+    await linkScenesToEvent("p1", [], "e1");
     expect(await listSceneEvents(["e1"])).toEqual([]);
   });
 });

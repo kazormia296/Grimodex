@@ -1082,13 +1082,17 @@ export function ChroniclePanel() {
         return groupId == null ? g == null : g === groupId;
       });
       try {
-        for (const e of targets) {
-          await uiUpdateEvent({
-            eventId: e.id,
-            primaryCodexId: codexId,
-            laneGroup: "",
-          });
-        }
+        // 対象は互いに独立なので並列に書く（逐次 await で DB を N 回直列に
+        // 待たない）。undo journal は 1 件=1 エントリのまま。
+        await Promise.all(
+          targets.map((e) =>
+            uiUpdateEvent({
+              eventId: e.id,
+              primaryCodexId: codexId,
+              laneGroup: "",
+            }),
+          ),
+        );
         if (groupId) handleHideGroup(groupId);
         refresh();
       } catch {
@@ -1108,11 +1112,14 @@ export function ChroniclePanel() {
   const handleBulkDelete = useCallback(async () => {
     if (!projectId || selectedIdSet.size === 0) return;
     try {
-      for (const id of selectedIdSet) {
-        if (isSceneEventId(id))
-          await clearSceneChronicleDate(sceneIdFromEventId(id));
-        else await uiDeleteEvent(id);
-      }
+      // 対象は互いに独立なので並列に消す（undo journal は 1 件=1 エントリのまま）。
+      await Promise.all(
+        [...selectedIdSet].map((id) =>
+          isSceneEventId(id)
+            ? clearSceneChronicleDate(sceneIdFromEventId(id))
+            : uiDeleteEvent(id),
+        ),
+      );
       setSelectedEventId(null);
       refresh();
     } catch {
@@ -1133,17 +1140,18 @@ export function ChroniclePanel() {
     async (codexId: string) => {
       if (!projectId || selectedIdSet.size === 0) return;
       try {
-        for (const id of selectedIdSet) {
-          if (isSceneEventId(id)) {
-            await updatePovCharacter(sceneIdFromEventId(id), codexId || null);
-          } else {
-            await uiUpdateEvent({
-              eventId: id,
-              primaryCodexId: codexId,
-              laneGroup: "",
-            });
-          }
-        }
+        // 対象は互いに独立なので並列に書く（undo journal は 1 件=1 エントリのまま）。
+        await Promise.all(
+          [...selectedIdSet].map((id) =>
+            isSceneEventId(id)
+              ? updatePovCharacter(sceneIdFromEventId(id), codexId || null)
+              : uiUpdateEvent({
+                  eventId: id,
+                  primaryCodexId: codexId,
+                  laneGroup: "",
+                }),
+          ),
+        );
         refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));

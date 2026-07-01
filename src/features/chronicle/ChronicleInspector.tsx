@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Trash2,
@@ -84,6 +84,81 @@ const selectCls =
   "h-7 min-w-0 max-w-44 rounded-md border border-border bg-card px-2 text-xs text-foreground";
 const labelCls =
   "flex min-w-0 flex-col gap-1 text-[11px] text-muted-foreground";
+
+interface DraftTextFieldProps {
+  value: string;
+  onCommit: (v: string) => void;
+  placeholder?: string;
+  className?: string;
+  multiline?: boolean;
+  rows?: number;
+  delayMs?: number;
+}
+
+/**
+ * ローカル下書き＋trailing debounce commit のテキスト入力。入力は即時反映し、
+ * commit（tracked-write の DB 書込→bumpRevision→全件再取得、または tree store
+ * 書込のカスケード）は打鍵停止後に 1 回へ纏める。commit はスケジュール時点の
+ * 関数を捕まえるので、flush が選択切替後に走っても旧対象へ正しく書き込む。
+ * blur / unmount で必ず flush（編集ロスト防止）。呼び出し側は対象切替時に
+ * remount するよう key を付けること。
+ */
+export function DraftTextField({
+  value,
+  onCommit,
+  placeholder,
+  className,
+  multiline = false,
+  rows,
+  delayMs = 500,
+}: DraftTextFieldProps) {
+  const [draft, setDraft] = useState(value);
+  const pendingRef = useRef<{
+    commit: (v: string) => void;
+    value: string;
+  } | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 外部更新（undo / 他ビュー編集）は未編集（pending なし）のときだけ取り込む。
+  const lastValueRef = useRef(value);
+  if (value !== lastValueRef.current) {
+    lastValueRef.current = value;
+    if (pendingRef.current == null) setDraft(value);
+  }
+  const flush = useCallback(() => {
+    if (timerRef.current != null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    const p = pendingRef.current;
+    pendingRef.current = null;
+    // 打ち消し合って元の値へ戻った下書きは書き込まない（無駄な再取得を防ぐ）。
+    if (p && p.value !== lastValueRef.current) p.commit(p.value);
+  }, []);
+  const handleChange = useCallback(
+    (v: string) => {
+      setDraft(v);
+      pendingRef.current = { commit: onCommit, value: v };
+      if (timerRef.current != null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(flush, delayMs);
+    },
+    [onCommit, flush, delayMs],
+  );
+  // unmount（選択切替の remount / インスペクタを閉じる）時に pending を flush。
+  useEffect(() => flush, [flush]);
+  const common = {
+    value: draft,
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      handleChange(e.target.value),
+    onBlur: flush,
+    placeholder,
+    className,
+  };
+  return multiline ? (
+    <textarea rows={rows} {...common} />
+  ) : (
+    <input {...common} />
+  );
+}
 
 function Banner({ children }: { children: React.ReactNode }) {
   return (
@@ -272,9 +347,10 @@ export function ChronicleInspector({
                   : "var(--muted-foreground)",
               }}
             />
-            <input
+            <DraftTextField
+              key={`title-${event.id}`}
               value={event.title}
-              onChange={(e) => onPatch({ title: e.target.value })}
+              onCommit={(v) => onPatch({ title: v })}
               placeholder={t("chronicle.untitled", "無題のイベント")}
               className="min-w-0 flex-1 bg-transparent text-base font-semibold text-foreground outline-none"
             />
@@ -703,9 +779,11 @@ export function ChronicleInspector({
             {isScene && (
               <label className={labelCls}>
                 {t("chronicle.synopsis", "あらすじ")}
-                <textarea
+                <DraftTextField
+                  key={`note-${event.id}`}
+                  multiline
                   value={event.note ?? ""}
-                  onChange={(e) => onPatch({ note: e.target.value })}
+                  onCommit={(v) => onPatch({ note: v })}
                   rows={3}
                   className="min-h-16 rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground"
                   placeholder={t(

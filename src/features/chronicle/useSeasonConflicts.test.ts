@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  checkInputsFingerprint,
   collectFulfilledSceneTexts,
   mergeAgeCheckEvents,
+  type EventForCheck,
 } from "./useSeasonConflicts";
 
 type E = { id: string; startTime: number | null };
@@ -38,6 +40,70 @@ describe("mergeAgeCheckEvents", () => {
       { sceneId: "sc1", eventId: "scene:sc1" }, // 自分自身の本文を参照
       { sceneId: "sc2", eventId: "scene:sc2" },
     ]);
+  });
+});
+
+describe("checkInputsFingerprint", () => {
+  const base = (): EventForCheck[] => [
+    { id: "e1", startTime: 10, primaryCodexId: "c1", kind: "generic" },
+    { id: "e2", startTime: null, primaryCodexId: null, kind: "birth" },
+  ];
+  const links = [{ sceneId: "sA", eventId: "e1" }];
+
+  it("チェックに効かないフィールド（title 等）や配列 identity では変わらない", () => {
+    const a = checkInputsFingerprint(base(), links, []);
+    const withTitle = base().map((e) => ({ ...e, title: "打鍵中…" }));
+    const b = checkInputsFingerprint(withTitle, [...links], []);
+    expect(b).toBe(a);
+  });
+
+  it("startTime / primaryCodexId / kind / リンク対 の変化では変わる", () => {
+    const a = checkInputsFingerprint(base(), links, []);
+    const moved = base();
+    moved[0] = { ...moved[0], startTime: 11 };
+    expect(checkInputsFingerprint(moved, links, [])).not.toBe(a);
+
+    const pov = base();
+    pov[0] = { ...pov[0], primaryCodexId: "c2" };
+    expect(checkInputsFingerprint(pov, links, [])).not.toBe(a);
+
+    const kind = base();
+    kind[1] = { ...kind[1], kind: "death" };
+    expect(checkInputsFingerprint(kind, links, [])).not.toBe(a);
+
+    expect(
+      checkInputsFingerprint(
+        base(),
+        [...links, { sceneId: "sB", eventId: "e2" }],
+        [],
+      ),
+    ).not.toBe(a);
+  });
+
+  it("ageExtraEvents（scene-event）の増減・日付変化でも変わる", () => {
+    const extra: EventForCheck[] = [
+      { id: "scene:sc1", startTime: 20, primaryCodexId: "c1", kind: "generic" },
+    ];
+    const a = checkInputsFingerprint(base(), links, extra);
+    expect(checkInputsFingerprint(base(), links, [])).not.toBe(a);
+    const shifted = [{ ...extra[0], startTime: 21 }];
+    expect(checkInputsFingerprint(base(), links, shifted)).not.toBe(a);
+  });
+
+  it("undefined と空配列の ageExtraEvents は同一視する", () => {
+    expect(checkInputsFingerprint(base(), links, undefined)).toBe(
+      checkInputsFingerprint(base(), links, []),
+    );
+  });
+
+  it("セクション間（events / links）で似た内容が混ざっても衝突しない", () => {
+    const a = checkInputsFingerprint([], links, []);
+    const b = checkInputsFingerprint(
+      [{ id: "sA", startTime: null, primaryCodexId: "e1", kind: "" }],
+      [],
+      [],
+    );
+    expect(a).not.toBe(b);
   });
 });
 
