@@ -145,6 +145,9 @@ export function ChroniclePanel() {
       : { pxPerDay: 1, viewStartDay: 0 };
   });
   const [trackW, setTrackW] = useState(0);
+  // フィット時にトラックの**現在**幅を同期読みするための実要素参照（trackW state は
+  // ResizeObserver 非同期でインスペクタ開閉直後は stale になりうる）。
+  const trackElRef = useRef<HTMLDivElement | null>(null);
   // 永続ビューがあれば「フィット済み」とみなし初回オートフィットを抑止する。
   const fittedRef = useRef(useChronicleStore.getState().pxPerDay != null);
 
@@ -574,8 +577,11 @@ export function ChroniclePanel() {
 
   // ── 表示操作（いずれも applyView で永続化する） ───────────
   const handleFit = useCallback(() => {
+    // インスペクタ開閉直後は trackW state が stale なので、可視トラックの現在幅を同期読みして
+    // インスペクタ領域を除いた実表示域にフィットさせる（トラックは flex sibling で縮む）。
+    const liveW = trackElRef.current?.clientWidth || trackW;
     applyView(
-      fitAll({ dataStart: eff.dataStart, dataEnd: eff.dataEnd, trackW }),
+      fitAll({ dataStart: eff.dataStart, dataEnd: eff.dataEnd, trackW: liveW }),
     );
   }, [eff.dataStart, eff.dataEnd, trackW, applyView]);
   const handleZoom = useCallback(
@@ -1475,6 +1481,7 @@ export function ChroniclePanel() {
             view={view}
             onViewChange={applyView}
             onMeasureTrack={setTrackW}
+            trackElRef={trackElRef}
             layout={layout}
             eventsById={eventsById}
             selectedEventId={selectedEventId}

@@ -37,6 +37,8 @@ export interface ChronicleViewportProps {
   view: View;
   onViewChange: (v: View) => void;
   onMeasureTrack: (w: number) => void;
+  /** フィット時の同期幅読み用にトラック実要素を親へ公開する ref。 */
+  trackElRef?: React.MutableRefObject<HTMLDivElement | null>;
   layout: ChronicleLayout;
   eventsById: Map<string, MarkerEvent>;
   /** プライマリ選択（アンカー＝因果エッジ作成ハンドルを出す対象）。 */
@@ -117,6 +119,7 @@ export function ChronicleViewport({
   view,
   onViewChange,
   onMeasureTrack,
+  trackElRef: externalTrackElRef,
   layout,
   eventsById,
   selectedEventId,
@@ -266,45 +269,52 @@ export function ChronicleViewport({
   };
 
   // wheel（passive:false で preventDefault）と ResizeObserver を track へ装着。
-  const setTrackEl = useCallback((el: HTMLDivElement | null) => {
-    if (!el) {
-      cleanupRef.current?.();
-      cleanupRef.current = null;
-      trackElRef.current = null;
-      return;
-    }
-    trackElRef.current = el;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      // Shift+ホイール=横スクロール（トラックパッドの deltaX も拾う）。
-      if (e.shiftKey) {
-        const delta =
-          Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-        onViewChangeRef.current(panByPx({ view: viewRef.current, dx: -delta }));
+  const setTrackEl = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el) {
+        cleanupRef.current?.();
+        cleanupRef.current = null;
+        trackElRef.current = null;
+        if (externalTrackElRef) externalTrackElRef.current = null;
         return;
       }
-      const rect = el.getBoundingClientRect();
-      const pivotPx = e.clientX - rect.left;
-      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-      onViewChangeRef.current(
-        zoomAt({ view: viewRef.current, pivotPx, factor }),
-      );
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    const ro =
-      typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => {
-            const w = el.clientWidth;
-            if (w > 0) onMeasureRef.current(w);
-          })
-        : null;
-    ro?.observe(el);
-    if (el.clientWidth > 0) onMeasureRef.current(el.clientWidth);
-    cleanupRef.current = () => {
-      el.removeEventListener("wheel", onWheel);
-      ro?.disconnect();
-    };
-  }, []);
+      trackElRef.current = el;
+      if (externalTrackElRef) externalTrackElRef.current = el;
+      const onWheel = (e: WheelEvent) => {
+        e.preventDefault();
+        // Shift+ホイール=横スクロール（トラックパッドの deltaX も拾う）。
+        if (e.shiftKey) {
+          const delta =
+            Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+          onViewChangeRef.current(
+            panByPx({ view: viewRef.current, dx: -delta }),
+          );
+          return;
+        }
+        const rect = el.getBoundingClientRect();
+        const pivotPx = e.clientX - rect.left;
+        const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+        onViewChangeRef.current(
+          zoomAt({ view: viewRef.current, pivotPx, factor }),
+        );
+      };
+      el.addEventListener("wheel", onWheel, { passive: false });
+      const ro =
+        typeof ResizeObserver !== "undefined"
+          ? new ResizeObserver(() => {
+              const w = el.clientWidth;
+              if (w > 0) onMeasureRef.current(w);
+            })
+          : null;
+      ro?.observe(el);
+      if (el.clientWidth > 0) onMeasureRef.current(el.clientWidth);
+      cleanupRef.current = () => {
+        el.removeEventListener("wheel", onWheel);
+        ro?.disconnect();
+      };
+    },
+    [externalTrackElRef],
+  );
   useEffect(
     () => () => {
       cleanupRef.current?.();
