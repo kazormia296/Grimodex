@@ -236,7 +236,11 @@ export const LayoutShell = memo(function LayoutShell({
       <motion.div
         ref={shellRef}
         data-layout-shell
-        className="relative grid h-full w-full overflow-hidden"
+        // overflow-clip（hidden ではなく）: hidden はスクロールコンテナになり、最大化中に
+        // パネル内要素がフォーカスされるとブラウザが shell を自動スクロールして上端の
+        // ZoomRestoreBar 行をクリップ外へ追い出す（＝「元に戻す」ヘッダーが消える）。clip は
+        // スクロールコンテナを作らないのでフォーカススクロール自体が起きない。
+        className="relative grid h-full w-full overflow-clip"
         initial={false}
         animate={crossfadeControls}
         style={{
