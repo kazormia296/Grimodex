@@ -14,6 +14,8 @@ const recorderMock = vi.hoisted(() => ({
   initRecorderForProject: vi.fn(() => Promise.resolve()),
   resetRecorderChain: vi.fn(),
   setRecorderEnabled: vi.fn(),
+  isRecorderEnabled: vi.fn(() => true),
+  getRecorderChainHead: vi.fn(() => 0),
 }));
 const snapshotsMock = vi.hoisted(() => ({
   recordStateSnapshot: vi.fn(() => Promise.resolve()),
@@ -57,6 +59,7 @@ import {
   purgeTimelapseHistory,
   isTimelapseEnabled,
   ensureGenesisBaselines,
+  rebaselineScenesAtTail,
 } from "./toggle";
 
 beforeEach(() => {
@@ -66,6 +69,8 @@ beforeEach(() => {
   treeMock.loadSceneContent.mockResolvedValue('{"type":"doc"}');
   dbSelectWhere.mockResolvedValue([]);
   snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
+  recorderMock.isRecorderEnabled.mockReturnValue(true);
+  recorderMock.getRecorderChainHead.mockReturnValue(0);
 });
 
 describe("setTimelapseEnabled", () => {
@@ -182,6 +187,62 @@ describe("ensureGenesisBaselines", () => {
     await ensureGenesisBaselines("p1");
 
     expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe("rebaselineScenesAtTail", () => {
+  it("flushes then stamps an editor baseline at the CURRENT tail (not genesis) for each scene", async () => {
+    recorderMock.getRecorderChainHead.mockReturnValue(87);
+    treeMock.loadSceneContent.mockResolvedValue('{"type":"doc","content":[]}');
+
+    await rebaselineScenesAtTail("p1", ["sceneA", "sceneB"]);
+
+    // Must flush first so the caller's meta event is committed and the
+    // in-memory head equals the DB tail.
+    expect(recorderMock.flushNow).toHaveBeenCalled();
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(2);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "p1",
+        domain: "editor",
+        entityType: "scene",
+        entityId: "sceneA",
+        anchorSequence: 87, // tail, NOT 0 — the whole point of the fix
+      }),
+    );
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ entityId: "sceneB", anchorSequence: 87 }),
+    );
+  });
+
+  it("no-op when recording is disabled (nothing to keep coherent)", async () => {
+    recorderMock.isRecorderEnabled.mockReturnValue(false);
+
+    await rebaselineScenesAtTail("p1", ["sceneA"]);
+
+    expect(recorderMock.flushNow).not.toHaveBeenCalled();
+    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("no-op for an empty scene list", async () => {
+    await rebaselineScenesAtTail("p1", []);
+    expect(recorderMock.flushNow).not.toHaveBeenCalled();
+    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("best-effort: one scene's load failure does not abort the rest", async () => {
+    recorderMock.getRecorderChainHead.mockReturnValue(5);
+    treeMock.loadSceneContent
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce('{"type":"doc"}');
+
+    await rebaselineScenesAtTail("p1", ["bad", "good"]);
+
+    // "bad" threw during loadSceneContent -> skipped; "good" still stamped.
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ entityId: "good", anchorSequence: 5 }),
+    );
   });
 });
 

@@ -6,6 +6,7 @@ import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { invoke } from "@/lib/tauri";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -141,6 +142,26 @@ function normalizeSetupRow(raw: unknown): ForeshadowSetupRow {
 
 // ── Foreshadow CRUD ───────────────────────────────────────────────
 
+/**
+ * Timelapse record for a foreshadow (伏線) UI mutation. Uses the SAME
+ * `foreshadow` domain the Rust AI path emits via its undo journal
+ * (`agent_writes.rs`) — the plain `foreshadow.rs` UI commands do NOT append
+ * change_events, so the UI path and AI path are disjoint (no double-record).
+ */
+function recordForeshadow(
+  opType: string,
+  entityId: string | null,
+  payload: Record<string, unknown>,
+): void {
+  recordChangeEvent({
+    domain: "foreshadow",
+    opType,
+    entityType: "foreshadow",
+    entityId,
+    payload,
+  });
+}
+
 export async function createForeshadow(
   data: Omit<NewForeshadow, "createdAt" | "updatedAt">,
 ): Promise<ForeshadowRow> {
@@ -153,7 +174,12 @@ export async function createForeshadow(
         loadBearing: data.loadBearing ?? null,
       },
     });
-    return normalizeForeshadowRow(created);
+    const norm = normalizeForeshadowRow(created);
+    recordForeshadow("create", norm.id, {
+      foreshadowId: norm.id,
+      title: norm.title,
+    });
+    return norm;
   }
 
   const now = new Date();
@@ -163,6 +189,10 @@ export async function createForeshadow(
     .select()
     .from(foreshadows)
     .where(eq(foreshadows.id, data.id));
+  recordForeshadow("create", data.id, {
+    foreshadowId: data.id,
+    title: data.title,
+  });
   return created as ForeshadowRow;
 }
 
@@ -887,6 +917,10 @@ export async function updateForeshadow(
     >
   >,
 ): Promise<void> {
+  recordForeshadow("update", id, {
+    foreshadowId: id,
+    fields: Object.keys(patch),
+  });
   if (isTauriRuntime()) {
     const tauriPatch: Record<string, unknown> = {};
     if (patch.title !== undefined) tauriPatch.title = patch.title;
@@ -922,6 +956,7 @@ export async function updateForeshadow(
 }
 
 export async function deleteForeshadow(id: string): Promise<void> {
+  recordForeshadow("delete", id, { foreshadowId: id });
   if (isTauriRuntime()) {
     await invoke("foreshadow_delete", { id });
     return;

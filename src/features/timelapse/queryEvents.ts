@@ -2,18 +2,9 @@ import { db } from "@/db/client";
 import { changeEvents } from "@/db/schema";
 import { and, asc, eq } from "drizzle-orm";
 
-export type Domain =
-  | "editor"
-  | "codex"
-  | "snippet"
-  | "grid"
-  | "map"
-  | "synopsis"
-  | "intent"
-  | "beat"
-  // P0 (§17): chat conversation flow + panel/layout/focus motion.
-  | "chat"
-  | "layout";
+// Re-export the canonical union from the recorder so the recorded-domain set
+// stays single-sourced (was a hand-maintained duplicate that drifted).
+export type { Domain } from "./recorder";
 
 /**
  * Fetch the project's change-event tail, ordered by sequence (ascending).

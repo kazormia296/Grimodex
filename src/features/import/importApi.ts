@@ -34,6 +34,8 @@ import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
 } from "@/features/project/projectStore";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { db } from "@/db/client";
 import { chatSessions, chatMessages } from "@/db/schema";
@@ -518,6 +520,12 @@ export async function importTree(
 ): Promise<{ imported: number; errors: string[] }> {
   let imported = 0;
   const errors: string[] = [];
+  // Imported scenes get their content via saveSceneContent (DB direct), which
+  // bypasses the editor's doc.step recording. Collect them so we can re-anchor
+  // their editor baselines at the chain tail (like a restore) — otherwise a
+  // later edit to an imported scene replays from an empty genesis doc and
+  // throws RangeError.
+  const createdSceneIds: string[] = [];
 
   const total = countTreeNodes(roots);
   if (total === 0) {
@@ -592,6 +600,7 @@ export async function importTree(
               charCount: sceneCharCount(content),
             });
           }
+          createdSceneIds.push(node.id);
           imported++;
         } catch (err) {
           errors.push(`${node.title}: ${String(err)}`);
@@ -603,6 +612,18 @@ export async function importTree(
   }
 
   await insertNodes(roots, null);
+
+  if (imported > 0) {
+    recordChangeEvent({
+      domain: "import",
+      opType: "tree",
+      payload: { imported, scenes: createdSceneIds.length },
+    });
+    // Import always targets the currently-loaded project (past-genesis), so a
+    // tail-anchored rebaseline is correct here.
+    await rebaselineScenesAtTail(getCurrentProjectId(), createdSceneIds);
+  }
+
   onProgress?.({ total, done: total, currentName: "" });
   return { imported, errors };
 }

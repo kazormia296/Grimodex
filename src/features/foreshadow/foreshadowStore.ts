@@ -20,6 +20,9 @@ import {
   type SceneForeshadowInfo,
 } from "./api";
 import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -43,6 +46,27 @@ import type {
   ForeshadowSetupRow,
   ForeshadowWithLabel,
 } from "./types";
+
+/**
+ * Foreshadow undo/redo re-bakes payoff marks by writing scene content directly
+ * (`saveSceneContent`) and, when the editor is live, `setContent(..., {
+ * emitUpdate: false })` — both bypass the editor's doc.step recording. This is
+ * an out-of-band body write, so record it and re-anchor the scene's editor
+ * baseline at the chain tail (same treatment as a snapshot restore) to keep
+ * timelapse replay coherent. no-op when recording is off / no scene.
+ */
+async function recordForeshadowMarkBake(sceneId: string | null): Promise<void> {
+  if (!sceneId) return;
+  recordChangeEvent({
+    domain: "foreshadow",
+    opType: "mark.update",
+    entityType: "scene",
+    entityId: sceneId,
+    sceneId,
+    payload: { sceneId },
+  });
+  await rebaselineScenesAtTail(getCurrentProjectId(), [sceneId]);
+}
 
 interface ForeshadowState {
   items: ForeshadowWithLabel[];
@@ -1002,6 +1026,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       async undo() {
         await deleteSetup(setupPayload.id);
         await saveSceneContent(capSceneId, capBefore);
+        await recordForeshadowMarkBake(capSceneId);
         // If the editor is currently displaying this scene, also reset its content
         // without firing onUpdate (second arg false).
         const ed = useEditorStore.getState().editor;
@@ -1027,6 +1052,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       async redo() {
         await createForeshadowSetup(setupPayload);
         await saveSceneContent(capSceneId, capAfter);
+        await recordForeshadowMarkBake(capSceneId);
         const ed = useEditorStore.getState().editor;
         const curScene = useSceneStore.getState().activeSceneId;
         if (ed && curScene === capSceneId) {

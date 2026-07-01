@@ -25,7 +25,19 @@ const FLUSH_DEBOUNCE_MS = 100;
  */
 const MAX_FLUSH_RETRIES = 10;
 
-type Domain =
+/**
+ * Canonical recorded-domain union. This is the single source of truth — the
+ * player filter (`TimelapsePlayer`) and query helpers (`queryEvents`) re-use it
+ * so the set can never drift.
+ *
+ * Some domains are ALSO appended by the Rust `agent_writes` path (AI writes /
+ * undo journal): `codex`, `snippet`, `event`, `foreshadow`, `prose`. TS UI
+ * hooks reuse the SAME domain name for the human-driven code path — the two
+ * paths are disjoint callers, so this is not double-recording. `prose` is
+ * recorded ONLY by Rust; TS never calls `recordChangeEvent` for it — it lives
+ * in the union purely for read/caption/player-filter parity.
+ */
+export type Domain =
   | "editor"
   | "codex"
   | "snippet"
@@ -39,7 +51,26 @@ type Domain =
   // Grimodex" rather than bare prose. These domains carry no doc.step; their
   // replay consumer is separate from the editor-body replayEngine.
   | "chat"
-  | "layout";
+  | "layout"
+  // Planning / annotation / version / per-project-config layers. All are
+  // metadata domains (no doc.step) — replayEngine early-returns for them and
+  // they surface only as caption text.
+  | "event" // chronicle (matches Rust agent_writes domain)
+  | "plot"
+  | "foreshadow" // matches Rust agent_writes/undo-journal domain
+  | "review" // impact-review baselines + post-effect annotations
+  | "labels"
+  | "abtest"
+  | "prompt"
+  | "import"
+  | "mount" // external-mount IN (file → app) sync
+  | "trash" // restore (delete already recorded via grid)
+  | "settings" // per-project settings only
+  | "project" // per-project meta
+  | "lint"
+  | "attribution"
+  | "revision"
+  | "prose"; // Rust-recorded only; union member for parity
 
 export interface RecordEventInput {
   domain: Domain;
@@ -143,6 +174,11 @@ export function setRecorderEnabled(enabled: boolean): void {
 /** Expose the current recorder session id for AI write primitives. */
 export function getRecorderSessionId(): string {
   return state.sessionId;
+}
+
+/** Whether the recorder is currently writing through to the chain. */
+export function isRecorderEnabled(): boolean {
+  return state.enabled;
 }
 
 /**

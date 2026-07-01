@@ -10,6 +10,8 @@ import {
   saveSceneContent,
   updateNode,
 } from "@/features/tree/api";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
@@ -578,6 +580,28 @@ async function applyExternalContent(
   await updateNode(nodeId, {
     sourceMtime: sourceMtime ?? new Date().toISOString(),
   });
+  // External file → app (IN) rewrites scene content in the DB and the live
+  // editor reload runs with isApplyingExternalUpdate=true, so no doc.step is
+  // recorded. Mark the sync and re-anchor the scene baseline at the chain tail
+  // so later edits replay on the imported content (no RangeError).
+  //
+  // Defensive: this path is reached for file-content events (→ scene nodes),
+  // but a folder also carries a sourceUri. change_events.sceneId is a valid FK
+  // to ANY tree node (no flush-wedge), yet baselining a folder as an editor
+  // scene would be a wasted, never-replayed snapshot — so skip positively-known
+  // folders. A brand-new scene not yet in the store still proceeds.
+  const knownNode = useTreeStore.getState().nodes?.find((n) => n.id === nodeId);
+  if (knownNode?.nodeType !== "folder") {
+    recordChangeEvent({
+      domain: "mount",
+      opType: "file.import",
+      entityType: "scene",
+      entityId: nodeId,
+      sceneId: nodeId,
+      payload: { sceneId: nodeId, charCount },
+    });
+    await rebaselineScenesAtTail(getCurrentProjectId(), [nodeId]);
+  }
   scheduleSceneIndex(nodeId);
   useTreeStore.getState().setCharCount(nodeId, charCount);
   await useTreeStore.getState().loadTree(getCurrentProjectId());

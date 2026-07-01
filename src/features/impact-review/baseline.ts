@@ -7,6 +7,7 @@ import { db } from "@/db/client";
 import { impactReviewBaselines } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { stableStringify } from "@/features/post-effect/canonicalize";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import type { CodexSnapshot } from "./diff";
 
 function stableHash(s: string): string {
@@ -50,4 +51,11 @@ export async function saveBaseline(
       target: impactReviewBaselines.entryId,
       set: { projectId, snapshotJson, contentHash, reviewedAt },
     });
+  recordChangeEvent({
+    domain: "review",
+    opType: "baseline.save",
+    entityType: "impact_review_baseline",
+    entityId: entryId,
+    payload: { entryId, contentHash },
+  });
 }

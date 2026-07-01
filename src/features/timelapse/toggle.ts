@@ -20,7 +20,9 @@ import { changeEvents, stateSnapshots } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import {
   flushNow,
+  getRecorderChainHead,
   initRecorderForProject,
+  isRecorderEnabled,
   resetRecorderChain,
   setRecorderEnabled,
 } from "./recorder";
@@ -137,6 +139,53 @@ export async function ensureGenesisBaselines(projectId: string): Promise<void> {
   const existing = await loadLatestSnapshot({ projectId, domain: "editor" });
   if (existing) return; // already baked (e.g. toggle-ON, then reload)
   await stampSceneBaselines(projectId);
+}
+
+/**
+ * Re-anchor scene editor baselines at the CURRENT chain tail after an
+ * out-of-band body rewrite (revision project-snapshot restore / import bulk /
+ * external-mount IN). Unlike `stampSceneBaselines` (which anchors at
+ * genesis=0), this stamps at the live head so subsequent doc.steps replay on
+ * top of the rewritten doc while the pre-write history still replays from the
+ * older genesis baseline — `loadLatestSnapshot` picks the greatest
+ * `anchorSequence <= asOfSequence`, so both segments stay coherent and the
+ * `RangeError: Position out of range` that a stale baseline caused is avoided.
+ *
+ * Contract: the caller MUST have already `recordChangeEvent`-enqueued its meta
+ * event (e.g. `revision`/`snapshot.restore`) BEFORE calling this. We flush so
+ * the in-memory head equals the committed DB tail, then anchor there.
+ * Best-effort per scene: a failure degrades that scene's replay seek but never
+ * corrupts the chain. No-op when recording is disabled (nothing to keep
+ * coherent) or the scene list is empty.
+ */
+export async function rebaselineScenesAtTail(
+  projectId: string,
+  sceneIds: string[],
+): Promise<void> {
+  if (!isRecorderEnabled() || sceneIds.length === 0) return;
+  await flushNow(); // commit the caller's meta event -> lastSequence == DB tail
+  const anchorSequence = getRecorderChainHead();
+  const anchorTimestamp = Date.now();
+  for (const sceneId of sceneIds) {
+    try {
+      const payload = await loadSceneContent(sceneId); // PM-JSON string
+      await recordStateSnapshot({
+        projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId: sceneId,
+        anchorSequence,
+        anchorTimestamp,
+        payload,
+      });
+    } catch (err) {
+      console.warn(
+        "[timelapse] rebaseline snapshot failed for scene",
+        sceneId,
+        err,
+      );
+    }
+  }
 }
 
 /** Re-arm the recorder on a freshly-wiped project and stamp baselines. */

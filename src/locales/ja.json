@@ -3720,7 +3720,38 @@
       "layoutPreset": "レイアウトプリセット: {{preset}}",
       "layoutState": "パネル: {{panels}}",
       "gridOp": "ツリー {{op}}{{title}}",
-      "aiTreeOp": "AI構成: 生成{{created}} 移動{{moved}} 改名{{renamed}}"
+      "aiTreeOp": "AI構成: 生成{{created}} 移動{{moved}} 改名{{renamed}}",
+      "newDomain": "{{label}}: {{verb}} {{name}}",
+      "domain": {
+        "event": "年表",
+        "plot": "プロット",
+        "foreshadow": "伏線",
+        "review": "影響レビュー",
+        "labels": "ラベル",
+        "abtest": "A/B比較",
+        "prompt": "プロンプト",
+        "import": "インポート",
+        "mount": "外部同期",
+        "trash": "ゴミ箱",
+        "settings": "設定",
+        "project": "作品設定",
+        "lint": "校正辞書",
+        "attribution": "帰属",
+        "revision": "版",
+        "prose": "本文提案"
+      },
+      "verb": {
+        "create": "作成",
+        "update": "更新",
+        "delete": "削除",
+        "restore": "復元",
+        "chosen": "採用",
+        "use": "使用",
+        "propose": "提案",
+        "accept": "採用",
+        "discard": "破棄",
+        "import": "取り込み"
+      }
     }
   },
   "phase": {

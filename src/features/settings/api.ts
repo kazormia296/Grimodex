@@ -1,6 +1,21 @@
 import { db } from "@/db/client";
 import { appSettings, projectSettings } from "@/db/schema";
 import { eq, and, like } from "drizzle-orm";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
+
+/**
+ * Keys we never surface in the timelapse: the recorder's own on/off control
+ * (`timelapse.enabled`) would self-reference (it is written during the
+ * OFF→ON re-arm), so recording it is noise. app_settings (global) are out of
+ * scope entirely — only project_settings are recorded.
+ */
+function isRecordableProjectSettingKey(key: string): boolean {
+  return !key.startsWith("timelapse.");
+}
+
+function shortSettingValue(value: string): string {
+  return value.length > 120 ? `${value.slice(0, 120)}…` : value;
+}
 
 export async function getSetting(key: string): Promise<string | null> {
   const rows = await db
@@ -61,6 +76,15 @@ export async function setProjectSetting(
       target: [projectSettings.projectId, projectSettings.key],
       set: { value },
     });
+  if (isRecordableProjectSettingKey(key)) {
+    recordChangeEvent({
+      domain: "settings",
+      opType: "project.set",
+      entityType: "project_setting",
+      entityId: key,
+      payload: { key, value: shortSettingValue(value) },
+    });
+  }
 }
 
 export async function deleteProjectSetting(
@@ -75,6 +99,15 @@ export async function deleteProjectSetting(
         eq(projectSettings.key, key),
       ),
     );
+  if (isRecordableProjectSettingKey(key)) {
+    recordChangeEvent({
+      domain: "settings",
+      opType: "project.delete",
+      entityType: "project_setting",
+      entityId: key,
+      payload: { key },
+    });
+  }
 }
 
 export async function getAllProjectSettings(

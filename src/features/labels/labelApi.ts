@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { labels, treeNodeLabels } from "@/db/schema";
 import { asc, eq, sql } from "drizzle-orm";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 
 export type Label = typeof labels.$inferSelect;
 
@@ -30,6 +31,13 @@ export async function createLabel(data: {
       createdAt: new Date().toISOString(),
     })
     .returning();
+  recordChangeEvent({
+    domain: "labels",
+    opType: "label.create",
+    entityType: "label",
+    entityId: data.id,
+    payload: { labelId: data.id, name: data.name, color: data.color },
+  });
   return rows[0];
 }
 
@@ -46,11 +54,25 @@ export async function updateLabel(
     .set(updateData)
     .where(eq(labels.id, id))
     .returning();
+  recordChangeEvent({
+    domain: "labels",
+    opType: "label.update",
+    entityType: "label",
+    entityId: id,
+    payload: { labelId: id, fields: Object.keys(updateData) },
+  });
   return rows[0];
 }
 
 export async function deleteLabel(id: string): Promise<void> {
   await db.delete(labels).where(eq(labels.id, id));
+  recordChangeEvent({
+    domain: "labels",
+    opType: "label.delete",
+    entityType: "label",
+    entityId: id,
+    payload: { labelId: id },
+  });
 }
 
 export async function listNodeLabels(nodeId: string): Promise<Label[]> {
@@ -81,6 +103,15 @@ export async function setNodeLabels(
       .insert(treeNodeLabels)
       .values(labelIds.map((labelId) => ({ nodeId, labelId })));
   }
+  recordChangeEvent({
+    domain: "labels",
+    opType: "node.labels.set",
+    entityType: "tree_node",
+    entityId: nodeId,
+    // sceneId left null: nodeId may be a chapter/folder, not necessarily a
+    // scene FK — a bad FK would wedge the flush loop.
+    payload: { nodeId, labelIds },
+  });
 }
 
 export async function reorderLabels(orderedIds: string[]): Promise<void> {
@@ -90,6 +121,11 @@ export async function reorderLabels(orderedIds: string[]): Promise<void> {
       .set({ sortOrder: i * 1.0 })
       .where(eq(labels.id, orderedIds[i]));
   }
+  recordChangeEvent({
+    domain: "labels",
+    opType: "label.reorder",
+    payload: { orderedIds },
+  });
 }
 
 export async function countNodesWithLabel(labelId: string): Promise<number> {

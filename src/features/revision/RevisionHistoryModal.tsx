@@ -8,6 +8,7 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useRevisionStore } from "./revisionStore";
 import { createRevision } from "./api";
 import { saveSceneContent } from "@/features/tree/api";
+import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { getReadonlyEditorExtensions } from "@/features/editor/extensions";
@@ -401,6 +402,18 @@ export function RevisionHistoryModal() {
       if (entityType === "scene") {
         await saveSceneContent(entityId, JSON.stringify(mainEditor.getJSON()));
       }
+
+      // Marker only: `setContent` above dispatches a normal editor transaction,
+      // so EditorPane.onTransaction already records the doc.step that replays
+      // this restore. No rebaseline needed (unlike a project-snapshot restore).
+      recordChangeEvent({
+        domain: "revision",
+        opType: "content.restore",
+        entityType,
+        entityId,
+        sceneId: entityType === "scene" ? entityId : null,
+        payload: { entityType, entityId },
+      });
 
       setConfirmRestore(false);
       toast.success(t("revision.restored"));
