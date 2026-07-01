@@ -237,6 +237,28 @@ describe("ensureGenesisBaselines", () => {
     );
   });
 
+  it("baselines a codex added after the first genesis pass (scene already baked)", async () => {
+    dbSelectWhere.mockResolvedValue([]); // still genesis (no doc.step)
+    // Scene baseline already exists (editor domain); codex/snippet have none.
+    snapshotsMock.loadLatestSnapshot.mockImplementation((opts?: unknown) =>
+      Promise.resolve(
+        (opts as { domain: string }).domain === "editor"
+          ? { domain: "editor" }
+          : null,
+      ),
+    );
+    treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+    codexMock.listCodexEntries.mockResolvedValue([{ id: "c1", content: "{}" }]);
+
+    await ensureGenesisBaselines("p1");
+
+    // Scene skipped (already baked); the fresh codex is stamped.
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: "codex", entityId: "c1" }),
+    );
+  });
+
   it("past genesis (events exist): does NOT bake — avoids double-applying recorded steps", async () => {
     dbSelectWhere.mockResolvedValue([{ id: 1 }]); // >=1 recorded event
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);

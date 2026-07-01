@@ -54,10 +54,13 @@ function paint(theme: EditorRenderTheme, content: unknown[], w = 400, h = 300) {
 }
 
 describe("verticalRenderer (real canvas)", () => {
+  // Latin glyphs for the pixel-bound geometry assertions: headless CI Chromium
+  // always has a Latin font, whereas CJK glyph coverage is not guaranteed (a
+  // missing font would ink nothing and false-fail). The mock-ctx unit test
+  // covers the CJK/ruby/縦中横 geometry; here we only need "ink lands where the
+  // coordinate maths says". CJK+ruby+tcy still get a real-canvas smoke below.
   it("inks the first column on the RIGHT (vs horizontal on the left)", () => {
-    const one = [
-      { type: "paragraph", content: [{ type: "text", text: "猫" }] },
-    ];
+    const one = [{ type: "paragraph", content: [{ type: "text", text: "A" }] }];
     const v = paint(VERTICAL, one);
     const hh = paint(HORIZONTAL, one);
     expect(v.count).toBeGreaterThan(0);
@@ -69,14 +72,8 @@ describe("verticalRenderer (real canvas)", () => {
 
   it("flows multi-paragraph text leftward across several columns", () => {
     const b = paint(VERTICAL, [
-      {
-        type: "paragraph",
-        content: [{ type: "text", text: "吾輩は猫である。名前はまだ無い。" }],
-      },
-      {
-        type: "paragraph",
-        content: [{ type: "text", text: "どこで生れたか見当がつかぬ。" }],
-      },
+      { type: "paragraph", content: [{ type: "text", text: "ABCDEFGHIJKL" }] },
+      { type: "paragraph", content: [{ type: "text", text: "MNOPQRSTUVWX" }] },
     ]);
     expect(b.count).toBeGreaterThan(0);
     // Columns span a wide horizontal band (right-to-left), not a single strip.

@@ -1158,8 +1158,10 @@ async function recordRestoreAndRebaseline(
     payload: { snapshotId, format, restoredCount, scopes: [...scopes] },
   });
   // Re-anchor the baseline of every entity whose body this restore rewrote.
-  // legacy snapshots are content-only (scene bodies); structural ones rewrite a
-  // scope's body only when that scope is selected (scene→"body",
+  // A LEGACY restore replays content_versions for ALL entity types
+  // (restoreLegacyContentOnly writes scene/note/codex_entry/snippet bodies), so
+  // it must rebaseline codex/snippet too — not just scenes. A STRUCTURAL restore
+  // only rewrites a scope's body when that scope is selected (scene→"body",
   // codex→"codex", snippet→"snippet"). A stale codex/snippet baseline throws the
   // same post-restore RangeError as scenes once the entity is edited again.
   const refs: EntityBaselineRef[] = [];
@@ -1175,14 +1177,14 @@ async function recordRestoreAndRebaseline(
       );
     refs.push(...sceneRows.map((r) => ({ kind: "scene" as const, id: r.id })));
   }
-  if (format === "structural" && scopes.has("codex")) {
+  if (format === "legacy" || scopes.has("codex")) {
     const codexRows = await db
       .select({ id: codexEntries.id })
       .from(codexEntries)
       .where(eq(codexEntries.projectId, projectId));
     refs.push(...codexRows.map((r) => ({ kind: "codex" as const, id: r.id })));
   }
-  if (format === "structural" && scopes.has("snippet")) {
+  if (format === "legacy" || scopes.has("snippet")) {
     const snippetRows = await db
       .select({ id: snippets.id })
       .from(snippets)

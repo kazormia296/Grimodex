@@ -130,63 +130,91 @@ async function wipeHistory(projectId: string): Promise<void> {
   resetRecorderChain();
 }
 
+/** Which entity kinds a genesis-baseline pass should stamp. */
+interface BaselineKindFilter {
+  scene: boolean;
+  codex: boolean;
+  snippet: boolean;
+}
+
+const ALL_KINDS: BaselineKindFilter = {
+  scene: true,
+  codex: true,
+  snippet: true,
+};
+
 /**
  * Stamp the current doc of every editor-body entity (scenes + codex entries +
  * snippets) as a genesis (anchorSequence=0) baseline so post-enable edits replay
  * from a known starting doc. codex/snippet list rows already carry `.content`,
  * so they're stamped without a re-fetch; scenes load their body lazily.
- * Best-effort per entity: a failure degrades that entity's replay seek but never
- * corrupts the chain.
+ * `which` limits the pass to kinds that don't already have a baseline (see
+ * `ensureGenesisBaselines`), so a codex added after the first genesis pass still
+ * gets baselined without re-stamping scenes. Best-effort per entity: a failure
+ * degrades that entity's replay seek but never corrupts the chain.
  */
-async function stampEntityBaselines(projectId: string): Promise<void> {
+async function stampEntityBaselines(
+  projectId: string,
+  which: BaselineKindFilter = ALL_KINDS,
+): Promise<void> {
   const anchorTimestamp = Date.now();
 
-  const nodes = await listAllNodes(projectId);
-  for (const scene of nodes.filter((n) => n.nodeType === "scene")) {
-    try {
-      const payload = await loadSceneContent(scene.id); // PM-JSON string
-      await recordEntityBaseline(
-        projectId,
-        "scene",
-        scene.id,
-        payload,
-        0,
-        anchorTimestamp,
-      );
-    } catch (err) {
-      console.warn("[timelapse] baseline failed for scene", scene.id, err);
+  if (which.scene) {
+    const nodes = await listAllNodes(projectId);
+    for (const scene of nodes.filter((n) => n.nodeType === "scene")) {
+      try {
+        const payload = await loadSceneContent(scene.id); // PM-JSON string
+        await recordEntityBaseline(
+          projectId,
+          "scene",
+          scene.id,
+          payload,
+          0,
+          anchorTimestamp,
+        );
+      } catch (err) {
+        console.warn("[timelapse] baseline failed for scene", scene.id, err);
+      }
     }
   }
 
-  const codex = await listCodexEntries(projectId);
-  for (const entry of codex) {
-    try {
-      await recordEntityBaseline(
-        projectId,
-        "codex",
-        entry.id,
-        entry.content,
-        0,
-        anchorTimestamp,
-      );
-    } catch (err) {
-      console.warn("[timelapse] baseline failed for codex", entry.id, err);
+  if (which.codex) {
+    const codex = await listCodexEntries(projectId);
+    for (const entry of codex) {
+      try {
+        await recordEntityBaseline(
+          projectId,
+          "codex",
+          entry.id,
+          entry.content,
+          0,
+          anchorTimestamp,
+        );
+      } catch (err) {
+        console.warn("[timelapse] baseline failed for codex", entry.id, err);
+      }
     }
   }
 
-  const snippetRows = await listSnippets(projectId);
-  for (const snippet of snippetRows) {
-    try {
-      await recordEntityBaseline(
-        projectId,
-        "snippet",
-        snippet.id,
-        snippet.content,
-        0,
-        anchorTimestamp,
-      );
-    } catch (err) {
-      console.warn("[timelapse] baseline failed for snippet", snippet.id, err);
+  if (which.snippet) {
+    const snippetRows = await listSnippets(projectId);
+    for (const snippet of snippetRows) {
+      try {
+        await recordEntityBaseline(
+          projectId,
+          "snippet",
+          snippet.id,
+          snippet.content,
+          0,
+          anchorTimestamp,
+        );
+      } catch (err) {
+        console.warn(
+          "[timelapse] baseline failed for snippet",
+          snippet.id,
+          err,
+        );
+      }
     }
   }
 }
@@ -228,18 +256,24 @@ async function hasBodySteps(projectId: string): Promise<boolean> {
  * events yet), so the default-ON path matches the toggled path.
  *
  * Two guards keep this safe and idempotent:
- *  - Skip when editor steps already exist: past genesis an anchorSequence=0
+ *  - Skip when body steps already exist: past genesis an anchorSequence=0
  *    baseline would double-apply the already-recorded steps on top of a doc
  *    that already includes them (positions go out of range — the very bug we
  *    fix). Such projects can only be repaired by an explicit OFF→ON re-record.
- *  - Skip when an editor baseline already exists: avoids duplicate rows when a
- *    genesis project is reloaded before its first edit (e.g. after a toggle-ON).
+ *  - Skip PER KIND when a baseline for that kind already exists: avoids duplicate
+ *    rows on reload, yet still baselines a codex/snippet added AFTER the first
+ *    genesis pass (scenes stay skipped, the new kind gets stamped) — otherwise a
+ *    single editor-only guard would leave the fresh codex/snippet unbaselined.
  */
 export async function ensureGenesisBaselines(projectId: string): Promise<void> {
   if (await hasBodySteps(projectId)) return; // past genesis
-  const existing = await loadLatestSnapshot({ projectId, domain: "editor" });
-  if (existing) return; // already baked (e.g. toggle-ON, then reload)
-  await stampEntityBaselines(projectId);
+  const which: BaselineKindFilter = {
+    scene: !(await loadLatestSnapshot({ projectId, domain: "editor" })),
+    codex: !(await loadLatestSnapshot({ projectId, domain: "codex" })),
+    snippet: !(await loadLatestSnapshot({ projectId, domain: "snippet" })),
+  };
+  if (!which.scene && !which.codex && !which.snippet) return; // all baked
+  await stampEntityBaselines(projectId, which);
 }
 
 /**

@@ -229,6 +229,25 @@ describe("verticalRenderer — structure + attribution", () => {
     const h = glyph(ops, "章")!;
     expect(h.font).toMatch(/32px/); // 16 × HEADING_SCALE[1]=2
   });
+
+  it("ordered list: items flow leftward with content indented below the marker", () => {
+    const li = (t: string) => ({
+      type: "listItem",
+      content: [para([txt(t)])],
+    });
+    const ops = renderJson([
+      { type: "orderedList", content: [li("あ"), li("い")] },
+    ]);
+    const a = glyph(ops, "あ")!;
+    const b = glyph(ops, "い")!;
+    const marker1 = glyph(ops, "1")!; // "1." → "1" + "."
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    // Item 2 sits to the LEFT of item 1 (right-to-left block progression).
+    expect(b.args[1] as number).toBeLessThan(a.args[1] as number);
+    // Content is indented BELOW its marker in the shared first column.
+    expect(a.args[2] as number).toBeGreaterThan(marker1.args[2] as number);
+  });
 });
 
 describe("verticalRenderer — vertical:false is unaffected", () => {

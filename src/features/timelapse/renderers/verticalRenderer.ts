@@ -397,7 +397,7 @@ function renderListVertical(
   inherited: Inherited,
   ordered: boolean,
 ): number {
-  const indent = Math.round(theme.fontSizePx * 1.5);
+  const baseIndent = Math.round(theme.fontSizePx * 1.5);
   let idx = 1;
   let xr = xRight;
   block.forEach((listItem) => {
@@ -405,7 +405,7 @@ function renderListVertical(
     idx += 1;
     const markerStyle = textStyle(theme, inherited);
     // Marker sits at the top (inline-start) of the item's first column.
-    paintInlineVertical(
+    const { columns: markerColumns } = paintInlineVertical(
       ctx,
       verticalTextItems(marker),
       xr,
@@ -414,6 +414,10 @@ function renderListVertical(
       markerStyle,
       theme,
     );
+    // Content starts below the marker cells so a multi-cell marker (e.g. "100.")
+    // never overlaps the body in the shared first column. One cell per marker
+    // char is a safe over-estimate (tcy may combine digits into fewer cells).
+    const indent = Math.max(baseIndent, [...marker].length * theme.fontSizePx);
     let itemXr = xr;
     listItem.forEach((child) => {
       itemXr = renderBlockVertical(
@@ -426,8 +430,10 @@ function renderListVertical(
         inherited,
       );
     });
-    // Advance past the wider of marker column / content columns.
-    xr = itemXr < xr ? itemXr : xr - theme.lineHeightPx - theme.paragraphGapPx;
+    // Advance past the wider of the marker columns / the content columns.
+    const markerXr =
+      xr - markerColumns * theme.lineHeightPx - theme.paragraphGapPx;
+    xr = Math.min(itemXr, markerXr);
   });
   return xr;
 }
