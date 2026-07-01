@@ -1,4 +1,5 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type { TateChuYokoPolicy } from "@/features/editor/tateChuYokoPolicy";
 import {
   collectInline,
   makeNoPaintCtx,
@@ -7,9 +8,10 @@ import {
   type Ctx2D,
 } from "./inlineRuns";
 import { renderTable } from "./tableRenderer";
+import { renderDocVertical } from "./verticalRenderer";
 
 /**
- * 執筆タイムラプス Editor canvas renderer (P7 + P1 + P2 + P8).
+ * 執筆タイムラプス Editor canvas renderer (P7 + P1 + P2 + P8 + 縦書き).
  *
  * Paints a ProseMirror doc onto a 2D canvas. Glyphs use a single `text` colour
  * (matching the live editor, which doesn't recolour text by authorship);
@@ -20,9 +22,11 @@ import { renderTable } from "./tableRenderer";
  * P2 adds structural fidelity for the common novel blocks: headings, lists,
  * blockquote. P8 (this file + `inlineRuns` + `tableRenderer`) closes the inline
  * gap: bold / italic / underline / strikethrough marks, ruby (振り仮名) and
- * emphasis dots (圏点), plus tables and sceneBeat blocks. Horizontal writing
- * only — vertical (縦書き) is a separate phase. Theme colours and the editor
- * font come from `resolveEditorTheme` so the video matches the live theme.
+ * emphasis dots (圏点), plus tables and sceneBeat blocks. When `theme.vertical`
+ * is set the whole doc is dispatched to `verticalRenderer` (vertical-rl columns,
+ * right-side ruby/圏点, 縦中横 digit clusters); the horizontal path below is
+ * untouched. Theme colours and the editor font come from `resolveEditorTheme`
+ * so the video matches the live theme.
  */
 
 export type AuthorshipSource = "ai" | "human" | "unknown" | null;
@@ -46,6 +50,10 @@ export interface EditorRenderTheme {
   paragraphGapPx: number;
   /** Ruby annotation size relative to the base glyph (rt ≈ 0.5em). */
   rubyFontScale: number;
+  /** vertical-rl 縦書き mode — dispatches to verticalRenderer. */
+  vertical: boolean;
+  /** Which half-width digit runs become 縦中横 clusters (vertical mode only). */
+  tateChuYoko: TateChuYokoPolicy;
 }
 
 export const DEFAULT_THEME: EditorRenderTheme = {
@@ -65,6 +73,8 @@ export const DEFAULT_THEME: EditorRenderTheme = {
   paddingPx: 32,
   paragraphGapPx: 12,
   rubyFontScale: 0.5,
+  vertical: false,
+  tateChuYoko: "2",
 };
 
 /** Text styling inherited down the block tree (blockquote sets muted+italic). */
@@ -90,6 +100,11 @@ export function renderDocToCanvas(
   theme: EditorRenderTheme = DEFAULT_THEME,
   focusPos?: number | null,
 ): void {
+  if (theme.vertical) {
+    renderDocVertical(ctx, doc, width, height, theme, focusPos);
+    return;
+  }
+
   ctx.fillStyle = theme.background;
   ctx.fillRect(0, 0, width, height);
 

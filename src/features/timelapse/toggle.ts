@@ -17,7 +17,7 @@
 
 import { db } from "@/db/client";
 import { changeEvents, stateSnapshots } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   flushNow,
   getRecorderChainHead,
@@ -29,8 +29,77 @@ import {
 import { recordStateSnapshot, loadLatestSnapshot } from "./snapshots";
 import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import { listAllNodes, loadSceneContent } from "@/features/tree/api";
+import { getCodexEntry, listCodexEntries } from "@/features/codex/api";
+import { getSnippet, listSnippets } from "@/features/snippets/api";
 
 export const TIMELAPSE_ENABLED_KEY = "timelapse.enabled";
+
+/**
+ * Editor-body entity kinds whose doc.step stream the timelapse replays. The
+ * center EditorPane tab fires a `doc.step` change_event for all three
+ * (EditorPane.tsx: domain = editor|codex|snippet). Each needs a state_snapshot
+ * baseline anchored under the SAME domain the doc.step carries so
+ * `compositeTimelapse.buildCursors` can seek to a known starting doc — otherwise
+ * a body edit on a pre-existing codex/snippet replays from an empty doc and the
+ * first step's position exceeds it (RangeError → replay halts, blank frame).
+ */
+export type BaselineKind = "scene" | "codex" | "snippet";
+
+export interface EntityBaselineRef {
+  kind: BaselineKind;
+  id: string;
+}
+
+/** doc.step domain + entityType per kind (must match the recorder + buildCursors). */
+const KIND_SNAPSHOT: Record<
+  BaselineKind,
+  { domain: string; entityType: string }
+> = {
+  scene: { domain: "editor", entityType: "scene" },
+  codex: { domain: "codex", entityType: "codex_entry" },
+  snippet: { domain: "snippet", entityType: "snippet" },
+};
+
+/**
+ * Current PM-JSON body for an entity, or null when it no longer exists (a stale
+ * ref must be skipped, not stamped with an empty doc). Scenes throw on a missing
+ * node (caught upstream); codex/snippet resolve to undefined.
+ */
+async function loadEntityContent(
+  projectId: string,
+  ref: EntityBaselineRef,
+): Promise<string | null> {
+  if (ref.kind === "scene") return loadSceneContent(ref.id);
+  if (ref.kind === "codex") {
+    return (await getCodexEntry(projectId, ref.id))?.content ?? null;
+  }
+  return (await getSnippet(projectId, ref.id))?.content ?? null;
+}
+
+/**
+ * Record one entity baseline. Best-effort: a failure degrades that entity's
+ * replay seek but never corrupts the chain, so callers swallow the warning and
+ * continue with the rest.
+ */
+async function recordEntityBaseline(
+  projectId: string,
+  kind: BaselineKind,
+  entityId: string,
+  payload: string,
+  anchorSequence: number,
+  anchorTimestamp: number,
+): Promise<void> {
+  const spec = KIND_SNAPSHOT[kind];
+  await recordStateSnapshot({
+    projectId,
+    domain: spec.domain,
+    entityType: spec.entityType,
+    entityId,
+    anchorSequence,
+    anchorTimestamp,
+    payload,
+  });
+}
 
 /** Persisted per-project flag. Defaults ON for legacy projects with no row. */
 export async function isTimelapseEnabled(projectId: string): Promise<boolean> {
@@ -61,53 +130,113 @@ async function wipeHistory(projectId: string): Promise<void> {
   resetRecorderChain();
 }
 
+/** Which entity kinds a genesis-baseline pass should stamp. */
+interface BaselineKindFilter {
+  scene: boolean;
+  codex: boolean;
+  snippet: boolean;
+}
+
+const ALL_KINDS: BaselineKindFilter = {
+  scene: true,
+  codex: true,
+  snippet: true,
+};
+
 /**
- * Stamp the current doc of every scene as a genesis (anchorSequence=0) baseline
- * so post-enable edits replay from a known starting doc. Best-effort per scene:
- * a failure degrades replay seek for that scene but never corrupts the chain.
+ * Stamp the current doc of every editor-body entity (scenes + codex entries +
+ * snippets) as a genesis (anchorSequence=0) baseline so post-enable edits replay
+ * from a known starting doc. codex/snippet list rows already carry `.content`,
+ * so they're stamped without a re-fetch; scenes load their body lazily.
+ * `which` limits the pass to kinds that don't already have a baseline (see
+ * `ensureGenesisBaselines`), so a codex added after the first genesis pass still
+ * gets baselined without re-stamping scenes. Best-effort per entity: a failure
+ * degrades that entity's replay seek but never corrupts the chain.
  */
-async function stampSceneBaselines(projectId: string): Promise<void> {
-  const nodes = await listAllNodes(projectId);
-  const scenes = nodes.filter((n) => n.nodeType === "scene");
+async function stampEntityBaselines(
+  projectId: string,
+  which: BaselineKindFilter = ALL_KINDS,
+): Promise<void> {
   const anchorTimestamp = Date.now();
-  for (const scene of scenes) {
-    try {
-      const payload = await loadSceneContent(scene.id); // PM-JSON string
-      await recordStateSnapshot({
-        projectId,
-        domain: "editor",
-        entityType: "scene",
-        entityId: scene.id,
-        anchorSequence: 0,
-        anchorTimestamp,
-        payload,
-      });
-    } catch (err) {
-      console.warn(
-        "[timelapse] baseline snapshot failed for scene",
-        scene.id,
-        err,
-      );
+
+  if (which.scene) {
+    const nodes = await listAllNodes(projectId);
+    for (const scene of nodes.filter((n) => n.nodeType === "scene")) {
+      try {
+        const payload = await loadSceneContent(scene.id); // PM-JSON string
+        await recordEntityBaseline(
+          projectId,
+          "scene",
+          scene.id,
+          payload,
+          0,
+          anchorTimestamp,
+        );
+      } catch (err) {
+        console.warn("[timelapse] baseline failed for scene", scene.id, err);
+      }
+    }
+  }
+
+  if (which.codex) {
+    const codex = await listCodexEntries(projectId);
+    for (const entry of codex) {
+      try {
+        await recordEntityBaseline(
+          projectId,
+          "codex",
+          entry.id,
+          entry.content,
+          0,
+          anchorTimestamp,
+        );
+      } catch (err) {
+        console.warn("[timelapse] baseline failed for codex", entry.id, err);
+      }
+    }
+  }
+
+  if (which.snippet) {
+    const snippetRows = await listSnippets(projectId);
+    for (const snippet of snippetRows) {
+      try {
+        await recordEntityBaseline(
+          projectId,
+          "snippet",
+          snippet.id,
+          snippet.content,
+          0,
+          anchorTimestamp,
+        );
+      } catch (err) {
+        console.warn(
+          "[timelapse] baseline failed for snippet",
+          snippet.id,
+          err,
+        );
+      }
     }
   }
 }
 
 /**
- * Cheap existence probe: has this project recorded any editor body step?
- * LIMIT 1 keeps it O(1) on the load path even for a large change_events table
- * (a long novel's log can reach tens of MB — §6). "Genesis" for an editor
- * baseline means specifically "no editor doc.step to double-apply", not "no
- * events at all": a project may hold only layout/chat events yet still have
- * content-bearing scenes that need baselining.
+ * Cheap existence probe: has this project recorded any editor-body step (scene,
+ * codex, OR snippet)? LIMIT 1 keeps it O(1) on the load path even for a large
+ * change_events table (a long novel's log can reach tens of MB — §6). "Genesis"
+ * for a body baseline means specifically "no body doc.step to double-apply", not
+ * "no events at all": a project may hold only layout/chat events yet still have
+ * content-bearing scenes/codex/snippets that need baselining. A codex-only edit
+ * (editor doc.step absent, codex doc.step present) is likewise past genesis —
+ * stamping anchor=0 over its recorded steps would double-apply them.
  */
-async function hasEditorSteps(projectId: string): Promise<boolean> {
+async function hasBodySteps(projectId: string): Promise<boolean> {
   const rows = await db
     .select({ id: changeEvents.id })
     .from(changeEvents)
     .where(
       and(
         eq(changeEvents.projectId, projectId),
-        eq(changeEvents.domain, "editor"),
+        inArray(changeEvents.domain, ["editor", "codex", "snippet"]),
         eq(changeEvents.opType, "doc.step"),
       ),
     )
@@ -127,18 +256,24 @@ async function hasEditorSteps(projectId: string): Promise<boolean> {
  * events yet), so the default-ON path matches the toggled path.
  *
  * Two guards keep this safe and idempotent:
- *  - Skip when editor steps already exist: past genesis an anchorSequence=0
+ *  - Skip when body steps already exist: past genesis an anchorSequence=0
  *    baseline would double-apply the already-recorded steps on top of a doc
  *    that already includes them (positions go out of range — the very bug we
  *    fix). Such projects can only be repaired by an explicit OFF→ON re-record.
- *  - Skip when an editor baseline already exists: avoids duplicate rows when a
- *    genesis project is reloaded before its first edit (e.g. after a toggle-ON).
+ *  - Skip PER KIND when a baseline for that kind already exists: avoids duplicate
+ *    rows on reload, yet still baselines a codex/snippet added AFTER the first
+ *    genesis pass (scenes stay skipped, the new kind gets stamped) — otherwise a
+ *    single editor-only guard would leave the fresh codex/snippet unbaselined.
  */
 export async function ensureGenesisBaselines(projectId: string): Promise<void> {
-  if (await hasEditorSteps(projectId)) return; // past genesis
-  const existing = await loadLatestSnapshot({ projectId, domain: "editor" });
-  if (existing) return; // already baked (e.g. toggle-ON, then reload)
-  await stampSceneBaselines(projectId);
+  if (await hasBodySteps(projectId)) return; // past genesis
+  const which: BaselineKindFilter = {
+    scene: !(await loadLatestSnapshot({ projectId, domain: "editor" })),
+    codex: !(await loadLatestSnapshot({ projectId, domain: "codex" })),
+    snippet: !(await loadLatestSnapshot({ projectId, domain: "snippet" })),
+  };
+  if (!which.scene && !which.codex && !which.snippet) return; // all baked
+  await stampEntityBaselines(projectId, which);
 }
 
 /**
@@ -158,41 +293,56 @@ export async function ensureGenesisBaselines(projectId: string): Promise<void> {
  * corrupts the chain. No-op when recording is disabled (nothing to keep
  * coherent) or the scene list is empty.
  */
-export async function rebaselineScenesAtTail(
+export async function rebaselineEntitiesAtTail(
   projectId: string,
-  sceneIds: string[],
+  refs: EntityBaselineRef[],
 ): Promise<void> {
-  if (!isRecorderEnabled() || sceneIds.length === 0) return;
+  if (!isRecorderEnabled() || refs.length === 0) return;
   await flushNow(); // commit the caller's meta event -> lastSequence == DB tail
   const anchorSequence = getRecorderChainHead();
   const anchorTimestamp = Date.now();
-  for (const sceneId of sceneIds) {
+  for (const ref of refs) {
     try {
-      const payload = await loadSceneContent(sceneId); // PM-JSON string
-      await recordStateSnapshot({
+      const payload = await loadEntityContent(projectId, ref); // PM-JSON string
+      if (payload === null) continue; // entity gone — skip, don't stamp empty
+      await recordEntityBaseline(
         projectId,
-        domain: "editor",
-        entityType: "scene",
-        entityId: sceneId,
+        ref.kind,
+        ref.id,
+        payload,
         anchorSequence,
         anchorTimestamp,
-        payload,
-      });
+      );
     } catch (err) {
       console.warn(
-        "[timelapse] rebaseline snapshot failed for scene",
-        sceneId,
+        "[timelapse] rebaseline snapshot failed for",
+        ref.kind,
+        ref.id,
         err,
       );
     }
   }
 }
 
+/**
+ * Back-compat wrapper: re-anchor scene editor baselines at the current tail.
+ * Callers that predate the multi-entity generalization keep passing scene ids.
+ */
+export async function rebaselineScenesAtTail(
+  projectId: string,
+  sceneIds: string[],
+): Promise<void> {
+  await rebaselineEntitiesAtTail(
+    projectId,
+    sceneIds.map((id) => ({ kind: "scene" as const, id })),
+  );
+}
+
 /** Re-arm the recorder on a freshly-wiped project and stamp baselines. */
 async function rearmFromGenesis(projectId: string): Promise<void> {
   setRecorderEnabled(true);
   await initRecorderForProject(projectId); // re-reads now-empty tail -> genesis
-  await stampSceneBaselines(projectId);
+  await stampEntityBaselines(projectId);
   // Seed the workspace layout snapshot so forward layout events have an initial
   // state to replay on top of (§17 P0.4). Mirrors the per-session seed in
   // projectStore.loadProject so toggle-ON without a reload also anchors the UI.

@@ -29,6 +29,18 @@ const treeMock = vi.hoisted(() => ({
   listAllNodes: vi.fn(() => Promise.resolve([] as unknown[])),
   loadSceneContent: vi.fn(() => Promise.resolve("{}")),
 }));
+const codexMock = vi.hoisted(() => ({
+  listCodexEntries: vi.fn(() => Promise.resolve([] as unknown[])),
+  getCodexEntry: vi.fn(() =>
+    Promise.resolve<unknown>({ content: '{"type":"doc"}' }),
+  ),
+}));
+const snippetMock = vi.hoisted(() => ({
+  listSnippets: vi.fn(() => Promise.resolve([] as unknown[])),
+  getSnippet: vi.fn(() =>
+    Promise.resolve<unknown>({ content: '{"type":"doc"}' }),
+  ),
+}));
 
 vi.mock("@/db/client", () => ({
   db: {
@@ -52,6 +64,8 @@ vi.mock("./seedSession", () => ({
 vi.mock("./snapshots", () => snapshotsMock);
 vi.mock("@/features/settings/api", () => settingsMock);
 vi.mock("@/features/tree/api", () => treeMock);
+vi.mock("@/features/codex/api", () => codexMock);
+vi.mock("@/features/snippets/api", () => snippetMock);
 
 import { changeEvents, stateSnapshots } from "@/db/schema";
 import {
@@ -60,6 +74,7 @@ import {
   isTimelapseEnabled,
   ensureGenesisBaselines,
   rebaselineScenesAtTail,
+  rebaselineEntitiesAtTail,
 } from "./toggle";
 
 beforeEach(() => {
@@ -67,6 +82,10 @@ beforeEach(() => {
   settingsMock.getProjectSetting.mockResolvedValue(null);
   treeMock.listAllNodes.mockResolvedValue([]);
   treeMock.loadSceneContent.mockResolvedValue('{"type":"doc"}');
+  codexMock.listCodexEntries.mockResolvedValue([]);
+  codexMock.getCodexEntry.mockResolvedValue({ content: '{"type":"doc"}' });
+  snippetMock.listSnippets.mockResolvedValue([]);
+  snippetMock.getSnippet.mockResolvedValue({ content: '{"type":"doc"}' });
   dbSelectWhere.mockResolvedValue([]);
   snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
   recorderMock.isRecorderEnabled.mockReturnValue(true);
@@ -105,6 +124,37 @@ describe("setTimelapseEnabled", () => {
       "p1",
       "timelapse.enabled",
       "true",
+    );
+  });
+
+  it("enable: also baselines codex entries and snippets at genesis", async () => {
+    treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+    codexMock.listCodexEntries.mockResolvedValue([
+      { id: "c1", content: '{"type":"doc"}' },
+    ]);
+    snippetMock.listSnippets.mockResolvedValue([
+      { id: "sn1", content: '{"type":"doc"}' },
+    ]);
+
+    await setTimelapseEnabled("p1", true);
+
+    // scene + codex + snippet
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(3);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: "c1",
+        anchorSequence: 0,
+      }),
+    );
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        domain: "snippet",
+        entityType: "snippet",
+        entityId: "sn1",
+        anchorSequence: 0,
+      }),
     );
   });
 
@@ -165,9 +215,54 @@ describe("ensureGenesisBaselines", () => {
     );
   });
 
+  it("genesis: also bakes codex/snippet baselines (not just scenes)", async () => {
+    dbSelectWhere.mockResolvedValue([]);
+    snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
+    treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+    codexMock.listCodexEntries.mockResolvedValue([
+      { id: "c1", content: '{"type":"doc"}' },
+    ]);
+    snippetMock.listSnippets.mockResolvedValue([
+      { id: "sn1", content: '{"type":"doc"}' },
+    ]);
+
+    await ensureGenesisBaselines("p1");
+
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(3);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: "codex", entityId: "c1" }),
+    );
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: "snippet", entityId: "sn1" }),
+    );
+  });
+
+  it("baselines a codex added after the first genesis pass (scene already baked)", async () => {
+    dbSelectWhere.mockResolvedValue([]); // still genesis (no doc.step)
+    // Scene baseline already exists (editor domain); codex/snippet have none.
+    snapshotsMock.loadLatestSnapshot.mockImplementation((opts?: unknown) =>
+      Promise.resolve(
+        (opts as { domain: string }).domain === "editor"
+          ? { domain: "editor" }
+          : null,
+      ),
+    );
+    treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+    codexMock.listCodexEntries.mockResolvedValue([{ id: "c1", content: "{}" }]);
+
+    await ensureGenesisBaselines("p1");
+
+    // Scene skipped (already baked); the fresh codex is stamped.
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: "codex", entityId: "c1" }),
+    );
+  });
+
   it("past genesis (events exist): does NOT bake — avoids double-applying recorded steps", async () => {
     dbSelectWhere.mockResolvedValue([{ id: 1 }]); // >=1 recorded event
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
+    codexMock.listCodexEntries.mockResolvedValue([{ id: "c1" }]);
 
     await ensureGenesisBaselines("p1");
 
@@ -242,6 +337,66 @@ describe("rebaselineScenesAtTail", () => {
     expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
     expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({ entityId: "good", anchorSequence: 5 }),
+    );
+  });
+});
+
+describe("rebaselineEntitiesAtTail", () => {
+  it("stamps codex/snippet baselines at the tail with the matching domain", async () => {
+    recorderMock.getRecorderChainHead.mockReturnValue(42);
+    codexMock.getCodexEntry.mockResolvedValue({ content: '{"type":"doc"}' });
+    snippetMock.getSnippet.mockResolvedValue({ content: '{"type":"doc"}' });
+
+    await rebaselineEntitiesAtTail("p1", [
+      { kind: "codex", id: "c1" },
+      { kind: "snippet", id: "sn1" },
+    ]);
+
+    expect(recorderMock.flushNow).toHaveBeenCalled();
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(2);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: "c1",
+        anchorSequence: 42,
+      }),
+    );
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        domain: "snippet",
+        entityType: "snippet",
+        entityId: "sn1",
+        anchorSequence: 42,
+      }),
+    );
+  });
+
+  it("no-op when recording is disabled or refs empty", async () => {
+    recorderMock.isRecorderEnabled.mockReturnValue(false);
+    await rebaselineEntitiesAtTail("p1", [{ kind: "codex", id: "c1" }]);
+    expect(recorderMock.flushNow).not.toHaveBeenCalled();
+
+    recorderMock.isRecorderEnabled.mockReturnValue(true);
+    await rebaselineEntitiesAtTail("p1", []);
+    expect(recorderMock.flushNow).not.toHaveBeenCalled();
+    expect(snapshotsMock.recordStateSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("skips a codex entry that no longer exists (undefined) but stamps the rest", async () => {
+    recorderMock.getRecorderChainHead.mockReturnValue(7);
+    codexMock.getCodexEntry
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ content: '{"type":"doc"}' });
+
+    await rebaselineEntitiesAtTail("p1", [
+      { kind: "codex", id: "gone" },
+      { kind: "codex", id: "here" },
+    ]);
+
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledTimes(1);
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ entityId: "here", anchorSequence: 7 }),
     );
   });
 });

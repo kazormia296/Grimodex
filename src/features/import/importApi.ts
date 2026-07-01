@@ -35,7 +35,10 @@ import {
   getCurrentProjectLanguage,
 } from "@/features/project/projectStore";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import {
+  rebaselineEntitiesAtTail,
+  rebaselineScenesAtTail,
+} from "@/features/timelapse/toggle";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { db } from "@/db/client";
 import { chatSessions, chatMessages } from "@/db/schema";
@@ -387,6 +390,7 @@ export async function importCodexEntries(
   }
 
   // ── Phase 3: insert entries ───────────────────────────────────────────────
+  const createdCodexIds: string[] = [];
   for (let i = 0; i < sorted.length; i++) {
     const e = sorted[i];
     onProgress?.({ total: sorted.length, done: i, currentName: e.name });
@@ -457,6 +461,7 @@ export async function importCodexEntries(
         throw updateErr;
       }
 
+      createdCodexIds.push(e.id);
       imported++;
     } catch (err) {
       errors.push(`${e.name}: ${String(err)}`);
@@ -468,6 +473,23 @@ export async function importCodexEntries(
     done: sorted.length,
     currentName: "",
   });
+
+  // Timelapse: imported codex bodies are written out of band (no doc.step), so a
+  // later center-tab edit would replay from an empty seed and throw. Re-anchor
+  // each imported entry's baseline at the current chain tail (no-op when
+  // recording is off). Import is past-genesis, so a tail anchor is correct.
+  if (createdCodexIds.length > 0) {
+    recordChangeEvent({
+      domain: "import",
+      opType: "codex",
+      payload: { codex: createdCodexIds.length },
+    });
+    await rebaselineEntitiesAtTail(
+      getCurrentProjectId(),
+      createdCodexIds.map((id) => ({ kind: "codex" as const, id })),
+    );
+  }
+
   return { imported, errors };
 }
 
@@ -480,6 +502,7 @@ export async function importSnippets(
 ): Promise<{ imported: number; errors: string[] }> {
   let imported = 0;
   const errors: string[] = [];
+  const createdSnippetIds: string[] = [];
 
   for (let i = 0; i < snippets.length; i++) {
     const s = snippets[i];
@@ -493,6 +516,7 @@ export async function importSnippets(
         content: s.content,
         contentSource: "human",
       });
+      createdSnippetIds.push(s.id);
       imported++;
     } catch (err) {
       errors.push(`${s.title}: ${String(err)}`);
@@ -504,6 +528,21 @@ export async function importSnippets(
     done: snippets.length,
     currentName: "",
   });
+
+  // Timelapse: same out-of-band body concern as imported codex — anchor each
+  // imported snippet's baseline at the tail so a later center-tab edit replays.
+  if (createdSnippetIds.length > 0) {
+    recordChangeEvent({
+      domain: "import",
+      opType: "snippet",
+      payload: { snippet: createdSnippetIds.length },
+    });
+    await rebaselineEntitiesAtTail(
+      getCurrentProjectId(),
+      createdSnippetIds.map((id) => ({ kind: "snippet" as const, id })),
+    );
+  }
+
   return { imported, errors };
 }
 

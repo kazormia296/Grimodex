@@ -20,6 +20,29 @@ import {
   type EditorRenderTheme,
 } from "./renderers/editorRenderer";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import type { TateChuYokoPolicy } from "@/features/editor/tateChuYokoPolicy";
+
+/**
+ * Writing-mode + 縦中横 policy for the current project, read from the same
+ * settings store the live editor reads (single source of truth — the video's
+ * orientation always matches what the editor is showing). Safe in any env: the
+ * zustand getter falls back to the defaults before `loadAll` populates it.
+ */
+function resolveWritingMode(): {
+  vertical: boolean;
+  tateChuYoko: TateChuYokoPolicy;
+} {
+  try {
+    const s = useSettingsStore.getState();
+    return {
+      vertical: s.getBoolean("editor.verticalMode", false),
+      tateChuYoko: s.get("editor.tateChuYoko", "2") as TateChuYokoPolicy,
+    };
+  } catch {
+    return { vertical: false, tateChuYoko: "2" };
+  }
+}
 
 function px(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -105,6 +128,7 @@ export function resolveEditorTheme(): EditorRenderTheme {
       fontFamily,
       fontSizePx,
       lineHeightPx,
+      ...resolveWritingMode(),
     };
   } catch {
     return DEFAULT_THEME;
