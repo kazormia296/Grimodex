@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, Suspense } from "react";
 import { cn } from "@/lib/utils";
 import type { ToolWindowPanelId } from "./layoutTypes";
 import { PANEL_COMPONENT_MAP } from "./panelComponents";
@@ -21,7 +21,10 @@ export const SlotView = memo(function SlotView({ panelId }: SlotViewProps) {
         isDragging && "gx-panel--dragging",
       )}
     >
-      <Component />
+      {/* lazy パネル (chronicle 等) の初回 import 中はパネル背景だけ見せる。 */}
+      <Suspense fallback={<div className="min-h-0 flex-1" aria-hidden />}>
+        <Component />
+      </Suspense>
     </div>
   );
 });
