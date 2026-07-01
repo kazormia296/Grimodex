@@ -6,6 +6,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   CalendarDays,
+  ExternalLink,
 } from "lucide-react";
 import {
   EVENT_PRECISIONS,
@@ -26,6 +27,7 @@ import { laneColorFor } from "./laneColor";
 import { ChronicleDatePicker } from "./ChronicleDatePicker";
 import { ChronicleDetailField } from "./ChronicleDetailField";
 import { CodexEntryPicker } from "./CodexEntryPicker";
+import { SceneLinkField, type SceneLinkMode } from "./SceneLinkField";
 import { lunarInfoForDay } from "./chronicleLunar";
 import {
   Popover,
@@ -46,7 +48,20 @@ export interface ChronicleInspectorProps {
   ageConflicts?: AgeConflict[];
   hasTwoPlacesIssue?: boolean;
   hasCausalIssue?: boolean;
+  /** Scene-Event union: 選択中がシーン由来トークン(scene:*)なら true。
+   * event 固有の節（種別/参加/原因/秘匿/参照シーン/刻む取込）を隠し、削除は日付クリアに読み替える。 */
+  isScene?: boolean;
   linkedSceneCount?: number;
+  /** このイベントにリンク済みのシーン id（参照シーンの手動編集用）。 */
+  linkedSceneIds?: string[];
+  /** シーンをこのイベントへリンク／解除する（未指定なら参照シーン節を出さない）。
+   * mode=イベント優先ならこのイベントの日付/POV/場所をシーンへ同期する。 */
+  onLinkScene?: (sceneId: string, mode: SceneLinkMode) => void;
+  onUnlinkScene?: (sceneId: string) => void;
+  /** このイベントの主シーンをエディタで開く（scene-event/リンク済みのとき）。 */
+  onOpenScene?: () => void;
+  /** 参照シーンのピルクリックで該当シーンを開く。 */
+  onOpenSceneById?: (sceneId: string) => void;
   allEvents?: { id: string; title: string }[];
   causeIds?: string[];
   onAddCause?: (causeId: string) => void;
@@ -90,7 +105,13 @@ export function ChronicleInspector({
   ageConflicts,
   hasTwoPlacesIssue = false,
   hasCausalIssue = false,
+  isScene = false,
   linkedSceneCount = 0,
+  linkedSceneIds = [],
+  onLinkScene,
+  onUnlinkScene,
+  onOpenScene,
+  onOpenSceneById,
   allEvents = [],
   causeIds = [],
   onAddCause,
@@ -346,22 +367,24 @@ export function ChronicleInspector({
                   ))}
                 </select>
               </label>
-              <label className={labelCls}>
-                {t("chronicle.kindLabel", "種別")}
-                <select
-                  value={event.kind}
-                  onChange={(e) =>
-                    onPatch({ kind: e.target.value as EventRow["kind"] })
-                  }
-                  className={selectCls}
-                >
-                  {EVENT_KINDS.map((k) => (
-                    <option key={k} value={k}>
-                      {t(`chronicle.kind.${k}`, k)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {!isScene && (
+                <label className={labelCls}>
+                  {t("chronicle.kindLabel", "種別")}
+                  <select
+                    value={event.kind}
+                    onChange={(e) =>
+                      onPatch({ kind: e.target.value as EventRow["kind"] })
+                    }
+                    className={selectCls}
+                  >
+                    {EVENT_KINDS.map((k) => (
+                      <option key={k} value={k}>
+                        {t(`chronicle.kind.${k}`, k)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className={labelCls}>
                 {t("chronicle.precisionLabel", "日付の確度")}
                 <select
@@ -382,8 +405,8 @@ export function ChronicleInspector({
               </label>
             </div>
 
-            {/* 参加レーン（複数 Codex 所属＝マルチレーン描画） */}
-            {onSetParticipants && (
+            {/* 参加レーン（複数 Codex 所属＝マルチレーン描画）。event 専用。 */}
+            {!isScene && onSetParticipants && (
               <div className="flex flex-col gap-1.5 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
                 <span className="text-[11px] text-muted-foreground">
                   {t("chronicle.participants", "参加レーン（複数所属）")}
@@ -582,8 +605,8 @@ export function ChronicleInspector({
               );
             })()}
 
-            {/* 原因 */}
-            {(causeIds.length > 0 || onAddCause) && (
+            {/* 原因（因果エッジ）。event 専用。 */}
+            {!isScene && (causeIds.length > 0 || onAddCause) && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="flex-none text-[11px] text-muted-foreground">
                   {t("chronicle.causes", "原因")}
@@ -629,60 +652,109 @@ export function ChronicleInspector({
               </div>
             )}
 
-            {/* AI 秘匿 */}
-            <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
-              <label className="flex items-center gap-2 text-xs text-foreground">
-                <input
-                  type="checkbox"
-                  checked={event.secret}
-                  onChange={(e) => onPatch({ secret: e.target.checked })}
-                  style={{ accentColor: "var(--primary)" }}
-                  className="size-4"
-                />
-                {t("chronicle.secretLabel", "AI に秘匿（ネタバレ防止）")}
-              </label>
-              {event.secret && (
-                <div className="flex flex-wrap items-center gap-2 pl-6">
-                  <span className="text-[11px] text-muted-foreground">
-                    {t("chronicle.revealSceneLabel", "開示シーン")}
-                  </span>
-                  <select
-                    value={event.revealSceneId ?? ""}
-                    onChange={(e) => onPatch({ revealSceneId: e.target.value })}
-                    aria-label={t("chronicle.revealSceneLabel", "開示シーン")}
-                    className={selectCls}
-                  >
-                    <option value="">
-                      {t("chronicle.revealSceneAuto", "自動（初出シーン）")}
-                    </option>
-                    {scenes.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.title ||
-                          t("chronicle.untitledScene", "無題のシーン")}
+            {/* AI 秘匿。event 専用（scene の可視性は別系統）。 */}
+            {!isScene && (
+              <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
+                <label className="flex items-center gap-2 text-xs text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={event.secret}
+                    onChange={(e) => onPatch({ secret: e.target.checked })}
+                    style={{ accentColor: "var(--primary)" }}
+                    className="size-4"
+                  />
+                  {t("chronicle.secretLabel", "AI に秘匿（ネタバレ防止）")}
+                </label>
+                {event.secret && (
+                  <div className="flex flex-wrap items-center gap-2 pl-6">
+                    <span className="text-[11px] text-muted-foreground">
+                      {t("chronicle.revealSceneLabel", "開示シーン")}
+                    </span>
+                    <select
+                      value={event.revealSceneId ?? ""}
+                      onChange={(e) =>
+                        onPatch({ revealSceneId: e.target.value })
+                      }
+                      aria-label={t("chronicle.revealSceneLabel", "開示シーン")}
+                      className={selectCls}
+                    >
+                      <option value="">
+                        {t("chronicle.revealSceneAuto", "自動（初出シーン）")}
                       </option>
-                    ))}
-                  </select>
-                  <span className="min-w-40 flex-1 text-[11px] text-muted-foreground">
-                    {t(
-                      "chronicle.secretDescShort",
-                      "開示シーン以降を書くときのみ AI に渡されます。",
-                    )}
-                  </span>
-                </div>
-              )}
-            </div>
+                      {scenes.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.title ||
+                            t("chronicle.untitledScene", "無題のシーン")}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="min-w-40 flex-1 text-[11px] text-muted-foreground">
+                      {t(
+                        "chronicle.secretDescShort",
+                        "開示シーン以降を書くときのみ AI に渡されます。",
+                      )}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* シーンイベントのあらすじ（synopsis↔note）。scene 専用の簡易エディタ。 */}
+            {isScene && (
+              <label className={labelCls}>
+                {t("chronicle.synopsis", "あらすじ")}
+                <textarea
+                  value={event.note ?? ""}
+                  onChange={(e) => onPatch({ note: e.target.value })}
+                  rows={3}
+                  className="min-h-16 rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground"
+                  placeholder={t(
+                    "chronicle.synopsisPlaceholder",
+                    "このシーンの要約…",
+                  )}
+                />
+              </label>
+            )}
           </div>
 
-          {/* 詳細（リッチテキスト） */}
-          <ChronicleDetailField
-            key={event.id}
-            event={event}
-            onPatchDetail={(detail) => onPatch({ detail })}
-          />
+          {/* 詳細（リッチテキスト）。event 専用（scene は synopsis を上で編集）。 */}
+          {!isScene && (
+            <ChronicleDetailField
+              key={`detail-${event.id}`}
+              event={event}
+              onPatchDetail={(detail) => onPatch({ detail })}
+            />
+          )}
+
+          {/* 参照シーン（手動リンク）。event 専用（scene は自分自身なので不要）。 */}
+          {!isScene && onLinkScene && onUnlinkScene && (
+            <SceneLinkField
+              key={`scene-link-${event.id}`}
+              scenes={scenes}
+              linkedSceneIds={linkedSceneIds}
+              onLink={onLinkScene}
+              onUnlink={onUnlinkScene}
+              onOpenScene={onOpenSceneById}
+            />
+          )}
 
           {/* アクション */}
           <div className="flex items-center gap-2">
-            {linkedSceneCount > 0 && onStamp && (
+            {onOpenScene && (
+              <button
+                type="button"
+                onClick={onOpenScene}
+                title={t(
+                  "chronicle.openSceneHint",
+                  "該当シーンをエディタで開く",
+                )}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs hover:bg-accent"
+              >
+                <ExternalLink className="size-3.5" />
+                {t("chronicle.openScene", "シーンを開く")}
+              </button>
+            )}
+            {!isScene && linkedSceneCount > 0 && onStamp && (
               <button
                 type="button"
                 onClick={onStamp}
@@ -696,7 +768,7 @@ export function ChronicleInspector({
                 {t("chronicle.stamp", "シーンへ刻む")}
               </button>
             )}
-            {linkedSceneCount > 0 && onPull && (
+            {!isScene && linkedSceneCount > 0 && onPull && (
               <button
                 type="button"
                 onClick={onPull}
@@ -710,12 +782,24 @@ export function ChronicleInspector({
                 {t("chronicle.pull", "シーンから取込")}
               </button>
             )}
+            {/* シーンイベントは「削除」せず作中日付をクリアしてタイムラインから外す。 */}
             <button
               type="button"
               onClick={onDelete}
+              title={
+                isScene
+                  ? t(
+                      "chronicle.clearSceneDateHint",
+                      "シーンは消さずタイムラインから外します",
+                    )
+                  : undefined
+              }
               className="ms-auto inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/30 bg-card px-3 text-xs text-destructive hover:bg-destructive/10"
             >
-              <Trash2 className="size-3.5" /> {t("chronicle.delete", "削除")}
+              <Trash2 className="size-3.5" />{" "}
+              {isScene
+                ? t("chronicle.clearSceneDate", "作中日付をクリア")
+                : t("chronicle.delete", "削除")}
             </button>
           </div>
         </div>

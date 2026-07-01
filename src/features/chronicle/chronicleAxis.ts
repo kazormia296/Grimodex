@@ -105,15 +105,28 @@ export function clampPxPerDay(p: number): number {
   return Math.max(MIN_PX_PER_DAY, Math.min(p, MAX_PX_PER_DAY));
 }
 
-/** データ全域が収まり、左右にわずかな余白を持つ View を返す。 */
+/**
+ * データ全域が収まり、左右にわずかな余白を持つ View を返す。
+ * ただし全域が最小ズームでも収まらない（遠い外れ値でスパンが肥大した）場合は、
+ * 左端の外れ値に張り付くと主要イベントが画面外へ押し出されるため、focusDay
+ * （通常は開始日の中央値）を中心に据える。外れ値は pan で到達できる。
+ */
 export function fitAll(args: {
   dataStart: number;
   dataEnd: number;
   trackW: number;
+  /** 収まりきらない時に中心に据える日（省略時は従来どおり左寄せ）。 */
+  focusDay?: number;
 }): View {
   const span = Math.max(args.dataEnd - args.dataStart, 30);
   const w = args.trackW > 0 ? args.trackW : 1;
-  const pxPerDay = clampPxPerDay(w / (span * 1.06));
+  const raw = w / (span * 1.06);
+  const pxPerDay = clampPxPerDay(raw);
+  // pxPerDay > raw = 最小ズームへクランプされた（＝全域が入りきらない）。
+  if (args.focusDay != null && pxPerDay > raw) {
+    const visibleDays = w / pxPerDay;
+    return { pxPerDay, viewStartDay: args.focusDay - visibleDays / 2 };
+  }
   const viewStartDay = args.dataStart - span * 0.03;
   return { pxPerDay, viewStartDay };
 }

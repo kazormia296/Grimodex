@@ -162,6 +162,11 @@ CREATE TABLE IF NOT EXISTS projects (
     ai_instructions        TEXT,
     phase_resolution_mode  TEXT NOT NULL DEFAULT 'reading'
                              CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
+    outline                TEXT,             -- 作品全体のアウトライン（AI context L2 に常時注入）
+    target_readers         TEXT,             -- 想定読者ペルソナ
+    ai_policy              TEXT NOT NULL DEFAULT
+                             '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false,"knowledgeWrite":false}}',
+    is_sample              INTEGER NOT NULL DEFAULT 0,  -- 1=サンプル/チュートリアル（初回に SampleTour）
     created_at             TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -178,12 +183,29 @@ CREATE TABLE IF NOT EXISTS tree_nodes (
     story_time_label  TEXT,
     pov_character_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
     location_id       TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+    -- 作中年表（Chronicle）: シーン自身の作中時間アンカー（読み順 sort_order とは独立）。
+    -- events と同じ日数モデル（chronicle_start_time = 暦の通日）。granularity/precision は
+    -- EVENT_GRANULARITIES / EVENT_PRECISIONS（CHECK は付けない＝migrate.rs の add_column 準拠）。
+    chronicle_start_time        INTEGER,
+    chronicle_start_minute      INTEGER,
+    chronicle_start_granularity TEXT NOT NULL DEFAULT 'none',
+    chronicle_end_time          INTEGER,
+    chronicle_end_minute        INTEGER,
+    chronicle_end_granularity   TEXT NOT NULL DEFAULT 'none',
+    chronicle_precision         TEXT NOT NULL DEFAULT 'exact',
     status            TEXT DEFAULT 'outline'
                         CHECK(status IS NULL OR status IN ('outline','draft','complete','revision','final')),
     content              TEXT NOT NULL DEFAULT '{}',
     unplaced_beats_doc   TEXT NOT NULL DEFAULT '[]',
     char_count           INTEGER NOT NULL DEFAULT 0,
     unplaced_beat_preview TEXT,
+    placed_beat_preview  TEXT,              -- scene：本文中の placed beat 指示文プレビュー（JSON 配列）
+    intent               TEXT,              -- scene：作者が宣言する狙い（intent-drift 検証の入力）
+    context_mode         TEXT,              -- note：AI コンテキスト取り込み方針（always/mentioned/suppress/hidden）
+    aliases              TEXT NOT NULL DEFAULT '[]',  -- note：メンション検出用の別名（JSON 配列）
+    excluded_aliases     TEXT NOT NULL DEFAULT '[]',  -- note：メンション検出から除外する別名
+    archived_at          TEXT,              -- ソフトアーカイブ時刻（ISO・非 NULL でツリー非表示）
+    version              INTEGER NOT NULL DEFAULT 0,   -- 楽観的並行制御カウンタ
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -231,6 +253,7 @@ CREATE TABLE IF NOT EXISTS codex_entries (
                               CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
     source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
     notes                   TEXT,
+    version                 INTEGER NOT NULL DEFAULT 0,  -- 楽観的並行制御カウンタ
     created_at              TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug)
@@ -331,6 +354,7 @@ CREATE TABLE IF NOT EXISTS snippets (
     scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
     source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
     usage_count             INTEGER NOT NULL DEFAULT 0,
+    version                 INTEGER NOT NULL DEFAULT 0,  -- 楽観的並行制御カウンタ
     created_at              TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -353,6 +377,8 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     id           TEXT PRIMARY KEY,
     project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     node_id      TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+    codex_anchor_id   TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,  -- codex 起点の会話
+    snippet_anchor_id TEXT REFERENCES snippets(id) ON DELETE SET NULL,       -- snippet 起点の会話
     title        TEXT NOT NULL DEFAULT 'New session',
     title_manual INTEGER NOT NULL DEFAULT 0,
     model        TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
@@ -405,6 +431,9 @@ CREATE TABLE IF NOT EXISTS chat_summaries (
     session_id  TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     summary     TEXT NOT NULL,
     token_count INTEGER,
+    generation       INTEGER NOT NULL DEFAULT 1,  -- 進行的要約の世代
+    source_msg_count INTEGER NOT NULL DEFAULT 0,  -- 要約が覆うメッセージ数
+    last_msg_id      TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,  -- 覆った最後のメッセージ
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_chat_summaries_session ON chat_summaries(session_id, created_at);
@@ -617,6 +646,7 @@ CREATE TABLE IF NOT EXISTS map_stickies (
     color_slot             INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0),
     ai_branch_id           TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL,
     source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+    ai_derived             INTEGER NOT NULL DEFAULT 0,  -- 1=AI ブランチ由来（AI 生成バッジ）
     created_at             TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -726,6 +756,7 @@ CREATE INDEX IF NOT EXISTS idx_lint_ignored_rule  ON lint_ignored_diagnostics(ru
 
 CREATE TABLE IF NOT EXISTS lint_term_dictionary (
     id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,  -- プロジェクト単位（旧: workspace 全体）
     preferred  TEXT NOT NULL,
     variants   TEXT NOT NULL,
     severity   TEXT NOT NULL DEFAULT 'warning',
@@ -735,6 +766,7 @@ CREATE TABLE IF NOT EXISTS lint_term_dictionary (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_lint_term_dict_project   ON lint_term_dictionary(project_id);
 CREATE INDEX IF NOT EXISTS idx_lint_term_dict_preferred ON lint_term_dictionary(preferred);
 CREATE INDEX IF NOT EXISTS idx_lint_term_dict_sort      ON lint_term_dictionary(sort_order);
 
@@ -761,6 +793,8 @@ CREATE TABLE IF NOT EXISTS foreshadows (
     payoff_confirmed INTEGER NOT NULL DEFAULT 0,
     abandoned        INTEGER NOT NULL DEFAULT 0,
     load_bearing     TEXT,
+    secret           INTEGER NOT NULL DEFAULT 1,  -- 1=AI 秘匿（伏線の既定・本当のどんでん返し用）
+    codex_link_dirty_at INTEGER,                  -- codex リンク再計算用の内部ダーティ印（既定 NULL）
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL
 );
@@ -849,6 +883,136 @@ CREATE INDEX IF NOT EXISTS idx_trash_project_deleted
     ON trash_items(project_id, deleted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trash_project_kind_deleted
     ON trash_items(project_id, kind, deleted_at DESC);
+
+-- ================================================================
+-- プロットスレッド（Timeline スレッド・オーバーレイ / Plottr・AeonTimeline 型）
+-- src-tauri/src/database/migrate.rs + src-tauri/src/commands/plot_threads.rs 準拠
+-- ================================================================
+CREATE TABLE IF NOT EXISTS plot_threads (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL DEFAULT '',
+    color         TEXT,                       -- 生 CSS hex（Codex パレット slot の .fg）。NULL=var(--primary)
+    description   TEXT,
+    sort_order    TEXT NOT NULL DEFAULT 'a0', -- base62 fractional-index（レーン縦順）
+    -- 生存スパン override（現状 UI 未使用のレガシー列。NULL のまま）
+    start_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+    end_node_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_plot_threads_project ON plot_threads(project_id);
+
+CREATE TABLE IF NOT EXISTS plot_thread_scene_links (
+    id          TEXT PRIMARY KEY,
+    thread_id   TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+    node_id     TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    phase_type  TEXT NOT NULL
+                  CHECK(phase_type IN ('introduce','develop','turn','climax','resolve')),
+    note        TEXT,
+    sort_order  TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_plot_thread_links_thread ON plot_thread_scene_links(thread_id);
+CREATE INDEX IF NOT EXISTS idx_plot_thread_links_node   ON plot_thread_scene_links(node_id);
+
+CREATE TABLE IF NOT EXISTS plot_thread_branches (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    from_thread_id  TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+    to_thread_id    TEXT NOT NULL REFERENCES plot_threads(id) ON DELETE CASCADE,
+    at_node_id      TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL CHECK(kind IN ('branch','merge')),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_project ON plot_thread_branches(project_id);
+CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_from    ON plot_thread_branches(from_thread_id);
+CREATE INDEX IF NOT EXISTS idx_plot_thread_branches_to      ON plot_thread_branches(to_thread_id);
+
+-- ================================================================
+-- 作中年表（Chronicle / 作中時間 fabula 軸）
+-- src-tauri/src/database/migrate.rs 準拠。events.lane_group と
+-- project_calendar の leap_rule/age_reckoning/eras/reform/timezone/lunar_tz_minutes は
+-- 本番では add_column_if_missing で追加される列だが、ここでは CREATE に直接含める。
+-- 時刻列は全て TEXT ISO datetime（foreshadows の int ms とは別系統）。
+-- ================================================================
+CREATE TABLE IF NOT EXISTS events (
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title             TEXT NOT NULL DEFAULT '',
+    note              TEXT,                    -- プレーンテキスト（AI 注入/抽出用の要約）
+    detail            TEXT,                    -- リッチテキスト（ProseMirror doc JSON）
+    ordinal           TEXT NOT NULL DEFAULT 'a0',  -- base62 fractional-index（timeline x 軸順）
+    primary_codex_id  TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,  -- 主人物レーン
+    location_codex_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,  -- 場所（2か所同時チェック基準）
+    start_time        INTEGER,                 -- 暦の通日（day0 = start_year の最初の月の1日）
+    end_time          INTEGER,                 -- 区間終端（NULL=点イベント）
+    start_minute      INTEGER,                 -- 0..1439（granularity='time' のとき有効）
+    end_minute        INTEGER,
+    start_granularity TEXT NOT NULL DEFAULT 'none'
+                        CHECK(start_granularity IN ('none','season','year','month','day','time')),
+    end_granularity   TEXT NOT NULL DEFAULT 'none'
+                        CHECK(end_granularity IN ('none','season','year','month','day','time')),
+    precision         TEXT NOT NULL DEFAULT 'exact'
+                        CHECK(precision IN ('exact','approx','unknown')),
+    kind              TEXT NOT NULL DEFAULT 'generic'
+                        CHECK(kind IN ('generic','birth','death')),  -- birth/death は年齢計算の基準
+    secret            INTEGER NOT NULL DEFAULT 0,  -- 0/1。1=AI 秘匿（reveal アンカー方式）
+    reveal_scene_id   TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,  -- 読み順の開示アンカー
+    lane_group        TEXT,                    -- 未割当イベントのサブレーン id（FK なし）
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
+CREATE INDEX IF NOT EXISTS idx_events_ordinal ON events(project_id, ordinal);
+
+-- 参加人物（主人物以外もイベントの複製マーカーとして各レーンに現れる）
+CREATE TABLE IF NOT EXISTS event_participants (
+    event_id        TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    codex_entry_id  TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    role            TEXT,
+    PRIMARY KEY (event_id, codex_entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_participants_codex ON event_participants(codex_entry_id);
+
+-- fabula イベント ↔ 読み順シーンの橋渡し（スタンプ）。0..N（0=オフページ）
+CREATE TABLE IF NOT EXISTS scene_events (
+    scene_id  TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
+    event_id  TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    PRIMARY KEY (scene_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scene_events_event ON scene_events(event_id);
+
+-- 因果（原因 → 効果の有向エッジ。効果が原因より前なら因果順序違反）
+CREATE TABLE IF NOT EXISTS event_relations (
+    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    cause_event_id  TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    effect_event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    PRIMARY KEY (cause_event_id, effect_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_relations_project ON event_relations(project_id);
+CREATE INDEX IF NOT EXISTS idx_event_relations_effect  ON event_relations(effect_event_id);
+
+-- プロジェクトごとの暦（1 行）。JSON 列は文字列で保存。
+CREATE TABLE IF NOT EXISTS project_calendar (
+    project_id          TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    days_per_year       INTEGER NOT NULL DEFAULT 360,
+    season_boundaries   TEXT NOT NULL DEFAULT '[]',  -- [{name,startDayOfYear}]
+    start_year          INTEGER NOT NULL DEFAULT 0,
+    months              TEXT NOT NULL DEFAULT '[]',   -- [{name,days}]
+    weekday_names       TEXT NOT NULL DEFAULT '[]',   -- string[]
+    weekday_start_index INTEGER NOT NULL DEFAULT 0,
+    leap_rule           TEXT NOT NULL DEFAULT '{"kind":"none"}',
+    age_reckoning       TEXT NOT NULL DEFAULT 'full', -- full=満年齢 / counting=数え年
+    eras                TEXT NOT NULL DEFAULT '[]',   -- [{name,startYear}]
+    reform              TEXT NOT NULL DEFAULT 'null',
+    timezone            TEXT NOT NULL DEFAULT 'null',
+    lunar_tz_minutes    INTEGER NOT NULL DEFAULT 480,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- FTS5 全文検索インデックス
 CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts USING fts5(
@@ -1737,8 +1901,9 @@ def seed(db_path: Path, scale: str = "default") -> None:
     project_id = "default-project"
     conn.execute(
         """INSERT INTO projects
-           (id,title,genre,pov,tense,language,style_guide,ai_instructions,phase_resolution_mode,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,title,genre,pov,tense,language,style_guide,ai_instructions,phase_resolution_mode,
+            outline,target_readers,is_sample,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             project_id,
             "朱の記憶",
@@ -1751,6 +1916,15 @@ def seed(db_path: Path, scale: str = "default") -> None:
             "和風ダークファンタジーの執筆補助をしてください。設定の一貫性と登場人物の動機を重視し、"
             "シーンを展開するときは朱音の内面と周囲の空気感を両立させてください。",
             "reading",
+            # outline（AI context L2 に常時注入される作品全体の設計図）
+            "三部構成の和風ダークファンタジー。第一部『帰還』＝朱音が十年ぶりに故郷の廃社へ戻り、"
+            "朱紐と封じ文を得て、十年前の火事の謎に踏み込む。第二部『朱の道』＝都で冬弥と対峙し、"
+            "朱鬼と記憶喰いの真相へ迫る。第三部＝母が儀を意図的に破った事実が開示され、"
+            "朱音が朱縄の儀を完成させるか否かの選択に至る。核テーマは『喪の作業と記憶の継承』。",
+            # target_readers（想定読者ペルソナ）
+            "和風ホラー／ダークファンタジーを好む10代後半〜30代の読者。"
+            "静かな筆致と伏線回収を楽しみ、説明過多を嫌う層。",
+            1,  # is_sample=1（サンプルワークスペース。初回に SampleTour が出る）
             now, now,
         ),
     )
@@ -2768,10 +2942,12 @@ def seed(db_path: Path, scale: str = "default") -> None:
         conn.execute(
             """INSERT INTO map_stickies
                (id,board_id,title,body,preview_text,palette_id,color_slot,
-                ai_branch_id,source_chat_message_id,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                ai_branch_id,source_chat_message_id,ai_derived,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (sid, board, title, body, preview,
-             palette_id, color_slot, ai_branch_id, source_chat_message_id, now, now),
+             palette_id, color_slot, ai_branch_id, source_chat_message_id,
+             1 if ai_branch_id else 0,  # AI ブランチ由来の付箋には AI 生成バッジを付ける
+             now, now),
         )
         return sid
 
@@ -2872,9 +3048,9 @@ def seed(db_path: Path, scale: str = "default") -> None:
     ]):
         conn.execute(
             """INSERT INTO lint_term_dictionary
-               (id,preferred,variants,severity,note,enabled,sort_order,created_at,updated_at)
-               VALUES (?,?,?,?,?,1,?,?,?)""",
-            (uid(), preferred, json.dumps(variants, ensure_ascii=False),
+               (id,project_id,preferred,variants,severity,note,enabled,sort_order,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,1,?,?,?)""",
+            (uid(), project_id, preferred, json.dumps(variants, ensure_ascii=False),
              severity, note, i, now_ms, now_ms),
         )
 
@@ -3312,12 +3488,13 @@ def seed(db_path: Path, scale: str = "default") -> None:
     # ---- chat_summaries / chat_summary_messages ----
     summary_id = uid()
     conn.execute(
-        """INSERT INTO chat_summaries (id, session_id, summary, token_count, created_at)
-           VALUES (?,?,?,?,?)""",
+        """INSERT INTO chat_summaries
+           (id, session_id, summary, token_count, generation, source_msg_count, last_msg_id, created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
         (summary_id, session_id,
          "朱音の語り口（感情を抑え、行動と所作で内面を示す）について議論。"
          "AI が「三つ数えてから」という所作モチーフを提案し、朱音の状態のバロメーターとして使う方針で合意。",
-         220, now),
+         220, 1, 4, chat_msg_ids[3], now),  # 世代1・先頭4メッセージを要約・最後は chat_msg_ids[3]
     )
     for mid in chat_msg_ids[:4]:
         conn.execute(
@@ -3594,9 +3771,17 @@ def seed(db_path: Path, scale: str = "default") -> None:
         ],
     }
     scene2_content_new = json.dumps(scene2_doc, ensure_ascii=False)
+    # placed_beat_preview: 本文中の placed sceneBeat 指示文を各60字で抽出（Grid 表示用・JSON 配列）
+    scene2_placed_preview = json.dumps(
+        [
+            "".join(c.get("text", "") for c in n.get("content", []))[:60]
+            for n in scene2_doc["content"] if n.get("type") == "sceneBeat"
+        ],
+        ensure_ascii=False,
+    )
     conn.execute(
-        "UPDATE tree_nodes SET content=?, status=? WHERE id=?",
-        (scene2_content_new, "draft", scene2_id),
+        "UPDATE tree_nodes SET content=?, status=?, placed_beat_preview=? WHERE id=?",
+        (scene2_content_new, "draft", scene2_placed_preview, scene2_id),
     )
 
     # ---- Unplaced beats（scene3：未執筆のシーンに beat 案を貯めておく） ----
@@ -3771,6 +3956,443 @@ def seed(db_path: Path, scale: str = "default") -> None:
                 "INSERT INTO tree_node_labels (node_id, label_id) VALUES (?,?)",
                 (node_id, label_ids[name]),
             )
+
+    # ================================================================
+    # プロットスレッド（Timeline スレッド・オーバーレイ）
+    # ================================================================
+    # 読み順シーン列に「名前付きスレッド × introduce/develop/turn/climax/resolve マーカー」を
+    # 重ねる。収束バンド（同一シーン列に 2 本以上のマーカー）と branch/merge コネクタを投入し、
+    # subway / separated レイアウトで見え方が変わるようスレッドごとにマーカー数を変える
+    # （主線=4 本 → subway で中央、他=2 本）。color は Codex パレット slot の .fg 生 hex。
+    def _plot_thread(tid, name, color, sort_order, description=None):
+        conn.execute(
+            """INSERT INTO plot_threads
+               (id,project_id,name,color,description,sort_order,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (tid, project_id, name, color, description, sort_order, now, now),
+        )
+
+    def _plot_link(thread_id, node_id, phase_type, note=None):
+        conn.execute(
+            """INSERT INTO plot_thread_scene_links
+               (id,thread_id,node_id,phase_type,note,sort_order,created_at,updated_at)
+               VALUES (?,?,?,?,?,NULL,?,?)""",
+            (uid(), thread_id, node_id, phase_type, note, now, now),
+        )
+
+    def _plot_branch(from_thread, to_thread, at_node, kind):
+        conn.execute(
+            """INSERT INTO plot_thread_branches
+               (id,project_id,from_thread_id,to_thread_id,at_node_id,kind,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (uid(), project_id, from_thread, to_thread, at_node, kind, now, now),
+        )
+
+    thread_return_id = uid()   # 主線・4 マーカー
+    thread_fire_id   = uid()   # 十年前の火事・2 マーカー
+    thread_fuuya_id  = uid()   # 冬弥の陰謀・2 マーカー
+    thread_otowa_id  = uid()   # 音羽の守り・2 マーカー
+    _plot_thread(thread_return_id, "朱音の帰還",   "#2045AA", "a0",
+                 "主人公の現在時間軸。廃社への帰還から都での対峙まで。")
+    _plot_thread(thread_fire_id,   "十年前の火事", "#AA2020", "a1",
+                 "回想で断片的に描かれる、十年前の朱縄の儀と炎の夜。")
+    _plot_thread(thread_fuuya_id,  "冬弥の陰謀",   "#6A20AA", "a2",
+                 "陰陽寮の裏で進む冬弥の独自調査。二章で主線から分岐する。")
+    _plot_thread(thread_otowa_id,  "音羽の守り",   "#208020", "a3",
+                 "桐野に残り朱音を見守り続ける音羽の視点。")
+
+    # マーカー（node_id は読み順シーン）。収束列 = scene1 / scene2 / payoff / scene3。
+    _plot_link(thread_return_id, scene1_id,          "introduce", "朱音、廃社に帰還")
+    _plot_link(thread_return_id, scene2_id,          "develop",   "封じ文を得る")
+    _plot_link(thread_return_id, scene_payoff_id,    "turn",      "侵入者の痕跡に気づく")
+    _plot_link(thread_return_id, scene3_id,          "climax",    "冬弥との対峙")
+    _plot_link(thread_fire_id,   scene_flashback_id, "introduce", "十年前の炎の夜")
+    _plot_link(thread_fire_id,   scene_payoff_id,    "resolve",   "祭壇の傷が火事の続きを示す")
+    _plot_link(thread_fuuya_id,  scene2_id,          "develop",   "封じ文の差出人の影")
+    _plot_link(thread_fuuya_id,  scene3_id,          "turn",      "冬弥、正体の一端を見せる")
+    _plot_link(thread_otowa_id,  scene1_id,          "introduce", "「遅い」とだけ言う音羽")
+    _plot_link(thread_otowa_id,  scene3_id,          "develop",   "都まで文を届ける")
+
+    # branch = 二章で「冬弥の陰謀」が主線から分岐 / merge = 間章で「火事」が主線へ合流
+    _plot_branch(thread_return_id, thread_fuuya_id,  scene2_id,       "branch")
+    _plot_branch(thread_fire_id,   thread_return_id, scene_payoff_id, "merge")
+
+    # ================================================================
+    # 作中年表（Chronicle / 作中時間 fabula 軸）
+    # ================================================================
+    # 暦・出来事・参加人物・シーンスタンプ・因果・AI 秘匿・シーン自身の日付を投入し、
+    # 4 種の整合チェック（季節 / 年齢 / 2か所同時 / 因果順序）を意図的に発火させる。
+    # 読み順 ≠ 作中時間の逆転（火事=fabula 最古だが読み順 3 番目）で Tie ビューも確認できる。
+    CAL_START_YEAR = 970
+    CAL_DAYS_PER_YEAR = 360
+
+    def cal_day(year: int, day_of_year: int = 0) -> int:
+        """暦の通日。day0 = CAL_START_YEAR の最初の月の1日。閏なし 360 日/年。
+        season_boundaries: 春[0,90) 夏[90,180) 秋[180,270) 冬[270,360)。"""
+        return (year - CAL_START_YEAR) * CAL_DAYS_PER_YEAR + day_of_year
+
+    # base62 fractional-index の append 系列（generateKeyBetween 相当・0..61 まで有効）。
+    # ordinal は cmpKeys（プレーン ASCII 比較）順なので a0<a1<…<a9<aA<…。
+    _FRAC_B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+    def frac_key(i: int) -> str:
+        return "a" + _FRAC_B62[i]
+
+    # ---- 暦（project_calendar・1 行） ----
+    conn.execute(
+        """INSERT INTO project_calendar
+           (project_id,days_per_year,season_boundaries,start_year,months,weekday_names,
+            weekday_start_index,leap_rule,age_reckoning,eras,reform,timezone,lunar_tz_minutes,
+            created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            project_id, CAL_DAYS_PER_YEAR,
+            json.dumps([
+                {"name": "春", "startDayOfYear": 0},
+                {"name": "夏", "startDayOfYear": 90},
+                {"name": "秋", "startDayOfYear": 180},
+                {"name": "冬", "startDayOfYear": 270},
+            ], ensure_ascii=False),
+            CAL_START_YEAR,
+            json.dumps([{"name": n, "days": 30} for n in [
+                "睦月", "如月", "弥生", "卯月", "皐月", "水無月",
+                "文月", "葉月", "長月", "神無月", "霜月", "師走",
+            ]], ensure_ascii=False),
+            json.dumps(["日", "月", "火", "水", "木", "金", "土"], ensure_ascii=False),
+            0,
+            json.dumps({"kind": "none"}, ensure_ascii=False),
+            "full",
+            json.dumps([{"name": "承平", "startYear": 850},
+                        {"name": "神護", "startYear": CAL_START_YEAR}], ensure_ascii=False),
+            "null",
+            json.dumps({"label": "京", "offsetMinutes": 540}, ensure_ascii=False),
+            540,
+            now, now,
+        ),
+    )
+
+    # ---- 整合チェック発火用のデバッグシーン（季節語「夏」＋年齢語「少女」を含む本文） ----
+    # このシーンに「冬」の出来事を関連付ける → 季節矛盾。
+    # このシーンに「満年齢が少女(7-17)から外れる朱音」の出来事を関連付ける → 年齢矛盾。
+    chronicle_debug_scene_id = uid()
+    chronicle_debug_body = doc_nodes(
+        para("【デバッグ用】年表の整合チェック（季節・年齢）を発火させるためのシーン。"),
+        para("夏の陽ざしが照りつけていた。まだ少女のようなあどけなさを残した面立ちで、"
+             "井戸端に立つ人影があった。"),
+    )
+    conn.execute(
+        """INSERT INTO tree_nodes
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,status,content,
+            char_count,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            chronicle_debug_scene_id, project_id, notes_folder_id, "scene",
+            "デバッグ：年表整合チェック",
+            "年表の季節矛盾・年齢矛盾チェックを発火させるためのデバッグシーン。",
+            "z8", "outline", chronicle_debug_body,
+            _count_doc_chars(chronicle_debug_body), now, now,
+        ),
+    )
+
+    # ---- 出来事（events） ----
+    def _event(eid, ordinal, title, *, note=None, detail=None,
+               primary=None, location=None,
+               start_time=None, end_time=None,
+               start_minute=None, end_minute=None,
+               start_gran="none", end_gran="none",
+               precision="exact", kind="generic",
+               secret=0, reveal_scene=None, lane_group=None):
+        conn.execute(
+            """INSERT INTO events
+               (id,project_id,title,note,detail,ordinal,primary_codex_id,location_codex_id,
+                start_time,end_time,start_minute,end_minute,
+                start_granularity,end_granularity,precision,kind,secret,reveal_scene_id,lane_group,
+                created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (eid, project_id, title, note, detail, ordinal, primary, location,
+             start_time, end_time, start_minute, end_minute,
+             start_gran, end_gran, precision, kind, secret, reveal_scene, lane_group,
+             now, now),
+        )
+
+    def _participants(eid, *codex_ids):
+        for cid in codex_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO event_participants (event_id,codex_entry_id,role)"
+                " VALUES (?,?,NULL)",
+                (eid, cid),
+            )
+
+    def _stamp(scene_id, eid):
+        # fabula イベント ↔ 読み順シーンの橋渡し
+        conn.execute(
+            "INSERT OR IGNORE INTO scene_events (scene_id,event_id) VALUES (?,?)",
+            (scene_id, eid),
+        )
+
+    def _relate(cause_eid, effect_eid):
+        conn.execute(
+            "INSERT OR IGNORE INTO event_relations (project_id,cause_event_id,effect_event_id)"
+            " VALUES (?,?,?)",
+            (project_id, cause_eid, effect_eid),
+        )
+
+    ev_birth        = uid()  # 朱音、誕生（年齢計算の基準 birth）
+    ev_ritual_fail  = uid()  # 朱縄の儀の失敗（AI 秘匿・reveal 自動導出）
+    ev_fire         = uid()  # 社が燃えた夜（fabula 最古の主要事件・分単位時刻）
+    ev_mother_death = uid()  # 母、斃れる（AI 秘匿・reveal 明示=三章）
+    ev_dbg_age      = uid()  # [デバッグ] 年齢矛盾
+    ev_return       = uid()  # 廃社への帰還
+    ev_himo         = uid()  # 朱紐と他人の記憶
+    ev_letter       = uid()  # 封じ文の発見
+    ev_place_a      = uid()  # [デバッグ] 2か所同時（廃社・区間）
+    ev_place_b      = uid()  # [デバッグ] 2か所同時（都・区間）
+    ev_curse        = uid()  # 朱鬼の覚醒（AI 恒久秘匿・火事が呼び起こした後年の覚醒）
+    ev_fuuya        = uid()  # 冬弥、現れる（初冬）
+    ev_snow         = uid()  # [デバッグ] 季節矛盾（未割当レーン＋lane_group）
+    ev_letter_written = uid()  # [デバッグ] 因果順序違反（記述が発見より後＝日付逆転）
+
+    _event(ev_birth, frac_key(0), "朱音、誕生",
+           note="朱音がこの世に生まれた年。年齢計算の基準（birth）。",
+           primary=akane_id, start_time=cal_day(973, 40),
+           start_gran="year", kind="birth")
+    _participants(ev_birth, akane_id, hidden_char_id)
+
+    _event(ev_ritual_fail, frac_key(1), "朱縄の儀の失敗",
+           note="母が主導した最後の完全な儀。何かが狂い、儀は破れた。",
+           primary=hidden_char_id, start_time=cal_day(990, 118),
+           start_gran="day", precision="approx",
+           secret=1, reveal_scene=None)  # reveal 自動導出（最初にスタンプした回想シーン）
+    _participants(ev_ritual_fail, hidden_char_id, akane_id)
+
+    _event(ev_fire, frac_key(2), "社が燃えた夜",
+           note="朱縄の儀が失敗し、廃社が炎に包まれた夜。",
+           detail=doc_nodes(
+               para("十年前の夏の夜。朱縄の儀の最中に何かが狂い、本殿が炎に包まれた。"),
+               para("朱音はその場にいたが、記憶は炎の色と熱、そして誰かの叫び声しか残っていない。"),
+           ),
+           primary=akane_id, location=haisha_id,
+           start_time=cal_day(990, 120), start_minute=1320,  # 22:00
+           start_gran="time")
+    _participants(ev_fire, akane_id, shuki_id, hidden_char_id)
+
+    _event(ev_mother_death, frac_key(3), "母、斃れる",
+           note="[ネタバレ] 母は儀を意図的に破り、我が身と引き換えに朱鬼を封じかけた。",
+           detail=doc_nodes(
+               para("【ネタバレ・AI 秘匿】母は儀を意図的に破り、我が身と引き換えに朱鬼を封じかけた。"),
+               para("この事実は第三部（三章以降）で開示する。それまで AI コンテキストには渡さない。"),
+           ),
+           primary=hidden_char_id, location=haisha_id,
+           start_time=cal_day(990, 121), start_minute=1350,  # 22:30
+           start_gran="time", precision="approx", kind="death",
+           secret=1, reveal_scene=scene3_id)  # reveal 明示（三章で開示）
+    _participants(ev_mother_death, hidden_char_id, shuki_id, akane_id)
+
+    _event(ev_dbg_age, frac_key(4), "朱音、記録所での日々（デバッグ：年齢矛盾）",
+           note="[デバッグ] 満年齢 27 の朱音を『少女』を含むシーンへ関連付け → 年齢矛盾。",
+           primary=akane_id, start_time=cal_day(1000, 100),  # 夏（デバッグシーンの夏と一致→季節は抑止）
+           start_gran="day")
+    _participants(ev_dbg_age, akane_id)
+
+    _event(ev_return, frac_key(5), "廃社への帰還",
+           note="十年ぶりに朱音が桐野の廃社へ戻る。",
+           primary=akane_id, location=haisha_id,
+           start_time=cal_day(1000, 200), start_gran="day")
+    _participants(ev_return, akane_id)
+
+    _event(ev_himo, frac_key(6), "朱紐と他人の記憶",
+           note="祭壇の朱紐に触れた瞬間、見知らぬ者の記憶が流れ込む。",
+           primary=akane_id, location=haisha_id,
+           start_time=cal_day(1000, 200), start_gran="day")
+    _participants(ev_himo, akane_id)
+
+    _event(ev_letter, frac_key(7), "封じ文の発見",
+           note="朱紐の下から「帰れ」と記された封じ文が見つかる。",
+           primary=akane_id, location=haisha_id,
+           start_time=cal_day(1000, 201), start_gran="day")
+    _participants(ev_letter, akane_id, otowa_id)
+
+    _event(ev_place_a, frac_key(8), "廃社での夜通しの調べ（デバッグ：2か所同時 A）",
+           note="[デバッグ] 廃社に滞在した区間。ev_place_b（都）と重なり 2か所同時を発火。",
+           primary=akane_id, location=haisha_id,
+           start_time=cal_day(1000, 201), end_time=cal_day(1000, 204),
+           start_gran="day", end_gran="day")
+    _participants(ev_place_a, akane_id)
+
+    _event(ev_place_b, frac_key(9), "都・記録所への問い合わせ（デバッグ：2か所同時 B）",
+           note="[デバッグ] 同時期に都にいた区間。ev_place_a（廃社）と重なり矛盾（オフページ）。",
+           primary=akane_id, location=miyako_id,
+           start_time=cal_day(1000, 203), end_time=cal_day(1000, 206),
+           start_gran="day", end_gran="day")
+    _participants(ev_place_b, akane_id)
+
+    _event(ev_curse, frac_key(10), "朱鬼の覚醒",
+           note="朱鬼が再び動き始める。恒久秘匿（スタンプ無し=fail-closed）。"
+                "十年前の失敗した儀（＝社が燃えた夜）が長い時間をかけて呼び起こした。",
+           primary=shuki_id, start_time=cal_day(1000, 210),
+           start_gran="season", precision="unknown",
+           secret=1, reveal_scene=None)  # スタンプ無し → 恒久秘匿（fail-closed）
+    _participants(ev_curse, shuki_id)
+
+    _event(ev_fuuya, frac_key(11), "冬弥、朱音の前に現れる",
+           note="陰陽寮の術師・冬弥が、朱音の帰京を待っていたかのように現れる。",
+           primary=fuuya_id, location=miyako_id,
+           start_time=cal_day(1000, 275), start_gran="day")  # 初冬
+    _participants(ev_fuuya, fuuya_id, akane_id)
+
+    _event(ev_snow, frac_key(12), "初雪、桐野に降る（デバッグ：季節矛盾）",
+           note="[デバッグ] 冬の出来事を『夏』を含むシーンへ関連付け → 季節矛盾。"
+                "主人物なし＝未割当レーン（lane_group で束ねる）。",
+           primary=None, location=kirino_id,
+           start_time=cal_day(1000, 300), start_gran="day",
+           lane_group="天候")
+
+    _event(ev_letter_written, frac_key(13), "封じ文が記される（デバッグ：因果順序違反）",
+           note="[デバッグ] 封じ文は『発見』より前に記されたはずだが、日付が発見より後になっている＝"
+                "因果順序の矛盾サンプル（原因が結果より後）。差出人は伏線のため未指定。",
+           primary=None, start_time=cal_day(1000, 310),  # 発見(doy201)より後にわざと誤設定
+           start_gran="day", precision="approx",
+           lane_group="伏線")
+
+    # スタンプ（scene_events）: fabula ↔ 読み順。火事は fabula 最古だが読み順 3 番目（回想）。
+    _stamp(scene_flashback_id, ev_fire)
+    _stamp(status_variant_ids["final"], ev_fire)   # 番外「燃えた夜の祝詞」でも再び触れる
+    _stamp(scene_flashback_id, ev_ritual_fail)
+    _stamp(scene_flashback_id, ev_mother_death)
+    _stamp(scene1_id, ev_return)
+    _stamp(scene1_id, ev_himo)
+    _stamp(scene2_id, ev_letter)
+    _stamp(scene_payoff_id, ev_place_a)
+    _stamp(scene3_id, ev_fuuya)
+    _stamp(chronicle_debug_scene_id, ev_dbg_age)
+    _stamp(chronicle_debug_scene_id, ev_snow)
+    # ev_birth / ev_place_b / ev_curse は意図的にオフページ（スタンプ無し）
+
+    # 因果（event_relations）: 正常 4 本＋因果順序違反 1 本（効果が原因より前＝赤エッジ）。
+    _relate(ev_ritual_fail, ev_fire)     # 儀式失敗 → 火事（正常）
+    _relate(ev_fire, ev_mother_death)    # 火事 → 母の死（正常）
+    _relate(ev_fire, ev_himo)            # 火事の残留記憶 → 十年後の流入（正常・長距離）
+    _relate(ev_fire, ev_curse)           # 失敗した儀（火事・年990）→ 朱鬼の覚醒（年1000）（正常・長距離）
+    _relate(ev_letter_written, ev_letter)  # [デバッグ] 記述(doy310) → 発見(doy201)＝因果順序違反（赤）
+
+    # ---- シーン自身の作中日付（tree_nodes.chronicle_*・events とは独立の scene アンカー） ----
+    def _scene_chronicle(node_id, start_time, start_gran, *,
+                         start_minute=None, end_time=None, end_minute=None,
+                         end_gran="none", precision="exact"):
+        conn.execute(
+            """UPDATE tree_nodes SET
+                 chronicle_start_time=?, chronicle_start_minute=?, chronicle_start_granularity=?,
+                 chronicle_end_time=?, chronicle_end_minute=?, chronicle_end_granularity=?,
+                 chronicle_precision=?
+               WHERE id=?""",
+            (start_time, start_minute, start_gran,
+             end_time, end_minute, end_gran, precision, node_id),
+        )
+
+    _scene_chronicle(scene1_id,         cal_day(1000, 200), "day")
+    _scene_chronicle(scene2_id,         cal_day(1000, 201), "day")
+    _scene_chronicle(scene_flashback_id, cal_day(990, 120), "time", start_minute=1320)
+    _scene_chronicle(scene_payoff_id,   cal_day(1000, 202), "time", start_minute=1400)  # 23:20
+    _scene_chronicle(scene3_id,         cal_day(1000, 275), "day")
+    # 番外シーンの作中日付（前史=伝承なので precision=unknown / 年粒度、承平21年頃）
+    _scene_chronicle(status_variant_ids["complete"], cal_day(870, 40), "year",
+                     precision="unknown")                         # 番外：朱紐の起源（前史）
+    _scene_chronicle(status_variant_ids["revision"], cal_day(1000, 278), "day")   # 陰陽寮の地下（初冬）
+    _scene_chronicle(status_variant_ids["final"], cal_day(990, 120), "time",
+                     start_minute=1320)                           # 燃えた夜の祝詞（十年前・夏の夜）
+
+    # ================================================================
+    # 追加メタデータ（欠けていたシーン/ノート/プロジェクト系フィールドの補完）
+    # ================================================================
+    # 番外シーンに欠けていた location を補完
+    conn.execute("UPDATE tree_nodes SET location_id=? WHERE id=?",
+                 (miyako_id, status_variant_ids["complete"]))   # 神泉苑＝都
+    conn.execute("UPDATE tree_nodes SET location_id=? WHERE id=?",
+                 (onmyoryo_id, status_variant_ids["revision"])) # 陰陽寮
+    conn.execute("UPDATE tree_nodes SET location_id=? WHERE id=?",
+                 (haisha_id, status_variant_ids["final"]))      # 廃社
+
+    # デバッグシーンにも一通りのメタデータ（POV/場所/物語時系列/作中日付）を付与
+    conn.execute(
+        """UPDATE tree_nodes SET pov_character_id=?, location_id=?,
+             story_time_order=?, story_time_label=?,
+             chronicle_start_time=?, chronicle_start_granularity=?
+           WHERE id=?""",
+        (akane_id, haisha_id, "z8", "（デバッグ）",
+         cal_day(1000, 100), "day", chronicle_debug_scene_id),
+    )
+
+    # ---- シーンの狙い（intent）＝ intent-drift 検証の入力（本文の実際の狙いとずれると警告） ----
+    for sid_i, intent_txt in [
+        (scene1_id,          "朱音を廃社へ帰還させ、朱紐との再会と『他人の記憶』を読者に印象づける。"),
+        (scene2_id,          "封じ文という物証を導入し、『差出人は誰か』という中盤の問いを立てる。"),
+        (scene_flashback_id, "十年前の火事の断片を提示し、朱音の記憶の欠落そのものを読者に意識させる。"),
+        (scene_payoff_id,    "廃社への侵入者の痕跡を確定させ、伏線『廃社の侵入者』を回収する。"),
+        (scene3_id,          "冬弥を初登場させ、彼の二重性への疑いを静かに植える。"),
+    ]:
+        conn.execute("UPDATE tree_nodes SET intent=? WHERE id=?", (intent_txt, sid_i))
+
+    # ---- ノート（調査メモ）のメタデータ：context_mode ＋ メンション別名 ----
+    conn.execute(
+        "UPDATE tree_nodes SET context_mode=?, aliases=?, excluded_aliases=? WHERE id=?",
+        ("mentioned",
+         json.dumps(["調査ノート", "設定メモ"], ensure_ascii=False),
+         json.dumps(["メモ"], ensure_ascii=False),  # 「メモ」単体は誤検出が多いので除外
+         research_note_id),
+    )
+
+    # ---- アーカイブ済みシーン（archived_at＝ツリーから隠れる soft-delete のサンプル） ----
+    archived_scene_id = uid()
+    archived_body = doc_nodes(
+        para("【アーカイブ】没にした幕間。都の雨の中、朱音が記録所の同僚とすれ違うだけの短い場面。"),
+        para("テンポを削ぐため本編から外したが、後で語り直すかもしれないので残してある。"),
+    )
+    archived_iso = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() - 3 * 86400, tz=timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        """INSERT INTO tree_nodes
+           (id,project_id,parent_id,node_type,title,synopsis,sort_order,status,content,
+            pov_character_id,char_count,archived_at,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (archived_scene_id, project_id, notes_folder_id, "scene",
+         "（アーカイブ）幕間：都の雨",
+         "没にした短い幕間。archived_at 付きでツリーから隠れる。",
+         "z9", "draft", archived_body, akane_id,
+         _count_doc_chars(archived_body), archived_iso, now, now),
+    )
+
+    # ---- version（楽観的並行制御カウンタ）を編集履歴のあるエンティティに反映 ----
+    conn.execute("UPDATE tree_nodes SET version=3 WHERE id=?", (scene1_id,))   # content_versions 3件相当
+    conn.execute("UPDATE tree_nodes SET version=1 WHERE id=?", (scene2_id,))
+    conn.execute("UPDATE codex_entries SET version=2 WHERE id=?", (akane_id,)) # 本文＋フェーズ＋detail 編集
+    conn.execute("UPDATE snippets SET version=1 WHERE id=?", (snippet1_id,))
+
+    # ---- 伏線の AI 秘匿（secret）：既定=1(秘匿)。表層の手がかりは 0(公開)にして両方を用意 ----
+    # 大どんでん返し（忘れられた声/冬弥の二重の顔/封じ文の差出人）は secret=1 のまま。
+    for fid in (fs_jouro_id, fs_kazaguruma_id, fs_abandoned_id):
+        conn.execute("UPDATE foreshadows SET secret=0 WHERE id=?", (fid,))
+
+    # ---- Codex 起点のチャットセッション（codex_anchor_id・シーン非依存の会話） ----
+    codex_chat_id = uid()
+    conn.execute(
+        """INSERT INTO chat_sessions
+           (id,project_id,node_id,codex_anchor_id,title,title_manual,model,created_at,updated_at)
+           VALUES (?,?,NULL,?,?,?,?,?,?)""",
+        (codex_chat_id, project_id, akane_id, "朱音の造形について", 1,
+         "openrouter/anthropic/claude-sonnet-4.6", now, now),
+    )
+    for role, text in [
+        ("user", "朱音の感情の抑え方を、冬弥とどう差別化すればいいでしょうか。"),
+        ("assistant",
+         "冬弥は『嘘で隠す』、朱音は『沈黙で抑える』と対比すると効きます。"
+         "冬弥は饒舌に話題を逸らし、朱音は言葉数が減って所作が硬くなる——"
+         "同じ『隠す』でもベクトルが逆なので、二人が並ぶ場面で自然に緊張が生まれます。"),
+    ]:
+        conn.execute(
+            "INSERT INTO chat_messages (id,session_id,role,content,created_at) VALUES (?,?,?,?,?)",
+            (uid(), codex_chat_id, role, text, now),
+        )
 
     # ================================================================
     # 文屑箱（trash_items）：削除した本文断片・構造アイテムをサンプル投入

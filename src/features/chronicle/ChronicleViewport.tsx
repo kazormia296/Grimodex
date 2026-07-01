@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -22,6 +22,11 @@ import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
 import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
 import { EventMarker, type MarkerEvent } from "./EventMarker";
+import {
+  connectedCausalChain,
+  directCauses,
+  directEffects,
+} from "./causalTraversal";
 
 const SNAP_PX = 12;
 const DRAG_THRESHOLD = 3;
@@ -32,6 +37,8 @@ export interface ChronicleViewportProps {
   view: View;
   onViewChange: (v: View) => void;
   onMeasureTrack: (w: number) => void;
+  /** フィット時の同期幅読み用にトラック実要素を親へ公開する ref。 */
+  trackElRef?: React.MutableRefObject<HTMLDivElement | null>;
   layout: ChronicleLayout;
   eventsById: Map<string, MarkerEvent>;
   /** プライマリ選択（アンカー＝因果エッジ作成ハンドルを出す対象）。 */
@@ -82,6 +89,10 @@ export interface ChronicleViewportProps {
   onDeleteEvent?: (id: string) => void;
   /** コンテキストメニュー「編集」: 単独選択＋詳細パネルを開く（未指定時は単独選択のみ）。 */
   onEditEvent?: (id: string) => void;
+  /** コンテキストメニュー「該当シーンを開く」。 */
+  onOpenScene?: (eventId: string) => void;
+  /** 「該当シーンを開く」を出せるイベント id 集合（scene-event＋リンク済み実イベント）。 */
+  openableSceneEventIds?: Set<string>;
   /** 複数選択の一括移動（primaryId の吸着先 newStartDay 差分を全選択へ。レーンは保持）。 */
   onMoveSelected?: (primaryId: string, newStartDay: number) => void;
   /** 選択中をまとめて時間方向に nudge（キーボード ←/→）。日数の符号付き差分。 */
@@ -90,6 +101,12 @@ export interface ChronicleViewportProps {
   onDeleteSelected?: () => void;
   /** 選択解除（キーボード Escape）。 */
   onClearSelection?: () => void;
+  /** 因果ホバー強調用の関係一覧（cause→effect）。 */
+  relations?: { causeId: string; effectId: string }[];
+  /** コンテキスト「原因を選択」（1 世代上・複数可）。 */
+  onSelectCauses?: (eventId: string) => void;
+  /** コンテキスト「結果を選択」（1 世代下・複数可）。 */
+  onSelectEffects?: (eventId: string) => void;
 }
 
 /**
@@ -102,6 +119,7 @@ export function ChronicleViewport({
   view,
   onViewChange,
   onMeasureTrack,
+  trackElRef: externalTrackElRef,
   layout,
   eventsById,
   selectedEventId,
@@ -127,13 +145,26 @@ export function ChronicleViewport({
   onSelectPosition,
   onDeleteEvent,
   onEditEvent,
+  onOpenScene,
+  openableSceneEventIds,
   onMoveSelected,
   onNudgeSelected,
   onDeleteSelected,
   onClearSelection,
+  relations,
+  onSelectCauses,
+  onSelectEffects,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const trackElRef = useRef<HTMLDivElement | null>(null);
+  // 因果ホバー強調: ホバー中の出来事に連なるチェーン以外を dim する。
+  const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
+  const causalChain = useMemo(() => {
+    if (!hoveredEventId || !relations || relations.length === 0) return null;
+    const chain = connectedCausalChain(hoveredEventId, relations);
+    // 因果が無い（自分だけ）ときは dim しない。
+    return chain.size > 1 ? chain : null;
+  }, [hoveredEventId, relations]);
   // ネイティブ wheel / pointer ハンドラから最新値を読むための ref。
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -238,45 +269,52 @@ export function ChronicleViewport({
   };
 
   // wheel（passive:false で preventDefault）と ResizeObserver を track へ装着。
-  const setTrackEl = useCallback((el: HTMLDivElement | null) => {
-    if (!el) {
-      cleanupRef.current?.();
-      cleanupRef.current = null;
-      trackElRef.current = null;
-      return;
-    }
-    trackElRef.current = el;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      // Shift+ホイール=横スクロール（トラックパッドの deltaX も拾う）。
-      if (e.shiftKey) {
-        const delta =
-          Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-        onViewChangeRef.current(panByPx({ view: viewRef.current, dx: -delta }));
+  const setTrackEl = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el) {
+        cleanupRef.current?.();
+        cleanupRef.current = null;
+        trackElRef.current = null;
+        if (externalTrackElRef) externalTrackElRef.current = null;
         return;
       }
-      const rect = el.getBoundingClientRect();
-      const pivotPx = e.clientX - rect.left;
-      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-      onViewChangeRef.current(
-        zoomAt({ view: viewRef.current, pivotPx, factor }),
-      );
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    const ro =
-      typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => {
-            const w = el.clientWidth;
-            if (w > 0) onMeasureRef.current(w);
-          })
-        : null;
-    ro?.observe(el);
-    if (el.clientWidth > 0) onMeasureRef.current(el.clientWidth);
-    cleanupRef.current = () => {
-      el.removeEventListener("wheel", onWheel);
-      ro?.disconnect();
-    };
-  }, []);
+      trackElRef.current = el;
+      if (externalTrackElRef) externalTrackElRef.current = el;
+      const onWheel = (e: WheelEvent) => {
+        e.preventDefault();
+        // Shift+ホイール=横スクロール（トラックパッドの deltaX も拾う）。
+        if (e.shiftKey) {
+          const delta =
+            Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+          onViewChangeRef.current(
+            panByPx({ view: viewRef.current, dx: -delta }),
+          );
+          return;
+        }
+        const rect = el.getBoundingClientRect();
+        const pivotPx = e.clientX - rect.left;
+        const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+        onViewChangeRef.current(
+          zoomAt({ view: viewRef.current, pivotPx, factor }),
+        );
+      };
+      el.addEventListener("wheel", onWheel, { passive: false });
+      const ro =
+        typeof ResizeObserver !== "undefined"
+          ? new ResizeObserver(() => {
+              const w = el.clientWidth;
+              if (w > 0) onMeasureRef.current(w);
+            })
+          : null;
+      ro?.observe(el);
+      if (el.clientWidth > 0) onMeasureRef.current(el.clientWidth);
+      cleanupRef.current = () => {
+        el.removeEventListener("wheel", onWheel);
+        ro?.disconnect();
+      };
+    },
+    [externalTrackElRef],
+  );
   useEffect(
     () => () => {
       cleanupRef.current?.();
@@ -845,9 +883,17 @@ export function ChronicleViewport({
                   labelsOn={labelsOn}
                   resizable={!locked && render.isInterval}
                   cursor={locked ? "default" : "grab"}
+                  dimmed={causalChain ? !causalChain.has(realId) : false}
+                  onHover={
+                    relations && relations.length > 0
+                      ? (h) => setHoveredEventId(h ? realId : null)
+                      : undefined
+                  }
                   edgeHandle={
                     // 因果エッジハンドルは単一選択時のプライマリのみ。
+                    // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
                     selectedEventId === realId &&
+                    !ev.isScene &&
                     (!selectedIds || selectedIds.size <= 1) &&
                     !locked &&
                     !!onCreateEdge
@@ -925,6 +971,44 @@ export function ChronicleViewport({
                   >
                     {t("chronicle.ctxEdit", "編集")}
                   </button>
+                  {onOpenScene && openableSceneEventIds?.has(menu.eventId) && (
+                    <button
+                      type="button"
+                      className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                      onClick={() => {
+                        onOpenScene(menu.eventId!);
+                        setMenu(null);
+                      }}
+                    >
+                      {t("chronicle.ctxOpenScene", "該当シーンを開く")}
+                    </button>
+                  )}
+                  {onSelectCauses &&
+                    directCauses(menu.eventId, relations ?? []).length > 0 && (
+                      <button
+                        type="button"
+                        className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                        onClick={() => {
+                          onSelectCauses(menu.eventId!);
+                          setMenu(null);
+                        }}
+                      >
+                        {t("chronicle.ctxSelectCauses", "原因を選択")}
+                      </button>
+                    )}
+                  {onSelectEffects &&
+                    directEffects(menu.eventId, relations ?? []).length > 0 && (
+                      <button
+                        type="button"
+                        className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                        onClick={() => {
+                          onSelectEffects(menu.eventId!);
+                          setMenu(null);
+                        }}
+                      >
+                        {t("chronicle.ctxSelectEffects", "結果を選択")}
+                      </button>
+                    )}
                   {!locked && onDeleteEvent && (
                     <button
                       type="button"

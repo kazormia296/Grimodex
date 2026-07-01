@@ -4,7 +4,7 @@ import {
   Plus,
   Sparkles,
   CalendarCog,
-  Spline,
+  Link,
   AlertTriangle,
   ZoomIn,
   ZoomOut,
@@ -26,7 +26,6 @@ export interface ChronicleToolbarProps {
   showEventList: boolean;
   showInspector: boolean;
   showEdges: boolean;
-  tieMode: boolean;
   density: LaneDensity;
   labelsOn: boolean;
   locked: boolean;
@@ -35,7 +34,6 @@ export interface ChronicleToolbarProps {
   onNew: () => void;
   onExtract: () => void;
   onSaveCalendar: (cal: ChronicleCalendar) => void;
-  onToggleTie: () => void;
   onToggleLock: () => void;
   onGotoConflict: () => void;
   onToggleEdges: () => void;
@@ -114,14 +112,6 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           onSave={props.onSaveCalendar}
           onClose={() => setCalOpen(false)}
         />
-        <button
-          type="button"
-          onClick={props.onToggleTie}
-          className={toggleCls(props.tieMode)}
-          title={t("chronicle.tieView", "読む順×作中時間")}
-        >
-          <Spline className="size-3.5" /> {t("chronicle.tie", "タイ線")}
-        </button>
         <button
           type="button"
           onClick={props.onToggleLock}
@@ -269,19 +259,6 @@ function ChronicleLegend() {
       )}
       {item(
         <span
-          className="rounded-full border-2"
-          style={{
-            width: 11,
-            height: 11,
-            borderColor: "var(--muted-foreground)",
-            background: "var(--card)",
-            boxSizing: "border-box",
-          }}
-        />,
-        t("chronicle.legendOffpage", "オフページ"),
-      )}
-      {item(
-        <span
           style={{
             width: 0,
             height: 0,
@@ -315,6 +292,14 @@ function ChronicleLegend() {
           }}
         />,
         t("chronicle.legendInterval", "期間"),
+      )}
+      {item(
+        <Link className="size-3 opacity-60" />,
+        t("chronicle.legendOnpage", "シーンに登場"),
+        t(
+          "chronicle.legendOnpageHint",
+          "シーンに紐づく（オンページ）。無印はオフページ（背景）。",
+        ),
       )}
       <span className="mx-0.5 h-3.5 w-px bg-border" />
       {item(
