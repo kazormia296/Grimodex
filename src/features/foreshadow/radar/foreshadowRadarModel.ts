@@ -1,4 +1,3 @@
-import { getAncestorFolders } from "@/features/tree/treeStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { DerivedLabel, ForeshadowWithLabel } from "../types";
 
@@ -81,16 +80,37 @@ const AT_RISK: ReadonlySet<DerivedLabel> = new Set<DerivedLabel>([
   "orphan_payoff",
 ]);
 
+/** byId マップで親を辿り、最上位の祖先フォルダを返す（getAncestorFolders の O(depth) 版）。 */
+function topAncestorFolder(
+  byId: Map<string, TreeNodeData>,
+  sceneId: string,
+): TreeNodeData | null {
+  const start = byId.get(sceneId);
+  if (!start) return null;
+  const guard = new Set<string>();
+  let top: TreeNodeData | null = null;
+  let parentId = start.parentId;
+  while (parentId) {
+    if (guard.has(parentId)) break;
+    guard.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    if (parent.nodeType === "folder") top = parent;
+    parentId = parent.parentId;
+  }
+  return top;
+}
+
 /** 読書順で連続する同一トップレベルフォルダをまとめて章バンドにする。 */
 function buildChapterBands(
   nodes: TreeNodeData[],
   sceneOrder: Map<string, number>,
 ): RadarChapterBand[] {
   const ordered = [...sceneOrder.entries()].sort((a, b) => a[1] - b[1]);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
   const bands: RadarChapterBand[] = [];
   for (const [sceneId, idx] of ordered) {
-    const ancestors = getAncestorFolders(nodes, sceneId);
-    const top = ancestors.length > 0 ? ancestors[ancestors.length - 1] : null;
+    const top = topAncestorFolder(byId, sceneId);
     const key = top ? top.id : "__root__";
     const label = top ? top.title : null;
     const last = bands[bands.length - 1];

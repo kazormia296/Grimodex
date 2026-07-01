@@ -234,4 +234,25 @@ describe("buildForeshadowRadarModel", () => {
       { key: "__root__", label: null, startIndex: 2, endIndex: 2 },
     ]);
   });
+
+  it("入れ子フォルダのシーンは最上位フォルダの章バンドに属する", () => {
+    const nodes = [
+      { id: "c1", parentId: null, nodeType: "folder", title: "第1章" },
+      { id: "sub", parentId: "c1", nodeType: "folder", title: "節" },
+      { id: "s0", parentId: "sub", nodeType: "scene", title: "s0" },
+    ] as unknown as TreeNodeData[];
+    const order = new Map<string, number>([["s0", 0]]);
+    const model = buildForeshadowRadarModel([], {}, order, nodes);
+    expect(model.bands).toEqual([
+      { key: "c1", label: "第1章", startIndex: 0, endIndex: 0 },
+    ]);
+  });
+
+  it("nodes に存在しないシーンはルートバンドに落とす", () => {
+    const order = new Map<string, number>([["ghost", 0]]);
+    const model = buildForeshadowRadarModel([], {}, order, []);
+    expect(model.bands).toEqual([
+      { key: "__root__", label: null, startIndex: 0, endIndex: 0 },
+    ]);
+  });
 });
