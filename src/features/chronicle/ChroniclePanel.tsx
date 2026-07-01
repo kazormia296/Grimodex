@@ -76,13 +76,8 @@ import {
 } from "./ChronicleEventList";
 import { CodexEntryPicker } from "./CodexEntryPicker";
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
-import { ChronicleTieView } from "./ChronicleTieView";
-import { buildTieView } from "./tieView";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { useSeasonConflicts } from "./useSeasonConflicts";
-
-const TIE_PAD = 40;
-const TIE_STEP = 120;
 
 /**
  * 作中年表(Chronicle)パネル — 人物/場所レーン×作中時間軸の pan/zoom 年表。
@@ -166,7 +161,6 @@ export function ChroniclePanel() {
   const [showEventList, setShowEventList] = useState(false);
   const [showInspector, setShowInspector] = useState(true);
   const [showEdges, setShowEdges] = useState(true);
-  const [tieMode, setTieMode] = useState(false);
   const [extractOpen, setExtractOpen] = useState(false);
   // インスペクタ高さ（上端グリップでリサイズ。選択をまたいで保持）。
   const [inspectorWidth, setInspectorWidth] = useState(360);
@@ -1283,40 +1277,6 @@ export function ChroniclePanel() {
     [selected, projectId, refresh, t],
   );
 
-  // タイ線複合ビュー（reading 順 scene ↔ 作中時間 event）。
-  const tieView = useMemo(() => {
-    if (!tieMode) return null;
-    const readingOrder = computeGlobalSceneOrder(nodes);
-    const linked = new Set(sceneLinks.map((l) => l.sceneId));
-    const sceneById = new Map(nodes.map((nd) => [nd.id, nd]));
-    const tieScenes = [...linked]
-      .filter((sid) => sceneById.has(sid))
-      .sort((a, b) => (readingOrder.get(a) ?? 0) - (readingOrder.get(b) ?? 0))
-      .map((sid) => ({ id: sid, title: sceneById.get(sid)!.title }));
-    const tieEvents = events.map((e) => ({
-      id: e.id,
-      title: e.title,
-      ordinal: e.ordinal,
-    }));
-    const maxCount = Math.max(tieScenes.length, tieEvents.length, 1);
-    const width = 2 * TIE_PAD + Math.max(1, maxCount - 1) * TIE_STEP;
-    return {
-      model: buildTieView({
-        scenes: tieScenes,
-        events: tieEvents,
-        links: sceneLinks.map((l) => ({
-          sceneId: l.sceneId,
-          eventId: l.eventId,
-        })),
-        width,
-        padX: TIE_PAD,
-        topY: 30,
-        bottomY: 150,
-      }),
-      width,
-    };
-  }, [tieMode, nodes, sceneLinks, events]);
-
   const n = renderEvents.length;
 
   // ── ステータスバー（縦ライン位置＝ルーラー解像度依存 / 選択イベント開始終了＝設定解像度依存）──
@@ -1353,8 +1313,7 @@ export function ChroniclePanel() {
           lang,
         )
       : null;
-  const showStatusBar =
-    n > 0 && !tieMode && (linePosLabel != null || selected != null);
+  const showStatusBar = n > 0 && (linePosLabel != null || selected != null);
 
   if (!projectId) {
     return (
@@ -1377,7 +1336,6 @@ export function ChroniclePanel() {
         showEventList={showEventList}
         showInspector={showInspector}
         showEdges={showEdges}
-        tieMode={tieMode}
         density={density}
         labelsOn={labelsOn}
         locked={locked}
@@ -1386,7 +1344,6 @@ export function ChroniclePanel() {
         onNew={handleAdd}
         onExtract={() => setExtractOpen(true)}
         onSaveCalendar={(c) => void saveCalendar(c)}
-        onToggleTie={() => setTieMode((m) => !m)}
         onToggleLock={toggleLock}
         onGotoConflict={handleGotoConflict}
         onToggleEdges={() => setShowEdges((s) => !s)}
@@ -1416,14 +1373,6 @@ export function ChroniclePanel() {
               "chronicle.empty",
               "イベントがまだありません。「追加」で作成できます。",
             )}
-          </div>
-        ) : tieMode && tieView ? (
-          <div className="flex-1 overflow-auto bg-card">
-            <ChronicleTieView
-              model={tieView.model}
-              width={tieView.width}
-              height={180}
-            />
           </div>
         ) : (
           <ChronicleViewport

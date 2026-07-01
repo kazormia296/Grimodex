@@ -4,7 +4,6 @@ import {
   Plus,
   Sparkles,
   CalendarCog,
-  Spline,
   AlertTriangle,
   ZoomIn,
   ZoomOut,
@@ -26,7 +25,6 @@ export interface ChronicleToolbarProps {
   showEventList: boolean;
   showInspector: boolean;
   showEdges: boolean;
-  tieMode: boolean;
   density: LaneDensity;
   labelsOn: boolean;
   locked: boolean;
@@ -35,7 +33,6 @@ export interface ChronicleToolbarProps {
   onNew: () => void;
   onExtract: () => void;
   onSaveCalendar: (cal: ChronicleCalendar) => void;
-  onToggleTie: () => void;
   onToggleLock: () => void;
   onGotoConflict: () => void;
   onToggleEdges: () => void;
@@ -114,14 +111,6 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           onSave={props.onSaveCalendar}
           onClose={() => setCalOpen(false)}
         />
-        <button
-          type="button"
-          onClick={props.onToggleTie}
-          className={toggleCls(props.tieMode)}
-          title={t("chronicle.tieView", "読む順×作中時間")}
-        >
-          <Spline className="size-3.5" /> {t("chronicle.tie", "タイ線")}
-        </button>
         <button
           type="button"
           onClick={props.onToggleLock}

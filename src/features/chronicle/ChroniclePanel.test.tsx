@@ -118,7 +118,6 @@ vi.mock("./ChronicleInspector", () => ({
     </div>
   ),
 }));
-vi.mock("./ChronicleTieView", () => ({ ChronicleTieView: () => null }));
 vi.mock("./ChronicleCalendarEditor", () => ({
   ChronicleCalendarEditor: () => null,
 }));
