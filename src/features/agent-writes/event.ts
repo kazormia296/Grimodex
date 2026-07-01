@@ -207,22 +207,26 @@ export async function agentSetEventParticipants(
 export async function agentLinkSceneEvent(
   sceneId: string,
   eventId: string,
+  opts?: TrackedWriteOpts,
 ): Promise<void> {
   await trackedEventWrite(
     "agent_scene_event_link",
     { sceneId, eventId },
     "chronicle.agentHistoryUpdate",
+    opts,
   );
 }
 
 export async function agentUnlinkSceneEvent(
   sceneId: string,
   eventId: string,
+  opts?: TrackedWriteOpts,
 ): Promise<void> {
   await trackedEventWrite(
     "agent_scene_event_unlink",
     { sceneId, eventId },
     "chronicle.agentHistoryUpdate",
+    opts,
   );
 }
 
@@ -295,4 +299,19 @@ export function uiRemoveEventRelation(
   effectEventId: string,
 ): Promise<void> {
   return agentRemoveEventRelation(causeEventId, effectEventId, UI_WRITE_OPTS);
+}
+
+/** シーン⇔出来事の手動リンク（undo 連動・surface="manual"）。 */
+export function uiLinkSceneEvent(
+  sceneId: string,
+  eventId: string,
+): Promise<void> {
+  return agentLinkSceneEvent(sceneId, eventId, UI_WRITE_OPTS);
+}
+
+export function uiUnlinkSceneEvent(
+  sceneId: string,
+  eventId: string,
+): Promise<void> {
+  return agentUnlinkSceneEvent(sceneId, eventId, UI_WRITE_OPTS);
 }

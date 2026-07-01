@@ -26,6 +26,8 @@ import {
   uiAddEventRelation,
   uiRemoveEventRelation,
   uiSetEventParticipants,
+  uiLinkSceneEvent,
+  uiUnlinkSceneEvent,
 } from "@/features/agent-writes/event";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
@@ -1084,6 +1086,31 @@ export function ChroniclePanel() {
     [selected, projectId, refresh],
   );
 
+  const handleLinkScene = useCallback(
+    async (sceneId: string) => {
+      if (!selected || !projectId) return;
+      try {
+        await uiLinkSceneEvent(sceneId, selected.id);
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+    },
+    [selected, projectId, refresh, t],
+  );
+  const handleUnlinkScene = useCallback(
+    async (sceneId: string) => {
+      if (!selected || !projectId) return;
+      try {
+        await uiUnlinkSceneEvent(sceneId, selected.id);
+        refresh();
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+    },
+    [selected, projectId, refresh, t],
+  );
+
   // 選択中イベントの参加レーン（複数 Codex 所属）。
   const selectedParticipants = useMemo(
     () => (selected ? (participantsByEvent.get(selected.id) ?? []) : []),
@@ -1296,6 +1323,9 @@ export function ChroniclePanel() {
             )}
             hasCausalIssue={selectedHasCausalIssue}
             linkedSceneCount={selectedSceneIds.length}
+            linkedSceneIds={selectedSceneIds}
+            onLinkScene={handleLinkScene}
+            onUnlinkScene={handleUnlinkScene}
             allEvents={events}
             causeIds={selectedCauseIds}
             participantIds={selectedParticipants}

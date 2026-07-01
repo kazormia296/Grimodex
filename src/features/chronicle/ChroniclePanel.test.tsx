@@ -26,6 +26,8 @@ const eventMocks = vi.hoisted(() => ({
   uiAddEventRelation: vi.fn(),
   uiRemoveEventRelation: vi.fn(),
   uiSetEventParticipants: vi.fn(),
+  uiLinkSceneEvent: vi.fn(),
+  uiUnlinkSceneEvent: vi.fn(),
 }));
 vi.mock("@/features/agent-writes/event", () => eventMocks);
 
@@ -58,9 +60,13 @@ vi.mock("./ChronicleInspector", () => ({
   ChronicleInspector: ({
     event,
     onPatch,
+    onLinkScene,
+    onUnlinkScene,
   }: {
     event: EventRow;
     onPatch: (patch: Partial<EventRow>) => void;
+    onLinkScene?: (sceneId: string) => void;
+    onUnlinkScene?: (sceneId: string) => void;
   }) => (
     <div>
       <span data-testid="insp-title">{event.title}</span>
@@ -69,6 +75,12 @@ vi.mock("./ChronicleInspector", () => ({
         onClick={() => onPatch({ title: "新題" })}
       >
         patch
+      </button>
+      <button data-testid="link-btn" onClick={() => onLinkScene?.("s1")}>
+        link
+      </button>
+      <button data-testid="unlink-btn" onClick={() => onUnlinkScene?.("s1")}>
+        unlink
       </button>
     </div>
   ),
@@ -132,6 +144,8 @@ beforeEach(() => {
   eventMocks.uiDeleteEvent.mockResolvedValue(undefined);
   eventMocks.uiAddEventRelation.mockResolvedValue(undefined);
   eventMocks.uiRemoveEventRelation.mockResolvedValue(undefined);
+  eventMocks.uiLinkSceneEvent.mockResolvedValue(undefined);
+  eventMocks.uiUnlinkSceneEvent.mockResolvedValue(undefined);
 });
 
 describe("ChroniclePanel project switch", () => {
@@ -206,5 +220,51 @@ describe("ChroniclePanel optimistic patch", () => {
       title: "新題",
     });
     expect(toastMocks.error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChroniclePanel scene link", () => {
+  it("onLinkScene で uiLinkSceneEvent(sceneId, eventId) を呼び、成功後に再ロードする", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+
+    const before = apiMocks.listSceneEvents.mock.calls.length;
+    fireEvent.click(screen.getByTestId("link-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiLinkSceneEvent).toHaveBeenCalledWith("s1", "ea");
+    });
+    // refresh() が reloadKey を bump → ロード effect 再実行で scene 橋を読み直す。
+    await waitFor(() => {
+      expect(apiMocks.listSceneEvents.mock.calls.length).toBeGreaterThan(
+        before,
+      );
+    });
+    expect(toastMocks.error).not.toHaveBeenCalled();
+  });
+
+  it("onUnlinkScene 失敗時はエラーを通知する", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    eventMocks.uiUnlinkSceneEvent.mockRejectedValueOnce(new Error("boom"));
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+
+    fireEvent.click(screen.getByTestId("unlink-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUnlinkSceneEvent).toHaveBeenCalledWith("s1", "ea");
+    });
+    await waitFor(() => {
+      expect(toastMocks.error).toHaveBeenCalledTimes(1);
+    });
   });
 });

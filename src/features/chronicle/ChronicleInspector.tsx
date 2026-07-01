@@ -26,6 +26,7 @@ import { laneColorFor } from "./laneColor";
 import { ChronicleDatePicker } from "./ChronicleDatePicker";
 import { ChronicleDetailField } from "./ChronicleDetailField";
 import { CodexEntryPicker } from "./CodexEntryPicker";
+import { SceneLinkField } from "./SceneLinkField";
 import { lunarInfoForDay } from "./chronicleLunar";
 import {
   Popover,
@@ -47,6 +48,11 @@ export interface ChronicleInspectorProps {
   hasTwoPlacesIssue?: boolean;
   hasCausalIssue?: boolean;
   linkedSceneCount?: number;
+  /** このイベントにリンク済みのシーン id（参照シーンの手動編集用）。 */
+  linkedSceneIds?: string[];
+  /** シーンをこのイベントへリンク／解除する（未指定なら参照シーン節を出さない）。 */
+  onLinkScene?: (sceneId: string) => void;
+  onUnlinkScene?: (sceneId: string) => void;
   allEvents?: { id: string; title: string }[];
   causeIds?: string[];
   onAddCause?: (causeId: string) => void;
@@ -91,6 +97,9 @@ export function ChronicleInspector({
   hasTwoPlacesIssue = false,
   hasCausalIssue = false,
   linkedSceneCount = 0,
+  linkedSceneIds = [],
+  onLinkScene,
+  onUnlinkScene,
   allEvents = [],
   causeIds = [],
   onAddCause,
@@ -679,6 +688,17 @@ export function ChronicleInspector({
             event={event}
             onPatchDetail={(detail) => onPatch({ detail })}
           />
+
+          {/* 参照シーン（手動リンク） */}
+          {onLinkScene && onUnlinkScene && (
+            <SceneLinkField
+              key={event.id}
+              scenes={scenes}
+              linkedSceneIds={linkedSceneIds}
+              onLink={onLinkScene}
+              onUnlink={onUnlinkScene}
+            />
+          )}
 
           {/* アクション */}
           <div className="flex items-center gap-2">
