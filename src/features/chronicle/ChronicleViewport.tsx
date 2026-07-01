@@ -847,7 +847,9 @@ export function ChronicleViewport({
                   cursor={locked ? "default" : "grab"}
                   edgeHandle={
                     // 因果エッジハンドルは単一選択時のプライマリのみ。
+                    // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
                     selectedEventId === realId &&
+                    !ev.isScene &&
                     (!selectedIds || selectedIds.size <= 1) &&
                     !locked &&
                     !!onCreateEdge

@@ -51,8 +51,33 @@ vi.mock("./useSeasonConflicts", () => ({
 
 // ── 重い子コンポーネントは観測しやすいテストダブルへ差し替える ──
 vi.mock("./ChronicleViewport", () => ({
-  ChronicleViewport: ({ eventsById }: { eventsById: Map<string, unknown> }) => (
-    <div data-testid="viewport" data-n={eventsById.size} />
+  ChronicleViewport: ({
+    eventsById,
+    onMoveEvent,
+    onDeleteEvent,
+  }: {
+    eventsById: Map<string, unknown>;
+    onMoveEvent?: (
+      id: string,
+      newStartDay: number | null,
+      newCodexId: string | null,
+    ) => void;
+    onDeleteEvent?: (id: string) => void;
+  }) => (
+    <div data-testid="viewport" data-n={eventsById.size}>
+      <button
+        data-testid="move-scene-btn"
+        onClick={() => onMoveEvent?.("scene:sc1", 200, null)}
+      >
+        move
+      </button>
+      <button
+        data-testid="ctx-delete-scene-btn"
+        onClick={() => onDeleteEvent?.("scene:sc1")}
+      >
+        ctx-delete
+      </button>
+    </div>
   ),
 }));
 vi.mock("./ChronicleToolbar", () => ({ ChronicleToolbar: () => null }));
@@ -364,6 +389,85 @@ describe("ChroniclePanel scene-event union", () => {
       );
     });
     expect(eventMocks.uiDeleteEvent).not.toHaveBeenCalled();
+  });
+
+  it("scene-event のドラッグ再配置は作中日付へ書き戻す（uiUpdateEvent は呼ばない）", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({
+      nodes: [makeScene({ id: "sc1", chronicleStartTime: 100 })],
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+
+    fireEvent.click(screen.getByTestId("move-scene-btn")); // onMoveEvent("scene:sc1",200,null)
+    await waitFor(() => {
+      expect(useTreeStore.getState().updateChronicleDate).toHaveBeenCalledWith(
+        "sc1",
+        expect.objectContaining({ chronicleStartTime: 200 }),
+      );
+    });
+    expect(eventMocks.uiUpdateEvent).not.toHaveBeenCalled();
+  });
+
+  it("コンテキストメニュー削除も scene-event は作中日付クリア（uiDeleteEvent は呼ばない）", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+
+    fireEvent.click(screen.getByTestId("ctx-delete-scene-btn"));
+    await waitFor(() => {
+      expect(useTreeStore.getState().updateChronicleDate).toHaveBeenCalledWith(
+        "sc1",
+        expect.objectContaining({ chronicleStartTime: null }),
+      );
+    });
+    expect(eventMocks.uiDeleteEvent).not.toHaveBeenCalled();
+  });
+
+  it("一括削除は scene=日付クリア / 実event=削除 に振り分ける（混在で片方も落ちない）", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelection(["ea", "scene:sc1"], "ea"); // 実+scene 混在
+    });
+
+    fireEvent.click(screen.getByTestId("bulk-delete"));
+    await waitFor(() => {
+      expect(eventMocks.uiDeleteEvent).toHaveBeenCalledWith("ea");
+    });
+    expect(useTreeStore.getState().updateChronicleDate).toHaveBeenCalledWith(
+      "sc1",
+      expect.objectContaining({ chronicleStartTime: null }),
+    );
+    expect(toastMocks.error).not.toHaveBeenCalled();
+  });
+
+  it("一括レーン割当は scene=POV更新 / 実event=uiUpdateEvent に振り分ける", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.getState().setSelection(["ea", "scene:sc1"], "ea");
+    });
+
+    fireEvent.click(screen.getByTestId("bulk-unassign")); // handleBulkAssign("")
+    await waitFor(() => {
+      expect(useTreeStore.getState().updatePovCharacter).toHaveBeenCalledWith(
+        "sc1",
+        null,
+      );
+    });
+    expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: "ea" }),
+    );
   });
 
   it("通常イベント選択は isScene=no のまま", async () => {

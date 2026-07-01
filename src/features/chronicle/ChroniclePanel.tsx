@@ -116,6 +116,21 @@ export function ChroniclePanel() {
   const updateChronicleDate = useTreeStore((s) => s.updateChronicleDate);
   const timelineSelected = useTimelineStore((s) => s.selectedNodeIds);
 
+  // scene-event の「削除」＝作中日付をクリアしてタイムラインから外す（シーン本体は残す）。
+  // inspector 削除 / コンテキストメニュー削除 / 一括削除で共通利用する。
+  const clearSceneChronicleDate = useCallback(
+    (sceneId: string) =>
+      updateChronicleDate(sceneId, {
+        chronicleStartTime: null,
+        chronicleStartMinute: null,
+        chronicleStartGranularity: "none",
+        chronicleEndTime: null,
+        chronicleEndMinute: null,
+        chronicleEndGranularity: "none",
+      }),
+    [updateChronicleDate],
+  );
+
   const [events, setEvents] = useState<EventRow[]>([]);
   const [sceneLinks, setSceneLinks] = useState<SceneEventRow[]>([]);
   const [relations, setRelations] = useState<EventRelationRow[]>([]);
@@ -289,6 +304,10 @@ export function ChroniclePanel() {
     };
   }, [projectId]);
 
+  // NOTE(scene-event union v1): 整合チェック（季節/年齢/因果/2か所同時）は実 `events`
+  // のみを対象とし、scene-event(scene:*) は現状チェック対象外。season は event↔リンク
+  // シーン本文モデル、causal は関係を持つ event 前提で、scene-event へそのまま広げると
+  // 意味が崩れるため。将来 two-places/age への scene 取り込みは別途 opt-in で検討する。
   const {
     calendar,
     conflicts,
@@ -672,10 +691,30 @@ export function ChroniclePanel() {
     defaultCreateDay,
   ]);
 
-  // id 指定の楽観パッチ（ドラッグ移動/伸縮で使う。handlePatch は選択中専用）。
+  // id 指定の楽観パッチ（ドラッグ移動/伸縮/キーボード nudge で使う。handlePatch は選択中専用）。
   const patchById = useCallback(
     async (id: string, patch: Partial<EventRow>) => {
       if (!projectId) return;
+      // シーンイベントはシーン側の作中日付/POV へ書き戻す（tree store が楽観 set）。
+      if (isSceneEventId(id)) {
+        const sceneId = sceneIdFromEventId(id);
+        try {
+          if ("primaryCodexId" in patch || "laneGroup" in patch) {
+            // ドラッグでのレーン移動＝POV 変更（未割当は概念が無いので null）。
+            await updatePovCharacter(sceneId, patch.primaryCodexId || null);
+          }
+          const dp: ChronicleDatePatch = {};
+          if ("startTime" in patch) dp.chronicleStartTime = patch.startTime;
+          if ("endTime" in patch) dp.chronicleEndTime = patch.endTime;
+          if ("startMinute" in patch)
+            dp.chronicleStartMinute = patch.startMinute;
+          if ("endMinute" in patch) dp.chronicleEndMinute = patch.endMinute;
+          if (Object.keys(dp).length) await updateChronicleDate(sceneId, dp);
+        } catch {
+          toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+        }
+        return;
+      }
       const prev = events.find((e) => e.id === id);
       if (!prev) return;
       setEvents((evs) =>
@@ -688,14 +727,14 @@ export function ChroniclePanel() {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [projectId, events, t],
+    [projectId, events, t, updatePovCharacter, updateChronicleDate],
   );
 
   // マーカー再配置（横=startTime / 縦=レーン再割当。interval は期間維持）。
   // 時刻 zoom 中は時刻も吸着先へ、日以上 zoom では時刻を保持して day だけ動かす。
   const handleMoveEvent = useCallback(
     (id: string, newStartDay: number | null, newCodexId: string | null) => {
-      const e = events.find((x) => x.id === id);
+      const e = renderEvents.find((x) => x.id === id);
       if (!e) return;
       // 移動先レーンを実 codex 割当 or 未割当グループに解く。""=NULL クリア。
       const { primaryCodexId, laneGroup } = decodeLaneTarget(newCodexId);
@@ -712,7 +751,7 @@ export function ChroniclePanel() {
       }
       void patchById(id, patch);
     },
-    [events, patchById],
+    [renderEvents, patchById],
   );
 
   // 選択中の全イベントを同じ「日数差分(端数可)」だけ平行移動（レーン・期間長は保持）。
@@ -727,7 +766,7 @@ export function ChroniclePanel() {
         rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
       if (!subDay && Math.round(deltaDays) === 0) return;
       for (const id of selectedIdSet) {
-        const e = events.find((x) => x.id === id);
+        const e = renderEvents.find((x) => x.id === id);
         if (!e || e.startTime == null) continue;
         void patchById(
           id,
@@ -744,26 +783,26 @@ export function ChroniclePanel() {
         );
       }
     },
-    [selectedIdSet, events, patchById],
+    [selectedIdSet, renderEvents, patchById],
   );
 
   // 一括ドラッグ: primary の吸着先(newStartDay=グリッド吸着済)と元の先端の差分を全選択へ。
   // 端数(サブデイ/月端数)も保ったまま shiftSelectedBy へ渡す（Math.round しない）。
   const handleMoveSelected = useCallback(
     (primaryId: string, newStartDay: number) => {
-      const primary = events.find((e) => e.id === primaryId);
+      const primary = renderEvents.find((e) => e.id === primaryId);
       if (!primary || primary.startTime == null) return;
       const fracStart =
         primary.startTime + (primary.startMinute ?? 0) / MIN_PER_DAY;
       shiftSelectedBy(newStartDay - fracStart);
     },
-    [events, shiftSelectedBy],
+    [renderEvents, shiftSelectedBy],
   );
 
   // 期間端の伸縮（開始/終了を吸着位置へ。start<=end を保つ。時刻 zoom は時刻も更新）。
   const handleResizeEvent = useCallback(
     (id: string, edge: "start" | "end", newDay: number) => {
-      const e = events.find((x) => x.id === id);
+      const e = renderEvents.find((x) => x.id === id);
       if (!e || e.startTime == null) return;
       const subDay =
         rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
@@ -783,13 +822,15 @@ export function ChroniclePanel() {
         void patchById(id, patch);
       }
     },
-    [events, patchById],
+    [renderEvents, patchById],
   );
 
   // D&D 因果エッジ作成（ドラッグ元=原因→落下先=結果）。
   const handleCreateEdge = useCallback(
     async (causeId: string, effectId: string) => {
-      if (!projectId) return;
+      // 因果は実 event 専用。scene-event は関係を持てない（Rust 側で弾かれる）。
+      if (!projectId || isSceneEventId(causeId) || isSceneEventId(effectId))
+        return;
       try {
         await uiAddEventRelation(causeId, effectId);
         refresh();
@@ -840,7 +881,12 @@ export function ChroniclePanel() {
     async (id: string) => {
       if (!projectId) return;
       try {
-        await uiDeleteEvent(id);
+        // scene-event は削除ではなく作中日付クリア（inspector 削除と同挙動）。
+        if (isSceneEventId(id)) {
+          await clearSceneChronicleDate(sceneIdFromEventId(id));
+        } else {
+          await uiDeleteEvent(id);
+        }
         if (useChronicleStore.getState().selectedEventId === id)
           setSelectedEventId(null);
         refresh();
@@ -848,7 +894,7 @@ export function ChroniclePanel() {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [projectId, refresh, setSelectedEventId, t],
+    [projectId, refresh, setSelectedEventId, t, clearSceneChronicleDate],
   );
 
   // 範囲選択(Shift)用の時間順 id 列（startDay 昇順, 同値は id）。
@@ -978,35 +1024,52 @@ export function ChroniclePanel() {
     [setSelectedEventId],
   );
 
-  // 選択中をまとめて削除。
+  // 選択中をまとめて削除。scene-event は作中日付クリア、実 event は削除に振り分ける。
   const handleBulkDelete = useCallback(async () => {
     if (!projectId || selectedIdSet.size === 0) return;
     try {
-      for (const id of selectedIdSet) await uiDeleteEvent(id);
+      for (const id of selectedIdSet) {
+        if (isSceneEventId(id))
+          await clearSceneChronicleDate(sceneIdFromEventId(id));
+        else await uiDeleteEvent(id);
+      }
       setSelectedEventId(null);
       refresh();
     } catch {
       toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
     }
-  }, [projectId, selectedIdSet, setSelectedEventId, refresh, t]);
+  }, [
+    projectId,
+    selectedIdSet,
+    setSelectedEventId,
+    refresh,
+    t,
+    clearSceneChronicleDate,
+  ]);
 
   // 選択中をまとめて指定 Codex レーンへ割当（""=未割当へ戻す）。
+  // scene-event はレーン=POV なので updatePovCharacter へ振り分ける。
   const handleBulkAssign = useCallback(
     async (codexId: string) => {
       if (!projectId || selectedIdSet.size === 0) return;
       try {
-        for (const id of selectedIdSet)
-          await uiUpdateEvent({
-            eventId: id,
-            primaryCodexId: codexId,
-            laneGroup: "",
-          });
+        for (const id of selectedIdSet) {
+          if (isSceneEventId(id)) {
+            await updatePovCharacter(sceneIdFromEventId(id), codexId || null);
+          } else {
+            await uiUpdateEvent({
+              eventId: id,
+              primaryCodexId: codexId,
+              laneGroup: "",
+            });
+          }
+        }
         refresh();
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [projectId, selectedIdSet, refresh, t],
+    [projectId, selectedIdSet, refresh, t, updatePovCharacter],
   );
 
   const handlePatch = useCallback(
@@ -1069,16 +1132,8 @@ export function ChroniclePanel() {
     // シーンイベントは「削除」ではなく作中日付をクリアしてタイムラインから外す
     // （シーン本体は消さない）。日付が null になれば deriveSceneEventRows から外れる。
     if (isSceneEventId(selected.id)) {
-      const sceneId = sceneIdFromEventId(selected.id);
       try {
-        await updateChronicleDate(sceneId, {
-          chronicleStartTime: null,
-          chronicleStartMinute: null,
-          chronicleStartGranularity: "none",
-          chronicleEndTime: null,
-          chronicleEndMinute: null,
-          chronicleEndGranularity: "none",
-        });
+        await clearSceneChronicleDate(sceneIdFromEventId(selected.id));
         setSelectedEventId(null);
       } catch {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
@@ -1098,7 +1153,7 @@ export function ChroniclePanel() {
     refresh,
     setSelectedEventId,
     t,
-    updateChronicleDate,
+    clearSceneChronicleDate,
   ]);
 
   const selectedSceneIds = useMemo(
@@ -1478,6 +1533,7 @@ export function ChroniclePanel() {
           </div>
           <button
             type="button"
+            data-testid="bulk-unassign"
             onClick={() => void handleBulkAssign("")}
             className="inline-flex h-8 items-center rounded-lg px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
           >
@@ -1485,6 +1541,7 @@ export function ChroniclePanel() {
           </button>
           <button
             type="button"
+            data-testid="bulk-delete"
             onClick={() => void handleBulkDelete()}
             className="inline-flex h-8 items-center gap-1 rounded-lg px-3 text-xs text-destructive hover:bg-destructive/10"
           >
