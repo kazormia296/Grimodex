@@ -713,7 +713,7 @@ export function ChronicleInspector({
           {/* 詳細（リッチテキスト）。event 専用（scene は synopsis を上で編集）。 */}
           {!isScene && (
             <ChronicleDetailField
-              key={event.id}
+              key={`detail-${event.id}`}
               event={event}
               onPatchDetail={(detail) => onPatch({ detail })}
             />
@@ -722,7 +722,7 @@ export function ChronicleInspector({
           {/* 参照シーン（手動リンク）。event 専用（scene は自分自身なので不要）。 */}
           {!isScene && onLinkScene && onUnlinkScene && (
             <SceneLinkField
-              key={event.id}
+              key={`scene-link-${event.id}`}
               scenes={scenes}
               linkedSceneIds={linkedSceneIds}
               onLink={onLinkScene}
