@@ -4147,9 +4147,10 @@ def seed(db_path: Path, scale: str = "default") -> None:
     ev_letter       = uid()  # 封じ文の発見
     ev_place_a      = uid()  # [デバッグ] 2か所同時（廃社・区間）
     ev_place_b      = uid()  # [デバッグ] 2か所同時（都・区間）
-    ev_curse        = uid()  # 朱鬼の覚醒（AI 恒久秘匿・因果違反の原因）
+    ev_curse        = uid()  # 朱鬼の覚醒（AI 恒久秘匿・火事が呼び起こした後年の覚醒）
     ev_fuuya        = uid()  # 冬弥、現れる（初冬）
     ev_snow         = uid()  # [デバッグ] 季節矛盾（未割当レーン＋lane_group）
+    ev_letter_written = uid()  # [デバッグ] 因果順序違反（記述が発見より後＝日付逆転）
 
     _event(ev_birth, frac_key(0), "朱音、誕生",
            note="朱音がこの世に生まれた年。年齢計算の基準（birth）。",
@@ -4226,7 +4227,8 @@ def seed(db_path: Path, scale: str = "default") -> None:
     _participants(ev_place_b, akane_id)
 
     _event(ev_curse, frac_key(10), "朱鬼の覚醒",
-           note="[デバッグ] 朱鬼が再び動き始める。恒久秘匿（スタンプ無し）＋因果順序違反の原因。",
+           note="朱鬼が再び動き始める。恒久秘匿（スタンプ無し=fail-closed）。"
+                "十年前の失敗した儀（＝社が燃えた夜）が長い時間をかけて呼び起こした。",
            primary=shuki_id, start_time=cal_day(1000, 210),
            start_gran="season", precision="unknown",
            secret=1, reveal_scene=None)  # スタンプ無し → 恒久秘匿（fail-closed）
@@ -4245,6 +4247,13 @@ def seed(db_path: Path, scale: str = "default") -> None:
            start_time=cal_day(1000, 300), start_gran="day",
            lane_group="天候")
 
+    _event(ev_letter_written, frac_key(13), "封じ文が記される（デバッグ：因果順序違反）",
+           note="[デバッグ] 封じ文は『発見』より前に記されたはずだが、日付が発見より後になっている＝"
+                "因果順序の矛盾サンプル（原因が結果より後）。差出人は伏線のため未指定。",
+           primary=None, start_time=cal_day(1000, 310),  # 発見(doy201)より後にわざと誤設定
+           start_gran="day", precision="approx",
+           lane_group="伏線")
+
     # スタンプ（scene_events）: fabula ↔ 読み順。火事は fabula 最古だが読み順 3 番目（回想）。
     _stamp(scene_flashback_id, ev_fire)
     _stamp(status_variant_ids["final"], ev_fire)   # 番外「燃えた夜の祝詞」でも再び触れる
@@ -4259,11 +4268,12 @@ def seed(db_path: Path, scale: str = "default") -> None:
     _stamp(chronicle_debug_scene_id, ev_snow)
     # ev_birth / ev_place_b / ev_curse は意図的にオフページ（スタンプ無し）
 
-    # 因果（event_relations）: 正常 3 本＋因果順序違反 1 本（効果が原因より前＝赤エッジ）。
+    # 因果（event_relations）: 正常 4 本＋因果順序違反 1 本（効果が原因より前＝赤エッジ）。
     _relate(ev_ritual_fail, ev_fire)     # 儀式失敗 → 火事（正常）
     _relate(ev_fire, ev_mother_death)    # 火事 → 母の死（正常）
     _relate(ev_fire, ev_himo)            # 火事の残留記憶 → 十年後の流入（正常・長距離）
-    _relate(ev_curse, ev_fire)           # [デバッグ] 覚醒(年1000) → 火事(年990)＝因果順序違反
+    _relate(ev_fire, ev_curse)           # 失敗した儀（火事・年990）→ 朱鬼の覚醒（年1000）（正常・長距離）
+    _relate(ev_letter_written, ev_letter)  # [デバッグ] 記述(doy310) → 発見(doy201)＝因果順序違反（赤）
 
     # ---- シーン自身の作中日付（tree_nodes.chronicle_*・events とは独立の scene アンカー） ----
     def _scene_chronicle(node_id, start_time, start_gran, *,
