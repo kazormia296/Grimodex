@@ -1,8 +1,15 @@
 // @vitest-environment happy-dom
 import { describe, it, expect } from "vitest";
-import { Editor } from "@tiptap/core";
+import { Editor, getSchema } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
+import { Table } from "@tiptap/extension-table";
+import TableRow from "@tiptap/extension-table-row";
+import TableHeader from "@tiptap/extension-table-header";
+import TableCell from "@tiptap/extension-table-cell";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
+import { RubyNode } from "@/features/editor/RubyNode";
+import { EmphasisDotsMark } from "@/features/editor/EmphasisDotsMark";
+import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import {
   DEFAULT_THEME,
   renderDocToCanvas,
@@ -108,6 +115,174 @@ function aiEditor() {
   });
   return editor;
 }
+
+// Build a doc from PM JSON via a schema (no Editor view → no React NodeView),
+// so we can exercise ruby / emphasisDots / table / sceneBeat directly.
+const richSchema = getSchema([
+  StarterKit,
+  AuthorshipMark,
+  RubyNode,
+  EmphasisDotsMark,
+  Table.configure({ resizable: false }),
+  TableRow,
+  TableHeader,
+  TableCell,
+  SceneBeatNode,
+]);
+
+function renderJson(
+  content: unknown[],
+  opts: { theme?: EditorRenderTheme; width?: number; height?: number } = {},
+) {
+  const doc = richSchema.nodeFromJSON({ type: "doc", content });
+  const { ctx, ops } = makeMockCtx();
+  renderDocToCanvas(
+    ctx as unknown as CanvasRenderingContext2D,
+    doc,
+    opts.width ?? 600,
+    opts.height ?? 400,
+    opts.theme ?? DEFAULT_THEME,
+  );
+  return ops;
+}
+
+const para = (content: unknown[]) => ({ type: "paragraph", content });
+const txt = (text: string, marks?: { type: string }[]) => ({
+  type: "text",
+  text,
+  ...(marks ? { marks } : {}),
+});
+
+describe("editorRenderer inline fidelity (P8)", () => {
+  it("renders bold and italic marks with the matching font", () => {
+    const ops = renderJson([
+      para([txt("bold", [{ type: "bold" }])]),
+      para([txt("slant", [{ type: "italic" }])]),
+    ]);
+    const bold = ops.find((o) => o.type === "fillText" && o.args[0] === "bold");
+    const slant = ops.find(
+      (o) => o.type === "fillText" && o.args[0] === "slant",
+    );
+    expect(bold?.font).toContain("bold");
+    expect(slant?.font).toContain("italic");
+  });
+
+  it("draws a strikethrough rule in the text colour", () => {
+    const ops = renderJson([para([txt("gone", [{ type: "strike" }])])]);
+    // A thin rule fillRect in the glyph colour (not the bg / not a tint).
+    const rule = ops.find(
+      (o) =>
+        o.type === "fillRect" &&
+        o.fillStyle === DEFAULT_THEME.text &&
+        (o.args[3] as number) <= 3,
+    );
+    expect(rule).toBeTruthy();
+  });
+
+  it("renders ruby: base glyphs plus a smaller annotation above", () => {
+    const ops = renderJson([
+      para([{ type: "ruby", attrs: { base: "漢字", annotation: "かんじ" } }]),
+    ]);
+    const base = ops.find((o) => o.type === "fillText" && o.args[0] === "漢字");
+    const ann = ops.find(
+      (o) => o.type === "fillText" && o.args[0] === "かんじ",
+    );
+    expect(base).toBeTruthy();
+    expect(ann).toBeTruthy();
+    // Annotation uses the ruby scale (16 * 0.5 = 8px) and sits above the base.
+    expect(ann?.font).toContain("8px");
+    expect(ann?.args[2] as number).toBeLessThan(base?.args[2] as number);
+  });
+
+  it("renders emphasis dots (圏点) — one dot per base character", () => {
+    const ops = renderJson([para([txt("強調", [{ type: "emphasisDots" }])])]);
+    const glyph = ops.find(
+      (o) => o.type === "fillText" && o.args[0] === "強調",
+    );
+    // Two small square dots in the glyph colour, above the baseline.
+    const dots = ops.filter(
+      (o) =>
+        o.type === "fillRect" &&
+        o.fillStyle === DEFAULT_THEME.text &&
+        o.args[2] === o.args[3] && // square
+        (o.args[1] as number) < (glyph?.args[2] as number),
+    );
+    expect(dots.length).toBe(2);
+  });
+
+  it("renders a table as a grid with cell text", () => {
+    const cell = (t: string, header = false) => ({
+      type: header ? "tableHeader" : "tableCell",
+      content: [para([txt(t)])],
+    });
+    const ops = renderJson([
+      {
+        type: "table",
+        content: [
+          { type: "tableRow", content: [cell("H1", true), cell("H2", true)] },
+          { type: "tableRow", content: [cell("A"), cell("B")] },
+        ],
+      },
+    ]);
+    // Grid rules in the border colour.
+    const grid = ops.filter(
+      (o) => o.type === "fillRect" && o.fillStyle === DEFAULT_THEME.border,
+    );
+    expect(grid.length).toBeGreaterThanOrEqual(4);
+    expect(textOf(ops)).toContain("H1");
+    expect(textOf(ops)).toContain("B");
+    // Header cells render bold.
+    const h1 = ops.find((o) => o.type === "fillText" && o.args[0] === "H1");
+    expect(h1?.font).toContain("bold");
+  });
+
+  it("draws a complete grid for a ragged table (rows with unequal cells)", () => {
+    const cell = (t: string) => ({
+      type: "tableCell",
+      content: [para([txt(t)])],
+    });
+    // Row 1 has 3 cells, row 2 has 2 → numCols = 3. Every row must still be
+    // fully ruled across all 3 columns.
+    const ops = renderJson([
+      {
+        type: "table",
+        content: [
+          {
+            type: "tableRow",
+            content: [cell("a"), cell("b"), cell("c")],
+          },
+          { type: "tableRow", content: [cell("d"), cell("e")] },
+        ],
+      },
+    ]);
+    const verticals = ops.filter(
+      (o) =>
+        o.type === "fillRect" &&
+        o.fillStyle === DEFAULT_THEME.border &&
+        (o.args[2] as number) <= 3 && // thin vertical rule
+        (o.args[3] as number) > 3,
+    );
+    // 2 rows × (numCols=3 left edges + 1 right edge) = 8 vertical rules,
+    // regardless of the short second row.
+    expect(verticals.length).toBe(8);
+  });
+
+  it("renders a sceneBeat with a label and its body text", () => {
+    const ops = renderJson([
+      {
+        type: "sceneBeat",
+        attrs: { beatType: "summary" },
+        content: [txt("beat body")],
+      },
+    ]);
+    // paintInline splits on whitespace, so the body arrives as "beat" + "body".
+    expect(textOf(ops)).toContain("beat");
+    expect(textOf(ops)).toContain("body");
+    expect(
+      ops.some((o) => o.type === "fillText" && /◈/.test(String(o.args[0]))),
+    ).toBe(true);
+  });
+});
 
 describe("renderDocToCanvas", () => {
   it("paints the background and the document text", () => {
