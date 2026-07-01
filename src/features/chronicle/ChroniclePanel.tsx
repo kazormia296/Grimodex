@@ -304,10 +304,19 @@ export function ChroniclePanel() {
     };
   }, [projectId]);
 
-  // NOTE(scene-event union v1): 整合チェック（季節/年齢/因果/2か所同時）は実 `events`
-  // のみを対象とし、scene-event(scene:*) は現状チェック対象外。season は event↔リンク
-  // シーン本文モデル、causal は関係を持つ event 前提で、scene-event へそのまま広げると
-  // 意味が崩れるため。将来 two-places/age への scene 取り込みは別途 opt-in で検討する。
+  // Scene-Event union: 作中日付を持つシーンを擬似 EventRow 化してタイムラインに
+  // 一級トークンとして混ぜる（描画・選択・レイアウト専用）。実 event の `events` は
+  // DB 書き込み用に純粋なまま保つ。scene:* id は書き込み経路で isSceneEventId ガードする。
+  const sceneEventRows = useMemo(() => deriveSceneEventRows(nodes), [nodes]);
+  const renderEvents = useMemo(
+    () => [...events, ...sceneEventRows],
+    [events, sceneEventRows],
+  );
+
+  // 整合チェックの scene 取り込み方針:
+  // - 2か所同時 / 年齢 = scene-event も対象（POV人物+場所+日付/本文年齢語を持つため有効）。
+  // - 季節（event↔リンクシーン本文モデル）/ 因果（関係を持つ event 前提）= 実 event 専用。
+  // 年齢は useSeasonConflicts に ageExtraEvents として scene-event を渡す（本文は自分自身）。
   const {
     calendar,
     conflicts,
@@ -315,7 +324,12 @@ export function ChroniclePanel() {
     ageConflicts,
     ageConflictIds,
     saveCalendar,
-  } = useSeasonConflicts({ projectId, events, links: sceneLinks });
+  } = useSeasonConflicts({
+    projectId,
+    events,
+    links: sceneLinks,
+    ageExtraEvents: sceneEventRows,
+  });
   const cal = useMemo<ChronicleCalendar>(
     () => calendar ?? { daysPerYear: 360, seasonBoundaries: [] },
     [calendar],
@@ -326,8 +340,8 @@ export function ChroniclePanel() {
     [events, relations],
   );
   const twoPlacesConflicts = useMemo(
-    () => findTwoPlacesConflicts({ events }),
-    [events],
+    () => findTwoPlacesConflicts({ events: renderEvents }),
+    [renderEvents],
   );
   const issueIds = useMemo(
     () =>
@@ -340,16 +354,6 @@ export function ChroniclePanel() {
     [conflictIds, ageConflictIds, causalConflicts, twoPlacesConflicts],
   );
   const issueCount = issueIds.size;
-
-  // 実効日（全 event に startTime あれば実時間軸、無ければ ordinal 序列）。
-  // Scene-Event union: 作中日付を持つシーンを擬似 EventRow 化してタイムラインに
-  // 一級トークンとして混ぜる（描画・選択・レイアウト専用）。実 event の `events` は
-  // DB 書き込み用に純粋なまま保つ。scene:* id は書き込み経路で isSceneEventId ガードする。
-  const sceneEventRows = useMemo(() => deriveSceneEventRows(nodes), [nodes]);
-  const renderEvents = useMemo(
-    () => [...events, ...sceneEventRows],
-    [events, sceneEventRows],
-  );
 
   const eff = useMemo(
     () =>
