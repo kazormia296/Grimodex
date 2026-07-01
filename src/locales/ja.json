@@ -4980,6 +4980,8 @@
     "openScene": "シーンを開く",
     "openSceneHint": "該当シーンをエディタで開く",
     "ctxOpenScene": "該当シーンを開く",
+    "ctxSelectCauses": "原因を選択",
+    "ctxSelectEffects": "結果を選択",
     "linkModeLabel": "リンク時の優先",
     "linkModeEvent": "イベント優先",
     "linkModeScene": "シーン優先",

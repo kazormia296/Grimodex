@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -22,6 +22,11 @@ import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
 import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
 import { EventMarker, type MarkerEvent } from "./EventMarker";
+import {
+  connectedCausalChain,
+  directCauses,
+  directEffects,
+} from "./causalTraversal";
 
 const SNAP_PX = 12;
 const DRAG_THRESHOLD = 3;
@@ -94,6 +99,12 @@ export interface ChronicleViewportProps {
   onDeleteSelected?: () => void;
   /** 選択解除（キーボード Escape）。 */
   onClearSelection?: () => void;
+  /** 因果ホバー強調用の関係一覧（cause→effect）。 */
+  relations?: { causeId: string; effectId: string }[];
+  /** コンテキスト「原因を選択」（1 世代上・複数可）。 */
+  onSelectCauses?: (eventId: string) => void;
+  /** コンテキスト「結果を選択」（1 世代下・複数可）。 */
+  onSelectEffects?: (eventId: string) => void;
 }
 
 /**
@@ -137,9 +148,20 @@ export function ChronicleViewport({
   onNudgeSelected,
   onDeleteSelected,
   onClearSelection,
+  relations,
+  onSelectCauses,
+  onSelectEffects,
 }: ChronicleViewportProps) {
   const { t } = useTranslation();
   const trackElRef = useRef<HTMLDivElement | null>(null);
+  // 因果ホバー強調: ホバー中の出来事に連なるチェーン以外を dim する。
+  const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
+  const causalChain = useMemo(() => {
+    if (!hoveredEventId || !relations || relations.length === 0) return null;
+    const chain = connectedCausalChain(hoveredEventId, relations);
+    // 因果が無い（自分だけ）ときは dim しない。
+    return chain.size > 1 ? chain : null;
+  }, [hoveredEventId, relations]);
   // ネイティブ wheel / pointer ハンドラから最新値を読むための ref。
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -851,6 +873,12 @@ export function ChronicleViewport({
                   labelsOn={labelsOn}
                   resizable={!locked && render.isInterval}
                   cursor={locked ? "default" : "grab"}
+                  dimmed={causalChain ? !causalChain.has(realId) : false}
+                  onHover={
+                    relations && relations.length > 0
+                      ? (h) => setHoveredEventId(h ? realId : null)
+                      : undefined
+                  }
                   edgeHandle={
                     // 因果エッジハンドルは単一選択時のプライマリのみ。
                     // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
@@ -945,6 +973,32 @@ export function ChronicleViewport({
                       {t("chronicle.ctxOpenScene", "該当シーンを開く")}
                     </button>
                   )}
+                  {onSelectCauses &&
+                    directCauses(menu.eventId, relations ?? []).length > 0 && (
+                      <button
+                        type="button"
+                        className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                        onClick={() => {
+                          onSelectCauses(menu.eventId!);
+                          setMenu(null);
+                        }}
+                      >
+                        {t("chronicle.ctxSelectCauses", "原因を選択")}
+                      </button>
+                    )}
+                  {onSelectEffects &&
+                    directEffects(menu.eventId, relations ?? []).length > 0 && (
+                      <button
+                        type="button"
+                        className="flex w-full items-center px-3 py-1.5 hover:bg-accent"
+                        onClick={() => {
+                          onSelectEffects(menu.eventId!);
+                          setMenu(null);
+                        }}
+                      >
+                        {t("chronicle.ctxSelectEffects", "結果を選択")}
+                      </button>
+                    )}
                   {!locked && onDeleteEvent && (
                     <button
                       type="button"

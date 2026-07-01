@@ -4993,6 +4993,8 @@
     "openScene": "Open scene",
     "openSceneHint": "Open the linked scene in the editor",
     "ctxOpenScene": "Open linked scene",
+    "ctxSelectCauses": "Select causes",
+    "ctxSelectEffects": "Select effects",
     "linkModeLabel": "On link, prefer",
     "linkModeEvent": "Event",
     "linkModeScene": "Scene",

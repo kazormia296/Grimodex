@@ -39,6 +39,7 @@ import {
   sceneIdFromEventId,
 } from "./sceneEventAdapter";
 import type { SceneLinkMode } from "./SceneLinkField";
+import { directCauses, directEffects } from "./causalTraversal";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
 import {
@@ -609,6 +610,35 @@ export function ChroniclePanel() {
       }
     },
     [eff, view, trackW, applyView, setSelectedEventId],
+  );
+
+  // コンテキスト「原因/結果を選択」: 1 世代上/下（複数可）を選択し先頭へスクロール。
+  // ホバー dim（全世代・非選択）とは別で、選択状態に載せる。
+  const selectRelatedGeneration = useCallback(
+    (eventId: string, dir: "causes" | "effects") => {
+      const ids =
+        dir === "causes"
+          ? directCauses(eventId, relations)
+          : directEffects(eventId, relations);
+      if (ids.length === 0) return;
+      setSelection(ids, ids[0]); // 複数選択（primary=先頭）
+      const ed = eff.byId.get(ids[0]);
+      if (ed && view.pxPerDay > 0 && trackW > 0) {
+        applyView({
+          pxPerDay: view.pxPerDay,
+          viewStartDay: ed.startDay - trackW / 2 / view.pxPerDay,
+        });
+      }
+    },
+    [relations, setSelection, eff, view, trackW, applyView],
+  );
+  const handleSelectCauses = useCallback(
+    (eventId: string) => selectRelatedGeneration(eventId, "causes"),
+    [selectRelatedGeneration],
+  );
+  const handleSelectEffects = useCallback(
+    (eventId: string) => selectRelatedGeneration(eventId, "effects"),
+    [selectRelatedGeneration],
   );
 
   // サイドペイン一覧の表示用データ（純データに畳んでコンポーネントへ渡す）。
@@ -1472,6 +1502,9 @@ export function ChroniclePanel() {
             onEditEvent={handleEditEvent}
             onOpenScene={handleOpenSceneForEvent}
             openableSceneEventIds={openableSceneEventIds}
+            relations={relations}
+            onSelectCauses={handleSelectCauses}
+            onSelectEffects={handleSelectEffects}
             onMoveSelected={handleMoveSelected}
             onNudgeSelected={shiftSelectedBy}
             onDeleteSelected={handleBulkDelete}

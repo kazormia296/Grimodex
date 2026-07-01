@@ -47,6 +47,10 @@ export interface EventMarkerProps {
   edgeHandle?: boolean;
   /** ホバー時カーソル（非ロック=pointer/手、ロック=default）。 */
   cursor?: CSSProperties["cursor"];
+  /** 因果ホバー時、連結チェーン外なので淡色化する。 */
+  dimmed?: boolean;
+  /** ホバー開始/終了（因果チェーン強調の駆動）。 */
+  onHover?: (hovering: boolean) => void;
   /** クリック選択（修飾キー判定のため MouseEvent を渡す）。 */
   onSelect: (e: ReactMouseEvent) => void;
 }
@@ -95,6 +99,8 @@ export function EventMarker({
   offsetY = 0,
   edgeHandle = false,
   cursor = "pointer",
+  dimmed = false,
+  onHover,
   onSelect,
 }: EventMarkerProps) {
   const { t } = useTranslation();
@@ -182,6 +188,10 @@ export function EventMarker({
     // レーン入れ替えアニメ（ドラッグ追従と排他。GPU フレンドリな transform のみ）。
     container.transform = `translateY(${offsetY}px)`;
   }
+
+  // 因果ホバー: 連結チェーン外は淡色化（Timeline のスレッドホバーと同じ 0.28）。
+  if (dimmed) container.opacity = 0.28;
+  container.transition = `opacity ${CSS_DURATIONS.normal} ${CSS_EASINGS.easeOut}`;
 
   // 先頭グリフは**種別のみ**で形が決まる（出生=三角 / 死亡=菱形 / 出来事=丸 / 期間=帯）。
   // 常に塗り。scene リンク有無（オンページ/オフページ）は形では表さず、右隣の Link
@@ -332,6 +342,8 @@ export function EventMarker({
       data-event-id={event.id}
       data-selected={selected || undefined}
       onClick={onSelect}
+      onMouseEnter={onHover ? () => onHover(true) : undefined}
+      onMouseLeave={onHover ? () => onHover(false) : undefined}
       title={event.title || t("chronicle.untitled", "無題のイベント")}
       className="group"
       style={{
