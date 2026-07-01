@@ -636,3 +636,87 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(onDeleteSelected).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライブエッジ", () => {
+  it("中ボタンドラッグで横パン（onViewChange）＋トラックが grabbing", () => {
+    const onViewChange = vi.fn();
+    const props = makeProps({ onViewChange });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 20 });
+    expect(tr.style.cursor).toBe("grabbing");
+    fireEvent.mouseMove(document, { clientX: 160, clientY: 20 });
+    // panByPx(dx=60): viewStartDay = 0 - 60/2 = -30
+    const lastCall = onViewChange.mock.calls.at(-1)![0] as {
+      viewStartDay: number;
+    };
+    expect(lastCall.viewStartDay).toBeCloseTo(-30);
+    fireEvent.mouseUp(document, { clientX: 160, clientY: 20 });
+    expect(tr.style.cursor).not.toBe("grabbing");
+  });
+
+  it("マーカードラッグ中に日時バブルを表示し、離すと消える（body へ portal）", () => {
+    const formatDayLabel = vi.fn((d: number) => `day:${Math.round(d)}`);
+    const props = makeProps({ formatDayLabel });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 220, clientY: 40 });
+    const bubble = document.body.querySelector(
+      '[data-testid="chronicle-drag-date-bubble"]',
+    );
+    expect(bubble).toBeTruthy();
+    expect(bubble!.textContent).toMatch(/^day:/);
+    expect(formatDayLabel).toHaveBeenCalled();
+    fireEvent.mouseUp(document, { clientX: 220, clientY: 40 });
+    expect(
+      document.body.querySelector('[data-testid="chronicle-drag-date-bubble"]'),
+    ).toBeNull();
+  });
+
+  it("ドラッグ中は因果エッジがライブで引き直される（liveEdges）", () => {
+    const relations = [{ causeId: "e1", effectId: "e2" }];
+    const view = { pxPerDay: 2, viewStartDay: 0 };
+    const layout = buildChronicleLayout({
+      events,
+      lanes,
+      view,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 180,
+      relations,
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const props = makeProps({ layout, relations, view });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const edge = () =>
+      container
+        .querySelector('[data-causal-edge="e1|e2"]')
+        ?.getAttribute("d") ?? null;
+    const before = edge();
+    expect(before).toBeTruthy();
+    const marker = container.querySelector(
+      '[data-event-id="e1"]',
+    ) as HTMLElement;
+    fireEvent.mouseDown(marker, { button: 0, clientX: 100, clientY: 20 });
+    fireEvent.mouseMove(document, { clientX: 300, clientY: 20 });
+    const during = edge();
+    expect(during).toBeTruthy();
+    // 動いた端点(e1)に追従してパスが変わる。
+    expect(during).not.toBe(before);
+    fireEvent.mouseUp(document, { clientX: 300, clientY: 20 });
+  });
+});

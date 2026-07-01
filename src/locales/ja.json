@@ -3333,7 +3333,8 @@
       "splitBelow": "下に分割",
       "closeGroup": "グループを閉じる",
       "tabList": "タブ一覧",
-      "linearMode": "リニアモード"
+      "linearMode": "リニアモード",
+      "linearModeUnavailable": "リニアモードは本文タブでのみ使えます"
     },
     "contextMenu": {
       "cut": "カット",

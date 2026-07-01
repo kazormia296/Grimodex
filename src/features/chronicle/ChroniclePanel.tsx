@@ -544,6 +544,31 @@ export function ChroniclePanel() {
   const rulerLevelRef = useRef<string>("day");
   rulerLevelRef.current = layout.ticks.level;
 
+  // ドラッグ/期間端伸縮中の日時バブル文言を、現在のルーラー解像度に応じた精度で作る。
+  // level → 表示粒度: year/month/day はそのまま、hour/minute は time（HH:MM 付き）。
+  // 暦軸なし（order）や粒度なしは空文字＝バブル非表示。
+  const formatDragDayLabel = useCallback(
+    (day: number): string => {
+      if (!eff.hasCalendarAxis) return "";
+      const level = layout.ticks.level;
+      const gran =
+        level === "year"
+          ? "year"
+          : level === "month"
+            ? "month"
+            : level === "day"
+              ? "day"
+              : level === "hour" || level === "minute"
+                ? "time"
+                : "none";
+      if (gran === "none") return "";
+      const floorDay = Math.floor(day);
+      const minute = Math.round((day - floorDay) * MIN_PER_DAY);
+      return formatChronicleDate(floorDay, minute, gran, cal, lang);
+    },
+    [eff.hasCalendarAxis, layout.ticks.level, cal, lang],
+  );
+
   const eventsById = useMemo(() => {
     const m = new Map<string, MarkerEvent>();
     for (const e of renderEvents) {
@@ -1535,6 +1560,7 @@ export function ChroniclePanel() {
             onNudgeSelected={shiftSelectedBy}
             onDeleteSelected={handleBulkDelete}
             onClearSelection={clearSelection}
+            formatDayLabel={formatDragDayLabel}
           />
         )}
         {showInspector && selected && multiCount <= 1 && (

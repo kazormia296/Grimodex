@@ -123,6 +123,34 @@ describe("縦中横エクスポート記法 — 対象 run の length ポリシ�
   });
 });
 
+describe("縦中横エクスポート記法 — 記号クラスタ / ローマ数字（拡張）", () => {
+  it("感嘆符・疑問符クラスタ（！？）を包む（policy 2 でも対象）", () => {
+    const out = exportWith("本当に！？", { tateChuYoko: "caita" }, "2");
+    expect(out).toContain("本当に[tatechuyoko]！？[/tatechuyoko]");
+  });
+
+  it("ASCII ローマ数字（III）を包む（桁ポリシー非依存）", () => {
+    const out = exportWith("第III章", { tateChuYoko: "caita" }, "2");
+    expect(out).toContain("第[tatechuyoko]III[/tatechuyoko]章");
+  });
+
+  it("Unicode ローマ数字（Ⅶ）を包む", () => {
+    const out = exportWith("Ⅶ巻", { tateChuYoko: "caita" }, "all");
+    expect(out).toContain("[tatechuyoko]Ⅶ[/tatechuyoko]巻");
+  });
+
+  it("厳密なローマ数字でない英単語（VIVID）は包まない（誤結合防止）", () => {
+    const out = exportWith("VIVID", { tateChuYoko: "caita" }, "all");
+    expect(out).toContain("VIVID");
+    expect(out).not.toContain("[tatechuyoko]");
+  });
+
+  it("policy 'off' では記号・ローマ数字も出さない", () => {
+    const out = exportWith("第III章！？", { tateChuYoko: "caita" }, "off");
+    expect(out).not.toContain("[tatechuyoko]");
+  });
+});
+
 describe("縦中横エクスポート記法 — プロファイル/サイト連携", () => {
   it("青空文庫プロファイルの既定は前方参照型", () => {
     expect(

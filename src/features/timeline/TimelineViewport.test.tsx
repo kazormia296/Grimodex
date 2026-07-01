@@ -601,16 +601,52 @@ describe("TimelineViewport – 中ボタン(ホイール)ドラッグでパン",
     expect(container.scrollLeft).toBe(50);
   });
 
-  it("左ボタンの mousedown ではパンしない（中ボタン専用）", () => {
+  it("左ボタンで背景をドラッグするとパンする（Chronicle と同挙動・閾値超え）", () => {
+    const { getByTestId } = render(
+      <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
+    );
+    const container = getByTestId("timeline-scroll-container");
+    stubScroll(container, 0, 0);
+    // 背景（コンテナ直下）を左ボタンでドラッグ = コンテンツを掴んで逆向きにスクロール。
+    mouse(container, "mousedown", { button: 0, clientX: 500, clientY: 300 });
+    mouse(document, "mousemove", { button: 0, clientX: 400, clientY: 250 });
+    expect(container.scrollLeft).toBe(100);
+    expect(container.scrollTop).toBe(50);
+    mouse(document, "mouseup", { button: 0, clientX: 400, clientY: 250 });
+  });
+
+  it("左ボタンの閾値未満の動きではパンしない（クリック/選択を壊さない）", () => {
     const { getByTestId } = render(
       <TimelineViewport scenes={panScenes()} onSelectScene={vi.fn()} />,
     );
     const container = getByTestId("timeline-scroll-container");
     stubScroll(container, 0, 0);
     mouse(container, "mousedown", { button: 0, clientX: 500, clientY: 300 });
-    mouse(document, "mousemove", { button: 0, clientX: 400, clientY: 250 });
+    // 3px 未満（THRESH=4）は pan 開始しない。
+    mouse(document, "mousemove", { button: 0, clientX: 502, clientY: 301 });
     expect(container.scrollLeft).toBe(0);
-    expect(container.scrollTop).toBe(0);
+    mouse(document, "mouseup", { button: 0, clientX: 502, clientY: 301 });
+  });
+
+  it("左ボタンでドット上をドラッグしても背景パンしない（シーンドラッグに委譲）", () => {
+    const { container, getByTestId } = render(
+      <TimelineViewport
+        scenes={panScenes()}
+        onSelectScene={vi.fn()}
+        onDropStoryTime={vi.fn()}
+      />,
+    );
+    const scroll = getByTestId("timeline-scroll-container");
+    stubScroll(scroll, 0, 0);
+    const dot = [...container.querySelectorAll("circle")].find((c) =>
+      c.querySelector("title"),
+    ) as SVGCircleElement;
+    expect(dot).toBeTruthy();
+    mouse(dot, "mousedown", { button: 0, clientX: 500, clientY: 200 });
+    mouse(document, "mousemove", { button: 0, clientX: 400, clientY: 200 });
+    // ドットの左ドラッグ = シーン並べ替え。背景パンは走らない（dragActiveRef ガード）。
+    expect(scroll.scrollLeft).toBe(0);
+    mouse(document, "mouseup", { button: 0, clientX: 400, clientY: 200 });
   });
 
   it("中ボタンをドット上で押してもシーンドラッグを起動せずパンする（button ガード）", () => {

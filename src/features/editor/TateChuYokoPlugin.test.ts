@@ -96,6 +96,39 @@ describe("buildTateChuYokoDecorations — policy 'all' (2桁以上すべて)", (
   });
 });
 
+describe("buildTateChuYokoDecorations — 記号クラスタ / ローマ数字（拡張）", () => {
+  it("感嘆符・疑問符クラスタ（！？）を結合する（policy 2/all 双方）", () => {
+    expect(build("本当に！？と思った", "2").texts).toEqual(["！？"]);
+    expect(build("えっ！！まさか", "all").texts).toEqual(["！！"]);
+  });
+
+  it("ASCII 大文字ローマ数字（III）を結合する（桁ポリシー非依存）", () => {
+    expect(build("第III章", "2").texts).toEqual(["III"]);
+    expect(build("第VII部", "all").texts).toEqual(["VII"]);
+  });
+
+  it("Unicode ローマ数字（Ⅶ）を結合する", () => {
+    expect(build("Ⅶ巻", "all").texts).toEqual(["Ⅶ"]);
+  });
+
+  it("数字・記号・ローマ数字が混在した文を from 昇順で正しく覆う", () => {
+    expect(build("第III章、2026年、本当に！？", "all").texts).toEqual([
+      "III",
+      "2026",
+      "！？",
+    ]);
+  });
+
+  it("ローマ字だけの英単語（MIX 以外）は結合しない（誤結合防止）", () => {
+    // 厳密なローマ数字でない CIVIL / VIVID は素通し。
+    expect(build("CIVIL VIVID", "all").texts).toEqual([]);
+  });
+
+  it("off ではローマ数字・記号も一切結合しない", () => {
+    expect(build("第III章 本当に！？", "off").texts).toEqual([]);
+  });
+});
+
 describe("buildTateChuYokoDecorations — policy 'off'", () => {
   it("off では decoration を一切作らない", () => {
     const { set } = build("第12話", "off");
