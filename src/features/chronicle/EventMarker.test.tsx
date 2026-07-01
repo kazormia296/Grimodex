@@ -49,6 +49,19 @@ describe("EventMarker (DOM token)", () => {
     expect(el.getAttribute("title")).toBe("出来事A");
   });
 
+  it("シーンイベント(isScene)の点グリフは角丸スクエア（丸=イベントと区別）", () => {
+    const { getByTestId } = renderMarker({ event: ev({ isScene: true }) });
+    const g = getByTestId("marker-glyph") as HTMLElement;
+    expect(g.style.borderRadius).not.toBe("50%"); // 丸ではない
+    expect(g.style.borderRadius).toBe("3px"); // 角丸スクエア
+  });
+
+  it("通常イベント(非 isScene)の点グリフは丸のまま", () => {
+    const { getByTestId } = renderMarker({ event: ev({ isScene: false }) });
+    const g = getByTestId("marker-glyph") as HTMLElement;
+    expect(g.style.borderRadius).toBe("50%");
+  });
+
   it("interval は barWidth の幅で帯を描く", () => {
     const { container } = renderMarker({ isInterval: true, barWidth: 120 });
     const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;

@@ -18,6 +18,8 @@ export interface MarkerEvent {
   /** scene 参照あり=実線/中身あり、なし=オフページ（中空グリフ）。 */
   sceneLinked: boolean;
   primaryCodexId: string | null;
+  /** Scene-Event union: これがシーン由来トークン（scene:*）なら true。角丸スクエアで区別。 */
+  isScene?: boolean;
 }
 
 export interface EventMarkerProps {
@@ -247,6 +249,16 @@ export function EventMarker({
             border: `1.5px solid ${lc}`,
             boxSizing: "border-box",
           };
+    } else if (event.isScene) {
+      // シーン由来トークン＝角丸スクエア（■）。丸(●=イベント)と一目で区別する。
+      glyph = {
+        flex: "none",
+        width: 10,
+        height: 10,
+        borderRadius: 3,
+        background: lc,
+        boxSizing: "border-box",
+      };
     } else if (!event.sceneLinked) {
       // 汎用のオフページ（scene 未参照）＝中空丸 ◯（凡例で明示）。
       glyph = {

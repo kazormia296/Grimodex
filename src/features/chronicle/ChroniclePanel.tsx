@@ -5,7 +5,10 @@ import { Trash2, X } from "lucide-react";
 import { PanelHeader } from "@/features/layout/PanelHeader";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useTreeStore } from "@/features/tree/treeStore";
+import {
+  useTreeStore,
+  type ChronicleDatePatch,
+} from "@/features/tree/treeStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useChronicleStore } from "./chronicleStore";
 import {
@@ -29,6 +32,11 @@ import {
   uiLinkSceneEvent,
   uiUnlinkSceneEvent,
 } from "@/features/agent-writes/event";
+import {
+  deriveSceneEventRows,
+  isSceneEventId,
+  sceneIdFromEventId,
+} from "./sceneEventAdapter";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
 import {
@@ -100,6 +108,12 @@ export function ChroniclePanel() {
   const revisionCounter = useChronicleStore((s) => s.revisionCounter);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
   const nodes = useTreeStore((s) => s.nodes);
+  // Scene-Event union の書き戻し（scene-event 編集 → シーン側プロパティ）に使う。
+  const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
+  const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
+  const updatePovCharacter = useTreeStore((s) => s.updatePovCharacter);
+  const updateLocation = useTreeStore((s) => s.updateLocation);
+  const updateChronicleDate = useTreeStore((s) => s.updateChronicleDate);
   const timelineSelected = useTimelineStore((s) => s.selectedNodeIds);
 
   const [events, setEvents] = useState<EventRow[]>([]);
@@ -220,10 +234,14 @@ export function ChroniclePanel() {
       .then(async (rows) => {
         if (cancelled) return;
         setEvents(rows);
-        // 削除/undo/redo 後の stale な選択 id を実 event に整合（全削除経路を覆う）。
+        // 削除/undo/redo 後の stale な選択 id を整合（全削除経路を覆う）。scene-event の
+        // 選択(scene:*)を消さないよう、実 event id ∪ 現在の scene-event id を有効集合とする。
+        const sceneIds = deriveSceneEventRows(
+          useTreeStore.getState().nodes,
+        ).map((r) => r.id);
         useChronicleStore
           .getState()
-          .sanitizeSelection(new Set(rows.map((e) => e.id)));
+          .sanitizeSelection(new Set([...rows.map((e) => e.id), ...sceneIds]));
         const [links, rels, parts] = await Promise.all([
           listSceneEvents(rows.map((e) => e.id)),
           listEventRelations(projectId),
@@ -305,10 +323,19 @@ export function ChroniclePanel() {
   const issueCount = issueIds.size;
 
   // 実効日（全 event に startTime あれば実時間軸、無ければ ordinal 序列）。
+  // Scene-Event union: 作中日付を持つシーンを擬似 EventRow 化してタイムラインに
+  // 一級トークンとして混ぜる（描画・選択・レイアウト専用）。実 event の `events` は
+  // DB 書き込み用に純粋なまま保つ。scene:* id は書き込み経路で isSceneEventId ガードする。
+  const sceneEventRows = useMemo(() => deriveSceneEventRows(nodes), [nodes]);
+  const renderEvents = useMemo(
+    () => [...events, ...sceneEventRows],
+    [events, sceneEventRows],
+  );
+
   const eff = useMemo(
     () =>
       effectiveDays(
-        events.map((e) => ({
+        renderEvents.map((e) => ({
           id: e.id,
           ordinal: e.ordinal,
           startTime: e.startTime,
@@ -317,18 +344,18 @@ export function ChroniclePanel() {
           endMinute: e.endMinute,
         })),
       ),
-    [events],
+    [renderEvents],
   );
 
   // trackW 計測後に未フィットなら全体表示にフィット。
   useEffect(() => {
-    if (trackW > 0 && !fittedRef.current && events.length > 0) {
+    if (trackW > 0 && !fittedRef.current && renderEvents.length > 0) {
       fittedRef.current = true;
       setView(
         fitAll({ dataStart: eff.dataStart, dataEnd: eff.dataEnd, trackW }),
       );
     }
-  }, [trackW, events.length, eff.dataStart, eff.dataEnd]);
+  }, [trackW, renderEvents.length, eff.dataStart, eff.dataEnd]);
 
   // 参加者（追加レーン所属）の eventId → codexId[]。
   const participantsByEvent = useMemo(() => {
@@ -359,7 +386,7 @@ export function ChroniclePanel() {
       if (arr) arr.push(id);
       else groupMap.set(g, [id]);
     };
-    for (const ev of events) {
+    for (const ev of renderEvents) {
       const pid = ev.primaryCodexId;
       if (pid && entryById.has(pid)) {
         pushLane(pid, ev.id);
@@ -405,11 +432,11 @@ export function ChroniclePanel() {
       });
     });
     return out;
-  }, [events, entries, t, participantsByEvent, emptyGroups, laneOrder]);
+  }, [renderEvents, entries, t, participantsByEvent, emptyGroups, laneOrder]);
 
   const layoutEvents: LayoutEventInput[] = useMemo(() => {
     const entryIds = new Set(entries.map((e) => e.id));
-    return events.flatMap((e) => {
+    return renderEvents.flatMap((e) => {
       const ed = eff.byId.get(e.id);
       if (!ed) return [];
       const base = {
@@ -417,7 +444,8 @@ export function ChroniclePanel() {
         kind: e.kind,
         precision: e.precision,
         secret: e.secret,
-        sceneLinked: scenedEventIds.has(e.id),
+        // シーンイベントは常に on-page（scene そのもの）。実 event は scene_events で判定。
+        sceneLinked: isSceneEventId(e.id) || scenedEventIds.has(e.id),
         startDay: ed.startDay,
         endDay: ed.endDay,
       };
@@ -432,7 +460,7 @@ export function ChroniclePanel() {
       }
       return out;
     });
-  }, [events, entries, eff, scenedEventIds, participantsByEvent]);
+  }, [renderEvents, entries, eff, scenedEventIds, participantsByEvent]);
 
   const causalPairs = useMemo(
     () => causalConflictPairSet(causalConflicts),
@@ -481,30 +509,33 @@ export function ChroniclePanel() {
 
   const eventsById = useMemo(() => {
     const m = new Map<string, MarkerEvent>();
-    for (const e of events) {
+    for (const e of renderEvents) {
+      const isScene = isSceneEventId(e.id);
       m.set(e.id, {
         id: e.id,
         title: e.title,
         kind: e.kind,
         precision: e.precision,
         secret: e.secret,
-        sceneLinked: scenedEventIds.has(e.id),
+        sceneLinked: isScene || scenedEventIds.has(e.id),
         primaryCodexId: e.primaryCodexId,
+        isScene,
       });
     }
     return m;
-  }, [events, scenedEventIds]);
+  }, [renderEvents, scenedEventIds]);
 
   const selected = useMemo(
-    () => events.find((e) => e.id === selectedEventId) ?? null,
-    [events, selectedEventId],
+    () => renderEvents.find((e) => e.id === selectedEventId) ?? null,
+    [renderEvents, selectedEventId],
   );
+  const selectedIsScene = selected != null && isSceneEventId(selected.id);
 
   // 複数選択集合（存在する出来事のみ＝削除済み id を除く）。ハイライト/一括操作に使う。
   const selectedIdSet = useMemo(() => {
-    const existing = new Set(events.map((e) => e.id));
+    const existing = new Set(renderEvents.map((e) => e.id));
     return new Set(selectedEventIds.filter((id) => existing.has(id)));
-  }, [events, selectedEventIds]);
+  }, [renderEvents, selectedEventIds]);
   const multiCount = selectedIdSet.size;
 
   const activeLaneKey = useMemo(() => {
@@ -982,6 +1013,34 @@ export function ChroniclePanel() {
     async (patch: Partial<EventRow>) => {
       if (!selected || !projectId) return;
       const id = selected.id;
+      // シーンイベントは events テーブルではなくシーン側プロパティへ書き戻す
+      // （双方向 union）。tree store 経由なので nodes 更新で自動的に再描画される。
+      if (isSceneEventId(id)) {
+        const sceneId = sceneIdFromEventId(id);
+        try {
+          if (patch.title != null) await updateNodeTitle(sceneId, patch.title);
+          if ("note" in patch) await updateSynopsis(sceneId, patch.note ?? "");
+          if ("primaryCodexId" in patch)
+            await updatePovCharacter(sceneId, patch.primaryCodexId ?? null);
+          if ("locationCodexId" in patch)
+            await updateLocation(sceneId, patch.locationCodexId ?? null);
+          const dp: ChronicleDatePatch = {};
+          if ("startTime" in patch) dp.chronicleStartTime = patch.startTime;
+          if ("endTime" in patch) dp.chronicleEndTime = patch.endTime;
+          if ("startMinute" in patch)
+            dp.chronicleStartMinute = patch.startMinute;
+          if ("endMinute" in patch) dp.chronicleEndMinute = patch.endMinute;
+          if ("startGranularity" in patch)
+            dp.chronicleStartGranularity = patch.startGranularity;
+          if ("endGranularity" in patch)
+            dp.chronicleEndGranularity = patch.endGranularity;
+          if ("precision" in patch) dp.chroniclePrecision = patch.precision;
+          if (Object.keys(dp).length) await updateChronicleDate(sceneId, dp);
+        } catch {
+          toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+        }
+        return;
+      }
       const prev = selected;
       setEvents((evs) =>
         evs.map((e) => (e.id === id ? { ...e, ...patch } : e)),
@@ -993,11 +1052,39 @@ export function ChroniclePanel() {
         toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
       }
     },
-    [selected, projectId, t],
+    [
+      selected,
+      projectId,
+      t,
+      updateNodeTitle,
+      updateSynopsis,
+      updatePovCharacter,
+      updateLocation,
+      updateChronicleDate,
+    ],
   );
 
   const handleDelete = useCallback(async () => {
     if (!selected || !projectId) return;
+    // シーンイベントは「削除」ではなく作中日付をクリアしてタイムラインから外す
+    // （シーン本体は消さない）。日付が null になれば deriveSceneEventRows から外れる。
+    if (isSceneEventId(selected.id)) {
+      const sceneId = sceneIdFromEventId(selected.id);
+      try {
+        await updateChronicleDate(sceneId, {
+          chronicleStartTime: null,
+          chronicleStartMinute: null,
+          chronicleStartGranularity: "none",
+          chronicleEndTime: null,
+          chronicleEndMinute: null,
+          chronicleEndGranularity: "none",
+        });
+        setSelectedEventId(null);
+      } catch {
+        toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
+      }
+      return;
+    }
     try {
       await uiDeleteEvent(selected.id);
       setSelectedEventId(null);
@@ -1005,7 +1092,14 @@ export function ChroniclePanel() {
     } catch {
       toast.error(t("chronicle.actionFailed", "操作に失敗しました"));
     }
-  }, [selected, projectId, refresh, setSelectedEventId, t]);
+  }, [
+    selected,
+    projectId,
+    refresh,
+    setSelectedEventId,
+    t,
+    updateChronicleDate,
+  ]);
 
   const selectedSceneIds = useMemo(
     () =>
@@ -1018,7 +1112,7 @@ export function ChroniclePanel() {
   );
 
   const handleStamp = useCallback(async () => {
-    if (!selected) return;
+    if (!selected || isSceneEventId(selected.id)) return;
     try {
       await Promise.all(
         selectedSceneIds.map((sceneId) =>
@@ -1031,7 +1125,7 @@ export function ChroniclePanel() {
   }, [selected, selectedSceneIds, updateStoryTime, t]);
 
   const handlePull = useCallback(async () => {
-    if (!selected || !projectId) return;
+    if (!selected || !projectId || isSceneEventId(selected.id)) return;
     const nodeById = new Map(nodes.map((nd) => [nd.id, nd]));
     const order = selectedSceneIds
       .map((sid) => nodeById.get(sid)?.storyTimeOrder ?? null)
@@ -1071,7 +1165,7 @@ export function ChroniclePanel() {
 
   const handleAddCause = useCallback(
     async (causeId: string) => {
-      if (!selected || !projectId) return;
+      if (!selected || !projectId || isSceneEventId(selected.id)) return;
       await uiAddEventRelation(causeId, selected.id);
       refresh();
     },
@@ -1079,7 +1173,7 @@ export function ChroniclePanel() {
   );
   const handleRemoveCause = useCallback(
     async (causeId: string) => {
-      if (!selected || !projectId) return;
+      if (!selected || !projectId || isSceneEventId(selected.id)) return;
       await uiRemoveEventRelation(causeId, selected.id);
       refresh();
     },
@@ -1088,7 +1182,8 @@ export function ChroniclePanel() {
 
   const handleLinkScene = useCallback(
     async (sceneId: string) => {
-      if (!selected || !projectId) return;
+      // scene:* は events テーブルに行が無く Rust 側 event_ok 検査で弾かれるため不可。
+      if (!selected || !projectId || isSceneEventId(selected.id)) return;
       try {
         await uiLinkSceneEvent(sceneId, selected.id);
         refresh();
@@ -1100,7 +1195,7 @@ export function ChroniclePanel() {
   );
   const handleUnlinkScene = useCallback(
     async (sceneId: string) => {
-      if (!selected || !projectId) return;
+      if (!selected || !projectId || isSceneEventId(selected.id)) return;
       try {
         await uiUnlinkSceneEvent(sceneId, selected.id);
         refresh();
@@ -1118,7 +1213,7 @@ export function ChroniclePanel() {
   );
   const handleSetParticipants = useCallback(
     async (codexEntryIds: string[]) => {
-      if (!selected || !projectId) return;
+      if (!selected || !projectId || isSceneEventId(selected.id)) return;
       try {
         await uiSetEventParticipants(selected.id, codexEntryIds);
         refresh();
@@ -1163,7 +1258,7 @@ export function ChroniclePanel() {
     };
   }, [tieMode, nodes, sceneLinks, events]);
 
-  const n = events.length;
+  const n = renderEvents.length;
 
   // ── ステータスバー（縦ライン位置＝ルーラー解像度依存 / 選択イベント開始終了＝設定解像度依存）──
   const rulerLevel = layout.ticks.level;
@@ -1322,6 +1417,7 @@ export function ChroniclePanel() {
               (c) => c.eventA === selected.id || c.eventB === selected.id,
             )}
             hasCausalIssue={selectedHasCausalIssue}
+            isScene={selectedIsScene}
             linkedSceneCount={selectedSceneIds.length}
             linkedSceneIds={selectedSceneIds}
             onLinkScene={handleLinkScene}

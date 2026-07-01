@@ -59,22 +59,30 @@ vi.mock("./ChronicleToolbar", () => ({ ChronicleToolbar: () => null }));
 vi.mock("./ChronicleInspector", () => ({
   ChronicleInspector: ({
     event,
+    isScene,
     onPatch,
+    onDelete,
     onLinkScene,
     onUnlinkScene,
   }: {
     event: EventRow;
+    isScene?: boolean;
     onPatch: (patch: Partial<EventRow>) => void;
+    onDelete: () => void;
     onLinkScene?: (sceneId: string) => void;
     onUnlinkScene?: (sceneId: string) => void;
   }) => (
     <div>
       <span data-testid="insp-title">{event.title}</span>
+      <span data-testid="insp-is-scene">{isScene ? "yes" : "no"}</span>
       <button
         data-testid="patch-btn"
         onClick={() => onPatch({ title: "新題" })}
       >
         patch
+      </button>
+      <button data-testid="delete-btn" onClick={() => onDelete()}>
+        delete
       </button>
       <button data-testid="link-btn" onClick={() => onLinkScene?.("s1")}>
         link
@@ -97,7 +105,7 @@ import { ChroniclePanel } from "./ChroniclePanel";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useChronicleStore } from "./chronicleStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 
 const NOW = "2026-06-27T00:00:00.000Z";
@@ -135,7 +143,15 @@ beforeEach(() => {
   useChronicleStore.setState({ selectedEventId: null });
   useCodexStore.setState({ entries: [] });
   useTimelineStore.setState({ selectedNodeIds: [] });
-  useTreeStore.setState({ nodes: [] });
+  // scene-event 書き戻し先のツリーストア action は DB を叩くので mock に差し替える。
+  useTreeStore.setState({
+    nodes: [],
+    updateNodeTitle: vi.fn().mockResolvedValue(undefined),
+    updateSynopsis: vi.fn().mockResolvedValue(undefined),
+    updatePovCharacter: vi.fn().mockResolvedValue(undefined),
+    updateLocation: vi.fn().mockResolvedValue(undefined),
+    updateChronicleDate: vi.fn().mockResolvedValue(undefined),
+  });
   apiMocks.listSceneEvents.mockResolvedValue([]);
   apiMocks.listEventRelations.mockResolvedValue([]);
   apiMocks.listEventParticipantsForProject.mockResolvedValue([]);
@@ -266,5 +282,98 @@ describe("ChroniclePanel scene link", () => {
     await waitFor(() => {
       expect(toastMocks.error).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+function makeScene(over: Partial<TreeNodeData> = {}): TreeNodeData {
+  return {
+    id: "sc1",
+    projectId: "p1",
+    parentId: null,
+    nodeType: "scene",
+    title: "旅立ち",
+    synopsis: null,
+    intent: null,
+    sortOrder: "a0",
+    status: "draft",
+    storyTimeOrder: null,
+    storyTimeLabel: null,
+    povCharacterId: null,
+    locationId: null,
+    chronicleStartTime: 100,
+    chronicleStartMinute: null,
+    chronicleStartGranularity: "day",
+    chronicleEndTime: null,
+    chronicleEndMinute: null,
+    chronicleEndGranularity: "none",
+    chroniclePrecision: "exact",
+    charCount: 0,
+    archivedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...over,
+  };
+}
+
+describe("ChroniclePanel scene-event union", () => {
+  it("作中日付を持つシーンは実イベント0でもトークンとして現れる", async () => {
+    apiMocks.listEvents.mockResolvedValue([]); // 実イベントなし
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    const vp = await screen.findByTestId("viewport");
+    expect(vp.getAttribute("data-n")).toBe("1"); // scene-event 1件
+  });
+
+  it("scene-event 選択で isScene モードになり、編集はツリーストアへ書き戻す（uiUpdateEvent は呼ばない）", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "scene:sc1" });
+    });
+    expect(screen.getByTestId("insp-is-scene").textContent).toBe("yes");
+
+    fireEvent.click(screen.getByTestId("patch-btn")); // onPatch({title:"新題"})
+    await waitFor(() => {
+      expect(useTreeStore.getState().updateNodeTitle).toHaveBeenCalledWith(
+        "sc1",
+        "新題",
+      );
+    });
+    expect(eventMocks.uiUpdateEvent).not.toHaveBeenCalled();
+  });
+
+  it("scene-event の削除は作中日付クリア（uiDeleteEvent は呼ばない）", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "scene:sc1" });
+    });
+
+    fireEvent.click(screen.getByTestId("delete-btn"));
+    await waitFor(() => {
+      expect(useTreeStore.getState().updateChronicleDate).toHaveBeenCalledWith(
+        "sc1",
+        expect.objectContaining({ chronicleStartTime: null }),
+      );
+    });
+    expect(eventMocks.uiDeleteEvent).not.toHaveBeenCalled();
+  });
+
+  it("通常イベント選択は isScene=no のまま", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+    expect(screen.getByTestId("insp-is-scene").textContent).toBe("no");
   });
 });
