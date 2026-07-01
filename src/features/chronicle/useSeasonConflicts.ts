@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadSceneContent } from "@/features/tree/api";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import {
@@ -60,11 +60,32 @@ export function mergeAgeCheckEvents<E extends { id: string }>(
   };
 }
 
-interface EventForCheck {
+export interface EventForCheck {
   id: string;
   startTime: number | null;
   primaryCodexId: string | null;
   kind: string;
+}
+
+/**
+ * 整合チェック入力の指紋。季節/年齢チェックが実際に読むフィールド
+ * （id / startTime / primaryCodexId / kind とリンク対）だけを畳むため、
+ * title 等のテキスト編集や配列 identity の変化（楽観 setEvents / nodes 更新に
+ * よる再導出）では変わらない。effect の依存をこれに絞ることで、per-keystroke に
+ * 本文 SELECT（loadSceneContent）＋再チェックが走るカスケードを防ぐ。
+ */
+export function checkInputsFingerprint(
+  events: EventForCheck[],
+  links: { sceneId: string; eventId: string }[],
+  ageExtraEvents?: EventForCheck[],
+): string {
+  const ev = (e: EventForCheck) =>
+    `${e.id}\u0000${e.startTime ?? ""}\u0000${e.primaryCodexId ?? ""}\u0000${e.kind}`;
+  return [
+    events.map(ev).join("\n"),
+    links.map((l) => `${l.sceneId}\u0000${l.eventId}`).join("\n"),
+    (ageExtraEvents ?? []).map(ev).join("\n"),
+  ].join("\u0001");
 }
 
 interface UseSeasonConflictsArgs {
@@ -95,6 +116,25 @@ export function useSeasonConflicts({
   const [ageConflicts, setAgeConflicts] = useState<AgeConflict[]>([]);
   const [calVersion, setCalVersion] = useState(0);
 
+  // 指紋が同じ間は同一参照をチェック effect へ渡す。楽観 setEvents や nodes 更新に
+  // よる「内容は同じで identity だけ変わる」再導出では effect を再走させない
+  // （per-keystroke の本文 SELECT＋再チェック対策）。
+  const fingerprint = useMemo(
+    () => checkInputsFingerprint(events, links, ageExtraEvents),
+    [events, links, ageExtraEvents],
+  );
+  const stableRef = useRef({
+    fingerprint,
+    inputs: { events, links, ageExtraEvents },
+  });
+  if (stableRef.current.fingerprint !== fingerprint) {
+    stableRef.current = {
+      fingerprint,
+      inputs: { events, links, ageExtraEvents },
+    };
+  }
+  const checkInputs = stableRef.current.inputs;
+
   useEffect(() => {
     if (!projectId) {
       setCalendar(null);
@@ -119,6 +159,7 @@ export function useSeasonConflicts({
   }, [projectId, calVersion]);
 
   useEffect(() => {
+    const { events, links, ageExtraEvents } = checkInputs;
     // 季節は seasonBoundaries が要るが、年齢は daysPerYear>0 だけで動く。
     if (!calendar || calendar.daysPerYear <= 0) {
       setConflicts([]);
@@ -188,7 +229,7 @@ export function useSeasonConflicts({
     return () => {
       cancelled = true;
     };
-  }, [calendar, events, links, ageExtraEvents]);
+  }, [calendar, checkInputs]);
 
   const saveCalendar = useCallback(
     async (cal: ChronicleCalendar) => {

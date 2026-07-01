@@ -65,12 +65,13 @@ import {
 } from "@/features/semantic-search/api";
 import { fuseCodexHybrid, type CodexHybridResult } from "./codexHybridSearch";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import {
-  listEvents as listChronicleEvents,
-  listSceneEventsForProject,
-} from "@/features/chronicle/api";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
-import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
+import {
+  getSharedEvents,
+  getSharedSceneEvents,
+  getSharedReadingOrder,
+  invalidateChronicleToolCache,
+} from "./chronicleToolCache";
 
 interface QueryResult<T = Record<string, unknown>> {
   rows: T[];
@@ -298,9 +299,9 @@ async function searchEvents(
   });
 
   // 現在シーン（activeSceneId）文脈で hidden な event id 集合を算出（spec §2.5）。
-  const allEvents = await listChronicleEvents(projectId);
-  const sceneEvents = await listSceneEventsForProject(projectId);
-  const readingOrder = computeGlobalSceneOrder(useTreeStore.getState().nodes);
+  const allEvents = await getSharedEvents(projectId);
+  const sceneEvents = await getSharedSceneEvents(projectId);
+  const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
   const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
   const hidden = new Set(
     allEvents
@@ -1254,6 +1255,9 @@ async function createCodexEntryTool(
       tokensUsed: 0,
       error: msg,
     };
+  } finally {
+    // DB 書込成功後に store 再ロード等で throw しても stale 化しないよう finally で破棄。
+    invalidateChronicleToolCache();
   }
 }
 
@@ -1298,6 +1302,8 @@ async function updateCodexEntryTool(
       tokensUsed: 0,
       error: msg,
     };
+  } finally {
+    invalidateChronicleToolCache();
   }
 }
 
@@ -1664,6 +1670,9 @@ async function applyAiTreePlanTool(
       tokensUsed: 0,
       error: msg,
     };
+  } finally {
+    // tree 変更は readingOrder / scene 可視性判定に効くため共有キャッシュを破棄。
+    invalidateChronicleToolCache();
   }
 }
 

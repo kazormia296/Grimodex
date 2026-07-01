@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, fireEvent } from "@testing-library/react";
 import type { EventRow } from "./api";
 
 // 重い子コンポーネントは軽量スタブへ（key の重複検出は親側で起きるので実装不要）。
@@ -26,7 +26,7 @@ vi.mock("@/components/ui/popover", () => ({
   ),
 }));
 
-import { ChronicleInspector } from "./ChronicleInspector";
+import { ChronicleInspector, DraftTextField } from "./ChronicleInspector";
 
 const NOW = "2026-06-27T00:00:00.000Z";
 
@@ -77,6 +77,106 @@ function renderInspector() {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe("DraftTextField — ローカル下書き＋trailing debounce commit", () => {
+  it("打鍵は即時に入力へ反映され、commit は debounce 後に最終値で 1 回だけ", () => {
+    vi.useFakeTimers();
+    const onCommit = vi.fn();
+    const { getByRole } = render(
+      <DraftTextField value="初期" onCommit={onCommit} />,
+    );
+    const input = getByRole("textbox") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "あ" } });
+    fireEvent.change(input, { target: { value: "あい" } });
+    fireEvent.change(input, { target: { value: "あいう" } });
+    // 打鍵中は即時反映・未 commit（per-keystroke DB 書込を出さない）。
+    expect(input.value).toBe("あいう");
+    expect(onCommit).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(500);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith("あいう");
+  });
+
+  it("blur で pending を即 flush する", () => {
+    vi.useFakeTimers();
+    const onCommit = vi.fn();
+    const { getByRole } = render(
+      <DraftTextField value="初期" onCommit={onCommit} />,
+    );
+    const input = getByRole("textbox") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "編集後" } });
+    fireEvent.blur(input);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith("編集後");
+    // debounce 満了後の二重 commit なし。
+    vi.advanceTimersByTime(1000);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("unmount（選択切替の remount）でも pending を flush して編集を失わない", () => {
+    vi.useFakeTimers();
+    const onCommit = vi.fn();
+    const { getByRole, unmount } = render(
+      <DraftTextField value="初期" onCommit={onCommit} />,
+    );
+    fireEvent.change(getByRole("textbox"), { target: { value: "途中" } });
+    unmount();
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith("途中");
+  });
+
+  it("flush はスケジュール時点の commit 関数を使う（選択切替後の誤書込防止）", () => {
+    vi.useFakeTimers();
+    const commitA = vi.fn();
+    const commitB = vi.fn();
+    const { getByRole, rerender } = render(
+      <DraftTextField value="初期" onCommit={commitA} />,
+    );
+    fireEvent.change(getByRole("textbox"), { target: { value: "Aの編集" } });
+    // 打鍵後に onCommit prop が差し替わっても、pending は旧 commit へ流れる。
+    rerender(<DraftTextField value="初期" onCommit={commitB} />);
+    vi.advanceTimersByTime(500);
+    expect(commitA).toHaveBeenCalledWith("Aの編集");
+    expect(commitB).not.toHaveBeenCalled();
+  });
+
+  it("pending なしのときは外部更新（undo 等）を下書きへ取り込む", () => {
+    const onCommit = vi.fn();
+    const { getByRole, rerender } = render(
+      <DraftTextField value="v1" onCommit={onCommit} />,
+    );
+    rerender(<DraftTextField value="v2" onCommit={onCommit} />);
+    expect((getByRole("textbox") as HTMLInputElement).value).toBe("v2");
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("打ち消し合って元の値へ戻った下書きは commit しない", () => {
+    vi.useFakeTimers();
+    const onCommit = vi.fn();
+    const { getByRole } = render(
+      <DraftTextField value="初期" onCommit={onCommit} />,
+    );
+    const input = getByRole("textbox") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "初期x" } });
+    fireEvent.change(input, { target: { value: "初期" } });
+    vi.advanceTimersByTime(500);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("multiline は textarea として描画され同じ debounce で commit する", () => {
+    vi.useFakeTimers();
+    const onCommit = vi.fn();
+    const { getByRole } = render(
+      <DraftTextField value="" onCommit={onCommit} multiline rows={3} />,
+    );
+    const area = getByRole("textbox") as HTMLTextAreaElement;
+    expect(area.tagName.toLowerCase()).toBe("textarea");
+    fireEvent.change(area, { target: { value: "あらすじ" } });
+    vi.advanceTimersByTime(500);
+    expect(onCommit).toHaveBeenCalledWith("あらすじ");
+  });
 });
 
 describe("ChronicleInspector — 子要素の React key", () => {

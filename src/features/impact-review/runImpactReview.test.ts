@@ -21,11 +21,18 @@ vi.mock("@/features/chat/store", () => ({
 vi.mock("@/lib/prosemirror", () => ({
   prosemirrorToText: () => "scene body text",
 }));
+const dbSelect = vi.fn(() => ({
+  from: () => ({
+    where: () =>
+      Promise.resolve([
+        { id: "s2", content: "{}" },
+        { id: "s1", content: "{}" },
+      ]),
+  }),
+}));
 vi.mock("@/db/client", () => ({
   db: {
-    select: () => ({
-      from: () => ({ where: () => Promise.resolve([{ content: "{}" }]) }),
-    }),
+    select: (...args: unknown[]) => dbSelect(...(args as [])),
   },
 }));
 
@@ -108,6 +115,27 @@ describe("runImpactReview", () => {
     ).toBe(true);
     // baseline only advances AFTER the run completes (onDone)
     expect(saveBaseline).not.toHaveBeenCalled();
+  });
+
+  it("fetches scene texts in a single batched query, preserving candidate order", async () => {
+    vi.mocked(getBaseline).mockResolvedValue({
+      ...snap,
+      details: [{ name: "年齢", value: "12" }],
+    });
+    vi.mocked(narrowCandidateScenes).mockResolvedValue([
+      { sceneId: "s1", score: 1, matchedBy: ["dense"] },
+      { sceneId: "s2", score: 0.5, matchedBy: ["sparse"] },
+    ]);
+    vi.mocked(runPostEffectMulti).mockResolvedValue({
+      runId: "r1",
+      cleanup: () => {},
+    });
+
+    await runImpactReview("e1");
+    expect(dbSelect).toHaveBeenCalledTimes(1); // per-candidate ではなく一括 SELECT
+    const [req] = vi.mocked(runPostEffectMulti).mock.calls[0];
+    // DB が s2, s1 の順で返しても candidates の順序を維持する
+    expect(req.scenes.map((s) => s.scene_id)).toEqual(["s1", "s2"]);
   });
 
   it("advances the baseline when the run completes (onDone wrapper)", async () => {

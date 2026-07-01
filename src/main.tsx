@@ -29,9 +29,13 @@ import "@fontsource/line-seed-jp/latin-700.css";
 // Inter + Noto Sans JP をブレンドした UI 向け書体。npm パッケージは Google Fonts 式の
 // unicode-range サブセット (./w/normal/<weight>/*.woff2) を per-weight CSS で提供し、Vite が
 // build 時にバンドルする。@font-face family は "Gen Interface JP"。Regular(400)/Medium(500)/Bold(700)。
-import "gen-interface-jp/400.css";
-import "gen-interface-jp/500.css";
-import "gen-interface-jp/700.css";
+// unicode-range @font-face CSS が 3 weight 合計 ~300KB あり main CSS の同期パースを
+// 太らせるため、動的 import で別チャンクへ分離する。発火は起動直後（設定の非同期ロード
+// → --ui-font 適用より先に登録が済む）なので、選択中ユーザーでも FOUT にならない。
+// woff2 自体は従来どおりブラウザが実使用時にのみフェッチする。
+void import("gen-interface-jp/400.css");
+void import("gen-interface-jp/500.css");
+void import("gen-interface-jp/700.css");
 // 同梱フォント: Literata (OFL-1.1)。英語プロジェクトの本文デフォルト書体
 // (Google Play Books の長文読書向け serif)。latin のみ (和文サブセット不要)。
 // italic は必須: 英語小説の強調・内的独白表現で faux italic を避ける。

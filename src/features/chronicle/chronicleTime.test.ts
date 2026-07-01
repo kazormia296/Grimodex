@@ -181,6 +181,37 @@ describe("seasonOf", () => {
     expect(seasonOf(59, cal)).toBe("A");
     expect(seasonOf(60, cal)).toBe("B");
   });
+  it("未ソート境界でも正しく、同一配列の反復呼び出し（ソートキャッシュ）でも結果が安定", () => {
+    // 逆順の境界配列。identity キャッシュ導入後も入力は破壊されない。
+    const boundaries = [
+      { name: "冬", startDayOfYear: 270 },
+      { name: "春", startDayOfYear: 0 },
+      { name: "秋", startDayOfYear: 180 },
+      { name: "夏", startDayOfYear: 90 },
+    ];
+    const cal: ChronicleCalendar = {
+      daysPerYear: 360,
+      seasonBoundaries: boundaries,
+    };
+    for (let i = 0; i < 3; i++) {
+      expect(seasonOf(0, cal)).toBe("春");
+      expect(seasonOf(100, cal)).toBe("夏");
+      expect(seasonOf(200, cal)).toBe("秋");
+      expect(seasonOf(300, cal)).toBe("冬");
+    }
+    // 入力配列は非破壊（元の順序のまま）。
+    expect(boundaries.map((b) => b.name)).toEqual(["冬", "春", "秋", "夏"]);
+    // 別 identity の配列（内容違い）はキャッシュを共有しない。
+    const cal2: ChronicleCalendar = {
+      daysPerYear: 360,
+      seasonBoundaries: [
+        { name: "乾季", startDayOfYear: 0 },
+        { name: "雨季", startDayOfYear: 180 },
+      ],
+    };
+    expect(seasonOf(100, cal2)).toBe("乾季");
+    expect(seasonOf(200, cal2)).toBe("雨季");
+  });
   it("境界が空 or daysPerYear<=0 なら null", () => {
     expect(seasonOf(10, { daysPerYear: 360, seasonBoundaries: [] })).toBeNull();
     expect(

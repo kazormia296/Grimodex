@@ -432,6 +432,22 @@ export const DEFAULT_SEASON_BOUNDARIES: SeasonBoundary[] = [
   { name: "冬", startDayOfYear: 270 },
 ];
 
+// seasonOf は矛盾チェックでイベント毎に呼ばれるため、境界の昇順ソートを
+// 配列 identity でキャッシュする（境界配列は JSON parse / 新規リテラル由来で
+// immutable 扱い。呼び出しごとの再ソートを避ける）。
+const sortedBoundariesCache = new WeakMap<SeasonBoundary[], SeasonBoundary[]>();
+function sortedSeasonBoundaries(
+  boundaries: SeasonBoundary[],
+): SeasonBoundary[] {
+  const cached = sortedBoundariesCache.get(boundaries);
+  if (cached) return cached;
+  const sorted = [...boundaries].sort(
+    (a, b) => a.startDayOfYear - b.startDayOfYear,
+  );
+  sortedBoundariesCache.set(boundaries, sorted);
+  return sorted;
+}
+
 /**
  * 数値時刻（紀元からの日数）→ その日の作中季節名。
  * 境界は startDayOfYear 昇順に並べた循環区間。最初の境界より前の通日は
@@ -447,9 +463,7 @@ export function seasonOf(
     return null;
   }
   const dayOfYear = dayNumberToDate(time, calendar).dayOfYear;
-  const sorted = [...seasonBoundaries].sort(
-    (a, b) => a.startDayOfYear - b.startDayOfYear,
-  );
+  const sorted = sortedSeasonBoundaries(seasonBoundaries);
   let current = sorted[sorted.length - 1]; // 巻き戻し既定値（年末→年初の循環）
   for (const b of sorted) {
     if (dayOfYear >= b.startDayOfYear) current = b;

@@ -11,6 +11,7 @@ import type {
   Citation,
 } from "./agentTypes";
 import { ensureTokenizer, countTokens } from "../contextBuilder";
+import { beginAgentToolTurn } from "./toolTurnCache";
 
 /**
  * データ取得ツール呼び出しの既定上限。呼び出し元が maxToolCalls を渡さない
@@ -259,7 +260,9 @@ export async function runAgentLoop(
       ...(thinkingBlocks.length > 0 ? { thinkingBlocks } : {}),
     });
 
-    // Execute each tool
+    // Execute each tool. ターン内共有キャッシュ（toolTurnCache）はバッチ開始時に
+    // 破棄し、同一バッチのツール間でのみデータロードを共有する（stale 防止）。
+    beginAgentToolTurn();
     const toolResults: ToolResult[] = [];
     for (const tu of toolUses) {
       // ask_user はデータ取得予算 (maxToolCalls) を消費せず別枠でカウント。

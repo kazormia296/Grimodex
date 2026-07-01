@@ -4,7 +4,7 @@ import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { createEvent, deleteEvent, linkSceneToEvent, listEvents } from "./api";
+import { createEvent, deleteEvent, linkScenesToEvent, listEvents } from "./api";
 
 export interface ExtractEventsRequest {
   scenes: Array<{
@@ -181,9 +181,8 @@ export async function importExtractedEvents(
         note: p.note ?? null,
       });
       createdIds.push(ev.id);
-      for (const sid of p.evidenceSceneIds) {
-        await linkSceneToEvent(projectId, sid, ev.id);
-      }
+      // 根拠シーンは一括リンク（per-scene の検証 SELECT ×2 を畳む）。
+      await linkScenesToEvent(projectId, p.evidenceSceneIds, ev.id);
       count++;
     }
     return count;

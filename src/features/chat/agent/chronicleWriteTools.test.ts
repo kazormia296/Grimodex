@@ -28,6 +28,10 @@ const apiMock = vi.hoisted(() => ({
   listSceneEventsForProject: vi.fn(async () => []),
 }));
 vi.mock("@/features/chronicle/api", () => apiMock);
+// 共有キャッシュ(chronicleToolCache)が codex 名 loader を持つため軽量 mock。
+vi.mock("@/features/codex/api", () => ({
+  listCodexEntries: vi.fn(async () => []),
+}));
 
 import {
   createEventTool,
@@ -39,9 +43,14 @@ import {
   addEventRelationTool,
   removeEventRelationTool,
 } from "./chronicleWriteTools";
+import { invalidateChronicleToolCache } from "./chronicleToolCache";
 
 beforeEach(() => {
   for (const fn of Object.values(m)) fn.mockClear();
+  apiMock.listEvents.mockClear();
+  apiMock.listSceneEventsForProject.mockClear();
+  // ターン内共有キャッシュをテスト間で持ち越さない（runAgentLoop の毎ターン破棄相当）。
+  invalidateChronicleToolCache();
 });
 
 describe("createEventTool", () => {
@@ -134,6 +143,21 @@ describe("participants / relations", () => {
   });
 });
 
+describe("ターン内共有キャッシュ", () => {
+  it("relation add は cause/effect 2 回の可視性チェックで listEvents を 1 回に畳む", async () => {
+    await addEventRelationTool({ causeEventId: "a", effectEventId: "b" });
+    expect(m.agentAddEventRelation).toHaveBeenCalledWith("a", "b");
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("write 後はキャッシュを破棄し、次のチェックで再ロードする", async () => {
+    await updateEventTool({ eventId: "e1", title: "x" });
+    await updateEventTool({ eventId: "e1", title: "y" });
+    expect(m.agentUpdateEvent).toHaveBeenCalledTimes(2);
+    expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("AI 秘匿 write-by-id ゲート", () => {
   it("hidden な secret event への update/delete は呼ばず generic not found", async () => {
     apiMock.listEvents.mockResolvedValueOnce([
@@ -143,6 +167,8 @@ describe("AI 秘匿 write-by-id ゲート", () => {
     expect(r.error).toBe("Event not found");
     expect(m.agentUpdateEvent).not.toHaveBeenCalled();
 
+    // 次ターン相当としてキャッシュを破棄し、2 個目の mockResolvedValueOnce を使わせる。
+    invalidateChronicleToolCache();
     apiMock.listEvents.mockResolvedValueOnce([
       { id: "sec", secret: true, revealSceneId: null },
     ]);

@@ -105,7 +105,12 @@ function eventsById() {
   return m;
 }
 
-function renderViewport(over: { onSelectEvent?: (id: string) => void } = {}) {
+function renderViewport(
+  over: {
+    onSelectEvent?: (id: string) => void;
+    relations?: { causeId: string; effectId: string }[];
+  } = {},
+) {
   return render(
     <ChronicleViewport
       view={view}
@@ -120,6 +125,7 @@ function renderViewport(over: { onSelectEvent?: (id: string) => void } = {}) {
       showEdges
       labelsOn
       onSelectEvent={over.onSelectEvent ?? (() => {})}
+      relations={over.relations}
     />,
   );
 }
@@ -170,5 +176,19 @@ describe("ChronicleViewport", () => {
       toggle: true,
       range: false,
     });
+  });
+
+  it("因果ホバーで連結チェーン外のマーカーが dim され、離すと戻る", () => {
+    const { container } = renderViewport({
+      relations: [{ causeId: "e1", effectId: "e2" }],
+    });
+    const e1 = container.querySelector('[data-event-id="e1"]') as HTMLElement;
+    const e3 = container.querySelector('[data-event-id="e3"]') as HTMLElement;
+    fireEvent.mouseOver(e1);
+    // e1→e2 のチェーン外にある e3 は淡色化。チェーン内の e1 はそのまま。
+    expect(e3.style.opacity).toBe("0.28");
+    expect(e1.style.opacity).not.toBe("0.28");
+    fireEvent.mouseOut(e1);
+    expect(e3.style.opacity).not.toBe("0.28");
   });
 });

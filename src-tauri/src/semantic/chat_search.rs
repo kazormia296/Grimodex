@@ -58,24 +58,48 @@ struct CacheEntry {
     embedding_dim: usize,
     chunker_version: String,
     chunk: Arc<ChatCachedChunk>,
+    /// LRU 用。最後にアクセスした時点の tick。
+    last_used: u64,
 }
 
-/// message_id → キャッシュエントリ。`Mutex` は std (spawn_blocking 内で使う)。
+/// キャッシュ保持数の上限。1 エントリ ≒ 埋め込み f32×256-384 (~1-1.5KB) + メタ
+/// なので 2048 件でも数 MB に収まる。超過時は最終アクセスが最も古いものを 1 件
+/// evict する (codexCrossMentions の LRU 上限 64 と同じ方針の Rust 簡易版)。
+const CACHE_CAPACITY: usize = 2048;
+
+struct CacheInner {
+    map: HashMap<String, CacheEntry>,
+    /// 単調アクセスカウンタ。get/put のたびに進める。
+    tick: u64,
+}
+
+/// message_id → キャッシュエントリ (容量上限つき LRU)。`Mutex` は std
+/// (spawn_blocking 内で使う)。
 pub struct ChatSearchCache {
-    inner: Mutex<HashMap<String, CacheEntry>>,
+    inner: Mutex<CacheInner>,
+    capacity: usize,
 }
 
 impl Default for ChatSearchCache {
     fn default() -> Self {
-        Self {
-            inner: Mutex::new(HashMap::new()),
-        }
+        Self::with_capacity(CACHE_CAPACITY)
     }
 }
 
 impl ChatSearchCache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// テストで上限を差し替えるためのコンストラクタ。
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(CacheInner {
+                map: HashMap::new(),
+                tick: 0,
+            }),
+            capacity,
+        }
     }
 
     pub fn get(
@@ -89,16 +113,19 @@ impl ChatSearchCache {
             .inner
             .lock()
             .map_err(|e| anyhow!("chat search cache lock poisoned: {e}"))?;
-        let Some(entry) = guard.get(message_id) else {
+        guard.tick += 1;
+        let tick = guard.tick;
+        let Some(entry) = guard.map.get_mut(message_id) else {
             return Ok(None);
         };
         if entry.model_id == model_id
             && entry.embedding_dim == embedding_dim
             && entry.chunker_version == chunker_version
         {
+            entry.last_used = tick;
             return Ok(Some(entry.chunk.clone()));
         }
-        guard.remove(message_id);
+        guard.map.remove(message_id);
         Ok(None)
     }
 
@@ -114,15 +141,28 @@ impl ChatSearchCache {
             .inner
             .lock()
             .map_err(|e| anyhow!("chat search cache lock poisoned: {e}"))?;
-        guard.insert(
+        guard.tick += 1;
+        let last_used = guard.tick;
+        guard.map.insert(
             message_id,
             CacheEntry {
                 model_id,
                 embedding_dim,
                 chunker_version,
                 chunk,
+                last_used,
             },
         );
+        if guard.map.len() > self.capacity {
+            if let Some(oldest) = guard
+                .map
+                .iter()
+                .min_by_key(|(_, e)| e.last_used)
+                .map(|(k, _)| k.clone())
+            {
+                guard.map.remove(&oldest);
+            }
+        }
         Ok(())
     }
 
@@ -132,7 +172,7 @@ impl ChatSearchCache {
             .inner
             .lock()
             .map_err(|e| anyhow!("chat search cache lock poisoned: {e}"))?;
-        guard.remove(message_id);
+        guard.map.remove(message_id);
         Ok(())
     }
 
@@ -142,12 +182,12 @@ impl ChatSearchCache {
             .inner
             .lock()
             .map_err(|e| anyhow!("chat search cache lock poisoned: {e}"))?;
-        guard.clear();
+        guard.map.clear();
         Ok(())
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().map(|g| g.len()).unwrap_or(0)
+        self.inner.lock().map(|g| g.map.len()).unwrap_or(0)
     }
 }
 
@@ -535,6 +575,40 @@ mod tests {
             run_chat_search(&db, &cache, &unit_vec(dim, 3), "p1", 10, MODEL_ID, dim, VER).unwrap();
         assert_eq!(hits.len(), 1, "only p1 messages");
         assert_eq!(hits[0].message_id, "m1");
+    }
+
+    #[test]
+    fn cache_evicts_least_recently_used_over_capacity() {
+        let cache = ChatSearchCache::with_capacity(2);
+        let chunk = |id: &str| {
+            Arc::new(ChatCachedChunk {
+                message_id: id.into(),
+                session_id: "s1".into(),
+                role: "user".into(),
+                text: "t".into(),
+                inserted_to_editor: false,
+                extracted_count: 0,
+                embedding: vec![1.0, 0.0],
+            })
+        };
+        cache
+            .put("a".into(), "m".into(), 2, "v".into(), chunk("a"))
+            .unwrap();
+        cache
+            .put("b".into(), "m".into(), 2, "v".into(), chunk("b"))
+            .unwrap();
+        // a に触れて recency を上げる → 溢れたときは b が evict される。
+        assert!(cache.get("a", "m", 2, "v").unwrap().is_some());
+        cache
+            .put("c".into(), "m".into(), 2, "v".into(), chunk("c"))
+            .unwrap();
+        assert_eq!(cache.len(), 2);
+        assert!(
+            cache.get("b", "m", 2, "v").unwrap().is_none(),
+            "LRU evicted"
+        );
+        assert!(cache.get("a", "m", 2, "v").unwrap().is_some());
+        assert!(cache.get("c", "m", 2, "v").unwrap().is_some());
     }
 
     #[test]

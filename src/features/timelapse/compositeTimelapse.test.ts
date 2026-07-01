@@ -109,6 +109,8 @@ describe("pickRenderTarget", () => {
 describe("buildCompositeTimelapsePlan", () => {
   beforeEach(() => {
     load.mockReset();
+    loadSnap.mockReset();
+    loadSnap.mockResolvedValue(null);
   });
 
   it("throws when project has no events", async () => {
@@ -140,6 +142,49 @@ describe("buildCompositeTimelapsePlan", () => {
     expect(loadSnap).toHaveBeenCalledWith(
       expect.objectContaining({ domain: "codex", entityId: "c1" }),
     );
+  });
+
+  it("loads entity baselines in parallel (not one roundtrip at a time)", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    loadSnap.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 0));
+      inFlight -= 1;
+      return null;
+    });
+    load.mockResolvedValue([
+      ev({
+        sequence: 1,
+        domain: "editor",
+        opType: "doc.step",
+        sceneId: "sceneA",
+        payload: '{"steps":[]}',
+      }),
+      ev({
+        sequence: 2,
+        domain: "codex",
+        opType: "doc.step",
+        entityId: "c1",
+        payload: '{"steps":[]}',
+      }),
+      ev({
+        sequence: 3,
+        domain: "snippet",
+        opType: "doc.step",
+        entityId: "sn1",
+        payload: '{"steps":[]}',
+      }),
+    ]);
+    const plan = await buildCompositeTimelapsePlan({
+      projectId: "p",
+      fps: 4,
+      targetDurationSec: 1,
+    });
+    expect(plan.cursors.size).toBe(3);
+    expect(loadSnap).toHaveBeenCalledTimes(3);
+    expect(maxInFlight).toBeGreaterThan(1);
   });
 
   it("includes chrome captions in frameCaptions for chat events", async () => {

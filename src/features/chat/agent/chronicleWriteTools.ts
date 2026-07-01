@@ -13,12 +13,13 @@ import {
 import { EVENT_KINDS, EVENT_GRANULARITIES } from "@/db/schema";
 import type { EventKind, EventGranularity } from "@/db/schema";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
-import {
-  listEvents as listChronicleEvents,
-  listSceneEventsForProject,
-} from "@/features/chronicle/api";
 import { isEventHiddenFromAi } from "@/features/chronicle/chronicleSecrecy";
+import {
+  getSharedEvents,
+  getSharedSceneEvents,
+  getSharedReadingOrder,
+  invalidateChronicleToolCache,
+} from "./chronicleToolCache";
 import type { ToolResult } from "./agentTypes";
 
 type ToolReturn = Omit<ToolResult, "toolCallId">;
@@ -52,15 +53,14 @@ function optNum(v: unknown): number | null {
 async function isEventVisibleForWrite(eventId: string): Promise<boolean> {
   const projectId = useTreeStore.getState().projectId;
   if (!projectId) return false;
-  const events = await listChronicleEvents(projectId);
+  const events = await getSharedEvents(projectId);
   const ev = events.find((e) => e.id === eventId);
   if (!ev) return false;
   if (!ev.secret) return true;
-  const readingOrder = computeGlobalSceneOrder(useTreeStore.getState().nodes);
+  const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
   const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
-  const sceneEvents = await listSceneEventsForProject(projectId, {
-    eventIds: [eventId],
-  });
+  // 全件共有キャッシュを使う（判定側が eventId で絞るため結果は filter 版と同一）。
+  const sceneEvents = await getSharedSceneEvents(projectId);
   return !isEventHiddenFromAi(ev, currentSceneId, {
     readingOrder,
     sceneEvents,
@@ -121,6 +121,9 @@ export async function createEventTool(
     );
   } catch (e) {
     return fail("create_event", e instanceof Error ? e.message : String(e));
+  } finally {
+    // write 後はターン内共有キャッシュを必ず破棄（stale 読み防止）。
+    invalidateChronicleToolCache();
   }
 }
 
@@ -177,6 +180,8 @@ export async function updateEventTool(
     return ok("update_event", { id: eventId }, `Updated event ${eventId}`);
   } catch (e) {
     return fail("update_event", e instanceof Error ? e.message : String(e));
+  } finally {
+    invalidateChronicleToolCache();
   }
 }
 
@@ -193,6 +198,8 @@ export async function deleteEventTool(
     return ok("delete_event", { id: eventId }, `Deleted event ${eventId}`);
   } catch (e) {
     return fail("delete_event", e instanceof Error ? e.message : String(e));
+  } finally {
+    invalidateChronicleToolCache();
   }
 }
 
@@ -218,6 +225,8 @@ export async function stampSceneEventTool(
       "stamp_scene_event",
       e instanceof Error ? e.message : String(e),
     );
+  } finally {
+    invalidateChronicleToolCache();
   }
 }
 
@@ -243,6 +252,8 @@ export async function unstampSceneEventTool(
       "unstamp_scene_event",
       e instanceof Error ? e.message : String(e),
     );
+  } finally {
+    invalidateChronicleToolCache();
   }
 }
 
@@ -267,6 +278,8 @@ export async function setEventParticipantsTool(
       "set_event_participants",
       e instanceof Error ? e.message : String(e),
     );
+  } finally {
+    invalidateChronicleToolCache();
   }
 }
 
@@ -298,6 +311,8 @@ export async function addEventRelationTool(
       "add_event_relation",
       e instanceof Error ? e.message : String(e),
     );
+  } finally {
+    invalidateChronicleToolCache();
   }
 }
 
@@ -329,5 +344,7 @@ export async function removeEventRelationTool(
       "remove_event_relation",
       e instanceof Error ? e.message : String(e),
     );
+  } finally {
+    invalidateChronicleToolCache();
   }
 }

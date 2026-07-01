@@ -31,12 +31,15 @@ vi.mock("@/features/codex/api", () => ({
   listCodexEntries: vi.fn(async () => codexEntries),
 }));
 
+import * as chronicleApi from "@/features/chronicle/api";
+import { listCodexEntries } from "@/features/codex/api";
 import {
   listEventsTool,
   getEventDetailTool,
   getCharacterTimelineTool,
   getChronicleStateTool,
 } from "./chronicleReadTools";
+import { invalidateChronicleToolCache } from "./chronicleToolCache";
 
 function ev(p: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -65,6 +68,11 @@ beforeEach(() => {
   relations.length = 0;
   calendarRow = null;
   codexEntries.length = 0;
+  // ターン内共有キャッシュをテスト間で持ち越さない（runAgentLoop の毎ターン破棄相当）。
+  invalidateChronicleToolCache();
+  vi.mocked(chronicleApi.listEvents).mockClear();
+  vi.mocked(chronicleApi.listSceneEventsForProject).mockClear();
+  vi.mocked(listCodexEntries).mockClear();
 });
 
 describe("listEventsTool", () => {
@@ -191,6 +199,24 @@ describe("getCharacterTimelineTool", () => {
   it("codexId 無しは引数エラー", async () => {
     const r = await getCharacterTimelineTool({});
     expect(r.summary).toContain("codexId");
+  });
+});
+
+describe("ターン内共有キャッシュ", () => {
+  it("同一ターンの複数 read ツールで listEvents / codex 名をロードし直さない", async () => {
+    events.push(ev({ id: "e1", title: "戴冠" }));
+    sceneEvents.push({ sceneId: "s1", eventId: "e1" });
+    codexEntries.push({ id: "c1", name: "アリス" });
+
+    await listEventsTool({});
+    await getEventDetailTool({ eventId: "e1" });
+    await getChronicleStateTool({});
+
+    expect(vi.mocked(chronicleApi.listEvents)).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(chronicleApi.listSceneEventsForProject),
+    ).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(listCodexEntries)).toHaveBeenCalledTimes(1);
   });
 });
 
