@@ -312,6 +312,10 @@ const AXES = [
     desc: "年表事実（ゴラン死亡・アリスの状況）と矛盾しない（2=矛盾なし/0=明確な矛盾）",
   },
   { key: "fluency", desc: "日本語の自然さ・場面としての流れ（2=自然/0=破綻）" },
+  {
+    key: "time_distance",
+    desc: "注入された経過時間の感覚と整合するか（直近の道中は数十日内のごく最近、アリスの誕生は約20年前で現在20歳）（2=整合/0=時間感覚が矛盾）",
+  },
 ] as const;
 
 const GROUND_TRUTH = [
@@ -319,6 +323,7 @@ const GROUND_TRUTH = [
   "そこで崩御している。アリスがこれから訪ねても、ゴラン本人の助力は得られない。",
   "アリスは辺境の村出身の若者で、いま王都へ向かおうとしている。",
   "シーン本文はアリスが『ゴランの助けを借りに行く』意図を述べるが、ゴランの死には触れていない。",
+  "相対時間: 直近の道中イベントはいずれもアンカーから数十日以内のごく最近。アリスの誕生は約20年前（現在20歳）。",
 ].join("\n");
 
 // ───────── 決定的サニティ（key 不要・常時実行・fixture を検証） ─────────
@@ -333,6 +338,10 @@ function assertFixtureSanity(): void {
   // 3. inject は空ではなく一般的な年表価値を持つ（時刻 + アリスの状況）。
   expect(BLOCKS.inject).toContain("アリス");
   expect(BLOCKS.inject.length).toBeGreaterThan(0);
+  // 3b. 相対時間ラベル（時間距離）が注入される: アンカー自身=同日、直近の道中
+  //     フィラー（アンカーから数十日前）=「N日前」。暦あり・月未定義なので日表記。
+  expect(BLOCKS.inject).toContain("同日");
+  expect(BLOCKS.inject).toContain("日前");
   // 4. pickSnapshotCharacters セマンティクス: mention のみゴランを seed する。
   const anchor = resolveSceneAnchor(SCENE_CURRENT, {
     sceneEvents: SCENE_EVENTS,
