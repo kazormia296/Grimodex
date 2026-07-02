@@ -3,6 +3,10 @@ import type { ComponentProps } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { ChronicleViewport } from "./ChronicleViewport";
+import {
+  getAnnouncerState,
+  __resetAnnouncerForTest,
+} from "@/lib/a11y/announcer";
 
 type VP = ComponentProps<typeof ChronicleViewport>;
 import {
@@ -634,6 +638,209 @@ describe("ChronicleViewport interactions (happy-dom math)", () => {
     expect(onNudgeSelected).not.toHaveBeenCalled();
     fireEvent.keyDown(tr, { key: "Delete" });
     expect(onDeleteSelected).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChronicleViewport — キーボード代替（a11y: ズーム/パン/期間端/announce）", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    __resetAnnouncerForTest();
+  });
+
+  it("+/- でズーム（選択不要・wheel ズームのキーボード代替）", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.keyDown(tr, { key: "+" });
+    expect(props.onViewChange).toHaveBeenCalledTimes(1);
+    const zin = props.onViewChange.mock.calls[0][0] as { pxPerDay: number };
+    expect(zin.pxPerDay).toBeCloseTo(2 * 1.2);
+    fireEvent.keyDown(tr, { key: "-" });
+    const zout = props.onViewChange.mock.calls[1][0] as { pxPerDay: number };
+    expect(zout.pxPerDay).toBeCloseTo(2 / 1.2);
+    // Shift 併用（多くの配列で "+" は Shift が要る）でも効く。
+    fireEvent.keyDown(tr, { key: "+", shiftKey: true });
+    expect(props.onViewChange).toHaveBeenCalledTimes(3);
+  });
+
+  it("Ctrl+←/→ で横パン（Shift+wheel のキーボード代替・pxPerDay 維持）", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.keyDown(tr, { key: "ArrowRight", ctrlKey: true });
+    const right = props.onViewChange.mock.calls[0][0] as {
+      pxPerDay: number;
+      viewStartDay: number;
+    };
+    expect(right.pxPerDay).toBe(2);
+    expect(right.viewStartDay).toBeGreaterThan(0); // 右=後の日へ
+    fireEvent.keyDown(tr, { key: "ArrowLeft", ctrlKey: true });
+    const left = props.onViewChange.mock.calls[1][0] as {
+      viewStartDay: number;
+    };
+    expect(left.viewStartDay).toBeLessThan(0);
+    // 選択が無くても効く（選択ナビは発火しない）。
+    expect(props.onSelectEvent).not.toHaveBeenCalled();
+  });
+
+  it("Home/End でデータ両端へジャンプ", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.keyDown(tr, { key: "Home" });
+    fireEvent.keyDown(tr, { key: "End" });
+    expect(props.onViewChange).toHaveBeenCalledTimes(2);
+    const home = props.onViewChange.mock.calls[0][0] as {
+      pxPerDay: number;
+      viewStartDay: number;
+    };
+    const end = props.onViewChange.mock.calls[1][0] as {
+      pxPerDay: number;
+      viewStartDay: number;
+    };
+    expect(home.pxPerDay).toBe(2);
+    expect(end.pxPerDay).toBe(2);
+    expect(end.viewStartDay).toBeGreaterThan(home.viewStartDay);
+  });
+
+  it("Shift+←/→ で終了端・Ctrl+Shift+←/→ で開始端を伸縮（onResizeSelectedBy）", () => {
+    const onResizeSelectedBy = vi.fn();
+    const props = makeProps({
+      selectedEventId: "e2",
+      selectedIds: new Set(["e2"]),
+      onResizeSelectedBy,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.keyDown(tr, { key: "ArrowRight", shiftKey: true });
+    expect(onResizeSelectedBy).toHaveBeenCalledTimes(1);
+    expect(onResizeSelectedBy.mock.calls[0][0]).toBe("end");
+    expect(onResizeSelectedBy.mock.calls[0][1]).toBeGreaterThan(0);
+    fireEvent.keyDown(tr, { key: "ArrowLeft", shiftKey: true, ctrlKey: true });
+    expect(onResizeSelectedBy).toHaveBeenCalledTimes(2);
+    expect(onResizeSelectedBy.mock.calls[1][0]).toBe("start");
+    expect(onResizeSelectedBy.mock.calls[1][1]).toBeLessThan(0);
+    // 伸縮は選択ナビ/パンを発火しない。
+    expect(props.onSelectEvent).not.toHaveBeenCalled();
+    expect(props.onViewChange).not.toHaveBeenCalled();
+  });
+
+  it("ロック中は Shift+矢印の期間端伸縮をしない", () => {
+    const onResizeSelectedBy = vi.fn();
+    const props = makeProps({
+      locked: true,
+      selectedEventId: "e2",
+      selectedIds: new Set(["e2"]),
+      onResizeSelectedBy,
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    fireEvent.keyDown(track(container), {
+      key: "ArrowRight",
+      shiftKey: true,
+    });
+    expect(onResizeSelectedBy).not.toHaveBeenCalled();
+  });
+
+  it("矢印ナビで選択先のイベント名を announce する", () => {
+    const props = makeProps({
+      selectedEventId: "e1",
+      selectedIds: new Set(["e1"]),
+    });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    fireEvent.keyDown(track(container), { key: "ArrowRight" });
+    expect(props.onSelectEvent).toHaveBeenCalledWith("e2");
+    expect(getAnnouncerState().polite).toContain("期間"); // e2 のタイトル
+  });
+
+  it("キーボードナビ後は因果チェーン外のマーカーを dim する（選択のみでは dim しない）", () => {
+    const ev3: LayoutEventInput[] = [
+      ...events,
+      {
+        id: "e3",
+        title: "無関係",
+        primaryCodexId: "c1",
+        kind: "generic",
+        precision: "exact",
+        secret: false,
+        sceneLinked: true,
+        startDay: 220,
+        endDay: null,
+      },
+    ];
+    const lanes3: LayoutLane[] = [
+      { ...lanes[0], eventIds: ["e1", "e2", "e3"] },
+    ];
+    const relations = [{ causeId: "e1", effectId: "e2" }];
+    const view = { pxPerDay: 2, viewStartDay: 0 };
+    const layout = buildChronicleLayout({
+      events: ev3,
+      lanes: lanes3,
+      view,
+      trackW: 800,
+      density: "standard",
+      labelsOn: true,
+      calendar: cal,
+      hasCalendarAxis: true,
+      dataStart: 50,
+      dataEnd: 220,
+      relations,
+      causalConflictPairs: new Set(),
+      lang: "ja",
+    });
+    const eventsById = new Map<string, MarkerEvent>(
+      ev3.map((e) => [
+        e.id,
+        {
+          id: e.id,
+          title: e.title,
+          kind: e.kind,
+          precision: e.precision,
+          secret: e.secret,
+          sceneLinked: e.sceneLinked,
+          primaryCodexId: e.primaryCodexId,
+        },
+      ]),
+    );
+    const props = makeProps({
+      layout,
+      eventsById,
+      relations,
+      selectedEventId: "e1",
+      selectedIds: new Set(["e1"]),
+    });
+    const { container, rerender } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const opacityOf = (id: string) =>
+      (container.querySelector(`[data-event-id="${id}"]`) as HTMLElement).style
+        .opacity;
+    // 選択（prop）だけでは dim しない。
+    expect(opacityOf("e3")).not.toBe("0.28");
+    // 矢印ナビ e1→e2 → 親が selectedEventId を更新した状態を反映。
+    fireEvent.keyDown(track(container), { key: "ArrowRight" });
+    expect(props.onSelectEvent).toHaveBeenCalledWith("e2");
+    rerender(
+      <ChronicleViewport
+        {...(props as unknown as VP)}
+        selectedEventId="e2"
+        selectedIds={new Set(["e2"])}
+      />,
+    );
+    // e3 はチェーン外なので dim、e2（チェーン内）は dim しない。
+    expect(opacityOf("e3")).toBe("0.28");
+    expect(opacityOf("e2")).not.toBe("0.28");
   });
 });
 

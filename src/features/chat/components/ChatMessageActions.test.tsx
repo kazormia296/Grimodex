@@ -77,6 +77,21 @@ describe("ChatMessageActions - view prompt", () => {
     expect(document.body.contains(menu)).toBe(true);
   });
 
+  it("⋮ ボタンが accessible name (aria-label) と aria-expanded を持つ", () => {
+    render(
+      <ChatMessageActions
+        messageId="msg-6"
+        messageRole="user"
+        onViewPrompt={() => {}}
+      />,
+    );
+    const trigger = screen.getByTestId("message-actions-msg-6");
+    expect(trigger.getAttribute("aria-label")).toBe("chat.actions.moreOptions");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("onViewPrompt のみでもドロップダウンを表示する", () => {
     const onViewPrompt = vi.fn();
     render(

@@ -76,6 +76,21 @@ export function CorrelationDialog({
   const canRun =
     loaded && characters.length > 0 && selected.size > 0 && !running;
 
+  // Escape でキーボードからも閉じられるようにする (WCAG 2.1.1)。
+  // 背景クリック同様、生成実行中は閉じない。
+  useEffect(() => {
+    if (running) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
+  }, [running, onClose]);
+
   const run = async () => {
     if (!canRun) return;
     setProgress({ phase: "cross-reference" });
@@ -102,6 +117,7 @@ export function CorrelationDialog({
 
   return createPortal(
     <div
+      role="presentation"
       style={{
         position: "fixed",
         inset: 0,
@@ -111,12 +127,20 @@ export function CorrelationDialog({
         alignItems: "center",
         justifyContent: "center",
       }}
-      onClick={running ? undefined : onClose}
+      onClick={
+        running
+          ? undefined
+          : (e) => {
+              if (e.target === e.currentTarget) onClose();
+            }
+      }
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("map.correlationDialog.title")}
         className="bg-popover border border-border rounded-lg shadow-xl"
         style={{ minWidth: 380, maxWidth: 480, padding: 24 }}
-        onClick={(e) => e.stopPropagation()}
       >
         <div
           style={{

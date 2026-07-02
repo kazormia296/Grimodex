@@ -183,50 +183,60 @@ export function ChronicleEventList({
             {t("chronicle.eventListEmpty", "該当するイベントがありません")}
           </div>
         ) : (
-          filtered.map((it) => (
-            <button
-              key={it.id}
-              type="button"
-              data-event-list-id={it.id}
-              data-selected={it.id === selectedId || undefined}
-              onClick={() => onSelect(it.id)}
-              className={`flex w-full flex-col gap-0.5 border-b border-border/40 px-3 py-1.5 text-left hover:bg-accent ${
-                it.id === selectedId ? "bg-accent" : ""
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span style={dotStyle(it)} />
-                <span className="min-w-0 flex-1 truncate text-xs text-foreground">
-                  {it.title || t("chronicle.untitled", "無題のイベント")}
-                </span>
-                {it.dateLabel && (
-                  <span
-                    className="flex-none text-[11px] text-muted-foreground"
-                    style={{ fontFeatureSettings: "'tnum'" }}
-                  >
-                    {it.dateLabel}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-1.5 ps-4 text-[11px] text-muted-foreground">
-                {it.laneName && <span className="truncate">{it.laneName}</span>}
-                {it.kind !== "generic" && <span>· {kindLabel(it.kind)}</span>}
-                {it.hasIssue && (
-                  <AlertTriangle
-                    className="size-3 flex-none"
-                    style={{ color: "#e0a23a" }}
-                    aria-label={t("chronicle.hasIssue", "整合警告あり")}
-                  />
-                )}
-                {it.secret && (
-                  <Lock
-                    className="size-3 flex-none"
-                    aria-label={t("chronicle.secretTag", "秘匿")}
-                  />
-                )}
-              </div>
-            </button>
-          ))
+          // list-style:none (preflight) は WebKit/VoiceOver がリスト意味論を
+          // 落とすため、明示 role=list で復元する（macOS の WKWebView 対策）。
+          <ul role="list" aria-label={t("chronicle.eventList", "イベント一覧")}>
+            {filtered.map((it) => (
+              <li key={it.id}>
+                <button
+                  type="button"
+                  data-event-list-id={it.id}
+                  data-selected={it.id === selectedId || undefined}
+                  aria-current={it.id === selectedId ? "true" : undefined}
+                  onClick={() => onSelect(it.id)}
+                  className={`flex w-full flex-col gap-0.5 border-b border-border/40 px-3 py-1.5 text-left hover:bg-accent ${
+                    it.id === selectedId ? "bg-accent" : ""
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span style={dotStyle(it)} aria-hidden />
+                    <span className="min-w-0 flex-1 truncate text-xs text-foreground">
+                      {it.title || t("chronicle.untitled", "無題のイベント")}
+                    </span>
+                    {it.dateLabel && (
+                      <span
+                        className="flex-none text-[11px] text-muted-foreground"
+                        style={{ fontFeatureSettings: "'tnum'" }}
+                      >
+                        {it.dateLabel}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 ps-4 text-[11px] text-muted-foreground">
+                    {it.laneName && (
+                      <span className="truncate">{it.laneName}</span>
+                    )}
+                    {it.kind !== "generic" && (
+                      <span>· {kindLabel(it.kind)}</span>
+                    )}
+                    {it.hasIssue && (
+                      <AlertTriangle
+                        className="size-3 flex-none"
+                        style={{ color: "#e0a23a" }}
+                        aria-label={t("chronicle.hasIssue", "整合警告あり")}
+                      />
+                    )}
+                    {it.secret && (
+                      <Lock
+                        className="size-3 flex-none"
+                        aria-label={t("chronicle.secretTag", "秘匿")}
+                      />
+                    )}
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </div>

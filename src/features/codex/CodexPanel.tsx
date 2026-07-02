@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Search, ArrowLeft, Pencil, Trash2 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -94,6 +94,11 @@ function CodexEditView({
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
+  const baseId = useId();
+  const typeId = `${baseId}-type`;
+  const nameId = `${baseId}-name`;
+  const summaryId = `${baseId}-summary`;
+  const tagsId = `${baseId}-tags`;
   const [type, setType] = useState<CodexEntryType>(
     entry.type as CodexEntryType,
   );
@@ -113,10 +118,11 @@ function CodexEditView({
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
         <div>
-          <label className="mb-1 block text-xs font-medium">
+          <label htmlFor={typeId} className="mb-1 block text-xs font-medium">
             {t("codex.typeLabel")}
           </label>
           <select
+            id={typeId}
             value={type}
             onChange={(e) => setType(e.target.value as CodexEntryType)}
             className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
@@ -129,10 +135,11 @@ function CodexEditView({
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium">
+          <label htmlFor={nameId} className="mb-1 block text-xs font-medium">
             {t("codex.nameLabel")}
           </label>
           <input
+            id={nameId}
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -140,10 +147,11 @@ function CodexEditView({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium">
+          <label htmlFor={summaryId} className="mb-1 block text-xs font-medium">
             {t("codex.summaryLabel")}
           </label>
           <textarea
+            id={summaryId}
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
             rows={5}
@@ -151,10 +159,11 @@ function CodexEditView({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium">
+          <label htmlFor={tagsId} className="mb-1 block text-xs font-medium">
             {t("codex.tagsLabel")}
           </label>
           <input
+            id={tagsId}
             type="text"
             value={tags}
             onChange={(e) => setTags(e.target.value)}
@@ -373,6 +382,7 @@ export function CodexPanel() {
             value={localSearch}
             onChange={(e) => handleSearchChange(e.target.value)}
             placeholder={t("codex.searchPlaceholder")}
+            aria-label={t("codex.searchPlaceholder")}
             className="w-full rounded-md border border-input bg-background py-1.5 pl-7 pr-2 text-sm"
           />
         </div>
@@ -380,6 +390,7 @@ export function CodexPanel() {
           data-testid="codex-filter-select"
           value={filterType ?? ""}
           onChange={(e) => handleFilterChange(e.target.value)}
+          aria-label={t("codex.filterTypeLabel")}
           className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
         >
           <option value="">{t("codex.filterAll")}</option>

@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { CodexContentEditor } from "@/features/codex/components/CodexContentEditor";
@@ -26,6 +26,9 @@ export function ChronicleDetailField({
   onPatchDetail,
 }: ChronicleDetailFieldProps) {
   const { t } = useTranslation();
+  // CodexContentEditor は labelable な form control でないため htmlFor では結べない。
+  // role=group + aria-labelledby でラベル「詳細」をエディタ領域全体に関連付ける。
+  const labelId = useId();
   // 最新のシリアライズ済み content を保持し、autosave が stale を書かないようにする。
   const contentRef = useRef(event.detail ?? "");
 
@@ -49,11 +52,15 @@ export function ChronicleDetailField({
   }, []);
 
   return (
-    <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
+    <div
+      role="group"
+      aria-labelledby={labelId}
+      className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5"
+    >
       <div className="flex items-center justify-between">
-        <label className="text-xs font-medium text-foreground">
+        <span id={labelId} className="text-xs font-medium text-foreground">
           {t("chronicle.detail.label", "詳細")}
-        </label>
+        </span>
         <button
           type="button"
           onClick={() =>

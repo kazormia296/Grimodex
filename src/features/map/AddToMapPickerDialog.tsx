@@ -58,6 +58,20 @@ export function AddToMapPickerDialog({
     setQuery("");
   }, [entityType]);
 
+  // Escape でどこにフォーカスがあっても閉じられるようにする (WCAG 2.1.1)。
+  // capture で先取りし、Map 側など後続の Escape 処理へ流さない。
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
+  }, [onClose]);
+
   const lower = query.toLowerCase();
 
   const items: { id: string; label: string }[] = (() => {
@@ -113,6 +127,7 @@ export function AddToMapPickerDialog({
 
   return createPortal(
     <div
+      role="presentation"
       style={{
         position: "fixed",
         inset: 0,
@@ -122,9 +137,14 @@ export function AddToMapPickerDialog({
         alignItems: "center",
         justifyContent: "center",
       }}
-      onClick={onClose}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("map.picker.dialogLabel", "マップに追加")}
         style={{
           width: 400,
           maxHeight: "70vh",
@@ -136,7 +156,6 @@ export function AddToMapPickerDialog({
           boxShadow: "0 8px 24px rgba(0,0,0,0.2)",
           overflow: "hidden",
         }}
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Type tabs */}
         <div
@@ -187,7 +206,10 @@ export function AddToMapPickerDialog({
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Escape" && onClose()}
+            onKeyDown={(e) =>
+              // IME 変換キャンセルの Escape でダイアログを閉じない
+              e.key === "Escape" && !e.nativeEvent.isComposing && onClose()
+            }
             placeholder={t("map.picker.searchPlaceholder", {
               type: typeLabel(t, entityType),
             })}

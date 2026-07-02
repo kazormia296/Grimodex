@@ -122,7 +122,7 @@ export const COLOR_THEMES: ColorTheme[] = [
       "--secondary": "oklch(0.965 0 0)",
       "--secondary-foreground": "oklch(0.205 0 0)",
       "--muted": "oklch(0.965 0 0)",
-      "--muted-foreground": "oklch(0.556 0 0)",
+      "--muted-foreground": "oklch(0.54 0 0)",
       "--accent": "oklch(0.965 0 0)",
       "--accent-foreground": "oklch(0.205 0 0)",
       "--destructive": "oklch(0.577 0.245 27.325)",

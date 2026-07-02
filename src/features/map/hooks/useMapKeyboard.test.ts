@@ -5,7 +5,12 @@ import { useMapKeyboard } from "./useMapKeyboard";
 
 function makeKeyEvent(
   key: string,
-  opts: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean } = {},
+  opts: {
+    ctrlKey?: boolean;
+    metaKey?: boolean;
+    altKey?: boolean;
+    isComposing?: boolean;
+  } = {},
   target: HTMLElement = document.createElement("div"),
 ): React.KeyboardEvent<HTMLDivElement> {
   return {
@@ -16,6 +21,7 @@ function makeKeyEvent(
     shiftKey: false,
     preventDefault: vi.fn(),
     stopPropagation: vi.fn(),
+    nativeEvent: { isComposing: opts.isComposing ?? false },
     target,
   } as unknown as React.KeyboardEvent<HTMLDivElement>;
 }
@@ -181,5 +187,39 @@ describe("useMapKeyboard — 新規ショートカット", () => {
     const input = document.createElement("input");
     act(() => onKeyDown(makeKeyEvent("s", {}, input)));
     expect(mocks.onAddSticky).not.toHaveBeenCalled();
+  });
+
+  it("S キーは select フォーカス中には発火しない", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    const select = document.createElement("select");
+    act(() => onKeyDown(makeKeyEvent("s", {}, select)));
+    expect(mocks.onAddSticky).not.toHaveBeenCalled();
+  });
+
+  it("S キーは contenteditable 配下の要素では発火しない", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    const host = document.createElement("div");
+    host.setAttribute("contenteditable", "true");
+    const child = document.createElement("span");
+    host.appendChild(child);
+    document.body.appendChild(host);
+    try {
+      act(() => onKeyDown(makeKeyEvent("s", {}, child)));
+      expect(mocks.onAddSticky).not.toHaveBeenCalled();
+    } finally {
+      host.remove();
+    }
+  });
+
+  it("IME 変換中 (isComposing) はショートカットを無視する", () => {
+    const { onKeyDown, mocks } = renderKeyboard();
+    act(() => onKeyDown(makeKeyEvent("s", { isComposing: true })));
+    expect(mocks.onAddSticky).not.toHaveBeenCalled();
+  });
+
+  it("IME 変換中 (isComposing) は Escape も無視する", () => {
+    const { onKeyDown, mocks } = renderKeyboard({ searchVisible: true });
+    act(() => onKeyDown(makeKeyEvent("Escape", { isComposing: true })));
+    expect(mocks.setSearchVisible).not.toHaveBeenCalled();
   });
 });

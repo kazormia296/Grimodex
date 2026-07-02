@@ -21,14 +21,18 @@ function buildDecorations(
     if (!node.isText) return;
     for (const mark of node.marks) {
       if (mark.type.name !== "comment") continue;
-      decos.push(
-        Decoration.inline(pos, pos + node.nodeSize, {
-          class: "comment-deco",
-          "data-comment-text": (mark.attrs.text as string) ?? "",
-          "data-comment-from": String(pos),
-          "data-comment-to": String(pos + node.nodeSize),
-        }),
-      );
+      const text = (mark.attrs.text as string) ?? "";
+      // role="mark" + aria-description で SR にコメント付き箇所と本文を伝える
+      // （title は native tooltip が hover popover と競合するため使わない）。
+      const attrs: Record<string, string> = {
+        class: "comment-deco",
+        role: "mark",
+        "data-comment-text": text,
+        "data-comment-from": String(pos),
+        "data-comment-to": String(pos + node.nodeSize),
+      };
+      if (text) attrs["aria-description"] = text;
+      decos.push(Decoration.inline(pos, pos + node.nodeSize, attrs));
     }
   });
 

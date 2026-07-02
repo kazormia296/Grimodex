@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
+import type { EditorEvents } from "@tiptap/core";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
 
@@ -31,6 +32,8 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Escape で閉じた範囲は caret が離れるまで再表示しない
+  const suppressedRangeRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
@@ -51,6 +54,20 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
     }, 200);
   }, [clearHideTimer]);
 
+  const showFromElement = useCallback(
+    (el: HTMLElement) => {
+      clearHideTimer();
+      const text = el.getAttribute("data-comment-text") ?? "";
+      const from = parseInt(el.getAttribute("data-comment-from") ?? "0", 10);
+      const to = parseInt(el.getAttribute("data-comment-to") ?? "0", 10);
+      const rect = el.getBoundingClientRect();
+      setTarget({ text, from, to, x: rect.left, y: rect.bottom + 6 });
+      setEditing(false);
+      setEditText(text);
+    },
+    [clearHideTimer],
+  );
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !showComments) return;
@@ -63,19 +80,70 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
         scheduleHide();
         return;
       }
-      clearHideTimer();
-      const text = el.getAttribute("data-comment-text") ?? "";
-      const from = parseInt(el.getAttribute("data-comment-from") ?? "0", 10);
-      const to = parseInt(el.getAttribute("data-comment-to") ?? "0", 10);
-      const rect = el.getBoundingClientRect();
-      setTarget({ text, from, to, x: rect.left, y: rect.bottom + 6 });
-      setEditing(false);
-      setEditText(text);
+      showFromElement(el);
     }
 
     container.addEventListener("mouseover", onMouseOver);
     return () => container.removeEventListener("mouseover", onMouseOver);
-  }, [containerRef, showComments, scheduleHide, clearHideTimer]);
+  }, [containerRef, showComments, scheduleHide, showFromElement]);
+
+  // キーボードユーザー向け: caret がコメント装飾内に入ったら popover を表示
+  useEffect(() => {
+    if (!editor) return;
+    // テスト用モック editor など emitter を持たない実装では購読しない
+    if (typeof editor.on !== "function" || typeof editor.off !== "function") {
+      return;
+    }
+    const onSelectionUpdate = ({
+      editor: ed,
+      transaction,
+    }: EditorEvents["selectionUpdate"]) => {
+      // 入力・IME 由来の selection 変化では反応しない（執筆の妨害防止）
+      if (transaction.docChanged || ed.view.composing) return;
+      let el: HTMLElement | null = null;
+      const { selection } = ed.state;
+      if (selection.empty) {
+        try {
+          const { node } = ed.view.domAtPos(selection.from);
+          const base = node instanceof Element ? node : node.parentElement;
+          el =
+            (base?.closest?.("[data-comment-text]") as HTMLElement | null) ??
+            null;
+        } catch {
+          el = null;
+        }
+      }
+      if (!el) {
+        suppressedRangeRef.current = null;
+        scheduleHide();
+        return;
+      }
+      const key = `${el.getAttribute("data-comment-from")}:${el.getAttribute("data-comment-to")}`;
+      if (suppressedRangeRef.current === key) return;
+      suppressedRangeRef.current = null;
+      showFromElement(el);
+    };
+    editor.on("selectionUpdate", onSelectionUpdate);
+    return () => {
+      editor.off("selectionUpdate", onSelectionUpdate);
+    };
+  }, [editor, scheduleHide, showFromElement]);
+
+  // Escape で閉じる（編集中は input 側の Escape が編集のみ取り消す）
+  useEffect(() => {
+    if (!target || editing) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      // 最上層のこのポップオーバーだけを閉じ、下層の Escape 動作へ波及させない
+      e.stopPropagation();
+      suppressedRangeRef.current = `${target.from}:${target.to}`;
+      clearHideTimer();
+      setTarget(null);
+      setEditing(false);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [target, editing, clearHideTimer]);
 
   // Hide on showComments toggle off
   useEffect(() => {
@@ -126,6 +194,8 @@ export function CommentHoverPopover({ editor, containerRef }: Props) {
   return createPortal(
     <div
       ref={popoverRef}
+      role="dialog"
+      aria-label={t("editor.comment.popoverLabel")}
       className="fixed z-50 rounded-md border border-border bg-popover shadow-md"
       style={{ left: x, top: y, minWidth: menuWidth, maxWidth: menuWidth }}
       onMouseEnter={clearHideTimer}

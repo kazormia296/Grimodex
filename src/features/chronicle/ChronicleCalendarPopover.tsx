@@ -1,5 +1,6 @@
 import { createPortal } from "react-dom";
 import type { RefObject } from "react";
+import { useTranslation } from "react-i18next";
 import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 import { ChronicleCalendarEditor } from "./ChronicleCalendarEditor";
 import type { ChronicleCalendar } from "./chronicleTime";
@@ -24,6 +25,7 @@ export function ChronicleCalendarPopover({
   onSave,
   onClose,
 }: ChronicleCalendarPopoverProps) {
+  const { t } = useTranslation();
   const { popoverRef, style, maxHeight } = useAnchoredPopover(
     triggerRef,
     open,
@@ -37,6 +39,8 @@ export function ChronicleCalendarPopover({
       style={{ ...style, maxHeight: maxHeight ?? undefined }}
       className="z-50 w-[380px] overflow-auto rounded-lg border border-border bg-card shadow-lg"
       role="dialog"
+      aria-modal="true"
+      aria-label={t("chronicle.calendarEditor", "暦の設定")}
     >
       <ChronicleCalendarEditor
         initial={initial}

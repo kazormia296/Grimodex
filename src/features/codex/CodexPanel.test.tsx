@@ -111,6 +111,37 @@ describe("CodexPanel", () => {
     expect(screen.getByTestId("codex-filter-select")).toBeInTheDocument();
   });
 
+  it("gives search input and filter select an accessible name", () => {
+    render(<CodexPanel />);
+
+    const searchInput = screen.getByTestId("codex-search-input");
+    expect(searchInput.getAttribute("aria-label")).toBeTruthy();
+    expect(searchInput.getAttribute("aria-label")).toBe(
+      searchInput.getAttribute("placeholder"),
+    );
+
+    const filterSelect = screen.getByTestId("codex-filter-select");
+    expect(filterSelect.getAttribute("aria-label")).toBeTruthy();
+  });
+
+  it("associates edit form labels with their controls", async () => {
+    const user = userEvent.setup();
+    mockListCodexEntries.mockResolvedValue(mockEntries);
+    render(<CodexPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText("アリス")).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("アリス"));
+    await user.click(screen.getByTestId("codex-edit-button"));
+
+    expect(screen.getByTestId("codex-edit-view")).toBeInTheDocument();
+    expect(screen.getByLabelText("タイプ")).toBeInstanceOf(HTMLSelectElement);
+    expect(screen.getByLabelText("名前")).toBeInstanceOf(HTMLInputElement);
+    expect(screen.getByLabelText("概要")).toBeInstanceOf(HTMLTextAreaElement);
+    expect(screen.getByLabelText("タグ")).toBeInstanceOf(HTMLInputElement);
+  });
+
   it("displays entry list", async () => {
     mockListCodexEntries.mockResolvedValue(mockEntries);
     render(<CodexPanel />);

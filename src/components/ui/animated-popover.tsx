@@ -1,13 +1,19 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { useFocusRestoreOnClose } from "@/components/ui/useFocusRestoreOnClose";
 
 interface AnimatedPopoverProps {
   open: boolean;
   onClose?: () => void;
   /** ref wrapping trigger + popover; used for click-outside detection */
   containerRef?: React.RefObject<HTMLElement | null>;
+  /**
+   * close 時に open 時点のフォーカス（通常トリガ）へ戻す（既定 true）。
+   * 外側クリックで閉じた場合は復元しない。
+   */
+  restoreFocusOnClose?: boolean;
   className?: string;
   style?: React.CSSProperties;
   children: React.ReactNode;
@@ -17,11 +23,15 @@ export function AnimatedPopover({
   open,
   onClose,
   containerRef,
+  restoreFocusOnClose = true,
   className,
   style,
   children,
 }: AnimatedPopoverProps) {
   const reduced = useReducedMotion();
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useFocusRestoreOnClose(open, contentRef, containerRef, restoreFocusOnClose);
 
   useEffect(() => {
     if (!open || !onClose) return;
@@ -50,6 +60,7 @@ export function AnimatedPopover({
     <AnimatePresence>
       {open && (
         <motion.div
+          ref={contentRef}
           className={cn(className)}
           style={style}
           initial={{ opacity: 0, scale: 0.95 }}

@@ -64,11 +64,21 @@ export function useMapKeyboard(opts: {
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
+      // IME 変換中のキー入力（Escape での変換キャンセル等）を
+      // ショートカットとして解釈しない (WCAG 2.1.4)。
+      if (e.nativeEvent?.isComposing) return;
       const target = e.target;
       const inInput =
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
-        (target instanceof HTMLElement && target.isContentEditable);
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement &&
+          // isContentEditable は継承値を反映するが、closest も併用して
+          // editable ホスト配下の要素を確実に拾う (false 指定は除外)。
+          (target.isContentEditable ||
+            target.closest(
+              '[contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
+            ) !== null));
 
       if (e.key === "Escape") {
         // Priority: frame drawing > search > focus > palette

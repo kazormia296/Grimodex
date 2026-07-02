@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
+import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import {
   listCodexEntries,
@@ -241,6 +242,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       } else {
         const entries = await searchCodexEntries(query, getCurrentProjectId());
         set({ entries, isLoading: false });
+        // 成功パスは toast を出さないため、SR には結果件数が無音になる。
+        // 呼び出し側 (パネル) が debounce 済みなので確定検索ごとに 1 回だけ、
+        // かつ後発の検索が始まっていれば stale な件数は読み上げない。
+        if (get().searchQuery === query) {
+          announce(
+            i18next.t("codex.searchResultCount", { count: entries.length }),
+          );
+        }
       }
     } catch (e) {
       set({ isLoading: false });

@@ -55,7 +55,8 @@ export function ExportSitePickerDialog({
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // IME 変換キャンセルの Escape でダイアログを閉じない
+      if (e.key === "Escape" && !e.isComposing) {
         e.stopImmediatePropagation();
         e.preventDefault();
         onClose();
@@ -124,12 +125,14 @@ export function ExportSitePickerDialog({
 
   return createPortal(
     <div
+      role="presentation"
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
-      onClick={onClose}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div
         className="flex max-h-[80vh] w-[440px] flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
-        onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label={t("export.settings.sitePicker.title")}

@@ -38,7 +38,10 @@ describe("SlashCommandPopup", () => {
     const cmds = getInlineAiCommands();
     openWith(cmds);
     render(<SlashCommandPopup />);
-    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    const listbox = screen.getByRole("listbox");
+    expect(listbox).toBeInTheDocument();
+    // aria-activedescendant を機能させるため listbox は focusable (tabindex=-1)。
+    expect(listbox).toHaveAttribute("tabindex", "-1");
     const options = screen.getAllByRole("option");
     expect(options.length).toBe(cmds.length);
     // First option is selected by default.

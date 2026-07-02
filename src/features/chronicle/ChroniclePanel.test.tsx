@@ -35,6 +35,10 @@ vi.mock("@/features/agent-writes/event", () => eventMocks);
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 vi.mock("sonner", () => ({ toast: toastMocks }));
 
+// ── SR announcer をモック（読み込み完了/ズーム通知の発火を検証） ──
+const announceMocks = vi.hoisted(() => ({ announce: vi.fn() }));
+vi.mock("@/lib/a11y/announcer", () => announceMocks);
+
 // ── tabStore.openPinned（シーンを開く）をモック ──
 const tabMocks = vi.hoisted(() => ({ openPinned: vi.fn() }));
 vi.mock("@/features/editor/tabStore", () => ({
@@ -61,6 +65,8 @@ vi.mock("./ChronicleViewport", () => ({
     eventsById,
     onMoveEvent,
     onDeleteEvent,
+    onViewChange,
+    onResizeSelectedBy,
   }: {
     eventsById: Map<string, unknown>;
     onMoveEvent?: (
@@ -69,6 +75,8 @@ vi.mock("./ChronicleViewport", () => ({
       newCodexId: string | null,
     ) => void;
     onDeleteEvent?: (id: string) => void;
+    onViewChange?: (v: { pxPerDay: number; viewStartDay: number }) => void;
+    onResizeSelectedBy?: (edge: "start" | "end", deltaDays: number) => void;
   }) => (
     <div data-testid="viewport" data-n={eventsById.size}>
       <button
@@ -82,6 +90,24 @@ vi.mock("./ChronicleViewport", () => ({
         onClick={() => onDeleteEvent?.("scene:sc1")}
       >
         ctx-delete
+      </button>
+      <button
+        data-testid="zoom-btn"
+        onClick={() => onViewChange?.({ pxPerDay: 9, viewStartDay: 0 })}
+      >
+        zoom
+      </button>
+      <button
+        data-testid="pan-btn"
+        onClick={() => onViewChange?.({ pxPerDay: 9, viewStartDay: 555 })}
+      >
+        pan
+      </button>
+      <button
+        data-testid="resize-end-btn"
+        onClick={() => onResizeSelectedBy?.("end", 5)}
+      >
+        resize-end
       </button>
     </div>
   ),
@@ -185,7 +211,12 @@ function makeEvent(over: Partial<EventRow> = {}): EventRow {
 beforeEach(() => {
   vi.clearAllMocks();
   useProjectStore.setState({ currentProjectId: null });
-  useChronicleStore.setState({ selectedEventId: null });
+  useChronicleStore.setState({
+    selectedEventId: null,
+    selectedEventIds: [],
+    pxPerDay: null,
+    viewStartDay: null,
+  });
   useCodexStore.setState({ entries: [] });
   useTimelineStore.setState({ selectedNodeIds: [] });
   // scene-event 書き戻し先のツリーストア action は DB を叩くので mock に差し替える。
@@ -599,5 +630,111 @@ describe("ChroniclePanel シーンを開く / 選択伝播", () => {
       useChronicleStore.setState({ selectedEventId: "ea" });
     });
     expect(screen.getByTestId("insp-can-open").textContent).toBe("no");
+  });
+});
+
+describe("ChroniclePanel a11y announce（読み込み完了 / ズームレベル）", () => {
+  it("プロジェクト読み込み完了で announce し、revision 再取得では鳴らさない", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({ id: "ea" }),
+      makeEvent({ id: "eb" }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    await waitFor(() => {
+      expect(announceMocks.announce).toHaveBeenCalledTimes(1);
+    });
+    expect(String(announceMocks.announce.mock.calls[0][0])).toContain("2");
+
+    // undo/CRUD 由来の再取得（revision bump）では読み込み announce を繰り返さない。
+    const before = apiMocks.listEvents.mock.calls.length;
+    act(() => {
+      useChronicleStore.getState().bumpRevision();
+    });
+    await waitFor(() => {
+      expect(apiMocks.listEvents.mock.calls.length).toBeGreaterThan(before);
+    });
+    await screen.findByTestId("viewport");
+    expect(announceMocks.announce).toHaveBeenCalledTimes(1);
+  });
+
+  it("ズーム（pxPerDay 変化）は debounce 後に1回だけ announce、パンでは鳴らさない", async () => {
+    apiMocks.listEvents.mockResolvedValue([makeEvent({ id: "ea" })]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    await waitFor(() => {
+      expect(announceMocks.announce).toHaveBeenCalledTimes(1); // 読み込み分
+    });
+    announceMocks.announce.mockClear();
+
+    // ズーム連打 → debounce（400ms）内は無音、経過後に1回だけ。
+    fireEvent.click(screen.getByTestId("zoom-btn"));
+    fireEvent.click(screen.getByTestId("zoom-btn"));
+    expect(announceMocks.announce).not.toHaveBeenCalled();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    expect(announceMocks.announce).toHaveBeenCalledTimes(1);
+    expect(String(announceMocks.announce.mock.calls[0][0])).toContain("ズーム");
+
+    // パン（pxPerDay 同値・viewStartDay のみ変化）では announce しない。
+    announceMocks.announce.mockClear();
+    fireEvent.click(screen.getByTestId("pan-btn"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    expect(announceMocks.announce).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChroniclePanel キーボード期間端伸縮（onResizeSelectedBy）", () => {
+  it("選択中の期間イベントの終了端を差分で patch する", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({
+        id: "ea",
+        startTime: 100,
+        endTime: 110,
+        startGranularity: "day",
+        endGranularity: "day",
+      }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({
+        selectedEventId: "ea",
+        selectedEventIds: ["ea"],
+      });
+    });
+    fireEvent.click(screen.getByTestId("resize-end-btn")); // ("end", +5)
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith({
+        eventId: "ea",
+        endTime: 115,
+      });
+    });
+  });
+
+  it("点イベント（endTime なし）は対象外（patch しない）", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({ id: "ea", startTime: 100, startGranularity: "day" }),
+    ]);
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({
+        selectedEventId: "ea",
+        selectedEventIds: ["ea"],
+      });
+    });
+    fireEvent.click(screen.getByTestId("resize-end-btn"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(eventMocks.uiUpdateEvent).not.toHaveBeenCalled();
   });
 });

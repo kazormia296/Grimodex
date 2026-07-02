@@ -423,8 +423,7 @@ export function GridPanel() {
     if (
       target === panelRef.current ||
       (target.closest("[data-grid-scene-id]") === null &&
-        !target.closest("button") &&
-        !target.closest("[role='option']"))
+        !target.closest("button"))
     ) {
       clearSelection();
     }

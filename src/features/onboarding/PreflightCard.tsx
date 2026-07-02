@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
 import i18next from "@/lib/i18n";
-import { DURATIONS, EASINGS } from "@/lib/animation";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { expandPreset } from "@/features/ai-policy/preset";
 import type { AiPolicyPreset } from "@/features/ai-policy/types";
@@ -20,20 +20,24 @@ interface SkipDialogProps {
 
 function SkipDialog({ onConfirm, onCancel }: SkipDialogProps) {
   const { t } = useTranslation();
+  const reduced = useReducedMotion();
   return (
     <motion.div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: DURATIONS.fast }}
+      transition={{ duration: reduced ? 0 : DURATIONS.fast }}
     >
       <motion.div
         className="mx-4 w-full max-w-sm rounded-xl border border-border bg-card p-6 shadow-xl"
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        transition={{ duration: DURATIONS.normal, ease: EASINGS.easeOut }}
+        transition={{
+          duration: reduced ? 0 : DURATIONS.normal,
+          ease: EASINGS.easeOut,
+        }}
       >
         <p className="mb-2 text-sm font-semibold text-foreground">
           {t("tour.skipConfirmTitle")}
@@ -64,6 +68,7 @@ function SkipDialog({ onConfirm, onCancel }: SkipDialogProps) {
 
 export function PreflightCard() {
   const { t } = useTranslation();
+  const reduced = useReducedMotion();
   const [step, setStep] = useState<Step>("language");
   const [selectedLang, setSelectedLang] = useState(
     useWorkspaceStore.getState().globalSettings?.uiLanguage ?? "ja",
@@ -172,7 +177,10 @@ export function PreflightCard() {
               initial={{ opacity: 0, x: 24 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -24 }}
-              transition={{ duration: DURATIONS.normal, ease: EASINGS.easeOut }}
+              transition={{
+                duration: reduced ? 0 : DURATIONS.normal,
+                ease: EASINGS.easeOut,
+              }}
             >
               {step === "language" && (
                 <LanguageStep

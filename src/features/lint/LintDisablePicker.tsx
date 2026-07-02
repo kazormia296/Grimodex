@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/core";
@@ -116,6 +116,8 @@ export function LintDisablePicker({
     persistedPolicy === "span" ? "span" : "block",
   );
   const [rememberPolicy, setRememberPolicy] = useState(false);
+  const blockRadioId = useId();
+  const spanRadioId = useId();
 
   // ESC closes without applying.
   useEffect(() => {
@@ -222,8 +224,12 @@ export function LintDisablePicker({
                   "TipTap Mark は 1 ブロック内に閉じる仕様のため、以下のいずれかを選んでください:",
                 )}
               </div>
-              <label className="flex items-start gap-2 text-xs">
+              <label
+                htmlFor={blockRadioId}
+                className="flex items-start gap-2 text-xs"
+              >
                 <input
+                  id={blockRadioId}
                   type="radio"
                   name="multi-block-policy"
                   checked={policy === "block"}
@@ -241,8 +247,12 @@ export function LintDisablePicker({
                   </span>
                 </span>
               </label>
-              <label className="flex items-start gap-2 text-xs">
+              <label
+                htmlFor={spanRadioId}
+                className="flex items-start gap-2 text-xs"
+              >
                 <input
+                  id={spanRadioId}
                   type="radio"
                   name="multi-block-policy"
                   checked={policy === "span"}

@@ -138,6 +138,7 @@ export function SlashCommandPopup() {
     <div
       ref={ref}
       role="listbox"
+      tabIndex={-1}
       aria-label={t("inlineAi.slashMenuLabel")}
       aria-activedescendant={
         noResults ? undefined : `slash-opt-${items[selectedIndex]?.id}`

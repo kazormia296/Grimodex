@@ -31,6 +31,19 @@ describe("PanelHeader", () => {
     expect(header.className).toContain("text-xs");
   });
 
+  it("exposes the title as a level-2 heading for SR navigation", () => {
+    render(<PanelHeader panelId="chronicle" />);
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading.textContent).toBe("layout.panel.chronicle");
+  });
+
+  it("keeps the heading role on custom title overrides", () => {
+    render(<PanelHeader panelId="grid" title="カスタム" />);
+    expect(
+      screen.getByRole("heading", { level: 2, name: "カスタム" }),
+    ).toBeTruthy();
+  });
+
   it("renders count, custom title override and right-aligned actions", () => {
     render(
       <PanelHeader

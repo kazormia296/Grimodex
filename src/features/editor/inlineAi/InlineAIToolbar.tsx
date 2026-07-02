@@ -137,6 +137,7 @@ export function InlineAIToolbar({
         transition={{ duration: DURATIONS.slow }}
         className="flex items-center gap-1 rounded-full border border-border bg-popover px-3 py-1.5 shadow-lg"
         role="status"
+        aria-live="polite"
       >
         <button
           type="button"
@@ -152,7 +153,7 @@ export function InlineAIToolbar({
             </kbd>
           )}
         </button>
-        <div className="h-3 w-px bg-border" />
+        <div aria-hidden className="h-3 w-px bg-border" />
         <button
           type="button"
           onClick={onReject}
@@ -166,7 +167,7 @@ export function InlineAIToolbar({
         </button>
         {!isGenerating && (
           <>
-            <div className="h-3 w-px bg-border" />
+            <div aria-hidden className="h-3 w-px bg-border" />
             <button
               type="button"
               onClick={onRetry}

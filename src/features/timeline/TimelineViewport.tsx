@@ -81,7 +81,9 @@ export const PAD_RIGHT = 32;
 
 const STATUS_FILL: Record<string, string> = {
   outline: "var(--color-muted-foreground, #888)",
-  draft: "#eab308",
+  // draft は旧 #eab308 だと白背景で 1.9:1 しかなく WCAG 1.4.11 (3:1) を割るため
+  // amber-600 に変更（白背景 3.2:1 / ダーク背景 ~5:1）。
+  draft: "#d97706",
   complete: "#22c55e",
   revision: "#c084fc",
   final: "#60a5fa",

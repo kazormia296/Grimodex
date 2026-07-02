@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
+import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
 import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
@@ -570,7 +571,7 @@ async function handleFileChanged(
 async function applyExternalContent(
   nodeId: string,
   _rootId: string,
-  _relPath: string,
+  relPath: string,
   markdown: string,
   sourceMtime?: string,
 ): Promise<void> {
@@ -605,6 +606,15 @@ async function applyExternalContent(
   scheduleSceneIndex(nodeId);
   useTreeStore.getState().setCharCount(nodeId, charCount);
   await useTreeStore.getState().loadTree(getCurrentProjectId());
+
+  // 外部編集の取り込みはトーストを出さない無音イベントなので、
+  // SR 利用者へ aria-live で通知する (WCAG 4.1.3)。
+  announce(
+    i18next.t("externalMount.a11y.fileImported", {
+      name: basename(relPath),
+      defaultValue: "外部ファイル「{{name}}」の変更を取り込みました",
+    }),
+  );
 
   // file-backed Scene でも schema 非依存の Codex 本文検出と チャット context
   // 再構築は実行する。Mention 拡張のような schema 依存処理は file-backed
@@ -712,6 +722,14 @@ async function handleFileRemoved(
       if (!still || still.archivedAt) return;
       await softArchiveNode(still.id);
       await useTreeStore.getState().loadTree(getCurrentProjectId());
+      // dirty 経路と違いトーストを出さないため SR へ通知 (WCAG 4.1.3)。
+      announce(
+        i18next.t("externalMount.a11y.fileArchived", {
+          name: basename(relPath),
+          defaultValue:
+            "外部で削除されたファイル「{{name}}」をアーカイブしました",
+        }),
+      );
     })();
   }, RENAME_WINDOW_MS);
   pendingArchives.push({ rootId: root.id, relPath, timer });

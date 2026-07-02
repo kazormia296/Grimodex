@@ -58,6 +58,12 @@ describe("InlineAIToolbar visibility", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
+  it("announces status transitions via an explicit aria-live region", () => {
+    setStatus("generating");
+    render(<Harness isOwner />);
+    expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
+  });
+
   it("renders Accept/Reject/Retry when diffShown for the owner", () => {
     setStatus("diffShown");
     render(<Harness isOwner />);

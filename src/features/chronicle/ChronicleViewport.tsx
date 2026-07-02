@@ -20,6 +20,7 @@ import { buildCausalBezier } from "./chronicleCausalBezier";
 import { laneAtY } from "./chronicleLanePack";
 import { useLaneReorderTween } from "./chronicleLaneAnim";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+import { announce } from "@/lib/a11y/announcer";
 import { snapDayToTicks } from "./chronicleSnap";
 import { ChronicleRuler } from "./ChronicleRuler";
 import { ChronicleLaneGutter } from "./ChronicleLaneGutter";
@@ -34,6 +35,9 @@ const SNAP_PX = 12;
 const DRAG_THRESHOLD = 3;
 // Y のデッドゾーン: これ未満の縦移動はレーン変更せず横スライドのみ（Grid のシーン同様）。
 const LANE_DEADZONE = 28;
+// キーボード代替のパン/スクロール量（wheel/中ボタンパンの WCAG 2.1.1 等価操作）。
+const KBD_PAN_PX = 80;
+const KBD_VSCROLL_PX = 60;
 
 export interface ChronicleViewportProps {
   view: View;
@@ -99,6 +103,11 @@ export interface ChronicleViewportProps {
   onMoveSelected?: (primaryId: string, newStartDay: number) => void;
   /** 選択中をまとめて時間方向に nudge（キーボード ←/→）。日数の符号付き差分。 */
   onNudgeSelected?: (deltaDays: number) => void;
+  /**
+   * プライマリ選択の期間端をキーボードで伸縮（Shift+←/→=終了端, Ctrl+Shift+←/→=開始端）。
+   * ドラッグの期間端グリップ（onResizeEvent）のキーボード代替。日数の符号付き差分。
+   */
+  onResizeSelectedBy?: (edge: "start" | "end", deltaDays: number) => void;
   /** 選択中をまとめて削除（キーボード Delete/Backspace）。 */
   onDeleteSelected?: () => void;
   /** 選択解除（キーボード Escape）。 */
@@ -156,6 +165,7 @@ export function ChronicleViewport({
   openableSceneEventIds,
   onMoveSelected,
   onNudgeSelected,
+  onResizeSelectedBy,
   onDeleteSelected,
   onClearSelection,
   relations,
@@ -169,12 +179,21 @@ export function ChronicleViewport({
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   // 因果ホバー強調: ホバー中の出来事に連なるチェーン以外を dim する。
   const [hoveredEventId, setHoveredEventId] = useState<string | null>(null);
+  // キーボード（矢印ナビ）で選択した出来事。ホバーと同じ因果チェーン強調を
+  // キーボード操作でも発動させる（マウスクリック選択では発動しない＝従来挙動維持）。
+  // selectedEventId と一致する間だけ有効＝一覧クリック等の別経路選択で自然に失効する。
+  const [kbdSelectedId, setKbdSelectedId] = useState<string | null>(null);
+  const chainSourceId =
+    hoveredEventId ??
+    (kbdSelectedId != null && kbdSelectedId === selectedEventId
+      ? kbdSelectedId
+      : null);
   const causalChain = useMemo(() => {
-    if (!hoveredEventId || !relations || relations.length === 0) return null;
-    const chain = connectedCausalChain(hoveredEventId, relations);
+    if (!chainSourceId || !relations || relations.length === 0) return null;
+    const chain = connectedCausalChain(chainSourceId, relations);
     // 因果が無い（自分だけ）ときは dim しない。
     return chain.size > 1 ? chain : null;
-  }, [hoveredEventId, relations]);
+  }, [chainSourceId, relations]);
   // ネイティブ wheel / pointer ハンドラから最新値を読むための ref。
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -641,13 +660,77 @@ export function ChronicleViewport({
     }
     if (target) {
       const realTarget = realEventId(target);
-      if (realTarget !== cur) onSelectEvent(realTarget);
+      if (realTarget !== cur) {
+        onSelectEvent(realTarget);
+        setKbdSelectedId(realTarget);
+        // SR へ選択先を短文で通知（連打時も最新だけ読まれる polite live region）。
+        const title = eventsById.get(realTarget)?.title;
+        announce(
+          title && title.trim()
+            ? title
+            : t("chronicle.untitled", "無題のイベント"),
+        );
+      }
     }
   };
 
-  // キーボード操作（トラックフォーカス時）: 矢印=選択移動 / Alt+矢印=時間ナッジ(Alt+Shift=1週間) /
-  // Delete=削除 / Esc=選択解除。検索欄・インスペクタ入力は別 DOM なのでここへは来ない。
+  // ビュー操作のキーボード代替（選択不要。wheel ズーム / Shift+wheel 横 / 中ボタン縦の等価）:
+  // +/- =ズーム（中央 pivot） / Ctrl(⌘)+←→=横パン / Ctrl(⌘)+↑↓=縦スクロール /
+  // PageUp/Down=縦ページ送り / Home/End=データ両端へ。処理したら true。
+  const handleViewKey = (e: React.KeyboardEvent): boolean => {
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      // "+" は多くの配列で Shift が要るため shift は不問にする。
+      if (e.key === "+" || e.key === "=" || e.key === "-" || e.key === "_") {
+        const w = trackElRef.current?.clientWidth ?? 0;
+        const factor = e.key === "-" || e.key === "_" ? 1 / 1.2 : 1.2;
+        onViewChange(zoomAt({ view, pivotPx: w / 2, factor }));
+        return true;
+      }
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        const dx = e.key === "ArrowLeft" ? KBD_PAN_PX : -KBD_PAN_PX;
+        onViewChange(panByPx({ view, dx }));
+        return true;
+      }
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        const sc = scrollAreaRef.current;
+        if (sc)
+          sc.scrollTop +=
+            e.key === "ArrowDown" ? KBD_VSCROLL_PX : -KBD_VSCROLL_PX;
+        return true;
+      }
+    }
+    if (e.key === "PageUp" || e.key === "PageDown") {
+      const sc = scrollAreaRef.current;
+      if (sc) {
+        const step = Math.max(sc.clientHeight * 0.9, 40);
+        sc.scrollTop += e.key === "PageDown" ? step : -step;
+      }
+      return true;
+    }
+    if (e.key === "Home" || e.key === "End") {
+      const geom = layout.scroll;
+      onViewChange({
+        pxPerDay: view.pxPerDay,
+        viewStartDay:
+          e.key === "Home" ? geom.fullStart : geom.fullStart + geom.denom,
+      });
+      return true;
+    }
+    return false;
+  };
+
+  // キーボード操作（トラックフォーカス時）: 矢印=選択移動 / Alt+矢印=時間ナッジ(Alt+Shift=粗) /
+  // Shift+←→=期間終了端の伸縮（Ctrl+Shift=開始端） / +/- =ズーム / Ctrl+矢印・PageUp/Down・
+  // Home/End=パン・スクロール / Delete=削除 / Esc=選択解除。
+  // 検索欄・インスペクタ入力は別 DOM なのでここへは来ない。
   const onTrackKeyDown = (e: React.KeyboardEvent) => {
+    // ビュー操作（ズーム/パン/スクロール）は選択が無くても効く。
+    if (handleViewKey(e)) {
+      e.preventDefault();
+      return;
+    }
     const hasSel = (selectedIds && selectedIds.size > 0) || !!selectedEventId;
     if (!hasSel) return;
     if (e.key === "Escape") {
@@ -671,22 +754,33 @@ export function ChronicleViewport({
               : null;
     if (!dir) return;
     e.preventDefault();
+    // 現在のズームグリッド由来の移動量（ナッジ/期間端伸縮で共用）。
+    const spanDays = (ticks: { x: number }[], fallback: number) =>
+      ticks.length >= 2 && view.pxPerDay > 0
+        ? Math.abs(ticks[1].x - ticks[0].x) / view.pxPerDay
+        : fallback;
+    const minorStep = spanDays(layout.ticks.minor, 1);
     if (e.altKey) {
       // Alt+矢印=ナッジ移動（時間方向のみ）。移動量は現在のズームグリッド由来:
       // Alt=細グリッド1目盛り / Alt+Shift=粗グリッド(major)1目盛り。↑/↓ は対象外。
       if (locked || !hasCalendarAxis || !onNudgeSelected) return;
       if (dir === "left" || dir === "right") {
-        const spanDays = (ticks: { x: number }[], fallback: number) =>
-          ticks.length >= 2 && view.pxPerDay > 0
-            ? Math.abs(ticks[1].x - ticks[0].x) / view.pxPerDay
-            : fallback;
-        const minorStep = spanDays(layout.ticks.minor, 1);
         const step = e.shiftKey
           ? spanDays(layout.ticks.major, minorStep * 4)
           : minorStep;
         onNudgeSelected(dir === "left" ? -step : step);
       }
       return;
+    }
+    if (e.shiftKey && (dir === "left" || dir === "right")) {
+      // Shift+←/→=プライマリ選択の期間「終了端」を伸縮 / Ctrl(⌘)+Shift=「開始端」。
+      // ドラッグの期間端グリップと同じくロック中・並び順モードでは無効
+      // （その場合は従来どおり下の選択ナビゲーションへフォールバック）。
+      if (!locked && hasCalendarAxis && onResizeSelectedBy) {
+        const edge = e.ctrlKey || e.metaKey ? "start" : "end";
+        onResizeSelectedBy(edge, dir === "left" ? -minorStep : minorStep);
+        return;
+      }
     }
     // 修飾なし=選択ナビゲーション。
     navigateSelection(dir);
@@ -732,6 +826,8 @@ export function ChronicleViewport({
 
   const handleSelect = (id: string, e: React.MouseEvent) => {
     if (draggedRef.current) return;
+    // マウス選択ではキーボード由来の因果チェーン強調を解除（従来のホバー駆動へ戻す）。
+    setKbdSelectedId(null);
     // Ctrl/⌘=トグル, Shift=範囲, 修飾なし=単一。
     onSelectEvent(id, {
       toggle: e.ctrlKey || e.metaKey,

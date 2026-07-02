@@ -155,3 +155,44 @@ describe("TimelineHeader – 表示オプション（ケバブ）", () => {
     expect(onToggleInspector).toHaveBeenCalled();
   });
 });
+
+describe("TimelineHeader – a11y（アイコンボタンの accessible name / focus indicator）", () => {
+  beforeEach(resetStore);
+
+  it("表示オプション（ケバブ）に title と同値の aria-label がある", () => {
+    renderHeader();
+    const trigger = screen.getByTestId("timeline-display-menu");
+    const label = trigger.getAttribute("aria-label");
+    expect(label).toBeTruthy();
+    expect(label).toBe(trigger.getAttribute("title"));
+  });
+
+  it("インスペクタ開閉ボタンに title と同値の aria-label がある", () => {
+    renderHeader();
+    const btn = screen.getByTitle("インスペクター");
+    expect(btn.getAttribute("aria-label")).toBe("インスペクター");
+  });
+
+  it("outline-none を使う要素は focus(-visible) ring の代替を持つ", () => {
+    renderHeader();
+    const targets = [
+      ...document.querySelectorAll(
+        "select, [data-testid='timeline-display-menu']",
+      ),
+    ];
+    expect(targets.length).toBeGreaterThan(0);
+    for (const el of targets) {
+      const cls = el.className;
+      if (cls.includes("outline-none")) {
+        expect(cls).toContain("focus-visible:ring-1");
+      }
+    }
+  });
+
+  it("spacing select は reading モードで aria-disabled が立つ", () => {
+    useTimelineStore.setState({ axisMode: "reading" });
+    renderHeader();
+    const select = screen.getByTestId("spacing-mode-select");
+    expect(select.getAttribute("aria-disabled")).toBe("true");
+  });
+});

@@ -130,6 +130,7 @@ export function GridHeader({
             size="icon-xs"
             onClick={toggleSearch}
             title={t("grid.header.search", "検索")}
+            aria-label={t("grid.header.search", "検索")}
             aria-pressed={searchOpen}
           >
             <Search />

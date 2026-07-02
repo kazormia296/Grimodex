@@ -314,6 +314,58 @@ describe("EventMarker (DOM token)", () => {
   });
 });
 
+describe("EventMarker — アクセシブル名 / 状態", () => {
+  const btn = (r: ReturnType<typeof renderMarker>) =>
+    r.container.querySelector('[data-event-id="m1"]') as HTMLElement;
+
+  it("button の aria-label にイベント名を含む（title 属性任せにしない）", () => {
+    const r = renderMarker();
+    expect(btn(r).getAttribute("aria-label")).toContain("出来事A");
+  });
+
+  it("aria-label に種別（出生/死亡）と確度（おおよそ/不明）を統合する", () => {
+    const birth = renderMarker({
+      event: ev({ kind: "birth", precision: "approx" }),
+    });
+    const label = btn(birth).getAttribute("aria-label")!;
+    expect(label).toContain("出生");
+    expect(label).toContain("おおよそ");
+    // 確定(exact)は無印（視覚の確度チップと同じ扱い）。
+    const exact = renderMarker({ event: ev({ precision: "exact" }) });
+    expect(btn(exact).getAttribute("aria-label")).not.toContain("確定");
+  });
+
+  it("aria-label に矛盾/秘匿の状態を含む", () => {
+    const r = renderMarker({
+      event: ev({ secret: true }),
+      conflict: true,
+    });
+    const label = btn(r).getAttribute("aria-label")!;
+    expect(label).toContain("整合警告あり");
+    expect(label).toContain("秘匿");
+  });
+
+  it("無題イベントは aria-label がフォールバック名になる", () => {
+    const r = renderMarker({ event: ev({ title: "" }) });
+    expect(btn(r).getAttribute("aria-label")).toContain("無題のイベント");
+  });
+
+  it("選択状態は aria-current=true（非選択時は属性なし）", () => {
+    const on = renderMarker({ selected: true });
+    expect(btn(on).getAttribute("aria-current")).toBe("true");
+    const off = renderMarker({ selected: false });
+    expect(btn(off).getAttribute("aria-current")).toBeNull();
+  });
+
+  it("種別グリフは装飾（aria-hidden）— 種別は button の aria-label が伝える", () => {
+    for (const kind of ["generic", "birth"] as const) {
+      const r = renderMarker({ event: ev({ kind }) });
+      const glyph = r.container.querySelector('[data-testid="marker-glyph"]')!;
+      expect(glyph.getAttribute("aria-hidden")).toBe("true");
+    }
+  });
+});
+
 describe("EventMarker — リサイズグリップ / カーソル", () => {
   it("interval+resizable は両端にリサイズグリップを描く（既定は隠れ group-hover で表示）", () => {
     const { container } = renderMarker({
@@ -323,10 +375,12 @@ describe("EventMarker — リサイズグリップ / カーソル", () => {
     });
     const grips = container.querySelectorAll('[data-testid="resize-grip"]');
     expect(grips.length).toBe(2);
-    // 既定は非表示(opacity-0)、ホバー(group-hover)でフェードイン。
+    // 既定は非表示(opacity-0)、ホバー(group-hover)/キーボードフォーカス
+    // (group-focus-visible)でフェードイン（WCAG 1.4.13）。
     for (const g of grips) {
       expect(g.className).toContain("opacity-0");
       expect(g.className).toContain("group-hover:opacity-100");
+      expect(g.className).toContain("group-focus-visible:opacity-100");
     }
     // 両端の data-resize 帯の中に居る（クリック判定は帯側が担う）。
     expect(

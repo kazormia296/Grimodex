@@ -28,8 +28,16 @@ import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import type { MentionPopupState } from "../extensions/ChatMentionExtension";
 import type { CommandPopupState } from "../extensions/ChatSlashCommandExtension";
-import { MentionPopup } from "./MentionPopup";
-import { ChatCommandPopup } from "./ChatCommandPopup";
+import {
+  MentionPopup,
+  MENTION_LISTBOX_ID,
+  mentionOptionId,
+} from "./MentionPopup";
+import {
+  ChatCommandPopup,
+  CHAT_COMMAND_LISTBOX_ID,
+  chatCommandOptionId,
+} from "./ChatCommandPopup";
 import { ReasoningEffortChip } from "./ReasoningEffortChip";
 import type { ReasoningEffortValue } from "./ReasoningEffortChip";
 import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
@@ -336,6 +344,49 @@ export function ChatInput({
   useEffect(() => {
     if (editorRef) editorRef.current = editor;
   }, [editor, editorRef]);
+
+  // a11y: 補完ポップアップ(listbox)と入力欄の combobox 的な aria 配線。
+  // editorProps.attributes は生成時固定のため、開閉・選択の変化は
+  // contenteditable の DOM 属性を直接同期する（aria 属性のみ、挙動不変）。
+  useEffect(() => {
+    const dom = editor?.view.dom;
+    if (!dom) return;
+    // popup オブジェクトは extension の onUpdate 毎に新規参照になるため、
+    // 実際に値が変わったときだけ DOM を書き換える
+    const sync = (name: string, value: string | null) => {
+      if (value === null) {
+        if (dom.hasAttribute(name)) dom.removeAttribute(name);
+      } else if (dom.getAttribute(name) !== value) {
+        dom.setAttribute(name, value);
+      }
+    };
+    const mentionOpen = mentionPopup !== null && mentionPopup.items.length > 0;
+    const commandOpen = commandPopup !== null && commandPopup.items.length > 0;
+    if (mentionOpen || commandOpen) {
+      // items 縮小に index の追従が一瞬遅れても存在しない option id を指さない
+      const clamp = (index: number, length: number) =>
+        Math.max(0, Math.min(index, length - 1));
+      sync("aria-expanded", "true");
+      sync(
+        "aria-controls",
+        mentionOpen ? MENTION_LISTBOX_ID : CHAT_COMMAND_LISTBOX_ID,
+      );
+      sync(
+        "aria-activedescendant",
+        mentionOpen && mentionPopup !== null
+          ? mentionOptionId(clamp(mentionIndex, mentionPopup.items.length))
+          : commandPopup !== null
+            ? chatCommandOptionId(
+                clamp(commandIndex, commandPopup.items.length),
+              )
+            : null,
+      );
+    } else {
+      sync("aria-expanded", "false");
+      sync("aria-controls", null);
+      sync("aria-activedescendant", null);
+    }
+  }, [editor, mentionPopup, mentionIndex, commandPopup, commandIndex]);
 
   // G18: editLastFnRef を最新の messages/editor に合わせて更新
   useEffect(() => {

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
+import { announce } from "@/lib/a11y/announcer";
 import type {
   Diagnostic,
   DisableDirective,
@@ -221,6 +222,14 @@ export const useLintStore = create<LintState>()((set, get) => {
    * When this changes the entire block cache is invalidated.
    */
   let lastConfigKey = "";
+  /**
+   * SR 読み上げ (announce) の重複抑止。lint は入力のたびに debounce 実行
+   * されるため、毎回読み上げるとノイズになる — 診断数が変化したときだけ
+   * 完了を announce する (視覚的にはパネルの件数変化に相当する情報)。
+   * Lint はトーストを出さない経路なので二重読み上げにはならない。
+   */
+  let lastAnnouncedCount: number | null = null;
+  let lastAnnouncedError: string | null = null;
 
   return {
     currentSceneId: null,
@@ -254,6 +263,8 @@ export const useLintStore = create<LintState>()((set, get) => {
     setCurrentScene: (sceneId) => {
       blockDiagCache = new Map();
       lastConfigKey = "";
+      lastAnnouncedCount = null;
+      lastAnnouncedError = null;
       set({
         currentSceneId: sceneId,
         rawDiagnostics: [],
@@ -267,6 +278,8 @@ export const useLintStore = create<LintState>()((set, get) => {
     clear: () => {
       blockDiagCache = new Map();
       lastConfigKey = "";
+      lastAnnouncedCount = null;
+      lastAnnouncedError = null;
       set({
         rawDiagnostics: [],
         diagnostics: [],
@@ -415,6 +428,17 @@ export const useLintStore = create<LintState>()((set, get) => {
           isLinting: false,
           lastErrorMessage: null,
         }));
+        // Lint 完了を SR へ通知 (WCAG 4.1.3)。件数が変わったときだけ。
+        if (filtered.length !== lastAnnouncedCount) {
+          lastAnnouncedCount = filtered.length;
+          announce(
+            i18next.t("lint.a11y.completed", {
+              count: filtered.length,
+              defaultValue: "Lint が完了しました。指摘は {{count}} 件です",
+            }),
+          );
+        }
+        lastAnnouncedError = null;
       } catch (err) {
         if (get().pendingRequestId !== requestId) return;
         // Clear the block cache on error — stale entries could mask the root
@@ -429,6 +453,12 @@ export const useLintStore = create<LintState>()((set, get) => {
           isLinting: false,
           lastErrorMessage: message,
         });
+        // エラーはパネル表示のみでトーストが出ないため SR へも通知する。
+        if (message !== lastAnnouncedError) {
+          lastAnnouncedError = message;
+          announce(message, "assertive");
+        }
+        lastAnnouncedCount = null;
       }
     },
   };

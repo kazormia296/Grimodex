@@ -113,3 +113,20 @@ describe("TimelineInspector – 未選択時のプレースホルダー", () => 
     expect(queryByRole("textbox")).toBeNull();
   });
 });
+
+describe("TimelineInspector – close ボタン a11y", () => {
+  beforeEach(resetStore);
+
+  it("close ボタンに aria-label と focus-visible ring がある", () => {
+    const { getByLabelText } = render(
+      <TimelineInspector
+        node={null}
+        width={224}
+        onClose={vi.fn()}
+        onUpdateStoryTimeLabel={vi.fn()}
+      />,
+    );
+    const btn = getByLabelText("インスペクターを閉じる");
+    expect(btn.className).toContain("focus-visible:ring-1");
+  });
+});

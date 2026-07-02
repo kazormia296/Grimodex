@@ -1791,7 +1791,11 @@ export function MapCanvas() {
                   borderRadius: "50%",
                   border: "2px solid var(--border)",
                   borderTopColor: "var(--foreground)",
-                  animation: "grimodex-spin 0.8s linear infinite",
+                  // Reduced Motion 時は回転を止め、静的な進行インジケータ
+                  // (リング + 下のラベル) として残す。
+                  animation: reducedMotion
+                    ? "none"
+                    : "grimodex-spin 0.8s linear infinite",
                 }}
               />
               <span>{t("map.aiBranch.generating")}</span>
