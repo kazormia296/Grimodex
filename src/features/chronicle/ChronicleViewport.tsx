@@ -569,13 +569,21 @@ export function ChronicleViewport({
       return;
     }
 
-    // ── 空白: 横パン＋（非ドラッグ時）位置選択 ──
+    // ── 空白: パン（横=view / 縦=scrollTop）＋（非ドラッグ時）位置選択 ──
+    // 中ボタンのハンドツールと同じく縦横両方向へパンできる（横は panByPx、縦は
+    // スクロール領域の scrollTop を直接移動）。以前は横だけで縦に動かせなかった。
     const startView = viewRef.current;
+    const scrollEl = scrollAreaRef.current;
+    const startScrollTop = scrollEl?.scrollTop ?? 0;
     bindDrag(
       (ev) => {
         const dx = ev.clientX - startX;
-        if (Math.abs(dx) > DRAG_THRESHOLD) draggedRef.current = true;
+        const dy = ev.clientY - startY;
+        // 縦だけのドラッグもドラッグ扱い（=クリック位置選択を抑止）にするため dy も見る。
+        if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)
+          draggedRef.current = true;
         onViewChangeRef.current(panByPx({ view: startView, dx }));
+        if (scrollEl) scrollEl.scrollTop = startScrollTop - dy;
       },
       (ev) => {
         if (!draggedRef.current && cb.onSelectPosition) {

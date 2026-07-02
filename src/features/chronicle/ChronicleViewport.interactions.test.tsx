@@ -864,6 +864,54 @@ describe("ChronicleViewport — 中ドラッグパン / 日時バブル / ライ
     expect(tr.style.cursor).not.toBe("grabbing");
   });
 
+  it("中ボタンドラッグで縦パン（scrollTop を移動）", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    const scrollArea = tr.parentElement as HTMLElement;
+    scrollArea.scrollTop = 100;
+    fireEvent.mouseDown(tr, { button: 1, clientX: 100, clientY: 100 });
+    // 上へ 60px ドラッグ → コンテンツは下へスクロール: 100 - (40 - 100) = 160
+    fireEvent.mouseMove(document, { clientX: 100, clientY: 40 });
+    expect(scrollArea.scrollTop).toBe(160);
+    fireEvent.mouseUp(document, { clientX: 100, clientY: 40 });
+  });
+
+  it("空白ドラッグで縦にもパンする（横=view / 縦=scrollTop）", () => {
+    const onViewChange = vi.fn();
+    const props = makeProps({ onViewChange });
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    const scrollArea = tr.parentElement as HTMLElement;
+    scrollArea.scrollTop = 100;
+    fireEvent.mouseDown(tr, { button: 0, clientX: 300, clientY: 100 });
+    // 斜めドラッグ: 横 +60 / 縦 上へ 60。縦: 100 - (40 - 100) = 160
+    fireEvent.mouseMove(document, { clientX: 360, clientY: 40 });
+    expect(scrollArea.scrollTop).toBe(160);
+    // 横パン（従来挙動）も維持される
+    expect(onViewChange).toHaveBeenCalled();
+    fireEvent.mouseUp(document, { clientX: 360, clientY: 40 });
+    // ドラッグ扱いなので位置選択は発火しない
+    expect(props.onSelectPosition).not.toHaveBeenCalled();
+  });
+
+  it("縦のみの空白ドラッグはクリック選択にならない（onSelectPosition 不発）", () => {
+    const props = makeProps();
+    const { container } = render(
+      <ChronicleViewport {...(props as unknown as VP)} />,
+    );
+    const tr = track(container);
+    fireEvent.mouseDown(tr, { button: 0, clientX: 300, clientY: 100 });
+    // 横移動なし・縦だけ 60px 動かす
+    fireEvent.mouseMove(document, { clientX: 300, clientY: 40 });
+    fireEvent.mouseUp(document, { clientX: 300, clientY: 40 });
+    expect(props.onSelectPosition).not.toHaveBeenCalled();
+  });
+
   it("マーカードラッグ中に日時バブルを表示し、離すと消える（body へ portal）", () => {
     const formatDayLabel = vi.fn((d: number) => `day:${Math.round(d)}`);
     const props = makeProps({ formatDayLabel });

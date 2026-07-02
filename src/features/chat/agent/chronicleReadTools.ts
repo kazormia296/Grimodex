@@ -6,7 +6,6 @@ import {
   listEventParticipantsForProject,
   listEventRelations,
   getProjectCalendar,
-  type CalendarRow,
 } from "@/features/chronicle/api";
 import {
   getSharedEvents,
@@ -27,7 +26,12 @@ import {
   resolveSceneAnchor,
   type SceneChronicle,
 } from "@/features/chronicle/resolveSceneAnchor";
-import type { ChronicleCalendar } from "@/features/chronicle/chronicleTime";
+import {
+  calendarFromRow,
+  formatChronicleDate,
+  type ChronicleCalendar,
+  type DateLang,
+} from "@/features/chronicle/chronicleTime";
 import type { EventPrecision } from "@/db/schema";
 import type { ToolResult } from "./agentTypes";
 
@@ -40,48 +44,6 @@ const noProject = (name: string, content: unknown): ToolReturn => ({
   tokensUsed: 0,
 });
 
-function parseCalendar(row: CalendarRow | null): ChronicleCalendar | null {
-  if (!row) return null;
-  let boundaries: ChronicleCalendar["seasonBoundaries"] = [];
-  try {
-    const parsed = JSON.parse(row.seasonBoundaries);
-    if (Array.isArray(parsed)) boundaries = parsed;
-  } catch {
-    boundaries = [];
-  }
-  let months: ChronicleCalendar["months"] = [];
-  try {
-    const parsed = JSON.parse(row.months);
-    if (Array.isArray(parsed)) months = parsed;
-  } catch {
-    months = [];
-  }
-  let weekdayNames: ChronicleCalendar["weekdayNames"] = [];
-  try {
-    const parsed = JSON.parse(row.weekdayNames);
-    if (Array.isArray(parsed)) weekdayNames = parsed;
-  } catch {
-    weekdayNames = [];
-  }
-  let leap: ChronicleCalendar["leap"] = { kind: "none" };
-  try {
-    const parsed = JSON.parse(row.leapRule) as ChronicleCalendar["leap"];
-    if (parsed?.kind === "gregorian") leap = parsed;
-  } catch {
-    leap = { kind: "none" };
-  }
-  return {
-    daysPerYear: row.daysPerYear,
-    seasonBoundaries: boundaries,
-    startYear: row.startYear,
-    months,
-    weekdayNames,
-    weekdayStartIndex: row.weekdayStartIndex,
-    leap,
-    ageReckoning: row.ageReckoning === "counting" ? "counting" : "full",
-  };
-}
-
 const result = (
   name: string,
   content: unknown,
@@ -92,6 +54,21 @@ const result = (
   summary,
   tokensUsed: countTokens(JSON.stringify(content)),
 });
+
+/**
+ * 出来事の day 番号を暦整形した文字列（pull ツールの絶対日付）。暦なし・粒度 none・
+ * 日付欠落は null。push（相対時間）と違い pull はトークン圧が低いので粒度フルで出す。
+ */
+function fmtEventDate(
+  cal: ChronicleCalendar | null,
+  day: number | null,
+  minute: number | null,
+  granularity: string,
+  lang: DateLang,
+): string | null {
+  if (!cal) return null;
+  return formatChronicleDate(day, minute, granularity, cal, lang) || null;
+}
 
 /**
  * AI 秘匿: 現在シーン文脈で「可視」イベント id 集合を算出（spec §2.5）。
@@ -128,6 +105,9 @@ export async function listEventsTool(
   const kind = String(params["kind"] ?? "").trim();
   const events = await getSharedEvents(projectId);
   const names = await getSharedCodexNames(projectId);
+  const calendarRow = await getProjectCalendar(projectId);
+  const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
+  const lang: DateLang = i18next.language === "en" ? "en" : "ja";
   // AI 秘匿: 現在シーンで hidden な secret イベントを除外。
   const visible = await visibleEventIds(projectId, events);
   const shown = events.filter((e) => visible.has(e.id));
@@ -142,6 +122,13 @@ export async function listEventsTool(
       kind: e.kind,
       ordinal: e.ordinal,
       startTime: e.startTime,
+      startDate: fmtEventDate(
+        calendar,
+        e.startTime,
+        e.startMinute,
+        e.startGranularity,
+        lang,
+      ),
       primaryCharacter: e.primaryCodexId
         ? (names.get(e.primaryCodexId) ?? null)
         : null,
@@ -177,14 +164,16 @@ export async function getEventDetailTool(
       tokensUsed: 0,
     };
 
-  const [names, participants, allSceneEvents, allRelations] = await Promise.all(
-    [
+  const [names, participants, allSceneEvents, allRelations, calendarRow] =
+    await Promise.all([
       getSharedCodexNames(projectId),
       listEventParticipantsForProject(projectId, [eventId]),
       getSharedSceneEvents(projectId),
       listEventRelations(projectId),
-    ],
-  );
+      getProjectCalendar(projectId),
+    ]);
+  const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
+  const lang: DateLang = i18next.language === "en" ? "en" : "ja";
   const sceneLinks = allSceneEvents.filter((s) => s.eventId === eventId);
   const titleByEvent = new Map(events.map((e) => [e.id, e.title] as const));
   const nodes = useTreeStore.getState().nodes;
@@ -202,6 +191,21 @@ export async function getEventDetailTool(
     endMinute: ev.endMinute,
     startGranularity: ev.startGranularity,
     endGranularity: ev.endGranularity,
+    // 暦整形済みの絶対日付（暦なし/粒度 none は null）。start/end 両端。
+    startDate: fmtEventDate(
+      calendar,
+      ev.startTime,
+      ev.startMinute,
+      ev.startGranularity,
+      lang,
+    ),
+    endDate: fmtEventDate(
+      calendar,
+      ev.endTime,
+      ev.endMinute,
+      ev.endGranularity,
+      lang,
+    ),
     precision: ev.precision,
     primaryCharacter: ev.primaryCodexId
       ? (names.get(ev.primaryCodexId) ?? null)
@@ -254,7 +258,7 @@ export async function getCharacterTimelineTool(
     getProjectCalendar(projectId),
     getSharedCodexNames(projectId),
   ]);
-  const calendar = parseCalendar(calendarRow);
+  const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
   // AI 秘匿: hidden な secret イベントを除外（秘匿された生年・死亡・経歴の漏洩防止）。
   const visible = await visibleEventIds(projectId, events);
   const visibleEvents = events.filter((e) => visible.has(e.id));
@@ -377,7 +381,7 @@ export async function getChronicleStateTool(
       participants: vis.participants,
       relations: vis.relations,
       sceneEvents: vis.sceneEvents,
-      calendar: parseCalendar(calendarRow),
+      calendar: calendarRow ? calendarFromRow(calendarRow) : null,
       characterIds,
       codexNames: names,
     },

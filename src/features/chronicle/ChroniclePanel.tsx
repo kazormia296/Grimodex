@@ -261,10 +261,15 @@ export function ChroniclePanel() {
       .map((n) => ({
         id: n.id,
         title: n.title,
+        // 日時が明示設定済みか（開始時刻あり かつ 粒度 != none）。追加時に
+        // イベント優先で上書きすると消えるため、SceneLinkField が確認ダイアログを出す。
+        hasDate:
+          n.chronicleStartTime != null &&
+          (n.chronicleStartGranularity ?? "none") !== "none",
         pos: order.get(n.id) ?? Number.POSITIVE_INFINITY,
       }))
       .sort((a, b) => a.pos - b.pos)
-      .map(({ id, title }) => ({ id, title }));
+      .map(({ id, title, hasDate }) => ({ id, title, hasDate }));
   }, [nodes]);
 
   const loadedProjectIdRef = useRef<string | null>(null);
@@ -1362,10 +1367,28 @@ export function ChroniclePanel() {
     [selected, sceneIdForEvent],
   );
   // scene 紐付けイベント選択時、Timeline と Chat/エディタの現在シーンも同期する。
+  // 自分が Timeline へ同期した scene を覚えておき、選択解除時に取り消す。これを
+  // しないと Timeline 選択が残り、その scene に紐づく出来事へ related の薄いリング
+  // (box-shadow 3px chronicle-selection 22%) が貼り付いたままになる（選択解除後も残留）。
+  const syncedSceneRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!primaryLinkedSceneId) return;
-    useTimelineStore.getState().selectNode(primaryLinkedSceneId);
+    const tl = useTimelineStore.getState();
+    if (!primaryLinkedSceneId) {
+      // 選択解除: 直前に自分が同期した scene だけを解除する。ユーザーが Timeline で
+      // 直接選んだ選択（他 id や複数選択）は touch しない（blast radius 最小化）。
+      if (
+        syncedSceneRef.current &&
+        tl.selectedNodeIds.length === 1 &&
+        tl.selectedNodeIds[0] === syncedSceneRef.current
+      ) {
+        tl.clearSelection();
+      }
+      syncedSceneRef.current = null;
+      return;
+    }
+    tl.selectNode(primaryLinkedSceneId);
     useTreeStore.getState().setActiveScene(primaryLinkedSceneId);
+    syncedSceneRef.current = primaryLinkedSceneId;
   }, [primaryLinkedSceneId]);
 
   const handleStamp = useCallback(async () => {

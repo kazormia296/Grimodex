@@ -587,6 +587,60 @@ describe("ChroniclePanel シーンを開く / 選択伝播", () => {
     expect(useTreeStore.getState().activeSceneId).toBe("sc1");
   });
 
+  it("イベント選択解除で、同期していた Timeline 選択も解除する（related 薄リング残留の防止）", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "scene:sc1" });
+    });
+    await waitFor(() => {
+      expect(useTimelineStore.getState().selectedNodeIds).toContain("sc1");
+    });
+    // 選択解除 → 自分が同期した Timeline 選択も外れる（薄い related リングを残さない）。
+    act(() => {
+      useChronicleStore.setState({
+        selectedEventId: null,
+        selectedEventIds: [],
+      });
+    });
+    await waitFor(() => {
+      expect(useTimelineStore.getState().selectedNodeIds).toEqual([]);
+    });
+  });
+
+  it("ユーザーが Timeline で直接選び直した選択は、イベント選択解除で消さない", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({
+      nodes: [makeScene({ id: "sc1" }), makeScene({ id: "sc2" })],
+    });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "scene:sc1" });
+    });
+    await waitFor(() => {
+      expect(useTimelineStore.getState().selectedNodeIds).toContain("sc1");
+    });
+    // ユーザーが Timeline 側で別 scene を選び直す（chronicle の同期とは別経路）。
+    act(() => {
+      useTimelineStore.getState().selectNode("sc2");
+    });
+    act(() => {
+      useChronicleStore.setState({
+        selectedEventId: null,
+        selectedEventIds: [],
+      });
+    });
+    // sc2（ユーザー選択）は据え置き（自分が同期した sc1 とは違うので触らない）。
+    await waitFor(() => {
+      expect(useTimelineStore.getState().selectedNodeIds).toEqual(["sc2"]);
+    });
+  });
+
   it("scene-event はインスペクタの「シーンを開く」で openPinned する", async () => {
     apiMocks.listEvents.mockResolvedValue([]);
     useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });

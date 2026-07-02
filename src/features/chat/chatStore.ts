@@ -196,7 +196,7 @@ import {
 import { assembleChronicleSnapshotText } from "@/features/chronicle/chronicleSnapshot";
 import type { SceneChronicle } from "@/features/chronicle/resolveSceneAnchor";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
-import type { ChronicleCalendar } from "@/features/chronicle/chronicleTime";
+import { calendarFromRow } from "@/features/chronicle/chronicleTime";
 import type { EventPrecision } from "@/db/schema";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
@@ -1890,50 +1890,9 @@ async function buildChronicleSnapshotTextForScene(
     ],
   );
 
-  let calendar: ChronicleCalendar | null = null;
-  if (calendarRow) {
-    let boundaries: ChronicleCalendar["seasonBoundaries"] = [];
-    try {
-      const parsed = JSON.parse(calendarRow.seasonBoundaries);
-      if (Array.isArray(parsed)) boundaries = parsed;
-    } catch {
-      boundaries = [];
-    }
-    let months: ChronicleCalendar["months"] = [];
-    try {
-      const parsed = JSON.parse(calendarRow.months);
-      if (Array.isArray(parsed)) months = parsed;
-    } catch {
-      months = [];
-    }
-    let weekdayNames: ChronicleCalendar["weekdayNames"] = [];
-    try {
-      const parsed = JSON.parse(calendarRow.weekdayNames);
-      if (Array.isArray(parsed)) weekdayNames = parsed;
-    } catch {
-      weekdayNames = [];
-    }
-    let leap: ChronicleCalendar["leap"] = { kind: "none" };
-    try {
-      const parsed = JSON.parse(
-        calendarRow.leapRule,
-      ) as ChronicleCalendar["leap"];
-      if (parsed?.kind === "gregorian") leap = parsed;
-    } catch {
-      leap = { kind: "none" };
-    }
-    calendar = {
-      daysPerYear: calendarRow.daysPerYear,
-      seasonBoundaries: boundaries,
-      startYear: calendarRow.startYear,
-      months,
-      weekdayNames,
-      weekdayStartIndex: calendarRow.weekdayStartIndex,
-      leap,
-      ageReckoning:
-        calendarRow.ageReckoning === "counting" ? "counting" : "full",
-    };
-  }
+  // 暦復元は正本 calendarFromRow に委譲（eras/timezone/reform/lunarTzMinutes を
+  // 落とさない。旧インラインパースは季節/月/曜日/閏のみで元号等を捨てていた）。
+  const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
 
   const readingOrder = computeGlobalSceneOrder(nodes);
   return assembleChronicleSnapshotText({

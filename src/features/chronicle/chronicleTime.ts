@@ -424,6 +424,111 @@ export function formatChronicleDate(
   return dayStr;
 }
 
+/**
+ * 暦の DB 行（生 JSON 文字列を持つ）の構造的型。api の CalendarRow はこれに
+ * projectId/createdAt/updatedAt を足した上位互換なので、そのまま calendarFromRow に
+ * 渡せる。純粋モジュール（chronicleTime）に置くことで、api（drizzle 依存）を import
+ * せずに暦復元を共有できる（テストのモジュールモック回避・重複パース集約）。
+ */
+export interface CalendarRowData {
+  daysPerYear: number;
+  seasonBoundaries: string;
+  startYear: number;
+  months: string;
+  weekdayNames: string;
+  weekdayStartIndex: number;
+  leapRule: string;
+  ageReckoning: string;
+  eras: string;
+  reform: string;
+  timezone: string;
+  lunarTzMinutes: number;
+}
+
+/**
+ * CalendarRowData（生 JSON 文字列を持つ DB 行）を UI/注入が使う ChronicleCalendar へ復元する。
+ * months/seasonBoundaries/weekdayNames/eras/reform/timezone を JSON parse し、不正なら
+ * フォールバック。useSeasonConflicts / useProjectCalendar / AI 注入（push/pull）の重複
+ * パースをここへ集約し、eras/timezone/reform/lunarTzMinutes の取りこぼしを防ぐ。
+ */
+export function calendarFromRow(row: CalendarRowData): ChronicleCalendar {
+  const parse = <T>(raw: string, fallback: T): T => {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  };
+  const leap = parse<LeapRule>(row.leapRule, { kind: "none" });
+  const ageReckoning: AgeReckoning =
+    row.ageReckoning === "counting" ? "counting" : "full";
+  return {
+    daysPerYear: row.daysPerYear,
+    seasonBoundaries: parse<SeasonBoundary[]>(row.seasonBoundaries, []),
+    startYear: row.startYear,
+    months: parse<MonthDef[]>(row.months, []),
+    weekdayNames: parse<string[]>(row.weekdayNames, []),
+    weekdayStartIndex: row.weekdayStartIndex,
+    leap: leap && leap.kind === "gregorian" ? leap : { kind: "none" },
+    ageReckoning,
+    eras: parse<EraDef[]>(row.eras, []),
+    reform: parse<CalendarReform | null>(row.reform, null) ?? undefined,
+    timezone: parse<TimeZoneDef | null>(row.timezone, null) ?? undefined,
+    lunarTzMinutes: row.lunarTzMinutes,
+  };
+}
+
+/**
+ * アンカー（現在シーンの作中時刻）から見た出来事の「相対時間」ラベル。
+ * AI コンテキスト注入で各出来事に時間距離を与える（絶対日付は独自暦の演算を
+ * モデルに強いるため使わない）。過去方向のみ（recent/offpage はアンカー以前）。
+ *
+ * 規則（**整数演算のみ** — Rust パリティで float 丸め差を出さない）:
+ *  - cal/eventDay/anchorDay いずれか null、または未来（delta<0）→ null（省略）
+ *  - delta==0 → 同日
+ *  - delta>=dpy → 約N年前（N=round(delta/dpy)）
+ *  - months 定義あり && 概算月数>=2 → 約Nヶ月前（N=round(delta·月数/dpy)）
+ *  - それ以外 → N日前（approx 時のみ「約N日前」）
+ * 年/月は本質的に丸めた概算なので常に「約」。日は approx のときだけ「約」。
+ */
+export function formatRelativeDays(
+  eventDay: number | null,
+  anchorDay: number | null,
+  approx: boolean,
+  cal: ChronicleCalendar | null,
+  lang: DateLang = "ja",
+): string | null {
+  if (cal == null || eventDay == null || anchorDay == null) return null;
+  const delta = anchorDay - eventDay;
+  if (delta < 0) return null;
+  const ja = lang === "ja";
+  if (delta === 0) return ja ? "同日" : "same day";
+
+  // round(a/b) を整数で（正の値の round-half-up）: floor((2a+b)/(2b))。
+  const roundDiv = (a: number, b: number): number =>
+    Math.floor((2 * a + b) / (2 * b));
+
+  const dpy = calendarDaysPerYear(cal);
+  const monthCount = cal.months?.length ?? 0;
+
+  if (dpy > 0 && delta >= dpy) {
+    const n = roundDiv(delta, dpy);
+    return ja ? `約${n}年前` : `about ${n} year${n === 1 ? "" : "s"} earlier`;
+  }
+  if (dpy > 0 && monthCount > 0) {
+    const months = roundDiv(delta * monthCount, dpy);
+    if (months >= 2) {
+      return ja
+        ? `約${months}ヶ月前`
+        : `about ${months} month${months === 1 ? "" : "s"} earlier`;
+    }
+  }
+  const suffix = ja ? "日前" : ` day${delta === 1 ? "" : "s"} earlier`;
+  return ja
+    ? `${approx ? "約" : ""}${delta}${suffix}`
+    : `${approx ? "about " : ""}${delta}${suffix}`;
+}
+
 /** 既定の 360日・春夏秋冬 4季暦（新規作成/エディタの初期値）。 */
 export const DEFAULT_SEASON_BOUNDARIES: SeasonBoundary[] = [
   { name: "春", startDayOfYear: 0 },

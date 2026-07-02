@@ -43,15 +43,15 @@
       { "codexId": "mentor", "name": "Mentor", "status": "unknown", "age": null, "location": "Castle" }
     ],
     "recentEvents": [
-      { "eventId": "e1", "title": "Departure", "note": "leaves home" },
-      { "eventId": "eoff", "title": "Rumor spreads", "note": "spread fast" }
+      { "eventId": "e1", "title": "Departure", "note": "leaves home", "relTime": "同日" },
+      { "eventId": "eoff", "title": "Rumor spreads", "note": "spread fast", "relTime": "約20年前" }
     ],
     "unresolvedCausal": [
       { "causeTitle": "Departure", "effectTitle": "Final battle" }
     ],
     "offpage": [
-      { "eventId": "eb", "title": "Hero born", "note": null },
-      { "eventId": "eoff", "title": "Rumor spreads", "note": "spread fast" }
+      { "eventId": "eb", "title": "Hero born", "note": null, "relTime": "約20年前" },
+      { "eventId": "eoff", "title": "Rumor spreads", "note": "spread fast", "relTime": "約20年前" }
     ]
   }
 }

@@ -11,6 +11,7 @@ import {
   activeTimeZone,
   formatTimeOfDay,
   formatChronicleDate,
+  formatRelativeDays,
   type ChronicleCalendar,
 } from "./chronicleTime";
 
@@ -398,6 +399,75 @@ describe("formatChronicleDate", () => {
   });
   it("dayNumber が null なら空", () => {
     expect(formatChronicleDate(null, null, "day", GREG, "ja")).toBe("");
+  });
+});
+
+describe("formatRelativeDays（アンカーからの相対時間）", () => {
+  const CAL360: ChronicleCalendar = { daysPerYear: 360, seasonBoundaries: [] };
+  const CAL_MONTHS: ChronicleCalendar = {
+    daysPerYear: 360,
+    seasonBoundaries: [],
+    months: Array.from({ length: 12 }, (_, i) => ({
+      name: `${i + 1}月`,
+      days: 30,
+    })),
+  };
+
+  it("暦なし / 日付欠落は null（省略）", () => {
+    expect(formatRelativeDays(0, 100, false, null)).toBeNull();
+    expect(formatRelativeDays(null, 100, false, CAL360)).toBeNull();
+    expect(formatRelativeDays(0, null, false, CAL360)).toBeNull();
+  });
+
+  it("未来（delta<0）は嘘ラベルを出さず null", () => {
+    expect(formatRelativeDays(100, 0, false, CAL360)).toBeNull();
+  });
+
+  it("同日", () => {
+    expect(formatRelativeDays(50, 50, false, CAL360)).toBe("同日");
+    expect(formatRelativeDays(50, 50, false, CAL360, "en")).toBe("same day");
+  });
+
+  it("年スケール（delta>=dpy、四捨五入）", () => {
+    expect(formatRelativeDays(0, 360, false, CAL360)).toBe("約1年前");
+    // 7100/360 = 19.72 → 20（fixture 01 と一致）
+    expect(formatRelativeDays(0, 7100, false, CAL360)).toBe("約20年前");
+    // 540/360 = 1.5 → 2（round-half-up）
+    expect(formatRelativeDays(0, 540, false, CAL360)).toBe("約2年前");
+    // approx でも年は常に「約」（差分なし）
+    expect(formatRelativeDays(0, 360, true, CAL360)).toBe("約1年前");
+    expect(formatRelativeDays(0, 360, false, CAL360, "en")).toBe(
+      "about 1 year earlier",
+    );
+    expect(formatRelativeDays(0, 720, false, CAL360, "en")).toBe(
+      "about 2 years earlier",
+    );
+  });
+
+  it("月スケール（months 定義あり && 概算 >= 2ヶ月）", () => {
+    // 212·12/360 = 7.07 → 7（fixture 05 と一致）
+    expect(formatRelativeDays(0, 212, false, CAL_MONTHS)).toBe("約7ヶ月前");
+    // 45·12/360 = 1.5 → 2
+    expect(formatRelativeDays(0, 45, false, CAL_MONTHS)).toBe("約2ヶ月前");
+    expect(formatRelativeDays(0, 45, false, CAL_MONTHS, "en")).toBe(
+      "about 2 months earlier",
+    );
+  });
+
+  it("日スケール（月未満 / months 未定義）", () => {
+    // months なし → 月ブランチをスキップして日表記
+    expect(formatRelativeDays(0, 30, false, CAL360)).toBe("30日前");
+    // months あり・概算 1ヶ月 → まだ日表記
+    expect(formatRelativeDays(0, 30, false, CAL_MONTHS)).toBe("30日前");
+    // approx は日に「約」を付す
+    expect(formatRelativeDays(0, 30, true, CAL360)).toBe("約30日前");
+    expect(formatRelativeDays(0, 5, false, CAL360, "en")).toBe(
+      "5 days earlier",
+    );
+    expect(formatRelativeDays(0, 1, false, CAL360, "en")).toBe("1 day earlier");
+    expect(formatRelativeDays(0, 5, true, CAL360, "en")).toBe(
+      "about 5 days earlier",
+    );
   });
 });
 

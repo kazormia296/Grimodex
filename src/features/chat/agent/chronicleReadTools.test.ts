@@ -52,8 +52,35 @@ function ev(p: Record<string, unknown>): Record<string, unknown> {
     locationCodexId: p.locationCodexId ?? null,
     startTime: p.startTime ?? null,
     endTime: p.endTime ?? null,
+    startMinute: p.startMinute ?? null,
+    endMinute: p.endMinute ?? null,
+    startGranularity: p.startGranularity ?? "none",
+    endGranularity: p.endGranularity ?? "none",
     precision: "exact",
     kind: p.kind ?? "generic",
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+/** 12ヶ月×30日・startYear 1000 の暦行（暦整形の startDate 検証用）。 */
+function calWithMonths(): Record<string, unknown> {
+  return {
+    projectId: "p1",
+    daysPerYear: 360,
+    seasonBoundaries: "[]",
+    startYear: 1000,
+    months: JSON.stringify(
+      Array.from({ length: 12 }, (_, i) => ({ name: `${i + 1}月`, days: 30 })),
+    ),
+    weekdayNames: "[]",
+    weekdayStartIndex: 0,
+    leapRule: '{"kind":"none"}',
+    ageReckoning: "full",
+    eras: "[]",
+    reform: "null",
+    timezone: "null",
+    lunarTzMinutes: 480,
     createdAt: "",
     updatedAt: "",
   };
@@ -101,6 +128,24 @@ describe("listEventsTool", () => {
     treeState.projectId = "";
     const r = await listEventsTool({});
     expect(r.summary).toBe("No active project");
+  });
+
+  it("暦設定時に各イベントへ暦整形済み startDate を付す（暦なし/粒度 none は null）", async () => {
+    calendarRow = calWithMonths();
+    events.push(
+      {
+        ...ev({ id: "e1", title: "戴冠", startTime: 0 }),
+        startGranularity: "day",
+      },
+      ev({ id: "e2", title: "順序のみ" }), // startTime null / 粒度 none
+    );
+    const evs = (await listEventsTool({})).content as {
+      events: { id: string; startDate: string | null }[];
+    };
+    expect(evs.events.find((e) => e.id === "e1")?.startDate).toContain(
+      "1000年",
+    );
+    expect(evs.events.find((e) => e.id === "e2")?.startDate).toBeNull();
   });
 });
 
@@ -152,6 +197,21 @@ describe("getEventDetailTool", () => {
     ]);
     expect(c.scenes).toEqual([{ sceneId: "s1", title: "シーン1" }]);
     expect(c.relations).toEqual([{ cause: "毒殺", effect: "王の死" }]);
+  });
+
+  it("暦設定時に startDate/endDate を暦整形して付す（粒度 none/暦なしは null）", async () => {
+    calendarRow = calWithMonths();
+    events.push({
+      ...ev({ id: "e1", title: "祭", startTime: 0, endTime: 90 }),
+      startGranularity: "day",
+      endGranularity: "day",
+    });
+    const c = (await getEventDetailTool({ eventId: "e1" })).content as {
+      startDate: string | null;
+      endDate: string | null;
+    };
+    expect(c.startDate).toContain("1000年"); // day0 = 1000年1月1日
+    expect(c.endDate).toContain("1000年4月1日"); // day90 = 4月1日
   });
 });
 
@@ -239,5 +299,42 @@ describe("getChronicleStateTool", () => {
     const r = await getChronicleStateTool({});
     expect(r.content).toBeNull();
     expect(r.summary).toBe("No chronicle events");
+  });
+
+  it("eras 付き暦で formattedDate に元号が載る（calendarFromRow 一本化で欠落解消）", async () => {
+    const months = JSON.stringify(
+      Array.from({ length: 12 }, (_, i) => ({ name: `${i + 1}月`, days: 30 })),
+    );
+    calendarRow = {
+      projectId: "p1",
+      daysPerYear: 360,
+      seasonBoundaries: "[]",
+      startYear: 1000,
+      months,
+      weekdayNames: "[]",
+      weekdayStartIndex: 0,
+      leapRule: '{"kind":"none"}',
+      ageReckoning: "full",
+      eras: '[{"name":"明治","startYear":1000}]',
+      reform: "null",
+      timezone: "null",
+      lunarTzMinutes: 480,
+      createdAt: "",
+      updatedAt: "",
+    };
+    // day0 = 暦年 1000 = 明治1年。粒度 day のイベントを stamp してアンカーを日付付きに。
+    events.push({
+      ...ev({ id: "e1", title: "戴冠", ordinal: "a1", startTime: 0 }),
+      startGranularity: "day",
+      startMinute: null,
+      endGranularity: "none",
+      endMinute: null,
+    });
+    sceneEvents.push({ sceneId: "s1", eventId: "e1" });
+
+    const r = await getChronicleStateTool({});
+    const snap = r.content as { time: { formattedDate: string | null } };
+    // 旧 parseCalendar は eras を捨てるため "1000年1月1日"（元号なし）になっていた。
+    expect(snap.time.formattedDate).toContain("明治");
   });
 });

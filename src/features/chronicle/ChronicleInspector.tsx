@@ -35,14 +35,19 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 
+// narrow（＝インスペクタ幅が狭い）ときに下部アクションのラベルを畳んでアイコンのみに
+// する。アクション行を `@container` にして各ラベル span に付ける（Tailwind v4 CQ・調整可）。
+const ACTION_COLLAPSE = "@max-[360px]:hidden";
+
 export interface ChronicleInspectorProps {
   event: EventRow;
   /** レーン（主人物）候補。任意の Codex を割り当て可能なので全件＋種別。 */
   laneOptions: { id: string; name: string; type: string }[];
   /** 場所候補（location 種別）。 */
   locations: { id: string; name: string }[];
-  /** AI 秘匿の reveal アンカー候補（読む順のシーン）。 */
-  scenes?: { id: string; title: string }[];
+  /** AI 秘匿の reveal アンカー候補（読む順のシーン）。hasDate=シーンに日時設定済み
+   * （SceneLinkField が追加時に優先ダイアログを出すか判定する）。 */
+  scenes?: { id: string; title: string; hasDate?: boolean }[];
   calendar: ChronicleCalendar;
   conflicts?: SeasonConflict[];
   ageConflicts?: AgeConflict[];
@@ -816,8 +821,11 @@ export function ChronicleInspector({
             />
           )}
 
-          {/* アクション */}
-          <div className="flex items-center gap-2">
+          {/* アクション（narrow 時はラベルを畳んでアイコンのみ＝@container + collapse span） */}
+          <div
+            data-testid="inspector-actions"
+            className="@container flex items-center gap-2"
+          >
             {onOpenScene && (
               <button
                 type="button"
@@ -829,7 +837,9 @@ export function ChronicleInspector({
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs hover:bg-accent"
               >
                 <ExternalLink className="size-3.5" />
-                {t("chronicle.openScene", "シーンを開く")}
+                <span className={ACTION_COLLAPSE}>
+                  {t("chronicle.openScene", "シーンを開く")}
+                </span>
               </button>
             )}
             {!isScene && linkedSceneCount > 0 && onStamp && (
@@ -843,7 +853,9 @@ export function ChronicleInspector({
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs hover:bg-accent"
               >
                 <ArrowDownToLine className="size-3.5" />
-                {t("chronicle.stamp", "シーンへ刻む")}
+                <span className={ACTION_COLLAPSE}>
+                  {t("chronicle.stamp", "シーンへ刻む")}
+                </span>
               </button>
             )}
             {!isScene && linkedSceneCount > 0 && onPull && (
@@ -857,7 +869,9 @@ export function ChronicleInspector({
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs hover:bg-accent"
               >
                 <ArrowUpFromLine className="size-3.5" />
-                {t("chronicle.pull", "シーンから取込")}
+                <span className={ACTION_COLLAPSE}>
+                  {t("chronicle.pull", "シーンから取込")}
+                </span>
               </button>
             )}
             {/* シーンイベントは「削除」せず作中日付をクリアしてタイムラインから外す。 */}
@@ -870,14 +884,16 @@ export function ChronicleInspector({
                       "chronicle.clearSceneDateHint",
                       "シーンは消さずタイムラインから外します",
                     )
-                  : undefined
+                  : t("chronicle.delete", "削除")
               }
               className="ms-auto inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/30 bg-card px-3 text-xs text-destructive hover:bg-destructive/10"
             >
-              <Trash2 className="size-3.5" />{" "}
-              {isScene
-                ? t("chronicle.clearSceneDate", "作中日付をクリア")
-                : t("chronicle.delete", "削除")}
+              <Trash2 className="size-3.5" />
+              <span className={ACTION_COLLAPSE}>
+                {isScene
+                  ? t("chronicle.clearSceneDate", "作中日付をクリア")
+                  : t("chronicle.delete", "削除")}
+              </span>
             </button>
           </div>
         </div>

@@ -112,14 +112,14 @@
       }
     ],
     "recentEvents": [
-      { "eventId": "e2", "title": "邂逅", "note": null },
-      { "eventId": "e1", "title": "出立", "note": "故郷を発つ" }
+      { "eventId": "e2", "title": "邂逅", "note": null, "relTime": "同日" },
+      { "eventId": "e1", "title": "出立", "note": "故郷を発つ", "relTime": "約7ヶ月前" }
     ],
     "unresolvedCausal": [{ "causeTitle": "出立", "effectTitle": "決戦" }],
     "offpage": [
-      { "eventId": "eb", "title": "勇者誕生", "note": null },
-      { "eventId": "e2", "title": "邂逅", "note": null },
-      { "eventId": "e1", "title": "出立", "note": "故郷を発つ" }
+      { "eventId": "eb", "title": "勇者誕生", "note": null, "relTime": "約20年前" },
+      { "eventId": "e2", "title": "邂逅", "note": null, "relTime": "同日" },
+      { "eventId": "e1", "title": "出立", "note": "故郷を発つ", "relTime": "約7ヶ月前" }
     ]
   }
 }

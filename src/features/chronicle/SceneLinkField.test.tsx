@@ -45,18 +45,31 @@ describe("filterLinkableScenes", () => {
   });
 });
 
-function setup(linkedSceneIds: string[] = []) {
+// 日時ありシーンを含む候補（優先ダイアログの発火確認用）。
+const DATED = [
+  { id: "d1", title: "日時あり", hasDate: true },
+  { id: "d2", title: "日時なし" },
+];
+
+function setup(
+  linkedSceneIds: string[] = [],
+  scenes: { id: string; title: string; hasDate?: boolean }[] = SCENES,
+) {
   const onLink = vi.fn();
   const onUnlink = vi.fn();
   const utils = render(
     <SceneLinkField
-      scenes={SCENES}
+      scenes={scenes}
       linkedSceneIds={linkedSceneIds}
       onLink={onLink}
       onUnlink={onUnlink}
     />,
   );
-  return { ...utils, onLink, onUnlink };
+  const candidate = (id: string) =>
+    utils
+      .getAllByTestId("link-scene-candidate")
+      .find((b) => b.getAttribute("data-scene-id") === id) as HTMLElement;
+  return { ...utils, onLink, onUnlink, candidate };
 }
 
 describe("SceneLinkField", () => {
@@ -101,16 +114,51 @@ describe("SceneLinkField", () => {
     expect(candidates.length).toBe(1);
     expect(candidates[0].getAttribute("data-scene-id")).toBe("s2");
     fireEvent.click(candidates[0]);
-    // 既定はイベント優先。
+    // 日時なしシーンは既定=イベント優先で即リンク（ダイアログ無し）。
     expect(onLink).toHaveBeenCalledWith("s2", "event");
   });
 
-  it("シーン優先トグルに切り替えると mode=scene でリンクする", () => {
-    const { getByTestId, getAllByTestId, onLink } = setup([]);
+  it("日時なしシーンはダイアログ無しで即 onLink(id, 'event')", () => {
+    const { getByTestId, queryByTestId, candidate, onLink } = setup([], DATED);
     fireEvent.click(getByTestId("link-scene-toggle"));
-    fireEvent.click(getByTestId("link-mode-scene"));
-    fireEvent.click(getAllByTestId("link-scene-candidate")[0]);
-    expect(onLink.mock.calls[0][1]).toBe("scene");
+    fireEvent.click(candidate("d2"));
+    expect(onLink).toHaveBeenCalledWith("d2", "event");
+    expect(queryByTestId("link-mode-dialog")).toBeNull();
+  });
+
+  it("日時ありシーンをクリックすると確認ダイアログを開き、まだ onLink しない", () => {
+    const { getByTestId, candidate, onLink } = setup([], DATED);
+    fireEvent.click(getByTestId("link-scene-toggle"));
+    fireEvent.click(candidate("d1"));
+    expect(getByTestId("link-mode-dialog")).toBeTruthy();
+    expect(onLink).not.toHaveBeenCalled();
+  });
+
+  it("ダイアログでイベント優先を選ぶと onLink(id, 'event')・閉じる", () => {
+    const { getByTestId, queryByTestId, candidate, onLink } = setup([], DATED);
+    fireEvent.click(getByTestId("link-scene-toggle"));
+    fireEvent.click(candidate("d1"));
+    fireEvent.click(getByTestId("link-mode-dialog-event"));
+    expect(onLink).toHaveBeenCalledWith("d1", "event");
+    expect(queryByTestId("link-mode-dialog")).toBeNull();
+  });
+
+  it("ダイアログでシーン優先を選ぶと onLink(id, 'scene')・閉じる", () => {
+    const { getByTestId, queryByTestId, candidate, onLink } = setup([], DATED);
+    fireEvent.click(getByTestId("link-scene-toggle"));
+    fireEvent.click(candidate("d1"));
+    fireEvent.click(getByTestId("link-mode-dialog-scene"));
+    expect(onLink).toHaveBeenCalledWith("d1", "scene");
+    expect(queryByTestId("link-mode-dialog")).toBeNull();
+  });
+
+  it("ダイアログでキャンセルすると onLink せず閉じる", () => {
+    const { getByTestId, queryByTestId, candidate, onLink } = setup([], DATED);
+    fireEvent.click(getByTestId("link-scene-toggle"));
+    fireEvent.click(candidate("d1"));
+    fireEvent.click(getByTestId("link-mode-dialog-cancel"));
+    expect(onLink).not.toHaveBeenCalled();
+    expect(queryByTestId("link-mode-dialog")).toBeNull();
   });
 
   it("候補が無ければ該当なし表示", () => {
