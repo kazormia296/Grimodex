@@ -429,7 +429,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "list_events",
     description:
-      "List the story-chronicle events (the in-world fabula timeline, distinct from reading order) of the current project, in chronicle order. Optionally filter by kind ('birth' | 'death' | 'generic'). Each event returns id, title, kind, ordinal, startTime (days from the in-world epoch; may be null when only the order is known), and the primary character's name. Use to answer 'when did X happen' or to survey the timeline.",
+      "List the story-chronicle events (the in-world fabula timeline, distinct from reading order) of the current project, in chronicle order. Optionally filter by kind ('birth' | 'death' | 'generic'). Each event returns id, title, kind, ordinal, startTime (days from the in-world epoch; may be null when only the order is known), startDate (the calendar-formatted date string, e.g. 'Year 1267, 4月3日'; null when there is no calendar or the date granularity is unset), and the primary character's name. Use to answer 'when did X happen' or to survey the timeline.",
     inputSchema: {
       type: "object",
       properties: {
@@ -445,7 +445,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "get_event_detail",
     description:
-      "Given a chronicle event id, return its full detail: title, note, kind, ordinal, startTime/endTime, primary character, location, participant characters (names + roles), the scenes the event is stamped to (id + title), and its causal relations (cause→effect titles). Use after list_events to inspect one event.",
+      "Given a chronicle event id, return its full detail: title, note, kind, ordinal, startTime/endTime, startDate/endDate (calendar-formatted date strings for the start and end; null when there is no calendar or the granularity is unset), primary character, location, participant characters (names + roles), the scenes the event is stamped to (id + title), and its causal relations (cause→effect titles). Use after list_events to inspect one event.",
     inputSchema: {
       type: "object",
       properties: {
@@ -469,7 +469,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "get_chronicle_state",
     description:
-      "Return the world-state snapshot at a scene's story time: which of the relevant characters are alive/dead/unborn and their ages, the current season, the most recent events, unresolved cause→effect pairs (cause has happened, effect has not yet), and off-page background events. If sceneId is omitted, the current scene is used. Use to check temporal/seasonal/age consistency before writing. Returns structured JSON.",
+      "Return the world-state snapshot at a scene's story time: which of the relevant characters are alive/dead/unborn and their ages, the current season, the most recent events, unresolved cause→effect pairs (cause has happened, effect has not yet), and off-page background events. Recent and off-page events each carry a relTime label (the time distance from the scene's anchor, e.g. '約2年前' / 'about 2 years earlier' / '同日'; null when there is no calendar). If sceneId is omitted, the current scene is used. Use to check temporal/seasonal/age consistency before writing. Returns structured JSON.",
     inputSchema: {
       type: "object",
       properties: {

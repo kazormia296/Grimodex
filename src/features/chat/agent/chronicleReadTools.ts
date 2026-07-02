@@ -26,7 +26,12 @@ import {
   resolveSceneAnchor,
   type SceneChronicle,
 } from "@/features/chronicle/resolveSceneAnchor";
-import { calendarFromRow } from "@/features/chronicle/chronicleTime";
+import {
+  calendarFromRow,
+  formatChronicleDate,
+  type ChronicleCalendar,
+  type DateLang,
+} from "@/features/chronicle/chronicleTime";
 import type { EventPrecision } from "@/db/schema";
 import type { ToolResult } from "./agentTypes";
 
@@ -49,6 +54,21 @@ const result = (
   summary,
   tokensUsed: countTokens(JSON.stringify(content)),
 });
+
+/**
+ * 出来事の day 番号を暦整形した文字列（pull ツールの絶対日付）。暦なし・粒度 none・
+ * 日付欠落は null。push（相対時間）と違い pull はトークン圧が低いので粒度フルで出す。
+ */
+function fmtEventDate(
+  cal: ChronicleCalendar | null,
+  day: number | null,
+  minute: number | null,
+  granularity: string,
+  lang: DateLang,
+): string | null {
+  if (!cal) return null;
+  return formatChronicleDate(day, minute, granularity, cal, lang) || null;
+}
 
 /**
  * AI 秘匿: 現在シーン文脈で「可視」イベント id 集合を算出（spec §2.5）。
@@ -85,6 +105,9 @@ export async function listEventsTool(
   const kind = String(params["kind"] ?? "").trim();
   const events = await getSharedEvents(projectId);
   const names = await getSharedCodexNames(projectId);
+  const calendarRow = await getProjectCalendar(projectId);
+  const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
+  const lang: DateLang = i18next.language === "en" ? "en" : "ja";
   // AI 秘匿: 現在シーンで hidden な secret イベントを除外。
   const visible = await visibleEventIds(projectId, events);
   const shown = events.filter((e) => visible.has(e.id));
@@ -99,6 +122,13 @@ export async function listEventsTool(
       kind: e.kind,
       ordinal: e.ordinal,
       startTime: e.startTime,
+      startDate: fmtEventDate(
+        calendar,
+        e.startTime,
+        e.startMinute,
+        e.startGranularity,
+        lang,
+      ),
       primaryCharacter: e.primaryCodexId
         ? (names.get(e.primaryCodexId) ?? null)
         : null,
@@ -134,14 +164,16 @@ export async function getEventDetailTool(
       tokensUsed: 0,
     };
 
-  const [names, participants, allSceneEvents, allRelations] = await Promise.all(
-    [
+  const [names, participants, allSceneEvents, allRelations, calendarRow] =
+    await Promise.all([
       getSharedCodexNames(projectId),
       listEventParticipantsForProject(projectId, [eventId]),
       getSharedSceneEvents(projectId),
       listEventRelations(projectId),
-    ],
-  );
+      getProjectCalendar(projectId),
+    ]);
+  const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
+  const lang: DateLang = i18next.language === "en" ? "en" : "ja";
   const sceneLinks = allSceneEvents.filter((s) => s.eventId === eventId);
   const titleByEvent = new Map(events.map((e) => [e.id, e.title] as const));
   const nodes = useTreeStore.getState().nodes;
@@ -159,6 +191,21 @@ export async function getEventDetailTool(
     endMinute: ev.endMinute,
     startGranularity: ev.startGranularity,
     endGranularity: ev.endGranularity,
+    // 暦整形済みの絶対日付（暦なし/粒度 none は null）。start/end 両端。
+    startDate: fmtEventDate(
+      calendar,
+      ev.startTime,
+      ev.startMinute,
+      ev.startGranularity,
+      lang,
+    ),
+    endDate: fmtEventDate(
+      calendar,
+      ev.endTime,
+      ev.endMinute,
+      ev.endGranularity,
+      lang,
+    ),
     precision: ev.precision,
     primaryCharacter: ev.primaryCodexId
       ? (names.get(ev.primaryCodexId) ?? null)
