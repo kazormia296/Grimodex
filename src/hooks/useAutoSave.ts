@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
+import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 
 export interface AutoSave {
   schedule: () => void;
@@ -68,7 +69,7 @@ export function createAutoSave(
       // workspace 切替中の明示拒否 (Rust with_db の WORKSPACE_SWITCHING) は
       // 生メッセージではなく i18n 済みの短い文言で知らせる。dirty は維持され、
       // 次の入力/スケジュールでリトライされる。
-      if (detail.includes("WORKSPACE_SWITCHING")) {
+      if (isWorkspaceSwitchingError(e)) {
         toast.error(i18next.t("autoSave.workspaceSwitching"));
       } else {
         toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
@@ -103,13 +104,20 @@ export function createAutoSave(
   }
 
   async function flush() {
-    // 実行中の save があれば先に完了を待つ (runSave はエラーを内部処理する
-    // ので reject しない)。その後に pending の debounce を即時実行する。
-    const running = inFlight;
-    if (running) await running;
-    if (!pending) return;
-    cancel();
-    await startSave("flush");
+    // in-flight と pending の両方が静止するまでループする。1 回だけの await
+    // だと「await 中に debounce タイマーが発火して始まった run2」や「並行
+    // flush が開始した save」をすり抜ける (M3 review R4-2)。各イテレーションで
+    // inFlight を再読し、pending は cancel → 即時実行する。runSave はエラーを
+    // 内部処理するのでこの await は reject しない。
+    while (inFlight || pending) {
+      const running = inFlight;
+      if (running) {
+        await running;
+        continue;
+      }
+      cancel();
+      await startSave("flush");
+    }
   }
 
   return { schedule, cancel, flush };

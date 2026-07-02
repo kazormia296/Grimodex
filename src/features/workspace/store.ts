@@ -17,7 +17,11 @@ import { loadAndSyncChronicleSettings } from "@/features/chronicle/chronicleStor
 import type { ChronicleSettings } from "@/features/chronicle/chronicleStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { useGridStore } from "@/features/grid/gridStore";
-import { useProjectStore } from "@/features/project/projectStore";
+import {
+  useProjectStore,
+  getCurrentProjectId,
+} from "@/features/project/projectStore";
+import { toast } from "sonner";
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
 
 export interface RecentWorkspace {
@@ -216,9 +220,15 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         "open_workspace already in flight; ignoring re-entry",
         path,
       );
+      toast.info(i18next.t("workspace.openInProgress"));
       return;
     }
     openWorkspaceInFlight = true;
+    // R4-1 系列A 検出用: 「エディタ表示中の同一パス再オープン」は
+    // EditorScreen の key (activeWorkspacePath) が変わらず remount しない。
+    const wasSamePathReopen =
+      get().view === "editor" && get().activeWorkspacePath === path;
+    let suspendEpoch: number | null = null;
     try {
       set({ error: null });
       // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
@@ -242,8 +252,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // quiesce 完了後〜新 project rebind までの recorder を止める。切替中の
       // flush 再試行が open 完了後に新 workspace の hash chain へ旧イベントを
       // 混入させるのを防ぐ (C1)。resume は projectStore.loadProject の rebind
-      // 完了後 (失敗時は下の catch)。
-      suspendRecorderForWorkspaceSwitch();
+      // 完了後 (失敗時は下の catch)。世代番号を保持し、遅延 resume が後発の
+      // 切替の suspend を打ち消さないようにする (R4-1 系列D)。
+      suspendEpoch = suspendRecorderForWorkspaceSwitch();
       const result = await invoke<OpenWorkspaceResult>("open_workspace", {
         path,
       });
@@ -296,12 +307,24 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       useGridStore.getState().loadFromSettings(settings);
       const { useMatrixStore } = await import("@/features/matrix/matrixStore");
       useMatrixStore.getState().loadFromSettings(settings);
+      // R4-1 系列A: 同一パスの再オープン (例: チュートリアル再実行 = seed で
+      // DB を作り直して同じ path を open) では EditorScreen が remount せず、
+      // mount 時の loadProject (recorder resume を含む rebind の唯一の経路) が
+      // 走らない。ここで明示的に再ロードする。loadProject は再実行安全:
+      // generation ガードが外部フィードの多重購読を防ぎ、reloadProjectData が
+      // in-memory 状態を作り直す。失敗は下の catch で error 表示 + resume。
+      if (wasSamePathReopen) {
+        await useProjectStore.getState().loadProject(getCurrentProjectId());
+      }
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {
       // open 失敗 = 旧 workspace / 旧 project のまま。recorder の suspend を
       // 解除して記録を復帰させる (成功時の resume は projectStore の rebind)。
-      resumeRecorder();
+      // epoch 付き: この切替の suspend のみ解除する。
+      if (suspendEpoch !== null) {
+        resumeRecorder(suspendEpoch);
+      }
       set({
         error: e instanceof Error ? e.message : String(e),
         // If still on loading screen (called from initialize), recover to launcher

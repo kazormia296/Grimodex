@@ -20,6 +20,7 @@ import {
   _resetRecorderForTests,
   flushNow,
   getRecorderChainHead,
+  getRecorderSessionId,
   initRecorderForProject,
   recordChangeEvent,
   resetRecorderChain,
@@ -467,5 +468,45 @@ describe("recorder", () => {
     expect(args.projectId).toBe("p-new");
     expect(args.events).toHaveLength(1);
     expect(rows.every((r) => r.projectId === "p-new")).toBe(true);
+  });
+
+  it("古い世代の resume は後発の suspend を打ち消さない (R4-1 系列D)", async () => {
+    setupAppendCommand();
+    await initRecorderForProject("p-epoch");
+
+    const epoch1 = suspendRecorderForWorkspaceSwitch(); // 切替1
+    const epoch2 = suspendRecorderForWorkspaceSwitch(); // 切替2 が割り込み
+
+    // 切替1 の遅延 resume は無視され、suspend されたまま
+    resumeRecorder(epoch1);
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+    await flushNow();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    // 現世代 (切替2) の resume で解除される
+    resumeRecorder(epoch2);
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 2 } });
+    await flushNow();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("workspace 切替を跨いだら同一 projectId でも再 init する (R4-3)", async () => {
+    // 旧 workspace: tail = 42
+    setupAppendCommand({ sequence: 42, hash: "7c".repeat(32) });
+    await initRecorderForProject("default-project");
+    expect(getRecorderChainHead()).toBe(42);
+    const oldSession = getRecorderSessionId();
+
+    // workspace 切替 (suspend → swap → resume)。新 workspace の chain は空。
+    // 両 workspace とも projectId は 'default-project' (最頻ケース)。
+    const epoch = suspendRecorderForWorkspaceSwitch();
+    setupTail({ value: null });
+    resumeRecorder(epoch);
+    await initRecorderForProject("default-project");
+
+    // projectId だけの冪等ガードだと旧 initPromise を返して no-op になり、
+    // 旧 tail(42) が新 workspace の seed snapshot に焼かれてしまう。
+    expect(getRecorderChainHead()).toBe(0);
+    expect(getRecorderSessionId()).not.toBe(oldSession);
   });
 });

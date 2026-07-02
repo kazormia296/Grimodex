@@ -35,9 +35,13 @@ fn sql_prefix(sql: &str) -> String {
 // async fn + tauri::async_runtime::spawn_blocking で専用ブロッキングプールへ
 // 逃がす (定形は commands/semantic.rs の semantic_index_scene を参照)。
 // workspace 切替との並行は WorkspaceState.switching (swap 区間の明示拒否) と
-// フロントの pre-switch quiesce で抑える。open 完了「後」に発行されたコマンドが
-// 新 DB に行くのは pre-M3 の FIFO 実行でも同じであり仕様 (発行済み write の
-// 取りこぼしはフロント quiesce が防ぐ)。
+// フロントの pre-switch quiesce で抑える。残余レースの整理:
+// - open 中 (migrate/VACUUM 中 = swap 前) に発行された write は旧 DB に
+//   正しく着弾する (switching は swap 直前まで立たない)。
+// - swap 区間に走ったコマンドは WORKSPACE_SWITCHING の明示エラーで拒否される。
+// - open 完了「後」に発行されたコマンドが新 DB に行くのは pre-M3 の FIFO
+//   実行でも同じであり仕様 (発行済み write の取りこぼしはフロント quiesce が
+//   防ぐ)。
 
 #[tauri::command(async)]
 pub(crate) fn db_execute(

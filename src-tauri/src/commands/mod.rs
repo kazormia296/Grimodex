@@ -173,7 +173,9 @@ pub(crate) fn with_db_state<T>(
     // 別 workspace の DB へ黙って落ちる (UPDATE は 0行 hit の黙示ロスト、
     // INSERT は行混入) のを防ぐ。
     // "WORKSPACE_SWITCHING" はフロントが判別に使う安定マーカー (timelapse
-    // recorder の再送抑止 / 保存失敗 toast の文言差し替え)。変更しないこと。
+    // recorder の再送抑止 / 保存失敗 toast の文言差し替え)。TS 側の対の定数は
+    // src/features/concurrency/workspaceSwitching.ts の
+    // WORKSPACE_SWITCHING_MARKER。変更するときは両方同時に。
     if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(anyhow::anyhow!(
             "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected"

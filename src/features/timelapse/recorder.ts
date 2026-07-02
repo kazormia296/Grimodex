@@ -12,6 +12,7 @@ import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { debugLog } from "@/lib/debugLog";
+import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import type { VerifyResult } from "./hashChain";
 
 const FLUSH_DEBOUNCE_MS = 100;
@@ -131,6 +132,20 @@ interface RecorderState {
   suspended: boolean;
   /** suspend 中に破棄したイベント数 (resume 時にまとめて warn する)。 */
   droppedWhileSuspended: number;
+  /**
+   * suspend の世代番号。suspend のたびに増える。resumeRecorder(epoch) は
+   * 現世代のみ有効 — 切替1の遅い resume が切替2の suspend を打ち消して
+   * 切替中に記録が流れ出す (C1 再発) のを防ぐ (M3 review R4-1 系列D)。
+   */
+  suspendEpoch: number;
+  /**
+   * 最後に initRecorderForProject が完了した時点の suspendEpoch。
+   * 冪等ガードのキーに使う — projectId だけをキーにすると、両 workspace とも
+   * 'default-project' の最頻ケースで切替後の rebind が no-op になり、旧
+   * workspace の tail が新 workspace の seed snapshot に anchorSequence
+   * として焼かれる (M3 review R4-3)。
+   */
+  initEpoch: number;
 }
 
 const state: RecorderState = {
@@ -148,6 +163,8 @@ const state: RecorderState = {
   initPromise: null,
   suspended: false,
   droppedWhileSuspended: 0,
+  suspendEpoch: 0,
+  initEpoch: 0,
 };
 
 function newSessionId(): string {
@@ -200,8 +217,13 @@ export function isRecorderEnabled(): boolean {
  * 旧 workspace 向けのキューと進行中の backoff 再試行を破棄する。
  * 切替を跨いだ flush 再試行が新 workspace の hash chain に旧イベントを
  * 混入させるのを防ぐ (C1)。resume するまで新規イベントは破棄される。
+ *
+ * 戻り値はこの suspend の世代番号。遅延して resume する経路 (rebind 完了 /
+ * 失敗ロールバック) は必ずこれを resumeRecorder(epoch) に渡すこと — 古い
+ * 世代の resume は無視され、後発の切替の suspend を打ち消さない (系列D)。
  */
-export function suspendRecorderForWorkspaceSwitch(): void {
+export function suspendRecorderForWorkspaceSwitch(): number {
+  state.suspendEpoch += 1;
   state.suspended = true;
   state.droppedWhileSuspended = 0;
   if (state.flushTimer) {
@@ -216,14 +238,28 @@ export function suspendRecorderForWorkspaceSwitch(): void {
     );
   }
   state.queue = [];
+  return state.suspendEpoch;
+}
+
+/** 現在の suspend 世代番号。遅延 resume する経路が entry 時に捕捉して使う。 */
+export function getRecorderSuspendEpoch(): number {
+  return state.suspendEpoch;
 }
 
 /**
  * suspend の解除。新 workspace の project rebind 完了後
  * (projectStore.loadProject) と、open_workspace 失敗時のロールバック
  * (workspace/store.ts) から呼ぶ。suspend されていなければ no-op。
+ *
+ * `epoch` を渡すと現世代の suspend のみ解除する (古い世代の遅延 resume は
+ * 無視)。省略時は無条件に現在の suspend を解除する — 呼び出しと suspend の
+ * 間に別の切替が割り込み得ない同期的な文脈でのみ省略してよい。
  */
-export function resumeRecorder(): void {
+export function resumeRecorder(epoch?: number): void {
+  if (epoch !== undefined && epoch !== state.suspendEpoch) {
+    // 古い切替の resume が後発の切替の suspend を打ち消すのを防ぐ (系列D)。
+    return;
+  }
   if (!state.suspended) return;
   state.suspended = false;
   if (state.droppedWhileSuspended > 0) {
@@ -249,6 +285,7 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
   // avoid leaking timers / promises across test files.
   if (!state.enabled) {
     state.projectId = projectId;
+    state.initEpoch = state.suspendEpoch;
     // Clear any pending queue and timer so events from the prior project cannot
     // flush into this (OFF) project after a switch.
     if (state.flushTimer) {
@@ -258,10 +295,18 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
     state.queue = [];
     return;
   }
-  if (state.projectId === projectId && state.initPromise) {
+  // 冪等ガードは projectId + suspend 世代の複合キー。workspace 切替 (suspend)
+  // を跨いだら、同一 projectId ('default-project' 同士の切替が最頻) でも必ず
+  // 再 init して新 workspace の tail / 新 sessionId を引き直す (R4-3)。
+  if (
+    state.projectId === projectId &&
+    state.initEpoch === state.suspendEpoch &&
+    state.initPromise
+  ) {
     return state.initPromise;
   }
   state.projectId = projectId;
+  state.initEpoch = state.suspendEpoch;
   state.sessionId = newSessionId();
   state.queue = [];
 
@@ -323,6 +368,8 @@ export function _resetRecorderForTests(): void {
   state.initPromise = null;
   state.suspended = false;
   state.droppedWhileSuspended = 0;
+  state.suspendEpoch = 0;
+  state.initEpoch = 0;
 }
 
 /**
@@ -420,8 +467,7 @@ export async function flushNow(): Promise<void> {
       // workspace 切替拒否 (WORKSPACE_SWITCHING マーカー) は再送しない —
       // suspend と二重の防御。再送すると open 完了後に旧イベントが新
       // workspace の chain へ混入する (C1)。バッチは破棄して件数を warn。
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("WORKSPACE_SWITCHING")) {
+      if (isWorkspaceSwitchingError(err)) {
         debugLog.warn(
           "timelapse",
           `workspace switching: dropping ${batch.length} event(s) instead of re-queueing`,

@@ -194,6 +194,57 @@ describe("createAutoSave", () => {
     // pending は無かったので追加の save は走らない
     expect(saveFn).toHaveBeenCalledTimes(1);
   });
+
+  it("flush は await 中にタイマー発火で始まった run2 も待つ (R4-2)", async () => {
+    const gates: Array<() => void> = [];
+    const saveFn = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          gates.push(r);
+        }),
+    );
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500); // run1 開始 (in-flight)
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    let flushed = false;
+    const flushing = autoSave.flush().then(() => {
+      flushed = true;
+    });
+    // flush が run1 を await している間に再武装 → タイマー発火 → run2 開始
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledTimes(2);
+
+    gates[0](); // run1 完了
+    await vi.advanceTimersByTimeAsync(0);
+    // 1 回だけの await 実装はここで resolve していた (run2 のすり抜け)
+    expect(flushed).toBe(false);
+
+    gates[1](); // run2 完了
+    await flushing;
+    expect(flushed).toBe(true);
+  });
+
+  it("WORKSPACE_SWITCHING 拒否は i18n 済みの切替中文言で toast する", async () => {
+    const saveFn = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
+        ),
+      );
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(toast.error).toHaveBeenCalledWith(
+      i18next.t("autoSave.workspaceSwitching"),
+    );
+  });
 });
 
 describe("flushAllAutoSaves (workspace 切替前 quiesce)", () => {

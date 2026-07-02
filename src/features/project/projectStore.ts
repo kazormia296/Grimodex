@@ -47,6 +47,48 @@ interface ProjectState {
 
 let loadProjectGeneration = 0;
 
+/**
+ * timelapse recorder / externalWriteFeed を触ってよい実行環境か。
+ * VITEST では mocked db harness にチェーン tail SELECT を要求しない・タイマー
+ * や promise をテストファイル間にリークさせないため、SSR (window なし) では
+ * そもそも記録対象が無いためスキップする。
+ */
+function isRealBrowserRuntime(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    !(
+      typeof import.meta !== "undefined" &&
+      (import.meta as { vitest?: boolean }).vitest
+    ) &&
+    !(typeof process !== "undefined" && process.env?.VITEST)
+  );
+}
+
+/**
+ * loadProject entry で workspace 切替 suspend の世代番号を捕捉する
+ * (real browser 以外は null)。遅延 resume (rebind 完了 / 失敗時) はこの世代を
+ * 渡す — 古い切替の resume が後発の切替の suspend を打ち消すのを防ぐ
+ * (M3 review R4-1 系列D)。
+ */
+async function captureRecorderSuspendEpoch(): Promise<number | null> {
+  if (!isRealBrowserRuntime()) return null;
+  try {
+    const { getRecorderSuspendEpoch } =
+      await import("@/features/timelapse/recorder");
+    return getRecorderSuspendEpoch();
+  } catch {
+    return null;
+  }
+}
+
+/** recorder resume の fire-and-forget 版 (real browser のみ)。 */
+function resumeRecorderIfRealBrowser(epoch: number | null | undefined): void {
+  if (!isRealBrowserRuntime()) return;
+  void import("@/features/timelapse/recorder")
+    .then((m) => m.resumeRecorder(epoch ?? undefined))
+    .catch(() => {});
+}
+
 export const useProjectStore = create<ProjectState>()((set, get) => ({
   currentProjectId: null,
   projects: [],
@@ -77,17 +119,21 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   loadProject: async (projectId) => {
     // プロジェクト切替は reloadProjectData で tab/chat/map 等の in-memory 状態を
     // 破棄し owner エディタを作り替えるため、pending 中は止める (唯一の入口)。
-    if (guardInlineAiPending()) return;
+    if (guardInlineAiPending()) {
+      // R4-1 系列C: workspace 切替の rebind としてここへ来た場合、早期 return
+      // で resume 不達だとタイムラプス記録が無警告で恒久停止する。rebind なし
+      // の resume なので直後のイベントは旧 project 束縛のままになりうるが、
+      // 「inline AI pending 中にロードがブロックされた」異常系でユーザー操作
+      // イベントはほぼ発生せず、恒久黙殺よりマシという妥協。呼び出し直後に
+      // 実行される (遅延しない) ため epoch なし = 現世代の解除でよい。
+      resumeRecorderIfRealBrowser(undefined);
+      return;
+    }
     const generation = ++loadProjectGeneration;
     const previousId = get().currentProjectId;
-    if (
-      typeof window !== "undefined" &&
-      !(
-        typeof import.meta !== "undefined" &&
-        (import.meta as { vitest?: boolean }).vitest
-      ) &&
-      !(typeof process !== "undefined" && process.env?.VITEST)
-    ) {
+    // この rebind フローが対応する suspend 世代 (系列D 用)。
+    const recorderEpoch = await captureRecorderSuspendEpoch();
+    if (isRealBrowserRuntime()) {
       const { stopExternalWriteFeed } =
         await import("@/features/concurrency/externalWriteFeed");
       stopExternalWriteFeed();
@@ -119,14 +165,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       // per-project 設定 (timelapse.enabled, 既定 ON) で決まる (§15.5)。
       // 執筆タイムラプス recorder: real browser only. Skip in tests and SSR
       // — VITEST env signals vitest; tauri-host process has neither flag.
-      if (
-        typeof window !== "undefined" &&
-        !(
-          typeof import.meta !== "undefined" &&
-          (import.meta as { vitest?: boolean }).vitest
-        ) &&
-        !(typeof process !== "undefined" && process.env?.VITEST)
-      ) {
+      if (isRealBrowserRuntime()) {
         void (async () => {
           const { isTimelapseEnabled, ensureGenesisBaselines } =
             await import("@/features/timelapse/toggle");
@@ -150,8 +189,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           await initRecorderForProject(projectId);
           // rebind 完了 = 新 workspace の chain tail に載って良い状態。
           // workspace 切替 quiesce の suspend をここで解除する (切替でない
-          // 通常の project ロードでは no-op)。
-          resumeRecorder();
+          // 通常の project ロードでは no-op)。epoch 付き: この rebind より
+          // 後に始まった切替の suspend は打ち消さない (系列D)。
+          resumeRecorder(recorderEpoch ?? undefined);
           // §17 P0.4: 毎セッション開始時に現在のレイアウトを seed snapshot として
           // 焼き、replay の初期 UI 状態を確定させる (forward layout イベントの起点)。
           if (enabled) {
@@ -167,19 +207,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           console.warn("[timelapse] recorder init failed", err);
           // init 失敗でも suspend は解除する (立ちっぱなし = 以後の全イベント
           // が黙って破棄され続ける)。失敗時の記録可否は enabled 側が決める。
-          void import("@/features/timelapse/recorder").then((m) =>
-            m.resumeRecorder(),
-          );
+          resumeRecorderIfRealBrowser(recorderEpoch);
         });
       }
-      if (
-        typeof window !== "undefined" &&
-        !(
-          typeof import.meta !== "undefined" &&
-          (import.meta as { vitest?: boolean }).vitest
-        ) &&
-        !(typeof process !== "undefined" && process.env?.VITEST)
-      ) {
+      if (isRealBrowserRuntime()) {
         if (generation === loadProjectGeneration) {
           void import("@/features/concurrency/externalWriteFeed").then(
             ({ startExternalWriteFeed }) => {
@@ -205,6 +236,12 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     } catch (e) {
       // 切替失敗 — パネルがロードされていない Project を指したままにしない。
       set({ currentProjectId: previousId });
+      // R4-1 系列B: rethrow 前に resume。timelapse IIFE (resume 経路) より
+      // 手前で throw すると resume 不達 = 記録の恒久停止になる。rebind 未完の
+      // resume なので直後のイベントは旧 project 束縛になりうるが、プロジェクト
+      // ロード失敗の異常系でユーザー操作イベントはほぼ無く、恒久黙殺よりマシ
+      // という妥協。epoch 付きなので後発の切替の suspend は打ち消さない。
+      resumeRecorderIfRealBrowser(recorderEpoch);
       throw e;
     }
   },
