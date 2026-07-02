@@ -141,7 +141,12 @@ export function ChronicleLaneGutter({
       // z-20: 選択マーカー(z-9)が左端で負 left にはみ出してもガターを覆わせない。
       // relative は必須: position が static のままだと z-20 が効かず（z-index は
       // 位置指定要素にしか効かない）、マーカーがレーンヘッダーに重なる（再発防止）。
-      className="relative z-20 flex-none border-r border-border bg-card"
+      // min-h-max も必須: 親スクロール領域（flex row・高さ確定）の flex line は
+      // 可視高さで固まるため、stretch だけだとガターの箱が初期可視高さで止まり、
+      // それより下のレーンセルは箱の外へオーバーフローする。その領域には不透明背景
+      // (bg-card) が塗られず、横スクロールで負 left になったマーカーがヘッダー上に
+      // 透けて見える。箱をコンテンツ全高まで伸ばして遮蔽を全レーンに効かせる。
+      className="relative z-20 min-h-max flex-none border-r border-border bg-card"
       style={{ width: gutterX }}
     >
       {lanes.map((lane) => {
