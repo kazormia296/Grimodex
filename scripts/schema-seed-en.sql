@@ -515,8 +515,6 @@ CREATE TABLE IF NOT EXISTS map_node_positions (
     )
 );
 CREATE INDEX IF NOT EXISTS idx_map_pos_board  ON map_node_positions(board_id);
-CREATE INDEX IF NOT EXISTS idx_map_pos_tree   ON map_node_positions(tree_node_id);
-CREATE INDEX IF NOT EXISTS idx_map_pos_codex  ON map_node_positions(codex_entry_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_map_pos_uniq_scene
     ON map_node_positions(board_id, tree_node_id)
     WHERE tree_node_id IS NOT NULL;
@@ -749,19 +747,19 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS snippets_fts_ai AFTER INSERT ON snippets BEGIN
     INSERT INTO snippets_fts(rowid, title, content, tags_cache)
-    VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,''));
+    VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache, ''));
 END;
 CREATE TRIGGER IF NOT EXISTS snippets_fts_ad AFTER DELETE ON snippets BEGIN
     INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags_cache)
-    VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags_cache,''));
+    VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags_cache, ''));
 END;
 CREATE TRIGGER IF NOT EXISTS snippets_fts_au AFTER UPDATE ON snippets
   WHEN old.title IS NOT new.title OR old.content IS NOT new.content OR old.tags_cache IS NOT new.tags_cache
 BEGIN
     INSERT INTO snippets_fts(snippets_fts, rowid, title, content, tags_cache)
-    VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags_cache,''));
+    VALUES ('delete', old.rowid, old.title, old.content, COALESCE(old.tags_cache, ''));
     INSERT INTO snippets_fts(rowid, title, content, tags_cache)
-    VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache,''));
+    VALUES (new.rowid, new.title, new.content, COALESCE(new.tags_cache, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ai AFTER INSERT ON chat_messages BEGIN
@@ -781,19 +779,19 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_ai AFTER INSERT ON tree_nodes BEGIN
     INSERT INTO tree_nodes_fts(rowid, title, content)
-    VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''));
+    VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
 END;
 CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_ad AFTER DELETE ON tree_nodes BEGIN
     INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content)
-    VALUES ('delete', old.rowid, COALESCE(old.title,''), COALESCE(old.content,''));
+    VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, ''));
 END;
 CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_au AFTER UPDATE ON tree_nodes
   WHEN old.title IS NOT new.title OR old.content IS NOT new.content
 BEGIN
     INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, title, content)
-    VALUES ('delete', old.rowid, COALESCE(old.title,''), COALESCE(old.content,''));
+    VALUES ('delete', old.rowid, COALESCE(old.title, ''), COALESCE(old.content, ''));
     INSERT INTO tree_nodes_fts(rowid, title, content)
-    VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''));
+    VALUES (new.rowid, COALESCE(new.title, ''), COALESCE(new.content, ''));
 END;
 
 -- Snapshot-aware cascade triggers (kept in sync with
