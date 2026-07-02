@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
   saveScene,
   registeredSaveHandlerIds,
+  dirtyGatedSaveHandler,
 } from "./editorSaveRegistry";
 
 beforeEach(() => {
@@ -51,5 +54,69 @@ describe("editorSaveRegistry", () => {
     registerSaveHandler("n1", async () => {});
     unregisterSaveHandler("n1");
     expect(registeredSaveHandlerIds()).toEqual([]);
+  });
+});
+
+/**
+ * saveScene() の外部 flush 契約は「DB を live editor の状態に追いつかせる」。
+ * clean な editor まで無条件保存すると、saveSceneContent の OCC version が
+ * flush のたびに bump され、開いているだけのシーンへの headless 自動適用
+ * (autoApplyProse の base_version 突き合わせ) が恒久 stale ブロックになる。
+ * dirty ゲートで「未保存編集があるときだけ書く」ことを保証する。
+ */
+describe("dirtyGatedSaveHandler (外部 flush の dirty ゲート)", () => {
+  it("dirty のとき save を呼ぶ", async () => {
+    const save = vi.fn(async () => {});
+    const handler = dirtyGatedSaveHandler(() => true, save);
+    await handler();
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("clean のとき no-op で resolve する (保存も version bump も走らない)", async () => {
+    const save = vi.fn(async () => {});
+    const handler = dirtyGatedSaveHandler(() => false, save);
+    await expect(handler()).resolves.toBeUndefined();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("dirty は登録時ではなく呼び出し時点で評価する", async () => {
+    const save = vi.fn(async () => {});
+    let dirty = false;
+    const handler = dirtyGatedSaveHandler(() => dirty, save);
+    registerSaveHandler("scene-x", handler);
+    await saveScene("scene-x");
+    expect(save).not.toHaveBeenCalled();
+    dirty = true;
+    await saveScene("scene-x");
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("save の失敗はそのまま伝播する (呼び出し側が dirty を維持できる)", async () => {
+    const save = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    const handler = dirtyGatedSaveHandler(() => true, save);
+    await expect(handler()).rejects.toThrow("boom");
+  });
+});
+
+describe("エディタの save handler 登録 (ソース invariant)", () => {
+  // EditorPane / LinearSceneBlock はコンポーネントテスト基盤の無い巨大
+  // コンポーネントなので、EditorPane.snippetSave.test.ts と同じく
+  // レンダリングせず構造 invariant として gate する。素の saveFn を直接
+  // 登録し直すと dirty ゲートが外れて上記の恒久 stale ブロックが再発する。
+  it("EditorPane は dirtyGatedSaveHandler 経由で登録する", () => {
+    const src = readFileSync(resolve(__dirname, "./EditorPane.tsx"), "utf-8");
+    expect(src).toMatch(/dirtyGatedSaveHandler\(/);
+    expect(src).not.toMatch(/registerSaveHandler\(nodeId, saveFn\)/);
+  });
+
+  it("LinearSceneBlock は dirtyGatedSaveHandler 経由で登録する", () => {
+    const src = readFileSync(
+      resolve(__dirname, "./LinearSceneBlock.tsx"),
+      "utf-8",
+    );
+    expect(src).toMatch(/dirtyGatedSaveHandler\(/);
+    expect(src).not.toMatch(/registerSaveHandler\(sceneId, saveFn\)/);
   });
 });

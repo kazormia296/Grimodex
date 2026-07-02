@@ -19,6 +19,7 @@ import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
+  dirtyGatedSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
 import { useTabStore } from "@/features/editor/tabStore";
 import { subscribeLiveContentRafCoalesced } from "@/features/editor/sceneContentStore";
@@ -341,9 +342,16 @@ function MountedSceneBlock({
   // これが無いと agent 書き込み (autoApplyProse) / Codex 改名波及 /
   // post-effect・チャット送信前 flush がリニアの未保存編集を flush できず、
   // stale な DB 本文を read-modify-write して直近編集を消す。
+  // dirty ゲート付き: clean な editor への外部 flush は no-op (詳細は
+  // dirtyGatedSaveHandler)。リニアの dirty 正本は dirtyTabIds
+  // (onUpdate で同期セット / coreSave 成功時とunmount で解除)。
   useEffect(() => {
-    registerSaveHandler(sceneId, saveFn);
-    return () => unregisterSaveHandler(sceneId, saveFn);
+    const handler = dirtyGatedSaveHandler(
+      () => useTabStore.getState().dirtyTabIds.has(sceneId),
+      saveFn,
+    );
+    registerSaveHandler(sceneId, handler);
+    return () => unregisterSaveHandler(sceneId, handler);
   }, [sceneId, saveFn]);
 
   // unmount 時に dirty を確実に解除する (EditorPane の cleanup と同じ)。

@@ -413,3 +413,36 @@ describe("autoApplyProseProposal — stale base_version 検知", () => {
     expect(h.getSceneVersion).not.toHaveBeenCalled();
   });
 });
+
+describe("autoApplyProseProposal — open editor (dirty ゲート付き flush との協調)", () => {
+  // saveScene() の外部 flush は dirty ゲート付き (editorSaveRegistry の
+  // dirtyGatedSaveHandler)。externalWriteFeed の既存ポリシー
+  // 「dirty なら conflict / clean なら自動反映」と揃える。
+  it("clean な open editor: flush は no-op → version 不変 → 自動適用 + live resync", async () => {
+    h.state.liveSubscribers = ["scene-1"];
+    h.state.sceneVersion = 2;
+    const result = await autoApplyProseProposal(proposal({ baseVersion: 2 }));
+    expect(result.applied).toBe(true);
+    expect(h.persistSceneBody).toHaveBeenCalledTimes(1);
+    expect(h.setLiveContent).toHaveBeenCalledTimes(1);
+    expect(h.setLiveContent.mock.calls[0][0]).toBe("scene-1");
+  });
+
+  it("dirty な open editor: flush が保存 + bump → stale ブロック → 手動レビューへ", async () => {
+    h.state.liveSubscribers = ["scene-1"];
+    h.state.sceneVersion = 2;
+    h.saveScene.mockImplementationOnce(async () => {
+      // dirty flush = 実保存 → saveSceneContent が version を bump する
+      h.state.sceneVersion += 1;
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await autoApplyProseProposal(proposal({ baseVersion: 2 }));
+      expect(result).toEqual({ applied: false, reason: "stale-base-version" });
+      expect(h.persistSceneBody).not.toHaveBeenCalled();
+      expect(h.setLiveContent).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

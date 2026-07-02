@@ -1,6 +1,7 @@
 import { getProject } from "@/features/project/api";
 import { isBodyWriteDisabled } from "@/features/ai-policy/parse";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import { getSceneVersion } from "@/features/tree/api";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import type { PendingProseProposal } from "@/features/agent-writes/proseStagingStore";
 
@@ -17,6 +18,22 @@ export function isHeadlessAppliable(
   if (proposal.mode === "append") return true;
   if (proposal.mode === "insert" && !!proposal.anchorText) return true;
   return false;
+}
+
+/**
+ * DB 由来 proposal の stale 判定: propose 時点の base_version
+ * (prose_staging.base_version) と現在の tree_nodes.version の不一致。
+ * stale な行は headless 自動適用 (autoApplyProse) が適用せず `proposed` の
+ * まま残すため、「auto-apply が拾うから diff UI では隠す」suppression
+ * (useAgentProseStaging) の前提が成り立たない — suppression 側はこれを見て
+ * stale 行を手動レビューに乗せる。baseVersion の無い in-app 直接 enqueue
+ * (diff UI 専用) は比較不能なので stale 扱いしない。
+ */
+export async function isProposalStale(
+  proposal: Pick<PendingProseProposal, "sceneId" | "baseVersion">,
+): Promise<boolean> {
+  if (proposal.baseVersion === undefined) return false;
+  return (await getSceneVersion(proposal.sceneId)) !== proposal.baseVersion;
 }
 
 /**

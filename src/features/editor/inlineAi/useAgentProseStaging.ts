@@ -9,6 +9,7 @@ import {
 import {
   isAutoAcceptEnabled,
   isHeadlessAppliable,
+  isProposalStale,
 } from "@/features/agent-writes/autoAcceptGate";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useInlineAiStore } from "./inlineAiStore";
@@ -32,10 +33,13 @@ interface InlineAiDiffApi {
 /**
  * Bridges agent/MCP prose_staging proposals into the inline-AI diff accept/reject UI.
  *
- * ここでは prose_staging.base_version の stale 検知 (autoApplyProse 参照) を
- * 意図的に行わない: この経路は人間が「現在の本文」に重ねた diff を目視して
- * 受理する human-in-the-loop であり、propose 後に本文が進んでいても最新本文
- * ベースで判断できる。version 検査は無人適用 (headless) 専用のガード。
+ * 受理判断そのものには prose_staging.base_version の stale 検査を課さない:
+ * この経路は人間が「現在の本文」に重ねた diff を目視して受理する
+ * human-in-the-loop であり、propose 後に本文が進んでいても最新本文ベースで
+ * 判断できる。version 検査が適用可否を決めるのは無人適用 (headless) 側。
+ * ただし mount 時の suppression (下記 effect) は staleness を参照する —
+ * stale 行は headless 自動適用が適用せず `proposed` のまま残すため、
+ * 「auto-apply が拾うから隠す」と永久に孤児化する。
  */
 export function useAgentProseStaging(
   editor: Editor | null,
@@ -58,9 +62,16 @@ export function useAgentProseStaging(
       // 'accepted') row causes a double-apply and an "entry is not in proposed
       // status" error on accept. Non-anchored insert / replace are never
       // auto-applied, so they still surface for manual placement.
+      //
+      // 例外: stale (base_version 不一致) な行は auto-apply が適用せず
+      // `proposed` のまま残す (autoApplyProse の stale 検知) ので、ここで
+      // 隠すと誰にも拾われない孤児になる。stale 行は suppress せず diff UI
+      // に乗せる — これが backlog / live 両経路の not-applied フォールバック
+      // (proseStagingStore.enqueue) の、シーンを開いた時の受け皿になる。
       if (
         isHeadlessAppliable(proposal) &&
-        (await isAutoAcceptEnabled(getCurrentProjectId()))
+        (await isAutoAcceptEnabled(getCurrentProjectId())) &&
+        !(await isProposalStale(proposal))
       ) {
         return;
       }

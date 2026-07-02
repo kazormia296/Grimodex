@@ -83,12 +83,19 @@ interface SnippetState {
       >,
     options?: { silent?: boolean },
   ) => Promise<Snippet>;
+  /**
+   * 保存の成否を返す。false = DB に保存されていない (OCC 衝突 / 行なし /
+   * 失敗)。ユーザ通知 (toast / conflict handler) はここで済ませるが、
+   * 「保存済み」扱いにして良いか (EditorPane の dirty クリア等) は呼び出し側
+   * が戻り値で判断する — 衝突を握り潰して正常 resolve すると、呼び出し側が
+   * dirty を誤クリアして未保存の編集が失われる。
+   */
   update: (
     id: string,
     data: Partial<
       Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
     >,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   remove: (id: string) => Promise<void>;
   incrementUsageCount: (id: string) => Promise<void>;
 }
@@ -248,7 +255,8 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         data,
         { baseVersion: before?.version ?? 0 },
       );
-      if (!updated) return;
+      // 行なし (スコープ miss / 削除済み) = 保存されていない
+      if (!updated) return false;
       set((state) => ({
         entries: state.entries.map((e) => (e.id === id ? updated : e)),
       }));
@@ -256,11 +264,11 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       if (e instanceof SnippetVersionConflictError) {
         // 非破壊: store も timelapse も触らず、呼び出し側に再読み込みを促す。
         snippetEditConflictHandler(id);
-        return;
+        return false;
       }
       toast.error(i18next.t("snippets.store.updateFailed"));
       debugLog.error("SnippetStore", "update", errorDetail(e));
-      return;
+      return false;
     }
 
     // 本文 (content, ProseMirror JSON) の変更差分を timelapse に記録する。
@@ -281,8 +289,9 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
           : { fields: Object.keys(data) },
     });
 
-    if (!before) return;
-    if (useGlobalHistoryStore.getState().isReplaying) return;
+    // ここから先は保存成功 (undo 履歴の登録可否は成否と無関係)
+    if (!before) return true;
+    if (useGlobalHistoryStore.getState().isReplaying) return true;
 
     const undoPatch: Record<string, unknown> = {};
     for (const key of Object.keys(data)) {
@@ -322,6 +331,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         }
       },
     });
+    return true;
   },
 
   remove: async (id) => {

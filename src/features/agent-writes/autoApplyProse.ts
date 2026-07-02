@@ -159,13 +159,18 @@ export async function autoApplyProseProposal(
   // version を bump する (tree/api.ts) ので、propose 後に human / AI / 復元系の
   // 保存が挟まっていれば不一致になる。不一致なら適用せず `proposed` のまま残し、
   // 既存の scene 用 conflict 導線 (externalWriteStore → ExternalEditConflictBanner)
-  // に流す。呼び出し側 (autoAcceptFeed → externalWriteFeed) は not-applied を
-  // 手動 diff レビューへ fallback させる。
+  // に流す。not-applied の手動 diff レビューへの fallback は両経路が担う:
+  // live poller (externalWriteFeed) と backlog drain (autoAcceptFeed) が
+  // proseStagingStore.enqueue し、シーンを開いた時の再ロード
+  // (useAgentProseStaging) も stale 行は suppress せず enqueue する。
   //
   // 意図した安全側の挙動 (無人 writer は疑わしければ書かない):
-  //  - 直前の saveScene() flush 自体も version を bump するため、シーンが live
-  //    editor で開かれている間の自動適用はここでブロックされ、手動レビューに
-  //    落ちる (headless 適用が素通りするのはシーンを誰も開いていない時)。
+  //  - 直前の saveScene() flush は dirty ゲート付き (editorSaveRegistry の
+  //    dirtyGatedSaveHandler) で、未保存編集があるときだけ保存 + bump する。
+  //    dirty な open シーンはここでブロックされ手動レビューに落ち、clean な
+  //    open シーンは no-op flush → version 不変 → 自動適用 + live resync
+  //    (下の hasLiveContentSubscriber) が走る。externalWriteFeed の既存
+  //    ポリシー「dirty なら conflict / clean なら自動反映」と同じ。
   //  - AI 適用自身も saveSceneContent 経由で bump するので、1 件目の適用前に
   //    propose された 2 件目は base が古くなりブロックされる。
   // baseVersion の無い proposal (in-app 直接 enqueue = diff UI 専用) は比較

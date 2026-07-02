@@ -335,6 +335,46 @@ describe("snippetStore", () => {
       );
     });
 
+    // 保存の成否は戻り値で返す。EditorPane の snippet 保存 (coreSave) は
+    // これを見て dirty を維持する — 衝突を toast だけで握り潰して正常 resolve
+    // すると、呼び出し側が dirty を誤クリアして編集が失われうる。
+    it("成功時は true を返す", async () => {
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValue({ ...original, title: "新題" });
+
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { title: "新題" }),
+      ).resolves.toBe(true);
+    });
+
+    it("OCC 衝突時は false を返す (呼び出し側が dirty を維持できる)", async () => {
+      const original = fakeSnippet({ id: "snippet-1", version: 2 });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockRejectedValueOnce(
+        new SnippetVersionConflictError("snippet-1"),
+      );
+
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { content: "new" }),
+      ).resolves.toBe(false);
+    });
+
+    it("その他の失敗と行なし (undefined) も false を返す", async () => {
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+
+      mockUpdateSnippet.mockRejectedValueOnce(new Error("boom"));
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { title: "x" }),
+      ).resolves.toBe(false);
+
+      mockUpdateSnippet.mockResolvedValueOnce(undefined);
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { title: "x" }),
+      ).resolves.toBe(false);
+    });
+
     it("records snippet.update with a content diff over extracted text", async () => {
       const original = fakeSnippet({
         id: "snippet-1",

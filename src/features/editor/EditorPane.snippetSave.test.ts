@@ -25,4 +25,15 @@ describe("EditorPane snippet save (二重書き込み集約)", () => {
       /await useSnippetStore\.getState\(\)\.update\(id, \{ content \}\)/,
     );
   });
+
+  it("store.update の失敗 (false) を握り潰さず throw して dirty を維持する", () => {
+    // snippetStore.update は OCC 衝突・失敗を toast 済みの上 false で返す
+    // (throw しない)。ここで throw に変換して saveFn へ伝播させないと、
+    // saveFn の setIsDirty(false) が無条件に走り「保存されていないのに
+    // clean 表示」→ 衝突時に編集が失われる (旧・直呼び throw と同じ挙動の維持)。
+    expect(source).toMatch(
+      /const saved = await useSnippetStore\.getState\(\)\.update\(id, \{ content \}\)/,
+    );
+    expect(source).toMatch(/if \(!saved\)[\s\S]{0,300}?throw/);
+  });
 });

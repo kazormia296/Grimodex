@@ -113,6 +113,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
+  dirtyGatedSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
 import {
   useSceneContentStore,
@@ -328,8 +329,16 @@ export function EditorPane({
     useState<CodexMentionPopupState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
 
-  const setIsDirtyRef = useRef(setIsDirty);
-  setIsDirtyRef.current = setIsDirty;
+  // isDirty の同期ミラー。React state (isDirty) の tabStore への同期は
+  // レンダー後 effect まで遅れるため、外部 flush (saveScene) の dirty ゲート
+  // (dirtyGatedSaveHandler) は打鍵と同じ tick で更新されるこの ref を正とする。
+  // 更新は setIsDirtyRef 経由に一本化してあり、両者は乖離しない。
+  const isDirtyRef = useRef(false);
+  const setIsDirtyRef = useRef<(dirty: boolean) => void>(() => {});
+  setIsDirtyRef.current = (dirty: boolean) => {
+    isDirtyRef.current = dirty;
+    setIsDirty(dirty);
+  };
 
   const saveSceneIdRef = useRef(nodeId);
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
@@ -412,7 +421,17 @@ export function EditorPane({
       // updateSnippet 直呼び + store.update の二重 DB 書き込みを store 経由の
       // 1 回に集約 (entries 反映 / timelapse 記録 / undo 履歴も store が担う)。
       // 二重のままだと store 側の OCC (baseVersion) が直呼びの更新と自己衝突する。
-      await useSnippetStore.getState().update(id, { content });
+      //
+      // store.update は OCC 衝突・失敗をユーザ通知 (toast / conflict handler)
+      // 済みの上 false で返す (throw しない)。ここで throw に変換して saveFn
+      // へ伝播させ、setIsDirty(false) を走らせない — 旧・直呼び (throw) と
+      // 同じく「保存されていないのに clean 表示」で編集が失われるのを防ぐ。
+      const saved = await useSnippetStore.getState().update(id, { content });
+      if (!saved) {
+        throw new Error(
+          `snippet save not persisted (version conflict or update failure): ${id}`,
+        );
+      }
     } else if (ctx === "chronicle_event") {
       // 出来事の詳細（ProseMirror JSON）。インスペクタと同じ tracked-write 経路
       // （uiUpdateEvent）で保存し、undo/redo・鮮度カウンタを一貫させる。
@@ -485,10 +504,13 @@ export function EditorPane({
     }
   }, [coreSave, shouldAutoRevision, recordAutoRevision]);
 
-  // Register this pane's save function so the tab context menu can trigger it
+  // Register this pane's save function so external callers (tab context menu,
+  // agent writes, rename cascade, …) can flush it. dirty ゲート付き:
+  // clean な editor への外部 flush は no-op (詳細は dirtyGatedSaveHandler)。
   useEffect(() => {
-    registerSaveHandler(nodeId, saveFn);
-    return () => unregisterSaveHandler(nodeId, saveFn);
+    const handler = dirtyGatedSaveHandler(() => isDirtyRef.current, saveFn);
+    registerSaveHandler(nodeId, handler);
+    return () => unregisterSaveHandler(nodeId, handler);
   }, [nodeId, saveFn]);
 
   // Sync isDirty to the tab store for unsaved-changes detection
@@ -1486,7 +1508,7 @@ export function EditorPane({
           // 表示用の count 系は EditorStatsFooter が isLoading の false 遷移で
           // 再計算・tree 同期する。ここでは auto-draft 判定用の空判定だけ行う。
           const count = getDocText(editor!.state.doc).length;
-          setIsDirty(false);
+          setIsDirtyRef.current(false);
           wasEmptyRef.current = count === 0;
 
           if (!isEntryMode) {

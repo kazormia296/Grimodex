@@ -12,11 +12,13 @@ import type { PendingProseProposal } from "@/features/agent-writes/proseStagingS
 
 const h = vi.hoisted(() => ({
   enabled: false,
+  stale: false,
   proposal: null as PendingProseProposal | null,
   enqueue: vi.fn(),
   clear: vi.fn(),
   loadLatestProposedProse: vi.fn(async () => h.proposal),
   isAutoAcceptEnabled: vi.fn(async () => h.enabled),
+  isProposalStale: vi.fn(async () => h.stale),
 }));
 
 vi.mock("@/features/agent-writes/proseStagingStore", () => ({
@@ -32,6 +34,7 @@ vi.mock("@/features/agent-writes/autoAcceptGate", () => ({
   isAutoAcceptEnabled: h.isAutoAcceptEnabled,
   isHeadlessAppliable: (p: { mode: string; anchorText?: string }) =>
     p.mode === "append" || (p.mode === "insert" && !!p.anchorText),
+  isProposalStale: h.isProposalStale,
 }));
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "proj-1",
@@ -54,6 +57,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   vi.clearAllMocks();
   h.enabled = false;
+  h.stale = false;
   h.proposal = null;
 });
 
@@ -109,6 +113,40 @@ describe("useAgentProseStaging — diff-UI surfacing vs auto-apply", () => {
     };
     renderHook(() => useAgentProseStaging(null, "scene-1", diffApi));
     await waitFor(() => expect(h.isAutoAcceptEnabled).toHaveBeenCalled());
+    await flush();
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("stale (base_version 不一致) な append proposal は auto-accept ON でも surface する", async () => {
+    // headless 自動適用 (autoApplyProse) は stale 行を適用せず `proposed` の
+    // まま残す。「auto-apply が拾うから隠す」suppression の前提が成り立たない
+    // ので、隠すと「適用もされず diff にも出ない」永久孤児になる。
+    h.enabled = true;
+    h.stale = true;
+    h.proposal = {
+      stagingId: "s1",
+      sceneId: "scene-1",
+      text: "x",
+      mode: "append",
+      baseVersion: 1,
+    };
+    renderHook(() => useAgentProseStaging(null, "scene-1", diffApi));
+    await waitFor(() => expect(h.enqueue).toHaveBeenCalledTimes(1));
+    expect(h.enqueue).toHaveBeenCalledWith(h.proposal);
+  });
+
+  it("fresh (base_version 一致) な append proposal は従来通り suppress する", async () => {
+    h.enabled = true;
+    h.stale = false;
+    h.proposal = {
+      stagingId: "s1",
+      sceneId: "scene-1",
+      text: "x",
+      mode: "append",
+      baseVersion: 1,
+    };
+    renderHook(() => useAgentProseStaging(null, "scene-1", diffApi));
+    await waitFor(() => expect(h.isProposalStale).toHaveBeenCalled());
     await flush();
     expect(h.enqueue).not.toHaveBeenCalled();
   });

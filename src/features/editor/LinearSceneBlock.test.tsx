@@ -190,11 +190,22 @@ vi.mock("@/features/external-mount/externalRootStore", () => ({
 }));
 
 // tabStore は layoutStore→codexStore の eager 連鎖を引き込むため最小モック。
-// dirty 配線 (setTabDirty 呼び出し) はこの spy で assert する。
-const mockSetTabDirty = vi.hoisted(() => vi.fn());
+// dirty 配線 (setTabDirty 呼び出し) はこの spy で assert する。dirtyTabIds は
+// 外部 flush (saveScene) の dirty ゲート (dirtyGatedSaveHandler) が参照する
+// ため、setTabDirty の呼び出しを反映する実 Set として維持する。
+const mockDirtyTabIds = vi.hoisted(() => new Set<string>());
+const mockSetTabDirty = vi.hoisted(() =>
+  vi.fn((id: string, dirty: boolean) => {
+    if (dirty) mockDirtyTabIds.add(id);
+    else mockDirtyTabIds.delete(id);
+  }),
+);
 vi.mock("@/features/editor/tabStore", () => ({
   useTabStore: {
-    getState: () => ({ setTabDirty: mockSetTabDirty }),
+    getState: () => ({
+      setTabDirty: mockSetTabDirty,
+      dirtyTabIds: mockDirtyTabIds,
+    }),
   },
 }));
 // conflict バナーは i18n + tabStore に依存するので描画だけ落とす
@@ -282,6 +293,7 @@ beforeEach(() => {
   mockToastError.mockClear();
   mockToastInfo.mockClear();
   mockSetTabDirty.mockClear();
+  mockDirtyTabIds.clear();
   isFileBackedNodeMock.mockReturnValue(false);
   createdEditors.length = 0;
   useExternalWriteStore.getState().clear();
