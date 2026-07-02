@@ -15,6 +15,8 @@ import {
   LockOpen,
   List,
   PanelRight,
+  Rows3,
+  Info,
 } from "lucide-react";
 import type { LaneDensity } from "./chronicleLayout";
 import type { ChronicleCalendar } from "./chronicleTime";
@@ -59,6 +61,11 @@ const toggleCls = (active: boolean) =>
 const iconBtn =
   "grid size-7 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground";
 
+// narrow（＝ツールバー幅が狭い）ときにラベルを畳んでアイコンのみにする。ツールバー行を
+// `@container` にして、各ボタンのラベル span にこのクラスを付ける。閾値はコンテナ幅基準
+// （px は目安、調整可）。Tailwind v4 のコンテナクエリ（追加プラグイン不要）。
+const collapseLabel = "@max-[800px]:hidden";
+
 const DENSITIES: LaneDensity[] = ["compact", "standard", "roomy"];
 
 /** ツールバー（左: 新規/抽出/暦/タイ線/ロック・右: 整合警告/因果/密度/ラベル/ズーム/凡例）＋凡例。 */
@@ -75,23 +82,34 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
 
   return (
     <>
-      <div className="flex h-12 flex-none items-center gap-1 border-b border-border bg-card px-3">
+      <div className="@container flex h-12 flex-none items-center gap-1 border-b border-border bg-card px-3">
         <button
           type="button"
+          data-testid="toolbar-new"
           onClick={props.onNew}
           disabled={props.creating}
+          title={t("chronicle.newEvent", "新しいイベント")}
           className="inline-flex h-8 items-center gap-1 rounded-md px-3 text-xs font-medium disabled:opacity-50"
           style={{
             background: "var(--primary)",
             color: "var(--primary-foreground)",
           }}
         >
-          <Plus className="size-3.5" />{" "}
-          {t("chronicle.newEvent", "新しいイベント")}
+          <Plus className="size-3.5" />
+          <span className={collapseLabel}>
+            {t("chronicle.newEvent", "新しいイベント")}
+          </span>
         </button>
-        <button type="button" onClick={props.onExtract} className={ghost}>
-          <Sparkles className="size-3.5" />{" "}
-          {t("chronicle.aiExtract", "AI 抽出")}
+        <button
+          type="button"
+          onClick={props.onExtract}
+          className={ghost}
+          title={t("chronicle.aiExtract", "AI 抽出")}
+        >
+          <Sparkles className="size-3.5" />
+          <span className={collapseLabel}>
+            {t("chronicle.aiExtract", "AI 抽出")}
+          </span>
         </button>
         <div className="mx-0.5 h-5 w-px bg-border" />
         <button
@@ -99,11 +117,18 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           ref={calBtnRef}
           onClick={() => setCalOpen((o) => !o)}
           className={toggleCls(calOpen)}
+          title={
+            hasCalendar
+              ? t("chronicle.calendarEditor", "暦の設定")
+              : t("chronicle.setupCalendar", "暦を設定")
+          }
         >
           <CalendarCog className="size-3.5" />
-          {hasCalendar
-            ? t("chronicle.calendarEditor", "暦の設定")
-            : t("chronicle.setupCalendar", "暦を設定")}
+          <span className={collapseLabel}>
+            {hasCalendar
+              ? t("chronicle.calendarEditor", "暦の設定")
+              : t("chronicle.setupCalendar", "暦を設定")}
+          </span>
         </button>
         <ChronicleCalendarPopover
           triggerRef={calBtnRef}
@@ -126,9 +151,11 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
           ) : (
             <LockOpen className="size-3.5" />
           )}
-          {props.locked
-            ? t("chronicle.locked", "ロック中")
-            : t("chronicle.lock", "ロック")}
+          <span className={collapseLabel}>
+            {props.locked
+              ? t("chronicle.locked", "ロック中")
+              : t("chronicle.lock", "ロック")}
+          </span>
         </button>
 
         <div className="ms-auto flex items-center gap-1">
@@ -138,8 +165,10 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
             className={toggleCls(props.showEventList)}
             title={t("chronicle.eventList", "イベント一覧")}
           >
-            <List className="size-3.5" />{" "}
-            {t("chronicle.eventListShort", "一覧")}
+            <List className="size-3.5" />
+            <span className={collapseLabel}>
+              {t("chronicle.eventListShort", "一覧")}
+            </span>
           </button>
           <button
             type="button"
@@ -147,14 +176,17 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
             className={toggleCls(props.showInspector)}
             title={t("chronicle.inspector", "詳細パネル")}
           >
-            <PanelRight className="size-3.5" />{" "}
-            {t("chronicle.inspectorShort", "詳細")}
+            <PanelRight className="size-3.5" />
+            <span className={collapseLabel}>
+              {t("chronicle.inspectorShort", "詳細")}
+            </span>
           </button>
           <div className="mx-0.5 h-5 w-px bg-border" />
           {props.issueCount > 0 && (
             <button
               type="button"
               onClick={props.onGotoConflict}
+              title={`${t("chronicle.issues", "整合警告")} ${props.issueCount}`}
               className="inline-flex h-8 items-center gap-1.5 rounded px-2 text-xs"
               style={{
                 background: "color-mix(in oklch, #e0a23a 14%, transparent)",
@@ -162,7 +194,9 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
               }}
             >
               <AlertTriangle className="size-3.5" />
-              {t("chronicle.issues", "整合警告")} {props.issueCount}
+              <span className={collapseLabel}>
+                {t("chronicle.issues", "整合警告")} {props.issueCount}
+              </span>
             </button>
           )}
           <button
@@ -171,15 +205,25 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
             className={toggleCls(props.showEdges)}
             title={t("chronicle.causalEdges", "因果エッジ")}
           >
-            <GitBranch className="size-3.5" /> {t("chronicle.causal", "因果")}
+            <GitBranch className="size-3.5" />
+            <span className={collapseLabel}>
+              {t("chronicle.causal", "因果")}
+            </span>
           </button>
           <button
             type="button"
+            data-testid="toolbar-density"
             onClick={nextDensity}
             className={ghost}
-            title={t("chronicle.densityLabel", "レーン密度")}
+            title={`${t("chronicle.densityLabel", "レーン密度")}: ${t(
+              `chronicle.density.${props.density}`,
+              props.density,
+            )}`}
           >
-            {t(`chronicle.density.${props.density}`, props.density)}
+            <Rows3 className="size-3.5" />
+            <span className={collapseLabel}>
+              {t(`chronicle.density.${props.density}`, props.density)}
+            </span>
           </button>
           <button
             type="button"
@@ -187,7 +231,10 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
             className={toggleCls(props.labelsOn)}
             title={t("chronicle.markerLabels", "ラベル表示")}
           >
-            <Tags className="size-3.5" /> {t("chronicle.labels", "ラベル")}
+            <Tags className="size-3.5" />
+            <span className={collapseLabel}>
+              {t("chronicle.labels", "ラベル")}
+            </span>
           </button>
           <div className="mx-0.5 h-5 w-px bg-border" />
           <button
@@ -212,14 +259,22 @@ export function ChronicleToolbar(props: ChronicleToolbarProps) {
             className={ghost}
             title={t("chronicle.fit", "全体を表示")}
           >
-            <Maximize2 className="size-3.5" /> {t("chronicle.fitShort", "全体")}
+            <Maximize2 className="size-3.5" />
+            <span className={collapseLabel}>
+              {t("chronicle.fitShort", "全体")}
+            </span>
           </button>
           <button
             type="button"
+            data-testid="toolbar-legend"
             onClick={props.onToggleLegend}
             className={toggleCls(props.showLegend)}
+            title={t("chronicle.legend", "凡例")}
           >
-            {t("chronicle.legend", "凡例")}
+            <Info className="size-3.5" />
+            <span className={collapseLabel}>
+              {t("chronicle.legend", "凡例")}
+            </span>
           </button>
         </div>
       </div>

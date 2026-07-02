@@ -200,3 +200,27 @@ describe("ChronicleInspector — 子要素の React key", () => {
     expect(getAllByTestId("scene-link").length).toBe(1);
   });
 });
+
+describe("ChronicleInspector — 下部アクションの narrow 縮退", () => {
+  it("アクション行は @container（コンテナクエリの基準）", () => {
+    const { getByTestId } = renderInspector();
+    expect(getByTestId("inspector-actions").className).toContain("@container");
+  });
+
+  it("アクションのラベルは collapse クラス付き span で畳める", () => {
+    const { getByTestId } = renderInspector();
+    const spans =
+      getByTestId("inspector-actions").querySelectorAll("button span");
+    expect(spans.length).toBeGreaterThan(0);
+    spans.forEach((s) => expect(s.className).toContain("@max-"));
+  });
+
+  it("非 scene の削除ボタンに title を付ける（アイコンのみ縮退時の識別）", () => {
+    const { getByTestId } = renderInspector();
+    // 非 scene・onOpenScene/onStamp/onPull 未指定なので、行内のボタンは削除のみ。
+    const btn = getByTestId("inspector-actions").querySelector(
+      "button",
+    ) as HTMLButtonElement;
+    expect(btn.getAttribute("title")).toBeTruthy();
+  });
+});
