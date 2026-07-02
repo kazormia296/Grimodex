@@ -39,7 +39,7 @@ const treeMock = vi.hoisted(() => {
       >();
       for (const id of ids) {
         out.set(id, {
-          content: (await loadSceneContent(id)) as string,
+          content: (await loadSceneContent()) as string,
           unplacedBeatsDoc: "[]",
         });
       }
