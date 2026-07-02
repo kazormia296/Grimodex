@@ -244,9 +244,24 @@ describe("ChronicleViewport geometry (real Chromium)", () => {
     const mz = Number(getComputedStyle(marker).zIndex);
     // ガターは選択マーカー(z=9)より高い z で前面に来る。
     expect(gz).toBeGreaterThan(mz);
+    // z-index は位置指定要素にしか効かない。ガターが static だと z-20 が無視され
+    // マーカーが前面に来る（過去の再発バグ）。position が効いていることを直接 gate する。
+    // getComputedStyle().zIndex は static でも "20" を返すため、上の z 比較だけでは
+    // この不具合を検出できなかった。
+    expect(getComputedStyle(gutter).position).not.toBe("static");
     // 実際に左はみ出し（負 left）が起きていることも確認（テストの前提保証）。
     const gRect = gutter.getBoundingClientRect();
     const mRect = marker.getBoundingClientRect();
     expect(mRect.left).toBeLessThan(gRect.right);
+    // 塗り順の実測: マーカーがガター上へはみ出す点で最前面がガター側であること。
+    // （マーカーが前面なら elementFromPoint はマーカーを返す＝バグ再発）。
+    const px = gRect.right - 2;
+    const py = mRect.top + mRect.height / 2;
+    const topEl = document.elementFromPoint(px, py) as HTMLElement | null;
+    expect(topEl).toBeTruthy();
+    expect(
+      topEl!.closest('[data-testid="chronicle-lane-gutter"]'),
+    ).not.toBeNull();
+    expect(topEl!.closest("[data-event-id]")).toBeNull();
   });
 });

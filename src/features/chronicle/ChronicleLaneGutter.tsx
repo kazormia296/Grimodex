@@ -139,7 +139,9 @@ export function ChronicleLaneGutter({
       ref={setGutterEl}
       data-testid="chronicle-lane-gutter"
       // z-20: 選択マーカー(z-9)が左端で負 left にはみ出してもガターを覆わせない。
-      className="z-20 flex-none border-r border-border bg-card"
+      // relative は必須: position が static のままだと z-20 が効かず（z-index は
+      // 位置指定要素にしか効かない）、マーカーがレーンヘッダーに重なる（再発防止）。
+      className="relative z-20 flex-none border-r border-border bg-card"
       style={{ width: gutterX }}
     >
       {lanes.map((lane) => {
