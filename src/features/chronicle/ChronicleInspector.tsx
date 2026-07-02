@@ -41,8 +41,9 @@ export interface ChronicleInspectorProps {
   laneOptions: { id: string; name: string; type: string }[];
   /** 場所候補（location 種別）。 */
   locations: { id: string; name: string }[];
-  /** AI 秘匿の reveal アンカー候補（読む順のシーン）。 */
-  scenes?: { id: string; title: string }[];
+  /** AI 秘匿の reveal アンカー候補（読む順のシーン）。hasDate=シーンに日時設定済み
+   * （SceneLinkField が追加時に優先ダイアログを出すか判定する）。 */
+  scenes?: { id: string; title: string; hasDate?: boolean }[];
   calendar: ChronicleCalendar;
   conflicts?: SeasonConflict[];
   ageConflicts?: AgeConflict[];

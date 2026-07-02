@@ -1,10 +1,14 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, X } from "lucide-react";
+import { SceneLinkModeDialog } from "./SceneLinkModeDialog";
 
 export interface SceneOption {
   id: string;
   title: string;
+  /** シーンに日時（暦の開始時刻）が明示設定されているか。設定済みなら追加時に
+   * イベント優先/シーン優先をダイアログで確認する（上書き事故の防止）。 */
+  hasDate?: boolean;
 }
 
 /**
@@ -58,8 +62,15 @@ export function SceneLinkField({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  // 既定は「イベント優先」（このイベントの日付/POV/場所をシーンへ合わせる）。
-  const [mode, setMode] = useState<SceneLinkMode>("event");
+  // 日時が設定済みのシーンを選んだとき、優先方向を確認するダイアログの対象。
+  const [pending, setPending] = useState<SceneOption | null>(null);
+
+  // 候補クリック: 日時ありはダイアログで優先を確認、日時なしは既定=イベント優先で
+  // 即リンク（空のシーンに日付/POV/場所を写すだけなので上書き事故が無い）。
+  const chooseCandidate = (scene: SceneOption) => {
+    if (scene.hasDate) setPending(scene);
+    else onLink(scene.id, "event");
+  };
 
   const titleOf = useMemo(() => {
     const m = new Map(scenes.map((s) => [s.id, s.title]));
@@ -141,32 +152,7 @@ export function SceneLinkField({
 
         {open && (
           <div className="flex flex-col gap-1 rounded-lg border border-border bg-card p-1.5">
-            {/* リンク時のプロパティ優先方向（既定=イベント優先で日付/POV/場所を合わせる）。 */}
-            <div
-              className="flex items-center gap-1 text-[11px]"
-              role="radiogroup"
-              aria-label={t("chronicle.linkModeLabel", "リンク時の優先")}
-            >
-              {(["event", "scene"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  data-testid={`link-mode-${m}`}
-                  role="radio"
-                  aria-checked={mode === m}
-                  onClick={() => setMode(m)}
-                  className={`rounded px-1.5 py-0.5 ${
-                    mode === m
-                      ? "bg-primary/15 text-foreground"
-                      : "text-muted-foreground hover:bg-accent"
-                  }`}
-                >
-                  {m === "event"
-                    ? t("chronicle.linkModeEvent", "イベント優先")
-                    : t("chronicle.linkModeScene", "シーン優先")}
-                </button>
-              ))}
-            </div>
+            {/* 優先方向のトグルは廃止。日時ありシーンを選んだときだけ下のダイアログで確認する。 */}
             <input
               data-testid="link-scene-search"
               type="text"
@@ -191,7 +177,7 @@ export function SceneLinkField({
                       type="button"
                       data-testid="link-scene-candidate"
                       data-scene-id={s.id}
-                      onClick={() => onLink(s.id, mode)}
+                      onClick={() => chooseCandidate(s)}
                       className="flex w-full items-center rounded-md px-2 py-1 text-start text-xs hover:bg-accent"
                     >
                       <span className="truncate">
@@ -206,6 +192,17 @@ export function SceneLinkField({
           </div>
         )}
       </div>
+
+      {pending && (
+        <SceneLinkModeDialog
+          sceneTitle={pending.title}
+          onChoose={(mode) => {
+            onLink(pending.id, mode);
+            setPending(null);
+          }}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </div>
   );
 }

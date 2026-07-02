@@ -261,10 +261,15 @@ export function ChroniclePanel() {
       .map((n) => ({
         id: n.id,
         title: n.title,
+        // 日時が明示設定済みか（開始時刻あり かつ 粒度 != none）。追加時に
+        // イベント優先で上書きすると消えるため、SceneLinkField が確認ダイアログを出す。
+        hasDate:
+          n.chronicleStartTime != null &&
+          (n.chronicleStartGranularity ?? "none") !== "none",
         pos: order.get(n.id) ?? Number.POSITIVE_INFINITY,
       }))
       .sort((a, b) => a.pos - b.pos)
-      .map(({ id, title }) => ({ id, title }));
+      .map(({ id, title, hasDate }) => ({ id, title, hasDate }));
   }, [nodes]);
 
   const loadedProjectIdRef = useRef<string | null>(null);
