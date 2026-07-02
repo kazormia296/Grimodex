@@ -75,6 +75,14 @@ interface ChronicleState {
   toggleLock: () => void;
   /** 位置選択を設定/解除する（空白クリック=設定、選択解除=null）。 */
   setSelectedPosition: (day: number | null, laneKey?: string | null) => void;
+  /**
+   * ephemeral な選択状態（primary/複数選択/位置/レーン）を全解除する。
+   * プロジェクト切替（reloadProjectData）から呼び、旧プロジェクトの
+   * selectedEventId が新プロジェクトの renderEvents に stale 一致して
+   * 誤選択・クロスプロジェクト参照を生むのを防ぐ。timeline/grid の
+   * clearSelection と対になる（従来 chronicle だけ未実装だった）。
+   */
+  clearSelection: () => void;
   /** 年表 mutation 後に呼ぶ。全 CRUD 経路から発火させる。 */
   bumpRevision: () => void;
   loadFromSettings: (settings: Partial<ChronicleSettings>) => void;
@@ -117,6 +125,13 @@ export const useChronicleStore = create<ChronicleState>((set) => ({
   toggleLock: () => set((s) => ({ locked: !s.locked })),
   setSelectedPosition: (selectedDay, selectedLaneKey = null) =>
     set({ selectedDay, selectedLaneKey }),
+  clearSelection: () =>
+    set({
+      selectedEventId: null,
+      selectedEventIds: [],
+      selectedDay: null,
+      selectedLaneKey: null,
+    }),
   bumpRevision: () => set((s) => ({ revisionCounter: s.revisionCounter + 1 })),
   loadFromSettings: (settings) =>
     set({

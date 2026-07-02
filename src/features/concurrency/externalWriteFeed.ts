@@ -158,6 +158,27 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
       await import("@/features/foreshadow/foreshadowStore");
     await useForeshadowStore.getState().load(projectId);
   }
+  // 以下 3 ドメインは metadata 系（Rust agent_writes / MCP が記録する）。
+  // 従来 fanOut は grid/codex/snippet/foreshadow の 4 ドメインしか反映せず、
+  // 別プロセス（MCP 等）が年表(event)・プロット・ラベルを書いても UI が stale
+  // なままだった。各ドメインの再ロード権威に合わせて反映する。dynamic import
+  // は上の foreshadow と同じ module-init cycle 回避のため。
+  if (domains.has("event")) {
+    // Chronicle は revisionCounter を購読して listEvents を再クエリするため
+    // bumpRevision が再ロードのトリガ（ChroniclePanel useEffect deps）。
+    const { useChronicleStore } =
+      await import("@/features/chronicle/chronicleStore");
+    useChronicleStore.getState().bumpRevision();
+  }
+  if (domains.has("plot")) {
+    const { usePlotThreadStore } =
+      await import("@/features/plot-threads/plotThreadStore");
+    await usePlotThreadStore.getState().load(projectId);
+  }
+  if (domains.has("labels")) {
+    const { useLabelStore } = await import("@/features/labels/labelStore");
+    await useLabelStore.getState().load(projectId);
+  }
 
   const editorEvents = events.filter(
     (e) => e.domain === "editor" && e.sceneId != null,

@@ -40,6 +40,9 @@ import {
   uiLinkSceneEvent,
   uiUnlinkSceneEvent,
   agentLinkSceneEvent,
+  agentCreateEvent,
+  agentUpdateEvent,
+  uiCreateEvent,
 } from "./event";
 
 const writeResult = {
@@ -115,5 +118,66 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     await expect(agentLinkSceneEvent("s1", "e1")).rejects.toThrow();
     expect(h.blockIfPolicyOff).toHaveBeenCalledWith("knowledgeWrite");
     expect(h.invoke).not.toHaveBeenCalled();
+  });
+});
+
+// #2: 出来事 detail（リッチテキスト）の AI 帰属焼込。codex/snippet と同様、
+// AI/agent 経路の detail には authorship マークを焼き込み、手動 UI 編集
+// (surface="manual") の detail には足さない（既に人間帰属マークを持つため）。
+describe("event detail の AI 帰属焼込 (#2)", () => {
+  const DETAIL_DOC = JSON.stringify({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: "AI が書いた詳細" }],
+      },
+    ],
+  });
+
+  type PmNode = {
+    type?: string;
+    marks?: { type: string }[];
+    content?: PmNode[];
+  };
+
+  function lastDetailDoc(): PmNode {
+    const call = [...h.invoke.mock.calls]
+      .reverse()
+      .find(
+        (c) => c[0] === "agent_event_create" || c[0] === "agent_event_update",
+      );
+    const payload = (call?.[1] as { payload: { detail: string } }).payload;
+    return JSON.parse(payload.detail) as PmNode;
+  }
+
+  function hasAuthorshipMark(doc: PmNode): boolean {
+    const text = doc.content?.[0]?.content?.[0];
+    return (text?.marks ?? []).some((m) => m.type === "authorship");
+  }
+
+  beforeEach(() => {
+    h.blockIfPolicyOff.mockClear();
+    h.blockIfPolicyOff.mockReturnValue(false);
+    h.invoke.mockClear();
+    h.invoke.mockResolvedValue(writeResult);
+    h.bumpRevision.mockClear();
+    h.push.mockClear();
+    h.isReplaying = false;
+  });
+
+  it("AI 経路 agentCreateEvent は detail に authorship マークを焼き込む", async () => {
+    await agentCreateEvent({ title: "t", detail: DETAIL_DOC });
+    expect(hasAuthorshipMark(lastDetailDoc())).toBe(true);
+  });
+
+  it("AI 経路 agentUpdateEvent も detail 更新に authorship マークを焼き込む", async () => {
+    await agentUpdateEvent({ eventId: "e1", detail: DETAIL_DOC });
+    expect(hasAuthorshipMark(lastDetailDoc())).toBe(true);
+  });
+
+  it("手動 UI 経路 uiCreateEvent は detail に AI マークを足さない (surface=manual)", async () => {
+    await uiCreateEvent({ title: "t", detail: DETAIL_DOC });
+    expect(hasAuthorshipMark(lastDetailDoc())).toBe(false);
   });
 });
