@@ -141,6 +141,12 @@ function MountedSceneBlock({
   // useAutoSave の cleanup flush が走る。pending が arm されていた場合、
   // false 始まりだと空 doc がそのまま DB に書き込まれる。
   const loadFailedRef = useRef(true);
+  // 編集世代カウンタ (EditorPane と同じ Fix)。onUpdate で dirty を立てるたび
+  // ++ し、coreSave は「save 開始時と同世代のときのみ」dirty を解除する。
+  // 無条件解除だと保存 (await) 中に入った編集の dirty=true をクロバーし、
+  // 外部 flush の dirty ゲート (dirtyGatedSaveHandler) が clean 誤判定 →
+  // headless 適用の resync がその編集を上書き消失させる。
+  const editGenerationRef = useRef(0);
   const [charCount, setCharCount] = useState(0);
   // タイピング中の文字数同期 debounce タイマー (EditorStatsFooter と同じ
   // 200ms trailing)。
@@ -173,12 +179,18 @@ function MountedSceneBlock({
       `save ${sceneId.slice(0, 8)}`,
       JSON.stringify({ docLen: getDocText(ed.state.doc).length }),
     );
+    // save 開始時の編集世代 (doc 捕捉と同期区間なので取りこぼし無し)。
+    const editGenAtStart = editGenerationRef.current;
     // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
     // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
     // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
     await persistSceneBody(sceneId, ed.state.doc);
     // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
-    useTabStore.getState().setTabDirty(sceneId, false);
+    // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
+    // (editGenerationRef のコメント参照)。
+    if (editGenerationRef.current === editGenAtStart) {
+      useTabStore.getState().setTabDirty(sceneId, false);
+    }
   }, [sceneId]);
 
   const saveFn = useCallback(async () => {
@@ -255,6 +267,8 @@ function MountedSceneBlock({
         // 検出・post-effect/チャットの flush 列挙が参照する)。リニアはタブを
         // 持たないが、この Set に乗らないと外部変更が未保存編集をサイレントに
         // 上書きする。解除は coreSave 成功時と unmount cleanup。
+        // 世代カウンタは dirty 立てと同時に ++ (coreSave の条件付き解除用)。
+        editGenerationRef.current += 1;
         useTabStore.getState().setTabDirty(sceneId, true);
 
         // Auto-transition outline → draft: wasEmptyRef が true の間だけ

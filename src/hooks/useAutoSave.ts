@@ -10,6 +10,21 @@ export interface AutoSave {
   flush: () => Promise<void>;
 }
 
+/**
+ * 保存失敗のうち「ユーザ通知は発生源で済んでいる」ことを表す marker エラー。
+ * 例: snippet の OCC 衝突は snippetStore が editConflict をトースト済みで、
+ * ここでさらに autoSave.failed を重ねると同一失敗の二重トーストになる。
+ * runSave の catch はこれを見て toast だけをスキップする — 失敗としての
+ * 扱い (呼び出し側の dirty 維持・debugLog・回復時の announce) は通常の
+ * 失敗と同じ。
+ */
+export class AlreadyNotifiedSaveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AlreadyNotifiedSaveError";
+  }
+}
+
 export function createAutoSave(
   saveFn: () => Promise<void>,
   delayMs: number,
@@ -32,7 +47,10 @@ export function createAutoSave(
       lastFailed = true;
       const detail = errorDetail(e);
       debugLog.error("AutoSave", `${label} failed`, detail);
-      toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
+      // 発生源で通知済みの失敗はトーストを重ねない (二重通知防止)。
+      if (!(e instanceof AlreadyNotifiedSaveError)) {
+        toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
+      }
     }
   }
 

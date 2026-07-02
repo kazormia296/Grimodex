@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createAutoSave } from "@/hooks/useAutoSave";
+import { createAutoSave, AlreadyNotifiedSaveError } from "@/hooks/useAutoSave";
 
 vi.mock("sonner", () => ({
   toast: { error: vi.fn() },
@@ -163,5 +163,26 @@ describe("createAutoSave", () => {
     autoSave.schedule();
     await autoSave.flush();
     expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  it("AlreadyNotifiedSaveError では toast を重ねない (発生源で通知済み)", async () => {
+    // 例: snippet の OCC 衝突は snippetStore が editConflict をトースト済み。
+    // ここで autoSave.failed を重ねると同一失敗で二重トーストになる。
+    const saveFn = vi
+      .fn()
+      .mockRejectedValueOnce(new AlreadyNotifiedSaveError("snippet conflict"))
+      .mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(toast.error).not.toHaveBeenCalled();
+
+    // toast を出さなくても「失敗」としては扱う (dirty 維持は呼び出し側、
+    // 回復 announce はここ): 次の成功で recovered を1回読み上げる。
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(i18next.t("autoSave.recovered"));
   });
 });

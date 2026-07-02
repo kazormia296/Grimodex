@@ -530,6 +530,26 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", false);
   });
 
+  it("保存 (await) 中に入った編集は dirty を維持する (編集世代カウンタ)", async () => {
+    // coreSave が doc を捕捉して await している間に次の編集が入った場合、
+    // 保存完了時の無条件 setTabDirty(false) がその編集の dirty=true を
+    // クロバーすると、外部 flush の dirty ゲートが clean 誤判定 → headless
+    // 適用の resync が未保存編集を上書き消失させる (Fix 2 の保証破り)。
+    await renderLoaded();
+    lastEditor().commands.insertContentAt(1, "編集A");
+    expect(mockDirtyTabIds.has("scene-0001")).toBe(true);
+    mockPersist.mockImplementationOnce(async () => {
+      // 保存の await 中に次の編集が入る
+      lastEditor().commands.insertContentAt(1, "編集B");
+    });
+    mockSetTabDirty.mockClear();
+    await saveScene("scene-0001");
+    expect(mockPersist).toHaveBeenCalledTimes(1);
+    // 世代不一致 → dirty は維持 (解除しない)
+    expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", false);
+    expect(mockDirtyTabIds.has("scene-0001")).toBe(true);
+  });
+
   it("setLiveContent (agent 書き込み/改名波及の resync) を editor doc に反映する", async () => {
     await renderLoaded();
     const RESYNC_GROUP = -1; // autoApplyProse / renameEngine の sentinel

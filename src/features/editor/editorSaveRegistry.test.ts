@@ -119,4 +119,17 @@ describe("エディタの save handler 登録 (ソース invariant)", () => {
     expect(src).toMatch(/dirtyGatedSaveHandler\(/);
     expect(src).not.toMatch(/registerSaveHandler\(sceneId, saveFn\)/);
   });
+
+  it("EditorPane は save 中に入った編集の dirty を世代カウンタでクロバーしない", () => {
+    // coreSave の await 中に入った編集の dirty=true を、保存完了時の無条件
+    // setIsDirty(false) が消すと gate が clean 誤判定 → headless 適用の
+    // resync が未保存編集を上書きする。dirty クリアは「save 開始時と編集
+    // 世代が一致する場合のみ」であること (挙動テストは LinearSceneBlock 側、
+    // EditorPane はコンポーネントテスト基盤が無いためソース invariant)。
+    const src = readFileSync(resolve(__dirname, "./EditorPane.tsx"), "utf-8");
+    expect(src).toMatch(/const editGenAtStart = editGenerationRef\.current/);
+    expect(src).toMatch(
+      /if \(editGenerationRef\.current === editGenAtStart\)[\s\S]{0,300}?setIsDirtyRef\.current\(false\)/,
+    );
+  });
 });

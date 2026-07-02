@@ -45,7 +45,7 @@ import {
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { useAutoSave } from "@/hooks/useAutoSave";
+import { useAutoSave, AlreadyNotifiedSaveError } from "@/hooks/useAutoSave";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -334,8 +334,15 @@ export function EditorPane({
   // (dirtyGatedSaveHandler) は打鍵と同じ tick で更新されるこの ref を正とする。
   // 更新は setIsDirtyRef 経由に一本化してあり、両者は乖離しない。
   const isDirtyRef = useRef(false);
+  // 編集世代カウンタ: dirty を立てる (=編集イベント) たびに ++。saveFn は
+  // save 開始時の世代を記録し、「同世代のときのみ」dirty をクリアする。
+  // coreSave の await 中に入った編集の dirty=true を無条件クリアでクロバー
+  // すると、外部 flush の dirty ゲートが clean 誤判定 → headless 適用
+  // (autoApplyProse) の resync が未保存編集を上書き消失させるため。
+  const editGenerationRef = useRef(0);
   const setIsDirtyRef = useRef<(dirty: boolean) => void>(() => {});
   setIsDirtyRef.current = (dirty: boolean) => {
+    if (dirty) editGenerationRef.current += 1;
     isDirtyRef.current = dirty;
     setIsDirty(dirty);
   };
@@ -426,9 +433,11 @@ export function EditorPane({
       // 済みの上 false で返す (throw しない)。ここで throw に変換して saveFn
       // へ伝播させ、setIsDirty(false) を走らせない — 旧・直呼び (throw) と
       // 同じく「保存されていないのに clean 表示」で編集が失われるのを防ぐ。
+      // 通知済みなので AlreadyNotifiedSaveError: useAutoSave の catch は
+      // autoSave.failed トーストを重ねない (二重トースト防止)。
       const saved = await useSnippetStore.getState().update(id, { content });
       if (!saved) {
-        throw new Error(
+        throw new AlreadyNotifiedSaveError(
           `snippet save not persisted (version conflict or update failure): ${id}`,
         );
       }
@@ -457,13 +466,21 @@ export function EditorPane({
       );
       return;
     }
+    // save 開始時の編集世代 (下の条件付き dirty クリア用)。ここから coreSave の
+    // doc 捕捉までは同期区間なので、捕捉に入った編集を取りこぼさない。
+    const editGenAtStart = editGenerationRef.current;
     setIsSaving(true);
     try {
       await coreSave();
     } finally {
       setIsSaving(false);
     }
-    setIsDirtyRef.current(false);
+    // coreSave の await 中に編集が入っていた場合 (世代不一致) は dirty を維持
+    // する。無条件クリアだと外部 flush の dirty ゲートが clean 誤判定し、
+    // headless 適用の resync がその編集を上書き消失させる。
+    if (editGenerationRef.current === editGenAtStart) {
+      setIsDirtyRef.current(false);
+    }
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
     // Codex/snippet tabs don't use the revision system

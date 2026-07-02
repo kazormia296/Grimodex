@@ -34,6 +34,10 @@ describe("EditorPane snippet save (二重書き込み集約)", () => {
     expect(source).toMatch(
       /const saved = await useSnippetStore\.getState\(\)\.update\(id, \{ content \}\)/,
     );
-    expect(source).toMatch(/if \(!saved\)[\s\S]{0,300}?throw/);
+    // 通知は store 側で済んでいるため AlreadyNotifiedSaveError を投げ、
+    // useAutoSave の autoSave.failed トーストを重ねない (二重トースト防止)。
+    expect(source).toMatch(
+      /if \(!saved\)[\s\S]{0,300}?throw new AlreadyNotifiedSaveError/,
+    );
   });
 });

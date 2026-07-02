@@ -88,9 +88,11 @@ export async function drainProposedProse(projectId: string): Promise<void> {
       // auto-accept ON の headless-appliable 行はシーンを開いた時の再ロード
       // (useAgentProseStaging) でも suppress され、「適用もされず diff にも
       // 出ない」サイレント孤児になる。store は単一 pending なので複数 blocked
-      // 時は最後の 1 件だけ残るが、シーンを開けば useAgentProseStaging が
-      // DB から最新 proposed 行を再ロードして enqueue する (stale 行は
-      // suppression 対象外) ため、導線としては全行が手動レビューに到達する。
+      // 時は最後の 1 件だけ残る — 残りは、シーンを開いた時の再ロードが最新
+      // proposed 行を 1 件 surface し (stale 行は suppression 対象外)、以降は
+      // useAgentProseStaging の accept/reject 後チェーン再ロードが次の行を
+      // 順に enqueue する。つまり blocked 行はユーザーが順に処理する前提の
+      // 逐次到達で、この enqueue はその起点 (最初の 1 件) を保証する。
       useProseStagingStore.getState().enqueue(proposal);
     }
   }

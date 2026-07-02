@@ -3451,6 +3451,7 @@
   },
   "inlineAi": {
     "generateFailed": "Generation failed",
+    "proposalAlreadyFinalized": "This AI proposal was already applied or discarded elsewhere. The outdated preview has been dismissed.",
     "pendingBlocked": "You have an unconfirmed AI generation. Press Tab to accept or Esc to discard before continuing.",
     "additionalPrompt": "Additional instructions (optional)",
     "commands": {
