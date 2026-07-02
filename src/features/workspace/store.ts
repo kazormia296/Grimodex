@@ -6,8 +6,8 @@ import { flushAllAutoSaves } from "@/hooks/useAutoSave";
 import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
 import {
   flushNow as flushTimelapseRecorder,
-  suspendRecorderForWorkspaceSwitch,
-  resumeRecorder,
+  beginWorkspaceSwitch,
+  endWorkspaceSwitch,
 } from "@/features/timelapse/recorder";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -228,7 +228,6 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     // EditorScreen の key (activeWorkspacePath) が変わらず remount しない。
     const wasSamePathReopen =
       get().view === "editor" && get().activeWorkspacePath === path;
-    let suspendEpoch: number | null = null;
     try {
       set({ error: null });
       // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
@@ -249,15 +248,32 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           errorDetail(e),
         );
       }
-      // quiesce 完了後〜新 project rebind までの recorder を止める。切替中の
+      // 切替開始 (r5 状態機械): recorder のキュー破棄 + 束縛無効化。切替中の
       // flush 再試行が open 完了後に新 workspace の hash chain へ旧イベントを
-      // 混入させるのを防ぐ (C1)。resume は projectStore.loadProject の rebind
-      // 完了後 (失敗時は下の catch)。世代番号を保持し、遅延 resume が後発の
-      // 切替の suspend を打ち消さないようにする (R4-1 系列D)。
-      suspendEpoch = suspendRecorderForWorkspaceSwitch();
-      const result = await invoke<OpenWorkspaceResult>("open_workspace", {
-        path,
-      });
+      // 混入させるのを防ぐ (C1)。記録の再開は「命令」ではなく、正規 rebind
+      // (projectStore の initRecorderForProject) の完了だけが束縛を有効に戻す。
+      //
+      // begin〜end は swap (open_workspace invoke) だけを正確に括る。end を
+      // openWorkspace 全体の finally に置くと、set({view}) 以降の await 中に
+      // React が EditorScreen を mount して走らせた正規 rebind
+      // (loadProject → initRecorderForProject) が switchInProgress=true の
+      // bystander と誤判定され、束縛が二度と書かれない (= 記録の恒久停止)。
+      // swap の成否が確定した時点で切替は終わり、以降の記録可否は
+      // bindingInvalidated (rebind 完了まで true) が閉じる。
+      beginWorkspaceSwitch();
+      let result: OpenWorkspaceResult;
+      let swapDone = false;
+      try {
+        result = await invoke<OpenWorkspaceResult>("open_workspace", {
+          path,
+        });
+        swapDone = true;
+      } finally {
+        // swap 未実行の失敗 = 旧 workspace 続行なので旧束縛は依然正しい →
+        // 復元して記録をそのまま再開する。swap 済みなら束縛は無効のまま =
+        // 正規 rebind (initRecorderForProject) の完了だけが記録を再開する。
+        endWorkspaceSwitch({ restoreBinding: !swapDone });
+      }
       // Resolve the current Project before the editor view renders so that
       // panels reading currentProjectId have a value to work with.
       await useProjectStore.getState().initCurrentProject();
@@ -309,22 +325,21 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       useMatrixStore.getState().loadFromSettings(settings);
       // R4-1 系列A: 同一パスの再オープン (例: チュートリアル再実行 = seed で
       // DB を作り直して同じ path を open) では EditorScreen が remount せず、
-      // mount 時の loadProject (recorder resume を含む rebind の唯一の経路) が
-      // 走らない。ここで明示的に再ロードする。loadProject は再実行安全:
-      // generation ガードが外部フィードの多重購読を防ぎ、reloadProjectData が
-      // in-memory 状態を作り直す。失敗は下の catch で error 表示 + resume。
+      // mount 時の loadProject (正規 rebind の唯一の経路) が走らない。ここで
+      // 明示的に再ロードする。loadProject は再実行安全: generation ガードが
+      // 外部フィードの多重購読を防ぎ、reloadProjectData が in-memory 状態を
+      // 作り直す。切替は上で終了済みなので、この rebind は bystander 扱い
+      // されず束縛を書ける。
       if (wasSamePathReopen) {
         await useProjectStore.getState().loadProject(getCurrentProjectId());
       }
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {
-      // open 失敗 = 旧 workspace / 旧 project のまま。recorder の suspend を
-      // 解除して記録を復帰させる (成功時の resume は projectStore の rebind)。
-      // epoch 付き: この切替の suspend のみ解除する。
-      if (suspendEpoch !== null) {
-        resumeRecorder(suspendEpoch);
-      }
+      // open 失敗時も recorder への命令的な復帰はしない (r5)。束縛の扱いは
+      // swap を括る endWorkspaceSwitch({restoreBinding}) が一元的に決めた。
+      // swap 後の後続処理の失敗では束縛は無効のまま = 次の正規 rebind まで
+      // イベントは warn 付きで破棄される (誤束縛での混入より安全側)。
       set({
         error: e instanceof Error ? e.message : String(e),
         // If still on loading screen (called from initialize), recover to launcher

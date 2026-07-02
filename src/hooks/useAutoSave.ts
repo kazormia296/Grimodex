@@ -109,7 +109,12 @@ export function createAutoSave(
     // flush が開始した save」をすり抜ける (M3 review R4-2)。各イテレーションで
     // inFlight を再読し、pending は cancel → 即時実行する。runSave はエラーを
     // 内部処理するのでこの await は reject しない。
-    while (inFlight || pending) {
+    // 上限 20 周: save 自身が schedule を再誘発し続ける等で理論上 livelock
+    // するため打ち切る (r5 Minor-1)。上限到達時の未保存分は
+    // awaitAllPendingSceneWrites の write チェーン待ちと Rust 側
+    // WORKSPACE_SWITCHING 拒否の防御に委ねる。
+    for (let round = 0; round < 20; round++) {
+      if (!inFlight && !pending) return;
       const running = inFlight;
       if (running) {
         await running;
@@ -118,6 +123,10 @@ export function createAutoSave(
       cancel();
       await startSave("flush");
     }
+    debugLog.warn(
+      "AutoSave",
+      "flush loop reached its 20-round cap; giving up waiting for quiescence",
+    );
   }
 
   return { schedule, cancel, flush };

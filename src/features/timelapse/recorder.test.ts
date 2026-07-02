@@ -18,16 +18,17 @@ vi.mock("@/db/client", () => ({
 
 import {
   _resetRecorderForTests,
+  beginWorkspaceSwitch,
+  endWorkspaceSwitch,
   flushNow,
   getRecorderChainHead,
   getRecorderSessionId,
   initRecorderForProject,
   recordChangeEvent,
   resetRecorderChain,
-  resumeRecorder,
   setRecorderEnabled,
-  suspendRecorderForWorkspaceSwitch,
 } from "./recorder";
+import { debugLog } from "@/lib/debugLog";
 import {
   bytesToHex,
   computeEventHash,
@@ -408,21 +409,18 @@ describe("recorder", () => {
     }
   });
 
-  // --- workspace 切替の suspend / resume (M3 review C1) ---
+  // --- workspace 切替の状態機械 (M3 review r5) ---
+  // recording可 ⟺ bound ∧ ¬bindingInvalidated ∧ ¬switchInProgress。
+  // 束縛を有効化する唯一の経路は initRecorderForProject。
 
-  it("suspend 中は既存キューを破棄し、新規イベントも記録せず flush は no-op", async () => {
+  it("切替開始で既存キューを破棄し、切替中はイベント破棄・flush no-op", async () => {
     setupAppendCommand();
     await initRecorderForProject("p-sus");
     recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
 
-    suspendRecorderForWorkspaceSwitch();
-    // suspend 後に発生したイベントは破棄される
+    beginWorkspaceSwitch();
+    // 切替中に発生したイベントは破棄される
     recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 2 } });
-    await flushNow();
-    expect(invokeMock).not.toHaveBeenCalled();
-
-    // resume しても破棄済みイベントは復活しない (混入防止が優先)
-    resumeRecorder();
     await flushNow();
     expect(invokeMock).not.toHaveBeenCalled();
   });
@@ -448,46 +446,102 @@ describe("recorder", () => {
     expect(invokeMock).toHaveBeenCalledTimes(1);
   });
 
-  it("resume 後の新イベントは新 project の chain にだけ流れる", async () => {
+  it("契約(a): 切替成功後は init 完了まで recordChangeEvent が warn 付きで破棄される", async () => {
+    const warnSpy = vi.spyOn(debugLog, "warn");
     const { rows } = setupAppendCommand();
     await initRecorderForProject("p-old");
+
+    beginWorkspaceSwitch();
+    endWorkspaceSwitch(); // 切替成功: restoreBinding なし = 束縛は無効のまま
+
+    // rebind 前のイベントは破棄され、初回は warn が出る
     recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
-
-    suspendRecorderForWorkspaceSwitch();
-    await flushNow(); // no-op (旧イベントは破棄済み)
+    await flushNow();
     expect(invokeMock).not.toHaveBeenCalled();
+    expect(
+      warnSpy.mock.calls.some(
+        ([tag, msg]) => tag === "timelapse" && String(msg).includes("破棄中"),
+      ),
+    ).toBe(true);
 
-    // 新 workspace の project に rebind → resume
+    // 正規 rebind (init) の完了で記録が再開する
     await initRecorderForProject("p-new");
-    resumeRecorder();
     recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 2 } });
     await flushNow();
-
     expect(invokeMock).toHaveBeenCalledTimes(1);
     const [, args] = invokeMock.mock.calls[0] as [string, AppendArgs];
     expect(args.projectId).toBe("p-new");
     expect(args.events).toHaveLength(1);
     expect(rows.every((r) => r.projectId === "p-new")).toBe(true);
+    warnSpy.mockRestore();
   });
 
-  it("古い世代の resume は後発の suspend を打ち消さない (R4-1 系列D)", async () => {
+  it("契約(b): 切替失敗 (restoreBinding) では旧束縛のまま記録が継続する", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-old");
+
+    beginWorkspaceSwitch();
+    endWorkspaceSwitch({ restoreBinding: true }); // swap 未実行の失敗
+
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+    await flushNow();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    const [, args] = invokeMock.mock.calls[0] as [string, AppendArgs];
+    expect(args.projectId).toBe("p-old");
+    expect(rows.every((r) => r.projectId === "p-old")).toBe(true);
+  });
+
+  it("契約(c): 切替中に完了した bystander init は束縛を書かない", async () => {
     setupAppendCommand();
-    await initRecorderForProject("p-epoch");
+    await initRecorderForProject("p-old");
 
-    const epoch1 = suspendRecorderForWorkspaceSwitch(); // 切替1
-    const epoch2 = suspendRecorderForWorkspaceSwitch(); // 切替2 が割り込み
+    beginWorkspaceSwitch();
+    const bound = await initRecorderForProject("p-bystander");
+    expect(bound).toBe(false);
 
-    // 切替1 の遅延 resume は無視され、suspend されたまま
-    resumeRecorder(epoch1);
+    endWorkspaceSwitch(); // 切替成功 (rebind 待ち)
+    // bystander init は束縛を書いていないので記録は再開しない
     recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
     await flushNow();
     expect(invokeMock).not.toHaveBeenCalled();
 
-    // 現世代 (切替2) の resume で解除される
-    resumeRecorder(epoch2);
+    // 正規 rebind で再開する
+    const rebound = await initRecorderForProject("p-new");
+    expect(rebound).toBe(true);
     recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 2 } });
     await flushNow();
     expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("契約(d): 完了時に世代が進んでいた旧 init は state を書かない (Minor-2)", async () => {
+    // tail read を遅延させて init を切替と交差させる
+    let releaseTail!: (v: Array<{ sequence: number }>) => void;
+    dbSelectMock.mockImplementation(() => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () =>
+              new Promise<Array<{ sequence: number }>>((r) => {
+                releaseTail = r;
+              }),
+          }),
+        }),
+      }),
+    }));
+
+    const initP = initRecorderForProject("p-slow"); // 旧 init (tail 未解決)
+    beginWorkspaceSwitch(); // 世代が進む
+    endWorkspaceSwitch();
+    releaseTail([{ sequence: 42 }]); // 旧 init が遅延 resolve
+
+    const bound = await initP;
+    expect(bound).toBe(false); // 束縛を書かない
+    expect(getRecorderChainHead()).toBe(0); // lastSequence を clobber しない
+
+    // 記録も再開していない (束縛は無効のまま)
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+    await flushNow();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("workspace 切替を跨いだら同一 projectId でも再 init する (R4-3)", async () => {
@@ -497,12 +551,13 @@ describe("recorder", () => {
     expect(getRecorderChainHead()).toBe(42);
     const oldSession = getRecorderSessionId();
 
-    // workspace 切替 (suspend → swap → resume)。新 workspace の chain は空。
+    // workspace 切替 (begin → swap 成功 → end)。新 workspace の chain は空。
     // 両 workspace とも projectId は 'default-project' (最頻ケース)。
-    const epoch = suspendRecorderForWorkspaceSwitch();
+    beginWorkspaceSwitch();
+    endWorkspaceSwitch();
     setupTail({ value: null });
-    resumeRecorder(epoch);
-    await initRecorderForProject("default-project");
+    const bound = await initRecorderForProject("default-project");
+    expect(bound).toBe(true);
 
     // projectId だけの冪等ガードだと旧 initPromise を返して no-op になり、
     // 旧 tail(42) が新 workspace の seed snapshot に焼かれてしまう。

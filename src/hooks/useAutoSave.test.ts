@@ -16,6 +16,7 @@ vi.mock("@/lib/a11y/announcer", () => ({
 import { toast } from "sonner";
 import { announce } from "@/lib/a11y/announcer";
 import i18next from "@/lib/i18n";
+import { debugLog } from "@/lib/debugLog";
 
 describe("createAutoSave", () => {
   beforeEach(() => {
@@ -226,6 +227,30 @@ describe("createAutoSave", () => {
     gates[1](); // run2 完了
     await flushing;
     expect(flushed).toBe(true);
+  });
+
+  it("契約(e): flush ループは 20 周で打ち切って warn する (livelock 防止)", async () => {
+    const warnSpy = vi.spyOn(debugLog, "warn");
+    // save のたびに schedule を再誘発する病的ケース (持続タイピング相当)
+    const holder: { schedule?: () => void } = {};
+    const saveFn = vi.fn(async () => {
+      holder.schedule?.();
+    });
+    const autoSave = createAutoSave(saveFn, 500);
+    holder.schedule = autoSave.schedule;
+
+    autoSave.schedule();
+    await expect(autoSave.flush()).resolves.toBeUndefined();
+
+    expect(saveFn.mock.calls.length).toBeLessThanOrEqual(21);
+    expect(
+      warnSpy.mock.calls.some(
+        ([tag, msg]) => tag === "AutoSave" && String(msg).includes("cap"),
+      ),
+    ).toBe(true);
+
+    autoSave.cancel();
+    warnSpy.mockRestore();
   });
 
   it("WORKSPACE_SWITCHING 拒否は i18n 済みの切替中文言で toast する", async () => {

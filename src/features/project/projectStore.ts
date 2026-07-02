@@ -64,31 +64,6 @@ function isRealBrowserRuntime(): boolean {
   );
 }
 
-/**
- * loadProject entry で workspace 切替 suspend の世代番号を捕捉する
- * (real browser 以外は null)。遅延 resume (rebind 完了 / 失敗時) はこの世代を
- * 渡す — 古い切替の resume が後発の切替の suspend を打ち消すのを防ぐ
- * (M3 review R4-1 系列D)。
- */
-async function captureRecorderSuspendEpoch(): Promise<number | null> {
-  if (!isRealBrowserRuntime()) return null;
-  try {
-    const { getRecorderSuspendEpoch } =
-      await import("@/features/timelapse/recorder");
-    return getRecorderSuspendEpoch();
-  } catch {
-    return null;
-  }
-}
-
-/** recorder resume の fire-and-forget 版 (real browser のみ)。 */
-function resumeRecorderIfRealBrowser(epoch: number | null | undefined): void {
-  if (!isRealBrowserRuntime()) return;
-  void import("@/features/timelapse/recorder")
-    .then((m) => m.resumeRecorder(epoch ?? undefined))
-    .catch(() => {});
-}
-
 export const useProjectStore = create<ProjectState>()((set, get) => ({
   currentProjectId: null,
   projects: [],
@@ -120,19 +95,16 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     // プロジェクト切替は reloadProjectData で tab/chat/map 等の in-memory 状態を
     // 破棄し owner エディタを作り替えるため、pending 中は止める (唯一の入口)。
     if (guardInlineAiPending()) {
-      // R4-1 系列C: workspace 切替の rebind としてここへ来た場合、早期 return
-      // で resume 不達だとタイムラプス記録が無警告で恒久停止する。rebind なし
-      // の resume なので直後のイベントは旧 project 束縛のままになりうるが、
-      // 「inline AI pending 中にロードがブロックされた」異常系でユーザー操作
-      // イベントはほぼ発生せず、恒久黙殺よりマシという妥協。呼び出し直後に
-      // 実行される (遅延しない) ため epoch なし = 現世代の解除でよい。
-      resumeRecorderIfRealBrowser(undefined);
+      // 早期 return = project はロードされない = recorder の有効な束縛が
+      // 存在しない。この場合「記録しない (warn 付き破棄)」が正しい挙動 —
+      // ここで旧束縛のまま記録を再開すると、workspace 切替直後なら旧
+      // イベントが新 workspace の hash chain へ混入する (r5 で命令的
+      // resume を廃止した理由)。記録は次の正規 rebind
+      // (initRecorderForProject) 完了で自動的に再開する。
       return;
     }
     const generation = ++loadProjectGeneration;
     const previousId = get().currentProjectId;
-    // この rebind フローが対応する suspend 世代 (系列D 用)。
-    const recorderEpoch = await captureRecorderSuspendEpoch();
     if (isRealBrowserRuntime()) {
       const { stopExternalWriteFeed } =
         await import("@/features/concurrency/externalWriteFeed");
@@ -169,32 +141,27 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         void (async () => {
           const { isTimelapseEnabled, ensureGenesisBaselines } =
             await import("@/features/timelapse/toggle");
-          const {
-            flushNow,
-            setRecorderEnabled,
-            initRecorderForProject,
-            resumeRecorder,
-          } = await import("@/features/timelapse/recorder");
+          const { flushNow, setRecorderEnabled, initRecorderForProject } =
+            await import("@/features/timelapse/recorder");
           // Drain the previous project's pending queue BEFORE calling
           // setRecorderEnabled so the flush still runs with the old project's
           // enabled=true state (flushNow is a no-op when the queue is empty).
-          // workspace 切替中 (recorder suspend 中) はこの drain 自体が no-op
-          // — 旧キューは suspend 時に破棄済みで、ここで流すと旧イベントが
-          // 新 workspace の chain に混入する (M3 review C1)。
+          // workspace 切替後 (束縛無効中) はこの drain 自体が no-op — 旧
+          // キューは beginWorkspaceSwitch で破棄済みで、ここで流すと旧
+          // イベントが新 workspace の chain に混入する (M3 review C1)。
           await flushNow().catch(() => {});
           // setRecorderEnabled must precede init: when disabled, init only
           // binds projectId and skips the chain-tail read (recorder.ts).
           const enabled = await isTimelapseEnabled(projectId);
           setRecorderEnabled(enabled);
-          await initRecorderForProject(projectId);
-          // rebind 完了 = 新 workspace の chain tail に載って良い状態。
-          // workspace 切替 quiesce の suspend をここで解除する (切替でない
-          // 通常の project ロードでは no-op)。epoch 付き: この rebind より
-          // 後に始まった切替の suspend は打ち消さない (系列D)。
-          resumeRecorder(recorderEpoch ?? undefined);
+          // 正規 rebind — 束縛を有効化する唯一の経路 (r5 状態機械)。切替中の
+          // bystander init / 世代跨ぎの旧 init は束縛を書かず false を返す。
+          // その場合 lastSequence が旧 workspace の値のままなので、seed
+          // snapshot (anchorSequence 依存) を焼いてはならない。
+          const bound = await initRecorderForProject(projectId);
           // §17 P0.4: 毎セッション開始時に現在のレイアウトを seed snapshot として
           // 焼き、replay の初期 UI 状態を確定させる (forward layout イベントの起点)。
-          if (enabled) {
+          if (enabled && bound) {
             // default-ON 経路では明示トグルが無く scene baseline が焼かれない
             // ため、genesis (記録履歴が空) のとき一度だけ焼く。これが無いと
             // 記録 ON 前から本文のあるシーンが動画 export で replay 不能になる。
@@ -204,10 +171,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
             await seedWorkspaceSnapshot(projectId);
           }
         })().catch((err) => {
+          // init 失敗 = 有効な束縛が無い。記録は再開されず、イベントは warn
+          // 付きで破棄される (recorder 側の不変条件)。次の loadProject /
+          // 再オープンの正規 rebind で自動再開する。
           console.warn("[timelapse] recorder init failed", err);
-          // init 失敗でも suspend は解除する (立ちっぱなし = 以後の全イベント
-          // が黙って破棄され続ける)。失敗時の記録可否は enabled 側が決める。
-          resumeRecorderIfRealBrowser(recorderEpoch);
         });
       }
       if (isRealBrowserRuntime()) {
@@ -236,12 +203,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     } catch (e) {
       // 切替失敗 — パネルがロードされていない Project を指したままにしない。
       set({ currentProjectId: previousId });
-      // R4-1 系列B: rethrow 前に resume。timelapse IIFE (resume 経路) より
-      // 手前で throw すると resume 不達 = 記録の恒久停止になる。rebind 未完の
-      // resume なので直後のイベントは旧 project 束縛になりうるが、プロジェクト
-      // ロード失敗の異常系でユーザー操作イベントはほぼ無く、恒久黙殺よりマシ
-      // という妥協。epoch 付きなので後発の切替の suspend は打ち消さない。
-      resumeRecorderIfRealBrowser(recorderEpoch);
+      // recorder はここで触らない (r5): project がロードされていない =
+      // 有効な束縛が存在しないので「記録しない (warn 付き破棄)」が正しい。
+      // 記録は次の正規 rebind (initRecorderForProject) 完了で自動再開する。
       throw e;
     }
   },
