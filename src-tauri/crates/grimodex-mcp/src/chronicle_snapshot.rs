@@ -451,6 +451,11 @@ fn format_time_of_day(minute: Option<i64>) -> Option<String> {
 
 /// day 番号＋分＋粒度 → 表示文字列（`formatChronicleDate` の移植）。
 /// none/None は空文字。lang は "ja" のみ日本語、それ以外は英語整形（呼出側で正規化）。
+///
+/// 既知の TS↔Rust 乖離: TS 側 formatChronicleDate は eras（元号）/timezone を反映するが、
+/// Rust の CalendarInput はそれらのフィールドを持たず本関数にも元号/TZ 分岐が無い。
+/// fixture に eras/timezone を入れない限りパリティゲートは緑。元号/TZ の Rust 移植は
+/// 別フォローアップ（現状 MCP の formattedDate/startDate は元号非対応）。
 pub fn format_chronicle_date(
     day_number: Option<i64>,
     minute: Option<i64>,

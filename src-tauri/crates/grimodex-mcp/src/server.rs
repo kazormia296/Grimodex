@@ -414,7 +414,7 @@ impl GrimodexServer {
 
     /// List chronicle events in story (ordinal) order. Optional kind filter.
     #[tool(
-        description = "List chronicle (作中年表) events in story order (ordinal). Each item: id, title, kind, ordinal, startTime, primaryCharacter (resolved codex name). Optional kind filter: 'birth'|'death'|'generic'."
+        description = "List chronicle (作中年表) events in story order (ordinal). Each item: id, title, kind, ordinal, startTime, startDate (calendar-formatted date string; null when there is no calendar or the granularity is unset), primaryCharacter (resolved codex name). Optional kind filter: 'birth'|'death'|'generic'."
     )]
     async fn list_events(
         &self,
@@ -425,7 +425,7 @@ impl GrimodexServer {
 
     /// Get one event's full detail: participants, scene links, causal relations.
     #[tool(
-        description = "Get a chronicle event's full detail by event_id: title, note, kind, ordinal, start/end time, precision, primaryCharacter and location (resolved names), participants (codexId/name/role), stamped scenes (sceneId/title), and causal relations (cause/effect titles). Returns null if the event is not in this project."
+        description = "Get a chronicle event's full detail by event_id: title, note, kind, ordinal, start/end time, startDate/endDate (calendar-formatted date strings; null when there is no calendar or the granularity is unset), precision, primaryCharacter and location (resolved names), participants (codexId/name/role), stamped scenes (sceneId/title), and causal relations (cause/effect titles). Returns null if the event is not in this project."
     )]
     async fn get_event_detail(
         &self,

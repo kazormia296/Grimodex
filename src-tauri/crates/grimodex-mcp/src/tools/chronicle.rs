@@ -72,6 +72,8 @@ struct EventListItem {
     kind: String,
     ordinal: String,
     start_time: Option<i64>,
+    /// 暦整形済みの絶対日付（暦なし/粒度 none は None）。TS list_events と同 shape。
+    start_date: Option<String>,
     primary_character: Option<String>,
 }
 
@@ -88,6 +90,8 @@ pub async fn list_events(
     let project_id = server.project_id();
     let events = db::chronicle_list_events(&conn, &project_id).map_err(internal_err)?;
     let names = db::chronicle_codex_names(&conn, &project_id).map_err(internal_err)?;
+    let calendar = db::chronicle_get_calendar(&conn, &project_id).map_err(internal_err)?;
+    let cal_input = parse_calendar(calendar);
     let kind = params.kind.as_deref().map(str::trim).unwrap_or("");
     let filtered: Vec<EventListItem> = events
         .into_iter()
@@ -98,6 +102,12 @@ pub async fn list_events(
             kind: e.kind,
             ordinal: e.ordinal,
             start_time: e.start_time,
+            start_date: fmt_event_date(
+                cal_input.as_ref(),
+                e.start_time,
+                e.start_minute,
+                &e.start_granularity,
+            ),
             // `e.primaryCodexId ? (names.get(id) ?? null) : null`: a present id
             // whose codex is missing resolves to JSON null, not "".
             primary_character: e
@@ -152,6 +162,9 @@ struct EventDetail {
     end_minute: Option<i64>,
     start_granularity: String,
     end_granularity: String,
+    /// 暦整形済みの絶対日付（両端。暦なし/粒度 none は None）。TS get_event_detail と同 shape。
+    start_date: Option<String>,
+    end_date: Option<String>,
     precision: String,
     primary_character: Option<String>,
     location: Option<String>,
@@ -186,6 +199,8 @@ pub async fn get_event_detail(
     let scene_events = db::chronicle_list_scene_events(&conn, &project_id).map_err(internal_err)?;
     let relations = db::chronicle_list_relations(&conn, &project_id).map_err(internal_err)?;
     let scene_titles = db::chronicle_scene_titles(&conn, &project_id).map_err(internal_err)?;
+    let calendar = db::chronicle_get_calendar(&conn, &project_id).map_err(internal_err)?;
+    let cal_input = parse_calendar(calendar);
     let title_by_event: HashMap<&str, &str> = events
         .iter()
         .map(|e| (e.id.as_str(), e.title.as_str()))
@@ -203,6 +218,18 @@ pub async fn get_event_detail(
         end_minute: ev.end_minute,
         start_granularity: ev.start_granularity.clone(),
         end_granularity: ev.end_granularity.clone(),
+        start_date: fmt_event_date(
+            cal_input.as_ref(),
+            ev.start_time,
+            ev.start_minute,
+            &ev.start_granularity,
+        ),
+        end_date: fmt_event_date(
+            cal_input.as_ref(),
+            ev.end_time,
+            ev.end_minute,
+            &ev.end_granularity,
+        ),
         precision: ev.precision.clone(),
         primary_character: name_or_null(&names, &ev.primary_codex_id),
         location: name_or_null(&names, &ev.location_codex_id),
@@ -338,6 +365,23 @@ pub struct GetChronicleStateParams {
     /// The scene to anchor the world-state snapshot to. Required (MCP has no
     /// notion of an "active scene").
     pub scene_id: Option<String>,
+}
+
+/// 出来事の day 番号を暦整形した絶対日付文字列（TS の fmtEventDate と同 shape）。
+/// 暦なし/粒度 none/日付欠落は None。lang は get_chronicle_state と同じ ja 固定。
+fn fmt_event_date(
+    cal: Option<&snap::CalendarInput>,
+    day: Option<i64>,
+    minute: Option<i64>,
+    granularity: &str,
+) -> Option<String> {
+    let cal = cal?;
+    let s = snap::format_chronicle_date(day, minute, granularity, cal, "ja");
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 fn parse_calendar(raw: Option<db::ChronicleCalendarRaw>) -> Option<snap::CalendarInput> {
@@ -1016,6 +1060,57 @@ mod tests {
         let events = json["events"].as_array().unwrap();
         assert_eq!(events.len(), 1, "only p1's event is visible");
         assert_eq!(events[0]["id"], "mine");
+    }
+
+    #[tokio::test]
+    async fn list_and_detail_include_formatted_dates() {
+        let server = make_server(false);
+        {
+            let conn = server.conn.lock().unwrap();
+            let months = (1..=12)
+                .map(|i| format!("{{\"name\":\"{i}月\",\"days\":30}}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            conn.execute(
+                "INSERT INTO project_calendar (project_id, days_per_year, season_boundaries, \
+                 start_year, months, weekday_names, weekday_start_index, leap_rule, age_reckoning) \
+                 VALUES ('p1', 360, '[]', 1000, ?1, '[]', 0, '{\"kind\":\"none\"}', 'full')",
+                params![format!("[{months}]")],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events (id, project_id, title, ordinal, kind, start_time, \
+                 start_granularity, end_time, end_granularity, created_at, updated_at) \
+                 VALUES ('e1', 'p1', '祭', 'a0', 'generic', 0, 'day', 90, 'day', \
+                 datetime('now'), datetime('now'))",
+                [],
+            )
+            .unwrap();
+        }
+        // list_events: startDate is calendar-formatted.
+        let listed = list_events(&server, ListEventsParams { kind: None })
+            .await
+            .unwrap();
+        let lj = result_json(&listed);
+        assert!(
+            lj["events"][0]["startDate"]
+                .as_str()
+                .unwrap()
+                .contains("1000年"),
+            "list_events startDate should be calendar-formatted"
+        );
+        // get_event_detail: both startDate and endDate (day 90 = 1000年4月1日).
+        let detail = get_event_detail(
+            &server,
+            GetEventDetailParams {
+                event_id: "e1".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let dj = result_json(&detail);
+        assert!(dj["startDate"].as_str().unwrap().contains("1000年"));
+        assert_eq!(dj["endDate"].as_str().unwrap(), "1000年4月1日");
     }
 
     #[tokio::test]
