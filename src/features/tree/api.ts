@@ -6,6 +6,7 @@ import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/place
 import {
   trackSceneContentWrite,
   awaitPendingSceneContentWrite,
+  serializeSceneWrite,
 } from "@/features/tree/pendingSceneWrites";
 import { debugLog } from "@/lib/debugLog";
 
@@ -203,22 +204,26 @@ export async function saveSceneContent(
   // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
   // track はこの関数の最初の await より前 = 呼び出しと同期で行うこと。unmount
   // cleanup からの fire-and-forget flush でも、直後の load が pending を見える。
-  const write = Promise.resolve(
-    db
-      .update(treeNodes)
-      .set({
-        content: payload.content,
-        ...(payload.unplacedBeatsDoc !== undefined && {
-          unplacedBeatsDoc: payload.unplacedBeatsDoc,
-          unplacedBeatPreview,
-        }),
-        ...(payload.charCount !== undefined && {
-          charCount: payload.charCount,
-        }),
-        placedBeatPreview,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(treeNodes.id, sceneId)),
+  // serializeSceneWrite で同一シーンの先行 write の後ろにチェーンし、
+  // 「発行順 = コミット順」を保証する（M3 async 化で UPDATE 同士が並行しうる）。
+  const write = serializeSceneWrite(sceneId, () =>
+    Promise.resolve(
+      db
+        .update(treeNodes)
+        .set({
+          content: payload.content,
+          ...(payload.unplacedBeatsDoc !== undefined && {
+            unplacedBeatsDoc: payload.unplacedBeatsDoc,
+            unplacedBeatPreview,
+          }),
+          ...(payload.charCount !== undefined && {
+            charCount: payload.charCount,
+          }),
+          placedBeatPreview,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(treeNodes.id, sceneId)),
+    ),
   );
   trackSceneContentWrite(sceneId, write);
   await write;
@@ -254,14 +259,19 @@ export async function saveSceneBeatsOnly(
   payload: { unplacedBeatsDoc: string },
 ): Promise<{ unplacedBeatPreview: string | null }> {
   const unplacedBeatPreview = deriveUnplacedPreview(payload.unplacedBeatsDoc);
-  await db
-    .update(treeNodes)
-    .set({
-      unplacedBeatsDoc: payload.unplacedBeatsDoc,
-      unplacedBeatPreview,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(treeNodes.id, sceneId));
+  // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
+  await serializeSceneWrite(sceneId, () =>
+    Promise.resolve(
+      db
+        .update(treeNodes)
+        .set({
+          unplacedBeatsDoc: payload.unplacedBeatsDoc,
+          unplacedBeatPreview,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(treeNodes.id, sceneId)),
+    ),
+  );
   return { unplacedBeatPreview };
 }
 
@@ -274,13 +284,18 @@ export async function savePlacedBeatPreviewOnly(
   sceneId: string,
   placedBeatPreview: string | null,
 ): Promise<void> {
-  await db
-    .update(treeNodes)
-    .set({
-      placedBeatPreview,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(treeNodes.id, sceneId));
+  // 同一 tree_nodes 行を書くため saveSceneContent と同じ per-scene チェーンに載せる。
+  await serializeSceneWrite(sceneId, () =>
+    Promise.resolve(
+      db
+        .update(treeNodes)
+        .set({
+          placedBeatPreview,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(treeNodes.id, sceneId)),
+    ),
+  );
 }
 
 /** Load scene content + unplaced beats doc in one query. */

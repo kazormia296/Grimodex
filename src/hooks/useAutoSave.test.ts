@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createAutoSave } from "@/hooks/useAutoSave";
+import {
+  createAutoSave,
+  flushAllAutoSaves,
+  registerAutoSaveForQuiesce,
+} from "@/hooks/useAutoSave";
 
 vi.mock("sonner", () => ({
   toast: { error: vi.fn() },
@@ -163,5 +167,61 @@ describe("createAutoSave", () => {
     autoSave.schedule();
     await autoSave.flush();
     expect(announce).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("flushAllAutoSaves (workspace 切替前 quiesce)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("登録済みインスタンスの pending save をすべて flush する", async () => {
+    const saveA = vi.fn().mockResolvedValue(undefined);
+    const saveB = vi.fn().mockResolvedValue(undefined);
+    const a = createAutoSave(saveA, 2000);
+    const b = createAutoSave(saveB, 2000);
+    const unregisterA = registerAutoSaveForQuiesce(a);
+    const unregisterB = registerAutoSaveForQuiesce(b);
+
+    a.schedule();
+    b.schedule();
+    await flushAllAutoSaves();
+
+    expect(saveA).toHaveBeenCalledTimes(1);
+    expect(saveB).toHaveBeenCalledTimes(1);
+
+    unregisterA();
+    unregisterB();
+  });
+
+  it("登録解除後のインスタンスは flush されない", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 2000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+    unregister();
+
+    autoSave.schedule();
+    await flushAllAutoSaves();
+    expect(saveFn).not.toHaveBeenCalled();
+
+    autoSave.cancel();
+  });
+
+  it("save の失敗があっても reject しない (既存の toast フローに委ねる)", async () => {
+    const saveFn = vi.fn().mockRejectedValue(new Error("switching"));
+    const autoSave = createAutoSave(saveFn, 2000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    autoSave.schedule();
+    await expect(flushAllAutoSaves()).resolves.toBeUndefined();
+    expect(saveFn).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalled();
+
+    unregister();
   });
 });

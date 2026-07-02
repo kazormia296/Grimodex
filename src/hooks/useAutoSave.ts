@@ -10,6 +10,32 @@ export interface AutoSave {
   flush: () => Promise<void>;
 }
 
+/**
+ * 生存中の AutoSave インスタンスの registry。workspace 切替 (open_workspace)
+ * の直前に、マウント中の全エディタ/パネルの未保存 debounce を強制 flush する
+ * ため (quiesce)。DB コマンドの async 化 (M3) で切替と save が並行しうるため、
+ * 切替前に書き込みを静止させないと旧 workspace 向けの save が新 workspace の
+ * DB に落ちる。
+ */
+const activeAutoSaves = new Set<AutoSave>();
+
+/** useAutoSave がマウント時に登録する。戻り値は登録解除関数。 */
+export function registerAutoSaveForQuiesce(instance: AutoSave): () => void {
+  activeAutoSaves.add(instance);
+  return () => {
+    activeAutoSaves.delete(instance);
+  };
+}
+
+/**
+ * 生存中の全 AutoSave の pending save を flush して完了を待つ。
+ * flush は内部でエラーを握って toast 表示する (reject しない) ので、
+ * ここでの失敗は「保存失敗 toast + dirty 維持」として既存フローに乗る。
+ */
+export async function flushAllAutoSaves(): Promise<void> {
+  await Promise.all([...activeAutoSaves].map((autoSave) => autoSave.flush()));
+}
+
 export function createAutoSave(
   saveFn: () => Promise<void>,
   delayMs: number,
@@ -86,8 +112,11 @@ export function useAutoSave(
   }, []);
 
   useEffect(() => {
+    const instance = autoSaveRef.current;
+    const unregister = instance ? registerAutoSaveForQuiesce(instance) : null;
     return () => {
-      autoSaveRef.current?.flush();
+      unregister?.();
+      instance?.flush();
     };
   }, []);
 

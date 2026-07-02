@@ -449,7 +449,13 @@ pub(crate) async fn seed_sample_workspace(
         let ws_id = uuid::Uuid::new_v4().to_string();
         workspace::ensure_workspace_meta(&ws_path, &ws_id, &now_dt)?;
 
-        // Persist sample workspace path in GlobalSettings
+        // Persist sample workspace path in GlobalSettings (write_lock で
+        // read-modify-write を原子化。save_global_settings / open_workspace
+        // と並行しても lost update しない)
+        let _gs_guard = gs_path
+            .write_lock
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut settings = workspace::read_global_settings(&gs_path.path);
         settings.sample_workspace_path = Some(ws_path_str.clone());
         workspace::write_global_settings(&gs_path.path, &settings)?;

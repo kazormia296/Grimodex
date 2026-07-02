@@ -2,6 +2,9 @@ import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { flushAllAutoSaves } from "@/hooks/useAutoSave";
+import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
+import { flushNow as flushTimelapseRecorder } from "@/features/timelapse/recorder";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
@@ -197,6 +200,24 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   openWorkspace: async (path: string) => {
     try {
       set({ error: null });
+      // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
+      // swap を跨いだ in-flight write が旧 workspace の内容を新 workspace の
+      // DB に落とさないよう、切替前に書き込みを静止させる:
+      // (a) マウント中の全 AutoSave を flush、(b) pending scene write の完了
+      // 待ち、(c) timelapse recorder の flush。ここで save が失敗しても既存の
+      // 失敗 toast + dirty 維持 (リトライ) に任せ、切替自体は続行する
+      // (Rust 側の switching ガードが最後の砦)。
+      try {
+        await flushAllAutoSaves();
+        await awaitAllPendingSceneWrites();
+        await flushTimelapseRecorder();
+      } catch (e) {
+        debugLog.warn(
+          "workspaceStore",
+          "pre-switch quiesce failed; proceeding with switch",
+          errorDetail(e),
+        );
+      }
       const result = await invoke<OpenWorkspaceResult>("open_workspace", {
         path,
       });

@@ -127,6 +127,10 @@ pub(crate) struct OpenWorkspaceResult {
 pub(crate) fn get_global_settings(
     gs_path: tauri::State<'_, GlobalSettingsPath>,
 ) -> Result<GlobalSettings, AppError> {
+    let _guard = gs_path
+        .write_lock
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(workspace::read_global_settings(&gs_path.path))
 }
 
@@ -135,6 +139,10 @@ pub(crate) fn save_global_settings(
     gs_path: tauri::State<'_, GlobalSettingsPath>,
     settings: GlobalSettings,
 ) -> Result<(), AppError> {
+    let _guard = gs_path
+        .write_lock
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     workspace::write_global_settings(&gs_path.path, &settings)?;
     Ok(())
 }
@@ -232,6 +240,17 @@ fn is_system_directory(path: &Path) -> bool {
     })
 }
 
+/// RAII: `WorkspaceState::switching` を全 exit (正常・エラー・panic 巻き戻し)
+/// で確実に false へ戻す。open_workspace が途中で `?` で抜けてもフラグが
+/// 立ちっぱなしにならない (立ちっぱなし = 全 DB コマンドが恒久拒否 = 文鎮化)。
+struct SwitchingGuard<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for SwitchingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn open_workspace(
     app: tauri::AppHandle,
@@ -245,6 +264,21 @@ pub(crate) async fn open_workspace(
             let codex_semantic_cache = app.state::<CodexSearchCache>();
             let events_semantic_cache = app.state::<EventsSearchCache>();
             let chat_semantic_cache = app.state::<ChatSearchCache>();
+
+            // open 自体を直列化 (併走 migrate の check-then-act / 二重
+            // VACUUM INTO 防止)。ロック順序は open_lock → inner → write_lock
+            // の一方向のみ (with_db は inner のみ取るので循環しない)。
+            let _open_guard = ws_state
+                .open_lock
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            // 本処理前に switching を立て、切替中の with_db を明示エラーに
+            // 落とす。_open_guard より後に宣言 = 先に drop されるので、
+            // open_lock 解放時には必ずフラグは戻っている。
+            ws_state
+                .switching
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let _switching_guard = SwitchingGuard(&ws_state.switching);
 
             let ws_path = PathBuf::from(&path);
             reject_unsafe_workspace_path(&ws_path)?;
@@ -288,7 +322,13 @@ pub(crate) async fn open_workspace(
             events_semantic_cache.clear()?;
             chat_semantic_cache.clear()?;
 
-            // Update global settings
+            // Update global settings (write_lock で read-modify-write を
+            // 原子化。save_global_settings / seed_sample_workspace と並行
+            // しても lost update しない)
+            let _gs_guard = gs_path
+                .write_lock
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let mut settings = workspace::read_global_settings(&gs_path.path);
             let now = chrono::Utc::now().to_rfc3339();
             workspace::touch_recent_workspace(&mut settings, &path, &now);
