@@ -12,6 +12,21 @@ export interface AutoSave {
 }
 
 /**
+ * 保存失敗のうち「ユーザ通知は発生源で済んでいる」ことを表す marker エラー。
+ * 例: snippet の OCC 衝突は snippetStore が editConflict をトースト済みで、
+ * ここでさらに autoSave.failed を重ねると同一失敗の二重トーストになる。
+ * runSave の catch はこれを見て toast だけをスキップする — 失敗としての
+ * 扱い (呼び出し側の dirty 維持・debugLog・回復時の announce) は通常の
+ * 失敗と同じ。
+ */
+export class AlreadyNotifiedSaveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AlreadyNotifiedSaveError";
+  }
+}
+
+/**
  * 生存中の AutoSave インスタンスの registry。workspace 切替 (open_workspace)
  * の直前に、マウント中の全エディタ/パネルの未保存 debounce を強制 flush する
  * ため (quiesce)。DB コマンドの async 化 (M3) で切替と save が並行しうるため、
@@ -66,10 +81,13 @@ export function createAutoSave(
       lastFailed = true;
       const detail = errorDetail(e);
       debugLog.error("AutoSave", `${label} failed`, detail);
+      // 発生源で通知済みの失敗はトーストを重ねない (二重通知防止)。
       // workspace 切替中の明示拒否 (Rust with_db の WORKSPACE_SWITCHING) は
       // 生メッセージではなく i18n 済みの短い文言で知らせる。dirty は維持され、
       // 次の入力/スケジュールでリトライされる。
-      if (isWorkspaceSwitchingError(e)) {
+      if (e instanceof AlreadyNotifiedSaveError) {
+        // 通知済み: toast なし (debugLog / lastFailed / 回復 announce は通常どおり)
+      } else if (isWorkspaceSwitchingError(e)) {
         toast.error(i18next.t("autoSave.workspaceSwitching"));
       } else {
         toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));

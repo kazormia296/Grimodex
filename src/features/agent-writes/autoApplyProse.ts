@@ -2,7 +2,7 @@ import { getSchema } from "@tiptap/core";
 import { Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
 import { EditorState } from "@tiptap/pm/state";
 import { getEditorExtensions } from "@/features/editor/extensions";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContent, getSceneVersion } from "@/features/tree/api";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import { agentAcceptProseStage } from "@/features/agent-writes/prose";
@@ -13,6 +13,7 @@ import {
   hasLiveContentSubscriber,
 } from "@/features/editor/sceneContentStore";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import type { PendingProseProposal } from "@/features/agent-writes/proseStagingStore";
 
 // Sentinel source-group for setLiveContent: out of band of every real editor
@@ -26,7 +27,8 @@ export type AutoApplySkipReason =
   | "file-backed"
   | "content-unparseable"
   | "anchor-not-found"
-  | "anchor-ambiguous";
+  | "anchor-ambiguous"
+  | "stale-base-version";
 
 export interface AutoApplyOutcome {
   applied: boolean;
@@ -151,6 +153,46 @@ export async function autoApplyProseProposal(
   // when no editor is mounted (the scene cannot be dirty then).
   await saveScene(sceneId);
   const raw = await loadSceneContent(sceneId);
+
+  // Stale 検知: propose 時点の tree_nodes.version (prose_staging.base_version)
+  // と現在の version を突き合わせる。saveSceneContent が本文書き込みごとに
+  // version を bump する (tree/api.ts) ので、propose 後に human / AI / 復元系の
+  // 保存が挟まっていれば不一致になる。不一致なら適用せず `proposed` のまま残し、
+  // 既存の scene 用 conflict 導線 (externalWriteStore → ExternalEditConflictBanner)
+  // に流す。not-applied の手動 diff レビューへの fallback は両経路が担う:
+  // live poller (externalWriteFeed) と backlog drain (autoAcceptFeed) が
+  // proseStagingStore.enqueue し、シーンを開いた時の再ロード
+  // (useAgentProseStaging) も stale 行は suppress せず enqueue する。
+  //
+  // 意図した安全側の挙動 (無人 writer は疑わしければ書かない):
+  //  - 直前の saveScene() flush は dirty ゲート付き (editorSaveRegistry の
+  //    dirtyGatedSaveHandler) で、未保存編集があるときだけ保存 + bump する。
+  //    dirty な open シーンはここでブロックされ手動レビューに落ち、clean な
+  //    open シーンは no-op flush → version 不変 → 自動適用 + live resync
+  //    (下の hasLiveContentSubscriber) が走る。externalWriteFeed の既存
+  //    ポリシー「dirty なら conflict / clean なら自動反映」と同じ。
+  //  - AI 適用自身も saveSceneContent 経由で bump するので、1 件目の適用前に
+  //    propose された 2 件目は base が古くなりブロックされる。
+  // baseVersion の無い proposal (in-app 直接 enqueue = diff UI 専用) は比較
+  // 不能なので従来動作を維持する。
+  if (proposal.baseVersion !== undefined) {
+    const currentVersion = await getSceneVersion(sceneId);
+    if (currentVersion !== proposal.baseVersion) {
+      console.warn(
+        `[autoApplyProse] stale base_version for scene ${sceneId}: ` +
+          `proposed at v${proposal.baseVersion}, scene is now v${currentVersion}; ` +
+          "leaving proposal for manual review",
+      );
+      useExternalWriteStore.getState().pushConflict({
+        sceneId,
+        domain: "prose",
+        opType: "prose.stale",
+        entityId: stagingId,
+      });
+      return { applied: false, reason: "stale-base-version" };
+    }
+  }
+
   const doc = buildDoc(schema, raw);
   // Fail safe: never replace unreadable-but-present prose with an empty doc.
   if (!doc) return { applied: false, reason: "content-unparseable" };

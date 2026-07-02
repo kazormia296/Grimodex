@@ -6,7 +6,10 @@ import {
   isHeadlessAppliable,
 } from "@/features/agent-writes/autoAcceptGate";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import type { PendingProseProposal } from "@/features/agent-writes/proseStagingStore";
+import {
+  useProseStagingStore,
+  type PendingProseProposal,
+} from "@/features/agent-writes/proseStagingStore";
 
 /**
  * Headless auto-apply consumer for AI body proposals (A2 / Phase 1).
@@ -76,7 +79,22 @@ export async function drainProposedProse(projectId: string): Promise<void> {
   if (proposals.length === 0) return;
   let applied = 0;
   for (const proposal of proposals) {
-    if (await applyOne(proposal)) applied += 1;
+    if (await applyOne(proposal)) {
+      applied += 1;
+    } else {
+      // live poller (externalWriteFeed) と同じ not-applied フォールバック:
+      // 適用できなかった行 (stale-base-version / unsupported-mode / エラー等)
+      // は diff レビュー導線 (proseStagingStore) へ enqueue する。これが無いと、
+      // auto-accept ON の headless-appliable 行はシーンを開いた時の再ロード
+      // (useAgentProseStaging) でも suppress され、「適用もされず diff にも
+      // 出ない」サイレント孤児になる。store は単一 pending なので複数 blocked
+      // 時は最後の 1 件だけ残る — 残りは、シーンを開いた時の再ロードが最新
+      // proposed 行を 1 件 surface し (stale 行は suppression 対象外)、以降は
+      // useAgentProseStaging の accept/reject 後チェーン再ロードが次の行を
+      // 順に enqueue する。つまり blocked 行はユーザーが順に処理する前提の
+      // 逐次到達で、この enqueue はその起点 (最初の 1 件) を保証する。
+      useProseStagingStore.getState().enqueue(proposal);
+    }
   }
   debugLog.info(
     "autoAcceptProse",

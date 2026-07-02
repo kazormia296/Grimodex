@@ -3041,6 +3041,8 @@
       "saved": "Snippetとして保存しました",
       "createFailed": "スニペットの作成に失敗しました",
       "updateFailed": "スニペットの更新に失敗しました",
+      "updateMissing": "保存できませんでした。このスニペットは削除済みか、見つかりません。",
+      "editConflict": "このスニペットは別のウィンドウで更新されたため保存できませんでした。最新を読み込んでから編集し直してください。",
       "deleteFailed": "スニペットの削除に失敗しました",
       "agentHistoryCreate": "Agent: Snippet作成"
     },
@@ -3445,6 +3447,7 @@
   },
   "inlineAi": {
     "generateFailed": "生成に失敗しました",
+    "proposalAlreadyFinalized": "このAI提案は別の経路で処理済みだったため、古いプレビューを閉じました",
     "pendingBlocked": "未確定のAI生成があります。Tab で反映 / Esc で破棄してから操作できます",
     "additionalPrompt": "追加の指示（省略可）",
     "commands": {

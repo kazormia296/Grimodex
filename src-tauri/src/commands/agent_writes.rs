@@ -924,6 +924,9 @@ fn agent_accept_prose_stage_impl(
             )?;
 
             if status != "proposed" {
+                // NOTE: 部分文字列 "not in proposed status" に JS 側
+                // (useAgentProseStaging の isRowNotProposedError) が依存。
+                // 文言を変える場合は両方更新すること。
                 anyhow::bail!("staging entry is not in proposed status");
             }
 
@@ -994,6 +997,9 @@ fn agent_discard_prose_stage_impl(
             )?;
 
             if status != "proposed" {
+                // NOTE: 部分文字列 "not in proposed status" に JS 側
+                // (useAgentProseStaging の isRowNotProposedError) が依存。
+                // 文言を変える場合は両方更新すること。
                 anyhow::bail!("staging entry is not in proposed status");
             }
 

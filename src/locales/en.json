@@ -3046,6 +3046,8 @@
       "saved": "Saved as Snippet",
       "createFailed": "Failed to create snippet",
       "updateFailed": "Failed to update snippet",
+      "updateMissing": "Couldn't save: this snippet was deleted or no longer exists.",
+      "editConflict": "Couldn't save: this snippet was updated in another window. Reload the latest version and edit again.",
       "deleteFailed": "Failed to delete snippet",
       "agentHistoryCreate": "Agent: Create Snippet"
     },
@@ -3450,6 +3452,7 @@
   },
   "inlineAi": {
     "generateFailed": "Generation failed",
+    "proposalAlreadyFinalized": "This AI proposal was already applied or discarded elsewhere. The outdated preview has been dismissed.",
     "pendingBlocked": "You have an unconfirmed AI generation. Press Tab to accept or Esc to discard before continuing.",
     "additionalPrompt": "Additional instructions (optional)",
     "commands": {

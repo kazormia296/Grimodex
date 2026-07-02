@@ -37,7 +37,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
-import { getSnippet, updateSnippet } from "@/features/snippets/api";
+import { getSnippet } from "@/features/snippets/api";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -45,7 +45,7 @@ import {
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { useAutoSave } from "@/hooks/useAutoSave";
+import { useAutoSave, AlreadyNotifiedSaveError } from "@/hooks/useAutoSave";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -113,6 +113,7 @@ import { useTabStore } from "@/features/editor/tabStore";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
+  dirtyGatedSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
 import {
   useSceneContentStore,
@@ -328,8 +329,23 @@ export function EditorPane({
     useState<CodexMentionPopupState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
 
-  const setIsDirtyRef = useRef(setIsDirty);
-  setIsDirtyRef.current = setIsDirty;
+  // isDirty の同期ミラー。React state (isDirty) の tabStore への同期は
+  // レンダー後 effect まで遅れるため、外部 flush (saveScene) の dirty ゲート
+  // (dirtyGatedSaveHandler) は打鍵と同じ tick で更新されるこの ref を正とする。
+  // 更新は setIsDirtyRef 経由に一本化してあり、両者は乖離しない。
+  const isDirtyRef = useRef(false);
+  // 編集世代カウンタ: dirty を立てる (=編集イベント) たびに ++。saveFn は
+  // save 開始時の世代を記録し、「同世代のときのみ」dirty をクリアする。
+  // coreSave の await 中に入った編集の dirty=true を無条件クリアでクロバー
+  // すると、外部 flush の dirty ゲートが clean 誤判定 → headless 適用
+  // (autoApplyProse) の resync が未保存編集を上書き消失させるため。
+  const editGenerationRef = useRef(0);
+  const setIsDirtyRef = useRef<(dirty: boolean) => void>(() => {});
+  setIsDirtyRef.current = (dirty: boolean) => {
+    if (dirty) editGenerationRef.current += 1;
+    isDirtyRef.current = dirty;
+    setIsDirty(dirty);
+  };
 
   const saveSceneIdRef = useRef(nodeId);
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
@@ -409,8 +425,22 @@ export function EditorPane({
       }
     } else if (ctx === "snippet") {
       const content = ed.getHTML();
-      await updateSnippet(getCurrentProjectId(), id, { content });
-      useSnippetStore.getState().update(id, { content });
+      // updateSnippet 直呼び + store.update の二重 DB 書き込みを store 経由の
+      // 1 回に集約 (entries 反映 / timelapse 記録 / undo 履歴も store が担う)。
+      // 二重のままだと store 側の OCC (baseVersion) が直呼びの更新と自己衝突する。
+      //
+      // store.update は false の全経路 (OCC 衝突 / 行なし=削除済み / 失敗)
+      // をユーザ通知 (conflict handler / toast) 済みの上で返す契約 (snippetStore
+      // 参照)。ここで throw に変換して saveFn へ伝播させ、setIsDirty(false) を
+      // 走らせない — 旧・直呼び (throw) と同じく「保存されていないのに clean
+      // 表示」で編集が失われるのを防ぐ。通知済みなので AlreadyNotifiedSaveError:
+      // useAutoSave の catch は autoSave.failed トーストを重ねない (二重防止)。
+      const saved = await useSnippetStore.getState().update(id, { content });
+      if (!saved) {
+        throw new AlreadyNotifiedSaveError(
+          `snippet save not persisted (version conflict or update failure): ${id}`,
+        );
+      }
     } else if (ctx === "chronicle_event") {
       // 出来事の詳細（ProseMirror JSON）。インスペクタと同じ tracked-write 経路
       // （uiUpdateEvent）で保存し、undo/redo・鮮度カウンタを一貫させる。
@@ -436,13 +466,21 @@ export function EditorPane({
       );
       return;
     }
+    // save 開始時の編集世代 (下の条件付き dirty クリア用)。ここから coreSave の
+    // doc 捕捉までは同期区間なので、捕捉に入った編集を取りこぼさない。
+    const editGenAtStart = editGenerationRef.current;
     setIsSaving(true);
     try {
       await coreSave();
     } finally {
       setIsSaving(false);
     }
-    setIsDirtyRef.current(false);
+    // coreSave の await 中に編集が入っていた場合 (世代不一致) は dirty を維持
+    // する。無条件クリアだと外部 flush の dirty ゲートが clean 誤判定し、
+    // headless 適用の resync がその編集を上書き消失させる。
+    if (editGenerationRef.current === editGenAtStart) {
+      setIsDirtyRef.current(false);
+    }
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
     // Codex/snippet tabs don't use the revision system
@@ -483,10 +521,13 @@ export function EditorPane({
     }
   }, [coreSave, shouldAutoRevision, recordAutoRevision]);
 
-  // Register this pane's save function so the tab context menu can trigger it
+  // Register this pane's save function so external callers (tab context menu,
+  // agent writes, rename cascade, …) can flush it. dirty ゲート付き:
+  // clean な editor への外部 flush は no-op (詳細は dirtyGatedSaveHandler)。
   useEffect(() => {
-    registerSaveHandler(nodeId, saveFn);
-    return () => unregisterSaveHandler(nodeId, saveFn);
+    const handler = dirtyGatedSaveHandler(() => isDirtyRef.current, saveFn);
+    registerSaveHandler(nodeId, handler);
+    return () => unregisterSaveHandler(nodeId, handler);
   }, [nodeId, saveFn]);
 
   // Sync isDirty to the tab store for unsaved-changes detection
@@ -1192,6 +1233,21 @@ export function EditorPane({
     nodeId,
     inlineAiDiff,
   );
+  // inline-AI がこのペインで生成/プレビュー中 (非 idle = 未 accept のテキスト
+  // が doc に入っている) は、arm 済みの autosave タイマーも解除する。
+  // onUpdate の gate は「新規 schedule の抑止」しかせず、直前の編集で arm
+  // 済みのタイマーは発火して未 accept のプレビュー本文ごと persist して
+  // しまう (無帰属 AI テキストの焼き込み + version bump)。accept/reject で
+  // idle に戻ると reset+dispatch の onUpdate が改めて schedule するので、
+  // ここで消した「打鍵分の保存」は取りこぼされない。
+  // 既知の残余 (スコープ外): diff 表示中の unmount flush / workspace 切替
+  // quiesce はプレビュー込み doc を保存しうる pre-existing の穴。
+  const inlineAiStatus = useInlineAiStore((s) => s.status);
+  useEffect(() => {
+    if (inlineAiStatus !== "idle" && inlineAiOwnerEditor === editor) {
+      cancel();
+    }
+  }, [inlineAiStatus, inlineAiOwnerEditor, editor, cancel]);
 
   useCursorOverlay(mountedEditor);
   useImeDiagnostics(mountedEditor);
@@ -1484,7 +1540,7 @@ export function EditorPane({
           // 表示用の count 系は EditorStatsFooter が isLoading の false 遷移で
           // 再計算・tree 同期する。ここでは auto-draft 判定用の空判定だけ行う。
           const count = getDocText(editor!.state.doc).length;
-          setIsDirty(false);
+          setIsDirtyRef.current(false);
           wasEmptyRef.current = count === 0;
 
           if (!isEntryMode) {

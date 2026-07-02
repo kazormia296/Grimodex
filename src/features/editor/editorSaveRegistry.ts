@@ -40,3 +40,26 @@ export async function saveScene(nodeId: string): Promise<void> {
 export function registeredSaveHandlerIds(): string[] {
   return [...handlers.keys()];
 }
+
+/**
+ * saveScene() の外部 flush 契約は「DB を live editor の状態に追いつかせる」
+ * こと。編集が保存済み (clean) なら DB は既に追いついているので書かない。
+ *
+ * clean でも無条件に保存すると、saveSceneContent の OCC version が flush の
+ * たびに bump され、propose 時点の base_version と必ず食い違う — 開いている
+ * だけのシーンへの headless 自動適用 (autoApplyProse) が恒久 stale ブロック
+ * になり、「clean な open シーンは自動反映 + live resync」の設計
+ * (externalWriteFeed と同じポリシー) が死ぬ。dirty 情報を持つのは各エディタ
+ * コンポーネントだけなので、登録側がこのゲートで包んで登録する。
+ *
+ * `isDirty` は呼び出し時点で評価する (登録時の値を閉じ込めない)。
+ */
+export function dirtyGatedSaveHandler(
+  isDirty: () => boolean,
+  save: () => Promise<void>,
+): () => Promise<void> {
+  return async () => {
+    if (!isDirty()) return;
+    await save();
+  };
+}

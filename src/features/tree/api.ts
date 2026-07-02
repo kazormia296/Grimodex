@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq, and, isNull, inArray } from "drizzle-orm";
+import { eq, and, isNull, inArray, sql } from "drizzle-orm";
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 import {
@@ -311,6 +311,12 @@ export async function saveSceneContentInner(
           charCount: payload.charCount,
         }),
         placedBeatPreview,
+        // OCC 在庫: 本文を書くたび無条件で version を +1 する。WHERE への
+        // version 条件 (OCC 検査) は付けない — 保存 hot path を絶対に落とさない。
+        // 読み手は prose_staging.base_version との突き合わせ (autoApplyProse の
+        // stale 検知)。human-human 競合は change_events ベースの
+        // externalWriteFeed ガードが従来通り担当する。
+        version: sql`${treeNodes.version} + 1`,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(treeNodes.id, sceneId)),
@@ -319,6 +325,22 @@ export async function saveSceneContentInner(
   await write;
 
   return { placedBeatPreview, unplacedBeatPreview };
+}
+
+/**
+ * 現在の scene 行の OCC version を返す (不在なら 0)。
+ * prose_staging.base_version (propose 時点の version) との突き合わせ =
+ * headless 自動適用の stale 検知用 (agent-writes/autoApplyProse.ts)。
+ */
+export async function getSceneVersion(sceneId: string): Promise<number> {
+  // load 系と同じ read-after-write バリア: 未着の content 書き込み (とその
+  // version bump) を追い越して古い version を読まない。
+  await awaitPendingSceneContentWrite(sceneId);
+  const rows = await db
+    .select({ version: treeNodes.version })
+    .from(treeNodes)
+    .where(eq(treeNodes.id, sceneId));
+  return rows[0]?.version ?? 0;
 }
 
 /** Load ProseMirror JSON content for a scene from the DB. Returns empty string if not found. */

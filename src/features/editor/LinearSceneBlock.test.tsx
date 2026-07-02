@@ -153,7 +153,7 @@ vi.mock("@/features/editor/inlineAi/InlineAIPalette", () => ({
 const autoSaveCtl = vi.hoisted(
   () =>
     ({ last: null }) as {
-      last: { schedule: () => void } | null;
+      last: { schedule: () => void; flush: () => Promise<void> } | null;
     },
 );
 vi.mock("@/hooks/useAutoSave", async (importOriginal) => {
@@ -190,11 +190,22 @@ vi.mock("@/features/external-mount/externalRootStore", () => ({
 }));
 
 // tabStore は layoutStore→codexStore の eager 連鎖を引き込むため最小モック。
-// dirty 配線 (setTabDirty 呼び出し) はこの spy で assert する。
-const mockSetTabDirty = vi.hoisted(() => vi.fn());
+// dirty 配線 (setTabDirty 呼び出し) はこの spy で assert する。dirtyTabIds は
+// 外部 flush (saveScene) の dirty ゲート (dirtyGatedSaveHandler) が参照する
+// ため、setTabDirty の呼び出しを反映する実 Set として維持する。
+const mockDirtyTabIds = vi.hoisted(() => new Set<string>());
+const mockSetTabDirty = vi.hoisted(() =>
+  vi.fn((id: string, dirty: boolean) => {
+    if (dirty) mockDirtyTabIds.add(id);
+    else mockDirtyTabIds.delete(id);
+  }),
+);
 vi.mock("@/features/editor/tabStore", () => ({
   useTabStore: {
-    getState: () => ({ setTabDirty: mockSetTabDirty }),
+    getState: () => ({
+      setTabDirty: mockSetTabDirty,
+      dirtyTabIds: mockDirtyTabIds,
+    }),
   },
 }));
 // conflict バナーは i18n + tabStore に依存するので描画だけ落とす
@@ -282,6 +293,7 @@ beforeEach(() => {
   mockToastError.mockClear();
   mockToastInfo.mockClear();
   mockSetTabDirty.mockClear();
+  mockDirtyTabIds.clear();
   isFileBackedNodeMock.mockReturnValue(false);
   createdEditors.length = 0;
   useExternalWriteStore.getState().clear();
@@ -516,6 +528,70 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     await saveScene("scene-0001");
     expect(mockPersist).not.toHaveBeenCalled();
     expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", false);
+  });
+
+  it("inline-AI がこのエディタで非 idle になったら armed 済み autosave を解除する", async () => {
+    // 生成/プレビューの実テキストが doc に入っている間、onUpdate の gate は
+    // 「新規 schedule の抑止」しかしない。直前の編集で arm 済みのタイマーが
+    // 発火すると、未 accept のプレビュー本文ごと persist される (無帰属 AI
+    // テキストの焼き込み)。非 idle 遷移で pending を cancel すること。
+    await renderLoaded();
+    lastEditor().commands.insertContentAt(1, "編集"); // autosave を arm
+    act(() => {
+      useInlineAiStore.getState().startGeneration({
+        commandId: "continue",
+        mode: "insert",
+        originalRange: null,
+        originalText: "",
+        insertPos: 0,
+        abortController: new AbortController(),
+        activeEditor: lastEditor(),
+      });
+    });
+    // cancel 済みなら flush は no-op (pending なし)
+    await autoSaveCtl.last!.flush();
+    expect(mockPersist).not.toHaveBeenCalled();
+  });
+
+  it("別エディタが inline-AI owner のときは自分の armed autosave を解除しない", async () => {
+    // owner 判定は onUpdate の gate と同じ activeEditor 一致。リニアは複数
+    // エディタがグローバル単一 store を共有するため、status だけで消すと
+    // 他シーンの通常編集の保存が失われる。
+    await renderLoaded();
+    lastEditor().commands.insertContentAt(1, "編集");
+    act(() => {
+      useInlineAiStore.getState().startGeneration({
+        commandId: "continue",
+        mode: "insert",
+        originalRange: null,
+        originalText: "",
+        insertPos: 0,
+        abortController: new AbortController(),
+        activeEditor: null, // 別エディタ (このブロックではない)
+      });
+    });
+    await autoSaveCtl.last!.flush();
+    expect(mockPersist).toHaveBeenCalledTimes(1);
+  });
+
+  it("保存 (await) 中に入った編集は dirty を維持する (編集世代カウンタ)", async () => {
+    // coreSave が doc を捕捉して await している間に次の編集が入った場合、
+    // 保存完了時の無条件 setTabDirty(false) がその編集の dirty=true を
+    // クロバーすると、外部 flush の dirty ゲートが clean 誤判定 → headless
+    // 適用の resync が未保存編集を上書き消失させる (Fix 2 の保証破り)。
+    await renderLoaded();
+    lastEditor().commands.insertContentAt(1, "編集A");
+    expect(mockDirtyTabIds.has("scene-0001")).toBe(true);
+    mockPersist.mockImplementationOnce(async () => {
+      // 保存の await 中に次の編集が入る
+      lastEditor().commands.insertContentAt(1, "編集B");
+    });
+    mockSetTabDirty.mockClear();
+    await saveScene("scene-0001");
+    expect(mockPersist).toHaveBeenCalledTimes(1);
+    // 世代不一致 → dirty は維持 (解除しない)
+    expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", false);
+    expect(mockDirtyTabIds.has("scene-0001")).toBe(true);
   });
 
   it("setLiveContent (agent 書き込み/改名波及の resync) を editor doc に反映する", async () => {

@@ -77,7 +77,9 @@ describe("listNodes projection", () => {
     expect(row.nodeType).toBe("scene");
     expect(row.synopsis).toBe("あらすじ");
     expect(row.charCount).toBe(10);
-    expect(row.version).toBe(0);
+    // saveSceneContent は本文保存ごとに version を無条件 bump する (M4 OCC) ため、
+    // insert(0) → 1 回の保存で 1 になる。projection に version 列が乗ることの検証。
+    expect(row.version).toBe(1);
     expect("unplacedBeatPreview" in row).toBe(true);
     expect("placedBeatPreview" in row).toBe(true);
     expect("createdAt" in row).toBe(true);

@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { snippets } from "@/db/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
+import { SnippetVersionConflictError } from "./occ";
 
 export type Snippet = Omit<typeof snippets.$inferSelect, "contentSource"> & {
   contentSource?: string | null;
@@ -53,12 +54,49 @@ export async function updateSnippet(
   data: Partial<
     Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
   >,
+  opts?: { baseVersion?: number },
 ): Promise<Snippet | undefined> {
+  // OCC: baseVersion 指定時のみ条件付き UPDATE (version 照合 + インクリメント)。
+  // 省略時は従来通りの blind UPDATE で完全後方互換 (version 列は触らない)。
+  // codex の updateCodexEntry (codex/api.ts) と同型。
+  const useOcc = opts?.baseVersion !== undefined;
+  const baseVersion = opts?.baseVersion ?? 0;
   const rows = await db
     .update(snippets)
-    .set({ ...data, updatedAt: new Date().toISOString() })
-    .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)))
+    .set(
+      useOcc
+        ? {
+            ...data,
+            version: baseVersion + 1,
+            updatedAt: new Date().toISOString(),
+          }
+        : { ...data, updatedAt: new Date().toISOString() },
+    )
+    .where(
+      useOcc
+        ? and(
+            eq(snippets.id, id),
+            eq(snippets.projectId, projectId),
+            eq(snippets.version, baseVersion),
+          )
+        : and(eq(snippets.id, id), eq(snippets.projectId, projectId)),
+    )
     .returning();
+
+  // 0 件マッチ。OCC 有効時は「行が存在するのに 0 件」= version 衝突として
+  // SnippetVersionConflictError を投げ、呼び出し側に非破壊リロードを委ねる。
+  // 行が存在しないなら従来通り undefined (別プロジェクト等のスコープ miss)。
+  if (!rows[0]) {
+    if (useOcc) {
+      const exists = await db
+        .select({ id: snippets.id })
+        .from(snippets)
+        .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)))
+        .limit(1);
+      if (exists[0]) throw new SnippetVersionConflictError(id);
+    }
+    return undefined;
+  }
   return rows[0];
 }
 

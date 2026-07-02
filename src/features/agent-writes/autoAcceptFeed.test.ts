@@ -57,6 +57,7 @@ import {
   drainProposedProse,
   resetAutoAcceptProseConsumerForTest,
 } from "@/features/agent-writes/autoAcceptFeed";
+import { useProseStagingStore } from "@/features/agent-writes/proseStagingStore";
 
 function proposal(
   over: Partial<PendingProseProposal> = {},
@@ -78,6 +79,7 @@ beforeEach(() => {
   h.state.bodyWriteOn = true;
   h.state.outcome = { applied: true };
   h.state.backlog = [];
+  useProseStagingStore.getState().clear();
 });
 
 describe("auto-accept gate (live handler)", () => {
@@ -152,5 +154,31 @@ describe("backlog drain", () => {
     expect(h.loadAllProposedProse).toHaveBeenCalledWith("proj-1");
     // only the two append rows reach autoApplyProseProposal
     expect(h.autoApplyProseProposal).toHaveBeenCalledTimes(2);
+  });
+
+  it("適用できなかった backlog 行は diff レビューへ enqueue する (live poller と同じ fallback)", async () => {
+    h.state.toggleOn = true;
+    h.state.backlog = [
+      proposal({ stagingId: "s1", baseVersion: 1 }),
+      proposal({ stagingId: "s2", baseVersion: 1 }),
+    ];
+    // 1 件目の適用が scene version を bump → 2 件目は stale でブロックされる
+    // シナリオ。enqueue フォールバックが無いと s2 は「適用もされず diff にも
+    // 出ない」サイレント孤児になる。
+    h.autoApplyProseProposal.mockImplementation(async (p) =>
+      p.stagingId === "s1"
+        ? { applied: true }
+        : { applied: false, reason: "stale-base-version" },
+    );
+    await drainProposedProse("proj-1");
+    expect(h.autoApplyProseProposal).toHaveBeenCalledTimes(2);
+    expect(useProseStagingStore.getState().pending?.stagingId).toBe("s2");
+  });
+
+  it("適用済みの backlog 行は enqueue しない", async () => {
+    h.state.toggleOn = true;
+    h.state.backlog = [proposal({ stagingId: "s1" })];
+    await drainProposedProse("proj-1");
+    expect(useProseStagingStore.getState().pending).toBeNull();
   });
 });

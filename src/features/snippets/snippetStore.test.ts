@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { useSnippetStore } from "./snippetStore";
+import { useSnippetStore, setSnippetEditConflictHandler } from "./snippetStore";
+import { SnippetVersionConflictError } from "./occ";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+
+const { toastError, toastSuccess } = vi.hoisted(() => ({
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
+vi.mock("sonner", () => ({
+  toast: { error: toastError, success: toastSuccess },
+}));
 
 vi.mock("./api", () => ({
   listSnippets: vi.fn(() => Promise.resolve([])),
@@ -63,6 +73,8 @@ const fakeSnippet = (
 describe("snippetStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setSnippetEditConflictHandler(() => {}); // reset to no-op between tests
+    useGlobalHistoryStore.setState({ past: [], future: [] });
     useSnippetStore.setState({
       entries: [],
       searchQuery: "",
@@ -246,8 +258,77 @@ describe("snippetStore", () => {
         {
           title: "更新後",
         },
+        { baseVersion: 0 },
       );
       expect(useSnippetStore.getState().entries[0].title).toBe("更新後");
+    });
+
+    it("読み込み時点の version を baseVersion として渡す (OCC)", async () => {
+      const original = fakeSnippet({ id: "snippet-1", version: 5 });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValue({ ...original, version: 6 });
+
+      await useSnippetStore.getState().update("snippet-1", { content: "new" });
+
+      expect(mockUpdateSnippet).toHaveBeenCalledWith(
+        "default-project",
+        "snippet-1",
+        { content: "new" },
+        { baseVersion: 5 },
+      );
+      // 返り値 (version=base+1) で entries を置き換えるので、連続保存でも
+      // in-memory の version が DB に追従し自己衝突しない。
+      expect(useSnippetStore.getState().entries[0].version).toBe(6);
+    });
+
+    it("OCC 衝突時は store を上書きせず conflict handler を id 付きで呼ぶ", async () => {
+      const original = fakeSnippet({
+        id: "snippet-1",
+        content: "old",
+        version: 2,
+      });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockRejectedValueOnce(
+        new SnippetVersionConflictError("snippet-1"),
+      );
+      const handler = vi.fn();
+      setSnippetEditConflictHandler(handler);
+
+      await useSnippetStore.getState().update("snippet-1", { content: "new" });
+
+      expect(handler).toHaveBeenCalledWith("snippet-1");
+      expect(useSnippetStore.getState().entries[0].content).toBe("old"); // 非破壊
+      // 保存されていないので timelapse にも undo 履歴にも残さない
+      expect(mockRecord).not.toHaveBeenCalled();
+      expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
+    });
+
+    it("undo/redo クロージャは blind (baseVersion なし) で再生する", async () => {
+      const original = fakeSnippet({ id: "snippet-1", version: 3 });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValue({
+        ...original,
+        title: "更新後",
+        version: 4,
+      });
+
+      await useSnippetStore.getState().update("snippet-1", { title: "更新後" });
+
+      const cmd = useGlobalHistoryStore.getState().past.at(-1);
+      expect(cmd).toBeTruthy();
+
+      mockUpdateSnippet.mockClear();
+      mockUpdateSnippet.mockResolvedValue(original);
+      await cmd!.undo();
+      // replay 中の version 移動は後続 OCC を壊すため、opts (第4引数) を渡さない
+      expect(mockUpdateSnippet).toHaveBeenCalledTimes(1);
+      expect(mockUpdateSnippet.mock.calls[0]).toHaveLength(3);
+
+      mockUpdateSnippet.mockClear();
+      mockUpdateSnippet.mockResolvedValue({ ...original, title: "更新後" });
+      await cmd!.redo();
+      expect(mockUpdateSnippet).toHaveBeenCalledTimes(1);
+      expect(mockUpdateSnippet.mock.calls[0]).toHaveLength(3);
     });
 
     it("does nothing if update returns undefined", async () => {
@@ -260,6 +341,60 @@ describe("snippetStore", () => {
       expect(useSnippetStore.getState().entries[0].title).toBe(
         "テストスニペット",
       );
+    });
+
+    // 保存の成否は戻り値で返す。EditorPane の snippet 保存 (coreSave) は
+    // これを見て dirty を維持する — 衝突を toast だけで握り潰して正常 resolve
+    // すると、呼び出し側が dirty を誤クリアして編集が失われうる。
+    it("成功時は true を返す", async () => {
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValue({ ...original, title: "新題" });
+
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { title: "新題" }),
+      ).resolves.toBe(true);
+    });
+
+    it("OCC 衝突時は false を返す (呼び出し側が dirty を維持できる)", async () => {
+      const original = fakeSnippet({ id: "snippet-1", version: 2 });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockRejectedValueOnce(
+        new SnippetVersionConflictError("snippet-1"),
+      );
+
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { content: "new" }),
+      ).resolves.toBe(false);
+    });
+
+    it("その他の失敗と行なし (undefined) も false を返す", async () => {
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+
+      mockUpdateSnippet.mockRejectedValueOnce(new Error("boom"));
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { title: "x" }),
+      ).resolves.toBe(false);
+
+      mockUpdateSnippet.mockResolvedValueOnce(undefined);
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { title: "x" }),
+      ).resolves.toBe(false);
+    });
+
+    it("行なし (削除済み/スコープmiss) の false でもトーストで通知する (無音失敗防止)", async () => {
+      // EditorPane は false → AlreadyNotifiedSaveError で「通知済み」を前提に
+      // autoSave.failed トーストを抑止する。この経路が無音だと、削除済み
+      // snippet を開いたまま編集したときの保存失敗が完全無音で継続する。
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValueOnce(undefined);
+
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { title: "x" }),
+      ).resolves.toBe(false);
+      expect(toastError).toHaveBeenCalledTimes(1);
     });
 
     it("records snippet.update with a content diff over extracted text", async () => {

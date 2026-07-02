@@ -19,6 +19,7 @@ import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
+  dirtyGatedSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
 import { useTabStore } from "@/features/editor/tabStore";
 import { subscribeLiveContentRafCoalesced } from "@/features/editor/sceneContentStore";
@@ -140,6 +141,12 @@ function MountedSceneBlock({
   // useAutoSave の cleanup flush が走る。pending が arm されていた場合、
   // false 始まりだと空 doc がそのまま DB に書き込まれる。
   const loadFailedRef = useRef(true);
+  // 編集世代カウンタ (EditorPane と同じ Fix)。onUpdate で dirty を立てるたび
+  // ++ し、coreSave は「save 開始時と同世代のときのみ」dirty を解除する。
+  // 無条件解除だと保存 (await) 中に入った編集の dirty=true をクロバーし、
+  // 外部 flush の dirty ゲート (dirtyGatedSaveHandler) が clean 誤判定 →
+  // headless 適用の resync がその編集を上書き消失させる。
+  const editGenerationRef = useRef(0);
   const [charCount, setCharCount] = useState(0);
   // タイピング中の文字数同期 debounce タイマー (EditorStatsFooter と同じ
   // 200ms trailing)。
@@ -172,12 +179,18 @@ function MountedSceneBlock({
       `save ${sceneId.slice(0, 8)}`,
       JSON.stringify({ docLen: getDocText(ed.state.doc).length }),
     );
+    // save 開始時の編集世代 (doc 捕捉と同期区間なので取りこぼし無し)。
+    const editGenAtStart = editGenerationRef.current;
     // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
     // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
     // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
     await persistSceneBody(sceneId, ed.state.doc);
     // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
-    useTabStore.getState().setTabDirty(sceneId, false);
+    // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
+    // (editGenerationRef のコメント参照)。
+    if (editGenerationRef.current === editGenAtStart) {
+      useTabStore.getState().setTabDirty(sceneId, false);
+    }
   }, [sceneId]);
 
   const saveFn = useCallback(async () => {
@@ -254,6 +267,8 @@ function MountedSceneBlock({
         // 検出・post-effect/チャットの flush 列挙が参照する)。リニアはタブを
         // 持たないが、この Set に乗らないと外部変更が未保存編集をサイレントに
         // 上書きする。解除は coreSave 成功時と unmount cleanup。
+        // 世代カウンタは dirty 立てと同時に ++ (coreSave の条件付き解除用)。
+        editGenerationRef.current += 1;
         useTabStore.getState().setTabDirty(sceneId, true);
 
         // Auto-transition outline → draft: wasEmptyRef が true の間だけ
@@ -303,6 +318,24 @@ function MountedSceneBlock({
 
   editorRef.current = editor;
 
+  // inline-AI がこのブロックで生成/プレビュー中 (非 idle = 未 accept の
+  // テキストが doc に入っている) は、arm 済みの autosave タイマーも解除する
+  // (EditorPane と同じ Fix)。onUpdate の gate は「新規 schedule の抑止」しか
+  // せず、直前の編集で arm 済みのタイマーは発火して未 accept のプレビュー
+  // 本文ごと persist してしまう (無帰属 AI テキストの焼き込み)。owner 判定は
+  // onUpdate と同じ activeEditor 一致 (リニアは複数エディタがグローバル単一
+  // store を共有するため status だけでは不可)。accept/reject で idle に戻る
+  // と reset+dispatch の onUpdate が改めて schedule するので、消した打鍵分の
+  // 保存は取りこぼされない。既知の残余 (スコープ外): diff 表示中の unmount
+  // flush はプレビュー込み doc を保存しうる pre-existing の穴。
+  const inlineAiStatus = useInlineAiStore((s) => s.status);
+  const inlineAiOwnerEditor = useInlineAiStore((s) => s.activeEditor);
+  useEffect(() => {
+    if (inlineAiStatus !== "idle" && inlineAiOwnerEditor === editor) {
+      cancel();
+    }
+  }, [inlineAiStatus, inlineAiOwnerEditor, editor, cancel]);
+
   // active シーンの editor を Toolbar / SceneMetaPanel がフォーカス無しで
   // 参照できるよう registry へ登録する (linearEditorStore.editorsById)。
   useEffect(() => {
@@ -341,9 +374,16 @@ function MountedSceneBlock({
   // これが無いと agent 書き込み (autoApplyProse) / Codex 改名波及 /
   // post-effect・チャット送信前 flush がリニアの未保存編集を flush できず、
   // stale な DB 本文を read-modify-write して直近編集を消す。
+  // dirty ゲート付き: clean な editor への外部 flush は no-op (詳細は
+  // dirtyGatedSaveHandler)。リニアの dirty 正本は dirtyTabIds
+  // (onUpdate で同期セット / coreSave 成功時とunmount で解除)。
   useEffect(() => {
-    registerSaveHandler(sceneId, saveFn);
-    return () => unregisterSaveHandler(sceneId, saveFn);
+    const handler = dirtyGatedSaveHandler(
+      () => useTabStore.getState().dirtyTabIds.has(sceneId),
+      saveFn,
+    );
+    registerSaveHandler(sceneId, handler);
+    return () => unregisterSaveHandler(sceneId, handler);
   }, [sceneId, saveFn]);
 
   // unmount 時に dirty を確実に解除する (EditorPane の cleanup と同じ)。

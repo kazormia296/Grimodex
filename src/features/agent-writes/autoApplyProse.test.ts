@@ -12,11 +12,13 @@ import type { PendingProseProposal } from "@/features/agent-writes/proseStagingS
 const h = vi.hoisted(() => ({
   state: {
     sceneContent: "" as string,
+    sceneVersion: 0 as number,
     treeNodes: [] as Array<{ id: string; sourceUri?: string }>,
     liveSubscribers: [] as string[],
     fileBacked: false,
   },
   loadSceneContent: vi.fn(async () => h.state.sceneContent),
+  getSceneVersion: vi.fn(async () => h.state.sceneVersion),
   saveScene: vi.fn(async (_id: string) => {}),
   persistSceneBody: vi.fn(async (_id: string, _doc: ProseMirrorNode) => {}),
   agentAcceptProseStage: vi.fn(async () => ({})),
@@ -26,6 +28,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@/features/tree/api", () => ({
   loadSceneContent: h.loadSceneContent,
+  getSceneVersion: h.getSceneVersion,
 }));
 vi.mock("@/features/editor/editorSaveRegistry", () => ({
   saveScene: h.saveScene,
@@ -54,6 +57,7 @@ vi.mock("@/features/timelapse/recorder", () => ({
 }));
 
 import { autoApplyProseProposal } from "@/features/agent-writes/autoApplyProse";
+import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
 const HELLO_DOC = JSON.stringify({
   type: "doc",
@@ -106,9 +110,11 @@ function blockTexts(doc: ProseMirrorNode): string[] {
 beforeEach(() => {
   vi.clearAllMocks();
   h.state.sceneContent = HELLO_DOC;
+  h.state.sceneVersion = 0;
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
   h.state.liveSubscribers = [];
   h.state.fileBacked = false;
+  useExternalWriteStore.getState().clear();
 });
 
 describe("autoApplyProseProposal — append", () => {
@@ -342,6 +348,101 @@ describe("autoApplyProseProposal — skips", () => {
       const result = await autoApplyProseProposal(proposal());
       expect(result.applied).toBe(true);
       expect(h.persistSceneBody).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
+describe("autoApplyProseProposal — stale base_version 検知", () => {
+  it("baseVersion 不一致 → 適用せず proposed のまま残し conflict を surface する", async () => {
+    h.state.sceneVersion = 3; // propose (base=1) の後に本文が保存され version が進んだ
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await autoApplyProseProposal(proposal({ baseVersion: 1 }));
+      expect(result).toEqual({
+        applied: false,
+        reason: "stale-base-version",
+      });
+      // 適用も finalize もしない (row は `proposed` のまま → 手動レビューへ)
+      expect(h.agentAcceptProseStage).not.toHaveBeenCalled();
+      expect(h.persistSceneBody).not.toHaveBeenCalled();
+      expect(h.recordChangeEvent).not.toHaveBeenCalled();
+      // 既存の scene 用 conflict 導線 (ExternalEditConflictBanner) に流す
+      expect(useExternalWriteStore.getState().conflicts).toEqual([
+        {
+          sceneId: "scene-1",
+          domain: "prose",
+          opType: "prose.stale",
+          entityId: "stage-1",
+        },
+      ]);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("baseVersion 一致 → 従来通り適用する", async () => {
+    h.state.sceneVersion = 2;
+    const result = await autoApplyProseProposal(proposal({ baseVersion: 2 }));
+    expect(result.applied).toBe(true);
+    expect(h.persistSceneBody).toHaveBeenCalledTimes(1);
+    expect(useExternalWriteStore.getState().conflicts).toEqual([]);
+  });
+
+  it("version の読み取りは flush → loadSceneContent の後 (直前の flush 分も検知)", async () => {
+    const order: string[] = [];
+    h.saveScene.mockImplementationOnce(async () => {
+      order.push("flush");
+    });
+    h.loadSceneContent.mockImplementationOnce(async () => {
+      order.push("load");
+      return h.state.sceneContent;
+    });
+    h.getSceneVersion.mockImplementationOnce(async () => {
+      order.push("version");
+      return 0;
+    });
+    await autoApplyProseProposal(proposal({ baseVersion: 0 }));
+    expect(order).toEqual(["flush", "load", "version"]);
+  });
+
+  it("baseVersion 未指定 (DB 由来でない proposal) → 比較せず従来動作", async () => {
+    h.state.sceneVersion = 99;
+    const result = await autoApplyProseProposal(proposal());
+    expect(result.applied).toBe(true);
+    expect(h.getSceneVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe("autoApplyProseProposal — open editor (dirty ゲート付き flush との協調)", () => {
+  // saveScene() の外部 flush は dirty ゲート付き (editorSaveRegistry の
+  // dirtyGatedSaveHandler)。externalWriteFeed の既存ポリシー
+  // 「dirty なら conflict / clean なら自動反映」と揃える。
+  it("clean な open editor: flush は no-op → version 不変 → 自動適用 + live resync", async () => {
+    h.state.liveSubscribers = ["scene-1"];
+    h.state.sceneVersion = 2;
+    const result = await autoApplyProseProposal(proposal({ baseVersion: 2 }));
+    expect(result.applied).toBe(true);
+    expect(h.persistSceneBody).toHaveBeenCalledTimes(1);
+    expect(h.setLiveContent).toHaveBeenCalledTimes(1);
+    expect(h.setLiveContent.mock.calls[0][0]).toBe("scene-1");
+  });
+
+  it("dirty な open editor: flush が保存 + bump → stale ブロック → 手動レビューへ", async () => {
+    h.state.liveSubscribers = ["scene-1"];
+    h.state.sceneVersion = 2;
+    h.saveScene.mockImplementationOnce(async () => {
+      // dirty flush = 実保存 → saveSceneContent が version を bump する
+      h.state.sceneVersion += 1;
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await autoApplyProseProposal(proposal({ baseVersion: 2 }));
+      expect(result).toEqual({ applied: false, reason: "stale-base-version" });
+      expect(h.persistSceneBody).not.toHaveBeenCalled();
+      expect(h.setLiveContent).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
     }
   });
 });
