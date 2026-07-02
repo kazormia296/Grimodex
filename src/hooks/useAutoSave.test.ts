@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createAutoSave } from "@/hooks/useAutoSave";
+import {
+  createAutoSave,
+  flushAllAutoSaves,
+  registerAutoSaveForQuiesce,
+} from "@/hooks/useAutoSave";
 
 vi.mock("sonner", () => ({
   toast: { error: vi.fn() },
@@ -12,6 +16,7 @@ vi.mock("@/lib/a11y/announcer", () => ({
 import { toast } from "sonner";
 import { announce } from "@/lib/a11y/announcer";
 import i18next from "@/lib/i18n";
+import { debugLog } from "@/lib/debugLog";
 
 describe("createAutoSave", () => {
   beforeEach(() => {
@@ -163,5 +168,162 @@ describe("createAutoSave", () => {
     autoSave.schedule();
     await autoSave.flush();
     expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  it("flush は in-flight の save 完了を待つ (切替前 quiesce のすり抜け防止)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const saveFn = vi.fn(() => gate);
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500); // runSave 開始 (pending=false, in-flight)
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    let flushed = false;
+    const flushing = autoSave.flush().then(() => {
+      flushed = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(flushed).toBe(false); // in-flight 完了までは resolve しない
+
+    release();
+    await flushing;
+    expect(flushed).toBe(true);
+    // pending は無かったので追加の save は走らない
+    expect(saveFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("flush は await 中にタイマー発火で始まった run2 も待つ (R4-2)", async () => {
+    const gates: Array<() => void> = [];
+    const saveFn = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          gates.push(r);
+        }),
+    );
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500); // run1 開始 (in-flight)
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    let flushed = false;
+    const flushing = autoSave.flush().then(() => {
+      flushed = true;
+    });
+    // flush が run1 を await している間に再武装 → タイマー発火 → run2 開始
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(saveFn).toHaveBeenCalledTimes(2);
+
+    gates[0](); // run1 完了
+    await vi.advanceTimersByTimeAsync(0);
+    // 1 回だけの await 実装はここで resolve していた (run2 のすり抜け)
+    expect(flushed).toBe(false);
+
+    gates[1](); // run2 完了
+    await flushing;
+    expect(flushed).toBe(true);
+  });
+
+  it("契約(e): flush ループは 20 周で打ち切って warn する (livelock 防止)", async () => {
+    const warnSpy = vi.spyOn(debugLog, "warn");
+    // save のたびに schedule を再誘発する病的ケース (持続タイピング相当)
+    const holder: { schedule?: () => void } = {};
+    const saveFn = vi.fn(async () => {
+      holder.schedule?.();
+    });
+    const autoSave = createAutoSave(saveFn, 500);
+    holder.schedule = autoSave.schedule;
+
+    autoSave.schedule();
+    await expect(autoSave.flush()).resolves.toBeUndefined();
+
+    expect(saveFn.mock.calls.length).toBeLessThanOrEqual(21);
+    expect(
+      warnSpy.mock.calls.some(
+        ([tag, msg]) => tag === "AutoSave" && String(msg).includes("cap"),
+      ),
+    ).toBe(true);
+
+    autoSave.cancel();
+    warnSpy.mockRestore();
+  });
+
+  it("WORKSPACE_SWITCHING 拒否は i18n 済みの切替中文言で toast する", async () => {
+    const saveFn = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
+        ),
+      );
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(toast.error).toHaveBeenCalledWith(
+      i18next.t("autoSave.workspaceSwitching"),
+    );
+  });
+});
+
+describe("flushAllAutoSaves (workspace 切替前 quiesce)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("登録済みインスタンスの pending save をすべて flush する", async () => {
+    const saveA = vi.fn().mockResolvedValue(undefined);
+    const saveB = vi.fn().mockResolvedValue(undefined);
+    const a = createAutoSave(saveA, 2000);
+    const b = createAutoSave(saveB, 2000);
+    const unregisterA = registerAutoSaveForQuiesce(a);
+    const unregisterB = registerAutoSaveForQuiesce(b);
+
+    a.schedule();
+    b.schedule();
+    await flushAllAutoSaves();
+
+    expect(saveA).toHaveBeenCalledTimes(1);
+    expect(saveB).toHaveBeenCalledTimes(1);
+
+    unregisterA();
+    unregisterB();
+  });
+
+  it("登録解除後のインスタンスは flush されない", async () => {
+    const saveFn = vi.fn().mockResolvedValue(undefined);
+    const autoSave = createAutoSave(saveFn, 2000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+    unregister();
+
+    autoSave.schedule();
+    await flushAllAutoSaves();
+    expect(saveFn).not.toHaveBeenCalled();
+
+    autoSave.cancel();
+  });
+
+  it("save の失敗があっても reject しない (既存の toast フローに委ねる)", async () => {
+    const saveFn = vi.fn().mockRejectedValue(new Error("switching"));
+    const autoSave = createAutoSave(saveFn, 2000);
+    const unregister = registerAutoSaveForQuiesce(autoSave);
+
+    autoSave.schedule();
+    await expect(flushAllAutoSaves()).resolves.toBeUndefined();
+    expect(saveFn).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalled();
+
+    unregister();
   });
 });

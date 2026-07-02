@@ -11,6 +11,8 @@ import { db } from "@/db/client";
 import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
+import { debugLog } from "@/lib/debugLog";
+import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import type { VerifyResult } from "./hashChain";
 
 const FLUSH_DEBOUNCE_MS = 100;
@@ -107,6 +109,28 @@ interface TimelapseAppendResult {
   tailSequence: number;
 }
 
+/**
+ * Workspace 切替まわりの recorder 状態機械 (M3 review r5)。
+ *
+ * 記録可否は単一の不変条件で決まる:
+ *
+ *     recording可 ⟺ bound(enabled ∧ projectId≠null) ∧ ¬bindingInvalidated ∧ ¬switchInProgress
+ *
+ * 「resume」という命令は存在しない。束縛を有効化する唯一の経路は
+ * `initRecorderForProject`(正規 rebind) であり、切替中・世代跨ぎ・旧 init は
+ * 束縛を書けない。これにより「resume したが束縛が誤り」「他人の切替を解除」
+ * という命令的 resume の穴 (r4 で反証されたもの) が構造的に不可能になる。
+ *
+ * 遷移一覧:
+ * - beginWorkspaceSwitch():  switchInProgress=true, bindingInvalidated=true,
+ *   switchEpoch++, キュー破棄 + backoff キャンセル。
+ * - endWorkspaceSwitch({restoreBinding}): switchInProgress=false。
+ *   restoreBinding=true (切替失敗 = swap 未実行で旧束縛が依然正しい) のときのみ
+ *   bindingInvalidated=false。成功時は invalidated のまま = init 完了まで記録停止。
+ * - initRecorderForProject(): 切替中 (switchInProgress) は abort、完了時に
+ *   世代 (switchEpoch) が entry から進んでいたら abort、自分が現行 init で
+ *   なければ state を書かない。成功時のみ束縛を書き bindingInvalidated=false。
+ */
 interface RecorderState {
   enabled: boolean;
   projectId: string | null;
@@ -118,7 +142,36 @@ interface RecorderState {
   flushPromise: Promise<void> | null;
   /** Consecutive failed-flush count; gates retry backoff and the give-up cap. */
   flushRetries: number;
-  initPromise: Promise<void> | null;
+  /** 現行 init。resolve 値は「束縛を書いたか」(bystander/世代跨ぎ abort = false)。 */
+  initPromise: Promise<boolean> | null;
+  /**
+   * workspace 切替の実行中 (beginWorkspaceSwitch 〜 endWorkspaceSwitch)。
+   * true の間は記録・flush を止め、bystander init も束縛を書けない。
+   */
+  switchInProgress: boolean;
+  /**
+   * 束縛 (projectId / lastSequence / sessionId) が現在の workspace に対して
+   * 有効でない。切替開始で true になり、正規 rebind (initRecorderForProject)
+   * の完了、または切替失敗時の endWorkspaceSwitch({restoreBinding:true})
+   * だけが false に戻す。true の間のイベントは warn 付きで破棄 — 誤った束縛で
+   * 新 workspace の hash chain に旧イベントを混入させる (C1) よりも
+   * 「記録しない」が正しい。
+   */
+  bindingInvalidated: boolean;
+  /** 束縛無効中に破棄したイベント数 (初回は即 warn、以降は再束縛時にまとめて warn)。 */
+  droppedWhileInvalidated: number;
+  /**
+   * workspace 切替の世代番号 (beginWorkspaceSwitch のたびに増える)。
+   * init は entry で捕捉した世代と完了時の世代が一致するときだけ束縛を書く。
+   */
+  switchEpoch: number;
+  /**
+   * 最後に束縛を書いた init の switchEpoch。冪等ガードのキーに使う —
+   * projectId だけをキーにすると、両 workspace とも 'default-project' の
+   * 最頻ケースで切替後の rebind が no-op になり、旧 workspace の tail が
+   * 新 workspace の seed snapshot に anchorSequence として焼かれる (R4-3)。
+   */
+  initEpoch: number;
 }
 
 const state: RecorderState = {
@@ -134,6 +187,11 @@ const state: RecorderState = {
   flushPromise: null,
   flushRetries: 0,
   initPromise: null,
+  switchInProgress: false,
+  bindingInvalidated: false,
+  droppedWhileInvalidated: 0,
+  switchEpoch: 0,
+  initEpoch: 0,
 };
 
 function newSessionId(): string {
@@ -181,20 +239,106 @@ export function isRecorderEnabled(): boolean {
   return state.enabled;
 }
 
+/** 束縛無効中に破棄した件数のまとめ warn (再束縛/復元の時点で出す)。 */
+function reportDroppedWhileInvalidated(): void {
+  if (state.droppedWhileInvalidated > 0) {
+    debugLog.warn(
+      "timelapse",
+      `workspace switch: dropped ${state.droppedWhileInvalidated} event(s) recorded before the project rebind completed`,
+    );
+    state.droppedWhileInvalidated = 0;
+  }
+}
+
+/**
+ * Workspace 切替の開始。openWorkspace が quiesce 直後・invoke 前に呼ぶ。
+ * 以後のイベント記録・flush を止め、旧 workspace 向けのキューと進行中の
+ * backoff 再試行を破棄する (切替を跨いだ flush 再試行が新 workspace の
+ * hash chain へ旧イベントを混入させる C1 の防止)。
+ *
+ * 併せて束縛を無効化 (bindingInvalidated=true) する。切替後の記録再開は
+ * 「命令」ではなく、正規 rebind (initRecorderForProject) の完了だけが束縛を
+ * 有効に戻す。戻り値は新しい切替世代 (テスト/診断用)。
+ */
+export function beginWorkspaceSwitch(): number {
+  state.switchEpoch += 1;
+  state.switchInProgress = true;
+  state.bindingInvalidated = true;
+  state.droppedWhileInvalidated = 0;
+  if (state.flushTimer) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = null;
+  }
+  state.flushRetries = 0;
+  if (state.queue.length > 0) {
+    debugLog.warn(
+      "timelapse",
+      `workspace switch: dropping ${state.queue.length} queued event(s) for the old workspace`,
+    );
+  }
+  state.queue = [];
+  return state.switchEpoch;
+}
+
+/**
+ * Workspace 切替の終了。openWorkspace が swap (open_workspace invoke) を
+ * 括る finally で成功/失敗の両方で必ず呼ぶ (openWorkspaceInFlight ガードに
+ * より begin/end は厳密に交互)。swap の成否確定より広い区間を括らないこと —
+ * set({view}) 以降まで switchInProgress を保つと、React の EditorScreen
+ * mount が走らせる正規 rebind が bystander と誤判定される。
+ *
+ * - `restoreBinding: true` は「swap が実行されなかった失敗」(open_workspace
+ *   invoke が失敗し旧 workspace 続行) のときのみ渡す — 旧束縛は依然正しい
+ *   ので記録をそのまま再開する。
+ * - 成功時 (および swap 後の後続処理の失敗時) は bindingInvalidated=true の
+ *   まま = 正規 rebind (initRecorderForProject) が完了するまで記録は再開
+ *   しない。「resume したが束縛が誤り」を構造的に排除するための非対称。
+ */
+export function endWorkspaceSwitch(options?: {
+  restoreBinding?: boolean;
+}): void {
+  state.switchInProgress = false;
+  if (options?.restoreBinding) {
+    state.bindingInvalidated = false;
+    reportDroppedWhileInvalidated();
+  }
+}
+
 /**
  * Bind the recorder to a project and resume the chain from the DB tail.
  *
- * Idempotent for the same projectId. Switching projects starts a fresh
- * in-memory session (sessionId changes). Rust reads the live DB tail again
- * during each append, so this only caches the latest tail sequence for UI
- * consumers.
+ * Idempotent for the same projectId within the same switch generation.
+ * Switching projects starts a fresh in-memory session (sessionId changes).
+ * Rust reads the live DB tail again during each append, so this only caches
+ * the latest tail sequence for UI consumers.
+ *
+ * **束縛を有効化する唯一の経路** (状態機械コメント参照)。戻り値は
+ * 「束縛を書いたか」— 切替中の bystander init / 完了時に世代が進んでいた
+ * 旧 init は state を書かず false を返す (呼び出し側はその場合 seed
+ * snapshot 等の anchorSequence 依存処理を行ってはならない)。
  */
-export async function initRecorderForProject(projectId: string): Promise<void> {
+export async function initRecorderForProject(
+  projectId: string,
+): Promise<boolean> {
+  // 切替中の bystander init は束縛を書かない。切替が終われば正規 rebind
+  // (loadProject) が改めて init する。
+  if (state.switchInProgress) return false;
+
   // When the recorder is disabled (typical in tests), don't touch the DB —
   // mocked db harnesses don't need to mock the chain-tail SELECT and we
   // avoid leaking timers / promises across test files.
   if (!state.enabled) {
     state.projectId = projectId;
+    state.initEpoch = state.switchEpoch;
+    // disabled でも束縛自体は書けたことにする (記録可否は enabled 側が閉じる)。
+    // これで後から toggle-ON → init される流れでも invalidated が残らない。
+    state.bindingInvalidated = false;
+    // 過去の enabled init の promise を残すと、後の enabled init が複合キー
+    // 一致で stale promise を short-circuit し、旧 workspace の tail を束縛に
+    // 使い続ける理論穴がある (r5 Minor-3)。disabled バインドは tail を読まない
+    // ので必ず破棄し、次の enabled init に tail を引き直させる。
+    state.initPromise = null;
+    reportDroppedWhileInvalidated();
     // Clear any pending queue and timer so events from the prior project cannot
     // flush into this (OFF) project after a switch.
     if (state.flushTimer) {
@@ -202,24 +346,45 @@ export async function initRecorderForProject(projectId: string): Promise<void> {
       state.flushTimer = null;
     }
     state.queue = [];
-    return;
+    return true;
   }
-  if (state.projectId === projectId && state.initPromise) {
+  // 冪等ガードは projectId + 切替世代の複合キー。workspace 切替を跨いだら、
+  // 同一 projectId ('default-project' 同士の切替が最頻) でも必ず再 init して
+  // 新 workspace の tail / 新 sessionId を引き直す (R4-3)。
+  if (
+    state.projectId === projectId &&
+    state.initEpoch === state.switchEpoch &&
+    state.initPromise
+  ) {
     return state.initPromise;
   }
+  const entryEpoch = state.switchEpoch;
   state.projectId = projectId;
+  state.initEpoch = state.switchEpoch;
   state.sessionId = newSessionId();
   state.queue = [];
 
-  state.initPromise = (async () => {
+  // 自己参照用ホルダー: IIFE の最初の await より後で読むため、下の代入は
+  // 必ず完了している (TS の use-before-assign を避けるため let + null 初期化)。
+  let self: Promise<boolean> | null = null;
+  const init = (async (): Promise<boolean> => {
     const head = await readChainTail(projectId);
-    if (head) {
-      state.lastSequence = head.sequence;
-    } else {
-      state.lastSequence = 0;
+    // 自分が現行 init でなければ state を書かない — 旧 init の遅延 resolve が
+    // 新 init の lastSequence を clobber するのを防ぐ (r5 Minor-2)。
+    if (state.initPromise !== self) return false;
+    // 完了時に切替世代が進んでいた / 切替中なら束縛を書かない — 旧 workspace
+    // の tail を新 workspace の束縛として有効化しない (r5 契約 (c)(d))。
+    if (state.switchEpoch !== entryEpoch || state.switchInProgress) {
+      return false;
     }
+    state.lastSequence = head ? head.sequence : 0;
+    state.bindingInvalidated = false;
+    reportDroppedWhileInvalidated();
+    return true;
   })();
-  return state.initPromise;
+  self = init;
+  state.initPromise = init;
+  return init;
 }
 
 /**
@@ -267,6 +432,11 @@ export function _resetRecorderForTests(): void {
   state.flushTimer = null;
   state.flushPromise = null;
   state.initPromise = null;
+  state.switchInProgress = false;
+  state.bindingInvalidated = false;
+  state.droppedWhileInvalidated = 0;
+  state.switchEpoch = 0;
+  state.initEpoch = 0;
 }
 
 /**
@@ -275,6 +445,19 @@ export function _resetRecorderForTests(): void {
  * yet, the call is silently dropped.
  */
 export function recordChangeEvent(input: RecordEventInput): void {
+  if (state.switchInProgress || state.bindingInvalidated) {
+    // 束縛が無効 (切替中 or 正規 rebind 未完了): 誤った束縛で新 workspace の
+    // hash chain へ混入させるより破棄が正しい。ただし無警告にしない —
+    // 初回は即 warn、以降は件数を集計して再束縛時にまとめて warn する。
+    if (state.droppedWhileInvalidated === 0) {
+      debugLog.warn(
+        "timelapse",
+        "workspace 切替後 project 未ロードのため timelapse イベントを破棄中 (プロジェクトを開き直すと再開する)",
+      );
+    }
+    state.droppedWhileInvalidated += 1;
+    return;
+  }
   if (!state.enabled || !state.projectId) return;
   state.queue.push({
     eventUid: crypto.randomUUID(),
@@ -290,6 +473,7 @@ export function recordChangeEvent(input: RecordEventInput): void {
 }
 
 function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
+  if (state.switchInProgress || state.bindingInvalidated) return;
   if (state.flushTimer) return;
   state.flushTimer = setTimeout(() => {
     state.flushTimer = null;
@@ -306,6 +490,14 @@ function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
 export async function flushNow(): Promise<void> {
   if (state.flushPromise) return state.flushPromise;
   state.flushPromise = (async () => {
+    // 切替中・束縛無効中は何も流さない (キューは beginWorkspaceSwitch で
+    // 破棄済み)。ここで flush すると switching 拒否 → re-queue → open 完了後に
+    // 新 workspace の chain へ着地する (C1)。projectStore の rebind 前 drain
+    // もこの経路で no-op になる。
+    if (state.switchInProgress || state.bindingInvalidated) {
+      state.queue = [];
+      return;
+    }
     // Bail out immediately when the recorder is disabled so an OFF project is
     // never contaminated by events that were queued for the previous project.
     if (!state.enabled) {
@@ -346,6 +538,17 @@ export async function flushNow(): Promise<void> {
       state.lastSequence = result.tailSequence;
       state.flushRetries = 0;
     } catch (err) {
+      // workspace 切替拒否 (WORKSPACE_SWITCHING マーカー) は再送しない —
+      // beginWorkspaceSwitch の束縛無効化と二重の防御。再送すると open 完了後
+      // に旧イベントが新 workspace の chain へ混入する (C1)。バッチは破棄して
+      // 件数を warn。
+      if (isWorkspaceSwitchingError(err)) {
+        debugLog.warn(
+          "timelapse",
+          `workspace switching: dropping ${batch.length} event(s) instead of re-queueing`,
+        );
+        return;
+      }
       // Rust owns sequence/hash allocation, so client-side UNIQUE collision
       // reconciliation is gone. Retry the same eventUid batch: if the command
       // committed but the transport rejected, Rust treats the resend as a no-op.

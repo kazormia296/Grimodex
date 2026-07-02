@@ -4,7 +4,7 @@ use crate::database::change_events::{AppendChangeEvent, AppendResult};
 
 use super::{with_db, AppError, WorkspaceState};
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn timelapse_append_batch(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,

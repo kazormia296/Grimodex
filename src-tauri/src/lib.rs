@@ -80,7 +80,10 @@ pub fn run() {
 
             // Global settings path (stays in AppData)
             let gs_path = app_dir.join("global-settings.json");
-            app.manage(GlobalSettingsPath { path: gs_path });
+            app.manage(GlobalSettingsPath {
+                path: gs_path,
+                write_lock: Mutex::new(()),
+            });
 
             // AI settings path (stays in AppData)
             let ai_path = app_dir.join("ai-settings.json");
@@ -113,6 +116,8 @@ pub fn run() {
             // Workspace state starts empty — frontend will call open_workspace
             app.manage(WorkspaceState {
                 inner: Mutex::new(None),
+                switching: std::sync::atomic::AtomicBool::new(false),
+                open_lock: Mutex::new(()),
             });
 
             // Codex matcher state (rebuilt on demand via codex_rebuild_matcher)

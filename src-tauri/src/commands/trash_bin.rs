@@ -72,7 +72,7 @@ fn trash_bin_create_impl(
         .unwrap_or(Value::Null))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn trash_bin_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: TrashBinCreatePayload,
@@ -80,7 +80,7 @@ pub(crate) fn trash_bin_create(
     with_db(&ws_state, |db| trash_bin_create_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn trash_bin_list(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,
@@ -100,7 +100,7 @@ pub(crate) fn trash_bin_list(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn trash_bin_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -115,7 +115,7 @@ pub(crate) fn trash_bin_delete(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn trash_bin_clear_all(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,
@@ -132,7 +132,7 @@ pub(crate) fn trash_bin_clear_all(
 
 /// 期日切れ・件数超過のアイテムを刈り取る。
 /// Phase 1 では起動時に呼ぶだけ（バックグラウンド実行は Phase 7）。
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn trash_bin_prune(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,

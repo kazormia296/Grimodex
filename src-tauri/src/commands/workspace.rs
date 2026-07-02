@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
+use tauri::Manager;
 
 use crate::database::Database;
 use crate::semantic::chat_search::ChatSearchCache;
@@ -126,6 +127,10 @@ pub(crate) struct OpenWorkspaceResult {
 pub(crate) fn get_global_settings(
     gs_path: tauri::State<'_, GlobalSettingsPath>,
 ) -> Result<GlobalSettings, AppError> {
+    let _guard = gs_path
+        .write_lock
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(workspace::read_global_settings(&gs_path.path))
 }
 
@@ -134,6 +139,10 @@ pub(crate) fn save_global_settings(
     gs_path: tauri::State<'_, GlobalSettingsPath>,
     settings: GlobalSettings,
 ) -> Result<(), AppError> {
+    let _guard = gs_path
+        .write_lock
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     workspace::write_global_settings(&gs_path.path, &settings)?;
     Ok(())
 }
@@ -231,66 +240,142 @@ fn is_system_directory(path: &Path) -> bool {
     })
 }
 
+/// RAII: `WorkspaceState::switching` を全 exit (正常・エラー・panic 巻き戻し)
+/// で確実に false へ戻す。open_workspace が途中で `?` で抜けてもフラグが
+/// 立ちっぱなしにならない (立ちっぱなし = 全 DB コマンドが恒久拒否 = 文鎮化)。
+struct SwitchingGuard<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for SwitchingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[tauri::command]
-pub(crate) fn open_workspace(
-    ws_state: tauri::State<'_, WorkspaceState>,
-    gs_path: tauri::State<'_, GlobalSettingsPath>,
-    semantic_cache: tauri::State<'_, SearchCache>,
-    codex_semantic_cache: tauri::State<'_, CodexSearchCache>,
-    events_semantic_cache: tauri::State<'_, EventsSearchCache>,
-    chat_semantic_cache: tauri::State<'_, ChatSearchCache>,
+pub(crate) async fn open_workspace(
+    app: tauri::AppHandle,
     path: String,
 ) -> Result<OpenWorkspaceResult, AppError> {
-    let ws_path = PathBuf::from(&path);
-    reject_unsafe_workspace_path(&ws_path)?;
-    std::fs::create_dir_all(&ws_path).map_err(|e| anyhow::anyhow!(e))?;
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<OpenWorkspaceResult, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let gs_path = app.state::<GlobalSettingsPath>();
+            let semantic_cache = app.state::<SearchCache>();
+            let codex_semantic_cache = app.state::<CodexSearchCache>();
+            let events_semantic_cache = app.state::<EventsSearchCache>();
+            let chat_semantic_cache = app.state::<ChatSearchCache>();
 
-    let is_existing = workspace::is_existing_workspace(&ws_path);
+            // open 自体を直列化 (併走 migrate の check-then-act / 二重
+            // VACUUM INTO 防止)。ロック順序は open_lock → inner → write_lock
+            // の一方向のみ (with_db は inner のみ取るので循環しない)。
+            let _open_guard = ws_state
+                .open_lock
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    // Initialize workspace metadata
-    let uuid_str = uuid::Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-    workspace::ensure_workspace_meta(&ws_path, &uuid_str, &now)?;
+            let ws_path = PathBuf::from(&path);
+            reject_unsafe_workspace_path(&ws_path)?;
+            std::fs::create_dir_all(&ws_path).map_err(|e| anyhow::anyhow!(e))?;
 
-    // Open database
-    let db_path = ws_path.join("grimodex.db");
-    let database = Database::new(&db_path)?;
-    database.migrate()?;
-    // Refresh planner stats on open (cheap: analysis_limit is set). Non-fatal —
-    // a stats refresh failure must not block opening the workspace.
-    if let Err(e) = database.optimize() {
-        tracing::warn!("PRAGMA optimize on workspace open failed: {e}");
-    }
-    // Automatic backup (best-effort, throttled by data.backupInterval).
-    maybe_auto_backup(&ws_path, &database);
-    // Age out unbounded append-only logs (90-day retention; change_events is
-    // excluded — hash chain). Non-fatal.
-    if let Err(e) = database.prune_old_logs(90) {
-        tracing::warn!("prune_old_logs on workspace open failed: {e}");
-    }
+            let is_existing = workspace::is_existing_workspace(&ws_path);
 
-    // Set as active workspace
-    let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-    *inner = Some(ActiveWorkspace {
-        db: database,
-        path: ws_path,
-    });
+            // Initialize workspace metadata
+            let uuid_str = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            workspace::ensure_workspace_meta(&ws_path, &uuid_str, &now)?;
 
-    // Semantic search の in-memory cache は前 workspace の scene_id を握っているので
-    // 切替時に必ず捨てる (UUID 衝突は起きないが、安全側に倒す)。
-    semantic_cache.clear()?;
-    codex_semantic_cache.clear()?;
-    events_semantic_cache.clear()?;
-    chat_semantic_cache.clear()?;
+            // Open database
+            let db_path = ws_path.join("grimodex.db");
+            let database = Database::new(&db_path)?;
+            database.migrate()?;
+            // Refresh planner stats on open (cheap: analysis_limit is set). Non-fatal —
+            // a stats refresh failure must not block opening the workspace.
+            if let Err(e) = database.optimize() {
+                tracing::warn!("PRAGMA optimize on workspace open failed: {e}");
+            }
+            // Automatic backup (best-effort, throttled by data.backupInterval).
+            maybe_auto_backup(&ws_path, &database);
+            // Age out unbounded append-only logs (90-day retention; change_events is
+            // excluded — hash chain). Non-fatal.
+            if let Err(e) = database.prune_old_logs(90) {
+                tracing::warn!("prune_old_logs on workspace open failed: {e}");
+            }
 
-    // Update global settings
-    let mut settings = workspace::read_global_settings(&gs_path.path);
-    let now = chrono::Utc::now().to_rfc3339();
-    workspace::touch_recent_workspace(&mut settings, &path, &now);
-    workspace::write_global_settings(&gs_path.path, &settings)?;
+            // swap 直前で switching を立てる (Fix I3)。ここまでの migrate /
+            // VACUUM / prune の数秒間は旧 DB への正当な読み書き (切替中も
+            // 生きている旧 UI の検索・チャット・保存) を通したままにし、
+            // swap 区間だけ with_db を明示エラーで拒否する。swap 前に
+            // 走り出した with_db は inner ロックで直列化されるので安全性は
+            // 同等。ガードの Drop 復帰 (正常・エラー・panic) は維持。
+            // _open_guard より後に宣言 = 先に drop されるので、open_lock
+            // 解放時には必ずフラグは戻っている。
+            ws_state
+                .switching
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let _switching_guard = SwitchingGuard(&ws_state.switching);
 
-    let name = workspace::workspace_name(&path);
-    Ok(OpenWorkspaceResult { name, is_existing })
+            // Set as active workspace
+            let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            *inner = Some(ActiveWorkspace {
+                db: database,
+                path: ws_path,
+            });
+
+            // =================================================================
+            // 不変条件: swap (上の *inner = Some(...)) 以降は絶対に Err を
+            // 返さないこと (infallible)。フロント (workspace/store.ts) の
+            // endWorkspaceSwitch({restoreBinding}) 判定は「invoke エラー ⟹
+            // swap 未実行」に依存しており、swap 後に Err を返すと旧束縛が
+            // 復元され、旧束縛のまま新 DB へ timelapse が記録される (C1 の
+            // 最悪形)。以降の失敗は tracing::warn で握って続行する
+            // (workspace 自体は開けているので open 全体を失敗させない方が
+            // 正しい)。残余: spawn_blocking の JoinError (swap 後の panic)
+            // だけはこの契約の外だが、unwrap() 禁止のコードベースで panic は
+            // 既に異常系。
+            // =================================================================
+
+            // Semantic search の in-memory cache は前 workspace の scene_id を握っているので
+            // 切替時に必ず捨てる (UUID 衝突は起きないが、安全側に倒す)。
+            // 失敗 (poisoned mutex) は stale cache を許容して続行 — 検索結果が
+            // 一時的に古くなるだけで、次の clear / 再 index で回復する。
+            if let Err(e) = semantic_cache.clear() {
+                tracing::warn!("semantic cache clear on workspace open failed: {e}");
+            }
+            if let Err(e) = codex_semantic_cache.clear() {
+                tracing::warn!("codex semantic cache clear on workspace open failed: {e}");
+            }
+            if let Err(e) = events_semantic_cache.clear() {
+                tracing::warn!("events semantic cache clear on workspace open failed: {e}");
+            }
+            if let Err(e) = chat_semantic_cache.clear() {
+                tracing::warn!("chat semantic cache clear on workspace open failed: {e}");
+            }
+
+            // Update global settings (write_lock で read-modify-write を
+            // 原子化。save_global_settings / seed_sample_workspace と並行
+            // しても lost update しない)。失敗 (ENOSPC / EACCES / AV による
+            // rename ロック / 毒化) は recent-workspaces が更新されないだけ
+            // なので warn で続行 (上の不変条件)。
+            match gs_path.write_lock.lock() {
+                Ok(_gs_guard) => {
+                    let mut settings = workspace::read_global_settings(&gs_path.path);
+                    let now = chrono::Utc::now().to_rfc3339();
+                    workspace::touch_recent_workspace(&mut settings, &path, &now);
+                    if let Err(e) = workspace::write_global_settings(&gs_path.path, &settings) {
+                        tracing::warn!("global settings update on workspace open failed: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("global settings lock on workspace open failed: {e}");
+                }
+            }
+
+            let name = workspace::workspace_name(&path);
+            Ok(OpenWorkspaceResult { name, is_existing })
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
 }
 
 #[derive(Serialize)]
@@ -309,7 +394,7 @@ pub(crate) struct McpConfigInfo {
 /// dir. The frontend assembles the `.mcp.json` snippet from this (adding the
 /// `mcp` subcommand, `--project`, and `--readonly`). Errors if no workspace
 /// is open.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn get_mcp_config(
     ws_state: tauri::State<'_, WorkspaceState>,
 ) -> Result<McpConfigInfo, AppError> {

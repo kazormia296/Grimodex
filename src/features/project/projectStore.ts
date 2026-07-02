@@ -47,6 +47,23 @@ interface ProjectState {
 
 let loadProjectGeneration = 0;
 
+/**
+ * timelapse recorder / externalWriteFeed を触ってよい実行環境か。
+ * VITEST では mocked db harness にチェーン tail SELECT を要求しない・タイマー
+ * や promise をテストファイル間にリークさせないため、SSR (window なし) では
+ * そもそも記録対象が無いためスキップする。
+ */
+function isRealBrowserRuntime(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    !(
+      typeof import.meta !== "undefined" &&
+      (import.meta as { vitest?: boolean }).vitest
+    ) &&
+    !(typeof process !== "undefined" && process.env?.VITEST)
+  );
+}
+
 export const useProjectStore = create<ProjectState>()((set, get) => ({
   currentProjectId: null,
   projects: [],
@@ -77,17 +94,18 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   loadProject: async (projectId) => {
     // プロジェクト切替は reloadProjectData で tab/chat/map 等の in-memory 状態を
     // 破棄し owner エディタを作り替えるため、pending 中は止める (唯一の入口)。
-    if (guardInlineAiPending()) return;
+    if (guardInlineAiPending()) {
+      // 早期 return = project はロードされない = recorder の有効な束縛が
+      // 存在しない。この場合「記録しない (warn 付き破棄)」が正しい挙動 —
+      // ここで旧束縛のまま記録を再開すると、workspace 切替直後なら旧
+      // イベントが新 workspace の hash chain へ混入する (r5 で命令的
+      // resume を廃止した理由)。記録は次の正規 rebind
+      // (initRecorderForProject) 完了で自動的に再開する。
+      return;
+    }
     const generation = ++loadProjectGeneration;
     const previousId = get().currentProjectId;
-    if (
-      typeof window !== "undefined" &&
-      !(
-        typeof import.meta !== "undefined" &&
-        (import.meta as { vitest?: boolean }).vitest
-      ) &&
-      !(typeof process !== "undefined" && process.env?.VITEST)
-    ) {
+    if (isRealBrowserRuntime()) {
       const { stopExternalWriteFeed } =
         await import("@/features/concurrency/externalWriteFeed");
       stopExternalWriteFeed();
@@ -119,14 +137,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       // per-project 設定 (timelapse.enabled, 既定 ON) で決まる (§15.5)。
       // 執筆タイムラプス recorder: real browser only. Skip in tests and SSR
       // — VITEST env signals vitest; tauri-host process has neither flag.
-      if (
-        typeof window !== "undefined" &&
-        !(
-          typeof import.meta !== "undefined" &&
-          (import.meta as { vitest?: boolean }).vitest
-        ) &&
-        !(typeof process !== "undefined" && process.env?.VITEST)
-      ) {
+      if (isRealBrowserRuntime()) {
         void (async () => {
           const { isTimelapseEnabled, ensureGenesisBaselines } =
             await import("@/features/timelapse/toggle");
@@ -135,15 +146,22 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           // Drain the previous project's pending queue BEFORE calling
           // setRecorderEnabled so the flush still runs with the old project's
           // enabled=true state (flushNow is a no-op when the queue is empty).
+          // workspace 切替後 (束縛無効中) はこの drain 自体が no-op — 旧
+          // キューは beginWorkspaceSwitch で破棄済みで、ここで流すと旧
+          // イベントが新 workspace の chain に混入する (M3 review C1)。
           await flushNow().catch(() => {});
           // setRecorderEnabled must precede init: when disabled, init only
           // binds projectId and skips the chain-tail read (recorder.ts).
           const enabled = await isTimelapseEnabled(projectId);
           setRecorderEnabled(enabled);
-          await initRecorderForProject(projectId);
+          // 正規 rebind — 束縛を有効化する唯一の経路 (r5 状態機械)。切替中の
+          // bystander init / 世代跨ぎの旧 init は束縛を書かず false を返す。
+          // その場合 lastSequence が旧 workspace の値のままなので、seed
+          // snapshot (anchorSequence 依存) を焼いてはならない。
+          const bound = await initRecorderForProject(projectId);
           // §17 P0.4: 毎セッション開始時に現在のレイアウトを seed snapshot として
           // 焼き、replay の初期 UI 状態を確定させる (forward layout イベントの起点)。
-          if (enabled) {
+          if (enabled && bound) {
             // default-ON 経路では明示トグルが無く scene baseline が焼かれない
             // ため、genesis (記録履歴が空) のとき一度だけ焼く。これが無いと
             // 記録 ON 前から本文のあるシーンが動画 export で replay 不能になる。
@@ -152,18 +170,14 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               await import("@/features/timelapse/seedSession");
             await seedWorkspaceSnapshot(projectId);
           }
-        })().catch((err) =>
-          console.warn("[timelapse] recorder init failed", err),
-        );
+        })().catch((err) => {
+          // init 失敗 = 有効な束縛が無い。記録は再開されず、イベントは warn
+          // 付きで破棄される (recorder 側の不変条件)。次の loadProject /
+          // 再オープンの正規 rebind で自動再開する。
+          console.warn("[timelapse] recorder init failed", err);
+        });
       }
-      if (
-        typeof window !== "undefined" &&
-        !(
-          typeof import.meta !== "undefined" &&
-          (import.meta as { vitest?: boolean }).vitest
-        ) &&
-        !(typeof process !== "undefined" && process.env?.VITEST)
-      ) {
+      if (isRealBrowserRuntime()) {
         if (generation === loadProjectGeneration) {
           void import("@/features/concurrency/externalWriteFeed").then(
             ({ startExternalWriteFeed }) => {
@@ -189,6 +203,9 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     } catch (e) {
       // 切替失敗 — パネルがロードされていない Project を指したままにしない。
       set({ currentProjectId: previousId });
+      // recorder はここで触らない (r5): project がロードされていない =
+      // 有効な束縛が存在しないので「記録しない (warn 付き破棄)」が正しい。
+      // 記録は次の正規 rebind (initRecorderForProject) 完了で自動再開する。
       throw e;
     }
   },

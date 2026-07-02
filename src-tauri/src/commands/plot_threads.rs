@@ -105,7 +105,7 @@ fn plot_thread_create_impl(
     )?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn plot_thread_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: PlotThreadCreatePayload,
@@ -154,7 +154,7 @@ fn plot_thread_update_impl(
     )?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn plot_thread_update(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -163,7 +163,7 @@ pub(crate) fn plot_thread_update(
     with_db(&ws_state, |db| plot_thread_update_impl(db, id, patch))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn plot_thread_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -190,7 +190,7 @@ fn plot_thread_list_impl(
     Ok(rows.into_iter().map(Value::Object).collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn plot_thread_list(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,
@@ -237,7 +237,7 @@ fn plot_thread_link_create_impl(
     )?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn plot_thread_link_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: PlotThreadLinkCreatePayload,
@@ -324,7 +324,7 @@ fn plot_thread_link_update_impl(
     )?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn plot_thread_link_update(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -333,7 +333,7 @@ pub(crate) fn plot_thread_link_update(
     with_db(&ws_state, |db| plot_thread_link_update_impl(db, id, patch))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn plot_thread_link_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -362,7 +362,7 @@ fn plot_thread_list_links_impl(
     Ok(rows.into_iter().map(Value::Object).collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn plot_thread_list_links(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,

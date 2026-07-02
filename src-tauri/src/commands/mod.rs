@@ -78,11 +78,29 @@ pub(crate) struct ActiveWorkspace {
 
 pub(crate) struct WorkspaceState {
     pub(crate) inner: Mutex<Option<ActiveWorkspace>>,
+    /// `open_workspace` 実行中フラグ。DB コマンドの async 化 (M3) で
+    /// open_workspace と他コマンドが真に並行するようになったため、切替中の
+    /// DB アクセスを `with_db` で明示エラーにする (swap を跨いだ write が
+    /// 切替後の別 workspace の DB へ黙って落ちるより遥かに良い失敗モード)。
+    /// set/reset は open_workspace 内の RAII ガードが行う。
+    pub(crate) switching: std::sync::atomic::AtomicBool,
+    /// `open_workspace` 自体を直列化する番兵。並行 open による同一 DB への
+    /// 併走 migrate (add_column_if_missing の check-then-act) と二重
+    /// VACUUM INTO を防ぐ。ガードは絶対に await を跨がないこと
+    /// (std::sync::MutexGuard は !Send)。
+    pub(crate) open_lock: Mutex<()>,
 }
 
 /// Path to the global settings file in AppData.
 pub(crate) struct GlobalSettingsPath {
     pub(crate) path: PathBuf,
+    /// global-settings.json の read-modify-write を直列化する番兵
+    /// (license.rs の `write_lock` と同型)。M3 async 化で blocking pool 上の
+    /// open_workspace / seed_sample_workspace と main thread の
+    /// save_global_settings が並行しうるため、これが無いと lost update が
+    /// 起きる。ガードは絶対に await を跨がないこと
+    /// (std::sync::MutexGuard は !Send)。
+    pub(crate) write_lock: Mutex<()>,
 }
 
 /// Path to the AI settings file in AppData.
@@ -132,6 +150,15 @@ pub(crate) fn with_db<T>(
     ws_state: &tauri::State<'_, WorkspaceState>,
     f: impl FnOnce(&Database) -> anyhow::Result<T>,
 ) -> Result<T, AppError> {
+    with_db_state(ws_state, f)
+}
+
+/// `tauri::State` を剥がした `with_db` 本体。単体テストから `WorkspaceState`
+/// を直接組んで検証できるように分離している。
+pub(crate) fn with_db_state<T>(
+    ws_state: &WorkspaceState,
+    f: impl FnOnce(&Database) -> anyhow::Result<T>,
+) -> Result<T, AppError> {
     // Phase 5 instrumentation: log ws_state lock contention. This is the
     // outer Mutex held for the entire DB call, so contention here delays
     // every DB-touching command — including readers behind a slow writer.
@@ -141,8 +168,83 @@ pub(crate) fn with_db<T>(
     if ws_lock_ms >= 50 {
         tracing::warn!("with_db ws_state.lock wait={}ms", ws_lock_ms);
     }
+    // workspace 切替中の DB アクセスは明示エラーで拒否する (M3)。フロントは
+    // 保存失敗 toast + dirty 維持でリトライに任せる。切替を跨いだ write が
+    // 別 workspace の DB へ黙って落ちる (UPDATE は 0行 hit の黙示ロスト、
+    // INSERT は行混入) のを防ぐ。
+    // "WORKSPACE_SWITCHING" はフロントが判別に使う安定マーカー (timelapse
+    // recorder の再送抑止 / 保存失敗 toast の文言差し替え)。TS 側の対の定数は
+    // src/features/concurrency/workspaceSwitching.ts の
+    // WORKSPACE_SWITCHING_MARKER。変更するときは両方同時に。
+    if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(anyhow::anyhow!(
+            "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected"
+        )
+        .into());
+    }
     let ws = inner
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?;
     Ok(f(&ws.db)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn workspace_state_with_db() -> WorkspaceState {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        WorkspaceState {
+            inner: Mutex::new(Some(ActiveWorkspace {
+                db,
+                path: PathBuf::from("/tmp/test-ws"),
+            })),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        }
+    }
+
+    #[test]
+    fn with_db_rejects_while_switching() {
+        let state = workspace_state_with_db();
+        state
+            .switching
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let mut ran = false;
+        let err = with_db_state(&state, |_db| {
+            ran = true;
+            Ok(())
+        })
+        .expect_err("switching 中は明示エラーになるはず");
+        assert!(
+            err.to_string().contains("WORKSPACE_SWITCHING"),
+            "エラー文言にフロント判別用の安定マーカーを含む: {err}"
+        );
+        assert!(!ran, "switching 中はクロージャを実行しない");
+
+        // フラグ解除後は通常どおり実行される。
+        state
+            .switching
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut ran_after = false;
+        with_db_state(&state, |_db| {
+            ran_after = true;
+            Ok(())
+        })
+        .expect("switching 解除後は成功する");
+        assert!(ran_after);
+    }
+
+    #[test]
+    fn with_db_errors_when_no_workspace_open() {
+        let state = WorkspaceState {
+            inner: Mutex::new(None),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        };
+        let err = with_db_state(&state, |_db| Ok(())).expect_err("未オープンはエラー");
+        assert!(err.to_string().contains("No workspace is open"));
+    }
 }
