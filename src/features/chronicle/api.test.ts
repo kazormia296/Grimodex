@@ -1,10 +1,30 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import type { BindParams } from "sql.js";
 
+// C2: setEventParticipants が invoke("db_execute_batch") を使うため、そのバッチを
+// 下の @/db/client モックと同じ sqldb 上で実行できるよう共有ホルダーを立てる。
+const chronicleTestDb = vi.hoisted(
+  () =>
+    ({ runBatch: undefined }) as {
+      runBatch?: (statements: { sql: string; params: unknown[] }[]) => void;
+    },
+);
+
 // chronicle のテーブル群は browser-mock のスキーマに無いため、本テスト専用に
 // sql.js(in-memory SQLite) を立て、その上に drizzle-proxy を載せて @/db/client を
 // 差し替える。これで listEvents の ORDER BY / projectId スコープ / ordinal 採番など
 // 「実際の SQL 挙動」を assert できる(SQL 文字列の捕捉では足りない部分)。
+vi.mock("@/lib/tauri", () => ({
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+    if (cmd === "db_execute_batch") {
+      chronicleTestDb.runBatch?.(
+        (args?.statements as { sql: string; params: unknown[] }[]) ?? [],
+      );
+    }
+    return [];
+  }),
+}));
+
 vi.mock("@/db/client", async () => {
   const { drizzle } = await import("drizzle-orm/sqlite-proxy");
   const schema = await import("@/db/schema");
@@ -81,6 +101,7 @@ vi.mock("@/db/client", async () => {
       context_mode TEXT,
       aliases TEXT,
       excluded_aliases TEXT,
+      version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT,
       updated_at TEXT
     );
@@ -102,6 +123,22 @@ vi.mock("@/db/client", async () => {
     },
     { schema },
   );
+  // Route db_execute_batch (setEventParticipants) to the same sqldb.
+  chronicleTestDb.runBatch = (statements) => {
+    sqldb.run("BEGIN");
+    try {
+      for (const s of statements) {
+        const st = sqldb.prepare(s.sql);
+        st.bind(s.params as BindParams);
+        st.step();
+        st.free();
+      }
+      sqldb.run("COMMIT");
+    } catch (e) {
+      sqldb.run("ROLLBACK");
+      throw e;
+    }
+  };
   return { db };
 });
 
