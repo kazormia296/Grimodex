@@ -47,40 +47,43 @@ export type TreeNodeLite = Omit<TreeNode, "content" | "unplacedBeatsDoc">;
 
 // listNodes / listAllNodes 用の明示 projection。satisfies で TreeNodeLite との
 // 列ずれ (漏れ・余剰 = content/unplacedBeatsDoc の混入) をコンパイル時に検出する。
-const treeNodeLiteColumns = {
-  id: treeNodes.id,
-  projectId: treeNodes.projectId,
-  parentId: treeNodes.parentId,
-  nodeType: treeNodes.nodeType,
-  title: treeNodes.title,
-  synopsis: treeNodes.synopsis,
-  intent: treeNodes.intent,
-  sortOrder: treeNodes.sortOrder,
-  storyTimeOrder: treeNodes.storyTimeOrder,
-  storyTimeLabel: treeNodes.storyTimeLabel,
-  povCharacterId: treeNodes.povCharacterId,
-  locationId: treeNodes.locationId,
-  chronicleStartTime: treeNodes.chronicleStartTime,
-  chronicleStartMinute: treeNodes.chronicleStartMinute,
-  chronicleStartGranularity: treeNodes.chronicleStartGranularity,
-  chronicleEndTime: treeNodes.chronicleEndTime,
-  chronicleEndMinute: treeNodes.chronicleEndMinute,
-  chronicleEndGranularity: treeNodes.chronicleEndGranularity,
-  chroniclePrecision: treeNodes.chroniclePrecision,
-  status: treeNodes.status,
-  charCount: treeNodes.charCount,
-  unplacedBeatPreview: treeNodes.unplacedBeatPreview,
-  placedBeatPreview: treeNodes.placedBeatPreview,
-  sourceUri: treeNodes.sourceUri,
-  sourceMtime: treeNodes.sourceMtime,
-  archivedAt: treeNodes.archivedAt,
-  contextMode: treeNodes.contextMode,
-  aliases: treeNodes.aliases,
-  excludedAliases: treeNodes.excludedAliases,
-  createdAt: treeNodes.createdAt,
-  updatedAt: treeNodes.updatedAt,
-  version: treeNodes.version,
-} satisfies { [K in keyof TreeNodeLite]: (typeof treeNodes)[K] };
+// 関数にしているのは、@/db/schema を部分 mock するテストがこのモジュールを
+// import しただけで treeNodes 参照 (undefined.id) で落ちないようにするため。
+const treeNodeLiteColumns = () =>
+  ({
+    id: treeNodes.id,
+    projectId: treeNodes.projectId,
+    parentId: treeNodes.parentId,
+    nodeType: treeNodes.nodeType,
+    title: treeNodes.title,
+    synopsis: treeNodes.synopsis,
+    intent: treeNodes.intent,
+    sortOrder: treeNodes.sortOrder,
+    storyTimeOrder: treeNodes.storyTimeOrder,
+    storyTimeLabel: treeNodes.storyTimeLabel,
+    povCharacterId: treeNodes.povCharacterId,
+    locationId: treeNodes.locationId,
+    chronicleStartTime: treeNodes.chronicleStartTime,
+    chronicleStartMinute: treeNodes.chronicleStartMinute,
+    chronicleStartGranularity: treeNodes.chronicleStartGranularity,
+    chronicleEndTime: treeNodes.chronicleEndTime,
+    chronicleEndMinute: treeNodes.chronicleEndMinute,
+    chronicleEndGranularity: treeNodes.chronicleEndGranularity,
+    chroniclePrecision: treeNodes.chroniclePrecision,
+    status: treeNodes.status,
+    charCount: treeNodes.charCount,
+    unplacedBeatPreview: treeNodes.unplacedBeatPreview,
+    placedBeatPreview: treeNodes.placedBeatPreview,
+    sourceUri: treeNodes.sourceUri,
+    sourceMtime: treeNodes.sourceMtime,
+    archivedAt: treeNodes.archivedAt,
+    contextMode: treeNodes.contextMode,
+    aliases: treeNodes.aliases,
+    excludedAliases: treeNodes.excludedAliases,
+    createdAt: treeNodes.createdAt,
+    updatedAt: treeNodes.updatedAt,
+    version: treeNodes.version,
+  }) satisfies { [K in keyof TreeNodeLite]: (typeof treeNodes)[K] };
 
 export async function listNodes(
   projectId: string,
@@ -90,7 +93,7 @@ export async function listNodes(
   if (parentId !== undefined) {
     if (parentId === null) {
       return db
-        .select(treeNodeLiteColumns)
+        .select(treeNodeLiteColumns())
         .from(treeNodes)
         .where(
           and(
@@ -101,7 +104,7 @@ export async function listNodes(
         );
     }
     return db
-      .select(treeNodeLiteColumns)
+      .select(treeNodeLiteColumns())
       .from(treeNodes)
       .where(
         and(
@@ -112,7 +115,7 @@ export async function listNodes(
       );
   }
   return db
-    .select(treeNodeLiteColumns)
+    .select(treeNodeLiteColumns())
     .from(treeNodes)
     .where(and(eq(treeNodes.projectId, projectId), notArchived));
 }
@@ -120,7 +123,7 @@ export async function listNodes(
 /** Includes archived nodes — for external mount reconciliation only. */
 export async function listAllNodes(projectId: string): Promise<TreeNodeLite[]> {
   return db
-    .select(treeNodeLiteColumns)
+    .select(treeNodeLiteColumns())
     .from(treeNodes)
     .where(eq(treeNodes.projectId, projectId));
 }
