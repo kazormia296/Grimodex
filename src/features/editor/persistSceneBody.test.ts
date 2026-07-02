@@ -47,8 +47,12 @@ vi.mock("@/features/editor/charCountForBody", () => ({
 vi.mock("@/features/editor/beat/unplacedBeatsStore", () => ({
   useUnplacedBeatsStore: { getState: () => ({ getBeats: () => [] }) },
 }));
+// persistSceneBody はチェーン単位の内側で非チェーンの saveSceneContentInner を
+// 呼ぶ (公開 saveSceneContent だと自己 await デッドロック)。mock fn の名前は
+// 既存 assertion 互換のため h.saveSceneContent のまま。pendingSceneWrites は
+// mock しない — 実チェーンで直列化契約 (I1) をテストする。
 vi.mock("@/features/tree/api", () => ({
-  saveSceneContent: h.saveSceneContent,
+  saveSceneContentInner: h.saveSceneContent,
 }));
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: {
@@ -178,5 +182,51 @@ describe("persistSceneBody — file-backed scene", () => {
     expect(h.saveAuthorshipSpans).not.toHaveBeenCalled();
     expect(h.saveForeshadowAnchors).not.toHaveBeenCalled();
     expect(h.saveAnnotationAnchors).not.toHaveBeenCalled();
+  });
+});
+
+describe("persistSceneBody — write-write serialization (M3 review I1)", () => {
+  const flushTasks = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  it("並行 persist は content+cascade の単一チェーン単位で直列化される", async () => {
+    const order: string[] = [];
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((r) => {
+      releaseA = r;
+    });
+    let call = 0;
+    // A の content 書き込みを人工的に遅延させ、B を即時にする。チェーンが
+    // 無ければ B の content/spans が A の cascade を追い越して
+    // 「新 content + 旧 spans」で確定しうる。
+    h.saveSceneContent
+      .mockImplementationOnce(async () => {
+        call = 1;
+        order.push("content_A");
+        await gateA;
+        return { placedBeatPreview: null, unplacedBeatPreview: null };
+      })
+      .mockImplementationOnce(async () => {
+        call = 2;
+        order.push("content_B");
+        return { placedBeatPreview: null, unplacedBeatPreview: null };
+      });
+    h.saveAuthorshipSpans
+      .mockImplementationOnce(async () => {
+        order.push(`spans_${call === 1 ? "A" : "B"}`);
+      })
+      .mockImplementationOnce(async () => {
+        order.push(`spans_${call === 1 ? "A" : "B"}`);
+      });
+
+    const pA = persistSceneBody("scene-1", fakeDoc);
+    const pB = persistSceneBody("scene-1", fakeDoc);
+
+    await flushTasks();
+    // B は A のチェーン単位 (content + cascade) 完了まで開始しない
+    expect(order).toEqual(["content_A"]);
+
+    releaseA();
+    await Promise.all([pA, pB]);
+    expect(order).toEqual(["content_A", "spans_A", "content_B", "spans_B"]);
   });
 });

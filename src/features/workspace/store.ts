@@ -4,7 +4,11 @@ import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { flushAllAutoSaves } from "@/hooks/useAutoSave";
 import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
-import { flushNow as flushTimelapseRecorder } from "@/features/timelapse/recorder";
+import {
+  flushNow as flushTimelapseRecorder,
+  suspendRecorderForWorkspaceSwitch,
+  resumeRecorder,
+} from "@/features/timelapse/recorder";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
@@ -122,6 +126,12 @@ interface WorkspaceState {
   seedAndOpenSample: (language: string, aiPolicy: string) => Promise<void>;
 }
 
+/**
+ * openWorkspace の JS 側 in-flight ガード。連打で open_workspace が Rust の
+ * open_lock 待ちに積まれるのと、quiesce / recorder suspend の多重実行を防ぐ。
+ */
+let openWorkspaceInFlight = false;
+
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   view: "loading",
   globalSettings: null,
@@ -198,6 +208,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   },
 
   openWorkspace: async (path: string) => {
+    // 連打・多重呼び出しの in-flight ガード (Rust 側は open_lock で直列化
+    // されるが、JS 側でも二重 open のキュー積みと quiesce の多重実行を防ぐ)。
+    if (openWorkspaceInFlight) {
+      debugLog.warn(
+        "workspaceStore",
+        "open_workspace already in flight; ignoring re-entry",
+        path,
+      );
+      return;
+    }
+    openWorkspaceInFlight = true;
     try {
       set({ error: null });
       // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
@@ -218,6 +239,11 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
           errorDetail(e),
         );
       }
+      // quiesce 完了後〜新 project rebind までの recorder を止める。切替中の
+      // flush 再試行が open 完了後に新 workspace の hash chain へ旧イベントを
+      // 混入させるのを防ぐ (C1)。resume は projectStore.loadProject の rebind
+      // 完了後 (失敗時は下の catch)。
+      suspendRecorderForWorkspaceSwitch();
       const result = await invoke<OpenWorkspaceResult>("open_workspace", {
         path,
       });
@@ -273,11 +299,16 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {
+      // open 失敗 = 旧 workspace / 旧 project のまま。recorder の suspend を
+      // 解除して記録を復帰させる (成功時の resume は projectStore の rebind)。
+      resumeRecorder();
       set({
         error: e instanceof Error ? e.message : String(e),
         // If still on loading screen (called from initialize), recover to launcher
         ...(get().view === "loading" ? { view: "launcher" as const } : {}),
       });
+    } finally {
+      openWorkspaceInFlight = false;
     }
   },
 

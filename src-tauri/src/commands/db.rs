@@ -34,6 +34,10 @@ fn sql_prefix(sql: &str) -> String {
 // seed_sample_workspace / open_workspace) は tokio ワーカーを塞がないよう
 // async fn + tauri::async_runtime::spawn_blocking で専用ブロッキングプールへ
 // 逃がす (定形は commands/semantic.rs の semantic_index_scene を参照)。
+// workspace 切替との並行は WorkspaceState.switching (swap 区間の明示拒否) と
+// フロントの pre-switch quiesce で抑える。open 完了「後」に発行されたコマンドが
+// 新 DB に行くのは pre-M3 の FIFO 実行でも同じであり仕様 (発行済み write の
+// 取りこぼしはフロント quiesce が防ぐ)。
 
 #[tauri::command(async)]
 pub(crate) fn db_execute(

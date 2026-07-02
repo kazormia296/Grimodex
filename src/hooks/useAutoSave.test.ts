@@ -168,6 +168,32 @@ describe("createAutoSave", () => {
     await autoSave.flush();
     expect(announce).toHaveBeenCalledTimes(1);
   });
+
+  it("flush は in-flight の save 完了を待つ (切替前 quiesce のすり抜け防止)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const saveFn = vi.fn(() => gate);
+    const autoSave = createAutoSave(saveFn, 500);
+
+    autoSave.schedule();
+    await vi.advanceTimersByTimeAsync(500); // runSave 開始 (pending=false, in-flight)
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    let flushed = false;
+    const flushing = autoSave.flush().then(() => {
+      flushed = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(flushed).toBe(false); // in-flight 完了までは resolve しない
+
+    release();
+    await flushing;
+    expect(flushed).toBe(true);
+    // pending は無かったので追加の save は走らない
+    expect(saveFn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("flushAllAutoSaves (workspace 切替前 quiesce)", () => {

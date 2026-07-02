@@ -43,6 +43,13 @@ export function createAutoSave(
   let timerId: ReturnType<typeof setTimeout> | null = null;
   let pending = false;
   let lastFailed = false;
+  /**
+   * 実行中の runSave。flush はこれも待つ — pending の debounce だけ見ると
+   * 「直近オートセーブがまさに実行中」の save (切替直前に最も高確率で存在
+   * する) をすり抜け、workspace 切替 quiesce が in-flight write を取り残す
+   * (M3 review I2)。
+   */
+  let inFlight: Promise<void> | null = null;
 
   // 自動保存は数秒おきに発火するため、成功を毎回読み上げると SR 利用者の
   // 執筆を妨げる。失敗 → 成功の回復時のみ announce する (失敗時は Sonner の
@@ -58,8 +65,23 @@ export function createAutoSave(
       lastFailed = true;
       const detail = errorDetail(e);
       debugLog.error("AutoSave", `${label} failed`, detail);
-      toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
+      // workspace 切替中の明示拒否 (Rust with_db の WORKSPACE_SWITCHING) は
+      // 生メッセージではなく i18n 済みの短い文言で知らせる。dirty は維持され、
+      // 次の入力/スケジュールでリトライされる。
+      if (detail.includes("WORKSPACE_SWITCHING")) {
+        toast.error(i18next.t("autoSave.workspaceSwitching"));
+      } else {
+        toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
+      }
     }
+  }
+
+  function startSave(label: "save" | "flush"): Promise<void> {
+    const run = runSave(label).finally(() => {
+      if (inFlight === run) inFlight = null;
+    });
+    inFlight = run;
+    return run;
   }
 
   function cancel() {
@@ -76,14 +98,18 @@ export function createAutoSave(
     timerId = setTimeout(async () => {
       timerId = null;
       pending = false;
-      await runSave("save");
+      await startSave("save");
     }, delayMs);
   }
 
   async function flush() {
+    // 実行中の save があれば先に完了を待つ (runSave はエラーを内部処理する
+    // ので reject しない)。その後に pending の debounce を即時実行する。
+    const running = inFlight;
+    if (running) await running;
     if (!pending) return;
     cancel();
-    await runSave("flush");
+    await startSave("flush");
   }
 
   return { schedule, cancel, flush };

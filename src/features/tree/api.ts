@@ -181,6 +181,30 @@ export async function saveSceneContent(
   sceneId: string,
   payloadOrContent: string | SaveScenePayload,
 ): Promise<DerivedPreviews> {
+  // serializeSceneWrite で同一シーンの先行 write の後ろにチェーンし、
+  // 「発行順 = コミット順」を保証する（M3 async 化で UPDATE 同士が並行しうる）。
+  // チェーン entry は同期登録されるので、unmount cleanup からの fire-and-forget
+  // flush でも直後の load が pending を見える (awaitPendingSceneContentWrite は
+  // writeChains も待つ)。
+  return serializeSceneWrite(sceneId, () =>
+    saveSceneContentInner(sceneId, payloadOrContent),
+  );
+}
+
+/**
+ * `saveSceneContent` のチェーン非経由の内部実装。
+ *
+ * serializeSceneWrite の**チェーン単位の内側**から呼ぶためのもの
+ * (persistSceneBody は content 書き込みと authorship/foreshadow/annotation の
+ * full-replace cascade を単一チェーン単位として実行する)。チェーン単位の中で
+ * 公開 `saveSceneContent` を呼ぶと、同一チェーンへの自己 await でデッドロック
+ * するため、この分離が必要。直接呼ぶのはチェーン単位内のみ — 通常の呼び出し
+ * 側は必ず `saveSceneContent` を使うこと。
+ */
+export async function saveSceneContentInner(
+  sceneId: string,
+  payloadOrContent: string | SaveScenePayload,
+): Promise<DerivedPreviews> {
   const payload: SaveScenePayload =
     typeof payloadOrContent === "string"
       ? { content: payloadOrContent }
@@ -202,28 +226,22 @@ export async function saveSceneContent(
 
   // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
   // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
-  // track はこの関数の最初の await より前 = 呼び出しと同期で行うこと。unmount
-  // cleanup からの fire-and-forget flush でも、直後の load が pending を見える。
-  // serializeSceneWrite で同一シーンの先行 write の後ろにチェーンし、
-  // 「発行順 = コミット順」を保証する（M3 async 化で UPDATE 同士が並行しうる）。
-  const write = serializeSceneWrite(sceneId, () =>
-    Promise.resolve(
-      db
-        .update(treeNodes)
-        .set({
-          content: payload.content,
-          ...(payload.unplacedBeatsDoc !== undefined && {
-            unplacedBeatsDoc: payload.unplacedBeatsDoc,
-            unplacedBeatPreview,
-          }),
-          ...(payload.charCount !== undefined && {
-            charCount: payload.charCount,
-          }),
-          placedBeatPreview,
-          updatedAt: new Date().toISOString(),
-        })
-        .where(eq(treeNodes.id, sceneId)),
-    ),
+  const write = Promise.resolve(
+    db
+      .update(treeNodes)
+      .set({
+        content: payload.content,
+        ...(payload.unplacedBeatsDoc !== undefined && {
+          unplacedBeatsDoc: payload.unplacedBeatsDoc,
+          unplacedBeatPreview,
+        }),
+        ...(payload.charCount !== undefined && {
+          charCount: payload.charCount,
+        }),
+        placedBeatPreview,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(treeNodes.id, sceneId)),
   );
   trackSceneContentWrite(sceneId, write);
   await write;

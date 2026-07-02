@@ -11,6 +11,7 @@ import { db } from "@/db/client";
 import { changeEvents } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
+import { debugLog } from "@/lib/debugLog";
 import type { VerifyResult } from "./hashChain";
 
 const FLUSH_DEBOUNCE_MS = 100;
@@ -119,6 +120,17 @@ interface RecorderState {
   /** Consecutive failed-flush count; gates retry backoff and the give-up cap. */
   flushRetries: number;
   initPromise: Promise<void> | null;
+  /**
+   * Workspace 切替中フラグ。true の間は新規イベントを破棄し flush も no-op。
+   * 切替の quiesce (workspace/store.ts) が suspend し、新 workspace の
+   * project rebind (projectStore.loadProject) が resume する。これが無いと、
+   * 切替中に拒否された flush の re-queue + backoff が open 完了後に再試行され、
+   * project id が両 workspace とも 'default-project' のため FK が通って
+   * 旧イベントが新 workspace の hash chain へ恒久混入する (M3 review C1)。
+   */
+  suspended: boolean;
+  /** suspend 中に破棄したイベント数 (resume 時にまとめて warn する)。 */
+  droppedWhileSuspended: number;
 }
 
 const state: RecorderState = {
@@ -134,6 +146,8 @@ const state: RecorderState = {
   flushPromise: null,
   flushRetries: 0,
   initPromise: null,
+  suspended: false,
+  droppedWhileSuspended: 0,
 };
 
 function newSessionId(): string {
@@ -179,6 +193,46 @@ export function getRecorderSessionId(): string {
 /** Whether the recorder is currently writing through to the chain. */
 export function isRecorderEnabled(): boolean {
   return state.enabled;
+}
+
+/**
+ * Workspace 切替の quiesce から呼ぶ: 以後のイベント記録・flush を止め、
+ * 旧 workspace 向けのキューと進行中の backoff 再試行を破棄する。
+ * 切替を跨いだ flush 再試行が新 workspace の hash chain に旧イベントを
+ * 混入させるのを防ぐ (C1)。resume するまで新規イベントは破棄される。
+ */
+export function suspendRecorderForWorkspaceSwitch(): void {
+  state.suspended = true;
+  state.droppedWhileSuspended = 0;
+  if (state.flushTimer) {
+    clearTimeout(state.flushTimer);
+    state.flushTimer = null;
+  }
+  state.flushRetries = 0;
+  if (state.queue.length > 0) {
+    debugLog.warn(
+      "timelapse",
+      `workspace switch: dropping ${state.queue.length} queued event(s) for the old workspace`,
+    );
+  }
+  state.queue = [];
+}
+
+/**
+ * suspend の解除。新 workspace の project rebind 完了後
+ * (projectStore.loadProject) と、open_workspace 失敗時のロールバック
+ * (workspace/store.ts) から呼ぶ。suspend されていなければ no-op。
+ */
+export function resumeRecorder(): void {
+  if (!state.suspended) return;
+  state.suspended = false;
+  if (state.droppedWhileSuspended > 0) {
+    debugLog.warn(
+      "timelapse",
+      `workspace switch: dropped ${state.droppedWhileSuspended} event(s) recorded during the switch`,
+    );
+    state.droppedWhileSuspended = 0;
+  }
 }
 
 /**
@@ -267,6 +321,8 @@ export function _resetRecorderForTests(): void {
   state.flushTimer = null;
   state.flushPromise = null;
   state.initPromise = null;
+  state.suspended = false;
+  state.droppedWhileSuspended = 0;
 }
 
 /**
@@ -275,6 +331,12 @@ export function _resetRecorderForTests(): void {
  * yet, the call is silently dropped.
  */
 export function recordChangeEvent(input: RecordEventInput): void {
+  if (state.suspended) {
+    // workspace 切替中: どちらの workspace に属すべきか確定できないため破棄
+    // (件数は resume 時にまとめて warn)。
+    state.droppedWhileSuspended += 1;
+    return;
+  }
   if (!state.enabled || !state.projectId) return;
   state.queue.push({
     eventUid: crypto.randomUUID(),
@@ -290,6 +352,7 @@ export function recordChangeEvent(input: RecordEventInput): void {
 }
 
 function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
+  if (state.suspended) return;
   if (state.flushTimer) return;
   state.flushTimer = setTimeout(() => {
     state.flushTimer = null;
@@ -306,6 +369,14 @@ function scheduleFlush(delayMs: number = FLUSH_DEBOUNCE_MS): void {
 export async function flushNow(): Promise<void> {
   if (state.flushPromise) return state.flushPromise;
   state.flushPromise = (async () => {
+    // Workspace 切替中は何も流さない (キューは suspend 時に破棄済み)。ここで
+    // flush すると switching 拒否 → re-queue → open 完了後に新 workspace の
+    // chain へ着地する (C1)。projectStore の rebind 前 drain もこの経路で
+    // no-op になる。
+    if (state.suspended) {
+      state.queue = [];
+      return;
+    }
     // Bail out immediately when the recorder is disabled so an OFF project is
     // never contaminated by events that were queued for the previous project.
     if (!state.enabled) {
@@ -346,6 +417,17 @@ export async function flushNow(): Promise<void> {
       state.lastSequence = result.tailSequence;
       state.flushRetries = 0;
     } catch (err) {
+      // workspace 切替拒否 (WORKSPACE_SWITCHING マーカー) は再送しない —
+      // suspend と二重の防御。再送すると open 完了後に旧イベントが新
+      // workspace の chain へ混入する (C1)。バッチは破棄して件数を warn。
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("WORKSPACE_SWITCHING")) {
+        debugLog.warn(
+          "timelapse",
+          `workspace switching: dropping ${batch.length} event(s) instead of re-queueing`,
+        );
+        return;
+      }
       // Rust owns sequence/hash allocation, so client-side UNIQUE collision
       // reconciliation is gone. Retry the same eventUid batch: if the command
       // committed but the transport rejected, Rust treats the resend as a no-op.

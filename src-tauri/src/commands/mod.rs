@@ -172,10 +172,13 @@ pub(crate) fn with_db_state<T>(
     // 保存失敗 toast + dirty 維持でリトライに任せる。切替を跨いだ write が
     // 別 workspace の DB へ黙って落ちる (UPDATE は 0行 hit の黙示ロスト、
     // INSERT は行混入) のを防ぐ。
+    // "WORKSPACE_SWITCHING" はフロントが判別に使う安定マーカー (timelapse
+    // recorder の再送抑止 / 保存失敗 toast の文言差し替え)。変更しないこと。
     if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(
-            anyhow::anyhow!("workspace is switching; DB access is temporarily rejected").into(),
-        );
+        return Err(anyhow::anyhow!(
+            "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected"
+        )
+        .into());
     }
     let ws = inner
         .as_ref()
@@ -214,8 +217,8 @@ mod tests {
         })
         .expect_err("switching 中は明示エラーになるはず");
         assert!(
-            err.to_string().contains("switching"),
-            "エラー文言に switching を含む: {err}"
+            err.to_string().contains("WORKSPACE_SWITCHING"),
+            "エラー文言にフロント判別用の安定マーカーを含む: {err}"
         );
         assert!(!ran, "switching 中はクロージャを実行しない");
 

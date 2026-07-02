@@ -272,13 +272,6 @@ pub(crate) async fn open_workspace(
                 .open_lock
                 .lock()
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            // 本処理前に switching を立て、切替中の with_db を明示エラーに
-            // 落とす。_open_guard より後に宣言 = 先に drop されるので、
-            // open_lock 解放時には必ずフラグは戻っている。
-            ws_state
-                .switching
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            let _switching_guard = SwitchingGuard(&ws_state.switching);
 
             let ws_path = PathBuf::from(&path);
             reject_unsafe_workspace_path(&ws_path)?;
@@ -307,6 +300,19 @@ pub(crate) async fn open_workspace(
             if let Err(e) = database.prune_old_logs(90) {
                 tracing::warn!("prune_old_logs on workspace open failed: {e}");
             }
+
+            // swap 直前で switching を立てる (Fix I3)。ここまでの migrate /
+            // VACUUM / prune の数秒間は旧 DB への正当な読み書き (切替中も
+            // 生きている旧 UI の検索・チャット・保存) を通したままにし、
+            // swap 区間だけ with_db を明示エラーで拒否する。swap 前に
+            // 走り出した with_db は inner ロックで直列化されるので安全性は
+            // 同等。ガードの Drop 復帰 (正常・エラー・panic) は維持。
+            // _open_guard より後に宣言 = 先に drop されるので、open_lock
+            // 解放時には必ずフラグは戻っている。
+            ws_state
+                .switching
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let _switching_guard = SwitchingGuard(&ws_state.switching);
 
             // Set as active workspace
             let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;

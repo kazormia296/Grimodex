@@ -3893,7 +3893,8 @@
   },
   "autoSave": {
     "failed": "Auto-save failed: {{reason}}",
-    "recovered": "Auto-save recovered; your changes are saved"
+    "recovered": "Auto-save recovered; your changes are saved",
+    "workspaceSwitching": "Could not save while switching workspaces (your changes are kept and will be re-saved automatically)"
   },
   "sceneLoad": {
     "failed": "Failed to load scene content (saving paused for this scene): {{reason}}"

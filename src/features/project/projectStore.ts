@@ -130,17 +130,28 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         void (async () => {
           const { isTimelapseEnabled, ensureGenesisBaselines } =
             await import("@/features/timelapse/toggle");
-          const { flushNow, setRecorderEnabled, initRecorderForProject } =
-            await import("@/features/timelapse/recorder");
+          const {
+            flushNow,
+            setRecorderEnabled,
+            initRecorderForProject,
+            resumeRecorder,
+          } = await import("@/features/timelapse/recorder");
           // Drain the previous project's pending queue BEFORE calling
           // setRecorderEnabled so the flush still runs with the old project's
           // enabled=true state (flushNow is a no-op when the queue is empty).
+          // workspace 切替中 (recorder suspend 中) はこの drain 自体が no-op
+          // — 旧キューは suspend 時に破棄済みで、ここで流すと旧イベントが
+          // 新 workspace の chain に混入する (M3 review C1)。
           await flushNow().catch(() => {});
           // setRecorderEnabled must precede init: when disabled, init only
           // binds projectId and skips the chain-tail read (recorder.ts).
           const enabled = await isTimelapseEnabled(projectId);
           setRecorderEnabled(enabled);
           await initRecorderForProject(projectId);
+          // rebind 完了 = 新 workspace の chain tail に載って良い状態。
+          // workspace 切替 quiesce の suspend をここで解除する (切替でない
+          // 通常の project ロードでは no-op)。
+          resumeRecorder();
           // §17 P0.4: 毎セッション開始時に現在のレイアウトを seed snapshot として
           // 焼き、replay の初期 UI 状態を確定させる (forward layout イベントの起点)。
           if (enabled) {
@@ -152,9 +163,14 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
               await import("@/features/timelapse/seedSession");
             await seedWorkspaceSnapshot(projectId);
           }
-        })().catch((err) =>
-          console.warn("[timelapse] recorder init failed", err),
-        );
+        })().catch((err) => {
+          console.warn("[timelapse] recorder init failed", err);
+          // init 失敗でも suspend は解除する (立ちっぱなし = 以後の全イベント
+          // が黙って破棄され続ける)。失敗時の記録可否は enabled 側が決める。
+          void import("@/features/timelapse/recorder").then((m) =>
+            m.resumeRecorder(),
+          );
+        });
       }
       if (
         typeof window !== "undefined" &&

@@ -108,14 +108,19 @@ export function trackSceneContentWrite(
  * Wait until no content write is pending for the scene. Resolves immediately
  * in the common case (no pending entry). Failed writes unblock the reader —
  * the read then returns the last committed row, same as before the barrier.
+ *
+ * `writeChains` も待つ: チェーン entry は serializeSceneWrite が同期登録する
+ * ので、「発行済みだがまだ UPDATE をディスパッチしていない write」(先行 write
+ * の後ろに並んでいる) も reader から見える。pendingWrites (実ディスパッチ済み
+ * UPDATE) だけだとこの窓を追い越して stale read しうる。
  */
 export async function awaitPendingSceneContentWrite(
   sceneId: string,
 ): Promise<void> {
-  let write = pendingWrites.get(sceneId);
+  let write = writeChains.get(sceneId) ?? pendingWrites.get(sceneId);
   while (write) {
     await write.catch(() => {});
-    const next = pendingWrites.get(sceneId);
+    const next = writeChains.get(sceneId) ?? pendingWrites.get(sceneId);
     // The settle handler above removes the entry before this continuation
     // runs (it was attached first). Seeing the same promise again would mean
     // re-awaiting a settled write forever — treat it as done defensively.

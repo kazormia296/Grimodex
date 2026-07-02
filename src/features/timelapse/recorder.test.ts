@@ -23,7 +23,9 @@ import {
   initRecorderForProject,
   recordChangeEvent,
   resetRecorderChain,
+  resumeRecorder,
   setRecorderEnabled,
+  suspendRecorderForWorkspaceSwitch,
 } from "./recorder";
 import {
   bytesToHex,
@@ -403,5 +405,67 @@ describe("recorder", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // --- workspace 切替の suspend / resume (M3 review C1) ---
+
+  it("suspend 中は既存キューを破棄し、新規イベントも記録せず flush は no-op", async () => {
+    setupAppendCommand();
+    await initRecorderForProject("p-sus");
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+
+    suspendRecorderForWorkspaceSwitch();
+    // suspend 後に発生したイベントは破棄される
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 2 } });
+    await flushNow();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    // resume しても破棄済みイベントは復活しない (混入防止が優先)
+    resumeRecorder();
+    await flushNow();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("WORKSPACE_SWITCHING 拒否のバッチは re-queue しない (open 完了後の混入防止)", async () => {
+    setupTail({ value: null });
+    invokeMock.mockImplementation(() =>
+      Promise.reject(
+        new Error(
+          "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected",
+        ),
+      ),
+    );
+    await initRecorderForProject("p-marker");
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+
+    // 通常の失敗と違い throw せず、バッチを破棄して静かに終わる
+    await expect(flushNow()).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+
+    // 破棄済みなので再 flush で再送されない
+    await flushNow();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("resume 後の新イベントは新 project の chain にだけ流れる", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("p-old");
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 1 } });
+
+    suspendRecorderForWorkspaceSwitch();
+    await flushNow(); // no-op (旧イベントは破棄済み)
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    // 新 workspace の project に rebind → resume
+    await initRecorderForProject("p-new");
+    resumeRecorder();
+    recordChangeEvent({ domain: "editor", opType: "step", payload: { i: 2 } });
+    await flushNow();
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    const [, args] = invokeMock.mock.calls[0] as [string, AppendArgs];
+    expect(args.projectId).toBe("p-new");
+    expect(args.events).toHaveLength(1);
+    expect(rows.every((r) => r.projectId === "p-new")).toBe(true);
   });
 });

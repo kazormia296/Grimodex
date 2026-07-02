@@ -96,6 +96,30 @@ describe("pendingSceneWrites", () => {
 
     d.resolve();
   });
+
+  it("チェーンに並んだ未ディスパッチの write も待つ (writeChains バリア)", async () => {
+    const d1 = deferred();
+    const order: string[] = [];
+    // 先行 write は in-flight、後続 write はチェーン待ち (UPDATE 未ディスパッチ
+    // なので pendingWrites には載らない)。
+    void serializeSceneWrite("s6", () => d1.promise);
+    void serializeSceneWrite("s6", async () => {
+      order.push("write2");
+    });
+
+    let readDone = false;
+    const reader = awaitPendingSceneContentWrite("s6").then(() => {
+      order.push("read");
+      readDone = true;
+    });
+    await flushTasks();
+    expect(readDone).toBe(false);
+
+    d1.resolve();
+    await reader;
+    // reader は後続 write の完了後に解決する (追い越さない)
+    expect(order).toEqual(["write2", "read"]);
+  });
 });
 
 describe("serializeSceneWrite", () => {
