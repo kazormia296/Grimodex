@@ -268,8 +268,9 @@ describe("normalizeEvent", () => {
 
 describe("calendarFromRow", () => {
   it("閏ルール・曜日起点・年齢表記を CalendarRow から復元する", () => {
+    // calendarFromRow は CalendarRowData（暦の値フィールドのみ）を受ける。
+    // projectId/createdAt/updatedAt は消費しないので渡さない。
     const cal = calendarFromRow({
-      projectId: "p1",
       daysPerYear: 365,
       seasonBoundaries: JSON.stringify([{ name: "冬", startDayOfYear: 270 }]),
       startYear: 2000,
@@ -285,8 +286,6 @@ describe("calendarFromRow", () => {
       }),
       timezone: JSON.stringify({ label: "JST", offsetMinutes: 540 }),
       lunarTzMinutes: 540,
-      createdAt: NOW,
-      updatedAt: NOW,
     });
 
     expect(cal.weekdayStartIndex).toBe(6);

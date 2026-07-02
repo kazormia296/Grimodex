@@ -424,6 +424,60 @@ export function formatChronicleDate(
   return dayStr;
 }
 
+/**
+ * 暦の DB 行（生 JSON 文字列を持つ）の構造的型。api の CalendarRow はこれに
+ * projectId/createdAt/updatedAt を足した上位互換なので、そのまま calendarFromRow に
+ * 渡せる。純粋モジュール（chronicleTime）に置くことで、api（drizzle 依存）を import
+ * せずに暦復元を共有できる（テストのモジュールモック回避・重複パース集約）。
+ */
+export interface CalendarRowData {
+  daysPerYear: number;
+  seasonBoundaries: string;
+  startYear: number;
+  months: string;
+  weekdayNames: string;
+  weekdayStartIndex: number;
+  leapRule: string;
+  ageReckoning: string;
+  eras: string;
+  reform: string;
+  timezone: string;
+  lunarTzMinutes: number;
+}
+
+/**
+ * CalendarRowData（生 JSON 文字列を持つ DB 行）を UI/注入が使う ChronicleCalendar へ復元する。
+ * months/seasonBoundaries/weekdayNames/eras/reform/timezone を JSON parse し、不正なら
+ * フォールバック。useSeasonConflicts / useProjectCalendar / AI 注入（push/pull）の重複
+ * パースをここへ集約し、eras/timezone/reform/lunarTzMinutes の取りこぼしを防ぐ。
+ */
+export function calendarFromRow(row: CalendarRowData): ChronicleCalendar {
+  const parse = <T>(raw: string, fallback: T): T => {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  };
+  const leap = parse<LeapRule>(row.leapRule, { kind: "none" });
+  const ageReckoning: AgeReckoning =
+    row.ageReckoning === "counting" ? "counting" : "full";
+  return {
+    daysPerYear: row.daysPerYear,
+    seasonBoundaries: parse<SeasonBoundary[]>(row.seasonBoundaries, []),
+    startYear: row.startYear,
+    months: parse<MonthDef[]>(row.months, []),
+    weekdayNames: parse<string[]>(row.weekdayNames, []),
+    weekdayStartIndex: row.weekdayStartIndex,
+    leap: leap && leap.kind === "gregorian" ? leap : { kind: "none" },
+    ageReckoning,
+    eras: parse<EraDef[]>(row.eras, []),
+    reform: parse<CalendarReform | null>(row.reform, null) ?? undefined,
+    timezone: parse<TimeZoneDef | null>(row.timezone, null) ?? undefined,
+    lunarTzMinutes: row.lunarTzMinutes,
+  };
+}
+
 /** 既定の 360日・春夏秋冬 4季暦（新規作成/エディタの初期値）。 */
 export const DEFAULT_SEASON_BOUNDARIES: SeasonBoundary[] = [
   { name: "春", startDayOfYear: 0 },

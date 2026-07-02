@@ -6,7 +6,6 @@ import {
   listEventParticipantsForProject,
   listEventRelations,
   getProjectCalendar,
-  type CalendarRow,
 } from "@/features/chronicle/api";
 import {
   getSharedEvents,
@@ -27,7 +26,7 @@ import {
   resolveSceneAnchor,
   type SceneChronicle,
 } from "@/features/chronicle/resolveSceneAnchor";
-import type { ChronicleCalendar } from "@/features/chronicle/chronicleTime";
+import { calendarFromRow } from "@/features/chronicle/chronicleTime";
 import type { EventPrecision } from "@/db/schema";
 import type { ToolResult } from "./agentTypes";
 
@@ -39,48 +38,6 @@ const noProject = (name: string, content: unknown): ToolReturn => ({
   summary: "No active project",
   tokensUsed: 0,
 });
-
-function parseCalendar(row: CalendarRow | null): ChronicleCalendar | null {
-  if (!row) return null;
-  let boundaries: ChronicleCalendar["seasonBoundaries"] = [];
-  try {
-    const parsed = JSON.parse(row.seasonBoundaries);
-    if (Array.isArray(parsed)) boundaries = parsed;
-  } catch {
-    boundaries = [];
-  }
-  let months: ChronicleCalendar["months"] = [];
-  try {
-    const parsed = JSON.parse(row.months);
-    if (Array.isArray(parsed)) months = parsed;
-  } catch {
-    months = [];
-  }
-  let weekdayNames: ChronicleCalendar["weekdayNames"] = [];
-  try {
-    const parsed = JSON.parse(row.weekdayNames);
-    if (Array.isArray(parsed)) weekdayNames = parsed;
-  } catch {
-    weekdayNames = [];
-  }
-  let leap: ChronicleCalendar["leap"] = { kind: "none" };
-  try {
-    const parsed = JSON.parse(row.leapRule) as ChronicleCalendar["leap"];
-    if (parsed?.kind === "gregorian") leap = parsed;
-  } catch {
-    leap = { kind: "none" };
-  }
-  return {
-    daysPerYear: row.daysPerYear,
-    seasonBoundaries: boundaries,
-    startYear: row.startYear,
-    months,
-    weekdayNames,
-    weekdayStartIndex: row.weekdayStartIndex,
-    leap,
-    ageReckoning: row.ageReckoning === "counting" ? "counting" : "full",
-  };
-}
 
 const result = (
   name: string,
@@ -254,7 +211,7 @@ export async function getCharacterTimelineTool(
     getProjectCalendar(projectId),
     getSharedCodexNames(projectId),
   ]);
-  const calendar = parseCalendar(calendarRow);
+  const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
   // AI 秘匿: hidden な secret イベントを除外（秘匿された生年・死亡・経歴の漏洩防止）。
   const visible = await visibleEventIds(projectId, events);
   const visibleEvents = events.filter((e) => visible.has(e.id));
@@ -377,7 +334,7 @@ export async function getChronicleStateTool(
       participants: vis.participants,
       relations: vis.relations,
       sceneEvents: vis.sceneEvents,
-      calendar: parseCalendar(calendarRow),
+      calendar: calendarRow ? calendarFromRow(calendarRow) : null,
       characterIds,
       codexNames: names,
     },

@@ -240,4 +240,41 @@ describe("getChronicleStateTool", () => {
     expect(r.content).toBeNull();
     expect(r.summary).toBe("No chronicle events");
   });
+
+  it("eras 付き暦で formattedDate に元号が載る（calendarFromRow 一本化で欠落解消）", async () => {
+    const months = JSON.stringify(
+      Array.from({ length: 12 }, (_, i) => ({ name: `${i + 1}月`, days: 30 })),
+    );
+    calendarRow = {
+      projectId: "p1",
+      daysPerYear: 360,
+      seasonBoundaries: "[]",
+      startYear: 1000,
+      months,
+      weekdayNames: "[]",
+      weekdayStartIndex: 0,
+      leapRule: '{"kind":"none"}',
+      ageReckoning: "full",
+      eras: '[{"name":"明治","startYear":1000}]',
+      reform: "null",
+      timezone: "null",
+      lunarTzMinutes: 480,
+      createdAt: "",
+      updatedAt: "",
+    };
+    // day0 = 暦年 1000 = 明治1年。粒度 day のイベントを stamp してアンカーを日付付きに。
+    events.push({
+      ...ev({ id: "e1", title: "戴冠", ordinal: "a1", startTime: 0 }),
+      startGranularity: "day",
+      startMinute: null,
+      endGranularity: "none",
+      endMinute: null,
+    });
+    sceneEvents.push({ sceneId: "s1", eventId: "e1" });
+
+    const r = await getChronicleStateTool({});
+    const snap = r.content as { time: { formattedDate: string | null } };
+    // 旧 parseCalendar は eras を捨てるため "1000年1月1日"（元号なし）になっていた。
+    expect(snap.time.formattedDate).toContain("明治");
+  });
 });
