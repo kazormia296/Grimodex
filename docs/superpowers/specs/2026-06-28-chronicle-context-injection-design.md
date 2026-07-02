@@ -166,11 +166,13 @@ export function renderChronicleSnapshot(snapshot: ChronicleSnapshot, lang: strin
    - 生存/死亡/不明（birth/death event + startTime）
    - 年齢（startTime ＋ calendar.daysPerYear）または `unknown`
    - **最後に判明する居場所**: `primaryCodexId === characterId` **または** participant に含まれる event のうち、`locationCodexId != null` かつ `ordinal ≤ anchor.ordinal` の**最新**（ordinal 降順）。群衆 event で全 participant に同 location を適用してよい。
-3. **直近の重要イベント** — K=8（title＋短 note）。
+3. **直近の重要イベント** — K=8（title＋相対時間＋短 note）。
 4. **未回収の因果** — ordinal ベース（上記 derive）。
 5. **オフページ背景** — D1 定義。
 
 `startTime=null` の anchor でも §1・§4・§5（ordinal ベース）は出せる。§2 の暦依存行のみ省略/`unknown`。
+
+**相対時間ラベル（`relTime`）** — §3/§5 の各出来事に、アンカー startTime から見た相対時間を付す（`SnapshotEvent.relTime`, `formatRelativeDays`）。行フォーマットは `- {title}（{relTime}）（{note}）`。絶対日付は独自暦（可変 daysPerYear）の演算をモデルに強いるため使わず、`同日 / N日前 / 約Nヶ月前 / 約N年前`（en: `same day / N days earlier / about N months earlier / about N years earlier`）を出す。整数演算のみで TS↔Rust 丸め一致。暦なし/日付欠落/未来（delta<0）は `null`（省略）。「約」化 = `precision != exact || 粗い粒度(year|season|month, event/anchor)`。pull（`list_events`/`get_event_detail`）は逆に絶対日付 `startDate`/`endDate`（`formatChronicleDate`）を返す（トークン圧が低いので粒度フル）。
 
 ### C2. アンカー解決
 
@@ -259,7 +261,7 @@ const chronicleSnapshotText = renderChronicleSnapshot(snapshot, lang);
 #### トークン上限
 
 - スナップショット全体 ≤600 トークン（テスト gate）。
-- 超過時は `deriveOffpageEvents` → `deriveRecentEvents` → character 詳細 note の順で短縮。
+- 超過時は `offpage` → `recent` → 詳細 `note` → 相対時間 `relTime` の順で短縮（`RENDER_LEVELS`）。相対時間（時間距離）は note より整合性価値が高いので note を落とした後まで残す。dates を持つ最小段（recent:3/offpage:0）は常に ≤600 に収まるため、暦付きシーンでは relTime は必ず生き残る。
 
 #### 設定トグル
 
