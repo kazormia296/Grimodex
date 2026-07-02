@@ -14,6 +14,7 @@ import {
   isProposalStale,
 } from "@/features/agent-writes/autoAcceptGate";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { useInlineAiStore } from "./inlineAiStore";
 
@@ -174,7 +175,19 @@ export function useAgentProseStaging(
   // 同期で inline-AI store を idle に戻すため、直後に surface 判定できる)。
   const surfaceNextInChain = useCallback(() => {
     if (!sceneId) return;
-    void surfaceLatestProposal(sceneId).catch((e) => {
+    const targetSceneId = sceneId;
+    void (async () => {
+      // accept/reject で編集された doc を dirty-gated flush (saveScene) で
+      // 先に永続化してから次行を出す。accept は autosave を arm するだけで
+      // 未保存のため、そのまま次行プレビュー (実テキストの history-less
+      // 挿入) を doc に乗せると、armed タイマーの発火でプレビュー込み doc
+      // が persist される (無帰属 AI テキストの焼き込み)。保存を確定させて
+      // 「未保存の accept 内容とプレビューが同居する窓」自体を消す。
+      // プレビュー表示後の残余タイマーは、エディタ側の「inline-AI 非 idle
+      // 遷移で armed autosave を cancel する」effect が対で受け持つ。
+      await saveScene(targetSceneId);
+      await surfaceLatestProposal(targetSceneId);
+    })().catch((e) => {
       debugLog.warn("proseStaging", "チェーン再ロードに失敗", errorDetail(e));
     });
   }, [sceneId, surfaceLatestProposal]);

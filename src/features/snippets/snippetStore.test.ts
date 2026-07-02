@@ -3,6 +3,14 @@ import { useSnippetStore, setSnippetEditConflictHandler } from "./snippetStore";
 import { SnippetVersionConflictError } from "./occ";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
+const { toastError, toastSuccess } = vi.hoisted(() => ({
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
+vi.mock("sonner", () => ({
+  toast: { error: toastError, success: toastSuccess },
+}));
+
 vi.mock("./api", () => ({
   listSnippets: vi.fn(() => Promise.resolve([])),
   getSnippet: vi.fn(),
@@ -373,6 +381,20 @@ describe("snippetStore", () => {
       await expect(
         useSnippetStore.getState().update("snippet-1", { title: "x" }),
       ).resolves.toBe(false);
+    });
+
+    it("行なし (削除済み/スコープmiss) の false でもトーストで通知する (無音失敗防止)", async () => {
+      // EditorPane は false → AlreadyNotifiedSaveError で「通知済み」を前提に
+      // autoSave.failed トーストを抑止する。この経路が無音だと、削除済み
+      // snippet を開いたまま編集したときの保存失敗が完全無音で継続する。
+      const original = fakeSnippet({ id: "snippet-1" });
+      useSnippetStore.setState({ entries: [original] });
+      mockUpdateSnippet.mockResolvedValueOnce(undefined);
+
+      await expect(
+        useSnippetStore.getState().update("snippet-1", { title: "x" }),
+      ).resolves.toBe(false);
+      expect(toastError).toHaveBeenCalledTimes(1);
     });
 
     it("records snippet.update with a content diff over extracted text", async () => {

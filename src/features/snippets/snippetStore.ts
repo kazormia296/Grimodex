@@ -255,8 +255,16 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         data,
         { baseVersion: before?.version ?? 0 },
       );
-      // 行なし (スコープ miss / 削除済み) = 保存されていない
-      if (!updated) return false;
+      // 行なし (スコープ miss / 削除済み) = 保存されていない。
+      // false の全経路はここで必ず通知する契約 (衝突=conflict handler /
+      // 失敗・行なし=toast)。EditorPane は false を「通知済み」marker
+      // (AlreadyNotifiedSaveError) で throw し autoSave.failed を重ねない
+      // ため、無通知の false 経路を作ると保存失敗が完全無音になる。
+      if (!updated) {
+        toast.error(i18next.t("snippets.store.updateMissing"));
+        debugLog.warn("SnippetStore", `update target missing: ${id}`);
+        return false;
+      }
       set((state) => ({
         entries: state.entries.map((e) => (e.id === id ? updated : e)),
       }));

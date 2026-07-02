@@ -3041,6 +3041,7 @@
       "saved": "Snippetとして保存しました",
       "createFailed": "スニペットの作成に失敗しました",
       "updateFailed": "スニペットの更新に失敗しました",
+      "updateMissing": "保存できませんでした。このスニペットは削除済みか、見つかりません。",
       "editConflict": "このスニペットは別のウィンドウで更新されたため保存できませんでした。最新を読み込んでから編集し直してください。",
       "deleteFailed": "スニペットの削除に失敗しました",
       "agentHistoryCreate": "Agent: Snippet作成"

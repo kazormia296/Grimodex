@@ -429,12 +429,12 @@ export function EditorPane({
       // 1 回に集約 (entries 反映 / timelapse 記録 / undo 履歴も store が担う)。
       // 二重のままだと store 側の OCC (baseVersion) が直呼びの更新と自己衝突する。
       //
-      // store.update は OCC 衝突・失敗をユーザ通知 (toast / conflict handler)
-      // 済みの上 false で返す (throw しない)。ここで throw に変換して saveFn
-      // へ伝播させ、setIsDirty(false) を走らせない — 旧・直呼び (throw) と
-      // 同じく「保存されていないのに clean 表示」で編集が失われるのを防ぐ。
-      // 通知済みなので AlreadyNotifiedSaveError: useAutoSave の catch は
-      // autoSave.failed トーストを重ねない (二重トースト防止)。
+      // store.update は false の全経路 (OCC 衝突 / 行なし=削除済み / 失敗)
+      // をユーザ通知 (conflict handler / toast) 済みの上で返す契約 (snippetStore
+      // 参照)。ここで throw に変換して saveFn へ伝播させ、setIsDirty(false) を
+      // 走らせない — 旧・直呼び (throw) と同じく「保存されていないのに clean
+      // 表示」で編集が失われるのを防ぐ。通知済みなので AlreadyNotifiedSaveError:
+      // useAutoSave の catch は autoSave.failed トーストを重ねない (二重防止)。
       const saved = await useSnippetStore.getState().update(id, { content });
       if (!saved) {
         throw new AlreadyNotifiedSaveError(
@@ -1233,6 +1233,21 @@ export function EditorPane({
     nodeId,
     inlineAiDiff,
   );
+  // inline-AI がこのペインで生成/プレビュー中 (非 idle = 未 accept のテキスト
+  // が doc に入っている) は、arm 済みの autosave タイマーも解除する。
+  // onUpdate の gate は「新規 schedule の抑止」しかせず、直前の編集で arm
+  // 済みのタイマーは発火して未 accept のプレビュー本文ごと persist して
+  // しまう (無帰属 AI テキストの焼き込み + version bump)。accept/reject で
+  // idle に戻ると reset+dispatch の onUpdate が改めて schedule するので、
+  // ここで消した「打鍵分の保存」は取りこぼされない。
+  // 既知の残余 (スコープ外): diff 表示中の unmount flush / workspace 切替
+  // quiesce はプレビュー込み doc を保存しうる pre-existing の穴。
+  const inlineAiStatus = useInlineAiStore((s) => s.status);
+  useEffect(() => {
+    if (inlineAiStatus !== "idle" && inlineAiOwnerEditor === editor) {
+      cancel();
+    }
+  }, [inlineAiStatus, inlineAiOwnerEditor, editor, cancel]);
 
   useCursorOverlay(mountedEditor);
   useImeDiagnostics(mountedEditor);

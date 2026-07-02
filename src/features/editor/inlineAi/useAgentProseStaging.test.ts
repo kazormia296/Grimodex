@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   isProposalStale: vi.fn(async () => h.stale),
   agentAcceptProseStage: vi.fn(async () => ({})),
   agentDiscardProseStage: vi.fn(async () => ({})),
+  saveScene: vi.fn(async () => {}),
   toastInfo: vi.fn(),
   toastError: vi.fn(),
 }));
@@ -39,6 +40,9 @@ vi.mock("sonner", () => ({
 }));
 vi.mock("@/lib/i18n", () => ({
   default: { t: (k: string) => k },
+}));
+vi.mock("@/features/editor/editorSaveRegistry", () => ({
+  saveScene: h.saveScene,
 }));
 vi.mock("@/features/agent-writes/autoAcceptGate", () => ({
   isAutoAcceptEnabled: h.isAutoAcceptEnabled,
@@ -294,5 +298,30 @@ describe("useAgentProseStaging — accept/reject の staging 連携", () => {
     expect(h.agentDiscardProseStage).toHaveBeenCalledWith("s1");
     expect(api.rejectOrAbort).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(h.enqueue).toHaveBeenCalledWith(p2));
+  });
+
+  it("チェーンは accept 内容の保存 (saveScene) 完了後に次行を読む (I-2b)", async () => {
+    // accept は autosave を arm するだけで永続化はまだ。P1 未保存のまま
+    // P2 プレビュー (実テキスト挿入) が doc に乗ると、armed タイマーの発火で
+    // プレビュー込み doc が焼き込まれる。チェーンは dirty-gated flush
+    // (saveScene) で accept 内容を確定させてから次行を surface する。
+    h.proposal = null;
+    const api = { ...diffApi, getActiveStagingId: () => "s1" };
+    const { result } = renderHook(() =>
+      useAgentProseStaging(null, "scene-1", api),
+    );
+    await flush();
+    const order: string[] = [];
+    h.saveScene.mockImplementationOnce(async () => {
+      order.push("saveScene");
+    });
+    h.loadLatestProposedProse.mockImplementationOnce(async () => {
+      order.push("load");
+      return null;
+    });
+    await result.current.acceptWithStaging();
+    await waitFor(() => expect(order).toContain("load"));
+    expect(order).toEqual(["saveScene", "load"]);
+    expect(h.saveScene).toHaveBeenCalledWith("scene-1");
   });
 });

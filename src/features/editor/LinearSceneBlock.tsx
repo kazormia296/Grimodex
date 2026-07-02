@@ -318,6 +318,24 @@ function MountedSceneBlock({
 
   editorRef.current = editor;
 
+  // inline-AI がこのブロックで生成/プレビュー中 (非 idle = 未 accept の
+  // テキストが doc に入っている) は、arm 済みの autosave タイマーも解除する
+  // (EditorPane と同じ Fix)。onUpdate の gate は「新規 schedule の抑止」しか
+  // せず、直前の編集で arm 済みのタイマーは発火して未 accept のプレビュー
+  // 本文ごと persist してしまう (無帰属 AI テキストの焼き込み)。owner 判定は
+  // onUpdate と同じ activeEditor 一致 (リニアは複数エディタがグローバル単一
+  // store を共有するため status だけでは不可)。accept/reject で idle に戻る
+  // と reset+dispatch の onUpdate が改めて schedule するので、消した打鍵分の
+  // 保存は取りこぼされない。既知の残余 (スコープ外): diff 表示中の unmount
+  // flush はプレビュー込み doc を保存しうる pre-existing の穴。
+  const inlineAiStatus = useInlineAiStore((s) => s.status);
+  const inlineAiOwnerEditor = useInlineAiStore((s) => s.activeEditor);
+  useEffect(() => {
+    if (inlineAiStatus !== "idle" && inlineAiOwnerEditor === editor) {
+      cancel();
+    }
+  }, [inlineAiStatus, inlineAiOwnerEditor, editor, cancel]);
+
   // active シーンの editor を Toolbar / SceneMetaPanel がフォーカス無しで
   // 参照できるよう registry へ登録する (linearEditorStore.editorsById)。
   useEffect(() => {

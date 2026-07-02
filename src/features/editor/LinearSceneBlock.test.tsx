@@ -153,7 +153,7 @@ vi.mock("@/features/editor/inlineAi/InlineAIPalette", () => ({
 const autoSaveCtl = vi.hoisted(
   () =>
     ({ last: null }) as {
-      last: { schedule: () => void } | null;
+      last: { schedule: () => void; flush: () => Promise<void> } | null;
     },
 );
 vi.mock("@/hooks/useAutoSave", async (importOriginal) => {
@@ -528,6 +528,50 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     await saveScene("scene-0001");
     expect(mockPersist).not.toHaveBeenCalled();
     expect(mockSetTabDirty).not.toHaveBeenCalledWith("scene-0001", false);
+  });
+
+  it("inline-AI がこのエディタで非 idle になったら armed 済み autosave を解除する", async () => {
+    // 生成/プレビューの実テキストが doc に入っている間、onUpdate の gate は
+    // 「新規 schedule の抑止」しかしない。直前の編集で arm 済みのタイマーが
+    // 発火すると、未 accept のプレビュー本文ごと persist される (無帰属 AI
+    // テキストの焼き込み)。非 idle 遷移で pending を cancel すること。
+    await renderLoaded();
+    lastEditor().commands.insertContentAt(1, "編集"); // autosave を arm
+    act(() => {
+      useInlineAiStore.getState().startGeneration({
+        commandId: "continue",
+        mode: "insert",
+        originalRange: null,
+        originalText: "",
+        insertPos: 0,
+        abortController: new AbortController(),
+        activeEditor: lastEditor(),
+      });
+    });
+    // cancel 済みなら flush は no-op (pending なし)
+    await autoSaveCtl.last!.flush();
+    expect(mockPersist).not.toHaveBeenCalled();
+  });
+
+  it("別エディタが inline-AI owner のときは自分の armed autosave を解除しない", async () => {
+    // owner 判定は onUpdate の gate と同じ activeEditor 一致。リニアは複数
+    // エディタがグローバル単一 store を共有するため、status だけで消すと
+    // 他シーンの通常編集の保存が失われる。
+    await renderLoaded();
+    lastEditor().commands.insertContentAt(1, "編集");
+    act(() => {
+      useInlineAiStore.getState().startGeneration({
+        commandId: "continue",
+        mode: "insert",
+        originalRange: null,
+        originalText: "",
+        insertPos: 0,
+        abortController: new AbortController(),
+        activeEditor: null, // 別エディタ (このブロックではない)
+      });
+    });
+    await autoSaveCtl.last!.flush();
+    expect(mockPersist).toHaveBeenCalledTimes(1);
   });
 
   it("保存 (await) 中に入った編集は dirty を維持する (編集世代カウンタ)", async () => {

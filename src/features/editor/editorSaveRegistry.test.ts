@@ -132,4 +132,15 @@ describe("エディタの save handler 登録 (ソース invariant)", () => {
       /if \(editGenerationRef\.current === editGenAtStart\)[\s\S]{0,300}?setIsDirtyRef\.current\(false\)/,
     );
   });
+
+  it("EditorPane は inline-AI 非 idle 遷移で armed autosave を cancel する", () => {
+    // onUpdate の gate は「新規 schedule の抑止」のみで、arm 済みタイマーは
+    // 発火して未 accept のプレビュー/生成テキストごと persist してしまう
+    // (無帰属 AI テキストの焼き込み)。owner 一致の非 idle 遷移で cancel する
+    // こと (挙動テストは LinearSceneBlock 側、こちらはソース invariant)。
+    const src = readFileSync(resolve(__dirname, "./EditorPane.tsx"), "utf-8");
+    expect(src).toMatch(
+      /inlineAiStatus !== "idle" && inlineAiOwnerEditor === editor[\s\S]{0,120}?cancel\(\)/,
+    );
+  });
 });
