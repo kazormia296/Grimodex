@@ -122,7 +122,7 @@ fn foreshadow_create_impl(
         .unwrap_or(Value::Null))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: ForeshadowCreatePayload,
@@ -222,7 +222,7 @@ fn foreshadow_update_impl(
         .unwrap_or(Value::Null))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_update(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -231,7 +231,7 @@ pub(crate) fn foreshadow_update(
     with_db(&ws_state, |db| foreshadow_update_impl(db, id, patch))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -246,7 +246,7 @@ pub(crate) fn foreshadow_delete(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_list(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,
@@ -306,7 +306,7 @@ pub(crate) struct ForeshadowListWithLabelsResponse {
 
 /// List foreshadows and their setup rows in a single DB lock acquisition.
 /// Avoids a follow-up `db_execute` IPC that can time out under lock contention.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_list_with_labels(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,
@@ -386,7 +386,7 @@ fn fetch_setup_label_rows(
 }
 
 /// Open (unresolved) foreshadows + setup label rows in one DB lock acquisition.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_list_open_for_context(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,
@@ -430,7 +430,7 @@ pub(crate) struct ForeshadowSceneInfoResponse {
     payoff_foreshadow_ids: Vec<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_get_scene_info(
     ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
@@ -473,7 +473,7 @@ pub(crate) struct ForeshadowSceneContextResponse {
     setup_scene_rows: Vec<Value>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_get_scene_context(
     ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
@@ -525,7 +525,7 @@ pub(crate) fn foreshadow_get_scene_context(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_list_by_codex_entry(
     ws_state: tauri::State<'_, WorkspaceState>,
     codex_entry_id: String,
@@ -576,7 +576,7 @@ pub(crate) struct ForeshadowChapterStatsBundle {
     related_setups: Vec<Value>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_get_chapter_stats(
     ws_state: tauri::State<'_, WorkspaceState>,
     chapter_id: String,
@@ -654,7 +654,7 @@ pub(crate) fn foreshadow_get_chapter_stats(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_get_setup(
     ws_state: tauri::State<'_, WorkspaceState>,
     setup_id: String,
@@ -679,7 +679,7 @@ pub(crate) struct ForeshadowSetupPatch {
     last_evaluated_at: Option<Option<i64>>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_update_setup(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -732,7 +732,7 @@ pub(crate) fn foreshadow_update_setup(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_get(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -765,7 +765,7 @@ pub(crate) fn foreshadow_get(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_link_codex(
     ws_state: tauri::State<'_, WorkspaceState>,
     foreshadow_id: String,
@@ -781,7 +781,7 @@ pub(crate) fn foreshadow_link_codex(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_unlink_codex(
     ws_state: tauri::State<'_, WorkspaceState>,
     foreshadow_id: String,
@@ -797,7 +797,7 @@ pub(crate) fn foreshadow_unlink_codex(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_list_linked_codex(
     ws_state: tauri::State<'_, WorkspaceState>,
     foreshadow_id: String,
@@ -815,7 +815,7 @@ pub(crate) fn foreshadow_list_linked_codex(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_set_setup_strength(
     ws_state: tauri::State<'_, WorkspaceState>,
     setup_id: String,
@@ -837,7 +837,7 @@ pub(crate) fn foreshadow_set_setup_strength(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_setup_create_ai(
     ws_state: tauri::State<'_, WorkspaceState>,
     id: String,
@@ -988,7 +988,7 @@ fn resolve_orphan_impl(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_resolve_orphan(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: OrphanResolvePayload,
@@ -1084,7 +1084,7 @@ fn save_anchors_for_scene_impl(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_save_anchors_for_scene(
     ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
@@ -1167,7 +1167,7 @@ fn load_anchors_for_scene_impl(
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn foreshadow_load_anchors_for_scene(
     ws_state: tauri::State<'_, WorkspaceState>,
     scene_id: String,
