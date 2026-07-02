@@ -120,4 +120,6 @@ mod migrate;
 pub(crate) mod undo_journal;
 
 #[cfg(test)]
+mod seed_schema_parity;
+#[cfg(test)]
 mod tests;

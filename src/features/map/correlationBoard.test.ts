@@ -30,7 +30,7 @@ const { listCodexEntriesMock, buildReportMock, listRelationsMock } = vi.hoisted(
   }),
 );
 vi.mock("@/features/codex/api", () => ({
-  listCodexEntries: listCodexEntriesMock,
+  listCodexEntriesForContext: listCodexEntriesMock,
 }));
 vi.mock("@/features/codex/crossReference", () => ({
   buildCrossReferenceReportForProject: buildReportMock,

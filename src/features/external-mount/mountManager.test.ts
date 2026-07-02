@@ -1,12 +1,14 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TreeNode } from "@/features/tree/api";
+import type { TreeNodeLite } from "@/features/tree/api";
 
 const {
   mockUpdateNode,
   mockListAllNodes,
   mockSaveSceneContent,
   mockCreateNode,
+  mockLoadSceneContent,
+  mockLoadSceneContents,
   mockLoadTree,
   mockSetCharCount,
   mockUpsertSceneBodyMentions,
@@ -15,11 +17,14 @@ const {
   mockReadExternalFile,
   mockGetExternalFileMtime,
   mockRegisterMount,
+  mockScanMount,
 } = vi.hoisted(() => ({
   mockUpdateNode: vi.fn().mockResolvedValue(undefined),
   mockListAllNodes: vi.fn(),
   mockSaveSceneContent: vi.fn().mockResolvedValue({ placedBeatPreview: null }),
   mockCreateNode: vi.fn(),
+  mockLoadSceneContent: vi.fn().mockResolvedValue("{}"),
+  mockLoadSceneContents: vi.fn().mockResolvedValue(new Map<string, string>()),
   mockLoadTree: vi.fn().mockResolvedValue(undefined),
   mockSetCharCount: vi.fn(),
   mockUpsertSceneBodyMentions: vi.fn().mockResolvedValue(undefined),
@@ -35,6 +40,7 @@ const {
     .fn()
     .mockResolvedValue("2026-05-24T12:00:00.000Z"),
   mockRegisterMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
+  mockScanMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
 }));
 
 vi.mock("@/features/tree/api", async (importOriginal) => {
@@ -45,6 +51,8 @@ vi.mock("@/features/tree/api", async (importOriginal) => {
     listAllNodes: mockListAllNodes,
     saveSceneContent: mockSaveSceneContent,
     createNode: mockCreateNode,
+    loadSceneContent: mockLoadSceneContent,
+    loadSceneContents: mockLoadSceneContents,
   };
 });
 
@@ -103,13 +111,14 @@ vi.mock("./api", () => ({
     mockGetExternalFileMtime(...args),
   unregisterMount: vi.fn().mockResolvedValue(undefined),
   registerMount: (...args: unknown[]) => mockRegisterMount(...args),
-  scanMount: vi.fn().mockResolvedValue({ files: [], dirs: [] }),
+  scanMount: (...args: unknown[]) => mockScanMount(...args),
 }));
 
 vi.mock("sonner", () => ({
   toast: {
     success: vi.fn(),
     warning: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
@@ -137,9 +146,12 @@ import {
 import { useExternalRootStore } from "./externalRootStore";
 import { buildMountFolderUri, buildSourceUri } from "./sourceUri";
 
+// listAllNodes は H4 projection で content / unplacedBeatsDoc を返さない
+// (TreeNodeLite)。本文が要る経路は loadSceneContent / loadSceneContents の
+// mock から供給する。
 function node(
-  overrides: Partial<TreeNode> & Pick<TreeNode, "id" | "sourceUri">,
-): TreeNode {
+  overrides: Partial<TreeNodeLite> & Pick<TreeNodeLite, "id" | "sourceUri">,
+): TreeNodeLite {
   return {
     projectId: "p1",
     parentId: null,
@@ -162,8 +174,6 @@ function node(
     chronicleEndGranularity: "none",
     chroniclePrecision: "exact",
     status: "outline",
-    content: "{}",
-    unplacedBeatsDoc: "[]",
     charCount: 0,
     unplacedBeatPreview: null,
     placedBeatPreview: null,
@@ -330,7 +340,6 @@ describe("addExternalMount", () => {
         id: "scene-existing",
         sourceUri: sceneUri,
         charCount: 0,
-        content: "{}",
         parentId: "mount-folder",
       }),
     ]);
@@ -484,9 +493,12 @@ describe("handleFileEvent removed deferral", () => {
       node({
         id: "scene-1",
         sourceUri: "external-root://root-1/chapter/01.md",
-        content: JSON.stringify(markdownToPmJson("Hello.\n")),
       }),
     ]);
+    // rename 検知ハッシュ用の本文は listAllNodes ではなく loadSceneContent 経由
+    mockLoadSceneContent.mockResolvedValue(
+      JSON.stringify(markdownToPmJson("Hello.\n")),
+    );
   });
 
   it("does not archive immediately on removed; cancels when changed follows", async () => {
@@ -543,6 +555,67 @@ describe("handleFileEvent removed deferral", () => {
     );
 
     vi.useRealTimers();
+  });
+});
+
+describe("handleFileEvent rename detection (removed → added)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetPendingArchives();
+    _resetRecentDeletes();
+    useExternalRootStore.setState({
+      roots: [{ id: "root-1", path: "/mnt", label: "M" }],
+      mutedWrites: [],
+      conflicts: [],
+    });
+  });
+
+  it("loadSceneContent 経由の本文ハッシュで rename を検知し sourceUri を付け替える", async () => {
+    const markdown = "Hello.\n";
+    const oldUri = buildSourceUri("root-1", "chapter/01.md");
+    const newUri = buildSourceUri("root-1", "chapter/02.md");
+    mockListAllNodes.mockResolvedValue([
+      node({ id: "scene-1", sourceUri: oldUri }),
+    ]);
+    // listAllNodes の行には content が無いので、削除イベント時のハッシュは
+    // loadSceneContent 単発ロードから計算される。
+    mockLoadSceneContent.mockResolvedValue(
+      JSON.stringify(markdownToPmJson(markdown)),
+    );
+    mockScanMount.mockResolvedValue({
+      dirs: [],
+      files: [
+        {
+          relPath: "chapter/02.md",
+          content: markdown,
+          mtime: "2026-05-24T12:00:00.000Z",
+          contentHash: await contentHash(markdown),
+        },
+      ],
+    });
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/01.md",
+      kind: "removed",
+    });
+    expect(mockLoadSceneContent).toHaveBeenCalledWith("scene-1");
+
+    await handleFileEvent({
+      rootId: "root-1",
+      relPath: "chapter/02.md",
+      kind: "added",
+    });
+
+    expect(mockUpdateNode).toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ sourceUri: newUri }),
+    );
+    // rename として処理され、アーカイブはされない
+    expect(mockUpdateNode).not.toHaveBeenCalledWith(
+      "scene-1",
+      expect.objectContaining({ archivedAt: expect.any(String) }),
+    );
   });
 });
 

@@ -55,6 +55,91 @@ export async function listCodexEntries(
     .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
 }
 
+// ---------------------------------------------------------------------------
+// M10: 用途別 projection (Phase 1)
+// listCodexEntries は全列 SELECT で、重い列 (content=PM JSON 本文 /
+// icon=base64 WebP / notes=プライベート PM JSON) を毎回転送していた。
+// mention 検出だけの経路・AI 文脈構築の経路・timelapse ベースラインの経路は
+// 必要列が固定なので、列を絞った専用 API に分ける。
+// codexStore（一覧/編集面/undo が全列に依存）は従来通り listCodexEntries を使う。
+// ---------------------------------------------------------------------------
+
+/** mention 検出 (CodexMatchTarget) に必要な 5 列だけの行。 */
+export type CodexMatchRow = Pick<
+  CodexEntry,
+  "id" | "name" | "type" | "aliases" | "excludedAliases"
+>;
+
+/**
+ * AI 文脈構築用: icon / notes の 2 列だけを除いた行。content は L4 注入・
+ * children budget・reverse mention 走査が全件横断で読むため残す。
+ * notes は「AI 文脈には注入しない」列 (schema comment 参照) なので除外して良い。
+ */
+export type CodexContextEntry = Omit<CodexEntry, "icon" | "notes">;
+
+/**
+ * mention 検出の match target 専用の軽量 projection。
+ * content / icon / notes を転送しない。
+ */
+export async function listCodexMatchTargets(
+  projectId: string,
+  type?: CodexEntryType,
+): Promise<CodexMatchRow[]> {
+  const scope = eq(codexEntries.projectId, projectId);
+  return db
+    .select({
+      id: codexEntries.id,
+      name: codexEntries.name,
+      type: codexEntries.type,
+      aliases: codexEntries.aliases,
+      excludedAliases: codexEntries.excludedAliases,
+    })
+    .from(codexEntries)
+    .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
+}
+
+/**
+ * AI 文脈構築 (chat L4 / エクスポートのキャラクターブック) 用 projection。
+ * icon (base64 画像) と notes (注入禁止のプライベートメモ) だけを落とす。
+ */
+export async function listCodexEntriesForContext(
+  projectId: string,
+  type?: CodexEntryType,
+): Promise<CodexContextEntry[]> {
+  const scope = eq(codexEntries.projectId, projectId);
+  return db
+    .select({
+      id: codexEntries.id,
+      projectId: codexEntries.projectId,
+      parentId: codexEntries.parentId,
+      type: codexEntries.type,
+      name: codexEntries.name,
+      aliases: codexEntries.aliases,
+      excludedAliases: codexEntries.excludedAliases,
+      summary: codexEntries.summary,
+      content: codexEntries.content,
+      tagsCache: codexEntries.tagsCache,
+      contextMode: codexEntries.contextMode,
+      childrenBudget: codexEntries.childrenBudget,
+      sourceChatMessageId: codexEntries.sourceChatMessageId,
+      createdAt: codexEntries.createdAt,
+      updatedAt: codexEntries.updatedAt,
+      version: codexEntries.version,
+    })
+    .from(codexEntries)
+    .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
+}
+
+/** timelapse ベースライン記録用: id + content (PM JSON) のみ。 */
+export async function listCodexContentsForBaseline(
+  projectId: string,
+): Promise<Array<{ id: string; content: string }>> {
+  return db
+    .select({ id: codexEntries.id, content: codexEntries.content })
+    .from(codexEntries)
+    .where(eq(codexEntries.projectId, projectId));
+}
+
 export async function getCodexEntry(
   projectId: string,
   id: string,

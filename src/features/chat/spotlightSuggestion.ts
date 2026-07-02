@@ -1,5 +1,8 @@
 import type { CodexEntry } from "@/features/codex/api";
 
+/** スコアリングが読む最小列 (M10: icon/notes なしの projection 行も受ける)。 */
+type SpotlightCandidate = Pick<CodexEntry, "id" | "content" | "summary">;
+
 const MIN_TEXT_LEN = 30;
 const MIN_SCORE = 2;
 const MAX_CANDIDATES = 3;
@@ -28,7 +31,10 @@ function countText(node: ProseMirrorNode | null | undefined): number {
   return total;
 }
 
-function scoreCandidate(entry: CodexEntry, isDetected: boolean): number {
+function scoreCandidate(
+  entry: SpotlightCandidate,
+  isDetected: boolean,
+): number {
   const textLen = extractTextLen(entry.content);
   if (textLen < MIN_TEXT_LEN) return 0;
   let score = 1;
@@ -38,8 +44,8 @@ function scoreCandidate(entry: CodexEntry, isDetected: boolean): number {
 }
 
 export function computeSpotlightCandidates(
-  detectedEntries: readonly CodexEntry[],
-  alwaysEntries: readonly CodexEntry[],
+  detectedEntries: readonly SpotlightCandidate[],
+  alwaysEntries: readonly SpotlightCandidate[],
   pinnedIds: ReadonlySet<string>,
   maxCandidates: number = MAX_CANDIDATES,
 ): Set<string> {

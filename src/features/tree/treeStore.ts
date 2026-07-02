@@ -6,7 +6,7 @@ import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
-import type { TreeNode as ApiNode } from "./api";
+import type { TreeNodeLite as ApiNode } from "./api";
 import { loadBatchAiRatio } from "@/features/attribution/api";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -205,7 +205,17 @@ export interface SceneMeta {
   sortOrder: string;
 }
 
-function toNodeData(n: ApiNode): TreeNodeData {
+/**
+ * list 系の軽量行 (TreeNodeLite) と createNode 等の全列行 (TreeNode) の両方を
+ * 受ける。note 本文は list 経路では別クエリ (listNoteContents) の結果を
+ * `noteContent` で注入し、全列行では行自身の content をそのまま使う。
+ * scene の content はどちらの経路でも store に載せない (不変条件)。
+ */
+function toNodeData(
+  n: ApiNode & { content?: string },
+  noteContent?: string,
+): TreeNodeData {
+  const noteBody = noteContent ?? n.content;
   return {
     id: n.id,
     projectId: n.projectId,
@@ -231,7 +241,9 @@ function toNodeData(n: ApiNode): TreeNodeData {
     sourceUri: n.sourceUri ?? null,
     sourceMtime: n.sourceMtime ?? null,
     archivedAt: n.archivedAt ?? null,
-    ...(n.nodeType === "note" ? { content: n.content } : {}),
+    ...(n.nodeType === "note" && noteBody !== undefined
+      ? { content: noteBody }
+      : {}),
     contextMode: n.contextMode ?? null,
     aliases: n.aliases ?? null,
     excludedAliases: n.excludedAliases ?? null,
@@ -612,8 +624,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     // try/catch で包んで従来どおり握りつぶす。
     set({ isLoading: true, projectId });
     try {
-      const raw = await api.listNodes(projectId);
-      const nodes = raw.map(toNodeData);
+      // listNodes は content / unplacedBeatsDoc を引かない軽量 projection (H4)。
+      // note 本文だけ 2 段目クエリで取り、note ノードにマージする
+      // (scene 本文は store 外に保つ不変条件は toNodeData 側で維持)。
+      const [raw, noteContents] = await Promise.all([
+        api.listNodes(projectId),
+        api.listNoteContents(projectId),
+      ]);
+      const nodes = raw.map((n) => toNodeData(n, noteContents.get(n.id)));
       const sc = computeScenes(nodes);
       // Expand folders by default
       const chapters = nodes.filter((n) => n.nodeType === "folder");

@@ -8,6 +8,8 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
   createNode,
   listAllNodes,
+  loadSceneContent,
+  loadSceneContents,
   saveSceneContent,
   updateNode,
 } from "@/features/tree/api";
@@ -282,10 +284,17 @@ async function reconcileRoot(
     diskHashByPath.set(f.relPath, await hashForDiskContent(f.content));
   }
 
+  // listAllNodes は content を返さない軽量 projection (H4) なので、rename 検知
+  // ハッシュの対象 (DB にあって disk に無い少数ノード) だけ本文をバッチロードして
+  // hashForNode に注入する。
+  const dbOnlyContents = await loadSceneContents(dbOnly.map(([, n]) => n.id));
+
   for (const [uri, node] of dbOnly) {
     const parsed = parseSourceUri(uri);
     if (!parsed) continue;
-    const nodeHash = await hashForNode(node);
+    const content = dbOnlyContents.get(node.id);
+    const nodeHash =
+      content !== undefined ? await hashForNode({ content }) : null;
     const match =
       nodeHash != null
         ? diskOnly.find((f) => diskHashByPath.get(f.relPath) === nodeHash)
@@ -694,7 +703,10 @@ async function handleFileRemoved(
 
   // handleFileAdded 側で hashForDiskContent と比較するので、削除側も同じ正規化
   // 経路 (hashForNode) で計算する。parse 不能なら rename 候補から除外。
-  const hash = await hashForNode(node);
+  // findNodeByUri (listAllNodes) の行は content を持たないため単発ロードで注入。
+  const hash = await hashForNode({
+    content: await loadSceneContent(node.id),
+  });
   if (hash) {
     recentDeletes.push({
       rootId: root.id,

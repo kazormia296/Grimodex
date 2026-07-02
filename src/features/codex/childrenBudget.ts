@@ -29,13 +29,20 @@ export function getBudgetLabels(): Record<ChildrenBudgetPreset, string> {
 export const BUDGET_LABELS = BUDGET_LABEL_KEYS;
 
 /**
+ * 階層 walk に必要な最小列。M10: chat 経路は icon/notes を持たない
+ * projection 行 (CodexContextEntry) を渡すため、CodexEntry 固定にせず
+ * 構造的部分型のジェネリクスで受ける (UI 経路は従来通り全列行を渡せる)。
+ */
+type HierarchyEntry = Pick<CodexEntry, "id" | "parentId">;
+
+/**
  * Get children of an entry from an already-loaded entries array (synchronous).
  * Use this for UI rendering to avoid extra DB queries.
  */
-export function getChildrenFromArray(
+export function getChildrenFromArray<T extends HierarchyEntry>(
   parentId: string,
-  allEntries: CodexEntry[],
-): CodexEntry[] {
+  allEntries: T[],
+): T[] {
   return allEntries.filter((e) => e.parentId === parentId);
 }
 
@@ -43,11 +50,11 @@ export function getChildrenFromArray(
  * BFS traversal of descendants using loaded entries array.
  * Returns entries in BFS order (breadth-first).
  */
-export function getDescendantsBFS(
+export function getDescendantsBFS<T extends HierarchyEntry>(
   entryId: string,
-  allEntries: CodexEntry[],
-): CodexEntry[] {
-  const result: CodexEntry[] = [];
+  allEntries: T[],
+): T[] {
+  const result: T[] = [];
   const visited = new Set<string>();
   const queue = getChildrenFromArray(entryId, allEntries);
 
@@ -72,7 +79,7 @@ export function getDescendantsBFS(
  */
 export function collectBudgetedDescendantIds(
   seedIds: Iterable<string>,
-  allEntries: CodexEntry[],
+  allEntries: Array<Pick<CodexEntry, "id" | "parentId" | "childrenBudget">>,
 ): Set<string> {
   const byId = new Map(allEntries.map((e) => [e.id, e]));
   const ids = new Set<string>();
@@ -97,7 +104,7 @@ export function collectBudgetedDescendantIds(
  * 解決される経路（detected / focus）では必ず渡すこと。
  */
 export function buildChildrenContext(
-  descendants: CodexEntry[],
+  descendants: Array<Pick<CodexEntry, "id" | "name" | "summary" | "content">>,
   budgetTokens: number,
   resolvedById?: ReadonlyMap<
     string,

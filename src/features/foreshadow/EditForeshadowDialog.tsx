@@ -11,9 +11,9 @@ import {
   removeCodexLink,
   listCodexEntriesByForeshadow,
 } from "./api";
-import { listCodexEntries } from "@/features/codex/api";
+import { listCodexMatchTargets } from "@/features/codex/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import type { CodexEntry } from "@/features/codex/api";
+import type { CodexMatchRow } from "@/features/codex/api";
 
 type LinkedCodexEntry = { id: string; name: string };
 import type { ForeshadowLoadBearing, ForeshadowWithLabel } from "./types";
@@ -54,7 +54,7 @@ export function EditForeshadowDialog({
   >(new Map());
   const [linksToAdd, setLinksToAdd] = useState<Set<string>>(new Set());
   const [linksToRemove, setLinksToRemove] = useState<Set<string>>(new Set());
-  const [allCodexEntries, setAllCodexEntries] = useState<CodexEntry[]>([]);
+  const [allCodexEntries, setAllCodexEntries] = useState<CodexMatchRow[]>([]);
   const [codexSearch, setCodexSearch] = useState("");
   const [showCodexSearch, setShowCodexSearch] = useState(false);
   const codexSearchRef = useRef<HTMLInputElement>(null);
@@ -85,7 +85,9 @@ export function EditForeshadowDialog({
         setLinkedEntries(m);
       });
 
-      void listCodexEntries(getCurrentProjectId()).then(setAllCodexEntries);
+      void listCodexMatchTargets(getCurrentProjectId()).then(
+        setAllCodexEntries,
+      );
     }
     // item.id をキーにしてスナップショットを取る
     // eslint-disable-next-line react-hooks/exhaustive-deps

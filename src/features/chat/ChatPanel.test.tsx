@@ -110,6 +110,8 @@ vi.mock("@/features/editor/editorStore", async () => {
 
 vi.mock("@/features/codex/api", () => ({
   listCodexEntries: vi.fn(() => Promise.resolve([])),
+  listCodexEntriesForContext: vi.fn(() => Promise.resolve([])),
+  listCodexMatchTargets: vi.fn(() => Promise.resolve([])),
   getCodexEntry: vi.fn(),
   createCodexEntry: vi.fn(),
   updateCodexEntry: vi.fn(),
