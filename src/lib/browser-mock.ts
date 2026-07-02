@@ -76,6 +76,7 @@ const SCHEMA_DDL = `
     context_mode TEXT,
     aliases TEXT NOT NULL DEFAULT '[]',
     excluded_aliases TEXT NOT NULL DEFAULT '[]',
+    version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -128,6 +129,7 @@ const SCHEMA_DDL = `
     scene_id TEXT,
     source_chat_message_id TEXT,
     usage_count INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
