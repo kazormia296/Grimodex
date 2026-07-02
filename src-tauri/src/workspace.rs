@@ -154,12 +154,24 @@ pub fn read_global_settings(path: &Path) -> GlobalSettings {
 }
 
 /// Write global settings to the given file path.
+///
+/// 同一ディレクトリの `.tmp` に書いてから rename で原子的に置き換える。
+/// DB コマンドの async 化 (M3) で blocking pool 上の open_workspace /
+/// seed_sample_workspace と main thread の save_global_settings が並行しうる
+/// ため、素の `fs::write` だと torn read (部分書き込みの読取り → default への
+/// 巻き戻り永続化) が起きる。rename は Unix では原子的置換、Windows でも
+/// 既存宛先を置換する (`MOVEFILE_REPLACE_EXISTING`)。呼び出し側の
+/// read-modify-write 直列化は `GlobalSettingsPath::write_lock` が担う。
 pub fn write_global_settings(path: &Path, settings: &GlobalSettings) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(settings)?;
-    std::fs::write(path, json)?;
+    let mut tmp_os = path.as_os_str().to_owned();
+    tmp_os.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp_os);
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -274,6 +286,38 @@ mod tests {
         assert_eq!(settings.theme, "system");
         assert!(!settings.show_launcher_on_startup);
         assert!(settings.last_active_workspace.is_none());
+    }
+
+    #[test]
+    fn test_write_global_settings_atomic_tmp_renamed_away() {
+        let dir = temp_dir("gs_atomic");
+        cleanup(&dir);
+        let path = dir.join("settings.json");
+        let tmp = {
+            let mut os = path.as_os_str().to_owned();
+            os.push(".tmp");
+            PathBuf::from(os)
+        };
+
+        let settings = GlobalSettings {
+            theme: "dark".to_string(),
+            ..GlobalSettings::default()
+        };
+        write_global_settings(&path, &settings).expect("write");
+
+        // .tmp は rename で消えている (torn read 対策の atomic 置換)。
+        assert!(!tmp.exists(), ".tmp must be renamed away after write");
+        assert_eq!(read_global_settings(&path).theme, "dark");
+
+        // 既存宛先があっても rename で置換できる (2 回目以降の write)。
+        let settings2 = GlobalSettings {
+            theme: "light".to_string(),
+            ..GlobalSettings::default()
+        };
+        write_global_settings(&path, &settings2).expect("overwrite");
+        assert!(!tmp.exists(), ".tmp must be renamed away after overwrite");
+        assert_eq!(read_global_settings(&path).theme, "light");
+        cleanup(&dir);
     }
 
     #[test]

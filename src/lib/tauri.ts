@@ -39,6 +39,19 @@ const SLOW_COMMANDS = new Set([
    *  保存先を選ぶまで分単位かかりうるので 10s では reject されてしまう。 */
   "export_save_text",
   "export_save_bytes",
+  /** M3 で async 化した長時間 DB コマンド群。JS 側 10s タイムアウトだと
+   *  「Rust 側は実行継続しているのに失敗扱い → 再クリックで多重実行」になる。
+   *  FTS 全再構築/修復は分単位、open/seed は migrate + VACUUM INTO を含み、
+   *  extract は全シーン形態素解析。db_execute_batch は毎オートセーブの spans
+   *  batch にも使われるため入れない (300s にすると真のハング検出が遅れる。
+   *  pre-M3 も 10s で運用できていた)。 */
+  "fts_rebuild",
+  "fts_rebuild_en",
+  "fts_optimize",
+  "repair_integrity",
+  "seed_sample_workspace",
+  "open_workspace",
+  "extract_codex_candidates",
 ]);
 
 let browserMock: BrowserMock | null = null;

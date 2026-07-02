@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useWorkspaceStore } from "./store";
+import { useProjectStore } from "@/features/project/projectStore";
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
@@ -141,6 +142,59 @@ describe("useWorkspaceStore", () => {
       const state = useWorkspaceStore.getState();
       expect(state.view).not.toBe("editor");
       expect(state.error).toBeTruthy();
+    });
+
+    // R4-1 系列A: 同一パス再オープン (例: チュートリアル再実行) では
+    // EditorScreen の key (activeWorkspacePath) が変わらず remount しないため、
+    // mount 時の loadProject (recorder resume を含む rebind の唯一の経路) が
+    // 走らない。openWorkspace が明示的に再ロードする契約を検証する。
+    it("同一パス再オープンでは loadProject を明示的に再実行する (R4-1 系列A)", async () => {
+      const samePath = "D:\\Novels\\Same";
+      const settingsShape = {
+        recentWorkspaces: [],
+        lastActiveWorkspace: samePath,
+        theme: "system",
+        uiLanguage: "ja",
+        uiScale: 1,
+        showLauncherOnStartup: false,
+        trustedWorkspaces: [samePath],
+      };
+      mockInvoke.mockImplementation((cmd: string) => {
+        switch (cmd) {
+          case "open_workspace":
+            return Promise.resolve({ name: "Same", isExisting: true });
+          case "get_global_settings":
+            return Promise.resolve(settingsShape);
+          case "db_execute":
+            return Promise.resolve({ rows: [] });
+          default:
+            return Promise.resolve(undefined);
+        }
+      });
+      const loadProjectSpy = vi.fn(async () => {});
+      const prevLoadProject = useProjectStore.getState().loadProject;
+      useProjectStore.setState({ loadProject: loadProjectSpy });
+      try {
+        // 1) エディタ表示中 + 同一パス → 明示再ロードされる
+        useWorkspaceStore.setState({
+          view: "editor",
+          activeWorkspacePath: samePath,
+        });
+        await useWorkspaceStore.getState().openWorkspace(samePath);
+        expect(useWorkspaceStore.getState().error).toBeNull();
+        expect(loadProjectSpy).toHaveBeenCalledTimes(1);
+
+        // 2) 別パスへの切替 → remount (mount 時の loadProject) に任せる
+        loadProjectSpy.mockClear();
+        useWorkspaceStore.setState({
+          view: "editor",
+          activeWorkspacePath: "D:\\Novels\\Other",
+        });
+        await useWorkspaceStore.getState().openWorkspace(samePath);
+        expect(loadProjectSpy).not.toHaveBeenCalled();
+      } finally {
+        useProjectStore.setState({ loadProject: prevLoadProject });
+      }
     });
   });
 

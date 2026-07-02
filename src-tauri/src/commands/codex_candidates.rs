@@ -13,6 +13,7 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use grimodex_lint::morph::{tokenize_block, MorphToken};
 use rusqlite::params;
 use serde_json::Value;
+use tauri::Manager;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::database::Database;
@@ -371,60 +372,68 @@ fn load_known_codex_names(db: &Database, project_id: &str) -> anyhow::Result<Has
 /// `min_count` 未満の出現はノイズ (誤判定・一回限りの語) として除外する
 /// (既定 2)。日本語以外のプロジェクトは空を返す。
 #[tauri::command]
-pub(crate) fn extract_codex_candidates(
-    ws_state: tauri::State<'_, WorkspaceState>,
+pub(crate) async fn extract_codex_candidates(
+    app: tauri::AppHandle,
     project_id: String,
     min_count: Option<usize>,
 ) -> Result<Vec<CodexCandidate>, AppError> {
-    let min_count = min_count.unwrap_or(2).max(1);
+    let result =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<CodexCandidate>, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            let min_count = min_count.unwrap_or(2).max(1);
 
-    // フェーズ 1 (ロック保持は最小): DB から読書順シーンと既知名だけ取り出す。
-    // 形態素解析 (CPU バウンド) はロックの**外**で行い、大規模プロジェクトで
-    // ワークスペースの DB アクセス全体をブロックしないようにする。
-    let (scenes, known): (Vec<(String, String)>, HashSet<String>) = with_db(&ws_state, |db| {
-        // 日本語専用 (lindera/UniDic)。それ以外は候補なし。
-        if project_language(db, &project_id)? != "ja" {
-            return Ok((Vec::new(), HashSet::new()));
-        }
-        let nodes = load_project_nodes(db, &project_id)?;
-        let known = load_known_codex_names(db, &project_id)?;
-        Ok((reading_order_scenes(&nodes), known))
-    })?;
+            // フェーズ 1 (ロック保持は最小): DB から読書順シーンと既知名だけ取り出す。
+            // 形態素解析 (CPU バウンド) はロックの**外**で行い、大規模プロジェクトで
+            // ワークスペースの DB アクセス全体をブロックしないようにする。
+            let (scenes, known): (Vec<(String, String)>, HashSet<String>) =
+                with_db(&ws_state, |db| {
+                    // 日本語専用 (lindera/UniDic)。それ以外は候補なし。
+                    if project_language(db, &project_id)? != "ja" {
+                        return Ok((Vec::new(), HashSet::new()));
+                    }
+                    let nodes = load_project_nodes(db, &project_id)?;
+                    let known = load_known_codex_names(db, &project_id)?;
+                    Ok((reading_order_scenes(&nodes), known))
+                })?;
 
-    // 既知名の本文マスク用 AC を一度だけ構築 (ロック外)。パターンは正規化済み `known`
-    // (NFC) を流用。これで各シーンの本文から既知名の出現スパンを引き、過分割フラグメント
-    // (一文字等) を候補から除外する。
-    let name_patterns: Vec<String> = known.iter().cloned().collect();
-    let name_matcher = build_name_matcher(&name_patterns);
+            // 既知名の本文マスク用 AC を一度だけ構築 (ロック外)。パターンは正規化済み `known`
+            // (NFC) を流用。これで各シーンの本文から既知名の出現スパンを引き、過分割フラグメント
+            // (一文字等) を候補から除外する。
+            let name_patterns: Vec<String> = known.iter().cloned().collect();
+            let name_matcher = build_name_matcher(&name_patterns);
 
-    // フェーズ 2 (ロック外): 各シーンを形態素解析。平文も持ち回して文脈窓に使う。
-    let mut scenes_tokens: Vec<SceneTokens> = Vec::with_capacity(scenes.len());
-    for (scene_id, content_json) in scenes {
-        // 本文を NFC へ正規化してから形態素解析・マスクの双方に使う。これで既知名
-        // パターン (normalize_name=NFC) と本文の合成/分解形が一致し、トークン・スパンの
-        // バイトオフセットも同一座標系に揃う (UniDic も NFC 前提なので解析品質も向上)。
-        let plain: String = plaintext_of(&content_json).nfc().collect();
-        let tokens = if plain.is_empty() {
-            Vec::new()
-        } else {
-            match tokenize_block(&plain) {
-                Ok(t) => t,
-                Err(e) => {
-                    // best-effort: そのシーンは空扱いにするが、握り潰さず記録する。
-                    tracing::warn!(
-                        scene_id = %scene_id,
-                        error = %e,
-                        "[codex_candidates] morph tokenize 失敗; このシーンを空扱い"
-                    );
+            // フェーズ 2 (ロック外): 各シーンを形態素解析。平文も持ち回して文脈窓に使う。
+            let mut scenes_tokens: Vec<SceneTokens> = Vec::with_capacity(scenes.len());
+            for (scene_id, content_json) in scenes {
+                // 本文を NFC へ正規化してから形態素解析・マスクの双方に使う。これで既知名
+                // パターン (normalize_name=NFC) と本文の合成/分解形が一致し、トークン・スパンの
+                // バイトオフセットも同一座標系に揃う (UniDic も NFC 前提なので解析品質も向上)。
+                let plain: String = plaintext_of(&content_json).nfc().collect();
+                let tokens = if plain.is_empty() {
                     Vec::new()
-                }
+                } else {
+                    match tokenize_block(&plain) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            // best-effort: そのシーンは空扱いにするが、握り潰さず記録する。
+                            tracing::warn!(
+                                scene_id = %scene_id,
+                                error = %e,
+                                "[codex_candidates] morph tokenize 失敗; このシーンを空扱い"
+                            );
+                            Vec::new()
+                        }
+                    }
+                };
+                let name_spans = name_occurrence_spans(&plain, name_matcher.as_ref());
+                scenes_tokens.push((scene_id, plain, tokens, name_spans));
             }
-        };
-        let name_spans = name_occurrence_spans(&plain, name_matcher.as_ref());
-        scenes_tokens.push((scene_id, plain, tokens, name_spans));
-    }
 
-    Ok(aggregate_candidates(&scenes_tokens, &known, min_count))
+            Ok(aggregate_candidates(&scenes_tokens, &known, min_count))
+        })
+        .await
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
 }
 
 #[cfg(test)]

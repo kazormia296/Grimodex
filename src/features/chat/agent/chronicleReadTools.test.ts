@@ -28,11 +28,11 @@ vi.mock("@/features/chronicle/api", () => ({
   getProjectCalendar: vi.fn(async () => calendarRow),
 }));
 vi.mock("@/features/codex/api", () => ({
-  listCodexEntries: vi.fn(async () => codexEntries),
+  listCodexMatchTargets: vi.fn(async () => codexEntries),
 }));
 
 import * as chronicleApi from "@/features/chronicle/api";
-import { listCodexEntries } from "@/features/codex/api";
+import { listCodexMatchTargets } from "@/features/codex/api";
 import {
   listEventsTool,
   getEventDetailTool,
@@ -72,7 +72,7 @@ beforeEach(() => {
   invalidateChronicleToolCache();
   vi.mocked(chronicleApi.listEvents).mockClear();
   vi.mocked(chronicleApi.listSceneEventsForProject).mockClear();
-  vi.mocked(listCodexEntries).mockClear();
+  vi.mocked(listCodexMatchTargets).mockClear();
 });
 
 describe("listEventsTool", () => {
@@ -216,7 +216,7 @@ describe("ターン内共有キャッシュ", () => {
     expect(
       vi.mocked(chronicleApi.listSceneEventsForProject),
     ).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(listCodexEntries)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(listCodexMatchTargets)).toHaveBeenCalledTimes(1);
   });
 });
 

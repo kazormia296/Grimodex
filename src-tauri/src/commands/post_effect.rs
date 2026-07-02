@@ -5065,7 +5065,7 @@ pub(crate) async fn start_post_effect_run_multi(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn abort_post_effect_run(
     abort_flag: State<'_, PostEffectAbortFlag>,
     ws_state: State<'_, WorkspaceState>,
@@ -5090,7 +5090,7 @@ pub(crate) fn abort_post_effect_run(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_post_effect_runs(
     ws_state: State<'_, WorkspaceState>,
     project_id: String,
@@ -5136,7 +5136,7 @@ pub(crate) fn list_post_effect_runs(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn get_post_effect_run(
     ws_state: State<'_, WorkspaceState>,
     run_id: String,
@@ -5220,7 +5220,7 @@ const SCENE_LENS_FOR_PROJECT_SQL: &str = "SELECT l.*, r.completed_at AS run_comp
 
 /// Outline オーバーレイ用: scene ごとに最新 run の lens を返す。
 /// 各 lens に run の completed_at (`runCompletedAt`) を付け、stale 判定に使う。
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_scene_lens_for_project(
     ws_state: State<'_, WorkspaceState>,
     project_id: String,
@@ -5241,7 +5241,7 @@ pub(crate) fn list_scene_lens_for_project(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_annotations_for_scene(
     ws_state: State<'_, WorkspaceState>,
     project_id: String,
@@ -5308,7 +5308,7 @@ pub(crate) fn list_annotations_for_scene(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_annotations_for_project(
     ws_state: State<'_, WorkspaceState>,
     project_id: String,
@@ -5388,7 +5388,7 @@ fn update_annotation_status_inner(
     Ok(ann)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn update_annotation_status(
     ws_state: State<'_, WorkspaceState>,
     annotation_id: String,
@@ -5470,7 +5470,7 @@ fn reply_to_annotation_inner(
 }
 
 /// 疑似コメントへの返信を追加する (設計書 §4: 親の run_id を継承)。
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn reply_to_annotation(
     ws_state: State<'_, WorkspaceState>,
     args: ReplyToAnnotationArgs,
@@ -5538,7 +5538,7 @@ fn update_relation_status_inner(
     Ok(rel)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn update_relation_status(
     ws_state: State<'_, WorkspaceState>,
     relation_id: String,
@@ -5550,7 +5550,7 @@ pub(crate) fn update_relation_status(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn save_post_effect_annotations(
     ws_state: State<'_, WorkspaceState>,
     project_id: String,

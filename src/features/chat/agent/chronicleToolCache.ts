@@ -1,4 +1,4 @@
-import { listCodexEntries } from "@/features/codex/api";
+import { listCodexMatchTargets } from "@/features/codex/api";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import {
   listEvents,
@@ -12,7 +12,7 @@ import { SharedLoader, registerToolTurnReset } from "./toolTurnCache";
 /**
  * chronicle 系ツールが 1 ターン内で共有する lazy キャッシュ。
  * read 4 ツール + write 7 ツールの可視性チェック (isEventVisibleForWrite) が
- * それぞれ listEvents / listSceneEventsForProject / listCodexEntries /
+ * それぞれ listEvents / listSceneEventsForProject / listCodexMatchTargets /
  * computeGlobalSceneOrder をフルロードし直していたのを、ターン内 1 回に畳む。
  *
  * 返り値（配列 / Map）は共有インスタンスなので呼び出し側は読み取り専用で扱うこと。
@@ -27,7 +27,8 @@ const sceneEventsLoader = new SharedLoader<SceneEventRow[]>((projectId) =>
 );
 const codexNamesLoader = new SharedLoader<Map<string, string>>(
   async (projectId) => {
-    const entries = await listCodexEntries(projectId);
+    // id→name の Map しか作らないので match projection (5 列) で十分。
+    const entries = await listCodexMatchTargets(projectId);
     return new Map(entries.map((e) => [e.id, e.name] as const));
   },
 );

@@ -4,7 +4,10 @@ import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
-import { listCodexEntries, type CodexEntry } from "@/features/codex/api";
+import {
+  listCodexMatchTargets,
+  type CodexMatchRow,
+} from "@/features/codex/api";
 import {
   generateCorrelationBoard,
   type CorrelationProgress,
@@ -29,7 +32,7 @@ export function CorrelationDialog({
   onClose,
 }: CorrelationDialogProps) {
   const { t } = useTranslation();
-  const [characters, setCharacters] = useState<CodexEntry[]>([]);
+  const [characters, setCharacters] = useState<CodexMatchRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [minShared, setMinShared] = useState(2);
@@ -40,7 +43,7 @@ export function CorrelationDialog({
     let cancelled = false;
     void (async () => {
       try {
-        const rows = await listCodexEntries(projectId, "character");
+        const rows = await listCodexMatchTargets(projectId, "character");
         if (cancelled) return;
         rows.sort((a, b) => a.name.localeCompare(b.name));
         setCharacters(rows);

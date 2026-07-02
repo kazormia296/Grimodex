@@ -3896,7 +3896,8 @@
   },
   "autoSave": {
     "failed": "Auto-save failed: {{reason}}",
-    "recovered": "Auto-save recovered; your changes are saved"
+    "recovered": "Auto-save recovered; your changes are saved",
+    "workspaceSwitching": "Could not save while switching workspaces (your changes are kept and will be re-saved automatically)"
   },
   "sceneLoad": {
     "failed": "Failed to load scene content (saving paused for this scene): {{reason}}"
@@ -3934,6 +3935,7 @@
   },
   "workspace": {
     "invalidPath": "Workspace \"{{path}}\" does not exist or is invalid. Removed from the list.",
+    "openInProgress": "A workspace is already being opened. Please wait for it to finish",
     "trustTitle": "Do You Trust This Workspace?",
     "trustMessage": "This workspace was not created by you. It may contain content that could run malicious code.",
     "trustPath": "Path: {{path}}",

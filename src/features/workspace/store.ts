@@ -2,6 +2,13 @@ import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { flushAllAutoSaves } from "@/hooks/useAutoSave";
+import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
+import {
+  flushNow as flushTimelapseRecorder,
+  beginWorkspaceSwitch,
+  endWorkspaceSwitch,
+} from "@/features/timelapse/recorder";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
@@ -10,7 +17,11 @@ import { loadAndSyncChronicleSettings } from "@/features/chronicle/chronicleStor
 import type { ChronicleSettings } from "@/features/chronicle/chronicleStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { useGridStore } from "@/features/grid/gridStore";
-import { useProjectStore } from "@/features/project/projectStore";
+import {
+  useProjectStore,
+  getCurrentProjectId,
+} from "@/features/project/projectStore";
+import { toast } from "sonner";
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
 
 export interface RecentWorkspace {
@@ -119,6 +130,12 @@ interface WorkspaceState {
   seedAndOpenSample: (language: string, aiPolicy: string) => Promise<void>;
 }
 
+/**
+ * openWorkspace の JS 側 in-flight ガード。連打で open_workspace が Rust の
+ * open_lock 待ちに積まれるのと、quiesce / recorder suspend の多重実行を防ぐ。
+ */
+let openWorkspaceInFlight = false;
+
 export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   view: "loading",
   globalSettings: null,
@@ -195,11 +212,75 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   },
 
   openWorkspace: async (path: string) => {
+    // 連打・多重呼び出しの in-flight ガード (Rust 側は open_lock で直列化
+    // されるが、JS 側でも二重 open のキュー積みと quiesce の多重実行を防ぐ)。
+    if (openWorkspaceInFlight) {
+      debugLog.warn(
+        "workspaceStore",
+        "open_workspace already in flight; ignoring re-entry",
+        path,
+      );
+      toast.info(i18next.t("workspace.openInProgress"));
+      return;
+    }
+    openWorkspaceInFlight = true;
+    // R4-1 系列A 検出用: 「エディタ表示中の同一パス再オープン」は
+    // EditorScreen の key (activeWorkspacePath) が変わらず remount しない。
+    const wasSamePathReopen =
+      get().view === "editor" && get().activeWorkspacePath === path;
     try {
       set({ error: null });
-      const result = await invoke<OpenWorkspaceResult>("open_workspace", {
-        path,
-      });
+      // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
+      // swap を跨いだ in-flight write が旧 workspace の内容を新 workspace の
+      // DB に落とさないよう、切替前に書き込みを静止させる:
+      // (a) マウント中の全 AutoSave を flush、(b) pending scene write の完了
+      // 待ち、(c) timelapse recorder の flush。ここで save が失敗しても既存の
+      // 失敗 toast + dirty 維持 (リトライ) に任せ、切替自体は続行する
+      // (Rust 側の switching ガードが最後の砦)。
+      try {
+        await flushAllAutoSaves();
+        await awaitAllPendingSceneWrites();
+        await flushTimelapseRecorder();
+      } catch (e) {
+        debugLog.warn(
+          "workspaceStore",
+          "pre-switch quiesce failed; proceeding with switch",
+          errorDetail(e),
+        );
+      }
+      // 切替開始 (r5 状態機械): recorder のキュー破棄 + 束縛無効化。切替中の
+      // flush 再試行が open 完了後に新 workspace の hash chain へ旧イベントを
+      // 混入させるのを防ぐ (C1)。記録の再開は「命令」ではなく、正規 rebind
+      // (projectStore の initRecorderForProject) の完了だけが束縛を有効に戻す。
+      //
+      // begin〜end は swap (open_workspace invoke) だけを正確に括る。end を
+      // openWorkspace 全体の finally に置くと、set({view}) 以降の await 中に
+      // React が EditorScreen を mount して走らせた正規 rebind
+      // (loadProject → initRecorderForProject) が switchInProgress=true の
+      // bystander と誤判定され、束縛が二度と書かれない (= 記録の恒久停止)。
+      // swap の成否が確定した時点で切替は終わり、以降の記録可否は
+      // bindingInvalidated (rebind 完了まで true) が閉じる。
+      // 既知残余 (理論値): end 後〜正規 rebind 前に完了した別経路の init は
+      // 束縛を書けるが、その init は swap 済みの新 DB から tail を読むため
+      // 「旧 workspace の束縛で新 chain に書く」誤束縛にはならない。
+      beginWorkspaceSwitch();
+      let result: OpenWorkspaceResult;
+      let swapDone = false;
+      try {
+        result = await invoke<OpenWorkspaceResult>("open_workspace", {
+          path,
+        });
+        // swap 完了。Rust 側 open_workspace は swap 以降 infallible
+        // (src-tauri/src/commands/workspace.rs の不変条件コメント参照) なので
+        // 「invoke エラー ⟹ swap 未実行」が成立し、下の restoreBinding 判定が
+        // 安全になる。
+        swapDone = true;
+      } finally {
+        // swap 未実行の失敗 = 旧 workspace 続行なので旧束縛は依然正しい →
+        // 復元して記録をそのまま再開する。swap 済みなら束縛は無効のまま =
+        // 正規 rebind (initRecorderForProject) の完了だけが記録を再開する。
+        endWorkspaceSwitch({ restoreBinding: !swapDone });
+      }
       // Resolve the current Project before the editor view renders so that
       // panels reading currentProjectId have a value to work with.
       await useProjectStore.getState().initCurrentProject();
@@ -249,14 +330,30 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       useGridStore.getState().loadFromSettings(settings);
       const { useMatrixStore } = await import("@/features/matrix/matrixStore");
       useMatrixStore.getState().loadFromSettings(settings);
+      // R4-1 系列A: 同一パスの再オープン (例: チュートリアル再実行 = seed で
+      // DB を作り直して同じ path を open) では EditorScreen が remount せず、
+      // mount 時の loadProject (正規 rebind の唯一の経路) が走らない。ここで
+      // 明示的に再ロードする。loadProject は再実行安全: generation ガードが
+      // 外部フィードの多重購読を防ぎ、reloadProjectData が in-memory 状態を
+      // 作り直す。切替は上で終了済みなので、この rebind は bystander 扱い
+      // されず束縛を書ける。
+      if (wasSamePathReopen) {
+        await useProjectStore.getState().loadProject(getCurrentProjectId());
+      }
       // Optimize FTS indexes in background (fire-and-forget)
       invoke("fts_optimize").catch(() => {});
     } catch (e) {
+      // open 失敗時も recorder への命令的な復帰はしない (r5)。束縛の扱いは
+      // swap を括る endWorkspaceSwitch({restoreBinding}) が一元的に決めた。
+      // swap 後の後続処理の失敗では束縛は無効のまま = 次の正規 rebind まで
+      // イベントは warn 付きで破棄される (誤束縛での混入より安全側)。
       set({
         error: e instanceof Error ? e.message : String(e),
         // If still on loading screen (called from initialize), recover to launcher
         ...(get().view === "loading" ? { view: "launcher" as const } : {}),
       });
+    } finally {
+      openWorkspaceInFlight = false;
     }
   },
 

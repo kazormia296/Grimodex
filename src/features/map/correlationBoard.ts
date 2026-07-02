@@ -24,7 +24,7 @@ import {
   type NewMapFrame,
 } from "@/db/schema";
 import { invoke } from "@/lib/tauri";
-import { listCodexEntries } from "@/features/codex/api";
+import { listCodexEntriesForContext } from "@/features/codex/api";
 import { buildCrossReferenceReportForProject } from "@/features/codex/crossReference";
 import { listCodexRelations } from "@/features/codex/codexRelationApi";
 import { parseTags } from "@/features/codex/components/EntryCard";
@@ -179,7 +179,10 @@ export async function generateCorrelationBoard(
   onProgress?: (p: CorrelationProgress) => void,
 ): Promise<{ boardId: string }> {
   // 1. characters。親 frame の title 解決のため全 entry を一度取得し character を抽出する。
-  const allEntries = await listCodexEntries(projectId);
+  // id/name/type に加え parentId (共通親 Frame) と tagsCache (force layout の
+  // タグ束ね) を読むため match projection では足りない。icon/notes だけ落とした
+  // context projection を使う (M10)。
+  const allEntries = await listCodexEntriesForContext(projectId);
   const nameById = new Map(allEntries.map((e) => [e.id, e.name]));
   const allCharacters = allEntries.filter((e) => e.type === "character");
   const filterSet =

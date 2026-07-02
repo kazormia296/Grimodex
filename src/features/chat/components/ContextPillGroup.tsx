@@ -12,6 +12,7 @@ import type { CodexEntry } from "@/features/codex/api";
 import type { PinnedCodexEntryWithData } from "../chatApi";
 import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
 import { CodexEntryPopoverContent } from "@/features/codex/components/CodexEntryPopoverContent";
+import type { CodexPillEntry } from "@/features/codex/components/CodexPill";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 
@@ -20,8 +21,8 @@ interface ContextPillGroupProps {
   label: string;
   /** ピン済みエントリ（先頭に表示） */
   pinnedEntries: PinnedCodexEntryWithData[];
-  /** autoエントリ（後ろに表示、Pinボタン） */
-  autoEntries: CodexEntry[];
+  /** autoエントリ（後ろに表示、Pinボタン）。M10: icon なし projection 行も可 */
+  autoEntries: CodexPillEntry[];
   /** via表示の子エントリ（pinned の後、auto の前に表示） */
   viaEntries?: { child: CodexEntry; parentName: string }[];
   /** auto エントリのうち ✨ Spotlight 候補としてマークする ID 集合 */
@@ -68,7 +69,7 @@ export function ContextPillGroup({
 
   // Codex エントリ hover ポップオーバー
   const [hoveredEntry, setHoveredEntry] = useState<{
-    entry: CodexEntry;
+    entry: CodexPillEntry;
     rect: DOMRect;
   } | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,7 +86,7 @@ export function ContextPillGroup({
   }, [open]);
 
   const handleEntryMouseEnter = useCallback(
-    (entry: CodexEntry, e: MouseEvent<HTMLElement>) => {
+    (entry: CodexPillEntry, e: MouseEvent<HTMLElement>) => {
       if (hideTimerRef.current) {
         clearTimeout(hideTimerRef.current);
         hideTimerRef.current = null;

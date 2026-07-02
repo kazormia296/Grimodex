@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 use crate::{
     commands::{AppError, GlobalSettingsPath},
@@ -221,240 +222,252 @@ pub(crate) struct SeedResult {
 ///
 /// Caller must invoke `open_workspace(path)` afterwards to set the active workspace.
 #[tauri::command]
-pub(crate) fn seed_sample_workspace(
-    gs_path: tauri::State<'_, GlobalSettingsPath>,
+pub(crate) async fn seed_sample_workspace(
+    app: tauri::AppHandle,
     language: String,
     ai_policy: String,
 ) -> Result<SeedResult, AppError> {
-    let app_dir = gs_path
-        .path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine AppData directory"))?;
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<SeedResult, AppError> {
+        let gs_path = app.state::<GlobalSettingsPath>();
+        let app_dir = gs_path
+            .path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine AppData directory"))?;
 
-    let ws_path = app_dir.join("sample-workspace");
-    std::fs::create_dir_all(&ws_path).map_err(anyhow::Error::from)?;
+        let ws_path = app_dir.join("sample-workspace");
+        std::fs::create_dir_all(&ws_path).map_err(anyhow::Error::from)?;
 
-    // Always (re-)create the database from scratch so the schema is fresh.
-    let db_path = ws_path.join("grimodex.db");
-    if db_path.exists() {
-        std::fs::remove_file(&db_path).map_err(anyhow::Error::from)?;
-    }
+        // Always (re-)create the database from scratch so the schema is fresh.
+        let db_path = ws_path.join("grimodex.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).map_err(anyhow::Error::from)?;
+        }
 
-    // Open and migrate
-    let db = Database::new(&db_path)?;
-    db.migrate()?;
+        // Open and migrate
+        let db = Database::new(&db_path)?;
+        db.migrate()?;
 
-    // Pick the embedded sample whose authored language matches the user's UI
-    // language (ja / en). `sample_language` is written to the project's
-    // `language` column so labels and body stay consistent; unknown languages
-    // fall back to the Japanese sample. See `select_seed` for the rationale.
-    let (seed_src, sample_language) = select_seed(&language);
+        // Pick the embedded sample whose authored language matches the user's UI
+        // language (ja / en). `sample_language` is written to the project's
+        // `language` column so labels and body stay consistent; unknown languages
+        // fall back to the Japanese sample. See `select_seed` for the rationale.
+        let (seed_src, sample_language) = select_seed(&language);
 
-    // Seed from embedded JSON
-    let seed: SeedData = serde_json::from_str(seed_src).map_err(anyhow::Error::from)?;
-    let project_id = seed.project.id.clone();
-    let now_dt = chrono::Utc::now().to_rfc3339();
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    db.with_conn(|conn| {
-        // Project
-        // Migration pre-inserts "default-project"; replace it with sample data.
-        conn.execute(
-            "INSERT OR REPLACE INTO projects
-                (id, title, genre, language, ai_instructions, ai_policy, is_sample, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
-            rusqlite::params![
-                project_id,
-                seed.project.title,
-                seed.project.genre,
-                sample_language,
-                seed.project.ai_instructions,
-                ai_policy,
-                now_dt,
-            ],
-        )?;
-
-        // Tree nodes (insert in order — parents before children)
-        for node in &seed.tree_nodes {
-            let content = node
-                .content
-                .clone()
-                .unwrap_or_else(|| r#"{"type":"doc","content":[]}"#.to_string());
-            let char_count = count_scene_body_chars(&content);
+        // Seed from embedded JSON
+        let seed: SeedData = serde_json::from_str(seed_src).map_err(anyhow::Error::from)?;
+        let project_id = seed.project.id.clone();
+        let now_dt = chrono::Utc::now().to_rfc3339();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        db.with_conn(|conn| {
+            // Project
+            // Migration pre-inserts "default-project"; replace it with sample data.
             conn.execute(
-                "INSERT INTO tree_nodes
-                    (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, char_count, story_time_order, story_time_label, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+                "INSERT OR REPLACE INTO projects
+                    (id, title, genre, language, ai_instructions, ai_policy, is_sample, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
                 rusqlite::params![
-                    node.id,
                     project_id,
-                    node.parent_id,
-                    node.node_type,
-                    node.title,
-                    node.synopsis,
-                    node.sort_order,
-                    node.status,
-                    content,
-                    char_count,
-                    node.story_time_order,
-                    node.story_time_label,
+                    seed.project.title,
+                    seed.project.genre,
+                    sample_language,
+                    seed.project.ai_instructions,
+                    ai_policy,
                     now_dt,
                 ],
             )?;
-        }
 
-        // Codex entries
-        for entry in &seed.codex_entries {
-            let content = entry
-                .content
-                .clone()
-                .unwrap_or_else(|| r#"{"type":"doc","content":[]}"#.to_string());
-            let context_mode = entry
-                .context_mode
-                .clone()
-                .unwrap_or_else(|| "mentioned".to_string());
-            conn.execute(
-                "INSERT INTO codex_entries
-                    (id, project_id, type, name, aliases, summary, content, notes, context_mode, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-                rusqlite::params![
-                    entry.id,
-                    project_id,
-                    entry.entry_type,
-                    entry.name,
-                    entry.aliases,
-                    entry.summary,
-                    content,
-                    entry.notes,
-                    context_mode,
-                    now_dt,
-                ],
-            )?;
-        }
+            // Tree nodes (insert in order — parents before children)
+            for node in &seed.tree_nodes {
+                let content = node
+                    .content
+                    .clone()
+                    .unwrap_or_else(|| r#"{"type":"doc","content":[]}"#.to_string());
+                let char_count = count_scene_body_chars(&content);
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, parent_id, node_type, title, synopsis, sort_order, status, content, char_count, story_time_order, story_time_label, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+                    rusqlite::params![
+                        node.id,
+                        project_id,
+                        node.parent_id,
+                        node.node_type,
+                        node.title,
+                        node.synopsis,
+                        node.sort_order,
+                        node.status,
+                        content,
+                        char_count,
+                        node.story_time_order,
+                        node.story_time_label,
+                        now_dt,
+                    ],
+                )?;
+            }
 
-        // Chat sessions
-        for session in &seed.chat_sessions {
-            conn.execute(
-                "INSERT INTO chat_sessions
-                    (id, project_id, node_id, title, model, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                rusqlite::params![
-                    session.id,
-                    project_id,
-                    session.node_id,
-                    session.title,
-                    session.model,
-                    now_dt,
-                ],
-            )?;
-        }
+            // Codex entries
+            for entry in &seed.codex_entries {
+                let content = entry
+                    .content
+                    .clone()
+                    .unwrap_or_else(|| r#"{"type":"doc","content":[]}"#.to_string());
+                let context_mode = entry
+                    .context_mode
+                    .clone()
+                    .unwrap_or_else(|| "mentioned".to_string());
+                conn.execute(
+                    "INSERT INTO codex_entries
+                        (id, project_id, type, name, aliases, summary, content, notes, context_mode, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                    rusqlite::params![
+                        entry.id,
+                        project_id,
+                        entry.entry_type,
+                        entry.name,
+                        entry.aliases,
+                        entry.summary,
+                        content,
+                        entry.notes,
+                        context_mode,
+                        now_dt,
+                    ],
+                )?;
+            }
 
-        // Chat messages
-        for msg in &seed.chat_messages {
-            conn.execute(
-                "INSERT INTO chat_messages
-                    (id, session_id, role, content, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![msg.id, msg.session_id, msg.role, msg.content, now_dt],
-            )?;
-        }
+            // Chat sessions
+            for session in &seed.chat_sessions {
+                conn.execute(
+                    "INSERT INTO chat_sessions
+                        (id, project_id, node_id, title, model, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                    rusqlite::params![
+                        session.id,
+                        project_id,
+                        session.node_id,
+                        session.title,
+                        session.model,
+                        now_dt,
+                    ],
+                )?;
+            }
 
-        // Foreshadows
-        for fs in &seed.foreshadows {
-            conn.execute(
-                "INSERT INTO foreshadows
-                    (id, project_id, title, intent, notes, payoff_scene_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                rusqlite::params![
-                    fs.id,
-                    project_id,
-                    fs.title,
-                    fs.intent,
-                    fs.notes,
-                    fs.payoff_scene_id,
-                    now_ms,
-                ],
-            )?;
-        }
+            // Chat messages
+            for msg in &seed.chat_messages {
+                conn.execute(
+                    "INSERT INTO chat_messages
+                        (id, session_id, role, content, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![msg.id, msg.session_id, msg.role, msg.content, now_dt],
+                )?;
+            }
 
-        // Snippets
-        for sn in &seed.snippets {
-            conn.execute(
-                "INSERT INTO snippets
-                    (id, project_id, title, content, content_source, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                rusqlite::params![
-                    sn.id,
-                    project_id,
-                    sn.title,
-                    sn.content,
-                    sn.content_source,
-                    now_dt,
-                ],
-            )?;
-        }
+            // Foreshadows
+            for fs in &seed.foreshadows {
+                conn.execute(
+                    "INSERT INTO foreshadows
+                        (id, project_id, title, intent, notes, payoff_scene_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                    rusqlite::params![
+                        fs.id,
+                        project_id,
+                        fs.title,
+                        fs.intent,
+                        fs.notes,
+                        fs.payoff_scene_id,
+                        now_ms,
+                    ],
+                )?;
+            }
 
-        // Foreshadow setups
-        for setup in &seed.foreshadow_setups {
-            conn.execute(
-                "INSERT INTO foreshadow_setups
-                    (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
-                     attribution, is_orphan, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)",
-                rusqlite::params![
-                    setup.id,
-                    setup.foreshadow_id,
-                    setup.scene_id,
-                    setup.from_pos,
-                    setup.to_pos,
-                    setup.kind,
-                    setup.strength,
-                    setup.attribution,
-                    now_ms,
-                ],
-            )?;
-        }
+            // Snippets
+            for sn in &seed.snippets {
+                conn.execute(
+                    "INSERT INTO snippets
+                        (id, project_id, title, content, content_source, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                    rusqlite::params![
+                        sn.id,
+                        project_id,
+                        sn.title,
+                        sn.content,
+                        sn.content_source,
+                        now_dt,
+                    ],
+                )?;
+            }
 
-        // Authorship spans — provenance for sample scenes. Seeded directly so the
-        // attribution surfaces (AI ratio badge / report / overlay) are populated
-        // on first open; see `SeedAuthorshipSpan`. Only `node_id` is set among the
-        // owner columns, satisfying the table's "exactly one owner" CHECK.
-        for span in &seed.authorship_spans {
-            conn.execute(
-                "INSERT INTO authorship_spans
-                    (id, node_id, from_pos, to_pos, source, model, timestamp)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    span.id,
-                    span.node_id,
-                    span.from_pos,
-                    span.to_pos,
-                    span.source,
-                    span.model,
-                    span.timestamp,
-                ],
-            )?;
-        }
+            // Foreshadow setups
+            for setup in &seed.foreshadow_setups {
+                conn.execute(
+                    "INSERT INTO foreshadow_setups
+                        (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
+                         attribution, is_orphan, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)",
+                    rusqlite::params![
+                        setup.id,
+                        setup.foreshadow_id,
+                        setup.scene_id,
+                        setup.from_pos,
+                        setup.to_pos,
+                        setup.kind,
+                        setup.strength,
+                        setup.attribution,
+                        now_ms,
+                    ],
+                )?;
+            }
 
-        Ok(())
-    })?;
+            // Authorship spans — provenance for sample scenes. Seeded directly so the
+            // attribution surfaces (AI ratio badge / report / overlay) are populated
+            // on first open; see `SeedAuthorshipSpan`. Only `node_id` is set among the
+            // owner columns, satisfying the table's "exactly one owner" CHECK.
+            for span in &seed.authorship_spans {
+                conn.execute(
+                    "INSERT INTO authorship_spans
+                        (id, node_id, from_pos, to_pos, source, model, timestamp)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        span.id,
+                        span.node_id,
+                        span.from_pos,
+                        span.to_pos,
+                        span.source,
+                        span.model,
+                        span.timestamp,
+                    ],
+                )?;
+            }
 
-    // Ensure workspace metadata file exists
-    let ws_path_str = ws_path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Non-UTF-8 workspace path"))?
-        .to_string();
-    let ws_id = uuid::Uuid::new_v4().to_string();
-    workspace::ensure_workspace_meta(&ws_path, &ws_id, &now_dt)?;
+            Ok(())
+        })?;
 
-    // Persist sample workspace path in GlobalSettings
-    let mut settings = workspace::read_global_settings(&gs_path.path);
-    settings.sample_workspace_path = Some(ws_path_str.clone());
-    workspace::write_global_settings(&gs_path.path, &settings)?;
+        // Ensure workspace metadata file exists
+        let ws_path_str = ws_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Non-UTF-8 workspace path"))?
+            .to_string();
+        let ws_id = uuid::Uuid::new_v4().to_string();
+        workspace::ensure_workspace_meta(&ws_path, &ws_id, &now_dt)?;
 
-    Ok(SeedResult {
-        path: ws_path_str,
-        project_id,
+        // Persist sample workspace path in GlobalSettings (write_lock で
+        // read-modify-write を原子化。save_global_settings / open_workspace
+        // と並行しても lost update しない)
+        let _gs_guard = gs_path
+            .write_lock
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut settings = workspace::read_global_settings(&gs_path.path);
+        settings.sample_workspace_path = Some(ws_path_str.clone());
+        workspace::write_global_settings(&gs_path.path, &settings)?;
+
+        Ok(SeedResult {
+            path: ws_path_str,
+            project_id,
+        })
     })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
 }
 
 // ---------------------------------------------------------------------------

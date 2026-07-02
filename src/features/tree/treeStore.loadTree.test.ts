@@ -2,9 +2,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockListNodes = vi.fn();
+const mockListNoteContents = vi.fn();
 
 vi.mock("./api", () => ({
   listNodes: (...args: unknown[]) => mockListNodes(...args),
+  listNoteContents: (...args: unknown[]) => mockListNoteContents(...args),
 }));
 
 vi.mock("@/features/project/projectStore", () => ({
@@ -29,6 +31,8 @@ vi.mock("@/features/codex/phaseStore", () => ({
 
 import { useTreeStore } from "./treeStore";
 
+// listNodes は H4 projection で content / unplacedBeatsDoc を返さない
+// (TreeNodeLite 相当の行)。note 本文は listNoteContents の別クエリで来る。
 function sceneNode(id: string, sortOrder: string) {
   return {
     id,
@@ -43,8 +47,6 @@ function sceneNode(id: string, sortOrder: string) {
     povCharacterId: null,
     locationId: null,
     status: "outline",
-    content: "{}",
-    unplacedBeatsDoc: "[]",
     charCount: 0,
     unplacedBeatPreview: null,
     placedBeatPreview: null,
@@ -59,6 +61,7 @@ function sceneNode(id: string, sortOrder: string) {
 describe("loadTree activeSceneId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockListNoteContents.mockResolvedValue(new Map<string, string>());
     useTreeStore.setState({
       activeSceneId: "scene-b",
       nodes: [],
@@ -80,25 +83,34 @@ describe("loadTree activeSceneId", () => {
 
   it("keeps scene bodies out of store but loads note content", async () => {
     mockListNodes.mockResolvedValue([
-      {
-        ...sceneNode("scene-a", "a0"),
-        content:
-          '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"scene body"}]}]}',
-      },
+      sceneNode("scene-a", "a0"),
       {
         ...sceneNode("note-a", "a1"),
         nodeType: "note" as const,
         title: "Note",
-        content:
-          '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"note body"}]}]}',
         contextMode: "mentioned",
         aliases: "[]",
         excludedAliases: "[]",
       },
     ]);
+    // note 本文は 2 段目クエリ (listNoteContents) から来る。scene id が
+    // 混入しても nodeType ゲートで store には載らないこと (不変条件) も見る。
+    mockListNoteContents.mockResolvedValue(
+      new Map([
+        [
+          "note-a",
+          '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"note body"}]}]}',
+        ],
+        [
+          "scene-a",
+          '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"scene body"}]}]}',
+        ],
+      ]),
+    );
 
     await useTreeStore.getState().loadTree("p1");
 
+    expect(mockListNoteContents).toHaveBeenCalledWith("p1");
     const scene = useTreeStore.getState().nodes.find((n) => n.id === "scene-a");
     const note = useTreeStore.getState().nodes.find((n) => n.id === "note-a");
     expect(scene?.content).toBeUndefined();

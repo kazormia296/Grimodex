@@ -739,7 +739,7 @@ fn agent_snippet_create_impl(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_codex_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentCodexCreatePayload,
@@ -747,7 +747,7 @@ pub(crate) fn agent_codex_create(
     with_db(&ws_state, |db| agent_codex_create_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_codex_update(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentCodexUpdatePayload,
@@ -755,7 +755,7 @@ pub(crate) fn agent_codex_update(
     with_db(&ws_state, |db| agent_codex_update_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_write_bundle(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentWriteBundlePayload,
@@ -763,7 +763,7 @@ pub(crate) fn agent_write_bundle(
     with_db(&ws_state, |db| agent_write_bundle_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_snippet_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentSnippetCreatePayload,
@@ -1050,7 +1050,7 @@ fn agent_discard_prose_stage_impl(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_propose_scene_body(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentProposeSceneBodyPayload,
@@ -1058,7 +1058,7 @@ pub(crate) fn agent_propose_scene_body(
     with_db(&ws_state, |db| agent_propose_scene_body_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_accept_prose_stage(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentProseStageIdPayload,
@@ -1066,7 +1066,7 @@ pub(crate) fn agent_accept_prose_stage(
     with_db(&ws_state, |db| agent_accept_prose_stage_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_discard_prose_stage(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentProseStageIdPayload,
@@ -1214,7 +1214,7 @@ fn agent_undo_journal_impl(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_apply_undo_journal(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentUndoJournalPayload,
@@ -1315,7 +1315,7 @@ fn agent_foreshadow_update_impl(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_foreshadow_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentForeshadowCreatePayload,
@@ -1323,7 +1323,7 @@ pub(crate) fn agent_foreshadow_create(
     with_db(&ws_state, |db| agent_foreshadow_create_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_foreshadow_update(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentForeshadowUpdatePayload,
@@ -2814,7 +2814,7 @@ fn agent_event_relation_mutate_impl(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_event_create(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventCreatePayload,
@@ -2822,7 +2822,7 @@ pub(crate) fn agent_event_create(
     with_db(&ws_state, |db| agent_event_create_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_event_update(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventUpdatePayload,
@@ -2830,7 +2830,7 @@ pub(crate) fn agent_event_update(
     with_db(&ws_state, |db| agent_event_update_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_event_delete(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventIdPayload,
@@ -2838,7 +2838,7 @@ pub(crate) fn agent_event_delete(
     with_db(&ws_state, |db| agent_event_delete_impl(db, payload))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_event_set_participants(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventParticipantsPayload,
@@ -2848,7 +2848,7 @@ pub(crate) fn agent_event_set_participants(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_scene_event_link(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentSceneEventPayload,
@@ -2858,7 +2858,7 @@ pub(crate) fn agent_scene_event_link(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_scene_event_unlink(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentSceneEventPayload,
@@ -2868,7 +2868,7 @@ pub(crate) fn agent_scene_event_unlink(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_event_relation_add(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventRelationPayload,
@@ -2878,7 +2878,7 @@ pub(crate) fn agent_event_relation_add(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn agent_event_relation_remove(
     ws_state: tauri::State<'_, WorkspaceState>,
     payload: AgentEventRelationPayload,

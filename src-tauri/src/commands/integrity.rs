@@ -1,23 +1,42 @@
 use serde_json::Value;
+use tauri::Manager;
 
 use super::{with_db, AppError, WorkspaceState};
 
 #[tauri::command]
-pub(crate) fn fts_optimize(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppError> {
-    with_db(&ws_state, |db| db.fts_optimize())
+pub(crate) async fn fts_optimize(app: tauri::AppHandle) -> Result<(), AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        with_db(&ws_state, |db| db.fts_optimize())
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
 }
 
 #[tauri::command]
-pub(crate) fn fts_rebuild(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppError> {
-    with_db(&ws_state, |db| db.fts_rebuild())
+pub(crate) async fn fts_rebuild(app: tauri::AppHandle) -> Result<(), AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        with_db(&ws_state, |db| db.fts_rebuild())
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
 }
 
 #[tauri::command]
-pub(crate) fn fts_rebuild_en(ws_state: tauri::State<'_, WorkspaceState>) -> Result<(), AppError> {
-    with_db(&ws_state, |db| db.rebuild_en_fts())
+pub(crate) async fn fts_rebuild_en(app: tauri::AppHandle) -> Result<(), AppError> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
+        let ws_state = app.state::<WorkspaceState>();
+        with_db(&ws_state, |db| db.rebuild_en_fts())
+    })
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn fts_search(
     ws_state: tauri::State<'_, WorkspaceState>,
     project_id: String,
@@ -30,7 +49,7 @@ pub(crate) fn fts_search(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn integrity_check(
     ws_state: tauri::State<'_, WorkspaceState>,
 ) -> Result<serde_json::Map<String, Value>, AppError> {
@@ -38,8 +57,16 @@ pub(crate) fn integrity_check(
 }
 
 #[tauri::command]
-pub(crate) fn repair_integrity(
-    ws_state: tauri::State<'_, WorkspaceState>,
+pub(crate) async fn repair_integrity(
+    app: tauri::AppHandle,
 ) -> Result<serde_json::Map<String, Value>, AppError> {
-    with_db(&ws_state, |db| db.repair_integrity())
+    let result = tauri::async_runtime::spawn_blocking(
+        move || -> Result<serde_json::Map<String, Value>, AppError> {
+            let ws_state = app.state::<WorkspaceState>();
+            with_db(&ws_state, |db| db.repair_integrity())
+        },
+    )
+    .await
+    .map_err(|e| AppError::Anyhow(anyhow::anyhow!("spawn_blocking join error: {e}")))?;
+    result
 }

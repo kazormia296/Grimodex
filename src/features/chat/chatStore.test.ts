@@ -100,6 +100,7 @@ vi.mock("@/features/project/api", () => ({
 
 vi.mock("@/features/codex/api", () => ({
   listCodexEntries: vi.fn(() => Promise.resolve([])),
+  listCodexEntriesForContext: vi.fn(() => Promise.resolve([])),
 }));
 
 vi.mock("@/features/snippets/api", () => ({
@@ -1240,10 +1241,11 @@ describe("useChatStore", () => {
     });
 
     it("buildPromptForCopy refreshes context when lastSystemPrompt is empty in project scope", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
       const folder = {
@@ -1296,10 +1298,11 @@ describe("useChatStore", () => {
     });
 
     it("buildPromptForCopy with mentions reverts lastSystemPrompt so next send isn't polluted", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
       const folder = {
@@ -1469,8 +1472,9 @@ describe("useChatStore", () => {
 
   describe("refreshContextLayers global chat pinned+mention dedup", () => {
     it("excludes mentioned child from DB-pinned parent's children and childrenContext", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockListPinnedCodex = vi.mocked(chatApi.listPinnedCodexEntries);
 
       const now = new Date().toISOString();
@@ -1553,13 +1557,14 @@ describe("useChatStore", () => {
 
   describe("refreshContextLayers folder scope aggregation", () => {
     it("aggregates descendant scene bodies and detects codex from joined text", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -1675,13 +1680,14 @@ describe("useChatStore", () => {
     });
 
     it("uses Tier 2 (synopsis-only aggregate) when includeBodies=false even within Tier 1 size", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -1755,13 +1761,14 @@ describe("useChatStore", () => {
     });
 
     it("uses Tier 2 with a non-eco overflow note (not 'eco モード') when includeBodies=true but bodies exceed the size threshold", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -1840,12 +1847,13 @@ describe("useChatStore", () => {
     });
 
     it("Tier 2 folder: injects placed and unplaced beats into each scene part", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent, loadSceneFull, loadScenesFull } =
         await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockLoadSceneFull = vi.mocked(loadSceneFull);
       const mockLoadScenesFull = vi.mocked(loadScenesFull);
@@ -1971,14 +1979,15 @@ describe("useChatStore", () => {
     });
 
     it("Tier 2 folder: beat.injectIntoContext=false skips beats and loadSceneFull", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent, loadSceneFull } =
         await import("@/features/tree/api");
       const { useSettingsStore } =
         await import("@/features/settings/settingsStore");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockLoadSceneFull = vi.mocked(loadSceneFull);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -2042,11 +2051,12 @@ describe("useChatStore", () => {
     });
 
     it("Tier 2 folder: unplaced beats still inject when scene content is not PM-JSON", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneFull } = await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadSceneFull = vi.mocked(loadSceneFull);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
@@ -2111,13 +2121,14 @@ describe("useChatStore", () => {
     });
 
     it("falls back to Tier 3 (outline only) when scene count exceeds Tier 2 threshold (200)", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -2177,13 +2188,14 @@ describe("useChatStore", () => {
     });
 
     it("drops from Tier 1 to Tier 2 when scene count exceeds Tier 1 threshold (30) but within Tier 2 (200)", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -2683,11 +2695,12 @@ describe("useChatStore", () => {
     }
 
     it("Tier 1: aggregates all project scenes with bodies when includeBodies=true", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
@@ -2744,11 +2757,12 @@ describe("useChatStore", () => {
     });
 
     it("Tier 2: nests scenes under folder outline headers", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
@@ -2796,13 +2810,14 @@ describe("useChatStore", () => {
     });
 
     it("Tier 2: synopsis-only aggregate includes root-level scenes", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -2864,12 +2879,13 @@ describe("useChatStore", () => {
     });
 
     it("Tier 2 project-grouped: beat sections appear under each scene within folder hierarchy", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent, loadSceneFull } =
         await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockLoadSceneFull = vi.mocked(loadSceneFull);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -2938,11 +2954,12 @@ describe("useChatStore", () => {
     });
 
     it("Tier 3: outline only when scene count exceeds 200", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
@@ -2985,13 +3002,14 @@ describe("useChatStore", () => {
     });
 
     it("agent mode: pull 委譲 — Tier 2 を outline only に落とし synopsis を push しない", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -3041,11 +3059,12 @@ describe("useChatStore", () => {
     });
 
     it("agent mode: 明示 includeBodies=true の小規模プロジェクトは Tier 1 本文を維持する", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
@@ -3085,7 +3104,8 @@ describe("useChatStore", () => {
     });
 
     it("agent mode + CLI provider: ツール無しなので pull 委譲せず全 synopsis を push する", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
       const { findMentionedEntriesAsync } =
@@ -3093,7 +3113,7 @@ describe("useChatStore", () => {
       const { useAiSettingsStore } = await import("./store");
       const { DEFAULT_AI_SETTINGS } = await import("./types");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockMatcher = vi.mocked(findMentionedEntriesAsync);
       const mockTreeState = vi.mocked(useTreeStore.getState);
@@ -3143,10 +3163,11 @@ describe("useChatStore", () => {
     });
 
     it("empty project: no aggregated scene content", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
       mockTreeState.mockReturnValue({
@@ -3174,11 +3195,12 @@ describe("useChatStore", () => {
     });
 
     it("Tier 3: top-level scenes get a pseudo-group with title rows", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
@@ -3226,10 +3248,11 @@ describe("useChatStore", () => {
     });
 
     it("completely empty tree (no nodes) returns empty scene", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
       mockTreeState.mockReturnValue({
@@ -3255,11 +3278,12 @@ describe("useChatStore", () => {
     });
 
     it("Tier 1: single scene load failure does not kill the aggregate", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { useTreeStore } = await import("@/features/tree/treeStore");
       const { loadSceneContent } = await import("@/features/tree/api");
 
-      const mockListCodex = vi.mocked(listCodexEntries);
+      const mockListCodex = vi.mocked(listCodexEntriesForContext);
       const mockLoadScene = vi.mocked(loadSceneContent);
       const mockTreeState = vi.mocked(useTreeStore.getState);
 
@@ -3722,8 +3746,11 @@ describe("useChatStore", () => {
     });
 
     it("scene スコープ: 除外した always は refresh 後も注入・ピル復活しない", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
-      vi.mocked(listCodexEntries).mockResolvedValue([alwaysEntry] as never);
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
+      vi.mocked(listCodexEntriesForContext).mockResolvedValue([
+        alwaysEntry,
+      ] as never);
 
       useChatStore.setState({
         activeSceneId: "scene-1",
@@ -3756,8 +3783,11 @@ describe("useChatStore", () => {
     });
 
     it("project スコープ (グローバル経路): 除外 always はインライン再収集からも外れる", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
-      vi.mocked(listCodexEntries).mockResolvedValue([alwaysEntry] as never);
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
+      vi.mocked(listCodexEntriesForContext).mockResolvedValue([
+        alwaysEntry,
+      ] as never);
       vi.mocked(chatApi.listPinnedCodexEntries).mockResolvedValue([]);
 
       useChatStore.setState({
@@ -3831,7 +3861,8 @@ describe("useChatStore", () => {
     // × は detected/always を区別せず付く UI のため、除外は検出経路にも
     // 効かせる。always だけ弾くと detected の × が直後の refresh で即復活する。
     it("scene スコープ: 除外した detected エントリも再検出で復活しない", async () => {
-      const { listCodexEntries } = await import("@/features/codex/api");
+      const { listCodexEntriesForContext } =
+        await import("@/features/codex/api");
       const { findMentionedEntriesAsync } =
         await import("@/features/codex/rustMatcher");
       const detEntry = {
@@ -3840,7 +3871,9 @@ describe("useChatStore", () => {
         name: "検出キャラ",
         contextMode: "mentioned",
       };
-      vi.mocked(listCodexEntries).mockResolvedValue([detEntry] as never);
+      vi.mocked(listCodexEntriesForContext).mockResolvedValue([
+        detEntry,
+      ] as never);
       vi.mocked(findMentionedEntriesAsync).mockImplementation(() =>
         Promise.resolve([
           {

@@ -29,8 +29,12 @@ import {
   saveScene,
   registeredSaveHandlerIds,
 } from "@/features/editor/editorSaveRegistry";
-import { listNodes } from "@/features/tree/api";
-import { listCodexEntries, type CodexEntry } from "../api";
+import { listNodes, loadSceneContents } from "@/features/tree/api";
+import {
+  listCodexEntries,
+  listCodexMatchTargets,
+  type CodexEntry,
+} from "../api";
 import { listCodexRelations } from "../codexRelationApi";
 import { useCodexStore } from "../codexStore";
 import { enqueueRescan } from "../mentionRescanQueue";
@@ -125,6 +129,11 @@ export async function gatherRenameSources(
 
   // --- tree nodes: title (plain), synopsis (plain), scene body (PM doc) ---
   const nodes = await listNodes(projectId);
+  // listNodes は content を返さない軽量 projection (H4)。scene 本文は
+  // content 専用バッチで 1 往復にまとめてロードする (per-scene N+1 回避)。
+  const sceneContents = await loadSceneContents(
+    nodes.filter((n) => n.nodeType === "scene").map((n) => n.id),
+  );
   for (const n of nodes) {
     const label = n.title || n.id;
     if (n.title) {
@@ -144,7 +153,7 @@ export async function gatherRenameSources(
       });
     }
     if (n.nodeType === "scene") {
-      const json = toJsonString(n.content);
+      const json = toJsonString(sceneContents.get(n.id));
       const flat = json ? flattenJson(json, schema, `scene ${n.id}`) : null;
       if (flat && json) {
         sources.push({
@@ -260,17 +269,9 @@ export async function prepareRenamePropagation(
 
   const [sources, allTargets] = await Promise.all([
     gatherRenameSources(projectId),
-    listCodexEntries(projectId).then((es) =>
-      (es as CodexEntry[]).map(
-        (e): CodexMatchTarget => ({
-          id: e.id,
-          name: e.name,
-          type: e.type,
-          aliases: e.aliases,
-          excludedAliases: e.excludedAliases,
-        }),
-      ),
-    ),
+    // match target 用途なので軽量 projection。CodexMatchRow は
+    // CodexMatchTarget と構造互換 (aliases: string | null ⊂ 許容型)。
+    listCodexMatchTargets(projectId) satisfies Promise<CodexMatchTarget[]>,
   ]);
 
   return detectRenameOccurrences({

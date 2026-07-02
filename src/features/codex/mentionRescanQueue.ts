@@ -3,7 +3,7 @@ import { db } from "@/db/client";
 import { treeNodes, sceneCodexMentions } from "@/db/schema";
 import { eq, and, count, inArray } from "drizzle-orm";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
-import { listCodexEntries } from "./api";
+import { listCodexMatchTargets } from "./api";
 import type { CodexMatchTarget } from "./codexMatcher";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 
@@ -70,7 +70,7 @@ export function enqueueRescan(forEntryId: string | null = null): void {
   if (runningPromise !== null) return;
 
   runningPromise = (async () => {
-    const allEntries = await listCodexEntries(getCurrentProjectId());
+    const allEntries = await listCodexMatchTargets(getCurrentProjectId());
     const matchTargets: CodexMatchTarget[] = allEntries.map((e) => ({
       id: e.id,
       name: e.name,
