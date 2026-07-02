@@ -215,6 +215,9 @@ pub struct SnapshotEvent {
     pub event_id: String,
     pub title: String,
     pub note: Option<String>,
+    /// アンカーから見た相対時間ラベル（`formatRelativeDays` の結果）。暦なし/日付
+    /// 欠落/未来は None。fixture の書き漏れをテストで落とすため #[serde(default)] は付けない。
+    pub rel_time: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -529,6 +532,68 @@ pub fn format_chronicle_date(
     day_str
 }
 
+/// アンカーから見た出来事の相対時間ラベル（`formatRelativeDays` の移植）。
+/// None/未来(delta<0) は None。整数演算のみ（TS と丸め一致）。
+pub fn format_relative_days(
+    event_day: Option<i64>,
+    anchor_day: Option<i64>,
+    approx: bool,
+    cal: Option<&CalendarInput>,
+    lang: &str,
+) -> Option<String> {
+    let cal = cal?;
+    let event_day = event_day?;
+    let anchor_day = anchor_day?;
+    let delta = anchor_day - event_day;
+    if delta < 0 {
+        return None;
+    }
+    let ja = lang == "ja";
+    if delta == 0 {
+        return Some(if ja {
+            "同日".to_string()
+        } else {
+            "same day".to_string()
+        });
+    }
+    // round(a/b) を整数で（正の値の round-half-up）: (2a+b)/(2b)。
+    let round_div = |a: i64, b: i64| -> i64 { (2 * a + b) / (2 * b) };
+
+    let dpy = calendar_days_per_year(cal);
+    let month_count = cal.months.len() as i64;
+
+    if dpy > 0 && delta >= dpy {
+        let n = round_div(delta, dpy);
+        return Some(if ja {
+            format!("約{n}年前")
+        } else {
+            format!("about {n} year{} earlier", if n == 1 { "" } else { "s" })
+        });
+    }
+    if dpy > 0 && month_count > 0 {
+        let months = round_div(delta * month_count, dpy);
+        if months >= 2 {
+            return Some(if ja {
+                format!("約{months}ヶ月前")
+            } else {
+                format!(
+                    "about {months} month{} earlier",
+                    if months == 1 { "" } else { "s" }
+                )
+            });
+        }
+    }
+    Some(if ja {
+        format!("{}{delta}日前", if approx { "約" } else { "" })
+    } else {
+        format!(
+            "{}{delta} day{} earlier",
+            if approx { "about " } else { "" },
+            if delta == 1 { "" } else { "s" }
+        )
+    })
+}
+
 /// `computeGlobalSceneOrder` の移植: ツリーを DFS し scene にグローバル順序
 /// index を割り当てる。folder は index を消費せず再帰、note はスキップ。
 pub fn compute_global_scene_order(nodes: &[SceneNode]) -> HashMap<String, i64> {
@@ -795,7 +860,31 @@ pub fn derive_last_known_location(
     codex_names.get(loc).cloned()
 }
 
-fn derive_recent_events(anchor: &ChronicleAnchor, events: &[EventInput]) -> Vec<SnapshotEvent> {
+/// 粗い粒度（日より粗い）。相対時間の「約」化判定に使う。正メンバーシップ判定で
+/// TS の COARSE_GRANULARITY と一致させる（!= "none" だと欠落キーで解釈が割れる）。
+fn is_coarse_granularity(g: &str) -> bool {
+    matches!(g, "year" | "season" | "month")
+}
+
+/// アンカーからの相対時間ラベル（`relTimeFor` の移植）。
+fn rel_time_for(
+    e: &EventInput,
+    anchor: &ChronicleAnchor,
+    calendar: Option<&CalendarInput>,
+    lang: &str,
+) -> Option<String> {
+    let approx = e.precision != "exact"
+        || is_coarse_granularity(&e.start_granularity)
+        || is_coarse_granularity(&anchor.start_granularity);
+    format_relative_days(e.start_time, anchor.start_time, approx, calendar, lang)
+}
+
+fn derive_recent_events(
+    anchor: &ChronicleAnchor,
+    events: &[EventInput],
+    calendar: Option<&CalendarInput>,
+    lang: &str,
+) -> Vec<SnapshotEvent> {
     let mut filtered: Vec<&EventInput> = events
         .iter()
         .filter(|e| e.kind == "generic" && at_or_before(&e.ordinal, &anchor.ordinal))
@@ -812,6 +901,7 @@ fn derive_recent_events(anchor: &ChronicleAnchor, events: &[EventInput]) -> Vec<
                 .as_ref()
                 .filter(|n| !n.is_empty())
                 .map(|n| truncate(n, NOTE_CAP)),
+            rel_time: rel_time_for(e, anchor, calendar, lang),
         })
         .collect()
 }
@@ -846,6 +936,8 @@ fn derive_offpage_events(
     anchor: &ChronicleAnchor,
     events: &[EventInput],
     scene_events: &[SceneEventInput],
+    calendar: Option<&CalendarInput>,
+    lang: &str,
 ) -> Vec<SnapshotEvent> {
     let stamped: HashSet<&str> = scene_events.iter().map(|se| se.event_id.as_str()).collect();
     let kind_rank = |k: &str| -> i64 {
@@ -878,6 +970,7 @@ fn derive_offpage_events(
                 .as_ref()
                 .filter(|n| !n.is_empty())
                 .map(|n| truncate(n, NOTE_CAP)),
+            rel_time: rel_time_for(e, anchor, calendar, lang),
         })
         .collect()
 }
@@ -1012,9 +1105,15 @@ pub fn derive_chronicle_snapshot(input: DeriveInput<'_>) -> ChronicleSnapshot {
             formatted_date,
         },
         characters,
-        recent_events: derive_recent_events(input.anchor, input.events),
+        recent_events: derive_recent_events(input.anchor, input.events, input.calendar, lang),
         unresolved_causal: derive_unresolved_causal(input.anchor, input.events, input.relations),
-        offpage: derive_offpage_events(input.anchor, input.events, input.scene_events),
+        offpage: derive_offpage_events(
+            input.anchor,
+            input.events,
+            input.scene_events,
+            input.calendar,
+            lang,
+        ),
     }
 }
 
@@ -1109,6 +1208,103 @@ mod tests {
             count += 1;
         }
         assert!(count >= 3, "expected at least 3 fixtures, found {count}");
+    }
+
+    fn cal_rel(months: bool) -> CalendarInput {
+        CalendarInput {
+            days_per_year: 360,
+            season_boundaries: vec![],
+            start_year: 0,
+            months: if months {
+                (1..=12)
+                    .map(|i| MonthDef {
+                        name: format!("{i}月"),
+                        days: 30,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            },
+            weekday_names: vec![],
+            weekday_start_index: 0,
+            leap: LeapRule::None,
+            age_reckoning: String::new(),
+        }
+    }
+
+    #[test]
+    fn format_relative_days_matches_ts_thresholds() {
+        let c360 = cal_rel(false);
+        let cm = cal_rel(true);
+        // null / 未来
+        assert_eq!(
+            format_relative_days(Some(0), Some(100), false, None, "ja"),
+            None
+        );
+        assert_eq!(
+            format_relative_days(None, Some(100), false, Some(&c360), "ja"),
+            None
+        );
+        assert_eq!(
+            format_relative_days(Some(100), Some(0), false, Some(&c360), "ja"),
+            None
+        );
+        // 同日
+        assert_eq!(
+            format_relative_days(Some(50), Some(50), false, Some(&c360), "ja").as_deref(),
+            Some("同日")
+        );
+        assert_eq!(
+            format_relative_days(Some(50), Some(50), false, Some(&c360), "en").as_deref(),
+            Some("same day")
+        );
+        // 年
+        assert_eq!(
+            format_relative_days(Some(0), Some(360), false, Some(&c360), "ja").as_deref(),
+            Some("約1年前")
+        );
+        assert_eq!(
+            format_relative_days(Some(0), Some(7100), false, Some(&c360), "ja").as_deref(),
+            Some("約20年前")
+        );
+        assert_eq!(
+            format_relative_days(Some(0), Some(540), false, Some(&c360), "ja").as_deref(),
+            Some("約2年前")
+        );
+        assert_eq!(
+            format_relative_days(Some(0), Some(720), false, Some(&c360), "en").as_deref(),
+            Some("about 2 years earlier")
+        );
+        // 月
+        assert_eq!(
+            format_relative_days(Some(0), Some(212), false, Some(&cm), "ja").as_deref(),
+            Some("約7ヶ月前")
+        );
+        assert_eq!(
+            format_relative_days(Some(0), Some(45), false, Some(&cm), "en").as_deref(),
+            Some("about 2 months earlier")
+        );
+        // 日
+        assert_eq!(
+            format_relative_days(Some(0), Some(30), false, Some(&c360), "ja").as_deref(),
+            Some("30日前")
+        );
+        assert_eq!(
+            format_relative_days(Some(0), Some(30), false, Some(&cm), "ja").as_deref(),
+            Some("30日前")
+        );
+        assert_eq!(
+            format_relative_days(Some(0), Some(30), true, Some(&c360), "ja").as_deref(),
+            Some("約30日前")
+        );
+        assert_eq!(
+            format_relative_days(Some(0), Some(1), false, Some(&c360), "en").as_deref(),
+            Some("1 day earlier")
+        );
+        assert_eq!(
+            format_relative_days(Some(0), Some(5), true, Some(&c360), "en").as_deref(),
+            Some("about 5 days earlier")
+        );
     }
 
     #[test]

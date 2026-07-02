@@ -3,7 +3,9 @@ import type { EventPrecision } from "@/db/schema";
 import {
   seasonOf,
   formatChronicleDate,
+  formatRelativeDays,
   type ChronicleCalendar,
+  type DateLang,
 } from "./chronicleTime";
 import {
   resolveSceneAnchor,
@@ -41,6 +43,11 @@ export interface SnapshotEvent {
   eventId: string;
   title: string;
   note: string | null;
+  /**
+   * アンカー（現在シーンの作中時刻）から見た相対時間ラベル（例「約2年前」「同日」）。
+   * 暦なし・日付欠落・アンカー未確定では null（省略）。絶対日付は使わない。
+   */
+  relTime: string | null;
 }
 
 export interface CausalPair {
@@ -148,9 +155,36 @@ export function deriveLastKnownLocation(
   return codexNames.get(best.locationCodexId) ?? null;
 }
 
+// 粗い粒度（日より粗い＝厳密な日差にならない）。相対時間を「約」化する判定に使う。
+// Rust パリティのため正メンバーシップ判定（!== "none" だと granularity 欠落キーで
+// TS/Rust の解釈が割れる）。
+const COARSE_GRANULARITY = new Set(["year", "season", "month"]);
+
+/** アンカーからの相対時間ラベル（暦なし/日付欠落/アンカー未確定は null）。 */
+function relTimeFor(
+  e: EventRow,
+  anchor: ChronicleAnchor,
+  calendar: ChronicleCalendar | null,
+  lang: DateLang,
+): string | null {
+  const approx =
+    e.precision !== "exact" ||
+    COARSE_GRANULARITY.has(e.startGranularity) ||
+    COARSE_GRANULARITY.has(anchor.startGranularity);
+  return formatRelativeDays(
+    e.startTime,
+    anchor.startTime,
+    approx,
+    calendar,
+    lang,
+  );
+}
+
 function deriveRecentEvents(
   anchor: ChronicleAnchor,
   events: EventRow[],
+  calendar: ChronicleCalendar | null,
+  lang: DateLang,
 ): SnapshotEvent[] {
   return events
     .filter(
@@ -162,6 +196,7 @@ function deriveRecentEvents(
       eventId: e.id,
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
+      relTime: relTimeFor(e, anchor, calendar, lang),
     }));
 }
 
@@ -194,6 +229,8 @@ function deriveOffpageEvents(
   anchor: ChronicleAnchor,
   events: EventRow[],
   sceneEvents: { sceneId: string; eventId: string }[],
+  calendar: ChronicleCalendar | null,
+  lang: DateLang,
 ): SnapshotEvent[] {
   const stamped = new Set(sceneEvents.map((se) => se.eventId));
   const kindRank = (k: EventRow["kind"]) => (k === "generic" ? 1 : 0); // birth/death 優先
@@ -212,6 +249,7 @@ function deriveOffpageEvents(
       eventId: e.id,
       title: truncate(e.title, TITLE_CAP),
       note: e.note ? truncate(e.note, NOTE_CAP) : null,
+      relTime: relTimeFor(e, anchor, calendar, lang),
     }));
 }
 
@@ -277,6 +315,7 @@ export function deriveChronicleSnapshot(
       };
     });
 
+  const dateLang: DateLang = lang === "en" ? "en" : "ja";
   return {
     time: {
       source: anchor.source,
@@ -286,9 +325,15 @@ export function deriveChronicleSnapshot(
       formattedDate,
     },
     characters,
-    recentEvents: deriveRecentEvents(anchor, events),
+    recentEvents: deriveRecentEvents(anchor, events, calendar, dateLang),
     unresolvedCausal: deriveUnresolvedCausal(anchor, events, relations),
-    offpage: deriveOffpageEvents(anchor, events, sceneEvents),
+    offpage: deriveOffpageEvents(
+      anchor,
+      events,
+      sceneEvents,
+      calendar,
+      dateLang,
+    ),
   };
 }
 

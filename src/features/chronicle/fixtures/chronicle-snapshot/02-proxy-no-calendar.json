@@ -23,7 +23,7 @@
       { "codexId": "hero", "name": "Hero", "status": "unknown", "age": null, "location": null }
     ],
     "recentEvents": [
-      { "eventId": "e1", "title": "Meeting", "note": null }
+      { "eventId": "e1", "title": "Meeting", "note": null, "relTime": null }
     ],
     "unresolvedCausal": [],
     "offpage": []

@@ -305,6 +305,93 @@ describe("deriveChronicleSnapshot — recent events", () => {
   });
 });
 
+describe("deriveChronicleSnapshot — relTime（アンカーからの相対時間）", () => {
+  const dated = (id: string, ordinal: string, startTime: number | null) =>
+    mkEvent({ id, title: id, ordinal, startTime, startGranularity: "day" });
+
+  it("recentEvents に相対時間ラベルを付す（暦＋日付付きアンカー）", () => {
+    const events = [
+      dated("same", "a1", 7200), // 同日
+      dated("long", "a2", 100), // delta 7100 → 約20年前
+      mkEvent({ id: "nodate", title: "nodate", ordinal: "a3" }), // startTime null
+    ];
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a9", 7200, "exact", null, "day"),
+        events,
+        calendar: CAL,
+        characterIds: [],
+      }),
+    );
+    // ordinal 降順: nodate(a3), long(a2), same(a1)
+    expect(snap.recentEvents.map((e) => e.relTime)).toEqual([
+      null,
+      "約20年前",
+      "同日",
+    ]);
+  });
+
+  it("暦なしでは relTime=null（省略）", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a9", 7200, "exact", null, "day"),
+        events: [dated("e", "a1", 100)],
+        calendar: null,
+        characterIds: [],
+      }),
+    );
+    expect(snap.recentEvents[0].relTime).toBeNull();
+  });
+
+  it("アンカーに startTime が無ければ relTime=null", () => {
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a9", null),
+        events: [dated("e", "a1", 100)],
+        calendar: CAL,
+        characterIds: [],
+      }),
+    );
+    expect(snap.recentEvents[0].relTime).toBeNull();
+  });
+
+  it("precision approx / 粗い粒度は「約」付き日表記", () => {
+    const ev = mkEvent({
+      id: "e",
+      title: "e",
+      ordinal: "a1",
+      startTime: 7170, // delta 30
+      startGranularity: "day",
+      precision: "approx",
+    });
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a9", 7200, "exact", null, "day"),
+        events: [ev],
+        calendar: CAL,
+        characterIds: [],
+      }),
+    );
+    expect(snap.recentEvents[0].relTime).toBe("約30日前");
+  });
+
+  it("offpage にも相対時間ラベルを付す", () => {
+    const events = [
+      dated("off", "a1", 100), // 未 stamp → offpage、delta 7100 → 約20年前
+    ];
+    const snap = deriveChronicleSnapshot(
+      input({
+        anchor: stamped("a9", 7200, "exact", null, "day"),
+        events,
+        sceneEvents: [],
+        calendar: CAL,
+        characterIds: [],
+      }),
+    );
+    expect(snap.offpage[0].relTime).toBe("約20年前");
+  });
+});
+
 describe("deriveChronicleSnapshot — unresolved causal (ordinal)", () => {
   it("原因<=anchor かつ 結果>anchor の因果のみ拾う", () => {
     const events = [
