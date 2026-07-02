@@ -1,8 +1,8 @@
 import { invoke } from "@/lib/tauri";
 import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { listCodexEntries } from "./api";
-import type { CodexEntry } from "./api";
+import { listCodexMatchTargets } from "./api";
+import type { CodexMatchRow } from "./api";
 import { createCodexMatcher } from "./codexMatcher";
 import { rebuildMatcher, matchText } from "./rustMatcher";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -34,7 +34,8 @@ export async function buildCrossReferenceReport(): Promise<
 export async function buildCrossReferenceReportForProject(
   projectId: string,
 ): Promise<CrossReferenceEntry[]> {
-  const entries = await listCodexEntries(projectId);
+  // matcher と id/name/type の逆引きにしか使わないので match projection で十分。
+  const entries = await listCodexMatchTargets(projectId);
   if (entries.length === 0) return [];
 
   const scenesResult = await invoke<QueryResult>("db_execute", {
@@ -45,7 +46,7 @@ export async function buildCrossReferenceReportForProject(
   const scenes = scenesResult.rows;
   if (scenes.length === 0) return [];
 
-  const targets = entries.map((e: CodexEntry) => ({
+  const targets = entries.map((e: CodexMatchRow) => ({
     id: e.id,
     name: e.name,
     type: e.type,
@@ -56,7 +57,7 @@ export async function buildCrossReferenceReportForProject(
 
   const mentionMap = new Map<
     string,
-    { entry: CodexEntry; scenes: Map<string, SceneMention> }
+    { entry: CodexMatchRow; scenes: Map<string, SceneMention> }
   >();
 
   for (const scene of scenes) {
@@ -77,7 +78,7 @@ export async function buildCrossReferenceReportForProject(
 
     for (const [entryId, count] of countsByEntry) {
       if (!mentionMap.has(entryId)) {
-        const entry = entries.find((e: CodexEntry) => e.id === entryId);
+        const entry = entries.find((e: CodexMatchRow) => e.id === entryId);
         if (!entry) continue;
         mentionMap.set(entryId, { entry, scenes: new Map() });
       }

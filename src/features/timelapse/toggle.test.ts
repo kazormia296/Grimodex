@@ -48,7 +48,7 @@ const treeMock = vi.hoisted(() => {
   };
 });
 const codexMock = vi.hoisted(() => ({
-  listCodexEntries: vi.fn(() => Promise.resolve([] as unknown[])),
+  listCodexContentsForBaseline: vi.fn(() => Promise.resolve([] as unknown[])),
   getCodexEntry: vi.fn(() =>
     Promise.resolve<unknown>({ content: '{"type":"doc"}' }),
   ),
@@ -100,7 +100,7 @@ beforeEach(() => {
   settingsMock.getProjectSetting.mockResolvedValue(null);
   treeMock.listAllNodes.mockResolvedValue([]);
   treeMock.loadSceneContent.mockResolvedValue('{"type":"doc"}');
-  codexMock.listCodexEntries.mockResolvedValue([]);
+  codexMock.listCodexContentsForBaseline.mockResolvedValue([]);
   codexMock.getCodexEntry.mockResolvedValue({ content: '{"type":"doc"}' });
   snippetMock.listSnippets.mockResolvedValue([]);
   snippetMock.getSnippet.mockResolvedValue({ content: '{"type":"doc"}' });
@@ -147,7 +147,7 @@ describe("setTimelapseEnabled", () => {
 
   it("enable: also baselines codex entries and snippets at genesis", async () => {
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
-    codexMock.listCodexEntries.mockResolvedValue([
+    codexMock.listCodexContentsForBaseline.mockResolvedValue([
       { id: "c1", content: '{"type":"doc"}' },
     ]);
     snippetMock.listSnippets.mockResolvedValue([
@@ -237,7 +237,7 @@ describe("ensureGenesisBaselines", () => {
     dbSelectWhere.mockResolvedValue([]);
     snapshotsMock.loadLatestSnapshot.mockResolvedValue(null);
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
-    codexMock.listCodexEntries.mockResolvedValue([
+    codexMock.listCodexContentsForBaseline.mockResolvedValue([
       { id: "c1", content: '{"type":"doc"}' },
     ]);
     snippetMock.listSnippets.mockResolvedValue([
@@ -266,7 +266,9 @@ describe("ensureGenesisBaselines", () => {
       ),
     );
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
-    codexMock.listCodexEntries.mockResolvedValue([{ id: "c1", content: "{}" }]);
+    codexMock.listCodexContentsForBaseline.mockResolvedValue([
+      { id: "c1", content: "{}" },
+    ]);
 
     await ensureGenesisBaselines("p1");
 
@@ -280,7 +282,7 @@ describe("ensureGenesisBaselines", () => {
   it("past genesis (events exist): does NOT bake — avoids double-applying recorded steps", async () => {
     dbSelectWhere.mockResolvedValue([{ id: 1 }]); // >=1 recorded event
     treeMock.listAllNodes.mockResolvedValue([{ id: "s1", nodeType: "scene" }]);
-    codexMock.listCodexEntries.mockResolvedValue([{ id: "c1" }]);
+    codexMock.listCodexContentsForBaseline.mockResolvedValue([{ id: "c1" }]);
 
     await ensureGenesisBaselines("p1");
 

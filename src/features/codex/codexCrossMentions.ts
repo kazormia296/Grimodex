@@ -6,6 +6,15 @@ import {
 } from "./codexMatcher";
 import { extractPlainText } from "./prosemirrorTextExtractor";
 
+/**
+ * 逆 mention 走査の候補行に必要な最小列。M10: chat 経路は icon/notes を
+ * 持たない projection 行を渡すため構造的部分型で受ける。
+ */
+type CrossMentionCandidate = Pick<
+  CodexEntry,
+  "id" | "summary" | "content" | "updatedAt"
+>;
+
 const plainTextCache = new Map<string, { stamp: string; text: string }>();
 /**
  * findReverseMentioningEntries の結果メモ。memoKey は候補集合全体の
@@ -15,7 +24,7 @@ const plainTextCache = new Map<string, { stamp: string; text: string }>();
  * 上限を張る (ヒット時は delete+set で再挿入し LRU 化)。
  */
 const REVERSE_MEMO_MAX = 64;
-const reverseMemoMap = new Map<string, CodexEntry[]>();
+const reverseMemoMap = new Map<string, CrossMentionCandidate[]>();
 
 /** summary + content(PM JSON→plain) の走査用テキスト。updatedAt キーでメモ化 */
 export function getEntryScanText(entry: {
@@ -33,10 +42,10 @@ export function getEntryScanText(entry: {
 }
 
 /** 逆方向: selected(name+aliases) が candidates の summary+content 中で言及されるエントリ */
-export function findReverseMentioningEntries(
+export function findReverseMentioningEntries<T extends CrossMentionCandidate>(
   selected: CodexMatchTarget,
-  candidates: CodexEntry[],
-): CodexEntry[] {
+  candidates: T[],
+): T[] {
   const candidateKey = candidates
     .map((c) => `${c.id}:${c.updatedAt}`)
     .join(",");
@@ -46,13 +55,15 @@ export function findReverseMentioningEntries(
   const cached = reverseMemoMap.get(memoKey);
   if (cached !== undefined) {
     // LRU: ヒットしたキーを末尾へ移し、eviction 対象から遠ざける。
+    // memoKey は候補集合の id:updatedAt を含むため、同一キーなら candidates と
+    // 同じ行集合 (=同じ T) から選ばれた参照であることが保証される。
     reverseMemoMap.delete(memoKey);
     reverseMemoMap.set(memoKey, cached);
-    return cached;
+    return cached as T[];
   }
 
   const matcher = createCodexMatcher([selected]);
-  const result: CodexEntry[] = [];
+  const result: T[] = [];
   const seen = new Set<string>();
   for (const candidate of candidates) {
     if (candidate.id === selected.id) continue;

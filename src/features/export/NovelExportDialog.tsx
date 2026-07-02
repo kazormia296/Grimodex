@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
-import { listCodexEntries } from "@/features/codex/api";
+import { listCodexEntriesForContext } from "@/features/codex/api";
 import { currentCodexMentionResolver } from "@/features/codex/mentionNameResolver";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadScenesFull } from "@/features/tree/api";
@@ -86,8 +86,9 @@ export function NovelExportBody({ onClose }: { onClose: () => void }) {
       });
 
       // Codex → キャラクターブック。suppress/hidden は文脈注入と同じ基準で除外。
+      // content は使うが icon/notes は使わないので context projection で取得。
       const codexEntries: NovelExportCodexEntry[] = (
-        await listCodexEntries(projectId)
+        await listCodexEntriesForContext(projectId)
       )
         .filter(
           (e) => e.contextMode !== "suppress" && e.contextMode !== "hidden",

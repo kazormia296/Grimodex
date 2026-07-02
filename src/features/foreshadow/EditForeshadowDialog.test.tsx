@@ -23,7 +23,7 @@ vi.mock("./api", () => ({
 }));
 
 vi.mock("@/features/codex/api", () => ({
-  listCodexEntries: mockListCodexEntries,
+  listCodexMatchTargets: mockListCodexEntries,
 }));
 
 vi.mock("./foreshadowStore", () => ({

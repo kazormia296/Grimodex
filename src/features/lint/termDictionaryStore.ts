@@ -3,7 +3,7 @@ import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { listCodexEntries } from "@/features/codex/api";
+import { listCodexMatchTargets } from "@/features/codex/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { LintTermEntry, Severity } from "./types";
 
@@ -80,7 +80,7 @@ async function fetchCodexAliases(): Promise<Set<string>> {
   // Rust engine's pre-filter in `resolve_term_dictionary`.
   const out = new Set<string>();
   try {
-    const rows = await listCodexEntries(getCurrentProjectId());
+    const rows = await listCodexMatchTargets(getCurrentProjectId());
     for (const r of rows) {
       if (!r.aliases) continue;
       try {
