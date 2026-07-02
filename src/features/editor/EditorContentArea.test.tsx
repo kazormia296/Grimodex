@@ -98,7 +98,10 @@ function makeSettings(spellCheck: boolean): EditorSettings {
   };
 }
 
-function renderArea(spellCheck: boolean) {
+function renderArea(
+  spellCheck: boolean,
+  filterSource: "human" | "ai" | "unknown" | null = null,
+) {
   return render(
     <EditorContentArea
       editor={null}
@@ -111,7 +114,7 @@ function renderArea(spellCheck: boolean) {
       focusModeHideBeats={false}
       focusMode={false}
       typewriterMode={false}
-      filterSource={null}
+      filterSource={filterSource}
       editorSettings={makeSettings(spellCheck)}
       editorTitle=""
       loadedPhaseLabel={null}
@@ -140,5 +143,20 @@ describe("EditorContentArea spellcheck wiring", () => {
     const el = container.querySelector("div[spellcheck]");
     expect(el).not.toBeNull();
     expect(el!.getAttribute("spellcheck")).toBe("true");
+  });
+});
+
+describe("EditorContentArea attribution filter live region", () => {
+  it("announces the active filter via role=status", () => {
+    const { getByRole } = renderArea(false, "ai");
+    const status = getByRole("status");
+    // 既存キー: attribution.filtering="フィルタ中:" / attribution.ai="AI生成"
+    expect(status.textContent).toContain("AI生成");
+    expect(status.className).toContain("sr-only");
+  });
+
+  it("keeps the live region mounted but empty without a filter", () => {
+    const { getByRole } = renderArea(false, null);
+    expect(getByRole("status").textContent).toBe("");
   });
 });

@@ -1,4 +1,5 @@
 import { useSettingNumber } from "../useSettingControl";
+import { useSettingRowA11y } from "./SettingRow";
 
 interface SettingNumberInputProps {
   settingKey: string;
@@ -27,6 +28,7 @@ export function SettingNumberInput({
   placeholder,
 }: SettingNumberInputProps) {
   const { value, setValue } = useSettingNumber(settingKey, defaultValue);
+  const rowA11y = useSettingRowA11y();
 
   return (
     <div className="flex items-center gap-1.5">
@@ -37,6 +39,8 @@ export function SettingNumberInput({
         step={step}
         value={value === 0 ? "" : value}
         placeholder={placeholder}
+        aria-labelledby={rowA11y?.labelId}
+        aria-describedby={rowA11y?.descriptionId}
         onChange={(e) => {
           const v = parseInt(e.target.value, 10);
           if (Number.isNaN(v)) {

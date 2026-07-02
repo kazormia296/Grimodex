@@ -59,6 +59,7 @@ export function WindowControls() {
     <div className="flex items-center">
       <button
         type="button"
+        aria-label={t("window.minimize")}
         title={t("window.minimize")}
         onClick={minimize}
         className="flex h-8 w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -67,6 +68,7 @@ export function WindowControls() {
       </button>
       <button
         type="button"
+        aria-label={isMaximized ? t("window.restore") : t("window.maximize")}
         title={isMaximized ? t("window.restore") : t("window.maximize")}
         onClick={toggleMaximize}
         className="flex h-8 w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -79,6 +81,7 @@ export function WindowControls() {
       </button>
       <button
         type="button"
+        aria-label={t("window.close")}
         title={t("window.close")}
         onClick={close}
         className="flex h-8 w-10 items-center justify-center text-muted-foreground transition-colors hover:bg-red-600 hover:text-white"

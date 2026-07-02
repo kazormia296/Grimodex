@@ -574,6 +574,23 @@ export function TimelinePanel() {
           e.preventDefault();
           setZoom(zoom / ZOOM_STEP);
           break;
+        case "ArrowLeft":
+        case "ArrowRight":
+        case "ArrowUp":
+        case "ArrowDown": {
+          // ホイールズーム・中ボタンパンのキーボード代替（Ctrl+矢印でパン）。
+          // パネル内フォーカス時のみ（素の矢印キーはシーン/マーカーナビに使用済み）。
+          if (!containerRef.current?.contains(document.activeElement)) break;
+          const el = viewportRef.current;
+          if (!el) break;
+          e.preventDefault();
+          const step = 80;
+          if (e.key === "ArrowLeft") el.scrollLeft -= step;
+          else if (e.key === "ArrowRight") el.scrollLeft += step;
+          else if (e.key === "ArrowUp") el.scrollTop -= step;
+          else el.scrollTop += step;
+          break;
+        }
       }
     }
     document.addEventListener("keydown", handleKeyDown);

@@ -7,6 +7,17 @@ import {
   useAnchoredPopover,
   type PopoverPlacement,
 } from "@/components/ui/useAnchoredPopover";
+import { useFocusRestoreOnClose } from "@/components/ui/useFocusRestoreOnClose";
+
+/** 開時の自動フォーカス先を探すための focusable セレクタ（tabbable な代表格）。 */
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
 
 /**
  * children は通常の ReactNode に加え、anchored モード時に算出される可用高さ
@@ -32,6 +43,17 @@ interface AnimatedDropdownProps {
   anchorRef?: React.RefObject<HTMLElement | null>;
   /** anchorRef 指定時の展開方向（既定 bottom-start）。 */
   placement?: PopoverPlacement;
+  /**
+   * close 時に open 時点のフォーカス（通常トリガ）へ戻す（既定 true）。
+   * 外側クリックで閉じた場合は復元しない。
+   */
+  restoreFocusOnClose?: boolean;
+  /**
+   * anchored モードで open 時に最初の focusable 要素（なければ本体コンテナ）へ
+   * フォーカスを移す（既定 true）。呼び出し側が autoFocus 等で既にコンテンツ内へ
+   * フォーカスしている場合は何もしない。
+   */
+  autoFocusContent?: boolean;
   className?: string;
   children: DropdownChildren;
 }
@@ -42,6 +64,8 @@ export function AnimatedDropdown({
   containerRef,
   anchorRef,
   placement = "bottom-start",
+  restoreFocusOnClose = true,
+  autoFocusContent = true,
   className,
   children,
 }: AnimatedDropdownProps) {
@@ -57,6 +81,27 @@ export function AnimatedDropdown({
     onClose,
     placement,
   );
+
+  // close 時のフォーカス復元。anchored はトリガ=anchorRef、inline は
+  // containerRef（トリガ+メニューを囲む）を「内側」とみなして外側クリックを判定する。
+  const inlineContentRef = useRef<HTMLDivElement>(null);
+  useFocusRestoreOnClose(
+    open,
+    anchored ? popoverRef : inlineContentRef,
+    anchorRef ?? containerRef,
+    restoreFocusOnClose,
+  );
+
+  // anchored: メニュー表示後（style 確定 = portal mount 後）、フォーカスを
+  // コンテンツへ移してキーボード操作の起点をメニュー内にする。
+  const anchoredVisible = anchored && open && style !== null;
+  useEffect(() => {
+    if (!anchoredVisible || !autoFocusContent) return;
+    const el = popoverRef.current;
+    if (!el || el.contains(document.activeElement)) return;
+    const first = el.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+    (first ?? el).focus();
+  }, [anchoredVisible, autoFocusContent, popoverRef]);
 
   // Escape: inline モードのみここで処理（anchored は useAnchoredPopover が処理）。
   useEffect(() => {
@@ -106,6 +151,7 @@ export function AnimatedDropdown({
         {open && style && (
           <motion.div
             ref={popoverRef}
+            tabIndex={-1}
             style={anchoredStyle ?? undefined}
             className={cn(className, !isFnChildren && "overflow-y-auto")}
             initial={{ opacity: 0, y: -4 }}
@@ -125,6 +171,7 @@ export function AnimatedDropdown({
     <AnimatePresence>
       {open && (
         <motion.div
+          ref={inlineContentRef}
           className={cn(className)}
           initial={{ opacity: 0, y: -4 }}
           animate={{ opacity: 1, y: 0 }}

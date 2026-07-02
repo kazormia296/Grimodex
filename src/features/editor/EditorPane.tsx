@@ -1769,6 +1769,18 @@ export function EditorPane({
         ? chronicleEventTitle
         : (activeNode?.title ?? "");
 
+  // contenteditable の accessible name。editorProps.attributes は生成時に固定
+  // されるため、タブ切替・リネームに追従できるよう view.dom へ動的に付与する。
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.view.dom.setAttribute(
+      "aria-label",
+      editorTitle
+        ? t("editor.a11y.editorBody", { title: editorTitle })
+        : t("editor.a11y.editorBodyUntitled"),
+    );
+  }, [editor, editorTitle, t]);
+
   // Phase label for display in banner and title (null = no active phase / base content)
   const loadedPhaseLabel =
     loadedPhaseId != null

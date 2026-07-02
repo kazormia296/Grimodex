@@ -1,6 +1,7 @@
 import { useRef, useCallback, useEffect } from "react";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
+import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 
 export interface AutoSave {
@@ -15,6 +16,25 @@ export function createAutoSave(
 ): AutoSave {
   let timerId: ReturnType<typeof setTimeout> | null = null;
   let pending = false;
+  let lastFailed = false;
+
+  // 自動保存は数秒おきに発火するため、成功を毎回読み上げると SR 利用者の
+  // 執筆を妨げる。失敗 → 成功の回復時のみ announce する (失敗時は Sonner の
+  // toast が読み上げるので announce しない: 二重読み上げ防止)。
+  async function runSave(label: "save" | "flush") {
+    try {
+      await saveFn();
+      if (lastFailed) {
+        lastFailed = false;
+        announce(i18next.t("autoSave.recovered"));
+      }
+    } catch (e) {
+      lastFailed = true;
+      const detail = errorDetail(e);
+      debugLog.error("AutoSave", `${label} failed`, detail);
+      toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
+    }
+  }
 
   function cancel() {
     if (timerId !== null) {
@@ -30,26 +50,14 @@ export function createAutoSave(
     timerId = setTimeout(async () => {
       timerId = null;
       pending = false;
-      try {
-        await saveFn();
-      } catch (e) {
-        const detail = errorDetail(e);
-        debugLog.error("AutoSave", "save failed", detail);
-        toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
-      }
+      await runSave("save");
     }, delayMs);
   }
 
   async function flush() {
     if (!pending) return;
     cancel();
-    try {
-      await saveFn();
-    } catch (e) {
-      const detail = errorDetail(e);
-      debugLog.error("AutoSave", "flush failed", detail);
-      toast.error(i18next.t("autoSave.failed", { reason: rootCause(e) }));
-    }
+    await runSave("flush");
   }
 
   return { schedule, cancel, flush };

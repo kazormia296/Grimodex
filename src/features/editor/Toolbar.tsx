@@ -25,6 +25,8 @@ function ToolbarButton({
   children,
   disabled,
   allowFocus,
+  ariaHasPopup,
+  ariaExpanded,
 }: {
   active?: boolean;
   onClick: () => void;
@@ -32,12 +34,16 @@ function ToolbarButton({
   children: React.ReactNode;
   disabled?: boolean;
   allowFocus?: boolean;
+  ariaHasPopup?: React.AriaAttributes["aria-haspopup"];
+  ariaExpanded?: boolean;
 }) {
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
+      aria-haspopup={ariaHasPopup}
+      aria-expanded={ariaExpanded}
       disabled={disabled}
       onMouseDown={allowFocus ? undefined : (e) => e.preventDefault()}
       onClick={onClick}
@@ -54,7 +60,7 @@ function ToolbarButton({
 }
 
 function Sep() {
-  return <div className="mx-0.5 h-4 w-px bg-border" />;
+  return <div aria-hidden className="mx-0.5 h-4 w-px bg-border" />;
 }
 
 export interface ToolbarActions {
@@ -265,6 +271,47 @@ export function Toolbar({
     return () => document.removeEventListener("mousedown", close);
   }, [fontSizeOpen]);
 
+  // Overflow メニュー: 開いたら最初の項目へフォーカス (menu パターン)。
+  useEffect(() => {
+    if (!overflowOpen) return;
+    overflowDropdownRef.current
+      ?.querySelector<HTMLElement>("button:not(:disabled)")
+      ?.focus();
+  }, [overflowOpen]);
+
+  function closeOverflowAndRestoreFocus() {
+    setOverflowOpen(false);
+    overflowBtnRef.current?.querySelector("button")?.focus();
+  }
+
+  function handleOverflowMenuKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeOverflowAndRestoreFocus();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    // number input 内では矢印キーの値増減 (native 挙動) を優先する。
+    if ((e.target as HTMLElement).tagName === "INPUT") return;
+    const items = Array.from(
+      overflowDropdownRef.current?.querySelectorAll<HTMLElement>(
+        "button:not(:disabled), input",
+      ) ?? [],
+    );
+    if (items.length === 0) return;
+    e.preventDefault();
+    const idx = items.indexOf(document.activeElement as HTMLElement);
+    const next =
+      idx === -1
+        ? items[e.key === "ArrowDown" ? 0 : items.length - 1]
+        : items[
+            (idx + (e.key === "ArrowDown" ? 1 : -1) + items.length) %
+              items.length
+          ];
+    next?.focus();
+  }
+
   if (!editor) return null;
 
   // Register imperative handles so EditorPane can trigger dialogs via keyboard shortcuts.
@@ -336,7 +383,11 @@ export function Toolbar({
   const hasOverflowedButtons = visibleUnitCount < 4;
 
   return (
-    <div className="glass-editor-chrome relative flex-shrink-0 border-b border-border">
+    <div
+      role="toolbar"
+      aria-label={t("editor.toolbar.label")}
+      className="glass-editor-chrome relative flex-shrink-0 border-b border-border"
+    >
       {/* Toolbar content area — overflow-hidden clips at panel width */}
       <div ref={innerRef} className="relative overflow-hidden">
         <div className="flex w-max items-center px-1.5 py-1">
@@ -572,6 +623,8 @@ export function Toolbar({
             <ToolbarButton
               label={t("editor.toolbar.moreOptions")}
               active={overflowOpen}
+              ariaHasPopup="menu"
+              ariaExpanded={overflowOpen}
               onClick={() => setOverflowOpen((v) => !v)}
             >
               ⋮
@@ -607,6 +660,10 @@ export function Toolbar({
       {overflowOpen && (
         <div
           ref={overflowDropdownRef}
+          role="menu"
+          tabIndex={-1}
+          aria-label={t("editor.toolbar.moreOptions")}
+          onKeyDown={handleOverflowMenuKeyDown}
           className="absolute right-0 top-full z-50 mt-1 min-w-[200px] rounded border border-border bg-popover py-1 shadow-md"
         >
           {/* ツールバーに収まらないボタン群 */}
@@ -697,7 +754,7 @@ export function Toolbar({
             </>
           )}
           {hasOverflowedButtons && (
-            <div className="my-1 border-t border-border" />
+            <div aria-hidden className="my-1 border-t border-border" />
           )}
           <OverflowItem
             label={t("editor.toolbar.findReplace")}
@@ -719,6 +776,11 @@ export function Toolbar({
             <input
               type="number"
               min={0}
+              aria-label={t(
+                targetUnit === "word"
+                  ? "editor.toolbar.targetWordCount"
+                  : "editor.toolbar.targetCharCount",
+              )}
               value={targetCharCount === 0 ? "" : targetCharCount}
               placeholder="0"
               onMouseDown={(e) => e.stopPropagation()}
@@ -729,7 +791,7 @@ export function Toolbar({
               className="ml-2 w-20 rounded border border-input bg-background px-1.5 py-0.5 text-right tabular-nums focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
-          <div className="my-1 border-t border-border" />
+          <div aria-hidden className="my-1 border-t border-border" />
           <OverflowItem
             label={t("editor.toolbar.showLineNumbers")}
             checked={showLineNumbers}
@@ -855,7 +917,7 @@ function OverflowItem({
       disabled={disabled}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      role={checked !== undefined ? "menuitemcheckbox" : undefined}
+      role={checked !== undefined ? "menuitemcheckbox" : "menuitem"}
       aria-checked={checked}
       className={cn(
         "flex w-full items-center justify-between px-3 py-1.5 text-left text-xs",

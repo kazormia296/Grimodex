@@ -81,6 +81,7 @@ export function CodexCommandPalette({
             value={query}
             onChange={(e) => void handleSearch(e.target.value)}
             placeholder={t("codex.searchPlaceholder")}
+            aria-label={t("codex.searchPlaceholder")}
             className="flex-1 bg-transparent py-3 text-sm outline-none"
           />
         </div>

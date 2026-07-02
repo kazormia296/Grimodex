@@ -164,6 +164,9 @@
       "errorVariantsRequired": "許容しない表記を 1 つ以上入力してください。",
       "errorDuplicateVariant": "同じ variant が他のエントリに登録されています: {{variants}}",
       "copySuffix": "{{name}}（コピー）"
+    },
+    "a11y": {
+      "completed": "Lint が完了しました。指摘は {{count}} 件です"
     }
   },
   "postEffect": {
@@ -1668,7 +1671,8 @@
       "insertLabel": "挿入",
       "codexLabel": "Codex",
       "snippetLabel": "Snippet",
-      "copyLabel": "コピー"
+      "copyLabel": "コピー",
+      "moreOptions": "その他のオプション"
     },
     "contextMenu": {
       "insertSelectionToEditor": "選択テキストをエディタに挿入",
@@ -2157,7 +2161,10 @@
       "pinAdded": "ピン追加",
       "pinRemoved": "ピン解除",
       "renamePropagated": "「{{oldName}}」→「{{newName}}」の本文反映"
-    }
+    },
+    "filterTypeLabel": "タイプで絞り込み",
+    "searchResultCount_one": "検索結果 {{count}}件",
+    "searchResultCount_other": "検索結果 {{count}}件"
   },
   "grid": {
     "empty": "章がありません。「章を追加」から始めましょう。",
@@ -3047,7 +3054,9 @@
       "registerAsForeshadow": "伏線として登録",
       "addToMap": "Map に追加"
     },
-    "duplicateTitle": "{{title}} (コピー)"
+    "duplicateTitle": "{{title}} (コピー)",
+    "searchResultCount_one": "検索結果 {{count}}件",
+    "searchResultCount_other": "検索結果 {{count}}件"
   },
   "tree": {
     "openInEditor": "Editorで開く",
@@ -3295,7 +3304,8 @@
       "showLineNumbers": "行番号を表示",
       "rubyBase": "ベース",
       "rubyAnnotation": "ふりがな",
-      "urlPlaceholder": "https://..."
+      "urlPlaceholder": "https://...",
+      "label": "エディタツールバー"
     },
     "status": {
       "outline": "アウトライン",
@@ -3407,7 +3417,8 @@
     },
     "comment": {
       "inputPlaceholder": "コメントを入力…",
-      "empty": "（コメントなし）"
+      "empty": "（コメントなし）",
+      "popoverLabel": "コメント"
     },
     "lintDisable": {
       "gutterTooltipAll": "このブロックは全 Lint ルールを無効化中",
@@ -3426,7 +3437,11 @@
       "overwrite": "上書き",
       "overwriteConfirm": "既存のSynopsisを上書きしますか？"
     },
-    "bodyPlaceholder": "思いついたことを書く…"
+    "bodyPlaceholder": "思いついたことを書く…",
+    "a11y": {
+      "editorBody": "本文エディタ: {{title}}",
+      "editorBodyUntitled": "本文エディタ"
+    }
   },
   "inlineAi": {
     "generateFailed": "生成に失敗しました",
@@ -3870,7 +3885,8 @@
     "reload": "再読み込み"
   },
   "autoSave": {
-    "failed": "自動保存に失敗しました: {{reason}}"
+    "failed": "自動保存に失敗しました: {{reason}}",
+    "recovered": "自動保存が回復し、変更を保存しました"
   },
   "sceneLoad": {
     "failed": "本文の読み込みに失敗しました（このシーンの保存は停止中）: {{reason}}"
@@ -4145,6 +4161,10 @@
       "renamed": "「{{title}}」にリネームされました",
       "reconcileFailed": "「{{label}}」の同期に失敗しました",
       "mountFailed": "マウントに失敗しました"
+    },
+    "a11y": {
+      "fileArchived": "外部で削除されたファイル「{{name}}」をアーカイブしました",
+      "fileImported": "外部ファイル「{{name}}」の変更を取り込みました"
     }
   },
   "scenes": {
@@ -4595,7 +4615,8 @@
       "empty": "(空)",
       "searchPlaceholder": "{{type}}を検索…",
       "noMatches": "一致するものがありません",
-      "noItems": "{{type}}がありません"
+      "noItems": "{{type}}がありません",
+      "dialogLabel": "マップに追加"
     },
     "autoArrange": {
       "layoutReadingOrder": "読み順でグリッド配置",
@@ -5201,7 +5222,9 @@
       "exact": "確定",
       "approx": "おおよそ",
       "unknown": "不明"
-    }
+    },
+    "a11yLoaded": "年表を読み込みました（{{count}}件）",
+    "a11yZoomLevel": "ズーム: {{unit}}単位"
   },
   "timeline": {
     "displayMenu": "表示オプション",

@@ -7,7 +7,7 @@ import { X } from "lucide-react";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { AnimatedPopover } from "@/components/ui/animated-popover";
-import { DURATIONS, EASINGS } from "@/lib/animation";
+import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
 import { isReducedMotion } from "@/lib/gsap";
 import type { AiPolicyToggles } from "@/features/ai-policy/types";
 import { parseAiPolicy } from "@/features/ai-policy/parse";
@@ -200,6 +200,7 @@ function TourCard({
   onCreateWorkspace,
 }: TourCardProps) {
   const { t } = useTranslation();
+  const reduced = useReducedMotion();
   const nextBtnRef = useRef<HTMLButtonElement>(null);
   const prevHighlight = useRef(highlightNext);
   const [skipConfirmOpen, setSkipConfirmOpen] = useState(false);
@@ -252,7 +253,10 @@ function TourCard({
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 12 }}
-        transition={{ duration: DURATIONS.normal, ease: EASINGS.easeOut }}
+        transition={{
+          duration: reduced ? 0 : DURATIONS.normal,
+          ease: EASINGS.easeOut,
+        }}
         className="rounded-2xl border border-border bg-card/95 p-5 shadow-2xl backdrop-blur-sm"
       >
         <div className="mb-3 flex items-center justify-between">

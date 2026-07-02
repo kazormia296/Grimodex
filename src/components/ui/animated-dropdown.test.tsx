@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 
 vi.mock("motion/react", async () => {
   const { createElement, forwardRef } = await import("react");
@@ -97,5 +97,156 @@ describe("AnimatedDropdown", () => {
     render(<Wrapper />);
     await userEvent.click(screen.getByTestId("outside"));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("AnimatedDropdown focus restore (inline)", () => {
+  function Harness() {
+    const [open, setOpen] = useState(false);
+    const containerRef = useRef<HTMLDivElement>(null);
+    return (
+      <div>
+        <div ref={containerRef}>
+          <button
+            type="button"
+            data-testid="trigger"
+            onClick={() => setOpen((v) => !v)}
+          >
+            trigger
+          </button>
+          <AnimatedDropdown
+            open={open}
+            onClose={() => setOpen(false)}
+            containerRef={containerRef}
+          >
+            <button type="button" data-testid="item">
+              item
+            </button>
+          </AnimatedDropdown>
+        </div>
+        <button type="button" data-testid="outside">
+          outside
+        </button>
+      </div>
+    );
+  }
+
+  it("restores focus to the trigger when closed via Escape", async () => {
+    render(<Harness />);
+    const trigger = screen.getByTestId("trigger");
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByTestId("item"));
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("item")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("does not restore focus when closed by outside click", async () => {
+    render(<Harness />);
+    await userEvent.click(screen.getByTestId("trigger"));
+    const outside = screen.getByTestId("outside");
+    await userEvent.click(outside);
+    expect(screen.queryByTestId("item")).toBeNull();
+    expect(document.activeElement).toBe(outside);
+  });
+});
+
+describe("AnimatedDropdown anchored mode focus", () => {
+  function Harness({ menu }: { menu?: React.ReactNode }) {
+    const [open, setOpen] = useState(false);
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    return (
+      <div>
+        <button
+          ref={triggerRef}
+          type="button"
+          data-testid="trigger"
+          onClick={() => setOpen((v) => !v)}
+        >
+          trigger
+        </button>
+        <AnimatedDropdown
+          open={open}
+          onClose={() => setOpen(false)}
+          anchorRef={triggerRef}
+        >
+          {menu ?? (
+            <>
+              <button type="button" data-testid="item-1">
+                Item 1
+              </button>
+              <button type="button" data-testid="item-2">
+                Item 2
+              </button>
+            </>
+          )}
+        </AnimatedDropdown>
+        <button type="button" data-testid="outside">
+          outside
+        </button>
+      </div>
+    );
+  }
+
+  it("moves focus to the first focusable element on open", async () => {
+    render(<Harness />);
+    await userEvent.click(screen.getByTestId("trigger"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId("item-1")),
+    );
+  });
+
+  it("focuses the content container (tabindex=-1) when no focusable children", async () => {
+    render(<Harness menu={<span data-testid="plain">plain</span>} />);
+    await userEvent.click(screen.getByTestId("trigger"));
+    await waitFor(() => {
+      const active = document.activeElement as HTMLElement;
+      expect(active.getAttribute("tabindex")).toBe("-1");
+      expect(active.contains(screen.getByTestId("plain"))).toBe(true);
+    });
+  });
+
+  it("keeps caller-managed focus (autoFocus inside content) on open", async () => {
+    render(
+      <Harness
+        menu={
+          <>
+            <button type="button" data-testid="first-btn">
+              first
+            </button>
+            {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+            <input data-testid="search" autoFocus />
+          </>
+        }
+      />,
+    );
+    await userEvent.click(screen.getByTestId("trigger"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId("search")),
+    );
+  });
+
+  it("restores focus to the trigger when closed via Escape", async () => {
+    render(<Harness />);
+    const trigger = screen.getByTestId("trigger");
+    await userEvent.click(trigger);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId("item-1")),
+    );
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("item-1")).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("does not restore focus when closed by outside click", async () => {
+    render(<Harness />);
+    await userEvent.click(screen.getByTestId("trigger"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId("item-1")),
+    );
+    const outside = screen.getByTestId("outside");
+    await userEvent.click(outside);
+    await waitFor(() => expect(screen.queryByTestId("item-1")).toBeNull());
+    expect(document.activeElement).toBe(outside);
   });
 });

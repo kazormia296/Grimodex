@@ -59,9 +59,13 @@ export function Heatmap({ heatmap }: HeatmapProps) {
             {heatmap.weeks.map((col, w) => (
               <div key={w} className="flex flex-col gap-[2px]">
                 {col.map((cell) => (
+                  // title は視覚 tooltip 用に保持しつつ、SR には role="img" +
+                  // aria-label で「日付 — 値」を提供する (WCAG 1.1.1)。
                   <div
                     key={cell.key}
                     title={cellTitle(cell)}
+                    role={cell.inRange ? "img" : undefined}
+                    aria-label={cell.inRange ? cellTitle(cell) : undefined}
                     aria-hidden={!cell.inRange}
                     className={`h-[11px] w-[11px] rounded-[2px] ${
                       cell.inRange ? LEVEL_CLASS[cell.level] : "bg-transparent"

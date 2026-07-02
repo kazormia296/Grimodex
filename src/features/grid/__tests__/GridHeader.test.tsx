@@ -71,6 +71,12 @@ describe("GridHeader", () => {
     expect(screen.getByText("5 章")).toBeDefined();
   });
 
+  it("検索ボタン（closed state）に accessible name がある", () => {
+    render(<GridHeader {...defaultProps} />);
+    const btn = screen.getByRole("button", { name: "検索" });
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("🔍 ボタンクリックで検索バーが展開される", () => {
     render(<GridHeader {...defaultProps} />);
     expect(

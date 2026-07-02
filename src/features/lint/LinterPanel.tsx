@@ -157,6 +157,21 @@ function NotificationsList() {
 function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+
+  // Escape でキーボードからも閉じられるようにする (WCAG 2.1.1)。
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      setOpen(false);
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
+  }, [open]);
+
   if (warnings.length === 0) return null;
   return (
     <>
@@ -171,12 +186,17 @@ function WarningsBadge({ warnings }: { warnings: RuleWarning[] }) {
       </button>
       {open && (
         <div
+          role="presentation"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          onClick={() => setOpen(false)}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setOpen(false);
+          }}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("lint.warnings.title", "Linter の警告")}
             className="max-h-[60vh] w-[min(520px,90vw)] overflow-y-auto rounded border border-border bg-background p-4 text-sm shadow-lg"
-            onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between">
               <h3 className="font-semibold">
@@ -942,8 +962,12 @@ function ContextMenu({
     zIndex: 60,
   };
   return (
+    // 位置決め用コンテナ。外側クリック close (window click listener) を
+    // メニュー内クリックで発火させないための stopPropagation なので、
+    // 意味論上は presentation とする (項目自体は button)。
     <div
       style={style}
+      role="presentation"
       onClick={(e) => e.stopPropagation()}
       className="min-w-[220px] rounded border border-border bg-background py-1 text-sm shadow-lg"
     >
@@ -1679,14 +1703,32 @@ function ExportReportDialog({
     }
   }, [format, includeExcerpt, scenes, onClose]);
 
+  // Escape でキーボードからも閉じられるようにする (WCAG 2.1.1)。
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
+  }, [onClose]);
+
   return (
     <div
+      role="presentation"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      onClick={onClose}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("lint.export.dialogTitle", "Lint レポートを書き出し")}
         className="w-[min(420px,90vw)] rounded border border-border bg-background p-4 text-sm shadow-lg"
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between">
           <h3 className="font-semibold">

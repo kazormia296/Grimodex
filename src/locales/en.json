@@ -164,6 +164,9 @@
       "errorVariantsRequired": "Please enter at least one disallowed form.",
       "errorDuplicateVariant": "The same variant is already registered in another entry: {{variants}}",
       "copySuffix": "{{name}} (copy)"
+    },
+    "a11y": {
+      "completed": "Lint finished: {{count}} issue(s) found"
     }
   },
   "postEffect": {
@@ -1668,7 +1671,8 @@
       "insertLabel": "Insert",
       "codexLabel": "Codex",
       "snippetLabel": "Snippet",
-      "copyLabel": "Copy"
+      "copyLabel": "Copy",
+      "moreOptions": "More options"
     },
     "contextMenu": {
       "insertSelectionToEditor": "Insert selection to editor",
@@ -2162,7 +2166,10 @@
       "pinAdded": "Pin added",
       "pinRemoved": "Pin removed",
       "renamePropagated": "Apply rename \"{{oldName}}\" → \"{{newName}}\" to body text"
-    }
+    },
+    "filterTypeLabel": "Filter by type",
+    "searchResultCount_one": "{{count}} result found",
+    "searchResultCount_other": "{{count}} results found"
   },
   "grid": {
     "empty": "No chapters yet. Use \"Add Chapter\" to get started.",
@@ -3052,7 +3059,9 @@
       "registerAsForeshadow": "Register as Foreshadow",
       "addToMap": "Add to Map"
     },
-    "duplicateTitle": "{{title}} (copy)"
+    "duplicateTitle": "{{title}} (copy)",
+    "searchResultCount_one": "{{count}} result found",
+    "searchResultCount_other": "{{count}} results found"
   },
   "tree": {
     "openInEditor": "Open in Editor",
@@ -3300,7 +3309,8 @@
       "showLineNumbers": "Show line numbers",
       "rubyBase": "Base",
       "rubyAnnotation": "Reading",
-      "urlPlaceholder": "https://..."
+      "urlPlaceholder": "https://...",
+      "label": "Editor toolbar"
     },
     "status": {
       "outline": "Outline",
@@ -3412,7 +3422,8 @@
     },
     "comment": {
       "inputPlaceholder": "Enter a comment…",
-      "empty": "(No comment)"
+      "empty": "(No comment)",
+      "popoverLabel": "Comment"
     },
     "lintDisable": {
       "gutterTooltipAll": "All Lint rules are disabled on this block",
@@ -3431,7 +3442,11 @@
       "overwrite": "Overwrite",
       "overwriteConfirm": "Overwrite existing synopsis?"
     },
-    "bodyPlaceholder": "Write whatever comes to mind…"
+    "bodyPlaceholder": "Write whatever comes to mind…",
+    "a11y": {
+      "editorBody": "Editor body: {{title}}",
+      "editorBodyUntitled": "Editor body"
+    }
   },
   "inlineAi": {
     "generateFailed": "Generation failed",
@@ -3877,7 +3892,8 @@
     "reload": "Reload"
   },
   "autoSave": {
-    "failed": "Auto-save failed: {{reason}}"
+    "failed": "Auto-save failed: {{reason}}",
+    "recovered": "Auto-save recovered; your changes are saved"
   },
   "sceneLoad": {
     "failed": "Failed to load scene content (saving paused for this scene): {{reason}}"
@@ -4152,6 +4168,10 @@
       "renamed": "Renamed to {{title}}",
       "reconcileFailed": "Failed to sync \"{{label}}\"",
       "mountFailed": "Failed to mount folder"
+    },
+    "a11y": {
+      "fileArchived": "Archived \"{{name}}\", which was deleted externally",
+      "fileImported": "Imported external changes from \"{{name}}\""
     }
   },
   "scenes": {
@@ -4602,7 +4622,8 @@
       "empty": "(Empty)",
       "searchPlaceholder": "Search {{type}}…",
       "noMatches": "No matches found",
-      "noItems": "No {{type}} found"
+      "noItems": "No {{type}} found",
+      "dialogLabel": "Add to map"
     },
     "autoArrange": {
       "layoutReadingOrder": "Grid layout by reading order",
@@ -5214,7 +5235,9 @@
       "exact": "Exact",
       "approx": "Approx",
       "unknown": "Unknown"
-    }
+    },
+    "a11yLoaded": "Chronicle loaded ({{count}} events)",
+    "a11yZoomLevel": "Zoom: {{unit}} scale"
   },
   "timeline": {
     "displayMenu": "Display options",

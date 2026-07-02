@@ -50,6 +50,7 @@ import { shouldAutoDraftTransition } from "@/features/editor/autoStatusTransitio
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { EditorContentSkeleton } from "@/features/editor/EditorContentSkeleton";
 import i18next from "@/lib/i18n";
+import { useTranslation } from "react-i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import { useLinearEditorStore } from "./linearEditorStore";
 import { useLinearInlineAi } from "./useLinearInlineAi";
@@ -311,6 +312,20 @@ function MountedSceneBlock({
       useLinearEditorStore.getState().unregisterEditor(sceneId, editor);
     };
   }, [sceneId, editor]);
+
+  // contenteditable の accessible name。editorProps.attributes は生成時に固定
+  // されるため、リネームに追従できるよう view.dom へ動的に付与する
+  // (EditorPane と同じ契約)。
+  const { t } = useTranslation();
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.view.dom.setAttribute(
+      "aria-label",
+      title
+        ? t("editor.a11y.editorBody", { title })
+        : t("editor.a11y.editorBodyUntitled"),
+    );
+  }, [editor, title, t]);
 
   // SlashCommandExtension が dispatch する inlineai:slash-command の実行配線
   // (構造挿入 sceneBeat + AI 生成系の generate/palette/toolbar)。グローバル単一

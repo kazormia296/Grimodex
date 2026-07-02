@@ -42,10 +42,25 @@ export function AINodeDialog({
     textareaRef.current?.focus();
   }, []);
 
+  // Escape でどこにフォーカスがあっても閉じられるようにする (WCAG 2.1.1)。
+  // capture で先取りし、Map 側など後続の Escape 処理へ流さない。
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      onCancel();
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
+  }, [onCancel]);
+
   const canSubmit = prompt.trim().length > 0;
 
   return createPortal(
     <div
+      role="presentation"
       style={{
         position: "fixed",
         inset: 0,
@@ -55,12 +70,16 @@ export function AINodeDialog({
         alignItems: "center",
         justifyContent: "center",
       }}
-      onClick={onCancel}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("map.aiBranch.label")}
         className="bg-popover border border-border rounded-lg shadow-xl"
         style={{ minWidth: 360, maxWidth: 520, padding: 24 }}
-        onClick={(e) => e.stopPropagation()}
       >
         <div
           style={{
@@ -119,7 +138,8 @@ export function AINodeDialog({
             onChange={(e) => setPrompt(e.target.value)}
             placeholder={t("map.aiNodeDialog.promptPlaceholder")}
             onKeyDown={(e) => {
-              if (e.key === "Escape") onCancel();
+              // IME 変換キャンセルの Escape でダイアログを閉じない
+              if (e.key === "Escape" && !e.nativeEvent.isComposing) onCancel();
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canSubmit) {
                 onConfirm(prompt.trim(), count, vsThreshold);
               }

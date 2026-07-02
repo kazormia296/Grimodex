@@ -254,6 +254,53 @@ describe("ManageFieldsDialog", () => {
     expect(mockDelete).not.toHaveBeenCalled();
   });
 
+  it("Escape closes only the delete confirmation, not the parent dialog", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    mockListDefs.mockResolvedValue([makeDefinition("def-1", "身長", "text")]);
+    render(<ManageFieldsDialog {...defaultProps} onClose={onClose} />);
+    await waitFor(() => screen.getByTestId("manage-field-delete-def-1"));
+    await user.click(screen.getByTestId("manage-field-delete-def-1"));
+    expect(
+      screen.getByTestId("manage-field-delete-confirm-dialog"),
+    ).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByTestId("manage-field-delete-confirm-dialog"),
+    ).not.toBeInTheDocument();
+    // 親 (AnimatedOverlay) の Escape close は capture で先取りされている
+    expect(onClose).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it("delete confirmation has dialog semantics and backdrop click closes it", async () => {
+    const user = userEvent.setup();
+    mockListDefs.mockResolvedValue([makeDefinition("def-1", "身長", "text")]);
+    render(<ManageFieldsDialog {...defaultProps} />);
+    await waitFor(() => screen.getByTestId("manage-field-delete-def-1"));
+    await user.click(screen.getByTestId("manage-field-delete-def-1"));
+
+    const backdrop = screen.getByTestId("manage-field-delete-confirm-dialog");
+    const dialog = backdrop.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(dialog).toHaveAccessibleName();
+
+    // ダイアログ内クリックでは閉じない
+    fireEvent.click(dialog as HTMLElement);
+    expect(
+      screen.getByTestId("manage-field-delete-confirm-dialog"),
+    ).toBeInTheDocument();
+
+    // backdrop 直クリックで閉じる
+    fireEvent.click(backdrop);
+    expect(
+      screen.queryByTestId("manage-field-delete-confirm-dialog"),
+    ).not.toBeInTheDocument();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
   describe("dropdown options editing", () => {
     const openAddForm = async (user: ReturnType<typeof userEvent.setup>) => {
       await waitFor(() => screen.getByTestId("manage-fields-add-button"));

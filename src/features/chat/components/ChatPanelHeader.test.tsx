@@ -322,3 +322,15 @@ describe("ChatPanelHeader — Map overlay toggle gated on Map panel visibility",
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ChatPanelHeader — 新規セッションボタンの accessible name", () => {
+  it("Plus ボタンが title と同文言の aria-label を持つ", () => {
+    const onNewSession = vi.fn();
+    render(<ChatPanelHeader {...baseProps({ onNewSession })} />);
+    const button = screen.getByRole("button", { name: "chat.newSession" });
+    expect(button.getAttribute("aria-label")).toBe("chat.newSession");
+    expect(button.getAttribute("title")).toBe("chat.newSession");
+    fireEvent.click(button);
+    expect(onNewSession).toHaveBeenCalledTimes(1);
+  });
+});

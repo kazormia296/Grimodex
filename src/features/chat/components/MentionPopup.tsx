@@ -6,6 +6,14 @@ import type {
 } from "@/features/codex/CodexMentionExtension";
 import { getTypeLabel } from "../utils/typeLabels";
 
+/** 入力欄側の aria-controls / aria-activedescendant から参照する listbox id。 */
+export const MENTION_LISTBOX_ID = "mention-popup-listbox";
+
+/** aria-activedescendant で指す option id（selectedIndex と同期）。 */
+export function mentionOptionId(index: number): string {
+  return `${MENTION_LISTBOX_ID}-option-${index}`;
+}
+
 interface MentionPopupProps {
   items: MentionItem[];
   selectedIndex: number;
@@ -97,6 +105,7 @@ export function MentionPopup({
   return (
     <ul
       ref={listRef}
+      id={MENTION_LISTBOX_ID}
       role="listbox"
       aria-label={t("chat.context.mentionSuggestions")}
       style={style}
@@ -105,6 +114,7 @@ export function MentionPopup({
       {items.map((item, i) => (
         <li
           key={`${item.kind}-${item.id}`}
+          id={mentionOptionId(i)}
           role="option"
           aria-selected={i === selectedIndex}
           data-mention-kind={item.kind}

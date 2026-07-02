@@ -81,6 +81,7 @@ import { CodexEntryPicker } from "./CodexEntryPicker";
 import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { useSeasonConflicts } from "./useSeasonConflicts";
+import { announce } from "@/lib/a11y/announcer";
 
 /**
  * 作中年表(Chronicle)パネル — 人物/場所レーン×作中時間軸の pan/zoom 年表。
@@ -150,14 +151,57 @@ export function ChroniclePanel() {
   const trackElRef = useRef<HTMLDivElement | null>(null);
   // 永続ビューがあれば「フィット済み」とみなし初回オートフィットを抑止する。
   const fittedRef = useRef(useChronicleStore.getState().pxPerDay != null);
+  // ドラッグ書き戻し時に現在のルーラー解像度（時刻 zoom か否か）を参照する。
+  // 代入は layout 算出後（下方）。ズーム通知の debounce 後読みにも使う。
+  const rulerLevelRef = useRef<string>("day");
+
+  // ズーム操作の SR 通知。wheel/ツールバー/キーボードの全ズームが applyView 経由で
+  // pxPerDay を変えるのでそこで検出する。連打で煩くならないよう debounce し、
+  // 確定後のルーラー粒度（再レンダ済みの rulerLevelRef）を短文で読み上げる。
+  const zoomAnnounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const scheduleZoomAnnounce = useCallback(() => {
+    if (zoomAnnounceTimerRef.current)
+      clearTimeout(zoomAnnounceTimerRef.current);
+    zoomAnnounceTimerRef.current = setTimeout(() => {
+      zoomAnnounceTimerRef.current = null;
+      const level = rulerLevelRef.current;
+      const unit =
+        level === "year"
+          ? t("chronicle.year", "年")
+          : level === "month"
+            ? t("chronicle.month", "月")
+            : level === "day"
+              ? t("chronicle.day", "日")
+              : level === "hour"
+                ? t("chronicle.dialHour", "時")
+                : level === "minute"
+                  ? t("chronicle.dialMinute", "分")
+                  : t("chronicle.readingOrder", "読む順");
+      announce(t("chronicle.a11yZoomLevel", "ズーム: {{unit}}単位", { unit }));
+    }, 400);
+  }, [t]);
+  useEffect(
+    () => () => {
+      if (zoomAnnounceTimerRef.current)
+        clearTimeout(zoomAnnounceTimerRef.current);
+    },
+    [],
+  );
+  const lastPxPerDayRef = useRef(view.pxPerDay);
 
   // ユーザー操作由来のビュー変更は永続化する（drag/zoom/fit/警告ジャンプ）。
   const applyView = useCallback(
     (v: View) => {
+      if (v.pxPerDay !== lastPxPerDayRef.current) {
+        lastPxPerDayRef.current = v.pxPerDay;
+        scheduleZoomAnnounce();
+      }
       setView(v);
       setChronicleView(v.pxPerDay, v.viewStartDay);
     },
-    [setChronicleView],
+    [setChronicleView, scheduleZoomAnnounce],
   );
 
   // 表示オプション（ローカル・非永続）。
@@ -225,6 +269,9 @@ export function ChroniclePanel() {
 
   const loadedProjectIdRef = useRef<string | null>(null);
   useEffect(() => {
+    // プロジェクト読み込み（切替/初回）か、CRUD/undo 由来の再取得かを区別する。
+    // SR への「読み込み完了」通知は前者のみ（mutation ごとに鳴らすと煩いため）。
+    const isProjectLoad = loadedProjectIdRef.current !== projectId;
     // プロジェクト切替時は前プロジェクトのデータと選択を同期的に捨て、フィットも再実行。
     if (loadedProjectIdRef.current !== projectId) {
       loadedProjectIdRef.current = projectId;
@@ -249,6 +296,13 @@ export function ChroniclePanel() {
       .then(async (rows) => {
         if (cancelled) return;
         setEvents(rows);
+        // 読み込み完了を SR へ通知（この経路に toast は無い）。
+        if (isProjectLoad)
+          announce(
+            t("chronicle.a11yLoaded", "年表を読み込みました（{{count}}件）", {
+              count: rows.length,
+            }),
+          );
         // 削除/undo/redo 後の stale な選択 id を整合（全削除経路を覆う）。scene-event の
         // 選択(scene:*)を消さないよう、実 event id ∪ 現在の scene-event id を有効集合とする。
         const sceneIds = deriveSceneEventRows(
@@ -285,6 +339,7 @@ export function ChroniclePanel() {
     revisionCounter,
     setSelectedEventId,
     setSelectedPosition,
+    t,
   ]);
 
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
@@ -540,8 +595,6 @@ export function ChroniclePanel() {
       lang,
     ],
   );
-  // ドラッグ書き戻し時に現在のルーラー解像度（時刻 zoom か否か）を参照する。
-  const rulerLevelRef = useRef<string>("day");
   rulerLevelRef.current = layout.ticks.level;
 
   // ドラッグ/期間端伸縮中の日時バブル文言を、現在のルーラー解像度に応じた精度で作る。
@@ -903,6 +956,27 @@ export function ChroniclePanel() {
       }
     },
     [renderEvents, patchById],
+  );
+
+  // 期間端伸縮のキーボード代替（Shift+←/→=終了端, Ctrl+Shift=開始端）。プライマリ選択の
+  // 期間イベント限定（点はドラッグの端グリップ同様に対象外）。start<=end のクランプと
+  // 時刻 zoom 時の分反映は handleResizeEvent が担う。
+  const handleResizeSelectedBy = useCallback(
+    (edge: "start" | "end", deltaDays: number) => {
+      if (!selectedEventId || !Number.isFinite(deltaDays) || deltaDays === 0)
+        return;
+      const e = renderEvents.find((x) => x.id === selectedEventId);
+      if (!e || e.startTime == null || e.endTime == null) return;
+      const subDay =
+        rulerLevelRef.current === "hour" || rulerLevelRef.current === "minute";
+      // 日グリッド以上では分端数を基準に含めない（丸めで端が1日ズレるのを防ぐ）。
+      const base =
+        edge === "start"
+          ? e.startTime + (subDay ? (e.startMinute ?? 0) / MIN_PER_DAY : 0)
+          : e.endTime + (subDay ? (e.endMinute ?? 0) / MIN_PER_DAY : 0);
+      handleResizeEvent(selectedEventId, edge, base + deltaDays);
+    },
+    [selectedEventId, renderEvents, handleResizeEvent],
   );
 
   // D&D 因果エッジ作成（ドラッグ元=原因→落下先=結果）。
@@ -1566,6 +1640,7 @@ export function ChroniclePanel() {
             onSelectEffects={handleSelectEffects}
             onMoveSelected={handleMoveSelected}
             onNudgeSelected={shiftSelectedBy}
+            onResizeSelectedBy={handleResizeSelectedBy}
             onDeleteSelected={handleBulkDelete}
             onClearSelection={clearSelection}
             formatDayLabel={formatDragDayLabel}

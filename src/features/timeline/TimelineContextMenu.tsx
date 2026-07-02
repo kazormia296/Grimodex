@@ -56,6 +56,20 @@ export function TimelineContextMenu({ node, x, y, onClose, axisMode }: Props) {
     };
   }, [onClose]);
 
+  // 開時にメニューへフォーカスを移し、close 時に元の要素へ復元する。
+  // メニュー項目のクリックでエディタ等へフォーカスが移った場合は奪い返さない
+  // （body に落ちた＝フォーカスが行方不明のときだけ復元する）。
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    menuRef.current?.focus();
+    return () => {
+      const active = document.activeElement;
+      if (prev?.isConnected && (!active || active === document.body)) {
+        prev.focus();
+      }
+    };
+  }, []);
+
   const style: React.CSSProperties = {
     position: "fixed",
     left: Math.max(0, Math.min(x, window.innerWidth - 220)),
@@ -92,6 +106,7 @@ export function TimelineContextMenu({ node, x, y, onClose, axisMode }: Props) {
     <div
       ref={menuRef}
       style={style}
+      tabIndex={-1}
       className="min-w-[192px] rounded-md border border-border bg-popover py-1 shadow-lg"
     >
       {item(

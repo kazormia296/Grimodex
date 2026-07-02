@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 import { EditorContent } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
 import { SceneBeatEditorContextProvider } from "@/features/editor/beat/SceneBeatEditorContext";
@@ -75,6 +76,7 @@ export function EditorContentArea({
   isSceneContentLoading,
   sceneId,
 }: EditorContentAreaProps) {
+  const { t } = useTranslation();
   // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
   // 例外) に切り替える。クラス付与方式 (editor-vertical と同じ流儀)。
   const isEnglish = useCurrentProject()?.language === "en";
@@ -88,6 +90,16 @@ export function EditorContentArea({
         showReplace={findShowReplace}
         onClose={() => setFindOpen(false)}
       />
+      {/* 帰属フィルタは色のみの表現のため、SR には live region で状態を伝える */}
+      <div
+        role="status"
+        className="sr-only"
+        data-testid="attribution-filter-status"
+      >
+        {filterSource
+          ? `${t("attribution.filtering")} ${t(`attribution.${filterSource}`)}`
+          : ""}
+      </div>
       <EditorDropDiv
         outerRef={editorContainerRef}
         data-show-foreshadow-marks={showForeshadowMarks ? "true" : "false"}

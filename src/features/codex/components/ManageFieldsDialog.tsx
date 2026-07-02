@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useId } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X, Pencil, Trash2 } from "lucide-react";
@@ -298,6 +298,25 @@ function EditForm({ definition, onSave, onCancel }: EditFormProps) {
   );
 }
 
+/**
+ * 確認サブダイアログの Escape 対応。親 ManageFieldsDialog (AnimatedOverlay) も
+ * window keydown で閉じるため、capture phase で先取りして確認ダイアログ
+ * だけを閉じる (ExportPresetPicker の SavePresetDialog と同じ流儀)。
+ */
+function useConfirmDialogEscape(onCancel: () => void): void {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      onCancel();
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", handler, { capture: true });
+  }, [onCancel]);
+}
+
 // --- Delete Confirm Dialog ---
 interface DeleteConfirmProps {
   definitionName: string;
@@ -311,19 +330,26 @@ function DeleteConfirmDialog({
   onCancel,
 }: DeleteConfirmProps) {
   const { t } = useTranslation();
+  const titleId = useId();
+  useConfirmDialogEscape(onCancel);
   // 親の ManageFieldsDialog (AnimatedOverlay) は body へ portal された z-50。
   // その上に確実に重ねるため、こちらも body へ portal して z-[60] にする。
   return createPortal(
     <div
       data-testid="manage-field-delete-confirm-dialog"
+      role="presentation"
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
-      onClick={onCancel}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
       >
-        <h4 className="mb-2 text-sm font-semibold">
+        <h4 id={titleId} className="mb-2 text-sm font-semibold">
           {t("codex.detail.deleteFieldTitle")}
         </h4>
         <p className="mb-4 text-xs text-muted-foreground">
@@ -368,18 +394,25 @@ function PresetConfirmDialog({
   onCancel,
 }: PresetConfirmProps) {
   const { t } = useTranslation();
+  const titleId = useId();
+  useConfirmDialogEscape(onCancel);
   // portal された親 (z-50) の上に重ねるため body へ portal して z-[60]
   return createPortal(
     <div
       data-testid="manage-fields-preset-confirm-dialog"
+      role="presentation"
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
-      onClick={onCancel}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="w-96 rounded-lg border border-border bg-background p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
       >
-        <h4 className="mb-2 text-sm font-semibold">
+        <h4 id={titleId} className="mb-2 text-sm font-semibold">
           {t("codex.detail.presetConfirmTitle")}
         </h4>
         <p className="mb-1 text-xs font-medium">
@@ -451,19 +484,26 @@ function CleanupConfirmDialog({
   onCancel,
 }: CleanupConfirmProps) {
   const { t } = useTranslation();
+  const titleId = useId();
+  useConfirmDialogEscape(onCancel);
   // DeleteConfirmDialog 同様、portal された親 (z-50) の上に重ねるため
   // body へ portal して z-[60]
   return createPortal(
     <div
       data-testid="manage-fields-cleanup-confirm-dialog"
+      role="presentation"
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
-      onClick={onCancel}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="w-80 rounded-lg border border-border bg-background p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
       >
-        <h4 className="mb-2 text-sm font-semibold">
+        <h4 id={titleId} className="mb-2 text-sm font-semibold">
           {t("codex.detail.deleteEmptyConfirmTitle")}
         </h4>
         <p className="mb-2 text-xs text-muted-foreground">
@@ -552,6 +592,12 @@ export function ManageFieldsDialog({
     if (open) {
       void load();
       setPresetGenre(presetDefault);
+    } else {
+      // 確認サブダイアログは AnimatedOverlay の外側に描画されるため、閉時に
+      // state を破棄しないと親が閉じてもダイアログと capture Escape が残留する
+      setDeletingDef(null);
+      setPresetPreview(null);
+      setCleanupTargets(null);
     }
   }, [open, load, presetDefault]);
 
@@ -797,7 +843,7 @@ export function ManageFieldsDialog({
         </div>
       </AnimatedOverlay>
 
-      {deletingDef && (
+      {open && deletingDef && (
         <DeleteConfirmDialog
           definitionName={deletingDef.name}
           onConfirm={() => void handleDeleteConfirm()}
@@ -805,7 +851,7 @@ export function ManageFieldsDialog({
         />
       )}
 
-      {presetPreview && (
+      {open && presetPreview && (
         <PresetConfirmDialog
           toAdd={presetPreview.toAdd}
           toSkip={presetPreview.toSkip}
@@ -814,7 +860,7 @@ export function ManageFieldsDialog({
         />
       )}
 
-      {cleanupTargets && (
+      {open && cleanupTargets && (
         <CleanupConfirmDialog
           targets={cleanupTargets}
           onConfirm={() => void handleCleanupConfirm()}

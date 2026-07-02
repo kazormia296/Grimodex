@@ -1,8 +1,16 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { GridDisplaySettings } from "../gridStore";
+
+const { mockOpenPreview, mockOpenPinned, mockSetActiveScene } = vi.hoisted(
+  () => ({
+    mockOpenPreview: vi.fn(),
+    mockOpenPinned: vi.fn(),
+    mockSetActiveScene: vi.fn(),
+  }),
+);
 
 // --- dnd-kit stubs ---
 vi.mock("@dnd-kit/core", () => ({
@@ -17,7 +25,12 @@ vi.mock("@dnd-kit/core", () => ({
 
 // --- store stubs ---
 vi.mock("@/features/editor/tabStore", () => ({
-  useTabStore: { getState: vi.fn(() => ({ openPinned: vi.fn() })) },
+  useTabStore: {
+    getState: vi.fn(() => ({
+      openPinned: mockOpenPinned,
+      openPreview: mockOpenPreview,
+    })),
+  },
 }));
 vi.mock("@/features/layout/layoutStore", () => ({
   useLayoutStore: { getState: vi.fn(() => ({ showPanel: vi.fn() })) },
@@ -56,6 +69,7 @@ vi.mock("@/features/tree/treeStore", () => ({
         pendingRenameId: null,
         charCounts: {},
         setPendingRenameId: vi.fn(),
+        setActiveScene: mockSetActiveScene,
       })),
     },
   ),
@@ -80,6 +94,7 @@ const mockUseNodeBeatPreview = vi.mocked(useNodeBeatPreview);
 
 // --- component under test (imported after mocks) ---
 import { GridSceneCard } from "../GridSceneCard";
+import { useGridStore } from "../gridStore";
 
 const DEFAULT_DISPLAY: GridDisplaySettings = {
   showSynopsis: true,
@@ -116,6 +131,7 @@ function makeScene(overrides: Partial<TreeNodeData> = {}): TreeNodeData {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useGridStore.getState().clearSelection();
   mockUseNodeBeatPreview.mockReturnValue({ placed: null, unplaced: null });
   mockUseDraggable.mockReturnValue({
     attributes: {},
@@ -276,5 +292,86 @@ describe("GridSceneCard", () => {
       />,
     );
     expect(screen.getByText("9,999 字")).toBeDefined();
+  });
+
+  describe("keyboard & ARIA (a11y)", () => {
+    function renderCard(overrides: Partial<TreeNodeData> = {}) {
+      render(
+        <GridSceneCard
+          scene={makeScene(overrides)}
+          display={DEFAULT_DISPLAY}
+        />,
+      );
+      return screen.getByRole("group", { name: "Test Scene" });
+    }
+
+    it("カードは role=group + aria-label=タイトル + tabIndex=0（nested-interactive 回避）", () => {
+      const card = renderCard();
+      expect(card.getAttribute("tabindex")).toBe("0");
+      expect(card.getAttribute("aria-selected")).toBeNull();
+      expect(card.getAttribute("role")).not.toBe("option");
+    });
+
+    it("選択状態は aria-current='true' で表現される", () => {
+      const card = renderCard();
+      expect(card.getAttribute("aria-current")).toBeNull();
+      act(() => useGridStore.getState().selectOnly("scene-1"));
+      expect(card.getAttribute("aria-current")).toBe("true");
+    });
+
+    it("Enter キーで選択 + プレビューが開く", () => {
+      const card = renderCard();
+      fireEvent.keyDown(card, { key: "Enter" });
+      expect(useGridStore.getState().selectedSceneIds.has("scene-1")).toBe(
+        true,
+      );
+      expect(mockOpenPreview).toHaveBeenCalledWith("scene-1");
+      expect(mockSetActiveScene).toHaveBeenCalledWith("scene-1");
+    });
+
+    it("Space キーでも選択できる", () => {
+      const card = renderCard();
+      fireEvent.keyDown(card, { key: " " });
+      expect(useGridStore.getState().selectedSceneIds.has("scene-1")).toBe(
+        true,
+      );
+    });
+
+    it("Ctrl+Enter は選択をトグルする（プレビューは開かない）", () => {
+      const card = renderCard();
+      fireEvent.keyDown(card, { key: "Enter", ctrlKey: true });
+      expect(useGridStore.getState().selectedSceneIds.has("scene-1")).toBe(
+        true,
+      );
+      fireEvent.keyDown(card, { key: "Enter", ctrlKey: true });
+      expect(useGridStore.getState().selectedSceneIds.has("scene-1")).toBe(
+        false,
+      );
+      expect(mockOpenPreview).not.toHaveBeenCalled();
+    });
+
+    it("nested interactive 要素（ドラッグハンドル）からの keydown では発火しない", () => {
+      renderCard();
+      const handle = screen.getByLabelText("ドラッグして移動");
+      fireEvent.keyDown(handle, { key: "Enter" });
+      expect(useGridStore.getState().selectedSceneIds.size).toBe(0);
+      expect(mockOpenPreview).not.toHaveBeenCalled();
+    });
+
+    it("カードとドラッグハンドルに focus-visible スタイルがある", () => {
+      const card = renderCard();
+      expect(card.className).toContain("focus-visible:ring-2");
+      const handle = screen.getByLabelText("ドラッグして移動");
+      expect(handle.className).toContain("focus-visible:opacity-100");
+      expect(handle.className).toContain("group-focus-within:opacity-100");
+      expect(handle.className).toContain("focus-visible:ring-1");
+    });
+
+    it("エディタで開くボタンはキーボードフォーカス時にも表示される", () => {
+      renderCard();
+      const btn = screen.getByTestId("grid-card-open-editor-btn");
+      expect(btn.className).toContain("group-focus-within:opacity-100");
+      expect(btn.className).toContain("focus-visible:opacity-100");
+    });
   });
 });

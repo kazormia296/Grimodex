@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { announce } from "@/lib/a11y/announcer";
 import * as snippetApi from "./api";
 import type { Snippet, NewSnippet } from "./api";
 import { searchSnippets } from "./search";
@@ -129,6 +130,14 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       } else {
         const entries = await searchSnippets(query);
         set({ entries, isLoading: false });
+        // 成功パスは toast を出さないため、SR には結果件数が無音になる。
+        // 呼び出し側 (パネル) が debounce 済みなので確定検索ごとに 1 回だけ、
+        // かつ後発の検索が始まっていれば stale な件数は読み上げない。
+        if (get().searchQuery === query) {
+          announce(
+            i18next.t("snippets.searchResultCount", { count: entries.length }),
+          );
+        }
       }
     } catch (e) {
       set({ isLoading: false });

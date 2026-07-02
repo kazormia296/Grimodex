@@ -52,6 +52,11 @@ describe("EditorBubbleMenu", () => {
     );
     expect(screen.getByRole("toolbar")).toBeInTheDocument();
     expect(screen.getByTestId("bubble-bold")).toBeInTheDocument();
+    // 装飾セパレータは aria-hidden で SR から隠す
+    const seps = screen
+      .getByRole("toolbar")
+      .querySelectorAll("div.w-px[aria-hidden]");
+    expect(seps.length).toBeGreaterThan(0);
     editor.destroy();
   });
 

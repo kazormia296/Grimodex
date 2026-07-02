@@ -219,6 +219,8 @@ export function ChatMessageActions({
             ref={triggerRef}
             data-testid={`message-actions-${messageId}`}
             onClick={() => (open ? setOpen(false) : openMenu())}
+            aria-label={t("chat.actions.moreOptions")}
+            aria-expanded={open}
             className="inline-flex items-center rounded border border-border px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
           >
             <MoreVertical className="h-3 w-3" />

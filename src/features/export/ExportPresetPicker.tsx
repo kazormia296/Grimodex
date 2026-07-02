@@ -51,7 +51,8 @@ function SavePresetDialog({
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // IME 変換キャンセルの Escape でダイアログを閉じない
+      if (e.key === "Escape" && !e.isComposing) {
         e.stopImmediatePropagation();
         e.preventDefault();
         onClose();
@@ -85,12 +86,17 @@ function SavePresetDialog({
   // に出すことで viewport 基準に戻す + ExportDialog より確実に上に重ねる。
   return createPortal(
     <div
+      role="presentation"
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
-      onClick={onClose}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("export.settings.userPresets.saveTitle")}
         className="w-[320px] rounded-lg border border-border bg-background p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
       >
         <h3 className="mb-3 text-sm font-semibold">
           {t("export.settings.userPresets.saveTitle")}

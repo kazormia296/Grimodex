@@ -145,16 +145,11 @@ function GridSceneCardImpl({
     el.style.height = `${el.scrollHeight}px`;
   }, [addingBeat, beatDraft]);
 
-  function handleCardClick(e: React.MouseEvent) {
-    if (isEditing || addingBeat) return;
-    // Ignore clicks on interactive descendants — they handle their own clicks
-    if (
-      (e.target as HTMLElement).closest(
-        "button, a, input, textarea, [contenteditable='true']",
-      )
-    ) {
-      return;
-    }
+  function activateCard(e: {
+    metaKey: boolean;
+    ctrlKey: boolean;
+    shiftKey: boolean;
+  }) {
     if (e.metaKey || e.ctrlKey) {
       toggleSelection(scene.id);
     } else if (e.shiftKey) {
@@ -169,6 +164,28 @@ function GridSceneCardImpl({
         markEnd("grid.cardClick.single");
       }
     }
+  }
+
+  function isInteractiveDescendant(target: EventTarget | null) {
+    return !!(target as HTMLElement | null)?.closest(
+      "button, a, input, textarea, [contenteditable='true']",
+    );
+  }
+
+  function handleCardClick(e: React.MouseEvent) {
+    if (isEditing || addingBeat) return;
+    // Ignore clicks on interactive descendants — they handle their own clicks
+    if (isInteractiveDescendant(e.target)) return;
+    activateCard(e);
+  }
+
+  function handleCardKeyDown(e: React.KeyboardEvent) {
+    if (isEditing || addingBeat) return;
+    if (e.key !== "Enter" && e.key !== " ") return;
+    // Nested interactive elements (drag handle, menu, inputs…) own their keys
+    if (isInteractiveDescendant(e.target)) return;
+    e.preventDefault();
+    activateCard(e);
   }
 
   const axisLockOffset = axisLockOffsetPx ?? 0;
@@ -197,7 +214,7 @@ function GridSceneCardImpl({
         "shrink-0 rounded p-0.5",
         fileBacked
           ? "cursor-not-allowed text-muted-foreground/30 opacity-30"
-          : "cursor-grab active:cursor-grabbing text-muted-foreground/40 opacity-0 group-hover:opacity-100 hover:text-muted-foreground hover:bg-accent",
+          : "cursor-grab active:cursor-grabbing text-muted-foreground/40 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:text-muted-foreground hover:bg-accent",
         "transition-opacity",
         isDragging && !fileBacked && "opacity-100",
       )}
@@ -248,11 +265,16 @@ function GridSceneCardImpl({
       >
         <div
           tabIndex={0}
-          role="option"
-          aria-selected={isSelected}
+          // role="group"(構造ロール)なので nested な button/input を含んでも
+          // nested-interactive 違反にならない。選択状態は role 非依存の
+          // aria-current で表す（aria-selected は listbox 前提のため不可）。
+          role="group"
+          aria-label={scene.title}
+          aria-current={isSelected ? "true" : undefined}
           className={cn(
             "group relative rounded-md border bg-card text-card-foreground shadow-sm",
             "flex flex-col select-none outline-none",
+            "focus-visible:ring-2 focus-visible:ring-ring",
             (isDragging || dimmed) && "opacity-40",
             isSelected && "ring-2 ring-primary border-primary/60 bg-primary/5",
             isRevealed &&
@@ -260,6 +282,7 @@ function GridSceneCardImpl({
           )}
           style={{ transition: "opacity 120ms ease-out" }}
           onClick={handleCardClick}
+          onKeyDown={handleCardKeyDown}
         >
           {display.showLabelBar && <GridCardLabelBar nodeId={scene.id} />}
 

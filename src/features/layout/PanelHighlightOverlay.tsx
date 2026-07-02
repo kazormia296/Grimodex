@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useGSAP } from "@gsap/react";
 import { gsap } from "gsap";
-import { CSS_DURATIONS } from "@/lib/animation";
+import { CSS_DURATIONS, useReducedMotion } from "@/lib/animation";
 import type { PanelId } from "./panelIds";
 import { PANEL_REGION_MAP, type PanelRegion } from "./panelRegions";
 import { isReducedMotion } from "@/lib/gsap";
@@ -71,6 +71,7 @@ const RING_COLOR = "oklch(0.55 0.22 264)";
 const GLOW_COLOR = "oklch(0.55 0.22 264 / 0.5)";
 
 export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
+  const reduced = useReducedMotion();
   const [rect, setRect] = useState<Rect | null>(null);
   const [isExact, setIsExact] = useState(false);
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -137,7 +138,9 @@ export function PanelHighlightOverlay({ panelId }: PanelHighlightOverlayProps) {
         height: rect.height,
         pointerEvents: "none",
         zIndex: 9999,
-        transition: `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease, width ${CSS_DURATIONS.fast} ease, height ${CSS_DURATIONS.fast} ease`,
+        transition: reduced
+          ? "none"
+          : `left ${CSS_DURATIONS.fast} ease, top ${CSS_DURATIONS.fast} ease, width ${CSS_DURATIONS.fast} ease, height ${CSS_DURATIONS.fast} ease`,
       }}
     >
       <div

@@ -966,6 +966,7 @@ export function CodexManagementPanel({
         onChange={(e) => handleSearchChange(e.target.value)}
         onKeyDown={handleSearchKeyDown}
         placeholder={t("codex.searchPlaceholder")}
+        aria-label={t("codex.searchPlaceholder")}
         className="flex-1 bg-transparent text-xs outline-none"
       />
     </div>

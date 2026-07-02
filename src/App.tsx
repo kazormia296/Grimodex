@@ -676,6 +676,7 @@ function EditorScreen() {
               <HistoryButtons />
               <button
                 type="button"
+                aria-label={t("app.exportLabel")}
                 title={t("app.exportTitle")}
                 onClick={() => setShowExport((v) => !v)}
                 className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -694,6 +695,7 @@ function EditorScreen() {
               <PanelToggleDropdown />
               <button
                 type="button"
+                aria-label={t("app.settingsLabel")}
                 title={t("app.settingsTitle")}
                 onClick={() => {
                   setSettingsInitialCategory("project");

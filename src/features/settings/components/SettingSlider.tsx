@@ -1,4 +1,5 @@
 import { useSettingNumber } from "../useSettingControl";
+import { useSettingRowA11y } from "./SettingRow";
 
 interface SettingSliderProps {
   settingKey: string;
@@ -20,6 +21,7 @@ export function SettingSlider({
   disabled = false,
 }: SettingSliderProps) {
   const { value, setValue } = useSettingNumber(settingKey, defaultValue);
+  const rowA11y = useSettingRowA11y();
 
   return (
     <div className={`flex items-center gap-2 ${disabled ? "opacity-50" : ""}`}>
@@ -29,6 +31,8 @@ export function SettingSlider({
         max={max}
         step={step}
         value={value}
+        aria-labelledby={rowA11y?.labelId}
+        aria-describedby={rowA11y?.descriptionId}
         disabled={disabled}
         onChange={(e) => setValue(parseFloat(e.target.value))}
         className="h-1.5 w-28 cursor-pointer appearance-none rounded-full bg-muted accent-primary disabled:cursor-not-allowed"

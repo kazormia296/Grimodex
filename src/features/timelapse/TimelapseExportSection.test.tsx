@@ -39,9 +39,11 @@ vi.mock("@/features/tree/treeStore", () => ({
 vi.mock("./videoExport", () => ({ pickSupportedWebmMime: () => state.mime }));
 vi.mock("./exportTimelapse", () => exportMock);
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/a11y/announcer", () => ({ announce: vi.fn() }));
 
 import { TimelapseExportSection } from "./TimelapseExportSection";
 import { toast } from "sonner";
+import { announce } from "@/lib/a11y/announcer";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -150,6 +152,46 @@ describe("TimelapseExportSection", () => {
       expect(vi.mocked(toast.error)).toHaveBeenCalledTimes(1),
     );
     expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  it("announces export start once; completion is left to the toast", async () => {
+    render(<TimelapseExportSection />);
+    fireEvent.click(screen.getByTestId("timelapse-export-video"));
+    expect(vi.mocked(announce)).toHaveBeenCalledWith("書き出し中…");
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalled());
+    // Sonner has its own aria-live — no second announce on completion.
+    expect(vi.mocked(announce)).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces start but not failure (error toast covers it)", async () => {
+    exportMock.produceSceneTimelapseWebm.mockRejectedValueOnce(
+      new Error("internal error"),
+    );
+    render(<TimelapseExportSection />);
+    fireEvent.click(screen.getByTestId("timelapse-export-video"));
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalled());
+    expect(vi.mocked(announce)).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the export button aria-busy while exporting", async () => {
+    let resolveExport!: (v: {
+      blob: Blob;
+      frameCount: number;
+      eventCount: number;
+    }) => void;
+    exportMock.produceSceneTimelapseWebm.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveExport = resolve;
+        }),
+    );
+    render(<TimelapseExportSection />);
+    const btn = screen.getByTestId("timelapse-export-video");
+    expect(btn).toHaveAttribute("aria-busy", "false");
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn).toHaveAttribute("aria-busy", "true"));
+    resolveExport({ blob: new Blob(["x"]), frameCount: 1, eventCount: 1 });
+    await waitFor(() => expect(btn).toHaveAttribute("aria-busy", "false"));
   });
 
   it("does not show a success toast when the save dialog is cancelled", async () => {

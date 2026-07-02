@@ -70,10 +70,10 @@ export function TimelineInspector({
         </span>
         <button
           onClick={onClose}
-          className="text-muted-foreground hover:text-foreground"
+          className="rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           aria-label={t("timeline.inspector.close", "インスペクターを閉じる")}
         >
-          <X size={12} />
+          <X size={12} aria-hidden />
         </button>
       </div>
 

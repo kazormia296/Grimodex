@@ -70,7 +70,7 @@ export function TimelineHeader({
       <select
         value={axisMode}
         onChange={(e) => setAxisMode(e.target.value as AxisMode)}
-        className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none"
+        className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         aria-label={t("timeline.axisMode", "時間軸モード")}
       >
         {(Object.entries(AXIS_LABELS) as [AxisMode, string][]).map(
@@ -87,8 +87,9 @@ export function TimelineHeader({
         data-testid="spacing-mode-select"
         value={spacingMode}
         disabled={axisMode === "reading"}
+        aria-disabled={axisMode === "reading"}
         onChange={(e) => setSpacingMode(e.target.value as SpacingMode)}
-        className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-xs focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
         aria-label={t("timeline.spacingMode", "スペーシング")}
       >
         {(Object.entries(SPACING_LABELS) as [SpacingMode, string][]).map(
@@ -146,8 +147,9 @@ export function TimelineHeader({
         <DropdownMenu>
           <DropdownMenuTrigger
             data-testid="timeline-display-menu"
-            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 focus:outline-none data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
+            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-accent data-[state=open]:text-accent-foreground"
             title={t("timeline.displayMenu", "表示オプション")}
+            aria-label={t("timeline.displayMenu", "表示オプション")}
           >
             <EllipsisVertical className="h-3.5 w-3.5" aria-hidden />
           </DropdownMenuTrigger>
@@ -193,8 +195,9 @@ export function TimelineHeader({
         <button
           onClick={onToggleInspector}
           aria-pressed={inspectorOpen}
-          className={`rounded px-1.5 py-0.5 text-xs ${inspectorOpen ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
+          className={`rounded px-1.5 py-0.5 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${inspectorOpen ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/50"}`}
           title={t("timeline.toggleInspector", "インスペクター")}
+          aria-label={t("timeline.toggleInspector", "インスペクター")}
         >
           <PanelRight className="h-3.5 w-3.5" aria-hidden />
         </button>

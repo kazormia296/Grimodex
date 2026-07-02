@@ -190,4 +190,60 @@ describe("TimelineContextMenu", () => {
     expect(mockDeleteNode).toHaveBeenCalledWith("scene-1");
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("開くとメニューへフォーカスが移る", () => {
+    render(
+      <TimelineContextMenu
+        node={scene}
+        x={100}
+        y={100}
+        onClose={onClose}
+        axisMode="story"
+      />,
+    );
+    const menu = screen.getByText(/Editor/i).closest("div[tabindex='-1']");
+    expect(menu).toBeTruthy();
+    expect(document.activeElement).toBe(menu);
+  });
+
+  it("close（unmount）でフォーカスが元の要素へ戻る", () => {
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const { unmount } = render(
+      <TimelineContextMenu
+        node={scene}
+        x={100}
+        y={100}
+        onClose={onClose}
+        axisMode="story"
+      />,
+    );
+    expect(document.activeElement).not.toBe(trigger);
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    document.body.removeChild(trigger);
+  });
+
+  it("メニュー操作でフォーカスが別要素へ移った場合は奪い返さない", () => {
+    const trigger = document.createElement("button");
+    const other = document.createElement("button");
+    document.body.appendChild(trigger);
+    document.body.appendChild(other);
+    trigger.focus();
+    const { unmount } = render(
+      <TimelineContextMenu
+        node={scene}
+        x={100}
+        y={100}
+        onClose={onClose}
+        axisMode="story"
+      />,
+    );
+    other.focus();
+    unmount();
+    expect(document.activeElement).toBe(other);
+    document.body.removeChild(trigger);
+    document.body.removeChild(other);
+  });
 });

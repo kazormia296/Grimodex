@@ -84,6 +84,7 @@ function AddChildInput({
           if (e.key === "Escape") setOpen(false);
         }}
         placeholder={t("codex.relation.searchPlaceholder")}
+        aria-label={t("codex.relation.searchPlaceholder")}
         className="w-full rounded border border-input bg-background px-2 py-1 text-xs outline-none"
       />
       {results.length > 0 && (

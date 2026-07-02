@@ -147,4 +147,33 @@ describe("ChronicleEventList", () => {
     fireEvent.click(getByLabelText("閉じる"));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("一覧は ul/li のセマンティックなリスト構造（各行ボタンは li 内）", () => {
+    const { container } = renderList([item({ id: "a" }), item({ id: "b" })]);
+    const list = container.querySelector("ul")!;
+    expect(list).toBeTruthy();
+    // preflight の list-style:none で WebKit がリスト意味論を落とすため明示 role。
+    expect(list.getAttribute("role")).toBe("list");
+    expect(list.getAttribute("aria-label")).toBe("イベント一覧");
+    expect(list.querySelectorAll(":scope > li").length).toBe(2);
+    for (const btn of container.querySelectorAll("[data-event-list-id]")) {
+      expect(btn.parentElement?.tagName.toLowerCase()).toBe("li");
+    }
+  });
+
+  it("選択行は aria-current=true（非選択行は属性なし）", () => {
+    const { container } = renderList([item({ id: "a" }), item({ id: "b" })], {
+      selectedId: "b",
+    });
+    expect(
+      container
+        .querySelector('[data-event-list-id="b"]')!
+        .getAttribute("aria-current"),
+    ).toBe("true");
+    expect(
+      container
+        .querySelector('[data-event-list-id="a"]')!
+        .getAttribute("aria-current"),
+    ).toBeNull();
+  });
 });

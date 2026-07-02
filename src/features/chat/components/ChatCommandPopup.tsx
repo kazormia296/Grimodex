@@ -2,6 +2,14 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { ChatCommand } from "../extensions/chatCommands";
 
+/** 入力欄側の aria-controls / aria-activedescendant から参照する listbox id。 */
+export const CHAT_COMMAND_LISTBOX_ID = "chat-command-popup-listbox";
+
+/** aria-activedescendant で指す option id（selectedIndex と同期）。 */
+export function chatCommandOptionId(index: number): string {
+  return `${CHAT_COMMAND_LISTBOX_ID}-option-${index}`;
+}
+
 interface ChatCommandPopupProps {
   items: ChatCommand[];
   selectedIndex: number;
@@ -53,6 +61,7 @@ export function ChatCommandPopup({
 
   return (
     <ul
+      id={CHAT_COMMAND_LISTBOX_ID}
       role="listbox"
       aria-label={t("chat.context.commandSuggestions")}
       style={style}
@@ -61,6 +70,7 @@ export function ChatCommandPopup({
       {items.map((cmd, i) => (
         <li
           key={cmd.id}
+          id={chatCommandOptionId(i)}
           role="option"
           aria-selected={i === selectedIndex}
           onClick={() => onSelect(cmd)}

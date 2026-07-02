@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useId, useRef, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { SpellCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -20,8 +20,32 @@ const TABS: { id: KouetsuTab; labelKey: string }[] = [
 export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  const { activeTab, setActiveTab } = useKouetsuStore();
+  const { activeTab: storedTab, setActiveTab } = useKouetsuStore();
+  // persist 済み store から不正値が来ても tab 選択と aria-labelledby の
+  // id 参照が壊れないよう既知の tab に正規化する
+  const activeTab = TABS.some(({ id }) => id === storedTab)
+    ? storedTab
+    : TABS[0].id;
   const setPanelActive = useKouetsuStore((s) => s.setPanelActive);
+  const idBase = useId();
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  // APG tabs パターン: 矢印キーで隣接タブへ移動（automatic activation）。
+  const handleTabKeyDown = (
+    e: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) => {
+    let next: number;
+    if (e.key === "ArrowRight") next = (index + 1) % TABS.length;
+    else if (e.key === "ArrowLeft")
+      next = (index - 1 + TABS.length) % TABS.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = TABS.length - 1;
+    else return;
+    e.preventDefault();
+    setActiveTab(TABS[next].id);
+    tabRefs.current[next]?.focus();
+  };
 
   // keepalive で hidden の間、配下ビューの scene 追従処理を bail させるため
   // パネルの active 状態を store に反映する (isActive 省略時は active 扱い)。
@@ -39,23 +63,44 @@ export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
         <span className="mr-1 shrink-0 font-medium text-foreground">
           {t("layout.panel.kouetsu")}
         </span>
-        {TABS.map(({ id, labelKey }) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setActiveTab(id)}
-            className={cn(
-              "rounded px-2 py-0.5 text-xs transition-colors",
-              activeTab === id
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-            )}
-          >
-            {t(labelKey)}
-          </button>
-        ))}
+        <div
+          role="tablist"
+          aria-label={t("layout.panel.kouetsu")}
+          className="flex items-center gap-0.5"
+        >
+          {TABS.map(({ id, labelKey }, index) => (
+            <button
+              key={id}
+              ref={(el) => {
+                tabRefs.current[index] = el;
+              }}
+              type="button"
+              role="tab"
+              id={`${idBase}-tab-${id}`}
+              aria-selected={activeTab === id}
+              aria-controls={`${idBase}-tabpanel`}
+              tabIndex={activeTab === id ? 0 : -1}
+              onClick={() => setActiveTab(id)}
+              onKeyDown={(e) => handleTabKeyDown(e, index)}
+              className={cn(
+                "rounded px-2 py-0.5 text-xs transition-colors",
+                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                activeTab === id
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              )}
+            >
+              {t(labelKey)}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div
+        role="tabpanel"
+        id={`${idBase}-tabpanel`}
+        aria-labelledby={`${idBase}-tab-${activeTab}`}
+        className="min-h-0 flex-1 overflow-hidden"
+      >
         {activeTab === "issues" && <IssuesTab />}
         {activeTab === "editorial" && <EditorialTab />}
         {activeTab === "comments" && <CommentsTab />}

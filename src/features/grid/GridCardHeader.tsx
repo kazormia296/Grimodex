@@ -85,7 +85,7 @@ export function GridCardHeader({
         <Button
           variant="ghost"
           size="icon-xs"
-          className="opacity-0 group-hover:opacity-100 transition-opacity"
+          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity"
           onClick={(e) => {
             e.stopPropagation();
             onOpenInEditor();

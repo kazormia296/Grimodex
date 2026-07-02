@@ -60,6 +60,10 @@ vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
 }));
 
+vi.mock("@/lib/a11y/announcer", () => ({
+  announce: vi.fn(),
+}));
+
 const { mockOnCodexAnchorDeleted } = vi.hoisted(() => ({
   mockOnCodexAnchorDeleted: vi.fn(),
 }));
@@ -78,6 +82,7 @@ import {
 } from "./api";
 import { searchCodexEntries } from "./search";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { announce } from "@/lib/a11y/announcer";
 
 const mockListCodexEntries = vi.mocked(listCodexEntries);
 const mockCreateCodexEntry = vi.mocked(createCodexEntry);
@@ -85,6 +90,7 @@ const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
 const mockDeleteCodexEntry = vi.mocked(deleteCodexEntry);
 const mockSearchCodexEntries = vi.mocked(searchCodexEntries);
 const mockRecord = vi.mocked(recordChangeEvent);
+const mockAnnounce = vi.mocked(announce);
 
 function pmDoc(text: string): string {
   return JSON.stringify({
@@ -175,6 +181,51 @@ describe("codexStore", () => {
 
       expect(mockListCodexEntries).toHaveBeenCalled();
       expect(useCodexStore.getState().searchQuery).toBe("");
+    });
+
+    it("announces the result count once after a successful search", async () => {
+      mockSearchCodexEntries.mockResolvedValue([mockEntry]);
+
+      await useCodexStore.getState().search("アリス");
+
+      expect(mockAnnounce).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not announce when the query is empty", async () => {
+      mockListCodexEntries.mockResolvedValue([mockEntry, mockEntry2]);
+
+      await useCodexStore.getState().search("");
+
+      expect(mockAnnounce).not.toHaveBeenCalled();
+    });
+
+    it("does not announce when the search fails", async () => {
+      mockSearchCodexEntries.mockRejectedValue(new Error("boom"));
+
+      await useCodexStore.getState().search("アリス");
+
+      expect(mockAnnounce).not.toHaveBeenCalled();
+    });
+
+    it("does not announce a stale result after a newer search starts", async () => {
+      let resolveFirst!: (value: CodexEntry[]) => void;
+      mockSearchCodexEntries
+        .mockImplementationOnce(
+          () =>
+            new Promise<CodexEntry[]>((resolve) => {
+              resolveFirst = resolve;
+            }),
+        )
+        .mockResolvedValueOnce([mockEntry]);
+
+      const first = useCodexStore.getState().search("ア");
+      const second = useCodexStore.getState().search("アリス");
+      await second;
+      resolveFirst([mockEntry, mockEntry2]);
+      await first;
+
+      // 後発の「アリス」の分だけ読み上げ、先発の stale な件数は読まない
+      expect(mockAnnounce).toHaveBeenCalledTimes(1);
     });
   });
 

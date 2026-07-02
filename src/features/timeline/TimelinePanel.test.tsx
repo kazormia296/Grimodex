@@ -1217,3 +1217,78 @@ describe("TimelinePanel – インスペクタのルーティング（オーバ�
     expect(queryByTestId("plot-marker-inspector")).toBeNull();
   });
 });
+
+describe("TimelinePanel – Ctrl+矢印パン（ホイール/中ボタンのキーボード代替）", () => {
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    mockTreeWith(mockSceneNodes);
+  });
+  afterEach(() => {
+    mockTreeWith([]);
+  });
+
+  function panKey(key: string) {
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key, ctrlKey: true, bubbles: true }),
+      );
+    });
+  }
+
+  it("panel focused → Ctrl+ArrowRight/Left で横パンする", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    const viewport = getByTestId("timeline-scroll-container");
+    viewport.scrollLeft = 200;
+    panKey("ArrowRight");
+    expect(viewport.scrollLeft).toBe(280);
+    panKey("ArrowLeft");
+    expect(viewport.scrollLeft).toBe(200);
+  });
+
+  it("panel focused → Ctrl+ArrowDown/Up で縦パンする", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    act(() => {
+      getByTestId("timeline-panel").focus();
+    });
+    const viewport = getByTestId("timeline-scroll-container");
+    viewport.scrollTop = 200;
+    panKey("ArrowDown");
+    expect(viewport.scrollTop).toBe(280);
+    panKey("ArrowUp");
+    expect(viewport.scrollTop).toBe(200);
+  });
+
+  it("panel 外フォーカスでは Ctrl+ArrowRight でパンしない", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    const outside = document.createElement("div");
+    outside.setAttribute("tabindex", "-1");
+    document.body.appendChild(outside);
+    act(() => {
+      outside.focus();
+    });
+    const viewport = getByTestId("timeline-scroll-container");
+    viewport.scrollLeft = 200;
+    panKey("ArrowRight");
+    expect(viewport.scrollLeft).toBe(200);
+    document.body.removeChild(outside);
+  });
+
+  it("INPUT フォーカス中は Ctrl+ArrowRight でパンしない", () => {
+    const { getByTestId } = render(<TimelinePanel />);
+    const panel = getByTestId("timeline-panel");
+    const input = document.createElement("input");
+    panel.appendChild(input);
+    act(() => {
+      input.focus();
+    });
+    const viewport = getByTestId("timeline-scroll-container");
+    viewport.scrollLeft = 200;
+    panKey("ArrowRight");
+    expect(viewport.scrollLeft).toBe(200);
+    panel.removeChild(input);
+  });
+});

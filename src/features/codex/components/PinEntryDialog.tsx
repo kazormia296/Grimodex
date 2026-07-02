@@ -480,6 +480,7 @@ export function PinEntryDialog({
                   value={codexSearch}
                   onChange={(e) => setCodexSearch(e.target.value)}
                   placeholder={t("codex.searchPlaceholder")}
+                  aria-label={t("codex.searchPlaceholder")}
                   className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </div>
@@ -578,6 +579,7 @@ export function PinEntryDialog({
                   value={snippetSearch}
                   onChange={(e) => setSnippetSearch(e.target.value)}
                   placeholder={t("snippets.searchPlaceholder")}
+                  aria-label={t("snippets.searchPlaceholder")}
                   className="w-full rounded border border-input bg-background py-1 pl-6 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                 />
               </div>

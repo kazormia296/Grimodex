@@ -1,3 +1,5 @@
+import { useSettingRowA11y } from "./SettingRow";
+
 interface SettingTextareaProps {
   value: string;
   onChange: (v: string) => void;
@@ -13,11 +15,15 @@ export function SettingTextarea({
   maxLength,
   rows = 4,
 }: SettingTextareaProps) {
+  const rowA11y = useSettingRowA11y();
+
   return (
     <div className="w-full">
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        aria-labelledby={rowA11y?.labelId}
+        aria-describedby={rowA11y?.descriptionId}
         placeholder={placeholder}
         maxLength={maxLength}
         rows={rows}

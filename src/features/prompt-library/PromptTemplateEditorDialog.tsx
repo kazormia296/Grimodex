@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
@@ -25,6 +25,9 @@ export function PromptTemplateEditorDialog({
   onClose,
 }: PromptTemplateEditorDialogProps) {
   const { t } = useTranslation();
+  const baseId = useId();
+  const titleId = `${baseId}-title`;
+  const contentId = `${baseId}-content`;
   const [title, setTitle] = useState(initialTitle);
   const [content, setContent] = useState(initialContent);
   const canSubmit = title.trim().length > 0 && content.trim().length > 0;
@@ -49,10 +52,14 @@ export function PromptTemplateEditorDialog({
 
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          <label
+            htmlFor={titleId}
+            className="mb-1 block text-xs font-medium text-muted-foreground"
+          >
             {t("promptLibrary.editor.titleLabel")}
           </label>
           <input
+            id={titleId}
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -62,10 +69,14 @@ export function PromptTemplateEditorDialog({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">
+          <label
+            htmlFor={contentId}
+            className="mb-1 block text-xs font-medium text-muted-foreground"
+          >
             {t("promptLibrary.editor.contentLabel")}
           </label>
           <textarea
+            id={contentId}
             value={content}
             onChange={(e) => setContent(e.target.value)}
             rows={8}

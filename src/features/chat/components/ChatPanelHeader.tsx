@@ -625,6 +625,7 @@ export function ChatPanelHeader({
           type="button"
           onClick={onNewSession}
           title={t("chat.newSession")}
+          aria-label={t("chat.newSession")}
           className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Plus className="h-3.5 w-3.5" />

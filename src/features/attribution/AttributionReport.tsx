@@ -50,8 +50,10 @@ function StatBar({
   const pct = total > 0 ? Math.round((count / total) * 100) : 0;
   const isActive = activeFilter === source;
   return (
-    <div
-      className={`flex items-center gap-2 text-xs cursor-pointer rounded px-1 py-0.5 transition-colors ${isActive ? "bg-accent" : "hover:bg-accent/50"}`}
+    <button
+      type="button"
+      aria-pressed={isActive}
+      className={`flex w-full items-center gap-2 text-left text-xs cursor-pointer rounded px-1 py-0.5 transition-colors ${isActive ? "bg-accent" : "hover:bg-accent/50"}`}
       onClick={() => onFilter(isActive ? null : source)}
       title={
         isActive
@@ -69,7 +71,7 @@ function StatBar({
       <span className="w-16 text-right tabular-nums text-muted-foreground">
         {t("attribution.charCount", { count, pct })}
       </span>
-    </div>
+    </button>
   );
 }
 

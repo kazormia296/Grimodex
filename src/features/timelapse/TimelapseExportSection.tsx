@@ -5,6 +5,7 @@ import { Film } from "lucide-react";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { announce } from "@/lib/a11y/announcer";
 import { pickSupportedWebmMime } from "./videoExport";
 import {
   produceSceneTimelapseWebm,
@@ -51,6 +52,9 @@ export function TimelapseExportSection({
     if (!supportedMime || busy) return;
     if (scope === "scene" && !activeSceneId) return;
     setBusy(true);
+    // 完了/失敗は Sonner toast (独自 aria-live) が読み上げるため、
+    // announce は開始時のみ (二重読み上げ防止)。
+    announce(t("timelapse.exporting"));
     try {
       let blob: Blob;
       let base: string;
@@ -199,6 +203,7 @@ export function TimelapseExportSection({
       <button
         type="button"
         data-testid="timelapse-export-video"
+        aria-busy={busy}
         disabled={!canExport}
         onClick={() => void handleExport()}
         className="self-start rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"

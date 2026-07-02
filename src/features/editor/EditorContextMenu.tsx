@@ -387,6 +387,7 @@ export function EditorContextMenu({
           value={snippetSearch}
           onChange={(e) => setSnippetSearch(e.target.value)}
           placeholder={t("editor.contextMenu.searchSnippet")}
+          aria-label={t("editor.contextMenu.searchSnippet")}
           className="m-2 rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
         />
         <div className="max-h-64 overflow-y-auto pb-1">

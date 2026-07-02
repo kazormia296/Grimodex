@@ -36,7 +36,9 @@
   --secondary: oklch(0.965 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.965 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  /* 0.54: WCAG AA 4.5:1 を --muted/--accent (0.965) 上でも満たす明度。
+     (0.556 は白上 4.73:1 だが muted 背景上 4.27:1 で AA 未満だった) */
+  --muted-foreground: oklch(0.54 0 0);
   --accent: oklch(0.965 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -1769,4 +1771,24 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 /* ── Trash Bin: ドラッグ中の body 強調 ──────────────────────────────── */
 [data-trash-body-id][data-dragging="true"] {
   filter: brightness(1.05) saturate(1.1);
+}
+
+/* ── Reduced Motion (WCAG 2.3.3) ─────────────────────────────────────
+   OS の prefers-reduced-motion を尊重し、この stylesheet / Tailwind /
+   tw-animate-css 由来の CSS アニメ・トランジションを実質無効化する
+   (Tailwind v4 / tw-animate-css は自前の reduced-motion ガードを持たない)。
+   duration を 0.01ms に潰す方式なので最終状態には必ず到達し、表示自体は
+   消えない (spinner は静止インジケータ + ラベルとして残る)。
+   JS 駆動アニメ (Framer Motion / GSAP) はここでは止まらないため、
+   useReducedMotion / isReducedMotion (OS + アプリ設定の合成) で各所ガード。
+   通常モード (no-preference) の見た目には一切影響しない。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

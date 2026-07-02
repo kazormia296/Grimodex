@@ -67,9 +67,9 @@ const mix = (c: string, pct: number, to: string) =>
   `color-mix(in oklch, ${c} ${pct}%, ${to})`;
 
 /**
- * 期間（interval）の両端にホバー時だけ出すリサイズグリップ（縦の小バー）。
- * 既定は opacity-0 で、親ボタンの group-hover で淡くフェードイン（duration/easing は
- * animation.ts の正本から）。pointer-events は親の data-resize 帯に委ねる（none）。
+ * 期間（interval）の両端にホバー/キーボードフォーカス時だけ出すリサイズグリップ（縦の小バー）。
+ * 既定は opacity-0 で、親ボタンの group-hover / group-focus-visible で淡くフェードイン
+ * （duration/easing は animation.ts の正本から）。pointer-events は親の data-resize 帯に委ねる（none）。
  */
 const RESIZE_GRIP: CSSProperties = {
   width: 3,
@@ -219,9 +219,11 @@ function EventMarkerBase({
       : "5.5,1 10,5.5 5.5,10 1,5.5"; // 菱形
     glyphNode = (
       // testid/title は span に載せる（React の SVG 型は title 属性を持たないため）。
+      // 種別は親ボタンの aria-label に含めるため、グリフ自体は装飾（aria-hidden）。
       <span
         data-testid="marker-glyph"
         title={kindTitle}
+        aria-hidden
         style={{ flex: "none", display: "flex" }}
       >
         <svg
@@ -258,9 +260,26 @@ function EventMarkerBase({
           background: lc,
         };
     glyphNode = (
-      <span data-testid="marker-glyph" title={kindTitle} style={glyph} />
+      <span
+        data-testid="marker-glyph"
+        title={kindTitle}
+        aria-hidden
+        style={glyph}
+      />
     );
   }
+
+  // アクセシブル名: title 属性はホバー tooltip 用で、種別/確度/警告/秘匿の状態が
+  // SR に伝わらないため aria-label へ統合する。選択状態は aria-current で示す。
+  const ariaParts = [event.title || t("chronicle.untitled", "無題のイベント")];
+  if (kindTitle) ariaParts.push(kindTitle);
+  if (event.precision !== "exact") {
+    ariaParts.push(
+      t(`chronicle.precision.${event.precision}`, event.precision),
+    );
+  }
+  if (conflict) ariaParts.push(t("chronicle.hasIssue", "整合警告あり"));
+  if (event.secret) ariaParts.push(t("chronicle.secretTag", "秘匿"));
 
   // 種別は先頭グリフ（凡例と同じ三角/菱形/丸）で示すため、文字タグは廃止。
   // 確度チップ（確定は無印・おおよそ/不明のみ明示）。線種だけでは判別しづらい問題への対策。
@@ -352,6 +371,8 @@ function EventMarkerBase({
       onMouseEnter={onHover ? () => onHover(event.id, true) : undefined}
       onMouseLeave={onHover ? () => onHover(event.id, false) : undefined}
       title={event.title || t("chronicle.untitled", "無題のイベント")}
+      aria-label={ariaParts.join(", ")}
+      aria-current={selected ? "true" : undefined}
       className="group"
       style={{
         ...container,
@@ -381,7 +402,7 @@ function EventMarkerBase({
             <span
               aria-hidden
               data-testid="resize-grip"
-              className="opacity-0 group-hover:opacity-100"
+              className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
               style={RESIZE_GRIP}
             />
           </span>
@@ -403,7 +424,7 @@ function EventMarkerBase({
             <span
               aria-hidden
               data-testid="resize-grip"
-              className="opacity-0 group-hover:opacity-100"
+              className="opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
               style={RESIZE_GRIP}
             />
           </span>

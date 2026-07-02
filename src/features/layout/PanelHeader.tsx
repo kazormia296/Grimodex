@@ -65,6 +65,8 @@ export function PanelHeader({
     >
       <Icon className="size-3.5 shrink-0 opacity-70" aria-hidden="true" />
       <span
+        role="heading"
+        aria-level={2}
         className={cn("truncate font-medium text-foreground", titleClassName)}
       >
         {resolvedTitle}
