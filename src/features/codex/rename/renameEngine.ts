@@ -30,7 +30,11 @@ import {
   registeredSaveHandlerIds,
 } from "@/features/editor/editorSaveRegistry";
 import { listNodes, loadSceneContents } from "@/features/tree/api";
-import { listCodexEntries, type CodexEntry } from "../api";
+import {
+  listCodexEntries,
+  listCodexMatchTargets,
+  type CodexEntry,
+} from "../api";
 import { listCodexRelations } from "../codexRelationApi";
 import { useCodexStore } from "../codexStore";
 import { enqueueRescan } from "../mentionRescanQueue";
@@ -265,17 +269,9 @@ export async function prepareRenamePropagation(
 
   const [sources, allTargets] = await Promise.all([
     gatherRenameSources(projectId),
-    listCodexEntries(projectId).then((es) =>
-      (es as CodexEntry[]).map(
-        (e): CodexMatchTarget => ({
-          id: e.id,
-          name: e.name,
-          type: e.type,
-          aliases: e.aliases,
-          excludedAliases: e.excludedAliases,
-        }),
-      ),
-    ),
+    // match target 用途なので軽量 projection。CodexMatchRow は
+    // CodexMatchTarget と構造互換 (aliases: string | null ⊂ 許容型)。
+    listCodexMatchTargets(projectId) satisfies Promise<CodexMatchTarget[]>,
   ]);
 
   return detectRenameOccurrences({

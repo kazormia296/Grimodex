@@ -25,7 +25,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import type { CodexEntry } from "@/features/codex/api";
+import type { CodexEntry, CodexContextEntry } from "@/features/codex/api";
 import type {
   PinnedCodexEntryWithData,
   PinnedSnippetEntryWithData,
@@ -48,7 +48,10 @@ import { getTypeLabel } from "../utils/typeLabels";
 import { ContextPillGroup } from "./ContextPillGroup";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { getChildrenFromArray } from "@/features/codex/childrenBudget";
-import { CodexPill } from "@/features/codex/components/CodexPill";
+import {
+  CodexPill,
+  type CodexPillEntry,
+} from "@/features/codex/components/CodexPill";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { PinCodexDialog } from "./PinCodexDialog";
 
@@ -78,10 +81,10 @@ interface ContextBarProps {
     | { kind: "snippet"; id: string; title: string }
     | null;
   pinnedEntries: PinnedCodexEntryWithData[];
-  /** G15: auto-detected entries (excluding pinned) */
-  detectedEntries?: CodexEntry[];
+  /** G15: auto-detected entries (excluding pinned)。M10: icon なし projection 行 */
+  detectedEntries?: CodexContextEntry[];
   /** G15: always-mode entries (excluding pinned and detected) */
-  alwaysEntries?: CodexEntry[];
+  alwaysEntries?: CodexContextEntry[];
   /** G16: pinned snippet entries */
   pinnedSnippets?: PinnedSnippetEntryWithData[];
   /**
@@ -189,6 +192,13 @@ export function ContextBar({
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const allCodexEntries = useCodexStore((s) => s.entries);
 
+  // M10: detected/always は icon 列を持たない projection 行。ピルのホバー
+  // ポップオーバーに出すアイコンは codexStore の全列行から補完する
+  // (store 未 hydrate 時は従来の色ドット表示にフォールバック)。
+  const fullEntryById = new Map(allCodexEntries.map((e) => [e.id, e]));
+  const toPillEntry = (e: CodexContextEntry): CodexPillEntry =>
+    fullEntryById.get(e.id) ?? e;
+
   // via表示の子エントリを計算（既に pinned/detected/always に含まれるものと dismissed は除外）
   const alreadyShownIds = new Set([
     ...pinnedEntries.map((e) => e.id),
@@ -254,7 +264,7 @@ export function ContextBar({
   // type別グループマップ（pinned + via + auto を統合、pinned が先頭）
   type MergedGroup = {
     pinned: PinnedCodexEntryWithData[];
-    auto: CodexEntry[];
+    auto: CodexPillEntry[];
     via: ViaChild[];
   };
   const groupMap = new Map<string, MergedGroup>();
@@ -266,7 +276,7 @@ export function ContextBar({
     }
     for (const entry of [...detectedEntries, ...alwaysEntries]) {
       const g = groupMap.get(entry.type) ?? { pinned: [], auto: [], via: [] };
-      g.auto.push(entry);
+      g.auto.push(toPillEntry(entry));
       groupMap.set(entry.type, g);
     }
     for (const vc of viaChildren) {
@@ -765,7 +775,7 @@ export function ContextBar({
                     return (
                       <CodexPill
                         key={entry.id}
-                        entry={entry}
+                        entry={toPillEntry(entry)}
                         dim
                         suffix={
                           isCandidate ? (

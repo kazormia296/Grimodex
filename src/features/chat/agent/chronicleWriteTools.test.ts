@@ -30,7 +30,7 @@ const apiMock = vi.hoisted(() => ({
 vi.mock("@/features/chronicle/api", () => apiMock);
 // 共有キャッシュ(chronicleToolCache)が codex 名 loader を持つため軽量 mock。
 vi.mock("@/features/codex/api", () => ({
-  listCodexEntries: vi.fn(async () => []),
+  listCodexMatchTargets: vi.fn(async () => []),
 }));
 
 import {

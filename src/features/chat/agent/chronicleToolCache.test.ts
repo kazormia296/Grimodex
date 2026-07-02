@@ -10,7 +10,7 @@ const apiMock = vi.hoisted(() => ({
 vi.mock("@/features/chronicle/api", () => apiMock);
 
 const codexMock = vi.hoisted(() => ({
-  listCodexEntries: vi.fn(async () => [{ id: "c1", name: "アリス" }]),
+  listCodexMatchTargets: vi.fn(async () => [{ id: "c1", name: "アリス" }]),
 }));
 vi.mock("@/features/codex/api", () => codexMock);
 
@@ -32,7 +32,7 @@ beforeEach(() => {
   invalidateChronicleToolCache();
   apiMock.listEvents.mockClear();
   apiMock.listSceneEventsForProject.mockClear();
-  codexMock.listCodexEntries.mockClear();
+  codexMock.listCodexMatchTargets.mockClear();
   phaseMock.computeGlobalSceneOrder.mockClear();
 });
 
@@ -46,7 +46,7 @@ describe("chronicleToolCache", () => {
     await getSharedCodexNames("p1");
     expect(apiMock.listEvents).toHaveBeenCalledTimes(1);
     expect(apiMock.listSceneEventsForProject).toHaveBeenCalledTimes(1);
-    expect(codexMock.listCodexEntries).toHaveBeenCalledTimes(1);
+    expect(codexMock.listCodexMatchTargets).toHaveBeenCalledTimes(1);
     expect(names.get("c1")).toBe("アリス");
   });
 
@@ -67,7 +67,7 @@ describe("chronicleToolCache", () => {
     await getSharedCodexNames("p1");
     expect(apiMock.listEvents).toHaveBeenCalledTimes(2);
     expect(apiMock.listSceneEventsForProject).toHaveBeenCalledTimes(2);
-    expect(codexMock.listCodexEntries).toHaveBeenCalledTimes(2);
+    expect(codexMock.listCodexMatchTargets).toHaveBeenCalledTimes(2);
   });
 
   it("beginAgentToolTurn（ターン境界）でも破棄される", async () => {

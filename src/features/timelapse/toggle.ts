@@ -33,7 +33,10 @@ import {
   loadSceneContent,
   loadScenesFull,
 } from "@/features/tree/api";
-import { getCodexEntry, listCodexEntries } from "@/features/codex/api";
+import {
+  getCodexEntry,
+  listCodexContentsForBaseline,
+} from "@/features/codex/api";
 import { getSnippet, listSnippets } from "@/features/snippets/api";
 
 export const TIMELAPSE_ENABLED_KEY = "timelapse.enabled";
@@ -191,7 +194,8 @@ async function stampEntityBaselines(
   }
 
   if (which.codex) {
-    const codex = await listCodexEntries(projectId);
+    // baseline payload は content (PM JSON) だけなので id+content projection。
+    const codex = await listCodexContentsForBaseline(projectId);
     for (const entry of codex) {
       try {
         await recordEntityBaseline(

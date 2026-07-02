@@ -6,6 +6,15 @@ import { extractPlainText } from "./prosemirrorTextExtractor";
 export const DEFAULT_MAX_RELATION_DEPTH = 2;
 export const DEFAULT_MAX_RELATION_ENTRIES = 12;
 
+/**
+ * relation 展開が読む最小列。M10: chat 経路は icon/notes を持たない
+ * projection 行を渡すため構造的部分型で受ける (全列行もそのまま渡せる)。
+ */
+type RelationEntry = Pick<
+  CodexEntry,
+  "id" | "type" | "name" | "summary" | "content"
+>;
+
 interface RelationNeighbor {
   entryId: string;
   viaLabel: string;
@@ -49,7 +58,7 @@ function sanitizeForHtmlComment(text: string): string {
 export function expandCodexRelationsBFS(
   seedEntryIds: string[],
   relations: CodexRelationRow[],
-  allEntries: CodexEntry[],
+  allEntries: RelationEntry[],
   excludeIds: Set<string>,
   options: ExpandRelationsOptions = {},
 ): CodexContext[] {
@@ -156,7 +165,7 @@ export interface IntraContextRelationEdge {
 export function collectIntraContextRelations(
   seedEntryIds: string[],
   relations: CodexRelationRow[],
-  allEntries: CodexEntry[],
+  allEntries: Array<Pick<CodexEntry, "id" | "name">>,
 ): IntraContextRelationEdge[] {
   const seeds = new Set(seedEntryIds);
   if (seeds.size === 0 || relations.length === 0) return [];

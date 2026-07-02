@@ -184,7 +184,7 @@ import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { listCodexEntries } from "@/features/codex/api";
+import { listCodexEntriesForContext } from "@/features/codex/api";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import {
   listEvents,
@@ -217,7 +217,7 @@ import {
   estimateSummaryTokenCount,
 } from "./summarization";
 import { computeL5UsedTokens } from "./conversationHistory";
-import type { CodexEntry } from "@/features/codex/api";
+import type { CodexEntry, CodexContextEntry } from "@/features/codex/api";
 import {
   listContextDetailsByEntryIds,
   listRawDetailValuesByEntryIds,
@@ -275,8 +275,9 @@ import {
 } from "@/features/codex/relationExpansion";
 
 // フェーズ解決ヘルパー: エントリ配列に対してフェーズを一括解決する
+// (M10: icon/notes は読まないので context projection 行を受ける。全列行も可)
 async function resolveEntriesForContext(
-  entries: CodexEntry[],
+  entries: CodexContextEntry[],
   effectiveSceneId: string | null,
   opts?: { applyAllPhases?: boolean },
 ): Promise<{
@@ -417,7 +418,7 @@ function parseTags(json: string | null | undefined): string[] | undefined {
 // PinnedCodexContext extends CodexContext なので、ジェネリックで両方扱える。
 async function enrichWithCustomDetails<T extends CodexContext>(
   entries: T[],
-  allEntries: CodexEntry[],
+  allEntries: CodexContextEntry[],
 ): Promise<T[]> {
   if (entries.length === 0) return entries;
   const entryIds = entries.map((e) => e.id);
@@ -454,8 +455,8 @@ async function enrichWithCustomDetails<T extends CodexContext>(
 // Helper: compute childrenContext for pinned/G21 entries based on childrenBudget.
 // resolvedById を渡すと子孫 summary を phase 解決済みで注入する（Phase Cb）。
 function buildChildrenCtxForEntry(
-  entry: CodexEntry,
-  allEntries: CodexEntry[],
+  entry: Pick<CodexEntry, "id" | "childrenBudget">,
+  allEntries: CodexContextEntry[],
   l4Budget: number,
   excludeIds?: Set<string>,
   resolvedById?: ReadonlyMap<
@@ -523,8 +524,9 @@ interface ChatState {
   chapterOutlines: Array<{ title: string; outline: string }>;
 
   // G15: auto-detected and always-mode entries (excluding pinned)
-  detectedEntries: CodexEntry[];
-  alwaysEntries: CodexEntry[];
+  // (M10: listCodexEntriesForContext 由来の projection 行。icon/notes を持たない)
+  detectedEntries: CodexContextEntry[];
+  alwaysEntries: CodexContextEntry[];
   /**
    * codex/snippet スコープのアンカー (= この会話の主題)。ContextBar に固定チップ
    * として表示し、プロンプトの <focus_subject> 注入対象と一致させる。
@@ -1135,12 +1137,12 @@ function appendProjectGroupedParts(
 /** Codex スコープ: 選択エントリの最終状態 + 関連 L1 + relation 展開。 */
 export async function buildCodexScopeBlocks(opts: {
   selectedEntryId: string;
-  allEntries: CodexEntry[];
+  allEntries: CodexContextEntry[];
   /** project 言語 (timeline 文脈の見出し英語化に使用)。 */
   lang?: string | null;
 }): Promise<{
   selectedPinned: import("./contextBuilder").PinnedCodexContext;
-  relatedMentioned: CodexEntry[];
+  relatedMentioned: CodexContextEntry[];
   relationExpanded: CodexContext[];
 } | null> {
   const { selectedEntryId, allEntries, lang } = opts;
@@ -1257,7 +1259,7 @@ export async function buildCodexScopeBlocks(opts: {
   );
 
   const relatedIdSet = new Set<string>();
-  const relatedMentioned: CodexEntry[] = [];
+  const relatedMentioned: CodexContextEntry[] = [];
   for (const entry of [...forwardMatched, ...reverseMatched]) {
     if (entry.id === selected.id || relatedIdSet.has(entry.id)) continue;
     relatedIdSet.add(entry.id);
@@ -1295,7 +1297,7 @@ async function buildAggregatedScene(opts: {
   includeBodies: boolean;
   activeSceneId: string | null;
   prefacePolicy: AggregatedPrefacePolicy;
-  allEntries: CodexEntry[];
+  allEntries: CodexContextEntry[];
   /** project スコープのフォルダ階層グループ化に必須 */
   allNodes?: TreeNodeData[];
   /**
@@ -1308,7 +1310,7 @@ async function buildAggregatedScene(opts: {
   agentMode: boolean;
 }): Promise<{
   aggregatedScene: { id: string; title: string; content: string };
-  aggregatedDetected: CodexEntry[];
+  aggregatedDetected: CodexContextEntry[];
 } | null> {
   const MAX_BODY_TIER_SCENES = 30;
   const MAX_BODY_TIER_CHARS = 100_000;
@@ -1383,7 +1385,9 @@ async function buildAggregatedScene(opts: {
       ? `[このプロジェクト「${anchorTitle}」のフォルダ階層の Outline（=== フォルダ名 ===）を注入しています。シーンはまだ作成されていません]`
       : `[このプロジェクト「${anchorTitle}」はシーン数が多いため、フォルダ階層の Outline のみを注入しています（=== フォルダ名 ===）。個別シーンの synopsis / 本文は省略されています]`;
 
-  async function detectFromJoined(joined: string): Promise<CodexEntry[]> {
+  async function detectFromJoined(
+    joined: string,
+  ): Promise<CodexContextEntry[]> {
     try {
       const detectable = allEntries.filter(
         (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
@@ -1626,8 +1630,8 @@ interface SceneContextPayload {
   prompt: string;
   totalTokens: number;
   layers: LayerBreakdown[];
-  detectedEntries: CodexEntry[];
-  alwaysEntries: CodexEntry[];
+  detectedEntries: CodexContextEntry[];
+  alwaysEntries: CodexContextEntry[];
   /** L4 に full body + custom details + aliases が完全注入されたエントリの ID。
    * Agent モードで `get_codex_entry` 短絡判定に使う。Spotlight 経路を通った
    * エントリ（pinnedCodexEntries）が該当する。 */
@@ -1649,7 +1653,7 @@ interface SceneContextPayload {
  * （重複 fetch 防止）。tree / aiBranch / snippet は内部で lookup。
  */
 async function loadMapBoardMarkdown(
-  allEntries: CodexEntry[],
+  allEntries: CodexContextEntry[],
 ): Promise<string | undefined> {
   const { includeMapBoard, mapBoardId } = useChatStore.getState();
   if (!includeMapBoard) return undefined;
@@ -2004,7 +2008,7 @@ async function buildSceneContextPrompt(opts: {
   inputPinnedEntryIds: string[];
   conversationMessages: ChatMessage[];
   commandInstruction?: string;
-  prefetchedEntries?: CodexEntry[];
+  prefetchedEntries?: CodexContextEntry[];
   agentMode?: boolean;
   /** @scene mention で per-message pin される scene ID 群。本関数内で
    * tree から本文を読み込み、buildSystemPrompt の mentionedScenes として
@@ -2041,7 +2045,8 @@ async function buildSceneContextPrompt(opts: {
 
   await ensureTokenizer();
   const allEntries =
-    opts.prefetchedEntries ?? (await listCodexEntries(getCurrentProjectId()));
+    opts.prefetchedEntries ??
+    (await listCodexEntriesForContext(getCurrentProjectId()));
 
   const aiSettings = useAiSettingsStore.getState().settings;
   // チャット用の一時モデル(あれば)を既定より優先。コンテキスト予算を実際に送る
@@ -2126,7 +2131,7 @@ async function buildSceneContextPrompt(opts: {
     ...alwaysNotMentioned,
   ]);
 
-  const buildCodexCtx = (e: CodexEntry): CodexContext => {
+  const buildCodexCtx = (e: CodexContextEntry): CodexContext => {
     const summary = e.summary ?? "";
     const contentFallback = summary.trim()
       ? undefined
@@ -2187,7 +2192,7 @@ async function buildSceneContextPrompt(opts: {
   // Phase resolution
   const rawFullEntries = rawCodexEntries
     .map((e) => allEntries.find((a) => a.id === e.id))
-    .filter((e): e is CodexEntry => e !== undefined);
+    .filter((e): e is CodexContextEntry => e !== undefined);
   const { resolved: phaseResolved, phases: entryPhases } =
     await resolveEntriesForContext(rawFullEntries, effectiveSceneId);
 
@@ -2297,7 +2302,7 @@ async function buildSceneContextPrompt(opts: {
   const detectedNotPinned = mentioned
     .filter((e) => !pinnedIdSet.has(e.id))
     .map((e) => allEntries.find((a) => a.id === e.id))
-    .filter((e): e is CodexEntry => e !== undefined);
+    .filter((e): e is CodexContextEntry => e !== undefined);
   const alwaysNotPinned = alwaysCodexEntries.filter(
     (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
   );
@@ -3546,10 +3551,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // 通常モードと同じく、@言及/CodexHighlight 経由でメッセージ内に検出された
         // Codex エントリを送信時に自動 Spotlight する。
-        // listCodexEntries の結果は buildSceneContextPrompt に prefetchedEntries
+        // listCodexEntriesForContext の結果は buildSceneContextPrompt に prefetchedEntries
         // として渡し、二重 fetch を避ける。
         const allEntriesForCtx = sceneCtx
-          ? await listCodexEntries(getCurrentProjectId())
+          ? await listCodexEntriesForContext(getCurrentProjectId())
           : [];
         if (sessionIdForPersist && sceneCtx) {
           const chatMentioned = await findMentionedEntriesAsync(
@@ -4279,7 +4284,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       let sentSystemPrompt = "";
 
       if (sceneCtx) {
-        const allEntries = await listCodexEntries(getCurrentProjectId());
+        const allEntries = await listCodexEntriesForContext(
+          getCurrentProjectId(),
+        );
 
         // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
         if (sessionIdForPersist) {
@@ -4811,7 +4818,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       try {
         const [projectCtx, allEntries] = await Promise.all([
           fetchProjectContext(activeProjectId),
-          listCodexEntries(getCurrentProjectId()),
+          listCodexEntriesForContext(getCurrentProjectId()),
         ]);
 
         // Phase 3b: スレッド focus 中は焦点が「縦糸」なので codex/snippet の
@@ -4850,7 +4857,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           title: string;
           content: string;
         } | null = null;
-        let aggregatedDetected: CodexEntry[] = [];
+        let aggregatedDetected: CodexContextEntry[] = [];
         const includeBodies = get().includeBodies;
         if (threadFocusOverride) {
           // Phase 3b: スレッド所属シーンを集約して <focus_subject> へ。folder/project

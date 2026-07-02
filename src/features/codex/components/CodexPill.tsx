@@ -15,8 +15,18 @@ import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { CodexEntryPopoverContent } from "./CodexEntryPopoverContent";
 import { cn } from "@/lib/utils";
 
+/**
+ * ピルが読む最小列。M10: chat の detected/always ピルは icon/notes を
+ * 持たない projection 行を渡すため icon は任意 (全列 CodexEntry も渡せる)。
+ */
+export type CodexPillEntry = Pick<
+  CodexEntry,
+  "id" | "name" | "type" | "summary"
+> &
+  Partial<Pick<CodexEntry, "icon">>;
+
 interface CodexPillProps {
-  entry: CodexEntry;
+  entry: CodexPillEntry;
   /** Explicit color override; defaults to typeColorMap[entry.type]. */
   resolvedColor?: ResolvedCodexColor;
   /** Reduce opacity to indicate auto/via state. */

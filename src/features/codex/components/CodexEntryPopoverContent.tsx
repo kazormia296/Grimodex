@@ -2,8 +2,15 @@ import { ExternalLink, EyeOff } from "lucide-react";
 import type { CodexEntry } from "@/features/codex/api";
 import { iconToDataUrl } from "../iconUtils";
 
+/**
+ * ポップオーバーが読む最小列。M10: chat の detected/always ピルは icon を
+ * 持たない projection 行を渡すため icon は任意 (無ければ色ドットで代替)。
+ */
+export type CodexPopoverEntry = Pick<CodexEntry, "name" | "summary"> &
+  Partial<Pick<CodexEntry, "icon">>;
+
 interface CodexEntryPopoverContentProps {
-  entry: CodexEntry;
+  entry: CodexPopoverEntry;
   dotColor: string;
   typeLabel: string;
   onOpenInCodex?: () => void;
