@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 import { getProviderLabel } from "@/features/chat/providerLabels";
@@ -54,11 +55,18 @@ export function RoleModelRow({
   catalogLoading,
 }: RoleModelRowProps) {
   const { t } = useTranslation();
-  // whole-store 購読: set で再描画される（既存のロール ModelPicker と同契約）。
-  const settingsStore = useSettingsStore();
-
   const key = roleSettingKey(role);
-  const map = parseRoleProviders(settingsStore.get(ROLE_PROVIDERS_KEY) || "");
+  // 必要キーのみのセレクタ購読: 無関係な設定 set で全ロール行が再描画されるのを防ぐ。
+  const roleProvidersRaw = useSettingsStore(
+    (s) => s.get(ROLE_PROVIDERS_KEY) || "",
+  );
+  const modelValue = useSettingsStore((s) => s.get(key, ""));
+  const setSetting = useSettingsStore((s) => s.set);
+
+  const map = useMemo(
+    () => parseRoleProviders(roleProvidersRaw),
+    [roleProvidersRaw],
+  );
   const override = map[role];
   const overrideProvider = override?.provider;
   const selected = overrideProvider
@@ -94,10 +102,10 @@ export function RoleModelRow({
       const [provider, endpointId] = value.split("|");
       next[role] = endpointId ? { provider, endpointId } : { provider };
     }
-    settingsStore.set(ROLE_PROVIDERS_KEY, JSON.stringify(next));
+    setSetting(ROLE_PROVIDERS_KEY, JSON.stringify(next));
     // プロバイダを変えるとモデル ID の名前空間が変わるため、誤送信防止にモデルを
     // クリアする（ユーザーが新プロバイダのモデルを選び直す）。
-    settingsStore.set(key, "");
+    setSetting(key, "");
   };
 
   return (
@@ -147,8 +155,8 @@ export function RoleModelRow({
         </select>
         <ModelPicker
           models={roleModels}
-          value={settingsStore.get(key, "")}
-          onChange={(v) => settingsStore.set(key, v)}
+          value={modelValue}
+          onChange={(v) => setSetting(key, v)}
           isLoading={overrideProvider ? catalogLoading : isLoadingModels}
           placeholder={t("settings.ai.sameChatModel")}
           className="min-w-[12rem]"

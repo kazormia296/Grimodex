@@ -90,7 +90,11 @@ vi.mock("@/features/settings/settingsStore", () => {
       cache[key] === "true" ? true : cache[key] === "false" ? false : def,
     set: vi.fn(),
   };
-  return { useSettingsStore: () => store };
+  // selector 購読（useSettingsStore((s) => ...)）と whole-store の両方に対応する。
+  return {
+    useSettingsStore: (selector?: (s: typeof store) => unknown) =>
+      selector ? selector(store) : store,
+  };
 });
 
 beforeEach(() => {

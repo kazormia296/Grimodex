@@ -1,17 +1,19 @@
 import i18next from "@/lib/i18n";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { listCodexEntries } from "@/features/codex/api";
-import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { countTokens } from "../contextBuilder";
 import {
-  listEvents,
   listEventParticipantsForProject,
-  listSceneEventsForProject,
   listEventRelations,
   getProjectCalendar,
   type CalendarRow,
 } from "@/features/chronicle/api";
+import {
+  getSharedEvents,
+  getSharedSceneEvents,
+  getSharedCodexNames,
+  getSharedReadingOrder,
+} from "./chronicleToolCache";
 import {
   deriveChronicleSnapshot,
   pickSnapshotCharacters,
@@ -37,11 +39,6 @@ const noProject = (name: string, content: unknown): ToolReturn => ({
   summary: "No active project",
   tokensUsed: 0,
 });
-
-async function loadCodexNames(projectId: string): Promise<Map<string, string>> {
-  const entries = await listCodexEntries(projectId);
-  return new Map(entries.map((e) => [e.id, e.name] as const));
-}
 
 function parseCalendar(row: CalendarRow | null): ChronicleCalendar | null {
   if (!row) return null;
@@ -106,10 +103,9 @@ async function visibleEventIds(
   projectId: string,
   events: EventRow[],
 ): Promise<Set<string>> {
-  const nodes = useTreeStore.getState().nodes;
-  const readingOrder = computeGlobalSceneOrder(nodes);
+  const readingOrder = getSharedReadingOrder(useTreeStore.getState().nodes);
   const currentSceneId = useTreeStore.getState().activeSceneId ?? "";
-  const sceneEvents = await listSceneEventsForProject(projectId);
+  const sceneEvents = await getSharedSceneEvents(projectId);
   return new Set(
     events
       .filter(
@@ -130,8 +126,8 @@ export async function listEventsTool(
   const projectId = useTreeStore.getState().projectId;
   if (!projectId) return noProject("list_events", { events: [] });
   const kind = String(params["kind"] ?? "").trim();
-  const events = await listEvents(projectId);
-  const names = await loadCodexNames(projectId);
+  const events = await getSharedEvents(projectId);
+  const names = await getSharedCodexNames(projectId);
   // AI 秘匿: 現在シーンで hidden な secret イベントを除外。
   const visible = await visibleEventIds(projectId, events);
   const shown = events.filter((e) => visible.has(e.id));
@@ -169,7 +165,7 @@ export async function getEventDetailTool(
       tokensUsed: 0,
     };
 
-  const events = await listEvents(projectId);
+  const events = await getSharedEvents(projectId);
   // AI 秘匿: hidden な event は「存在しない」扱い（generic not found・存在 oracle 化を防ぐ）。
   const visible = await visibleEventIds(projectId, events);
   const ev = events.find((e) => e.id === eventId);
@@ -181,12 +177,15 @@ export async function getEventDetailTool(
       tokensUsed: 0,
     };
 
-  const [names, participants, sceneLinks, allRelations] = await Promise.all([
-    loadCodexNames(projectId),
-    listEventParticipantsForProject(projectId, [eventId]),
-    listSceneEventsForProject(projectId, { eventIds: [eventId] }),
-    listEventRelations(projectId),
-  ]);
+  const [names, participants, allSceneEvents, allRelations] = await Promise.all(
+    [
+      getSharedCodexNames(projectId),
+      listEventParticipantsForProject(projectId, [eventId]),
+      getSharedSceneEvents(projectId),
+      listEventRelations(projectId),
+    ],
+  );
+  const sceneLinks = allSceneEvents.filter((s) => s.eventId === eventId);
   const titleByEvent = new Map(events.map((e) => [e.id, e.title] as const));
   const nodes = useTreeStore.getState().nodes;
   const titleByScene = new Map(nodes.map((n) => [n.id, n.title] as const));
@@ -250,10 +249,10 @@ export async function getCharacterTimelineTool(
     };
 
   const [events, participants, calendarRow, names] = await Promise.all([
-    listEvents(projectId),
+    getSharedEvents(projectId),
     listEventParticipantsForProject(projectId),
     getProjectCalendar(projectId),
-    loadCodexNames(projectId),
+    getSharedCodexNames(projectId),
   ]);
   const calendar = parseCalendar(calendarRow);
   // AI 秘匿: hidden な secret イベントを除外（秘匿された生年・死亡・経歴の漏洩防止）。
@@ -320,7 +319,7 @@ export async function getChronicleStateTool(
       tokensUsed: 0,
     };
 
-  const events = await listEvents(projectId);
+  const events = await getSharedEvents(projectId);
   if (events.length === 0)
     return {
       name: "get_chronicle_state",
@@ -332,13 +331,13 @@ export async function getChronicleStateTool(
   const [participants, sceneEvents, calendarRow, relations, names] =
     await Promise.all([
       listEventParticipantsForProject(projectId),
-      listSceneEventsForProject(projectId),
+      getSharedSceneEvents(projectId),
       getProjectCalendar(projectId),
       listEventRelations(projectId),
-      loadCodexNames(projectId),
+      getSharedCodexNames(projectId),
     ]);
   const nodes = useTreeStore.getState().nodes;
-  const readingOrder = computeGlobalSceneOrder(nodes);
+  const readingOrder = getSharedReadingOrder(nodes);
   // push (buildChronicleSnapshotTextForScene) と同じアンカー結果になるよう、
   // シーン自身の暦日付（scene-own アンカー源）を tree ノードから構築する。
   const sceneChronicle = new Map<string, SceneChronicle>();

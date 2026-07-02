@@ -448,6 +448,51 @@ export async function linkSceneToEvent(
   });
 }
 
+/**
+ * 1 event へ複数シーンを一括リンク（importExtractedEvents 用）。
+ * linkSceneToEvent をシーンごとに呼ぶと検証 SELECT が 2×N 回走る（N+1）ため、
+ * event 検証 1 回＋scene 検証を inArray で 1 回に畳み、insert も 1 文にする。
+ * 挙動は per-scene 呼び出しと同じ（不正 id は黙ってスキップ / 既存リンクは
+ * onConflictDoNothing / timelapse 記録はリンクごと）。
+ */
+export async function linkScenesToEvent(
+  projectId: string,
+  sceneIds: string[],
+  eventId: string,
+): Promise<void> {
+  if (sceneIds.length === 0) return;
+  const [event] = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
+  if (!event) return;
+  const sceneRows = await db
+    .select({ id: treeNodes.id })
+    .from(treeNodes)
+    .where(
+      and(inArray(treeNodes.id, sceneIds), eq(treeNodes.projectId, projectId)),
+    );
+  const valid = new Set(sceneRows.map((r) => r.id));
+  const targets = [...new Set(sceneIds)].filter((id) => valid.has(id));
+  if (targets.length === 0) return;
+  await db
+    .insert(sceneEvents)
+    .values(targets.map((sceneId) => ({ sceneId, eventId })))
+    .onConflictDoNothing();
+  bumpChronicleRevision();
+  // sceneId is verified against real tree_nodes rows above, so it is a safe FK.
+  for (const sceneId of targets) {
+    recordChangeEvent({
+      domain: "event",
+      opType: "sceneLink.add",
+      entityType: "event",
+      entityId: eventId,
+      sceneId,
+      payload: { eventId, sceneId },
+    });
+  }
+}
+
 export async function unlinkSceneFromEvent(
   projectId: string,
   sceneId: string,

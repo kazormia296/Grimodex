@@ -1544,6 +1544,79 @@ fn collect_participants_json(conn: &rusqlite::Connection, event_id: &str) -> any
 // (DELETE → INSERT OR IGNORE) and always scoped to `project_id` (XPROJ).
 // ---------------------------------------------------------------------------
 
+/// Rows per multi-row INSERT chunk. Keeps bind variables (up to 3 per row)
+/// well below SQLite's default limit of 999.
+const INSERT_CHUNK_ROWS: usize = 100;
+
+/// Bulk-insert event participants with a chunked multi-row
+/// `INSERT OR IGNORE` (OR IGNORE applies per row, so semantics match the
+/// former per-row loop).
+fn batch_insert_event_participants(
+    conn: &rusqlite::Connection,
+    event_id: &str,
+    rows: &[(&str, Option<&str>)],
+) -> anyhow::Result<()> {
+    for chunk in rows.chunks(INSERT_CHUNK_ROWS) {
+        let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(", ");
+        let sql = format!(
+            "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+             VALUES {placeholders}"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 3);
+        for (codex_id, role) in chunk {
+            params.push(&event_id);
+            params.push(codex_id);
+            params.push(role);
+        }
+        conn.execute(&sql, params.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Bulk-insert scene links for one event (chunked multi-row `INSERT OR IGNORE`).
+fn batch_insert_scene_events(
+    conn: &rusqlite::Connection,
+    event_id: &str,
+    scene_ids: &[&str],
+) -> anyhow::Result<()> {
+    for chunk in scene_ids.chunks(INSERT_CHUNK_ROWS) {
+        let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
+        let sql = format!(
+            "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES {placeholders}"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 2);
+        for scene_id in chunk {
+            params.push(scene_id);
+            params.push(&event_id);
+        }
+        conn.execute(&sql, params.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Bulk-insert event relations as `(project_id, cause_event_id, effect_event_id)`
+/// tuples (chunked multi-row `INSERT OR IGNORE`).
+fn batch_insert_event_relations(
+    conn: &rusqlite::Connection,
+    rows: &[(&str, &str, &str)],
+) -> anyhow::Result<()> {
+    for chunk in rows.chunks(INSERT_CHUNK_ROWS) {
+        let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(", ");
+        let sql = format!(
+            "INSERT OR IGNORE INTO event_relations
+             (project_id, cause_event_id, effect_event_id) VALUES {placeholders}"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 3);
+        for (proj, cause, effect) in chunk {
+            params.push(proj);
+            params.push(cause);
+            params.push(effect);
+        }
+        conn.execute(&sql, params.as_slice())?;
+    }
+    Ok(())
+}
+
 /// Make the DB match a composite event snapshot exactly: UPSERT the event row
 /// and replace its participants, scene links, and relations (both directions).
 fn apply_event_composite_snapshot(
@@ -1627,15 +1700,15 @@ fn apply_event_composite_snapshot(
         rusqlite::params![id],
     )?;
     if let Some(arr) = snap["participants"].as_array() {
-        for p in arr {
-            if let Some(codex_id) = p["codexEntryId"].as_str() {
-                conn.execute(
-                    "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
-                     VALUES (?1, ?2, ?3)",
-                    rusqlite::params![id, codex_id, p["role"].as_str()],
-                )?;
-            }
-        }
+        let rows: Vec<(&str, Option<&str>)> = arr
+            .iter()
+            .filter_map(|p| {
+                p["codexEntryId"]
+                    .as_str()
+                    .map(|codex_id| (codex_id, p["role"].as_str()))
+            })
+            .collect();
+        batch_insert_event_participants(conn, id, &rows)?;
     }
 
     conn.execute(
@@ -1643,14 +1716,8 @@ fn apply_event_composite_snapshot(
         rusqlite::params![id],
     )?;
     if let Some(arr) = snap["sceneLinks"].as_array() {
-        for s in arr {
-            if let Some(scene_id) = s.as_str() {
-                conn.execute(
-                    "INSERT OR IGNORE INTO scene_events (scene_id, event_id) VALUES (?1, ?2)",
-                    rusqlite::params![scene_id, id],
-                )?;
-            }
-        }
+        let scene_ids: Vec<&str> = arr.iter().filter_map(|s| s.as_str()).collect();
+        batch_insert_scene_events(conn, id, &scene_ids)?;
     }
 
     conn.execute(
@@ -1658,28 +1725,26 @@ fn apply_event_composite_snapshot(
         rusqlite::params![id],
     )?;
     if let Some(arr) = snap["relations"]["asCause"].as_array() {
-        for r in arr {
-            if let Some(effect) = r["effectEventId"].as_str() {
-                let proj = r["projectId"].as_str().unwrap_or(project_id);
-                conn.execute(
-                    "INSERT OR IGNORE INTO event_relations
-                     (project_id, cause_event_id, effect_event_id) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![proj, id, effect],
-                )?;
-            }
-        }
+        let rows: Vec<(&str, &str, &str)> = arr
+            .iter()
+            .filter_map(|r| {
+                r["effectEventId"]
+                    .as_str()
+                    .map(|effect| (r["projectId"].as_str().unwrap_or(project_id), id, effect))
+            })
+            .collect();
+        batch_insert_event_relations(conn, &rows)?;
     }
     if let Some(arr) = snap["relations"]["asEffect"].as_array() {
-        for r in arr {
-            if let Some(cause) = r["causeEventId"].as_str() {
-                let proj = r["projectId"].as_str().unwrap_or(project_id);
-                conn.execute(
-                    "INSERT OR IGNORE INTO event_relations
-                     (project_id, cause_event_id, effect_event_id) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![proj, cause, id],
-                )?;
-            }
-        }
+        let rows: Vec<(&str, &str, &str)> = arr
+            .iter()
+            .filter_map(|r| {
+                r["causeEventId"]
+                    .as_str()
+                    .map(|cause| (r["projectId"].as_str().unwrap_or(project_id), cause, id))
+            })
+            .collect();
+        batch_insert_event_relations(conn, &rows)?;
     }
     Ok(())
 }
@@ -1696,15 +1761,15 @@ fn restore_event_participants_snapshot(
         rusqlite::params![event_id],
     )?;
     if let Some(arr) = snap["participants"].as_array() {
-        for p in arr {
-            if let Some(codex_id) = p["codexEntryId"].as_str() {
-                conn.execute(
-                    "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
-                     VALUES (?1, ?2, ?3)",
-                    rusqlite::params![event_id, codex_id, p["role"].as_str()],
-                )?;
-            }
-        }
+        let rows: Vec<(&str, Option<&str>)> = arr
+            .iter()
+            .filter_map(|p| {
+                p["codexEntryId"]
+                    .as_str()
+                    .map(|codex_id| (codex_id, p["role"].as_str()))
+            })
+            .collect();
+        batch_insert_event_participants(conn, event_id, &rows)?;
     }
     Ok(())
 }
@@ -1848,6 +1913,46 @@ fn apply_event_redo_in_tx(
     }
 }
 
+/// Verify a codex entry belongs to `project_id`; bail otherwise. Prevents a
+/// caller (AI agent / MCP / renderer) from planting a cross-project row in
+/// `event_participants` — a project-A event pointing at a project-B codex entry.
+/// Mirrors the scope guard already enforced by `agent_scene_event_mutate_impl`
+/// and `agent_event_relation_mutate_impl` for their FK targets.
+fn ensure_codex_in_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    codex_id: &str,
+) -> anyhow::Result<()> {
+    let ok: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![codex_id, project_id],
+        |r| r.get(0),
+    )?;
+    if ok == 0 {
+        anyhow::bail!("codex entry '{codex_id}' not found in project '{project_id}'");
+    }
+    Ok(())
+}
+
+/// Verify a scene tree-node belongs to `project_id`; bail otherwise. Prevents a
+/// caller from planting a cross-project row in `scene_events` — a project-A event
+/// linked to a project-B scene. Mirrors `agent_scene_event_mutate_impl`'s guard.
+fn ensure_scene_in_project(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> anyhow::Result<()> {
+    let ok: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![scene_id, project_id],
+        |r| r.get(0),
+    )?;
+    if ok == 0 {
+        anyhow::bail!("scene '{scene_id}' not found in project '{project_id}'");
+    }
+    Ok(())
+}
+
 fn agent_event_create_impl(
     db: &Database,
     payload: AgentEventCreatePayload,
@@ -1910,19 +2015,20 @@ fn agent_event_create_impl(
             )?;
 
             for codex_id in &participants {
-                conn.execute(
-                    "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
-                     VALUES (?1, ?2, NULL)",
-                    rusqlite::params![event_id, codex_id],
-                )?;
+                // Scope guard: reject participants from another project so the
+                // event↔codex link can never cross the project boundary. The
+                // transaction rolls back the already-inserted event row on bail.
+                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
             }
             for scene_id in &scene_ids {
-                conn.execute(
-                    "INSERT OR IGNORE INTO scene_events (scene_id, event_id)
-                     VALUES (?1, ?2)",
-                    rusqlite::params![scene_id, event_id],
-                )?;
+                // Scope guard: reject scenes from another project (see above).
+                ensure_scene_in_project(conn, &payload.project_id, scene_id)?;
             }
+            let participant_rows: Vec<(&str, Option<&str>)> =
+                participants.iter().map(|c| (c.as_str(), None)).collect();
+            batch_insert_event_participants(conn, &event_id, &participant_rows)?;
+            let scene_id_refs: Vec<&str> = scene_ids.iter().map(String::as_str).collect();
+            batch_insert_scene_events(conn, &event_id, &scene_id_refs)?;
 
             let after = collect_event_snapshot(conn, &event_id)?.to_string();
 
@@ -2356,12 +2462,17 @@ fn agent_event_set_participants_impl(
                 rusqlite::params![payload.event_id],
             )?;
             for codex_id in &payload.codex_entry_ids {
-                conn.execute(
-                    "INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
-                     VALUES (?1, ?2, NULL)",
-                    rusqlite::params![payload.event_id, codex_id],
-                )?;
+                // Scope guard: the event is already confirmed in this project
+                // above, but each participant must be too — otherwise a P1 event
+                // could be linked to a P2 codex entry. Bail rolls back the tx.
+                ensure_codex_in_project(conn, &payload.project_id, codex_id)?;
             }
+            let participant_rows: Vec<(&str, Option<&str>)> = payload
+                .codex_entry_ids
+                .iter()
+                .map(|c| (c.as_str(), None))
+                .collect();
+            batch_insert_event_participants(conn, &payload.event_id, &participant_rows)?;
 
             let after = collect_participants_json(conn, &payload.event_id)?.to_string();
 
@@ -3743,6 +3854,217 @@ mod tests {
         assert_eq!(participant_count(&db, &event_id), 2);
         assert!(participant_has(&db, &event_id, &codex_b));
         assert!(!participant_has(&db, &event_id, &codex_a));
+    }
+
+    #[test]
+    fn batched_inserts_chunk_past_100_rows() {
+        // Multi-row INSERT batching must stay correct across the
+        // INSERT_CHUNK_ROWS (=100) boundary on every write path.
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex_ids: Vec<String> = (0..120)
+            .map(|i| insert_codex(&db, &project_id, &format!("C{i}")))
+            .collect();
+        let scene_ids: Vec<String> = (0..120).map(|_| insert_scene(&db, &project_id)).collect();
+
+        // create path (participants + scene links).
+        let (event_id, journal_id) = create_event(
+            &db,
+            &project_id,
+            "big",
+            codex_ids.clone(),
+            scene_ids.clone(),
+        );
+        assert_eq!(participant_count(&db, &event_id), 120);
+        assert_eq!(scene_link_count(&db, &event_id), 120);
+
+        // undo → redo (apply_event_composite_snapshot path).
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo")).unwrap();
+        assert_eq!(participant_count(&db, &event_id), 0);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo")).unwrap();
+        assert_eq!(participant_count(&db, &event_id), 120);
+        assert_eq!(scene_link_count(&db, &event_id), 120);
+
+        // set_participants → undo (restore_event_participants_snapshot path).
+        let res = agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                codex_entry_ids: codex_ids[..3].to_vec(),
+            },
+        )
+        .unwrap();
+        let set_journal = res["undoJournalId"].as_str().unwrap().to_string();
+        assert_eq!(participant_count(&db, &event_id), 3);
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &set_journal, "undo")).unwrap();
+        assert_eq!(
+            participant_count(&db, &event_id),
+            120,
+            "chunked participants snapshot fully restored"
+        );
+    }
+
+    #[test]
+    fn event_create_rejects_cross_project_participant_and_writes_nothing() {
+        let db = test_db();
+        let p1 = insert_project(&db);
+        let p2 = insert_project(&db);
+        // A codex entry that lives in a *different* project.
+        let foreign_codex = insert_codex(&db, &p2, "Foreign");
+
+        // Attempt to create a P1 event whose participant belongs to P2.
+        let res = agent_event_create_impl(
+            &db,
+            AgentEventCreatePayload {
+                project_id: p1.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                title: Some("xproj".to_string()),
+                note: None,
+                detail: None,
+                ordinal: None,
+                primary_codex_id: None,
+                lane_group: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                precision: None,
+                kind: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: Some(vec![foreign_codex.clone()]),
+                scene_ids: None,
+            },
+        );
+
+        assert!(res.is_err(), "cross-project participant must be rejected");
+        // Transaction rolled back: no event row, no cross-project link, no
+        // change-event side effects leaked.
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM events WHERE project_id = ?1",
+                &p1,
+                None
+            ),
+            0,
+            "event row rolled back"
+        );
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM event_participants WHERE codex_entry_id = ?1",
+                &foreign_codex,
+                None
+            ),
+            0,
+            "no cross-project participant link written"
+        );
+        db.with_conn(|conn| {
+            let changes: i64 =
+                conn.query_row("SELECT COUNT(*) FROM change_events", [], |r| r.get(0))?;
+            assert_eq!(changes, 0, "no change events leaked");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn event_create_rejects_cross_project_scene_link() {
+        let db = test_db();
+        let p1 = insert_project(&db);
+        let p2 = insert_project(&db);
+        let foreign_scene = insert_scene(&db, &p2);
+
+        let res = agent_event_create_impl(
+            &db,
+            AgentEventCreatePayload {
+                project_id: p1.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                title: Some("xproj-scene".to_string()),
+                note: None,
+                detail: None,
+                ordinal: None,
+                primary_codex_id: None,
+                lane_group: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                precision: None,
+                kind: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: Some(vec![foreign_scene.clone()]),
+            },
+        );
+
+        assert!(res.is_err(), "cross-project scene link must be rejected");
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM events WHERE project_id = ?1",
+                &p1,
+                None
+            ),
+            0,
+            "event row rolled back"
+        );
+        assert_eq!(
+            scalar_count(
+                &db,
+                "SELECT COUNT(*) FROM scene_events WHERE scene_id = ?1",
+                &foreign_scene,
+                None
+            ),
+            0,
+            "no cross-project scene link written"
+        );
+    }
+
+    #[test]
+    fn set_participants_rejects_cross_project_codex_and_preserves_existing() {
+        let db = test_db();
+        let p1 = insert_project(&db);
+        let p2 = insert_project(&db);
+        let local = insert_codex(&db, &p1, "Local");
+        let foreign = insert_codex(&db, &p2, "Foreign");
+        let (event_id, _) = create_event(&db, &p1, "e", vec![local.clone()], vec![]);
+
+        // Replace the participant set with one containing a foreign-project codex.
+        let res = agent_event_set_participants_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: p1.clone(),
+                session_id: "sess".to_string(),
+                surface: None,
+                event_id: event_id.clone(),
+                codex_entry_ids: vec![foreign.clone()],
+            },
+        );
+
+        assert!(res.is_err(), "cross-project participant must be rejected");
+        // Rollback preserves the pre-existing valid participant — the DELETE that
+        // precedes the re-insert is inside the same rolled-back transaction.
+        assert_eq!(
+            participant_count(&db, &event_id),
+            1,
+            "existing set preserved on rollback"
+        );
+        assert!(participant_has(&db, &event_id, &local));
+        assert!(!participant_has(&db, &event_id, &foreign));
     }
 
     #[test]

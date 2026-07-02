@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type {
   CSSProperties,
   ReactNode,
@@ -49,10 +50,10 @@ export interface EventMarkerProps {
   cursor?: CSSProperties["cursor"];
   /** 因果ホバー時、連結チェーン外なので淡色化する。 */
   dimmed?: boolean;
-  /** ホバー開始/終了（因果チェーン強調の駆動）。 */
-  onHover?: (hovering: boolean) => void;
-  /** クリック選択（修飾キー判定のため MouseEvent を渡す）。 */
-  onSelect: (e: ReactMouseEvent) => void;
+  /** ホバー開始/終了（因果チェーン強調の駆動）。id=event.id（親で安定コールバック化）。 */
+  onHover?: (id: string, hovering: boolean) => void;
+  /** クリック選択（修飾キー判定のため MouseEvent を渡す）。id=event.id。 */
+  onSelect: (id: string, e: ReactMouseEvent) => void;
 }
 
 const BIRTH = "oklch(0.6 0.14 150)";
@@ -83,8 +84,10 @@ const RESIZE_GRIP: CSSProperties = {
  * 1 出来事を DOM トークンとして描く（point=ピル / interval=帯）。
  * 色は lane（primaryCodexId 由来の安定 oklch）＋種別の意味色。テーマ非依存に
  * するため塗りは transparent への color-mix で重ねる（ダークでも破綻しない）。
+ * export は memo 化（末尾）: 親のドラッグ/ホバー再レンダー時に props が変わらない
+ * マーカーの再描画を省く。callback は id を渡す形にして親が安定参照を渡せるようにする。
  */
-export function EventMarker({
+function EventMarkerBase({
   event,
   left,
   top,
@@ -364,9 +367,9 @@ export function EventMarker({
       type="button"
       data-event-id={event.id}
       data-selected={selected || undefined}
-      onClick={onSelect}
-      onMouseEnter={onHover ? () => onHover(true) : undefined}
-      onMouseLeave={onHover ? () => onHover(false) : undefined}
+      onClick={(e) => onSelect(event.id, e)}
+      onMouseEnter={onHover ? () => onHover(event.id, true) : undefined}
+      onMouseLeave={onHover ? () => onHover(event.id, false) : undefined}
       title={event.title || t("chronicle.untitled", "無題のイベント")}
       aria-label={ariaParts.join(", ")}
       aria-current={selected ? "true" : undefined}
@@ -489,3 +492,5 @@ export function EventMarker({
     </button>
   );
 }
+
+export const EventMarker = memo(EventMarkerBase);

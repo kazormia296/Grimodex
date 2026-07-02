@@ -6,6 +6,7 @@ import { TimelineViewport } from "./TimelineViewport";
 import { zoomFactorFromWheel, computeZoomScrollLeft } from "./timelineZoom";
 import { useTimelineStore } from "./timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import { buildPlotLaneModel } from "@/features/plot-threads/plotThreadLaneModel";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 
@@ -17,6 +18,19 @@ function setReduceMotion(on: boolean) {
 }
 
 vi.mock("@/lib/tauri", () => ({ invoke: vi.fn(), isTauri: () => false }));
+
+// buildPlotLaneModel を実装そのままの spy でラップする（挙動は actual と同一）。
+// マーカードラッグ中に mousemove 毎のフルレーン再構築が走らないことを検証する。
+vi.mock(
+  "@/features/plot-threads/plotThreadLaneModel",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/plot-threads/plotThreadLaneModel")
+      >();
+    return { ...actual, buildPlotLaneModel: vi.fn(actual.buildPlotLaneModel) };
+  },
+);
 
 const mockScene: TreeNodeData = {
   id: "scene-1",
@@ -1409,6 +1423,33 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     expect(updateMarker).not.toHaveBeenCalled();
     expect(addMarker).not.toHaveBeenCalled();
     expect(addBranch).not.toHaveBeenCalled();
+  });
+
+  it("同じドロップ先への mousemove ではレーンモデルを再構築しない（離散キーで抑制）", () => {
+    seed();
+    usePlotThreadStore.setState({
+      updateMarker: vi.fn(),
+      addMarker: vi.fn(),
+      addBranch: vi.fn(),
+    });
+    const spy = vi.mocked(buildPlotLaneModel);
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+    const m = getByTestId("plot-marker-l1"); // t1(上,y158)@s1
+    fireEvent.mouseDown(m, { clientX: 150, clientY: 158 });
+    // t2(下,y214) の s2(x246) へ → branch プレビューを構築。
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
+    const afterFirst = spy.mock.calls.length;
+    // 同じドロップ先（同列・同レーン）内の微小移動では再構築しない。
+    fireEvent.mouseMove(document, { clientX: 247, clientY: 215 });
+    fireEvent.mouseMove(document, { clientX: 244, clientY: 213 });
+    fireEvent.mouseMove(document, { clientX: 248, clientY: 214 });
+    expect(spy.mock.calls.length).toBe(afterFirst);
+    // ドロップ先（列）が変われば再構築される（プレビューは追従したまま）。
+    fireEvent.mouseMove(document, { clientX: 150, clientY: 214 });
+    expect(spy.mock.calls.length).toBeGreaterThan(afterFirst);
+    fireEvent.mouseUp(document, { clientX: 150, clientY: 214 });
   });
 });
 

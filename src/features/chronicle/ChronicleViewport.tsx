@@ -824,16 +824,28 @@ export function ChronicleViewport({
     document.addEventListener("mouseup", up);
   };
 
-  const handleSelect = (id: string, e: React.MouseEvent) => {
-    if (draggedRef.current) return;
-    // マウス選択ではキーボード由来の因果チェーン強調を解除（従来のホバー駆動へ戻す）。
-    setKbdSelectedId(null);
-    // Ctrl/⌘=トグル, Shift=範囲, 修飾なし=単一。
-    onSelectEvent(id, {
-      toggle: e.ctrlKey || e.metaKey,
-      range: e.shiftKey,
-    });
-  };
+  // マーカーへ渡す callback は安定参照にする（EventMarker は memo 化済み。
+  // per-marker の inline closure を作ると全マーカーが毎回再レンダーされる）。
+  const handleSelect = useCallback(
+    (id: string, e: React.MouseEvent) => {
+      if (draggedRef.current) return;
+      // マウス選択ではキーボード由来の因果チェーン強調を解除（従来のホバー駆動へ戻す）。
+      setKbdSelectedId(null);
+      // Ctrl/⌘=トグル, Shift=範囲, 修飾なし=単一。
+      onSelectEvent(id, {
+        toggle: e.ctrlKey || e.metaKey,
+        range: e.shiftKey,
+      });
+    },
+    [onSelectEvent],
+  );
+
+  const handleMarkerHover = useCallback((id: string, hovering: boolean) => {
+    setHoveredEventId(hovering ? id : null);
+  }, []);
+  // 因果関係が無ければホバー強調は駆動しない（従来の per-marker 分岐と同じ）。
+  const markerHover =
+    relations && relations.length > 0 ? handleMarkerHover : undefined;
 
   const {
     spacing,
@@ -1115,11 +1127,7 @@ export function ChronicleViewport({
                       resizable={!locked && render.isInterval}
                       cursor={locked ? "default" : "grab"}
                       dimmed={causalChain ? !causalChain.has(realId) : false}
-                      onHover={
-                        relations && relations.length > 0
-                          ? (h) => setHoveredEventId(h ? realId : null)
-                          : undefined
-                      }
+                      onHover={markerHover}
                       edgeHandle={
                         // 因果エッジハンドルは単一選択時のプライマリのみ。
                         // scene-event は関係を持てないので出さない（壊れた affordance 防止）。
@@ -1134,7 +1142,7 @@ export function ChronicleViewport({
                           ? { dx: dragPreview.dx, dy: dragPreview.dy }
                           : null
                       }
-                      onSelect={(e) => handleSelect(realId, e)}
+                      onSelect={handleSelect}
                     />
                   </motion.div>
                 );

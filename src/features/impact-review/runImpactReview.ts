@@ -6,7 +6,7 @@
 
 import { db } from "@/db/client";
 import { treeNodes } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import {
   runPostEffectMulti,
@@ -57,13 +57,20 @@ export interface ImpactReviewResult {
 
 const CANDIDATE_LIMIT = 30;
 
-async function getScenePlainText(sceneId: string): Promise<string> {
+/** 候補シーンの本文プレーンテキストを 1 クエリで一括取得する（sceneId → text）。 */
+async function getScenePlainTexts(
+  sceneIds: string[],
+): Promise<Map<string, string>> {
+  const texts = new Map<string, string>();
+  if (sceneIds.length === 0) return texts;
   const rows = await db
-    .select({ content: treeNodes.content })
+    .select({ id: treeNodes.id, content: treeNodes.content })
     .from(treeNodes)
-    .where(eq(treeNodes.id, sceneId));
-  if (!rows[0]) return "";
-  return prosemirrorToText(rows[0].content ?? "{}");
+    .where(inArray(treeNodes.id, sceneIds));
+  for (const row of rows) {
+    texts.set(row.id, prosemirrorToText(row.content ?? "{}"));
+  }
+  return texts;
 }
 
 /**
@@ -138,8 +145,9 @@ export async function runImpactReview(
     codex_payload_json: string;
     scene_text: string;
   }> = [];
+  const sceneTexts = await getScenePlainTexts(candidates.map((c) => c.sceneId));
   for (const c of candidates) {
-    const sceneText = await getScenePlainText(c.sceneId);
+    const sceneText = sceneTexts.get(c.sceneId) ?? "";
     if (sceneText.trim() === "") continue;
     scenes.push({
       scene_id: c.sceneId,

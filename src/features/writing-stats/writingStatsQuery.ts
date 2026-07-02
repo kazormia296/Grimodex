@@ -31,6 +31,35 @@ const WINDOW_DAYS = 371;
 const MS_PER_DAY = 86_400_000;
 
 /**
+ * change_events は追記専用のジャーナル（hash chain 付き）で、id は AUTOINCREMENT
+ * のため再利用されない。payload は id に対して不変なので、字数をイベント id キーの
+ * モジュールキャッシュに載せ、シーン追加/削除のたびに窓内全行を JSON.parse し直す
+ * のを避ける（MessageBadge の messageId キャッシュと同じ FIFO 上限方式）。
+ */
+const insertedCharsCache = new Map<number, number>();
+export const INSERTED_CHARS_CACHE_MAX = 50_000;
+
+/** Test-only: reset the module cache between tests. */
+export function _clearInsertedCharsCache(): void {
+  insertedCharsCache.clear();
+}
+
+export function insertedCharsForEvent(
+  eventId: number,
+  payloadJson: string,
+): number {
+  const cached = insertedCharsCache.get(eventId);
+  if (cached !== undefined) return cached;
+  const chars = insertedCharsFromPayload(payloadJson);
+  if (insertedCharsCache.size >= INSERTED_CHARS_CACHE_MAX) {
+    const oldest = insertedCharsCache.keys().next().value;
+    if (oldest !== undefined) insertedCharsCache.delete(oldest);
+  }
+  insertedCharsCache.set(eventId, chars);
+  return chars;
+}
+
+/**
  * `change_events.payload`（`{ steps: ProseMirrorStepJSON[] }`）から挿入文字数を
  * best-effort で復元する。正味の増減は保存されていないため「挿入された文字数」の
  * 概算（削除は差し引かない）。形が想定外なら 0（フォールバックで件数表示になる）。
@@ -88,6 +117,7 @@ export async function loadWritingStatsData(
   const [rows, perScene, usage] = await Promise.all([
     db
       .select({
+        id: changeEvents.id,
         timestamp: changeEvents.timestamp,
         payload: changeEvents.payload,
       })
@@ -107,7 +137,7 @@ export async function loadWritingStatsData(
 
   const events: WritingEvent[] = rows.map((r) => ({
     timestamp: r.timestamp,
-    chars: insertedCharsFromPayload(r.payload),
+    chars: insertedCharsForEvent(r.id, r.payload),
   }));
 
   const attribution: AttributionTotals = {

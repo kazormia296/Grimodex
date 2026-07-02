@@ -108,23 +108,27 @@ async function buildCursors(
     byKey.set(key, list);
   }
 
+  // Load the baseline under the SAME domain the doc.step carries: scene bodies
+  // are recorded as domain "editor", codex/snippet under their own domain. A
+  // codex/snippet entity with pre-existing body needs its baseline too, else
+  // the first recorded step's position exceeds the empty seed doc and replay
+  // halts. No baseline (null) → seed from empty, unchanged from before.
+  // Snapshot loads are independent per entity — fire them in parallel instead
+  // of one DB roundtrip at a time.
+  const entries = [...byKey.entries()];
+  const snapshots = await Promise.all(
+    entries.map(([key]) => {
+      const [kind, entityId] = key.split(":") as [string, string];
+      const domain = kind === "scene" ? "editor" : kind;
+      return loadLatestSnapshot({ projectId, domain, entityId });
+    }),
+  );
+
   const cursors = new Map<RenderTargetKey, ReplayCursor>();
-  for (const [key, evs] of byKey) {
-    const [kind, entityId] = key.split(":") as [string, string];
-    // Load the baseline under the SAME domain the doc.step carries: scene bodies
-    // are recorded as domain "editor", codex/snippet under their own domain. A
-    // codex/snippet entity with pre-existing body needs its baseline too, else
-    // the first recorded step's position exceeds the empty seed doc and replay
-    // halts. No baseline (null) → seed from empty, unchanged from before.
-    const domain = kind === "scene" ? "editor" : kind;
-    const snapshot = await loadLatestSnapshot({
-      projectId,
-      domain,
-      entityId,
-    });
+  entries.forEach(([key, evs], i) => {
     const start = (() => {
       try {
-        return buildReplayStart(schema, evs, snapshot);
+        return buildReplayStart(schema, evs, snapshots[i]);
       } catch {
         return buildReplayStart(schema, evs, null);
       }
@@ -133,7 +137,7 @@ async function buildCursors(
       key,
       createReplayCursor(schema, start.initialDoc, start.replayEvents),
     );
-  }
+  });
   return cursors;
 }
 

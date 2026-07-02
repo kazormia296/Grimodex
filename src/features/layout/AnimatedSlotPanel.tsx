@@ -1,4 +1,4 @@
-import { memo, useRef } from "react";
+import { memo, Suspense, useRef } from "react";
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { useReducedMotion } from "@/lib/animation";
@@ -83,7 +83,12 @@ export const AnimatedSlotPanel = memo(function AnimatedSlotPanel({
                   : chromeExitTransition(reduced)
               }
             >
-              <Component isActive={isActive} />
+              {/* lazy パネル (chronicle 等) の初回 import 中はパネル背景だけ見せる。 */}
+              <Suspense
+                fallback={<div className="min-h-0 flex-1" aria-hidden />}
+              >
+                <Component isActive={isActive} />
+              </Suspense>
             </motion.div>
           </PanelChromeMenu>
         );

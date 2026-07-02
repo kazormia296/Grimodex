@@ -5,7 +5,7 @@ const mockBlock = vi.hoisted(() => vi.fn(() => false));
 const mockRecord = vi.hoisted(() => vi.fn());
 const mockOverride = vi.hoisted(() => vi.fn());
 const mockCreateEvent = vi.hoisted(() => vi.fn());
-const mockLinkScene = vi.hoisted(() => vi.fn());
+const mockLinkScenes = vi.hoisted(() => vi.fn());
 const mockListEvents = vi.hoisted(() => vi.fn());
 const mockDeleteEvent = vi.hoisted(() => vi.fn());
 
@@ -26,7 +26,7 @@ vi.mock("@/features/settings/settingsStore", () => ({
 }));
 vi.mock("./api", () => ({
   createEvent: mockCreateEvent,
-  linkSceneToEvent: mockLinkScene,
+  linkScenesToEvent: mockLinkScenes,
   listEvents: mockListEvents,
   deleteEvent: mockDeleteEvent,
 }));
@@ -182,8 +182,8 @@ describe("importExtractedEvents", () => {
     mockCreateEvent.mockImplementation(async (d: { title: string }) => ({
       id: `ev-${d.title}`,
     }));
-    mockLinkScene.mockReset();
-    mockLinkScene.mockResolvedValue(undefined);
+    mockLinkScenes.mockReset();
+    mockLinkScenes.mockResolvedValue(undefined);
     mockListEvents.mockReset();
     mockListEvents.mockResolvedValue([]);
     mockDeleteEvent.mockReset();
@@ -201,10 +201,14 @@ describe("importExtractedEvents", () => {
     );
     expect(n).toBe(2);
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
-    // A の根拠 2 シーンのみ link（B は 0）
-    expect(mockLinkScene).toHaveBeenCalledTimes(2);
-    expect(mockLinkScene).toHaveBeenCalledWith("p1", "s1", "ev-新事件A");
-    expect(mockLinkScene).toHaveBeenCalledWith("p1", "s2", "ev-新事件A");
+    // 根拠シーンは出来事ごとに一括 link（A=2 シーン / B=空配列）
+    expect(mockLinkScenes).toHaveBeenCalledTimes(2);
+    expect(mockLinkScenes).toHaveBeenCalledWith(
+      "p1",
+      ["s1", "s2"],
+      "ev-新事件A",
+    );
+    expect(mockLinkScenes).toHaveBeenCalledWith("p1", [], "ev-新事件B");
   });
 
   it("既存タイトルと重複する候補は正規化一致でスキップ（大小・前後空白を吸収）", async () => {
@@ -273,8 +277,8 @@ describe("importExtractedEvents", () => {
     // A=成功, B=失敗で停止, C=未試行
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
     // A の link のみ実行済み（B は createEvent で落ちるため link されない）
-    expect(mockLinkScene).toHaveBeenCalledTimes(1);
-    expect(mockLinkScene).toHaveBeenCalledWith("p1", "s1", "ev-A");
+    expect(mockLinkScenes).toHaveBeenCalledTimes(1);
+    expect(mockLinkScenes).toHaveBeenCalledWith("p1", ["s1"], "ev-A");
     expect(mockDeleteEvent).toHaveBeenCalledWith("ev-A", "p1");
   });
 });

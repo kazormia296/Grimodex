@@ -25,7 +25,6 @@ import {
   buildPlotLaneModel,
   computeLaneDragTargets,
   LANE_HEIGHT,
-  type PlotLaneModel,
 } from "@/features/plot-threads/plotThreadLaneModel";
 import { resolveMarkerDrop } from "@/features/plot-threads/plotThreadDnd";
 import { generateKeyBetween, cmpKeys } from "@/features/tree/fractionalIndex";
@@ -33,7 +32,7 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { contrastTextColor } from "@/lib/resolveCodexColors";
 import { fitLabelToWidth } from "./threadLabelFit";
-import type { PlotPhaseType } from "@/db/schema";
+import { PLOT_PHASE_TYPES, type PlotPhaseType } from "@/db/schema";
 import { recordMark } from "@/lib/perfLog";
 import {
   DURATIONS,
@@ -94,6 +93,10 @@ export interface PhasePinData {
   label: string;
   entryName: string;
 }
+
+// ── hover-dim（ヘッダー hover で当該スレッド以外を淡くする）──
+const DIM_OPACITY = 0.28;
+const dimTransition = `opacity ${CSS_DURATIONS.normal} ${CSS_EASINGS.easeOut}`;
 
 /** 軸から何px離れたらY軸ロックを解除するか */
 const AXIS_LOCK_THRESHOLD = 28;
@@ -236,6 +239,29 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     dragActiveRef.current = !!(drag || markerDrag || labelDrag);
 
     const STEP = STEP_BASE * zoom;
+
+    // 段階チップのラベルと幅は phaseType 毎に一定。マーカー/コネクタの render ループ
+    // 内で毎回 t() lookup と幅計算を繰り返さないよう、言語が変わったときだけ再計算する。
+    const phaseChip = useMemo(() => {
+      const m = new Map<PlotPhaseType, { label: string; chipW: number }>();
+      for (const p of PLOT_PHASE_TYPES) {
+        const label = t(`plotThread.phaseType.${p}`, p);
+        m.set(p, { label, chipW: Math.max(28, label.length * CHIP_FONT + 12) });
+      }
+      return m;
+    }, [t]);
+
+    // マーカーの非選択スタイルは全マーカー共通なので共有する（選択中は 1 個だけ
+    // なのでその場で生成してよい）。
+    const markerBaseStyle = useMemo<React.CSSProperties>(
+      () => ({
+        filter: "none",
+        transition: reducedMotion
+          ? undefined
+          : `filter ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
+      }),
+      [reducedMotion],
+    );
 
     // x はシーンの index（後段で xOf() により px 化）。毎 render の再計算を避ける。
     const sceneX = useMemo(() => {
@@ -436,14 +462,26 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     }, [branches]);
 
     // ── hover-dim（ヘッダー hover で当該スレッド以外を淡くする）──
-    const DIM_OPACITY = 0.28;
-    const dimTransition = `opacity ${CSS_DURATIONS.normal} ${CSS_EASINGS.easeOut}`;
+    // スタイルは lit / dim の 2 値しかないので共有オブジェクトを使い回す
+    // （レーン/コネクタ数 × 毎 render の新規オブジェクト生成を避ける）。
+    const dimStyles = useMemo(
+      () => ({
+        lit: {
+          opacity: 1,
+          transition: reducedMotion ? undefined : dimTransition,
+        } as React.CSSProperties,
+        dim: {
+          opacity: DIM_OPACITY,
+          transition: reducedMotion ? undefined : dimTransition,
+        } as React.CSSProperties,
+      }),
+      [reducedMotion],
+    );
     /** スレッド単位の dim スタイル（hover 中の非対象を淡くしアニメーション）。 */
-    const threadDimStyle = (threadId: string): React.CSSProperties => ({
-      opacity:
-        hoveredThreadId && hoveredThreadId !== threadId ? DIM_OPACITY : 1,
-      transition: reducedMotion ? undefined : dimTransition,
-    });
+    const threadDimStyle = (threadId: string): React.CSSProperties =>
+      hoveredThreadId && hoveredThreadId !== threadId
+        ? dimStyles.dim
+        : dimStyles.lit;
     const branchEnds = useMemo(() => {
       const m = new Map<string, { from: string; to: string }>();
       for (const b of branches)
@@ -462,21 +500,14 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
       connId: string,
       connColor: string | null,
     ): React.CSSProperties => {
-      if (!hoveredThreadId)
-        return {
-          opacity: 1,
-          transition: reducedMotion ? undefined : dimTransition,
-        };
+      if (!hoveredThreadId) return dimStyles.lit;
       const ends = branchEnds.get(connId);
       const hoveredColor = threadColorById.get(hoveredThreadId) ?? null;
       const lit =
         !!ends &&
         (ends.from === hoveredThreadId ||
           (ends.to === hoveredThreadId && connColor === hoveredColor));
-      return {
-        opacity: lit ? 1 : DIM_OPACITY,
-        transition: reducedMotion ? undefined : dimTransition,
-      };
+      return lit ? dimStyles.lit : dimStyles.dim;
     };
 
     // ── マーカー追加のスケールイン検出（前回 render に無かった linkId だけ animate）──
@@ -513,16 +544,19 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         ? padLeft + visibleForWidth * STEP * 2 + PAD_RIGHT
         : padLeft + scenes.length * STEP + PAD_RIGHT;
 
-    function xOf(i: number): number {
-      if (i >= scheduledCount) {
-        // Unscheduled: place below in a separate lane at same x step
-        return padLeft + (i - scheduledCount) * STEP;
-      }
-      if (weights && weights.length > i) {
-        return padLeft + weights[i] * (visibleForWidth * STEP * 2);
-      }
-      return padLeft + i * STEP;
-    }
+    const xOf = useCallback(
+      (i: number): number => {
+        if (i >= scheduledCount) {
+          // Unscheduled: place below in a separate lane at same x step
+          return padLeft + (i - scheduledCount) * STEP;
+        }
+        if (weights && weights.length > i) {
+          return padLeft + weights[i] * (visibleForWidth * STEP * 2);
+        }
+        return padLeft + i * STEP;
+      },
+      [scheduledCount, padLeft, STEP, weights, visibleForWidth],
+    );
 
     function yOf(i: number): number {
       return i >= scheduledCount ? UNSCHEDULED_Y : LANE_Y;
@@ -556,22 +590,183 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
     // モデルへ差し替える（帯・コネクタが追従＝ライブ再計算）。nearestSceneIndex /
     // scheduledCount に依存するためここで適用する。ラベルドラッグ override 中
     // （laneModel !== homeLaneModel）は両者排他なので行わない。
+    // ドロップ先の解決（resolveMarkerDrop）は軽いので毎 render 行い、高価な
+    // buildPlotLaneModel の再構築は解決結果（離散値）が変わったときだけ行う
+    // （mousemove 毎のフルレーン再構築を避ける）。判定は commitMarkerDrop と同一。
+    const markerDropDesc = (() => {
+      if (!markerDrag?.moved) return null;
+      const dropCol = nearestSceneIndex(markerDrag.currentX);
+      const dropNodeId = dropCol >= 0 ? scenes[dropCol]?.id : undefined;
+      if (!dropNodeId) return null;
+      const action = resolveMarkerDrop({
+        dropY: markerDrag.currentY,
+        sourceThreadId: markerDrag.threadId,
+        nodeId: dropNodeId,
+        columnSlots: homeLaneModel.lanes.map((l) => ({
+          threadId: l.thread.id,
+          y: l.yByColumn.get(dropCol) ?? l.y,
+        })),
+      });
+      if (action.type === "none") return null;
+      return {
+        linkId: markerDrag.linkId,
+        threadId: markerDrag.threadId,
+        nodeId: markerDrag.nodeId,
+        action,
+      };
+    })();
+    // プレビュー再構築のキー。ドラッグ座標そのものではなく解決結果で比較する。
+    const markerDropKey = markerDropDesc
+      ? [
+          markerDropDesc.linkId,
+          markerDropDesc.threadId,
+          markerDropDesc.nodeId,
+          markerDropDesc.action.type,
+          markerDropDesc.action.type === "move-scene"
+            ? markerDropDesc.action.nodeId
+            : `${markerDropDesc.action.fromThreadId}>${markerDropDesc.action.toThreadId}@${markerDropDesc.action.atNodeId}:${markerDropDesc.action.kind}`,
+        ].join("|")
+      : null;
+    const markerDropDescRef = useRef(markerDropDesc);
+    markerDropDescRef.current = markerDropDesc;
+    /**
+     * マーカードラッグ中の「ライブ・プレビュー」レーンモデル。ドラッグ中マーカーを
+     * 解決済みドロップ先へ移したリンク配列＋追従/新規エッジで buildPlotLaneModel を
+     * 組み直す。解決不能（none / 列外）なら null（呼び出し側は homeLaneModel に
+     * フォールバック）。desc の実体は ref から読み、markerDropKey に離散化して比較する。
+     */
+    const markerDragModel = useMemo(() => {
+      const d = markerDropDescRef.current;
+      if (!d) return null;
+      const { action } = d;
+      const newThread =
+        action.type === "branch" ? action.toThreadId : d.threadId;
+      const newScene =
+        action.type === "move-scene" ? action.nodeId : action.atNodeId;
+      const crossThread = newThread !== d.threadId;
+      // ドラッグ中マーカーを移動先へ。
+      const previewLinks = links.map((l) =>
+        l.id === d.linkId ? { ...l, threadId: newThread, nodeId: newScene } : l,
+      );
+      // 既存アンカー（to===自スレッド && at===開始シーン）は追従。自己参照は落とす。
+      const anchored = branches.filter(
+        (b) => b.atNodeId === d.nodeId && b.toThreadId === d.threadId,
+      );
+      let previewBranches = branches;
+      if (anchored.length > 0) {
+        previewBranches = branches
+          .map((e) => {
+            if (!(e.atNodeId === d.nodeId && e.toThreadId === d.threadId))
+              return e;
+            const resTo = crossThread ? newThread : e.toThreadId;
+            if (e.fromThreadId === resTo) return null; // 自己参照
+            return crossThread
+              ? { ...e, toThreadId: newThread, atNodeId: newScene }
+              : { ...e, atNodeId: newScene };
+          })
+          .filter((b): b is (typeof branches)[number] => b !== null);
+      } else if (action.type === "branch" && crossThread) {
+        // 別スレッドへ → 新規 branch/merge のコネクタをプレビュー表示（重複時は出さない）。
+        const isDup = branches.some(
+          (b) =>
+            b.fromThreadId === action.fromThreadId &&
+            b.toThreadId === action.toThreadId &&
+            b.atNodeId === action.atNodeId &&
+            b.kind === action.kind,
+        );
+        if (!isDup)
+          previewBranches = [
+            ...branches,
+            {
+              id: "__preview_branch__",
+              projectId: "",
+              fromThreadId: action.fromThreadId,
+              toThreadId: action.toThreadId,
+              atNodeId: action.atNodeId,
+              kind: action.kind,
+              createdAt: "",
+              updatedAt: "",
+            },
+          ];
+      }
+      return buildPlotLaneModel({
+        threads,
+        links: previewLinks,
+        sceneX,
+        laneTop: threadsTop,
+        branches: previewBranches,
+        scheduledCount: scheduledCountForLanes,
+        subwaySort: plotSubwaySort,
+      });
+      // markerDropKey は ref 経由で読む desc（毎 mousemove で識別子が変わる）を
+      // 離散値へ縮約した再計算キー。本文では未使用だが意図的に依存に含める。
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+      markerDropKey,
+      threads,
+      links,
+      branches,
+      sceneX,
+      threadsTop,
+      scheduledCountForLanes,
+      plotSubwaySort,
+    ]);
     if (markerDrag?.moved && laneModel === homeLaneModel) {
-      laneModel = buildMarkerDragModel(markerDrag) ?? laneModel;
+      laneModel = markerDragModel ?? laneModel;
     }
 
     // from 列にチップ（マーカー）があるコネクタは、ランプ根本がそのチップの下に隠れる。
     // スレッドごとに「列 → phaseType」を引けるようにして、ランプ始点をチップ幅ぶん左へ
-    // 逃がす判定に使う（描画は下の connectors マップ）。
-    const markerPhaseByThreadCol = new Map<
-      string,
-      Map<number, PlotPhaseType>
-    >();
-    for (const lane of laneModel.lanes) {
-      const cols = new Map<number, PlotPhaseType>();
-      for (const mk of lane.markers) cols.set(mk.x, mk.phaseType);
-      markerPhaseByThreadCol.set(lane.thread.id, cols);
-    }
+    // 逃がす判定に使う（描画は下の connectors マップ）。レーン構造が変わったときだけ
+    // 再構築する（毎 render の O(lanes×markers) を避ける）。
+    const markerPhaseByThreadCol = useMemo(() => {
+      const byThread = new Map<string, Map<number, PlotPhaseType>>();
+      for (const lane of laneModel.lanes) {
+        const cols = new Map<number, PlotPhaseType>();
+        for (const mk of lane.markers) cols.set(mk.x, mk.phaseType);
+        byThread.set(lane.thread.id, cols);
+      }
+      return byThread;
+    }, [laneModel.lanes]);
+
+    // 分岐 / 合流コネクタのジオメトリ（ランプの逃がし量と path 文字列）。hover 等
+    // コネクタと無関係な再 render での再構築を避け、モデル / ズームが変わった
+    // ときだけ組み直す（文字列構築とチップ幅判定を render ループから外す）。
+    // 描画されない状態（scenes モード / reading 以外）では組み立てない。
+    const connectorGeometry = useMemo(() => {
+      if (!showThreads || axisMode !== "reading") return [];
+      return laneModel.connectors.map((c) => {
+        const X = xOf(c.x);
+        // from 列に拡大チップ（マーカー）があると、ランプ根本がチップ下に隠れる。
+        // その時はランプ始点を「チップ左端 - 余白」まで左へ逃がして根本を見せる。
+        // チップが無い（帯のまま渡る）/縮小時（点）は従来どおり CONNECTOR_RAMP。
+        const fromPhase = markerPhaseByThreadCol.get(c.fromThreadId)?.get(c.x);
+        let ramp = CONNECTOR_RAMP;
+        if (fromPhase && STEP >= CHIP_MIN_STEP) {
+          const fromChipW = phaseChip.get(fromPhase)?.chipW ?? 28;
+          // 余白（根本の出っ張り）は倍率に応じてスケールさせる。チップ幅は
+          // ズーム非依存の固定 px なので chipW/2（チップ下に隠れない最低限）は
+          // 常に確保し、追加の逃がし量だけ zoom 倍にする（拡大ほど大きく逃がす／
+          // チップ表示下限の低ズームでは前の列へ食い込みにくくする）。
+          ramp = Math.max(
+            CONNECTOR_RAMP,
+            fromChipW / 2 + CONNECTOR_RAMP_MARGIN * zoom,
+          );
+        }
+        // from レーン(X-ramp) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
+        const d = `M ${X - ramp} ${c.fromY} C ${X - ramp * 0.4} ${c.fromY}, ${X - ramp * 0.6} ${c.toY}, ${X} ${c.toY}`;
+        return { ...c, d };
+      });
+    }, [
+      showThreads,
+      axisMode,
+      laneModel.connectors,
+      markerPhaseByThreadCol,
+      phaseChip,
+      xOf,
+      STEP,
+      zoom,
+    ]);
 
     function handleLaneDoubleClick(
       e: React.MouseEvent<SVGRectElement>,
@@ -717,87 +912,6 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
         currentX: svgX,
         currentY: svgY,
         moved: false,
-      });
-    }
-
-    /**
-     * マーカードラッグ中の「ライブ・プレビュー」レーンモデルを作る。ドロップ先を
-     * resolveMarkerDrop で解決し、ドラッグ中マーカーをその位置へ移したリンク配列＋
-     * 追従/新規エッジで buildPlotLaneModel を組み直す（commitMarkerDrop と同じ判定）。
-     * 解決不能（none / 列外）なら null（呼び出し側は homeLaneModel にフォールバック）。
-     */
-    function buildMarkerDragModel(d: MarkerDragState): PlotLaneModel | null {
-      const dropCol = nearestSceneIndex(d.currentX);
-      const dropNodeId = dropCol >= 0 ? scenes[dropCol]?.id : undefined;
-      if (!dropNodeId) return null;
-      const action = resolveMarkerDrop({
-        dropY: d.currentY,
-        sourceThreadId: d.threadId,
-        nodeId: dropNodeId,
-        columnSlots: homeLaneModel.lanes.map((l) => ({
-          threadId: l.thread.id,
-          y: l.yByColumn.get(dropCol) ?? l.y,
-        })),
-      });
-      if (action.type === "none") return null;
-      const newThread =
-        action.type === "branch" ? action.toThreadId : d.threadId;
-      const newScene =
-        action.type === "move-scene" ? action.nodeId : action.atNodeId;
-      const crossThread = newThread !== d.threadId;
-      // ドラッグ中マーカーを移動先へ。
-      const previewLinks = links.map((l) =>
-        l.id === d.linkId ? { ...l, threadId: newThread, nodeId: newScene } : l,
-      );
-      // 既存アンカー（to===自スレッド && at===開始シーン）は追従。自己参照は落とす。
-      const anchored = branches.filter(
-        (b) => b.atNodeId === d.nodeId && b.toThreadId === d.threadId,
-      );
-      let previewBranches = branches;
-      if (anchored.length > 0) {
-        previewBranches = branches
-          .map((e) => {
-            if (!(e.atNodeId === d.nodeId && e.toThreadId === d.threadId))
-              return e;
-            const resTo = crossThread ? newThread : e.toThreadId;
-            if (e.fromThreadId === resTo) return null; // 自己参照
-            return crossThread
-              ? { ...e, toThreadId: newThread, atNodeId: newScene }
-              : { ...e, atNodeId: newScene };
-          })
-          .filter((b): b is (typeof branches)[number] => b !== null);
-      } else if (action.type === "branch" && crossThread) {
-        // 別スレッドへ → 新規 branch/merge のコネクタをプレビュー表示（重複時は出さない）。
-        const isDup = branches.some(
-          (b) =>
-            b.fromThreadId === action.fromThreadId &&
-            b.toThreadId === action.toThreadId &&
-            b.atNodeId === action.atNodeId &&
-            b.kind === action.kind,
-        );
-        if (!isDup)
-          previewBranches = [
-            ...branches,
-            {
-              id: "__preview_branch__",
-              projectId: "",
-              fromThreadId: action.fromThreadId,
-              toThreadId: action.toThreadId,
-              atNodeId: action.atNodeId,
-              kind: action.kind,
-              createdAt: "",
-              updatedAt: "",
-            },
-          ];
-      }
-      return buildPlotLaneModel({
-        threads,
-        links: previewLinks,
-        sceneX,
-        laneTop: threadsTop,
-        branches: previewBranches,
-        scheduledCount: scheduledCountForLanes,
-        subwaySort: plotSubwaySort,
       });
     }
 
@@ -1817,53 +1931,23 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                 butt 端どうしの縦シームでなめらかに繋がる。線は通常の帯と同じ太さ・色・不透過。 */}
             {showThreads &&
               axisMode === "reading" &&
-              laneModel.connectors.map((c) => {
-                const X = xOf(c.x);
-                // from 列に拡大チップ（マーカー）があると、ランプ根本がチップ下に隠れる。
-                // その時はランプ始点を「チップ左端 - 余白」まで左へ逃がして根本を見せる。
-                // チップが無い（帯のまま渡る）/縮小時（点）は従来どおり CONNECTOR_RAMP。
-                const fromPhase = markerPhaseByThreadCol
-                  .get(c.fromThreadId)
-                  ?.get(c.x);
-                let ramp = CONNECTOR_RAMP;
-                if (fromPhase && STEP >= CHIP_MIN_STEP) {
-                  const fromLabel = t(
-                    `plotThread.phaseType.${fromPhase}`,
-                    fromPhase,
-                  );
-                  const fromChipW = Math.max(
-                    28,
-                    fromLabel.length * CHIP_FONT + 12,
-                  );
-                  // 余白（根本の出っ張り）は倍率に応じてスケールさせる。チップ幅は
-                  // ズーム非依存の固定 px なので chipW/2（チップ下に隠れない最低限）は
-                  // 常に確保し、追加の逃がし量だけ zoom 倍にする（拡大ほど大きく逃がす／
-                  // チップ表示下限の低ズームでは前の列へ食い込みにくくする）。
-                  ramp = Math.max(
-                    CONNECTOR_RAMP,
-                    fromChipW / 2 + CONNECTOR_RAMP_MARGIN * zoom,
-                  );
-                }
-                // from レーン(X-ramp) から to レーン(X=マーカー) へ手前から斜めに流れ込む。
-                const d = `M ${X - ramp} ${c.fromY} C ${X - ramp * 0.4} ${c.fromY}, ${X - ramp * 0.6} ${c.toY}, ${X} ${c.toY}`;
-                return (
-                  <path
-                    key={`conn-${c.id}`}
-                    data-testid="plot-thread-connector"
-                    data-kind={c.kind}
-                    d={d}
-                    fill="none"
-                    stroke={c.color ?? "var(--primary)"}
-                    // 線(帯)と同じ subway 路線幅（TRACK_WIDTH）。
-                    strokeWidth={TRACK_WIDTH}
-                    // 不透過・butt 端: 帯の butt 端と縦シームで揃え、重なり混色を避ける。
-                    strokeLinecap="butt"
-                    strokeLinejoin="round"
-                    pointerEvents="none"
-                    style={connectorDimStyle(c.id, c.color)}
-                  />
-                );
-              })}
+              connectorGeometry.map((c) => (
+                <path
+                  key={`conn-${c.id}`}
+                  data-testid="plot-thread-connector"
+                  data-kind={c.kind}
+                  d={c.d}
+                  fill="none"
+                  stroke={c.color ?? "var(--primary)"}
+                  // 線(帯)と同じ subway 路線幅（TRACK_WIDTH）。
+                  strokeWidth={TRACK_WIDTH}
+                  // 不透過・butt 端: 帯の butt 端と縦シームで揃え、重なり混色を避ける。
+                  strokeLinecap="butt"
+                  strokeLinejoin="round"
+                  pointerEvents="none"
+                  style={connectorDimStyle(c.id, c.color)}
+                />
+              ))}
 
             {/* スレッドマーカー（separated）。帯・コネクタより後＝最前面に描く
                 （線がマーカーへ被らないよう描画順序を最後にする）。ドラッグ / 右クリック /
@@ -1875,11 +1959,9 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                   style={threadDimStyle(lane.thread.id)}
                 >
                   {lane.markers.map((mk) => {
-                    const label = t(
-                      `plotThread.phaseType.${mk.phaseType}`,
-                      mk.phaseType,
-                    );
-                    const chipW = Math.max(28, label.length * CHIP_FONT + 12);
+                    const chip = phaseChip.get(mk.phaseType);
+                    const label = chip?.label ?? mk.phaseType;
+                    const chipW = chip?.chipW ?? 28;
                     const cx = xOf(mk.x);
                     const fill = lane.thread.color ?? "var(--primary)";
                     const selected = selectedPlotLinkId === mk.linkId;
@@ -1891,14 +1973,13 @@ export const TimelineViewport = forwardRef<HTMLDivElement, Props>(
                     const markerClass = newMarkerIds.has(mk.linkId)
                       ? "cursor-pointer plot-marker-in"
                       : "cursor-pointer";
-                    const markerStyle: React.CSSProperties = {
-                      filter: selected
-                        ? `drop-shadow(0 0 5px ${fill})`
-                        : "none",
-                      transition: reducedMotion
-                        ? undefined
-                        : `filter ${CSS_DURATIONS.fast} ${CSS_EASINGS.easeOut}`,
-                    };
+                    // 選択中（高々 1 個）だけその場で生成し、残りは共有スタイル。
+                    const markerStyle: React.CSSProperties = selected
+                      ? {
+                          filter: `drop-shadow(0 0 5px ${fill})`,
+                          transition: markerBaseStyle.transition,
+                        }
+                      : markerBaseStyle;
                     const onDown = (e: React.MouseEvent<SVGElement>) =>
                       handleMarkerMouseDown(
                         e,

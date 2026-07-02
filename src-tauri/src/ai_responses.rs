@@ -104,11 +104,11 @@ pub fn build_chat_input(messages: &[(&str, &str)]) -> (String, Vec<Value>) {
 /// `call_id` は parse 時に `output[].function_call.call_id` を `ToolUse.id` に写したもの
 /// で、function_call と function_call_output のペアリングに使われる。
 pub fn build_agent_input(messages: &[AgentMessage]) -> (String, Vec<Value>) {
-    let mut instructions: Vec<String> = Vec::new();
+    let mut instructions: Vec<&str> = Vec::new();
     let mut input: Vec<Value> = Vec::new();
     for msg in messages {
         match msg {
-            AgentMessage::System { content } => instructions.push(content.clone()),
+            AgentMessage::System { content } => instructions.push(content.as_str()),
             AgentMessage::User { content } => {
                 input.push(json!({ "role": "user", "content": content }));
             }
@@ -459,12 +459,13 @@ fn extract_first_output_text(result: &Value) -> anyhow::Result<String> {
 // ---------------------------------------------------------------------------
 
 /// Responses SSE データイベントを解釈した結果(送出すべきアクション)。
+/// delta はパース済み JSON からの借用 (&str) — 毎 delta の String 割当を避ける。
 #[derive(Debug, PartialEq)]
-pub enum StreamAction {
+pub enum StreamAction<'a> {
     /// 本文 delta(block_type=text で emit)。
-    TextDelta(String),
+    TextDelta(&'a str),
     /// 推論要約 delta(block_type=thinking で emit)。
-    ThinkingDelta(String),
+    ThinkingDelta(&'a str),
     /// 最終イベント。usage と終了理由を確定する。
     Completed {
         input_tokens: Option<u64>,
@@ -479,14 +480,14 @@ pub enum StreamAction {
 }
 
 /// 1 つの SSE データ JSON(`{type, ...}`)を `StreamAction` に解釈する。
-pub fn interpret_stream_event(json: &Value) -> StreamAction {
+pub fn interpret_stream_event(json: &Value) -> StreamAction<'_> {
     match json["type"].as_str() {
         Some("response.output_text.delta") => {
             let d = json["delta"].as_str().unwrap_or("");
             if d.is_empty() {
                 StreamAction::Ignore
             } else {
-                StreamAction::TextDelta(d.to_string())
+                StreamAction::TextDelta(d)
             }
         }
         Some("response.reasoning_summary_text.delta") => {
@@ -494,7 +495,7 @@ pub fn interpret_stream_event(json: &Value) -> StreamAction {
             if d.is_empty() {
                 StreamAction::Ignore
             } else {
-                StreamAction::ThinkingDelta(d.to_string())
+                StreamAction::ThinkingDelta(d)
             }
         }
         Some("response.completed") | Some("response.incomplete") => {
@@ -532,6 +533,14 @@ pub fn interpret_stream_event(json: &Value) -> StreamAction {
         }
         _ => StreamAction::Ignore,
     }
+}
+
+/// stream-chunk emit のペイロード。毎 delta に `json!` で Value ツリーを組み立てず、
+/// 借用 &str のまま直列化する (preserve_order 下の `json!` と wire 形は同一)。
+#[derive(Clone, serde::Serialize)]
+struct StreamChunkPayload<'a> {
+    delta: &'a str,
+    block_type: &'static str,
 }
 
 // ---------------------------------------------------------------------------
@@ -805,13 +814,21 @@ pub async fn send_stream(
                 };
                 match interpret_stream_event(&json) {
                     StreamAction::TextDelta(d) => {
-                        let _ = app_handle
-                            .emit(&chunk_event, json!({ "delta": d, "block_type": "text" }));
+                        let _ = app_handle.emit(
+                            &chunk_event,
+                            StreamChunkPayload {
+                                delta: d,
+                                block_type: "text",
+                            },
+                        );
                     }
                     StreamAction::ThinkingDelta(d) => {
                         let _ = app_handle.emit(
                             &chunk_event,
-                            json!({ "delta": d, "block_type": "thinking" }),
+                            StreamChunkPayload {
+                                delta: d,
+                                block_type: "thinking",
+                            },
                         );
                     }
                     StreamAction::Completed {
@@ -1390,10 +1407,7 @@ mod tests {
     #[test]
     fn interpret_stream_event_text_delta() {
         let ev = json!({ "type": "response.output_text.delta", "delta": "Hi" });
-        assert_eq!(
-            interpret_stream_event(&ev),
-            StreamAction::TextDelta("Hi".to_string())
-        );
+        assert_eq!(interpret_stream_event(&ev), StreamAction::TextDelta("Hi"));
         // 空 delta は Ignore。
         let empty = json!({ "type": "response.output_text.delta", "delta": "" });
         assert_eq!(interpret_stream_event(&empty), StreamAction::Ignore);
@@ -1404,8 +1418,19 @@ mod tests {
         let ev = json!({ "type": "response.reasoning_summary_text.delta", "delta": "mm" });
         assert_eq!(
             interpret_stream_event(&ev),
-            StreamAction::ThinkingDelta("mm".to_string())
+            StreamAction::ThinkingDelta("mm")
         );
+    }
+
+    #[test]
+    fn stream_chunk_payload_matches_legacy_json_shape() {
+        // FE 契約: 従来 json!({delta, block_type}) で emit していた形と同一であること。
+        let payload = StreamChunkPayload {
+            delta: "Hi",
+            block_type: "text",
+        };
+        let v = serde_json::to_value(&payload).unwrap();
+        assert_eq!(v, json!({ "delta": "Hi", "block_type": "text" }));
     }
 
     #[test]

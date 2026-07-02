@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { render, fireEvent } from "@testing-library/react";
 import {
   EventMarker,
   type MarkerEvent,
@@ -36,6 +36,7 @@ function renderMarker(props: Partial<EventMarkerProps> = {}) {
       resizable={props.resizable}
       cursor={props.cursor}
       dragOffset={props.dragOffset}
+      onHover={props.onHover}
       onSelect={props.onSelect ?? (() => {})}
     />,
   );
@@ -306,11 +307,28 @@ describe("EventMarker (DOM token)", () => {
     expect(el.getAttribute("title")).toBe("出来事A");
   });
 
-  it("クリックで onSelect が発火する", () => {
+  it("クリックで onSelect が event.id 付きで発火する", () => {
     const onSelect = vi.fn();
     const { container } = renderMarker({ onSelect });
     (container.querySelector('[data-event-id="m1"]') as HTMLElement).click();
     expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0][0]).toBe("m1");
+  });
+
+  it("onHover は event.id 付きで enter=true / leave=false を通知する", () => {
+    const onHover = vi.fn();
+    const { container } = renderMarker({ onHover });
+    const el = container.querySelector('[data-event-id="m1"]') as HTMLElement;
+    fireEvent.mouseOver(el);
+    expect(onHover).toHaveBeenLastCalledWith("m1", true);
+    fireEvent.mouseOut(el);
+    expect(onHover).toHaveBeenLastCalledWith("m1", false);
+  });
+
+  it("EventMarker は memo 化されている（親のドラッグ/ホバー再レンダーで全マーカー再描画しない gate）", () => {
+    expect((EventMarker as { $$typeof?: symbol }).$$typeof).toBe(
+      Symbol.for("react.memo"),
+    );
   });
 });
 
