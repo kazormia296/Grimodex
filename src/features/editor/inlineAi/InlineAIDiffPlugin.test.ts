@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { EditorState } from "@tiptap/pm/state";
+import { EditorState, type Transaction } from "@tiptap/pm/state";
 import { schema } from "prosemirror-schema-basic";
 import { DecorationSet } from "@tiptap/pm/view";
+import { history, undo } from "@tiptap/pm/history";
 import type { Editor } from "@tiptap/core";
 
 import {
@@ -265,5 +266,83 @@ describe("InlineAIDiffPlugin: diffShown 編集ロック (B1)", () => {
     useInlineAiStore.getState().finishGeneration("m");
     const next = state.apply(state.tr.insertText("X", 1));
     expect(next.doc.textContent).toContain("X");
+  });
+});
+
+// pending guard の二重 undo 系統ガード（アーキ監査 #12 の回帰テスト）。
+//
+// 背景: App.tsx の global undo ハンドラはフォーカスが ProseMirror 内のとき
+// early return し（App.tsx:540）、Ctrl+Z を TipTap 内蔵 undo（prosemirror-history）
+// に委ねる。この内蔵 undo は globalHistoryStore の replayGuard を経由しないため、
+// 「pending 中に内蔵 undo が AI diff 下の doc を巻き戻せてしまうのでは」という
+// 疑義があった。実際には prosemirror-history の undo transaction は
+// `setMeta(historyKey, …)` を立てるだけで `addToHistory:false` を立てない
+// （prosemirror-history 1.5 histTransaction）。そのため diffShown/generating/error
+// 中は InlineAIDiffPlugin.filterTransaction が「addToHistory:false でない
+// docChanged tr」として握りつぶす。この不変条件を明示的に gate する
+// （将来 filterTransaction が history tr を通す方向へ変わると穴が開くため）。
+describe("InlineAIDiffPlugin: pending 中の内蔵 undo ガード (#12)", () => {
+  beforeEach(() => {
+    useInlineAiStore.getState().reset();
+  });
+
+  function makeHistoryState(text: string, owner?: Editor): EditorState {
+    return EditorState.create({
+      doc: schema.nodes.doc.create({}, [
+        schema.nodes.paragraph.create({}, [schema.text(text)]),
+      ]),
+      // 実アプリの TipTap StarterKit History 相当（@tiptap/pm/history）。
+      plugins: [history(), createInlineAIDiffPlugin(owner)],
+    });
+  }
+
+  function enterDiffShown(owner: Editor) {
+    useInlineAiStore.getState().startGeneration({
+      commandId: "continue",
+      mode: "insert",
+      originalRange: null,
+      originalText: "",
+      insertPos: 12,
+      abortController: new AbortController(),
+      activeEditor: owner,
+    });
+    useInlineAiStore.getState().setGeneratedRange({ from: 12, to: 13 });
+    useInlineAiStore.getState().finishGeneration("m");
+  }
+
+  /** undo コマンドを filterTransaction 経由で適用し、結果 state を返す。 */
+  function applyUndo(state: EditorState): EditorState {
+    let out = state;
+    // state.apply は applyTransaction 経由で filterTransaction を通す
+    // （既存テストの入力握りつぶしと同じ経路）。
+    undo(state, (tr: Transaction) => {
+      out = state.apply(tr);
+    });
+    return out;
+  }
+
+  it("diffShown 中の owner エディタの内蔵 undo は握りつぶされ doc を巻き戻さない", () => {
+    // ユーザー編集を 1 つ履歴に積む（"hello world" → "hello worldX"）。
+    const base = makeHistoryState("hello world", OWNER_A);
+    let state = base.apply(base.tr.insertText("X", 12));
+    expect(state.doc.textContent).toBe("hello worldX");
+
+    enterDiffShown(OWNER_A);
+    expect(useInlineAiStore.getState().status).toBe("diffShown");
+
+    state = applyUndo(state);
+    // 握りつぶされていれば doc は不変（AI diff 下の本文が保護される）。
+    expect(state.doc.textContent).toBe("hello worldX");
+  });
+
+  it("idle 復帰後は同じ内蔵 undo が通る（ガードが status 依存であることの対照）", () => {
+    const base = makeHistoryState("hello world", OWNER_A);
+    let state = base.apply(base.tr.insertText("X", 12));
+    enterDiffShown(OWNER_A);
+    useInlineAiStore.getState().reset(); // accept/reject 相当で idle へ
+
+    state = applyUndo(state);
+    // ガードが外れているので undo が適用され "X" が消える。
+    expect(state.doc.textContent).toBe("hello world");
   });
 });

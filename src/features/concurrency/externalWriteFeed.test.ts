@@ -5,6 +5,9 @@ const h = vi.hoisted(() => ({
   loadCodex: vi.fn().mockResolvedValue(undefined),
   loadSnippets: vi.fn().mockResolvedValue(undefined),
   loadForeshadows: vi.fn().mockResolvedValue(undefined),
+  bumpChronicle: vi.fn(),
+  loadPlot: vi.fn().mockResolvedValue(undefined),
+  loadLabels: vi.fn().mockResolvedValue(undefined),
   dirtyTabs: new Set<string>(),
 }));
 
@@ -37,6 +40,24 @@ vi.mock("@/features/editor/tabStore", () => ({
 vi.mock("@/features/foreshadow/foreshadowStore", () => ({
   useForeshadowStore: {
     getState: () => ({ load: h.loadForeshadows }),
+  },
+}));
+
+vi.mock("@/features/chronicle/chronicleStore", () => ({
+  useChronicleStore: {
+    getState: () => ({ bumpRevision: h.bumpChronicle }),
+  },
+}));
+
+vi.mock("@/features/plot-threads/plotThreadStore", () => ({
+  usePlotThreadStore: {
+    getState: () => ({ load: h.loadPlot }),
+  },
+}));
+
+vi.mock("@/features/labels/labelStore", () => ({
+  useLabelStore: {
+    getState: () => ({ load: h.loadLabels }),
   },
 }));
 
@@ -80,6 +101,10 @@ describe("externalWriteFeed fan-out", () => {
     h.reloadTree.mockClear();
     h.loadCodex.mockClear();
     h.loadSnippets.mockClear();
+    h.loadForeshadows.mockClear();
+    h.bumpChronicle.mockClear();
+    h.loadPlot.mockClear();
+    h.loadLabels.mockClear();
     h.dirtyTabs = new Set();
     useExternalWriteStore.getState().clear();
     useInlineAiStore.getState().reset();
@@ -108,6 +133,37 @@ describe("externalWriteFeed fan-out", () => {
       "p1",
     );
     expect(h.loadForeshadows).toHaveBeenCalledWith("p1");
+  });
+
+  it("bumps chronicle revision on event (chronicle) domain events", async () => {
+    await processExternalEventsForTest(
+      [
+        ev({
+          domain: "event",
+          opType: "event.create",
+          entityType: "event",
+          entityId: "e1",
+        }),
+      ],
+      "p1",
+    );
+    expect(h.bumpChronicle).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads plot threads on plot domain events", async () => {
+    await processExternalEventsForTest(
+      [ev({ domain: "plot", opType: "plot.update" })],
+      "p1",
+    );
+    expect(h.loadPlot).toHaveBeenCalledWith("p1");
+  });
+
+  it("reloads labels on labels domain events", async () => {
+    await processExternalEventsForTest(
+      [ev({ domain: "labels", opType: "label.create" })],
+      "p1",
+    );
+    expect(h.loadLabels).toHaveBeenCalledWith("p1");
   });
 
   it("pushes conflict for dirty editor scene", async () => {

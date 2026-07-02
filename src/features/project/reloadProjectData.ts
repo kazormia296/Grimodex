@@ -23,6 +23,11 @@ import { useMapStore } from "@/features/map/mapStore";
 import { usePromptLibraryStore } from "@/features/prompt-library/promptLibraryStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
+import { useChronicleStore } from "@/features/chronicle/chronicleStore";
+import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { useEditorStore } from "@/features/editor/editorStore";
+import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
+import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { withProjectLoad } from "./projectLoadGate";
 import { initializeExternalMounts } from "@/features/external-mount/mountManager";
 
@@ -129,6 +134,21 @@ export async function reloadProjectData(projectId: string): Promise<void> {
     // Timeline の選択（シーン + プロットのマーカー/スレッド）を破棄。残すと
     // 新 Project でインスペクタが旧プロジェクトの選択を指したまま開く。
     useTimelineStore.getState().clearSelection();
+    // Chronicle も同様に ephemeral 選択を破棄。従来 chronicle だけ clearSelection
+    // 自体が無く、旧プロジェクトの selectedEventId が新プロジェクトの
+    // renderEvents に stale 一致して誤選択・クロスプロジェクト参照を生んでいた。
+    useChronicleStore.getState().clearSelection();
+    // エディタ関連の module/store 参照を破棄。これらは reloadProjectData の手動
+    // 列挙から漏れており、旧プロジェクトのエディタ参照や live content、inline-AI
+    // pending が新プロジェクトへ持ち越されると、Chat/Snippet 挿入や Accept/Reject
+    // が別プロジェクトのエディタに向かう / 同 id 衝突時に旧本文が subscribe
+    // コールバックへ渡る余地があった。
+    useInlineAiStore.getState().reset();
+    useEditorStore.getState().setEditor(null);
+    useFocusedContentEditorStore.getState().setCurrent(null, null);
+    // sceneId キーの live content（複数ペイン同期用の in-memory TipTap JSON）を
+    // 全消去。clearContent は個別 id 削除のみで全消去手段が無かった。
+    useSceneContentStore.setState({ liveContent: {} });
     useBarStore.getState().reset();
     usePanelStore.getState().reset();
     useResultsPanelStore.getState().reset();

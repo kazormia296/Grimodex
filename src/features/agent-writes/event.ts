@@ -6,6 +6,7 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
 import { scheduleEventIndex } from "@/features/semantic-search/scheduler";
+import { markCodexContentAsAi } from "./codex";
 import { applyUndoJournal } from "./undoJournal";
 import type { EventKind, EventPrecision, EventGranularity } from "@/db/schema";
 
@@ -115,12 +116,22 @@ export async function agentCreateEvent(
   input: AgentEventCreateInput,
   opts?: TrackedWriteOpts,
 ): Promise<{ id: string; title: string }> {
+  // AI/agent 経路では detail（リッチテキスト = PM JSON）に AI 帰属マークを
+  // 焼き込む。codex/snippet 経路と同じ markCodexContentAsAi を再利用し、
+  // AI が書いた年表の詳細本文が CodexContentEditor 上で AI 色に着色される
+  // ようにする。手動 UI 編集（surface="manual"）の detail は既にエディタが
+  // 人間帰属マークを持つため対象外（markCodexContentAsAi は既存 authorship
+  // マークを冪等にスキップするが、二重処理を避けるため明示ガードする）。
+  const detail =
+    input.detail && opts?.surface !== "manual"
+      ? markCodexContentAsAi(input.detail)
+      : (input.detail ?? null);
   const result = await trackedEventWrite(
     "agent_event_create",
     {
       title: input.title ?? "",
       note: input.note ?? null,
-      detail: input.detail ?? null,
+      detail,
       ordinal: input.ordinal ?? undefined,
       primaryCodexId: input.primaryCodexId ?? null,
       laneGroup: input.laneGroup ?? null,
@@ -173,6 +184,11 @@ export async function agentUpdateEvent(
   opts?: TrackedWriteOpts,
 ): Promise<void> {
   const { eventId, ...patch } = input;
+  // create と同じ理由で AI 経路の detail 更新に AI 帰属マークを焼き込む
+  // （set-if-present なので detail 未指定の更新は触らない）。
+  if (patch.detail && opts?.surface !== "manual") {
+    patch.detail = markCodexContentAsAi(patch.detail);
+  }
   await trackedEventWrite(
     "agent_event_update",
     { eventId, ...patch },

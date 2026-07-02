@@ -66,6 +66,27 @@ pub struct GlobalSettings {
     /// Matrix panel settings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matrix: Option<serde_json::Value>,
+    /// Chronicle (作中年表) panel settings (zoom, pan/zoom view, showOffpage, locked).
+    /// フロント側は camelCase `chronicle` として read-modify-write する
+    /// (chronicleStore.ts)。ここに宣言が無いと serde が silent drop し、
+    /// 年表ビューの永続化が成立しない (round-trip 欠落)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chronicle: Option<serde_json::Value>,
+    /// Layout schema version (PersistedLayout migration marker).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout_version: Option<u32>,
+    /// Per-panel tool window state (slot / view mode / undock size).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_windows: Option<serde_json::Value>,
+    /// Panel ids that keep a stripe icon across close.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stripe_panel_ids: Option<serde_json::Value>,
+    /// Stripe (left/right/bottom) widths in px.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stripe_sizes: Option<serde_json::Value>,
+    /// Stripe visibility per region.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stripe_visibility: Option<serde_json::Value>,
     /// User-preference settings (cross-workspace): editor visuals, keys, display, data, revision.
     /// Keyed by the same key strings used in app_settings (e.g. "editor.fontFamily").
     #[serde(default)]
@@ -109,6 +130,12 @@ impl Default for GlobalSettings {
             map: None,
             grid: None,
             matrix: None,
+            chronicle: None,
+            layout_version: None,
+            tool_windows: None,
+            stripe_panel_ids: None,
+            stripe_sizes: None,
+            stripe_visibility: None,
             user_preferences: std::collections::HashMap::new(),
             project_defaults: std::collections::HashMap::new(),
             default_ai_policy: None,
@@ -285,6 +312,86 @@ mod tests {
         assert_eq!(tl["zoom"], 2.0);
         assert_eq!(tl["scrollOffset"], 120);
         assert_eq!(tl["display"]["showPhasePins"], true);
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn test_global_settings_preserves_frontend_panel_fields() {
+        // IPC 型契約テスト: FE (chronicleStore.ts / layoutStore.ts) が
+        // read-modify-write で save_global_settings に渡す camelCase フィールドが
+        // serde round-trip で silent drop されないことを保証する。
+        //
+        // 回帰の背景: chronicle フィールドが Rust GlobalSettings に無く
+        // deny_unknown_fields も無いため、FE が {..., chronicle} を送っても
+        // deserialize 時に黙って捨てられ、年表ビュー設定が毎回消えていた。
+        // timeline だけ上に test があり chronicle には無かったことが見落としの
+        // 温床だった。ここでは struct を直接構築せず、FE が実際に送る shape の
+        // JSON を read（=from_str）→ write（=to_string）→ read で往復させ、
+        // struct にフィールドが欠けていれば即座に落ちるようにする。
+        let dir = temp_dir("gs_panel_fields");
+        cleanup(&dir);
+        fs::create_dir_all(&dir).ok();
+        let path = dir.join("settings.json");
+
+        let incoming = serde_json::json!({
+            "recentWorkspaces": [],
+            "lastActiveWorkspace": null,
+            "theme": "system",
+            "uiLanguage": "ja",
+            "uiScale": 100,
+            "showLauncherOnStartup": false,
+            "chronicle": {
+                "zoom": 2.0,
+                "pxPerDay": 12.5,
+                "viewStartDay": 3.0,
+                "locked": true
+            },
+            "toolWindows": { "codex-quick": { "slot": "right" } },
+            "stripePanelIds": ["codex-quick"],
+            "stripeSizes": { "right": 320 },
+            "stripeVisibility": { "right": true },
+            "layoutVersion": 2
+        });
+        fs::write(&path, serde_json::to_string(&incoming).expect("seed json")).expect("seed write");
+
+        // read = serde_json::from_str (FE→Rust)、write = to_string_pretty (Rust→FE)。
+        let loaded = read_global_settings(&path);
+        write_global_settings(&path, &loaded).expect("write");
+        let reloaded = read_global_settings(&path);
+
+        let ch = reloaded
+            .chronicle
+            .clone()
+            .expect("chronicle field must survive roundtrip");
+        assert_eq!(ch["zoom"], 2.0);
+        assert_eq!(ch["locked"], true);
+        assert_eq!(ch["viewStartDay"], 3.0);
+
+        let tw = reloaded
+            .tool_windows
+            .clone()
+            .expect("toolWindows must survive roundtrip");
+        assert_eq!(tw["codex-quick"]["slot"], "right");
+        assert!(
+            reloaded.stripe_panel_ids.is_some(),
+            "stripePanelIds must survive roundtrip"
+        );
+        assert_eq!(
+            reloaded
+                .stripe_sizes
+                .clone()
+                .expect("stripeSizes must survive")["right"],
+            320
+        );
+        assert_eq!(
+            reloaded
+                .stripe_visibility
+                .clone()
+                .expect("stripeVisibility must survive")["right"],
+            true
+        );
+        assert_eq!(reloaded.layout_version, Some(2));
 
         cleanup(&dir);
     }

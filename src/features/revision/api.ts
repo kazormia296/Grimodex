@@ -1,6 +1,12 @@
 import { db } from "@/db/client";
-import { contentVersions, projectSnapshotEntries } from "@/db/schema";
-import { eq, and, desc, sql, inArray } from "drizzle-orm";
+import {
+  contentVersions,
+  projectSnapshotEntries,
+  projectSnapshotTreeNodes,
+  projectSnapshotCodexEntries,
+  projectSnapshotSnippets,
+} from "@/db/schema";
+import { eq, and, desc, sql, inArray, isNotNull } from "drizzle-orm";
 import type { ContentVersion } from "@/db/schema";
 
 export type EntityType = "scene" | "note" | "codex_entry" | "snippet";
@@ -137,12 +143,56 @@ export async function pruneRevisions(
 
   if (deleteIds.length === 0) return;
 
-  // Exclude IDs referenced by project snapshots
-  const protectedRows = await db
-    .select({ versionId: projectSnapshotEntries.versionId })
-    .from(projectSnapshotEntries)
-    .where(inArray(projectSnapshotEntries.versionId, deleteIds));
-  const protectedIds = new Set(protectedRows.map((r) => r.versionId));
+  // Exclude IDs referenced by project snapshots. content_versions rows are
+  // referenced from FOUR places, all ON DELETE RESTRICT in SQL:
+  //   1. project_snapshot_entries.version_id (scene/note/codex/snippet 本文の版)
+  //   2. project_snapshot_tree_nodes.body_version_id
+  //   3. project_snapshot_codex_entries.body_version_id
+  //   4. project_snapshot_snippets.body_version_id
+  // 以前は (1) しか除外しておらず、(2)〜(4) が参照する版を削除対象に残していた。
+  // FK RESTRICT が実際の DELETE を弾く（＝データ損失は無い）が、DELETE 文が
+  // 常に失敗し .catch(console.error) に飲まれるため prune が機能せず版が
+  // 際限なく蓄積する。DB トリガー / schema コメントは 4 参照すべてを保護する
+  // 前提で書かれており、ここも 4 参照すべてを除外して整合させる。
+  const [entryRefs, treeRefs, codexRefs, snippetRefs] = await Promise.all([
+    db
+      .select({ versionId: projectSnapshotEntries.versionId })
+      .from(projectSnapshotEntries)
+      .where(inArray(projectSnapshotEntries.versionId, deleteIds)),
+    db
+      .select({ versionId: projectSnapshotTreeNodes.bodyVersionId })
+      .from(projectSnapshotTreeNodes)
+      .where(
+        and(
+          isNotNull(projectSnapshotTreeNodes.bodyVersionId),
+          inArray(projectSnapshotTreeNodes.bodyVersionId, deleteIds),
+        ),
+      ),
+    db
+      .select({ versionId: projectSnapshotCodexEntries.bodyVersionId })
+      .from(projectSnapshotCodexEntries)
+      .where(
+        and(
+          isNotNull(projectSnapshotCodexEntries.bodyVersionId),
+          inArray(projectSnapshotCodexEntries.bodyVersionId, deleteIds),
+        ),
+      ),
+    db
+      .select({ versionId: projectSnapshotSnippets.bodyVersionId })
+      .from(projectSnapshotSnippets)
+      .where(
+        and(
+          isNotNull(projectSnapshotSnippets.bodyVersionId),
+          inArray(projectSnapshotSnippets.bodyVersionId, deleteIds),
+        ),
+      ),
+  ]);
+  const protectedIds = new Set<string>();
+  for (const rows of [entryRefs, treeRefs, codexRefs, snippetRefs]) {
+    for (const r of rows) {
+      if (r.versionId) protectedIds.add(r.versionId);
+    }
+  }
   deleteIds = deleteIds.filter((id) => !protectedIds.has(id));
 
   if (deleteIds.length === 0) return;
