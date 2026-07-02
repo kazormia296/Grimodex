@@ -164,7 +164,7 @@ pub fn tracked_foreshadow_create(
 
     match result {
         Ok(res) => {
-            conn.execute_batch("COMMIT")?;
+            crate::commit_or_rollback(conn)?;
             Ok(res)
         }
         Err(e) => {
@@ -298,7 +298,7 @@ pub fn tracked_foreshadow_update(
 
     match result {
         Ok(res) => {
-            conn.execute_batch("COMMIT")?;
+            crate::commit_or_rollback(conn)?;
             Ok(res)
         }
         Err(e) => {

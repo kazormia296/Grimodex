@@ -14,6 +14,13 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue({}),
 }));
 
+// M11: atomic writes go through invoke("db_execute_batch"). These tests assert
+// on the (mocked) drizzle builder calls + returned rows, not real persistence,
+// so the batch invoke is a no-op here.
+vi.mock("@/lib/tauri", () => ({
+  invoke: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
 }));
@@ -45,6 +52,11 @@ function makeMock(returnValue: unknown) {
   for (const m of allMethods) {
     chain[m] = vi.fn().mockReturnValue(chain);
   }
+  // M11: atomic map writes go through db.insert(...).values(...).toSQL() +
+  // db_execute_batch. The mock must supply toSQL() for those builders.
+  chain["toSQL"] = vi
+    .fn()
+    .mockReturnValue({ sql: "INSERT INTO t VALUES (?)", params: [] });
   chain["returning"] = vi.fn().mockResolvedValue(returnValue);
   chain["then"] = (
     resolve: (v: unknown) => void,
@@ -644,10 +656,13 @@ describe("mapApi — createAiBranch", () => {
 
     expect(result.branch.prompt).toBe("アイデアを出して");
     expect(result.stickies).toHaveLength(1);
-    expect(result.stickies[0].aiBranchId).toBe("branch-1");
+    // M11: ids are generated in JS (crypto.randomUUID), not read back from the
+    // insert's .returning(); the sticky links to the actual generated branch id.
+    expect(result.stickies[0].aiBranchId).toBe(result.branch.id);
     // branch position + 1 sticky position
     expect(result.positions).toHaveLength(2);
-    // insert was called 6 times (branch, branchPos, sticky, stickyPos, edge, span)
+    // insert builders are still invoked per table/chunk (branch, branchPos,
+    // sticky, stickyPos, edge, span) to produce .toSQL() for the batch.
     expect(db.insert).toHaveBeenCalledTimes(6);
   });
 
@@ -685,10 +700,11 @@ describe("mapApi — createAiBranch", () => {
       ],
     );
 
-    // 3rd insert は mapStickies。values() に渡った body を検査する。
+    // 3rd insert は mapStickies。M11 で values() には行の配列が渡るので
+    // 先頭要素の body を検査する。
     const stickyChain = (db.insert as ReturnType<typeof vi.fn>).mock.results[2]
       .value as { values: ReturnType<typeof vi.fn> };
-    const insertedBody = stickyChain.values.mock.calls[0][0].body as string;
+    const insertedBody = stickyChain.values.mock.calls[0][0][0].body as string;
     const parsed = JSON.parse(insertedBody);
     expect(parsed.content[0].content[0].marks[0]).toMatchObject({
       type: "authorship",

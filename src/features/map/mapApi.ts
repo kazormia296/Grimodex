@@ -15,7 +15,6 @@ import {
   type MapNodePosition,
   type NewMapNodePosition,
   type MapAiBranch,
-  type NewMapAiBranch,
   type MapSticky,
   type NewMapSticky,
   type MapEdge,
@@ -25,7 +24,7 @@ import {
   type AuthorshipSpan,
   type NewAuthorshipSpan,
 } from "@/db/schema";
-import { eq, and, isNotNull, inArray } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, inArray } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { generateKeyBetween } from "@/features/tree/fractionalIndex";
 import type {
@@ -40,7 +39,29 @@ import { DEFAULT_PALETTE_ID, DEFAULT_COLOR_SLOT } from "@/lib/stickyPalettes";
 import { seedAuthorshipMarksJson } from "@/features/attribution/seedAuthorshipMarks";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
+import { invoke } from "@/lib/tauri";
 import i18next from "@/lib/i18n";
+
+/**
+ * 複数文を 1 tx (Rust 側 execute_batch_tx = BEGIN..COMMIT) で原子的に書く共通
+ * ヘルパ。フロントから素の BEGIN/COMMIT を投げると共有 Mutex<Connection> 上の
+ * 無関係な並行書き込みを巻き込むため、db_execute_batch を使う
+ * (causalityBoard / attribution/api と同型)。SQL は drizzle の .toSQL() から生成し、
+ * 生 SQL は手書きしない。
+ */
+const INSERT_CHUNK = 50;
+
+type BatchStatement = { sql: string; params: unknown[]; method: string };
+
+function toStatement(q: { sql: string; params: unknown[] }): BatchStatement {
+  return { sql: q.sql, params: q.params, method: "run" };
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
 
 /**
  * 執筆タイムラプス: Map 系操作を統一窓口で capture する。drag 中の
@@ -250,23 +271,20 @@ export async function duplicateBoard(
   const now = new Date().toISOString();
   const newBoardId = crypto.randomUUID();
 
-  const newBoard = await db
-    .insert(mapBoards)
-    .values({
-      id: newBoardId,
-      projectId,
-      title: i18next.t("map.board.duplicateTitle", { title: source[0].title }),
-      sortOrder: maxOrder + 1.0,
-      mode: source[0].mode,
-      viewportX: source[0].viewportX,
-      viewportY: source[0].viewportY,
-      viewportZoom: source[0].viewportZoom,
-      showConfig: source[0].showConfig,
-      colorBy: source[0].colorBy,
-      createdAt: now,
-      updatedAt: now,
-    } satisfies NewMapBoard)
-    .returning();
+  const boardRow: MapBoard = {
+    id: newBoardId,
+    projectId,
+    title: i18next.t("map.board.duplicateTitle", { title: source[0].title }),
+    sortOrder: maxOrder + 1.0,
+    mode: source[0].mode,
+    viewportX: source[0].viewportX,
+    viewportY: source[0].viewportY,
+    viewportZoom: source[0].viewportZoom,
+    showConfig: source[0].showConfig,
+    colorBy: source[0].colorBy,
+    createdAt: now,
+    updatedAt: now,
+  };
 
   // Copy stickies
   const srcStickies = await db
@@ -274,10 +292,10 @@ export async function duplicateBoard(
     .from(mapStickies)
     .where(eq(mapStickies.boardId, sourceId));
   const stickyIdMap = new Map<string, string>();
-  for (const s of srcStickies) {
+  const stickyRows: NewMapSticky[] = srcStickies.map((s) => {
     const newId = crypto.randomUUID();
     stickyIdMap.set(s.id, newId);
-    await db.insert(mapStickies).values({
+    return {
       ...s,
       id: newId,
       boardId: newBoardId,
@@ -285,8 +303,8 @@ export async function duplicateBoard(
       sourceChatMessageId: null,
       createdAt: now,
       updatedAt: now,
-    });
-  }
+    };
+  });
 
   // Copy positions
   const srcPositions = await db
@@ -294,10 +312,10 @@ export async function duplicateBoard(
     .from(mapNodePositions)
     .where(eq(mapNodePositions.boardId, sourceId));
   const posIdMap = new Map<string, string>();
-  for (const p of srcPositions) {
+  const posRows: NewMapNodePosition[] = srcPositions.map((p) => {
     const newId = crypto.randomUUID();
     posIdMap.set(p.id, newId);
-    await db.insert(mapNodePositions).values({
+    return {
       ...p,
       id: newId,
       boardId: newBoardId,
@@ -305,19 +323,20 @@ export async function duplicateBoard(
       aiBranchId: null,
       createdAt: now,
       updatedAt: now,
-    });
-  }
+    };
+  });
 
-  // Copy edges
+  // Copy edges (skip any whose endpoints failed to remap)
   const srcEdges = await db
     .select()
     .from(mapEdges)
     .where(eq(mapEdges.boardId, sourceId));
+  const edgeRows: NewMapEdge[] = [];
   for (const e of srcEdges) {
     const newFrom = posIdMap.get(e.fromPositionId);
     const newTo = posIdMap.get(e.toPositionId);
     if (!newFrom || !newTo) continue;
-    await db.insert(mapEdges).values({
+    edgeRows.push({
       ...e,
       id: crypto.randomUUID(),
       boardId: newBoardId,
@@ -333,17 +352,37 @@ export async function duplicateBoard(
     .select()
     .from(mapFrames)
     .where(eq(mapFrames.boardId, sourceId));
-  for (const f of srcFrames) {
-    await db.insert(mapFrames).values({
-      ...f,
-      id: crypto.randomUUID(),
-      boardId: newBoardId,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
+  const frameRows: NewMapFrame[] = srcFrames.map((f) => ({
+    ...f,
+    id: crypto.randomUUID(),
+    boardId: newBoardId,
+    createdAt: now,
+    updatedAt: now,
+  }));
 
-  return newBoard[0];
+  // Write board + all copied rows in one tx (FK order: board → stickies →
+  // positions → edges → frames). Previously each row was a separate IPC, so a
+  // failure mid-copy left a half-populated board on the shared connection.
+  const statements: BatchStatement[] = [
+    toStatement(db.insert(mapBoards).values(boardRow).toSQL()),
+  ];
+  for (const part of chunk(stickyRows, INSERT_CHUNK)) {
+    statements.push(toStatement(db.insert(mapStickies).values(part).toSQL()));
+  }
+  for (const part of chunk(posRows, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(db.insert(mapNodePositions).values(part).toSQL()),
+    );
+  }
+  for (const part of chunk(edgeRows, INSERT_CHUNK)) {
+    statements.push(toStatement(db.insert(mapEdges).values(part).toSQL()));
+  }
+  for (const part of chunk(frameRows, INSERT_CHUNK)) {
+    statements.push(toStatement(db.insert(mapFrames).values(part).toSQL()));
+  }
+  await invoke("db_execute_batch", { statements });
+
+  return boardRow;
 }
 
 // ── Node positions ─────────────────────────────────────────────────────────
@@ -794,87 +833,155 @@ export async function promoteSticky(
   const now = new Date().toISOString();
   let newEntityId: string;
   let nodeRefType: NodeRefType;
+  let entityInsert: { sql: string; params: unknown[] };
 
   if (targetType === "scene" || targetType === "note") {
     newEntityId = crypto.randomUUID();
-    // Place under the default chapter with a proper sort order
+    // Place under the default chapter if it exists, else at the tree root.
+    // The fixed "default-chapter" id only exists in tests/seed data; in a real
+    // project it is absent, so inserting with parentId="default-chapter" would
+    // violate the tree_nodes.parent_id FK (promotion silently failed). Fall back
+    // to null (root) like the tree store's own scene-create path.
     const DEFAULT_CHAPTER_ID = "default-chapter";
+    const chapterRows = await db
+      .select({ id: treeNodes.id })
+      .from(treeNodes)
+      .where(eq(treeNodes.id, DEFAULT_CHAPTER_ID))
+      .limit(1);
+    const parentId: string | null = chapterRows.length
+      ? DEFAULT_CHAPTER_ID
+      : null;
     const siblings = await db
       .select()
       .from(treeNodes)
-      .where(eq(treeNodes.parentId, DEFAULT_CHAPTER_ID));
+      .where(
+        and(
+          eq(treeNodes.projectId, options.projectId),
+          parentId === null
+            ? isNull(treeNodes.parentId)
+            : eq(treeNodes.parentId, parentId),
+        ),
+      );
     const lastKey = siblings.length
       ? siblings.sort((a, b) => (a.sortOrder > b.sortOrder ? 1 : -1)).at(-1)!
           .sortOrder
       : null;
     const sortOrder = generateKeyBetween(lastKey, null);
-    await db.insert(treeNodes).values({
-      id: newEntityId,
-      projectId: options.projectId,
-      parentId: DEFAULT_CHAPTER_ID,
-      nodeType: targetType,
-      title,
-      sortOrder,
-      content: body,
-      createdAt: now,
-      updatedAt: now,
-    });
+    entityInsert = db
+      .insert(treeNodes)
+      .values({
+        id: newEntityId,
+        projectId: options.projectId,
+        parentId,
+        nodeType: targetType,
+        title,
+        sortOrder,
+        content: body,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .toSQL();
     nodeRefType = targetType;
   } else if (targetType === "snippet") {
     newEntityId = crypto.randomUUID();
-    await db.insert(snippets).values({
-      id: newEntityId,
-      projectId: options.projectId,
-      title,
-      content: body,
-      createdAt: now,
-      updatedAt: now,
-    });
+    entityInsert = db
+      .insert(snippets)
+      .values({
+        id: newEntityId,
+        projectId: options.projectId,
+        title,
+        content: body,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .toSQL();
     nodeRefType = "snippet";
   } else {
     // codex
     newEntityId = crypto.randomUUID();
     const type = options.codexType ?? "character";
-    await db.insert(codexEntries).values({
-      id: newEntityId,
-      projectId: options.projectId,
-      type,
-      name: title,
-      content: body,
-      createdAt: now,
-      updatedAt: now,
-    });
+    entityInsert = db
+      .insert(codexEntries)
+      .values({
+        id: newEntityId,
+        projectId: options.projectId,
+        type,
+        name: title,
+        content: body,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .toSQL();
     nodeRefType = "codex";
   }
 
-  const [updatedPosition] = await db
+  const isTreeTarget = targetType === "scene" || targetType === "note";
+  const treeNodeIdVal = isTreeTarget ? newEntityId : null;
+  const codexEntryIdVal = targetType === "codex" ? newEntityId : null;
+  const snippetIdVal = targetType === "snippet" ? newEntityId : null;
+
+  // Read the position row up front so the return value can be reconstructed:
+  // db_execute_batch has no RETURNING channel. A missing position is an error
+  // like the missing-sticky guard above (the caller always passes a live id).
+  const [existingPos] = await db
+    .select()
+    .from(mapNodePositions)
+    .where(eq(mapNodePositions.id, positionId))
+    .limit(1);
+  if (!existingPos) throw new Error(`Position ${positionId} not found`);
+
+  // entity INSERT → position UPDATE → authorship migrate → sticky DELETE, in one
+  // tx. Previously these ran as 3–4 separate IPCs, so a crash between them could
+  // leave the sticky deleted with no entity, or authorship spans orphaned. The
+  // position/authorship UPDATEs (which null out stickyId) MUST precede the
+  // sticky DELETE so ON DELETE CASCADE does not take the position row or the
+  // migrated spans with it.
+  const positionUpdate = db
     .update(mapNodePositions)
     .set({
       nodeRefType,
-      treeNodeId:
-        targetType === "scene" || targetType === "note" ? newEntityId : null,
-      codexEntryId: targetType === "codex" ? newEntityId : null,
-      snippetId: targetType === "snippet" ? newEntityId : null,
+      treeNodeId: treeNodeIdVal,
+      codexEntryId: codexEntryIdVal,
+      snippetId: snippetIdVal,
       stickyId: null,
       aiBranchId: null,
       updatedAt: now,
     })
     .where(eq(mapNodePositions.id, positionId))
-    .returning();
-
-  // Migrate authorship spans to the new entity before CASCADE deletes them
-  await db
+    .toSQL();
+  const authorshipUpdate = db
     .update(authorshipSpans)
     .set({
-      nodeId:
-        targetType === "scene" || targetType === "note" ? newEntityId : null,
-      codexEntryId: targetType === "codex" ? newEntityId : null,
-      snippetId: targetType === "snippet" ? newEntityId : null,
+      nodeId: treeNodeIdVal,
+      codexEntryId: codexEntryIdVal,
+      snippetId: snippetIdVal,
       stickyId: null,
     })
-    .where(eq(authorshipSpans.stickyId, stickyId));
+    .where(eq(authorshipSpans.stickyId, stickyId))
+    .toSQL();
+  const stickyDelete = db
+    .delete(mapStickies)
+    .where(eq(mapStickies.id, stickyId))
+    .toSQL();
+  await invoke("db_execute_batch", {
+    statements: [
+      toStatement(entityInsert),
+      toStatement(positionUpdate),
+      toStatement(authorshipUpdate),
+      toStatement(stickyDelete),
+    ],
+  });
 
-  await db.delete(mapStickies).where(eq(mapStickies.id, stickyId));
+  const updatedPosition: MapNodePosition = {
+    ...existingPos,
+    nodeRefType,
+    treeNodeId: treeNodeIdVal,
+    codexEntryId: codexEntryIdVal,
+    snippetId: snippetIdVal,
+    stickyId: null,
+    aiBranchId: null,
+    updatedAt: now,
+  };
 
   return { newEntityId, updatedPosition };
 }
@@ -931,48 +1038,43 @@ export async function createAiBranch(
       ? options.cardPositions
       : null;
 
-  const [branch] = await db
-    .insert(mapAiBranches)
-    .values({
-      id: branchId,
-      boardId,
-      prompt,
-      seedNodeIds: JSON.stringify(seedNodeIds),
-      sessionId: options?.sessionId ?? null,
-      model: options?.model ?? null,
-      // N4: トークン使用量は ai_usage 台帳 (surface='map_branch') に記録する。
-      // この列は読み手の無いレガシー placeholder のため null のまま据え置く。
-      tokenUsage: null,
-      createdAt: now,
-      updatedAt: now,
-    } satisfies NewMapAiBranch)
-    .returning();
+  const branchRow: MapAiBranch = {
+    id: branchId,
+    boardId,
+    prompt,
+    seedNodeIds: JSON.stringify(seedNodeIds),
+    sessionId: options?.sessionId ?? null,
+    model: options?.model ?? null,
+    // N4: トークン使用量は ai_usage 台帳 (surface='map_branch') に記録する。
+    // この列は読み手の無いレガシー placeholder のため null のまま据え置く。
+    tokenUsage: null,
+    createdAt: now,
+    updatedAt: now,
+  };
 
   // Place branch node at the spawn position
   const branchPosId = crypto.randomUUID();
-  const [branchPosition] = await db
-    .insert(mapNodePositions)
-    .values({
-      id: branchPosId,
-      boardId,
-      nodeRefType: "ai_branch",
-      aiBranchId: branchId,
-      treeNodeId: null,
-      codexEntryId: null,
-      snippetId: null,
-      stickyId: null,
-      x: spawnX,
-      y: spawnY,
-      pinned: 0,
-      zIndex: 0,
-      createdAt: now,
-      updatedAt: now,
-    } satisfies NewMapNodePosition)
-    .returning();
+  const branchPositionRow: MapNodePosition = {
+    id: branchPosId,
+    boardId,
+    nodeRefType: "ai_branch",
+    aiBranchId: branchId,
+    treeNodeId: null,
+    codexEntryId: null,
+    snippetId: null,
+    stickyId: null,
+    x: spawnX,
+    y: spawnY,
+    pinned: 0,
+    zIndex: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
 
-  const stickies: MapSticky[] = [];
-  const positions: MapNodePosition[] = [branchPosition];
-  const edges: MapEdge[] = [];
+  const stickyRows: MapSticky[] = [];
+  const stickyPosRows: MapNodePosition[] = [];
+  const edgeRows: MapEdge[] = [];
+  const spanRows: NewAuthorshipSpan[] = [];
 
   const angleStep = cards.length > 0 ? (2 * Math.PI) / cards.length : 0;
   const radius = 280;
@@ -1002,66 +1104,57 @@ export async function createAiBranch(
       y = spawnY + Math.round(radius * Math.sin(angle));
     }
 
-    const [sticky] = await db
-      .insert(mapStickies)
-      .values({
-        id: stickyId,
-        boardId,
-        title: card.title || null,
-        body,
-        previewText: previewText || null,
-        paletteId: DEFAULT_PALETTE_ID,
-        colorSlot: DEFAULT_COLOR_SLOT,
-        aiBranchId: branchId,
-        aiDerived: 1,
-        sourceChatMessageId: null,
-        createdAt: now,
-        updatedAt: now,
-      } satisfies NewMapSticky)
-      .returning();
+    stickyRows.push({
+      id: stickyId,
+      boardId,
+      title: card.title || null,
+      body,
+      previewText: previewText || null,
+      paletteId: DEFAULT_PALETTE_ID,
+      colorSlot: DEFAULT_COLOR_SLOT,
+      aiBranchId: branchId,
+      aiDerived: 1,
+      sourceChatMessageId: null,
+      createdAt: now,
+      updatedAt: now,
+    });
 
-    const [pos] = await db
-      .insert(mapNodePositions)
-      .values({
-        id: posId,
-        boardId,
-        nodeRefType: "sticky",
-        stickyId,
-        aiBranchId: null,
-        treeNodeId: null,
-        codexEntryId: null,
-        snippetId: null,
-        x,
-        y,
-        pinned: 0,
-        zIndex: 0,
-        createdAt: now,
-        updatedAt: now,
-      } satisfies NewMapNodePosition)
-      .returning();
+    stickyPosRows.push({
+      id: posId,
+      boardId,
+      nodeRefType: "sticky",
+      stickyId,
+      aiBranchId: null,
+      treeNodeId: null,
+      codexEntryId: null,
+      snippetId: null,
+      x,
+      y,
+      pinned: 0,
+      zIndex: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
 
     // Dashed edge: branch → sticky
-    const [edge] = await db
-      .insert(mapEdges)
-      .values({
-        id: crypto.randomUUID(),
-        boardId,
-        fromPositionId: branchPosId,
-        toPositionId: posId,
-        forwardLabel: null,
-        backwardLabel: null,
-        labels: "[]",
-        style: "dashed",
-        color: "#888888",
-        direction: "forward",
-        createdAt: now,
-        updatedAt: now,
-      } satisfies NewMapEdge)
-      .returning();
+    edgeRows.push({
+      id: crypto.randomUUID(),
+      boardId,
+      fromPositionId: branchPosId,
+      toPositionId: posId,
+      forwardLabel: null,
+      backwardLabel: null,
+      labels: "[]",
+      style: "dashed",
+      color: "#888888",
+      direction: "forward",
+      createdAt: now,
+      updatedAt: now,
+    });
 
     // Authorship span covering the full body (use full text, not truncated preview)
     const bodyLen = extractAllText(body).length;
-    await db.insert(authorshipSpans).values({
+    spanRows.push({
       id: crypto.randomUUID(),
       stickyId,
       nodeId: null,
@@ -1075,14 +1168,40 @@ export async function createAiBranch(
       timestamp: now,
       chatMsgId: null,
       phaseId: null,
-    } satisfies NewAuthorshipSpan);
-
-    stickies.push(sticky);
-    positions.push(pos);
-    edges.push(edge);
+    });
   }
 
-  return { branch, stickies, positions, edges };
+  // One tx: branch → branch position → stickies → sticky positions → edges →
+  // spans (FK-safe order). Previously each card issued 4 separate INSERT IPCs on
+  // the shared connection, so a mid-loop failure left a half-built branch.
+  const statements: BatchStatement[] = [
+    toStatement(db.insert(mapAiBranches).values(branchRow).toSQL()),
+    toStatement(db.insert(mapNodePositions).values(branchPositionRow).toSQL()),
+  ];
+  for (const part of chunk(stickyRows, INSERT_CHUNK)) {
+    statements.push(toStatement(db.insert(mapStickies).values(part).toSQL()));
+  }
+  for (const part of chunk(stickyPosRows, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(db.insert(mapNodePositions).values(part).toSQL()),
+    );
+  }
+  for (const part of chunk(edgeRows, INSERT_CHUNK)) {
+    statements.push(toStatement(db.insert(mapEdges).values(part).toSQL()));
+  }
+  for (const part of chunk(spanRows, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(db.insert(authorshipSpans).values(part).toSQL()),
+    );
+  }
+  await invoke("db_execute_batch", { statements });
+
+  return {
+    branch: branchRow,
+    stickies: stickyRows,
+    positions: [branchPositionRow, ...stickyPosRows],
+    edges: edgeRows,
+  };
 }
 
 export async function deleteAiBranch(id: string): Promise<void> {
@@ -1173,28 +1292,68 @@ export async function getAiBranchSnapshot(
 export async function restoreAiBranchSnapshot(
   snapshot: AiBranchSnapshot,
 ): Promise<void> {
-  await db.insert(mapAiBranches).values(snapshot.branch).onConflictDoNothing();
-  await db
-    .insert(mapNodePositions)
-    .values(snapshot.branchPosition)
-    .onConflictDoNothing();
-  for (const sticky of snapshot.stickies) {
-    await db.insert(mapStickies).values(sticky).onConflictDoNothing();
-    // Re-link orphan stickies (aiBranchId was set NULL by ON DELETE SET NULL)
-    await db
-      .update(mapStickies)
-      .set({ aiBranchId: snapshot.branch.id })
-      .where(eq(mapStickies.id, sticky.id));
+  const stickyIds = snapshot.stickies.map((s) => s.id);
+  // One tx: branch → branch position → stickies → re-link → sticky positions →
+  // edges → spans (FK-safe order). onConflictDoNothing keeps this idempotent for
+  // both undo-of-create and undo-of-delete (orphan stickies survive), and the
+  // re-link UPDATE re-points any orphans (aiBranchId nulled by ON DELETE SET
+  // NULL) back to this branch. Previously each row was a separate IPC.
+  const statements: BatchStatement[] = [
+    toStatement(
+      db
+        .insert(mapAiBranches)
+        .values(snapshot.branch)
+        .onConflictDoNothing()
+        .toSQL(),
+    ),
+    toStatement(
+      db
+        .insert(mapNodePositions)
+        .values(snapshot.branchPosition)
+        .onConflictDoNothing()
+        .toSQL(),
+    ),
+  ];
+  for (const part of chunk(snapshot.stickies, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db.insert(mapStickies).values(part).onConflictDoNothing().toSQL(),
+      ),
+    );
   }
-  for (const pos of snapshot.stickyPositions) {
-    await db.insert(mapNodePositions).values(pos).onConflictDoNothing();
+  for (const part of chunk(stickyIds, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db
+          .update(mapStickies)
+          .set({ aiBranchId: snapshot.branch.id })
+          .where(inArray(mapStickies.id, part))
+          .toSQL(),
+      ),
+    );
   }
-  for (const edge of snapshot.edges) {
-    await db.insert(mapEdges).values(edge).onConflictDoNothing();
+  for (const part of chunk(snapshot.stickyPositions, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db.insert(mapNodePositions).values(part).onConflictDoNothing().toSQL(),
+      ),
+    );
   }
-  for (const span of snapshot.spans) {
-    await db.insert(authorshipSpans).values(span).onConflictDoNothing();
+  for (const part of chunk(snapshot.edges, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db.insert(mapEdges).values(part).onConflictDoNothing().toSQL(),
+      ),
+    );
   }
+  for (const part of chunk(snapshot.spans, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db.insert(authorshipSpans).values(part).onConflictDoNothing().toSQL(),
+      ),
+    );
+  }
+  await invoke("db_execute_batch", { statements });
 }
 
 /**
@@ -1207,20 +1366,48 @@ export async function eraseAiBranchSnapshot(
   // mapAiBranches deletion cascades to: branch position (ai_branch_id cascade),
   // and edges from that position (position cascade). Stickies' aiBranchId is
   // set null. So we still need to explicitly delete the derived stickies and
-  // their positions and authorship spans.
-  for (const span of snapshot.spans) {
-    await db.delete(authorshipSpans).where(eq(authorshipSpans.id, span.id));
+  // their positions and authorship spans. All in one tx (was per-row IPCs).
+  const spanIds = snapshot.spans.map((s) => s.id);
+  const stickyPosIds = snapshot.stickyPositions.map((p) => p.id);
+  const stickyIds = snapshot.stickies.map((s) => s.id);
+  const statements: BatchStatement[] = [];
+  for (const part of chunk(spanIds, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db
+          .delete(authorshipSpans)
+          .where(inArray(authorshipSpans.id, part))
+          .toSQL(),
+      ),
+    );
   }
-  for (const pos of snapshot.stickyPositions) {
-    await db.delete(mapNodePositions).where(eq(mapNodePositions.id, pos.id));
+  for (const part of chunk(stickyPosIds, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db
+          .delete(mapNodePositions)
+          .where(inArray(mapNodePositions.id, part))
+          .toSQL(),
+      ),
+    );
   }
-  for (const sticky of snapshot.stickies) {
-    await db.delete(mapStickies).where(eq(mapStickies.id, sticky.id));
+  for (const part of chunk(stickyIds, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db.delete(mapStickies).where(inArray(mapStickies.id, part)).toSQL(),
+      ),
+    );
   }
   // Branch deletion cascades to branch position + edges from that position
-  await db
-    .delete(mapAiBranches)
-    .where(eq(mapAiBranches.id, snapshot.branch.id));
+  statements.push(
+    toStatement(
+      db
+        .delete(mapAiBranches)
+        .where(eq(mapAiBranches.id, snapshot.branch.id))
+        .toSQL(),
+    ),
+  );
+  await invoke("db_execute_batch", { statements });
 }
 
 // ── User edges ─────────────────────────────────────────────────────────────
@@ -1455,12 +1642,7 @@ export async function promoteFrame(
       ? await db
           .select()
           .from(mapStickies)
-          .where(
-            insideStickyIds.length === 1
-              ? eq(mapStickies.id, insideStickyIds[0])
-              : eq(mapStickies.boardId, boardId),
-          )
-          .then((rows) => rows.filter((s) => insideStickyIds.includes(s.id)))
+          .where(inArray(mapStickies.id, insideStickyIds))
       : [];
 
   // Build merged ProseMirror JSON
@@ -1485,30 +1667,54 @@ export async function promoteFrame(
   const codexId = crypto.randomUUID();
   const codexType = options.codexType ?? "lore";
 
-  await db.insert(codexEntries).values({
-    id: codexId,
-    projectId: options.projectId,
-    type: codexType,
-    name: frame.title || "Untitled",
-    content: JSON.stringify({ type: "doc", content: mergedContent }),
-    createdAt: now,
-    updatedAt: now,
-  });
-
+  // Codex INSERT + authorship migrate + sticky DELETE + frame DELETE in one tx.
+  // The authorship UPDATE (which nulls stickyId) MUST precede the sticky DELETE
+  // so ON DELETE CASCADE does not take the migrated spans with it. Previously
+  // every statement was a separate IPC (per-sticky UPDATE/DELETE loops).
+  const statements: BatchStatement[] = [
+    toStatement(
+      db
+        .insert(codexEntries)
+        .values({
+          id: codexId,
+          projectId: options.projectId,
+          type: codexType,
+          name: frame.title || "Untitled",
+          content: JSON.stringify({ type: "doc", content: mergedContent }),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .toSQL(),
+    ),
+  ];
   // Migrate authorship spans to the new Codex entry before CASCADE deletes them
-  for (const stickyId of insideStickyIds) {
-    await db
-      .update(authorshipSpans)
-      .set({ codexEntryId: codexId, stickyId: null })
-      .where(eq(authorshipSpans.stickyId, stickyId));
+  for (const part of chunk(insideStickyIds, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db
+          .update(authorshipSpans)
+          .set({ codexEntryId: codexId, stickyId: null })
+          .where(inArray(authorshipSpans.stickyId, part))
+          .toSQL(),
+      ),
+    );
   }
-
   // Delete stickies (cascades to positions via stickyId FK)
-  for (const stickyId of insideStickyIds) {
-    await db.delete(mapStickies).where(eq(mapStickies.id, stickyId));
+  for (const part of chunk(insideStickyIds, INSERT_CHUNK)) {
+    statements.push(
+      toStatement(
+        db.delete(mapStickies).where(inArray(mapStickies.id, part)).toSQL(),
+      ),
+    );
   }
+  // Delete the frame
+  statements.push(
+    toStatement(db.delete(mapFrames).where(eq(mapFrames.id, frameId)).toSQL()),
+  );
+  await invoke("db_execute_batch", { statements });
 
-  // Create position for the new Codex entry at frame center
+  // Create position for the new Codex entry at frame center (records a
+  // position.create timelapse event; kept out of the batch to preserve it).
   await upsertNodePosition({
     boardId,
     nodeRefType: "codex",
@@ -1516,9 +1722,6 @@ export async function promoteFrame(
     x: frame.x + frame.width / 2,
     y: frame.y + frame.height / 2,
   });
-
-  // Delete the frame
-  await db.delete(mapFrames).where(eq(mapFrames.id, frameId));
 
   return { newEntityId: codexId };
 }

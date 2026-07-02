@@ -31,7 +31,11 @@ impl Database {
         let lock_wait_ms = lock_started.elapsed().as_millis();
 
         let sql_started = Instant::now();
-        conn.execute_batch("BEGIN")?;
+        // BEGIN IMMEDIATE acquires the write lock up front. A plain (deferred)
+        // BEGIN only takes it on the first write, so a writer on the same DB
+        // file (e.g. the MCP process) could slip in between and turn a later
+        // statement into SQLITE_BUSY_SNAPSHOT — which busy_timeout cannot retry.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
         let mut last_rows = Vec::new();
         let result = (|| -> anyhow::Result<_> {
             for stmt in statements {
@@ -40,10 +44,17 @@ impl Database {
             Ok(last_rows)
         })();
         let final_result = match result {
-            Ok(rows) => {
-                conn.execute_batch("COMMIT")?;
-                Ok(rows)
-            }
+            Ok(rows) => match conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(rows),
+                // A failed COMMIT (deferred FK check, busy, disk-full, ...) leaves
+                // the transaction open on this shared single connection. Without
+                // an explicit ROLLBACK the next caller inherits a zombie tx and
+                // its writes silently ride on / get rolled back with it.
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e.into())
+                }
+            },
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK");
                 Err(e)
@@ -117,7 +128,18 @@ impl Database {
                     }
                     Err(_) => Value::Null,
                 };
-                map.insert(col_name.clone(), val);
+                // The proxy maps rows positionally on the JS side
+                // (`Object.values(row)` in src/db/client.ts) over this
+                // insertion-ordered map (serde_json `preserve_order`). A JOIN
+                // that yields two columns with the same name would collide on
+                // insert, dropping a value and shifting every later column. Keep
+                // arity/order intact by suffixing duplicate keys; the key text is
+                // irrelevant to the positional mapping.
+                if map.contains_key(col_name) {
+                    map.insert(format!("{col_name}\u{0}{i}"), val);
+                } else {
+                    map.insert(col_name.clone(), val);
+                }
             }
             Ok(map)
         })?;

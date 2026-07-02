@@ -17,7 +17,7 @@
 
 import { db } from "@/db/client";
 import { changeEvents, stateSnapshots } from "@/db/schema";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import {
   flushNow,
   getRecorderChainHead,
@@ -28,7 +28,11 @@ import {
 } from "./recorder";
 import { recordStateSnapshot, loadLatestSnapshot } from "./snapshots";
 import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
-import { listAllNodes, loadSceneContent } from "@/features/tree/api";
+import {
+  listAllNodes,
+  loadSceneContent,
+  loadScenesFull,
+} from "@/features/tree/api";
 import { getCodexEntry, listCodexEntries } from "@/features/codex/api";
 import { getSnippet, listSnippets } from "@/features/snippets/api";
 
@@ -110,11 +114,13 @@ export async function isTimelapseEnabled(projectId: string): Promise<boolean> {
 
 /** Number of recorded events for a project (for purge confirmation UI). */
 export async function countTimelapseEvents(projectId: string): Promise<number> {
-  const rows = await db
-    .select({ id: changeEvents.id })
+  // COUNT(*) を SQL 側で集計する。全行の id を webview に持ち帰って rows.length で
+  // 数えると、長編の change_events (数十 MB になり得る §6) を丸ごと転送してしまう。
+  const [row] = await db
+    .select({ n: count() })
     .from(changeEvents)
     .where(eq(changeEvents.projectId, projectId));
-  return rows.length;
+  return row?.n ?? 0;
 }
 
 /**
@@ -161,9 +167,15 @@ async function stampEntityBaselines(
 
   if (which.scene) {
     const nodes = await listAllNodes(projectId);
-    for (const scene of nodes.filter((n) => n.nodeType === "scene")) {
+    const scenes = nodes.filter((n) => n.nodeType === "scene");
+    // per-scene loadSceneContent は 1 件ごとに IPC 往復 + drizzle sqlite-proxy の
+    // warmed microtask を積み上げる N+1 (長編で数百シーン)。loadScenesFull で 1 往復に
+    // 畳む — 内部で同じ read-after-write バリア (awaitPendingSceneContentWrite) を
+    // 張るので、記録される baseline payload は loadSceneContent と不変。
+    const contents = await loadScenesFull(scenes.map((s) => s.id));
+    for (const scene of scenes) {
       try {
-        const payload = await loadSceneContent(scene.id); // PM-JSON string
+        const payload = contents.get(scene.id)?.content ?? ""; // PM-JSON string
         await recordEntityBaseline(
           projectId,
           "scene",

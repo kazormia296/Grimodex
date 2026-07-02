@@ -4608,7 +4608,7 @@ async fn run_multi_task(
 
 fn fail_run(app: &AppHandle, run_id: &str, error_message: &str) {
     let ws_state = app.state::<WorkspaceState>();
-    let _ = super::with_db(&ws_state, |db| {
+    if let Err(e) = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE post_effect_runs
@@ -4618,12 +4618,17 @@ fn fail_run(app: &AppHandle, run_id: &str, error_message: &str) {
             )?;
             Ok(())
         })
-    });
+    }) {
+        // Don't silently drop it: a failed UPDATE leaves the row stuck at
+        // 'running', blocking re-runs of the same scope until the next startup
+        // recovery flips stale 'running' rows to 'failed'.
+        tracing::error!("fail_run: could not mark post_effect_run {run_id} failed: {e}");
+    }
 }
 
 fn finalize_run(app: &AppHandle, run_id: &str) {
     let ws_state = app.state::<WorkspaceState>();
-    let _ = super::with_db(&ws_state, |db| {
+    if let Err(e) = super::with_db(&ws_state, |db| {
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE post_effect_runs
@@ -4633,7 +4638,11 @@ fn finalize_run(app: &AppHandle, run_id: &str) {
             )?;
             Ok(())
         })
-    });
+    }) {
+        // A failed UPDATE leaves the row stuck at 'running' even though the work
+        // completed; surface it rather than dropping it silently.
+        tracing::error!("finalize_run: could not mark post_effect_run {run_id} completed: {e}");
+    }
 }
 
 /// キャッシュ照合と running 行 INSERT の結果。

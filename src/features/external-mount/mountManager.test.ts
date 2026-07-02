@@ -144,6 +144,7 @@ function node(
     projectId: "p1",
     parentId: null,
     nodeType: "scene",
+    version: 0,
     title: "Scene",
     synopsis: null,
 

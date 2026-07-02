@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { db } from "@/db/client";
 import { treeNodes, sceneCodexMentions } from "@/db/schema";
-import { eq, and, count } from "drizzle-orm";
+import { eq, and, count, inArray } from "drizzle-orm";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { listCodexEntries } from "./api";
 import type { CodexMatchTarget } from "./codexMatcher";
@@ -84,7 +84,8 @@ export function enqueueRescan(forEntryId: string | null = null): void {
     // We limit the *scene* set for performance only when a single entry changed.
     let scenes: { id: string; content: string }[];
     if (forEntryId !== null) {
-      // Rescan scenes that currently mention this codex OR have no body row yet
+      const projectId = getCurrentProjectId();
+      // Scenes that currently mention this entry (source='body').
       const mentioned = await db
         .select({ sceneId: sceneCodexMentions.sceneId })
         .from(sceneCodexMentions)
@@ -95,21 +96,51 @@ export function enqueueRescan(forEntryId: string | null = null): void {
           ),
         );
       const mentionedIds = new Set(mentioned.map((r) => r.sceneId));
-      const allScenes = await db
-        .select({ id: treeNodes.id, content: treeNodes.content })
-        .from(treeNodes)
-        .where(
-          and(
-            eq(treeNodes.nodeType, "scene"),
-            eq(treeNodes.projectId, getCurrentProjectId()),
-          ),
-        );
-      // Rescan scenes already mentioning + a sample of others (to catch new matches)
-      scenes = allScenes.filter(
-        (s) => mentionedIds.has(s.id) || !mentionedIds.size,
-      );
-      // Fallback: always rescan all if the set is small
-      if (scenes.length === 0) scenes = allScenes;
+
+      if (mentionedIds.size === 0) {
+        // Entry currently matches nothing: a name/alias change may newly match
+        // anywhere, and this also covers rename re-establishment (the prior
+        // rescan stripped every row before the new name existed in prose).
+        // Scan every scene.
+        scenes = await db
+          .select({ id: treeNodes.id, content: treeNodes.content })
+          .from(treeNodes)
+          .where(
+            and(
+              eq(treeNodes.nodeType, "scene"),
+              eq(treeNodes.projectId, projectId),
+            ),
+          );
+      } else {
+        // Rescan scenes that currently mention this entry (their rows may need
+        // pruning) OR have no body row yet (never scanned → may hold new
+        // matches). Resolve the target scene ids first, then load content for
+        // only those scenes via inArray instead of pulling every scene's body.
+        const indexed = await db
+          .select({ sceneId: sceneCodexMentions.sceneId })
+          .from(sceneCodexMentions)
+          .where(eq(sceneCodexMentions.source, "body"));
+        const indexedIds = new Set(indexed.map((r) => r.sceneId));
+        const sceneRows = await db
+          .select({ id: treeNodes.id })
+          .from(treeNodes)
+          .where(
+            and(
+              eq(treeNodes.nodeType, "scene"),
+              eq(treeNodes.projectId, projectId),
+            ),
+          );
+        const targetIds = sceneRows
+          .map((r) => r.id)
+          .filter((id) => mentionedIds.has(id) || !indexedIds.has(id));
+        scenes =
+          targetIds.length === 0
+            ? []
+            : await db
+                .select({ id: treeNodes.id, content: treeNodes.content })
+                .from(treeNodes)
+                .where(inArray(treeNodes.id, targetIds));
+      }
     } else {
       scenes = await db
         .select({ id: treeNodes.id, content: treeNodes.content })

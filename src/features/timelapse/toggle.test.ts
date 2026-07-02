@@ -25,10 +25,28 @@ const settingsMock = vi.hoisted(() => ({
   getProjectSetting: vi.fn(() => Promise.resolve<string | null>(null)),
   setProjectSetting: vi.fn(() => Promise.resolve()),
 }));
-const treeMock = vi.hoisted(() => ({
-  listAllNodes: vi.fn(() => Promise.resolve([] as unknown[])),
-  loadSceneContent: vi.fn(() => Promise.resolve("{}")),
-}));
+const treeMock = vi.hoisted(() => {
+  const loadSceneContent = vi.fn(() => Promise.resolve("{}"));
+  return {
+    listAllNodes: vi.fn(() => Promise.resolve([] as unknown[])),
+    loadSceneContent,
+    // toggle.ts now batches scene bodies via loadScenesFull; delegate to the
+    // loadSceneContent mock so per-test content overrides still apply.
+    loadScenesFull: vi.fn(async (ids: string[]) => {
+      const out = new Map<
+        string,
+        { content: string; unplacedBeatsDoc: string }
+      >();
+      for (const id of ids) {
+        out.set(id, {
+          content: (await loadSceneContent()) as string,
+          unplacedBeatsDoc: "[]",
+        });
+      }
+      return out;
+    }),
+  };
+});
 const codexMock = vi.hoisted(() => ({
   listCodexEntries: vi.fn(() => Promise.resolve([] as unknown[])),
   getCodexEntry: vi.fn(() =>

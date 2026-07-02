@@ -66,7 +66,14 @@ export async function updateProject(
   // A language switch re-routes which FTS tables a project's content lives in;
   // rebuild the English (_en) index so search stays consistent. Best-effort.
   if (data.language !== undefined) {
-    await invoke("fts_rebuild_en").catch(() => {});
+    await invoke("fts_rebuild_en").catch((e) => {
+      // Don't swallow silently: a failed rebuild leaves English search stale
+      // with no signal until the user manually rebuilds from settings.
+      console.error(
+        "fts_rebuild_en failed after language change; English search may be stale until a manual rebuild",
+        e,
+      );
+    });
   }
   // Records under the currently-bound project (meta edits target the active
   // project). recordChangeEvent no-ops when that isn't the recording project.

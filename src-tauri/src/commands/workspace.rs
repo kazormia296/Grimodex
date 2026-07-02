@@ -10,6 +10,111 @@ use crate::workspace::{self, GlobalSettings};
 
 use super::{ActiveWorkspace, AppError, GlobalSettingsPath, WorkspaceState};
 
+/// Read a global-scoped setting from the `app_settings` key/value table,
+/// falling back to `default` when absent or unreadable.
+fn read_app_setting(db: &Database, key: &str, default: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                [key],
+                |r| r.get::<_, String>(0),
+            )
+            .ok())
+    })
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| default.to_string())
+}
+
+/// Age (seconds) of the most recent `grimodex-*.db` backup in `dir`, if any.
+fn newest_backup_age_secs(dir: &Path) -> Option<u64> {
+    let mut newest: Option<std::time::SystemTime> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("grimodex-") && name.ends_with(".db")) {
+            continue;
+        }
+        if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+            newest = Some(newest.map_or(modified, |cur| cur.max(modified)));
+        }
+    }
+    std::time::SystemTime::now()
+        .duration_since(newest?)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Keep the newest `keep` backups (timestamped names sort chronologically),
+/// deleting older ones.
+fn rotate_backups(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("grimodex-") && n.ends_with(".db"))
+                .unwrap_or(false)
+        })
+        .collect();
+    files.sort();
+    if files.len() > keep {
+        for old in &files[..files.len() - keep] {
+            if let Err(e) = std::fs::remove_file(old) {
+                tracing::warn!("auto-backup: cannot remove old backup {old:?}: {e}");
+            }
+        }
+    }
+}
+
+/// Automatic backup wiring (DB health audit 2026-07): the `data.autoBackup`
+/// settings were UI-only, so a corrupt/lost grimodex.db meant total data loss.
+/// On workspace open, if enabled and the newest backup is older than the
+/// configured interval, write a `VACUUM INTO` snapshot to `<ws>/backups/` and
+/// rotate to `maxBackups`. Best-effort: never blocks opening the workspace.
+fn maybe_auto_backup(ws_path: &Path, db: &Database) {
+    if read_app_setting(db, "data.autoBackup", "true") != "true" {
+        return;
+    }
+    let interval_min: u64 = read_app_setting(db, "data.backupInterval", "60")
+        .parse()
+        .unwrap_or(60);
+    let max_backups: usize = read_app_setting(db, "data.maxBackups", "10")
+        .parse()
+        .unwrap_or(10)
+        .max(1);
+    let dir = ws_path.join("backups");
+
+    if let Some(age) = newest_backup_age_secs(&dir) {
+        if age < interval_min.saturating_mul(60) {
+            return;
+        }
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("auto-backup: cannot create backups dir: {e}");
+        return;
+    }
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let dest = dir.join(format!("grimodex-{ts}.db"));
+    match db.quick_check() {
+        Ok(Some(report)) => {
+            tracing::error!("auto-backup: quick_check reported corruption ({report}); backing up anyway for recovery");
+        }
+        Err(e) => tracing::warn!("auto-backup: quick_check failed: {e}"),
+        Ok(None) => {}
+    }
+    if let Err(e) = db.backup_to(&dest) {
+        tracing::warn!("auto-backup: VACUUM INTO failed: {e}");
+        return;
+    }
+    rotate_backups(&dir, max_backups);
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OpenWorkspaceResult {
@@ -151,6 +256,18 @@ pub(crate) fn open_workspace(
     let db_path = ws_path.join("grimodex.db");
     let database = Database::new(&db_path)?;
     database.migrate()?;
+    // Refresh planner stats on open (cheap: analysis_limit is set). Non-fatal —
+    // a stats refresh failure must not block opening the workspace.
+    if let Err(e) = database.optimize() {
+        tracing::warn!("PRAGMA optimize on workspace open failed: {e}");
+    }
+    // Automatic backup (best-effort, throttled by data.backupInterval).
+    maybe_auto_backup(&ws_path, &database);
+    // Age out unbounded append-only logs (90-day retention; change_events is
+    // excluded — hash chain). Non-fatal.
+    if let Err(e) = database.prune_old_logs(90) {
+        tracing::warn!("prune_old_logs on workspace open failed: {e}");
+    }
 
     // Set as active workspace
     let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;

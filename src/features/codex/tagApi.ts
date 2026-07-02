@@ -7,6 +7,7 @@ import {
   snippets,
 } from "@/db/schema";
 import { asc, eq, inArray } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 
 export type CodexTag = typeof codexTags.$inferSelect;
 
@@ -88,14 +89,7 @@ export async function setSnippetEntryTags(
   snippetId: string,
   tagIds: string[],
 ): Promise<void> {
-  await db
-    .delete(snippetEntryTags)
-    .where(eq(snippetEntryTags.snippetId, snippetId));
-  if (tagIds.length > 0) {
-    await db
-      .insert(snippetEntryTags)
-      .values(tagIds.map((tagId) => ({ snippetId, tagId })));
-  }
+  // tagsCache の値は書き込み前に tag 名/色を読み取って算出する（read-only、tx 外）。
   let tagCache: { name: string; color: string | null }[] = [];
   if (tagIds.length > 0) {
     const tags = await db
@@ -105,28 +99,40 @@ export async function setSnippetEntryTags(
       .orderBy(asc(codexTags.name));
     tagCache = tags.map((t) => ({ name: t.name, color: t.color }));
   }
-  await db
+
+  // 既存 DELETE → 新規 INSERT → tagsCache UPDATE を 1 tx で原子化する
+  // （別 IPC だと途中失敗で tag 不整合が残るため）。SQL は drizzle .toSQL() 由来。
+  const del = db
+    .delete(snippetEntryTags)
+    .where(eq(snippetEntryTags.snippetId, snippetId))
+    .toSQL();
+  const statements: { sql: string; params: unknown[]; method: string }[] = [
+    { sql: del.sql, params: del.params, method: "run" },
+  ];
+  if (tagIds.length > 0) {
+    const ins = db
+      .insert(snippetEntryTags)
+      .values(tagIds.map((tagId) => ({ snippetId, tagId })))
+      .toSQL();
+    statements.push({ sql: ins.sql, params: ins.params, method: "run" });
+  }
+  const upd = db
     .update(snippets)
     .set({ tagsCache: JSON.stringify(tagCache) })
-    .where(eq(snippets.id, snippetId));
+    .where(eq(snippets.id, snippetId))
+    .toSQL();
+  statements.push({ sql: upd.sql, params: upd.params, method: "run" });
+
+  await invoke("db_execute_batch", { statements });
 }
 
 export async function setEntryTags(
   entryId: string,
   tagIds: string[],
 ): Promise<void> {
-  // Delete all existing associations
-  await db.delete(codexEntryTags).where(eq(codexEntryTags.entryId, entryId));
-
-  // Insert new associations
-  if (tagIds.length > 0) {
-    await db
-      .insert(codexEntryTags)
-      .values(tagIds.map((tagId) => ({ entryId, tagId })));
-  }
-
-  // Update tagsCache on codex entry (sorted alphabetically, consistent with listEntryTags)
-  // Format: {name: string, color: string | null}[] — stores color for display in entry list
+  // Compute tagsCache first (sorted alphabetically, consistent with listEntryTags).
+  // Format: {name: string, color: string | null}[] — stores color for display in entry list.
+  // This is a read; it stays outside the write tx below.
   let tagCache: { name: string; color: string | null }[] = [];
   if (tagIds.length > 0) {
     const tags = await db
@@ -137,11 +143,31 @@ export async function setEntryTags(
     tagCache = tags.map((t) => ({ name: t.name, color: t.color }));
   }
 
-  await db
+  // 既存 DELETE → 新規 INSERT → tagsCache UPDATE を 1 tx で原子化する
+  // （別 IPC だと途中失敗で tag 不整合が残るため）。SQL は drizzle .toSQL() 由来。
+  const del = db
+    .delete(codexEntryTags)
+    .where(eq(codexEntryTags.entryId, entryId))
+    .toSQL();
+  const statements: { sql: string; params: unknown[]; method: string }[] = [
+    { sql: del.sql, params: del.params, method: "run" },
+  ];
+  if (tagIds.length > 0) {
+    const ins = db
+      .insert(codexEntryTags)
+      .values(tagIds.map((tagId) => ({ entryId, tagId })))
+      .toSQL();
+    statements.push({ sql: ins.sql, params: ins.params, method: "run" });
+  }
+  const upd = db
     .update(codexEntries)
     .set({
       tagsCache: JSON.stringify(tagCache),
       updatedAt: new Date().toISOString(),
     })
-    .where(eq(codexEntries.id, entryId));
+    .where(eq(codexEntries.id, entryId))
+    .toSQL();
+  statements.push({ sql: upd.sql, params: upd.params, method: "run" });
+
+  await invoke("db_execute_batch", { statements });
 }

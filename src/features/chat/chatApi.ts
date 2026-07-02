@@ -611,6 +611,19 @@ export async function deleteSession(id: string): Promise<void> {
   await db.delete(chatSessions).where(eq(chatSessions.id, id));
 }
 
+/**
+ * プロジェクトのチャット履歴を全消去する。chat_sessions を 1 文で消すだけで、
+ * chat_messages / chat_summaries / chat_summary_messages / chat_message_prompts /
+ * chat_session_pinned_codex はすべて FK ON DELETE CASCADE (foreign_keys=ON) で
+ * 連鎖削除される。子テーブルを個別に DELETE すると N+1 かつ非原子（別 IPC ごとに
+ * lock/unlock され、途中失敗で中途半端に消える）になるため、単一 statement に閉じる。
+ */
+export async function clearProjectChatHistory(
+  projectId: string,
+): Promise<void> {
+  await db.delete(chatSessions).where(eq(chatSessions.projectId, projectId));
+}
+
 export async function listMessages(sessionId: string): Promise<ChatMessage[]> {
   const rows = await db
     .select()

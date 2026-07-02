@@ -17,7 +17,7 @@ impl Database {
                 ai_instructions        TEXT,
                 outline                TEXT,
                 target_readers         TEXT,
-                phase_resolution_mode  TEXT NOT NULL DEFAULT 'reading'
+                phase_resolution_mode  TEXT NOT NULL DEFAULT 'auto'
                                          CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
                 created_at             TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1957,6 +1957,40 @@ impl Database {
                 ON event_relations(effect_event_id);",
         )?;
 
+        // Fix (DB health audit 2026-07): FK child columns that lacked a covering
+        // index. Without one, every ON DELETE CASCADE / SET NULL / RESTRICT check
+        // full-scans the child table when the parent row is deleted; the
+        // self-referential tree_nodes.parent_id in particular makes bulk subtree
+        // deletes O(n²). All idempotent (IF NOT EXISTS); tables are created above.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent ON tree_nodes(parent_id);
+             CREATE INDEX IF NOT EXISTS idx_tree_nodes_location ON tree_nodes(location_id);
+             CREATE INDEX IF NOT EXISTS idx_tree_nodes_pov ON tree_nodes(pov_character_id);
+             CREATE INDEX IF NOT EXISTS idx_ai_usage_scene_node ON ai_usage(scene_node_id);
+             CREATE INDEX IF NOT EXISTS idx_map_node_positions_ai_branch ON map_node_positions(ai_branch_id);
+             CREATE INDEX IF NOT EXISTS idx_map_node_positions_snippet ON map_node_positions(snippet_id);
+             CREATE INDEX IF NOT EXISTS idx_map_node_positions_sticky ON map_node_positions(sticky_id);
+             CREATE INDEX IF NOT EXISTS idx_chat_sessions_node ON chat_sessions(node_id);
+             CREATE INDEX IF NOT EXISTS idx_post_effect_annotations_scene ON post_effect_annotations(scene_id);
+             CREATE INDEX IF NOT EXISTS idx_pear_run ON post_effect_annotation_relations(run_id);
+             CREATE INDEX IF NOT EXISTS idx_pear_project ON post_effect_annotation_relations(project_id);
+             CREATE INDEX IF NOT EXISTS idx_post_effect_runs_scope_target ON post_effect_runs(scope_target_id);
+             CREATE INDEX IF NOT EXISTS idx_psnap_entries_version ON project_snapshot_entries(version_id);
+             CREATE INDEX IF NOT EXISTS idx_psnap_tree_body_version ON project_snapshot_tree_nodes(body_version_id);
+             CREATE INDEX IF NOT EXISTS idx_psnap_codex_body_version ON project_snapshot_codex_entries(body_version_id);
+             CREATE INDEX IF NOT EXISTS idx_psnap_snippets_body_version ON project_snapshot_snippets(body_version_id);
+             CREATE INDEX IF NOT EXISTS idx_pinned_codex_entry ON chat_session_pinned_codex(codex_entry_id);
+             CREATE INDEX IF NOT EXISTS idx_pinned_codex_snippet ON chat_session_pinned_codex(snippet_id);
+             CREATE INDEX IF NOT EXISTS idx_pinned_codex_sticky ON chat_session_pinned_codex(sticky_id);
+             CREATE INDEX IF NOT EXISTS idx_trash_items_origin_codex ON trash_items(origin_codex_id);
+             CREATE INDEX IF NOT EXISTS idx_trash_items_origin_scene ON trash_items(origin_scene_id);
+             CREATE INDEX IF NOT EXISTS idx_cpdo_definition ON codex_phase_detail_overrides(definition_id);
+             CREATE INDEX IF NOT EXISTS idx_codex_dismissed_dismissed ON codex_dismissed_relations(dismissed_id);
+             CREATE INDEX IF NOT EXISTS idx_scene_beat_pov_char ON scene_beat_pov_cache(pov_character_id);
+             CREATE INDEX IF NOT EXISTS idx_map_ai_branches_session ON map_ai_branches(session_id);
+             CREATE INDEX IF NOT EXISTS idx_chat_summaries_last_msg ON chat_summaries(last_msg_id);",
+        )?;
+
         Ok(())
     }
 
@@ -2022,9 +2056,38 @@ impl Database {
     /// are also indexed there but never queried for English projects).
     pub(super) fn ensure_en_fts(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS fts_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            "CREATE TABLE IF NOT EXISTS fts_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
 
-             CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts_en USING fts5(
+        // Fix (DB health audit 2026-07): the `_en` AFTER DELETE triggers below
+        // used to be language-guarded (`WHEN (SELECT language FROM projects ...)
+        // LIKE 'en%'`). On an FK ON DELETE CASCADE the parent row (projects /
+        // chat_sessions) is deleted *first*, so the guard subquery returns NULL,
+        // the guard fails, and the `_en` index row is never removed → orphan.
+        // When the base table later reuses that rowid, INSERT into the
+        // standalone (non-external-content) FTS5 table fails with a duplicate
+        // rowid constraint, blocking all subsequent writes on that table.
+        // Deleting a non-existent rowid is a harmless no-op, so the guard is
+        // unnecessary on delete: drop the legacy guarded triggers once and let
+        // the unguarded definitions below recreate them. Idempotent via the
+        // `en_ad_unguarded` flag so this runs at most once per DB.
+        let ad_unguarded: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM fts_meta WHERE key = 'en_ad_unguarded')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !ad_unguarded {
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS codex_fts_en_ad;
+                 DROP TRIGGER IF EXISTS snippets_fts_en_ad;
+                 DROP TRIGGER IF EXISTS chat_messages_fts_en_ad;
+                 DROP TRIGGER IF EXISTS tree_nodes_fts_en_ad;
+                 DROP TRIGGER IF EXISTS post_effect_annotations_fts_en_ad;",
+            )?;
+        }
+
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS codex_fts_en USING fts5(
                  name, aliases, summary, tags_cache, content,
                  tokenize='porter unicode61'
              );
@@ -2114,7 +2177,6 @@ impl Database {
                  VALUES (new.rowid, COALESCE(new.title,''), COALESCE(new.content,''));
              END;
              CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_en_ad AFTER DELETE ON tree_nodes
-               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
              BEGIN
                  DELETE FROM tree_nodes_fts_en WHERE rowid = old.rowid;
              END;
@@ -2134,7 +2196,6 @@ impl Database {
                  INSERT INTO post_effect_annotations_fts_en(rowid, content) VALUES (new.rowid, new.content);
              END;
              CREATE TRIGGER IF NOT EXISTS post_effect_annotations_fts_en_ad AFTER DELETE ON post_effect_annotations
-               WHEN (SELECT language FROM projects WHERE id = old.project_id) LIKE 'en%'
              BEGIN
                  DELETE FROM post_effect_annotations_fts_en WHERE rowid = old.rowid;
              END;
@@ -3676,7 +3737,7 @@ mod tests {
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL DEFAULT 't',
                     language TEXT NOT NULL DEFAULT 'ja',
-                    phase_resolution_mode TEXT NOT NULL DEFAULT 'reading',
+                    phase_resolution_mode TEXT NOT NULL DEFAULT 'auto',
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                  );

@@ -276,6 +276,53 @@ mod tests {
         }
     }
 
+    /// M13 guard (DB health audit 2026-07): the in-app writer (this module) and
+    /// the MCP writer (`grimodex_core::change_events`) are two copies of the
+    /// same canonical serialization + hash chain that write to the *same*
+    /// change_events table. If they ever diverge, chain verification breaks.
+    /// This locks them: append the same events through both and require an
+    /// identical tail hash, so a future edit that drifts one copy fails CI.
+    #[test]
+    fn in_app_and_core_writers_agree_on_hash_chain() {
+        let events = [
+            event("uid-1", None, 1),
+            event("uid-2", None, 2),
+            event("uid-3", None, 3),
+        ];
+        let core_events: Vec<grimodex_core::change_events::AppendChangeEvent> = events
+            .iter()
+            .map(|e| grimodex_core::change_events::AppendChangeEvent {
+                event_uid: e.event_uid.clone(),
+                scene_id: e.scene_id.clone(),
+                domain: e.domain.clone(),
+                op_type: e.op_type.clone(),
+                entity_type: e.entity_type.clone(),
+                entity_id: e.entity_id.clone(),
+                payload: e.payload.clone(),
+                timestamp: e.timestamp,
+            })
+            .collect();
+
+        // setup_conn() already seeds project 'p'.
+        let conn_a = setup_conn();
+        let a = append_change_events(&conn_a, "p", "session-1", &events).unwrap();
+
+        let conn_b = setup_conn();
+        let b = grimodex_core::change_events::append_change_events(
+            &conn_b,
+            "p",
+            "session-1",
+            &core_events,
+        )
+        .unwrap();
+
+        assert_eq!(
+            a.tail_hash, b.tail_hash,
+            "in-app and core change-event writers diverged on the hash chain"
+        );
+        assert_eq!(a.tail_sequence, b.tail_sequence);
+    }
+
     fn setup_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(

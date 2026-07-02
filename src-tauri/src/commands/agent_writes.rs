@@ -266,7 +266,7 @@ fn agent_codex_create_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -448,7 +448,7 @@ fn agent_codex_update_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -609,7 +609,7 @@ fn agent_write_bundle_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -728,7 +728,7 @@ fn agent_snippet_create_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -893,7 +893,7 @@ fn agent_propose_scene_body_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -963,7 +963,7 @@ fn agent_accept_prose_stage_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -1033,7 +1033,7 @@ fn agent_discard_prose_stage_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -1197,7 +1197,7 @@ fn agent_undo_journal_impl(
         })();
         match result {
             Ok(()) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(json!({ "ok": true }))
             }
             Err(e) => {
@@ -2075,7 +2075,7 @@ fn agent_event_create_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -2322,7 +2322,7 @@ fn agent_event_update_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -2419,7 +2419,7 @@ fn agent_event_delete_impl(db: &Database, payload: AgentEventIdPayload) -> anyho
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -2523,7 +2523,7 @@ fn agent_event_set_participants_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -2652,7 +2652,7 @@ fn agent_scene_event_mutate_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
@@ -2797,7 +2797,7 @@ fn agent_event_relation_mutate_impl(
 
         match result {
             Ok(res) => {
-                conn.execute_batch("COMMIT")?;
+                grimodex_core::commit_or_rollback(conn)?;
                 Ok(serde_json::to_value(res)?)
             }
             Err(e) => {
