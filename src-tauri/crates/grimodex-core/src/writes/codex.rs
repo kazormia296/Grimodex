@@ -471,7 +471,7 @@ pub fn tracked_codex_create(
     let result = tracked_codex_create_in_tx(conn, input, &undo_id, &event_uid, timestamp, &now);
     match result {
         Ok(res) => {
-            conn.execute_batch("COMMIT")?;
+            crate::commit_or_rollback(conn)?;
             Ok(res)
         }
         Err(e) => {
@@ -495,7 +495,7 @@ pub fn tracked_codex_update(
     let result = tracked_codex_update_in_tx(conn, input, &undo_id, &event_uid, timestamp, &now);
     match result {
         Ok(res) => {
-            conn.execute_batch("COMMIT")?;
+            crate::commit_or_rollback(conn)?;
             Ok(res)
         }
         Err(e) => {

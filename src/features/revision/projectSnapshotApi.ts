@@ -116,6 +116,16 @@ function buildInsert(
   };
 }
 
+/**
+ * Convert a drizzle insert query's `.toSQL()` output into a db_execute_batch
+ * statement (mirrors src/features/attribution/api.ts の toSQL 取り回し). The
+ * snapshot tables are all TEXT/INTEGER columns, so `.toSQL()` only emits
+ * string/number/null params — the `SqlParam[]` cast is a widening no-op.
+ */
+function toBatchStmt(query: { sql: string; params: unknown[] }): BatchStmt {
+  return { sql: query.sql, params: query.params as SqlParam[], method: "run" };
+}
+
 // ── createProjectSnapshot ──────────────────────────────────────────
 
 /** Get the latest revision ID for an entity, or create one if content differs. */
@@ -148,9 +158,14 @@ async function getOrCreateRevisionId(
 /**
  * Create a named project snapshot capturing the current state of every scope
  * (structural metadata + body content via content_versions pointer +
- * ancillary tables as aux JSON). Snapshot creation is not strictly
- * transactional — partial-failure leftovers in content_versions are harmless
- * and prunable. Restore *is* transactional.
+ * ancillary tables as aux JSON). The snapshot header row and every body row
+ * (tree_nodes / codex / snippets / entries / aux) are written in a single
+ * db_execute_batch transaction, so a mid-write failure rolls back the whole
+ * snapshot instead of leaving an incomplete one behind as a restore candidate.
+ * Body content is materialised into content_versions *before* the batch (via
+ * getOrCreateRevisionId); those pointer rows are the only non-transactional
+ * part, and any partial-failure leftovers there are harmless and prunable.
+ * Restore *is* transactional too.
  */
 export async function createProjectSnapshot(params: {
   name: string;
@@ -161,13 +176,25 @@ export async function createProjectSnapshot(params: {
   const snapshotId = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  await db.insert(projectSnapshots).values({
-    id: snapshotId,
-    projectId: PROJECT_ID,
-    name,
-    description: description ?? null,
-    createdAt: now,
-  });
+  // すべての書き込みを 1 バッチに積み、db_execute_batch(Rust 側 execute_batch_tx
+  // = 単一 lock 内 BEGIN..COMMIT)で原子的に実行する。ヘッダ行を先頭に置くことで
+  // 本体行 → ヘッダ の FK(snapshot_id)が同一トランザクション内で満たされ、途中
+  // 失敗なら全ロールバックされる（不完全スナップショットを復元候補に残さない）。
+  const statements: BatchStmt[] = [];
+  statements.push(
+    toBatchStmt(
+      db
+        .insert(projectSnapshots)
+        .values({
+          id: snapshotId,
+          projectId: PROJECT_ID,
+          name,
+          description: description ?? null,
+          createdAt: now,
+        })
+        .toSQL(),
+    ),
+  );
 
   // Capture tree_nodes (scenes / notes / folders).
   // Folders have empty content; getOrCreateRevisionId is skipped for them.
@@ -220,7 +247,11 @@ export async function createProjectSnapshot(params: {
     });
   }
   if (treeNodeRows.length > 0) {
-    await db.insert(projectSnapshotTreeNodes).values(treeNodeRows);
+    statements.push(
+      toBatchStmt(
+        db.insert(projectSnapshotTreeNodes).values(treeNodeRows).toSQL(),
+      ),
+    );
   }
 
   // Capture codex_entries
@@ -259,7 +290,11 @@ export async function createProjectSnapshot(params: {
     });
   }
   if (codexSnapRows.length > 0) {
-    await db.insert(projectSnapshotCodexEntries).values(codexSnapRows);
+    statements.push(
+      toBatchStmt(
+        db.insert(projectSnapshotCodexEntries).values(codexSnapRows).toSQL(),
+      ),
+    );
   }
 
   // Capture snippets
@@ -291,15 +326,24 @@ export async function createProjectSnapshot(params: {
     });
   }
   if (snippetSnapRows.length > 0) {
-    await db.insert(projectSnapshotSnippets).values(snippetSnapRows);
+    statements.push(
+      toBatchStmt(
+        db.insert(projectSnapshotSnippets).values(snippetSnapRows).toSQL(),
+      ),
+    );
   }
 
   // Legacy mirror table: keep one row per body_version_id so older clients
   // can still derive entryCount and the "content-only" restore path works.
   if (versionIds.length > 0) {
-    await db
-      .insert(projectSnapshotEntries)
-      .values(versionIds.map((versionId) => ({ snapshotId, versionId })));
+    statements.push(
+      toBatchStmt(
+        db
+          .insert(projectSnapshotEntries)
+          .values(versionIds.map((versionId) => ({ snapshotId, versionId })))
+          .toSQL(),
+      ),
+    );
   }
 
   // Aux scopes: one JSON row per aux scope, capturing the current project's
@@ -331,9 +375,12 @@ export async function createProjectSnapshot(params: {
     });
   }
   if (auxInserts.length > 0) {
-    await db.insert(projectSnapshotAux).values(auxInserts);
+    statements.push(
+      toBatchStmt(db.insert(projectSnapshotAux).values(auxInserts).toSQL()),
+    );
   }
 
+  await rawBatch(statements);
   return { id: snapshotId, entryCount: versionIds.length };
 }
 

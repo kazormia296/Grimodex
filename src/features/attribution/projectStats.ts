@@ -1,6 +1,11 @@
 import { db } from "@/db/client";
-import { authorshipSpans, treeNodes, codexEntries } from "@/db/schema";
-import { inArray, eq, and, isNotNull, or } from "drizzle-orm";
+import {
+  authorshipSpans,
+  treeNodes,
+  codexEntries,
+  snippets,
+} from "@/db/schema";
+import { inArray, eq, and, isNotNull } from "drizzle-orm";
 import type { AttributionStats } from "./attributionStats";
 
 export interface SceneAttributionStats extends AttributionStats {
@@ -82,87 +87,103 @@ export interface KnowledgeAttributionStats extends AttributionStats {
  * Load attribution stats for Codex/Snippet owner lanes (non-scene content).
  * Returns per-entity stats keyed by `${lane}:${entityId}`.
  */
+interface KnowledgeSpanRow {
+  entityId: string | null;
+  fromPos: number;
+  toPos: number;
+  source: string;
+  model: string | null;
+}
+
 export async function loadKnowledgeAttributionStats(
   projectId: string,
 ): Promise<Record<string, KnowledgeAttributionStats>> {
-  const spans = await db
-    .select()
-    .from(authorshipSpans)
-    .where(
-      or(
-        isNotNull(authorshipSpans.codexEntryId),
-        isNotNull(authorshipSpans.snippetId),
+  // codex / snippet を個別クエリに分け、各々 isNotNull 単独述語で対象インデックス
+  // (idx_authorship_codex / idx_authorship_snippet) に乗せつつ、所有側テーブルとの
+  // JOIN で現プロジェクトのみへスコープする。旧実装は OR 述語の全表スキャンに加え、
+  // snippet レーンを一切スコープしておらず、マルチプロジェクト DB で他プロジェクト
+  // 由来の AI 文字数が混入していた（データ漏洩）。
+  const [codexSpans, snippetSpans] = await Promise.all([
+    db
+      .select({
+        entityId: authorshipSpans.codexEntryId,
+        fromPos: authorshipSpans.fromPos,
+        toPos: authorshipSpans.toPos,
+        source: authorshipSpans.source,
+        model: authorshipSpans.model,
+      })
+      .from(authorshipSpans)
+      .innerJoin(
+        codexEntries,
+        eq(authorshipSpans.codexEntryId, codexEntries.id),
+      )
+      .where(
+        and(
+          isNotNull(authorshipSpans.codexEntryId),
+          eq(codexEntries.projectId, projectId),
+        ),
       ),
-    );
+    db
+      .select({
+        entityId: authorshipSpans.snippetId,
+        fromPos: authorshipSpans.fromPos,
+        toPos: authorshipSpans.toPos,
+        source: authorshipSpans.source,
+        model: authorshipSpans.model,
+      })
+      .from(authorshipSpans)
+      .innerJoin(snippets, eq(authorshipSpans.snippetId, snippets.id))
+      .where(
+        and(
+          isNotNull(authorshipSpans.snippetId),
+          eq(snippets.projectId, projectId),
+        ),
+      ),
+  ]);
 
   const result: Record<string, KnowledgeAttributionStats> = {};
 
-  for (const span of spans) {
-    const lane: KnowledgeLane | null = span.codexEntryId
-      ? "codex"
-      : span.snippetId
-        ? "snippet"
-        : null;
-    const entityId = span.codexEntryId ?? span.snippetId;
-    if (!lane || !entityId) continue;
+  const accumulate = (lane: KnowledgeLane, rows: KnowledgeSpanRow[]) => {
+    for (const span of rows) {
+      const entityId = span.entityId;
+      if (!entityId) continue;
 
-    const key = `${lane}:${entityId}`;
-    if (!result[key]) {
-      result[key] = {
-        lane,
-        entityId,
-        human: 0,
-        ai: 0,
-        unknown: 0,
-        unmarked: 0,
-        total: 0,
-        modelBreakdown: {},
-      };
+      const key = `${lane}:${entityId}`;
+      if (!result[key]) {
+        result[key] = {
+          lane,
+          entityId,
+          human: 0,
+          ai: 0,
+          unknown: 0,
+          unmarked: 0,
+          total: 0,
+          modelBreakdown: {},
+        };
+      }
+      const len = span.toPos - span.fromPos;
+      result[key].total += len;
+      switch (span.source) {
+        case "ai":
+          result[key].ai += len;
+          {
+            const model = span.model || "__unknown_model__";
+            result[key].modelBreakdown[model] =
+              (result[key].modelBreakdown[model] ?? 0) + len;
+          }
+          break;
+        case "human":
+          result[key].human += len;
+          break;
+        case "unknown":
+          result[key].unknown += len;
+          break;
+      }
     }
-    const len = span.toPos - span.fromPos;
-    result[key].total += len;
-    switch (span.source) {
-      case "ai":
-        result[key].ai += len;
-        {
-          const model = span.model || "__unknown_model__";
-          result[key].modelBreakdown[model] =
-            (result[key].modelBreakdown[model] ?? 0) + len;
-        }
-        break;
-      case "human":
-        result[key].human += len;
-        break;
-      case "unknown":
-        result[key].unknown += len;
-        break;
-    }
-  }
+  };
 
-  // Filter to project scope via a lightweight join check
-  const codexIds = [
-    ...new Set(
-      Object.values(result)
-        .filter((r) => r.lane === "codex")
-        .map((r) => r.entityId),
-    ),
-  ];
-  if (codexIds.length > 0) {
-    const rows = await db
-      .select({ id: codexEntries.id })
-      .from(codexEntries)
-      .where(
-        and(
-          eq(codexEntries.projectId, projectId),
-          inArray(codexEntries.id, codexIds),
-        ),
-      );
-    const allowed = new Set(rows.map((r) => r.id));
-    for (const key of Object.keys(result)) {
-      const r = result[key];
-      if (r.lane === "codex" && !allowed.has(r.entityId)) delete result[key];
-    }
-  }
+  accumulate("codex", codexSpans);
+  accumulate("snippet", snippetSpans);
 
   return result;
 }

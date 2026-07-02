@@ -2105,7 +2105,7 @@ fn in_immediate_tx<T>(
     conn.execute_batch("BEGIN IMMEDIATE")?;
     match f(conn) {
         Ok(v) => {
-            conn.execute_batch("COMMIT")?;
+            grimodex_core::commit_or_rollback(conn)?;
             Ok(v)
         }
         Err(e) => {

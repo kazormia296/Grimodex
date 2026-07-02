@@ -1,4 +1,5 @@
 import { db } from "@/db/client";
+import { invoke } from "@/lib/tauri";
 import {
   events,
   eventParticipants,
@@ -178,41 +179,42 @@ export async function createEvent(data: {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   let ordinal = data.ordinal;
-  // ordinal 自動採番（max の次）は read→insert の競合に弱い。max 読取と insert を
-  // 1 transaction に閉じることで、二重発火時の ordinal 衝突を防ぐ。
-  await db.transaction(async (tx) => {
-    if (ordinal === undefined) {
-      const existing = await tx
-        .select()
-        .from(events)
-        .where(eq(events.projectId, data.projectId))
-        .orderBy(asc(events.ordinal), asc(events.id));
-      ordinal = nextEventOrdinal(
-        existing.map((e) => normalizeEvent(e).ordinal),
-      );
-    }
-    await tx.insert(events).values({
-      id,
-      projectId: data.projectId,
-      title: data.title ?? "",
-      note: data.note ?? null,
-      detail: data.detail ?? null,
-      ordinal,
-      primaryCodexId: data.primaryCodexId ?? null,
-      locationCodexId: data.locationCodexId ?? null,
-      startTime: data.startTime ?? null,
-      endTime: data.endTime ?? null,
-      startMinute: data.startMinute ?? null,
-      endMinute: data.endMinute ?? null,
-      startGranularity: data.startGranularity ?? "none",
-      endGranularity: data.endGranularity ?? "none",
-      precision: data.precision ?? "exact",
-      kind: data.kind ?? "generic",
-      secret: data.secret ?? false,
-      revealSceneId: data.revealSceneId ?? null,
-      createdAt: now,
-      updatedAt: now,
-    });
+  if (ordinal === undefined) {
+    // ordinal は base62 の fractional-index（nextEventOrdinal で JS 生成）なので
+    // SQL 側 MAX+1 には畳めない。max 読取→採番は read で行う。sqlite-proxy では
+    // db.transaction の BEGIN/COMMIT が別 IPC となり共有接続上の無関係な書込みを
+    // 巻き込むため使わない。read→insert 間の稀な ordinal 衝突は listEvents の
+    // (ordinal,id) 二段ソートが吸収する（既存挙動どおり）。
+    const existing = await db
+      .select()
+      .from(events)
+      .where(eq(events.projectId, data.projectId))
+      .orderBy(asc(events.ordinal), asc(events.id));
+    ordinal = nextEventOrdinal(existing.map((e) => normalizeEvent(e).ordinal));
+  }
+  // 単一 INSERT は 1 IPC = 1 statement で原子的（db_execute_batch は複数文を
+  // 原子化する用途。ここは 1 文なので通常の drizzle insert で十分）。
+  await db.insert(events).values({
+    id,
+    projectId: data.projectId,
+    title: data.title ?? "",
+    note: data.note ?? null,
+    detail: data.detail ?? null,
+    ordinal,
+    primaryCodexId: data.primaryCodexId ?? null,
+    locationCodexId: data.locationCodexId ?? null,
+    startTime: data.startTime ?? null,
+    endTime: data.endTime ?? null,
+    startMinute: data.startMinute ?? null,
+    endMinute: data.endMinute ?? null,
+    startGranularity: data.startGranularity ?? "none",
+    endGranularity: data.endGranularity ?? "none",
+    precision: data.precision ?? "exact",
+    kind: data.kind ?? "generic",
+    secret: data.secret ?? false,
+    revealSceneId: data.revealSceneId ?? null,
+    createdAt: now,
+    updatedAt: now,
   });
   const [row] = await db.select().from(events).where(eq(events.id, id));
   bumpChronicleRevision();
@@ -306,25 +308,35 @@ export async function setEventParticipants(
   projectId: string,
   codexEntryIds: string[],
 ): Promise<void> {
-  // 全削除→再挿入を 1 transaction に閉じ、insert 失敗時に delete を巻き戻して
-  // 参加者集合が中途半端に空になるのを防ぐ（atomic な置換）。
   // event_participants は project_id 列を持たないため、まず対象 event が
   // projectId に属するかを検証してから書き換える（XPROJ fail-closed：他
   // プロジェクトの event の参加者は触れない。linkSceneToEvent と同じ流儀）。
-  await db.transaction(async (tx) => {
-    const [ev] = await tx
-      .select({ id: events.id })
-      .from(events)
-      .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
-    if (!ev) return;
-    await tx
-      .delete(eventParticipants)
-      .where(eq(eventParticipants.eventId, eventId));
-    if (codexEntryIds.length === 0) return;
-    await tx
+  // この検証は read-only gate なので batch の外に置く（属さなければ何も書かない）。
+  const [ev] = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(and(eq(events.id, eventId), eq(events.projectId, projectId)));
+  if (!ev) return;
+  // 全削除→再挿入を db_execute_batch(Rust 側 execute_batch_tx = 単一 lock 内
+  // BEGIN..COMMIT)で原子化し、insert 失敗時に delete を巻き戻して参加者集合が
+  // 中途半端に空になるのを防ぐ。sqlite-proxy では db.transaction の BEGIN/COMMIT が
+  // 別 IPC となり共有接続上の無関係な書込みを巻き込むため使わない（attribution/api.ts
+  // の replaceAuthorshipSpansForLaneAtomic と同じ流儀）。
+  const del = db
+    .delete(eventParticipants)
+    .where(eq(eventParticipants.eventId, eventId))
+    .toSQL();
+  const statements: { sql: string; params: unknown[]; method: string }[] = [
+    { sql: del.sql, params: del.params, method: "run" },
+  ];
+  if (codexEntryIds.length > 0) {
+    const ins = db
       .insert(eventParticipants)
-      .values(codexEntryIds.map((codexEntryId) => ({ eventId, codexEntryId })));
-  });
+      .values(codexEntryIds.map((codexEntryId) => ({ eventId, codexEntryId })))
+      .toSQL();
+    statements.push({ sql: ins.sql, params: ins.params, method: "run" });
+  }
+  await invoke("db_execute_batch", { statements });
   bumpChronicleRevision();
   recordEvent("participants.set", eventId, {
     eventId,

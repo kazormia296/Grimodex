@@ -95,8 +95,9 @@ pub fn restore_codex_authorship_spans(
     let Some(spans_val) = snap.get("authorshipSpans") else {
         return Ok(());
     };
-    let spans: Vec<AuthorshipSpanSnap> =
-        serde_json::from_value(spans_val.clone()).unwrap_or_default();
+    let spans: Vec<AuthorshipSpanSnap> = serde_json::from_value(spans_val.clone()).context(
+        "parse authorship spans from snapshot (refusing to wipe spans on malformed JSON)",
+    )?;
     let now = chrono::Utc::now().to_rfc3339();
     for span in spans {
         let span_id = uuid::Uuid::new_v4().to_string();
@@ -132,8 +133,9 @@ pub fn restore_snippet_authorship_spans(
     let Some(spans_val) = snap.get("authorshipSpans") else {
         return Ok(());
     };
-    let spans: Vec<AuthorshipSpanSnap> =
-        serde_json::from_value(spans_val.clone()).unwrap_or_default();
+    let spans: Vec<AuthorshipSpanSnap> = serde_json::from_value(spans_val.clone()).context(
+        "parse authorship spans from snapshot (refusing to wipe spans on malformed JSON)",
+    )?;
     let now = chrono::Utc::now().to_rfc3339();
     for span in spans {
         let span_id = uuid::Uuid::new_v4().to_string();

@@ -298,7 +298,7 @@ pub async fn propose_scene_body(
 
     match result {
         Ok(res) => {
-            conn.execute_batch("COMMIT").map_err(internal_err)?;
+            grimodex_core::commit_or_rollback(&conn).map_err(internal_err)?;
             let json = serde_json::to_string_pretty(&res).map_err(internal_err)?;
             Ok(CallToolResult::success(vec![rmcp::model::Content::text(
                 json,

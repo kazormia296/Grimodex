@@ -24,6 +24,7 @@ describe("searchSnippets", () => {
     sceneId: null,
     sourceChatMessageId: null,
     usageCount: 0,
+    version: 0,
     createdAt: "2025-01-01T00:00:00Z",
     updatedAt: "2025-01-01T00:00:00Z",
   };

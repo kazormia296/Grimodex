@@ -1416,6 +1416,55 @@ fn test_rebuild_en_fts_repopulates_after_wipe() {
     );
 }
 
+/// Regression (DB health audit 2026-07, C1): the `_en` FTS AFTER DELETE triggers
+/// used to be language-guarded via a subquery on the parent row (projects). On
+/// an FK cascade the parent is deleted first, so the guard evaluated NULL, the
+/// trigger didn't fire, and the `_en` index row was orphaned — then a later
+/// insert that reused the rowid failed with a duplicate-rowid constraint. The
+/// unguarded delete triggers must remove the row on cascade.
+#[test]
+fn test_en_fts_no_orphan_on_cascade_delete() {
+    let db = Database::new(Path::new(":memory:")).expect("open");
+    db.migrate().expect("migrate");
+    let conn = db.conn.lock().expect("lock");
+
+    conn.execute_batch(
+        "INSERT INTO projects(id, title, language) VALUES ('p_en', 'En', 'en');
+         INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+           VALUES ('s1', 'p_en', 'scene', 'Ch1', 'hello world content');",
+    )
+    .expect("seed en scene");
+    let before: i64 = conn
+        .query_row("SELECT count(*) FROM tree_nodes_fts_en", [], |r| r.get(0))
+        .expect("count before");
+    assert_eq!(before, 1, "en scene indexed into _en");
+
+    // Cascade-delete via the parent project. The old guarded trigger would not
+    // fire (parent already gone), leaving an orphan.
+    conn.execute("DELETE FROM projects WHERE id = 'p_en'", [])
+        .expect("delete project");
+    let orphans: i64 = conn
+        .query_row("SELECT count(*) FROM tree_nodes_fts_en", [], |r| r.get(0))
+        .expect("count after");
+    assert_eq!(
+        orphans, 0,
+        "cascade delete must not leave an _en FTS orphan"
+    );
+
+    // Rowid reuse: a fresh en scene reuses the freed rowid; a lingering orphan
+    // would make the trigger's INSERT fail with a duplicate-rowid constraint.
+    conn.execute_batch(
+        "INSERT INTO projects(id, title, language) VALUES ('p_en2', 'En2', 'en');
+         INSERT INTO tree_nodes(id, project_id, node_type, title, content)
+           VALUES ('s2', 'p_en2', 'scene', 'Ch2', 'more content here');",
+    )
+    .expect("reinsert after cascade must not hit a duplicate rowid");
+    let reindexed: i64 = conn
+        .query_row("SELECT count(*) FROM tree_nodes_fts_en", [], |r| r.get(0))
+        .expect("count reindexed");
+    assert_eq!(reindexed, 1, "new en scene indexed cleanly after cascade");
+}
+
 #[test]
 fn test_nullify_codex_source_on_message_delete() {
     let db = test_db();

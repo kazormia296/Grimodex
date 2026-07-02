@@ -15,6 +15,7 @@ impl Database {
              INSERT INTO snippets_fts_en(snippets_fts_en) VALUES('optimize');
              INSERT INTO chat_messages_fts_en(chat_messages_fts_en) VALUES('optimize');
              INSERT INTO tree_nodes_fts_en(tree_nodes_fts_en) VALUES('optimize');
+             INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts) VALUES('optimize');
              INSERT INTO post_effect_annotations_fts_en(post_effect_annotations_fts_en) VALUES('optimize');",
         )?;
         Ok(())
@@ -42,7 +43,14 @@ impl Database {
         // LIKE when the query is short or no trigram-friendly token remains.
         let match_query = to_fts_match(query);
         let use_like = query.chars().count() < 3 || match_query.is_empty();
-        let like_pattern = format!("%{query}%");
+        // Escape LIKE metacharacters so a query containing % or _ matches them
+        // literally instead of as wildcards (paired with `ESCAPE '\'` in the
+        // fallback LIKE clauses below). Backslash first so we don't double-escape.
+        let like_escaped = query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like_pattern = format!("%{like_escaped}%");
 
         let is_en: bool = conn
             .query_row(
@@ -58,7 +66,7 @@ impl Database {
                     "SELECT id, title, COALESCE(synopsis, '')
                      FROM tree_nodes
                      WHERE project_id = ?1 AND node_type = 'scene'
-                       AND (title LIKE ?2 OR content LIKE ?2)
+                       AND (title LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\')
                      LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
@@ -112,7 +120,7 @@ impl Database {
                     "SELECT id, name, COALESCE(summary, '')
                      FROM codex_entries
                      WHERE project_id = ?1
-                       AND (name LIKE ?2 OR aliases LIKE ?2 OR summary LIKE ?2 OR content LIKE ?2)
+                       AND (name LIKE ?2 ESCAPE '\\' OR aliases LIKE ?2 ESCAPE '\\' OR summary LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\')
                      LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
@@ -161,7 +169,7 @@ impl Database {
                 let mut stmt = conn.prepare(
                     "SELECT id, title, COALESCE(tags_cache, '')
                      FROM snippets
-                     WHERE project_id = ?1 AND (title LIKE ?2 OR content LIKE ?2)
+                     WHERE project_id = ?1 AND (title LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\')
                      LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
@@ -220,7 +228,7 @@ impl Database {
                      JOIN chat_sessions cs ON cs.id = cm.session_id
                      WHERE cs.project_id = ?1
                        AND cm.role IN ('user', 'assistant')
-                       AND cm.content LIKE ?2
+                       AND cm.content LIKE ?2 ESCAPE '\\'
                      LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(
@@ -279,7 +287,8 @@ impl Database {
             "INSERT INTO codex_fts(codex_fts) VALUES('rebuild');
              INSERT INTO snippets_fts(snippets_fts) VALUES('rebuild');
              INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('rebuild');
-             INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('rebuild');",
+             INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('rebuild');
+             INSERT INTO post_effect_annotations_fts(post_effect_annotations_fts) VALUES('rebuild');",
         )?;
         rebuild_en_fts_sql(&conn)?;
         Ok(())
