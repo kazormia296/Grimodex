@@ -260,6 +260,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // bystander と誤判定され、束縛が二度と書かれない (= 記録の恒久停止)。
       // swap の成否が確定した時点で切替は終わり、以降の記録可否は
       // bindingInvalidated (rebind 完了まで true) が閉じる。
+      // 既知残余 (理論値): end 後〜正規 rebind 前に完了した別経路の init は
+      // 束縛を書けるが、その init は swap 済みの新 DB から tail を読むため
+      // 「旧 workspace の束縛で新 chain に書く」誤束縛にはならない。
       beginWorkspaceSwitch();
       let result: OpenWorkspaceResult;
       let swapDone = false;
@@ -267,6 +270,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         result = await invoke<OpenWorkspaceResult>("open_workspace", {
           path,
         });
+        // swap 完了。Rust 側 open_workspace は swap 以降 infallible
+        // (src-tauri/src/commands/workspace.rs の不変条件コメント参照) なので
+        // 「invoke エラー ⟹ swap 未実行」が成立し、下の restoreBinding 判定が
+        // 安全になる。
         swapDone = true;
       } finally {
         // swap 未実行の失敗 = 旧 workspace 続行なので旧束縛は依然正しい →

@@ -333,6 +333,11 @@ export async function initRecorderForProject(
     // disabled でも束縛自体は書けたことにする (記録可否は enabled 側が閉じる)。
     // これで後から toggle-ON → init される流れでも invalidated が残らない。
     state.bindingInvalidated = false;
+    // 過去の enabled init の promise を残すと、後の enabled init が複合キー
+    // 一致で stale promise を short-circuit し、旧 workspace の tail を束縛に
+    // 使い続ける理論穴がある (r5 Minor-3)。disabled バインドは tail を読まない
+    // ので必ず破棄し、次の enabled init に tail を引き直させる。
+    state.initPromise = null;
     reportDroppedWhileInvalidated();
     // Clear any pending queue and timer so events from the prior project cannot
     // flush into this (OFF) project after a switch.

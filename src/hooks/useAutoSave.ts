@@ -110,9 +110,12 @@ export function createAutoSave(
     // inFlight を再読し、pending は cancel → 即時実行する。runSave はエラーを
     // 内部処理するのでこの await は reject しない。
     // 上限 20 周: save 自身が schedule を再誘発し続ける等で理論上 livelock
-    // するため打ち切る (r5 Minor-1)。上限到達時の未保存分は
-    // awaitAllPendingSceneWrites の write チェーン待ちと Rust 側
-    // WORKSPACE_SWITCHING 拒否の防御に委ねる。
+    // するため打ち切る (r5 Minor-1)。注意: 上限到達時に残った pending の
+    // debounce は防御の外 — 発行済み write は awaitAllPendingSceneWrites が、
+    // swap 区間の発行は Rust 側 WORKSPACE_SWITCHING 拒否が止めるが、打ち切り
+    // 後にタイマーで発火する save は切替完了後の新 DB に着地しうる (pre-M3 の
+    // 「open 後に発行された write は新 DB に行く」と同型の残余。到達には
+    // save 実行中の再入力が 20 回連続する必要があり実運用ではまず起きない)。
     for (let round = 0; round < 20; round++) {
       if (!inFlight && !pending) return;
       const running = inFlight;

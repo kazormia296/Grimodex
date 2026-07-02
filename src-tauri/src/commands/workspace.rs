@@ -321,24 +321,54 @@ pub(crate) async fn open_workspace(
                 path: ws_path,
             });
 
+            // =================================================================
+            // 不変条件: swap (上の *inner = Some(...)) 以降は絶対に Err を
+            // 返さないこと (infallible)。フロント (workspace/store.ts) の
+            // endWorkspaceSwitch({restoreBinding}) 判定は「invoke エラー ⟹
+            // swap 未実行」に依存しており、swap 後に Err を返すと旧束縛が
+            // 復元され、旧束縛のまま新 DB へ timelapse が記録される (C1 の
+            // 最悪形)。以降の失敗は tracing::warn で握って続行する
+            // (workspace 自体は開けているので open 全体を失敗させない方が
+            // 正しい)。残余: spawn_blocking の JoinError (swap 後の panic)
+            // だけはこの契約の外だが、unwrap() 禁止のコードベースで panic は
+            // 既に異常系。
+            // =================================================================
+
             // Semantic search の in-memory cache は前 workspace の scene_id を握っているので
             // 切替時に必ず捨てる (UUID 衝突は起きないが、安全側に倒す)。
-            semantic_cache.clear()?;
-            codex_semantic_cache.clear()?;
-            events_semantic_cache.clear()?;
-            chat_semantic_cache.clear()?;
+            // 失敗 (poisoned mutex) は stale cache を許容して続行 — 検索結果が
+            // 一時的に古くなるだけで、次の clear / 再 index で回復する。
+            if let Err(e) = semantic_cache.clear() {
+                tracing::warn!("semantic cache clear on workspace open failed: {e}");
+            }
+            if let Err(e) = codex_semantic_cache.clear() {
+                tracing::warn!("codex semantic cache clear on workspace open failed: {e}");
+            }
+            if let Err(e) = events_semantic_cache.clear() {
+                tracing::warn!("events semantic cache clear on workspace open failed: {e}");
+            }
+            if let Err(e) = chat_semantic_cache.clear() {
+                tracing::warn!("chat semantic cache clear on workspace open failed: {e}");
+            }
 
             // Update global settings (write_lock で read-modify-write を
             // 原子化。save_global_settings / seed_sample_workspace と並行
-            // しても lost update しない)
-            let _gs_guard = gs_path
-                .write_lock
-                .lock()
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let mut settings = workspace::read_global_settings(&gs_path.path);
-            let now = chrono::Utc::now().to_rfc3339();
-            workspace::touch_recent_workspace(&mut settings, &path, &now);
-            workspace::write_global_settings(&gs_path.path, &settings)?;
+            // しても lost update しない)。失敗 (ENOSPC / EACCES / AV による
+            // rename ロック / 毒化) は recent-workspaces が更新されないだけ
+            // なので warn で続行 (上の不変条件)。
+            match gs_path.write_lock.lock() {
+                Ok(_gs_guard) => {
+                    let mut settings = workspace::read_global_settings(&gs_path.path);
+                    let now = chrono::Utc::now().to_rfc3339();
+                    workspace::touch_recent_workspace(&mut settings, &path, &now);
+                    if let Err(e) = workspace::write_global_settings(&gs_path.path, &settings) {
+                        tracing::warn!("global settings update on workspace open failed: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("global settings lock on workspace open failed: {e}");
+                }
+            }
 
             let name = workspace::workspace_name(&path);
             Ok(OpenWorkspaceResult { name, is_existing })
