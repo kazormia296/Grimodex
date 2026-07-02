@@ -160,6 +160,8 @@ export async function loadLatestProposedProse(
     replaceTo: parsed.replaceTo,
     anchorText: parsed.anchorText,
     anchorPosition: parsed.anchorPosition,
+    // propose 時点の tree_nodes.version。headless 自動適用の stale 検知に使う。
+    baseVersion: row.baseVersion,
   };
 }
 
@@ -194,6 +196,8 @@ export async function loadAllProposedProse(
       replaceTo: parsed.replaceTo,
       anchorText: parsed.anchorText,
       anchorPosition: parsed.anchorPosition,
+      // propose 時点の tree_nodes.version。headless 自動適用の stale 検知に使う。
+      baseVersion: row.baseVersion,
     };
   });
 }

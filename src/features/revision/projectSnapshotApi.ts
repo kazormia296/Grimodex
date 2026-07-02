@@ -457,7 +457,17 @@ async function restoreLegacyContentOnly(snapshotId: string): Promise<number> {
     if (v.entityType === "scene" || v.entityType === "note") {
       await db
         .update(treeNodes)
-        .set({ content: v.content, updatedAt: now })
+        .set({
+          content: v.content,
+          // 権威的復元も scene 本文の writer — version を進めて pending prose
+          // proposal の stale 検知 (autoApplyProse) を働かせる。OCC 検査は
+          // 付けない (復元を version 衝突で失敗させてはいけない)。
+          // codex/snippet 側は bump しない: 両 store は in-memory に version
+          // 在庫を持つため、store 外から version を動かすと次の OCC 保存が
+          // 偽衝突する (scene は在庫を持たないのでこの問題がない)。
+          version: sql`${treeNodes.version} + 1`,
+          updatedAt: now,
+        })
         .where(eq(treeNodes.id, v.entityId));
     } else if (v.entityType === "codex_entry") {
       await db

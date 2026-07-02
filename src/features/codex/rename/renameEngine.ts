@@ -1,7 +1,7 @@
 import { getSchema } from "@tiptap/core";
 import i18next from "@/lib/i18n";
 import { Node as ProseMirrorNode, type Schema } from "@tiptap/pm/model";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import {
   treeNodes,
@@ -306,6 +306,12 @@ function buildStatements(
         content,
         charCount: countSceneBodyCharsFromJson(content),
         placedBeatPreview: extractPlacedBeatPreviewFromString(content),
+        // 権威的一括上書きも scene 本文の writer なので version を進め、pending
+        // prose proposal の stale 検知 (autoApplyProse) を働かせる。OCC 検査
+        // (WHERE version=?) は付けない — 正当な一括置換を衝突で落とさない。
+        // undo statement も本文を書き戻す writer なので同様に bump する
+        // (scene は FE に version 在庫を持たず OCC 検査も無いので自己衝突しない)。
+        version: sql`${treeNodes.version} + 1`,
         updatedAt: now,
       });
       return {

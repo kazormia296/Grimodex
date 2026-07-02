@@ -16,6 +16,14 @@ export interface PendingProseProposal {
    */
   anchorText?: string;
   anchorPosition?: "before" | "after";
+  /**
+   * propose 時点の tree_nodes.version (prose_staging.base_version)。headless
+   * 自動適用 (autoApplyProse) が「propose 後に本文が書き換わっていないか」の
+   * stale 検知に使う。DB 由来の proposal (loadLatestProposedProse /
+   * loadAllProposedProse) では必ず入る。in-app agent の直接 enqueue
+   * (toolExecutors → diff UI 専用) では省略され、その場合は比較しない。
+   */
+  baseVersion?: number;
 }
 
 interface ProseStagingState {

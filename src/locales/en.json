@@ -3046,6 +3046,7 @@
       "saved": "Saved as Snippet",
       "createFailed": "Failed to create snippet",
       "updateFailed": "Failed to update snippet",
+      "editConflict": "Couldn't save: this snippet was updated in another window. Reload the latest version and edit again.",
       "deleteFailed": "Failed to delete snippet",
       "agentHistoryCreate": "Agent: Create Snippet"
     },

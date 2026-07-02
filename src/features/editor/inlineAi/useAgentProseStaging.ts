@@ -31,6 +31,11 @@ interface InlineAiDiffApi {
 
 /**
  * Bridges agent/MCP prose_staging proposals into the inline-AI diff accept/reject UI.
+ *
+ * ここでは prose_staging.base_version の stale 検知 (autoApplyProse 参照) を
+ * 意図的に行わない: この経路は人間が「現在の本文」に重ねた diff を目視して
+ * 受理する human-in-the-loop であり、propose 後に本文が進んでいても最新本文
+ * ベースで判断できる。version 検査は無人適用 (headless) 専用のガード。
  */
 export function useAgentProseStaging(
   editor: Editor | null,

@@ -5,6 +5,7 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 import { announce } from "@/lib/a11y/announcer";
 import * as snippetApi from "./api";
 import type { Snippet, NewSnippet } from "./api";
+import { SnippetVersionConflictError } from "./occ";
 import { searchSnippets } from "./search";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { captureSnippetDeletion } from "@/features/trash-bin/captureHooks";
@@ -18,6 +19,23 @@ import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
+
+/**
+ * 別窓 / 別プロセスが同じ snippet を先に更新していて OCC 衝突した時のハンドラ。
+ * 既定はトースト通知のみ。編集面が setSnippetEditConflictHandler で
+ * 「最新を読み込む」導線に差し替える (codexStore の同名フックと対称)。
+ * 本文を黙って上書きしないための非破壊フックなので、ここでは store も
+ * timelapse も触らない。
+ */
+let snippetEditConflictHandler: (snippetId: string) => void = () => {
+  toast.error(i18next.t("snippets.store.editConflict"));
+};
+
+export function setSnippetEditConflictHandler(
+  handler: (snippetId: string) => void,
+): void {
+  snippetEditConflictHandler = handler;
+}
 
 export type SnippetSourceFilter =
   | "all"
@@ -220,16 +238,26 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
     const before = get().entries.find((e) => e.id === id);
 
     try {
+      // OCC: 読み込み時点の version を baseVersion として渡す。別窓 / 別プロセスが
+      // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
+      // 成功時は .returning() の行 (version = base + 1) で entries を置き換える
+      // ので、in-memory の version が DB に追従し、連続保存でも自己衝突しない。
       const updated = await snippetApi.updateSnippet(
         getCurrentProjectId(),
         id,
         data,
+        { baseVersion: before?.version ?? 0 },
       );
       if (!updated) return;
       set((state) => ({
         entries: state.entries.map((e) => (e.id === id ? updated : e)),
       }));
     } catch (e) {
+      if (e instanceof SnippetVersionConflictError) {
+        // 非破壊: store も timelapse も触らず、呼び出し側に再読み込みを促す。
+        snippetEditConflictHandler(id);
+        return;
+      }
       toast.error(i18next.t("snippets.store.updateFailed"));
       debugLog.error("SnippetStore", "update", errorDetail(e));
       return;
@@ -262,6 +290,9 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       undoPatch[key] = v ?? undefined;
     }
 
+    // undo/redo クロージャは blind (baseVersion 無し) で固定する。replay 中に
+    // version が動くと、その後の OCC 保存 (update) が in-memory の version と
+    // 食い違って自己衝突するため。
     useGlobalHistoryStore.getState().push({
       kind: "snippets",
       label: i18next.t("history.snippets.updated"),

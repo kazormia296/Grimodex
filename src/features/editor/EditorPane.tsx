@@ -37,7 +37,7 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
-import { getSnippet, updateSnippet } from "@/features/snippets/api";
+import { getSnippet } from "@/features/snippets/api";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -409,8 +409,10 @@ export function EditorPane({
       }
     } else if (ctx === "snippet") {
       const content = ed.getHTML();
-      await updateSnippet(getCurrentProjectId(), id, { content });
-      useSnippetStore.getState().update(id, { content });
+      // updateSnippet 直呼び + store.update の二重 DB 書き込みを store 経由の
+      // 1 回に集約 (entries 反映 / timelapse 記録 / undo 履歴も store が担う)。
+      // 二重のままだと store 側の OCC (baseVersion) が直呼びの更新と自己衝突する。
+      await useSnippetStore.getState().update(id, { content });
     } else if (ctx === "chronicle_event") {
       // 出来事の詳細（ProseMirror JSON）。インスペクタと同じ tracked-write 経路
       // （uiUpdateEvent）で保存し、undo/redo・鮮度カウンタを一貫させる。
