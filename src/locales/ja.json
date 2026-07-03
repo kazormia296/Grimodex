@@ -945,6 +945,7 @@
       "semanticReindexFailed": "インデックスの再構築に失敗しました",
       "semanticIndexStatus": "{{scenes}} シーン / {{chunks}} チャンク",
       "semanticIndexStale": "{{count}} チャンクが再構築待ち",
+      "languageChangedReindexPrompt": "執筆言語を変更しました。既存の意味検索インデックスは再構築が必要です。",
       "semanticDebugDumpTitle": "開発専用: scene_chunks をコンソールにダンプ",
       "semanticDebugDumpButton": "チャンクをダンプ",
       "aiAutoAcceptBody": "本文提案の自動適用（ヘッドレス）",

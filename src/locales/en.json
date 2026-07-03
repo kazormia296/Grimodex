@@ -945,6 +945,7 @@
       "semanticReindexFailed": "Failed to rebuild the index",
       "semanticIndexStatus": "{{scenes}} scenes / {{chunks}} chunks",
       "semanticIndexStale": "{{count}} chunks need rebuilding",
+      "languageChangedReindexPrompt": "Writing language changed. The existing semantic search index needs rebuilding.",
       "semanticDebugDumpTitle": "Dev only: dump scene_chunks to the console",
       "semanticDebugDumpButton": "Dump chunks",
       "aiAutoAcceptBody": "Auto-apply body proposals (headless)",

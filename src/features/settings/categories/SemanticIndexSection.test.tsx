@@ -3,12 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 /**
- * B5 回帰ガード: 意味検索インデックスの全件再構築ボタン。
- * インデックス投入はシーン保存時の逐次更新しか経路が無く、全件再構築の
- * 発火点が UI に存在しなかった（semanticReindexAll の呼び出し元ゼロ）ため、
- * 既存プロジェクトでは Semantic RAG が一切注入されなかった。
- *
- * ボタンは Project タブから AI タブ（AiProjectSettings）へ移設済み。
+ * B5 回帰ガード（AI タブ → Data タブへ移設）: 意味検索インデックスの全件再構築ボタン。
+ * インデックス投入はシーン保存時の逐次更新しか経路が無く、全件再構築の発火点が UI に
+ * 無かった（semanticReindexAll の呼び出し元ゼロ）ため、既存プロジェクトで Semantic RAG が
+ * 一切注入されなかった。再構築ロジックは reindexActions.runSemanticReindex に集約済み。
  */
 
 const apiMock = vi.hoisted(() => ({
@@ -25,37 +23,19 @@ const apiMock = vi.hoisted(() => ({
     }),
   ),
 }));
-const toastMock = vi.hoisted(() => ({
-  success: vi.fn(),
-  error: vi.fn(),
-}));
+const toastMock = vi.hoisted(() => {
+  const fn = vi.fn();
+  return Object.assign(fn, { success: vi.fn(), error: vi.fn() });
+});
 
 vi.mock("@/features/semantic-search/api", () => apiMock);
 vi.mock("sonner", () => ({ toast: toastMock }));
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "proj-test",
-}));
-vi.mock("../hooks/useProjectSettings", () => ({
-  useProjectSettings: () => ({
-    project: {
-      id: "proj-test",
-      aiPolicy: null,
-      outline: null,
-      targetReaders: null,
-      styleGuide: null,
-      aiInstructions: null,
-    },
-    isLoading: false,
-    updateField: vi.fn(),
-  }),
-}));
-vi.mock("../useSettingControl", () => ({
-  useSettingControl: () => ({ value: "", setValue: vi.fn() }),
-  useSettingBoolean: () => ({ value: false, setValue: vi.fn() }),
-  useSettingNumber: () => ({ value: 60, setValue: vi.fn() }),
+  getCurrentProjectLanguage: () => "ja",
 }));
 
-import { AiProjectSettings } from "./AiProjectSettings";
+import { SemanticIndexSection } from "./SemanticIndexSection";
 import {
   useReindexProgressStore,
   _resetReindexProgressForTests,
@@ -67,9 +47,9 @@ beforeEach(() => {
   _resetReindexProgressForTests();
 });
 
-describe("AiProjectSettings semantic reindex", () => {
+describe("SemanticIndexSection (Data タブ)", () => {
   it("再構築ボタンが現在のプロジェクトで semantic_reindex_all を呼ぶ", async () => {
-    render(<AiProjectSettings />);
+    render(<SemanticIndexSection />);
     const btn = screen.getByRole("button", { name: "再構築" });
 
     fireEvent.click(btn);
@@ -80,10 +60,8 @@ describe("AiProjectSettings semantic reindex", () => {
     await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
   });
 
-  // 「再構築したのに注入されない」の切り分け用。0 件ならインデックス側、
-  // 非 0 なら検索/スコア側の問題と即断できる。
   it("インデックス状態（シーン数/チャンク数）を表示する", async () => {
-    render(<AiProjectSettings />);
+    render(<SemanticIndexSection />);
     await waitFor(() =>
       expect(apiMock.semanticIndexStatus).toHaveBeenCalledWith("proj-test"),
     );
@@ -98,7 +76,7 @@ describe("AiProjectSettings semantic reindex", () => {
           resolveReindex = resolve;
         }),
     );
-    render(<AiProjectSettings />);
+    render(<SemanticIndexSection />);
     const btn = screen.getByRole("button", { name: "再構築" });
 
     fireEvent.click(btn);
@@ -114,20 +92,18 @@ describe("AiProjectSettings semantic reindex", () => {
     );
   });
 
-  // 多重起動ガードはコンポーネントローカルだと設定パネルの閉じ開き
-  // (再マウント) で外れる。グローバル store (running) で持続することを gate。
   it("再マウントしても実行中ガードが持続する", async () => {
     apiMock.semanticReindexAll.mockImplementation(
       () => new Promise<number>(() => {}),
     );
-    const first = render(<AiProjectSettings />);
+    const first = render(<SemanticIndexSection />);
     fireEvent.click(screen.getByRole("button", { name: "再構築" }));
     await waitFor(() =>
       expect(useReindexProgressStore.getState().running).toBe(true),
     );
     first.unmount();
 
-    render(<AiProjectSettings />);
+    render(<SemanticIndexSection />);
     const btn = screen.getByRole("button", { name: "再構築中…" });
     expect(btn).toBeDisabled();
     fireEvent.click(btn);
@@ -137,7 +113,7 @@ describe("AiProjectSettings semantic reindex", () => {
   it("失敗時は progress 表示を片付けて error toast を出す", async () => {
     apiMock.semanticReindexAll.mockRejectedValueOnce(new Error("boom"));
     const clearSpy = vi.spyOn(useReindexProgressStore.getState(), "clear");
-    render(<AiProjectSettings />);
+    render(<SemanticIndexSection />);
     const btn = screen.getByRole("button", { name: "再構築" });
 
     fireEvent.click(btn);

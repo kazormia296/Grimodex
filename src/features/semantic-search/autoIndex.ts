@@ -203,6 +203,22 @@ export async function ensureSemanticIndexesOnOpen(
   await ensureSceneIndexed(projectId);
 }
 
+/**
+ * 指定プロジェクトの「1セッション1回」ガードだけを解除する。執筆言語の切替で
+ * 埋め込みモデル/次元/チャンカ仕様が変わり既存チャンクが全 stale 化したとき、
+ * open 時オートインデックス（と DL 完了リスナの再インデックス）を**もう一度**
+ * 走らせられるようにする。これを呼ばないと同一セッション内では projectId 単位の
+ * ガードに弾かれ、開き直すまで dense 検索が stale のまま残る。
+ * 重い処理はここでは起こさない（呼び出し側が明示トリガ/再 open で回す）。
+ */
+export function resetIndexGuards(projectId: string): void {
+  if (!projectId) return;
+  codexAttempted.delete(projectId);
+  sceneAttempted.delete(projectId);
+  chatAttempted.delete(projectId);
+  modelAttempted.delete(projectId);
+}
+
 /** テスト用: 試行済みガードをリセット。 */
 export function _resetAutoIndexForTests(): void {
   codexAttempted.clear();

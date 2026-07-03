@@ -10,6 +10,8 @@ import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { TimelapseSettings } from "./TimelapseSettings";
 import { getAllProjectSettings } from "../api";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import { notifyLanguageChangedReindex } from "@/features/semantic-search/reindexActions";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { PhaseResolutionMode } from "@/features/codex/phaseResolver";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -170,9 +172,14 @@ export function ProjectCategory() {
           <select
             value={project.language}
             // 言語変更で embedding spec (model_id/dim/chunker) が変わり既存チャンクが
-            // 全 stale になる。stale 表示と再構築の導線は AI タブの「意味検索インデックス」
-            // セクションが担う（タブ表示時に index status を再取得する）。
-            onChange={(e) => updateField("language", e.target.value)}
+            // 全 stale になる。永続化後（onPersist）にハイブリッド導線を起動:
+            // オートインデックスのガードを解除し、ワンクリックの再構築トーストを出す
+            // （重い処理はトグル時には走らせない）。stale 表示と手動再構築は Data タブ。
+            onChange={(e) =>
+              updateField("language", e.target.value, () =>
+                notifyLanguageChangedReindex(getCurrentProjectId()),
+              )
+            }
             className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
           >
             {LANGUAGE_OPTIONS.map((o) => (

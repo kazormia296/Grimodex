@@ -12,6 +12,7 @@ import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
 import { exportCodexJson } from "../exportUtils";
 import { IntegrityCheckSection } from "@/features/workspace/IntegrityCheckDialog";
+import { SemanticIndexSection } from "./SemanticIndexSection";
 import { MountListDialog } from "@/features/external-mount/components/MountListDialog";
 import {
   enqueueRescan,
@@ -372,6 +373,9 @@ export function DataCategory() {
           </button>
         </SettingRow>
       </SettingSection>
+
+      {/* 意味検索インデックス（旧: AI タブ。FTS 再構築 / VACUUM と同族の索引保守）。 */}
+      <SemanticIndexSection />
 
       {/* Integrity Check */}
       <SettingSection title={t("settings.data.integrityCheck")}>
