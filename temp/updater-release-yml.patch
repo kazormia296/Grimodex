@@ -1,30 +1,42 @@
-From: Track2 updater 導入
-Subject: [PATCH] release.yml に updater 署名 + createUpdaterArtifacts overlay + latest.json 生成を配線
-
-.github/ はサンドボックスから直接編集できないため、この差分を手動適用してください。
-
-適用方法:
-  cd <repo-root>
-  git apply temp/updater-release-yml.patch
-
-適用前に TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD の
-GitHub Secrets 登録が必要です (PR 本文の「鍵生成」参照)。
-
 --- a/.github/workflows/release.yml
 +++ b/.github/workflows/release.yml
-@@ -116,10 +116,11 @@
+@@ -105,6 +105,20 @@
+             echo "args=" >> "$GITHUB_OUTPUT"
+           fi
+ 
++      # updater 署名の公開鍵がプレースホルダのままだと、配信後に全更新の署名
++      # 検証が必ず失敗する (実機で気づけない)。v1.0.0 以降のビルドで差し替え忘れを
++      # ここで落とす。
++      - name: updater pubkey が本番用に差し替え済みか検証 (v1.0.0 以降)
++        shell: bash
++        run: |
++          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
++          MAJOR="${VERSION%%.*}"
++          PUBKEY=$(node -p "require('./src-tauri/tauri.conf.json').plugins?.updater?.pubkey || ''")
++          if [ "$MAJOR" -ge 1 ] && { [ -z "$PUBKEY" ] || [ "$PUBKEY" = "__REPLACE_WITH_UPDATER_PUBKEY__" ]; }; then
++            echo "::error::updater pubkey がプレースホルダのままです。pnpm tauri signer generate で生成した公開鍵に差し替えてください。" >&2
++            exit 1
++          fi
++
+       - name: Tauri ビルド & リリース作成
+         uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
+         env:
+@@ -116,12 +130,14 @@
            # APPLE_ID: ${{ secrets.APPLE_ID }}
            # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
            # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 -          # Windows / アップデーター署名（将来対応）
 -          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 -          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-+          # Windows / アップデーター署名（Track2 updater 有効化）
++          # Windows / アップデーター署名（updater/NSIS 署名鍵。GitHub Secrets に登録）
 +          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 +          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
          with:
            tauriScript: pnpm tauri
 -          args: ${{ steps.licensing.outputs.args }}
-+          includeUpdaterJson: true
++          # updater overlay (createUpdaterArtifacts) を release ビルドのみ合成。
 +          args: ${{ steps.licensing.outputs.args }} --config src-tauri/tauri.updater.conf.json
++          includeUpdaterJson: true
            tagName: v__VERSION__
+           releaseName: "Grimodex v__VERSION__"
+           releaseBody: |

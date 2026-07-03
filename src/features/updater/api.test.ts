@@ -98,6 +98,34 @@ describe("updater/api", () => {
       expect(useUpdaterStore.getState().phase).toBe("idle");
       expect(mockRelaunch).not.toHaveBeenCalled();
     });
+
+    it("goes to error (not ready) and skips relaunch when install/verify fails after Finished", async () => {
+      // Finished 発火後に署名検証が落ちる (不正 pubkey 等) 実挙動を模す。
+      // 旧実装は Finished で ready にし reject を握らず、偽の準備完了 →
+      // 未更新版へ再起動ループになっていた。修正後は error で止まる。
+      mockIsTauri.mockReturnValue(true);
+      const update = {
+        version: "2.0.0",
+        body: null,
+        downloadAndInstall: vi.fn(
+          async (onEvent?: (e: DownloadEvent) => void): Promise<void> => {
+            onEvent?.({ event: "Started", data: { contentLength: 100 } });
+            onEvent?.({ event: "Progress", data: { chunkLength: 100 } });
+            onEvent?.({ event: "Finished" });
+            throw new Error("signature verification failed");
+          },
+        ),
+      } as unknown as Update;
+      mockCheck.mockResolvedValueOnce(update);
+      await checkForUpdate();
+
+      await expect(startUpdateDownload()).resolves.toBeUndefined();
+
+      const s = useUpdaterStore.getState();
+      expect(s.phase).toBe("error");
+      expect(s.error).toContain("signature verification failed");
+      expect(mockRelaunch).not.toHaveBeenCalled();
+    });
   });
 
   describe("restartApp", () => {

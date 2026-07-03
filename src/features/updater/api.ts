@@ -33,7 +33,13 @@ export async function checkForUpdate(): Promise<Update | null> {
 
 /**
  * 直近の更新をダウンロード＆インストールし、進捗を updaterStore に流す。
- * Finished で ready にし、最後にアプリを再起動する。pendingUpdate が無ければ no-op。
+ * pendingUpdate が無ければ no-op。
+ *
+ * 重要: `Finished` イベントはダウンロード完了時に発火するが、これは**署名検証の
+ * 前**である。検証・インストールの成否は downloadAndInstall の resolve/reject で
+ * しか判らないため、ready にするのは promise が resolve した後に限る。検証失敗
+ * (不正な pubkey / .sig 破損 / 途中エラー) は reject で捕捉し error 状態にする。
+ * これをしないと「準備完了」の偽表示のまま未更新版へ再起動するループになる。
  */
 export async function startUpdateDownload(): Promise<void> {
   const update = pendingUpdate;
@@ -41,22 +47,31 @@ export async function startUpdateDownload(): Promise<void> {
   const store = useUpdaterStore.getState();
   let total = 0;
   let downloaded = 0;
-  await update.downloadAndInstall((event: DownloadEvent) => {
-    switch (event.event) {
-      case "Started":
-        total = event.data.contentLength ?? 0;
-        downloaded = 0;
-        store.setDownloading(0, total);
-        break;
-      case "Progress":
-        downloaded += event.data.chunkLength;
-        store.setDownloading(downloaded, total);
-        break;
-      case "Finished":
-        store.setReady();
-        break;
-    }
-  });
+  try {
+    await update.downloadAndInstall((event: DownloadEvent) => {
+      switch (event.event) {
+        case "Started":
+          total = event.data.contentLength ?? 0;
+          downloaded = 0;
+          store.setDownloading(0, total);
+          break;
+        case "Progress":
+          downloaded += event.data.chunkLength;
+          store.setDownloading(downloaded, total);
+          break;
+        case "Finished":
+          // ダウンロードのみ完了。署名検証はこの後 (resolve 時) なので
+          // 進捗を 100% にするに留め、ready はまだ立てない。
+          store.setDownloading(total, total);
+          break;
+      }
+    });
+  } catch (e) {
+    store.setError(e instanceof Error ? e.message : String(e));
+    return;
+  }
+  // ここに到達 = 署名検証・インストールが成功。ここで初めて ready。
+  store.setReady();
   // インストール完了 → 再起動。Windows は installMode 次第でインストーラ側が
   // 再起動を担うため、relaunch 失敗は握りつぶす (restartApp 内で処理)。
   await restartApp();
