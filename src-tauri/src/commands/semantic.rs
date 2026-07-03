@@ -95,16 +95,34 @@ pub(crate) struct SemanticEmbedderState {
 ///    にフォールバック (cargo test や非 Tauri 経路の救済)。
 ///
 /// model_int8.onnx の存在で判定する。
-fn resolve_model_dir(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> PathBuf {
+fn resolve_model_dir(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> Option<PathBuf> {
     let rel = PathBuf::from("resources/semantic").join(spec.dir_name);
+    // 1) バンドル同梱 (Strategy B: JA int8 + 両 tokenizer はここに入る)。
     if let Ok(base) = app.path().resource_dir() {
         let candidate = base.join(&rel);
         if candidate.join("model_int8.onnx").exists() {
-            return candidate;
+            return Some(candidate);
         }
     }
-    // dev / test の安全網。
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
+    // 2) オンデマンド DL 済みディレクトリ (EN / 大型モデルはここに落ちる)。
+    //    downloader が model_int8.onnx + tokenizer.json を app_data 配下に揃える。
+    if let Ok(data) = app.path().app_data_dir() {
+        let candidate = data.join("models").join(spec.dir_name);
+        if candidate.join("model_int8.onnx").exists() {
+            return Some(candidate);
+        }
+    }
+    // 3) dev / test の安全網 —— **実在する場合のみ返す**。
+    //    リリースビルドでは env!("CARGO_MANIFEST_DIR") はビルドマシン
+    //    (例: GitHub Actions の D:\a\Grimodex\Grimodex\src-tauri) を指し、実機には
+    //    存在しない。旧実装はこれを無条件に返していたため tokenizer load が深部で
+    //    os error 3 になり「壊れている」ように見えていた。存在しなければ None を
+    //    返し、呼び出し側が明示エラー→FTS degrade に落ちる。
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&rel);
+    if dev.join("model_int8.onnx").exists() {
+        return Some(dev);
+    }
+    None
 }
 
 /// model_int8.onnx + tokenizer.json から spec のモデルを構築。
@@ -113,7 +131,13 @@ fn load_embedder(
     app: &tauri::AppHandle,
     spec: &'static EmbeddingModelSpec,
 ) -> anyhow::Result<Embedder> {
-    let dir = resolve_model_dir(app, spec);
+    let dir = resolve_model_dir(app, spec).ok_or_else(|| {
+        anyhow::anyhow!(
+            "embedding model '{}' is not installed (checked bundle resources and the \
+             on-demand model dir); semantic search unavailable — falling back to full-text search",
+            spec.dir_name
+        )
+    })?;
     let model_path = dir.join("model_int8.onnx");
     let tokenizer_path = dir.join("tokenizer.json");
     Embedder::load(&model_path, &tokenizer_path, spec)
