@@ -275,6 +275,15 @@ class CursorOverlayView {
         this.el.classList.remove("no-transition");
       }, 200);
     }
+    // 挿入 (docSize 増加 = 入力 / hardBreak / IME 確定 / ペースト) 直後のキャレットは
+    // 常に新しい内容の直後 = 折り返し・改行境界では「行頭側」(bias=1)。hardBreak
+    // (Shift+Enter) と IME 確定は keymap/composition が keydown を消費して
+    // updateBiasFromKey に届かないため、Backspace (bias=-1) の後に再改行すると
+    // bias=-1 が残り、縦書きで一行目行末にキャレットが取り残される。ここで補正する。
+    if (docSize > this.prevDocSize) {
+      this.bias = 1;
+      this.pendingVertical = null;
+    }
     this.pendingSnap = false;
     this.prevDocSize = docSize;
 
@@ -338,6 +347,15 @@ class CursorOverlayView {
       this.pendingVertical = null;
     } else if (this.pendingVertical !== null) {
       this.pendingVertical = null;
+    }
+
+    // hardBreak の直後の位置は、折り返しではなく「常に次の行の行頭」であり、
+    // 前行の行末という解釈は存在しない (行末は hardBreak の直前 = pos_before_br)。
+    // Backspace で hardBreak を消して空行の行頭 (= 残った hardBreak の直後) へ来ると
+    // bias=-1 のまま前の hardBreak の矩形 = 一行目行末を選んでしまう。ここで
+    // 行頭側 (bias=1) を最終確定し、click/矢印由来の bias より優先する。
+    if (view.state.selection.$from.nodeBefore?.type.name === "hardBreak") {
+      this.bias = 1;
     }
 
     // 縦書きは DOM Range ベースのリゾルバで列幅とインライン位置を再構成する
