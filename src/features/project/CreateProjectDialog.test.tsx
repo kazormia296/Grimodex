@@ -16,6 +16,14 @@ vi.mock("@/features/codex/typeApi", () => ({
   ]),
 }));
 
+// 新規プロジェクトの既定執筆言語は UI 言語から導くので、workspace store を差し替える。
+const ws = vi.hoisted(() => ({ uiLanguage: "ja" }));
+vi.mock("@/features/workspace/store", () => ({
+  useWorkspaceStore: {
+    getState: () => ({ globalSettings: { uiLanguage: ws.uiLanguage } }),
+  },
+}));
+
 const sampleProjects = [
   {
     id: "proj-a",
@@ -38,6 +46,36 @@ const sampleProjects = [
 describe("CreateProjectDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    ws.uiLanguage = "ja";
+  });
+
+  it("defaults writing language to the UI language (en UI → en)", async () => {
+    ws.uiLanguage = "en";
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CreateProjectDialog
+        open
+        onClose={() => {}}
+        projects={sampleProjects}
+        defaultSourceProjectId="proj-a"
+        onCreate={onCreate}
+      />,
+    );
+    // フォームの言語セレクトが既定で en になっている。
+    expect(
+      (screen.getByTestId("project-language-select") as HTMLSelectElement)
+        .value,
+    ).toBe("en");
+    // 手で変えずに作成しても language=en が送られる。
+    fireEvent.change(screen.getByTestId("project-title-input"), {
+      target: { value: "Vol 1" },
+    });
+    fireEvent.click(screen.getByTestId("project-create-submit"));
+    await waitFor(() => {
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ language: "en" }),
+      );
+    });
   });
 
   it("calls onCreate with form values", async () => {
