@@ -1064,6 +1064,7 @@
     },
     "about": {
       "github": "GitHub",
+      "checkForUpdates": "Check for updates",
       "searchPlaceholder": "Search {{count}} libraries…",
       "notFound": "No libraries found matching \"{{query}}\"",
       "full": "Full text",
@@ -4595,6 +4596,16 @@
       "restricted": "Editing is locked without a valid license — reading and exporting are always available.",
       "openSettings": "Open license settings"
     }
+  },
+  "updater": {
+    "updateAvailable": "A new version is available",
+    "updateNow": "Update now",
+    "later": "Later",
+    "downloading": "Downloading update…",
+    "readyToRestart": "Update ready to install",
+    "restartNow": "Restart",
+    "upToDate": "You're up to date",
+    "checkFailed": "Failed to check for updates"
   },
   "semanticSearch": {
     "reindexComplete": "Reindex complete",
