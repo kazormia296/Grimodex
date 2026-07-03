@@ -1222,11 +1222,35 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   pointer-events: none;
   z-index: 10;
   opacity: 1;
+  /* duration/easing は設定 (editor.caretSlideDuration / caretSlideSnappiness)
+   * から caretSlideStyle.ts が :root の CSS 変数へ反映する。フォールバックは
+   * 既定値 (80ms / snappiness=50 のカーブ) と一致させること。 */
   transition:
-    left 80ms cubic-bezier(0.22, 1, 0.36, 1),
-    top 80ms cubic-bezier(0.22, 1, 0.36, 1),
-    width 80ms cubic-bezier(0.22, 1, 0.36, 1),
-    height 80ms cubic-bezier(0.22, 1, 0.36, 1);
+    left var(--caret-slide-duration, 80ms)
+      var(--caret-slide-easing, cubic-bezier(0.22, 1, 0.36, 1)),
+    top var(--caret-slide-duration, 80ms)
+      var(--caret-slide-easing, cubic-bezier(0.22, 1, 0.36, 1)),
+    width var(--caret-slide-duration, 80ms)
+      var(--caret-slide-easing, cubic-bezier(0.22, 1, 0.36, 1)),
+    height var(--caret-slide-duration, 80ms)
+      var(--caret-slide-easing, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+/* 設定パネルの「動きを試す」プレビュー用の疑似キャレット。エディタ本体の
+ * .typewriter-cursor と同じ CSS 変数を参照するのでスライダー変更が即反映。 */
+.caret-preview-caret {
+  position: absolute;
+  width: 2px;
+  background-color: var(--content-foreground);
+  pointer-events: none;
+  transition:
+    left var(--caret-slide-duration, 80ms)
+      var(--caret-slide-easing, cubic-bezier(0.22, 1, 0.36, 1)),
+    top var(--caret-slide-duration, 80ms)
+      var(--caret-slide-easing, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.caret-preview-caret.no-transition {
+  transition: none;
 }
 
 .typewriter-cursor.blinking {
@@ -1236,20 +1260,6 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .typewriter-cursor.composing,
 .typewriter-cursor.no-transition {
   transition: none;
-}
-
-/* Character fade-in — applied by CharacterFadePlugin to newly typed/IME-confirmed
-   ranges. Decoration class is removed after the animation by a cleanup tx. */
-@keyframes editor-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-.editor-fade-in {
-  animation: editor-fade-in 120ms ease-out;
 }
 
 /* Character fade-out — a ghost glyph appended to document.body by

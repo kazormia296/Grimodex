@@ -5,6 +5,8 @@ import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
 import { SettingToggle } from "../components/SettingToggle";
 import { SettingSlider } from "../components/SettingSlider";
+import { CaretMotionPreview } from "../components/CaretMotionPreview";
+import { CaretSlideResetButton } from "../components/CaretSlideResetButton";
 import { SettingNumberInput } from "../components/SettingNumberInput";
 import { SettingDropdown } from "../components/SettingDropdown";
 import { FontFamilySelect } from "../components/FontFamilySelect";
@@ -51,10 +53,6 @@ export function EditorCategory() {
     "editor.cursorBlink",
     true,
   );
-  const { value: fadeIn, setValue: setFadeIn } = useSettingBoolean(
-    "editor.characterFadeIn",
-    false,
-  );
   const { value: fadeOut, setValue: setFadeOut } = useSettingBoolean(
     "editor.characterFadeOut",
     false,
@@ -80,23 +78,20 @@ export function EditorCategory() {
   const prevAnimRef = useRef<{
     smoothCaret: boolean;
     cursorBlink: boolean;
-    fadeIn: boolean;
     fadeOut: boolean;
   } | null>(null);
 
   function handleDisableAll(v: boolean) {
     setDisableAll(v);
     if (v) {
-      prevAnimRef.current = { smoothCaret, cursorBlink, fadeIn, fadeOut };
+      prevAnimRef.current = { smoothCaret, cursorBlink, fadeOut };
       setSmoothCaret(false);
       setCursorBlink(false);
-      setFadeIn(false);
       setFadeOut(false);
     } else if (prevAnimRef.current) {
       // この session で退避した値があるときだけ復元（無ければ現状維持＝悪化させない）。
       setSmoothCaret(prevAnimRef.current.smoothCaret);
       setCursorBlink(prevAnimRef.current.cursorBlink);
-      setFadeIn(prevAnimRef.current.fadeIn);
       setFadeOut(prevAnimRef.current.fadeOut);
       prevAnimRef.current = null;
     }
@@ -264,12 +259,32 @@ export function EditorCategory() {
             disabled={disableAll}
           />
         </SettingRow>
-        <SettingRow label={t("settings.editor.fadeIn")}>
-          <AnimToggle
-            value={fadeIn}
-            onChange={setFadeIn}
-            disabled={disableAll}
+        <SettingRow label={t("settings.editor.caretSlideDuration")}>
+          <SettingSlider
+            settingKey="editor.caretSlideDuration"
+            min={40}
+            max={200}
+            step={10}
+            defaultValue={80}
+            format={(v) => `${v}ms`}
+            disabled={disableAll || !smoothCaret}
           />
+        </SettingRow>
+        <SettingRow label={t("settings.editor.caretSlideSnappiness")}>
+          <SettingSlider
+            settingKey="editor.caretSlideSnappiness"
+            min={0}
+            max={100}
+            step={5}
+            defaultValue={50}
+            disabled={disableAll || !smoothCaret}
+          />
+        </SettingRow>
+        <SettingRow label={t("settings.editor.caretMotionPreview")}>
+          <div className="flex items-center gap-2">
+            <CaretSlideResetButton />
+            <CaretMotionPreview disabled={disableAll || !smoothCaret} />
+          </div>
         </SettingRow>
         <SettingRow label={t("settings.editor.fadeOut")}>
           <AnimToggle

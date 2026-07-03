@@ -82,7 +82,6 @@ function makeSettings(spellCheck: boolean): EditorSettings {
     inlineAiShortcut: true,
     smoothCaret: false,
     cursorBlink: false,
-    characterFadeIn: false,
     characterFadeOut: false,
     disableAllAnimations: false,
     wordBreak: "normal",

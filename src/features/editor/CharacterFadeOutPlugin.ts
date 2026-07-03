@@ -1,5 +1,6 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { ReplaceStep } from "@tiptap/pm/transform";
+import { resolveCoordsVertical } from "./cursorCoords";
 
 export const characterFadeOutKey = new PluginKey<FadeOutState>(
   "characterFadeOut",
@@ -33,9 +34,14 @@ type FadeOutMeta = { type: "consumed" };
  * screen coords with `coordsAtPos`, append a fixed-position glyph to
  * `document.body`, schedule its removal after the CSS animation, and
  * dispatch a "consumed" meta transaction to clear the queue.
+ *
+ * 縦書き (getVertical=true) では PM の coordsAtPos が矩形を flatten して
+ * 列情報を失うため、スムースキャレットと同じ resolveCoordsVertical で
+ * 挿入点を取り、ghost に writing-mode: vertical-rl を当てて縦向きに描く。
  */
 export function createCharacterFadeOutPlugin(
   getFadeOut: () => boolean,
+  getVertical: () => boolean,
 ): Plugin<FadeOutState> {
   return new Plugin<FadeOutState>({
     key: characterFadeOutKey,
@@ -80,16 +86,25 @@ export function createCharacterFadeOutPlugin(
 
           const wrapper = view.dom;
           const computed = window.getComputedStyle(wrapper);
+          const vertical = getVertical();
 
           for (const item of s.pending) {
             try {
-              const coords = view.coordsAtPos(item.newPos);
+              // 縦書きは bias=-1 (直前文字側) に anchor する。削除後の
+              // reflow で動かないのは前方のテキストなので、削除された
+              // 文字の元位置に最も近い安定点になる。null は flatten 版へ
+              // フォールバック。
+              const coords =
+                (vertical
+                  ? resolveCoordsVertical(view, item.newPos, -1)
+                  : null) ?? view.coordsAtPos(item.newPos);
               const ghost = document.createElement("span");
               ghost.className = "editor-fade-out-ghost";
               ghost.textContent = item.char;
               ghost.style.position = "fixed";
               ghost.style.left = `${coords.left}px`;
               ghost.style.top = `${coords.top}px`;
+              if (vertical) ghost.style.writingMode = "vertical-rl";
               ghost.style.fontFamily = computed.fontFamily;
               ghost.style.fontSize = computed.fontSize;
               ghost.style.lineHeight = computed.lineHeight;

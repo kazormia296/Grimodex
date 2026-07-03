@@ -6,6 +6,11 @@ import {
   cursorOverlayKey,
   createCursorOverlayPlugin,
 } from "./CursorOverlayPlugin";
+import {
+  CARET_SLIDE_DURATION_DEFAULT,
+  CARET_SLIDE_SNAPPINESS_DEFAULT,
+  applyCaretSlideVars,
+} from "./caretSlideStyle";
 
 /**
  * Registers the cursor overlay ProseMirror plugin for the given editor.
@@ -29,6 +34,18 @@ export function useCursorOverlay(editor: Editor | null) {
   const verticalMode = useSettingsStore((s) =>
     s.getBoolean("editor.verticalMode", false),
   );
+  const slideDuration = useSettingsStore((s) =>
+    s.getNumber("editor.caretSlideDuration", CARET_SLIDE_DURATION_DEFAULT),
+  );
+  const slideSnappiness = useSettingsStore((s) =>
+    s.getNumber("editor.caretSlideSnappiness", CARET_SLIDE_SNAPPINESS_DEFAULT),
+  );
+
+  // スライドの duration/easing は CSS 変数経由 (:root)。エディタが複数あって
+  // も冪等な同値書き込みなので、インスタンスごとに呼んで問題ない。
+  useEffect(() => {
+    applyCaretSlideVars(slideDuration, slideSnappiness);
+  }, [slideDuration, slideSnappiness]);
 
   // Register plugin once per editor instance
   useEffect(() => {
