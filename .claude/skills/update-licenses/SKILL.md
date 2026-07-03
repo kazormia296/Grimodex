@@ -32,13 +32,17 @@ allowed-tools: Read, Edit, Grep, Bash, WebFetch
 
 ## 手順
 
-1. **新規同梱アセットの洗い出し**（手追加対象が増えていないか）:
-   - `src-tauri/tauri.release.conf.json` の `bundle.resources` に、`gatherAssetLicenses()`
-     未収録の ONNX モデルが無いか（例: ruri-v3-30m / bge-small-en-v15）。
+1. **新規同梱・再配布アセットの洗い出し**（手追加対象が増えていないか）:
+   - 埋め込みモデル (ONNX) は同梱せずオンデマンド DL（GitHub Release
+     `semantic-models-v1` から app_data へ取得）方式に移行済みだが、int8 モデルを
+     我々が再配布している以上ライセンス収録は必要。`gatherAssetLicenses()` に
+     未収録のモデルが無いか（例: ruri-v3-30m / bge-small-en-v15）。
+   - `src-tauri/tauri.conf.json` の `bundle.resources` に、未収録の同梱アセット
+     （git-tracked の tokenizer.json 等）が無いか。
    - `src/index.css` の `@font-face` と `src/assets/` 配下に、未収録の独自フォント/画像が無いか。
    ```
    grep -nE "@font-face|font-family" src/index.css
-   cat src-tauri/tauri.release.conf.json
+   cat src-tauri/tauri.conf.json
    find src-tauri/resources -maxdepth 2 -type d
    ```
 2. **新規アセットがあれば `gatherAssetLicenses()` に追加**:

@@ -540,9 +540,10 @@ function gatherAssetLicenses(): LicenseEntry[] {
       licenseText: UNIDIC_BSD_LICENSE_TEXT,
     },
     {
-      // Semantic Search 用の日本語テキスト埋め込みモデル。リリースビルドに
-      // ONNX (model_int8.onnx) と tokenizer.json を Tauri リソースとして同梱
-      // している (src-tauri/tauri.release.conf.json)。
+      // Semantic Search 用の日本語テキスト埋め込みモデル。int8 ONNX は同梱せず、
+      // 初回利用時に app_data へオンデマンド DL する (GitHub Release
+      // semantic-models-v1 から取得。src-tauri/src/semantic/spec.rs の
+      // artifact_url/sha256 で pin)。我々が再配布する以上ライセンス収録が必要。
       // Authors: Hayato Tsukagoshi and Ryohei Sasano (arXiv:2409.07737)。
       name: "Ruri v3 (cl-nagoya/ruri-v3-30m, Japanese text embedding model, embedded as ONNX for semantic search)",
       version: "ruri-v3-30m",
@@ -552,9 +553,10 @@ function gatherAssetLicenses(): LicenseEntry[] {
     },
     {
       // Semantic Search 用の英語テキスト埋め込みモデル。日本語の Ruri v3 と対になる
-      // 言語別モデルで、英語プロジェクトの semantic search に使う。リリースビルドに
-      // ONNX (model_int8.onnx) と tokenizer.json を Tauri リソースとして同梱している
-      // (src-tauri/tauri.release.conf.json / dir_name: bge-small-en-v15)。
+      // 言語別モデルで、英語プロジェクトの semantic search に使う。int8 ONNX は
+      // 同梱せず、初回利用時に app_data へオンデマンド DL する (GitHub Release
+      // semantic-models-v1 から取得。dir_name: bge-small-en-v15)。再配布に伴い
+      // ライセンス収録が必要。
       // BAAI (Beijing Academy of Artificial Intelligence) の FlagEmbedding プロジェクト
       // として MIT ライセンスで公開されている (商用利用可)。
       name: "BGE small en v1.5 (BAAI/bge-small-en-v1.5, English text embedding model, embedded as ONNX for semantic search)",
