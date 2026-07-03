@@ -243,3 +243,99 @@ describe("CursorOverlayPlugin – disable hands back the native caret", () => {
     wrapper.remove();
   });
 });
+
+/**
+ * 入力中スライドと大ジャンプ snap の切り分け (距離しきい値 = 行送り 1.5 倍)。
+ * 旧実装は docChanged のたびに .no-transition を 200ms 付与し、タイピング中は
+ * スムースキャレットが常に無効だった。
+ */
+describe("CursorOverlayPlugin – typing slide vs long-jump snap", () => {
+  function setup() {
+    const wrapper = document.createElement("div");
+    wrapper.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 600,
+        width: 800,
+        height: 600,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    Object.defineProperty(wrapper, "scrollTop", { value: 0, writable: true });
+    document.body.appendChild(wrapper);
+
+    const state = EditorState.create({
+      doc: schema.nodes.doc.create({}, [
+        schema.nodes.paragraph.create({}, [schema.text("hello")]),
+      ]),
+      plugins: [createCursorOverlayPlugin(() => true)],
+    });
+    const view = new EditorView(wrapper, { state });
+    // 行高 20px (top=20, bottom=40) → snap しきい値 = 30px
+    const coords = vi.fn().mockReturnValue({ left: 50, top: 20, bottom: 40 });
+    view.coordsAtPos = coords;
+    view.hasFocus = vi.fn().mockReturnValue(true);
+    const cursor = wrapper.querySelector(
+      ".typewriter-cursor",
+    ) as HTMLDivElement;
+    return { wrapper, view, coords, cursor };
+  }
+
+  it("打鍵 (docChanged) でもしきい値以下の移動はスライドする", () => {
+    const { wrapper, view, coords, cursor } = setup();
+
+    // 初回描画は prevBox が無いので snap
+    view.dispatch(view.state.tr.insertText("a", 1, 1));
+    expect(cursor.classList.contains("no-transition")).toBe(true);
+
+    // 1 文字ぶん (12px < 30px) の移動 → transition 有効のまま位置更新
+    coords.mockReturnValue({ left: 62, top: 20, bottom: 40 });
+    view.dispatch(view.state.tr.insertText("b", 2, 2));
+    expect(cursor.style.left).toBe("62px");
+    expect(cursor.classList.contains("no-transition")).toBe(false);
+
+    view.destroy();
+    wrapper.remove();
+  });
+
+  it("行送り 1.5 倍を超える移動 (ペースト等) は snap する", () => {
+    const { wrapper, view, coords, cursor } = setup();
+
+    view.dispatch(view.state.tr.insertText("a", 1, 1));
+    coords.mockReturnValue({ left: 62, top: 20, bottom: 40 });
+    view.dispatch(view.state.tr.insertText("b", 2, 2));
+    expect(cursor.classList.contains("no-transition")).toBe(false);
+
+    // 238px の大ジャンプ → snap
+    coords.mockReturnValue({ left: 300, top: 20, bottom: 40 });
+    view.dispatch(view.state.tr.insertText("長い貼り付け", 3, 3));
+    expect(cursor.style.left).toBe("300px");
+    expect(cursor.classList.contains("no-transition")).toBe(true);
+
+    view.destroy();
+    wrapper.remove();
+  });
+
+  it("非表示からの再表示は snap する (古い位置からの滑り防止)", () => {
+    const { wrapper, view, coords, cursor } = setup();
+
+    view.dispatch(view.state.tr.insertText("a", 1, 1));
+    coords.mockReturnValue({ left: 62, top: 20, bottom: 40 });
+    view.dispatch(view.state.tr.insertText("b", 2, 2));
+    expect(cursor.classList.contains("no-transition")).toBe(false);
+
+    // blur → hide (prevBox クリア) → focus 再表示は近距離でも snap
+    view.dom.dispatchEvent(new Event("blur"));
+    expect(cursor.style.visibility).toBe("hidden");
+    coords.mockReturnValue({ left: 70, top: 20, bottom: 40 });
+    view.dom.dispatchEvent(new Event("focus"));
+    expect(cursor.style.visibility).toBe("visible");
+    expect(cursor.classList.contains("no-transition")).toBe(true);
+
+    view.destroy();
+    wrapper.remove();
+  });
+});

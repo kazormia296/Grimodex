@@ -15,8 +15,10 @@ export const cursorOverlayKey = new PluginKey("cursorOverlay");
  * Creates a ProseMirror plugin that renders a custom typewriter-style cursor
  * overlay with:
  * - Fade-based blink animation (530ms on → 200ms fade → 270ms off)
- * - Smooth 80ms slide transition on cursor movement
- * - Transition disabled during IME composition and deletion
+ * - Smooth 80ms slide transition on cursor movement, including typing and
+ *   deletion; long jumps (> 1.5 line advances: paste, newline, scene switch)
+ *   snap instead so the caret doesn't visibly fly across the editor
+ * - Transition disabled during IME composition
  *
  * Soft-wrap affinity is resolved by tracking the last user action as a
  * `bias` value (-1 = line-end, 1 = line-start) and passing it directly to
@@ -113,8 +115,13 @@ class CursorOverlayView {
    */
   private wrapper: HTMLElement;
   private prevDocSize: number;
-  private noTransitionTimer = 0;
   private rafHandle = 0;
+  /**
+   * 直近に描画したキャレット位置 (wrapper 相対 px)。移動距離ベースの
+   * snap 判定に使う。非表示化で null に戻し、再表示時は必ず snap させる
+   * (古い位置からのスライドを防ぐ)。
+   */
+  private prevBox: { left: number; top: number } | null = null;
   /**
    * Soft-wrap affinity bias.
    *   -1  line-end side  (End, Backspace)
@@ -188,7 +195,6 @@ class CursorOverlayView {
   }
 
   destroy() {
-    clearTimeout(this.noTransitionTimer);
     cancelAnimationFrame(this.rafHandle);
     this.el.remove();
     this.view.dom.style.caretColor = "";
@@ -264,17 +270,7 @@ class CursorOverlayView {
       return;
     }
 
-    // Disable slide transition during rapid typing/deletion, and when a
-    // paragraph move (Alt+Arrow) relocated the caret to a moved block —
-    // sliding the caret across the editor reads as a flicker.
     const docSize = view.state.doc.content.size;
-    if (docSize !== this.prevDocSize || this.pendingSnap) {
-      this.el.classList.add("no-transition");
-      clearTimeout(this.noTransitionTimer);
-      this.noTransitionTimer = window.setTimeout(() => {
-        this.el.classList.remove("no-transition");
-      }, 200);
-    }
     // 挿入 (docSize 増加 = 入力 / hardBreak / IME 確定 / ペースト) 直後のキャレットは
     // 常に新しい内容の直後 = 折り返し・改行境界では「行頭側」(bias=1)。hardBreak
     // (Shift+Enter) と IME 確定は keymap/composition が keydown を消費して
@@ -284,6 +280,7 @@ class CursorOverlayView {
       this.bias = 1;
       this.pendingVertical = null;
     }
+    const snapRequested = this.pendingSnap;
     this.pendingSnap = false;
     this.prevDocSize = docSize;
 
@@ -377,6 +374,21 @@ class CursorOverlayView {
       this.wrapper.getBoundingClientRect(),
       vertical,
     );
+
+    // 入力・削除を含む通常の移動は 80ms スライドで滑らせる。ただし移動距離が
+    // 行送りの 1.5 倍を超える大ジャンプ (ペースト / 改行 / シーン切替 /
+    // Alt+矢印の段落移動 = snapRequested) はスライドが「飛び」に見えるため
+    // 瞬間移動させる。非表示からの再表示も古い位置からの滑りを避けて snap。
+    // 行送りはキャレットの行軸サイズで近似 (横書き=行高, 縦書き=列幅)。
+    const lineSize = vertical ? box.width : box.height;
+    const snap =
+      snapRequested ||
+      this.prevBox === null ||
+      Math.hypot(box.left - this.prevBox.left, box.top - this.prevBox.top) >
+        lineSize * 1.5;
+    this.el.classList.toggle("no-transition", snap);
+    this.prevBox = { left: box.left, top: box.top };
+
     this.el.style.visibility = "visible";
     this.el.style.left = `${box.left}px`;
     this.el.style.top = `${box.top}px`;
@@ -396,6 +408,7 @@ class CursorOverlayView {
 
   hide() {
     this.el.style.visibility = "hidden";
+    this.prevBox = null;
   }
 
   setComposing(composing: boolean) {
