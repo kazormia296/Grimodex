@@ -1064,6 +1064,7 @@
     },
     "about": {
       "github": "GitHub",
+      "checkForUpdates": "更新を確認",
       "searchPlaceholder": "{{count}} 件のライブラリを検索…",
       "notFound": "「{{query}}」に一致するライブラリは見つかりません",
       "full": "全文",
@@ -4588,6 +4589,16 @@
       "restricted": "ライセンスが有効でないため編集は無効です — 閲覧と書き出しはいつでも可能です。",
       "openSettings": "ライセンス設定を開く"
     }
+  },
+  "updater": {
+    "updateAvailable": "新しいバージョンがあります",
+    "updateNow": "今すぐ更新",
+    "later": "後で",
+    "downloading": "更新をダウンロード中…",
+    "readyToRestart": "更新の準備ができました",
+    "restartNow": "再起動",
+    "upToDate": "最新版です",
+    "checkFailed": "更新の確認に失敗しました"
   },
   "semanticSearch": {
     "reindexComplete": "再インデックス完了",

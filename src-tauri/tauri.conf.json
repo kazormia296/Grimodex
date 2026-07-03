@@ -43,5 +43,16 @@
       "resources/semantic/ruri-v3-30m/tokenizer.json",
       "resources/semantic/bge-small-en-v15/tokenizer.json"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/kazormia296/Grimodex/releases/latest/download/latest.json"
+      ],
+      "pubkey": "__REPLACE_WITH_UPDATER_PUBKEY__",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

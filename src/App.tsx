@@ -29,6 +29,8 @@ import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgress
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { ModelDownloadToast } from "@/features/semantic-search/ModelDownloadToast";
 import { useModelDownloadListener } from "@/features/semantic-search/useModelDownloadListener";
+import { UpdateToast } from "@/features/updater/UpdateToast";
+import { useUpdateChecker } from "@/features/updater/useUpdateChecker";
 import { ensureSemanticIndexesOnOpen } from "@/features/semantic-search/autoIndex";
 import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
@@ -142,6 +144,8 @@ function App() {
   useReindexProgressListener();
   // オンデマンド埋め込みモデル DL の進行状況 event を購読。完了後に back-index を再実行。
   useModelDownloadListener();
+  // アプリ更新: 起動 ~10 秒後にサイレント check() → 更新があればトーストを出す。
+  useUpdateChecker();
   useExternalMountListener();
   useLicenseStateListener();
 
@@ -741,6 +745,7 @@ function EditorScreen() {
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />
       <ModelDownloadToast />
+      <UpdateToast />
       <ReloadConflictDialog />
       <main
         id="main-content"

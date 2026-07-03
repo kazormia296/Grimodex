@@ -39,6 +39,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-window-state = "2"
+# アプリ自動更新 (Track2 updater 導入)。licensing / semantic feature とは独立の
+# 無条件依存。updater は署名付き latest.json を GitHub Releases から取得し、
+# process は更新後の再起動 (relaunch) に使う。
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 window-vibrancy = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

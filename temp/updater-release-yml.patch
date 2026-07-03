@@ -1,0 +1,30 @@
+From: Track2 updater 導入
+Subject: [PATCH] release.yml に updater 署名 + createUpdaterArtifacts overlay + latest.json 生成を配線
+
+.github/ はサンドボックスから直接編集できないため、この差分を手動適用してください。
+
+適用方法:
+  cd <repo-root>
+  git apply temp/updater-release-yml.patch
+
+適用前に TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD の
+GitHub Secrets 登録が必要です (PR 本文の「鍵生成」参照)。
+
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -116,10 +116,11 @@
+           # APPLE_ID: ${{ secrets.APPLE_ID }}
+           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+-          # Windows / アップデーター署名（将来対応）
+-          # TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+-          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
++          # Windows / アップデーター署名（Track2 updater 有効化）
++          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
++          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+         with:
+           tauriScript: pnpm tauri
+-          args: ${{ steps.licensing.outputs.args }}
++          includeUpdaterJson: true
++          args: ${{ steps.licensing.outputs.args }} --config src-tauri/tauri.updater.conf.json
+           tagName: v__VERSION__
