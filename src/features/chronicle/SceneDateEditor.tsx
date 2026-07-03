@@ -11,7 +11,7 @@ import {
 } from "@/features/tree/treeStore";
 import type { ChronicleCalendar } from "./chronicleTime";
 import { useProjectCalendar } from "./useProjectCalendar";
-import { EventDateEditor, type EventDatePatch } from "./EventDateEditor";
+import { EventDateFields, type EventDatePatch } from "./EventDateFields";
 
 interface SceneDateEditorProps {
   node: TreeNodeData;
@@ -42,20 +42,21 @@ function toChroniclePatch(p: EventDatePatch): ChronicleDatePatch {
  * 永続化＋楽観反映する（POV/場所の保存と同経路）。scene 以外では描画しない。
  */
 export function SceneDateEditor({ node }: SceneDateEditorProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { calendar } = useProjectCalendar(node.projectId);
   const updateChronicleDate = useTreeStore((s) => s.updateChronicleDate);
 
   if (node.nodeType !== "scene") return null;
 
   const cal = calendar ?? FALLBACK_CALENDAR;
+  const lang = i18n.language?.startsWith("en") ? "en" : "ja";
 
   return (
-    <div className="flex flex-shrink-0 flex-col gap-1.5 border-b border-border bg-muted/30 px-3 py-2">
-      <span className="text-xs font-medium text-muted-foreground">
+    <div className="flex flex-shrink-0 flex-col gap-2 border-b border-border bg-muted/30 px-3 py-2.5">
+      <span className="text-[11px] font-medium text-muted-foreground">
         {t("chronicle.sceneDate", "作中日付")}
       </span>
-      <EventDateEditor
+      <EventDateFields
         calendar={cal}
         startTime={node.chronicleStartTime ?? null}
         startMinute={node.chronicleStartMinute ?? null}
@@ -68,11 +69,10 @@ export function SceneDateEditor({ node }: SceneDateEditorProps) {
           (node.chronicleEndGranularity ?? "none") as EventGranularity
         }
         onPatch={(p) => void updateChronicleDate(node.id, toChroniclePatch(p))}
+        lang={lang}
       />
-      <label className="flex items-center gap-1 text-xs">
-        <span className="text-muted-foreground">
-          {t("chronicle.precisionLabel", "日付の確度")}
-        </span>
+      <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span>{t("chronicle.precisionLabel", "日付の確度")}</span>
         <select
           value={(node.chroniclePrecision ?? "exact") as EventPrecision}
           onChange={(e) =>
@@ -81,7 +81,7 @@ export function SceneDateEditor({ node }: SceneDateEditorProps) {
             })
           }
           aria-label={t("chronicle.precisionLabel", "日付の確度")}
-          className="rounded border bg-transparent px-1 py-0.5"
+          className="h-7 min-w-0 rounded-md border border-border bg-card px-2 text-xs text-foreground"
         >
           {EVENT_PRECISIONS.map((p) => (
             <option key={p} value={p}>

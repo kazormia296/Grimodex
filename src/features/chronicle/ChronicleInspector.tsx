@@ -5,35 +5,19 @@ import {
   AlertTriangle,
   ArrowDownToLine,
   ArrowUpFromLine,
-  CalendarDays,
   ExternalLink,
 } from "lucide-react";
-import {
-  EVENT_PRECISIONS,
-  EVENT_KINDS,
-  EVENT_GRANULARITIES,
-  type EventGranularity,
-} from "@/db/schema";
+import { EVENT_PRECISIONS, EVENT_KINDS } from "@/db/schema";
 import type { EventRow } from "./api";
 import type { SeasonConflict } from "./seasonCheck";
 import type { AgeConflict } from "./ageCheck";
-import {
-  dateToDayNumber,
-  formatChronicleDate,
-  type ChronicleCalendar,
-  type DateLang,
-} from "./chronicleTime";
+import { type ChronicleCalendar, type DateLang } from "./chronicleTime";
 import { laneColorFor } from "./laneColor";
-import { ChronicleDatePicker } from "./ChronicleDatePicker";
+import { EventDateFields } from "./EventDateFields";
 import { ChronicleDetailField } from "./ChronicleDetailField";
 import { CodexEntryPicker } from "./CodexEntryPicker";
 import { SceneLinkField, type SceneLinkMode } from "./SceneLinkField";
 import { lunarInfoForDay } from "./chronicleLunar";
-import {
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
-} from "@/components/ui/popover";
 
 // narrow（＝インスペクタ幅が狭い）ときに下部アクションのラベルを畳んでアイコンのみに
 // する。アクション行を `@container` にして各ラベル span に付ける（Tailwind v4 CQ・調整可）。
@@ -239,88 +223,11 @@ export function ChronicleInspector({
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
   };
-  const [pickerOpen, setPickerOpen] = useState<"start" | "end" | null>(null);
-
   const titleById = new Map(allEvents.map((e) => [e.id, e.title]));
   const causeOptions = allEvents.filter(
     (e) => e.id !== event.id && !causeIds.includes(e.id),
   );
-  const startYear = calendar.startYear ?? 0;
-  const isInterval = event.endTime != null;
   const lc = laneColorFor(event.primaryCodexId);
-
-  // 日時ピッカー本体（Radix PopoverContent 内に描画。配置/衝突回避/アニメは Radix 側）。
-  const pickerContentFor = (which: "start" | "end") => {
-    const gran =
-      which === "start"
-        ? event.startGranularity
-        : event.endGranularity === "none"
-          ? "day"
-          : event.endGranularity;
-    const day =
-      which === "start"
-        ? (event.startTime ?? dateToDayNumber({ year: startYear }, calendar))
-        : (event.endTime ??
-          event.startTime ??
-          dateToDayNumber({ year: startYear }, calendar));
-    const minute =
-      which === "start" ? (event.startMinute ?? 0) : (event.endMinute ?? 0);
-    return (
-      <ChronicleDatePicker
-        which={which}
-        granularity={gran as EventGranularity}
-        calendar={calendar}
-        day={day}
-        minute={minute}
-        lang={lang}
-        onCommitDay={(d) => {
-          if (which === "start") onPatch({ startTime: d });
-          else onPatch({ endTime: Math.max(d, event.startTime ?? d) });
-        }}
-        onCommitMinute={(m) => {
-          if (which === "start") onPatch({ startMinute: m });
-          else onPatch({ endMinute: m });
-        }}
-        onClose={() => setPickerOpen(null)}
-      />
-    );
-  };
-
-  const setGran = (which: "start" | "end", g: EventGranularity) => {
-    if (which === "start") {
-      if (g === "none") {
-        onPatch({
-          startGranularity: "none",
-          startTime: null,
-          startMinute: null,
-        });
-      } else {
-        const base =
-          event.startTime ?? dateToDayNumber({ year: startYear }, calendar);
-        onPatch({ startGranularity: g, startTime: base });
-      }
-    }
-  };
-
-  const startResolved =
-    event.startGranularity === "none"
-      ? ""
-      : formatChronicleDate(
-          event.startTime,
-          event.startMinute,
-          event.startGranularity,
-          calendar,
-          lang,
-        );
-  const endResolved = isInterval
-    ? formatChronicleDate(
-        event.endTime,
-        event.endMinute,
-        event.endGranularity === "none" ? "day" : event.endGranularity,
-        calendar,
-        lang,
-      )
-    : "";
 
   return (
     <div
@@ -535,120 +442,19 @@ export function ChronicleInspector({
               </div>
             )}
 
-            {/* 開始 / 終了 日時 */}
-            <div className="flex flex-col gap-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="w-7 flex-none text-[11px] text-muted-foreground">
-                  {t("chronicle.startTime", "開始")}
-                </span>
-                <select
-                  value={event.startGranularity}
-                  onChange={(e) =>
-                    setGran("start", e.target.value as EventGranularity)
-                  }
-                  aria-label={t("chronicle.startGranularity", "開始の粒度")}
-                  className={selectCls}
-                >
-                  {EVENT_GRANULARITIES.map((g) => (
-                    <option key={g} value={g}>
-                      {t(`chronicle.granularity.${g}`, g)}
-                    </option>
-                  ))}
-                </select>
-                {event.startGranularity !== "none" ? (
-                  <Popover
-                    open={pickerOpen === "start"}
-                    onOpenChange={(o) => setPickerOpen(o ? "start" : null)}
-                  >
-                    <PopoverTrigger asChild>
-                      <button
-                        type="button"
-                        className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
-                        style={{ fontFeatureSettings: "'tnum'" }}
-                      >
-                        <CalendarDays className="size-3.5 opacity-70" />
-                        {startResolved}
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      align="start"
-                      side="top"
-                      className="w-[296px]"
-                    >
-                      {pickerContentFor("start")}
-                    </PopoverContent>
-                  </Popover>
-                ) : (
-                  <span className="text-xs text-muted-foreground">
-                    {t("chronicle.timeUnset", "時刻は未指定（並び順のみ）")}
-                  </span>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="w-7 flex-none text-[11px] text-muted-foreground">
-                  {t("chronicle.endTime", "終了")}
-                </span>
-                {isInterval ? (
-                  <>
-                    <Popover
-                      open={pickerOpen === "end"}
-                      onOpenChange={(o) => setPickerOpen(o ? "end" : null)}
-                    >
-                      <PopoverTrigger asChild>
-                        <button
-                          type="button"
-                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-accent"
-                          style={{ fontFeatureSettings: "'tnum'" }}
-                        >
-                          <CalendarDays className="size-3.5 opacity-70" />
-                          {endResolved}
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent
-                        align="start"
-                        side="top"
-                        className="w-[296px]"
-                      >
-                        {pickerContentFor("end")}
-                      </PopoverContent>
-                    </Popover>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onPatch({
-                          endTime: null,
-                          endGranularity: "none",
-                          endMinute: null,
-                        })
-                      }
-                      className="h-[26px] rounded-md border border-border bg-card px-2 text-[11px] text-muted-foreground hover:bg-accent"
-                    >
-                      {t("chronicle.makePoint", "点にする")}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-xs text-muted-foreground">
-                      {t("chronicle.unset", "未指定")}
-                    </span>
-                    {event.startGranularity !== "none" && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onPatch({
-                            endTime: (event.startTime ?? 0) + 60,
-                            endGranularity: "day",
-                            endMinute: 0,
-                          })
-                        }
-                        className="h-[26px] rounded-md border border-border bg-card px-2 text-[11px] text-muted-foreground hover:bg-accent"
-                      >
-                        {t("chronicle.makeInterval", "期間にする")}
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
+            {/* 開始 / 終了 日時（Editor / Timeline のシーン日付と共有） */}
+            <div className="rounded-xl border border-border bg-muted/30 px-3 py-2.5">
+              <EventDateFields
+                calendar={calendar}
+                startTime={event.startTime}
+                startMinute={event.startMinute}
+                startGranularity={event.startGranularity}
+                endTime={event.endTime}
+                endMinute={event.endMinute}
+                endGranularity={event.endGranularity}
+                onPatch={onPatch}
+                lang={lang}
+              />
             </div>
 
             {/* 旧暦・六曜・節気（実暦12ヶ月暦のみ。中国農暦 UTC+8 ベース） */}
