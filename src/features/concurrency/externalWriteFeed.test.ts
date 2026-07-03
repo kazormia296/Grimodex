@@ -9,7 +9,30 @@ const h = vi.hoisted(() => ({
   loadPlot: vi.fn().mockResolvedValue(undefined),
   loadLabels: vi.fn().mockResolvedValue(undefined),
   dirtyTabs: new Set<string>(),
+  // When true, the mocked drizzle query rejects like a stalled db_execute
+  // (e.g. blocked behind the native save dialog during timelapse export).
+  dbReject: false,
 }));
+
+// pollTick() reads change_events via the drizzle proxy (db.select()...). Mock it
+// so a transient IPC/DB failure can be simulated; defaults to resolving [] so the
+// fan-out tests (which never touch db) are unaffected.
+vi.mock("@/db/client", () => {
+  const makeQuery = () => {
+    const q: Record<string, unknown> = {
+      from: () => q,
+      where: () => q,
+      orderBy: () => q,
+      limit: () => q,
+      then: (resolve: (v: unknown[]) => void, reject: (e: unknown) => void) =>
+        h.dbReject
+          ? reject(new Error("IPC timeout after 10000ms: db_execute"))
+          : resolve([]),
+    };
+    return q;
+  };
+  return { db: { select: () => makeQuery() } };
+});
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: {
@@ -64,6 +87,8 @@ vi.mock("@/features/labels/labelStore", () => ({
 import {
   processExternalEventsForTest,
   stopExternalWriteFeed,
+  pollExternalWritesForTest,
+  getExternalWriteCursorForTest,
 } from "./externalWriteFeed";
 import { useExternalWriteStore } from "./externalWriteStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -269,6 +294,29 @@ describe("externalWriteFeed fan-out", () => {
       "p1",
     );
     expect(useExternalWriteStore.getState().reloadNonce["snippet-2"]).toBe(1);
+  });
+});
+
+// A stalled db_execute (e.g. the change_events poll firing while the native save
+// dialog blocks IPC during timelapse export) hits ipcQueue's 10s timeout and
+// rejects. pollTick is fired via `void pollTick()` in setInterval, so an
+// unguarded reject escapes as a [Global] unhandled rejection. pollTick must
+// swallow it and retain the cursor for the next tick.
+describe("externalWriteFeed pollTick resilience", () => {
+  beforeEach(() => {
+    stopExternalWriteFeed();
+    h.dbReject = false;
+  });
+
+  it("does not reject when the poll's DB read fails (IPC timeout)", async () => {
+    // Arm the poller for project p1 without touching db (processExternalEventsForTest
+    // sets state.projectId directly), then make the next DB read reject.
+    await processExternalEventsForTest([], "p1");
+    h.dbReject = true;
+
+    await expect(pollExternalWritesForTest()).resolves.toBeUndefined();
+    // Cursor is never advanced on the failing path, so the next tick retries.
+    expect(getExternalWriteCursorForTest()).toBe(0);
   });
 });
 
