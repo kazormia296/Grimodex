@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  adjacentColumnPoint,
   caretBox,
   lineAxisContentCoord,
   toContainerRelative,
@@ -46,6 +47,32 @@ describe("toContainerRelative", () => {
 // ---------------------------------------------------------------------------
 // resolveVerticalBias
 // ---------------------------------------------------------------------------
+describe("adjacentColumnPoint", () => {
+  // vertical-rl: 次の列 (読み進み方向) は左 = x が減る、前の列は右 = x が増える。
+  // インライン位置 y は列を跨いでも保持される。
+  it("next (次の列) は centerX から pitch ぶん左へ、y は据え置き", () => {
+    expect(adjacentColumnPoint(100, 42, 30, "next")).toEqual({
+      left: 70,
+      top: 42,
+    });
+  });
+
+  it("prev (前の列) は centerX から pitch ぶん右へ、y は据え置き", () => {
+    expect(adjacentColumnPoint(100, 42, 30, "prev")).toEqual({
+      left: 130,
+      top: 42,
+    });
+  });
+
+  it("next と prev は centerX を挟んで対称", () => {
+    const next = adjacentColumnPoint(200, 10, 25, "next");
+    const prev = adjacentColumnPoint(200, 10, 25, "prev");
+    expect(next.left).toBe(175);
+    expect(prev.left).toBe(225);
+    expect((next.left + prev.left) / 2).toBe(200);
+  });
+});
+
 describe("resolveVerticalBias", () => {
   it("returns null when not at a wrap boundary", () => {
     expect(resolveVerticalBias(100, 101, 160, "up")).toBeNull();

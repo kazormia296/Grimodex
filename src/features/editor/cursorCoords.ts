@@ -136,6 +136,24 @@ export function resolveCoords(
 }
 
 /**
+ * 縦書き (vertical-rl) の列移動 (ArrowLeft/ArrowRight) 用の目標点。
+ *
+ * `centerX` = 現在キャレットが属する列の中心 x、`y` = インライン位置
+ * (列を跨いでも保持する)、`pitch` = 列ピッチ (= computed line-height の px、
+ * = 隣接列の中心間距離)。`dir` は読み進み基準:
+ *   "next" = 次の列 (vertical-rl では左)、"prev" = 前の列 (右)。
+ * 返り値を `view.posAtCoords` に渡すと隣接列の同じインライン位置の pos が取れる。
+ */
+export function adjacentColumnPoint(
+  centerX: number,
+  y: number,
+  pitch: number,
+  dir: "next" | "prev",
+): { left: number; top: number } {
+  return { left: dir === "next" ? centerX - pitch : centerX + pitch, top: y };
+}
+
+/**
  * 縦書き (vertical-rl) 用のキャレット座標リゾルバ。
  *
  * prosemirror-view の coordsAtPos は flattenV (横書き前提) で矩形を
