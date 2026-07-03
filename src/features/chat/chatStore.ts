@@ -984,6 +984,7 @@ async function fetchSceneContext(
       id: node.id,
       title: node.title,
       synopsis: node.synopsis ?? undefined,
+      intent: node.intent ?? undefined,
       content: prosemirrorToText(content ?? ""),
       contentJson: content ?? "",
       storyTimeLabel: node.storyTimeLabel ?? null,

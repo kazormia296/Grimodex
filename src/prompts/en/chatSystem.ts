@@ -215,6 +215,9 @@ export const EN_CHAT_SYSTEM = {
     styleGuide: "Style Guide",
     aiInstructions: "AI Instructions",
     synopsis: "Synopsis",
+    /** Label for the current scene's intent (treeNodes.intent) in L3. Worded as a goal,
+     * not background info, so the model steers toward it (matches intent_drift heading). */
+    intent: "Intent (author's goal for this scene)",
     prevTitle: "Title",
     prevSummary: "Summary",
     contentType: "Type",
