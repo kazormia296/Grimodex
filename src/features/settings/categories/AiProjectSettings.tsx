@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 import { useProjectSettings } from "../hooks/useProjectSettings";
 import { useSettingBoolean } from "../useSettingControl";
 import { SettingSection } from "../components/SettingSection";
@@ -9,18 +7,6 @@ import { SettingTextarea } from "../components/SettingTextarea";
 import { parseAiPolicy, serializeAiPolicy } from "@/features/ai-policy/parse";
 import { expandPreset, inferPreset } from "@/features/ai-policy/preset";
 import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
-import { getCurrentProjectId } from "@/features/project/projectStore";
-import {
-  semanticDebugDump,
-  semanticIndexStatus,
-  semanticReindexAll,
-  type SemanticIndexStatus,
-} from "@/features/semantic-search/api";
-import {
-  runSearchEvalCompare,
-  formatEvalCompare,
-} from "@/features/semantic-search/searchEval";
-import { useReindexProgressStore } from "@/features/semantic-search/reindexProgressStore";
 
 /**
  * AI タブの「プロジェクト」スコープに表示する、プロジェクト固有の AI 設定。
@@ -39,59 +25,6 @@ export function AiProjectSettings() {
   const semanticRecall = useSettingBoolean("ai.semanticRecall", true);
   const hybridRecall = useSettingBoolean("ai.hybridRecall", true);
   const chatRecall = useSettingBoolean("ai.chatRecall", true);
-
-  // 多重起動ガードはグローバル store に置く — コンポーネントローカル state だと
-  // 設定パネルの閉じ開きやカテゴリ切替（再マウント）でガードが外れ、全件再構築を
-  // 二重起動できてしまう。
-  const reindexRunning = useReindexProgressStore((s) => s.running);
-  const setReindexRunning = useReindexProgressStore((s) => s.setRunning);
-
-  // インデックス状態（インデックス済みシーン数/チャンク数）。「再構築したのに
-  // 注入されない」の切り分けに必須 — 0 件ならインデックス側、非 0 なら検索/スコア
-  // 側の問題と即断できる。Embedder ロード不要の軽量クエリ。
-  const [indexStatus, setIndexStatus] = useState<SemanticIndexStatus | null>(
-    null,
-  );
-  const refreshIndexStatus = useCallback(() => {
-    semanticIndexStatus(getCurrentProjectId())
-      .then(setIndexStatus)
-      .catch(() => setIndexStatus(null));
-  }, []);
-  // プロジェクト未取得時は叩かない（プロジェクト確定後・タブ表示時に取得）。
-  useEffect(() => {
-    if (project) refreshIndexStatus();
-  }, [project, refreshIndexStatus]);
-
-  // 意味検索インデックスの全件再構築。インデックスへの投入は通常シーン保存時の
-  // 逐次更新（scheduleSceneIndex）だけなので、機能追加前から存在する・編集して
-  // いないシーンは未インデックスのまま＝関連シーン注入が一切効かない。
-  // 進行状況は Rust 側 progress event → ReindexProgressToast（App.tsx 常設）が表示。
-  async function handleSemanticReindex() {
-    if (useReindexProgressStore.getState().running) return;
-    setReindexRunning(true);
-    try {
-      const chunks = await semanticReindexAll(getCurrentProjectId());
-      toast.success(
-        t("settings.project.semanticReindexDone", {
-          defaultValue: "インデックスを再構築しました（{{count}} チャンク）",
-          count: chunks,
-        }),
-      );
-    } catch (e) {
-      // 失敗時は呼び出し側が progress 表示を片付ける契約（reindexProgressStore）
-      useReindexProgressStore.getState().clear();
-      toast.error(
-        t(
-          "settings.project.semanticReindexFailed",
-          "インデックスの再構築に失敗しました",
-        ),
-      );
-      console.error("[semanticReindex]", e);
-    } finally {
-      setReindexRunning(false);
-      refreshIndexStatus();
-    }
-  }
 
   if (isLoading || !project) return null;
 
@@ -296,110 +229,8 @@ export function AiProjectSettings() {
             className="h-4 w-4 cursor-pointer rounded border-input"
           />
         </SettingRow>
-        {/* 状態表示+再構築ボタン(DEV ではデバッグ用ボタンも並ぶ)は横幅のあるクラスタ。
-            SettingRow(値は flex-shrink-0 列)に入れると説明列が 0 幅まで潰され、説明文が
-            縦書きのように折り返される。ラベル+説明を上に積んだ全幅ブロックにする。 */}
-        <div className="rounded px-1 py-1.5">
-          <div className="text-sm text-foreground">
-            {t(
-              "settings.project.semanticReindex",
-              "意味検索インデックスの再構築",
-            )}
-          </div>
-          <div className="mb-2 mt-0.5 text-xs text-muted-foreground">
-            {t(
-              "settings.project.semanticReindexDesc",
-              "プロジェクト内の全シーンを再インデックスする。インデックスはシーン保存時にしか更新されないため、既存プロジェクトで初めて関連シーン注入を使うときはここから構築する。進行状況は画面右下に表示される。",
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            {indexStatus && (
-              <span className="text-xs text-muted-foreground">
-                {t("settings.project.semanticIndexStatus", {
-                  defaultValue: "{{scenes}} シーン / {{chunks}} チャンク",
-                  scenes: indexStatus.indexedSceneCount,
-                  chunks: indexStatus.indexedChunkCount,
-                })}
-              </span>
-            )}
-            {indexStatus && indexStatus.staleChunkCount > 0 && (
-              // 言語変更等でモデル/次元/チャンカが変わると既存チャンクが stale 化し
-              // 関連シーン注入が無言で空になる。再構築を促す。
-              <span className="text-xs text-amber-600 dark:text-amber-400">
-                {t("settings.project.semanticIndexStale", {
-                  defaultValue: "{{count}} チャンクが再構築待ち",
-                  count: indexStatus.staleChunkCount,
-                })}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={handleSemanticReindex}
-              disabled={reindexRunning}
-              className="rounded-md border border-border px-3 py-1 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {reindexRunning
-                ? t("settings.project.semanticReindexRunning", "再構築中…")
-                : t("settings.project.semanticReindexButton", "再構築")}
-            </button>
-            {import.meta.env.DEV && (
-              // 開発専用: index 済み scene_chunks をコンソールにダンプして
-              // セマンティック検索のデバッグ（何が・どのモデルで index されたか）に使う。
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    const dump = await semanticDebugDump({
-                      projectId: getCurrentProjectId(),
-                    });
-                    console.log(
-                      `[semantic-debug] ${dump.returnedChunks}/${dump.totalChunks} chunks · ` +
-                        `lang=${dump.language} · model=${dump.currentModelId} · ` +
-                        `dim=${dump.currentEmbeddingDim} · chunker=${dump.currentChunkerVersion}`,
-                    );
-                    console.table(dump.chunks);
-                  } catch (e) {
-                    console.error("[semantic-debug] dump failed", e);
-                  }
-                }}
-                className="rounded-md border border-dashed border-border px-3 py-1 text-sm text-muted-foreground hover:bg-accent"
-                title={t("settings.project.semanticDebugDumpTitle")}
-              >
-                {t("settings.project.semanticDebugDumpButton")}
-              </button>
-            )}
-            {import.meta.env.DEV && (
-              // 開発専用: query→期待シーンの eval set を実機 semantic_search に流し、
-              // dense 単独 vs hybrid(dense+sparse RRF) の Recall@1/@3/MRR・差分・miss/junk を
-              // コンソールへ。検索品質の回帰検知と「sparse 融合の効き目」計測用。
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    const cmp = await runSearchEvalCompare();
-                    console.log(formatEvalCompare(cmp));
-                    console.table(
-                      cmp.hybrid.results.map((r) => ({
-                        query: r.query,
-                        rank: r.rank,
-                        expectedScore: r.expectedScore,
-                        topScore: r.topScore,
-                        top: r.scenes[0]?.sceneTitle,
-                      })),
-                    );
-                    console.table(cmp.hybrid.junk);
-                  } catch (e) {
-                    console.error("[semantic-eval] failed", e);
-                  }
-                }}
-                className="rounded-md border border-dashed border-border px-3 py-1 text-sm text-muted-foreground hover:bg-accent"
-                title={t("settings.project.semanticEvalTitle")}
-              >
-                {t("settings.project.semanticEvalButton")}
-              </button>
-            )}
-          </div>
-        </div>
+        {/* 意味検索インデックスの状態表示・全件再構築は Data タブ（SemanticIndexSection）へ
+            移設した。FTS 再構築 / VACUUM と同族の索引保守のため。 */}
       </SettingSection>
 
       <SettingSection title={t("settings.project.aiSettings")}>
