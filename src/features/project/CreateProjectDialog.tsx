@@ -4,6 +4,7 @@ import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import type { Project } from "./api";
 import { GENRE_VALUES } from "./genreOptions";
 import { listCodexTypes, type CodexType } from "@/features/codex/typeApi";
+import { useWorkspaceStore } from "@/features/workspace/store";
 
 export interface CreateProjectFormData {
   title: string;
@@ -31,6 +32,25 @@ const LANGUAGE_OPTIONS = [
 
 const GENRE_OPTIONS = ["", ...GENRE_VALUES];
 
+/**
+ * 新規プロジェクトの既定「執筆言語」を UI 言語から導く。UI が英語なら英語を、
+ * それ以外は前方一致する対応言語（無ければ日本語）を既定にする。UI が英語なのに
+ * 執筆言語が常に日本語だと、英語ユーザーが既定のまま作成すると JP 用埋め込みモデル
+ * (ruri) が選ばれ、後で英語へ切替時に別モデル (bge) を無駄に DL することになる。
+ * ※ 既存プロジェクトの language や DB フォールバック('ja') は変えない（変更すると
+ *   full_model_id が変わり scene_chunks が全 stale 化＝フル再indexを誘発するため）。
+ */
+function defaultWritingLanguage(uiLanguage: string): string {
+  return (
+    LANGUAGE_OPTIONS.find((o) => uiLanguage.startsWith(o.value))?.value ?? "ja"
+  );
+}
+
+/** 購読せず現在の UI 言語を読む（フォーム初期値・open リセットの種として使う）。 */
+function currentUiLanguage(): string {
+  return useWorkspaceStore.getState().globalSettings?.uiLanguage ?? "ja";
+}
+
 export function CreateProjectDialog({
   open,
   onClose,
@@ -41,7 +61,9 @@ export function CreateProjectDialog({
   const { t } = useTranslation();
   const [title, setTitle] = useState("");
   const [genre, setGenre] = useState("");
-  const [language, setLanguage] = useState("ja");
+  const [language, setLanguage] = useState(() =>
+    defaultWritingLanguage(currentUiLanguage()),
+  );
   const [timelapseEnabled, setTimelapseEnabled] = useState(true);
   const [seedFromProjectId, setSeedFromProjectId] = useState(
     defaultSourceProjectId,
@@ -56,7 +78,7 @@ export function CreateProjectDialog({
     if (open) {
       setTitle("");
       setGenre("");
-      setLanguage("ja");
+      setLanguage(defaultWritingLanguage(currentUiLanguage()));
       setTimelapseEnabled(true);
       setSeedFromProjectId(defaultSourceProjectId);
       setSelectedTypeSlugs(new Set());
