@@ -17,7 +17,7 @@ use tauri::Manager;
 use codex_matching::CodexMatcherState;
 use commands::external_mount::ExternalMountState;
 #[cfg(feature = "semantic-embedding")]
-use commands::semantic::SemanticEmbedderState;
+use commands::semantic::{ModelDownloadState, SemanticEmbedderState};
 use commands::{
     AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LicensePath,
     LogGuard, PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
@@ -151,6 +151,10 @@ pub fn run() {
             app.manage(SemanticEmbedderState {
                 inner: std::sync::Mutex::new(std::collections::HashMap::new()),
             });
+
+            // オンデマンドモデル DL の in-flight 集合 (二重 DL ガード)。
+            #[cfg(feature = "semantic-embedding")]
+            app.manage(ModelDownloadState::default());
 
             // Semantic search: in-memory embedding cache (scene_id -> Vec<f32>).
             // Cleared on workspace open; invalidated per-scene on index_scene.
@@ -292,6 +296,8 @@ pub fn run() {
             commands::semantic::semantic_index_status,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_reindex_all,
+            #[cfg(feature = "semantic-embedding")]
+            commands::semantic::semantic_download_model,
             #[cfg(feature = "semantic-embedding")]
             commands::semantic::semantic_chunk_context,
             #[cfg(feature = "semantic-embedding")]

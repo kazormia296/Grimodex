@@ -21,7 +21,7 @@
 
 #![cfg(feature = "semantic-embedding")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -40,6 +40,7 @@ use crate::semantic::codex_index::{
     CodexUpsertOutcome,
 };
 use crate::semantic::codex_search::{run_codex_search, CodexSearchCache, CodexSearchHit};
+use crate::semantic::download::{download_model, is_model_installed};
 use crate::semantic::embedding::Embedder;
 use crate::semantic::events_index::{
     collect_events_index_status, embed_event_text, list_event_ids_in_project,
@@ -85,6 +86,57 @@ pub(crate) struct SemanticEmbedderState {
     /// dir_name (= spec.dir_name) ごとに Embedder を保持。ja/en プロジェクトを
     /// 同一セッションで交互に使ってもそれぞれのモデルを使い回せる。
     pub(crate) inner: Mutex<HashMap<&'static str, Embedder>>,
+}
+
+/// オンデマンド DL の in-flight 管理。同一 dir_name の二重ダウンロードを防ぐだけの
+/// 軽量な集合 (DL 実体は保持しない)。lock は insert/remove の一瞬しか保持せず、
+/// DL 中は解放しているので embedder lock と競合しない。
+#[derive(Default)]
+pub(crate) struct ModelDownloadState {
+    pub(crate) inflight: Mutex<HashSet<&'static str>>,
+}
+
+/// 指定言語の埋め込みモデルが未インストールなら、バックグラウンドで DL を開始する。
+/// 即時に状態文字列を返す:
+/// - `"installed"`: 既に同梱/DL 済みで DL 不要。
+/// - `"downloading"`: DL を開始した (または既に進行中)。
+/// - `"unavailable"`: DL 元 (artifact_url) が無い spec。
+///
+/// DL 本体は `spawn` に投げて await しないため IPC タイムアウトに掛からない。進捗は
+/// `semantic:model_download_progress` イベントで流れ、`done=true`(error=None) が成功。
+/// フロントはそれを受けて再インデックスを呼ぶ。
+#[tauri::command]
+pub(crate) async fn semantic_download_model(
+    app: tauri::AppHandle,
+    language: String,
+) -> Result<String, AppError> {
+    let spec = spec_for_language(&language);
+    if is_model_installed(&app, spec) {
+        return Ok("installed".to_string());
+    }
+    if spec.artifact_url.is_empty() {
+        return Ok("unavailable".to_string());
+    }
+    // 二重起動ガード: 既に同 dir_name を DL 中なら開始しない。
+    {
+        let dl_state = app.state::<ModelDownloadState>();
+        let mut inflight = dl_state
+            .inflight
+            .lock()
+            .map_err(|e| anyhow::anyhow!("download state lock poisoned: {e}"))?;
+        if inflight.contains(spec.dir_name) {
+            return Ok("downloading".to_string());
+        }
+        inflight.insert(spec.dir_name);
+    }
+    let bg = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = download_model(bg.clone(), spec).await;
+        if let Ok(mut inflight) = bg.state::<ModelDownloadState>().inflight.lock() {
+            inflight.remove(spec.dir_name);
+        }
+    });
+    Ok("downloading".to_string())
 }
 
 /// spec に対応する同梱モデルディレクトリを解決する。
