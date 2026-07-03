@@ -622,7 +622,6 @@
       "disableAllDesc": "Turn off all settings below at once",
       "smoothCaret": "Smooth caret",
       "cursorBlink": "Cursor blink",
-      "fadeIn": "Character fade-in",
       "fadeOut": "Character fade-out",
       "beats": "Beats",
       "focusModeHideBeats": "Hide beats in Focus Mode",

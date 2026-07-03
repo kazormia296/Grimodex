@@ -1238,20 +1238,6 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   transition: none;
 }
 
-/* Character fade-in — applied by CharacterFadePlugin to newly typed/IME-confirmed
-   ranges. Decoration class is removed after the animation by a cleanup tx. */
-@keyframes editor-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-.editor-fade-in {
-  animation: editor-fade-in 120ms ease-out;
-}
-
 /* Character fade-out — a ghost glyph appended to document.body by
    CharacterFadeOutPlugin at the deletion site. Fixed-positioned so screen
    coords from coordsAtPos work directly. */

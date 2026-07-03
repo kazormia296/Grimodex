@@ -622,7 +622,6 @@
       "disableAllDesc": "以下の設定を一括でOFF",
       "smoothCaret": "スムーズカーソル",
       "cursorBlink": "カーソル点滅",
-      "fadeIn": "文字フェードイン",
       "fadeOut": "文字フェードアウト",
       "beats": "ビート",
       "focusModeHideBeats": "フォーカスモード時にビートを非表示",

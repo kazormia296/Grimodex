@@ -16,7 +16,6 @@ export interface EditorSettings {
   inlineAiShortcut: boolean;
   smoothCaret: boolean;
   cursorBlink: boolean;
-  characterFadeIn: boolean;
   characterFadeOut: boolean;
   disableAllAnimations: boolean;
   wordBreak: string;
@@ -49,7 +48,6 @@ export function useEditorSettings(): EditorSettings {
     inlineAiShortcut: store.getBoolean("editor.inlineAiShortcut", true),
     smoothCaret: store.getBoolean("editor.smoothCaret", true),
     cursorBlink: store.getBoolean("editor.cursorBlink", true),
-    characterFadeIn: store.getBoolean("editor.characterFadeIn", false),
     characterFadeOut: store.getBoolean("editor.characterFadeOut", false),
     disableAllAnimations: store.getBoolean(
       "editor.disableAllAnimations",

@@ -51,10 +51,6 @@ export function EditorCategory() {
     "editor.cursorBlink",
     true,
   );
-  const { value: fadeIn, setValue: setFadeIn } = useSettingBoolean(
-    "editor.characterFadeIn",
-    false,
-  );
   const { value: fadeOut, setValue: setFadeOut } = useSettingBoolean(
     "editor.characterFadeOut",
     false,
@@ -80,23 +76,20 @@ export function EditorCategory() {
   const prevAnimRef = useRef<{
     smoothCaret: boolean;
     cursorBlink: boolean;
-    fadeIn: boolean;
     fadeOut: boolean;
   } | null>(null);
 
   function handleDisableAll(v: boolean) {
     setDisableAll(v);
     if (v) {
-      prevAnimRef.current = { smoothCaret, cursorBlink, fadeIn, fadeOut };
+      prevAnimRef.current = { smoothCaret, cursorBlink, fadeOut };
       setSmoothCaret(false);
       setCursorBlink(false);
-      setFadeIn(false);
       setFadeOut(false);
     } else if (prevAnimRef.current) {
       // この session で退避した値があるときだけ復元（無ければ現状維持＝悪化させない）。
       setSmoothCaret(prevAnimRef.current.smoothCaret);
       setCursorBlink(prevAnimRef.current.cursorBlink);
-      setFadeIn(prevAnimRef.current.fadeIn);
       setFadeOut(prevAnimRef.current.fadeOut);
       prevAnimRef.current = null;
     }
@@ -261,13 +254,6 @@ export function EditorCategory() {
           <AnimToggle
             value={cursorBlink}
             onChange={setCursorBlink}
-            disabled={disableAll}
-          />
-        </SettingRow>
-        <SettingRow label={t("settings.editor.fadeIn")}>
-          <AnimToggle
-            value={fadeIn}
-            onChange={setFadeIn}
             disabled={disableAll}
           />
         </SettingRow>
