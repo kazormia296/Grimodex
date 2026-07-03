@@ -317,7 +317,7 @@ pub(crate) async fn open_workspace(
             // Set as active workspace
             let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
             *inner = Some(ActiveWorkspace {
-                db: database,
+                db: std::sync::Arc::new(database),
                 path: ws_path,
             });
 
