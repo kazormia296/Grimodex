@@ -16,11 +16,17 @@ import { MarkdownDoc } from "@/features/settings/categories/about/MarkdownDoc";
 import { EULA_VERSION } from "./constants";
 
 export function EulaConsentDialog() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { globalSettings, updateGlobalSettings } = useWorkspaceStore();
   const [agreed, setAgreed] = useState(false);
   const [showMessage, setShowMessage] = useState(false);
   const [isAccepting, setIsAccepting] = useState(false);
+
+  // UI 言語に合わせて表示する規約を切り替える。英訳は参考訳であり、
+  // 法的正本は日本語版（TERMS_ja.md）である点は英訳冒頭に明記済み。
+  const termsSrc = i18n.language?.startsWith("en")
+    ? "TERMS_en.md"
+    : "TERMS_ja.md";
 
   const needsConsent =
     globalSettings != null &&
@@ -65,7 +71,7 @@ export function EulaConsentDialog() {
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto rounded border border-border px-4 py-3">
-          <MarkdownDoc src="TERMS_ja.md" />
+          <MarkdownDoc src={termsSrc} />
           {showMessage && (
             <>
               <hr className="border-border" />
