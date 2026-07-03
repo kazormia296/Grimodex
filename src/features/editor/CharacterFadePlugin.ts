@@ -72,9 +72,13 @@ export function createCharacterFadePlugin(
             if (slice.size === 0) continue;
 
             // Map the inserted range through subsequent steps in this tr so
-            // the decoration aligns with the final document.
+            // the decoration aligns with the final document. The range
+            // [step.from, step.from + slice.size] is post-step coords, so
+            // slice from stepIndex + 1 — including the step's own map would
+            // re-shift the range one insert-width forward (off-by-one that
+            // painted the fade on the char AFTER the typed one).
             const stepIndex = tr.steps.indexOf(step);
-            const mapping = tr.mapping.slice(stepIndex);
+            const mapping = tr.mapping.slice(stepIndex + 1);
             const from = mapping.map(step.from);
             const to = mapping.map(step.from + slice.size);
             if (from < to) {
