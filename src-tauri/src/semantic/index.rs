@@ -154,6 +154,12 @@ pub fn upsert_scene_chunks(
 /// - `stale_chunk_count`: そのうち現行 `model_id` / `embedding_dim` / `chunker_version`
 ///   と不一致のもの (再インデックス対象)。
 /// - `indexed_scene_count`: 何件の scene が一つでも chunk を持っているか。
+/// - `nonempty_scene_count`: 本文が現行チャンカで 1 つ以上 chunk を生む (= index に
+///   載りうる) scene 数。空 scene は chunk を 1 件も生まないため
+///   `indexed_scene_count` に永遠に載らない一方、total scene 数には含まれる。充足
+///   判定の分母をこの値にすることで「空 scene があるだけで恒真 → open ごとに無駄な
+///   再インデックス」を防ぐ。SQL だけでは決まらない (チャンカ通しが要る) ため
+///   `collect_index_status` では 0 のまま返し、`semantic_index_status` command が埋める。
 /// - `current_*`: 呼び出し側 (commands/semantic.rs) が握る現行の識別子をそのまま返す。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -161,6 +167,7 @@ pub struct IndexStatusReport {
     pub indexed_chunk_count: usize,
     pub stale_chunk_count: usize,
     pub indexed_scene_count: usize,
+    pub nonempty_scene_count: usize,
     pub current_model_id: String,
     pub current_embedding_dim: usize,
     pub current_chunker_version: String,
@@ -217,6 +224,10 @@ pub fn collect_index_status(
             indexed_chunk_count: indexed_chunk_count as usize,
             stale_chunk_count: stale_chunk_count as usize,
             indexed_scene_count: indexed_scene_count as usize,
+            // SQL だけでは空/非空を判別できない。command 側が
+            // `count_indexable_scenes` を通して埋める (0 のまま漏れても
+            // `indexed < nonempty` が偽になり「再インデックスしない」側に倒れる安全既定)。
+            nonempty_scene_count: 0,
             current_model_id: current_model_id.to_string(),
             current_embedding_dim,
             current_chunker_version: current_chunker_version.to_string(),
@@ -240,6 +251,58 @@ pub fn list_scene_ids_in_project(db: &Database, project_id: &str) -> Result<Vec<
         }
         Ok(out)
     })
+}
+
+/// まだ chunk を 1 件も持たない scene の content 一覧。`nonempty_scene_count` の
+/// 算出で「既に chunk を持つ scene は定義上 non-empty なので数え直さず、未 chunk
+/// 集合だけをチャンカに通して本当に空か判定する」ための読み出し。空 scene が大量に
+/// あっても content 読み出しは未 chunk 分だけで済む。Embedder は不要。
+pub fn list_unindexed_scene_contents(db: &Database, project_id: &str) -> Result<Vec<String>> {
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT tn.content
+             FROM tree_nodes tn
+             WHERE tn.project_id = ? AND tn.node_type = 'scene'
+               AND NOT EXISTS (
+                   SELECT 1 FROM scene_chunks sc WHERE sc.scene_id = tn.id
+               )",
+        )?;
+        let rows = stmt.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+}
+
+/// 与えた content 群のうち、現行チャンカで 1 つ以上 chunk を生む (= index に載りうる)
+/// ものの件数。`embed_scene_payloads` と同一の parse→chunk 経路を辿るので「実際に
+/// 載る」判定と完全に一致する (ヒューリスティックな空判定でズレて恒真化するのを防ぐ)。
+/// JSON parse 失敗・空本文は 0 chunk = 非 indexable として数えない。Embedder は不要 —
+/// チャンク分割は純 CPU なので呼び出し側は DB lock の外で回すこと。
+pub fn count_indexable_scenes(
+    contents: &[String],
+    spec: &crate::semantic::spec::EmbeddingModelSpec,
+) -> usize {
+    use crate::semantic::chunker::{chunk_scene, CHUNKER_VERSION};
+    use crate::semantic::chunker_en::chunk_scene_en;
+    let config = spec.chunker_config();
+    contents
+        .iter()
+        .filter(|content| {
+            let Ok(doc) = serde_json::from_str::<serde_json::Value>(content) else {
+                return false;
+            };
+            // 言語別チャンカー: ja=chunk_scene、en=chunk_scene_en (embed_scene_payloads と同一分岐)。
+            let chunks = if spec.chunker_version == CHUNKER_VERSION {
+                chunk_scene(&doc, &config)
+            } else {
+                chunk_scene_en(&doc, &config)
+            };
+            chunks.map(|c| !c.is_empty()).unwrap_or(false)
+        })
+        .count()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -707,6 +770,109 @@ mod tests {
         assert_eq!(s.indexed_chunk_count, 5);
         assert_eq!(s.stale_chunk_count, 2);
         assert_eq!(s.indexed_scene_count, 2);
+    }
+
+    // ── nonempty_scene_count / count_indexable_scenes ────────────────────
+    // 「空 scene 混在で open ごとに毎回フル再インデックス」回帰のガード。
+
+    /// ProseMirror doc として本文を持つ (JA チャンカで chunk を 1 つ以上生む) JSON。
+    const NONEMPTY_DOC: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"本文です。"}]}]}"#;
+    /// 空 doc (paragraph 無し) — chunk を 1 件も生まない。
+    const EMPTY_DOC: &str = r#"{"type":"doc","content":[]}"#;
+
+    #[test]
+    fn count_indexable_scenes_excludes_empty_and_unparsable() {
+        let spec = crate::semantic::spec::spec_for_language("ja");
+        let contents = vec![
+            NONEMPTY_DOC.to_string(),
+            EMPTY_DOC.to_string(),
+            r#"{"type":"doc"}"#.to_string(), // content キー無し = 空
+            "not json".to_string(),          // parse 失敗 = 非 indexable
+        ];
+        // 数に入るのは本文を持つ 1 件だけ。
+        assert_eq!(count_indexable_scenes(&contents, spec), 1);
+        assert_eq!(count_indexable_scenes(&[], spec), 0);
+    }
+
+    #[test]
+    fn list_unindexed_scene_contents_returns_only_chunkless() {
+        let db = mem_db();
+        seed_scene(&db, "s_indexed", NONEMPTY_DOC);
+        seed_scene(&db, "s_empty", EMPTY_DOC);
+        // s_indexed にだけ chunk を入れる。
+        upsert_scene_chunks(
+            &db,
+            "s_indexed",
+            &compute_content_hash(NONEMPTY_DOC),
+            &[make_payload(4, 0.1)],
+            "m",
+            4,
+            "v1",
+        )
+        .unwrap();
+
+        let contents = list_unindexed_scene_contents(&db, "p1").unwrap();
+        // chunk を持つ s_indexed は除外され、未 chunk の s_empty だけ返る。
+        assert_eq!(contents, vec![EMPTY_DOC.to_string()]);
+    }
+
+    /// 回帰: 実体 1 + 空 3 のとき nonempty == indexed == 1 で
+    /// `indexed < nonempty` が偽 = 再インデックスしない側に倒れる。command が
+    /// 組み立てるのと同じ式で検証する。
+    #[test]
+    fn nonempty_scene_count_ignores_empty_scenes() {
+        let db = mem_db();
+        let spec = crate::semantic::spec::spec_for_language("ja");
+        seed_scene(&db, "s_real", NONEMPTY_DOC);
+        upsert_scene_chunks(
+            &db,
+            "s_real",
+            &compute_content_hash(NONEMPTY_DOC),
+            &[make_payload(4, 0.1)],
+            "m",
+            4,
+            "v1",
+        )
+        .unwrap();
+        for id in ["e1", "e2", "e3"] {
+            seed_scene(&db, id, EMPTY_DOC);
+        }
+
+        let s = collect_index_status(&db, "p1", "m", 4, "v1").unwrap();
+        assert_eq!(s.indexed_scene_count, 1);
+        let unindexed = list_unindexed_scene_contents(&db, "p1").unwrap();
+        let nonempty = s.indexed_scene_count + count_indexable_scenes(&unindexed, spec);
+        // 空 3 は数に入らない → nonempty == indexed → incomplete=false。
+        assert_eq!(nonempty, 1);
+        assert_eq!(s.indexed_scene_count, nonempty);
+    }
+
+    /// 逆: 未 index の非空 scene が居れば nonempty > indexed で再インデックスが要る。
+    #[test]
+    fn nonempty_scene_count_counts_unindexed_nonempty_scene() {
+        let db = mem_db();
+        let spec = crate::semantic::spec::spec_for_language("ja");
+        seed_scene(&db, "s_real", NONEMPTY_DOC);
+        upsert_scene_chunks(
+            &db,
+            "s_real",
+            &compute_content_hash(NONEMPTY_DOC),
+            &[make_payload(4, 0.1)],
+            "m",
+            4,
+            "v1",
+        )
+        .unwrap();
+        seed_scene(&db, "s_new", NONEMPTY_DOC); // 未 index の非空
+        seed_scene(&db, "e1", EMPTY_DOC); // 未 index の空
+
+        let s = collect_index_status(&db, "p1", "m", 4, "v1").unwrap();
+        assert_eq!(s.indexed_scene_count, 1);
+        let unindexed = list_unindexed_scene_contents(&db, "p1").unwrap();
+        let nonempty = s.indexed_scene_count + count_indexable_scenes(&unindexed, spec);
+        // s_new は数に入り e1 は入らない → nonempty=2 > indexed=1。
+        assert_eq!(nonempty, 2);
+        assert!(s.indexed_scene_count < nonempty);
     }
 
     #[test]

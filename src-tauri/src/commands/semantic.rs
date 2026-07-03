@@ -49,9 +49,9 @@ use crate::semantic::events_index::{
 };
 use crate::semantic::events_search::{run_events_search, EventSearchHit, EventsSearchCache};
 use crate::semantic::index::{
-    collect_index_status, embed_scene_payloads, list_scene_ids_in_project, project_language,
-    project_language_for_scene, read_scene_for_index, upsert_scene_chunks, IndexStatusReport,
-    UpsertOutcome,
+    collect_index_status, count_indexable_scenes, embed_scene_payloads, list_scene_ids_in_project,
+    list_unindexed_scene_contents, project_language, project_language_for_scene,
+    read_scene_for_index, upsert_scene_chunks, IndexStatusReport, UpsertOutcome,
 };
 use crate::semantic::search::{run_search, SearchCache, SearchHit};
 use crate::semantic::spec::{spec_for_language, EmbeddingModelSpec};
@@ -971,17 +971,35 @@ pub(crate) async fn semantic_index_status(
     let result =
         tauri::async_runtime::spawn_blocking(move || -> Result<IndexStatusReport, AppError> {
             let ws_state = app.state::<WorkspaceState>();
-            let report = with_db(&ws_state, |db| {
+            // SQL 集計 (chunk 数 / stale / chunk を持つ scene 数) と、未 chunk scene の
+            // content 読み出しを 1 回の workspace lock でまとめて取り出す。チャンク分割
+            // (純 CPU) は lock を跨がせず、lock 解放後に回す。
+            //
+            // コスト注記: 未 chunk scene の content 読み出しはこの lock 内で走る (SQL の
+            // 宿命)。定常状態では未 chunk = 空/見出しのみ scene に収束し中身はごく小さい
+            // ので実質定数。初回 open の巨大未 index プロジェクトだけは全 scene 本文を
+            // 読むが、直後に走る reindex が同じ本文を読むので相対的には誤差。旧実装の
+            // countScenesInProject (別 IPC = 追加 lock 取得) が消えた分、guard 経路の
+            // lock 取得回数はむしろ減っている。
+            let (mut report, unindexed_contents, spec) = with_db(&ws_state, |db| {
                 let language = project_language(db, &project_id)?;
                 let spec = spec_for_language(&language);
-                collect_index_status(
+                let report = collect_index_status(
                     db,
                     &project_id,
                     &spec.full_model_id(),
                     spec.embedding_dim,
                     spec.chunker_version,
-                )
+                )?;
+                let unindexed_contents = list_unindexed_scene_contents(db, &project_id)?;
+                Ok((report, unindexed_contents, spec))
             })?;
+            // nonempty = 既に chunk を持つ scene (定義上 non-empty) + 未 chunk だが本文が
+            // 現行チャンカで chunk を生む scene。空 scene はここで 0 chunk と判定され数に
+            // 入らないので、`indexed_scene_count < nonempty_scene_count` は「未 index の
+            // 非空 scene が居るとき」だけ真になる (空 scene での恒真化を断つ)。
+            report.nonempty_scene_count =
+                report.indexed_scene_count + count_indexable_scenes(&unindexed_contents, spec);
             Ok(report)
         })
         .await

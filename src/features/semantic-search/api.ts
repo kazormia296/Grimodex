@@ -20,6 +20,13 @@ export interface SemanticIndexStatus {
   indexedChunkCount: number;
   staleChunkCount: number;
   indexedSceneCount: number;
+  /**
+   * 本文が現行チャンカで 1 つ以上 chunk を生む (= index に載りうる) scene 数。
+   * 空 scene は chunk を生まず indexedSceneCount に載らないため、充足判定の分母は
+   * total scene 数ではなくこの値を使う (空 scene での恒真化 → open ごとの無駄な
+   * 再インデックスを防ぐ)。Rust `IndexStatusReport.nonemptySceneCount` と一致。
+   */
+  nonemptySceneCount: number;
   currentModelId: string;
   currentEmbeddingDim: number;
   currentChunkerVersion: string;

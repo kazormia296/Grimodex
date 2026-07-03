@@ -106,6 +106,7 @@ describe("semantic-search/api", () => {
         indexedChunkCount: 100,
         staleChunkCount: 10,
         indexedSceneCount: 8,
+        nonemptySceneCount: 8,
         currentModelId: "cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1",
         currentEmbeddingDim: 256,
         currentChunkerVersion: "semantic-prose-chunker-v1",

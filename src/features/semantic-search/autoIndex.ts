@@ -1,4 +1,3 @@
-import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import {
@@ -122,16 +121,6 @@ export async function ensureChatIndexed(projectId: string): Promise<void> {
   }
 }
 
-/** project 内の scene 総数 (embedder 不要の軽量 count)。 */
-async function countScenesInProject(projectId: string): Promise<number> {
-  const res = await invoke<{ rows: { n: number }[] }>("db_execute", {
-    sql: "SELECT COUNT(*) AS n FROM tree_nodes WHERE project_id = ? AND node_type = 'scene'",
-    params: [projectId],
-    method: "all",
-  });
-  return Number(res.rows?.[0]?.n ?? 0);
-}
-
 /**
  * 既存 scene の自動 back-index。手動「再構築」ボタンと同じ `semanticReindexAll` を
  * 使い、進捗は既存の ReindexProgressToast (App 常設リスナ) が表示する。多重起動は
@@ -146,20 +135,22 @@ export async function ensureSceneIndexed(projectId: string): Promise<void> {
   if (autoIndexingProjectId !== null) return;
   sceneAttempted.add(projectId);
   try {
-    const [status, totalScenes] = await Promise.all([
-      semanticIndexStatus(projectId),
-      countScenesInProject(projectId),
-    ]);
+    const status = await semanticIndexStatus(projectId);
+    // 分母は total scene 数ではなく nonemptySceneCount (本文が chunk を生む scene 数)。
+    // 空 scene は chunk を 1 件も生まず indexedSceneCount に載らないので、total を分母に
+    // すると空 scene が 1 つでもあれば恒真になり、stale=0 でも open ごとに無駄な再
+    // インデックスが走っていた (例: 空 14 + 実体 1 → 1/15 で毎回発火)。
     const incomplete =
-      status.indexedSceneCount < totalScenes || status.staleChunkCount > 0;
-    if (!incomplete) return; // 充足 (未 index も stale も無い)
+      status.indexedSceneCount < status.nonemptySceneCount ||
+      status.staleChunkCount > 0;
+    if (!incomplete) return; // 充足 (未 index の非空 scene も stale も無い)
     // status 取得は async なので、その間に他の reindex が走り出していないか再確認。
     if (useReindexProgressStore.getState().running) return;
     if (autoIndexingProjectId !== null) return;
     autoIndexingProjectId = projectId;
     debugLog.info(
       "semantic-search",
-      `scene auto back-index: ${status.indexedSceneCount}/${totalScenes} indexed, stale=${status.staleChunkCount} → reindexing`,
+      `scene auto back-index: ${status.indexedSceneCount}/${status.nonemptySceneCount} indexable, stale=${status.staleChunkCount} → reindexing`,
     );
     useReindexProgressStore.getState().setRunning(true);
     try {
