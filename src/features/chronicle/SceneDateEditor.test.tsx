@@ -90,6 +90,24 @@ describe("SceneDateEditor", () => {
     );
   });
 
+  it("開始粒度を設定すると Chronicle と統一された日付コントロールを出す（期間トグル）", () => {
+    // 旧 EventDateEditor（bare な年/月/日 number 入力）ではなく、共有 EventDateFields
+    // を使っていること＝Chronicle インスペクタと同じ「期間にする」トグルが出ることで gate。
+    useTreeStore.setState({ updateChronicleDate: vi.fn() });
+    const { getByText, getByLabelText } = render(
+      <SceneDateEditor
+        node={makeNode({
+          chronicleStartGranularity: "day",
+          chronicleStartTime: 100,
+        })}
+      />,
+    );
+    expect((getByLabelText("開始の粒度") as HTMLSelectElement).value).toBe(
+      "day",
+    );
+    expect(getByText("期間にする")).toBeDefined();
+  });
+
   it("scene 以外（folder / note）では何も描画しない", () => {
     useTreeStore.setState({ updateChronicleDate: vi.fn() });
     const folder = render(

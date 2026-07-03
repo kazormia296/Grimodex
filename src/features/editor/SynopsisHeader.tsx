@@ -152,9 +152,9 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
         )}
       </div>
       {!collapsed && (
-        <div className="px-3 pb-2">
+        <div className="flex flex-col gap-2.5 px-3 pb-2.5 pt-1">
           {confirmOverwrite && (
-            <div className="mb-2 flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs">
+            <div className="flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs">
               <span className="flex-1 text-muted-foreground">
                 {t("editor.synopsis.overwriteConfirm")}
               </span>
@@ -175,13 +175,20 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
             </div>
           )}
           {isGenerating && (
-            <p className="mb-1 text-[10px] italic text-muted-foreground/70">
+            <p className="text-[10px] italic text-muted-foreground/70">
               {t("editor.synopsis.generatingFromBeats")}
             </p>
           )}
-          <SynopsisArea nodeId={sceneId} />
-          <div className="mt-2 border-t border-border/60 pt-2">
-            <span className="mb-1 block text-[10px] font-medium text-muted-foreground">
+          {/* あらすじ本文（bare = 外枠なしで下の意図欄と左端を揃える） */}
+          <div data-testid="synopsis-field">
+            <SynopsisArea nodeId={sceneId} bare />
+          </div>
+          {/* 意図（狙い）。あらすじと同じインセット・同じラベル体裁に揃える。 */}
+          <div
+            data-testid="intent-field"
+            className="border-t border-border/60 pt-2.5"
+          >
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">
               {t("editor.synopsis.intentLabel")}
             </span>
             <InlineSynopsisEditor
@@ -196,7 +203,7 @@ export function SynopsisHeader({ sceneId, editor }: SynopsisHeaderProps) {
             />
           </div>
           {(characters.length > 0 || locations.length > 0) && (
-            <div className="mt-1.5 flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-3">
               {characters.length > 0 && (
                 <CodexRefSelect
                   label={t("editor.synopsis.povLabel")}

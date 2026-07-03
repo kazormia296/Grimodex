@@ -10,9 +10,15 @@ import { InlineSynopsisEditor } from "@/features/editor/InlineSynopsisEditor";
 
 interface SynopsisAreaProps {
   nodeId: string;
+  /**
+   * 外枠（border-t + p-2）と重複ラベルを外し、本文テキストエリアを親コンテナの
+   * インセットへ揃える。Editor インスペクタ（SynopsisHeader）が intent 欄と
+   * 左端を一致させるために使う。既定 false（Scenes パネルは従来通り枠付き）。
+   */
+  bare?: boolean;
 }
 
-export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
+export function SynopsisArea({ nodeId, bare = false }: SynopsisAreaProps) {
   const nodes = useTreeStore((s) => s.nodes);
   const updateSynopsis = useTreeStore((s) => s.updateSynopsis);
   const node = nodes.find((n) => n.id === nodeId);
@@ -65,11 +71,15 @@ export function SynopsisArea({ nodeId }: SynopsisAreaProps) {
   const isFolder = node.nodeType === "folder";
 
   return (
-    <div className="border-t border-border p-2">
-      <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">
-          {isFolder ? t("tree.outline.label") : "Synopsis"}
-        </span>
+    <div className={bare ? "" : "border-t border-border p-2"}>
+      <div
+        className={`mb-1 flex items-center ${bare ? "justify-end" : "justify-between"}`}
+      >
+        {!bare && (
+          <span className="text-xs font-medium text-muted-foreground">
+            {isFolder ? t("tree.outline.label") : "Synopsis"}
+          </span>
+        )}
         {!isFolder && (
           <button
             type="button"
