@@ -6,9 +6,11 @@
 //! する (tokenizer のみ同梱。設計書 §4.7 の「同梱は tokenizer のみ・DL は onnx のみ」)。
 //! DL 先は `app_data_dir/models/<dir_name>/`(唯一確実な writable)。手順は
 //! 「.part へ streaming DL → sha256 検証 → tokenizer を揃える → model_int8.onnx へ
-//! atomic rename」。`resolve_model_dir`(commands/semantic.rs)は最終 model_int8.onnx の
-//! 存在のみ見るため、rename 完了が「インストール完了」を意味し、中断した .part が
-//! 誤って load されることはない。sha256 は spec に焼いた calibration 対象と一致必須。
+//! atomic rename → sha256 sidecar を書く」。インストール判定 (`download_dir_is_current`)
+//! は model の存在に加えて **sidecar の sha256 が現行 spec と一致するか** まで見るため、
+//! (a) 中断した .part が誤って load されず、(b) 別モデルへ差し替え (artifact_sha256 変更)
+//! を検知して再 DL でき、(c) 旧バージョンの DL 済みを stale として置換できる。
+//! sha256 は spec に焼いた calibration 対象と一致必須。
 #![cfg(feature = "semantic-embedding")]
 
 use std::io::Write;
@@ -48,21 +50,76 @@ fn download_target_dir(
     Ok(data.join("models").join(spec.dir_name))
 }
 
-/// `resolve_model_dir` と同じ判定 (model_int8.onnx の存在) で、バンドル同梱または
-/// DL 済みディレクトリのどちらかにモデルが既に在るかを返す。DL の二重起動回避に使う。
+const MODEL_FILE: &str = "model_int8.onnx";
+/// インストール済みモデルの identity 印。DL 完了時に `spec.artifact_sha256` を書き、
+/// 以降 `download_dir_is_current` がこれと現行 spec を突き合わせる。ファイルの「存在」
+/// だけでなく「中身が現行 spec と一致するか」を安価に判定でき、別モデルへの差し替え
+/// (artifact_sha256 変更) を検知して再 DL を促せる。
+const SIDECAR_FILE: &str = "model_int8.onnx.sha256";
+
+/// DL 済みディレクトリが「現行 spec と一致する完成品」か。model_int8.onnx が在り、
+/// かつ sidecar の sha256 が `spec.artifact_sha256` と一致する時だけ true。sidecar が
+/// 無い/食い違う (=旧バージョン DL・中断・別モデル) は false → 呼び出し側が再 DL する。
+pub fn download_dir_is_current(dir: &Path, spec: &EmbeddingModelSpec) -> bool {
+    if !dir.join(MODEL_FILE).exists() {
+        return false;
+    }
+    match std::fs::read_to_string(dir.join(SIDECAR_FILE)) {
+        Ok(recorded) => recorded.trim() == spec.artifact_sha256,
+        Err(_) => false,
+    }
+}
+
+/// 現行 spec と一致する DL 済みモデルディレクトリ (app_data)。無ければ None。
+/// ローダ (`resolve_model_dir`) と DL 判定 (`is_model_installed`) の両方から使う。
+pub fn installed_download_dir(
+    app: &tauri::AppHandle,
+    spec: &EmbeddingModelSpec,
+) -> Option<PathBuf> {
+    let dir = download_target_dir(app, spec).ok()?;
+    if download_dir_is_current(&dir, spec) {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// モデルが「使える状態で在る」か。バンドル同梱 (信頼・sidecar 不要) か、現行 spec と
+/// 一致する DL 済み。DL の二重起動回避と先行トリガの skip 判定に使う。存在だけでなく
+/// sha256 一致まで見るので、別モデルへ差し替え後は false になり再 DL される。
 pub fn is_model_installed(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> bool {
     let rel = PathBuf::from("resources/semantic").join(spec.dir_name);
     if let Ok(base) = app.path().resource_dir() {
-        if base.join(&rel).join("model_int8.onnx").exists() {
-            return true;
+        if base.join(&rel).join(MODEL_FILE).exists() {
+            return true; // 同梱物は信頼 (Strategy A では int8 非同梱だが一般性のため残す)。
         }
     }
-    if let Ok(dir) = download_target_dir(app, spec) {
-        if dir.join("model_int8.onnx").exists() {
-            return true;
+    installed_download_dir(app, spec).is_some()
+}
+
+/// 現行 spec 群 (`ALL_SPECS`) 以外の `app_data/models/<dir>` を削除する。モデル切替
+/// (dir_name 変更) で残る旧モデルの掃除。起動時に 1 度だけ呼ぶ想定 (`lib.rs::setup`)。
+/// 進行中 DL の dir は現行 spec に含まれるため消さない。
+pub fn gc_stale_model_dirs(app: &tauri::AppHandle) {
+    let Ok(base) = app.path().app_data_dir() else {
+        return;
+    };
+    let models = base.join("models");
+    let Ok(entries) = std::fs::read_dir(&models) else {
+        return; // models/ 未作成 (初回) なら何もしない。
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let keep = super::spec::ALL_SPECS.iter().any(|s| s.dir_name == name);
+        if !keep && std::fs::remove_dir_all(&path).is_ok() {
+            tracing::info!(target: "semantic", "GC removed stale model dir: {name}");
         }
     }
-    false
 }
 
 fn emit_progress(app: &tauri::AppHandle, progress: ModelDownloadProgress) {
@@ -110,10 +167,18 @@ async fn install(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> anyhow::R
     }
     let dir = download_target_dir(app, spec)?;
     std::fs::create_dir_all(&dir)?;
-    let final_path = dir.join("model_int8.onnx");
-    if final_path.exists() {
-        return Ok(()); // 別経路で既にインストール済み。
+    // 既に現行 spec と一致する DL 済みなら skip (sha256 sidecar で判定)。単なる
+    // ファイル存在ではなく中身一致で見るので、別モデルへ差し替えた (artifact_sha256
+    // 変更) 場合は skip されず再 DL される。
+    if download_dir_is_current(&dir, spec) {
+        return Ok(());
     }
+
+    let final_path = dir.join(MODEL_FILE);
+    let sidecar_path = dir.join(SIDECAR_FILE);
+    // 更新の開始と同時に "not current" にする (古い sidecar を先に消す)。以降どの経路で
+    // 中断しても download_dir_is_current=false のまま = 次回きちんと再 DL される。
+    let _ = std::fs::remove_file(&sidecar_path);
 
     // .part は最終ディレクトリと同一 FS に置く (rename を atomic に保つ)。
     let part_path = dir.join("model_int8.onnx.part");
@@ -132,8 +197,12 @@ async fn install(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> anyhow::R
         return Err(e);
     }
 
-    // atomic rename = インストール完了 (ここで初めて resolve_model_dir が拾う)。
+    // 旧モデルを置換して rename (Windows の rename は既存先で失敗しうるので先に消す)。
+    let _ = std::fs::remove_file(&final_path);
     std::fs::rename(&part_path, &final_path)?;
+    // sidecar は最後に書く = ここで初めて download_dir_is_current が true になる。
+    // (rename 後〜write 前に落ちても "not current" 扱いで安全に再 DL される。)
+    std::fs::write(&sidecar_path, spec.artifact_sha256)?;
     Ok(())
 }
 
@@ -233,4 +302,65 @@ fn ensure_tokenizer(
         "tokenizer.json が見つかりません ('{}' のバンドル/dev いずれにも)",
         spec.dir_name
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn fresh_dir() -> PathBuf {
+        // tempfile 依存なしでユニークな一時ディレクトリを作る。
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("grimodex-dl-test-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn current_requires_model_and_matching_sidecar() {
+        let dir = fresh_dir();
+        let spec = &crate::semantic::spec::SPEC_EN;
+
+        // model 無し → false。
+        assert!(!download_dir_is_current(&dir, spec));
+
+        // model はあるが sidecar 無し (旧バージョン DL 相当) → false。
+        std::fs::write(dir.join(MODEL_FILE), b"onnx-bytes").unwrap();
+        assert!(!download_dir_is_current(&dir, spec));
+
+        // sidecar が別 sha (別モデル差し替え相当) → false。
+        std::fs::write(dir.join(SIDECAR_FILE), "0000000000000000").unwrap();
+        assert!(!download_dir_is_current(&dir, spec));
+
+        // sidecar が spec.artifact_sha256 と一致 → true。
+        std::fs::write(dir.join(SIDECAR_FILE), spec.artifact_sha256).unwrap();
+        assert!(download_dir_is_current(&dir, spec));
+
+        // 末尾改行/空白があっても trim 一致で true。
+        std::fs::write(
+            dir.join(SIDECAR_FILE),
+            format!("{}\n", spec.artifact_sha256),
+        )
+        .unwrap();
+        assert!(download_dir_is_current(&dir, spec));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_spec_has_distinct_sidecar_identity() {
+        // 2 モデルの sha256 が異なる = sidecar で取り違えない。
+        let dir = fresh_dir();
+        let ja = &crate::semantic::spec::SPEC_JA;
+        let en = &crate::semantic::spec::SPEC_EN;
+        std::fs::write(dir.join(MODEL_FILE), b"x").unwrap();
+        std::fs::write(dir.join(SIDECAR_FILE), ja.artifact_sha256).unwrap();
+        assert!(download_dir_is_current(&dir, ja));
+        assert!(!download_dir_is_current(&dir, en));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

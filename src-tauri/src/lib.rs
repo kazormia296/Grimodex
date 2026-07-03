@@ -156,6 +156,16 @@ pub fn run() {
             #[cfg(feature = "semantic-embedding")]
             app.manage(ModelDownloadState::default());
 
+            // モデル切替後に残る旧 app_data/models/<dir> を掃除する (現行 spec 以外の dir)。
+            // 起動を止めないよう spawn_blocking。models/ 未作成 (初回) なら no-op。
+            #[cfg(feature = "semantic-embedding")]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    semantic::download::gc_stale_model_dirs(&handle);
+                });
+            }
+
             // Semantic search: in-memory embedding cache (scene_id -> Vec<f32>).
             // Cleared on workspace open; invalidated per-scene on index_scene.
             app.manage(semantic::search::SearchCache::new());
