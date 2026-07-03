@@ -135,14 +135,42 @@ pub(crate) struct LicensePath {
 // Shared error / result / helper
 // ---------------------------------------------------------------------------
 
+/// コマンドの標準 Result 型 (`Result<T, AppError>` の別名)。新規コマンドは
+/// これを使う。
+pub(crate) type AppResult<T> = Result<T, AppError>;
+
+/// コマンドがフロントへ返すエラー。ドメイン化された失敗は名前付き variant に
+/// し、それ以外は `Anyhow` に集約する (`?` で anyhow から自動変換)。
+///
+/// **ワイヤ形式は文字列**: `Serialize` は Display をそのまま `serialize_str` で
+/// 載せる。フロントは invoke reject 値を 126 箇所で `String(err)` /
+/// `err.message` として読むため、object 形 (`{code, message}`) へ変えると全箇所が
+/// "[object Object]" に化ける。よって `code` フィールド追加と FE の code ベース
+/// 判定への移行は Slice2 (FE と同時) で行い、本 Slice では文字列ワイヤを維持する。
+/// 名前付き variant の Display には、フロントが部分一致で判定している安定
+/// マーカーを必ず含めること (下記各 variant のコメント参照)。
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppError {
+    /// workspace 切替中の DB アクセス拒否 (M3)。Display は安定マーカー
+    /// "WORKSPACE_SWITCHING" を含む — フロント
+    /// `src/features/concurrency/workspaceSwitching.ts` の
+    /// `WORKSPACE_SWITCHING_MARKER` と対。変更時は両方同時に。
+    #[error("WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected")]
+    WorkspaceSwitching,
+
+    /// アクティブな workspace が無い状態での DB / メタアクセス。
+    #[error("No workspace is open")]
+    NoWorkspace,
+
+    /// ドメイン化されていないアプリ層エラー。`?` で anyhow から自動変換される。
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
 }
 
 impl Serialize for AppError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // 文字列ワイヤ (上記コメント参照)。object 化は FE 移行と同時 (Slice2)
+        // まで禁止 — 破ると 126 箇所の String(err) が "[object Object]" になる。
         serializer.serialize_str(&self.to_string())
     }
 }
@@ -157,7 +185,7 @@ pub(crate) struct QueryResult {
 pub(crate) fn with_db<T>(
     ws_state: &tauri::State<'_, WorkspaceState>,
     f: impl FnOnce(&Database) -> anyhow::Result<T>,
-) -> Result<T, AppError> {
+) -> AppResult<T> {
     with_db_state(ws_state, f)
 }
 
@@ -166,7 +194,7 @@ pub(crate) fn with_db<T>(
 pub(crate) fn with_db_state<T>(
     ws_state: &WorkspaceState,
     f: impl FnOnce(&Database) -> anyhow::Result<T>,
-) -> Result<T, AppError> {
+) -> AppResult<T> {
     // ws_state.inner はアクティブ workspace の解決 (Option → Arc<Database>) と
     // switching チェックのためだけに取得し、SQL 実行 (f) の前に必ず解放する。
     // 以前は f をロック保持下で走らせていたため、ws_state Mutex が DB コール
@@ -186,19 +214,14 @@ pub(crate) fn with_db_state<T>(
         // 保存失敗 toast + dirty 維持でリトライに任せる。切替を跨いだ write が
         // 別 workspace の DB へ黙って落ちる (UPDATE は 0行 hit の黙示ロスト、
         // INSERT は行混入) のを防ぐ。
-        // "WORKSPACE_SWITCHING" はフロントが判別に使う安定マーカー (timelapse
-        // recorder の再送抑止 / 保存失敗 toast の文言差し替え)。TS 側の対の定数は
-        // src/features/concurrency/workspaceSwitching.ts の
-        // WORKSPACE_SWITCHING_MARKER。変更するときは両方同時に。
+        // 安定マーカー "WORKSPACE_SWITCHING" は AppError::WorkspaceSwitching の
+        // Display が担う (timelapse recorder の再送抑止 / 保存失敗 toast の文言
+        // 差し替え)。TS 側の対の定数は src/features/concurrency/
+        // workspaceSwitching.ts の WORKSPACE_SWITCHING_MARKER。変更時は両方同時に。
         if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(anyhow::anyhow!(
-                "WORKSPACE_SWITCHING: workspace is switching; DB access is temporarily rejected"
-            )
-            .into());
+            return Err(AppError::WorkspaceSwitching);
         }
-        let ws = inner
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?;
+        let ws = inner.as_ref().ok_or(AppError::NoWorkspace)?;
         Arc::clone(&ws.db)
         // inner guard はこのブロック終端で drop = f 実行前に ws_state ロック解放。
     };
@@ -268,6 +291,32 @@ mod tests {
             lock_was_free,
             "with_db_state は f を走らせる前に ws_state.inner ロックを解放すること"
         );
+    }
+
+    #[test]
+    fn app_error_variant_display_carries_frontend_markers() {
+        // クロス言語契約: フロントは Display 文字列の部分一致でこれらを判定する
+        // (workspaceSwitching.ts / debugLog rootCause 経由の版数判定など)。
+        // variant の Display からマーカーが消えると FE の分岐が静かに壊れる。
+        assert!(AppError::WorkspaceSwitching
+            .to_string()
+            .contains("WORKSPACE_SWITCHING"));
+        assert!(AppError::NoWorkspace
+            .to_string()
+            .contains("No workspace is open"));
+    }
+
+    #[test]
+    fn app_error_serializes_as_bare_string_not_object() {
+        // ワイヤは文字列を維持する (フロントは 126 箇所で String(err) / err.message
+        // として読むため object 化すると全滅する)。object 化は FE 移行と同時
+        // (Slice2) まで禁止 — その回帰をここで gate する。
+        let json = serde_json::to_string(&AppError::WorkspaceSwitching).expect("serialize");
+        assert!(
+            json.starts_with('"') && json.ends_with('"'),
+            "AppError はワイヤに文字列で載ること (object 化禁止): {json}"
+        );
+        assert!(json.contains("WORKSPACE_SWITCHING"));
     }
 
     #[test]

@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use crate::commands::AppResult;
+
 // ---------------------------------------------------------------------------
 // Public types (camelCase ↔ Rust via serde)
 // ---------------------------------------------------------------------------
@@ -390,9 +392,9 @@ pub struct CodexMatcherState {
 pub fn codex_rebuild_matcher(
     state: tauri::State<'_, CodexMatcherState>,
     entries: Vec<MatchEntry>,
-) -> Result<(), String> {
-    let matcher = CachedMatcher::build(&entries).map_err(|e| e.to_string())?;
-    let mut inner = state.inner.lock().map_err(|e| e.to_string())?;
+) -> AppResult<()> {
+    let matcher = CachedMatcher::build(&entries).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut inner = state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     *inner = Some(matcher);
     Ok(())
 }
@@ -402,11 +404,11 @@ pub fn codex_match_text(
     state: tauri::State<'_, CodexMatcherState>,
     text: String,
     exclude_entry_ids: Vec<String>,
-) -> Result<Vec<CodexMatch>, String> {
+) -> AppResult<Vec<CodexMatch>> {
     let started = std::time::Instant::now();
     let text_chars = text.chars().count();
     let lock_started = std::time::Instant::now();
-    let inner = state.inner.lock().map_err(|e| e.to_string())?;
+    let inner = state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     let lock_wait_ms = lock_started.elapsed().as_millis();
     let match_started = std::time::Instant::now();
     let result = match inner.as_ref() {
