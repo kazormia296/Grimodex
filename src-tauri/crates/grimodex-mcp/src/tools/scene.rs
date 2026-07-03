@@ -485,4 +485,47 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0);
     }
+
+    #[tokio::test]
+    async fn propose_scene_body_rejects_scene_from_another_project() {
+        // XPROJ 書込経路の lock-in: p1 に pin されたサーバは、別プロジェクト p2 が
+        // 所有する scene へは提案できない。propose_scene_body は scope を
+        // server.project_id() から取り `WHERE id=? AND project_id=?` で pre-read
+        // するため、他プロジェクトの scene_id は 0 行 = エラーになる。read-by-id の
+        // project_id フィルタが将来外れたら (XPROJ 書込漏れ) ここで赤くなる。
+        let server = make_writable_server(None); // p1 + scene s1(p1)、bodyWrite 許可
+        {
+            let conn = server.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, title, ai_policy) VALUES ('p2', 'Other', NULL)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES ('s2', 'p2', 'scene', 'Foreign')",
+                [],
+            )
+            .unwrap();
+        }
+        let res = propose_scene_body(
+            &server,
+            ProposeSceneBodyParams {
+                scene_id: "s2".to_string(), // p2 の scene — p1 pin のサーバからは不可視
+                text: "cross-project write".to_string(),
+                mode: None,
+                anchor_text: None,
+                anchor_position: None,
+            },
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "他プロジェクトが所有する scene への提案は拒否されること (XPROJ 書込防御)"
+        );
+        let conn = server.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prose_staging", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "XPROJ 拒否時は prose_staging 行を作らないこと");
+    }
 }
