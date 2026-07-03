@@ -42,6 +42,7 @@ function sceneStatus(over: Partial<Record<string, unknown>> = {}) {
     indexedChunkCount: 0,
     staleChunkCount: 0,
     indexedSceneCount: 0,
+    nonemptySceneCount: 0,
     currentModelId: "m",
     currentEmbeddingDim: 256,
     currentChunkerVersion: "v1",
@@ -159,11 +160,10 @@ describe("ensureChatIndexed", () => {
 });
 
 describe("ensureSceneIndexed", () => {
-  it("reindexes when indexedSceneCount < total scenes", async () => {
+  it("reindexes when indexedSceneCount < nonemptySceneCount", async () => {
     mockSemanticIndexStatus.mockResolvedValue(
-      sceneStatus({ indexedSceneCount: 1 }),
+      sceneStatus({ indexedSceneCount: 1, nonemptySceneCount: 4 }),
     );
-    mockInvoke.mockResolvedValue({ rows: [{ n: 4 }] });
     await ensureSceneIndexed("p1");
     expect(mockSemanticReindexAll).toHaveBeenCalledWith("p1");
     expect(useReindexProgressStore.getState().running).toBe(false);
@@ -171,20 +171,43 @@ describe("ensureSceneIndexed", () => {
 
   it("reindexes when stale chunks exist", async () => {
     mockSemanticIndexStatus.mockResolvedValue(
-      sceneStatus({ indexedSceneCount: 4, staleChunkCount: 2 }),
+      sceneStatus({
+        indexedSceneCount: 4,
+        nonemptySceneCount: 4,
+        staleChunkCount: 2,
+      }),
     );
-    mockInvoke.mockResolvedValue({ rows: [{ n: 4 }] });
     await ensureSceneIndexed("p1");
     expect(mockSemanticReindexAll).toHaveBeenCalledWith("p1");
   });
 
   it("skips when scenes fully indexed and fresh", async () => {
     mockSemanticIndexStatus.mockResolvedValue(
-      sceneStatus({ indexedSceneCount: 4, staleChunkCount: 0 }),
+      sceneStatus({
+        indexedSceneCount: 4,
+        nonemptySceneCount: 4,
+        staleChunkCount: 0,
+      }),
     );
-    mockInvoke.mockResolvedValue({ rows: [{ n: 4 }] });
     await ensureSceneIndexed("p1");
     expect(mockSemanticReindexAll).not.toHaveBeenCalled();
+  });
+
+  it("skips when only empty scenes remain unindexed (indexed == nonempty, stale=0)", async () => {
+    // 回帰ガード: 空 scene 14 + 実体 1 のプロジェクト。indexedSceneCount(1) は
+    // total scene 数(15) より小さいが、空 scene は chunk を生まないので
+    // nonemptySceneCount は 1。分母を total にしていた旧実装では 1<15 で毎回
+    // 再インデックスが走っていた。nonemptySceneCount を分母にすれば発火しない。
+    mockSemanticIndexStatus.mockResolvedValue(
+      sceneStatus({
+        indexedSceneCount: 1,
+        nonemptySceneCount: 1,
+        staleChunkCount: 0,
+      }),
+    );
+    await ensureSceneIndexed("p1");
+    expect(mockSemanticReindexAll).not.toHaveBeenCalled();
+    expect(useReindexProgressStore.getState().running).toBe(false);
   });
 
   it("defers when a reindex is already running", async () => {
@@ -196,9 +219,8 @@ describe("ensureSceneIndexed", () => {
 
   it("is silent and clears running when reindex fails", async () => {
     mockSemanticIndexStatus.mockResolvedValue(
-      sceneStatus({ indexedSceneCount: 0 }),
+      sceneStatus({ indexedSceneCount: 0, nonemptySceneCount: 4 }),
     );
-    mockInvoke.mockResolvedValue({ rows: [{ n: 4 }] });
     mockSemanticReindexAll.mockRejectedValueOnce(new Error("boom"));
     await expect(ensureSceneIndexed("p1")).resolves.toBeUndefined();
     expect(useReindexProgressStore.getState().running).toBe(false);
@@ -206,9 +228,8 @@ describe("ensureSceneIndexed", () => {
 
   it("single-flights an A→B race: only one bulk reindex proceeds and the flag is not cleared early", async () => {
     mockSemanticIndexStatus.mockResolvedValue(
-      sceneStatus({ indexedSceneCount: 0 }),
+      sceneStatus({ indexedSceneCount: 0, nonemptySceneCount: 4 }),
     );
-    mockInvoke.mockResolvedValue({ rows: [{ n: 4 }] });
     // 先発 (A) の bulk reindex を in-flight に保持する deferred。
     let releaseA: () => void = () => {};
     const aInFlight = new Promise<number>((resolve) => {
@@ -244,9 +265,8 @@ describe("ensureSemanticIndexesOnOpen", () => {
       totalMessageCount: 3,
     });
     mockSemanticIndexStatus.mockResolvedValue(
-      sceneStatus({ indexedSceneCount: 0 }),
+      sceneStatus({ indexedSceneCount: 0, nonemptySceneCount: 3 }),
     );
-    mockInvoke.mockResolvedValue({ rows: [{ n: 3 }] });
     await ensureSemanticIndexesOnOpen("p1");
     expect(mockCodexReindexAll).toHaveBeenCalledWith("p1");
     expect(mockChatReindexAll).toHaveBeenCalledWith("p1");

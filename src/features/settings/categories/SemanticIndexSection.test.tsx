@@ -17,6 +17,7 @@ const apiMock = vi.hoisted(() => ({
       indexedChunkCount: 12,
       staleChunkCount: 0,
       indexedSceneCount: 3,
+      nonemptySceneCount: 3,
       currentModelId: "ruri-v3-30m",
       currentEmbeddingDim: 256,
       currentChunkerVersion: "v1",
