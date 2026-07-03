@@ -2079,6 +2079,13 @@ function LPVariantH() {
               >
                 E FOR
               </a>
+              <a
+                className="hz-nav-link"
+                href="#buy"
+                style={{ color: HZ_INK, textDecoration: "none" }}
+              >
+                F BUY
+              </a>
             </div>
             <div
               style={{
@@ -2471,7 +2478,7 @@ function LPVariantH() {
                       >
                         <span>STATUS</span>
                         <b style={{ background: HZ_HL, padding: "0 4px" }}>
-                          BETA
+                          v1.0
                         </b>
                       </div>
                     </div>
@@ -3291,10 +3298,100 @@ function LPVariantH() {
               letterSpacing: ".08em",
             }}
           >
-            FREE (BETA) · LOCAL-FIRST · BRING YOUR OWN AI KEY
+            {lang === "en"
+              ? "30-DAY FULL TRIAL · LOCAL-FIRST · BRING YOUR OWN AI KEY"
+              : "30日間フル機能トライアル · ローカルファースト · 自分のAIキーで"}
           </p>
+          {/* PRICE — 景表法対応の「予告」形式。取り消し線での比較表示はしない（§4.1.3）。
+              TODO(発売前): {{SALE_END_DATE}} を発売記念セールの終了日（実日付）へ置換する。 */}
           <div
-            style={{ display: "flex", justifyContent: "center", marginTop: 44 }}
+            style={{
+              maxWidth: 640,
+              margin: "40px auto 0",
+              border: `2px solid ${HZ_INK}`,
+              padding: "22px 26px",
+              textAlign: "left",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: ".1em",
+                opacity: 0.65,
+                marginBottom: 10,
+              }}
+            >
+              {lang === "en"
+                ? "GRIMODEX v1.0 · ONE-TIME PURCHASE"
+                : "GRIMODEX v1.0 · 買い切り"}
+            </div>
+            <div
+              style={{
+                fontSize: 23,
+                fontWeight: 800,
+                letterSpacing: -0.5,
+                lineHeight: 1.35,
+                marginBottom: 12,
+              }}
+            >
+              {lang === "en" ? (
+                <>
+                  Launch price{" "}
+                  <span className="hz-mark" style={{ padding: "0 6px" }}>
+                    ¥6,900
+                  </span>{" "}
+                  <span
+                    style={{ fontSize: 15, fontWeight: 400, opacity: 0.75 }}
+                  >
+                    until {"{{SALE_END_DATE}}"} — regular price ¥8,900
+                    thereafter.
+                  </span>
+                </>
+              ) : (
+                <>
+                  発売記念価格{" "}
+                  <span className="hz-mark" style={{ padding: "0 6px" }}>
+                    ¥6,900
+                  </span>{" "}
+                  <span
+                    style={{ fontSize: 15, fontWeight: 400, opacity: 0.75 }}
+                  >
+                    （{"{{SALE_END_DATE}}"} まで）。以降は通常価格 ¥8,900。
+                  </span>
+                </>
+              )}
+            </div>
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: 20,
+                fontSize: 14,
+                lineHeight: 1.8,
+                opacity: 0.85,
+              }}
+            >
+              <li>
+                {lang === "en"
+                  ? "30-day full-feature trial — every feature, no purchase required."
+                  : "30日間フル機能トライアル（購入不要ですべての機能が使えます）。"}
+              </li>
+              <li>
+                {lang === "en"
+                  ? "One-time purchase; paid upgrade only per major version."
+                  : "買い切り。メジャーバージョンごとに有償アップグレード。"}
+              </li>
+            </ul>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              flexWrap: "wrap",
+              gap: 20,
+              marginTop: 44,
+            }}
           >
             <a
               href="https://github.com/kazormia296/Grimodex/releases/latest"
@@ -3340,11 +3437,214 @@ function LPVariantH() {
                 macOS / Windows / Linux
               </div>
             </a>
+            {/* TODO(発売前): href を Polar の実 checkout URL に差し替える。
+                現状はプレースホルダ（例: 製品ページ / organization の checkout）。 */}
+            <a
+              href="https://polar.sh/grimodex"
+              target="_blank"
+              rel="noreferrer"
+              className="hz-shadow"
+              style={{
+                background: HZ_INK,
+                color: HZ_BG,
+                border: `2px solid ${HZ_INK}`,
+                padding: "22px 30px",
+                textAlign: "left",
+                cursor: "pointer",
+                display: "inline-flex",
+                flexDirection: "column",
+                gap: 5,
+                minWidth: 360,
+                textDecoration: "none",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 11,
+                  textTransform: "uppercase",
+                  letterSpacing: ".1em",
+                  opacity: 0.7,
+                }}
+              >
+                ↗ {lang === "en" ? "BUY A LICENSE" : "ライセンスを購入"}
+              </div>
+              <div
+                style={{ fontWeight: 800, fontSize: 26, letterSpacing: -0.5 }}
+              >
+                {lang === "en" ? "Buy now — ¥6,900" : "いま購入 — ¥6,900"}
+              </div>
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: 10,
+                  textTransform: "uppercase",
+                  opacity: 0.6,
+                }}
+              >
+                {lang === "en"
+                  ? "Secure checkout · Polar"
+                  : "Polar の安全な決済"}
+              </div>
+            </a>
           </div>
 
-          {/* OPEN BETA — Discord tester recruitment. The whole card links to
-              the Discord invite; the inner pill is a visual affordance, not a
-              nested anchor. */}
+          {/* BUY — 日本語購入ガイド（§4.1.2）。チェックアウトと確認メールが英語のみ
+              である点を先に明示する。スクリーンショットは撮影後に assets/ へ置き、
+              言語出し分け命名（<id>.png = ja / <id>-en.png = en）で差し込む想定。
+              TODO(発売前): buy-checkout / buy-email / buy-activate のスクショを撮影し、
+              下の枠を実画像（<img>）へ置き換える。 */}
+          <div
+            id="buy"
+            style={{ maxWidth: 900, margin: "84px auto 0", textAlign: "left" }}
+          >
+            <div
+              style={{
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 11,
+                textTransform: "uppercase",
+                letterSpacing: ".1em",
+                opacity: 0.65,
+                marginBottom: 14,
+              }}
+            >
+              {lang === "en"
+                ? "HOW TO BUY · 3 STEPS"
+                : "購入ガイド · 3ステップ"}
+            </div>
+            <div
+              style={{
+                border: `2px solid ${HZ_INK}`,
+                background: HZ_HL,
+                padding: "14px 18px",
+                fontSize: 14,
+                lineHeight: 1.7,
+                marginBottom: 24,
+              }}
+            >
+              {lang === "en"
+                ? "Heads up: the checkout screen and the confirmation email are in English only — this is normal and legitimate. Payment and license keys are handled by Polar, our authorized reseller."
+                : "ご案内: チェックアウト画面と購入確認メールは英語のみで届きますが、正規のものです。決済とライセンスキーの発行は、当社のライセンス管理事業者 Polar が行います。"}
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: 20,
+              }}
+            >
+              {[
+                {
+                  n: "01",
+                  shot: "buy-checkout",
+                  title: {
+                    ja: "チェックアウトで入力",
+                    en: "Fill in the checkout",
+                  },
+                  body: {
+                    ja: "「いま購入」から Polar のチェックアウトへ進み、メールアドレスとカード情報を入力します（画面は英語）。",
+                    en: "Open the Polar checkout from “Buy now,” then enter your email address and card details (the screen is in English).",
+                  },
+                },
+                {
+                  n: "02",
+                  shot: "buy-email",
+                  title: {
+                    ja: "キーが英語メールで届く",
+                    en: "Get your key by email",
+                  },
+                  body: {
+                    ja: "購入後、ライセンスキーが英語のメールで届きます。キー文字列をコピーしておきます。",
+                    en: "After purchase, your license key arrives in an English email. Copy the key string.",
+                  },
+                },
+                {
+                  n: "03",
+                  shot: "buy-activate",
+                  title: { ja: "アプリ設定に入力", en: "Activate in the app" },
+                  body: {
+                    ja: "Grimodex の設定を開き、ライセンス欄にキーを貼り付けて認証すれば完了です。",
+                    en: "Open Grimodex Settings, paste the key into the license field, and activate. Done.",
+                  },
+                },
+              ].map((s) => (
+                <div
+                  key={s.n}
+                  style={{
+                    border: `2px solid ${HZ_INK}`,
+                    padding: "18px 18px 20px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                  }}
+                >
+                  <div
+                    style={{ display: "flex", alignItems: "baseline", gap: 10 }}
+                  >
+                    <span
+                      style={{
+                        background: HZ_INK,
+                        color: HZ_BG,
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        padding: "3px 7px",
+                        letterSpacing: ".08em",
+                      }}
+                    >
+                      {s.n}
+                    </span>
+                    <span
+                      style={{
+                        fontWeight: 800,
+                        fontSize: 16,
+                        letterSpacing: -0.3,
+                      }}
+                    >
+                      {lpText(s.title, lang)}
+                    </span>
+                  </div>
+                  {/* スクショ枠（撮影待ち）。実画像は <shot>.png(ja)/<shot>-en.png(en) を
+                      assets/ に置き、この枠を <img> へ差し替える。 */}
+                  <div
+                    aria-hidden="true"
+                    style={{
+                      border: `2px dashed ${HZ_INK}`,
+                      aspectRatio: "16 / 10",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      textAlign: "center",
+                      padding: 8,
+                      opacity: 0.55,
+                      fontFamily: "'JetBrains Mono', monospace",
+                      fontSize: 10,
+                      textTransform: "uppercase",
+                      letterSpacing: ".08em",
+                    }}
+                  >
+                    {lang === "en"
+                      ? `SCREENSHOT · ${s.shot}-en.png`
+                      : `スクリーンショット · ${s.shot}.png`}
+                  </div>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: 13,
+                      lineHeight: 1.7,
+                      opacity: 0.85,
+                    }}
+                  >
+                    {lpText(s.body, lang)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* TESTER RECRUITMENT — Discord テスター募集 / 進呈公約の履行。The whole
+              card links to the Discord invite; the inner chip is a visual
+              affordance, not a nested anchor. */}
           <div
             style={{ display: "flex", justifyContent: "center", marginTop: 40 }}
           >
@@ -3390,9 +3690,6 @@ function LPVariantH() {
                       border: `1.5px solid ${HZ_INK}`,
                     }}
                   >
-                    OPEN BETA
-                  </span>
-                  <span style={{ opacity: 0.6 }}>
                     {lang === "en" ? "TESTERS WANTED" : "テスター募集"}
                   </span>
                 </div>
@@ -3430,8 +3727,8 @@ function LPVariantH() {
                   }}
                 >
                   {lang === "en"
-                    ? "Grimodex is in open beta and looking for testers. Submit at least one reproducible bug report — or a feature proposal we adopt — during the beta, and we'll grant you a full 1.0 release license."
-                    : "Grimodex は現在オープンベータ中で、ベータテスターを募集しています。ベータ期間中に「再現可能なバグ報告」または「採用された機能提案」を 1 件以上してくださった方に、1.0 の製品版ライセンスを進呈します。"}
+                    ? "Testers wanted. Submit at least one reproducible bug report — or a feature proposal we adopt — during the beta, and we'll grant you a full 1.0 release license, delivered as a 100%-off code through the normal checkout."
+                    : "テスターを募集しています。ベータ期間中に「再現可能なバグ報告」または「採用された機能提案」を 1 件以上してくださった方に、1.0 の製品版ライセンスを進呈します（100% 割引コードで通常のチェックアウトを通す形でお渡しします）。"}
                 </p>
               </div>
               <span
@@ -3474,7 +3771,7 @@ function LPVariantH() {
             <HZBar
               items={[
                 { t: "GRIMODEX", k: true },
-                { t: "BETA" },
+                { t: "v1.0" },
                 { t: "TAURI v2" },
                 {
                   t: "GITHUB ↗",
