@@ -149,7 +149,7 @@ pub(crate) async fn semantic_download_model(
 /// model_int8.onnx の存在で判定する。
 fn resolve_model_dir(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> Option<PathBuf> {
     let rel = PathBuf::from("resources/semantic").join(spec.dir_name);
-    // 1) バンドル同梱 (Strategy B: JA int8 + 両 tokenizer はここに入る)。
+    // 1) バンドル同梱 (tokenizer は同梱。int8 を同梱する構成ならここで当たる)。
     if let Ok(base) = app.path().resource_dir() {
         let candidate = base.join(&rel);
         if candidate.join("model_int8.onnx").exists() {

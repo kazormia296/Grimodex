@@ -34,7 +34,7 @@ const modelAttempted = new Set<string>();
 
 /**
  * プロジェクト言語の埋め込みモデルが未インストールなら、バックグラウンド DL を
- * 開始する (Strategy B: JA は同梱で即 "installed"、EN/大型はここで DL)。
+ * 開始する (int8 は非同梱: JA/EN とも初回利用時にここで DL、tokenizer のみ同梱)。
  * 進捗/完了は `useModelDownloadListener` が受け取り、完了後に back-index を再実行する。
  * 失敗は無音 (FTS degrade)。1 セッション 1 プロジェクト 1 回 (DL 開始済みなら再試行しない)。
  */
@@ -193,7 +193,7 @@ export async function ensureSceneIndexed(projectId: string): Promise<void> {
 export async function ensureSemanticIndexesOnOpen(
   projectId: string,
 ): Promise<void> {
-  // 先にモデル DL を起動 (fire-and-forget で即返る)。未同梱言語 (EN) はここで DL が
+  // 先にモデル DL を起動 (fire-and-forget で即返る)。未 DL の言語はここで DL が
   // 走り、完了後に useModelDownloadListener が本関数を再呼び出しして index し直す。
   await ensureSemanticModelForProject(projectId);
   // codex / chat 先 (軽量・短時間) → scene (重い)。embedder ロックは Rust 側で直列化。

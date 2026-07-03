@@ -2,7 +2,8 @@
 //!
 //! 設計: `docs/設計_埋め込みモデルのオンデマンドDL.md`。
 //!
-//! Strategy B では JA(ruri) はバンドル同梱、EN(bge)/大型は非同梱でここから DL する。
+//! int8 モデルは非同梱で、言語に応じて (JA=ruri / EN=bge) 初回利用時にここから DL
+//! する (tokenizer のみ同梱。設計書 §4.7 の「同梱は tokenizer のみ・DL は onnx のみ」)。
 //! DL 先は `app_data_dir/models/<dir_name>/`(唯一確実な writable)。手順は
 //! 「.part へ streaming DL → sha256 検証 → tokenizer を揃える → model_int8.onnx へ
 //! atomic rename」。`resolve_model_dir`(commands/semantic.rs)は最終 model_int8.onnx の

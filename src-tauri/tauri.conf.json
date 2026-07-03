@@ -40,7 +40,6 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/semantic/ruri-v3-30m/model_int8.onnx",
       "resources/semantic/ruri-v3-30m/tokenizer.json",
       "resources/semantic/bge-small-en-v15/tokenizer.json"
     ]
