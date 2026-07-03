@@ -1,7 +1,7 @@
 # Grimodex Terms of Use
 
-Last updated: 2026-06-11
-Version: v1.1 (draft)
+Last updated: 2026-07-04
+Version: v1.2 (draft)
 
 **Authoritative language notice.** The authoritative, legally binding text of these Terms of Use is the Japanese version (`TERMS_ja.md`). This English version is a reference translation provided for convenience only. In the event of any discrepancy or inconsistency between this English translation and the Japanese version, the Japanese version shall prevail.
 
@@ -29,7 +29,7 @@ By installing, launching, or using the Software, the user (the "User") is deemed
 
 2.2. When using Third-Party Services, **the User is responsible for complying with the terms of use, privacy policies, and usage policies of each respective provider**. The Developer bears no responsibility whatsoever for the operation, availability, or terms compliance of Third-Party Services.
 
-2.3. The Software merely launches third-party tools as subprocesses within the User's environment, and does not relay, store, or transmit any credentials.
+2.3. For CLI-based third-party tools, the Software merely launches them as subprocesses within the User's environment and does not relay, store, or transmit their credentials. For API-based Third-Party Services, the Software stores the API keys configured by the User only on the User's device (in the OS keychain / credential store) and transmits them solely for the purpose of authenticating API requests to the respective service. API keys are never transmitted to the Developer.
 
 2.4. The User shall obtain and manage, at their own responsibility, the access rights, billing contracts, and API keys for Third-Party Services.
 
@@ -59,11 +59,20 @@ By installing, launching, or using the Software, the user (the "User") is deemed
 
 4.3. Content that the User sends from the Software to third-party AI services (prompts, context, text excerpts, etc.) is transmitted to each AI provider's servers and processed in accordance with each company's privacy policy. The User bears the risk if the transmitted content includes confidential or personal information.
 
-4.4. The User shall perform backups at their own responsibility. The Developer bears no responsibility for data loss caused by defects in the Software, storage failures, operational errors, or the like.
+4.4. The User shall perform backups at their own responsibility. The Developer's liability for data loss caused by defects in the Software, storage failures, operational errors, or the like is governed by Section 6 of these Terms.
 
-4.5. The paid version of the Software communicates with the servers of the payment and license management provider (Polar Software, Inc.) in order to verify the validity of the license. The information transmitted is limited to the license key and an activation identifier (a per-device anonymous ID issued by the license management provider), and does not include the User's work data or device-specific information. Communication occurs at activation and at re-verification approximately every 7 days. Even when a network connection is unavailable, all features remain usable for 30 days from the last verification.
+4.5. The paid version of the Software communicates with the servers of the payment and license management provider (Polar Software, Inc.) in order to verify the validity of the license. The information transmitted is limited to the license key, an activation identifier (a per-device anonymous ID issued by the license management provider), and an activation label indicating the operating system type (e.g., "Grimodex on Windows"), and does not include the User's work data or any information that could uniquely identify the User's device. Communication occurs at activation and at re-verification approximately every 7 days. Even when a network connection is unavailable, all features remain usable for 30 days from the last verification.
 
 4.6. Even if the license becomes invalid or expires, viewing and exporting the data created by the User is not restricted.
+
+4.7. The Software communicates with external servers only in the following cases:
+
+- When using the Third-Party Services configured by the User (Section 2 and 4.3)
+- When verifying the license of the paid version (4.5)
+- When checking for application updates (at startup and upon a manual check from the settings screen, the Software sends a request to its distribution server (GitHub) to retrieve update information; this request includes the Software's current version and operating system type)
+- When downloading the AI models used for semantic search for the first time (the model files are retrieved from the Software's distribution server (GitHub))
+
+None of these communications transmits the User's work data. Note that, as a result of these communications, connection information such as the IP address may be logged by the operator of the destination server (GitHub, Inc., etc.).
 
 ---
 
@@ -79,23 +88,27 @@ In using the Software, the User shall not engage in any of the following acts:
 
 ---
 
-## 6. Disclaimer
+## 6. Disclaimer of Warranty and Limitation of Liability
 
-6.1. The Software is provided "AS IS", without any warranty of any kind, whether express or implied, including as to merchantability, fitness for a particular purpose, or non-infringement of third-party rights.
+6.1. The Software is provided "AS IS", and, to the maximum extent permitted by applicable law, without any warranty of any kind, whether express or implied, including as to merchantability, fitness for a particular purpose, or non-infringement of third-party rights.
 
-6.2. The Developer of the Software shall not be liable for any damages arising from the use of or inability to use the Software (including but not limited to data loss, lost profits, business interruption, or claims from third parties), regardless of the legal basis, whether in contract, tort, or otherwise.
+6.2. Except in cases of willful misconduct or gross negligence on the part of the Developer, the Developer shall not be liable for any damages arising from the use of or inability to use the Software (including but not limited to data loss, lost profits, business interruption, or claims from third parties), regardless of the legal basis, whether in contract, tort, or otherwise.
 
-6.3. The Software and the integrated third-party AI services may experience defects, malfunctions, inaccuracies in output, or service outages. Always back up important creative data yourself.
+6.3. Even where the Developer is liable for damages, except in cases of willful misconduct or gross negligence on the part of the Developer, the Developer's aggregate liability shall not exceed the amount actually paid by the User as consideration for the Software.
+
+6.4. The Software and the integrated third-party AI services may experience defects, malfunctions, inaccuracies in output, or service outages. Always back up important creative data yourself.
+
+6.5. (Reservation of consumer rights) Nothing in these Terms excludes or limits any rights granted to the User under the Consumer Contract Act of Japan or any other applicable law that cannot be excluded or limited by contract.
 
 ---
 
 ## 7. Changes to the Terms
 
-7.1. The Developer may revise these Terms.
+7.1. The Developer may revise these Terms. When making a revision, the Developer will announce the content of the revised Terms and their effective date in the release notes of the Software or on its distribution page (the GitHub repository).
 
 7.2. Minor revisions (such as correcting typos, clarifying expressions, or updating reference links, which do not materially affect the User's rights or obligations) take effect when they are bundled with a new version of the Software, and the User is deemed to have agreed to the revised Terms by continuing to use the new version.
 
-7.3. For revisions that materially affect the User's rights or obligations (those accompanied by a major or minor version update), the User shall be asked for explicit re-consent when the Software launches. If the User cannot re-consent, the User shall discontinue use of the Software.
+7.3. For revisions that materially affect the User's rights or obligations, the revision will be distributed together with a major or minor version update, and the User will be asked for explicit re-consent when the Software launches. If the User cannot re-consent, the User shall discontinue use of the Software.
 
 ---
 
@@ -103,19 +116,31 @@ In using the Software, the User shall not engage in any of the following acts:
 
 8.1. These Terms are governed by and construed in accordance with the laws of Japan.
 
-8.2. In the event of a dispute arising in connection with the Software or these Terms, the district court having jurisdiction over the Developer's place of residence shall be the exclusive agreed court of first instance.
+8.2. In the event of a dispute arising in connection with the Software or these Terms, the district court having jurisdiction over the Developer's place of residence shall be the exclusive agreed court of first instance. However, this Section does not deprive the User of any benefit regarding jurisdiction to which the User is entitled as a consumer under applicable law.
 
 ---
 
-## 9. General Provisions
+## 9. Termination
 
-9.1. (Severability) Even if any provision of these Terms is held invalid or unenforceable under applicable law, the validity and enforceability of the remaining provisions shall not be affected, and the provision held invalid or unenforceable shall be applied with the minimum modification necessary to achieve its original intent.
+9.1. If the User breaches these Terms, the Developer may, by notice to the User, terminate the User's authorization to use the Software under these Terms with prospective effect. Termination of the license granted under the Elastic License 2.0 is governed by the provisions of that license.
 
-9.2. (Entire Agreement) These Terms and the license document bundled with the Software (the Elastic License 2.0) constitute the entire agreement between the User and the Developer regarding the use of the Software, and supersede all prior agreements and understandings on this matter.
+9.2. Even after the authorization to use the Software is terminated, as in 4.6, viewing and exporting the data created by the User is not restricted.
+
+9.3. Sections 3, 4, 6, 8, this Section 9, and Section 10 shall survive any termination of the authorization to use the Software.
 
 ---
 
-## 10. Contact
+## 10. General Provisions
+
+10.1. (Severability) Even if any provision of these Terms is held invalid or unenforceable under applicable law, the validity and enforceability of the remaining provisions shall not be affected, and the provision held invalid or unenforceable shall be applied with the minimum modification necessary to achieve its original intent.
+
+10.2. (Entire Agreement) These Terms and the license document bundled with the Software (the Elastic License 2.0) constitute the entire agreement between the User and the Developer regarding the use of the Software, and supersede all prior agreements and understandings on this matter.
+
+10.3. (Language) The Japanese version of these Terms is the authoritative text. Even where the Developer provides an English or other reference translation, in the event of any discrepancy or inconsistency between the authoritative text and the reference translation, the Japanese version shall prevail.
+
+---
+
+## 11. Contact
 
 For inquiries regarding these Terms, please use the Issues of the Software's GitHub repository ( https://github.com/kazormia296/Grimodex ).
 
