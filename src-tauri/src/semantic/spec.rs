@@ -175,6 +175,11 @@ pub static SPEC_EN: EmbeddingModelSpec = EmbeddingModelSpec {
     artifact_size: 34_041_756,
 };
 
+/// 現行の全 spec。オンデマンド DL 済みモデルの GC で「残すべき dir_name」の集合として
+/// 使う (ここに無い `app_data/models/<dir>` は旧モデルとして掃除対象)。モデルを
+/// 増やす/差し替える際はここも更新する。
+pub static ALL_SPECS: [&EmbeddingModelSpec; 2] = [&SPEC_JA, &SPEC_EN];
+
 /// Pick the model spec for a project language. Anything that is not English
 /// falls back to the Japanese (ruri) spec.
 pub fn spec_for_language(language: &str) -> &'static EmbeddingModelSpec {

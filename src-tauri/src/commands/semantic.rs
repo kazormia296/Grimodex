@@ -40,7 +40,7 @@ use crate::semantic::codex_index::{
     CodexUpsertOutcome,
 };
 use crate::semantic::codex_search::{run_codex_search, CodexSearchCache, CodexSearchHit};
-use crate::semantic::download::{download_model, is_model_installed};
+use crate::semantic::download::{download_model, installed_download_dir, is_model_installed};
 use crate::semantic::embedding::Embedder;
 use crate::semantic::events_index::{
     collect_events_index_status, embed_event_text, list_event_ids_in_project,
@@ -131,7 +131,15 @@ pub(crate) async fn semantic_download_model(
     }
     let bg = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = download_model(bg.clone(), spec).await;
+        let ok = download_model(bg.clone(), spec).await.is_ok();
+        if ok {
+            // 差し替え後 (in-place 更新) でも新モデルが確実に使われるよう、キャッシュ済み
+            // Embedder を破棄して次回 ensure_embedder で再ロードさせる。dir_name を変えない
+            // 更新では、この破棄が無いと旧 Embedder がセッション中ずっと居座ってしまう。
+            if let Ok(mut guard) = bg.state::<SemanticEmbedderState>().inner.lock() {
+                guard.remove(spec.dir_name);
+            }
+        }
         if let Ok(mut inflight) = bg.state::<ModelDownloadState>().inflight.lock() {
             inflight.remove(spec.dir_name);
         }
@@ -139,14 +147,14 @@ pub(crate) async fn semantic_download_model(
     Ok("downloading".to_string())
 }
 
-/// spec に対応する同梱モデルディレクトリを解決する。
+/// spec に対応するモデルディレクトリを解決する。無ければ None。
 ///
 /// 探索順:
-/// 1. `app.path().resource_dir()/resources/semantic/{spec.dir_name}` (bundle 同梱)。
-/// 2. 見つからなければ `CARGO_MANIFEST_DIR/resources/semantic/{spec.dir_name}`
-///    にフォールバック (cargo test や非 Tauri 経路の救済)。
+/// 1. バンドル同梱 `resource_dir()/resources/semantic/{dir_name}` (model_int8.onnx 存在)。
+/// 2. オンデマンド DL 済み `app_data/models/{dir_name}` (sidecar sha256 が現行 spec と一致)。
+/// 3. dev/test 救済 `CARGO_MANIFEST_DIR/resources/semantic/{dir_name}` (**実在時のみ**)。
 ///
-/// model_int8.onnx の存在で判定する。
+/// None のとき `load_embedder` は明示エラーを返し、消費側は FTS に degrade する。
 fn resolve_model_dir(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> Option<PathBuf> {
     let rel = PathBuf::from("resources/semantic").join(spec.dir_name);
     // 1) バンドル同梱 (tokenizer は同梱。int8 を同梱する構成ならここで当たる)。
@@ -158,11 +166,10 @@ fn resolve_model_dir(app: &tauri::AppHandle, spec: &EmbeddingModelSpec) -> Optio
     }
     // 2) オンデマンド DL 済みディレクトリ (EN / 大型モデルはここに落ちる)。
     //    downloader が model_int8.onnx + tokenizer.json を app_data 配下に揃える。
-    if let Ok(data) = app.path().app_data_dir() {
-        let candidate = data.join("models").join(spec.dir_name);
-        if candidate.join("model_int8.onnx").exists() {
-            return Some(candidate);
-        }
+    //    sidecar sha256 が現行 spec と一致する時のみ採用する (別モデルへ差し替え途中の
+    //    旧バイトを掴まないよう。不一致なら None→FTS degrade、その間に再 DL が走る)。
+    if let Some(dir) = installed_download_dir(app, spec) {
+        return Some(dir);
     }
     // 3) dev / test の安全網 —— **実在する場合のみ返す**。
     //    リリースビルドでは env!("CARGO_MANIFEST_DIR") はビルドマシン
