@@ -58,6 +58,17 @@ export function semanticReindexAll(projectId: string): Promise<number> {
 }
 
 /**
+ * 指定言語の埋め込みモデルが未インストールなら、バックグラウンド DL を開始する。
+ * 即時に状態を返す: `"installed"`(DL 不要) / `"downloading"`(開始 or 進行中) /
+ * `"unavailable"`(DL 元未設定)。DL 本体は Rust 側 spawn で走り、進捗は
+ * `semantic:model_download_progress` イベント (useModelDownloadListener) で流れる
+ * ため、この invoke 自体は即座に返る (IPC タイムアウト非該当)。
+ */
+export function downloadSemanticModel(language: string): Promise<string> {
+  return invoke<string>("semantic_download_model", { language });
+}
+
+/**
  * Codex の dense セマンティック検索 (段階3 hybrid の dense arm)。
  * Rust 側 `codex_semantic_search` (semantic-embedding feature gate) を叩く。
  * 1 エントリ 1 ベクトル (name+aliases+summary+content を埋め込み)。score は cosine。

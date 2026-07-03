@@ -73,6 +73,23 @@ pub struct EmbeddingModelSpec {
     /// (feature-gated) golden test, so a plain `cargo check` sees it unused.
     #[allow(dead_code)]
     pub golden_fixture: &'static str,
+
+    // --- On-demand download metadata (registry; consumed by the model downloader) ---
+    // These describe where the *calibrated* int8 `model_int8.onnx` for this spec
+    // lives so a build/runtime that lacks the bundled resource can fetch it. They
+    // are pure附随情報 and MUST NOT affect `full_model_id()` / byte-stability.
+    //
+    /// Public HTTPS URL of the calibrated int8 ONNX (a GitHub Release asset). The
+    /// downloaded bytes MUST sha256-match `artifact_sha256` — a mismatch means a
+    /// different quantization and would silently invalidate the RAG calibration,
+    /// so the downloader rejects it. Empty string = no download source configured.
+    pub artifact_url: &'static str,
+    /// Lowercase hex sha256 of the exact int8 artifact the model was calibrated
+    /// against. Pinned here so "this identifier's chunks were built from this
+    /// exact artifact" is a fixed invariant (see docs/設計_埋め込みモデルのオンデマンドDL.md §2.3).
+    pub artifact_sha256: &'static str,
+    /// Expected byte size of the int8 artifact (progress denominator + DoS hard cap).
+    pub artifact_size: u64,
 }
 
 impl EmbeddingModelSpec {
@@ -115,6 +132,12 @@ pub static SPEC_JA: EmbeddingModelSpec = EmbeddingModelSpec {
     chunker_version: CHUNKER_VERSION,
     model_id_suffix: "@local/model_int8.onnx/prefix-v1",
     golden_fixture: "ruri_v3_30m_golden.json",
+    // int8 は非同梱 (tokenizer のみ同梱)。JA も EN 同様、初回利用時にここから
+    // オンデマンド DL する。pinned to the semantic-models-v1 Release asset.
+    artifact_url:
+        "https://github.com/kazormia296/Grimodex/releases/download/semantic-models-v1/ruri-v3-30m-model_int8.onnx",
+    artifact_sha256: "946ae837c9cd3f78baf93af541e77facec62d31049921d7c00fbcb57b4610bcf",
+    artifact_size: 37_074_051,
 };
 
 /// English chunker version — independent of the Japanese one so English-only
@@ -144,6 +167,12 @@ pub static SPEC_EN: EmbeddingModelSpec = EmbeddingModelSpec {
     chunker_version: CHUNKER_VERSION_EN,
     model_id_suffix: "@local/model_int8.onnx/en-v1",
     golden_fixture: "bge_small_en_v15_golden.json",
+    // int8 は非同梱: 初回利用時に app_data へオンデマンド DL する。
+    // pinned to the semantic-models-v1 Release asset.
+    artifact_url:
+        "https://github.com/kazormia296/Grimodex/releases/download/semantic-models-v1/bge-small-en-v15-model_int8.onnx",
+    artifact_sha256: "4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b",
+    artifact_size: 34_041_756,
 };
 
 /// Pick the model spec for a project language. Anything that is not English
@@ -189,6 +218,41 @@ mod tests {
     #[test]
     fn en_uses_independent_chunker_version() {
         assert_ne!(SPEC_EN.chunker_version, SPEC_JA.chunker_version);
+    }
+
+    fn is_lower_hex64(s: &str) -> bool {
+        s.len() == 64
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+
+    #[test]
+    fn download_metadata_is_well_formed() {
+        for spec in [&SPEC_JA, &SPEC_EN] {
+            // A configured artifact must be an https GitHub Release asset with a
+            // valid pinned sha256 and non-zero size (progress denominator / DoS cap).
+            assert!(
+                spec.artifact_url.starts_with("https://github.com/"),
+                "artifact_url must be an https GitHub URL: {}",
+                spec.artifact_url
+            );
+            assert!(
+                spec.artifact_url.contains("/releases/download/"),
+                "artifact_url must be a Release asset: {}",
+                spec.artifact_url
+            );
+            assert!(
+                is_lower_hex64(spec.artifact_sha256),
+                "artifact_sha256 must be 64 lowercase hex chars: {}",
+                spec.artifact_sha256
+            );
+            assert!(spec.artifact_size > 0);
+        }
+        // The download metadata must never leak into the staleness identifier.
+        assert_eq!(
+            SPEC_JA.full_model_id(),
+            "cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1"
+        );
     }
 
     #[test]

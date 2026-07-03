@@ -24,4 +24,6 @@ pub(crate) mod search;
 pub(crate) mod spec;
 
 #[cfg(feature = "semantic-embedding")]
+pub(crate) mod download;
+#[cfg(feature = "semantic-embedding")]
 pub(crate) mod embedding;

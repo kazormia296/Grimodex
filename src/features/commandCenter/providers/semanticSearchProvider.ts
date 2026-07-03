@@ -89,11 +89,13 @@ export const semanticSearchProvider: CommandCenterProvider = {
       };
     } catch (e) {
       if (ctx.signal.aborted) return emptySection();
+      // 埋め込みモデル未インストール (オンデマンド DL 中/失敗) は「壊れた」ではなく
+      // degrade。error バナーを出さず無音で空にする (lexical/FTS section は別 provider
+      // で並行表示され続ける)。DL 完了後は再検索で dense も乗る。
+      const message = e instanceof Error ? e.message : String(e);
+      if (/not installed/i.test(message)) return emptySection();
       return emptySection({
-        state: {
-          kind: "error",
-          message: e instanceof Error ? e.message : String(e),
-        },
+        state: { kind: "error", message },
       });
     }
   },

@@ -159,6 +159,20 @@ describe("semanticSearchProvider", () => {
     expect(section.state).toEqual({ kind: "error", message: "model load" });
   });
 
+  it("degrades silently (no error banner) when the model is not installed", async () => {
+    // On-demand DL not yet finished: the Rust embedder load errors with
+    // "...is not installed...". Semantic section must go empty WITHOUT an error
+    // state so the parallel FTS/lexical section still carries the UI.
+    vi.mocked(semanticSearch).mockRejectedValueOnce(
+      new Error(
+        "embedding model 'bge-small-en-v15' is not installed (...); falling back to full-text search",
+      ),
+    );
+    const section = await semanticSearchProvider.search(makeContext());
+    expect(section.items).toEqual([]);
+    expect(section.state).toBeUndefined();
+  });
+
   it("returns empty section when signal is aborted before mapping", async () => {
     const controller = new AbortController();
     vi.mocked(semanticSearch).mockImplementationOnce(async () => {

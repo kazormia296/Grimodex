@@ -1,10 +1,12 @@
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import {
   codexIndexStatus,
   codexReindexAll,
   chatIndexStatus,
   chatReindexAll,
+  downloadSemanticModel,
   semanticIndexStatus,
   semanticReindexAll,
 } from "./api";
@@ -28,6 +30,33 @@ import { useReindexProgressStore } from "./reindexProgressStore";
 const codexAttempted = new Set<string>();
 const sceneAttempted = new Set<string>();
 const chatAttempted = new Set<string>();
+const modelAttempted = new Set<string>();
+
+/**
+ * プロジェクト言語の埋め込みモデルが未インストールなら、バックグラウンド DL を
+ * 開始する (int8 は非同梱: JA/EN とも初回利用時にここで DL、tokenizer のみ同梱)。
+ * 進捗/完了は `useModelDownloadListener` が受け取り、完了後に back-index を再実行する。
+ * 失敗は無音 (FTS degrade)。1 セッション 1 プロジェクト 1 回 (DL 開始済みなら再試行しない)。
+ */
+export async function ensureSemanticModelForProject(
+  projectId: string,
+): Promise<void> {
+  if (!projectId || modelAttempted.has(projectId)) return;
+  modelAttempted.add(projectId);
+  try {
+    const language = getCurrentProjectLanguage();
+    const status = await downloadSemanticModel(language);
+    debugLog.info("semantic-search", `model ensure (${language}): ${status}`);
+  } catch (e) {
+    // "unavailable"/接続失敗などは再 open で再試行できるようガードを外す。
+    modelAttempted.delete(projectId);
+    debugLog.warn(
+      "semantic-search",
+      `model ensure skipped: ${projectId}`,
+      errorDetail(e),
+    );
+  }
+}
 
 /**
  * 自動 scene back-index の単一フライト トークン。`reindexProgressStore.running`
@@ -164,7 +193,11 @@ export async function ensureSceneIndexed(projectId: string): Promise<void> {
 export async function ensureSemanticIndexesOnOpen(
   projectId: string,
 ): Promise<void> {
+  // 先にモデル DL を起動 (fire-and-forget で即返る)。未 DL の言語はここで DL が
+  // 走り、完了後に useModelDownloadListener が本関数を再呼び出しして index し直す。
+  await ensureSemanticModelForProject(projectId);
   // codex / chat 先 (軽量・短時間) → scene (重い)。embedder ロックは Rust 側で直列化。
+  // モデル未着ならこれらは無音で degrade (sparse/FTS)、DL 完了後の再呼び出しで index。
   await ensureCodexIndexed(projectId);
   await ensureChatIndexed(projectId);
   await ensureSceneIndexed(projectId);
@@ -175,5 +208,6 @@ export function _resetAutoIndexForTests(): void {
   codexAttempted.clear();
   sceneAttempted.clear();
   chatAttempted.clear();
+  modelAttempted.clear();
   autoIndexingProjectId = null;
 }
