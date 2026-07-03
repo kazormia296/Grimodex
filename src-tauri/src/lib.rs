@@ -19,20 +19,20 @@ use commands::external_mount::ExternalMountState;
 #[cfg(feature = "semantic-embedding")]
 use commands::semantic::{ModelDownloadState, SemanticEmbedderState};
 use commands::{
-    AiSettingsPath, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag, LicensePath,
-    LogGuard, PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
+    AiSettingsPath, AppResult, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag,
+    LicensePath, LogGuard, PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
 };
 use external_mount::watch::ExternalMountWatchState;
 
 #[tauri::command]
-fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> AppResult<()> {
     #[cfg(target_os = "macos")]
     {
         use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
 
         let window = app
             .get_webview_window("main")
-            .ok_or_else(|| "main window was not found".to_string())?;
+            .ok_or_else(|| anyhow::anyhow!("main window was not found"))?;
 
         if enabled {
             apply_vibrancy(
@@ -41,9 +41,9 @@ fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> Result<(), Strin
                 None,
                 None,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         } else {
-            clear_vibrancy(&window).map_err(|error| error.to_string())?;
+            clear_vibrancy(&window).map_err(|error| anyhow::anyhow!("{error}"))?;
         }
     }
 

@@ -402,7 +402,7 @@ pub(crate) fn get_mcp_config(
     let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
     let workspace = inner
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No workspace is open"))?
+        .ok_or(AppError::NoWorkspace)?
         .path
         .to_string_lossy()
         .into_owned();
