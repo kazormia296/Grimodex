@@ -201,6 +201,9 @@ export const JA_CHAT_SYSTEM = {
     styleGuide: "文体ガイド",
     aiInstructions: "AI指示",
     synopsis: "あらすじ",
+    /** L3 現在シーンの intent (treeNodes.intent) ラベル。背景情報ではなく到達目標として
+     * モデルを操舵するため説明的な文言にする（intent_drift 側の見出しと整合）。 */
+    intent: "狙い（このシーンで達成したいこと）",
     prevTitle: "タイトル",
     prevSummary: "要約",
     contentType: "タイプ",

@@ -18,6 +18,10 @@ export interface SceneContext {
   /** Raw ProseMirror JSON string (DB value). Used to extract Placed beats for context injection. */
   contentJson?: string;
   synopsis?: string;
+  /** Author-declared goal for this scene (treeNodes.intent). Injected into L3 as steering
+   * info right after synopsis. Chat only — graders (review/meta_structure) must NOT receive
+   * this (intent_drift owns intent-as-criteria; see post-effect/customInstruction.ts). */
+  intent?: string;
   /** Story-time label for the current scene (e.g. "第3話・夕方"). Injected into L3 when set. */
   storyTimeLabel?: string | null;
 }
@@ -1003,6 +1007,9 @@ export function buildSystemPrompt(
     }
     if (input.scene.synopsis) {
       l3Text += `\n${s.labels.synopsis}: ${input.scene.synopsis}`;
+    }
+    if (input.scene.intent?.trim()) {
+      l3Text += `\n${s.labels.intent}: ${input.scene.intent.trim()}`;
     }
   }
   // C-3: 「予定ビート」セクションを Synopsis 後・本文前に注入

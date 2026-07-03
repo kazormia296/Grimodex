@@ -1037,6 +1037,50 @@ describe("contextBuilder", () => {
     });
   });
 
+  describe("buildSystemPrompt — scene.intent 注入", () => {
+    const scene: SceneContext = {
+      id: "s1",
+      title: "テストシーン",
+      content: "本文テキスト",
+      synopsis: "あらすじ文",
+    };
+
+    it("intent が Synopsis 後・pendingBeats 前に注入される", () => {
+      const section = "## このシーンの予定ビート\n- [Placed #1 / free] ビート";
+      const result = buildSystemPrompt({
+        scene: { ...scene, intent: "主人公の孤立を確定させる" },
+        pendingBeatsSection: section,
+      });
+      const synopsisIdx = result.prompt.indexOf("あらすじ文");
+      const intentIdx = result.prompt.indexOf(
+        "狙い（このシーンで達成したいこと）: 主人公の孤立を確定させる",
+      );
+      const sectionIdx = result.prompt.indexOf("予定ビート");
+      expect(synopsisIdx).toBeGreaterThanOrEqual(0);
+      expect(intentIdx).toBeGreaterThan(synopsisIdx);
+      expect(sectionIdx).toBeGreaterThan(intentIdx);
+    });
+
+    it("intent が undefined / 空文字 / 空白のみ のとき出力は byte-identical", () => {
+      const withUndefined = buildSystemPrompt({ scene });
+      const withEmpty = buildSystemPrompt({ scene: { ...scene, intent: "" } });
+      const withBlank = buildSystemPrompt({
+        scene: { ...scene, intent: "   " },
+      });
+      expect(withEmpty.prompt).toBe(withUndefined.prompt);
+      expect(withBlank.prompt).toBe(withUndefined.prompt);
+      expect(withUndefined.prompt).not.toContain("狙い（");
+    });
+
+    it("excludeLayers = ['L3'] のとき intent も除去される", () => {
+      const result = buildSystemPrompt({
+        scene: { ...scene, intent: "主人公の孤立を確定させる" },
+        excludeLayers: ["L3"],
+      });
+      expect(result.prompt).not.toContain("主人公の孤立を確定させる");
+    });
+  });
+
   describe("buildSystemPrompt — sceneLabels / sceneForeshadow (Phase 1)", () => {
     const scene: SceneContext = {
       id: "s1",
