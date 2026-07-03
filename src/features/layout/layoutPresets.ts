@@ -210,13 +210,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             {
               id: "b1",
               sizeRatio: 1,
-              panels: [
-                "kouetsu",
-                "trash-bin",
-                "timeline",
-                "chronicle",
-                "writing-stats",
-              ],
+              panels: ["kouetsu", "trash-bin", "timeline", "writing-stats"],
               activePanel: null,
             },
           ],
@@ -230,7 +224,7 @@ const PRESET_DEFINITIONS: Record<BuiltinPresetId, BuiltinPresetDefinition> = {
             id: "ctcbae9d6f",
             kind: "tool",
             sizeRatio: 1,
-            panels: ["grid", "map"],
+            panels: ["grid", "map", "chronicle"],
             activePanel: "grid",
           },
         ],

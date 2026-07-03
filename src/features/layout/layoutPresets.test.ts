@@ -60,6 +60,21 @@ describe("layoutPresets viewport safety", () => {
     );
   });
 
+  it("plan preset groups chronicle with grid/map in the center band", () => {
+    const state = getBuiltinPresetState("builtin:plan", NARROW_VIEWPORT)!;
+    const toolSegments = state.center.segments.filter((s) => s.kind === "tool");
+    const chronicleSegment = toolSegments.find((s) =>
+      s.panels.includes("chronicle"),
+    );
+    expect(chronicleSegment).toBeDefined();
+    expect(chronicleSegment!.panels).toEqual(
+      expect.arrayContaining(["grid", "map", "chronicle"]),
+    );
+    // 下部バーの残置（timeline との同居）を解消していること
+    const bottomPanels = state.regions.bottom.slots.flatMap((s) => s.panels);
+    expect(bottomPanels).not.toContain("chronicle");
+  });
+
   it("review preset places kouetsu in the center band beside the editor", () => {
     const state = getBuiltinPresetState("builtin:review", NARROW_VIEWPORT)!;
     const centerPanels = state.center.segments
