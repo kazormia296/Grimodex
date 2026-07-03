@@ -278,26 +278,33 @@ async function pollTick(): Promise<void> {
   const projectId = state.projectId;
   if (!projectId) return;
 
-  const sessionId = getRecorderSessionId();
-  let rows = await fetchExternalRows(projectId, state.cursor, sessionId);
-
-  if (rows.length === 0) {
-    const tail = await readTailSequence(projectId);
-    if (tail > state.cursor) {
-      // Re-fetch once: events may have landed between the first query and tail read.
-      rows = await fetchExternalRows(projectId, state.cursor, sessionId);
-      if (rows.length === 0) {
-        state.cursor = tail;
-      }
-    }
-    if (rows.length === 0) return;
-  }
-
+  // Everything below runs inside one try/catch. pollTick is fired via
+  // `void pollTick()` in setInterval, so ANY throw here (including the DB reads,
+  // not just fan-out) escapes as a [Global] unhandled rejection. In particular
+  // db_execute can hit ipcQueue's 10s timeout when a native modal dialog blocks
+  // IPC dispatch — e.g. the save dialog at the end of a timelapse export. Swallow
+  // + log and retain state.cursor (only advanced on success) so the next tick
+  // retries the same range instead of crashing the poll or dropping events.
   try {
+    const sessionId = getRecorderSessionId();
+    let rows = await fetchExternalRows(projectId, state.cursor, sessionId);
+
+    if (rows.length === 0) {
+      const tail = await readTailSequence(projectId);
+      if (tail > state.cursor) {
+        // Re-fetch once: events may have landed between the first query and tail read.
+        rows = await fetchExternalRows(projectId, state.cursor, sessionId);
+        if (rows.length === 0) {
+          state.cursor = tail;
+        }
+      }
+      if (rows.length === 0) return;
+    }
+
     await fanOut(rows);
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
-    console.warn("[externalWriteFeed] fan-out failed; cursor retained", err);
+    console.warn("[externalWriteFeed] poll failed; cursor retained", err);
   }
 }
 
