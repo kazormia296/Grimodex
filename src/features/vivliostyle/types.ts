@@ -3,9 +3,10 @@
 //
 // IPC 契約（Rust 側 commands/vivliostyle.rs と固定契約）:
 // - vivliostyle_detect / vivliostyle_build / vivliostyle_abort_build /
-//   vivliostyle_save_output
-// - イベント: vivliostyle:log / vivliostyle:done / vivliostyle:error
-//   （payload は camelCase）
+//   vivliostyle_save_output / vivliostyle_preview_start /
+//   vivliostyle_preview_stop
+// - イベント: vivliostyle:log / vivliostyle:done / vivliostyle:error /
+//   vivliostyle:preview-exited（payload は camelCase、preview-exited は空 `{}`）
 // ────────────────────────────────────────────────────────────────────
 
 /** vivliostyle_detect の結果。null = PATH 上に CLI が見つからない。 */

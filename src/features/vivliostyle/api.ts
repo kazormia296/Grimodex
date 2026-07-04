@@ -50,6 +50,25 @@ export async function saveVivliostyleOutput(
   return invoke<string | null>("vivliostyle_save_output", { outputToken });
 }
 
+/**
+ * プレビューを開始する。既存プレビューが実行中なら Rust 側が kill して
+ * 置き換える (singleton)。エラーは invoke reject で返る。
+ */
+export async function startVivliostylePreview(params: {
+  files: VivliostyleBuildFile[];
+  binaryPath?: string | null;
+}): Promise<void> {
+  return invoke<void>("vivliostyle_preview_start", {
+    files: params.files,
+    binaryPath: params.binaryPath ?? null,
+  });
+}
+
+/** 実行中プレビューを停止する。未実行なら no-op。 */
+export async function stopVivliostylePreview(): Promise<void> {
+  return invoke<void>("vivliostyle_preview_stop");
+}
+
 // ---------------------------------------------------------------------------
 // イベント購読ラッパー
 // ---------------------------------------------------------------------------
@@ -70,6 +89,19 @@ export async function onVivliostyleError(
   handler: (e: VivliostyleErrorEvent) => void,
 ): Promise<() => void> {
   return listen<VivliostyleErrorEvent>("vivliostyle:error", handler);
+}
+
+/**
+ * プレビュープロセスの自然終了 (ユーザーがプレビューウィンドウを閉じた等) を
+ * 購読する。stop / 再起動で Rust 側が kill した場合は発火しない (世代 ID で
+ * 区別される固定契約)。payload は空 `{}`。
+ */
+export async function onVivliostylePreviewExited(
+  handler: () => void,
+): Promise<() => void> {
+  return listen<Record<string, never>>("vivliostyle:preview-exited", () =>
+    handler(),
+  );
 }
 
 // ---------------------------------------------------------------------------

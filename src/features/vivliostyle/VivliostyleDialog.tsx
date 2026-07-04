@@ -23,6 +23,7 @@ import type { VivliostyleDetectResult } from "./types";
 import { loadVivliostyleExportSources } from "./loadExportSources";
 import type { VivliostyleExportSources } from "./loadExportSources";
 import { useVivliostyleBuild } from "./useVivliostyleBuild";
+import { useVivliostylePreview } from "./useVivliostylePreview";
 import { useVivliostyleSettings } from "./useVivliostyleSettings";
 import { ThemePicker } from "./ThemePicker";
 import { FormatPicker } from "./FormatPicker";
@@ -32,8 +33,8 @@ import { BuildFooter } from "./BuildFooter";
 
 // ────────────────────────────────────────────────────────────────────
 // 本の書き出し（Vivliostyle）ダイアログ。
-// シーン選択（ExportTree 再利用）＋テーマ/形式選択＋ビルド進捗。
-// プレビューは PR3 の領分でここには無い。
+// シーン選択（ExportTree 再利用）＋テーマ/形式選択＋ビルド進捗＋プレビュー。
+// プレビューはダイアログを閉じても止めない（Rust 側 singleton が管理）。
 // ────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -56,6 +57,7 @@ export function VivliostyleDialog({ open, onClose }: Props) {
   >(undefined);
   const [isSaving, setIsSaving] = useState(false);
   const { status, logs, start, abort, reset } = useVivliostyleBuild();
+  const preview = useVivliostylePreview();
 
   // 設定（settingsStore 経由で永続化）
   const {
@@ -100,9 +102,12 @@ export function VivliostyleDialog({ open, onClose }: Props) {
     cliAvailable &&
     sources !== null &&
     status.phase !== "running";
+  // プレビューはビルド実行中でも押せる（files は押下時点のスナップショット）。
+  const canPreview = sceneCount > 0 && cliAvailable && sources !== null;
 
-  async function handleBuild() {
-    if (!canBuild || !sources) return;
+  /** build / preview 共通の入力ファイル組み立て（呼出し時点のスナップショット）。 */
+  function assembleFiles() {
+    if (!sources) return null;
     const html = buildVivliostyleHtml({
       nodes,
       contentMap: sources.contentMap,
@@ -113,17 +118,39 @@ export function VivliostyleDialog({ open, onClose }: Props) {
       tateChuYokoPolicy: tateChuYokoPolicy as TateChuYokoPolicy,
       resolveMentionName: currentCodexMentionResolver(),
     });
+    return [
+      { name: VIVLIOSTYLE_HTML_FILENAME, contents: html },
+      {
+        name: VIVLIOSTYLE_THEME_FILENAME,
+        contents: VIVLIOSTYLE_THEMES[theme].css,
+      },
+    ];
+  }
+
+  async function handleBuild() {
+    if (!canBuild) return;
+    const files = assembleFiles();
+    if (!files) return;
     await start({
-      files: [
-        { name: VIVLIOSTYLE_HTML_FILENAME, contents: html },
-        {
-          name: VIVLIOSTYLE_THEME_FILENAME,
-          contents: VIVLIOSTYLE_THEMES[theme].css,
-        },
-      ],
+      files,
       format,
       binaryPath: binaryPath.trim() || null,
     });
+  }
+
+  async function handlePreview() {
+    if (preview.running) {
+      await preview.stop();
+      return;
+    }
+    if (!canPreview) return;
+    const files = assembleFiles();
+    if (!files) return;
+    try {
+      await preview.start({ files, binaryPath: binaryPath.trim() || null });
+    } catch (err) {
+      toast.error(t("vivliostyle.preview.failed", { error: String(err) }));
+    }
   }
 
   async function handleSave() {
@@ -204,6 +231,9 @@ export function VivliostyleDialog({ open, onClose }: Props) {
         isRunning={status.phase === "running"}
         canBuild={canBuild}
         onBuild={() => void handleBuild()}
+        previewRunning={preview.running}
+        canPreview={canPreview}
+        onPreview={() => void handlePreview()}
       />
     </AnimatedOverlay>
   );

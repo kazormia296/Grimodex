@@ -116,6 +116,9 @@ function setupInvoke(detect: { path: string; version: string } | null) {
         return undefined;
       case "vivliostyle_save_output":
         return "/tmp/book.pdf";
+      case "vivliostyle_preview_start":
+      case "vivliostyle_preview_stop":
+        return undefined;
       default:
         // settingsStore の永続化など無関係な invoke は握りつぶす
         return undefined;
@@ -234,5 +237,114 @@ describe("VivliostyleDialog", () => {
 
     expect(await screen.findByText("chromium launch failed")).toBeVisible();
     expect(screen.queryByTestId("vivliostyle-save")).toBeNull();
+  });
+
+  it("プレビュー開始で preview_start が invoke され、停止ボタンに切り替わる", async () => {
+    setupInvoke({ path: "/usr/bin/vivliostyle", version: "8.0.0" });
+    render(<VivliostyleDialog open onClose={vi.fn()} />);
+
+    const previewButton = screen.getByTestId("vivliostyle-preview");
+    await waitFor(() => {
+      expect(previewButton).toBeEnabled();
+    });
+    expect(previewButton).toHaveTextContent("vivliostyle.preview.start");
+    fireEvent.click(previewButton);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "vivliostyle_preview_start",
+        expect.objectContaining({ binaryPath: null }),
+      );
+    });
+    // files は build と同じ book.html + theme.css のスナップショット
+    const call = invokeMock.mock.calls.find(
+      ([cmd]) => cmd === "vivliostyle_preview_start",
+    );
+    const files = (call?.[1] as { files: VivliostyleBuildFile[] }).files;
+    const names = files.map((f) => f.name);
+    expect(names).toContain(VIVLIOSTYLE_HTML_FILENAME);
+    expect(names).toContain(VIVLIOSTYLE_THEME_FILENAME);
+    expect(
+      files.find((f) => f.name === VIVLIOSTYLE_HTML_FILENAME)?.contents,
+    ).toContain("吾輩は猫である。");
+
+    await waitFor(() => {
+      expect(previewButton).toHaveTextContent("vivliostyle.preview.stop");
+    });
+  });
+
+  it("preview-exited イベントで開始ボタンに戻る", async () => {
+    setupInvoke({ path: "/usr/bin/vivliostyle", version: "8.0.0" });
+    render(<VivliostyleDialog open onClose={vi.fn()} />);
+
+    const previewButton = screen.getByTestId("vivliostyle-preview");
+    await waitFor(() => {
+      expect(previewButton).toBeEnabled();
+    });
+    fireEvent.click(previewButton);
+    await waitFor(() => {
+      expect(previewButton).toHaveTextContent("vivliostyle.preview.stop");
+    });
+
+    // ユーザーがプレビューウィンドウを閉じた（自然終了）
+    await act(async () => {
+      emitEvent("vivliostyle:preview-exited", {});
+    });
+
+    await waitFor(() => {
+      expect(previewButton).toHaveTextContent("vivliostyle.preview.start");
+    });
+  });
+
+  it("実行中にプレビューボタンを押すと preview_stop が invoke され idle に戻る", async () => {
+    setupInvoke({ path: "/usr/bin/vivliostyle", version: "8.0.0" });
+    render(<VivliostyleDialog open onClose={vi.fn()} />);
+
+    const previewButton = screen.getByTestId("vivliostyle-preview");
+    await waitFor(() => {
+      expect(previewButton).toBeEnabled();
+    });
+    fireEvent.click(previewButton);
+    await waitFor(() => {
+      expect(previewButton).toHaveTextContent("vivliostyle.preview.stop");
+    });
+
+    fireEvent.click(previewButton);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "vivliostyle_preview_stop",
+        undefined,
+      );
+    });
+    await waitFor(() => {
+      expect(previewButton).toHaveTextContent("vivliostyle.preview.start");
+    });
+  });
+
+  it("プレビュー起動失敗時はエラートーストを出し idle のまま", async () => {
+    setupInvoke({ path: "/usr/bin/vivliostyle", version: "8.0.0" });
+    invokeMock.mockImplementation(async (cmd: string) => {
+      switch (cmd) {
+        case "vivliostyle_detect":
+          return { path: "/usr/bin/vivliostyle", version: "8.0.0" };
+        case "vivliostyle_preview_start":
+          throw new Error("spawn failed");
+        default:
+          return undefined;
+      }
+    });
+    render(<VivliostyleDialog open onClose={vi.fn()} />);
+
+    const previewButton = screen.getByTestId("vivliostyle-preview");
+    await waitFor(() => {
+      expect(previewButton).toBeEnabled();
+    });
+    fireEvent.click(previewButton);
+
+    const { toast } = await import("sonner");
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("vivliostyle.preview.failed");
+    });
+    expect(previewButton).toHaveTextContent("vivliostyle.preview.start");
   });
 });
