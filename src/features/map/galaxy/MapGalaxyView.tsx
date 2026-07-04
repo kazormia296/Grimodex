@@ -6,6 +6,9 @@ import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useEnsureCodexTypeColors } from "@/features/codex/useEnsureCodexTypeColors";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useTreeStore } from "@/features/tree/treeStore";
+import { useChronicleStore } from "@/features/chronicle/chronicleStore";
+import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { useMapStore } from "../mapStore";
 import { loadGalaxyGraphInput } from "../galaxyData";
 import {
@@ -67,13 +70,31 @@ export function MapGalaxyView() {
     [raw, galaxyFilters],
   );
 
+  // シングルクリック: 各エンティティを対応パネルで選択状態にする
+  const handleSelectNode = useCallback((node: GalaxyNode) => {
+    switch (node.kind) {
+      case "scene":
+        useTreeStore.getState().setActiveScene(node.refId);
+        break;
+      case "codex":
+        useCodexStore.getState().requestSelectEntry(node.refId);
+        break;
+      case "event":
+        useChronicleStore.getState().setSelectedEventId(node.refId);
+        break;
+      case "thread":
+        useTimelineStore.getState().setSelectedPlotThreadId(node.refId);
+        break;
+    }
+  }, []);
+
   const handleOpenNode = useCallback((node: GalaxyNode) => {
     if (node.kind === "scene") {
       useTabStore.getState().openPinned(node.refId);
     } else if (node.kind === "codex") {
       useCodexStore.getState().requestSelectEntry(node.refId);
     }
-    // event / thread は v1 ではジャンプ先なし（カメラフォーカスのみ）
+    // event / thread は v1 ではジャンプ先なし（選択+カメラフォーカスのみ）
   }, []);
 
   const empty =
@@ -95,7 +116,11 @@ export function MapGalaxyView() {
         <CenterMessage>{t("map.galaxy.noWebgl")}</CenterMessage>
       )}
       {showCanvas && (
-        <GalaxyCanvas graph={filtered} onOpenNode={handleOpenNode} />
+        <GalaxyCanvas
+          graph={filtered}
+          onSelectNode={handleSelectNode}
+          onOpenNode={handleOpenNode}
+        />
       )}
       {!loading && !loadFailed && (
         <div className="absolute left-3 top-3 z-10">

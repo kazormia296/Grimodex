@@ -9,6 +9,8 @@ import type { GalaxyGraph, GalaxyNode, GalaxyEdgeKind } from "../galaxyGraph";
 
 interface GalaxyCanvasProps {
   graph: GalaxyGraph;
+  /** シングルクリック（ダブルクリックの 1 打目でも呼ばれる） */
+  onSelectNode: (node: GalaxyNode) => void;
   onOpenNode: (node: GalaxyNode) => void;
 }
 
@@ -48,7 +50,11 @@ function endpointId(end: unknown): string {
  * ギャラクシービューの 3D 描画層。WebGL 依存のため自動テスト対象外
  * （グラフ導出ロジックは galaxyGraph.ts 側で gate 済み）。
  */
-export function GalaxyCanvas({ graph, onOpenNode }: GalaxyCanvasProps) {
+export function GalaxyCanvas({
+  graph,
+  onSelectNode,
+  onOpenNode,
+}: GalaxyCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -189,7 +195,8 @@ export function GalaxyCanvas({ graph, onOpenNode }: GalaxyCanvasProps) {
         onOpenNode(node);
         return;
       }
-      // シングルクリック: ノードへカメラを寄せる
+      // シングルクリック: 対応パネルで選択し、ノードへカメラを寄せる
+      onSelectNode(node);
       const x = node.x ?? 0;
       const y = node.y ?? 0;
       const z = node.z ?? 0;
@@ -201,7 +208,7 @@ export function GalaxyCanvas({ graph, onOpenNode }: GalaxyCanvasProps) {
         reducedMotion ? 0 : 800,
       );
     },
-    [onOpenNode, reducedMotion],
+    [onSelectNode, onOpenNode, reducedMotion],
   );
 
   return (

@@ -9,10 +9,25 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue({}),
 }));
 
-// three を引き込む 3D 描画層は必ず mock する（happy-dom では WebGL 不可）
+// three を引き込む 3D 描画層は必ず mock する（happy-dom では WebGL 不可）。
+// onSelectNode の配線検証用に、ノードごとの選択ボタンを生やす。
 vi.mock("./GalaxyCanvas", () => ({
-  GalaxyCanvas: ({ graph }: { graph: { nodes: unknown[] } }) => (
-    <div data-testid="galaxy-canvas" data-node-count={graph.nodes.length} />
+  GalaxyCanvas: ({
+    graph,
+    onSelectNode,
+  }: {
+    graph: { nodes: Array<{ id: string }> };
+    onSelectNode: (node: { id: string }) => void;
+  }) => (
+    <div data-testid="galaxy-canvas" data-node-count={graph.nodes.length}>
+      {graph.nodes.map((n) => (
+        <button
+          key={n.id}
+          data-testid={`select-${n.id}`}
+          onClick={() => onSelectNode(n)}
+        />
+      ))}
+    </div>
   ),
 }));
 
@@ -39,6 +54,18 @@ const requestSelectEntry = vi.fn();
 vi.mock("@/features/codex/codexStore", () => ({
   useCodexStore: { getState: () => ({ requestSelectEntry }) },
 }));
+const setActiveScene = vi.fn();
+vi.mock("@/features/tree/treeStore", () => ({
+  useTreeStore: { getState: () => ({ setActiveScene }) },
+}));
+const setSelectedEventId = vi.fn();
+vi.mock("@/features/chronicle/chronicleStore", () => ({
+  useChronicleStore: { getState: () => ({ setSelectedEventId }) },
+}));
+const setSelectedPlotThreadId = vi.fn();
+vi.mock("@/features/timeline/timelineStore", () => ({
+  useTimelineStore: { getState: () => ({ setSelectedPlotThreadId }) },
+}));
 
 import { MapGalaxyView } from "./MapGalaxyView";
 import { useMapStore } from "../mapStore";
@@ -53,7 +80,7 @@ beforeEach(() => {
   loadGalaxyGraphInput.mockReset();
 });
 
-/** シーン1つ + 孤立 codex 1つ（エッジなし）の入力 */
+/** 全 4 種のノード各 1 つ（すべて孤立、エッジなし）の入力 */
 function fixtureInput(): GalaxyGraphInput {
   return {
     treeNodes: [
@@ -74,10 +101,12 @@ function fixtureInput(): GalaxyGraphInput {
       },
     ],
     relations: [],
-    events: [],
+    events: [{ id: "e1", title: "開戦" }] as GalaxyGraphInput["events"],
     sceneEvents: [],
     participants: [],
-    threads: [],
+    threads: [
+      { id: "t1", name: "主軸", color: "#f00" },
+    ] as GalaxyGraphInput["threads"],
     threadLinks: [],
   };
 }
@@ -107,7 +136,7 @@ describe("MapGalaxyView", () => {
     expect(screen.getByText("銀河を構築中…")).toBeTruthy();
     resolve(fixtureInput());
     const canvas = await screen.findByTestId("galaxy-canvas");
-    expect(canvas.getAttribute("data-node-count")).toBe("2");
+    expect(canvas.getAttribute("data-node-count")).toBe("4");
   });
 
   it("ノード 0 件なら空状態メッセージを出す", async () => {
@@ -123,11 +152,30 @@ describe("MapGalaxyView", () => {
     await screen.findByText("グラフデータの読み込みに失敗しました");
   });
 
+  it("ノードクリックで対応エンティティが選択される", async () => {
+    loadGalaxyGraphInput.mockResolvedValue(fixtureInput());
+    render(<MapGalaxyView />);
+    await screen.findByTestId("galaxy-canvas");
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+    await user.click(screen.getByTestId("select-scene:s1"));
+    expect(setActiveScene).toHaveBeenCalledWith("s1");
+
+    await user.click(screen.getByTestId("select-codex:c1"));
+    expect(requestSelectEntry).toHaveBeenCalledWith("c1");
+
+    await user.click(screen.getByTestId("select-event:e1"));
+    expect(setSelectedEventId).toHaveBeenCalledWith("e1");
+
+    await user.click(screen.getByTestId("select-thread:t1"));
+    expect(setSelectedPlotThreadId).toHaveBeenCalledWith("t1");
+  });
+
   it("フィルタ変更（孤立ノードを隠す）で表示グラフが絞り込まれる", async () => {
     loadGalaxyGraphInput.mockResolvedValue(fixtureInput());
     render(<MapGalaxyView />);
     const canvas = await screen.findByTestId("galaxy-canvas");
-    expect(canvas.getAttribute("data-node-count")).toBe("2");
+    expect(canvas.getAttribute("data-node-count")).toBe("4");
 
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     await user.click(screen.getByText("孤立ノードを隠す"));
