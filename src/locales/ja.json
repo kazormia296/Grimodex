@@ -4781,14 +4781,14 @@
       "nodes": {
         "scenes": "シーン",
         "codex": "Codex",
-        "events": "出来事",
+        "events": "イベント",
         "threads": "プロットスレッド"
       },
       "edges": {
         "mention": "言及",
         "relation": "関係",
         "sequence": "シーン連結",
-        "eventLink": "出来事リンク",
+        "eventLink": "イベントリンク",
         "participant": "参加者",
         "thread": "スレッド"
       },
