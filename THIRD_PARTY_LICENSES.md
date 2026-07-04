@@ -3195,6 +3195,11 @@ SOFTWARE.
 ```
 </details>
 
+### react-force-graph-2d (1.29.1)
+
+- License: MIT
+- Repository: https://github.com/vasturiano/react-force-graph
+
 ### react-force-graph-3d (1.29.1)
 
 - License: MIT

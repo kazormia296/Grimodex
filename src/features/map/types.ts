@@ -10,6 +10,7 @@ export type SceneDisplayVariant = "compact" | "auto";
 export type ColorByAxis = "none" | "status" | "stickyColor";
 export type VisualTheme = "default" | "corkboard" | "constellation";
 export type MapViewKind = "board" | "galaxy";
+export type GalaxyDimension = "2d" | "3d";
 
 export interface GalaxyNodeFlags {
   scenes: boolean;
@@ -115,6 +116,7 @@ export interface MapPersistentState {
   visualTheme: VisualTheme;
   viewKind: MapViewKind;
   galaxyFilters: GalaxyFilters;
+  galaxyDimension: GalaxyDimension;
 }
 
 // Auto-mode default: compact

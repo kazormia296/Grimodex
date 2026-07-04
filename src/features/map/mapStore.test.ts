@@ -34,6 +34,7 @@ describe("useMapStore", () => {
       pendingExport: null,
       viewKind: "board",
       galaxyFilters: DEFAULT_GALAXY_FILTERS,
+      galaxyDimension: "3d",
     } as Parameters<typeof useMapStore.setState>[0]);
   });
 
@@ -206,6 +207,45 @@ describe("useMapStore", () => {
   it("setViewKind でビュー種別を切り替えられる", () => {
     useMapStore.getState().setViewKind("galaxy");
     expect(useMapStore.getState().viewKind).toBe("galaxy");
+  });
+
+  it("setGalaxyDimension で 2D/3D を切り替えられる（既定は 3d）", () => {
+    expect(useMapStore.getState().galaxyDimension).toBe("3d");
+    useMapStore.getState().setGalaxyDimension("2d");
+    expect(useMapStore.getState().galaxyDimension).toBe("2d");
+  });
+
+  it("loadFromSettings で galaxyDimension を復元できる（欠損は 3d）", () => {
+    const base = {
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      uiLanguage: "ja",
+      uiScale: 100,
+      showLauncherOnStartup: false,
+    };
+    useMapStore.getState().loadFromSettings({
+      ...base,
+      map: {
+        activeBoardId: null,
+        gridSnap: false,
+        minimapVisible: false,
+        visualTheme: "default" as const,
+        galaxyDimension: "2d" as const,
+      },
+    });
+    expect(useMapStore.getState().galaxyDimension).toBe("2d");
+
+    useMapStore.getState().loadFromSettings({
+      ...base,
+      map: {
+        activeBoardId: null,
+        gridSnap: false,
+        minimapVisible: false,
+        visualTheme: "default" as const,
+      },
+    });
+    expect(useMapStore.getState().galaxyDimension).toBe("3d");
   });
 
   it("setGalaxyFilters は nodes/edges を部分マージする", () => {

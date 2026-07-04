@@ -10,6 +10,7 @@ import type {
   ColorByAxis,
   VisualTheme,
   MapViewKind,
+  GalaxyDimension,
   GalaxyFilters,
   GalaxyFiltersPatch,
   MapBoardRecord,
@@ -26,6 +27,7 @@ interface MapState {
   visualTheme: VisualTheme;
   viewKind: MapViewKind;
   galaxyFilters: GalaxyFilters;
+  galaxyDimension: GalaxyDimension;
   // transient UI state (not persisted)
   searchVisible: boolean;
   pendingAutoArrange: AutoArrangeType | null;
@@ -44,6 +46,7 @@ interface MapState {
   setColorBy: (axis: ColorByAxis) => void;
   setVisualTheme: (theme: VisualTheme) => void;
   setViewKind: (kind: MapViewKind) => void;
+  setGalaxyDimension: (dimension: GalaxyDimension) => void;
   setGalaxyFilters: (patch: GalaxyFiltersPatch) => void;
   setSearchVisible: (v: boolean) => void;
   setPendingAutoArrange: (type: AutoArrangeType | null) => void;
@@ -68,6 +71,7 @@ export const useMapStore = create<MapState>((set) => ({
   visualTheme: "default",
   viewKind: "board",
   galaxyFilters: DEFAULT_GALAXY_FILTERS,
+  galaxyDimension: "3d",
   searchVisible: false,
   pendingAutoArrange: null,
   focusedNodeId: null,
@@ -83,6 +87,7 @@ export const useMapStore = create<MapState>((set) => ({
   setColorBy: (axis) => set({ colorBy: axis }),
   setVisualTheme: (theme) => set({ visualTheme: theme }),
   setViewKind: (kind) => set({ viewKind: kind }),
+  setGalaxyDimension: (dimension) => set({ galaxyDimension: dimension }),
   setGalaxyFilters: (patch) =>
     set((s) => ({
       galaxyFilters: {
@@ -107,6 +112,7 @@ export const useMapStore = create<MapState>((set) => ({
       minimapVisible: saved.minimapVisible ?? false,
       visualTheme: saved.visualTheme ?? "default",
       viewKind: saved.viewKind ?? "board",
+      galaxyDimension: saved.galaxyDimension ?? "3d",
       // 旧設定や部分的な保存値でも欠けたフラグはデフォルトで補完する
       galaxyFilters: saved.galaxyFilters
         ? {
@@ -148,6 +154,7 @@ function snapshotPersistent(s: MapState): MapPersistentState {
     visualTheme: s.visualTheme,
     viewKind: s.viewKind,
     galaxyFilters: s.galaxyFilters,
+    galaxyDimension: s.galaxyDimension,
   };
 }
 
