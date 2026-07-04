@@ -96,6 +96,14 @@ describe("縦中横エクスポート記法 — スタイル別", () => {
     const out = exportWith("12と34", { tateChuYoko: "aozora-forward" });
     expect(out).toContain("12［＃「12」は縦中横］と34［＃「34」は縦中横］");
   });
+
+  it('html-span: <span class="tcy"> で包む（CSS 組版向け）', () => {
+    const out = exportWith("Ｂ29を確認", {
+      format: "html",
+      tateChuYoko: "html-span",
+    });
+    expect(out).toContain('Ｂ<span class="tcy">29</span>を確認');
+  });
 });
 
 describe("縦中横エクスポート記法 — 対象 run の length ポリシー", () => {
