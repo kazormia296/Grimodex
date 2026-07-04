@@ -497,6 +497,8 @@
     "degenLayout": "Layout was degenerate and has been reset to default. ({{reason}})",
     "exportTitle": "Export (Ctrl+Shift+E)",
     "exportLabel": "Export",
+    "bookExportTitle": "Book Export (Vivliostyle)",
+    "bookExportLabel": "Book Export",
     "settingsTitle": "Settings (Ctrl+Alt+,)",
     "settingsLabel": "Settings",
     "settingsLabelUpdateAvailable": "Settings (update available)"
@@ -3181,6 +3183,7 @@
     "command": {
       "openSettings": "Open Settings",
       "export": "Export",
+      "vivliostyle": "Book Export (Vivliostyle)",
       "restartTour": "Restart Tour",
       "togglePanel": "Toggle Panel: {{panel}}"
     }
@@ -3953,6 +3956,43 @@
     "trustWarning": "Only open workspaces from sources you trust.",
     "trustAndOpen": "Trust & Open",
     "trustCancel": "Cancel"
+  },
+  "vivliostyle": {
+    "title": "Book Export (Vivliostyle)",
+    "theme": {
+      "label": "Theme",
+      "bunkoVertical": "Bunko (vertical writing)",
+      "shinshoVertical": "Shinsho (vertical writing)",
+      "a4Horizontal": "A4 (horizontal writing)"
+    },
+    "format": {
+      "label": "Format",
+      "pdf": "PDF",
+      "epub": "EPUB"
+    },
+    "cli": {
+      "checking": "Checking for Vivliostyle CLI…",
+      "detected": "Vivliostyle CLI detected ({{version}})",
+      "notFound": "Vivliostyle CLI not found",
+      "guide": "Book export requires Node.js and the Vivliostyle CLI. Install Node.js, then run the following command.",
+      "copyCommand": "Copy",
+      "copied": "Copied",
+      "manualPath": "Set the vivliostyle binary path manually",
+      "manualPathPlaceholder": "e.g. /usr/local/bin/vivliostyle",
+      "redetect": "Detect again"
+    },
+    "build": {
+      "start": "Export",
+      "running": "Typesetting…",
+      "firstRunNote": "The first run downloads Chromium and may take several minutes.",
+      "abort": "Abort",
+      "done": "Typesetting finished",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Saved: {{path}}",
+      "saveFailed": "Failed to save: {{error}}",
+      "failed": "Export failed"
+    }
   },
   "export": {
     "selectAll": "Select all",

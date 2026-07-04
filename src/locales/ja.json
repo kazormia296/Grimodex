@@ -497,6 +497,8 @@
     "degenLayout": "レイアウトが退化しているため、デフォルトに戻しました。（{{reason}}）",
     "exportTitle": "エクスポート (Ctrl+Shift+E)",
     "exportLabel": "エクスポート",
+    "bookExportTitle": "本の書き出し（Vivliostyle）",
+    "bookExportLabel": "本の書き出し",
     "settingsTitle": "設定 (Ctrl+Alt+,)",
     "settingsLabel": "設定",
     "settingsLabelUpdateAvailable": "設定（更新があります）"
@@ -3176,6 +3178,7 @@
     "command": {
       "openSettings": "設定を開く",
       "export": "エクスポート",
+      "vivliostyle": "本の書き出し（Vivliostyle）",
       "restartTour": "ツアー再開",
       "togglePanel": "パネル切替: {{panel}}"
     }
@@ -3946,6 +3949,43 @@
     "trustWarning": "信頼できるソースのワークスペースのみ開いてください。",
     "trustAndOpen": "信頼して開く",
     "trustCancel": "キャンセル"
+  },
+  "vivliostyle": {
+    "title": "本の書き出し（Vivliostyle）",
+    "theme": {
+      "label": "テーマ",
+      "bunkoVertical": "文庫判（縦書き）",
+      "shinshoVertical": "新書判（縦書き）",
+      "a4Horizontal": "A4（横書き）"
+    },
+    "format": {
+      "label": "形式",
+      "pdf": "PDF",
+      "epub": "EPUB"
+    },
+    "cli": {
+      "checking": "Vivliostyle CLI を確認中…",
+      "detected": "Vivliostyle CLI 検出済み（{{version}}）",
+      "notFound": "Vivliostyle CLI が見つかりません",
+      "guide": "本の書き出しには Node.js と Vivliostyle CLI が必要です。Node.js をインストールした上で、次のコマンドを実行してください。",
+      "copyCommand": "コピー",
+      "copied": "コピー済み",
+      "manualPath": "vivliostyle バイナリのパスを手動指定",
+      "manualPathPlaceholder": "例: /usr/local/bin/vivliostyle",
+      "redetect": "再検出"
+    },
+    "build": {
+      "start": "書き出し",
+      "running": "組版中…",
+      "firstRunNote": "初回実行時は Chromium のダウンロードが行われるため、数分かかることがあります。",
+      "abort": "中止",
+      "done": "組版が完了しました",
+      "save": "保存",
+      "saving": "保存中…",
+      "saved": "保存しました: {{path}}",
+      "saveFailed": "保存に失敗しました: {{error}}",
+      "failed": "書き出しに失敗しました"
+    }
   },
   "export": {
     "selectAll": "全選択",

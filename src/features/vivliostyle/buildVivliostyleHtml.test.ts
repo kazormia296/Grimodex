@@ -93,6 +93,50 @@ describe("buildVivliostyleHtml — 文書シェル", () => {
     const out = build({ projectTitle: 'A<B>&"C' });
     expect(out).toContain("<title>A&lt;B&gt;&amp;&quot;C</title>");
   });
+
+  it("lang 属性をエスケープする（属性脱出によるタグ注入を防ぐ）", () => {
+    const out = build({ projectLanguage: 'ja"><script>' });
+    expect(out).not.toContain("<script>");
+    expect(out).toContain('lang="ja&quot;&gt;&lt;script&gt;"');
+  });
+
+  it("本文テキストの HTML 特殊文字をエスケープする（Chromium で実行される HTML への script 焼き込み防止）", () => {
+    const out = build({
+      contentMap: {
+        s1: pmDoc(['<script>alert(1)</script> と A&B "引用"']),
+      },
+      checkedIds: new Set(["f1", "s1"]),
+    });
+    expect(out).not.toContain("<script>alert(1)</script>");
+    expect(out).toContain(
+      "&lt;script&gt;alert(1)&lt;/script&gt; と A&amp;B &quot;引用&quot;",
+    );
+  });
+
+  it("ルビの base/annotation もエスケープする", () => {
+    const doc = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "ruby",
+              attrs: { base: "<b>x</b>", annotation: "<i>y</i>" },
+            },
+          ],
+        },
+      ],
+    });
+    const out = build({
+      contentMap: { s1: doc },
+      checkedIds: new Set(["f1", "s1"]),
+    });
+    expect(out).not.toContain("<b>x</b>");
+    expect(out).toContain(
+      "<ruby>&lt;b&gt;x&lt;/b&gt;<rp>(</rp><rt>&lt;i&gt;y&lt;/i&gt;</rt><rp>)</rp></ruby>",
+    );
+  });
 });
 
 describe("buildVivliostyleHtml — 本文構造", () => {

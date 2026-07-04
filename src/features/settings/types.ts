@@ -217,6 +217,11 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "export.sceneBreakCustom": "project",
   // Timelapse — work-specific (project)
   "timelapse.enabled": "project",
+  // Vivliostyle（本の書き出し）— CLI バイナリパスはユーザー環境依存 (global)、
+  // テーマ/形式は作品の体裁 (project)
+  "vivliostyle.binaryPath": "global",
+  "vivliostyle.theme": "project",
+  "vivliostyle.format": "project",
 };
 
 export const DEFAULT_SETTINGS: Record<string, string> = {
@@ -370,6 +375,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // Timelapse — record changes for this project (default on, preserves
   // the previous always-on behaviour; legacy projects with no row read on).
   "timelapse.enabled": "true",
+  // Vivliostyle（本の書き出し）
+  "vivliostyle.binaryPath": "",
+  "vivliostyle.theme": "bunko-vertical",
+  "vivliostyle.format": "pdf",
 };
 
 /**
