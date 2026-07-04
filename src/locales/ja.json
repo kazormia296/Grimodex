@@ -498,7 +498,8 @@
     "exportTitle": "エクスポート (Ctrl+Shift+E)",
     "exportLabel": "エクスポート",
     "settingsTitle": "設定 (Ctrl+Alt+,)",
-    "settingsLabel": "設定"
+    "settingsLabel": "設定",
+    "settingsLabelUpdateAvailable": "設定（更新があります）"
   },
   "a11y": {
     "skipToContent": "本文へスキップ",

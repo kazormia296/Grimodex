@@ -32,6 +32,7 @@ import { useModelDownloadListener } from "@/features/semantic-search/useModelDow
 import { UpdateToast } from "@/features/updater/UpdateToast";
 import { useUpdateChecker } from "@/features/updater/useUpdateChecker";
 import { UpdateDot } from "@/features/updater/UpdateDot";
+import { useUpdatePending } from "@/features/updater/updaterStore";
 import { ensureSemanticIndexesOnOpen } from "@/features/semantic-search/autoIndex";
 import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
@@ -280,6 +281,8 @@ function App() {
 
 function EditorScreen() {
   const { t } = useTranslation();
+  // 更新が保留中か (⚙ ボタンの SR ラベル用。UpdateDot も同じ store を読む)。
+  const updatePending = useUpdatePending();
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
@@ -704,7 +707,13 @@ function EditorScreen() {
               <PanelToggleDropdown />
               <button
                 type="button"
-                aria-label={t("app.settingsLabel")}
+                aria-label={
+                  updatePending
+                    ? t("app.settingsLabelUpdateAvailable", {
+                        defaultValue: "設定（更新があります）",
+                      })
+                    : t("app.settingsLabel")
+                }
                 title={t("app.settingsTitle")}
                 onClick={() => {
                   setSettingsInitialCategory("project");
