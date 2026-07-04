@@ -4761,6 +4761,41 @@
       "corkboard": "コルクボード",
       "constellation": "星座"
     },
+    "view": {
+      "board": "ボード",
+      "galaxy": "グラフ",
+      "switchToGalaxy": "グラフビューへ切替",
+      "switchToBoard": "ボードビューへ切替"
+    },
+    "galaxy": {
+      "title": "グラフ",
+      "refresh": "更新",
+      "filters": "フィルタ",
+      "loading": "グラフを構築中…",
+      "empty": "まだノードがありません。書き始めるとグラフが育ちます。",
+      "loadError": "グラフデータの読み込みに失敗しました",
+      "noWebgl": "この環境では 3D 表示を利用できません",
+      "hideOrphans": "孤立ノードを隠す",
+      "nodeSection": "ノード",
+      "edgeSection": "つながり",
+      "nodes": {
+        "scenes": "シーン",
+        "codex": "Codex",
+        "events": "イベント",
+        "threads": "プロットスレッド"
+      },
+      "edges": {
+        "mention": "言及",
+        "relation": "関係",
+        "sequence": "シーン連結",
+        "eventLink": "イベントリンク",
+        "participant": "参加者",
+        "thread": "スレッド"
+      },
+      "openHint": "ダブルクリックで開く",
+      "dimension2d": "2D 表示",
+      "dimension3d": "3D 表示"
+    },
     "arrange": {
       "readingOrder": "Grid: 読み順",
       "forceDirected": "Force-directed"

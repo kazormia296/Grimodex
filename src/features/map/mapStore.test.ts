@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useMapStore } from "./mapStore";
+import { DEFAULT_GALAXY_FILTERS } from "./types";
 
 // Suppress global-settings persistence in unit tests
 vi.mock("@tauri-apps/api/core", () => ({
@@ -31,6 +32,9 @@ describe("useMapStore", () => {
       pendingAutoArrange: null,
       focusedNodeId: null,
       pendingExport: null,
+      viewKind: "board",
+      galaxyFilters: DEFAULT_GALAXY_FILTERS,
+      galaxyDimension: "3d",
     } as Parameters<typeof useMapStore.setState>[0]);
   });
 
@@ -144,6 +148,117 @@ describe("useMapStore", () => {
     expect(s.visualTheme).toBe("corkboard");
     expect(s.activeBoardId).toBe("b1");
     expect(s.colorBy).toBe("none");
+  });
+
+  it("loadFromSettings で viewKind/galaxyFilters を復元できる", () => {
+    const fakeSettings = {
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      uiLanguage: "ja",
+      uiScale: 100,
+      showLauncherOnStartup: false,
+      map: {
+        activeBoardId: null,
+        gridSnap: false,
+        minimapVisible: false,
+        visualTheme: "default" as const,
+        viewKind: "galaxy" as const,
+        galaxyFilters: {
+          ...DEFAULT_GALAXY_FILTERS,
+          hideOrphans: true,
+          edges: { ...DEFAULT_GALAXY_FILTERS.edges, sequence: false },
+        },
+      },
+    };
+
+    useMapStore.getState().loadFromSettings(fakeSettings);
+
+    const s = useMapStore.getState();
+    expect(s.viewKind).toBe("galaxy");
+    expect(s.galaxyFilters.hideOrphans).toBe(true);
+    expect(s.galaxyFilters.edges.sequence).toBe(false);
+    expect(s.galaxyFilters.edges.mention).toBe(true);
+  });
+
+  it("旧設定（galaxy キーなし）はデフォルトへフォールバックする", () => {
+    const fakeSettings = {
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      uiLanguage: "ja",
+      uiScale: 100,
+      showLauncherOnStartup: false,
+      map: {
+        activeBoardId: null,
+        gridSnap: false,
+        minimapVisible: false,
+        visualTheme: "default" as const,
+      },
+    };
+
+    useMapStore.getState().loadFromSettings(fakeSettings);
+
+    const s = useMapStore.getState();
+    expect(s.viewKind).toBe("board");
+    expect(s.galaxyFilters).toEqual(DEFAULT_GALAXY_FILTERS);
+  });
+
+  it("setViewKind でビュー種別を切り替えられる", () => {
+    useMapStore.getState().setViewKind("galaxy");
+    expect(useMapStore.getState().viewKind).toBe("galaxy");
+  });
+
+  it("setGalaxyDimension で 2D/3D を切り替えられる（既定は 3d）", () => {
+    expect(useMapStore.getState().galaxyDimension).toBe("3d");
+    useMapStore.getState().setGalaxyDimension("2d");
+    expect(useMapStore.getState().galaxyDimension).toBe("2d");
+  });
+
+  it("loadFromSettings で galaxyDimension を復元できる（欠損は 3d）", () => {
+    const base = {
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      uiLanguage: "ja",
+      uiScale: 100,
+      showLauncherOnStartup: false,
+    };
+    useMapStore.getState().loadFromSettings({
+      ...base,
+      map: {
+        activeBoardId: null,
+        gridSnap: false,
+        minimapVisible: false,
+        visualTheme: "default" as const,
+        galaxyDimension: "2d" as const,
+      },
+    });
+    expect(useMapStore.getState().galaxyDimension).toBe("2d");
+
+    useMapStore.getState().loadFromSettings({
+      ...base,
+      map: {
+        activeBoardId: null,
+        gridSnap: false,
+        minimapVisible: false,
+        visualTheme: "default" as const,
+      },
+    });
+    expect(useMapStore.getState().galaxyDimension).toBe("3d");
+  });
+
+  it("setGalaxyFilters は nodes/edges を部分マージする", () => {
+    useMapStore.getState().setGalaxyFilters({ nodes: { scenes: false } });
+    let s = useMapStore.getState();
+    expect(s.galaxyFilters.nodes.scenes).toBe(false);
+    expect(s.galaxyFilters.nodes.codex).toBe(true);
+
+    useMapStore.getState().setGalaxyFilters({ hideOrphans: true });
+    s = useMapStore.getState();
+    expect(s.galaxyFilters.hideOrphans).toBe(true);
+    expect(s.galaxyFilters.nodes.scenes).toBe(false);
+    expect(s.galaxyFilters.edges.mention).toBe(true);
   });
 
   it("hydrateFromBoard で mode/viewport/show/colorBy を復元する", () => {

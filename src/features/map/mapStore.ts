@@ -2,13 +2,17 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { GlobalSettings } from "@/features/workspace/store";
 import { parseShowConfig } from "./mapApi";
-import { DEFAULT_SHOW } from "./types";
+import { DEFAULT_SHOW, DEFAULT_GALAXY_FILTERS } from "./types";
 import type {
   MapMode,
   ShowFlags,
   MapPersistentState,
   ColorByAxis,
   VisualTheme,
+  MapViewKind,
+  GalaxyDimension,
+  GalaxyFilters,
+  GalaxyFiltersPatch,
   MapBoardRecord,
 } from "./types";
 
@@ -21,6 +25,9 @@ interface MapState {
   minimapVisible: boolean;
   colorBy: ColorByAxis;
   visualTheme: VisualTheme;
+  viewKind: MapViewKind;
+  galaxyFilters: GalaxyFilters;
+  galaxyDimension: GalaxyDimension;
   // transient UI state (not persisted)
   searchVisible: boolean;
   pendingAutoArrange: AutoArrangeType | null;
@@ -38,6 +45,9 @@ interface MapState {
   setMinimapVisible: (v: boolean) => void;
   setColorBy: (axis: ColorByAxis) => void;
   setVisualTheme: (theme: VisualTheme) => void;
+  setViewKind: (kind: MapViewKind) => void;
+  setGalaxyDimension: (dimension: GalaxyDimension) => void;
+  setGalaxyFilters: (patch: GalaxyFiltersPatch) => void;
   setSearchVisible: (v: boolean) => void;
   setPendingAutoArrange: (type: AutoArrangeType | null) => void;
   setFocusedNode: (id: string | null) => void;
@@ -59,6 +69,9 @@ export const useMapStore = create<MapState>((set) => ({
   minimapVisible: false,
   colorBy: "none",
   visualTheme: "default",
+  viewKind: "board",
+  galaxyFilters: DEFAULT_GALAXY_FILTERS,
+  galaxyDimension: "3d",
   searchVisible: false,
   pendingAutoArrange: null,
   focusedNodeId: null,
@@ -73,6 +86,16 @@ export const useMapStore = create<MapState>((set) => ({
   setMinimapVisible: (v) => set({ minimapVisible: v }),
   setColorBy: (axis) => set({ colorBy: axis }),
   setVisualTheme: (theme) => set({ visualTheme: theme }),
+  setViewKind: (kind) => set({ viewKind: kind }),
+  setGalaxyDimension: (dimension) => set({ galaxyDimension: dimension }),
+  setGalaxyFilters: (patch) =>
+    set((s) => ({
+      galaxyFilters: {
+        nodes: { ...s.galaxyFilters.nodes, ...patch.nodes },
+        edges: { ...s.galaxyFilters.edges, ...patch.edges },
+        hideOrphans: patch.hideOrphans ?? s.galaxyFilters.hideOrphans,
+      },
+    })),
   setSearchVisible: (v) => set({ searchVisible: v }),
   setPendingAutoArrange: (type) => set({ pendingAutoArrange: type }),
   setFocusedNode: (id) => set({ focusedNodeId: id }),
@@ -88,6 +111,24 @@ export const useMapStore = create<MapState>((set) => ({
       gridSnap: saved.gridSnap ?? false,
       minimapVisible: saved.minimapVisible ?? false,
       visualTheme: saved.visualTheme ?? "default",
+      viewKind: saved.viewKind ?? "board",
+      galaxyDimension: saved.galaxyDimension ?? "3d",
+      // 旧設定や部分的な保存値でも欠けたフラグはデフォルトで補完する
+      galaxyFilters: saved.galaxyFilters
+        ? {
+            nodes: {
+              ...DEFAULT_GALAXY_FILTERS.nodes,
+              ...saved.galaxyFilters.nodes,
+            },
+            edges: {
+              ...DEFAULT_GALAXY_FILTERS.edges,
+              ...saved.galaxyFilters.edges,
+            },
+            hideOrphans:
+              saved.galaxyFilters.hideOrphans ??
+              DEFAULT_GALAXY_FILTERS.hideOrphans,
+          }
+        : DEFAULT_GALAXY_FILTERS,
     });
   },
 
@@ -111,6 +152,9 @@ function snapshotPersistent(s: MapState): MapPersistentState {
     gridSnap: s.gridSnap,
     minimapVisible: s.minimapVisible,
     visualTheme: s.visualTheme,
+    viewKind: s.viewKind,
+    galaxyFilters: s.galaxyFilters,
+    galaxyDimension: s.galaxyDimension,
   };
 }
 

@@ -9,6 +9,49 @@ export type NodeRefType =
 export type SceneDisplayVariant = "compact" | "auto";
 export type ColorByAxis = "none" | "status" | "stickyColor";
 export type VisualTheme = "default" | "corkboard" | "constellation";
+export type MapViewKind = "board" | "galaxy";
+export type GalaxyDimension = "2d" | "3d";
+
+export interface GalaxyNodeFlags {
+  scenes: boolean;
+  codex: boolean;
+  events: boolean;
+  threads: boolean;
+}
+
+export interface GalaxyEdgeFlags {
+  mention: boolean;
+  relation: boolean;
+  sequence: boolean;
+  eventLink: boolean;
+  participant: boolean;
+  thread: boolean;
+}
+
+export interface GalaxyFilters {
+  nodes: GalaxyNodeFlags;
+  edges: GalaxyEdgeFlags;
+  hideOrphans: boolean;
+}
+
+export interface GalaxyFiltersPatch {
+  nodes?: Partial<GalaxyNodeFlags>;
+  edges?: Partial<GalaxyEdgeFlags>;
+  hideOrphans?: boolean;
+}
+
+export const DEFAULT_GALAXY_FILTERS: GalaxyFilters = {
+  nodes: { scenes: true, codex: true, events: true, threads: true },
+  edges: {
+    mention: true,
+    relation: true,
+    sequence: true,
+    eventLink: true,
+    participant: true,
+    thread: true,
+  },
+  hideOrphans: false,
+};
 
 export interface MapNodePositionRecord {
   id: string;
@@ -71,6 +114,9 @@ export interface MapPersistentState {
   gridSnap: boolean;
   minimapVisible: boolean;
   visualTheme: VisualTheme;
+  viewKind: MapViewKind;
+  galaxyFilters: GalaxyFilters;
+  galaxyDimension: GalaxyDimension;
 }
 
 // Auto-mode default: compact
