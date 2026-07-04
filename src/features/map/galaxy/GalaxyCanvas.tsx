@@ -94,14 +94,20 @@ export function GalaxyCanvas({ graph, onOpenNode }: GalaxyCanvasProps) {
     return () => ro.disconnect();
   }, []);
 
-  // bloom は一度だけ追加する
+  // bloom は一度だけ追加する。strength/threshold は「淡くにじむ」程度に抑える
+  // （強すぎると高次数ノードが白飛びして色の区別が消える）。
   const bloomAddedRef = useRef(false);
   useEffect(() => {
     if (bloomAddedRef.current) return;
     const composer = fgRef.current?.postProcessingComposer?.();
     if (!composer) return;
     composer.addPass(
-      new UnrealBloomPass(new Vector2(size.width, size.height), 1.1, 0.5, 0.15),
+      new UnrealBloomPass(
+        new Vector2(size.width, size.height),
+        0.42,
+        0.35,
+        0.35,
+      ),
     );
     bloomAddedRef.current = true;
   }, [size.width, size.height]);
