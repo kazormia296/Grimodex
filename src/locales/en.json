@@ -1065,6 +1065,9 @@
     "about": {
       "github": "GitHub",
       "checkForUpdates": "Check for updates",
+      "updateNowVersion": "Update now (v{{version}})",
+      "restartToUpdate": "Restart to update",
+      "downloadingProgress": "Downloading… {{pct}}%",
       "searchPlaceholder": "Search {{count}} libraries…",
       "notFound": "No libraries found matching \"{{query}}\"",
       "full": "Full text",

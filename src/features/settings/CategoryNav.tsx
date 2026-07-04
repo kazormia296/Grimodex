@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { SETTINGS_CATEGORIES, type SettingsCategory } from "./types";
 import { useLicenseStore } from "@/features/license/store";
+import { UpdateDot } from "@/features/updater/UpdateDot";
 
 interface CategoryNavProps {
   active: SettingsCategory;
@@ -29,6 +30,7 @@ export function CategoryNav({ active, onChange }: CategoryNavProps) {
         >
           <Icon className="h-4 w-4 flex-shrink-0" />
           <span>{label}</span>
+          {id === "about" && <UpdateDot className="ml-auto" />}
         </button>
       ))}
     </nav>

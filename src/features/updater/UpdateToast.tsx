@@ -19,7 +19,7 @@ export function UpdateToast() {
   const downloaded = useUpdaterStore((s) => s.downloaded);
   const total = useUpdaterStore((s) => s.total);
   const error = useUpdaterStore((s) => s.error);
-  const reset = useUpdaterStore((s) => s.reset);
+  const dismissToast = useUpdaterStore((s) => s.dismissToast);
 
   // idle / checking は無表示 (自動チェックは静かに走る)。
   if (phase === "idle" || phase === "checking") return null;
@@ -138,7 +138,7 @@ export function UpdateToast() {
             marginTop: 10,
           }}
         >
-          <ToastButton onClick={() => reset()} variant="ghost">
+          <ToastButton onClick={() => dismissToast()} variant="ghost">
             {t("updater.later", { defaultValue: "後で" })}
           </ToastButton>
           <ToastButton

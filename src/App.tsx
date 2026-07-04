@@ -31,6 +31,7 @@ import { ModelDownloadToast } from "@/features/semantic-search/ModelDownloadToas
 import { useModelDownloadListener } from "@/features/semantic-search/useModelDownloadListener";
 import { UpdateToast } from "@/features/updater/UpdateToast";
 import { useUpdateChecker } from "@/features/updater/useUpdateChecker";
+import { UpdateDot } from "@/features/updater/UpdateDot";
 import { ensureSemanticIndexesOnOpen } from "@/features/semantic-search/autoIndex";
 import { useExternalMountListener } from "@/features/external-mount/useExternalMountListener";
 import { ReloadConflictDialog } from "@/features/external-mount/components/ReloadConflictDialog";
@@ -709,12 +710,13 @@ function EditorScreen() {
                   setSettingsInitialCategory("project");
                   setShowSettings(true);
                 }}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="relative flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
                 <Settings className="h-4 w-4 shrink-0" />
                 <span className="hidden whitespace-nowrap text-sm xl:inline">
                   {t("app.settingsLabel")}
                 </span>
+                <UpdateDot className="absolute right-1 top-1" />
               </button>
               {!mac && (
                 <>

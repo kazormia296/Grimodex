@@ -7,7 +7,11 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useLicenseStore } from "@/features/license/store";
 import { errorDetail } from "@/lib/debugLog";
 import { useUpdaterStore } from "@/features/updater/updaterStore";
-import { checkForUpdate } from "@/features/updater/api";
+import {
+  checkForUpdate,
+  startUpdateDownload,
+  restartApp,
+} from "@/features/updater/api";
 
 const GITHUB_URL = "https://github.com/kazormia296/Grimodex";
 
@@ -17,8 +21,12 @@ export function AppInfoHeader() {
   // ライセンス機構の有無 (ライセンス認証設計書 §9.1)。リリースビルドの
   // feature 指定ミスを目視確認できるようにする。
   const licensingEnabled = useLicenseStore((s) => s.licensingEnabled);
-  // 手動更新チェック中はボタンを無効化しアイコンを回す。
-  const checkingUpdate = useUpdaterStore((s) => s.phase === "checking");
+  // 更新ボタンは phase / availableVersion に応じて表示・動作を切り替える
+  // (更新を確認 → 今すぐ更新 → ダウンロード中… → 再起動して更新)。
+  const phase = useUpdaterStore((s) => s.phase);
+  const availableVersion = useUpdaterStore((s) => s.availableVersion);
+  const downloaded = useUpdaterStore((s) => s.downloaded);
+  const total = useUpdaterStore((s) => s.total);
 
   useEffect(() => {
     getVersion()
@@ -52,6 +60,34 @@ export function AppInfoHeader() {
     }
   }
 
+  // 更新ボタンの表示・動作を状態から導出する。
+  const checkingUpdate = phase === "checking";
+  const downloading = phase === "downloading";
+  const ready = phase === "ready";
+  const hasUpdate = availableVersion !== null;
+  const updateBusy = checkingUpdate || downloading;
+  // primary で強調するのは「更新あり」「準備完了」= ユーザーの操作を促したいとき。
+  const updateEmphasis = ready || hasUpdate;
+  const downloadPct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+  const onUpdateClick = () => {
+    if (ready) void restartApp();
+    else if (hasUpdate) void startUpdateDownload();
+    else void handleCheckUpdate();
+  };
+  const updateLabel = ready
+    ? t("settings.about.restartToUpdate", { defaultValue: "再起動して更新" })
+    : downloading
+      ? t("settings.about.downloadingProgress", {
+          defaultValue: "ダウンロード中… {{pct}}%",
+          pct: downloadPct,
+        })
+      : hasUpdate
+        ? t("settings.about.updateNowVersion", {
+            defaultValue: "今すぐ更新 v{{version}}",
+            version: availableVersion,
+          })
+        : t("settings.about.checkForUpdates", { defaultValue: "更新を確認" });
+
   return (
     <div className="flex-shrink-0 border-b border-border px-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
@@ -74,16 +110,18 @@ export function AppInfoHeader() {
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => void handleCheckUpdate()}
-            disabled={checkingUpdate}
-            className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground disabled:opacity-50"
+            onClick={onUpdateClick}
+            disabled={updateBusy}
+            className={
+              updateEmphasis
+                ? "flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                : "flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground disabled:opacity-50"
+            }
           >
             <RefreshCw
-              className={`h-3.5 w-3.5 ${checkingUpdate ? "animate-spin" : ""}`}
+              className={`h-3.5 w-3.5 ${updateBusy ? "animate-spin" : ""}`}
             />
-            {t("settings.about.checkForUpdates", {
-              defaultValue: "更新を確認",
-            })}
+            {updateLabel}
           </button>
           <button
             type="button"
