@@ -4761,6 +4761,39 @@
       "corkboard": "コルクボード",
       "constellation": "星座"
     },
+    "view": {
+      "board": "ボード",
+      "galaxy": "ギャラクシー",
+      "switchToGalaxy": "ギャラクシービューへ切替",
+      "switchToBoard": "ボードビューへ切替"
+    },
+    "galaxy": {
+      "title": "ギャラクシー",
+      "refresh": "更新",
+      "filters": "フィルタ",
+      "loading": "銀河を構築中…",
+      "empty": "まだ星がありません。書き始めると銀河が生まれます。",
+      "loadError": "グラフデータの読み込みに失敗しました",
+      "noWebgl": "この環境では 3D 表示を利用できません",
+      "hideOrphans": "孤立ノードを隠す",
+      "nodeSection": "ノード",
+      "edgeSection": "つながり",
+      "nodes": {
+        "scenes": "シーン",
+        "codex": "Codex",
+        "events": "出来事",
+        "threads": "プロットスレッド"
+      },
+      "edges": {
+        "mention": "言及",
+        "relation": "関係",
+        "sequence": "シーン連結",
+        "eventLink": "出来事リンク",
+        "participant": "参加者",
+        "thread": "スレッド"
+      },
+      "openHint": "ダブルクリックで開く"
+    },
     "arrange": {
       "readingOrder": "Grid: 読み順",
       "forceDirected": "Force-directed"

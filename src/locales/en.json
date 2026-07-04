@@ -4768,6 +4768,39 @@
       "corkboard": "Corkboard",
       "constellation": "Constellation"
     },
+    "view": {
+      "board": "Board",
+      "galaxy": "Galaxy",
+      "switchToGalaxy": "Switch to galaxy view",
+      "switchToBoard": "Switch to board view"
+    },
+    "galaxy": {
+      "title": "Galaxy",
+      "refresh": "Refresh",
+      "filters": "Filters",
+      "loading": "Building the galaxy…",
+      "empty": "No stars yet. Start writing and a galaxy will be born.",
+      "loadError": "Failed to load graph data",
+      "noWebgl": "3D view is not available in this environment",
+      "hideOrphans": "Hide orphan nodes",
+      "nodeSection": "Nodes",
+      "edgeSection": "Links",
+      "nodes": {
+        "scenes": "Scenes",
+        "codex": "Codex",
+        "events": "Events",
+        "threads": "Plot threads"
+      },
+      "edges": {
+        "mention": "Mentions",
+        "relation": "Relations",
+        "sequence": "Scene order",
+        "eventLink": "Event links",
+        "participant": "Participants",
+        "thread": "Threads"
+      },
+      "openHint": "Double-click to open"
+    },
     "arrange": {
       "readingOrder": "Grid: Reading order",
       "forceDirected": "Force-directed"
