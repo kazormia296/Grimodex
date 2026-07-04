@@ -64,12 +64,16 @@ export type EmphasisDotsStyle =
  *  - `aozora-range`   : 青空文庫・範囲指定型。`［＃縦中横］29［＃縦中横終わり］` で挟む。
  *                       対象が長い・外字を含むなど前方参照で曖昧なとき向き。
  *  - `caita`          : caita の `[tatechuyoko]29[/tatechuyoko]` 記法。
+ *  - `html-span`      : `<span class="tcy">29</span>`。CSS 組版
+ *                       （`text-combine-upright: all`）向け。Vivliostyle 連携の
+ *                       HTML 出力が使う。投稿サイトプリセットでは使用しない。
  */
 export type TateChuYokoExportStyle =
   | "none"
   | "aozora-forward"
   | "aozora-range"
-  | "caita";
+  | "caita"
+  | "html-span";
 
 /** なろう傍点モード（UI トグル用、emphasisDotsStyle と連動） */
 export type NarouEmphasisMode = "batch" | "per-char";

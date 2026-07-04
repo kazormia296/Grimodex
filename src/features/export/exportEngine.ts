@@ -177,6 +177,12 @@ interface RenderCtx {
   settings: ExportSettings;
   resolvedRuby: RubyStyle;
   resolvedEmphasis: EmphasisDotsStyle;
+  /**
+   * html format 限定: 段落を実 `<p>` 要素で包み、hardBreak を `<br>` にする
+   * （CSS 組版向け。Vivliostyle 連携が使う）。false（既定）は従来どおり
+   * 素のテキスト行 — publish 出力（word-html/ao3 プリセット）の凍結挙動。
+   */
+  htmlParagraphs: boolean;
   /** Optional `@mention` → display-name resolver. See {@link MentionNameResolver}. */
   resolveMentionName?: MentionNameResolver;
   /**
@@ -237,7 +243,15 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       // exports.
       if (inner === "") {
         if (ctx.settings.format === "markdown") return "<p></p>\n";
+        if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
+          // 意図的な空行（連続空行由来の空段落）。CSS 組版では whitespace-only
+          // 行は潰れるため、blank class 付き要素として高さを保持させる。
+          return '<p class="blank"></p>\n';
+        }
         return "\n";
+      }
+      if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
+        return `<p>${inner}</p>\n`;
       }
       return inner + "\n";
     }
@@ -276,6 +290,10 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       //  - `breaks: false` (CommonMark strict, opt-in): bare `\n` collapses to
       //    a soft break (space) on re-parse, permanently losing the node. Emit
       //    the spec hardBreak marker (`  \n`) so it round-trips.
+      if (ctx.settings.format === "html" && ctx.htmlParagraphs) {
+        // <p> 内の生 \n は whitespace として潰れるため実 <br> で出す。
+        return "<br>";
+      }
       return ctx.strictLineBreaks ? "  \n" : "\n";
 
     case "ruby":
@@ -572,6 +590,10 @@ function wrapTateChuYoko(run: string, style: TateChuYokoExportStyle): string {
       return `［＃縦中横］${run}［＃縦中横終わり］`;
     case "caita":
       return `[tatechuyoko]${run}[/tatechuyoko]`;
+    case "html-span":
+      // CSS 組版向け（.tcy { text-combine-upright: all }）。run は数字・記号・
+      // ローマ数字のみ（TATE_CHU_YOKO_RUN）なので HTML エスケープ不要。
+      return `<span class="tcy">${run}</span>`;
     case "none":
       return run;
     default: {
@@ -675,6 +697,7 @@ export function renderPmDocToArchiveMarkdown(
     },
     resolvedRuby: rubyStyle,
     resolvedEmphasis: emphasisDotsStyle,
+    htmlParagraphs: false,
     strictLineBreaks: options.strictLineBreaks ?? false,
     tateChuYokoPolicy: "2",
     resolveMentionName: options.resolveMentionName,
@@ -790,6 +813,14 @@ export interface GenerateExportInput {
   tateChuYokoPolicy?: TateChuYokoPolicy;
   /** Optional `@mention` → display-name resolver. See {@link MentionNameResolver}. */
   resolveMentionName?: MentionNameResolver;
+  /**
+   * html format 限定: 文書シェル（doctype/head/body）を差し替える。
+   * 未指定なら従来の `wrapHtml`（インライン style）— publish 出力の凍結挙動。
+   * Vivliostyle 連携は theme.css への `<link>` を持つ自前シェルを渡す。
+   */
+  htmlWrapper?: (body: string, title: string, lang: string) => string;
+  /** html format 限定: 段落を実 `<p>` で包む。{@link RenderCtx.htmlParagraphs} 参照。 */
+  htmlParagraphs?: boolean;
 }
 
 /**
@@ -806,6 +837,8 @@ export function generateExport(input: GenerateExportInput): string {
     projectLanguage = "ja",
     tateChuYokoPolicy = "2",
     resolveMentionName,
+    htmlWrapper,
+    htmlParagraphs = false,
   } = input;
 
   const resolvedRuby: RubyStyle =
@@ -822,6 +855,7 @@ export function generateExport(input: GenerateExportInput): string {
     settings,
     resolvedRuby,
     resolvedEmphasis,
+    htmlParagraphs,
     strictLineBreaks: false,
     tateChuYokoPolicy,
     resolveMentionName,
@@ -922,7 +956,7 @@ export function generateExport(input: GenerateExportInput): string {
   }
 
   if (settings.format === "html") {
-    return wrapHtml(result, projectTitle, projectLanguage);
+    return (htmlWrapper ?? wrapHtml)(result, projectTitle, projectLanguage);
   }
 
   return result;
