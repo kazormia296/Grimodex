@@ -271,7 +271,15 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
     }
 
     case "text": {
-      const raw = node.text ?? "";
+      // html format は本文を必ずエスケープする。従来の publish 用途（Word 貼付・
+      // AO3）でも `<` を含む本文が構造を壊すのは誤りであり、Vivliostyle 連携では
+      // 生成 HTML がヘッドレス Chromium で実行されるため、未エスケープの
+      // <script> 焼き込みは原稿流出・ローカルファイル読取につながる（敵対
+      // レビュー Critical）。エスケープは縦中横 wrap（<span> を差し込む）より
+      // 前に行う — run は数字・記号のみでエスケープの影響を受けない。
+      const rawText = node.text ?? "";
+      const raw =
+        ctx.settings.format === "html" ? escapeHtml(rawText) : rawText;
       const marks = node.marks ?? [];
       // 傍点(emphasisDots)が乗った run には縦中横記法を付けない。傍点も縦中横も
       // ［＃…］系の注記/囲みを出すため、両方適用すると注記がネストして青空文庫
@@ -296,12 +304,19 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       }
       return ctx.strictLineBreaks ? "  \n" : "\n";
 
-    case "ruby":
-      return renderRuby(
-        (node.attrs?.base as string) ?? "",
-        (node.attrs?.annotation as string) ?? "",
-        ctx.resolvedRuby,
-      );
+    case "ruby": {
+      // html format はルビの base/annotation もエスケープ（text と同じ理由）。
+      const base = (node.attrs?.base as string) ?? "";
+      const annotation = (node.attrs?.annotation as string) ?? "";
+      if (ctx.settings.format === "html") {
+        return renderRuby(
+          escapeHtml(base),
+          escapeHtml(annotation),
+          ctx.resolvedRuby,
+        );
+      }
+      return renderRuby(base, annotation, ctx.resolvedRuby);
+    }
 
     case "mention": {
       // `@mention` is an inline atom: the display name lives in attrs (`label`),
@@ -315,9 +330,11 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       const id = (node.attrs?.id as string) ?? "";
       const label = (node.attrs?.label as string | undefined) ?? "";
       const fallback = label || id;
-      return ctx.resolveMentionName
+      const name = ctx.resolveMentionName
         ? ctx.resolveMentionName(id, fallback)
         : fallback;
+      // html format はメンション名もエスケープ（text と同じ理由）。
+      return ctx.settings.format === "html" ? escapeHtml(name) : name;
     }
 
     case "sceneBeat":

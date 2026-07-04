@@ -39,6 +39,11 @@ const SLOW_COMMANDS = new Set([
    *  保存先を選ぶまで分単位かかりうるので 10s では reject されてしまう。 */
   "export_save_text",
   "export_save_bytes",
+  /** detect はログインシェル起動を伴う PATH 解決で 10s を超えうる。save は
+   *  export_save_* と同じく保存ダイアログで invoke がブロックする。
+   *  (vivliostyle_build は即 runId を返す fire-and-forget なので不要) */
+  "vivliostyle_detect",
+  "vivliostyle_save_output",
   /** M3 で async 化した長時間 DB コマンド群。JS 側 10s タイムアウトだと
    *  「Rust 側は実行継続しているのに失敗扱い → 再クリックで多重実行」になる。
    *  FTS 全再構築/修復は分単位、open/seed は migrate + VACUUM INTO を含み、

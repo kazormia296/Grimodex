@@ -85,6 +85,15 @@ function buildCommands(): CommandDef[] {
       run: () => window.dispatchEvent(new CustomEvent("open-export-dialog")),
     },
     {
+      id: "open-vivliostyle",
+      label: i18next.t("commandCenter.command.vivliostyle", {
+        defaultValue: "本の書き出し（Vivliostyle）",
+      }),
+      keywords: "vivliostyle book pdf epub print 組版",
+      run: () =>
+        window.dispatchEvent(new CustomEvent("open-vivliostyle-dialog")),
+    },
+    {
       id: "restart-sample-tour",
       label: i18next.t("commandCenter.command.restartTour", {
         defaultValue: "ツアー再開",

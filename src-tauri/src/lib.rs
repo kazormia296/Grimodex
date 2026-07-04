@@ -188,6 +188,12 @@ pub fn run() {
             app.manage(ExternalMountWatchState::new());
             app.manage(ExternalMountState::new());
 
+            // Vivliostyle CLI ビルドの run / 成果物レジストリ
+            app.manage(commands::vivliostyle::VivliostyleState::default());
+            // 前回セッションで save されずに残った Vivliostyle temp 成果物を
+            // 一括掃除する。起動を止めないよう spawn_blocking。
+            tauri::async_runtime::spawn_blocking(commands::vivliostyle::cleanup_temp_root);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -205,6 +211,10 @@ pub fn run() {
             commands::license::deactivate_license,
             commands::export::export_save_text,
             commands::export::export_save_bytes,
+            commands::vivliostyle::vivliostyle_detect,
+            commands::vivliostyle::vivliostyle_build,
+            commands::vivliostyle::vivliostyle_abort_build,
+            commands::vivliostyle::vivliostyle_save_output,
             commands::fonts::list_system_fonts,
             commands::db::db_execute,
             commands::db::db_execute_batch,
