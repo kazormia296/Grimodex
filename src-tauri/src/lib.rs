@@ -215,6 +215,8 @@ pub fn run() {
             commands::vivliostyle::vivliostyle_build,
             commands::vivliostyle::vivliostyle_abort_build,
             commands::vivliostyle::vivliostyle_save_output,
+            commands::vivliostyle::vivliostyle_preview_start,
+            commands::vivliostyle::vivliostyle_preview_stop,
             commands::fonts::list_system_fonts,
             commands::db::db_execute,
             commands::db::db_execute_batch,
@@ -358,6 +360,20 @@ pub fn run() {
             commands::external_mount::external_mount_list,
             commands::external_mount::external_mount_scan,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| match event {
+            // アプリ終了時に Vivliostyle の実行中 build とプレビューを
+            // プロセスグループごと kill する (孫の Chromium 残留防止 +
+            // 終了後も temp に書き続ける build の遮断)。updater の relaunch
+            // (tauri_plugin_process → AppHandle::restart) も Tauri v2 では
+            // ExitRequested → Exit の順で event loop を通るためここで漏れない。
+            // このアプリに prevent_exit する箇所は無いので ExitRequested 時点で
+            // 殺してよい (kill_all は冪等なので Exit との二重呼びも無害)。
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                let state = app_handle.state::<commands::vivliostyle::VivliostyleState>();
+                commands::vivliostyle::kill_all(&state);
+            }
+            _ => {}
+        });
 }

@@ -3992,6 +3992,13 @@
       "saved": "Saved: {{path}}",
       "saveFailed": "Failed to save: {{error}}",
       "failed": "Export failed"
+    },
+    "preview": {
+      "start": "Preview",
+      "stop": "Stop preview",
+      "running": "Preview running",
+      "note": "Opens the typeset result in a separate browser window. The preview stays open even if you close this dialog.",
+      "failed": "Failed to start preview: {{error}}"
     }
   },
   "export": {

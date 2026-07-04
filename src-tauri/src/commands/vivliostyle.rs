@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -57,6 +57,32 @@ pub(crate) struct VivliostyleState {
     runs: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// output_token → save 待ち成果物
     outputs: Mutex<HashMap<String, OutputArtifact>>,
+    /// 実行中プレビュープロセス (singleton)。多重起動時は旧を kill して置換。
+    preview: Mutex<Option<PreviewProcess>>,
+    /// プレビューの世代カウンタ。「stop/再起動で自分が kill した終了」と
+    /// 「ユーザーがプレビューを閉じた自然終了」の race を区別する
+    /// (詳細は `vivliostyle_preview_start` の doc コメント)。
+    preview_generation: AtomicU64,
+    /// stop 到来カウンタ。`kill_preview` (stop / アプリ終了) が bump する。
+    /// preview_start は自分の起動前後で epoch が進んでいたら「起動中に stop が
+    /// 来た」とみなし自分を kill する — バイナリ解決 await 中の stop は
+    /// take_preview で拾えない (エントリ未 store) ための補完。
+    preview_stop_epoch: AtomicU64,
+    /// run_id → 実行中 build プロセスの pid。アプリ終了時の一括 kill 用
+    /// (abort フラグ経由の kill はタスクのポーリング待ちになり、終了時は
+    /// ランタイムごと落ちて間に合わないため pid を直接引ける必要がある)。
+    run_pids: Mutex<HashMap<String, u32>>,
+}
+
+/// 実行中プレビューの管理エントリ。child 本体は wait タスクが所有し、
+/// kill は pid ベースでプロセスグループごと行う。
+pub(crate) struct PreviewProcess {
+    /// 起動ごとに単調増加する世代 ID
+    generation: u64,
+    /// spawn 直後の pid (取得失敗時 None — kill は no-op になる)
+    pid: Option<u32>,
+    /// book.html / theme.css を書き出した temp dir
+    dir: PathBuf,
 }
 
 /// save 待ちの成果物。`dir` ごと temp に残っており、save 完了 or
@@ -80,6 +106,39 @@ impl VivliostyleState {
         if let Ok(mut runs) = self.runs.lock() {
             runs.remove(run_id);
         }
+        if let Ok(mut pids) = self.run_pids.lock() {
+            pids.remove(run_id);
+        }
+    }
+
+    /// 実行中 build の pid を登録する (spawn 直後、アプリ終了時 kill 用)。
+    fn register_run_pid(&self, run_id: &str, pid: u32) {
+        if let Ok(mut pids) = self.run_pids.lock() {
+            pids.insert(run_id.to_string(), pid);
+        }
+    }
+
+    /// 全 run の abort フラグを立て、登録済み pid を drain して返す
+    /// (アプリ終了時の一括 kill 用。drain するので二重 kill しない)。
+    fn abort_all_runs_and_drain_pids(&self) -> Vec<u32> {
+        if let Ok(runs) = self.runs.lock() {
+            for flag in runs.values() {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
+        match self.run_pids.lock() {
+            Ok(mut pids) => pids.drain().map(|(_, pid)| pid).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// 現在の stop epoch (SeqCst — stop と in-flight start 間の可視性保証)。
+    fn preview_stop_epoch(&self) -> u64 {
+        self.preview_stop_epoch.load(Ordering::SeqCst)
+    }
+
+    fn bump_preview_stop_epoch(&self) {
+        self.preview_stop_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// abort フラグを立てる。run_id が未知 (終了済み等) なら false。
@@ -117,6 +176,35 @@ impl VivliostyleState {
         match self.outputs.lock() {
             Ok(mut outputs) => outputs.drain().map(|(_, a)| a).collect(),
             Err(_) => Vec::new(),
+        }
+    }
+
+    /// 次のプレビュー世代 ID を払い出す (単調増加)。
+    fn next_preview_generation(&self) -> u64 {
+        self.preview_generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// 新プレビューを登録し、置き換えられた旧エントリ (あれば) を返す。
+    /// 呼び出し側は返ってきた旧エントリの kill / temp 掃除に責任を持つ。
+    fn store_preview(&self, p: PreviewProcess) -> Option<PreviewProcess> {
+        match self.preview.lock() {
+            Ok(mut guard) => guard.replace(p),
+            Err(_) => None,
+        }
+    }
+
+    /// プレビューエントリを無条件に引き抜く (stop / 再起動 / アプリ終了用)。
+    fn take_preview(&self) -> Option<PreviewProcess> {
+        self.preview.lock().ok()?.take()
+    }
+
+    /// 世代が一致する場合のみエントリを引き抜く (自然終了ハンドラ用)。
+    /// 不一致 = stop/再起動側が既に kill + 掃除済みなので None。
+    fn take_preview_if_generation(&self, generation: u64) -> Option<PreviewProcess> {
+        let mut guard = self.preview.lock().ok()?;
+        match guard.as_ref() {
+            Some(p) if p.generation == generation => guard.take(),
+            _ => None,
         }
     }
 }
@@ -161,6 +249,11 @@ struct VivliostyleErrorEvent {
     message: String,
 }
 
+/// `vivliostyle:preview-exited` の payload。中身は無いが、`{}` を emit する
+/// 固定契約 (camelCase 規約の他イベントと同型) を明示するため空 struct にする。
+#[derive(Clone, Serialize)]
+struct VivliostylePreviewExitedEvent {}
+
 fn emit_log(app: &AppHandle, run_id: &str, line: String) {
     let _ = app.emit(
         "vivliostyle:log",
@@ -197,10 +290,35 @@ fn build_vivliostyle_args(format: &str, input: &str, output: &str) -> Vec<String
     ]
 }
 
+/// `vivliostyle preview book.html` の引数列。
+fn preview_vivliostyle_args(input: &str) -> Vec<String> {
+    vec!["preview".to_string(), input.to_string()]
+}
+
 /// files の name がホワイトリストに載っているか。完全一致のみ許可するので
 /// `../x` や絶対パス、サブディレクトリ付きの名前は自動的に拒否される。
 fn is_allowed_file_name(name: &str) -> bool {
     ALLOWED_FILE_NAMES.contains(&name)
+}
+
+/// build / preview 共通の入力検証。空・ホワイトリスト外・book.html 欠落を拒否。
+fn validate_input_files(files: &[VivliostyleFile]) -> anyhow::Result<()> {
+    if files.is_empty() {
+        anyhow::bail!("ビルド対象ファイルがありません");
+    }
+    for f in files {
+        if !is_allowed_file_name(&f.name) {
+            anyhow::bail!(
+                "許可されていないファイル名です: {} ({} のみ)",
+                f.name,
+                ALLOWED_FILE_NAMES.join(" / ")
+            );
+        }
+    }
+    if !files.iter().any(|f| f.name == INPUT_FILE_NAME) {
+        anyhow::bail!("{INPUT_FILE_NAME} が含まれていません");
+    }
+    Ok(())
 }
 
 /// format ("pdf" | "epub") に対応する成果物ファイル名。未知 format は None。
@@ -221,6 +339,80 @@ fn temp_root() -> PathBuf {
 /// 前回セッションで save されずに残った成果物 temp dir を削除する。
 pub(crate) fn cleanup_temp_root() {
     let _ = std::fs::remove_dir_all(temp_root());
+}
+
+/// temp dir を新規作成して files を書き出す (build / preview 共通)。
+/// name は `validate_input_files` 検証済みが前提 (join が temp dir 内に閉じる)。
+fn write_input_dir(files: &[VivliostyleFile]) -> anyhow::Result<PathBuf> {
+    let dir = temp_root().join(Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow::anyhow!("temp dir の作成に失敗しました {}: {e}", dir.display()))?;
+    for f in files {
+        if let Err(e) = std::fs::write(dir.join(&f.name), &f.contents) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(anyhow::anyhow!("{} の書き出しに失敗しました: {e}", f.name));
+        }
+    }
+    Ok(dir)
+}
+
+/// バイナリ解決: ユーザー指定 > PATH 検出 (build / preview 共通)。
+async fn resolve_vivliostyle_binary(binary_path: Option<String>) -> anyhow::Result<String> {
+    match binary_path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => Ok(p),
+        None => detect_binary_named(VIVLIOSTYLE_BIN_NAME)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "vivliostyle CLI が見つかりません。`npm install -g @vivliostyle/cli` \
+                 でインストールするか、設定でパスを指定してください"
+                )
+            }),
+    }
+}
+
+/// spawn 直前の Command 構築 (build / preview 共通)。
+/// stdin null / stdout+stderr piped / Windows は NO_WINDOW / Unix は setsid で
+/// 新プロセスグループを切り、kill 時に孫 (Chromium) まで纏めて殺せるようにする。
+fn vivliostyle_command(bin: &str, args: &[String], dir: &Path) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(unix)]
+    {
+        // Safety: pre_exec は spawn 後 fork した子で同期実行される。
+        // setsid() は signal-safe で副作用なし。
+        unsafe {
+            cmd.pre_exec(|| {
+                let _ = libc::setsid();
+                Ok(())
+            });
+        }
+    }
+    cmd
+}
+
+/// パイプ詰まり防止の読み捨てタスク (debug ログに relay)。
+fn spawn_pipe_drain<R>(reader: R, label: &'static str)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if !line.is_empty() {
+                tracing::debug!("[vivliostyle {label}] {line}");
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -262,22 +454,7 @@ pub(crate) async fn vivliostyle_build(
 ) -> AppResult<String> {
     let output_name = output_file_name(&format)
         .ok_or_else(|| anyhow::anyhow!("未対応の出力形式です: {format} (pdf | epub のみ)"))?;
-    if files.is_empty() {
-        return Err(anyhow::anyhow!("ビルド対象ファイルがありません").into());
-    }
-    for f in &files {
-        if !is_allowed_file_name(&f.name) {
-            return Err(anyhow::anyhow!(
-                "許可されていないファイル名です: {} ({} のみ)",
-                f.name,
-                ALLOWED_FILE_NAMES.join(" / ")
-            )
-            .into());
-        }
-    }
-    if !files.iter().any(|f| f.name == INPUT_FILE_NAME) {
-        return Err(anyhow::anyhow!("{INPUT_FILE_NAME} が含まれていません").into());
-    }
+    validate_input_files(&files)?;
 
     // 新 build 開始時に、save されなかった旧成果物の temp dir を掃除する。
     // (実行中 build の temp dir は outputs 未登録なので影響しない)
@@ -285,14 +462,7 @@ pub(crate) async fn vivliostyle_build(
         let _ = std::fs::remove_dir_all(&artifact.dir);
     }
 
-    let dir = temp_root().join(Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| anyhow::anyhow!("temp dir の作成に失敗しました {}: {e}", dir.display()))?;
-    for f in &files {
-        // name はホワイトリスト検証済みなので join は temp dir 内に閉じる
-        std::fs::write(dir.join(&f.name), &f.contents)
-            .map_err(|e| anyhow::anyhow!("{} の書き出しに失敗しました: {e}", f.name))?;
-    }
+    let dir = write_input_dir(&files)?;
 
     let run_id = Uuid::new_v4().to_string();
     let abort = Arc::new(AtomicBool::new(false));
@@ -364,6 +534,155 @@ pub(crate) fn vivliostyle_save_output(
 }
 
 // ---------------------------------------------------------------------------
+// プレビュー
+// ---------------------------------------------------------------------------
+
+/// プレビューを開始する。build と同じ入力ファイル群を temp dir に書き出して
+/// `vivliostyle preview book.html` を spawn する (CLI がブラウザを開く)。
+/// 多重起動時は旧プレビューをプロセスグループごと kill + temp 掃除してから
+/// 新規起動する。
+///
+/// ## 世代 ID による race 対策
+/// 「stop / 再起動で自分が kill した終了」と「ユーザーがプレビューウィンドウ
+/// を閉じた自然終了」を区別するため、エントリに単調増加の generation を持たせる:
+/// - kill する側 (stop / 再起動 / アプリ終了) は `take_preview()` でエントリを
+///   **先に**引き抜いてから kill + temp 掃除する
+/// - 自然終了側 (wait タスク) は `take_preview_if_generation(自分の世代)` が
+///   Some を返した場合のみ「現役プレビューの自然終了」とみなし、temp 掃除 +
+///   `vivliostyle:preview-exited` を emit する
+///
+/// これで kill 済み旧プロセスの wait 完了が新プレビューの state を壊したり、
+/// stop 時に余分な exited イベントを飛ばしたりしない。
+#[tauri::command]
+pub(crate) async fn vivliostyle_preview_start(
+    app_handle: AppHandle,
+    state: State<'_, VivliostyleState>,
+    files: Vec<VivliostyleFile>,
+    binary_path: Option<String>,
+) -> AppResult<()> {
+    validate_input_files(&files)?;
+
+    // stop epoch を控える。以降の await 中に stop が来たら store 後に検知して
+    // 自分を kill する (Important-1: 「stop → in-flight start」race 対策)。
+    let stop_epoch = state.preview_stop_epoch();
+
+    // 旧プレビューが居れば kill + temp 掃除。エントリを先に引き抜くので、
+    // 旧 wait タスク側は generation 不一致 (エントリ無し) となり二重掃除しない。
+    if let Some(prev) = state.take_preview() {
+        kill_process_group(prev.pid, libc_sigkill());
+        let _ = std::fs::remove_dir_all(&prev.dir);
+    }
+
+    // build と違い即 return する必要がない (進捗イベントを待つ相手がいない)
+    // ので、バイナリ解決の失敗はこの場で invoke エラーとして返す。
+    let bin = resolve_vivliostyle_binary(binary_path).await?;
+    let dir = write_input_dir(&files)?;
+
+    let args = preview_vivliostyle_args(INPUT_FILE_NAME);
+    let mut child = match vivliostyle_command(&bin, &args, &dir).spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(
+                anyhow::anyhow!("vivliostyle preview の起動に失敗しました ({bin}): {e}").into(),
+            );
+        }
+    };
+    let pid = child.id();
+
+    // stdout / stderr はパイプ詰まり防止のため読み捨てる (debug ログに relay)。
+    if let Some(stdout) = child.stdout.take() {
+        spawn_pipe_drain(stdout, "preview stdout");
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_pipe_drain(stderr, "preview stderr");
+    }
+
+    let generation = state.next_preview_generation();
+    if let Some(evicted) = state.store_preview(PreviewProcess {
+        generation,
+        pid,
+        dir: dir.clone(),
+    }) {
+        // 同時 start の race で別 start に割り込まれた場合のみ通る
+        // (通常は冒頭の take_preview で空になっている)。
+        kill_process_group(evicted.pid, libc_sigkill());
+        let _ = std::fs::remove_dir_all(&evicted.dir);
+    }
+
+    // 終了検知タスク。自然終了のときだけ state 掃除 + exited イベント。
+    // kill された場合も child.wait() は返るので、ここが zombie reap を兼ねる。
+    // (下の stop-epoch 自殺 kill より先に張る — 早期 return で child を drop
+    //  すると reap されず zombie になるため)
+    let app_for_wait = app_handle.clone();
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+        let state = app_for_wait.state::<VivliostyleState>();
+        if let Some(p) = state.take_preview_if_generation(generation) {
+            let _ = std::fs::remove_dir_all(&p.dir);
+            let _ = app_for_wait.emit(
+                "vivliostyle:preview-exited",
+                VivliostylePreviewExitedEvent {},
+            );
+        }
+        // 不一致/エントリ無し = stop / 再起動 / アプリ終了側が掃除済み。reap のみ。
+    });
+
+    // 起動中 (バイナリ解決〜spawn の await 中) に stop が来ていたら、その
+    // stop はエントリ未 store のため素通りしている (Important-1)。ここで検知
+    // して自分を kill し、FE には exited を流して idle に戻す。エントリの
+    // 引き抜きは wait タスクと take セマンティクスで排他なので emit は高々1回。
+    if state.preview_stop_epoch() != stop_epoch {
+        if let Some(p) = state.take_preview_if_generation(generation) {
+            kill_process_group(p.pid, libc_sigkill());
+            let _ = std::fs::remove_dir_all(&p.dir);
+            let _ = app_handle.emit(
+                "vivliostyle:preview-exited",
+                VivliostylePreviewExitedEvent {},
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// 実行中プレビューを停止する。未実行なら no-op。
+#[tauri::command]
+pub(crate) fn vivliostyle_preview_stop(state: State<'_, VivliostyleState>) -> AppResult<()> {
+    kill_preview(&state);
+    Ok(())
+}
+
+/// プレビュープロセスをプロセスグループごと kill して temp を掃除する。冪等。
+/// stop コマンドとアプリ終了 (lib.rs の RunEvent ハンドラ) の双方から呼ぶ。
+///
+/// SIGKILL 即殺の理由: プレビューは表示専用で graceful shutdown の必要がなく、
+/// 孫の Chromium まで確実に道連れにする方を優先する (Windows は
+/// taskkill /T /F 相当なのでもともと強制)。temp 削除はプロセス残存中の
+/// ファイルロック (特に Windows) で失敗し得るが、次回起動時の
+/// `cleanup_temp_root` が回収するので無視してよい。
+pub(crate) fn kill_preview(state: &VivliostyleState) {
+    // 先に epoch を bump — バイナリ解決 await 中でエントリ未 store の
+    // in-flight start にも「stop が来た」ことを伝える (Important-1 対策)。
+    state.bump_preview_stop_epoch();
+    if let Some(p) = state.take_preview() {
+        kill_process_group(p.pid, libc_sigkill());
+        let _ = std::fs::remove_dir_all(&p.dir);
+    }
+}
+
+/// アプリ終了時の一括 kill: 実行中 build のプロセスグループ + プレビュー。
+/// abort フラグ経由では build タスクのポーリング (300ms) を待つことになり、
+/// 終了時は tokio ランタイムごと落ちて間に合わないため pid を直接 kill する。
+/// temp dir は次回起動時の `cleanup_temp_root` が回収する。冪等。
+pub(crate) fn kill_all(state: &VivliostyleState) {
+    for pid in state.abort_all_runs_and_drain_pids() {
+        kill_process_group(Some(pid), libc_sigkill());
+    }
+    kill_preview(state);
+}
+
+// ---------------------------------------------------------------------------
 // ビルドタスク本体
 // ---------------------------------------------------------------------------
 
@@ -429,50 +748,21 @@ async fn run_build_inner(
     binary_path: Option<String>,
     abort: &Arc<AtomicBool>,
 ) -> anyhow::Result<Option<PathBuf>> {
-    // バイナリ解決: ユーザー指定 > PATH 検出。detect はログインシェル起動を
-    // 伴い遅いことがあるため、即 return 後のこのタスク内で行う。
-    let bin = match binary_path.filter(|p| !p.trim().is_empty()) {
-        Some(p) => p,
-        None => detect_binary_named(VIVLIOSTYLE_BIN_NAME)
-            .await
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "vivliostyle CLI が見つかりません。`npm install -g @vivliostyle/cli` \
-                 でインストールするか、設定でパスを指定してください"
-                )
-            })?,
-    };
+    // バイナリ解決は detect がログインシェル起動を伴い遅いことがあるため、
+    // 即 return 後のこのタスク内で行う。
+    let bin = resolve_vivliostyle_binary(binary_path).await?;
 
     let args = build_vivliostyle_args(format, INPUT_FILE_NAME, output_name);
-    let mut cmd = tokio::process::Command::new(&bin);
-    cmd.args(&args)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    // 子プロセスの孫プロセス対策 (cli_provider::build_command と同じ流儀):
-    // Unix では新しいプロセスグループを切って abort 時に -pgid で纏めて殺す。
-    #[cfg(unix)]
-    {
-        // Safety: pre_exec は spawn 後 fork した子で同期実行される。
-        // setsid() は signal-safe で副作用なし。
-        unsafe {
-            cmd.pre_exec(|| {
-                let _ = libc::setsid();
-                Ok(())
-            });
-        }
-    }
-
-    let mut child = cmd
+    let mut child = vivliostyle_command(&bin, &args, dir)
         .spawn()
         .map_err(|e| anyhow::anyhow!("vivliostyle の起動に失敗しました ({bin}): {e}"))?;
     let pid = child.id();
+    // アプリ終了時の一括 kill (kill_all) 用に pid を登録する。
+    // 対応する削除は run_build_task 側の remove_run (pid も落とす)。
+    if let Some(pid) = pid {
+        app.state::<VivliostyleState>()
+            .register_run_pid(run_id, pid);
+    }
 
     // stderr は別タスクで読む (読まないとパイプ詰まりで子がブロックする)。
     // vivliostyle は進捗をほぼ stderr に出すのでログとして relay する。
@@ -570,6 +860,166 @@ mod build_vivliostyle_args_tests {
             build_vivliostyle_args("epub", "book.html", "output.epub"),
             vec!["build", "book.html", "-f", "epub", "-o", "output.epub"]
         );
+    }
+}
+
+#[cfg(test)]
+mod preview_vivliostyle_args_tests {
+    use super::preview_vivliostyle_args;
+
+    #[test]
+    fn preview_args_in_order() {
+        assert_eq!(
+            preview_vivliostyle_args("book.html"),
+            vec!["preview", "book.html"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod validate_input_files_tests {
+    use super::{validate_input_files, VivliostyleFile};
+
+    fn file(name: &str) -> VivliostyleFile {
+        VivliostyleFile {
+            name: name.to_string(),
+            contents: String::new(),
+        }
+    }
+
+    #[test]
+    fn accepts_html_and_css() {
+        assert!(validate_input_files(&[file("book.html"), file("theme.css")]).is_ok());
+        assert!(validate_input_files(&[file("book.html")]).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_files() {
+        assert!(validate_input_files(&[]).is_err());
+    }
+
+    #[test]
+    fn rejects_unlisted_names() {
+        assert!(validate_input_files(&[file("book.html"), file("../x")]).is_err());
+        assert!(validate_input_files(&[file("book.html"), file("evil.js")]).is_err());
+    }
+
+    #[test]
+    fn rejects_missing_entrypoint() {
+        assert!(validate_input_files(&[file("theme.css")]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod preview_state_tests {
+    use super::{PreviewProcess, VivliostyleState};
+    use std::path::PathBuf;
+
+    fn process(generation: u64) -> PreviewProcess {
+        PreviewProcess {
+            generation,
+            pid: Some(1000 + generation as u32),
+            dir: PathBuf::from(format!("/tmp/viv-preview/{generation}")),
+        }
+    }
+
+    #[test]
+    fn generation_is_monotonic() {
+        let state = VivliostyleState::default();
+        let g1 = state.next_preview_generation();
+        let g2 = state.next_preview_generation();
+        assert!(g2 > g1);
+    }
+
+    #[test]
+    fn store_preview_returns_evicted_entry() {
+        let state = VivliostyleState::default();
+        assert!(state.store_preview(process(1)).is_none());
+        let evicted = state.store_preview(process(2));
+        assert_eq!(evicted.map(|p| p.generation), Some(1));
+    }
+
+    #[test]
+    fn take_preview_consumes_entry() {
+        let state = VivliostyleState::default();
+        state.store_preview(process(1));
+        assert_eq!(state.take_preview().map(|p| p.generation), Some(1));
+        assert!(state.take_preview().is_none());
+    }
+
+    #[test]
+    fn take_preview_if_generation_only_matches_current() {
+        let state = VivliostyleState::default();
+        state.store_preview(process(2));
+        // 旧世代 (kill 済み) の wait タスクは引き抜けない
+        assert!(state.take_preview_if_generation(1).is_none());
+        assert_eq!(
+            state.take_preview_if_generation(2).map(|p| p.generation),
+            Some(2)
+        );
+        // 引き抜き済みなら同世代でも None (二重掃除しない)
+        assert!(state.take_preview_if_generation(2).is_none());
+    }
+
+    // 敵対レビュー Important-1: 「stop → in-flight start」race。
+    // start はエントリ時点の stop epoch を控え、store 後に epoch が進んで
+    // いたら (= 起動中に stop が来た) 自分を kill する。
+    #[test]
+    fn stop_epoch_detects_stop_during_inflight_start() {
+        let state = VivliostyleState::default();
+        let epoch = state.preview_stop_epoch();
+        // start がバイナリ解決 await 中に stop が来る
+        kill_and_bump(&state);
+        // store は成功するが epoch 差分で stop 到来を検知できる
+        state.store_preview(process(1));
+        assert_ne!(state.preview_stop_epoch(), epoch);
+        // 検知後は自世代エントリを引き抜いて自殺 kill する
+        assert!(state.take_preview_if_generation(1).is_some());
+    }
+
+    #[test]
+    fn stop_epoch_unchanged_without_stop() {
+        let state = VivliostyleState::default();
+        let epoch = state.preview_stop_epoch();
+        state.store_preview(process(1));
+        assert_eq!(state.preview_stop_epoch(), epoch);
+    }
+
+    fn kill_and_bump(state: &VivliostyleState) {
+        super::kill_preview(state);
+    }
+}
+
+#[cfg(test)]
+mod exit_kill_all_tests {
+    use super::VivliostyleState;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // 敵対レビュー Important-2: アプリ終了時は preview だけでなく実行中 build
+    // もプロセスグループごと kill する。state レベルでは「全 run の abort
+    // フラグが立ち、登録済み pid が全て drain される」ことを固定する。
+    #[test]
+    fn kill_all_runs_sets_abort_flags_and_drains_pids() {
+        let state = VivliostyleState::default();
+        let flag = Arc::new(AtomicBool::new(false));
+        state.register_run("r1", Arc::clone(&flag));
+        state.register_run_pid("r1", 12345);
+
+        let pids = state.abort_all_runs_and_drain_pids();
+        assert!(flag.load(Ordering::Relaxed));
+        assert_eq!(pids, vec![12345]);
+        // drain 済みなので二回目は空 (二重 kill しない)
+        assert!(state.abort_all_runs_and_drain_pids().is_empty());
+    }
+
+    #[test]
+    fn remove_run_also_drops_pid() {
+        let state = VivliostyleState::default();
+        state.register_run("r1", Arc::new(AtomicBool::new(false)));
+        state.register_run_pid("r1", 111);
+        state.remove_run("r1");
+        assert!(state.abort_all_runs_and_drain_pids().is_empty());
     }
 }
 
