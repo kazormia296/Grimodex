@@ -31,6 +31,13 @@ vi.mock("./GalaxyCanvas", () => ({
   ),
 }));
 
+// 2D 描画層も同様に mock（切替検証用に testid を分ける）
+vi.mock("./Galaxy2DCanvas", () => ({
+  Galaxy2DCanvas: ({ graph }: { graph: { nodes: unknown[] } }) => (
+    <div data-testid="galaxy-canvas-2d" data-node-count={graph.nodes.length} />
+  ),
+}));
+
 const loadGalaxyGraphInput = vi.fn();
 vi.mock("../galaxyData", () => ({
   loadGalaxyGraphInput: (...a: unknown[]) => loadGalaxyGraphInput(...a),
@@ -76,7 +83,10 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
     {} as unknown as ReturnType<HTMLCanvasElement["getContext"]>,
   );
-  useMapStore.setState({ galaxyFilters: DEFAULT_GALAXY_FILTERS });
+  useMapStore.setState({
+    galaxyFilters: DEFAULT_GALAXY_FILTERS,
+    galaxyDimension: "3d",
+  });
   loadGalaxyGraphInput.mockReset();
 });
 
@@ -150,6 +160,33 @@ describe("MapGalaxyView", () => {
     loadGalaxyGraphInput.mockRejectedValue(new Error("boom"));
     render(<MapGalaxyView />);
     await screen.findByText("グラフデータの読み込みに失敗しました");
+  });
+
+  it("2D/3D トグルで描画層が切り替わり store に反映される", async () => {
+    loadGalaxyGraphInput.mockResolvedValue(fixtureInput());
+    render(<MapGalaxyView />);
+    await screen.findByTestId("galaxy-canvas");
+    expect(screen.queryByTestId("galaxy-canvas-2d")).toBeNull();
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await user.click(screen.getByTitle("2D 表示"));
+
+    const canvas2d = await screen.findByTestId("galaxy-canvas-2d");
+    expect(canvas2d.getAttribute("data-node-count")).toBe("4");
+    expect(screen.queryByTestId("galaxy-canvas")).toBeNull();
+    expect(useMapStore.getState().galaxyDimension).toBe("2d");
+  });
+
+  it("WebGL 不可では 3D のみブロックし、2D 切替で描画できる", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    loadGalaxyGraphInput.mockResolvedValue(fixtureInput());
+    render(<MapGalaxyView />);
+    await screen.findByText("この環境では 3D 表示を利用できません");
+    expect(screen.queryByTestId("galaxy-canvas")).toBeNull();
+
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await user.click(screen.getByTitle("2D 表示"));
+    await screen.findByTestId("galaxy-canvas-2d");
   });
 
   it("ノードクリックで対応エンティティが選択される", async () => {

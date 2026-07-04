@@ -4792,7 +4792,9 @@
         "participant": "参加者",
         "thread": "スレッド"
       },
-      "openHint": "ダブルクリックで開く"
+      "openHint": "ダブルクリックで開く",
+      "dimension2d": "2D 表示",
+      "dimension3d": "3D 表示"
     },
     "arrange": {
       "readingOrder": "Grid: 読み順",

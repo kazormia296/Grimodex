@@ -4799,7 +4799,9 @@
         "participant": "Participants",
         "thread": "Threads"
       },
-      "openHint": "Double-click to open"
+      "openHint": "Double-click to open",
+      "dimension2d": "2D view",
+      "dimension3d": "3D view"
     },
     "arrange": {
       "readingOrder": "Grid: Reading order",

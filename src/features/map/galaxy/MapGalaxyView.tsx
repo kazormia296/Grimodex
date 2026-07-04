@@ -1,6 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCw } from "lucide-react";
+import { Box, RefreshCw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useEnsureCodexTypeColors } from "@/features/codex/useEnsureCodexTypeColors";
@@ -17,8 +24,15 @@ import {
   type GalaxyGraph,
   type GalaxyNode,
 } from "../galaxyGraph";
-import { GalaxyCanvas } from "./GalaxyCanvas";
 import { GalaxyFilterPanel } from "./GalaxyFilterPanel";
+
+// 2D 利用時に three 系を読み込まないよう、描画層ごとに chunk を分ける
+const GalaxyCanvas = lazy(() =>
+  import("./GalaxyCanvas").then((m) => ({ default: m.GalaxyCanvas })),
+);
+const Galaxy2DCanvas = lazy(() =>
+  import("./Galaxy2DCanvas").then((m) => ({ default: m.Galaxy2DCanvas })),
+);
 
 function detectWebgl(): boolean {
   try {
@@ -38,6 +52,8 @@ export function MapGalaxyView() {
   const projectId = useCurrentProjectId();
   const galaxyFilters = useMapStore((s) => s.galaxyFilters);
   const setGalaxyFilters = useMapStore((s) => s.setGalaxyFilters);
+  const galaxyDimension = useMapStore((s) => s.galaxyDimension);
+  const setGalaxyDimension = useMapStore((s) => s.setGalaxyDimension);
   useEnsureCodexTypeColors();
 
   const [raw, setRaw] = useState<GalaxyGraph | null>(null);
@@ -99,8 +115,10 @@ export function MapGalaxyView() {
 
   const empty =
     !loading && !loadFailed && raw !== null && raw.nodes.length === 0;
+  // WebGL が要るのは 3D のみ。不可なら 2D への切替を促す
+  const webglBlocked = galaxyDimension === "3d" && !webglAvailable;
   const showCanvas =
-    !loading && !loadFailed && !empty && webglAvailable && filtered !== null;
+    !loading && !loadFailed && !empty && !webglBlocked && filtered !== null;
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-[#05060f]">
@@ -112,18 +130,28 @@ export function MapGalaxyView() {
       )}
       {loadFailed && <CenterMessage>{t("map.galaxy.loadError")}</CenterMessage>}
       {empty && <CenterMessage>{t("map.galaxy.empty")}</CenterMessage>}
-      {!loading && !loadFailed && !empty && !webglAvailable && (
+      {!loading && !loadFailed && !empty && webglBlocked && (
         <CenterMessage>{t("map.galaxy.noWebgl")}</CenterMessage>
       )}
       {showCanvas && (
-        <GalaxyCanvas
-          graph={filtered}
-          onSelectNode={handleSelectNode}
-          onOpenNode={handleOpenNode}
-        />
+        <Suspense fallback={null}>
+          {galaxyDimension === "3d" ? (
+            <GalaxyCanvas
+              graph={filtered}
+              onSelectNode={handleSelectNode}
+              onOpenNode={handleOpenNode}
+            />
+          ) : (
+            <Galaxy2DCanvas
+              graph={filtered}
+              onSelectNode={handleSelectNode}
+              onOpenNode={handleOpenNode}
+            />
+          )}
+        </Suspense>
       )}
       {!loading && !loadFailed && (
-        <div className="absolute left-3 top-3 z-10">
+        <div className="absolute left-3 top-3 z-10 flex items-center gap-1">
           <Button
             variant="outline"
             size="xs"
@@ -133,6 +161,34 @@ export function MapGalaxyView() {
           >
             <RefreshCw className="size-3" aria-hidden />
             {t("map.galaxy.refresh")}
+          </Button>
+          <Button
+            variant={galaxyDimension === "2d" ? "default" : "outline"}
+            size="xs"
+            onClick={() => setGalaxyDimension("2d")}
+            title={t("map.galaxy.dimension2d")}
+            className={
+              galaxyDimension === "2d"
+                ? undefined
+                : "bg-background/80 backdrop-blur"
+            }
+          >
+            <Square className="size-3" aria-hidden />
+            2D
+          </Button>
+          <Button
+            variant={galaxyDimension === "3d" ? "default" : "outline"}
+            size="xs"
+            onClick={() => setGalaxyDimension("3d")}
+            title={t("map.galaxy.dimension3d")}
+            className={
+              galaxyDimension === "3d"
+                ? undefined
+                : "bg-background/80 backdrop-blur"
+            }
+          >
+            <Box className="size-3" aria-hidden />
+            3D
           </Button>
         </div>
       )}
