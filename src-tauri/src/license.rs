@@ -82,12 +82,14 @@ fn key_tail(key: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Polar Organization ID (§4.1: アプリにハードコード埋め込み)。
-/// TODO(発売前): Polar で Grimodex Organization を作成したら実 ID に差し替える。
+/// Grimodex Organization (slug: grimodex) の実 ID。2026-07-04 設定。
 /// licensing feature が無効な間 (ベータ) は到達しないコード。
-pub(crate) const POLAR_ORGANIZATION_ID: &str = "00000000-0000-4000-8000-000000000000";
+pub(crate) const POLAR_ORGANIZATION_ID: &str = "73eb02b0-1226-401e-9f77-141f5f1be4a4";
 
 /// メジャーバージョン期待 benefit_id (§4.3)。空文字の間は照合をスキップする。
-/// TODO(発売前): Polar の v1 Product / Benefit 作成後に埋める。
+/// v1.0 発売時は意図的に空のまま = 照合スキップで運用する。実キーの live E2E で
+/// validate 応答が返す実 benefit_id を確認後、follow-up で実値を設定する
+/// (§4.3 の罠: 実測前に埋めると不一致で正規キーを全 revoked に誤爆する)。
 pub(crate) const POLAR_EXPECTED_BENEFIT_ID: &str = "";
 
 const POLAR_BASE_URL: &str = "https://api.polar.sh";
