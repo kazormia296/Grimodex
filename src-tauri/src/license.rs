@@ -126,7 +126,12 @@ pub(crate) fn activation_label() -> String {
 /// §4.3 benefit_id 照合。**「存在して不一致」のときのみ** true (= 弾く)。
 /// 欠損 (None) は照合せず通す — 応答仕様の揺れで正規キーを弾かない・
 /// 曖昧ケースを revoked に倒さない (fail-soft、コミット前レビュー確定指摘)。
-/// 期待値が未設定 (ベータ〜Product 作成前) も素通り。
+/// 期待値が未設定 (空文字、ベータ〜Product 作成前) も素通り。
+///
+/// 本番の期待値 `POLAR_EXPECTED_BENEFIT_ID` を使う薄いラッパ。activate コマンド層
+/// (`activate_license`) が使う。validate 経路は注入版 `benefit_mismatch_with` を
+/// 直接呼ぶ — mock サーバーテストで任意の expected を渡せるように
+/// (base_url/organization_id と同じ DI パターン)。
 pub(crate) fn benefit_mismatch(benefit_id: Option<&str>) -> bool {
     benefit_mismatch_with(POLAR_EXPECTED_BENEFIT_ID, benefit_id)
 }
@@ -170,7 +175,14 @@ pub(crate) async fn polar_validate(
     key: &str,
     activation_id: &str,
 ) -> anyhow::Result<PolarValidateOutcome> {
-    polar_validate_at(POLAR_BASE_URL, POLAR_ORGANIZATION_ID, key, activation_id).await
+    polar_validate_at(
+        POLAR_BASE_URL,
+        POLAR_ORGANIZATION_ID,
+        POLAR_EXPECTED_BENEFIT_ID,
+        key,
+        activation_id,
+    )
+    .await
 }
 
 pub(crate) async fn polar_deactivate(key: &str, activation_id: &str) -> anyhow::Result<()> {
@@ -241,6 +253,7 @@ async fn polar_activate_at(
 async fn polar_validate_at(
     base_url: &str,
     organization_id: &str,
+    expected_benefit_id: &str,
     key: &str,
     activation_id: &str,
 ) -> anyhow::Result<PolarValidateOutcome> {
@@ -264,7 +277,9 @@ async fn polar_validate_at(
             // キー無効は HTTP エラーではなく status で表現される (公式仕様)。
             // benefit が「存在して不一致」(§4.3: 別メジャーバージョンのキー) も
             // 無効扱い。欠損は照合スキップ (granted を信頼、fail-soft)。
-            if parsed.status == "granted" && !benefit_mismatch(parsed.benefit_id.as_deref()) {
+            if parsed.status == "granted"
+                && !benefit_mismatch_with(expected_benefit_id, parsed.benefit_id.as_deref())
+            {
                 Ok(PolarValidateOutcome::Valid {
                     benefit_id: parsed.benefit_id,
                 })
@@ -569,7 +584,7 @@ mod polar_tests {
             }),
         )
         .await;
-        match polar_validate_at(&server.uri(), ORG, KEY, ACT).await {
+        match polar_validate_at(&server.uri(), ORG, "", KEY, ACT).await {
             Ok(PolarValidateOutcome::Valid { benefit_id }) => {
                 assert_eq!(benefit_id.as_deref(), Some("ben-2"));
             }
@@ -593,7 +608,7 @@ mod polar_tests {
             )
             .mount(&server)
             .await;
-        let outcome = polar_validate_at(&server.uri(), ORG, KEY, ACT).await;
+        let outcome = polar_validate_at(&server.uri(), ORG, "", KEY, ACT).await;
         assert!(matches!(outcome, Ok(PolarValidateOutcome::Valid { .. })));
     }
 
@@ -602,7 +617,7 @@ mod polar_tests {
         // キー無効は HTTP エラーではなく 200 + status=revoked (公式仕様で確定)。
         let server = MockServer::start().await;
         mount_validate(&server, 200, serde_json::json!({"status": "revoked"})).await;
-        let outcome = polar_validate_at(&server.uri(), ORG, KEY, ACT).await;
+        let outcome = polar_validate_at(&server.uri(), ORG, "", KEY, ACT).await;
         assert!(matches!(outcome, Ok(PolarValidateOutcome::Invalid)));
     }
 
@@ -610,7 +625,7 @@ mod polar_tests {
     async fn validate_disabled_status_is_invalid() {
         let server = MockServer::start().await;
         mount_validate(&server, 200, serde_json::json!({"status": "disabled"})).await;
-        let outcome = polar_validate_at(&server.uri(), ORG, KEY, ACT).await;
+        let outcome = polar_validate_at(&server.uri(), ORG, "", KEY, ACT).await;
         assert!(matches!(outcome, Ok(PolarValidateOutcome::Invalid)));
     }
 
@@ -624,7 +639,7 @@ mod polar_tests {
             serde_json::json!({"error": "ResourceNotFound", "detail": "Not found"}),
         )
         .await;
-        let outcome = polar_validate_at(&server.uri(), ORG, KEY, ACT).await;
+        let outcome = polar_validate_at(&server.uri(), ORG, "", KEY, ACT).await;
         assert!(matches!(outcome, Ok(PolarValidateOutcome::Invalid)));
     }
 
@@ -638,7 +653,7 @@ mod polar_tests {
             serde_json::json!({"error": "InternalServerError"}),
         )
         .await;
-        assert!(polar_validate_at(&server.uri(), ORG, KEY, ACT)
+        assert!(polar_validate_at(&server.uri(), ORG, "", KEY, ACT)
             .await
             .is_err());
     }
@@ -654,7 +669,7 @@ mod polar_tests {
             serde_json::json!({"error": "RequestValidationError", "detail": []}),
         )
         .await;
-        assert!(polar_validate_at(&server.uri(), ORG, KEY, ACT)
+        assert!(polar_validate_at(&server.uri(), ORG, "", KEY, ACT)
             .await
             .is_err());
     }
@@ -662,8 +677,36 @@ mod polar_tests {
     #[tokio::test]
     async fn validate_network_unreachable_is_comm_failure() {
         // 接続不能 (ポート閉鎖) → Err。grace 消化継続側に倒れる。
-        let outcome = polar_validate_at("http://127.0.0.1:1", ORG, KEY, ACT).await;
+        let outcome = polar_validate_at("http://127.0.0.1:1", ORG, "", KEY, ACT).await;
         assert!(outcome.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_granted_matching_benefit_is_valid() {
+        // 期待 benefit と一致すれば Valid (§4.3 の正常系)。
+        let server = MockServer::start().await;
+        mount_validate(
+            &server,
+            200,
+            serde_json::json!({"status": "granted", "benefit_id": "expected-benefit"}),
+        )
+        .await;
+        let outcome = polar_validate_at(&server.uri(), ORG, "expected-benefit", KEY, ACT).await;
+        assert!(matches!(outcome, Ok(PolarValidateOutcome::Valid { .. })));
+    }
+
+    #[tokio::test]
+    async fn validate_granted_but_benefit_mismatch_is_invalid() {
+        // §4.3: granted でも benefit_id が期待値と不一致 = 別メジャーバージョンのキー扱いで無効。
+        let server = MockServer::start().await;
+        mount_validate(
+            &server,
+            200,
+            serde_json::json!({"status": "granted", "benefit_id": "other-major-version"}),
+        )
+        .await;
+        let outcome = polar_validate_at(&server.uri(), ORG, "expected-benefit", KEY, ACT).await;
+        assert!(matches!(outcome, Ok(PolarValidateOutcome::Invalid)));
     }
 
     fn outcome_kind(o: &anyhow::Result<PolarValidateOutcome>) -> &'static str {
