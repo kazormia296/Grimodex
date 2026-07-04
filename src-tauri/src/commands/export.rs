@@ -18,8 +18,8 @@ use tauri_plugin_dialog::DialogExt;
 use super::AppError;
 
 /// ネイティブ保存ダイアログを Rust 側で開き、ユーザーが選んだパスを返す。
-/// キャンセル時は `None`。
-fn prompt_save_path(
+/// キャンセル時は `None`。vivliostyle.rs (成果物保存) からも同じ流儀で使う。
+pub(crate) fn prompt_save_path(
     app: &tauri::AppHandle,
     suggested_name: &str,
     filter_name: &str,

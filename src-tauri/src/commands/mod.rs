@@ -30,6 +30,7 @@ pub(crate) mod post_effect;
 pub(crate) mod semantic;
 pub(crate) mod timelapse;
 pub(crate) mod trash_bin;
+pub(crate) mod vivliostyle;
 pub(crate) mod workspace;
 
 // ---------------------------------------------------------------------------

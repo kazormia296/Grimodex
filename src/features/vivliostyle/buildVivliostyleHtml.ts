@@ -76,7 +76,7 @@ function wrapVivliostyleHtml(
   lang: string,
 ): string {
   return `<!DOCTYPE html>
-<html lang="${lang}">
+<html lang="${escapeHtml(lang)}">
 <head>
   <meta charset="UTF-8">
   <title>${escapeHtml(title)}</title>

@@ -90,17 +90,83 @@ pub enum CliEvent {
 ///   （PATH に無い GUI/ユーザ領域インストール向け）→ PowerShell →
 ///   **`~/.local/bin`**（Claude Code 等ネイティブインストーラの既定先）→ Scoop / npm 等。
 pub async fn detect_binary(kind: CliKind) -> Option<String> {
+    detect_binary_spec(&BinaryDetectSpec::for_cli_kind(kind)).await
+}
+
+/// バイナリ名だけで PATH 等を探す一般化版（vivliostyle 等、`CliKind` に属さない
+/// CLI 用）。挙動は `detect_binary` からベンダー固有ディレクトリ探索
+/// (macOS Application Support / .app、Windows LocalAppData ベンダー) を除いた
+/// 部分と同一。
+pub(crate) async fn detect_binary_named(bin_name: &str) -> Option<String> {
+    detect_binary_spec(&BinaryDetectSpec::generic(bin_name)).await
+}
+
+/// バイナリ検出仕様。`detect_binary` の kind 依存箇所（バイナリ名と
+/// ベンダー固有ディレクトリの解決テーブル）だけをここへ分離し、探索ロジック
+/// 本体 (`detect_binary_unix` / `detect_binary_windows`) をバイナリ名非依存で
+/// 再利用できるようにする。
+///
+/// フィールドの使用箇所は OS ごとに異なる（`mac_*` は macOS のみ、`win_*` は
+/// Windows のみ）ため、struct 全体で未使用警告を許容する。
+#[allow(dead_code)]
+struct BinaryDetectSpec<'a> {
+    /// PATH 上で探すバイナリ名
+    bin_name: &'a str,
+    /// macOS: `~/Library/Application Support` 配下のベンダーフォルダ名
+    mac_vendor_dirs: &'static [&'static str],
+    /// macOS: `/Applications` / `~/Applications` の `.app` ディレクトリ名
+    mac_app_bundle_names: &'static [&'static str],
+    /// Windows: `%LocalAppData%` 配下のベンダーフォルダ名
+    win_vendor_dirs: &'static [&'static str],
+}
+
+impl<'a> BinaryDetectSpec<'a> {
+    /// ベンダー固有ディレクトリを持たない汎用 CLI (vivliostyle 等)。
+    /// PATH / ツールチェーン / 定番ディレクトリの探索のみ行う。
+    fn generic(bin_name: &'a str) -> Self {
+        Self {
+            bin_name,
+            mac_vendor_dirs: &[],
+            mac_app_bundle_names: &[],
+            win_vendor_dirs: &[],
+        }
+    }
+
+    /// 既存 3 CLI の解決テーブル（挙動不変で従来の kind 別テーブルを移設）。
+    fn for_cli_kind(kind: CliKind) -> Self {
+        Self {
+            bin_name: kind.default_binary_name(),
+            mac_vendor_dirs: match kind {
+                CliKind::Claude => &["Anthropic", "anthropic", "Claude", "claude"],
+                CliKind::Codex => &["OpenAI", "openai", "Codex", "codex"],
+                CliKind::Opencode => &["OpenCode", "opencode", "sst.opencode", "ai.opencode"],
+            },
+            mac_app_bundle_names: match kind {
+                CliKind::Claude => &["Claude", "Claude Code"],
+                CliKind::Codex => &["Codex", "OpenAI Codex"],
+                CliKind::Opencode => &["OpenCode", "opencode"],
+            },
+            win_vendor_dirs: match kind {
+                CliKind::Claude => &["Anthropic", "anthropic", "Claude", "claude"],
+                CliKind::Codex => &["OpenAI", "openai"],
+                CliKind::Opencode => &["opencode", "OpenCode", "sst", "anomalyco"],
+            },
+        }
+    }
+}
+
+async fn detect_binary_spec(spec: &BinaryDetectSpec<'_>) -> Option<String> {
     #[cfg(unix)]
     {
-        detect_binary_unix(kind).await
+        detect_binary_unix(spec).await
     }
     #[cfg(windows)]
     {
-        detect_binary_windows(kind).await
+        detect_binary_windows(spec).await
     }
     #[cfg(all(not(unix), not(windows)))]
     {
-        let _ = kind;
+        let _ = spec;
         None
     }
 }
@@ -169,8 +235,8 @@ case ":$PATH:" in *":$PNPM_HOME:"*) ;; *) [ -d "$PNPM_HOME" ] && export PATH="$P
 }
 
 #[cfg(unix)]
-async fn detect_binary_unix(kind: CliKind) -> Option<String> {
-    let bin_name = kind.default_binary_name();
+async fn detect_binary_unix(spec: &BinaryDetectSpec<'_>) -> Option<String> {
+    let bin_name = spec.bin_name;
     if bash_escape_singlequoted_literal(bin_name).is_empty() {
         return None;
     }
@@ -265,10 +331,10 @@ command -v npm >/dev/null 2>&1 && npm config get prefix"#,
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(p) = macos_application_support_cli(kind, bin_name) {
+        if let Some(p) = macos_application_support_cli(spec.mac_vendor_dirs, bin_name) {
             return Some(p);
         }
-        if let Some(p) = macos_app_bundle_cli(kind, bin_name) {
+        if let Some(p) = macos_app_bundle_cli(spec.mac_app_bundle_names, bin_name) {
             return Some(p);
         }
     }
@@ -293,25 +359,6 @@ command -v npm >/dev/null 2>&1 && npm config get prefix"#,
     }
 
     None
-}
-
-/// macOS: GUI/インストーラが `~/Library/Application Support/<Vendor>` 配下に CLI を置くことがある。
-#[cfg(all(unix, target_os = "macos"))]
-fn macos_library_application_support_vendors(kind: CliKind) -> &'static [&'static str] {
-    match kind {
-        CliKind::Claude => &["Anthropic", "anthropic", "Claude", "claude"],
-        CliKind::Codex => &["OpenAI", "openai", "Codex", "codex"],
-        CliKind::Opencode => &["OpenCode", "opencode", "sst.opencode", "ai.opencode"],
-    }
-}
-
-#[cfg(all(unix, target_os = "macos"))]
-fn macos_app_bundle_directory_names(kind: CliKind) -> &'static [&'static str] {
-    match kind {
-        CliKind::Claude => &["Claude", "Claude Code"],
-        CliKind::Codex => &["Codex", "OpenAI Codex"],
-        CliKind::Opencode => &["OpenCode", "opencode"],
-    }
 }
 
 #[cfg(all(unix, target_os = "macos"))]
@@ -346,11 +393,12 @@ fn unix_find_file_bfs_under(
     None
 }
 
+/// macOS: GUI/インストーラが `~/Library/Application Support/<Vendor>` 配下に CLI を置くことがある。
 #[cfg(all(unix, target_os = "macos"))]
-fn macos_application_support_cli(kind: CliKind, bin_name: &str) -> Option<String> {
+fn macos_application_support_cli(vendors: &[&str], bin_name: &str) -> Option<String> {
     let home = dirs::home_dir()?;
     let las = home.join("Library/Application Support");
-    for v in macos_library_application_support_vendors(kind) {
+    for v in vendors {
         let root = las.join(v);
         if let Some(p) = unix_find_file_bfs_under(&root, bin_name, 12) {
             return p.to_str().map(str::to_string);
@@ -360,10 +408,10 @@ fn macos_application_support_cli(kind: CliKind, bin_name: &str) -> Option<String
 }
 
 #[cfg(all(unix, target_os = "macos"))]
-fn macos_app_bundle_cli(kind: CliKind, bin_name: &str) -> Option<String> {
+fn macos_app_bundle_cli(app_bundle_names: &[&str], bin_name: &str) -> Option<String> {
     let home = dirs::home_dir()?;
     for apps_root in [PathBuf::from("/Applications"), home.join("Applications")] {
-        for app in macos_app_bundle_directory_names(kind) {
+        for app in app_bundle_names {
             let macos_dir = apps_root
                 .join(format!("{app}.app"))
                 .join("Contents")
@@ -486,15 +534,6 @@ fn find_exe_windows_apps_aliases(local: &std::path::Path, bin_name: &str) -> Opt
 }
 
 #[cfg(windows)]
-fn local_appdata_vendor_roots(kind: CliKind) -> &'static [&'static str] {
-    match kind {
-        CliKind::Claude => &["Anthropic", "anthropic", "Claude", "claude"],
-        CliKind::Codex => &["OpenAI", "openai"],
-        CliKind::Opencode => &["opencode", "OpenCode", "sst", "anomalyco"],
-    }
-}
-
-#[cfg(windows)]
 fn find_exe_bfs_under_root(
     root: &std::path::Path,
     exe_leaf: &str,
@@ -612,10 +651,10 @@ fn decode_ps_path_output(stdout: &[u8]) -> Option<String> {
 }
 
 #[cfg(windows)]
-async fn detect_binary_windows(kind: CliKind) -> Option<String> {
+async fn detect_binary_windows(spec: &BinaryDetectSpec<'_>) -> Option<String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    let bin_name = kind.default_binary_name();
+    let bin_name = spec.bin_name;
     let exe_leaf = windows_cli_exe_leaf(bin_name);
 
     if let Some(p) = where_exe_first(bin_name, CREATE_NO_WINDOW).await {
@@ -628,8 +667,7 @@ async fn detect_binary_windows(kind: CliKind) -> Option<String> {
         return p.to_str().map(str::to_string);
     }
 
-    let vendors = local_appdata_vendor_roots(kind);
-    if let Some(p) = find_exe_under_vendor_roots(&local, vendors, &exe_leaf) {
+    if let Some(p) = find_exe_under_vendor_roots(&local, spec.win_vendor_dirs, &exe_leaf) {
         return p.to_str().map(str::to_string);
     }
 
@@ -1134,19 +1172,19 @@ where
 }
 
 #[cfg(unix)]
-fn libc_sigterm() -> i32 {
+pub(crate) fn libc_sigterm() -> i32 {
     libc::SIGTERM
 }
 #[cfg(unix)]
-fn libc_sigkill() -> i32 {
+pub(crate) fn libc_sigkill() -> i32 {
     libc::SIGKILL
 }
 #[cfg(not(unix))]
-fn libc_sigterm() -> i32 {
+pub(crate) fn libc_sigterm() -> i32 {
     0
 }
 #[cfg(not(unix))]
-fn libc_sigkill() -> i32 {
+pub(crate) fn libc_sigkill() -> i32 {
     0
 }
 
@@ -1154,7 +1192,7 @@ fn libc_sigkill() -> i32 {
 ///
 /// - **Unix**: `setsid()` 済みなので pgid == pid。-pid で同グループへ SIG* 送信。
 /// - **Windows**: `taskkill /T /F` で子ツリー一括終了。`sig` は未使用。
-fn kill_process_group(pid: Option<u32>, sig: i32) {
+pub(crate) fn kill_process_group(pid: Option<u32>, sig: i32) {
     let Some(pid) = pid else {
         return;
     };

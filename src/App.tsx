@@ -45,8 +45,9 @@ import {
   guardInlineAiPending,
 } from "@/features/editor/inlineAi/pendingGuard";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
-import { Settings, FileOutput } from "lucide-react";
+import { Settings, FileOutput, BookOpen } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
+import { VivliostyleDialog } from "@/features/vivliostyle/VivliostyleDialog";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -287,6 +288,7 @@ function EditorScreen() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
+  const [showVivliostyle, setShowVivliostyle] = useState(false);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showTransferDialog, setShowTransferDialog] = useState(false);
   const [transferTab, setTransferTab] = useState<TransferTab>("import");
@@ -455,6 +457,16 @@ function EditorScreen() {
     }
     window.addEventListener("open-export-dialog", onOpenExport);
     return () => window.removeEventListener("open-export-dialog", onOpenExport);
+  }, []);
+
+  // Open Vivliostyle book-export dialog via custom event (command palette)
+  useEffect(() => {
+    function onOpenVivliostyle() {
+      setShowVivliostyle(true);
+    }
+    window.addEventListener("open-vivliostyle-dialog", onOpenVivliostyle);
+    return () =>
+      window.removeEventListener("open-vivliostyle-dialog", onOpenVivliostyle);
   }, []);
 
   // Keyboard shortcuts (Ctrl+Alt+*)
@@ -698,6 +710,18 @@ function EditorScreen() {
                   {t("app.exportLabel")}
                 </span>
               </button>
+              <button
+                type="button"
+                aria-label={t("app.bookExportLabel")}
+                title={t("app.bookExportTitle")}
+                onClick={() => setShowVivliostyle((v) => !v)}
+                className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <BookOpen className="h-4 w-4 shrink-0" />
+                <span className="hidden whitespace-nowrap text-sm xl:inline">
+                  {t("app.bookExportLabel")}
+                </span>
+              </button>
             </>
           }
           center={<CommandCenterBar />}
@@ -743,6 +767,10 @@ function EditorScreen() {
         initialCategory={settingsInitialCategory}
       />
       <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
+      <VivliostyleDialog
+        open={showVivliostyle}
+        onClose={() => setShowVivliostyle(false)}
+      />
       <ProjectSnapshotModal
         open={showSnapshotModal}
         onClose={() => setShowSnapshotModal(false)}
