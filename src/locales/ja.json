@@ -4763,16 +4763,16 @@
     },
     "view": {
       "board": "ボード",
-      "galaxy": "ギャラクシー",
-      "switchToGalaxy": "ギャラクシービューへ切替",
+      "galaxy": "グラフ",
+      "switchToGalaxy": "グラフビューへ切替",
       "switchToBoard": "ボードビューへ切替"
     },
     "galaxy": {
-      "title": "ギャラクシー",
+      "title": "グラフ",
       "refresh": "更新",
       "filters": "フィルタ",
-      "loading": "銀河を構築中…",
-      "empty": "まだ星がありません。書き始めると銀河が生まれます。",
+      "loading": "グラフを構築中…",
+      "empty": "まだノードがありません。書き始めるとグラフが育ちます。",
       "loadError": "グラフデータの読み込みに失敗しました",
       "noWebgl": "この環境では 3D 表示を利用できません",
       "hideOrphans": "孤立ノードを隠す",

@@ -4770,16 +4770,16 @@
     },
     "view": {
       "board": "Board",
-      "galaxy": "Galaxy",
-      "switchToGalaxy": "Switch to galaxy view",
+      "galaxy": "Graph",
+      "switchToGalaxy": "Switch to graph view",
       "switchToBoard": "Switch to board view"
     },
     "galaxy": {
-      "title": "Galaxy",
+      "title": "Graph",
       "refresh": "Refresh",
       "filters": "Filters",
-      "loading": "Building the galaxy…",
-      "empty": "No stars yet. Start writing and a galaxy will be born.",
+      "loading": "Building the graph…",
+      "empty": "No nodes yet. Start writing and the graph will grow.",
       "loadError": "Failed to load graph data",
       "noWebgl": "3D view is not available in this environment",
       "hideOrphans": "Hide orphan nodes",

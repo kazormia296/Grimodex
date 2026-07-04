@@ -143,7 +143,7 @@ describe("MapGalaxyView", () => {
       }),
     );
     render(<MapGalaxyView />);
-    expect(screen.getByText("銀河を構築中…")).toBeTruthy();
+    expect(screen.getByText("グラフを構築中…")).toBeTruthy();
     resolve(fixtureInput());
     const canvas = await screen.findByTestId("galaxy-canvas");
     expect(canvas.getAttribute("data-node-count")).toBe("4");
@@ -152,7 +152,7 @@ describe("MapGalaxyView", () => {
   it("ノード 0 件なら空状態メッセージを出す", async () => {
     loadGalaxyGraphInput.mockResolvedValue(emptyInput());
     render(<MapGalaxyView />);
-    await screen.findByText(/まだ星がありません/);
+    await screen.findByText(/まだノードがありません/);
     expect(screen.queryByTestId("galaxy-canvas")).toBeNull();
   });
 
