@@ -498,7 +498,8 @@
     "exportTitle": "エクスポート (Ctrl+Shift+E)",
     "exportLabel": "エクスポート",
     "settingsTitle": "設定 (Ctrl+Alt+,)",
-    "settingsLabel": "設定"
+    "settingsLabel": "設定",
+    "settingsLabelUpdateAvailable": "設定（更新があります）"
   },
   "a11y": {
     "skipToContent": "本文へスキップ",
@@ -1065,6 +1066,9 @@
     "about": {
       "github": "GitHub",
       "checkForUpdates": "更新を確認",
+      "updateNowVersion": "今すぐ更新 v{{version}}",
+      "restartToUpdate": "再起動して更新",
+      "downloadingProgress": "ダウンロード中… {{pct}}%",
       "searchPlaceholder": "{{count}} 件のライブラリを検索…",
       "notFound": "「{{query}}」に一致するライブラリは見つかりません",
       "full": "全文",

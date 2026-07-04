@@ -90,4 +90,35 @@ describe("updaterStore", () => {
     vi.advanceTimersByTime(AUTO_CLEAR_MS * 2);
     expect(useUpdaterStore.getState().phase).toBe("idle");
   });
+
+  it("availableVersion is set on setAvailable and survives dismissToast (「後で」)", () => {
+    useUpdaterStore.getState().setAvailable("2.0.0", "notes");
+    expect(useUpdaterStore.getState().availableVersion).toBe("2.0.0");
+    // 「後で」= dismissToast: トーストは畳む (phase idle) が保留マーカーは残す
+    useUpdaterStore.getState().dismissToast();
+    const s = useUpdaterStore.getState();
+    expect(s.phase).toBe("idle");
+    expect(s.availableVersion).toBe("2.0.0");
+  });
+
+  it("setUpToDate clears availableVersion", () => {
+    useUpdaterStore.getState().setAvailable("2.0.0", null);
+    useUpdaterStore.getState().setUpToDate();
+    expect(useUpdaterStore.getState().availableVersion).toBeNull();
+  });
+
+  it("availableVersion survives an error auto-clear (retry 可能に残す)", () => {
+    useUpdaterStore.getState().setAvailable("2.0.0", null);
+    useUpdaterStore.getState().setError("download failed");
+    vi.advanceTimersByTime(AUTO_CLEAR_MS);
+    const s = useUpdaterStore.getState();
+    expect(s.phase).toBe("idle");
+    expect(s.availableVersion).toBe("2.0.0");
+  });
+
+  it("reset clears availableVersion", () => {
+    useUpdaterStore.getState().setAvailable("2.0.0", null);
+    useUpdaterStore.getState().reset();
+    expect(useUpdaterStore.getState().availableVersion).toBeNull();
+  });
 });
