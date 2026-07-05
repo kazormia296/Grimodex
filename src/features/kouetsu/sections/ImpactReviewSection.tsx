@@ -9,21 +9,17 @@ import { ProjectImpactReviewView } from "@/features/kouetsu/views/ProjectImpactR
 import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
 
 /**
- * 校閲 Issues タブの「影響レビュー」セクション。
- * 変更された Codex 設定と矛盾する本文箇所 (impact_review_anchor) を表示する。
- * 実行 (run) は Codex 詳細の「影響をチェック」ボタンから行うため表示専用。
- * scope に応じて current / project / ignored を出し分ける (整合性セクションと同型)。
+ * 受信箱の「影響レビュー」観点。変更された Codex 設定と矛盾する本文箇所
+ * (impact_review_anchor) を表示する。実行 (run) は Codex 詳細の「影響をチェック」
+ * ボタンから行うため表示専用。scope/statusFilter に応じて出し分ける（整合性と同型）。
  */
 export function ImpactReviewSection() {
   const { t } = useTranslation();
-  const scope = useKouetsuStore((s) => s.activeIssuesScope);
+  const scope = useKouetsuStore((s) => s.scope);
+  const statusFilter = useKouetsuStore((s) => s.statusFilter);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
-  if (scope === "project") {
-    return <ProjectImpactReviewView />;
-  }
-
-  if (scope === "ignored") {
+  if (statusFilter === "dismissed") {
     return (
       <DismissedAnnotationsView
         category="impact_review_anchor"
@@ -31,8 +27,9 @@ export function ImpactReviewSection() {
       />
     );
   }
-
-  // current scope
+  if (scope.type !== "scene") {
+    return <ProjectImpactReviewView />;
+  }
   if (!activeSceneId) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">

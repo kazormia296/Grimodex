@@ -7,14 +7,11 @@ import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnno
 
 export function IntentDriftSection() {
   const { t } = useTranslation();
-  const scope = useKouetsuStore((s) => s.activeEditorialScope);
+  const scope = useKouetsuStore((s) => s.scope);
+  const statusFilter = useKouetsuStore((s) => s.statusFilter);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
-  if (scope === "project") {
-    return <ProjectIntentDriftView />;
-  }
-
-  if (scope === "ignored") {
+  if (statusFilter === "dismissed") {
     return (
       <DismissedAnnotationsView
         category="intent_anchor"
@@ -22,7 +19,9 @@ export function IntentDriftSection() {
       />
     );
   }
-
+  if (scope.type !== "scene") {
+    return <ProjectIntentDriftView />;
+  }
   if (!activeSceneId) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">

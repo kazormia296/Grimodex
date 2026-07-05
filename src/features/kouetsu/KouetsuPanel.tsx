@@ -3,14 +3,17 @@ import { useTranslation } from "react-i18next";
 import { SpellCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useKouetsuStore, type KouetsuTab } from "./kouetsuStore";
-import { IssuesTab } from "./IssuesTab";
-import { EditorialTab } from "./EditorialTab";
+import { IssuesInbox } from "./IssuesInbox";
 import { CommentsTab } from "./CommentsTab";
 import { BlockerTab } from "./BlockerTab";
 import { recordMark } from "@/lib/perfLog";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 
-const TABS: { id: KouetsuTab; labelKey: string }[] = [
+// Task 8 で正式に 3 タブ化するまでの暫定 widen。editorial タブは残しつつ中身は
+// IssuesInbox（受信箱）を描画する。store の KouetsuTab には "editorial" は含めない。
+type PanelTab = KouetsuTab | "editorial";
+
+const TABS: { id: PanelTab; labelKey: string }[] = [
   { id: "issues", labelKey: "kouetsu.tab.issues" },
   { id: "editorial", labelKey: "kouetsu.tab.editorial" },
   { id: "comments", labelKey: "kouetsu.tab.comments" },
@@ -20,7 +23,10 @@ const TABS: { id: KouetsuTab; labelKey: string }[] = [
 export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  const { activeTab: storedTab, setActiveTab } = useKouetsuStore();
+  const storedTab: PanelTab = useKouetsuStore((s) => s.activeTab);
+  const setActiveTab = useKouetsuStore(
+    (s) => s.setActiveTab as (tab: PanelTab) => void,
+  );
   // persist 済み store から不正値が来ても tab 選択と aria-labelledby の
   // id 参照が壊れないよう既知の tab に正規化する
   const activeTab = TABS.some(({ id }) => id === storedTab)
@@ -101,8 +107,9 @@ export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
         aria-labelledby={`${idBase}-tab-${activeTab}`}
         className="min-h-0 flex-1 overflow-hidden"
       >
-        {activeTab === "issues" && <IssuesTab />}
-        {activeTab === "editorial" && <EditorialTab />}
+        {(activeTab === "issues" || activeTab === "editorial") && (
+          <IssuesInbox />
+        )}
         {activeTab === "comments" && <CommentsTab />}
         {activeTab === "blocker" && <BlockerTab />}
       </div>

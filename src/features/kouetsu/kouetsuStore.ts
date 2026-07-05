@@ -9,9 +9,6 @@ export type KouetsuScope =
 export type KouetsuStatusFilter = "open" | "dismissed";
 export type ProjectGroupBy = "scene" | "codex";
 
-/** @deprecated Task 5 で全参照を KouetsuScope へ移行後に削除する。 */
-export type IssuesScope = "current" | "project" | "ignored";
-
 interface KouetsuState {
   activeTab: KouetsuTab;
   /** 指摘タブのスコープ（Chat と同セマンティクス）。scene = アクティブシーン追従。 */

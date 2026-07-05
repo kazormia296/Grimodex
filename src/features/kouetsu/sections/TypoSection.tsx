@@ -7,14 +7,11 @@ import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnno
 
 export function TypoSection() {
   const { t } = useTranslation();
-  const scope = useKouetsuStore((s) => s.activeIssuesScope);
+  const scope = useKouetsuStore((s) => s.scope);
+  const statusFilter = useKouetsuStore((s) => s.statusFilter);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
-  if (scope === "project") {
-    return <ProjectTypoView />;
-  }
-
-  if (scope === "ignored") {
+  if (statusFilter === "dismissed") {
     // 整合性と同じ DismissedAnnotationsView を category で絞って流用。
     // category を渡さないと両セクションが byte 同一の全件リストを出し、
     // 誤字側でも「無視した整合性チェック結果はありません」が漏れていた。
@@ -25,8 +22,9 @@ export function TypoSection() {
       />
     );
   }
-
-  // current scope
+  if (scope.type !== "scene") {
+    return <ProjectTypoView />;
+  }
   if (!activeSceneId) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">

@@ -4,11 +4,8 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { KouetsuPanel } from "./KouetsuPanel";
 import { useKouetsuStore } from "./kouetsuStore";
 
-vi.mock("./IssuesTab", () => ({
-  IssuesTab: () => <div data-testid="stub-issues" />,
-}));
-vi.mock("./EditorialTab", () => ({
-  EditorialTab: () => <div data-testid="stub-editorial" />,
+vi.mock("./IssuesInbox", () => ({
+  IssuesInbox: () => <div data-testid="stub-issues" />,
 }));
 vi.mock("./CommentsTab", () => ({
   CommentsTab: () => <div data-testid="stub-comments" />,
@@ -64,7 +61,8 @@ describe("KouetsuPanel タブの ARIA tablist パターン", () => {
     fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
     expect(tabs[1]).toHaveAttribute("aria-selected", "true");
     expect(document.activeElement).toBe(tabs[1]);
-    expect(screen.getByTestId("stub-editorial")).toBeInTheDocument();
+    // Task 8 で editorial タブは廃止予定。暫定で editorial も IssuesInbox を描画する。
+    expect(screen.getByTestId("stub-issues")).toBeInTheDocument();
 
     fireEvent.keyDown(tabs[1], { key: "ArrowRight" });
     fireEvent.keyDown(tabs[2], { key: "ArrowRight" });

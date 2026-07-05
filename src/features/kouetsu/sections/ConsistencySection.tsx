@@ -7,14 +7,11 @@ import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnno
 
 export function ConsistencySection() {
   const { t } = useTranslation();
-  const scope = useKouetsuStore((s) => s.activeIssuesScope);
+  const scope = useKouetsuStore((s) => s.scope);
+  const statusFilter = useKouetsuStore((s) => s.statusFilter);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
-  if (scope === "project") {
-    return <ProjectAnnotationsView />;
-  }
-
-  if (scope === "ignored") {
+  if (statusFilter === "dismissed") {
     return (
       <DismissedAnnotationsView
         category="consistency_anchor"
@@ -22,8 +19,9 @@ export function ConsistencySection() {
       />
     );
   }
-
-  // current scope
+  if (scope.type !== "scene") {
+    return <ProjectAnnotationsView />;
+  }
   if (!activeSceneId) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">
