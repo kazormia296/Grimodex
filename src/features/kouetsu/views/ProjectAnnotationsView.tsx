@@ -78,9 +78,22 @@ export function ProjectAnnotationsView() {
 
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
+  const nodes = useTreeStore((s) => s.nodes);
   const { setAnnotations: storeSetAnnotations } = useAnnotationStore();
   const groupBy = useKouetsuStore((s) => s.projectGroupBy);
   const setGroupBy = useKouetsuStore((s) => s.setProjectGroupBy);
+
+  // 校閲スコープ。folder のとき subtree に絞る。scene / project は project 扱い。
+  const kouetsuScope = useKouetsuStore((s) => s.scope);
+  const scopeType =
+    kouetsuScope.type === "folder" ? ("folder" as const) : ("project" as const);
+  const scopeTargetId =
+    kouetsuScope.type === "folder" ? kouetsuScope.anchorId : null;
+  // 表示フィルタ用の subtree scene 集合（folder 以外は null = 絞り込みなし）。
+  const visibleSceneIds = useMemo(() => {
+    if (kouetsuScope.type !== "folder") return null;
+    return new Set(getSceneIdsForScope(nodes, "folder", kouetsuScope.anchorId));
+  }, [kouetsuScope, nodes]);
 
   const sceneTitle = (sceneId: string) =>
     scenes.find((s) => s.id === sceneId)?.title ?? sceneId;
@@ -133,7 +146,8 @@ export function ProjectAnnotationsView() {
       if (blockIfUnlicensed()) return;
       // シーンが無いプロジェクトは静かに終了 (旧 runAll と同じ挙動)
       const { nodes } = useTreeStore.getState();
-      if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+      if (getSceneIdsForScope(nodes, scopeType, scopeTargetId).length === 0)
+        return;
       const lang = getCurrentProjectLanguage();
       const model =
         useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
@@ -166,8 +180,8 @@ export function ProjectAnnotationsView() {
               effect === "consistency" ? (ov.model ?? model) : model;
             buildMultiPayload(
               projectId,
-              "project",
-              null,
+              scopeType,
+              scopeTargetId,
               effectiveModel,
               effectType,
               customKouetsu,
@@ -188,8 +202,8 @@ export function ProjectAnnotationsView() {
                   {
                     project_id: projectId,
                     effect_type: effectType,
-                    scope_type: "project",
-                    scope_target_id: null,
+                    scope_type: scopeType,
+                    scope_target_id: scopeTargetId,
                     model: effectiveModel,
                     model_override:
                       effectType === "consistency" ? ov.model : undefined,
@@ -354,7 +368,7 @@ export function ProjectAnnotationsView() {
         );
       }
     },
-    [runningAll, projectId, afterRunAll, t],
+    [runningAll, projectId, afterRunAll, t, scopeType, scopeTargetId],
   );
 
   // ---- grouping ----
@@ -366,9 +380,14 @@ export function ProjectAnnotationsView() {
   };
 
   const groups: Group[] = useMemo(() => {
+    // folder スコープでは subtree 外シーンの指摘をグルーピング前に隠す
+    // （project 時は素通し）。scene / codex どちらのグルーピングにも効かせる。
+    const source = visibleSceneIds
+      ? annotations.filter((a) => a.sceneId && visibleSceneIds.has(a.sceneId))
+      : annotations;
     if (groupBy === "scene") {
       const acc = new Map<string, Group>();
-      for (const ann of annotations) {
+      for (const ann of source) {
         if (!ann.sceneId) continue;
         const g = acc.get(ann.sceneId) ?? {
           key: ann.sceneId,
@@ -383,7 +402,7 @@ export function ProjectAnnotationsView() {
     }
     // codex grouping
     const acc = new Map<string, Group>();
-    for (const ann of annotations) {
+    for (const ann of source) {
       const parsed = parseAnnotationMeta(ann);
       const key = parsed.codex?.entryId ?? "__other__";
       const label =
@@ -397,7 +416,7 @@ export function ProjectAnnotationsView() {
     }
     return [...acc.values()];
     // sceneTitle depends on `scenes` so include it
-  }, [annotations, groupBy, scenes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [annotations, groupBy, scenes, visibleSceneIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col">

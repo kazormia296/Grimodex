@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   buildMultiPayload: vi.fn(),
   runPostEffectMulti: vi.fn(),
   listAnnotationsForProject: vi.fn(),
+  getSceneIdsForScope: vi.fn(),
   dirtyTabIds: new Set<string>(),
 }));
 
@@ -59,7 +60,7 @@ vi.mock("@/prompts/index", () => ({
 }));
 vi.mock("@/features/post-effect/consistencyPayloadBuilder", () => ({
   buildMultiPayload: h.buildMultiPayload,
-  getSceneIdsForScope: () => ["scene-1", "scene-2"],
+  getSceneIdsForScope: h.getSceneIdsForScope,
 }));
 vi.mock("@/features/post-effect/reviewPayloadBuilder", () => ({
   REVIEW_PROMPT_VERSION: "test-v",
@@ -82,6 +83,7 @@ vi.mock("@/features/post-effect/api", async (importOriginal) => {
 });
 
 import { ProjectReviewView } from "./ProjectReviewView";
+import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
@@ -92,6 +94,9 @@ describe("ProjectReviewView runAll の flush", () => {
     h.buildMultiPayload.mockReset();
     h.runPostEffectMulti.mockReset();
     h.listAnnotationsForProject.mockReset();
+    h.getSceneIdsForScope.mockReset();
+    h.getSceneIdsForScope.mockReturnValue(["scene-1", "scene-2"]);
+    useKouetsuStore.setState({ scope: { type: "scene" } });
     h.runPostEffectMulti.mockImplementation(
       async (_req: unknown, callbacks: { onDone?: (e: unknown) => void }) => {
         callbacks.onDone?.({
@@ -154,5 +159,77 @@ describe("ProjectReviewView runAll の flush", () => {
 
     await waitFor(() => expect(h.buildMultiPayload).toHaveBeenCalledTimes(1));
     expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProjectReviewView folder スコープ", () => {
+  beforeEach(() => {
+    h.buildMultiPayload.mockReset();
+    h.runPostEffectMulti.mockReset();
+    h.listAnnotationsForProject.mockReset();
+    h.getSceneIdsForScope.mockReset();
+    h.getSceneIdsForScope.mockReturnValue(["scene-1", "scene-2"]);
+    h.runPostEffectMulti.mockImplementation(
+      async (_req: unknown, callbacks: { onDone?: (e: unknown) => void }) => {
+        callbacks.onDone?.({
+          run_id: "r1",
+          annotation_count: 0,
+          from_cache: false,
+        });
+        return { runId: "r1", cleanup: () => {} };
+      },
+    );
+    h.listAnnotationsForProject.mockResolvedValue({ annotations: [] });
+    useKouetsuStore.setState({ scope: { type: "folder", anchorId: "ch1" } });
+  });
+
+  afterEach(() => {
+    cleanup();
+    h.dirtyTabIds.clear();
+    useKouetsuStore.setState({ scope: { type: "scene" } });
+  });
+
+  it("folder スコープでは subtree 外シーンの annotation を表示しない", async () => {
+    // subtree = [scene-1] のみ。外側 outside-scene は隠れるべき。
+    h.getSceneIdsForScope.mockReturnValue(["scene-1"]);
+    h.listAnnotationsForProject.mockResolvedValue({
+      annotations: [
+        { id: "a1", sceneId: "scene-1", category: "review" },
+        { id: "a2", sceneId: "outside-scene", category: "review" },
+      ],
+    });
+
+    render(<ProjectReviewView />);
+    // グループ見出しは sceneTitle(sceneId) = sceneId (scenes が空のため)。
+    await screen.findByText("scene-1");
+    expect(screen.queryByText("outside-scene")).toBeNull();
+  });
+
+  it("folder スコープの実行は scope_type='folder' + scope_target_id を multi へ渡す", async () => {
+    h.getSceneIdsForScope.mockReturnValue(["scene-1"]);
+    h.buildMultiPayload.mockResolvedValue({
+      inputHash: "hash-1",
+      scenes: [{ scene_id: "scene-1", scene_text: "本文" }],
+    });
+
+    render(<ProjectReviewView />);
+    fireEvent.click(screen.getByRole("button", { name: "AIレビュー" }));
+
+    await waitFor(() => expect(h.runPostEffectMulti).toHaveBeenCalled());
+    const req = h.runPostEffectMulti.mock.calls[0][0] as {
+      scope_type: string;
+      scope_target_id: string | null;
+    };
+    expect(req.scope_type).toBe("folder");
+    expect(req.scope_target_id).toBe("ch1");
+    expect(h.buildMultiPayload).toHaveBeenCalledWith(
+      "p1",
+      "folder",
+      "ch1",
+      expect.anything(),
+      "review",
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });

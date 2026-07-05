@@ -46,6 +46,7 @@ import {
   postEffectErrorToast,
   postEffectPartialToast,
 } from "@/features/post-effect/errorToast";
+import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import type {
   PostEffectAnnotation,
   PostEffectSeverity,
@@ -73,7 +74,20 @@ export function ProjectTypoView() {
 
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
+  const nodes = useTreeStore((s) => s.nodes);
   const { setAnnotations: storeSetAnnotations } = useAnnotationStore();
+
+  // 校閲スコープ。folder のとき subtree に絞る。scene / project は project 扱い。
+  const kouetsuScope = useKouetsuStore((s) => s.scope);
+  const scopeType =
+    kouetsuScope.type === "folder" ? ("folder" as const) : ("project" as const);
+  const scopeTargetId =
+    kouetsuScope.type === "folder" ? kouetsuScope.anchorId : null;
+  // 表示フィルタ用の subtree scene 集合（folder 以外は null = 絞り込みなし）。
+  const visibleSceneIds = useMemo(() => {
+    if (kouetsuScope.type !== "folder") return null;
+    return new Set(getSceneIdsForScope(nodes, "folder", kouetsuScope.anchorId));
+  }, [kouetsuScope, nodes]);
 
   const sceneTitle = (sceneId: string) =>
     scenes.find((s) => s.id === sceneId)?.title ?? sceneId;
@@ -124,7 +138,8 @@ export function ProjectTypoView() {
     if (blockIfPolicyOff("analysis")) return;
     if (blockIfUnlicensed()) return;
     const { nodes } = useTreeStore.getState();
-    if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+    if (getSceneIdsForScope(nodes, scopeType, scopeTargetId).length === 0)
+      return;
     const lang = getCurrentProjectLanguage();
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
@@ -138,8 +153,8 @@ export function ProjectTypoView() {
       await flushPendingSceneSaves();
       const payload = await buildMultiPayload(
         projectId,
-        "project",
-        null,
+        scopeType,
+        scopeTargetId,
         model,
         "typo_detection",
         customKouetsu,
@@ -159,8 +174,8 @@ export function ProjectTypoView() {
           {
             project_id: projectId,
             effect_type: "typo_detection",
-            scope_type: "project",
-            scope_target_id: null,
+            scope_type: scopeType,
+            scope_target_id: scopeTargetId,
             model,
             prompt_version: TYPO_PROMPT_VERSION,
             input_hash: payload.inputHash,
@@ -217,11 +232,15 @@ export function ProjectTypoView() {
         e instanceof Error ? e.message : String(e),
       );
     }
-  }, [runningAll, projectId, afterRunAll, t]);
+  }, [runningAll, projectId, afterRunAll, t, scopeType, scopeTargetId]);
 
   const groups = useMemo(() => {
+    // folder スコープでは subtree 外シーンの指摘を隠す（project 時は素通し）。
+    const source = visibleSceneIds
+      ? annotations.filter((a) => a.sceneId && visibleSceneIds.has(a.sceneId))
+      : annotations;
     const acc = new Map<string, PostEffectAnnotation[]>();
-    for (const ann of annotations) {
+    for (const ann of source) {
       if (!ann.sceneId) continue;
       const arr = acc.get(ann.sceneId) ?? [];
       arr.push(ann);
@@ -233,7 +252,7 @@ export function ProjectTypoView() {
       items,
     }));
     // sceneTitle depends on scenes
-  }, [annotations, scenes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [annotations, scenes, visibleSceneIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const disabled = runningAll || analysisGate.presentation !== "enabled";
   const triggerTitle = analysisGate.tooltip ?? t("kouetsu.typo.projectTooltip");
