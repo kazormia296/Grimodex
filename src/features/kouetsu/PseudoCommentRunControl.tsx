@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Info, Loader2, Sparkles } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -9,10 +9,7 @@ import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
-import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
-import { useEditorStore } from "@/features/editor/editorStore";
-import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import {
   buildPseudoCommentPayload,
   buildPseudoCommentSystemPrompt,
@@ -26,35 +23,42 @@ import { fetchProjectContext } from "@/features/project/contextAtoms";
 import { useCurrentProject } from "@/features/project/projectStore";
 import {
   flushPendingSceneSaves,
-  listAnnotationsForScene,
   runPostEffect,
 } from "@/features/post-effect/api";
 import { getPromptCatalog } from "@/prompts/index";
 import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
-import {
-  groupPseudoThreads,
-  PseudoCommentThread,
-} from "@/features/post-effect/PseudoCommentThread";
 import type { PostEffectDoneEvent } from "@/features/post-effect/types";
 import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 
 interface Props {
-  sceneId: string;
+  /** 実行完了時に呼ぶ。CommentsTab の annotation-only reload を渡す。 */
+  onCompleted: () => Promise<void> | void;
 }
 
-export function CurrentScenePseudoCommentView({ sceneId }: Props) {
+/**
+ * 疑似コメント（読者ペルソナによる本文横コメント）の実行導線。
+ * ペルソナ選択 + 生成ボタンのみを持つ薄いヘッダ部品で、CommentsTab のヘッダに置く。
+ * スレッド表示は CommentsTab が一元的に行うため、このコンポーネントは持たない
+ * （旧 CurrentScenePseudoCommentView から実行部分だけを切り出したもの）。
+ * 対象は常にアクティブシーン。シーン未選択時は生成ボタンを無効化する。
+ */
+export function PseudoCommentRunControl({ onCompleted }: Props) {
   const { t } = useTranslation();
   // project 言語で読者ペルソナ集合 (ja/en) と校閲プロンプトを切替える。
   const lang = useCurrentProject()?.language ?? "ja";
   const personaDefs = personaDefsForLang(lang);
   const personas = personasForLang(lang);
+  // 対象は常にアクティブシーン。activeSceneId は string 既定("")なので falsy 判定。
+  const sceneId = useTreeStore((s) => s.activeSceneId);
   // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
   // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
   // 実行中なのにボタンが通常表示へ戻る）。
   const [launching, setLaunching] = useState(false);
   // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  // sceneId が "" (未選択) のときはどの run にも一致しない (run は実 scene id
+  // でのみ begin される)。undefined を渡すと「scene の任意 run」に一致して
+  // 未選択時に他シーンの spinner を拾うため、そのまま渡す。
   const storeRunning = useIsPostEffectRunning(
     "pseudo_comment",
     "scene",
@@ -67,11 +71,6 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
   const [genre, setGenre] = useState<string | null>(null);
   const [targetReaders, setTargetReaders] = useState<string | null>(null);
   const analysisGate = useAiGate("analysis");
-  const { setAnnotations } = useAnnotationStore();
-  const annotationsByScene = useAnnotationStore((s) => s.annotationsByScene);
-  const sceneAnnotations = annotationsByScene.get(sceneId) ?? [];
-  const threads = groupPseudoThreads(sceneAnnotations);
-  const panelActive = useKouetsuStore((s) => s.panelActive);
 
   useEffect(() => {
     if (!useAiSettingsStore.getState().settings) {
@@ -79,28 +78,9 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     }
   }, []);
 
-  const reload = useCallback(async () => {
-    const projectId = useTreeStore.getState().projectId;
-    const resp = await listAnnotationsForScene({ projectId, sceneId });
-    setAnnotations(sceneId, resp.annotations);
-    const editor = useEditorStore.getState().editor;
-    if (editor) applyAnnotationsToEditor(editor, resp.annotations);
-  }, [sceneId, setAnnotations]);
-
-  // 初回 / シーン切替時に読み込む。KouetsuPanel が keepalive で hidden の間は
-  // bail する: reload の listAnnotations + setAnnotations + applyAnnotationsToEditor
-  // は EditorPane のシーンロード (annotations を editor/store に適用) と冗長で、
-  // hidden 中は EditorPane が editor を最新に保つ。再アクティブ化時に panelActive
-  // が deps 経由で false→true になり現在シーンで 1 回 catch up する。
-  useEffect(() => {
-    if (!panelActive) return;
-    void reload();
-  }, [reload, panelActive]);
-
   // genre / 想定読者プロフィールを取得 (ペルソナ brief 注入 + ターゲット読者層の
-  // 選択可否判定)。パネル再アクティブ化時に取り直し、設定変更を拾う。
+  // 選択可否判定)。project 単位の値なのでマウント時に 1 度だけ取る。
   useEffect(() => {
-    if (!panelActive) return;
     let cancelled = false;
     void fetchProjectContext().then((ctx) => {
       if (cancelled) return;
@@ -110,7 +90,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [panelActive]);
+  }, []);
 
   const hasTargetProfile = Boolean(targetReaders?.trim());
 
@@ -128,7 +108,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
   }, [hasTargetProfile, persona, lang]);
 
   const run = useCallback(async () => {
-    if (running) return;
+    if (running || !sceneId) return;
     if (blockIfPolicyOff("analysis")) return;
     if (blockIfUnlicensed()) return;
     const projectId = useTreeStore.getState().projectId;
@@ -195,7 +175,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
         ).catch((err) => resolve({ ok: false, error: String(err) }));
       });
 
-      await reload();
+      await onCompleted();
       setLaunching(false);
 
       if (!outcome.ok) {
@@ -220,81 +200,63 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
         e instanceof Error ? e.message : String(e),
       );
     }
-  }, [running, sceneId, persona, genre, targetReaders, reload, lang]);
+  }, [running, sceneId, persona, genre, targetReaders, lang, t, onCompleted]);
 
-  const disabled = running || analysisGate.presentation !== "enabled";
+  const disabled =
+    running || !sceneId || analysisGate.presentation !== "enabled";
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
-        <select
-          value={persona}
-          onChange={(e) => setPersona(e.target.value)}
-          className="rounded border border-border bg-background px-1.5 py-0.5 text-xs outline-none"
+    <div className="flex items-center gap-1.5">
+      <select
+        value={persona}
+        onChange={(e) => setPersona(e.target.value)}
+        className="rounded border border-border bg-background px-1.5 py-0.5 text-xs outline-none"
+      >
+        {personaDefs.map((d) => {
+          const locked = Boolean(d.requiresTargetProfile) && !hasTargetProfile;
+          return (
+            <option
+              key={d.label}
+              value={d.label}
+              disabled={locked}
+              title={
+                locked
+                  ? t("kouetsu.pseudoComment.targetProfileRequired")
+                  : undefined
+              }
+            >
+              {locked
+                ? `${d.label}${t("kouetsu.pseudoComment.requiresTargetProfile")}`
+                : d.label}
+            </option>
+          );
+        })}
+      </select>
+      {/* analysis がポリシーで OFF のときは生成ボタンを隠す（ペルソナ選択は残す）。 */}
+      {analysisGate.presentation !== "hidden" && (
+        <button
+          type="button"
+          disabled={disabled}
+          title={
+            !sceneId
+              ? t("kouetsu.selectScene")
+              : (analysisGate.tooltip ?? t("kouetsu.pseudoComment.runTooltip"))
+          }
+          onClick={() => void run()}
+          className={cn(
+            "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
+            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+          )}
         >
-          {personaDefs.map((d) => {
-            const locked =
-              Boolean(d.requiresTargetProfile) && !hasTargetProfile;
-            return (
-              <option
-                key={d.label}
-                value={d.label}
-                disabled={locked}
-                title={
-                  locked
-                    ? t("kouetsu.pseudoComment.targetProfileRequired")
-                    : undefined
-                }
-              >
-                {locked
-                  ? `${d.label}${t("kouetsu.pseudoComment.requiresTargetProfile")}`
-                  : d.label}
-              </option>
-            );
-          })}
-        </select>
-        {/* analysis がポリシーで OFF のときは生成ボタンを隠す（ペルソナ選択は残す）。 */}
-        {analysisGate.presentation !== "hidden" && (
-          <button
-            type="button"
-            disabled={disabled}
-            title={
-              analysisGate.tooltip ?? t("kouetsu.pseudoComment.runTooltip")
-            }
-            onClick={() => void run()}
-            className={cn(
-              "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
-              "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-            )}
-          >
-            {running ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <Sparkles size={12} />
-            )}
-            <span>{t("kouetsu.pseudoComment.generateButton")}</span>
-          </button>
-        )}
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {threads.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-            <Info size={18} />
-            <span>{t("kouetsu.pseudoComment.empty")}</span>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {threads.map((t) => (
-              <PseudoCommentThread
-                key={t.root.id}
-                thread={t}
-                onChanged={() => void reload()}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+          {running ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Sparkles size={12} />
+          )}
+          <span>{t("kouetsu.pseudoComment.generateButton")}</span>
+        </button>
+      )}
     </div>
   );
 }

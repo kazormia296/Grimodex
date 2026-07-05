@@ -19,6 +19,8 @@ interface KouetsuState {
   /**
    * AnimatedSlotPanel keepalive 中の KouetsuPanel の active 状態。
    * 実行時 UI 状態なので永続化しない (partialize で除外)。
+   * KouetsuPanel が書き込む。旧 CurrentScenePseudoCommentView 削除後は現状の
+   * 読み手が居ないが、hidden 中の reload bail 用途で将来また使うため残す。
    */
   panelActive: boolean;
   setActiveTab: (tab: KouetsuTab) => void;
