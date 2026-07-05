@@ -3486,25 +3486,32 @@ pub async fn call_post_effect_api(
             });
             // OpenAI 直叩き / Sakana(fugu) は reasoning モデルが max_tokens を 400 拒否する
             // ため max_completion_tokens に切替 + 予算を確保する(他の reasoning 予算サイトと整合)。
-            // Ollama / OpenaiCompatible も 32k: ローカル・自己管理エンドポイントの
-            // reasoning 系モデル (deepseek-r1 / qwen3 / plamo 等) は hidden reasoning が
-            // max_tokens に課金され、4096 だと JSON 本文が途中で切れてパース失敗になる
-            // (post_effect は構造化 JSON 必須なので途中切断 = シーン失敗)。
             // OpenRouter は従量課金のため既知の reasoning モデルのみ 32k に広げる。
-            let post_effect_limit = if matches!(
+            // Ollama / OpenaiCompatible は上限を送らない (None): ローカル・自己管理
+            // エンドポイントの reasoning 系モデル (deepseek-r1 / qwen3 / plamo 等) は
+            // hidden reasoning が max_tokens に課金され 4096 だと JSON 本文が途中で
+            // 切れる一方、32k 等の固定値は小コンテキストのサーバ (vLLM の
+            // max-model-len 8192 等) が「prompt + max_tokens > 上限」の 400 で全シーン
+            // 拒否する。省略すればサーバ既定 (モデル上限 / 残コンテキストへの自動丸め)
+            // に委ねられ、切断も 400 も避けられる。
+            let post_effect_limit: Option<u32> = if matches!(
                 settings.provider,
-                AiProvider::OpenAI
-                    | AiProvider::Sakana
-                    | AiProvider::Ollama
-                    | AiProvider::OpenaiCompatible
+                AiProvider::OpenAI | AiProvider::Sakana
             ) || (matches!(settings.provider, AiProvider::OpenRouter)
                 && is_openrouter_reasoning_model(&settings.model))
             {
-                32_000
+                Some(32_000)
+            } else if matches!(
+                settings.provider,
+                AiProvider::Ollama | AiProvider::OpenaiCompatible
+            ) {
+                None
             } else {
-                4096
+                Some(4096)
             };
-            insert_chat_completion_token_limit(&mut body, &settings.provider, post_effect_limit);
+            if let Some(limit) = post_effect_limit {
+                insert_chat_completion_token_limit(&mut body, &settings.provider, limit);
+            }
             apply_openrouter_provider_pin(
                 &mut body,
                 &settings.provider,
@@ -3534,7 +3541,7 @@ pub async fn call_post_effect_api(
             if result["choices"][0]["finish_reason"].as_str() == Some("length") {
                 tracing::warn!(
                     model = %settings.model,
-                    limit = post_effect_limit,
+                    limit = ?post_effect_limit,
                     "post_effect: 応答がトークン上限で打ち切られた (finish_reason=length) — JSON パース失敗の可能性が高い"
                 );
             }

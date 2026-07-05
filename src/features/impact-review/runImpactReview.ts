@@ -202,11 +202,17 @@ export async function runImpactReview(
     {
       ...callbacks,
       onDone: async (e) => {
-        // レビュー完了 → baseline を現在状態へ進める（次回は今回以降の差分を見る）
-        try {
-          await saveBaseline(projectId, entryId, snapshot);
-        } catch {
-          /* baseline 更新失敗は致命ではない */
+        // レビュー完了 → baseline を現在状態へ進める（次回は今回以降の差分を見る）。
+        // 部分失敗 (summary あり = 一部シーンが未解析) では前進させない:
+        // ここで進めると computeCodexDiff が次回 'no-change' になり、失敗した
+        // シーンはこの変更について二度と再チェックされなくなる。据え置けば
+        // 再実行で全候補シーンが同じ差分で再チェックされる。
+        if (!e.summary) {
+          try {
+            await saveBaseline(projectId, entryId, snapshot);
+          } catch {
+            /* baseline 更新失敗は致命ではない */
+          }
         }
         await callbacks.onDone?.(e);
       },
