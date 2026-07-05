@@ -1337,7 +1337,6 @@
     },
     "tab": {
       "issues": "指摘",
-      "editorial": "批評",
       "comments": "コメント",
       "blocker": "ブロッカー"
     },
@@ -1368,8 +1367,7 @@
     },
     "scope": {
       "current": "現在シーン",
-      "project": "プロジェクト",
-      "ignored": "除外"
+      "project": "プロジェクト"
     },
     "scopePicker": "チェック範囲を選択",
     "filter": {
@@ -1430,7 +1428,6 @@
       "runTooltip": "メタ構造レビューを実行"
     },
     "pseudoComment": {
-      "projectUnavailable": "疑似コメントは現在シーンで生成します。横断表示は「コメント」タブへ。",
       "emptyIgnored": "無視した疑似コメントはありません",
       "generationFailed": "疑似コメントの生成に失敗しました",
       "noComments": "コメントはありませんでした",
@@ -1458,8 +1455,6 @@
       "checkFailed": "誤字脱字チェックに失敗しました",
       "noIssues": "誤字脱字は見つかりませんでした",
       "launchFailed": "誤字脱字チェックを起動できませんでした",
-      "localDetection": "ローカル検出",
-      "localEmpty": "確定的なタイポは見つかっていません",
       "aiDetection": "AI 検出",
       "aiEmpty": "AI チェック未実行 / 検出なし",
       "resolvedIgnored": "解決済み / 無視",

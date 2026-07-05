@@ -1337,7 +1337,6 @@
     },
     "tab": {
       "issues": "Issues",
-      "editorial": "Editorial",
       "comments": "Comments",
       "blocker": "Blockers"
     },
@@ -1368,8 +1367,7 @@
     },
     "scope": {
       "current": "Current scene",
-      "project": "Project",
-      "ignored": "Excluded"
+      "project": "Project"
     },
     "scopePicker": "Select check scope",
     "filter": {
@@ -1430,7 +1428,6 @@
       "runTooltip": "Run meta-structure review"
     },
     "pseudoComment": {
-      "projectUnavailable": "Pseudo-comments are generated per scene. Use the Comments tab for cross-project view",
       "emptyIgnored": "No ignored pseudo-comments",
       "generationFailed": "Failed to generate pseudo comments",
       "noComments": "No comments generated",
@@ -1458,8 +1455,6 @@
       "checkFailed": "Typo check failed",
       "noIssues": "No typos found",
       "launchFailed": "Failed to launch typo check",
-      "localDetection": "Local Detection",
-      "localEmpty": "No confirmed typos found",
       "aiDetection": "AI Detection",
       "aiEmpty": "AI check not run / no findings",
       "resolvedIgnored": "Resolved / Ignored",
