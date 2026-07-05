@@ -34,6 +34,7 @@ Rules:
 - Do NOT report anything that is not in the CODEX at all — only check against what is explicitly stated in CODEX fields.
 - If a span does not contradict any CODEX entry, do not report it.
 - Include enough context in found_context (~30 characters before/after found_text) to locate the exact position in the scene.
+- If there are no violations, return JSON with an empty "violations" array ({"violations": []}). Never omit the key or return a bare empty object.
 
 When source_field is "detail", set "detail_name" to the EXACT name string from the entry's detail_values list (e.g. "height", "material"). For "summary" or "content" set detail_name to null.
 
@@ -72,6 +73,7 @@ Rules:
 - Do NOT propose alternative phrasings ("better wording") — only typo-class fixes.
 - Include enough context in found_context (~30 characters before/after found_text) to locate the exact position.
 - suggestion must be the corrected substring that would replace found_text.
+- If there are no issues, return JSON with an empty "issues" array ({"issues": []}). Never omit the key or return a bare empty object.
 
 Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
 {
@@ -96,6 +98,7 @@ Rules:
 - No CODEX is provided — judge only by the scene text itself.
 - Do NOT report anything that is not a genuine contradiction.
 - Include enough context in found_context (~30 characters before/after found_text) to locate the exact position.
+- If there are no contradictions, return JSON with an empty "pairs" array ({"pairs": []}). Never omit the key or return a bare empty object.
 
 Respond with a JSON object in this exact format (no markdown, no explanation, only the JSON):
 {

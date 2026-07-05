@@ -1300,6 +1300,7 @@
   "kouetsu": {
     "openLog": "Open logs",
     "openLogFailed": "Failed to open the log folder",
+    "partialFailure": "Some scenes failed to analyze",
     "progressToast": {
       "running": "Running…",
       "runningProgress": "Running scene {{progress}}",

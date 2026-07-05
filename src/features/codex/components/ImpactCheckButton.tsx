@@ -9,7 +9,10 @@ import { blockIfUnlicensed } from "@/features/license/gate";
 import { flushPendingSceneSaves } from "@/features/post-effect/api";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { runImpactReview } from "@/features/impact-review/runImpactReview";
-import { postEffectErrorToast } from "@/features/post-effect/errorToast";
+import {
+  postEffectErrorToast,
+  postEffectPartialToast,
+} from "@/features/post-effect/errorToast";
 
 interface ImpactCheckButtonProps {
   entryId: string;
@@ -45,7 +48,9 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
       // 未保存のシーン本文を flush してから差分を取る (整合性チェックと同じ前処理)。
       await flushPendingSceneSaves();
       const result = await runImpactReview(entryId, {
-        onDone: () => {
+        onDone: (e) => {
+          // 部分失敗 (一部シーンのみ解析失敗) は warning に集約 (成功分は保存済み)。
+          if (postEffectPartialToast(e.summary)) return;
           toast.success(t("codex.impactCheck.done"));
         },
         onError: (e) => {

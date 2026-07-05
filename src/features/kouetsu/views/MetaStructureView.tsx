@@ -36,7 +36,10 @@ import {
   buildTensionSeries,
   detectSaggyRuns,
 } from "@/features/post-effect/tensionSeries";
-import { postEffectErrorToast } from "@/features/post-effect/errorToast";
+import {
+  postEffectErrorToast,
+  postEffectPartialToast,
+} from "@/features/post-effect/errorToast";
 import type {
   PostEffectSeverity,
   SceneLensRecord,
@@ -214,30 +217,32 @@ export function MetaStructureView({ scope, sceneId }: Props) {
         setLaunching(false);
         return;
       }
-      const outcome = await new Promise<{ ok: boolean; error?: string }>(
-        (resolve) => {
-          runPostEffectMulti(
-            {
-              project_id: projectId,
-              effect_type: "meta_structure",
-              scope_type: "project",
-              scope_target_id: null,
-              model,
-              prompt_version: META_STRUCTURE_PROMPT_VERSION,
-              input_hash: payload.inputHash,
-              scenes: payload.scenes,
-              system_prompt: appendKouetsuGuidance(
-                getPromptCatalog(lang).postEffect.metaStructureSystem,
-                customKouetsu,
-              ),
-            },
-            {
-              onDone: () => resolve({ ok: true }),
-              onError: (e) => resolve({ ok: false, error: e.error }),
-            },
-          ).catch((err) => resolve({ ok: false, error: String(err) }));
-        },
-      );
+      const outcome = await new Promise<{
+        ok: boolean;
+        summary?: string;
+        error?: string;
+      }>((resolve) => {
+        runPostEffectMulti(
+          {
+            project_id: projectId,
+            effect_type: "meta_structure",
+            scope_type: "project",
+            scope_target_id: null,
+            model,
+            prompt_version: META_STRUCTURE_PROMPT_VERSION,
+            input_hash: payload.inputHash,
+            scenes: payload.scenes,
+            system_prompt: appendKouetsuGuidance(
+              getPromptCatalog(lang).postEffect.metaStructureSystem,
+              customKouetsu,
+            ),
+          },
+          {
+            onDone: (e) => resolve({ ok: true, summary: e.summary }),
+            onError: (e) => resolve({ ok: false, error: e.error }),
+          },
+        ).catch((err) => resolve({ ok: false, error: String(err) }));
+      });
       await loadLens(projectId);
       setLaunching(false);
       if (!outcome.ok) {
@@ -245,6 +250,9 @@ export function MetaStructureView({ scope, sceneId }: Props) {
           t("kouetsu.metaStructure.projectReviewFailed"),
           outcome.error,
         );
+      } else {
+        // 部分失敗 (一部シーンのみ解析失敗) は warning で通知 (成功分は保存済み)。
+        postEffectPartialToast(outcome.summary);
       }
     } catch (e) {
       setLaunching(false);

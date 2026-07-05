@@ -1300,6 +1300,7 @@
   "kouetsu": {
     "openLog": "ログを開く",
     "openLogFailed": "ログフォルダを開けませんでした",
+    "partialFailure": "一部のシーンで解析に失敗しました",
     "progressToast": {
       "running": "実行中…",
       "runningProgress": "実行中 {{progress}} シーン",

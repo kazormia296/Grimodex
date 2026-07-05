@@ -536,12 +536,21 @@ fn detail_name_is_valid(
 /// - ルートが Array（`[{...}]` 形式で返す LLM）
 /// - キー名揺れ（`violations` を期待しているのに `issues` / `results` 等で返す）
 /// - キーが配列でない（オブジェクトや文字列で返す）
+///
+/// 例外: ルートが空オブジェクト `{}` の場合は「該当なし」として空配列を返す。
+/// 弱いローカル LLM (gemma 等) が空配列指示を無視して `{}` だけを返す定型で、
+/// 他キーが存在しない以上キー揺れの証拠もないため、失敗扱いにしない。
 fn extract_array_field(parsed: &Value, key: &str) -> anyhow::Result<Vec<Value>> {
     if !parsed.is_object() {
         anyhow::bail!(
             "LLM 出力のルートが Object ではありません (root={})",
             value_type_name(parsed)
         );
+    }
+    // 空オブジェクト `{}` は弱いローカル LLM の「該当なし」の定型 (raw_bytes=2)。
+    // キー揺れ (他のキーで返す) とは別物なので、空配列として受理する。
+    if parsed.as_object().is_some_and(|m| m.is_empty()) {
+        return Ok(Vec::new());
     }
     let field = &parsed[key];
     if field.is_null() {
@@ -759,6 +768,25 @@ mod extract_array_field_tests {
         let msg = err.to_string();
         assert!(msg.contains("期待キー 'violations'"), "got: {msg}");
         assert!(msg.contains("issues"), "got: {msg}");
+    }
+
+    #[test]
+    fn empty_object_means_no_findings() {
+        // 弱いローカル LLM (gemma 等) は「該当なし」を `{}` (raw_bytes=2) で
+        // 返すことがある。キー揺れと違い他キーが無い = 出力構造の取り違えでは
+        // ないので、空配列として扱う (scene 失敗 → run 全体失敗にしない)。
+        let v = json!({});
+        let result = extract_array_field(&v, "issues").unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn errors_when_field_is_null_explicitly() {
+        // `{"issues": null}` は空オブジェクトではなく明示 null — 構造ズレとして
+        // 引き続きエラー (silent fail 撲滅の従来方針を維持)。
+        let v = json!({ "issues": null });
+        let err = extract_array_field(&v, "issues").unwrap_err();
+        assert!(err.to_string().contains("期待キー"), "got: {err}");
     }
 
     #[test]
@@ -4470,6 +4498,97 @@ async fn run_meta_structure_task(
 // Multi-scene run task
 // ---------------------------------------------------------------------------
 
+/// run_multi_task 終了時の着地判定。
+///
+/// 従来は 1 シーンの失敗で run 全体を即 fail + return していたため、
+/// プロジェクト全体チェックが LLM の 1 回の出力揺れ (パース不能 JSON 等) で
+/// 丸ごと失敗していた。全シーンを処理し切ったあと、失敗の集計でまとめて
+/// 着地を決める。
+enum MultiRunOutcome {
+    /// 全シーン成功 (空シーン skip 含む) — completed + done イベント。
+    Completed,
+    /// 一部失敗 — 成功シーンの annotation は保存済み。run 行は failed
+    /// (同一 input_hash がキャッシュに乗らない = 再実行で再試行できる) に
+    /// しつつ、FE には done イベント + summary で「部分完了」を伝える。
+    CompletedWithFailures(String),
+    /// 実処理した全シーンが失敗 — 従来どおり fail_run + error イベント。
+    Failed(String),
+}
+
+/// `attempted` = 空シーン skip を除いた実処理シーン数。
+/// `failures` = (scene_id, エラーメッセージ)。
+fn decide_multi_outcome(attempted: usize, failures: &[(String, String)]) -> MultiRunOutcome {
+    if failures.is_empty() {
+        return MultiRunOutcome::Completed;
+    }
+    let first_error = failures
+        .first()
+        .map(|(_, e)| e.as_str())
+        .unwrap_or("不明なエラー");
+    if failures.len() >= attempted {
+        return MultiRunOutcome::Failed(format!(
+            "全 {attempted} シーンの解析に失敗しました。最初のエラー: {first_error}"
+        ));
+    }
+    let ok = attempted - failures.len();
+    MultiRunOutcome::CompletedWithFailures(format!(
+        "{}/{attempted} シーンの解析に失敗しました（他 {ok} シーンは完了）。最初のエラー: {first_error}",
+        failures.len()
+    ))
+}
+
+#[cfg(test)]
+mod decide_multi_outcome_tests {
+    use super::{decide_multi_outcome, MultiRunOutcome};
+
+    fn fail(id: &str, err: &str) -> (String, String) {
+        (id.to_string(), err.to_string())
+    }
+
+    #[test]
+    fn all_ok_is_completed() {
+        assert!(matches!(
+            decide_multi_outcome(5, &[]),
+            MultiRunOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn zero_attempted_is_completed() {
+        // 全シーンが空で skip された場合も正常完了扱い
+        assert!(matches!(
+            decide_multi_outcome(0, &[]),
+            MultiRunOutcome::Completed
+        ));
+    }
+
+    #[test]
+    fn some_failures_is_partial_with_counts() {
+        let failures = vec![fail("s1", "パース失敗: xyz")];
+        match decide_multi_outcome(15, &failures) {
+            MultiRunOutcome::CompletedWithFailures(msg) => {
+                assert!(msg.contains("1/15"), "got: {msg}");
+                assert!(msg.contains("他 14 シーンは完了"), "got: {msg}");
+                assert!(msg.contains("パース失敗: xyz"), "got: {msg}");
+            }
+            _ => panic!("expected CompletedWithFailures"),
+        }
+    }
+
+    #[test]
+    fn all_failed_is_failed() {
+        let failures = vec![fail("s1", "err A"), fail("s2", "err B")];
+        match decide_multi_outcome(2, &failures) {
+            MultiRunOutcome::Failed(msg) => {
+                assert!(msg.contains("全 2 シーン"), "got: {msg}");
+                // 最初のエラーを代表として載せる
+                assert!(msg.contains("err A"), "got: {msg}");
+            }
+            _ => panic!("expected Failed"),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_multi_task(
     app: AppHandle,
@@ -4485,6 +4604,10 @@ async fn run_multi_task(
     let abort_flag = app.state::<PostEffectAbortFlag>();
     let total = scenes.len();
     let mut total_count = 0usize;
+    // 1 シーンの失敗で run 全体を落とさず、失敗を集計して最後に着地を決める
+    // (decide_multi_outcome)。成功シーンの annotation はその場で保存済み。
+    let mut attempted = 0usize;
+    let mut failures: Vec<(String, String)> = Vec::new();
     tracing::info!(
         run_id = %run_id,
         effect_type = %effect_type,
@@ -4517,6 +4640,21 @@ async fn run_multi_task(
                 message: Some(&msg),
             },
         );
+
+        // 空シーンは AI に投げない。空本文に指摘は存在しえず、弱いローカル
+        // モデルは空入力に対して `{}` 等の degenerate な出力を返しやすい
+        // (プロジェクト全体チェック失敗の主要因の一つだった)。
+        if scene.scene_text.trim().is_empty() {
+            tracing::info!(
+                run_id = %run_id,
+                idx = idx + 1,
+                total = total,
+                scene_id = %scene.scene_id,
+                "[post_effect] skipping empty scene"
+            );
+            continue;
+        }
+        attempted += 1;
 
         tracing::info!(
             run_id = %run_id,
@@ -4653,35 +4791,68 @@ async fn run_multi_task(
                     scene_id = %scene.scene_id,
                     elapsed_ms = elapsed_ms,
                     error = %e,
-                    "[post_effect] processing scene FAILED"
+                    "[post_effect] processing scene FAILED (continuing with remaining scenes)"
                 );
-                let _ = app.emit(
-                    "post_effect:error",
-                    ErrorEvent {
-                        run_id: &run_id,
-                        error: e.to_string(),
-                    },
-                );
-                fail_run(&app, &run_id, &e.to_string());
-                return;
+                failures.push((scene.scene_id.clone(), e.to_string()));
             }
         }
     }
 
-    tracing::info!(
-        run_id = %run_id,
-        total_count = total_count,
-        "[post_effect] run_multi_task DONE"
-    );
-    finalize_run(&app, &run_id);
-    let _ = app.emit(
-        "post_effect:done",
-        DoneEvent {
-            run_id: &run_id,
-            annotation_count: total_count,
-            summary: None,
-        },
-    );
+    match decide_multi_outcome(attempted, &failures) {
+        MultiRunOutcome::Completed => {
+            tracing::info!(
+                run_id = %run_id,
+                total_count = total_count,
+                "[post_effect] run_multi_task DONE"
+            );
+            finalize_run(&app, &run_id);
+            let _ = app.emit(
+                "post_effect:done",
+                DoneEvent {
+                    run_id: &run_id,
+                    annotation_count: total_count,
+                    summary: None,
+                },
+            );
+        }
+        MultiRunOutcome::CompletedWithFailures(summary) => {
+            tracing::warn!(
+                run_id = %run_id,
+                total_count = total_count,
+                failed_scenes = failures.len(),
+                summary = %summary,
+                "[post_effect] run_multi_task DONE with partial failures"
+            );
+            // DB 上は failed にする: 同一 input_hash が completed キャッシュに
+            // 乗ると、失敗シーンが本文未変更のまま二度と再解析されないため。
+            // FE には done + summary を渡し「成功分は保存済み・一部失敗」を
+            // 警告トーストで見せる (error イベントだと全滅に見えてしまう)。
+            fail_run(&app, &run_id, &summary);
+            let _ = app.emit(
+                "post_effect:done",
+                DoneEvent {
+                    run_id: &run_id,
+                    annotation_count: total_count,
+                    summary: Some(summary),
+                },
+            );
+        }
+        MultiRunOutcome::Failed(message) => {
+            tracing::error!(
+                run_id = %run_id,
+                failed_scenes = failures.len(),
+                "[post_effect] run_multi_task FAILED (all scenes)"
+            );
+            fail_run(&app, &run_id, &message);
+            let _ = app.emit(
+                "post_effect:error",
+                ErrorEvent {
+                    run_id: &run_id,
+                    error: message,
+                },
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
