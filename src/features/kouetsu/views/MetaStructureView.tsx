@@ -87,15 +87,6 @@ export function MetaStructureView({ scope, sceneId }: Props) {
   // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
   // 実行中なのにボタンが通常表示へ戻る）。
   const [launching, setLaunching] = useState(false);
-  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
-  const sceneRunning = useIsPostEffectRunning(
-    "meta_structure",
-    "scene",
-    sceneId,
-  );
-  const projectRunning = useIsPostEffectRunning("meta_structure", "project");
-  const storeRunning = sceneRunning || projectRunning;
-  const running = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
@@ -110,6 +101,22 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     kouetsuScope.type === "folder" ? ("folder" as const) : ("project" as const);
   const scopeTargetId =
     kouetsuScope.type === "folder" ? kouetsuScope.anchorId : null;
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。project 側は
+  // scopeType/scopeTargetId 導出後に呼ぶことで folder run を正しく区別する
+  // （run 実行中に unmount→remount してもスピナーが消えない）。scene 側は
+  // シーン単位の run のため対象外（現状維持）。
+  const sceneRunning = useIsPostEffectRunning(
+    "meta_structure",
+    "scene",
+    sceneId,
+  );
+  const projectRunning = useIsPostEffectRunning(
+    "meta_structure",
+    scopeType,
+    scopeTargetId ?? undefined,
+  );
+  const storeRunning = sceneRunning || projectRunning;
+  const running = launching || storeRunning;
   // 表示フィルタ用の subtree scene 集合（folder 以外は null = 絞り込みなし）。
   const visibleSceneIds = useMemo(() => {
     if (kouetsuScope.type !== "folder") return null;

@@ -66,14 +66,6 @@ export function ProjectAnnotationsView() {
   // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
   // 実行中なのにボタンが通常表示へ戻る）。
   const [launching, setLaunching] = useState(false);
-  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
-  const consistencyRunning = useIsPostEffectRunning("consistency", "project");
-  const intraRunning = useIsPostEffectRunning(
-    "intra_scene_consistency",
-    "project",
-  );
-  const storeRunning = consistencyRunning || intraRunning;
-  const runningAll = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
 
   const projectId = useTreeStore((s) => s.projectId);
@@ -89,6 +81,21 @@ export function ProjectAnnotationsView() {
     kouetsuScope.type === "folder" ? ("folder" as const) : ("project" as const);
   const scopeTargetId =
     kouetsuScope.type === "folder" ? kouetsuScope.anchorId : null;
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。scopeType/
+  // scopeTargetId 導出後に呼ぶことで folder run を正しく区別する（run
+  // 実行中に unmount→remount してもスピナーが消えない）。
+  const consistencyRunning = useIsPostEffectRunning(
+    "consistency",
+    scopeType,
+    scopeTargetId ?? undefined,
+  );
+  const intraRunning = useIsPostEffectRunning(
+    "intra_scene_consistency",
+    scopeType,
+    scopeTargetId ?? undefined,
+  );
+  const storeRunning = consistencyRunning || intraRunning;
+  const runningAll = launching || storeRunning;
   // 表示フィルタ用の subtree scene 集合（folder 以外は null = 絞り込みなし）。
   const visibleSceneIds = useMemo(() => {
     if (kouetsuScope.type !== "folder") return null;

@@ -84,6 +84,7 @@ vi.mock("@/features/post-effect/api", async (importOriginal) => {
 
 import { ProjectReviewView } from "./ProjectReviewView";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
+import { usePostEffectRunStore } from "@/features/post-effect/runStore";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
@@ -231,5 +232,39 @@ describe("ProjectReviewView folder スコープ", () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+});
+
+describe("ProjectReviewView 実行中表示の scope 一致", () => {
+  beforeEach(() => {
+    h.getSceneIdsForScope.mockReset();
+    h.getSceneIdsForScope.mockReturnValue(["scene-1"]);
+    useKouetsuStore.setState({ scope: { type: "folder", anchorId: "ch1" } });
+  });
+
+  afterEach(() => {
+    cleanup();
+    useKouetsuStore.setState({ scope: { type: "scene" } });
+    usePostEffectRunStore.setState({ runs: {} });
+  });
+
+  it("folder スコープで実行中の run があれば、unmount→remount しても実行ボタンが disabled のまま", () => {
+    // 実障害: useIsPostEffectRunning("review", "project") が scope 固定だと
+    // folder run（scopeType:"folder"）を拾えず、unmount→remount で
+    // ボタンが再有効化 → 二重起動を許してしまう。
+    usePostEffectRunStore.getState().begin({
+      runId: "r1",
+      projectId: "p1",
+      effectType: "review",
+      scopeType: "folder",
+      scopeTargetId: "ch1",
+    });
+
+    const { unmount } = render(<ProjectReviewView />);
+    expect(screen.getByRole("button", { name: "AIレビュー" })).toBeDisabled();
+
+    unmount();
+    render(<ProjectReviewView />);
+    expect(screen.getByRole("button", { name: "AIレビュー" })).toBeDisabled();
   });
 });
