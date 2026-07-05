@@ -1362,7 +1362,7 @@
     },
     "comments": {
       "empty": "No comments",
-      "emptyHint": "Select text and press {{shortcut}} to add a manual comment; pseudo-comments from the Editorial tab are also aggregated here",
+      "emptyHint": "Select text and press {{shortcut}} to add a comment. Generate AI comments with the “AI Comment” button above.",
       "jumpToLocation": "Open and select location"
     },
     "scope": {
@@ -1376,7 +1376,6 @@
     },
     "editorial": {
       "review": "Review",
-      "pseudoComment": "Pseudo-comments",
       "intentDrift": "Intent drift",
       "metaStructure": "Meta structure",
       "timeline": "Timeline"
@@ -1435,7 +1434,6 @@
       "targetProfileRequired": "Enter target reader profile in project settings to enable",
       "requiresTargetProfile": " (requires target reader setting)",
       "generateButton": "AI Comment",
-      "empty": "No comments yet",
       "runTooltip": "Generate comments with the selected persona"
     },
     "review": {

@@ -1362,7 +1362,7 @@
     },
     "comments": {
       "empty": "コメントはありません",
-      "emptyHint": "本文を選択して {{shortcut}} で手動コメント、批評タブの疑似コメントもここに集約されます",
+      "emptyHint": "本文を選択して {{shortcut}} でコメントを追加できます。AIコメントは上の「AIコメント」ボタンから生成できます",
       "jumpToLocation": "該当箇所を開いて選択"
     },
     "scope": {
@@ -1376,7 +1376,6 @@
     },
     "editorial": {
       "review": "レビュー",
-      "pseudoComment": "疑似コメント",
       "intentDrift": "狙いズレ",
       "metaStructure": "メタ構造",
       "timeline": "時系列"
@@ -1435,7 +1434,6 @@
       "targetProfileRequired": "プロジェクト設定で想定読者を入力すると選べます",
       "requiresTargetProfile": "（要・想定読者設定）",
       "generateButton": "AIコメント",
-      "empty": "コメントはまだありません",
       "runTooltip": "選択したペルソナでコメントを生成"
     },
     "review": {
