@@ -6,7 +6,7 @@ import { listAnnotationsForProject } from "@/features/post-effect/api";
 import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
-import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
+import { useResolvedKouetsuScope } from "@/features/kouetsu/useResolvedKouetsuScope";
 
 /**
  * 影響レビュー (impact_review_anchor) のプロジェクト全件ビュー。
@@ -23,7 +23,8 @@ export function ProjectImpactReviewView() {
   const nodes = useTreeStore((s) => s.nodes);
 
   // folder スコープでは subtree 外シーンの指摘を隠す（表示専用ビュー）。
-  const kouetsuScope = useKouetsuStore((s) => s.scope);
+  // 宙に浮いた folder anchor は resolve 段階で project へ倒れる（絞り込み無効）。
+  const kouetsuScope = useResolvedKouetsuScope();
   const visibleSceneIds = useMemo(() => {
     if (kouetsuScope.type !== "folder") return null;
     return new Set(getSceneIdsForScope(nodes, "folder", kouetsuScope.anchorId));

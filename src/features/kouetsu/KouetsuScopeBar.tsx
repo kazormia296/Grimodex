@@ -9,6 +9,7 @@ import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { useKouetsuStore, type KouetsuStatusFilter } from "./kouetsuStore";
+import { useResolvedKouetsuScope } from "./useResolvedKouetsuScope";
 
 const FILTERS: Array<{ id: KouetsuStatusFilter; labelKey: string }> = [
   { id: "open", labelKey: "kouetsu.filter.open" },
@@ -37,7 +38,10 @@ function openSceneInEditor(sceneId: string): void {
  */
 export function KouetsuScopeBar() {
   const { t } = useTranslation();
-  const scope = useKouetsuStore((s) => s.scope);
+  // 宙に浮いた folder anchor は project へ正規化した scope を表示/選択に使う
+  // （ラベルは「プロジェクト」表示なのに selection/scope が folder のまま、という
+  // 不整合を防ぐ）。書き込み（setScope）は生 store に対して行う。
+  const scope = useResolvedKouetsuScope();
   const setScope = useKouetsuStore((s) => s.setScope);
   const statusFilter = useKouetsuStore((s) => s.statusFilter);
   const setStatusFilter = useKouetsuStore((s) => s.setStatusFilter);

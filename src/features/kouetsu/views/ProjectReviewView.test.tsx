@@ -33,7 +33,12 @@ vi.mock("@/features/tree/treeStore", () => {
   const state = {
     projectId: "p1",
     scenes: [],
-    nodes: [{ id: "scene-1", nodeType: "scene" }],
+    // ch1 = 実在する folder anchor（folder テストで resolve が folder を維持する
+    // ために必要）。resolveKouetsuScope は nodes に無い anchor を project へ倒す。
+    nodes: [
+      { id: "scene-1", nodeType: "scene" },
+      { id: "ch1", nodeType: "folder", parentId: null },
+    ],
   };
   return {
     useTreeStore: Object.assign(
@@ -227,6 +232,63 @@ describe("ProjectReviewView folder スコープ", () => {
       "p1",
       "folder",
       "ch1",
+      expect.anything(),
+      "review",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+});
+
+describe("ProjectReviewView 宙に浮いた folder anchor", () => {
+  beforeEach(() => {
+    h.buildMultiPayload.mockReset();
+    h.runPostEffectMulti.mockReset();
+    h.listAnnotationsForProject.mockReset();
+    h.getSceneIdsForScope.mockReset();
+    h.getSceneIdsForScope.mockReturnValue(["scene-1"]);
+    h.runPostEffectMulti.mockImplementation(
+      async (_req: unknown, callbacks: { onDone?: (e: unknown) => void }) => {
+        callbacks.onDone?.({
+          run_id: "r1",
+          annotation_count: 0,
+          from_cache: false,
+        });
+        return { runId: "r1", cleanup: () => {} };
+      },
+    );
+    h.listAnnotationsForProject.mockResolvedValue({ annotations: [] });
+    // anchorId が現ツリー(nodes)に存在しない = プロジェクト切替/フォルダ削除で
+    // 宙に浮いた状態。resolve で project へ倒れるべき。
+    useKouetsuStore.setState({ scope: { type: "folder", anchorId: "ghost" } });
+  });
+
+  afterEach(() => {
+    cleanup();
+    h.dirtyTabIds.clear();
+    useKouetsuStore.setState({ scope: { type: "scene" } });
+  });
+
+  it("anchorId が nodes に無いとき multi は project 引数で起動する", async () => {
+    h.buildMultiPayload.mockResolvedValue({
+      inputHash: "hash-1",
+      scenes: [{ scene_id: "scene-1", scene_text: "本文" }],
+    });
+
+    render(<ProjectReviewView />);
+    fireEvent.click(screen.getByRole("button", { name: "AIレビュー" }));
+
+    await waitFor(() => expect(h.runPostEffectMulti).toHaveBeenCalled());
+    const req = h.runPostEffectMulti.mock.calls[0][0] as {
+      scope_type: string;
+      scope_target_id: string | null;
+    };
+    expect(req.scope_type).toBe("project");
+    expect(req.scope_target_id).toBeNull();
+    expect(h.buildMultiPayload).toHaveBeenCalledWith(
+      "p1",
+      "project",
+      null,
       expect.anything(),
       "review",
       expect.anything(),

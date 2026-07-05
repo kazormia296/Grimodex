@@ -44,7 +44,7 @@ import type {
   PostEffectSeverity,
   SceneLensRecord,
 } from "@/features/post-effect/types";
-import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
+import { useResolvedKouetsuScope } from "@/features/kouetsu/useResolvedKouetsuScope";
 
 const SEVERITY_ICON: Record<PostEffectSeverity, React.ReactNode> = {
   error: <XCircle size={13} className="shrink-0 text-destructive" />,
@@ -95,8 +95,9 @@ export function MetaStructureView({ scope, sceneId }: Props) {
   const loadLens = useLensStore((s) => s.load);
 
   // 校閲スコープ。folder のとき subtree に絞る（prop の scope は "current" |
-  // "project" のままで、folder は "project" 扱いで渡ってくる）。
-  const kouetsuScope = useKouetsuStore((s) => s.scope);
+  // "project" のままで、folder は "project" 扱いで渡ってくる）。宙に浮いた
+  // folder anchor は resolve 段階で project へ倒れる。
+  const kouetsuScope = useResolvedKouetsuScope();
   const scopeType =
     kouetsuScope.type === "folder" ? ("folder" as const) : ("project" as const);
   const scopeTargetId =

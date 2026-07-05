@@ -29,7 +29,7 @@ import {
   postEffectErrorToast,
   postEffectPartialToast,
 } from "@/features/post-effect/errorToast";
-import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
+import { useResolvedKouetsuScope } from "@/features/kouetsu/useResolvedKouetsuScope";
 
 export function ProjectReviewView() {
   const { t } = useTranslation();
@@ -46,7 +46,8 @@ export function ProjectReviewView() {
   const nodes = useTreeStore((s) => s.nodes);
 
   // 校閲スコープ。folder のとき subtree に絞る。scene / project は project 扱い。
-  const kouetsuScope = useKouetsuStore((s) => s.scope);
+  // 宙に浮いた folder anchor は resolve 段階で project へ倒れる。
+  const kouetsuScope = useResolvedKouetsuScope();
   const scopeType =
     kouetsuScope.type === "folder" ? ("folder" as const) : ("project" as const);
   const scopeTargetId =
