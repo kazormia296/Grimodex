@@ -497,8 +497,6 @@
     "degenLayout": "レイアウトが退化しているため、デフォルトに戻しました。（{{reason}}）",
     "exportTitle": "エクスポート (Ctrl+Shift+E)",
     "exportLabel": "エクスポート",
-    "bookExportTitle": "本の書き出し（Vivliostyle）",
-    "bookExportLabel": "本の書き出し",
     "settingsTitle": "設定 (Ctrl+Alt+,)",
     "settingsLabel": "設定",
     "settingsLabelUpdateAvailable": "設定（更新があります）"
@@ -3983,6 +3981,7 @@
   },
   "vivliostyle": {
     "title": "本の書き出し（Vivliostyle）",
+    "tab": "本の書き出し",
     "theme": {
       "label": "テーマ",
       "bunkoVertical": "文庫判（縦書き）",

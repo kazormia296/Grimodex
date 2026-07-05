@@ -46,9 +46,9 @@ import {
   guardInlineAiPending,
 } from "@/features/editor/inlineAi/pendingGuard";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
-import { Settings, FileOutput, BookOpen } from "lucide-react";
+import { Settings, FileOutput } from "lucide-react";
 import { ExportDialog } from "@/features/export/ExportDialog";
-import { VivliostyleDialog } from "@/features/vivliostyle/VivliostyleDialog";
+import type { ExportDialogMode } from "@/features/export/ExportDialog";
 import {
   COLOR_THEMES,
   DEFAULT_COLOR_THEME,
@@ -289,7 +289,11 @@ function EditorScreen() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingsCategory>("project");
   const [showExport, setShowExport] = useState(false);
-  const [showVivliostyle, setShowVivliostyle] = useState(false);
+  // エクスポートダイアログを特定タブで開く要求。seq（nonce）の変化で
+  // ダイアログ既開時の再要求にもタブ切替が効く（undefined なら前回タブ維持）。
+  const [exportModeRequest, setExportModeRequest] = useState<
+    { mode: ExportDialogMode; seq: number } | undefined
+  >(undefined);
   const [showSnapshotModal, setShowSnapshotModal] = useState(false);
   const [showTransferDialog, setShowTransferDialog] = useState(false);
   const [transferTab, setTransferTab] = useState<TransferTab>("import");
@@ -460,10 +464,15 @@ function EditorScreen() {
     return () => window.removeEventListener("open-export-dialog", onOpenExport);
   }, []);
 
-  // Open Vivliostyle book-export dialog via custom event (command palette)
+  // Open export dialog on the book (Vivliostyle) tab via custom event
+  // (command palette)
   useEffect(() => {
     function onOpenVivliostyle() {
-      setShowVivliostyle(true);
+      setExportModeRequest((prev) => ({
+        mode: "book",
+        seq: (prev?.seq ?? 0) + 1,
+      }));
+      setShowExport(true);
     }
     window.addEventListener("open-vivliostyle-dialog", onOpenVivliostyle);
     return () =>
@@ -711,18 +720,6 @@ function EditorScreen() {
                   {t("app.exportLabel")}
                 </span>
               </button>
-              <button
-                type="button"
-                aria-label={t("app.bookExportLabel")}
-                title={t("app.bookExportTitle")}
-                onClick={() => setShowVivliostyle((v) => !v)}
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              >
-                <BookOpen className="h-4 w-4 shrink-0" />
-                <span className="hidden whitespace-nowrap text-sm xl:inline">
-                  {t("app.bookExportLabel")}
-                </span>
-              </button>
             </>
           }
           center={<CommandCenterBar />}
@@ -767,10 +764,10 @@ function EditorScreen() {
         onClose={() => setShowSettings(false)}
         initialCategory={settingsInitialCategory}
       />
-      <ExportDialog open={showExport} onClose={() => setShowExport(false)} />
-      <VivliostyleDialog
-        open={showVivliostyle}
-        onClose={() => setShowVivliostyle(false)}
+      <ExportDialog
+        open={showExport}
+        onClose={() => setShowExport(false)}
+        modeRequest={exportModeRequest}
       />
       <ProjectSnapshotModal
         open={showSnapshotModal}
