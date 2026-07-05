@@ -42,7 +42,10 @@ import type {
   PostEffectSeverity,
 } from "@/features/post-effect/types";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
-import { postEffectErrorToast } from "@/features/post-effect/errorToast";
+import {
+  postEffectErrorToast,
+  postEffectPartialToast,
+} from "@/features/post-effect/errorToast";
 
 const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   error: <XCircle size={13} className="text-destructive shrink-0" />,
@@ -235,6 +238,17 @@ export function ProjectAnnotationsView() {
             errors.push(
               `${t("kouetsu.consistency.intraPrefix")}: ${resB.error}`,
             );
+          // 部分失敗 (一部シーンのみ解析失敗) の summary。片方が完全失敗した
+          // 場合でも、もう片方の部分失敗を握り潰さないよう先に集めておく。
+          const partialSummaries: string[] = [];
+          if (resA.kind === "ok" && resA.e.summary) {
+            partialSummaries.push(`Codex: ${resA.e.summary}`);
+          }
+          if (resB.kind === "ok" && resB.e.summary) {
+            partialSummaries.push(
+              `${t("kouetsu.consistency.intraPrefix")}: ${resB.e.summary}`,
+            );
+          }
 
           if (errors.length === 2) {
             postEffectErrorToast(
@@ -252,7 +266,15 @@ export function ProjectAnnotationsView() {
               t("kouetsu.projectAnnotations.checkFailedPartial", { label }),
               errors[0],
             );
+            // 生き残った側が部分失敗していた場合はその警告も出す。
+            if (partialSummaries.length > 0) {
+              postEffectPartialToast(partialSummaries.join(" / "));
+            }
           } else {
+            if (partialSummaries.length > 0) {
+              postEffectPartialToast(partialSummaries.join(" / "));
+              return;
+            }
             const bothCache =
               resA.kind === "ok" &&
               resB.kind === "ok" &&
@@ -297,6 +319,10 @@ export function ProjectAnnotationsView() {
               t("kouetsu.consistency.singleEffectError", { label }),
               res.error,
             );
+            return;
+          }
+          // 部分失敗 (一部シーンのみ解析失敗) は warning に集約する。
+          if (postEffectPartialToast(res.e.summary)) {
             return;
           }
           if (res.e.from_cache) {

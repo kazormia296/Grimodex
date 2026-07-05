@@ -2,15 +2,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // listen / invoke の型と mock を hoist
-const { mockListen, mockInvoke, mockDirtyTabIds } = vi.hoisted(() => ({
-  mockListen: vi.fn(),
-  mockInvoke: vi.fn(),
-  mockDirtyTabIds: new Set<string>(),
-}));
+const { mockListen, mockInvoke, mockDirtyTabIds, mockNotify, mockEnsurePerm } =
+  vi.hoisted(() => ({
+    mockListen: vi.fn(),
+    mockInvoke: vi.fn(),
+    mockDirtyTabIds: new Set<string>(),
+    mockNotify: vi.fn(),
+    mockEnsurePerm: vi.fn(),
+  }));
 
 vi.mock("@/lib/tauri", () => ({
   listen: mockListen,
   invoke: mockInvoke,
+}));
+
+// デスクトップ通知は環境依存 (Tauri plugin + document.hasFocus) なので stub し、
+// 配線 (呼ばれる/呼ばれない) だけをここで検証する。
+vi.mock("./desktopNotify", () => ({
+  ensureNotificationPermission: mockEnsurePerm,
+  notifyRunTerminalIfUnfocused: mockNotify,
 }));
 
 // 実 tabStore は layoutStore/treeStore まで引き込むため最小 stub にする
@@ -48,6 +58,8 @@ beforeEach(() => {
   subs = [];
   mockListen.mockReset();
   mockInvoke.mockReset();
+  mockNotify.mockReset();
+  mockEnsurePerm.mockReset();
   // listen(channel, handler) は unlisten 関数を返す Promise
   mockListen.mockImplementation(
     async (channel: EventChannel, handler: Handler) => {
@@ -374,7 +386,10 @@ describe("runPostEffect run_id フィルタリング", () => {
     });
   });
 
-  it("from_cache は runStore に登録しない（グローバル進捗に出さない）", async () => {
+  it("from_cache は runStore に cached 終端で登録する（常駐トーストに出す）", async () => {
+    // 旧仕様は「登録しない」だったが、成功トーストを持たないビュー (review 等)
+    // では「押しても何も起きない」ように見えた。cached の終端エントリとして
+    // 登録し、全サーフェス共通のフィードバックを常駐トーストに出す。
     mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: true });
     const onDone = vi.fn();
     await runPostEffect(baseReq, { onDone });
@@ -382,6 +397,64 @@ describe("runPostEffect run_id フィルタリング", () => {
     await Promise.resolve();
 
     expect(onDone).toHaveBeenCalledTimes(1);
-    expect(usePostEffectRunStore.getState().runs["r1"]).toBeUndefined();
+    const run = usePostEffectRunStore.getState().runs["r1"];
+    expect(run).toBeDefined();
+    // 合成 done (dispatchDone → complete) が cached 終端を上書きしないこと。
+    expect(run.outcome).toEqual({ kind: "cached" });
+    // 終端済みなので spinner 判定 (outcome undefined) には乗らない。
+  });
+
+  it("done イベントの summary が outcome に伝搬する（部分失敗表示用）", async () => {
+    mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: false });
+    await runPostEffect(baseReq, {});
+
+    fireEvent("post_effect:done", {
+      run_id: "r1",
+      annotation_count: 4,
+      summary: "3/15 シーンの解析に失敗しました",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(usePostEffectRunStore.getState().runs["r1"].outcome).toEqual({
+      kind: "done",
+      annotationCount: 4,
+      summary: "3/15 シーンの解析に失敗しました",
+    });
+  });
+
+  it("done/error でデスクトップ通知が配線され、from_cache では呼ばれない", async () => {
+    // 非キャッシュ run: 開始時に権限確保 + done で通知
+    mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: false });
+    await runPostEffect(baseReq, {});
+    expect(mockEnsurePerm).toHaveBeenCalledTimes(1);
+
+    fireEvent("post_effect:done", { run_id: "r1", annotation_count: 2 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockNotify).toHaveBeenCalledWith(
+      { effectType: "review", scopeType: "scene" },
+      { kind: "done", annotationCount: 2, summary: undefined },
+    );
+
+    // error でも通知
+    mockNotify.mockClear();
+    mockInvoke.mockResolvedValue({ run_id: "r2", from_cache: false });
+    await runPostEffect(baseReq, {});
+    fireEvent("post_effect:error", { run_id: "r2", error: "boom" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockNotify).toHaveBeenCalledWith(
+      { effectType: "review", scopeType: "scene" },
+      { kind: "error", error: "boom" },
+    );
+
+    // キャッシュ短絡: 即時完了 (ユーザーは操作直後で見ている) なので通知しない
+    mockNotify.mockClear();
+    mockInvoke.mockResolvedValue({ run_id: "r3", from_cache: true });
+    await runPostEffect(baseReq, {});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockNotify).not.toHaveBeenCalled();
   });
 });

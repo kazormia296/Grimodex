@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Loader2, CircleCheck, CircleAlert } from "lucide-react";
+import { Loader2, CircleCheck, CircleAlert, X } from "lucide-react";
 import { toast } from "sonner";
 import { abortPostEffectRun } from "./api";
 import { usePostEffectRunStore, type ActivePostEffectRun } from "./runStore";
@@ -85,8 +85,14 @@ export function PostEffectProgressToast() {
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {run.outcome === undefined ? (
                 <Loader2 size={13} className="animate-spin shrink-0" />
+              ) : run.outcome.kind === "cached" ? (
+                <CircleCheck size={13} className="shrink-0 text-blue-400" />
               ) : run.outcome.kind === "done" ? (
-                <CircleCheck size={13} className="shrink-0 text-green-500" />
+                run.outcome.summary ? (
+                  <CircleAlert size={13} className="shrink-0 text-yellow-500" />
+                ) : (
+                  <CircleCheck size={13} className="shrink-0 text-green-500" />
+                )
               ) : (
                 <CircleAlert size={13} className="shrink-0 text-red-500" />
               )}
@@ -112,6 +118,20 @@ export function PostEffectProgressToast() {
                     {t("kouetsu.progressToast.abort")}
                   </button>
                 ))}
+              {/* 終端後は手動クローズ可。error / 部分失敗は自動で消えない
+                  (runStore 側でタイマーを張らない) ため、これが唯一の閉じ導線。 */}
+              {run.outcome !== undefined && (
+                <button
+                  type="button"
+                  aria-label={t("kouetsu.progressToast.close")}
+                  onClick={() =>
+                    usePostEffectRunStore.getState().remove(run.runId)
+                  }
+                  className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                >
+                  <X size={12} />
+                </button>
+              )}
             </div>
             <div style={{ marginTop: 6, opacity: 0.8 }}>
               {run.outcome === undefined
@@ -120,16 +140,34 @@ export function PostEffectProgressToast() {
                       progress: run.message,
                     })
                   : t("kouetsu.progressToast.running")
-                : run.outcome.kind === "done"
-                  ? run.outcome.annotationCount > 0
-                    ? t("kouetsu.progressToast.done", {
-                        count: run.outcome.annotationCount,
-                      })
-                    : t("kouetsu.progressToast.doneNoFindings")
-                  : t("kouetsu.progressToast.failed", {
-                      error: run.outcome.error,
-                    })}
+                : run.outcome.kind === "cached"
+                  ? t("kouetsu.progressToast.cached")
+                  : run.outcome.kind === "done"
+                    ? run.outcome.summary
+                      ? t("kouetsu.progressToast.donePartial", {
+                          count: run.outcome.annotationCount,
+                        })
+                      : run.outcome.annotationCount > 0
+                        ? t("kouetsu.progressToast.done", {
+                            count: run.outcome.annotationCount,
+                          })
+                        : t("kouetsu.progressToast.doneNoFindings")
+                    : t("kouetsu.progressToast.failed", {
+                        error: run.outcome.error,
+                      })}
             </div>
+            {run.outcome?.kind === "done" && run.outcome.summary && (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 11,
+                  opacity: 0.7,
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {run.outcome.summary}
+              </div>
+            )}
             {run.outcome === undefined && (
               <div
                 aria-hidden

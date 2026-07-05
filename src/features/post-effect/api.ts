@@ -6,6 +6,10 @@
 import { invoke, listen } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { usePostEffectRunStore } from "./runStore";
+import {
+  ensureNotificationPermission,
+  notifyRunTerminalIfUnfocused,
+} from "./desktopNotify";
 import type {
   PostEffectRun,
   PostEffectAnnotation,
@@ -392,11 +396,28 @@ async function runPostEffectInternal(
     callbacks.onPartial?.(e);
   };
   const dispatchDone = wrapTerminal(async (e: PostEffectDoneEvent) => {
-    usePostEffectRunStore.getState().complete(e.run_id, e.annotation_count);
+    usePostEffectRunStore
+      .getState()
+      .complete(e.run_id, e.annotation_count, e.summary ?? undefined);
+    // 非フォーカス時のみ OS 通知 (キャッシュ短絡は即時完了なので通知しない)。
+    if (!e.from_cache) {
+      void notifyRunTerminalIfUnfocused(
+        { effectType: meta.effectType, scopeType: meta.scopeType },
+        {
+          kind: "done",
+          annotationCount: e.annotation_count,
+          summary: e.summary ?? undefined,
+        },
+      );
+    }
     if (callbacks.onDone) await callbacks.onDone(e);
   });
   const dispatchError = wrapTerminal(async (e: PostEffectErrorEvent) => {
     usePostEffectRunStore.getState().fail(e.run_id, e.error);
+    void notifyRunTerminalIfUnfocused(
+      { effectType: meta.effectType, scopeType: meta.scopeType },
+      { kind: "error", error: e.error },
+    );
     if (callbacks.onError) await callbacks.onError(e);
   });
 
@@ -456,8 +477,20 @@ async function runPostEffectInternal(
     // 既存の completed run の id だけ返してくる。done イベントは
     // 永遠に飛んでこないので、ここで合成的に onDone を fire してやる。
     // (これがないと spinner が永久に回る)
-    // runStore には登録しない = キャッシュ短絡はグローバル進捗に出さない。
+    // 常駐トーストには cached の終端エントリとして登録する: 以前は登録
+    // しない仕様で、成功トーストを持たないビュー (review / timeline /
+    // meta_structure) では「押しても何も起きない」ように見えていた。
+    // 全サーフェス共通のフィードバックはこの 1 箇所で担保する。
+    // (合成 done → complete は runStore 側の終端上書きガードで無視される)
     if (result.from_cache) {
+      usePostEffectRunStore.getState().recordCacheHit({
+        runId: result.run_id,
+        projectId: meta.projectId,
+        effectType: meta.effectType,
+        scopeType: meta.scopeType,
+        scopeTargetId: meta.scopeTargetId,
+        totalScenes: meta.totalScenes,
+      });
       const synthetic: PostEffectDoneEvent = {
         run_id: result.run_id,
         annotation_count: 0,
@@ -475,6 +508,9 @@ async function runPostEffectInternal(
       scopeTargetId: meta.scopeTargetId,
       totalScenes: meta.totalScenes,
     });
+    // 通知権限は run 開始時 = ユーザーがボタンを押した直後 (フォーカス中) に
+    // 確保しておく。終端時の通知 (非フォーカス中) では権限プロンプトを出さない。
+    void ensureNotificationPermission();
     // begin 後に再生する（progress が store のエントリを見つけられるように）。
     for (const b of replay) replayOne(b);
     return { runId: result.run_id, cleanup };

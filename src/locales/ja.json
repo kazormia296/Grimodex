@@ -1300,15 +1300,19 @@
   "kouetsu": {
     "openLog": "ログを開く",
     "openLogFailed": "ログフォルダを開けませんでした",
+    "partialFailure": "一部のシーンで解析に失敗しました",
     "progressToast": {
       "running": "実行中…",
       "runningProgress": "実行中 {{progress}} シーン",
       "done": "完了 — 指摘 {{count}} 件",
       "doneNoFindings": "完了 — 指摘なし",
+      "donePartial": "完了（一部シーン失敗）— 指摘 {{count}} 件",
+      "cached": "キャッシュから再利用 — 前回から内容が変わっていないため送信していません",
       "failed": "失敗: {{error}}",
       "abort": "中止",
       "aborting": "中止中…",
       "abortFailed": "中止要求に失敗しました",
+      "close": "閉じる",
       "effect": {
         "review": "AIレビュー",
         "typo_detection": "誤字脱字チェック",

@@ -42,7 +42,10 @@ import {
   TypoChip,
   TypoContrastRow,
 } from "@/features/post-effect/AnnotationDetails";
-import { postEffectErrorToast } from "@/features/post-effect/errorToast";
+import {
+  postEffectErrorToast,
+  postEffectPartialToast,
+} from "@/features/post-effect/errorToast";
 import type {
   PostEffectAnnotation,
   PostEffectSeverity,
@@ -149,6 +152,7 @@ export function ProjectTypoView() {
         ok: boolean;
         from_cache?: boolean;
         count?: number;
+        summary?: string;
         error?: string;
       }>((resolve) => {
         runPostEffectMulti(
@@ -172,6 +176,7 @@ export function ProjectTypoView() {
                 ok: true,
                 from_cache: e.from_cache,
                 count: e.annotation_count,
+                summary: e.summary,
               }),
             onError: (e) => resolve({ ok: false, error: e.error }),
           },
@@ -186,6 +191,11 @@ export function ProjectTypoView() {
           t("kouetsu.projectTypo.checkFailed"),
           result.error,
         );
+        return;
+      }
+      // 部分失敗 (一部シーンのみ解析失敗) は warning に集約し、成功トーストは
+      // 出さない (summary に完了/失敗シーン数が含まれる)。
+      if (postEffectPartialToast(result.summary)) {
         return;
       }
       if (result.from_cache) {

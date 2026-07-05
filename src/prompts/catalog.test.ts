@@ -107,4 +107,18 @@ describe("getPromptCatalog en wiring", () => {
       );
     }
   });
+
+  it("consistency/typo/intra prompts pin the explicit empty-array instruction (ja/en)", () => {
+    // 弱いローカル LLM は「該当なし」を {} やキー省略で返しがちで、期待キー
+    // 欠落 → scene 失敗 → プロジェクト全体チェック失敗の一因だった。
+    // 「空配列を返せ」の指示行を ja/en 両方で固定する (落とすと再発する)。
+    expect(JA_POST_EFFECT.consistencySystem).toContain('"violations" を空配列');
+    expect(JA_POST_EFFECT.typoSystem).toContain('"issues" を空配列');
+    expect(JA_POST_EFFECT.intraSystem).toContain('"pairs" を空配列');
+    expect(EN_POST_EFFECT.consistencySystem).toContain(
+      'empty "violations" array',
+    );
+    expect(EN_POST_EFFECT.typoSystem).toContain('empty "issues" array');
+    expect(EN_POST_EFFECT.intraSystem).toContain('empty "pairs" array');
+  });
 });

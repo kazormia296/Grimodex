@@ -36,7 +36,10 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
-import { postEffectErrorToast } from "@/features/post-effect/errorToast";
+import {
+  postEffectErrorToast,
+  postEffectPartialToast,
+} from "@/features/post-effect/errorToast";
 
 /**
  * 物語内時系列の整合性 (timeline_consistency)。project スコープの multi run で
@@ -160,37 +163,39 @@ export function ProjectTimelineConsistencyView() {
         });
         return;
       }
-      const outcome = await new Promise<{ ok: boolean; error?: string }>(
-        (resolve) => {
-          runPostEffectMulti(
-            {
-              project_id: projectId,
-              effect_type: "timeline_consistency",
-              scope_type: "project",
-              scope_target_id: null,
-              model,
-              model_override: ov.model,
-              provider_override: ov.provider,
-              api_variant_override: ov.apiVariant,
-              endpoint_id_override: ov.endpointId,
-              prompt_version: TIMELINE_CONSISTENCY_PROMPT_VERSION,
-              input_hash: payload.inputHash,
-              scenes: payload.scenes,
-              system_prompt: appendTimelineGuidance(
-                appendKouetsuGuidance(
-                  getPromptCatalog(lang).postEffect.timelineConsistencySystem,
-                  customKouetsu,
-                ),
-                payload.timelineContext,
+      const outcome = await new Promise<{
+        ok: boolean;
+        summary?: string;
+        error?: string;
+      }>((resolve) => {
+        runPostEffectMulti(
+          {
+            project_id: projectId,
+            effect_type: "timeline_consistency",
+            scope_type: "project",
+            scope_target_id: null,
+            model,
+            model_override: ov.model,
+            provider_override: ov.provider,
+            api_variant_override: ov.apiVariant,
+            endpoint_id_override: ov.endpointId,
+            prompt_version: TIMELINE_CONSISTENCY_PROMPT_VERSION,
+            input_hash: payload.inputHash,
+            scenes: payload.scenes,
+            system_prompt: appendTimelineGuidance(
+              appendKouetsuGuidance(
+                getPromptCatalog(lang).postEffect.timelineConsistencySystem,
+                customKouetsu,
               ),
-            },
-            {
-              onDone: () => resolve({ ok: true }),
-              onError: (e) => resolve({ ok: false, error: e.error }),
-            },
-          ).catch((err) => resolve({ ok: false, error: String(err) }));
-        },
-      );
+              payload.timelineContext,
+            ),
+          },
+          {
+            onDone: (e) => resolve({ ok: true, summary: e.summary }),
+            onError: (e) => resolve({ ok: false, error: e.error }),
+          },
+        ).catch((err) => resolve({ ok: false, error: String(err) }));
+      });
       await afterRunAll(activeSceneId);
       setLaunching(false);
       if (!outcome.ok) {
@@ -198,6 +203,9 @@ export function ProjectTimelineConsistencyView() {
           t("kouetsu.projectTimeline.checkFailed"),
           outcome.error,
         );
+      } else {
+        // 部分失敗 (一部シーンのみ解析失敗) は warning で通知 (成功分は保存済み)。
+        postEffectPartialToast(outcome.summary);
       }
     } catch (e) {
       console.error("timeline multi launch error", e);

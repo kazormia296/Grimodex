@@ -75,6 +75,8 @@ pub fn run() {
         // licensing / semantic feature とは独立の無条件プラグイン。
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 校閲 run 終端のデスクトップ通知 (非フォーカス時のみ FE 側が送る)
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let app_dir = app
                 .path()
