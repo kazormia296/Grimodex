@@ -1,6 +1,5 @@
 import { useEffect, useId, useRef, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { SpellCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useKouetsuStore, type KouetsuTab } from "./kouetsuStore";
 import { IssuesInbox } from "./IssuesInbox";
@@ -8,14 +7,10 @@ import { CommentsTab } from "./CommentsTab";
 import { BlockerTab } from "./BlockerTab";
 import { recordMark } from "@/lib/perfLog";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
+import { PanelHeader } from "@/features/layout/PanelHeader";
 
-// Task 8 で正式に 3 タブ化するまでの暫定 widen。editorial タブは残しつつ中身は
-// IssuesInbox（受信箱）を描画する。store の KouetsuTab には "editorial" は含めない。
-type PanelTab = KouetsuTab | "editorial";
-
-const TABS: { id: PanelTab; labelKey: string }[] = [
+const TABS: { id: KouetsuTab; labelKey: string }[] = [
   { id: "issues", labelKey: "kouetsu.tab.issues" },
-  { id: "editorial", labelKey: "kouetsu.tab.editorial" },
   { id: "comments", labelKey: "kouetsu.tab.comments" },
   { id: "blocker", labelKey: "kouetsu.tab.blocker" },
 ];
@@ -23,12 +18,10 @@ const TABS: { id: PanelTab; labelKey: string }[] = [
 export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  const storedTab: PanelTab = useKouetsuStore((s) => s.activeTab);
-  const setActiveTab = useKouetsuStore(
-    (s) => s.setActiveTab as (tab: PanelTab) => void,
-  );
-  // persist 済み store から不正値が来ても tab 選択と aria-labelledby の
-  // id 参照が壊れないよう既知の tab に正規化する
+  const storedTab = useKouetsuStore((s) => s.activeTab);
+  const setActiveTab = useKouetsuStore((s) => s.setActiveTab);
+  // persist 済み store から不正値（旧 "editorial" 等）が来ても tab 選択と
+  // aria-labelledby の id 参照が壊れないよう既知の tab に正規化する
   const activeTab = TABS.some(({ id }) => id === storedTab)
     ? storedTab
     : TABS[0].id;
@@ -61,14 +54,7 @@ export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const __renderResult = (
     <div className="flex h-full flex-col" data-testid="kouetsu-panel">
-      <div
-        data-panel-header
-        className="flex shrink-0 items-center gap-0.5 border-b border-border bg-muted/20 px-3 py-1 text-xs"
-      >
-        <SpellCheck className="size-3.5 shrink-0 opacity-70" aria-hidden />
-        <span className="mr-1 shrink-0 font-medium text-foreground">
-          {t("layout.panel.kouetsu")}
-        </span>
+      <PanelHeader panelId="kouetsu">
         <div
           role="tablist"
           aria-label={t("layout.panel.kouetsu")}
@@ -100,16 +86,14 @@ export function KouetsuPanel({ isActive = true }: SlotPanelProps = {}) {
             </button>
           ))}
         </div>
-      </div>
+      </PanelHeader>
       <div
         role="tabpanel"
         id={`${idBase}-tabpanel`}
         aria-labelledby={`${idBase}-tab-${activeTab}`}
         className="min-h-0 flex-1 overflow-hidden"
       >
-        {(activeTab === "issues" || activeTab === "editorial") && (
-          <IssuesInbox />
-        )}
+        {activeTab === "issues" && <IssuesInbox />}
         {activeTab === "comments" && <CommentsTab />}
         {activeTab === "blocker" && <BlockerTab />}
       </div>
