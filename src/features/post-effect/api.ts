@@ -6,6 +6,10 @@
 import { invoke, listen } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { usePostEffectRunStore } from "./runStore";
+import {
+  ensureNotificationPermission,
+  notifyRunTerminalIfUnfocused,
+} from "./desktopNotify";
 import type {
   PostEffectRun,
   PostEffectAnnotation,
@@ -395,10 +399,25 @@ async function runPostEffectInternal(
     usePostEffectRunStore
       .getState()
       .complete(e.run_id, e.annotation_count, e.summary ?? undefined);
+    // 非フォーカス時のみ OS 通知 (キャッシュ短絡は即時完了なので通知しない)。
+    if (!e.from_cache) {
+      void notifyRunTerminalIfUnfocused(
+        { effectType: meta.effectType, scopeType: meta.scopeType },
+        {
+          kind: "done",
+          annotationCount: e.annotation_count,
+          summary: e.summary ?? undefined,
+        },
+      );
+    }
     if (callbacks.onDone) await callbacks.onDone(e);
   });
   const dispatchError = wrapTerminal(async (e: PostEffectErrorEvent) => {
     usePostEffectRunStore.getState().fail(e.run_id, e.error);
+    void notifyRunTerminalIfUnfocused(
+      { effectType: meta.effectType, scopeType: meta.scopeType },
+      { kind: "error", error: e.error },
+    );
     if (callbacks.onError) await callbacks.onError(e);
   });
 
@@ -489,6 +508,9 @@ async function runPostEffectInternal(
       scopeTargetId: meta.scopeTargetId,
       totalScenes: meta.totalScenes,
     });
+    // 通知権限は run 開始時 = ユーザーがボタンを押した直後 (フォーカス中) に
+    // 確保しておく。終端時の通知 (非フォーカス中) では権限プロンプトを出さない。
+    void ensureNotificationPermission();
     // begin 後に再生する（progress が store のエントリを見つけられるように）。
     for (const b of replay) replayOne(b);
     return { runId: result.run_id, cleanup };

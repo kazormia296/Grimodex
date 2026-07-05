@@ -16,10 +16,11 @@ import { create } from "zustand";
  *   - 右下常駐トースト: `usePostEffectRunStore((s) => s.runs)`
  *   - パネルアイコンバッジ: `useAnyPostEffectRunning()`
  *
- * 終端（done/error）を受けても即座に消さず、`outcome` を付けたまま
- * `AUTO_CLEAR_MS` だけ残してから削除する（トーストの完了表示用）。
- * spinner 判定 (`useIsPostEffectRunning`) は outcome 付きを実行中と
- * 見なさない。
+ * 終端を受けても即座に消さず `outcome` を付けたまま残す。完全成功 (done)
+ * と cached は `AUTO_CLEAR_MS` 後に自動削除、**error と部分失敗
+ * (done + summary) はユーザーが × で閉じるまで残す**（長時間 run の失敗を
+ * 4 秒で見逃させない）。spinner 判定 (`useIsPostEffectRunning`) は
+ * outcome 付きを実行中と見なさない。
  */
 
 export interface ActivePostEffectRun {
@@ -144,7 +145,9 @@ export const usePostEffectRunStore = create<PostEffectRunState>()(
           },
         },
       }));
-      scheduleClear(runId);
+      // 部分失敗 (summary あり) は自動で消さない — error と同様、
+      // ユーザーが × で閉じるまで残す。
+      if (!summary) scheduleClear(runId);
     },
     fail: (runId, error) => {
       const cur = get().runs[runId];
@@ -155,7 +158,7 @@ export const usePostEffectRunStore = create<PostEffectRunState>()(
           [runId]: { ...cur, outcome: { kind: "error", error } },
         },
       }));
-      scheduleClear(runId);
+      // error は自動で消さない (× で閉じるまで残す)。
     },
     recordCacheHit: (run) => {
       set((s) => ({
@@ -173,13 +176,20 @@ export const usePostEffectRunStore = create<PostEffectRunState>()(
       }));
       scheduleClear(run.runId);
     },
-    remove: (runId) =>
+    remove: (runId) => {
+      // 手動クローズ時に自動削除タイマーが残らないよう掃除する。
+      const timer = clearTimers.get(runId);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        clearTimers.delete(runId);
+      }
       set((s) => {
         if (!(runId in s.runs)) return s;
         const next = { ...s.runs };
         delete next[runId];
         return { runs: next };
-      }),
+      });
+    },
   }),
 );
 

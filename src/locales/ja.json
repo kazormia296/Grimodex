@@ -1312,6 +1312,7 @@
       "abort": "中止",
       "aborting": "中止中…",
       "abortFailed": "中止要求に失敗しました",
+      "close": "閉じる",
       "effect": {
         "review": "AIレビュー",
         "typo_detection": "誤字脱字チェック",

@@ -3494,21 +3494,20 @@ pub async fn call_post_effect_api(
             // max-model-len 8192 等) が「prompt + max_tokens > 上限」の 400 で全シーン
             // 拒否する。省略すればサーバ既定 (モデル上限 / 残コンテキストへの自動丸め)
             // に委ねられ、切断も 400 も避けられる。
-            let post_effect_limit: Option<u32> = if matches!(
-                settings.provider,
-                AiProvider::OpenAI | AiProvider::Sakana
-            ) || (matches!(settings.provider, AiProvider::OpenRouter)
-                && is_openrouter_reasoning_model(&settings.model))
-            {
-                Some(32_000)
-            } else if matches!(
-                settings.provider,
-                AiProvider::Ollama | AiProvider::OpenaiCompatible
-            ) {
-                None
-            } else {
-                Some(4096)
-            };
+            let post_effect_limit: Option<u32> =
+                if matches!(settings.provider, AiProvider::OpenAI | AiProvider::Sakana)
+                    || (matches!(settings.provider, AiProvider::OpenRouter)
+                        && is_openrouter_reasoning_model(&settings.model))
+                {
+                    Some(32_000)
+                } else if matches!(
+                    settings.provider,
+                    AiProvider::Ollama | AiProvider::OpenaiCompatible
+                ) {
+                    None
+                } else {
+                    Some(4096)
+                };
             if let Some(limit) = post_effect_limit {
                 insert_chat_completion_token_limit(&mut body, &settings.provider, limit);
             }

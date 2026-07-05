@@ -23,7 +23,7 @@ vi.mock("./api", () => ({
 }));
 
 import { PostEffectProgressToast } from "./PostEffectProgressToast";
-import { usePostEffectRunStore } from "./runStore";
+import { AUTO_CLEAR_MS, usePostEffectRunStore } from "./runStore";
 
 function seedRun(
   over: Partial<
@@ -154,6 +154,52 @@ describe("PostEffectProgressToast", () => {
     expect(
       screen.getByText("3/15 シーンの解析に失敗しました"),
     ).toBeInTheDocument();
+  });
+
+  it("done/cached は AUTO_CLEAR_MS 後に消え、error/部分失敗は残る", () => {
+    vi.useFakeTimers();
+    try {
+      seedRun(); // r1: 完全成功
+      seedRun({ runId: "r2" }); // r2: エラー
+      seedRun({ runId: "r3" }); // r3: 部分失敗
+      act(() => {
+        usePostEffectRunStore.getState().complete("r1", 2);
+        usePostEffectRunStore.getState().fail("r2", "boom");
+        usePostEffectRunStore
+          .getState()
+          .complete("r3", 1, "3/15 シーンの解析に失敗しました");
+        usePostEffectRunStore.getState().recordCacheHit({
+          runId: "r4",
+          projectId: "p1",
+          effectType: "review",
+          scopeType: "project",
+          scopeTargetId: null,
+        });
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(AUTO_CLEAR_MS + 100);
+      });
+
+      const runs = usePostEffectRunStore.getState().runs;
+      expect(runs["r1"]).toBeUndefined(); // 完全成功は自動クリア
+      expect(runs["r4"]).toBeUndefined(); // cached も自動クリア
+      expect(runs["r2"]).toBeDefined(); // エラーは残る
+      expect(runs["r3"]).toBeDefined(); // 部分失敗も残る
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("終端エントリは × ボタンで閉じられる", () => {
+    seedRun();
+    render(<PostEffectProgressToast />);
+    act(() => {
+      usePostEffectRunStore.getState().fail("r1", "boom");
+    });
+
+    fireEvent.click(screen.getByLabelText("kouetsu.progressToast.close"));
+    expect(usePostEffectRunStore.getState().runs["r1"]).toBeUndefined();
   });
 
   it("complete は既に終端済み (cached) のエントリを上書きしない", () => {

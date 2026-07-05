@@ -11,10 +11,14 @@ export async function openLogDir(): Promise<void> {
  * post_effect 系の失敗トースト。localLLM の 400 のように「詳細ログを見ないと
  * 原因が分からない」失敗が起きる経路なので、常に「ログを開く」アクションを
  * 付けて `~/.grimodex/logs/lint-tauri.*.log` へ誘導する。
+ * 長時間 run の失敗を数秒で見逃させないため自動では消さない
+ * (duration: Infinity + closeButton)。
  */
 export function postEffectErrorToast(title: string, description?: string) {
   toast.error(title, {
     description,
+    duration: Infinity,
+    closeButton: true,
     action: {
       label: i18next.t("kouetsu.openLog", "ログを開く"),
       onClick: () => {

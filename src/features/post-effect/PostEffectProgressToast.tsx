@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Loader2, CircleCheck, CircleAlert } from "lucide-react";
+import { Loader2, CircleCheck, CircleAlert, X } from "lucide-react";
 import { toast } from "sonner";
 import { abortPostEffectRun } from "./api";
 import { usePostEffectRunStore, type ActivePostEffectRun } from "./runStore";
@@ -118,6 +118,20 @@ export function PostEffectProgressToast() {
                     {t("kouetsu.progressToast.abort")}
                   </button>
                 ))}
+              {/* 終端後は手動クローズ可。error / 部分失敗は自動で消えない
+                  (runStore 側でタイマーを張らない) ため、これが唯一の閉じ導線。 */}
+              {run.outcome !== undefined && (
+                <button
+                  type="button"
+                  aria-label={t("kouetsu.progressToast.close")}
+                  onClick={() =>
+                    usePostEffectRunStore.getState().remove(run.runId)
+                  }
+                  className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                >
+                  <X size={12} />
+                </button>
+              )}
             </div>
             <div style={{ marginTop: 6, opacity: 0.8 }}>
               {run.outcome === undefined

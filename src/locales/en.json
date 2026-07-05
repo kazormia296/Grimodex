@@ -1312,6 +1312,7 @@
       "abort": "Abort",
       "aborting": "Aborting…",
       "abortFailed": "Failed to request abort",
+      "close": "Close",
       "effect": {
         "review": "AI review",
         "typo_detection": "Typo check",

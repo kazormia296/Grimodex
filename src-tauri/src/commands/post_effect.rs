@@ -1398,7 +1398,13 @@ mod is_annotation_previously_closed_tests {
     #[test]
     fn open_guard_matches_open_only() {
         let conn = open_db();
-        insert(&conn, "a1", "open", "typo_anchor", r#"{"dismiss_key":"K1"}"#);
+        insert(
+            &conn,
+            "a1",
+            "open",
+            "typo_anchor",
+            r#"{"dismiss_key":"K1"}"#,
+        );
         // open 行は open ガードにだけヒットし、closed 判定にはヒットしない
         assert!(has_open_annotation_with_key(
             &conn,
@@ -1431,7 +1437,13 @@ mod is_annotation_previously_closed_tests {
             &["K1"]
         ));
         // project スコープ外は不可視
-        insert(&conn, "a2", "open", "typo_anchor", r#"{"dismiss_key":"K2"}"#);
+        insert(
+            &conn,
+            "a2",
+            "open",
+            "typo_anchor",
+            r#"{"dismiss_key":"K2"}"#,
+        );
         assert!(!has_open_annotation_with_key(
             &conn,
             "P9",
