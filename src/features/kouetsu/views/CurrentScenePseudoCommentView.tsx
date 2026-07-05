@@ -10,6 +10,7 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import {
@@ -37,6 +38,7 @@ import {
   PseudoCommentThread,
 } from "@/features/post-effect/PseudoCommentThread";
 import type { PostEffectDoneEvent } from "@/features/post-effect/types";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 
 interface Props {
   sceneId: string;
@@ -48,7 +50,17 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
   const lang = useCurrentProject()?.language ?? "ja";
   const personaDefs = personaDefsForLang(lang);
   const personas = personasForLang(lang);
-  const [running, setRunning] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const storeRunning = useIsPostEffectRunning(
+    "pseudo_comment",
+    "scene",
+    sceneId,
+  );
+  const running = launching || storeRunning;
   const [persona, setPersona] = useState<string>(personas[0]);
   // genre は全ペルソナの brief に、targetReaders は「ターゲット読者層」ペルソナの
   // 実体として注入する。targetReaders 空のとき同ペルソナは選択不可にする。
@@ -128,7 +140,7 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
     const customKouetsu = useSettingsStore
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
-    setRunning(true);
+    setLaunching(true);
     try {
       await flushPendingSceneSaves(sceneId);
       // brief を 1 度だけ解決し、hash (payload) と system_prompt で同じものを使う。
@@ -184,12 +196,13 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
       });
 
       await reload();
-      setRunning(false);
+      setLaunching(false);
 
       if (!outcome.ok) {
-        toast.error(t("kouetsu.pseudoComment.generationFailed"), {
-          description: outcome.error,
-        });
+        postEffectErrorToast(
+          t("kouetsu.pseudoComment.generationFailed"),
+          outcome.error,
+        );
         return;
       }
       if (outcome.e?.from_cache) {
@@ -201,10 +214,11 @@ export function CurrentScenePseudoCommentView({ sceneId }: Props) {
       }
     } catch (e) {
       console.error("pseudo_comment launch error", e);
-      setRunning(false);
-      toast.error(t("kouetsu.pseudoComment.launchFailed"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.pseudoComment.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }, [running, sceneId, persona, genre, targetReaders, reload, lang]);
 

@@ -23,6 +23,7 @@ pub(crate) mod foreshadow;
 pub(crate) mod integrity;
 pub(crate) mod license;
 pub(crate) mod lint;
+pub(crate) mod logs;
 pub(crate) mod onboarding;
 pub(crate) mod plot_threads;
 pub(crate) mod post_effect;

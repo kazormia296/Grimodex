@@ -23,6 +23,7 @@ import { useStripeIconPointerDrag } from "./useStripeIconPointerDrag";
 import { stripeAxisForRegion } from "./layoutStripeSwap";
 import type { PanelId } from "./panelIds";
 import { PANEL_ICON_MAP } from "./panelIcons";
+import { useAnyPostEffectRunning } from "@/features/post-effect/runStore";
 import { KEYBOARD_SHORTCUT_MAP } from "./panelRegions";
 import type { LayoutRegionId, RegionId } from "./layoutTypes";
 
@@ -71,6 +72,11 @@ export function ToolWindowIcon({
     slotId,
     layoutLocked,
   });
+
+  // 校閲 (post-effect) 実行中はパネルを閉じていても分かるよう kouetsu の
+  // stripe アイコンにドットバッジを出す。他パネルへ広げる時は map 化する。
+  const anyPostEffectRunning = useAnyPostEffectRunning();
+  const showBusyBadge = panelId === "kouetsu" && anyPostEffectRunning;
 
   const label = t(`layout.panel.${panelId}`);
   // Prefer the live (possibly rebound) binding from the registry; fall back to
@@ -126,6 +132,13 @@ export function ToolWindowIcon({
           )}
         >
           <Icon className="h-4 w-4" />
+          {showBusyBadge && (
+            <span
+              aria-hidden
+              data-testid="stripe-busy-badge"
+              className="pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 animate-pulse rounded-full bg-primary"
+            />
+          )}
           {active && (
             <span
               aria-hidden

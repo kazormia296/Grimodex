@@ -2292,8 +2292,8 @@ async fn process_consistency_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            raw_preview = %&raw_response.chars().take(2000).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] consistency: JSON parse FAILED"
         );
@@ -2743,8 +2743,8 @@ async fn process_intra_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            raw_preview = %&raw_response.chars().take(2000).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] intra: JSON parse FAILED"
         );
@@ -3025,8 +3025,8 @@ async fn process_typo_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            raw_preview = %&raw_response.chars().take(2000).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] typo: JSON parse FAILED"
         );
@@ -3265,8 +3265,8 @@ async fn process_review_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            raw_preview = %&raw_response.chars().take(2000).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] review: JSON parse FAILED"
         );
@@ -3448,8 +3448,8 @@ async fn process_intent_drift_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            raw_preview = %&raw_response.chars().take(2000).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] intent_drift: JSON parse FAILED"
         );
@@ -3674,8 +3674,8 @@ async fn process_timeline_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            raw_preview = %&raw_response.chars().take(2000).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] timeline_consistency: JSON parse FAILED"
         );
@@ -3911,8 +3911,8 @@ async fn process_impact_review_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            raw_preview = %&raw_response.chars().take(200).collect::<String>(),
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            raw_preview = %&raw_response.chars().take(2000).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] impact_review: JSON parse FAILED"
         );
@@ -4180,7 +4180,7 @@ async fn process_pseudo_comment_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] pseudo_comment: JSON parse FAILED"
         );
@@ -4371,7 +4371,7 @@ async fn process_meta_structure_scene(
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
-            extracted_preview = %&json_str.chars().take(200).collect::<String>(),
+            extracted_preview = %&json_str.chars().take(2000).collect::<String>(),
             error = %e,
             "[post_effect] meta_structure: JSON parse FAILED"
         );

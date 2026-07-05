@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { GitBranch, ExternalLink, RefreshCw } from "lucide-react";
+import { GitBranch, ExternalLink, RefreshCw, FolderSearch } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { getVersion } from "@tauri-apps/api/app";
@@ -12,6 +12,7 @@ import {
   startUpdateDownload,
   restartApp,
 } from "@/features/updater/api";
+import { openLogDir } from "@/features/post-effect/errorToast";
 
 const GITHUB_URL = "https://github.com/kazormia296/Grimodex";
 
@@ -131,6 +132,19 @@ export function AppInfoHeader() {
             className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground"
           >
             {t("tour.restartTutorial")}
+          </button>
+          {/* トラブル報告用: 詳細ログ (~/.grimodex/logs/) をファイルマネージャで開く */}
+          <button
+            type="button"
+            onClick={() => {
+              openLogDir().catch(() => {
+                toast.error(t("kouetsu.openLogFailed"));
+              });
+            }}
+            className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+          >
+            <FolderSearch className="h-3.5 w-3.5" />
+            {t("settings.about.openLogDir")}
           </button>
           <a
             href={GITHUB_URL}

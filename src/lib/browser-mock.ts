@@ -1086,6 +1086,9 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleDbExecuteBatch(args) as T;
       case "timelapse_append_batch":
         return (await handleTimelapseAppendBatch(args)) as T;
+      case "open_log_dir":
+        // ブラウザではファイルマネージャを開けない。no-op で成功扱い。
+        return undefined as T;
       case "get_ai_settings":
         return handleGetAiSettings() as T;
       case "save_ai_settings":

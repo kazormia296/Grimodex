@@ -1069,6 +1069,7 @@
     },
     "about": {
       "github": "GitHub",
+      "openLogDir": "ログフォルダを開く",
       "checkForUpdates": "更新を確認",
       "updateNowVersion": "今すぐ更新 v{{version}}",
       "restartToUpdate": "再起動して更新",
@@ -1299,6 +1300,34 @@
     }
   },
   "kouetsu": {
+    "openLog": "ログを開く",
+    "openLogFailed": "ログフォルダを開けませんでした",
+    "progressToast": {
+      "running": "実行中…",
+      "runningProgress": "実行中 {{progress}} シーン",
+      "done": "完了 — 指摘 {{count}} 件",
+      "doneNoFindings": "完了 — 指摘なし",
+      "failed": "失敗: {{error}}",
+      "abort": "中止",
+      "aborting": "中止中…",
+      "abortFailed": "中止要求に失敗しました",
+      "effect": {
+        "review": "AIレビュー",
+        "typo_detection": "誤字脱字チェック",
+        "consistency": "Codex整合性",
+        "intra_scene_consistency": "シーン内矛盾",
+        "intent_drift": "狙いズレ診断",
+        "pseudo_comment": "疑似コメント",
+        "meta_structure": "メタ構造",
+        "timeline_consistency": "時系列チェック",
+        "impact_review": "影響レビュー"
+      },
+      "scope": {
+        "scene": "現在シーン",
+        "folder": "フォルダ",
+        "project": "プロジェクト"
+      }
+    },
     "tension": {
       "title": "テンション波形",
       "saggy": "■ 中だるみ",

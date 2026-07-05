@@ -6,7 +6,9 @@ import {
   fireEvent,
   waitFor,
   cleanup,
+  act,
 } from "@testing-library/react";
+import { usePostEffectRunStore } from "@/features/post-effect/runStore";
 
 const h = vi.hoisted(() => ({
   buildIntentDriftPayload: vi.fn(),
@@ -146,5 +148,50 @@ describe("CurrentSceneIntentDriftView run の flush", () => {
     await waitFor(() =>
       expect(h.buildIntentDriftPayload).toHaveBeenCalledTimes(1),
     );
+  });
+});
+
+describe("CurrentSceneIntentDriftView 実行中表示の再マウント永続", () => {
+  afterEach(() => {
+    cleanup();
+    usePostEffectRunStore.setState({ runs: {} });
+  });
+
+  it("runStore に実行中 run があれば、マウントし直しても実行中表示になる", () => {
+    // 実障害: 実行中に別タブへ移動して戻る（= unmount → 再 mount）と
+    // ローカル useState の running が消え、ボタンが通常表示に戻っていた。
+    usePostEffectRunStore.getState().begin({
+      runId: "r1",
+      projectId: "p1",
+      effectType: "intent_drift",
+      scopeType: "scene",
+      scopeTargetId: SCENE_ID,
+    });
+
+    render(<CurrentSceneIntentDriftView sceneId={SCENE_ID} />);
+    expect(screen.getByRole("button", { name: "狙いズレ診断" })).toBeDisabled();
+
+    // 終端（done）を store が受けたら、再マウント後のビューでも解除される。
+    act(() => {
+      usePostEffectRunStore.getState().complete("r1", 0);
+    });
+    expect(
+      screen.getByRole("button", { name: "狙いズレ診断" }),
+    ).not.toBeDisabled();
+  });
+
+  it("別シーンの実行中 run では実行中表示にならない", () => {
+    usePostEffectRunStore.getState().begin({
+      runId: "r2",
+      projectId: "p1",
+      effectType: "intent_drift",
+      scopeType: "scene",
+      scopeTargetId: "other-scene",
+    });
+
+    render(<CurrentSceneIntentDriftView sceneId={SCENE_ID} />);
+    expect(
+      screen.getByRole("button", { name: "狙いズレ診断" }),
+    ).not.toBeDisabled();
   });
 });

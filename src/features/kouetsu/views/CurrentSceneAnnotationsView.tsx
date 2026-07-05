@@ -10,6 +10,7 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import {
   buildConsistencyPayload,
@@ -28,6 +29,7 @@ import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction"
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { PostEffectAnnotationPanel } from "@/features/post-effect/PostEffectAnnotationPanel";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 import type {
   PostEffectAnnotation,
   PostEffectDoneEvent,
@@ -83,7 +85,23 @@ function countOpenByOtherModel(
 
 export function CurrentSceneAnnotationsView({ sceneId }: Props) {
   const { t } = useTranslation();
-  const [running, setRunning] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const consistencyRunning = useIsPostEffectRunning(
+    "consistency",
+    "scene",
+    sceneId,
+  );
+  const intraRunning = useIsPostEffectRunning(
+    "intra_scene_consistency",
+    "scene",
+    sceneId,
+  );
+  const storeRunning = consistencyRunning || intraRunning;
+  const running = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
 
@@ -109,7 +127,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
       const customKouetsu = useSettingsStore
         .getState()
         .get("aiPrompt.custom.kouetsu", "");
-      setRunning(true);
+      setLaunching(true);
       try {
         await flushPendingSceneSaves(sceneId);
         async function startConsistency(): Promise<RunOutcome> {
@@ -213,7 +231,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
         setAnnotations(sceneId, resp.annotations);
         const editor = useEditorStore.getState().editor;
         if (editor) applyAnnotationsToEditor(editor, resp.annotations);
-        setRunning(false);
+        setLaunching(false);
 
         const labelOf = (e: "consistency" | "intra") =>
           e === "consistency"
@@ -231,11 +249,11 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
           return;
         }
         if (errors.length > 0) {
-          toast.error(
+          postEffectErrorToast(
             t("kouetsu.consistency.partialError", {
               effect: labelOf(errors[0]!.effect),
             }),
-            { description: errors[0]!.error },
+            errors[0]!.error,
           );
         } else {
           const allCache = oks.every((r) => r.e.from_cache === true);
@@ -271,10 +289,11 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
         }
       } catch (e) {
         console.error("post-effect launch error", e);
-        setRunning(false);
-        toast.error(t("kouetsu.consistency.launchFailed"), {
-          description: e instanceof Error ? e.message : String(e),
-        });
+        setLaunching(false);
+        postEffectErrorToast(
+          t("kouetsu.consistency.launchFailed"),
+          e instanceof Error ? e.message : String(e),
+        );
       }
     },
     [running, sceneId, setAnnotations, t],

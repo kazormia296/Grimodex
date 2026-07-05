@@ -10,6 +10,7 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import {
   buildReviewPayload,
@@ -34,6 +35,7 @@ import {
   REVIEW_FILTER,
 } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type { PostEffectDoneEvent } from "@/features/post-effect/types";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 
 interface Props {
   sceneId: string;
@@ -41,7 +43,13 @@ interface Props {
 
 export function CurrentSceneReviewView({ sceneId }: Props) {
   const { t } = useTranslation();
-  const [running, setRunning] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const storeRunning = useIsPostEffectRunning("review", "scene", sceneId);
+  const running = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
 
@@ -69,7 +77,7 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
       useTreeStore.getState().nodes,
       sceneId,
     );
-    setRunning(true);
+    setLaunching(true);
     try {
       await flushPendingSceneSaves(sceneId);
       const payload = await buildReviewPayload(
@@ -118,12 +126,13 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
       setAnnotations(sceneId, resp.annotations);
       const editor = useEditorStore.getState().editor;
       if (editor) applyAnnotationsToEditor(editor, resp.annotations);
-      setRunning(false);
+      setLaunching(false);
 
       if (!outcome.ok) {
-        toast.error(t("kouetsu.review.executionFailed"), {
-          description: outcome.error,
-        });
+        postEffectErrorToast(
+          t("kouetsu.review.executionFailed"),
+          outcome.error,
+        );
         return;
       }
       if (outcome.e?.from_cache) {
@@ -135,10 +144,11 @@ export function CurrentSceneReviewView({ sceneId }: Props) {
       }
     } catch (e) {
       console.error("review launch error", e);
-      setRunning(false);
-      toast.error(t("kouetsu.review.launchFailed"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.review.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }, [running, sceneId, setAnnotations, t]);
 

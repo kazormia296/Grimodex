@@ -7,7 +7,9 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { flushPendingSceneSaves } from "@/features/post-effect/api";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { runImpactReview } from "@/features/impact-review/runImpactReview";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 
 interface ImpactCheckButtonProps {
   entryId: string;
@@ -23,7 +25,12 @@ interface ImpactCheckButtonProps {
  */
 export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
   const { t } = useTranslation();
-  const [running, setRunning] = useState(false);
+  // 起動準備中のみのローカル状態。実行中表示は runStore から導出する
+  // （タブ移動＝unmount で消えないように）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const storeRunning = useIsPostEffectRunning("impact_review", "project");
+  const running = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
 
   // analysis がポリシーで OFF のときはボタンを描画しない (整合性チェックと同じ方針)。
@@ -33,7 +40,7 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
     if (running) return;
     if (blockIfPolicyOff("analysis")) return;
     if (blockIfUnlicensed()) return;
-    setRunning(true);
+    setLaunching(true);
     try {
       // 未保存のシーン本文を flush してから差分を取る (整合性チェックと同じ前処理)。
       await flushPendingSceneSaves();
@@ -42,7 +49,7 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
           toast.success(t("codex.impactCheck.done"));
         },
         onError: (e) => {
-          toast.error(t("codex.impactCheck.error"), { description: e.error });
+          postEffectErrorToast(t("codex.impactCheck.error"), e.error);
         },
       });
       switch (result.status) {
@@ -61,11 +68,12 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
           break;
       }
     } catch (e) {
-      toast.error(t("codex.impactCheck.error"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      postEffectErrorToast(
+        t("codex.impactCheck.error"),
+        e instanceof Error ? e.message : String(e),
+      );
     } finally {
-      setRunning(false);
+      setLaunching(false);
     }
   };
 

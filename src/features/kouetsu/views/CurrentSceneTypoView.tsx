@@ -21,6 +21,7 @@ import { blockIfUnlicensed } from "@/features/license/gate";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useLintStore } from "@/features/lint/lintStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import {
   buildTypoPayload,
   TYPO_PROMPT_VERSION,
@@ -46,6 +47,7 @@ import {
 } from "@/features/post-effect/AnnotationDetails";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import type { Diagnostic } from "@/features/lint/types";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 import type {
   PostEffectAnnotation,
   PostEffectSeverity,
@@ -70,7 +72,17 @@ interface Props {
 
 export function CurrentSceneTypoView({ sceneId }: Props) {
   const { t } = useTranslation();
-  const [running, setRunning] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const storeRunning = useIsPostEffectRunning(
+    "typo_detection",
+    "scene",
+    sceneId,
+  );
+  const running = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
   const { setAnnotations } = useAnnotationStore();
 
@@ -91,7 +103,7 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
     const customKouetsu = useSettingsStore
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
-    setRunning(true);
+    setLaunching(true);
     try {
       await flushPendingSceneSaves(sceneId);
       const payload = await buildTypoPayload(sceneId, model, customKouetsu);
@@ -133,12 +145,10 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
       setAnnotations(sceneId, resp.annotations);
       const editor = useEditorStore.getState().editor;
       if (editor) applyAnnotationsToEditor(editor, resp.annotations);
-      setRunning(false);
+      setLaunching(false);
 
       if (!done.ok) {
-        toast.error(t("kouetsu.typo.checkFailed"), {
-          description: done.error,
-        });
+        postEffectErrorToast(t("kouetsu.typo.checkFailed"), done.error);
         return;
       }
       if (done.from_cache) {
@@ -150,10 +160,11 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
       }
     } catch (e) {
       console.error("typo run error", e);
-      setRunning(false);
-      toast.error(t("kouetsu.typo.launchFailed"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.typo.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }, [running, sceneId, setAnnotations, t]);
 

@@ -10,6 +10,7 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import {
   buildTimelinePayload,
@@ -35,6 +36,7 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 
 /**
  * 物語内時系列の整合性 (timeline_consistency)。project スコープの multi run で
@@ -45,7 +47,16 @@ export function ProjectTimelineConsistencyView() {
   const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
-  const [runningAll, setRunningAll] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const storeRunning = useIsPostEffectRunning(
+    "timeline_consistency",
+    "project",
+  );
+  const runningAll = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
 
   const projectId = useTreeStore((s) => s.projectId);
@@ -132,7 +143,7 @@ export function ProjectTimelineConsistencyView() {
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
     const activeSceneId = useTreeStore.getState().activeSceneId;
-    setRunningAll(true);
+    setLaunching(true);
     try {
       await flushPendingSceneSaves();
       const payload = await buildTimelinePayload(
@@ -143,7 +154,7 @@ export function ProjectTimelineConsistencyView() {
         { provider: ov.provider, endpointId: ov.endpointId },
       );
       if (payload.scenes.length === 0) {
-        setRunningAll(false);
+        setLaunching(false);
         toast.info(t("kouetsu.projectTimeline.noScenesPlaced"), {
           description: t("kouetsu.projectTimeline.placeScenesHint"),
         });
@@ -181,18 +192,20 @@ export function ProjectTimelineConsistencyView() {
         },
       );
       await afterRunAll(activeSceneId);
-      setRunningAll(false);
+      setLaunching(false);
       if (!outcome.ok) {
-        toast.error(t("kouetsu.projectTimeline.checkFailed"), {
-          description: outcome.error,
-        });
+        postEffectErrorToast(
+          t("kouetsu.projectTimeline.checkFailed"),
+          outcome.error,
+        );
       }
     } catch (e) {
       console.error("timeline multi launch error", e);
-      setRunningAll(false);
-      toast.error(t("kouetsu.projectTimeline.launchFailed"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.projectTimeline.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }, [runningAll, projectId, afterRunAll]);
 

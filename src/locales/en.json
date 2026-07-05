@@ -1069,6 +1069,7 @@
     },
     "about": {
       "github": "GitHub",
+      "openLogDir": "Open log folder",
       "checkForUpdates": "Check for updates",
       "updateNowVersion": "Update now (v{{version}})",
       "restartToUpdate": "Restart to update",
@@ -1299,6 +1300,34 @@
     }
   },
   "kouetsu": {
+    "openLog": "Open logs",
+    "openLogFailed": "Failed to open the log folder",
+    "progressToast": {
+      "running": "Running…",
+      "runningProgress": "Running scene {{progress}}",
+      "done": "Done — {{count}} findings",
+      "doneNoFindings": "Done — no findings",
+      "failed": "Failed: {{error}}",
+      "abort": "Abort",
+      "aborting": "Aborting…",
+      "abortFailed": "Failed to request abort",
+      "effect": {
+        "review": "AI review",
+        "typo_detection": "Typo check",
+        "consistency": "Codex consistency",
+        "intra_scene_consistency": "In-scene contradictions",
+        "intent_drift": "Intent drift",
+        "pseudo_comment": "Pseudo comments",
+        "meta_structure": "Meta structure",
+        "timeline_consistency": "Timeline check",
+        "impact_review": "Impact review"
+      },
+      "scope": {
+        "scene": "Current scene",
+        "folder": "Folder",
+        "project": "Project"
+      }
+    },
     "tension": {
       "title": "Tension curve",
       "saggy": "■ Saggy stretch",
