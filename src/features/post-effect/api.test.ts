@@ -374,7 +374,10 @@ describe("runPostEffect run_id フィルタリング", () => {
     });
   });
 
-  it("from_cache は runStore に登録しない（グローバル進捗に出さない）", async () => {
+  it("from_cache は runStore に cached 終端で登録する（常駐トーストに出す）", async () => {
+    // 旧仕様は「登録しない」だったが、成功トーストを持たないビュー (review 等)
+    // では「押しても何も起きない」ように見えた。cached の終端エントリとして
+    // 登録し、全サーフェス共通のフィードバックを常駐トーストに出す。
     mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: true });
     const onDone = vi.fn();
     await runPostEffect(baseReq, { onDone });
@@ -382,6 +385,29 @@ describe("runPostEffect run_id フィルタリング", () => {
     await Promise.resolve();
 
     expect(onDone).toHaveBeenCalledTimes(1);
-    expect(usePostEffectRunStore.getState().runs["r1"]).toBeUndefined();
+    const run = usePostEffectRunStore.getState().runs["r1"];
+    expect(run).toBeDefined();
+    // 合成 done (dispatchDone → complete) が cached 終端を上書きしないこと。
+    expect(run.outcome).toEqual({ kind: "cached" });
+    // 終端済みなので spinner 判定 (outcome undefined) には乗らない。
+  });
+
+  it("done イベントの summary が outcome に伝搬する（部分失敗表示用）", async () => {
+    mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: false });
+    await runPostEffect(baseReq, {});
+
+    fireEvent("post_effect:done", {
+      run_id: "r1",
+      annotation_count: 4,
+      summary: "3/15 シーンの解析に失敗しました",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(usePostEffectRunStore.getState().runs["r1"].outcome).toEqual({
+      kind: "done",
+      annotationCount: 4,
+      summary: "3/15 シーンの解析に失敗しました",
+    });
   });
 });

@@ -116,4 +116,61 @@ describe("PostEffectProgressToast", () => {
       screen.getByText("kouetsu.progressToast.failed"),
     ).toBeInTheDocument();
   });
+
+  it("cached 終端は「キャッシュ再利用」表示になる（実行中扱いにならない）", () => {
+    act(() => {
+      usePostEffectRunStore.getState().recordCacheHit({
+        runId: "r1",
+        projectId: "p1",
+        effectType: "review",
+        scopeType: "project",
+        scopeTargetId: null,
+        totalScenes: 12,
+      });
+    });
+    render(<PostEffectProgressToast />);
+
+    expect(
+      screen.getByText("kouetsu.progressToast.cached"),
+    ).toBeInTheDocument();
+    // 終端済みなので中止ボタンや進捗バーは出ない
+    expect(screen.queryByText("kouetsu.progressToast.abort")).toBeNull();
+    expect(screen.queryByText("kouetsu.progressToast.running")).toBeNull();
+  });
+
+  it("summary 付き done（部分失敗）は donePartial + summary 本文を表示する", () => {
+    seedRun();
+    render(<PostEffectProgressToast />);
+
+    act(() => {
+      usePostEffectRunStore
+        .getState()
+        .complete("r1", 4, "3/15 シーンの解析に失敗しました");
+    });
+
+    expect(
+      screen.getByText("kouetsu.progressToast.donePartial"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("3/15 シーンの解析に失敗しました"),
+    ).toBeInTheDocument();
+  });
+
+  it("complete は既に終端済み (cached) のエントリを上書きしない", () => {
+    act(() => {
+      usePostEffectRunStore.getState().recordCacheHit({
+        runId: "r1",
+        projectId: "p1",
+        effectType: "review",
+        scopeType: "project",
+        scopeTargetId: null,
+      });
+      // from_cache の合成 done が complete を叩いても cached 表示が残る
+      usePostEffectRunStore.getState().complete("r1", 0);
+    });
+
+    expect(usePostEffectRunStore.getState().runs["r1"].outcome).toEqual({
+      kind: "cached",
+    });
+  });
 });

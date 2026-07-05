@@ -1306,6 +1306,8 @@
       "runningProgress": "Running scene {{progress}}",
       "done": "Done — {{count}} findings",
       "doneNoFindings": "Done — no findings",
+      "donePartial": "Done with some scene failures — {{count}} findings",
+      "cached": "Reused cached result — nothing has changed since the last run",
       "failed": "Failed: {{error}}",
       "abort": "Abort",
       "aborting": "Aborting…",

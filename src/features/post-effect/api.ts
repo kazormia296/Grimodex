@@ -392,7 +392,9 @@ async function runPostEffectInternal(
     callbacks.onPartial?.(e);
   };
   const dispatchDone = wrapTerminal(async (e: PostEffectDoneEvent) => {
-    usePostEffectRunStore.getState().complete(e.run_id, e.annotation_count);
+    usePostEffectRunStore
+      .getState()
+      .complete(e.run_id, e.annotation_count, e.summary ?? undefined);
     if (callbacks.onDone) await callbacks.onDone(e);
   });
   const dispatchError = wrapTerminal(async (e: PostEffectErrorEvent) => {
@@ -456,8 +458,20 @@ async function runPostEffectInternal(
     // 既存の completed run の id だけ返してくる。done イベントは
     // 永遠に飛んでこないので、ここで合成的に onDone を fire してやる。
     // (これがないと spinner が永久に回る)
-    // runStore には登録しない = キャッシュ短絡はグローバル進捗に出さない。
+    // 常駐トーストには cached の終端エントリとして登録する: 以前は登録
+    // しない仕様で、成功トーストを持たないビュー (review / timeline /
+    // meta_structure) では「押しても何も起きない」ように見えていた。
+    // 全サーフェス共通のフィードバックはこの 1 箇所で担保する。
+    // (合成 done → complete は runStore 側の終端上書きガードで無視される)
     if (result.from_cache) {
+      usePostEffectRunStore.getState().recordCacheHit({
+        runId: result.run_id,
+        projectId: meta.projectId,
+        effectType: meta.effectType,
+        scopeType: meta.scopeType,
+        scopeTargetId: meta.scopeTargetId,
+        totalScenes: meta.totalScenes,
+      });
       const synthetic: PostEffectDoneEvent = {
         run_id: result.run_id,
         annotation_count: 0,

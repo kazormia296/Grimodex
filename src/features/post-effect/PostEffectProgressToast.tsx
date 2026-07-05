@@ -85,8 +85,14 @@ export function PostEffectProgressToast() {
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {run.outcome === undefined ? (
                 <Loader2 size={13} className="animate-spin shrink-0" />
+              ) : run.outcome.kind === "cached" ? (
+                <CircleCheck size={13} className="shrink-0 text-blue-400" />
               ) : run.outcome.kind === "done" ? (
-                <CircleCheck size={13} className="shrink-0 text-green-500" />
+                run.outcome.summary ? (
+                  <CircleAlert size={13} className="shrink-0 text-yellow-500" />
+                ) : (
+                  <CircleCheck size={13} className="shrink-0 text-green-500" />
+                )
               ) : (
                 <CircleAlert size={13} className="shrink-0 text-red-500" />
               )}
@@ -120,16 +126,34 @@ export function PostEffectProgressToast() {
                       progress: run.message,
                     })
                   : t("kouetsu.progressToast.running")
-                : run.outcome.kind === "done"
-                  ? run.outcome.annotationCount > 0
-                    ? t("kouetsu.progressToast.done", {
-                        count: run.outcome.annotationCount,
-                      })
-                    : t("kouetsu.progressToast.doneNoFindings")
-                  : t("kouetsu.progressToast.failed", {
-                      error: run.outcome.error,
-                    })}
+                : run.outcome.kind === "cached"
+                  ? t("kouetsu.progressToast.cached")
+                  : run.outcome.kind === "done"
+                    ? run.outcome.summary
+                      ? t("kouetsu.progressToast.donePartial", {
+                          count: run.outcome.annotationCount,
+                        })
+                      : run.outcome.annotationCount > 0
+                        ? t("kouetsu.progressToast.done", {
+                            count: run.outcome.annotationCount,
+                          })
+                        : t("kouetsu.progressToast.doneNoFindings")
+                    : t("kouetsu.progressToast.failed", {
+                        error: run.outcome.error,
+                      })}
             </div>
+            {run.outcome?.kind === "done" && run.outcome.summary && (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 11,
+                  opacity: 0.7,
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {run.outcome.summary}
+              </div>
+            )}
             {run.outcome === undefined && (
               <div
                 aria-hidden

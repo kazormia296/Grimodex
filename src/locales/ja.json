@@ -1306,6 +1306,8 @@
       "runningProgress": "実行中 {{progress}} シーン",
       "done": "完了 — 指摘 {{count}} 件",
       "doneNoFindings": "完了 — 指摘なし",
+      "donePartial": "完了（一部シーン失敗）— 指摘 {{count}} 件",
+      "cached": "キャッシュから再利用 — 前回から内容が変わっていないため送信していません",
       "failed": "失敗: {{error}}",
       "abort": "中止",
       "aborting": "中止中…",

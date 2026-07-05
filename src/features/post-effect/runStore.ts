@@ -38,7 +38,11 @@ export interface ActivePostEffectRun {
   startedAt: number;
   /** 終端状態。undefined = 実行中。 */
   outcome?:
-    | { kind: "done"; annotationCount: number }
+    | { kind: "done"; annotationCount: number; summary?: string }
+    // キャッシュ短絡 (from_cache): バックエンドは何も実行していない。
+    // 成功トーストを持たないビューでも「何も起きなかった」ように見えない
+    // よう、終端済みエントリとして常駐トーストに出す。
+    | { kind: "cached" }
     | { kind: "error"; error: string };
 }
 
@@ -56,8 +60,20 @@ interface PostEffectRunState {
     runId: string,
     p: { stage: string; progress: number; message?: string | null },
   ) => void;
-  complete: (runId: string, annotationCount: number) => void;
+  /** summary は multi 実行の部分失敗メッセージ（無ければ完全成功）。 */
+  complete: (runId: string, annotationCount: number, summary?: string) => void;
   fail: (runId: string, error: string) => void;
+  /**
+   * from_cache 短絡を終端済み (cached) エントリとして登録する。
+   * begin と違い最初から outcome 付きなので spinner 判定
+   * (`useIsPostEffectRunning`) には一切乗らず、AUTO_CLEAR_MS 後に消える。
+   */
+  recordCacheHit: (
+    run: Omit<
+      ActivePostEffectRun,
+      "progress" | "stage" | "message" | "startedAt" | "outcome"
+    >,
+  ) => void;
   remove: (runId: string) => void;
 }
 
@@ -109,16 +125,22 @@ export const usePostEffectRunStore = create<PostEffectRunState>()(
           },
         };
       }),
-    complete: (runId, annotationCount) => {
+    complete: (runId, annotationCount, summary) => {
       const cur = get().runs[runId];
-      if (!cur) return;
+      // 終端済み (cached 等) は上書きしない: from_cache の合成 done が
+      // recordCacheHit 直後に complete を叩いても cached 表示を保つ。
+      if (!cur || cur.outcome) return;
       set((s) => ({
         runs: {
           ...s.runs,
           [runId]: {
             ...cur,
             progress: 1,
-            outcome: { kind: "done", annotationCount },
+            outcome: {
+              kind: "done",
+              annotationCount,
+              ...(summary ? { summary } : {}),
+            },
           },
         },
       }));
@@ -126,7 +148,7 @@ export const usePostEffectRunStore = create<PostEffectRunState>()(
     },
     fail: (runId, error) => {
       const cur = get().runs[runId];
-      if (!cur) return;
+      if (!cur || cur.outcome) return;
       set((s) => ({
         runs: {
           ...s.runs,
@@ -134,6 +156,22 @@ export const usePostEffectRunStore = create<PostEffectRunState>()(
         },
       }));
       scheduleClear(runId);
+    },
+    recordCacheHit: (run) => {
+      set((s) => ({
+        runs: {
+          ...s.runs,
+          [run.runId]: {
+            ...run,
+            progress: 1,
+            stage: "done",
+            message: null,
+            startedAt: Date.now(),
+            outcome: { kind: "cached" },
+          },
+        },
+      }));
+      scheduleClear(run.runId);
     },
     remove: (runId) =>
       set((s) => {
