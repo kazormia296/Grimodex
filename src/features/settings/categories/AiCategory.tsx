@@ -27,7 +27,11 @@ import type {
 } from "@/features/chat/types";
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
-import { MODEL_ROLES } from "@/features/chat/modelRouting";
+import {
+  MODEL_ROLES,
+  ROLE_PROVIDERS_KEY,
+  sameProviderRoleModelKeys,
+} from "@/features/chat/modelRouting";
 import { useChatModelCatalog } from "@/features/chat/useChatModelCatalog";
 import { RoleModelRow } from "./RoleModelRow";
 import {
@@ -249,6 +253,15 @@ export function AiCategory() {
     );
     settingsStore.set(MODEL_BY_PROVIDER_KEY, JSON.stringify(modelMap));
     const restoredModel = restored?.model ?? "";
+
+    // 「チャットと同じプロバイダ」モードの機能別モデルは旧プロバイダの名前空間に
+    // 属するため、持ち越すと新プロバイダへ旧モデル ID をそのまま送ってしまう
+    // （例: Ollama へ claude 系 ID → 400 invalid model name）。切替時にクリアする。
+    for (const key of sameProviderRoleModelKeys(
+      settingsStore.get(ROLE_PROVIDERS_KEY, ""),
+    )) {
+      if (settingsStore.get(key, "") !== "") settingsStore.set(key, "");
+    }
 
     // 履歴の無いプロバイダへ初めて切替えるときの既定 variant。
     // Sakana は Responses API が推奨/既定経路なので "responses" を既定 ON にする

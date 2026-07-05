@@ -94,6 +94,29 @@ export function RoleModelRow({
     isModelCapableForRole(m.id, role),
   );
 
+  // 保存済みモデルが現在の一覧に無い（プロバイダ切替前の遺物・一覧からの消滅など）。
+  // controlled <select> は不一致 value を空選択に化けさせ、stale 値が見えないまま
+  // 送信だけ壊れるため、合成 option で実際の保存値を可視化しリセット導線を出す。
+  // 一覧が空のとき（読み込み失敗等）は判定できないので警告しない。
+  const modelListReady = overrideProvider ? !catalogLoading : !isLoadingModels;
+  const staleModel =
+    modelValue !== "" &&
+    modelListReady &&
+    roleModels.length > 0 &&
+    !roleModels.some((m) => m.id === modelValue);
+  const pickerModels = staleModel
+    ? [
+        ...roleModels,
+        {
+          id: modelValue,
+          name: t("settings.ai.roleModel.staleModelOption", {
+            model: modelValue,
+            defaultValue: "{{model}}（一覧に無し）",
+          }),
+        },
+      ]
+    : roleModels;
+
   const handleProviderChange = (value: string): void => {
     const next = { ...map };
     if (value === SAME) {
@@ -154,7 +177,7 @@ export function RoleModelRow({
           )}
         </select>
         <ModelPicker
-          models={roleModels}
+          models={pickerModels}
           value={modelValue}
           onChange={(v) => setSetting(key, v)}
           isLoading={overrideProvider ? catalogLoading : isLoadingModels}
@@ -162,6 +185,24 @@ export function RoleModelRow({
           className="min-w-[12rem]"
         />
       </div>
+      {staleModel && (
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+          <span>
+            {t("settings.ai.roleModel.staleModel", {
+              model: modelValue,
+              defaultValue:
+                "保存済みモデル {{model}} は現在のプロバイダのモデル一覧にありません（プロバイダ切替前の値など）。このままでは送信に失敗する可能性があります。",
+            })}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSetting(key, "")}
+            className="rounded border border-amber-600/40 px-1.5 py-0.5 hover:bg-amber-600/10"
+          >
+            {t("settings.ai.roleModel.reset", "リセット")}
+          </button>
+        </div>
+      )}
       {overrideUnavailable && (
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
           <span>

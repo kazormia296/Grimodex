@@ -11,6 +11,7 @@ import {
   ROLE_PROVIDERS_KEY,
   parseRoleProviders,
   resolveRoleSendOverride,
+  sameProviderRoleModelKeys,
 } from "./modelRouting";
 import {
   AI_PATHS,
@@ -237,6 +238,32 @@ describe("parseRoleProviders — 不正な内部値の型ガード（破損/旧�
     expect(
       parseRoleProviders('{"agent":{"provider":"openai","endpointId":5}}'),
     ).toEqual({ agent: { provider: "openai" } });
+  });
+});
+
+describe("sameProviderRoleModelKeys — アクティブプロバイダ切替時のクリア対象", () => {
+  it("roleProviders が空なら全ロールのモデルキーが対象", () => {
+    expect(sameProviderRoleModelKeys("")).toEqual(
+      MODEL_ROLES.map((r) => roleSettingKey(r)),
+    );
+  });
+
+  it("明示的な provider 割り当てのあるロールは対象外（宛先が固定）", () => {
+    const raw = JSON.stringify({ review: { provider: "anthropic" } });
+    const keys = sameProviderRoleModelKeys(raw);
+    expect(keys).not.toContain(roleSettingKey("review"));
+    expect(keys).toContain(roleSettingKey("conversation"));
+  });
+
+  it("endpointId だけのエントリ（provider 無し）は active 追従なので対象", () => {
+    const raw = JSON.stringify({ review: { endpointId: "e1" } });
+    expect(sameProviderRoleModelKeys(raw)).toContain(roleSettingKey("review"));
+  });
+
+  it("破損 JSON は空マップ扱い＝全ロール対象（安全側）", () => {
+    expect(sameProviderRoleModelKeys("{broken")).toEqual(
+      MODEL_ROLES.map((r) => roleSettingKey(r)),
+    );
   });
 });
 

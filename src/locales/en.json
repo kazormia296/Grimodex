@@ -686,6 +686,8 @@
         "sameProvider": "Same provider as chat",
         "unavailableProvider": "The selected provider/endpoint is no longer available (key or endpoint removed). Sends will fail or go to a different target.",
         "unavailableOption": "{{provider}} (unavailable)",
+        "staleModel": "The saved model {{model}} is not in the current provider's model list (e.g. a leftover from before a provider switch). Sends may fail until it is changed.",
+        "staleModelOption": "{{model}} (not in list)",
         "reset": "Reset",
         "cacheNote": "Note: picking a model from a different provider than your default for a role splits that path's prompt cache, which can raise cost and latency.",
         "conversation": {
