@@ -40,7 +40,7 @@ import {
   postEffectErrorToast,
   postEffectPartialToast,
 } from "@/features/post-effect/errorToast";
-import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
+import { useResolvedKouetsuScope } from "@/features/kouetsu/useResolvedKouetsuScope";
 
 /**
  * 物語内時系列の整合性 (timeline_consistency)。project スコープの multi run で
@@ -66,9 +66,10 @@ export function ProjectTimelineConsistencyView() {
   const projectId = useTreeStore((s) => s.projectId);
   const nodes = useTreeStore((s) => s.nodes);
   const { setAnnotations: storeSetAnnotations } = useAnnotationStore();
-  // 時系列は本質的にプロジェクト全域なので folder では絞らない（multi も常に
-  // project）。folder 選択中は「絞られない」ことをチップで明示する。
-  const isFolderScope = useKouetsuStore((s) => s.scope.type === "folder");
+  // 時系列は本質的にプロジェクト全域なので folder/scene では絞らない（multi も
+  // 常に project）。project 以外を選択中は「絞られない」ことをチップで明示する
+  // （宙に浮いた folder anchor は resolve 段階で project へ倒れチップ非表示）。
+  const isNonProjectScope = useResolvedKouetsuScope().type !== "project";
 
   const titleById = useMemo(
     () => new Map(nodes.map((n) => [n.id, n.title] as const)),
@@ -246,7 +247,7 @@ export function ProjectTimelineConsistencyView() {
           <span className="text-xs text-muted-foreground">
             {t("kouetsu.projectTimeline.header")}
           </span>
-          {isFolderScope && (
+          {isNonProjectScope && (
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
               {t("kouetsu.scope.project")}
             </span>
