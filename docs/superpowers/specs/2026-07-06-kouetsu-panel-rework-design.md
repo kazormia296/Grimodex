@@ -105,6 +105,14 @@ type KouetsuScope =
 - Rust: multi allowlist + per-run abort のテスト（`cargo test --no-default-features`）。
 - パネル内部のみの変更だが `pnpm test:browser` も実行して layout invariant を確認。
 
+## 実装計画時の確定逸脱（2026-07-06 精読で判明）
+
+1. **intent_drift は multi 化しない** — シーン毎の `intent` が system_prompt と input_hash に畳み込まれるため（`intentDriftPayloadBuilder.ts`）、multi の共有 system_prompt では成立しない。FE の直列単発ループ（per-scene キャッシュ活用、intent 未設定はスキップ）で実装する。Rust の multi allowlist 追加は不要となり、Phase 2 の Rust 変更は per-run abort 化のみ。
+2. **バッジは scene スコープ + open フィルタのみ実数、それ以外は非表示（null）** — folder/project の実数集計は全 Project ビューのフェッチ統合が必要で blast radius が大きい。嘘の 0 固定の根治（非表示は嘘ではない）を優先し、実数化はフェッチ統合時の将来課題とする。
+3. **校正の全章 Lint スキャンは folder 絞り込み非対応のまま** — `lintProjectStore.start` が project 単位のため、全体チェックでは project 全域で実行する。
+
+実装計画: `docs/superpowers/plans/2026-07-06-kouetsu-panel-rework.md`
+
 ## 非スコープ
 
 - 検出主体タブ再編（案B / north-star）は本リワークが包含・置換する。
