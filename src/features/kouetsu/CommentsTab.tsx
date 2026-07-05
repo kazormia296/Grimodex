@@ -139,7 +139,14 @@ export function CommentsTab() {
           <button
             type="button"
             aria-pressed={showDismissed}
-            onClick={() => setShowDismissed(!showDismissed)}
+            onClick={() => {
+              const next = !showDismissed;
+              setShowDismissed(next);
+              // 除外ビューで復元(reopen)した annotation は status=open に戻るが
+              // 親の threads state は古いまま。通常ビューへ戻す瞬間に annotation
+              // だけ再取得し、復元分を即スレッドへ反映する（所見: 反映漏れ）。
+              if (!next) void reloadAnnotations();
+            }}
             className={cn(
               "rounded px-2 py-0.5",
               showDismissed
