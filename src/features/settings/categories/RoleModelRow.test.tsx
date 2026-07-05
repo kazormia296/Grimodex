@@ -113,3 +113,70 @@ describe("RoleModelRow — settings 購読の絞り込み", () => {
     expect(cache[roleSettingKey("review")]).toBe("");
   });
 });
+
+describe("RoleModelRow — stale モデル値の可視化（プロバイダ切替の遺物）", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ cache: {} });
+  });
+
+  const gemma = { id: "gemma4:e2b", name: "Gemma 4 e2b" };
+
+  function renderWithModels() {
+    return render(
+      <RoleModelRow
+        // eslint-disable-next-line jsx-a11y/aria-role -- RoleModelRow の role は ARIA でなく AI モデルロール
+        role="review"
+        activeModels={[gemma]}
+        sections={[]}
+        isLoadingModels={false}
+        catalogLoading={false}
+      />,
+    );
+  }
+
+  it("保存値が一覧に無いと警告とリセット導線を出し、リセットでクリアする", () => {
+    // 実障害: Ollama がアクティブなのに別プロバイダ時代の値が残り、
+    // controlled select 上は空選択に化けて見えないまま送信だけ壊れていた。
+    useSettingsStore
+      .getState()
+      .set(roleSettingKey("review"), "~anthropic/claude-opus-latest");
+    renderWithModels();
+
+    expect(
+      screen.getByText("settings.ai.roleModel.staleModel"),
+    ).toBeInTheDocument();
+    // 合成 option で実際の保存値が select 上に見える。
+    const option = screen.getByRole("option", {
+      name: "settings.ai.roleModel.staleModelOption",
+    }) as HTMLOptionElement;
+    expect(option.value).toBe("~anthropic/claude-opus-latest");
+
+    fireEvent.click(screen.getByText("settings.ai.roleModel.reset"));
+    expect(useSettingsStore.getState().get(roleSettingKey("review"), "")).toBe(
+      "",
+    );
+  });
+
+  it("保存値が一覧にあれば警告を出さない", () => {
+    useSettingsStore.getState().set(roleSettingKey("review"), "gemma4:e2b");
+    renderWithModels();
+    expect(screen.queryByText("settings.ai.roleModel.staleModel")).toBeNull();
+  });
+
+  it("一覧が空（読み込み失敗等）のときは判定できないので警告しない", () => {
+    useSettingsStore
+      .getState()
+      .set(roleSettingKey("review"), "~anthropic/claude-opus-latest");
+    render(
+      <RoleModelRow
+        // eslint-disable-next-line jsx-a11y/aria-role -- RoleModelRow の role は ARIA でなく AI モデルロール
+        role="review"
+        activeModels={[]}
+        sections={[]}
+        isLoadingModels={false}
+        catalogLoading={false}
+      />,
+    );
+    expect(screen.queryByText("settings.ai.roleModel.staleModel")).toBeNull();
+  });
+});

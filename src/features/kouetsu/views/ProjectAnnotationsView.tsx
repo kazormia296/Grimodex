@@ -10,6 +10,7 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import {
   buildMultiPayload,
@@ -41,6 +42,7 @@ import type {
   PostEffectSeverity,
 } from "@/features/post-effect/types";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 
 const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   error: <XCircle size={13} className="text-destructive shrink-0" />,
@@ -57,7 +59,18 @@ export function ProjectAnnotationsView() {
   const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
-  const [runningAll, setRunningAll] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const consistencyRunning = useIsPostEffectRunning("consistency", "project");
+  const intraRunning = useIsPostEffectRunning(
+    "intra_scene_consistency",
+    "project",
+  );
+  const storeRunning = consistencyRunning || intraRunning;
+  const runningAll = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
 
   const projectId = useTreeStore((s) => s.projectId);
@@ -125,7 +138,7 @@ export function ProjectAnnotationsView() {
         .getState()
         .get("aiPrompt.custom.kouetsu", "");
       const activeSceneId = useTreeStore.getState().activeSceneId;
-      setRunningAll(true);
+      setLaunching(true);
 
       try {
         await flushPendingSceneSaves();
@@ -214,7 +227,7 @@ export function ProjectAnnotationsView() {
             startOneMulti("intra"),
           ]);
           await afterRunAll(activeSceneId);
-          setRunningAll(false);
+          setLaunching(false);
 
           const errors: string[] = [];
           if (resA.kind === "err") errors.push(`Codex: ${resA.error}`);
@@ -224,9 +237,10 @@ export function ProjectAnnotationsView() {
             );
 
           if (errors.length === 2) {
-            toast.error(t("kouetsu.projectAnnotations.checkFailed"), {
-              description: errors.join(" / "),
-            });
+            postEffectErrorToast(
+              t("kouetsu.projectAnnotations.checkFailed"),
+              errors.join(" / "),
+            );
             return;
           }
           if (errors.length === 1) {
@@ -234,11 +248,9 @@ export function ProjectAnnotationsView() {
               resA.kind === "err"
                 ? t("kouetsu.consistency.codexLabel")
                 : t("kouetsu.consistency.intraLabel");
-            toast.error(
+            postEffectErrorToast(
               t("kouetsu.projectAnnotations.checkFailedPartial", { label }),
-              {
-                description: errors[0],
-              },
+              errors[0],
             );
           } else {
             const bothCache =
@@ -274,16 +286,17 @@ export function ProjectAnnotationsView() {
           // consistency または intra 単独
           const res = await startOneMulti(kind);
           await afterRunAll(activeSceneId);
-          setRunningAll(false);
+          setLaunching(false);
 
           if (res.kind === "err") {
             const label =
               kind === "consistency"
                 ? t("kouetsu.consistency.codexLabel")
                 : t("kouetsu.consistency.intraLabel");
-            toast.error(t("kouetsu.consistency.singleEffectError", { label }), {
-              description: res.error,
-            });
+            postEffectErrorToast(
+              t("kouetsu.consistency.singleEffectError", { label }),
+              res.error,
+            );
             return;
           }
           if (res.e.from_cache) {
@@ -308,10 +321,11 @@ export function ProjectAnnotationsView() {
         }
       } catch (e) {
         console.error("post-effect multi launch error", e);
-        setRunningAll(false);
-        toast.error(t("kouetsu.projectAnnotations.launchFailed"), {
-          description: e instanceof Error ? e.message : String(e),
-        });
+        setLaunching(false);
+        postEffectErrorToast(
+          t("kouetsu.projectAnnotations.launchFailed"),
+          e instanceof Error ? e.message : String(e),
+        );
       }
     },
     [runningAll, projectId, afterRunAll, t],

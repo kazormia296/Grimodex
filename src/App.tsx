@@ -26,6 +26,7 @@ import {
   useResultsPanelStore,
 } from "@/features/commandCenter";
 import { ReindexProgressToast } from "@/features/semantic-search/ReindexProgressToast";
+import { PostEffectProgressToast } from "@/features/post-effect/PostEffectProgressToast";
 import { useReindexProgressListener } from "@/features/semantic-search/useReindexProgressListener";
 import { ModelDownloadToast } from "@/features/semantic-search/ModelDownloadToast";
 import { useModelDownloadListener } from "@/features/semantic-search/useModelDownloadListener";
@@ -784,6 +785,7 @@ function EditorScreen() {
       {showSampleTour && <SampleTour />}
       <ReindexProgressToast />
       <ModelDownloadToast />
+      <PostEffectProgressToast />
       <UpdateToast />
       <ReloadConflictDialog />
       <main

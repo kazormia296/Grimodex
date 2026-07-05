@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Info, Loader2, Sparkles, XCircle } from "lucide-react";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
@@ -9,6 +8,7 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useLensStore } from "@/features/post-effect/lensStore";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import {
   buildMultiPayload,
   getSceneIdsForScope,
@@ -36,6 +36,7 @@ import {
   buildTensionSeries,
   detectSaggyRuns,
 } from "@/features/post-effect/tensionSeries";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 import type {
   PostEffectSeverity,
   SceneLensRecord,
@@ -78,7 +79,19 @@ interface Props {
 
 export function MetaStructureView({ scope, sceneId }: Props) {
   const { t } = useTranslation();
-  const [running, setRunning] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const sceneRunning = useIsPostEffectRunning(
+    "meta_structure",
+    "scene",
+    sceneId,
+  );
+  const projectRunning = useIsPostEffectRunning("meta_structure", "project");
+  const storeRunning = sceneRunning || projectRunning;
+  const running = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
@@ -120,7 +133,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
       useTreeStore.getState().nodes,
       sceneId,
     );
-    setRunning(true);
+    setLaunching(true);
     try {
       await flushPendingSceneSaves(sceneId);
       const payload = await buildMetaStructurePayload(
@@ -158,17 +171,19 @@ export function MetaStructureView({ scope, sceneId }: Props) {
         },
       );
       await loadLens(projectId);
-      setRunning(false);
+      setLaunching(false);
       if (!outcome.ok) {
-        toast.error(t("kouetsu.metaStructure.reviewFailed"), {
-          description: outcome.error,
-        });
+        postEffectErrorToast(
+          t("kouetsu.metaStructure.reviewFailed"),
+          outcome.error,
+        );
       }
     } catch (e) {
-      setRunning(false);
-      toast.error(t("kouetsu.metaStructure.launchFailed"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.metaStructure.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }, [running, sceneId, projectId, loadLens, t]);
 
@@ -184,7 +199,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     const customKouetsu = useSettingsStore
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
-    setRunning(true);
+    setLaunching(true);
     try {
       await flushPendingSceneSaves();
       const payload = await buildMultiPayload(
@@ -196,7 +211,7 @@ export function MetaStructureView({ scope, sceneId }: Props) {
         customKouetsu,
       );
       if (payload.scenes.length === 0) {
-        setRunning(false);
+        setLaunching(false);
         return;
       }
       const outcome = await new Promise<{ ok: boolean; error?: string }>(
@@ -224,17 +239,19 @@ export function MetaStructureView({ scope, sceneId }: Props) {
         },
       );
       await loadLens(projectId);
-      setRunning(false);
+      setLaunching(false);
       if (!outcome.ok) {
-        toast.error(t("kouetsu.metaStructure.projectReviewFailed"), {
-          description: outcome.error,
-        });
+        postEffectErrorToast(
+          t("kouetsu.metaStructure.projectReviewFailed"),
+          outcome.error,
+        );
       }
     } catch (e) {
-      setRunning(false);
-      toast.error(t("kouetsu.metaStructure.launchFailed"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.metaStructure.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }, [running, projectId, loadLens, t]);
 

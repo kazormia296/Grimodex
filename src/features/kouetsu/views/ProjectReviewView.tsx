@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Info, Loader2, Sparkles } from "lucide-react";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
@@ -14,6 +13,7 @@ import {
   getSceneIdsForScope,
 } from "@/features/post-effect/consistencyPayloadBuilder";
 import { REVIEW_PROMPT_VERSION } from "@/features/post-effect/reviewPayloadBuilder";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import {
   flushPendingSceneSaves,
   listAnnotationsForProject,
@@ -25,12 +25,19 @@ import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction"
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 
 export function ProjectReviewView() {
   const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
-  const [runningAll, setRunningAll] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const storeRunning = useIsPostEffectRunning("review", "project");
+  const runningAll = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
 
   const projectId = useTreeStore((s) => s.projectId);
@@ -75,7 +82,7 @@ export function ProjectReviewView() {
     const customKouetsu = useSettingsStore
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
-    setRunningAll(true);
+    setLaunching(true);
     try {
       await flushPendingSceneSaves();
       const payload = await buildMultiPayload(
@@ -88,7 +95,7 @@ export function ProjectReviewView() {
         { provider: ov.provider, endpointId: ov.endpointId },
       );
       if (payload.scenes.length === 0) {
-        setRunningAll(false);
+        setLaunching(false);
         return;
       }
       const outcome = await new Promise<{ ok: boolean; error?: string }>(
@@ -120,18 +127,17 @@ export function ProjectReviewView() {
         },
       );
       reload();
-      setRunningAll(false);
+      setLaunching(false);
       if (!outcome.ok) {
-        toast.error(t("kouetsu.projectReview.failed"), {
-          description: outcome.error,
-        });
+        postEffectErrorToast(t("kouetsu.projectReview.failed"), outcome.error);
       }
     } catch (e) {
       console.error("review multi launch error", e);
-      setRunningAll(false);
-      toast.error(t("kouetsu.projectReview.launchFailed"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.projectReview.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }, [runningAll, projectId, reload]);
 

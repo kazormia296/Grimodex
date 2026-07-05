@@ -686,6 +686,8 @@
         "sameProvider": "Same provider as chat",
         "unavailableProvider": "The selected provider/endpoint is no longer available (key or endpoint removed). Sends will fail or go to a different target.",
         "unavailableOption": "{{provider}} (unavailable)",
+        "staleModel": "The saved model {{model}} is not in the current provider's model list (e.g. a leftover from before a provider switch). Sends may fail until it is changed.",
+        "staleModelOption": "{{model}} (not in list)",
         "reset": "Reset",
         "cacheNote": "Note: picking a model from a different provider than your default for a role splits that path's prompt cache, which can raise cost and latency.",
         "conversation": {
@@ -1067,6 +1069,7 @@
     },
     "about": {
       "github": "GitHub",
+      "openLogDir": "Open log folder",
       "checkForUpdates": "Check for updates",
       "updateNowVersion": "Update now (v{{version}})",
       "restartToUpdate": "Restart to update",
@@ -1297,6 +1300,34 @@
     }
   },
   "kouetsu": {
+    "openLog": "Open logs",
+    "openLogFailed": "Failed to open the log folder",
+    "progressToast": {
+      "running": "Running…",
+      "runningProgress": "Running scene {{progress}}",
+      "done": "Done — {{count}} findings",
+      "doneNoFindings": "Done — no findings",
+      "failed": "Failed: {{error}}",
+      "abort": "Abort",
+      "aborting": "Aborting…",
+      "abortFailed": "Failed to request abort",
+      "effect": {
+        "review": "AI review",
+        "typo_detection": "Typo check",
+        "consistency": "Codex consistency",
+        "intra_scene_consistency": "In-scene contradictions",
+        "intent_drift": "Intent drift",
+        "pseudo_comment": "Pseudo comments",
+        "meta_structure": "Meta structure",
+        "timeline_consistency": "Timeline check",
+        "impact_review": "Impact review"
+      },
+      "scope": {
+        "scene": "Current scene",
+        "folder": "Folder",
+        "project": "Project"
+      }
+    },
     "tension": {
       "title": "Tension curve",
       "saggy": "■ Saggy stretch",

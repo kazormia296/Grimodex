@@ -21,12 +21,15 @@ vi.mock("@/features/editor/tabStore", () => ({
 }));
 
 import { flushPendingSceneSaves, runPostEffect } from "./api";
+import { usePostEffectRunStore } from "./runStore";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
 
-type Handler = (event: { payload: unknown }) => void | Promise<void>;
+// `@/lib/tauri` の listen はハンドラへ payload を**直接**渡す契約
+// (tauriListen の (e) => handler(e.payload) ラップ)。mock も同じ契約にする。
+type Handler = (payload: unknown) => void | Promise<void>;
 type EventChannel =
   | "post_effect:progress"
   | "post_effect:partial"
@@ -58,7 +61,7 @@ beforeEach(() => {
 function fireEvent(channel: EventChannel, payload: unknown) {
   for (const s of subs) {
     if (s.channel === channel) {
-      void s.handler({ payload });
+      void s.handler(payload);
     }
   }
 }
@@ -230,5 +233,155 @@ describe("runPostEffect 自動 cleanup", () => {
       // 2 回目の done でも cleanup() は no-op (cleanedUp フラグ)
       expect(s.unlisten).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe("runPostEffect run_id フィルタリング", () => {
+  const baseReq = {
+    project_id: "p1",
+    effect_type: "review",
+    scope_type: "scene",
+    scope_target_id: "s1",
+    model: "test",
+    prompt_version: "v1",
+    input_hash: "hash",
+    codex_payload_json: "[]",
+    scene_text: "",
+    system_prompt: "test system prompt",
+  } as const;
+
+  beforeEach(() => {
+    usePostEffectRunStore.setState({ runs: {} });
+  });
+
+  it("他 run の done では terminal handler も cleanup も発火しない", async () => {
+    // 並行 run（例: review 実行中に typo を開始）で他 run の完了が
+    // この run の spinner/toast を巻き込んで終わらせていた退行の防止。
+    mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: false });
+
+    const onDone = vi.fn();
+    await runPostEffect(baseReq, { onDone });
+
+    fireEvent("post_effect:done", {
+      run_id: "OTHER",
+      annotation_count: 3,
+      summary: null,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onDone).not.toHaveBeenCalled();
+    for (const s of subs) {
+      expect(s.unlisten).not.toHaveBeenCalled();
+    }
+
+    // 自 run の done では従来どおり発火 + 解除。
+    fireEvent("post_effect:done", {
+      run_id: "r1",
+      annotation_count: 0,
+      summary: null,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("run_id 確定前に届いた自 run の done はバッファされ再生される", async () => {
+    // starter (invoke) の resolve より先に done が emit される超高速
+    // completion。ここを落とすと spinner 永続に戻る。
+    let resolveStarter!: (v: unknown) => void;
+    mockInvoke.mockReturnValue(
+      new Promise((resolve) => {
+        resolveStarter = resolve;
+      }),
+    );
+
+    const onDone = vi.fn();
+    const p = runPostEffect(baseReq, { onDone });
+    // listen 登録完了を待つ（starter は未解決のまま）
+    await Promise.resolve();
+    await Promise.resolve();
+
+    fireEvent("post_effect:done", {
+      run_id: "r1",
+      annotation_count: 2,
+      summary: null,
+    });
+    fireEvent("post_effect:done", {
+      run_id: "OTHER",
+      annotation_count: 9,
+      summary: null,
+    });
+    expect(onDone).not.toHaveBeenCalled();
+
+    resolveStarter({ run_id: "r1", from_cache: false });
+    await p;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onDone.mock.calls[0][0].annotation_count).toBe(2);
+    for (const s of subs) {
+      expect(s.unlisten).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("runStore に begin → progress → complete が反映される", async () => {
+    mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: false });
+    await runPostEffect(baseReq, {});
+
+    const run = usePostEffectRunStore.getState().runs["r1"];
+    expect(run).toBeDefined();
+    expect(run.effectType).toBe("review");
+    expect(run.scopeType).toBe("scene");
+    expect(run.scopeTargetId).toBe("s1");
+    expect(run.outcome).toBeUndefined();
+
+    fireEvent("post_effect:progress", {
+      run_id: "r1",
+      stage: "calling_ai",
+      progress: 0.5,
+      message: "3/12",
+    });
+    await Promise.resolve();
+    const mid = usePostEffectRunStore.getState().runs["r1"];
+    expect(mid.progress).toBe(0.5);
+    expect(mid.message).toBe("3/12");
+
+    fireEvent("post_effect:done", {
+      run_id: "r1",
+      annotation_count: 4,
+      summary: null,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const done = usePostEffectRunStore.getState().runs["r1"];
+    // 終端後も AUTO_CLEAR_MS の間はエントリが残る（トースト完了表示用）
+    expect(done.outcome).toEqual({ kind: "done", annotationCount: 4 });
+  });
+
+  it("error で outcome=error になる", async () => {
+    mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: false });
+    await runPostEffect(baseReq, {});
+
+    fireEvent("post_effect:error", { run_id: "r1", error: "boom" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(usePostEffectRunStore.getState().runs["r1"].outcome).toEqual({
+      kind: "error",
+      error: "boom",
+    });
+  });
+
+  it("from_cache は runStore に登録しない（グローバル進捗に出さない）", async () => {
+    mockInvoke.mockResolvedValue({ run_id: "r1", from_cache: true });
+    const onDone = vi.fn();
+    await runPostEffect(baseReq, { onDone });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(usePostEffectRunStore.getState().runs["r1"]).toBeUndefined();
   });
 });

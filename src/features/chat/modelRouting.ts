@@ -169,6 +169,24 @@ export const MODEL_ROUTING_EXCLUDED: readonly string[] = [
   "agent_call_limit",
 ];
 
+/**
+ * アクティブ（チャット）プロバイダの切替時にクリアすべきロールモデル設定キー。
+ *
+ * 「チャットと同じプロバイダ」モード（roleProviders に provider 割り当てが無い）
+ * のロールモデルはアクティブプロバイダのモデル名前空間に属するため、切替を
+ * またいで持ち越すと旧プロバイダのモデル ID を新プロバイダへそのまま送って
+ * しまう（例: Ollama へ claude 系 ID → HTTP 400 "invalid model name"）。
+ * RoleModelRow がロール個別のプロバイダ変更時にモデルをクリアするのと同じ規約を
+ * アクティブプロバイダ切替にも適用する。明示的な provider 割り当てがあるロールは
+ * 宛先が固定なので対象外。
+ */
+export function sameProviderRoleModelKeys(rawRoleProviders: string): string[] {
+  const map = parseRoleProviders(rawRoleProviders);
+  return MODEL_ROLES.filter((role) => !map[role]?.provider).map((role) =>
+    roleSettingKey(role),
+  );
+}
+
 type SettingGetter = (key: string) => string;
 
 const defaultGetter: SettingGetter = (key) =>

@@ -16,6 +16,7 @@ import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
 import {
   buildMultiPayload,
@@ -41,6 +42,7 @@ import {
   TypoChip,
   TypoContrastRow,
 } from "@/features/post-effect/AnnotationDetails";
+import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 import type {
   PostEffectAnnotation,
   PostEffectSeverity,
@@ -57,7 +59,13 @@ export function ProjectTypoView() {
   const { t } = useTranslation();
   const [annotations, setAnnotations] = useState<PostEffectAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
-  const [runningAll, setRunningAll] = useState(false);
+  // 起動準備（payload 構築〜invoke）中のみのローカル状態。実行中かどうかは
+  // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
+  // 実行中なのにボタンが通常表示へ戻る）。
+  const [launching, setLaunching] = useState(false);
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
+  const storeRunning = useIsPostEffectRunning("typo_detection", "project");
+  const runningAll = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
 
   const projectId = useTreeStore((s) => s.projectId);
@@ -121,7 +129,7 @@ export function ProjectTypoView() {
       .getState()
       .get("aiPrompt.custom.kouetsu", "");
     const activeSceneId = useTreeStore.getState().activeSceneId;
-    setRunningAll(true);
+    setLaunching(true);
 
     try {
       await flushPendingSceneSaves();
@@ -134,7 +142,7 @@ export function ProjectTypoView() {
         customKouetsu,
       );
       if (payload.scenes.length === 0) {
-        setRunningAll(false);
+        setLaunching(false);
         return;
       }
       const result = await new Promise<{
@@ -171,12 +179,13 @@ export function ProjectTypoView() {
       });
 
       await afterRunAll(activeSceneId);
-      setRunningAll(false);
+      setLaunching(false);
 
       if (!result.ok) {
-        toast.error(t("kouetsu.projectTypo.checkFailed"), {
-          description: result.error,
-        });
+        postEffectErrorToast(
+          t("kouetsu.projectTypo.checkFailed"),
+          result.error,
+        );
         return;
       }
       if (result.from_cache) {
@@ -192,10 +201,11 @@ export function ProjectTypoView() {
       }
     } catch (e) {
       console.error("typo multi launch error", e);
-      setRunningAll(false);
-      toast.error(t("kouetsu.projectTypo.launchFailed"), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.projectTypo.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
     }
   }, [runningAll, projectId, afterRunAll, t]);
 
