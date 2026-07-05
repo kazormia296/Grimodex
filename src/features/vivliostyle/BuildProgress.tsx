@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, Loader2, Save, XCircle } from "lucide-react";
-import type { VivliostyleBuildPhase } from "./useVivliostyleBuild";
+import type { VivliostyleBuildPhase } from "./runStore";
 
 // ────────────────────────────────────────────────────────────────────
 // ビルド進捗表示。indeterminate spinner + ログ末尾数行 + 中止ボタン。

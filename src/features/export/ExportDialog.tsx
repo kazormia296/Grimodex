@@ -31,6 +31,7 @@ import {
 } from "./exportUserPresets";
 import { AnimatedOverlay } from "@/components/ui/animated-overlay";
 import { TimelapseExportSection } from "@/features/timelapse/TimelapseExportSection";
+import { VivliostyleExportSection } from "@/features/vivliostyle/VivliostyleExportSection";
 import {
   buildProvenanceBreakdown,
   type ProvenanceDisclosureReport,
@@ -174,12 +175,21 @@ async function saveFile(
 // ExportDialog 本体
 // ────────────────────────────────────────────────────────────────────
 
+/** ダイアログのタブ（テキスト出力 / AI 使用開示 / タイムラプス動画 / 本の書き出し）。 */
+export type ExportDialogMode = "text" | "authorship" | "timelapse" | "book";
+
 interface Props {
   open: boolean;
   onClose: () => void;
+  /**
+   * タブ指定つきで開く要求（コマンドパレットの「本の書き出し」など）。
+   * ダイアログが既に開いている間の再要求でもタブを切り替えられるよう、
+   * seq（nonce）の変化で適用する。未指定なら前回のタブを維持する。
+   */
+  modeRequest?: { mode: ExportDialogMode; seq: number };
 }
 
-export function ExportDialog({ open, onClose }: Props) {
+export function ExportDialog({ open, onClose, modeRequest }: Props) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const expandedIds = useTreeStore((s) => s.expandedIds);
@@ -197,8 +207,8 @@ export function ExportDialog({ open, onClose }: Props) {
   const [isExporting, setIsExporting] = useState(false);
   const [projectTitle, setProjectTitle] = useState("Untitled Project");
   const [projectLanguage, setProjectLanguage] = useState("ja");
-  // テキスト出力 / AI 使用開示 / タイムラプス動画 の切り替え。
-  const [mode, setMode] = useState<"text" | "authorship" | "timelapse">("text");
+  // テキスト出力 / AI 使用開示 / タイムラプス動画 / 本の書き出し の切り替え。
+  const [mode, setMode] = useState<ExportDialogMode>("text");
   const [includePassageExcerpts, setIncludePassageExcerpts] = useState(false);
   // 制作過程開示: 各AI使用箇所に「入力(発話/指示)＋出力」を、さらにサブトグルで
   // 送信プロンプト全文を同梱する。
@@ -211,6 +221,15 @@ export function ExportDialog({ open, onClose }: Props) {
   const [isLoadingAuthorship, setIsLoadingAuthorship] = useState(false);
 
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // タブ指定つきの open 要求を適用する。seq の変化で発火するため、
+  // ダイアログが既に開いているときの再要求（コマンドパレット再実行）でも
+  // タブが切り替わる。
+  useEffect(() => {
+    if (modeRequest) setMode(modeRequest.mode);
+    // intentionally keyed on seq: same-mode re-requests must re-apply
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeRequest?.seq]);
 
   // ダイアログが開いた時に状態を初期化
   useEffect(() => {
@@ -455,12 +474,12 @@ export function ExportDialog({ open, onClose }: Props) {
         <h2 className="text-sm font-semibold text-foreground">
           {t("export.dialog.title")}
         </h2>
-        {/* モード切替: テキスト / タイムラプス動画 (#8) */}
+        {/* モード切替: テキスト / 開示 / タイムラプス動画 / 本の書き出し */}
         <div
           role="tablist"
           className="inline-flex rounded-md border border-border p-0.5"
         >
-          {(["text", "authorship", "timelapse"] as const).map((m) => (
+          {(["text", "authorship", "timelapse", "book"] as const).map((m) => (
             <button
               key={m}
               type="button"
@@ -478,7 +497,9 @@ export function ExportDialog({ open, onClose }: Props) {
                   ? "timelapse.tabTextExport"
                   : m === "authorship"
                     ? "attribution.report"
-                    : "timelapse.tabVideoExport",
+                    : m === "timelapse"
+                      ? "timelapse.tabVideoExport"
+                      : "vivliostyle.tab",
               )}
             </button>
           ))}
@@ -529,14 +550,18 @@ export function ExportDialog({ open, onClose }: Props) {
           includeFullSystemPrompt={includeFullSystemPrompt}
           onIncludeFullSystemPromptChange={setIncludeFullSystemPrompt}
         />
-      ) : (
+      ) : mode === "timelapse" ? (
         <div className="flex-1 overflow-auto">
           <TimelapseExportSection projectTitle={projectTitle} />
         </div>
+      ) : (
+        // 本の書き出し（Vivliostyle）。body + 専用フッター（プレビュー/書き出し）を
+        // セクション側が描画する。タブ表示中のみマウントされ、マウント時に初期化。
+        <VivliostyleExportSection />
       )}
 
-      {/* フッター (動画は TimelapseExportSection が自前の書き出しボタンを持つ) */}
-      {mode !== "timelapse" && (
+      {/* フッター (動画/本の書き出しは各セクションが自前のフッターを持つ) */}
+      {mode !== "timelapse" && mode !== "book" && (
         <div className="flex flex-shrink-0 items-center gap-3 border-t border-border px-4 py-2">
           {mode === "text" ? (
             <>

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BookOpen, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
@@ -11,7 +10,7 @@ import {
 import type { ExportTreeState } from "@/features/export/ExportTree";
 import type { TateChuYokoPolicy } from "@/features/editor/tateChuYokoPolicy";
 import { currentCodexMentionResolver } from "@/features/codex/mentionNameResolver";
-import { AnimatedOverlay } from "@/components/ui/animated-overlay";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import {
   buildVivliostyleHtml,
   VIVLIOSTYLE_HTML_FILENAME,
@@ -22,8 +21,7 @@ import { detectVivliostyle, saveVivliostyleOutput } from "./api";
 import type { VivliostyleDetectResult } from "./types";
 import { loadVivliostyleExportSources } from "./loadExportSources";
 import type { VivliostyleExportSources } from "./loadExportSources";
-import { useVivliostyleBuild } from "./useVivliostyleBuild";
-import { useVivliostylePreview } from "./useVivliostylePreview";
+import { useVivliostyleRunStore } from "./runStore";
 import { useVivliostyleSettings } from "./useVivliostyleSettings";
 import { ThemePicker } from "./ThemePicker";
 import { FormatPicker } from "./FormatPicker";
@@ -32,17 +30,15 @@ import { BuildProgress } from "./BuildProgress";
 import { BuildFooter } from "./BuildFooter";
 
 // ────────────────────────────────────────────────────────────────────
-// 本の書き出し（Vivliostyle）ダイアログ。
+// 本の書き出し（Vivliostyle）セクション。ExportDialog の「本の書き出し」
+// タブとして body + フッターを描画する（タブ表示中のみマウントされ、
+// マウント時に CLI 検出と素材ロードを行う）。
 // シーン選択（ExportTree 再利用）＋テーマ/形式選択＋ビルド進捗＋プレビュー。
-// プレビューはダイアログを閉じても止めない（Rust 側 singleton が管理）。
+// ビルド/プレビューの実行状態は runStore がタブ切替を跨いで保持し、
+// プレビューはタブやダイアログを閉じても止めない（Rust 側 singleton が管理）。
 // ────────────────────────────────────────────────────────────────────
 
-interface Props {
-  open: boolean;
-  onClose: () => void;
-}
-
-export function VivliostyleDialog({ open, onClose }: Props) {
+export function VivliostyleExportSection() {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
   const expandedIds = useTreeStore((s) => s.expandedIds);
@@ -56,8 +52,15 @@ export function VivliostyleDialog({ open, onClose }: Props) {
     VivliostyleDetectResult | null | undefined
   >(undefined);
   const [isSaving, setIsSaving] = useState(false);
-  const { status, logs, start, abort, reset } = useVivliostyleBuild();
-  const preview = useVivliostylePreview();
+  // ビルド/プレビューの実行状態はグローバル store（タブ切替 = unmount を
+  // 跨いで進捗・中止・停止手段を維持する）。
+  const status = useVivliostyleRunStore((s) => s.build);
+  const logs = useVivliostyleRunStore((s) => s.logs);
+  const startBuild = useVivliostyleRunStore((s) => s.startBuild);
+  const abortBuild = useVivliostyleRunStore((s) => s.abortBuild);
+  const previewRunning = useVivliostyleRunStore((s) => s.previewRunning);
+  const startPreview = useVivliostyleRunStore((s) => s.startPreview);
+  const stopPreview = useVivliostyleRunStore((s) => s.stopPreview);
 
   // 設定（settingsStore 経由で永続化）
   const {
@@ -77,18 +80,24 @@ export function VivliostyleDialog({ open, onClose }: Props) {
       .catch(() => setDetected(null));
   }, []);
 
-  // 開いた時に状態を初期化
+  // マウント時（タブ表示時）に素材と CLI 検出を初期化する。ビルド/プレビューの
+  // 実行状態は runStore がタブ切替を跨いで保持するためここでは触らないが、
+  // 別プロジェクトのビルド状態（stale done の保存ボタン等）だけは破棄する。
   useEffect(() => {
-    if (!open) return;
-    setTreeState(buildInitialTreeState(nodes, expandedIds));
     loadVivliostyleExportSources()
       .then(setSources)
       .catch(() => setSources(null));
     redetect();
-    reset();
-    // intentionally omit deps: runs only when dialog opens
+    const run = useVivliostyleRunStore.getState();
+    if (
+      run.buildProjectId !== null &&
+      run.buildProjectId !== getCurrentProjectId()
+    ) {
+      run.resetBuild();
+    }
+    // intentionally omit deps: runs only when the section mounts
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, []);
 
   const { sceneCount, charCount, totalScenes } = calcExportStats(
     nodes,
@@ -131,7 +140,7 @@ export function VivliostyleDialog({ open, onClose }: Props) {
     if (!canBuild) return;
     const files = assembleFiles();
     if (!files) return;
-    await start({
+    await startBuild({
       files,
       format,
       binaryPath: binaryPath.trim() || null,
@@ -139,15 +148,15 @@ export function VivliostyleDialog({ open, onClose }: Props) {
   }
 
   async function handlePreview() {
-    if (preview.running) {
-      await preview.stop();
+    if (previewRunning) {
+      await stopPreview();
       return;
     }
     if (!canPreview) return;
     const files = assembleFiles();
     if (!files) return;
     try {
-      await preview.start({ files, binaryPath: binaryPath.trim() || null });
+      await startPreview({ files, binaryPath: binaryPath.trim() || null });
     } catch (err) {
       toast.error(t("vivliostyle.preview.failed", { error: String(err) }));
     }
@@ -168,29 +177,7 @@ export function VivliostyleDialog({ open, onClose }: Props) {
   }
 
   return (
-    <AnimatedOverlay
-      open={open}
-      onClose={onClose}
-      testId="vivliostyle-dialog"
-      className="flex h-[640px] w-[860px] min-h-[400px] min-w-[560px] max-h-[90vh] max-w-[90vw] resize flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
-    >
-      {/* ヘッダー */}
-      <div className="flex flex-shrink-0 items-center gap-3 border-b border-border px-4 py-2">
-        <BookOpen className="h-4 w-4 text-muted-foreground" aria-hidden />
-        <h2 className="text-sm font-semibold text-foreground">
-          {t("vivliostyle.title")}
-        </h2>
-        <div className="flex-1" />
-        <button
-          type="button"
-          aria-label={t("common.close")}
-          onClick={onClose}
-          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
+    <>
       {/* ボディ: 左=シーン選択 / 右=CLI 状態・テーマ・形式・進捗 */}
       <div className="flex flex-1 overflow-hidden">
         <div className="w-1/2 min-w-[240px] overflow-hidden border-r border-border">
@@ -216,7 +203,7 @@ export function VivliostyleDialog({ open, onClose }: Props) {
           <BuildProgress
             status={status}
             logs={logs}
-            onAbort={() => void abort()}
+            onAbort={() => void abortBuild()}
             onSave={() => void handleSave()}
             isSaving={isSaving}
           />
@@ -231,10 +218,10 @@ export function VivliostyleDialog({ open, onClose }: Props) {
         isRunning={status.phase === "running"}
         canBuild={canBuild}
         onBuild={() => void handleBuild()}
-        previewRunning={preview.running}
+        previewRunning={previewRunning}
         canPreview={canPreview}
         onPreview={() => void handlePreview()}
       />
-    </AnimatedOverlay>
+    </>
   );
 }
