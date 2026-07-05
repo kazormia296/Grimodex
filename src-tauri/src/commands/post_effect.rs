@@ -576,11 +576,23 @@ fn value_type_name(v: &Value) -> &'static str {
 }
 
 /// LLM が返す JSON を取り出す。
+/// 0) 冒頭の `<think>...</think>`（ローカル reasoning モデルの思考出力）を除去
 /// 1) ```json ... ``` / ``` ... ``` で囲まれた最初のブロックを優先
 /// 2) なければ最初の `{` から最後の `}` までを返す（前置き文対策）
 /// 3) どちらでもなければ trim 済み全文を返す
 fn extract_json(raw: &str) -> &str {
     let trimmed = raw.trim();
+
+    // 0) reasoning モデル (deepseek-r1 / qwen3 等) は /v1 互換経路で
+    //    <think>...</think> を本文に前置する。think 内の `{` や ``` が
+    //    下の切り出しを誤爆させるため、冒頭ブロックに限って捨てる。
+    let trimmed = match trimmed.strip_prefix("<think>") {
+        Some(rest) => match rest.find("</think>") {
+            Some(end) => rest[end + "</think>".len()..].trim(),
+            None => trimmed,
+        },
+        None => trimmed,
+    };
 
     // 1) コードフェンスを探す（prefix 限定ではなくどこにあっても拾う）
     if let Some(fence_start) = trimmed.find("```") {
@@ -605,9 +617,29 @@ fn extract_json(raw: &str) -> &str {
     trimmed
 }
 
+/// LLM 応答を JSON として解釈する（`extract_json` の解析側）。
+/// ローカル LLM は外側の `{}` を省いた `"findings": [...]` を返すことがあり、
+/// その場合 `trailing characters` で素の parse が失敗する。失敗時は
+/// 「抽出結果」「trim 済み全文」をそれぞれ `{}` で包んで一度だけ再試行し、
+/// どれも通らなければ元のエラーを返す。
+fn parse_llm_json(raw: &str) -> Result<Value, serde_json::Error> {
+    let json_str = extract_json(raw);
+    match serde_json::from_str(json_str) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            for candidate in [json_str, raw.trim()] {
+                if let Ok(v) = serde_json::from_str::<Value>(&format!("{{{candidate}}}")) {
+                    return Ok(v);
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod extract_json_tests {
-    use super::extract_json;
+    use super::{extract_json, parse_llm_json};
 
     #[test]
     fn handles_raw_json() {
@@ -636,6 +668,56 @@ mod extract_json_tests {
     fn handles_fence_without_language_tag() {
         let raw = "```\n{\"a\":1}\n```";
         assert_eq!(extract_json(raw), "{\"a\":1}");
+    }
+
+    #[test]
+    fn strips_leading_think_block() {
+        // think 内の `{}` や ``` に釣られず本体の JSON を取り出す
+        let raw = "<think>例えば {\"x\":1} のような…</think>\n{\"findings\":[]}";
+        assert_eq!(extract_json(raw), "{\"findings\":[]}");
+    }
+
+    #[test]
+    fn keeps_text_when_think_block_unclosed() {
+        let raw = "<think>途中で切れた {\"findings\":[]}";
+        assert_eq!(extract_json(raw), "{\"findings\":[]}");
+    }
+
+    // --- parse_llm_json: 外側 {} 省略の救済 ---
+
+    #[test]
+    fn parse_recovers_braceless_empty_array() {
+        // 実報告: `trailing characters at line 1 column 11`
+        // (= `"findings"` 直後の `:` で失敗するパターン)
+        let v = parse_llm_json("\"findings\": []").unwrap();
+        assert!(v["findings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_recovers_braceless_with_objects() {
+        // 内側に `{}` があると extract_json の brace 切り出しが誤爆するため
+        // 全文 wrap 側でしか救済できないケース
+        let raw = "\"findings\": [{\"title\":\"a\"},{\"title\":\"b\"}]";
+        let v = parse_llm_json(raw).unwrap();
+        assert_eq!(v["findings"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn parse_recovers_fenced_braceless() {
+        let raw = "```json\n\"findings\": [{\"title\":\"a\"}]\n```";
+        let v = parse_llm_json(raw).unwrap();
+        assert_eq!(v["findings"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_passes_through_well_formed() {
+        let v = parse_llm_json("{\"violations\":[]}").unwrap();
+        assert!(v["violations"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_still_fails_on_prose() {
+        assert!(parse_llm_json("シーンは全体的に良好です。").is_err());
     }
 }
 
@@ -2206,7 +2288,7 @@ async fn process_consistency_scene(
         json_preview = %&json_str.chars().take(120).collect::<String>(),
         "[post_effect] consistency: extracted JSON preview"
     );
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
@@ -2657,7 +2739,7 @@ async fn process_intra_scene(
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
@@ -2939,7 +3021,7 @@ async fn process_typo_scene(
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
@@ -3179,7 +3261,7 @@ async fn process_review_scene(
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
@@ -3362,7 +3444,7 @@ async fn process_intent_drift_scene(
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
@@ -3588,7 +3670,7 @@ async fn process_timeline_scene(
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
@@ -3825,7 +3907,7 @@ async fn process_impact_review_scene(
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
@@ -4094,7 +4176,7 @@ async fn process_pseudo_comment_scene(
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,
@@ -4285,7 +4367,7 @@ async fn process_meta_structure_scene(
 
     on_stage(0.5, "parsing");
     let json_str = extract_json(&raw_response);
-    let parsed: Value = serde_json::from_str(json_str).map_err(|e| {
+    let parsed: Value = parse_llm_json(&raw_response).map_err(|e| {
         tracing::error!(
             run_id = run_id,
             scene_id = scene_id,

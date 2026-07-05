@@ -3343,6 +3343,64 @@ pub async fn send_chat_with_tools(
 /// acceptable for Phase 1 since only Anthropic family supports caching).
 ///
 /// Returns the first text block from the response.
+/// post_effect の user content ブロック列（Anthropic 形式）。Codex 前置きには
+/// cache_control を付け、チャンク呼び出し間でキャッシュを再利用させる。
+/// AUDIT POINT: cache_control must sit at the Codex/Scene boundary.
+fn post_effect_user_blocks(
+    codex_content: Option<&str>,
+    scene_content: &str,
+) -> Vec<serde_json::Value> {
+    let mut user_blocks: Vec<serde_json::Value> = Vec::new();
+    if let Some(codex) = codex_content {
+        user_blocks.push(serde_json::json!({
+            "type": "text",
+            "text": format!("[Codex]\n{}", codex),
+            "cache_control": { "type": "ephemeral" }
+        }));
+    }
+    user_blocks.push(serde_json::json!({
+        "type": "text",
+        "text": format!("[Scene]\n{}", scene_content)
+    }));
+    user_blocks
+}
+
+/// OpenAI 互換 /chat/completions に渡す post_effect の user content。
+/// cache_control を解釈できるのは OpenRouter（Claude 系モデルへ passthrough）
+/// だけで、Ollama や一部のローカル OpenAI 互換サーバはパーツ配列そのものを
+/// 400 で拒否する実装がある。そのため OpenRouter 以外はチャット経路と同じ
+/// プレーン文字列 content に平坦化する。
+pub(crate) fn post_effect_openai_user_content(
+    provider: &AiProvider,
+    codex_content: Option<&str>,
+    scene_content: &str,
+) -> serde_json::Value {
+    if matches!(provider, AiProvider::OpenRouter) {
+        return serde_json::Value::Array(post_effect_user_blocks(codex_content, scene_content));
+    }
+    let text = match codex_content {
+        Some(codex) => format!("[Codex]\n{codex}\n\n[Scene]\n{scene_content}"),
+        None => format!("[Scene]\n{scene_content}"),
+    };
+    serde_json::Value::String(text)
+}
+
+/// HTTP エラー時にステータスだけでなくレスポンスボディ（プロバイダの実エラー
+/// メッセージ）まで拾って anyhow エラーにする。`error_for_status()` はボディを
+/// 捨てるため、Ollama の 400 などが「Bad Request」以上の情報を持てなかった。
+async fn error_with_response_body(
+    resp: reqwest::Response,
+    url: &str,
+) -> anyhow::Result<reqwest::Response> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body_text = resp.text().await.unwrap_or_default();
+    let snippet: String = body_text.chars().take(300).collect();
+    anyhow::bail!("HTTP {status} ({url}): {snippet}")
+}
+
 pub async fn call_post_effect_api(
     settings: &AiSettings,
     api_key: &str,
@@ -3354,22 +3412,6 @@ pub async fn call_post_effect_api(
     let client = reqwest::Client::new();
     let endpoints = settings.endpoints();
 
-    // Build the user content array (content blocks).
-    let mut user_blocks: Vec<serde_json::Value> = Vec::new();
-    if let Some(codex) = codex_content {
-        // Codex prefix — mark for caching so it is reused across chunk calls.
-        // AUDIT POINT: cache_control must sit at the Codex/Scene boundary.
-        user_blocks.push(serde_json::json!({
-            "type": "text",
-            "text": format!("[Codex]\n{}", codex),
-            "cache_control": { "type": "ephemeral" }
-        }));
-    }
-    user_blocks.push(serde_json::json!({
-        "type": "text",
-        "text": format!("[Scene]\n{}", scene_content)
-    }));
-
     match settings.provider {
         AiProvider::Anthropic => {
             let url = format!("{}/messages", settings.provider.base_url(endpoints));
@@ -3377,18 +3419,21 @@ pub async fn call_post_effect_api(
                 "model": settings.model,
                 "max_tokens": 4096,
                 "system": system_prompt,
-                "messages": [{ "role": "user", "content": user_blocks }]
+                "messages": [{
+                    "role": "user",
+                    "content": post_effect_user_blocks(codex_content, scene_content)
+                }]
             });
             let resp = client
-                .post(url)
+                .post(url.as_str())
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("anthropic-beta", "prompt-caching-2024-07-31")
                 .header("content-type", "application/json")
                 .json(&body)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await?;
+            let resp = error_with_response_body(resp, &url).await?;
             let result: serde_json::Value = resp.json().await?;
             extract_first_text_block_anthropic(&result)
         }
@@ -3430,11 +3475,13 @@ pub async fn call_post_effect_api(
                     .provider
                     .openai_compat_base_url(endpoints, api_variant.as_deref())
             );
+            let user_content =
+                post_effect_openai_user_content(&settings.provider, codex_content, scene_content);
             let mut body = serde_json::json!({
                 "model": settings.model,
                 "messages": [
                     { "role": "system", "content": system_prompt },
-                    { "role": "user",   "content": user_blocks }
+                    { "role": "user",   "content": user_content }
                 ]
             });
             // OpenAI 直叩き / Sakana(fugu) は reasoning モデルが max_tokens を 400 拒否する
@@ -3451,7 +3498,9 @@ pub async fn call_post_effect_api(
                 &settings.provider,
                 settings.openrouter_provider_pin.as_deref(),
             );
-            let mut req = client.post(url).header("content-type", "application/json");
+            let mut req = client
+                .post(url.as_str())
+                .header("content-type", "application/json");
             let needs_auth = match settings.provider {
                 AiProvider::Ollama => false,
                 AiProvider::OpenaiCompatible => !api_key.is_empty(),
@@ -3465,7 +3514,8 @@ pub async fn call_post_effect_api(
                     .header("HTTP-Referer", "https://github.com/kazormia296/Grimodex")
                     .header("X-Title", "Grimodex");
             }
-            let resp = req.json(&body).send().await?.error_for_status()?;
+            let resp = req.json(&body).send().await?;
+            let resp = error_with_response_body(resp, &url).await?;
             let result: serde_json::Value = resp.json().await?;
             extract_first_text_block_openai(&result)
         }
@@ -4641,6 +4691,41 @@ mod tests {
         assert!(body.get("provider").is_none());
         apply_openrouter_provider_pin(&mut body, &AiProvider::Anthropic, Some("anthropic"));
         assert!(body.get("provider").is_none());
+    }
+
+    // --- post_effect_openai_user_content: content 形状のプロバイダ分岐 ---
+    // Ollama 等のローカル OpenAI 互換サーバはパーツ配列 content を 400 で拒否
+    // する実装があるため、cache_control が意味を持つ OpenRouter 以外は
+    // プレーン文字列に平坦化する（チャット経路と同形）。
+
+    #[test]
+    fn post_effect_user_content_is_plain_string_for_ollama() {
+        let v = post_effect_openai_user_content(&AiProvider::Ollama, None, "本文");
+        assert_eq!(v, serde_json::json!("[Scene]\n本文"));
+    }
+
+    #[test]
+    fn post_effect_user_content_flattens_codex_for_local_providers() {
+        let v = post_effect_openai_user_content(
+            &AiProvider::OpenaiCompatible,
+            Some("{\"entries\":[]}"),
+            "本文",
+        );
+        assert_eq!(
+            v,
+            serde_json::json!("[Codex]\n{\"entries\":[]}\n\n[Scene]\n本文")
+        );
+    }
+
+    #[test]
+    fn post_effect_user_content_keeps_blocks_with_cache_control_for_openrouter() {
+        let v = post_effect_openai_user_content(&AiProvider::OpenRouter, Some("codex"), "本文");
+        let blocks = v.as_array().expect("array content");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(blocks[0]["text"], "[Codex]\ncodex");
+        assert_eq!(blocks[1]["text"], "[Scene]\n本文");
+        assert!(blocks[1].get("cache_control").is_none());
     }
 
     #[test]
