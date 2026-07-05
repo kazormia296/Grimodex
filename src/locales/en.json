@@ -1371,6 +1371,11 @@
       "project": "Project",
       "ignored": "Excluded"
     },
+    "scopePicker": "Select check scope",
+    "filter": {
+      "open": "Open",
+      "dismissed": "Dismissed"
+    },
     "editorial": {
       "review": "Review",
       "pseudoComment": "Pseudo-comments",

@@ -1371,6 +1371,11 @@
       "project": "プロジェクト",
       "ignored": "除外"
     },
+    "scopePicker": "チェック範囲を選択",
+    "filter": {
+      "open": "開いている",
+      "dismissed": "除外"
+    },
     "editorial": {
       "review": "レビュー",
       "pseudoComment": "疑似コメント",
