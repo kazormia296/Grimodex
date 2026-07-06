@@ -89,11 +89,11 @@ export function PseudoCommentRunControl({ onCompleted }: Props) {
     running || !sceneId || analysisGate.presentation !== "enabled";
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex min-w-0 items-center gap-1.5">
       <select
         value={persona}
         onChange={(e) => setPersona(e.target.value)}
-        className="rounded border border-border bg-background px-1.5 py-0.5 text-xs outline-none"
+        className="min-w-0 max-w-40 truncate rounded border border-border bg-background px-1.5 py-0.5 text-xs outline-none"
       >
         {personaDefs.map((d) => {
           const locked = Boolean(d.requiresTargetProfile) && !hasTargetProfile;

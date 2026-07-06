@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { FullCheckStepId } from "./fullCheckStore";
+import type { IssueCat } from "./triage/issueModel";
 
 export type KouetsuTab = "issues" | "comments" | "blocker";
 export type KouetsuScope =
@@ -9,15 +10,14 @@ export type KouetsuScope =
   | { type: "folder"; anchorId: string }
   | { type: "project" };
 export type KouetsuStatusFilter = "open" | "dismissed";
-export type ProjectGroupBy = "scene" | "codex";
 
 /**
  * persist された folder anchor が現ツリーに存在しない場合 project へ倒す
  * （kouetsu-store はプロジェクト横断 persist のため、プロジェクト切替や
  * フォルダ削除で anchor が宙に浮く）。宙に浮いた folder のまま放置すると
- * getSceneIdsForScope が空集合を返し、Project 系ビューが全空表示 + 実行が
+ * getSceneIdsForScope が空集合を返し、統合リストが全空表示 + 実行が
  * 無音 no-op になる。scene / project はそのまま素通しする。
- * 消費側（Project 系ビュー / KouetsuScopeBar）は必ずこの正規化を経由する。
+ * 消費側（TriageHeader / 統合リスト系フック）は必ずこの正規化を経由する。
  */
 export function resolveKouetsuScope(
   scope: KouetsuScope,
@@ -36,7 +36,6 @@ interface KouetsuState {
   scope: KouetsuScope;
   /** 場所軸から分離したステータスフィルタ（旧 "ignored" スコープの後継）。 */
   statusFilter: KouetsuStatusFilter;
-  projectGroupBy: ProjectGroupBy;
   /**
    * AnimatedSlotPanel keepalive 中の KouetsuPanel の active 状態。
    * 実行時 UI 状態なので永続化しない (partialize で除外)。
@@ -49,12 +48,22 @@ interface KouetsuState {
    * 疑似コメント・影響レビューは全体チェックの対象外なので鍵に含めない。
    */
   fullCheckEffects: Record<FullCheckStepId, boolean>;
+  /**
+   * トリアージ UI の実行時状態（すべて非永続 — partialize で除外）。
+   * selectedIssueId = トリアージカード表示中の UnifiedIssue.id。
+   * dashboardOn = 観点ダッシュボード表示。catFilter = 観点絞り込み。
+   */
+  selectedIssueId: string | null;
+  dashboardOn: boolean;
+  catFilter: IssueCat | null;
   setActiveTab: (tab: KouetsuTab) => void;
   setScope: (scope: KouetsuScope) => void;
   setStatusFilter: (filter: KouetsuStatusFilter) => void;
-  setProjectGroupBy: (mode: ProjectGroupBy) => void;
   setPanelActive: (active: boolean) => void;
   setFullCheckEffect: (id: FullCheckStepId, on: boolean) => void;
+  setSelectedIssueId: (id: string | null) => void;
+  toggleDashboard: () => void;
+  setCatFilter: (cat: IssueCat | null) => void;
 }
 
 /** 全体チェック観点の既定値（全 true）。 */
@@ -72,12 +81,13 @@ interface PersistedV0 {
   activeTab?: string;
   activeIssuesScope?: "current" | "project" | "ignored";
   activeEditorialScope?: "current" | "project" | "ignored";
-  projectGroupBy?: ProjectGroupBy;
 }
 
 /**
  * v0（指摘/批評独立スコープ + ignored スコープ）→ v1（単一 scope + statusFilter）。
  * 旧 activeIssuesScope を正とし、editorial 側は捨てる（タブ自体が消えるため）。
+ * 旧 persist の projectGroupBy（撤去済み）は返却に含めない。v1 persist に
+ * 残っていても shallow merge で state 外の余剰キーになるだけで無害。
  */
 export function migrateKouetsuStore(persisted: unknown, version: number) {
   if (version >= 1) return persisted as Record<string, unknown>;
@@ -95,7 +105,6 @@ export function migrateKouetsuStore(persisted: unknown, version: number) {
     activeTab,
     scope,
     statusFilter,
-    projectGroupBy: old.projectGroupBy ?? "scene",
   };
 }
 
@@ -105,18 +114,27 @@ export const useKouetsuStore = create<KouetsuState>()(
       activeTab: "issues",
       scope: { type: "scene" },
       statusFilter: "open",
-      projectGroupBy: "scene",
       panelActive: true,
       fullCheckEffects: { ...DEFAULT_FULL_CHECK_EFFECTS },
+      selectedIssueId: null,
+      dashboardOn: false,
+      catFilter: null,
       setActiveTab: (tab) => set({ activeTab: tab }),
-      setScope: (scope) => set({ scope }),
-      setStatusFilter: (filter) => set({ statusFilter: filter }),
-      setProjectGroupBy: (mode) => set({ projectGroupBy: mode }),
+      // スコープ/フィルタ変更で選択・観点絞り込みをリセットする（別スコープの
+      // id が selectedIssueId に残ると存在しない項目のカードを探し続ける）。
+      setScope: (scope) =>
+        set({ scope, selectedIssueId: null, catFilter: null }),
+      setStatusFilter: (filter) =>
+        set({ statusFilter: filter, selectedIssueId: null, catFilter: null }),
       setPanelActive: (active) => set({ panelActive: active }),
       setFullCheckEffect: (id, on) =>
         set((s) => ({
           fullCheckEffects: { ...s.fullCheckEffects, [id]: on },
         })),
+      setSelectedIssueId: (id) => set({ selectedIssueId: id }),
+      toggleDashboard: () =>
+        set((s) => ({ dashboardOn: !s.dashboardOn, selectedIssueId: null })),
+      setCatFilter: (cat) => set({ catFilter: cat }),
     }),
     {
       // version は据え置き（1）。fullCheckEffects は新規追加フィールドのため、
@@ -129,7 +147,6 @@ export const useKouetsuStore = create<KouetsuState>()(
         activeTab: s.activeTab,
         scope: s.scope,
         statusFilter: s.statusFilter,
-        projectGroupBy: s.projectGroupBy,
         fullCheckEffects: s.fullCheckEffects,
       }),
     },

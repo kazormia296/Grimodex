@@ -4,17 +4,27 @@ import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 
 // vi.mock() は巻き上げが必要なので vi.hoisted() で参照を確保する
-const { updateAnnotationStatusMock } = vi.hoisted(() => ({
+const { updateAnnotationStatusMock, applyMock } = vi.hoisted(() => ({
   updateAnnotationStatusMock: vi.fn().mockResolvedValue(undefined),
+  applyMock: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
   updateAnnotationStatus: updateAnnotationStatusMock,
 }));
 
-// closeAnnotation は現在プロジェクトを useTreeStore から取って XPROJ ガードに渡す
+// mark refresh の呼び出し有無を検証するため実装を透過ラップする。
+vi.mock("./applyAnnotationsToEditor", async (importOriginal) => {
+  const orig =
+    await importOriginal<typeof import("./applyAnnotationsToEditor")>();
+  applyMock.mockImplementation(orig.applyAnnotationsToEditor);
+  return { applyAnnotationsToEditor: applyMock };
+});
+
+// closeAnnotation は現在プロジェクト（XPROJ ガード）とアクティブシーン
+// （mark refresh のシーン一致判定）を useTreeStore から取る。
 vi.mock("@/features/tree/treeStore", () => ({
-  useTreeStore: { getState: () => ({ projectId: "p" }) },
+  useTreeStore: { getState: () => ({ projectId: "p", activeSceneId: "s1" }) },
 }));
 
 import { useAnnotationStore } from "./annotationStore";
@@ -32,13 +42,13 @@ function makeEditor(text: string): Editor {
   });
 }
 
-function ann(id: string, found: string): PostEffectAnnotation {
+function ann(id: string, found: string, sceneId = "s1"): PostEffectAnnotation {
   return {
     id,
     projectId: "p",
     runId: "r",
     anchorType: "scene_range",
-    sceneId: "s1",
+    sceneId,
     rangeStart: 0,
     rangeEnd: found.length,
     textSnapshot: found,
@@ -88,6 +98,29 @@ describe("closeAnnotation", () => {
     );
     const stored = useAnnotationStore.getState().annotationsByScene.get("s1");
     expect(stored?.find((x) => x.id === "a1")?.status).toBe("resolved");
+    // アクティブシーン（s1）の annotation なので mark refresh は実行される。
+    expect(applyMock).toHaveBeenCalledTimes(1);
+    editor.destroy();
+  });
+
+  it("別シーンの annotation では mark refresh をスキップする（表示中シーンの下線を消さない）", async () => {
+    const editor = makeEditor("表示中シーンの本文");
+    // folder/project スコープの統合リストから、非アクティブシーン s2 の指摘を
+    // 解決するケース。editor はアクティブシーン s1 の doc を持つため、s2 の
+    // annotation 集合を適用すると s1 の下線が全消しになる（回帰ガード）。
+    const a = ann("a2", "誤り", "s2");
+    useAnnotationStore.getState().setAnnotations("s2", [a]);
+
+    await closeAnnotation(a, "resolved", editor);
+
+    expect(updateAnnotationStatusMock).toHaveBeenCalledWith(
+      "a2",
+      "resolved",
+      "p",
+    );
+    const stored = useAnnotationStore.getState().annotationsByScene.get("s2");
+    expect(stored?.find((x) => x.id === "a2")?.status).toBe("resolved");
+    expect(applyMock).not.toHaveBeenCalled();
     editor.destroy();
   });
 

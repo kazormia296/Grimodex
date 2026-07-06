@@ -33,7 +33,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetFullCheckRuns();
   usePostEffectRunStore.setState({ runs: {} });
-  useFullCheckStore.setState({ cancelRequested: false });
+  useFullCheckStore.setState({
+    cancelRequested: false,
+    currentStep: null,
+    runState: "idle",
+    pipelineVisible: false,
+  });
 });
 
 describe("fullCheckStore requestCancel の abort スコープ", () => {
@@ -62,8 +67,26 @@ describe("fullCheckStore requestCancel の abort スコープ", () => {
     // 追跡 run のみ abort。無関係 run の abort IPC は呼ばれない。
     expect(h.abortPostEffectRun).toHaveBeenCalledTimes(1);
     expect(h.abortPostEffectRun).toHaveBeenCalledWith("fc-run", "p1");
-    // lint scan cancel は常に呼ぶ（単一 scan 構造なので無害）。
+    // lint ステップ実行中でなければ lint scan cancel は呼ばない（後述テスト）。
+    expect(h.lintCancel).not.toHaveBeenCalled();
+  });
+
+  it("lint scan cancel は currentStep=lint のときだけ呼ぶ（手動再スキャンを巻き込まない）", () => {
+    // lint ステップ実行中: 全体チェック自身の scan なので cancel する。
+    useFullCheckStore.setState({ currentStep: "lint" });
+    useFullCheckStore.getState().requestCancel();
     expect(h.lintCancel).toHaveBeenCalledTimes(1);
+
+    // lint ステップ通過後（AI ステップ実行中）: このとき active な scan が
+    // あればユーザーが手動起動した無関係な再スキャン（校正タイル等）なので
+    // 巻き込まない。
+    vi.clearAllMocks();
+    useFullCheckStore.setState({
+      cancelRequested: false,
+      currentStep: "review",
+    });
+    useFullCheckStore.getState().requestCancel();
+    expect(h.lintCancel).not.toHaveBeenCalled();
   });
 
   it("consistency の 2 本並走はどちらも追跡され両方 abort される", () => {
@@ -120,5 +143,39 @@ describe("fullCheckStore requestCancel の abort スコープ", () => {
     // trackFullCheckRun を呼ばない = 全体チェックが起動していない状態。
     useFullCheckStore.getState().requestCancel();
     expect(h.abortPostEffectRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("fullCheckStore パイプライン表示アクション", () => {
+  it("showPipeline / hidePipeline は pipelineVisible だけを切り替える", () => {
+    useFullCheckStore.getState().showPipeline();
+    expect(useFullCheckStore.getState().pipelineVisible).toBe(true);
+    expect(useFullCheckStore.getState().runState).toBe("idle"); // 触らない
+    useFullCheckStore.getState().hidePipeline();
+    expect(useFullCheckStore.getState().pipelineVisible).toBe(false);
+  });
+
+  it("closePipeline は runState=done を idle へ戻し表示を畳む", () => {
+    useFullCheckStore.setState({ runState: "done", pipelineVisible: true });
+    useFullCheckStore.getState().closePipeline();
+    const s = useFullCheckStore.getState();
+    expect(s.runState).toBe("idle");
+    expect(s.pipelineVisible).toBe(false);
+  });
+
+  it("closePipeline は実行中（runState=running）なら表示のみ畳み runState は維持する", () => {
+    useFullCheckStore.setState({ runState: "running", pipelineVisible: true });
+    useFullCheckStore.getState().closePipeline();
+    const s = useFullCheckStore.getState();
+    expect(s.runState).toBe("running"); // run の終了処理側で確定する
+    expect(s.pipelineVisible).toBe(false);
+  });
+
+  it("closePipeline は idle でも安全（表示を畳むだけ）", () => {
+    useFullCheckStore.setState({ runState: "idle", pipelineVisible: true });
+    useFullCheckStore.getState().closePipeline();
+    const s = useFullCheckStore.getState();
+    expect(s.runState).toBe("idle");
+    expect(s.pipelineVisible).toBe(false);
   });
 });

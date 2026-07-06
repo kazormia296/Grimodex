@@ -1298,6 +1298,70 @@
     }
   },
   "kouetsu": {
+    "triage": {
+      "openSuffix": "件の指摘が開いています",
+      "noOpen": "開いている指摘はありません",
+      "lastCheck": "最終チェック {{time}}",
+      "sev": {
+        "high": "重大",
+        "mid": "注意",
+        "low": "提案"
+      },
+      "time": {
+        "justNow": "たった今",
+        "minutesAgo": "{{count}}分前",
+        "yesterday": "昨日"
+      },
+      "neverRun": "未実行",
+      "auto": "自動",
+      "manual": "手動",
+      "runningBadge": "実行中 {{done}}/{{total}}",
+      "runningTitle": "実行中 — クリックでパイプラインを表示",
+      "doneBadge": "完了 {{count}}件",
+      "dashboardToggle": "観点ダッシュボード",
+      "effectsNote": "影響レビューはCodex変更時に手動で実行します",
+      "pipeline": {
+        "done": "完了 — 指摘 {{count}}件",
+        "cancelled": "中止 — {{done}}/{{total}} 観点を実行",
+        "running": "全体チェック — {{scope}}",
+        "back": "戻る",
+        "waiting": "待機中",
+        "excluded": "対象外",
+        "sceneLint": "自動反映済み",
+        "impactManual": "Codex変更時に手動",
+        "noFindings": "検出なし",
+        "count": "{{count}}件"
+      },
+      "card": {
+        "jump": "本文へ",
+        "resolve": "解決",
+        "dismiss": "無視",
+        "later": "あとで",
+        "fixTitle": "修正を適用"
+      },
+      "restore": "再表示",
+      "runHistory": "実行履歴",
+      "catFilter": "観点: {{label}}",
+      "sort": {
+        "severity": "並び: 重要度",
+        "grouped": "グループ: 観点",
+        "dismissed": "除外した項目"
+      },
+      "emptyOpen": "このスコープに開いている指摘はありません",
+      "emptyDismissed": "除外した指摘はありません",
+      "run": "実行",
+      "rerun": "再実行",
+      "ok": "問題なし",
+      "noImpact": "影響なし",
+      "aiDetected": "AI検出",
+      "compare": {
+        "codex": "CODEX 設定",
+        "body": "本文",
+        "change": "変更内容"
+      },
+      "lintDisables": "校正の無効化",
+      "runCategoryFailed": "チェックを起動できませんでした"
+    },
     "openLog": "ログを開く",
     "openLogFailed": "ログフォルダを開けませんでした",
     "partialFailure": "一部のシーンで解析に失敗しました",
@@ -1310,7 +1374,16 @@
       "completedWithFailures": "全体チェック完了（{{failed}} 観点失敗）",
       "alreadyRunning": "実行中です",
       "lintProjectWide": "校正は常にプロジェクト全体を走査します",
-      "lintSceneSkipped": "現在シーンは自動反映済みのためスキップします"
+      "lintSceneSkipped": "現在シーンは自動反映済みのためスキップします",
+      "stepHelp": {
+        "lint": "表記ゆれ・約物・スタイルの規則違反をルールベースで機械的に検査します（AI不使用）",
+        "typo": "誤字脱字・送り仮名・助詞抜けなどをAIが検出します",
+        "consistency": "Codex設定との食い違いと、シーン内の矛盾をAIが照合します",
+        "review": "構成・ペース配分・キャラクター変化・視点の観点でAIが講評します",
+        "meta": "章立てや場面転換などの構造上の問題をAIが分析します",
+        "timeline": "出来事の時系列の矛盾（日付・経過時間）をAIが検査します",
+        "intent": "シーンに設定した「狙い」と本文のズレをAIが診断します"
+      }
     },
     "progressToast": {
       "running": "実行中…",
@@ -1382,7 +1455,7 @@
     },
     "scopePicker": "チェック範囲を選択",
     "filter": {
-      "open": "開いている",
+      "open": "Open",
       "dismissed": "除外"
     },
     "editorial": {

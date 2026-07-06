@@ -126,16 +126,34 @@ export function humanCommentsFromDoc(
 }
 
 /**
+ * アクティブシーン宛ての操作（疑似コメント生成等）の結果が、現在のスコープ
+ * フィルタで不可視になるか。folder スコープでアクティブシーンが配下に無い
+ * ときだけ true（project=null は全件表示、シーン未選択 "" は対象外）。
+ */
+export function isActiveSceneOutOfScope(
+  sceneIds: ReadonlySet<string> | null,
+  activeSceneId: string,
+): boolean {
+  return (
+    sceneIds !== null && activeSceneId !== "" && !sceneIds.has(activeSceneId)
+  );
+}
+
+/**
  * Merge human comments and pseudo-comment threads into per-scene groups.
  * `filter` "human" drops threads, "ai" drops human, "all" keeps both.
  * Threads whose root has no sceneId are skipped; empty groups are dropped.
+ * `sceneIds` はスコープ絞り込み（null/省略 = 全シーン。空集合 = 0 件）。
  */
 export function buildCommentGroups(
   human: HumanComment[],
   threads: PseudoThread[],
   filter: Filter,
   resolveTitle: (sceneId: string) => string,
+  sceneIds: ReadonlySet<string> | null = null,
 ): SceneGroup[] {
+  const inScope = (sceneId: string) =>
+    sceneIds === null || sceneIds.has(sceneId);
   const acc = new Map<string, SceneGroup>();
   const ensure = (sceneId: string): SceneGroup => {
     const g = acc.get(sceneId) ?? {
@@ -148,12 +166,14 @@ export function buildCommentGroups(
     return g;
   };
   if (filter !== "ai") {
-    for (const c of human) ensure(c.sceneId).human.push(c);
+    for (const c of human) {
+      if (inScope(c.sceneId)) ensure(c.sceneId).human.push(c);
+    }
   }
   if (filter !== "human") {
     for (const t of threads) {
       if (!t.root.sceneId) continue;
-      ensure(t.root.sceneId).threads.push(t);
+      if (inScope(t.root.sceneId)) ensure(t.root.sceneId).threads.push(t);
     }
   }
   return [...acc.values()].filter(

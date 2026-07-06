@@ -1298,6 +1298,70 @@
     }
   },
   "kouetsu": {
+    "triage": {
+      "openSuffix": "open issues",
+      "noOpen": "No open issues",
+      "lastCheck": "Last check {{time}}",
+      "sev": {
+        "high": "Critical",
+        "mid": "Warning",
+        "low": "Suggestion"
+      },
+      "time": {
+        "justNow": "just now",
+        "minutesAgo": "{{count}}m ago",
+        "yesterday": "yesterday"
+      },
+      "neverRun": "Not run",
+      "auto": "Auto",
+      "manual": "Manual",
+      "runningBadge": "Running {{done}}/{{total}}",
+      "runningTitle": "Running — click to show the pipeline",
+      "doneBadge": "Done: {{count}}",
+      "dashboardToggle": "Aspect dashboard",
+      "effectsNote": "Impact review runs manually when Codex entries change",
+      "pipeline": {
+        "done": "Done — {{count}} issues",
+        "cancelled": "Cancelled — ran {{done}}/{{total}} aspects",
+        "running": "Full check — {{scope}}",
+        "back": "Back",
+        "waiting": "Waiting",
+        "excluded": "Not included",
+        "sceneLint": "Covered by live lint",
+        "impactManual": "Manual on Codex changes",
+        "noFindings": "No findings",
+        "count": "{{count}}"
+      },
+      "card": {
+        "jump": "Open in text",
+        "resolve": "Resolve",
+        "dismiss": "Dismiss",
+        "later": "Later",
+        "fixTitle": "Apply fix"
+      },
+      "restore": "Restore",
+      "runHistory": "Run history",
+      "catFilter": "Aspect: {{label}}",
+      "sort": {
+        "severity": "Sort: severity",
+        "grouped": "Grouped by aspect",
+        "dismissed": "Dismissed items"
+      },
+      "emptyOpen": "No open issues in this scope",
+      "emptyDismissed": "No dismissed issues",
+      "run": "Run",
+      "rerun": "Re-run",
+      "ok": "No issues",
+      "noImpact": "No impact",
+      "aiDetected": "AI detected",
+      "compare": {
+        "codex": "CODEX ENTRY",
+        "body": "TEXT",
+        "change": "CHANGE"
+      },
+      "lintDisables": "Lint disables",
+      "runCategoryFailed": "Failed to launch the check"
+    },
     "openLog": "Open logs",
     "openLogFailed": "Failed to open the log folder",
     "partialFailure": "Some scenes failed to analyze",
@@ -1310,7 +1374,16 @@
       "completedWithFailures": "Done with {{failed}} failed checks",
       "alreadyRunning": "Already running",
       "lintProjectWide": "Proofreading always scans the whole project",
-      "lintSceneSkipped": "Skipped — the current scene is linted live"
+      "lintSceneSkipped": "Skipped — the current scene is linted live",
+      "stepHelp": {
+        "lint": "Rule-based, mechanical checks for style, punctuation and notation (no AI)",
+        "typo": "AI detects typos, okurigana errors, missing particles and more",
+        "consistency": "AI cross-checks the text against Codex entries and finds in-scene contradictions",
+        "review": "AI critiques structure, pacing, character arcs and point of view",
+        "meta": "AI analyzes structural issues such as chaptering and scene transitions",
+        "timeline": "AI checks chronological contradictions (dates, elapsed time)",
+        "intent": "AI diagnoses drift between the scene's stated intent and the text"
+      }
     },
     "progressToast": {
       "running": "Running…",

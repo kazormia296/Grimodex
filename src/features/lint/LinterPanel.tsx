@@ -41,6 +41,11 @@ import {
   collectTypoAnnotationsResolvedByFix,
 } from "@/features/post-effect/autoResolveOnLintFix";
 import {
+  applyAllLintFixes,
+  applyLintFix,
+  jumpToDiagnostic,
+} from "./lintActions";
+import {
   filterDiagnostics,
   groupByRule,
   groupBySeverity,
@@ -279,7 +284,6 @@ function CurrentLinterView() {
   const setRule = useLintConfigStore((s) => s.setRule);
   const addIgnore = useLintIgnoreStore((s) => s.addIgnore);
   const reapplyIgnores = useLintStore((s) => s.reapplyIgnores);
-  const pushNotification = useLintStore((s) => s.pushNotification);
 
   const {
     severityFilter,
@@ -367,136 +371,32 @@ function CurrentLinterView() {
     return keys;
   }, [filtered, cursorOffset, keyByDiagnostic]);
 
+  // ジャンプ / Fix / 一括 Fix の実体は lintActions.ts（校閲トリアージと共用）。
   const jumpTo = useCallback(
     (d: Diagnostic) => {
       if (!editor) return;
-      const map = buildOffsetMap(editor.state.doc);
-      const from = strOffsetToPmPos(map, d.range.start);
-      const to = strOffsetToPmPos(map, d.range.end);
-      if (from == null || to == null) return;
-      editor
-        .chain()
-        .focus()
-        .setTextSelection({ from, to })
-        .scrollIntoView()
-        .run();
+      jumpToDiagnostic(editor, d);
     },
     [editor],
   );
 
   const applyFix = useCallback(
     (d: Diagnostic) => {
-      if (!editor || !d.fix) return;
-      if (guardInlineAiPending()) return;
-      const before = buildOffsetMap(editor.state.doc);
-      const from = strOffsetToPmPos(before, d.fix.range.start);
-      const to = strOffsetToPmPos(before, d.fix.range.end);
-      if (from == null || to == null) return;
-      const beforeDisableCount = before.disables.length;
-      // AI typo annotation の auto-resolve 候補は Fix 適用前の doc/位置を必須とする
-      const autoResolveIds = currentSceneId
-        ? collectTypoAnnotationsResolvedByFix(
-            currentSceneId,
-            editor.state.doc,
-            from,
-            to,
-            d.fix.replacement,
-          )
-        : [];
-      editor
-        .chain()
-        .focus()
-        .insertContentAt({ from, to }, d.fix.replacement)
-        .run();
-      // Per design doc: "Fix 結果として disable が完全消滅した場合、
-      // Linter パネルに通知". Compare directive counts pre/post — if
-      // any disappeared, surface a single notification (not per-mark).
-      const afterDisableCount = buildOffsetMap(editor.state.doc).disables
-        .length;
-      const removed = beforeDisableCount - afterDisableCount;
-      if (removed > 0) {
-        pushNotification(
-          t("lint.fix.disablesRemoved", {
-            count: removed,
-            defaultValue:
-              "Fix 適用により {{count}} 件の Lint 無効化が削除されました",
-          }),
-        );
-      }
-      if (autoResolveIds.length > 0) {
-        void applyAutoResolvedTypos(autoResolveIds, editor, currentSceneId);
-      }
-      if (currentSceneId) {
-        void runLintNow(editor, currentSceneId);
-      }
+      if (!editor) return;
+      applyLintFix(editor, currentSceneId ?? null, d);
     },
-    [editor, currentSceneId, pushNotification, t],
+    [editor, currentSceneId],
   );
 
   /**
-   * Apply every fix in the currently-filtered list in one pass.
-   * Sort descending by range.start so earlier offsets don't shift
-   * under later ones. Uses a single chained transaction per the
-   * TipTap API.
+   * Apply every fix in the currently-filtered list in one pass
+   * (applyAllLintFixes sorts descending by range.start so earlier
+   * offsets don't shift under later ones).
    */
   const applyAllFixes = useCallback(() => {
     if (!editor) return;
-    if (guardInlineAiPending()) return;
-    const withFix = filtered.filter((d) => d.fix);
-    if (withFix.length === 0) return;
-    const map = buildOffsetMap(editor.state.doc);
-    const beforeDisableCount = map.disables.length;
-    const sorted = [...withFix].sort(
-      (a, b) => b.fix!.range.start - a.fix!.range.start,
-    );
-    // 適用前 doc で全 Fix の auto-resolve 候補を集める (Fix 後は textSnapshot が
-    // ずれて resolveAnnotationRange が orphan を返すため)
-    const preDoc = editor.state.doc;
-    const autoResolveIds: string[] = [];
-    if (currentSceneId) {
-      for (const d of sorted) {
-        const from = strOffsetToPmPos(map, d.fix!.range.start);
-        const to = strOffsetToPmPos(map, d.fix!.range.end);
-        if (from == null || to == null) continue;
-        autoResolveIds.push(
-          ...collectTypoAnnotationsResolvedByFix(
-            currentSceneId,
-            preDoc,
-            from,
-            to,
-            d.fix!.replacement,
-          ),
-        );
-      }
-    }
-    let chain = editor.chain().focus();
-    for (const d of sorted) {
-      const from = strOffsetToPmPos(map, d.fix!.range.start);
-      const to = strOffsetToPmPos(map, d.fix!.range.end);
-      if (from == null || to == null) continue;
-      chain = chain.insertContentAt({ from, to }, d.fix!.replacement);
-    }
-    chain.run();
-    const afterDisableCount = buildOffsetMap(editor.state.doc).disables.length;
-    const removed = beforeDisableCount - afterDisableCount;
-    if (removed > 0) {
-      pushNotification(
-        t("lint.fix.disablesRemovedBulk", {
-          count: removed,
-          defaultValue:
-            "一括 Fix 適用により {{count}} 件の Lint 無効化が削除されました",
-        }),
-      );
-    }
-    if (autoResolveIds.length > 0) {
-      void applyAutoResolvedTypos(
-        [...new Set(autoResolveIds)],
-        editor,
-        currentSceneId,
-      );
-    }
-    if (currentSceneId) void runLintNow(editor, currentSceneId);
-  }, [editor, filtered, currentSceneId, pushNotification, t]);
+    applyAllLintFixes(editor, currentSceneId ?? null, filtered);
+  }, [editor, filtered, currentSceneId]);
 
   const fixableCount = useMemo(
     () => filtered.filter((d) => d.fix).length,
