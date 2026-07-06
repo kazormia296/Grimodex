@@ -5,6 +5,7 @@ import { renderHook, act } from "@testing-library/react";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { useLayerAutoFollow } from "./useLayerAutoFollow";
@@ -55,6 +56,7 @@ beforeEach(() => {
   });
   useAttributionStore.setState({ showAttribution: false });
   useCodexHighlightStore.setState({ enabled: true });
+  useKouetsuStore.setState({ activeTab: "issues" });
 });
 
 describe("useLayerAutoFollow", () => {
@@ -67,13 +69,35 @@ describe("useLayerAutoFollow", () => {
     expect(useCursorSettingsStore.getState().showLint).toBe(false);
     expect(useCodexHighlightStore.getState().enabled).toBe(false);
 
-    // kouetsu パネルを開く → 校閲の指摘 (校閲+Lint) と読者コメントがON
+    // kouetsu パネルを開く (指摘タブ) → 校閲の指摘 (校閲+Lint) のみON
     act(() => {
       __panelsMock.setState({ kouetsu: true });
     });
     expect(useAnnotationStore.getState().showAnnotations).toBe(true);
-    expect(useAnnotationStore.getState().showReaderComments).toBe(true);
     expect(useCursorSettingsStore.getState().showLint).toBe(true);
+    expect(useAnnotationStore.getState().showReaderComments).toBe(false);
+    expect(useCursorSettingsStore.getState().showComments).toBe(false);
+
+    // コメントタブへ切替 → コメント+読者コメントがON、指摘はOFF
+    act(() => {
+      useKouetsuStore.setState({ activeTab: "comments" });
+    });
+    expect(useAnnotationStore.getState().showReaderComments).toBe(true);
+    expect(useCursorSettingsStore.getState().showComments).toBe(true);
+    expect(useAnnotationStore.getState().showAnnotations).toBe(false);
+    expect(useCursorSettingsStore.getState().showLint).toBe(false);
+
+    // ブロッカータブ → kouetsu系レイヤー全OFF
+    act(() => {
+      useKouetsuStore.setState({ activeTab: "blocker" });
+    });
+    expect(useAnnotationStore.getState().showReaderComments).toBe(false);
+    expect(useCursorSettingsStore.getState().showComments).toBe(false);
+    expect(useAnnotationStore.getState().showAnnotations).toBe(false);
+
+    act(() => {
+      useKouetsuStore.setState({ activeTab: "issues" });
+    });
 
     // codex / attribution / foreshadow パネル → 対応レイヤーがON
     act(() => {

@@ -14,7 +14,6 @@ import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore
 import { countPlacedBeats } from "@/features/editor/beat/beatDocQueries";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import {
   CodexRefPickerPopover,
   type CodexRefEntry,
@@ -97,7 +96,6 @@ export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
     "editor.sceneMetaPanelOpen",
     true,
   );
-  const focusMode = useCursorSettingsStore((s) => s.focusMode);
 
   const entries = useCodexStore((s) => s.entries);
   const { calendar } = useProjectCalendar(node?.projectId ?? null);
@@ -125,7 +123,8 @@ export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
     };
   }, [editor, sceneId, primaryTabId]);
 
-  if (!node || !sceneId || panelOpen || focusMode) return null;
+  // フォーカスモードでも隠さない（本文の減光は FocusModePlugin 側で完結する）
+  if (!node || !sceneId || panelOpen) return null;
 
   if (groupIndex !== undefined) {
     const groupTabId = groupIndex === 0 ? primaryTabId : secondaryTabId;

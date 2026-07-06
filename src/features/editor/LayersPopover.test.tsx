@@ -286,12 +286,10 @@ describe("LayersPopover", () => {
     expect(useCursorSettingsStore.getState().showLint).toBe(false);
   });
 
-  it("校閲パネルを開く → showPanel(kouetsu) + onClose", async () => {
-    const { onClose } = renderPopover();
-    const link = await screen.findByText("editor.layers.openKouetsu");
-    fireEvent.click(link);
-    expect(showPanelSpy).toHaveBeenCalledWith("kouetsu");
-    expect(onClose).toHaveBeenCalled();
+  it("校閲パネルを開く導線は置かない (フッタ廃止)", async () => {
+    renderPopover();
+    await screen.findByTestId("layers-popover");
+    expect(screen.queryByText("editor.layers.openKouetsu")).toBeNull();
   });
 });
 

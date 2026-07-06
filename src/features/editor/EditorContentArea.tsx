@@ -10,6 +10,8 @@ import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
+import { AnnotationHoverPopover } from "@/features/post-effect/AnnotationHoverPopover";
+import { LintHoverPopover } from "@/features/lint/LintHoverPopover";
 import { ForeshadowMarkPopover } from "@/features/foreshadow/ForeshadowMarkPopover";
 import { ForeshadowMarkHoverPopover } from "@/features/foreshadow/ForeshadowMarkHoverPopover";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
@@ -29,6 +31,8 @@ interface EditorContentAreaProps {
   findShowReplace: boolean;
   setFindOpen: (open: boolean) => void;
   showForeshadowMarks: boolean;
+  /** ガター生成レイヤーON時の inline-start 予約幅 (gutterReserveInlineSize)。 */
+  gutterReserve: string | null;
   focusModeHideBeats: boolean;
   focusMode: boolean;
   typewriterMode: boolean;
@@ -60,6 +64,7 @@ export function EditorContentArea({
   findShowReplace,
   setFindOpen,
   showForeshadowMarks,
+  gutterReserve,
   focusModeHideBeats,
   focusMode,
   typewriterMode,
@@ -116,9 +121,15 @@ export function EditorContentArea({
         <div
           className={cn(
             editorSettings.showLineNumbers && "editor-line-numbers",
+            gutterReserve && "editor-gutter-reserve",
             isEnglish && "editor-en-typography",
           )}
-          style={buildEditorContentStyle(editorSettings)}
+          style={{
+            ...buildEditorContentStyle(editorSettings),
+            ...(gutterReserve
+              ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
+              : {}),
+          }}
           // contenteditable は spellcheck 属性を祖先から継承する
           spellCheck={editorSettings.spellCheck}
         >
@@ -195,6 +206,12 @@ export function EditorContentArea({
             <PseudoCommentBubble
               editor={editor}
               containerRef={editorContainerRef}
+            />
+            <AnnotationHoverPopover containerRef={editorContainerRef} />
+            <LintHoverPopover
+              editor={editor}
+              containerRef={editorContainerRef}
+              sceneId={sceneId}
             />
             <EditorContextMenu
               editor={editor}

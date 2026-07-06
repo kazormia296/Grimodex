@@ -116,6 +116,34 @@
   背景なし / 校閲と Lint の同 severity 同色）を実 Chromium で gate。
 - `resolveCodexColors.test.ts`: `codexHighlightBackground` の2セグメント式。
 
+## フォローアップ (2026-07-07 ユーザーフィードバック5件)
+
+1. **ガター表示領域の予約** — オーバーレイON時にアイコンが幅次第でクリップされる問題。
+   ガター生成レイヤー（コメント/読者コメント/伏線/校閲）のON数から
+   `gutterReserveInlineSize(n)` = `calc(14n+2(n-1)px + 0.6em)` を算出し、
+   EditorContentArea の本文ラッパー（editor-line-numbers と同じ内側 div）に
+   `.editor-gutter-reserve` + `--gutter-reserve` で padding-inline-start を予約。
+   行番号 (2.5em) 併用時は加算。縦書きは論理プロパティで上余白へ自動追従。
+   幾何 gate: decorationChannels.browser.test（予約なし=はみ出し / あり=収まる）。
+2. **フォーカスモードで詳細ペイン・チップ行を表示** — focusMode の非表示条件を
+   SceneMetaChipRow と EditorPane.isPanelVisible から除去。フォーカスモードの
+   効果は本文減光 (FocusModePlugin) のみに。※旧設計 (1h) の
+   「`!focusMode`」表示条件はこのフォローアップで廃止。
+3. **ホバーポップオーバー全種対応 + カーソル統一** —
+   校閲の指摘: `AnnotationHoverPopover`（severity アイコン + 観点ラベル
+   (ANNOTATION_CATEGORY_TO_CAT→CAT_LABEL_KEY) + 指摘本文。pseudo_comment は
+   PseudoCommentBubble の担当のまま除外）。
+   Lint: `LintHoverPopover`（rule + message + Fix ボタン。message は decoration の
+   `data-lint-message` 属性から読む — LintDecorationPlugin に属性追加。Fix は
+   rule_id+message の一意一致時のみ表示）。
+   カーソルは全装飾 `help` に統一（pe-annotation / codex-highlight を pointer→help。
+   全種「ホバーで詳細」モデルでクリックハンドラを持つ装飾は無いため）。
+4. **パネル連動のタブ連動化** — kouetsu 系レイヤーは `kouetsuStore.activeTab` に連動:
+   指摘タブ→校閲の指摘 (校閲+Lint) / コメントタブ→コメント+読者コメント /
+   ブロッカータブ・パネル閉→全OFF。コメントレイヤーも Auto 対象に昇格。
+5. **「校閲パネルを開く →」フッタ導線を削除** — LayersPopover のフッタバーごと廃止
+   （i18n キー editor.layers.openKouetsu 削除）。
+
 ## 既知のトレードオフ
 - Auto 追従中の手動トグルは write-through で永続化される（明示操作のため意図通り）
   が、次のパネル可視変化で実効表示は再同期される。

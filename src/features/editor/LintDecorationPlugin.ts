@@ -64,6 +64,9 @@ export function buildLintDecorations(
         class: `lint-deco lint-deco--${d.severity}`,
         "data-lint-rule": d.rule_id,
         "data-lint-severity": d.severity,
+        // ホバーポップオーバー (LintHoverPopover) が DOM から直接読めるよう
+        // メッセージも載せる（診断の位置照合を不要にする）
+        "data-lint-message": d.message,
       }),
     );
   }

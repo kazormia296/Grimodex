@@ -10,6 +10,7 @@ import {
   createGutterMarksPlugin,
   gutterMarksKey,
   buildGutterWidgetDom,
+  gutterReserveInlineSize,
   GUTTER_REBUILD_META,
   type GutterChannel,
 } from "./GutterMarksPlugin";
@@ -268,5 +269,14 @@ describe("buildGutterWidgetDom", () => {
     expect(icons[3].className).toContain("gutter-mark--review");
     // 各アイコンは svg を1つ持つ
     expect(el.querySelectorAll("svg")).toHaveLength(4);
+  });
+});
+
+describe("gutterReserveInlineSize", () => {
+  it("チャネル数に応じた予約幅 (14px×n + 2px×(n-1) + 0.6em) を返す", () => {
+    expect(gutterReserveInlineSize(0)).toBeNull();
+    expect(gutterReserveInlineSize(1)).toBe("calc(14px + 0.6em)");
+    expect(gutterReserveInlineSize(2)).toBe("calc(30px + 0.6em)");
+    expect(gutterReserveInlineSize(4)).toBe("calc(62px + 0.6em)");
   });
 });

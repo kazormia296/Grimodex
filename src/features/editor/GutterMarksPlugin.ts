@@ -96,6 +96,19 @@ function collectChannels(node: ProseMirrorNode): GutterChannel[] {
   return channels;
 }
 
+/**
+ * ガター行の inline-start 張り出し量（予約幅）。アイコン 14px × n + gap 2px ×
+ * (n-1) に、アンカーからの逃げ 0.6em (.gutter-marks__row の inset-inline-end)
+ * を足したもの。EditorContentArea がガター生成レイヤーON時に本文ラッパーへ
+ * `--gutter-reserve` として供給し padding で予約する — EditorDropDiv の
+ * p-4 (16px) だけでは狭幅時に張り出しがクリップされるため。
+ */
+export function gutterReserveInlineSize(channelCount: number): string | null {
+  if (channelCount <= 0) return null;
+  const px = channelCount * 14 + (channelCount - 1) * 2;
+  return `calc(${px}px + 0.6em)`;
+}
+
 /** widget の DOM を生成する（テストから直接呼べるよう export）。 */
 export function buildGutterWidgetDom(channels: GutterChannel[]): HTMLElement {
   const el = document.createElement("span");

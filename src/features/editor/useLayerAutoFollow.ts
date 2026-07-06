@@ -4,6 +4,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin";
+import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
@@ -13,11 +14,13 @@ import { LINT_REBUILD_META } from "./LintDecorationPlugin";
 /**
  * 本文レイヤーのパネル連動 (Auto) モード。
  * layerAutoFollow ON の間、対応パネルの可視状態にレイヤー表示を完全追従させる:
- *   kouetsu パネル → 校閲の指摘 (校閲+Lint) と読者コメント
+ *   kouetsu パネル (指摘タブ) → 校閲の指摘 (校閲+Lint)
+ *   kouetsu パネル (コメントタブ) → コメント + 読者コメント
  *   codex パネル → Codex ハイライト
  *   attribution パネル → 帰属ハイライト
  *   foreshadow パネル → 伏線マーク
- * （コメントレイヤーは対応パネルがないため手動のまま。）
+ * kouetsu 系はパネル可視だけでなくパネル内のアクティブタブに連動する
+ * （ブロッカータブは対応レイヤーなし = kouetsu系レイヤー全OFF）。
  *
  * 自動追従は persist:false で設定 (display.layer*) を書き換えない —
  * 手動基準値は保存されたまま残り、Auto OFF 復帰時に initFromSettings で戻す。
@@ -31,6 +34,7 @@ export function useLayerAutoFollow(editor: Editor | null): void {
   // requestLayerAutoFollowSync() の bump が follow effect を再実行させる。
   const syncNonce = useCursorSettingsStore((s) => s.layerAutoFollowSyncNonce);
   const kouetsuActive = useLayoutStore((s) => s.isPanelActive("kouetsu"));
+  const kouetsuTab = useKouetsuStore((s) => s.activeTab);
   const codexActive = useLayoutStore((s) => s.isPanelActive("codex"));
   const attributionActive = useLayoutStore((s) =>
     s.isPanelActive("attribution"),
@@ -48,17 +52,18 @@ export function useLayerAutoFollow(editor: Editor | null): void {
       if (!editor || editor.isDestroyed || !editor.view) return;
       editor.view.dispatch(editor.state.tr.setMeta(meta, true));
     };
+    const issuesActive = kouetsuActive && kouetsuTab === "issues";
+    const commentsActive = kouetsuActive && kouetsuTab === "comments";
     const annotation = useAnnotationStore.getState();
-    annotation.setShowAnnotations(kouetsuActive, { persist: false });
-    annotation.setShowReaderComments(kouetsuActive, { persist: false });
-    useCursorSettingsStore.getState().setShowLint(kouetsuActive, {
-      persist: false,
-    });
+    annotation.setShowAnnotations(issuesActive, { persist: false });
+    annotation.setShowReaderComments(commentsActive, { persist: false });
+    const cursor = useCursorSettingsStore.getState();
+    cursor.setShowLint(issuesActive, { persist: false });
+    cursor.setShowComments(commentsActive, { persist: false });
     dispatchMeta(ANNOTATION_REBUILD_META);
     dispatchMeta(LINT_REBUILD_META);
-    useCursorSettingsStore
-      .getState()
-      .setShowForeshadowMarks(foreshadowActive, { persist: false });
+    dispatchMeta(COMMENT_REBUILD_META);
+    cursor.setShowForeshadowMarks(foreshadowActive, { persist: false });
     dispatchMeta(GUTTER_REBUILD_META);
     useAttributionStore
       .getState()
@@ -71,6 +76,7 @@ export function useLayerAutoFollow(editor: Editor | null): void {
     syncNonce,
     editor,
     kouetsuActive,
+    kouetsuTab,
     codexActive,
     attributionActive,
     foreshadowActive,

@@ -102,10 +102,10 @@ describe("SceneMetaChipRow の表示条件", () => {
     expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
   });
 
-  it("フォーカスモード中は出ない", () => {
+  it("フォーカスモード中も表示される (本文減光のみがフォーカスモードの効果)", () => {
     useCursorSettingsStore.setState({ focusMode: true });
     render(<SceneMetaChipRow />);
-    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+    expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
   });
 
   it("scene 以外のノードでは出ない", () => {

@@ -277,4 +277,56 @@ describe("段落ガター記号の幾何", () => {
       el.remove();
     }
   });
+
+  it("狭幅: editor-gutter-reserve が張り出し分を予約しアイコンがクリップされない", async () => {
+    // 予約なしの対照: 狭いコンテナ (padding なし) ではガター行が左へはみ出す
+    const bare = document.createElement("div");
+    bare.style.cssText = "width:300px;height:200px;overflow:auto";
+    document.body.appendChild(bare);
+    const bareEditor = new Editor({
+      element: bare,
+      extensions: [StarterKit, CommentMark, gutterTestExtension],
+      content: COMMENTED_DOC,
+    });
+    try {
+      const row = await waitFor(() => {
+        const r = bare.querySelector(".gutter-marks__row") as HTMLElement;
+        expect(r).toBeTruthy();
+        return r;
+      });
+      expect(row.getBoundingClientRect().left).toBeLessThan(
+        bare.getBoundingClientRect().left,
+      );
+    } finally {
+      bareEditor.destroy();
+      bare.remove();
+    }
+
+    // 予約あり: --gutter-reserve の padding-inline-start でコンテナ内に収まる
+    const el = document.createElement("div");
+    el.className = "editor-gutter-reserve";
+    el.style.cssText = "width:300px;height:200px;overflow:auto";
+    el.style.setProperty("--gutter-reserve", "calc(14px + 0.6em)");
+    document.body.appendChild(el);
+    const editor = new Editor({
+      element: el,
+      extensions: [StarterKit, CommentMark, gutterTestExtension],
+      content: COMMENTED_DOC,
+    });
+    try {
+      const row = await waitFor(() => {
+        const r = el.querySelector(".gutter-marks__row") as HTMLElement;
+        expect(r).toBeTruthy();
+        return r;
+      });
+      const rowRect = row.getBoundingClientRect();
+      expect(rowRect.width).toBeGreaterThan(0);
+      expect(rowRect.left).toBeGreaterThanOrEqual(
+        el.getBoundingClientRect().left,
+      );
+    } finally {
+      editor.destroy();
+      el.remove();
+    }
+  });
 });

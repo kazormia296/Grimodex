@@ -29,7 +29,6 @@ import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin";
 import { useLintStore } from "@/features/lint/lintStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useCodexHighlightStore } from "./codexHighlightStore";
@@ -473,20 +472,6 @@ export function LayersPopover({
           </div>
         )}
       </LayerRow>
-
-      {/* フッタ */}
-      <div className="flex items-center border-t border-border bg-muted/30 px-3 py-1.5">
-        <button
-          type="button"
-          onClick={() => {
-            useLayoutStore.getState().showPanel("kouetsu");
-            onClose();
-          }}
-          className="ms-auto rounded px-1 text-[10px] font-semibold text-primary hover:bg-accent"
-        >
-          {t("editor.layers.openKouetsu")}
-        </button>
-      </div>
     </motion.div>,
     document.body,
   );

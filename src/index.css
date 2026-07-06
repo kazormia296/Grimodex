@@ -1029,9 +1029,11 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   color: currentColor;
 }
 
-/* Codex highlight decorations (Task 3.6) */
+/* Codex highlight decorations (Task 3.6)
+   cursor は本文装飾全種で help に統一（全種ホバーで詳細ポップオーバーが
+   出るモデルのため。クリックハンドラを持つ装飾は無い）。 */
 .codex-highlight {
-  cursor: pointer;
+  cursor: help;
   transition: opacity 0.15s;
 }
 .codex-highlight:hover {
@@ -1117,7 +1119,7 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   text-decoration-color: var(--deco-issue-warning);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
-  cursor: pointer;
+  cursor: help;
 }
 .pe-annotation-severity-error {
   text-decoration-color: var(--deco-issue-error);
@@ -1150,6 +1152,19 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 /* 段落ガター記号 — コメント/伏線/校閲を含むブロックの先頭に当たりアイコン。
    幅0の anchor + 論理プロパティ絶対配置で、横書きでは段落左、縦書きでは
    段落頭の上部余白に回る (lint-disable-gutter と同じ手法)。 */
+
+/* ガター生成レイヤーON時は本文ラッパーの inline-start にアイコン分の余白を
+   予約する（EditorDropDiv の p-4=16px だけでは狭幅時に張り出しがクリップ
+   される）。幅は有効チャネル数から gutterReserveInlineSize が算出し、
+   EditorContentArea が --gutter-reserve で供給する。行番号 (2.5em 予約) と
+   併用時は加算する。縦書きでは論理プロパティにより上余白へ自動追従。 */
+.editor-gutter-reserve {
+  padding-inline-start: var(--gutter-reserve, 0px);
+}
+.editor-line-numbers.editor-gutter-reserve {
+  padding-inline-start: calc(2.5em + var(--gutter-reserve, 0px));
+}
+
 .gutter-marks {
   display: inline-block;
   width: 0;

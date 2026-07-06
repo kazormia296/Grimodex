@@ -3600,8 +3600,7 @@
       "codexStyleUnderline": "Underline",
       "codexOpacity": "Codex highlight opacity",
       "opacity": "Opacity",
-      "aiShare": "AI {{percent}}%",
-      "openKouetsu": "Open review panel →"
+      "aiShare": "AI {{percent}}%"
     },
     "synopsis": {
       "title": "Synopsis",

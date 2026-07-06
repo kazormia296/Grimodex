@@ -3595,8 +3595,7 @@
       "codexStyleUnderline": "下線",
       "codexOpacity": "Codexハイライトの濃度",
       "opacity": "濃度",
-      "aiShare": "AI {{percent}}%",
-      "openKouetsu": "校閲パネルを開く →"
+      "aiShare": "AI {{percent}}%"
     },
     "synopsis": {
       "title": "Synopsis",

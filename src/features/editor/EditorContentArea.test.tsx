@@ -110,6 +110,7 @@ function renderArea(
       findShowReplace={false}
       setFindOpen={() => {}}
       showForeshadowMarks={false}
+      gutterReserve={null}
       focusModeHideBeats={false}
       focusMode={false}
       typewriterMode={false}
