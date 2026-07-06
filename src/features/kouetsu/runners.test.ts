@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   buildReviewPayload: vi.fn(),
   buildMetaStructurePayload: vi.fn(),
   buildTimelinePayload: vi.fn(),
+  buildIntentDriftPayload: vi.fn(),
   runPostEffect: vi.fn(),
   runPostEffectMulti: vi.fn(),
   flushPendingSceneSaves: vi.fn(() => Promise.resolve()),
@@ -28,7 +29,12 @@ const h = vi.hoisted(() => ({
     apiVariant: undefined,
     endpointId: undefined,
   })),
-  nodes: [{ id: "s1", nodeType: "scene", parentId: null }],
+  nodes: [{ id: "s1", nodeType: "scene", parentId: null }] as {
+    id: string;
+    nodeType: string;
+    parentId: string | null;
+    intent?: string;
+  }[],
 }));
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
@@ -69,6 +75,7 @@ vi.mock("@/prompts/index", () => ({
       intraSystem: "INTRA",
       metaStructureSystem: "META",
       timelineConsistencySystem: "TIMELINE",
+      intentDriftSystem: "INTENT",
     },
   }),
 }));
@@ -76,6 +83,7 @@ vi.mock("@/features/post-effect/customInstruction", () => ({
   appendKouetsuGuidance: (s: string) => s,
   appendStoryContextGuidance: (s: string) => s,
   appendTimelineGuidance: (s: string) => s,
+  appendIntentGuidance: (s: string) => s,
 }));
 vi.mock("@/features/post-effect/storyContext", () => ({
   selectStoryContext: () => ({}),
@@ -104,6 +112,10 @@ vi.mock("@/features/post-effect/timelinePayloadBuilder", () => ({
   buildTimelinePayload: h.buildTimelinePayload,
   TIMELINE_CONSISTENCY_PROMPT_VERSION: "timeline-v",
 }));
+vi.mock("@/features/post-effect/intentDriftPayloadBuilder", () => ({
+  buildIntentDriftPayload: h.buildIntentDriftPayload,
+  INTENT_DRIFT_PROMPT_VERSION: "intent-v",
+}));
 vi.mock("@/features/post-effect/api", () => ({
   runPostEffect: h.runPostEffect,
   runPostEffectMulti: h.runPostEffectMulti,
@@ -116,6 +128,7 @@ import {
   runConsistencyCheck,
   runMetaStructureCheck,
   runTimelineCheck,
+  runIntentDriftCheck,
 } from "./runners";
 
 /** onDone を同期で呼ぶ multi モック。 */
@@ -176,6 +189,10 @@ beforeEach(() => {
   h.buildTimelinePayload.mockResolvedValue({
     scenes: [{ scene_id: "s1", codex_payload_json: "[]", scene_text: "t" }],
     timelineContext: "ctx",
+    inputHash: "h",
+  });
+  h.buildIntentDriftPayload.mockResolvedValue({
+    sceneText: "t",
     inputHash: "h",
   });
 });
@@ -430,5 +447,147 @@ describe("runTimelineCheck", () => {
     h.blockIfUnlicensed.mockReturnValue(true);
     const out = await runTimelineCheck();
     expect(out).toEqual({ ok: true, blocked: true });
+  });
+});
+
+describe("runIntentDriftCheck", () => {
+  /** intent 付き 2 シーンを列挙する既定セットアップ。 */
+  function setNodes(s2Intent: string) {
+    h.getSceneIdsForScope.mockReturnValue(["s1", "s2"]);
+    h.nodes.length = 0;
+    h.nodes.push(
+      { id: "s1", nodeType: "scene", parentId: null, intent: "緊張感" },
+      { id: "s2", nodeType: "scene", parentId: null, intent: s2Intent },
+    );
+    h.runPostEffect.mockImplementation(singleDone({ annotation_count: 1 }));
+  }
+
+  it("intent 未設定のシーンはスキップし、intent ありだけ直列に単発 run する", async () => {
+    setNodes(""); // s2 は intent 空 → スキップ
+    const out = await runIntentDriftCheck({ type: "project" });
+    expect(h.runPostEffect).toHaveBeenCalledTimes(1);
+    const req = h.runPostEffect.mock.calls[0][0] as {
+      effect_type: string;
+      scope_type: string;
+      scope_target_id: string;
+    };
+    expect(req.effect_type).toBe("intent_drift");
+    expect(req.scope_type).toBe("scene");
+    expect(req.scope_target_id).toBe("s1");
+    expect(out).toEqual({ ok: true, fromCache: false, count: 1 });
+    expect(h.runPostEffectMulti).not.toHaveBeenCalled();
+  });
+
+  it("空白のみの intent もスキップする", async () => {
+    setNodes("   ");
+    await runIntentDriftCheck({ type: "project" });
+    expect(h.runPostEffect).toHaveBeenCalledTimes(1);
+    expect(
+      (h.runPostEffect.mock.calls[0][0] as { scope_target_id: string })
+        .scope_target_id,
+    ).toBe("s1");
+  });
+
+  it("intent ありの複数シーンを直列に起動し count を合算する", async () => {
+    setNodes("静けさ");
+    const out = await runIntentDriftCheck({ type: "project" });
+    expect(h.runPostEffect).toHaveBeenCalledTimes(2);
+    const ids = h.runPostEffect.mock.calls.map(
+      (c) => (c[0] as { scope_target_id: string }).scope_target_id,
+    );
+    expect(ids).toEqual(["s1", "s2"]);
+    expect(out).toEqual({ ok: true, fromCache: false, count: 2 });
+  });
+
+  it("scene スコープは対象シーンのみ起動する", async () => {
+    h.nodes.length = 0;
+    h.nodes.push({
+      id: "sx",
+      nodeType: "scene",
+      parentId: null,
+      intent: "決意",
+    });
+    h.runPostEffect.mockImplementation(singleDone({ annotation_count: 3 }));
+    const out = await runIntentDriftCheck({ type: "scene", sceneId: "sx" });
+    expect(h.getSceneIdsForScope).not.toHaveBeenCalled();
+    expect(h.runPostEffect).toHaveBeenCalledTimes(1);
+    expect(
+      (h.runPostEffect.mock.calls[0][0] as { scope_target_id: string })
+        .scope_target_id,
+    ).toBe("sx");
+    expect(out).toEqual({ ok: true, fromCache: false, count: 3 });
+  });
+
+  it("isCancelled が true を返したら残りシーンを起動しない", async () => {
+    setNodes("静けさ"); // 2 シーンとも intent あり
+    let calls = 0;
+    await runIntentDriftCheck(
+      { type: "project" },
+      { isCancelled: () => calls++ >= 1 },
+    );
+    expect(h.runPostEffect.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(h.runPostEffect).toHaveBeenCalledTimes(1);
+  });
+
+  it("intent 付きシーンが 0 件なら skipped を返し起動しない", async () => {
+    setNodes("");
+    h.nodes[0].intent = ""; // s1 も空にする
+    const out = await runIntentDriftCheck({ type: "project" });
+    expect(out).toEqual({ ok: true, skipped: true });
+    expect(h.runPostEffect).not.toHaveBeenCalled();
+  });
+
+  it("onSceneProgress に done/total を通知する", async () => {
+    setNodes("静けさ");
+    const progress: [number, number][] = [];
+    await runIntentDriftCheck(
+      { type: "project" },
+      { onSceneProgress: (done, total) => progress.push([done, total]) },
+    );
+    expect(progress).toEqual([
+      [1, 2],
+      [2, 2],
+    ]);
+  });
+
+  it("一部シーンが失敗しても成功分の count を返し summary を付ける", async () => {
+    setNodes("静けさ");
+    h.runPostEffect
+      .mockImplementationOnce(singleDone({ annotation_count: 2 }))
+      .mockImplementationOnce((_req, cb) => {
+        (cb as { onError?: (e: unknown) => void }).onError?.({
+          run_id: "r2",
+          error: "boom",
+        });
+        return Promise.resolve({ runId: "r2", cleanup: () => {} });
+      });
+    const out = await runIntentDriftCheck({ type: "project" });
+    expect(out.ok).toBe(true);
+    if (out.ok && "count" in out) {
+      expect(out.count).toBe(2);
+      expect(out.summary).toBeTruthy();
+    }
+  });
+
+  it("全シーンが失敗したら ok:false を返す", async () => {
+    setNodes("静けさ");
+    h.runPostEffect.mockImplementation((_req, cb) => {
+      (cb as { onError?: (e: unknown) => void }).onError?.({
+        run_id: "r1",
+        error: "boom",
+      });
+      return Promise.resolve({ runId: "r1", cleanup: () => {} });
+    });
+    const out = await runIntentDriftCheck({ type: "project" });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toContain("boom");
+  });
+
+  it("ブロック時は blocked を返し何も起動しない", async () => {
+    setNodes("静けさ");
+    h.blockIfPolicyOff.mockReturnValue(true);
+    const out = await runIntentDriftCheck({ type: "project" });
+    expect(out).toEqual({ ok: true, blocked: true });
+    expect(h.runPostEffect).not.toHaveBeenCalled();
   });
 });
