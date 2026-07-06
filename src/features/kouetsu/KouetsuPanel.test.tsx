@@ -1,8 +1,20 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import { KouetsuPanel } from "./KouetsuPanel";
 import { useKouetsuStore } from "./kouetsuStore";
+
+// Radix Tabs のトリガは click ではなく mousedown で選択される。
+function clickTab(el: HTMLElement) {
+  fireEvent.mouseDown(el, { button: 0 });
+  fireEvent.click(el);
+}
 
 vi.mock("./IssuesInbox", () => ({
   IssuesInbox: () => <div data-testid="stub-issues" />,
@@ -31,70 +43,82 @@ describe("KouetsuPanel タブの ARIA tablist パターン", () => {
       expect(tab).toHaveAttribute("aria-selected", "false");
     }
 
+    // Radix Tabs はタブごとに専用 panel を持ち、非選択 panel は unmount される。
     const panel = screen.getByRole("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe(tabs[0].id);
-    for (const tab of tabs) {
-      expect(tab.getAttribute("aria-controls")).toBe(panel.id);
-    }
+    expect(tabs[0].getAttribute("aria-controls")).toBe(panel.id);
   });
 
-  it("roving tabindex: 選択タブのみ tabIndex=0", () => {
+  it("roving tabindex: フォーカスしたタブが tab stop（tabIndex=0）になる", () => {
     render(<KouetsuPanel />);
     const tabs = screen.getAllByRole("tab");
+    // Radix はコンテナが entry focus を担うため、初期トリガは全て -1。
+    act(() => tabs[0].focus());
     expect(tabs[0].tabIndex).toBe(0);
     for (const tab of tabs.slice(1)) {
       expect(tab.tabIndex).toBe(-1);
     }
 
-    fireEvent.click(tabs[1]);
+    clickTab(tabs[1]);
     expect(tabs[1]).toHaveAttribute("aria-selected", "true");
-    expect(tabs[1].tabIndex).toBe(0);
-    expect(tabs[0].tabIndex).toBe(-1);
     expect(screen.getByTestId("stub-comments")).toBeInTheDocument();
   });
 
-  it("ArrowRight で次のタブへ選択とフォーカスが移る（末尾から先頭へ循環）", () => {
+  it("ArrowRight で次のタブへ選択とフォーカスが移る（末尾から先頭へ循環）", async () => {
     render(<KouetsuPanel />);
     const tabs = screen.getAllByRole("tab");
-    tabs[0].focus();
+    act(() => tabs[0].focus());
 
+    // Radix の roving focus は矢印キーの focus 移動を setTimeout 経由で行う。
     fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
-    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+    await waitFor(() =>
+      expect(tabs[1]).toHaveAttribute("aria-selected", "true"),
+    );
     expect(document.activeElement).toBe(tabs[1]);
     expect(screen.getByTestId("stub-comments")).toBeInTheDocument();
 
     fireEvent.keyDown(tabs[1], { key: "ArrowRight" });
-    expect(tabs[2]).toHaveAttribute("aria-selected", "true");
+    await waitFor(() =>
+      expect(tabs[2]).toHaveAttribute("aria-selected", "true"),
+    );
     expect(screen.getByTestId("stub-blocker")).toBeInTheDocument();
 
     fireEvent.keyDown(tabs[2], { key: "ArrowRight" });
-    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+    await waitFor(() =>
+      expect(tabs[0]).toHaveAttribute("aria-selected", "true"),
+    );
     expect(document.activeElement).toBe(tabs[0]);
   });
 
-  it("ArrowLeft で前のタブへ（先頭から末尾へ循環）、Home/End で端へ", () => {
+  it("ArrowLeft で前のタブへ（先頭から末尾へ循環）、Home/End で端へ", async () => {
     render(<KouetsuPanel />);
     const tabs = screen.getAllByRole("tab");
-    tabs[0].focus();
+    act(() => tabs[0].focus());
 
     fireEvent.keyDown(tabs[0], { key: "ArrowLeft" });
-    expect(tabs[2]).toHaveAttribute("aria-selected", "true");
+    await waitFor(() =>
+      expect(tabs[2]).toHaveAttribute("aria-selected", "true"),
+    );
     expect(document.activeElement).toBe(tabs[2]);
     expect(screen.getByTestId("stub-blocker")).toBeInTheDocument();
 
     fireEvent.keyDown(tabs[2], { key: "Home" });
-    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+    await waitFor(() =>
+      expect(tabs[0]).toHaveAttribute("aria-selected", "true"),
+    );
     expect(document.activeElement).toBe(tabs[0]);
 
     fireEvent.keyDown(tabs[0], { key: "End" });
-    expect(tabs[2]).toHaveAttribute("aria-selected", "true");
+    await waitFor(() =>
+      expect(tabs[2]).toHaveAttribute("aria-selected", "true"),
+    );
     expect(document.activeElement).toBe(tabs[2]);
   });
 
   it("タブパネルの aria-labelledby は選択タブに追従する", () => {
     render(<KouetsuPanel />);
     const tabs = screen.getAllByRole("tab");
-    fireEvent.click(tabs[1]);
+    clickTab(tabs[1]);
     const panel = screen.getByRole("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe(tabs[1].id);
   });

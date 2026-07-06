@@ -1320,7 +1320,6 @@
       "doneBadge": "Done: {{count}}",
       "dashboardToggle": "Aspect dashboard",
       "effectsNote": "Impact review runs manually when Codex entries change",
-      "dashboardTitle": "8 aspects — click a tile to filter",
       "pipeline": {
         "done": "Done — {{count}} issues",
         "cancelled": "Cancelled — ran {{done}}/{{total}} aspects",
@@ -1375,7 +1374,16 @@
       "completedWithFailures": "Done with {{failed}} failed checks",
       "alreadyRunning": "Already running",
       "lintProjectWide": "Proofreading always scans the whole project",
-      "lintSceneSkipped": "Skipped — the current scene is linted live"
+      "lintSceneSkipped": "Skipped — the current scene is linted live",
+      "stepHelp": {
+        "lint": "Rule-based, mechanical checks for style, punctuation and notation (no AI)",
+        "typo": "AI detects typos, okurigana errors, missing particles and more",
+        "consistency": "AI cross-checks the text against Codex entries and finds in-scene contradictions",
+        "review": "AI critiques structure, pacing, character arcs and point of view",
+        "meta": "AI analyzes structural issues such as chaptering and scene transitions",
+        "timeline": "AI checks chronological contradictions (dates, elapsed time)",
+        "intent": "AI diagnoses drift between the scene's stated intent and the text"
+      }
     },
     "progressToast": {
       "running": "Running…",

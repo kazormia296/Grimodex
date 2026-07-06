@@ -3,6 +3,7 @@ import type { PseudoThread } from "@/features/post-effect/PseudoCommentThread";
 import {
   buildCommentGroups,
   humanCommentsFromDoc,
+  isActiveSceneOutOfScope,
   type HumanComment,
 } from "./commentsAggregation";
 
@@ -191,6 +192,27 @@ describe("buildCommentGroups", () => {
     expect(groups.map((g) => g.sceneId).sort()).toEqual(["a", "c"]);
   });
 
+  it("sceneIds を渡すと対象シーンのグループだけ残る（null は全シーン）", () => {
+    const scoped = buildCommentGroups(
+      human,
+      threads,
+      "all",
+      title,
+      new Set(["a"]),
+    );
+    expect(scoped.map((g) => g.sceneId)).toEqual(["a"]);
+    expect(scoped[0].human.length).toBe(2);
+    expect(scoped[0].threads.length).toBe(1);
+
+    const all = buildCommentGroups(human, threads, "all", title, null);
+    expect(all.map((g) => g.sceneId).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("sceneIds が空集合なら全グループが落ちる（scene スコープでシーン未選択）", () => {
+    const groups = buildCommentGroups(human, threads, "all", title, new Set());
+    expect(groups).toEqual([]);
+  });
+
   // NOTE: buildCommentGroups never creates an empty group (every ensure() is
   // followed by a push), so the trailing .filter() is defensive/unreachable.
   // This case only pins the empty-input → empty-output behavior, not the filter.
@@ -208,5 +230,17 @@ describe("buildCommentGroups", () => {
     );
     expect(groups.map((g) => g.sceneId)).toEqual(["z"]);
     expect(groups[0].threads.length).toBe(1);
+  });
+});
+
+describe("isActiveSceneOutOfScope", () => {
+  it("folder スコープ相当（集合にアクティブシーンが無い）でのみ true", () => {
+    expect(isActiveSceneOutOfScope(new Set(["x"]), "s1")).toBe(true);
+    expect(isActiveSceneOutOfScope(new Set(["s1"]), "s1")).toBe(false);
+  });
+
+  it("project スコープ（null）とシーン未選択（空文字）は false", () => {
+    expect(isActiveSceneOutOfScope(null, "s1")).toBe(false);
+    expect(isActiveSceneOutOfScope(new Set(["x"]), "")).toBe(false);
   });
 });

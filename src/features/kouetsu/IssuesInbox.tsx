@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useKouetsuStore } from "./kouetsuStore";
 import { useFullCheckStore } from "./fullCheckStore";
 import { TriageHeader } from "./triage/TriageHeader";
@@ -10,6 +10,7 @@ import { IssueList } from "./triage/IssueList";
 import { TriageFooter } from "./triage/TriageFooter";
 import { useOnRunSettled, useUnifiedIssues } from "./triage/useUnifiedIssues";
 import { useEffectLastRuns } from "./triage/useEffectLastRuns";
+import { useStageCoexist } from "./triage/useStageCoexist";
 import {
   advanceFrom,
   CAT_ORDER,
@@ -31,11 +32,16 @@ import {
  * リストに統合し、上部ステージを排他 4 モードで切り替える:
  *   triage（行選択時のカード） > pipeline（全体チェック中〜閉じるまで）
  *   > dashboard（観点タイル） > summary（既定の件数サマリー）。
+ * ただしパネルが十分大きいとき（useStageCoexist: 高さ+幅の両ゲート）は
+ * ダッシュボードをカード/サマリーと共存表示する（カードとサマリーは常に
+ * 排他。縦に大きい pipeline も排他のまま）。
  * 旧・8 セクション縦積み（InboxSection）はこのリワークで置換された。
  */
 export function IssuesInbox() {
   const { open, dismissed, refresh } = useUnifiedIssues();
   const { lastRuns, refresh: refreshLastRuns } = useEffectLastRuns();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const coexist = useStageCoexist(containerRef);
 
   const selectedIssueId = useKouetsuStore((s) => s.selectedIssueId);
   const setSelectedIssueId = useKouetsuStore((s) => s.setSelectedIssueId);
@@ -120,14 +126,14 @@ export function IssuesInbox() {
     [refresh],
   );
 
-  // ステージのモード導出（優先順: triage > pipeline > dashboard > summary）。
-  const mode = selectedIssue
-    ? "triage"
-    : pipelineVisible && runState !== "idle"
-      ? "pipeline"
-      : dashboardOn
-        ? "dashboard"
-        : "summary";
+  // ステージ導出。基本は排他（優先順: triage > pipeline > dashboard >
+  // summary）だが、coexist のときだけ dashboard を第 2 ステージ（カード or
+  // サマリー）の上に共存させる。
+  const pipelineOn = !selectedIssue && pipelineVisible && runState !== "idle";
+  const showDashboard =
+    dashboardOn && !pipelineOn && (coexist || !selectedIssue);
+  const showSummary =
+    !selectedIssue && !pipelineOn && (!dashboardOn || coexist);
 
   // サマリーの「最終チェック」: 全体チェック完了時刻を優先し、無ければ
   // 観点別最終実行の最新値（アプリ再起動後も post_effect_runs から復元される）。
@@ -151,9 +157,10 @@ export function IssuesInbox() {
   }, [open, selectedIssueId, setSelectedIssueId]);
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div ref={containerRef} className="flex h-full flex-col overflow-hidden">
       <TriageHeader />
-      {mode === "triage" && selectedIssue && (
+      {showDashboard && <DashboardStage open={open} lastRuns={lastRuns} />}
+      {selectedIssue && (
         <TriageCard
           issue={selectedIssue}
           onJump={() => jumpToIssue(selectedIssue)}
@@ -164,11 +171,8 @@ export function IssuesInbox() {
           onClose={() => setSelectedIssueId(null)}
         />
       )}
-      {mode === "pipeline" && <PipelineStage open={open} />}
-      {mode === "dashboard" && (
-        <DashboardStage open={open} lastRuns={lastRuns} />
-      )}
-      {mode === "summary" && (
+      {pipelineOn && <PipelineStage open={open} />}
+      {showSummary && (
         <SummaryStage
           counts={deriveSevCounts(open)}
           lastCheckLabel={lastCheckLabel}

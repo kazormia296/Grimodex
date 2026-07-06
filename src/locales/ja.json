@@ -1320,7 +1320,6 @@
       "doneBadge": "完了 {{count}}件",
       "dashboardToggle": "観点ダッシュボード",
       "effectsNote": "影響レビューはCodex変更時に手動で実行します",
-      "dashboardTitle": "8つの観点 — タイルで絞り込み",
       "pipeline": {
         "done": "完了 — 指摘 {{count}}件",
         "cancelled": "中止 — {{done}}/{{total}} 観点を実行",
@@ -1375,7 +1374,16 @@
       "completedWithFailures": "全体チェック完了（{{failed}} 観点失敗）",
       "alreadyRunning": "実行中です",
       "lintProjectWide": "校正は常にプロジェクト全体を走査します",
-      "lintSceneSkipped": "現在シーンは自動反映済みのためスキップします"
+      "lintSceneSkipped": "現在シーンは自動反映済みのためスキップします",
+      "stepHelp": {
+        "lint": "表記ゆれ・約物・スタイルの規則違反をルールベースで機械的に検査します（AI不使用）",
+        "typo": "誤字脱字・送り仮名・助詞抜けなどをAIが検出します",
+        "consistency": "Codex設定との食い違いと、シーン内の矛盾をAIが照合します",
+        "review": "構成・ペース配分・キャラクター変化・視点の観点でAIが講評します",
+        "meta": "章立てや場面転換などの構造上の問題をAIが分析します",
+        "timeline": "出来事の時系列の矛盾（日付・経過時間）をAIが検査します",
+        "intent": "シーンに設定した「狙い」と本文のズレをAIが診断します"
+      }
     },
     "progressToast": {
       "running": "実行中…",
@@ -1447,7 +1455,7 @@
     },
     "scopePicker": "チェック範囲を選択",
     "filter": {
-      "open": "開いている",
+      "open": "Open",
       "dismissed": "除外"
     },
     "editorial": {

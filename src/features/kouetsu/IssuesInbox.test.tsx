@@ -99,6 +99,15 @@ vi.mock("./fullCheck", async (orig) => {
   return { ...actual, runFullCheck: runFullCheckMock };
 });
 
+// サイズ計測（ResizeObserver）はテストから直接制御する。false = 排他表示
+// （従来挙動）、true = ダッシュボード共存。
+const coexistState = vi.hoisted(() => ({ coexist: false }));
+vi.mock("./triage/useStageCoexist", () => ({
+  useStageCoexist: () => coexistState.coexist,
+  STAGE_COEXIST_MIN_HEIGHT: 560,
+  STAGE_COEXIST_MIN_WIDTH: 330,
+}));
+
 import { IssuesInbox } from "./IssuesInbox";
 
 // ---------------------------------------------------------------------------
@@ -244,6 +253,7 @@ function allPending(): Record<FullCheckStepId, FullCheckStepState> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  coexistState.coexist = false;
   h.open = OPEN_ISSUES;
   h.dismissed = DISMISSED_ISSUES;
   useKouetsuStore.setState({
@@ -373,8 +383,7 @@ describe("IssuesInbox 観点ダッシュボード", () => {
   it("田トグルでダッシュボードが出て、タイルクリックで観点フィルタ chip が付く", () => {
     render(<IssuesInbox />);
     fireEvent.click(screen.getByLabelText("観点ダッシュボード"));
-    const dash = screen.getByText("8つの観点 — タイルで絞り込み")
-      .parentElement as HTMLElement;
+    const dash = screen.getByTestId("triage-dashboard");
     expect(dash).toBeInTheDocument();
 
     // typo タイル（1 件）をクリック → 観点フィルタ
@@ -401,7 +410,7 @@ describe("IssuesInbox 観点ダッシュボード", () => {
 describe("IssuesInbox ステータス pill", () => {
   it("開いている/除外の件数を実数表示し、切替で除外リスト + 再表示が出る", async () => {
     render(<IssuesInbox />);
-    const openPill = screen.getByRole("button", { name: "開いている 3" });
+    const openPill = screen.getByRole("button", { name: "Open 3" });
     expect(openPill).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "除外 1" }));
@@ -478,9 +487,7 @@ describe("IssuesInbox パイプラインステージ", () => {
     expect(screen.getByText("全体チェック — 現在シーン")).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("観点ダッシュボード"));
-    expect(
-      screen.getByText("8つの観点 — タイルで絞り込み"),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("triage-dashboard")).toBeInTheDocument();
     expect(screen.queryByText("全体チェック — 現在シーン")).toBeNull();
     // 実行中は表示のみ畳む（run 自体は継続、ピルから復帰可能）
     expect(useFullCheckStore.getState().pipelineVisible).toBe(false);
@@ -519,5 +526,54 @@ describe("IssuesInbox パイプラインステージ", () => {
     // 畳んでいる間も RunControl は実行中ピルを出す
     fireEvent.click(screen.getByText("実行中 2/7"));
     expect(screen.getByText("全体チェック — 現在シーン")).toBeInTheDocument();
+  });
+});
+
+describe("IssuesInbox ステージ共存（サイズ十分 = coexist）", () => {
+  it("coexist では dashboardOn でもサマリーが併存する", () => {
+    coexistState.coexist = true;
+    useKouetsuStore.setState({ dashboardOn: true });
+    render(<IssuesInbox />);
+    expect(screen.getByTestId("triage-dashboard")).toBeInTheDocument();
+    expect(screen.getByText("件の指摘が開いています")).toBeInTheDocument();
+  });
+
+  it("coexist では選択カードとダッシュボードが併存する（サマリーとカードは排他）", () => {
+    coexistState.coexist = true;
+    useKouetsuStore.setState({ dashboardOn: true });
+    render(<IssuesInbox />);
+    fireEvent.click(screen.getByText("田中の年齢が矛盾しています"));
+    expect(screen.getByTestId("triage-dashboard")).toBeInTheDocument();
+    expect(screen.getByText("本文へ")).toBeInTheDocument();
+    expect(screen.queryByText("件の指摘が開いています")).toBeNull();
+  });
+
+  it("coexist でなければ従来どおり排他（選択でカードのみ、サマリーも出ない）", () => {
+    useKouetsuStore.setState({ dashboardOn: true });
+    render(<IssuesInbox />);
+    expect(screen.getByTestId("triage-dashboard")).toBeInTheDocument();
+    expect(screen.queryByText("件の指摘が開いています")).toBeNull();
+
+    fireEvent.click(screen.getByText("田中の年齢が矛盾しています"));
+    expect(screen.queryByTestId("triage-dashboard")).toBeNull();
+    expect(screen.getByText("本文へ")).toBeInTheDocument();
+  });
+
+  it("coexist でもパイプラインは排他（ダッシュボード・サマリーとも非表示）", () => {
+    coexistState.coexist = true;
+    useKouetsuStore.setState({ dashboardOn: true });
+    render(<IssuesInbox />);
+    act(() => {
+      useFullCheckStore.setState({
+        running: true,
+        runState: "running",
+        pipelineVisible: true,
+        done: 1,
+        total: 7,
+      });
+    });
+    expect(screen.getByText("全体チェック — 現在シーン")).toBeInTheDocument();
+    expect(screen.queryByTestId("triage-dashboard")).toBeNull();
+    expect(screen.queryByText("件の指摘が開いています")).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import { useLintProjectStore } from "@/features/lint/lintProjectStore";
 import { useKouetsuStore } from "../kouetsuStore";
 import { useResolvedKouetsuScope } from "../useResolvedKouetsuScope";
 import {
+  CAT_ICON,
   CAT_LABEL_KEY,
   SEV_LABEL_KEY,
   SEV_TEXT_CLASS,
@@ -23,7 +24,8 @@ import { useIsCatRunning } from "./useCatRunning";
 import type { EffectLastRunMap } from "./useEffectLastRuns";
 
 /**
- * 観点ダッシュボード（デザイン 1c / 2a）: 8 観点タイルの 2 列グリッド。
+ * 観点ダッシュボード（デザイン 1c / 2a）: 8 観点タイルのグリッド
+ * （列数はパネル幅に応じて auto-fill で可変）。
  * タイル = 件数（最悪重大度の色）+ 内訳 + 最終実行。クリックで観点フィルタ、
  * 実行ボタンで観点単発チェック（結果反映は useUnifiedIssues の自動 refresh）。
  */
@@ -46,11 +48,15 @@ export function DashboardStage({
   }, [open]);
 
   return (
-    <div className="shrink-0 border-b border-border bg-muted/20 px-2.5 py-2">
-      <div className="mb-1.5 text-[10px] font-semibold tracking-wide text-muted-foreground">
-        {t("kouetsu.triage.dashboardTitle")}
-      </div>
-      <div className="grid grid-cols-2 gap-1.5">
+    <div
+      data-testid="triage-dashboard"
+      aria-label={t("kouetsu.triage.dashboardToggle")}
+      // max-h + 内部スクロール: auto-fill で 1 列に落ちるとタイルが縦に
+      // 伸びる（~460px）。ダッシュボードがリスト本体（flex-1）やフッターを
+      // 押し潰さないよう、はみ出す分は自前でスクロールさせる。
+      className="max-h-64 shrink-0 overflow-y-auto border-b border-border bg-muted/20 px-2.5 py-2"
+    >
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-1.5">
         {CAT_ORDER.map((cat) => (
           <Tile
             key={cat}
@@ -79,6 +85,7 @@ function Tile({
   const setCatFilter = useKouetsuStore((s) => s.setCatFilter);
   const running = useIsCatRunning(cat);
   const projectScanDone = useLintProjectStore((s) => s.phase === "done");
+  const CatIcon = CAT_ICON[cat];
 
   const n = issues.length;
   const counts = deriveSevCounts(issues);
@@ -133,8 +140,15 @@ function Tile({
       )}
     >
       <div className="flex items-center justify-between gap-1">
-        <span className="truncate text-[10.5px] font-semibold">
-          {t(CAT_LABEL_KEY[cat])}
+        <span className="flex min-w-0 items-center gap-1">
+          <CatIcon
+            size={11}
+            className="shrink-0 text-muted-foreground"
+            aria-hidden
+          />
+          <span className="truncate text-[10.5px] font-semibold">
+            {t(CAT_LABEL_KEY[cat])}
+          </span>
         </span>
         <span className="flex shrink-0 items-center gap-1">
           <span className="text-[9px] text-muted-foreground">{corner}</span>

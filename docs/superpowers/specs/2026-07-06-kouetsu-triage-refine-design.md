@@ -33,28 +33,32 @@ Claude Design プロジェクト「Grimodexの校閲パネルリファイン」
 ## 新 UI 構造（指摘タブ）
 
 ```
-KouetsuPanel（3 タブ: 指摘/コメント/ブロッカー — 変更なし）
+KouetsuPanel（3 タブ: 指摘/コメント/ブロッカー — shadcn Tabs + lucide アイコン化、追補参照）
 └─ IssuesInbox（全面書き換え）
    ├─ TriageHeader（旧 KouetsuScopeBar の再設計）
-   │   ├─ スコープピッカー trigger（既存 ScopeTreePickerList popover を維持）
+   │   ├─ KouetsuScopePicker（既存 ScopeTreePickerList popover。コメントタブと共用）
    │   └─ 右側: RunControl + ダッシュボードトグル（LayoutGrid アイコン）
-   ├─ ステージ（排他 4 モード、優先順: triage > pipeline > dashboard > summary）
+   ├─ ステージ（基本は排他、優先順: triage > pipeline > dashboard > summary。
+   │   サイズ十分時のみ dashboard がカード/サマリーと共存 — 追補参照）
    │   ├─ TriageCard   … 行選択時。詳細 + アクション（本文へ/Fix/解決/無視/あとで）
    │   ├─ PipelineStage… 全体チェック実行中〜閉じるまで。ステップ一覧 + 進捗バー
-   │   ├─ DashboardStage… 8 観点タイル（件数/最終実行/実行ボタン）。タイル=観点フィルタ
+   │   ├─ DashboardStage… 8 観点タイル（件数/最終実行/実行ボタン、幅追従の可変列）。
+   │   │                   タイル=観点フィルタ
    │   └─ SummaryStage … 既定。開いている件数 + 重大度分布バー
-   ├─ リストツールバー: 「開いている N」「除外 N」pill + 観点フィルタ chip + 並びラベル
+   ├─ リストツールバー: 「Open N」「除外 N」pill + 観点フィルタ chip + 並びラベル
    ├─ IssueList（統合トリアージリスト、セクション廃止）
    └─ TriageFooter: 観点別の最終実行ドット + 実行履歴 popover
 ```
 
-### ステージのモード導出（デザイン 2a のロジックを踏襲）
+### ステージのモード導出（デザイン 2a を基本に、coexist 共存を追加）
 
 ```
-mode = selectedIssueId ? "triage"
-     : (pipelineVisible && runState !== "idle") ? "pipeline"
-     : dashboardOn ? "dashboard"
-     : "summary"
+pipelineOn    = !selectedIssue && pipelineVisible && runState !== "idle"
+showDashboard = dashboardOn && !pipelineOn && (coexist || !selectedIssue)
+showSummary   = !selectedIssue && !pipelineOn && (!dashboardOn || coexist)
+// coexist = コンテナ高さ >= 560px かつ幅 >= 330px
+//（useStageCoexist、ResizeObserver。追補 7 参照）。
+// coexist=false のとき旧・排他 4 モードと完全に同値。
 ```
 
 - 全体チェック開始で `pipelineVisible=true`・選択解除。実行中に「戻る」で
@@ -241,9 +245,12 @@ catFilter をリセットする。
 ## i18n
 
 `kouetsu.triage.*` を ja.json / en.json に追加（開いている N 件・重大/注意/提案・
-全体チェック・チェックする観点・8つの観点・最終チェック・実行中 n/N・待機中・対象外・
+全体チェック・チェックする観点・最終チェック・実行中 n/N・待機中・対象外・
 検出なし・本文へ・解決・無視・あとで・再表示・実行履歴・未実行・自動・手動 等）。
 観点名は既存キー（`FULL_CHECK_STEP_LABEL_KEY` が指すもの）を再利用する。
+追補で `kouetsu.triage.dashboardTitle`（8つの観点）は削除、
+`kouetsu.fullCheck.stepHelp.*`（観点説明 7 キー）を追加、
+`kouetsu.filter.open` は ja でも「Open」表記に変更。
 
 ## 削除対象と維持対象
 
@@ -296,6 +303,58 @@ catFilter をリセットする。
    と同じ挙動を踏襲）。「除外 N」pill の件数もプロジェクト全体の実数。
 8. **`docs/Grimodex_PostEffects設計書.md` の校閲パネル UI 記述（旧 8 セクション
    構造）への追従は別 PR**（受信箱リワーク時の #284 相当の docs 作業）。
+
+## 追補 — UI 磨き込み 11 項目（2026-07-06、同日追加実装）
+
+初回実装レビュー後のフィードバックで以下を追加実装した（同ブランチ）。
+
+1. **パネルタブを shadcn Tabs 化** — `@radix-ui/react-tabs` を新規導入し
+   `src/components/ui/tabs.tsx` を追加。KouetsuPanel の手書き APG tablist
+   （useId/roving tabIndex/矢印キー処理）を置換。lucide アイコン付き
+   （指摘=SearchCheck / コメント=MessageSquare / ブロッカー=OctagonAlert）。
+   旧 persist 値（"editorial"）の正規化・keepalive の setPanelActive は維持。
+   Radix 化に伴いタブ選択は mousedown 駆動・矢印キーの focus 移動は
+   setTimeout 経由（テストは waitFor で追従）。
+2. **スコープピッカーを `KouetsuScopePicker` へ共通化しコメントタブにも設置** —
+   スコープは kouetsuStore.scope を両タブで共有（単一の真実源）。コメントタブは
+   `buildCommentGroups(..., sceneIds)` で表示のみ絞る（読み込みは project 全体の
+   まま、スコープ切替で再フェッチしない）。scene スコープ = アクティブシーン、
+   folder = `getSceneIdsForScope`。疑似コメント生成の対象は従来どおり常に
+   アクティブシーン（スコープ非依存）だが、folder スコープでアクティブシーンが
+   スコープ外だと生成物が不可視（無音 no-op に見える）になるため、生成完了時に
+   `isActiveSceneOutOfScope` なら scene スコープへ自動切替して結果を見せる
+   （敵対レビュー確定指摘の修正）。除外ビュー（DismissedAnnotationsView）は
+   従来どおりプロジェクト全体（確定逸脱 7 と同方針）。
+3. **全体チェックのドロップダウンを Radix Popover 化** — RunControl の
+   useAnchoredPopover + createPortal を `components/ui/popover.tsx`
+   （開閉アニメ + collision 回避）へ置換。非制御 open。
+4. **観点説明のヘルプテキスト** — ドロップダウン各行に
+   `kouetsu.fullCheck.stepHelp.<stepId>` を title（ホバー）で表示。
+5. **ダッシュボードの可変列** — `grid-cols-2` →
+   `repeat(auto-fill, minmax(9.5rem, 1fr))`（パネル幅に追従）。
+6. **「8つの観点 — タイルで絞り込み」見出しを削除** — dashboardTitle キーごと
+   削除。テストのアンカーは `data-testid="triage-dashboard"` へ変更。
+7. **サイズ十分時のステージ共存** — `useStageCoexist`（ResizeObserver、
+   高さ >= 560px `STAGE_COEXIST_MIN_HEIGHT` **かつ** 幅 >= 330px
+   `STAGE_COEXIST_MIN_WIDTH`）が true のとき、dashboard をカード or
+   サマリーの上に共存表示。幅ゲートは敵対レビュー確定指摘の修正: auto-fill で
+   1 列に落ちるとダッシュボードが ~460px に膨らみ、高さ 560px 前提が崩れて
+   リストが 0px に潰れるため、タイル 2 列以上を保てる幅でのみ共存を許す。
+   防御として DashboardStage 自体にも `max-h-64 overflow-y-auto`（内部
+   スクロール）を付け、排他モードでも 1 列ダッシュボードがリスト/フッターを
+   押し潰さないようにした。サマリーとカードは常に排他。縦に大きい pipeline も
+   従来どおり排他。ResizeObserver 不在環境（happy-dom）では常に false
+   （= 旧挙動）に落ちる。
+8. **「開いている」→「Open」** — ja の `kouetsu.filter.open` を英字表記へ。
+9. **観点アイコン `CAT_ICON`**（catalog.ts） — linter=SpellCheck /
+   typo=ScanText / consistency=Scale / impact=Radar / review=Eye /
+   intent=Crosshair / meta=Layers / timeline=Clock。ドロップダウン行と
+   ダッシュボードタイルに表示。
+10. **ステータス pill アイコン** — Open=CircleDot / 除外=EyeOff（IssueList、
+    コメントタブの除外トグルも EyeOff）。
+11. **コメントタブのツールバー narrow 対応** — flex-wrap 化 + フィルタに
+    アイコン（全て=MessagesSquare / 人間=User / AI=Bot）。ペルソナ select は
+    min-w-0 + max-w-40 で縮小可能に。
 
 ## 既知の罠との整合（再掲）
 

@@ -1,3 +1,14 @@
+import {
+  Clock,
+  Crosshair,
+  Eye,
+  Layers,
+  Radar,
+  Scale,
+  ScanText,
+  SpellCheck,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import i18next from "@/lib/i18n";
 import { codexChipLabel } from "@/features/post-effect/annotationMeta";
 import type {
@@ -24,6 +35,18 @@ export const CAT_LABEL_KEY: Record<IssueCat, string> = {
   intent: "kouetsu.editorial.intentDrift",
   meta: "kouetsu.editorial.metaStructure",
   timeline: "kouetsu.editorial.timeline",
+};
+
+/** 観点アイコン（ドロップダウン・ダッシュボードタイル等の視覚識別）。 */
+export const CAT_ICON: Record<IssueCat, LucideIcon> = {
+  linter: SpellCheck,
+  typo: ScanText,
+  consistency: Scale,
+  impact: Radar,
+  review: Eye,
+  intent: Crosshair,
+  meta: Layers,
+  timeline: Clock,
 };
 
 /** 観点 → 全体チェックのステップ。impact は全体チェック対象外（null）。 */

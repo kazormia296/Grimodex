@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { CircleDot, EyeOff, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { DisablesView } from "@/features/lint/LintDisablesView";
@@ -85,12 +85,13 @@ export function IssueList({
             aria-pressed={!dismissedView}
             onClick={() => setStatusFilter("open")}
             className={cn(
-              "rounded-full px-2 py-0.5 text-[10.5px] tabular-nums",
+              "flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] tabular-nums",
               !dismissedView
                 ? "bg-[var(--kouetsu-accent-weak)] font-semibold text-foreground"
                 : "text-muted-foreground hover:bg-accent",
             )}
           >
+            <CircleDot size={10} className="shrink-0" />
             {t("kouetsu.filter.open")} {open.length}
           </button>
           <button
@@ -98,12 +99,13 @@ export function IssueList({
             aria-pressed={dismissedView}
             onClick={() => setStatusFilter("dismissed")}
             className={cn(
-              "rounded-full px-2 py-0.5 text-[10.5px] tabular-nums",
+              "flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] tabular-nums",
               dismissedView
                 ? "bg-[var(--kouetsu-accent-weak)] font-semibold text-foreground"
                 : "text-muted-foreground hover:bg-accent",
             )}
           >
+            <EyeOff size={10} className="shrink-0" />
             {t("kouetsu.filter.dismissed")} {dismissed.length}
           </button>
         </div>
