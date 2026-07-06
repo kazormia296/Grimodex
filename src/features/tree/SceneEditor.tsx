@@ -3,6 +3,7 @@ import { useSceneStore } from "./store";
 import { useTreeStore } from "./treeStore";
 import { TabBar } from "@/features/editor/TabBar";
 import { Breadcrumb } from "@/features/editor/Breadcrumb";
+import { SceneMetaChipRow } from "@/features/editor/SceneMetaChipRow";
 import { EditorPane } from "@/features/editor/EditorPane";
 import { useTabStore } from "@/features/editor/tabStore";
 import { LinearEditorView } from "@/features/editor/LinearEditorView";
@@ -211,6 +212,7 @@ export function SceneEditor() {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden">
         <Breadcrumb />
+        <SceneMetaChipRow />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <TabBar groupIndex={0} />
           <div className="relative flex flex-1 flex-col overflow-hidden">
@@ -242,6 +244,7 @@ export function SceneEditor() {
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
       <Breadcrumb />
+      <SceneMetaChipRow />
 
       <div className={splitClass}>
         {/* ---- Primary group ---- */}

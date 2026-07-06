@@ -6,12 +6,16 @@ import { EditorState } from "@tiptap/pm/state";
 import { Schema } from "@tiptap/pm/model";
 import type { Editor } from "@tiptap/react";
 
+import { Editor as TipTapEditor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { LayersPopover } from "./LayersPopover";
+import { Toolbar } from "./Toolbar";
 
 const showPanelSpy = vi.fn();
 
@@ -226,31 +230,34 @@ describe("LayersPopover", () => {
 });
 
 describe("Toolbar 統合", () => {
-  it("レイヤーボタンでポップオーバーが開閉する", async () => {
-    const { Editor: TipTapEditor } = await import("@tiptap/core");
-    const { default: StarterKit } = await import("@tiptap/starter-kit");
-    const { Toolbar } = await import("./Toolbar");
-    const editor = new TipTapEditor({
-      extensions: [StarterKit],
-      content: "<p>本文</p>",
-    });
-    render(
-      <Toolbar
-        editor={editor as never}
-        onFindReplace={() => {}}
-        sceneId="s1"
-        nodeType="scene"
-      />,
-    );
-    const trigger = screen.getByRole("button", {
-      name: "editor.toolbar.layers",
-    });
-    expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
-    fireEvent.click(trigger);
-    await waitFor(() => {
-      expect(screen.getByTestId("layers-popover")).toBeTruthy();
-    });
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
-    editor.destroy();
-  });
+  // スイート全体で走ると transform/import が重なり既定 5s では足りないことが
+  // あるため余裕を持たせる（単体では ~1s）。
+  it(
+    "レイヤーボタンでポップオーバーが開閉する",
+    { timeout: 15000 },
+    async () => {
+      const editor = new TipTapEditor({
+        extensions: [StarterKit],
+        content: "<p>本文</p>",
+      });
+      render(
+        <Toolbar
+          editor={editor as never}
+          onFindReplace={() => {}}
+          sceneId="s1"
+          nodeType="scene"
+        />,
+      );
+      const trigger = screen.getByRole("button", {
+        name: "editor.toolbar.layers",
+      });
+      expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+      fireEvent.click(trigger);
+      await waitFor(() => {
+        expect(screen.getByTestId("layers-popover")).toBeTruthy();
+      });
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      editor.destroy();
+    },
+  );
 });

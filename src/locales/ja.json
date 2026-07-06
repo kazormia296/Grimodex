@@ -3296,7 +3296,8 @@
         "dropToUnplace": "ここにドロップして未配置に戻す",
         "emptyState": "Beat はまだありません。+ を押して追加してください。",
         "placedHeading": "配置済み（本文順）：",
-        "emptyBeat": "空の Beat"
+        "emptyBeat": "空の Beat",
+        "paragraphRef": "本文 ¶{{n}}"
       },
       "alternativeSaved": "代替案をスニペットに保存しました",
       "modelInherit": "モデルを継承",
@@ -3488,6 +3489,19 @@
       "comment": "この段落にコメントがあります",
       "foreshadow": "この段落に伏線マークがあります",
       "review": "この段落に校閲の指摘があります"
+    },
+    "sceneDetail": {
+      "title": "シーン詳細",
+      "pov": "視点",
+      "location": "場所",
+      "notSet": "未設定",
+      "searchCharacter": "人物を検索…",
+      "searchLocation": "場所を検索…",
+      "clearSelection": "指定なしにする",
+      "noMatches": "該当なし",
+      "synopsisChip": "あらすじ",
+      "synopsisEmpty": "未記入",
+      "beatsChip": "ビート {{count}}"
     },
     "layers": {
       "title": "本文レイヤー",
