@@ -184,6 +184,37 @@ describe("runFullCheck", () => {
     expect(toast.success).toHaveBeenCalledTimes(1);
   });
 
+  it("consistency の codex 片側失敗は観点失敗として failures に可視化する", async () => {
+    // runner の scene パスは片側の payload build 失敗を ok:false へ畳む
+    // （reject しない）。無音の握り潰しにせず、観点失敗として完了 warning に出す。
+    runConsistency.mockResolvedValue({
+      codex: { ok: false, error: "codex build fail" },
+      intra: { ok: true, fromCache: false, count: 3 },
+    });
+    await runFullCheck({ type: "project" }, enabled({ consistency: true }));
+    const state = useFullCheckStore.getState();
+    expect(state.failures).toEqual([
+      { step: "consistency", error: "codex build fail" },
+    ]);
+    expect(state.done).toBe(1);
+    expect(toast.warning).toHaveBeenCalledTimes(1);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("consistency の intra 片側失敗も failures に可視化する", async () => {
+    runConsistency.mockResolvedValue({
+      codex: { ok: true, fromCache: false, count: 2 },
+      intra: { ok: false, error: "intra run fail" },
+    });
+    await runFullCheck({ type: "project" }, enabled({ consistency: true }));
+    const state = useFullCheckStore.getState();
+    expect(state.failures).toEqual([
+      { step: "consistency", error: "intra run fail" },
+    ]);
+    expect(toast.warning).toHaveBeenCalledTimes(1);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it("intent runner は isCancelled が true になった時点で以降のシーンを起動しない", async () => {
     // runIntentDriftCheck の per-scene 直列を mock で再現し、各シーン起動前に
     // opts.isCancelled() を確認する。途中で cancelRequested を立て、以降の
