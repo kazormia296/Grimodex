@@ -4775,6 +4775,25 @@ mod abort_registry_tests {
         reg.clear("run-a");
         assert!(!reg.is_aborted("run-a")); // 終端後は解除され、後続の同名 run を汚さない
     }
+
+    /// 単発 run の終端は `start_post_effect_run` の spawn 出口で
+    /// `registry.clear(&run_id)` を呼ぶ（run_multi の join 出口と同じパターン。
+    /// AppHandle が要るため spawn 自体はユニットで駆動できないが、その clear が
+    /// 満たすべき不変条件をレジストリ単体で担保する）。中止要求済みの単発 run が
+    /// 終端で clear されても、並走する別 run の中止要求は残る。
+    #[test]
+    fn single_run_terminal_clear_is_scoped() {
+        let reg = super::PostEffectAbortRegistry::new();
+        // 単発 run(single) と別 run(other) の両方に中止を要求。
+        reg.request("single");
+        reg.request("other");
+        assert!(reg.is_aborted("single"));
+        assert!(reg.is_aborted("other"));
+        // 単発 run が終端 → spawn 出口の clear 相当。
+        reg.clear("single");
+        assert!(!reg.is_aborted("single")); // 永久残留しない（リーク防止）
+        assert!(reg.is_aborted("other")); // 並走 run の要求は握り潰さない
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5400,6 +5419,13 @@ pub(crate) async fn start_post_effect_run(
             );
             fail_run(&app_clone, &rid_clone, &msg);
         }
+        // 単発 run の全終端（run_effect_task 内の done/error、および内側タスクが
+        // panic して join が Err のパス）を集約する単一出口。multi 側と同じく
+        // ここで clear し、中止要求の run_id が中止レジストリへ永久残留するのを防ぐ
+        // （単発 run は abort を観測しないが、要求エントリは掃除する必要がある）。
+        app_clone
+            .state::<PostEffectAbortRegistry>()
+            .clear(&rid_clone);
     });
 
     Ok(StartPostEffectRunResult {
