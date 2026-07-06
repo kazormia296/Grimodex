@@ -26,6 +26,10 @@ import { LINT_REBUILD_META } from "./LintDecorationPlugin";
  */
 export function useLayerAutoFollow(editor: Editor | null): void {
   const enabled = useCursorSettingsStore((s) => s.layerAutoFollow);
+  // 外部リセット (SettingsDialog close の initFromSettings 等) が Auto 追従中の
+  // ランタイム状態を巻き戻したときの再同期シグナル。deps に入れることで
+  // requestLayerAutoFollowSync() の bump が follow effect を再実行させる。
+  const syncNonce = useCursorSettingsStore((s) => s.layerAutoFollowSyncNonce);
   const kouetsuActive = useLayoutStore((s) => s.isPanelActive("kouetsu"));
   const codexActive = useLayoutStore((s) => s.isPanelActive("codex"));
   const attributionActive = useLayoutStore((s) =>
@@ -64,6 +68,7 @@ export function useLayerAutoFollow(editor: Editor | null): void {
     });
   }, [
     enabled,
+    syncNonce,
     editor,
     kouetsuActive,
     codexActive,

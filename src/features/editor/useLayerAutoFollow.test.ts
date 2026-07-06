@@ -110,6 +110,31 @@ describe("useLayerAutoFollow", () => {
     expect(useAnnotationStore.getState().showAnnotations).toBe(true); // 初期値のまま
   });
 
+  it("外部リセット (initFromSettings) 後、requestLayerAutoFollowSync で再同期する", () => {
+    renderHook(() => useLayerAutoFollow(null));
+    // 全パネル閉で auto 同期 → 全OFF
+    expect(useAnnotationStore.getState().showAnnotations).toBe(false);
+    expect(useCursorSettingsStore.getState().showLint).toBe(false);
+
+    // SettingsDialog close 相当: initFromSettings が手動基準値 (既定 true) へ
+    // 巻き戻す。enabled とパネル可視は不変なので follow effect は自発しない
+    // （layerAutoFollow は実環境では設定=true が読み戻される — ここでは触らず
+    // annotation 側の巻き戻しと showLint の手動巻き戻しで再現する）。
+    act(() => {
+      useAnnotationStore.getState().initFromSettings();
+      useCursorSettingsStore.setState({ showLint: true });
+    });
+    expect(useAnnotationStore.getState().showAnnotations).toBe(true); // 巻き戻った
+
+    // nonce bump → follow effect が再実行されパネル可視状態 (閉) へ再同期
+    act(() => {
+      useCursorSettingsStore.getState().requestLayerAutoFollowSync();
+    });
+    expect(useAnnotationStore.getState().showAnnotations).toBe(false);
+    expect(useAnnotationStore.getState().showReaderComments).toBe(false);
+    expect(useCursorSettingsStore.getState().showLint).toBe(false);
+  });
+
   it("ON→OFF で保存済み設定 (手動基準値) へ復元する", () => {
     renderHook(() => useLayerAutoFollow(null));
     // 全パネル閉で auto 同期 → 全OFF

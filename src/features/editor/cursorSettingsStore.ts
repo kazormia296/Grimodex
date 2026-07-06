@@ -24,6 +24,13 @@ interface CursorSettingsState {
   /** 本文レイヤーのパネル連動 (Auto) モード。ON中は開いているパネルに追従。 */
   layerAutoFollow: boolean;
   toggleLayerAutoFollow: () => void;
+  /**
+   * パネル連動の再同期要求カウンタ（非永続）。initFromSettings 等の外部リセットが
+   * Auto 追従中のランタイム状態を巻き戻した後に bump すると、useLayerAutoFollow の
+   * follow effect が再実行されてパネル可視状態へ再同期する。
+   */
+  layerAutoFollowSyncNonce: number;
+  requestLayerAutoFollowSync: () => void;
   /** Whether the "add comment" input popover is open. */
   commentPickerOpen: boolean;
   setCommentPickerOpen: (open: boolean) => void;
@@ -115,6 +122,12 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
           .set("display.layerAutoFollow", String(next));
         return { layerAutoFollow: next };
       }),
+
+    layerAutoFollowSyncNonce: 0,
+    requestLayerAutoFollowSync: () =>
+      set((s) => ({
+        layerAutoFollowSyncNonce: s.layerAutoFollowSyncNonce + 1,
+      })),
 
     commentPickerOpen: false,
     setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
