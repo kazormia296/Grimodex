@@ -79,6 +79,27 @@
   /* Map note node — tinted with the app's brand accent (#534AB7). */
   --note-bg: #eeebfa;
   --note-border: #8b7fd4;
+  /* ─── 校閲トリアージ (kouetsu triage) ───────────────────────
+     Brand-purple accent + severity palette from the design doc
+     (docs/superpowers/specs/2026-07-06-kouetsu-triage-refine-design.md).
+     Light values come from the Claude Design mock; dark values are the
+     same hues lifted in lightness for contrast on dark surfaces. */
+  --kouetsu-accent: #534ab7;
+  --kouetsu-accent-hover: #463d9e;
+  --kouetsu-accent-weak: #eeecf6;
+  --kouetsu-sev-high: #d64545;
+  --kouetsu-sev-mid: #e09a3a;
+  --kouetsu-sev-low: #7a72ce;
+  --kouetsu-chip-high-bg: #f6e7e7;
+  --kouetsu-chip-high-fg: #a33232;
+  --kouetsu-chip-mid-bg: #f7eedd;
+  --kouetsu-chip-mid-fg: #946417;
+  --kouetsu-chip-low-bg: #edebf8;
+  --kouetsu-chip-low-fg: #4a4390;
+  --kouetsu-mark-high: #f9e0dd;
+  --kouetsu-mark-mid: #f7eedd;
+  --kouetsu-mark-low: #edebf8;
+  --kouetsu-ok: #3fa66c;
   /* Sticky paper bg is set per-instance via inline `--sticky-bg-light` from
      stickyPalettes.ts. See `.sticky-paper` rule below for the consumer. */
   /* Subtle paper noise texture (fractalNoise, ~5% opacity) */
@@ -195,6 +216,23 @@
   --attribution-unknown: oklch(0.8 0.16 30);
   --note-bg: #2a2540;
   --note-border: #7a6bc4;
+  /* 校閲トリアージ — ダークは同系色相を明度反転（暗面でのコントラスト確保）。 */
+  --kouetsu-accent: #8d84e0;
+  --kouetsu-accent-hover: #a49ce8;
+  --kouetsu-accent-weak: #2e2a4a;
+  --kouetsu-sev-high: #e07070;
+  --kouetsu-sev-mid: #e0ac62;
+  --kouetsu-sev-low: #948ce0;
+  --kouetsu-chip-high-bg: #4a2626;
+  --kouetsu-chip-high-fg: #e8a9a9;
+  --kouetsu-chip-mid-bg: #453722;
+  --kouetsu-chip-mid-fg: #e0be85;
+  --kouetsu-chip-low-bg: #2e2a4a;
+  --kouetsu-chip-low-fg: #b3ace8;
+  --kouetsu-mark-high: #4a2626;
+  --kouetsu-mark-mid: #453722;
+  --kouetsu-mark-low: #2e2a4a;
+  --kouetsu-ok: #5dbd88;
   --glass-border: color-mix(in oklch, white 16%, var(--border));
   --glass-shadow: 0 18px 48px rgb(0 0 0 / 0.36);
   /* Sticky paper bg in dark mode is computed from the inline --sticky-bg-light

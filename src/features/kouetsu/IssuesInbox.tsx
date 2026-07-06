@@ -1,127 +1,187 @@
-import { useMemo } from "react";
-import { ResizablePanelGroup } from "@/components/ui/resizable";
-import { useLintStore } from "@/features/lint/lintStore";
-import { useAnnotationStore } from "@/features/post-effect/annotationStore";
-import { useTreeStore } from "@/features/tree/treeStore";
+import { useCallback, useEffect, useMemo } from "react";
 import { useKouetsuStore } from "./kouetsuStore";
-import { deriveIssueCounts, type IssueCounts } from "./issueCounts";
-import { KouetsuScopeBar } from "./KouetsuScopeBar";
-import { FullCheckControl } from "./FullCheckControl";
-import { InboxSection, type CountKey, type SectionDef } from "./InboxSection";
-import { LinterSection } from "./sections/LinterSection";
-import { TypoSection } from "./sections/TypoSection";
-import { ConsistencySection } from "./sections/ConsistencySection";
-import { ImpactReviewSection } from "./sections/ImpactReviewSection";
-import { ReviewSection } from "./sections/ReviewSection";
-import { IntentDriftSection } from "./sections/IntentDriftSection";
-import { MetaStructureSection } from "./sections/MetaStructureSection";
-import { TimelineConsistencySection } from "./sections/TimelineConsistencySection";
-
-// 機械系 → 批評系の固定順。「指摘/批評」はタブではなく並び順に降格する。
-const SECTIONS: SectionDef[] = [
-  {
-    key: "linter",
-    titleKey: "settings.linter.proofreading",
-    defaultExpanded: true,
-    countKey: "linterCount",
-    Body: LinterSection,
-    actionKey: "settings.ai.autoDetect",
-  },
-  {
-    key: "typo",
-    titleKey: "kouetsu.issues.typo",
-    defaultExpanded: true,
-    countKey: "typoCount",
-    Body: TypoSection,
-  },
-  {
-    key: "consistency",
-    titleKey: "codex.tab.consistency",
-    defaultExpanded: true,
-    countKey: "consistencyCount",
-    Body: ConsistencySection,
-  },
-  {
-    key: "impact",
-    titleKey: "kouetsu.impactReview.title",
-    defaultExpanded: false,
-    countKey: "impactCount",
-    Body: ImpactReviewSection,
-  },
-  {
-    key: "review",
-    titleKey: "kouetsu.editorial.review",
-    defaultExpanded: false,
-    countKey: "reviewCount",
-    Body: ReviewSection,
-  },
-  {
-    key: "intent",
-    titleKey: "kouetsu.editorial.intentDrift",
-    defaultExpanded: false,
-    countKey: "intentCount",
-    Body: IntentDriftSection,
-  },
-  {
-    key: "meta",
-    titleKey: "kouetsu.editorial.metaStructure",
-    defaultExpanded: false,
-    countKey: null,
-    Body: MetaStructureSection,
-  },
-  {
-    key: "timeline",
-    titleKey: "kouetsu.editorial.timeline",
-    defaultExpanded: false,
-    countKey: null,
-    Body: TimelineConsistencySection,
-  },
-];
+import { useFullCheckStore } from "./fullCheckStore";
+import { TriageHeader } from "./triage/TriageHeader";
+import { SummaryStage } from "./triage/SummaryStage";
+import { DashboardStage } from "./triage/DashboardStage";
+import { PipelineStage } from "./triage/PipelineStage";
+import { TriageCard } from "./triage/TriageCard";
+import { IssueList } from "./triage/IssueList";
+import { TriageFooter } from "./triage/TriageFooter";
+import { useOnRunSettled, useUnifiedIssues } from "./triage/useUnifiedIssues";
+import { useEffectLastRuns } from "./triage/useEffectLastRuns";
+import {
+  advanceFrom,
+  CAT_ORDER,
+  deriveSevCounts,
+  groupByCat,
+  type UnifiedIssue,
+} from "./triage/issueModel";
+import { catLastRunIso, relativeTimeLabel } from "./triage/catalog";
+import {
+  dismissIssue,
+  fixIssue,
+  jumpToIssue,
+  resolveIssue,
+  restoreIssue,
+} from "./triage/issueActions";
 
 /**
- * 指摘/批評タブを 1 つに統合した受信箱。8 観点グループを機械系→批評系の固定順で
- * 縦に並べ、KouetsuScopeBar のスコープ/ステータスフィルタを全グループで共有する。
- * 折りたたみ中のグループは Body を mount しない（project フェッチの束を避ける）。
+ * 指摘タブ = 統合トリアージ（デザイン 2a）。8 観点の指摘を 1 本の重要度順
+ * リストに統合し、上部ステージを排他 4 モードで切り替える:
+ *   triage（行選択時のカード） > pipeline（全体チェック中〜閉じるまで）
+ *   > dashboard（観点タイル） > summary（既定の件数サマリー）。
+ * 旧・8 セクション縦積み（InboxSection）はこのリワークで置換された。
  */
 export function IssuesInbox() {
-  const scope = useKouetsuStore((s) => s.scope);
-  const statusFilter = useKouetsuStore((s) => s.statusFilter);
-  const diagnostics = useLintStore((s) => s.diagnostics);
-  const activeSceneId = useTreeStore((s) => s.activeSceneId);
-  const annotationsByScene = useAnnotationStore((s) => s.annotationsByScene);
+  const { open, dismissed, refresh } = useUnifiedIssues();
+  const { lastRuns, refresh: refreshLastRuns } = useEffectLastRuns();
 
-  const counts = useMemo(
+  const selectedIssueId = useKouetsuStore((s) => s.selectedIssueId);
+  const setSelectedIssueId = useKouetsuStore((s) => s.setSelectedIssueId);
+  const dashboardOn = useKouetsuStore((s) => s.dashboardOn);
+  const catFilter = useKouetsuStore((s) => s.catFilter);
+  const runState = useFullCheckStore((s) => s.runState);
+  const pipelineVisible = useFullCheckStore((s) => s.pipelineVisible);
+  const lastFinishedAt = useFullCheckStore((s) => s.lastFinishedAt);
+
+  // run 終端（全体チェックの各観点・タイル単発とも）で最終実行時刻を追従。
+  useOnRunSettled(refreshLastRuns);
+
+  const selectedIssue = useMemo(
     () =>
-      deriveIssueCounts({
-        diagnostics,
-        annotationsByScene,
-        scope,
-        statusFilter,
-        activeSceneId,
-      }),
-    [diagnostics, annotationsByScene, scope, statusFilter, activeSceneId],
+      selectedIssueId
+        ? (open.find((i) => i.id === selectedIssueId) ?? null)
+        : null,
+    [open, selectedIssueId],
   );
+
+  // トリアージの「次へ」順序 = リストの表示順（観点フィルタ・グループ順を反映）。
+  const displayOrder = useMemo(() => {
+    const filtered = catFilter ? open.filter((i) => i.cat === catFilter) : open;
+    const ordered = dashboardOn
+      ? groupByCat(filtered).flatMap((g) => g.items)
+      : filtered;
+    return ordered.map((i) => i.id);
+  }, [open, catFilter, dashboardOn]);
+
+  const advance = useCallback(
+    (issueId: string, removed: boolean) => {
+      setSelectedIssueId(advanceFrom(displayOrder, issueId, removed));
+    },
+    [displayOrder, setSelectedIssueId],
+  );
+
+  const handleSelect = useCallback(
+    (issue: UnifiedIssue) => {
+      setSelectedIssueId(selectedIssueId === issue.id ? null : issue.id);
+    },
+    [selectedIssueId, setSelectedIssueId],
+  );
+
+  const handleResolve = useCallback(
+    async (issue: UnifiedIssue) => {
+      const ok = await resolveIssue(issue);
+      if (ok) {
+        advance(issue.id, true);
+        refresh();
+      }
+    },
+    [advance, refresh],
+  );
+
+  const handleDismiss = useCallback(
+    async (issue: UnifiedIssue) => {
+      const ok = await dismissIssue(issue);
+      if (ok) {
+        advance(issue.id, true);
+        refresh();
+      }
+    },
+    [advance, refresh],
+  );
+
+  const handleFix = useCallback(
+    async (issue: UnifiedIssue, fromCard: boolean) => {
+      const ok = await fixIssue(issue);
+      if (ok) {
+        if (fromCard) advance(issue.id, true);
+        refresh();
+      }
+    },
+    [advance, refresh],
+  );
+
+  const handleRestore = useCallback(
+    async (issue: UnifiedIssue) => {
+      const ok = await restoreIssue(issue);
+      if (ok) refresh();
+    },
+    [refresh],
+  );
+
+  // ステージのモード導出（優先順: triage > pipeline > dashboard > summary）。
+  const mode = selectedIssue
+    ? "triage"
+    : pipelineVisible && runState !== "idle"
+      ? "pipeline"
+      : dashboardOn
+        ? "dashboard"
+        : "summary";
+
+  // サマリーの「最終チェック」: 全体チェック完了時刻を優先し、無ければ
+  // 観点別最終実行の最新値（アプリ再起動後も post_effect_runs から復元される）。
+  const lastCheckLabel = useMemo(() => {
+    let iso = lastFinishedAt;
+    if (!iso) {
+      for (const cat of CAT_ORDER) {
+        const catIso = catLastRunIso(cat, lastRuns);
+        if (catIso && (!iso || catIso > iso)) iso = catIso;
+      }
+    }
+    return iso ? relativeTimeLabel(iso, new Date()) : null;
+  }, [lastFinishedAt, lastRuns]);
+
+  // 選択中の指摘が解決等でリストから消えたら選択を解除する（別スコープの
+  // stale id がカード探索に残り続けるのを防ぐ）。
+  useEffect(() => {
+    if (selectedIssueId && !open.some((i) => i.id === selectedIssueId)) {
+      setSelectedIssueId(null);
+    }
+  }, [open, selectedIssueId, setSelectedIssueId]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <KouetsuScopeBar actions={<FullCheckControl />} />
-      <ResizablePanelGroup
-        orientation="vertical"
-        className="flex-1 overflow-hidden"
-      >
-        {SECTIONS.map((def, i) => (
-          <InboxSection
-            key={def.key}
-            def={def}
-            count={countFor(counts, def.countKey)}
-            withHandle={i > 0}
-          />
-        ))}
-      </ResizablePanelGroup>
+      <TriageHeader />
+      {mode === "triage" && selectedIssue && (
+        <TriageCard
+          issue={selectedIssue}
+          onJump={() => jumpToIssue(selectedIssue)}
+          onFix={() => void handleFix(selectedIssue, true)}
+          onResolve={() => void handleResolve(selectedIssue)}
+          onDismiss={() => void handleDismiss(selectedIssue)}
+          onLater={() => advance(selectedIssue.id, false)}
+          onClose={() => setSelectedIssueId(null)}
+        />
+      )}
+      {mode === "pipeline" && <PipelineStage open={open} />}
+      {mode === "dashboard" && (
+        <DashboardStage open={open} lastRuns={lastRuns} />
+      )}
+      {mode === "summary" && (
+        <SummaryStage
+          counts={deriveSevCounts(open)}
+          lastCheckLabel={lastCheckLabel}
+        />
+      )}
+      <IssueList
+        open={open}
+        dismissed={dismissed}
+        onSelect={handleSelect}
+        onQuickFix={(issue) => void handleFix(issue, false)}
+        onRestore={(issue) => void handleRestore(issue)}
+      />
+      <TriageFooter lastRuns={lastRuns} />
     </div>
   );
-}
-
-function countFor(counts: IssueCounts, key: CountKey | null): number | null {
-  return key ? counts[key] : null;
 }

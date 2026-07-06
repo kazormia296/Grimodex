@@ -1298,6 +1298,70 @@
     }
   },
   "kouetsu": {
+    "triage": {
+      "openSuffix": "open issues",
+      "noOpen": "No open issues",
+      "lastCheck": "Last check {{time}}",
+      "sev": {
+        "high": "Critical",
+        "mid": "Warning",
+        "low": "Suggestion"
+      },
+      "time": {
+        "justNow": "just now",
+        "minutesAgo": "{{count}}m ago",
+        "yesterday": "yesterday"
+      },
+      "neverRun": "Not run",
+      "auto": "Auto",
+      "manual": "Manual",
+      "runningBadge": "Running {{done}}/{{total}}",
+      "runningTitle": "Running — click to show the pipeline",
+      "dashboardToggle": "Aspect dashboard",
+      "effectsNote": "Impact review runs manually when Codex entries change",
+      "dashboardTitle": "8 aspects — click a tile to filter",
+      "pipeline": {
+        "done": "Done — {{count}} issues",
+        "cancelled": "Cancelled — ran {{done}}/{{total}} aspects",
+        "running": "Full check — {{scope}}",
+        "back": "Back",
+        "waiting": "Waiting",
+        "excluded": "Not included",
+        "sceneLint": "Covered by live lint",
+        "impactManual": "Manual on Codex changes",
+        "noFindings": "No findings",
+        "count": "{{count}}"
+      },
+      "card": {
+        "jump": "Open in text",
+        "resolve": "Resolve",
+        "dismiss": "Dismiss",
+        "later": "Later",
+        "fixTitle": "Apply fix"
+      },
+      "restore": "Restore",
+      "runHistory": "Run history",
+      "catFilter": "Aspect: {{label}}",
+      "sort": {
+        "severity": "Sort: severity",
+        "grouped": "Grouped by aspect",
+        "dismissed": "Dismissed items"
+      },
+      "emptyOpen": "No open issues in this scope",
+      "emptyDismissed": "No dismissed issues",
+      "run": "Run",
+      "rerun": "Re-run",
+      "ok": "No issues",
+      "noImpact": "No impact",
+      "aiDetected": "AI detected",
+      "compare": {
+        "codex": "CODEX ENTRY",
+        "body": "TEXT",
+        "change": "CHANGE"
+      },
+      "lintDisables": "Lint disables",
+      "runCategoryFailed": "Failed to launch the check"
+    },
     "openLog": "Open logs",
     "openLogFailed": "Failed to open the log folder",
     "partialFailure": "Some scenes failed to analyze",

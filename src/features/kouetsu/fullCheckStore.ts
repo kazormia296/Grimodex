@@ -47,6 +47,19 @@ export interface FullCheckFailure {
   error: string;
 }
 
+/**
+ * 1 観点の per-step 進捗（パイプライン表示用の判別 union）。
+ * skipped は「今回の run の対象外」を表す:
+ *   - unchecked … 観点選択で OFF
+ *   - sceneLint … scene スコープの live lint 済みにより除外された lint
+ */
+export type FullCheckStepState =
+  | { state: "pending" }
+  | { state: "running" }
+  | { state: "done"; count: number }
+  | { state: "error"; error: string }
+  | { state: "skipped"; reason: "unchecked" | "sceneLint" };
+
 export interface FullCheckState {
   running: boolean;
   currentStep: FullCheckStepId | null;
@@ -56,6 +69,27 @@ export interface FullCheckState {
   total: number;
   failures: FullCheckFailure[];
   cancelRequested: boolean;
+  /**
+   * run のライフサイクル。"done" は完走・中止後もパイプラインを閉じる
+   * （closePipeline）まで維持する。blocked（ガード拒否）時のみ "idle" へ戻る。
+   * running フラグとは常に同期する（running === (runState === "running")）。
+   */
+  runState: "idle" | "running" | "done";
+  /** 観点ごとの進捗。run 開始時に対象=pending / 非対象=skipped で初期化。 */
+  steps: Record<FullCheckStepId, FullCheckStepState>;
+  /** パイプラインステージの表示フラグ（実行中の「戻る」で false にできる）。 */
+  pipelineVisible: boolean;
+  /** 最後に完走した時刻（ISO）。中止・blocked では更新しない。 */
+  lastFinishedAt: string | null;
+  /** 完走 run の指摘合計。中止・blocked では更新しない。 */
+  findingsTotal: number;
+}
+
+/** 全観点 pending の steps レコード（store 初期値用）。 */
+function initialSteps(): Record<FullCheckStepId, FullCheckStepState> {
+  const rec = {} as Record<FullCheckStepId, FullCheckStepState>;
+  for (const id of FULL_CHECK_STEP_ORDER) rec[id] = { state: "pending" };
+  return rec;
 }
 
 interface FullCheckActions {
@@ -69,6 +103,16 @@ interface FullCheckActions {
    * 入るため、in-flight の 1 シーンは abort され、残りは isCancelled で起動されない。
    */
   requestCancel: () => void;
+  /** パイプラインステージを再表示する（「実行中 n/N」pill からの復帰）。 */
+  showPipeline: () => void;
+  /** 実行中の「戻る」。run は継続したまま表示だけ畳む。 */
+  hidePipeline: () => void;
+  /**
+   * パイプラインを閉じる。完了後（runState==="done"）は "idle" へ戻して
+   * 次回のダッシュボード/サマリ表示に返す。実行中は表示のみ畳む
+   * （runState は run の終了処理側で確定する）。
+   */
+  closePipeline: () => void;
 }
 
 /**
@@ -117,9 +161,22 @@ export const useFullCheckStore = create<FullCheckState & FullCheckActions>()(
     total: 0,
     failures: [],
     cancelRequested: false,
+    runState: "idle",
+    steps: initialSteps(),
+    pipelineVisible: false,
+    lastFinishedAt: null,
+    findingsTotal: 0,
     requestCancel: () => {
       set({ cancelRequested: true });
       abortActiveWork();
     },
+    showPipeline: () => set({ pipelineVisible: true }),
+    hidePipeline: () => set({ pipelineVisible: false }),
+    closePipeline: () =>
+      set((s) =>
+        s.runState === "done"
+          ? { runState: "idle", pipelineVisible: false }
+          : { pipelineVisible: false },
+      ),
   }),
 );

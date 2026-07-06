@@ -1298,6 +1298,70 @@
     }
   },
   "kouetsu": {
+    "triage": {
+      "openSuffix": "件の指摘が開いています",
+      "noOpen": "開いている指摘はありません",
+      "lastCheck": "最終チェック {{time}}",
+      "sev": {
+        "high": "重大",
+        "mid": "注意",
+        "low": "提案"
+      },
+      "time": {
+        "justNow": "たった今",
+        "minutesAgo": "{{count}}分前",
+        "yesterday": "昨日"
+      },
+      "neverRun": "未実行",
+      "auto": "自動",
+      "manual": "手動",
+      "runningBadge": "実行中 {{done}}/{{total}}",
+      "runningTitle": "実行中 — クリックでパイプラインを表示",
+      "dashboardToggle": "観点ダッシュボード",
+      "effectsNote": "影響レビューはCodex変更時に手動で実行します",
+      "dashboardTitle": "8つの観点 — タイルで絞り込み",
+      "pipeline": {
+        "done": "完了 — 指摘 {{count}}件",
+        "cancelled": "中止 — {{done}}/{{total}} 観点を実行",
+        "running": "全体チェック — {{scope}}",
+        "back": "戻る",
+        "waiting": "待機中",
+        "excluded": "対象外",
+        "sceneLint": "自動反映済み",
+        "impactManual": "Codex変更時に手動",
+        "noFindings": "検出なし",
+        "count": "{{count}}件"
+      },
+      "card": {
+        "jump": "本文へ",
+        "resolve": "解決",
+        "dismiss": "無視",
+        "later": "あとで",
+        "fixTitle": "修正を適用"
+      },
+      "restore": "再表示",
+      "runHistory": "実行履歴",
+      "catFilter": "観点: {{label}}",
+      "sort": {
+        "severity": "並び: 重要度",
+        "grouped": "グループ: 観点",
+        "dismissed": "除外した項目"
+      },
+      "emptyOpen": "このスコープに開いている指摘はありません",
+      "emptyDismissed": "除外した指摘はありません",
+      "run": "実行",
+      "rerun": "再実行",
+      "ok": "問題なし",
+      "noImpact": "影響なし",
+      "aiDetected": "AI検出",
+      "compare": {
+        "codex": "CODEX 設定",
+        "body": "本文",
+        "change": "変更内容"
+      },
+      "lintDisables": "校正の無効化",
+      "runCategoryFailed": "チェックを起動できませんでした"
+    },
     "openLog": "ログを開く",
     "openLogFailed": "ログフォルダを開けませんでした",
     "partialFailure": "一部のシーンで解析に失敗しました",

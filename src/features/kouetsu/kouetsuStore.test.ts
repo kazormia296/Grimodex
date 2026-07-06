@@ -13,7 +13,9 @@ function node(id: string, nodeType: "folder" | "scene"): TreeNodeData {
 }
 
 describe("kouetsuStore persist migration (v0 → v1)", () => {
-  it("editorial タブは issues へ写像される", () => {
+  it("editorial タブは issues へ写像され、撤去済み projectGroupBy は返却に含めない", () => {
+    // 旧 persist に projectGroupBy が残っていても、migrate が返さなければ
+    // shallow merge で state 外の余剰キーになるだけで無害。
     const migrated = migrateKouetsuStore(
       {
         activeTab: "editorial",
@@ -24,7 +26,7 @@ describe("kouetsuStore persist migration (v0 → v1)", () => {
       0,
     );
     expect(migrated.activeTab).toBe("issues");
-    expect(migrated.projectGroupBy).toBe("codex");
+    expect(migrated).not.toHaveProperty("projectGroupBy");
   });
   it("current → {type:'scene'} / open", () => {
     const m = migrateKouetsuStore(
@@ -32,7 +34,6 @@ describe("kouetsuStore persist migration (v0 → v1)", () => {
         activeTab: "issues",
         activeIssuesScope: "current",
         activeEditorialScope: "current",
-        projectGroupBy: "scene",
       },
       0,
     );
@@ -45,7 +46,6 @@ describe("kouetsuStore persist migration (v0 → v1)", () => {
         activeTab: "comments",
         activeIssuesScope: "project",
         activeEditorialScope: "current",
-        projectGroupBy: "scene",
       },
       0,
     );
@@ -57,14 +57,13 @@ describe("kouetsuStore persist migration (v0 → v1)", () => {
         activeTab: "issues",
         activeIssuesScope: "ignored",
         activeEditorialScope: "current",
-        projectGroupBy: "scene",
       },
       0,
     );
     expect(m.scope).toEqual({ type: "scene" });
     expect(m.statusFilter).toBe("dismissed");
   });
-  it("v1 以降はそのまま返す", () => {
+  it("v1 以降はそのまま返す（撤去済み projectGroupBy が残っていても素通し = 無害）", () => {
     const v1 = {
       activeTab: "blocker",
       scope: { type: "project" },

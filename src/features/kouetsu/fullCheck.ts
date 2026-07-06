@@ -12,6 +12,7 @@ import {
   trackFullCheckRun,
   resetFullCheckRuns,
   type FullCheckStepId,
+  type FullCheckStepState,
 } from "./fullCheckStore";
 import { executeStep, type StepResult } from "./fullCheckSteps";
 
@@ -32,6 +33,7 @@ export {
 export type {
   FullCheckStepId,
   FullCheckState,
+  FullCheckStepState,
   FullCheckFailure,
 } from "./fullCheckStore";
 
@@ -95,6 +97,15 @@ export async function runFullCheck(
   );
   if (steps.length === 0) return;
 
+  // per-step 進捗の初期化: 対象=pending / 非対象=skipped（OFF は unchecked、
+  // enabled なのに除外される lint は sceneLint = scene スコープの live lint 済み）。
+  const stepStates = {} as Record<FullCheckStepId, FullCheckStepState>;
+  for (const id of FULL_CHECK_STEP_ORDER) {
+    stepStates[id] = steps.includes(id)
+      ? { state: "pending" }
+      : { state: "skipped", reason: enabled[id] ? "sceneLint" : "unchecked" };
+  }
+
   useFullCheckStore.setState({
     running: true,
     currentStep: null,
@@ -102,6 +113,10 @@ export async function runFullCheck(
     total: steps.length,
     failures: [],
     cancelRequested: false,
+    runState: "running",
+    steps: stepStates,
+    pipelineVisible: true,
+    findingsTotal: 0,
   });
 
   let findings = 0;
@@ -118,7 +133,10 @@ export async function runFullCheck(
       // 現ステップの run のみを中止対象にする（ステップは直列 await なので、前
       // ステップの run は全て終端済み。集合をリセットしても取りこぼしはない）。
       resetFullCheckRuns();
-      useFullCheckStore.setState({ currentStep: step });
+      useFullCheckStore.setState((s) => ({
+        currentStep: step,
+        steps: { ...s.steps, [step]: { state: "running" } },
+      }));
       let res: StepResult;
       try {
         res = await executeStep(step, runScope, hooks);
@@ -131,18 +149,38 @@ export async function runFullCheck(
       }
       // 中止要求後に生じた error/throw は「中止起因」とみなし failures に積まない
       // （backend abort が error 終端になるため）。cancel 前の真の失敗は残す。
-      if (res.error != null && !useFullCheckStore.getState().cancelRequested) {
+      // steps 上は cancel 起因でも error として記録する（表示のみ・集計には不算入）。
+      if (res.error != null) {
         const error = res.error;
         useFullCheckStore.setState((s) => ({
-          failures: [...s.failures, { step, error }],
+          steps: { ...s.steps, [step]: { state: "error", error } },
+          failures: s.cancelRequested
+            ? s.failures
+            : [...s.failures, { step, error }],
         }));
-      } else if (res.error == null) {
-        findings += res.count ?? 0;
+      } else {
+        const count = res.count ?? 0;
+        findings += count;
+        useFullCheckStore.setState((s) => ({
+          steps: { ...s.steps, [step]: { state: "done", count } },
+        }));
       }
       useFullCheckStore.setState((s) => ({ done: s.done + 1 }));
     }
   } finally {
-    useFullCheckStore.setState({ running: false, currentStep: null });
+    // runState は中止・完走とも "done"（パイプラインを閉じるまで維持）。
+    // blocked（ガード拒否）のみ即 "idle" へ戻す。lastFinishedAt / findingsTotal
+    // は完走時（cancel でも blocked でもない）だけ確定する。
+    const completed = !blocked && !useFullCheckStore.getState().cancelRequested;
+    useFullCheckStore.setState({
+      running: false,
+      currentStep: null,
+      runState: blocked ? "idle" : "done",
+      ...(blocked ? { pipelineVisible: false } : {}),
+      ...(completed
+        ? { lastFinishedAt: new Date().toISOString(), findingsTotal: findings }
+        : {}),
+    });
     // 追跡集合を掃除（run 終了後に stale な runId を残さない）。
     resetFullCheckRuns();
   }

@@ -26,7 +26,10 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import {
   runFullCheck,
   useFullCheckStore,
+  FULL_CHECK_STEP_ORDER,
+  type FullCheckState,
   type FullCheckStepId,
+  type FullCheckStepState,
 } from "./fullCheck";
 
 const okOutcome = { ok: true as const, fromCache: false, count: 0 };
@@ -52,6 +55,13 @@ function enabled(
   };
 }
 
+/** 全観点 pending の steps レコード（beforeEach のリセット用）。 */
+function pendingSteps(): Record<FullCheckStepId, FullCheckStepState> {
+  const rec = {} as Record<FullCheckStepId, FullCheckStepState>;
+  for (const id of FULL_CHECK_STEP_ORDER) rec[id] = { state: "pending" };
+  return rec;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   useFullCheckStore.setState({
@@ -61,6 +71,11 @@ beforeEach(() => {
     total: 0,
     failures: [],
     cancelRequested: false,
+    runState: "idle",
+    steps: pendingSteps(),
+    pipelineVisible: false,
+    lastFinishedAt: null,
+    findingsTotal: 0,
   });
   runTypo.mockResolvedValue(okOutcome);
   runReview.mockResolvedValue(okOutcome);
@@ -303,5 +318,135 @@ describe("runFullCheck", () => {
     const state = useFullCheckStore.getState();
     expect(state.failures).toEqual([{ step: "typo", error: "boom" }]);
     expect(toast.warning).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runFullCheck per-step 進捗（パイプライン表示用）", () => {
+  it("開始時に対象=pending / 非対象=skipped(unchecked) で初期化し、実行中は running を立てる", async () => {
+    // 閉包代入の CFA 制約を避けるため配列 push でスナップショットを捕捉する。
+    const midStates: FullCheckState[] = [];
+    runTypo.mockImplementation(async () => {
+      midStates.push(useFullCheckStore.getState());
+      return okOutcome;
+    });
+    await runFullCheck(
+      { type: "project" },
+      enabled({ typo: true, review: true }),
+    );
+    // typo 実行中のスナップショット: 自分=running / 後続対象=pending / OFF=skipped。
+    expect(midStates).toHaveLength(1);
+    const mid = midStates[0];
+    expect(mid.runState).toBe("running");
+    expect(mid.pipelineVisible).toBe(true);
+    expect(mid.findingsTotal).toBe(0);
+    expect(mid.steps.typo).toEqual({ state: "running" });
+    expect(mid.steps.review).toEqual({ state: "pending" });
+    expect(mid.steps.lint).toEqual({ state: "skipped", reason: "unchecked" });
+    expect(mid.steps.intent).toEqual({ state: "skipped", reason: "unchecked" });
+  });
+
+  it("scene スコープで除外された lint は skipped(sceneLint) になる", async () => {
+    await runFullCheck({ type: "scene" }, enabled({ lint: true, typo: true }));
+    const state = useFullCheckStore.getState();
+    expect(state.steps.lint).toEqual({ state: "skipped", reason: "sceneLint" });
+    expect(state.steps.typo).toEqual({ state: "done", count: 0 });
+    // OFF の観点は unchecked のまま。
+    expect(state.steps.review).toEqual({
+      state: "skipped",
+      reason: "unchecked",
+    });
+  });
+
+  it("完走時は per-step done{count} と findingsTotal / lastFinishedAt を確定する", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-06T12:34:56.000Z"));
+    try {
+      runTypo.mockResolvedValue({ ok: true, fromCache: false, count: 2 });
+      runReview.mockResolvedValue({ ok: true, fromCache: false, count: 3 });
+      await runFullCheck(
+        { type: "project" },
+        enabled({ typo: true, review: true }),
+      );
+      const state = useFullCheckStore.getState();
+      expect(state.steps.typo).toEqual({ state: "done", count: 2 });
+      expect(state.steps.review).toEqual({ state: "done", count: 3 });
+      expect(state.findingsTotal).toBe(5);
+      expect(state.lastFinishedAt).toBe("2026-07-06T12:34:56.000Z");
+      // 完了後もパイプラインは閉じるまで表示を維持する（runState=done）。
+      expect(state.runState).toBe("done");
+      expect(state.running).toBe(false);
+      expect(state.pipelineVisible).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("観点エラーは steps に error として記録し、後続観点は続行する（完走扱い）", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-06T12:34:56.000Z"));
+    try {
+      runTypo.mockResolvedValue({ ok: false, error: "boom" });
+      runReview.mockResolvedValue({ ok: true, fromCache: false, count: 4 });
+      await runFullCheck(
+        { type: "project" },
+        enabled({ typo: true, review: true }),
+      );
+      const state = useFullCheckStore.getState();
+      expect(state.steps.typo).toEqual({ state: "error", error: "boom" });
+      expect(state.steps.review).toEqual({ state: "done", count: 4 });
+      expect(state.failures).toEqual([{ step: "typo", error: "boom" }]);
+      // 失敗ありでも中止ではないので完走扱い（lastFinishedAt / findingsTotal 確定）。
+      expect(state.runState).toBe("done");
+      expect(state.findingsTotal).toBe(4);
+      expect(state.lastFinishedAt).toBe("2026-07-06T12:34:56.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("中止時は残り観点が pending のまま、runState=done で lastFinishedAt は未更新", async () => {
+    runTypo.mockImplementation(async () => {
+      useFullCheckStore.getState().requestCancel();
+      return { ok: true, fromCache: false, count: 1 };
+    });
+    await runFullCheck(
+      { type: "project" },
+      enabled({ typo: true, review: true }),
+    );
+    const state = useFullCheckStore.getState();
+    expect(state.steps.typo).toEqual({ state: "done", count: 1 });
+    expect(state.steps.review).toEqual({ state: "pending" }); // break で未着手のまま
+    expect(state.runState).toBe("done"); // 中止でもパイプラインは閉じるまで維持
+    expect(state.lastFinishedAt).toBeNull();
+    expect(state.findingsTotal).toBe(0);
+  });
+
+  it("cancel 起因の abort error は steps に error 記録するが failures には積まない", async () => {
+    runTypo.mockImplementation(async () => {
+      useFullCheckStore.getState().requestCancel();
+      return { ok: false, error: "aborted" };
+    });
+    await runFullCheck(
+      { type: "project" },
+      enabled({ typo: true, review: true }),
+    );
+    const state = useFullCheckStore.getState();
+    expect(state.steps.typo).toEqual({ state: "error", error: "aborted" });
+    expect(state.failures).toHaveLength(0);
+    expect(state.runState).toBe("done");
+    expect(state.lastFinishedAt).toBeNull();
+  });
+
+  it("blocked（ガード拒否）は runState を idle に戻し lastFinishedAt / findingsTotal は未更新", async () => {
+    runTypo.mockResolvedValue({ ok: true, blocked: true });
+    await runFullCheck(
+      { type: "project" },
+      enabled({ typo: true, review: true }),
+    );
+    const state = useFullCheckStore.getState();
+    expect(state.runState).toBe("idle");
+    expect(state.pipelineVisible).toBe(false);
+    expect(state.lastFinishedAt).toBeNull();
+    expect(state.findingsTotal).toBe(0);
   });
 });
