@@ -3352,10 +3352,7 @@
       "linkShort": "リンク",
       "sceneBreak": "シーン区切り (* * *)",
       "fontSize": "文字サイズ",
-      "attribution": "帰属表示",
-      "comments": "コメント表示（未実装）",
-      "foreshadowMarks": "伏線マーク表示",
-      "reviewMarks": "校閲アノテーション表示",
+      "layers": "本文レイヤー",
       "focusMode": "フォーカスモード",
       "typewriterMode": "タイプライターモード",
       "verticalMode": "縦書きで編集（この作品）",
@@ -3491,6 +3488,21 @@
       "comment": "この段落にコメントがあります",
       "foreshadow": "この段落に伏線マークがあります",
       "review": "この段落に校閲の指摘があります"
+    },
+    "layers": {
+      "title": "本文レイヤー",
+      "hideAll": "すべて隠す",
+      "attribution": "帰属ハイライト",
+      "comments": "コメント",
+      "foreshadow": "伏線マーク",
+      "review": "校閲の指摘",
+      "lint": "Lint",
+      "codex": "Codexハイライト",
+      "codexNote": "（見た目は不変）",
+      "opacity": "濃度",
+      "aiShare": "AI {{percent}}%",
+      "sampleNote": "行の左見本 ＝ 本文中の描画",
+      "openKouetsu": "校閲パネルを開く →"
     },
     "synopsis": {
       "title": "Synopsis",

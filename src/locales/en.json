@@ -3357,10 +3357,7 @@
       "linkShort": "Link",
       "sceneBreak": "Scene break (* * *)",
       "fontSize": "Font size",
-      "attribution": "Attribution",
-      "comments": "Comments (not implemented)",
-      "foreshadowMarks": "Show foreshadow marks",
-      "reviewMarks": "Show review annotations",
+      "layers": "Body layers",
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
       "verticalMode": "Vertical writing (this work)",
@@ -3496,6 +3493,21 @@
       "comment": "This paragraph has comments",
       "foreshadow": "This paragraph has foreshadow marks",
       "review": "This paragraph has review issues"
+    },
+    "layers": {
+      "title": "Body layers",
+      "hideAll": "Hide all",
+      "attribution": "Attribution highlight",
+      "comments": "Comments",
+      "foreshadow": "Foreshadow marks",
+      "review": "Review issues",
+      "lint": "Lint",
+      "codex": "Codex highlight",
+      "codexNote": "(appearance unchanged)",
+      "opacity": "Opacity",
+      "aiShare": "AI {{percent}}%",
+      "sampleNote": "Left sample = in-body rendering",
+      "openKouetsu": "Open review panel →"
     },
     "synopsis": {
       "title": "Synopsis",
