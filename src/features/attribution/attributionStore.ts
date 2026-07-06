@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import type { LayerSetOptions } from "@/features/post-effect/annotationStore";
 
 export type AttributionScope = "scene" | "project";
 export type FilterSource = "human" | "ai" | "unknown" | null;
@@ -8,6 +9,7 @@ interface AttributionState {
   showAttribution: boolean;
   scope: AttributionScope;
   filterSource: FilterSource;
+  setShowAttribution: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleAttribution: () => void;
   setScope: (scope: AttributionScope) => void;
   setFilterSource: (source: FilterSource) => void;
@@ -15,16 +17,19 @@ interface AttributionState {
   initFromSettings: () => void;
 }
 
-export const useAttributionStore = create<AttributionState>()((set) => ({
+export const useAttributionStore = create<AttributionState>()((set, get) => ({
   showAttribution: false,
   scope: "scene",
   filterSource: null,
-  toggleAttribution: () =>
-    set((s) => {
-      const next = !s.showAttribution;
-      useSettingsStore.getState().set("display.layerAttribution", String(next));
-      return { showAttribution: next };
-    }),
+  setShowAttribution: (visible, opts) => {
+    if (opts?.persist !== false) {
+      useSettingsStore
+        .getState()
+        .set("display.layerAttribution", String(visible));
+    }
+    set({ showAttribution: visible });
+  },
+  toggleAttribution: () => get().setShowAttribution(!get().showAttribution),
   setScope: (scope) => set({ scope }),
   setFilterSource: (source) =>
     set((s) => ({

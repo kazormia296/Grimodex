@@ -538,6 +538,8 @@
       "highlightStyle": "Highlight style",
       "colorText": "Text color + highlight",
       "underline": "Underline",
+      "codexOpacity": "Highlight opacity",
+      "codexOpacityDesc": "Background tint strength (100% = default)",
       "attribution": "Attribution",
       "attributionOpacity": "Attribution highlight opacity",
       "attributionOpacityDesc": "Background intensity when Attribution is visible (5–25%)",
@@ -3565,6 +3567,7 @@
     },
     "gutter": {
       "comment": "This paragraph has comments",
+      "reader": "This paragraph has reader comments",
       "foreshadow": "This paragraph has foreshadow marks",
       "review": "This paragraph has review issues"
     },
@@ -3584,16 +3587,20 @@
     "layers": {
       "title": "Body layers",
       "hideAll": "Hide all",
+      "autoFollow": "Follow panels",
+      "autoFollowHint": "Automatically match layer visibility to open panels",
       "attribution": "Attribution highlight",
       "comments": "Comments",
+      "readerComments": "Reader comments",
       "foreshadow": "Foreshadow marks",
       "review": "Review issues",
-      "lint": "Lint",
       "codex": "Codex highlight",
-      "codexNote": "(appearance unchanged)",
+      "codexStyle": "Style",
+      "codexStyleDefault": "Default",
+      "codexStyleUnderline": "Underline",
+      "codexOpacity": "Codex highlight opacity",
       "opacity": "Opacity",
       "aiShare": "AI {{percent}}%",
-      "sampleNote": "Left sample = in-body rendering",
       "openKouetsu": "Open review panel →"
     },
     "synopsis": {

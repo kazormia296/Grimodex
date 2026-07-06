@@ -1,8 +1,9 @@
 /**
- * 本文レイヤー3チャネルの CSS 解決（実 Chromium）。
- * Editorパネル Refine (1e) の契約:
- * - 点線 = 自分のメモ: コメント dotted / 伏線 dashed（色は --deco-* トークン）
- * - 波線 = 直すべき問題: 校閲はピンク単色 / Lint は重大度色
+ * 本文レイヤーのチャネル CSS 解決（実 Chromium）。
+ * Editorパネル Refine (1e→2b) の契約:
+ * - 点線 = コメント族: 自分のコメント=琥珀 / 読者コメント=菫（pseudo_comment）
+ * - 波線 = 校閲の指摘: 校閲アノテーションも Lint も同じ重要度色
+ *   (error/warning/info、suggestion=info)
  * - .dark でチャネル色が暗背景向けに差し替わる
  * - 段落ガター記号は横書きで段落のインライン開始側（左）、縦書きで
  *   段落頭の上部余白に回る（論理プロパティの物理マップ）
@@ -21,14 +22,16 @@ import { useCursorSettingsStore } from "./cursorSettingsStore";
 // --deco-* トークンの期待値 (index.css)
 const LIGHT = {
   comment: "rgb(217, 154, 38)", // #d99a26
+  readerComment: "rgb(139, 92, 246)", // #8b5cf6
   foreshadowSetup: "rgb(91, 111, 216)", // #5b6fd8
-  review: "rgb(194, 65, 126)", // #c2417e
-  lintWarning: "rgb(217, 141, 31)", // #d98d1f
+  issueError: "rgb(239, 68, 68)", // #ef4444
+  issueWarning: "rgb(217, 141, 31)", // #d98d1f
+  issueInfo: "rgb(59, 130, 246)", // #3b82f6
 };
 const DARK_COMMENT = "rgb(227, 176, 74)"; // #e3b04a
 
-describe("3チャネルの CSS 解決", () => {
-  it("コメント=点線 / 校閲=ピンク波線 / Lint警告=アンバー波線 が別スタイルに解決される", () => {
+describe("本文レイヤーチャネルの CSS 解決", () => {
+  it("コメント=点線 / 校閲・Lint=重要度色の波線 に解決され、同じ severity は同色になる", () => {
     render(
       <div className="tiptap">
         <p>
@@ -64,17 +67,17 @@ describe("3チャネルの CSS 解決", () => {
     expect(comment.textDecorationColor).toBe(LIGHT.comment);
 
     expect(review.textDecorationStyle).toBe("wavy");
-    expect(review.textDecorationColor).toBe(LIGHT.review);
+    expect(review.textDecorationColor).toBe(LIGHT.issueWarning);
 
     expect(lint.textDecorationStyle).toBe("wavy");
-    expect(lint.textDecorationColor).toBe(LIGHT.lintWarning);
+    expect(lint.textDecorationColor).toBe(LIGHT.issueWarning);
 
-    // 旧状態への回帰ガード: 3系統が同一アンバーに縮退しない
-    expect(review.textDecorationColor).not.toBe(lint.textDecorationColor);
+    // 統合契約: 同じ severity なら校閲と Lint は同色（ソースで色を分けない）
+    expect(review.textDecorationColor).toBe(lint.textDecorationColor);
     expect(comment.textDecorationStyle).not.toBe(review.textDecorationStyle);
   });
 
-  it("校閲は severity によらずピンク単色（本文中の severity 色分けは廃止）", () => {
+  it("校閲は severity で色分けされる (error=赤 / warning=橙 / suggestion・info=青)", () => {
     render(
       <div className="tiptap">
         <p>
@@ -90,15 +93,16 @@ describe("3チャネルの CSS 解決", () => {
         </p>
       </div>,
     );
-    for (const sev of ["error", "warning", "suggestion", "info"]) {
-      const cs = getComputedStyle(
-        document.querySelector(`[data-testid='pe-${sev}']`)!,
-      );
-      expect(cs.textDecorationColor, sev).toBe(LIGHT.review);
-    }
+    const colorOf = (sev: string) =>
+      getComputedStyle(document.querySelector(`[data-testid='pe-${sev}']`)!)
+        .textDecorationColor;
+    expect(colorOf("error")).toBe(LIGHT.issueError);
+    expect(colorOf("warning")).toBe(LIGHT.issueWarning);
+    expect(colorOf("suggestion")).toBe(LIGHT.issueInfo);
+    expect(colorOf("info")).toBe(LIGHT.issueInfo);
   });
 
-  it("pseudo_comment は下線ではなくハイライトのまま", () => {
+  it("pseudo_comment (読者コメント) は菫色の点線下線で、背景ハイライトを持たない", () => {
     render(
       <div className="tiptap">
         <p>
@@ -106,7 +110,7 @@ describe("3チャネルの CSS 解決", () => {
             className="pe-annotation pe-annotation-severity-info pe-annotation-pseudo_comment"
             data-testid="pe-pseudo"
           >
-            擬似コメント
+            読者コメント
           </span>
         </p>
       </div>,
@@ -114,8 +118,10 @@ describe("3チャネルの CSS 解決", () => {
     const cs = getComputedStyle(
       document.querySelector("[data-testid='pe-pseudo']")!,
     );
-    expect(cs.textDecorationLine).toBe("none");
-    expect(cs.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(cs.textDecorationStyle).toBe("dotted");
+    expect(cs.textDecorationColor).toBe(LIGHT.readerComment);
+    // 帰属ハイライト (面) と混同しない: 背景は透明のまま
+    expect(cs.backgroundColor).toBe("rgba(0, 0, 0, 0)");
   });
 
   it("伏線は破線で、data-show-foreshadow-marks ゲートが効く", () => {

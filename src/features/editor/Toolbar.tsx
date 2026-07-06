@@ -31,6 +31,7 @@ import {
   useSettingNumber,
 } from "@/features/settings/useSettingControl";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
+import { useLayerAutoFollow } from "@/features/editor/useLayerAutoFollow";
 import { useCurrentProject } from "@/features/project/projectStore";
 import { primaryCountUnit } from "@/features/editor/charCountStats";
 
@@ -161,6 +162,12 @@ export function Toolbar({
     showLint,
   } = useCursorSettingsStore();
   const showAnnotations = useAnnotationStore((s) => s.showAnnotations);
+  const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
+
+  // パネル連動 (Auto) モード: layerAutoFollow ON の間、パネル可視状態に
+  // レイヤー表示を追従させる。Toolbar はエディタごとに1つなので、split view
+  // でも各エディタが自分の rebuild meta を受け取る。
+  useLayerAutoFollow(editor);
 
   // isActive 系のボタン状態だけを selector で抽出する。useEditorState は
   // deepEqual 比較なので、フラグが実際に変わったときだけ Toolbar が再レンダー
@@ -397,14 +404,16 @@ export function Toolbar({
   const hasOverflowedButtons = visibleUnitCount < 4;
 
   // レイヤーボタンの状態ドット: ON のレイヤーのチャネル色を並べる
-  // (Codex は「見た目は不変」の常時系なのでドットに含めない)。
+  // (Codex は常時系なのでドットに含めない)。順序はポップオーバーの行順に揃える。
   const layerDots: string[] = [];
   if (showAttribution) layerDots.push("var(--attribution-ai)");
   if (showComments) layerDots.push("var(--deco-comment)");
+  if (sceneId && nodeType === "scene" && showReaderComments)
+    layerDots.push("var(--deco-reader-comment)");
   if (showForeshadowMarks) layerDots.push("var(--deco-foreshadow-setup)");
-  if (sceneId && nodeType === "scene" && showAnnotations)
-    layerDots.push("var(--deco-review)");
-  if (showLint) layerDots.push("var(--deco-lint-warning)");
+  // 校閲の指摘 (校閲+Lint 統合レイヤー) は1ドット
+  if ((sceneId && nodeType === "scene" && showAnnotations) || showLint)
+    layerDots.push("var(--deco-issue-warning)");
 
   return (
     <div
@@ -555,21 +564,26 @@ export function Toolbar({
                 label={t("editor.toolbar.sceneBreak")}
                 onClick={() => editor.chain().focus().insertSceneBreak().run()}
               >
-                {/* シーン区切り (* * *) のグリフアイコン */}
+                {/* シーン区切りのグリフアイコン — 本文中の「* * *」と1対1で
+                    対応するアスタリスク3連 (旧: 線+極小ドットは判読不能だった) */}
                 <svg
                   width="14"
                   height="14"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2"
+                  strokeWidth="1.6"
                   strokeLinecap="round"
                 >
-                  <path d="M3 12h3" />
-                  <path d="M18 12h3" />
-                  <circle cx="9" cy="12" r="0.6" fill="currentColor" />
-                  <circle cx="12" cy="12" r="0.6" fill="currentColor" />
-                  <circle cx="15" cy="12" r="0.6" fill="currentColor" />
+                  <path d="M4 9v6" />
+                  <path d="M1.4 10.5 6.6 13.5" />
+                  <path d="M1.4 13.5 6.6 10.5" />
+                  <path d="M12 9v6" />
+                  <path d="M9.4 10.5 14.6 13.5" />
+                  <path d="M9.4 13.5 14.6 10.5" />
+                  <path d="M20 9v6" />
+                  <path d="M17.4 10.5 22.6 13.5" />
+                  <path d="M17.4 13.5 22.6 10.5" />
                 </svg>
               </ToolbarButton>
             </div>

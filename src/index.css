@@ -1039,30 +1039,32 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 
 /* ── 本文レイヤーのチャネル色 ──────────────────────────────────
-   Editorパネル Refine (1e): 本文中の装飾を3チャネルに整理する。
+   Editorパネル Refine (1e→2b): 本文中の装飾チャネル。
      面   = 帰属 (背景 color-mix、--attribution-* を継続使用)
-     波線 = 直すべき問題 (校閲=ピンク単色 / Lint=重大度色)
-     点線・破線 = 自分のメモ (コメント=点線 / 伏線=破線)
-     文字色 = Codex (不変)
-   旧状態ではコメント・Lint警告・校閲警告が同一のアンバー波線
-   #f59e0b を共有していて見分け不能だった。 */
+     波線 = 校閲の指摘 (校閲+Lint 共通の重要度色 error/warning/info、
+            suggestion は info と同色)
+     点線・破線 = コメント族と自分のメモ (自分のコメント=琥珀点線 /
+            読者コメント=菫点線 / 伏線=破線)
+     文字色 = Codex (タイプ色)
+   旧: 校閲はピンク単色 (--deco-review) の波線だったが、ソースで色を
+   分ける意味が薄いため Lint と統合し重要度スケールへ一本化した。 */
 :root {
   --deco-comment: #d99a26;
+  --deco-reader-comment: #8b5cf6;
   --deco-foreshadow-setup: #5b6fd8;
   --deco-foreshadow-payoff: #2f9e6b;
-  --deco-review: #c2417e;
-  --deco-lint-error: #ef4444;
-  --deco-lint-warning: #d98d1f;
-  --deco-lint-info: #3b82f6;
+  --deco-issue-error: #ef4444;
+  --deco-issue-warning: #d98d1f;
+  --deco-issue-info: #3b82f6;
 }
 .dark {
   --deco-comment: #e3b04a;
+  --deco-reader-comment: #a78bfa;
   --deco-foreshadow-setup: #7d8ce8;
   --deco-foreshadow-payoff: #4ade80;
-  --deco-review: #d66a9d;
-  --deco-lint-error: #f87171;
-  --deco-lint-warning: #e8a94a;
-  --deco-lint-info: #60a5fa;
+  --deco-issue-error: #f87171;
+  --deco-issue-warning: #e8a94a;
+  --deco-issue-info: #60a5fa;
 }
 
 /* Lint diagnostic decorations (squiggly underlines) */
@@ -1074,13 +1076,13 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   cursor: help;
 }
 .lint-deco--error {
-  text-decoration-color: var(--deco-lint-error);
+  text-decoration-color: var(--deco-issue-error);
 }
 .lint-deco--warning {
-  text-decoration-color: var(--deco-lint-warning);
+  text-decoration-color: var(--deco-issue-warning);
 }
 .lint-deco--info {
-  text-decoration-color: var(--deco-lint-info);
+  text-decoration-color: var(--deco-issue-info);
 }
 
 /* ForeshadowMarks — visible only when showForeshadowMarks is ON.
@@ -1105,21 +1107,33 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   cursor: help;
 }
 
-/* PostEffect annotation decorations — 校閲チャネルはピンク単色の波線。
-   severity は本文中では色分けしない (パネル側で表現する)。
-   pseudo_comment だけは下線ではなくハイライトのまま。 */
+/* PostEffect annotation decorations — 校閲チャネルは Lint と同じ重要度色の
+   波線 (error/warning/info。suggestion=info、既定=warning)。
+   pseudo_comment (読者コメント) は指摘ではなくコメント族 — 菫色の点線。
+   旧の文字全体背景は帰属ハイライト (面) と視覚言語が衝突するため廃止。 */
 .pe-annotation {
   text-decoration-line: underline;
   text-decoration-style: wavy;
-  text-decoration-color: var(--deco-review);
+  text-decoration-color: var(--deco-issue-warning);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
   cursor: pointer;
 }
-.pe-annotation-pseudo_comment {
-  text-decoration-line: none;
-  background-color: rgb(129 140 248 / 0.16); /* indigo-400 tint */
-  border-radius: 2px;
+.pe-annotation-severity-error {
+  text-decoration-color: var(--deco-issue-error);
+}
+.pe-annotation-severity-warning {
+  text-decoration-color: var(--deco-issue-warning);
+}
+.pe-annotation-severity-suggestion,
+.pe-annotation-severity-info {
+  text-decoration-color: var(--deco-issue-info);
+}
+/* severity クラスと同居するため 2 クラスで specificity を上げて上書きする */
+.pe-annotation.pe-annotation-pseudo_comment {
+  text-decoration-style: dotted;
+  text-decoration-color: var(--deco-reader-comment);
+  text-decoration-thickness: 1.5px;
 }
 
 /* CommentMark decoration — dotted underline (自分のメモチャネル) */
@@ -1176,9 +1190,21 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
     transparent
   );
 }
+.gutter-mark--reader {
+  color: var(--deco-reader-comment);
+  background-color: color-mix(
+    in srgb,
+    var(--deco-reader-comment) 12%,
+    transparent
+  );
+}
 .gutter-mark--review {
-  color: var(--deco-review);
-  background-color: color-mix(in srgb, var(--deco-review) 12%, transparent);
+  color: var(--deco-issue-warning);
+  background-color: color-mix(
+    in srgb,
+    var(--deco-issue-warning) 12%,
+    transparent
+  );
 }
 
 /* Inline `lintDisable` Mark — regular disable (listed rule IDs) gets a

@@ -4,7 +4,15 @@ import { motion } from "motion/react";
 import type { Editor } from "@tiptap/react";
 import type { RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { Flag } from "lucide-react";
+import {
+  BookOpen,
+  Fingerprint,
+  Flag,
+  MessageSquareText,
+  MessagesSquare,
+  PanelsTopLeft,
+  SpellCheck,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   DURATIONS,
@@ -13,7 +21,10 @@ import {
   useReducedMotion,
 } from "@/lib/animation";
 import { useAnchoredPopover } from "@/components/ui/useAnchoredPopover";
-import { useSettingNumber } from "@/features/settings/useSettingControl";
+import {
+  useSettingControl,
+  useSettingNumber,
+} from "@/features/settings/useSettingControl";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin";
@@ -26,25 +37,6 @@ import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
 import { GUTTER_REBUILD_META } from "./GutterMarksPlugin";
 import { LINT_REBUILD_META } from "./LintDecorationPlugin";
 import { countMarkRuns } from "./layerCounts";
-
-/** Codex 組み込み4タイプの見本ドット色 (typeApi.ts BUILTIN_TYPES の seed 値)。 */
-const CODEX_SAMPLE_COLORS = ["#7F77DD", "#1D9E75", "#BA7517", "#D85A30"];
-
-function WavySample({ color }: { color: string }) {
-  return (
-    <svg
-      width="30"
-      height="8"
-      viewBox="0 0 30 8"
-      fill="none"
-      stroke={color}
-      strokeWidth="1.6"
-      strokeLinecap="round"
-    >
-      <path d="M2 5q2.4-4 4.8 0t4.8 0t4.8 0t4.8 0t4.8 0" />
-    </svg>
-  );
-}
 
 function LayerSwitch({
   checked,
@@ -78,17 +70,15 @@ function LayerSwitch({
 }
 
 function LayerRow({
-  sample,
+  icon,
   label,
-  note,
   count,
   checked,
   onToggle,
   children,
 }: {
-  sample: React.ReactNode;
+  icon: React.ReactNode;
   label: string;
-  note?: string;
   count?: string | number | null;
   checked: boolean;
   onToggle: () => void;
@@ -100,11 +90,11 @@ function LayerRow({
         <span
           aria-hidden
           className={cn(
-            "flex w-[30px] flex-shrink-0 items-center",
+            "flex w-[18px] flex-shrink-0 items-center justify-center",
             !checked && "opacity-40",
           )}
         >
-          {sample}
+          {icon}
         </span>
         <span
           className={cn(
@@ -113,11 +103,6 @@ function LayerRow({
           )}
         >
           {label}
-          {note && (
-            <span className="ms-1 text-[9px] text-muted-foreground">
-              {note}
-            </span>
-          )}
         </span>
         {count != null && count !== "" && (
           <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
@@ -142,11 +127,13 @@ export interface LayersPopoverProps {
 }
 
 /**
- * 「本文レイヤー」ポップオーバー (Editorパネル Refine 1c)。
- * 帰属 / コメント / 伏線 / 校閲 / Lint / Codex の表示トグルを1箇所に集約し、
- * 各行の左に本文中の見え方の見本、右に件数バッジとスイッチを置く。
- * 帰属行は ON のとき濃度スライダー（display.attributionHighlightOpacity）を
- * 展開する。トグルは各ストアへ write-through され設定として永続化される。
+ * 「本文レイヤー」ポップオーバー (Editorパネル Refine 1c→2b)。
+ * 帰属 / コメント / 読者コメント / 伏線 / 校閲の指摘 / Codex の表示トグルを
+ * 1箇所に集約する。校閲の指摘は校閲アノテーション+Lint を束ねる統合レイヤー
+ * （1スイッチが両フラグへ write-through）。各行の左は Lucide アイコンを
+ * チャネル色で描く。帰属行は濃度スライダー、Codex 行はスタイル (デフォルト/
+ * 下線) セグメントと濃度スライダーを ON 時に展開する。
+ * ヘッダ下の「パネル連動」は useLayerAutoFollow の Auto モードのトグル。
  */
 export function LayersPopover({
   editor,
@@ -172,11 +159,15 @@ export function LayersPopover({
     showForeshadowMarks,
     toggleShowForeshadowMarks,
     showLint,
-    toggleShowLint,
+    setShowLint,
+    layerAutoFollow,
+    toggleLayerAutoFollow,
   } = useCursorSettingsStore();
   const showAnnotations = useAnnotationStore((s) => s.showAnnotations);
-  const toggleShowAnnotations = useAnnotationStore(
-    (s) => s.toggleShowAnnotations,
+  const setShowAnnotations = useAnnotationStore((s) => s.setShowAnnotations);
+  const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
+  const toggleShowReaderComments = useAnnotationStore(
+    (s) => s.toggleShowReaderComments,
   );
   const codexEnabled = useCodexHighlightStore((s) => s.enabled);
   const setCodexEnabled = useCodexHighlightStore((s) => s.setEnabled);
@@ -185,13 +176,28 @@ export function LayersPopover({
     "display.attributionHighlightOpacity",
     10,
   );
+  const { value: codexStyle, setValue: setCodexStyle } = useSettingControl(
+    "display.codexHighlightStyle",
+    "color-text",
+  );
+  const { value: codexOpacity, setValue: setCodexOpacity } = useSettingNumber(
+    "display.codexHighlightOpacity",
+    10,
+  );
 
   const isScene = !!sceneId && nodeType === "scene";
 
   const reviewCount = useAnnotationStore((s) =>
     sceneId
       ? (s.annotationsByScene.get(sceneId) ?? []).filter(
-          (a) => a.status !== "dismissed",
+          (a) => a.status !== "dismissed" && a.category !== "pseudo_comment",
+        ).length
+      : 0,
+  );
+  const readerCommentCount = useAnnotationStore((s) =>
+    sceneId
+      ? (s.annotationsByScene.get(sceneId) ?? []).filter(
+          (a) => a.status !== "dismissed" && a.category === "pseudo_comment",
         ).length
       : 0,
   );
@@ -219,26 +225,34 @@ export function LayersPopover({
     editor.view.dispatch(editor.state.tr.setMeta(meta, true));
   };
 
+  // 校閲の指摘 = 校閲アノテーション + Lint の統合レイヤー。スイッチは
+  // 「どちらかON」を表示し、トグルで両フラグを揃えて書き込む。
+  const issuesChecked = showAnnotations || showLint;
+  const toggleIssues = () => {
+    const next = !issuesChecked;
+    setShowAnnotations(next);
+    setShowLint(next);
+    dispatchMeta(ANNOTATION_REBUILD_META);
+    dispatchMeta(LINT_REBUILD_META);
+  };
+
   const hideAll = () => {
     if (showAttribution) toggleAttribution();
     if (showComments) {
       toggleShowComments();
       dispatchMeta(COMMENT_REBUILD_META);
     }
+    // 読者コメント行は scene でのみ表示している — 見えていないトグルを
+    // グローバルにOFF永続化しないよう、hideAll も同じ条件でガードする。
+    if (showReaderComments && isScene) {
+      toggleShowReaderComments();
+      dispatchMeta(ANNOTATION_REBUILD_META);
+    }
     if (showForeshadowMarks) {
       toggleShowForeshadowMarks();
       dispatchMeta(GUTTER_REBUILD_META);
     }
-    // 校閲行は scene でのみ表示している — 見えていないトグルを
-    // グローバルにOFF永続化しないよう、hideAll も同じ条件でガードする。
-    if (showAnnotations && isScene) {
-      toggleShowAnnotations();
-      dispatchMeta(ANNOTATION_REBUILD_META);
-    }
-    if (showLint) {
-      toggleShowLint();
-      dispatchMeta(LINT_REBUILD_META);
-    }
+    if (issuesChecked) toggleIssues();
     if (codexEnabled) setCodexEnabled(false);
   };
 
@@ -268,25 +282,38 @@ export function LayersPopover({
         </button>
       </div>
 
+      {/* パネル連動 (Auto) モード */}
+      <div
+        className="flex items-center gap-2.5 border-b border-border bg-muted/30 px-3 py-2"
+        title={t("editor.layers.autoFollowHint")}
+      >
+        <span
+          aria-hidden
+          className="flex w-[18px] flex-shrink-0 items-center justify-center text-muted-foreground"
+        >
+          <PanelsTopLeft size={14} />
+        </span>
+        <span
+          className={cn(
+            "flex-1 truncate text-xs",
+            layerAutoFollow
+              ? "font-medium text-foreground"
+              : "text-muted-foreground",
+          )}
+        >
+          {t("editor.layers.autoFollow")}
+        </span>
+        <LayerSwitch
+          checked={layerAutoFollow}
+          label={t("editor.layers.autoFollow")}
+          onChange={toggleLayerAutoFollow}
+        />
+      </div>
+
       {/* 帰属ハイライト */}
       <LayerRow
-        sample={
-          <span className="flex w-full flex-col gap-0.5">
-            <span
-              className="h-1.5 rounded-sm"
-              style={{
-                background:
-                  "color-mix(in oklab, var(--attribution-ai) 30%, transparent)",
-              }}
-            />
-            <span
-              className="h-1.5 rounded-sm"
-              style={{
-                background:
-                  "color-mix(in oklab, var(--attribution-unknown) 30%, transparent)",
-              }}
-            />
-          </span>
+        icon={
+          <Fingerprint size={14} style={{ color: "var(--attribution-ai)" }} />
         }
         label={t("editor.layers.attribution")}
         count={
@@ -298,7 +325,7 @@ export function LayersPopover({
         onToggle={toggleAttribution}
       >
         {showAttribution && (
-          <div className="mt-2 flex items-center gap-2 ps-[40px]">
+          <div className="mt-2 flex items-center gap-2 ps-[28px]">
             <span className="flex-shrink-0 text-[9px] text-muted-foreground">
               {t("editor.layers.opacity")}
             </span>
@@ -321,10 +348,10 @@ export function LayersPopover({
 
       {/* コメント */}
       <LayerRow
-        sample={
-          <span
-            className="h-2 w-full"
-            style={{ borderBottom: "2px dotted var(--deco-comment)" }}
+        icon={
+          <MessageSquareText
+            size={14}
+            style={{ color: "var(--deco-comment)" }}
           />
         }
         label={t("editor.layers.comments")}
@@ -336,23 +363,29 @@ export function LayersPopover({
         }}
       />
 
+      {/* 読者コメント (scene のみ) */}
+      {isScene && (
+        <LayerRow
+          icon={
+            <MessagesSquare
+              size={14}
+              style={{ color: "var(--deco-reader-comment)" }}
+            />
+          }
+          label={t("editor.layers.readerComments")}
+          count={readerCommentCount}
+          checked={showReaderComments}
+          onToggle={() => {
+            toggleShowReaderComments();
+            dispatchMeta(ANNOTATION_REBUILD_META);
+          }}
+        />
+      )}
+
       {/* 伏線マーク */}
       <LayerRow
-        sample={
-          <span className="flex w-full items-center gap-0.5">
-            <Flag
-              size={9}
-              className="flex-shrink-0"
-              style={{ color: "var(--deco-foreshadow-setup)" }}
-              fill="var(--deco-foreshadow-setup)"
-            />
-            <span
-              className="h-2 flex-1"
-              style={{
-                borderBottom: "2px dashed var(--deco-foreshadow-setup)",
-              }}
-            />
-          </span>
+        icon={
+          <Flag size={14} style={{ color: "var(--deco-foreshadow-setup)" }} />
         }
         label={t("editor.layers.foreshadow")}
         count={markCounts.foreshadow}
@@ -363,56 +396,86 @@ export function LayersPopover({
         }}
       />
 
-      {/* 校閲の指摘 (scene のみ) */}
-      {isScene && (
-        <LayerRow
-          sample={<WavySample color="var(--deco-review)" />}
-          label={t("editor.layers.review")}
-          count={reviewCount}
-          checked={showAnnotations}
-          onToggle={() => {
-            toggleShowAnnotations();
-            dispatchMeta(ANNOTATION_REBUILD_META);
-          }}
-        />
-      )}
-
-      {/* Lint */}
+      {/* 校閲の指摘 (校閲 + Lint 統合) */}
       <LayerRow
-        sample={<WavySample color="var(--deco-lint-warning)" />}
-        label={t("editor.layers.lint")}
-        count={lintCount}
-        checked={showLint}
-        onToggle={() => {
-          toggleShowLint();
-          dispatchMeta(LINT_REBUILD_META);
-        }}
+        icon={
+          <SpellCheck
+            size={14}
+            style={{ color: "var(--deco-issue-warning)" }}
+          />
+        }
+        label={t("editor.layers.review")}
+        count={lintCount + (isScene ? reviewCount : 0)}
+        checked={issuesChecked}
+        onToggle={toggleIssues}
       />
 
       {/* Codex ハイライト */}
       <LayerRow
-        sample={
-          <span className="flex gap-0.5">
-            {CODEX_SAMPLE_COLORS.map((c) => (
-              <span
-                key={c}
-                className="h-1.5 w-1.5 rounded-full"
-                style={{ background: c }}
-              />
-            ))}
-          </span>
-        }
+        icon={<BookOpen size={14} className="text-muted-foreground" />}
         label={t("editor.layers.codex")}
-        note={t("editor.layers.codexNote")}
         checked={codexEnabled}
         onToggle={() => setCodexEnabled(!codexEnabled)}
-      />
+      >
+        {codexEnabled && (
+          <div className="mt-2 flex flex-col gap-1.5 ps-[28px]">
+            <div className="flex items-center gap-2">
+              <span className="flex-shrink-0 text-[9px] text-muted-foreground">
+                {t("editor.layers.codexStyle")}
+              </span>
+              <div className="flex items-center gap-px rounded-md border border-border bg-muted/30 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setCodexStyle("color-text")}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] transition-colors",
+                    codexStyle !== "underline"
+                      ? "bg-accent font-medium text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {t("editor.layers.codexStyleDefault")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCodexStyle("underline")}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] transition-colors",
+                    codexStyle === "underline"
+                      ? "bg-accent font-medium text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {t("editor.layers.codexStyleUnderline")}
+                </button>
+              </div>
+            </div>
+            {codexStyle !== "underline" && (
+              <div className="flex items-center gap-2">
+                <span className="flex-shrink-0 text-[9px] text-muted-foreground">
+                  {t("editor.layers.opacity")}
+                </span>
+                <input
+                  type="range"
+                  min={5}
+                  max={25}
+                  step={1}
+                  value={codexOpacity}
+                  onChange={(e) => setCodexOpacity(Number(e.target.value))}
+                  aria-label={t("editor.layers.codexOpacity")}
+                  className="h-1 min-w-0 flex-1 accent-primary"
+                />
+                <span className="w-8 flex-shrink-0 text-right font-mono text-[9px] tabular-nums text-muted-foreground">
+                  {codexOpacity * 10}%
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+      </LayerRow>
 
       {/* フッタ */}
       <div className="flex items-center border-t border-border bg-muted/30 px-3 py-1.5">
-        <span className="text-[9px] text-muted-foreground">
-          {t("editor.layers.sampleNote")}
-        </span>
         <button
           type="button"
           onClick={() => {

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import type { LayerSetOptions } from "@/features/post-effect/annotationStore";
 
 interface CursorSettingsState {
   cursorAnimation: boolean;
@@ -11,12 +12,18 @@ interface CursorSettingsState {
   typewriterMode: boolean;
   toggleTypewriterMode: () => void;
   showComments: boolean;
+  setShowComments: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleShowComments: () => void;
   showForeshadowMarks: boolean;
+  setShowForeshadowMarks: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleShowForeshadowMarks: () => void;
   /** Lint 波線の表示（本文レイヤー）。診断の実行自体は止めない。 */
   showLint: boolean;
+  setShowLint: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleShowLint: () => void;
+  /** 本文レイヤーのパネル連動 (Auto) モード。ON中は開いているパネルに追従。 */
+  layerAutoFollow: boolean;
+  toggleLayerAutoFollow: () => void;
   /** Whether the "add comment" input popover is open. */
   commentPickerOpen: boolean;
   setCommentPickerOpen: (open: boolean) => void;
@@ -33,84 +40,105 @@ interface CursorSettingsState {
   initFromSettings: () => void;
 }
 
-export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
-  cursorAnimation: true,
-  toggleCursorAnimation: () =>
-    set((s) => {
-      const next = !s.cursorAnimation;
-      useSettingsStore.getState().set("editor.smoothCaret", String(next));
-      return { cursorAnimation: next };
-    }),
+export const useCursorSettingsStore = create<CursorSettingsState>()(
+  (set, get) => ({
+    cursorAnimation: true,
+    toggleCursorAnimation: () =>
+      set((s) => {
+        const next = !s.cursorAnimation;
+        useSettingsStore.getState().set("editor.smoothCaret", String(next));
+        return { cursorAnimation: next };
+      }),
 
-  cursorBlink: true,
-  toggleCursorBlink: () =>
-    set((s) => {
-      const next = !s.cursorBlink;
-      useSettingsStore.getState().set("editor.cursorBlink", String(next));
-      return { cursorBlink: next };
-    }),
+    cursorBlink: true,
+    toggleCursorBlink: () =>
+      set((s) => {
+        const next = !s.cursorBlink;
+        useSettingsStore.getState().set("editor.cursorBlink", String(next));
+        return { cursorBlink: next };
+      }),
 
-  focusMode: false,
-  toggleFocusMode: () =>
-    set((s) => {
-      const next = !s.focusMode;
-      useSettingsStore.getState().set("editor.focusMode", String(next));
-      return { focusMode: next };
-    }),
+    focusMode: false,
+    toggleFocusMode: () =>
+      set((s) => {
+        const next = !s.focusMode;
+        useSettingsStore.getState().set("editor.focusMode", String(next));
+        return { focusMode: next };
+      }),
 
-  typewriterMode: false,
-  toggleTypewriterMode: () =>
-    set((s) => {
-      const next = !s.typewriterMode;
-      useSettingsStore.getState().set("editor.typewriterMode", String(next));
-      return { typewriterMode: next };
-    }),
+    typewriterMode: false,
+    toggleTypewriterMode: () =>
+      set((s) => {
+        const next = !s.typewriterMode;
+        useSettingsStore.getState().set("editor.typewriterMode", String(next));
+        return { typewriterMode: next };
+      }),
 
-  showComments: false,
-  toggleShowComments: () =>
-    set((s) => {
-      const next = !s.showComments;
-      useSettingsStore.getState().set("display.layerComments", String(next));
-      return { showComments: next };
-    }),
+    showComments: false,
+    setShowComments: (visible, opts) => {
+      if (opts?.persist !== false) {
+        useSettingsStore
+          .getState()
+          .set("display.layerComments", String(visible));
+      }
+      set({ showComments: visible });
+    },
+    toggleShowComments: () => get().setShowComments(!get().showComments),
 
-  showForeshadowMarks: false,
-  toggleShowForeshadowMarks: () =>
-    set((s) => {
-      const next = !s.showForeshadowMarks;
-      useSettingsStore.getState().set("display.layerForeshadow", String(next));
-      return { showForeshadowMarks: next };
-    }),
+    showForeshadowMarks: false,
+    setShowForeshadowMarks: (visible, opts) => {
+      if (opts?.persist !== false) {
+        useSettingsStore
+          .getState()
+          .set("display.layerForeshadow", String(visible));
+      }
+      set({ showForeshadowMarks: visible });
+    },
+    toggleShowForeshadowMarks: () =>
+      get().setShowForeshadowMarks(!get().showForeshadowMarks),
 
-  showLint: true,
-  toggleShowLint: () =>
-    set((s) => {
-      const next = !s.showLint;
-      useSettingsStore.getState().set("display.layerLint", String(next));
-      return { showLint: next };
-    }),
+    showLint: true,
+    setShowLint: (visible, opts) => {
+      if (opts?.persist !== false) {
+        useSettingsStore.getState().set("display.layerLint", String(visible));
+      }
+      set({ showLint: visible });
+    },
+    toggleShowLint: () => get().setShowLint(!get().showLint),
 
-  commentPickerOpen: false,
-  setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
+    layerAutoFollow: false,
+    toggleLayerAutoFollow: () =>
+      set((s) => {
+        const next = !s.layerAutoFollow;
+        useSettingsStore
+          .getState()
+          .set("display.layerAutoFollow", String(next));
+        return { layerAutoFollow: next };
+      }),
 
-  foreshadowPickerOpen: false,
-  setForeshadowPickerOpen: (open) =>
-    set({ foreshadowPickerOpen: open, foreshadowPickerInitialMode: null }),
+    commentPickerOpen: false,
+    setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
 
-  foreshadowPickerInitialMode: null,
-  openForeshadowPicker: (mode) =>
-    set({ foreshadowPickerOpen: true, foreshadowPickerInitialMode: mode }),
+    foreshadowPickerOpen: false,
+    setForeshadowPickerOpen: (open) =>
+      set({ foreshadowPickerOpen: open, foreshadowPickerInitialMode: null }),
 
-  initFromSettings: () => {
-    const s = useSettingsStore.getState();
-    set({
-      cursorAnimation: s.getBoolean("editor.smoothCaret", true),
-      cursorBlink: s.getBoolean("editor.cursorBlink", true),
-      focusMode: s.getBoolean("editor.focusMode", false),
-      typewriterMode: s.getBoolean("editor.typewriterMode", false),
-      showComments: s.getBoolean("display.layerComments", false),
-      showForeshadowMarks: s.getBoolean("display.layerForeshadow", false),
-      showLint: s.getBoolean("display.layerLint", true),
-    });
-  },
-}));
+    foreshadowPickerInitialMode: null,
+    openForeshadowPicker: (mode) =>
+      set({ foreshadowPickerOpen: true, foreshadowPickerInitialMode: mode }),
+
+    initFromSettings: () => {
+      const s = useSettingsStore.getState();
+      set({
+        cursorAnimation: s.getBoolean("editor.smoothCaret", true),
+        cursorBlink: s.getBoolean("editor.cursorBlink", true),
+        focusMode: s.getBoolean("editor.focusMode", false),
+        typewriterMode: s.getBoolean("editor.typewriterMode", false),
+        showComments: s.getBoolean("display.layerComments", false),
+        showForeshadowMarks: s.getBoolean("display.layerForeshadow", false),
+        showLint: s.getBoolean("display.layerLint", true),
+        layerAutoFollow: s.getBoolean("display.layerAutoFollow", false),
+      });
+    },
+  }),
+);

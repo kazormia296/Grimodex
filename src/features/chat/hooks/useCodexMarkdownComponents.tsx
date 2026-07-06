@@ -6,7 +6,10 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { createCodexMatcher } from "@/features/codex/codexMatcher";
-import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
+import {
+  codexHighlightBackground,
+  type ResolvedCodexColor,
+} from "@/lib/resolveCodexColors";
 import { SAFE_COMPONENTS } from "@/features/chat/components/safeMarkdown";
 
 /**
@@ -42,6 +45,9 @@ export function useCodexMarkdownComponents(): Components {
   const highlightStyle = useSettingsStore((s) =>
     s.get("display.codexHighlightStyle", "color-text"),
   );
+  const highlightOpacity = useSettingsStore((s) =>
+    Number(s.get("display.codexHighlightOpacity", "10")),
+  );
   const enabled = useCodexHighlightStore((s) => s.enabled);
 
   return useMemo(() => {
@@ -72,7 +78,10 @@ export function useCodexMarkdownComponents(): Components {
                 textUnderlineOffset: "3px",
               }
             : {
-                backgroundColor: colors.hl,
+                backgroundColor: codexHighlightBackground(
+                  colors,
+                  highlightOpacity,
+                ),
                 color: colors.tx,
                 borderRadius: "3px",
                 padding: "0 2px",
@@ -118,5 +127,5 @@ export function useCodexMarkdownComponents(): Components {
         <blockquote>{wrap(children)}</blockquote>
       ),
     } as Components;
-  }, [entries, typeColorMap, highlightStyle, enabled]);
+  }, [entries, typeColorMap, highlightStyle, highlightOpacity, enabled]);
 }

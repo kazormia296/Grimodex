@@ -4,7 +4,10 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { CodexMatch } from "@/features/codex/codexMatcher";
 import { useCodexHighlightStore } from "./codexHighlightStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import type { ResolvedCodexColor } from "@/lib/resolveCodexColors";
+import {
+  codexHighlightBackground,
+  type ResolvedCodexColor,
+} from "@/lib/resolveCodexColors";
 import { markStart, markEnd } from "@/lib/perfLog";
 import { flattenDocForCodex } from "./codexDocFlatten";
 
@@ -20,6 +23,7 @@ export function mapMatchesToDecorations(
   matches: CodexMatch[],
   typeColorMap: Record<string, ResolvedCodexColor> = {},
   highlightStyle: string = "color-text",
+  opacityLevel: number = 10,
 ): Decoration[] {
   if (matches.length === 0) return [];
 
@@ -48,7 +52,7 @@ export function mapMatchesToDecorations(
     const inlineStyle =
       highlightStyle === "underline"
         ? `text-decoration: underline; text-decoration-color: ${colors.fg}; text-underline-offset: 3px`
-        : `background-color: ${colors.hl}; color: ${colors.tx}; border-radius: 3px; padding-inline: 2px`;
+        : `background-color: ${codexHighlightBackground(colors, opacityLevel)}; color: ${colors.tx}; border-radius: 3px; padding-inline: 2px`;
 
     // Check if the match is entirely within a single ruby atom.
     // All flat chars must map to the same PM position (the atom's pos).
@@ -172,9 +176,14 @@ export function createCodexHighlightPlugin(): Plugin {
             | CodexMatch[]
             | undefined;
           if (asyncResult !== undefined) {
-            const highlightStyle = useSettingsStore
-              .getState()
-              .get("display.codexHighlightStyle", "color-text");
+            const settings = useSettingsStore.getState();
+            const highlightStyle = settings.get(
+              "display.codexHighlightStyle",
+              "color-text",
+            );
+            const opacityLevel = Number(
+              settings.get("display.codexHighlightOpacity", "10"),
+            );
             return DecorationSet.create(
               newState.doc,
               mapMatchesToDecorations(
@@ -182,6 +191,7 @@ export function createCodexHighlightPlugin(): Plugin {
                 asyncResult,
                 typeColorMap,
                 highlightStyle,
+                opacityLevel,
               ),
             );
           }
