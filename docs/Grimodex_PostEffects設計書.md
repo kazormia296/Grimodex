@@ -708,7 +708,19 @@ MVP: 明示ボタンのみ。`[整合性チェック]` と `[自己整合性チ�
 
 自動実行（シーン保存後 debounce）は post-MVP、設定で opt-in。
 
-**現状の実装**: 校閲（Kouetsu）パネルの `Issues` タブ配下に統合済み。エントリポイントは `src/features/kouetsu/views/CurrentSceneAnnotationsView.tsx`（現在シーン）と `ProjectAnnotationsView.tsx`（全シーン一括 = folder/project scope 用）。`DismissedAnnotationsView.tsx` で dismissed の一覧／復帰も可能。各 view で `consistency` / `intra` / `both` の 3 モード起動が選べる（ドロップダウン）。エディタツールバーには `consistencyMarks` トグル（`Cs` ボタン）があり、`useAnnotationStore.showAnnotations` を切り替えて `AnnotationPlugin` の Decoration を一括 ON/OFF できる。
+**現状の実装**: 校閲（Kouetsu）パネルの **「指摘」タブ（受信箱）内の「整合性」観点グループ**（`ConsistencySection`）に統合済み。ビュー実体は `src/features/kouetsu/views/CurrentSceneAnnotationsView.tsx`（scene スコープ）/ `ProjectAnnotationsView.tsx`（folder・project スコープ）/ `DismissedAnnotationsView.tsx`（除外の一覧・復帰）で、**どれを描画するかは各 view のドロップダウンではなく `KouetsuScopeBar` のスコープ + ステータスフィルタが決める**（scene/folder/project × 開いている/除外）。整合性の起動は `consistency` / `intra` / `both` の 3 モードから選ぶ。エディタツールバーには `consistencyMarks` トグル（`Cs` ボタン）があり、`useAnnotationStore.showAnnotations` を切り替えて `AnnotationPlugin` の Decoration を一括 ON/OFF できる。
+
+> **（2026-07-06 追記 / PR #281・#282）校閲パネルの受信箱モデル再編**: 旧「指摘 / 批評（editorial）」の 2 タブ + `current` / `project` / `ignored` スコープ切替の構成を廃し、**トップタブ 3 つ**へ再編した（`KouetsuPanel.tsx` の `TABS`、`kouetsuStore.KouetsuTab = "issues" | "comments" | "blocker"`）。旧 `editorial` タブ値は persist から来ても既知タブへ正規化される。
+>
+> - **指摘**（`IssuesInbox`）: 旧「指摘 / 批評」を 1 つの受信箱に統合。**8 観点グループを機械系 → 批評系の固定順**で縦に並べる — 校正（`linter`）/ 誤字脱字（`typo`）/ 整合性（`consistency`）/ 影響レビュー（`impact`）/ レビュー（`review`）/ 狙いズレ（`intent`）/ メタ構造（`meta`）/ 時系列（`timeline`）。先頭 3 グループは既定展開、以降は折りたたみ。**折りたたみ中は Body を mount しない**（project フェッチの束を避ける。`IssuesInbox.tsx` の `SECTIONS`・`InboxSection.tsx`、件数バッジは `issueCounts.deriveIssueCounts`）。「指摘 / 批評」はタブではなく並び順に降格した。
+> - **コメント**（`CommentsTab`）: **人間コメント**（`CommentMark` の doc 焼き込みを `humanCommentsFromDoc` で走査）と **AI 疑似コメント**（annotation を `groupPseudoThreads`）を **シーン単位に一本化**して表示（`commentsAggregation.buildCommentGroups`、filter=all/human/ai + 除外トグル）。**疑似コメントの実行導線もこのタブに集約**（`PseudoCommentRunControl` / `usePseudoCommentRun`、対象は常にアクティブシーン）。
+> - **ブロッカー**（`BlockerTab` / `deriveBlockers`）: 各ドメインパネルが既に計算済みのシグナル（foreshadow・lens 診断・未配置 beat・intent 空・救済候補 trash 等）を、新規 authored データ無しで 1 つのランク付きダッシュボードへ集約する（Tier A-3）。
+>
+> **スコープ**（`KouetsuScopeBar` / `useResolvedKouetsuScope`）: Chat と共通の `ScopeTreePickerList`（`@/features/tree/ScopeTreePicker`）による **シーン（アクティブ追従）/ フォルダ（act・章）/ プロジェクト** のツリーピッカー。旧「除外（ignored）」スコープは廃し、**「開いている / 除外」の 2 値ステータスフィルタ**として場所軸から直交分離した（`KouetsuStatusFilter`。migration で旧 `ignored` スコープを `statusFilter: "dismissed"` へ昇格）。宙に浮いた folder anchor は project へ正規化してから表示・選択に使う。スコープ / ステータスフィルタは 8 観点グループ全体で共有する。
+>
+> **全体チェック**（`FullCheckControl` / `fullCheck.ts` / `fullCheckSteps.ts` / `fullCheckStore.ts`）: 選択観点を **固定順（`FULL_CHECK_STEP_ORDER` = lint→typo→consistency→review→meta→timeline→intent）で 1 つずつ直列実行**するオーケストレータ。continue-on-error（`run_multi_task` と同じ思想。片観点が throw しても `failures` に積んで続行）。scene スコープでは live lint 済みのため lint を除外する。**疑似コメント・影響レビューは全体チェックの対象外**（設計決定 — `FULL_CHECK_STEP_ORDER` にも選択肢にも含めない）。**中止は「全体チェック自身が起動した run」だけを abort し、残りの観点はスキップ**する（`onRunStarted` で run_id を `trackFullCheckRun` の追跡集合へ記録 → `requestCancel` はその集合の in-flight run のみ abort。並走する手動起動 run を巻き込まない）。
+>
+> **実行系**（`runners.ts` + `runners/`、1 effect 1 ファイル）: ガード（policy/license）→ flush → payload build → `runPostEffect(Multi)` → outcome 正規化までを集約し、トースト・一覧再取得・エディタ反映は呼び出し側に残す（`runners/shared.ts`）。typo/review/consistency/metaStructure は scene=単発 / folder・project=multi、timeline は multi 専用。**`intent_drift` だけは FE 側でシーン毎の単発 run を直列実行**する（`runners/intentDrift.ts`）— per-scene の intent が `system_prompt` / `input_hash` に畳み込まれるため `start_post_effect_run_multi` に載せられない（`CurrentSceneIntentDriftView` とバイト同等のキャッシュキーを保つのが絶対条件。未変更シーンは per-scene `input_hash` により from_cache で即終わる）。Rust 側の中止フラグは **`PostEffectAbortRegistry`（run_id 単位の `HashSet<String>`、`request` / `is_aborted` / `clear`）**で per-run に abort を登録・照会する（`src-tauri/src/commands/mod.rs`。旧・アプリ全体単一 `AtomicBool` を per-run 化し、並走 run の一方の中止が全 run へ波及していた問題を解消）。
 
 ### 異常系
 

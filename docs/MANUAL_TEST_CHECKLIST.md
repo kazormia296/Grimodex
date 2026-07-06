@@ -181,8 +181,9 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 
 ## 15. Kouetsu（校閲）パネル
 
-- [ ] Comments / Issues / Editorial タブ切替
-- [ ] Issues scope bar
+- [ ] 指摘（受信箱）/ コメント / ブロッカー のタブ切替
+- [ ] 指摘タブのスコープバー（シーン / フォルダ / プロジェクト + 開いている / 除外 フィルタ）
+- [ ] 全体チェック（選択観点を固定順で直列実行・中止で残りスキップ）
 - [ ] 校閲フローの一連動作
 
 ## 16. Command Center / Command Palette

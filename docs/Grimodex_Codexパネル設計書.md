@@ -880,7 +880,7 @@ Trackingタブ内に「Context:」ドロップダウンを配置。エントリ�
 
 ### Consistency タブ（実装済み・設計書未記載）
 
-本文側の整合性指摘を **Codex 設定から逆引き**するタブ（`src/features/codex/components/ConsistencyTab.tsx`、表示ラベル「整合性」、`AlertTriangle` アイコン）。校閲パネル（`ProjectAnnotationsView` / Issues タブ）の指摘を、このエントリを起点に並べ直したものであり、新しい解析エンジンを足すのではなく既存 annotation を `entry_id` で読み替えるだけ（生成側は不変）。
+本文側の整合性指摘を **Codex 設定から逆引き**するタブ（`src/features/codex/components/ConsistencyTab.tsx`、表示ラベル「整合性」、`AlertTriangle` アイコン）。校閲パネル（`ProjectAnnotationsView` / 「指摘」タブの整合性観点グループ）の指摘を、このエントリを起点に並べ直したものであり、新しい解析エンジンを足すのではなく既存 annotation を `entry_id` で読み替えるだけ（生成側は不変）。
 
 | 表示要素 | 内容 |
 |---------|------|
@@ -897,7 +897,7 @@ Trackingタブ内に「Context:」ドロップダウンを配置。エントリ�
 `ImpactCheckButton`（`ImpactCheckButton.tsx`）は **Codex 設定の変更がどの本文と矛盾するか**を逆方向に探す手動トリガ。「この変更の影響をチェック」ボタンで `runImpactReview(entryId)`（`@/features/impact-review/runImpactReview`）を起動する:
 
 - 現在の Codex スナップショット ↔ baseline の差分を取り、`narrowCandidateScenes` で影響候補シーンを絞り込んだうえで `impact_review` post-effect を実行する
-- 結果は `post_effect_annotations` に入り、校閲パネルの **Issues タブ（影響レビュー）** に annotation として表示される（完了後に Kouetsu 側へ反映）。完了で baseline を現在値へ更新
+- 結果は `post_effect_annotations` に入り、校閲パネルの **「指摘」タブの影響レビュー観点グループ** に annotation として表示される（完了後に Kouetsu 側へ反映）。完了で baseline を現在値へ更新
 - 整合性チェックと同じガードを踏襲: AI ポリシー OFF（`useAiGate("analysis")`）ではボタン非表示、ライセンス未認証は実行時に弾く（`blockIfUnlicensed`）。実行前に `flushPendingSceneSaves` で未保存本文を flush
 - 実行結果のステータス: `no-change`（差分なし）/ `no-candidates`（候補 0）/ `started`（{N} 件のシーンを確認中）
 - これは consistency（本文 → Codex 矛盾）の **向きとトリガを変えた経路**で、矛盾検出エンジン自体は consistency / phaseResolver の既存実装を共有する。impact-review の詳細は別途 impact-review 設計を参照
