@@ -23,12 +23,19 @@ const h = vi.hoisted(() => ({
   runPostEffect: vi.fn(),
   runPostEffectMulti: vi.fn(),
   flushPendingSceneSaves: vi.fn(() => Promise.resolve()),
-  resolveRoleSendOverride: vi.fn(() => ({
-    model: undefined,
-    provider: undefined,
-    apiVariant: undefined,
-    endpointId: undefined,
-  })),
+  resolveRoleSendOverride: vi.fn(
+    (): {
+      model?: string;
+      provider?: string;
+      apiVariant?: string;
+      endpointId?: string;
+    } => ({
+      model: undefined,
+      provider: undefined,
+      apiVariant: undefined,
+      endpointId: undefined,
+    }),
+  ),
   nodes: [{ id: "s1", nodeType: "scene", parentId: null }] as {
     id: string;
     nodeType: string;
@@ -382,6 +389,45 @@ describe("runConsistencyCheck", () => {
     );
     expect(scopes).toEqual(["scene", "scene"]);
     expect(h.runPostEffectMulti).not.toHaveBeenCalled();
+  });
+
+  it("実際に使ったモデルを models で返す（codex=roleロール override / intra=基底）", async () => {
+    h.resolveRoleSendOverride.mockReturnValue({
+      model: "role-model",
+      provider: undefined,
+      apiVariant: undefined,
+      endpointId: undefined,
+    });
+    h.buildConsistencyPayload.mockResolvedValue({
+      codexPayloadJson: "[{}]",
+      sceneText: "t",
+      inputHash: "h",
+    });
+    h.buildIntraPayload.mockResolvedValue({ sceneText: "t", inputHash: "h" });
+    h.runPostEffect.mockImplementation(singleDone({ annotation_count: 0 }));
+    const out = await runConsistencyCheck({ type: "scene", sceneId: "s1" });
+    expect(out.models).toEqual({ codex: "role-model", intra: "m" });
+  });
+
+  it("ブロック時は models を返さない", async () => {
+    h.blockIfPolicyOff.mockReturnValue(true);
+    const out = await runConsistencyCheck({ type: "scene", sceneId: "s1" });
+    expect(out.models).toBeUndefined();
+  });
+
+  it("scene で片側の payload build が失敗しても、もう片側の outcome は返る", async () => {
+    h.buildConsistencyPayload.mockRejectedValue(new Error("db read fail"));
+    h.buildIntraPayload.mockResolvedValue({ sceneText: "t", inputHash: "h" });
+    h.runPostEffect.mockImplementation(singleDone({ annotation_count: 2 }));
+    const out = await runConsistencyCheck({ type: "scene", sceneId: "s1" });
+    expect(out.codex.ok).toBe(false);
+    if (!out.codex.ok) expect(out.codex.error).toContain("db read fail");
+    expect(out.intra).toEqual({ ok: true, fromCache: false, count: 2 });
+    // intra 側の単発 run は起動されている（consistency の build 失敗で巻き込まれない）。
+    expect(h.runPostEffect).toHaveBeenCalledTimes(1);
+    expect(
+      (h.runPostEffect.mock.calls[0][0] as { effect_type: string }).effect_type,
+    ).toBe("intra_scene_consistency");
   });
 });
 

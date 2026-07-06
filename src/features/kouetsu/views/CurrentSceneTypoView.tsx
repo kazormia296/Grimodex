@@ -15,24 +15,11 @@ import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
-import {
-  buildTypoPayload,
-  TYPO_PROMPT_VERSION,
-} from "@/features/post-effect/typoPayloadBuilder";
-import {
-  flushPendingSceneSaves,
-  listAnnotationsForScene,
-  runPostEffect,
-} from "@/features/post-effect/api";
-import { getPromptCatalog } from "@/prompts/index";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
-import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import { listAnnotationsForScene } from "@/features/post-effect/api";
+import { runTypoCheck } from "@/features/kouetsu/runners";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { closeAnnotation } from "@/features/post-effect/closeAnnotation";
 import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
@@ -88,68 +75,32 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
 
   const run = useCallback(async () => {
     if (running) return;
-    if (blockIfPolicyOff("analysis")) return;
-    if (blockIfUnlicensed()) return;
-    const projectId = useTreeStore.getState().projectId;
-    const lang = getCurrentProjectLanguage();
-    const model =
-      useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
-    const customKouetsu = useSettingsStore
-      .getState()
-      .get("aiPrompt.custom.kouetsu", "");
     setLaunching(true);
     try {
-      await flushPendingSceneSaves(sceneId);
-      const payload = await buildTypoPayload(sceneId, model, customKouetsu);
-      const done = await new Promise<{
-        ok: boolean;
-        from_cache?: boolean;
-        count?: number;
-        error?: string;
-      }>((resolve) => {
-        runPostEffect(
-          {
-            project_id: projectId,
-            effect_type: "typo_detection",
-            scope_type: "scene",
-            scope_target_id: sceneId,
-            model,
-            prompt_version: TYPO_PROMPT_VERSION,
-            input_hash: payload.inputHash,
-            codex_payload_json: "[]",
-            scene_text: payload.sceneText,
-            system_prompt: appendKouetsuGuidance(
-              getPromptCatalog(lang).postEffect.typoSystem,
-              customKouetsu,
-            ),
-          },
-          {
-            onDone: (e) =>
-              resolve({
-                ok: true,
-                from_cache: e.from_cache,
-                count: e.annotation_count,
-              }),
-            onError: (e) => resolve({ ok: false, error: e.error }),
-          },
-        ).catch((err) => resolve({ ok: false, error: String(err) }));
-      });
-
+      // ガード → flush → payload build → run 起動は runner に委譲する
+      // （全体チェックと同一経路 = input_hash / キャッシュキーが分裂しない）。
+      const outcome = await runTypoCheck({ type: "scene", sceneId });
+      // ガード拒否は無反応（ガードが toast 済み）。
+      if ("blocked" in outcome || "skipped" in outcome) {
+        setLaunching(false);
+        return;
+      }
+      const projectId = useTreeStore.getState().projectId;
       const resp = await listAnnotationsForScene({ projectId, sceneId });
       setAnnotations(sceneId, resp.annotations);
       const editor = useEditorStore.getState().editor;
       if (editor) applyAnnotationsToEditor(editor, resp.annotations);
       setLaunching(false);
 
-      if (!done.ok) {
-        postEffectErrorToast(t("kouetsu.typo.checkFailed"), done.error);
+      if (!outcome.ok) {
+        postEffectErrorToast(t("kouetsu.typo.checkFailed"), outcome.error);
         return;
       }
-      if (done.from_cache) {
+      if (outcome.fromCache) {
         toast.info(t("kouetsu.consistency.fromCache"), {
           description: t("kouetsu.cache.notSent"),
         });
-      } else if ((done.count ?? 0) === 0) {
+      } else if (outcome.count === 0) {
         toast.success(t("kouetsu.typo.noIssues"));
       }
     } catch (e) {

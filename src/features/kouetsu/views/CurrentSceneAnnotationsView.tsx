@@ -4,46 +4,21 @@ import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
-import {
-  buildConsistencyPayload,
-  buildIntraPayload,
-  CONSISTENCY_PROMPT_VERSION,
-  INTRA_CONSISTENCY_PROMPT_VERSION,
-} from "@/features/post-effect/consistencyPayloadBuilder";
-import {
-  flushPendingSceneSaves,
-  listAnnotationsForScene,
-  runPostEffect,
-} from "@/features/post-effect/api";
-import { getPromptCatalog } from "@/prompts/index";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
-import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import { listAnnotationsForScene } from "@/features/post-effect/api";
+import { runConsistencyCheck } from "@/features/kouetsu/runners";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { PostEffectAnnotationPanel } from "@/features/post-effect/PostEffectAnnotationPanel";
 import { postEffectErrorToast } from "@/features/post-effect/errorToast";
-import type {
-  PostEffectAnnotation,
-  PostEffectDoneEvent,
-} from "@/features/post-effect/types";
+import type { PostEffectAnnotation } from "@/features/post-effect/types";
 
 interface Props {
   sceneId: string;
 }
-
-type RunKind = "consistency" | "intra" | "both";
-
-type RunOutcome =
-  | { kind: "ok"; effect: "consistency" | "intra"; e: PostEffectDoneEvent }
-  | { kind: "err"; effect: "consistency" | "intra"; error: string };
 
 function getDetectedByModel(ann: PostEffectAnnotation): string | undefined {
   let meta: Record<string, unknown> | undefined;
@@ -111,168 +86,78 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
     }
   }, []);
 
-  const run = useCallback(
-    async (kind: RunKind) => {
-      if (running) return;
-      if (blockIfPolicyOff("analysis")) return;
-      if (blockIfUnlicensed()) return;
-      const projectId = useTreeStore.getState().projectId;
-      const lang = getCurrentProjectLanguage();
-      const model =
-        useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
-      // consistency のみ review ロール対象。intra_scene_consistency は対象外なので
-      // baseModel(=model)のまま（input_hash・実呼び出しを汚さない）。
-      const ov = resolveRoleSendOverride("post_effect_consistency");
-      const consistencyModel = ov.model ?? model;
-      const customKouetsu = useSettingsStore
-        .getState()
-        .get("aiPrompt.custom.kouetsu", "");
-      setLaunching(true);
-      try {
-        await flushPendingSceneSaves(sceneId);
-        async function startConsistency(): Promise<RunOutcome> {
-          try {
-            const payload = await buildConsistencyPayload(
-              projectId,
-              sceneId,
-              consistencyModel,
-              customKouetsu,
-              { provider: ov.provider, endpointId: ov.endpointId },
-            );
-            return await new Promise<RunOutcome>((resolve) => {
-              runPostEffect(
-                {
-                  project_id: projectId,
-                  effect_type: "consistency",
-                  scope_type: "scene",
-                  scope_target_id: sceneId,
-                  model: consistencyModel,
-                  model_override: ov.model,
-                  provider_override: ov.provider,
-                  api_variant_override: ov.apiVariant,
-                  endpoint_id_override: ov.endpointId,
-                  prompt_version: CONSISTENCY_PROMPT_VERSION,
-                  input_hash: payload.inputHash,
-                  codex_payload_json: payload.codexPayloadJson,
-                  scene_text: payload.sceneText,
-                  system_prompt: appendKouetsuGuidance(
-                    getPromptCatalog(lang).postEffect.consistencySystem,
-                    customKouetsu,
-                  ),
-                },
-                {
-                  onDone: (e) =>
-                    resolve({ kind: "ok", effect: "consistency", e }),
-                  onError: (e) =>
-                    resolve({
-                      kind: "err",
-                      effect: "consistency",
-                      error: e.error,
-                    }),
-                },
-              ).catch((err) =>
-                resolve({
-                  kind: "err",
-                  effect: "consistency",
-                  error: String(err),
-                }),
-              );
-            });
-          } catch (err) {
-            return { kind: "err", effect: "consistency", error: String(err) };
-          }
-        }
-
-        async function startIntra(): Promise<RunOutcome> {
-          try {
-            const payload = await buildIntraPayload(
-              sceneId,
-              model,
-              customKouetsu,
-            );
-            return await new Promise<RunOutcome>((resolve) => {
-              runPostEffect(
-                {
-                  project_id: projectId,
-                  effect_type: "intra_scene_consistency",
-                  scope_type: "scene",
-                  scope_target_id: sceneId,
-                  model,
-                  prompt_version: INTRA_CONSISTENCY_PROMPT_VERSION,
-                  input_hash: payload.inputHash,
-                  codex_payload_json: "[]",
-                  scene_text: payload.sceneText,
-                  system_prompt: appendKouetsuGuidance(
-                    getPromptCatalog(lang).postEffect.intraSystem,
-                    customKouetsu,
-                  ),
-                },
-                {
-                  onDone: (e) => resolve({ kind: "ok", effect: "intra", e }),
-                  onError: (e) =>
-                    resolve({ kind: "err", effect: "intra", error: e.error }),
-                },
-              ).catch((err) =>
-                resolve({ kind: "err", effect: "intra", error: String(err) }),
-              );
-            });
-          } catch (err) {
-            return { kind: "err", effect: "intra", error: String(err) };
-          }
-        }
-
-        const tasks: Array<Promise<RunOutcome>> = [];
-        if (kind === "consistency" || kind === "both")
-          tasks.push(startConsistency());
-        if (kind === "intra" || kind === "both") tasks.push(startIntra());
-        const results = await Promise.all(tasks);
-
-        const resp = await listAnnotationsForScene({ projectId, sceneId });
-        setAnnotations(sceneId, resp.annotations);
-        const editor = useEditorStore.getState().editor;
-        if (editor) applyAnnotationsToEditor(editor, resp.annotations);
+  const run = useCallback(async () => {
+    if (running) return;
+    setLaunching(true);
+    try {
+      // ガード → role override 解決 → flush → payload build → 2 run 並行起動は
+      // runner に委譲する（全体チェックと同一経路 = input_hash / キャッシュキーが
+      // 分裂しない）。片側の build 失敗は runner が ok:false へ畳む。
+      const { codex, intra, models } = await runConsistencyCheck({
+        type: "scene",
+        sceneId,
+      });
+      // ガード拒否は無反応（ガードが toast 済み。両側同時に blocked になる）。
+      if ("blocked" in codex || "blocked" in intra) {
         setLaunching(false);
+        return;
+      }
 
-        const labelOf = (e: "consistency" | "intra") =>
-          e === "consistency"
-            ? t("kouetsu.consistency.codexLabel")
-            : t("kouetsu.consistency.intraLabel");
-        const errors = results.filter((r) => r.kind === "err");
-        const oks = results.filter((r) => r.kind === "ok");
+      const projectId = useTreeStore.getState().projectId;
+      const resp = await listAnnotationsForScene({ projectId, sceneId });
+      setAnnotations(sceneId, resp.annotations);
+      const editor = useEditorStore.getState().editor;
+      if (editor) applyAnnotationsToEditor(editor, resp.annotations);
+      setLaunching(false);
 
-        if (errors.length === results.length) {
-          toast.error(t("integrity.checkError"), {
-            description: errors
-              .map((r) => `${labelOf(r.effect)}: ${r.error}`)
-              .join(" / "),
+      const labelOf = (e: "consistency" | "intra") =>
+        e === "consistency"
+          ? t("kouetsu.consistency.codexLabel")
+          : t("kouetsu.consistency.intraLabel");
+      const results = [
+        { effect: "consistency" as const, outcome: codex },
+        { effect: "intra" as const, outcome: intra },
+      ];
+      const errors = results.flatMap((r) =>
+        r.outcome.ok ? [] : [{ effect: r.effect, error: r.outcome.error }],
+      );
+      const oks = results.flatMap((r) =>
+        r.outcome.ok && "count" in r.outcome ? [r.outcome] : [],
+      );
+
+      if (errors.length === results.length) {
+        toast.error(t("integrity.checkError"), {
+          description: errors
+            .map((r) => `${labelOf(r.effect)}: ${r.error}`)
+            .join(" / "),
+        });
+        return;
+      }
+      if (errors.length > 0) {
+        postEffectErrorToast(
+          t("kouetsu.consistency.partialError", {
+            effect: labelOf(errors[0]!.effect),
+          }),
+          errors[0]!.error,
+        );
+      } else {
+        const allCache = oks.every((o) => o.fromCache);
+        const totalCount = oks.reduce((sum, o) => sum + o.count, 0);
+        if (allCache) {
+          toast.info(t("kouetsu.consistency.fromCache"), {
+            description: t("kouetsu.cache.notSent"),
           });
-          return;
+        } else if (totalCount === 0) {
+          toast.success(t("kouetsu.consistency.noIssues"));
         }
-        if (errors.length > 0) {
-          postEffectErrorToast(
-            t("kouetsu.consistency.partialError", {
-              effect: labelOf(errors[0]!.effect),
-            }),
-            errors[0]!.error,
-          );
-        } else {
-          const allCache = oks.every((r) => r.e.from_cache === true);
-          const totalCount = oks.reduce(
-            (sum, r) => sum + r.e.annotation_count,
-            0,
-          );
-          if (allCache) {
-            toast.info(t("kouetsu.consistency.fromCache"), {
-              description: t("kouetsu.cache.notSent"),
-            });
-          } else if (totalCount === 0) {
-            toast.success(t("kouetsu.consistency.noIssues"));
-          }
-        }
+      }
 
+      // 「今回のモデル」集合は runner が実際に使ったものを使う（別導出だと
+      // 役割別モデルの変更時に警告だけがズレる）。
+      if (models) {
         const otherModelCount = countOpenByOtherModel(resp.annotations, [
-          consistencyModel,
-          model,
+          models.codex,
+          models.intra,
         ]);
         if (otherModelCount.total > 0) {
           const sample = [...otherModelCount.byModel.entries()]
@@ -287,17 +172,16 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
             { description: sample },
           );
         }
-      } catch (e) {
-        console.error("post-effect launch error", e);
-        setLaunching(false);
-        postEffectErrorToast(
-          t("kouetsu.consistency.launchFailed"),
-          e instanceof Error ? e.message : String(e),
-        );
       }
-    },
-    [running, sceneId, setAnnotations, t],
-  );
+    } catch (e) {
+      console.error("post-effect launch error", e);
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.consistency.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }, [running, sceneId, setAnnotations, t]);
 
   const disabled = running || analysisGate.presentation !== "enabled";
   const triggerTitle =
@@ -315,7 +199,7 @@ export function CurrentSceneAnnotationsView({ sceneId }: Props) {
             type="button"
             disabled={disabled}
             title={triggerTitle}
-            onClick={() => void run("both")}
+            onClick={() => void run()}
             className={cn(
               "flex items-center gap-1 rounded px-2 py-0.5 text-xs",
               "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
