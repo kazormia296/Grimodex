@@ -4,36 +4,18 @@ import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
-import {
-  buildIntentDriftPayload,
-  INTENT_DRIFT_PROMPT_VERSION,
-} from "@/features/post-effect/intentDriftPayloadBuilder";
-import {
-  flushPendingSceneSaves,
-  listAnnotationsForScene,
-  runPostEffect,
-} from "@/features/post-effect/api";
-import { getPromptCatalog } from "@/prompts/index";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
-import {
-  appendIntentGuidance,
-  appendKouetsuGuidance,
-} from "@/features/post-effect/customInstruction";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import { listAnnotationsForScene } from "@/features/post-effect/api";
+import { runIntentDriftCheck } from "@/features/kouetsu/runners";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import {
   PostEffectAnnotationPanel,
   INTENT_DRIFT_FILTER,
 } from "@/features/post-effect/PostEffectAnnotationPanel";
-import type { PostEffectDoneEvent } from "@/features/post-effect/types";
 import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 
 interface Props {
@@ -63,64 +45,18 @@ export function CurrentSceneIntentDriftView({ sceneId }: Props) {
 
   const run = useCallback(async () => {
     if (running || !hasIntent) return;
-    if (blockIfPolicyOff("analysis")) return;
-    if (blockIfUnlicensed()) return;
-    const projectId = useTreeStore.getState().projectId;
-    const lang = getCurrentProjectLanguage();
-    // 機能別モデル(review ロール)を input_hash・記録・実呼び出しに一貫反映する。
-    // 未設定なら既定チャットモデル（byte-identical）。
-    const ov = resolveRoleSendOverride("post_effect_intent_drift");
-    const model =
-      ov.model ??
-      useAiSettingsStore.getState().settings?.model ??
-      "gpt-4o-mini";
-    const customKouetsu = useSettingsStore
-      .getState()
-      .get("aiPrompt.custom.kouetsu", "");
     setLaunching(true);
     try {
-      await flushPendingSceneSaves(sceneId);
-      const payload = await buildIntentDriftPayload(
-        sceneId,
-        model,
-        intent,
-        customKouetsu,
-        { provider: ov.provider, endpointId: ov.endpointId },
-      );
-      const basePrompt = getPromptCatalog(lang).postEffect.intentDriftSystem;
-      const systemPrompt = appendIntentGuidance(
-        appendKouetsuGuidance(basePrompt, customKouetsu),
-        intent,
-      );
-      const outcome = await new Promise<{
-        ok: boolean;
-        e?: PostEffectDoneEvent;
-        error?: string;
-      }>((resolve) => {
-        runPostEffect(
-          {
-            project_id: projectId,
-            effect_type: "intent_drift",
-            scope_type: "scene",
-            scope_target_id: sceneId,
-            model,
-            model_override: ov.model,
-            provider_override: ov.provider,
-            api_variant_override: ov.apiVariant,
-            endpoint_id_override: ov.endpointId,
-            prompt_version: INTENT_DRIFT_PROMPT_VERSION,
-            input_hash: payload.inputHash,
-            codex_payload_json: "[]",
-            scene_text: payload.sceneText,
-            system_prompt: systemPrompt,
-          },
-          {
-            onDone: (e) => resolve({ ok: true, e }),
-            onError: (e) => resolve({ ok: false, error: e.error }),
-          },
-        ).catch((err) => resolve({ ok: false, error: String(err) }));
-      });
-
+      // ガード → role override 解決 → intent 読み出し → flush → payload build →
+      // run 起動は runner に委譲する（全体チェックと同一経路 = input_hash /
+      // キャッシュキーが分裂しない）。intent は runner が treeStore から読む。
+      const outcome = await runIntentDriftCheck({ type: "scene", sceneId });
+      // ガード拒否 / intent 空（hasIntent ガード済みのため通常到達しない）は無反応。
+      if ("blocked" in outcome || "skipped" in outcome) {
+        setLaunching(false);
+        return;
+      }
+      const projectId = useTreeStore.getState().projectId;
       const resp = await listAnnotationsForScene({ projectId, sceneId });
       setAnnotations(sceneId, resp.annotations);
       const editor = useEditorStore.getState().editor;
@@ -134,11 +70,11 @@ export function CurrentSceneIntentDriftView({ sceneId }: Props) {
         );
         return;
       }
-      if (outcome.e?.from_cache) {
+      if (outcome.fromCache) {
         toast.info(t("kouetsu.consistency.fromCache"), {
           description: t("kouetsu.cache.notSent"),
         });
-      } else if ((outcome.e?.annotation_count ?? 0) === 0) {
+      } else if (outcome.count === 0) {
         toast.success(t("kouetsu.intentDrift.noIssues"));
       }
     } catch (e) {
@@ -149,7 +85,7 @@ export function CurrentSceneIntentDriftView({ sceneId }: Props) {
         e instanceof Error ? e.message : String(e),
       );
     }
-  }, [running, sceneId, intent, hasIntent, setAnnotations, t]);
+  }, [running, sceneId, hasIntent, setAnnotations, t]);
 
   const disabled =
     running || !hasIntent || analysisGate.presentation !== "enabled";

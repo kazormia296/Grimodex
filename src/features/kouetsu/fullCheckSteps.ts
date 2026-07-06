@@ -46,11 +46,14 @@ function normalizePair(
 ): StepResult {
   if (codex.ok && "blocked" in codex && intra.ok && "blocked" in intra)
     return { blocked: true };
-  // 両方ハード失敗のときだけ観点失敗（片方成功は成功分を数える）。
-  if (!codex.ok && !intra.ok) return { error: codex.error };
+  // 片側でもハード失敗があれば観点失敗として failures へ可視化する（成功側の
+  // 指摘は保存済みで一覧には出る）。runner の scene パスは片側の payload build
+  // 失敗を reject でなく ok:false へ畳むため、ここで拾わないと無音になる。
+  if (!codex.ok) return { error: codex.error };
+  if (!intra.ok) return { error: intra.error };
   let count = 0;
-  if (codex.ok && "count" in codex) count += codex.count;
-  if (intra.ok && "count" in intra) count += intra.count;
+  if ("count" in codex) count += codex.count;
+  if ("count" in intra) count += intra.count;
   return { count };
 }
 

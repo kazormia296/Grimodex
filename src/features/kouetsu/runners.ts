@@ -20,6 +20,7 @@ export type {
 export { runTypoCheck } from "./runners/typo";
 export { runReviewCheck } from "./runners/review";
 export { runConsistencyCheck } from "./runners/consistency";
+export type { ConsistencyRunResult } from "./runners/consistency";
 export { runMetaStructureCheck } from "./runners/metaStructure";
 export { runTimelineCheck } from "./runners/timeline";
 export { runIntentDriftCheck } from "./runners/intentDrift";
