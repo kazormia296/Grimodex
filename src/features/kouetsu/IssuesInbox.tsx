@@ -6,6 +6,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useKouetsuStore } from "./kouetsuStore";
 import { deriveIssueCounts, type IssueCounts } from "./issueCounts";
 import { KouetsuScopeBar } from "./KouetsuScopeBar";
+import { FullCheckControl } from "./FullCheckControl";
 import { InboxSection, type CountKey, type SectionDef } from "./InboxSection";
 import { LinterSection } from "./sections/LinterSection";
 import { TypoSection } from "./sections/TypoSection";
@@ -103,7 +104,7 @@ export function IssuesInbox() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <KouetsuScopeBar />
+      <KouetsuScopeBar actions={<FullCheckControl />} />
       <ResizablePanelGroup
         orientation="vertical"
         className="flex-1 overflow-hidden"

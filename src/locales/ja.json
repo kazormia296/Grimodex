@@ -1301,6 +1301,17 @@
     "openLog": "ログを開く",
     "openLogFailed": "ログフォルダを開けませんでした",
     "partialFailure": "一部のシーンで解析に失敗しました",
+    "fullCheck": {
+      "run": "全体チェック",
+      "configure": "チェックする観点",
+      "progress": "{{done}}/{{total}} 観点",
+      "cancel": "中止",
+      "completed": "全体チェック完了 — 指摘 {{count}} 件",
+      "completedWithFailures": "全体チェック完了（{{failed}} 観点失敗）",
+      "alreadyRunning": "実行中です",
+      "lintProjectWide": "校正は常にプロジェクト全体を走査します",
+      "lintSceneSkipped": "現在シーンは自動反映済みのためスキップします"
+    },
     "progressToast": {
       "running": "実行中…",
       "runningProgress": "実行中 {{progress}} シーン",
@@ -1413,7 +1424,9 @@
       "executionFailed": "狙いズレ診断の実行に失敗しました",
       "noIssues": "明確なズレは見つかりませんでした",
       "launchFailed": "狙いズレ診断を起動できませんでした",
-      "empty": "狙いズレの指摘はまだありません"
+      "empty": "狙いズレの指摘はまだありません",
+      "serialPartial": "{{total}} 件中 {{failed}} 件のシーンで診断に失敗しました",
+      "serialCancelled": "途中で中止されました"
     },
     "metaStructure": {
       "noExcluded": "メタ構造に除外項目はありません",
@@ -1504,7 +1517,10 @@
       "empty": "整合性の問題は見つかっていません"
     },
     "projectIntentDrift": {
-      "header": "全シーン・狙いズレ（表示のみ）"
+      "header": "全シーン・狙いズレ",
+      "runTooltip": "狙いを設定した全シーンの狙いズレを診断",
+      "failed": "全シーン狙いズレ診断に失敗しました",
+      "launchFailed": "全シーン狙いズレ診断を起動できませんでした"
     },
     "projectReview": {
       "failed": "全シーン批評に失敗しました",

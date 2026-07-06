@@ -1301,6 +1301,17 @@
     "openLog": "Open logs",
     "openLogFailed": "Failed to open the log folder",
     "partialFailure": "Some scenes failed to analyze",
+    "fullCheck": {
+      "run": "Full check",
+      "configure": "Checks to run",
+      "progress": "{{done}}/{{total}} checks",
+      "cancel": "Cancel",
+      "completed": "Full check done — {{count}} findings",
+      "completedWithFailures": "Done with {{failed}} failed checks",
+      "alreadyRunning": "Already running",
+      "lintProjectWide": "Proofreading always scans the whole project",
+      "lintSceneSkipped": "Skipped — the current scene is linted live"
+    },
     "progressToast": {
       "running": "Running…",
       "runningProgress": "Running scene {{progress}}",
@@ -1413,7 +1424,9 @@
       "executionFailed": "Failed to execute intent drift diagnosis",
       "noIssues": "No clear intent drift found",
       "launchFailed": "Failed to launch intent drift diagnosis",
-      "empty": "No intent-drift findings yet"
+      "empty": "No intent-drift findings yet",
+      "serialPartial": "{{failed}} of {{total}} scenes failed to diagnose",
+      "serialCancelled": "Stopped partway"
     },
     "metaStructure": {
       "noExcluded": "No excluded items in meta structure",
@@ -1504,7 +1517,10 @@
       "empty": "No consistency issues found"
     },
     "projectIntentDrift": {
-      "header": "All Scenes Intent Drift (view only)"
+      "header": "All Scenes Intent Drift",
+      "runTooltip": "Diagnose intent drift for every scene that has an intent",
+      "failed": "Failed to diagnose intent drift for all scenes",
+      "launchFailed": "Failed to launch intent drift diagnosis for all scenes"
     },
     "projectReview": {
       "failed": "Failed to review all scenes",

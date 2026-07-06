@@ -20,7 +20,7 @@ use commands::external_mount::ExternalMountState;
 use commands::semantic::{ModelDownloadState, SemanticEmbedderState};
 use commands::{
     AiSettingsPath, AppResult, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag,
-    LicensePath, LogGuard, PostEffectAbortFlag, StreamAbortFlag, WorkspaceState,
+    LicensePath, LogGuard, PostEffectAbortRegistry, StreamAbortFlag, WorkspaceState,
 };
 use external_mount::watch::ExternalMountWatchState;
 
@@ -146,10 +146,8 @@ pub fn run() {
                 flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
-            // PostEffect run abort flag
-            app.manage(PostEffectAbortFlag {
-                flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            });
+            // PostEffect run abort registry (run_id 単位)
+            app.manage(PostEffectAbortRegistry::new());
 
             // Semantic search: per-language ONNX Embedders (ja=ruri / en=...).
             // Lazy load on first invoke, keyed by model dir name.

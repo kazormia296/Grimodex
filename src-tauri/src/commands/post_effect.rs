@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use super::ai::resolve_api_key;
-use super::PostEffectAbortFlag;
+use super::PostEffectAbortRegistry;
 use super::{AiSettingsPath, AppError, WorkspaceState};
 use crate::ai::{call_post_effect_api, read_ai_settings};
 
@@ -4764,6 +4764,38 @@ mod decide_multi_outcome_tests {
     }
 }
 
+#[cfg(test)]
+mod abort_registry_tests {
+    #[test]
+    fn abort_registry_is_scoped_per_run() {
+        let reg = super::PostEffectAbortRegistry::new();
+        reg.request("run-a");
+        assert!(reg.is_aborted("run-a"));
+        assert!(!reg.is_aborted("run-b")); // 他 run に波及しない
+        reg.clear("run-a");
+        assert!(!reg.is_aborted("run-a")); // 終端後は解除され、後続の同名 run を汚さない
+    }
+
+    /// 単発 run の終端は `start_post_effect_run` の spawn 出口で
+    /// `registry.clear(&run_id)` を呼ぶ（run_multi の join 出口と同じパターン。
+    /// AppHandle が要るため spawn 自体はユニットで駆動できないが、その clear が
+    /// 満たすべき不変条件をレジストリ単体で担保する）。中止要求済みの単発 run が
+    /// 終端で clear されても、並走する別 run の中止要求は残る。
+    #[test]
+    fn single_run_terminal_clear_is_scoped() {
+        let reg = super::PostEffectAbortRegistry::new();
+        // 単発 run(single) と別 run(other) の両方に中止を要求。
+        reg.request("single");
+        reg.request("other");
+        assert!(reg.is_aborted("single"));
+        assert!(reg.is_aborted("other"));
+        // 単発 run が終端 → spawn 出口の clear 相当。
+        reg.clear("single");
+        assert!(!reg.is_aborted("single")); // 永久残留しない（リーク防止）
+        assert!(reg.is_aborted("other")); // 並走 run の要求は握り潰さない
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_multi_task(
     app: AppHandle,
@@ -4776,7 +4808,7 @@ async fn run_multi_task(
     model_override: Option<String>,
     prov: RoleProviderOverride,
 ) {
-    let abort_flag = app.state::<PostEffectAbortFlag>();
+    let abort_registry = app.state::<PostEffectAbortRegistry>();
     let total = scenes.len();
     let mut total_count = 0usize;
     // 1 シーンの失敗で run 全体を落とさず、失敗を集計して最後に着地を決める
@@ -4791,7 +4823,7 @@ async fn run_multi_task(
     );
 
     for (idx, scene) in scenes.into_iter().enumerate() {
-        if abort_flag.flag.load(std::sync::atomic::Ordering::Relaxed) {
+        if abort_registry.is_aborted(&run_id) {
             tracing::warn!(run_id = %run_id, "[post_effect] aborted by user");
             fail_run(&app, &run_id, "中断されました");
             let _ = app.emit(
@@ -5173,14 +5205,10 @@ fn ensure_post_effect_run(
 pub(crate) async fn start_post_effect_run(
     ws_state: State<'_, WorkspaceState>,
     ai_settings_path: State<'_, AiSettingsPath>,
-    abort_flag: State<'_, PostEffectAbortFlag>,
     app_handle: AppHandle,
     args: StartPostEffectRunArgs,
 ) -> Result<StartPostEffectRunResult, AppError> {
-    // abort フラグをリセット
-    abort_flag
-        .flag
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    // 単発 run は abort を見ないため中止レジストリには一切触れない。
 
     let effect_type = args.effect_type.as_str();
     let supported = matches!(
@@ -5391,6 +5419,13 @@ pub(crate) async fn start_post_effect_run(
             );
             fail_run(&app_clone, &rid_clone, &msg);
         }
+        // 単発 run の全終端（run_effect_task 内の done/error、および内側タスクが
+        // panic して join が Err のパス）を集約する単一出口。multi 側と同じく
+        // ここで clear し、中止要求の run_id が中止レジストリへ永久残留するのを防ぐ
+        // （単発 run は abort を観測しないが、要求エントリは掃除する必要がある）。
+        app_clone
+            .state::<PostEffectAbortRegistry>()
+            .clear(&rid_clone);
     });
 
     Ok(StartPostEffectRunResult {
@@ -5403,13 +5438,11 @@ pub(crate) async fn start_post_effect_run(
 pub(crate) async fn start_post_effect_run_multi(
     ws_state: State<'_, WorkspaceState>,
     ai_settings_path: State<'_, AiSettingsPath>,
-    abort_flag: State<'_, PostEffectAbortFlag>,
     app_handle: AppHandle,
     args: StartPostEffectRunMultiArgs,
 ) -> Result<StartPostEffectRunResult, AppError> {
-    abort_flag
-        .flag
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    // 中止要求は run_id 単位。新 run 開始時に集合全体をリセットしない
+    // (並走 run の中止要求を握り潰さないため)。clear は run 終端で行う。
 
     if args.scenes.is_empty() {
         return Err(anyhow::anyhow!("scenes が空です").into());
@@ -5497,6 +5530,12 @@ pub(crate) async fn start_post_effect_run_multi(
             );
             fail_run(&app_clone, &rid_clone, &msg);
         }
+        // run の全終端（正常完了 / 部分失敗 / エラー / 中止、および
+        // run_multi_task が panic して join が Err のパス）を集約する単一出口。
+        // ここで clear すれば run_id が中止レジストリに残り続けるリークを防げる。
+        app_clone
+            .state::<PostEffectAbortRegistry>()
+            .clear(&rid_clone);
     });
 
     Ok(StartPostEffectRunResult {
@@ -5507,14 +5546,13 @@ pub(crate) async fn start_post_effect_run_multi(
 
 #[tauri::command(async)]
 pub(crate) fn abort_post_effect_run(
-    abort_flag: State<'_, PostEffectAbortFlag>,
+    registry: State<'_, PostEffectAbortRegistry>,
     ws_state: State<'_, WorkspaceState>,
     run_id: String,
     project_id: String,
 ) -> Result<(), AppError> {
-    abort_flag
-        .flag
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // この run_id の中止を要求 (他の並走 run には波及しない)。
+    registry.request(&run_id);
     // DB 上も cancelled にする (タスクが既に終わっている場合は影響なし)。
     // XPROJ ガード: 現在プロジェクトの run に限定 (他プロジェクトの run_id では 0 行 = no-op)。
     super::with_db(&ws_state, |db| {

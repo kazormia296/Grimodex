@@ -13,27 +13,16 @@ import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
 import {
-  buildMultiPayload,
-  getSceneIdsForScope,
-} from "@/features/post-effect/consistencyPayloadBuilder";
-import { TYPO_PROMPT_VERSION } from "@/features/post-effect/typoPayloadBuilder";
-import {
-  flushPendingSceneSaves,
   listAnnotationsForProject,
   listAnnotationsForScene,
-  runPostEffectMulti,
 } from "@/features/post-effect/api";
+import { runTypoCheck } from "@/features/kouetsu/runners";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
-import { getPromptCatalog } from "@/prompts/index";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
-import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
-import { useSettingsStore } from "@/features/settings/settingsStore";
 import { applyTypoFixAndResolve } from "@/features/post-effect/typoFix";
 import { parseAnnotationMeta } from "@/features/post-effect/annotationMeta";
 import {
@@ -142,93 +131,40 @@ export function ProjectTypoView() {
 
   const runAll = useCallback(async () => {
     if (runningAll) return;
-    if (blockIfPolicyOff("analysis")) return;
-    if (blockIfUnlicensed()) return;
-    const { nodes } = useTreeStore.getState();
-    if (getSceneIdsForScope(nodes, scopeType, scopeTargetId).length === 0)
-      return;
-    const lang = getCurrentProjectLanguage();
-    const model =
-      useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
-    const customKouetsu = useSettingsStore
-      .getState()
-      .get("aiPrompt.custom.kouetsu", "");
     const activeSceneId = useTreeStore.getState().activeSceneId;
     setLaunching(true);
-
     try {
-      await flushPendingSceneSaves();
-      const payload = await buildMultiPayload(
-        projectId,
-        scopeType,
-        scopeTargetId,
-        model,
-        "typo_detection",
-        customKouetsu,
+      const outcome = await runTypoCheck(
+        scopeType === "folder"
+          ? { type: "folder", anchorId: scopeTargetId as string }
+          : { type: "project" },
       );
-      if (payload.scenes.length === 0) {
+      // ガード拒否 / 対象 0 件は無反応（runner・ガードが処理済み）。
+      if ("skipped" in outcome || "blocked" in outcome) {
         setLaunching(false);
         return;
       }
-      const result = await new Promise<{
-        ok: boolean;
-        from_cache?: boolean;
-        count?: number;
-        summary?: string;
-        error?: string;
-      }>((resolve) => {
-        runPostEffectMulti(
-          {
-            project_id: projectId,
-            effect_type: "typo_detection",
-            scope_type: scopeType,
-            scope_target_id: scopeTargetId,
-            model,
-            prompt_version: TYPO_PROMPT_VERSION,
-            input_hash: payload.inputHash,
-            scenes: payload.scenes,
-            system_prompt: appendKouetsuGuidance(
-              getPromptCatalog(lang).postEffect.typoSystem,
-              customKouetsu,
-            ),
-          },
-          {
-            onDone: (e) =>
-              resolve({
-                ok: true,
-                from_cache: e.from_cache,
-                count: e.annotation_count,
-                summary: e.summary,
-              }),
-            onError: (e) => resolve({ ok: false, error: e.error }),
-          },
-        ).catch((err) => resolve({ ok: false, error: String(err) }));
-      });
-
       await afterRunAll(activeSceneId);
       setLaunching(false);
-
-      if (!result.ok) {
+      if (!outcome.ok) {
         postEffectErrorToast(
           t("kouetsu.projectTypo.checkFailed"),
-          result.error,
+          outcome.error,
         );
         return;
       }
       // 部分失敗 (一部シーンのみ解析失敗) は warning に集約し、成功トーストは
       // 出さない (summary に完了/失敗シーン数が含まれる)。
-      if (postEffectPartialToast(result.summary)) {
-        return;
-      }
-      if (result.from_cache) {
+      if (postEffectPartialToast(outcome.summary)) return;
+      if (outcome.fromCache) {
         toast.info(t("kouetsu.consistency.fromCache"), {
           description: t("kouetsu.cache.notSent"),
         });
-      } else if ((result.count ?? 0) === 0) {
+      } else if (outcome.count === 0) {
         toast.success(t("kouetsu.projectTypo.noIssues"));
       } else {
         toast.success(
-          t("kouetsu.projectTypo.foundCount", { count: result.count }),
+          t("kouetsu.projectTypo.foundCount", { count: outcome.count }),
         );
       }
     } catch (e) {
@@ -239,7 +175,7 @@ export function ProjectTypoView() {
         e instanceof Error ? e.message : String(e),
       );
     }
-  }, [runningAll, projectId, afterRunAll, t, scopeType, scopeTargetId]);
+  }, [runningAll, afterRunAll, t, scopeType, scopeTargetId]);
 
   const groups = useMemo(() => {
     // folder スコープでは subtree 外シーンの指摘を隠す（project 時は素通し）。

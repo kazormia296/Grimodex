@@ -3,26 +3,12 @@ import { useTranslation } from "react-i18next";
 import { Info, Loader2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
-import {
-  buildMultiPayload,
-  getSceneIdsForScope,
-} from "@/features/post-effect/consistencyPayloadBuilder";
-import { REVIEW_PROMPT_VERSION } from "@/features/post-effect/reviewPayloadBuilder";
+import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
-import {
-  flushPendingSceneSaves,
-  listAnnotationsForProject,
-  runPostEffectMulti,
-} from "@/features/post-effect/api";
-import { getPromptCatalog } from "@/prompts/index";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
-import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import { listAnnotationsForProject } from "@/features/post-effect/api";
+import { runReviewCheck } from "@/features/kouetsu/runners";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
 import {
@@ -93,66 +79,18 @@ export function ProjectReviewView() {
 
   const runAll = useCallback(async () => {
     if (runningAll) return;
-    if (blockIfPolicyOff("analysis")) return;
-    if (blockIfUnlicensed()) return;
-    const { nodes } = useTreeStore.getState();
-    if (getSceneIdsForScope(nodes, scopeType, scopeTargetId).length === 0)
-      return;
-    const lang = getCurrentProjectLanguage();
-    const ov = resolveRoleSendOverride("post_effect_review");
-    const model =
-      ov.model ??
-      useAiSettingsStore.getState().settings?.model ??
-      "gpt-4o-mini";
-    const customKouetsu = useSettingsStore
-      .getState()
-      .get("aiPrompt.custom.kouetsu", "");
     setLaunching(true);
     try {
-      await flushPendingSceneSaves();
-      const payload = await buildMultiPayload(
-        projectId,
-        scopeType,
-        scopeTargetId,
-        model,
-        "review",
-        customKouetsu,
-        { provider: ov.provider, endpointId: ov.endpointId },
+      const outcome = await runReviewCheck(
+        scopeType === "folder"
+          ? { type: "folder", anchorId: scopeTargetId as string }
+          : { type: "project" },
       );
-      if (payload.scenes.length === 0) {
+      // ガード拒否 / 対象 0 件は無反応（runner・ガードが処理済み）。
+      if ("skipped" in outcome || "blocked" in outcome) {
         setLaunching(false);
         return;
       }
-      const outcome = await new Promise<{
-        ok: boolean;
-        summary?: string;
-        error?: string;
-      }>((resolve) => {
-        runPostEffectMulti(
-          {
-            project_id: projectId,
-            effect_type: "review",
-            scope_type: scopeType,
-            scope_target_id: scopeTargetId,
-            model,
-            model_override: ov.model,
-            provider_override: ov.provider,
-            api_variant_override: ov.apiVariant,
-            endpoint_id_override: ov.endpointId,
-            prompt_version: REVIEW_PROMPT_VERSION,
-            input_hash: payload.inputHash,
-            scenes: payload.scenes,
-            system_prompt: appendKouetsuGuidance(
-              getPromptCatalog(lang).postEffect.reviewSystem,
-              customKouetsu,
-            ),
-          },
-          {
-            onDone: (e) => resolve({ ok: true, summary: e.summary }),
-            onError: (e) => resolve({ ok: false, error: e.error }),
-          },
-        ).catch((err) => resolve({ ok: false, error: String(err) }));
-      });
       reload();
       setLaunching(false);
       if (!outcome.ok) {
@@ -169,7 +107,7 @@ export function ProjectReviewView() {
         e instanceof Error ? e.message : String(e),
       );
     }
-  }, [runningAll, projectId, reload, scopeType, scopeTargetId]);
+  }, [runningAll, reload, scopeType, scopeTargetId, t]);
 
   const groups = useMemo(() => {
     // folder スコープでは subtree 外シーンの指摘を隠す（project 時は素通し）。
