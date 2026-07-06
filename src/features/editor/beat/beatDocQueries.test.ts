@@ -46,6 +46,20 @@ describe("paragraphOrdinalAtPos", () => {
     expect(paragraphOrdinalAtPos(doc, p1.nodeSize)).toBe(2);
   });
 
+  it("先行する sceneBeat は段落として数えない", () => {
+    const beat1 = schema.nodes.sceneBeat.create({}, [schema.text("b1")]);
+    const beat2 = schema.nodes.sceneBeat.create({}, [schema.text("b2")]);
+    const p1 = p("段落1");
+    // [beat1, beat2, p1]: beat2 は本文第1段落の前 → ¶1
+    const doc = schema.nodes.doc.create({}, [beat1, beat2, p1]);
+    expect(paragraphOrdinalAtPos(doc, beat1.nodeSize)).toBe(1);
+
+    // [p1, beat1, beat2, p2]: beat2 は第2段落の前 → ¶2
+    const p2 = p("段落2");
+    const doc2 = schema.nodes.doc.create({}, [p1, beat1, beat2, p2]);
+    expect(paragraphOrdinalAtPos(doc2, p1.nodeSize + beat1.nodeSize)).toBe(2);
+  });
+
   it("scene-break など非 textblock は段落として数えない", () => {
     const p1 = p("段落1");
     const brk = schema.nodes.sceneBreak.create();

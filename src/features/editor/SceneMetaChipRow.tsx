@@ -13,6 +13,7 @@ import type { ChronicleCalendar } from "@/features/chronicle/chronicleTime";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { countPlacedBeats } from "@/features/editor/beat/beatDocQueries";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import {
   CodexRefPickerPopover,
@@ -98,9 +99,14 @@ export function SceneMetaChipRow() {
     sceneId ? (s.sceneBeats[sceneId]?.length ?? 0) : 0,
   );
   const editor = useEditorStore((s) => s.editor);
+  // グローバル editor は primary group (groupIndex 0) のアクティブタブの
+  // doc を指す。split view で secondary をフォーカスしているときなど、
+  // activeSceneId と一致しない場合は別シーンの doc を数えてしまうため
+  // ゲートする（不一致時は配置済みを数えず未配置のみのバッジになる）。
+  const primaryTabId = useTabStore((s) => s.activeTabId);
   const [placedCount, setPlacedCount] = useState(0);
   useEffect(() => {
-    if (!editor || !sceneId) {
+    if (!editor || !sceneId || primaryTabId !== sceneId) {
       setPlacedCount(0);
       return;
     }
@@ -110,7 +116,7 @@ export function SceneMetaChipRow() {
     return () => {
       editor.off("transaction", update);
     };
-  }, [editor, sceneId]);
+  }, [editor, sceneId, primaryTabId]);
 
   if (!node || !sceneId || panelOpen || focusMode) return null;
 

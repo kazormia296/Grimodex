@@ -18,6 +18,10 @@ const schema = new Schema({
   nodes: {
     doc: { content: "block+" },
     paragraph: { group: "block", content: "inline*" },
+    blockquote: { group: "block", content: "block+" },
+    bulletList: { group: "block", content: "listItem+" },
+    listItem: { content: "block+" },
+    sceneBeat: { group: "block", content: "inline*" },
     text: { group: "inline" },
   },
   marks: {
@@ -149,6 +153,52 @@ describe("GutterMarksPlugin", () => {
 
     useAnnotationStore.setState({ showAnnotations: false });
     state = state.apply(state.tr.setMeta("annotationUpdate", true));
+    expect(widgetKeys(state)).toHaveLength(0);
+  });
+
+  it("nests: コンテナと内側段落で二重描画しない (blockquote)", () => {
+    const para = schema.nodes.paragraph.create({}, [
+      schema.text("引用内コメント", [schema.marks.comment.create()]),
+    ]);
+    const doc = schema.nodes.doc.create({}, [
+      schema.nodes.blockquote.create({}, [para]),
+    ]);
+    const state = EditorState.create({
+      doc,
+      plugins: [createGutterMarksPlugin()],
+    });
+    const keys = widgetKeys(state);
+    // 最内の paragraph (pos 1) にのみ 1 widget
+    expect(keys).toEqual(["gutter-1-comment"]);
+  });
+
+  it("nests: bulletList>listItem>paragraph でも 1 widget", () => {
+    const para = schema.nodes.paragraph.create({}, [
+      schema.text("リスト項目", [schema.marks.comment.create()]),
+    ]);
+    const doc = schema.nodes.doc.create({}, [
+      schema.nodes.bulletList.create({}, [
+        schema.nodes.listItem.create({}, [para]),
+      ]),
+    ]);
+    const state = EditorState.create({
+      doc,
+      plugins: [createGutterMarksPlugin()],
+    });
+    expect(widgetKeys(state)).toHaveLength(1);
+  });
+
+  it("sceneBeat 内の mark にはガターを出さない", () => {
+    const doc = schema.nodes.doc.create({}, [
+      schema.nodes.sceneBeat.create({}, [
+        schema.text("ビート内コメント", [schema.marks.comment.create()]),
+      ]),
+      schema.nodes.paragraph.create({}, [schema.text("本文")]),
+    ]);
+    const state = EditorState.create({
+      doc,
+      plugins: [createGutterMarksPlugin()],
+    });
     expect(widgetKeys(state)).toHaveLength(0);
   });
 

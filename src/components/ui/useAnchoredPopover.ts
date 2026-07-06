@@ -166,7 +166,12 @@ export function useAnchoredPopover(
       }
     }
     function onKeyDown(e: globalThis.KeyboardEvent) {
-      if (e.key === "Escape") onCloseRef.current();
+      if (e.key !== "Escape") return;
+      // ネストした子ポップオーバー（Radix 等）にフォーカスがあるときの Esc は
+      // 子レイヤーだけを閉じさせ、こちらは巻き込まれない。
+      const target = e.target as Node | null;
+      if (target && isInsideClickRef.current?.(target)) return;
+      onCloseRef.current();
     }
     document.addEventListener("mousedown", onMouseDown);
     document.addEventListener("keydown", onKeyDown);

@@ -28,14 +28,6 @@ export const GUTTER_REBUILD_META = "gutterMarks/rebuild";
 
 export type GutterChannel = "comment" | "foreshadow" | "review";
 
-const GUTTER_BLOCK_KINDS = new Set([
-  "paragraph",
-  "heading",
-  "blockquote",
-  "listItem",
-  "tableCell",
-]);
-
 /** チャネル → 表示順。widget key にも同順で刻む。 */
 const CHANNEL_ORDER: GutterChannel[] = ["comment", "foreshadow", "review"];
 
@@ -112,10 +104,14 @@ export function buildGutterWidgetDom(channels: GutterChannel[]): HTMLElement {
 function buildGutterDecorations(state: EditorState): DecorationSet {
   const decos: Decoration[] = [];
   state.doc.descendants((node, pos) => {
-    if (!GUTTER_BLOCK_KINDS.has(node.type.name)) return true;
+    // 最内の textblock (paragraph/heading 等) にのみ描く。blockquote/listItem/
+    // tableCell などのコンテナ側にも描くと内側の段落と二重になる
+    // (offsetMap の「nested block を持つブロックは自前テキストを出さない」
+    // passthrough ガードと同じ理由)。sceneBeat は本文ではないので対象外。
+    if (!node.isTextblock || node.type.name === "sceneBeat") return true;
 
     const channels = collectChannels(node);
-    if (channels.length === 0) return true;
+    if (channels.length === 0) return false;
 
     const ordered = CHANNEL_ORDER.filter((c) => channels.includes(c));
     decos.push(
@@ -124,7 +120,8 @@ function buildGutterDecorations(state: EditorState): DecorationSet {
         key: `gutter-${pos}-${ordered.join(".")}`,
       }),
     );
-    return true;
+    // textblock の中に textblock は無いのでこれ以上潜らない
+    return false;
   });
   return DecorationSet.create(state.doc, decos);
 }

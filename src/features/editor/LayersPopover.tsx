@@ -229,7 +229,9 @@ export function LayersPopover({
       toggleShowForeshadowMarks();
       dispatchMeta(GUTTER_REBUILD_META);
     }
-    if (showAnnotations) {
+    // 校閲行は scene でのみ表示している — 見えていないトグルを
+    // グローバルにOFF永続化しないよう、hideAll も同じ条件でガードする。
+    if (showAnnotations && isScene) {
       toggleShowAnnotations();
       dispatchMeta(ANNOTATION_REBUILD_META);
     }

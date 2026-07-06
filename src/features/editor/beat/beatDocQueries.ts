@@ -16,9 +16,10 @@ export function countPlacedBeats(doc: ProseMirrorNode | null): number {
 
 /**
  * トップレベル位置 pos にあるノードの「本文 ¶n」番号を返す。
- * n = pos より前に完結しているトップレベル textblock の数 + 1
- * （= そのビートが次に係る段落の番号）。sceneBeat 自身や scene-break
- * などの非 textblock ノードは数えない。
+ * n = pos より前に完結しているトップレベル本文 textblock の数 + 1
+ * （= そのビートが次に係る段落の番号）。sceneBeat は content:"inline*" の
+ * textblock だが本文段落ではないので数えない（scene-break 等の非 textblock
+ * ノードも同様）。
  */
 export function paragraphOrdinalAtPos(
   doc: ProseMirrorNode,
@@ -26,7 +27,11 @@ export function paragraphOrdinalAtPos(
 ): number {
   let ordinal = 0;
   doc.forEach((child, offset) => {
-    if (offset + child.nodeSize <= pos && child.isTextblock) {
+    if (
+      offset + child.nodeSize <= pos &&
+      child.isTextblock &&
+      child.type.name !== "sceneBeat"
+    ) {
       ordinal++;
     }
   });
