@@ -4,30 +4,17 @@ import { AlertTriangle, Info, Loader2, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
+import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
 import {
-  buildMultiPayload,
-  getSceneIdsForScope,
-  CONSISTENCY_PROMPT_VERSION,
-  INTRA_CONSISTENCY_PROMPT_VERSION,
-} from "@/features/post-effect/consistencyPayloadBuilder";
-import {
-  flushPendingSceneSaves,
   listAnnotationsForProject,
   listAnnotationsForScene,
-  runPostEffectMulti,
 } from "@/features/post-effect/api";
-import { getPromptCatalog } from "@/prompts/index";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
-import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import { runConsistencyCheck } from "@/features/kouetsu/runners";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { parseAnnotationMeta } from "@/features/post-effect/annotationMeta";
 import {
@@ -38,7 +25,6 @@ import {
 } from "@/features/post-effect/AnnotationDetails";
 import type {
   PostEffectAnnotation,
-  PostEffectDoneEvent,
   PostEffectSeverity,
 } from "@/features/post-effect/types";
 import { useKouetsuStore } from "@/features/kouetsu/kouetsuStore";
@@ -54,10 +40,6 @@ const SEVERITY_ICONS: Record<PostEffectSeverity, React.ReactNode> = {
   suggestion: <Info size={13} className="text-blue-400 shrink-0" />,
   info: <Info size={13} className="text-muted-foreground shrink-0" />,
 };
-
-type RunOutcome =
-  | { kind: "ok"; effect: "consistency" | "intra"; e: PostEffectDoneEvent }
-  | { kind: "err"; effect: "consistency" | "intra"; error: string };
 
 export function ProjectAnnotationsView() {
   const { t } = useTranslation();
@@ -148,237 +130,101 @@ export function ProjectAnnotationsView() {
     [projectId, storeSetAnnotations],
   );
 
-  const runMulti = useCallback(
-    async (kind: "consistency" | "intra" | "both") => {
-      if (runningAll) return;
-      if (blockIfPolicyOff("analysis")) return;
-      if (blockIfUnlicensed()) return;
-      // シーンが無いプロジェクトは静かに終了 (旧 runAll と同じ挙動)
-      const { nodes } = useTreeStore.getState();
-      if (getSceneIdsForScope(nodes, scopeType, scopeTargetId).length === 0)
-        return;
-      const lang = getCurrentProjectLanguage();
-      const model =
-        useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
-      const customKouetsu = useSettingsStore
-        .getState()
-        .get("aiPrompt.custom.kouetsu", "");
-      const activeSceneId = useTreeStore.getState().activeSceneId;
-      setLaunching(true);
-
-      try {
-        await flushPendingSceneSaves();
-        // runPostEffectMulti は starter() 完了で即 resolve するため、terminal を
-        // 待つには手動 Promise を組む。onError も resolve して Promise.all が
-        // 片方失敗で全体 reject されないようにする。
-        function startOneMulti(
-          effect: "consistency" | "intra",
-        ): Promise<RunOutcome> {
-          return new Promise((resolve) => {
-            const effectType =
-              effect === "consistency"
-                ? ("consistency" as const)
-                : ("intra_scene_consistency" as const);
-            const promptVersion =
-              effect === "consistency"
-                ? CONSISTENCY_PROMPT_VERSION
-                : INTRA_CONSISTENCY_PROMPT_VERSION;
-            // consistency のみ review ロール対象。intra は baseModel(=model)のまま。
-            const ov = resolveRoleSendOverride("post_effect_consistency");
-            const effectiveModel =
-              effect === "consistency" ? (ov.model ?? model) : model;
-            buildMultiPayload(
-              projectId,
-              scopeType,
-              scopeTargetId,
-              effectiveModel,
-              effectType,
-              customKouetsu,
-              effectType === "consistency"
-                ? { provider: ov.provider, endpointId: ov.endpointId }
-                : undefined,
-            )
-              .then((payload) => {
-                if (payload.scenes.length === 0) {
-                  resolve({
-                    kind: "ok",
-                    effect,
-                    e: { run_id: "", annotation_count: 0, from_cache: false },
-                  });
-                  return;
-                }
-                runPostEffectMulti(
-                  {
-                    project_id: projectId,
-                    effect_type: effectType,
-                    scope_type: scopeType,
-                    scope_target_id: scopeTargetId,
-                    model: effectiveModel,
-                    model_override:
-                      effectType === "consistency" ? ov.model : undefined,
-                    provider_override:
-                      effectType === "consistency" ? ov.provider : undefined,
-                    api_variant_override:
-                      effectType === "consistency" ? ov.apiVariant : undefined,
-                    endpoint_id_override:
-                      effectType === "consistency" ? ov.endpointId : undefined,
-                    prompt_version: promptVersion,
-                    input_hash: payload.inputHash,
-                    scenes: payload.scenes,
-                    system_prompt: appendKouetsuGuidance(
-                      effect === "consistency"
-                        ? getPromptCatalog(lang).postEffect.consistencySystem
-                        : getPromptCatalog(lang).postEffect.intraSystem,
-                      customKouetsu,
-                    ),
-                  },
-                  {
-                    onDone: (e) => resolve({ kind: "ok", effect, e }),
-                    onError: (e) =>
-                      resolve({ kind: "err", effect, error: e.error }),
-                  },
-                ).catch((err) =>
-                  resolve({ kind: "err", effect, error: String(err) }),
-                );
-              })
-              .catch((err) =>
-                resolve({ kind: "err", effect, error: String(err) }),
-              );
-          });
-        }
-
-        if (kind === "both") {
-          const [resA, resB] = await Promise.all([
-            startOneMulti("consistency"),
-            startOneMulti("intra"),
-          ]);
-          await afterRunAll(activeSceneId);
-          setLaunching(false);
-
-          const errors: string[] = [];
-          if (resA.kind === "err") errors.push(`Codex: ${resA.error}`);
-          if (resB.kind === "err")
-            errors.push(
-              `${t("kouetsu.consistency.intraPrefix")}: ${resB.error}`,
-            );
-          // 部分失敗 (一部シーンのみ解析失敗) の summary。片方が完全失敗した
-          // 場合でも、もう片方の部分失敗を握り潰さないよう先に集めておく。
-          const partialSummaries: string[] = [];
-          if (resA.kind === "ok" && resA.e.summary) {
-            partialSummaries.push(`Codex: ${resA.e.summary}`);
-          }
-          if (resB.kind === "ok" && resB.e.summary) {
-            partialSummaries.push(
-              `${t("kouetsu.consistency.intraPrefix")}: ${resB.e.summary}`,
-            );
-          }
-
-          if (errors.length === 2) {
-            postEffectErrorToast(
-              t("kouetsu.projectAnnotations.checkFailed"),
-              errors.join(" / "),
-            );
-            return;
-          }
-          if (errors.length === 1) {
-            const label =
-              resA.kind === "err"
-                ? t("kouetsu.consistency.codexLabel")
-                : t("kouetsu.consistency.intraLabel");
-            postEffectErrorToast(
-              t("kouetsu.projectAnnotations.checkFailedPartial", { label }),
-              errors[0],
-            );
-            // 生き残った側が部分失敗していた場合はその警告も出す。
-            if (partialSummaries.length > 0) {
-              postEffectPartialToast(partialSummaries.join(" / "));
-            }
-          } else {
-            if (partialSummaries.length > 0) {
-              postEffectPartialToast(partialSummaries.join(" / "));
-              return;
-            }
-            const bothCache =
-              resA.kind === "ok" &&
-              resB.kind === "ok" &&
-              resA.e.from_cache === true &&
-              resB.e.from_cache === true;
-            const totalCount =
-              (resA.kind === "ok" ? resA.e.annotation_count : 0) +
-              (resB.kind === "ok" ? resB.e.annotation_count : 0);
-            const consCount = resA.kind === "ok" ? resA.e.annotation_count : 0;
-            const intraCount = resB.kind === "ok" ? resB.e.annotation_count : 0;
-
-            if (bothCache) {
-              toast.info(t("kouetsu.consistency.fromCache"), {
-                description: t("kouetsu.cache.notSent"),
-              });
-            } else if (totalCount === 0) {
-              toast.success(t("kouetsu.projectAnnotations.noIssues"));
-            } else {
-              toast.success(
-                t("kouetsu.consistency.foundCount", { count: totalCount }),
-                {
-                  description: t("kouetsu.consistency.conflictBreakdown", {
-                    consCount,
-                    intraCount,
-                  }),
-                },
-              );
-            }
-          }
-        } else {
-          // consistency または intra 単独
-          const res = await startOneMulti(kind);
-          await afterRunAll(activeSceneId);
-          setLaunching(false);
-
-          if (res.kind === "err") {
-            const label =
-              kind === "consistency"
-                ? t("kouetsu.consistency.codexLabel")
-                : t("kouetsu.consistency.intraLabel");
-            postEffectErrorToast(
-              t("kouetsu.consistency.singleEffectError", { label }),
-              res.error,
-            );
-            return;
-          }
-          // 部分失敗 (一部シーンのみ解析失敗) は warning に集約する。
-          if (postEffectPartialToast(res.e.summary)) {
-            return;
-          }
-          if (res.e.from_cache) {
-            toast.info(t("kouetsu.consistency.fromCache"), {
-              description: t("kouetsu.cache.notSent"),
-            });
-          } else if (res.e.annotation_count === 0) {
-            const label =
-              kind === "consistency"
-                ? t("kouetsu.consistency.codexLabel")
-                : t("kouetsu.consistency.intraLabel");
-            toast.success(
-              t("kouetsu.projectAnnotations.noIssuesOfType", { label }),
-            );
-          } else {
-            toast.success(
-              t("kouetsu.projectAnnotations.foundCount", {
-                count: res.e.annotation_count,
-              }),
-            );
-          }
-        }
-      } catch (e) {
-        console.error("post-effect multi launch error", e);
+  const runMulti = useCallback(async () => {
+    if (runningAll) return;
+    const activeSceneId = useTreeStore.getState().activeSceneId;
+    setLaunching(true);
+    try {
+      const { codex, intra } = await runConsistencyCheck(
+        scopeType === "folder"
+          ? { type: "folder", anchorId: scopeTargetId as string }
+          : { type: "project" },
+      );
+      // ガード拒否は無反応（ガードが toast 済み）。
+      if ("blocked" in codex) {
         setLaunching(false);
+        return;
+      }
+      // 対象 0 件 (両 effect skipped) は静かに終了 (旧 getSceneIds 空と同じ)。
+      if ("skipped" in codex && "skipped" in intra) {
+        setLaunching(false);
+        return;
+      }
+      await afterRunAll(activeSceneId);
+      setLaunching(false);
+
+      const codexCount = codex.ok && "count" in codex ? codex.count : 0;
+      const intraCount = intra.ok && "count" in intra ? intra.count : 0;
+      const codexCache = codex.ok && "fromCache" in codex && codex.fromCache;
+      const intraCache = intra.ok && "fromCache" in intra && intra.fromCache;
+
+      const errors: string[] = [];
+      if (!codex.ok) errors.push(`Codex: ${codex.error}`);
+      if (!intra.ok)
+        errors.push(`${t("kouetsu.consistency.intraPrefix")}: ${intra.error}`);
+      // 部分失敗 (一部シーンのみ解析失敗) の summary。片方が完全失敗した場合でも
+      // もう片方の部分失敗を握り潰さないよう先に集めておく。
+      const partialSummaries: string[] = [];
+      if (codex.ok && "summary" in codex && codex.summary)
+        partialSummaries.push(`Codex: ${codex.summary}`);
+      if (intra.ok && "summary" in intra && intra.summary)
+        partialSummaries.push(
+          `${t("kouetsu.consistency.intraPrefix")}: ${intra.summary}`,
+        );
+
+      if (errors.length === 2) {
         postEffectErrorToast(
-          t("kouetsu.projectAnnotations.launchFailed"),
-          e instanceof Error ? e.message : String(e),
+          t("kouetsu.projectAnnotations.checkFailed"),
+          errors.join(" / "),
+        );
+        return;
+      }
+      if (errors.length === 1) {
+        const label = !codex.ok
+          ? t("kouetsu.consistency.codexLabel")
+          : t("kouetsu.consistency.intraLabel");
+        postEffectErrorToast(
+          t("kouetsu.projectAnnotations.checkFailedPartial", { label }),
+          errors[0],
+        );
+        // 生き残った側が部分失敗していた場合はその警告も出す。
+        if (partialSummaries.length > 0) {
+          postEffectPartialToast(partialSummaries.join(" / "));
+        }
+        return;
+      }
+      if (partialSummaries.length > 0) {
+        postEffectPartialToast(partialSummaries.join(" / "));
+        return;
+      }
+      const bothCache = codexCache && intraCache;
+      const totalCount = codexCount + intraCount;
+      if (bothCache) {
+        toast.info(t("kouetsu.consistency.fromCache"), {
+          description: t("kouetsu.cache.notSent"),
+        });
+      } else if (totalCount === 0) {
+        toast.success(t("kouetsu.projectAnnotations.noIssues"));
+      } else {
+        toast.success(
+          t("kouetsu.consistency.foundCount", { count: totalCount }),
+          {
+            description: t("kouetsu.consistency.conflictBreakdown", {
+              consCount: codexCount,
+              intraCount,
+            }),
+          },
         );
       }
-    },
-    [runningAll, projectId, afterRunAll, t, scopeType, scopeTargetId],
-  );
+    } catch (e) {
+      console.error("post-effect multi launch error", e);
+      setLaunching(false);
+      postEffectErrorToast(
+        t("kouetsu.projectAnnotations.launchFailed"),
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }, [runningAll, afterRunAll, t, scopeType, scopeTargetId]);
 
   // ---- grouping ----
   type Group = {
@@ -466,7 +312,7 @@ export function ProjectAnnotationsView() {
           <button
             type="button"
             disabled={runningAll || analysisGate.presentation !== "enabled"}
-            onClick={() => void runMulti("both")}
+            onClick={() => void runMulti()}
             title={
               analysisGate.tooltip ?? t("kouetsu.consistency.runAllScenes")
             }

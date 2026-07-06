@@ -4,35 +4,20 @@ import { AlertTriangle, Info, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import { useEditorStore } from "@/features/editor/editorStore";
-import {
-  buildTimelinePayload,
-  TIMELINE_CONSISTENCY_PROMPT_VERSION,
-} from "@/features/post-effect/timelinePayloadBuilder";
 import {
   detectTimelineHygiene,
   type TimelineHygieneFinding,
 } from "@/features/post-effect/timelineHygiene";
 import {
-  flushPendingSceneSaves,
   listAnnotationsForProject,
   listAnnotationsForScene,
-  runPostEffectMulti,
 } from "@/features/post-effect/api";
-import { getPromptCatalog } from "@/prompts/index";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
-import {
-  appendKouetsuGuidance,
-  appendTimelineGuidance,
-} from "@/features/post-effect/customInstruction";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import { runTimelineCheck } from "@/features/kouetsu/runners";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
@@ -139,68 +124,23 @@ export function ProjectTimelineConsistencyView() {
 
   const runAll = useCallback(async () => {
     if (runningAll) return;
-    if (blockIfPolicyOff("analysis")) return;
-    if (blockIfUnlicensed()) return;
-    const lang = getCurrentProjectLanguage();
-    const ov = resolveRoleSendOverride("post_effect_timeline_consistency");
-    const model =
-      ov.model ??
-      useAiSettingsStore.getState().settings?.model ??
-      "gpt-4o-mini";
-    const customKouetsu = useSettingsStore
-      .getState()
-      .get("aiPrompt.custom.kouetsu", "");
     const activeSceneId = useTreeStore.getState().activeSceneId;
     setLaunching(true);
     try {
-      await flushPendingSceneSaves();
-      const payload = await buildTimelinePayload(
-        "project",
-        null,
-        model,
-        customKouetsu,
-        { provider: ov.provider, endpointId: ov.endpointId },
-      );
-      if (payload.scenes.length === 0) {
+      const outcome = await runTimelineCheck();
+      // ガード拒否は無反応（ガードが toast 済み）。
+      if ("blocked" in outcome) {
+        setLaunching(false);
+        return;
+      }
+      // story-time 未配置で対象 0 件 → noScenesPlaced を案内。
+      if ("skipped" in outcome) {
         setLaunching(false);
         toast.info(t("kouetsu.projectTimeline.noScenesPlaced"), {
           description: t("kouetsu.projectTimeline.placeScenesHint"),
         });
         return;
       }
-      const outcome = await new Promise<{
-        ok: boolean;
-        summary?: string;
-        error?: string;
-      }>((resolve) => {
-        runPostEffectMulti(
-          {
-            project_id: projectId,
-            effect_type: "timeline_consistency",
-            scope_type: "project",
-            scope_target_id: null,
-            model,
-            model_override: ov.model,
-            provider_override: ov.provider,
-            api_variant_override: ov.apiVariant,
-            endpoint_id_override: ov.endpointId,
-            prompt_version: TIMELINE_CONSISTENCY_PROMPT_VERSION,
-            input_hash: payload.inputHash,
-            scenes: payload.scenes,
-            system_prompt: appendTimelineGuidance(
-              appendKouetsuGuidance(
-                getPromptCatalog(lang).postEffect.timelineConsistencySystem,
-                customKouetsu,
-              ),
-              payload.timelineContext,
-            ),
-          },
-          {
-            onDone: (e) => resolve({ ok: true, summary: e.summary }),
-            onError: (e) => resolve({ ok: false, error: e.error }),
-          },
-        ).catch((err) => resolve({ ok: false, error: String(err) }));
-      });
       await afterRunAll(activeSceneId);
       setLaunching(false);
       if (!outcome.ok) {
@@ -220,7 +160,7 @@ export function ProjectTimelineConsistencyView() {
         e instanceof Error ? e.message : String(e),
       );
     }
-  }, [runningAll, projectId, afterRunAll]);
+  }, [runningAll, afterRunAll, t]);
 
   const groups = useMemo(() => {
     const acc = new Map<

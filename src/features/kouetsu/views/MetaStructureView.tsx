@@ -5,31 +5,10 @@ import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { blockIfUnlicensed } from "@/features/license/gate";
 import { useLensStore } from "@/features/post-effect/lensStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
-import {
-  buildMultiPayload,
-  getSceneIdsForScope,
-} from "@/features/post-effect/consistencyPayloadBuilder";
-import {
-  buildMetaStructurePayload,
-  META_STRUCTURE_PROMPT_VERSION,
-} from "@/features/post-effect/metaStructurePayloadBuilder";
-import {
-  flushPendingSceneSaves,
-  runPostEffect,
-  runPostEffectMulti,
-} from "@/features/post-effect/api";
-import { getPromptCatalog } from "@/prompts/index";
-import { getCurrentProjectLanguage } from "@/features/project/projectStore";
-import {
-  appendKouetsuGuidance,
-  appendStoryContextGuidance,
-} from "@/features/post-effect/customInstruction";
-import { selectStoryContext } from "@/features/post-effect/storyContext";
-import { useSettingsStore } from "@/features/settings/settingsStore";
+import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
+import { runMetaStructureCheck } from "@/features/kouetsu/runners";
 import { TensionCurve } from "@/features/post-effect/TensionCurve";
 import { CausalityMapButton } from "@/features/map/CausalityMapButton";
 import {
@@ -146,55 +125,14 @@ export function MetaStructureView({ scope, sceneId }: Props) {
 
   const runScene = useCallback(async () => {
     if (running || !sceneId) return;
-    if (blockIfPolicyOff("analysis")) return;
-    if (blockIfUnlicensed()) return;
-    const lang = getCurrentProjectLanguage();
-    const model =
-      useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
-    const customKouetsu = useSettingsStore
-      .getState()
-      .get("aiPrompt.custom.kouetsu", "");
-    const storyContext = selectStoryContext(
-      useTreeStore.getState().nodes,
-      sceneId,
-    );
     setLaunching(true);
     try {
-      await flushPendingSceneSaves(sceneId);
-      const payload = await buildMetaStructurePayload(
-        sceneId,
-        model,
-        customKouetsu,
-        storyContext,
-      );
-      const outcome = await new Promise<{ ok: boolean; error?: string }>(
-        (resolve) => {
-          runPostEffect(
-            {
-              project_id: projectId,
-              effect_type: "meta_structure",
-              scope_type: "scene",
-              scope_target_id: sceneId,
-              model,
-              prompt_version: META_STRUCTURE_PROMPT_VERSION,
-              input_hash: payload.inputHash,
-              codex_payload_json: "[]",
-              scene_text: payload.sceneText,
-              system_prompt: appendStoryContextGuidance(
-                appendKouetsuGuidance(
-                  getPromptCatalog(lang).postEffect.metaStructureSystem,
-                  customKouetsu,
-                ),
-                storyContext,
-              ),
-            },
-            {
-              onDone: () => resolve({ ok: true }),
-              onError: (e) => resolve({ ok: false, error: e.error }),
-            },
-          ).catch((err) => resolve({ ok: false, error: String(err) }));
-        },
-      );
+      const outcome = await runMetaStructureCheck({ type: "scene", sceneId });
+      // ガード拒否 / 対象 0 件は無反応（runner・ガードが処理済み）。
+      if ("skipped" in outcome || "blocked" in outcome) {
+        setLaunching(false);
+        return;
+      }
       await loadLens(projectId);
       setLaunching(false);
       if (!outcome.ok) {
@@ -214,58 +152,18 @@ export function MetaStructureView({ scope, sceneId }: Props) {
 
   const runProject = useCallback(async () => {
     if (running) return;
-    if (blockIfPolicyOff("analysis")) return;
-    if (blockIfUnlicensed()) return;
-    const { nodes } = useTreeStore.getState();
-    if (getSceneIdsForScope(nodes, scopeType, scopeTargetId).length === 0)
-      return;
-    const lang = getCurrentProjectLanguage();
-    const model =
-      useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
-    const customKouetsu = useSettingsStore
-      .getState()
-      .get("aiPrompt.custom.kouetsu", "");
     setLaunching(true);
     try {
-      await flushPendingSceneSaves();
-      const payload = await buildMultiPayload(
-        projectId,
-        scopeType,
-        scopeTargetId,
-        model,
-        "meta_structure",
-        customKouetsu,
+      const outcome = await runMetaStructureCheck(
+        scopeType === "folder"
+          ? { type: "folder", anchorId: scopeTargetId as string }
+          : { type: "project" },
       );
-      if (payload.scenes.length === 0) {
+      // ガード拒否 / 対象 0 件は無反応（runner・ガードが処理済み）。
+      if ("skipped" in outcome || "blocked" in outcome) {
         setLaunching(false);
         return;
       }
-      const outcome = await new Promise<{
-        ok: boolean;
-        summary?: string;
-        error?: string;
-      }>((resolve) => {
-        runPostEffectMulti(
-          {
-            project_id: projectId,
-            effect_type: "meta_structure",
-            scope_type: scopeType,
-            scope_target_id: scopeTargetId,
-            model,
-            prompt_version: META_STRUCTURE_PROMPT_VERSION,
-            input_hash: payload.inputHash,
-            scenes: payload.scenes,
-            system_prompt: appendKouetsuGuidance(
-              getPromptCatalog(lang).postEffect.metaStructureSystem,
-              customKouetsu,
-            ),
-          },
-          {
-            onDone: (e) => resolve({ ok: true, summary: e.summary }),
-            onError: (e) => resolve({ ok: false, error: e.error }),
-          },
-        ).catch((err) => resolve({ ok: false, error: String(err) }));
-      });
       await loadLens(projectId);
       setLaunching(false);
       if (!outcome.ok) {
