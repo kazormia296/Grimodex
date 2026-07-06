@@ -44,6 +44,7 @@ import type {
   PostEffectSeverity,
   SceneLensRecord,
 } from "@/features/post-effect/types";
+import { useResolvedKouetsuScope } from "@/features/kouetsu/useResolvedKouetsuScope";
 
 const SEVERITY_ICON: Record<PostEffectSeverity, React.ReactNode> = {
   error: <XCircle size={13} className="shrink-0 text-destructive" />,
@@ -86,21 +87,42 @@ export function MetaStructureView({ scope, sceneId }: Props) {
   // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
   // 実行中なのにボタンが通常表示へ戻る）。
   const [launching, setLaunching] = useState(false);
-  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
-  const sceneRunning = useIsPostEffectRunning(
-    "meta_structure",
-    "scene",
-    sceneId,
-  );
-  const projectRunning = useIsPostEffectRunning("meta_structure", "project");
-  const storeRunning = sceneRunning || projectRunning;
-  const running = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
   const nodes = useTreeStore((s) => s.nodes);
   const bySceneId = useLensStore((s) => s.bySceneId);
   const loadLens = useLensStore((s) => s.load);
+
+  // 校閲スコープ。folder のとき subtree に絞る（prop の scope は "current" |
+  // "project" のままで、folder は "project" 扱いで渡ってくる）。宙に浮いた
+  // folder anchor は resolve 段階で project へ倒れる。
+  const kouetsuScope = useResolvedKouetsuScope();
+  const scopeType =
+    kouetsuScope.type === "folder" ? ("folder" as const) : ("project" as const);
+  const scopeTargetId =
+    kouetsuScope.type === "folder" ? kouetsuScope.anchorId : null;
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。project 側は
+  // scopeType/scopeTargetId 導出後に呼ぶことで folder run を正しく区別する
+  // （run 実行中に unmount→remount してもスピナーが消えない）。scene 側は
+  // シーン単位の run のため対象外（現状維持）。
+  const sceneRunning = useIsPostEffectRunning(
+    "meta_structure",
+    "scene",
+    sceneId,
+  );
+  const projectRunning = useIsPostEffectRunning(
+    "meta_structure",
+    scopeType,
+    scopeTargetId ?? undefined,
+  );
+  const storeRunning = sceneRunning || projectRunning;
+  const running = launching || storeRunning;
+  // 表示フィルタ用の subtree scene 集合（folder 以外は null = 絞り込みなし）。
+  const visibleSceneIds = useMemo(() => {
+    if (kouetsuScope.type !== "folder") return null;
+    return new Set(getSceneIdsForScope(nodes, "folder", kouetsuScope.anchorId));
+  }, [kouetsuScope, nodes]);
 
   const tensionSeries = useMemo(
     () => buildTensionSeries(nodes, bySceneId),
@@ -195,7 +217,8 @@ export function MetaStructureView({ scope, sceneId }: Props) {
     if (blockIfPolicyOff("analysis")) return;
     if (blockIfUnlicensed()) return;
     const { nodes } = useTreeStore.getState();
-    if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+    if (getSceneIdsForScope(nodes, scopeType, scopeTargetId).length === 0)
+      return;
     const lang = getCurrentProjectLanguage();
     const model =
       useAiSettingsStore.getState().settings?.model ?? "gpt-4o-mini";
@@ -207,8 +230,8 @@ export function MetaStructureView({ scope, sceneId }: Props) {
       await flushPendingSceneSaves();
       const payload = await buildMultiPayload(
         projectId,
-        "project",
-        null,
+        scopeType,
+        scopeTargetId,
         model,
         "meta_structure",
         customKouetsu,
@@ -226,8 +249,8 @@ export function MetaStructureView({ scope, sceneId }: Props) {
           {
             project_id: projectId,
             effect_type: "meta_structure",
-            scope_type: "project",
-            scope_target_id: null,
+            scope_type: scopeType,
+            scope_target_id: scopeTargetId,
             model,
             prompt_version: META_STRUCTURE_PROMPT_VERSION,
             input_hash: payload.inputHash,
@@ -261,19 +284,23 @@ export function MetaStructureView({ scope, sceneId }: Props) {
         e instanceof Error ? e.message : String(e),
       );
     }
-  }, [running, projectId, loadLens, t]);
+  }, [running, projectId, loadLens, t, scopeType, scopeTargetId]);
 
   const projectGroups = useMemo(() => {
     if (scope !== "project") return [];
-    return [...bySceneId.entries()]
-      .map(([sid, lenses]) => ({
-        sceneId: sid,
-        label: sceneTitle(sid),
-        lenses,
-      }))
-      .filter((g) => g.lenses.length > 0);
+    return (
+      [...bySceneId.entries()]
+        // folder スコープでは subtree 外シーンの lens を隠す（project 時は素通し）。
+        .filter(([sid]) => !visibleSceneIds || visibleSceneIds.has(sid))
+        .map(([sid, lenses]) => ({
+          sceneId: sid,
+          label: sceneTitle(sid),
+          lenses,
+        }))
+        .filter((g) => g.lenses.length > 0)
+    );
     // sceneTitle depends on scenes
-  }, [bySceneId, scope, scenes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bySceneId, scope, scenes, visibleSceneIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentLenses = sceneId ? (bySceneId.get(sceneId) ?? []) : [];
   const disabled = running || analysisGate.presentation !== "enabled";

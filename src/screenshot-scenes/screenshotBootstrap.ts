@@ -109,7 +109,8 @@ export function applyScreenshotUiState(): void {
   const { lint, annotations } = c;
   useKouetsuStore.setState({
     activeTab: "issues",
-    activeIssuesScope: "current",
+    scope: { type: "scene" },
+    statusFilter: "open",
   });
   const lintDiagnostics = [
     {

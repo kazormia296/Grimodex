@@ -1,65 +1,55 @@
 import type { Diagnostic } from "@/features/lint/types";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
-import type { IssuesScope } from "./kouetsuStore";
-
-const TYPO_RULE_ID = "ja/typo-confusable";
+import type { KouetsuScope, KouetsuStatusFilter } from "./kouetsuStore";
 
 export interface IssueCounts {
-  linterCount: number;
-  typoLintCount: number;
-  typoAiCount: number;
-  typoCount: number;
-  consistencyCount: number;
-  impactCount: number;
+  linterCount: number | null;
+  typoCount: number | null;
+  consistencyCount: number | null;
+  impactCount: number | null;
+  reviewCount: number | null;
+  intentCount: number | null;
 }
 
 /**
- * Derive the kouetsu Issues panel section counts.
- *
- * The scope→[] gate lives INSIDE this helper: consistency / typo-AI counts
- * only see scene annotations when scope === "current" with a non-null
- * activeSceneId, so the scope-gated semantics are part of the unit under test.
- *
- * typo Lint diagnostics are counted in BOTH linterCount (校正: full Linter
- * panel) and typoCount (誤字脱字): an intentional MVP double-count.
+ * 受信箱グループのバッジ件数。不変条件: バッジは「いま表示されている件数」に
+ * 一致する実数のみ。scene スコープ + open フィルタ以外では件数を知らないので
+ * null（バッジ非表示）を返す — 0 固定の嘘バッジ（旧実装）を出さない。
+ * typo lint は校正(linterCount)のみに計上（旧 MVP の意図的二重計上を廃止）。
  */
 export function deriveIssueCounts({
   diagnostics,
   annotationsByScene,
   scope,
+  statusFilter,
   activeSceneId,
 }: {
   diagnostics: Diagnostic[];
   annotationsByScene: Map<string, PostEffectAnnotation[]>;
-  scope: IssuesScope;
+  scope: KouetsuScope;
+  statusFilter: KouetsuStatusFilter;
   activeSceneId: string | null;
 }): IssueCounts {
-  const sceneAnnotations =
-    scope === "current" && activeSceneId
-      ? (annotationsByScene.get(activeSceneId) ?? [])
-      : [];
-
-  const typoLintCount = diagnostics.filter(
-    (d) => d.rule_id === TYPO_RULE_ID,
-  ).length;
-  const linterCount = diagnostics.length;
-  const consistencyCount = sceneAnnotations.filter(
-    (a) => a.status === "open" && a.category === "consistency_anchor",
-  ).length;
-  const typoAiCount = sceneAnnotations.filter(
-    (a) => a.status === "open" && a.category === "typo_anchor",
-  ).length;
-  const typoCount = typoLintCount + typoAiCount;
-  const impactCount = sceneAnnotations.filter(
-    (a) => a.status === "open" && a.category === "impact_review_anchor",
-  ).length;
-
+  const NONE: IssueCounts = {
+    linterCount: null,
+    typoCount: null,
+    consistencyCount: null,
+    impactCount: null,
+    reviewCount: null,
+    intentCount: null,
+  };
+  if (scope.type !== "scene" || statusFilter !== "open" || !activeSceneId) {
+    return NONE;
+  }
+  const anns = annotationsByScene.get(activeSceneId) ?? [];
+  const openOf = (category: string) =>
+    anns.filter((a) => a.status === "open" && a.category === category).length;
   return {
-    linterCount,
-    typoLintCount,
-    typoAiCount,
-    typoCount,
-    consistencyCount,
-    impactCount,
+    linterCount: diagnostics.length,
+    typoCount: openOf("typo_anchor"),
+    consistencyCount: openOf("consistency_anchor"),
+    impactCount: openOf("impact_review_anchor"),
+    reviewCount: openOf("review"),
+    intentCount: openOf("intent_anchor"),
   };
 }

@@ -1337,7 +1337,6 @@
     },
     "tab": {
       "issues": "Issues",
-      "editorial": "Editorial",
       "comments": "Comments",
       "blocker": "Blockers"
     },
@@ -1363,17 +1362,20 @@
     },
     "comments": {
       "empty": "No comments",
-      "emptyHint": "Select text and press {{shortcut}} to add a manual comment; pseudo-comments from the Editorial tab are also aggregated here",
+      "emptyHint": "Select text and press {{shortcut}} to add a comment. Generate AI comments with the “AI Comment” button above.",
       "jumpToLocation": "Open and select location"
     },
     "scope": {
       "current": "Current scene",
-      "project": "Project",
-      "ignored": "Excluded"
+      "project": "Project"
+    },
+    "scopePicker": "Select check scope",
+    "filter": {
+      "open": "Open",
+      "dismissed": "Dismissed"
     },
     "editorial": {
       "review": "Review",
-      "pseudoComment": "Pseudo-comments",
       "intentDrift": "Intent drift",
       "metaStructure": "Meta structure",
       "timeline": "Timeline"
@@ -1425,7 +1427,6 @@
       "runTooltip": "Run meta-structure review"
     },
     "pseudoComment": {
-      "projectUnavailable": "Pseudo-comments are generated per scene. Use the Comments tab for cross-project view",
       "emptyIgnored": "No ignored pseudo-comments",
       "generationFailed": "Failed to generate pseudo comments",
       "noComments": "No comments generated",
@@ -1433,7 +1434,6 @@
       "targetProfileRequired": "Enter target reader profile in project settings to enable",
       "requiresTargetProfile": " (requires target reader setting)",
       "generateButton": "AI Comment",
-      "empty": "No comments yet",
       "runTooltip": "Generate comments with the selected persona"
     },
     "review": {
@@ -1453,8 +1453,6 @@
       "checkFailed": "Typo check failed",
       "noIssues": "No typos found",
       "launchFailed": "Failed to launch typo check",
-      "localDetection": "Local Detection",
-      "localEmpty": "No confirmed typos found",
       "aiDetection": "AI Detection",
       "aiEmpty": "AI check not run / no findings",
       "resolvedIgnored": "Resolved / Ignored",

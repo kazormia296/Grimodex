@@ -8,8 +8,6 @@ import {
   Globe2,
   FolderTree,
   FileText,
-  Check,
-  Circle,
   BookOpen,
   BookMarked,
   NotepadText,
@@ -21,8 +19,7 @@ import {
 } from "lucide-react";
 import { useChatStore } from "../chatStore";
 import { useTreeStore } from "@/features/tree/treeStore";
-import type { TreeNodeData } from "@/features/tree/treeStore";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { ScopeTreePickerList } from "@/features/tree/ScopeTreePicker";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -88,35 +85,6 @@ interface ChatPanelHeaderProps {
   onToggleRag: () => void;
 }
 
-interface TreeRow {
-  node: TreeNodeData;
-  depth: number;
-}
-
-/** Flatten nodes into a depth-tagged DFS order using parentId chains. */
-function flattenTree(nodes: TreeNodeData[]): TreeRow[] {
-  const childrenByParent = new Map<string | null, TreeNodeData[]>();
-  for (const n of nodes) {
-    const key = n.parentId;
-    const arr = childrenByParent.get(key) ?? [];
-    arr.push(n);
-    childrenByParent.set(key, arr);
-  }
-  for (const arr of childrenByParent.values()) {
-    arr.sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-  }
-  const out: TreeRow[] = [];
-  function walk(parentId: string | null, depth: number) {
-    const kids = childrenByParent.get(parentId) ?? [];
-    for (const n of kids) {
-      out.push({ node: n, depth });
-      if (n.nodeType === "folder") walk(n.id, depth + 1);
-    }
-  }
-  walk(null, 0);
-  return out;
-}
-
 export function ChatPanelHeader({
   sessionsPanelOpen,
   setSessionsPanelOpen,
@@ -146,8 +114,6 @@ export function ChatPanelHeader({
   // Phase 3b: スレッド focus override（補助チップで表示・解除。scope dropdown とは別）。
   const threadFocus = useChatStore((s) => s.threadFocusOverride);
   const clearThreadFocus = useChatStore((s) => s.clearThreadFocusOverride);
-
-  const rows = useMemo(() => flattenTree(nodes), [nodes]);
 
   // snippet スコープのラベル解決にタイトルが要る。Snippet パネル未訪問だと
   // store が空のままなので、scope が snippet の間はロードを保証する。
@@ -377,78 +343,21 @@ export function ChatPanelHeader({
                 </div>
 
                 {pickerTab === "scene" && (
-                  <>
-                    {/* Project (root) */}
-                    <button
-                      type="button"
-                      onClick={handlePickProject}
-                      className={[
-                        "flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-xs",
-                        chatScope === "project"
-                          ? "bg-accent font-medium text-foreground"
-                          : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                      ].join(" ")}
-                    >
-                      <Globe className="h-3.5 w-3.5 shrink-0" />
-                      <span className="flex-1">{t("chat.scope.project")}</span>
-                      {chatScope === "project" && (
-                        <Check className="h-3 w-3 shrink-0" />
-                      )}
-                    </button>
-
-                    <div className="max-h-72 overflow-y-auto py-1">
-                      {rows.length === 0 && (
-                        <p className="px-3 py-2 text-xs text-muted-foreground">
-                          {t("chat.noScenes")}
-                        </p>
-                      )}
-                      {rows.map(({ node, depth }) => {
-                        const isFolder = node.nodeType === "folder";
-                        if (!isFolder && node.nodeType !== "scene") return null;
-                        const isSelected = isFolder
-                          ? chatScope === "folder" && scopeAnchorId === node.id
-                          : chatScope === "scene" && chatSceneId === node.id;
-                        const isEditorActive =
-                          !isFolder && editorActiveSceneId === node.id;
-                        return (
-                          <button
-                            key={node.id}
-                            type="button"
-                            onClick={() =>
-                              isFolder
-                                ? handlePickFolder(node.id)
-                                : handlePickScene(node.id)
-                            }
-                            style={{ paddingLeft: 12 + depth * 12 }}
-                            className={[
-                              "flex w-full items-center gap-1.5 py-1 pr-3 text-left text-xs",
-                              isSelected
-                                ? "bg-accent font-medium text-foreground"
-                                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                            ].join(" ")}
-                          >
-                            {isFolder ? (
-                              <FolderTree className="h-3 w-3 shrink-0 opacity-70" />
-                            ) : (
-                              <FileText className="h-3 w-3 shrink-0 opacity-70" />
-                            )}
-                            <span className="flex-1 truncate">
-                              {node.title}
-                            </span>
-                            {isEditorActive && (
-                              <Circle
-                                className="h-2 w-2 shrink-0 fill-primary text-primary"
-                                aria-label={t("chat.scope.editorHere")}
-                              />
-                            )}
-                            {isSelected && (
-                              <Check className="h-3 w-3 shrink-0" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </>
+                  <ScopeTreePickerList
+                    selection={
+                      chatScope === "project"
+                        ? { type: "project" }
+                        : chatScope === "folder" && scopeAnchorId
+                          ? { type: "folder", anchorId: scopeAnchorId }
+                          : chatScope === "scene"
+                            ? { type: "scene", sceneId: chatSceneId }
+                            : null
+                    }
+                    editorActiveSceneId={editorActiveSceneId}
+                    onPickScene={handlePickScene}
+                    onPickFolder={handlePickFolder}
+                    onPickProject={handlePickProject}
+                  />
                 )}
 
                 {pickerTab === "codex" && (

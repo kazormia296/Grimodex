@@ -4,11 +4,8 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { KouetsuPanel } from "./KouetsuPanel";
 import { useKouetsuStore } from "./kouetsuStore";
 
-vi.mock("./IssuesTab", () => ({
-  IssuesTab: () => <div data-testid="stub-issues" />,
-}));
-vi.mock("./EditorialTab", () => ({
-  EditorialTab: () => <div data-testid="stub-editorial" />,
+vi.mock("./IssuesInbox", () => ({
+  IssuesInbox: () => <div data-testid="stub-issues" />,
 }));
 vi.mock("./CommentsTab", () => ({
   CommentsTab: () => <div data-testid="stub-comments" />,
@@ -28,7 +25,7 @@ describe("KouetsuPanel タブの ARIA tablist パターン", () => {
     expect(tablist).toHaveAccessibleName();
 
     const tabs = screen.getAllByRole("tab");
-    expect(tabs).toHaveLength(4);
+    expect(tabs).toHaveLength(3);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
     for (const tab of tabs.slice(1)) {
       expect(tab).toHaveAttribute("aria-selected", "false");
@@ -49,9 +46,9 @@ describe("KouetsuPanel タブの ARIA tablist パターン", () => {
       expect(tab.tabIndex).toBe(-1);
     }
 
-    fireEvent.click(tabs[2]);
-    expect(tabs[2]).toHaveAttribute("aria-selected", "true");
-    expect(tabs[2].tabIndex).toBe(0);
+    fireEvent.click(tabs[1]);
+    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+    expect(tabs[1].tabIndex).toBe(0);
     expect(tabs[0].tabIndex).toBe(-1);
     expect(screen.getByTestId("stub-comments")).toBeInTheDocument();
   });
@@ -64,12 +61,13 @@ describe("KouetsuPanel タブの ARIA tablist パターン", () => {
     fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
     expect(tabs[1]).toHaveAttribute("aria-selected", "true");
     expect(document.activeElement).toBe(tabs[1]);
-    expect(screen.getByTestId("stub-editorial")).toBeInTheDocument();
+    expect(screen.getByTestId("stub-comments")).toBeInTheDocument();
 
     fireEvent.keyDown(tabs[1], { key: "ArrowRight" });
+    expect(tabs[2]).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("stub-blocker")).toBeInTheDocument();
+
     fireEvent.keyDown(tabs[2], { key: "ArrowRight" });
-    expect(tabs[3]).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(tabs[3], { key: "ArrowRight" });
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
     expect(document.activeElement).toBe(tabs[0]);
   });
@@ -80,17 +78,17 @@ describe("KouetsuPanel タブの ARIA tablist パターン", () => {
     tabs[0].focus();
 
     fireEvent.keyDown(tabs[0], { key: "ArrowLeft" });
-    expect(tabs[3]).toHaveAttribute("aria-selected", "true");
-    expect(document.activeElement).toBe(tabs[3]);
+    expect(tabs[2]).toHaveAttribute("aria-selected", "true");
+    expect(document.activeElement).toBe(tabs[2]);
     expect(screen.getByTestId("stub-blocker")).toBeInTheDocument();
 
-    fireEvent.keyDown(tabs[3], { key: "Home" });
+    fireEvent.keyDown(tabs[2], { key: "Home" });
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
     expect(document.activeElement).toBe(tabs[0]);
 
     fireEvent.keyDown(tabs[0], { key: "End" });
-    expect(tabs[3]).toHaveAttribute("aria-selected", "true");
-    expect(document.activeElement).toBe(tabs[3]);
+    expect(tabs[2]).toHaveAttribute("aria-selected", "true");
+    expect(document.activeElement).toBe(tabs[2]);
   });
 
   it("タブパネルの aria-labelledby は選択タブに追従する", () => {
@@ -107,5 +105,21 @@ describe("KouetsuPanel タブの ARIA tablist パターン", () => {
       expect(tab.className).toContain("focus-visible:ring-1");
       expect(tab.className).toContain("focus-visible:ring-ring");
     }
+  });
+
+  it("persist 済みの旧タブ値 editorial は issues へ正規化される", () => {
+    useKouetsuStore.setState({ activeTab: "editorial" as never });
+    render(<KouetsuPanel />);
+    expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByTestId("stub-issues")).toBeInTheDocument();
+  });
+
+  it("パネルヘッダは data-panel-header を持つ（PanelHeader 正本）", () => {
+    const { container } = render(<KouetsuPanel />);
+    expect(container.querySelector("[data-panel-header]")).not.toBeNull();
+    expect(container.querySelectorAll("[data-panel-header]")).toHaveLength(1);
   });
 });

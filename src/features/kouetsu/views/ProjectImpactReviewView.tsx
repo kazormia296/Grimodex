@@ -3,8 +3,10 @@ import { useTranslation } from "react-i18next";
 import { Info, Loader2 } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { listAnnotationsForProject } from "@/features/post-effect/api";
+import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
+import { useResolvedKouetsuScope } from "@/features/kouetsu/useResolvedKouetsuScope";
 
 /**
  * 影響レビュー (impact_review_anchor) のプロジェクト全件ビュー。
@@ -18,6 +20,15 @@ export function ProjectImpactReviewView() {
 
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
+  const nodes = useTreeStore((s) => s.nodes);
+
+  // folder スコープでは subtree 外シーンの指摘を隠す（表示専用ビュー）。
+  // 宙に浮いた folder anchor は resolve 段階で project へ倒れる（絞り込み無効）。
+  const kouetsuScope = useResolvedKouetsuScope();
+  const visibleSceneIds = useMemo(() => {
+    if (kouetsuScope.type !== "folder") return null;
+    return new Set(getSceneIdsForScope(nodes, "folder", kouetsuScope.anchorId));
+  }, [kouetsuScope, nodes]);
 
   const sceneTitle = (sceneId: string) =>
     scenes.find((s) => s.id === sceneId)?.title ?? sceneId;
@@ -36,8 +47,11 @@ export function ProjectImpactReviewView() {
   }, [projectId]);
 
   const groups = useMemo(() => {
+    const source = visibleSceneIds
+      ? annotations.filter((a) => a.sceneId && visibleSceneIds.has(a.sceneId))
+      : annotations;
     const acc = new Map<string, PostEffectAnnotation[]>();
-    for (const ann of annotations) {
+    for (const ann of source) {
       if (!ann.sceneId) continue;
       const arr = acc.get(ann.sceneId) ?? [];
       arr.push(ann);
@@ -49,7 +63,7 @@ export function ProjectImpactReviewView() {
       items,
     }));
     // sceneTitle depends on scenes
-  }, [annotations, scenes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [annotations, scenes, visibleSceneIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (

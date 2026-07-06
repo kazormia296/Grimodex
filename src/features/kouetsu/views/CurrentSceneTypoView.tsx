@@ -16,10 +16,8 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { useEditorStore } from "@/features/editor/editorStore";
-import { useLintStore } from "@/features/lint/lintStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useIsPostEffectRunning } from "@/features/post-effect/runStore";
 import {
@@ -45,15 +43,11 @@ import {
   TypoChip,
   TypoContrastRow,
 } from "@/features/post-effect/AnnotationDetails";
-import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
-import type { Diagnostic } from "@/features/lint/types";
 import { postEffectErrorToast } from "@/features/post-effect/errorToast";
 import type {
   PostEffectAnnotation,
   PostEffectSeverity,
 } from "@/features/post-effect/types";
-
-const TYPO_RULE_ID = "ja/typo-confusable";
 
 // Stable empty fallback — Zustand のセレクタが render ごとに新規 `[]` を返すと
 // useSyncExternalStore が「snapshot が変わった」と判定して無限ループする。
@@ -200,108 +194,9 @@ export function CurrentSceneTypoView({ sceneId }: Props) {
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <LocalTypoList />
         <AiTypoList sceneId={sceneId} />
       </div>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Local lint diagnostics (ja/typo-confusable)
-// ---------------------------------------------------------------------------
-
-function LocalTypoList() {
-  const { t } = useTranslation();
-  const diagnostics = useLintStore((s) => s.diagnostics);
-  const editor = useEditorStore((s) => s.editor);
-  const localTypos = useMemo(
-    () => diagnostics.filter((d) => d.rule_id === TYPO_RULE_ID),
-    [diagnostics],
-  );
-
-  const jumpTo = (d: Diagnostic) => {
-    if (!editor) return;
-    const map = buildOffsetMap(editor.state.doc);
-    const from = strOffsetToPmPos(map, d.range.start);
-    const to = strOffsetToPmPos(map, d.range.end);
-    if (from == null || to == null) return;
-    editor
-      .chain()
-      .focus()
-      .setTextSelection({ from, to })
-      .scrollIntoView()
-      .run();
-  };
-
-  const applyFix = (d: Diagnostic) => {
-    if (!editor || !d.fix) return;
-    // 未確定の inline-AI diff 中に本文を置換すると pending 範囲とズレて壊れる。
-    if (guardInlineAiPending()) return;
-    const map = buildOffsetMap(editor.state.doc);
-    const from = strOffsetToPmPos(map, d.fix.range.start);
-    const to = strOffsetToPmPos(map, d.fix.range.end);
-    if (from == null || to == null) return;
-    editor
-      .chain()
-      .focus()
-      .insertContentAt({ from, to }, d.fix.replacement)
-      .run();
-  };
-
-  return (
-    <section className="flex flex-col">
-      <div className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-border bg-muted/30 px-3 py-1 text-[11px] font-medium text-muted-foreground">
-        <span>{t("kouetsu.typo.localDetection")}</span>
-        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] leading-none">
-          {localTypos.length}
-        </span>
-      </div>
-      {localTypos.length === 0 ? (
-        <p className="px-3 py-2 text-xs text-muted-foreground">
-          {t("kouetsu.typo.localEmpty")}
-        </p>
-      ) : (
-        <ul className="flex flex-col gap-1 p-2">
-          {localTypos.map((d, i) => (
-            <li
-              key={`${d.rule_id}:${d.range.start}:${i}`}
-              className={cn(
-                "group flex flex-col gap-1 rounded border border-border px-2 py-1.5 text-xs cursor-pointer select-none",
-                "hover:border-muted-foreground/40 hover:bg-accent/30",
-              )}
-              onClick={() => jumpTo(d)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") jumpTo(d);
-              }}
-              role="button"
-              tabIndex={0}
-            >
-              <div className="flex items-start gap-1.5">
-                {SEVERITY_ICONS[d.severity]}
-                <span className="leading-snug text-foreground/90">
-                  {d.message}
-                </span>
-                {d.fix && (
-                  <button
-                    type="button"
-                    aria-label="Quick Fix"
-                    title={d.fix.label}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      applyFix(d);
-                    }}
-                    className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-accent-foreground group-hover:opacity-100"
-                  >
-                    <CheckCircle2 size={13} />
-                  </button>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
   );
 }
 

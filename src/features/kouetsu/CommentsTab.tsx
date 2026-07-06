@@ -21,6 +21,8 @@ import {
   type SceneGroup,
 } from "./commentsAggregation";
 import { jumpToComment } from "./jumpToComment";
+import { PseudoCommentRunControl } from "./PseudoCommentRunControl";
+import { DismissedAnnotationsView } from "@/features/kouetsu/views/DismissedAnnotationsView";
 
 async function loadHumanComments(projectId: string): Promise<HumanComment[]> {
   const rows = await db
@@ -49,6 +51,9 @@ export function CommentsTab() {
   const [threads, setThreads] = useState<PseudoThread[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
+  // 除外（dismiss 済み）疑似コメント表示のトグル。Filter 型（human/ai/all）とは
+  // 直交する軸なので別 state で持つ。ON のとき本文を除外ビューに差し替える。
+  const [showDismissed, setShowDismissed] = useState(false);
 
   const sceneTitle = useCallback(
     (sceneId: string) => scenes.find((s) => s.id === sceneId)?.title ?? sceneId,
@@ -131,19 +136,47 @@ export function CommentsTab() {
               {label}
             </button>
           ))}
+          <button
+            type="button"
+            aria-pressed={showDismissed}
+            onClick={() => {
+              const next = !showDismissed;
+              setShowDismissed(next);
+              // 除外ビューで復元(reopen)した annotation は status=open に戻るが
+              // 親の threads state は古いまま。通常ビューへ戻す瞬間に annotation
+              // だけ再取得し、復元分を即スレッドへ反映する（所見: 反映漏れ）。
+              if (!next) void reloadAnnotations();
+            }}
+            className={cn(
+              "rounded px-2 py-0.5",
+              showDismissed
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-accent",
+            )}
+          >
+            {t("kouetsu.filter.dismissed")}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => void reload()}
-          title={t("error.reload")}
-          className="rounded p-1 text-muted-foreground hover:bg-accent"
-        >
-          <RefreshCw size={12} />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <PseudoCommentRunControl onCompleted={reloadAnnotations} />
+          <button
+            type="button"
+            onClick={() => void reload()}
+            title={t("error.reload")}
+            className="rounded p-1 text-muted-foreground hover:bg-accent"
+          >
+            <RefreshCw size={12} />
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading ? (
+        {showDismissed ? (
+          <DismissedAnnotationsView
+            category="pseudo_comment"
+            emptyLabel={t("kouetsu.pseudoComment.emptyIgnored")}
+          />
+        ) : loading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 size={16} className="animate-spin text-muted-foreground" />
           </div>

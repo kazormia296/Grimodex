@@ -29,6 +29,7 @@ import {
   postEffectErrorToast,
   postEffectPartialToast,
 } from "@/features/post-effect/errorToast";
+import { useResolvedKouetsuScope } from "@/features/kouetsu/useResolvedKouetsuScope";
 
 export function ProjectReviewView() {
   const { t } = useTranslation();
@@ -38,13 +39,33 @@ export function ProjectReviewView() {
   // runStore から導出する（ローカル useState だとタブ移動＝unmount で消え、
   // 実行中なのにボタンが通常表示へ戻る）。
   const [launching, setLaunching] = useState(false);
-  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。
-  const storeRunning = useIsPostEffectRunning("review", "project");
-  const runningAll = launching || storeRunning;
   const analysisGate = useAiGate("analysis");
 
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
+  const nodes = useTreeStore((s) => s.nodes);
+
+  // 校閲スコープ。folder のとき subtree に絞る。scene / project は project 扱い。
+  // 宙に浮いた folder anchor は resolve 段階で project へ倒れる。
+  const kouetsuScope = useResolvedKouetsuScope();
+  const scopeType =
+    kouetsuScope.type === "folder" ? ("folder" as const) : ("project" as const);
+  const scopeTargetId =
+    kouetsuScope.type === "folder" ? kouetsuScope.anchorId : null;
+  // hook は短絡評価の右辺に置けないため、必ず無条件で呼ぶ。scopeType/
+  // scopeTargetId 導出後に呼ぶことで folder run を正しく区別する（run
+  // 実行中に unmount→remount してもスピナーが消えない）。
+  const storeRunning = useIsPostEffectRunning(
+    "review",
+    scopeType,
+    scopeTargetId ?? undefined,
+  );
+  const runningAll = launching || storeRunning;
+  // 表示フィルタ用の subtree scene 集合（folder 以外は null = 絞り込みなし）。
+  const visibleSceneIds = useMemo(() => {
+    if (kouetsuScope.type !== "folder") return null;
+    return new Set(getSceneIdsForScope(nodes, "folder", kouetsuScope.anchorId));
+  }, [kouetsuScope, nodes]);
 
   const sceneTitle = (sceneId: string) =>
     scenes.find((s) => s.id === sceneId)?.title ?? sceneId;
@@ -75,7 +96,8 @@ export function ProjectReviewView() {
     if (blockIfPolicyOff("analysis")) return;
     if (blockIfUnlicensed()) return;
     const { nodes } = useTreeStore.getState();
-    if (getSceneIdsForScope(nodes, "project", null).length === 0) return;
+    if (getSceneIdsForScope(nodes, scopeType, scopeTargetId).length === 0)
+      return;
     const lang = getCurrentProjectLanguage();
     const ov = resolveRoleSendOverride("post_effect_review");
     const model =
@@ -90,8 +112,8 @@ export function ProjectReviewView() {
       await flushPendingSceneSaves();
       const payload = await buildMultiPayload(
         projectId,
-        "project",
-        null,
+        scopeType,
+        scopeTargetId,
         model,
         "review",
         customKouetsu,
@@ -110,8 +132,8 @@ export function ProjectReviewView() {
           {
             project_id: projectId,
             effect_type: "review",
-            scope_type: "project",
-            scope_target_id: null,
+            scope_type: scopeType,
+            scope_target_id: scopeTargetId,
             model,
             model_override: ov.model,
             provider_override: ov.provider,
@@ -147,14 +169,18 @@ export function ProjectReviewView() {
         e instanceof Error ? e.message : String(e),
       );
     }
-  }, [runningAll, projectId, reload]);
+  }, [runningAll, projectId, reload, scopeType, scopeTargetId]);
 
   const groups = useMemo(() => {
+    // folder スコープでは subtree 外シーンの指摘を隠す（project 時は素通し）。
+    const source = visibleSceneIds
+      ? annotations.filter((a) => a.sceneId && visibleSceneIds.has(a.sceneId))
+      : annotations;
     const acc = new Map<
       string,
       { sceneId: string; label: string; items: PostEffectAnnotation[] }
     >();
-    for (const ann of annotations) {
+    for (const ann of source) {
       if (!ann.sceneId) continue;
       const g = acc.get(ann.sceneId) ?? {
         sceneId: ann.sceneId,
@@ -166,7 +192,7 @@ export function ProjectReviewView() {
     }
     return [...acc.values()];
     // sceneTitle depends on `scenes`
-  }, [annotations, scenes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [annotations, scenes, visibleSceneIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col">

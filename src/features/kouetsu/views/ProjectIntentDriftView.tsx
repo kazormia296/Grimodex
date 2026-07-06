@@ -3,8 +3,10 @@ import { useTranslation } from "react-i18next";
 import { Info, Loader2 } from "lucide-react";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { listAnnotationsForProject } from "@/features/post-effect/api";
+import { getSceneIdsForScope } from "@/features/post-effect/consistencyPayloadBuilder";
 import { AnnotationItem } from "@/features/post-effect/PostEffectAnnotationPanel";
 import type { PostEffectAnnotation } from "@/features/post-effect/types";
+import { useResolvedKouetsuScope } from "@/features/kouetsu/useResolvedKouetsuScope";
 
 /** プロジェクト全体の intent_anchor 指摘を表示するのみ（multi run 非対応）。 */
 export function ProjectIntentDriftView() {
@@ -14,6 +16,15 @@ export function ProjectIntentDriftView() {
 
   const projectId = useTreeStore((s) => s.projectId);
   const scenes = useTreeStore((s) => s.scenes);
+  const nodes = useTreeStore((s) => s.nodes);
+
+  // folder スコープでは subtree 外シーンの指摘を隠す（表示専用ビュー）。
+  // 宙に浮いた folder anchor は resolve 段階で project へ倒れる（絞り込み無効）。
+  const kouetsuScope = useResolvedKouetsuScope();
+  const visibleSceneIds = useMemo(() => {
+    if (kouetsuScope.type !== "folder") return null;
+    return new Set(getSceneIdsForScope(nodes, "folder", kouetsuScope.anchorId));
+  }, [kouetsuScope, nodes]);
 
   const sceneTitle = (sceneId: string) =>
     scenes.find((s) => s.id === sceneId)?.title ?? sceneId;
@@ -36,11 +47,14 @@ export function ProjectIntentDriftView() {
   }, [reload]);
 
   const groups = useMemo(() => {
+    const source = visibleSceneIds
+      ? annotations.filter((a) => a.sceneId && visibleSceneIds.has(a.sceneId))
+      : annotations;
     const acc = new Map<
       string,
       { sceneId: string; label: string; items: PostEffectAnnotation[] }
     >();
-    for (const ann of annotations) {
+    for (const ann of source) {
       if (!ann.sceneId) continue;
       const g = acc.get(ann.sceneId) ?? {
         sceneId: ann.sceneId,
@@ -51,7 +65,7 @@ export function ProjectIntentDriftView() {
       acc.set(ann.sceneId, g);
     }
     return [...acc.values()];
-  }, [annotations, scenes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [annotations, scenes, visibleSceneIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col">

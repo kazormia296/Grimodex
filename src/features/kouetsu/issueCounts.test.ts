@@ -21,24 +21,76 @@ function mapOf(
 }
 
 describe("deriveIssueCounts", () => {
-  it("typo Lint diagnostics are double-counted in linterCount and typoCount", () => {
-    const diagnostics = [
-      diag(TYPO_RULE_ID),
-      diag(TYPO_RULE_ID),
-      diag("ja/other-rule"),
-    ];
+  it("typo lint 診断は typoCount に含めない（二重計上廃止）", () => {
+    const diagnostics = [diag(TYPO_RULE_ID), diag("ja/other-rule")];
+    const openTypoAnn = ann("open", "typo_anchor");
     const counts = deriveIssueCounts({
       diagnostics,
-      annotationsByScene: new Map(),
-      scope: "current",
+      annotationsByScene: mapOf("s1", [openTypoAnn]),
+      scope: { type: "scene" },
+      statusFilter: "open",
       activeSceneId: "s1",
     });
-    // linterCount is the total diagnostics (typo Lint included)
-    expect(counts.linterCount).toBe(3);
-    // typoLintCount counts only the typo-confusable rule
-    expect(counts.typoLintCount).toBe(2);
-    // typoCount includes the same typo Lint diagnostics (MVP double-count)
-    expect(counts.typoCount).toBe(2);
+    // linterCount is the total lint diagnostics (校正は全 lint 診断)
+    expect(counts.linterCount).toBe(2);
+    // typoCount is AI typo_anchor annotations only — no lint double-count
+    expect(counts.typoCount).toBe(1);
+  });
+
+  it("scene 以外のスコープでは全カウントが null（0 固定の嘘バッジ禁止）", () => {
+    const anns = [ann("open", "typo_anchor")];
+    const counts = deriveIssueCounts({
+      diagnostics: [diag(TYPO_RULE_ID)],
+      annotationsByScene: mapOf("s1", anns),
+      scope: { type: "project" },
+      statusFilter: "open",
+      activeSceneId: "s1",
+    });
+    expect(counts.linterCount).toBeNull();
+    expect(counts.typoCount).toBeNull();
+    expect(counts.consistencyCount).toBeNull();
+    expect(counts.impactCount).toBeNull();
+    expect(counts.reviewCount).toBeNull();
+    expect(counts.intentCount).toBeNull();
+  });
+
+  it("folder スコープでも全カウントが null", () => {
+    const counts = deriveIssueCounts({
+      diagnostics: [diag(TYPO_RULE_ID)],
+      annotationsByScene: new Map(),
+      scope: { type: "folder", anchorId: "f1" },
+      statusFilter: "open",
+      activeSceneId: "s1",
+    });
+    expect(counts.linterCount).toBeNull();
+  });
+
+  it("statusFilter=dismissed では全カウント null", () => {
+    const counts = deriveIssueCounts({
+      diagnostics: [],
+      annotationsByScene: new Map(),
+      scope: { type: "scene" },
+      statusFilter: "dismissed",
+      activeSceneId: "s1",
+    });
+    expect(counts.consistencyCount).toBeNull();
+    expect(counts.linterCount).toBeNull();
+    expect(counts.typoCount).toBeNull();
+    expect(counts.impactCount).toBeNull();
+    expect(counts.reviewCount).toBeNull();
+    expect(counts.intentCount).toBeNull();
+  });
+
+  it("scene スコープでも activeSceneId が null なら全カウント null", () => {
+    const anns = [ann("open", "consistency_anchor")];
+    const counts = deriveIssueCounts({
+      diagnostics: [],
+      annotationsByScene: mapOf("s1", anns),
+      scope: { type: "scene" },
+      statusFilter: "open",
+      activeSceneId: null,
+    });
+    expect(counts.consistencyCount).toBeNull();
   });
 
   it("consistencyCount counts only open consistency_anchor annotations", () => {
@@ -51,13 +103,14 @@ describe("deriveIssueCounts", () => {
     const counts = deriveIssueCounts({
       diagnostics: [],
       annotationsByScene: mapOf("s1", anns),
-      scope: "current",
+      scope: { type: "scene" },
+      statusFilter: "open",
       activeSceneId: "s1",
     });
     expect(counts.consistencyCount).toBe(2);
   });
 
-  it("typoAiCount counts only open typo_anchor annotations", () => {
+  it("typoCount counts only open typo_anchor annotations", () => {
     const anns = [
       ann("open", "typo_anchor"),
       ann("dismissed", "typo_anchor"), // wrong status
@@ -66,49 +119,12 @@ describe("deriveIssueCounts", () => {
     const counts = deriveIssueCounts({
       diagnostics: [diag(TYPO_RULE_ID)],
       annotationsByScene: mapOf("s1", anns),
-      scope: "current",
+      scope: { type: "scene" },
+      statusFilter: "open",
       activeSceneId: "s1",
     });
-    expect(counts.typoAiCount).toBe(1);
-    // typoCount = typoLintCount (1) + typoAiCount (1)
-    expect(counts.typoCount).toBe(2);
-  });
-
-  it("scope gate: non-current scope yields 0 consistency even with scene data (RED target)", () => {
-    const anns = [
-      ann("open", "consistency_anchor"),
-      ann("open", "consistency_anchor"),
-    ];
-    const counts = deriveIssueCounts({
-      diagnostics: [],
-      annotationsByScene: mapOf("s1", anns),
-      scope: "project", // non-current → gate forces []
-      activeSceneId: "s1", // non-null, so only the scope gate suppresses it
-    });
-    expect(counts.consistencyCount).toBe(0);
-    expect(counts.typoAiCount).toBe(0);
-  });
-
-  it("scope gate: current scope with null activeSceneId yields 0 consistency", () => {
-    const anns = [ann("open", "consistency_anchor")];
-    const counts = deriveIssueCounts({
-      diagnostics: [],
-      annotationsByScene: mapOf("s1", anns),
-      scope: "current",
-      activeSceneId: null,
-    });
-    expect(counts.consistencyCount).toBe(0);
-  });
-
-  it("current scope with matching activeSceneId surfaces the consistency count", () => {
-    const anns = [ann("open", "consistency_anchor")];
-    const counts = deriveIssueCounts({
-      diagnostics: [],
-      annotationsByScene: mapOf("s1", anns),
-      scope: "current",
-      activeSceneId: "s1",
-    });
-    expect(counts.consistencyCount).toBe(1);
+    expect(counts.typoCount).toBe(1);
+    expect(counts.linterCount).toBe(1);
   });
 
   it("impactCount counts only open impact_review_anchor annotations", () => {
@@ -121,10 +137,25 @@ describe("deriveIssueCounts", () => {
     const counts = deriveIssueCounts({
       diagnostics: [],
       annotationsByScene: mapOf("s1", anns),
-      scope: "current",
+      scope: { type: "scene" },
+      statusFilter: "open",
       activeSceneId: "s1",
     });
     expect(counts.impactCount).toBe(2);
     expect(counts.consistencyCount).toBe(1);
+  });
+
+  it("review / intent もカウントされる（旧 EditorialTab のインライン計数を吸収）", () => {
+    const openReviewAnn = ann("open", "review");
+    const openIntentAnn = ann("open", "intent_anchor");
+    const counts = deriveIssueCounts({
+      diagnostics: [],
+      annotationsByScene: mapOf("s1", [openReviewAnn, openIntentAnn]),
+      scope: { type: "scene" },
+      statusFilter: "open",
+      activeSceneId: "s1",
+    });
+    expect(counts.reviewCount).toBe(1);
+    expect(counts.intentCount).toBe(1);
   });
 });

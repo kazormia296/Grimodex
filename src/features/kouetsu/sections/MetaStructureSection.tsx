@@ -5,14 +5,11 @@ import { MetaStructureView } from "@/features/kouetsu/views/MetaStructureView";
 
 export function MetaStructureSection() {
   const { t } = useTranslation();
-  const scope = useKouetsuStore((s) => s.activeEditorialScope);
+  const scope = useKouetsuStore((s) => s.scope);
+  const statusFilter = useKouetsuStore((s) => s.statusFilter);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
-  if (scope === "project") {
-    return <MetaStructureView scope="project" />;
-  }
-
-  if (scope === "ignored") {
+  if (statusFilter === "dismissed") {
     // メタ構造は scene_lens 由来で dismiss の概念を持たない (annotation ではない)。
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">
@@ -20,7 +17,9 @@ export function MetaStructureSection() {
       </div>
     );
   }
-
+  if (scope.type !== "scene") {
+    return <MetaStructureView scope="project" />;
+  }
   if (!activeSceneId) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">
