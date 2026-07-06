@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, Loader2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useLintProjectStore } from "@/features/lint/lintProjectStore";
 import { useKouetsuStore } from "../kouetsuStore";
 import { useResolvedKouetsuScope } from "../useResolvedKouetsuScope";
 import {
@@ -77,6 +78,7 @@ function Tile({
   const catFilter = useKouetsuStore((s) => s.catFilter);
   const setCatFilter = useKouetsuStore((s) => s.setCatFilter);
   const running = useIsCatRunning(cat);
+  const projectScanDone = useLintProjectStore((s) => s.phase === "done");
 
   const n = issues.length;
   const counts = deriveSevCounts(issues);
@@ -92,8 +94,12 @@ function Tile({
         : lastIso
           ? (relativeTimeLabel(lastIso, new Date()) ?? "")
           : "";
-  // linter は live で常時走査、impact は手動運用なので「未実行」を出さない。
-  const unrun = cat !== "linter" && cat !== "impact" && !lastIso;
+  // 0 件を緑 OK と見せてよいのは「実際に検査済み」のときだけ（嘘バッジ禁止の
+  // 不変条件）。linter は scene スコープなら live lint 済みで常に検査済み、
+  // folder/project では全章スキャン完了までは「未実行」。impact / AI 観点は
+  // 最終実行記録（post_effect_runs）が無ければ「未実行」。
+  const unrun =
+    cat === "linter" ? scope.type !== "scene" && !projectScanDone : !lastIso;
 
   const breakdown = (["high", "mid", "low"] as const)
     .filter((sev) => counts[sev] > 0)

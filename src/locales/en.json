@@ -1317,6 +1317,7 @@
       "manual": "Manual",
       "runningBadge": "Running {{done}}/{{total}}",
       "runningTitle": "Running — click to show the pipeline",
+      "doneBadge": "Done: {{count}}",
       "dashboardToggle": "Aspect dashboard",
       "effectsNote": "Impact review runs manually when Codex entries change",
       "dashboardTitle": "8 aspects — click a tile to filter",

@@ -21,7 +21,11 @@ import { listPostEffectRuns } from "@/features/post-effect/api";
 import type { PostEffectType } from "@/features/post-effect/types";
 import { useTreeStore } from "@/features/tree/treeStore";
 
-/** 最終実行時刻を表示する観点（設計書 Phase 1C の 7 種、固定順）。 */
+/**
+ * 最終実行時刻を表示する観点（設計書 Phase 1C の 7 種 + impact_review、固定順）。
+ * impact_review はダッシュボードタイルの「未実行」判定に使う（フッターには
+ * 出さない — 手動運用のため鮮度ドットの対象外）。
+ */
 export const EFFECT_LAST_RUN_TARGETS: readonly PostEffectType[] = [
   "typo_detection",
   "consistency",
@@ -30,6 +34,7 @@ export const EFFECT_LAST_RUN_TARGETS: readonly PostEffectType[] = [
   "intent_drift",
   "meta_structure",
   "timeline_consistency",
+  "impact_review",
 ];
 
 /** 直近に failed / cancelled / running が混ざっても completed を拾える深さ。 */

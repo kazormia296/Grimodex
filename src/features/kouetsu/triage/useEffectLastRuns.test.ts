@@ -54,13 +54,13 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("useEffectLastRuns", () => {
-  it("7 観点それぞれに listPostEffectRuns を projectId + effectType + limit で呼ぶ", async () => {
+  it("8 観点それぞれに listPostEffectRuns を projectId + effectType + limit で呼ぶ", async () => {
     mockOneCompletedPerEffect();
     const { result } = renderHook(() => useEffectLastRuns());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(listPostEffectRuns).toHaveBeenCalledTimes(7);
+    expect(listPostEffectRuns).toHaveBeenCalledTimes(8);
     for (const effect of EFFECT_LAST_RUN_TARGETS) {
       expect(listPostEffectRuns).toHaveBeenCalledWith({
         projectId: "p1",
@@ -71,8 +71,8 @@ describe("useEffectLastRuns", () => {
         `2026-07-06T01:00:00.000Z#${effect}`,
       );
     }
-    // 生のまま 7 キー（consistency 系を畳まない）
-    expect(Object.keys(result.current.lastRuns)).toHaveLength(7);
+    // 生のまま 8 キー（consistency 系を畳まない）
+    expect(Object.keys(result.current.lastRuns)).toHaveLength(8);
   });
 
   it("completed 以外が混ざる配列では最初の completed の completedAt を選ぶ", async () => {
@@ -126,14 +126,14 @@ describe("useEffectLastRuns", () => {
     expect(result.current.lastRuns.typo_detection).toBe(
       "2026-07-06T00:01:00.000Z",
     );
-    expect(Object.keys(result.current.lastRuns)).toHaveLength(6);
+    expect(Object.keys(result.current.lastRuns)).toHaveLength(7);
   });
 
   it("refresh() で再取得し、更新後の値が反映される", async () => {
     mockOneCompletedPerEffect();
     const { result } = renderHook(() => useEffectLastRuns());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(listPostEffectRuns).toHaveBeenCalledTimes(7);
+    expect(listPostEffectRuns).toHaveBeenCalledTimes(8);
 
     listPostEffectRuns.mockImplementation(async () => [
       makeRun({ completedAt: "2026-07-06T12:00:00.000Z" }),
@@ -141,7 +141,7 @@ describe("useEffectLastRuns", () => {
     act(() => result.current.refresh());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(listPostEffectRuns).toHaveBeenCalledTimes(14);
+    expect(listPostEffectRuns).toHaveBeenCalledTimes(16);
     expect(result.current.lastRuns.review).toBe("2026-07-06T12:00:00.000Z");
   });
 

@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Loader2, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronDown, Loader2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
@@ -34,6 +34,8 @@ export function RunControl() {
   const runState = useFullCheckStore((s) => s.runState);
   const done = useFullCheckStore((s) => s.done);
   const total = useFullCheckStore((s) => s.total);
+  const pipelineVisible = useFullCheckStore((s) => s.pipelineVisible);
+  const findingsTotal = useFullCheckStore((s) => s.findingsTotal);
   const showPipeline = useFullCheckStore((s) => s.showPipeline);
 
   const [open, setOpen] = useState(false);
@@ -80,6 +82,32 @@ export function RunControl() {
         <Loader2 size={12} className="animate-spin" />
         <span className="tabular-nums">
           {t("kouetsu.triage.runningBadge", { done, total })}
+        </span>
+      </button>
+    );
+  }
+
+  // 実行中に「戻る」で畳んだまま run が完了すると runState=done かつ
+  // pipelineVisible=false になる。ここが唯一の showPipeline 導線なので、
+  // 完了バッジとして残して結果パイプラインへ復帰できるようにする
+  // （「閉じる」で idle に戻るとバッジも消える）。
+  if (runState === "done" && !pipelineVisible) {
+    return (
+      <button
+        type="button"
+        title={t("kouetsu.triage.pipeline.done", { count: findingsTotal })}
+        onClick={() => {
+          setSelectedIssueId(null);
+          showPipeline();
+        }}
+        className={cn(
+          "flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium",
+          "bg-[var(--kouetsu-accent-weak)] text-[var(--kouetsu-accent)]",
+        )}
+      >
+        <CheckCircle2 size={12} />
+        <span className="tabular-nums">
+          {t("kouetsu.triage.doneBadge", { count: findingsTotal })}
         </span>
       </button>
     );

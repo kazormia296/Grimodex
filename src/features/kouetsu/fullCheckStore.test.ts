@@ -35,6 +35,7 @@ beforeEach(() => {
   usePostEffectRunStore.setState({ runs: {} });
   useFullCheckStore.setState({
     cancelRequested: false,
+    currentStep: null,
     runState: "idle",
     pipelineVisible: false,
   });
@@ -66,8 +67,26 @@ describe("fullCheckStore requestCancel の abort スコープ", () => {
     // 追跡 run のみ abort。無関係 run の abort IPC は呼ばれない。
     expect(h.abortPostEffectRun).toHaveBeenCalledTimes(1);
     expect(h.abortPostEffectRun).toHaveBeenCalledWith("fc-run", "p1");
-    // lint scan cancel は常に呼ぶ（単一 scan 構造なので無害）。
+    // lint ステップ実行中でなければ lint scan cancel は呼ばない（後述テスト）。
+    expect(h.lintCancel).not.toHaveBeenCalled();
+  });
+
+  it("lint scan cancel は currentStep=lint のときだけ呼ぶ（手動再スキャンを巻き込まない）", () => {
+    // lint ステップ実行中: 全体チェック自身の scan なので cancel する。
+    useFullCheckStore.setState({ currentStep: "lint" });
+    useFullCheckStore.getState().requestCancel();
     expect(h.lintCancel).toHaveBeenCalledTimes(1);
+
+    // lint ステップ通過後（AI ステップ実行中）: このとき active な scan が
+    // あればユーザーが手動起動した無関係な再スキャン（校正タイル等）なので
+    // 巻き込まない。
+    vi.clearAllMocks();
+    useFullCheckStore.setState({
+      cancelRequested: false,
+      currentStep: "review",
+    });
+    useFullCheckStore.getState().requestCancel();
+    expect(h.lintCancel).not.toHaveBeenCalled();
   });
 
   it("consistency の 2 本並走はどちらも追跡され両方 abort される", () => {

@@ -138,9 +138,14 @@ export function resetFullCheckRuns(): void {
 
 /** 進行中の実 run を止める（フラグとは別に副作用として能動 abort）。 */
 function abortActiveWork(): void {
-  // lint スキャン（running 以外は no-op）。lintProjectStore は単一 scan 構造
-  // （activeController が 1 本）なので、全体チェックが起動した scan のみが active。
-  useLintProjectStore.getState().cancel();
+  // lint スキャンの cancel は「全体チェックが lint ステップ実行中」に限定する。
+  // ステップは直列 await なので、currentStep が lint を過ぎた後に active な
+  // scan があればそれはユーザーが手動起動した無関係な再スキャン（ダッシュ
+  // ボードの校正タイル等）であり、巻き込んで abort してはならない
+  // （post-effect run の per-run 追跡と同じ isolation 方針）。
+  if (useFullCheckStore.getState().currentStep === "lint") {
+    useLintProjectStore.getState().cancel();
+  }
   // 全体チェック自身が起動した run に限定して abort する。集合に記録した runId を
   // runStore で引き、outcome 未確定（＝まだ実行中）のものだけを止める。既に終端した
   // 過去ステップの runId が集合に残っていても outcome フィルタで no-op になる。

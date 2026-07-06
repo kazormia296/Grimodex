@@ -31,9 +31,16 @@ export async function closeAnnotation(
   }
   useAnnotationStore.getState().updateAnnotationStatus(ann.id, status);
 
+  // mark refresh は annotation のシーンが「現在表示中のシーン」のときだけ行う。
+  // editor は常にアクティブシーンの doc を持つため、別シーンの annotation で
+  // 適用すると表示中シーンの下線が丸ごと別シーン分に差し替わる（＝全消し）。
+  // 校閲トリアージの folder/project スコープは越境の解決/無視が普通に起きる。
   if (editor && ann.sceneId) {
-    const next =
-      useAnnotationStore.getState().annotationsByScene.get(ann.sceneId) ?? [];
-    applyAnnotationsToEditor(editor, next);
+    const activeSceneId = useTreeStore.getState().activeSceneId;
+    if (ann.sceneId === activeSceneId) {
+      const next =
+        useAnnotationStore.getState().annotationsByScene.get(ann.sceneId) ?? [];
+      applyAnnotationsToEditor(editor, next);
+    }
   }
 }

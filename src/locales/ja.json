@@ -1317,6 +1317,7 @@
       "manual": "手動",
       "runningBadge": "実行中 {{done}}/{{total}}",
       "runningTitle": "実行中 — クリックでパイプラインを表示",
+      "doneBadge": "完了 {{count}}件",
       "dashboardToggle": "観点ダッシュボード",
       "effectsNote": "影響レビューはCodex変更時に手動で実行します",
       "dashboardTitle": "8つの観点 — タイルで絞り込み",
