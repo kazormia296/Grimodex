@@ -87,6 +87,7 @@ import {
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { useFocusMode } from "@/features/editor/useFocusMode";
+import { gutterReserveInlineSize } from "@/features/editor/GutterMarksPlugin";
 import {
   useTypewriterScroll,
   computeTypewriterScrollTop,
@@ -1153,10 +1154,26 @@ export function EditorPane({
   const showForeshadowMarks = useCursorSettingsStore(
     (s) => s.showForeshadowMarks,
   );
+  // ガター生成レイヤーのON数から本文 inline-start の予約幅を算出する
+  // （オーバーレイ表示中はアイコンが必ず見えるよう領域を確保する）。
+  const showCommentsLayer = useCursorSettingsStore((s) => s.showComments);
+  const showAnnotationsLayer = useAnnotationStore((s) => s.showAnnotations);
+  const showReaderCommentsLayer = useAnnotationStore(
+    (s) => s.showReaderComments,
+  );
+  const gutterReserve = gutterReserveInlineSize(
+    [
+      showCommentsLayer,
+      showReaderCommentsLayer,
+      showForeshadowMarks,
+      showAnnotationsLayer,
+    ].filter(Boolean).length,
+  );
   const focusModeHideBeats = editorSettings.focusModeHideBeats;
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;
   const sceneMetaPanelWidth = editorSettings.sceneMetaPanelWidth;
-  const isPanelVisible = sceneMetaPanelOpen && !focusMode && !isEntryMode;
+  // フォーカスモードでも詳細ペインは隠さない（本文の減光は FocusModePlugin 側）
+  const isPanelVisible = sceneMetaPanelOpen && !isEntryMode;
   const handleTogglePanel = useCallback(() => {
     useSettingsStore
       .getState()
@@ -1984,6 +2001,7 @@ export function EditorPane({
                 findShowReplace={findShowReplace}
                 setFindOpen={setFindOpen}
                 showForeshadowMarks={showForeshadowMarks}
+                gutterReserve={gutterReserve}
                 focusModeHideBeats={focusModeHideBeats}
                 focusMode={focusMode}
                 typewriterMode={effectiveTypewriter}
@@ -2027,6 +2045,7 @@ export function EditorPane({
                 findShowReplace={findShowReplace}
                 setFindOpen={setFindOpen}
                 showForeshadowMarks={showForeshadowMarks}
+                gutterReserve={gutterReserve}
                 focusModeHideBeats={focusModeHideBeats}
                 focusMode={focusMode}
                 typewriterMode={effectiveTypewriter}

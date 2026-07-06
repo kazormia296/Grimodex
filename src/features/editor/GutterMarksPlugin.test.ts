@@ -10,6 +10,7 @@ import {
   createGutterMarksPlugin,
   gutterMarksKey,
   buildGutterWidgetDom,
+  gutterReserveInlineSize,
   GUTTER_REBUILD_META,
   type GutterChannel,
 } from "./GutterMarksPlugin";
@@ -36,6 +37,7 @@ const schema = new Schema({
       attrs: {
         annotationId: { default: "" },
         status: { default: "open" },
+        category: { default: "review" },
       },
     },
   },
@@ -83,7 +85,10 @@ beforeEach(() => {
     showComments: true,
     showForeshadowMarks: true,
   });
-  useAnnotationStore.setState({ showAnnotations: true });
+  useAnnotationStore.setState({
+    showAnnotations: true,
+    showReaderComments: true,
+  });
 });
 
 describe("GutterMarksPlugin", () => {
@@ -156,6 +161,39 @@ describe("GutterMarksPlugin", () => {
     expect(widgetKeys(state)).toHaveLength(0);
   });
 
+  it("pseudo_comment は review でなく reader チャネルになる", () => {
+    const state = makeState([
+      {
+        text: "読者コメント付き段落",
+        marks: [["peAnnotation", { category: "pseudo_comment" }]],
+      },
+    ]);
+    expect(widgetKeys(state)).toEqual(["gutter-0-reader"]);
+  });
+
+  it("reader チャネルは showReaderComments でゲートされ、review レイヤーに従わない", () => {
+    useAnnotationStore.setState({
+      showAnnotations: false,
+      showReaderComments: true,
+    });
+    const state = makeState([
+      {
+        text: "読者コメントと校閲",
+        marks: [["peAnnotation", { category: "pseudo_comment" }]],
+      },
+    ]);
+    expect(widgetKeys(state)).toEqual(["gutter-0-reader"]);
+
+    useAnnotationStore.setState({ showReaderComments: false });
+    const hidden = makeState([
+      {
+        text: "読者コメント",
+        marks: [["peAnnotation", { category: "pseudo_comment" }]],
+      },
+    ]);
+    expect(widgetKeys(hidden)).toHaveLength(0);
+  });
+
   it("nests: コンテナと内側段落で二重描画しない (blockquote)", () => {
     const para = schema.nodes.paragraph.create({}, [
       schema.text("引用内コメント", [schema.marks.comment.create()]),
@@ -215,15 +253,30 @@ describe("GutterMarksPlugin", () => {
 
 describe("buildGutterWidgetDom", () => {
   it("renders one icon per channel with channel classes", () => {
-    const channels: GutterChannel[] = ["comment", "foreshadow", "review"];
+    const channels: GutterChannel[] = [
+      "comment",
+      "reader",
+      "foreshadow",
+      "review",
+    ];
     const el = buildGutterWidgetDom(channels);
     expect(el.className).toBe("gutter-marks");
     const icons = el.querySelectorAll(".gutter-mark");
-    expect(icons).toHaveLength(3);
+    expect(icons).toHaveLength(4);
     expect(icons[0].className).toContain("gutter-mark--comment");
-    expect(icons[1].className).toContain("gutter-mark--foreshadow");
-    expect(icons[2].className).toContain("gutter-mark--review");
+    expect(icons[1].className).toContain("gutter-mark--reader");
+    expect(icons[2].className).toContain("gutter-mark--foreshadow");
+    expect(icons[3].className).toContain("gutter-mark--review");
     // 各アイコンは svg を1つ持つ
-    expect(el.querySelectorAll("svg")).toHaveLength(3);
+    expect(el.querySelectorAll("svg")).toHaveLength(4);
+  });
+});
+
+describe("gutterReserveInlineSize", () => {
+  it("チャネル数に応じた予約幅 (14px×n + 2px×(n-1) + 0.6em) を返す", () => {
+    expect(gutterReserveInlineSize(0)).toBeNull();
+    expect(gutterReserveInlineSize(1)).toBe("calc(14px + 0.6em)");
+    expect(gutterReserveInlineSize(2)).toBe("calc(30px + 0.6em)");
+    expect(gutterReserveInlineSize(4)).toBe("calc(62px + 0.6em)");
   });
 });

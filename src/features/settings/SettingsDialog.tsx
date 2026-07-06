@@ -80,6 +80,10 @@ export function SettingsDialog({
     useAttributionStore.getState().initFromSettings();
     useAnnotationStore.getState().initFromSettings();
     useCodexHighlightStore.getState().initFromSettings();
+    // initFromSettings はパネル連動 (Auto) 中の非永続な追従状態を手動基準値へ
+    // 巻き戻す。パネル可視状態は変わっておらず follow effect が自発しないため、
+    // nonce を bump して再同期させる（Auto OFF なら effect 側の guard で無視）。
+    useCursorSettingsStore.getState().requestLayerAutoFollowSync();
     onClose();
   }, [flushPending, onClose]);
 

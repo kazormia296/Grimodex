@@ -538,6 +538,8 @@
       "highlightStyle": "ハイライトスタイル",
       "colorText": "文字色 + ハイライト",
       "underline": "下線",
+      "codexOpacity": "ハイライトの濃度",
+      "codexOpacityDesc": "背景スタイル時の色の強さ (100% = 標準)",
       "attribution": "帰属表示",
       "attributionOpacity": "帰属ハイライトの不透明度",
       "attributionOpacityDesc": "Attribution 表示時の背景色の強さ (5〜25%)",
@@ -3560,6 +3562,7 @@
     },
     "gutter": {
       "comment": "この段落にコメントがあります",
+      "reader": "この段落に読者コメントがあります",
       "foreshadow": "この段落に伏線マークがあります",
       "review": "この段落に校閲の指摘があります"
     },
@@ -3579,17 +3582,20 @@
     "layers": {
       "title": "本文レイヤー",
       "hideAll": "すべて隠す",
+      "autoFollow": "パネル連動",
+      "autoFollowHint": "開いているパネルに合わせて表示を自動で切り替える",
       "attribution": "帰属ハイライト",
       "comments": "コメント",
+      "readerComments": "読者コメント",
       "foreshadow": "伏線マーク",
       "review": "校閲の指摘",
-      "lint": "Lint",
       "codex": "Codexハイライト",
-      "codexNote": "（見た目は不変）",
+      "codexStyle": "スタイル",
+      "codexStyleDefault": "デフォルト",
+      "codexStyleUnderline": "下線",
+      "codexOpacity": "Codexハイライトの濃度",
       "opacity": "濃度",
-      "aiShare": "AI {{percent}}%",
-      "sampleNote": "行の左見本 ＝ 本文中の描画",
-      "openKouetsu": "校閲パネルを開く →"
+      "aiShare": "AI {{percent}}%"
     },
     "synopsis": {
       "title": "Synopsis",

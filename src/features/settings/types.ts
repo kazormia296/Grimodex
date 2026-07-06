@@ -117,13 +117,17 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "display.glassSurfaceEditorChrome": "global",
   "display.codexHighlight": "global",
   "display.codexHighlightStyle": "global",
+  "display.codexHighlightOpacity": "global",
   "display.attributionHighlightOpacity": "global",
   // 本文レイヤーの表示トグル (Editorパネル Refine 1c で永続化を統一)
   "display.layerAttribution": "global",
   "display.layerComments": "global",
+  "display.layerReaderComments": "global",
   "display.layerForeshadow": "global",
   "display.layerReview": "global",
   "display.layerLint": "global",
+  // 本文レイヤーのパネル連動 (Auto) モード
+  "display.layerAutoFollow": "global",
   // Codex — user preference (global)
   "codex.entryTitleFont": "global",
   // AI — user preference (global)
@@ -301,14 +305,19 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "display.glassSurfaceEditorChrome": "true",
   "display.codexHighlight": "true",
   "display.codexHighlightStyle": "color-text",
+  // Codex ハイライト(背景スタイル)の濃度。10 = パレット設計値そのまま
+  // (codexHighlightBackground が 10 未満を透明側、10 超を fg 混合で解決)
+  "display.codexHighlightOpacity": "10",
   "display.attributionHighlightOpacity": "10",
-  // 本文レイヤー表示の既定: 校閲・Lint はON、帰属・コメント・伏線はOFF
+  // 本文レイヤー表示の既定: 校閲・Lint・読者コメントはON、帰属・コメント・伏線はOFF
   // （従来の各ストア初期値と同じ。以後はトグルが write-through で永続化）
   "display.layerAttribution": "false",
   "display.layerComments": "false",
+  "display.layerReaderComments": "true",
   "display.layerForeshadow": "false",
   "display.layerReview": "true",
   "display.layerLint": "true",
+  "display.layerAutoFollow": "false",
   // Codex — エントリタイトル(名称欄)のフォント。空 = 言語別の既定に追従
   // (codexNameFont が ja=駅名標 / en=Helvetica系 を解決)。ユーザーが明示選択した
   // 値が勝つ。ピッカーでは空が「デフォルト (<言語の既定フォント名>)」として表示される。

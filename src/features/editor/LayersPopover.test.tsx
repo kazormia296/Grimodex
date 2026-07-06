@@ -17,7 +17,7 @@ import { useCodexHighlightStore } from "./codexHighlightStore";
 import { LayersPopover } from "./LayersPopover";
 import { Toolbar } from "./Toolbar";
 
-const showPanelSpy = vi.fn();
+const showPanelSpy = vi.hoisted(() => vi.fn());
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (k: string) => k }),
@@ -44,11 +44,18 @@ vi.mock("motion/react", () => ({
   useReducedMotion: () => false,
 }));
 
-vi.mock("@/features/layout/layoutStore", () => ({
-  useLayoutStore: {
-    getState: () => ({ showPanel: showPanelSpy }),
-  },
-}));
+// Toolbar 内の useLayerAutoFollow が hook としても呼ぶため、callable +
+// getState の両方を備えたモックにする（パネルは常に非表示）。
+vi.mock("@/features/layout/layoutStore", () => {
+  const state = {
+    showPanel: showPanelSpy,
+    isPanelActive: () => false,
+  };
+  const useLayoutStore = (selector: (s: typeof state) => unknown) =>
+    selector(state);
+  useLayoutStore.getState = () => state;
+  return { useLayoutStore };
+});
 
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: (
@@ -127,16 +134,19 @@ beforeEach(() => {
     showComments: false,
     showForeshadowMarks: false,
     showLint: true,
+    layerAutoFollow: false,
   });
   useAttributionStore.setState({ showAttribution: false });
   useAnnotationStore.setState({
     showAnnotations: true,
+    showReaderComments: true,
     annotationsByScene: new Map([
       [
         "s1",
         [
-          { id: "a1", status: "open" },
-          { id: "a2", status: "dismissed" },
+          { id: "a1", status: "open", category: "review" },
+          { id: "a2", status: "dismissed", category: "review" },
+          { id: "a3", status: "open", category: "pseudo_comment" },
         ] as never,
       ],
     ]),
@@ -145,28 +155,29 @@ beforeEach(() => {
 });
 
 describe("LayersPopover", () => {
-  it("scene では6行のトグルが並ぶ", async () => {
+  it("scene では6レイヤー行+パネル連動の7スイッチが並ぶ", async () => {
     renderPopover();
+    await waitFor(() => {
+      expect(screen.getAllByRole("switch")).toHaveLength(7);
+    });
+  });
+
+  it("scene 以外では読者コメント行が出ない（校閲の指摘は残る）", async () => {
+    renderPopover({ nodeType: "codex" });
     await waitFor(() => {
       expect(screen.getAllByRole("switch")).toHaveLength(6);
     });
+    expect(screen.queryByLabelText("editor.layers.readerComments")).toBeNull();
+    expect(screen.getByLabelText("editor.layers.review")).toBeTruthy();
   });
 
-  it("scene 以外では校閲行が出ない", async () => {
-    renderPopover({ nodeType: "codex" });
-    await waitFor(() => {
-      expect(screen.getAllByRole("switch")).toHaveLength(5);
-    });
-    expect(screen.queryByLabelText("editor.layers.review")).toBeNull();
-  });
-
-  it("件数バッジ: doc 走査(コメント/伏線)と annotationStore(非dismissed)を反映する", async () => {
+  it("件数バッジ: 校閲の指摘 = 校閲(非dismissed・読者コメント除く) + Lint", async () => {
     renderPopover();
     await waitFor(() => {
       expect(screen.getByTestId("layers-popover")).toBeTruthy();
     });
     const popover = screen.getByTestId("layers-popover");
-    // comment run=1, foreshadow run=1, 校閲=非dismissed 1件
+    // comment run=1 / foreshadow run=1 / 読者コメント=1 / 指摘=校閲1+Lint0=1
     const counts = Array.from(popover.querySelectorAll(".font-mono")).map(
       (el) => el.textContent,
     );
@@ -185,13 +196,37 @@ describe("LayersPopover", () => {
     );
   });
 
-  it("Lint トグルで showLint 反転 + LINT_REBUILD_META dispatch", async () => {
+  it("読者コメントトグルで showReaderComments 反転 + 設定へ write-through", async () => {
     const { dispatch } = renderPopover();
-    const sw = await screen.findByLabelText("editor.layers.lint");
+    const sw = await screen.findByLabelText("editor.layers.readerComments");
     fireEvent.click(sw);
-    expect(useCursorSettingsStore.getState().showLint).toBe(false);
+    expect(useAnnotationStore.getState().showReaderComments).toBe(false);
     expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(settingsSetSpy).toHaveBeenCalledWith(
+      "display.layerReaderComments",
+      "false",
+    );
+  });
+
+  it("校閲の指摘トグルは校閲+Lint 両フラグを一括で書き、両方の rebuild meta を dispatch", async () => {
+    const { dispatch } = renderPopover();
+    const sw = await screen.findByLabelText("editor.layers.review");
+    fireEvent.click(sw);
+    expect(useAnnotationStore.getState().showAnnotations).toBe(false);
+    expect(useCursorSettingsStore.getState().showLint).toBe(false);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(settingsSetSpy).toHaveBeenCalledWith("display.layerReview", "false");
     expect(settingsSetSpy).toHaveBeenCalledWith("display.layerLint", "false");
+  });
+
+  it("校閲の指摘は片方だけONでもスイッチONとして表示し、トグルで両方OFFにする", async () => {
+    useAnnotationStore.setState({ showAnnotations: false });
+    renderPopover();
+    const sw = await screen.findByLabelText("editor.layers.review");
+    expect(sw).toHaveAttribute("aria-checked", "true"); // showLint=true のため
+    fireEvent.click(sw);
+    expect(useAnnotationStore.getState().showAnnotations).toBe(false);
+    expect(useCursorSettingsStore.getState().showLint).toBe(false);
   });
 
   it("帰属ONで濃度スライダーが展開され、設定キーへ書き込む", async () => {
@@ -207,6 +242,35 @@ describe("LayersPopover", () => {
     );
   });
 
+  it("Codex ON でスタイルセグメント+濃度スライダーが展開され、設定キーへ書き込む", async () => {
+    renderPopover();
+    const underlineBtn = await screen.findByText(
+      "editor.layers.codexStyleUnderline",
+    );
+    fireEvent.click(underlineBtn);
+    expect(settingsSetSpy).toHaveBeenCalledWith(
+      "display.codexHighlightStyle",
+      "underline",
+    );
+    const slider = await screen.findByLabelText("editor.layers.codexOpacity");
+    fireEvent.change(slider, { target: { value: "18" } });
+    expect(settingsSetSpy).toHaveBeenCalledWith(
+      "display.codexHighlightOpacity",
+      "18",
+    );
+  });
+
+  it("パネル連動スイッチで layerAutoFollow を設定へ write-through", async () => {
+    renderPopover();
+    const sw = await screen.findByLabelText("editor.layers.autoFollow");
+    fireEvent.click(sw);
+    expect(useCursorSettingsStore.getState().layerAutoFollow).toBe(true);
+    expect(settingsSetSpy).toHaveBeenCalledWith(
+      "display.layerAutoFollow",
+      "true",
+    );
+  });
+
   it("すべて隠すで全レイヤーOFF", async () => {
     renderPopover();
     const hideAll = await screen.findByText("editor.layers.hideAll");
@@ -218,14 +282,14 @@ describe("LayersPopover", () => {
     });
     expect(useCodexHighlightStore.getState().enabled).toBe(false);
     expect(useAnnotationStore.getState().showAnnotations).toBe(false);
+    expect(useAnnotationStore.getState().showReaderComments).toBe(false);
+    expect(useCursorSettingsStore.getState().showLint).toBe(false);
   });
 
-  it("校閲パネルを開く → showPanel(kouetsu) + onClose", async () => {
-    const { onClose } = renderPopover();
-    const link = await screen.findByText("editor.layers.openKouetsu");
-    fireEvent.click(link);
-    expect(showPanelSpy).toHaveBeenCalledWith("kouetsu");
-    expect(onClose).toHaveBeenCalled();
+  it("校閲パネルを開く導線は置かない (フッタ廃止)", async () => {
+    renderPopover();
+    await screen.findByTestId("layers-popover");
+    expect(screen.queryByText("editor.layers.openKouetsu")).toBeNull();
   });
 });
 

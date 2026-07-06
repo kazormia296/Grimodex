@@ -393,6 +393,19 @@ export function DisplayCategory() {
             defaultValue="color-text"
           />
         </SettingRow>
+        <SettingRow
+          label={t("settings.display.codexOpacity")}
+          description={t("settings.display.codexOpacityDesc")}
+        >
+          <SettingSlider
+            settingKey="display.codexHighlightOpacity"
+            min={5}
+            max={25}
+            step={1}
+            defaultValue={10}
+            format={(v) => `${v * 10}%`}
+          />
+        </SettingRow>
       </SettingSection>
 
       <SettingSection title={t("settings.display.attribution")}>

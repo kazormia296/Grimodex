@@ -46,6 +46,9 @@ export function useCodexHighlight(
   const highlightStyle = useSettingsStore((s) =>
     s.get("display.codexHighlightStyle", "color-text"),
   );
+  const highlightOpacity = useSettingsStore((s) =>
+    s.get("display.codexHighlightOpacity", "10"),
+  );
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
 
@@ -142,8 +145,9 @@ export function useCodexHighlight(
   }, [editor, setMatchedEntryIds]);
 
   // Rebuild Rust matcher + initial match when entries / highlight style /
-  // enabled が変わったとき。enabled を deps に入れないと「Codexハイライトを有効化」
-  // トグルの ON/OFF が即座に反映されない (装飾の clear/rebuild dispatch が走らない)。
+  // opacity / enabled が変わったとき。enabled を deps に入れないと「Codexハイライトを
+  // 有効化」トグルの ON/OFF が即座に反映されない (装飾の clear/rebuild dispatch が
+  // 走らない)。opacity/style も同経路で装飾の再構築を促す。
   useEffect(() => {
     if (!editor || editor.isDestroyed || !editor.state) return;
     const targets = targetsRef.current;
@@ -167,6 +171,7 @@ export function useCodexHighlight(
     editor,
     entries,
     highlightStyle,
+    highlightOpacity,
     enabled,
     skipMatchedIds,
     setMatchedEntryIds,

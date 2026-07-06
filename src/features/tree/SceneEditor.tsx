@@ -212,9 +212,10 @@ export function SceneEditor() {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden">
         <Breadcrumb />
-        <SceneMetaChipRow />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <TabBar groupIndex={0} />
+          {/* メタチップ行はタブバー直下 (タブ=どのシーンか、チップ=その中身) */}
+          <SceneMetaChipRow />
           <div className="relative flex flex-1 flex-col overflow-hidden">
             <LinearEditorView />
           </div>
@@ -244,12 +245,14 @@ export function SceneEditor() {
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
       <Breadcrumb />
-      <SceneMetaChipRow />
 
       <div className={splitClass}>
         {/* ---- Primary group ---- */}
         <div className={primaryClass}>
           <TabBar groupIndex={0} />
+          {/* メタチップ行はタブバー直下。split view では各グループに置き、
+              アクティブシーンを表示しているグループにだけ出る */}
+          <SceneMetaChipRow groupIndex={0} />
           <div className="relative flex flex-1 flex-col overflow-hidden">
             {primarySceneId ? (
               <EditorPane
@@ -282,6 +285,7 @@ export function SceneEditor() {
         {secondaryGroupOpen && (
           <div className={secondaryClass}>
             <TabBar groupIndex={1} />
+            <SceneMetaChipRow groupIndex={1} />
             <div className="relative flex flex-1 flex-col overflow-hidden">
               {secondarySceneId ? (
                 <EditorPane

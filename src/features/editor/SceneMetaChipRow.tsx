@@ -14,7 +14,6 @@ import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore
 import { countPlacedBeats } from "@/features/editor/beat/beatDocQueries";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import {
   CodexRefPickerPopover,
   type CodexRefEntry,
@@ -68,12 +67,16 @@ function Chip({
 }
 
 /**
- * ブレッドクラム直下のメタチップ行 (Editorパネル Refine 1h)。
+ * タブバー直下のメタチップ行 (Editorパネル Refine 1h→2b でタブバーと上下入替)。
  * シーン詳細パネルを閉じているときだけ、視点 / 場所 / 作中日付 / あらすじ /
  * ビートを1行のチップで常設する。チップはその場ポップオーバー編集
  * （パネルと同じ共有ピッカー）。ビートチップはパネルを開く。
+ *
+ * groupIndex 指定時は「そのグループのアクティブタブ = アクティブシーン」の
+ * ときだけ描画する（split view で各グループのタブバー直下に置くためのゲート。
+ * 同一シーンが両グループで開いている場合はフォーカス中のグループを優先）。
  */
-export function SceneMetaChipRow() {
+export function SceneMetaChipRow({ groupIndex }: { groupIndex?: 0 | 1 } = {}) {
   const { t, i18n } = useTranslation();
   const [openPopover, setOpenPopover] = useState<ChipPopover | null>(null);
   const povChipRef = useRef<HTMLSpanElement>(null);
@@ -86,11 +89,13 @@ export function SceneMetaChipRow() {
   );
   const sceneId = node?.nodeType === "scene" ? node.id : null;
 
+  const secondaryTabId = useTabStore((s) => s.secondaryActiveTabId);
+  const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
+
   const { value: panelOpen } = useSettingBoolean(
     "editor.sceneMetaPanelOpen",
     true,
   );
-  const focusMode = useCursorSettingsStore((s) => s.focusMode);
 
   const entries = useCodexStore((s) => s.entries);
   const { calendar } = useProjectCalendar(node?.projectId ?? null);
@@ -118,7 +123,20 @@ export function SceneMetaChipRow() {
     };
   }, [editor, sceneId, primaryTabId]);
 
-  if (!node || !sceneId || panelOpen || focusMode) return null;
+  // フォーカスモードでも隠さない（本文の減光は FocusModePlugin 側で完結する）
+  if (!node || !sceneId || panelOpen) return null;
+
+  if (groupIndex !== undefined) {
+    const groupTabId = groupIndex === 0 ? primaryTabId : secondaryTabId;
+    if (groupTabId !== sceneId) return null;
+    // 同一シーンを両グループで開いているときはフォーカス中のグループにだけ出す
+    if (
+      primaryTabId === sceneId &&
+      secondaryTabId === sceneId &&
+      groupIndex !== activeGroupIndex
+    )
+      return null;
+  }
 
   const pov = entries.find((e) => e.id === node.povCharacterId) ?? null;
   const location = entries.find((e) => e.id === node.locationId) ?? null;

@@ -8,6 +8,7 @@ import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useEditorStore } from "./editorStore";
+import { useTabStore } from "./tabStore";
 import { SceneMetaChipRow } from "./SceneMetaChipRow";
 
 vi.mock("react-i18next", () => ({
@@ -72,6 +73,11 @@ beforeEach(() => {
   stubPanelOpen(false);
   useCursorSettingsStore.setState({ focusMode: false });
   useEditorStore.setState({ editor: null } as never);
+  useTabStore.setState({
+    activeTabId: "s1",
+    secondaryActiveTabId: null,
+    activeGroupIndex: 0,
+  } as never);
   useCodexStore.setState({
     entries: [
       { id: "c1", name: "千早", type: "character" },
@@ -96,16 +102,44 @@ describe("SceneMetaChipRow の表示条件", () => {
     expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
   });
 
-  it("フォーカスモード中は出ない", () => {
+  it("フォーカスモード中も表示される (本文減光のみがフォーカスモードの効果)", () => {
     useCursorSettingsStore.setState({ focusMode: true });
     render(<SceneMetaChipRow />);
-    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+    expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
   });
 
   it("scene 以外のノードでは出ない", () => {
     seedScene({ nodeType: "note" } as Partial<TreeNodeData>);
     render(<SceneMetaChipRow />);
     expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+  });
+
+  it("groupIndex 指定時: そのグループのアクティブタブがアクティブシーンのときだけ出る", () => {
+    useTabStore.setState({
+      activeTabId: "s1",
+      secondaryActiveTabId: "other",
+      activeGroupIndex: 0,
+    } as never);
+    const { unmount } = render(<SceneMetaChipRow groupIndex={0} />);
+    expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
+    unmount();
+
+    render(<SceneMetaChipRow groupIndex={1} />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+  });
+
+  it("groupIndex 指定時: 同一シーンが両グループで開いているとフォーカス中のグループだけに出る", () => {
+    useTabStore.setState({
+      activeTabId: "s1",
+      secondaryActiveTabId: "s1",
+      activeGroupIndex: 1,
+    } as never);
+    const { unmount } = render(<SceneMetaChipRow groupIndex={0} />);
+    expect(screen.queryByTestId("scene-meta-chip-row")).toBeNull();
+    unmount();
+
+    render(<SceneMetaChipRow groupIndex={1} />);
+    expect(screen.getByTestId("scene-meta-chip-row")).toBeTruthy();
   });
 });
 
