@@ -1756,9 +1756,15 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   async refreshAiRatio(nodeId) {
     try {
       const ratios = await loadBatchAiRatio([nodeId]);
-      set((state) => ({
-        aiRatios: { ...state.aiRatios, ...ratios },
-      }));
+      // 結果に無いノード (シーンが空になった等) は key ごと削除する。
+      // spread マージだけだと旧 % がツリー再ロードまで残留するし、
+      // 0 を書くと初期一括ロード (省略=key無し) と表示が食い違う。
+      set((state) => {
+        const next = { ...state.aiRatios };
+        if (nodeId in ratios) next[nodeId] = ratios[nodeId];
+        else delete next[nodeId];
+        return { aiRatios: next };
+      });
     } catch {
       // ignore
     }
