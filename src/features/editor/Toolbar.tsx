@@ -9,6 +9,7 @@ import { formatShortcut, isMac } from "@/lib/platform";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
+import { GUTTER_REBUILD_META } from "@/features/editor/GutterMarksPlugin";
 import {
   useSettingBoolean,
   useSettingNumber,
@@ -591,7 +592,14 @@ export function Toolbar({
           <ToolbarButton
             label={t("editor.toolbar.foreshadowMarks")}
             active={showForeshadowMarks}
-            onClick={toggleShowForeshadowMarks}
+            onClick={() => {
+              toggleShowForeshadowMarks();
+              // 伏線の本文装飾は DOM 属性ゲート (EditorContentArea) だが、
+              // 段落ガター記号は plugin 描画なので rebuild を明示発火する。
+              editor.view.dispatch(
+                editor.state.tr.setMeta(GUTTER_REBUILD_META, true),
+              );
+            }}
           >
             Fs
           </ToolbarButton>

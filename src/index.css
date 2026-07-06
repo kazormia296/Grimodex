@@ -1000,6 +1000,33 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   opacity: 0.7;
 }
 
+/* ── 本文レイヤーのチャネル色 ──────────────────────────────────
+   Editorパネル Refine (1e): 本文中の装飾を3チャネルに整理する。
+     面   = 帰属 (背景 color-mix、--attribution-* を継続使用)
+     波線 = 直すべき問題 (校閲=ピンク単色 / Lint=重大度色)
+     点線・破線 = 自分のメモ (コメント=点線 / 伏線=破線)
+     文字色 = Codex (不変)
+   旧状態ではコメント・Lint警告・校閲警告が同一のアンバー波線
+   #f59e0b を共有していて見分け不能だった。 */
+:root {
+  --deco-comment: #d99a26;
+  --deco-foreshadow-setup: #5b6fd8;
+  --deco-foreshadow-payoff: #2f9e6b;
+  --deco-review: #c2417e;
+  --deco-lint-error: #ef4444;
+  --deco-lint-warning: #d98d1f;
+  --deco-lint-info: #3b82f6;
+}
+.dark {
+  --deco-comment: #e3b04a;
+  --deco-foreshadow-setup: #7d8ce8;
+  --deco-foreshadow-payoff: #4ade80;
+  --deco-review: #d66a9d;
+  --deco-lint-error: #f87171;
+  --deco-lint-warning: #e8a94a;
+  --deco-lint-info: #60a5fa;
+}
+
 /* Lint diagnostic decorations (squiggly underlines) */
 .lint-deco {
   text-decoration-line: underline;
@@ -1009,20 +1036,22 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   cursor: help;
 }
 .lint-deco--error {
-  text-decoration-color: #ef4444;
+  text-decoration-color: var(--deco-lint-error);
 }
 .lint-deco--warning {
-  text-decoration-color: #f59e0b;
+  text-decoration-color: var(--deco-lint-warning);
 }
 .lint-deco--info {
-  text-decoration-color: #3b82f6;
+  text-decoration-color: var(--deco-lint-info);
 }
 
-/* ForeshadowMarks — visible only when showForeshadowMarks is ON */
+/* ForeshadowMarks — visible only when showForeshadowMarks is ON.
+   破線 = 自分のメモチャネル (setup と payoff は色で区別)。 */
 [data-show-foreshadow-marks="true"] [data-foreshadow-setup] {
   text-decoration-line: underline;
-  text-decoration-style: solid;
-  text-decoration-color: #60a5fa; /* blue-400 */
+  text-decoration-style: dashed;
+  text-decoration-color: var(--deco-foreshadow-setup);
+  text-decoration-thickness: 1.5px;
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
   cursor: help;
@@ -1030,49 +1059,88 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 
 [data-show-foreshadow-marks="true"] [data-foreshadow-payoff] {
   text-decoration-line: underline;
-  text-decoration-style: solid;
-  text-decoration-color: #4ade80; /* green-400 */
+  text-decoration-style: dashed;
+  text-decoration-color: var(--deco-foreshadow-payoff);
+  text-decoration-thickness: 1.5px;
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
   cursor: help;
 }
 
-/* PostEffect annotation decorations — wavy underlines, severity-keyed colours */
+/* PostEffect annotation decorations — 校閲チャネルはピンク単色の波線。
+   severity は本文中では色分けしない (パネル側で表現する)。
+   pseudo_comment だけは下線ではなくハイライトのまま。 */
 .pe-annotation {
   text-decoration-line: underline;
   text-decoration-style: wavy;
+  text-decoration-color: var(--deco-review);
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
   cursor: pointer;
 }
-.pe-annotation-severity-error {
-  text-decoration-color: #ef4444; /* red-500 */
-}
-.pe-annotation-severity-warning {
-  text-decoration-color: #f59e0b; /* amber-500 */
-}
-.pe-annotation-severity-suggestion {
-  text-decoration-color: #60a5fa; /* blue-400 */
-}
-.pe-annotation-severity-info {
-  text-decoration-color: #94a3b8; /* slate-400 / muted */
-}
-/* pseudo_comment は severity 下線ではなくコメント色のハイライトにする。
-   severity rule の後に置いて下線を打ち消す (同 specificity で後勝ち)。 */
 .pe-annotation-pseudo_comment {
   text-decoration-line: none;
   background-color: rgb(129 140 248 / 0.16); /* indigo-400 tint */
   border-radius: 2px;
 }
 
-/* CommentMark decoration — amber wavy underline when showComments is ON */
+/* CommentMark decoration — dotted underline (自分のメモチャネル) */
 .comment-deco {
   text-decoration-line: underline;
-  text-decoration-style: wavy;
-  text-decoration-color: #f59e0b;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--deco-comment);
+  text-decoration-thickness: 1.5px;
   text-decoration-skip-ink: none;
   text-underline-offset: 3px;
   cursor: help;
+}
+
+/* 段落ガター記号 — コメント/伏線/校閲を含むブロックの先頭に当たりアイコン。
+   幅0の anchor + 論理プロパティ絶対配置で、横書きでは段落左、縦書きでは
+   段落頭の上部余白に回る (lint-disable-gutter と同じ手法)。 */
+.gutter-marks {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  position: relative;
+  vertical-align: top;
+}
+.gutter-marks__row {
+  position: absolute;
+  inset-inline-end: 0.6em;
+  inset-block-start: 0.25em;
+  display: flex;
+  gap: 2px;
+  pointer-events: auto;
+}
+.gutter-mark {
+  display: flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  opacity: 0.9;
+}
+.gutter-mark svg {
+  display: block;
+}
+.gutter-mark--comment {
+  color: var(--deco-comment);
+  background-color: color-mix(in srgb, var(--deco-comment) 14%, transparent);
+}
+.gutter-mark--foreshadow {
+  color: var(--deco-foreshadow-setup);
+  background-color: color-mix(
+    in srgb,
+    var(--deco-foreshadow-setup) 13%,
+    transparent
+  );
+}
+.gutter-mark--review {
+  color: var(--deco-review);
+  background-color: color-mix(in srgb, var(--deco-review) 12%, transparent);
 }
 
 /* Inline `lintDisable` Mark — regular disable (listed rule IDs) gets a

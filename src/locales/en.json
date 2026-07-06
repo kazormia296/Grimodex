@@ -3492,6 +3492,11 @@
       "gutterTooltipAll": "All Lint rules are disabled on this block",
       "gutterTooltipPartial": "{{count}} Lint disable directives on this block"
     },
+    "gutter": {
+      "comment": "This paragraph has comments",
+      "foreshadow": "This paragraph has foreshadow marks",
+      "review": "This paragraph has review issues"
+    },
     "synopsis": {
       "title": "Synopsis",
       "intentLabel": "Intent (What you want to achieve in this scene)",

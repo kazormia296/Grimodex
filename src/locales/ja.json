@@ -3487,6 +3487,11 @@
       "gutterTooltipAll": "このブロックは全 Lint ルールを無効化中",
       "gutterTooltipPartial": "このブロックに {{count}} 件の Lint 無効化があります"
     },
+    "gutter": {
+      "comment": "この段落にコメントがあります",
+      "foreshadow": "この段落に伏線マークがあります",
+      "review": "この段落に校閲の指摘があります"
+    },
     "synopsis": {
       "title": "Synopsis",
       "intentLabel": "狙い（このシーンで達成したいこと）",

@@ -27,6 +27,7 @@ import { LintDisableMark } from "@/features/editor/LintDisableMark";
 import { LintDisableBlockAttrs } from "@/features/editor/LintDisableBlockAttrs";
 import { CommentMark } from "@/features/editor/CommentMark";
 import { createCommentDecorationPlugin } from "@/features/editor/CommentDecorationPlugin";
+import { createGutterMarksPlugin } from "@/features/editor/GutterMarksPlugin";
 import { ForeshadowSetupMark } from "@/features/foreshadow/marks/ForeshadowSetupMark";
 import { ForeshadowPayoffMark } from "@/features/foreshadow/marks/ForeshadowPayoffMark";
 import { ForeshadowPasteRule } from "@/features/foreshadow/marks/foreshadowPasteRule";
@@ -123,6 +124,13 @@ const AnnotationDecorationExtension = Extension.create({
   },
 });
 
+const GutterMarksExtension = Extension.create({
+  name: "gutterMarks",
+  addProseMirrorPlugins() {
+    return [createGutterMarksPlugin()];
+  },
+});
+
 const ToolbarShortcutsExtension = Extension.create({
   name: "toolbarShortcuts",
 
@@ -205,6 +213,7 @@ export function getEditorExtensions(
     ForeshadowPasteRule,
     AnnotationMark,
     AnnotationDecorationExtension,
+    GutterMarksExtension,
   ];
 
   // mention の「ノード型」は常に登録する。popup 未配線のサーフェス

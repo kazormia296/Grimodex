@@ -14,6 +14,9 @@ interface CursorSettingsState {
   toggleShowComments: () => void;
   showForeshadowMarks: boolean;
   toggleShowForeshadowMarks: () => void;
+  /** Lint 波線の表示（本文レイヤー）。診断の実行自体は止めない。 */
+  showLint: boolean;
+  toggleShowLint: () => void;
   /** Whether the "add comment" input popover is open. */
   commentPickerOpen: boolean;
   setCommentPickerOpen: (open: boolean) => void;
@@ -69,6 +72,9 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
   showForeshadowMarks: false,
   toggleShowForeshadowMarks: () =>
     set((s) => ({ showForeshadowMarks: !s.showForeshadowMarks })),
+
+  showLint: true,
+  toggleShowLint: () => set((s) => ({ showLint: !s.showLint })),
 
   commentPickerOpen: false,
   setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
