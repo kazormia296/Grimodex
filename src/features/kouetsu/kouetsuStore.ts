@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import type { FullCheckStepId } from "./fullCheckStore";
 
 export type KouetsuTab = "issues" | "comments" | "blocker";
 export type KouetsuScope =
@@ -43,12 +44,29 @@ interface KouetsuState {
    * 読み手が居ないが、hidden 中の reload bail 用途で将来また使うため残す。
    */
   panelActive: boolean;
+  /**
+   * 全体チェックで実行する観点の選択状態（persist 対象）。既定は全 true。
+   * 疑似コメント・影響レビューは全体チェックの対象外なので鍵に含めない。
+   */
+  fullCheckEffects: Record<FullCheckStepId, boolean>;
   setActiveTab: (tab: KouetsuTab) => void;
   setScope: (scope: KouetsuScope) => void;
   setStatusFilter: (filter: KouetsuStatusFilter) => void;
   setProjectGroupBy: (mode: ProjectGroupBy) => void;
   setPanelActive: (active: boolean) => void;
+  setFullCheckEffect: (id: FullCheckStepId, on: boolean) => void;
 }
+
+/** 全体チェック観点の既定値（全 true）。 */
+const DEFAULT_FULL_CHECK_EFFECTS: Record<FullCheckStepId, boolean> = {
+  lint: true,
+  typo: true,
+  consistency: true,
+  review: true,
+  meta: true,
+  timeline: true,
+  intent: true,
+};
 
 interface PersistedV0 {
   activeTab?: string;
@@ -89,13 +107,21 @@ export const useKouetsuStore = create<KouetsuState>()(
       statusFilter: "open",
       projectGroupBy: "scene",
       panelActive: true,
+      fullCheckEffects: { ...DEFAULT_FULL_CHECK_EFFECTS },
       setActiveTab: (tab) => set({ activeTab: tab }),
       setScope: (scope) => set({ scope }),
       setStatusFilter: (filter) => set({ statusFilter: filter }),
       setProjectGroupBy: (mode) => set({ projectGroupBy: mode }),
       setPanelActive: (active) => set({ panelActive: active }),
+      setFullCheckEffect: (id, on) =>
+        set((s) => ({
+          fullCheckEffects: { ...s.fullCheckEffects, [id]: on },
+        })),
     }),
     {
+      // version は据え置き（1）。fullCheckEffects は新規追加フィールドのため、
+      // persist の既定 shallow merge で旧 persist に無くても initializer の
+      // 既定（全 true）がそのまま効く（migration 不要）。
       name: "kouetsu-store",
       version: 1,
       migrate: migrateKouetsuStore,
@@ -104,6 +130,7 @@ export const useKouetsuStore = create<KouetsuState>()(
         scope: s.scope,
         statusFilter: s.statusFilter,
         projectGroupBy: s.projectGroupBy,
+        fullCheckEffects: s.fullCheckEffects,
       }),
     },
   ),

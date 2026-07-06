@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, FileText, FolderTree, Globe } from "lucide-react";
@@ -35,8 +35,9 @@ function openSceneInEditor(sceneId: string): void {
  * 指摘タブのヘッダ行: ツリースコープピッカー（シーン/フォルダ/プロジェクト、
  * Chat と同セマンティクス）+ ステータスフィルタ chips（開いている/除外）。
  * シーン選択はエディタ移動 + scene スコープ（Chat と同挙動）。
+ * `actions` はフィルタ chips の左に差し込む（全体チェック導線など）。
  */
-export function KouetsuScopeBar() {
+export function KouetsuScopeBar({ actions }: { actions?: ReactNode }) {
   const { t } = useTranslation();
   // 宙に浮いた folder anchor は project へ正規化した scope を表示/選択に使う
   // （ラベルは「プロジェクト」表示なのに selection/scope が folder のまま、という
@@ -96,6 +97,7 @@ export function KouetsuScopeBar() {
       </button>
 
       <div className="ml-auto flex items-center gap-1">
+        {actions}
         {FILTERS.map(({ id, labelKey }) => (
           <button
             key={id}

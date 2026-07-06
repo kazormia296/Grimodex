@@ -1301,6 +1301,17 @@
     "openLog": "ログを開く",
     "openLogFailed": "ログフォルダを開けませんでした",
     "partialFailure": "一部のシーンで解析に失敗しました",
+    "fullCheck": {
+      "run": "全体チェック",
+      "configure": "チェックする観点",
+      "progress": "{{done}}/{{total}} 観点",
+      "cancel": "中止",
+      "completed": "全体チェック完了 — 指摘 {{count}} 件",
+      "completedWithFailures": "全体チェック完了（{{failed}} 観点失敗）",
+      "alreadyRunning": "実行中です",
+      "lintProjectWide": "校正は常にプロジェクト全体を走査します",
+      "lintSceneSkipped": "現在シーンは自動反映済みのためスキップします"
+    },
     "progressToast": {
       "running": "実行中…",
       "runningProgress": "実行中 {{progress}} シーン",

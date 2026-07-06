@@ -1301,6 +1301,17 @@
     "openLog": "Open logs",
     "openLogFailed": "Failed to open the log folder",
     "partialFailure": "Some scenes failed to analyze",
+    "fullCheck": {
+      "run": "Full check",
+      "configure": "Checks to run",
+      "progress": "{{done}}/{{total}} checks",
+      "cancel": "Cancel",
+      "completed": "Full check done — {{count}} findings",
+      "completedWithFailures": "Done with {{failed}} failed checks",
+      "alreadyRunning": "Already running",
+      "lintProjectWide": "Proofreading always scans the whole project",
+      "lintSceneSkipped": "Skipped — the current scene is linted live"
+    },
     "progressToast": {
       "running": "Running…",
       "runningProgress": "Running scene {{progress}}",
