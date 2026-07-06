@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { PostEffectAnnotation, PostEffectStatus } from "./types";
 
 interface AnnotationState {
@@ -19,6 +20,8 @@ interface AnnotationState {
   ) => void;
   toggleShowAnnotations: () => void;
   setFocusedAnnotationId: (id: string | null) => void;
+  /** Sync runtime state from persisted settings (call after loadAll). */
+  initFromSettings: () => void;
 }
 
 export const useAnnotationStore = create<AnnotationState>()((set) => ({
@@ -50,7 +53,19 @@ export const useAnnotationStore = create<AnnotationState>()((set) => ({
     }),
 
   toggleShowAnnotations: () =>
-    set((s) => ({ showAnnotations: !s.showAnnotations })),
+    set((s) => {
+      const next = !s.showAnnotations;
+      useSettingsStore.getState().set("display.layerReview", String(next));
+      return { showAnnotations: next };
+    }),
 
   setFocusedAnnotationId: (id) => set({ focusedAnnotationId: id }),
+
+  initFromSettings: () => {
+    set({
+      showAnnotations: useSettingsStore
+        .getState()
+        .getBoolean("display.layerReview", true),
+    });
+  },
 }));

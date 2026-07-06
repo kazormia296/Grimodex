@@ -3296,7 +3296,8 @@
         "dropToUnplace": "ここにドロップして未配置に戻す",
         "emptyState": "Beat はまだありません。+ を押して追加してください。",
         "placedHeading": "配置済み（本文順）：",
-        "emptyBeat": "空の Beat"
+        "emptyBeat": "空の Beat",
+        "paragraphRef": "本文 ¶{{n}}"
       },
       "alternativeSaved": "代替案をスニペットに保存しました",
       "modelInherit": "モデルを継承",
@@ -3352,10 +3353,7 @@
       "linkShort": "リンク",
       "sceneBreak": "シーン区切り (* * *)",
       "fontSize": "文字サイズ",
-      "attribution": "帰属表示",
-      "comments": "コメント表示（未実装）",
-      "foreshadowMarks": "伏線マーク表示",
-      "reviewMarks": "校閲アノテーション表示",
+      "layers": "本文レイヤー",
       "focusMode": "フォーカスモード",
       "typewriterMode": "タイプライターモード",
       "verticalMode": "縦書きで編集（この作品）",
@@ -3486,6 +3484,39 @@
     "lintDisable": {
       "gutterTooltipAll": "このブロックは全 Lint ルールを無効化中",
       "gutterTooltipPartial": "このブロックに {{count}} 件の Lint 無効化があります"
+    },
+    "gutter": {
+      "comment": "この段落にコメントがあります",
+      "foreshadow": "この段落に伏線マークがあります",
+      "review": "この段落に校閲の指摘があります"
+    },
+    "sceneDetail": {
+      "title": "シーン詳細",
+      "pov": "視点",
+      "location": "場所",
+      "notSet": "未設定",
+      "searchCharacter": "人物を検索…",
+      "searchLocation": "場所を検索…",
+      "clearSelection": "指定なしにする",
+      "noMatches": "該当なし",
+      "synopsisChip": "あらすじ",
+      "synopsisEmpty": "未記入",
+      "beatsChip": "ビート {{count}}"
+    },
+    "layers": {
+      "title": "本文レイヤー",
+      "hideAll": "すべて隠す",
+      "attribution": "帰属ハイライト",
+      "comments": "コメント",
+      "foreshadow": "伏線マーク",
+      "review": "校閲の指摘",
+      "lint": "Lint",
+      "codex": "Codexハイライト",
+      "codexNote": "（見た目は不変）",
+      "opacity": "濃度",
+      "aiShare": "AI {{percent}}%",
+      "sampleNote": "行の左見本 ＝ 本文中の描画",
+      "openKouetsu": "校閲パネルを開く →"
     },
     "synopsis": {
       "title": "Synopsis",

@@ -3301,7 +3301,8 @@
         "dropToUnplace": "Drop beat here to unplace",
         "emptyState": "No beats yet. Click + to add your first beat.",
         "placedHeading": "Placed (in document order):",
-        "emptyBeat": "empty beat"
+        "emptyBeat": "empty beat",
+        "paragraphRef": "Body ¶{{n}}"
       },
       "modelInherit": "Inherit model",
       "actionBarKeep": "Keep",
@@ -3357,10 +3358,7 @@
       "linkShort": "Link",
       "sceneBreak": "Scene break (* * *)",
       "fontSize": "Font size",
-      "attribution": "Attribution",
-      "comments": "Comments (not implemented)",
-      "foreshadowMarks": "Show foreshadow marks",
-      "reviewMarks": "Show review annotations",
+      "layers": "Body layers",
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
       "verticalMode": "Vertical writing (this work)",
@@ -3491,6 +3489,39 @@
     "lintDisable": {
       "gutterTooltipAll": "All Lint rules are disabled on this block",
       "gutterTooltipPartial": "{{count}} Lint disable directives on this block"
+    },
+    "gutter": {
+      "comment": "This paragraph has comments",
+      "foreshadow": "This paragraph has foreshadow marks",
+      "review": "This paragraph has review issues"
+    },
+    "sceneDetail": {
+      "title": "Scene Details",
+      "pov": "POV",
+      "location": "Location",
+      "notSet": "Not set",
+      "searchCharacter": "Search characters…",
+      "searchLocation": "Search locations…",
+      "clearSelection": "Clear selection",
+      "noMatches": "No matches",
+      "synopsisChip": "Synopsis",
+      "synopsisEmpty": "Empty",
+      "beatsChip": "Beats {{count}}"
+    },
+    "layers": {
+      "title": "Body layers",
+      "hideAll": "Hide all",
+      "attribution": "Attribution highlight",
+      "comments": "Comments",
+      "foreshadow": "Foreshadow marks",
+      "review": "Review issues",
+      "lint": "Lint",
+      "codex": "Codex highlight",
+      "codexNote": "(appearance unchanged)",
+      "opacity": "Opacity",
+      "aiShare": "AI {{percent}}%",
+      "sampleNote": "Left sample = in-body rendering",
+      "openKouetsu": "Open review panel →"
     },
     "synopsis": {
       "title": "Synopsis",

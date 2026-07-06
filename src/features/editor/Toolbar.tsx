@@ -1,4 +1,21 @@
-import { Check, X } from "lucide-react";
+import {
+  Bold,
+  Check,
+  EllipsisVertical,
+  Focus,
+  Italic,
+  Keyboard,
+  Layers,
+  Link as LinkIcon,
+  List,
+  ListOrdered,
+  Minus,
+  PanelRight,
+  Strikethrough,
+  TextQuote,
+  Underline,
+  X,
+} from "lucide-react";
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { useEditorState } from "@tiptap/react";
@@ -8,13 +25,12 @@ import { cn } from "@/lib/utils";
 import { formatShortcut, isMac } from "@/lib/platform";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
-import { COMMENT_REBUILD_META } from "@/features/editor/CommentDecorationPlugin";
+import { LayersPopover } from "@/features/editor/LayersPopover";
 import {
   useSettingBoolean,
   useSettingNumber,
 } from "@/features/settings/useSettingControl";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
-import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin";
 import { useCurrentProject } from "@/features/project/projectStore";
 import { primaryCountUnit } from "@/features/editor/charCountStats";
 
@@ -97,11 +113,13 @@ export function Toolbar({
   const [linkPos, setLinkPos] = useState<{ x: number; y: number } | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [fontSizeOpen, setFontSizeOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
   const { t } = useTranslation();
   const overflowBtnRef = useRef<HTMLDivElement>(null);
   const overflowDropdownRef = useRef<HTMLDivElement>(null);
   const fontSizeBtnRef = useRef<HTMLDivElement>(null);
   const fontSizeDropdownRef = useRef<HTMLDivElement>(null);
+  const layersBtnRef = useRef<HTMLDivElement>(null);
   const rightGroupRef = useRef<HTMLDivElement>(null);
   const [rightGroupWidth, setRightGroupWidth] = useState(0);
 
@@ -132,21 +150,17 @@ export function Toolbar({
     false,
   );
 
-  const { showAttribution, toggleAttribution } = useAttributionStore();
+  const showAttribution = useAttributionStore((s) => s.showAttribution);
   const {
     focusMode,
     toggleFocusMode,
     typewriterMode,
     toggleTypewriterMode,
     showComments,
-    toggleShowComments,
     showForeshadowMarks,
-    toggleShowForeshadowMarks,
+    showLint,
   } = useCursorSettingsStore();
   const showAnnotations = useAnnotationStore((s) => s.showAnnotations);
-  const toggleShowAnnotations = useAnnotationStore(
-    (s) => s.toggleShowAnnotations,
-  );
 
   // isActive 系のボタン状態だけを selector で抽出する。useEditorState は
   // deepEqual 比較なので、フラグが実際に変わったときだけ Toolbar が再レンダー
@@ -382,6 +396,16 @@ export function Toolbar({
 
   const hasOverflowedButtons = visibleUnitCount < 4;
 
+  // レイヤーボタンの状態ドット: ON のレイヤーのチャネル色を並べる
+  // (Codex は「見た目は不変」の常時系なのでドットに含めない)。
+  const layerDots: string[] = [];
+  if (showAttribution) layerDots.push("var(--attribution-ai)");
+  if (showComments) layerDots.push("var(--deco-comment)");
+  if (showForeshadowMarks) layerDots.push("var(--deco-foreshadow-setup)");
+  if (sceneId && nodeType === "scene" && showAnnotations)
+    layerDots.push("var(--deco-review)");
+  if (showLint) layerDots.push("var(--deco-lint-warning)");
+
   return (
     <div
       role="toolbar"
@@ -398,28 +422,28 @@ export function Toolbar({
               active={active?.bold}
               onClick={() => editor.chain().focus().toggleBold().run()}
             >
-              <strong>B</strong>
+              <Bold size={14} />
             </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.italic")}
               active={active?.italic}
               onClick={() => editor.chain().focus().toggleItalic().run()}
             >
-              <em>I</em>
+              <Italic size={14} />
             </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.underline")}
               active={active?.underline}
               onClick={() => editor.chain().focus().toggleUnderline().run()}
             >
-              <span className="underline">U</span>
+              <Underline size={14} />
             </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.strikethrough")}
               active={active?.strike}
               onClick={() => editor.chain().focus().toggleStrike().run()}
             >
-              <span className="line-through">S</span>
+              <Strikethrough size={14} />
             </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.emphasisDots")}
@@ -475,27 +499,27 @@ export function Toolbar({
                 active={active?.bulletList}
                 onClick={() => editor.chain().focus().toggleBulletList().run()}
               >
-                ≡
+                <List size={14} />
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.orderedList")}
                 active={active?.orderedList}
                 onClick={() => editor.chain().focus().toggleOrderedList().run()}
               >
-                1.
+                <ListOrdered size={14} />
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.blockquote")}
                 active={active?.blockquote}
                 onClick={() => editor.chain().focus().toggleBlockquote().run()}
               >
-                ❝
+                <TextQuote size={14} />
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.horizontalRule")}
                 onClick={insertHorizontalRule}
               >
-                —
+                <Minus size={14} />
               </ToolbarButton>
             </div>
           )}
@@ -510,7 +534,14 @@ export function Toolbar({
                 onClick={openRuby}
                 allowFocus
               >
-                Ruby
+                {/* ふり仮名の2段グリフ — 日本語固有機能はアイコン化せず
+                    文字のまま (デザイン 1a) */}
+                <span className="flex flex-col items-center leading-none">
+                  <span className="text-[6.5px] tracking-wide text-muted-foreground">
+                    ふり
+                  </span>
+                  <span className="text-[10px] font-semibold">仮名</span>
+                </span>
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.link")}
@@ -518,13 +549,28 @@ export function Toolbar({
                 onClick={openLink}
                 allowFocus
               >
-                Link
+                <LinkIcon size={13} />
               </ToolbarButton>
               <ToolbarButton
                 label={t("editor.toolbar.sceneBreak")}
                 onClick={() => editor.chain().focus().insertSceneBreak().run()}
               >
-                * * *
+                {/* シーン区切り (* * *) のグリフアイコン */}
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                >
+                  <path d="M3 12h3" />
+                  <path d="M18 12h3" />
+                  <circle cx="9" cy="12" r="0.6" fill="currentColor" />
+                  <circle cx="12" cy="12" r="0.6" fill="currentColor" />
+                  <circle cx="15" cy="12" r="0.6" fill="currentColor" />
+                </svg>
               </ToolbarButton>
             </div>
           )}
@@ -535,7 +581,7 @@ export function Toolbar({
           ref={rightGroupRef}
           className="absolute inset-y-0 right-0 flex items-center gap-0.5 border-l border-border bg-background px-1.5"
         >
-          {/* Editor settings: 文字サイズ・モード切替 */}
+          {/* Editor settings: 文字サイズ */}
           <div ref={fontSizeBtnRef}>
             <ToolbarButton
               label={t("editor.toolbar.fontSize")}
@@ -545,77 +591,65 @@ export function Toolbar({
               Aa
             </ToolbarButton>
           </div>
-          <ToolbarButton
-            label={t("editor.toolbar.focusMode")}
-            active={focusMode}
-            onClick={toggleFocusMode}
-          >
-            Focus
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("editor.toolbar.typewriterMode")}
-            active={typewriterMode}
-            onClick={toggleTypewriterMode}
-            disabled={verticalMode}
-          >
-            TW
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("editor.toolbar.verticalMode")}
-            active={verticalMode}
-            onClick={() => setVerticalMode(!verticalMode)}
-          >
-            縦
-          </ToolbarButton>
-          <Sep />
-          {/* Overlays: 帰属 / コメント / 伏線 / 校閲 (peAnnotation) */}
-          <ToolbarButton
-            label={t("editor.toolbar.attribution")}
-            active={showAttribution}
-            onClick={toggleAttribution}
-          >
-            Attr
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("editor.toolbar.comments")}
-            active={showComments}
-            onClick={() => {
-              toggleShowComments();
-              editor.view.dispatch(
-                editor.state.tr.setMeta(COMMENT_REBUILD_META, true),
-              );
-            }}
-          >
-            Cmt
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("editor.toolbar.foreshadowMarks")}
-            active={showForeshadowMarks}
-            onClick={toggleShowForeshadowMarks}
-          >
-            Fs
-          </ToolbarButton>
-          {sceneId && nodeType === "scene" && (
+          {/* 表示モードセグメント: 集中 / タイプライター / 縦書き */}
+          <div className="flex items-center gap-px rounded-md border border-border bg-muted/30 p-0.5">
             <ToolbarButton
-              label={t("editor.toolbar.reviewMarks")}
-              active={showAnnotations}
-              onClick={() => {
-                toggleShowAnnotations();
-                editor.view.dispatch(
-                  editor.state.tr.setMeta(ANNOTATION_REBUILD_META, true),
-                );
-              }}
+              label={t("editor.toolbar.focusMode")}
+              active={focusMode}
+              onClick={toggleFocusMode}
             >
-              Rv
+              <Focus size={13} />
             </ToolbarButton>
-          )}
+            <ToolbarButton
+              label={t("editor.toolbar.typewriterMode")}
+              active={typewriterMode}
+              onClick={toggleTypewriterMode}
+              disabled={verticalMode}
+            >
+              <Keyboard size={13} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={t("editor.toolbar.verticalMode")}
+              active={verticalMode}
+              onClick={() => setVerticalMode(!verticalMode)}
+            >
+              縦
+            </ToolbarButton>
+          </div>
+          {/* 本文レイヤー: 旧 Attr/Cmt/Fs/Rv 個別トグルを1ボタン+ポップオーバーに集約 */}
+          <div ref={layersBtnRef}>
+            <ToolbarButton
+              label={t("editor.toolbar.layers")}
+              active={layersOpen}
+              ariaHasPopup="dialog"
+              ariaExpanded={layersOpen}
+              onClick={() => setLayersOpen((v) => !v)}
+            >
+              <span className="flex items-center gap-1">
+                <Layers size={13} />
+                <span className="flex items-center gap-[2.5px]">
+                  {layerDots.length > 0 ? (
+                    layerDots.map((color, i) => (
+                      <span
+                        key={i}
+                        className="h-[5px] w-[5px] rounded-full"
+                        style={{ background: color }}
+                      />
+                    ))
+                  ) : (
+                    <span className="h-[5px] w-[5px] rounded-full bg-border" />
+                  )}
+                </span>
+              </span>
+            </ToolbarButton>
+          </div>
           {onTogglePanel !== undefined && (
             <ToolbarButton
               label={t("editor.toolbar.sceneMetaPanel")}
               active={panelOpen ?? false}
               onClick={onTogglePanel}
             >
-              ▶
+              <PanelRight size={14} />
             </ToolbarButton>
           )}
           <Sep />
@@ -627,11 +661,21 @@ export function Toolbar({
               ariaExpanded={overflowOpen}
               onClick={() => setOverflowOpen((v) => !v)}
             >
-              ⋮
+              <EllipsisVertical size={14} />
             </ToolbarButton>
           </div>
         </div>
       </div>
+
+      {/* 本文レイヤーポップオーバー (body へ portal) */}
+      <LayersPopover
+        editor={editor}
+        open={layersOpen}
+        onClose={() => setLayersOpen(false)}
+        triggerRef={layersBtnRef}
+        sceneId={sceneId}
+        nodeType={nodeType}
+      />
 
       {/* 文字サイズポップオーバー */}
       {fontSizeOpen && (

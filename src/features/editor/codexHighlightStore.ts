@@ -28,7 +28,12 @@ export const useCodexHighlightStore = create<CodexHighlightState>()((set) => ({
   setMatchTargets: (targets) => set({ matchTargets: targets }),
   setMatchedEntryIds: (ids) => set({ matchedEntryIds: ids }),
   setHoveredEntryId: (id) => set({ hoveredEntryId: id }),
-  setEnabled: (enabled) => set({ enabled }),
+  setEnabled: (enabled) => {
+    // 本文レイヤーのトグルからも呼ばれるため設定へ write-through する
+    // （設定画面からの呼び出しでは同値の再書き込みになるだけで無害）。
+    useSettingsStore.getState().set("display.codexHighlight", String(enabled));
+    set({ enabled });
+  },
   setTypeColorMap: (map) => set({ typeColorMap: map }),
   initFromSettings: () => {
     set({

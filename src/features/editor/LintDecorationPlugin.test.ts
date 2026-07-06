@@ -1,12 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { EditorState } from "@tiptap/pm/state";
 import { schema } from "prosemirror-schema-basic";
 import { DecorationSet } from "@tiptap/pm/view";
 
 import type { Diagnostic } from "@/features/lint/types";
+import { useCursorSettingsStore } from "./cursorSettingsStore";
 import {
   createLintDecorationPlugin,
   lintDecorationKey,
+  LINT_REBUILD_META,
 } from "./LintDecorationPlugin";
 
 function docState(text: string): EditorState {
@@ -33,8 +35,12 @@ function diag(
 }
 
 function getDecoSet(state: EditorState): DecorationSet {
-  return lintDecorationKey.getState(state) as DecorationSet;
+  return (lintDecorationKey.getState(state) as { decos: DecorationSet }).decos;
 }
+
+beforeEach(() => {
+  useCursorSettingsStore.setState({ showLint: true });
+});
 
 describe("LintDecorationPlugin", () => {
   it("starts with an empty decoration set", () => {
@@ -114,6 +120,49 @@ describe("LintDecorationPlugin", () => {
         diagnostics: [],
       }),
     );
+    expect(getDecoSet(state).find()).toHaveLength(0);
+  });
+
+  it("stays empty while showLint is off", () => {
+    useCursorSettingsStore.setState({ showLint: false });
+    let state = docState("hello");
+    state = state.apply(
+      state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [diag("x", "error", 0, 3)],
+      }),
+    );
+    expect(getDecoSet(state).find()).toHaveLength(0);
+  });
+
+  it("rebuilds retained diagnostics when toggled back on via LINT_REBUILD_META", () => {
+    useCursorSettingsStore.setState({ showLint: false });
+    let state = docState("hello");
+    state = state.apply(
+      state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [diag("x", "error", 0, 3)],
+      }),
+    );
+    expect(getDecoSet(state).find()).toHaveLength(0);
+
+    useCursorSettingsStore.setState({ showLint: true });
+    state = state.apply(state.tr.setMeta(LINT_REBUILD_META, true));
+    expect(getDecoSet(state).find()).toHaveLength(1);
+  });
+
+  it("hides existing decorations when toggled off via LINT_REBUILD_META", () => {
+    let state = docState("hello");
+    state = state.apply(
+      state.tr.setMeta(lintDecorationKey, {
+        type: "lintDecoration/set",
+        diagnostics: [diag("x", "warning", 0, 3)],
+      }),
+    );
+    expect(getDecoSet(state).find()).toHaveLength(1);
+
+    useCursorSettingsStore.setState({ showLint: false });
+    state = state.apply(state.tr.setMeta(LINT_REBUILD_META, true));
     expect(getDecoSet(state).find()).toHaveLength(0);
   });
 });

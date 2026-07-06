@@ -14,6 +14,9 @@ interface CursorSettingsState {
   toggleShowComments: () => void;
   showForeshadowMarks: boolean;
   toggleShowForeshadowMarks: () => void;
+  /** Lint 波線の表示（本文レイヤー）。診断の実行自体は止めない。 */
+  showLint: boolean;
+  toggleShowLint: () => void;
   /** Whether the "add comment" input popover is open. */
   commentPickerOpen: boolean;
   setCommentPickerOpen: (open: boolean) => void;
@@ -64,11 +67,28 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
     }),
 
   showComments: false,
-  toggleShowComments: () => set((s) => ({ showComments: !s.showComments })),
+  toggleShowComments: () =>
+    set((s) => {
+      const next = !s.showComments;
+      useSettingsStore.getState().set("display.layerComments", String(next));
+      return { showComments: next };
+    }),
 
   showForeshadowMarks: false,
   toggleShowForeshadowMarks: () =>
-    set((s) => ({ showForeshadowMarks: !s.showForeshadowMarks })),
+    set((s) => {
+      const next = !s.showForeshadowMarks;
+      useSettingsStore.getState().set("display.layerForeshadow", String(next));
+      return { showForeshadowMarks: next };
+    }),
+
+  showLint: true,
+  toggleShowLint: () =>
+    set((s) => {
+      const next = !s.showLint;
+      useSettingsStore.getState().set("display.layerLint", String(next));
+      return { showLint: next };
+    }),
 
   commentPickerOpen: false,
   setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
@@ -88,6 +108,9 @@ export const useCursorSettingsStore = create<CursorSettingsState>()((set) => ({
       cursorBlink: s.getBoolean("editor.cursorBlink", true),
       focusMode: s.getBoolean("editor.focusMode", false),
       typewriterMode: s.getBoolean("editor.typewriterMode", false),
+      showComments: s.getBoolean("display.layerComments", false),
+      showForeshadowMarks: s.getBoolean("display.layerForeshadow", false),
+      showLint: s.getBoolean("display.layerLint", true),
     });
   },
 }));

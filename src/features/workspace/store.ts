@@ -315,6 +315,13 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         const { useCodexHighlightStore } =
           await import("@/features/editor/codexHighlightStore");
         useCodexHighlightStore.getState().initFromSettings();
+        // 本文レイヤーの表示トグル (帰属 / 校閲) も設定から復元する
+        const { useAttributionStore } =
+          await import("@/features/attribution/attributionStore");
+        useAttributionStore.getState().initFromSettings();
+        const { useAnnotationStore } =
+          await import("@/features/post-effect/annotationStore");
+        useAnnotationStore.getState().initFromSettings();
       }
       // Lint config depends on settings being loaded first.
       const { useLintConfigStore } =

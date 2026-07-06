@@ -2,11 +2,14 @@ import { MapPin } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Editor } from "@tiptap/core";
 import { useTranslation } from "react-i18next";
+import { paragraphOrdinalAtPos } from "@/features/editor/beat/beatDocQueries";
 
 interface PlacedBeatEntry {
   id: string;
   pos: number;
   preview: string;
+  /** 本文中のおおよその位置 (段落番号 ¶n)。 */
+  paragraph: number;
 }
 
 interface PlacedBeatListProps {
@@ -19,7 +22,12 @@ function collectPlacedBeats(editor: Editor | null): PlacedBeatEntry[] {
   editor.state.doc.descendants((node, pos) => {
     if (node.type.name === "sceneBeat") {
       const preview = node.textContent.slice(0, 40);
-      beats.push({ id: node.attrs.id as string, pos, preview });
+      beats.push({
+        id: node.attrs.id as string,
+        pos,
+        preview,
+        paragraph: paragraphOrdinalAtPos(editor.state.doc, pos),
+      });
       return false;
     }
     return true;
@@ -71,6 +79,9 @@ export function PlacedBeatList({ editor }: PlacedBeatListProps) {
                     {t("editor.beat.panel.emptyBeat")}
                   </em>
                 )}
+              </span>
+              <span className="shrink-0 font-mono text-[8.5px] text-muted-foreground/70">
+                {t("editor.beat.panel.paragraphRef", { n: beat.paragraph })}
               </span>
             </button>
           </li>

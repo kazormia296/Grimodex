@@ -49,6 +49,15 @@ export function useAnchoredPopover(
   open: boolean,
   onClose: () => void,
   placement: PopoverPlacement = "bottom-start",
+  options?: {
+    /**
+     * 外側クリック判定を拡張する述語。true を返した target は「内側」扱いで
+     * 閉じない。ポップオーバー内に Radix Popover 等の「body へ portal される
+     * 子ポップオーバー」を持つ場合、その content は popoverRef の外にあるため
+     * これで守る（例: `[data-radix-popper-content-wrapper]` 内のクリック）。
+     */
+    isInsideClick?: (target: Node) => boolean;
+  },
 ): UseAnchoredPopoverResult {
   const popoverRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<PopoverLayout | null>(null);
@@ -57,6 +66,8 @@ export function useAnchoredPopover(
   // リスナの再購読を open 遷移時だけに抑える。
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const isInsideClickRef = useRef(options?.isInsideClick);
+  isInsideClickRef.current = options?.isInsideClick;
 
   // トリガ矩形 + placement から fixed 座標 + 可用高さを計算する。
   const computeLayout = useCallback((): PopoverLayout | null => {
@@ -148,13 +159,19 @@ export function useAnchoredPopover(
       const target = e.target as Node;
       if (
         !triggerRef.current?.contains(target) &&
-        !popoverRef.current?.contains(target)
+        !popoverRef.current?.contains(target) &&
+        !isInsideClickRef.current?.(target)
       ) {
         onCloseRef.current();
       }
     }
     function onKeyDown(e: globalThis.KeyboardEvent) {
-      if (e.key === "Escape") onCloseRef.current();
+      if (e.key !== "Escape") return;
+      // ネストした子ポップオーバー（Radix 等）にフォーカスがあるときの Esc は
+      // 子レイヤーだけを閉じさせ、こちらは巻き込まれない。
+      const target = e.target as Node | null;
+      if (target && isInsideClickRef.current?.(target)) return;
+      onCloseRef.current();
     }
     document.addEventListener("mousedown", onMouseDown);
     document.addEventListener("keydown", onKeyDown);

@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { X } from "lucide-react";
 import { useSettingsStore } from "./settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
+import { useAttributionStore } from "@/features/attribution/attributionStore";
+import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { CategoryNav } from "./CategoryNav";
 import type { SettingsCategory } from "./types";
 import { ProjectCategory } from "./categories/ProjectCategory";
@@ -71,7 +74,12 @@ export function SettingsDialog({
 
   const handleClose = useCallback(async () => {
     await flushPending();
+    // 設定から初期化される runtime ストアをすべて再同期する
+    // （本文レイヤートグルの写し先: cursor / attribution / annotation / codex）。
     useCursorSettingsStore.getState().initFromSettings();
+    useAttributionStore.getState().initFromSettings();
+    useAnnotationStore.getState().initFromSettings();
+    useCodexHighlightStore.getState().initFromSettings();
     onClose();
   }, [flushPending, onClose]);
 
