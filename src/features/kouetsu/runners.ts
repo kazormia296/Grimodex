@@ -11,7 +11,11 @@
  * （runner 内で再解決はしない）。実体は `runners/` 配下（1 effect 1 ファイル）。
  */
 
-export type { KouetsuRunScope, KouetsuRunOutcome } from "./runners/shared";
+export type {
+  KouetsuRunScope,
+  KouetsuRunOutcome,
+  KouetsuRunHooks,
+} from "./runners/shared";
 
 export { runTypoCheck } from "./runners/typo";
 export { runReviewCheck } from "./runners/review";

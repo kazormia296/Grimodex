@@ -26,12 +26,14 @@ import {
   launchSingle,
   multiScope,
   scopeHasNoScenes,
+  type KouetsuRunHooks,
   type KouetsuRunOutcome,
   type KouetsuRunScope,
 } from "./shared";
 
 export async function runReviewCheck(
   scope: KouetsuRunScope,
+  hooks?: KouetsuRunHooks,
 ): Promise<KouetsuRunOutcome> {
   if (!guardsPass()) return BLOCKED;
   const { projectId, lang, model: base, customKouetsu } = commonParams();
@@ -59,22 +61,25 @@ export async function runReviewCheck(
       storyContext,
       route,
     );
-    return launchSingle({
-      project_id: projectId,
-      effect_type: "review",
-      scope_type: "scene",
-      scope_target_id: scope.sceneId,
-      model,
-      ...overrides,
-      prompt_version: REVIEW_PROMPT_VERSION,
-      input_hash: payload.inputHash,
-      codex_payload_json: "[]",
-      scene_text: payload.sceneText,
-      system_prompt: appendStoryContextGuidance(
-        appendKouetsuGuidance(reviewSystem, customKouetsu),
-        storyContext,
-      ),
-    });
+    return launchSingle(
+      {
+        project_id: projectId,
+        effect_type: "review",
+        scope_type: "scene",
+        scope_target_id: scope.sceneId,
+        model,
+        ...overrides,
+        prompt_version: REVIEW_PROMPT_VERSION,
+        input_hash: payload.inputHash,
+        codex_payload_json: "[]",
+        scene_text: payload.sceneText,
+        system_prompt: appendStoryContextGuidance(
+          appendKouetsuGuidance(reviewSystem, customKouetsu),
+          storyContext,
+        ),
+      },
+      hooks,
+    );
   }
 
   const { scopeType, scopeTargetId } = multiScope(scope);
@@ -90,16 +95,19 @@ export async function runReviewCheck(
     route,
   );
   if (payload.scenes.length === 0) return SKIPPED;
-  return launchMulti({
-    project_id: projectId,
-    effect_type: "review",
-    scope_type: scopeType,
-    scope_target_id: scopeTargetId,
-    model,
-    ...overrides,
-    prompt_version: REVIEW_PROMPT_VERSION,
-    input_hash: payload.inputHash,
-    scenes: payload.scenes,
-    system_prompt: appendKouetsuGuidance(reviewSystem, customKouetsu),
-  });
+  return launchMulti(
+    {
+      project_id: projectId,
+      effect_type: "review",
+      scope_type: scopeType,
+      scope_target_id: scopeTargetId,
+      model,
+      ...overrides,
+      prompt_version: REVIEW_PROMPT_VERSION,
+      input_hash: payload.inputHash,
+      scenes: payload.scenes,
+      system_prompt: appendKouetsuGuidance(reviewSystem, customKouetsu),
+    },
+    hooks,
+  );
 }

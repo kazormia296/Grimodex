@@ -25,12 +25,14 @@ import {
   launchSingle,
   multiScope,
   scopeHasNoScenes,
+  type KouetsuRunHooks,
   type KouetsuRunOutcome,
   type KouetsuRunScope,
 } from "./shared";
 
 export async function runMetaStructureCheck(
   scope: KouetsuRunScope,
+  hooks?: KouetsuRunHooks,
 ): Promise<KouetsuRunOutcome> {
   if (!guardsPass()) return BLOCKED;
   const { projectId, lang, model, customKouetsu } = commonParams();
@@ -48,21 +50,24 @@ export async function runMetaStructureCheck(
       customKouetsu,
       storyContext,
     );
-    return launchSingle({
-      project_id: projectId,
-      effect_type: "meta_structure",
-      scope_type: "scene",
-      scope_target_id: scope.sceneId,
-      model,
-      prompt_version: META_STRUCTURE_PROMPT_VERSION,
-      input_hash: payload.inputHash,
-      codex_payload_json: "[]",
-      scene_text: payload.sceneText,
-      system_prompt: appendStoryContextGuidance(
-        appendKouetsuGuidance(metaSystem, customKouetsu),
-        storyContext,
-      ),
-    });
+    return launchSingle(
+      {
+        project_id: projectId,
+        effect_type: "meta_structure",
+        scope_type: "scene",
+        scope_target_id: scope.sceneId,
+        model,
+        prompt_version: META_STRUCTURE_PROMPT_VERSION,
+        input_hash: payload.inputHash,
+        codex_payload_json: "[]",
+        scene_text: payload.sceneText,
+        system_prompt: appendStoryContextGuidance(
+          appendKouetsuGuidance(metaSystem, customKouetsu),
+          storyContext,
+        ),
+      },
+      hooks,
+    );
   }
 
   const { scopeType, scopeTargetId } = multiScope(scope);
@@ -77,15 +82,18 @@ export async function runMetaStructureCheck(
     customKouetsu,
   );
   if (payload.scenes.length === 0) return SKIPPED;
-  return launchMulti({
-    project_id: projectId,
-    effect_type: "meta_structure",
-    scope_type: scopeType,
-    scope_target_id: scopeTargetId,
-    model,
-    prompt_version: META_STRUCTURE_PROMPT_VERSION,
-    input_hash: payload.inputHash,
-    scenes: payload.scenes,
-    system_prompt: appendKouetsuGuidance(metaSystem, customKouetsu),
-  });
+  return launchMulti(
+    {
+      project_id: projectId,
+      effect_type: "meta_structure",
+      scope_type: scopeType,
+      scope_target_id: scopeTargetId,
+      model,
+      prompt_version: META_STRUCTURE_PROMPT_VERSION,
+      input_hash: payload.inputHash,
+      scenes: payload.scenes,
+      system_prompt: appendKouetsuGuidance(metaSystem, customKouetsu),
+    },
+    hooks,
+  );
 }

@@ -7,6 +7,7 @@ import {
   runMetaStructureCheck,
   runTimelineCheck,
   runIntentDriftCheck,
+  type KouetsuRunHooks,
   type KouetsuRunScope,
   type KouetsuRunOutcome,
 } from "./runners";
@@ -65,30 +66,36 @@ async function runLintStep(): Promise<StepResult> {
   return { count };
 }
 
-/** 1 観点を実行して正規化結果を返す。 */
+/**
+ * 1 観点を実行して正規化結果を返す。hooks.onRunStarted は各 run 起動時に
+ * run_id を通知し、全体チェックが「自分が起動した run だけ」を中止対象へ
+ * 絞るために使う（無関係の並走 run を巻き込まない）。
+ */
 export async function executeStep(
   step: FullCheckStepId,
   runScope: KouetsuRunScope,
+  hooks?: KouetsuRunHooks,
 ): Promise<StepResult> {
   switch (step) {
     case "lint":
       return runLintStep();
     case "typo":
-      return normalize(await runTypoCheck(runScope));
+      return normalize(await runTypoCheck(runScope, hooks));
     case "consistency": {
-      const { codex, intra } = await runConsistencyCheck(runScope);
+      const { codex, intra } = await runConsistencyCheck(runScope, hooks);
       return normalizePair(codex, intra);
     }
     case "review":
-      return normalize(await runReviewCheck(runScope));
+      return normalize(await runReviewCheck(runScope, hooks));
     case "meta":
-      return normalize(await runMetaStructureCheck(runScope));
+      return normalize(await runMetaStructureCheck(runScope, hooks));
     case "timeline":
-      return normalize(await runTimelineCheck());
+      return normalize(await runTimelineCheck(hooks));
     case "intent":
       return normalize(
         await runIntentDriftCheck(runScope, {
           isCancelled: () => useFullCheckStore.getState().cancelRequested,
+          onRunStarted: hooks?.onRunStarted,
         }),
       );
   }

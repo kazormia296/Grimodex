@@ -9,6 +9,8 @@ import {
   FULL_CHECK_STEP_LABEL_KEY,
   FULL_CHECK_STEP_ORDER,
   useFullCheckStore,
+  trackFullCheckRun,
+  resetFullCheckRuns,
   type FullCheckStepId,
 } from "./fullCheckStore";
 import { executeStep, type StepResult } from "./fullCheckSteps";
@@ -104,16 +106,22 @@ export async function runFullCheck(
 
   let findings = 0;
   let blocked = false;
+  // 全体チェック自身が起動した run だけを中止対象へ絞るためのフック。onRunStarted
+  // で run_id を追跡集合へ記録し、requestCancel はその集合のみを abort する。
+  const hooks = { onRunStarted: (runId: string) => trackFullCheckRun(runId) };
   // ループ全体を try/finally で包み、runner の payload build / flush / IPC が
   // reject しても running を恒久ロックしない（finally で必ず false へ復帰）。
   // throw した観点は failures に積んで続行する（continue-on-error）。
   try {
     for (const step of steps) {
       if (useFullCheckStore.getState().cancelRequested) break;
+      // 現ステップの run のみを中止対象にする（ステップは直列 await なので、前
+      // ステップの run は全て終端済み。集合をリセットしても取りこぼしはない）。
+      resetFullCheckRuns();
       useFullCheckStore.setState({ currentStep: step });
       let res: StepResult;
       try {
-        res = await executeStep(step, runScope);
+        res = await executeStep(step, runScope, hooks);
       } catch (e) {
         res = { error: e instanceof Error ? e.message : String(e) };
       }
@@ -135,6 +143,8 @@ export async function runFullCheck(
     }
   } finally {
     useFullCheckStore.setState({ running: false, currentStep: null });
+    // 追跡集合を掃除（run 終了後に stale な runId を残さない）。
+    resetFullCheckRuns();
   }
 
   const { cancelRequested, failures } = useFullCheckStore.getState();

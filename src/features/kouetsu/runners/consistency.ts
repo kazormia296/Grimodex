@@ -24,12 +24,14 @@ import {
   launchSingle,
   multiScope,
   scopeHasNoScenes,
+  type KouetsuRunHooks,
   type KouetsuRunOutcome,
   type KouetsuRunScope,
 } from "./shared";
 
 export async function runConsistencyCheck(
   scope: KouetsuRunScope,
+  hooks?: KouetsuRunHooks,
 ): Promise<{ codex: KouetsuRunOutcome; intra: KouetsuRunOutcome }> {
   if (!guardsPass()) return { codex: BLOCKED, intra: BLOCKED };
   const { projectId, lang, model, customKouetsu } = commonParams();
@@ -56,40 +58,46 @@ export async function runConsistencyCheck(
           customKouetsu,
           codexRoute,
         );
-        return launchSingle({
-          project_id: projectId,
-          effect_type: "consistency",
-          scope_type: "scene",
-          scope_target_id: sceneId,
-          model: codexModel,
-          ...codexOverrides,
-          prompt_version: CONSISTENCY_PROMPT_VERSION,
-          input_hash: payload.inputHash,
-          codex_payload_json: payload.codexPayloadJson,
-          scene_text: payload.sceneText,
-          system_prompt: appendKouetsuGuidance(
-            catalog.consistencySystem,
-            customKouetsu,
-          ),
-        });
+        return launchSingle(
+          {
+            project_id: projectId,
+            effect_type: "consistency",
+            scope_type: "scene",
+            scope_target_id: sceneId,
+            model: codexModel,
+            ...codexOverrides,
+            prompt_version: CONSISTENCY_PROMPT_VERSION,
+            input_hash: payload.inputHash,
+            codex_payload_json: payload.codexPayloadJson,
+            scene_text: payload.sceneText,
+            system_prompt: appendKouetsuGuidance(
+              catalog.consistencySystem,
+              customKouetsu,
+            ),
+          },
+          hooks,
+        );
       })(),
       (async (): Promise<KouetsuRunOutcome> => {
         const payload = await buildIntraPayload(sceneId, model, customKouetsu);
-        return launchSingle({
-          project_id: projectId,
-          effect_type: "intra_scene_consistency",
-          scope_type: "scene",
-          scope_target_id: sceneId,
-          model,
-          prompt_version: INTRA_CONSISTENCY_PROMPT_VERSION,
-          input_hash: payload.inputHash,
-          codex_payload_json: "[]",
-          scene_text: payload.sceneText,
-          system_prompt: appendKouetsuGuidance(
-            catalog.intraSystem,
-            customKouetsu,
-          ),
-        });
+        return launchSingle(
+          {
+            project_id: projectId,
+            effect_type: "intra_scene_consistency",
+            scope_type: "scene",
+            scope_target_id: sceneId,
+            model,
+            prompt_version: INTRA_CONSISTENCY_PROMPT_VERSION,
+            input_hash: payload.inputHash,
+            codex_payload_json: "[]",
+            scene_text: payload.sceneText,
+            system_prompt: appendKouetsuGuidance(
+              catalog.intraSystem,
+              customKouetsu,
+            ),
+          },
+          hooks,
+        );
       })(),
     ]);
     return { codex, intra };
@@ -115,23 +123,26 @@ export async function runConsistencyCheck(
       isCodex ? codexRoute : undefined,
     );
     if (payload.scenes.length === 0) return SKIPPED;
-    return launchMulti({
-      project_id: projectId,
-      effect_type: effect,
-      scope_type: scopeType,
-      scope_target_id: scopeTargetId,
-      model: effModel,
-      ...(isCodex ? codexOverrides : {}),
-      prompt_version: isCodex
-        ? CONSISTENCY_PROMPT_VERSION
-        : INTRA_CONSISTENCY_PROMPT_VERSION,
-      input_hash: payload.inputHash,
-      scenes: payload.scenes,
-      system_prompt: appendKouetsuGuidance(
-        isCodex ? catalog.consistencySystem : catalog.intraSystem,
-        customKouetsu,
-      ),
-    });
+    return launchMulti(
+      {
+        project_id: projectId,
+        effect_type: effect,
+        scope_type: scopeType,
+        scope_target_id: scopeTargetId,
+        model: effModel,
+        ...(isCodex ? codexOverrides : {}),
+        prompt_version: isCodex
+          ? CONSISTENCY_PROMPT_VERSION
+          : INTRA_CONSISTENCY_PROMPT_VERSION,
+        input_hash: payload.inputHash,
+        scenes: payload.scenes,
+        system_prompt: appendKouetsuGuidance(
+          isCodex ? catalog.consistencySystem : catalog.intraSystem,
+          customKouetsu,
+        ),
+      },
+      hooks,
+    );
   };
 
   const [codex, intra] = await Promise.all([

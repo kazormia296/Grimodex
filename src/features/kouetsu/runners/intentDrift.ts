@@ -40,6 +40,11 @@ export interface IntentDriftRunOptions {
   onSceneProgress?: (done: number, total: number) => void;
   /** true を返すと残りシーンを起動しない（実行中の run は待つ）。 */
   isCancelled?: () => boolean;
+  /**
+   * 各シーンの run 起動直後に backend が採番した run_id を通知する。
+   * 全体チェックが in-flight の 1 シーンだけを中止対象に絞るために使う。
+   */
+  onRunStarted?: (runId: string) => void;
 }
 
 /** scope 内の対象シーン ID を列挙する（scene はそのシーンのみ）。 */
@@ -132,19 +137,22 @@ export async function runIntentDriftCheck(
       appendKouetsuGuidance(basePrompt, customKouetsu),
       intent,
     );
-    const outcome = await launchSingle({
-      project_id: projectId,
-      effect_type: "intent_drift",
-      scope_type: "scene",
-      scope_target_id: id,
-      model,
-      ...overrides,
-      prompt_version: INTENT_DRIFT_PROMPT_VERSION,
-      input_hash: payload.inputHash,
-      codex_payload_json: "[]",
-      scene_text: payload.sceneText,
-      system_prompt: systemPrompt,
-    });
+    const outcome = await launchSingle(
+      {
+        project_id: projectId,
+        effect_type: "intent_drift",
+        scope_type: "scene",
+        scope_target_id: id,
+        model,
+        ...overrides,
+        prompt_version: INTENT_DRIFT_PROMPT_VERSION,
+        input_hash: payload.inputHash,
+        codex_payload_json: "[]",
+        scene_text: payload.sceneText,
+        system_prompt: systemPrompt,
+      },
+      { onRunStarted: opts?.onRunStarted },
+    );
     ran++;
     opts?.onSceneProgress?.(ran, total);
     if (!outcome.ok) {

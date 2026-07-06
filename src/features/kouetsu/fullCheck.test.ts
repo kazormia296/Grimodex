@@ -98,7 +98,12 @@ describe("runFullCheck", () => {
     // lint は live lint 済みなので scene では除外 → total は typo の 1 のみ。
     expect(useFullCheckStore.getState().total).toBe(1);
     expect(runTypo).toHaveBeenCalledTimes(1);
-    expect(runTypo).toHaveBeenCalledWith({ type: "scene", sceneId: "scene-1" });
+    // 第 2 引数は onRunStarted フック（中止対象の限定用）。scope が正しく渡る
+    // ことだけを assert する。
+    expect(runTypo).toHaveBeenCalledWith(
+      { type: "scene", sceneId: "scene-1" },
+      expect.objectContaining({ onRunStarted: expect.any(Function) }),
+    );
   });
 
   it("観点の失敗は failures に積んで続行する", async () => {

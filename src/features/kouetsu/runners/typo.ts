@@ -20,12 +20,14 @@ import {
   launchSingle,
   multiScope,
   scopeHasNoScenes,
+  type KouetsuRunHooks,
   type KouetsuRunOutcome,
   type KouetsuRunScope,
 } from "./shared";
 
 export async function runTypoCheck(
   scope: KouetsuRunScope,
+  hooks?: KouetsuRunHooks,
 ): Promise<KouetsuRunOutcome> {
   if (!guardsPass()) return BLOCKED;
   const { projectId, lang, model, customKouetsu } = commonParams();
@@ -37,18 +39,21 @@ export async function runTypoCheck(
   if (scope.type === "scene") {
     await flushPendingSceneSaves(scope.sceneId);
     const payload = await buildTypoPayload(scope.sceneId, model, customKouetsu);
-    return launchSingle({
-      project_id: projectId,
-      effect_type: "typo_detection",
-      scope_type: "scene",
-      scope_target_id: scope.sceneId,
-      model,
-      prompt_version: TYPO_PROMPT_VERSION,
-      input_hash: payload.inputHash,
-      codex_payload_json: "[]",
-      scene_text: payload.sceneText,
-      system_prompt: systemPrompt,
-    });
+    return launchSingle(
+      {
+        project_id: projectId,
+        effect_type: "typo_detection",
+        scope_type: "scene",
+        scope_target_id: scope.sceneId,
+        model,
+        prompt_version: TYPO_PROMPT_VERSION,
+        input_hash: payload.inputHash,
+        codex_payload_json: "[]",
+        scene_text: payload.sceneText,
+        system_prompt: systemPrompt,
+      },
+      hooks,
+    );
   }
 
   const { scopeType, scopeTargetId } = multiScope(scope);
@@ -63,15 +68,18 @@ export async function runTypoCheck(
     customKouetsu,
   );
   if (payload.scenes.length === 0) return SKIPPED;
-  return launchMulti({
-    project_id: projectId,
-    effect_type: "typo_detection",
-    scope_type: scopeType,
-    scope_target_id: scopeTargetId,
-    model,
-    prompt_version: TYPO_PROMPT_VERSION,
-    input_hash: payload.inputHash,
-    scenes: payload.scenes,
-    system_prompt: systemPrompt,
-  });
+  return launchMulti(
+    {
+      project_id: projectId,
+      effect_type: "typo_detection",
+      scope_type: scopeType,
+      scope_target_id: scopeTargetId,
+      model,
+      prompt_version: TYPO_PROMPT_VERSION,
+      input_hash: payload.inputHash,
+      scenes: payload.scenes,
+      system_prompt: systemPrompt,
+    },
+    hooks,
+  );
 }

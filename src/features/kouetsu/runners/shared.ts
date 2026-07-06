@@ -41,6 +41,15 @@ export type KouetsuRunOutcome =
 export const SKIPPED: KouetsuRunOutcome = { ok: true, skipped: true };
 export const BLOCKED: KouetsuRunOutcome = { ok: true, blocked: true };
 
+/**
+ * runner が起動した実 run の副作用フック。全体チェックが「自分が起動した run
+ * だけ」を中止対象に絞るために使う（無関係の並走 run を巻き込まないため）。
+ * onRunStarted は backend が採番した run_id を run 起動直後に通知する。
+ */
+export interface KouetsuRunHooks {
+  onRunStarted?: (runId: string) => void;
+}
+
 // ---------------------------------------------------------------------------
 // Guards / scope / params
 // ---------------------------------------------------------------------------
@@ -103,23 +112,32 @@ function normalizeDone(e: PostEffectDoneEvent): KouetsuRunOutcome {
 /** runPostEffect を起動し、terminal イベントを待って outcome へ正規化する。 */
 export function launchSingle(
   req: StartPostEffectRunRequest,
+  hooks?: KouetsuRunHooks,
 ): Promise<KouetsuRunOutcome> {
   return new Promise((resolve) => {
     runPostEffect(req, {
       onDone: (e) => resolve(normalizeDone(e)),
       onError: (e) => resolve({ ok: false, error: e.error }),
-    }).catch((err) => resolve({ ok: false, error: String(err) }));
+    })
+      // 起動成功時に run_id を呼び出し側へ通知（中止対象の限定に使う）。
+      // begin は runPostEffect の resolve 前に済んでいるので、この時点で
+      // runStore にエントリが存在する。
+      .then(({ runId }) => hooks?.onRunStarted?.(runId))
+      .catch((err) => resolve({ ok: false, error: String(err) }));
   });
 }
 
 /** runPostEffectMulti を起動し、terminal イベントを待って outcome へ正規化する。 */
 export function launchMulti(
   req: StartPostEffectRunMultiRequest,
+  hooks?: KouetsuRunHooks,
 ): Promise<KouetsuRunOutcome> {
   return new Promise((resolve) => {
     runPostEffectMulti(req, {
       onDone: (e) => resolve(normalizeDone(e)),
       onError: (e) => resolve({ ok: false, error: e.error }),
-    }).catch((err) => resolve({ ok: false, error: String(err) }));
+    })
+      .then(({ runId }) => hooks?.onRunStarted?.(runId))
+      .catch((err) => resolve({ ok: false, error: String(err) }));
   });
 }
