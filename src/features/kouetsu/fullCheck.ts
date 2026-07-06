@@ -11,7 +11,7 @@ import {
   useFullCheckStore,
   type FullCheckStepId,
 } from "./fullCheckStore";
-import { executeStep } from "./fullCheckSteps";
+import { executeStep, type StepResult } from "./fullCheckSteps";
 
 /**
  * fullCheck.ts — 全体チェックのオーケストレータ本体。
@@ -104,26 +104,40 @@ export async function runFullCheck(
 
   let findings = 0;
   let blocked = false;
-  for (const step of steps) {
-    if (useFullCheckStore.getState().cancelRequested) break;
-    useFullCheckStore.setState({ currentStep: step });
-    const res = await executeStep(step, runScope);
-    if (res.blocked) {
-      blocked = true;
-      break;
+  // ループ全体を try/finally で包み、runner の payload build / flush / IPC が
+  // reject しても running を恒久ロックしない（finally で必ず false へ復帰）。
+  // throw した観点は failures に積んで続行する（continue-on-error）。
+  try {
+    for (const step of steps) {
+      if (useFullCheckStore.getState().cancelRequested) break;
+      useFullCheckStore.setState({ currentStep: step });
+      let res: StepResult;
+      try {
+        res = await executeStep(step, runScope);
+      } catch (e) {
+        res = { error: e instanceof Error ? e.message : String(e) };
+      }
+      if (res.blocked) {
+        blocked = true;
+        break;
+      }
+      // 中止要求後に生じた error/throw は「中止起因」とみなし failures に積まない
+      // （backend abort が error 終端になるため）。cancel 前の真の失敗は残す。
+      if (res.error != null && !useFullCheckStore.getState().cancelRequested) {
+        const error = res.error;
+        useFullCheckStore.setState((s) => ({
+          failures: [...s.failures, { step, error }],
+        }));
+      } else if (res.error == null) {
+        findings += res.count ?? 0;
+      }
+      useFullCheckStore.setState((s) => ({ done: s.done + 1 }));
     }
-    if (res.error != null) {
-      useFullCheckStore.setState((s) => ({
-        failures: [...s.failures, { step, error: res.error as string }],
-      }));
-    } else {
-      findings += res.count ?? 0;
-    }
-    useFullCheckStore.setState((s) => ({ done: s.done + 1 }));
+  } finally {
+    useFullCheckStore.setState({ running: false, currentStep: null });
   }
 
   const { cancelRequested, failures } = useFullCheckStore.getState();
-  useFullCheckStore.setState({ running: false, currentStep: null });
 
   // blocked（ガード拒否）はガードが既に toast 済み。完了トーストは出さない。
   if (!blocked) finishToast(cancelRequested, failures, findings);

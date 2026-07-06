@@ -179,13 +179,93 @@ describe("runFullCheck", () => {
     expect(toast.success).toHaveBeenCalledTimes(1);
   });
 
-  it("intent は cancelRequested を isCancelled として配線する", async () => {
-    let seenCancelledFalse = false;
+  it("intent runner は isCancelled が true になった時点で以降のシーンを起動しない", async () => {
+    // runIntentDriftCheck の per-scene 直列を mock で再現し、各シーン起動前に
+    // opts.isCancelled() を確認する。途中で cancelRequested を立て、以降の
+    // シーン起動が止まる（＝isCancelled が実際に直列を止める）ことを検証する。
+    const launched: number[] = [];
     runIntent.mockImplementation(async (_scope, opts) => {
-      seenCancelledFalse = opts?.isCancelled?.() === false;
+      for (let i = 0; i < 5; i++) {
+        if (opts?.isCancelled?.()) break;
+        launched.push(i);
+        // 2 シーン目起動後に外部から中止要求が来たと想定。
+        if (i === 1) useFullCheckStore.getState().requestCancel();
+      }
       return okOutcome;
     });
     await runFullCheck({ type: "project" }, enabled({ intent: true }));
-    expect(seenCancelledFalse).toBe(true);
+    // i=0,1 は起動、i=2 の直前で isCancelled()===true → 停止。3 件目以降なし。
+    expect(launched).toEqual([0, 1]);
+  });
+
+  it("runner が reject しても後続観点を続行し failures に積む（running も戻す）", async () => {
+    // Fix 1 回帰: payload build / flush / IPC の reject が running を恒久ロック
+    // しないこと、continue-on-error で後続が走ること、failures に積まれることを検証。
+    runTypo.mockRejectedValue(new Error("ipc down"));
+    runReview.mockResolvedValue({ ok: true, fromCache: false, count: 1 });
+    await runFullCheck(
+      { type: "project" },
+      enabled({ typo: true, review: true }),
+    );
+    const state = useFullCheckStore.getState();
+    expect(state.failures).toHaveLength(1);
+    expect(state.failures[0]).toEqual({ step: "typo", error: "ipc down" });
+    expect(runReview).toHaveBeenCalled(); // continue-on-error
+    expect(state.done).toBe(2);
+    expect(state.running).toBe(false); // finally で必ず復帰
+    // 真の失敗ありなので warning、success は出さない。
+    expect(toast.warning).toHaveBeenCalledTimes(1);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("非 Error の throw も message 化して failures に積む", async () => {
+    runTypo.mockImplementation(async () => {
+      throw "raw string failure";
+    });
+    await runFullCheck({ type: "project" }, enabled({ typo: true }));
+    const state = useFullCheckStore.getState();
+    expect(state.failures[0]).toEqual({
+      step: "typo",
+      error: "raw string failure",
+    });
+    expect(state.running).toBe(false);
+  });
+
+  it("実行中の cancel で生じた観点 error は failures に積まず warning を出さない", async () => {
+    // Fix 2 回帰: in-flight run を abort すると backend が error 終端になるが、
+    // cancelRequested 後の error は「中止起因」とみなし failures に積まない。
+    runTypo.mockImplementation(async () => {
+      // in-flight で中止要求（backend abort → error 終端相当）。
+      useFullCheckStore.getState().requestCancel();
+      return { ok: false, error: "aborted" };
+    });
+    await runFullCheck(
+      { type: "project" },
+      enabled({ typo: true, review: true }),
+    );
+    const state = useFullCheckStore.getState();
+    expect(state.failures).toHaveLength(0); // 中止起因は積まない
+    expect(runReview).not.toHaveBeenCalled(); // 中止で残りをスキップ
+    expect(state.running).toBe(false);
+    // 真の失敗なし → warning も success も出さない（中止＝トーストなし）。
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("cancel 前の真の失敗は残り、中止後もその warning を出す", async () => {
+    // typo は真に失敗（cancel 前）、review 実行中に cancel → review の error は
+    // 中止起因で積まないが、typo の failure は残るので warning が出る。
+    runTypo.mockResolvedValue({ ok: false, error: "boom" });
+    runReview.mockImplementation(async () => {
+      useFullCheckStore.getState().requestCancel();
+      return { ok: false, error: "aborted" };
+    });
+    await runFullCheck(
+      { type: "project" },
+      enabled({ typo: true, review: true }),
+    );
+    const state = useFullCheckStore.getState();
+    expect(state.failures).toEqual([{ step: "typo", error: "boom" }]);
+    expect(toast.warning).toHaveBeenCalledTimes(1);
   });
 });
