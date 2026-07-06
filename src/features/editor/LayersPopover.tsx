@@ -211,7 +211,6 @@ export function LayersPopover({
         "foreshadowPayoff",
       ]),
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editor]);
 
   if (!open || !style) return null;

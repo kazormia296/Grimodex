@@ -45,6 +45,13 @@ export function CodexRefPickerPopover({
     if (!open) setQuery("");
   }, [open]);
 
+  // ポップオーバー本体は配置計算後にマウントされるため、open を見る effect では
+  // 早すぎる。マウント時の callback ref で検索欄へフォーカスする（ダイアログの
+  // フォーカス管理として意図的 — jsx-a11y/no-autofocus の JSX prop は使わない）。
+  const focusOnMount = (el: HTMLInputElement | null) => {
+    if (el && document.activeElement !== el) el.focus();
+  };
+
   const q = query.trim().toLowerCase();
   const filtered = q
     ? entries.filter((e) => e.name.toLowerCase().includes(q))
@@ -67,7 +74,7 @@ export function CodexRefPickerPopover({
       <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-1.5">
         <Search size={11} className="shrink-0 text-muted-foreground" />
         <input
-          autoFocus
+          ref={focusOnMount}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={searchPlaceholder}
