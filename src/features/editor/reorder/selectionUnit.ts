@@ -14,6 +14,24 @@ export interface SelectionUnitContext {
   caretFlatOffset: number;
 }
 
+export interface ParagraphSelectionContext {
+  resolved: NonNullable<ReturnType<typeof resolveParagraphAtSelection>>;
+  caretFlatOffset: number;
+}
+
+/** 選択位置の paragraph と caret の flat offset のみ解決（unit 数は問わない）。 */
+export function resolveParagraphSelectionContext(
+  state: EditorState,
+): ParagraphSelectionContext | null {
+  const resolved = resolveParagraphAtSelection(state);
+  if (!resolved) return null;
+  const caretFlatOffset = pmPosToFlatOffset(
+    resolved.flat,
+    state.selection.from,
+  );
+  return { resolved, caretFlatOffset };
+}
+
 /** 現在選択から paragraph + unit 文脈を解決。 */
 export function resolveSelectionUnits(
   state: EditorState,

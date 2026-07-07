@@ -9,9 +9,11 @@ import {
   buildAdjacentUnitSwapTransaction,
   buildParagraphReorderTransaction,
 } from "./reorderTransaction";
-import { flatRangeToPm } from "./paragraphFlat";
+import { flatRangeToPm, resolveParagraphAtSelection } from "./paragraphFlat";
 import { flashUnitHighlight } from "./flashHighlight";
 import {
+  clearBunsetsuCache,
+  fetchBunsetsuUnits,
   getCachedBunsetsuUnits,
   isJapanese,
   prefetchBunsetsuUnits,
@@ -92,23 +94,22 @@ function swapWithFlash(editor: Editor, dir: -1 | 1): boolean {
   if (granularity === "bunsetsu") {
     const bunsetsuUnits = getCachedBunsetsuUnits(editor.state, language);
     if (!bunsetsuUnits) {
-      const ctx = resolveSelectionUnits(editor.state, "sentence", language);
-      if (!ctx) return false;
-      const snapshot = captureSwapSnapshot(editor.state, ctx.resolved, dir);
-      prefetchBunsetsuUnits(
-        editor,
-        snapshot,
-        language,
-        (validSnap) => {
-          if (!isSwapSnapshotValid(editor.state, validSnap)) return;
-          performUnitSwap(editor, validSnap.dir, "bunsetsu", language);
-        },
-        (validSnap) => {
-          if (!isSwapSnapshotValid(editor.state, validSnap)) return;
-          performUnitSwap(editor, validSnap.dir, "sentence", language);
-        },
-      );
-      return true;
+      // 文節 cache miss 時は文粒度で即時 swap（カード UI と同じフォールバック）。
+      // 並行して文節を prefetch し、次回以降は bunsetsu 粒度で swap できるようにする。
+      if (performUnitSwap(editor, dir, "sentence", language)) {
+        const resolved = resolveParagraphAtSelection(editor.state);
+        if (resolved) void fetchBunsetsuUnits(resolved.flat.text);
+        return true;
+      }
+
+      const resolved = resolveParagraphAtSelection(editor.state);
+      if (!resolved) return false;
+      const snapshot = captureSwapSnapshot(editor.state, resolved, dir);
+      prefetchBunsetsuUnits(editor, snapshot, language, (validSnap) => {
+        if (!isSwapSnapshotValid(editor.state, validSnap)) return;
+        performUnitSwap(editor, validSnap.dir, "bunsetsu", language);
+      });
+      return false;
     }
   }
 
@@ -247,13 +248,14 @@ export const ParagraphReorderExtension = Extension.create({
 
   addKeyboardShortcuts() {
     return {
-      "Alt-Shift-ArrowUp": () =>
-        !isVerticalWriting() && swapWithFlash(this.editor, -1),
-      "Alt-Shift-ArrowDown": () =>
-        !isVerticalWriting() && swapWithFlash(this.editor, 1),
-      "Alt-Shift-ArrowRight": () =>
-        isVerticalWriting() && swapWithFlash(this.editor, -1),
+      // 横書き: Alt+Shift+←/→、縦書き: Alt+Shift+↑/↓（段落移動 Alt+矢印とは軸を入れ替え）。
       "Alt-Shift-ArrowLeft": () =>
+        !isVerticalWriting() && swapWithFlash(this.editor, -1),
+      "Alt-Shift-ArrowRight": () =>
+        !isVerticalWriting() && swapWithFlash(this.editor, 1),
+      "Alt-Shift-ArrowUp": () =>
+        isVerticalWriting() && swapWithFlash(this.editor, -1),
+      "Alt-Shift-ArrowDown": () =>
         isVerticalWriting() && swapWithFlash(this.editor, 1),
       "Alt-Shift-g": () => this.editor.commands.toggleReorderGranularity(),
       "Alt-Shift-G": () => this.editor.commands.toggleReorderGranularity(),

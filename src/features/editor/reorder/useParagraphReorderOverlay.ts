@@ -6,7 +6,7 @@ import { resolveParagraphAtSelection } from "./paragraphFlat";
 import { resolveUnitsForParagraph } from "./unitResolver";
 import { buildParagraphReorderTransaction } from "./reorderTransaction";
 import { clearBunsetsuCache, fetchBunsetsuUnits } from "./bunsetsuSegmenter";
-import { resolveSelectionUnits } from "./selectionUnit";
+import { resolveParagraphSelectionContext } from "./selectionUnit";
 import { revalidateParagraphContext } from "./paragraphSnapshot";
 
 export interface ParagraphReorderContext {
@@ -38,8 +38,8 @@ export function useParagraphReorderOverlay(
       const isStaleRequest = () => requestId !== requestIdRef.current;
       const g = granularityOverride ?? granularity;
       const language = getCurrentProjectLanguage();
-      const ctx = resolveSelectionUnits(editor.state, "sentence", language);
-      if (!ctx) {
+      const paragraphCtx = resolveParagraphSelectionContext(editor.state);
+      if (!paragraphCtx) {
         setErrorMessage("singleUnit");
         setUnits([]);
         setOrder([]);
@@ -53,12 +53,16 @@ export function useParagraphReorderOverlay(
         let nextUnits: ReorderUnit[] | null = null;
         if (g === "bunsetsu") {
           clearBunsetsuCache();
-          const fetched = await fetchBunsetsuUnits(ctx.resolved.flat.text);
+          const fetched = await fetchBunsetsuUnits(
+            paragraphCtx.resolved.flat.text,
+          );
           // より新しい reloadUnits が走っていたら、この結果は捨てる。
           if (isStaleRequest()) return;
           // await 中に段落が編集された場合、fetched は旧テキスト向けの unit
           // なので現在の doc に適用してはいけない（stale fetch 結果の取り込み防止）。
-          if (!revalidateParagraphContext(editor.state, ctx.resolved)) {
+          if (
+            !revalidateParagraphContext(editor.state, paragraphCtx.resolved)
+          ) {
             setErrorMessage("staleDocument");
             setUnits([]);
             setOrder([]);
@@ -88,15 +92,15 @@ export function useParagraphReorderOverlay(
         }
 
         ctxRef.current = {
-          resolved: ctx.resolved,
+          resolved: paragraphCtx.resolved,
           units: nextUnits,
-          caretFlatOffset: ctx.caretFlatOffset,
+          caretFlatOffset: paragraphCtx.caretFlatOffset,
         };
         setUnits(nextUnits);
         setOrder(nextUnits.map((_, i) => i));
       } catch {
         if (isStaleRequest()) return;
-        if (!revalidateParagraphContext(editor.state, ctx.resolved)) {
+        if (!revalidateParagraphContext(editor.state, paragraphCtx.resolved)) {
           setErrorMessage("staleDocument");
           setUnits([]);
           setOrder([]);
@@ -111,9 +115,9 @@ export function useParagraphReorderOverlay(
           );
           if (fallback && fallback.length > 1) {
             ctxRef.current = {
-              resolved: ctx.resolved,
+              resolved: paragraphCtx.resolved,
               units: fallback,
-              caretFlatOffset: ctx.caretFlatOffset,
+              caretFlatOffset: paragraphCtx.caretFlatOffset,
             };
             setUnits(fallback);
             setOrder(fallback.map((_, i) => i));
@@ -136,6 +140,8 @@ export function useParagraphReorderOverlay(
   const openOverlay = useCallback(() => {
     if (!editor || readOnly) return;
     setOpen(true);
+    setGranularityState("sentence");
+    editor.commands.setReorderGranularity("sentence");
     void reloadUnits("sentence");
   }, [editor, readOnly, reloadUnits]);
 

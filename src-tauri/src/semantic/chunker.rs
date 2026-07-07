@@ -189,6 +189,11 @@ pub fn split_sentences_ja(text: &str) -> Vec<&str> {
                 out.push(&text[start..end]);
                 start = end;
             }
+            '、' if depth == 0 => {
+                let end = i + c.len_utf8();
+                out.push(&text[start..end]);
+                start = end;
+            }
             _ => {}
         }
     }
@@ -448,6 +453,26 @@ mod tests {
     // ──────────────────────────────────────────────────────────
     // split_sentences_ja
     // ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn split_sentences_splits_on_touten() {
+        let text = "段落切替、段落内文、形態素解析による分節の入れ替えテストしています";
+        let result = split_sentences_ja(text);
+        assert_eq!(
+            result,
+            vec![
+                "段落切替、",
+                "段落内文、",
+                "形態素解析による分節の入れ替えテストしています",
+            ]
+        );
+    }
+
+    #[test]
+    fn split_sentences_keeps_touten_inside_brackets() {
+        let result = split_sentences_ja("「一つ、二つ、三つ」と言った。");
+        assert_eq!(result, vec!["「一つ、二つ、三つ」と言った。"]);
+    }
 
     #[test]
     fn split_sentences_basic() {

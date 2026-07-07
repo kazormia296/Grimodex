@@ -135,6 +135,18 @@ mod tests {
     }
 
     #[test]
+    fn comma_separated_description_splits_into_multiple_bunsetsu() {
+        let text = "段落切替、段落内文、形態素解析による分節の入れ替えテストしています";
+        let chunks = segment_bunsetsu(text).expect("segment");
+        assert!(
+            chunks.len() >= 2,
+            "expected multiple bunsetsu for comma-separated prose: {chunks:?}"
+        );
+        let rebuilt: String = chunks.iter().map(|c| c.surface.as_str()).collect();
+        assert_eq!(rebuilt, text);
+    }
+
+    #[test]
     fn utf16_offsets_match_js_slice_for_emoji() {
         let text = "A🎉は";
         let chunks = segment_bunsetsu(text).expect("segment");

@@ -24,6 +24,7 @@ function charUtf16End(utf16Start: number, char: string): number {
 
 /**
  * 括弧深度を考慮した日本語文分割（Rust `split_sentences_ja` と parity）。
+ * 終端は `。！？!?` に加え読点 `、` も区切りとする。
  * 返却 range は UTF-16 code unit 基準。
  */
 export function sentenceRangesJa(text: string): Utf16Range[] {
@@ -71,6 +72,13 @@ export function sentenceRangesJa(text: string): Utf16Range[] {
           out.push({ from: start, to: end });
           start = end;
           idx = j - 1;
+        }
+        break;
+      case "、":
+        if (depth === 0) {
+          const end = charUtf16End(utf16Start, char);
+          out.push({ from: start, to: end });
+          start = end;
         }
         break;
       default:

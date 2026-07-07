@@ -121,4 +121,65 @@ describe("useParagraphReorderOverlay", () => {
 
     editor.destroy();
   });
+
+  it("句点なし1文でも文節粒度では units を解決できる", async () => {
+    const text =
+      "段落切替、段落内文、形態素解析による分節の入れ替えテストしています";
+    const editor = makeEditor(`<p>${text}</p>`);
+    editor.commands.setTextSelection(2);
+
+    vi.mocked(invoke).mockResolvedValue([
+      { start: 0, end: 4, surface: "段落切替" },
+      { start: 4, end: 5, surface: "、" },
+      { start: 5, end: 9, surface: "段落内文" },
+      { start: 9, end: 10, surface: "、" },
+      {
+        start: 10,
+        end: text.length,
+        surface: "形態素解析による分節の入れ替えテストしています",
+      },
+    ]);
+
+    const { result } = renderHook(() =>
+      useParagraphReorderOverlay(editor, false),
+    );
+
+    act(() => {
+      result.current.openOverlay();
+    });
+    act(() => {
+      result.current.setGranularity("bunsetsu");
+    });
+
+    await waitFor(() => {
+      expect(result.current.units.length).toBeGreaterThan(1);
+      expect(result.current.canConfirm).toBe(true);
+    });
+    expect(result.current.errorMessage).toBeNull();
+
+    editor.destroy();
+  });
+
+  it("読点区切りの文は文粒度でも units を解決できる", async () => {
+    const text =
+      "段落切替、段落内文、形態素解析による分節の入れ替えテストしています";
+    const editor = makeEditor(`<p>${text}</p>`);
+    editor.commands.setTextSelection(2);
+
+    const { result } = renderHook(() =>
+      useParagraphReorderOverlay(editor, false),
+    );
+
+    act(() => {
+      result.current.openOverlay();
+    });
+
+    await waitFor(() => {
+      expect(result.current.units.length).toBe(3);
+      expect(result.current.canConfirm).toBe(true);
+    });
+    expect(result.current.errorMessage).toBeNull();
+
+    editor.destroy();
+  });
 });

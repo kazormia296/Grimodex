@@ -6,6 +6,25 @@ import {
 } from "./sentenceSplit";
 
 describe("sentenceSplit JA", () => {
+  it("読点でも文を分割する", () => {
+    const text =
+      "段落切替、段落内文、形態素解析による分節の入れ替えテストしています";
+    const ranges = sentenceRangesJa(text);
+    expect(ranges).toHaveLength(3);
+    expect(text.slice(ranges[0]!.from, ranges[0]!.to)).toBe("段落切替、");
+    expect(text.slice(ranges[1]!.from, ranges[1]!.to)).toBe("段落内文、");
+    expect(text.slice(ranges[2]!.from, ranges[2]!.to)).toBe(
+      "形態素解析による分節の入れ替えテストしています",
+    );
+  });
+
+  it("括弧内の読点では分割しない", () => {
+    const text = "「一つ、二つ、三つ」と言った。";
+    const ranges = sentenceRangesJa(text);
+    expect(ranges).toHaveLength(1);
+    expect(text.slice(ranges[0]!.from, ranges[0]!.to)).toBe(text);
+  });
+
   it("句読点で文を分割する", () => {
     const text = "彼女は立った。指先で石をなぞる。";
     const ranges = sentenceRangesJa(text);
