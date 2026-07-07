@@ -8,6 +8,7 @@ import {
   resolveCoordsVertical,
   resolveVerticalBias,
 } from "./cursorCoords";
+import { CARET_SLIDE_DURATION_DEFAULT } from "./caretSlideStyle";
 
 export const cursorOverlayKey = new PluginKey("cursorOverlay");
 
@@ -18,6 +19,9 @@ export const cursorOverlayKey = new PluginKey("cursorOverlay");
  * - Smooth 80ms slide transition on cursor movement, including typing and
  *   deletion; long jumps (> 1.5 line advances: paste, newline, scene switch)
  *   snap instead so the caret doesn't visibly fly across the editor
+ * - Fast continuous input (key auto-repeat / typing faster than the slide can
+ *   complete) snaps instead of sliding, so the caret doesn't perpetually lag
+ *   behind the text during a long key-press or a rapid burst
  * - Transition disabled during IME composition
  *
  * Soft-wrap affinity is resolved by tracking the last user action as a
@@ -30,6 +34,7 @@ export function createCursorOverlayPlugin(
   getEnabled: () => boolean,
   getBlink: () => boolean = () => true,
   getVertical: () => boolean = () => false,
+  getSlideDuration: () => number = () => CARET_SLIDE_DURATION_DEFAULT,
 ): Plugin {
   let overlayView: CursorOverlayView | null = null;
 
@@ -42,6 +47,7 @@ export function createCursorOverlayPlugin(
         getEnabled,
         getBlink,
         getVertical,
+        getSlideDuration,
       );
       return overlayView;
     },
@@ -156,11 +162,27 @@ class CursorOverlayView {
    */
   private pendingSnap = false;
 
+  /**
+   * One-shot flag: 高速連続入力 (キー長押しのオートリピート、または打鍵間隔が
+   * スライド時間より短い連打) を検出したとき true。次の updateCursor で消費し、
+   * スライドではなく snap させる。pendingSnap とは原因が別 (入力速度) だが
+   * 効果は同じ。
+   */
+  private pendingFastSnap = false;
+
+  /**
+   * 直近に updateBiasFromKey が計測した打鍵時刻 (performance.now, ms)。打鍵
+   * 間隔ベースの高速入力検出に使う。初期値 -Infinity で最初の打鍵は必ず
+   * 「低速」扱い (ページロード直後の performance.now が小さくても誤検出しない)。
+   */
+  private lastKeyAt = Number.NEGATIVE_INFINITY;
+
   constructor(
     private view: EditorView,
     private getEnabled: () => boolean,
     private getBlink: () => boolean,
     private getVertical: () => boolean = () => false,
+    private getSlideDuration: () => number = () => CARET_SLIDE_DURATION_DEFAULT,
   ) {
     const wrapper = view.dom.parentElement;
     if (!wrapper) throw new Error("CursorOverlayView: editor has no parent");
@@ -201,6 +223,19 @@ class CursorOverlayView {
   }
 
   updateBiasFromKey(event: KeyboardEvent) {
+    // 高速連続入力の検出。スライドは caretSlideDuration かけて滑るため、それより
+    // 短い間隔で打鍵 (キー長押しのオートリピート / 速い連打) されると、前回の
+    // スライドが完了しないうちに次の目標へ差し替わり、キャレットが入力に遅れて
+    // 追従し続ける ("遅れ")。この間は次の更新を snap させて即座に追いつかせ、
+    // 打鍵が緩めば (間隔 >= duration) 自動的にスライドへ戻す。修飾キー単独
+    // (Shift 等) はキャレットを動かさず「間隔」を汚すだけなので計測から除外。
+    if (!IGNORE_KEYS.has(event.key)) {
+      const now = performance.now();
+      if (event.repeat || now - this.lastKeyAt < this.getSlideDuration()) {
+        this.pendingFastSnap = true;
+      }
+      this.lastKeyAt = now;
+    }
     // Alt+矢印は段落移動ショートカット (ParagraphMoveExtension) で、行内/行跨ぎの
     // カーソル移動ではない。bias を変えず、キャレットが別ブロックへ大きく飛ぶので
     // スライド遷移を 1 回抑止 (snap) して「飛ぶ」ちらつきを防ぐ。
@@ -280,8 +315,11 @@ class CursorOverlayView {
       this.bias = 1;
       this.pendingVertical = null;
     }
-    const snapRequested = this.pendingSnap;
+    // pendingSnap = Alt+矢印の段落移動、pendingFastSnap = 高速連続入力。
+    // どちらもこの更新を snap させる (原因は別だが効果は同じ)。
+    const snapRequested = this.pendingSnap || this.pendingFastSnap;
     this.pendingSnap = false;
+    this.pendingFastSnap = false;
     this.prevDocSize = docSize;
 
     const { from } = view.state.selection;
