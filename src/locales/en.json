@@ -163,7 +163,22 @@
       "errorPreferredRequired": "Please enter a preferred form.",
       "errorVariantsRequired": "Please enter at least one disallowed form.",
       "errorDuplicateVariant": "The same variant is already registered in another entry: {{variants}}",
-      "copySuffix": "{{name}} (copy)"
+      "copySuffix": "{{name}} (copy)",
+      "importCsvTitle": "Import the term dictionary from CSV",
+      "exportCsvTitle": "Export the term dictionary to CSV",
+      "exportEmpty": "No dictionary entries to export",
+      "exportDone": "Exported {{count}} entries",
+      "importNoEntries": "No valid entries were found",
+      "importPreviewTitle": "Import CSV",
+      "importSummary": "Detected {{entries}} entries from {{rows}} rows",
+      "importSkippedRows": "Skipped {{count}} rows",
+      "importModeMerge": "Merge (update rows whose preferred form matches, add others, keep existing)",
+      "importModeReplace": "Replace (delete the entire existing dictionary and swap in)",
+      "importing": "Importing…",
+      "importRun": "Import",
+      "confirmReplace": "This will delete the entire existing term dictionary and replace it. Continue?",
+      "importDone": "Import complete: {{added}} added / {{updated}} updated / {{skipped}} skipped",
+      "importFailed": "Import failed"
     },
     "a11y": {
       "completed": "Lint finished: {{count}} issue(s) found"

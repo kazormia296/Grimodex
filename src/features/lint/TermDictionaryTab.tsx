@@ -9,11 +9,23 @@ import {
   Upload,
 } from "lucide-react";
 
+import { toast } from "sonner";
+
 import { cn } from "@/lib/utils";
+import { saveTextFile } from "@/lib/exportFile";
+import { openTextFile } from "@/lib/importFile";
 import {
   useTermDictionaryStore,
   type TermDictionaryRow,
 } from "./termDictionaryStore";
+import {
+  parseTermDictionaryCsv,
+  serializeTermDictionaryCsv,
+} from "./termDictionaryCsv";
+import {
+  TermDictionaryImportPanel,
+  type ImportPreview,
+} from "./TermDictionaryImportPanel";
 import { useTranslation } from "react-i18next";
 import { TableRowSkeletonRows } from "@/components/ui/skeleton-patterns";
 
@@ -51,6 +63,48 @@ export function TermDictionaryTab() {
 
   const [editing, setEditing] = useState<EditingState | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(
+    null,
+  );
+
+  const handleExport = async () => {
+    if (rows.length === 0) {
+      toast.info(t("lint.termDict.exportEmpty", "書き出す辞書がありません"));
+      return;
+    }
+    const csv = serializeTermDictionaryCsv(rows);
+    const saved = await saveTextFile(
+      "term-dictionary.csv",
+      { name: "CSV", extensions: ["csv"] },
+      csv,
+      "text/csv",
+    );
+    if (saved !== null) {
+      toast.success(
+        t("lint.termDict.exportDone", {
+          count: rows.length,
+          defaultValue: "{{count}} 件を書き出しました",
+        }),
+      );
+    }
+  };
+
+  const handleImport = async () => {
+    const file = await openTextFile({ name: "CSV", extensions: ["csv"] });
+    if (!file) return;
+    const parse = parseTermDictionaryCsv(file.content);
+    if (parse.entries.length === 0) {
+      toast.error(
+        t(
+          "lint.termDict.importNoEntries",
+          "有効なエントリが見つかりませんでした",
+        ),
+      );
+      return;
+    }
+    setEditing(null);
+    setImportPreview({ fileName: file.name, parse });
+  };
 
   useEffect(() => {
     if (!isLoaded) void load().catch(() => {});
@@ -121,27 +175,24 @@ export function TermDictionaryTab() {
         </button>
         <button
           type="button"
-          disabled
-          className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground"
-          title={t("lint.termDict.phase2Planned", "Phase 2 で実装予定")}
+          onClick={() => void handleImport()}
+          className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+          title={t(
+            "lint.termDict.importCsvTitle",
+            "CSV から用語辞書を取り込む",
+          )}
         >
           <Upload className="h-3.5 w-3.5" />{" "}
           {t("lint.termDict.importCsv", "CSV インポート")}
-          <span className="ml-1 text-[10px]">
-            {t("lint.termDict.unimplemented", "[未実装]")}
-          </span>
         </button>
         <button
           type="button"
-          disabled
-          className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground"
-          title={t("lint.termDict.phase2Planned", "Phase 2 で実装予定")}
+          onClick={() => void handleExport()}
+          className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+          title={t("lint.termDict.exportCsvTitle", "用語辞書を CSV に書き出す")}
         >
           <Download className="h-3.5 w-3.5" />{" "}
           {t("lint.termDict.export", "エクスポート")}
-          <span className="ml-1 text-[10px]">
-            {t("lint.termDict.unimplemented", "[未実装]")}
-          </span>
         </button>
         <div className="ml-auto flex items-center gap-2">
           <input
@@ -318,6 +369,13 @@ export function TermDictionaryTab() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {importPreview && (
+        <TermDictionaryImportPanel
+          preview={importPreview}
+          onClose={() => setImportPreview(null)}
+        />
       )}
 
       {editing && (
