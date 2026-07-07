@@ -18,7 +18,7 @@ licensing = []
 
 [dependencies]
 grimodex-core = { path = "../grimodex-core" }
-rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "2.1", features = ["server", "transport-io", "macros"] }
 schemars = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

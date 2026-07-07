@@ -42,7 +42,7 @@ pub async fn list_tree(
     // Build hierarchy (only makes sense when not filtering by type/status)
     let nested = build_tree(&nodes, None);
     let json = serde_json::to_string_pretty(&nested).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
         json,
     )]))
 }
@@ -51,7 +51,7 @@ pub async fn get_chapter_summaries(server: &GrimodexServer) -> Result<CallToolRe
     let conn = server.conn.lock().map_err(internal_err)?;
     let summaries = db::get_chapter_summaries(&conn, &server.project_id()).map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&summaries).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
         json,
     )]))
 }
