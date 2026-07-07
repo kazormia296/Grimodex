@@ -301,13 +301,27 @@ slim バックアップは埋め込み・FTS 索引が空なので、復元後�
 | **2** | ✅ 実装済 | gzip 圧縮 | `flate2` 直接依存、`GzEncoder`/`GzDecoder`（`.db.gz`）、`is_backup_file` 集約＋両フィルタ更新、restore は解凍→verify→原子 rename |
 | **3** | ✅ 実装済 | slim 化＋復元時再構築 | コピー側 slim（chunk `DELETE`＋JA `delete-all`/EN `DELETE`＋`VACUUM`）、`SLIM_*` 除外定数＋parity テスト、復元時 `fts_rebuild()`（埋め込みは reload 後 autoIndex が再構築＝`resetIndexGuards` 不要） |
 
-補足（実装で確定）:
+補足（実装＋敵対レビューで確定）:
 - 復元時の再オープン失敗は安定マーカー `RESTORE_SESSION_LOST` で FE に reload を促し、
   置換前失敗は元 DB を開き直してセッションを復帰（`reactivate_workspace`）。
 - 安全退避は best-effort（破損 DB でも復元を諦めさせない）＋ quiesce 後に取得。
-- open 時 FTS 乖離検知は未実装（follow-up 候補）。
+- **slim で `event_chunks` は除外**する。scene/codex/chat の埋め込みは reload 後の
+  `ensureSemanticIndexesOnOpen`（autoIndex）が自己修復するが、**events の open 時
+  back-index は存在しない**（`events_reindex_all` に FE 呼び出し元なし・events 検索は
+  dense-only）ため、slim で消すと Chronicle イベント意味検索が無音全滅し復旧手段が無い。
+  events 埋め込みは短く容量影響も小さいのでバックアップに残す（events back-index 実装は
+  follow-up）。
+- **open 時 FTS 自己修復（実装済）**: `slim_backup_copy` が `app_settings['fts.slim_backup']='1'`
+  マーカーをバックアップに書き、`rebuild_fts_if_stale`（`open_workspace` と `restore` の
+  happy path に配線）がそれを見て `fts_rebuild` ＋ マーカー消去する。復元の happy path 以外
+  （`RESTORE_SESSION_LOST` 経由の reload / 手動でのバックアップ昇格）でも検索が無音故障
+  しない。**external content FTS は索引を空にしても `SELECT`/`count(*)` が content 表を読む
+  ため索引の空判定ができず、マーカーが唯一の確実な検知手段**（敵対レビューで判明）。
+  通常 DB はマーカーが無いので単一 scalar query で no-op。rebuild 失敗時はマーカーを残して
+  次回 open で再試行（eventually-consistent）。
+- バックアップ名にミリ秒（`%3f`）を付与し同一秒衝突での世代喪失を防ぐ。
 - 残: 実機 E2E（Windows 稼働中ファイル置換 / newer-schema 復元 / 大 DB の slim+gzip 時間・
-  復元後の再 index 挙動）。
+  復元後の再 index 挙動）／ events の open 時 back-index（events を slim 対象化するなら前提）。
 
 ---
 

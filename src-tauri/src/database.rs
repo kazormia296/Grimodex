@@ -49,12 +49,14 @@ pub(crate) fn gunzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
 
 /// slim で全削除するチャンク表（埋め込み BLOB + 重複 text、再生成可）。トリガ・被参照
 /// FK が無いので素の DELETE で安全（migrate.rs:1348-1444 で確認）。
-const SLIM_CHUNK_TABLES: &[&str] = &[
-    "scene_chunks",
-    "codex_chunks",
-    "event_chunks",
-    "chat_message_chunks",
-];
+///
+/// **`event_chunks` は意図的に除外**する。scene/codex/chat の埋め込みは復元後 reload で
+/// フロント `ensureSemanticIndexesOnOpen`（autoIndex.ts）が back-index して自己修復するが、
+/// **events の open 時 back-index は存在せず**（`ensureEventsIndexed` なし・`events_reindex_all`
+/// に FE 呼び出し元なし）、events 検索は dense-only なので slim で消すと Chronicle イベントの
+/// 意味検索が無音で全滅し復旧手段が無い（敵対レビュー）。events 埋め込みは短く容量影響も小さい
+/// ので、events の open 時 back-index を足すまではバックアップに残す。
+const SLIM_CHUNK_TABLES: &[&str] = &["scene_chunks", "codex_chunks", "chat_message_chunks"];
 
 /// slim で索引を空にする JA FTS（external content, `content=...`）。`'delete-all'` で
 /// 内容表に触れず索引だけ空にする（DROP は復元後の書き込みで `*_fts_ai/ad/au` トリガを
@@ -96,6 +98,13 @@ fn slim_backup_copy(path: &Path) -> anyhow::Result<()> {
     for fts in SLIM_EN_FTS_TABLES {
         conn.execute(&format!("DELETE FROM {fts}"), [])?;
     }
+    // 復元側が「FTS を rebuild すべき slim バックアップ」と確実に分かるようマーカーを立てる。
+    // external content FTS は索引を空にしても `SELECT`/`count(*)` が content 表を読むため
+    // 索引の空判定ができない。app_settings のマーカーで検知する（rebuild_fts_if_stale）。
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('fts.slim_backup', '1')",
+        [],
+    )?;
     conn.execute_batch("VACUUM")?;
     Ok(())
 }

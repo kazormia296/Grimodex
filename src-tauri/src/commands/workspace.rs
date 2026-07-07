@@ -110,7 +110,10 @@ fn maybe_auto_backup(ws_path: &Path, db: &Database) {
         tracing::warn!("auto-backup: cannot create backups dir: {e}");
         return;
     }
-    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    // `%3f` = ミリ秒。同一秒に複数バックアップ（連続復元の安全退避や、safety が
+    // auto-backup と同秒）を書くと backup_to の rename が既存を上書きして世代を 1 つ失う
+    // ため、サブ秒のエントロピを足して衝突を避ける（敵対レビュー minor）。
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S%3f");
     // gzip 圧縮バックアップ（Phase 2）。
     let dest = dir.join(format!("grimodex-{ts}.db.gz"));
     match db.quick_check() {
@@ -332,7 +335,10 @@ pub(crate) fn restore_backup_core(
     if let Err(e) = std::fs::create_dir_all(&backups_dir) {
         tracing::warn!("restore: cannot create backups dir for safety copy: {e}");
     } else {
-        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        // `%3f` = ミリ秒。同一秒に複数バックアップ（連続復元の安全退避や、safety が
+        // auto-backup と同秒）を書くと backup_to の rename が既存を上書きして世代を 1 つ失う
+        // ため、サブ秒のエントロピを足して衝突を避ける（敵対レビュー minor）。
+        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S%3f");
         // 安全退避も通常バックアップと同じ gzip 形式 (Phase 2)。
         let safety = backups_dir.join(format!("grimodex-{ts}.db.gz"));
         if let Err(e) = old.db.backup_to(&safety) {
@@ -368,12 +374,13 @@ pub(crate) fn restore_backup_core(
     //     スキーマへ更新)。
     match open_active(&db_path) {
         Ok(database) => {
-            // slim バックアップ (Phase 3) は FTS 索引が空なので content から rebuild する。
-            // external content FTS は空でも検索が 0 件で無音故障するため無条件で呼ぶ
-            // (非 slim/旧形式でも冪等・安全)。埋め込みは reload 後のフロント autoIndex が
-            // 埋め直す。失敗しても DB 内容は無事なので warn + 続行。
-            if let Err(e) = database.fts_rebuild() {
-                tracing::warn!("restore: fts_rebuild after restore failed: {e}");
+            // slim バックアップ (Phase 3) は FTS 索引が空。復元 DB の slim マーカーを見て
+            // content から rebuild ＋ マーカー消去する (FE reload 後の open_workspace が
+            // 二重 rebuild しないように)。埋め込みは reload 後のフロント autoIndex が埋め直す。
+            // 失敗しても DB 内容は無事なので warn + 続行 (再オープン失敗経由の reload でも
+            // open_workspace の同じ処理が拾う)。
+            if let Err(e) = database.rebuild_fts_if_stale() {
+                tracing::warn!("restore: fts rebuild after restore failed: {e}");
             }
             on_reopened();
             let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -662,6 +669,13 @@ pub(crate) async fn open_workspace(
             // a stats refresh failure must not block opening the workspace.
             if let Err(e) = database.optimize() {
                 tracing::warn!("PRAGMA optimize on workspace open failed: {e}");
+            }
+            // slim バックアップ復元後などで FTS 索引が空なら content から再構築（自己修復。
+            // restore の happy path 以外＝再オープン失敗経由の reload や手動昇格でも検索が
+            // 無音故障しないようにする。通常 DB では count だけで no-op）。maybe_auto_backup
+            // より前に置き、live の FTS を埋めてからバックアップコピーを slim する。
+            if let Err(e) = database.rebuild_fts_if_stale() {
+                tracing::warn!("rebuild_fts_if_stale on workspace open failed: {e}");
             }
             // Automatic backup (best-effort, throttled by data.backupInterval).
             maybe_auto_backup(&ws_path, &database);
@@ -1067,7 +1081,8 @@ mod tests {
 
         // slim gzip バックアップ（FTS 索引は空になる）。
         let backup_name = "grimodex-20200101-000000.db.gz";
-        db.backup_to(&backups.join(backup_name)).expect("slim backup");
+        db.backup_to(&backups.join(backup_name))
+            .expect("slim backup");
 
         // content を消してから復元 → 復元で戻る。
         db.execute("DELETE FROM codex_entries WHERE id = 'c1'", &[], "run")

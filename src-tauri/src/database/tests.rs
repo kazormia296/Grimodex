@@ -3700,5 +3700,101 @@ fn test_slim_fts_lists_cover_all_fts_tables() {
             found += 1;
         }
     }
-    assert_eq!(found, 10, "JA5 + EN5 の FTS 表を検出すること (実際: {found})");
+    assert_eq!(
+        found, 10,
+        "JA5 + EN5 の FTS 表を検出すること (実際: {found})"
+    );
+}
+
+#[test]
+fn test_slim_excludes_event_chunks() {
+    // events は open 時 back-index が無く復元後に再構築されないので、slim 対象から
+    // 除外する（敵対レビュー: slim で消すと Chronicle イベント意味検索が無音全滅）。
+    // scene/codex/chat は autoIndex が自己修復するので slim 対象。
+    assert!(
+        !SLIM_CHUNK_TABLES.contains(&"event_chunks"),
+        "event_chunks は slim で消さない（復元後に再構築されないため）"
+    );
+    assert!(SLIM_CHUNK_TABLES.contains(&"scene_chunks"));
+    assert!(SLIM_CHUNK_TABLES.contains(&"codex_chunks"));
+    assert!(SLIM_CHUNK_TABLES.contains(&"chat_message_chunks"));
+}
+
+#[test]
+fn test_rebuild_fts_if_stale_repopulates_empty_index() {
+    // slim バックアップ復元の happy path 以外（再オープン失敗経由の reload / 手動昇格）
+    // で開かれた「content あり・FTS 空」の DB を open 時に自己修復することを gate する。
+    let db = test_db();
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
+         VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed codex");
+    // slim 復元後を模す: FTS 索引を空にし、slim マーカーを立てる（slim_backup_copy と対）。
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute("INSERT INTO codex_fts(codex_fts) VALUES('delete-all')", [])
+            .expect("empty fts");
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('fts.slim_backup','1')",
+            [],
+        )
+        .expect("set marker");
+    }
+    let before = db
+        .execute(
+            "SELECT count(*) AS n FROM codex_fts WHERE codex_fts MATCH 'スロウン'",
+            &[],
+            "get",
+        )
+        .expect("q before");
+    assert_eq!(before[0]["n"], Value::from(0), "索引は空になっている");
+
+    db.rebuild_fts_if_stale().expect("self-heal");
+
+    let after = db
+        .execute(
+            "SELECT count(*) AS n FROM codex_fts WHERE codex_fts MATCH 'スロウン'",
+            &[],
+            "get",
+        )
+        .expect("q after");
+    assert_eq!(
+        after[0]["n"],
+        Value::from(1),
+        "slim マーカーがあれば rebuild され検索復活"
+    );
+    // マーカーはクリアされる（次回 open で二重 rebuild しない）。
+    let marker = db
+        .execute(
+            "SELECT count(*) AS n FROM app_settings WHERE key='fts.slim_backup'",
+            &[],
+            "get",
+        )
+        .expect("q marker");
+    assert_eq!(marker[0]["n"], Value::from(0), "rebuild 後 marker はクリアされる");
+}
+
+#[test]
+fn test_rebuild_fts_if_stale_is_noop_when_populated() {
+    // 通常 DB（索引が埋まっている）では検索が維持される（余計に壊さない）。
+    let db = test_db();
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
+         VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed codex");
+    db.rebuild_fts_if_stale().expect("noop");
+    let after = db
+        .execute(
+            "SELECT count(*) AS n FROM codex_fts WHERE codex_fts MATCH 'スロウン'",
+            &[],
+            "get",
+        )
+        .expect("q");
+    assert_eq!(after[0]["n"], Value::from(1), "populated 索引は維持される");
 }
