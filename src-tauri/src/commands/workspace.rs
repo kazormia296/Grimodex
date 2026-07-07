@@ -368,6 +368,13 @@ pub(crate) fn restore_backup_core(
     //     スキーマへ更新)。
     match open_active(&db_path) {
         Ok(database) => {
+            // slim バックアップ (Phase 3) は FTS 索引が空なので content から rebuild する。
+            // external content FTS は空でも検索が 0 件で無音故障するため無条件で呼ぶ
+            // (非 slim/旧形式でも冪等・安全)。埋め込みは reload 後のフロント autoIndex が
+            // 埋め直す。失敗しても DB 内容は無事なので warn + 続行。
+            if let Err(e) = database.fts_rebuild() {
+                tracing::warn!("restore: fts_rebuild after restore failed: {e}");
+            }
             on_reopened();
             let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
             *inner = Some(ActiveWorkspace {
@@ -929,8 +936,8 @@ mod tests {
     fn test_restore_backup_core_rejects_corrupt_backup_without_touching_live_db() {
         // 壊れたバックアップは quick_check で弾かれ、稼働中 DB とセッションは無傷。
         // 「検証してから破壊」= 復元失敗で現行データを壊さない不変条件を gate する。
-        let dir = std::env::temp_dir()
-            .join(format!("grimodex_restore_corrupt_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("grimodex_restore_corrupt_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let db_path = dir.join("grimodex.db");
         let backups = dir.join("backups");
@@ -1004,10 +1011,15 @@ mod tests {
 
         // gzip 形式でバックアップ。
         let backup_name = "grimodex-20200101-000000.db.gz";
-        db.backup_to(&backups.join(backup_name)).expect("gz backup v1");
+        db.backup_to(&backups.join(backup_name))
+            .expect("gz backup v1");
 
-        db.execute("UPDATE projects SET title = 'v2' WHERE id = 'mark'", &[], "run")
-            .expect("v2");
+        db.execute(
+            "UPDATE projects SET title = 'v2' WHERE id = 'mark'",
+            &[],
+            "run",
+        )
+        .expect("v2");
 
         let ws_state = WorkspaceState {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace {
@@ -1028,6 +1040,70 @@ mod tests {
         assert_eq!(title, "v1", ".db.gz 復元も v1 に戻すこと");
         // 解凍 staging は残らない。
         assert!(!dir.join("grimodex.db.restore-tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_restore_rebuilds_fts_from_slim_backup() {
+        // Phase 3: slim バックアップは FTS 索引が空。復元後に content から rebuild され
+        // 検索が復活することを gate する（external content FTS の無音故障を防ぐ要）。
+        let dir =
+            std::env::temp_dir().join(format!("grimodex_restore_fts_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let db_path = dir.join("grimodex.db");
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&backups).expect("mkdir backups");
+
+        let db = Database::new(&db_path).expect("open");
+        db.migrate().expect("migrate");
+        db.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
+             VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed codex");
+
+        // slim gzip バックアップ（FTS 索引は空になる）。
+        let backup_name = "grimodex-20200101-000000.db.gz";
+        db.backup_to(&backups.join(backup_name)).expect("slim backup");
+
+        // content を消してから復元 → 復元で戻る。
+        db.execute("DELETE FROM codex_entries WHERE id = 'c1'", &[], "run")
+            .expect("del");
+
+        let ws_state = WorkspaceState {
+            inner: std::sync::Mutex::new(Some(ActiveWorkspace {
+                db: std::sync::Arc::new(db),
+                path: dir.clone(),
+            })),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: std::sync::Mutex::new(()),
+        };
+
+        restore_backup_core(&ws_state, backup_name, || {}).expect("restore");
+
+        // 復元後: content が戻り、かつ FTS 検索がヒットする（rebuild 済み）。
+        let (codex_n, fts_n) = crate::commands::with_db_state(&ws_state, |db| {
+            let c = db.execute(
+                "SELECT count(*) AS n FROM codex_entries WHERE id = 'c1'",
+                &[],
+                "get",
+            )?;
+            let f = db.execute(
+                "SELECT count(*) AS n FROM codex_fts WHERE codex_fts MATCH 'スロウン'",
+                &[],
+                "get",
+            )?;
+            Ok((
+                c[0]["n"].as_i64().unwrap_or(-1),
+                f[0]["n"].as_i64().unwrap_or(-1),
+            ))
+        })
+        .expect("query after restore");
+        assert_eq!(codex_n, 1, "restore は content を戻す");
+        assert_eq!(fts_n, 1, "restore 後に FTS が rebuild され検索可能");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

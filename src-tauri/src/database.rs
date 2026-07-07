@@ -42,6 +42,64 @@ pub(crate) fn gunzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+// --- slim バックアップ (backup restore Phase 3) ----------------------------
+// バックアップから**ソース本文から再生成可能な派生データ**を除外して容量を約半減させる。
+// 復元側は content から FTS を rebuild し（restore_backup_core）、埋め込みは reload 後の
+// フロント autoIndex が back-index するので、除外しても情報は失われない。
+
+/// slim で全削除するチャンク表（埋め込み BLOB + 重複 text、再生成可）。トリガ・被参照
+/// FK が無いので素の DELETE で安全（migrate.rs:1348-1444 で確認）。
+const SLIM_CHUNK_TABLES: &[&str] = &[
+    "scene_chunks",
+    "codex_chunks",
+    "event_chunks",
+    "chat_message_chunks",
+];
+
+/// slim で索引を空にする JA FTS（external content, `content=...`）。`'delete-all'` で
+/// 内容表に触れず索引だけ空にする（DROP は復元後の書き込みで `*_fts_ai/ad/au` トリガを
+/// 壊すため不可）。
+const SLIM_JA_FTS_TABLES: &[&str] = &[
+    "codex_fts",
+    "snippets_fts",
+    "chat_messages_fts",
+    "tree_nodes_fts",
+    "post_effect_annotations_fts",
+];
+
+/// slim で空にする EN FTS（非 external）。`'delete-all'` は external/contentless 専用で
+/// 使えないので素の DELETE（fts.rs の `_en` 非 external 前提と対）。
+const SLIM_EN_FTS_TABLES: &[&str] = &[
+    "codex_fts_en",
+    "snippets_fts_en",
+    "chat_messages_fts_en",
+    "tree_nodes_fts_en",
+    "post_effect_annotations_fts_en",
+];
+
+/// `VACUUM INTO` 出力のコピー（never the live DB）を開き、再生成可能な派生データを削って
+/// 最後に `VACUUM` する。DELETE だけでは解放ページが freelist に残ってファイルが縮まず、
+/// 解放ページ上の埋め込み BLOB バイトが物理的に残って圧縮率を殺す（`secure_delete` は
+/// 既定 OFF）ため、`VACUUM` が必須。
+fn slim_backup_copy(path: &Path) -> anyhow::Result<()> {
+    // foreign_keys は既定 OFF のまま（チャンク表に FK は無いが cascade 事故を避ける）。
+    let conn = Connection::open(path)?;
+    for table in SLIM_CHUNK_TABLES {
+        conn.execute(&format!("DELETE FROM {table}"), [])?;
+    }
+    for fts in SLIM_JA_FTS_TABLES {
+        conn.execute(
+            &format!("INSERT INTO {fts}({fts}) VALUES('delete-all')"),
+            [],
+        )?;
+    }
+    for fts in SLIM_EN_FTS_TABLES {
+        conn.execute(&format!("DELETE FROM {fts}"), [])?;
+    }
+    conn.execute_batch("VACUUM")?;
+    Ok(())
+}
+
 impl Database {
     pub fn new(path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
@@ -112,10 +170,12 @@ impl Database {
             // Release the connection lock before the (possibly slow) gzip/rename.
         }
 
-        // 2. Materialize `dest`: gzip when it ends in `.gz`, else plain rename.
-        //    Write to `<dest>.tmp` first, then rename, so a crash never leaves a
-        //    partial `dest`.
+        // 2. Slim + materialize `dest`: strip recomputable derived data (embeddings
+        //    + FTS index) so each backup is ~half size before compression, then
+        //    gzip when `dest` ends in `.gz`, else plain rename. Writes to `<dest>.tmp`
+        //    first so a crash never leaves a partial `dest` (backup restore Phase 3).
         let result = (|| -> anyhow::Result<()> {
+            slim_backup_copy(&sqlite_tmp)?;
             if dest.extension().and_then(|e| e.to_str()) == Some("gz") {
                 let gz_tmp = with_suffix(dest, ".tmp");
                 gzip_file(&sqlite_tmp, &gz_tmp)?;

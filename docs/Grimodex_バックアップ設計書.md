@@ -293,13 +293,21 @@ slim バックアップは埋め込み・FTS 索引が空なので、復元後�
 
 ## 7. 実装順序（サマリ）
 
-| Phase | 内容 | 主な変更点 |
-|---|---|---|
-| **1** | アプリ内リストア＋堅牢化 | `restore_backup`/`list_backups` コマンド、稼働中 DB 置換（直列化契約・wal 削除・安全退避）、`backup_to` の `.tmp`→`rename` |
-| **2** | gzip 圧縮 | `GzEncoder` 出力（`.db.gz`）、`is_backup_file` 集約＋両フィルタ更新、拡張子分岐リストア |
-| **3** | slim 化＋復元時再構築 | コピー側 slim（chunk DELETE＋JA `delete-all`/EN DELETE＋`VACUUM`）、除外定数＋parity テスト、復元時 `fts_rebuild()`＋`resetIndexGuards`、（任意）open 時 FTS 乖離検知 |
+**全 Phase 実装済み**（branch `feat/backup-restore-phase1`）。各 Phase は独立コミット。
 
-各 Phase は独立して出荷可能。Phase 1 から着手する。
+| Phase | 状態 | 内容 | 主な変更点 |
+|---|---|---|---|
+| **1** | ✅ 実装済 | アプリ内リストア＋堅牢化 | `restore_backup`/`list_backups` コマンド、稼働中 DB 置換（直列化契約・wal 削除・安全退避・原子 rename）、`backup_to` の `.tmp`→`rename` |
+| **2** | ✅ 実装済 | gzip 圧縮 | `flate2` 直接依存、`GzEncoder`/`GzDecoder`（`.db.gz`）、`is_backup_file` 集約＋両フィルタ更新、restore は解凍→verify→原子 rename |
+| **3** | ✅ 実装済 | slim 化＋復元時再構築 | コピー側 slim（chunk `DELETE`＋JA `delete-all`/EN `DELETE`＋`VACUUM`）、`SLIM_*` 除外定数＋parity テスト、復元時 `fts_rebuild()`（埋め込みは reload 後 autoIndex が再構築＝`resetIndexGuards` 不要） |
+
+補足（実装で確定）:
+- 復元時の再オープン失敗は安定マーカー `RESTORE_SESSION_LOST` で FE に reload を促し、
+  置換前失敗は元 DB を開き直してセッションを復帰（`reactivate_workspace`）。
+- 安全退避は best-effort（破損 DB でも復元を諦めさせない）＋ quiesce 後に取得。
+- open 時 FTS 乖離検知は未実装（follow-up 候補）。
+- 残: 実機 E2E（Windows 稼働中ファイル置換 / newer-schema 復元 / 大 DB の slim+gzip 時間・
+  復元後の再 index 挙動）。
 
 ---
 
