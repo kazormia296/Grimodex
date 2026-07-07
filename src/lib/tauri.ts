@@ -57,6 +57,11 @@ const SLOW_COMMANDS = new Set([
   "seed_sample_workspace",
   "open_workspace",
   "extract_codex_candidates",
+  /** バックアップ復元は 復元前の安全退避 (VACUUM INTO) + 接続クローズ待ち +
+   *  ファイル置換 + 再オープン (migrate) を含むため、大きな DB では 10s を
+   *  超えうる。open_workspace と同様に長めのタイムアウトを与える
+   *  (backup restore Phase 1)。 */
+  "restore_backup",
 ]);
 
 let browserMock: BrowserMock | null = null;

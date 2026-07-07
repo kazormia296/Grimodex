@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, serde::Deserialize)]
@@ -59,12 +59,32 @@ impl Database {
     /// `VACUUM INTO`. This is the automatic-backup primitive — it runs against
     /// the live connection and produces a standalone .db the user can restore by
     /// copying it back over grimodex.db (DB health audit 2026-07).
+    ///
+    /// Writes to a temporary sibling (`<dest>.tmp`) first, then atomically
+    /// `rename`s it into place. A crash mid-`VACUUM` must not leave a truncated
+    /// `grimodex-<ts>.db`: such a stump would be picked as the "newest" backup by
+    /// `newest_backup_age_secs` (suppressing further backups) and count as a live
+    /// generation in `rotate_backups` (evicting a real one). The `.tmp` suffix is
+    /// invisible to both — they match `*.db` only (backup restore Phase 1).
     pub fn backup_to(&self, dest: &Path) -> anyhow::Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let dest_str = dest
+        // `<dest>.tmp` (keeps the same directory so the final rename is atomic).
+        let mut tmp_os = dest.as_os_str().to_owned();
+        tmp_os.push(".tmp");
+        let tmp = PathBuf::from(tmp_os);
+        // `VACUUM INTO` refuses to overwrite an existing file — clear any stump
+        // left by a previously-killed backup before writing.
+        if tmp.exists() {
+            std::fs::remove_file(&tmp)?;
+        }
+        let tmp_str = tmp
             .to_str()
-            .ok_or_else(|| anyhow::anyhow!("backup path is not valid UTF-8"))?;
-        conn.execute("VACUUM INTO ?1", rusqlite::params![dest_str])?;
+            .ok_or_else(|| anyhow::anyhow!("backup temp path is not valid UTF-8"))?;
+        conn.execute("VACUUM INTO ?1", rusqlite::params![tmp_str])?;
+        // Release the connection lock before the filesystem rename (the rename
+        // does not need the DB and other readers should not wait on it).
+        drop(conn);
+        std::fs::rename(&tmp, dest)?;
         Ok(())
     }
 

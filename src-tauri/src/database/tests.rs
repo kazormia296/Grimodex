@@ -3517,3 +3517,43 @@ fn test_language_switch_reroutes_en_index() {
         1
     );
 }
+
+#[test]
+fn test_backup_to_writes_atomically_and_leaves_no_temp() {
+    // backup_to must `VACUUM INTO` a `.tmp` sibling then rename into place, so a
+    // crash mid-VACUUM cannot leave a truncated `grimodex-<ts>.db` stump that
+    // pollutes newest-backup detection / rotation (backup restore Phase 1).
+    let dir = std::env::temp_dir().join("grimodex_backup_to_atomic_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let db_path = dir.join("grimodex.db");
+
+    let db = Database::new(&db_path).expect("open on-disk db");
+    db.migrate().expect("migrate");
+    db.execute(
+        "INSERT INTO projects (id, title, created_at, updated_at) \
+         VALUES ('bk', 'Backed Up', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed row");
+
+    let dest = dir.join("grimodex-20260707-000000.db");
+    db.backup_to(&dest).expect("backup_to");
+
+    // Final artifact exists; the `.tmp` staging file was renamed away.
+    assert!(dest.exists(), "backup destination should exist");
+    let tmp = dir.join("grimodex-20260707-000000.db.tmp");
+    assert!(!tmp.exists(), "no .tmp staging file should remain");
+
+    // The backup is a valid standalone DB carrying the seeded row.
+    let restored = Database::new(&dest).expect("open backup as db");
+    let rows = restored
+        .execute("SELECT title FROM projects WHERE id = 'bk'", &[], "get")
+        .expect("query backup");
+    assert_eq!(rows[0]["title"], Value::String("Backed Up".into()));
+
+    drop(db);
+    drop(restored);
+    let _ = std::fs::remove_dir_all(&dir);
+}
