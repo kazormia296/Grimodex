@@ -163,7 +163,22 @@
       "errorPreferredRequired": "推奨表記を入力してください。",
       "errorVariantsRequired": "許容しない表記を 1 つ以上入力してください。",
       "errorDuplicateVariant": "同じ variant が他のエントリに登録されています: {{variants}}",
-      "copySuffix": "{{name}}（コピー）"
+      "copySuffix": "{{name}}（コピー）",
+      "importCsvTitle": "CSV から用語辞書を取り込む",
+      "exportCsvTitle": "用語辞書を CSV に書き出す",
+      "exportEmpty": "書き出す辞書がありません",
+      "exportDone": "{{count}} 件を書き出しました",
+      "importNoEntries": "有効なエントリが見つかりませんでした",
+      "importPreviewTitle": "CSV インポート",
+      "importSummary": "{{rows}} 行から {{entries}} 件のエントリを検出",
+      "importSkippedRows": "{{count}} 行をスキップしました",
+      "importModeMerge": "マージ（推奨表記が一致する行は更新、他は追加、既存はそのまま）",
+      "importModeReplace": "全置換（既存の辞書をすべて削除して入れ替え）",
+      "importing": "取込中…",
+      "importRun": "取り込む",
+      "confirmReplace": "既存の用語辞書をすべて削除して置き換えます。よろしいですか？",
+      "importDone": "取込完了: 追加 {{added}} / 更新 {{updated}} / スキップ {{skipped}}",
+      "importFailed": "取込に失敗しました"
     },
     "a11y": {
       "completed": "Lint が完了しました。指摘は {{count}} 件です"

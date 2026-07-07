@@ -837,11 +837,13 @@ Phase 1 から設定 UI に用意:
 - 各行に **ON/OFF チェックボックス**（特定エントリだけ一時的に黙らせる）
 - 並び替え: 推奨表記、更新日、Severity、`sort_order`（手動並び）
 
-### CSV インポート / エクスポート（Phase 2 以降）
+### CSV インポート / エクスポート（実装済み）
 
-- フォーマット: `preferred,variants,severity,note,enabled`（`variants` は `|` 区切り）
-- 用途: textlint-rule-prh YAML からの移行、複数プロジェクト間の辞書共有、編集者への校正ルール共有
-- Phase 1 では UI のボタンは用意するが `[未実装]` 状態とする
+- **エクスポート形式（正準）**: `preferred,variants,severity,note,enabled`（ヘッダ付き・`variants` は `|` 区切り・CRLF）。全エントリを書き出す。実装は `serializeTermDictionaryCsv`（`src/features/lint/termDictionaryCsv.ts`）。
+- **インポート（寛容パース）**: 現場のフォーマット揺れを吸収する。ヘッダ有無・列順・「1 エントリ 1 行」/「1 バリアント 1 行（ロング形式）」の両対応（preferred でグループ化して variants を union）、variants セル内区切り `| ｜ , ， 、 ; ； ／` を許容、`severity`/`enabled` の表記揺れを正規化、BOM 除去。preferred 空・variants 空の行はスキップして理由をプレビュー表示。実装は `parseTermDictionaryCsv`（同上）。
+- **取込モード**: 「マージ」（preferred 一致で更新・他は追加・既存据え置き）/「全置換」（既存を全削除して入替）を取込時に選択。variant 一意性は「先勝ち」で解決し、全 variant が衝突するエントリはスキップ。計画立案は純粋関数 `planBulkImport`（`src/features/lint/termDictionaryImport.ts`）、DB 反映は `useTermDictionaryStore.bulkImport`。
+- **ファイル I/O**: 保存は Rust 主導の `saveTextFile`、読込は `openTextFile`（`src/lib/importFile.ts`、`@tauri-apps/plugin-dialog` + `plugin-fs`。非 Tauri は `<input type=file>` フォールバック）。
+- 用途: textlint-rule-prh 等からの手作業移行、複数プロジェクト間の辞書共有、編集者への校正ルール共有。
 
 ### Lint 実行との接続
 
