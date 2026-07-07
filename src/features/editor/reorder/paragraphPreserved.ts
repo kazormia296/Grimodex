@@ -58,7 +58,7 @@ export function collectPreservedInlines(
   );
 }
 
-/** unit slice と gap inline を flatAnchor 位置に挿入して並べ替え後 Fragment を構築。 */
+/** unit slice と gap inline を「元 unit 境界」に基づいて並べ替え後 Fragment に構築。 */
 export function buildPermutedParagraphContent(
   doc: ProseMirrorNode,
   units: ReadonlyArray<{ from: number; to: number }>,
@@ -66,26 +66,48 @@ export function buildPermutedParagraphContent(
   unitSlices: ReadonlyArray<{ content: Fragment }>,
   preserved: PreservedInline[],
 ): Fragment {
-  let combined = Fragment.empty;
-  let preservedIdx = 0;
-  let flatCursor = 0;
+  // 各 preserved inline は元 unit の境界に位置する（flatAnchor = 先行する元 unit
+  // 長さの累積）。並べ替え後も「元々その inline が続いていた元 unit」の直後へ置く。
+  // 旧実装は flatAnchor を **新順序の累積 offset** と `===` 比較していたため、
+  // 入れ替えた 2 unit の長さが異なると境界がずれて inline が一切 append されず、
+  // 段落 replace で mention/hardBreak が **無言で消失**していた（データ欠損）。
+  const byAnchor = new Map<number, PreservedInline[]>();
+  for (const p of preserved) {
+    const arr = byAnchor.get(p.flatAnchor);
+    if (arr) arr.push(p);
+    else byAnchor.set(p.flatAnchor, [p]);
+  }
 
-  const flushPreserved = (anchor: number) => {
-    while (
-      preservedIdx < preserved.length &&
-      preserved[preservedIdx]!.flatAnchor === anchor
-    ) {
-      const p = preserved[preservedIdx]!;
+  // 元 unit index j の終端 flat offset（= その直後 inline の flatAnchor）。
+  const originalEnd: number[] = [];
+  let acc = 0;
+  for (let j = 0; j < units.length; j++) {
+    acc += units[j]!.to - units[j]!.from;
+    originalEnd[j] = acc;
+  }
+
+  let combined = Fragment.empty;
+  const emitted = new Set<PreservedInline>();
+  const appendPreserved = (arr: PreservedInline[] | undefined) => {
+    if (!arr) return;
+    for (const p of arr) {
       combined = combined.append(doc.slice(p.from, p.to).content);
-      preservedIdx++;
+      emitted.add(p);
     }
   };
 
-  flushPreserved(0);
+  // 先頭（flatAnchor 0 = 元 unit 0 の前）。
+  appendPreserved(byAnchor.get(0));
   for (const unitIdx of order) {
     combined = combined.append(unitSlices[unitIdx]!.content);
-    flatCursor += units[unitIdx]!.to - units[unitIdx]!.from;
-    flushPreserved(flatCursor);
+    // この元 unit の直後に位置していた inline を続けて置く。
+    appendPreserved(byAnchor.get(originalEnd[unitIdx]!));
+  }
+  // 防御的フラッシュ: 境界に一致しなかった inline（gap 等の想定外）も
+  // 末尾へ必ず出す。欠落（データ欠損）よりは順序ずれの方が遥かに安全。
+  for (const p of preserved) {
+    if (!emitted.has(p))
+      combined = combined.append(doc.slice(p.from, p.to).content);
   }
   return combined;
 }

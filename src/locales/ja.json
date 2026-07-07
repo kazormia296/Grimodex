@@ -3488,7 +3488,15 @@
       "segmentFailed": "分割に失敗しました",
       "staleDocument": "段落が編集中に変更されたため、確定できません",
       "cancel": "キャンセル",
-      "confirm": "確定"
+      "confirm": "確定",
+      "hint": {
+        "base": "Alt: 段落 / Alt+Shift: 文・文節 を並べ替え",
+        "paragraph": "段落を並べ替え（ハンドルをドラッグ / Alt+矢印）",
+        "unitSentence": "文を並べ替え（ドラッグ / Alt+Shift+矢印）",
+        "unitBunsetsu": "文節を並べ替え（ドラッグ / Alt+Shift+矢印）",
+        "switchToBunsetsu": "Alt+Shift+G で文節へ",
+        "switchToSentence": "Alt+Shift+G で文へ"
+      }
     },
     "status": {
       "outline": "アウトライン",

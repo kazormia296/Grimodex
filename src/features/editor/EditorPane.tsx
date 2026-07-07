@@ -61,6 +61,7 @@ import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { AttributionLegend } from "@/features/attribution/AttributionLegend";
+import { ReorderModeHint } from "@/features/editor/reorder/ReorderModeHint";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
@@ -2165,6 +2166,8 @@ export function EditorPane({
           {showAttribution && (
             <AttributionLegend className="text-[10px] text-muted-foreground" />
           )}
+          {/* 推敲リオーダー（Alt=段落 / Alt+Shift=文・文節）の操作案内 */}
+          <ReorderModeHint className="text-[10px] text-muted-foreground" />
         </div>
         {/* Right: stats + save state + history */}
         <div className="flex flex-shrink-0 items-center gap-3">

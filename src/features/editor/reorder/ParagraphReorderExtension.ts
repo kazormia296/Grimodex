@@ -12,13 +12,13 @@ import {
 import { flatRangeToPm, resolveParagraphAtSelection } from "./paragraphFlat";
 import { flashUnitHighlight } from "./flashHighlight";
 import {
-  clearBunsetsuCache,
   fetchBunsetsuUnits,
   getCachedBunsetsuUnits,
   isJapanese,
   prefetchBunsetsuUnits,
 } from "./bunsetsuSegmenter";
 import { captureSwapSnapshot, isSwapSnapshotValid } from "./paragraphSnapshot";
+import { useReorderModifierStore } from "./reorderModifierStore";
 
 const reorderKey = new PluginKey("paragraphReorder");
 
@@ -32,7 +32,11 @@ function getGranularity(state: Editor["state"]): ReorderGranularity {
   );
 }
 
-function effectiveGranularity(
+/**
+ * 有効粒度。文節指定でも非日本語なら文粒度へ落とす。
+ * 装飾プラグイン(ReorderInteractionExtension)からも参照するため export。
+ */
+export function effectiveGranularity(
   state: EditorState,
   language: string | undefined,
 ): ReorderGranularity {
@@ -206,6 +210,8 @@ export const ParagraphReorderExtension = Extension.create({
             getGranularity(state) === "sentence" ? "bunsetsu" : "sentence";
           if (!dispatch) return true;
           dispatch(tr.setMeta(reorderKey, { setGranularity: next }));
+          // フッター表示 + 装飾プラグインの再描画トリガ用にストアへミラー。
+          useReorderModifierStore.getState().setGranularity(next);
           return true;
         },
       setReorderGranularity:
@@ -213,6 +219,7 @@ export const ParagraphReorderExtension = Extension.create({
         ({ tr, dispatch }) => {
           if (!dispatch) return true;
           dispatch(tr.setMeta(reorderKey, { setGranularity: granularity }));
+          useReorderModifierStore.getState().setGranularity(granularity);
           return true;
         },
       applyParagraphReorder:

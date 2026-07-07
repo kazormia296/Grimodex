@@ -3493,7 +3493,15 @@
       "segmentFailed": "Segmentation failed",
       "staleDocument": "The paragraph changed while reordering; confirm aborted.",
       "cancel": "Cancel",
-      "confirm": "Apply"
+      "confirm": "Apply",
+      "hint": {
+        "base": "Alt: paragraphs / Alt+Shift: sentences · bunsetsu",
+        "paragraph": "Reorder paragraphs (drag handle / Alt+arrows)",
+        "unitSentence": "Reorder sentences (drag / Alt+Shift+arrows)",
+        "unitBunsetsu": "Reorder bunsetsu (drag / Alt+Shift+arrows)",
+        "switchToBunsetsu": "Alt+Shift+G → bunsetsu",
+        "switchToSentence": "Alt+Shift+G → sentences"
+      }
     },
     "status": {
       "outline": "Outline",

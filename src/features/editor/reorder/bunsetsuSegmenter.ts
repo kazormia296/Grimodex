@@ -46,6 +46,17 @@ export function getCachedBunsetsuUnits(
   return cache.units;
 }
 
+/**
+ * text をキーに確定済み文節 units を返す（selection 非依存）。
+ * 任意段落（ポインタ下の段落など）の文節を装飾/ドラッグで使うため。
+ * in-flight・空・text 不一致は null。
+ */
+export function getBunsetsuUnitsForText(text: string): ReorderUnit[] | null {
+  if (!cache || cache.text !== text) return null;
+  if (cache.promise || cache.units.length === 0) return null;
+  return cache.units;
+}
+
 export async function fetchBunsetsuUnits(text: string): Promise<ReorderUnit[]> {
   if (cache?.text === text && cache.units.length > 0) {
     return cache.units;

@@ -210,6 +210,48 @@ describe("reorderTransaction", () => {
     editor.destroy();
   });
 
+  it("長さの異なる unit 間の mention を swap 後も保持する（データ欠損回帰）", () => {
+    // 旧実装は新順序の累積 offset と flatAnchor を === 比較していたため、
+    // 入れ替える 2 unit の長さが異なると境界 inline が消失していた。
+    // "ABC。"(4) と "DE。"(3) は長さが違うので、その回帰を突く。
+    const editor = makeEditor("");
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "ABC。" },
+            { type: "mention", attrs: { id: "1", label: "ナナ" } },
+            { type: "text", text: "DE。" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(2);
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    expect(units).toHaveLength(2);
+    const unitIdx = findUnitIndexAtFlatOffset(units, 2);
+    const result = buildAdjacentUnitSwapTransaction(
+      editor.state,
+      resolved,
+      units,
+      unitIdx,
+      1,
+    );
+    expect(result).not.toBeNull();
+    editor.view.dispatch(result!.tr);
+
+    let mentionCount = 0;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention") mentionCount++;
+    });
+    expect(mentionCount).toBe(1); // 消えていないこと
+    expect(editor.state.doc.textContent).toBe("DE。ABC。");
+    editor.destroy();
+  });
+
   it("unit 内の hardBreak を swap 後も保持する", () => {
     const editor = makeEditor("");
     editor.commands.setContent({
