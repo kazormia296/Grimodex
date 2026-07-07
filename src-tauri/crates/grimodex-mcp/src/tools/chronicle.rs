@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::ErrorData;
 use schemars;
 use serde::{Deserialize, Serialize};
@@ -24,11 +24,11 @@ use crate::server::{internal_err, GrimodexServer};
 
 fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
     let json = serde_json::to_string_pretty(value).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![Content::text(json)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
 fn ok_null() -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::success(vec![Content::text(
+    Ok(CallToolResult::success(vec![ContentBlock::text(
         "null".to_string(),
     )]))
 }

@@ -25,7 +25,7 @@ pub async fn get_attribution_report(
             .map_err(internal_err)?;
 
     let json = serde_json::to_string_pretty(&report).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
         json,
     )]))
 }

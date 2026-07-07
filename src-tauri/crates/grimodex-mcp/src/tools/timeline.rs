@@ -27,7 +27,7 @@ pub async fn get_scene_timeline_neighbors(
             next: Vec::new(),
         };
         let json = serde_json::to_string_pretty(&empty).map_err(internal_err)?;
-        return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        return Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
             json,
         )]));
     }
@@ -36,7 +36,7 @@ pub async fn get_scene_timeline_neighbors(
     let neighbors = db::get_scene_timeline_neighbors(&conn, &server.project_id(), scene_id)
         .map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&neighbors).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
         json,
     )]))
 }
