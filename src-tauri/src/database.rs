@@ -14,6 +14,34 @@ pub struct Database {
     conn: Mutex<Connection>,
 }
 
+/// `<path><suffix>` を組む（拡張子付与 / temp 名生成用）。
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut os = path.as_os_str().to_owned();
+    os.push(suffix);
+    PathBuf::from(os)
+}
+
+/// `src` を gzip 圧縮して `dst` に書く（ストリーミング・一定メモリ）。
+fn gzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    let input = std::fs::File::open(src)?;
+    let output = std::fs::File::create(dst)?;
+    let mut encoder = flate2::write::GzEncoder::new(output, flate2::Compression::new(6));
+    let mut reader = std::io::BufReader::new(input);
+    std::io::copy(&mut reader, &mut encoder)?;
+    encoder.finish()?;
+    Ok(())
+}
+
+/// gzip の `src` を解凍して `dst` に書く（ストリーミング・一定メモリ）。
+/// バックアップ復元（Phase 2）で `.db.gz` を平文 `.db` に展開するのに使う。
+pub(crate) fn gunzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    let input = std::fs::File::open(src)?;
+    let mut decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(input));
+    let mut output = std::fs::File::create(dst)?;
+    std::io::copy(&mut decoder, &mut output)?;
+    Ok(())
+}
+
 impl Database {
     pub fn new(path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
@@ -57,35 +85,53 @@ impl Database {
 
     /// Write a consistent, compacted copy of the whole database to `dest` using
     /// `VACUUM INTO`. This is the automatic-backup primitive — it runs against
-    /// the live connection and produces a standalone .db the user can restore by
-    /// copying it back over grimodex.db (DB health audit 2026-07).
+    /// the live connection (DB health audit 2026-07).
     ///
-    /// Writes to a temporary sibling (`<dest>.tmp`) first, then atomically
-    /// `rename`s it into place. A crash mid-`VACUUM` must not leave a truncated
-    /// `grimodex-<ts>.db`: such a stump would be picked as the "newest" backup by
-    /// `newest_backup_age_secs` (suppressing further backups) and count as a live
-    /// generation in `rotate_backups` (evicting a real one). The `.tmp` suffix is
-    /// invisible to both — they match `*.db` only (backup restore Phase 1).
+    /// - When `dest` ends in `.gz` the compacted copy is **gzip-compressed**
+    ///   (backup restore Phase 2). SQLite pages of text/JSON typically shrink
+    ///   3–6×; the fastest-growing part (`change_events`, repetitive JSON)
+    ///   compresses very well.
+    /// - Everything is staged in temp siblings and `rename`d into place, so a
+    ///   crash mid-`VACUUM`/gzip never leaves a truncated `grimodex-<ts>.db(.gz)`:
+    ///   such a stump would be picked as the "newest" backup by
+    ///   `newest_backup_age_secs` (suppressing further backups) and count as a
+    ///   live generation in `rotate_backups` (evicting a real one). Temp names end
+    ///   in `.tmp`, invisible to `is_backup_file`.
     pub fn backup_to(&self, dest: &Path) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        // `<dest>.tmp` (keeps the same directory so the final rename is atomic).
-        let mut tmp_os = dest.as_os_str().to_owned();
-        tmp_os.push(".tmp");
-        let tmp = PathBuf::from(tmp_os);
-        // `VACUUM INTO` refuses to overwrite an existing file — clear any stump
-        // left by a previously-killed backup before writing.
-        if tmp.exists() {
-            std::fs::remove_file(&tmp)?;
+        // 1. `VACUUM INTO` a plain sqlite temp (consistent, compacted, no sidecars).
+        let sqlite_tmp = with_suffix(dest, ".sqlite.tmp");
+        {
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            if sqlite_tmp.exists() {
+                std::fs::remove_file(&sqlite_tmp)?;
+            }
+            let s = sqlite_tmp
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("backup temp path is not valid UTF-8"))?;
+            conn.execute("VACUUM INTO ?1", rusqlite::params![s])?;
+            // Release the connection lock before the (possibly slow) gzip/rename.
         }
-        let tmp_str = tmp
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("backup temp path is not valid UTF-8"))?;
-        conn.execute("VACUUM INTO ?1", rusqlite::params![tmp_str])?;
-        // Release the connection lock before the filesystem rename (the rename
-        // does not need the DB and other readers should not wait on it).
-        drop(conn);
-        std::fs::rename(&tmp, dest)?;
-        Ok(())
+
+        // 2. Materialize `dest`: gzip when it ends in `.gz`, else plain rename.
+        //    Write to `<dest>.tmp` first, then rename, so a crash never leaves a
+        //    partial `dest`.
+        let result = (|| -> anyhow::Result<()> {
+            if dest.extension().and_then(|e| e.to_str()) == Some("gz") {
+                let gz_tmp = with_suffix(dest, ".tmp");
+                gzip_file(&sqlite_tmp, &gz_tmp)?;
+                std::fs::remove_file(&sqlite_tmp)?;
+                std::fs::rename(&gz_tmp, dest)?;
+            } else {
+                std::fs::rename(&sqlite_tmp, dest)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            // Clean up staging so a failed backup can't pollute age/rotation.
+            let _ = std::fs::remove_file(&sqlite_tmp);
+            let _ = std::fs::remove_file(with_suffix(dest, ".tmp"));
+        }
+        result
     }
 
     /// Age out append-only audit/debug logs that otherwise grow without bound

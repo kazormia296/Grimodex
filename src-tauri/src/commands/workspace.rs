@@ -28,13 +28,23 @@ fn read_app_setting(db: &Database, key: &str, default: &str) -> String {
     .unwrap_or_else(|| default.to_string())
 }
 
-/// Age (seconds) of the most recent `grimodex-*.db` backup in `dir`, if any.
+/// `<ws>/backups/` のバックアップファイル名か（無圧縮 `.db` と gzip `.db.gz` の両方）。
+/// `.tmp` ステージングや無関係ファイルは除外。`newest_backup_age_secs` と
+/// `rotate_backups` が**同じ判定**を使うことで新旧形式が 1 つの世代集合として扱われる
+/// （片方が新形式を漏らすと間引き判定が壊れ毎回バックアップし、旧形式がローテ対象外で
+/// 永遠に残る。backup restore Phase 2）。ファイル名の時刻プレフィクスは固定幅なので
+/// 拡張子が混在しても名前ソート＝時系列は維持される。
+fn is_backup_file(name: &str) -> bool {
+    name.starts_with("grimodex-") && (name.ends_with(".db") || name.ends_with(".db.gz"))
+}
+
+/// Age (seconds) of the most recent backup in `dir`, if any.
 fn newest_backup_age_secs(dir: &Path) -> Option<u64> {
     let mut newest: Option<std::time::SystemTime> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !(name.starts_with("grimodex-") && name.ends_with(".db")) {
+        if !is_backup_file(&name) {
             continue;
         }
         if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
@@ -59,7 +69,7 @@ fn rotate_backups(dir: &Path, keep: usize) {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("grimodex-") && n.ends_with(".db"))
+                .map(is_backup_file)
                 .unwrap_or(false)
         })
         .collect();
@@ -101,7 +111,8 @@ fn maybe_auto_backup(ws_path: &Path, db: &Database) {
         return;
     }
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let dest = dir.join(format!("grimodex-{ts}.db"));
+    // gzip 圧縮バックアップ（Phase 2）。
+    let dest = dir.join(format!("grimodex-{ts}.db.gz"));
     match db.quick_check() {
         Ok(Some(report)) => {
             tracing::error!("auto-backup: quick_check reported corruption ({report}); backing up anyway for recovery");
@@ -251,24 +262,43 @@ pub(crate) fn restore_backup_core(
     // file_name は <ws>/backups 直下の basename のみ許可 (traversal 拒否)。
     let src = resolve_backup_path(&ws_path, file_name)?;
 
-    // Phase 1 は無圧縮 .db のみ復元可 (.db.gz は Phase 2)。
-    let is_plain_db = src
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(".db"))
-        .unwrap_or(false);
-    if !is_plain_db {
-        return Err(anyhow::anyhow!(
-            "この形式のバックアップはまだ復元に対応していません (.db のみ): {file_name}"
-        )
-        .into());
+    // 対応形式: 無圧縮 .db / gzip .db.gz (backup restore Phase 2)。
+    let name = src.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let is_gz = name.ends_with(".db.gz");
+    if !(is_gz || name.ends_with(".db")) {
+        return Err(
+            anyhow::anyhow!("この形式のバックアップは復元に対応していません: {file_name}").into(),
+        );
     }
-
-    // 候補の健全性を先に検証 — 壊れていれば何も破壊せず失敗させる。
-    verify_sqlite_ok(&src)?;
 
     let db_path = ws_path.join("grimodex.db");
     let backups_dir = ws_path.join("backups");
+
+    // 候補を平文 .db として materialize (gzip なら解凍) し、quick_check に通す。
+    // ここは switching 前 = セッションに触れないので、壊れた/展開失敗のバックアップでも
+    // 現行セッションは無傷のまま失敗させられる。以降の置換はこの検証済み平文を rename
+    // するだけ (原子)。materialize 先 `grimodex.db.restore-tmp` は is_backup_file に
+    // マッチしないので一覧・ローテには出ない。
+    let staged_plain = sidecar(&db_path, ".restore-tmp");
+    remove_if_exists(&staged_plain);
+    let prepared: anyhow::Result<()> = (|| {
+        if is_gz {
+            crate::database::gunzip_file(&src, &staged_plain)
+                .map_err(|e| anyhow::anyhow!("バックアップの解凍に失敗しました: {e}"))?;
+        } else {
+            std::fs::copy(&src, &staged_plain)
+                .map_err(|e| anyhow::anyhow!("復元DBのステージングに失敗しました: {e}"))?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = prepared {
+        remove_if_exists(&staged_plain);
+        return Err(e.into());
+    }
+    if let Err(e) = verify_sqlite_ok(&staged_plain) {
+        remove_if_exists(&staged_plain);
+        return Err(e);
+    }
 
     // (1) 新規 DB アクセスを止め、アクティブ workspace を外して in-flight を drain する。
     //     安全退避より先に switching を立てて quiesce することで、退避スナップショット
@@ -285,10 +315,11 @@ pub(crate) fn restore_backup_core(
     let old = old.ok_or(AppError::NoWorkspace)?;
 
     // in-flight with_db がクローンした Arc が全て落ちる (strong_count==1) まで待つ。
-    // ここまでファイルは未変更なので、タイムアウト時は old を戻して安全に中止できる。
+    // ここまで grimodex.db は未変更なので、タイムアウト時は old を戻して安全に中止できる。
     if let Err(e) = wait_for_sole_owner(&old.db) {
         let mut inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         *inner = Some(old);
+        remove_if_exists(&staged_plain);
         return Err(e);
     }
 
@@ -302,7 +333,8 @@ pub(crate) fn restore_backup_core(
         tracing::warn!("restore: cannot create backups dir for safety copy: {e}");
     } else {
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let safety = backups_dir.join(format!("grimodex-{ts}.db"));
+        // 安全退避も通常バックアップと同じ gzip 形式 (Phase 2)。
+        let safety = backups_dir.join(format!("grimodex-{ts}.db.gz"));
         if let Err(e) = old.db.backup_to(&safety) {
             tracing::warn!("restore: pre-restore safety backup failed (continuing): {e}");
         }
@@ -318,24 +350,16 @@ pub(crate) fn restore_backup_core(
     remove_if_exists(&sidecar(&db_path, "-wal"));
     remove_if_exists(&sidecar(&db_path, "-shm"));
 
-    // (5) 置換は**原子的**に行う: 候補を restore-tmp へコピー → rename で grimodex.db に
-    //     上書き。remove してから copy する方式は copy 途中失敗で grimodex.db が消失/切詰め
-    //     され、次回起動で空 DB を新規作成して「全損に見える」データ損失になる。rename は
-    //     両プラットフォームで既存を原子置換するので、copy/rename のどの失敗でも
-    //     grimodex.db は元のまま残る (backup_to の .tmp→rename と同じ思想)。
-    let restore_tmp = sidecar(&db_path, ".restore-tmp");
-    remove_if_exists(&restore_tmp);
-    let staged: anyhow::Result<()> = (|| {
-        std::fs::copy(&src, &restore_tmp)
-            .map_err(|e| anyhow::anyhow!("復元DBのステージングに失敗しました: {e}"))?;
-        std::fs::rename(&restore_tmp, &db_path)
-            .map_err(|e| anyhow::anyhow!("復元DBの適用に失敗しました: {e}"))?;
-        Ok(())
-    })();
-    if let Err(e) = staged {
+    // (5) 置換は**原子的**: 検証済み平文 staged_plain を rename で grimodex.db に上書き。
+    //     rename は両プラットフォームで既存を原子置換するので、失敗しても grimodex.db は
+    //     元のまま残る (remove+copy 方式だと copy 途中失敗で消失/切詰め → 次回起動で空 DB
+    //     を新規作成し「全損に見える」データ損失になる)。
+    if let Err(e) = std::fs::rename(&staged_plain, &db_path)
+        .map_err(|e| anyhow::anyhow!("復元DBの適用に失敗しました: {e}"))
+    {
         // rename 未達 = grimodex.db は元のまま。staging を片付け、元 DB を開き直して
         // セッションを復帰させてから (workspace-less で固まらせない) エラーを返す。
-        remove_if_exists(&restore_tmp);
+        remove_if_exists(&staged_plain);
         reactivate_workspace(ws_state, &db_path, &ws_path);
         return Err(e.into());
     }
@@ -956,5 +980,66 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_restore_backup_core_from_gzip_backup() {
+        // Phase 2: .db.gz バックアップを解凍して復元できること。
+        let dir =
+            std::env::temp_dir().join(format!("grimodex_restore_gz_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let db_path = dir.join("grimodex.db");
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&backups).expect("mkdir backups");
+
+        let db = Database::new(&db_path).expect("open");
+        db.migrate().expect("migrate");
+        db.execute(
+            "INSERT INTO projects (id, title, created_at, updated_at) \
+             VALUES ('mark', 'v1', datetime('now'), datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("seed v1");
+
+        // gzip 形式でバックアップ。
+        let backup_name = "grimodex-20200101-000000.db.gz";
+        db.backup_to(&backups.join(backup_name)).expect("gz backup v1");
+
+        db.execute("UPDATE projects SET title = 'v2' WHERE id = 'mark'", &[], "run")
+            .expect("v2");
+
+        let ws_state = WorkspaceState {
+            inner: std::sync::Mutex::new(Some(ActiveWorkspace {
+                db: std::sync::Arc::new(db),
+                path: dir.clone(),
+            })),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: std::sync::Mutex::new(()),
+        };
+
+        restore_backup_core(&ws_state, backup_name, || {}).expect("restore from gz");
+
+        let title = crate::commands::with_db_state(&ws_state, |db| {
+            let rows = db.execute("SELECT title FROM projects WHERE id = 'mark'", &[], "get")?;
+            Ok(rows[0]["title"].as_str().unwrap_or_default().to_string())
+        })
+        .expect("query after restore");
+        assert_eq!(title, "v1", ".db.gz 復元も v1 に戻すこと");
+        // 解凍 staging は残らない。
+        assert!(!dir.join("grimodex.db.restore-tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_backup_file_accepts_db_and_gz_only() {
+        assert!(is_backup_file("grimodex-20260101-000000.db"));
+        assert!(is_backup_file("grimodex-20260101-000000.db.gz"));
+        assert!(!is_backup_file("grimodex-20260101-000000.db.tmp"));
+        assert!(!is_backup_file("grimodex-20260101-000000.db.gz.tmp"));
+        // materialize 用 restore-tmp は "grimodex." 始まり (ハイフン無し) で除外。
+        assert!(!is_backup_file("grimodex.db.restore-tmp"));
+        assert!(!is_backup_file("other.db"));
     }
 }

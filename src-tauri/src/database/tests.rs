@@ -3557,3 +3557,43 @@ fn test_backup_to_writes_atomically_and_leaves_no_temp() {
     drop(restored);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn test_backup_to_gzip_roundtrip() {
+    // backup restore Phase 2: dest が .gz なら gzip 圧縮した DB を書き、gunzip で
+    // 元の有効な DB に戻ること。staging temp が残らないことも確認。
+    let dir = std::env::temp_dir().join("grimodex_backup_gzip_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let db_path = dir.join("grimodex.db");
+
+    let db = Database::new(&db_path).expect("open on-disk db");
+    db.migrate().expect("migrate");
+    db.execute(
+        "INSERT INTO projects (id, title, created_at, updated_at) \
+         VALUES ('gz', 'Gzipped', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed row");
+
+    let dest = dir.join("grimodex-20260708-000000.db.gz");
+    db.backup_to(&dest).expect("backup_to gz");
+    assert!(dest.exists(), "gz backup should exist");
+    // 圧縮 / VACUUM の staging temp は残らない。
+    assert!(!dir.join("grimodex-20260708-000000.db.gz.tmp").exists());
+    assert!(!dir.join("grimodex-20260708-000000.db.gz.sqlite.tmp").exists());
+
+    // gunzip すると有効な DB でシード行を持つ。
+    let plain = dir.join("restored.db");
+    gunzip_file(&dest, &plain).expect("gunzip");
+    let restored = Database::new(&plain).expect("open gunzipped db");
+    let rows = restored
+        .execute("SELECT title FROM projects WHERE id = 'gz'", &[], "get")
+        .expect("query gunzipped");
+    assert_eq!(rows[0]["title"], Value::String("Gzipped".into()));
+
+    drop(db);
+    drop(restored);
+    let _ = std::fs::remove_dir_all(&dir);
+}

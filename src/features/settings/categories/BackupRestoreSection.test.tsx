@@ -98,13 +98,36 @@ describe("BackupRestoreSection", () => {
     expect(reloadSpy).toHaveBeenCalled();
   });
 
-  it("未対応形式（.db.gz）は復元ボタンが disabled で restoreBackup を呼ばない", async () => {
+  it("gzip (.db.gz) バックアップも 2 クリックで復元できる", async () => {
+    const reloadSpy = vi
+      .spyOn(window.location, "reload")
+      .mockImplementation(() => {});
     apiMock.listBackups.mockResolvedValue([
       {
         fileName: "grimodex-B.db.gz",
         sizeBytes: 100,
         modifiedMs: 1,
         format: "db.gz",
+      },
+    ]);
+    render(<BackupRestoreSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "復元" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "全体を置換して復元" }),
+    );
+    await waitFor(() =>
+      expect(apiMock.restoreBackup).toHaveBeenCalledWith("grimodex-B.db.gz"),
+    );
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
+  });
+
+  it("未対応形式は復元ボタンが disabled で restoreBackup を呼ばない", async () => {
+    apiMock.listBackups.mockResolvedValue([
+      {
+        fileName: "grimodex-C.zip",
+        sizeBytes: 100,
+        modifiedMs: 1,
+        format: "zip",
       },
     ]);
     render(<BackupRestoreSection />);

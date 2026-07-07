@@ -13,6 +13,11 @@ import { listBackups, restoreBackup, type BackupInfo } from "../backupApi";
 /** Rust の restore_backup が「復元は適用したがセッション再オープンに失敗」を伝える安定マーカー。 */
 const RESTORE_SESSION_LOST = "RESTORE_SESSION_LOST";
 
+/** 復元に対応する形式（無圧縮 .db / gzip .db.gz）。 */
+function isSupportedFormat(format: string): boolean {
+  return format === "db" || format === "db.gz";
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
@@ -60,8 +65,8 @@ export function BackupRestoreSection() {
 
   async function handleRestore(b: BackupInfo) {
     if (restoringFile) return;
-    // Phase 1 は無圧縮 .db のみ復元可（.db.gz は Phase 2）。
-    if (b.format !== "db") {
+    // 復元対応: 無圧縮 .db / gzip .db.gz（Phase 2）。
+    if (!isSupportedFormat(b.format)) {
       toast.error(t("settings.data.restoreUnsupported"));
       return;
     }
@@ -151,7 +156,7 @@ export function BackupRestoreSection() {
           {backups.map((b) => {
             const isConfirming = confirmFile === b.fileName;
             const isRestoring = restoringFile === b.fileName;
-            const supported = b.format === "db";
+            const supported = isSupportedFormat(b.format);
             const disabled = !!restoringFile && !isRestoring;
             return (
               <li
