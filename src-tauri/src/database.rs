@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, serde::Deserialize)]
@@ -12,6 +12,101 @@ pub struct BatchStatement {
 
 pub struct Database {
     conn: Mutex<Connection>,
+}
+
+/// `<path><suffix>` を組む（拡張子付与 / temp 名生成用）。
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut os = path.as_os_str().to_owned();
+    os.push(suffix);
+    PathBuf::from(os)
+}
+
+/// `src` を gzip 圧縮して `dst` に書く（ストリーミング・一定メモリ）。
+fn gzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    let input = std::fs::File::open(src)?;
+    let output = std::fs::File::create(dst)?;
+    let mut encoder = flate2::write::GzEncoder::new(output, flate2::Compression::new(6));
+    let mut reader = std::io::BufReader::new(input);
+    std::io::copy(&mut reader, &mut encoder)?;
+    encoder.finish()?;
+    Ok(())
+}
+
+/// gzip の `src` を解凍して `dst` に書く（ストリーミング・一定メモリ）。
+/// バックアップ復元（Phase 2）で `.db.gz` を平文 `.db` に展開するのに使う。
+pub(crate) fn gunzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    let input = std::fs::File::open(src)?;
+    let mut decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(input));
+    let mut output = std::fs::File::create(dst)?;
+    std::io::copy(&mut decoder, &mut output)?;
+    Ok(())
+}
+
+// --- slim バックアップ (backup restore Phase 3) ----------------------------
+// バックアップから**ソース本文から再生成可能な派生データ**を除外して容量を約半減させる。
+// 復元側は content から FTS を rebuild し（restore_backup_core）、埋め込みは reload 後の
+// フロント autoIndex が back-index するので、除外しても情報は失われない。
+
+/// slim で全削除するチャンク表（埋め込み BLOB + 重複 text、再生成可）。トリガ・被参照
+/// FK が無いので素の DELETE で安全（migrate.rs:1348-1444 で確認）。
+///
+/// **`event_chunks` は意図的に除外**する。scene/codex/chat の埋め込みは復元後 reload で
+/// フロント `ensureSemanticIndexesOnOpen`（autoIndex.ts）が back-index して自己修復するが、
+/// **events の open 時 back-index は存在せず**（`ensureEventsIndexed` なし・`events_reindex_all`
+/// に FE 呼び出し元なし）、events 検索は dense-only なので slim で消すと Chronicle イベントの
+/// 意味検索が無音で全滅し復旧手段が無い（敵対レビュー）。events 埋め込みは短く容量影響も小さい
+/// ので、events の open 時 back-index を足すまではバックアップに残す。
+const SLIM_CHUNK_TABLES: &[&str] = &["scene_chunks", "codex_chunks", "chat_message_chunks"];
+
+/// slim で索引を空にする JA FTS（external content, `content=...`）。`'delete-all'` で
+/// 内容表に触れず索引だけ空にする（DROP は復元後の書き込みで `*_fts_ai/ad/au` トリガを
+/// 壊すため不可）。
+const SLIM_JA_FTS_TABLES: &[&str] = &[
+    "codex_fts",
+    "snippets_fts",
+    "chat_messages_fts",
+    "tree_nodes_fts",
+    "post_effect_annotations_fts",
+];
+
+/// slim で空にする EN FTS（非 external）。`'delete-all'` は external/contentless 専用で
+/// 使えないので素の DELETE（fts.rs の `_en` 非 external 前提と対）。
+const SLIM_EN_FTS_TABLES: &[&str] = &[
+    "codex_fts_en",
+    "snippets_fts_en",
+    "chat_messages_fts_en",
+    "tree_nodes_fts_en",
+    "post_effect_annotations_fts_en",
+];
+
+/// `VACUUM INTO` 出力のコピー（never the live DB）を開き、再生成可能な派生データを削って
+/// 最後に `VACUUM` する。DELETE だけでは解放ページが freelist に残ってファイルが縮まず、
+/// 解放ページ上の埋め込み BLOB バイトが物理的に残って圧縮率を殺す（`secure_delete` は
+/// 既定 OFF）ため、`VACUUM` が必須。
+fn slim_backup_copy(path: &Path) -> anyhow::Result<()> {
+    // foreign_keys は既定 OFF のまま（チャンク表に FK は無いが cascade 事故を避ける）。
+    let conn = Connection::open(path)?;
+    for table in SLIM_CHUNK_TABLES {
+        conn.execute(&format!("DELETE FROM {table}"), [])?;
+    }
+    for fts in SLIM_JA_FTS_TABLES {
+        conn.execute(
+            &format!("INSERT INTO {fts}({fts}) VALUES('delete-all')"),
+            [],
+        )?;
+    }
+    for fts in SLIM_EN_FTS_TABLES {
+        conn.execute(&format!("DELETE FROM {fts}"), [])?;
+    }
+    // 復元側が「FTS を rebuild すべき slim バックアップ」と確実に分かるようマーカーを立てる。
+    // external content FTS は索引を空にしても `SELECT`/`count(*)` が content 表を読むため
+    // 索引の空判定ができない。app_settings のマーカーで検知する（rebuild_fts_if_stale）。
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('fts.slim_backup', '1')",
+        [],
+    )?;
+    conn.execute_batch("VACUUM")?;
+    Ok(())
 }
 
 impl Database {
@@ -57,15 +152,55 @@ impl Database {
 
     /// Write a consistent, compacted copy of the whole database to `dest` using
     /// `VACUUM INTO`. This is the automatic-backup primitive — it runs against
-    /// the live connection and produces a standalone .db the user can restore by
-    /// copying it back over grimodex.db (DB health audit 2026-07).
+    /// the live connection (DB health audit 2026-07).
+    ///
+    /// - When `dest` ends in `.gz` the compacted copy is **gzip-compressed**
+    ///   (backup restore Phase 2). SQLite pages of text/JSON typically shrink
+    ///   3–6×; the fastest-growing part (`change_events`, repetitive JSON)
+    ///   compresses very well.
+    /// - Everything is staged in temp siblings and `rename`d into place, so a
+    ///   crash mid-`VACUUM`/gzip never leaves a truncated `grimodex-<ts>.db(.gz)`:
+    ///   such a stump would be picked as the "newest" backup by
+    ///   `newest_backup_age_secs` (suppressing further backups) and count as a
+    ///   live generation in `rotate_backups` (evicting a real one). Temp names end
+    ///   in `.tmp`, invisible to `is_backup_file`.
     pub fn backup_to(&self, dest: &Path) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let dest_str = dest
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("backup path is not valid UTF-8"))?;
-        conn.execute("VACUUM INTO ?1", rusqlite::params![dest_str])?;
-        Ok(())
+        // 1. `VACUUM INTO` a plain sqlite temp (consistent, compacted, no sidecars).
+        let sqlite_tmp = with_suffix(dest, ".sqlite.tmp");
+        {
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            if sqlite_tmp.exists() {
+                std::fs::remove_file(&sqlite_tmp)?;
+            }
+            let s = sqlite_tmp
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("backup temp path is not valid UTF-8"))?;
+            conn.execute("VACUUM INTO ?1", rusqlite::params![s])?;
+            // Release the connection lock before the (possibly slow) gzip/rename.
+        }
+
+        // 2. Slim + materialize `dest`: strip recomputable derived data (embeddings
+        //    + FTS index) so each backup is ~half size before compression, then
+        //    gzip when `dest` ends in `.gz`, else plain rename. Writes to `<dest>.tmp`
+        //    first so a crash never leaves a partial `dest` (backup restore Phase 3).
+        let result = (|| -> anyhow::Result<()> {
+            slim_backup_copy(&sqlite_tmp)?;
+            if dest.extension().and_then(|e| e.to_str()) == Some("gz") {
+                let gz_tmp = with_suffix(dest, ".tmp");
+                gzip_file(&sqlite_tmp, &gz_tmp)?;
+                std::fs::remove_file(&sqlite_tmp)?;
+                std::fs::rename(&gz_tmp, dest)?;
+            } else {
+                std::fs::rename(&sqlite_tmp, dest)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            // Clean up staging so a failed backup can't pollute age/rotation.
+            let _ = std::fs::remove_file(&sqlite_tmp);
+            let _ = std::fs::remove_file(with_suffix(dest, ".tmp"));
+        }
+        result
     }
 
     /// Age out append-only audit/debug logs that otherwise grow without bound

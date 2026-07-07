@@ -294,6 +294,33 @@ impl Database {
         Ok(())
     }
 
+    /// slim バックアップ（FTS 索引を空にして容量削減、backup restore Phase 3）を復元した
+    /// DB を検知して `fts_rebuild` する（＋マーカーを消す）。slim 側は `app_settings` に
+    /// `fts.slim_backup='1'` を書き込むので、それを見て rebuild する。`restore_backup` の
+    /// happy path でも、`RESTORE_SESSION_LOST` 経由の再オープンや手動でのバックアップ昇格
+    /// でも `open_workspace` から呼べば全経路で自己修復する（external content FTS は索引が
+    /// 空でも MATCH がエラーにならず 0 件を返すため、マーカーが唯一の確実な検知手段。
+    /// `SELECT`/`count(*)` は content 表を読むので空判定に使えない）。通常 DB は
+    /// マーカーが無いので単一の scalar query だけで no-op。
+    pub fn rebuild_fts_if_stale(&self) -> anyhow::Result<()> {
+        let pending: bool = self.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM app_settings WHERE key='fts.slim_backup' AND value='1')",
+                [],
+                |r| r.get(0),
+            )?)
+        })?;
+        if pending {
+            tracing::info!("open: slim backup restore detected — rebuilding FTS index");
+            self.fts_rebuild()?;
+            self.with_conn(|conn| {
+                conn.execute("DELETE FROM app_settings WHERE key='fts.slim_backup'", [])?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     /// Rebuild all `_en` FTS tables from English-project content. Used on a
     /// project language change and as a manual repair.
     pub fn rebuild_en_fts(&self) -> anyhow::Result<()> {

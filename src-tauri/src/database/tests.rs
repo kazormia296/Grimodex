@@ -3517,3 +3517,284 @@ fn test_language_switch_reroutes_en_index() {
         1
     );
 }
+
+#[test]
+fn test_backup_to_writes_atomically_and_leaves_no_temp() {
+    // backup_to must `VACUUM INTO` a `.tmp` sibling then rename into place, so a
+    // crash mid-VACUUM cannot leave a truncated `grimodex-<ts>.db` stump that
+    // pollutes newest-backup detection / rotation (backup restore Phase 1).
+    let dir = std::env::temp_dir().join("grimodex_backup_to_atomic_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let db_path = dir.join("grimodex.db");
+
+    let db = Database::new(&db_path).expect("open on-disk db");
+    db.migrate().expect("migrate");
+    db.execute(
+        "INSERT INTO projects (id, title, created_at, updated_at) \
+         VALUES ('bk', 'Backed Up', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed row");
+
+    let dest = dir.join("grimodex-20260707-000000.db");
+    db.backup_to(&dest).expect("backup_to");
+
+    // Final artifact exists; the `.tmp` staging file was renamed away.
+    assert!(dest.exists(), "backup destination should exist");
+    let tmp = dir.join("grimodex-20260707-000000.db.tmp");
+    assert!(!tmp.exists(), "no .tmp staging file should remain");
+
+    // The backup is a valid standalone DB carrying the seeded row.
+    let restored = Database::new(&dest).expect("open backup as db");
+    let rows = restored
+        .execute("SELECT title FROM projects WHERE id = 'bk'", &[], "get")
+        .expect("query backup");
+    assert_eq!(rows[0]["title"], Value::String("Backed Up".into()));
+
+    drop(db);
+    drop(restored);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_backup_to_gzip_roundtrip() {
+    // backup restore Phase 2: dest が .gz なら gzip 圧縮した DB を書き、gunzip で
+    // 元の有効な DB に戻ること。staging temp が残らないことも確認。
+    let dir = std::env::temp_dir().join("grimodex_backup_gzip_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let db_path = dir.join("grimodex.db");
+
+    let db = Database::new(&db_path).expect("open on-disk db");
+    db.migrate().expect("migrate");
+    db.execute(
+        "INSERT INTO projects (id, title, created_at, updated_at) \
+         VALUES ('gz', 'Gzipped', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed row");
+
+    let dest = dir.join("grimodex-20260708-000000.db.gz");
+    db.backup_to(&dest).expect("backup_to gz");
+    assert!(dest.exists(), "gz backup should exist");
+    // 圧縮 / VACUUM の staging temp は残らない。
+    assert!(!dir.join("grimodex-20260708-000000.db.gz.tmp").exists());
+    assert!(!dir
+        .join("grimodex-20260708-000000.db.gz.sqlite.tmp")
+        .exists());
+
+    // gunzip すると有効な DB でシード行を持つ。
+    let plain = dir.join("restored.db");
+    gunzip_file(&dest, &plain).expect("gunzip");
+    let restored = Database::new(&plain).expect("open gunzipped db");
+    let rows = restored
+        .execute("SELECT title FROM projects WHERE id = 'gz'", &[], "get")
+        .expect("query gunzipped");
+    assert_eq!(rows[0]["title"], Value::String("Gzipped".into()));
+
+    drop(db);
+    drop(restored);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_backup_to_slim_strips_chunks_and_fts_index() {
+    // backup restore Phase 3: slim は VACUUM INTO コピー側でチャンク表と FTS 索引を
+    // 空にする（再生成可能）。live DB は無変更、content 表は残ることを gate する。
+    let dir = std::env::temp_dir().join("grimodex_slim_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let db_path = dir.join("grimodex.db");
+    let db = Database::new(&db_path).expect("open");
+    db.migrate().expect("migrate");
+
+    // Codex entry → codex_fts をトリガで populate（識別語 スロウン）。
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
+         VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed codex");
+
+    // scene + scene_chunk（embedding BLOB）を raw conn で投入。
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, created_at, updated_at) \
+             VALUES ('s1','default-project','scene','S1','a0', datetime('now'), datetime('now'))",
+            [],
+        )
+        .expect("seed scene");
+        conn.execute(
+            "INSERT INTO scene_chunks (id, scene_id, chunk_index, text, char_start, char_end, embedding, embedding_dim, model_id, content_hash, chunker_version, created_at, updated_at) \
+             VALUES ('ch1','s1',0,'本文チャンク',0,4, ?1, 4, 'm', 'h', 'v', 0, 0)",
+            rusqlite::params![vec![0u8, 0, 0, 0]],
+        )
+        .expect("seed chunk");
+    }
+
+    let dest = dir.join("grimodex-20260708-000000.db.gz");
+    db.backup_to(&dest).expect("backup slim");
+
+    // live DB は無変更（slim はコピー側だけ触る）。
+    let live = db
+        .execute("SELECT count(*) AS n FROM scene_chunks", &[], "get")
+        .expect("count live");
+    assert_eq!(live[0]["n"], Value::from(1), "slim は live DB を変更しない");
+
+    // バックアップは slim: チャンク空・FTS 索引空・content 表は残存。
+    let plain = dir.join("slim.db");
+    gunzip_file(&dest, &plain).expect("gunzip");
+    let bk = Database::new(&plain).expect("open slim backup");
+    let ch = bk
+        .execute("SELECT count(*) AS n FROM scene_chunks", &[], "get")
+        .expect("count bk chunks");
+    assert_eq!(ch[0]["n"], Value::from(0), "slim はチャンク表を空にする");
+    let fts = bk
+        .execute(
+            "SELECT count(*) AS n FROM codex_fts WHERE codex_fts MATCH 'スロウン'",
+            &[],
+            "get",
+        )
+        .expect("count bk fts");
+    assert_eq!(fts[0]["n"], Value::from(0), "slim は FTS 索引を空にする");
+    let content = bk
+        .execute("SELECT count(*) AS n FROM codex_entries", &[], "get")
+        .expect("count bk codex");
+    assert_eq!(content[0]["n"], Value::from(1), "slim は content 表は残す");
+
+    drop(db);
+    drop(bk);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_slim_fts_lists_cover_all_fts_tables() {
+    // 新しい *_fts 表が追加されたのに SLIM_JA/EN_FTS_TABLES へ足し忘れると、slim
+    // バックアップにその索引が残って容量を食う。schema の全 FTS5 表が slim リストで
+    // カバーされることを parity gate する（seed_schema_parity と同じ流儀）。
+    let db = test_db();
+    let rows = db
+        .execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE '%USING fts5%'",
+            &[],
+            "all",
+        )
+        .expect("query fts tables");
+    let covered: std::collections::HashSet<&str> = SLIM_JA_FTS_TABLES
+        .iter()
+        .chain(SLIM_EN_FTS_TABLES.iter())
+        .copied()
+        .collect();
+    let mut found = 0;
+    for row in rows {
+        if let Value::String(name) = &row["name"] {
+            assert!(
+                covered.contains(name.as_str()),
+                "FTS 表 '{name}' が slim リストに無い — SLIM_JA/EN_FTS_TABLES に追加せよ"
+            );
+            found += 1;
+        }
+    }
+    assert_eq!(
+        found, 10,
+        "JA5 + EN5 の FTS 表を検出すること (実際: {found})"
+    );
+}
+
+#[test]
+fn test_slim_excludes_event_chunks() {
+    // events は open 時 back-index が無く復元後に再構築されないので、slim 対象から
+    // 除外する（敵対レビュー: slim で消すと Chronicle イベント意味検索が無音全滅）。
+    // scene/codex/chat は autoIndex が自己修復するので slim 対象。
+    assert!(
+        !SLIM_CHUNK_TABLES.contains(&"event_chunks"),
+        "event_chunks は slim で消さない（復元後に再構築されないため）"
+    );
+    assert!(SLIM_CHUNK_TABLES.contains(&"scene_chunks"));
+    assert!(SLIM_CHUNK_TABLES.contains(&"codex_chunks"));
+    assert!(SLIM_CHUNK_TABLES.contains(&"chat_message_chunks"));
+}
+
+#[test]
+fn test_rebuild_fts_if_stale_repopulates_empty_index() {
+    // slim バックアップ復元の happy path 以外（再オープン失敗経由の reload / 手動昇格）
+    // で開かれた「content あり・FTS 空」の DB を open 時に自己修復することを gate する。
+    let db = test_db();
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
+         VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed codex");
+    // slim 復元後を模す: FTS 索引を空にし、slim マーカーを立てる（slim_backup_copy と対）。
+    {
+        let conn = db.conn.lock().expect("lock");
+        conn.execute("INSERT INTO codex_fts(codex_fts) VALUES('delete-all')", [])
+            .expect("empty fts");
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('fts.slim_backup','1')",
+            [],
+        )
+        .expect("set marker");
+    }
+    let before = db
+        .execute(
+            "SELECT count(*) AS n FROM codex_fts WHERE codex_fts MATCH 'スロウン'",
+            &[],
+            "get",
+        )
+        .expect("q before");
+    assert_eq!(before[0]["n"], Value::from(0), "索引は空になっている");
+
+    db.rebuild_fts_if_stale().expect("self-heal");
+
+    let after = db
+        .execute(
+            "SELECT count(*) AS n FROM codex_fts WHERE codex_fts MATCH 'スロウン'",
+            &[],
+            "get",
+        )
+        .expect("q after");
+    assert_eq!(
+        after[0]["n"],
+        Value::from(1),
+        "slim マーカーがあれば rebuild され検索復活"
+    );
+    // マーカーはクリアされる（次回 open で二重 rebuild しない）。
+    let marker = db
+        .execute(
+            "SELECT count(*) AS n FROM app_settings WHERE key='fts.slim_backup'",
+            &[],
+            "get",
+        )
+        .expect("q marker");
+    assert_eq!(marker[0]["n"], Value::from(0), "rebuild 後 marker はクリアされる");
+}
+
+#[test]
+fn test_rebuild_fts_if_stale_is_noop_when_populated() {
+    // 通常 DB（索引が埋まっている）では検索が維持される（余計に壊さない）。
+    let db = test_db();
+    db.execute(
+        "INSERT INTO codex_entries (id, project_id, type, name, summary, tags_cache, created_at, updated_at) \
+         VALUES ('c1','default-project','character','セラフ','古代の守護者スロウン','[]', datetime('now'), datetime('now'))",
+        &[],
+        "run",
+    )
+    .expect("seed codex");
+    db.rebuild_fts_if_stale().expect("noop");
+    let after = db
+        .execute(
+            "SELECT count(*) AS n FROM codex_fts WHERE codex_fts MATCH 'スロウン'",
+            &[],
+            "get",
+        )
+        .expect("q");
+    assert_eq!(after[0]["n"], Value::from(1), "populated 索引は維持される");
+}

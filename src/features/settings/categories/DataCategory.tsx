@@ -13,6 +13,7 @@ import { SettingSlider } from "../components/SettingSlider";
 import { exportCodexJson } from "../exportUtils";
 import { IntegrityCheckSection } from "@/features/workspace/IntegrityCheckDialog";
 import { SemanticIndexSection } from "./SemanticIndexSection";
+import { BackupRestoreSection } from "./BackupRestoreSection";
 import { MountListDialog } from "@/features/external-mount/components/MountListDialog";
 import {
   enqueueRescan,
@@ -213,6 +214,7 @@ export function DataCategory() {
             format={(v) => t("settings.data.maxBackupsFormat", { v })}
           />
         </SettingRow>
+        <BackupRestoreSection />
       </SettingSection>
 
       {/* Revision History */}

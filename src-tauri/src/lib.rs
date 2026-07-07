@@ -203,6 +203,8 @@ pub fn run() {
             commands::workspace::validate_workspace_path,
             commands::workspace::open_workspace,
             commands::workspace::get_mcp_config,
+            commands::workspace::list_backups,
+            commands::workspace::restore_backup,
             // ライセンス: licensing feature 無効でも常時登録 (get_license_state が
             // licensing_enabled:false を返す契約。cfg で消すとフロントが invoke 不能)
             commands::license::get_license_state,
