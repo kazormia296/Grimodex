@@ -19,6 +19,13 @@
 > リスクは、確定前プレビュー（カードモード）と undo という安全弁で受け切る。
 > 係り受け解析による助詞の自動調整は **やらない**（スコープ外）。
 
+> **master 追従状況**：本設計は master `d612782c` を基点に起こし、その後マージされた
+> **#296（エディタ入力補助3種＋TW縦書き＋縦中横 `TcyMark`）** および #295（バックアップ肥大対策）と
+> 突合済み。中核依存（`ParagraphMoveExtension` / `CodexHighlightPlugin` / `codexDocFlatten` /
+> `AuthorshipMark` / Rust 側 `chunker.rs`・`morph.rs`・`en.rs`・`lib.rs`）は **#296 で無改修＝設計は
+> そのまま成立**。#296 由来の差分（新 inline mark `tcy`、自己修復 decoration `ShowInvisibles`、
+> `extensions.ts` 登録追加）は §6.3 / §6.4 / §6.5 に反映済み。
+
 ---
 
 ## 動機・背景
@@ -194,8 +201,10 @@ fn segment_bunsetsu(text: String) -> Result<Vec<Bunsetsu>, String>
 
 - **必ず marks 込みの Slice を運ぶ。** `doc.slice(from, to)` は各 text node の marks を保持する。
   **プレーンテキストを抽出して再挿入するのは禁止**（`authorship` mark が全消失し human 既定に
-  化ける）。`AuthorshipMark` は `inclusive:false`（`AuthorshipMark.ts:28`）なので、境界で
-  隣接文の帰属が誤って伸びることはない（有利）。
+  化けるほか、`emphasisDots`（傍点）・`tcy`（縦中横、#296 で追加の inline mark）等の特殊表現
+  マークも失う）。`AuthorshipMark` は `inclusive:false`（`AuthorshipMark.ts:28`）なので、境界で
+  隣接文の帰属が誤って伸びることはない（有利）。※ #296 追加の `TcyMark` は atom ではなく
+  **inline mark** なので flat 化（§6.4）には影響せず、Slice でそのまま運ばれる。
 - **単一 transaction で範囲反転**：swap する2単位を `[start1, end1]`, `[start2, end2]`
   （`end1 <= start2`、同一段落内・非重複）とすると、`start1..end2` を
   `slice2 + gap + slice1` で `replaceWith` して置換する（段落移動の
@@ -235,6 +244,15 @@ per-block オフセット再構築している（`CodexHighlightPlugin.ts:132-16
 - 受け側は範囲ごとに `codexKind`（`"inline"|"node"`、`CodexHighlightPlugin.ts:87,110`）を
   復元しつつ、旧 pos → 新 pos のマップで装飾を張り直す。
 - 既存の `CodexHighlightPlugin.reorder.test.ts` を段落内 swap ケースへ拡張する。
+
+> **他の decoration プラグインは自己修復するので特別扱い不要。** エディタには
+> `ShowInvisiblesPlugin`（#296 追加）や `TateChuYokoPlugin`（縦中横 auto）等の decoration
+> プラグインもあるが、これらは `docChanged` のたびに doc から**丸ごと再構築**（map しない。
+> `ShowInvisiblesPlugin.ts` の `apply` = `buildInvisibleDecorations(newState.doc)` を参照）＝
+> 自己修復するため reorder-meta は要らない。**map で DecorationSet を持ち越す Codex ハイライト
+> だけが特別扱いを要する**（PR#207 が Codex のみ再構築し、TateChuYoko は段落移動と無改修で
+> 共存しているのと同じ理由）。実装時は「自作の新プラグインが map 方式なら reorder-meta 対象」と
+> いう基準で判定する。
 
 ### 6.6 attribution（帰属）の保持
 
@@ -341,7 +359,7 @@ per-block オフセット再構築している（`CodexHighlightPlugin.ts:132-16
 - `src/features/editor/CodexHighlightPlugin.ts:132-160` — reorder 時の装飾再構築（拡張対象）
 - `src/features/editor/CodexHighlightPlugin.reorder.test.ts` — 装飾 reorder テスト（拡張対象）
 - `src/features/editor/codexDocFlatten.ts` — flat text ↔ PM position 契約
-- `src/features/editor/extensions.ts:183-243` — schema/拡張登録（段落は `inline*`、sentence ノード無し）
+- `src/features/editor/extensions.ts` — schema/拡張登録（段落は既定 `inline*` を継承、sentence ノード無し。#296 で `TcyMark`/`AozoraInputRules`/`AutoPairBracketsExtension` を追加登録＝登録ブロックは 211 行付近へ移動）
 - `src/features/attribution/AuthorshipMark.ts` — 帰属 inline mark（`inclusive:false`）
 - `src/semantic/chunker.rs:166` — `split_sentences_ja`（TS 移植元）
 - `src-tauri/crates/grimodex-lint/src/textscan/en.rs:169` — `sentence_ranges_en`（英語 TS 移植元）
