@@ -3471,6 +3471,7 @@
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
       "verticalMode": "Vertical writing (this work)",
+      "reorderMode": "Reorder (in-paragraph)",
       "sceneMetaPanel": "Scene info panel",
       "moreOptions": "More options",
       "findReplace": "Find and replace",
@@ -3481,6 +3482,17 @@
       "rubyAnnotation": "Reading",
       "urlPlaceholder": "https://...",
       "label": "Editor toolbar"
+    },
+    "reorder": {
+      "title": "Reorder — within paragraph",
+      "granularitySentence": "Sentence",
+      "granularityBunsetsu": "Bunsetsu",
+      "loading": "Segmenting…",
+      "singleUnit": "Need at least two units to reorder",
+      "bunsetsuFallback": "Bunsetsu segmentation failed; showing sentences",
+      "segmentFailed": "Segmentation failed",
+      "cancel": "Cancel",
+      "confirm": "Apply"
     },
     "status": {
       "outline": "Outline",

@@ -1,4 +1,5 @@
 import {
+  ArrowUpDown,
   Bold,
   Check,
   EllipsisVertical,
@@ -93,6 +94,9 @@ interface ToolbarProps {
   onTogglePanel?: () => void;
   sceneId?: string;
   nodeType?: string;
+  reorderOpen?: boolean;
+  onToggleReorder?: () => void;
+  reorderDisabled?: boolean;
 }
 
 export function Toolbar({
@@ -103,6 +107,9 @@ export function Toolbar({
   onTogglePanel,
   sceneId,
   nodeType,
+  reorderOpen,
+  onToggleReorder,
+  reorderDisabled,
 }: ToolbarProps) {
   const [rubyOpen, setRubyOpen] = useState(false);
   const [rubyBase, setRubyBase] = useState("");
@@ -630,6 +637,16 @@ export function Toolbar({
               縦
             </ToolbarButton>
           </div>
+          {onToggleReorder !== undefined && (
+            <ToolbarButton
+              label={t("editor.toolbar.reorderMode")}
+              active={reorderOpen ?? false}
+              disabled={reorderDisabled}
+              onClick={onToggleReorder}
+            >
+              <ArrowUpDown size={13} />
+            </ToolbarButton>
+          )}
           {/* 本文レイヤー: 旧 Attr/Cmt/Fs/Rv 個別トグルを1ボタン+ポップオーバーに集約 */}
           <div ref={layersBtnRef}>
             <ToolbarButton

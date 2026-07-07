@@ -145,6 +145,8 @@ import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
 import { DndContext, DragOverlay } from "@dnd-kit/core";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import { EditorContentArea } from "@/features/editor/EditorContentArea";
+import { useParagraphReorderOverlay } from "@/features/editor/reorder/useParagraphReorderOverlay";
+import { ReorderOverlay } from "@/features/editor/reorder/ReorderOverlay";
 import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
 import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
@@ -942,6 +944,15 @@ export function EditorPane({
     editorViewReady && isEditorViewReady(editor) ? editor : null;
   /** DB-native-only features (authorship, inline AI) — not on file-backed scenes. */
   const dbNativeEditor = mountedEditor && !isFileBacked ? mountedEditor : null;
+
+  const paragraphReorder = useParagraphReorderOverlay(
+    dbNativeEditor,
+    readOnly || isEntryMode,
+  );
+  const projectLanguage = getCurrentProjectLanguage();
+  const bunsetsuAvailable = !(projectLanguage ?? "ja")
+    .toLowerCase()
+    .startsWith("en");
 
   editorRef.current = editor;
 
@@ -1945,6 +1956,11 @@ export function EditorPane({
         onTogglePanel={handleTogglePanel}
         sceneId={isEntryMode ? undefined : nodeId}
         nodeType={activeNode?.nodeType}
+        reorderOpen={paragraphReorder.open}
+        onToggleReorder={
+          dbNativeEditor ? paragraphReorder.toggleOverlay : undefined
+        }
+        reorderDisabled={!dbNativeEditor || readOnly}
       />
       <LicenseRestrictionBanner />
       {isFileBacked && !isEntryMode && <FileBackedSceneBanner />}
@@ -2301,6 +2317,20 @@ export function EditorPane({
           />,
           document.body,
         )}
+      <ReorderOverlay
+        open={paragraphReorder.open}
+        units={paragraphReorder.units}
+        order={paragraphReorder.order}
+        onOrderChange={paragraphReorder.setOrder}
+        granularity={paragraphReorder.granularity}
+        onGranularityChange={paragraphReorder.setGranularity}
+        loading={paragraphReorder.loading}
+        errorMessage={paragraphReorder.errorMessage}
+        canConfirm={paragraphReorder.canConfirm}
+        onConfirm={paragraphReorder.confirm}
+        onCancel={paragraphReorder.closeOverlay}
+        bunsetsuAvailable={bunsetsuAvailable}
+      />
     </div>
   );
   recordMark("editorPane.render", performance.now() - __perfStart, __perfStart);

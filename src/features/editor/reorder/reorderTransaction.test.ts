@@ -1,0 +1,135 @@
+// @vitest-environment happy-dom
+import { describe, it, expect, vi } from "vitest";
+import { Editor } from "@tiptap/core";
+import { getEditorExtensions } from "../extensions";
+import { splitSentencesJa } from "./sentenceSplit";
+import { resolveParagraphAtSelection } from "./paragraphFlat";
+import {
+  buildAdjacentUnitSwapTransaction,
+  buildParagraphReorderTransaction,
+  findUnitIndexAtFlatOffset,
+} from "./reorderTransaction";
+
+function makeEditor(content: string) {
+  return new Editor({
+    extensions: getEditorExtensions({ setMentionPopup: vi.fn() }),
+    content,
+  });
+}
+
+describe("reorderTransaction", () => {
+  it("隣接 2 文を swap する", () => {
+    const editor = makeEditor("<p>AAA。BBB。</p>");
+    editor.commands.setTextSelection(2);
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    expect(units).toHaveLength(2);
+
+    const unitIdx = findUnitIndexAtFlatOffset(units, 2);
+    const result = buildAdjacentUnitSwapTransaction(
+      editor.state,
+      resolved,
+      units,
+      unitIdx,
+      1,
+    );
+    expect(result).not.toBeNull();
+    editor.view.dispatch(result!.tr);
+    expect(editor.state.doc.textContent).toBe("BBB。AAA。");
+    editor.destroy();
+  });
+
+  it("3 unit permutation で順序を入れ替える", () => {
+    const editor = makeEditor("<p>A。B。C。</p>");
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    const result = buildParagraphReorderTransaction(
+      editor.state,
+      resolved,
+      units,
+      [2, 0, 1],
+    );
+    expect(result).not.toBeNull();
+    editor.view.dispatch(result!.tr);
+    expect(editor.state.doc.textContent).toBe("C。A。B。");
+    editor.destroy();
+  });
+
+  it("端 unit への swap は null", () => {
+    const editor = makeEditor("<p>A。B。</p>");
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    expect(
+      buildAdjacentUnitSwapTransaction(editor.state, resolved, units, 0, -1),
+    ).toBeNull();
+    editor.destroy();
+  });
+
+  it("swap 後も authorship mark を保持する", () => {
+    const editor = makeEditor("");
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "AAA。",
+              marks: [{ type: "authorship", attrs: { source: "ai" } }],
+            },
+            {
+              type: "text",
+              text: "BBB。",
+              marks: [{ type: "authorship", attrs: { source: "human" } }],
+            },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(2);
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    const unitIdx = findUnitIndexAtFlatOffset(units, 2);
+    const result = buildAdjacentUnitSwapTransaction(
+      editor.state,
+      resolved,
+      units,
+      unitIdx,
+      1,
+    );
+    editor.view.dispatch(result!.tr);
+
+    let aiFound = false;
+    let humanFound = false;
+    editor.state.doc.descendants((node) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((m) => m.type.name === "authorship");
+      if (!mark) return;
+      if (node.text?.includes("AAA")) aiFound = mark.attrs.source === "ai";
+      if (node.text?.includes("BBB"))
+        humanFound = mark.attrs.source === "human";
+    });
+    expect(aiFound).toBe(true);
+    expect(humanFound).toBe(true);
+    editor.destroy();
+  });
+
+  it("swap 後もキャレットは unit 内 offset を保つ", () => {
+    const editor = makeEditor("<p>AAA。BBB。</p>");
+    editor.commands.setTextSelection(3);
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    const unitIdx = findUnitIndexAtFlatOffset(units, 3);
+    const result = buildAdjacentUnitSwapTransaction(
+      editor.state,
+      resolved,
+      units,
+      unitIdx,
+      1,
+    );
+    editor.view.dispatch(result!.tr);
+    expect(editor.state.selection.$from.parent.textContent).toContain("AAA");
+    editor.destroy();
+  });
+});
