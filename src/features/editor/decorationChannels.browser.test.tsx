@@ -204,7 +204,10 @@ const COMMENTED_DOC = {
   ],
 };
 
-function mountEditor(vertical: boolean): { el: HTMLElement; editor: Editor } {
+function mountEditor(
+  vertical: boolean,
+  content: unknown = COMMENTED_DOC,
+): { el: HTMLElement; editor: Editor } {
   const el = document.createElement("div");
   el.className = vertical ? "editor-vertical" : "";
   el.style.cssText = "width:500px;height:400px;padding:48px;overflow:auto";
@@ -212,10 +215,39 @@ function mountEditor(vertical: boolean): { el: HTMLElement; editor: Editor } {
   const editor = new Editor({
     element: el,
     extensions: [StarterKit, CommentMark, gutterTestExtension],
-    content: COMMENTED_DOC,
+    content: content as never,
   });
   return { el, editor };
 }
+
+/** A long unbreakable latin run — wraps only via overflow-wrap:break-word. */
+const BREAKWORD =
+  "aaassss" + "a".repeat(90) + "sssssssssssssssssssssjgij" + "kifekj";
+
+/**
+ * Two paragraphs with identical break-word text: the first carries a comment
+ * (→ gutter icon), the second is plain. Used to prove the gutter widget does
+ * not spawn a phantom empty line above the first wrapped line.
+ */
+const BREAKWORD_DOC = {
+  type: "doc",
+  content: [
+    {
+      type: "paragraph",
+      content: [
+        {
+          type: "text",
+          text: BREAKWORD,
+          marks: [{ type: "comment", attrs: { text: "めも" } }],
+        },
+      ],
+    },
+    {
+      type: "paragraph",
+      content: [{ type: "text", text: BREAKWORD }],
+    },
+  ],
+};
 
 describe("段落ガター記号の幾何", () => {
   beforeEach(() => {
@@ -258,6 +290,50 @@ describe("段落ガター記号の幾何", () => {
       expect(rowRect.height).toBeGreaterThan(0);
       // 縦書きのインライン開始 = 上端 → 段落より上に出る
       expect(rowRect.bottom).toBeLessThanOrEqual(pRect.top + 1);
+    } finally {
+      editor.destroy();
+      el.remove();
+    }
+  });
+
+  // ── bug1 回帰: ガター記号が段落先頭に幻の改行を生まない ──
+  // overflow-wrap:break-word で折り返す長い連続トークンの段落にガター記号が
+  // 付くと、旧実装 (.gutter-marks{display:inline-block}) は先頭に空の行ボックスを
+  // 1 つ余分に生み、本文が 1 行分下へずれていた（縦書きでも同様）。inline 化で
+  // 解消。ガター有りの段落が、同じ本文の素の段落より高く(縦書きでは幅広く)
+  // ならないことで gate する。happy-dom は break-word 折り返しを計算しないため
+  // browser test 必須。
+  it("横書き: break-word 段落のガターが幻の改行(余分な行)を作らない", async () => {
+    const { el, editor } = mountEditor(false, BREAKWORD_DOC);
+    try {
+      await waitFor(() => {
+        expect(el.querySelector(".gutter-marks__row")).toBeTruthy();
+      });
+      const ps = el.querySelectorAll(".tiptap > p");
+      const withGutter = (ps[0] as HTMLElement).getBoundingClientRect();
+      const plain = (ps[1] as HTMLElement).getBoundingClientRect();
+      // どちらも複数行に折り返している前提（テキストが十分長い）
+      expect(plain.height).toBeGreaterThan(30);
+      // ガター有りが素の段落より高くならない（= 余分な行が無い）。1px 許容。
+      expect(withGutter.height).toBeLessThanOrEqual(plain.height + 1);
+    } finally {
+      editor.destroy();
+      el.remove();
+    }
+  });
+
+  it("縦書き: break-word 段落のガターが幻の改行(余分な列)を作らない", async () => {
+    const { el, editor } = mountEditor(true, BREAKWORD_DOC);
+    try {
+      await waitFor(() => {
+        expect(el.querySelector(".gutter-marks__row")).toBeTruthy();
+      });
+      const ps = el.querySelectorAll(".tiptap > p");
+      const withGutter = (ps[0] as HTMLElement).getBoundingClientRect();
+      const plain = (ps[1] as HTMLElement).getBoundingClientRect();
+      // 縦書きのブロック軸は width。折り返して複数列になっている前提。
+      expect(plain.width).toBeGreaterThan(30);
+      expect(withGutter.width).toBeLessThanOrEqual(plain.width + 1);
     } finally {
       editor.destroy();
       el.remove();

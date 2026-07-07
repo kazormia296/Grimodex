@@ -1157,6 +1157,7 @@ export function EditorPane({
   // ガター生成レイヤーのON数から本文 inline-start の予約幅を算出する
   // （オーバーレイ表示中はアイコンが必ず見えるよう領域を確保する）。
   const showCommentsLayer = useCursorSettingsStore((s) => s.showComments);
+  const showLintLayer = useCursorSettingsStore((s) => s.showLint);
   const showAnnotationsLayer = useAnnotationStore((s) => s.showAnnotations);
   const showReaderCommentsLayer = useAnnotationStore(
     (s) => s.showReaderComments,
@@ -1166,7 +1167,9 @@ export function EditorPane({
       showCommentsLayer,
       showReaderCommentsLayer,
       showForeshadowMarks,
-      showAnnotationsLayer,
+      // review チャネルは 校閲アノテーション ∨ Lint のどちらでも出るので、
+      // showLint のみ ON でもガター記号分の幅を予約する (GutterMarksPlugin と同義)。
+      showAnnotationsLayer || showLintLayer,
     ].filter(Boolean).length,
   );
   const focusModeHideBeats = editorSettings.focusModeHideBeats;

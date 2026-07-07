@@ -8,6 +8,7 @@ import { ANNOTATION_REBUILD_META } from "@/features/post-effect/AnnotationPlugin
 import i18next from "@/lib/i18n";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
+import { lintDecorationKey, LINT_REBUILD_META } from "./LintDecorationPlugin";
 
 /**
  * 段落ガター記号 — コメント / 伏線 / 校閲の指摘を含むブロックの先頭に、
@@ -54,8 +55,19 @@ const CHANNEL_LABEL_KEYS: Record<GutterChannel, string> = {
   review: "editor.gutter.review",
 };
 
-/** ブロック内に存在する（かつレイヤーONの）チャネルを収集する。 */
-function collectChannels(node: ProseMirrorNode): GutterChannel[] {
+/**
+ * ブロック内に存在する（かつレイヤーONの）チャネルを収集する。
+ *
+ * `hasLint` は「このブロックの範囲に Lint 指摘 (lint-deco) があるか」。Lint は
+ * mark ではなく decoration なので walk では拾えず、buildGutterDecorations が
+ * LintDecorationPlugin の decoration set をブロック範囲で引いて渡す。校閲の
+ * 指摘レイヤーは「校閲アノテーション + Lint」の統合 (LayersPopover と同義)
+ * なので、どちらのソースでも同じ review ガター記号を出す。
+ */
+function collectChannels(
+  node: ProseMirrorNode,
+  hasLint: boolean,
+): GutterChannel[] {
   const cursor = useCursorSettingsStore.getState();
   const { showAnnotations: showReview, showReaderComments } =
     useAnnotationStore.getState();
@@ -92,7 +104,12 @@ function collectChannels(node: ProseMirrorNode): GutterChannel[] {
   if (hasComment && cursor.showComments) channels.push("comment");
   if (hasReader && showReaderComments) channels.push("reader");
   if (hasForeshadow && cursor.showForeshadowMarks) channels.push("foreshadow");
-  if (hasReview && showReview) channels.push("review");
+  // 校閲の指摘 = 校閲アノテーション(showAnnotations) ∨ Lint(showLint)。
+  // Lint 側は showLint OFF 時 decoration set が空なので hasLint も false に
+  // なるが、意図を明示して二重ゲートしておく。
+  const reviewFromAnnotation = hasReview && showReview;
+  const reviewFromLint = hasLint && cursor.showLint;
+  if (reviewFromAnnotation || reviewFromLint) channels.push("review");
   return channels;
 }
 
@@ -131,6 +148,14 @@ export function buildGutterWidgetDom(channels: GutterChannel[]): HTMLElement {
 
 function buildGutterDecorations(state: EditorState): DecorationSet {
   const decos: Decoration[] = [];
+  // LintDecorationPlugin の decoration set。Lint は mark ではなく decoration
+  // なので、ブロックごとに範囲を引いて「指摘あり」を判定する。gutter が apply /
+  // init 時に newState から最新の lint field を読めるのは、GutterMarksExtension を
+  // 低 priority (extensions.ts) にして PM プラグイン適用順で lint より **後** に
+  // 回しているから。TipTap は登録順を反転するので、単に「後から登録」では逆に
+  // gutter が先に走り lint field が undefined になる (詳細は extensions.ts の注記)。
+  // 万一 undefined でも `?? null` で無害に「Lint 指摘なし」扱いになる。
+  const lintDecos = lintDecorationKey.getState(state)?.decos ?? null;
   state.doc.descendants((node, pos) => {
     // 最内の textblock (paragraph/heading 等) にのみ描く。blockquote/listItem/
     // tableCell などのコンテナ側にも描くと内側の段落と二重になる
@@ -138,7 +163,11 @@ function buildGutterDecorations(state: EditorState): DecorationSet {
     // passthrough ガードと同じ理由)。sceneBeat は本文ではないので対象外。
     if (!node.isTextblock || node.type.name === "sceneBeat") return true;
 
-    const channels = collectChannels(node);
+    // ブロックのインライン内容範囲 [pos+1, pos+nodeSize-1] に lint-deco があるか。
+    const hasLint =
+      !!lintDecos &&
+      lintDecos.find(pos + 1, pos + node.nodeSize - 1).length > 0;
+    const channels = collectChannels(node, hasLint);
     if (channels.length === 0) return false;
 
     const ordered = CHANNEL_ORDER.filter((c) => channels.includes(c));
@@ -165,7 +194,12 @@ export function createGutterMarksPlugin(): Plugin {
         const forced =
           tr.getMeta(GUTTER_REBUILD_META) === true ||
           tr.getMeta(COMMENT_REBUILD_META) === true ||
-          tr.getMeta(ANNOTATION_REBUILD_META) === true;
+          tr.getMeta(ANNOTATION_REBUILD_META) === true ||
+          // Lint 指摘の更新 (debounce 後の setLintDiagnostics = lintDecorationKey
+          // meta) / showLint トグル (LINT_REBUILD_META) でも review ガターが
+          // 追従するよう rebuild する。
+          tr.getMeta(LINT_REBUILD_META) === true ||
+          tr.getMeta(lintDecorationKey) != null;
         if (!forced && !tr.docChanged) {
           return oldDecos.map(tr.mapping, tr.doc);
         }

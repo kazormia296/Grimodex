@@ -1,4 +1,5 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
+import type { EditorState, Transaction } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
@@ -109,17 +110,13 @@ function severityRank(s: Severity): number {
  * decorations from the new list and the current doc.
  */
 export function setLintDiagnostics(
-  view: {
-    state: { tr: { setMeta: (k: unknown, v: unknown) => unknown } };
-    dispatch: (tr: unknown) => void;
-  },
+  view: { state: EditorState; dispatch: (tr: Transaction) => void },
   diagnostics: Diagnostic[],
 ) {
-  const tr = (
-    view.state.tr as unknown as {
-      setMeta: (k: unknown, v: unknown) => unknown;
-    }
-  ).setMeta(lintDecorationKey, { type: META_SET, diagnostics });
+  const tr = view.state.tr.setMeta(lintDecorationKey, {
+    type: META_SET,
+    diagnostics,
+  });
   view.dispatch(tr);
 }
 

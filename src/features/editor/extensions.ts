@@ -96,7 +96,8 @@ export const ParagraphWithEmptyLineSupport = Paragraph.extend({
  * This extension adds the shortcuts that match what the toolbar labels
  * display, so both sets of keys work.
  */
-const LintDecorationExtension = Extension.create({
+// exported for gutterLintOrder integration test (real TipTap plugin ordering).
+export const LintDecorationExtension = Extension.create({
   name: "lintDecoration",
   addProseMirrorPlugins() {
     return [createLintDecorationPlugin()];
@@ -124,8 +125,20 @@ const AnnotationDecorationExtension = Extension.create({
   },
 });
 
-const GutterMarksExtension = Extension.create({
+// exported for gutterLintOrder integration test (must carry the real priority).
+export const GutterMarksExtension = Extension.create({
   name: "gutterMarks",
+  // 既定より低い priority で「最後に適用される PM プラグイン」にする。
+  // GutterMarksPlugin は review ガター記号のため LintDecorationPlugin の
+  // decoration state (lintDecorationKey) を apply 時に読む。TipTap の
+  // ExtensionManager.get plugins() は `sortExtensions([...extensions].reverse())`
+  // で **登録順を反転** してから priority 降順で安定ソートするため、既定 priority
+  // (100) のままだと後から登録した gutter の PM プラグインが lint より **先** に
+  // 適用され、gutter.apply 時点で newState の lint field が未計算 (undefined) に
+  // なる → hasLint が常に false になり lint 由来のガターが production で出ない。
+  // priority を下げて gutter を最後に回すことで、lint を含む全 decoration
+  // プラグインの適用後に gutter が走り、確実に最新の lint decoration を読める。
+  priority: 90,
   addProseMirrorPlugins() {
     return [createGutterMarksPlugin()];
   },
