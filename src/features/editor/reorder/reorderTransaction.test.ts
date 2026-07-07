@@ -132,4 +132,119 @@ describe("reorderTransaction", () => {
     expect(editor.state.selection.$from.parent.textContent).toContain("AAA");
     editor.destroy();
   });
+
+  it("unit 間の mention を swap 後も保持する", () => {
+    const editor = makeEditor("");
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "AAA。" },
+            { type: "mention", attrs: { id: "1", label: "ナナ" } },
+            { type: "text", text: "BBB。" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(2);
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    const unitIdx = findUnitIndexAtFlatOffset(units, 2);
+    const result = buildAdjacentUnitSwapTransaction(
+      editor.state,
+      resolved,
+      units,
+      unitIdx,
+      1,
+    );
+    expect(result).not.toBeNull();
+    editor.view.dispatch(result!.tr);
+
+    let mentionCount = 0;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention") mentionCount++;
+    });
+    expect(mentionCount).toBe(1);
+    expect(editor.state.doc.textContent).toBe("BBB。AAA。");
+    editor.destroy();
+  });
+
+  it("unit 間（文境界）の hardBreak を swap 後も保持する", () => {
+    const editor = makeEditor("");
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "AAA。" },
+            { type: "hardBreak" },
+            { type: "text", text: "BBB。" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(2);
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    expect(units).toHaveLength(2);
+    const unitIdx = findUnitIndexAtFlatOffset(units, 2);
+    const result = buildAdjacentUnitSwapTransaction(
+      editor.state,
+      resolved,
+      units,
+      unitIdx,
+      1,
+    );
+    expect(result).not.toBeNull();
+    editor.view.dispatch(result!.tr);
+
+    let hardBreakCount = 0;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "hardBreak") hardBreakCount++;
+    });
+    expect(hardBreakCount).toBe(1);
+    expect(editor.state.doc.textContent).toBe("BBB。AAA。");
+    editor.destroy();
+  });
+
+  it("unit 内の hardBreak を swap 後も保持する", () => {
+    const editor = makeEditor("");
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "A" },
+            { type: "hardBreak" },
+            { type: "text", text: "B。" },
+            { type: "text", text: "C。" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(2);
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units = splitSentencesJa(resolved.flat.text);
+    expect(units).toHaveLength(2);
+    const unitIdx = findUnitIndexAtFlatOffset(units, 2);
+    const result = buildAdjacentUnitSwapTransaction(
+      editor.state,
+      resolved,
+      units,
+      unitIdx,
+      1,
+    );
+    editor.view.dispatch(result!.tr);
+
+    let hardBreakCount = 0;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "hardBreak") hardBreakCount++;
+    });
+    expect(hardBreakCount).toBe(1);
+    editor.destroy();
+  });
 });

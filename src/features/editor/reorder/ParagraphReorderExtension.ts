@@ -1,5 +1,6 @@
 import { Extension, type Editor, type RawCommands } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
+import type { EditorState } from "@tiptap/pm/state";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import type { ReorderGranularity } from "./types";
@@ -12,8 +13,10 @@ import { flatRangeToPm } from "./paragraphFlat";
 import { flashUnitHighlight } from "./flashHighlight";
 import {
   getCachedBunsetsuUnits,
+  isJapanese,
   prefetchBunsetsuUnits,
 } from "./bunsetsuSegmenter";
+import { captureSwapSnapshot, isSwapSnapshotValid } from "./paragraphSnapshot";
 
 const reorderKey = new PluginKey("paragraphReorder");
 
@@ -27,23 +30,25 @@ function getGranularity(state: Editor["state"]): ReorderGranularity {
   );
 }
 
-function swapWithFlash(editor: Editor, dir: -1 | 1): boolean {
-  const language = getCurrentProjectLanguage();
-  const granularity = getGranularity(editor.state);
+function effectiveGranularity(
+  state: EditorState,
+  language: string | undefined,
+): ReorderGranularity {
+  const g = getGranularity(state);
+  if (g === "bunsetsu" && !isJapanese(language)) return "sentence";
+  return g;
+}
+
+function performUnitSwap(
+  editor: Editor,
+  dir: -1 | 1,
+  granularity: ReorderGranularity,
+  language: string | undefined,
+): boolean {
   const bunsetsuUnits =
     granularity === "bunsetsu"
       ? getCachedBunsetsuUnits(editor.state, language)
       : null;
-
-  if (granularity === "bunsetsu" && !bunsetsuUnits) {
-    const ctx = resolveSelectionUnits(editor.state, "sentence", language);
-    if (ctx) {
-      prefetchBunsetsuUnits(editor, ctx.resolved.flat.text, language, () => {
-        swapWithFlash(editor, dir);
-      });
-    }
-    return true;
-  }
 
   const ctx = resolveSelectionUnits(
     editor.state,
@@ -80,6 +85,36 @@ function swapWithFlash(editor: Editor, dir: -1 | 1): boolean {
   return true;
 }
 
+function swapWithFlash(editor: Editor, dir: -1 | 1): boolean {
+  const language = getCurrentProjectLanguage();
+  const granularity = effectiveGranularity(editor.state, language);
+
+  if (granularity === "bunsetsu") {
+    const bunsetsuUnits = getCachedBunsetsuUnits(editor.state, language);
+    if (!bunsetsuUnits) {
+      const ctx = resolveSelectionUnits(editor.state, "sentence", language);
+      if (!ctx) return false;
+      const snapshot = captureSwapSnapshot(editor.state, ctx.resolved, dir);
+      prefetchBunsetsuUnits(
+        editor,
+        snapshot,
+        language,
+        (validSnap) => {
+          if (!isSwapSnapshotValid(editor.state, validSnap)) return;
+          performUnitSwap(editor, validSnap.dir, "bunsetsu", language);
+        },
+        (validSnap) => {
+          if (!isSwapSnapshotValid(editor.state, validSnap)) return;
+          performUnitSwap(editor, validSnap.dir, "sentence", language);
+        },
+      );
+      return true;
+    }
+  }
+
+  return performUnitSwap(editor, dir, granularity, language);
+}
+
 export const ParagraphReorderExtension = Extension.create({
   name: "paragraphReorder",
 
@@ -109,7 +144,7 @@ export const ParagraphReorderExtension = Extension.create({
         () =>
         ({ state, tr, dispatch }) => {
           const language = getCurrentProjectLanguage();
-          const granularity = getGranularity(state);
+          const granularity = effectiveGranularity(state, language);
           const bunsetsuUnits =
             granularity === "bunsetsu"
               ? getCachedBunsetsuUnits(state, language)
@@ -137,7 +172,7 @@ export const ParagraphReorderExtension = Extension.create({
         () =>
         ({ state, tr, dispatch }) => {
           const language = getCurrentProjectLanguage();
-          const granularity = getGranularity(state);
+          const granularity = effectiveGranularity(state, language);
           const bunsetsuUnits =
             granularity === "bunsetsu"
               ? getCachedBunsetsuUnits(state, language)
@@ -164,6 +199,8 @@ export const ParagraphReorderExtension = Extension.create({
       toggleReorderGranularity:
         () =>
         ({ state, tr, dispatch }) => {
+          const language = getCurrentProjectLanguage();
+          if (!isJapanese(language)) return false;
           const next =
             getGranularity(state) === "sentence" ? "bunsetsu" : "sentence";
           if (!dispatch) return true;
@@ -181,7 +218,7 @@ export const ParagraphReorderExtension = Extension.create({
         (order: number[]) =>
         ({ state, tr, dispatch }) => {
           const language = getCurrentProjectLanguage();
-          const granularity = getGranularity(state);
+          const granularity = effectiveGranularity(state, language);
           const bunsetsuUnits =
             granularity === "bunsetsu"
               ? getCachedBunsetsuUnits(state, language)

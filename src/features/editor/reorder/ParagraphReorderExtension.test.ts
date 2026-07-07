@@ -21,6 +21,8 @@ vi.mock("@/features/project/projectStore", () => ({
 vi.mock("./bunsetsuSegmenter", () => ({
   getCachedBunsetsuUnits: () => null,
   prefetchBunsetsuUnits: vi.fn(),
+  isJapanese: (language: string | undefined) =>
+    !(language ?? "ja").toLowerCase().startsWith("en"),
 }));
 
 function pressKey(

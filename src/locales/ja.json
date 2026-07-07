@@ -3486,6 +3486,7 @@
       "singleUnit": "並べ替え可能な単位が2つ以上必要です",
       "bunsetsuFallback": "文節分割に失敗したため文単位で表示しています",
       "segmentFailed": "分割に失敗しました",
+      "staleDocument": "段落が編集中に変更されたため、確定できません",
       "cancel": "キャンセル",
       "confirm": "確定"
     },

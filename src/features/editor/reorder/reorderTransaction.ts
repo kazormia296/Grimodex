@@ -12,6 +12,11 @@ import {
   pmPosToFlatOffset,
   type ResolvedParagraph,
 } from "./paragraphFlat";
+import {
+  buildPermutedParagraphContent,
+  collectPreservedInlines,
+  unitPmRangesFor,
+} from "./paragraphPreserved";
 
 function isValidPermutation(order: number[], length: number): boolean {
   if (order.length !== length) return false;
@@ -64,19 +69,26 @@ export function buildParagraphReorderTransaction(
   const tr = transaction ?? state.tr;
   const doc = tr.doc;
 
-  const oldPmRanges = units.map((u) =>
-    flatRangeToPm(resolved.flat, u.from, u.to),
-  );
-
+  const pmRanges = unitPmRangesFor(resolved.flat, units);
   const slices = units.map((u) => {
     const pm = flatRangeToPm(resolved.flat, u.from, u.to);
     return doc.slice(pm.from, pm.to);
   });
 
-  let combined = slices[order[0]!]!.content;
-  for (let i = 1; i < order.length; i++) {
-    combined = combined.append(slices[order[i]!]!.content);
-  }
+  const preserved = collectPreservedInlines(
+    doc,
+    resolved.contentFrom,
+    resolved.contentTo,
+    resolved.flat,
+    pmRanges,
+  );
+  const combined = buildPermutedParagraphContent(
+    doc,
+    units,
+    order,
+    slices,
+    preserved,
+  );
 
   const tr2 = tr.replace(
     resolved.contentFrom,
@@ -95,7 +107,7 @@ export function buildParagraphReorderTransaction(
     const u = units[unitIdx]!;
     const len = u.to - u.from;
     const newPm = flatRangeToPm(newFlat, newFlatCursor, newFlatCursor + len);
-    const oldPm = oldPmRanges[unitIdx]!;
+    const oldPm = pmRanges[unitIdx]!;
     segments.push({
       oldFrom: oldPm.from,
       oldTo: oldPm.to,

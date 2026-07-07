@@ -3,6 +3,8 @@ import type { Editor } from "@tiptap/core";
 import type { EditorState } from "@tiptap/pm/state";
 import type { BunsetsuDto, ReorderUnit } from "./types";
 import { resolveParagraphAtSelection } from "./paragraphFlat";
+import type { SwapSnapshot } from "./paragraphSnapshot";
+import { isSwapSnapshotValid } from "./paragraphSnapshot";
 
 interface CacheEntry {
   text: string;
@@ -20,7 +22,7 @@ function dtoToUnits(dtos: BunsetsuDto[]): ReorderUnit[] {
   }));
 }
 
-function isJapanese(language: string | undefined): boolean {
+export function isJapanese(language: string | undefined): boolean {
   return !(language ?? "ja").toLowerCase().startsWith("en");
 }
 
@@ -37,6 +39,10 @@ export function getCachedBunsetsuUnits(
   const resolved = resolveParagraphAtSelection(state);
   if (!resolved) return null;
   if (!cache || cache.text !== resolved.flat.text) return null;
+  // in-flight (promise pending) や空結果は cache miss として扱う。
+  // 空配列を "確定済み unit なし" として返すと呼び出し側の
+  // `if (!bunsetsuUnits)` チェックをすり抜け、文粒度へ暗黙フォールバックしてしまう。
+  if (cache.promise || cache.units.length === 0) return null;
   return cache.units;
 }
 
@@ -64,21 +70,25 @@ export async function fetchBunsetsuUnits(text: string): Promise<ReorderUnit[]> {
   return promise;
 }
 
-/** 文節 cache miss 時に prefetch し、完了後に onReady を呼ぶ。 */
+/** 文節 cache miss 時に prefetch し、完了後に snapshot 検証して onReady を呼ぶ。 */
 export function prefetchBunsetsuUnits(
   editor: Editor,
-  text: string,
+  snapshot: SwapSnapshot,
   language: string | undefined,
-  onReady: () => void,
+  onReady: (snapshot: SwapSnapshot) => void,
+  onFailed?: (snapshot: SwapSnapshot) => void,
 ): void {
-  if (!isJapanese(language)) return;
-  void fetchBunsetsuUnits(text)
+  if (!isJapanese(language)) {
+    onFailed?.(snapshot);
+    return;
+  }
+  void fetchBunsetsuUnits(snapshot.flatText)
     .then(() => {
-      const resolved = resolveParagraphAtSelection(editor.state);
-      if (!resolved || resolved.flat.text !== text) return;
-      onReady();
+      if (!isSwapSnapshotValid(editor.state, snapshot)) return;
+      onReady(snapshot);
     })
     .catch(() => {
-      // 失敗時は文粒度 fallback（呼び出し側）
+      if (!isSwapSnapshotValid(editor.state, snapshot)) return;
+      onFailed?.(snapshot);
     });
 }

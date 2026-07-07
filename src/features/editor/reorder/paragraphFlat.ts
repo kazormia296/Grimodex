@@ -73,6 +73,24 @@ export interface ResolvedParagraph {
   flat: ParagraphFlat;
 }
 
+/** block 先頭 PM 位置から paragraph を解決する。 */
+export function resolveParagraphAtPos(
+  state: EditorState,
+  blockPos: number,
+): ResolvedParagraph | null {
+  const node = state.doc.nodeAt(blockPos);
+  if (!node || node.type.name !== "paragraph") return null;
+  const contentFrom = blockPos + 1;
+  const contentTo = blockPos + node.nodeSize - 1;
+  return {
+    pos: blockPos,
+    node,
+    contentFrom,
+    contentTo,
+    flat: flattenParagraph(node, contentFrom),
+  };
+}
+
 /** 選択位置を含む最上位 paragraph を解決する。対象外なら null。 */
 export function resolveParagraphAtSelection(
   state: EditorState,
