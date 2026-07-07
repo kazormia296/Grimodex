@@ -23,6 +23,13 @@ interface KeyboardArgs {
   filterRef: RefObject<HTMLInputElement | null>;
 }
 
+/**
+ * エディタへ DOM フォーカスを移す。ツリー(tabIndex=0 コンテナ)から focus が
+ * 外れるので、矢印 / Space のプレビュー遷移では呼ばない — 呼ぶと 1 手ごとに
+ * フォーカスがエディタへ奪われ、連続ナビゲーションが止まる（"フォーカス
+ * バイパス" が無効化される）。明示的に「開いて編集」する Enter / Ctrl+Enter
+ * でのみフォーカスを移す。
+ */
 function focusEditorPanel() {
   useLayoutStore.getState().requestEditorFocus();
 }
@@ -53,7 +60,6 @@ export function useScenesKeyboard({
         if (next) {
           if (next.nodeType === "scene" || next.nodeType === "note") {
             useTabStore.getState().openPreview(next.id);
-            focusEditorPanel();
           }
           useTreeStore.getState().selectNode(next.id, false);
         }
@@ -63,7 +69,6 @@ export function useScenesKeyboard({
         if (prev) {
           if (prev.nodeType === "scene" || prev.nodeType === "note") {
             useTabStore.getState().openPreview(prev.id);
-            focusEditorPanel();
           }
           useTreeStore.getState().selectNode(prev.id, false);
         }
@@ -72,7 +77,6 @@ export function useScenesKeyboard({
         const cur = nodeMap[activeSceneId];
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
           useTabStore.getState().openPreview(cur.id);
-          focusEditorPanel();
         }
       } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
