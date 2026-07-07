@@ -170,6 +170,7 @@ export function EditorBubbleMenu({
             underline: e.isActive("underline"),
             strike: e.isActive("strike"),
             emphasisDots: e.isActive("emphasisDots"),
+            tcy: e.isActive("tcy"),
             h1: e.isActive("heading", { level: 1 }),
             h2: e.isActive("heading", { level: 2 }),
             h3: e.isActive("heading", { level: 3 }),
@@ -281,6 +282,14 @@ export function EditorBubbleMenu({
           onClick={() => chain().toggleMark("emphasisDots").run()}
         >
           <span className="text-sm leading-none">﹅</span>
+        </BubbleButton>
+        <BubbleButton
+          testId="bubble-tcy"
+          label={t("editor.toolbar.tateChuYoko")}
+          active={state.tcy}
+          onClick={() => chain().toggleMark("tcy").run()}
+        >
+          <span className="text-[10px] font-bold leading-none">12</span>
         </BubbleButton>
 
         <Sep />

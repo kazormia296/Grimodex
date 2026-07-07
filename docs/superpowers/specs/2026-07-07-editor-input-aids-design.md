@@ -113,4 +113,32 @@ InputRule/compositionend では原理的に不可。物理入力だけ効く＝�
 - IME 実挙動（二重挿入/オーバータイプの実機）は happy-dom で再現不能 → 手動QAに送る。
 - `pnpm test` / `npx tsc --noEmit` / `pnpm lint:fix`。レイアウト幾何は絡まないため browser test は不要
   （¶ は純CSS、空白グリフは overlay で寸法不変）。
+
+## 追補 (2026-07-08): 縦中横を第4の特殊表現に追加
+
+方針転換により、これまで「縦書き時に数字連番へ自動で `.tcy` を当てる表示専用
+デコレーション」でしかなかった縦中横を、**ルビ・傍点と並ぶ第一級の特殊表現**
+（永続マーク）として追加する。既存の自動変換は `editor.tateChuYoko` (off/2/all)
+オプションとしてそのまま残す（併存）。
+
+- **新マーク** `TcyMark`（`tcy`、`<span class="tcy">`）。ルビ/傍点と同様
+  `getEditorExtensions` のみ（file-backed 非対応）。既存 `.tcy` CSS を流用（縦書きで
+  `text-combine-upright`）。横書きは淡い点線下線で印だけ示す（`.tiptap .tcy`、縦書きは
+  上書きで下線消し）。
+- **付与**: (a) バブルメニューのトグル（`toggleMark("tcy")`、傍点と同じUI）、
+  (b) 青空記法 `［＃縦中横］text［＃縦中横終わり］` の入力変換（`AozoraInputRules` に
+  追加、`editor.aozoraInput` ゲート）。markInputRule は capture がデリミタ内に出ると
+  誤爆するため自前 handler で範囲置換。
+- **auto-pair から `［］` を除外**（`［＃縦中横］` 記法の overtype 衝突を回避）。
+- **auto と併存**: `TateChuYokoPlugin` は `rangeHasMark` でマーク済み run を素通し
+  （二重 combine 回避。部分マークは run 全体を保守的に素通し＝policy="all" 3桁のみ実害）。
+- **export**: `resolvedTcy`（resolvedRuby/resolvedEmphasis と同型のマーク専用スタイル）を
+  追加。publish はユーザの site スタイル、archive markdown は `aozora-range` 固定で明示
+  マークを記法として保存（ルビ=括弧/傍点=《《》》 と同じ round-trip 水準）。auto は
+  archive で `tateChuYoko:"none"` のまま焼き込まない。
+- **timelapse**: `InlineStyle.tcy` を追加し、明示マーク run を policy 非依存で combine
+  cell 化（ルビ/傍点と同じく動画にも反映）。
+- 敵対レビュー（8エージェント）で archive round-trip 欠落（medium）と timelapse 未対応
+  （low）を検出・修正。実機QA: IME での記法入力、縦書き combine の見た目、
+  バブルメニューの付与操作。
 ```

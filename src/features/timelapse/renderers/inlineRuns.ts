@@ -48,6 +48,8 @@ export interface InlineStyle {
   strike: boolean;
   /** 圏点 (emphasisDots mark). */
   emphasis: boolean;
+  /** 明示縦中横 (tcy mark) — policy 非依存で combine する。 */
+  tcy: boolean;
 }
 
 const EMPTY_STYLE: InlineStyle = {
@@ -56,6 +58,7 @@ const EMPTY_STYLE: InlineStyle = {
   underline: false,
   strike: false,
   emphasis: false,
+  tcy: false,
 };
 
 interface TextItem {
@@ -95,6 +98,7 @@ function readStyle(marks: readonly { type: { name: string } }[]): InlineStyle {
     underline: hasMark(marks, "underline"),
     strike: hasMark(marks, "strike", "strikethrough", "s"),
     emphasis: hasMark(marks, "emphasisDots"),
+    tcy: hasMark(marks, "tcy"),
   };
 }
 

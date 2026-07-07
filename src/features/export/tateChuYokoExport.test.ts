@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { generateExport } from "./exportEngine";
+import { generateExport, renderPmDocToArchiveMarkdown } from "./exportEngine";
 import {
   applyExportPreset,
   detectExportPreset,
@@ -68,6 +68,77 @@ function exportForSite(text: string, id: ExportPresetId): string {
     settings: applyExportPreset(id, DEFAULT_EXPORT_SETTINGS),
   });
 }
+
+/** run 全体に tcy マークを付けた doc。 */
+function docWithTcyMark(text: string): string {
+  return JSON.stringify({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text, marks: [{ type: "tcy" }] }],
+      },
+    ],
+  });
+}
+
+function exportMarkedTcy(
+  text: string,
+  overrides: Partial<ExportSettings>,
+  policy?: TateChuYokoPolicy,
+): string {
+  return generateExport({
+    nodes: [scene],
+    contentMap: { s1: docWithTcyMark(text) },
+    checkedIds: new Set(["s1"]),
+    settings: { ...DEFAULT_EXPORT_SETTINGS, ...overrides },
+    tateChuYokoPolicy: policy,
+  });
+}
+
+describe("縦中横 archive round-trip（明示マークを失わない）", () => {
+  it("archive markdown は明示 tcy を aozora-range で残し、auto の数字は焼かない", () => {
+    const doc = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "西暦" },
+            { type: "text", text: "29", marks: [{ type: "tcy" }] },
+            { type: "text", text: "年 と 12 章" },
+          ],
+        },
+      ],
+    });
+    const md = renderPmDocToArchiveMarkdown(doc);
+    // 明示マーク "29" は記法として保存（ruby=括弧 / 傍点=《《》》 と同じ扱い）
+    expect(md).toContain("［＃縦中横］29［＃縦中横終わり］");
+    // マーク無しの "12"（auto 対象）は素の数字のまま（archive は auto を焼き込まない）
+    expect(md).toContain("12 章");
+    expect(md).not.toContain("［＃縦中横］12");
+  });
+});
+
+describe("縦中横エクスポート — 明示 TcyMark", () => {
+  it("マーク run は policy 非依存で記法を出す（policy off・非数字でも）", () => {
+    // "四" は auto 検出対象外(半角数字/記号/ローマ数字でない)かつ policy off。
+    // それでも明示マークなら縦中横記法が出る。
+    const out = exportMarkedTcy("四", { tateChuYoko: "aozora-range" }, "off");
+    expect(out).toContain("［＃縦中横］四［＃縦中横終わり］");
+  });
+
+  it("aozora-forward スタイルでも明示マークを出力する", () => {
+    const out = exportMarkedTcy("四", { tateChuYoko: "aozora-forward" }, "off");
+    expect(out).toContain("四［＃「四」は縦中横］");
+  });
+
+  it("style none のときはマークでも記法を出さない", () => {
+    const out = exportMarkedTcy("四", { tateChuYoko: "none" }, "all");
+    expect(out).toContain("四");
+    expect(out).not.toContain("縦中横");
+  });
+});
 
 describe("縦中横エクスポート記法 — スタイル別", () => {
   it("none: 記法を出さず半角数字をそのまま残す", () => {

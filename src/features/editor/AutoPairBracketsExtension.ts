@@ -19,7 +19,9 @@ import { META_SKIP } from "@/features/editor/TrashBinCapturePlugin";
  * 選択範囲ラップ(選択→開き約物で囲む)は非対応: IME 確定は選択を約物で置換済みのため
  * InputRule/compositionend からは原理的に不可 (物理入力だけ効くと挙動が不一致になる)。
  *
- * `《》` はルビ/傍点 (AozoraInputRules) と衝突するため除外。ASCII 引用符は smartQuotes 所管。
+ * `《》` はルビ/傍点 (AozoraInputRules) と衝突するため除外。`［］` も青空注記
+ * (縦中横 ［＃縦中横］… 等) の入力変換と衝突するため除外 (全角角括弧はプローズで
+ * ほぼ使わない)。ASCII 引用符は smartQuotes 所管。
  * priority を上げて Backspace キーマップを StarterKit/inputRules-undo より先に評価させる。
  */
 
@@ -29,15 +31,14 @@ const PAIRS: Record<string, string> = {
   "（": "）",
   "【": "】",
   "〔": "〕",
-  "［": "］",
   "〈": "〉",
   "｛": "｝",
   "〝": "〟",
 };
 
 const CLOSERS = new Set(Object.values(PAIRS));
-const OPEN_RE = /([「『（【〔［〈｛〝])$/;
-const CLOSE_RE = /([」』）】〕］〉｝〟])$/;
+const OPEN_RE = /([「『（【〔〈｛〝])$/;
+const CLOSE_RE = /([」』）】〕〉｝〟])$/;
 
 /** 内容文字(この直前では閉じ約物を自動挿入しない)。 */
 const CONTENT_CHAR = /[0-9A-Za-z぀-ヿ㐀-鿿豈-﫿ｦ-ﾝ々〆〇ーヶ]/;

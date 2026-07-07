@@ -45,18 +45,22 @@ function rubyNodes(
   return out;
 }
 
-function hasEmphasisDots(editor: Editor, text: string): boolean {
+function hasMark(editor: Editor, text: string, markName: string): boolean {
   let found = false;
   editor.state.doc.descendants((node: ProseMirrorNode) => {
     if (
       node.isText &&
       node.text === text &&
-      node.marks.some((m) => m.type.name === "emphasisDots")
+      node.marks.some((m) => m.type.name === markName)
     ) {
       found = true;
     }
   });
   return found;
+}
+
+function hasEmphasisDots(editor: Editor, text: string): boolean {
+  return hasMark(editor, text, "emphasisDots");
 }
 
 describe("aozora input rules", () => {
@@ -97,6 +101,30 @@ describe("aozora input rules", () => {
     expect(editor.state.doc.textContent).toBe("強調");
     expect(hasEmphasisDots(editor, "強調")).toBe(true);
     expect(rubyNodes(editor)).toEqual([]);
+  });
+
+  it("tate-chu-yoko ［＃縦中横］…［＃縦中横終わり］ → tcy mark", () => {
+    typeText(editor, "［＃縦中横］25［＃縦中横終わり］");
+    expect(editor.state.doc.textContent).toBe("25");
+    expect(hasMark(editor, "25", "tcy")).toBe(true);
+    expect(rubyNodes(editor)).toEqual([]);
+  });
+
+  it("OFF: leaves 縦中横 notation as literal text", () => {
+    setSettings({ "editor.aozoraInput": "false" });
+    typeText(editor, "［＃縦中横］25［＃縦中横終わり］");
+    expect(editor.state.doc.textContent).toBe(
+      "［＃縦中横］25［＃縦中横終わり］",
+    );
+    expect(hasMark(editor, "25", "tcy")).toBe(false);
+  });
+
+  it("縦中横 notation converts even with auto-pair ON (［］ は auto-pair 対象外)", () => {
+    // ［］ が auto-pair に残っていると overtype が tcy 入力ルールを食う。除外を gate。
+    setSettings({ "editor.autoPairBrackets": "true" });
+    typeText(editor, "［＃縦中横］25［＃縦中横終わり］");
+    expect(editor.state.doc.textContent).toBe("25");
+    expect(hasMark(editor, "25", "tcy")).toBe(true);
   });
 
   it("auto-ruby base spans a contiguous kanji run including ヶ (霞ヶ関)", () => {

@@ -4,12 +4,13 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 /**
  * 青空文庫/カクヨム系記法の入力時自動変換 (`editor.aozoraInput`, 既定 ON)。
  *
- * - `｜親文字《ふりがな》`  → ruby ノード (明示ピペ)
- * - `漢字《ふりがな》`      → ruby ノード (自動ルビ: 直前の連続漢字が base)
- * - `《《傍点》》`           → emphasisDots マーク
+ * - `｜親文字《ふりがな》`          → ruby ノード (明示ピペ)
+ * - `漢字《ふりがな》`              → ruby ノード (自動ルビ: 直前の連続漢字が base)
+ * - `《《傍点》》`                   → emphasisDots マーク
+ * - `［＃縦中横］text［＃縦中横終わり］` → tcy マーク (範囲指定型)
  *
- * ruby ノード / emphasisDots マークは既にスキーマに存在するため
- * (`RubyNode.ts` / `EmphasisDotsMark.ts`)、新スキーマは追加しない。
+ * ruby ノード / emphasisDots / tcy マークは既にスキーマに存在するため
+ * (`RubyNode.ts` / `EmphasisDotsMark.ts` / `TcyMark.ts`)、新スキーマは追加しない。
  * ロジックは import 経路の `kakuyomuMarkup.ts` と同じ形状を生成する。
  *
  * IME 経由の `》` は keydown では捕まらないが、prosemirror-inputrules が
@@ -30,6 +31,8 @@ const PIPE_RUBY = new RegExp(`｜([^｜《》\\n]+)《([^《》\\n]+)》$`);
 const AUTO_RUBY = new RegExp(`([${KANJI_CLASS}]+)《([^《》\\n]+)》$`);
 /** `《《text》》` — 傍点(圏点)。 */
 const EMPHASIS_DOTS = /《《([^《》\n]+)》》$/;
+/** `［＃縦中横］text［＃縦中横終わり］` — 範囲指定型の縦中横。 */
+const TCY_RANGE = /［＃縦中横］([^［］\n]+)［＃縦中横終わり］$/;
 
 /**
  * `TypographySettingsExtension` の gateBySetting と同型だが、既定を **true**
@@ -44,6 +47,25 @@ function gateOn(rule: InputRule, settingKey: string): InputRule {
         ? rule.handler(props)
         : null,
     undoable: rule.undoable,
+  });
+}
+
+/**
+ * `［＃縦中横］text［＃縦中横終わり］` を tcy マーク付きテキストへ置換する。
+ * markInputRule は capture がデリミタ内に現れると indexOf が誤爆するため
+ * (text が "縦中横" 等)、自前 handler で範囲を明示置換する。
+ */
+function tcyRule(): InputRule {
+  return new InputRule({
+    find: TCY_RANGE,
+    handler: ({ state, range, match }) => {
+      const tcyType = state.schema.marks.tcy;
+      const text = match[1];
+      if (!tcyType || !text) return null;
+      state.tr.insertText(text, range.from, range.to);
+      state.tr.addMark(range.from, range.from + text.length, tcyType.create());
+      state.tr.removeStoredMark(tcyType);
+    },
   });
 }
 
@@ -85,6 +107,10 @@ export const AozoraInputRules = Extension.create({
       );
     }
     rules.push(gateOn(rubyRule(AUTO_RUBY), "editor.aozoraInput"));
+    // 縦中横 (［＃縦中横］…［＃縦中横終わり］)。tcy マークが在るときだけ。
+    if (this.editor.schema.marks.tcy) {
+      rules.push(gateOn(tcyRule(), "editor.aozoraInput"));
+    }
     return rules;
   },
 });

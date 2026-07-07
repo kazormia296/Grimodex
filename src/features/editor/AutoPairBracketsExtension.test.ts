@@ -66,7 +66,6 @@ describe("auto-pair brackets", () => {
       ["（", "）"],
       ["【", "】"],
       ["〔", "〕"],
-      ["［", "］"],
       ["〈", "〉"],
       ["｛", "｝"],
     ] as const) {
@@ -115,6 +114,11 @@ describe("auto-pair brackets", () => {
   it("does not pair 《 (reserved for ruby/emphasis)", () => {
     typeText(editor, "《");
     expect(editor.state.doc.textContent).toBe("《");
+  });
+
+  it("does not pair ［ (reserved for 青空 ［＃…］ notation)", () => {
+    typeText(editor, "［");
+    expect(editor.state.doc.textContent).toBe("［");
   });
 
   // 回帰: overtype 直後の Backspace で inputRules-undo が net-zero overtype を
