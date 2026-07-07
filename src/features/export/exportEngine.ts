@@ -178,6 +178,14 @@ interface RenderCtx {
   resolvedRuby: RubyStyle;
   resolvedEmphasis: EmphasisDotsStyle;
   /**
+   * 明示的な縦中横マーク(TcyMark)を書き出す記法スタイル。auto の縦中横
+   * (applyTateChuYoko / settings.tateChuYoko) とは独立: 明示マークはユーザ意図
+   * なので policy 非依存で常に出力する。resolvedRuby/resolvedEmphasis と同じ
+   * 「マーク専用の解決済みスタイル」。archive markdown は auto を "none" で切る
+   * 一方で明示マークは失わないよう aozora-range で保存する。
+   */
+  resolvedTcy: TateChuYokoExportStyle;
+  /**
    * html format 限定: 段落を実 `<p>` 要素で包み、hardBreak を `<br>` にする
    * （CSS 組版向け。Vivliostyle 連携が使う）。false（既定）は従来どおり
    * 素のテキスト行 — publish 出力（word-html/ao3 プリセット）の凍結挙動。
@@ -286,7 +294,17 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
       // として不正になる（例: 29［＃「29」は縦中横］［＃「29［＃…］」に傍点］）。
       // 傍点を優先し数字は素のまま残す（縦書きビューアが2桁を自動結合する）。
       const hasEmphasis = marks.some((m) => m.type === "emphasisDots");
-      const body = hasEmphasis ? raw : applyTateChuYoko(raw, ctx);
+      // 明示縦中横(TcyMark)は policy 非依存で常に記法を出す(resolvedTcy)。auto
+      // (applyTateChuYoko)と同じく mark 装飾より先に raw を包む。text node の mark は
+      // 一様なので run 単位で包める(別マークが一部に乗ると tcy run が複数 node に
+      // 割れて複数記法になるが、その別マークが CSS の combine context も割るので
+      // エディタ表示と一致する)。傍点が同居する run は傍点優先(注記ネスト回避)。
+      const hasTcy = marks.some((m) => m.type === "tcy");
+      const body = hasEmphasis
+        ? raw
+        : hasTcy
+          ? wrapTateChuYoko(raw, ctx.resolvedTcy)
+          : applyTateChuYoko(raw, ctx);
       return applyMarks(body, marks, ctx);
     }
 
@@ -714,6 +732,10 @@ export function renderPmDocToArchiveMarkdown(
     },
     resolvedRuby: rubyStyle,
     resolvedEmphasis: emphasisDotsStyle,
+    // auto の縦中横は "none" で焼き込まない一方、明示マーク(TcyMark)はユーザ意図
+    // なので aozora-range で保存する (ruby=括弧 / 傍点=《《》》 と同じく記法として残す。
+    // file-backed 再取り込みでマークには戻らないが記法テキストとして復元可能)。
+    resolvedTcy: "aozora-range",
     htmlParagraphs: false,
     strictLineBreaks: options.strictLineBreaks ?? false,
     tateChuYokoPolicy: "2",
@@ -862,6 +884,9 @@ export function generateExport(input: GenerateExportInput): string {
     settings.rubyStyle ?? defaultRubyStyle(settings.format);
   const resolvedEmphasis: EmphasisDotsStyle =
     settings.emphasisDotsStyle ?? defaultEmphasisDotsStyle(settings.format);
+  // 明示縦中横マークは publish 出力ではユーザの site スタイルに合わせる
+  // (auto と同じ settings.tateChuYoko。"none" 選択時は明示マークも出さない)。
+  const resolvedTcy: TateChuYokoExportStyle = settings.tateChuYoko ?? "none";
 
   // generateExport is the user-facing publish path (markdown/html/plaintext).
   // Leaves strictLineBreaks=false for diff-friendly bare `\n` output. The
@@ -872,6 +897,7 @@ export function generateExport(input: GenerateExportInput): string {
     settings,
     resolvedRuby,
     resolvedEmphasis,
+    resolvedTcy,
     htmlParagraphs,
     strictLineBreaks: false,
     tateChuYokoPolicy,

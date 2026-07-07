@@ -199,6 +199,30 @@ export function EditorCategory() {
         <SettingRow label={t("settings.editor.bubbleMenu")}>
           <SettingToggle settingKey="editor.bubbleMenu" defaultValue={true} />
         </SettingRow>
+        <SettingRow
+          label={t("settings.editor.aozoraInput")}
+          description={t("settings.editor.aozoraInputDesc")}
+        >
+          <SettingToggle settingKey="editor.aozoraInput" defaultValue={true} />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.autoPairBrackets")}
+          description={t("settings.editor.autoPairBracketsDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.autoPairBrackets"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
+          label={t("settings.editor.showInvisibles")}
+          description={t("settings.editor.showInvisiblesDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.showInvisibles"
+            defaultValue={false}
+          />
+        </SettingRow>
       </SettingSection>
 
       <SettingSection title={t("settings.editor.inlineAi")}>

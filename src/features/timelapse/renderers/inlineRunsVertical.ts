@@ -43,6 +43,7 @@ export function verticalTextItems(text: string): InlineItem[] {
         underline: false,
         strike: false,
         emphasis: false,
+        tcy: false,
       },
     } as InlineItem,
   ];
@@ -96,6 +97,13 @@ function toCells(
       strike: st.strike,
       emphasis: st.emphasis,
     };
+    // 明示縦中横マーク(TcyMark)は policy 非依存で run 全体を1つの combine cell に
+    // する(エディタの text-combine-upright:all と一致)。text node の mark は一様
+    // なので item.text = マーク run そのもの。改行はここには来ない(text node)。
+    if (st.tcy && item.text.length > 0) {
+      cells.push({ kind: "tcy", text: item.text, span: 1, ...common });
+      continue;
+    }
     // Split into alternating non-digit / digit segments so a qualifying digit
     // run becomes one 縦中横 cell (within a single mark span — cross-mark runs
     // are left as stacked digits, matching what collectInline can see here).

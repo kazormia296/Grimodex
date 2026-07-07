@@ -33,6 +33,7 @@ import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
+import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
 import {
   loadAuthorshipSpans,
   spansToMarkData,
@@ -476,6 +477,7 @@ function MountedSceneBlock({
   useCursorOverlay(editor);
   useImeDiagnostics(editor);
   useTateChuYoko(editor);
+  useShowInvisibles(editor);
 
   // Load content
   useEffect(() => {
@@ -628,6 +630,7 @@ function MountedSceneBlock({
       <div
         className={cn(
           editorSettings.showLineNumbers && "editor-line-numbers",
+          editorSettings.showInvisibles && "editor-show-invisibles",
           isEnglish && "editor-en-typography",
         )}
         style={buildEditorContentStyle(editorSettings)}

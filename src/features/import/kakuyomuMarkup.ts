@@ -7,7 +7,10 @@
  * - Full-width indent (U+3000) preserved in paragraph text
  */
 
-const KANJI_RE = /[一-鿿々〆〤]/;
+// 自動ルビの base に含める文字クラス。ヶ(U+30F6)は 霞ヶ関 / 三ヶ月 等で
+// 連続漢字の一部として扱う必要がある。エディタ入力側 (AozoraInputRules.ts の
+// KANJI_CLASS) と一致させること — 片方だけ ヶ を欠くと同じ記法が別の doc になる。
+const KANJI_RE = /[一-鿿々〆〤ヶ]/;
 
 type InlineNode =
   | { type: "text"; text: string; marks?: { type: string }[] }

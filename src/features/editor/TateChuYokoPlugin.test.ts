@@ -278,3 +278,30 @@ describe("createTateChuYokoPlugin — hybrid apply", () => {
     editor.destroy();
   });
 });
+
+describe("明示 TcyMark との併存", () => {
+  it("tcy マーク済みの run は auto decoration を当てない（二重回避）", () => {
+    const editor = makeEditor();
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "第" },
+            { type: "text", text: "12", marks: [{ type: "tcy" }] },
+            { type: "text", text: "話" },
+          ],
+        },
+      ],
+    });
+    const doc = editor.state.doc;
+    // マーク済みなので auto は素通し（マーク側の .tcy が結合を担う）
+    expect(decoTexts(doc, buildTateChuYokoDecorations(doc, "2"))).toEqual([]);
+    editor.destroy();
+  });
+
+  it("マーク無しの同じ run は従来どおり auto decoration が当たる", () => {
+    expect(build("第12話", "2").texts).toEqual(["12"]);
+  });
+});

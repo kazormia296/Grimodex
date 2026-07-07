@@ -5,6 +5,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { RubyNode } from "@/features/editor/RubyNode";
 import { EmphasisDotsMark } from "@/features/editor/EmphasisDotsMark";
+import { TcyMark } from "@/features/editor/TcyMark";
 import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import {
   DEFAULT_THEME,
@@ -70,6 +71,7 @@ const richSchema = getSchema([
   AuthorshipMark,
   RubyNode,
   EmphasisDotsMark,
+  TcyMark,
   SceneBeatNode,
 ]);
 
@@ -191,6 +193,16 @@ describe("verticalRenderer — 縦中横 (tate-chu-yoko)", () => {
     expect(glyph(ops, "26")).toBeUndefined();
     expect(glyph(ops, "2")).toBeDefined();
     expect(glyph(ops, "6")).toBeDefined();
+  });
+
+  it("明示 tcy マークは policy 非依存で combine する（policy off でも1セル）", () => {
+    // auto では policy off で結合されない 3桁を明示マークで結合する。
+    const ops = renderJson([para([txt("123", [{ type: "tcy" }])])], {
+      theme: { ...VERTICAL, tateChuYoko: "off" },
+    });
+    expect(glyph(ops, "123")).toBeDefined();
+    expect(glyph(ops, "1")).toBeUndefined();
+    expect(glyph(ops, "2")).toBeUndefined();
   });
 
   it("policy '2' does NOT combine a 3-digit run", () => {

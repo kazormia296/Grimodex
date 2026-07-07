@@ -83,6 +83,9 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.sceneMetaPanelWidth": "global",
   "editor.linearBeatDisplay": "global",
   "editor.showLineNumbers": "global",
+  "editor.aozoraInput": "global",
+  "editor.showInvisibles": "global",
+  "editor.autoPairBrackets": "global",
   // Editor — work-specific (project)
   "editor.targetCharCount": "project",
   "editor.wordBreak": "project",
@@ -273,6 +276,12 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.sceneMetaPanelWidth": "20",
   "editor.linearBeatDisplay": "collapsed",
   "editor.showLineNumbers": "false",
+  // 青空文庫記法(｜親《ふりがな》/漢字《ふりがな》自動/《《傍点》》)の入力時自動変換。既定ON。
+  "editor.aozoraInput": "true",
+  // 空白・改行(¶/↵/半角・全角空白/タブ)の可視化。既定OFF。
+  "editor.showInvisibles": "false",
+  // 約物ペア(「」『』（）等)の自動補完。既定ON。
+  "editor.autoPairBrackets": "true",
   "editor.paragraphIndent": "0",
   "editor.verticalMode": "false",
   // 縦中横（縦書き時に半角数字を正立結合）。既定は出版物の慣習に最も近い

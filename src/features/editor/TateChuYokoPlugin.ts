@@ -37,6 +37,9 @@ export function buildTateChuYokoDecorations(
   // この contract が吸収する（see codexDocFlatten.ts）。
   const { text, flatPmPos } = flattenDocForCodex(doc);
   const decos: Decoration[] = [];
+  // 明示的な縦中横マーク(TcyMark)が乗った run は auto では装飾しない
+  // (mark span と decoration span の二重 .tcy = combine 二重掛けを避ける)。
+  const tcyType = doc.type.schema.marks.tcy;
 
   for (const m of text.matchAll(RUN)) {
     const run = m[0];
@@ -56,6 +59,11 @@ export function buildTateChuYokoDecorations(
     //    （codexDocFlatten.ts の「mention atoms contribute NOTHING」contract）
     //  - 万一 block 境界（\n スロット）を含む run
     if (pmLastChar - pmFrom !== run.length - 1) continue;
+    // rangeHasMark は any-overlap 判定。run の一部だけマーク済みでも run 全体を
+    // 素通しする(保守的フォールバック): 二重 combine を確実に避けるのを優先し、
+    // 残りの未マーク部分の自動 combine は諦める。数字 run が部分マークで割れるのは
+    // policy="all" の 3桁以上のみ(既定"2"では元々 combine 対象外)なので実害は限定的。
+    if (tcyType && doc.rangeHasMark(pmFrom, pmTo, tcyType)) continue;
     decos.push(Decoration.inline(pmFrom, pmTo, { class: "tcy" }));
   }
 
