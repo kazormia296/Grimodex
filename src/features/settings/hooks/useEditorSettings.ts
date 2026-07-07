@@ -26,6 +26,9 @@ export interface EditorSettings {
   sceneMetaPanelOpen: boolean;
   sceneMetaPanelWidth: number;
   showLineNumbers: boolean;
+  aozoraInput: boolean;
+  showInvisibles: boolean;
+  autoPairBrackets: boolean;
   paragraphIndent: number;
   verticalMode: boolean;
 }
@@ -64,6 +67,9 @@ export function useEditorSettings(): EditorSettings {
     sceneMetaPanelOpen: store.getBoolean("editor.sceneMetaPanelOpen", true),
     sceneMetaPanelWidth: store.getNumber("editor.sceneMetaPanelWidth", 20),
     showLineNumbers: store.getBoolean("editor.showLineNumbers", false),
+    aozoraInput: store.getBoolean("editor.aozoraInput", true),
+    showInvisibles: store.getBoolean("editor.showInvisibles", false),
+    autoPairBrackets: store.getBoolean("editor.autoPairBrackets", true),
     paragraphIndent: store.getNumber("editor.paragraphIndent", 0),
     verticalMode: store.getBoolean("editor.verticalMode", false),
   };

@@ -66,6 +66,7 @@ import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
+import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
@@ -91,6 +92,8 @@ import { gutterReserveInlineSize } from "@/features/editor/GutterMarksPlugin";
 import {
   useTypewriterScroll,
   computeTypewriterScrollTop,
+  computeTypewriterScrollLeft,
+  verticalColumnCenterX,
 } from "@/features/editor/useTypewriterScroll";
 import {
   getLogicalScrollOffset,
@@ -1194,36 +1197,53 @@ export function EditorPane({
     [],
   );
 
-  // Typewriter scroll is Y-axis only — disabled while vertical writing is on
-  // (the setting itself is left untouched so it comes back on mode exit).
+  // Typewriter scroll: 横書きは縦スクロールで行を、縦書き(vertical-rl)は
+  // 横スクロールで列を、それぞれ中央に保つ。
   const verticalMode = editorSettings.verticalMode;
-  const effectiveTypewriter = typewriterMode && !verticalMode;
-  useTypewriterScroll(editor, effectiveTypewriter, editorContainerRef);
+  const effectiveTypewriter = typewriterMode;
+  useTypewriterScroll(
+    editor,
+    effectiveTypewriter,
+    editorContainerRef,
+    verticalMode,
+  );
 
   // When typewriter mode is toggled (on or off), scroll immediately to center
-  // the cursor to prevent a visual jump from the 50vh padding being added/removed.
+  // the cursor to prevent a visual jump from the 50vh/50vw padding being
+  // added/removed. 縦書きでは横軸(scrollLeft)で列をセンタリングする。
   useEffect(() => {
-    if (verticalMode) return;
     if (!editorContainerRef.current || !isEditorViewReady(mountedEditor))
       return;
     const container = editorContainerRef.current;
     const ed = mountedEditor;
     const raf = requestAnimationFrame(() => {
       const { from } = ed.view.state.selection;
-      let coordsTop: number;
-      try {
-        coordsTop = ed.view.coordsAtPos(from).top;
-      } catch {
-        return;
-      }
       const containerRect = container.getBoundingClientRect();
-      const target = computeTypewriterScrollTop(
-        coordsTop,
-        containerRect.top,
-        container.scrollTop,
-        containerRect.height,
-      );
-      container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
+      if (verticalMode) {
+        const cursorX = verticalColumnCenterX(ed.view, from);
+        if (cursorX == null) return;
+        const target = computeTypewriterScrollLeft(
+          cursorX,
+          containerRect.left,
+          container.scrollLeft,
+          containerRect.width,
+        );
+        container.scrollTo({ left: target, behavior: "auto" });
+      } else {
+        let cursorTop: number;
+        try {
+          cursorTop = ed.view.coordsAtPos(from).top;
+        } catch {
+          return;
+        }
+        const target = computeTypewriterScrollTop(
+          cursorTop,
+          containerRect.top,
+          container.scrollTop,
+          containerRect.height,
+        );
+        container.scrollTo({ top: Math.max(0, target), behavior: "auto" });
+      }
     });
     return () => cancelAnimationFrame(raf);
   }, [effectiveTypewriter, verticalMode, mountedEditor, nodeId]);
@@ -1273,6 +1293,7 @@ export function EditorPane({
   useImeDiagnostics(mountedEditor);
   useCharacterFade(mountedEditor);
   useTateChuYoko(mountedEditor);
+  useShowInvisibles(mountedEditor);
   useAttribution(dbNativeEditor);
 
   // Listen for slash-command events dispatched by SlashCommandExtension

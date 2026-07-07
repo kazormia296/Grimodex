@@ -92,6 +92,9 @@ function makeSettings(spellCheck: boolean): EditorSettings {
     sceneMetaPanelOpen: false,
     sceneMetaPanelWidth: 20,
     showLineNumbers: false,
+    aozoraInput: true,
+    showInvisibles: false,
+    autoPairBrackets: true,
     paragraphIndent: 0,
     verticalMode: false,
   };

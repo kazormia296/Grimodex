@@ -12,6 +12,8 @@ import { defaultMarkdownSerializer } from "prosemirror-markdown";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { RubyNode } from "@/features/editor/RubyNode";
 import { EmphasisDotsMark } from "@/features/editor/EmphasisDotsMark";
+import { AozoraInputRules } from "@/features/editor/AozoraInputRules";
+import { AutoPairBracketsExtension } from "@/features/editor/AutoPairBracketsExtension";
 import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
 import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
@@ -209,6 +211,11 @@ export function getEditorExtensions(
     AuthorshipMark,
     EmphasisDotsMark,
     RubyNode,
+    // 青空文庫記法(｜親《ふりがな》/漢字《ふりがな》/《《傍点》》)の入力時変換。
+    // ruby/emphasisDots スキーマに依存するため project DB シーンのみ (file-backed 非対応)。
+    AozoraInputRules,
+    // 約物ペア(「」『』（）等)の自動補完。テキスト操作のみでスキーマ非依存。
+    AutoPairBracketsExtension,
     SceneBreakNode,
     SceneBeatNode,
     GeneratedProseBlockNode,

@@ -121,6 +121,7 @@ export function EditorContentArea({
         <div
           className={cn(
             editorSettings.showLineNumbers && "editor-line-numbers",
+            editorSettings.showInvisibles && "editor-show-invisibles",
             gutterReserve && "editor-gutter-reserve",
             isEnglish && "editor-en-typography",
           )}
