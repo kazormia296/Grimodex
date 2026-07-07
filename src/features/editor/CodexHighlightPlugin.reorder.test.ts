@@ -9,7 +9,10 @@ import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { Fragment } from "@tiptap/pm/model";
-import { remapCodexDecosForReorder } from "./CodexHighlightPlugin";
+import {
+  remapCodexDecosForReorder,
+  remapCodexDecosForInlinePermutation,
+} from "./CodexHighlightPlugin";
 
 function attrsClass(d: Decoration): string {
   return (d as unknown as { type: { attrs: Record<string, string> } }).type
@@ -118,6 +121,43 @@ describe("remapCodexDecosForReorder", () => {
       from: 11,
       to: 14,
     });
+    editor.destroy();
+  });
+});
+
+describe("remapCodexDecosForInlinePermutation", () => {
+  it("段落内 2 範囲 swap で装飾を新位置へ移す", () => {
+    const editor = new Editor({
+      extensions: [StarterKit],
+      content: "<p>foobarbaz</p>",
+    });
+    const doc = editor.state.doc;
+    const decoSet = DecorationSet.create(doc, [
+      Decoration.inline(1, 4, { class: "c-foo" }, { codexKind: "inline" }),
+      Decoration.inline(7, 10, { class: "c-baz" }, { codexKind: "inline" }),
+    ]);
+    // foo(1-4) + bar(4-7) + baz(7-10) → bar + foo + baz 相当: foo goes after bar
+    const tr = editor.state.tr.replaceWith(
+      1,
+      10,
+      doc
+        .slice(4, 7)
+        .content.append(doc.slice(1, 4).content)
+        .append(doc.slice(7, 10).content),
+    );
+    const remapped = remapCodexDecosForInlinePermutation(decoSet, tr.doc, {
+      kind: "inlinePermutation",
+      segments: [
+        { oldFrom: 1, oldTo: 4, newFrom: 4, newTo: 7 },
+        { oldFrom: 4, oldTo: 7, newFrom: 1, newTo: 4 },
+        { oldFrom: 7, oldTo: 10, newFrom: 7, newTo: 10 },
+      ],
+    });
+    const list = remapped
+      .find()
+      .map((d) => ({ from: d.from, to: d.to, cls: attrsClass(d) }));
+    expect(list).toContainEqual({ from: 4, to: 7, cls: "c-foo" });
+    expect(list).toContainEqual({ from: 7, to: 10, cls: "c-baz" });
     editor.destroy();
   });
 });

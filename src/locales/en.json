@@ -3471,6 +3471,7 @@
       "focusMode": "Focus mode",
       "typewriterMode": "Typewriter mode",
       "verticalMode": "Vertical writing (this work)",
+      "reorderMode": "Reorder (in-paragraph)",
       "sceneMetaPanel": "Scene info panel",
       "moreOptions": "More options",
       "findReplace": "Find and replace",
@@ -3481,6 +3482,26 @@
       "rubyAnnotation": "Reading",
       "urlPlaceholder": "https://...",
       "label": "Editor toolbar"
+    },
+    "reorder": {
+      "title": "Reorder — within paragraph",
+      "granularitySentence": "Sentence",
+      "granularityBunsetsu": "Bunsetsu",
+      "loading": "Segmenting…",
+      "singleUnit": "Need at least two units to reorder",
+      "bunsetsuFallback": "Bunsetsu segmentation failed; showing sentences",
+      "segmentFailed": "Segmentation failed",
+      "staleDocument": "The paragraph changed while reordering; confirm aborted.",
+      "cancel": "Cancel",
+      "confirm": "Apply",
+      "hint": {
+        "base": "Alt: paragraphs / Alt+Shift: sentences · bunsetsu",
+        "paragraph": "Reorder paragraphs (drag handle / Alt+arrows)",
+        "unitSentence": "Reorder sentences (drag / Alt+Shift+arrows)",
+        "unitBunsetsu": "Reorder bunsetsu (drag / Alt+Shift+arrows)",
+        "switchToBunsetsu": "Alt+Shift+G → bunsetsu",
+        "switchToSentence": "Alt+Shift+G → sentences"
+      }
     },
     "status": {
       "outline": "Outline",

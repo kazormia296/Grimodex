@@ -304,6 +304,7 @@ pub fn run() {
             commands::plot_threads::plot_thread_link_delete,
             commands::plot_threads::plot_thread_list_links,
             commands::lint::lint_text,
+            commands::reorder::segment_bunsetsu,
             commands::post_effect::start_post_effect_run,
             commands::post_effect::start_post_effect_run_multi,
             commands::post_effect::abort_post_effect_run,

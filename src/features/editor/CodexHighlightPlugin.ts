@@ -112,13 +112,74 @@ export function mapMatchesToDecorations(
   return decos;
 }
 
-interface CodexReorderInfo {
+interface CodexBlockReorderInfo {
+  kind?: "block";
   /** 入れ替えた 2 ブロックの先頭位置 (= 前ブロックの開始)。 */
   start: number;
   /** 前ブロック (doc 順で先) の nodeSize。 */
   firstSize: number;
   /** 後ブロック (doc 順で後) の nodeSize。 */
   secondSize: number;
+}
+
+interface CodexInlineSegmentMap {
+  oldFrom: number;
+  oldTo: number;
+  newFrom: number;
+  newTo: number;
+}
+
+export interface CodexInlineReorderInfo {
+  kind: "inlinePermutation";
+  segments: CodexInlineSegmentMap[];
+}
+
+type CodexReorderMeta = CodexBlockReorderInfo | CodexInlineReorderInfo;
+
+function isInlineReorder(
+  meta: CodexReorderMeta,
+): meta is CodexInlineReorderInfo {
+  return meta.kind === "inlinePermutation";
+}
+
+function cloneDecoration(d: Decoration, from: number, to: number): Decoration {
+  const attrs = (d as unknown as { type: { attrs: Record<string, string> } })
+    .type.attrs;
+  const spec = d.spec as { codexKind?: string } | undefined;
+  if (spec?.codexKind === "node") {
+    return Decoration.node(from, to, attrs, d.spec);
+  }
+  return Decoration.inline(from, to, attrs, d.spec);
+}
+
+/**
+ * 段落内 unit permutation 向け Codex 装飾 remap。
+ * unit 境界を跨ぐ装飾は落とし、async rebuild に任せる。
+ */
+export function remapCodexDecosForInlinePermutation(
+  oldDecos: DecorationSet,
+  doc: ProseMirrorNode,
+  reorder: CodexInlineReorderInfo,
+): DecorationSet {
+  const { segments } = reorder;
+  const rebuilt: Decoration[] = [];
+
+  for (const d of oldDecos.find()) {
+    const seg = segments.find((s) => d.from >= s.oldFrom && d.to <= s.oldTo);
+    if (!seg) {
+      // 段落内 reorder 対象外、または境界跨ぎ → 保持/破棄判定
+      const inAnyOld = segments.some(
+        (s) => d.from >= s.oldFrom && d.from < s.oldTo,
+      );
+      if (inAnyOld) continue;
+      rebuilt.push(cloneDecoration(d, d.from, d.to));
+      continue;
+    }
+    const shift = seg.newFrom - seg.oldFrom;
+    rebuilt.push(cloneDecoration(d, d.from + shift, d.to + shift));
+  }
+
+  return DecorationSet.create(doc, rebuilt);
 }
 
 /**
@@ -132,7 +193,7 @@ interface CodexReorderInfo {
 export function remapCodexDecosForReorder(
   oldDecos: DecorationSet,
   doc: ProseMirrorNode,
-  reorder: CodexReorderInfo,
+  reorder: CodexBlockReorderInfo,
 ): DecorationSet {
   const { start, firstSize, secondSize } = reorder;
   const mid = start + firstSize;
@@ -200,9 +261,16 @@ export function createCodexHighlightPlugin(): Plugin {
           // 運ぶ reorder meta を見て per-block オフセットで装飾を手動再構築し保持する。
           // これで移動中もハイライトの padding/色が消えず、折り返しズレ・ちらつきが出ない。
           const reorder = tr.getMeta("codexHighlightReorder") as
-            | CodexReorderInfo
+            | CodexReorderMeta
             | undefined;
           if (reorder) {
+            if (isInlineReorder(reorder)) {
+              return remapCodexDecosForInlinePermutation(
+                oldDecos,
+                newState.doc,
+                reorder,
+              );
+            }
             return remapCodexDecosForReorder(oldDecos, newState.doc, reorder);
           }
 

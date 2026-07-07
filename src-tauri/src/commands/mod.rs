@@ -27,6 +27,7 @@ pub(crate) mod logs;
 pub(crate) mod onboarding;
 pub(crate) mod plot_threads;
 pub(crate) mod post_effect;
+pub(crate) mod reorder;
 #[cfg(feature = "semantic-embedding")]
 pub(crate) mod semantic;
 pub(crate) mod timelapse;

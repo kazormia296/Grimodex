@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+pub mod bunsetsu;
 pub mod dialogue;
 pub mod engine;
 pub mod error;

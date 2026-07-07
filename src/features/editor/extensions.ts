@@ -20,6 +20,8 @@ import { SceneBeatNode } from "@/features/editor/SceneBeatNode";
 import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNode";
 import { FindReplaceExtension } from "@/features/editor/FindReplaceExtension";
 import { ParagraphMoveExtension } from "@/features/editor/ParagraphMoveExtension";
+import { ParagraphReorderExtension } from "@/features/editor/reorder/ParagraphReorderExtension";
+import { ReorderInteractionExtension } from "@/features/editor/reorder/ReorderInteractionExtension";
 import { VerticalCaretNavExtension } from "@/features/editor/VerticalCaretNavExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
@@ -206,6 +208,9 @@ export function getEditorExtensions(
     ToolbarShortcutsExtension,
     // 段落(最上位ブロック)を Alt+↑/↓ で上下移動
     ParagraphMoveExtension,
+    ParagraphReorderExtension,
+    // Alt=段落ハンドルドラッグ / Alt+Shift=文/文節 色帯+grab ドラッグ
+    ReorderInteractionExtension,
     // 縦書き時の ←/→ 列移動 (Chromium の vertical-rl hardBreak カーソルバグ対策)
     VerticalCaretNavExtension,
     // Custom marks/nodes

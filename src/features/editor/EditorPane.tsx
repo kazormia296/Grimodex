@@ -61,6 +61,7 @@ import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { AttributionLegend } from "@/features/attribution/AttributionLegend";
+import { ReorderModeHint } from "@/features/editor/reorder/ReorderModeHint";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
@@ -145,6 +146,8 @@ import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
 import { DndContext, DragOverlay } from "@dnd-kit/core";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import { EditorContentArea } from "@/features/editor/EditorContentArea";
+import { useParagraphReorderOverlay } from "@/features/editor/reorder/useParagraphReorderOverlay";
+import { ReorderOverlay } from "@/features/editor/reorder/ReorderOverlay";
 import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
 import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
@@ -942,6 +945,15 @@ export function EditorPane({
     editorViewReady && isEditorViewReady(editor) ? editor : null;
   /** DB-native-only features (authorship, inline AI) — not on file-backed scenes. */
   const dbNativeEditor = mountedEditor && !isFileBacked ? mountedEditor : null;
+
+  const paragraphReorder = useParagraphReorderOverlay(
+    dbNativeEditor,
+    readOnly || isEntryMode,
+  );
+  const projectLanguage = getCurrentProjectLanguage();
+  const bunsetsuAvailable = !(projectLanguage ?? "ja")
+    .toLowerCase()
+    .startsWith("en");
 
   editorRef.current = editor;
 
@@ -1945,6 +1957,11 @@ export function EditorPane({
         onTogglePanel={handleTogglePanel}
         sceneId={isEntryMode ? undefined : nodeId}
         nodeType={activeNode?.nodeType}
+        reorderOpen={paragraphReorder.open}
+        onToggleReorder={
+          dbNativeEditor ? paragraphReorder.toggleOverlay : undefined
+        }
+        reorderDisabled={!dbNativeEditor || readOnly}
       />
       <LicenseRestrictionBanner />
       {isFileBacked && !isEntryMode && <FileBackedSceneBanner />}
@@ -2149,6 +2166,8 @@ export function EditorPane({
           {showAttribution && (
             <AttributionLegend className="text-[10px] text-muted-foreground" />
           )}
+          {/* 推敲リオーダー（Alt=段落 / Alt+Shift=文・文節）の操作案内 */}
+          <ReorderModeHint className="text-[10px] text-muted-foreground" />
         </div>
         {/* Right: stats + save state + history */}
         <div className="flex flex-shrink-0 items-center gap-3">
@@ -2301,6 +2320,20 @@ export function EditorPane({
           />,
           document.body,
         )}
+      <ReorderOverlay
+        open={paragraphReorder.open}
+        units={paragraphReorder.units}
+        order={paragraphReorder.order}
+        onOrderChange={paragraphReorder.setOrder}
+        granularity={paragraphReorder.granularity}
+        onGranularityChange={paragraphReorder.setGranularity}
+        loading={paragraphReorder.loading}
+        errorMessage={paragraphReorder.errorMessage}
+        canConfirm={paragraphReorder.canConfirm}
+        onConfirm={paragraphReorder.confirm}
+        onCancel={paragraphReorder.closeOverlay}
+        bunsetsuAvailable={bunsetsuAvailable}
+      />
     </div>
   );
   recordMark("editorPane.render", performance.now() - __perfStart, __perfStart);
