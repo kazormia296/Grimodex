@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from "vitest";
 import { EditorState } from "@tiptap/pm/state";
+import type { Transaction } from "@tiptap/pm/state";
 import { Schema } from "@tiptap/pm/model";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
@@ -14,6 +15,12 @@ import {
   GUTTER_REBUILD_META,
   type GutterChannel,
 } from "./GutterMarksPlugin";
+import {
+  createLintDecorationPlugin,
+  setLintDiagnostics,
+  LINT_REBUILD_META,
+} from "./LintDecorationPlugin";
+import type { Diagnostic } from "@/features/lint/types";
 
 const schema = new Schema({
   nodes: {
@@ -84,12 +91,50 @@ beforeEach(() => {
   useCursorSettingsStore.setState({
     showComments: true,
     showForeshadowMarks: true,
+    showLint: true,
   });
   useAnnotationStore.setState({
     showAnnotations: true,
     showReaderComments: true,
   });
 });
+
+/**
+ * Lint 指摘は mark ではなく decoration。gutter の collectChannels ロジックが
+ * lint decoration を review チャネルに拾えるかを検証する。ここでは lint field が
+ * gutter より先に適用される「正しい」プラグイン順 [lint, gutter] を手で組む。
+ *
+ * 注意: これはロジックの単体検証であって、production の実プラグイン順は保証
+ * しない。TipTap は登録順を反転するため、実際の適用順は GutterMarksExtension の
+ * priority に依存する。その順序契約は getEditorExtensions() 実体で組む統合テスト
+ * (gutterLintOrder.browser.test.tsx) で別途 gate する。
+ */
+function makeStateWithLint(
+  text: string,
+  diagnostics: Diagnostic[],
+): EditorState {
+  let state = EditorState.create({
+    doc: schema.nodes.doc.create({}, [
+      schema.nodes.paragraph.create({}, text ? [schema.text(text)] : []),
+    ]),
+    plugins: [createLintDecorationPlugin(), createGutterMarksPlugin()],
+  });
+  const view = {
+    state,
+    dispatch: (tr: Transaction) => {
+      state = state.apply(tr);
+    },
+  };
+  setLintDiagnostics(view, diagnostics);
+  return state;
+}
+
+const LINT_DIAG: Diagnostic = {
+  rule_id: "ja/sentence-length",
+  severity: "warning",
+  message: "一文が長すぎます",
+  range: { start: 0, end: 5 },
+};
 
 describe("GutterMarksPlugin", () => {
   it("puts no widget on plain paragraphs", () => {
@@ -248,6 +293,66 @@ describe("GutterMarksPlugin", () => {
     const tr = state.tr.addMark(1, 2, comment);
     state = state.apply(tr);
     expect(widgetKeys(state)).toHaveLength(1);
+  });
+
+  // ── 校閲+Lint 統合: Lint 指摘のみの段落にも review ガター記号を出す ──
+  // (bug2: scene2 の 2 段落で文字数=一文長 Lint はあるがガターアイコンが無い)
+
+  it("Lint 指摘のみの段落にも review ガター記号を出す", () => {
+    const state = makeStateWithLint("これはとても長い一文です。", [LINT_DIAG]);
+    expect(widgetKeys(state)).toEqual(["gutter-0-review"]);
+  });
+
+  it("showLint OFF では Lint 由来の review ガターを出さない", () => {
+    useCursorSettingsStore.setState({ showLint: false });
+    const state = makeStateWithLint("これはとても長い一文です。", [LINT_DIAG]);
+    expect(widgetKeys(state)).toHaveLength(0);
+  });
+
+  it("showLint トグル (LINT_REBUILD_META) で Lint review ガターが追従する", () => {
+    let state = makeStateWithLint("これはとても長い一文です。", [LINT_DIAG]);
+    expect(widgetKeys(state)).toEqual(["gutter-0-review"]);
+
+    useCursorSettingsStore.setState({ showLint: false });
+    state = state.apply(state.tr.setMeta(LINT_REBUILD_META, true));
+    expect(widgetKeys(state)).toHaveLength(0);
+  });
+
+  it("Lint 診断が消えたら review ガターも消える", () => {
+    let state = makeStateWithLint("これはとても長い一文です。", [LINT_DIAG]);
+    expect(widgetKeys(state)).toEqual(["gutter-0-review"]);
+
+    const view = {
+      state,
+      dispatch: (tr: Transaction) => {
+        state = state.apply(tr);
+      },
+    };
+    setLintDiagnostics(view, []);
+    expect(widgetKeys(state)).toHaveLength(0);
+  });
+
+  it("校閲アノテーションと Lint が同居しても review は 1 記号に集約する", () => {
+    // peAnnotation(校閲) + Lint 両方が同じ段落にある state を組む。
+    let state = EditorState.create({
+      doc: schema.nodes.doc.create({}, [
+        schema.nodes.paragraph.create({}, [
+          schema.text("校閲もLintもあるMOJIRETSU", [
+            schema.marks.peAnnotation.create(),
+          ]),
+        ]),
+      ]),
+      plugins: [createLintDecorationPlugin(), createGutterMarksPlugin()],
+    });
+    const view = {
+      state,
+      dispatch: (tr: Transaction) => {
+        state = state.apply(tr);
+      },
+    };
+    setLintDiagnostics(view, [LINT_DIAG]);
+    // review が 2 回 push されず 1 記号
+    expect(widgetKeys(state)).toEqual(["gutter-0-review"]);
   });
 });
 

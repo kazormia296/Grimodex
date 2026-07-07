@@ -1166,11 +1166,15 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 
 .gutter-marks {
-  display: inline-block;
-  width: 0;
-  height: 0;
+  /* display:inline (NOT inline-block): a zero-size inline-block atomic box at
+     the paragraph start forces an extra empty line box whenever the paragraph
+     wraps via overflow-wrap:break-word (long unbreakable runs) — a phantom
+     "改行" above the first line in both writing modes. A plain inline anchor
+     participates in the existing line box without spawning one, and still
+     serves as the position:relative containing block for the absolute
+     .gutter-marks__row. width/height are no-ops on inline and dropped. */
+  display: inline;
   position: relative;
-  vertical-align: top;
 }
 .gutter-marks__row {
   position: absolute;
@@ -1261,11 +1265,12 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
  * `--all` variant uses a slightly stronger fill to flag the broader
  * suppression. */
 .lint-disable-gutter {
-  display: inline-block;
-  width: 0;
-  height: 0;
+  /* display:inline (NOT inline-block): 同じ 0×0 inline-block anchor は
+     .gutter-marks と同様、break-word で折り返す段落先頭で空行を1つ余分に生む
+     (幻の改行)。inline なら既存の行ボックスに参加し行を増やさない。::before の
+     ドットは position:relative アンカーからの絶対配置なので inline でも位置は保つ。 */
+  display: inline;
   position: relative;
-  vertical-align: top;
   pointer-events: auto;
 }
 .lint-disable-gutter::before {
