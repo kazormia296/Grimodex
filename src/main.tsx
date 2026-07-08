@@ -44,6 +44,7 @@ import "@fontsource/literata/latin-700.css";
 import "@fontsource/literata/latin-400-italic.css";
 import "@fontsource/literata/latin-700-italic.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
+import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
 
 window.addEventListener("unhandledrejection", (event) => {
   debugLog.error("Global", "unhandled rejection", errorDetail(event.reason));
@@ -68,6 +69,9 @@ document.addEventListener("keydown", (e) => {
     e.key === "F3";
   if (blocked) e.preventDefault();
 });
+
+// Windows: Alt / Alt+Space でシステムメニューが出るのを、エディタ編集中は抑止。
+installSuppressSystemMenuOnAlt();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

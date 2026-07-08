@@ -1334,8 +1334,8 @@
   },
   "kouetsu": {
     "triage": {
-      "openSuffix": "件の指摘が開いています",
-      "noOpen": "開いている指摘はありません",
+      "openSuffix": "件の指摘がOpenです",
+      "noOpen": "Open の指摘はありません",
       "lastCheck": "最終チェック {{time}}",
       "sev": {
         "high": "重大",
@@ -1382,7 +1382,7 @@
         "grouped": "グループ: 観点",
         "dismissed": "除外した項目"
       },
-      "emptyOpen": "このスコープに開いている指摘はありません",
+      "emptyOpen": "このスコープに Open の指摘はありません",
       "emptyDismissed": "除外した指摘はありません",
       "run": "実行",
       "rerun": "再実行",

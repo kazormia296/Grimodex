@@ -293,18 +293,18 @@ describe("IssuesInbox サマリーステージ", () => {
     render(<IssuesInbox />);
     // 大きい件数（サマリー）+ 凡例（重大/注意/提案 各 1）
     expect(screen.getByText("3")).toBeInTheDocument();
-    expect(screen.getByText("件の指摘が開いています")).toBeInTheDocument();
+    expect(screen.getByText("件の指摘がOpenです")).toBeInTheDocument();
     expect(screen.getByText("重大 1")).toBeInTheDocument();
     expect(screen.getByText("注意 1")).toBeInTheDocument();
     expect(screen.getByText("提案 1")).toBeInTheDocument();
   });
 
-  it("0 件では「開いている指摘はありません」", () => {
+  it("0 件では「Open の指摘はありません」", () => {
     h.open = [];
     render(<IssuesInbox />);
-    expect(screen.getByText("開いている指摘はありません")).toBeInTheDocument();
+    expect(screen.getByText("Open の指摘はありません")).toBeInTheDocument();
     expect(
-      screen.getByText("このスコープに開いている指摘はありません"),
+      screen.getByText("このスコープに Open の指摘はありません"),
     ).toBeInTheDocument();
   });
 });
@@ -535,7 +535,7 @@ describe("IssuesInbox ステージ共存（サイズ十分 = coexist）", () => 
     useKouetsuStore.setState({ dashboardOn: true });
     render(<IssuesInbox />);
     expect(screen.getByTestId("triage-dashboard")).toBeInTheDocument();
-    expect(screen.getByText("件の指摘が開いています")).toBeInTheDocument();
+    expect(screen.getByText("件の指摘がOpenです")).toBeInTheDocument();
   });
 
   it("coexist では選択カードとダッシュボードが併存する（サマリーとカードは排他）", () => {
@@ -545,14 +545,14 @@ describe("IssuesInbox ステージ共存（サイズ十分 = coexist）", () => 
     fireEvent.click(screen.getByText("田中の年齢が矛盾しています"));
     expect(screen.getByTestId("triage-dashboard")).toBeInTheDocument();
     expect(screen.getByText("本文へ")).toBeInTheDocument();
-    expect(screen.queryByText("件の指摘が開いています")).toBeNull();
+    expect(screen.queryByText("件の指摘がOpenです")).toBeNull();
   });
 
   it("coexist でなければ従来どおり排他（選択でカードのみ、サマリーも出ない）", () => {
     useKouetsuStore.setState({ dashboardOn: true });
     render(<IssuesInbox />);
     expect(screen.getByTestId("triage-dashboard")).toBeInTheDocument();
-    expect(screen.queryByText("件の指摘が開いています")).toBeNull();
+    expect(screen.queryByText("件の指摘がOpenです")).toBeNull();
 
     fireEvent.click(screen.getByText("田中の年齢が矛盾しています"));
     expect(screen.queryByTestId("triage-dashboard")).toBeNull();
@@ -574,6 +574,6 @@ describe("IssuesInbox ステージ共存（サイズ十分 = coexist）", () => 
     });
     expect(screen.getByText("全体チェック — 現在シーン")).toBeInTheDocument();
     expect(screen.queryByTestId("triage-dashboard")).toBeNull();
-    expect(screen.queryByText("件の指摘が開いています")).toBeNull();
+    expect(screen.queryByText("件の指摘がOpenです")).toBeNull();
   });
 });

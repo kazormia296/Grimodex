@@ -24,20 +24,28 @@ vi.mock("@/features/settings/migration", () => ({
 
 vi.mock("@/features/settings/api", () => ({
   setProjectSetting: vi.fn().mockResolvedValue(undefined),
+  getSetting: vi.fn().mockResolvedValue(null),
+  setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { reloadProjectData } from "./reloadProjectData";
 import { seedCodexTypesFromProject } from "./seedCodexTypes";
 import { ensureBuiltinTypes } from "@/features/codex/typeApi";
+import { getSetting, setSetting } from "@/features/settings/api";
 
 const mockedReload = vi.mocked(reloadProjectData);
 const mockedSeed = vi.mocked(seedCodexTypesFromProject);
 const mockedEnsureBuiltin = vi.mocked(ensureBuiltinTypes);
+const mockedGetSetting = vi.mocked(getSetting);
+const mockedSetSetting = vi.mocked(setSetting);
 
 beforeEach(async () => {
   mockedReload.mockClear();
   mockedSeed.mockClear();
   mockedEnsureBuiltin.mockClear();
+  mockedGetSetting.mockReset();
+  mockedGetSetting.mockResolvedValue(null);
+  mockedSetSetting.mockClear();
   useProjectStore.setState({
     currentProjectId: null,
     projects: [],
@@ -60,6 +68,36 @@ describe("useProjectStore", () => {
       expect(useProjectStore.getState().currentProjectId).toBe(PROJECT_ID);
       expect(useProjectStore.getState().projects).toHaveLength(1);
     });
+
+    it("restores last active project from app_settings when valid", async () => {
+      const now = new Date().toISOString();
+      await db.insert(projects).values({
+        id: "proj-b",
+        title: "Second Novel",
+        createdAt: now,
+        updatedAt: now,
+      });
+      mockedGetSetting.mockResolvedValue("proj-b");
+
+      await useProjectStore.getState().initCurrentProject();
+
+      expect(useProjectStore.getState().currentProjectId).toBe("proj-b");
+    });
+
+    it("falls back to first project when saved id is missing", async () => {
+      const now = new Date().toISOString();
+      await db.insert(projects).values({
+        id: "proj-b",
+        title: "Second Novel",
+        createdAt: now,
+        updatedAt: now,
+      });
+      mockedGetSetting.mockResolvedValue("deleted-project");
+
+      await useProjectStore.getState().initCurrentProject();
+
+      expect(useProjectStore.getState().currentProjectId).toBe(PROJECT_ID);
+    });
   });
 
   describe("loadProject", () => {
@@ -80,6 +118,10 @@ describe("useProjectStore", () => {
       expect(useProjectStore.getState().currentProjectId).toBe("proj-b");
       expect(document.documentElement.lang).toBe("en");
       expect(mockedReload).toHaveBeenCalledWith("proj-b");
+      expect(mockedSetSetting).toHaveBeenCalledWith(
+        "workspace.lastActiveProjectId",
+        "proj-b",
+      );
     });
 
     it("switching project clears undo history even when reloadProjectData is mocked", async () => {
