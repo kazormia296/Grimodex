@@ -12,9 +12,9 @@ pub async fn get_project(server: &GrimodexServer) -> Result<CallToolResult, Erro
     let conn = server.conn.lock().map_err(internal_err)?;
     let project = db::get_project(&conn, &pid).map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&project).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 pub async fn get_project_stats(server: &GrimodexServer) -> Result<CallToolResult, ErrorData> {
@@ -22,9 +22,9 @@ pub async fn get_project_stats(server: &GrimodexServer) -> Result<CallToolResult
     let conn = server.conn.lock().map_err(internal_err)?;
     let stats = db::get_project_stats(&conn, &pid).map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&stats).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 /// List projects. In pinned mode (default) returns only the bound project so
@@ -42,9 +42,9 @@ pub async fn list_projects(server: &GrimodexServer) -> Result<CallToolResult, Er
         }
     };
     let json = serde_json::to_string_pretty(&summaries).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -79,9 +79,9 @@ pub async fn select_project(
     server.set_current_project(params.project_id.clone());
     let body = serde_json::json!({ "selected": params.project_id, "title": title });
     let json = serde_json::to_string_pretty(&body).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[cfg(test)]

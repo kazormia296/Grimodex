@@ -514,9 +514,9 @@ pub async fn get_writing_context(
         .ok_or_else(|| ErrorData::invalid_params("scene not found in project", None))?;
     drop(conn);
     let json = serde_json::to_string_pretty(&ctx).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[cfg(test)]

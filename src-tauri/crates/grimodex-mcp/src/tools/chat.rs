@@ -37,9 +37,9 @@ pub async fn list_chat_sessions(
         .map_err(internal_err)?;
 
     let json = serde_json::to_string_pretty(&sessions).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 pub async fn read_chat_history(
@@ -65,7 +65,7 @@ pub async fn read_chat_history(
     .map_err(internal_err)?;
 
     let json = serde_json::to_string_pretty(&messages).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }

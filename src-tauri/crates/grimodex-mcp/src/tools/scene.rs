@@ -87,9 +87,9 @@ pub async fn read_scene(
     drop(conn);
 
     let json = serde_json::to_string_pretty(&results).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 pub async fn read_scenes_batch(
@@ -121,9 +121,9 @@ pub async fn read_scenes_batch(
     drop(conn);
 
     let json = serde_json::to_string_pretty(&results).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -300,9 +300,9 @@ pub async fn propose_scene_body(
         Ok(res) => {
             grimodex_core::commit_or_rollback(&conn).map_err(internal_err)?;
             let json = serde_json::to_string_pretty(&res).map_err(internal_err)?;
-            Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-                json,
-            )]))
+            Ok(CallToolResult::success(vec![
+                rmcp::model::ContentBlock::text(json),
+            ]))
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");

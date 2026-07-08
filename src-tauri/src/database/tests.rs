@@ -3774,7 +3774,11 @@ fn test_rebuild_fts_if_stale_repopulates_empty_index() {
             "get",
         )
         .expect("q marker");
-    assert_eq!(marker[0]["n"], Value::from(0), "rebuild 後 marker はクリアされる");
+    assert_eq!(
+        marker[0]["n"],
+        Value::from(0),
+        "rebuild 後 marker はクリアされる"
+    );
 }
 
 #[test]

@@ -38,9 +38,9 @@ pub async fn list_codex_entries(
     let entries =
         db::list_codex_entries(&conn, &server.project_id(), &filter).map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&entries).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 pub async fn get_codex_entry(
@@ -82,9 +82,9 @@ pub async fn get_codex_entry(
         .collect();
 
     let json = serde_json::to_string_pretty(&entries).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 // ─── Chat executor parity read tools ─────────────────────────────────────────
@@ -104,9 +104,9 @@ pub async fn list_codex_tags(
     let tags = db::list_codex_tags(&conn, &server.project_id(), params.type_filter.as_deref())
         .map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&tags).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -123,9 +123,9 @@ pub async fn search_codex_by_tags(
     let entries = db::search_codex_by_tags(&conn, &server.project_id(), &params.tags)
         .map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&entries).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -145,9 +145,9 @@ pub async fn find_related_entries(
     if id.is_empty() {
         let json = serde_json::to_string_pretty(&Vec::<db::RelatedCodexEntry>::new())
             .map_err(internal_err)?;
-        return Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-            json,
-        )]));
+        return Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(json),
+        ]));
     }
     let conn = server.conn.lock().map_err(internal_err)?;
     let entries = db::find_related_entries(
@@ -158,9 +158,9 @@ pub async fn find_related_entries(
     )
     .map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&entries).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 // ─── Phase 3: write tools ────────────────────────────────────────────────────
@@ -300,9 +300,9 @@ pub async fn create_codex_entry(
         message: format!("Codex entry '{}' created with id {}", name, new_id),
     };
     let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -451,9 +451,9 @@ pub async fn update_codex_entry(
         "message": "Codex entry updated successfully"
     })
     .to_string();
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[cfg(test)]

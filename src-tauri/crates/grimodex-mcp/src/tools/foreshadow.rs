@@ -28,9 +28,9 @@ pub async fn list_open_foreshadows(server: &GrimodexServer) -> Result<CallToolRe
     let conn = server.conn.lock().map_err(internal_err)?;
     let rows = db::list_open_foreshadows(&conn, &server.project_id()).map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&rows).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -46,18 +46,18 @@ pub async fn get_foreshadow_detail(
     let id = params.id.trim();
     if id.is_empty() {
         let json = "null".to_string();
-        return Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-            json,
-        )]));
+        return Ok(CallToolResult::success(vec![
+            rmcp::model::ContentBlock::text(json),
+        ]));
     }
 
     let conn = server.conn.lock().map_err(internal_err)?;
     let detail =
         db::get_foreshadow_detail(&conn, &server.project_id(), id).map_err(internal_err)?;
     let json = serde_json::to_string_pretty(&detail).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -148,9 +148,9 @@ pub async fn create_foreshadow(
         message: format!("Foreshadow '{title}' created with id {id}"),
     };
     let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -272,9 +272,9 @@ pub async fn update_foreshadow(
         message: format!("Foreshadow {id} updated"),
     };
     let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
-    Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-        json,
-    )]))
+    Ok(CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text(json),
+    ]))
 }
 
 #[cfg(test)]
