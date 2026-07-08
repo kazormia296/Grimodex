@@ -1,12 +1,9 @@
 import type { EditorState } from "@tiptap/pm/state";
 import type { ReorderGranularity, ReorderUnit } from "./types";
-import { splitSentences } from "./sentenceSplit";
 import { resolveParagraphAtSelection } from "./paragraphFlat";
-import { getCachedBunsetsuUnits } from "./bunsetsuSegmenter";
-
-function isJapanese(language: string | undefined): boolean {
-  return !(language ?? "ja").toLowerCase().startsWith("en");
-}
+import { getCachedBunsetsuUnits, isJapanese } from "./bunsetsuSegmenter";
+import { buildReorderUnits } from "./reorderUnits";
+import { splitSentences } from "./sentenceSplit";
 
 /**
  * 粒度と言語から paragraph の reorder units を解決する。
@@ -21,13 +18,25 @@ export function resolveUnitsForParagraph(
   const resolved = resolveParagraphAtSelection(state);
   if (!resolved) return null;
 
+  if (granularity === "character") {
+    return buildReorderUnits(state, resolved, "character", language);
+  }
+
   if (granularity === "bunsetsu" && isJapanese(language)) {
     const bunsetsu =
       bunsetsuOverride ?? getCachedBunsetsuUnits(state, language);
-    if (bunsetsu && bunsetsu.length > 1) return bunsetsu;
+    const units = buildReorderUnits(
+      state,
+      resolved,
+      "bunsetsu",
+      language,
+      bunsetsu,
+    );
+    if (units && units.length > 1) return units;
     // fallback
+    const sentences = splitSentences(resolved.flat.text, language);
+    return sentences.length > 0 ? sentences : null;
   }
 
-  const sentences = splitSentences(resolved.flat.text, language);
-  return sentences.length > 0 ? sentences : null;
+  return buildReorderUnits(state, resolved, granularity, language);
 }

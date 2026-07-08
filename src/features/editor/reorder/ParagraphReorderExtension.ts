@@ -5,6 +5,7 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getCurrentProjectLanguage } from "@/features/project/projectStore";
 import type { ReorderGranularity } from "./types";
 import { resolveSelectionUnits } from "./selectionUnit";
+import { getSelectionFlatRange } from "./reorderUnits";
 import {
   buildAdjacentUnitSwapTransaction,
   buildParagraphReorderTransaction,
@@ -181,6 +182,7 @@ export const ParagraphReorderExtension = Extension.create({
             ctx.unitIndex,
             -1,
             tr,
+            getSelectionFlatRange(state, ctx.resolved) ?? undefined,
           );
           if (!result) return false;
           if (dispatch) dispatch(result.tr);
@@ -209,6 +211,7 @@ export const ParagraphReorderExtension = Extension.create({
             ctx.unitIndex,
             1,
             tr,
+            getSelectionFlatRange(state, ctx.resolved) ?? undefined,
           );
           if (!result) return false;
           if (dispatch) dispatch(result.tr);
@@ -218,12 +221,20 @@ export const ParagraphReorderExtension = Extension.create({
         () =>
         ({ state, tr, dispatch }) => {
           const language = getCurrentProjectLanguage();
-          if (!isJapanese(language)) return false;
-          const next =
-            getGranularity(state) === "sentence" ? "bunsetsu" : "sentence";
+          const current = getGranularity(state);
+          let next: ReorderGranularity;
+          if (isJapanese(language)) {
+            next =
+              current === "sentence"
+                ? "bunsetsu"
+                : current === "bunsetsu"
+                  ? "character"
+                  : "sentence";
+          } else {
+            next = current === "sentence" ? "character" : "sentence";
+          }
           if (!dispatch) return true;
           dispatch(tr.setMeta(reorderKey, { setGranularity: next }));
-          // フッター表示 + 装飾プラグインの再描画トリガ用にストアへミラー。
           useReorderModifierStore.getState().setGranularity(next);
           return true;
         },

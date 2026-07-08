@@ -313,6 +313,68 @@ describe("ReorderInteractionExtension", () => {
     ]);
   });
 
+  it("character mode shows only the active unit frame without color bands", () => {
+    editor = makeEditor("<p>ABCD</p>");
+    editor.commands.setTextSelection(2);
+    editor.commands.setReorderGranularity("character");
+    useReorderModifierStore.getState().setMode("altShift");
+
+    const inline = decos(editor).filter((d) =>
+      classOf(d).includes("reorder-unit"),
+    );
+    expect(inline).toHaveLength(1);
+    expect(classOf(inline[0]!)).toContain("reorder-unit-character");
+    expect(classOf(inline[0]!)).not.toMatch(/reorder-unit-c\d/);
+  });
+
+  it("selection override treats selected span as one sentence unit", () => {
+    editor = makeEditor("<p>あいう。えお。かきく。</p>");
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const flat = resolved.flat;
+    const selFrom = flat.flatPmPos[4]!;
+    const selTo = flat.flatPmPos[6]! + 1;
+    editor.commands.setTextSelection({ from: selFrom, to: selTo });
+    useReorderModifierStore.getState().setMode("altShift");
+
+    const inline = decos(editor).filter((d) =>
+      classOf(d).includes("reorder-unit"),
+    );
+    const override = inline.filter((d) =>
+      classOf(d).includes("reorder-unit-selection-override"),
+    );
+    expect(override).toHaveLength(1);
+    expect(inline.length).toBeGreaterThan(2);
+  });
+
+  it("character + selection: keyboard swap keeps all text and preserves the selection (regression: data loss)", () => {
+    editor = makeEditor("<p>ABCDEF</p>");
+    // "CD" を範囲選択（PM [3,5)）。
+    editor.commands.setTextSelection({ from: 3, to: 5 });
+    editor.commands.setReorderGranularity("character");
+    const ok = editor.commands.swapUnitDownInner();
+    expect(ok).toBe(true);
+    // 選択外の文字（A,B,E,F）が一切消えない。
+    expect(editor.state.doc.textContent).toBe("ABECDF");
+    // 選択は移動後の "CD" を維持している。
+    const { from, to } = editor.state.selection;
+    expect(editor.state.doc.textBetween(from, to)).toBe("CD");
+  });
+
+  it("bunsetsu + selection straddling boundaries: swap keeps every character (regression: data loss)", async () => {
+    clearBunsetsuCache();
+    editor = makeEditor("<p>あいうえおか</p>");
+    await fetchBunsetsuUnits("あいうえおか");
+    // 文節 [0,2)[2,4)[4,6) を跨ぐ選択 flat [3,5) → PM [4,6)。
+    editor.commands.setTextSelection({ from: 4, to: 6 });
+    editor.commands.setReorderGranularity("bunsetsu");
+    const ok = editor.commands.swapUnitDownInner();
+    expect(ok).toBe(true);
+    // 6 文字すべて保持（脱落なし）。
+    expect(editor.state.doc.textContent).toBe("あいうかえお");
+    const { from, to } = editor.state.selection;
+    expect(editor.state.doc.textBetween(from, to)).toBe("えお");
+  });
+
   it("drag cleanup removes window listeners (no dangling swaps after mouseup)", () => {
     editor = makeEditor("<p>AAA。BBB。CCC。</p>");
     editor.commands.setTextSelection(2);

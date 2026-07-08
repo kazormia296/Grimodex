@@ -3487,6 +3487,7 @@
       "title": "Reorder — within paragraph",
       "granularitySentence": "Sentence",
       "granularityBunsetsu": "Bunsetsu",
+      "granularityCharacter": "Character",
       "loading": "Segmenting…",
       "singleUnit": "Need at least two units to reorder",
       "bunsetsuFallback": "Bunsetsu segmentation failed; showing sentences",
@@ -3496,12 +3497,13 @@
       "confirm": "Apply",
       "hint": {
         "currentUnit": "Unit: {{unit}}",
-        "base": "Alt: paragraphs / Alt+Shift: sentences · bunsetsu",
+        "base": "Alt: paragraphs / Alt+Shift: sentences · bunsetsu · characters",
         "paragraph": "Reorder paragraphs (drag handle / Alt+arrows)",
         "altShiftActive": "Reorder within paragraph (drag / Alt+Shift+arrows)",
         "unitSentence": "Reorder sentences (drag / Alt+Shift+arrows)",
         "unitBunsetsu": "Reorder bunsetsu (drag / Alt+Shift+arrows)",
         "switchToBunsetsu": "Alt+Shift+G → bunsetsu",
+        "switchToCharacter": "Alt+Shift+G → characters",
         "switchToSentence": "Alt+Shift+G → sentences"
       }
     },

@@ -1144,6 +1144,21 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .reorder-unit-sentence {
   /* 文モードは背景色帯のみ（上記 c0–c4）。 */
 }
+/* 文字モード: 色帯なし。入れ替え対象（active）の枠のみ。 */
+.reorder-unit-character {
+  background: none !important;
+  padding-inline: 0;
+}
+.reorder-unit-character.reorder-unit-active,
+.reorder-unit-character.reorder-unit-dragging {
+  box-shadow: inset 0 0 0 1.5px var(--primary);
+  border-radius: 2px;
+}
+/* 範囲選択で強制された 1 unit（文/文節）。 */
+.reorder-unit-selection-override {
+  outline: 1.5px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 1px;
+}
 /* カーソル位置の単位を強調（内側リング）。 */
 .reorder-unit-active {
   box-shadow: inset 0 0 0 1.5px var(--primary);

@@ -13,7 +13,11 @@ import {
   resolveParagraphAtSelection,
   type ResolvedParagraph,
 } from "./paragraphFlat";
-import { splitSentences } from "./sentenceSplit";
+import {
+  buildReorderUnits,
+  getSelectionFlatRange,
+  isSelectionOverrideUnit,
+} from "./reorderUnits";
 import {
   fetchBunsetsuUnits,
   getBunsetsuUnitsForText,
@@ -122,20 +126,12 @@ function refreshDecorations(view: EditorView): void {
 
 // ── units 解決（任意段落・粒度）────────────────────────────────────
 function unitsForResolved(
+  state: EditorState,
   resolved: ResolvedParagraph,
   granularity: ReorderGranularity,
   language: string | undefined,
 ): ReorderUnit[] | null {
-  if (granularity === "bunsetsu" && isJapanese(language)) {
-    const bunsetsu = getBunsetsuUnitsForText(resolved.flat.text);
-    if (bunsetsu && bunsetsu.length > 1) return bunsetsu;
-    // cache miss / in-flight → 文粒度へフォールバックしない（文節モード中に
-    // 文単位の色帯が出ると入れ替え対象が分からなくなる）。prefetch 完了後に
-    // refreshDecorations で文節帯を描く。
-    return null;
-  }
-  const sentences = splitSentences(resolved.flat.text, language);
-  return sentences.length > 1 ? sentences : null;
+  return buildReorderUnits(state, resolved, granularity, language);
 }
 
 // ── 装飾ビルド ────────────────────────────────────────────────────
@@ -145,24 +141,35 @@ function unitBandDecorations(
   activeIndex: number,
   dragging: boolean,
   granularity: ReorderGranularity,
+  selectionRange: { from: number; to: number } | null,
 ): Decoration[] {
   const decos: Decoration[] = [];
-  for (let i = 0; i < units.length; i++) {
-    const u = units[i]!;
-    if (u.to <= u.from) continue; // 空 unit ガード（flatRangeToPm は空で throw）
+  const indices =
+    granularity === "character" ? [activeIndex] : units.map((_, i) => i);
+
+  for (const i of indices) {
+    const u = units[i];
+    if (!u || u.to <= u.from) continue;
     let pm: { from: number; to: number };
     try {
       pm = flatRangeToPm(resolved.flat, u.from, u.to);
     } catch {
       continue;
     }
-    const classes = [
-      "reorder-unit",
-      `reorder-unit-c${i % BAND_COUNT}`,
-      granularity === "bunsetsu"
-        ? "reorder-unit-bunsetsu"
-        : "reorder-unit-sentence",
-    ];
+    const classes = ["reorder-unit"];
+    if (granularity === "character") {
+      classes.push("reorder-unit-character");
+    } else {
+      classes.push(`reorder-unit-c${i % BAND_COUNT}`);
+      classes.push(
+        granularity === "bunsetsu"
+          ? "reorder-unit-bunsetsu"
+          : "reorder-unit-sentence",
+      );
+    }
+    if (isSelectionOverrideUnit(u, selectionRange)) {
+      classes.push("reorder-unit-selection-override");
+    }
     if (i === activeIndex) classes.push("reorder-unit-active");
     if (dragging && i === activeIndex) classes.push("reorder-unit-dragging");
     decos.push(
@@ -183,24 +190,45 @@ function buildAltShiftDecorations(
   granularity: ReorderGranularity,
 ): Decoration[] {
   const language = getCurrentProjectLanguage();
+  const selectionRange = (() => {
+    if (drag) {
+      const resolved = resolveParagraphAtPos(state, drag.blockPos);
+      return resolved ? getSelectionFlatRange(state, resolved) : null;
+    }
+    const resolved = resolveParagraphAtSelection(state);
+    return resolved ? getSelectionFlatRange(state, resolved) : null;
+  })();
 
-  // ドラッグ中はスナップショット units を使い、途中で再セグメント（文節→文へ
-  // 化ける）しないようにする。drag はプラグイン状態なので view ごとに独立。
+  // ドラッグ中はスナップショット units を使い、途中で再セグメントしない。
   if (drag) {
     const resolved = resolveParagraphAtPos(state, drag.blockPos);
     if (!resolved) return [];
     const cu = currentUnitsFromOrder(drag.units0, drag.order);
     const activeSlot = slotOfOriginal(drag.order, drag.draggedOriginal);
-    return unitBandDecorations(resolved, cu, activeSlot, true, granularity);
+    return unitBandDecorations(
+      resolved,
+      cu,
+      activeSlot,
+      true,
+      granularity,
+      selectionRange,
+    );
   }
 
   const resolved = resolveParagraphAtSelection(state);
   if (!resolved) return [];
-  const units = unitsForResolved(resolved, granularity, language);
+  const units = unitsForResolved(state, resolved, granularity, language);
   if (!units) return [];
   const caretFlat = pmPosToFlatOffset(resolved.flat, state.selection.from);
   const activeIndex = findUnitIndexAtFlatOffset(units, caretFlat);
-  return unitBandDecorations(resolved, units, activeIndex, false, granularity);
+  return unitBandDecorations(
+    resolved,
+    units,
+    activeIndex,
+    false,
+    granularity,
+    selectionRange,
+  );
 }
 
 function createBlockHandle(
@@ -355,12 +383,22 @@ function trySwapUnitTowardPointer(
   if (dir === 0) return null;
   const resolvedNow = resolveParagraphAtPos(view.state, blockPos);
   if (!resolvedNow) return null;
+  // ドラッグ中の unit がライブ選択（範囲オーバーライド）と一致するなら、swap 後も
+  // その範囲を選択し続ける（選択解除による前後 unit との融合を防ぐ）。
+  const dragged = cu[curSlot]!;
+  const liveSel = getSelectionFlatRange(view.state, resolvedNow);
+  const selectionFlatRange =
+    liveSel && liveSel.from === dragged.from && liveSel.to === dragged.to
+      ? liveSel
+      : undefined;
   const res = buildAdjacentUnitSwapTransaction(
     view.state,
     resolvedNow,
     cu,
     curSlot,
     dir,
+    undefined,
+    selectionFlatRange,
   );
   if (!res) return null;
   const nextOrder = swapSlots(order, curSlot, curSlot + dir);
@@ -442,7 +480,7 @@ function tryStartUnitDragFromMouse(
   if (!resolved) return false; // paragraph 以外は対象外
   const language = getCurrentProjectLanguage();
   const granularity = effectiveGranularity(view.state, language);
-  const units0 = unitsForResolved(resolved, granularity, language);
+  const units0 = unitsForResolved(view.state, resolved, granularity, language);
   if (!units0 || units0.length <= 1) return false;
   const flatOffset = pmPosToFlatOffset(resolved.flat, info.pos);
   const startSlot = findUnitIndexAtFlatOffset(units0, flatOffset);

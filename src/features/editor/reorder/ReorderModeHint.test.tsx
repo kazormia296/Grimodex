@@ -21,6 +21,15 @@ describe("ReorderModeHint", () => {
     expect(container.textContent).not.toContain("入れ替え単位");
   });
 
+  it("shows character unit label when granularity is character", () => {
+    useReorderModifierStore.setState({
+      mode: "altShift",
+      granularity: "character",
+    });
+    const { container } = render(<ReorderModeHint />);
+    expect(container.textContent).toContain("文字");
+  });
+
   it("shows the current-unit badge only while mode is altShift", () => {
     useReorderModifierStore.setState({
       mode: "altShift",

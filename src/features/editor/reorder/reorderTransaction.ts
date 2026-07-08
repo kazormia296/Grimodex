@@ -62,6 +62,12 @@ export function buildParagraphReorderTransaction(
   order: number[],
   caretFlatOffset?: number,
   transaction?: Transaction,
+  /**
+   * 範囲選択オーバーライドの flat 区間。指定時は、その unit の移動後 PM 範囲へ
+   * TextSelection を張り直して選択を維持する（選択が解除されると次回 build で
+   * override が消え、移動先で前後 unit と融合してしまうのを防ぐ）。
+   */
+  selectionFlatRange?: { from: number; to: number },
 ): ParagraphReorderResult | null {
   if (units.length <= 1) return null;
   if (!isValidPermutation(order, units.length)) return null;
@@ -101,6 +107,16 @@ export function buildParagraphReorderTransaction(
 
   const newFlat = flattenParagraph(newNode, resolved.contentFrom);
 
+  const selUnitIdx =
+    selectionFlatRange !== undefined
+      ? units.findIndex(
+          (u) =>
+            u.from === selectionFlatRange.from &&
+            u.to === selectionFlatRange.to,
+        )
+      : -1;
+  let selNewPm: { from: number; to: number } | null = null;
+
   let newFlatCursor = 0;
   const segments: RangeSegmentMap[] = [];
   for (const unitIdx of order) {
@@ -114,6 +130,7 @@ export function buildParagraphReorderTransaction(
       newFrom: newPm.from,
       newTo: newPm.to,
     });
+    if (unitIdx === selUnitIdx) selNewPm = newPm;
     newFlatCursor += len;
   }
 
@@ -123,7 +140,10 @@ export function buildParagraphReorderTransaction(
   };
   tr2.setMeta("codexHighlightReorder", reorderMeta);
 
-  if (caretFlatOffset !== undefined) {
+  if (selNewPm) {
+    // 選択オーバーライド unit を移動後の位置で選択し直す（範囲維持）。
+    tr2.setSelection(TextSelection.create(tr2.doc, selNewPm.from, selNewPm.to));
+  } else if (caretFlatOffset !== undefined) {
     const newFlatOffset = mapFlatOffsetThroughPermutation(
       units,
       order,
@@ -148,6 +168,7 @@ export function buildAdjacentUnitSwapTransaction(
   unitIndex: number,
   dir: -1 | 1,
   transaction?: Transaction,
+  selectionFlatRange?: { from: number; to: number },
 ): ParagraphReorderResult | null {
   const target = unitIndex + dir;
   if (target < 0 || target >= units.length) return null;
@@ -163,6 +184,7 @@ export function buildAdjacentUnitSwapTransaction(
     order,
     caretFlat,
     transaction,
+    selectionFlatRange,
   );
 }
 

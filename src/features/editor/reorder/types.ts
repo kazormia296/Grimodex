@@ -1,5 +1,5 @@
 /** 並べ替えの作業粒度。 */
-export type ReorderGranularity = "sentence" | "bunsetsu";
+export type ReorderGranularity = "sentence" | "bunsetsu" | "character";
 
 /** 段落 flat テキスト上の 1 単位（半開区間 [from, to)）。 */
 export interface ReorderUnit {
