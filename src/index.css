@@ -826,28 +826,67 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   display: inline;
   position: relative;
 }
+.pm-ws-space,
+.pm-ws-ideographic,
+.pm-ws-tab {
+  /* 実空白は見えないようにし、::before マークだけ描画する */
+  color: transparent;
+}
+
+/* 半角空白 (·) / 全角空白 (□) は「フォント由来グリフ」ではなく CSS 図形で描く。
+   理由: U+00B7 / U+25A1 はプラットフォームのフォントフォールバックに依存し、
+   グリフの advance も ink 位置も環境で変わる。実測で □(U+25A1) は Noto Serif JP
+   に無く、Linux フォールバックでは advance 0.6em・Windows では 2em になる。
+   text-align:center は「グリフの advance」を中央寄せするだけなので、ink が advance
+   内で偏るフォールバックフォント(= ユーザーの Windows 実機)では □/· が横(左)ずれ
+   する — これが「テストは緑・日本語実機だけ左寄り」の真因。図形なら advance/ink
+   非依存で対称に描け、inset+margin:auto で span ボックス中央に確実に収まる。span
+   ボックスは空白文字そのもの(=文字間の隙間)なので、図形が span 中央にいれば隙間の
+   中央に見え、全 OS・全フォントで一致する。transform を使わないのは getComputedStyle
+   で検証可能にするため。 */
 .pm-ws-space::before,
-.pm-ws-ideographic::before,
-.pm-ws-tab::before {
+.pm-ws-ideographic::before {
+  content: "";
   position: absolute;
   inset-block: 0;
   inset-inline: 0;
-  text-align: center;
-  line-height: inherit;
-  color: var(--muted-foreground);
+  margin: auto;
   opacity: 0.45;
   user-select: none;
   pointer-events: none;
 }
 .pm-ws-space::before {
-  content: "·";
+  /* 中黒相当の小さなドット */
+  inline-size: 0.16em;
+  block-size: 0.16em;
+  border-radius: 50%;
+  background-color: var(--muted-foreground);
 }
 .pm-ws-ideographic::before {
-  content: "□";
+  /* 全角スペースの中空四角 */
+  inline-size: 0.5em;
+  block-size: 0.5em;
+  box-sizing: border-box;
+  border: 1px solid var(--muted-foreground);
+  border-radius: 1px;
 }
+
+/* タブ (→) はグリフのまま: 行頭 (inline-start) 寄せで、中央寄せ由来の横ずれ問題の
+   対象外。全角/半角空白のような「隙間の中央」要件が無いため図形化は見送る。 */
 .pm-ws-tab::before {
   content: "→";
+  position: absolute;
+  inset-inline-start: 0;
+  top: 50%;
+  height: 1em;
+  margin-top: -0.5em;
+  line-height: 1em;
+  font-size: 1em;
   text-align: start;
+  color: var(--muted-foreground);
+  opacity: 0.45;
+  user-select: none;
+  pointer-events: none;
 }
 /* hardBreak ↵ / 段落末 ¶ — フロー幅ゼロ widget。グリフは ::before で描画。 */
 .pm-ws-br,
