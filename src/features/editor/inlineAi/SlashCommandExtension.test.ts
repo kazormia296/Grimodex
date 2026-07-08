@@ -11,8 +11,27 @@ import {
 } from "./inlineAiCommands";
 
 describe("filterCommands", () => {
-  it("returns all commands for empty query", () => {
-    expect(filterCommands("")).toHaveLength(INLINE_AI_COMMANDS.length);
+  it("returns all non-selection commands for empty query", () => {
+    // slash メニューは "/" 打鍵で選択が破壊されるため needsSelection の置換系
+    // コマンド (rewrite/shorten/expand/tone/translate) を除外する。
+    const expected = INLINE_AI_COMMANDS.filter((c) => !c.needsSelection).length;
+    expect(filterCommands("")).toHaveLength(expected);
+  });
+
+  it("excludes needsSelection commands from the slash list", () => {
+    const ids = filterCommands("").map((c) => c.id);
+    for (const excluded of [
+      "rewrite",
+      "shorten",
+      "expand",
+      "tone",
+      "translate",
+    ]) {
+      expect(ids).not.toContain(excluded);
+    }
+    // insert 系 (needsSelection:false) は残る。
+    expect(ids).toContain("continue");
+    expect(ids).toContain("sceneBeat");
   });
 
   it("filters by command id prefix", () => {

@@ -26,6 +26,8 @@ import { useSettingBoolean } from "@/features/settings/useSettingControl";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { DURATIONS, VARIANTS, useReducedMotion } from "@/lib/animation";
 import type { ToolbarActions } from "./Toolbar";
+import type { InlineAiCommand } from "./inlineAi/inlineAiTypes";
+import { BubbleAiMenu } from "./BubbleAiMenu";
 
 const GAP = 8;
 const EDGE = 8;
@@ -36,6 +38,9 @@ const EST_WIDTH = 560;
 interface EditorBubbleMenuProps {
   editor: Editor | null;
   toolbarActionsRef: React.RefObject<ToolbarActions | null>;
+  /** 選択系インライン AI コマンド (rewrite/shorten/expand/tone/translate) の
+   *  起動ハンドラ。未指定なら AI サブメニューを出さない。 */
+  onInlineAiCommand?: (cmd: InlineAiCommand) => void;
 }
 
 /** 選択範囲のスクリーン矩形。実 DOM 選択を優先 (複数行・縦書きも実寸で取れる)。 */
@@ -93,7 +98,7 @@ export function computeBubblePosition(
   return { top, left, placeBelow };
 }
 
-function BubbleButton({
+export function BubbleButton({
   testId,
   label,
   active,
@@ -126,7 +131,7 @@ function BubbleButton({
   );
 }
 
-function Sep() {
+export function Sep() {
   return <div aria-hidden className="mx-0.5 h-4 w-px bg-border" />;
 }
 
@@ -139,6 +144,7 @@ function Sep() {
 export function EditorBubbleMenu({
   editor,
   toolbarActionsRef,
+  onInlineAiCommand,
 }: EditorBubbleMenuProps) {
   const { t } = useTranslation();
   const { value: enabled } = useSettingBoolean("editor.bubbleMenu", true);
@@ -381,6 +387,8 @@ export function EditorBubbleMenu({
         >
           <Flag className="h-3.5 w-3.5" />
         </BubbleButton>
+
+        {onInlineAiCommand && <BubbleAiMenu onCommand={onInlineAiCommand} />}
       </motion.div>
     </div>,
     document.body,

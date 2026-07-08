@@ -3425,7 +3425,8 @@
     "bubbleMenu": {
       "label": "選択ツールバー",
       "comment": "コメントを追加",
-      "foreshadow": "伏線として登録"
+      "foreshadow": "伏線として登録",
+      "ai": "AI で編集"
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",
