@@ -818,28 +818,17 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 
 /* 空白・改行の可視化 (editor.showInvisibles)。
-   段落末 ¶ は純CSS、空白/タブ/hardBreak は ShowInvisiblesPlugin の
-   decoration が付けるクラスに ::before オーバレイでグリフを重ねる
-   (実文字は残るのでコピー/文字数に影響しない)。論理プロパティで縦書き追従。 */
-.editor-show-invisibles .tiptap > p::after,
-.editor-show-invisibles .tiptap > h1::after,
-.editor-show-invisibles .tiptap > h2::after,
-.editor-show-invisibles .tiptap > h3::after,
-.editor-show-invisibles .tiptap > ul li > p::after,
-.editor-show-invisibles .tiptap > ol li > p::after,
-.editor-show-invisibles .tiptap > blockquote > p::after {
-  content: "¶";
-  color: var(--muted-foreground);
-  opacity: 0.35;
-  margin-inline-start: 0.15em;
-  font-size: 0.9em;
-  user-select: none;
-  pointer-events: none;
-}
+   ShowInvisiblesPlugin の decoration が付けるクラスに ::before オーバレイで
+   グリフを重ねる (実文字は残るのでコピー/文字数に影響しない)。
+   display:inline を明示 — inline-block 化は折り返し段落先頭で幻の改行を生む
+   (.gutter-marks / .lint-disable-gutter と同型)。論理プロパティで縦書き追従。 */
 .pm-ws {
+  display: inline;
   position: relative;
 }
-.pm-ws::before {
+.pm-ws-space::before,
+.pm-ws-ideographic::before,
+.pm-ws-tab::before {
   position: absolute;
   inset-block: 0;
   inset-inline: 0;
@@ -860,11 +849,34 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   content: "→";
   text-align: start;
 }
-.pm-ws-br {
-  color: var(--muted-foreground);
-  opacity: 0.45;
+/* hardBreak ↵ / 段落末 ¶ — フロー幅ゼロ widget。グリフは ::before で描画。 */
+.pm-ws-br,
+.pm-ws-para-end {
+  width: 0;
+  overflow: visible;
+  vertical-align: baseline;
   user-select: none;
   pointer-events: none;
+}
+.pm-ws-br::before,
+.pm-ws-para-end::before {
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-end: 0;
+  line-height: inherit;
+  color: var(--muted-foreground);
+  user-select: none;
+  pointer-events: none;
+}
+.pm-ws-br::before {
+  content: "↵";
+  opacity: 0.45;
+}
+.pm-ws-para-end::before {
+  content: "¶";
+  opacity: 0.35;
+  font-size: 0.9em;
+  margin-inline-start: 0.15em;
 }
 
 .tiptap {
