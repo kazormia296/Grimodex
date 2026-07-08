@@ -36,6 +36,24 @@ describe("currentUnitsFromOrder", () => {
       U(3, 6, "CDE"),
     ]);
   });
+
+  it("inserts English phrase gaps when reconstructing permuted flat offsets", () => {
+    const phrases = [
+      U(0, 3, "She"),
+      U(4, 9, "stood"),
+      U(10, 22, "at the gate."),
+    ];
+    expect(
+      currentUnitsFromOrder(phrases, [0, 2, 1], "en", "phrase").map(
+        (u) => u.surface,
+      ),
+    ).toEqual(["She", "at the gate.", "stood"]);
+    expect(currentUnitsFromOrder(phrases, [0, 2, 1], "en", "phrase")).toEqual([
+      U(0, 3, "She"),
+      U(4, 16, "at the gate."),
+      U(17, 22, "stood"),
+    ]);
+  });
 });
 
 describe("slotAtFlatOffset", () => {

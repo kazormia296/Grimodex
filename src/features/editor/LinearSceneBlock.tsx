@@ -4,6 +4,7 @@ import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import {
   getFileBackedEditorExtensions,
   sanitizePastedMarkdown,
@@ -449,6 +450,7 @@ function MountedSceneBlock({
             ? JSON.parse(detail.content)
             : "";
         ed.commands.setContent(parsed, { emitUpdate: false });
+        resetEditorHistory(ed.view);
         useTabStore.getState().setTabDirty(sceneId, false);
       } finally {
         isApplyingExternalUpdate.current = false;
@@ -576,6 +578,10 @@ function MountedSceneBlock({
             isApplyingExternalUpdate.current = false;
           }
         }
+      }
+
+      if (!cancelled) {
+        resetEditorHistory(editor!.view);
       }
     }
 

@@ -51,3 +51,4 @@ src/features/chat/calibration/embeddings.generated.json
 
 # SDD scratch ledger
 .superpowers/
+.worktrees/

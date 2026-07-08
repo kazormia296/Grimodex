@@ -1,4 +1,5 @@
-import type { ReorderUnit } from "./types";
+import type { ReorderGranularity, ReorderUnit } from "./types";
+import { needsEnglishUnitGap } from "./englishUnitGap";
 
 /**
  * ドラッグ中の unit 並べ替えを JS 側で追跡する純粋モデル。
@@ -19,19 +20,30 @@ export function identityOrder(n: number): number[] {
 /**
  * order（slot→元index）から、現在の flat text 上での unit 範囲を再構成する。
  * 現在の flat text は units0 の surface を order 順に連結したものと一致する
- * 前提（units は flat text を隙間なく分割する契約）。
+ * 前提。英語 phrase/word/sentence は unit 間に空白ギャップがあるため、
+ * `needsEnglishUnitGap` で 1 文字ずつ cursor を進める。
  */
 export function currentUnitsFromOrder(
   units0: ReorderUnit[],
   order: number[],
+  language?: string,
+  granularity: ReorderGranularity = "sentence",
 ): ReorderUnit[] {
   let cursor = 0;
   const out: ReorderUnit[] = [];
+  let prevIdx: number | null = null;
   for (const idx of order) {
     const u = units0[idx]!;
-    const len = u.to - u.from;
+    if (
+      prevIdx !== null &&
+      needsEnglishUnitGap(units0[prevIdx]!, u, granularity, language)
+    ) {
+      cursor += 1;
+    }
+    const len = u.surface.length;
     out.push({ from: cursor, to: cursor + len, surface: u.surface });
     cursor += len;
+    prevIdx = idx;
   }
   return out;
 }

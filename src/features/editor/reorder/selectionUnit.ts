@@ -2,11 +2,15 @@ import type { EditorState } from "@tiptap/pm/state";
 import type { ReorderGranularity, ReorderUnit } from "./types";
 import {
   pmPosToFlatOffset,
+  resolveParagraphAtPos,
   resolveParagraphAtSelection,
 } from "./paragraphFlat";
 import { findUnitIndexAtFlatOffset } from "./reorderTransaction";
 import { buildReorderUnits } from "./reorderUnits";
 import { getCachedBunsetsuUnits } from "./bunsetsuSegmenter";
+import { currentUnitsFromOrder } from "./reorderPermutation";
+import { reorderUiKey } from "./reorderUiKey";
+import { shouldFreezeSegment } from "./segmentFreeze";
 
 export interface SelectionUnitContext {
   resolved: NonNullable<ReturnType<typeof resolveParagraphAtSelection>>;
@@ -42,6 +46,25 @@ export function resolveSelectionUnits(
 ): SelectionUnitContext | null {
   const resolved = resolveParagraphAtSelection(state);
   if (!resolved) return null;
+
+  const freeze = reorderUiKey.getState(state)?.freeze ?? null;
+  if (freeze && shouldFreezeSegment(granularity, language)) {
+    const frozenResolved = resolveParagraphAtPos(state, freeze.blockPos);
+    if (frozenResolved && frozenResolved.pos === resolved.pos) {
+      const units = currentUnitsFromOrder(
+        freeze.units0,
+        freeze.order,
+        language,
+        granularity,
+      );
+      const caretFlatOffset = pmPosToFlatOffset(
+        frozenResolved.flat,
+        state.selection.from,
+      );
+      const unitIndex = findUnitIndexAtFlatOffset(units, caretFlatOffset);
+      return { resolved: frozenResolved, units, unitIndex, caretFlatOffset };
+    }
+  }
 
   let units = buildReorderUnits(
     state,

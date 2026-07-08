@@ -5,6 +5,7 @@ import { Clock, BookOpen, Files, CalendarDays } from "lucide-react";
 import { tiptapContentFromDb } from "@/lib/prosemirror";
 import { useEditor } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
+import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { FileBackedSceneBanner } from "@/features/external-mount/components/FileBackedSceneBanner";
@@ -1710,6 +1711,12 @@ export function EditorPane({
           isApplyingExternalUpdate.current = false;
         }
 
+        // シーン/Codex ロード完了後: 使い回しエディタの undo スタックを空にする。
+        // 残すと Ctrl+Z が前シーンの doc スナップショットを復元して本文が消える。
+        if (!cancelled && !loadFailedRef.current && editor) {
+          resetEditorHistory(editor.view);
+        }
+
         // Reset scroll to the start edge after scene load; saved state will be
         // restored below. Both axes so the reset is writing-mode independent.
         if (editorContainerRef.current) {
@@ -1859,6 +1866,7 @@ export function EditorPane({
             ? JSON.parse(detail.content)
             : "";
         editorRef.current.commands.setContent(parsed, { emitUpdate: false });
+        resetEditorHistory(editorRef.current.view);
         setIsDirtyRef.current(false);
       } finally {
         isApplyingExternalUpdate.current = false;
