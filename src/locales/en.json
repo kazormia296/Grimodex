@@ -3495,8 +3495,10 @@
       "cancel": "Cancel",
       "confirm": "Apply",
       "hint": {
+        "currentUnit": "Unit: {{unit}}",
         "base": "Alt: paragraphs / Alt+Shift: sentences · bunsetsu",
         "paragraph": "Reorder paragraphs (drag handle / Alt+arrows)",
+        "altShiftActive": "Reorder within paragraph (drag / Alt+Shift+arrows)",
         "unitSentence": "Reorder sentences (drag / Alt+Shift+arrows)",
         "unitBunsetsu": "Reorder bunsetsu (drag / Alt+Shift+arrows)",
         "switchToBunsetsu": "Alt+Shift+G → bunsetsu",

@@ -3490,8 +3490,10 @@
       "cancel": "キャンセル",
       "confirm": "確定",
       "hint": {
+        "currentUnit": "入れ替え単位: {{unit}}",
         "base": "Alt: 段落 / Alt+Shift: 文・文節 を並べ替え",
         "paragraph": "段落を並べ替え（ハンドルをドラッグ / Alt+矢印）",
+        "altShiftActive": "文・文節を並べ替え（ドラッグ / Alt+Shift+矢印）",
         "unitSentence": "文を並べ替え（ドラッグ / Alt+Shift+矢印）",
         "unitBunsetsu": "文節を並べ替え（ドラッグ / Alt+Shift+矢印）",
         "switchToBunsetsu": "Alt+Shift+G で文節へ",

@@ -197,20 +197,50 @@ function animatedMove(editor: Editor, dir: -1 | 1): boolean {
   return true;
 }
 
+/** 最上位ブロック index の DOM 矩形（view.dom 基準）。 */
+export function blockRectAtIndex(
+  view: EditorView,
+  index: number,
+): DOMRect | null {
+  const { doc } = view.state;
+  if (index < 0 || index >= doc.childCount) return null;
+  let pos = 0;
+  for (let i = 0; i < index; i++) pos += doc.child(i).nodeSize;
+  const offset = blockOffset(view, pos);
+  if (!offset) return null;
+  const base = view.dom.getBoundingClientRect();
+  return new DOMRect(
+    base.left + offset.left,
+    base.top + offset.top,
+    offset.el.offsetWidth,
+    offset.el.offsetHeight,
+  );
+}
+
 /**
  * 指定 index の最上位ブロックを隣ブロック(dir)と入れ替える（ドラッグ用）。
  * caret は動かさず transaction の mapping に委ねる（ドラッグ中に別位置の
- * キャレットを奪わないため）。FLIP アニメは掛けない（ドラッグ中の連続 swap
- * では位置がその都度変わり、スライドアニメが干渉するため即時反映にする）。
+ * キャレットを奪わないため）。animate=true なら各 swap に FLIP を掛ける。
  * 成否を返す。
  */
 export function swapBlockAt(
   view: EditorView,
   index: number,
   dir: -1 | 1,
+  options?: { animate?: boolean },
 ): boolean {
   const plan = planSwap(view.state, dir, index);
   if (!plan) return false;
+
+  const animate =
+    options?.animate === true &&
+    !isReducedMotion() &&
+    typeof view.dom.animate === "function";
+  const beforeCurrent = animate ? blockOffset(view, plan.currentBefore) : null;
+  const beforeNeighbor = animate
+    ? blockOffset(view, plan.neighborBefore)
+    : null;
+
   const tr = view.state.tr;
   tr.replaceWith(plan.start, plan.end, plan.fragment);
   tr.setMeta("codexHighlightReorder", {
@@ -219,6 +249,11 @@ export function swapBlockAt(
     secondSize: plan.secondSize,
   });
   view.dispatch(tr);
+
+  if (animate) {
+    flipBlock(view, plan.currentAfter, beforeCurrent);
+    flipBlock(view, plan.neighborAfter, beforeNeighbor);
+  }
   return true;
 }
 

@@ -26,12 +26,18 @@ import {
 import {
   currentUnitsFromOrder,
   identityOrder,
-  slotAtFlatOffset,
   slotOfOriginal,
   swapSlots,
 } from "./reorderPermutation";
-import { effectiveGranularity } from "./ParagraphReorderExtension";
-import { swapBlockAt } from "@/features/editor/ParagraphMoveExtension";
+import {
+  effectiveGranularity,
+  readReorderGranularity,
+  reorderKey,
+} from "./ParagraphReorderExtension";
+import {
+  blockRectAtIndex,
+  swapBlockAt,
+} from "@/features/editor/ParagraphMoveExtension";
 import {
   acquireModifierListeners,
   useReorderModifierStore,
@@ -49,6 +55,16 @@ interface UnitDragState {
 
 interface UiPluginState {
   mode: ReorderModifierMode;
+  /**
+   * 直近の decorations 再構築に使った粒度（reorderKey plugin の値をここに
+   * 都度スナップショットする）。tiptap の非chain `editor.commands.X()` は
+   * コマンド本体の実行が終わった**後**に実際の view.dispatch を行うため、
+   * コマンド内から zustand store 経由で外部通知しても、その時点では
+   * view.state にまだ新粒度が反映されていない（stale dispatch 順序問題）。
+   * この plugin 自身が newState から直接粒度を読んで変化を検出することで、
+   * 外部ストアの通知タイミングに依存せず確実に rebuild する。
+   */
+  granularity: ReorderGranularity;
   decorations: DecorationSet;
   /** この view で進行中の unit ドラッグ（無ければ null）。 */
   drag: UnitDragState | null;
@@ -66,7 +82,7 @@ export const reorderUiKey = new PluginKey<UiPluginState>("reorderInteraction");
 const BAND_COUNT = 5;
 
 const GRIP_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></svg>';
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></svg>';
 
 // 進行中ドラッグの window リスナ解除関数（同時に 1 つだけ = 単一マウス）。
 // プラグイン destroy 時に呼び、破棄済み view への dispatch とリスナ leak を防ぐ。
@@ -113,10 +129,13 @@ function unitsForResolved(
   if (granularity === "bunsetsu" && isJapanese(language)) {
     const bunsetsu = getBunsetsuUnitsForText(resolved.flat.text);
     if (bunsetsu && bunsetsu.length > 1) return bunsetsu;
-    // cache miss → 文粒度フォールバック（prefetch は plugin.update が担う）。
+    // cache miss / in-flight → 文粒度へフォールバックしない（文節モード中に
+    // 文単位の色帯が出ると入れ替え対象が分からなくなる）。prefetch 完了後に
+    // refreshDecorations で文節帯を描く。
+    return null;
   }
   const sentences = splitSentences(resolved.flat.text, language);
-  return sentences.length > 0 ? sentences : null;
+  return sentences.length > 1 ? sentences : null;
 }
 
 // ── 装飾ビルド ────────────────────────────────────────────────────
@@ -125,6 +144,7 @@ function unitBandDecorations(
   units: ReorderUnit[],
   activeIndex: number,
   dragging: boolean,
+  granularity: ReorderGranularity,
 ): Decoration[] {
   const decos: Decoration[] = [];
   for (let i = 0; i < units.length; i++) {
@@ -136,7 +156,13 @@ function unitBandDecorations(
     } catch {
       continue;
     }
-    const classes = ["reorder-unit", `reorder-unit-c${i % BAND_COUNT}`];
+    const classes = [
+      "reorder-unit",
+      `reorder-unit-c${i % BAND_COUNT}`,
+      granularity === "bunsetsu"
+        ? "reorder-unit-bunsetsu"
+        : "reorder-unit-sentence",
+    ];
     if (i === activeIndex) classes.push("reorder-unit-active");
     if (dragging && i === activeIndex) classes.push("reorder-unit-dragging");
     decos.push(
@@ -154,7 +180,10 @@ function unitBandDecorations(
 function buildAltShiftDecorations(
   state: EditorState,
   drag: UnitDragState | null,
+  granularity: ReorderGranularity,
 ): Decoration[] {
+  const language = getCurrentProjectLanguage();
+
   // ドラッグ中はスナップショット units を使い、途中で再セグメント（文節→文へ
   // 化ける）しないようにする。drag はプラグイン状態なので view ごとに独立。
   if (drag) {
@@ -162,18 +191,16 @@ function buildAltShiftDecorations(
     if (!resolved) return [];
     const cu = currentUnitsFromOrder(drag.units0, drag.order);
     const activeSlot = slotOfOriginal(drag.order, drag.draggedOriginal);
-    return unitBandDecorations(resolved, cu, activeSlot, true);
+    return unitBandDecorations(resolved, cu, activeSlot, true, granularity);
   }
 
   const resolved = resolveParagraphAtSelection(state);
   if (!resolved) return [];
-  const language = getCurrentProjectLanguage();
-  const granularity = effectiveGranularity(state, language);
   const units = unitsForResolved(resolved, granularity, language);
-  if (!units || units.length <= 1) return [];
+  if (!units) return [];
   const caretFlat = pmPosToFlatOffset(resolved.flat, state.selection.from);
   const activeIndex = findUnitIndexAtFlatOffset(units, caretFlat);
-  return unitBandDecorations(resolved, units, activeIndex, false);
+  return unitBandDecorations(resolved, units, activeIndex, false, granularity);
 }
 
 function createBlockHandle(
@@ -229,44 +256,60 @@ function buildDecorations(
   state: EditorState,
   mode: ReorderModifierMode,
   drag: UnitDragState | null,
+  granularity: ReorderGranularity,
 ): DecorationSet {
   const { doc } = state;
   if (mode === "alt") {
     return DecorationSet.create(doc, buildAltDecorations(doc));
   }
   if (mode === "altShift") {
-    return DecorationSet.create(doc, buildAltShiftDecorations(state, drag));
+    return DecorationSet.create(
+      doc,
+      buildAltShiftDecorations(state, drag, granularity),
+    );
   }
   return DecorationSet.empty;
 }
 
 // ── ドラッグ（インクリメンタル swap）─────────────────────────────────
-function blockIndexAtCoords(
+/**
+ * 隣接ブロックの中点を越えたときだけ 1 段 swap する。
+ * 絶対 index ターゲット方式だと swap 後にブロックがカーソル下へ流れ込み、
+ * 連続ドラッグが 1 手で止まる（または逆方向へ戻る）ため中点方式を使う。
+ */
+function trySwapBlockTowardPointer(
   view: EditorView,
-  x: number,
-  y: number,
-): number | null {
-  const info = view.posAtCoords({ left: x, top: y });
-  if (!info) return null;
-  const $pos = view.state.doc.resolve(info.pos);
-  if ($pos.depth < 1) return null;
-  return $pos.index(0);
+  draggedIndex: number,
+  clientY: number,
+): -1 | 0 | 1 {
+  const { doc } = view.state;
+  if (draggedIndex > 0) {
+    const above = blockRectAtIndex(view, draggedIndex - 1);
+    if (above && clientY < above.top + above.height / 2) {
+      return swapBlockAt(view, draggedIndex, -1, { animate: true }) ? -1 : 0;
+    }
+  }
+  if (draggedIndex < doc.childCount - 1) {
+    const below = blockRectAtIndex(view, draggedIndex + 1);
+    if (below && clientY > below.top + below.height / 2) {
+      return swapBlockAt(view, draggedIndex, 1, { animate: true }) ? 1 : 0;
+    }
+  }
+  return 0;
 }
 
 function startBlockDrag(view: EditorView, startIndex: number): void {
-  let currentIndex = startIndex;
+  let draggedIndex = startIndex;
   const move = (ev: MouseEvent) => {
     if (useReorderModifierStore.getState().mode !== "alt") {
       end();
       return;
     }
-    const target = blockIndexAtCoords(view, ev.clientX, ev.clientY);
-    if (target == null) return;
     let guard = 0;
-    while (currentIndex !== target && guard++ < 2000) {
-      const dir: -1 | 1 = target > currentIndex ? 1 : -1;
-      if (!swapBlockAt(view, currentIndex, dir)) break;
-      currentIndex += dir;
+    while (guard++ < 50) {
+      const dir = trySwapBlockTowardPointer(view, draggedIndex, ev.clientY);
+      if (dir === 0) break;
+      draggedIndex += dir;
     }
   };
   const removeListeners = () => {
@@ -279,6 +322,55 @@ function startBlockDrag(view: EditorView, startIndex: number): void {
   activeDragCleanup = removeListeners;
   window.addEventListener("mousemove", move, true);
   window.addEventListener("mouseup", end, true);
+}
+
+/**
+ * ドラッグ中 unit の隣接 slot の中点を pointer の flatOffset が越えたときだけ
+ * 1 段 swap する。旧実装は「pointer が指す slot（絶対 target）」へ向けて
+ * 複数手 swap していたが、swap のたびに前後 unit の文字数が変わり flat
+ * text 上の境界が動くため、同じ pointer 位置でも次の mousemove で target が
+ * 前後に振れて swap→swap-back を繰り返す「fighting/チラツキ」が起きていた
+ * （段落ドラッグの 1 手で止まる不具合と同根）。中点判定＋1 手ずつなら、
+ * 一度 unit が pointer 側へ来ればそれ以上動かないヒステリシスが効く。
+ */
+function trySwapUnitTowardPointer(
+  view: EditorView,
+  blockPos: number,
+  units0: ReorderUnit[],
+  order: number[],
+  draggedOriginal: number,
+  flatOffset: number,
+): number[] | null {
+  const curSlot = slotOfOriginal(order, draggedOriginal);
+  const cu = currentUnitsFromOrder(units0, order);
+  let dir: -1 | 1 | 0 = 0;
+  if (curSlot > 0) {
+    const above = cu[curSlot - 1]!;
+    if (flatOffset < (above.from + above.to) / 2) dir = -1;
+  }
+  if (dir === 0 && curSlot < cu.length - 1) {
+    const below = cu[curSlot + 1]!;
+    if (flatOffset > (below.from + below.to) / 2) dir = 1;
+  }
+  if (dir === 0) return null;
+  const resolvedNow = resolveParagraphAtPos(view.state, blockPos);
+  if (!resolvedNow) return null;
+  const res = buildAdjacentUnitSwapTransaction(
+    view.state,
+    resolvedNow,
+    cu,
+    curSlot,
+    dir,
+  );
+  if (!res) return null;
+  const nextOrder = swapSlots(order, curSlot, curSlot + dir);
+  // swap の doc 変更と同じ transaction で drag(order) を運ぶ → 同期 apply が
+  // 新 doc と一致した order で色帯を組む（1手遅れのちらつきを防ぐ）。
+  res.tr.setMeta(reorderUiKey, {
+    drag: { blockPos, units0, order: nextOrder, draggedOriginal },
+  });
+  view.dispatch(res.tr);
+  return nextOrder;
 }
 
 function startUnitDrag(
@@ -306,34 +398,18 @@ function startUnitDrag(
     const resolved = resolveParagraphAtPos(view.state, blockPos);
     if (!resolved) return;
     const flatOffset = pmPosToFlatOffset(resolved.flat, info.pos);
-    const targetSlot = slotAtFlatOffset(
-      currentUnitsFromOrder(units0, order),
-      flatOffset,
-    );
-    let curSlot = slotOfOriginal(order, draggedOriginal);
     let guard = 0;
-    while (curSlot !== targetSlot && guard++ < 2000) {
-      const dir: -1 | 1 = targetSlot > curSlot ? 1 : -1;
-      const resolvedNow = resolveParagraphAtPos(view.state, blockPos);
-      if (!resolvedNow) break;
-      const cu = currentUnitsFromOrder(units0, order);
-      const res = buildAdjacentUnitSwapTransaction(
-        view.state,
-        resolvedNow,
-        cu,
-        curSlot,
-        dir,
+    while (guard++ < 50) {
+      const nextOrder = trySwapUnitTowardPointer(
+        view,
+        blockPos,
+        units0,
+        order,
+        draggedOriginal,
+        flatOffset,
       );
-      if (!res) break;
-      const nextOrder = swapSlots(order, curSlot, curSlot + dir);
-      // swap の doc 変更と同じ transaction で drag(order) を運ぶ → 同期 apply が
-      // 新 doc と一致した order で色帯を組む（1手遅れのちらつきを防ぐ）。
-      res.tr.setMeta(reorderUiKey, {
-        drag: { blockPos, units0, order: nextOrder, draggedOriginal },
-      });
-      view.dispatch(res.tr);
+      if (!nextOrder) break;
       order = nextOrder;
-      curSlot += dir;
     }
   };
   const removeListeners = () => {
@@ -395,23 +471,57 @@ function maybePrefetchBunsetsu(view: EditorView): void {
     });
 }
 
+/** 修飾キー altShift 突入時に文節を先読みする。 */
+function onModifierModeChange(
+  view: EditorView,
+  mode: ReorderModifierMode,
+): void {
+  refreshDecorations(view);
+  if (mode === "altShift") maybePrefetchBunsetsu(view);
+}
+
 export const ReorderInteractionExtension = Extension.create({
   name: "reorderInteraction",
+
+  onFocus() {
+    // 複数エディタ（split view / Linear mode）でフォーカスが移った際、
+    // フッターに「今フォーカスしているエディタ」の粒度を反映する。
+    // onFocus は dispatch の外（DOM focus イベント起点）で呼ばれるため、
+    // ここで setGranularity しても view.update() 中の再入にはならない。
+    useReorderModifierStore
+      .getState()
+      .setGranularity(readReorderGranularity(this.editor.state));
+  },
 
   addProseMirrorPlugins() {
     return [
       new Plugin<UiPluginState>({
         key: reorderUiKey,
         state: {
-          init(): UiPluginState {
+          init(_config, state): UiPluginState {
             return {
               mode: "none",
+              granularity: readReorderGranularity(state),
               decorations: DecorationSet.empty,
               drag: null,
             };
           },
           apply(tr, prev, _oldState, newState): UiPluginState {
             const mode = useReorderModifierStore.getState().mode;
+            // 同一 transaction 内で直接 meta を読む（newState 経由だと、tiptap
+            // の ExtensionManager.plugins が extensions 配列を reverse() して
+            // から plugin を積むため、拡張の登録順に関わらずこの plugin の
+            // apply() が reorderKey 側の apply() より先に呼ばれることがあり、
+            // その場合 newState からはまだ更新前の粒度しか読めない）。
+            const granMeta = tr.getMeta(reorderKey) as
+              | { setGranularity?: ReorderGranularity }
+              | undefined;
+            const rawGranularity = granMeta?.setGranularity ?? prev.granularity;
+            const language = getCurrentProjectLanguage();
+            const granularity: ReorderGranularity =
+              rawGranularity === "bunsetsu" && !isJapanese(language)
+                ? "sentence"
+                : rawGranularity;
             const meta = tr.getMeta(reorderUiKey) as ReorderUiMeta | undefined;
             const drag =
               meta && "drag" in meta ? (meta.drag ?? null) : prev.drag;
@@ -419,24 +529,49 @@ export const ReorderInteractionExtension = Extension.create({
               meta?.refresh === true ||
               (meta && "drag" in meta) ||
               mode !== prev.mode ||
+              granularity !== prev.granularity ||
               tr.docChanged ||
               (mode === "altShift" && tr.selectionSet);
             if (!needRebuild) return prev;
             return {
               mode,
+              granularity,
               drag,
-              decorations: buildDecorations(newState, mode, drag),
+              decorations: buildDecorations(newState, mode, drag, granularity),
             };
           },
         },
         view(editorView) {
           const release = acquireModifierListeners();
-          const unsub = useReorderModifierStore.subscribe(() => {
-            refreshDecorations(editorView);
-            maybePrefetchBunsetsu(editorView);
+          // フォーカス中エディタの粒度をフッターへミラー（初期表示用。以降は
+          // Extension の onFocus / update() で更新する）。
+          useReorderModifierStore
+            .getState()
+            .setGranularity(readReorderGranularity(editorView.state));
+          // mode は window の Alt/Shift 押下状態から来る（どの transaction にも
+          // 属さない外部イベント）ので、これだけは store 購読で拾って明示的に
+          // decorations を作り直す。粒度変化による rebuild は上の apply() が
+          // newState を直接見て自己完結で検出する（store 経由にすると、tiptap
+          // の非chain commands.X() はコマンド本体の実行が終わった**後**に
+          // 初めて実 dispatch するため、コマンド内で store を更新した時点では
+          // まだ view.state に新粒度が反映されておらず、rebuild が古い粒度の
+          // まま握りつぶされる不具合があった）。
+          const unsub = useReorderModifierStore.subscribe((state, prev) => {
+            if (state.mode !== prev.mode) {
+              onModifierModeChange(editorView, state.mode);
+            }
           });
           return {
             update(v) {
+              // このエディタの実粒度をフッター表示用にミラー。decorations の
+              // rebuild は apply() 側で完結しているので、ここでの store 通知が
+              // 追加 dispatch を誘発することはない（このリスナは mode 変化
+              // のみを見る）。
+              useReorderModifierStore
+                .getState()
+                .setGranularity(readReorderGranularity(v.state));
+              // altShift 中にキャレット/クリックで段落を移動した場合の文節
+              // prefetch。fetch 自体は非同期なので dispatch の再入にはならない。
               if (useReorderModifierStore.getState().mode === "altShift") {
                 maybePrefetchBunsetsu(v);
               }

@@ -20,7 +20,15 @@ import {
 import { captureSwapSnapshot, isSwapSnapshotValid } from "./paragraphSnapshot";
 import { useReorderModifierStore } from "./reorderModifierStore";
 
-const reorderKey = new PluginKey("paragraphReorder");
+/**
+ * export される: ReorderInteractionExtension が同一 transaction 内で
+ * 直接 tr.getMeta(reorderKey) を読むため（tiptap の ExtensionManager.plugins
+ * は extensions 配列を reverse() してから plugin を積むので、拡張の登録順
+ * とは無関係に reorderUiKey 側の apply() が reorderKey 側の apply() より
+ * "先に" 呼ばれる。newState 経由でよそのプラグイン state を読むと、この
+ * 順序次第で同一 transaction 内の変更を読み落とす — 詳細はコメント参照）。
+ */
+export const reorderKey = new PluginKey("paragraphReorder");
 
 function isVerticalWriting(): boolean {
   return useSettingsStore.getState().getBoolean("editor.verticalMode", false);
@@ -43,6 +51,11 @@ export function effectiveGranularity(
   const g = getGranularity(state);
   if (g === "bunsetsu" && !isJapanese(language)) return "sentence";
   return g;
+}
+
+/** フッター表示用: エディタ plugin state の粒度を読む。 */
+export function readReorderGranularity(state: EditorState): ReorderGranularity {
+  return getGranularity(state);
 }
 
 function performUnitSwap(

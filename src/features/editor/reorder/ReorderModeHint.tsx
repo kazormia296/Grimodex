@@ -9,9 +9,13 @@ import {
 
 /**
  * フッターの推敲リオーダー説明。
- *   平常   … Alt=段落 / Alt+Shift=文・文節 の存在を控えめに案内
- *   Alt    … 段落並べ替え（ハンドルドラッグ / Alt+矢印）
- *   AltShift… 現在の入れ替え単位（文/文節）＋ ドラッグ/矢印 ＋ 粒度切替キー
+ *   平常     … Alt=段落 / Alt+Shift=文・文節 の存在を控えめに案内
+ *   Alt      … 段落並べ替え（ハンドルドラッグ / Alt+矢印）
+ *   AltShift … 現在の入れ替え単位（文/文節）＋ ドラッグ/矢印 ＋ 粒度切替キー
+ *
+ * 入れ替え単位バッジは Alt+Shift 押下中のみ表示する（常時表示すると、平常時
+ * にも関わらず「文/文節」という語が出て何の状態か紛らわしいとのフィードバック
+ * があったため、モード連動に戻した）。
  *
  * store は各エディタプラグインの view() が acquire するが、フッター単独でも
  * 追従できるよう（refcount 共有なので二重取得は無害）ここでも acquire する。
@@ -34,17 +38,19 @@ export function ReorderModeHint({ className }: { className?: string }) {
   if (mode === "alt") {
     text = t("editor.reorder.hint.paragraph");
   } else if (mode === "altShift") {
-    const unit =
+    const unitLabel =
       gran === "bunsetsu"
-        ? t("editor.reorder.hint.unitBunsetsu")
-        : t("editor.reorder.hint.unitSentence");
-    // 日本語のみ文↔文節を切替可能。英語は文固定なので切替案内を出さない。
+        ? t("editor.reorder.granularityBunsetsu")
+        : t("editor.reorder.granularitySentence");
+    const unitBadge = t("editor.reorder.hint.currentUnit", {
+      unit: unitLabel,
+    });
     const swap = !isJapanese
       ? ""
       : gran === "bunsetsu"
         ? ` · ${t("editor.reorder.hint.switchToSentence")}`
         : ` · ${t("editor.reorder.hint.switchToBunsetsu")}`;
-    text = `${unit}${swap}`;
+    text = `${unitBadge} · ${t("editor.reorder.hint.altShiftActive")}${swap}`;
   } else {
     text = t("editor.reorder.hint.base");
   }
@@ -56,6 +62,7 @@ export function ReorderModeHint({ className }: { className?: string }) {
         active ? "text-foreground" : "opacity-70"
       } ${className ?? ""}`}
       data-reorder-mode={mode}
+      data-reorder-granularity={gran}
     >
       <ArrowUpDown className="h-3 w-3 shrink-0" aria-hidden="true" />
       {text}
