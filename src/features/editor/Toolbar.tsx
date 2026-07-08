@@ -1,9 +1,12 @@
 import {
   ArrowUpDown,
   Bold,
+  BookOpen,
+  Brackets,
   Check,
   EllipsisVertical,
   Focus,
+  Hash,
   Italic,
   Keyboard,
   Layers,
@@ -12,10 +15,17 @@ import {
   ListOrdered,
   Minus,
   PanelRight,
+  Pilcrow,
+  Quote,
+  Search,
+  Sparkles,
+  SpellCheck,
   Strikethrough,
   TextQuote,
+  TextSelect,
   Underline,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
@@ -144,6 +154,41 @@ export function Toolbar({
     "editor.fontSize",
     18,
   );
+  const { value: lineHeight, setValue: setLineHeight } = useSettingNumber(
+    "editor.lineHeight",
+    2.0,
+  );
+  const { value: maxContentWidth, setValue: setMaxContentWidth } =
+    useSettingNumber("editor.maxContentWidth", 720);
+  const { value: paragraphSpacing, setValue: setParagraphSpacing } =
+    useSettingNumber("editor.paragraphSpacing", 8);
+
+  const { value: spellCheck, setValue: setSpellCheck } = useSettingBoolean(
+    "editor.spellCheck",
+    false,
+  );
+  const { value: smartQuotes, setValue: setSmartQuotes } = useSettingBoolean(
+    "editor.smartQuotes",
+    false,
+  );
+  const { value: smartDashes, setValue: setSmartDashes } = useSettingBoolean(
+    "editor.smartDashes",
+    false,
+  );
+  const { value: bubbleMenu, setValue: setBubbleMenu } = useSettingBoolean(
+    "editor.bubbleMenu",
+    true,
+  );
+  const { value: aozoraInput, setValue: setAozoraInput } = useSettingBoolean(
+    "editor.aozoraInput",
+    true,
+  );
+  const { value: autoPairBrackets, setValue: setAutoPairBrackets } =
+    useSettingBoolean("editor.autoPairBrackets", true);
+  const { value: showInvisibles, setValue: setShowInvisibles } =
+    useSettingBoolean("editor.showInvisibles", false);
+  const { value: inlineAiCommand, setValue: setInlineAiCommand } =
+    useSettingBoolean("editor.inlineAiCommand", true);
 
   const { value: targetCharCount, setValue: setTargetCharCount } =
     useSettingNumber("editor.targetCharCount", 0);
@@ -708,24 +753,48 @@ export function Toolbar({
         nodeType={nodeType}
       />
 
-      {/* 文字サイズポップオーバー */}
+      {/* 文字サイズ・行組みポップオーバー */}
       {fontSizeOpen && (
         <div
           ref={fontSizeDropdownRef}
-          className="absolute right-0 top-full z-50 mt-1 rounded border border-border bg-popover p-3 shadow-md"
+          className="absolute right-0 top-full z-50 mt-1 w-52 rounded border border-border bg-popover p-3 shadow-md"
         >
-          <div className="flex items-center gap-2">
-            <span className="min-w-[2.5rem] text-xs text-muted-foreground">
-              {fontSize}px
-            </span>
-            <input
-              type="range"
+          <div className="flex flex-col gap-3">
+            <TypographySliderRow
+              label={t("settings.editor.fontSize")}
+              displayValue={`${fontSize}px`}
               min={14}
               max={24}
               step={1}
               value={fontSize}
-              onChange={(e) => setFontSize(Number(e.target.value))}
-              className="w-28"
+              onChange={setFontSize}
+            />
+            <TypographySliderRow
+              label={t("settings.editor.lineHeight")}
+              displayValue={lineHeight.toFixed(1)}
+              min={1.2}
+              max={3.0}
+              step={0.1}
+              value={lineHeight}
+              onChange={setLineHeight}
+            />
+            <TypographySliderRow
+              label={t("settings.editor.maxWidth")}
+              displayValue={`${maxContentWidth}px`}
+              min={480}
+              max={960}
+              step={40}
+              value={maxContentWidth}
+              onChange={setMaxContentWidth}
+            />
+            <TypographySliderRow
+              label={t("settings.editor.paragraphSpacing")}
+              displayValue={`${paragraphSpacing}px`}
+              min={0}
+              max={24}
+              step={2}
+              value={paragraphSpacing}
+              onChange={setParagraphSpacing}
             />
           </div>
         </div>
@@ -833,6 +902,7 @@ export function Toolbar({
           )}
           <OverflowItem
             label={t("editor.toolbar.findReplace")}
+            icon={Search}
             // Ctrl+H is Windows/Linux only — ⌘H is macOS "Hide", so no Mac hint.
             shortcut={isMac() ? undefined : "Ctrl+H"}
             onClick={() => {
@@ -869,8 +939,64 @@ export function Toolbar({
           <div aria-hidden className="my-1 border-t border-border" />
           <OverflowItem
             label={t("editor.toolbar.showLineNumbers")}
+            icon={Hash}
             checked={showLineNumbers}
             onClick={() => setShowLineNumbers(!showLineNumbers)}
+          />
+          <div aria-hidden className="my-1 border-t border-border" />
+          <div
+            role="presentation"
+            className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+          >
+            {t("settings.editor.experience")}
+          </div>
+          <OverflowItem
+            label={t("settings.editor.spellCheck")}
+            icon={SpellCheck}
+            checked={spellCheck}
+            onClick={() => setSpellCheck(!spellCheck)}
+          />
+          <OverflowItem
+            label={t("settings.editor.smartQuotes")}
+            icon={Quote}
+            checked={smartQuotes}
+            onClick={() => setSmartQuotes(!smartQuotes)}
+          />
+          <OverflowItem
+            label={t("settings.editor.smartDashes")}
+            icon={Minus}
+            checked={smartDashes}
+            onClick={() => setSmartDashes(!smartDashes)}
+          />
+          <OverflowItem
+            label={t("settings.editor.bubbleMenu")}
+            icon={TextSelect}
+            checked={bubbleMenu}
+            onClick={() => setBubbleMenu(!bubbleMenu)}
+          />
+          <OverflowItem
+            label={t("settings.editor.aozoraInput")}
+            icon={BookOpen}
+            checked={aozoraInput}
+            onClick={() => setAozoraInput(!aozoraInput)}
+          />
+          <OverflowItem
+            label={t("settings.editor.autoPairBrackets")}
+            icon={Brackets}
+            checked={autoPairBrackets}
+            onClick={() => setAutoPairBrackets(!autoPairBrackets)}
+          />
+          <OverflowItem
+            label={t("settings.editor.showInvisibles")}
+            icon={Pilcrow}
+            checked={showInvisibles}
+            onClick={() => setShowInvisibles(!showInvisibles)}
+          />
+          <OverflowItem
+            label={t("settings.editor.slashCommand")}
+            icon={Sparkles}
+            checked={inlineAiCommand}
+            onClick={() => setInlineAiCommand(!inlineAiCommand)}
           />
         </div>
       )}
@@ -973,18 +1099,57 @@ export function Toolbar({
   );
 }
 
+function TypographySliderRow({
+  label,
+  displayValue,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+}: {
+  label: string;
+  displayValue: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="tabular-nums text-foreground">{displayValue}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onMouseDown={(e) => e.stopPropagation()}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full"
+      />
+    </div>
+  );
+}
+
 function OverflowItem({
   label,
   shortcut,
   onClick,
   disabled,
   checked,
+  icon: Icon,
 }: {
   label: string;
   shortcut?: string;
   onClick?: () => void;
   disabled?: boolean;
   checked?: boolean;
+  icon?: LucideIcon;
 }) {
   return (
     <button
@@ -1001,22 +1166,32 @@ function OverflowItem({
           : "text-foreground hover:bg-accent",
       )}
     >
-      <span className="flex items-center gap-1.5">
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
         {checked !== undefined && (
           <span
             aria-hidden
             className={cn(
-              "inline-flex w-3 items-center justify-center",
+              "inline-flex w-3 flex-shrink-0 items-center justify-center",
               checked ? "opacity-100" : "opacity-0",
             )}
           >
             <Check className="h-3 w-3" strokeWidth={3} />
           </span>
         )}
-        {label}
+        {Icon && (
+          <Icon
+            aria-hidden
+            className={cn(
+              "h-3.5 w-3.5 flex-shrink-0",
+              checked === false && "text-muted-foreground",
+            )}
+            strokeWidth={2}
+          />
+        )}
+        <span className="truncate">{label}</span>
       </span>
       {shortcut && (
-        <span className="ml-4 text-muted-foreground">
+        <span className="ml-2 flex-shrink-0 text-muted-foreground">
           {formatShortcut(shortcut)}
         </span>
       )}
