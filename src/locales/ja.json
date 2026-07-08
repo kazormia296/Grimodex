@@ -4872,6 +4872,13 @@
     "upToDate": "最新版です",
     "checkFailed": "更新の確認に失敗しました"
   },
+  "releaseNotes": {
+    "title": "v{{version}} の新機能",
+    "close": "閉じる",
+    "viewButton": "リリースノートを見る",
+    "notAvailable": "このバージョンのリリースノートはありません",
+    "fallbackLocale": "日本語版を表示しています"
+  },
   "semanticSearch": {
     "reindexComplete": "再インデックス完了",
     "reindexing": "セマンティック再インデックス中",

@@ -41,3 +41,7 @@ export function useUpdateChecker(): void {
     };
   }, []);
 }
+
+export function shouldSkipTauriProductionGate(): boolean {
+  return !isTauri() || import.meta.env.DEV;
+}
