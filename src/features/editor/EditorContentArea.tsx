@@ -21,6 +21,7 @@ import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import type { FilterSource } from "@/features/attribution/attributionStore";
+import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useCurrentProject } from "@/features/project/projectStore";
 
 interface EditorContentAreaProps {
@@ -48,6 +49,9 @@ interface EditorContentAreaProps {
   handleTitleEditStart: () => void;
   isSceneContentLoading: boolean;
   sceneId: string;
+  /** バブルメニューの AI サブメニューから起動されるインライン AI コマンドの
+   *  ハンドラ。未指定 (file-backed シーン等) のときはバブルに AI ボタンを出さない。 */
+  onInlineAiCommand?: (cmd: InlineAiCommand) => void;
 }
 
 /**
@@ -80,6 +84,7 @@ export function EditorContentArea({
   handleTitleEditStart,
   isSceneContentLoading,
   sceneId,
+  onInlineAiCommand,
 }: EditorContentAreaProps) {
   const { t } = useTranslation();
   // 英語プロジェクトでは段落スタイルを英文組版 (first-line indent + 先頭段落
@@ -193,6 +198,7 @@ export function EditorContentArea({
             <EditorBubbleMenu
               editor={editor}
               toolbarActionsRef={toolbarActionsRef}
+              onInlineAiCommand={onInlineAiCommand}
             />
             <CommentAddPopover editor={editor} />
             <ForeshadowMarkPopover editor={editor} />

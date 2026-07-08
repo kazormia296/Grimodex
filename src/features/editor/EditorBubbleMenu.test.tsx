@@ -8,6 +8,12 @@ import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { EditorBubbleMenu } from "./EditorBubbleMenu";
 import type { ToolbarActions } from "./Toolbar";
 
+// AI サブメニューの表示ゲートに使う useAiGate を固定値でモック
+// (プロバイダ readiness ストアを引き込まない)。policy は既定 (未ブロック)。
+vi.mock("@/features/ai-policy/useAiGate", () => ({
+  useAiGate: () => ({ presentation: "enabled", tooltip: null, capability: {} }),
+}));
+
 function makeEditor(html: string) {
   return new Editor({ extensions: getEditorExtensions(), content: html });
 }
@@ -123,6 +129,30 @@ describe("EditorBubbleMenu", () => {
       "aria-pressed",
       "true",
     );
+    editor.destroy();
+  });
+
+  it("omits the AI submenu when onInlineAiCommand is not provided", () => {
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    render(
+      <EditorBubbleMenu editor={editor} toolbarActionsRef={actionsRef()} />,
+    );
+    expect(screen.queryByTestId("bubble-ai")).not.toBeInTheDocument();
+    editor.destroy();
+  });
+
+  it("shows the AI submenu trigger when onInlineAiCommand is provided", () => {
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    render(
+      <EditorBubbleMenu
+        editor={editor}
+        toolbarActionsRef={actionsRef()}
+        onInlineAiCommand={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("bubble-ai")).toBeInTheDocument();
     editor.destroy();
   });
 });

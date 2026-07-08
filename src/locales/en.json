@@ -3442,7 +3442,8 @@
     "bubbleMenu": {
       "label": "Selection toolbar",
       "comment": "Add comment",
-      "foreshadow": "Mark as foreshadowing"
+      "foreshadow": "Mark as foreshadowing",
+      "ai": "Edit with AI"
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
