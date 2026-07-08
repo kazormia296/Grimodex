@@ -268,11 +268,24 @@ export function splitSentencesJa(text: string): ReorderUnit[] {
 }
 
 export function splitSentencesEn(text: string): ReorderUnit[] {
-  return sentenceRangesEn(text).map(({ from, to }) => ({
+  const units = sentenceRangesEn(text).map(({ from, to }) => ({
     from,
     to,
     surface: text.slice(from, to),
   }));
+  // 次文先頭の whitespace は lint 分割と同じだが、並べ替えでは trailing
+  // 側へ流れて脱落する。2 文目以降の leading ws を unit から除き、連結時の
+  // needsEnglishSentenceGap で補う。
+  return units.map((u, i) => {
+    if (i === 0) return u;
+    const leading = u.surface.match(/^\s+/)?.[0]?.length ?? 0;
+    if (leading === 0) return u;
+    return {
+      from: u.from + leading,
+      to: u.to,
+      surface: u.surface.slice(leading),
+    };
+  });
 }
 
 /** プロジェクト言語に応じた文分割。 */
@@ -283,4 +296,29 @@ export function splitSentences(
   const lang = (language ?? "ja").toLowerCase();
   if (lang.startsWith("en")) return splitSentencesEn(text);
   return splitSentencesJa(text);
+}
+
+export function isEnglishLanguage(language: string | undefined): boolean {
+  return (language ?? "ja").toLowerCase().startsWith("en");
+}
+
+/**
+ * 英語文 unit を並べ替え順に連結するとき、元テキストに無い区切り空白が
+ * 必要か。`sentence_ranges_en` は次文の leading whitespace を次 unit に
+ * 含めるため、swap すると空白が文の末尾へ流れて脱落する。連結時に 1 空白を
+ * 補う（元々 leading ws がある場合は重複挿入しない）。
+ */
+export function needsEnglishSentenceGap(
+  prev: ReorderUnit,
+  next: ReorderUnit,
+): boolean {
+  const a = prev.surface;
+  const b = next.surface;
+  if (/\s$/.test(a) || /^\s/.test(b)) return false;
+  const aEnd = a.trimEnd();
+  const bStart = b.trimStart();
+  return (
+    /[.!?][\u201D\u2019"')\]]*$/.test(aEnd) &&
+    /^[A-Za-z0-9\u201C\u2018"']/.test(bStart)
+  );
 }

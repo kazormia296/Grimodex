@@ -188,6 +188,9 @@ export function useParagraphReorderOverlay(
         u,
         order,
         caretFlatOffset,
+        undefined,
+        undefined,
+        getCurrentProjectLanguage(),
       );
       if (!result) {
         setErrorMessage("staleDocument");

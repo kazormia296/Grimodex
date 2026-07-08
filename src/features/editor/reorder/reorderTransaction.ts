@@ -17,6 +17,7 @@ import {
   collectPreservedInlines,
   unitPmRangesFor,
 } from "./paragraphPreserved";
+import { isEnglishLanguage, needsEnglishSentenceGap } from "./sentenceSplit";
 
 function isValidPermutation(order: number[], length: number): boolean {
   if (order.length !== length) return false;
@@ -29,19 +30,29 @@ export function mapFlatOffsetThroughPermutation(
   units: ReorderUnit[],
   order: number[],
   caretFlatOffset: number,
+  language?: string,
 ): number {
-  for (let i = 0; i < units.length; i++) {
-    const u = units[i]!;
+  const enGap = isEnglishLanguage(language);
+  let newOffset = 0;
+  let prevInOrder: number | null = null;
+
+  for (const unitIdx of order) {
+    const u = units[unitIdx]!;
+    const gap =
+      prevInOrder !== null &&
+      enGap &&
+      needsEnglishSentenceGap(units[prevInOrder]!, u)
+        ? 1
+        : 0;
+    const unitStart = newOffset + gap;
+    const unitLen = u.to - u.from;
+
     if (caretFlatOffset >= u.from && caretFlatOffset < u.to) {
-      const offsetInUnit = caretFlatOffset - u.from;
-      let newOffset = 0;
-      for (const idx of order) {
-        if (idx === i) {
-          return newOffset + offsetInUnit;
-        }
-        newOffset += units[idx]!.to - units[idx]!.from;
-      }
+      return unitStart + (caretFlatOffset - u.from);
     }
+
+    newOffset = unitStart + unitLen;
+    prevInOrder = unitIdx;
   }
   return caretFlatOffset;
 }
@@ -68,10 +79,12 @@ export function buildParagraphReorderTransaction(
    * override が消え、移動先で前後 unit と融合してしまうのを防ぐ）。
    */
   selectionFlatRange?: { from: number; to: number },
+  language?: string,
 ): ParagraphReorderResult | null {
   if (units.length <= 1) return null;
   if (!isValidPermutation(order, units.length)) return null;
 
+  const lang = language;
   const tr = transaction ?? state.tr;
   const doc = tr.doc;
 
@@ -94,6 +107,7 @@ export function buildParagraphReorderTransaction(
     order,
     slices,
     preserved,
+    lang,
   );
 
   const tr2 = tr.replace(
@@ -117,10 +131,19 @@ export function buildParagraphReorderTransaction(
       : -1;
   let selNewPm: { from: number; to: number } | null = null;
 
+  const enGap = isEnglishLanguage(lang);
   let newFlatCursor = 0;
+  let prevInOrder: number | null = null;
   const segments: RangeSegmentMap[] = [];
   for (const unitIdx of order) {
     const u = units[unitIdx]!;
+    if (
+      prevInOrder !== null &&
+      enGap &&
+      needsEnglishSentenceGap(units[prevInOrder]!, u)
+    ) {
+      newFlatCursor += 1;
+    }
     const len = u.to - u.from;
     const newPm = flatRangeToPm(newFlat, newFlatCursor, newFlatCursor + len);
     const oldPm = pmRanges[unitIdx]!;
@@ -132,6 +155,7 @@ export function buildParagraphReorderTransaction(
     });
     if (unitIdx === selUnitIdx) selNewPm = newPm;
     newFlatCursor += len;
+    prevInOrder = unitIdx;
   }
 
   const reorderMeta: CodexInlineReorderInfo = {
@@ -148,6 +172,7 @@ export function buildParagraphReorderTransaction(
       units,
       order,
       caretFlatOffset,
+      lang,
     );
     const caretPm = flatRangeToPm(
       newFlat,
@@ -169,6 +194,7 @@ export function buildAdjacentUnitSwapTransaction(
   dir: -1 | 1,
   transaction?: Transaction,
   selectionFlatRange?: { from: number; to: number },
+  language?: string,
 ): ParagraphReorderResult | null {
   const target = unitIndex + dir;
   if (target < 0 || target >= units.length) return null;
@@ -185,6 +211,7 @@ export function buildAdjacentUnitSwapTransaction(
     caretFlat,
     transaction,
     selectionFlatRange,
+    language,
   );
 }
 

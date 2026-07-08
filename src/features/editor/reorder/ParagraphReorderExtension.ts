@@ -183,6 +183,7 @@ export const ParagraphReorderExtension = Extension.create({
             -1,
             tr,
             getSelectionFlatRange(state, ctx.resolved) ?? undefined,
+            language,
           );
           if (!result) return false;
           if (dispatch) dispatch(result.tr);
@@ -212,6 +213,7 @@ export const ParagraphReorderExtension = Extension.create({
             1,
             tr,
             getSelectionFlatRange(state, ctx.resolved) ?? undefined,
+            language,
           );
           if (!result) return false;
           if (dispatch) dispatch(result.tr);
@@ -269,6 +271,8 @@ export const ParagraphReorderExtension = Extension.create({
             order,
             ctx.caretFlatOffset,
             tr,
+            undefined,
+            language,
           );
           if (!result) return false;
           if (dispatch) dispatch(result.tr);

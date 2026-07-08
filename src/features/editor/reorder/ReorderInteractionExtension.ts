@@ -391,6 +391,7 @@ function trySwapUnitTowardPointer(
     liveSel && liveSel.from === dragged.from && liveSel.to === dragged.to
       ? liveSel
       : undefined;
+  const language = getCurrentProjectLanguage();
   const res = buildAdjacentUnitSwapTransaction(
     view.state,
     resolvedNow,
@@ -399,6 +400,7 @@ function trySwapUnitTowardPointer(
     dir,
     undefined,
     selectionFlatRange,
+    language,
   );
   if (!res) return null;
   const nextOrder = swapSlots(order, curSlot, curSlot + dir);

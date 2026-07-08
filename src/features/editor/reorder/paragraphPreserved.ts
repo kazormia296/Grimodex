@@ -1,7 +1,8 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Fragment } from "@tiptap/pm/model";
-import type { ParagraphFlat } from "./types";
+import type { ParagraphFlat, ReorderUnit } from "./types";
 import { flatRangeToPm } from "./paragraphFlat";
+import { isEnglishLanguage, needsEnglishSentenceGap } from "./sentenceSplit";
 
 /** inline 直前の flat offset（unit 境界 = 前 unit の to）。 */
 export function flatAnchorBeforePm(flat: ParagraphFlat, pmPos: number): number {
@@ -61,10 +62,11 @@ export function collectPreservedInlines(
 /** unit slice と gap inline を「元 unit 境界」に基づいて並べ替え後 Fragment に構築。 */
 export function buildPermutedParagraphContent(
   doc: ProseMirrorNode,
-  units: ReadonlyArray<{ from: number; to: number }>,
+  units: ReadonlyArray<ReorderUnit>,
   order: number[],
   unitSlices: ReadonlyArray<{ content: Fragment }>,
   preserved: PreservedInline[],
+  language?: string,
 ): Fragment {
   // 各 preserved inline は元 unit の境界に位置する（flatAnchor = 先行する元 unit
   // 長さの累積）。並べ替え後も「元々その inline が続いていた元 unit」の直後へ置く。
@@ -96,12 +98,24 @@ export function buildPermutedParagraphContent(
     }
   };
 
+  const enGap = isEnglishLanguage(language);
+  const gapText = doc.type.schema.text(" ");
+
   // 先頭（flatAnchor 0 = 元 unit 0 の前）。
   appendPreserved(byAnchor.get(0));
+  let prevUnitIdx: number | null = null;
   for (const unitIdx of order) {
+    if (
+      prevUnitIdx !== null &&
+      enGap &&
+      needsEnglishSentenceGap(units[prevUnitIdx]!, units[unitIdx]!)
+    ) {
+      combined = combined.append(Fragment.from(gapText));
+    }
     combined = combined.append(unitSlices[unitIdx]!.content);
     // この元 unit の直後に位置していた inline を続けて置く。
     appendPreserved(byAnchor.get(originalEnd[unitIdx]!));
+    prevUnitIdx = unitIdx;
   }
   // 防御的フラッシュ: 境界に一致しなかった inline（gap 等の想定外）も
   // 末尾へ必ず出す。欠落（データ欠損）よりは順序ずれの方が遥かに安全。
