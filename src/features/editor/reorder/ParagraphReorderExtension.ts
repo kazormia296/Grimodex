@@ -51,6 +51,7 @@ export function effectiveGranularity(
 ): ReorderGranularity {
   const g = getGranularity(state);
   if (g === "bunsetsu" && !isJapanese(language)) return "sentence";
+  if (g === "phrase" && isJapanese(language)) return "sentence";
   if (g === "word" && isJapanese(language)) return "sentence";
   return g;
 }
@@ -238,10 +239,12 @@ export const ParagraphReorderExtension = Extension.create({
           } else {
             next =
               current === "sentence"
-                ? "word"
-                : current === "word"
-                  ? "character"
-                  : "sentence";
+                ? "phrase"
+                : current === "phrase"
+                  ? "word"
+                  : current === "word"
+                    ? "character"
+                    : "sentence";
           }
           if (!dispatch) return true;
           dispatch(tr.setMeta(reorderKey, { setGranularity: next }));

@@ -164,9 +164,11 @@ function unitBandDecorations(
       classes.push(
         granularity === "bunsetsu"
           ? "reorder-unit-bunsetsu"
-          : granularity === "word"
-            ? "reorder-unit-word"
-            : "reorder-unit-sentence",
+          : granularity === "phrase"
+            ? "reorder-unit-phrase"
+            : granularity === "word"
+              ? "reorder-unit-word"
+              : "reorder-unit-sentence",
       );
     }
     if (isSelectionOverrideUnit(u, selectionRange)) {
@@ -565,9 +567,11 @@ export const ReorderInteractionExtension = Extension.create({
             const granularity: ReorderGranularity =
               rawGranularity === "bunsetsu" && !isJapanese(language)
                 ? "sentence"
-                : rawGranularity === "word" && isJapanese(language)
+                : rawGranularity === "phrase" && isJapanese(language)
                   ? "sentence"
-                  : rawGranularity;
+                  : rawGranularity === "word" && isJapanese(language)
+                    ? "sentence"
+                    : rawGranularity;
             const meta = tr.getMeta(reorderUiKey) as ReorderUiMeta | undefined;
             const drag =
               meta && "drag" in meta ? (meta.drag ?? null) : prev.drag;

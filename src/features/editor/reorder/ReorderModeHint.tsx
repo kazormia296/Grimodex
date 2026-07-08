@@ -13,6 +13,7 @@ function granularityLabel(
   t: (key: string) => string,
 ): string {
   if (gran === "bunsetsu") return t("editor.reorder.granularityBunsetsu");
+  if (gran === "phrase") return t("editor.reorder.granularityPhrase");
   if (gran === "word") return t("editor.reorder.granularityWord");
   if (gran === "character") return t("editor.reorder.granularityCharacter");
   return t("editor.reorder.granularitySentence");
@@ -28,7 +29,8 @@ function nextGranularityHint(
     if (gran === "bunsetsu") return t("editor.reorder.hint.switchToCharacter");
     return t("editor.reorder.hint.switchToSentence");
   }
-  if (gran === "sentence") return t("editor.reorder.hint.switchToWord");
+  if (gran === "sentence") return t("editor.reorder.hint.switchToPhrase");
+  if (gran === "phrase") return t("editor.reorder.hint.switchToWord");
   if (gran === "word") return t("editor.reorder.hint.switchToCharacter");
   return t("editor.reorder.hint.switchToSentence");
 }
@@ -38,7 +40,8 @@ function displayGranularity(
   isJapanese: boolean,
 ): ReorderGranularity {
   if (!isJapanese && granularity === "bunsetsu") return "sentence";
-  if (isJapanese && granularity === "word") return "sentence";
+  if (isJapanese && (granularity === "phrase" || granularity === "word"))
+    return "sentence";
   return granularity;
 }
 

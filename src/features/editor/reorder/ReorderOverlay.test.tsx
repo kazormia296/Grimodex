@@ -30,6 +30,7 @@ describe("ReorderOverlay", () => {
         onConfirm={vi.fn()}
         onCancel={vi.fn()}
         bunsetsuAvailable
+        phraseAvailable={false}
         wordAvailable={false}
       />,
     );
@@ -53,6 +54,7 @@ describe("ReorderOverlay", () => {
         onConfirm={vi.fn()}
         onCancel={onCancel}
         bunsetsuAvailable
+        phraseAvailable={false}
         wordAvailable={false}
       />,
     );

@@ -3,6 +3,7 @@ import type { ReorderGranularity, ReorderUnit } from "./types";
 import { pmPosToFlatOffset, type ResolvedParagraph } from "./paragraphFlat";
 import { splitSentences, isEnglishLanguage } from "./sentenceSplit";
 import { getCachedBunsetsuUnits, isJapanese } from "./bunsetsuSegmenter";
+import { splitPhrasesEn } from "./phraseSplit";
 import { splitWordsEn } from "./wordSplit";
 
 /** 非空の段落内 range 選択を flat 半開区間へ。単一 paragraph 外は null。 */
@@ -59,6 +60,10 @@ function segmentRegionAbsolute(
   if (granularity === "character") {
     return splitCharacters(text, regionFrom, regionTo);
   }
+  if (granularity === "phrase" && isEnglishLanguage(language)) {
+    const slice = text.slice(regionFrom, regionTo);
+    return offsetUnits(splitPhrasesEn(slice), regionFrom);
+  }
   if (granularity === "word" && isEnglishLanguage(language)) {
     const slice = text.slice(regionFrom, regionTo);
     return offsetUnits(splitWordsEn(slice), regionFrom);
@@ -109,6 +114,10 @@ export function buildReorderUnits(
   if (!selectionRange) {
     if (granularity === "character") {
       const units = splitCharacters(text);
+      return units.length > 1 ? units : null;
+    }
+    if (granularity === "phrase" && isEnglishLanguage(language)) {
+      const units = splitPhrasesEn(text);
       return units.length > 1 ? units : null;
     }
     if (granularity === "word" && isEnglishLanguage(language)) {

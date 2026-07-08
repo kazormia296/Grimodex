@@ -30,6 +30,7 @@ interface ReorderOverlayProps {
   onConfirm: () => void;
   onCancel: () => void;
   bunsetsuAvailable: boolean;
+  phraseAvailable: boolean;
   wordAvailable: boolean;
 }
 
@@ -46,6 +47,7 @@ export function ReorderOverlay({
   onConfirm,
   onCancel,
   bunsetsuAvailable,
+  phraseAvailable,
   wordAvailable,
 }: ReorderOverlayProps) {
   const { t } = useTranslation();
@@ -87,6 +89,17 @@ export function ReorderOverlay({
               onClick={() => onGranularityChange("sentence")}
             >
               {t("editor.reorder.granularitySentence")}
+            </button>
+            <button
+              type="button"
+              disabled={!phraseAvailable}
+              className={cn(
+                "rounded px-2 py-0.5 disabled:opacity-40",
+                granularity === "phrase" && "bg-background shadow-sm",
+              )}
+              onClick={() => onGranularityChange("phrase")}
+            >
+              {t("editor.reorder.granularityPhrase")}
             </button>
             <button
               type="button"
