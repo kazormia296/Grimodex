@@ -25,6 +25,7 @@ import {
   nextFreezeAfterAdjacentSwap,
   shouldFreezeSegment,
 } from "./segmentFreeze";
+import { stampReorderHistoryExclusion } from "./reorderHistorySession";
 
 /**
  * export される: ReorderInteractionExtension が同一 transaction 内で
@@ -209,6 +210,7 @@ export const ParagraphReorderExtension = Extension.create({
                 result.tr.setMeta(reorderUiKey, { refresh: true, freeze });
               }
             }
+            stampReorderHistoryExclusion(result.tr, state);
             dispatch(result.tr);
           }
           return true;
@@ -256,6 +258,7 @@ export const ParagraphReorderExtension = Extension.create({
                 result.tr.setMeta(reorderUiKey, { refresh: true, freeze });
               }
             }
+            stampReorderHistoryExclusion(result.tr, state);
             dispatch(result.tr);
           }
           return true;

@@ -49,6 +49,12 @@ import {
   type ReorderModifierMode,
 } from "./reorderModifierStore";
 import { reorderUiKey } from "./reorderUiKey";
+import {
+  beginReorderHistorySession,
+  commitReorderHistorySession,
+  stampReorderHistoryExclusion,
+  type ReorderHistorySession,
+} from "./reorderHistorySession";
 
 /** 進行中の unit ドラッグ状態（プラグイン状態として各 view ごとに保持）。 */
 interface UnitDragState {
@@ -79,6 +85,8 @@ interface UiPluginState {
    * swap 完了まで splitPhrasesEn / splitWordsEn を再実行しない。
    */
   freeze: SegmentFreezeState | null;
+  /** Alt+Shift 押下中の undo バッチ用スナップショット。 */
+  historySession: ReorderHistorySession | null;
 }
 
 interface ReorderUiMeta {
@@ -87,6 +95,8 @@ interface ReorderUiMeta {
   drag?: UnitDragState | null;
   /** キーが存在すれば freeze を更新（null でクリア）。 */
   freeze?: SegmentFreezeState | null;
+  /** キーが存在すれば historySession を更新（null でクリア）。 */
+  historySession?: ReorderHistorySession | null;
 }
 
 export { reorderUiKey } from "./reorderUiKey";
@@ -453,6 +463,7 @@ function trySwapUnitTowardPointer(
   res.tr.setMeta(reorderUiKey, {
     drag: { blockPos, units0, order: nextOrder, draggedOriginal },
   });
+  stampReorderHistoryExclusion(res.tr, view.state);
   view.dispatch(res.tr);
   return nextOrder;
 }
@@ -555,6 +566,14 @@ function maybePrefetchBunsetsu(view: EditorView): void {
     });
 }
 
+function beginHistorySessionIfNeeded(view: EditorView): void {
+  const prev = reorderUiKey.getState(view.state)?.historySession ?? null;
+  if (prev) return;
+  dispatchUiMeta(view, {
+    historySession: beginReorderHistorySession(view.state),
+  });
+}
+
 /** 修飾キー altShift 突入時に文節を先読みする。 */
 function onModifierModeChange(
   view: EditorView,
@@ -562,11 +581,15 @@ function onModifierModeChange(
 ): void {
   const language = getCurrentProjectLanguage();
   const granularity = effectiveGranularity(view.state, language);
+  const prevSession = reorderUiKey.getState(view.state)?.historySession ?? null;
+
   if (mode === "altShift") {
+    if (view.hasFocus()) beginHistorySessionIfNeeded(view);
     const freeze = captureSegmentFreeze(view.state, granularity, language);
     dispatchUiMeta(view, { refresh: true, freeze });
   } else {
-    dispatchUiMeta(view, { refresh: true, freeze: null });
+    if (prevSession) commitReorderHistorySession(view, prevSession);
+    dispatchUiMeta(view, { refresh: true, freeze: null, historySession: null });
   }
   refreshDecorations(view);
   if (mode === "altShift") maybePrefetchBunsetsu(view);
@@ -583,6 +606,9 @@ export const ReorderInteractionExtension = Extension.create({
     useReorderModifierStore
       .getState()
       .setGranularity(readReorderGranularity(this.editor.state));
+    if (useReorderModifierStore.getState().mode === "altShift") {
+      beginHistorySessionIfNeeded(this.editor.view);
+    }
   },
 
   addProseMirrorPlugins() {
@@ -597,6 +623,7 @@ export const ReorderInteractionExtension = Extension.create({
               decorations: DecorationSet.empty,
               drag: null,
               freeze: null,
+              historySession: null,
             };
           },
           apply(tr, prev, _oldState, newState): UiPluginState {
@@ -624,6 +651,10 @@ export const ReorderInteractionExtension = Extension.create({
               meta && "drag" in meta ? (meta.drag ?? null) : prev.drag;
             let freeze =
               meta && "freeze" in meta ? (meta.freeze ?? null) : prev.freeze;
+            let historySession =
+              meta && "historySession" in meta
+                ? (meta.historySession ?? null)
+                : prev.historySession;
 
             if (mode !== "altShift") {
               freeze = null;
@@ -661,9 +692,11 @@ export const ReorderInteractionExtension = Extension.create({
               meta?.refresh === true ||
               (meta && "drag" in meta) ||
               (meta && "freeze" in meta) ||
+              (meta && "historySession" in meta) ||
               mode !== prev.mode ||
               granularity !== prev.granularity ||
               freeze !== prev.freeze ||
+              historySession !== prev.historySession ||
               tr.docChanged ||
               (mode === "altShift" && tr.selectionSet);
             if (!needRebuild) return prev;
@@ -672,6 +705,7 @@ export const ReorderInteractionExtension = Extension.create({
               granularity,
               drag,
               freeze,
+              historySession,
               decorations: buildDecorations(
                 newState,
                 mode,
