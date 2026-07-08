@@ -53,3 +53,32 @@ argument-hint: "[patch|minor|major]  (省略時 patch)"
    - `git switch master && git pull` で master を最新化。
    - `git tag -a v<新> -m "Release v<新>"`（lightweight タグ `git tag v...` のみは不可）。
    - `git push origin v<新>`（タグ push もユーザー確認の上で）。
+
+## リリースノート（アプリ内 What's New）
+
+バージョン bump 後、**リリース前**に以下を追加・更新する:
+
+1. `public/RELEASE_NOTES/v{新バージョン}.ja.md` をテンプレートから作成
+2. `public/RELEASE_NOTES/v{新バージョン}.en.md` をテンプレートから作成
+3. 両ファイルにユーザー向け要約を記入（ja / en それぞれ）
+
+テンプレート例:
+
+```markdown
+# vX.Y.Z
+
+## 新機能 / New
+
+- （追記）
+
+## 改善 / Improvements
+
+- （追記）
+
+## 修正 / Fixes
+
+- （追記）
+```
+
+GitHub `release.yml` の `releaseBody` とは別管理。アップグレード後の初回起動で
+`ReleaseNotesDialog` が ja 正本を参照して表示する（en UI は en → ja フォールバック）。

@@ -4880,6 +4880,13 @@
     "upToDate": "You're up to date",
     "checkFailed": "Failed to check for updates"
   },
+  "releaseNotes": {
+    "title": "What's New in v{{version}}",
+    "close": "Close",
+    "viewButton": "View release notes",
+    "notAvailable": "No release notes for this version",
+    "fallbackLocale": "Showing Japanese release notes"
+  },
   "semanticSearch": {
     "reindexComplete": "Reindex complete",
     "reindexing": "Semantic reindexing…",

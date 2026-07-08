@@ -7,6 +7,8 @@ import { WorkspaceMenu } from "@/features/workspace/WorkspaceMenu";
 import { ProjectMenu } from "@/features/project/ProjectMenu";
 import { WorkspaceTrustDialog } from "@/features/workspace/WorkspaceTrustDialog";
 import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
+import { ReleaseNotesDialog } from "@/features/release-notes/ReleaseNotesDialog";
+import { useReleaseNotesGate } from "@/features/release-notes/useReleaseNotesGate";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
@@ -150,6 +152,7 @@ function App() {
   useModelDownloadListener();
   // アプリ更新: 起動 ~10 秒後にサイレント check() → 更新があればトーストを出す。
   useUpdateChecker();
+  useReleaseNotesGate();
   useExternalMountListener();
   useLicenseStateListener();
 
@@ -276,6 +279,7 @@ function App() {
       {view === "editor" && <EditorScreen key={activeWorkspacePath ?? ""} />}
       <WorkspaceTrustDialog />
       <EulaConsentDialog />
+      <ReleaseNotesDialog />
       <DebugLogViewer />
     </>
   );

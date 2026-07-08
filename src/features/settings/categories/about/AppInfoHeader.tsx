@@ -13,11 +13,13 @@ import {
   restartApp,
 } from "@/features/updater/api";
 import { openLogDir } from "@/features/post-effect/errorToast";
+import { fetchReleaseNotes } from "@/features/release-notes/fetchReleaseNotes";
+import { useReleaseNotesStore } from "@/features/release-notes/releaseNotesStore";
 
 const GITHUB_URL = "https://github.com/kazormia296/Grimodex";
 
 export function AppInfoHeader() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [version, setVersion] = useState<string | null>(null);
   // ライセンス機構の有無 (ライセンス認証設計書 §9.1)。リリースビルドの
   // feature 指定ミスを目視確認できるようにする。
@@ -37,6 +39,23 @@ export function AppInfoHeader() {
 
   // 手動更新チェック。自動チェック (useUpdateChecker) と違い、結果 (最新版 /
   // 失敗) も sonner トーストで明示する。更新ありのときは UpdateToast も出る。
+  async function handleViewReleaseNotes() {
+    if (version == null) {
+      toast.error(t("releaseNotes.notAvailable"));
+      return;
+    }
+    const content = await fetchReleaseNotes(version, i18n.language);
+    if (content == null) {
+      toast.error(t("releaseNotes.notAvailable"));
+      return;
+    }
+    useReleaseNotesStore.getState().openManual({
+      version,
+      src: content.src,
+      isFallback: content.isFallback,
+    });
+  }
+
   async function handleCheckUpdate() {
     const store = useUpdaterStore.getState();
     store.setChecking();
@@ -123,6 +142,13 @@ export function AppInfoHeader() {
               className={`h-3.5 w-3.5 ${updateBusy ? "animate-spin" : ""}`}
             />
             {updateLabel}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleViewReleaseNotes()}
+            className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-foreground/40 hover:text-foreground"
+          >
+            {t("releaseNotes.viewButton")}
           </button>
           <button
             type="button"

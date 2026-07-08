@@ -69,6 +69,8 @@ export interface GlobalSettings {
   hasSeenWelcome?: boolean;
   /** Version of the EULA the user has accepted. Mismatch with current version triggers modal. */
   acceptedEulaVersion?: string;
+  /** Last app version for which the user has seen release notes (e.g. "0.10.4"). */
+  lastSeenReleaseNotesVersion?: string;
   /** Persisted timeline panel state */
   timeline?: TimelineSettings;
   /** Persisted chronicle (作中年表) panel state */

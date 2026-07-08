@@ -54,6 +54,10 @@ pub struct GlobalSettings {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accepted_eula_version: Option<String>,
+    /// Last app version for which the user has seen release notes (e.g. "0.10.4").
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_release_notes_version: Option<String>,
     /// Timeline panel settings (zoom, axis mode, scroll offset, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeline: Option<serde_json::Value>,
@@ -126,6 +130,7 @@ impl Default for GlobalSettings {
             trusted_workspaces: Vec::new(),
             has_seen_welcome: false,
             accepted_eula_version: None,
+            last_seen_release_notes_version: None,
             timeline: None,
             map: None,
             grid: None,
