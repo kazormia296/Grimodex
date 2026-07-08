@@ -75,6 +75,14 @@ export function useParagraphReorderOverlay(
             language,
             fetched,
           );
+        } else if (g === "phrase") {
+          nextUnits = resolveUnitsForParagraph(
+            editor.state,
+            "phrase",
+            language,
+          );
+        } else if (g === "word") {
+          nextUnits = resolveUnitsForParagraph(editor.state, "word", language);
         } else if (g === "character") {
           nextUnits = resolveUnitsForParagraph(
             editor.state,
@@ -188,6 +196,10 @@ export function useParagraphReorderOverlay(
         u,
         order,
         caretFlatOffset,
+        undefined,
+        undefined,
+        getCurrentProjectLanguage(),
+        granularity,
       );
       if (!result) {
         setErrorMessage("staleDocument");

@@ -4,6 +4,7 @@ import type { EditorState, Transaction } from "prosemirror-state";
 import type {
   CodexInlineReorderInfo,
   RangeSegmentMap,
+  ReorderGranularity,
   ReorderUnit,
 } from "./types";
 import {
@@ -17,6 +18,8 @@ import {
   collectPreservedInlines,
   unitPmRangesFor,
 } from "./paragraphPreserved";
+import { isEnglishLanguage } from "./sentenceSplit";
+import { needsEnglishUnitGap } from "./englishUnitGap";
 
 function isValidPermutation(order: number[], length: number): boolean {
   if (order.length !== length) return false;
@@ -29,19 +32,28 @@ export function mapFlatOffsetThroughPermutation(
   units: ReorderUnit[],
   order: number[],
   caretFlatOffset: number,
+  language?: string,
+  granularity: ReorderGranularity = "sentence",
 ): number {
-  for (let i = 0; i < units.length; i++) {
-    const u = units[i]!;
+  let newOffset = 0;
+  let prevInOrder: number | null = null;
+
+  for (const unitIdx of order) {
+    const u = units[unitIdx]!;
+    const gap =
+      prevInOrder !== null &&
+      needsEnglishUnitGap(units[prevInOrder]!, u, granularity, language)
+        ? 1
+        : 0;
+    const unitStart = newOffset + gap;
+    const unitLen = u.to - u.from;
+
     if (caretFlatOffset >= u.from && caretFlatOffset < u.to) {
-      const offsetInUnit = caretFlatOffset - u.from;
-      let newOffset = 0;
-      for (const idx of order) {
-        if (idx === i) {
-          return newOffset + offsetInUnit;
-        }
-        newOffset += units[idx]!.to - units[idx]!.from;
-      }
+      return unitStart + (caretFlatOffset - u.from);
     }
+
+    newOffset = unitStart + unitLen;
+    prevInOrder = unitIdx;
   }
   return caretFlatOffset;
 }
@@ -68,10 +80,14 @@ export function buildParagraphReorderTransaction(
    * override が消え、移動先で前後 unit と融合してしまうのを防ぐ）。
    */
   selectionFlatRange?: { from: number; to: number },
+  language?: string,
+  granularity: ReorderGranularity = "sentence",
 ): ParagraphReorderResult | null {
   if (units.length <= 1) return null;
   if (!isValidPermutation(order, units.length)) return null;
 
+  const lang = language;
+  const gran = granularity;
   const tr = transaction ?? state.tr;
   const doc = tr.doc;
 
@@ -94,6 +110,8 @@ export function buildParagraphReorderTransaction(
     order,
     slices,
     preserved,
+    lang,
+    gran,
   );
 
   const tr2 = tr.replace(
@@ -117,10 +135,19 @@ export function buildParagraphReorderTransaction(
       : -1;
   let selNewPm: { from: number; to: number } | null = null;
 
+  const enGap = isEnglishLanguage(lang);
   let newFlatCursor = 0;
+  let prevInOrder: number | null = null;
   const segments: RangeSegmentMap[] = [];
   for (const unitIdx of order) {
     const u = units[unitIdx]!;
+    if (
+      prevInOrder !== null &&
+      enGap &&
+      needsEnglishUnitGap(units[prevInOrder]!, u, gran, lang)
+    ) {
+      newFlatCursor += 1;
+    }
     const len = u.to - u.from;
     const newPm = flatRangeToPm(newFlat, newFlatCursor, newFlatCursor + len);
     const oldPm = pmRanges[unitIdx]!;
@@ -132,6 +159,7 @@ export function buildParagraphReorderTransaction(
     });
     if (unitIdx === selUnitIdx) selNewPm = newPm;
     newFlatCursor += len;
+    prevInOrder = unitIdx;
   }
 
   const reorderMeta: CodexInlineReorderInfo = {
@@ -148,6 +176,8 @@ export function buildParagraphReorderTransaction(
       units,
       order,
       caretFlatOffset,
+      lang,
+      gran,
     );
     const caretPm = flatRangeToPm(
       newFlat,
@@ -169,6 +199,8 @@ export function buildAdjacentUnitSwapTransaction(
   dir: -1 | 1,
   transaction?: Transaction,
   selectionFlatRange?: { from: number; to: number },
+  language?: string,
+  granularity: ReorderGranularity = "sentence",
 ): ParagraphReorderResult | null {
   const target = unitIndex + dir;
   if (target < 0 || target >= units.length) return null;
@@ -185,6 +217,8 @@ export function buildAdjacentUnitSwapTransaction(
     caretFlat,
     transaction,
     selectionFlatRange,
+    language,
+    granularity,
   );
 }
 
@@ -193,9 +227,18 @@ export function findUnitIndexAtFlatOffset(
   units: ReorderUnit[],
   flatOffset: number,
 ): number {
+  if (units.length === 0) return 0;
+
   for (let i = 0; i < units.length; i++) {
     const u = units[i]!;
     if (flatOffset >= u.from && flatOffset < u.to) return i;
   }
-  return Math.max(0, units.length - 1);
+
+  // 語/文の終端直後（unit 間の空白など）: 直前 unit に属する。
+  // word 粒度では PM キャレットが `u.to`（空白位置）に来ることが多い。
+  for (let i = units.length - 1; i >= 0; i--) {
+    const u = units[i]!;
+    if (flatOffset >= u.from) return i;
+  }
+  return 0;
 }

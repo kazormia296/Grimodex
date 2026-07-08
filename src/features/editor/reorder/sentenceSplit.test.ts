@@ -3,6 +3,8 @@ import {
   sentenceRangesJa,
   sentenceRangesEn,
   splitSentencesJa,
+  splitSentences,
+  needsEnglishSentenceGap,
 } from "./sentenceSplit";
 
 describe("sentenceSplit JA", () => {
@@ -86,5 +88,14 @@ describe("sentenceSplit EN", () => {
     expect(text.slice(ranges[0]!.from, ranges[0]!.to)).toBe(
       "Mr. Smith arrived.",
     );
+  });
+
+  it("needsEnglishSentenceGap detects missing inter-sentence space on swap", () => {
+    const text = "She stood at the gate. He waved from afar.";
+    const units = splitSentences(text, "en");
+    expect(units).toHaveLength(2);
+    expect(units[1]!.surface).toBe("He waved from afar.");
+    expect(needsEnglishSentenceGap(units[1]!, units[0]!)).toBe(true);
+    expect(needsEnglishSentenceGap(units[0]!, units[1]!)).toBe(true);
   });
 });

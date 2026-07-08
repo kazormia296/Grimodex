@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { PROJECT_ID as FALLBACK_PROJECT_ID } from "./constants";
 import {
   listProjects,
@@ -286,10 +287,16 @@ export function getCurrentProjectId(): string {
  */
 export function getCurrentProjectLanguage(): string {
   const id = useProjectStore.getState().currentProjectId;
-  return (
-    useProjectStore.getState().projects.find((p) => p.id === id)?.language ??
-    "ja"
-  );
+  const fromList = useProjectStore
+    .getState()
+    .projects.find((p) => p.id === id)?.language;
+  if (fromList) return fromList;
+  // loadProject は settingsStore.projectLanguage を更新するが、projects 一覧が
+  // 空/古いとき getCurrentProjectLanguage が "ja" に落ちて英語文が分割されない
+  // （Alt+Shift 色帯・swap が無反応になる）のを防ぐ。
+  const fromSettings = useSettingsStore.getState().projectLanguage;
+  if (fromSettings) return fromSettings;
+  return "ja";
 }
 
 /** Current Project id hook for React components. */

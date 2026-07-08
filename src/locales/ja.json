@@ -3482,6 +3482,8 @@
       "title": "推敲 — 段落内並べ替え",
       "granularitySentence": "文",
       "granularityBunsetsu": "文節",
+      "granularityPhrase": "句",
+      "granularityWord": "単語",
       "granularityCharacter": "文字",
       "loading": "分割中…",
       "singleUnit": "並べ替え可能な単位が2つ以上必要です",
@@ -3498,6 +3500,8 @@
         "unitSentence": "文を並べ替え（ドラッグ / Alt+Shift+矢印）",
         "unitBunsetsu": "文節を並べ替え（ドラッグ / Alt+Shift+矢印）",
         "switchToBunsetsu": "Alt+Shift+G で文節へ",
+        "switchToPhrase": "Alt+Shift+G で句へ",
+        "switchToWord": "Alt+Shift+G で単語へ",
         "switchToCharacter": "Alt+Shift+G で文字へ",
         "switchToSentence": "Alt+Shift+G で文へ"
       }

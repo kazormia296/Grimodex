@@ -30,6 +30,8 @@ describe("ReorderOverlay", () => {
         onConfirm={vi.fn()}
         onCancel={vi.fn()}
         bunsetsuAvailable
+        phraseAvailable={false}
+        wordAvailable={false}
       />,
     );
     expect(screen.getByText("editor.reorder.confirm")).toBeTruthy();
@@ -52,6 +54,8 @@ describe("ReorderOverlay", () => {
         onConfirm={vi.fn()}
         onCancel={onCancel}
         bunsetsuAvailable
+        phraseAvailable={false}
+        wordAvailable={false}
       />,
     );
     fireEvent.click(screen.getByText("editor.reorder.cancel"));
