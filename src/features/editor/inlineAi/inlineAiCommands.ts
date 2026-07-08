@@ -60,8 +60,19 @@ export function getVisibleInlineAiCommands(): InlineAiCommand[] {
   return all.filter((cmd) => !isAiGenerationCommand(cmd));
 }
 
+/**
+ * スラッシュ (/) メニュー用のコマンド一覧＋クエリ絞り込み。
+ * `needsSelection:true` の置換系コマンド (rewrite/shorten/expand/tone/translate) は
+ * 除外する: "/" を打鍵すると非空選択が置換削除され、かつ allow ガードが行頭でしか
+ * 開かないため、slash からは選択を保持できず generate が caret 挿入へ無言劣化する。
+ * これらの選択系コマンドは選択保持できる導線 (バブルメニュー / Ctrl+Shift+Space
+ * パレット) 専用とする。パレット/バブルは getVisibleInlineAiCommands() を直接使うので
+ * ここでの除外の影響を受けない。
+ */
 export function filterCommands(query: string): InlineAiCommand[] {
-  const commands = getVisibleInlineAiCommands();
+  const commands = getVisibleInlineAiCommands().filter(
+    (cmd) => !cmd.needsSelection,
+  );
   const q = query.toLowerCase().trim();
   if (!q) return commands;
   return commands.filter(

@@ -1313,21 +1313,14 @@ export function EditorPane({
   useShowInvisibles(mountedEditor);
   useAttribution(dbNativeEditor);
 
-  // Listen for slash-command events dispatched by SlashCommandExtension
-  useEffect(() => {
-    if (!dbNativeEditor || !isEditorViewReady(dbNativeEditor)) return;
-    const ed = dbNativeEditor;
-    let dom: HTMLElement;
-    try {
-      dom = ed.view.dom;
-    } catch {
-      return;
-    }
-    function onSlashCommand(e: Event) {
-      const cmd = (e as CustomEvent).detail?.command as
-        | InlineAiCommand
-        | undefined;
-      if (!cmd) return;
+  // インライン AI コマンドの起動を1箇所に集約する。slash メニュー(下の
+  // CustomEvent 経路)とバブルメニューの AI サブメニュー(EditorContentArea 経由で
+  // prop 注入)の両方から呼ばれる。分岐は従来 onSlashCommand が持っていたもの:
+  // insert-node は構造挿入 / needsArg はパレットへ委譲 / それ以外は即 generate。
+  const handleInlineAiCommand = useCallback(
+    (cmd: InlineAiCommand) => {
+      const ed = dbNativeEditor;
+      if (!ed || !isEditorViewReady(ed)) return;
       // Beat system: structural inserts skip the AI pipeline entirely.
       if (cmd.kind === "insert-node") {
         if (cmd.id === "sceneBeat") {
@@ -1355,12 +1348,32 @@ export function EditorPane({
         codexEntries,
       });
       generate(cmd, context);
+    },
+    [dbNativeEditor, nodeId, generate],
+  );
+
+  // Listen for slash-command events dispatched by SlashCommandExtension
+  useEffect(() => {
+    if (!dbNativeEditor || !isEditorViewReady(dbNativeEditor)) return;
+    const ed = dbNativeEditor;
+    let dom: HTMLElement;
+    try {
+      dom = ed.view.dom;
+    } catch {
+      return;
+    }
+    function onSlashCommand(e: Event) {
+      const cmd = (e as CustomEvent).detail?.command as
+        | InlineAiCommand
+        | undefined;
+      if (!cmd) return;
+      handleInlineAiCommand(cmd);
     }
     dom.addEventListener("inlineai:slash-command", onSlashCommand);
     return () => {
       dom.removeEventListener("inlineai:slash-command", onSlashCommand);
     };
-  }, [dbNativeEditor, nodeId, generate]);
+  }, [dbNativeEditor, handleInlineAiCommand]);
 
   // Subscribe to content sync from the other pane (or CodexContentEditor mini-editor).
   // Apply is rAF-coalesced: a typing burst on the peer pane collapses to at most
@@ -2070,6 +2083,9 @@ export function EditorPane({
                 handleTitleEditStart={handleTitleEditStart}
                 isSceneContentLoading={isSceneContentLoading}
                 sceneId={nodeId}
+                onInlineAiCommand={
+                  dbNativeEditor ? handleInlineAiCommand : undefined
+                }
               />
             </ResizablePanel>
             <ResizableHandle withHandle />
@@ -2114,6 +2130,9 @@ export function EditorPane({
                 handleTitleEditStart={handleTitleEditStart}
                 isSceneContentLoading={isSceneContentLoading}
                 sceneId={nodeId}
+                onInlineAiCommand={
+                  dbNativeEditor ? handleInlineAiCommand : undefined
+                }
               />
             </div>
           </div>
