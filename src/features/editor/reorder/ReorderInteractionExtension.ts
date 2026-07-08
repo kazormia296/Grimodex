@@ -651,7 +651,7 @@ export const ReorderInteractionExtension = Extension.create({
               meta && "drag" in meta ? (meta.drag ?? null) : prev.drag;
             let freeze =
               meta && "freeze" in meta ? (meta.freeze ?? null) : prev.freeze;
-            let historySession =
+            const historySession =
               meta && "historySession" in meta
                 ? (meta.historySession ?? null)
                 : prev.historySession;
