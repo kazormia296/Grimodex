@@ -48,6 +48,28 @@ interface ProjectState {
 
 let loadProjectGeneration = 0;
 
+/** Workspace-scoped app_settings key for the last active project. */
+export const LAST_ACTIVE_PROJECT_KEY = "workspace.lastActiveProjectId";
+
+async function readLastActiveProjectId(): Promise<string | null> {
+  const { getSetting } = await import("@/features/settings/api");
+  return getSetting(LAST_ACTIVE_PROJECT_KEY);
+}
+
+async function persistLastActiveProjectId(projectId: string): Promise<void> {
+  const { setSetting } = await import("@/features/settings/api");
+  await setSetting(LAST_ACTIVE_PROJECT_KEY, projectId);
+}
+
+function resolveInitialProjectId(
+  projectRows: Project[],
+  savedId: string | null,
+): string {
+  if (projectRows.length === 0) return FALLBACK_PROJECT_ID;
+  if (savedId && projectRows.some((p) => p.id === savedId)) return savedId;
+  return projectRows[0]!.id;
+}
+
 /**
  * timelapse recorder / externalWriteFeed を触ってよい実行環境か。
  * VITEST では mocked db harness にチェーン tail SELECT を要求しない・タイマー
@@ -72,9 +94,11 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   initCurrentProject: async () => {
     try {
       const projectRows = await listProjects();
+      const savedId = await readLastActiveProjectId();
+      const projectId = resolveInitialProjectId(projectRows, savedId);
       set({
         projects: projectRows,
-        currentProjectId: projectRows[0]?.id ?? FALLBACK_PROJECT_ID,
+        currentProjectId: projectId,
       });
     } catch {
       // A failed lookup must not block workspace open — fall back so the
@@ -133,6 +157,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       }
       const { reloadProjectData } = await import("./reloadProjectData");
       await reloadProjectData(projectId);
+      await persistLastActiveProjectId(projectId);
       // 執筆タイムラプス recorder を本 project に bind。失敗しても本流は止めない
       // (chain init は best-effort、次の event で再試行される)。記録の ON/OFF は
       // per-project 設定 (timelapse.enabled, 既定 ON) で決まる (§15.5)。
