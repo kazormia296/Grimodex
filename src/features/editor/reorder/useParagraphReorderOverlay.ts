@@ -75,6 +75,12 @@ export function useParagraphReorderOverlay(
             language,
             fetched,
           );
+        } else if (g === "character") {
+          nextUnits = resolveUnitsForParagraph(
+            editor.state,
+            "character",
+            language,
+          );
         } else {
           nextUnits = resolveUnitsForParagraph(
             editor.state,

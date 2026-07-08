@@ -3,15 +3,38 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Editor } from "@tiptap/core";
 import type { Decoration } from "@tiptap/pm/view";
 import { getEditorExtensions } from "../extensions";
-import { swapBlockAt } from "../ParagraphMoveExtension";
+import * as ParagraphMoveExtension from "../ParagraphMoveExtension";
 import {
   reorderUiKey,
   __resetReorderInteractionForTest,
   __reorderDragTestHooks,
 } from "./ReorderInteractionExtension";
-import { resolveParagraphAtSelection } from "./paragraphFlat";
+import {
+  flatRangeToPm,
+  resolveParagraphAtPos,
+  resolveParagraphAtSelection,
+} from "./paragraphFlat";
 import { splitSentencesJa } from "./sentenceSplit";
 import { useReorderModifierStore } from "./reorderModifierStore";
+import { clearBunsetsuCache, fetchBunsetsuUnits } from "./bunsetsuSegmenter";
+import { currentUnitsFromOrder } from "./reorderPermutation";
+import type { ReorderUnit } from "./types";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (_cmd: string, args: { text: string }) => {
+    // テスト用の疑似文節分割: 2 文字ごとに区切る（文と明確に異なる境界数）。
+    const text = args.text;
+    const dtos: Array<{ start: number; end: number; surface: string }> = [];
+    for (let i = 0; i < text.length; i += 2) {
+      dtos.push({
+        start: i,
+        end: Math.min(i + 2, text.length),
+        surface: text.slice(i, Math.min(i + 2, text.length)),
+      });
+    }
+    return dtos;
+  }),
+}));
 
 vi.mock("@/features/project/projectStore", async (importOriginal) => {
   const actual =
@@ -40,26 +63,64 @@ function classOf(d: Decoration): string {
   );
 }
 
+function mockBlockRects(_view: Editor["view"]): void {
+  vi.spyOn(ParagraphMoveExtension, "blockRectAtIndex").mockImplementation(
+    (_view, index) => {
+      const height = 50;
+      const top = index * height;
+      return new DOMRect(0, top, 100, height);
+    },
+  );
+}
+
+/**
+ * 単位文字幅で仮想レイアウトした flat offset を返す（reflow シミュレーション）。
+ * 実ブラウザでは同じ画面座標でも swap 後の再レイアウトで下にある文字が
+ * 変わり得る。posAtCoords をこのモデルで stub することで、その reflow を
+ * 単体テストで再現する。
+ */
+function flatOffsetAtScreenX(
+  unitsInOrder: ReorderUnit[],
+  x: number,
+  charWidth = 10,
+): number {
+  let px = 0;
+  let cursor = 0;
+  for (const u of unitsInOrder) {
+    const len = u.to - u.from;
+    const width = len * charWidth;
+    if (x < px + width) {
+      const localFrac = (x - px) / width;
+      return cursor + Math.round(localFrac * len);
+    }
+    px += width;
+    cursor += len;
+  }
+  return cursor;
+}
+
 describe("ReorderInteractionExtension", () => {
   let editor: Editor;
 
   afterEach(() => {
     editor?.destroy();
     useReorderModifierStore.setState({ mode: "none", granularity: "sentence" });
+    clearBunsetsuCache();
     __resetReorderInteractionForTest();
+    vi.restoreAllMocks();
   });
 
   it("swapBlockAt swaps a block at an explicit index (drag primitive)", () => {
     editor = makeEditor("<p>first</p><p>second</p><p>third</p>");
     // index 0 を dir=1 で下へ → first と second が入れ替わる
-    expect(swapBlockAt(editor.view, 0, 1)).toBe(true);
+    expect(ParagraphMoveExtension.swapBlockAt(editor.view, 0, 1)).toBe(true);
     expect(editor.state.doc.content.content.map((n) => n.textContent)).toEqual([
       "second",
       "first",
       "third",
     ]);
     // index 2 を dir=1（範囲外）は不可
-    expect(swapBlockAt(editor.view, 2, 1)).toBe(false);
+    expect(ParagraphMoveExtension.swapBlockAt(editor.view, 2, 1)).toBe(false);
   });
 
   it("mode='none' produces no decorations", () => {
@@ -117,6 +178,32 @@ describe("ReorderInteractionExtension", () => {
     expect(handles).toHaveLength(2);
   });
 
+  it("toggling granularity to bunsetsu while altShift is held immediately rebuilds bands with bunsetsu boundaries (regression)", async () => {
+    // 回帰対象のバグ: editor.commands.X()（非chain）は「コマンド本体の実行が
+    // 終わった後」に実 dispatch する。かつ tiptap の ExtensionManager.plugins
+    // は extensions 配列を reverse() してから plugin を積むため、
+    // reorderUiKey の apply() が reorderKey の apply() より先に呼ばれうる。
+    // どちらの経路でも粒度変化の検出を誤ると、装飾が旧粒度のまま固まる。
+    clearBunsetsuCache();
+    editor = makeEditor("<p>あいう。えお。かきく。</p>");
+    editor.commands.setTextSelection(2);
+    await fetchBunsetsuUnits("あいう。えお。かきく。");
+
+    useReorderModifierStore.getState().setMode("altShift");
+    const toggled = editor.commands.toggleReorderGranularity();
+    expect(toggled).toBe(true);
+
+    const inline = decos(editor).filter((d) =>
+      classOf(d).includes("reorder-unit"),
+    );
+    // モック文節分割（2文字ごと）で 12 文字 → 6 unit。文粒度の 3 のままなら
+    // 回帰。
+    expect(inline).toHaveLength(6);
+    expect(
+      inline.every((d) => classOf(d).includes("reorder-unit-bunsetsu")),
+    ).toBe(true);
+  });
+
   it("single-unit paragraph gets no bands in altShift", () => {
     editor = makeEditor("<p>句点なし本文</p>");
     editor.commands.setTextSelection(2);
@@ -149,14 +236,69 @@ describe("ReorderInteractionExtension", () => {
     expect(reorderUiKey.getState(editor.state)?.drag).toBeNull();
   });
 
+  it("unit drag settles without fighting when the pointer stays at the same screen position across reflow (regression)", () => {
+    // 長さの異なる 3 unit（1/1/2 文字）。x=15 は、初回 swap で unit の
+    // 再配置が起きた直後にちょうど境界を跨ぐ位置になるよう選んである
+    // （ブルートフォースで確認済み）。旧実装（「pointer がどの slot を指す
+    // か」を絶対 target として毎回計算し直す方式）はこのケースで、同一
+    // ポインタ位置への再 mousemove のたびに drag 対象が [1,2,0]⇄[1,0,2] を
+    // 永久に往復する「fighting/チラツキ」を起こす。新実装（隣接 slot の
+    // 中点を跨いだときだけ 1 手 swap するヒステリシス方式）は 1 回で
+    // [1,0,2] に収束し、以降変化しない。
+    editor = makeEditor("<p>ABCC</p>");
+    useReorderModifierStore.getState().setMode("altShift");
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const units0: ReorderUnit[] = [
+      { from: 0, to: 1, surface: "A" },
+      { from: 1, to: 2, surface: "B" },
+      { from: 2, to: 4, surface: "CC" },
+    ];
+
+    editor.view.posAtCoords = ({ left }: { left: number }) => {
+      const drag = reorderUiKey.getState(editor.state)?.drag;
+      const order = drag?.order ?? [0, 1, 2];
+      const cu = currentUnitsFromOrder(units0, order);
+      const flatOffset = flatOffsetAtScreenX(cu, left);
+      const resolvedNow = resolveParagraphAtPos(editor.state, resolved.pos)!;
+      const clamped = Math.max(
+        0,
+        Math.min(flatOffset, resolvedNow.flat.text.length - 1),
+      );
+      const pm = flatRangeToPm(resolvedNow.flat, clamped, clamped + 1);
+      return { pos: pm.from, inside: -1 };
+    };
+
+    __reorderDragTestHooks.startUnitDrag(editor.view, resolved.pos, units0, 0);
+
+    window.dispatchEvent(
+      new MouseEvent("mousemove", { clientX: 15, clientY: 0 }),
+    );
+    const afterFirst = editor.state.doc.textContent;
+    // 新実装は 1 回で [1,0,2]="BACC" に収束する（少なくとも 1 回は
+    // swap している = 何も起きていないテストにしない）。
+    expect(afterFirst).toBe("BACC");
+
+    // 同一ポインタ位置での再 mousemove（reflow 後、実ブラウザで頻発する
+    // 冗長イベント相当）。ここで巻き戻りが起きないことを確認する
+    // （旧実装はここで BCCA ⇄ BACC を永久に往復していた）。
+    window.dispatchEvent(
+      new MouseEvent("mousemove", { clientX: 15, clientY: 0 }),
+    );
+    expect(editor.state.doc.textContent).toBe(afterFirst);
+
+    // 何度繰り返しても安定している（無限に前後しない）。
+    window.dispatchEvent(
+      new MouseEvent("mousemove", { clientX: 15, clientY: 0 }),
+    );
+    expect(editor.state.doc.textContent).toBe(afterFirst);
+
+    window.dispatchEvent(new MouseEvent("mouseup"));
+  });
+
   it("block drag (mouse) incrementally reorders whole paragraphs to the pointer target", () => {
     editor = makeEditor("<p>one</p><p>two</p><p>three</p>");
     useReorderModifierStore.getState().setMode("alt");
-    // ポインタは 3 番目のブロック内を指す。
-    const doc = editor.state.doc;
-    let thirdStart = 0;
-    for (let i = 0; i < 2; i++) thirdStart += doc.child(i).nodeSize;
-    editor.view.posAtCoords = () => ({ pos: thirdStart + 2, inside: -1 });
+    mockBlockRects(editor.view);
 
     __reorderDragTestHooks.startBlockDrag(editor.view, 0);
     window.dispatchEvent(
@@ -169,6 +311,68 @@ describe("ReorderInteractionExtension", () => {
       "three",
       "one",
     ]);
+  });
+
+  it("character mode shows only the active unit frame without color bands", () => {
+    editor = makeEditor("<p>ABCD</p>");
+    editor.commands.setTextSelection(2);
+    editor.commands.setReorderGranularity("character");
+    useReorderModifierStore.getState().setMode("altShift");
+
+    const inline = decos(editor).filter((d) =>
+      classOf(d).includes("reorder-unit"),
+    );
+    expect(inline).toHaveLength(1);
+    expect(classOf(inline[0]!)).toContain("reorder-unit-character");
+    expect(classOf(inline[0]!)).not.toMatch(/reorder-unit-c\d/);
+  });
+
+  it("selection override treats selected span as one sentence unit", () => {
+    editor = makeEditor("<p>あいう。えお。かきく。</p>");
+    const resolved = resolveParagraphAtSelection(editor.state)!;
+    const flat = resolved.flat;
+    const selFrom = flat.flatPmPos[4]!;
+    const selTo = flat.flatPmPos[6]! + 1;
+    editor.commands.setTextSelection({ from: selFrom, to: selTo });
+    useReorderModifierStore.getState().setMode("altShift");
+
+    const inline = decos(editor).filter((d) =>
+      classOf(d).includes("reorder-unit"),
+    );
+    const override = inline.filter((d) =>
+      classOf(d).includes("reorder-unit-selection-override"),
+    );
+    expect(override).toHaveLength(1);
+    expect(inline.length).toBeGreaterThan(2);
+  });
+
+  it("character + selection: keyboard swap keeps all text and preserves the selection (regression: data loss)", () => {
+    editor = makeEditor("<p>ABCDEF</p>");
+    // "CD" を範囲選択（PM [3,5)）。
+    editor.commands.setTextSelection({ from: 3, to: 5 });
+    editor.commands.setReorderGranularity("character");
+    const ok = editor.commands.swapUnitDownInner();
+    expect(ok).toBe(true);
+    // 選択外の文字（A,B,E,F）が一切消えない。
+    expect(editor.state.doc.textContent).toBe("ABECDF");
+    // 選択は移動後の "CD" を維持している。
+    const { from, to } = editor.state.selection;
+    expect(editor.state.doc.textBetween(from, to)).toBe("CD");
+  });
+
+  it("bunsetsu + selection straddling boundaries: swap keeps every character (regression: data loss)", async () => {
+    clearBunsetsuCache();
+    editor = makeEditor("<p>あいうえおか</p>");
+    await fetchBunsetsuUnits("あいうえおか");
+    // 文節 [0,2)[2,4)[4,6) を跨ぐ選択 flat [3,5) → PM [4,6)。
+    editor.commands.setTextSelection({ from: 4, to: 6 });
+    editor.commands.setReorderGranularity("bunsetsu");
+    const ok = editor.commands.swapUnitDownInner();
+    expect(ok).toBe(true);
+    // 6 文字すべて保持（脱落なし）。
+    expect(editor.state.doc.textContent).toBe("あいうかえお");
+    const { from, to } = editor.state.selection;
+    expect(editor.state.doc.textBetween(from, to)).toBe("えお");
   });
 
   it("drag cleanup removes window listeners (no dangling swaps after mouseup)", () => {

@@ -97,6 +97,16 @@ export function ReorderOverlay({
             >
               {t("editor.reorder.granularityBunsetsu")}
             </button>
+            <button
+              type="button"
+              className={cn(
+                "rounded px-2 py-0.5",
+                granularity === "character" && "bg-background shadow-sm",
+              )}
+              onClick={() => onGranularityChange("character")}
+            >
+              {t("editor.reorder.granularityCharacter")}
+            </button>
           </div>
         </div>
 

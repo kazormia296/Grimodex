@@ -1111,7 +1111,11 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .reorder-unit {
   cursor: grab;
   border-radius: 3px;
-  padding-inline: 1px;
+  /* インライン装飾は前進幅を変えてはならない。padding/margin を持たせると
+     帯の付与・除去（特に文節モードは unit 数が多く、swap 後の bunsetsu
+     cache miss で一旦帯が消えて prefetch 後に戻る）ごとに横方向へリフロー
+     し「幅方向のちらつき」になる。背景/リングは advance に影響しない
+     box-shadow・outline・background のみで描く。 */
   /* 折り返した各行片にも背景/角丸/リングを個別に描く。 */
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
@@ -1134,6 +1138,31 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .reorder-unit-c4 {
   background-color: var(--reorder-band-4);
 }
+/* 文節モード: 細かい単位であることを示す下線リング（文モードとの視覚差）。 */
+.reorder-unit-bunsetsu {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  outline: 1px dashed color-mix(in srgb, var(--foreground) 18%, transparent);
+  outline-offset: -1px;
+}
+.reorder-unit-sentence {
+  /* 文モードは背景色帯のみ（上記 c0–c4）。 */
+}
+/* 文字モード: 色帯なし。入れ替え対象（active）の枠のみ。 */
+.reorder-unit-character {
+  background: none !important;
+  padding-inline: 0;
+}
+.reorder-unit-character.reorder-unit-active,
+.reorder-unit-character.reorder-unit-dragging {
+  box-shadow: inset 0 0 0 1.5px var(--primary);
+  border-radius: 2px;
+}
+/* 範囲選択で強制された 1 unit（文/文節）。 */
+.reorder-unit-selection-override {
+  outline: 1.5px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 1px;
+}
 /* カーソル位置の単位を強調（内側リング）。 */
 .reorder-unit-active {
   box-shadow: inset 0 0 0 1.5px var(--primary);
@@ -1152,21 +1181,20 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 .reorder-block-handle {
   position: absolute;
-  /* px 固定。em だと editor.fontSize（既定18〜可変）に比例して伸び、本文の
-     固定 16px inline パディングを越えて overflow-auto に横スクロールバーを
-     出したり端が切れる（レビュー指摘）。-15px..-2px なら 16px パディング内。 */
-  inset-inline-start: -15px;
-  inset-block-start: 0.2em;
+  /* 段落先頭行と垂直整列。gutter 側へ 28px 幅のヒット領域を確保。 */
+  inset-inline-start: -28px;
+  inset-block-start: 0.15em;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 13px;
-  height: 13px;
+  width: 28px;
+  height: 28px;
   color: var(--muted-foreground);
-  opacity: 0.5;
-  border-radius: 3px;
+  opacity: 0.55;
+  border-radius: 6px;
   cursor: grab;
   user-select: none;
+  pointer-events: auto;
   transition:
     opacity 0.12s ease,
     color 0.12s ease,
@@ -1179,10 +1207,12 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 }
 .reorder-block-handle:active {
   cursor: grabbing;
+  background-color: color-mix(in srgb, var(--primary) 22%, transparent);
 }
 .reorder-block-handle svg {
-  width: 100%;
-  height: 100%;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
 }
 
 /* ── 本文レイヤーのチャネル色 ──────────────────────────────────

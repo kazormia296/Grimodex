@@ -4,8 +4,9 @@ import {
   pmPosToFlatOffset,
   resolveParagraphAtSelection,
 } from "./paragraphFlat";
-import { splitSentences } from "./sentenceSplit";
 import { findUnitIndexAtFlatOffset } from "./reorderTransaction";
+import { buildReorderUnits } from "./reorderUnits";
+import { getCachedBunsetsuUnits } from "./bunsetsuSegmenter";
 
 export interface SelectionUnitContext {
   resolved: NonNullable<ReturnType<typeof resolveParagraphAtSelection>>;
@@ -42,14 +43,21 @@ export function resolveSelectionUnits(
   const resolved = resolveParagraphAtSelection(state);
   if (!resolved) return null;
 
-  let units: ReorderUnit[];
-  if (granularity === "bunsetsu" && bunsetsuUnits && bunsetsuUnits.length > 0) {
-    units = bunsetsuUnits;
-  } else {
-    units = splitSentences(resolved.flat.text, language);
+  let units = buildReorderUnits(
+    state,
+    resolved,
+    granularity,
+    language,
+    bunsetsuUnits ??
+      (granularity === "bunsetsu"
+        ? getCachedBunsetsuUnits(state, language)
+        : null),
+  );
+  // キーボード swap 等: 文節 cache miss 時は文粒度へ（旧 resolveSelectionUnits 互換）。
+  if ((!units || units.length <= 1) && granularity === "bunsetsu") {
+    units = buildReorderUnits(state, resolved, "sentence", language);
   }
-
-  if (units.length <= 1) return null;
+  if (!units || units.length <= 1) return null;
 
   const caretFlatOffset = pmPosToFlatOffset(
     resolved.flat,

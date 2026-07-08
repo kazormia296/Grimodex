@@ -6,15 +6,37 @@ import {
   acquireModifierListeners,
   useReorderModifierStore,
 } from "./reorderModifierStore";
+import type { ReorderGranularity } from "./types";
+
+function granularityLabel(
+  gran: ReorderGranularity,
+  t: (key: string) => string,
+): string {
+  if (gran === "bunsetsu") return t("editor.reorder.granularityBunsetsu");
+  if (gran === "character") return t("editor.reorder.granularityCharacter");
+  return t("editor.reorder.granularitySentence");
+}
+
+function nextGranularityHint(
+  gran: ReorderGranularity,
+  isJapanese: boolean,
+  t: (key: string) => string,
+): string {
+  if (isJapanese) {
+    if (gran === "sentence") return t("editor.reorder.hint.switchToBunsetsu");
+    if (gran === "bunsetsu") return t("editor.reorder.hint.switchToCharacter");
+    return t("editor.reorder.hint.switchToSentence");
+  }
+  return gran === "sentence"
+    ? t("editor.reorder.hint.switchToCharacter")
+    : t("editor.reorder.hint.switchToSentence");
+}
 
 /**
  * フッターの推敲リオーダー説明。
- *   平常   … Alt=段落 / Alt+Shift=文・文節 の存在を控えめに案内
- *   Alt    … 段落並べ替え（ハンドルドラッグ / Alt+矢印）
- *   AltShift… 現在の入れ替え単位（文/文節）＋ ドラッグ/矢印 ＋ 粒度切替キー
- *
- * store は各エディタプラグインの view() が acquire するが、フッター単独でも
- * 追従できるよう（refcount 共有なので二重取得は無害）ここでも acquire する。
+ *   平常     … Alt=段落 / Alt+Shift=文・文節・文字 を並べ替え の存在を控えめに案内
+ *   Alt      … 段落並べ替え（ハンドルドラッグ / Alt+矢印）
+ *   AltShift … 現在の入れ替え単位 ＋ ドラッグ/矢印 ＋ 粒度切替キー
  */
 export function ReorderModeHint({ className }: { className?: string }) {
   const { t } = useTranslation();
@@ -26,25 +48,18 @@ export function ReorderModeHint({ className }: { className?: string }) {
 
   useEffect(() => acquireModifierListeners(), []);
 
-  // 英語プロジェクトは文固定（effectiveGranularity と同じ扱い）。store の
-  // granularity は前プロジェクトの文節が残り得るので非日本語では文へ矯正する。
-  const gran = isJapanese ? granularity : "sentence";
+  const gran: ReorderGranularity =
+    !isJapanese && granularity === "bunsetsu" ? "sentence" : granularity;
 
   let text: string;
   if (mode === "alt") {
     text = t("editor.reorder.hint.paragraph");
   } else if (mode === "altShift") {
-    const unit =
-      gran === "bunsetsu"
-        ? t("editor.reorder.hint.unitBunsetsu")
-        : t("editor.reorder.hint.unitSentence");
-    // 日本語のみ文↔文節を切替可能。英語は文固定なので切替案内を出さない。
-    const swap = !isJapanese
-      ? ""
-      : gran === "bunsetsu"
-        ? ` · ${t("editor.reorder.hint.switchToSentence")}`
-        : ` · ${t("editor.reorder.hint.switchToBunsetsu")}`;
-    text = `${unit}${swap}`;
+    const unitBadge = t("editor.reorder.hint.currentUnit", {
+      unit: granularityLabel(gran, t),
+    });
+    const swap = ` · ${nextGranularityHint(gran, isJapanese, t)}`;
+    text = `${unitBadge} · ${t("editor.reorder.hint.altShiftActive")}${swap}`;
   } else {
     text = t("editor.reorder.hint.base");
   }
@@ -56,6 +71,7 @@ export function ReorderModeHint({ className }: { className?: string }) {
         active ? "text-foreground" : "opacity-70"
       } ${className ?? ""}`}
       data-reorder-mode={mode}
+      data-reorder-granularity={gran}
     >
       <ArrowUpDown className="h-3 w-3 shrink-0" aria-hidden="true" />
       {text}
