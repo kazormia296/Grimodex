@@ -75,6 +75,8 @@ export function useParagraphReorderOverlay(
             language,
             fetched,
           );
+        } else if (g === "word") {
+          nextUnits = resolveUnitsForParagraph(editor.state, "word", language);
         } else if (g === "character") {
           nextUnits = resolveUnitsForParagraph(
             editor.state,
@@ -191,6 +193,7 @@ export function useParagraphReorderOverlay(
         undefined,
         undefined,
         getCurrentProjectLanguage(),
+        granularity,
       );
       if (!result) {
         setErrorMessage("staleDocument");

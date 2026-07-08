@@ -954,6 +954,9 @@ export function EditorPane({
   const bunsetsuAvailable = !(projectLanguage ?? "ja")
     .toLowerCase()
     .startsWith("en");
+  const wordAvailable = (projectLanguage ?? "ja")
+    .toLowerCase()
+    .startsWith("en");
 
   editorRef.current = editor;
 
@@ -2333,6 +2336,7 @@ export function EditorPane({
         onConfirm={paragraphReorder.confirm}
         onCancel={paragraphReorder.closeOverlay}
         bunsetsuAvailable={bunsetsuAvailable}
+        wordAvailable={wordAvailable}
       />
     </div>
   );

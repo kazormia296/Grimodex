@@ -1,8 +1,9 @@
 import type { EditorState } from "@tiptap/pm/state";
 import type { ReorderGranularity, ReorderUnit } from "./types";
 import { pmPosToFlatOffset, type ResolvedParagraph } from "./paragraphFlat";
-import { splitSentences } from "./sentenceSplit";
+import { splitSentences, isEnglishLanguage } from "./sentenceSplit";
 import { getCachedBunsetsuUnits, isJapanese } from "./bunsetsuSegmenter";
+import { splitWordsEn } from "./wordSplit";
 
 /** 非空の段落内 range 選択を flat 半開区間へ。単一 paragraph 外は null。 */
 export function getSelectionFlatRange(
@@ -58,6 +59,10 @@ function segmentRegionAbsolute(
   if (granularity === "character") {
     return splitCharacters(text, regionFrom, regionTo);
   }
+  if (granularity === "word" && isEnglishLanguage(language)) {
+    const slice = text.slice(regionFrom, regionTo);
+    return offsetUnits(splitWordsEn(slice), regionFrom);
+  }
   if (granularity === "bunsetsu" && fullBunsetsu) {
     // 文節は段落全体をタイルするので、領域境界でクリップすれば領域を連続被覆
     // する（境界を跨ぐ文節は選択端で分割される — 脱落させない）。
@@ -104,6 +109,10 @@ export function buildReorderUnits(
   if (!selectionRange) {
     if (granularity === "character") {
       const units = splitCharacters(text);
+      return units.length > 1 ? units : null;
+    }
+    if (granularity === "word" && isEnglishLanguage(language)) {
+      const units = splitWordsEn(text);
       return units.length > 1 ? units : null;
     }
     if (granularity === "bunsetsu" && isJapanese(language)) {

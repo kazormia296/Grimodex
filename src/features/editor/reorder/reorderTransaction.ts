@@ -4,6 +4,7 @@ import type { EditorState, Transaction } from "prosemirror-state";
 import type {
   CodexInlineReorderInfo,
   RangeSegmentMap,
+  ReorderGranularity,
   ReorderUnit,
 } from "./types";
 import {
@@ -17,7 +18,8 @@ import {
   collectPreservedInlines,
   unitPmRangesFor,
 } from "./paragraphPreserved";
-import { isEnglishLanguage, needsEnglishSentenceGap } from "./sentenceSplit";
+import { isEnglishLanguage } from "./sentenceSplit";
+import { needsEnglishUnitGap } from "./englishUnitGap";
 
 function isValidPermutation(order: number[], length: number): boolean {
   if (order.length !== length) return false;
@@ -31,8 +33,8 @@ export function mapFlatOffsetThroughPermutation(
   order: number[],
   caretFlatOffset: number,
   language?: string,
+  granularity: ReorderGranularity = "sentence",
 ): number {
-  const enGap = isEnglishLanguage(language);
   let newOffset = 0;
   let prevInOrder: number | null = null;
 
@@ -40,8 +42,7 @@ export function mapFlatOffsetThroughPermutation(
     const u = units[unitIdx]!;
     const gap =
       prevInOrder !== null &&
-      enGap &&
-      needsEnglishSentenceGap(units[prevInOrder]!, u)
+      needsEnglishUnitGap(units[prevInOrder]!, u, granularity, language)
         ? 1
         : 0;
     const unitStart = newOffset + gap;
@@ -80,11 +81,13 @@ export function buildParagraphReorderTransaction(
    */
   selectionFlatRange?: { from: number; to: number },
   language?: string,
+  granularity: ReorderGranularity = "sentence",
 ): ParagraphReorderResult | null {
   if (units.length <= 1) return null;
   if (!isValidPermutation(order, units.length)) return null;
 
   const lang = language;
+  const gran = granularity;
   const tr = transaction ?? state.tr;
   const doc = tr.doc;
 
@@ -108,6 +111,7 @@ export function buildParagraphReorderTransaction(
     slices,
     preserved,
     lang,
+    gran,
   );
 
   const tr2 = tr.replace(
@@ -140,7 +144,7 @@ export function buildParagraphReorderTransaction(
     if (
       prevInOrder !== null &&
       enGap &&
-      needsEnglishSentenceGap(units[prevInOrder]!, u)
+      needsEnglishUnitGap(units[prevInOrder]!, u, gran, lang)
     ) {
       newFlatCursor += 1;
     }
@@ -173,6 +177,7 @@ export function buildParagraphReorderTransaction(
       order,
       caretFlatOffset,
       lang,
+      gran,
     );
     const caretPm = flatRangeToPm(
       newFlat,
@@ -195,6 +200,7 @@ export function buildAdjacentUnitSwapTransaction(
   transaction?: Transaction,
   selectionFlatRange?: { from: number; to: number },
   language?: string,
+  granularity: ReorderGranularity = "sentence",
 ): ParagraphReorderResult | null {
   const target = unitIndex + dir;
   if (target < 0 || target >= units.length) return null;
@@ -212,6 +218,7 @@ export function buildAdjacentUnitSwapTransaction(
     transaction,
     selectionFlatRange,
     language,
+    granularity,
   );
 }
 
@@ -220,9 +227,18 @@ export function findUnitIndexAtFlatOffset(
   units: ReorderUnit[],
   flatOffset: number,
 ): number {
+  if (units.length === 0) return 0;
+
   for (let i = 0; i < units.length; i++) {
     const u = units[i]!;
     if (flatOffset >= u.from && flatOffset < u.to) return i;
   }
-  return Math.max(0, units.length - 1);
+
+  // 語/文の終端直後（unit 間の空白など）: 直前 unit に属する。
+  // word 粒度では PM キャレットが `u.to`（空白位置）に来ることが多い。
+  for (let i = units.length - 1; i >= 0; i--) {
+    const u = units[i]!;
+    if (flatOffset >= u.from) return i;
+  }
+  return 0;
 }

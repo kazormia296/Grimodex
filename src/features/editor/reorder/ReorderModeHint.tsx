@@ -13,6 +13,7 @@ function granularityLabel(
   t: (key: string) => string,
 ): string {
   if (gran === "bunsetsu") return t("editor.reorder.granularityBunsetsu");
+  if (gran === "word") return t("editor.reorder.granularityWord");
   if (gran === "character") return t("editor.reorder.granularityCharacter");
   return t("editor.reorder.granularitySentence");
 }
@@ -27,16 +28,22 @@ function nextGranularityHint(
     if (gran === "bunsetsu") return t("editor.reorder.hint.switchToCharacter");
     return t("editor.reorder.hint.switchToSentence");
   }
-  return gran === "sentence"
-    ? t("editor.reorder.hint.switchToCharacter")
-    : t("editor.reorder.hint.switchToSentence");
+  if (gran === "sentence") return t("editor.reorder.hint.switchToWord");
+  if (gran === "word") return t("editor.reorder.hint.switchToCharacter");
+  return t("editor.reorder.hint.switchToSentence");
+}
+
+function displayGranularity(
+  granularity: ReorderGranularity,
+  isJapanese: boolean,
+): ReorderGranularity {
+  if (!isJapanese && granularity === "bunsetsu") return "sentence";
+  if (isJapanese && granularity === "word") return "sentence";
+  return granularity;
 }
 
 /**
  * フッターの推敲リオーダー説明。
- *   平常     … Alt=段落 / Alt+Shift=文・文節・文字 を並べ替え の存在を控えめに案内
- *   Alt      … 段落並べ替え（ハンドルドラッグ / Alt+矢印）
- *   AltShift … 現在の入れ替え単位 ＋ ドラッグ/矢印 ＋ 粒度切替キー
  */
 export function ReorderModeHint({ className }: { className?: string }) {
   const { t } = useTranslation();
@@ -48,8 +55,7 @@ export function ReorderModeHint({ className }: { className?: string }) {
 
   useEffect(() => acquireModifierListeners(), []);
 
-  const gran: ReorderGranularity =
-    !isJapanese && granularity === "bunsetsu" ? "sentence" : granularity;
+  const gran = displayGranularity(granularity, isJapanese);
 
   let text: string;
   if (mode === "alt") {
@@ -61,7 +67,9 @@ export function ReorderModeHint({ className }: { className?: string }) {
     const swap = ` · ${nextGranularityHint(gran, isJapanese, t)}`;
     text = `${unitBadge} · ${t("editor.reorder.hint.altShiftActive")}${swap}`;
   } else {
-    text = t("editor.reorder.hint.base");
+    text = t(
+      isJapanese ? "editor.reorder.hint.base" : "editor.reorder.hint.baseEn",
+    );
   }
 
   const active = mode !== "none";

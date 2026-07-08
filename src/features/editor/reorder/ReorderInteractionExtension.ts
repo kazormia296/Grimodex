@@ -164,7 +164,9 @@ function unitBandDecorations(
       classes.push(
         granularity === "bunsetsu"
           ? "reorder-unit-bunsetsu"
-          : "reorder-unit-sentence",
+          : granularity === "word"
+            ? "reorder-unit-word"
+            : "reorder-unit-sentence",
       );
     }
     if (isSelectionOverrideUnit(u, selectionRange)) {
@@ -392,6 +394,7 @@ function trySwapUnitTowardPointer(
       ? liveSel
       : undefined;
   const language = getCurrentProjectLanguage();
+  const granularity = effectiveGranularity(view.state, language);
   const res = buildAdjacentUnitSwapTransaction(
     view.state,
     resolvedNow,
@@ -401,6 +404,7 @@ function trySwapUnitTowardPointer(
     undefined,
     selectionFlatRange,
     language,
+    granularity,
   );
   if (!res) return null;
   const nextOrder = swapSlots(order, curSlot, curSlot + dir);
@@ -561,7 +565,9 @@ export const ReorderInteractionExtension = Extension.create({
             const granularity: ReorderGranularity =
               rawGranularity === "bunsetsu" && !isJapanese(language)
                 ? "sentence"
-                : rawGranularity;
+                : rawGranularity === "word" && isJapanese(language)
+                  ? "sentence"
+                  : rawGranularity;
             const meta = tr.getMeta(reorderUiKey) as ReorderUiMeta | undefined;
             const drag =
               meta && "drag" in meta ? (meta.drag ?? null) : prev.drag;

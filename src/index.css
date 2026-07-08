@@ -1145,6 +1145,13 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   outline: 1px dashed color-mix(in srgb, var(--foreground) 18%, transparent);
   outline-offset: -1px;
 }
+/* 英語 word モード: 点線リング（文節より細かい単位であることを示す）。 */
+.reorder-unit-word {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  outline: 1px dotted color-mix(in srgb, var(--foreground) 14%, transparent);
+  outline-offset: -1px;
+}
 .reorder-unit-sentence {
   /* 文モードは背景色帯のみ（上記 c0–c4）。 */
 }

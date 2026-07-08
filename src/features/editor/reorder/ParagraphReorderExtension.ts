@@ -51,6 +51,7 @@ export function effectiveGranularity(
 ): ReorderGranularity {
   const g = getGranularity(state);
   if (g === "bunsetsu" && !isJapanese(language)) return "sentence";
+  if (g === "word" && isJapanese(language)) return "sentence";
   return g;
 }
 
@@ -184,6 +185,7 @@ export const ParagraphReorderExtension = Extension.create({
             tr,
             getSelectionFlatRange(state, ctx.resolved) ?? undefined,
             language,
+            granularity,
           );
           if (!result) return false;
           if (dispatch) dispatch(result.tr);
@@ -214,6 +216,7 @@ export const ParagraphReorderExtension = Extension.create({
             tr,
             getSelectionFlatRange(state, ctx.resolved) ?? undefined,
             language,
+            granularity,
           );
           if (!result) return false;
           if (dispatch) dispatch(result.tr);
@@ -233,7 +236,12 @@ export const ParagraphReorderExtension = Extension.create({
                   ? "character"
                   : "sentence";
           } else {
-            next = current === "sentence" ? "character" : "sentence";
+            next =
+              current === "sentence"
+                ? "word"
+                : current === "word"
+                  ? "character"
+                  : "sentence";
           }
           if (!dispatch) return true;
           dispatch(tr.setMeta(reorderKey, { setGranularity: next }));
@@ -273,6 +281,7 @@ export const ParagraphReorderExtension = Extension.create({
             tr,
             undefined,
             language,
+            granularity,
           );
           if (!result) return false;
           if (dispatch) dispatch(result.tr);
