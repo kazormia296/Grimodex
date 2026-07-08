@@ -1,5 +1,5 @@
 import { Extension } from "@tiptap/core";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Plugin } from "@tiptap/pm/state";
 import type { EditorState } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { EditorView } from "@tiptap/pm/view";
@@ -38,6 +38,7 @@ import {
   readReorderGranularity,
   reorderKey,
 } from "./ParagraphReorderExtension";
+import { captureSegmentFreeze, type SegmentFreezeState } from "./segmentFreeze";
 import {
   blockRectAtIndex,
   swapBlockAt,
@@ -47,6 +48,7 @@ import {
   useReorderModifierStore,
   type ReorderModifierMode,
 } from "./reorderModifierStore";
+import { reorderUiKey } from "./reorderUiKey";
 
 /** 進行中の unit ドラッグ状態（プラグイン状態として各 view ごとに保持）。 */
 interface UnitDragState {
@@ -72,15 +74,22 @@ interface UiPluginState {
   decorations: DecorationSet;
   /** この view で進行中の unit ドラッグ（無ければ null）。 */
   drag: UnitDragState | null;
+  /**
+   * Alt+Shift 中の英語 phrase/word 境界固定（ドラッグの units0 と同型）。
+   * swap 完了まで splitPhrasesEn / splitWordsEn を再実行しない。
+   */
+  freeze: SegmentFreezeState | null;
 }
 
 interface ReorderUiMeta {
   refresh?: boolean;
   /** キーが存在すれば drag を更新（null でクリア）。 */
   drag?: UnitDragState | null;
+  /** キーが存在すれば freeze を更新（null でクリア）。 */
+  freeze?: SegmentFreezeState | null;
 }
 
-export const reorderUiKey = new PluginKey<UiPluginState>("reorderInteraction");
+export { reorderUiKey } from "./reorderUiKey";
 
 /** 色帯のサイクル数（隣接単位を視覚的に分離する）。 */
 const BAND_COUNT = 5;
@@ -191,6 +200,7 @@ function unitBandDecorations(
 function buildAltShiftDecorations(
   state: EditorState,
   drag: UnitDragState | null,
+  freeze: SegmentFreezeState | null,
   granularity: ReorderGranularity,
 ): Decoration[] {
   const language = getCurrentProjectLanguage();
@@ -207,13 +217,40 @@ function buildAltShiftDecorations(
   if (drag) {
     const resolved = resolveParagraphAtPos(state, drag.blockPos);
     if (!resolved) return [];
-    const cu = currentUnitsFromOrder(drag.units0, drag.order);
+    const cu = currentUnitsFromOrder(
+      drag.units0,
+      drag.order,
+      language,
+      granularity,
+    );
     const activeSlot = slotOfOriginal(drag.order, drag.draggedOriginal);
     return unitBandDecorations(
       resolved,
       cu,
       activeSlot,
       true,
+      granularity,
+      selectionRange,
+    );
+  }
+
+  // Alt+Shift キーボード入替え中も phrase/word は freeze で境界を固定する。
+  if (freeze) {
+    const resolved = resolveParagraphAtPos(state, freeze.blockPos);
+    if (!resolved) return [];
+    const cu = currentUnitsFromOrder(
+      freeze.units0,
+      freeze.order,
+      language,
+      granularity,
+    );
+    const caretFlat = pmPosToFlatOffset(resolved.flat, state.selection.from);
+    const activeIndex = findUnitIndexAtFlatOffset(cu, caretFlat);
+    return unitBandDecorations(
+      resolved,
+      cu,
+      activeIndex,
+      false,
       granularity,
       selectionRange,
     );
@@ -288,6 +325,7 @@ function buildDecorations(
   state: EditorState,
   mode: ReorderModifierMode,
   drag: UnitDragState | null,
+  freeze: SegmentFreezeState | null,
   granularity: ReorderGranularity,
 ): DecorationSet {
   const { doc } = state;
@@ -297,7 +335,7 @@ function buildDecorations(
   if (mode === "altShift") {
     return DecorationSet.create(
       doc,
-      buildAltShiftDecorations(state, drag, granularity),
+      buildAltShiftDecorations(state, drag, freeze, granularity),
     );
   }
   return DecorationSet.empty;
@@ -374,7 +412,9 @@ function trySwapUnitTowardPointer(
   flatOffset: number,
 ): number[] | null {
   const curSlot = slotOfOriginal(order, draggedOriginal);
-  const cu = currentUnitsFromOrder(units0, order);
+  const language = getCurrentProjectLanguage();
+  const granularity = effectiveGranularity(view.state, language);
+  const cu = currentUnitsFromOrder(units0, order, language, granularity);
   let dir: -1 | 1 | 0 = 0;
   if (curSlot > 0) {
     const above = cu[curSlot - 1]!;
@@ -395,8 +435,6 @@ function trySwapUnitTowardPointer(
     liveSel && liveSel.from === dragged.from && liveSel.to === dragged.to
       ? liveSel
       : undefined;
-  const language = getCurrentProjectLanguage();
-  const granularity = effectiveGranularity(view.state, language);
   const res = buildAdjacentUnitSwapTransaction(
     view.state,
     resolvedNow,
@@ -522,6 +560,14 @@ function onModifierModeChange(
   view: EditorView,
   mode: ReorderModifierMode,
 ): void {
+  const language = getCurrentProjectLanguage();
+  const granularity = effectiveGranularity(view.state, language);
+  if (mode === "altShift") {
+    const freeze = captureSegmentFreeze(view.state, granularity, language);
+    dispatchUiMeta(view, { refresh: true, freeze });
+  } else {
+    dispatchUiMeta(view, { refresh: true, freeze: null });
+  }
   refreshDecorations(view);
   if (mode === "altShift") maybePrefetchBunsetsu(view);
 }
@@ -550,6 +596,7 @@ export const ReorderInteractionExtension = Extension.create({
               granularity: readReorderGranularity(state),
               decorations: DecorationSet.empty,
               drag: null,
+              freeze: null,
             };
           },
           apply(tr, prev, _oldState, newState): UiPluginState {
@@ -575,11 +622,48 @@ export const ReorderInteractionExtension = Extension.create({
             const meta = tr.getMeta(reorderUiKey) as ReorderUiMeta | undefined;
             const drag =
               meta && "drag" in meta ? (meta.drag ?? null) : prev.drag;
+            let freeze =
+              meta && "freeze" in meta ? (meta.freeze ?? null) : prev.freeze;
+
+            if (mode !== "altShift") {
+              freeze = null;
+            } else if (drag) {
+              // ドラッグは独自の units0 を持つため freeze と併用しない。
+              freeze = null;
+            } else if (
+              meta &&
+              "drag" in meta &&
+              meta.drag === null &&
+              prev.drag
+            ) {
+              // ドラッグ終了後は altShift 継続なら phrase/word freeze を再採取。
+              freeze = captureSegmentFreeze(newState, granularity, language);
+            } else if (
+              tr.docChanged &&
+              !tr.getMeta("codexHighlightReorder") &&
+              freeze
+            ) {
+              // 推敲入替え以外の編集でスナップショットを破棄する。
+              freeze = null;
+            } else if (mode === "altShift" && !drag) {
+              const granChanged = granularity !== prev.granularity;
+              const selMoved =
+                tr.selectionSet &&
+                resolveParagraphAtSelection(newState)?.pos !== freeze?.blockPos;
+              if (granChanged || (tr.selectionSet && selMoved)) {
+                freeze = captureSegmentFreeze(newState, granularity, language);
+              } else if (!freeze && (meta?.refresh || mode !== prev.mode)) {
+                freeze = captureSegmentFreeze(newState, granularity, language);
+              }
+            }
+
             const needRebuild =
               meta?.refresh === true ||
               (meta && "drag" in meta) ||
+              (meta && "freeze" in meta) ||
               mode !== prev.mode ||
               granularity !== prev.granularity ||
+              freeze !== prev.freeze ||
               tr.docChanged ||
               (mode === "altShift" && tr.selectionSet);
             if (!needRebuild) return prev;
@@ -587,7 +671,14 @@ export const ReorderInteractionExtension = Extension.create({
               mode,
               granularity,
               drag,
-              decorations: buildDecorations(newState, mode, drag, granularity),
+              freeze,
+              decorations: buildDecorations(
+                newState,
+                mode,
+                drag,
+                freeze,
+                granularity,
+              ),
             };
           },
         },

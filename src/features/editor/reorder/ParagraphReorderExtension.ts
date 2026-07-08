@@ -20,6 +20,11 @@ import {
 } from "./bunsetsuSegmenter";
 import { captureSwapSnapshot, isSwapSnapshotValid } from "./paragraphSnapshot";
 import { useReorderModifierStore } from "./reorderModifierStore";
+import { reorderUiKey } from "./reorderUiKey";
+import {
+  nextFreezeAfterAdjacentSwap,
+  shouldFreezeSegment,
+} from "./segmentFreeze";
 
 /**
  * export される: ReorderInteractionExtension が同一 transaction 内で
@@ -189,7 +194,23 @@ export const ParagraphReorderExtension = Extension.create({
             granularity,
           );
           if (!result) return false;
-          if (dispatch) dispatch(result.tr);
+          if (dispatch) {
+            if (shouldFreezeSegment(granularity, language)) {
+              const freeze = nextFreezeAfterAdjacentSwap(
+                reorderUiKey.getState(state)?.freeze ?? null,
+                ctx.resolved,
+                ctx.units,
+                ctx.unitIndex,
+                -1,
+                granularity,
+                language,
+              );
+              if (freeze) {
+                result.tr.setMeta(reorderUiKey, { refresh: true, freeze });
+              }
+            }
+            dispatch(result.tr);
+          }
           return true;
         },
       swapUnitDownInner:
@@ -220,7 +241,23 @@ export const ParagraphReorderExtension = Extension.create({
             granularity,
           );
           if (!result) return false;
-          if (dispatch) dispatch(result.tr);
+          if (dispatch) {
+            if (shouldFreezeSegment(granularity, language)) {
+              const freeze = nextFreezeAfterAdjacentSwap(
+                reorderUiKey.getState(state)?.freeze ?? null,
+                ctx.resolved,
+                ctx.units,
+                ctx.unitIndex,
+                1,
+                granularity,
+                language,
+              );
+              if (freeze) {
+                result.tr.setMeta(reorderUiKey, { refresh: true, freeze });
+              }
+            }
+            dispatch(result.tr);
+          }
           return true;
         },
       toggleReorderGranularity:
