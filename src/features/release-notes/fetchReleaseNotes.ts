@@ -41,8 +41,6 @@ export async function fetchReleaseNotes(
   return null;
 }
 
-
-
 export interface ReleaseNotesGateOptions {
   globalSettings: GlobalSettings | null;
   updateGlobalSettings: (patch: Partial<GlobalSettings>) => Promise<boolean>;
@@ -50,23 +48,45 @@ export interface ReleaseNotesGateOptions {
   isCancelled: () => boolean;
 }
 
-export async function evaluateReleaseNotesGate(opts: ReleaseNotesGateOptions): Promise<void> {
-  const { globalSettings, updateGlobalSettings, uiLanguage, isCancelled } = opts;
+export async function evaluateReleaseNotesGate(
+  opts: ReleaseNotesGateOptions,
+): Promise<void> {
+  const { globalSettings, updateGlobalSettings, uiLanguage, isCancelled } =
+    opts;
   if (globalSettings == null) return;
   if (globalSettings.acceptedEulaVersion !== EULA_VERSION) return;
   if (isCancelled()) return;
   const verMod = await import("@tauri-apps/api/app");
   let current: string;
-  try { current = await verMod.getVersion(); } catch { return; }
+  try {
+    current = await verMod.getVersion();
+  } catch {
+    return;
+  }
   const store = useReleaseNotesStore.getState();
-  if (store.isOpen && store.mode === "auto" && store.version === current) return;
+  if (store.isOpen && store.mode === "auto" && store.version === current)
+    return;
   const lastSeen = globalSettings.lastSeenReleaseNotesVersion;
-  const persist = () => updateGlobalSettings({ lastSeenReleaseNotesVersion: current });
-  if (lastSeen == null || lastSeen === "") { await persist(); return; }
+  const persist = () =>
+    updateGlobalSettings({ lastSeenReleaseNotesVersion: current });
+  if (lastSeen == null || lastSeen === "") {
+    await persist();
+    return;
+  }
   if (!isNewer(current, lastSeen)) return;
-  if (!(await hasJaReleaseNotes(current))) { await persist(); return; }
+  if (!(await hasJaReleaseNotes(current))) {
+    await persist();
+    return;
+  }
   const content = await fetchReleaseNotes(current, uiLanguage);
   if (isCancelled()) return;
-  if (content == null) { await persist(); return; }
-  useReleaseNotesStore.getState().openAuto({ version: current, src: content.src, isFallback: content.isFallback });
+  if (content == null) {
+    await persist();
+    return;
+  }
+  useReleaseNotesStore.getState().openAuto({
+    version: current,
+    src: content.src,
+    isFallback: content.isFallback,
+  });
 }

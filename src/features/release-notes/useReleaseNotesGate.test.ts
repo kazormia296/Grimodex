@@ -10,7 +10,9 @@ import {
 } from "./releaseNotesStore";
 
 const updateGlobalSettings = vi.fn();
-let mockGlobalSettings: import("@/features/workspace/store").GlobalSettings | null = null;
+let mockGlobalSettings:
+  | import("@/features/workspace/store").GlobalSettings
+  | null = null;
 
 vi.mock("@tauri-apps/api/app", () => ({
   getVersion: vi.fn(async () => "0.10.4"),
@@ -42,7 +44,9 @@ describe("evaluateReleaseNotesGate", () => {
   });
 
   it("silently initializes on first install", async () => {
-    mockGlobalSettings = { acceptedEulaVersion: EULA_VERSION } as import("@/features/workspace/store").GlobalSettings;
+    mockGlobalSettings = {
+      acceptedEulaVersion: EULA_VERSION,
+    } as import("@/features/workspace/store").GlobalSettings;
     await evaluateReleaseNotesGate({
       globalSettings: mockGlobalSettings,
       updateGlobalSettings,
@@ -92,7 +96,9 @@ describe("evaluateReleaseNotesGate", () => {
   });
 
   it("waits until EULA accepted", async () => {
-    mockGlobalSettings = { acceptedEulaVersion: "0.0" } as import("@/features/workspace/store").GlobalSettings;
+    mockGlobalSettings = {
+      acceptedEulaVersion: "0.0",
+    } as import("@/features/workspace/store").GlobalSettings;
     await evaluateReleaseNotesGate({
       globalSettings: mockGlobalSettings,
       updateGlobalSettings,
@@ -105,7 +111,9 @@ describe("evaluateReleaseNotesGate", () => {
 
 describe("useReleaseNotesGate", () => {
   beforeEach(() => {
-    mockGlobalSettings = { acceptedEulaVersion: EULA_VERSION } as import("@/features/workspace/store").GlobalSettings;
+    mockGlobalSettings = {
+      acceptedEulaVersion: EULA_VERSION,
+    } as import("@/features/workspace/store").GlobalSettings;
     updateGlobalSettings.mockResolvedValue(true);
     vi.stubGlobal(
       "fetch",
@@ -116,7 +124,9 @@ describe("useReleaseNotesGate", () => {
   });
 
   it("re-runs when globalSettings changes after EULA", async () => {
-    mockGlobalSettings = { acceptedEulaVersion: "0.0" } as import("@/features/workspace/store").GlobalSettings;
+    mockGlobalSettings = {
+      acceptedEulaVersion: "0.0",
+    } as import("@/features/workspace/store").GlobalSettings;
     const { rerender } = renderHook(() => useReleaseNotesGate());
     await waitFor(() => expect(updateGlobalSettings).not.toHaveBeenCalled());
 

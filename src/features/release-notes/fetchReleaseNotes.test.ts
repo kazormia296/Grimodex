@@ -1,9 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  fetchReleaseNotes,
-  hasJaReleaseNotes,
-} from "./fetchReleaseNotes";
+import { fetchReleaseNotes, hasJaReleaseNotes } from "./fetchReleaseNotes";
 
 describe("fetchReleaseNotes", () => {
   beforeEach(() => {
@@ -49,7 +46,9 @@ describe("fetchReleaseNotes", () => {
 
 describe("hasJaReleaseNotes", () => {
   it("checks ja path only", async () => {
-    const fetchMock = vi.fn(async (url: string) => ({ ok: url.includes(".ja.md") }));
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: url.includes(".ja.md"),
+    }));
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
     expect(await hasJaReleaseNotes("0.10.4")).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith("/RELEASE_NOTES/v0.10.4.ja.md");
