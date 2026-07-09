@@ -23,13 +23,13 @@ Grimodex は 1.0 未満の開発中ソフトウェアです。セキュリティ
 **Please do NOT open a public GitHub Issue for security vulnerabilities.**
 **セキュリティ脆弱性を公開 Issue として投稿しないでください。**
 
-Use one of the following private channels:
+Use the following private channel:
 
-1. **GitHub Private Vulnerability Reporting** (preferred / 推奨)
-   - <https://github.com/kazormia296/Grimodex/security/advisories/new>
-2. **Email** — `midake745698@gmail.com`
-   - Please include `[Grimodex Security]` in the subject line.
-   - 件名に `[Grimodex Security]` を付けてください。
+**GitHub Private Vulnerability Reporting**
+
+- <https://github.com/kazormia296/Grimodex/security/advisories/new>
+- This is the only supported reporting channel. Reports sent by other means may be missed.
+- これが唯一の報告窓口です。他の手段による報告は見落とされる可能性があります。
 
 In your report, please include where possible:
 
