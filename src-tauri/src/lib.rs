@@ -55,8 +55,36 @@ fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> AppResult<()> {
     Ok(())
 }
 
+/// NVIDIA + WebKitGTK では DMABUF レンダラーが GBM バッファ確保に失敗し、
+/// ウィンドウが真っ白になる（ネイティブ Wayland では
+/// "Error 71 dispatching to Wayland display"、XWayland では
+/// "Failed to create GBM buffer" が出る）。`WEBKIT_DISABLE_DMABUF_RENDERER=1`
+/// で動作する合成パスにフォールバックする。NVIDIA 検出時のみ設定するため、
+/// AMD/Intel は高速な既定パスのまま。ユーザーが環境変数を明示している場合
+/// （=0 で強制有効化するなど）はそれを尊重する。
+#[cfg(target_os = "linux")]
+fn workaround_nvidia_dmabuf() {
+    // 明示設定があれば触らない。
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
+        return;
+    }
+    // プロプライエタリ／オープンいずれの NVIDIA カーネルモジュールでも
+    // ロード時に `/sys/module/nvidia` が存在する。
+    if std::path::Path::new("/sys/module/nvidia").exists() {
+        // `run()` の最初、GTK/WebKit 初期化やワーカースレッド生成より前に
+        // 呼ばれるため、環境変数への並行アクセスは発生しない。
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn workaround_nvidia_dmabuf() {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK ↔ NVIDIA workaround. Must run before any GTK/WebKit init.
+    workaround_nvidia_dmabuf();
+
     // Daily-rotating file log under `~/.grimodex/logs/lint-tauri-*.log`
     // plus stderr. The guard must outlive `tauri::Builder::run` so file
     // writes are flushed; stash it on the manager state.
