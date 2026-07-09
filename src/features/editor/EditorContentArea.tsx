@@ -120,7 +120,10 @@ export function EditorContentArea({
         className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
-            editor?.commands.focus();
+            // 余白クリックは「今見ている位置のままフォーカスだけ」戻す。
+            // 既定の scrollIntoView:true は selection が文書先頭のとき
+            // （シーンを開いてクリックせず読み進めた場合）先頭へ飛ぶ。
+            editor?.commands.focus(null, { scrollIntoView: false });
           }
         }}
       >

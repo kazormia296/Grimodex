@@ -79,7 +79,10 @@ export function ForeshadowMarkPopover({ editor }: Props) {
 
   const close = useCallback(() => {
     setOpen(false);
-    editor?.commands.focus();
+    // ポップオーバーを開いた位置は既に画面内 — スクロールは動かさない
+    // （既定の scrollIntoView:true は WebKitGTK の focus 時 selection リセット
+    // と重なると先頭ジャンプの原因になる）。
+    editor?.commands.focus(null, { scrollIntoView: false });
   }, [setOpen, editor]);
 
   const applySetupMark = (foreshadowId: string) => {

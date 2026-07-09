@@ -901,20 +901,32 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
   user-select: none;
   pointer-events: none;
 }
+/* Alt 押下中（reorder ハンドル表示中）は行番号を隠す — ハンドル
+   (.reorder-block-handle, inset-inline-start:-28px) と行番号 ::before は同じ
+   inline-start ガター領域を使うため、同時に描くと重なる。.reorder-block-anchor
+   は ReorderInteractionExtension が mode=alt の間だけ最上位ブロックへ付ける
+   node decoration クラスなので、この規則だけで排他が成立し、Alt を離せば
+   即座に行番号が戻る。display/content ではなく visibility にするのは
+   カウンタと幾何を一切動かさずリフローゼロで消すため。 */
+.editor-line-numbers .tiptap > .reorder-block-anchor::before {
+  visibility: hidden;
+}
 
 /* 空白・改行の可視化 (editor.showInvisibles)。
-   ShowInvisiblesPlugin の decoration が付けるクラスに ::before オーバレイで
-   グリフを重ねる (実文字は残るのでコピー/文字数に影響しない)。
+   ShowInvisiblesPlugin の decoration が付けるクラスへマークを重ねる
+   (実文字は残るのでコピー/文字数に影響しない)。
    display:inline を明示 — inline-block 化は折り返し段落先頭で幻の改行を生む
    (.gutter-marks / .lint-disable-gutter と同型)。論理プロパティで縦書き追従。 */
 .pm-ws {
   display: inline;
   position: relative;
+  /* マーク色 (旧 opacity 0.45 を色へ畳み込み) */
+  --pm-ws-ink: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
 }
 .pm-ws-space,
 .pm-ws-ideographic,
 .pm-ws-tab {
-  /* 実空白は見えないようにし、::before マークだけ描画する */
+  /* 実空白は見えないようにし、マークだけ描画する */
   color: transparent;
 }
 
@@ -924,59 +936,88 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
    に無く、Linux フォールバックでは advance 0.6em・Windows では 2em になる。
    text-align:center は「グリフの advance」を中央寄せするだけなので、ink が advance
    内で偏るフォールバックフォント(= ユーザーの Windows 実機)では □/· が横(左)ずれ
-   する — これが「テストは緑・日本語実機だけ左寄り」の真因。図形なら advance/ink
-   非依存で対称に描け、inset+margin:auto で span ボックス中央に確実に収まる。span
-   ボックスは空白文字そのもの(=文字間の隙間)なので、図形が span 中央にいれば隙間の
-   中央に見え、全 OS・全フォントで一致する。transform を使わないのは getComputedStyle
-   で検証可能にするため。 */
-.pm-ws-space::before,
-.pm-ws-ideographic::before {
-  content: "";
-  position: absolute;
-  inset-block: 0;
-  inset-inline: 0;
-  margin: auto;
-  opacity: 0.45;
-  user-select: none;
-  pointer-events: none;
+   する — これが「テストは緑・日本語実機だけ左寄り」の真因。
+
+   図形は擬似要素ではなく span 自身の background で描く。WebKitGTK は縦書き
+   (vertical-rl) で「position:relative な inline を包含ブロックとする abspos」の
+   paint を leading (line-height − 1em) 分ブロック軸へズラして描画するバグを
+   持ち、abspos ::before 方式は列中心から外れる (computed style は正常値を返し
+   paint だけズレるため computed 検証では検出不能)。background なら包含ブロックを
+   経由せず span ボックスに直接描くのでこのバグを回避でき、図形が点対称なので
+   物理指定の background-position: center が縦書きでもそのまま成立する。span
+   ボックスは空白文字そのもの(=文字間の隙間)なので、図形が span 中央にいれば
+   隙間の中央に見え、全 OS・全フォント・縦横どちらでも一致する。
+   既知のトレードオフ: 要素 background は選択ハイライトの下に描かれるため、
+   範囲選択中はマークがハイライトに沈む（旧 ::before 方式はハイライトの上）。
+   選択中だけの一時的・視覚的差分として許容する。 */
+.pm-ws-space {
+  /* 中黒相当の小さなドット (直径 0.16em) */
+  background-image: radial-gradient(
+    circle at center,
+    var(--pm-ws-ink) calc(0.08em - 0.25px),
+    transparent calc(0.08em + 0.25px)
+  );
+  background-position: center;
+  background-repeat: no-repeat;
 }
-.pm-ws-space::before {
-  /* 中黒相当の小さなドット */
-  inline-size: 0.16em;
-  block-size: 0.16em;
-  border-radius: 50%;
-  background-color: var(--muted-foreground);
-}
-.pm-ws-ideographic::before {
-  /* 全角スペースの中空四角 */
-  inline-size: 0.5em;
-  block-size: 0.5em;
-  box-sizing: border-box;
-  border: 1px solid var(--muted-foreground);
-  border-radius: 1px;
+.pm-ws-ideographic {
+  /* 全角スペースの中空四角 (0.5em 角・線幅 1px) — 4 本のストライプで描く */
+  background-image:
+    linear-gradient(var(--pm-ws-ink), var(--pm-ws-ink)),
+    linear-gradient(var(--pm-ws-ink), var(--pm-ws-ink)),
+    linear-gradient(var(--pm-ws-ink), var(--pm-ws-ink)),
+    linear-gradient(var(--pm-ws-ink), var(--pm-ws-ink));
+  background-size:
+    0.5em 1px,
+    0.5em 1px,
+    1px 0.5em,
+    1px 0.5em;
+  background-position:
+    center calc(50% - 0.25em),
+    center calc(50% + 0.25em),
+    calc(50% - 0.25em) center,
+    calc(50% + 0.25em) center;
+  background-repeat: no-repeat;
 }
 
-/* タブ (→) はグリフのまま: 行頭 (inline-start) 寄せで、中央寄せ由来の横ずれ問題の
-   対象外。全角/半角空白のような「隙間の中央」要件が無いため図形化は見送る。 */
-.pm-ws-tab::before {
-  content: "→";
-  position: absolute;
-  inset-inline-start: 0;
-  top: 50%;
-  height: 1em;
-  margin-top: -0.5em;
-  line-height: 1em;
-  font-size: 1em;
-  text-align: start;
-  color: var(--muted-foreground);
-  opacity: 0.45;
-  user-select: none;
-  pointer-events: none;
+/* タブ (→) も span 自身の background で描く。グリフ ::before の abspos 方式は
+   (a) vertical-rl で論理 inset-inline-start と物理 top が衝突する、
+   (b) WebKitGTK 縦書きの abspos paint ズレ、の 2 点で破綻するため廃止。
+   mask 方式にしないこと: mask は span と内容の描画全体（選択ハイライトや
+   同一 span にマージされる attribution/find 系の background-color を含む）を
+   矢印形に切り抜いてしまう。background-image なら他レイヤーと共存できる。
+   代償として色はテーマ変数に追従できないため、light/dark で SVG を差し替える。
+   矢印は行頭 (inline-start) 寄せ・字送り方向向き。 */
+.pm-ws-tab {
+  /* light: 黒 45% ≈ var(--pm-ws-ink) 相当 */
+  --pm-ws-tab-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1.5 8h12M9.5 4l4 4-4 4' fill='none' stroke='%23000' stroke-opacity='.45' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-image: var(--pm-ws-tab-arrow);
+  background-repeat: no-repeat;
+  background-size: 1em 1em;
+  background-position: left center;
 }
-/* hardBreak ↵ / 段落末 ¶ — フロー幅ゼロ widget。グリフは ::before で描画。 */
+.dark .pm-ws-tab {
+  --pm-ws-tab-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1.5 8h12M9.5 4l4 4-4 4' fill='none' stroke='%23fff' stroke-opacity='.5' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+/* 縦書き: 字送りは下向きなので矢印も下向き、行頭 = 物理 top。 */
+.editor-vertical .pm-ws-tab {
+  --pm-ws-tab-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5v12M4 9.5l4 4 4-4' fill='none' stroke='%23000' stroke-opacity='.45' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-position: center top;
+}
+.dark .editor-vertical .pm-ws-tab {
+  --pm-ws-tab-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5v12M4 9.5l4 4 4-4' fill='none' stroke='%23fff' stroke-opacity='.5' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+
+/* hardBreak ↵ / 段落末 ¶ — フロー幅ゼロ widget。グリフは ::before で描画。
+   アンカーは inline-block: WebKitGTK は縦書きで「inline を包含ブロックとする
+   abspos」の paint を leading 分ズラすため、inline のままだと ↵/¶ が列から
+   外れる (inline-block 包含ブロックなら正しく描く)。この widget は実文字を
+   包まない空 span なので inline-block でも幻の改行は生まない — 実文字を包む
+   .pm-ws-space 系の inline 装飾は inline-block 化禁止のまま。 */
 .pm-ws-br,
 .pm-ws-para-end {
-  width: 0;
+  display: inline-block;
+  inline-size: 0;
   overflow: visible;
   vertical-align: baseline;
   user-select: none;
@@ -1169,6 +1210,39 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
 .dark .tiptap .emphasis-dots {
   -webkit-text-emphasis-color: oklch(0.7 0 0);
   text-emphasis-color: oklch(0.7 0 0);
+}
+
+/* 傍点の WebKitGTK 縦書きフォールバック。WebKitGTK の native text-emphasis は
+   vertical-rl でマークが文字境界へ半文字ズレ + run 先頭のマークが欠落する
+   エンジンバグがあり CSS 値では直せないため、native 描画を止めて
+   EmphasisDotsFallbackPlugin が 1 文字ずつ付ける .emphasis-dot-char の背景に
+   ドットを描く（文字セルの右・縦中央 = timelapse canvas 実装と同じ幾何）。
+   - padding-right は縦書き inline ではブロック軸 padding なのでレイアウト
+     （字送り・列送り）に影響せず、背景の描画域だけを列間へ広げる。
+   - abspos ::after にしないのは、WebKitGTK が縦書きで「inline を包含ブロックと
+     する abspos」の paint を leading 分ズラす別バグを踏むため（空白マークの
+     background 方式と同じ判断）。
+   - 縦書き専用スコープなので物理プロパティ（right）で確定的に書く。 */
+html[data-engine="webkitgtk"] .editor-vertical .tiptap .emphasis-dots {
+  -webkit-text-emphasis: none;
+  text-emphasis: none;
+}
+html[data-engine="webkitgtk"] .editor-vertical .tiptap .emphasis-dot-char {
+  --emphasis-dot-ink: currentColor;
+  padding-right: 0.5em;
+  background-image: radial-gradient(
+    circle at center,
+    var(--emphasis-dot-ink) calc(0.09em - 0.25px),
+    transparent calc(0.09em + 0.25px)
+  );
+  background-size: 0.4em 0.4em;
+  background-repeat: no-repeat;
+  background-position: right 0.1em center;
+}
+/* .dark は <html> 自身に付く（App.tsx applyTheme）ため、data-engine と同じ
+   要素上の複合セレクタで書く — 子孫結合子だと絶対にマッチしない dead rule。 */
+html[data-engine="webkitgtk"].dark .editor-vertical .tiptap .emphasis-dot-char {
+  --emphasis-dot-ink: oklch(0.7 0 0);
 }
 
 /* Task 2.4: Temporary highlight for AI-inserted text */
@@ -1660,16 +1734,6 @@ html[data-engine="webkitgtk"] .editor-vertical .tiptap {
     "vert" 1,
     "vrt2" 1 !important;
 }
-/* Beat 操作 UI（「フリー」の長音符など）の縦組み字形。UI はゴシックのままで、vert/vrt2 を
- * 明示してシステム CJK ゴシックの縦組み字形を使わせる。writing-mode は上の別ルールで
- * vertical-rl 済み。 */
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > header,
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > footer,
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider {
-  font-feature-settings:
-    "vert" 1,
-    "vrt2" 1 !important;
-}
 /* 縦中横（tate-chu-yoko）— .tcy span 内を正立・横並びに結合する。
  * .tcy が付く経路は2つ:
  *  1. TateChuYokoPlugin の自動 decoration（縦書き時のみ登録）。
@@ -1722,6 +1786,29 @@ html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] 
 .editor-vertical .tiptap [data-type="scene-beat"] > footer *,
 .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
   writing-mode: vertical-rl;
+}
+
+/* WebKitGTK では Beat chrome を横書き島に戻す。WebKitGTK はフォームコントロール
+ * (<button> 等) の縦書きを機能フラグ VerticalFormControls（2.52 時点でも既定 OFF）で
+ * 拒否し、style adjuster が computed writing-mode を horizontal-tb へ強制するため
+ * CSS では覆せない。chrome 内で span=縦 / button=横（「フリー」チップ等）が混在すると
+ * チップだけ横倒しになり隣接要素と重なるので、chrome 全体を horizontal-tb に統一する
+ * のが唯一の整合解。Chromium (M119+) / WKWebView (17.4+) は button も縦にできるため
+ * data-engine なしの環境は上の縦帯ルールのまま。詳細度は同等なのでソース順で後勝ち。
+ * 注意: Beat chrome にテキスト入り <button> を追加しても span ラッパーでは回避不可 —
+ * この島ルールの対象に含めること。 */
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > header,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > footer,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > header *,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > footer *,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
+  writing-mode: horizontal-tb;
+  /* 上の .tiptap 縦組み字形強制 (vert/vrt2 !important) は継承でここへも届く。
+   * 横書き島に縦組み字形が乗ると、UI フォントが vert GSUB を持つ構成
+   * (システムフォント選択時) で長音符・約物が縦字形のまま横に並ぶため
+   * 打ち消す。継承値には直接宣言が常に勝つので !important 不要。 */
+  font-feature-settings: normal;
 }
 
 /* Beat ノードのブロック軸スタイル — Tailwind コアに block 軸の論理

@@ -17,7 +17,7 @@
  *   beat-divider）の軸マップ・ポップオーバー（.beat-popover）の横書き維持
  * - 行番号ガター padding-inline-start の軸マップ
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { render, waitFor, fireEvent } from "@testing-library/react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { Editor, Extension } from "@tiptap/core";
@@ -439,6 +439,52 @@ describe("縦書きMODE: Beat ノードの縦書き表示", () => {
         chipRect.top + 18,
       );
     });
+  });
+});
+
+describe("縦書きMODE: WebKitGTK では Beat chrome を横書き島にする", () => {
+  // WebKitGTK は <button> の縦書きを VerticalFormControls フラグ（既定 OFF）で
+  // 拒否するため、chrome 内で span=縦 / button=横 が混在して崩れる。
+  // html[data-engine="webkitgtk"] では chrome 全体を horizontal-tb へ統一する
+  // （index.css の島ルール）。WebKitGTK の button 強制自体は Chromium では
+  // 再現しないが、data-engine ゲートの島化 CSS の適用はここで gate できる。
+  afterEach(() => {
+    delete document.documentElement.dataset.engine;
+  });
+
+  it("data-engine=webkitgtk: header/footer/チップが horizontal-tb になり、チップは header 帯に収まる", async () => {
+    document.documentElement.dataset.engine = "webkitgtk";
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const header = beat.querySelector("header") as HTMLElement;
+    const footer = beat.querySelector("footer") as HTMLElement;
+    const chip = beat.querySelector(
+      '[data-testid="beat-type-chip"]',
+    ) as HTMLElement;
+    expect(getComputedStyle(header).writingMode).toBe("horizontal-tb");
+    expect(getComputedStyle(footer).writingMode).toBe("horizontal-tb");
+    expect(getComputedStyle(chip).writingMode).toBe("horizontal-tb");
+    // .tiptap の縦組み字形強制 (vert/vrt2) を島側で打ち消していること —
+    // 継承すると vert GSUB を持つ UI フォントで横書き島に縦字形が並ぶ
+    expect(getComputedStyle(header).fontFeatureSettings).toBe("normal");
+    expect(getComputedStyle(chip).fontFeatureSettings).toBe("normal");
+    // チップは横長ボックスで header 帯の中に収まる（横倒し重なりの回帰 gate）
+    const chipRect = chip.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    expect(chipRect.width).toBeGreaterThan(chipRect.height);
+    expect(chipRect.top).toBeGreaterThanOrEqual(headerRect.top - 1);
+    expect(chipRect.bottom).toBeLessThanOrEqual(headerRect.bottom + 1);
+    expect(chipRect.left).toBeGreaterThanOrEqual(headerRect.left - 1);
+    expect(chipRect.right).toBeLessThanOrEqual(headerRect.right + 1);
+    // Beat ノード本体（本文）は縦書きフローのまま
+    expect(getComputedStyle(beat).writingMode).toBe("vertical-rl");
+  });
+
+  it("data-engine なしでは既存の縦帯 chrome を維持する（回帰）", async () => {
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const header = beat.querySelector("header") as HTMLElement;
+    expect(getComputedStyle(header).writingMode).toBe("vertical-rl");
   });
 });
 

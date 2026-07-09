@@ -68,6 +68,8 @@ import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
+import { useEmphasisDotsFallback } from "@/features/editor/useEmphasisDotsFallback";
+import { createWebKitFocusScrollGuard } from "@/features/editor/webkitFocusScrollGuard";
 import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
@@ -237,16 +239,21 @@ export function EditorPane({
   // scrollOffset is the logical block-axis offset (scrollTop when horizontal,
   // -scrollLeft when vertical) — see editorLayout.getLogicalScrollOffset.
   const savedEditorStateRef = useRef<
-    Map<string, { from: number; to: number; scrollOffset: number }>
+    Map<string, { from: number; to: number; scrollOffset: number | null }>
   >(new Map());
   // Pending cursor/scroll restore for lazy application on next editor focus.
   // Set when the scene switch was triggered from the Scenes panel (no focus steal).
   // Cleared either when consumed by onFocus or when a new scene starts loading.
+  // scrollOffset=null は「無効（縦横トグルで軸が変わった等）— スクロールは
+  // 復元しない」。0 を無効値に使うと onFocus 復元が先頭へのジャンプになる。
   const pendingCursorRestoreRef = useRef<{
     from: number;
     to: number;
-    scrollOffset: number;
+    scrollOffset: number | null;
   } | null>(null);
+  // WebKitGTK の focus 時 selection 先頭リセット → scrollToSelection ジャンプの
+  // 抑止ガード（editorProps.handleScrollToSelection と onFocus で使う）。
+  const focusScrollGuardRef = useRef(createWebKitFocusScrollGuard());
   // count 系 state (charCount/beat) は EditorStatsFooter に分離済み。本体に
   // 置くとタイピング休止ごとの stat 更新で 2200 行ペイン全体が再レンダー
   // されるため、footer が editor の update イベントを自前購読して再計算する。
@@ -586,6 +593,12 @@ export function EditorPane({
           role: "textbox",
           "aria-multiline": "true",
         },
+        // WebKitGTK: focus 時の DOM selection 先頭リセットに対する PM の
+        // scrollToSelection が「先頭へスクロール」ジャンプになるのを抑止
+        // （詳細は webkitFocusScrollGuard.ts）。
+        handleScrollToSelection(view) {
+          return focusScrollGuardRef.current.handleScrollToSelection(view);
+        },
         handlePaste(view, event, slice) {
           const html = event.clipboardData?.getData("text/html");
           const plainText = event.clipboardData?.getData("text/plain") ?? "";
@@ -901,6 +914,7 @@ export function EditorPane({
       },
       onSelectionUpdate() {},
       onFocus() {
+        focusScrollGuardRef.current.noteFocus();
         onFocus();
         // Trash bin の D&D 復元先として「最後にフォーカスしていたエディタ」を共有。
         // editor 参照も渡し、text-fragment 挿入時に直接 chain().insertContent を呼べるように。
@@ -926,7 +940,9 @@ export function EditorPane({
             const to = Math.min(pending.to, Math.max(0, docSize - 1));
             ed.commands.setTextSelection({ from, to });
           }
-          if (editorContainerRef.current) {
+          // scrollOffset=null（縦横トグルで無効化済み）はスクロールを触らない
+          // — 0 を書くと読み進めた位置から先頭へ飛ぶ。
+          if (editorContainerRef.current && pending.scrollOffset != null) {
             setLogicalScrollOffset(
               editorContainerRef.current,
               pending.scrollOffset,
@@ -1267,14 +1283,16 @@ export function EditorPane({
 
   // Saved scroll offsets belong to one writing mode's block axis — toggling
   // vertical mode invalidates them (cursor positions stay; they are logical).
+  // 無効化は 0 ではなく null: 0 は「先頭」という有効な位置なので、後段の
+  // onFocus / restore が 0 を復元して先頭ジャンプになる。
   useEffect(() => {
     for (const [id, st] of savedEditorStateRef.current) {
-      savedEditorStateRef.current.set(id, { ...st, scrollOffset: 0 });
+      savedEditorStateRef.current.set(id, { ...st, scrollOffset: null });
     }
     if (pendingCursorRestoreRef.current) {
       pendingCursorRestoreRef.current = {
         ...pendingCursorRestoreRef.current,
-        scrollOffset: 0,
+        scrollOffset: null,
       };
     }
   }, [verticalMode]);
@@ -1310,6 +1328,7 @@ export function EditorPane({
   useImeDiagnostics(mountedEditor);
   useCharacterFade(mountedEditor);
   useTateChuYoko(mountedEditor);
+  useEmphasisDotsFallback(mountedEditor);
   useShowInvisibles(mountedEditor);
   useAttribution(dbNativeEditor);
 
@@ -1809,7 +1828,7 @@ export function EditorPane({
                   const to = Math.min(saved.to, Math.max(0, docSize - 1));
                   ed.chain().focus().setTextSelection({ from, to }).run();
                 }
-                if (editorContainerRef.current) {
+                if (editorContainerRef.current && saved.scrollOffset != null) {
                   setLogicalScrollOffset(
                     editorContainerRef.current,
                     saved.scrollOffset,
