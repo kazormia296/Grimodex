@@ -14,6 +14,7 @@ import {
   SpellCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Switch } from "@/components/ui/switch";
 import {
   DURATIONS,
   EASINGS,
@@ -47,24 +48,12 @@ function LayerSwitch({
   onChange: () => void;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
+    <Switch
+      size="sm"
+      checked={checked}
+      onCheckedChange={onChange}
       aria-label={label}
-      onClick={onChange}
-      className={cn(
-        "relative h-[17px] w-[30px] flex-shrink-0 rounded-full p-[2px] transition-colors",
-        checked ? "bg-primary" : "bg-border",
-      )}
-    >
-      <span
-        className={cn(
-          "block h-[13px] w-[13px] rounded-full bg-white shadow-sm transition-transform",
-          checked && "translate-x-[13px]",
-        )}
-      />
-    </button>
+    />
   );
 }
 
