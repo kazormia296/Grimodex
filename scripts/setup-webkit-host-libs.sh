@@ -32,9 +32,12 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "Ubuntu noble のパッケージ索引を取得中..."
+# libicu74 / libxml2 は main、libflite1 は universe にある
 : > "$TMP/index"
 for dist in noble noble-updates; do
-  curl -fsSL "$MIRROR/dists/$dist/main/binary-amd64/Packages.gz" | gzip -dc >> "$TMP/index"
+  for comp in main universe; do
+    curl -fsSL "$MIRROR/dists/$dist/$comp/binary-amd64/Packages.gz" | gzip -dc >> "$TMP/index"
+  done
 done
 
 mkdir -p "$DEST"
