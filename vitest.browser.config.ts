@@ -15,7 +15,9 @@ const alias = { "@": path.resolve(__dirname, "./src") };
 // Playwright の Linux 向け WebKit は Ubuntu ビルドのため、Arch 等の非 apt ホスト
 // では libicu74 / libxml2.so.2 / libflite1 が不足して起動できない。
 // scripts/setup-webkit-host-libs.sh で展開した互換ライブラリを WebKit 起動時のみ
-// LD_LIBRARY_PATH に載せる。未展開なら webkit instance を警告付きでスキップする
+// LD_PRELOAD でフルパス注入する。LD_LIBRARY_PATH は Playwright 同梱の
+// minibrowser-wpe/MiniBrowser ラッパーが自前の値で上書きするため使えない。
+// 未展開なら webkit instance を警告付きでスキップする
 // (CI は Ubuntu なので常に webkit が走り、ゲートとしては維持される)。
 const webkitHostLibs = path.join(
   process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache"),
@@ -27,6 +29,28 @@ const needsHostLibs =
 const hasHostLibs = fs.existsSync(
   path.join(webkitHostLibs, "libicudata.so.74"),
 );
+
+// ld.so は preload を先頭から順に解決するため依存されるものを先に並べる
+// (icudata → icuuc → icui18n、libflite → usenglish/cmulex → 各ボイス)
+const webkitPreloadLibs = [
+  "libicudata.so.74",
+  "libicuuc.so.74",
+  "libicui18n.so.74",
+  "libxml2.so.2",
+  "libflite.so.1",
+  "libflite_usenglish.so.1",
+  "libflite_cmulex.so.1",
+  "libflite_cmu_grapheme_lang.so.1",
+  "libflite_cmu_grapheme_lex.so.1",
+  "libflite_cmu_indic_lang.so.1",
+  "libflite_cmu_indic_lex.so.1",
+  "libflite_cmu_time_awb.so.1",
+  "libflite_cmu_us_awb.so.1",
+  "libflite_cmu_us_kal.so.1",
+  "libflite_cmu_us_kal16.so.1",
+  "libflite_cmu_us_rms.so.1",
+  "libflite_cmu_us_slt.so.1",
+];
 
 function webkitInstance() {
   if (!needsHostLibs) return [{ browser: "webkit" as const }];
@@ -42,9 +66,10 @@ function webkitInstance() {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([, v]) => v !== undefined),
   ) as Record<string, string>;
-  env.LD_LIBRARY_PATH = [webkitHostLibs, process.env.LD_LIBRARY_PATH]
-    .filter(Boolean)
-    .join(":");
+  env.LD_PRELOAD = webkitPreloadLibs
+    .map((lib) => path.join(webkitHostLibs, lib))
+    .filter((p) => fs.existsSync(p))
+    .join(" ");
   return [
     {
       browser: "webkit" as const,
