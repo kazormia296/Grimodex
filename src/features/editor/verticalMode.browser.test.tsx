@@ -434,9 +434,11 @@ describe("縦書きMODE: Beat ノードの縦書き表示", () => {
     const chipRect = chip.getBoundingClientRect();
     // トリガー直下(block-start)に開く。入場アニメ(y:-4→0)の落ち着き後の最終位置で
     // 測る（誤った placement なら settle しても満たさず timeout で fail する）。
+    // 基準は chip の実測 bottom（固定 px はフォントメトリクス差で WebKit CI が
+    // サブピクセル割れする）。-1 は subpixel 丸めの許容。
     await waitFor(() => {
       expect(menu.getBoundingClientRect().top).toBeGreaterThanOrEqual(
-        chipRect.top + 18,
+        chipRect.bottom - 1,
       );
     });
   });

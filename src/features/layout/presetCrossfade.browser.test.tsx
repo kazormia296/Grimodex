@@ -71,13 +71,13 @@ describe("preset crossfade (real browser)", () => {
     });
 
     // controls.set は MotionValue 経由で motion の frameloop (rAF) に乗り、
-    // DOM への反映は同フレームの paint 直前（同期ではない）。2 rAF 待って
-    // dip を観測する。フェードは DURATIONS.fast=150ms なので 2 フレーム
-    // (≈32ms) 後でも opacity < 1 のままで flake しない。
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
-    expect(parseFloat(getComputedStyle(shell).opacity)).toBeLessThan(1);
+    // DOM への反映は同フレームの paint 直前（同期ではない）。反映までの
+    // フレーム数はエンジン依存（WebKit は 2 rAF 後でも未反映のことがある）
+    // ため、固定フレーム待ちではなくポーリングで dip を観測する。フェードは
+    // DURATIONS.fast=150ms 続くので、waitFor の既定間隔 (50ms) で取り逃さない。
+    await waitFor(() => {
+      expect(parseFloat(getComputedStyle(shell).opacity)).toBeLessThan(1);
+    });
 
     await waitFor(
       () => {
