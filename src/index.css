@@ -1600,16 +1600,29 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
   writing-mode: vertical-rl;
   text-orientation: mixed;
   -webkit-text-orientation: mixed;
-  /* "vert" 1 を明示して縦組み用字形への置換を有効化する。Chromium は縦書きで
-     vert を自動適用するが、WebKitGTK / WKWebView は font-feature-settings を
-     指定した時点で既定の vert が外れ、長音符 (ー) が横倒しの横線のまま・句読点
-     (、。) が縦組み字形にならず左下寄せになる。vert を明示すると全エンジンで
-     縦組み字形 (縦向きの長音符・右上寄せの句読点) に揃う。"vpal" は縦組みの
-     プロポーショナル字間詰め (従来どおり)。 */
-  font-feature-settings: "vert" 1, "vpal" 1;
+  /* 縦組み用字形 (縦向きの長音符・右上寄せの句読点) を有効化。フォントが vert/vrt2
+     GSUB を持てば有効になる。同梱の fontsource web フォントはサブセット化で vert を
+     欠くため、WebKitGTK では下の [data-engine="webkitgtk"] ルールで vert 対応の
+     システムフォントに切り替える。"vpal" は縦組みプロポーショナル字間詰め。 */
+  font-feature-settings: "vert" 1, "vrt2" 1, "vpal" 1;
 }
 .editor-vertical .tiptap ruby rt {
   font-size: 0.5em;
+}
+
+/* WebKitGTK 縦書きの長音符横倒し・句読点左下寄せの修正。
+ * 原因: 同梱の fontsource フォント (Noto Serif JP / M PLUS 1 等) は web 最適化の
+ * サブセット化で縦組み字形の GSUB (vert/vrt2) が剥がされている (locl のみ)。Chromium は
+ * Unicode の縦書き字形フォールバックを内蔵するので web フォントでも正しく縦組みになるが、
+ * WebKitGTK は字形置換を font 側の vert に依存するため崩れる。WebKitGTK の縦書きに限り、
+ * vert/vrt2 を備えるシステム CJK 明朝を優先して正しい縦組み字形を得る。既定書体
+ * Noto Serif JP と同系統の Noto Serif CJK JP を先頭に置くので見た目はほぼ不変。
+ * !important は本文ラッパーの inline font-family (buildEditorContentStyle) を上書き
+ * するため。カスタム書体利用時も WebKitGTK 縦書きではこの CJK 明朝が優先される。 */
+html[data-engine="webkitgtk"] .editor-vertical .tiptap {
+  font-family:
+    "Noto Serif CJK JP", "Source Han Serif JP", "Source Han Serif",
+    "Harano Aji Mincho", "IPAexMincho", "IPAmjMincho", "Noto Serif JP", serif !important;
 }
 /* 縦中横（tate-chu-yoko）— .tcy span 内を正立・横並びに結合する。
  * .tcy が付く経路は2つ:
@@ -1638,11 +1651,12 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
  * 生成の本編プロセ (novel prose persisted in the doc), so it must inherit
  * vertical-rl — resetting it made AI-drafted scenes render horizontally
  * in vertical linear mode.
- * scene-beat の本文 (NodeViewContent) は縦書きフローに参加する（vertical-rl を
- * 継承し縦組みになる）。ただし操作 UI（header / footer / アクションバー / エラー帯）
- * は横書き島として扱い、下の別ルールで horizontal-tb に戻す。操作ポップオーバーは
- * document.body へ portal される（useAnchoredPopover）ため縦書きフロー外で、既定の
- * 横書き・トリガー矩形基準の fixed 配置で描画される。 */
+ * scene-beat は本文も操作 UI（header / footer / アクションバー / エラー帯）も
+ * まるごと縦書きフローに参加する（vertical-rl を継承し縦帯になる）。操作 UI の
+ * writing-mode は下の別ルールで明示的に vertical-rl へ揃える（WebKit の flex 子孫
+ * 伝播漏れ対策）。操作ポップオーバーは document.body へ portal される
+ * （useAnchoredPopover）ため縦書きフロー外で、既定の横書き・トリガー矩形基準の
+ * fixed 配置で描画される。 */
 .editor-vertical .tiptap .scene-break,
 .editor-vertical .tiptap table,
 .editor-vertical .tiptap pre,
@@ -1650,16 +1664,18 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
   writing-mode: horizontal-tb;
 }
 
-/* Beat の操作 UI（chrome）は横書き島。Beat ノード本体は vertical-rl を継承する
- * ため、reset しないと flex ツールバーのボタン/ラベル文字まで縦組みになり、さらに
- * flexbox × writing-mode の解釈差で WebKit と Chromium で並びが割れて「一部だけ
- * 横書きのまま」の崩れになる。chrome を明示的に horizontal-tb へ戻すと全エンジンで
- * 横並び・横組みに揃い、本文 (NodeViewContent) だけが縦組みになる。content は
- * beat-divider / header / footer を持たないのでこのルールに一致しない。 */
+/* Beat の操作 UI（header / footer / アクションバー / エラー帯）も本文と同じく縦組みに
+ * する。Beat ノードは vertical-rl を継承するが、WebKit では flex コンテナの子孫へ
+ * writing-mode が伝播しきらず「一部だけ横書きのまま」残ることがある。chrome とその
+ * 子孫に vertical-rl を明示して全エンジンで縦帯に揃える。SVG アイコンは writing-mode
+ * の影響を受けない。ポップオーバーは body へ portal されるので対象外（横書きのまま）。 */
 .editor-vertical .tiptap [data-type="scene-beat"] > header,
 .editor-vertical .tiptap [data-type="scene-beat"] > footer,
-.editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider {
-  writing-mode: horizontal-tb;
+.editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider,
+.editor-vertical .tiptap [data-type="scene-beat"] > header *,
+.editor-vertical .tiptap [data-type="scene-beat"] > footer *,
+.editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
+  writing-mode: vertical-rl;
 }
 
 /* Beat ノードのブロック軸スタイル — Tailwind コアに block 軸の論理
