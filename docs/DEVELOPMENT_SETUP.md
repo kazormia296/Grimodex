@@ -1,6 +1,9 @@
 # 開発環境構築ガイド
 
-> 最終更新: 2026-06-19
+> 最終更新: 2026-07-09
+
+> 推奨は下記の **devcontainer** です。Docker を使わずローカルホストへ直接構築したい場合は
+> [ネイティブ（非Docker）セットアップ](#ネイティブ非dockerセットアップ) を参照してください。
 
 ## 前提条件
 
@@ -42,6 +45,82 @@ pnpm tauri dev
 ```
 
 アプリウィンドウが表示されれば環境構築完了です。
+
+---
+
+## ネイティブ（非Docker）セットアップ
+
+Docker / devcontainer を使わず、ローカルホスト上に直接ビルド環境を構築する場合の手順です。
+**対応 OS: Debian / Ubuntu（apt）、Arch / Manjaro（pacman）、macOS（Homebrew + Xcode CLT）。Windows は WSL2 上の Ubuntu か devcontainer を使用してください。**
+
+### 前提
+
+| ソフトウェア | バージョン | 備考 |
+|-------------|-----------|------|
+| Node.js | 20 LTS 以上 | CI は Node 20 を使用。pnpm は `packageManager` フィールドに従い corepack が固定 |
+| Rust | stable | 未導入なら下記スクリプトが rustup で導入 |
+
+### 一撃セットアップ
+
+リポジトリ直下で次を実行すると、OS を判定して Tauri v2 のビルド依存・Rust ツールチェーン・pnpm 依存を導入します（冪等・再実行安全）。
+
+```bash
+bash scripts/bootstrap-build-env.sh
+```
+
+システム依存だけ入れて `pnpm install` を省く場合:
+
+```bash
+SKIP_PNPM_INSTALL=1 bash scripts/bootstrap-build-env.sh
+```
+
+### 手動で入れる場合（Ubuntu / Debian）
+
+`scripts/bootstrap-build-env.sh` が導入する内容と同一です（`.devcontainer/Dockerfile`・CI と一致）:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  build-essential curl wget file pkg-config libssl-dev \
+  libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+  libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf fonts-noto-cjk
+
+# Rust（未導入時）
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+source "$HOME/.cargo/env" && rustup component add clippy
+
+# pnpm（corepack で固定）+ 依存
+corepack enable pnpm && pnpm install --frozen-lockfile
+```
+
+### 手動で入れる場合（Arch / Manjaro）
+
+Arch はパッケージを `-dev` に分割しないため、ヘッダは本体パッケージに含まれます（`webkit2gtk-4.1` が `libsoup3` / `javascriptcoregtk-4.1` を、`base-devel` が `pkgconf` を引き込みます）:
+
+```bash
+sudo pacman -Sy --needed \
+  base-devel curl wget file openssl \
+  gtk3 webkit2gtk-4.1 libsoup3 librsvg \
+  libappindicator-gtk3 patchelf noto-fonts-cjk
+
+# Rust / pnpm は Debian の項と同じ
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+source "$HOME/.cargo/env" && rustup component add clippy
+corepack enable pnpm && pnpm install --frozen-lockfile
+```
+
+macOS は Tauri が標準の WKWebView を使うため追加の GUI ライブラリは不要で、Xcode Command Line Tools（`xcode-select --install`）があれば足ります。
+
+### 検証
+
+```bash
+pnpm build            # tsc 型チェック + vite 本番バンドル
+pnpm lint             # ESLint
+pnpm test:node --run  # Vitest（node）
+( cd src-tauri && cargo check --workspace )
+( cd src-tauri && cargo test --workspace --no-default-features )  # ONNX バイナリ不要のテスト
+```
 
 ---
 
