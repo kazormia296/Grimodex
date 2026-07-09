@@ -23,11 +23,7 @@ describe("Switch", () => {
 
   it("OFF 時は data-state=unchecked", () => {
     render(
-      <Switch
-        checked={false}
-        aria-label="off"
-        onCheckedChange={() => {}}
-      />,
+      <Switch checked={false} aria-label="off" onCheckedChange={() => {}} />,
     );
     expect(screen.getByRole("switch").getAttribute("data-state")).toBe(
       "unchecked",

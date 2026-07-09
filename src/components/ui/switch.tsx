@@ -16,11 +16,10 @@ const SIZE_STYLES = {
   },
 } as const;
 
-export interface SwitchProps
-  extends Omit<
-    React.ButtonHTMLAttributes<HTMLButtonElement>,
-    "role" | "type" | "aria-checked" | "onChange"
-  > {
+export interface SwitchProps extends Omit<
+  React.ButtonHTMLAttributes<HTMLButtonElement>,
+  "role" | "type" | "aria-checked" | "onChange"
+> {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   size?: keyof typeof SIZE_STYLES;
