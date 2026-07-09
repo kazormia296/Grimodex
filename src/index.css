@@ -1609,6 +1609,37 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
 .editor-vertical .tiptap ruby rt {
   font-size: 0.5em;
 }
+
+/* ── WebKitGTK 縦書きの字形修正（診断ページ パネルC で実証済み）──
+ * WebKitGTK は Chromium と違い縦組み字形 (vert/vrt2) を自動適用しない。さらに同梱の
+ * fontsource web フォント (Noto Serif JP 等) はサブセット化で vert/vrt2 GSUB を欠く
+ * (fonttools で確認、locl のみ)。よって「(1) vert/vrt2 を明示」かつ「(2) vert を持つ
+ * フォント」の両方が揃わないと、長音符が横倒し・句読点が左下寄せになる。
+ * WebKitGTK の縦書きに限り、vert を持つシステム CJK 明朝を優先し vert/vrt2 を明示する。
+ * 既定書体 Noto Serif JP と同系統の Noto Serif CJK JP を先頭に置くので見た目はほぼ不変。
+ * font-family と font-feature-settings は同一要素 (.tiptap) に置く — 親 .editor-vertical
+ * に feature を置いた実装では本文へ効かないケースがあったため。vpal は WebKitGTK で
+ * グリフが列中心からずれる原因になるので付けない (vert/vrt2 のみで字形は正しく出る)。
+ * !important は本文ラッパーの inline font-family (buildEditorContentStyle) を上書きする
+ * ため。data-engine は isWebKitGtk() が App 起動時に付与。 */
+html[data-engine="webkitgtk"] .editor-vertical .tiptap {
+  font-family:
+    "Noto Serif CJK JP", "Source Han Serif JP", "Source Han Serif",
+    "Harano Aji Mincho", "IPAexMincho", "IPAmjMincho", serif !important;
+  font-feature-settings:
+    "vert" 1,
+    "vrt2" 1 !important;
+}
+/* Beat 操作 UI（「フリー」の長音符など）の縦組み字形。UI はゴシックのままで、vert/vrt2 を
+ * 明示してシステム CJK ゴシックの縦組み字形を使わせる。writing-mode は上の別ルールで
+ * vertical-rl 済み。 */
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > header,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > footer,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider {
+  font-feature-settings:
+    "vert" 1,
+    "vrt2" 1 !important;
+}
 /* 縦中横（tate-chu-yoko）— .tcy span 内を正立・横並びに結合する。
  * .tcy が付く経路は2つ:
  *  1. TateChuYokoPlugin の自動 decoration（縦書き時のみ登録）。
