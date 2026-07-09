@@ -1609,21 +1609,6 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
 .editor-vertical .tiptap ruby rt {
   font-size: 0.5em;
 }
-
-/* WebKitGTK 縦書きの長音符横倒し・句読点左下寄せの修正。
- * 原因: 同梱の fontsource フォント (Noto Serif JP / M PLUS 1 等) は web 最適化の
- * サブセット化で縦組み字形の GSUB (vert/vrt2) が剥がされている (locl のみ)。Chromium は
- * Unicode の縦書き字形フォールバックを内蔵するので web フォントでも正しく縦組みになるが、
- * WebKitGTK は字形置換を font 側の vert に依存するため崩れる。WebKitGTK の縦書きに限り、
- * vert/vrt2 を備えるシステム CJK 明朝を優先して正しい縦組み字形を得る。既定書体
- * Noto Serif JP と同系統の Noto Serif CJK JP を先頭に置くので見た目はほぼ不変。
- * !important は本文ラッパーの inline font-family (buildEditorContentStyle) を上書き
- * するため。カスタム書体利用時も WebKitGTK 縦書きではこの CJK 明朝が優先される。 */
-html[data-engine="webkitgtk"] .editor-vertical .tiptap {
-  font-family:
-    "Noto Serif CJK JP", "Source Han Serif JP", "Source Han Serif",
-    "Harano Aji Mincho", "IPAexMincho", "IPAmjMincho", "Noto Serif JP", serif !important;
-}
 /* 縦中横（tate-chu-yoko）— .tcy span 内を正立・横並びに結合する。
  * .tcy が付く経路は2つ:
  *  1. TateChuYokoPlugin の自動 decoration（縦書き時のみ登録）。
