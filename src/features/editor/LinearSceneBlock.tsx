@@ -42,6 +42,7 @@ import {
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useCurrentProject } from "@/features/project/projectStore";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
+import { isWebKitGtk } from "@/lib/platform";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import {
@@ -639,7 +640,10 @@ function MountedSceneBlock({
           editorSettings.showInvisibles && "editor-show-invisibles",
           isEnglish && "editor-en-typography",
         )}
-        style={buildEditorContentStyle(editorSettings)}
+        style={buildEditorContentStyle(editorSettings, {
+          vertical: editorSettings.verticalMode,
+          webkitGtk: isWebKitGtk(),
+        })}
         // contenteditable は spellcheck 属性を祖先から継承する
         spellCheck={editorSettings.spellCheck}
       >
