@@ -31,7 +31,12 @@ function captureSteps(initial: string, inserts: string[]): ReplayEvent[] {
   return out;
 }
 
-describe("captureCanvasToWebm (real MediaRecorder)", () => {
+// WebM の MediaRecorder 録画は Chromium 系のみ。WebKit (WKWebView/Safari 系) は
+// 非対応で pickSupportedWebmMime が null を返し、アプリ側は export を無効化する
+// 仕様（videoExport.ts 参照）。このテストは Chromium の実エンコード経路の検証。
+const isChromium = /Chrome|Chromium|HeadlessChrome/.test(navigator.userAgent);
+
+describe.skipIf(!isChromium)("captureCanvasToWebm (real MediaRecorder)", () => {
   it("encodes replayed frames into a non-empty WebM blob", async () => {
     const mime = pickSupportedWebmMime();
     expect(mime, "Chromium should support a WebM mime").toBeTruthy();
