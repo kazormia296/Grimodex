@@ -37,6 +37,10 @@ jobs:
           # ort の prebuilt ONNX Runtime は glibc 2.38+ でビルドされており
           # __isoc23_strtol 等を参照する。ubuntu-22.04 (glibc 2.35) では
           # rust-lld が undefined symbol で落ちるため 24.04 以上必須。
+          # NOTE: このランナー OS の glibc が生成物の最低要求になる
+          # (ubuntu-24.04 = glibc 2.39)。ランナーを上げ下げしたら
+          # src-tauri/tauri.conf.json の bundle.linux.deb.depends の
+          # "libc6 (>= 2.39)" も必ず追従させること。
           - platform: ubuntu-24.04
           - platform: macos-latest
           - platform: windows-latest
