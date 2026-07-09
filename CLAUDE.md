@@ -13,7 +13,7 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 - ビルド: pnpm tauri build
 - テスト: pnpm test
 - テスト(単体): pnpm test --run [ファイルパス]
-- ブラウザテスト: pnpm test:browser（実 Chromium、`*.browser.test.tsx`。flex/grid 実寸など happy-dom で測れない幾何 invariant 用）
+- ブラウザテスト: pnpm test:browser（実 Chromium + WebKit、`*.browser.test.tsx`。flex/grid 実寸など happy-dom で測れない幾何 invariant 用。WebKit は WKWebView/WebKitGTK と同系エンジンの近似ゲート — Arch 等の非 apt ホストでは `bash scripts/setup-webkit-host-libs.sh` を一度実行しないと WebKit 側は警告付き skip になる）
 - Lint: pnpm lint:fix
 - 型チェック: npx tsc --noEmit
 - Rustチェック: cd src-tauri && cargo check
