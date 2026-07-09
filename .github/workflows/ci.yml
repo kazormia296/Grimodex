@@ -61,15 +61,15 @@ jobs:
         uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium-webkit
 
       - name: Playwright Chromium + システム依存をインストール
         if: steps.pw-cache.outputs.cache-hit != 'true'
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm exec playwright install --with-deps chromium webkit
 
       - name: システム依存のみインストール (キャッシュヒット時)
         if: steps.pw-cache.outputs.cache-hit == 'true'
-        run: pnpm exec playwright install-deps chromium
+        run: pnpm exec playwright install-deps chromium webkit
 
       - name: ブラウザテスト
         run: pnpm test:browser --run
