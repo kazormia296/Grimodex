@@ -1994,6 +1994,7 @@ dependencies = [
  "flate2",
  "fontdb",
  "futures",
+ "glib",
  "grimodex-core",
  "grimodex-lint",
  "grimodex-mcp",
@@ -2025,6 +2026,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-normalization",
  "uuid",
+ "webkit2gtk",
  "window-vibrancy 0.7.1",
  "wiremock",
 ]

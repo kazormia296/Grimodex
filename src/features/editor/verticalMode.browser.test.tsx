@@ -445,11 +445,13 @@ describe("縦書きMODE: Beat ノードの縦書き表示", () => {
 describe("縦書きMODE: WebKitGTK では Beat chrome を横書き島にする", () => {
   // WebKitGTK は <button> の縦書きを VerticalFormControls フラグ（既定 OFF）で
   // 拒否するため、chrome 内で span=縦 / button=横 が混在して崩れる。
-  // html[data-engine="webkitgtk"] では chrome 全体を horizontal-tb へ統一する
+  // html[data-engine="webkitgtk"]（かつ Rust 側でフラグ有効化に失敗して
+  // data-vfc="on" が立たない場合）では chrome 全体を horizontal-tb へ統一する
   // （index.css の島ルール）。WebKitGTK の button 強制自体は Chromium では
-  // 再現しないが、data-engine ゲートの島化 CSS の適用はここで gate できる。
+  // 再現しないが、data-engine/data-vfc ゲートの CSS 適用はここで gate できる。
   afterEach(() => {
     delete document.documentElement.dataset.engine;
+    delete document.documentElement.dataset.vfc;
   });
 
   it("data-engine=webkitgtk: header/footer/チップが horizontal-tb になり、チップは header 帯に収まる", async () => {
@@ -485,6 +487,22 @@ describe("縦書きMODE: WebKitGTK では Beat chrome を横書き島にする",
     const beat = await waitForBeatNode();
     const header = beat.querySelector("header") as HTMLElement;
     expect(getComputedStyle(header).writingMode).toBe("vertical-rl");
+  });
+
+  it("data-vfc=on (VerticalFormControls 有効化成功) では島を外し縦帯 chrome に戻す", async () => {
+    // Rust 側 (webkit_features.rs) がフラグを有効化できたビルドでは
+    // App の probe が data-vfc="on" を立て、島フォールバックは外れて
+    // Chromium と同形の縦帯 chrome になる（本命経路の gate）。
+    document.documentElement.dataset.engine = "webkitgtk";
+    document.documentElement.dataset.vfc = "on";
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const header = beat.querySelector("header") as HTMLElement;
+    const chip = beat.querySelector(
+      '[data-testid="beat-type-chip"]',
+    ) as HTMLElement;
+    expect(getComputedStyle(header).writingMode).toBe("vertical-rl");
+    expect(getComputedStyle(chip).writingMode).toBe("vertical-rl");
   });
 });
 

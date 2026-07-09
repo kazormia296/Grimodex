@@ -103,6 +103,14 @@ ndarray = { version = "0.17", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# WebKitGTK の機能フラグ操作 (webkit_features.rs)。wry が同じ crate を使うため
+# 新規のネイティブ依存は増えない。feature API (2.42+) 自体は未バインドで dlsym
+# 解決する — ここでは WebView/Settings 型と terminate_web_process/reload の
+# バインディングだけを使う。
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0", features = ["v2_40"] }
+glib = "0.18"
+
 [dev-dependencies]
 # Polar クライアントのモックテスト (ライセンス認証設計書 §10)。
 # base URL を注入可能にした polar_*_at 関数に MockServer を当てる。

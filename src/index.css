@@ -1788,21 +1788,26 @@ html[data-engine="webkitgtk"] .editor-vertical .tiptap {
   writing-mode: vertical-rl;
 }
 
-/* WebKitGTK では Beat chrome を横書き島に戻す。WebKitGTK はフォームコントロール
- * (<button> 等) の縦書きを機能フラグ VerticalFormControls（2.52 時点でも既定 OFF）で
- * 拒否し、style adjuster が computed writing-mode を horizontal-tb へ強制するため
- * CSS では覆せない。chrome 内で span=縦 / button=横（「フリー」チップ等）が混在すると
- * チップだけ横倒しになり隣接要素と重なるので、chrome 全体を horizontal-tb に統一する
- * のが唯一の整合解。Chromium (M119+) / WKWebView (17.4+) は button も縦にできるため
- * data-engine なしの環境は上の縦帯ルールのまま。詳細度は同等なのでソース順で後勝ち。
- * 注意: Beat chrome にテキスト入り <button> を追加しても span ラッパーでは回避不可 —
- * この島ルールの対象に含めること。 */
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > header,
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > footer,
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider,
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > header *,
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > footer *,
-html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
+/* WebKitGTK のフォールバック: Beat chrome を横書き島に戻す。WebKitGTK は
+ * フォームコントロール (<button> 等) の縦書きを機能フラグ
+ * VerticalFormControls（2.52 時点でも既定 OFF）で拒否し、style adjuster が
+ * computed writing-mode を horizontal-tb へ強制するため CSS では覆せない。
+ * chrome 内で span=縦 / button=横（「フリー」チップ等）が混在するとチップ
+ * だけ横倒しになり隣接要素と重なるので、chrome 全体を horizontal-tb に統一
+ * する。ただし横書き島は orthogonal flow になり header/footer が Beat 帯
+ * 上端に張り付く妥協形のため、本命は Rust 側 (webkit_features.rs) の
+ * VerticalFormControls 有効化 — 成功時は App が <html data-vfc="on"> を立て
+ * （probe: src/lib/verticalFormControls.ts）、この島ルールは外れて上の縦帯
+ * chrome（Chromium と同形）が生きる。:not([data-vfc="on"]) はその切替ゲート。
+ * Chromium (M119+) / WKWebView (17.4+) は data-engine なしで常に縦帯ルール。
+ * 注意: Beat chrome にテキスト入り <button> を追加しても span ラッパーでは
+ * 回避不可 — この島ルールの対象に含めること。 */
+html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > header,
+html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > footer,
+html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider,
+html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > header *,
+html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > footer *,
+html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
   writing-mode: horizontal-tb;
   /* 上の .tiptap 縦組み字形強制 (vert/vrt2 !important) は継承でここへも届く。
    * 横書き島に縦組み字形が乗ると、UI フォントが vert GSUB を持つ構成
