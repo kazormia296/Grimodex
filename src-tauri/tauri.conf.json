@@ -32,7 +32,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "app", "dmg", "deb", "rpm", "appimage"],
-    "publisher": "miyakey",
+    "publisher": "kazormia296",
     "homepage": "https://github.com/kazormia296/Grimodex",
     "icon": [
       "icons/32x32.png",
