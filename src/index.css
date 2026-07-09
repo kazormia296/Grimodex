@@ -25,6 +25,12 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* ネイティブ UI (select のドロップダウン一覧・スクロールバー・チェックボックス
+     等) をライトで描画させる。WebKitGTK / WKWebView は <option> ポップアップを
+     GTK/OS 側で描くため CSS の color/background が効かず、ダークテーマだと
+     color-scheme 未指定では白地×白文字で文字が読めなくなる。テーマは .dark で
+     dark に切り替える。 */
+  color-scheme: light;
   /* Auxiliary UI scale factor (1 = 100%); overridden from JS — see syncUiScaleFromGlobalSettings */
   --ui-scale: 1;
   --background: oklch(1 0 0);
@@ -174,6 +180,9 @@
 }
 
 .dark {
+  /* ネイティブ UI (select ドロップダウン一覧・スクロールバー等) をダークで描画。
+     これが無いと WebKitGTK でダークテーマ時にドロップダウンが白地×白文字になる。 */
+  color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.145 0 0);
@@ -571,6 +580,45 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
     background-attachment: fixed;
     box-shadow: 0 8px 20px rgb(0 0 0 / 0.12);
   }
+}
+
+/* ── WebKitGTK (Linux Tauri) ソフトウェア合成向けフォールバック ──
+ * Linux ビルドは WEBKIT_DISABLE_DMABUF_RENDERER=1 で GPU 合成が無効なため、
+ * backdrop-filter: blur() と background-attachment: fixed が per-frame の全面
+ * 再描画を誘発し、ダイアログ (エクスポート / 設定) やポップオーバーの開閉・
+ * スクロールが目に見えて重くなる。WebKitGTK のときだけ両者を切り、半透明ガラス面は
+ * @supports フォールバックと同じ不透明背景 (--glass-bg-strong) に落として可読性を
+ * 保つ。他プラットフォーム (WebView2 / GPU 有効な WKWebView) は影響を受けない。
+ * data-engine 属性は isWebKitGtk() が App 起動時に付与する (src/App.tsx)。 */
+html[data-engine="webkitgtk"] {
+  --glass-blur: 0px;
+}
+html[data-engine="webkitgtk"] .glass-surface,
+html[data-engine="webkitgtk"] .glass-shell,
+html[data-engine="webkitgtk"] .glass-chat,
+html[data-engine="webkitgtk"] .glass-editor-chrome,
+html[data-engine="webkitgtk"] .glass-editor-body,
+html[data-engine="webkitgtk"] [role="dialog"],
+html[data-engine="webkitgtk"] .bg-popover,
+html[data-engine="webkitgtk"] [data-radix-popper-content-wrapper] > *,
+html[data-engine="webkitgtk"] .dv-content-container,
+html[data-engine="webkitgtk"] .dv-tabs-and-actions-container,
+html[data-engine="webkitgtk"] .dv-active-sash {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-attachment: scroll !important;
+}
+/* blur を失う半透明面は不透明寄りに引き上げて可読性を確保する。ダイアログ /
+ * ポップオーバーは既に --glass-bg-strong を使うのでそのまま、パネル・シェル・チャット・
+ * エディタ chrome の --glass-bg 面を strong に寄せる。 */
+html[data-engine="webkitgtk"][data-glass-enabled="true"] .glass-surface,
+html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-shell="true"]
+  .glass-shell,
+html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-chat="true"]
+  .glass-chat,
+html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrome="true"]
+  .glass-editor-chrome {
+  background-color: var(--glass-bg-strong);
 }
 
 /* ───────────────────────────────────────────────────────────
@@ -1551,10 +1599,39 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .editor-vertical {
   writing-mode: vertical-rl;
   text-orientation: mixed;
-  font-feature-settings: "vpal";
+  -webkit-text-orientation: mixed;
+  /* 縦組み用字形 (縦向きの長音符・右上寄せの句読点) を有効化。フォントが vert/vrt2
+     GSUB を持てば有効になる。同梱の fontsource web フォントはサブセット化で vert を
+     欠くため、WebKitGTK では下の [data-engine="webkitgtk"] ルールで vert 対応の
+     システムフォントに切り替える。"vpal" は縦組みプロポーショナル字間詰め。 */
+  font-feature-settings: "vert" 1, "vrt2" 1, "vpal" 1;
 }
 .editor-vertical .tiptap ruby rt {
   font-size: 0.5em;
+}
+
+/* ── WebKitGTK 縦書きの字形修正（診断ページ パネルC/G で実証済み）──
+ * WebKitGTK は Chromium と違い縦組み字形 (vert/vrt2) を自動適用しないため、明示が要る。
+ * これが無いと長音符が横倒し・句読点が左下寄せになる。vpal は列中心からのズレの原因に
+ * なるので付けない (vert/vrt2 のみで字形は正しく出る)。
+ * フォント側の要件 (vert を持つフォントであること) は JS の resolveEditorFontFamily が
+ * 担う（同梱 web フォントのみ vert 対応システムフォントへ差し替え、ユーザ選択は尊重）。
+ * font-feature-settings は .tiptap に直接置く — 親 .editor-vertical への指定では本文へ
+ * 効かないケースがあったため。data-engine は isWebKitGtk() が App 起動時に付与。 */
+html[data-engine="webkitgtk"] .editor-vertical .tiptap {
+  font-feature-settings:
+    "vert" 1,
+    "vrt2" 1 !important;
+}
+/* Beat 操作 UI（「フリー」の長音符など）の縦組み字形。UI はゴシックのままで、vert/vrt2 を
+ * 明示してシステム CJK ゴシックの縦組み字形を使わせる。writing-mode は上の別ルールで
+ * vertical-rl 済み。 */
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > header,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > footer,
+html[data-engine="webkitgtk"] .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider {
+  font-feature-settings:
+    "vert" 1,
+    "vrt2" 1 !important;
 }
 /* 縦中横（tate-chu-yoko）— .tcy span 内を正立・横並びに結合する。
  * .tcy が付く経路は2つ:
@@ -1583,15 +1660,31 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
  * 生成の本編プロセ (novel prose persisted in the doc), so it must inherit
  * vertical-rl — resetting it made AI-drafted scenes render horizontally
  * in vertical linear mode.
- * scene-beat も島ではない: Beat ノードは縦書きフローに参加する（wrapper /
- * header / footer / content が vertical-rl を継承し縦帯になる）。操作
- * ポップオーバーは document.body へ portal される（useAnchoredPopover）ため
- * 縦書きフロー外で、既定の横書き・トリガー矩形基準の fixed 配置で描画される。 */
+ * scene-beat は本文も操作 UI（header / footer / アクションバー / エラー帯）も
+ * まるごと縦書きフローに参加する（vertical-rl を継承し縦帯になる）。操作 UI の
+ * writing-mode は下の別ルールで明示的に vertical-rl へ揃える（WebKit の flex 子孫
+ * 伝播漏れ対策）。操作ポップオーバーは document.body へ portal される
+ * （useAnchoredPopover）ため縦書きフロー外で、既定の横書き・トリガー矩形基準の
+ * fixed 配置で描画される。 */
 .editor-vertical .tiptap .scene-break,
 .editor-vertical .tiptap table,
 .editor-vertical .tiptap pre,
 .editor-vertical .tiptap ul[data-type="taskList"] {
   writing-mode: horizontal-tb;
+}
+
+/* Beat の操作 UI（header / footer / アクションバー / エラー帯）も本文と同じく縦組みに
+ * する。Beat ノードは vertical-rl を継承するが、WebKit では flex コンテナの子孫へ
+ * writing-mode が伝播しきらず「一部だけ横書きのまま」残ることがある。chrome とその
+ * 子孫に vertical-rl を明示して全エンジンで縦帯に揃える。SVG アイコンは writing-mode
+ * の影響を受けない。ポップオーバーは body へ portal されるので対象外（横書きのまま）。 */
+.editor-vertical .tiptap [data-type="scene-beat"] > header,
+.editor-vertical .tiptap [data-type="scene-beat"] > footer,
+.editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider,
+.editor-vertical .tiptap [data-type="scene-beat"] > header *,
+.editor-vertical .tiptap [data-type="scene-beat"] > footer *,
+.editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
+  writing-mode: vertical-rl;
 }
 
 /* Beat ノードのブロック軸スタイル — Tailwind コアに block 軸の論理

@@ -9,6 +9,7 @@ import {
   getLogicalScrollOffset,
   intersectsBlockAxis,
   pickActiveSceneId,
+  resolveEditorFontFamily,
   setLogicalScrollOffset,
 } from "./editorLayout";
 
@@ -207,5 +208,60 @@ describe("canScrollBlockAxis / getLinearRootMargin", () => {
   it("swaps the pre-mount margin axis", () => {
     expect(getLinearRootMargin(false)).toBe("200% 0px");
     expect(getLinearRootMargin(true)).toBe("0px 200%");
+  });
+});
+
+describe("resolveEditorFontFamily — WebKitGTK 縦書きの vert フォント解決", () => {
+  it("横書き or 非 WebKitGTK では変換せずユーザ設定をそのまま返す", () => {
+    const f = '"Noto Serif JP"';
+    // 横書き
+    expect(
+      resolveEditorFontFamily(f, { vertical: false, webkitGtk: true }),
+    ).toBe(f);
+    // 非 WebKitGTK（Chromium 等は Unicode 縦書き字形フォールバック内蔵）
+    expect(
+      resolveEditorFontFamily(f, { vertical: true, webkitGtk: false }),
+    ).toBe(f);
+    // 両方 false
+    expect(
+      resolveEditorFontFamily(f, { vertical: false, webkitGtk: false }),
+    ).toBe(f);
+  });
+
+  it("WebKitGTK 縦書き: 同梱明朝はシステム CJK 明朝を先頭へ差し替える（元指定は残す）", () => {
+    const out = resolveEditorFontFamily('"Noto Serif JP"', {
+      vertical: true,
+      webkitGtk: true,
+    });
+    // vert を持つシステムフォントが先頭
+    expect(out.startsWith('"Noto Serif CJK JP", "Source Han Serif JP"')).toBe(
+      true,
+    );
+    // ユーザ選択（元の指定）も残る＝システムに無ければ従来どおりにフォールバック
+    expect(out).toContain('"Noto Serif JP"');
+    // 汎用 CJK フォールバック
+    expect(out).toContain("serif");
+  });
+
+  it("WebKitGTK 縦書き: 同梱ゴシックは vert を持つシステムゴシックへ差し替える", () => {
+    const out = resolveEditorFontFamily('"M PLUS 1"', {
+      vertical: true,
+      webkitGtk: true,
+    });
+    expect(out.startsWith('"Noto Sans CJK JP", "Source Han Sans JP"')).toBe(
+      true,
+    );
+    expect(out).toContain('"M PLUS 1"');
+  });
+
+  it("WebKitGTK 縦書き: 未知（＝ユーザ指定システムフォント）は尊重し CJK フォールバックのみ足す", () => {
+    const out = resolveEditorFontFamily('"Yu Mincho"', {
+      vertical: true,
+      webkitGtk: true,
+    });
+    // ユーザ選択が先頭で尊重される
+    expect(out.startsWith('"Yu Mincho"')).toBe(true);
+    // vert を持つ CJK フォールバックが末尾に付く
+    expect(out).toContain('"Noto Serif CJK JP"');
   });
 });

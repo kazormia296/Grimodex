@@ -18,6 +18,7 @@ import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { EditorBodyWithLoading } from "@/features/editor/EditorContentSkeleton";
 import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
+import { isWebKitGtk } from "@/lib/platform";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import type { FilterSource } from "@/features/attribution/attributionStore";
@@ -131,7 +132,10 @@ export function EditorContentArea({
             isEnglish && "editor-en-typography",
           )}
           style={{
-            ...buildEditorContentStyle(editorSettings),
+            ...buildEditorContentStyle(editorSettings, {
+              vertical: editorSettings.verticalMode,
+              webkitGtk: isWebKitGtk(),
+            }),
             ...(gutterReserve
               ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
               : {}),
