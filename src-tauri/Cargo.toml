@@ -4,8 +4,8 @@ members = ["crates/grimodex-core", "crates/grimodex-mcp", "crates/grimodex-lint"
 [package]
 name = "grimodex"
 version = "1.0.0"
-description = "Grimodex - AI統合小説執筆エディタ (Tauri + React)"
-authors = ["miyakey <midake745698@gmail.com>"]
+description = "Grimodex - Writing Fidget IDE (Tauri + React)"
+authors = ["kazormia296 <kazormia296@gmail.com>"]
 license = "Elastic-2.0"
 edition = "2021"
 
