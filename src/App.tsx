@@ -75,7 +75,7 @@ import {
 } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
-import { isMac, matchesMod } from "@/lib/platform";
+import { isMac, isWebKitGtk, matchesMod } from "@/lib/platform";
 import {
   PANEL_COMMANDS,
   getMergedBindings,
@@ -357,6 +357,16 @@ function EditorScreen() {
   // 取得まで・失敗時はゲートが fail-open なので執筆は止まらない。
   useEffect(() => {
     void useLicenseStore.getState().refresh();
+  }, []);
+
+  // レンダリングエンジンを <html data-engine> に一度だけ記録する。WebKitGTK
+  // (Linux Tauri, WEBKIT_DISABLE_DMABUF_RENDERER=1 のソフトウェア合成) では
+  // index.css が backdrop-filter blur / fixed 背景を切ってダイアログの重さを
+  // 軽減する。エンジンはプロセス生存中に変わらないので mount 時一回で十分。
+  useEffect(() => {
+    if (isWebKitGtk()) {
+      document.documentElement.dataset.engine = "webkitgtk";
+    }
   }, []);
 
   useEffect(() => {

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   eventKeyToken,
   formatShortcut,
+  isWebKitUA,
   matchesMod,
   shortcutKey,
 } from "./platform";
@@ -108,5 +109,46 @@ describe("formatShortcut — macOS canonical order ⌃⌥⇧⌘ + key, no separa
     it(`${input} → ${expected}`, () => {
       expect(formatShortcut(input, true)).toBe(expected);
     });
+  }
+});
+
+describe("isWebKitUA — WebKit (non-Blink) engine detection", () => {
+  // Real WebKit UAs (no "Chrome/" token) → the packaged Tauri webviews we must
+  // apply vertical-rl / native-control workarounds to.
+  const webkit: Array<[string, string]> = [
+    [
+      "macOS WKWebView (Tauri)",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    ],
+    [
+      "Linux WebKitGTK (Tauri)",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15",
+    ],
+    [
+      "iOS Safari",
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    ],
+  ];
+  for (const [name, ua] of webkit) {
+    it(`${name} → true`, () => expect(isWebKitUA(ua)).toBe(true));
+  }
+
+  // Blink engines all carry a Chrome/Chromium/Edg/CriOS token → NOT WebKit.
+  const blink: Array<[string, string]> = [
+    [
+      "Windows WebView2 (Tauri)",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    ],
+    [
+      "Desktop Chrome (dev / Vitest browser)",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    ],
+    [
+      "iOS Chrome (CriOS)",
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0.0.0 Mobile/15E148 Safari/604.1",
+    ],
+  ];
+  for (const [name, ua] of blink) {
+    it(`${name} → false`, () => expect(isWebKitUA(ua)).toBe(false));
   }
 });

@@ -14,11 +14,12 @@
  * happy-dom は writing-mode のレイアウトも getBoundingClientRect の実寸も計算しない
  * ため browser test 必須 (CLAUDE.md のレイアウト/幾何ルール)。
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { fireEvent } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { VerticalCaretNavExtension } from "./VerticalCaretNavExtension";
+import { __setIsWebKitForTests } from "../../lib/platform";
 
 // doc: <p>ABCDE<br>FGHIJ</p>
 //   1 A 2 B 3 C 4 D 5 E 6 [br] 7 F 8 G 9 H 10 I 11 J 12
@@ -108,5 +109,65 @@ describe("横書き: 拡張は介入しない", () => {
     // 合成イベントはネイティブ移動を起こさない & 拡張は横書きで false を返すため
     // selection は据え置き (拡張が誤って縦書きロジックを適用していないことの gate)。
     expect(ed.state.selection.from).toBe(POS_BEFORE_BR);
+  });
+});
+
+// ↑/↓ の列内移動は WebKit 限定。Vitest browser runner は Chromium なので
+// __setIsWebKitForTests(true) で WebKit 分岐を強制し、ジオメトリではなく inline
+// 論理移動 (stepInline) が規約どおり動くことを実 Chromium レイアウト上で gate する。
+describe("縦書き列内移動 (↑/↓): WebKit 分岐", () => {
+  beforeEach(() => __setIsWebKitForTests(true));
+  afterEach(() => __setIsWebKitForTests(null));
+
+  it("↓ は列内を 1 文字前進する (AB|CDE → ABC|DE)", () => {
+    const ed = mount(true);
+    ed.commands.setTextSelection(3); // AB|CDE
+    press("ArrowDown");
+    expect(ed.state.selection.from).toBe(4); // ABC|DE
+  });
+
+  it("↑ は列内を 1 文字後退する (ABC|DE → AB|CDE)", () => {
+    const ed = mount(true);
+    ed.commands.setTextSelection(4);
+    press("ArrowUp");
+    expect(ed.state.selection.from).toBe(3);
+  });
+
+  it("一行目末尾で ↓ を押すと次の列頭 (二行目) へ inline 前進する", () => {
+    const ed = mount(true);
+    ed.commands.setTextSelection(POS_BEFORE_BR); // ABCDE| (列末)
+    press("ArrowDown");
+    // inline 前進は hardBreak を跨いで F の直前 (次の列頭) へ折り返す。
+    expect(ed.state.selection.from).toBe(POS_AFTER_BR);
+  });
+
+  it("ドキュメント先頭で ↑ は consume して据え置く (端で no-op)", () => {
+    const ed = mount(true);
+    ed.commands.setTextSelection(1); // |ABCDE
+    press("ArrowUp");
+    expect(ed.state.selection.from).toBe(1);
+  });
+
+  it("Shift+↓ は選択を列内前進方向へ拡張する (anchor 据え置き)", () => {
+    const ed = mount(true);
+    ed.commands.setTextSelection(3);
+    press("ArrowDown", true);
+    expect(ed.state.selection.empty).toBe(false);
+    expect(ed.state.selection.anchor).toBe(3);
+    expect(ed.state.selection.head).toBe(4);
+  });
+});
+
+describe("縦書き列内移動 (↑/↓): 非 WebKit では介入しない", () => {
+  beforeEach(() => __setIsWebKitForTests(false));
+  afterEach(() => __setIsWebKitForTests(null));
+
+  it("Chromium 系では ↓ を consume せず selection を書き換えない", () => {
+    const ed = mount(true);
+    ed.commands.setTextSelection(3);
+    press("ArrowDown");
+    // 合成イベントはネイティブ移動を起こさない & 拡張は非 WebKit で false を返すため
+    // selection は据え置き (↑/↓ を WebKit 限定にしている gate)。
+    expect(ed.state.selection.from).toBe(3);
   });
 });

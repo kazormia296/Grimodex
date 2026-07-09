@@ -25,6 +25,12 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* ネイティブ UI (select のドロップダウン一覧・スクロールバー・チェックボックス
+     等) をライトで描画させる。WebKitGTK / WKWebView は <option> ポップアップを
+     GTK/OS 側で描くため CSS の color/background が効かず、ダークテーマだと
+     color-scheme 未指定では白地×白文字で文字が読めなくなる。テーマは .dark で
+     dark に切り替える。 */
+  color-scheme: light;
   /* Auxiliary UI scale factor (1 = 100%); overridden from JS — see syncUiScaleFromGlobalSettings */
   --ui-scale: 1;
   --background: oklch(1 0 0);
@@ -174,6 +180,9 @@
 }
 
 .dark {
+  /* ネイティブ UI (select ドロップダウン一覧・スクロールバー等) をダークで描画。
+     これが無いと WebKitGTK でダークテーマ時にドロップダウンが白地×白文字になる。 */
+  color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.145 0 0);
@@ -571,6 +580,45 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
     background-attachment: fixed;
     box-shadow: 0 8px 20px rgb(0 0 0 / 0.12);
   }
+}
+
+/* ── WebKitGTK (Linux Tauri) ソフトウェア合成向けフォールバック ──
+ * Linux ビルドは WEBKIT_DISABLE_DMABUF_RENDERER=1 で GPU 合成が無効なため、
+ * backdrop-filter: blur() と background-attachment: fixed が per-frame の全面
+ * 再描画を誘発し、ダイアログ (エクスポート / 設定) やポップオーバーの開閉・
+ * スクロールが目に見えて重くなる。WebKitGTK のときだけ両者を切り、半透明ガラス面は
+ * @supports フォールバックと同じ不透明背景 (--glass-bg-strong) に落として可読性を
+ * 保つ。他プラットフォーム (WebView2 / GPU 有効な WKWebView) は影響を受けない。
+ * data-engine 属性は isWebKitGtk() が App 起動時に付与する (src/App.tsx)。 */
+html[data-engine="webkitgtk"] {
+  --glass-blur: 0px;
+}
+html[data-engine="webkitgtk"] .glass-surface,
+html[data-engine="webkitgtk"] .glass-shell,
+html[data-engine="webkitgtk"] .glass-chat,
+html[data-engine="webkitgtk"] .glass-editor-chrome,
+html[data-engine="webkitgtk"] .glass-editor-body,
+html[data-engine="webkitgtk"] [role="dialog"],
+html[data-engine="webkitgtk"] .bg-popover,
+html[data-engine="webkitgtk"] [data-radix-popper-content-wrapper] > *,
+html[data-engine="webkitgtk"] .dv-content-container,
+html[data-engine="webkitgtk"] .dv-tabs-and-actions-container,
+html[data-engine="webkitgtk"] .dv-active-sash {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-attachment: scroll !important;
+}
+/* blur を失う半透明面は不透明寄りに引き上げて可読性を確保する。ダイアログ /
+ * ポップオーバーは既に --glass-bg-strong を使うのでそのまま、パネル・シェル・チャット・
+ * エディタ chrome の --glass-bg 面を strong に寄せる。 */
+html[data-engine="webkitgtk"][data-glass-enabled="true"] .glass-surface,
+html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-shell="true"]
+  .glass-shell,
+html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-chat="true"]
+  .glass-chat,
+html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrome="true"]
+  .glass-editor-chrome {
+  background-color: var(--glass-bg-strong);
 }
 
 /* ───────────────────────────────────────────────────────────
@@ -1551,7 +1599,14 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
 .editor-vertical {
   writing-mode: vertical-rl;
   text-orientation: mixed;
-  font-feature-settings: "vpal";
+  -webkit-text-orientation: mixed;
+  /* "vert" 1 を明示して縦組み用字形への置換を有効化する。Chromium は縦書きで
+     vert を自動適用するが、WebKitGTK / WKWebView は font-feature-settings を
+     指定した時点で既定の vert が外れ、長音符 (ー) が横倒しの横線のまま・句読点
+     (、。) が縦組み字形にならず左下寄せになる。vert を明示すると全エンジンで
+     縦組み字形 (縦向きの長音符・右上寄せの句読点) に揃う。"vpal" は縦組みの
+     プロポーショナル字間詰め (従来どおり)。 */
+  font-feature-settings: "vert" 1, "vpal" 1;
 }
 .editor-vertical .tiptap ruby rt {
   font-size: 0.5em;
@@ -1583,14 +1638,27 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
  * 生成の本編プロセ (novel prose persisted in the doc), so it must inherit
  * vertical-rl — resetting it made AI-drafted scenes render horizontally
  * in vertical linear mode.
- * scene-beat も島ではない: Beat ノードは縦書きフローに参加する（wrapper /
- * header / footer / content が vertical-rl を継承し縦帯になる）。操作
- * ポップオーバーは document.body へ portal される（useAnchoredPopover）ため
- * 縦書きフロー外で、既定の横書き・トリガー矩形基準の fixed 配置で描画される。 */
+ * scene-beat の本文 (NodeViewContent) は縦書きフローに参加する（vertical-rl を
+ * 継承し縦組みになる）。ただし操作 UI（header / footer / アクションバー / エラー帯）
+ * は横書き島として扱い、下の別ルールで horizontal-tb に戻す。操作ポップオーバーは
+ * document.body へ portal される（useAnchoredPopover）ため縦書きフロー外で、既定の
+ * 横書き・トリガー矩形基準の fixed 配置で描画される。 */
 .editor-vertical .tiptap .scene-break,
 .editor-vertical .tiptap table,
 .editor-vertical .tiptap pre,
 .editor-vertical .tiptap ul[data-type="taskList"] {
+  writing-mode: horizontal-tb;
+}
+
+/* Beat の操作 UI（chrome）は横書き島。Beat ノード本体は vertical-rl を継承する
+ * ため、reset しないと flex ツールバーのボタン/ラベル文字まで縦組みになり、さらに
+ * flexbox × writing-mode の解釈差で WebKit と Chromium で並びが割れて「一部だけ
+ * 横書きのまま」の崩れになる。chrome を明示的に horizontal-tb へ戻すと全エンジンで
+ * 横並び・横組みに揃い、本文 (NodeViewContent) だけが縦組みになる。content は
+ * beat-divider / header / footer を持たないのでこのルールに一致しない。 */
+.editor-vertical .tiptap [data-type="scene-beat"] > header,
+.editor-vertical .tiptap [data-type="scene-beat"] > footer,
+.editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider {
   writing-mode: horizontal-tb;
 }
 
