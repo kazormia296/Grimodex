@@ -29,6 +29,11 @@ jobs:
     needs: ci
     permissions:
       contents: write
+    # 3 レグとも tauri-action が同一の draft release を作成/再利用するため、
+    # どのレグが最後に outputs を書いても値は同じ (build-arch ジョブが参照)。
+    outputs:
+      releaseId: ${{ steps.build.outputs.releaseId }}
+      releaseUploadUrl: ${{ steps.build.outputs.releaseUploadUrl }}
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -201,6 +206,7 @@ jobs:
             | OS | ファイル |
             |----|---------|
             | Linux (Debian/Ubuntu) | `.deb` |
+            | Linux (Arch) | `.pkg.tar.zst`（または AUR: `grimodex-bin`） |
             | Linux (Universal) | `.AppImage` |
             | macOS | `.dmg` |
             | Windows | `.exe` |
@@ -210,6 +216,18 @@ jobs:
           # タグ push 時は常に Draft。手動実行時は inputs.draft（デフォルト true）で制御
           releaseDraft: ${{ github.event_name != 'workflow_dispatch' || inputs.draft }}
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      # build-arch ジョブ (pacman パッケージ生成) へ .deb を受け渡す。
+      # draft release からの再ダウンロードは API 認証が絡むため、
+      # ビルド成果物をそのままアーティファクト経由で渡す。
+      - name: .deb をアーティファクトとして保存 (Linux のみ)
+        if: matrix.platform == 'ubuntu-24.04'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deb-for-arch
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+          retention-days: 1
 
       # tauri/#7533: Tauri は .app を署名+notarize+staple するが .dmg はしない。
       # 配布物である DMG を明示的に notarize + staple し、tauri-action が draft release へ
@@ -285,3 +303,73 @@ jobs:
           spctl -a -vvv -t open --context context:primary-signature "$DMG" \
             || echo "::warning::quarantine 付き spctl が accept しませんでした（runner 状態依存の可能性。要実機確認）。"
           echo "✅ 署名・公証・staple すべて検証 OK"
+
+  # ── Arch Linux (pacman) パッケージ ──────────────────────────────────────────
+  # Tauri bundler に pacman ターゲットがないため、ubuntu-24.04 レグが作った .deb を
+  # packaging/arch/PKGBUILD で再パッケージし .pkg.tar.zst をリリースへ追加する。
+  # AUR (grimodex-bin) への公開は、リリース公開時に aur-publish.yml が別途行う。
+  build-arch:
+    name: Build (arch pacman package)
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: パッケージングツールの導入
+        run: pacman -Syu --noconfirm --needed pacman-contrib jq git
+
+      - name: .deb アーティファクトを取得
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: deb-for-arch
+          path: packaging/arch
+
+      - name: makepkg で .pkg.tar.zst を生成
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          cd packaging/arch
+          sed "s/@PKGVER@/${VERSION}/" PKGBUILD > PKGBUILD.tmp
+          mv PKGBUILD.tmp PKGBUILD
+          # source の URL (draft release は未公開) からは取得できないため、
+          # 同名のローカルファイルを置いて makepkg に拾わせる。
+          cp ../../LICENSE "LICENSE-v${VERSION}"
+          # makepkg は root 実行を拒否するため専用ユーザーで実行する
+          useradd -m builder
+          chown -R builder: .
+          runuser -u builder -- updpkgsums
+          runuser -u builder -- makepkg -fd
+          ls -l ./*.pkg.tar.zst
+
+      - name: .pkg.tar.zst をリリースへアップロード
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.build.outputs.releaseId }}
+          RELEASE_UPLOAD_URL: ${{ needs.build.outputs.releaseUploadUrl }}
+        run: |
+          set -euo pipefail
+          PKG=$(find packaging/arch -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)
+          if [ -z "$PKG" ]; then
+            echo "::error::.pkg.tar.zst が見つかりません。" >&2
+            exit 1
+          fi
+          ASSET_NAME=$(basename "$PKG")
+          # 再実行時の重複 (already_exists) を避けるため同名アセットを削除してから上げる
+          OLD_ID=$(curl -sSf -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+            | jq -r --arg name "$ASSET_NAME" '.[] | select(.name==$name) | .id' | head -n1)
+          if [ -n "${OLD_ID:-}" ]; then
+            curl -sSf -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${OLD_ID}"
+          fi
+          UPLOAD_BASE="${RELEASE_UPLOAD_URL%%\{*}"
+          curl -sSf -X POST "${UPLOAD_BASE}?name=${ASSET_NAME}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"$PKG"
+          echo "uploaded: $ASSET_NAME"
