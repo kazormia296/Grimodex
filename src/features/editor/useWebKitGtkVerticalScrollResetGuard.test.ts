@@ -17,6 +17,7 @@ import { useWebKitGtkVerticalScrollResetGuard } from "./useWebKitGtkVerticalScro
 function makeScroller(): {
   el: HTMLElement;
   engineSet: (v: number) => void;
+  engineSetSilent: (v: number) => void;
   protoGet: () => number;
 } {
   const el = document.createElement("div");
@@ -40,6 +41,11 @@ function makeScroller(): {
     engineSet(v: number) {
       Object.getOwnPropertyDescriptor(proto, "scrollLeft")!.set!.call(el, v);
       el.dispatchEvent(new Event("scroll"));
+    },
+    // 「復元書き込みのクランプ」を模擬: scroll イベント無しで値だけ変える
+    // (実機では relayout 直後の書き込みが 0 へ丸められ、イベントが来ない)
+    engineSetSilent(v: number) {
+      Object.getOwnPropertyDescriptor(proto, "scrollLeft")!.set!.call(el, v);
     },
     protoGet: () => value,
   };
@@ -88,6 +94,64 @@ describe("useWebKitGtkVerticalScrollResetGuard", () => {
     el.scrollLeft = 0;
     el.dispatchEvent(new Event("scroll"));
 
+    expect(protoGet()).toBe(0);
+  });
+
+  it("奥の値への JS 書き込み直後のエンジンリセットも復元する（入力中の caret 追従の穴）", () => {
+    // PM は入力中に caret 追従で奥の値 (-1000 等) を書く。その直後にエンジンが
+    // 0 へ落とした場合、「直近に JS 書き込みあり」だけで素通しすると入力後に
+    // 先頭へ飛ぶ — 書き込んだ値が先頭近傍のときだけ素通しする。
+    const { el, engineSet, protoGet } = makeScroller();
+    mount(el);
+
+    el.scrollLeft = -1000;
+    el.dispatchEvent(new Event("scroll"));
+
+    vi.setSystemTime(1_000_100); // JS 書き込みから 100ms (窓内)
+    engineSet(0);
+
+    expect(protoGet()).toBe(-1000);
+  });
+
+  it("復元書き込みがクランプされても再アサートで書き直す", () => {
+    const { el, engineSet, engineSetSilent, protoGet } = makeScroller();
+    mount(el);
+
+    el.scrollLeft = -1000;
+    el.dispatchEvent(new Event("scroll"));
+
+    vi.setSystemTime(1_000_500);
+    engineSet(0);
+    expect(protoGet()).toBe(-1000); // 即時復元
+
+    // クランプ模擬: 復元直後に scroll イベント無しで 0 へ戻される
+    engineSetSilent(0);
+    vi.advanceTimersByTime(60); // 再アサート (0ms/50ms) が発火
+    expect(protoGet()).toBe(-1000);
+
+    // 再度クランプ → 150ms/300ms の再アサートでも書き直す
+    engineSetSilent(0);
+    vi.advanceTimersByTime(260);
+    expect(protoGet()).toBe(-1000);
+  });
+
+  it("再アサート中に JS の明示スクロールが入ったら手を引く", () => {
+    const { el, engineSet, protoGet } = makeScroller();
+    mount(el);
+
+    el.scrollLeft = -1000;
+    el.dispatchEvent(new Event("scroll"));
+
+    vi.setSystemTime(1_000_500);
+    engineSet(0);
+    expect(protoGet()).toBe(-1000);
+
+    // ユーザー/アプリが明示的に先頭へ（Ctrl+Home 相当）
+    vi.setSystemTime(1_000_520);
+    el.scrollLeft = 0;
+    el.dispatchEvent(new Event("scroll"));
+
+    vi.advanceTimersByTime(400); // 残りの再アサートは何もしない
     expect(protoGet()).toBe(0);
   });
 
