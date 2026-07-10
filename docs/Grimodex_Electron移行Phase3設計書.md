@@ -1,7 +1,7 @@
 # Grimodex Electron移行 Phase 3 設計書 — ネイティブ再結線
 
 - 日付: 2026-07-10（最終更新: 2026-07-11）
-- ステータス: 実装中（バッチ1〜2・バッチ3a〜3b 完了。バッチ3c〜5 は計画）
+- ステータス: 実装中（バッチ1〜2・バッチ3a〜3c 完了。バッチ3d〜5 は計画）
 - 正本: `docs/Grimodex_Electron移行検討.md`（移行判断・全体フェーズ）/ `docs/Grimodex_Electron移行Phase2設計書.md`（シェル構築）
 - データ正本: `docs/Grimodex_Electron移行Phase3_優先順位表.md`（バッチ提案・イベント配線順）と `docs/Grimodex_Electron移行Phase3_コマンド台帳.json`（全 145 コマンドの静的棚卸し + FE コールサイト分析）
 - 積み先: ブランチ `feat/electron-phase3`
@@ -120,15 +120,16 @@ overlap 検査を TS へ忠実移植。バッチ1 と依存なしで並行可。
 ### バッチ 3: AI 系 — HTTP + keyring + abort + ストリームイベント
 
 ai.rs 13 / cli_ai 5（main-TS 化）/ post_effect run 系 3 / license network 3。
-**ThreadsafeFunction ベースの emit ブリッジ確立**（chat 3ch → inline-ai 3ch →
-cli 3ch → post_effect 4ch の順）。abort フラグ 3 種 + PostEffectAbortRegistry を
-addon グローバル（OnceLock）に集約し「開始側と中止側が同一インスタンスを見る」構造を
-最初に固める。**API キー平文を renderer に返さない**契約維持（`has_api_key` の bool）。
+ストリームイベントは chat / inline-ai / post_effect を napi の ThreadsafeFunction、CLI を
+main 常駐 manager から既存の全窓 broadcast へ載せる。abort 状態は chat / inline-ai を
+`Backend` AppState、CLI を main manager、post_effect を `PostEffectAbortRegistry` に保持し、
+いずれも「開始側と中止側が同一インスタンスを見る」構造を固める。**API キー平文を
+renderer に返さない**契約維持（`has_api_key` の bool）。
 Electron 側のキー保管基盤を keyring から safeStorage へ切り替える。既存 Tauri keyring
 資格情報の自動インポートは Phase 4 の userData 移行に残し、3a 単体では再入力が必要。
 
 大きさゆえ 3a〜3e に分割する（3a = 基盤 + chat、3b = inline / agent +
-設定・モデル・接続）:
+設定・モデル・接続、3c = CLI AI）:
 
 #### バッチ 3a: grimodex-ai 抽出 + emit 抽象化 + chat ストリーム【完了】
 
@@ -205,8 +206,72 @@ Electron 側のキー保管基盤を keyring から safeStorage へ切り替え�
   `grimodex-ai` は 201 pass。Electron production build、両 TS typecheck、
   `cargo clippy --all-targets`、lint 0 errors（既存 warning 42件）も通過。
 
-**残り 3c〜3e**: 3c（cli_ai main-TS + child_process + NDJSON）/
-3d（post_effect run 系 + PostEffectAbortRegistry）/
+#### バッチ 3c: CLI AI main-TS + child process【完了】
+
+- **main-TS 5 コマンド**: `detect_cli_binary` / `test_cli_connection` /
+  `list_cli_models` / `send_cli_chat_stream` / `abort_cli_chat_stream` を
+  `electron/main/cliAi.ts` の常駐 manager として実装し、shell command ルーターへ登録した。
+  プロセス起動は `cross-spawn@7.0.6`、常時 `shell: false` とし、prompt / model は文字列連結
+  せず独立 argv で渡す。
+- **検出と実行ファイルの信頼境界**: CLI kind は `claude|codex|opencode` の固定 enum に限定。
+  GUI 起動時に PATH を失うケースに備え、Unix の login shell / version manager / 既知配置と
+  Windows の `where.exe` / PATH / 既知配置 / PowerShell を順に探索する。自動検出 path は
+  main が `realpath` + regular file を検査して session 中だけ信頼する。手入力 path は kind と
+  basename、絶対 path、regular file を検査し、canonical target を表示する native dialog で
+  明示許可された場合だけ session allowlist へ入れる（既定 / cancel は拒否）。Windows の
+  network / device path は slash を正規化して `realpath` の前後で拒否する。symlink は
+  ユーザー設定用の requested path を FE へ返す一方、許可判定と spawn には canonical target
+  を使う。自動検出中の current path と手動 grant は別管理し、refresh が null なら旧自動検出
+  cache / trust を削除する。Windows の手動 grant も canonical path を lowercase せず完全一致で
+  比較し、case-sensitive directory の大小文字を混同しない。並行 refresh は CLI kind ごとの
+  generation / epoch で直列化し、refresh 開始時に auto cache を無効化する。detect / `realpath`
+  の await 後も最新世代だけが cache を commit / delete でき、stale 世代はその時点の current
+  result（無ければ null）を返して古い path を復活させない。
+- **3系統 NDJSON adapter**: `electron/main/cliAdapters.ts` に Claude / Codex / OpenCode の
+  累積 text 差分、thinking、usage / stop reason 変換を分離した。壊れた JSON / 未知 event は
+  fail-soft で無視する。stream の raw stdout は 1 行 1MiB / 合計 64MiB / 10,000 行、
+  renderer へ emit する delta は合計 8MiB、短時間 capture は合計 4MiB、stderr tail は
+  64KiB に制限する。main 側 290 秒 deadline は send 受付時に開始し、PATH 検出 / `realpath` /
+  native authorization の時間も含む絶対期限とした。pre-spawn で期限を越えた場合は child を
+  起動しない。
+- **single-flight + abort**: 同時に許可する CLI stream はアプリ全体で 1 本だけとし、2 本目は
+  `CLI stream is already running` で明示拒否する。path 解決 / 許可待ち中の abort も保持し、
+  child を spawn せず `stop_reason: stopped` へ着地する。通常 abort は active child を即
+  `SIGTERM`、2 秒後も残れば `SIGKILL`。`will-quit` は TERM 直後に KILL し、capture / stream
+  の全 child を追跡する runner も一括 dispose する。Unix は process group、Windows の終了時は
+  同期 `taskkill.exe /T /F` で子孫を残さない。manager / runner は disposed latch を持ち、
+  終了開始後は send だけでなく detect / test / list / abort を含む全 handler と run / start を
+  fail-closed にして新しい child を作らない。
+- **専用 3ch + 安全既定**: `cli:stream-{chunk,done,error}` を main から全窓 broadcast。
+  Claude は tools 無効、Codex は read-only sandbox、OpenCode は全 permission deny とし、
+  spawn / 非ゼロ終了 / 出力上限エラーは error event と invoke reject の両経路を維持する。
+- **FE 契約**: 既存 invoke / listen 署名は維持し、CLI コメントの誤った `chat:stream-*` 記載を
+  実イベント名へ訂正。browser mock と Electron shell command 表も 5 コマンドへ同期した。
+  同じ失敗が `cli:stream-error` と invoke reject の両方から届いても `onError` は 1 回だけ呼ぶ。
+  native authorization 待ちを含む `test_cli_connection` も FE の SLOW 300 秒枠に登録した。
+- **敵対的レビュー**: 初回 7 回帰（無許可 path / spawn 前 abort / raw 総量・行数 /
+  deadline / child 回収 / error dedupe）を赤固定して修正。続けて UNC 正規化・send 開始基準の
+  absolute deadline・disposed manager / runner・FE slow timeout の 5 回帰を別コミットで固定し、
+  Windows grant の case と auto-detect refresh cache の 2 回帰、並行 refresh race の 1 回帰も
+  追加した（計 15）。
+- **起動スモーク hardening**: transparent + `show:false` の窓で `ready-to-show` が来ない環境も
+  `did-finish-load` を冪等 fallback にして確実に表示する。startup hydration 中だけ layout
+  crossfade / region chrome / editor の enter animation を抑止して最終 opacity=1 を即時表示し、
+  初期化後のユーザー操作では従来の motion が復帰することをテストで固定した。
+- **検証（2026-07-11 時点）**: Electron は 17 files / 345 passed、FE node は
+  861 passed + 8 skipped files / 8,809 passed + 35 skipped tests、browser は
+  73 passed + 1 skipped files / 309 passed + 1 skipped tests。CLI manager 単体は 24 tests。
+  Electron / root の両 TypeScript typecheck、変更 TS lint、full lint 0 errors
+  （既存 warning 42件）も通過。
+  repo 外の一時 `claude` を `tsx` harness から起動する**手動 CLI fixture smoke**で、
+  `--version`=`claude-fixture 1.0.0`、chunk=`fixture-ok`、done=`end_turn`（input 2 /
+  output 1）、abort done=`stopped` を再確認した（adapter smoke 自体は自動テスト未収録）。
+  別途、Node の実 child（`process.execPath`）を起動し、stdout readiness に依存せず 100ms 後の
+  `runner.disposeAll()` で回収する portable lifecycle テストは Electron suite に自動収録した。
+  `pnpm electron:build` と `pnpm electron:smoke` も通過し、3 回の起動すべてで全 layout layer の
+  opacity=1、シーン作成 → autosave → 再起動後の DB / UI 残存を確認した。
+
+**残り 3d〜3e**: 3d（post_effect run 系 + PostEffectAbortRegistry）/
 3e（license network + 6h 検証ループ + before-quit ライフサイクル）。
 
 ### バッチ 4: ort / lindera 重量級
@@ -233,7 +298,7 @@ before-quit のライフサイクル（vivliostyle kill_all・cleanup_temp_root�
 2. `inline-ai:stream-*`（3）— インライン AI / Beat 生成（バッチ3bで配線済み）
 3. `external-mount://*`（4）— 外部マウント同期。全窓 broadcast 契約（バッチ2で配線済み）
 4. `post_effect:done|error` — 校閲 runner の Promise 終端
-5. `cli:stream-*`（3）— CLI プロバイダ（1-2 と同型）
+5. `cli:stream-*`（3）— CLI プロバイダ（バッチ3cで main → 全窓 broadcast 配線済み）
 6. `vivliostyle:done|error` — ビルド終端
 7. `license:state_changed` — 稼働中の制限発動/解除
 8. `semantic:model_download_progress` — **done 受信で back-index 自動再開**（機能フック）
@@ -241,19 +306,19 @@ before-quit のライフサイクル（vivliostyle kill_all・cleanup_temp_root�
 10. `post_effect:partial` — FE 未購読、最下位
 
 Phase 2 で `Backend.on_event(tsfn)` の end-to-end は実証済み（`backend:ready` /
-`workspace:opened`）。各バッチで対応サブシステムを napi 化する際に、そのチャネルを
-この TSFn 経路へ載せる。
+`workspace:opened`）。napi 化するサブシステムはこの TSFn 経路へ載せ、main-TS 実装は
+同じ `broadcastEvent` を直接呼ぶ（external_mount / CLI で実証済み）。
 
 ## 4. 横断的な設計制約（バッチ共通）
 
 優先順位表 (e) のリスクを実装制約として明文化する:
 
-1. **共有ミュータブル状態の一体移植**: abort フラグ 3（chat / inline は実装済み、
-   CLI はバッチ3c）+ PostEffectAbortRegistry +
+1. **共有ミュータブル状態の一体移植**: chat / inline の abort フラグと CLI の single-flight
+   active child manager（いずれも実装済み）+ PostEffectAbortRegistry +
    CodexMatcherState（バッチ1c で実装済み）+ ExternalMountState + VivliostyleState +
    SemanticEmbedderState + 4 検索キャッシュ + write_lock 群。**開始側と中止側
-   （read/write）が同一 AppState インスタンスを見る**ことが正しさの条件。別プロセス化・
-   二重初期化は「abort が効かない」「lost update」を再発させる。
+   （read/write）が同一 AppState または main manager インスタンスを見る**ことが正しさの
+   条件。別プロセス化・二重初期化は「abort が効かない」「lost update」を再発させる。
 2. **文字列/object ワイヤ契約**: `WORKSPACE_SWITCHING` / `No workspace is open`（文字列、
    convert.rs で保存済み）、`not in proposed status`（prose stage）、`RESTORE_SESSION_LOST`、
    `SCENE_LENS_FOR_PROJECT_SQL`（一字一句）、`to_fts_match` ⇔ FE `toFtsMatchQuery`、

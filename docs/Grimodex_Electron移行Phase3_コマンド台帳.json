@@ -2,6 +2,9 @@
   "meta": {
     "generatedAt": "2026-07-10",
     "purpose": "Grimodex Electron 移行 Phase 3: Tauri コマンドの napi / main-TS 化 正規化台帳（棚卸しデータ + lib.rs 正式リスト + FE コールサイトのマージ）",
+    "inventorySemantics": "doneCount / remainingCount / 各 status は生成時点の静的棚卸し値であり、現在進捗の再集計ではない。進捗正本は Phase 3 設計書。2026-07-11 時点で Phase 3c の CLI AI 5 コマンドは main-TS 実装済み",
+    "phase3cValidation": "2026-07-11: Electron 17 files / 345 passed、node 861 files passed + 8 skipped / 8809 passed + 35 skipped、browser 73 files passed + 1 skipped / 309 passed + 1 skipped。electron:build / electron:smoke PASS（3起動、全layout layer opacity=1、scene作成→autosave→再起動後DB/UI残存）",
+    "phase3cShellHardening": "ready-to-show未発火時はdid-finish-loadで冪等表示。startup hydration中だけlayout crossfade / region chrome / editor enter animationを抑止し、初期化後のmotionは維持",
     "totalCommands": 145,
     "doneCount": 13,
     "remainingCount": 132,
@@ -955,6 +958,7 @@
       "isAsync": true,
       "summary": "CLI バイナリ (claude/codex/opencode) を PATH 上から探索し、見つかったフルパスを返す",
       "napiNotes": "内部は Unix で bash -lc 'which <bin>'、Windows で where.exe/powershell を tokio::process で起動。GUI 起動時の PATH 未継承問題への対処（login shell 経由）が肝。Electron なら main TS + Node child_process（または which パッケージ）で再実装容易。napi 不要候補",
+      "electronImplementation": "Phase 3c 完了。main-TS + cross-spawn。固定 CliKind のみでGUI PATHをfail-soft探索し、realpath + regular fileをmain検証。manual grantとは別のcurrent auto-detected pathとしてsession trustし、FEにはsymlink名を保つrequested pathを返す。kind別generation/epochをrefresh開始時に進めてauto cacheを無効化し、detect/realpath後も最新世代だけcommit/delete。stale世代はcurrent/nullを返して古い結果を復活させない。disposed後はfail-closed",
       "callSites": [
         { "file": "src/features/chat/cliApi.ts", "trigger": "panel-open", "notes": "L102 detectCliBinary ← chat/store.ts loadSettings（provider=cli のときのみ）" }
       ]
@@ -971,6 +975,7 @@
       "isAsync": true,
       "summary": "指定バイナリで --version を実行し、起動可否を確認してバージョン文字列を返す（認証状態は見ない）",
       "napiNotes": "cli_provider::test_binary が --version を叩くだけ。main TS の execFile で等価再実装可能、napi 化の必要性は低い。TS 側では stderr/exit code をメッセージに含める設計に合わせる",
+      "electronImplementation": "Phase 3c 完了。許可CLIのbasenameのみ受理。手入力pathは絶対path + realpath + regular fileを検証し、Windows UNC/deviceはslash正規化してrealpath前後で拒否。未検出canonical targetはdefault-cancelのnative dialog許可後だけmanual grantし、Windowsでもlowercaseせずexact path比較。shell:falseで--versionのみ、capture 10秒/4MiB、FEはSLOW 300秒。disposed後はfail-closed",
       "callSites": [
         { "file": "src/features/chat/cliApi.ts", "trigger": "settings", "notes": "L108 testCliConnection — CLI 接続テスト" }
       ]
@@ -987,6 +992,7 @@
       "isAsync": true,
       "summary": "CLI ごとの利用可能モデル一覧を返す（Claude は静的リスト、Codex/OpenCode は CLI コマンド実行で取得）",
       "napiNotes": "Claude 分は TS 定数化で済む。Codex/OpenCode 分は子プロセス起動+出力パースで Node child_process で再実装可能。返り値 AiModel は crate::ai の共有型 — TS 化時は ai.rs 側モデル型定義と共通化が必要",
+      "electronImplementation": "Phase 3c 完了。Claude は静的リスト、Codex は debug models --bundled のJSON、OpenCodeは models の行出力をmainでparse。Codex/OpenCodeはsend/testと同じauto-detected current pathまたはexact canonical manual grantを通し、disposed後はClaude静的返却を含めfail-closed",
       "callSites": [
         { "file": "src/features/chat/cliApi.ts", "trigger": "settings", "notes": "L116 listCliModels — CLI モデル一覧取得" }
       ]
@@ -1003,6 +1009,7 @@
       "isAsync": false,
       "summary": "進行中の CLI ストリームの中断フラグ (AtomicBool) を立てる。実際の kill は cli_provider::run のループが行う",
       "napiNotes": "Arc<AtomicBool> (CliStreamAbortFlag) を store するだけの純メモリ State 操作。send_cli_chat_stream と一体で移行すべき対。Electron main TS では AbortController か共有 boolean + child.kill() で置換。現状アプリ全体で単一フラグ共有のため CLI 並行実行時は両方止まる — 移行時に stream_id ベース化を検討（ソース内 TODO あり）",
+      "electronImplementation": "Phase 3c 完了。アプリ全体single-flightのためabort対象は一意。path解決/許可待ち中のabortも保持してspawnせずstoppedへ着地。通常はactive childを即TERM→2秒後KILL。will-quitはTERM直後KILL + runner全child一括dispose、Windowsは同期taskkill /T /F。disposed後のabortもfail-closed",
       "callSites": [
         { "file": "src/features/chat/cliApi.ts", "trigger": "user-action", "notes": "L94 abortCliChatStream — CLI ストリーム停止" }
       ]
@@ -1019,6 +1026,7 @@
       "isAsync": true,
       "summary": "CLI (Claude Code/Codex/OpenCode) を子プロセス起動し、stdout の NDJSON を cli:stream-chunk/done イベントに変換して emit、失敗時は cli:stream-error を emit する",
       "napiNotes": "cli_provider::run（tokio::process、stdout 行読み + adapter.rs の CLI 別 NDJSON パーサ、abort 検知で kill、Windows は taskkill.exe でプロセスツリー kill）が本体。Electron 移行では napi 化より main TS + Node child_process/readline での再実装が適切（adapter.rs の 3 系統イベント変換ロジック移植が主工数）。emit チャネルは実コードでは cli:* だがファイル冒頭 doc コメントは chat:stream-* と記載の不一致あり（FE リスナー確認時に注意）。CliChatPayload は camelCase deserialize。abort を stream_id 単位に分割する場合はレジストリ化が必要",
+      "electronImplementation": "Phase 3c 完了。cross-spawn(shell:false) + main常駐single-flight manager。3系統NDJSONをcli:stream-{chunk,done,error}へ全窓broadcast。raw stdoutは1行1MiB/合計64MiB/10000行、emitted deltaは8MiB。send受付から絶対290秒（path検出/native許可を含み期限後spawn禁止）。capture/stream全childをrunner追跡、manager/runner disposed latchで新規実行をfail-closed、FEはerror event + invoke rejectを1回へdedupe",
       "callSites": [
         { "file": "src/features/chat/cliApi.ts", "trigger": "user-action", "notes": "L84 sendCliChatStream — CLI プロバイダ経由のチャット送信" }
       ]
