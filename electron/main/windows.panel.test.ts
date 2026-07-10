@@ -125,12 +125,10 @@ vi.mock("electron", () => ({
   },
 }));
 
-const { createMainWindow, focusPanelWindow, openPanelWindow } = await import(
-  "./windows.js"
-);
+const { createMainWindow, focusPanelWindow, openPanelWindow } =
+  await import("./windows.js");
 
 const savedRendererUrl = process.env.ELECTRON_RENDERER_URL;
-const savedE2eNoThrottle = process.env.GRIMODEX_E2E_NO_THROTTLE;
 
 beforeAll(() => {
   process.env.ELECTRON_RENDERER_URL = "http://localhost:1430";
@@ -141,11 +139,6 @@ afterAll(() => {
     delete process.env.ELECTRON_RENDERER_URL;
   } else {
     process.env.ELECTRON_RENDERER_URL = savedRendererUrl;
-  }
-  if (savedE2eNoThrottle === undefined) {
-    delete process.env.GRIMODEX_E2E_NO_THROTTLE;
-  } else {
-    process.env.GRIMODEX_E2E_NO_THROTTLE = savedE2eNoThrottle;
   }
   rmSync(userDataDir, { recursive: true, force: true });
 });
@@ -168,16 +161,11 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
   });
 
   it("生成: URL は main が label から組み立てる（renderer 供給 URL なし）", () => {
-    process.env.GRIMODEX_E2E_NO_THROTTLE = "1";
-    try {
-      openPanelWindow("panel-codex", {
-        width: 500,
-        height: 700,
-        title: "Codex",
-      });
-    } finally {
-      delete process.env.GRIMODEX_E2E_NO_THROTTLE;
-    }
+    openPanelWindow("panel-codex", {
+      width: 500,
+      height: 700,
+      title: "Codex",
+    });
 
     expect(FakeBrowserWindow.instances).toHaveLength(1);
     const win = FakeBrowserWindow.instances[0];
@@ -195,7 +183,22 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
     expect(webPreferences.contextIsolation).toBe(true);
     expect(webPreferences.sandbox).toBe(true);
     expect(webPreferences.nodeIntegration).toBe(false);
-    expect(webPreferences.backgroundThrottling).toBe(false);
+  });
+
+  it("ready-to-show が来なくても did-finish-load で窓を表示する", () => {
+    const win = FakeBrowserWindow.instances[0];
+    expect(win.show).not.toHaveBeenCalled();
+
+    const didFinishLoad = win.webContents.on.mock.calls.find(
+      ([event]) => event === "did-finish-load",
+    )?.[1] as (() => void) | undefined;
+    expect(didFinishLoad).toBeTypeOf("function");
+    didFinishLoad?.();
+    expect(win.show).toHaveBeenCalledTimes(1);
+
+    // 遅れて ready-to-show が届いても二重表示しない。
+    win.emit("ready-to-show");
+    expect(win.show).toHaveBeenCalledTimes(1);
   });
 
   it("同一 label の再 open は新窓を作らず focus する（冪等）", () => {
@@ -221,11 +224,6 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
 
   it("メイン窓 closed で全パネル窓へ close が伝播し、registry から消える", () => {
     const main = createMainWindow() as unknown as FakeBrowserWindow;
-    const webPreferences = main.options.webPreferences as Record<
-      string,
-      unknown
-    >;
-    expect(webPreferences.backgroundThrottling).toBe(true);
     const panel = panelInstances()[0];
     expect(panel.destroyed).toBe(false);
 

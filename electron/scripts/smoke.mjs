@@ -103,10 +103,6 @@ async function launchApp() {
   const env = { ...process.env };
   delete env.ELECTRON_RENDERER_URL; // 本番経路（app://）を強制
   env.GRIMODEX_USER_DATA_DIR = userDataDir;
-  // headless/occluded な Electron 窓では renderer の rAF が完全停止し、
-  // Playwright の actionability（連続 frame での stable 判定）が進まない。
-  // 製品のバックグラウンド省電力設定は変えず、この自動操作だけ無効化する。
-  env.GRIMODEX_E2E_NO_THROTTLE = "1";
 
   const app = await _electron.launch({
     executablePath: electronBin,
