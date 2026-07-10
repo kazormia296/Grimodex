@@ -83,6 +83,7 @@ import {
   matchesBinding,
 } from "@/features/settings/keybindings";
 import { invoke } from "@/lib/tauri";
+import { onWindowCloseRequested } from "@/lib/windowControls";
 import { SampleTour } from "@/features/onboarding/SampleTour";
 import {
   getScreenshotPanelId,
@@ -181,8 +182,7 @@ function App() {
     let disposed = false;
     void (async () => {
       try {
-        const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        const un = await getCurrentWindow().onCloseRequested((event) => {
+        const un = await onWindowCloseRequested((event) => {
           if (guardInlineAiPending()) event.preventDefault();
         });
         if (disposed) un();

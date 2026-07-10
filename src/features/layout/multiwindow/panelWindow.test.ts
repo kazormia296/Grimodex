@@ -9,13 +9,10 @@ const { isTauriMock, getByLabelMock, setFocusMock, ctorSpy } = vi.hoisted(
   }),
 );
 vi.mock("@/lib/tauri", () => ({ isTauri: isTauriMock }));
-vi.mock("@tauri-apps/api/webviewWindow", () => ({
-  WebviewWindow: class {
-    static getByLabel = getByLabelMock;
-    constructor(label: string, options: Record<string, unknown>) {
-      ctorSpy(label, options);
-    }
-  },
+vi.mock("@/lib/webviewWindows", () => ({
+  getWebviewWindowByLabel: getByLabelMock,
+  createWebviewWindow: (label: string, options: Record<string, unknown>) =>
+    ctorSpy(label, options),
 }));
 
 import {

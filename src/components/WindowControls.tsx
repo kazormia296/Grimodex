@@ -3,10 +3,14 @@ import { useTranslation } from "react-i18next";
 import { Minus, Square, Copy, X } from "lucide-react";
 import { isMac } from "@/lib/platform";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
-
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}
+import { isTauri } from "@/lib/tauri";
+import {
+  closeWindow,
+  isWindowMaximized,
+  minimizeWindow,
+  onWindowResized,
+  toggleMaximizeWindow,
+} from "@/lib/windowControls";
 
 export function WindowControls() {
   const { t } = useTranslation();
@@ -18,15 +22,12 @@ export function WindowControls() {
     let unlisten: (() => void) | undefined;
 
     (async () => {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const win = getCurrentWindow();
-
       // Read initial state
-      setIsMaximized(await win.isMaximized());
+      setIsMaximized(await isWindowMaximized());
 
       // Track changes
-      unlisten = await win.onResized(async () => {
-        setIsMaximized(await win.isMaximized());
+      unlisten = await onWindowResized(() => {
+        void isWindowMaximized().then(setIsMaximized);
       });
     })();
 
@@ -38,21 +39,18 @@ export function WindowControls() {
   if (!isTauri() || isMac()) return null;
 
   async function minimize() {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().minimize();
+    await minimizeWindow();
   }
 
   async function toggleMaximize() {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().toggleMaximize();
+    await toggleMaximizeWindow();
   }
 
   async function close() {
     // 未確定の inline-AI diff があれば終了を止める (即時フィードバック)。
     // Mac ネイティブ閉じる / OS 経由の close は App の onCloseRequested が veto する。
     if (guardInlineAiPending()) return;
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().close();
+    await closeWindow();
   }
 
   return (

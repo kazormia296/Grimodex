@@ -1,5 +1,9 @@
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isTauri } from "@/lib/tauri";
+import {
+  createWebviewWindow,
+  getWebviewWindowByLabel,
+  type AppWindowHandle,
+} from "@/lib/webviewWindows";
 import type { PanelId } from "../panelIds";
 import { TOGGLEABLE_PANELS } from "../panelRegions";
 
@@ -87,22 +91,22 @@ export async function openPanelWindow(panelId: PanelId): Promise<void> {
   // 隠すが、ここを最終防衛線にして経路を問わず複製窓を不可能にする）。
   if (!canOpenPanelWindow(panelId)) return;
   const label = panelWindowLabel(panelId);
-  const existing = await WebviewWindow.getByLabel(label);
+  const existing = await getWebviewWindowByLabel(label);
   if (existing) {
     await existing.setFocus();
     return;
   }
   const { label: l, ...options } = buildPanelWindowOptions(panelId);
-  new WebviewWindow(l, options);
+  await createWebviewWindow(l, options);
 }
 
 /**
- * そのパネルの別窓が存在すれば WebviewWindow ハンドルを返す（無ければ null）。
+ * そのパネルの別窓が存在すればウィンドウハンドルを返す（無ければ null）。
  * ルーティング判定（別窓があるか）や focus に使う。非 Tauri は null。
  */
 export async function getPanelWindowHandle(
   panelId: PanelId,
-): Promise<WebviewWindow | null> {
+): Promise<AppWindowHandle | null> {
   if (!isTauri()) return null;
-  return WebviewWindow.getByLabel(panelWindowLabel(panelId));
+  return getWebviewWindowByLabel(panelWindowLabel(panelId));
 }
