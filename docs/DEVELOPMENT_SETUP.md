@@ -1,6 +1,6 @@
 # 開発環境構築ガイド
 
-> 最終更新: 2026-07-09
+> 最終更新: 2026-07-10
 
 > 推奨は下記の **devcontainer** です。Docker を使わずローカルホストへ直接構築したい場合は
 > [ネイティブ（非Docker）セットアップ](#ネイティブ非dockerセットアップ) を参照してください。
@@ -121,6 +121,49 @@ pnpm test:node --run  # Vitest（node）
 ( cd src-tauri && cargo check --workspace )
 ( cd src-tauri && cargo test --workspace --no-default-features )  # ONNX バイナリ不要のテスト
 ```
+
+---
+
+## Electron シェル（実験的 — 移行 Phase 2）
+
+Tauri シェルと並走する Electron シェルの開発手順です（設計書:
+`docs/Grimodex_Electron移行Phase2設計書.md`）。既存の `pnpm tauri dev` /
+`pnpm dev` / CI には一切影響しません。
+
+### 前提
+
+- 上記のネイティブセットアップ（Rust + pnpm）が済んでいること。
+  Electron は Chromium 同梱のため追加の GUI ライブラリは不要です。
+- 初回のみ napi ネイティブモジュールのビルドが必要です:
+
+```bash
+pnpm napi:build   # electron/native/grimodex-node → grimodex-node.node
+```
+
+### 開発起動
+
+```bash
+pnpm electron:dev
+```
+
+- renderer は Vite（**ポート 1430**。`pnpm tauri dev` の 1420 と分離されており並走可能）、
+  main/preload は esbuild watch で `dist-electron/` へ出力、変更時は Electron が自動再起動します。
+
+### 本番経路の確認・スモーク
+
+```bash
+pnpm electron:build   # 型チェック + main/preload バンドル + vite build
+pnpm electron:start   # ビルド成果物を app:// プロトコルでロードして起動
+pnpm electron:smoke   # Playwright _electron スモーク（workspace 作成→執筆→再起動残存）
+pnpm test:electron    # electron/ 配下 main プロセスの単体テスト（node 環境）
+```
+
+### 注意
+
+- Phase 2 は垂直スライスのみ（db_execute 系 + 代表 5 コマンドが napi 実装。
+  残りは `IPC_UNIMPLEMENTED:` マーカー付き reject の fail-soft）。
+- **同一 workspace を Tauri と Electron で同時に開かないでください**
+  （busy_timeout で共存はするが非推奨 — 設計書 §11）。
 
 ---
 
