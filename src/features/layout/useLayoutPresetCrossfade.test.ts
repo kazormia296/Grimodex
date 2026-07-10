@@ -34,7 +34,7 @@ describe("useLayoutPresetCrossfade", () => {
     vi.useRealTimers();
   });
 
-  it("re-triggers an opacity fade (set 0 → start 1) when preset changes", () => {
+  it("sets opacity 0 now and starts the fade after the layout commit", async () => {
     const { result } = renderHook(() => useLayoutPresetCrossfade());
     const setSpy = vi.spyOn(result.current.crossfadeControls, "set");
     const startSpy = vi.spyOn(result.current.crossfadeControls, "start");
@@ -44,12 +44,16 @@ describe("useLayoutPresetCrossfade", () => {
     });
 
     expect(setSpy).toHaveBeenCalledWith({ opacity: 0 });
+    expect(startSpy).not.toHaveBeenCalled();
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(startSpy).toHaveBeenCalledWith(
       expect.objectContaining({ opacity: 1 }),
     );
   });
 
-  it("does not fade on zoom enter (reveal が担当) but fades on zoom exit", () => {
+  it("does not fade on zoom enter (reveal が担当) but fades on zoom exit", async () => {
     const { result } = renderHook(() => useLayoutPresetCrossfade());
     const setSpy = vi.spyOn(result.current.crossfadeControls, "set");
     const startSpy = vi.spyOn(result.current.crossfadeControls, "start");
@@ -65,9 +69,26 @@ describe("useLayoutPresetCrossfade", () => {
       useLayoutStore.setState({ maximizedPanelId: null });
     });
     expect(setSpy).toHaveBeenCalledWith({ opacity: 0 });
+    expect(startSpy).not.toHaveBeenCalled();
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(startSpy).toHaveBeenCalledWith(
       expect.objectContaining({ opacity: 1 }),
     );
+  });
+
+  it("does not start a queued fade after unmount", async () => {
+    const { result, unmount } = renderHook(() => useLayoutPresetCrossfade());
+    const startSpy = vi.spyOn(result.current.crossfadeControls, "start");
+
+    act(() => {
+      useLayoutStore.setState({ activePresetId: "builtin:chat-main" });
+    });
+    unmount();
+    await Promise.resolve();
+
+    expect(startSpy).not.toHaveBeenCalled();
   });
 
   it("does not re-trigger the fade on re-render while preset is unchanged", () => {
