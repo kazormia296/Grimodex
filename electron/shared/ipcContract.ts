@@ -27,7 +27,31 @@
 
 export type Envelope<T = unknown> =
   | { ok: true; value: T }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      /**
+       * Tauri がエラーを **object** で serialize するコマンド（現状 lint_text の
+       * `LintError` = `{type, data}` のみ）の reject 値。renderer 側の解封は
+       * `errorValue ?? error` を throw する — FE `formatLintError` の
+       * `{type, data}` 分岐を保存するため（§5.2 の例外規定）。
+       */
+      errorValue?: unknown;
+    };
+
+/**
+ * dispatchInvoke の catch に「object reject へ復元せよ」と伝えるためのラッパー。
+ * `message` には人間可読な文字列（= error フィールド）を残す。
+ */
+export class WireErrorValue extends Error {
+  constructor(
+    public readonly value: unknown,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WireErrorValue";
+  }
+}
 
 /**
  * 未知コマンドの安定マーカー（§4.3）。renderer 側の debugLog 集計
@@ -229,6 +253,15 @@ export interface NapiBackendLike {
   ): Promise<string>;
   integrityCheck(): Promise<string>;
   repairIntegrity(): Promise<string>;
+  lintText(
+    blocks: unknown,
+    language: string,
+    scope: unknown,
+    config: unknown,
+    disables?: unknown,
+  ): Promise<string>;
+  segmentBunsetsu(text: string): Promise<string>;
+  listSystemFonts(): Promise<string>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
 }
 
@@ -447,7 +480,62 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   repair_integrity: {
     run: async (b) => parseWire(await b.repairIntegrity()),
   },
+  // lint / reorder / fonts（Phase 3 バッチ1b — grimodex-lint / grimodex-fonts
+  // を Tauri と共用）。Tauri 側 fn 署名:
+  //   lint_text(blocks, language, scope, config, disables: Option<…>) —
+  //     エラーは LintError の {type,data} object（napi は reason に JSON を
+  //     載せるため、ここで parse して WireErrorValue へ復元する）
+  //   segment_bunsetsu(text) / list_system_fonts()
+  lint_text: {
+    run: async (b, a) => {
+      try {
+        return parseWire(
+          await b.lintText(
+            requirePresent(a, "blocks", "lint_text"),
+            requireString(a, "language", "lint_text"),
+            requirePresent(a, "scope", "lint_text"),
+            requirePresent(a, "config", "lint_text"),
+            a.disables,
+          ),
+        );
+      } catch (e) {
+        throw restoreLintWireError(e);
+      }
+    },
+  },
+  segment_bunsetsu: {
+    run: async (b, a) =>
+      parseWire(
+        await b.segmentBunsetsu(requireString(a, "text", "segment_bunsetsu")),
+      ),
+  },
+  list_system_fonts: {
+    run: async (b) => parseWire(await b.listSystemFonts()),
+  },
 };
+
+/**
+ * lint_text の napi reason（LintError の {type,data} JSON 文字列）を
+ * object reject へ復元する。JSON でない / 形が違う場合は元のエラーを
+ * そのまま返す（引数検証エラー等は文字列ワイヤのまま）。
+ */
+function restoreLintWireError(e: unknown): unknown {
+  const message = toErrorString(e);
+  try {
+    const parsed: unknown = JSON.parse(message);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      "type" in parsed
+    ) {
+      return new WireErrorValue(parsed, message);
+    }
+  } catch {
+    // JSON でなければ文字列ワイヤのまま
+  }
+  return e;
+}
 
 /**
  * main-TS 実装コマンドのハンドラ集合。実体は electron/main/shellCommands.ts
@@ -503,6 +591,9 @@ export async function dispatchInvoke(
     }
     return { ok: false, error: unimplementedError(cmd) };
   } catch (e) {
+    if (e instanceof WireErrorValue) {
+      return { ok: false, error: e.message, errorValue: e.value };
+    }
     return { ok: false, error: toErrorString(e) };
   }
 }

@@ -17,6 +17,16 @@ pub fn join_err_to_napi(e: napi::tokio::task::JoinError) -> napi::Error {
     napi::Error::from_reason(format!("spawn_blocking join error: {e}"))
 }
 
+/// `LintError` → `napi::Error`。Tauri の `lint_text` は AppError と違い
+/// **object** (`{"type":…,"data":…}` — serde tag/content) で reject する
+/// 唯一のコマンド。reason にその JSON を載せ、ipcContract 側の lint_text
+/// アダプタが parse して object reject に復元する (WireErrorValue —
+/// FE `formatLintError` の `{type,data}` 分岐を保存するため)。
+pub fn lint_err_to_napi(e: &grimodex_lint::LintError) -> napi::Error {
+    let reason = serde_json::to_string(e).unwrap_or_else(|_| e.to_string());
+    napi::Error::from_reason(reason)
+}
+
 /// f64 が正確に整数を表せる上限 (2^53)。これを超える整数は JS 側で既に精度を
 /// 失っているため正規化しない。
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_992.0;
@@ -94,6 +104,20 @@ mod tests {
         let no_ws = app_err_to_napi(AppError::NoWorkspace);
         assert!(no_ws.reason.contains("No workspace is open"));
         assert_eq!(no_ws.reason, AppError::NoWorkspace.to_string());
+    }
+
+    #[test]
+    fn lint_error_serializes_to_tagged_json_reason() {
+        // Tauri ワイヤ: LintError は {"type":…,"data":…} の object で reject
+        // される (FE formatLintError の分岐対象)。reason にその JSON が
+        // そのまま載ること — JS 側アダプタの parse 復元前提。
+        let err = lint_err_to_napi(&grimodex_lint::LintError::InvalidLanguage(
+            "fr".to_string(),
+        ));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&err.reason).expect("reason は JSON");
+        assert_eq!(parsed["type"], "InvalidLanguage");
+        assert_eq!(parsed["data"], "fr");
     }
 
     #[test]

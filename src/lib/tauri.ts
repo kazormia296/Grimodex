@@ -165,7 +165,12 @@ export async function invoke<T = unknown>(
           // serialize）。envelope をここで解封して同一ワイヤにする —
           // `WORKSPACE_SWITCHING` / `No workspace is open` 等のマーカー
           // 部分一致判定（FE 126 箇所）の保存が目的（設計書 §5.2）。
-          throw envelope.error;
+          // 例外: lint_text の LintError は Tauri が object（{type,data}）で
+          // serialize する唯一のコマンドで、errorValue に載って届く
+          // （formatLintError の分岐を保存）。
+          throw envelope.errorValue !== undefined
+            ? envelope.errorValue
+            : envelope.error;
         }
         return envelope.value;
       },

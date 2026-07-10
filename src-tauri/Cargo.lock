@@ -1992,11 +1992,11 @@ dependencies = [
  "chrono",
  "dirs",
  "flate2",
- "fontdb",
  "futures",
  "glib",
  "grimodex-core",
  "grimodex-db",
+ "grimodex-fonts",
  "grimodex-lint",
  "grimodex-mcp",
  "hex",
@@ -2062,6 +2062,13 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "grimodex-fonts"
+version = "0.1.0"
+dependencies = [
+ "fontdb",
 ]
 
 [[package]]

@@ -119,6 +119,30 @@ describe("envelope 解封 = 生文字列 reject（Tauri ワイヤ契約 §5.2）
     expect(String(caught)).toContain("WORKSPACE_SWITCHING");
   });
 
+  it("errorValue があれば object をそのまま reject 値にする（lint_text の LintError 契約）", async () => {
+    installBridge({
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: '{"type":"InvalidLanguage","data":"fr"}',
+        errorValue: { type: "InvalidLanguage", data: "fr" },
+      }),
+    });
+    const { invoke } = await import("./tauri");
+    let caught: unknown = null;
+    try {
+      await invoke("lint_text", {
+        blocks: [],
+        language: "fr",
+        scope: "paragraph",
+        config: {},
+      });
+    } catch (e) {
+      caught = e;
+    }
+    // formatLintError（lintStore.ts）の {type, data} 分岐がそのまま成立する形
+    expect(caught).toEqual({ type: "InvalidLanguage", data: "fr" });
+  });
+
   it("ok:true は value をそのまま resolve する", async () => {
     installBridge({
       invoke: vi

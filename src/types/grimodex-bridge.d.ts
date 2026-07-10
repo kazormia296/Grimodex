@@ -9,7 +9,16 @@
 
 export type GrimodexInvokeEnvelope<T = unknown> =
   | { ok: true; value: T }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      /**
+       * Tauri がエラーを object で serialize するコマンド（lint_text の
+       * LintError = {type, data}）の reject 値。解封側は
+       * `errorValue ?? error` を throw する。
+       */
+      errorValue?: unknown;
+    };
 
 /** @tauri-apps/plugin-fs の DirEntry / src/lib/fs.ts の DirEntry と同形。 */
 export interface GrimodexDirEntry {

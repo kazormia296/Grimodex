@@ -96,6 +96,19 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "repairIntegrity",
       Promise.resolve('{"repaired":0}'),
     ) as never,
+    // lint / reorder / fonts（Phase 3 バッチ1b）
+    lintText: record(
+      "lintText",
+      Promise.resolve('{"diagnostics":[]}'),
+    ) as never,
+    segmentBunsetsu: record(
+      "segmentBunsetsu",
+      Promise.resolve('[{"start":0,"end":3,"surface":"走れ"}]'),
+    ) as never,
+    listSystemFonts: record(
+      "listSystemFonts",
+      Promise.resolve('["Noto Sans JP"]'),
+    ) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
   };
@@ -180,13 +193,18 @@ describe("dispatchInvoke", () => {
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
     const { backend } = fakeBackend();
     const env = await dispatchInvoke(
-      "lint_text",
+      "send_chat_message",
       {},
       { backend, shell: noShell },
     );
-    expect(env).toEqual({ ok: false, error: "IPC_UNIMPLEMENTED: lint_text" });
+    expect(env).toEqual({
+      ok: false,
+      error: "IPC_UNIMPLEMENTED: send_chat_message",
+    });
     expect(
-      unimplementedError("lint_text").startsWith(IPC_UNIMPLEMENTED_MARKER),
+      unimplementedError("send_chat_message").startsWith(
+        IPC_UNIMPLEMENTED_MARKER,
+      ),
     ).toBe(true);
   });
 
@@ -482,7 +500,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の integrity/FTS 6）", () => {
+  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 9）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "db_execute",
       "db_execute_batch",
@@ -492,9 +510,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "fts_search",
       "get_global_settings",
       "integrity_check",
+      "lint_text",
+      "list_system_fonts",
       "open_workspace",
       "repair_integrity",
       "save_global_settings",
+      "segment_bunsetsu",
       "timelapse_append_batch",
       "trash_bin_clear_all",
       "trash_bin_create",
@@ -502,6 +523,86 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "trash_bin_list",
       "trash_bin_prune",
       "validate_workspace_path",
+    ]);
+  });
+
+  it("lint_text は引数を写像し LintResponse を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "lint_text",
+      {
+        blocks: [{ id: "b1", text: "テスト。" }],
+        language: "ja",
+        scope: "paragraph",
+        config: {},
+        disables: [],
+      },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: true, value: { diagnostics: [] } });
+    expect(calls).toEqual([
+      {
+        method: "lintText",
+        args: [
+          [{ id: "b1", text: "テスト。" }],
+          "ja",
+          "paragraph",
+          {},
+          [],
+        ],
+      },
+    ]);
+  });
+
+  it("lint_text の LintError（{type,data} JSON reason）は errorValue へ復元される", async () => {
+    const reason = '{"type":"InvalidLanguage","data":"fr"}';
+    const { backend } = fakeBackend({
+      lintText: () => Promise.reject(new Error(reason)),
+    } as never);
+    const env = await dispatchInvoke(
+      "lint_text",
+      { blocks: [], language: "fr", scope: "paragraph", config: {} },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.error).toBe(reason);
+      expect(env.errorValue).toEqual({ type: "InvalidLanguage", data: "fr" });
+    }
+  });
+
+  it("lint_text の非 JSON エラー（引数検証等）は従来どおり文字列ワイヤのまま", async () => {
+    const { backend } = fakeBackend({
+      lintText: () => Promise.reject(new Error("invalid blocks: boom")),
+    } as never);
+    const env = await dispatchInvoke(
+      "lint_text",
+      { blocks: [], language: "ja", scope: "paragraph", config: {} },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: false, error: "invalid blocks: boom" });
+  });
+
+  it("segment_bunsetsu / list_system_fonts は JSON 文字列を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const seg = await dispatchInvoke(
+      "segment_bunsetsu",
+      { text: "走れメロス" },
+      { backend, shell: noShell },
+    );
+    expect(seg).toEqual({
+      ok: true,
+      value: [{ start: 0, end: 3, surface: "走れ" }],
+    });
+    const fonts = await dispatchInvoke(
+      "list_system_fonts",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(fonts).toEqual({ ok: true, value: ["Noto Sans JP"] });
+    expect(calls).toEqual([
+      { method: "segmentBunsetsu", args: ["走れメロス"] },
+      { method: "listSystemFonts", args: [] },
     ]);
   });
 

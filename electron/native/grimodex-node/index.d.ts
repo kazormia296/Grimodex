@@ -107,6 +107,28 @@ export declare class Backend {
    */
   repairIntegrity(): Promise<string>
   /**
+   * Linter 本体 (commands/lint.rs の写像 — grimodex-lint を Tauri と共用)。
+   * State 非依存だが、UniDic コールドロード (初回 >数秒) + CPU バウンドなので
+   * spawn_blocking。エラーは AppError ではなく **LintError の {type,data}
+   * JSON** を reason に載せる (convert::lint_err_to_napi — ipcContract の
+   * lint_text アダプタが object reject へ復元する)。
+   * 返り値: `LintResponse` の JSON 文字列。
+   */
+  lintText(blocks: any, language: string, scope: any, config: any, disables?: any | undefined | null): Promise<string>
+  /**
+   * 段落プレーンテキストの文節分割 (commands/reorder.rs の写像)。
+   * UniDic コールドロードで初回 10s 超えうる (FE 側 SLOW_COMMANDS 登録済み)。
+   * 返り値: `[{start, end, surface}, …]` (UTF-16 offset) の JSON 文字列。
+   */
+  segmentBunsetsu(text: string): Promise<string>
+  /**
+   * システムフォント列挙 (commands/fonts.rs の写像 — 実装本体は
+   * grimodex-fonts を Tauri と共用)。OS のフォントディレクトリスキャンは
+   * 数百 ms かかりうるため spawn_blocking。
+   * 返り値: family 名配列 (昇順・重複排除) の JSON 文字列。
+   */
+  listSystemFonts(): Promise<string>
+  /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
    * イベント (`backend:ready`) は登録時に emit 順で flush される。
