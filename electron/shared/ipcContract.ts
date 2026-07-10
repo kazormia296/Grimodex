@@ -346,6 +346,24 @@ export interface NapiBackendLike {
     sceneId: string,
     annotations: unknown,
   ): Promise<void>;
+  // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
+  // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が
+  // 失敗した場合は apiKeyError に生メッセージを載せる。native は cache hit なら
+  // secret snapshot を使わず返せるため、lookup失敗をここでinvoke rejectにしない。
+  // optional は旧 .node とのversion skewをrequireNapiMethodで明示エラー化するため。
+  startPostEffectRun?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string | null,
+    apiKeyError: string | null,
+  ): Promise<string>;
+  startPostEffectRunMulti?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string | null,
+    apiKeyError: string | null,
+  ): Promise<string>;
+  abortPostEffectRun?(runId: string, projectId: string): Promise<void>;
   // AI チャット（Phase 3 バッチ3a）。args は FE の camelCase 引数一式、settings は
   // dispatchInvoke が getAiSettings で1回だけ読んだ AiSettings スナップショット
   // （キー解決と送信を同一スナップショットで行い Tauri の原子的単一読込に揃える）、
@@ -438,6 +456,21 @@ function requirePresent(args: CommandArgs, key: string, cmd: string): unknown {
     );
   }
   return args[key];
+}
+
+/** Tauri の nested struct 引数の近似（null / 配列 / primitive は拒否）。 */
+function requireRecord(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): CommandArgs {
+  const value = requirePresent(args, key, cmd);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected an object`,
+    );
+  }
+  return value as CommandArgs;
 }
 
 /** Tauri の i64 引数の写像（非 number は deserialize 失敗と同等に扱う）。 */
@@ -1172,6 +1205,56 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  // post_effect run 系（Phase 3d）。FE の `{ args: snake_case DTO }` は nested
+  // object のキーを一切変換せず native へ渡す。start は run_id を即返す
+  // fire-and-forgetで、進捗/終端は既存 post_effect:* event 経路が担う。
+  start_post_effect_run: {
+    run: async (b, a, d) => {
+      const args = requireRecord(a, "args", "start_post_effect_run");
+      const startPostEffectRun = requireNapiMethod(
+        b,
+        b.startPostEffectRun,
+        "startPostEffectRun",
+      );
+      const { settings, apiKey, apiKeyError } =
+        await resolvePostEffectAiSnapshot(b, args, d, "start_post_effect_run");
+      return parseWire(
+        await startPostEffectRun(args, settings, apiKey, apiKeyError),
+      );
+    },
+  },
+  start_post_effect_run_multi: {
+    run: async (b, a, d) => {
+      const args = requireRecord(a, "args", "start_post_effect_run_multi");
+      const startPostEffectRunMulti = requireNapiMethod(
+        b,
+        b.startPostEffectRunMulti,
+        "startPostEffectRunMulti",
+      );
+      const { settings, apiKey, apiKeyError } =
+        await resolvePostEffectAiSnapshot(
+          b,
+          args,
+          d,
+          "start_post_effect_run_multi",
+        );
+      return parseWire(
+        await startPostEffectRunMulti(args, settings, apiKey, apiKeyError),
+      );
+    },
+  },
+  abort_post_effect_run: {
+    run: async (b, a) => {
+      const runId = requireString(a, "runId", "abort_post_effect_run");
+      const projectId = requireString(a, "projectId", "abort_post_effect_run");
+      await requireNapiMethod(
+        b,
+        b.abortPostEffectRun,
+        "abortPostEffectRun",
+      )(runId, projectId);
+      return null;
+    },
+  },
   // AI チャット（Phase 3 バッチ3a）。send 系は napi に api キーを持たせない設計:
   // dispatch が getAiSettings で設定を読み、secrets(safeStorage) で実効キーを解決し、
   // 同じ settings スナップショットを第2引数、平文キーを第3引数で注入する。
@@ -1297,6 +1380,72 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     },
   },
 };
+
+/**
+ * Tauri `post_effect.rs` で role provider/model override を適用する effect。
+ * typo / intra / meta_structure は既定 AI settings を読む従来契約なので、DTO に
+ * override が混入してもキーlookupへ持ち込まない（別providerのキー誤注入防止）。
+ */
+const POST_EFFECT_ROLE_OVERRIDE_TYPES: ReadonlySet<string> = new Set([
+  "consistency",
+  "review",
+  "intent_drift",
+  "pseudo_comment",
+  "impact_review",
+  "timeline_consistency",
+]);
+
+interface PostEffectAiSnapshot {
+  settings: unknown;
+  apiKey: string | null;
+  apiKeyError: string | null;
+}
+
+/**
+ * post-effect専用のAI設定/secret snapshot。
+ *
+ * start command はcache hitならHTTPを行わないため、キー未登録だけでなく
+ * safeStorage破損/復号失敗もここではinvoke rejectにしない。lookup例外を文字列へ
+ * 固定してnativeへ渡し、cache miss時の背景taskが post_effect:error とDB failedへ
+ * 着地させる。これによりFEがrun_id確定前イベントをbufferする既存契約も保てる。
+ */
+async function resolvePostEffectAiSnapshot(
+  backend: NapiBackendLike,
+  args: CommandArgs,
+  deps: DispatchDeps,
+  cmd: string,
+): Promise<PostEffectAiSnapshot> {
+  if (!deps.secrets) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+  const getApiKey = deps.secrets.getApiKeyForRequest;
+  if (!getApiKey) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+
+  // 設定read・キーroute解決・native呼出しは同一snapshotを共有（TOCTOU防止）。
+  const settings = parseWire(await backend.getAiSettings());
+  const usesRoleOverride =
+    typeof args.effect_type === "string" &&
+    POST_EFFECT_ROLE_OVERRIDE_TYPES.has(args.effect_type);
+  const provider = usesRoleOverride ? args.provider_override : undefined;
+  const endpointId = usesRoleOverride ? args.endpoint_id_override : undefined;
+
+  try {
+    return {
+      settings,
+      apiKey:
+        getApiKey.call(deps.secrets, settings, provider, endpointId) ?? null,
+      apiKeyError: null,
+    };
+  } catch (error) {
+    return {
+      settings,
+      apiKey: null,
+      apiKeyError: toErrorString(error),
+    };
+  }
+}
 
 /**
  * チャット送信の設定スナップショット取得 + API キー解決。**設定は getAiSettings で
