@@ -11,7 +11,8 @@
  *   Map で行う（§7.2）。listen / emit とも allowlist 外は拒否する。
  * - close veto（§6.4 手順 2）: `grim:close-requested` を受けたら登録済み
  *   ハンドラ（同期）を実行し `grim:close-reply` に { veto } を返す。
- *   main 側の win.on("close") プロトコルは S6。
+ *   ハンドラ登録数は `grim:close-handler-changed` で main へ通知し、
+ *   未登録の窓は問い合わせなしで即 close される（手順 4。main 側は windows.ts）。
  */
 import { contextBridge, ipcRenderer } from "electron";
 
@@ -45,10 +46,18 @@ ipcRenderer.on(IPC.event, (_event, channel: unknown, payload: unknown) => {
   }
 });
 
-// ── close veto プロトコル（§6.4 手順 2。main 側は S6） ───────────────────────
+// ── close veto プロトコル（§6.4 手順 2） ─────────────────────────────────────
 
 type CloseRequestedHandler = () => boolean;
 const closeHandlers = new Set<CloseRequestedHandler>();
+
+/**
+ * §6.4 手順 4 のための登録数通知。main はハンドラ未登録の窓
+ * （起動直後など）を問い合わせなしで即 close する。
+ */
+function notifyCloseHandlerCount(): void {
+  ipcRenderer.send(IPC.closeHandlerChanged, closeHandlers.size);
+}
 
 ipcRenderer.on(IPC.closeRequested, () => {
   let veto = false;
@@ -130,8 +139,9 @@ const bridge = {
     /** cb が true を返したら veto（閉じない）。 */
     onCloseRequested(cb: () => boolean): () => void {
       closeHandlers.add(cb);
+      notifyCloseHandlerCount();
       return () => {
-        closeHandlers.delete(cb);
+        if (closeHandlers.delete(cb)) notifyCloseHandlerCount();
       };
     },
   },

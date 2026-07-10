@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Minus, Square, Copy, X } from "lucide-react";
 import { isMac } from "@/lib/platform";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import { isElectron } from "@/lib/shell";
 import { isTauri } from "@/lib/tauri";
 import {
   closeWindow,
@@ -12,12 +13,22 @@ import {
   toggleMaximizeWindow,
 } from "@/lib/windowControls";
 
+/**
+ * デスクトップシェル（Tauri / Electron）でのみ描画する。
+ * Electron 判定は S6 のウィンドウクロームパリティ（frame:false の win/linux
+ * で操作系が空白になるのを防ぐ — 設計書 §6.3）。macOS はネイティブ信号機
+ * （Tauri は非表示運用、Electron は titleBarStyle:"hidden"）のため描画しない。
+ */
+function hasWindowChrome(): boolean {
+  return isTauri() || isElectron();
+}
+
 export function WindowControls() {
   const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    if (!isTauri() || isMac()) return;
+    if (!hasWindowChrome() || isMac()) return;
 
     let unlisten: (() => void) | undefined;
 
@@ -36,7 +47,7 @@ export function WindowControls() {
     };
   }, []);
 
-  if (!isTauri() || isMac()) return null;
+  if (!hasWindowChrome() || isMac()) return null;
 
   async function minimize() {
     await minimizeWindow();

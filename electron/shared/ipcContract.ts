@@ -70,6 +70,11 @@ export const IPC = {
   closeRequested: "grim:close-requested",
   /** renderer → main: close veto の応答（payload: { veto: boolean }）。 */
   closeReply: "grim:close-reply",
+  /**
+   * renderer → main: onCloseRequested ハンドラ登録数の通知（payload: number）。
+   * §6.4 手順 4（ハンドラ未登録の窓 — 起動直後など — は即 close）の判定に使う。
+   */
+  closeHandlerChanged: "grim:close-handler-changed",
   dialogOpenFolder: "grim:dialog-open-folder",
   dialogOpenFile: "grim:dialog-open-file",
   fsReadTextFile: "grim:fs-read-text-file",

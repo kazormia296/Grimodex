@@ -134,7 +134,7 @@ export function registerShellBridgeHandlers(): void {
         }
         return null;
       case "close":
-        // close veto プロトコル（win.on("close") 側、§6.4）は S6 で実装
+        // win.close() は windows.ts の close veto プロトコル（§6.4）を通る
         win.close();
         return null;
       case "isMaximized":

@@ -1,6 +1,6 @@
 /**
- * label 別 window-state 永続化（設計書 §6.7、Phase 2 S4 でモジュール新設。
- * windows.ts への接続 — 生成時復元 / resize・move 購読 — は S6）。
+ * label 別 window-state 永続化（設計書 §6.7、Phase 2 S4 でモジュール新設、
+ * S6 で windows.ts へ接続 — 生成時復元 / resize・move 購読）。
  *
  * - `userData/window-state.json` に `label → { bounds, maximized }`
  * - 保存は 500ms debounce（tauri-plugin-window-state と同じ main 内完結）
