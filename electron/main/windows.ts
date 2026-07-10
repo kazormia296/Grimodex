@@ -17,6 +17,7 @@ import { app, BrowserWindow, ipcMain, Menu, screen } from "electron";
 import type { BrowserWindowConstructorOptions } from "electron";
 
 import { IPC } from "../shared/ipcContract.js";
+import { PROD_INDEX_URL } from "./protocol.js";
 import {
   applicationMenuPolicy,
   buildMainWindowOptions,
@@ -237,11 +238,9 @@ export function createMainWindow(): BrowserWindow {
   if (rendererUrl) {
     void win.loadURL(rendererUrl);
   } else {
-    // 本番ロード（app:// プロトコル）は S8 で実装する（§8 S8）。
-    console.error(
-      "[grimodex-electron] ELECTRON_RENDERER_URL が未設定です。" +
-        "Phase 2 S3 時点では `pnpm electron:dev` からの起動のみサポートします。",
-    );
+    // 本番ロード（§8 S8）: app://bundle/index.html（dist/ 配信は protocol.ts。
+    // ハンドラ登録は index.ts が app ready 直後に行う）。
+    void win.loadURL(PROD_INDEX_URL);
   }
 
   return win;
