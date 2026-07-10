@@ -90,17 +90,8 @@ fn seed_project(
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, title, language, genre, outline],
         )?;
-        for (slug, label) in [
-            ("character", "Character"),
-            ("location", "Location"),
-            ("lore", "Lore"),
-        ] {
-            conn.execute(
-                "INSERT INTO codex_types (id, project_id, slug, label)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![format!("{id}-type-{slug}"), id, slug, label],
-            )?;
-        }
+        // `seed_builtin_codex_types` runs after project creation, so the
+        // character/location/lore rows needed by this fixture already exist.
         Ok(())
     })
 }
