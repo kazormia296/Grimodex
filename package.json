@@ -20,6 +20,7 @@
     "test": "vitest",
     "test:node": "vitest --config vitest.config.ts",
     "test:browser": "vitest --config vitest.browser.config.ts",
+    "test:electron": "vitest --config vitest.electron.config.ts",
     "test:storybook": "vitest --config vitest.storybook.config.ts",
     "storybook": "storybook dev -p 6006",
     "storybook:build": "storybook build",

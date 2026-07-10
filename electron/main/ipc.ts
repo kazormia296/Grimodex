@@ -1,0 +1,63 @@
+/**
+ * invoke ルーター（設計書 §2 / §5.2、Phase 2 S4）。
+ *
+ * `ipcMain.handle("grim:invoke")` 1 本に集約し、ルーティングの実体は
+ * 純関数 `dispatchInvoke`（electron/shared/ipcContract.ts — node 環境で
+ * 単体テスト済み）へ委譲する。ここは electron グルーのみ:
+ * - 送信元窓の解決（set_window_vibrancy の対象束縛）
+ * - IPC_UNIMPLEMENTED の main 側ログ（A6 fail-soft 監査の集計ポイント）
+ */
+import { BrowserWindow, ipcMain } from "electron";
+
+import {
+  dispatchInvoke,
+  IPC,
+  IPC_BACKEND_UNAVAILABLE_MARKER,
+  IPC_UNIMPLEMENTED_MARKER,
+} from "../shared/ipcContract.js";
+import type {
+  CommandArgs,
+  Envelope,
+  NapiBackendLike,
+} from "../shared/ipcContract.js";
+import {
+  buildShellCommandHandlers,
+  registerShellBridgeHandlers,
+} from "./shellCommands.js";
+
+function isRecord(value: unknown): value is CommandArgs {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * app ready 後に 1 回だけ呼ぶ。`backend` は .node ロード失敗時 null
+ * （napi コマンドは IPC_BACKEND_UNAVAILABLE の明示エラーで落ちる）。
+ */
+export function registerIpcRouter(backend: NapiBackendLike | null): void {
+  ipcMain.handle(
+    IPC.invoke,
+    async (event, cmd: unknown, args: unknown): Promise<Envelope> => {
+      if (typeof cmd !== "string") {
+        return {
+          ok: false,
+          error: "IPC_INVALID_REQUEST: command name must be a string",
+        };
+      }
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const envelope = await dispatchInvoke(cmd, isRecord(args) ? args : {}, {
+        backend,
+        shell: buildShellCommandHandlers(win),
+      });
+      if (
+        !envelope.ok &&
+        (envelope.error.startsWith(IPC_UNIMPLEMENTED_MARKER) ||
+          envelope.error.startsWith(IPC_BACKEND_UNAVAILABLE_MARKER))
+      ) {
+        console.warn(`[grim:invoke] ${envelope.error}`);
+      }
+      return envelope;
+    },
+  );
+
+  registerShellBridgeHandlers();
+}

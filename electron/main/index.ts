@@ -1,12 +1,15 @@
 /**
- * Electron main プロセスのエントリポイント（Phase 2 S3 骨格）。
+ * Electron main プロセスのエントリポイント。
  *
- * - app ライフサイクル管理 + 単一インスタンスロック
- * - ipc ルーター / イベントバス / napi Backend の接続は S4 以降で行う
- *   （設計書 docs/Grimodex_Electron移行Phase2設計書.md §3.1 / §8 S3）
+ * - app ライフサイクル管理 + 単一インスタンスロック（S3）
+ * - napi Backend ロード → invoke ルーター → イベントバスの接続（S4）
+ *   （設計書 docs/Grimodex_Electron移行Phase2設計書.md §2 / §8 S4）
  */
 import { app } from "electron";
 
+import { initBackend } from "./backend.js";
+import { registerEventBus } from "./events.js";
+import { registerIpcRouter } from "./ipc.js";
 import { createMainWindow, getWindow } from "./windows.js";
 import {
   applySessionPermissionPolicy,
@@ -33,6 +36,10 @@ if (!gotSingleInstanceLock) {
 
   void app.whenReady().then(() => {
     applySessionPermissionPolicy();
+    // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
+    const backend = initBackend();
+    registerIpcRouter(backend);
+    registerEventBus();
     createMainWindow();
   });
 
