@@ -21,5 +21,5 @@ argument-hint: [feature-or-file-path]
 2. テストは Vitest でソースと同階層に `*.test.ts(x)`。Rust は `src-tauri` 内 `#[cfg(test)]` モジュール
 3. レイアウト/幾何の assert は happy-dom 不可（flex/grid 実寸を計算しない）→ `*.browser.test.tsx` を書く
 4. Tauri IPC 境界は型安全性も検証する
-5. `pnpm test` /（Rust）`cd src-tauri && cargo test --no-default-features` を実行し結果を報告
+5. `pnpm test` /（Rust）`cd src-tauri && cargo test --workspace --no-default-features` を実行し結果を報告
 6. 失敗時はまずテストコード側の誤りを疑ってから直す
