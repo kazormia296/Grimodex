@@ -31,6 +31,9 @@ const KEYRING_SERVICES: Readonly<Record<string, string>> = {
 
 /** provider → keyring service 名。未知 provider は入力エラー（Rust の enum 網羅性に相当）。 */
 export function keyringService(provider: string): string {
+  if (!Object.hasOwn(KEYRING_SERVICES, provider)) {
+    throw new Error(`unknown AI provider: ${provider}`);
+  }
   const service = KEYRING_SERVICES[provider];
   if (service === undefined) {
     throw new Error(`unknown AI provider: ${provider}`);
@@ -78,6 +81,24 @@ export function keyringUserCandidates(
 export type KeyLookup = (service: string, account: string) => string | null;
 
 /**
+ * keyring と同じ「エントリがあれば返し、無ければ null」の素の lookup。
+ * list_ai_models はキー必須プロバイダでも未登録を空文字にして provider 側へ委ねる
+ * Tauri 契約のため、必須判定を行う resolveApiKey と分離する。
+ */
+export function findApiKey(
+  provider: string,
+  endpointId: string | null,
+  getKey: KeyLookup,
+): string | null {
+  const service = keyringService(provider);
+  for (const account of keyringUserCandidates(provider, endpointId)) {
+    const key = getKey(service, account);
+    if (key !== null) return key;
+  }
+  return null;
+}
+
+/**
  * 送信系で使う実 API キーを解決する（Rust commands::ai::resolve_api_key の TS 版）。
  * - Ollama / Cli: keyring に触れず空文字（ローカル LLM / CLI 認証）
  * - OpenaiCompatible: 任意（候補を引き、無ければ空文字）
@@ -95,13 +116,8 @@ export function resolveApiKey(
   }
   // OpenaiCompatible のみ endpoint 単位、他は None 相当（get_api_key の endpoint 引数に一致）。
   const lookupEndpoint = provider === "openai-compatible" ? endpointId : null;
-  const service = keyringService(provider);
-  for (const account of keyringUserCandidates(provider, lookupEndpoint)) {
-    const key = getKey(service, account);
-    if (key !== null) {
-      return key;
-    }
-  }
+  const key = findApiKey(provider, lookupEndpoint, getKey);
+  if (key !== null) return key;
   if (provider === "openai-compatible") {
     return ""; // 任意（未設定は空文字）
   }
@@ -118,10 +134,7 @@ export function hasApiKey(
   endpointId: string | null,
   getKey: KeyLookup,
 ): boolean {
-  const service = keyringService(provider);
-  return keyringUserCandidates(provider, endpointId).some(
-    (account) => getKey(service, account) !== null,
-  );
+  return findApiKey(provider, endpointId, getKey) !== null;
 }
 
 /** 最小限の AiSettings 形（effective provider/endpoint 解決に必要な部分のみ）。 */

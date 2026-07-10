@@ -111,6 +111,10 @@ pub struct AppState {
     /// send_chat_message_stream 開始側と abort_chat_stream 中止側が**同一インスタンス**を
     /// 見ることが「abort が効く」条件。単一フラグ設計（stream_id なし）は Tauri と同一。
     pub chat_abort: Arc<AtomicBool>,
+    /// インライン AI ストリームの中止フラグ (Tauri の `InlineAiAbortFlag` 相当 —
+    /// Phase 3 バッチ3b)。チャットとインライン AI が同時に走っても一方の中止が
+    /// 他方へ波及しないよう、`chat_abort` とは別の Arc を保持する。
+    pub inline_ai_abort: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -138,6 +142,7 @@ impl AppState {
             codex_matcher: Mutex::new(None),
             ai_settings_path: dir.join("ai-settings.json"),
             chat_abort: Arc::new(AtomicBool::new(false)),
+            inline_ai_abort: Arc::new(AtomicBool::new(false)),
         })
     }
 }

@@ -21,6 +21,7 @@ import type {
 } from "../shared/ipcContract.js";
 import {
   effectiveProviderEndpoint,
+  findApiKey,
   hasApiKey as hasApiKeyRule,
   keyringService,
   keyringUser,
@@ -58,6 +59,12 @@ export interface SecretsBridge {
     argProvider: unknown,
     argEndpointId: unknown,
   ): string;
+  /** モデル一覧用。未登録だけを null にし、復号・ストアエラーは伝播する。 */
+  getApiKeyForRequest(
+    settings: AiSettingsLite,
+    argProvider: unknown,
+    argEndpointId: unknown,
+  ): string | null;
 }
 
 /** 暗号文ストア形: `{ [service]: { [account]: base64(safeStorage ciphertext) } }`。 */
@@ -212,6 +219,15 @@ export function createKeyStore(
         argEndpointId,
       );
       return resolveApiKeyRule(provider, endpointId, getKey);
+    },
+
+    getApiKeyForRequest(settings, argProvider, argEndpointId) {
+      const { provider, endpointId } = effectiveProviderEndpoint(
+        settings,
+        argProvider,
+        argEndpointId,
+      );
+      return findApiKey(provider, endpointId, getKey);
     },
   };
 }

@@ -2,6 +2,10 @@
 
 作成日: 2026-07-10 / 正本データ: `Grimodex_Electron移行Phase3_コマンド台帳.json`（同ディレクトリ、145 コマンドの静的棚卸し + FE コールサイト分析 = IPC_UNIMPLEMENTED 実測ログの代替）/ 進捗の現在地と本表の使い方は `Grimodex_Electron移行Phase3設計書.md` を参照
 
+> 実装確定差分（2026-07-11）: バッチ3は 3a〜3e に分割し、3a〜3b が完了。
+> 当初の keyring / OnceLock 案は、main の safeStorage + `Backend` AppState へ変更した。
+> 進捗と確定後の設計は Phase 3 設計書を正本とする。
+
 ---
 
 ## (a) サマリー
@@ -131,7 +135,7 @@
 | --- | --- | --- | --- |
 | semantic 系 18（index/search/reindex/status/DL/chunk_context — debug_dump 除く） | ort 12 / pure-db 5 / network 1 | workspace-open の autoIndex（fail-soft）・editing-loop の scheduler・チャット recall | ort+tokenizers を napi crate に同梱。split-lock（読出し→embed→upsert）と embedder→workspace のロック順厳守。SemanticEmbedderState / ModelDownloadState / 4 キャッシュをプロセスグローバル化。全経路 FTS 縮退ありのため P2 |
 | vivliostyle 6（detect/build/abort/save_output/preview_start/preview_stop） | child-process 5 / main-ts 1 | panel-open / user-action | main TS 再実装推奨。プロセスグループ kill・generation+epoch の race 対策・before-quit の kill_all 移植 |
-| ai 設定系 5（save_ai_settings / save_api_key / delete_api_key / list_ai_models / test_ai_connection） | fs / keyring / network | settings | keyring 3 点セット（save/has/delete + legacy user 対称性）を揃えて移植 |
+| ai 設定系 5（save_ai_settings / save_api_key / delete_api_key / list_ai_models / test_ai_connection） | fs / keyring / network | settings | キー3点セットはバッチ3aで main safeStorage へ移植（legacy user 対称性を維持）。save/list/test は3bで napi 化し、list のみ未登録キーを空文字とする optional 解決 |
 | cli_ai 3（detect_cli_binary / test_cli_connection / list_cli_models） | child-process | panel-open / settings | main TS + which/execFile で napi 不要 |
 | foreshadow 4（link_codex / unlink_codex / list_linked_codex / set_setup_strength） | pure-db | user-action / panel-open | 1 文 SQL — db_execute 代替の最有力候補群 |
 | export_save_text / export_save_bytes | main-ts | user-action | dialog.showSaveDialog + fs。**PIO-2: renderer にパスを渡させない** |
@@ -173,10 +177,10 @@
 - **狙い**: イベントブリッジ（main → 全窓 broadcast）の最初の実戦投入。external-mount://×4 が critical チャネルの中で最も独立していて検証しやすい。resolve_under_root のセキュリティ検査・tmp+rename アトミック書込・overlap 検査を TS へ忠実移植。
 - **注意**: バッチ 1 と並行可能（依存なし）。
 
-### バッチ 3: AI 系 — HTTP + keyring + abort フラグ + ストリームイベント（約 25 コマンド）
+### バッチ 3: AI 系 — HTTP + safeStorage + abort フラグ + ストリームイベント（約 25 コマンド）
 - **対象**: ai.rs 13（送信 4 + abort 2 + 設定 2 + キー 3 + models/test 2）、cli_ai 5（main TS 化）、post_effect run 系 3（start / start_multi / abort）、license 4（get は done、network 3）
-- **狙い**: ThreadsafeFunction ベースの emit ブリッジ確立（chat 3ch → inline-ai 3ch → cli 3ch → post_effect 4ch の順）。abort 系 3 フラグ + PostEffectAbortRegistry を addon グローバル（OnceLock）に集約し、「開始コマンドと abort コマンドが同一インスタンスを見る」構造を最初に固める。
-- **クレート観点**: reqwest / keyring / ai.rs 本体の移植はここに集中。キーは Rust 内で解決し**平文を JS へ返さない**構造を維持。license のバックグラウンド検証ループ（6h 周期 + license:state_changed）も main 起動時に移植。
+- **狙い**: ThreadsafeFunction ベースの emit ブリッジ確立（chat 3ch → inline-ai 3ch → cli 3ch → post_effect 4ch の順）。chat / inline の abort は同一 `Backend` AppState の独立した `Arc<AtomicBool>` で保持し、CLI / PostEffect の共有状態は後続バッチで同じ原則に接続する。
+- **クレート観点**: HTTP / SSE / provider 分岐は `grimodex-ai` に抽出し Tauri / napi で共用。API キーは main の safeStorage で解決し、同一設定 snapshot とともに napi へ注入する。平文を renderer へ返さない。license のバックグラウンド検証ループ（6h 周期 + license:state_changed）は後続バッチで main 起動時に移植。
 
 ### バッチ 4: ort / lindera 重量級（semantic 19 + lint 3、P2 中心）
 - **対象**: semantic 系 19（pure-db の status/chunk_context/debug_dump 含む — spec 定数・チャンカが Rust 側にあるため一括）、lint_text、segment_bunsetsu、extract_codex_candidates
@@ -213,7 +217,7 @@
 1. **バイナリサイズ**: lint 系の embed-unidic（include_bytes!）で .node が +200〜250MB。辞書の外部ファイル化 or resources 配布をバッチ 4 の前に決定する。onboarding のサンプル JSON（include_str!）、ort モデルの resource_dir 前提も同種の同梱方式決定が必要。
 2. **セキュリティ契約の維持**: (a) API キー平文を renderer に返さない（has_api_key の bool 契約）、(b) 保存系はパスをダイアログ由来に限定（PIO-2）、(c) external_mount の resolve_under_root + 32MiB 上限、(d) XPROJ ガード（plot_thread_link / post_effect / agent_event 系）をサーバサイドに残す。db_execute への安易な分解はガード消失（TOCTOU）を招く。
 3. **文字列ワイヤ契約**: 'not in proposed status'（prose stage）、RESTORE_SESSION_LOST（restore_backup）、SCENE_LENS_FOR_PROJECT_SQL（一字一句移植）、to_fts_match ⇔ FE toFtsMatchQuery、normalize_name ⇔ candidateKey。回帰テストを napi 側へ持ち込む。
-4. **共有ミュータブル状態の一体移植**: abort フラグ 3 種 + PostEffectAbortRegistry + CodexMatcherState + ExternalMountState/WatchState + VivliostyleState + SemanticEmbedderState/ModelDownloadState + 4 検索キャッシュ + GlobalSettingsPath/LicensePath の write_lock。**開始側と中止側（または read/write）が同一インスタンスを見る**ことが正しさの条件で、別プロセス化・二重初期化すると「abort が効かない」「lost update」系の再発バグになる。
+4. **共有ミュータブル状態の一体移植**: abort フラグ 3 種 + PostEffectAbortRegistry + CodexMatcherState + ExternalMountState/WatchState + VivliostyleState + SemanticEmbedderState/ModelDownloadState + 4 検索キャッシュ + GlobalSettingsPath/LicensePath の write_lock。**開始側と中止側（または read/write）が同一 `Backend` AppState または main 常駐 manager を見る**ことが正しさの条件で、別プロセス化・二重初期化すると「abort が効かない」「lost update」系の再発バグになる。
 5. **undefined/null の 3 値セマンティクス**: foreshadow/plot_threads の patch 型は Option<Option<T>>。napi 境界（JSON シリアライズ）で undefined と null の区別が落ちない受け渡し方式を雛形段階で確立する。
 6. **棚卸し漏れ 3 コマンド**: codex_rebuild_matcher / codex_match_text は編集ループ P0 なのに台帳未収載。Phase 3 着手前に src-tauri/src/codex_matching.rs の精読棚卸しを行うこと。set_window_vibrancy は main-ts 化見込みで低リスク。
 7. **アプリライフサイクル**: Tauri setup 相当（状態初期化順・license 検証ループ・gc_stale_model_dirs・cleanup_temp_root）と ExitRequested 時の vivliostyle kill_all を Electron の app ready / before-quit に移植。emit の「全窓配信」契約（フローティングパネル窓）を main の broadcast ヘルパーで保証する。

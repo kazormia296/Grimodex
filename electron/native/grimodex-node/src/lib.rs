@@ -108,6 +108,62 @@ struct ChatRequest {
     endpoint_id: Option<String>,
 }
 
+/// `send_inline_ai_stream` の FE 引数 (camelCase)。チャットと同じ message / reasoning
+/// 形だが、prompt cache / web search は受けず、AI のべりすとでは Completion mode を使う。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InlineAiRequest {
+    messages: Vec<ChatMsgDto>,
+    thinking: Option<grimodex_ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    model: Option<String>,
+    api_variant: Option<String>,
+    provider: Option<grimodex_ai::AiProvider>,
+    endpoint_id: Option<String>,
+}
+
+/// `send_agent_message` の FE 引数 (camelCase)。AgentMessage / AgentToolDef の
+/// serde 定義を直接使い、toolUses / thinkingBlocks / inputSchema のワイヤをTauriと共有する。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRequest {
+    messages: Vec<grimodex_ai::AgentMessage>,
+    tools: Vec<grimodex_ai::AgentToolDef>,
+    thinking: Option<grimodex_ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    system_cache_segments: Option<Vec<String>>,
+    api_variant: Option<String>,
+    web_search: Option<grimodex_ai::WebSearchConfig>,
+    system_volatile_tail: Option<String>,
+    model: Option<String>,
+    provider: Option<grimodex_ai::AiProvider>,
+    endpoint_id: Option<String>,
+}
+
+/// `list_ai_models` の FE 引数。API キーは一覧取得では任意なので main が
+/// safeStorage から取得できた値（未設定なら空文字）を別引数で注入する。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListAiModelsRequest {
+    provider: grimodex_ai::AiProvider,
+    endpoint_id: Option<String>,
+}
+
+/// `test_ai_connection` の FE 引数。接続先 provider/model は必須、variant / endpoint
+/// は任意で、既知 endpoint だけを一時的に active へ切り替える。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestAiConnectionRequest {
+    provider: grimodex_ai::AiProvider,
+    model: String,
+    api_variant: Option<String>,
+    endpoint_id: Option<String>,
+}
+
 #[napi]
 pub struct Backend {
     state: Arc<AppState>,
@@ -1339,6 +1395,20 @@ impl Backend {
         .await
     }
 
+    /// AI 設定を `<appData>/ai-settings.json` へ保存する (Tauri の
+    /// `save_ai_settings` と同一)。API キーは別の safeStorage 経路なので含まない。
+    #[napi]
+    pub async fn save_ai_settings(&self, settings: serde_json::Value) -> Result<()> {
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            grimodex_ai::write_ai_settings(&state.ai_settings_path, &settings)?;
+            Ok(())
+        })
+        .await
+    }
+
     /// 非ストリーミングのチャット送信 (Tauri の send_chat_message と同一ロジック。
     /// キーは注入)。`args` は camelCase の ChatRequest、`api_key` は解決済み平文。
     /// `settings` は **呼び側 (dispatchInvoke) が getAiSettings で1回だけ読んだ AiSettings
@@ -1464,6 +1534,178 @@ impl Backend {
         self.state
             .chat_abort
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
+    /// AI のべりすとでは Completion mode を使う。チャットとは独立した abort flag。
+    #[napi]
+    pub async fn send_inline_ai_stream(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<()> {
+        let req: InlineAiRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+
+        self.state
+            .inline_ai_abort
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let flag = Arc::clone(&self.state.inline_ai_abort);
+        let settings_for_call = grimodex_ai::apply_provider_override(
+            settings,
+            req.model.as_deref(),
+            req.provider,
+            req.endpoint_id.as_deref(),
+        );
+        let effective_variant =
+            grimodex_ai::inline_effective_variant(&settings_for_call, req.api_variant.as_deref());
+        let variant = effective_variant.as_deref();
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+        let resolved_variant =
+            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings_for_call,
+            &api_key,
+            extra_body,
+            retry_429,
+            grimodex_ai::AiNovelistMode::Completion,
+            resolved_variant,
+            req.thinking,
+            req.effort,
+            req.reasoning_enabled,
+            req.reasoning_effort,
+            None,
+            None,
+            None,
+        );
+        let msgs: Vec<(&str, &str)> = req
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        let result =
+            grimodex_ai::send_chat_stream(&params, &msgs, flag, &self.state.events, "inline-ai")
+                .await;
+        if let Err(e) = result {
+            EventSink::emit(
+                &self.state.events,
+                "inline-ai:stream-error",
+                serde_json::json!({ "message": e.to_string() }),
+            );
+            return Err(Error::from_reason(e.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 実行中のインライン AI ストリームを中止する。chat_abort とは独立。
+    #[napi]
+    pub fn abort_inline_ai_stream(&self) {
+        self.state
+            .inline_ai_abort
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Tool Use 対応の Agent 送信。tool protocol 解決・Hermes/native の安全ゲートを
+    /// 含む `grimodex_ai::send_chat_with_tools` をTauriと共用する。
+    #[napi]
+    pub async fn send_agent_message(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<String> {
+        let req: AgentRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let settings_for_call = grimodex_ai::apply_provider_override(
+            settings,
+            req.model.as_deref(),
+            req.provider,
+            req.endpoint_id.as_deref(),
+        );
+        let variant = req.api_variant.as_deref();
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+        let resolved_variant =
+            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings_for_call,
+            &api_key,
+            extra_body,
+            retry_429,
+            grimodex_ai::AiNovelistMode::Chat,
+            resolved_variant,
+            req.thinking,
+            req.effort,
+            req.reasoning_enabled,
+            req.reasoning_effort,
+            req.system_cache_segments,
+            req.system_volatile_tail,
+            req.web_search,
+        );
+        let result = grimodex_ai::send_chat_with_tools(&params, &req.messages, &req.tools)
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        serde_json::to_string(&result)
+            .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
+    }
+
+    /// provider のモデル一覧を取得する。`settings` はmainが1回読んだsnapshot、
+    /// `api_key` はsafeStorageにキーが無い場合も空文字で注入される。
+    #[napi]
+    pub async fn list_ai_models(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<String> {
+        let req: ListAiModelsRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let mut settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        if let Some(endpoint_id) = req.endpoint_id.as_deref().filter(|id| !id.is_empty()) {
+            if settings.has_openai_compatible_endpoint(endpoint_id) {
+                settings.active_openai_compatible_endpoint_id = Some(endpoint_id.to_string());
+            }
+        }
+        let models = grimodex_ai::fetch_models(&req.provider, &api_key, settings.endpoints())
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        serde_json::to_string(&models)
+            .map_err(|e| Error::from_reason(format!("failed to serialize AI models: {e}")))
+    }
+
+    /// 最小リクエストでAI接続を確認する。variant解決はテスト対象providerを設定へ
+    /// 反映してから行い、OpenAI互換endpointの既定variantを正しく選ぶ。
+    #[napi]
+    pub async fn test_ai_connection(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<String> {
+        let req: TestAiConnectionRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let mut settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        settings.provider = req.provider.clone();
+        if let Some(endpoint_id) = req.endpoint_id.as_deref().filter(|id| !id.is_empty()) {
+            if settings.has_openai_compatible_endpoint(endpoint_id) {
+                settings.active_openai_compatible_endpoint_id = Some(endpoint_id.to_string());
+            }
+        }
+        let variant =
+            grimodex_ai::resolve_api_variant(req.api_variant.as_deref(), &settings, &req.model);
+        grimodex_ai::test_connection(
+            &req.provider,
+            &req.model,
+            &api_key,
+            settings.endpoints(),
+            variant.as_deref(),
+        )
+        .await
+        .map_err(|e| Error::from_reason(e.to_string()))
     }
 
     /// main 起動時に 1 回登録する (§7.1)。コールバックは

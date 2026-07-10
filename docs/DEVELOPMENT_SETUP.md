@@ -124,11 +124,12 @@ pnpm test:node --run  # Vitest（node）
 
 ---
 
-## Electron シェル（実験的 — 移行 Phase 2）
+## Electron シェル（実験的 — 移行 Phase 3）
 
-Tauri シェルと並走する Electron シェルの開発手順です（設計書:
-`docs/Grimodex_Electron移行Phase2設計書.md`）。既存の `pnpm tauri dev` /
-`pnpm dev` / CI には一切影響しません。
+Tauri シェルと並走する Electron シェルの開発手順です（シェル構築:
+`docs/Grimodex_Electron移行Phase2設計書.md`、現在の移植進捗:
+`docs/Grimodex_Electron移行Phase3設計書.md`）。既存の `pnpm tauri dev` / `pnpm dev` / CI には
+一切影響しません。
 
 ### 前提
 
@@ -156,12 +157,17 @@ pnpm electron:build   # 型チェック + main/preload バンドル + vite build
 pnpm electron:start   # ビルド成果物を app:// プロトコルでロードして起動
 pnpm electron:smoke   # Playwright _electron スモーク（workspace 作成→執筆→再起動残存）
 pnpm test:electron    # electron/ 配下 main プロセスの単体テスト（node 環境）
+pnpm --dir electron/native/grimodex-node test  # napi 公開境界 + 実HTTP/SSE E2E
 ```
 
 ### 注意
 
-- Phase 2 は垂直スライスのみ（db_execute 系 + 代表 5 コマンドが napi 実装。
-  残りは `IPC_UNIMPLEMENTED:` マーカー付き reject の fail-soft）。
+- Phase 3 はバッチ3bまで実装済みです。コマンド別の実装範囲と残作業は
+  `docs/Grimodex_Electron移行Phase3設計書.md` を参照してください。未移植コマンドは
+  `IPC_UNIMPLEMENTED:` マーカー付き reject で fail-soft します。
+- Electron の API キーは main プロセスの safeStorage で保管します。Tauri keyring からの
+  自動移行は Phase 4 のため、現時点の Electron 環境ではキーの再入力が必要です。
+  Linux で safeStorage が `basic_text` / `unknown` backend になる環境は安全でないため拒否します。
 - **同一 workspace を Tauri と Electron で同時に開かないでください**
   （busy_timeout で共存はするが非推奨 — 設計書 §11）。
 

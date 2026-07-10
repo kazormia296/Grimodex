@@ -1,7 +1,7 @@
 # Grimodex Electron移行 Phase 3 設計書 — ネイティブ再結線
 
-- 日付: 2026-07-10
-- ステータス: 実装中（バッチ1〜2・バッチ3a 完了。バッチ3b〜5 は計画）
+- 日付: 2026-07-10（最終更新: 2026-07-11）
+- ステータス: 実装中（バッチ1〜2・バッチ3a〜3b 完了。バッチ3c〜5 は計画）
 - 正本: `docs/Grimodex_Electron移行検討.md`（移行判断・全体フェーズ）/ `docs/Grimodex_Electron移行Phase2設計書.md`（シェル構築）
 - データ正本: `docs/Grimodex_Electron移行Phase3_優先順位表.md`（バッチ提案・イベント配線順）と `docs/Grimodex_Electron移行Phase3_コマンド台帳.json`（全 145 コマンドの静的棚卸し + FE コールサイト分析）
 - 積み先: ブランチ `feat/electron-phase3`
@@ -17,7 +17,8 @@ Phase 2 で「垂直スライス 13 コマンド + イベントバス実証」�
 Phase 3 はその実測ログ（＝どのコマンドが起動・編集フローで呼ばれるか）を優先順位に
 使う設計だったが、開発機での完全な dev 実行が難しいため、**静的コールサイト分析**
 （`src` 全体の invoke / listen 棚卸し + 起動シーケンス追跡）で実測ログを代替した。
-結果が `phase3-inventory.json`（145 コマンド）と `phase3-優先順位表.md`。
+結果が `Grimodex_Electron移行Phase3_コマンド台帳.json`（145 コマンド）と
+`Grimodex_Electron移行Phase3_優先順位表.md`。
 
 ## 1. コマンド分類と優先順位（要約）
 
@@ -126,7 +127,8 @@ addon グローバル（OnceLock）に集約し「開始側と中止側が同一
 Electron 側のキー保管基盤を keyring から safeStorage へ切り替える。既存 Tauri keyring
 資格情報の自動インポートは Phase 4 の userData 移行に残し、3a 単体では再入力が必要。
 
-大きさゆえ 3a〜3e に分割する（3a = 基盤 + chat）:
+大きさゆえ 3a〜3e に分割する（3a = 基盤 + chat、3b = inline / agent +
+設定・モデル・接続）:
 
 #### バッチ 3a: grimodex-ai 抽出 + emit 抽象化 + chat ストリーム【完了】
 
@@ -166,9 +168,45 @@ Electron 側のキー保管基盤を keyring から safeStorage へ切り替え�
   実abortを end-to-end gate）、electron 300pass、tsc通過、lint 0 errors
   （既存warning 42件）、FE 8710pass 回帰なし。
 
-**残り 3b〜3e**: 3b（inline-ai stream + abort + send_agent_message + 設定/接続系
-save_ai_settings/list_ai_models/test_ai_connection）/ 3c（cli_ai
-main-TS + child_process + NDJSON）/ 3d（post_effect run 系 + PostEffectAbortRegistry）/
+#### バッチ 3b: inline / agent + AI 設定・モデル・接続【完了】
+
+ブランチ `feat/electron-phase3-batch3b-ai-inline-agent`。
+
+- **napi 6 コマンド**: `send_inline_ai_stream` / `abort_inline_ai_stream` /
+  `send_agent_message` / `save_ai_settings` / `list_ai_models` /
+  `test_ai_connection`を Backend と IPC コマンド表に追加。`grimodex-ai` の
+  provider / HTTP / SSE / Responses / AI のべりすと分岐を Tauri と共用する。
+- **inline 専用 abort + 3ch**: AppState に chat と独立した
+  `inline_ai_abort: Arc<AtomicBool>` を保持し、`inline-ai:stream-{chunk,done,error}` を
+  EventQueue → ThreadsafeFunction → 全窓 broadcast へ接続。chat / inline の同時実行中に
+  inline だけを中止でき、HTTP 失敗では `stream-error` emit と invoke reject の
+  両経路を維持する。
+- **Agent ワイヤ + 安全策**: camelCase の tool 定義・tool 履歴・`tool_result` /
+  thinking / web search を `AgentMessage` / `AgentToolDef` へ復元し、
+  `send_chat_with_tools` を共用。OpenAI 互換など低信頼 provider から返った
+  mutating tool call を破棄し、read-only tool だけを通す既存の防御を保つ。
+- **設定・モデル・接続**: `save_ai_settings` は 3a の
+  `get_ai_settings` と同じ `<userData>/ai-settings.json` で round-trip。
+  `list_ai_models` は OpenAI 互換 endpoint override と、空キー時に
+  Authorization ヘッダを付けないローカル LLM 契約を維持。
+  `test_ai_connection` は provider / endpoint / model / API variant の override と
+  応答文字列を Tauri と同形で返す。
+- **safeStorage キー注入の原子性**: main が AI 設定を1回だけ読み、
+  同じ snapshot を safeStorage の実効 provider / endpoint キー解決と napi 呼び出しに
+  渡す。inline / agent / connection test は必須キー解決、model list だけは
+  Tauri の `get_api_key(...).unwrap_or_default()` と同じ optional 解決（未登録は
+  空文字）。キーストア破損・復号失敗は fail-closed で伝播し、平文キーを
+  renderer に返さない。
+- **FE 変更ゼロ**: AI 機能は既存の `@/lib/tauri` invoke / listen 抽象と
+  登録済み event allowlist をそのまま使う。Electron 固有分岐は追加しない。
+- **検証（2026-07-11 時点）**: Electron は 15 files / 312 tests、FE は
+  856 passed + 7 skipped files / 8710 passed + 34 skipped tests、native E2E は
+  63 total / 62 pass / 1 skip、Rust node crate は 9 pass、Tauri 本体は 408 pass、
+  `grimodex-ai` は 201 pass。Electron production build、両 TS typecheck、
+  `cargo clippy --all-targets`、lint 0 errors（既存 warning 42件）も通過。
+
+**残り 3c〜3e**: 3c（cli_ai main-TS + child_process + NDJSON）/
+3d（post_effect run 系 + PostEffectAbortRegistry）/
 3e（license network + 6h 検証ループ + before-quit ライフサイクル）。
 
 ### バッチ 4: ort / lindera 重量級
@@ -191,9 +229,9 @@ before-quit のライフサイクル（vivliostyle kill_all・cleanup_temp_root�
 
 優先順位表 (d) のとおり。critical（無いと機能沈黙）を先に配線する:
 
-1. `chat:stream-*`（3）— チャット応答の唯一経路
-2. `inline-ai:stream-*`（3）— インライン AI / Beat 生成
-3. `external-mount://*`（4）— 外部マウント同期。全窓 broadcast 契約
+1. `chat:stream-*`（3）— チャット応答の唯一経路（バッチ3aで配線済み）
+2. `inline-ai:stream-*`（3）— インライン AI / Beat 生成（バッチ3bで配線済み）
+3. `external-mount://*`（4）— 外部マウント同期。全窓 broadcast 契約（バッチ2で配線済み）
 4. `post_effect:done|error` — 校閲 runner の Promise 終端
 5. `cli:stream-*`（3）— CLI プロバイダ（1-2 と同型）
 6. `vivliostyle:done|error` — ビルド終端
@@ -210,7 +248,8 @@ Phase 2 で `Backend.on_event(tsfn)` の end-to-end は実証済み（`backend:r
 
 優先順位表 (e) のリスクを実装制約として明文化する:
 
-1. **共有ミュータブル状態の一体移植**: abort フラグ 3 + PostEffectAbortRegistry +
+1. **共有ミュータブル状態の一体移植**: abort フラグ 3（chat / inline は実装済み、
+   CLI はバッチ3c）+ PostEffectAbortRegistry +
    CodexMatcherState（バッチ1c で実装済み）+ ExternalMountState + VivliostyleState +
    SemanticEmbedderState + 4 検索キャッシュ + write_lock 群。**開始側と中止側
    （read/write）が同一 AppState インスタンスを見る**ことが正しさの条件。別プロセス化・

@@ -305,6 +305,11 @@ export declare class Backend {
    */
   getAiSettings(): Promise<string>
   /**
+   * AI 設定を `<appData>/ai-settings.json` へ保存する (Tauri の
+   * `save_ai_settings` と同一)。API キーは別の safeStorage 経路なので含まない。
+   */
+  saveAiSettings(settings: any): Promise<void>
+  /**
    * 非ストリーミングのチャット送信 (Tauri の send_chat_message と同一ロジック。
    * キーは注入)。`args` は camelCase の ChatRequest、`api_key` は解決済み平文。
    * `settings` は **呼び側 (dispatchInvoke) が getAiSettings で1回だけ読んだ AiSettings
@@ -326,6 +331,28 @@ export declare class Backend {
    * 純メモリの atomic store)。send_chat_message_stream と同一の chat_abort を立てる。
    */
   abortChatStream(): void
+  /**
+   * インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
+   * AI のべりすとでは Completion mode を使う。チャットとは独立した abort flag。
+   */
+  sendInlineAiStream(args: any, settings: any, apiKey: string): Promise<void>
+  /** 実行中のインライン AI ストリームを中止する。chat_abort とは独立。 */
+  abortInlineAiStream(): void
+  /**
+   * Tool Use 対応の Agent 送信。tool protocol 解決・Hermes/native の安全ゲートを
+   * 含む `grimodex_ai::send_chat_with_tools` をTauriと共用する。
+   */
+  sendAgentMessage(args: any, settings: any, apiKey: string): Promise<string>
+  /**
+   * provider のモデル一覧を取得する。`settings` はmainが1回読んだsnapshot、
+   * `api_key` はsafeStorageにキーが無い場合も空文字で注入される。
+   */
+  listAiModels(args: any, settings: any, apiKey: string): Promise<string>
+  /**
+   * 最小リクエストでAI接続を確認する。variant解決はテスト対象providerを設定へ
+   * 反映してから行い、OpenAI互換endpointの既定variantを正しく選ぶ。
+   */
+  testAiConnection(args: any, settings: any, apiKey: string): Promise<string>
   /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された

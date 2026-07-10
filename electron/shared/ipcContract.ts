@@ -362,6 +362,31 @@ export interface NapiBackendLike {
     apiKey: string,
   ): Promise<void>;
   abortChatStream(): void;
+  // AI Phase 3b（settings snapshot + safeStorage key注入は3a chatと同じ）。
+  // optional は旧 .node とのバージョンスキューを型境界で表すため。コマンド実行時は
+  // requireNapiMethod が必ず存在確認し、欠落を明示エラーにする。
+  saveAiSettings?(settings: unknown): Promise<void>;
+  sendInlineAiStream?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<void>;
+  abortInlineAiStream?(): void;
+  sendAgentMessage?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<string>;
+  listAiModels?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<string>;
+  testAiConnection?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<string>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
 }
 
@@ -378,6 +403,12 @@ export interface SecretsResolver {
     argProvider: unknown,
     argEndpointId: unknown,
   ): string;
+  /** list_ai_models用。未登録はnull、ストア/復号エラーはthrow。 */
+  getApiKeyForRequest?(
+    settings: unknown,
+    argProvider: unknown,
+    argEndpointId: unknown,
+  ): string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1151,7 +1182,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   send_chat_message: {
     run: async (b, a, d) => {
-      const { settings, apiKey } = await resolveChatKeyAndSettings(
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
         b,
         a,
         d,
@@ -1164,7 +1195,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     // fire-and-forget ストリーム。チャンク/完了/エラーは chat:stream-* イベント経由。
     // Tauri 同様、全ストリーム完了後に resolve（FE は SLOW_COMMANDS で 300s 許容）。
     run: async (b, a, d) => {
-      const { settings, apiKey } = await resolveChatKeyAndSettings(
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
         b,
         a,
         d,
@@ -1181,6 +1212,90 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  // AI Phase 3b。inline/agent/test は必須キー規則、models だけoptional lookup。
+  save_ai_settings: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.saveAiSettings,
+        "saveAiSettings",
+      )(requirePresent(a, "settings", "save_ai_settings"));
+      return null;
+    },
+  },
+  send_inline_ai_stream: {
+    run: async (b, a, d) => {
+      requirePresent(a, "messages", "send_inline_ai_stream");
+      const sendInlineAiStream = requireNapiMethod(
+        b,
+        b.sendInlineAiStream,
+        "sendInlineAiStream",
+      );
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "send_inline_ai_stream",
+      );
+      await sendInlineAiStream(a, settings, apiKey);
+      return null;
+    },
+  },
+  abort_inline_ai_stream: {
+    run: async (b) => {
+      requireNapiMethod(b, b.abortInlineAiStream, "abortInlineAiStream")();
+      return null;
+    },
+  },
+  send_agent_message: {
+    run: async (b, a, d) => {
+      requirePresent(a, "messages", "send_agent_message");
+      requirePresent(a, "tools", "send_agent_message");
+      const sendAgentMessage = requireNapiMethod(
+        b,
+        b.sendAgentMessage,
+        "sendAgentMessage",
+      );
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "send_agent_message",
+      );
+      return parseWire(await sendAgentMessage(a, settings, apiKey));
+    },
+  },
+  list_ai_models: {
+    run: async (b, a, d) => {
+      requireString(a, "provider", "list_ai_models");
+      const listAiModels = requireNapiMethod(b, b.listAiModels, "listAiModels");
+      const { settings, apiKey } = await resolveOptionalAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "list_ai_models",
+      );
+      return parseWire(await listAiModels(a, settings, apiKey));
+    },
+  },
+  test_ai_connection: {
+    run: async (b, a, d) => {
+      requireString(a, "provider", "test_ai_connection");
+      requireString(a, "model", "test_ai_connection");
+      const testAiConnection = requireNapiMethod(
+        b,
+        b.testAiConnection,
+        "testAiConnection",
+      );
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "test_ai_connection",
+      );
+      return testAiConnection(a, settings, apiKey);
+    },
+  },
 };
 
 /**
@@ -1191,7 +1306,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
  * secrets 不在は構成エラーとして明示。キー未設定時は resolveApiKeyForRequest が Tauri と
  * 同じ `No API key configured for <provider>` を throw する。
  */
-async function resolveChatKeyAndSettings(
+async function resolveRequiredAiKeyAndSettings(
   backend: NapiBackendLike,
   args: CommandArgs,
   deps: DispatchDeps,
@@ -1206,6 +1321,41 @@ async function resolveChatKeyAndSettings(
     args.provider,
     args.endpointId,
   );
+  return { settings, apiKey };
+}
+
+/** 旧 native binding を誤って組み合わせた場合も TypeError ではなく明示的に失敗させる。 */
+function requireNapiMethod<T extends (...args: never[]) => unknown>(
+  backend: NapiBackendLike,
+  method: T | undefined,
+  methodName: string,
+): T {
+  if (typeof method !== "function") {
+    throw new Error(
+      `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${methodName}`,
+    );
+  }
+  return method.bind(backend) as T;
+}
+
+/** list_ai_models専用: 未登録キーだけを空文字へ畳み、破損/復号エラーは伝播。 */
+async function resolveOptionalAiKeyAndSettings(
+  backend: NapiBackendLike,
+  args: CommandArgs,
+  deps: DispatchDeps,
+  cmd: string,
+): Promise<{ settings: unknown; apiKey: string }> {
+  if (!deps.secrets) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+  const getApiKey = deps.secrets.getApiKeyForRequest;
+  if (!getApiKey) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+  const settings = parseWire(await backend.getAiSettings());
+  const apiKey =
+    getApiKey.call(deps.secrets, settings, args.provider, args.endpointId) ??
+    "";
   return { settings, apiKey };
 }
 
