@@ -5,18 +5,22 @@ import { isTauri } from "./tauri";
  * 自動更新（updater / process）の抽象層。本体コードは
  * @tauri-apps/plugin-updater / plugin-process を直接 import せず
  * ここを経由する。store 遷移などの意味論は features/updater/api.ts が担う。
+ *
+ * Electron シェルは Phase 2 では意図的に非 Tauri と同挙動
+ * （check → null / relaunch → no-op）。electron-updater への実装は
+ * Phase 4（設計書 §3.4 の表）。
  */
 
 export type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
 
-/** 更新確認。非 Tauri は null（=更新なし）。 */
+/** 更新確認。非 Tauri（ブラウザ / Electron Phase 2）は null（=更新なし）。 */
 export async function check(): Promise<Update | null> {
   if (!isTauri()) return null;
   const { check: tauriCheck } = await import("@tauri-apps/plugin-updater");
   return tauriCheck();
 }
 
-/** アプリ再起動。非 Tauri は no-op。 */
+/** アプリ再起動。非 Tauri（ブラウザ / Electron Phase 2）は no-op。 */
 export async function relaunch(): Promise<void> {
   if (!isTauri()) return;
   const { relaunch: tauriRelaunch } =

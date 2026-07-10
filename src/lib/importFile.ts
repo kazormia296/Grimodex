@@ -1,3 +1,4 @@
+import { electronBridge, isElectron } from "@/lib/shell";
 import { isTauri } from "@/lib/tauri";
 import type { SaveFilter } from "@/lib/exportFile";
 
@@ -44,17 +45,28 @@ function openViaInput(filter: SaveFilter): Promise<OpenTextResult | null> {
 export async function openTextFile(
   filter: SaveFilter,
 ): Promise<OpenTextResult | null> {
-  if (!isTauri()) {
-    return openViaInput(filter);
+  if (isTauri()) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: filter.name, extensions: filter.extensions }],
+    });
+    if (typeof picked !== "string") return null;
+    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    const content = await readTextFile(picked);
+    return { name: basename(picked), content };
   }
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({
-    multiple: false,
-    directory: false,
-    filters: [{ name: filter.name, extensions: filter.extensions }],
-  });
-  if (typeof picked !== "string") return null;
-  const { readTextFile } = await import("@tauri-apps/plugin-fs");
-  const content = await readTextFile(picked);
-  return { name: basename(picked), content };
+  if (isElectron()) {
+    // main プロセスのネイティブファイルピッカ + fs 読み込み（§3.4）。
+    const bridge = electronBridge();
+    const picked = await bridge.dialog.openFile({
+      name: filter.name,
+      extensions: filter.extensions,
+    });
+    if (typeof picked !== "string") return null;
+    const content = await bridge.fs.readTextFile(picked);
+    return { name: basename(picked), content };
+  }
+  return openViaInput(filter);
 }
