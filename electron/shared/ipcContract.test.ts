@@ -28,6 +28,14 @@ interface Call {
   args: unknown[];
 }
 
+// agent_writes 系の代表返り値（AgentWriteResult / ProseStageResult、camelCase）。
+const AGENT_WRITE_RESULT = Promise.resolve(
+  '{"entityId":"e1","version":1,"changeEventUid":"ce1","undoJournalId":"uj1"}',
+);
+const PROSE_STAGE_RESULT = Promise.resolve(
+  '{"stagingId":"st1","sceneId":"s1","status":"proposed"}',
+);
+
 function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
   backend: NapiBackendLike;
   calls: Call[];
@@ -238,6 +246,90 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       Promise.resolve(
         '[{"from":10,"to":20,"markName":"foreshadowSetup","attrs":{"setupId":"su1","foreshadowId":"f1"}}]',
       ),
+    ) as never,
+    // agent_writes 18 コマンド（AgentWriteResult / ProseStageResult camelCase）
+    agentCodexCreate: record("agentCodexCreate", AGENT_WRITE_RESULT) as never,
+    agentCodexUpdate: record("agentCodexUpdate", AGENT_WRITE_RESULT) as never,
+    agentWriteBundle: record("agentWriteBundle", AGENT_WRITE_RESULT) as never,
+    agentSnippetCreate: record(
+      "agentSnippetCreate",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    agentProposeSceneBody: record(
+      "agentProposeSceneBody",
+      PROSE_STAGE_RESULT,
+    ) as never,
+    agentAcceptProseStage: record(
+      "agentAcceptProseStage",
+      PROSE_STAGE_RESULT,
+    ) as never,
+    agentDiscardProseStage: record(
+      "agentDiscardProseStage",
+      PROSE_STAGE_RESULT,
+    ) as never,
+    agentApplyUndoJournal: record(
+      "agentApplyUndoJournal",
+      Promise.resolve('{"ok":true}'),
+    ) as never,
+    agentForeshadowCreate: record(
+      "agentForeshadowCreate",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    agentForeshadowUpdate: record(
+      "agentForeshadowUpdate",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    agentEventCreate: record("agentEventCreate", AGENT_WRITE_RESULT) as never,
+    agentEventUpdate: record("agentEventUpdate", AGENT_WRITE_RESULT) as never,
+    agentEventDelete: record("agentEventDelete", AGENT_WRITE_RESULT) as never,
+    agentEventSetParticipants: record(
+      "agentEventSetParticipants",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    agentSceneEventLink: record(
+      "agentSceneEventLink",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    agentSceneEventUnlink: record(
+      "agentSceneEventUnlink",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    agentEventRelationAdd: record(
+      "agentEventRelationAdd",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    agentEventRelationRemove: record(
+      "agentEventRelationRemove",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    // post_effect pure-db 7 コマンド
+    listPostEffectRuns: record(
+      "listPostEffectRuns",
+      Promise.resolve('[{"id":"r1"}]'),
+    ) as never,
+    listSceneLensForProject: record(
+      "listSceneLensForProject",
+      Promise.resolve('[{"sceneId":"s1","runCompletedAt":"2026-07-10"}]'),
+    ) as never,
+    listAnnotationsForScene: record(
+      "listAnnotationsForScene",
+      Promise.resolve('{"annotations":[],"relations":[]}'),
+    ) as never,
+    listAnnotationsForProject: record(
+      "listAnnotationsForProject",
+      Promise.resolve('{"annotations":[]}'),
+    ) as never,
+    updateAnnotationStatus: record(
+      "updateAnnotationStatus",
+      Promise.resolve('{"id":"a1","status":"dismissed"}'),
+    ) as never,
+    replyToAnnotation: record(
+      "replyToAnnotation",
+      Promise.resolve('{"id":"a2","parent_id":"a1"}'),
+    ) as never,
+    savePostEffectAnnotations: record(
+      "savePostEffectAnnotations",
+      Promise.resolve(undefined),
     ) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
@@ -630,8 +722,26 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 39）", () => {
+  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 64）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
+      "agent_accept_prose_stage",
+      "agent_apply_undo_journal",
+      "agent_codex_create",
+      "agent_codex_update",
+      "agent_discard_prose_stage",
+      "agent_event_create",
+      "agent_event_delete",
+      "agent_event_relation_add",
+      "agent_event_relation_remove",
+      "agent_event_set_participants",
+      "agent_event_update",
+      "agent_foreshadow_create",
+      "agent_foreshadow_update",
+      "agent_propose_scene_body",
+      "agent_scene_event_link",
+      "agent_scene_event_unlink",
+      "agent_snippet_create",
+      "agent_write_bundle",
       "codex_match_text",
       "codex_rebuild_matcher",
       "db_execute",
@@ -663,6 +773,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "get_global_settings",
       "integrity_check",
       "lint_text",
+      "list_annotations_for_project",
+      "list_annotations_for_scene",
+      "list_post_effect_runs",
+      "list_scene_lens_for_project",
       "list_system_fonts",
       "open_workspace",
       "plot_thread_create",
@@ -674,7 +788,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_list_links",
       "plot_thread_update",
       "repair_integrity",
+      "reply_to_annotation",
       "save_global_settings",
+      "save_post_effect_annotations",
       "segment_bunsetsu",
       "timelapse_append_batch",
       "trash_bin_clear_all",
@@ -682,6 +798,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "trash_bin_delete",
       "trash_bin_list",
       "trash_bin_prune",
+      "update_annotation_status",
       "validate_workspace_path",
     ]);
   });
@@ -1197,6 +1314,132 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     );
     expect(calls).toHaveLength(0);
     expect(env.ok).toBe(false);
+  });
+
+  // ── agent_writes 18 コマンド（Phase 3 バッチ1） ────────────────────────
+  it("agent_writes: すべて単一 {payload} を素通しし AgentWriteResult を parse", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = { projectId: "p1", sessionId: "s1", name: "太郎" };
+    const created = await dispatchInvoke(
+      "agent_codex_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    // link/unlink・relation add/remove も FE 側は同じ {payload} 契約。
+    const linked = await dispatchInvoke(
+      "agent_scene_event_link",
+      { payload: { projectId: "p1", eventId: "e1", sceneId: "sc1" } },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "agentCodexCreate", args: [payload] },
+      {
+        method: "agentSceneEventLink",
+        args: [{ projectId: "p1", eventId: "e1", sceneId: "sc1" }],
+      },
+    ]);
+    expect(created).toEqual({
+      ok: true,
+      value: {
+        entityId: "e1",
+        version: 1,
+        changeEventUid: "ce1",
+        undoJournalId: "uj1",
+      },
+    });
+    expect(linked.ok).toBe(true);
+  });
+
+  it("agent_propose_scene_body: payload 欠落は invalid args（backend 未呼び出し）", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "agent_propose_scene_body",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(calls).toHaveLength(0);
+    expect(env.ok).toBe(false);
+  });
+
+  // ── post_effect pure-db 7 コマンド（Phase 3 バッチ1） ──────────────────
+  it("list_post_effect_runs: effectType(null→undefined) / limit / offset を写像", async () => {
+    const { backend, calls } = fakeBackend();
+    await dispatchInvoke(
+      "list_post_effect_runs",
+      { projectId: "p1", effectType: null, limit: 20, offset: 0 },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "list_post_effect_runs",
+      { projectId: "p1", effectType: "proofread", limit: null, offset: null },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "listPostEffectRuns", args: ["p1", undefined, 20, 0] },
+      {
+        method: "listPostEffectRuns",
+        args: ["p1", "proofread", undefined, undefined],
+      },
+    ]);
+  });
+
+  it("list_annotations_for_scene / update_annotation_status を写像し parse", async () => {
+    const { backend, calls } = fakeBackend();
+    const list = await dispatchInvoke(
+      "list_annotations_for_scene",
+      { projectId: "p1", sceneId: "s1", status: null },
+      { backend, shell: noShell },
+    );
+    const upd = await dispatchInvoke(
+      "update_annotation_status",
+      { annotationId: "a1", status: "dismissed", projectId: "p1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "listAnnotationsForScene", args: ["p1", "s1", undefined] },
+      { method: "updateAnnotationStatus", args: ["a1", "dismissed", "p1"] },
+    ]);
+    expect(list).toEqual({
+      ok: true,
+      value: { annotations: [], relations: [] },
+    });
+    expect(upd).toEqual({ ok: true, value: { id: "a1", status: "dismissed" } });
+  });
+
+  it("reply_to_annotation: snake_case の {args} をネストしたまま素通し", async () => {
+    const { backend, calls } = fakeBackend();
+    const args = {
+      parent_id: "a1",
+      content: "返信",
+      author_role: "human",
+      project_id: "p1",
+    };
+    const env = await dispatchInvoke(
+      "reply_to_annotation",
+      { args },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([{ method: "replyToAnnotation", args: [args] }]);
+    expect(env).toEqual({ ok: true, value: { id: "a2", parent_id: "a1" } });
+  });
+
+  it("save_post_effect_annotations: unit 返りは null（annotations 配列を素通し）", async () => {
+    const { backend, calls } = fakeBackend();
+    const annotations = [
+      { id: "a1", range_start: 3, range_end: 7, text_snapshot: "…" },
+    ];
+    const env = await dispatchInvoke(
+      "save_post_effect_annotations",
+      { projectId: "p1", sceneId: "s1", annotations },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "savePostEffectAnnotations",
+        args: ["p1", "s1", annotations],
+      },
+    ]);
+    expect(env).toEqual({ ok: true, value: null });
   });
 });
 

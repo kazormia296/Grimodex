@@ -256,6 +256,7 @@ impl Database {
     }
 }
 
+pub mod agent_writes;
 pub mod change_events;
 mod execute;
 pub mod foreshadow;
@@ -263,6 +264,7 @@ mod fts;
 mod integrity;
 mod migrate;
 pub mod plot_threads;
+pub mod post_effect;
 pub mod trash_bin;
 pub mod undo_journal;
 

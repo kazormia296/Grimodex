@@ -267,6 +267,38 @@ export declare class Backend {
    * AnchorMarkOutput 配列 (camelCase: from/to/markName/attrs) の JSON 文字列。
    */
   foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>
+  agentCodexCreate(payload: any): Promise<string>
+  agentCodexUpdate(payload: any): Promise<string>
+  agentWriteBundle(payload: any): Promise<string>
+  agentSnippetCreate(payload: any): Promise<string>
+  agentProposeSceneBody(payload: any): Promise<string>
+  agentAcceptProseStage(payload: any): Promise<string>
+  agentDiscardProseStage(payload: any): Promise<string>
+  agentApplyUndoJournal(payload: any): Promise<string>
+  agentForeshadowCreate(payload: any): Promise<string>
+  agentForeshadowUpdate(payload: any): Promise<string>
+  agentEventCreate(payload: any): Promise<string>
+  agentEventUpdate(payload: any): Promise<string>
+  agentEventDelete(payload: any): Promise<string>
+  agentEventSetParticipants(payload: any): Promise<string>
+  agentSceneEventLink(payload: any): Promise<string>
+  agentSceneEventUnlink(payload: any): Promise<string>
+  agentEventRelationAdd(payload: any): Promise<string>
+  agentEventRelationRemove(payload: any): Promise<string>
+  /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
+  listPostEffectRuns(projectId: string, effectType?: string | undefined | null, limit?: number | undefined | null, offset?: number | undefined | null): Promise<string>
+  /** Outline 用: scene ごとに最新 run の lens (`runCompletedAt` 付き) を返す。 */
+  listSceneLensForProject(projectId: string): Promise<string>
+  /** シーンの annotation + relation を返す (`{annotations,relations}`)。 */
+  listAnnotationsForScene(projectId: string, sceneId: string, status?: string | undefined | null): Promise<string>
+  /** プロジェクトの annotation を返す (`{annotations}`)。 */
+  listAnnotationsForProject(projectId: string, status?: string | undefined | null): Promise<string>
+  /** annotation の status を更新 (XPROJ ガード付き、conn 直呼び)。 */
+  updateAnnotationStatus(annotationId: string, status: string, projectId: string): Promise<string>
+  /** 疑似コメントへの返信を追加 (`args` は snake_case の ReplyToAnnotationArgs)。 */
+  replyToAnnotation(args: any): Promise<string>
+  /** シーンの annotation を保存 (raw snake_case 配列、range_start/end は i64)。 */
+  savePostEffectAnnotations(projectId: string, sceneId: string, annotations: any): Promise<void>
   /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
