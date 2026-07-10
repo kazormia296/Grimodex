@@ -25,6 +25,7 @@ const SURFACE_KEYS = {
   summarization: true,
   context_creator: true,
   codex_judgment: true,
+  codex_yomi: true,
   plot_thread_extract: true,
   chronicle_extract: true,
 } satisfies Record<AiUsageSurface, true>;

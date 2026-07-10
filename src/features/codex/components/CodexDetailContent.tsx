@@ -24,6 +24,15 @@ import { eq } from "drizzle-orm";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { useCodexStore } from "../codexStore";
 import { parseAliases } from "../codexMatcher";
+import {
+  parseReadings,
+  serializeReadings,
+  reconcileReadingKeys,
+  surfacesForEntry,
+  needsAiReading,
+  type ReadingMap,
+} from "../reading";
+import { inferReadings } from "../codexYomi";
 import { prepareRenamePropagation } from "../rename/renameEngine";
 import { useRenamePropagationStore } from "../rename/renamePropagationStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -140,6 +149,10 @@ export function CodexDetailContent({
       return [];
     }
   });
+  const [readings, setReadings] = useState<ReadingMap>(() =>
+    parseReadings(entry.readings),
+  );
+  const [estimatingReadings, setEstimatingReadings] = useState(false);
   const [childrenBudget, setChildrenBudget] = useState<ChildrenBudgetPreset>(
     (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
   );
@@ -176,6 +189,7 @@ export function CodexDetailContent({
     } catch {
       setExcludedAliases([]);
     }
+    setReadings(parseReadings(entry.readings));
     setChildrenBudget(
       (entry.childrenBudget as ChildrenBudgetPreset) ?? "compact",
     );
@@ -188,6 +202,7 @@ export function CodexDetailContent({
     entry.contextMode,
     entry.aliases,
     entry.excludedAliases,
+    entry.readings,
     entry.childrenBudget,
     entry.icon,
     initialTab,
@@ -300,7 +315,25 @@ export function CodexDetailContent({
           i18next.t("codex.detail.duplicateName", { name: trimmed }),
         );
       }
-      await update(entry.id, { name: trimmed });
+      // 読みは表記をキーにするマップなので、改名で name キーを追随させる
+      // (docs/Grimodex_IME連携設計書.md §3.1)。name 更新と同一パッチにして
+      // undo が name/readings を lockstep で巻き戻すようにする。
+      const oldSurfaces = surfacesForEntry(oldName, aliases);
+      const newSurfaces = surfacesForEntry(trimmed, aliases);
+      const reconciled = reconcileReadingKeys(
+        readings,
+        oldSurfaces,
+        newSurfaces,
+      );
+      const readingsChanged =
+        serializeReadings(reconciled) !== serializeReadings(readings);
+      await update(entry.id, {
+        name: trimmed,
+        ...(readingsChanged ? { readings: serializeReadings(reconciled) } : {}),
+      });
+      if (readingsChanged) setReadings(reconciled);
+      // 新しい表記が漢字を含み読み未設定なら AI 推定 (承認フロー無し, §3.3)。
+      void estimateReadingsFor([trimmed], reconciled);
       // Offer to propagate the rename to plain-text occurrences (Item C).
       // id-keyed references (@mentions, relations, pins, AI context) already
       // follow automatically; this covers prose / free-text the matcher finds.
@@ -331,8 +364,87 @@ export function CodexDetailContent({
   };
 
   const handleAliasesChange = async (newAliases: string[]) => {
+    // 別名の追加/削除/変更に readings のキーを追随させる (孤児剪定・単一リネーム移送)。
+    // name 成分は readings のキーである **確定済み** name を使う (ローカルの未コミット
+    // rename を混ぜると旧 name の読みが孤児剪定で消える。改名は handleNameBlur が担当)。
+    const committedName =
+      useCodexStore.getState().entries.find((e) => e.id === entry.id)?.name ??
+      entry.name;
+    const oldSurfaces = surfacesForEntry(committedName, aliases);
+    const newSurfaces = surfacesForEntry(committedName, newAliases);
+    const reconciled = reconcileReadingKeys(readings, oldSurfaces, newSurfaces);
+    const readingsChanged =
+      serializeReadings(reconciled) !== serializeReadings(readings);
     setAliases(newAliases);
-    await update(entry.id, { aliases: JSON.stringify(newAliases) });
+    if (readingsChanged) setReadings(reconciled);
+    await update(entry.id, {
+      aliases: JSON.stringify(newAliases),
+      ...(readingsChanged ? { readings: serializeReadings(reconciled) } : {}),
+    });
+    // 追加された表記が漢字を含み読み未設定なら AI 推定 (§3.3)。
+    const added = newSurfaces.filter((s) => !oldSurfaces.includes(s));
+    if (added.length > 0) void estimateReadingsFor(added, reconciled);
+  };
+
+  const handleReadingsChange = async (next: ReadingMap) => {
+    setReadings(next);
+    await update(entry.id, { readings: serializeReadings(next) });
+  };
+
+  // entry.type (slug) を表示用カテゴリラベルへ。AI 読み推定の曖昧性解消ヒント。
+  const resolveCategoryLabel = useCallback((): string => {
+    const ct = useCodexStore
+      .getState()
+      .types.find((t) => t.slug === entry.type);
+    return ct?.label ?? entry.type;
+  }, [entry.type]);
+
+  // 指定表記のうち漢字を含み読み未設定のものを AI 推定し、readings へ即マージ保存する。
+  // 既存の読みは上書きしない (ユーザー編集を尊重)。fire-and-forget で UI を止めない。
+  const estimateReadingsFor = useCallback(
+    async (targetSurfaces: string[], base: ReadingMap) => {
+      const need = targetSurfaces.filter(
+        (s) => needsAiReading(s) && !(base[s]?.length ?? 0),
+      );
+      if (need.length === 0) return;
+      // inferReadings は内部で例外を握り潰し空 Map を返す (reject しない)。
+      // estimating フラグは promise の finally で確実に戻す。
+      setEstimatingReadings(true);
+      const m = await inferReadings([
+        { id: entry.id, category: resolveCategoryLabel(), surfaces: need },
+      ]).finally(() => setEstimatingReadings(false));
+      const results = m.get(entry.id);
+      if (!results?.length) return;
+      // 最新の永続 readings (store が真実源) へ非破壊マージする。AI 応答待ちの間に
+      // 入った編集を保つため base ではなく store の現値を起点にする。
+      const storeEntry = useCodexStore
+        .getState()
+        .entries.find((e) => e.id === entry.id);
+      const latest = parseReadings(storeEntry?.readings);
+      // AI 応答が遅れて到達する間に改名/別名削除/undo で表記が消えている場合、
+      // もはやエントリの表記でない読みを書くと孤児キー＋不要な履歴 push になる。
+      // 現行表記の集合に含まれる surface だけ採用する。
+      const currentSurfaces = new Set(
+        surfacesForEntry(storeEntry?.name, parseAliases(storeEntry?.aliases)),
+      );
+      const next = { ...latest };
+      let changed = false;
+      for (const { surface, yomi } of results) {
+        if (!currentSurfaces.has(surface)) continue;
+        if (!(next[surface]?.length ?? 0)) {
+          next[surface] = [yomi];
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      setReadings(next);
+      await update(entry.id, { readings: serializeReadings(next) });
+    },
+    [entry.id, resolveCategoryLabel, update],
+  );
+
+  const handleEstimateReadings = () => {
+    void estimateReadingsFor(surfacesForEntry(name, aliases), readings);
   };
 
   const handleExcludedAliasesChange = async (newExcluded: string[]) => {
@@ -470,8 +582,13 @@ export function CodexDetailContent({
           <TrackingTab
             contextMode={contextMode}
             excludedAliases={excludedAliases}
+            surfaces={surfacesForEntry(name, aliases)}
+            readings={readings}
             onContextModeChange={(mode) => void handleContextModeChange(mode)}
             onExcludedAliasesChange={(e) => void handleExcludedAliasesChange(e)}
+            onReadingsChange={(next) => void handleReadingsChange(next)}
+            onEstimateReadings={handleEstimateReadings}
+            estimatingReadings={estimatingReadings}
           />
         )}
         {activeTab === "mentions" && (

@@ -22,6 +22,7 @@ export type AiUsageSurface =
   | "summarization" // 進行的要約 (L5)
   | "context_creator" // Context Creator (ピン提案エージェント)
   | "codex_judgment" // 未確定固有名詞候補の種別判定 (B2)
+  | "codex_yomi" // Codex 表記の読み(ふりがな)推定 (IME連携 Phase1)
   | "plot_thread_extract" // プロットスレッド抽出ウィザード (Phase 4a)
   | "chronicle_extract"; // 作中年表 出来事抽出ウィザード (Chronicle P4f)
 

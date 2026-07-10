@@ -65,6 +65,7 @@ type StructuralPatch = Partial<
     | "tagsCache"
     | "aliases"
     | "excludedAliases"
+    | "readings"
     | "parentId"
     | "contextMode"
     | "icon"
@@ -84,6 +85,7 @@ const FIELD_LABEL_KEYS: Record<string, string> = {
   tagsCache: "codex.history.tagsChanged",
   aliases: "codex.history.aliasesChanged",
   excludedAliases: "codex.history.excludedAliasesChanged",
+  readings: "codex.history.readingsChanged",
   parentId: "codex.history.parentChanged",
   contextMode: "codex.history.contextModeChanged",
   icon: "codex.history.iconChanged",
@@ -140,6 +142,7 @@ interface CodexState {
           | "tagsCache"
           | "aliases"
           | "excludedAliases"
+          | "readings"
           | "sourceChatMessageId"
         >
       >,
@@ -294,6 +297,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               tagsCache: captured.tagsCache ?? undefined,
               aliases: captured.aliases ?? undefined,
               excludedAliases: captured.excludedAliases ?? undefined,
+              readings: captured.readings ?? undefined,
               parentId: captured.parentId ?? undefined,
               sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
             });
@@ -501,6 +505,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
             tagsCache: captured.tagsCache ?? undefined,
             aliases: captured.aliases ?? undefined,
             excludedAliases: captured.excludedAliases ?? undefined,
+            readings: captured.readings ?? undefined,
             parentId: captured.parentId ?? undefined,
             sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
           });

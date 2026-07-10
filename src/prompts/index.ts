@@ -25,6 +25,7 @@ import {
 } from "./ja/chatApi";
 import { JA_POST_EFFECT } from "./ja/postEffect";
 import { buildCandidateJudgmentPromptJa } from "./ja/codexJudgment";
+import { buildYomiEstimationPromptJa } from "./ja/codexYomi";
 import { EN_CHAT_SYSTEM } from "./en/chatSystem";
 import { EN_AGENT_CONTROL } from "./en/agentControl";
 import { buildBeatSystemPromptEn, buildBeatUserPromptEn } from "./en/beat";
@@ -44,6 +45,7 @@ import {
 } from "./en/foreshadow";
 import { buildProposePlotThreadsPromptEn } from "./en/plotThread";
 import { buildCandidateJudgmentPromptEn } from "./en/codexJudgment";
+import { buildYomiEstimationPromptEn } from "./en/codexYomi";
 import {
   buildSynopsisFromContentPromptEn,
   buildSessionTitlePromptEn,
@@ -85,6 +87,9 @@ const JA_CATALOG = {
   },
   codexJudgment: {
     buildCandidateJudgmentPrompt: buildCandidateJudgmentPromptJa,
+  },
+  codexYomi: {
+    buildYomiEstimationPrompt: buildYomiEstimationPromptJa,
   },
   // ja/en の postEffect は `as const` で互いに異なる文字列リテラル型になるため、
   // string 値へ widen してどちらの言語セットも代入可能にする (中身は不変)。
@@ -134,6 +139,9 @@ const EN_CATALOG: PromptCatalog = {
   },
   codexJudgment: {
     buildCandidateJudgmentPrompt: buildCandidateJudgmentPromptEn,
+  },
+  codexYomi: {
+    buildYomiEstimationPrompt: buildYomiEstimationPromptEn,
   },
   postEffect: EN_POST_EFFECT,
 };

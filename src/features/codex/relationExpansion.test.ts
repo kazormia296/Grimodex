@@ -15,6 +15,7 @@ function makeEntry(id: string, name: string): CodexEntry {
     name,
     aliases: null,
     excludedAliases: null,
+    readings: null,
     summary: `${name} summary`,
     content: "{}",
     icon: null,

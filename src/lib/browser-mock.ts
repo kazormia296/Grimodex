@@ -88,6 +88,7 @@ const SCHEMA_DDL = `
     name TEXT NOT NULL DEFAULT 'Untitled',
     aliases TEXT,
     excluded_aliases TEXT,
+    readings TEXT,
     summary TEXT,
     content TEXT NOT NULL DEFAULT '{}',
     icon TEXT,

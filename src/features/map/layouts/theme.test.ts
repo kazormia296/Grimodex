@@ -66,6 +66,7 @@ function makeCodex(id: string, type = "character"): CodexEntry {
     name: id,
     aliases: null,
     excludedAliases: null,
+    readings: null,
     summary: null,
     content: "{}",
     icon: null,
