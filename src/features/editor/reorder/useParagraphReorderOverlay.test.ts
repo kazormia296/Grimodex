@@ -2,12 +2,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/tauri";
 import { getEditorExtensions } from "../extensions";
 import { useParagraphReorderOverlay } from "./useParagraphReorderOverlay";
 import { clearBunsetsuCache } from "./bunsetsuSegmenter";
 
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn(),
 }));
 

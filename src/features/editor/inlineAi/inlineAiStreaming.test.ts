@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-type ListenHandler = (event: { payload: unknown }) => void;
+type ListenHandler = (payload: unknown) => void;
 
 const listeners = new Map<string, ListenHandler>();
 const invokeMock = vi.fn();
@@ -15,9 +15,6 @@ const listenMock = vi.fn(async (eventName: string, handler: ListenHandler) => {
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
   listen: (...args: unknown[]) =>
     listenMock(...(args as [string, ListenHandler])),
 }));
@@ -26,7 +23,7 @@ import { sendInlineAiStream, abortInlineAiStream } from "./inlineAiStreaming";
 
 function emit(event: string, payload: unknown) {
   const handler = listeners.get(event);
-  handler?.({ payload });
+  handler?.(payload);
 }
 
 describe("inlineAiStreaming", () => {

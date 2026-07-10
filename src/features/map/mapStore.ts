@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/tauri";
 import type { GlobalSettings } from "@/features/workspace/store";
 import { parseShowConfig } from "./mapApi";
 import { DEFAULT_SHOW, DEFAULT_GALAXY_FILTERS } from "./types";

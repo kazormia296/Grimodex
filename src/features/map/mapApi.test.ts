@@ -10,10 +10,6 @@ vi.mock("@/db/client", () => ({
   },
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn().mockResolvedValue({}),
-}));
-
 // M11: atomic writes go through invoke("db_execute_batch"). These tests assert
 // on the (mocked) drizzle builder calls + returned rows, not real persistence,
 // so the batch invoke is a no-op here.
