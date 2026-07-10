@@ -3,7 +3,7 @@
  *
  * 2 系統ある:
  * 1. **Tauri コマンド互換**（grim:invoke ルーター経由、Envelope は ipcContract の
- *    dispatchInvoke が畳む）: set_window_vibrancy / get_license_state スタブ
+ *    dispatchInvoke が畳む）: set_window_vibrancy / export / logs
  * 2. **ブリッジ native API**（dialog / fs / openExternal / getVersion / zoom /
  *    windowControls — 専用チャネル + Envelope。preload 側で解封して
  *    Promise reject に変換する）
@@ -18,7 +18,6 @@ import type { IpcMainInvokeEvent } from "electron";
 
 import {
   clampZoomFactor,
-  DISABLED_LICENSE_STATE,
   IPC,
   isSafeExternalUrl,
   toErrorString,
@@ -50,11 +49,7 @@ export function defaultLogDir(): string {
   return path.join(base, ".grimodex", "logs");
 }
 
-function requireArgString(
-  args: CommandArgs,
-  key: string,
-  cmd: string,
-): string {
+function requireArgString(args: CommandArgs, key: string, cmd: string): string {
   const value = args[key];
   if (typeof value !== "string") {
     throw new Error(
@@ -120,8 +115,6 @@ export function buildShellCommandHandlers(
       }
       return Promise.resolve(null);
     },
-    // licensing 無効ビルドと同一形状（§4.3。Phase 3 で napi へ差し替え）
-    get_license_state: () => Promise.resolve({ ...DISABLED_LICENSE_STATE }),
     // export 系（commands/export.rs の写像）: 保存できたら絶対パス、
     // キャンセル時は null（Tauri ワイヤと同形）。
     export_save_text: async (args: CommandArgs) => {
@@ -292,18 +285,16 @@ export function registerShellBridgeHandlers(
   });
 
   handleWithEnvelope(IPC.fsReadTextFile, async (_event, path) => {
-    const real = await fsScope.assertReadable(
-      requireStringArg(path, "path"),
-      { asFile: true },
-    );
+    const real = await fsScope.assertReadable(requireStringArg(path, "path"), {
+      asFile: true,
+    });
     return readFile(real, "utf8");
   });
 
   handleWithEnvelope(IPC.fsReadDir, async (_event, path) => {
-    const real = await fsScope.assertReadable(
-      requireStringArg(path, "path"),
-      { asFile: false },
-    );
+    const real = await fsScope.assertReadable(requireStringArg(path, "path"), {
+      asFile: false,
+    });
     const entries = await readdir(real, {
       withFileTypes: true,
     });
@@ -337,7 +328,11 @@ export function registerShellBridgeHandlers(
   // IPC_UNIMPLEMENTED の明示エラーへ fail-soft する。
   handleWithEnvelope(IPC.panelOpen, (_event, label, opts) => {
     if (!panelWindows) throw new Error(unimplementedError("panelWindow.open"));
-    const o = (opts ?? {}) as { width?: unknown; height?: unknown; title?: unknown };
+    const o = (opts ?? {}) as {
+      width?: unknown;
+      height?: unknown;
+      title?: unknown;
+    };
     panelWindows.open(requireStringArg(label, "label"), o);
     return null;
   });

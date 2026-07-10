@@ -1,6 +1,6 @@
 /**
  * shellCommands の単体テスト（vitest node 環境 + electron モジュールモック）。
- * vibrancy 分岐 / license スタブ形状 / openExternal スキーム再検証 /
+ * vibrancy 分岐 / openExternal スキーム再検証 /
  * fs・zoom・windowControl の envelope 化を検証する。
  */
 import {
@@ -39,16 +39,18 @@ vi.mock("electron", () => ({
   },
   shell: { openExternal: openExternalMock, openPath: openPathMock },
   ipcMain: {
-    handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => {
+    handle: (
+      channel: string,
+      fn: (event: unknown, ...args: unknown[]) => unknown,
+    ) => {
       handlers.set(channel, fn);
     },
   },
   BrowserWindow: { fromWebContents: fromWebContentsMock },
 }));
 
-const { buildShellCommandHandlers, registerShellBridgeHandlers } = await import(
-  "./shellCommands.js"
-);
+const { buildShellCommandHandlers, registerShellBridgeHandlers } =
+  await import("./shellCommands.js");
 
 async function invokeBridge(
   channel: string,
@@ -69,19 +71,6 @@ beforeAll(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("buildShellCommandHandlers", () => {
-  it("get_license_state は licensing 無効ビルドと同一形状（§4.3）", async () => {
-    const h = buildShellCommandHandlers(null, "linux");
-    await expect(h.get_license_state({})).resolves.toEqual({
-      licensingEnabled: false,
-      status: "disabled",
-      trialDaysRemaining: null,
-      graceDaysRemaining: null,
-      keyTail: null,
-      activatedAt: null,
-      lastValidatedAt: null,
-    });
-  });
-
   it("set_window_vibrancy: darwin では setVibrancy を呼ぶ（Rust 実装と同分岐）", async () => {
     const setVibrancy = vi.fn();
     const h = buildShellCommandHandlers({ setVibrancy }, "darwin");
@@ -125,9 +114,7 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
         filters: unknown[];
       };
       expect(options.defaultPath).toBe("out.txt");
-      expect(options.filters).toEqual([
-        { name: "Text", extensions: ["txt"] },
-      ]);
+      expect(options.filters).toEqual([{ name: "Text", extensions: ["txt"] }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -273,10 +260,14 @@ describe("fs ブリッジ（ダイアログ許可制スコープ — fsScope.ts�
         canceled: false,
         filePaths: [path.join(dir, "pick.md")],
       });
-      const picked = await invokeBridge(IPC.dialogOpenFile, { sender: {} }, {
-        name: "Markdown",
-        extensions: ["md"],
-      });
+      const picked = await invokeBridge(
+        IPC.dialogOpenFile,
+        { sender: {} },
+        {
+          name: "Markdown",
+          extensions: ["md"],
+        },
+      );
       expect(picked).toEqual({ ok: true, value: path.join(dir, "pick.md") });
 
       const text = await invokeBridge(
@@ -337,7 +328,11 @@ describe("fs ブリッジ（ダイアログ許可制スコープ — fsScope.ts�
 describe("windowControl", () => {
   it("isMaximized は送信元窓の状態を返す", async () => {
     fromWebContentsMock.mockReturnValue({ isMaximized: () => true });
-    const env = await invokeBridge(IPC.windowControl, { sender: {} }, "isMaximized");
+    const env = await invokeBridge(
+      IPC.windowControl,
+      { sender: {} },
+      "isMaximized",
+    );
     expect(env).toEqual({ ok: true, value: true });
   });
 
@@ -361,13 +356,21 @@ describe("windowControl", () => {
 
   it("窓が見つからない webContents は envelope エラー", async () => {
     fromWebContentsMock.mockReturnValue(null);
-    const env = await invokeBridge(IPC.windowControl, { sender: {} }, "minimize");
+    const env = await invokeBridge(
+      IPC.windowControl,
+      { sender: {} },
+      "minimize",
+    );
     expect(env.ok).toBe(false);
   });
 
   it("未知の op は envelope エラー", async () => {
     fromWebContentsMock.mockReturnValue({ isMaximized: () => false });
-    const env = await invokeBridge(IPC.windowControl, { sender: {} }, "destroy");
+    const env = await invokeBridge(
+      IPC.windowControl,
+      { sender: {} },
+      "destroy",
+    );
     expect(env.ok).toBe(false);
     if (!env.ok) expect(env.error).toContain("unknown window control op");
   });
@@ -391,12 +394,21 @@ describe("setZoomFactor / getVersion / panelWindow スタブ", () => {
   });
 
   it("panelWindow は S7 まで IPC_UNIMPLEMENTED スタブ", async () => {
-    const open = await invokeBridge(IPC.panelOpen, { sender: {} }, "panel-codex", {});
+    const open = await invokeBridge(
+      IPC.panelOpen,
+      { sender: {} },
+      "panel-codex",
+      {},
+    );
     expect(open).toEqual({
       ok: false,
       error: "IPC_UNIMPLEMENTED: panelWindow.open",
     });
-    const focus = await invokeBridge(IPC.panelFocus, { sender: {} }, "panel-codex");
+    const focus = await invokeBridge(
+      IPC.panelFocus,
+      { sender: {} },
+      "panel-codex",
+    );
     expect(focus).toEqual({
       ok: false,
       error: "IPC_UNIMPLEMENTED: panelWindow.focusByLabel",

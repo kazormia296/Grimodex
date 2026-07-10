@@ -198,24 +198,6 @@ export function clampZoomFactor(factor: unknown): number {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// get_license_state スタブの形状（licensing 無効ビルドと同一 — §4.3）
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * src-tauri/src/license.rs `disabled_dto()` のワイヤ写像（camelCase）。
- * Phase 3 で grimodex-core の状態機械（napi 経由）へ差し替える。
- */
-export const DISABLED_LICENSE_STATE = {
-  licensingEnabled: false,
-  status: "disabled",
-  trialDaysRemaining: null,
-  graceDaysRemaining: null,
-  keyTail: null,
-  activatedAt: null,
-  lastValidatedAt: null,
-} as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // napi Backend の構造型（electron/native/grimodex-node/index.d.ts と同形。
 // 生成物 index.js は gitignore のため import せず構造的に一致させる）
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,6 +328,13 @@ export interface NapiBackendLike {
     sceneId: string,
     annotations: unknown,
   ): Promise<void>;
+  // license（Phase 3e）。optional は旧 .node とのversion skewを明示エラーに
+  // するため。runLicenseValidateCycleはrenderer commandではなくmain scheduler専用。
+  getLicenseState?(): Promise<string>;
+  activateLicense?(key: string): Promise<string>;
+  revalidateLicense?(): Promise<string>;
+  deactivateLicense?(): Promise<string>;
+  runLicenseValidateCycle?(): Promise<string | null>;
   // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
   // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が
   // 失敗した場合は apiKeyError に生メッセージを載せる。native は cache hit なら
@@ -1205,6 +1194,36 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  // license（Phase 3e）。状態機械/Polar通信/license.jsonは共有Rust backendが
+  // 一括して扱い、rendererへはキーを含まないDTOだけを返す。
+  get_license_state: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(b, b.getLicenseState, "getLicenseState")(),
+      ),
+  },
+  activate_license: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.activateLicense,
+          "activateLicense",
+        )(requireString(a, "key", "activate_license")),
+      ),
+  },
+  revalidate_license: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(b, b.revalidateLicense, "revalidateLicense")(),
+      ),
+  },
+  deactivate_license: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(b, b.deactivateLicense, "deactivateLicense")(),
+      ),
+  },
   // post_effect run 系（Phase 3d）。FE の `{ args: snake_case DTO }` は nested
   // object のキーを一切変換せず native へ渡す。start は run_id を即返す
   // fire-and-forgetで、進捗/終端は既存 post_effect:* event 経路が担う。
@@ -1549,7 +1568,6 @@ export type ShellCommandHandlers = Readonly<
  */
 export const SHELL_COMMAND_NAMES: readonly string[] = [
   "set_window_vibrancy",
-  "get_license_state",
   "export_save_text",
   "export_save_bytes",
   "open_log_dir",
@@ -1593,7 +1611,8 @@ export interface DispatchDeps {
 
 /**
  * コマンド 1 件を実行して Envelope に畳む。**決して throw しない**（§5.2）。
- * 優先順位: main-TS ハンドラ → napi コマンド表 → IPC_UNIMPLEMENTED。
+ * 優先順位: napi コマンド表 → main-TS ハンドラ → IPC_UNIMPLEMENTED。
+ * 移植済みcommandを古いshell stubが遮蔽しないよう、明示NAPI表を権威にする。
  */
 export async function dispatchInvoke(
   cmd: string,
@@ -1601,9 +1620,6 @@ export async function dispatchInvoke(
   deps: DispatchDeps,
 ): Promise<Envelope> {
   try {
-    if (Object.hasOwn(deps.shell, cmd)) {
-      return { ok: true, value: await deps.shell[cmd](args) };
-    }
     if (Object.hasOwn(NAPI_COMMANDS, cmd)) {
       if (!deps.backend) {
         return {
@@ -1615,6 +1631,9 @@ export async function dispatchInvoke(
         ok: true,
         value: await NAPI_COMMANDS[cmd].run(deps.backend, args, deps),
       };
+    }
+    if (Object.hasOwn(deps.shell, cmd)) {
+      return { ok: true, value: await deps.shell[cmd](args) };
     }
     return { ok: false, error: unimplementedError(cmd) };
   } catch (e) {
