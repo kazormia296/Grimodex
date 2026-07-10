@@ -1,4 +1,13 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// Suppress global-settings persistence in unit tests（gridStore.test と同方式。
+// mock しないと debounce 後の persister が実 @/lib/tauri → browser-mock を
+// 初期化してしまい、テストが密閉されない）
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
+  invoke: vi.fn().mockResolvedValue({}),
+}));
+
 import { useMatrixStore } from "./matrixStore";
 
 function resetStore() {

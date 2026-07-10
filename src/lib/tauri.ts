@@ -35,6 +35,10 @@ const SLOW_COMMANDS = new Set([
   "codex_index_entry",
   /** 中規模プロジェクトでは Aho-Corasick 構築に 10 秒超かかることがある */
   "codex_rebuild_matcher",
+  /** 初回呼び出しは lindera UniDic 埋め込み辞書のコールドロード（OnceLock、
+   *  morph.rs）で低速機だと 10s を超えうる。reject すると文節リオーダーが
+   *  文粒度フォールバックに退化するため長めのタイムアウトを与える。 */
+  "segment_bunsetsu",
   /** ネイティブ保存ダイアログを開いている間 invoke がブロックする。ユーザーが
    *  保存先を選ぶまで分単位かかりうるので 10s では reject されてしまう。 */
   "export_save_text",
