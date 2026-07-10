@@ -304,7 +304,7 @@ Tauri は renderer 内で `event.preventDefault()` する同期 veto。Electron 
 
 - main の `windows.ts` が `Map<label, BrowserWindow>` を保持。`panelWindow.open(label, opts)` は label を `/^panel-[a-z0-9-]+$/` で検証し、**URL は main が label から組み立てる**（dev: `${ELECTRON_RENDERER_URL}/?window=panel&panel=<id>`、prod: `app://bundle/index.html?window=panel&panel=<id>`）。renderer 供給 URL は受け取らない — Tauri capability（windows scope `panel-*`）の代替となる侵害時ガード。
 - 窓オプション: transparent / frame:false / 480×900 / label 別 window-state 復元。親子関係は付けない（現行はフローティング独立窓）。メイン窓 `closed` で全パネル窓を閉じ、`window-all-closed` で `app.quit()`（macOS 含む — 単一アプリ窓の現行挙動に合わせる）。
-- `src/lib/webviewWindows.ts` の Electron 分岐: `getWebviewWindowByLabel` → `focusByLabel` の存在確認、`createWebviewWindow` → `panelWindow.open`。`panelWindow.ts`（feature 層）は無改修。
+- `src/lib/webviewWindows.ts` の Electron 分岐: `getWebviewWindowByLabel` → `focusByLabel` の存在確認、`createWebviewWindow` → `panelWindow.open`。`panelWindow.ts`（feature 層）は無改修。**【最終レビューで改訂】** 無改修のままだと feature 層の `isTauri()` ゲート 4 箇所（panelWindow.ts×2 / PanelChromeMenu.tsx / ToolWindowIcon.tsx）により Electron では UI から別窓へ到達不能で A5 と両立しない（confirmed 指摘）。例外として `supportsPanelWindows()`（= isTauri ‖ isElectron、正本は panelWindow.ts）を新設し、4 ゲートをこれに差し替えた。
 - 既知の意味差として記録: Tauri の「生成失敗は `tauri://error` に流れ reject しない」契約は「open が reject しうる」に変わるが、呼び出し元 `openPanelWindow` は既に await + 無通知許容なので影響なし。
 
 ### 6.6 vibrancy
@@ -412,7 +412,7 @@ Rust emit 55 箇所の**実配線はしない**（発火元サブシステムが
 | `src-tauri/Cargo.toml` | workspace member 追加 | ~5 行 |
 | `package.json` / `.gitignore` | scripts / devDeps / ignore | ~20 行 |
 
-**触らないことを保証するファイル**: `vite.config.ts`、`tauri.conf.json`、`vitest.config.ts`、`.github/workflows/ci.yml` の required ジョブ、既存テスト全ファイル、`src/features/**`（feature 層は 1 行も変えない — Phase 1 の抽象層集約が効いている）。
+**触らないことを保証するファイル**: `vite.config.ts`、`tauri.conf.json`、`vitest.config.ts`、`.github/workflows/ci.yml` の required ジョブ、既存テスト全ファイル、`src/features/**`（feature 層は 1 行も変えない — Phase 1 の抽象層集約が効いている。**例外**: 最終レビュー confirmed 指摘により、パネル別窓の実行シェルゲート 4 箇所のみ `supportsPanelWindows()` へ差し替え — §6.5 の改訂注記を参照。既存テストは変更ゼロのまま、Electron 側の検証は新規テスト 3 ファイルで追加）。
 
 ## 10. テスト戦略
 

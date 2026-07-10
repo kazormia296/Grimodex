@@ -17,8 +17,11 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { useLayoutStore } from "./layoutStore";
-import { isTauri } from "@/lib/tauri";
-import { openPanelWindow, isPanelWindow } from "./multiwindow/panelWindow";
+import {
+  openPanelWindow,
+  isPanelWindow,
+  supportsPanelWindows,
+} from "./multiwindow/panelWindow";
 import { useStripeIconPointerDrag } from "./useStripeIconPointerDrag";
 import { stripeAxisForRegion } from "./layoutStripeSwap";
 import type { PanelId } from "./panelIds";
@@ -162,7 +165,7 @@ export function ToolWindowIcon({
             ? t("layout.panelMenu.restore")
             : t("layout.panelMenu.maximize")}
         </ContextMenuItem>
-        {isTauri() && !isPanelWindow() && (
+        {supportsPanelWindows() && !isPanelWindow() && (
           <ContextMenuItem
             data-testid={`ctx-open-window-${panelId}`}
             onSelect={() => void openPanelWindow(panelId)}
