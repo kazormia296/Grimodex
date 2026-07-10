@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { invoke, isTauri, isElectron } from "@/lib/tauri";
+import { invoke, isTauri } from "@/lib/tauri";
 import {
   plotThreads,
   plotThreadSceneLinks,
@@ -14,12 +14,17 @@ import { eq, inArray } from "drizzle-orm";
  *
  * Electron 移行 Phase 3 バッチ1: 従来 `isTauri()` 単独ゲートだったため Electron は
  * Drizzle 分岐に落ち、link_create / link_update の XPROJ ガードを**素通ししていた**。
- * `isElectron()` を足して napi 経由に載せることで、Electron でもサーバサイドの
+ * Electron 判定を足して napi 経由に載せることで、Electron でもサーバサイドの
  * XPROJ 検証・phase_type 検証が効くようになる（意図した挙動の厳格化）。
- * （src/lib/exportFile.ts の supportsNativeExport と同作法の実行シェルゲート）
+ *
+ * isElectron 相当（`"grimodex" in window`、src/lib/shell.ts と同判定）は inline で
+ * 書く。`@/lib/tauri` からの `isElectron` 再エクスポート import は browser build の
+ * ESM（実 Chromium/WebKit + 一部テストの部分 vi.mock("@/lib/tauri")）で解決に失敗
+ * するため使わない（foreshadow/api.ts と同作法）。
  */
 function nativeBackend(): boolean {
-  return isTauri() || isElectron();
+  if (isTauri()) return true;
+  return typeof window !== "undefined" && "grimodex" in window;
 }
 
 export interface PlotThreadRow {

@@ -7,13 +7,12 @@
  * `isTauri() || isElectron()` へ広げた結果、Electron では napi コマンドへ invoke
  * するようになる（= サーバサイドの XPROJ / phase_type 検証が効く）ことを gate する。
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const invoke = vi.fn();
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
   isTauri: () => false,
-  isElectron: () => true,
 }));
 
 import {
@@ -23,7 +22,17 @@ import {
   deletePlotThread,
 } from "./api";
 
-beforeEach(() => invoke.mockReset());
+beforeEach(() => {
+  invoke.mockReset();
+  // Electron マーカー（nativeBackend の inline "grimodex" in window 判定）。
+  // isTauri()=false のため、これで invoke（napi）パスに載る。
+  (window as unknown as Record<string, unknown>).grimodex = {
+    shell: "electron",
+  };
+});
+afterEach(() => {
+  delete (window as unknown as Record<string, unknown>).grimodex;
+});
 
 describe("plot-threads api は Electron でネイティブ backend (napi) へ invoke する", () => {
   it("createPlotThread は plot_thread_create を invoke（Drizzle 分岐に落ちない）", async () => {
