@@ -4,10 +4,14 @@ type ListenHandler = (payload: unknown) => void;
 
 const listeners = new Map<string, ListenHandler>();
 const callOrder: string[] = [];
-const invokeMock = vi.fn(async (command: string) => {
-  callOrder.push(`invoke:${command}`);
-  return undefined;
-});
+const invokeMock = vi.fn(
+  async (
+    ...args: [command: string, invokeArgs?: unknown]
+  ): Promise<unknown> => {
+    callOrder.push(`invoke:${args[0]}`);
+    return undefined;
+  },
+);
 const listenMock = vi.fn(async (event: string, handler: ListenHandler) => {
   callOrder.push(`listen:${event}`);
   listeners.set(event, handler);
@@ -17,7 +21,8 @@ const listenMock = vi.fn(async (event: string, handler: ListenHandler) => {
 });
 
 vi.mock("@/lib/tauri", () => ({
-  invoke: (...args: unknown[]) => invokeMock(...args),
+  invoke: (...args: [command: string, invokeArgs?: unknown]) =>
+    invokeMock(...args),
   listen: (...args: unknown[]) =>
     listenMock(...(args as [string, ListenHandler])),
 }));
