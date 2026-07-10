@@ -5,7 +5,7 @@ import { CitationList } from "./CitationList";
 import type { Citation } from "../agent/agentTypes";
 
 const openUrl = vi.fn();
-vi.mock("@tauri-apps/plugin-opener", () => ({
+vi.mock("@/lib/opener", () => ({
   openUrl: (url: string) => openUrl(url),
 }));
 vi.mock("react-i18next", () => ({

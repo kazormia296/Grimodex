@@ -6,6 +6,7 @@ import { EULA_VERSION } from "@/features/legal/constants";
 import type { GlobalSettings } from "@/features/workspace/store";
 import { isNewer } from "./semver";
 import { useReleaseNotesStore } from "./releaseNotesStore";
+import { getVersion } from "@/lib/appInfo";
 
 export interface ReleaseNotesContent {
   src: string;
@@ -56,10 +57,9 @@ export async function evaluateReleaseNotesGate(
   if (globalSettings == null) return;
   if (globalSettings.acceptedEulaVersion !== EULA_VERSION) return;
   if (isCancelled()) return;
-  const verMod = await import("@tauri-apps/api/app");
   let current: string;
   try {
-    current = await verMod.getVersion();
+    current = await getVersion();
   } catch {
     return;
   }

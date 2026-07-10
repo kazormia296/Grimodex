@@ -1,19 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
+import type { Update, DownloadEvent } from "@/lib/updater";
 
 vi.mock("@/lib/tauri", () => ({
   isTauri: vi.fn(),
 }));
-vi.mock("@tauri-apps/plugin-updater", () => ({
+vi.mock("@/lib/updater", () => ({
   check: vi.fn(),
-}));
-vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: vi.fn(),
 }));
 
 import { isTauri } from "@/lib/tauri";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { check, relaunch } from "@/lib/updater";
 import {
   checkForUpdate,
   startUpdateDownload,

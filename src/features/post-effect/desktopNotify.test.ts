@@ -7,7 +7,7 @@ const h = vi.hoisted(() => ({
   sendNotification: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/plugin-notification", () => ({
+vi.mock("@/lib/notification", () => ({
   isPermissionGranted: h.isPermissionGranted,
   requestPermission: h.requestPermission,
   sendNotification: h.sendNotification,

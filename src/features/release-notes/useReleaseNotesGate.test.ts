@@ -14,7 +14,7 @@ let mockGlobalSettings:
   | import("@/features/workspace/store").GlobalSettings
   | null = null;
 
-vi.mock("@tauri-apps/api/app", () => ({
+vi.mock("@/lib/appInfo", () => ({
   getVersion: vi.fn(async () => "0.10.4"),
 }));
 
