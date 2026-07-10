@@ -26,6 +26,12 @@ function buildLinearFixture(vertical: boolean): {
   const container = document.createElement("div");
   container.className = vertical ? "editor-vertical" : "";
   container.style.cssText = "width: 400px; height: 400px; overflow: auto;";
+  // 実アプリと同じく「スクローラ > wrapper > シーン」の3層にする。
+  // スクローラ自身は縦書きにせず、wrapper（直下の子）から vertical-rl が
+  // 始まる（index.css の .editor-vertical > * — WebKitGTK のスクロール
+  // リセットバグ回避の構造契約）。
+  const wrapper = document.createElement("div");
+  container.appendChild(wrapper);
   const blocks: HTMLElement[] = [];
   for (let i = 0; i < 5; i++) {
     const block = document.createElement("div");
@@ -33,7 +39,7 @@ function buildLinearFixture(vertical: boolean): {
     // ブロック軸方向に 300px（横=高さ / 縦=幅）
     block.style.blockSize = "300px";
     block.textContent = `scene ${i}`;
-    container.appendChild(block);
+    wrapper.appendChild(block);
     blocks.push(block);
   }
   document.body.appendChild(container);

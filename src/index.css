@@ -1708,14 +1708,39 @@ html[data-engine="webkitgtk"].dark .editor-vertical .tiptap .emphasis-dot-char {
  * so the scroll axis flips and writing-mode inherits down to .tiptap, where
  * the logical properties above resolve against vertical-rl. */
 .editor-vertical {
+  /* ★スクロールコンテナ自身は縦書きにしない★
+   * WebKitGTK は「vertical-rl なスクロールコンテナ」に対し、DOM 変異
+   * （ポップオーバー portal・decoration 再構築・入力後の再マッチ等、コンテナ外
+   * の変異でも）の relayout でスクロール位置を origin(0=先頭) へリセットする
+   * エンジンバグを持つ（実測。JS 関与ゼロ・overflow-anchor でも止まらない）。
+   * スクローラを horizontal-tb のまま direction: rtl にすると「右端起点・
+   * 負方向へ読み進む」横スクロール軸だけを借りられ、リセットは一切発火しない
+   * （実測: 対照 9 回 → 0 回。Linux で縦書きが動作している MirrorShard_2 と
+   * 同じ構造）。縦書きは直下の子（content wrapper）から開始する。
+   * scrollLeft の符号規約（0=右端・負方向=前方）は RTL スクローラでも
+   * vertical-rl スクローラと同一で、editorLayout の前提は不変（実測確認済み）。 */
+  direction: rtl;
+  /* スクロールアンカリング切り: 編集中の DOM 変異でエンジンが視点を動かす
+   * 要因にしかならない（Chromium でも無害）。 */
+  overflow-anchor: none;
+  /* 縦組み用字形 (縦向きの長音符・右上寄せの句読点) を有効化（継承で本文へ届く）。
+     フォントが vert/vrt2 GSUB を持てば有効になる。同梱の fontsource web フォントは
+     サブセット化で vert を欠くため、WebKitGTK では下の [data-engine="webkitgtk"]
+     ルールで vert 対応のシステムフォントに切り替える。"vpal" は縦組み
+     プロポーショナル字間詰め。 */
+  font-feature-settings: "vert" 1, "vrt2" 1, "vpal" 1;
+}
+/* 縦書きの実体はスクローラ直下の子から（両エディタとも直下は content wrapper
+ * 1 つ。direction は rtl をスクロール軸にだけ借りたので ltr へ戻す）。
+ * inline-size (物理高さ) はスクロールポートに固定する — orthogonal flow の
+ * 自動解決は content ベースに転ぶことがあり、行が折り返さず列化しなくなる。
+ * block-size (物理幅) は従来どおり列の増加に合わせて content 成長に任せる。 */
+.editor-vertical > * {
   writing-mode: vertical-rl;
+  direction: ltr;
   text-orientation: mixed;
   -webkit-text-orientation: mixed;
-  /* 縦組み用字形 (縦向きの長音符・右上寄せの句読点) を有効化。フォントが vert/vrt2
-     GSUB を持てば有効になる。同梱の fontsource web フォントはサブセット化で vert を
-     欠くため、WebKitGTK では下の [data-engine="webkitgtk"] ルールで vert 対応の
-     システムフォントに切り替える。"vpal" は縦組みプロポーショナル字間詰め。 */
-  font-feature-settings: "vert" 1, "vrt2" 1, "vpal" 1;
+  inline-size: 100%;
 }
 .editor-vertical .tiptap ruby rt {
   font-size: 0.5em;
