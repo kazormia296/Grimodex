@@ -29,6 +29,7 @@ use napi_derive::napi;
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::events::EventSink;
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
+use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
 
@@ -199,6 +200,73 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let result = db.append_change_events(&project_id, &session_id, &events)?;
                 Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
+    /// 文字屑ゴミ箱: 作成 (commands/trash_bin.rs の写像 — 実装本体は
+    /// `grimodex_db::trash_bin` を Tauri コマンドと共用)。trash_bin 5 コマンドは
+    /// workspace 読み込み時に `trash_bin_list` が必ず呼ばれるため、垂直スライスに
+    /// 含めないと Electron 起動のたびにゴミ箱エラートーストが出る (§4.3)。
+    /// `payload` は camelCase の TrashBinCreatePayload。
+    /// 返り値: 作成行 (`SELECT *`、列名は snake_case) の JSON 文字列。
+    #[napi]
+    pub async fn trash_bin_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: TrashBinCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = trash_bin::create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// 文字屑ゴミ箱: 一覧 (deleted_at 降順、`limit` 省略時 50 件)。
+    /// 返り値: 行オブジェクト配列の JSON 文字列。
+    #[napi]
+    pub async fn trash_bin_list(&self, project_id: String, limit: Option<i64>) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = trash_bin::list(db, project_id, limit)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    /// 文字屑ゴミ箱: 1 件削除 (拾い上げ成功時にも呼ばれる)。
+    #[napi]
+    pub async fn trash_bin_delete(&self, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| trash_bin::delete(db, id))).await
+    }
+
+    /// 文字屑ゴミ箱: project 内全削除。
+    #[napi]
+    pub async fn trash_bin_clear_all(&self, project_id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| trash_bin::clear_all(db, project_id)))
+            .await
+    }
+
+    /// 文字屑ゴミ箱: 期日切れ・件数超過の刈り取り (起動時に呼ばれる)。
+    /// 返り値: 残件数 (i64) の JSON 文字列。
+    #[napi]
+    pub async fn trash_bin_prune(
+        &self,
+        project_id: String,
+        retention_days: i64,
+        max_count: i64,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let count = trash_bin::prune(db, project_id, retention_days, max_count)?;
+                Ok(serde_json::to_string(&count)?)
             })
         })
         .await

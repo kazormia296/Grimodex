@@ -62,6 +62,24 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "timelapseAppendBatch",
       Promise.resolve('{"insertedCount":1,"tailSequence":2,"tailHash":"h"}'),
     ) as never,
+    // trash_bin 5 コマンド（napi は SELECT * の生行 = snake_case 列名を返す）
+    trashBinCreate: record(
+      "trashBinCreate",
+      Promise.resolve('{"id":"t1","preview_text":"消した文字屑"}'),
+    ) as never,
+    trashBinList: record(
+      "trashBinList",
+      Promise.resolve('[{"id":"t1","preview_text":"消した文字屑"}]'),
+    ) as never,
+    trashBinDelete: record(
+      "trashBinDelete",
+      Promise.resolve(undefined),
+    ) as never,
+    trashBinClearAll: record(
+      "trashBinClearAll",
+      Promise.resolve(undefined),
+    ) as never,
+    trashBinPrune: record("trashBinPrune", Promise.resolve("42")) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
   };
@@ -145,11 +163,15 @@ describe("toErrorString", () => {
 describe("dispatchInvoke", () => {
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
     const { backend } = fakeBackend();
-    const env = await dispatchInvoke("lint_text", {}, { backend, shell: noShell });
-    expect(env).toEqual({ ok: false, error: "IPC_UNIMPLEMENTED: lint_text" });
-    expect(unimplementedError("lint_text").startsWith(IPC_UNIMPLEMENTED_MARKER)).toBe(
-      true,
+    const env = await dispatchInvoke(
+      "lint_text",
+      {},
+      { backend, shell: noShell },
     );
+    expect(env).toEqual({ ok: false, error: "IPC_UNIMPLEMENTED: lint_text" });
+    expect(
+      unimplementedError("lint_text").startsWith(IPC_UNIMPLEMENTED_MARKER),
+    ).toBe(true);
   });
 
   it("backend 不在の napi コマンドは IPC_BACKEND_UNAVAILABLE", async () => {
@@ -193,9 +215,15 @@ describe("dispatchInvoke", () => {
   it("shell ハンドラが napi 表より優先される", async () => {
     const { backend, calls } = fakeBackend();
     const shell = {
-      get_license_state: vi.fn(() => Promise.resolve({ ...DISABLED_LICENSE_STATE })),
+      get_license_state: vi.fn(() =>
+        Promise.resolve({ ...DISABLED_LICENSE_STATE }),
+      ),
     };
-    const env = await dispatchInvoke("get_license_state", {}, { backend, shell });
+    const env = await dispatchInvoke(
+      "get_license_state",
+      {},
+      { backend, shell },
+    );
     expect(env).toEqual({
       ok: true,
       value: {
@@ -232,7 +260,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { sql: "SELECT ?", params: [1], method: "all" },
       { backend, shell: noShell },
     );
-    expect(calls).toEqual([{ method: "dbExecute", args: ["SELECT ?", [1], "all"] }]);
+    expect(calls).toEqual([
+      { method: "dbExecute", args: ["SELECT ?", [1], "all"] },
+    ]);
     // Tauri ワイヤ同形: invoke<QueryResult> が {rows} オブジェクトを受け取る
     expect(env).toEqual({ ok: true, value: { rows: [[1]] } });
   });
@@ -310,6 +340,116 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("trash_bin_create: {payload}（struct 内 camelCase）を素通しし作成行を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    // Tauri 実装（trash_bin.rs）は payload struct の中身を serde rename_all の
+    // camelCase で受ける — アダプタはキー変換せずそのまま渡すことが契約。
+    const payload = {
+      projectId: "p1",
+      kind: "text-fragment",
+      subKind: "text-fragment",
+      originSceneId: null,
+      originCodexId: null,
+      previewText: "消した文字屑",
+      previewMeta: null,
+      payload: '{"text":"…"}',
+      charCount: 6,
+      isInteresting: false,
+      deletedAt: "2026-07-10T00:00:00.000Z",
+    };
+    const env = await dispatchInvoke(
+      "trash_bin_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([{ method: "trashBinCreate", args: [payload] }]);
+    expect(env).toEqual({
+      ok: true,
+      value: { id: "t1", preview_text: "消した文字屑" },
+    });
+  });
+
+  it("trash_bin_list: {projectId, limit} → 位置引数、行配列を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "trash_bin_list",
+      { projectId: "p1", limit: 50 },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([{ method: "trashBinList", args: ["p1", 50] }]);
+    expect(env).toEqual({
+      ok: true,
+      value: [{ id: "t1", preview_text: "消した文字屑" }],
+    });
+  });
+
+  it("trash_bin_list: limit 省略 / null は Option<i64> の None（undefined）に落ちる", async () => {
+    const { backend, calls } = fakeBackend();
+    await dispatchInvoke(
+      "trash_bin_list",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "trash_bin_list",
+      { projectId: "p1", limit: null },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "trashBinList", args: ["p1", undefined] },
+      { method: "trashBinList", args: ["p1", undefined] },
+    ]);
+  });
+
+  it("trash_bin_delete / trash_bin_clear_all: unit 返りは null（Tauri ワイヤ同形）", async () => {
+    const { backend, calls } = fakeBackend();
+    const del = await dispatchInvoke(
+      "trash_bin_delete",
+      { id: "t1" },
+      { backend, shell: noShell },
+    );
+    const clear = await dispatchInvoke(
+      "trash_bin_clear_all",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "trashBinDelete", args: ["t1"] },
+      { method: "trashBinClearAll", args: ["p1"] },
+    ]);
+    expect(del).toEqual({ ok: true, value: null });
+    expect(clear).toEqual({ ok: true, value: null });
+  });
+
+  it("trash_bin_prune: camelCase キーを位置引数へ明示写像し残件数を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "trash_bin_prune",
+      { projectId: "p1", retentionDays: 60, maxCount: 10000 },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "trashBinPrune", args: ["p1", 60, 10000] },
+    ]);
+    expect(env).toEqual({ ok: true, value: 42 });
+  });
+
+  it("trash_bin_prune: 数値キー欠落は invalid args エラー envelope（backend は呼ばれない）", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "trash_bin_prune",
+      { projectId: "p1", retentionDays: "60", maxCount: 10000 },
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.error).toContain(
+        "invalid args `retentionDays` for command `trash_bin_prune`",
+      );
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("必須キー欠落は invalid args エラー envelope（backend は呼ばれない）", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -319,12 +459,14 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     );
     expect(env.ok).toBe(false);
     if (!env.ok) {
-      expect(env.error).toContain("invalid args `path` for command `open_workspace`");
+      expect(env.error).toContain(
+        "invalid args `path` for command `open_workspace`",
+      );
     }
     expect(calls).toHaveLength(0);
   });
 
-  it("垂直スライス 7 コマンドが揃っている（§4.3）", () => {
+  it("垂直スライス 12 コマンドが揃っている（§4.3、当初 7 + trash_bin 5）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "db_execute",
       "db_execute_batch",
@@ -332,6 +474,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "open_workspace",
       "save_global_settings",
       "timelapse_append_batch",
+      "trash_bin_clear_all",
+      "trash_bin_create",
+      "trash_bin_delete",
+      "trash_bin_list",
+      "trash_bin_prune",
       "validate_workspace_path",
     ]);
   });

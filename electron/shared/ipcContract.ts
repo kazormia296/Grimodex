@@ -8,7 +8,9 @@
  *   `if (!res.ok) throw res.error;` で**生文字列 reject** に解封する —
  *   Tauri のエラー文字列契約（`WORKSPACE_SWITCHING` / `No workspace is open`
  *   マーカーの部分一致判定 126 箇所）の保存が最重要。
- * - **コマンド表**: napi 垂直スライス 7 コマンド + main-TS 2 コマンド。
+ * - **コマンド表**: napi 垂直スライス 12 コマンド（当初 7 + trash_bin 5 —
+ *   workspace 読み込み時に必ず呼ばれる trash_bin_list が IPC_UNIMPLEMENTED で
+ *   起動のたびにゴミ箱エラートーストを出したため追補）+ main-TS 2 コマンド。
  *   引数アダプタ（Tauri の camelCase→snake_case 自動変換の写像）はコマンド
  *   ごとに明示する。この表が Phase 3 の 145 コマンド一括対応の正本になる。
  * - **イベント allowlist**: 前方一致ではなく列挙制。listen / emit とも
@@ -207,6 +209,15 @@ export interface NapiBackendLike {
     sessionId: string,
     events: unknown,
   ): Promise<string>;
+  trashBinCreate(payload: unknown): Promise<string>;
+  trashBinList(projectId: string, limit?: number | null): Promise<string>;
+  trashBinDelete(id: string): Promise<void>;
+  trashBinClearAll(projectId: string): Promise<void>;
+  trashBinPrune(
+    projectId: string,
+    retentionDays: number,
+    maxCount: number,
+  ): Promise<string>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
 }
 
@@ -239,6 +250,33 @@ function requirePresent(args: CommandArgs, key: string, cmd: string): unknown {
   return args[key];
 }
 
+/** Tauri の i64 引数の写像（非 number は deserialize 失敗と同等に扱う）。 */
+function requireNumber(args: CommandArgs, key: string, cmd: string): number {
+  const value = args[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a number`,
+    );
+  }
+  return value;
+}
+
+/** Tauri の Option<i64> 引数の写像（欠落 / null / undefined は None）。 */
+function optionalNumber(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): number | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a number or null`,
+    );
+  }
+  return value;
+}
+
 /** napi は JSON 文字列を返す（Tauri ワイヤと同形にするため parse して返す）。 */
 function parseWire(json: string): unknown {
   return JSON.parse(json) as unknown;
@@ -253,7 +291,7 @@ export interface NapiCommandSpec {
   run(backend: NapiBackendLike, args: CommandArgs): Promise<unknown>;
 }
 
-/** napi 実装コマンド（垂直スライス 7 コマンド、§4.3）。 */
+/** napi 実装コマンド（垂直スライス 12 コマンド = 当初 7 + trash_bin 5、§4.3）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
     run: async (b, a) =>
@@ -275,7 +313,9 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   open_workspace: {
     run: async (b, a) =>
-      parseWire(await b.openWorkspace(requireString(a, "path", "open_workspace"))),
+      parseWire(
+        await b.openWorkspace(requireString(a, "path", "open_workspace")),
+      ),
   },
   validate_workspace_path: {
     run: (b, a) =>
@@ -304,6 +344,54 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireString(a, "projectId", "timelapse_append_batch"),
           requireString(a, "sessionId", "timelapse_append_batch"),
           requirePresent(a, "events", "timelapse_append_batch"),
+        ),
+      ),
+  },
+  // trash_bin 5 コマンド（起動時の trash_bin_list IPC_UNIMPLEMENTED 修正）。
+  // Tauri 側 fn 署名（src-tauri/src/commands/trash_bin.rs）との対応:
+  //   create(payload: TrashBinCreatePayload) — struct 内は serde rename_all の
+  //   camelCase なので {payload} をそのまま素通しする
+  //   list(project_id, limit: Option<i64>) / delete(id) / clear_all(project_id)
+  //   prune(project_id, retention_days, max_count)
+  trash_bin_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.trashBinCreate(
+          requirePresent(a, "payload", "trash_bin_create"),
+        ),
+      ),
+  },
+  trash_bin_list: {
+    run: async (b, a) =>
+      parseWire(
+        await b.trashBinList(
+          requireString(a, "projectId", "trash_bin_list"),
+          optionalNumber(a, "limit", "trash_bin_list"),
+        ),
+      ),
+  },
+  trash_bin_delete: {
+    // Tauri の unit 返りコマンドは null を resolve する（ワイヤ同形）
+    run: async (b, a) => {
+      await b.trashBinDelete(requireString(a, "id", "trash_bin_delete"));
+      return null;
+    },
+  },
+  trash_bin_clear_all: {
+    run: async (b, a) => {
+      await b.trashBinClearAll(
+        requireString(a, "projectId", "trash_bin_clear_all"),
+      );
+      return null;
+    },
+  },
+  trash_bin_prune: {
+    run: async (b, a) =>
+      parseWire(
+        await b.trashBinPrune(
+          requireString(a, "projectId", "trash_bin_prune"),
+          requireNumber(a, "retentionDays", "trash_bin_prune"),
+          requireNumber(a, "maxCount", "trash_bin_prune"),
         ),
       ),
   },
@@ -353,7 +441,10 @@ export async function dispatchInvoke(
           error: `${IPC_BACKEND_UNAVAILABLE_MARKER} ${cmd}`,
         };
       }
-      return { ok: true, value: await NAPI_COMMANDS[cmd].run(deps.backend, args) };
+      return {
+        ok: true,
+        value: await NAPI_COMMANDS[cmd].run(deps.backend, args),
+      };
     }
     return { ok: false, error: unimplementedError(cmd) };
   } catch (e) {

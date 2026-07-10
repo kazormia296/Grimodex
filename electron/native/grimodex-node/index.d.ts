@@ -58,6 +58,29 @@ export declare class Backend {
    */
   timelapseAppendBatch(projectId: string, sessionId: string, events: any): Promise<string>
   /**
+   * 文字屑ゴミ箱: 作成 (commands/trash_bin.rs の写像 — 実装本体は
+   * `grimodex_db::trash_bin` を Tauri コマンドと共用)。trash_bin 5 コマンドは
+   * workspace 読み込み時に `trash_bin_list` が必ず呼ばれるため、垂直スライスに
+   * 含めないと Electron 起動のたびにゴミ箱エラートーストが出る (§4.3)。
+   * `payload` は camelCase の TrashBinCreatePayload。
+   * 返り値: 作成行 (`SELECT *`、列名は snake_case) の JSON 文字列。
+   */
+  trashBinCreate(payload: any): Promise<string>
+  /**
+   * 文字屑ゴミ箱: 一覧 (deleted_at 降順、`limit` 省略時 50 件)。
+   * 返り値: 行オブジェクト配列の JSON 文字列。
+   */
+  trashBinList(projectId: string, limit?: number | undefined | null): Promise<string>
+  /** 文字屑ゴミ箱: 1 件削除 (拾い上げ成功時にも呼ばれる)。 */
+  trashBinDelete(id: string): Promise<void>
+  /** 文字屑ゴミ箱: project 内全削除。 */
+  trashBinClearAll(projectId: string): Promise<void>
+  /**
+   * 文字屑ゴミ箱: 期日切れ・件数超過の刈り取り (起動時に呼ばれる)。
+   * 返り値: 残件数 (i64) の JSON 文字列。
+   */
+  trashBinPrune(projectId: string, retentionDays: number, maxCount: number): Promise<string>
+  /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
    * イベント (`backend:ready`) は登録時に emit 順で flush される。

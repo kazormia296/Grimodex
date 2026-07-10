@@ -261,6 +261,7 @@ mod execute;
 mod fts;
 mod integrity;
 mod migrate;
+pub mod trash_bin;
 pub mod undo_journal;
 
 pub mod error;

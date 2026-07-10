@@ -140,7 +140,7 @@ export function isElectron(): boolean {
 | `updater.ts` | Phase 2 は **check() → null / relaunch() → no-op**（非 Tauri と同挙動。実装は Phase 4） |
 | `notification.ts` | **変更不要**。既存の Web Notification フォールバックが Electron renderer でそのまま動く |
 
-**feature 層の 6 ファイル**（`foreshadow/api.ts` / `saveAnchors.ts` / `codex/candidateExtractor.ts` / `rustMatcher.ts` / `trash-bin/api.ts` ほか）のローカル `__TAURI_INTERNALS__` 判定は **Phase 2 では意図的に Tauri 判定のまま残す**。これらの非 Tauri フォールバックは drizzle（= `db_execute`）か純 JS 実装であり、Electron では db_execute が実 DB に着弾するため**フォールバック側が正しく動く**。専用コマンド（`codex_rebuild_matcher` 等）が napi に載る Phase 3 で、`hasNativeCommands()`（新設ヘルパ）へ 1 ファイルずつ切り替える。
+**feature 層の 6 ファイル**（`foreshadow/api.ts` / `saveAnchors.ts` / `codex/candidateExtractor.ts` / `rustMatcher.ts` / `trash-bin/api.ts` ほか）のローカル `__TAURI_INTERNALS__` 判定は **Phase 2 では意図的に Tauri 判定のまま残す**。これらの非 Tauri フォールバックは drizzle（= `db_execute`）か純 JS 実装であり、Electron では db_execute が実 DB に着弾するため**フォールバック側が正しく動く**。専用コマンド（`codex_rebuild_matcher` 等）が napi に載る Phase 3 で、`hasNativeCommands()`（新設ヘルパ）へ 1 ファイルずつ切り替える。**【ship 前修正で改訂】** `trash-bin/api.ts` はこの前提の例外だった — フォールバックが drizzle ではなく専用コマンド（`trash_bin_list` 等）で、workspace 読み込み時の `loadItems` が IPC_UNIMPLEMENTED reject → 起動のたびにゴミ箱エラートーストを出した。trash_bin 5 コマンドを napi 垂直スライスへ追加（§4.3）し、同ファイルのゲートのみ `supportsTrashBin()`（= isTauri ‖ isElectron、§6.5 の supportsPanelWindows と同作法）へ前倒しで切り替えた。
 
 ## 4. 論点2: Rust 側のクレート再編
 
@@ -207,6 +207,7 @@ impl Backend {
 | `open_workspace` / `validate_workspace_path` | napi | ワークスペースを開けないと何も始まらない。migrate + バックアップ含む |
 | `get_global_settings` / `save_global_settings` | napi | 起動時に必ず呼ばれる（workspace/store.ts:152） |
 | `timelapse_append_batch` | napi | 編集ループ常連の軽量 DB 書き込み（監査チェーン append）。コマンド本体 17 行 |
+| `trash_bin_create` / `trash_bin_list` / `trash_bin_delete` / `trash_bin_clear_all` / `trash_bin_prune` | napi | **【ship 前修正で追補】** workspace 読み込み時に `trash_bin_list`（+ パネル表示で `trash_bin_prune`）が必ず呼ばれ、IPC_UNIMPLEMENTED だと起動のたびにゴミ箱エラートーストが出る。5 つとも純 SQL で小さく、実装本体は grimodex-db（`trash_bin.rs`）へ移動して Tauri と共用 |
 | `set_window_vibrancy` | main-TS | ウィンドウ API。App.tsx が catch 済みだが macOS パリティに必要 |
 | `get_license_state` | main-TS スタブ | 起動時呼び出しを fail-soft にしない。**licensing 無効ビルドと同一形状**（`licensing_enabled:false`）を返す。Phase 3 で napi（grimodex-core の状態機械）へ差し替え |
 | 上記以外の 137 コマンド | `{ok:false, error:"IPC_UNIMPLEMENTED: <cmd>"}` | Phase 3。マーカーは debugLog で集計可能にし、Phase 3 の優先順位付けの実測データにする |
@@ -412,7 +413,7 @@ Rust emit 55 箇所の**実配線はしない**（発火元サブシステムが
 | `src-tauri/Cargo.toml` | workspace member 追加 | ~5 行 |
 | `package.json` / `.gitignore` | scripts / devDeps / ignore | ~20 行 |
 
-**触らないことを保証するファイル**: `vite.config.ts`、`tauri.conf.json`、`vitest.config.ts`、`.github/workflows/ci.yml` の required ジョブ、既存テスト全ファイル、`src/features/**`（feature 層は 1 行も変えない — Phase 1 の抽象層集約が効いている。**例外**: 最終レビュー confirmed 指摘により、パネル別窓の実行シェルゲート 4 箇所のみ `supportsPanelWindows()` へ差し替え — §6.5 の改訂注記を参照。既存テストは変更ゼロのまま、Electron 側の検証は新規テスト 3 ファイルで追加）。
+**触らないことを保証するファイル**: `vite.config.ts`、`tauri.conf.json`、`vitest.config.ts`、`.github/workflows/ci.yml` の required ジョブ、既存テスト全ファイル、`src/features/**`（feature 層は 1 行も変えない — Phase 1 の抽象層集約が効いている。**例外**: 最終レビュー confirmed 指摘により、パネル別窓の実行シェルゲート 4 箇所のみ `supportsPanelWindows()` へ差し替え — §6.5 の改訂注記を参照。既存テストは変更ゼロのまま、Electron 側の検証は新規テスト 3 ファイルで追加。**例外 2**: ship 前修正により `trash-bin/api.ts` の実行シェルゲートのみ `supportsTrashBin()` へ差し替え — §3.4 末尾 / §4.3 の改訂注記を参照）。
 
 ## 10. テスト戦略
 
