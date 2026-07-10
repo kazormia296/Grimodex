@@ -264,6 +264,89 @@ export interface NapiBackendLike {
   listSystemFonts(): Promise<string>;
   codexRebuildMatcher(entries: unknown): Promise<void>;
   codexMatchText(text: string, excludeEntryIds: string[]): Promise<string>;
+  plotThreadCreate(payload: unknown): Promise<string>;
+  plotThreadUpdate(id: string, patch: unknown): Promise<string>;
+  plotThreadDelete(id: string): Promise<void>;
+  plotThreadList(projectId: string): Promise<string>;
+  plotThreadLinkCreate(payload: unknown): Promise<string>;
+  plotThreadLinkUpdate(id: string, patch: unknown): Promise<string>;
+  plotThreadLinkDelete(id: string): Promise<void>;
+  plotThreadListLinks(projectId: string): Promise<string>;
+  foreshadowCreate(payload: unknown): Promise<string>;
+  foreshadowUpdate(id: string, patch: unknown): Promise<string>;
+  foreshadowDelete(id: string): Promise<void>;
+  foreshadowListWithLabels(projectId: string): Promise<string>;
+  foreshadowListOpenForContext(projectId: string): Promise<string>;
+  foreshadowGetSceneInfo(sceneId: string): Promise<string>;
+  foreshadowGetSceneContext(sceneId: string): Promise<string>;
+  foreshadowListByCodexEntry(codexEntryId: string): Promise<string>;
+  foreshadowGetChapterStats(chapterId: string): Promise<string>;
+  foreshadowGetSetup(setupId: string): Promise<string>;
+  foreshadowUpdateSetup(id: string, patch: unknown): Promise<void>;
+  foreshadowGet(id: string): Promise<string>;
+  foreshadowLinkCodex(foreshadowId: string, codexId: string): Promise<void>;
+  foreshadowUnlinkCodex(foreshadowId: string, codexId: string): Promise<void>;
+  foreshadowListLinkedCodex(foreshadowId: string): Promise<string>;
+  foreshadowSetSetupStrength(
+    setupId: string,
+    strength?: string | null,
+  ): Promise<void>;
+  foreshadowSetupCreateAi(input: unknown): Promise<void>;
+  foreshadowResolveOrphan(payload: unknown): Promise<string>;
+  foreshadowSaveAnchorsForScene(
+    sceneId: string,
+    setups: unknown,
+    payoffs: unknown,
+    docContentSize: number,
+  ): Promise<void>;
+  foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
+  // agent_writes 18 コマンド（すべて単一 payload → AgentWriteResult/ProseStageResult）
+  agentCodexCreate(payload: unknown): Promise<string>;
+  agentCodexUpdate(payload: unknown): Promise<string>;
+  agentWriteBundle(payload: unknown): Promise<string>;
+  agentSnippetCreate(payload: unknown): Promise<string>;
+  agentProposeSceneBody(payload: unknown): Promise<string>;
+  agentAcceptProseStage(payload: unknown): Promise<string>;
+  agentDiscardProseStage(payload: unknown): Promise<string>;
+  agentApplyUndoJournal(payload: unknown): Promise<string>;
+  agentForeshadowCreate(payload: unknown): Promise<string>;
+  agentForeshadowUpdate(payload: unknown): Promise<string>;
+  agentEventCreate(payload: unknown): Promise<string>;
+  agentEventUpdate(payload: unknown): Promise<string>;
+  agentEventDelete(payload: unknown): Promise<string>;
+  agentEventSetParticipants(payload: unknown): Promise<string>;
+  agentSceneEventLink(payload: unknown): Promise<string>;
+  agentSceneEventUnlink(payload: unknown): Promise<string>;
+  agentEventRelationAdd(payload: unknown): Promise<string>;
+  agentEventRelationRemove(payload: unknown): Promise<string>;
+  // post_effect pure-db 7 コマンド
+  listPostEffectRuns(
+    projectId: string,
+    effectType?: string | null,
+    limit?: number | null,
+    offset?: number | null,
+  ): Promise<string>;
+  listSceneLensForProject(projectId: string): Promise<string>;
+  listAnnotationsForScene(
+    projectId: string,
+    sceneId: string,
+    status?: string | null,
+  ): Promise<string>;
+  listAnnotationsForProject(
+    projectId: string,
+    status?: string | null,
+  ): Promise<string>;
+  updateAnnotationStatus(
+    annotationId: string,
+    status: string,
+    projectId: string,
+  ): Promise<string>;
+  replyToAnnotation(args: unknown): Promise<string>;
+  savePostEffectAnnotations(
+    projectId: string,
+    sceneId: string,
+    annotations: unknown,
+  ): Promise<void>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
 }
 
@@ -318,6 +401,22 @@ function optionalNumber(
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(
       `invalid args \`${key}\` for command \`${cmd}\`: expected a number or null`,
+    );
+  }
+  return value;
+}
+
+/** Tauri の Option<String> 引数の写像（欠落 / null は None。文字列以外は拒否）。 */
+function optionalString(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): string | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a string or null`,
     );
   }
   return value;
@@ -539,6 +638,470 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           excludeIds,
         ),
       );
+    },
+  },
+  // plot_threads 8 コマンド（Phase 3 バッチ1 — grimodex-db::plot_threads を
+  // Tauri と共用）。Tauri 側 fn 署名（src-tauri/src/commands/plot_threads.rs）:
+  //   create(payload) / update(id, patch) / delete(id) / list(project_id) /
+  //   link_create(payload) / link_update(id, patch) / link_delete(id) /
+  //   list_links(project_id)。payload / patch は camelCase オブジェクトを素通し
+  //   （from_wire が serde rename_all で受ける）。返り値は生の SQLite 行。
+  plot_thread_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadCreate(
+          requirePresent(a, "payload", "plot_thread_create"),
+        ),
+      ),
+  },
+  plot_thread_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadUpdate(
+          requireString(a, "id", "plot_thread_update"),
+          requirePresent(a, "patch", "plot_thread_update"),
+        ),
+      ),
+  },
+  plot_thread_delete: {
+    // unit 返りコマンドは null を resolve（ワイヤ同形）
+    run: async (b, a) => {
+      await b.plotThreadDelete(requireString(a, "id", "plot_thread_delete"));
+      return null;
+    },
+  },
+  plot_thread_list: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadList(
+          requireString(a, "projectId", "plot_thread_list"),
+        ),
+      ),
+  },
+  plot_thread_link_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadLinkCreate(
+          requirePresent(a, "payload", "plot_thread_link_create"),
+        ),
+      ),
+  },
+  plot_thread_link_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadLinkUpdate(
+          requireString(a, "id", "plot_thread_link_update"),
+          requirePresent(a, "patch", "plot_thread_link_update"),
+        ),
+      ),
+  },
+  plot_thread_link_delete: {
+    run: async (b, a) => {
+      await b.plotThreadLinkDelete(
+        requireString(a, "id", "plot_thread_link_delete"),
+      );
+      return null;
+    },
+  },
+  plot_thread_list_links: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadListLinks(
+          requireString(a, "projectId", "plot_thread_list_links"),
+        ),
+      ),
+  },
+  // foreshadow 20 コマンド（Phase 3 バッチ1 — grimodex-db::foreshadow を Tauri と
+  // 共用。foreshadow_list は FE 到達不能な dead path のため mirror なし）。
+  // payload / patch / setups / payoffs は camelCase を素通し（from_wire が
+  // serde rename_all + normalize_integer_numbers で受ける）。Value/応答 struct は
+  // parse して返す。unit 返りは null。
+  foreshadow_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowCreate(
+          requirePresent(a, "payload", "foreshadow_create"),
+        ),
+      ),
+  },
+  foreshadow_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowUpdate(
+          requireString(a, "id", "foreshadow_update"),
+          requirePresent(a, "patch", "foreshadow_update"),
+        ),
+      ),
+  },
+  foreshadow_delete: {
+    run: async (b, a) => {
+      await b.foreshadowDelete(requireString(a, "id", "foreshadow_delete"));
+      return null;
+    },
+  },
+  foreshadow_list_with_labels: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowListWithLabels(
+          requireString(a, "projectId", "foreshadow_list_with_labels"),
+        ),
+      ),
+  },
+  foreshadow_list_open_for_context: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowListOpenForContext(
+          requireString(a, "projectId", "foreshadow_list_open_for_context"),
+        ),
+      ),
+  },
+  foreshadow_get_scene_info: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGetSceneInfo(
+          requireString(a, "sceneId", "foreshadow_get_scene_info"),
+        ),
+      ),
+  },
+  foreshadow_get_scene_context: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGetSceneContext(
+          requireString(a, "sceneId", "foreshadow_get_scene_context"),
+        ),
+      ),
+  },
+  foreshadow_list_by_codex_entry: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowListByCodexEntry(
+          requireString(a, "codexEntryId", "foreshadow_list_by_codex_entry"),
+        ),
+      ),
+  },
+  foreshadow_get_chapter_stats: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGetChapterStats(
+          requireString(a, "chapterId", "foreshadow_get_chapter_stats"),
+        ),
+      ),
+  },
+  foreshadow_get_setup: {
+    // Option<Value> — null 許容（parseWire("null") = null）。
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGetSetup(
+          requireString(a, "setupId", "foreshadow_get_setup"),
+        ),
+      ),
+  },
+  foreshadow_update_setup: {
+    run: async (b, a) => {
+      await b.foreshadowUpdateSetup(
+        requireString(a, "id", "foreshadow_update_setup"),
+        requirePresent(a, "patch", "foreshadow_update_setup"),
+      );
+      return null;
+    },
+  },
+  foreshadow_get: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGet(requireString(a, "id", "foreshadow_get")),
+      ),
+  },
+  foreshadow_link_codex: {
+    run: async (b, a) => {
+      await b.foreshadowLinkCodex(
+        requireString(a, "foreshadowId", "foreshadow_link_codex"),
+        requireString(a, "codexId", "foreshadow_link_codex"),
+      );
+      return null;
+    },
+  },
+  foreshadow_unlink_codex: {
+    run: async (b, a) => {
+      await b.foreshadowUnlinkCodex(
+        requireString(a, "foreshadowId", "foreshadow_unlink_codex"),
+        requireString(a, "codexId", "foreshadow_unlink_codex"),
+      );
+      return null;
+    },
+  },
+  foreshadow_list_linked_codex: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowListLinkedCodex(
+          requireString(a, "foreshadowId", "foreshadow_list_linked_codex"),
+        ),
+      ),
+  },
+  foreshadow_set_setup_strength: {
+    // strength は Option<String>: 文字列以外（null / 省略）は None（列クリア）。
+    run: async (b, a) => {
+      const strength = typeof a.strength === "string" ? a.strength : undefined;
+      await b.foreshadowSetSetupStrength(
+        requireString(a, "setupId", "foreshadow_set_setup_strength"),
+        strength,
+      );
+      return null;
+    },
+  },
+  foreshadow_setup_create_ai: {
+    // FE は 12 個の flat な camelCase キーを送る（payload ラップ無し）。args
+    // オブジェクトをそのまま渡し、napi 側 from_wire が SetupCreateAiInput に落とす。
+    run: async (b, a) => {
+      await b.foreshadowSetupCreateAi(a);
+      return null;
+    },
+  },
+  foreshadow_resolve_orphan: {
+    // Option<String> — reinsert 時のみ new_id、その他 null（parseWire で復元）。
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowResolveOrphan(
+          requirePresent(a, "payload", "foreshadow_resolve_orphan"),
+        ),
+      ),
+  },
+  foreshadow_save_anchors_for_scene: {
+    run: async (b, a) => {
+      await b.foreshadowSaveAnchorsForScene(
+        requireString(a, "sceneId", "foreshadow_save_anchors_for_scene"),
+        requirePresent(a, "setups", "foreshadow_save_anchors_for_scene"),
+        requirePresent(a, "payoffs", "foreshadow_save_anchors_for_scene"),
+        requireNumber(a, "docContentSize", "foreshadow_save_anchors_for_scene"),
+      );
+      return null;
+    },
+  },
+  foreshadow_load_anchors_for_scene: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowLoadAnchorsForScene(
+          requireString(a, "sceneId", "foreshadow_load_anchors_for_scene"),
+        ),
+      ),
+  },
+  // agent_writes 18 コマンド（Phase 3 バッチ1 — grimodex-db::agent_writes を Tauri と
+  // 共用）。すべて FE は単一の `{ payload }` を送り、AgentWriteResult /
+  // ProseStageResult (camelCase) が返る。payload はそのまま素通し（napi 側 from_wire
+  // が serde rename_all + normalize_integer_numbers で受ける）。
+  agent_codex_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentCodexCreate(
+          requirePresent(a, "payload", "agent_codex_create"),
+        ),
+      ),
+  },
+  agent_codex_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentCodexUpdate(
+          requirePresent(a, "payload", "agent_codex_update"),
+        ),
+      ),
+  },
+  agent_write_bundle: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentWriteBundle(
+          requirePresent(a, "payload", "agent_write_bundle"),
+        ),
+      ),
+  },
+  agent_snippet_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentSnippetCreate(
+          requirePresent(a, "payload", "agent_snippet_create"),
+        ),
+      ),
+  },
+  agent_propose_scene_body: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentProposeSceneBody(
+          requirePresent(a, "payload", "agent_propose_scene_body"),
+        ),
+      ),
+  },
+  agent_accept_prose_stage: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentAcceptProseStage(
+          requirePresent(a, "payload", "agent_accept_prose_stage"),
+        ),
+      ),
+  },
+  agent_discard_prose_stage: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentDiscardProseStage(
+          requirePresent(a, "payload", "agent_discard_prose_stage"),
+        ),
+      ),
+  },
+  agent_apply_undo_journal: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentApplyUndoJournal(
+          requirePresent(a, "payload", "agent_apply_undo_journal"),
+        ),
+      ),
+  },
+  agent_foreshadow_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentForeshadowCreate(
+          requirePresent(a, "payload", "agent_foreshadow_create"),
+        ),
+      ),
+  },
+  agent_foreshadow_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentForeshadowUpdate(
+          requirePresent(a, "payload", "agent_foreshadow_update"),
+        ),
+      ),
+  },
+  agent_event_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentEventCreate(
+          requirePresent(a, "payload", "agent_event_create"),
+        ),
+      ),
+  },
+  agent_event_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentEventUpdate(
+          requirePresent(a, "payload", "agent_event_update"),
+        ),
+      ),
+  },
+  agent_event_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentEventDelete(
+          requirePresent(a, "payload", "agent_event_delete"),
+        ),
+      ),
+  },
+  agent_event_set_participants: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentEventSetParticipants(
+          requirePresent(a, "payload", "agent_event_set_participants"),
+        ),
+      ),
+  },
+  agent_scene_event_link: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentSceneEventLink(
+          requirePresent(a, "payload", "agent_scene_event_link"),
+        ),
+      ),
+  },
+  agent_scene_event_unlink: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentSceneEventUnlink(
+          requirePresent(a, "payload", "agent_scene_event_unlink"),
+        ),
+      ),
+  },
+  agent_event_relation_add: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentEventRelationAdd(
+          requirePresent(a, "payload", "agent_event_relation_add"),
+        ),
+      ),
+  },
+  agent_event_relation_remove: {
+    run: async (b, a) =>
+      parseWire(
+        await b.agentEventRelationRemove(
+          requirePresent(a, "payload", "agent_event_relation_remove"),
+        ),
+      ),
+  },
+  // post_effect pure-db 7 コマンド（Phase 3 バッチ1）。effectType / status は
+  // Option<String>（文字列以外は None）、limit / offset は Option<i64>。
+  // reply_to_annotation は snake_case の `args` を素通し。
+  list_post_effect_runs: {
+    run: async (b, a) =>
+      parseWire(
+        await b.listPostEffectRuns(
+          requireString(a, "projectId", "list_post_effect_runs"),
+          optionalString(a, "effectType", "list_post_effect_runs"),
+          optionalNumber(a, "limit", "list_post_effect_runs"),
+          optionalNumber(a, "offset", "list_post_effect_runs"),
+        ),
+      ),
+  },
+  list_scene_lens_for_project: {
+    run: async (b, a) =>
+      parseWire(
+        await b.listSceneLensForProject(
+          requireString(a, "projectId", "list_scene_lens_for_project"),
+        ),
+      ),
+  },
+  list_annotations_for_scene: {
+    run: async (b, a) =>
+      parseWire(
+        await b.listAnnotationsForScene(
+          requireString(a, "projectId", "list_annotations_for_scene"),
+          requireString(a, "sceneId", "list_annotations_for_scene"),
+          optionalString(a, "status", "list_annotations_for_scene"),
+        ),
+      ),
+  },
+  list_annotations_for_project: {
+    run: async (b, a) =>
+      parseWire(
+        await b.listAnnotationsForProject(
+          requireString(a, "projectId", "list_annotations_for_project"),
+          optionalString(a, "status", "list_annotations_for_project"),
+        ),
+      ),
+  },
+  update_annotation_status: {
+    run: async (b, a) =>
+      parseWire(
+        await b.updateAnnotationStatus(
+          requireString(a, "annotationId", "update_annotation_status"),
+          requireString(a, "status", "update_annotation_status"),
+          requireString(a, "projectId", "update_annotation_status"),
+        ),
+      ),
+  },
+  reply_to_annotation: {
+    // FE は snake_case キーを `args` にネストして送る（ReplyToAnnotationArgs は
+    // rename_all 無し）。オブジェクトをそのまま渡す。
+    run: async (b, a) =>
+      parseWire(
+        await b.replyToAnnotation(
+          requirePresent(a, "args", "reply_to_annotation"),
+        ),
+      ),
+  },
+  save_post_effect_annotations: {
+    // unit 返り（annotations は raw snake_case 配列を素通し）
+    run: async (b, a) => {
+      await b.savePostEffectAnnotations(
+        requireString(a, "projectId", "save_post_effect_annotations"),
+        requireString(a, "sceneId", "save_post_effect_annotations"),
+        requirePresent(a, "annotations", "save_post_effect_annotations"),
+      );
+      return null;
     },
   },
 };

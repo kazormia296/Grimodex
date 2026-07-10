@@ -29,7 +29,17 @@ use napi_derive::napi;
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::events::EventSink;
+use grimodex_db::agent_writes;
+use grimodex_db::foreshadow::{
+    self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
+    PayoffAnchorInput, SetupAnchorInput, SetupCreateAiInput,
+};
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
+use grimodex_db::plot_threads::{
+    self, PlotThreadCreatePayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
+    PlotThreadPatch,
+};
+use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
@@ -48,6 +58,27 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+/// agent_writes 18 コマンドの定形写像。FE の `{ payload }` を DTO へ
+/// deserialize し、共有 impl を with_db_state 上で呼んで結果 Value を JSON 文字列
+/// で返す (Tauri の `with_db(&ws, |db| agent_xxx_impl(db, payload))` の写像)。
+/// 各 impl 内で BEGIN IMMEDIATE → tracked write → commit_or_rollback が閉じる。
+async fn agent_write_cmd<T, F>(
+    state: Arc<AppState>,
+    label: &'static str,
+    payload: serde_json::Value,
+    f: F,
+) -> Result<String>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    F: FnOnce(&grimodex_db::Database, T) -> anyhow::Result<serde_json::Value> + Send + 'static,
+{
+    run_blocking(move || {
+        let dto: T = from_wire(label, payload)?;
+        with_db_state(&state.ws, |db| Ok(serde_json::to_string(&f(db, dto)?)?))
+    })
+    .await
 }
 
 #[napi]
@@ -410,7 +441,7 @@ impl Backend {
                 )));
             }
             let chunks = grimodex_lint::bunsetsu::segment_bunsetsu(&text)
-                .map_err(|e| Error::from_reason(format!("{e}")))?;
+                .map_err(|e| Error::from_reason(e.to_string()))?;
             let dtos: Vec<BunsetsuDto> = chunks
                 .into_iter()
                 .map(|c| BunsetsuDto {
@@ -491,6 +522,774 @@ impl Backend {
         })
         .await
         .map_err(join_err_to_napi)?
+    }
+
+    // ─────────────────────── plot_threads (Phase 3 バッチ1 — grimodex-db の
+    // plot_threads モジュールを Tauri と共用。commands/plot_threads.rs の写像) ──
+    //
+    // Value / Vec<Value> 返しは生の SQLite 行 (列名 snake_case)。patch 型の
+    // Option<Option<String>> 3 値は from_wire (serde_json::from_value) が Tauri の
+    // 引数 deserialize と同一挙動で受ける。link_create / link_update の XPROJ
+    // ガードは shared impl 内でサーバサイド維持される (§4.3 — db_execute への
+    // 分解禁止)。
+
+    /// プロットスレッド作成 (commands/plot_threads.rs::plot_thread_create の写像)。
+    /// `payload` は camelCase の PlotThreadCreatePayload。
+    /// 返り値: 作成行 (`SELECT *`、列名 snake_case) の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// プロットスレッド更新 (空 patch 時は現行行を返す)。`patch` は camelCase の
+    /// PlotThreadPatch (color / description は Option<Option<String>>)。
+    /// 返り値: 更新後行の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_update(
+        &self,
+        id: String,
+        patch: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let patch: PlotThreadPatch = from_wire("patch", patch)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::update(db, id, patch)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// プロットスレッド削除。
+    #[napi]
+    pub async fn plot_thread_delete(&self, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| plot_threads::delete(db, id))).await
+    }
+
+    /// プロジェクトのスレッド一覧 (sort_order 昇順)。
+    /// 返り値: 行オブジェクト配列の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = plot_threads::list(db, project_id)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    /// スレッド↔シーンのリンク作成 (XPROJ ガード + phase_type 検証を含む)。
+    /// `payload` は camelCase の PlotThreadLinkCreatePayload。
+    /// 返り値: 作成行の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_link_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadLinkCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::link_create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// リンク更新 (別スレッドへの移動時は XPROJ ガード。空 patch 時は現行行)。
+    /// `patch` は camelCase の PlotThreadLinkPatch (note / sortOrder は
+    /// Option<Option<String>>)。
+    /// 返り値: 更新後行の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_link_update(
+        &self,
+        id: String,
+        patch: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let patch: PlotThreadLinkPatch = from_wire("patch", patch)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::link_update(db, id, patch)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// リンク削除。
+    #[napi]
+    pub async fn plot_thread_link_delete(&self, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| plot_threads::link_delete(db, id))).await
+    }
+
+    /// プロジェクトの全リンク (thread の project で JOIN 絞り込み)。
+    /// 返り値: 行オブジェクト配列の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_list_links(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = plot_threads::list_links(db, project_id)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    // ─────────────────────── foreshadow (Phase 3 バッチ1 — grimodex-db の
+    // foreshadow モジュールを Tauri と共用。commands/foreshadow.rs の写像) ──
+    //
+    // Value / Vec<Value> / 応答 struct は raw snake_case 行 or camelCase struct。
+    // patch 型の Option<Option<T>> 3 値 + i64（save_anchors の from/to_pos、
+    // setup_create_ai の pos 群）は from_wire (normalize_integer_numbers 込み) が
+    // Tauri の引数 deserialize と同一挙動で受ける。foreshadow_list は FE 到達不能な
+    // dead path のため napi ミラーは設けない。
+
+    /// 伏線作成 (load_bearing 検証を含む)。`payload` は camelCase の
+    /// ForeshadowCreatePayload。返り値: 作成行 (snake_case) の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ForeshadowCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = foreshadow::create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// 伏線更新 (空 patch 時は現行行)。`patch` は ForeshadowPatch (多数の
+    /// Option<Option<T>>)。返り値: 更新後行の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_update(&self, id: String, patch: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let patch: ForeshadowPatch = from_wire("patch", patch)?;
+            with_db_state(&state.ws, |db| {
+                let row = foreshadow::update(db, id, patch)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// 伏線削除。
+    #[napi]
+    pub async fn foreshadow_delete(&self, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| foreshadow::delete(db, id))).await
+    }
+
+    /// 伏線 + setup ラベル行を 1 ロックで取得。返り値: ForeshadowListWithLabels
+    /// Response (camelCase struct、内部行は snake_case) の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_list_with_labels(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let res = foreshadow::list_with_labels(db, project_id)?;
+                Ok(serde_json::to_string(&res)?)
+            })
+        })
+        .await
+    }
+
+    /// 未解決 (open) 伏線 + setup ラベル行を 1 ロックで取得。
+    #[napi]
+    pub async fn foreshadow_list_open_for_context(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let res = foreshadow::list_open_for_context(db, project_id)?;
+                Ok(serde_json::to_string(&res)?)
+            })
+        })
+        .await
+    }
+
+    /// シーンの setup/payoff 伏線 id。返り値: ForeshadowSceneInfoResponse
+    /// (camelCase Vec<String>) の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_get_scene_info(&self, scene_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let res = foreshadow::get_scene_info(db, scene_id)?;
+                Ok(serde_json::to_string(&res)?)
+            })
+        })
+        .await
+    }
+
+    /// シーンの伏線コンテキスト (3 クエリ、JOIN)。返り値: ForeshadowSceneContext
+    /// Response の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_get_scene_context(&self, scene_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let res = foreshadow::get_scene_context(db, scene_id)?;
+                Ok(serde_json::to_string(&res)?)
+            })
+        })
+        .await
+    }
+
+    /// codex エントリに紐づく伏線一覧。返り値: ForeshadowListWithLabelsResponse
+    /// の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_list_by_codex_entry(&self, codex_entry_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let res = foreshadow::list_by_codex_entry(db, codex_entry_id)?;
+                Ok(serde_json::to_string(&res)?)
+            })
+        })
+        .await
+    }
+
+    /// チャプターの伏線統計 (最重 read、5 クエリ)。返り値: ForeshadowChapterStats
+    /// Bundle の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_get_chapter_stats(&self, chapter_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let res = foreshadow::get_chapter_stats(db, chapter_id)?;
+                Ok(serde_json::to_string(&res)?)
+            })
+        })
+        .await
+    }
+
+    /// setup 単体取得。返り値: 行 (snake_case) or null の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_get_setup(&self, setup_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let row = foreshadow::get_setup(db, setup_id)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// setup 更新 (空 patch は no-op)。`patch` は ForeshadowSetupPatch
+    /// (Option<Option<T>>)。
+    #[napi]
+    pub async fn foreshadow_update_setup(
+        &self,
+        id: String,
+        patch: serde_json::Value,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let patch: ForeshadowSetupPatch = from_wire("patch", patch)?;
+            with_db_state(&state.ws, |db| foreshadow::update_setup(db, id, patch))
+        })
+        .await
+    }
+
+    /// 伏線 + その setup 群を取得。返り値: `{"foreshadow":…,"setups":[…]}`
+    /// (キーは literal、内部行は snake_case) の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_get(&self, id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let detail = foreshadow::get(db, id)?;
+                Ok(serde_json::to_string(&detail)?)
+            })
+        })
+        .await
+    }
+
+    /// 伏線↔codex リンク作成 (INSERT OR IGNORE)。
+    #[napi]
+    pub async fn foreshadow_link_codex(
+        &self,
+        foreshadow_id: String,
+        codex_id: String,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                foreshadow::link_codex(db, foreshadow_id, codex_id)
+            })
+        })
+        .await
+    }
+
+    /// 伏線↔codex リンク削除。
+    #[napi]
+    pub async fn foreshadow_unlink_codex(
+        &self,
+        foreshadow_id: String,
+        codex_id: String,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                foreshadow::unlink_codex(db, foreshadow_id, codex_id)
+            })
+        })
+        .await
+    }
+
+    /// 伏線に紐づく codex エントリ一覧。返り値: codex_entries.* 行 (snake_case)
+    /// の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_list_linked_codex(&self, foreshadow_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = foreshadow::list_linked_codex(db, foreshadow_id)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    /// setup の強度を直接更新 (`strength` は null で列クリア)。
+    #[napi]
+    pub async fn foreshadow_set_setup_strength(
+        &self,
+        setup_id: String,
+        strength: Option<String>,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                foreshadow::set_setup_strength(db, setup_id, strength)
+            })
+        })
+        .await
+    }
+
+    /// AI 由来 setup の upsert。`input` は camelCase の SetupCreateAiInput
+    /// (fromPos/toPos は i64、lastEvaluatedAt は Option<i64> — from_wire が正規化)。
+    #[napi]
+    pub async fn foreshadow_setup_create_ai(&self, input: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let input: SetupCreateAiInput = from_wire("input", input)?;
+            with_db_state(&state.ws, |db| foreshadow::setup_create_ai(db, input))
+        })
+        .await
+    }
+
+    /// orphan setup の解決 (reanchor / delete / reinsert)。`payload` は camelCase
+    /// の OrphanResolvePayload (fromPos/toPos は Option<i64>)。
+    /// 返り値: reinsert 時のみ new_id、その他は null の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_resolve_orphan(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: OrphanResolvePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let out = foreshadow::resolve_orphan(db, payload)?;
+                Ok(serde_json::to_string(&out)?)
+            })
+        })
+        .await
+    }
+
+    /// シーンのアンカーを一括保存 (batch tx)。`setups` / `payoffs` は camelCase
+    /// の配列 (from/to_pos は i64)。`doc_content_size` は空 doc 判定の i64 ガード
+    /// (<=2 で bulk-orphan)。
+    #[napi]
+    pub async fn foreshadow_save_anchors_for_scene(
+        &self,
+        scene_id: String,
+        setups: serde_json::Value,
+        payoffs: serde_json::Value,
+        doc_content_size: i64,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let setups: Vec<SetupAnchorInput> = from_wire("setups", setups)?;
+            let payoffs: Vec<PayoffAnchorInput> = from_wire("payoffs", payoffs)?;
+            with_db_state(&state.ws, |db| {
+                foreshadow::save_anchors_for_scene(db, scene_id, setups, payoffs, doc_content_size)
+            })
+        })
+        .await
+    }
+
+    /// シーンのアンカー mark を取得 (0 座標・orphan を除外)。返り値:
+    /// AnchorMarkOutput 配列 (camelCase: from/to/markName/attrs) の JSON 文字列。
+    #[napi]
+    pub async fn foreshadow_load_anchors_for_scene(&self, scene_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let marks = foreshadow::load_anchors_for_scene(db, scene_id)?;
+                Ok(serde_json::to_string(&marks)?)
+            })
+        })
+        .await
+    }
+
+    // ─────────────────────── agent_writes (Phase 3 バッチ1 — grimodex-db の
+    // agent_writes モジュールを Tauri と共用。tracked write = BEGIN IMMEDIATE →
+    // entity mutation + authorship_spans + undo_journal + change_events →
+    // commit_or_rollback が各 impl 内で閉じる。XPROJ ガード / 楽観ロック /
+    // undo-redo はサーバサイド維持) ──────────────────────────────────────────
+    //
+    // 18 コマンドはすべて FE が単一の `{ payload }` を送る。返り値は
+    // AgentWriteResult / ProseStageResult (camelCase)。agent_write_cmd 定形で写像。
+
+    #[napi]
+    pub async fn agent_codex_create(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_codex_create_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_codex_update(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_codex_update_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_write_bundle(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_write_bundle_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_snippet_create(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_snippet_create_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_propose_scene_body(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_propose_scene_body_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_accept_prose_stage(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_accept_prose_stage_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_discard_prose_stage(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_discard_prose_stage_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_apply_undo_journal(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_undo_journal_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_foreshadow_create(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_foreshadow_create_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_foreshadow_update(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_foreshadow_update_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_event_create(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_create_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_event_update(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_update_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_event_delete(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_delete_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_event_set_participants(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_set_participants_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_scene_event_link(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
+                agent_writes::agent_scene_event_mutate_impl(db, p, true)
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_scene_event_unlink(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
+                agent_writes::agent_scene_event_mutate_impl(db, p, false)
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_event_relation_add(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
+                agent_writes::agent_event_relation_mutate_impl(db, p, true)
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn agent_event_relation_remove(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
+                agent_writes::agent_event_relation_mutate_impl(db, p, false)
+            },
+        )
+        .await
+    }
+
+    // ─────────────────────── post_effect (Phase 3 バッチ1 — pure-db 読み書き。
+    // grimodex-db の post_effect モジュールを Tauri と共用。SCENE_LENS_FOR_PROJECT_SQL
+    // 契約 / XPROJ ガード / snake_case ReplyToAnnotationArgs を維持。start_run 系と
+    // abort・dead 2 件はバッチ3 以降) ──────────────────────────────────────────
+
+    /// 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。
+    #[napi]
+    pub async fn list_post_effect_runs(
+        &self,
+        project_id: String,
+        effect_type: Option<String>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows =
+                    post_effect::list_post_effect_runs(db, project_id, effect_type, limit, offset)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    /// Outline 用: scene ごとに最新 run の lens (`runCompletedAt` 付き) を返す。
+    #[napi]
+    pub async fn list_scene_lens_for_project(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let v = post_effect::list_scene_lens_for_project(db, project_id)?;
+                Ok(serde_json::to_string(&v)?)
+            })
+        })
+        .await
+    }
+
+    /// シーンの annotation + relation を返す (`{annotations,relations}`)。
+    #[napi]
+    pub async fn list_annotations_for_scene(
+        &self,
+        project_id: String,
+        scene_id: String,
+        status: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let v =
+                    post_effect::list_annotations_for_scene(db, project_id, scene_id, status)?;
+                Ok(serde_json::to_string(&v)?)
+            })
+        })
+        .await
+    }
+
+    /// プロジェクトの annotation を返す (`{annotations}`)。
+    #[napi]
+    pub async fn list_annotations_for_project(
+        &self,
+        project_id: String,
+        status: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let v = post_effect::list_annotations_for_project(db, project_id, status)?;
+                Ok(serde_json::to_string(&v)?)
+            })
+        })
+        .await
+    }
+
+    /// annotation の status を更新 (XPROJ ガード付き、conn 直呼び)。
+    #[napi]
+    pub async fn update_annotation_status(
+        &self,
+        annotation_id: String,
+        status: String,
+        project_id: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let v = db.with_conn(|conn| {
+                    post_effect::update_annotation_status_inner(
+                        conn,
+                        &annotation_id,
+                        &status,
+                        &project_id,
+                    )
+                })?;
+                Ok(serde_json::to_string(&v)?)
+            })
+        })
+        .await
+    }
+
+    /// 疑似コメントへの返信を追加 (`args` は snake_case の ReplyToAnnotationArgs)。
+    #[napi]
+    pub async fn reply_to_annotation(&self, args: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let args: ReplyToAnnotationArgs = from_wire("args", args)?;
+            with_db_state(&state.ws, |db| {
+                let v = db.with_conn(|conn| post_effect::reply_to_annotation_inner(conn, &args))?;
+                Ok(serde_json::to_string(&v)?)
+            })
+        })
+        .await
+    }
+
+    /// シーンの annotation を保存 (raw snake_case 配列、range_start/end は i64)。
+    #[napi]
+    pub async fn save_post_effect_annotations(
+        &self,
+        project_id: String,
+        scene_id: String,
+        annotations: serde_json::Value,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let annotations: Vec<serde_json::Value> = from_wire("annotations", annotations)?;
+            with_db_state(&state.ws, |db| {
+                post_effect::save_post_effect_annotations(db, project_id, scene_id, annotations)
+            })
+        })
+        .await
     }
 
     /// main 起動時に 1 回登録する (§7.1)。コールバックは

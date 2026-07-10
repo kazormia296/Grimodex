@@ -24,7 +24,10 @@ function isTauriRuntime(): boolean {
   // Keep tests on invoke path (they mock invoke payloads directly).
   if (typeof process !== "undefined" && process.env?.VITEST) return true;
   if (typeof window === "undefined") return false;
-  return "__TAURI_INTERNALS__" in window;
+  // ネイティブ backend（Tauri `__TAURI_INTERNALS__` / Electron `"grimodex"` =
+  // isElectron 相当）はどちらも invoke 経由。Electron 移行 Phase 3 バッチ1で
+  // Electron を napi パスに載せる（api.ts と同判定 / src/lib/shell.ts と整合）。
+  return "__TAURI_INTERNALS__" in window || "grimodex" in window;
 }
 
 // ── Extraction helpers (pure, no DB) ─────────────────────────────
