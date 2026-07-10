@@ -2000,6 +2000,7 @@ dependencies = [
  "grimodex-fonts",
  "grimodex-lint",
  "grimodex-mcp",
+ "grimodex-post-effect",
  "hex",
  "libc",
  "ndarray",
@@ -2118,6 +2119,24 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "grimodex-post-effect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "grimodex-ai",
+ "grimodex-db",
+ "grimodex-lint",
+ "hex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 

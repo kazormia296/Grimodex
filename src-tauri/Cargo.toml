@@ -6,6 +6,7 @@ members = [
     "crates/grimodex-mcp",
     "crates/grimodex-lint",
     "crates/grimodex-ai",
+    "crates/grimodex-post-effect",
 ]
 
 [package]
@@ -84,6 +85,7 @@ grimodex-core = { path = "crates/grimodex-core" }
 # ai_responses / ai_novelist はクレート内部モジュールとして閉じる。keyring feature で
 # OS セキュアストレージ経路 (save/has/delete_api_key) を Tauri ビルドのみ有効化する。
 grimodex-ai = { path = "crates/grimodex-ai", features = ["keyring"] }
+grimodex-post-effect = { path = "crates/grimodex-post-effect" }
 # DB 層 (Electron 移行 Phase 2 S1 で抽出)。`crate::database` / `crate::workspace`
 # は lib.rs の互換シム経由でこのクレートへ委譲する。
 grimodex-db = { path = "crates/grimodex-db" }

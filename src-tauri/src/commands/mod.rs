@@ -17,6 +17,7 @@ pub(crate) use grimodex_db::{
     with_db_state, ActiveWorkspace, AppError, AppResult, GlobalSettingsPath, QueryResult,
     WorkspaceState,
 };
+pub(crate) use grimodex_post_effect::PostEffectAbortRegistry;
 
 pub(crate) mod agent_writes;
 pub(crate) mod ai;
@@ -64,35 +65,6 @@ pub(crate) struct InlineAiAbortFlag {
 /// and need their own abort signal independent from the HTTP-based Chat stream.
 pub(crate) struct CliStreamAbortFlag {
     pub(crate) flag: Arc<std::sync::atomic::AtomicBool>,
-}
-
-/// PostEffect run の中止要求を run_id 単位で保持するレジストリ。
-/// 旧実装はアプリ全体で単一の AtomicBool だったため、並走 run の一方を
-/// 中止すると全 run に波及し、新 run 開始が中止要求を握り潰していた。
-pub(crate) struct PostEffectAbortRegistry {
-    aborted: std::sync::Mutex<std::collections::HashSet<String>>,
-}
-
-impl PostEffectAbortRegistry {
-    pub(crate) fn new() -> Self {
-        Self {
-            aborted: std::sync::Mutex::new(std::collections::HashSet::new()),
-        }
-    }
-    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
-        // poison は前保持者の panic 痕。フラグ集合は整合性を要しないので回復して続行。
-        self.aborted.lock().unwrap_or_else(|e| e.into_inner())
-    }
-    pub(crate) fn request(&self, run_id: &str) {
-        self.lock().insert(run_id.to_string());
-    }
-    pub(crate) fn is_aborted(&self, run_id: &str) -> bool {
-        self.lock().contains(run_id)
-    }
-    /// run 終端時に呼ぶ（累積によるメモリリーク防止）。
-    pub(crate) fn clear(&self, run_id: &str) {
-        self.lock().remove(run_id);
-    }
 }
 
 /// Holds the `tracing-appender` worker guard so the non-blocking writer
