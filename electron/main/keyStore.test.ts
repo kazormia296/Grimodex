@@ -126,6 +126,25 @@ describe("createKeyStore", () => {
     ).toThrow("No API key configured for anthropic");
   });
 
+  it("モデル一覧用optional lookupは未設定をnull、設定済みを平文で返す", () => {
+    const ks = createKeyStore(dir, fakeStorage()) as ReturnType<
+      typeof createKeyStore
+    > & {
+      getApiKeyForRequest(
+        settings: { provider: string },
+        provider: unknown,
+        endpointId: unknown,
+      ): string | null;
+    };
+    expect(
+      ks.getApiKeyForRequest({ provider: "openai" }, "openai", null),
+    ).toBeNull();
+    ks.saveApiKey("openai", null, "sk-optional");
+    expect(ks.getApiKeyForRequest({ provider: "openai" }, "openai", null)).toBe(
+      "sk-optional",
+    );
+  });
+
   it("暗号化が利用不可なら save は明示エラー", () => {
     const ks = createKeyStore(dir, fakeStorage(false));
     expect(() => ks.saveApiKey("openai", null, "sk")).toThrow(
