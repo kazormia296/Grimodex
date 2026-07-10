@@ -76,6 +76,7 @@ import {
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { isMac, isWebKitGtk, matchesMod } from "@/lib/platform";
+import { supportsVerticalFormControls } from "@/lib/verticalFormControls";
 import {
   PANEL_COMMANDS,
   getMergedBindings,
@@ -366,6 +367,14 @@ function EditorScreen() {
   useEffect(() => {
     if (isWebKitGtk()) {
       document.documentElement.dataset.engine = "webkitgtk";
+      // フォームコントロールの縦書き対応 (VerticalFormControls) を probe。
+      // Rust 側 (webkit_features.rs) が有効化に成功したビルドでは true になり、
+      // index.css の Beat chrome 横書き島フォールバックが外れて Chromium と
+      // 同じ縦帯 chrome になる。フラグはページ提供時スナップショットなので
+      // プロセス生存中に変わらず、mount 時一回で十分。
+      if (supportsVerticalFormControls()) {
+        document.documentElement.dataset.vfc = "on";
+      }
     }
   }, []);
 

@@ -8,8 +8,15 @@
  * ロードせず generic serif にフォールバックしていたため「テスト緑・日本語実機だけ
  * 空白マーク左寄り」を検出できなかった。空白マーク (·/□) はフォント由来グリフを
  * 使うと advance / ink がプラットフォーム依存になり横ずれするため、CSS 図形で
- * 描画する方式に変更した。ここではその図形が span (=文字間の隙間) の中央に
- * 対称配置されることを検証する。
+ * 描画する方式に変更した。
+ *
+ * さらに図形は「abspos ::before」ではなく「span 自身の background / mask」で
+ * 描く。WebKitGTK は縦書き (vertical-rl) で inline を包含ブロックとする abspos
+ * の paint を leading 分ズラすバグを持ち、computed style は正常値のまま paint
+ * だけズレるため Chromium 実行のこのスイートでは直接検出できない。よってここでは
+ * (a) span が文字間の隙間の中央にいること、(b) WebKitGTK で壊れる技法
+ * (inline+abspos) に依存していないこと (::before 非使用・background/mask 使用・
+ * ↵/¶ アンカーの inline-block 化) を gate する。
  */
 import { describe, it, expect, afterEach, beforeAll } from "vitest";
 import { Editor, Extension } from "@tiptap/core";
@@ -78,29 +85,57 @@ function gapCenterDelta(paragraph: HTMLElement, span: HTMLElement): number {
   return spanCenter - gapCenter;
 }
 
+/** gapCenterDelta の縦書き版 — 字送り軸が縦なので top/bottom で測る。
+ *  測定不能 (隣接ノードの矩形が取れない) は 0 ではなく null を返す —
+ *  0 は「中央一致」と同値になり vacuous pass を生むため。 */
+function gapCenterDeltaVertical(
+  paragraph: HTMLElement,
+  span: HTMLElement,
+): number | null {
+  const spanRect = span.getBoundingClientRect();
+  const nodes = [...paragraph.childNodes];
+  const idx = nodes.indexOf(span);
+  const measureEdge = (node: ChildNode | undefined, end: boolean) => {
+    if (!node) return null;
+    const range = document.createRange();
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent ?? "";
+      if (!text.length) return null;
+      const offset = end ? text.length : 0;
+      range.setStart(node, Math.max(0, offset - (end ? 1 : 0)));
+      range.setEnd(node, end ? text.length : Math.min(1, text.length));
+    } else if (node instanceof HTMLElement) {
+      range.selectNodeContents(node);
+      if (end) range.collapse(false);
+    } else {
+      return null;
+    }
+    return range.getBoundingClientRect();
+  };
+  const prevRect = measureEdge(nodes[idx - 1], true);
+  const nextRect = measureEdge(nodes[idx + 1], false);
+  if (!prevRect || !nextRect) return null;
+  const gapCenter = (prevRect.bottom + nextRect.top) / 2;
+  const spanCenter = spanRect.top + spanRect.height / 2;
+  return spanCenter - gapCenter;
+}
+
 /**
- * マーク (::before 図形) のメトリクス。図形は inset+margin:auto で span
- * ボックスに対称配置されるので、
- *  - marginLeft ≈ marginRight  → 図形が span 内で水平中央
- *  - marginTop  ≈ marginBottom → 図形が span 内で垂直中央
- * を満たすはず。transform を使わないので getComputedStyle がそのまま使える。
+ * マークの描画スタイル。図形は span 自身の background / mask で描く
+ * (background は span ボックス基準なので、box 中央配置がエンジン保証される)。
+ * ::before が none であることは「WebKitGTK 縦書きで paint がズレる
+ * inline+abspos 技法に戻っていない」ことの gate。
  */
-function markMetrics(span: HTMLElement) {
-  const b = getComputedStyle(span, "::before");
-  const num = (v: string) => Number.parseFloat(v) || 0;
+function markStyle(span: HTMLElement) {
+  const s = getComputedStyle(span);
   return {
-    content: b.content,
-    width: num(b.width),
-    height: num(b.height),
-    marginLeft: num(b.marginLeft),
-    marginRight: num(b.marginRight),
-    marginTop: num(b.marginTop),
-    marginBottom: num(b.marginBottom),
-    backgroundColor: b.backgroundColor,
-    borderTopWidth: num(b.borderTopWidth),
-    borderRadius: b.borderTopLeftRadius,
-    hMarginSkew: Math.abs(num(b.marginLeft) - num(b.marginRight)),
-    vMarginSkew: Math.abs(num(b.marginTop) - num(b.marginBottom)),
+    beforeContent: getComputedStyle(span, "::before").content,
+    backgroundImage: s.backgroundImage,
+    backgroundPosition: s.backgroundPosition,
+    backgroundSize: s.backgroundSize,
+    backgroundRepeat: s.backgroundRepeat,
+    maskImage: s.maskImage || s.webkitMaskImage,
+    maskPosition: s.maskPosition || s.webkitMaskPosition,
   };
 }
 
@@ -304,7 +339,7 @@ describe("空白・改行可視化の幾何", () => {
     expect(span).toBeTruthy();
     const p = el.querySelector(".tiptap > p") as HTMLElement;
     const spanRect = span.getBoundingClientRect();
-    const m = markMetrics(span);
+    const m = markStyle(span);
     console.warn(
       "[invisibles:ja-ideographic]",
       JSON.stringify({
@@ -317,19 +352,26 @@ describe("空白・改行可視化の幾何", () => {
     // 全角空白セル ≈ 1em。
     expect(spanRect.width).toBeGreaterThan(EM * 0.7);
     expect(spanRect.width).toBeLessThan(EM * 1.3);
-    // マークはフォントグリフではなく CSS 図形 (content 空・border ありの中空四角)。
-    expect(m.content === '""' || m.content === "" || m.content === "none").toBe(
-      true,
-    );
-    expect(m.borderTopWidth).toBeGreaterThan(0);
-    // 図形サイズはフォント非依存 (0.5em)。glyph 方式の advance ばらつき
+    // マークは span 背景の CSS 図形 (中空四角 = 4 本のストライプ)。
+    // ::before が none = inline+abspos 技法に依存していない (WebKitGTK gate)。
+    expect(m.beforeContent).toBe("none");
+    expect(m.backgroundImage.match(/linear-gradient/g)?.length).toBe(4);
+    // 色は --pm-ws-ink (muted-foreground 45%) が gradient へ焼き込まれる。
+    // alpha 0 (不可視) への退行を gate — computed には `/ 0.45)` 形式で現れる。
+    expect(m.backgroundImage).toMatch(/\/ 0\.45\)/);
+    // 図形サイズはフォント非依存 (0.5em = EM/2)。glyph 方式の advance ばらつき
     // (Linux 0.6em / Windows 2em) を排除したことの gate。
-    expect(m.width + m.borderTopWidth * 2).toBeGreaterThan(EM * 0.4);
-    expect(m.width + m.borderTopWidth * 2).toBeLessThan(EM * 0.65);
-    // span 内で水平・垂直とも中央 (対称マージン)。
-    expect(m.hMarginSkew).toBeLessThan(0.6);
-    expect(m.vMarginSkew).toBeLessThan(1.5);
-    // span 自体が文字間の隙間中央にいる。両方満たせば「隙間の中央」に見える。
+    const sizes = m.backgroundSize.split(",").map((s) => s.trim());
+    expect(sizes.length).toBe(4);
+    expect(sizes[0]).toBe(`${EM / 2}px 1px`);
+    expect(sizes[2]).toBe(`1px ${EM / 2}px`);
+    // 4 本のストライプが上下左右の辺に配置される (中央へ潰れる退行を gate)。
+    // EM=20px なので calc は px 決定的に解決される。
+    expect(m.backgroundPosition).toBe(
+      `50% calc(50% - ${EM / 4}px), 50% calc(50% + ${EM / 4}px), calc(50% - ${EM / 4}px) 50%, calc(50% + ${EM / 4}px) 50%`,
+    );
+    // background は span ボックス基準なので box 中央配置はエンジン保証。
+    // span 自体が文字間の隙間中央にいれば「隙間の中央」に見える。
     expect(Math.abs(gapCenterDelta(p, span))).toBeLessThan(2);
   });
 
@@ -346,7 +388,7 @@ describe("空白・改行可視化の幾何", () => {
     expect(span).toBeTruthy();
     const p = el.querySelector(".tiptap > p") as HTMLElement;
     const spanRect = span.getBoundingClientRect();
-    const m = markMetrics(span);
+    const m = markStyle(span);
     console.warn(
       "[invisibles:ja-space]",
       JSON.stringify({
@@ -358,19 +400,15 @@ describe("空白・改行可視化の幾何", () => {
 
     expect(spanRect.width).toBeGreaterThan(0);
     expect(spanRect.width).toBeLessThan(EM);
-    // 中黒相当のドット (背景色あり・content 空・角丸)。
-    expect(m.content === '""' || m.content === "" || m.content === "none").toBe(
-      true,
-    );
-    expect(m.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
-    expect(m.backgroundColor).not.toBe("transparent");
-    expect(m.width).toBeGreaterThan(0);
-    expect(m.width).toBeLessThan(EM * 0.4);
-    // 幅≈高さ (ドット)。
-    expect(Math.abs(m.width - m.height)).toBeLessThan(1);
-    // span 内で対称中央。span 幅が狭くてもマージン対称なら中央。
-    expect(m.hMarginSkew).toBeLessThan(0.6);
-    expect(m.vMarginSkew).toBeLessThan(1.5);
+    // 中黒相当のドット = span 背景の radial-gradient。::before 非使用
+    // (WebKitGTK 縦書き abspos paint バグ回避技法の gate)。
+    expect(m.beforeContent).toBe("none");
+    expect(m.backgroundImage).toContain("radial-gradient");
+    // 色の alpha 0 (不可視) への退行を gate。
+    expect(m.backgroundImage).toMatch(/\/ 0\.45\)/);
+    // 物理 center は点対称図形なので縦書きでもそのまま成立する。
+    expect(m.backgroundPosition).toBe("50% 50%");
+    expect(m.backgroundRepeat).toBe("no-repeat");
     expect(Math.abs(gapCenterDelta(p, span))).toBeLessThan(2);
   });
 
@@ -387,13 +425,13 @@ describe("空白・改行可視化の幾何", () => {
     const span = el.querySelector(".pm-ws-space") as HTMLElement;
     expect(span).toBeTruthy();
     const p = el.querySelector(".tiptap > p") as HTMLElement;
-    const m = markMetrics(span);
+    const m = markStyle(span);
     console.warn(
       "[invisibles:en-space]",
       JSON.stringify({ gapDelta: gapCenterDelta(p, span), m }),
     );
-    expect(m.hMarginSkew).toBeLessThan(0.6);
-    expect(m.vMarginSkew).toBeLessThan(1.5);
+    expect(m.beforeContent).toBe("none");
+    expect(m.backgroundImage).toContain("radial-gradient");
     expect(Math.abs(gapCenterDelta(p, span))).toBeLessThan(2);
   });
 
@@ -437,5 +475,100 @@ describe("空白・改行可視化の幾何", () => {
     const noSpace = (ps[1] as HTMLElement).getBoundingClientRect();
     expect(noSpace.width).toBeGreaterThan(30);
     expect(withSpace.width).toBeLessThanOrEqual(noSpace.width + 1);
+  });
+
+  it.each([1.0, 2.0, 3.0])(
+    "縦書き lh=%s: 全角空白マークが background 方式で隙間中央にいる",
+    (lineHeight) => {
+      // line-height をパラメタライズする理由: WebKitGTK の abspos paint ズレは
+      // leading に比例し、lh=2 でだけ偶然相殺して見える修正案 (translate 方式)
+      // が存在した。技法 gate (background) は lh 非依存で成立すること。
+      const { el, editor } = mount(para("あ　い"), {
+        vertical: true,
+        editorSettings: { ...JA_EDITOR_SETTINGS, lineHeight },
+      });
+      cleanups.push(() => {
+        editor.destroy();
+        el.remove();
+      });
+
+      const span = el.querySelector(".pm-ws-ideographic") as HTMLElement;
+      expect(span).toBeTruthy();
+      const p = el.querySelector(".tiptap > p") as HTMLElement;
+      const m = markStyle(span);
+      // WebKitGTK で paint がズレる inline+abspos 技法に依存しない (::before 無し)
+      expect(m.beforeContent).toBe("none");
+      expect(m.backgroundImage).toContain("linear-gradient");
+      // 縦書きでは字送り軸 (縦) の隙間中央に span がいる
+      const delta = gapCenterDeltaVertical(p, span);
+      expect(delta).not.toBeNull();
+      expect(Math.abs(delta!)).toBeLessThan(2);
+    },
+  );
+
+  it("↵/¶ アンカーは inline-block (WebKitGTK 縦書き abspos paint バグ回避)", () => {
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "一行目" },
+            { type: "hardBreak" },
+            { type: "text", text: "二行目" },
+          ],
+        },
+      ],
+    };
+    const { el, editor } = mount(doc, { vertical: true });
+    cleanups.push(() => {
+      editor.destroy();
+      el.remove();
+    });
+
+    const br = el.querySelector(".pm-ws-br") as HTMLElement;
+    const paraEnd = el.querySelector(".pm-ws-para-end") as HTMLElement;
+    expect(br).toBeTruthy();
+    expect(paraEnd).toBeTruthy();
+    for (const anchor of [br, paraEnd]) {
+      const cs = getComputedStyle(anchor);
+      // inline 包含ブロックだと WebKitGTK 縦書きで ::before が列から外れる
+      expect(cs.display).toBe("inline-block");
+      expect(cs.width).toBe("0px");
+      expect(cs.overflow).toBe("visible");
+    }
+  });
+
+  it("タブ → は background 方式で、縦書きでは下向き矢印 + 行頭(上)寄せに切り替わる", () => {
+    const horizontal = mount(para("あ\tい"), { vertical: false });
+    const vertical = mount(para("あ\tい"), { vertical: true });
+    cleanups.push(() => {
+      horizontal.editor.destroy();
+      horizontal.el.remove();
+      vertical.editor.destroy();
+      vertical.el.remove();
+    });
+
+    const hSpan = horizontal.el.querySelector(".pm-ws-tab") as HTMLElement;
+    const vSpan = vertical.el.querySelector(".pm-ws-tab") as HTMLElement;
+    expect(hSpan).toBeTruthy();
+    expect(vSpan).toBeTruthy();
+
+    const hm = markStyle(hSpan);
+    const vm = markStyle(vSpan);
+    // 矢印は ::before グリフではなく span 背景の SVG (abspos 非依存)。
+    // 論理 inset と物理 top の衝突 (旧実装) の回帰 gate。
+    expect(hm.beforeContent).toBe("none");
+    expect(vm.beforeContent).toBe("none");
+    expect(hm.backgroundImage).toContain("data:image/svg+xml");
+    expect(vm.backgroundImage).toContain("data:image/svg+xml");
+    // mask を使わないこと: mask は選択ハイライトや同一 span にマージされる
+    // 他 decoration の background-color まで矢印形に切り抜いてしまう。
+    expect(hm.maskImage === "none" || hm.maskImage === "").toBe(true);
+    // 横書き: 行頭=左・行内中央 / 縦書き: 行頭=上・行内中央
+    expect(hm.backgroundPosition).toBe("0% 50%");
+    expect(vm.backgroundPosition).toBe("50% 0%");
+    // 縦書きは下向き矢印 SVG に差し替わる (パスが異なる)
+    expect(vm.backgroundImage).not.toBe(hm.backgroundImage);
   });
 });

@@ -86,6 +86,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.aozoraInput": "global",
   "editor.showInvisibles": "global",
   "editor.autoPairBrackets": "global",
+  "editor.codexPopoverOnCaret": "global",
   // Editor — work-specific (project)
   "editor.targetCharCount": "project",
   "editor.wordBreak": "project",
@@ -282,6 +283,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.showInvisibles": "false",
   // 約物ペア(「」『』（）等)の自動補完。既定ON。
   "editor.autoPairBrackets": "true",
+  // キャレットが Codex ハイライトに入ったときのポップオーバー表示
+  // （キーボード操作者向けのオプトイン）。マウスホバーは設定に関わらず常に
+  // 有効。執筆中にキャレット移動で開くのは煩わしいため既定OFF。
+  "editor.codexPopoverOnCaret": "false",
   "editor.paragraphIndent": "0",
   "editor.verticalMode": "false",
   // 縦中横（縦書き時に半角数字を正立結合）。既定は出版物の慣習に最も近い

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { isWebKitGtk } from "@/lib/platform";
 import type { ReorderGranularity } from "./types";
 
 /**
@@ -64,10 +65,29 @@ let attached = false;
 
 function syncFromEvent(e: Event): void {
   const ke = e as KeyboardEvent;
-  const alt = "altKey" in ke ? Boolean(ke.altKey) : false;
-  const shift = "shiftKey" in ke ? Boolean(ke.shiftKey) : false;
-  const ctrl = "ctrlKey" in ke ? Boolean(ke.ctrlKey) : false;
-  const meta = "metaKey" in ke ? Boolean(ke.metaKey) : false;
+  let alt = "altKey" in ke ? Boolean(ke.altKey) : false;
+  let shift = "shiftKey" in ke ? Boolean(ke.shiftKey) : false;
+  let ctrl = "ctrlKey" in ke ? Boolean(ke.ctrlKey) : false;
+  let meta = "metaKey" in ke ? Boolean(ke.metaKey) : false;
+  // WebKitGTK (GDK) は keyup の modifier state に「離す直前」の状態を入れる
+  // ため、離したキー自身のフラグが立ったまま届く (WebKit の WebEventFactory は
+  // KEY_RELEASE でこの補正をしない)。key/code で自前クリアしないと Alt を
+  // 離してもハンドルが消えない。Blink/WKWebView は keyup の state が正しい
+  // ので補正しない — 全エンジンに掛けると「左右 Alt 同時押しで片方だけ離す」
+  // とき正しい altKey=true まで潰してしまう。
+  if (ke.type === "keyup" && isWebKitGtk()) {
+    if (
+      ke.key === "Alt" ||
+      ke.key === "AltGraph" ||
+      ke.code === "AltLeft" ||
+      ke.code === "AltRight"
+    ) {
+      alt = false;
+    }
+    if (ke.key === "Shift") shift = false;
+    if (ke.key === "Control") ctrl = false;
+    if (ke.key === "Meta") meta = false;
+  }
   useReorderModifierStore
     .getState()
     .setMode(computeModifierMode(alt, shift, ctrl, meta));

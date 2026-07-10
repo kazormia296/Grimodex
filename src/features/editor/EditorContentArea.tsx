@@ -20,6 +20,7 @@ import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
 import { isWebKitGtk } from "@/lib/platform";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
+import { useWebKitGtkVerticalScrollResetGuard } from "@/features/editor/useWebKitGtkVerticalScrollResetGuard";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import type { FilterSource } from "@/features/attribution/attributionStore";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
@@ -93,6 +94,12 @@ export function EditorContentArea({
   const isEnglish = useCurrentProject()?.language === "en";
   // 縦書きではホイールの縦回転を読み進み方向 (横) のスクロールに変換する
   useVerticalWheelScroll(editorContainerRef, editorSettings.verticalMode);
+  // WebKitGTK: DOM 変異 relayout で vertical-rl の scrollLeft が先頭(0)へ
+  // リセットされるエンジンバグの検出即復元（Codex ホバーポップオーバー等）。
+  useWebKitGtkVerticalScrollResetGuard(
+    editorContainerRef,
+    editorSettings.verticalMode,
+  );
   return (
     <>
       <FindReplaceBar
@@ -120,7 +127,10 @@ export function EditorContentArea({
         className={`glass-editor-body flex-1 overflow-auto bg-content-background text-content-foreground-secondary p-4${editorSettings.verticalMode ? " editor-vertical" : ""}${typewriterMode ? " typewriter-padding" : ""}${filterSource ? ` attribution-filter-${filterSource}` : ""}`}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
-            editor?.commands.focus();
+            // 余白クリックは「今見ている位置のままフォーカスだけ」戻す。
+            // 既定の scrollIntoView:true は selection が文書先頭のとき
+            // （シーンを開いてクリックせず読み進めた場合）先頭へ飛ぶ。
+            editor?.commands.focus(null, { scrollIntoView: false });
           }
         }}
       >

@@ -17,7 +17,7 @@
  *   beat-divider）の軸マップ・ポップオーバー（.beat-popover）の横書き維持
  * - 行番号ガター padding-inline-start の軸マップ
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { render, waitFor, fireEvent } from "@testing-library/react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { Editor, Extension } from "@tiptap/core";
@@ -441,6 +441,140 @@ describe("縦書きMODE: Beat ノードの縦書き表示", () => {
         chipRect.bottom - 1,
       );
     });
+  });
+});
+
+describe("縦書きMODE: WebKitGTK では Beat chrome を横書き島にする", () => {
+  // WebKitGTK は <button> の縦書きを VerticalFormControls フラグ（既定 OFF）で
+  // 拒否するため、chrome 内で span=縦 / button=横 が混在して崩れる。
+  // html[data-engine="webkitgtk"]（かつ Rust 側でフラグ有効化に失敗して
+  // data-vfc="on" が立たない場合）では chrome 全体を horizontal-tb へ統一する
+  // （index.css の島ルール）。WebKitGTK の button 強制自体は Chromium では
+  // 再現しないが、data-engine/data-vfc ゲートの CSS 適用はここで gate できる。
+  afterEach(() => {
+    delete document.documentElement.dataset.engine;
+    delete document.documentElement.dataset.vfc;
+  });
+
+  it("data-engine=webkitgtk: header/footer/チップが horizontal-tb になり、チップは header 帯に収まる", async () => {
+    document.documentElement.dataset.engine = "webkitgtk";
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const header = beat.querySelector("header") as HTMLElement;
+    const footer = beat.querySelector("footer") as HTMLElement;
+    const chip = beat.querySelector(
+      '[data-testid="beat-type-chip"]',
+    ) as HTMLElement;
+    expect(getComputedStyle(header).writingMode).toBe("horizontal-tb");
+    expect(getComputedStyle(footer).writingMode).toBe("horizontal-tb");
+    expect(getComputedStyle(chip).writingMode).toBe("horizontal-tb");
+    // .tiptap の縦組み字形強制 (vert/vrt2) を島側で打ち消していること —
+    // 継承すると vert GSUB を持つ UI フォントで横書き島に縦字形が並ぶ
+    expect(getComputedStyle(header).fontFeatureSettings).toBe("normal");
+    expect(getComputedStyle(chip).fontFeatureSettings).toBe("normal");
+    // チップは横長ボックスで header 帯の中に収まる（横倒し重なりの回帰 gate）
+    const chipRect = chip.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    expect(chipRect.width).toBeGreaterThan(chipRect.height);
+    expect(chipRect.top).toBeGreaterThanOrEqual(headerRect.top - 1);
+    expect(chipRect.bottom).toBeLessThanOrEqual(headerRect.bottom + 1);
+    expect(chipRect.left).toBeGreaterThanOrEqual(headerRect.left - 1);
+    expect(chipRect.right).toBeLessThanOrEqual(headerRect.right + 1);
+    // Beat ノード本体（本文）は縦書きフローのまま
+    expect(getComputedStyle(beat).writingMode).toBe("vertical-rl");
+  });
+
+  it("data-engine なしでは既存の縦帯 chrome を維持する（回帰）", async () => {
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const header = beat.querySelector("header") as HTMLElement;
+    expect(getComputedStyle(header).writingMode).toBe("vertical-rl");
+  });
+
+  it("data-vfc=on (VerticalFormControls 有効化成功) では島を外し縦帯 chrome に戻す", async () => {
+    // Rust 側 (webkit_features.rs) がフラグを有効化できたビルドでは
+    // App の probe が data-vfc="on" を立て、島フォールバックは外れて
+    // Chromium と同形の縦帯 chrome になる（本命経路の gate）。
+    document.documentElement.dataset.engine = "webkitgtk";
+    document.documentElement.dataset.vfc = "on";
+    render(<BeatEditorFixture vertical />);
+    const beat = await waitForBeatNode();
+    const header = beat.querySelector("header") as HTMLElement;
+    const chip = beat.querySelector(
+      '[data-testid="beat-type-chip"]',
+    ) as HTMLElement;
+    expect(getComputedStyle(header).writingMode).toBe("vertical-rl");
+    expect(getComputedStyle(chip).writingMode).toBe("vertical-rl");
+  });
+});
+
+describe("縦書きMODE: スクローラ非縦書き構造と行長キャップ中央寄せ", () => {
+  // WebKitGTK のスクロールリセットバグ回避のため、スクローラ自身は
+  // horizontal-tb + direction:rtl のまま、縦書きは直下の子から始める
+  // （index.css の .editor-vertical / .editor-vertical > * の構造契約）。
+  it("スクローラは horizontal-tb + rtl、直下の子から vertical-rl が始まる", () => {
+    render(
+      <div
+        data-testid="scroller"
+        className="editor-vertical"
+        style={{ width: 400, height: 400, overflow: "auto" }}
+      >
+        <div data-testid="wrapper">
+          <p>縦書き本文</p>
+        </div>
+      </div>,
+    );
+    const scroller = document.querySelector(
+      "[data-testid='scroller']",
+    ) as HTMLElement;
+    const wrapper = document.querySelector(
+      "[data-testid='wrapper']",
+    ) as HTMLElement;
+    const scs = getComputedStyle(scroller);
+    expect(scs.writingMode).toBe("horizontal-tb");
+    expect(scs.direction).toBe("rtl");
+    const wcs = getComputedStyle(wrapper);
+    expect(wcs.writingMode).toBe("vertical-rl");
+    expect(wcs.direction).toBe("ltr");
+  });
+
+  it("行長キャップ (maxInlineSize + marginInline auto) が縦方向の中央寄せに解決される", () => {
+    // buildEditorMeasureStyle と同じ指定を持つ wrapper が、キャップ発動時に
+    // flex 交差軸 auto マージンで上下中央に寄る（「上のスペース」の回帰 gate。
+    // 通常フローだと親のブロック軸なので auto=0 に潰れて上詰めになる）。
+    render(
+      <div
+        data-testid="scroller"
+        className="editor-vertical"
+        style={{ width: 400, height: 900, overflow: "auto", padding: 16 }}
+      >
+        <div
+          data-testid="wrapper"
+          style={{
+            maxInlineSize: "720px",
+            marginBlock: 0,
+            marginInline: "auto",
+          }}
+        >
+          <p>本文</p>
+        </div>
+      </div>,
+    );
+    const scroller = document.querySelector(
+      "[data-testid='scroller']",
+    ) as HTMLElement;
+    const wrapper = document.querySelector(
+      "[data-testid='wrapper']",
+    ) as HTMLElement;
+    const sr = scroller.getBoundingClientRect();
+    const wr = wrapper.getBoundingClientRect();
+    // 高さは 720px にキャップされる（inline-size:100% と max の min 側）
+    expect(Math.round(wr.height)).toBe(720);
+    const topGap = wr.top - sr.top;
+    const bottomGap = sr.bottom - wr.bottom;
+    // (900 - 720) / 2 = 90px ずつ — padding 16px より十分大きい中央寄せ
+    expect(topGap).toBeGreaterThan(50);
+    expect(Math.abs(topGap - bottomGap)).toBeLessThan(2);
   });
 });
 

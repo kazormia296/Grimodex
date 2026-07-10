@@ -9,6 +9,8 @@ mod external_mount;
 mod license;
 mod lint_logging;
 mod semantic;
+#[cfg(target_os = "linux")]
+mod webkit_features;
 mod workspace;
 
 use std::sync::{Arc, Mutex};
@@ -106,6 +108,25 @@ pub fn run() {
         // 校閲 run 終端のデスクトップ通知 (非フォーカス時のみ FE 側が送る)
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // WebKitGTK: フォームコントロールの縦書きを許可する機能フラグ
+            // VerticalFormControls を有効化する（既定 OFF。詳細は
+            // webkit_features.rs）。起動直後の初期ロードに対して web process
+            // を再起動して適用するため、ユーザー状態には影響しない。
+            // 失敗時（< 2.42 等）はフロントの island CSS フォールバックが生きる。
+            // URL は closure の外で取得して渡す — この時点の初期ナビゲーションは
+            // まだ provisional で、view 側の URI (about:blank) は再ロード先に
+            // 使えない（webkit_features.rs の黒画面注意書き参照）。
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                let app_url = window.url().ok().map(|u| u.to_string());
+                let _ = window.with_webview(move |webview| {
+                    webkit_features::apply_vertical_form_controls(
+                        &webview.inner(),
+                        app_url.as_deref(),
+                    );
+                });
+            }
+
             let app_dir = app
                 .path()
                 .app_data_dir()
