@@ -14,6 +14,7 @@ import {
   isAllowedEventChannel,
   isSafeExternalUrl,
   NAPI_COMMANDS,
+  SHELL_COMMAND_NAMES,
   toErrorString,
   unimplementedError,
 } from "./ipcContract.js";
@@ -427,21 +428,64 @@ describe("toErrorString", () => {
 describe("dispatchInvoke", () => {
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
     const { backend } = fakeBackend();
-    // send_cli_chat_stream は3b時点で未実装（バッチ3cでmain-TS化予定）。
-    const env = await dispatchInvoke(
-      "send_cli_chat_stream",
-      {},
-      { backend, shell: noShell },
-    );
+    const command = "definitely_unknown_command";
+    const env = await dispatchInvoke(command, {}, { backend, shell: noShell });
     expect(env).toEqual({
       ok: false,
-      error: "IPC_UNIMPLEMENTED: send_cli_chat_stream",
+      error: `IPC_UNIMPLEMENTED: ${command}`,
     });
     expect(
-      unimplementedError("send_cli_chat_stream").startsWith(
-        IPC_UNIMPLEMENTED_MARKER,
-      ),
+      unimplementedError(command).startsWith(IPC_UNIMPLEMENTED_MARKER),
     ).toBe(true);
+  });
+
+  it("CLI AI 5コマンドはbackend不在でもmain shell handlerへ委譲される", async () => {
+    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
+    const shell = Object.fromEntries(
+      [
+        "detect_cli_binary",
+        "test_cli_connection",
+        "list_cli_models",
+        "send_cli_chat_stream",
+        "abort_cli_chat_stream",
+      ].map((command) => [
+        command,
+        async (args: Record<string, unknown>) => {
+          calls.push({ command, args });
+          return command === "detect_cli_binary" ? "/bin/claude" : null;
+        },
+      ]),
+    );
+
+    const detected = await dispatchInvoke(
+      "detect_cli_binary",
+      { cli: "claude" },
+      { backend: null, shell },
+    );
+    const sent = await dispatchInvoke(
+      "send_cli_chat_stream",
+      { payload: { cli: "claude", prompt: "hi" } },
+      { backend: null, shell },
+    );
+
+    expect(detected).toEqual({ ok: true, value: "/bin/claude" });
+    expect(sent).toEqual({ ok: true, value: null });
+    expect(calls).toEqual([
+      { command: "detect_cli_binary", args: { cli: "claude" } },
+      {
+        command: "send_cli_chat_stream",
+        args: { payload: { cli: "claude", prompt: "hi" } },
+      },
+    ]);
+    expect(SHELL_COMMAND_NAMES).toEqual(
+      expect.arrayContaining([
+        "detect_cli_binary",
+        "test_cli_connection",
+        "list_cli_models",
+        "send_cli_chat_stream",
+        "abort_cli_chat_stream",
+      ]),
+    );
   });
 
   it("backend 不在の napi コマンドは IPC_BACKEND_UNAVAILABLE", async () => {
