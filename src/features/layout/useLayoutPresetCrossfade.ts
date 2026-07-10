@@ -32,18 +32,27 @@ export function useLayoutPresetCrossfade() {
   const activePresetId = useLayoutStore((s) => s.activePresetId);
   const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
   const layoutLocked = useLayoutStore((s) => s.layoutLocked);
+  const initialized = useLayoutStore((s) => s.initialized);
   const reduced = useReducedMotion();
   const controls = useAnimationControls();
   const lastAnimRef = useRef(0);
   const prevPresetRef = useRef(activePresetId);
   const prevZoomRef = useRef(maximizedPanelId);
+  const prevInitializedRef = useRef(initialized);
 
   useLayoutEffect(() => {
     const presetChanged = prevPresetRef.current !== activePresetId;
     const zoomChanged = prevZoomRef.current !== maximizedPanelId;
     const zoomEntering = zoomChanged && prevZoomRef.current === null;
+    const startupHydrationCompleted =
+      !prevInitializedRef.current && initialized;
     prevPresetRef.current = activePresetId;
     prevZoomRef.current = maximizedPanelId;
+    prevInitializedRef.current = initialized;
+    // 初期 hydration は画面上のユーザー操作ではないため演出対象から外し、
+    // 保存済みレイアウトの最終状態をそのまま示す。loadPresets() が
+    // initialized=false のまま preset id を先に読む二段階更新もここで吸収する。
+    if (!initialized || startupHydrationCompleted) return;
     if (!presetChanged && (!zoomChanged || zoomEntering)) return;
 
     const canAnimate =
@@ -58,7 +67,14 @@ export function useLayoutPresetCrossfade() {
       opacity: 1,
       transition: presetCrossfadeTransition(reduced),
     });
-  }, [activePresetId, maximizedPanelId, layoutLocked, reduced, controls]);
+  }, [
+    activePresetId,
+    maximizedPanelId,
+    layoutLocked,
+    initialized,
+    reduced,
+    controls,
+  ]);
 
   return { crossfadeControls: controls };
 }

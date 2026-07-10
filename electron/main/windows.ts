@@ -167,7 +167,10 @@ function buildWebPreferences(): BrowserWindowConstructorOptions["webPreferences"
 }
 
 /**
- * ready-to-show で表示 + 復元位置の再適用（メイン窓 / パネル窓共通）。
+ * ready-to-show または did-finish-load の早い方で表示し、復元位置を再適用
+ * （メイン窓 / パネル窓共通）。transparent + show:false の窓では環境によって
+ * ready-to-show が発火せず、非表示 renderer の rAF も停止して永久に表示不能に
+ * なるため、document load 完了を安全な fallback とする。
  * maximize() は非表示窓を表示させる副作用があるため show の直前に行う。
  */
 function showWhenReady(
@@ -175,7 +178,10 @@ function showWhenReady(
   options: BrowserWindowConstructorOptions,
   startMaximized: boolean,
 ): void {
-  win.once("ready-to-show", () => {
+  let revealed = false;
+  const reveal = (): void => {
+    if (revealed || win.isDestroyed()) return;
+    revealed = true;
     if (startMaximized) win.maximize();
     win.show();
     // map 後に WM が constructor の x/y を上書きする環境がある
@@ -191,13 +197,16 @@ function showWhenReady(
         if (current.x !== x || current.y !== y) win.setPosition(x, y);
       }, 250);
     }
-  });
+  };
+
+  win.once("ready-to-show", reveal);
 
   win.webContents.on("did-finish-load", () => {
     // dev オーケストレータ / スモークスクリプトが起動確認に使うマーカーログ。
     console.log(
       `[grimodex-electron] renderer loaded: ${win.webContents.getURL()}`,
     );
+    reveal();
   });
 }
 

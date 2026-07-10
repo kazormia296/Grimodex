@@ -1,4 +1,4 @@
-import { memo, type ReactNode } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { useReducedMotion } from "@/lib/animation";
@@ -9,6 +9,7 @@ import {
   REGION_TRANSFORM_ORIGIN,
   type RegionChromeId,
 } from "./layoutAnimation";
+import { useLayoutStore } from "./layoutStore";
 
 interface AnimatedRegionChromeProps {
   region: RegionChromeId;
@@ -27,7 +28,17 @@ export const AnimatedRegionChrome = memo(function AnimatedRegionChrome({
   style,
 }: AnimatedRegionChromeProps) {
   const reduced = useReducedMotion();
+  const initialized = useLayoutStore((state) => state.initialized);
   const clip = REGION_CLIP_PATH[region];
+  // initializeLayout() と同じ render で閉じた region が開く場合、その enter は
+  // ユーザー操作ではなく起動 hydration。最終状態を静的に表示し、初期化完了後の
+  // toggle だけをアニメーションする。ref は次回の open render で効けばよいので、
+  // readiness 更新自体による余分な render は不要。
+  const animationReadyRef = useRef(initialized);
+  useEffect(() => {
+    if (initialized) animationReadyRef.current = true;
+  }, [initialized]);
+  const animateEntry = !reduced && animationReadyRef.current;
 
   return (
     <AnimatePresence initial={false}>
@@ -43,7 +54,7 @@ export const AnimatedRegionChrome = memo(function AnimatedRegionChrome({
             transformOrigin: REGION_TRANSFORM_ORIGIN[region],
             ...style,
           }}
-          initial={reduced ? false : { opacity: 0, clipPath: clip.closed }}
+          initial={animateEntry ? { opacity: 0, clipPath: clip.closed } : false}
           animate={{ opacity: 1, clipPath: clip.open }}
           exit={
             reduced
