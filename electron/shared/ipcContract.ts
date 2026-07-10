@@ -1417,6 +1417,13 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   "has_api_key",
   "save_api_key",
   "delete_api_key",
+  // CLI AI（Phase 3 バッチ3c）: main の常駐 child-process manager。napi backend
+  // 不在時も利用でき、send/abort は同一 manager の active process を共有する。
+  "detect_cli_binary",
+  "test_cli_connection",
+  "list_cli_models",
+  "send_cli_chat_stream",
+  "abort_cli_chat_stream",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

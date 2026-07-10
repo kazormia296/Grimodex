@@ -25,6 +25,10 @@ const SLOW_COMMANDS = new Set([
   "send_chat_message_stream",
   /** CLI は invoke が子プロセス終了までブロックするため HTTP ストリームと同様に長めのタイムアウト */
   "send_cli_chat_stream",
+  /** GUI起動時のPATH補完はlogin shell / toolchain探索を行い、内部timeoutが10秒近くなる。 */
+  "detect_cli_binary",
+  /** 手入力pathはElectron mainのnative authorization応答を待つ。 */
+  "test_cli_connection",
   "send_agent_message",
   "send_inline_ai_stream",
   "abort_inline_ai_stream",

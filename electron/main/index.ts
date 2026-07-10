@@ -8,9 +8,10 @@
  */
 import path from "node:path";
 
-import { app, safeStorage } from "electron";
+import { app, dialog, safeStorage } from "electron";
 
 import { initBackend } from "./backend.js";
+import { createCliAiManager } from "./cliAi.js";
 import { registerEventBus, broadcastEvent } from "./events.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerIpcRouter } from "./ipc.js";
@@ -69,7 +70,32 @@ if (!gotSingleInstanceLock) {
     // 注入する。watcher イベントは broadcastEvent で全窓へ配信（external-mount://
     // の全窓 broadcast 契約）。
     const externalMount = createExternalMountManager(broadcastEvent);
+    // CLI AI（バッチ3c）: active child / abort / process-tree kill を invoke を跨いで
+    // 共有する単一 manager。イベントは固定 cli:stream-* を全窓へ配信する。
+    const cliAi = createCliAiManager(broadcastEvent, {
+      // 自動検出外のpathはrendererの文字列だけでは信頼しない。ユーザーがpathを
+      // 見た上でnative dialogを明示許可した場合だけ、session allowlistへ入れる。
+      authorizeExecutable: async (kind, executable) => {
+        const { response } = await dialog.showMessageBox({
+          type: "warning",
+          title: "CLI実行の確認",
+          message: `${kind} CLIを実行しますか？`,
+          detail: [
+            "Grimodexが次の実行ファイルを起動し、入力したプロンプトを渡します。",
+            "自分で設定した信頼できるCLIであることを確認してください。",
+            "",
+            executable,
+          ].join("\n"),
+          buttons: ["許可", "キャンセル"],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        });
+        return response === 0;
+      },
+    });
     app.on("will-quit", () => {
+      cliAi.disposeAll();
       void externalMount.disposeAll();
     });
     // API キー保管（バッチ3a）: safeStorage 暗号化 + ai-keys.json。has/save/delete は
@@ -77,7 +103,11 @@ if (!gotSingleInstanceLock) {
     const keyStore = createKeyStore(app.getPath("userData"), safeStorage);
     registerIpcRouter(
       backend,
-      { ...externalMount.handlers, ...buildKeyStoreShellHandlers(keyStore) },
+      {
+        ...externalMount.handlers,
+        ...buildKeyStoreShellHandlers(keyStore),
+        ...cliAi.handlers,
+      },
       keyStore,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。

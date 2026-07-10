@@ -1118,6 +1118,15 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return undefined as T;
       case "abort_inline_ai_stream":
         return undefined as T;
+      case "detect_cli_binary":
+        return null as T;
+      case "list_cli_models":
+        return [] as T;
+      case "test_cli_connection":
+        throw new Error("CLI subprocess is unavailable in browser mock");
+      case "send_cli_chat_stream":
+      case "abort_cli_chat_stream":
+        return undefined as T;
       case "list_post_effect_runs":
         return [] as T;
       case "get_post_effect_run":
