@@ -1239,7 +1239,7 @@ React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / Not
 
 ## 実装状況（2026-05-16 時点）
 
-設計書と実コード（`src/features/map/` 配下、`src-tauri/src/database/migrate.rs`、関連他パネル）の差分を Phase 別に整理する。凡例: ✅ 実装済 / 🟡 部分（差分あり）/ ⬜ 未実装。
+設計書と実コード（`src/features/map/` 配下、`src-tauri/crates/grimodex-db/src/migrate.rs`、関連他パネル）の差分を Phase 別に整理する。凡例: ✅ 実装済 / 🟡 部分（差分あり）/ ⬜ 未実装。
 
 > **2026-06-18 追記（2026-05-16 以降の差分）**: 下記スナップショット以降に次が出荷された。
 > - **User edge → Codex Relation 昇格**（Phase E 計画分）が実装済（`promoteUserEdgeToCodexRelation` + `EdgeContextMenu`、`codex_relations` テーブル新設）。Phase E サマリは 0/6 → 1/6 へ。
@@ -1268,7 +1268,7 @@ React Flow を採用し、独自ノードタイプ（SceneNode / CodexNode / Not
 
 ### Phase A 詳細
 
-- ✅ `map_boards` / `map_node_positions` / `map_stickies` テーブル — `src-tauri/src/database/migrate.rs:543-650`。新規プロジェクト作成時に `Main` ボードを自動 seed する trigger あり（`migrate.rs:750-754`）。
+- ✅ `map_boards` / `map_node_positions` / `map_stickies` テーブル — `src-tauri/crates/grimodex-db/src/migrate.rs:543-650`。新規プロジェクト作成時に `Main` ボードを自動 seed する trigger あり（`migrate.rs:750-754`）。
 - ✅ 複数ボード対応（一覧・追加・削除・リネーム・複製）— `mapApi.ts:40-259`、`MapHeader.tsx:159-286`。削除確認ダイアログは `countBoardEntities`（`mapApi.ts:131-147`）を持つが、`MapHeader.tsx:550-591` の `BoardDeleteConfirm` では件数表示に未使用（設計書 615-625 行のダブル確認はテキストのみ）。
 - ✅ Free モード — `src/features/map/layouts/free.ts`
 - 🟡 Sticky ノード — TipTap 編集・色変更・削除・空白ダブルクリック生成・`S` キー・パレット `[+Sticky]` は揃う。以下が未達:

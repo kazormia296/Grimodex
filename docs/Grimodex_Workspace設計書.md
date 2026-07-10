@@ -68,7 +68,7 @@ Workspace は DB エンティティではない。実体は以下を含むディ
 ### Project 作成行の起点
 
 `grimodex.db` 初期化時、Rust マイグレーション
-（`src-tauri/src/database/migrate.rs`）が
+（`src-tauri/crates/grimodex-db/src/migrate.rs`）が
 `INSERT OR IGNORE INTO projects ... VALUES ('default-project', ...)` で
 `default-project` 行を常設する。サンプルワークスペース生成時のみ
 `src-tauri/src/commands/onboarding.rs` が独自 `project_id` で置き換える。

@@ -171,7 +171,7 @@ Scene Context パネルが直接所有する永続データは Codex セクシ�
 関連過去シーンセクションは read-only で、既存 `semantic_search` / `fts_search` を
 組み合わせるだけ（独自テーブルなし）。
 
-`codex_quick_pins`（手動ピン留め。正本 = `src-tauri/src/database/migrate.rs:118-123`）:
+`codex_quick_pins`（手動ピン留め。正本 = `src-tauri/crates/grimodex-db/src/migrate.rs:118-123`）:
 
 ```
 CREATE TABLE IF NOT EXISTS codex_quick_pins (
@@ -278,7 +278,7 @@ strip しつつ codex-quick のカスタム配置を保持する」）。古い 
 | `src/features/settings/keybindings.ts:71-73` | `focusCodexQuick = Mod+Alt+Q` |
 | `src/features/commandCenter/providers/commandProvider.ts:40` | keywords `"scene context codex quick"` |
 | `src/db/schema.ts:236-247` | `codexQuickPins` Drizzle 定義（migrate.rs のミラー） |
-| `src-tauri/src/database/migrate.rs:118-123` | `codex_quick_pins` SQL 正本 |
+| `src-tauri/crates/grimodex-db/src/migrate.rs:118-123` | `codex_quick_pins` SQL 正本 |
 | `src/locales/ja.json:1225,3495-3496` / `src/locales/en.json:1225,3500-3501` | 表示名・節見出しの i18n |
 
 ---

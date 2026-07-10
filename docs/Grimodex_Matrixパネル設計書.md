@@ -457,7 +457,7 @@ Phase A で **2つの新規テーブル**を追加する。1つは明示的リ�
 
 シーン単位で Codex エントリを明示的に紐付けるテーブル。「Pin to scene」「Add scene to chapter (with this codex)」操作の保存先。Codex Quick の project-wide pin（既存 `codex_quick_pins`）とは別物（あちらはプロジェクト全体ピン、scene 単位ではない）。
 
-**現状の実装**（`src/db/schema.ts` / `src-tauri/src/database/migrate.rs`）:
+**現状の実装**（`src/db/schema.ts` / `src-tauri/crates/grimodex-db/src/migrate.rs`）:
 
 ```sql
 CREATE TABLE scene_codex_pins (
@@ -478,7 +478,7 @@ CREATE INDEX idx_scene_codex_pins_entry ON scene_codex_pins(entry_id);
 
 下記の永続化キャッシュテーブル：
 
-**現状の実装**（`src/db/schema.ts` / `src-tauri/src/database/migrate.rs`）:
+**現状の実装**（`src/db/schema.ts` / `src-tauri/crates/grimodex-db/src/migrate.rs`）:
 
 ```sql
 CREATE TABLE scene_codex_mentions (
@@ -556,7 +556,7 @@ Beat レベル POV オーバーライド（`sceneBeat.attrs.pov`）を Matrix �
 - **採用**: 保存時に本文 docJson 内の `sceneBeat` ノードを走査し、シーン POV と異なる Beat POV を `scene_beat_pov_cache` テーブルに永続化。Matrix 描画時はこのキャッシュを JOIN するだけで済む
 - **不採用**: Matrix 描画のたびに全シーンの docJson を走査するアプローチ（500シーン分の docJson パースは Matrix の俯瞰用途と相反する）
 
-**現状の実装**（`src/db/schema.ts` / `src-tauri/src/database/migrate.rs`）:
+**現状の実装**（`src/db/schema.ts` / `src-tauri/crates/grimodex-db/src/migrate.rs`）:
 
 ```sql
 CREATE TABLE scene_beat_pov_cache (

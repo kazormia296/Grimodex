@@ -20,7 +20,7 @@
 
 ### 1. インデックス（Rust, codex の 1 エントリ 1 ベクトル経路をフォーク）
 
-- 新テーブル `chat_message_chunks`（`src-tauri/src/database/migrate.rs`）。`chat_messages` に `project_id` が無いため、検索スコープを効かせるため **`project_id` / `session_id` を index 時に非正規化**して持つ。`inserted_to_editor` / `extracted_count` の効果信号も列に持つ。Rust 専用（Drizzle mirror 不要 = codex_chunks と同じ）。
+- 新テーブル `chat_message_chunks`（`src-tauri/crates/grimodex-db/src/migrate.rs`）。`chat_messages` に `project_id` が無いため、検索スコープを効かせるため **`project_id` / `session_id` を index 時に非正規化**して持つ。`inserted_to_editor` / `extracted_count` の効果信号も列に持つ。Rust 専用（Drizzle mirror 不要 = codex_chunks と同じ）。
 - `src-tauri/src/semantic/chat_index.rs` — `read_chat_message_for_index` / `upsert_chat_chunk` / `embed_chat_text`。**hash 入力に効果信号を含める**ので、本文不変でも metadata 変更 → hash 変化 → 再 index で signal 列が更新される（stale-weight drift 対策）。user/assistant の非空メッセージのみ対象（system / 空は除外）。
 - トリガ: `scheduleChatIndex(messageId)`（`scheduler.ts`、2.5s デバウンス）を `chatApi.addMessage`（確定 1 回）と `updateMessageMetadata`（信号変化）から呼ぶ。
 - コマンド: `chat_index_message` / `chat_message_search` / `chat_index_status` / `chat_reindex_all`（`commands/semantic.rs`、`lib.rs` 登録）。`ChatSearchCache` は workspace 切替で clear。
