@@ -300,6 +300,24 @@ export declare class Backend {
   /** シーンの annotation を保存 (raw snake_case 配列、range_start/end は i64)。 */
   savePostEffectAnnotations(projectId: string, sceneId: string, annotations: any): Promise<void>
   /**
+   * 単一sceneの校閲runを開始し、AI完了を待たず `{run_id,from_cache}` を返す。
+   * `settings` とsecretはElectron mainが同じinvokeで取得したsnapshot。API key
+   * 未登録 (`None`) と保存済み空文字 (`Some("")`) を区別し、lookup errorも
+   * cache hitを壊さないよう背景taskまで遅延させる。
+   */
+  startPostEffectRun(args: any, settings: any, apiKey?: string | undefined | null, apiKeyError?: string | undefined | null): Promise<string>
+  /**
+   * 複数sceneの校閲run。処理はscene境界でabort registryを確認し、イベントは
+   * `post_effect:{progress,partial,done,error}` をEventQueueへ配信する。
+   */
+  startPostEffectRunMulti(args: any, settings: any, apiKey?: string | undefined | null, apiKeyError?: string | undefined | null): Promise<string>
+  /**
+   * 同一BackendのregistryとDB rowを一緒に更新する。DB上のproject ownershipを
+   * 確認できたrunning runだけにabort flagを立てるため、cross-project/late abort
+   * は別runや将来runへ波及しない。
+   */
+  abortPostEffectRun(runId: string, projectId: string): Promise<void>
+  /**
    * AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
    * 返り値: `AiSettings` の JSON 文字列 (camelCase)。
    */

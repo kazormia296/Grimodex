@@ -36,6 +36,9 @@ grimodex-fonts = { path = "../../../src-tauri/crates/grimodex-fonts" }
 # safeStorage を使うため keyring ネイティブ依存を .node に link しない。キー解決済みの
 # 平文キーを send_chat_message* へ注入し、build_chat_params に渡す。
 grimodex-ai = { path = "../../../src-tauri/crates/grimodex-ai" }
+# PostEffect の parser/annotation/runner 本体。Tauri と同じ crate を呼び、
+# Electron 側には AppState/EventQueue/safeStorage snapshot の adapter だけを置く。
+grimodex-post-effect = { path = "../../../src-tauri/crates/grimodex-post-effect" }
 serde = "1"
 serde_json = "1"
 anyhow = "1"

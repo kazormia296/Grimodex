@@ -111,11 +111,8 @@ mod tests {
         // Tauri ワイヤ: LintError は {"type":…,"data":…} の object で reject
         // される (FE formatLintError の分岐対象)。reason にその JSON が
         // そのまま載ること — JS 側アダプタの parse 復元前提。
-        let err = lint_err_to_napi(&grimodex_lint::LintError::InvalidLanguage(
-            "fr".to_string(),
-        ));
-        let parsed: serde_json::Value =
-            serde_json::from_str(&err.reason).expect("reason は JSON");
+        let err = lint_err_to_napi(&grimodex_lint::LintError::InvalidLanguage("fr".to_string()));
+        let parsed: serde_json::Value = serde_json::from_str(&err.reason).expect("reason は JSON");
         assert_eq!(parsed["type"], "InvalidLanguage");
         assert_eq!(parsed["data"], "fr");
     }

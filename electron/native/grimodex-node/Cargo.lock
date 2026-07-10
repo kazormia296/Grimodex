@@ -729,11 +729,30 @@ dependencies = [
  "grimodex-db",
  "grimodex-fonts",
  "grimodex-lint",
+ "grimodex-post-effect",
  "napi",
  "napi-build",
  "napi-derive",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "grimodex-post-effect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "grimodex-ai",
+ "grimodex-db",
+ "grimodex-lint",
+ "hex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

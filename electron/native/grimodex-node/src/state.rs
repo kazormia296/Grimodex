@@ -115,6 +115,9 @@ pub struct AppState {
     /// Phase 3 バッチ3b)。チャットとインライン AI が同時に走っても一方の中止が
     /// 他方へ波及しないよう、`chat_abort` とは別の Arc を保持する。
     pub inline_ai_abort: Arc<AtomicBool>,
+    /// post-effect run_id 単位の中止レジストリ。start/multi/abort が同じ Backend
+    /// インスタンス上で共有し、並走runの一方だけを中止する。
+    pub post_effect_abort: grimodex_post_effect::PostEffectAbortRegistry,
 }
 
 impl AppState {
@@ -143,6 +146,7 @@ impl AppState {
             ai_settings_path: dir.join("ai-settings.json"),
             chat_abort: Arc::new(AtomicBool::new(false)),
             inline_ai_abort: Arc::new(AtomicBool::new(false)),
+            post_effect_abort: grimodex_post_effect::PostEffectAbortRegistry::new(),
         })
     }
 }

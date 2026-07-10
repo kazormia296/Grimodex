@@ -14,6 +14,7 @@
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
 mod convert;
+mod post_effect_runtime;
 mod state;
 #[cfg(test)]
 mod test_link_stubs;
@@ -27,9 +28,9 @@ use napi::JsFunction;
 use napi_derive::napi;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
+use grimodex_db::agent_writes;
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::events::EventSink;
-use grimodex_db::agent_writes;
 use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
     PayoffAnchorInput, SetupAnchorInput, SetupCreateAiInput,
@@ -45,6 +46,7 @@ use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
+use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventTsfn};
 
 /// spawn_blocking + `AppError` → `napi::Error` 写像の定形。Tauri 側 M3 方針
@@ -567,8 +569,8 @@ impl Backend {
         napi::tokio::task::spawn_blocking(move || -> Result<()> {
             let entries: Vec<MatchEntry> =
                 from_wire("entries", entries).map_err(app_err_to_napi)?;
-            let matcher = CachedMatcher::build(&entries)
-                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            let matcher =
+                CachedMatcher::build(&entries).map_err(|e| Error::from_reason(format!("{e}")))?;
             let mut guard = state
                 .codex_matcher
                 .lock()
@@ -636,11 +638,7 @@ impl Backend {
     /// PlotThreadPatch (color / description は Option<Option<String>>)。
     /// 返り値: 更新後行の JSON 文字列。
     #[napi]
-    pub async fn plot_thread_update(
-        &self,
-        id: String,
-        patch: serde_json::Value,
-    ) -> Result<String> {
+    pub async fn plot_thread_update(&self, id: String, patch: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let patch: PlotThreadPatch = from_wire("patch", patch)?;
@@ -1293,8 +1291,7 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
-                let v =
-                    post_effect::list_annotations_for_scene(db, project_id, scene_id, status)?;
+                let v = post_effect::list_annotations_for_scene(db, project_id, scene_id, status)?;
                 Ok(serde_json::to_string(&v)?)
             })
         })
@@ -1371,6 +1368,67 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 post_effect::save_post_effect_annotations(db, project_id, scene_id, annotations)
             })
+        })
+        .await
+    }
+
+    // ─────────────────────── post_effect runner (Phase 3d — shared Rust
+    // engine + EventQueue 4ch + run_id単位abort registry) ─────────────────
+
+    /// 単一sceneの校閲runを開始し、AI完了を待たず `{run_id,from_cache}` を返す。
+    /// `settings` とsecretはElectron mainが同じinvokeで取得したsnapshot。API key
+    /// 未登録 (`None`) と保存済み空文字 (`Some("")`) を区別し、lookup errorも
+    /// cache hitを壊さないよう背景taskまで遅延させる。
+    #[napi]
+    pub async fn start_post_effect_run(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: Option<String>,
+        api_key_error: Option<String>,
+    ) -> Result<String> {
+        let args: grimodex_post_effect::StartPostEffectRunArgs =
+            from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let runtime = NodePostEffectRuntime::new(Arc::clone(&self.state));
+        let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error);
+        let result = grimodex_post_effect::start_post_effect_run(runtime, ai, args)
+            .await
+            .map_err(app_err_to_napi)?;
+        serde_json::to_string(&result).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// 複数sceneの校閲run。処理はscene境界でabort registryを確認し、イベントは
+    /// `post_effect:{progress,partial,done,error}` をEventQueueへ配信する。
+    #[napi]
+    pub async fn start_post_effect_run_multi(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: Option<String>,
+        api_key_error: Option<String>,
+    ) -> Result<String> {
+        let args: grimodex_post_effect::StartPostEffectRunMultiArgs =
+            from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let runtime = NodePostEffectRuntime::new(Arc::clone(&self.state));
+        let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error);
+        let result = grimodex_post_effect::start_post_effect_run_multi(runtime, ai, args)
+            .await
+            .map_err(app_err_to_napi)?;
+        serde_json::to_string(&result).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// 同一BackendのregistryとDB rowを一緒に更新する。DB上のproject ownershipを
+    /// 確認できたrunning runだけにabort flagを立てるため、cross-project/late abort
+    /// は別runや将来runへ波及しない。
+    #[napi]
+    pub async fn abort_post_effect_run(&self, run_id: String, project_id: String) -> Result<()> {
+        let runtime = NodePostEffectRuntime::new(Arc::clone(&self.state));
+        run_blocking(move || {
+            grimodex_post_effect::abort_post_effect_run(&runtime, &run_id, &project_id)
         })
         .await
     }
