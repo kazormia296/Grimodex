@@ -145,6 +145,45 @@ export declare class Backend {
    */
   codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>
   /**
+   * プロットスレッド作成 (commands/plot_threads.rs::plot_thread_create の写像)。
+   * `payload` は camelCase の PlotThreadCreatePayload。
+   * 返り値: 作成行 (`SELECT *`、列名 snake_case) の JSON 文字列。
+   */
+  plotThreadCreate(payload: any): Promise<string>
+  /**
+   * プロットスレッド更新 (空 patch 時は現行行を返す)。`patch` は camelCase の
+   * PlotThreadPatch (color / description は Option<Option<String>>)。
+   * 返り値: 更新後行の JSON 文字列。
+   */
+  plotThreadUpdate(id: string, patch: any): Promise<string>
+  /** プロットスレッド削除。 */
+  plotThreadDelete(id: string): Promise<void>
+  /**
+   * プロジェクトのスレッド一覧 (sort_order 昇順)。
+   * 返り値: 行オブジェクト配列の JSON 文字列。
+   */
+  plotThreadList(projectId: string): Promise<string>
+  /**
+   * スレッド↔シーンのリンク作成 (XPROJ ガード + phase_type 検証を含む)。
+   * `payload` は camelCase の PlotThreadLinkCreatePayload。
+   * 返り値: 作成行の JSON 文字列。
+   */
+  plotThreadLinkCreate(payload: any): Promise<string>
+  /**
+   * リンク更新 (別スレッドへの移動時は XPROJ ガード。空 patch 時は現行行)。
+   * `patch` は camelCase の PlotThreadLinkPatch (note / sortOrder は
+   * Option<Option<String>>)。
+   * 返り値: 更新後行の JSON 文字列。
+   */
+  plotThreadLinkUpdate(id: string, patch: any): Promise<string>
+  /** リンク削除。 */
+  plotThreadLinkDelete(id: string): Promise<void>
+  /**
+   * プロジェクトの全リンク (thread の project で JOIN 絞り込み)。
+   * 返り値: 行オブジェクト配列の JSON 文字列。
+   */
+  plotThreadListLinks(projectId: string): Promise<string>
+  /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
    * イベント (`backend:ready`) は登録時に emit 順で flush される。

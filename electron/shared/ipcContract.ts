@@ -264,6 +264,14 @@ export interface NapiBackendLike {
   listSystemFonts(): Promise<string>;
   codexRebuildMatcher(entries: unknown): Promise<void>;
   codexMatchText(text: string, excludeEntryIds: string[]): Promise<string>;
+  plotThreadCreate(payload: unknown): Promise<string>;
+  plotThreadUpdate(id: string, patch: unknown): Promise<string>;
+  plotThreadDelete(id: string): Promise<void>;
+  plotThreadList(projectId: string): Promise<string>;
+  plotThreadLinkCreate(payload: unknown): Promise<string>;
+  plotThreadLinkUpdate(id: string, patch: unknown): Promise<string>;
+  plotThreadLinkDelete(id: string): Promise<void>;
+  plotThreadListLinks(projectId: string): Promise<string>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
 }
 
@@ -540,6 +548,77 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       );
     },
+  },
+  // plot_threads 8 コマンド（Phase 3 バッチ1 — grimodex-db::plot_threads を
+  // Tauri と共用）。Tauri 側 fn 署名（src-tauri/src/commands/plot_threads.rs）:
+  //   create(payload) / update(id, patch) / delete(id) / list(project_id) /
+  //   link_create(payload) / link_update(id, patch) / link_delete(id) /
+  //   list_links(project_id)。payload / patch は camelCase オブジェクトを素通し
+  //   （from_wire が serde rename_all で受ける）。返り値は生の SQLite 行。
+  plot_thread_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadCreate(
+          requirePresent(a, "payload", "plot_thread_create"),
+        ),
+      ),
+  },
+  plot_thread_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadUpdate(
+          requireString(a, "id", "plot_thread_update"),
+          requirePresent(a, "patch", "plot_thread_update"),
+        ),
+      ),
+  },
+  plot_thread_delete: {
+    // unit 返りコマンドは null を resolve（ワイヤ同形）
+    run: async (b, a) => {
+      await b.plotThreadDelete(requireString(a, "id", "plot_thread_delete"));
+      return null;
+    },
+  },
+  plot_thread_list: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadList(
+          requireString(a, "projectId", "plot_thread_list"),
+        ),
+      ),
+  },
+  plot_thread_link_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadLinkCreate(
+          requirePresent(a, "payload", "plot_thread_link_create"),
+        ),
+      ),
+  },
+  plot_thread_link_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadLinkUpdate(
+          requireString(a, "id", "plot_thread_link_update"),
+          requirePresent(a, "patch", "plot_thread_link_update"),
+        ),
+      ),
+  },
+  plot_thread_link_delete: {
+    run: async (b, a) => {
+      await b.plotThreadLinkDelete(
+        requireString(a, "id", "plot_thread_link_delete"),
+      );
+      return null;
+    },
+  },
+  plot_thread_list_links: {
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadListLinks(
+          requireString(a, "projectId", "plot_thread_list_links"),
+        ),
+      ),
   },
 };
 

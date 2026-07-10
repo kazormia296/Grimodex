@@ -30,6 +30,10 @@ use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::events::EventSink;
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
+use grimodex_db::plot_threads::{
+    self, PlotThreadCreatePayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
+    PlotThreadPatch,
+};
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
@@ -410,7 +414,7 @@ impl Backend {
                 )));
             }
             let chunks = grimodex_lint::bunsetsu::segment_bunsetsu(&text)
-                .map_err(|e| Error::from_reason(format!("{e}")))?;
+                .map_err(|e| Error::from_reason(e.to_string()))?;
             let dtos: Vec<BunsetsuDto> = chunks
                 .into_iter()
                 .map(|c| BunsetsuDto {
@@ -491,6 +495,130 @@ impl Backend {
         })
         .await
         .map_err(join_err_to_napi)?
+    }
+
+    // ─────────────────────── plot_threads (Phase 3 バッチ1 — grimodex-db の
+    // plot_threads モジュールを Tauri と共用。commands/plot_threads.rs の写像) ──
+    //
+    // Value / Vec<Value> 返しは生の SQLite 行 (列名 snake_case)。patch 型の
+    // Option<Option<String>> 3 値は from_wire (serde_json::from_value) が Tauri の
+    // 引数 deserialize と同一挙動で受ける。link_create / link_update の XPROJ
+    // ガードは shared impl 内でサーバサイド維持される (§4.3 — db_execute への
+    // 分解禁止)。
+
+    /// プロットスレッド作成 (commands/plot_threads.rs::plot_thread_create の写像)。
+    /// `payload` は camelCase の PlotThreadCreatePayload。
+    /// 返り値: 作成行 (`SELECT *`、列名 snake_case) の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// プロットスレッド更新 (空 patch 時は現行行を返す)。`patch` は camelCase の
+    /// PlotThreadPatch (color / description は Option<Option<String>>)。
+    /// 返り値: 更新後行の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_update(
+        &self,
+        id: String,
+        patch: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let patch: PlotThreadPatch = from_wire("patch", patch)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::update(db, id, patch)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// プロットスレッド削除。
+    #[napi]
+    pub async fn plot_thread_delete(&self, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| plot_threads::delete(db, id))).await
+    }
+
+    /// プロジェクトのスレッド一覧 (sort_order 昇順)。
+    /// 返り値: 行オブジェクト配列の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_list(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = plot_threads::list(db, project_id)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    /// スレッド↔シーンのリンク作成 (XPROJ ガード + phase_type 検証を含む)。
+    /// `payload` は camelCase の PlotThreadLinkCreatePayload。
+    /// 返り値: 作成行の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_link_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: PlotThreadLinkCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::link_create(db, payload)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// リンク更新 (別スレッドへの移動時は XPROJ ガード。空 patch 時は現行行)。
+    /// `patch` は camelCase の PlotThreadLinkPatch (note / sortOrder は
+    /// Option<Option<String>>)。
+    /// 返り値: 更新後行の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_link_update(
+        &self,
+        id: String,
+        patch: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let patch: PlotThreadLinkPatch = from_wire("patch", patch)?;
+            with_db_state(&state.ws, |db| {
+                let row = plot_threads::link_update(db, id, patch)?;
+                Ok(serde_json::to_string(&row)?)
+            })
+        })
+        .await
+    }
+
+    /// リンク削除。
+    #[napi]
+    pub async fn plot_thread_link_delete(&self, id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| plot_threads::link_delete(db, id))).await
+    }
+
+    /// プロジェクトの全リンク (thread の project で JOIN 絞り込み)。
+    /// 返り値: 行オブジェクト配列の JSON 文字列。
+    #[napi]
+    pub async fn plot_thread_list_links(&self, project_id: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = plot_threads::list_links(db, project_id)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
     }
 
     /// main 起動時に 1 回登録する (§7.1)。コールバックは

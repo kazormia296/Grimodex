@@ -1,5 +1,5 @@
 import { db } from "@/db/client";
-import { invoke, isTauri } from "@/lib/tauri";
+import { invoke, isTauri, isElectron } from "@/lib/tauri";
 import {
   plotThreads,
   plotThreadSceneLinks,
@@ -7,6 +7,20 @@ import {
 } from "@/db/schema";
 import type { PlotPhaseType, PlotBranchKind } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
+
+/**
+ * ネイティブホスト（Tauri or Electron/napi）では Rust コマンドへ invoke する。
+ * ブラウザ / テスト（どちらでもない）だけ renderer 直 Drizzle にフォールバックする。
+ *
+ * Electron 移行 Phase 3 バッチ1: 従来 `isTauri()` 単独ゲートだったため Electron は
+ * Drizzle 分岐に落ち、link_create / link_update の XPROJ ガードを**素通ししていた**。
+ * `isElectron()` を足して napi 経由に載せることで、Electron でもサーバサイドの
+ * XPROJ 検証・phase_type 検証が効くようになる（意図した挙動の厳格化）。
+ * （src/lib/exportFile.ts の supportsNativeExport と同作法の実行シェルゲート）
+ */
+function nativeBackend(): boolean {
+  return isTauri() || isElectron();
+}
 
 export interface PlotThreadRow {
   id: string;
@@ -80,7 +94,7 @@ export async function createPlotThread(data: {
   description?: string | null;
   sortOrder: string;
 }): Promise<PlotThreadRow> {
-  if (isTauri()) {
+  if (nativeBackend()) {
     const created = await invoke("plot_thread_create", {
       payload: {
         projectId: data.projectId,
@@ -117,7 +131,7 @@ export async function updatePlotThread(
     Pick<PlotThreadRow, "name" | "color" | "description" | "sortOrder">
   >,
 ): Promise<void> {
-  if (isTauri()) {
+  if (nativeBackend()) {
     const p: Record<string, unknown> = {};
     if (patch.name !== undefined) p.name = patch.name;
     if (patch.color !== undefined) p.color = patch.color;
@@ -133,7 +147,7 @@ export async function updatePlotThread(
 }
 
 export async function deletePlotThread(id: string): Promise<void> {
-  if (isTauri()) {
+  if (nativeBackend()) {
     await invoke("plot_thread_delete", { id });
     return;
   }
@@ -165,7 +179,7 @@ export async function restorePlotThread(row: PlotThreadRow): Promise<void> {
 export async function listPlotThreads(
   projectId: string,
 ): Promise<PlotThreadRow[]> {
-  if (isTauri()) {
+  if (nativeBackend()) {
     const rows = (await invoke("plot_thread_list", { projectId })) as unknown[];
     return rows.map(normalizeThread);
   }
@@ -186,7 +200,7 @@ export async function createPlotThreadLink(data: {
   note?: string | null;
   sortOrder?: string | null;
 }): Promise<PlotThreadLinkRow> {
-  if (isTauri()) {
+  if (nativeBackend()) {
     const created = await invoke("plot_thread_link_create", {
       payload: {
         threadId: data.threadId,
@@ -226,7 +240,7 @@ export async function updatePlotThreadLink(
     >
   >,
 ): Promise<void> {
-  if (isTauri()) {
+  if (nativeBackend()) {
     const p: Record<string, unknown> = {};
     if (patch.threadId !== undefined) p.threadId = patch.threadId;
     if (patch.nodeId !== undefined) p.nodeId = patch.nodeId;
@@ -243,7 +257,7 @@ export async function updatePlotThreadLink(
 }
 
 export async function deletePlotThreadLink(id: string): Promise<void> {
-  if (isTauri()) {
+  if (nativeBackend()) {
     await invoke("plot_thread_link_delete", { id });
     return;
   }
@@ -269,7 +283,7 @@ export async function restorePlotThreadLink(
 export async function listPlotThreadLinks(
   projectId: string,
 ): Promise<PlotThreadLinkRow[]> {
-  if (isTauri()) {
+  if (nativeBackend()) {
     const rows = (await invoke("plot_thread_list_links", {
       projectId,
     })) as unknown[];

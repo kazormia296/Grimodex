@@ -116,7 +116,43 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     ) as never,
     codexMatchText: record(
       "codexMatchText",
-      Promise.resolve('[{"entryId":"c1","entryName":"太郎","entryType":"character","from":0,"to":2}]'),
+      Promise.resolve(
+        '[{"entryId":"c1","entryName":"太郎","entryType":"character","from":0,"to":2}]',
+      ),
+    ) as never,
+    // plot_threads 8 コマンド（Phase 3 バッチ1 — napi は SELECT * の生行 =
+    // snake_case 列名 / Vec<Value> を返す）
+    plotThreadCreate: record(
+      "plotThreadCreate",
+      Promise.resolve('{"id":"pt1","project_id":"p1","name":"糸"}'),
+    ) as never,
+    plotThreadUpdate: record(
+      "plotThreadUpdate",
+      Promise.resolve('{"id":"pt1","name":"改名"}'),
+    ) as never,
+    plotThreadDelete: record(
+      "plotThreadDelete",
+      Promise.resolve(undefined),
+    ) as never,
+    plotThreadList: record(
+      "plotThreadList",
+      Promise.resolve('[{"id":"pt1","name":"糸"}]'),
+    ) as never,
+    plotThreadLinkCreate: record(
+      "plotThreadLinkCreate",
+      Promise.resolve('{"id":"pl1","thread_id":"pt1","node_id":"s1"}'),
+    ) as never,
+    plotThreadLinkUpdate: record(
+      "plotThreadLinkUpdate",
+      Promise.resolve('{"id":"pl1","thread_id":"pt2"}'),
+    ) as never,
+    plotThreadLinkDelete: record(
+      "plotThreadLinkDelete",
+      Promise.resolve(undefined),
+    ) as never,
+    plotThreadListLinks: record(
+      "plotThreadListLinks",
+      Promise.resolve('[{"id":"pl1","thread_id":"pt1"}]'),
     ) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
@@ -509,7 +545,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 11）", () => {
+  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 19）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "codex_match_text",
       "codex_rebuild_matcher",
@@ -524,6 +560,14 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "lint_text",
       "list_system_fonts",
       "open_workspace",
+      "plot_thread_create",
+      "plot_thread_delete",
+      "plot_thread_link_create",
+      "plot_thread_link_delete",
+      "plot_thread_link_update",
+      "plot_thread_list",
+      "plot_thread_list_links",
+      "plot_thread_update",
       "repair_integrity",
       "save_global_settings",
       "segment_bunsetsu",
@@ -540,7 +584,13 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
   it("codex_rebuild_matcher は {entries} を素通しし null を resolve する", async () => {
     const { backend, calls } = fakeBackend();
     const entries = [
-      { id: "c1", name: "太郎", entryType: "character", aliases: [], excludedAliases: [] },
+      {
+        id: "c1",
+        name: "太郎",
+        entryType: "character",
+        aliases: [],
+        excludedAliases: [],
+      },
     ];
     const env = await dispatchInvoke(
       "codex_rebuild_matcher",
@@ -592,13 +642,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toEqual([
       {
         method: "lintText",
-        args: [
-          [{ id: "b1", text: "テスト。" }],
-          "ja",
-          "paragraph",
-          {},
-          [],
-        ],
+        args: [[{ id: "b1", text: "テスト。" }], "ja", "paragraph", {}, []],
       },
     ]);
   });
@@ -693,6 +737,131 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend, shell: noShell },
     );
     expect(repair).toEqual({ ok: true, value: { repaired: 0 } });
+  });
+
+  // plot_threads 8 コマンド（Phase 3 バッチ1）。payload / patch は素通し、
+  // id / projectId はスカラ写像、unit 返りは null、生行/配列は parse して返す。
+  it("plot_thread_create: {payload} 素通し、生行 snake_case を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      projectId: "p1",
+      name: "糸",
+      color: null,
+      description: null,
+      sortOrder: "a0",
+    };
+    const env = await dispatchInvoke(
+      "plot_thread_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([{ method: "plotThreadCreate", args: [payload] }]);
+    expect(env).toEqual({
+      ok: true,
+      value: { id: "pt1", project_id: "p1", name: "糸" },
+    });
+  });
+
+  it("plot_thread_update / link_update: {id, patch} を位置引数へ写像し行を parse", async () => {
+    const { backend, calls } = fakeBackend();
+    const patch = { name: "改名", description: null };
+    const upd = await dispatchInvoke(
+      "plot_thread_update",
+      { id: "pt1", patch },
+      { backend, shell: noShell },
+    );
+    const linkPatch = { threadId: "pt2" };
+    const linkUpd = await dispatchInvoke(
+      "plot_thread_link_update",
+      { id: "pl1", patch: linkPatch },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "plotThreadUpdate", args: ["pt1", patch] },
+      { method: "plotThreadLinkUpdate", args: ["pl1", linkPatch] },
+    ]);
+    expect(upd).toEqual({ ok: true, value: { id: "pt1", name: "改名" } });
+    expect(linkUpd).toEqual({
+      ok: true,
+      value: { id: "pl1", thread_id: "pt2" },
+    });
+  });
+
+  it("plot_thread_list / list_links: {projectId} → 位置引数、行配列を parse", async () => {
+    const { backend, calls } = fakeBackend();
+    const list = await dispatchInvoke(
+      "plot_thread_list",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+    const links = await dispatchInvoke(
+      "plot_thread_list_links",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "plotThreadList", args: ["p1"] },
+      { method: "plotThreadListLinks", args: ["p1"] },
+    ]);
+    expect(list).toEqual({ ok: true, value: [{ id: "pt1", name: "糸" }] });
+    expect(links).toEqual({
+      ok: true,
+      value: [{ id: "pl1", thread_id: "pt1" }],
+    });
+  });
+
+  it("plot_thread_delete / link_delete: unit 返りは null（Tauri ワイヤ同形）", async () => {
+    const { backend, calls } = fakeBackend();
+    const del = await dispatchInvoke(
+      "plot_thread_delete",
+      { id: "pt1" },
+      { backend, shell: noShell },
+    );
+    const linkDel = await dispatchInvoke(
+      "plot_thread_link_delete",
+      { id: "pl1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "plotThreadDelete", args: ["pt1"] },
+      { method: "plotThreadLinkDelete", args: ["pl1"] },
+    ]);
+    expect(del).toEqual({ ok: true, value: null });
+    expect(linkDel).toEqual({ ok: true, value: null });
+  });
+
+  it("plot_thread_link_create: {payload} 素通し、作成行を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      threadId: "pt1",
+      nodeId: "s1",
+      phaseType: "introduce",
+      note: null,
+      sortOrder: null,
+    };
+    const env = await dispatchInvoke(
+      "plot_thread_link_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "plotThreadLinkCreate", args: [payload] },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: { id: "pl1", thread_id: "pt1", node_id: "s1" },
+    });
+  });
+
+  it("plot_thread_update: id 欠落は invalid args エラー（backend は呼ばれない）", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "plot_thread_update",
+      { patch: {} },
+      { backend, shell: noShell },
+    );
+    expect(calls).toHaveLength(0);
+    expect(env.ok).toBe(false);
   });
 });
 
