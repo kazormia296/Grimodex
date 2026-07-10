@@ -262,6 +262,93 @@ describe("CliAiManager", () => {
     expect(runner.runCalls).toHaveLength(0);
   });
 
+  it("Windowsのcase-sensitive directoryでは大小文字違いを別grantにする", async () => {
+    const runner = new FakeRunner();
+    const authorizeExecutable = vi.fn(async () => true);
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "win32",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      authorizeExecutable,
+    });
+
+    await manager.handlers.test_cli_connection({
+      binaryPath: "C:\\Tools\\claude.cmd",
+    });
+    await manager.handlers.test_cli_connection({
+      binaryPath: "C:\\tools\\claude.cmd",
+    });
+    expect(authorizeExecutable).toHaveBeenCalledTimes(2);
+  });
+
+  it("refresh検出失敗後は古いauto-detected pathを再利用しない", async () => {
+    const runner = new FakeRunner();
+    const detected: Array<string | null> = [
+      "/usr/local/bin/claude",
+      null,
+      null,
+    ];
+    const detectBinary = vi.fn(async () => detected.shift() ?? null);
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      detectBinary,
+    });
+
+    await expect(
+      manager.handlers.detect_cli_binary({ cli: "claude" }),
+    ).resolves.toBe("/usr/local/bin/claude");
+    await expect(
+      manager.handlers.detect_cli_binary({ cli: "claude" }),
+    ).resolves.toBeNull();
+    await expect(
+      manager.handlers.send_cli_chat_stream({
+        payload: { cli: "claude", prompt: "hello" },
+      }),
+    ).rejects.toThrow("CLI executable not found: claude");
+    expect(runner.startCalls).toHaveLength(0);
+    expect(detectBinary).toHaveBeenCalledTimes(3);
+  });
+
+  it("並行refreshでは遅れて完了した古い検出結果を復活させない", async () => {
+    const runner = new FakeRunner();
+    let resolveFirst!: (value: string | null) => void;
+    let callCount = 0;
+    const detectBinary = vi.fn(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return new Promise<string | null>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return null;
+    });
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      detectBinary,
+    });
+
+    const first = manager.handlers.detect_cli_binary({ cli: "claude" });
+    await vi.waitFor(() => expect(detectBinary).toHaveBeenCalledOnce());
+    await expect(
+      manager.handlers.detect_cli_binary({ cli: "claude" }),
+    ).resolves.toBeNull();
+    resolveFirst("/usr/local/bin/claude");
+    await expect(first).resolves.toBeNull();
+    await expect(
+      manager.handlers.send_cli_chat_stream({
+        payload: { cli: "claude", prompt: "hello" },
+      }),
+    ).rejects.toThrow("CLI executable not found: claude");
+    expect(runner.startCalls).toHaveLength(0);
+  });
+
   it("Claudeは静的model、Codex/OpenCodeは安全なargvの出力をparseする", async () => {
     const { manager, runner } = createHarness();
     const claude = await manager.handlers.list_cli_models({
@@ -580,13 +667,16 @@ describe("CliAiManager", () => {
         prompt: "hello",
       },
     });
+    const expectation = expect(send).rejects.toThrow(
+      "CLI stream timed out after 20ms",
+    );
     await vi.waitFor(() => expect(resolveRealPath).toBeTypeOf("function"));
     await new Promise((resolve) => setTimeout(resolve, 30));
     resolveRealPath("/usr/local/bin/claude");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(runner.startCalls).toHaveLength(0);
-    await expect(send).rejects.toThrow("CLI stream timed out after 20ms");
+    await expectation;
   });
 
   it("disposeAllはactive childを停止する", async () => {
