@@ -1,7 +1,7 @@
 # Grimodex - 製品仕様書
 
-> バージョン: 0.9.0
-> 最終更新: 2026-06-28
+> バージョン: 1.0.0
+> 最終更新: 2026-07-11
 
 ## 1. 製品概要
 
@@ -842,7 +842,7 @@ FTS5仮想テーブルはトリガーにより自動同期される。
 
 ## 9. UIレイアウト
 
-> 詳細は [`Grimodex_レイアウトシステム設計書.md`](Grimodex_レイアウトシステム設計書.md) を参照。
+> 詳細は [`Grimodex_レイアウトシステム置換設計書.md`](Grimodex_レイアウトシステム置換設計書.md) を参照。
 
 VS Code + JetBrains ハイブリッドのDock/Float/Tab/Splitモデルを採用:
 
@@ -1089,8 +1089,6 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 ---
 
 ## 15. 開発フェーズ
-
-> 残りの実装タスクの詳細は [`implementation-workflow.md`](implementation-workflow.md) を参照。
 
 ### Phase 1: 基盤 ✅
 

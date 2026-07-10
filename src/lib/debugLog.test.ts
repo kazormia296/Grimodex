@@ -22,6 +22,18 @@ describe("redactParams", () => {
     expect(detail).not.toContain("[redacted]");
   });
 
+  it("redacts long comma-containing prose (does not leak per-fragment)", () => {
+    const prose =
+      "The mist rolled in, cold and grey, over the harbor, and the ship sailed away into the fog";
+    const err = new Error(
+      `Failed query: INSERT INTO scenes VALUES (?)\nparams: ${prose}`,
+    );
+    const detail = errorDetail(err);
+    expect(detail).not.toContain(prose);
+    expect(detail).not.toContain("sailed away into the fog");
+    expect(detail).toContain("…[redacted]");
+  });
+
   it("redacts params in stack trace (which repeats the message)", () => {
     const longContent = "b".repeat(200);
     const err = new Error(`Failed query: SELECT\nparams: ${longContent}`);

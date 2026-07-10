@@ -394,31 +394,48 @@ export async function listProjectSnapshots(): Promise<ProjectSnapshotMeta[]> {
     .where(eq(projectSnapshots.projectId, PROJECT_ID))
     .orderBy(desc(projectSnapshots.createdAt));
 
-  const results: ProjectSnapshotMeta[] = [];
-  for (const snap of snaps) {
-    const countRows = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(projectSnapshotEntries)
-      .where(eq(projectSnapshotEntries.snapshotId, snap.id));
-    // Structural snapshots always write at least one row to
-    // project_snapshot_aux (every aux scope, even empty ones). Legacy
-    // snapshots never touch aux. A codex-only or snippet-only project
-    // would have zero project_snapshot_tree_nodes rows but still be
-    // structural — so checking aux instead of tree_nodes is correct.
-    const auxCount = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(projectSnapshotAux)
-      .where(eq(projectSnapshotAux.snapshotId, snap.id));
-    results.push({
-      id: snap.id,
-      name: snap.name,
-      description: snap.description,
-      entryCount: Number(countRows[0]?.count ?? 0),
-      createdAt: snap.createdAt,
-      isStructural: Number(auxCount[0]?.count ?? 0) > 0,
-    });
-  }
-  return results;
+  if (snaps.length === 0) return [];
+  const snapshotIds = snaps.map((s) => s.id);
+
+  // 旧実装はスナップショット毎に COUNT を 2 本発行し 2N 回 IPC していた。
+  // GROUP BY で 1 本ずつ（計 2 本）に集約し N+1 を解消する。
+  const entryCounts = await db
+    .select({
+      snapshotId: projectSnapshotEntries.snapshotId,
+      count: sql<number>`count(*)`,
+    })
+    .from(projectSnapshotEntries)
+    .where(inArray(projectSnapshotEntries.snapshotId, snapshotIds))
+    .groupBy(projectSnapshotEntries.snapshotId);
+  const entryCountById = new Map(
+    entryCounts.map((r) => [r.snapshotId, Number(r.count)]),
+  );
+
+  // Structural snapshots always write at least one row to
+  // project_snapshot_aux (every aux scope, even empty ones). Legacy
+  // snapshots never touch aux. A codex-only or snippet-only project
+  // would have zero project_snapshot_tree_nodes rows but still be
+  // structural — so checking aux instead of tree_nodes is correct.
+  const auxCounts = await db
+    .select({
+      snapshotId: projectSnapshotAux.snapshotId,
+      count: sql<number>`count(*)`,
+    })
+    .from(projectSnapshotAux)
+    .where(inArray(projectSnapshotAux.snapshotId, snapshotIds))
+    .groupBy(projectSnapshotAux.snapshotId);
+  const auxCountById = new Map(
+    auxCounts.map((r) => [r.snapshotId, Number(r.count)]),
+  );
+
+  return snaps.map((snap) => ({
+    id: snap.id,
+    name: snap.name,
+    description: snap.description,
+    entryCount: entryCountById.get(snap.id) ?? 0,
+    createdAt: snap.createdAt,
+    isStructural: (auxCountById.get(snap.id) ?? 0) > 0,
+  }));
 }
 
 // ── deleteProjectSnapshot (unchanged behaviour) ────────────────────

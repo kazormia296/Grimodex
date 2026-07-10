@@ -74,6 +74,7 @@ const RELATION_EVAL_TEST =
   "src/features/codex/relationInjectionEval.live.test.ts";
 const CANDIDATE_JUDGMENT_TEST =
   "src/features/codex/candidateJudgment.live.test.ts";
+const CODEX_YOMI_TEST = "src/features/codex/codexYomi.live.test.ts";
 const POST_EFFECT_RUST = "src-tauri/src/commands/post_effect.rs";
 
 /** 生成経路（LLM を実際に叩く層）。n/a が許されない層。 */
@@ -230,6 +231,17 @@ export const AI_PATHS: AiPathEntry[] = [
     testRef: CANDIDATE_JUDGMENT_TEST,
     testName: "codex candidate judgment live E2E",
     note: "本番ビルダー codexJudgment.buildCandidateJudgmentPrompt + 本番パーサ parseJudgmentResponse + runLiveSingleShot。形態素×LLM の LLM 半分（種別分類/別名検出）を実モデルで検証。",
+  },
+  {
+    id: "codex_yomi",
+    label: "Codex 表記の読み(ふりがな)推定",
+    surface: "codex/codexYomi.ts inferReadings",
+    layer: "single-shot",
+    transport: "send_chat_message",
+    verifier: "js-live",
+    testRef: CODEX_YOMI_TEST,
+    testName: "codex yomi estimation live E2E",
+    note: "本番ビルダー codexYomi.buildYomiEstimationPrompt + 本番パーサ parseYomiResponse + runLiveSingleShot。漢字表記のひらがな読み推定を実モデルで検証。",
   },
   {
     id: "map_branch",

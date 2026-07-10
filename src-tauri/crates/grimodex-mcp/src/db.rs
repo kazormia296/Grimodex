@@ -572,6 +572,19 @@ pub fn validate_fts_query(query: &str) -> Result<()> {
     Ok(())
 }
 
+/// Neutralize FTS5 operator syntax: quote each ≥3-codepoint token (doubling
+/// embedded quotes) and OR-join them, matching grimodex-db `to_fts_match`
+/// and the TS `toFtsMatchQuery`/`ftsOrMatch`. Tokens shorter than 3 codepoints
+/// (trigram-unmatchable) are dropped; an all-short query yields an empty string
+/// so the caller falls back to LIKE.
+fn to_fts_match(raw: &str) -> String {
+    raw.split_whitespace()
+        .filter(|t| t.chars().count() >= 3)
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
 pub fn search_fts(
     conn: &Connection,
     project_id: &str,
@@ -582,8 +595,10 @@ pub fn search_fts(
     let mut results: Vec<SearchResult> = Vec::new();
     let lim = limit.min(50) as i64;
 
-    // FTS5 trigram requires ≥3 chars; fall back to LIKE for shorter queries.
-    let use_like = query.chars().count() < 3;
+    // FTS5 trigram requires ≥3 chars and treats punctuation as operators; build a
+    // sanitized MATCH expression and fall back to LIKE when nothing survives.
+    let match_expr = to_fts_match(query);
+    let use_like = match_expr.is_empty();
     let like_pattern = format!("%{query}%");
 
     if scope == "all" || scope == "scenes" {
@@ -614,7 +629,7 @@ pub fn search_fts(
                  WHERE tree_nodes_fts MATCH ?1 AND tn.project_id = ?2 AND tn.node_type = 'scene'
                  ORDER BY rank LIMIT ?3",
             )?;
-            let rows = stmt.query_map(params![query, project_id, lim], |row| {
+            let rows = stmt.query_map(params![match_expr, project_id, lim], |row| {
                 Ok(SearchResult {
                     source_type: "scene".to_string(),
                     id: row.get(0)?,
@@ -656,7 +671,7 @@ pub fn search_fts(
                  WHERE codex_fts MATCH ?1 AND e.project_id = ?2
                  ORDER BY rank LIMIT ?3",
             )?;
-            let rows = stmt.query_map(params![query, project_id, lim], |row| {
+            let rows = stmt.query_map(params![match_expr, project_id, lim], |row| {
                 Ok(SearchResult {
                     source_type: "codex".to_string(),
                     id: row.get(0)?,
@@ -697,7 +712,7 @@ pub fn search_fts(
                  WHERE snippets_fts MATCH ?1 AND s.project_id = ?2
                  ORDER BY rank LIMIT ?3",
             )?;
-            let rows = stmt.query_map(params![query, project_id, lim], |row| {
+            let rows = stmt.query_map(params![match_expr, project_id, lim], |row| {
                 Ok(SearchResult {
                     source_type: "snippet".to_string(),
                     id: row.get(0)?,
@@ -740,7 +755,7 @@ pub fn search_fts(
                  WHERE chat_messages_fts MATCH ?1 AND cs.project_id = ?2
                  ORDER BY rank LIMIT ?3",
             )?;
-            let rows = stmt.query_map(params![query, project_id, lim], |row| {
+            let rows = stmt.query_map(params![match_expr, project_id, lim], |row| {
                 Ok(SearchResult {
                     source_type: "chat".to_string(),
                     id: row.get(0)?,
@@ -984,7 +999,7 @@ pub fn get_attribution_report(
              JOIN tree_nodes tn ON tn.id = a.node_id
              WHERE tn.project_id = ?1 AND a.node_id IS NOT NULL
              GROUP BY tn.id, a.source
-             ORDER BY tn.sort_order, a.source",
+             ORDER BY tn.sort_order, tn.id, a.source",
         )?;
         let mut raw: Vec<(String, String, AttributionSourceSummary)> = stmt2
             .query_map(params![project_id], |row| {

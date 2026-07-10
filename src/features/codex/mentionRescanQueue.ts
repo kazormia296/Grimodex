@@ -180,7 +180,13 @@ export async function needsBodyBackfill(): Promise<boolean> {
   const [bodyCountRow] = await db
     .select({ c: count() })
     .from(sceneCodexMentions)
-    .where(eq(sceneCodexMentions.source, "body"));
+    .innerJoin(treeNodes, eq(sceneCodexMentions.sceneId, treeNodes.id))
+    .where(
+      and(
+        eq(sceneCodexMentions.source, "body"),
+        eq(treeNodes.projectId, getCurrentProjectId()),
+      ),
+    );
   const bodyCount = bodyCountRow?.c ?? 0;
 
   // bodyCount counts (scene, entry) pairs, not unique scenes.

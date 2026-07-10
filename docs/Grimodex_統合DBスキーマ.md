@@ -1166,7 +1166,7 @@ SQLite 3.38+の `json()` / `json_extract()` 関数でクエリ内でのJSON操�
 
 ## マイグレーション方針
 
-- スキーマ定義（DDL）は Rust 側の `src-tauri/src/database.rs` `Database::migrate()` メソッドで一元管理
+- スキーマ定義（DDL）は Rust 側の `src-tauri/crates/grimodex-db/src/migrate.rs` `Database::migrate()` メソッドで一元管理
 - TypeScript 側の `src/db/schema.ts` は Drizzle ORM のクエリビルダー用スキーマ定義のみ（DDL生成なし）
 - `drizzle-kit` によるマイグレーションファイル生成は使用しない（sqlite-proxy構成のため）
 - アプリ起動時（ワークスペースオープン時）に `Database::migrate()` が自動実行される
@@ -1859,7 +1859,7 @@ CREATE INDEX idx_scene_beat_pov_scene ON scene_beat_pov_cache(scene_id);
 
 ## スキーマ更新履歴（2026-05-07）
 
-現状コードベース（`src/db/schema.ts` + `src-tauri/src/database.rs`）と設計書の乖離を解消。
+現状コードベース（`src/db/schema.ts` + `src-tauri/crates/grimodex-db/`）と設計書の乖離を解消。
 
 ### 追加テーブル（設計書に未記載だったもの）
 
@@ -2677,7 +2677,7 @@ CREATE INDEX IF NOT EXISTS idx_lint_term_dict_project ON lint_term_dictionary(pr
 
 ### Drizzle ↔ Rust スキーマの差分
 
-`src-tauri/src/database/migrate.rs`（実 DB の正本）と `src/db/schema.ts`（アプリ層ミラー）の現状差分。いずれも意図的か、Drizzle が遅れているだけで実害はない。
+`src-tauri/crates/grimodex-db/src/migrate.rs`（実 DB の正本）と `src/db/schema.ts`（アプリ層ミラー）の現状差分。いずれも意図的か、Drizzle が遅れているだけで実害はない。
 
 | 項目 | 状態 |
 |------|------|

@@ -55,28 +55,6 @@ function parseMetadata(metadata: string | null | undefined): ParsedMetadata {
   return {};
 }
 
-function isSummaryMarker(msg: ChatMessageType): boolean {
-  if (!msg.metadata) return false;
-  try {
-    const parsed: unknown = JSON.parse(msg.metadata);
-    return (
-      parsed !== null && typeof parsed === "object" && "summary_id" in parsed
-    );
-  } catch {
-    return false;
-  }
-}
-
-function parseToolCalls(metadata: string | null | undefined): ToolCallRecord[] {
-  return parseMetadata(metadata).tool_calls ?? [];
-}
-
-function parseThinkingBlocks(
-  metadata: string | null | undefined,
-): Array<{ thinking: string; summary?: string }> {
-  return parseMetadata(metadata).thinking_blocks ?? [];
-}
-
 interface ChatMessageProps {
   msg: ChatMessageType;
   isStreaming: boolean;
@@ -118,7 +96,8 @@ function ChatMessageImpl({
   const { t } = useTranslation();
   const isAssistant = msg.role === "assistant";
   const isUser = msg.role === "user";
-  const isSummary = isSummaryMarker(msg);
+  const parsedMeta = useMemo(() => parseMetadata(msg.metadata), [msg.metadata]);
+  const isSummary = "summary_id" in parsedMeta;
   // 一部モデルが本文に吐き出す擬似ツール記法 (<tool_call>/<tool_response>) を
   // 描画・コピー・挿入・履歴の全消費前に除去する。生は DB に保持（可逆）。
   // assistant 本文のみ対象（user 投稿やサマリは原文のまま）。
@@ -129,13 +108,12 @@ function ChatMessageImpl({
   );
   const showActions = !isStreaming && safeContent.length > 0 && !isSummary;
   const toolCalls =
-    isAssistant && !isSummary ? parseToolCalls(msg.metadata) : [];
+    isAssistant && !isSummary ? (parsedMeta.tool_calls ?? []) : [];
   const thinkingBlocks =
-    isAssistant && !isSummary ? parseThinkingBlocks(msg.metadata) : [];
-  const parsedMeta =
-    isAssistant && !isSummary ? parseMetadata(msg.metadata) : {};
-  const citations = parsedMeta.citations ?? [];
-  const ragCost = parsedMeta.cost;
+    isAssistant && !isSummary ? (parsedMeta.thinking_blocks ?? []) : [];
+  const citations =
+    isAssistant && !isSummary ? (parsedMeta.citations ?? []) : [];
+  const ragCost = isAssistant && !isSummary ? parsedMeta.cost : undefined;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const codexComponents = useCodexMarkdownComponents();

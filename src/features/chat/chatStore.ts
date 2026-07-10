@@ -15,6 +15,9 @@ import { debugLog, errorDetail } from "@/lib/debugLog";
 // D-17: Error classification and retry helpers
 // ---------------------------------------------------------------------------
 
+/** 429（レート制限）で streaming 送信を自動リトライする最大回数。 */
+const MAX_RATE_LIMIT_RETRIES = 3;
+
 function classifyError(
   e: unknown,
 ): "auth" | "rate_limit" | "network" | "context_length" | "unknown" {
@@ -692,6 +695,9 @@ interface ChatState {
       /** Chat 入力で `@人物名`(codex) メンションされた codex ID 一覧。
        * 作中年表スナップショットの人物プールへ最優先 seed として渡す。 */
       mentionedCodexIds?: string[];
+      /** 429 リトライの内部カウンタ（外部呼び出しでは指定しない）。
+       * 上限は MAX_RATE_LIMIT_RETRIES。 */
+      _rateLimitRetry?: number;
     },
   ) => Promise<void>;
   buildPromptForCopy: (
@@ -3353,6 +3359,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       overrideAgentMode?: boolean;
       mentionedSceneIds?: string[];
       mentionedCodexIds?: string[];
+      /** 429 リトライの内部カウンタ（外部呼び出しでは指定しない）。 */
+      _rateLimitRetry?: number;
     },
   ) => {
     const {
@@ -4087,8 +4095,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           const finalMessages = get().messages;
           const lastMsg = finalMessages[finalMessages.length - 1];
           if (lastMsg?.role === "assistant" && lastMsg.content) {
-            const agentModel =
-              useAiSettingsStore.getState().settings?.model ?? undefined;
+            // 実際に使用したモデル（xprov / agent ロール / chat 一時 override を
+            // 反映した currentModel）で永続化・usage 記録する。既定モデルを再読み
+            // すると override 時に chat_messages.model と ai_usage が誤ったモデルへ
+            // ひも付き、コスト推定もずれる（streaming 経路 / research サブエージェント
+            // は既に実モデルで記録している）。currentModel が空文字なら undefined。
+            const agentModel = currentModel || undefined;
             await chatApi.addMessage(
               sessionIdForPersist,
               "assistant",
@@ -4689,12 +4701,33 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           duration: 8000,
         });
       } else if (kind === "rate_limit") {
-        // Retry after a delay for 429
         toast.warning(i18next.t("chat.rateLimited"));
+        // 失敗した placeholder（user + 空 assistant）を除去し、再送時の重複
+        // バブル（同じ user メッセージが 2 通 + 宙に浮いた空 assistant）を防ぐ。
+        set((s) => ({
+          messages: s.messages.filter(
+            (m) => m.id !== userMsg.id && m.id !== assistantMsg.id,
+          ),
+          isStreaming: false,
+        }));
+        // 永続 429 での無限リトライ（10 秒ごとに API を叩き続け、messages が
+        // 2 通/回で無限増殖）を防ぐため上限を設ける。新規送信は
+        // _rateLimitRetry=undefined から始まるのでカウンタは自然にリセットされる。
+        const attempt = (options?._rateLimitRetry ?? 0) + 1;
+        if (attempt > MAX_RATE_LIMIT_RETRIES) {
+          set({ error: msg });
+          return;
+        }
+        // 送信先セッションを pin。待機中にユーザーがセッション/シーンを切り替えて
+        // いたら再送を中止する（別会話への誤送信防止）。
+        const retrySessionId = get().activeSessionId;
         setTimeout(() => {
-          get().sendMessage(content);
+          if (get().activeSessionId !== retrySessionId) return;
+          void get().sendMessage(content, commandInstruction, {
+            ...options,
+            _rateLimitRetry: attempt,
+          });
         }, 10_000);
-        set({ isStreaming: false });
         return;
       } else if (kind === "network") {
         toast.error(i18next.t("chat.networkError"));

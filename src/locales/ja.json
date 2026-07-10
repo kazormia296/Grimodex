@@ -1215,6 +1215,7 @@
         "summarization": "要約",
         "context_creator": "Context Creator",
         "codex_judgment": "固有名詞候補の判定",
+        "codex_yomi": "読み推定",
         "plot_thread_extract": "プロットスレッド抽出",
         "chronicle_extract": "作中年表 出来事抽出"
       }
@@ -2177,6 +2178,19 @@
       "hidden": "AI から除外",
       "hiddenDesc": "AI コンテキストに一切注入しない"
     },
+    "readings": {
+      "label": "読み（ふりがな）",
+      "estimate": "AIで推定",
+      "auto": "自動: {{yomi}}",
+      "noSurfaces": "名前や別名を設定すると読みを登録できます",
+      "backfillTitle": "読みの一括推定",
+      "backfillDesc": "漢字を含む表記のうち読み未設定のものを AI が推定して登録します。IME 変換辞書・ルビ・五十音ソートに使われます。",
+      "backfillRun": "未設定の読みを一括推定",
+      "backfillRunning": "推定中… ({{done}}/{{total}})",
+      "backfillNone": "推定が必要な表記はありません",
+      "backfillDone": "{{count}} 件の読みを登録しました",
+      "backfillFailed": "読みの一括推定に失敗しました"
+    },
     "mentions": {
       "sourceChat": "抽出元チャット: {{title}}"
     },
@@ -2321,6 +2335,7 @@
       "tagsChanged": "タグ変更",
       "aliasesChanged": "別名変更",
       "excludedAliasesChanged": "除外別名変更",
+      "readingsChanged": "読み変更",
       "parentChanged": "親変更",
       "contextModeChanged": "コンテキストモード変更",
       "iconChanged": "アイコン変更",

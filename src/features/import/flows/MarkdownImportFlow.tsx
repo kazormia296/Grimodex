@@ -33,8 +33,12 @@ import {
 
 import type { MarkdownImportMode } from "../importTypes";
 import { prepareImportTarget, type ImportTarget } from "../importTarget";
-import { collectMarkdownFromDir } from "../markdownFolderReader";
+import {
+  collectMarkdownFromDir,
+  type CollectedFile,
+} from "../markdownFolderReader";
 import { readDir, readTextFile } from "@/lib/fs";
+import { invoke, isTauri } from "@/lib/tauri";
 
 interface Props {
   importTarget: ImportTarget;
@@ -127,6 +131,30 @@ export function MarkdownImportFlow({
   );
 
   const handleFolderPick = useCallback(async () => {
+    // Tauri: フォルダピック + 走査を Rust 側 (import_pick_folder_markdown) で
+    // 完結させる。renderer に fs:read capability を与えないため plugin-fs の
+    // readDir/readTextFile は使わない（設計は src-tauri/src/commands/import_fs.rs）。
+    if (isTauri()) {
+      let files: CollectedFile[] | null;
+      try {
+        files = await invoke<CollectedFile[] | null>(
+          "import_pick_folder_markdown",
+        );
+      } catch {
+        toast.error(t("import.markdown.folderError"));
+        return;
+      }
+      if (files === null) return; // ユーザーキャンセル
+      setPhase("analyzing");
+      if (files.length === 0) {
+        toast.error(t("import.markdown.noFiles"));
+        setPhase("idle");
+        return;
+      }
+      showPreview(parseMarkdownMulti(files));
+      return;
+    }
+    // Electron / browser: 従来どおりダイアログ + fs ラッパー経由で走査する。
     const path = await openFolderDialog();
     if (!path) return;
     setPhase("analyzing");

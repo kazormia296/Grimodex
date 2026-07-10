@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@/lib/tauri";
+import { patchGlobalSettings } from "@/lib/globalSettings";
 import type { GlobalSettings } from "@/features/workspace/store";
 import type { ShowMode } from "./lib/deriveColumns";
 
@@ -274,9 +274,10 @@ useMatrixStore.subscribe((state) => {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const current = await invoke<GlobalSettings>("get_global_settings");
-      const updated = { ...current, matrix: JSON.parse(next) };
-      await invoke("save_global_settings", { settings: updated });
+      await patchGlobalSettings((current) => ({
+        ...current,
+        matrix: JSON.parse(next),
+      }));
       useMatrixStore.getState().markSettingsSaved();
     } catch {
       // non-fatal

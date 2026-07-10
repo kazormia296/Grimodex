@@ -2037,6 +2037,12 @@ impl Database {
             "version",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        // 表記→読みの配列 (JSON Record<string, string[]>)。IME 変換辞書注入・ルビ・
+        // 五十音ソート用 (docs/Grimodex_IME連携設計書.md §3.1)。aliases と同じ nullable
+        // TEXT で、base CREATE TABLE には足さず version と同様この rescue のみで導入する。
+        // seed_schema_parity のゲート4(iii)は seed(readings 無し)→migrate でこの
+        // add_column_if_missing が足し、from-scratch と一致することを検証して緑になる。
+        Self::add_column_if_missing(conn, "codex_entries", "readings", "TEXT")?;
         Self::add_column_if_missing(conn, "snippets", "version", "INTEGER NOT NULL DEFAULT 0")?;
         Self::add_column_if_missing(conn, "tree_nodes", "version", "INTEGER NOT NULL DEFAULT 0")?;
 

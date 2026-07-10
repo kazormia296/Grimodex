@@ -192,10 +192,13 @@ function parseCodexEntries(files: Record<string, Uint8Array>): {
         continue;
       }
 
+      const attrs = metadata.attributes;
+      // 構造が壊れた metadata.json（attributes 欠落）は skip して import 全体を止めない
+      if (!attrs || typeof attrs !== "object") continue;
+
       const grimodexId = crypto.randomUUID();
       ncIdToGrimodexId.set(metadata.id, grimodexId);
 
-      const attrs = metadata.attributes;
       const type = NC_TYPE_MAP[attrs.type] ?? "lore";
       const contextMode = resolveContextMode(attrs);
 

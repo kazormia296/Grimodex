@@ -49,7 +49,7 @@
 | --- | --- | --- |
 | 段落（行）移動 | `src/features/editor/ParagraphMoveExtension.ts` | 隣接単位 swap の transaction 構築・キャレット追従・FLIP・縦書き対応の型 |
 | Codex 装飾の reorder 再構築 | `src/features/editor/CodexHighlightPlugin.ts:132-160`（`remapCodexDecosForReorder`） | `replaceWith` で落ちる装飾を meta 経由で per-block 再構築する仕組み |
-| 文分割（日本語） | `src/semantic/chunker.rs:166`（`split_sentences_ja`） | 括弧深度対応・末尾終端記号飲み込みのロジックを TS へ移植 |
+| 文分割（日本語） | `src-tauri/src/semantic/chunker.rs:166`（`split_sentences_ja`） | 括弧深度対応・末尾終端記号飲み込みのロジックを TS へ移植 |
 | 形態素解析 | `src-tauri/crates/grimodex-lint/src/morph.rs`（`tokenize_block`） | 文節チャンク化の入力。現状 Rust 内部限定なので expose が必要 |
 | 帰属マーク | `src/features/attribution/AuthorshipMark.ts` | 移動時に marks 込みで運べば保持される（`inclusive:false`） |
 | フラット化契約 | `src/features/editor/codexDocFlatten.ts` | 文/文節の char 範囲 → ProseMirror position 変換の基準 |
@@ -361,7 +361,7 @@ per-block オフセット再構築している（`CodexHighlightPlugin.ts:132-16
 - `src/features/editor/codexDocFlatten.ts` — flat text ↔ PM position 契約
 - `src/features/editor/extensions.ts` — schema/拡張登録（段落は既定 `inline*` を継承、sentence ノード無し。#296 で `TcyMark`/`AozoraInputRules`/`AutoPairBracketsExtension` を追加登録＝登録ブロックは 211 行付近へ移動）
 - `src/features/attribution/AuthorshipMark.ts` — 帰属 inline mark（`inclusive:false`）
-- `src/semantic/chunker.rs:166` — `split_sentences_ja`（TS 移植元）
+- `src-tauri/src/semantic/chunker.rs:166` — `split_sentences_ja`（TS 移植元）
 - `src-tauri/crates/grimodex-lint/src/textscan/en.rs:169` — `sentence_ranges_en`（英語 TS 移植元）
 - `src-tauri/crates/grimodex-lint/src/morph.rs` — `tokenize_block` / `MorphToken`（文節分割の入力）
 - `src/lib/animation.ts:52-61` / `src/lib/gsap.ts:4` — アニメ定数・Reduced Motion ガード

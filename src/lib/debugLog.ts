@@ -102,15 +102,11 @@ export function rootCause(e: unknown): string {
 function redactParams(message: string): string {
   return message.replace(
     /^(params:\s*)(.*)$/m,
-    (_match, prefix: string, paramStr: string) => {
-      const params = paramStr.split(",");
-      const redacted = params.map((p) => {
-        const trimmed = p.trim();
-        return trimmed.length > 60
-          ? trimmed.slice(0, 40) + "…[redacted]"
-          : trimmed;
-      });
-      return prefix + redacted.join(", ");
+    (match, prefix: string, paramStr: string) => {
+      const trimmed = paramStr.trim();
+      return trimmed.length > 60
+        ? prefix + trimmed.slice(0, 40) + "…[redacted]"
+        : match;
     },
   );
 }

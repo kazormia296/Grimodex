@@ -64,6 +64,7 @@ function makeEntry(
     tagsCache: null,
     aliases: null,
     excludedAliases: null,
+    readings: null,
     sourceChatMessageId: null,
     notes: null,
     version: 0,

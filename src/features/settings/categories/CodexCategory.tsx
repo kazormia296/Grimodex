@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { SettingSection } from "../components/SettingSection";
 import { SettingRow } from "../components/SettingRow";
 import { FontFamilySelect } from "../components/FontFamilySelect";
+import { ReadingsBackfillSection } from "./ReadingsBackfillSection";
 import type { BundledFont } from "../buildFontOptions";
 
 // Codex タイトル用の表示フォント（@font-face で同梱。src/index.css）。共通の
@@ -516,6 +517,8 @@ export function CodexCategory() {
           )}
         </div>
       </SettingSection>
+
+      <ReadingsBackfillSection />
 
       {/* Delete Confirm — SettingsDialog (AnimatedOverlay) は body へ portal
           された z-50 のため、その上に重ねるには portal + z-[60] が必要 */}
