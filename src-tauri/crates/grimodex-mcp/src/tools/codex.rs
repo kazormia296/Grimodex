@@ -219,7 +219,7 @@ pub async fn create_codex_entry(
     let aliases_str = if aliases_vec.is_empty() {
         None
     } else {
-        Some(aliases_vec.join(","))
+        Some(serde_json::to_string(&aliases_vec).map_err(internal_err)?)
     };
 
     let summary = if let Some(s) = &params.summary {
@@ -352,11 +352,7 @@ pub async fn update_codex_entry(
     let aliases_str = if let Some(a) = &params.aliases {
         let cleaned = sanitize::sanitize_aliases(a)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        Some(if cleaned.is_empty() {
-            String::new()
-        } else {
-            cleaned.join(",")
-        })
+        Some(serde_json::to_string(&cleaned).map_err(internal_err)?)
     } else {
         None
     };

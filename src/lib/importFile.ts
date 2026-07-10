@@ -1,5 +1,5 @@
 import { electronBridge, isElectron } from "@/lib/shell";
-import { isTauri } from "@/lib/tauri";
+import { invoke, isTauri } from "@/lib/tauri";
 import type { SaveFilter } from "@/lib/exportFile";
 
 /** 読み込んだテキストファイルの中身とファイル名。 */
@@ -37,8 +37,9 @@ function openViaInput(filter: SaveFilter): Promise<OpenTextResult | null> {
 
 /**
  * ネイティブのファイル選択ダイアログを開き、選んだ単一テキストファイルを読み込む。
- * 保存（`saveTextFile`）が Rust 主導なのと異なり、読込は `@tauri-apps/plugin-dialog`
- * ＋ `@tauri-apps/plugin-fs` を renderer から直接呼ぶ（既存 import フローと同方針）。
+ * 保存（`saveTextFile`）と同じく Rust 主導: ダイアログを開いてその場で読む
+ * `import_open_text_file` コマンドを invoke する（renderer に fs:read capability を
+ * 与えず、任意パスの silent read を防ぐ。設計は src-tauri/src/commands/import_fs.rs）。
  *
  * キャンセル時 / 非対応環境では null を返す。
  */
@@ -46,16 +47,11 @@ export async function openTextFile(
   filter: SaveFilter,
 ): Promise<OpenTextResult | null> {
   if (isTauri()) {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const picked = await open({
-      multiple: false,
-      directory: false,
-      filters: [{ name: filter.name, extensions: filter.extensions }],
-    });
-    if (typeof picked !== "string") return null;
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
-    const content = await readTextFile(picked);
-    return { name: basename(picked), content };
+    const picked = await invoke<OpenTextResult | null>(
+      "import_open_text_file",
+      { filterName: filter.name, extensions: filter.extensions },
+    );
+    return picked ?? null;
   }
   if (isElectron()) {
     // main プロセスのネイティブファイルピッカ + fs 読み込み（§3.4）。

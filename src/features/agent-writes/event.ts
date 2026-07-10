@@ -212,11 +212,13 @@ export async function agentDeleteEvent(
 export async function agentSetEventParticipants(
   eventId: string,
   codexEntryIds: string[],
+  opts?: TrackedWriteOpts,
 ): Promise<void> {
   await trackedEventWrite(
     "agent_event_set_participants",
     { eventId, codexEntryIds },
     "chronicle.agentHistoryUpdate",
+    opts,
   );
 }
 
@@ -300,7 +302,7 @@ export function uiSetEventParticipants(
   eventId: string,
   codexEntryIds: string[],
 ): Promise<void> {
-  return agentSetEventParticipants(eventId, codexEntryIds);
+  return agentSetEventParticipants(eventId, codexEntryIds, UI_WRITE_OPTS);
 }
 
 export function uiAddEventRelation(

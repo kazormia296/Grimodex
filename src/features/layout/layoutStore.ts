@@ -3,6 +3,7 @@ import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { GlobalSettings } from "@/features/workspace/store";
+import { patchGlobalSettings } from "@/lib/globalSettings";
 import {
   getScreenshotCaptureId,
   getScreenshotPanelId,
@@ -412,7 +413,6 @@ function scheduleSave(get: () => LayoutStoreState) {
           hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
       });
 
-      const current = await invoke<GlobalSettings>("get_global_settings");
       const persisted: PersistedLayout = {
         layoutVersion: LAYOUT_SCHEMA_VERSION,
         state: cloneLayoutState(layout),
@@ -421,23 +421,21 @@ function scheduleSave(get: () => LayoutStoreState) {
           hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
       };
 
-      await invoke("save_global_settings", {
-        settings: {
-          ...current,
-          layoutVersion: LAYOUT_SCHEMA_VERSION,
-          layout: persisted,
-          activeLayoutPresetId: activePresetId ?? null,
-          layoutPresets: customPresets.map((p) => ({
-            id: p.id,
-            name: p.name,
-            state: p.state,
-            hiddenStripePanels: p.hiddenStripePanels,
-          })),
-          builtinLayoutPresetOverrides: serializeBuiltinOverrides(
-            builtinPresetOverrides,
-          ),
-        },
-      });
+      await patchGlobalSettings((current) => ({
+        ...current,
+        layoutVersion: LAYOUT_SCHEMA_VERSION,
+        layout: persisted,
+        activeLayoutPresetId: activePresetId ?? null,
+        layoutPresets: customPresets.map((p) => ({
+          id: p.id,
+          name: p.name,
+          state: p.state,
+          hiddenStripePanels: p.hiddenStripePanels,
+        })),
+        builtinLayoutPresetOverrides: serializeBuiltinOverrides(
+          builtinPresetOverrides,
+        ),
+      }));
     } catch {
       /* ignore */
     }
@@ -450,25 +448,22 @@ async function persistPresets(
   builtinOverrides?: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
 ) {
   try {
-    const current = await invoke<GlobalSettings>("get_global_settings");
-    await invoke("save_global_settings", {
-      settings: {
-        ...current,
-        layoutPresets: presets.map((p) => ({
-          id: p.id,
-          name: p.name,
-          state: p.state,
-          hiddenStripePanels: p.hiddenStripePanels,
-        })),
-        activeLayoutPresetId: activeId,
-        ...(builtinOverrides !== undefined
-          ? {
-              builtinLayoutPresetOverrides:
-                serializeBuiltinOverrides(builtinOverrides),
-            }
-          : {}),
-      },
-    });
+    await patchGlobalSettings((current) => ({
+      ...current,
+      layoutPresets: presets.map((p) => ({
+        id: p.id,
+        name: p.name,
+        state: p.state,
+        hiddenStripePanels: p.hiddenStripePanels,
+      })),
+      activeLayoutPresetId: activeId,
+      ...(builtinOverrides !== undefined
+        ? {
+            builtinLayoutPresetOverrides:
+              serializeBuiltinOverrides(builtinOverrides),
+          }
+        : {}),
+    }));
   } catch {
     /* ignore */
   }
@@ -478,13 +473,10 @@ async function persistBuiltinOverrides(
   overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
 ) {
   try {
-    const current = await invoke<GlobalSettings>("get_global_settings");
-    await invoke("save_global_settings", {
-      settings: {
-        ...current,
-        builtinLayoutPresetOverrides: serializeBuiltinOverrides(overrides),
-      },
-    });
+    await patchGlobalSettings((current) => ({
+      ...current,
+      builtinLayoutPresetOverrides: serializeBuiltinOverrides(overrides),
+    }));
   } catch {
     /* ignore */
   }
@@ -492,26 +484,25 @@ async function persistBuiltinOverrides(
 
 export async function clearSavedLayout() {
   try {
-    const current = await invoke<GlobalSettings>("get_global_settings");
-    const {
-      layout: _l,
-      toolWindows: _t,
-      stripePanelIds: _s,
-      ...rest
-    } = current as GlobalSettings & {
-      layout?: unknown;
-      toolWindows?: unknown;
-      stripePanelIds?: unknown;
-    };
-    await invoke("save_global_settings", {
-      settings: {
+    await patchGlobalSettings((current) => {
+      const {
+        layout: _l,
+        toolWindows: _t,
+        stripePanelIds: _s,
+        ...rest
+      } = current as GlobalSettings & {
+        layout?: unknown;
+        toolWindows?: unknown;
+        stripePanelIds?: unknown;
+      };
+      return {
         ...rest,
         layoutVersion: LAYOUT_SCHEMA_VERSION,
         layout: {
           layoutVersion: LAYOUT_SCHEMA_VERSION,
           state: buildDefaultLayoutState({ allInactive: true }),
         },
-      },
+      };
     });
   } catch {
     /* ignore */

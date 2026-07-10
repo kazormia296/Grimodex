@@ -2,6 +2,7 @@ import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { patchGlobalSettings } from "@/lib/globalSettings";
 import { flushAllAutoSaves } from "@/hooks/useAutoSave";
 import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
 import {
@@ -430,10 +431,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   async updateGlobalSettings(updates: Partial<GlobalSettings>) {
     const current = get().globalSettings;
     if (!current) return false;
-    const updated = { ...current, ...updates };
-    set({ globalSettings: updated });
+    // 楽観更新（即時 UI 反映）。確定値は patch 解決後に上書きする。
+    set({ globalSettings: { ...current, ...updates } });
     try {
-      await invoke("save_global_settings", { settings: updated });
+      // ディスクの最新値へマージして保存する。layout/map/grid 等、所有 store が
+      // セッション中に直接ディスクへ書いた slice を、開いた時点の stale な
+      // in-memory スナップショットで潰さないため（旧実装のリグレッション）。
+      const saved = await patchGlobalSettings((disk) => ({
+        ...disk,
+        ...updates,
+      }));
+      set({ globalSettings: saved });
       return true;
     } catch (e) {
       // Revert on failure
@@ -450,13 +458,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   async updateUserPreference(key: string, value: string) {
     const current = get().globalSettings;
     if (!current) return false;
-    const updated = {
-      ...current,
-      userPreferences: { ...(current.userPreferences ?? {}), [key]: value },
-    };
-    set({ globalSettings: updated });
+    set({
+      globalSettings: {
+        ...current,
+        userPreferences: { ...(current.userPreferences ?? {}), [key]: value },
+      },
+    });
     try {
-      await invoke("save_global_settings", { settings: updated });
+      const saved = await patchGlobalSettings((disk) => ({
+        ...disk,
+        userPreferences: { ...(disk.userPreferences ?? {}), [key]: value },
+      }));
+      set({ globalSettings: saved });
       return true;
     } catch (e) {
       set({ globalSettings: current });
@@ -472,13 +485,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   async updateProjectDefaults(updates: Record<string, string>) {
     const current = get().globalSettings;
     if (!current) return false;
-    const updated = {
-      ...current,
-      projectDefaults: { ...(current.projectDefaults ?? {}), ...updates },
-    };
-    set({ globalSettings: updated });
+    set({
+      globalSettings: {
+        ...current,
+        projectDefaults: { ...(current.projectDefaults ?? {}), ...updates },
+      },
+    });
     try {
-      await invoke("save_global_settings", { settings: updated });
+      const saved = await patchGlobalSettings((disk) => ({
+        ...disk,
+        projectDefaults: { ...(disk.projectDefaults ?? {}), ...updates },
+      }));
+      set({ globalSettings: saved });
       return true;
     } catch (e) {
       set({ globalSettings: current });

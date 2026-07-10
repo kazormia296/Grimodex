@@ -163,8 +163,6 @@ struct PatternMeta {
     entry_id: String,
     entry_name: String,
     entry_type: String,
-    /// byte length of the pattern in the original text (not lowercased)
-    pattern_byte_len: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +173,7 @@ pub struct CachedMatcher {
     ac: AhoCorasick,
     metas: Vec<PatternMeta>,
     /// entry_id → list of exclusion patterns (lowercased)
-    exclusion_ac: Option<(AhoCorasick, Vec<(String, usize)>)>, // (entry_id, byte_len)
+    exclusion_ac: Option<(AhoCorasick, Vec<String>)>, // entry_id
 }
 
 impl CachedMatcher {
@@ -205,13 +203,11 @@ impl CachedMatcher {
 
             for &name in &names {
                 let lowered = name.to_lowercase();
-                let byte_len = lowered.len();
                 patterns.push(lowered);
                 metas.push(PatternMeta {
                     entry_id: entry.id.clone(),
                     entry_name: entry.name.clone(),
                     entry_type: entry.entry_type.clone(),
-                    pattern_byte_len: byte_len,
                 });
             }
         }
@@ -224,12 +220,12 @@ impl CachedMatcher {
 
         // Build exclusion AC
         let mut excl_patterns: Vec<String> = vec![];
-        let mut excl_metas: Vec<(String, usize)> = vec![];
+        let mut excl_metas: Vec<String> = vec![];
         for entry in entries {
             for excl in &entry.excluded_aliases {
                 if !excl.is_empty() {
                     excl_patterns.push(excl.to_lowercase());
-                    excl_metas.push((entry.id.clone(), excl.len()));
+                    excl_metas.push(entry.id.clone());
                 }
             }
         }
@@ -257,19 +253,14 @@ impl CachedMatcher {
             return vec![];
         }
 
-        let text_lower = text.to_lowercase();
-
         // Step 1: raw matches
+        // AC uses ascii_case_insensitive (length-preserving), so match offsets
+        // are native to the ORIGINAL text — feed `text` directly. Lowercasing
+        // the whole scene shifted offsets for chars whose Unicode lowercase
+        // changes byte length (e.g. İ U+0130 -> "i̇"), dropping/mislocating hits.
         let mut raw: Vec<(usize, usize, usize)> = vec![]; // (from_byte, to_byte, meta_idx)
-        for m in self.ac.find_overlapping_iter(&text_lower) {
-            let meta = &self.metas[m.pattern().as_usize()];
-            // Reconstruct actual byte span from original text using meta.pattern_byte_len
-            // AC matched on lowercased text, but we want spans in original text (same byte offsets)
-            let from = m.start();
-            let to = m.start() + meta.pattern_byte_len;
-            if to <= text.len() {
-                raw.push((from, to, m.pattern().as_usize()));
-            }
+        for m in self.ac.find_overlapping_iter(text) {
+            raw.push((m.start(), m.end(), m.pattern().as_usize()));
         }
 
         if raw.is_empty() {
@@ -280,10 +271,10 @@ impl CachedMatcher {
         // excl_ranges: entry_id → Vec<(from, to)>
         let mut excl_ranges: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         if let Some((eac, emetas)) = &self.exclusion_ac {
-            for m in eac.find_overlapping_iter(&text_lower) {
-                let (entry_id, byte_len) = &emetas[m.pattern().as_usize()];
+            for m in eac.find_overlapping_iter(text) {
+                let entry_id = &emetas[m.pattern().as_usize()];
                 let efrom = m.start();
-                let eto = m.start() + byte_len;
+                let eto = m.end();
                 excl_ranges
                     .entry(entry_id.as_str())
                     .or_default()
@@ -750,6 +741,24 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].from, 0);
         assert_eq!(matches[0].to, "C.C.".len());
+    }
+
+    /// Regression: a character whose Unicode lowercase changes UTF-8 byte
+    /// length must not shift downstream match offsets. 'İ' (U+0130) is 2 bytes
+    /// but `to_lowercase()` yields "i̇" (3 bytes). The old code searched
+    /// `text.to_lowercase()` yet applied the resulting byte offsets to the
+    /// boundary/UTF-16 tables built from the ORIGINAL text, so the following
+    /// match landed mid-character and was silently dropped (0 matches).
+    #[test]
+    fn test_non_length_preserving_lowercase_before_match() {
+        let m = matcher(vec![entry("c1", "太郎", "character")]);
+        let text = "İ太郎は走った";
+        let matches = m.match_text(text, &[]);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].entry_id, "c1");
+        // İ = 1 UTF-16 unit → 太郎 spans UTF-16 [1, 3).
+        assert_eq!(matches[0].from, 1);
+        assert_eq!(matches[0].to, 3);
     }
 
     // --- surrogate pair (supplementary character) tests ---

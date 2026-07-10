@@ -34,8 +34,7 @@ import { serializeMapBoard, assignBoardSlugs } from "./mapSerializer";
 import { slugifyTitle } from "./slug";
 import type { ZipExportSettings, ArchiveFileEntry } from "./types";
 import type { ForeshadowSetupRow } from "@/features/foreshadow/types";
-
-const GRIMODEX_VERSION = "0.4.2";
+import { getVersion } from "@/lib/appInfo";
 
 export interface BuildArchiveProgress {
   phase: string;
@@ -308,7 +307,11 @@ export async function buildArchive(
     }
   }
 
-  const manifest = buildManifest(project, settings, GRIMODEX_VERSION);
+  const manifest = buildManifest(
+    project,
+    settings,
+    await getVersion().catch(() => "unknown"),
+  );
   addFile(files, "manifest.json", JSON.stringify(manifest, null, 2));
 
   const zipInput: Record<string, Uint8Array> = {};

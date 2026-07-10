@@ -105,6 +105,8 @@ const state: PollerState = {
   timer: null,
 };
 
+let pollInFlight = false;
+
 type ChangeEventRow = typeof changeEvents.$inferSelect;
 
 async function readTailSequence(projectId: string): Promise<number> {
@@ -278,6 +280,9 @@ async function pollTick(): Promise<void> {
   const projectId = state.projectId;
   if (!projectId) return;
 
+  if (pollInFlight) return; // skip overlapping tick; cursor retained, next interval retries
+  pollInFlight = true;
+
   // Everything below runs inside one try/catch. pollTick is fired via
   // `void pollTick()` in setInterval, so ANY throw here (including the DB reads,
   // not just fan-out) escapes as a [Global] unhandled rejection. In particular
@@ -305,6 +310,8 @@ async function pollTick(): Promise<void> {
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
     console.warn("[externalWriteFeed] poll failed; cursor retained", err);
+  } finally {
+    pollInFlight = false;
   }
 }
 
