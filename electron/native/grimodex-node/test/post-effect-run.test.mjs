@@ -5,6 +5,8 @@
 //   - start は AI 完了を待たず run_id を即返し、4ch を EventQueue へ流す。
 //   - completed run は同一 cache key で再利用され、AI/key error/event を発生させない。
 //   - multi abort は同一 Backend の registry を共有し、cancelled を維持する。
+//   - secret lookup error は cache miss で fail-closed、cache hit は再実行しない。
+//   - role effect の provider/endpoint override と default effect の無視規則を保つ。
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -32,6 +34,21 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function withTimeout(promise, label, timeoutMs = 5000) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`timeout waiting for ${label} (${timeoutMs}ms)`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function startMockServer(handler) {
   return new Promise((resolve, reject) => {
     const server = createServer(handler);
@@ -54,30 +71,38 @@ async function readBody(req) {
   return raw;
 }
 
-function writeReviewResponse(res, suffix = "") {
+function writeAiResponse(res, content) {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(
     JSON.stringify({
       choices: [
         {
           message: {
-            content: JSON.stringify({
-              findings: [
-                {
-                  title: `表現の確認${suffix}`,
-                  reason: "同じ語が続いています",
-                  found_text: "風",
-                  found_context: "風が吹く",
-                  severity: "warning",
-                },
-              ],
-            }),
+            content: JSON.stringify(content),
           },
           finish_reason: "stop",
         },
       ],
     }),
   );
+}
+
+function writeReviewResponse(res, suffix = "") {
+  writeAiResponse(res, {
+    findings: [
+      {
+        title: `表現の確認${suffix}`,
+        reason: "同じ語が続いています",
+        found_text: "風",
+        found_context: "風が吹く",
+        severity: "warning",
+      },
+    ],
+  });
+}
+
+function writeTypoResponse(res) {
+  writeAiResponse(res, { issues: [] });
 }
 
 function makeBackend() {
@@ -98,6 +123,17 @@ function aiSettings(baseUrl) {
     ollamaEndpoint: "http://127.0.0.1:1",
     openaiCompatibleEndpoints: [{ id: "mock", baseUrl }],
     activeOpenaiCompatibleEndpointId: "mock",
+  };
+}
+
+function aiSettingsWithEndpoints(defaultBaseUrl, roleBaseUrl) {
+  return {
+    ...aiSettings(defaultBaseUrl),
+    openaiCompatibleEndpoints: [
+      { id: "default", baseUrl: defaultBaseUrl },
+      { id: "role", baseUrl: roleBaseUrl },
+    ],
+    activeOpenaiCompatibleEndpointId: "default",
   };
 }
 
@@ -147,12 +183,7 @@ async function rows(backend, sql, params = []) {
   return result.rows;
 }
 
-async function waitForRunEvent(
-  events,
-  channel,
-  runId,
-  timeoutMs = 5000,
-) {
+async function waitForRunEvent(events, channel, runId, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const event = events.find(
@@ -187,21 +218,16 @@ test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eve
     const settings = aiSettings(baseUrl);
     const args = singleArgs("pe-scene-1");
 
-    const startPromise = backend.startPostEffectRun(args, settings, null, null);
-    const startJson = await Promise.race([
-      startPromise,
-      new Promise((_, reject) =>
-        setTimeout(
-          () => reject(new Error("start awaited the background AI request")),
-          1000,
-        ),
-      ),
-    ]);
+    const startJson = await withTimeout(
+      backend.startPostEffectRun(args, settings, null, null),
+      "startPostEffectRun immediate return",
+      1000,
+    );
     const started = JSON.parse(startJson);
     assert.equal(started.from_cache, false);
     assert.equal(typeof started.run_id, "string");
 
-    await requestSeen.promise;
+    await withTimeout(requestSeen.promise, "first post-effect HTTP request");
     releaseResponse.resolve();
     const done = await waitForRunEvent(
       events,
@@ -237,7 +263,9 @@ test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eve
     );
     assert.equal(annotationCount.n, 1);
 
-    const eventCountBeforeCache = events.length;
+    const runEventCountBeforeCache = events.filter(
+      (event) => event.payload.run_id === started.run_id,
+    ).length;
     const cached = JSON.parse(
       await backend.startPostEffectRun(
         args,
@@ -250,12 +278,232 @@ test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eve
       run_id: started.run_id,
       from_cache: true,
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(requestCount, 1);
-    assert.equal(events.length, eventCountBeforeCache);
+
+    // 固定 sleep で「何も起きない」を推測せず、同じ Backend/runtime に cache hit
+    // より後で fresh run を投入して終端まで待つ。先行 cache branch が誤って task を
+    // spawn していれば、その HTTP または同一 run_id の event が barrier 完了前に現れる。
+    await insertScene(backend, "pe-cache-barrier");
+    const barrier = JSON.parse(
+      await backend.startPostEffectRun(
+        singleArgs("pe-cache-barrier", "review-hash-barrier"),
+        settings,
+        null,
+        null,
+      ),
+    );
+    assert.equal(barrier.from_cache, false);
+    await waitForRunEvent(events, "post_effect:done", barrier.run_id);
+
+    assert.equal(requestCount, 2, "初回 + barrier だけがAIを呼ぶ");
+    assert.equal(
+      events.filter((event) => event.payload.run_id === started.run_id).length,
+      runEventCountBeforeCache,
+      "cache hitは既存runへeventを追加しない",
+    );
   } finally {
     // 途中 assertion 失敗でも request handler の gate を解放して server.close を
     // 永久待ちにしない。resolve は完了後に再度呼んでも no-op。
+    releaseResponse.resolve();
+    await closeServer(server);
+  }
+});
+
+test("cache missのrequired providerでsecret lookupが失敗するとHTTP送信せずfailedへ着地する", async () => {
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer(async (req, res) => {
+    requestCount += 1;
+    await readBody(req);
+    writeReviewResponse(res);
+  });
+
+  try {
+    const { backend, events, workspace } = makeBackend();
+    await backend.openWorkspace(workspace);
+    await insertScene(backend, "pe-secret-error");
+    const lookupError = "保存済み API キーを復号できません";
+    const args = {
+      ...singleArgs("pe-secret-error", "review-secret-error-cache-miss"),
+      // Anthropic はキー必須。base settings の local OpenAI-compatible endpointへ
+      // fail-openする実装も requestCount で検知する。
+      provider_override: "anthropic",
+      model_override: "claude-required-key",
+    };
+
+    const started = JSON.parse(
+      await withTimeout(
+        backend.startPostEffectRun(
+          args,
+          aiSettings(baseUrl),
+          null,
+          lookupError,
+        ),
+        "secret-error run start",
+        1000,
+      ),
+    );
+    assert.equal(started.from_cache, false);
+
+    const error = await waitForRunEvent(
+      events,
+      "post_effect:error",
+      started.run_id,
+    );
+    assert.match(error.error, new RegExp(lookupError));
+    const [run] = await rows(
+      backend,
+      "SELECT status, error_message FROM post_effect_runs WHERE id = ?",
+      [started.run_id],
+    );
+    assert.equal(run.status, "failed");
+    assert.match(run.error_message, new RegExp(lookupError));
+    assert.equal(requestCount, 0, "secret error時はHTTPを一度も送らない");
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("role effectだけがoverride endpoint+keyを使い、default effectはrequest内overrideを無視する", async () => {
+  const defaultRequests = [];
+  const roleRequests = [];
+  const [defaultMock, roleMock] = await Promise.all([
+    startMockServer(async (req, res) => {
+      defaultRequests.push({
+        url: req.url,
+        authorization: req.headers.authorization,
+        body: JSON.parse(await readBody(req)),
+      });
+      writeTypoResponse(res);
+    }),
+    startMockServer(async (req, res) => {
+      roleRequests.push({
+        url: req.url,
+        authorization: req.headers.authorization,
+        body: JSON.parse(await readBody(req)),
+      });
+      writeReviewResponse(res, "-role");
+    }),
+  ]);
+
+  try {
+    const { backend, events, workspace } = makeBackend();
+    await backend.openWorkspace(workspace);
+    await insertScene(backend, "pe-route-review");
+    await insertScene(backend, "pe-route-typo");
+    const settings = aiSettingsWithEndpoints(
+      defaultMock.baseUrl,
+      roleMock.baseUrl,
+    );
+
+    const review = JSON.parse(
+      await backend.startPostEffectRun(
+        {
+          ...singleArgs("pe-route-review", "review-route-role"),
+          model_override: "role-review-model",
+          provider_override: "openai-compatible",
+          endpoint_id_override: "role",
+        },
+        settings,
+        "sk-role-only",
+        null,
+      ),
+    );
+    await waitForRunEvent(events, "post_effect:done", review.run_id);
+
+    const typo = JSON.parse(
+      await backend.startPostEffectRun(
+        {
+          ...singleArgs("pe-route-typo", "typo-route-default"),
+          effect_type: "typo_detection",
+          prompt_version: "typo_detection_v1.2",
+          // typo は role effect ではない。DTOに混入しても既定設定を使う。
+          model_override: "must-not-be-used",
+          provider_override: "openai-compatible",
+          endpoint_id_override: "role",
+        },
+        settings,
+        "sk-default-only",
+        null,
+      ),
+    );
+    await waitForRunEvent(events, "post_effect:done", typo.run_id);
+
+    assert.equal(roleRequests.length, 1);
+    assert.equal(roleRequests[0].url, "/chat/completions");
+    assert.equal(roleRequests[0].authorization, "Bearer sk-role-only");
+    assert.equal(roleRequests[0].body.model, "role-review-model");
+
+    assert.equal(defaultRequests.length, 1);
+    assert.equal(defaultRequests[0].url, "/chat/completions");
+    assert.equal(defaultRequests[0].authorization, "Bearer sk-default-only");
+    assert.equal(defaultRequests[0].body.model, "mock-review-model");
+  } finally {
+    await Promise.all([
+      closeServer(defaultMock.server),
+      closeServer(roleMock.server),
+    ]);
+  }
+});
+
+test("wrong-project abortはregistryを汚染せずmulti runが2scene完走する", async () => {
+  const requestSeen = deferred();
+  const releaseResponse = deferred();
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer(async (req, res) => {
+    requestCount += 1;
+    await readBody(req);
+    if (requestCount === 1) {
+      requestSeen.resolve();
+      await releaseResponse.promise;
+    }
+    writeReviewResponse(res, `-xproj-${requestCount}`);
+  });
+
+  try {
+    const { backend, events, workspace } = makeBackend();
+    await backend.openWorkspace(workspace);
+    await insertScene(backend, "pe-xproj-1");
+    await insertScene(backend, "pe-xproj-2");
+
+    const started = JSON.parse(
+      await withTimeout(
+        backend.startPostEffectRunMulti(
+          multiArgs(["pe-xproj-1", "pe-xproj-2"], "review-multi-xproj"),
+          aiSettings(baseUrl),
+          null,
+          null,
+        ),
+        "wrong-project multi run start",
+        1000,
+      ),
+    );
+    assert.equal(started.from_cache, false);
+    await withTimeout(requestSeen.promise, "wrong-project first HTTP request");
+
+    await backend.abortPostEffectRun(started.run_id, "another-project");
+    releaseResponse.resolve();
+    const done = await waitForRunEvent(
+      events,
+      "post_effect:done",
+      started.run_id,
+    );
+    assert.equal(done.annotation_count, 2);
+    assert.equal(requestCount, 2, "wrong-project abort後も次sceneを処理する");
+
+    const [run] = await rows(
+      backend,
+      "SELECT status FROM post_effect_runs WHERE id = ?",
+      [started.run_id],
+    );
+    assert.equal(run.status, "completed");
+    assert.equal(
+      events.some(
+        (event) =>
+          event.channel === "post_effect:error" &&
+          event.payload.run_id === started.run_id,
+      ),
+      false,
+    );
+  } finally {
     releaseResponse.resolve();
     await closeServer(server);
   }
@@ -280,15 +528,19 @@ test("abortPostEffectRun はmultiとregistryを共有し、abort勝利時はcanc
     await insertScene(backend, "pe-abort-2");
 
     const started = JSON.parse(
-      await backend.startPostEffectRunMulti(
-        multiArgs(["pe-abort-1", "pe-abort-2"]),
-        aiSettings(baseUrl),
-        null,
-        null,
+      await withTimeout(
+        backend.startPostEffectRunMulti(
+          multiArgs(["pe-abort-1", "pe-abort-2"]),
+          aiSettings(baseUrl),
+          null,
+          null,
+        ),
+        "abort multi run start",
+        1000,
       ),
     );
     assert.equal(started.from_cache, false);
-    await requestSeen.promise;
+    await withTimeout(requestSeen.promise, "abort first HTTP request");
 
     await backend.abortPostEffectRun(started.run_id, "default-project");
     releaseResponse.resolve();
