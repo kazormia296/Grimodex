@@ -30,6 +30,7 @@
  */
 import { beforeEach, describe, it, expect } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { REGION_CLIP_PATH, type RegionChromeId } from "./layoutAnimation";
 import { useLayoutStore } from "./layoutStore";
@@ -71,6 +72,46 @@ describe("AnimatedRegionChrome open clip-path invariant", () => {
     );
     expect(node).not.toBeNull();
     expect(getComputedStyle(node!).opacity).toBe("1");
+  });
+
+  it("restores enter motion after startup hydration on the same StrictMode instance", async () => {
+    useLayoutStore.setState({ initialized: false });
+    const child = <div>child</div>;
+    const view = (open: boolean) => (
+      <StrictMode>
+        <AnimatedRegionChrome region="left" open={open}>
+          {child}
+        </AnimatedRegionChrome>
+      </StrictMode>
+    );
+    const { rerender, container } = render(view(false));
+
+    act(() => {
+      useLayoutStore.setState({ initialized: true });
+      rerender(view(true));
+    });
+    const hydrated = container.querySelector<HTMLElement>(
+      '[data-animated-region="left"]',
+    );
+    expect(hydrated).not.toBeNull();
+    expect(getComputedStyle(hydrated!).opacity).toBe("1");
+
+    rerender(view(false));
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-animated-region="left"]'),
+      ).toBeNull();
+    });
+
+    rerender(view(true));
+    const reopened = container.querySelector<HTMLElement>(
+      '[data-animated-region="left"]',
+    );
+    expect(reopened).not.toBeNull();
+    expect(parseFloat(getComputedStyle(reopened!).opacity)).toBeLessThan(1);
+    await waitFor(() => {
+      expect(getComputedStyle(reopened!).opacity).toBe("1");
+    });
   });
 
   it.each(REGIONS)(
