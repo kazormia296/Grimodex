@@ -1137,13 +1137,26 @@ export type ShellCommandHandlers = Readonly<
   Record<string, (args: CommandArgs) => Promise<unknown>>
 >;
 
-/** main-TS 実装コマンド名（§4.3 の表 + Phase 3 追補の export / logs）。 */
+/**
+ * main-TS 実装コマンド名（§4.3 の表 + Phase 3 追補の export / logs +
+ * バッチ2 の external_mount）。external_mount 系は ipc ルーターが
+ * ExternalMountManager から注入する（registry/watcher が invoke を跨いで
+ * 持続するため per-invoke の buildShellCommandHandlers には含めない）。
+ * external_mount_list は FE 到達不能な dead path のため移植せず
+ * IPC_UNIMPLEMENTED に落とす（バッチ1 の dead code 方針と一致）。
+ */
 export const SHELL_COMMAND_NAMES: readonly string[] = [
   "set_window_vibrancy",
   "get_license_state",
   "export_save_text",
   "export_save_bytes",
   "open_log_dir",
+  "external_mount_register",
+  "external_mount_unregister",
+  "external_mount_read_file",
+  "external_mount_write_file",
+  "external_mount_file_mtime",
+  "external_mount_scan",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

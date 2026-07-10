@@ -1,7 +1,7 @@
 # Grimodex Electron移行 Phase 3 設計書 — ネイティブ再結線
 
 - 日付: 2026-07-10
-- ステータス: 実装中（バッチ1a〜1c 完了。以降のバッチは計画）
+- ステータス: 実装中（バッチ1 全完了・PR #322 マージ済み / バッチ2 完了。バッチ3〜5 は計画）
 - 正本: `docs/Grimodex_Electron移行検討.md`（移行判断・全体フェーズ）/ `docs/Grimodex_Electron移行Phase2設計書.md`（シェル構築）
 - データ正本: `docs/Grimodex_Electron移行Phase3_優先順位表.md`（バッチ提案・イベント配線順）と `docs/Grimodex_Electron移行Phase3_コマンド台帳.json`（全 145 コマンドの静的棚卸し + FE コールサイト分析）
 - 積み先: ブランチ `feat/electron-phase3`
@@ -75,13 +75,47 @@ FE 側で db_execute へ寄せる選択肢もあるが、**XPROJ ガード持ち
 （plot_thread_link_* / post_effect / agent_event）は必ずサーバサイド維持**
 （db_execute への分解は TOCTOU）。
 
-### バッチ 2: external_mount 一族（P0 残り、main-TS + chokidar）
+### バッチ 2: external_mount 一族（P0 残り、main-TS + chokidar）【完了】
 
 `external_mount_*` 7 コマンドは Rust の `notify` watcher に依存する。napi へ持ち込む
-より **main-TS + chokidar で再実装**が自然（fs 監視は Node の領分）。`external-mount://`
+より **main-TS + chokidar で再実装**した（fs 監視は Node の領分）。`external-mount://`
 ×4 イベントは main → 全窓 broadcast（Phase 2 のイベントバスの最初の実戦投入）。
 `resolve_under_root` のパス検査・tmp+rename アトミック書込・32MiB 上限（RUST-DOS-01）・
 overlap 検査を TS へ忠実移植。バッチ1 と依存なしで並行可。
+
+実装（ブランチ `feat/electron-phase3-batch2-external-mount`）:
+
+- `electron/main/externalMountFs.ts`（純 Node）: io/path/scan/hash +
+  `reject_unsafe_workspace_path`（PIO-1 / is_system_directory）を忠実移植。
+  実 fs 単体テストで traversal・symlink escape・overlap 境界・32MiB 上限・
+  depth/件数/バイト上限・CRLF 正規化を gate。
+- `electron/main/externalMount.ts`（ステート機械）: registry + overlap + rollback +
+  chokidar watcher + 500ms debounce + broadcast。`ExternalMountManager` を index.ts で
+  1 個生成し、その shell ハンドラを invoke ルーターへ merge（`registerIpcRouter` の
+  `extraShellHandlers`）。`will-quit` で `disposeAll`。
+- **FE / preload 変更ゼロ**: `features/external-mount/api.ts` は `invoke` を無条件呼び
+  （`isTauri()` ゲート無し）、event は allowlist 駆動の汎用バス経由で 4ch とも既登録。
+- **dead code**: `external_mount_list` は FE 到達不能（`listRegisteredMounts` に live
+  caller 無し）のため移植せず IPC_UNIMPLEMENTED に落とす（バッチ1f の dead-code 方針と一致）。
+
+**chokidar 設定と notify との差分**（詳細は externalMount.ts 冒頭コメント）:
+
+- `ignoreInitial: true` 必須（初期一覧は register が返す scan で渡す。無いと既存 .md 洪水化）。
+- `followSymlinks: false`（Rust の symlink 非追従と一致）。
+- `atomic: false` 必須（chokidar 既定 true をあえて無効化）。`atomic` は unlink を遅延させ
+  rename で **add が unlink より先**に届く。FE の rename 再構成（`mountManager.ts` の
+  content-hash + `recentDeletes`）は removed→added 順で初めて node identity を保つため、
+  inotify 由来の unlink→add 順を素通しさせる。Grimodex 自身の atomic writeback は FE 側
+  `isMuted` 済みなので畳む必要なし。
+- **native `renamed` は main から emit しない**。unlink+add の時間ペアリングは content 照合
+  なしでは無関係な delete+create を誤ペア化する data-integrity リスクのため不採用。FE の
+  content-hash 照合が安全な担当層。既知差分 2 件（純粋 rename は差分なし）:
+  ① dirty rename で `fileDeletedExternally` 警告トースト 1 回、
+  ② 「外部編集 → 取り込み前に同ファイル rename」の競合で hash 不一致 → 新ノード作成 +
+     旧ノード archive（本文は無事だが node identity リセット）。稀な編集直後 rename のみ。
+- 実 chokidar 統合テスト（`externalMount.integration.test.ts`）で ignoreInitial・
+  add/change/unlink 写像・rename の removed→added 順（厳密順序 assert は inotify=linux 限定、
+  macOS fsevents / Windows は Phase 4 実機検証）を gate。
 
 ### バッチ 3: AI 系 — HTTP + keyring + abort + ストリームイベント
 

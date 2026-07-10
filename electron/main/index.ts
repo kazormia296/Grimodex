@@ -11,7 +11,8 @@ import path from "node:path";
 import { app } from "electron";
 
 import { initBackend } from "./backend.js";
-import { registerEventBus } from "./events.js";
+import { registerEventBus, broadcastEvent } from "./events.js";
+import { createExternalMountManager } from "./externalMount.js";
 import { registerIpcRouter } from "./ipc.js";
 import {
   registerAppProtocolHandler,
@@ -62,7 +63,15 @@ if (!gotSingleInstanceLock) {
     }
     // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
     const backend = initBackend();
-    registerIpcRouter(backend);
+    // external_mount（§2 バッチ2）: registry + chokidar watcher を持つ常駐
+    // マネージャを 1 個生成し、その shell コマンドハンドラを invoke ルーターへ
+    // 注入する。watcher イベントは broadcastEvent で全窓へ配信（external-mount://
+    // の全窓 broadcast 契約）。
+    const externalMount = createExternalMountManager(broadcastEvent);
+    app.on("will-quit", () => {
+      void externalMount.disposeAll();
+    });
+    registerIpcRouter(backend, externalMount.handlers);
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は

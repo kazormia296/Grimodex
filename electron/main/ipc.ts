@@ -19,6 +19,7 @@ import type {
   CommandArgs,
   Envelope,
   NapiBackendLike,
+  ShellCommandHandlers,
 } from "../shared/ipcContract.js";
 import {
   buildShellCommandHandlers,
@@ -33,8 +34,15 @@ function isRecord(value: unknown): value is CommandArgs {
 /**
  * app ready 後に 1 回だけ呼ぶ。`backend` は .node ロード失敗時 null
  * （napi コマンドは IPC_BACKEND_UNAVAILABLE の明示エラーで落ちる）。
+ * `extraShellHandlers` は per-invoke に再生成できないステートフルな main-TS
+ * コマンド（external_mount の registry/watcher など）を単一インスタンスから
+ * 注入するための拡張点。invoke ごとの `buildShellCommandHandlers` の結果へ
+ * merge する（キー衝突なし = 追加分のみ）。
  */
-export function registerIpcRouter(backend: NapiBackendLike | null): void {
+export function registerIpcRouter(
+  backend: NapiBackendLike | null,
+  extraShellHandlers: ShellCommandHandlers = {},
+): void {
   ipcMain.handle(
     IPC.invoke,
     async (event, cmd: unknown, args: unknown): Promise<Envelope> => {
@@ -47,7 +55,7 @@ export function registerIpcRouter(backend: NapiBackendLike | null): void {
       const win = BrowserWindow.fromWebContents(event.sender);
       const envelope = await dispatchInvoke(cmd, isRecord(args) ? args : {}, {
         backend,
-        shell: buildShellCommandHandlers(win),
+        shell: { ...buildShellCommandHandlers(win), ...extraShellHandlers },
       });
       if (
         !envelope.ok &&
