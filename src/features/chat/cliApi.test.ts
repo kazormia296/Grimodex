@@ -112,6 +112,33 @@ describe("chat/cliApi", () => {
     );
   });
 
+  it("error eventとinvoke rejectが同じ失敗を運んでもonErrorは一度だけ呼ぶ", async () => {
+    let rejectInvoke!: (cause: Error) => void;
+    invokeMock.mockImplementationOnce(
+      async () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectInvoke = reject;
+        }),
+    );
+    const onError = vi.fn();
+    const cleanup = await sendCliChatStream(
+      { cli: "claude", prompt: "hello" },
+      {
+        onTextDelta: vi.fn(),
+        onThinkingDelta: vi.fn(),
+        onDone: vi.fn(),
+        onError,
+      },
+    );
+
+    emit("cli:stream-error", { message: "spawn failed" });
+    rejectInvoke(new Error("spawn failed"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith("spawn failed");
+    cleanup();
+  });
+
   it("abort/detect/testは正確なcommand shapeを使う", async () => {
     invokeMock
       .mockResolvedValueOnce(undefined)

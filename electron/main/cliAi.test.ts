@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCliInvocation,
   createCliAiManager,
+  createNodeCliProcessRunner,
   detectCliBinaryMain,
   MAX_CLI_LINE_BYTES,
   type CliCommandSpec,
@@ -57,6 +58,7 @@ class FakeRunner implements CliProcessRunner {
   };
   nextRunning = new FakeRunningProcess();
   startError: Error | null = null;
+  readonly disposeAll = vi.fn<() => void>();
 
   async run(
     spec: CliCommandSpec,
@@ -88,6 +90,8 @@ function createHarness() {
       runner,
       platform: "linux",
       isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      authorizeExecutable: async () => true,
       detectBinary,
       forceKillAfterMs: 20,
     },
@@ -200,6 +204,41 @@ describe("CliAiManager", () => {
     });
     expect(runner.runCalls.at(-1)?.options.timeoutMs).toBeLessThanOrEqual(
       10_000,
+    );
+  });
+
+  it("未検出の絶対pathはmain側authorizationなしに実行しない", async () => {
+    const runner = new FakeRunner();
+    const denied = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+    });
+    await expect(
+      denied.handlers.test_cli_connection({
+        binaryPath: "/tmp/claude",
+      }),
+    ).rejects.toThrow("CLI executable was not authorized");
+    expect(runner.runCalls).toHaveLength(0);
+
+    const authorizeExecutable = vi.fn(async () => true);
+    const allowed = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      authorizeExecutable,
+    });
+    runner.runResult.stdout = "claude 1.2.3\n";
+    await expect(
+      allowed.handlers.test_cli_connection({
+        binaryPath: "/opt/custom/claude",
+      }),
+    ).resolves.toBe("claude 1.2.3");
+    expect(authorizeExecutable).toHaveBeenCalledWith(
+      "claude",
+      "/opt/custom/claude",
     );
   });
 
@@ -337,6 +376,54 @@ describe("CliAiManager", () => {
     ]);
   });
 
+  it("spawn準備中のabortも失わず、childを起動せずstopped Doneにする", async () => {
+    const events: EmittedEvent[] = [];
+    const runner = new FakeRunner();
+    let resolveIsFile!: (value: boolean) => void;
+    const isFile = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveIsFile = resolve;
+        }),
+    );
+    const manager = createCliAiManager(
+      (channel, payload) => events.push({ channel, payload }),
+      {
+        runner,
+        platform: "linux",
+        isFile,
+        realPath: async (candidate) => candidate,
+        authorizeExecutable: async () => true,
+        forceKillAfterMs: 20,
+      },
+    );
+
+    const send = manager.handlers.send_cli_chat_stream({
+      payload: {
+        cli: "claude",
+        binaryPath: "/usr/local/bin/claude",
+        prompt: "hello",
+      },
+    });
+    await vi.waitFor(() => expect(isFile).toHaveBeenCalledOnce());
+    await manager.handlers.abort_cli_chat_stream({});
+    resolveIsFile(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(runner.startCalls).toHaveLength(0);
+    await expect(send).resolves.toBeNull();
+    expect(events).toEqual([
+      {
+        channel: "cli:stream-done",
+        payload: {
+          stop_reason: "stopped",
+          input_tokens: null,
+          output_tokens: null,
+        },
+      },
+    ]);
+  });
+
   it("spawn/非zero/巨大lineはerror eventとinvoke rejectの両方にする", async () => {
     const spawnHarness = createHarness();
     spawnHarness.runner.startError = new Error("ENOENT");
@@ -380,6 +467,77 @@ describe("CliAiManager", () => {
     await expect(oversized).rejects.toThrow("CLI stdout line exceeds limit");
   });
 
+  it("stream全体のbyte上限を超えたchildを停止してrejectする", async () => {
+    const events: EmittedEvent[] = [];
+    const runner = new FakeRunner();
+    const manager = createCliAiManager(
+      (channel, payload) => events.push({ channel, payload }),
+      {
+        runner,
+        platform: "linux",
+        isFile: async () => true,
+        realPath: async (candidate) => candidate,
+        authorizeExecutable: async () => true,
+        maxStreamBytes: 64,
+        maxStreamLines: 100,
+        forceKillAfterMs: 20,
+      },
+    );
+    const send = manager.handlers.send_cli_chat_stream({
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+    runner.nextRunning.stdout.write("{}\n".repeat(32));
+    runner.nextRunning.finish();
+
+    await expect(send).rejects.toThrow("CLI stdout exceeds total byte limit");
+    expect(events.at(-1)?.channel).toBe("cli:stream-error");
+  });
+
+  it("stream全体のline上限を超えたchildを停止してrejectする", async () => {
+    const runner = new FakeRunner();
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      authorizeExecutable: async () => true,
+      maxStreamBytes: 1024,
+      maxStreamLines: 2,
+      forceKillAfterMs: 20,
+    });
+    const send = manager.handlers.send_cli_chat_stream({
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
+    runner.nextRunning.stdout.write("{}\n{}\n{}\n");
+    runner.nextRunning.finish();
+
+    await expect(send).rejects.toThrow("CLI stdout exceeds line limit");
+  });
+
+  it("main側deadlineでhang childを停止してtimeoutとしてrejectする", async () => {
+    const runner = new FakeRunner();
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      authorizeExecutable: async () => true,
+      streamTimeoutMs: 20,
+      forceKillAfterMs: 20,
+    });
+    const send = manager.handlers.send_cli_chat_stream({
+      payload: { cli: "claude", prompt: "hello" },
+    });
+    await vi.waitFor(() =>
+      expect(runner.nextRunning.terminate).toHaveBeenCalledWith("SIGTERM"),
+    );
+    runner.nextRunning.finish(null, "SIGTERM");
+
+    await expect(send).rejects.toThrow("CLI stream timed out after 20ms");
+  });
+
   it("disposeAllはactive childを停止する", async () => {
     const { manager, runner } = createHarness();
     const send = manager.handlers.send_cli_chat_stream({
@@ -388,9 +546,41 @@ describe("CliAiManager", () => {
     await vi.waitFor(() => expect(runner.startCalls).toHaveLength(1));
     manager.disposeAll();
     expect(runner.nextRunning.terminate).toHaveBeenCalledWith("SIGTERM");
+    expect(runner.nextRunning.terminate).toHaveBeenCalledWith("SIGKILL");
+    expect(runner.disposeAll).toHaveBeenCalledOnce();
     runner.nextRunning.finish(null, "SIGTERM");
     await send;
   });
+});
+
+describe("createNodeCliProcessRunner", () => {
+  it(
+    "disposeAllは実childを即時回収する",
+    async () => {
+      const runner = createNodeCliProcessRunner(process.platform);
+      const running = runner.start({
+        executable: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)",
+        ],
+      });
+      await new Promise<void>((resolve, reject) => {
+        running.stdout.once("data", () => resolve());
+        running.stdout.once("error", reject);
+      });
+
+      if (!runner.disposeAll) {
+        running.terminate("SIGKILL");
+        await running.completion;
+        throw new Error("CliProcessRunner.disposeAll is missing");
+      }
+      runner.disposeAll();
+      const result = await running.completion;
+      expect(result.exitCode !== 0 || result.signal !== null).toBe(true);
+    },
+    10_000,
+  );
 });
 
 describe("detectCliBinaryMain", () => {
