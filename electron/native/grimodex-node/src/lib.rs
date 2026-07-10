@@ -26,6 +26,7 @@ use napi::threadsafe_function::ThreadSafeCallContext;
 use napi::JsFunction;
 use napi_derive::napi;
 
+use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::events::EventSink;
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
@@ -435,6 +436,58 @@ impl Backend {
             let families = grimodex_fonts::list_system_fonts();
             serde_json::to_string(&families)
                 .map_err(|e| Error::from_reason(format!("failed to serialize fonts: {e}")))
+        })
+        .await
+        .map_err(join_err_to_napi)?
+    }
+
+    /// Codex 名寄せマッチャの再構築 (commands/codex_matching.rs の写像 —
+    /// 本体は grimodex-core::codex_matching を Tauri と共用)。`entries` は
+    /// camelCase の MatchEntry 配列 (rustMatcher.ts が entryType/excludedAliases
+    /// で送る)。Aho-Corasick 構築は CPU バウンドなので spawn_blocking。
+    /// rebuild と match_text は AppState.codex_matcher の**同一インスタンス**を
+    /// 見る (Tauri の CodexMatcherState 相当)。
+    #[napi]
+    pub async fn codex_rebuild_matcher(&self, entries: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        napi::tokio::task::spawn_blocking(move || -> Result<()> {
+            let entries: Vec<MatchEntry> =
+                from_wire("entries", entries).map_err(app_err_to_napi)?;
+            let matcher = CachedMatcher::build(&entries)
+                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            let mut guard = state
+                .codex_matcher
+                .lock()
+                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            *guard = Some(matcher);
+            Ok(())
+        })
+        .await
+        .map_err(join_err_to_napi)?
+    }
+
+    /// `text` を現在のマッチャで名寄せする (commands/codex_matching.rs の写像)。
+    /// マッチャ未構築時は空配列 (Tauri 実装と同一の fail-soft)。高頻度 IPC だが
+    /// 作法統一のため async + spawn_blocking。
+    /// 返り値: `CodexMatch` (UTF-16 offset、camelCase) 配列の JSON 文字列。
+    #[napi]
+    pub async fn codex_match_text(
+        &self,
+        text: String,
+        exclude_entry_ids: Vec<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        napi::tokio::task::spawn_blocking(move || -> Result<String> {
+            let guard = state
+                .codex_matcher
+                .lock()
+                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            let matches: Vec<CodexMatch> = match guard.as_ref() {
+                None => vec![],
+                Some(matcher) => matcher.match_text(&text, &exclude_entry_ids),
+            };
+            serde_json::to_string(&matches)
+                .map_err(|e| Error::from_reason(format!("failed to serialize matches: {e}")))
         })
         .await
         .map_err(join_err_to_napi)?

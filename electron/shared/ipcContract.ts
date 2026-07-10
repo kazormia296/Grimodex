@@ -262,6 +262,8 @@ export interface NapiBackendLike {
   ): Promise<string>;
   segmentBunsetsu(text: string): Promise<string>;
   listSystemFonts(): Promise<string>;
+  codexRebuildMatcher(entries: unknown): Promise<void>;
+  codexMatchText(text: string, excludeEntryIds: string[]): Promise<string>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
 }
 
@@ -511,6 +513,33 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   list_system_fonts: {
     run: async (b) => parseWire(await b.listSystemFonts()),
+  },
+  // Codex 名寄せマッチャ（Phase 3 バッチ1c — grimodex-core::codex_matching を
+  // Tauri と共用）。Tauri 側 fn 署名（src-tauri/src/codex_matching.rs）:
+  //   codex_rebuild_matcher(entries: Vec<MatchEntry>) — {entries} を素通し
+  //   codex_match_text(text, exclude_entry_ids) — camelCase excludeEntryIds
+  codex_rebuild_matcher: {
+    // unit 返りコマンドは null を resolve（ワイヤ同形）
+    run: async (b, a) => {
+      await b.codexRebuildMatcher(
+        requirePresent(a, "entries", "codex_rebuild_matcher"),
+      );
+      return null;
+    },
+  },
+  codex_match_text: {
+    run: async (b, a) => {
+      const exclude = a.excludeEntryIds;
+      const excludeIds = Array.isArray(exclude)
+        ? exclude.filter((e): e is string => typeof e === "string")
+        : [];
+      return parseWire(
+        await b.codexMatchText(
+          requireString(a, "text", "codex_match_text"),
+          excludeIds,
+        ),
+      );
+    },
   },
 };
 

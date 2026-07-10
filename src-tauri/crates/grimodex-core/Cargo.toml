@@ -5,6 +5,9 @@ edition = "2021"
 description = "Shared Grimodex write primitives (change_events, policy, undo-journal)"
 
 [dependencies]
+# Codex 名寄せマッチャの Aho-Corasick（Electron 移行 Phase 3 で src-tauri から
+# 抽出。src-tauri 本体と同バージョン表記に揃える）。
+aho-corasick = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

@@ -17,6 +17,7 @@ pub fn commit_or_rollback(conn: &rusqlite::Connection) -> anyhow::Result<()> {
 }
 
 pub mod change_events;
+pub mod codex_matching;
 pub mod license;
 pub mod pm_text;
 pub mod policy;

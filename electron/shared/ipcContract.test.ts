@@ -109,6 +109,15 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "listSystemFonts",
       Promise.resolve('["Noto Sans JP"]'),
     ) as never,
+    // codex 名寄せマッチャ（Phase 3 バッチ1c）
+    codexRebuildMatcher: record(
+      "codexRebuildMatcher",
+      Promise.resolve(undefined),
+    ) as never,
+    codexMatchText: record(
+      "codexMatchText",
+      Promise.resolve('[{"entryId":"c1","entryName":"太郎","entryType":"character","from":0,"to":2}]'),
+    ) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
   };
@@ -500,8 +509,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 9）", () => {
+  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 11）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
+      "codex_match_text",
+      "codex_rebuild_matcher",
       "db_execute",
       "db_execute_batch",
       "fts_optimize",
@@ -523,6 +534,44 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "trash_bin_list",
       "trash_bin_prune",
       "validate_workspace_path",
+    ]);
+  });
+
+  it("codex_rebuild_matcher は {entries} を素通しし null を resolve する", async () => {
+    const { backend, calls } = fakeBackend();
+    const entries = [
+      { id: "c1", name: "太郎", entryType: "character", aliases: [], excludedAliases: [] },
+    ];
+    const env = await dispatchInvoke(
+      "codex_rebuild_matcher",
+      { entries },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: true, value: null });
+    expect(calls).toEqual([{ method: "codexRebuildMatcher", args: [entries] }]);
+  });
+
+  it("codex_match_text は text + excludeEntryIds を写像し matches を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "codex_match_text",
+      { text: "太郎は走った", excludeEntryIds: ["c2"] },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({
+      ok: true,
+      value: [
+        {
+          entryId: "c1",
+          entryName: "太郎",
+          entryType: "character",
+          from: 0,
+          to: 2,
+        },
+      ],
+    });
+    expect(calls).toEqual([
+      { method: "codexMatchText", args: ["太郎は走った", ["c2"]] },
     ]);
   });
 

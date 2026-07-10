@@ -129,6 +129,22 @@ export declare class Backend {
    */
   listSystemFonts(): Promise<string>
   /**
+   * Codex 名寄せマッチャの再構築 (commands/codex_matching.rs の写像 —
+   * 本体は grimodex-core::codex_matching を Tauri と共用)。`entries` は
+   * camelCase の MatchEntry 配列 (rustMatcher.ts が entryType/excludedAliases
+   * で送る)。Aho-Corasick 構築は CPU バウンドなので spawn_blocking。
+   * rebuild と match_text は AppState.codex_matcher の**同一インスタンス**を
+   * 見る (Tauri の CodexMatcherState 相当)。
+   */
+  codexRebuildMatcher(entries: any): Promise<void>
+  /**
+   * `text` を現在のマッチャで名寄せする (commands/codex_matching.rs の写像)。
+   * マッチャ未構築時は空配列 (Tauri 実装と同一の fail-soft)。高頻度 IPC だが
+   * 作法統一のため async + spawn_blocking。
+   * 返り値: `CodexMatch` (UTF-16 offset、camelCase) 配列の JSON 文字列。
+   */
+  codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>
+  /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
    * イベント (`backend:ready`) は登録時に emit 順で flush される。

@@ -83,12 +83,17 @@ impl EventSink for EventQueue {
 }
 
 /// `#[napi]` class `Backend` が Arc で保持する全状態 (設計書 §4.2)。
-/// Tauri の `app.manage(WorkspaceState)` / `app.manage(GlobalSettingsPath)` の
-/// napi 版。Phase 3 で abort フラグ / caches / matcher をここへ拡張する。
+/// Tauri の `app.manage(WorkspaceState)` / `app.manage(GlobalSettingsPath)` /
+/// `app.manage(CodexMatcherState)` の napi 版。Phase 3 で abort フラグ /
+/// caches を順次ここへ拡張する。
 pub struct AppState {
     pub ws: WorkspaceState,
     pub gs: GlobalSettingsPath,
     pub events: EventQueue,
+    /// Codex 名寄せマッチャ (Tauri の CodexMatcherState 相当 — Phase 3 バッチ1c)。
+    /// rebuild 側と match 側が**同一インスタンス**を見ることが正しさの条件
+    /// (別インスタンス化すると「rebuild したのに match が空」になる)。
+    pub codex_matcher: Mutex<Option<grimodex_core::codex_matching::CachedMatcher>>,
 }
 
 impl AppState {
@@ -113,6 +118,7 @@ impl AppState {
                 write_lock: Mutex::new(()),
             },
             events: EventQueue::new(),
+            codex_matcher: Mutex::new(None),
         })
     }
 }
