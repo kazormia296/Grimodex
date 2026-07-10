@@ -28,6 +28,7 @@ import type {
   Envelope,
   ShellCommandHandlers,
 } from "../shared/ipcContract.js";
+import { FsScope } from "./fsScope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Tauri コマンド互換（grim:invoke ルーターから呼ばれる）
@@ -132,9 +133,17 @@ export interface PanelWindowDelegate {
   focusByLabel(label: string): boolean;
 }
 
-/** ブリッジ native API（§5.4 の dialog / fs / openExternal / getVersion / zoom / windowControls / panelWindow）。 */
+/**
+ * ブリッジ native API（§5.4 の dialog / fs / openExternal / getVersion /
+ * zoom / windowControls / panelWindow）。
+ *
+ * fs はダイアログ許可制（fsScope.ts）: dialog.openFolder / openFile で
+ * ユーザーが選んだパスだけがスコープに入り、readTextFile / readDir は
+ * スコープ外を FS_SCOPE_DENIED で拒否する。
+ */
 export function registerShellBridgeHandlers(
   panelWindows?: PanelWindowDelegate,
+  fsScope: FsScope = new FsScope(),
 ): void {
   handleWithEnvelope(IPC.windowControl, (event, op) => {
     const win = senderWindow(event);
@@ -166,7 +175,9 @@ export function registerShellBridgeHandlers(
     const result = win
       ? await dialog.showOpenDialog(win, options)
       : await dialog.showOpenDialog(options);
-    return result.canceled ? null : (result.filePaths[0] ?? null);
+    const picked = result.canceled ? null : (result.filePaths[0] ?? null);
+    if (picked !== null) await fsScope.allowDir(picked);
+    return picked;
   });
 
   handleWithEnvelope(IPC.dialogOpenFile, async (event, filter) => {
@@ -183,15 +194,25 @@ export function registerShellBridgeHandlers(
     const result = win
       ? await dialog.showOpenDialog(win, options)
       : await dialog.showOpenDialog(options);
-    return result.canceled ? null : (result.filePaths[0] ?? null);
+    const picked = result.canceled ? null : (result.filePaths[0] ?? null);
+    if (picked !== null) await fsScope.allowFile(picked);
+    return picked;
   });
 
-  handleWithEnvelope(IPC.fsReadTextFile, (_event, path) =>
-    readFile(requireStringArg(path, "path"), "utf8"),
-  );
+  handleWithEnvelope(IPC.fsReadTextFile, async (_event, path) => {
+    const real = await fsScope.assertReadable(
+      requireStringArg(path, "path"),
+      { asFile: true },
+    );
+    return readFile(real, "utf8");
+  });
 
   handleWithEnvelope(IPC.fsReadDir, async (_event, path) => {
-    const entries = await readdir(requireStringArg(path, "path"), {
+    const real = await fsScope.assertReadable(
+      requireStringArg(path, "path"),
+      { asFile: false },
+    );
+    const entries = await readdir(real, {
       withFileTypes: true,
     });
     // plugin-fs の DirEntry と同形（src/lib/fs.ts）

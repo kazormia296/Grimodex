@@ -115,11 +115,24 @@ describe("openExternal（scheme 再検証 = safeUrl.ts と二重防御）", () =
   );
 });
 
-describe("fs ブリッジ", () => {
-  it("readTextFile / readDir が実ファイルを読める", async () => {
+describe("fs ブリッジ（ダイアログ許可制スコープ — fsScope.ts）", () => {
+  /** dialog.openFolder をモックで成功させてスコープを付与する。 */
+  async function grantFolder(dir: string): Promise<void> {
+    fromWebContentsMock.mockReturnValue(null);
+    showOpenDialogMock.mockResolvedValueOnce({
+      canceled: false,
+      filePaths: [dir],
+    });
+    const picked = await invokeBridge(IPC.dialogOpenFolder, { sender: {} });
+    expect(picked).toEqual({ ok: true, value: dir });
+  }
+
+  it("dialog.openFolder で選んだフォルダ配下は readTextFile / readDir が読める", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-fs-"));
     try {
       writeFileSync(path.join(dir, "a.txt"), "こんにちは", "utf8");
+      await grantFolder(dir);
+
       const text = await invokeBridge(
         IPC.fsReadTextFile,
         { sender: {} },
@@ -139,16 +152,72 @@ describe("fs ブリッジ", () => {
     }
   });
 
-  it("存在しないファイルはメッセージのみの envelope エラー（throw しない）", async () => {
-    const env = await invokeBridge(
-      IPC.fsReadTextFile,
-      { sender: {} },
-      "/no/such/file.txt",
-    );
-    expect(env.ok).toBe(false);
-    if (!env.ok) {
-      expect(env.error).toContain("ENOENT");
-      expect(env.error.startsWith("Error:")).toBe(false);
+  it("dialog.openFile で選んだ単一ファイルは readTextFile が読める", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-fs-"));
+    try {
+      writeFileSync(path.join(dir, "pick.md"), "# picked", "utf8");
+      fromWebContentsMock.mockReturnValue(null);
+      showOpenDialogMock.mockResolvedValueOnce({
+        canceled: false,
+        filePaths: [path.join(dir, "pick.md")],
+      });
+      const picked = await invokeBridge(IPC.dialogOpenFile, { sender: {} }, {
+        name: "Markdown",
+        extensions: ["md"],
+      });
+      expect(picked).toEqual({ ok: true, value: path.join(dir, "pick.md") });
+
+      const text = await invokeBridge(
+        IPC.fsReadTextFile,
+        { sender: {} },
+        path.join(dir, "pick.md"),
+      );
+      expect(text).toEqual({ ok: true, value: "# picked" });
+
+      // file grant は readDir を許可しない
+      const listing = await invokeBridge(IPC.fsReadDir, { sender: {} }, dir);
+      expect(listing.ok).toBe(false);
+      if (!listing.ok) expect(listing.error).toContain("FS_SCOPE_DENIED:");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ダイアログで許可していないパスは FS_SCOPE_DENIED の envelope エラー", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-fs-deny-"));
+    try {
+      writeFileSync(path.join(dir, "secret.txt"), "ひみつ", "utf8");
+      const env = await invokeBridge(
+        IPC.fsReadTextFile,
+        { sender: {} },
+        path.join(dir, "secret.txt"),
+      );
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain("FS_SCOPE_DENIED:");
+        expect(env.error.startsWith("Error:")).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("スコープ内の不存在ファイルは従来どおり ENOENT の envelope エラー", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-fs-"));
+    try {
+      await grantFolder(dir);
+      const env = await invokeBridge(
+        IPC.fsReadTextFile,
+        { sender: {} },
+        path.join(dir, "no-such-file.txt"),
+      );
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain("ENOENT");
+        expect(env.error.startsWith("Error:")).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
