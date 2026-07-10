@@ -272,6 +272,78 @@ impl Backend {
         .await
     }
 
+    /// FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
+    /// `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
+    /// タイミングで呼ばれる fail-soft コマンド。
+    #[napi]
+    pub async fn fts_optimize(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| db.fts_optimize())).await
+    }
+
+    /// FTS 全再構築 (設定画面のデータカテゴリから明示実行)。
+    #[napi]
+    pub async fn fts_rebuild(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| db.fts_rebuild())).await
+    }
+
+    /// 英語 FTS の再構築 (英語プロジェクト作成時に fail-soft で呼ばれる)。
+    #[napi]
+    pub async fn fts_rebuild_en(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| db.rebuild_en_fts())).await
+    }
+
+    /// FTS 検索 (チャット recall / コマンドセンター検索 — 編集ループ常連)。
+    /// 返り値: 行オブジェクト配列の JSON 文字列。
+    #[napi]
+    pub async fn fts_search(
+        &self,
+        project_id: String,
+        query: String,
+        scope: String,
+        limit: u32,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = db.search_fts(&project_id, &query, &scope, limit)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    /// 整合性チェック (IntegrityCheckDialog)。
+    /// 返り値: レポート object の JSON 文字列。
+    #[napi]
+    pub async fn integrity_check(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let report = db.integrity_check()?;
+                Ok(serde_json::to_string(&report)?)
+            })
+        })
+        .await
+    }
+
+    /// 整合性修復 (IntegrityCheckDialog — 長時間になりうるが spawn_blocking
+    /// なので Node main thread は塞がない)。
+    /// 返り値: レポート object の JSON 文字列。
+    #[napi]
+    pub async fn repair_integrity(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let report = db.repair_integrity()?;
+                Ok(serde_json::to_string(&report)?)
+            })
+        })
+        .await
+    }
+
     /// main 起動時に 1 回登録する (§7.1)。コールバックは
     /// `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
     /// イベント (`backend:ready`) は登録時に emit 順で flush される。

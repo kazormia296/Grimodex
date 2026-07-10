@@ -81,6 +81,32 @@ export declare class Backend {
    */
   trashBinPrune(projectId: string, retentionDays: number, maxCount: number): Promise<string>
   /**
+   * FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
+   * `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
+   * タイミングで呼ばれる fail-soft コマンド。
+   */
+  ftsOptimize(): Promise<void>
+  /** FTS 全再構築 (設定画面のデータカテゴリから明示実行)。 */
+  ftsRebuild(): Promise<void>
+  /** 英語 FTS の再構築 (英語プロジェクト作成時に fail-soft で呼ばれる)。 */
+  ftsRebuildEn(): Promise<void>
+  /**
+   * FTS 検索 (チャット recall / コマンドセンター検索 — 編集ループ常連)。
+   * 返り値: 行オブジェクト配列の JSON 文字列。
+   */
+  ftsSearch(projectId: string, query: string, scope: string, limit: number): Promise<string>
+  /**
+   * 整合性チェック (IntegrityCheckDialog)。
+   * 返り値: レポート object の JSON 文字列。
+   */
+  integrityCheck(): Promise<string>
+  /**
+   * 整合性修復 (IntegrityCheckDialog — 長時間になりうるが spawn_blocking
+   * なので Node main thread は塞がない)。
+   * 返り値: レポート object の JSON 文字列。
+   */
+  repairIntegrity(): Promise<string>
+  /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
    * イベント (`backend:ready`) は登録時に emit 順で flush される。

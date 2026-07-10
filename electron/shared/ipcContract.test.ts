@@ -80,6 +80,22 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       Promise.resolve(undefined),
     ) as never,
     trashBinPrune: record("trashBinPrune", Promise.resolve("42")) as never,
+    // integrity / FTS 6 コマンド（Phase 3 バッチ1）
+    ftsOptimize: record("ftsOptimize", Promise.resolve(undefined)) as never,
+    ftsRebuild: record("ftsRebuild", Promise.resolve(undefined)) as never,
+    ftsRebuildEn: record("ftsRebuildEn", Promise.resolve(undefined)) as never,
+    ftsSearch: record(
+      "ftsSearch",
+      Promise.resolve('[{"sourceType":"scene","id":"s1"}]'),
+    ) as never,
+    integrityCheck: record(
+      "integrityCheck",
+      Promise.resolve('{"orphans":0}'),
+    ) as never,
+    repairIntegrity: record(
+      "repairIntegrity",
+      Promise.resolve('{"repaired":0}'),
+    ) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
   };
@@ -466,12 +482,18 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("垂直スライス 12 コマンドが揃っている（§4.3、当初 7 + trash_bin 5）", () => {
+  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の integrity/FTS 6）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "db_execute",
       "db_execute_batch",
+      "fts_optimize",
+      "fts_rebuild",
+      "fts_rebuild_en",
+      "fts_search",
       "get_global_settings",
+      "integrity_check",
       "open_workspace",
+      "repair_integrity",
       "save_global_settings",
       "timelapse_append_batch",
       "trash_bin_clear_all",
@@ -481,6 +503,46 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "trash_bin_prune",
       "validate_workspace_path",
     ]);
+  });
+
+  it("fts_search は camelCase 引数を写像し、JSON 文字列を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "fts_search",
+      { projectId: "p1", query: "唯一無二", scope: "scenes", limit: 10 },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({
+      ok: true,
+      value: [{ sourceType: "scene", id: "s1" }],
+    });
+    expect(calls).toEqual([
+      { method: "ftsSearch", args: ["p1", "唯一無二", "scenes", 10] },
+    ]);
+  });
+
+  it("unit 返りの fts_optimize / fts_rebuild / fts_rebuild_en は null を resolve する", async () => {
+    for (const cmd of ["fts_optimize", "fts_rebuild", "fts_rebuild_en"]) {
+      const { backend } = fakeBackend();
+      const env = await dispatchInvoke(cmd, {}, { backend, shell: noShell });
+      expect(env).toEqual({ ok: true, value: null });
+    }
+  });
+
+  it("integrity_check / repair_integrity はレポート object を返す", async () => {
+    const { backend } = fakeBackend();
+    const check = await dispatchInvoke(
+      "integrity_check",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(check).toEqual({ ok: true, value: { orphans: 0 } });
+    const repair = await dispatchInvoke(
+      "repair_integrity",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(repair).toEqual({ ok: true, value: { repaired: 0 } });
   });
 });
 

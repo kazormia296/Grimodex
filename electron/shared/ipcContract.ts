@@ -218,6 +218,17 @@ export interface NapiBackendLike {
     retentionDays: number,
     maxCount: number,
   ): Promise<string>;
+  ftsOptimize(): Promise<void>;
+  ftsRebuild(): Promise<void>;
+  ftsRebuildEn(): Promise<void>;
+  ftsSearch(
+    projectId: string,
+    query: string,
+    scope: string,
+    limit: number,
+  ): Promise<string>;
+  integrityCheck(): Promise<string>;
+  repairIntegrity(): Promise<string>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
 }
 
@@ -394,6 +405,47 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireNumber(a, "maxCount", "trash_bin_prune"),
         ),
       ),
+  },
+  // integrity / FTS 6 コマンド（Phase 3 バッチ1 — 実装本体は grimodex-db の
+  // Database メソッドを Tauri と共用。コード移動なしの直接写像）。
+  // Tauri 側 fn 署名（src-tauri/src/commands/integrity.rs）:
+  //   fts_optimize() / fts_rebuild() / fts_rebuild_en() /
+  //   fts_search(project_id, query, scope, limit: u32) /
+  //   integrity_check() / repair_integrity()
+  fts_optimize: {
+    run: async (b) => {
+      await b.ftsOptimize();
+      return null;
+    },
+  },
+  fts_rebuild: {
+    run: async (b) => {
+      await b.ftsRebuild();
+      return null;
+    },
+  },
+  fts_rebuild_en: {
+    run: async (b) => {
+      await b.ftsRebuildEn();
+      return null;
+    },
+  },
+  fts_search: {
+    run: async (b, a) =>
+      parseWire(
+        await b.ftsSearch(
+          requireString(a, "projectId", "fts_search"),
+          requireString(a, "query", "fts_search"),
+          requireString(a, "scope", "fts_search"),
+          requireNumber(a, "limit", "fts_search"),
+        ),
+      ),
+  },
+  integrity_check: {
+    run: async (b) => parseWire(await b.integrityCheck()),
+  },
+  repair_integrity: {
+    run: async (b) => parseWire(await b.repairIntegrity()),
   },
 };
 
