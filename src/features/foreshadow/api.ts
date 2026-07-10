@@ -45,8 +45,20 @@ function getForeshadowCustomInstruction(): string {
   return useSettingsStore.getState().get("aiPrompt.custom.foreshadow", "");
 }
 
+/**
+ * ネイティブ backend（Tauri / Electron）で走っているか。true なら invoke が
+ * ネイティブコマンドへルートし、false（ブラウザ/テスト）だけ renderer 直
+ * Drizzle にフォールバックする。
+ *
+ * Electron 移行 Phase 3 バッチ1: 従来は `__TAURI_INTERNALS__` のみを見ており、
+ * Electron は Drizzle 分岐に落ちてサーバサイド検証（load_bearing 等）を
+ * 素通ししていた。isElectron 相当（`"grimodex" in window`、src/lib/shell.ts と
+ * 同判定）を inline で足す（@/lib/tauri から import すると既存テストの部分
+ * mock を壊すため inline にする）。
+ */
 function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (typeof window === "undefined") return false;
+  return "__TAURI_INTERNALS__" in window || "grimodex" in window;
 }
 
 function toDate(value: unknown): Date {

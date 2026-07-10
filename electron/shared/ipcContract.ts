@@ -272,6 +272,34 @@ export interface NapiBackendLike {
   plotThreadLinkUpdate(id: string, patch: unknown): Promise<string>;
   plotThreadLinkDelete(id: string): Promise<void>;
   plotThreadListLinks(projectId: string): Promise<string>;
+  foreshadowCreate(payload: unknown): Promise<string>;
+  foreshadowUpdate(id: string, patch: unknown): Promise<string>;
+  foreshadowDelete(id: string): Promise<void>;
+  foreshadowListWithLabels(projectId: string): Promise<string>;
+  foreshadowListOpenForContext(projectId: string): Promise<string>;
+  foreshadowGetSceneInfo(sceneId: string): Promise<string>;
+  foreshadowGetSceneContext(sceneId: string): Promise<string>;
+  foreshadowListByCodexEntry(codexEntryId: string): Promise<string>;
+  foreshadowGetChapterStats(chapterId: string): Promise<string>;
+  foreshadowGetSetup(setupId: string): Promise<string>;
+  foreshadowUpdateSetup(id: string, patch: unknown): Promise<void>;
+  foreshadowGet(id: string): Promise<string>;
+  foreshadowLinkCodex(foreshadowId: string, codexId: string): Promise<void>;
+  foreshadowUnlinkCodex(foreshadowId: string, codexId: string): Promise<void>;
+  foreshadowListLinkedCodex(foreshadowId: string): Promise<string>;
+  foreshadowSetSetupStrength(
+    setupId: string,
+    strength?: string | null,
+  ): Promise<void>;
+  foreshadowSetupCreateAi(input: unknown): Promise<void>;
+  foreshadowResolveOrphan(payload: unknown): Promise<string>;
+  foreshadowSaveAnchorsForScene(
+    sceneId: string,
+    setups: unknown,
+    payoffs: unknown,
+    docContentSize: number,
+  ): Promise<void>;
+  foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
 }
 
@@ -617,6 +645,179 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.plotThreadListLinks(
           requireString(a, "projectId", "plot_thread_list_links"),
+        ),
+      ),
+  },
+  // foreshadow 20 コマンド（Phase 3 バッチ1 — grimodex-db::foreshadow を Tauri と
+  // 共用。foreshadow_list は FE 到達不能な dead path のため mirror なし）。
+  // payload / patch / setups / payoffs は camelCase を素通し（from_wire が
+  // serde rename_all + normalize_integer_numbers で受ける）。Value/応答 struct は
+  // parse して返す。unit 返りは null。
+  foreshadow_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowCreate(
+          requirePresent(a, "payload", "foreshadow_create"),
+        ),
+      ),
+  },
+  foreshadow_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowUpdate(
+          requireString(a, "id", "foreshadow_update"),
+          requirePresent(a, "patch", "foreshadow_update"),
+        ),
+      ),
+  },
+  foreshadow_delete: {
+    run: async (b, a) => {
+      await b.foreshadowDelete(requireString(a, "id", "foreshadow_delete"));
+      return null;
+    },
+  },
+  foreshadow_list_with_labels: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowListWithLabels(
+          requireString(a, "projectId", "foreshadow_list_with_labels"),
+        ),
+      ),
+  },
+  foreshadow_list_open_for_context: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowListOpenForContext(
+          requireString(a, "projectId", "foreshadow_list_open_for_context"),
+        ),
+      ),
+  },
+  foreshadow_get_scene_info: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGetSceneInfo(
+          requireString(a, "sceneId", "foreshadow_get_scene_info"),
+        ),
+      ),
+  },
+  foreshadow_get_scene_context: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGetSceneContext(
+          requireString(a, "sceneId", "foreshadow_get_scene_context"),
+        ),
+      ),
+  },
+  foreshadow_list_by_codex_entry: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowListByCodexEntry(
+          requireString(a, "codexEntryId", "foreshadow_list_by_codex_entry"),
+        ),
+      ),
+  },
+  foreshadow_get_chapter_stats: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGetChapterStats(
+          requireString(a, "chapterId", "foreshadow_get_chapter_stats"),
+        ),
+      ),
+  },
+  foreshadow_get_setup: {
+    // Option<Value> — null 許容（parseWire("null") = null）。
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGetSetup(
+          requireString(a, "setupId", "foreshadow_get_setup"),
+        ),
+      ),
+  },
+  foreshadow_update_setup: {
+    run: async (b, a) => {
+      await b.foreshadowUpdateSetup(
+        requireString(a, "id", "foreshadow_update_setup"),
+        requirePresent(a, "patch", "foreshadow_update_setup"),
+      );
+      return null;
+    },
+  },
+  foreshadow_get: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowGet(requireString(a, "id", "foreshadow_get")),
+      ),
+  },
+  foreshadow_link_codex: {
+    run: async (b, a) => {
+      await b.foreshadowLinkCodex(
+        requireString(a, "foreshadowId", "foreshadow_link_codex"),
+        requireString(a, "codexId", "foreshadow_link_codex"),
+      );
+      return null;
+    },
+  },
+  foreshadow_unlink_codex: {
+    run: async (b, a) => {
+      await b.foreshadowUnlinkCodex(
+        requireString(a, "foreshadowId", "foreshadow_unlink_codex"),
+        requireString(a, "codexId", "foreshadow_unlink_codex"),
+      );
+      return null;
+    },
+  },
+  foreshadow_list_linked_codex: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowListLinkedCodex(
+          requireString(a, "foreshadowId", "foreshadow_list_linked_codex"),
+        ),
+      ),
+  },
+  foreshadow_set_setup_strength: {
+    // strength は Option<String>: 文字列以外（null / 省略）は None（列クリア）。
+    run: async (b, a) => {
+      const strength = typeof a.strength === "string" ? a.strength : undefined;
+      await b.foreshadowSetSetupStrength(
+        requireString(a, "setupId", "foreshadow_set_setup_strength"),
+        strength,
+      );
+      return null;
+    },
+  },
+  foreshadow_setup_create_ai: {
+    // FE は 12 個の flat な camelCase キーを送る（payload ラップ無し）。args
+    // オブジェクトをそのまま渡し、napi 側 from_wire が SetupCreateAiInput に落とす。
+    run: async (b, a) => {
+      await b.foreshadowSetupCreateAi(a);
+      return null;
+    },
+  },
+  foreshadow_resolve_orphan: {
+    // Option<String> — reinsert 時のみ new_id、その他 null（parseWire で復元）。
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowResolveOrphan(
+          requirePresent(a, "payload", "foreshadow_resolve_orphan"),
+        ),
+      ),
+  },
+  foreshadow_save_anchors_for_scene: {
+    run: async (b, a) => {
+      await b.foreshadowSaveAnchorsForScene(
+        requireString(a, "sceneId", "foreshadow_save_anchors_for_scene"),
+        requirePresent(a, "setups", "foreshadow_save_anchors_for_scene"),
+        requirePresent(a, "payoffs", "foreshadow_save_anchors_for_scene"),
+        requireNumber(a, "docContentSize", "foreshadow_save_anchors_for_scene"),
+      );
+      return null;
+    },
+  },
+  foreshadow_load_anchors_for_scene: {
+    run: async (b, a) =>
+      parseWire(
+        await b.foreshadowLoadAnchorsForScene(
+          requireString(a, "sceneId", "foreshadow_load_anchors_for_scene"),
         ),
       ),
   },

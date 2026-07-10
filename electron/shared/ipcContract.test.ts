@@ -154,6 +154,91 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "plotThreadListLinks",
       Promise.resolve('[{"id":"pl1","thread_id":"pt1"}]'),
     ) as never,
+    // foreshadow 20 コマンド（Phase 3 バッチ1）
+    foreshadowCreate: record(
+      "foreshadowCreate",
+      Promise.resolve('{"id":"f1","project_id":"p1","title":"伏線"}'),
+    ) as never,
+    foreshadowUpdate: record(
+      "foreshadowUpdate",
+      Promise.resolve('{"id":"f1","title":"改名"}'),
+    ) as never,
+    foreshadowDelete: record(
+      "foreshadowDelete",
+      Promise.resolve(undefined),
+    ) as never,
+    foreshadowListWithLabels: record(
+      "foreshadowListWithLabels",
+      Promise.resolve('{"foreshadows":[],"setups":[]}'),
+    ) as never,
+    foreshadowListOpenForContext: record(
+      "foreshadowListOpenForContext",
+      Promise.resolve('{"foreshadows":[],"setups":[]}'),
+    ) as never,
+    foreshadowGetSceneInfo: record(
+      "foreshadowGetSceneInfo",
+      Promise.resolve('{"setupForeshadowIds":[],"payoffForeshadowIds":[]}'),
+    ) as never,
+    foreshadowGetSceneContext: record(
+      "foreshadowGetSceneContext",
+      Promise.resolve('{"setups":[],"payoffs":[],"setupSceneRows":[]}'),
+    ) as never,
+    foreshadowListByCodexEntry: record(
+      "foreshadowListByCodexEntry",
+      Promise.resolve('{"foreshadows":[],"setups":[]}'),
+    ) as never,
+    foreshadowGetChapterStats: record(
+      "foreshadowGetChapterStats",
+      Promise.resolve(
+        '{"scenes":[],"setupsOnScenes":[],"payoffForeshadows":[],"relatedForeshadows":[],"relatedSetups":[]}',
+      ),
+    ) as never,
+    foreshadowGetSetup: record(
+      "foreshadowGetSetup",
+      Promise.resolve('{"id":"su1","is_orphan":0}'),
+    ) as never,
+    foreshadowUpdateSetup: record(
+      "foreshadowUpdateSetup",
+      Promise.resolve(undefined),
+    ) as never,
+    foreshadowGet: record(
+      "foreshadowGet",
+      Promise.resolve('{"foreshadow":{"id":"f1"},"setups":[]}'),
+    ) as never,
+    foreshadowLinkCodex: record(
+      "foreshadowLinkCodex",
+      Promise.resolve(undefined),
+    ) as never,
+    foreshadowUnlinkCodex: record(
+      "foreshadowUnlinkCodex",
+      Promise.resolve(undefined),
+    ) as never,
+    foreshadowListLinkedCodex: record(
+      "foreshadowListLinkedCodex",
+      Promise.resolve('[{"id":"c1","name":"太郎"}]'),
+    ) as never,
+    foreshadowSetSetupStrength: record(
+      "foreshadowSetSetupStrength",
+      Promise.resolve(undefined),
+    ) as never,
+    foreshadowSetupCreateAi: record(
+      "foreshadowSetupCreateAi",
+      Promise.resolve(undefined),
+    ) as never,
+    foreshadowResolveOrphan: record(
+      "foreshadowResolveOrphan",
+      Promise.resolve('"new-setup-id"'),
+    ) as never,
+    foreshadowSaveAnchorsForScene: record(
+      "foreshadowSaveAnchorsForScene",
+      Promise.resolve(undefined),
+    ) as never,
+    foreshadowLoadAnchorsForScene: record(
+      "foreshadowLoadAnchorsForScene",
+      Promise.resolve(
+        '[{"from":10,"to":20,"markName":"foreshadowSetup","attrs":{"setupId":"su1","foreshadowId":"f1"}}]',
+      ),
+    ) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
   };
@@ -545,12 +630,32 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 19）", () => {
+  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 39）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "codex_match_text",
       "codex_rebuild_matcher",
       "db_execute",
       "db_execute_batch",
+      "foreshadow_create",
+      "foreshadow_delete",
+      "foreshadow_get",
+      "foreshadow_get_chapter_stats",
+      "foreshadow_get_scene_context",
+      "foreshadow_get_scene_info",
+      "foreshadow_get_setup",
+      "foreshadow_link_codex",
+      "foreshadow_list_by_codex_entry",
+      "foreshadow_list_linked_codex",
+      "foreshadow_list_open_for_context",
+      "foreshadow_list_with_labels",
+      "foreshadow_load_anchors_for_scene",
+      "foreshadow_resolve_orphan",
+      "foreshadow_save_anchors_for_scene",
+      "foreshadow_set_setup_strength",
+      "foreshadow_setup_create_ai",
+      "foreshadow_unlink_codex",
+      "foreshadow_update",
+      "foreshadow_update_setup",
       "fts_optimize",
       "fts_rebuild",
       "fts_rebuild_en",
@@ -858,6 +963,236 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const env = await dispatchInvoke(
       "plot_thread_update",
       { patch: {} },
+      { backend, shell: noShell },
+    );
+    expect(calls).toHaveLength(0);
+    expect(env.ok).toBe(false);
+  });
+
+  // ── foreshadow 20 コマンド（Phase 3 バッチ1） ──────────────────────────
+  it("foreshadow_create / update / delete: payload・id+patch 写像、unit→null", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = { projectId: "p1", title: "伏線", intent: null };
+    const created = await dispatchInvoke(
+      "foreshadow_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    const patch = { title: "改名", intent: null };
+    const updated = await dispatchInvoke(
+      "foreshadow_update",
+      { id: "f1", patch },
+      { backend, shell: noShell },
+    );
+    const deleted = await dispatchInvoke(
+      "foreshadow_delete",
+      { id: "f1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "foreshadowCreate", args: [payload] },
+      { method: "foreshadowUpdate", args: ["f1", patch] },
+      { method: "foreshadowDelete", args: ["f1"] },
+    ]);
+    expect(created).toEqual({
+      ok: true,
+      value: { id: "f1", project_id: "p1", title: "伏線" },
+    });
+    expect(updated).toEqual({ ok: true, value: { id: "f1", title: "改名" } });
+    expect(deleted).toEqual({ ok: true, value: null });
+  });
+
+  it("foreshadow の read 系: projectId / sceneId / chapterId / codexEntryId を写像し struct を parse", async () => {
+    const { backend, calls } = fakeBackend();
+    await dispatchInvoke(
+      "foreshadow_list_with_labels",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "foreshadow_get_scene_info",
+      { sceneId: "s1" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "foreshadow_get_scene_context",
+      { sceneId: "s1" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "foreshadow_list_by_codex_entry",
+      { codexEntryId: "c1" },
+      { backend, shell: noShell },
+    );
+    const stats = await dispatchInvoke(
+      "foreshadow_get_chapter_stats",
+      { chapterId: "ch1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "foreshadowListWithLabels", args: ["p1"] },
+      { method: "foreshadowGetSceneInfo", args: ["s1"] },
+      { method: "foreshadowGetSceneContext", args: ["s1"] },
+      { method: "foreshadowListByCodexEntry", args: ["c1"] },
+      { method: "foreshadowGetChapterStats", args: ["ch1"] },
+    ]);
+    expect(stats.ok).toBe(true);
+  });
+
+  it("foreshadow_get_setup / get: setupId・id を写像し行 or {foreshadow,setups} を parse", async () => {
+    const { backend, calls } = fakeBackend();
+    const setup = await dispatchInvoke(
+      "foreshadow_get_setup",
+      { setupId: "su1" },
+      { backend, shell: noShell },
+    );
+    const detail = await dispatchInvoke(
+      "foreshadow_get",
+      { id: "f1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "foreshadowGetSetup", args: ["su1"] },
+      { method: "foreshadowGet", args: ["f1"] },
+    ]);
+    expect(setup).toEqual({ ok: true, value: { id: "su1", is_orphan: 0 } });
+    expect(detail).toEqual({
+      ok: true,
+      value: { foreshadow: { id: "f1" }, setups: [] },
+    });
+  });
+
+  it("foreshadow_link_codex / unlink_codex: foreshadowId+codexId 写像、unit→null", async () => {
+    const { backend, calls } = fakeBackend();
+    const link = await dispatchInvoke(
+      "foreshadow_link_codex",
+      { foreshadowId: "f1", codexId: "c1" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "foreshadow_unlink_codex",
+      { foreshadowId: "f1", codexId: "c1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "foreshadowLinkCodex", args: ["f1", "c1"] },
+      { method: "foreshadowUnlinkCodex", args: ["f1", "c1"] },
+    ]);
+    expect(link).toEqual({ ok: true, value: null });
+  });
+
+  it("foreshadow_set_setup_strength: 文字列は Some、null / 省略は None(undefined)", async () => {
+    const { backend, calls } = fakeBackend();
+    await dispatchInvoke(
+      "foreshadow_set_setup_strength",
+      { setupId: "su1", strength: "critical" },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "foreshadow_set_setup_strength",
+      { setupId: "su1", strength: null },
+      { backend, shell: noShell },
+    );
+    await dispatchInvoke(
+      "foreshadow_set_setup_strength",
+      { setupId: "su1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "foreshadowSetSetupStrength", args: ["su1", "critical"] },
+      { method: "foreshadowSetSetupStrength", args: ["su1", undefined] },
+      { method: "foreshadowSetSetupStrength", args: ["su1", undefined] },
+    ]);
+  });
+
+  it("foreshadow_setup_create_ai: 12 個の flat 引数オブジェクトをそのまま渡す", async () => {
+    const { backend, calls } = fakeBackend();
+    const args = {
+      id: "su1",
+      foreshadowId: "f1",
+      sceneId: "s1",
+      fromPos: 3,
+      toPos: 7,
+      kind: "designated_existing",
+      strength: null,
+      aiStrength: null,
+      attribution: "ai",
+      aiRationale: null,
+      aiReasoning: null,
+      lastEvaluatedAt: 1783664540830,
+    };
+    const env = await dispatchInvoke("foreshadow_setup_create_ai", args, {
+      backend,
+      shell: noShell,
+    });
+    expect(calls).toEqual([
+      { method: "foreshadowSetupCreateAi", args: [args] },
+    ]);
+    expect(env).toEqual({ ok: true, value: null });
+  });
+
+  it("foreshadow_resolve_orphan: {payload} を写像し Option<String> を parse（reinsert の new_id）", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = { setupId: "su1", action: "reinsert" };
+    const env = await dispatchInvoke(
+      "foreshadow_resolve_orphan",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "foreshadowResolveOrphan", args: [payload] },
+    ]);
+    expect(env).toEqual({ ok: true, value: "new-setup-id" });
+  });
+
+  it("foreshadow_save_anchors_for_scene: sceneId+setups+payoffs+docContentSize(number) を写像", async () => {
+    const { backend, calls } = fakeBackend();
+    const setups = [
+      { id: "su1", foreshadowId: "f1", sceneId: "s1", fromPos: 1, toPos: 5 },
+    ];
+    const payoffs: unknown[] = [];
+    const env = await dispatchInvoke(
+      "foreshadow_save_anchors_for_scene",
+      { sceneId: "s1", setups, payoffs, docContentSize: 2 },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      {
+        method: "foreshadowSaveAnchorsForScene",
+        args: ["s1", setups, payoffs, 2],
+      },
+    ]);
+    expect(env).toEqual({ ok: true, value: null });
+  });
+
+  it("foreshadow_load_anchors_for_scene: sceneId を写像し camelCase mark 配列を parse", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "foreshadow_load_anchors_for_scene",
+      { sceneId: "s1" },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "foreshadowLoadAnchorsForScene", args: ["s1"] },
+    ]);
+    expect(env).toEqual({
+      ok: true,
+      value: [
+        {
+          from: 10,
+          to: 20,
+          markName: "foreshadowSetup",
+          attrs: { setupId: "su1", foreshadowId: "f1" },
+        },
+      ],
+    });
+  });
+
+  it("foreshadow_save_anchors_for_scene: docContentSize 非 number は invalid args（backend 未呼び出し）", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "foreshadow_save_anchors_for_scene",
+      { sceneId: "s1", setups: [], payoffs: [] },
       { backend, shell: noShell },
     );
     expect(calls).toHaveLength(0);

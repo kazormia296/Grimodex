@@ -184,6 +184,90 @@ export declare class Backend {
    */
   plotThreadListLinks(projectId: string): Promise<string>
   /**
+   * 伏線作成 (load_bearing 検証を含む)。`payload` は camelCase の
+   * ForeshadowCreatePayload。返り値: 作成行 (snake_case) の JSON 文字列。
+   */
+  foreshadowCreate(payload: any): Promise<string>
+  /**
+   * 伏線更新 (空 patch 時は現行行)。`patch` は ForeshadowPatch (多数の
+   * Option<Option<T>>)。返り値: 更新後行の JSON 文字列。
+   */
+  foreshadowUpdate(id: string, patch: any): Promise<string>
+  /** 伏線削除。 */
+  foreshadowDelete(id: string): Promise<void>
+  /**
+   * 伏線 + setup ラベル行を 1 ロックで取得。返り値: ForeshadowListWithLabels
+   * Response (camelCase struct、内部行は snake_case) の JSON 文字列。
+   */
+  foreshadowListWithLabels(projectId: string): Promise<string>
+  /** 未解決 (open) 伏線 + setup ラベル行を 1 ロックで取得。 */
+  foreshadowListOpenForContext(projectId: string): Promise<string>
+  /**
+   * シーンの setup/payoff 伏線 id。返り値: ForeshadowSceneInfoResponse
+   * (camelCase Vec<String>) の JSON 文字列。
+   */
+  foreshadowGetSceneInfo(sceneId: string): Promise<string>
+  /**
+   * シーンの伏線コンテキスト (3 クエリ、JOIN)。返り値: ForeshadowSceneContext
+   * Response の JSON 文字列。
+   */
+  foreshadowGetSceneContext(sceneId: string): Promise<string>
+  /**
+   * codex エントリに紐づく伏線一覧。返り値: ForeshadowListWithLabelsResponse
+   * の JSON 文字列。
+   */
+  foreshadowListByCodexEntry(codexEntryId: string): Promise<string>
+  /**
+   * チャプターの伏線統計 (最重 read、5 クエリ)。返り値: ForeshadowChapterStats
+   * Bundle の JSON 文字列。
+   */
+  foreshadowGetChapterStats(chapterId: string): Promise<string>
+  /** setup 単体取得。返り値: 行 (snake_case) or null の JSON 文字列。 */
+  foreshadowGetSetup(setupId: string): Promise<string>
+  /**
+   * setup 更新 (空 patch は no-op)。`patch` は ForeshadowSetupPatch
+   * (Option<Option<T>>)。
+   */
+  foreshadowUpdateSetup(id: string, patch: any): Promise<void>
+  /**
+   * 伏線 + その setup 群を取得。返り値: `{"foreshadow":…,"setups":[…]}`
+   * (キーは literal、内部行は snake_case) の JSON 文字列。
+   */
+  foreshadowGet(id: string): Promise<string>
+  /** 伏線↔codex リンク作成 (INSERT OR IGNORE)。 */
+  foreshadowLinkCodex(foreshadowId: string, codexId: string): Promise<void>
+  /** 伏線↔codex リンク削除。 */
+  foreshadowUnlinkCodex(foreshadowId: string, codexId: string): Promise<void>
+  /**
+   * 伏線に紐づく codex エントリ一覧。返り値: codex_entries.* 行 (snake_case)
+   * の JSON 文字列。
+   */
+  foreshadowListLinkedCodex(foreshadowId: string): Promise<string>
+  /** setup の強度を直接更新 (`strength` は null で列クリア)。 */
+  foreshadowSetSetupStrength(setupId: string, strength?: string | undefined | null): Promise<void>
+  /**
+   * AI 由来 setup の upsert。`input` は camelCase の SetupCreateAiInput
+   * (fromPos/toPos は i64、lastEvaluatedAt は Option<i64> — from_wire が正規化)。
+   */
+  foreshadowSetupCreateAi(input: any): Promise<void>
+  /**
+   * orphan setup の解決 (reanchor / delete / reinsert)。`payload` は camelCase
+   * の OrphanResolvePayload (fromPos/toPos は Option<i64>)。
+   * 返り値: reinsert 時のみ new_id、その他は null の JSON 文字列。
+   */
+  foreshadowResolveOrphan(payload: any): Promise<string>
+  /**
+   * シーンのアンカーを一括保存 (batch tx)。`setups` / `payoffs` は camelCase
+   * の配列 (from/to_pos は i64)。`doc_content_size` は空 doc 判定の i64 ガード
+   * (<=2 で bulk-orphan)。
+   */
+  foreshadowSaveAnchorsForScene(sceneId: string, setups: any, payoffs: any, docContentSize: number): Promise<void>
+  /**
+   * シーンのアンカー mark を取得 (0 座標・orphan を除外)。返り値:
+   * AnchorMarkOutput 配列 (camelCase: from/to/markName/attrs) の JSON 文字列。
+   */
+  foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>
+  /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
    * イベント (`backend:ready`) は登録時に emit 順で flush される。

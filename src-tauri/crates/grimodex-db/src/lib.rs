@@ -258,6 +258,7 @@ impl Database {
 
 pub mod change_events;
 mod execute;
+pub mod foreshadow;
 mod fts;
 mod integrity;
 mod migrate;
