@@ -27,6 +27,7 @@ use tauri::Manager;
 
 use codex_matching::CodexMatcherState;
 use commands::external_mount::ExternalMountState;
+use commands::ime_export::ImeExportState;
 #[cfg(feature = "semantic-embedding")]
 use commands::semantic::{ModelDownloadState, SemanticEmbedderState};
 use commands::{
@@ -64,6 +65,25 @@ fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+fn deactivate_ime_on_exit(app: &tauri::AppHandle) {
+    let state = app.state::<ImeExportState>();
+    let request = state.request_gate.register_active();
+    let _guard = match state.write_lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if !state.request_gate.is_current(&request) {
+        return;
+    }
+    if let Err(error) = grimodex_db::ime_export::set_active_project(
+        &state.root,
+        None,
+        grimodex_db::ime_export::ImeIntegrationMode::On,
+    ) {
+        tracing::warn!("failed to deactivate IME state during shutdown: {error:#}");
+    }
 }
 
 /// NVIDIA + WebKitGTK では DMABUF レンダラーが GBM バッファ確保に失敗し、
@@ -105,6 +125,19 @@ pub fn run() {
     if let Some(guard) = log_guard {
         builder = builder.manage(LogGuard(guard));
     }
+    // IME state is process-global under app_data_dir. Match the Electron shell's
+    // single-instance contract so two Tauri processes cannot race its pointer
+    // and snapshots. The plugin must be registered before every other plugin.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }));
+    }
     builder
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
@@ -141,6 +174,14 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&app_dir).ok();
+
+            // IME snapshots are created lazily: auto mode with no registered
+            // consumer must not create the `ime/` directory at all.
+            app.manage(ImeExportState {
+                root: app_dir.join("ime"),
+                write_lock: Mutex::new(()),
+                request_gate: Default::default(),
+            });
 
             // Global settings path (stays in AppData)
             let gs_path = app_dir.join("global-settings.json");
@@ -281,6 +322,11 @@ pub fn run() {
             commands::vivliostyle::vivliostyle_preview_start,
             commands::vivliostyle::vivliostyle_preview_stop,
             commands::fonts::list_system_fonts,
+            commands::ime_export::ime_export_refresh,
+            commands::ime_export::ime_export_set_active_project,
+            commands::ime_export::ime_export_get_status,
+            commands::ime_export::ime_export_clear_all,
+            commands::ime_export::ime_export_remove_project,
             commands::db::db_execute,
             commands::db::db_execute_batch,
             commands::timelapse::timelapse_append_batch,
@@ -437,6 +483,7 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 let state = app_handle.state::<commands::vivliostyle::VivliostyleState>();
                 commands::vivliostyle::kill_all(&state);
+                deactivate_ime_on_exit(app_handle);
             }
             _ => {}
         });

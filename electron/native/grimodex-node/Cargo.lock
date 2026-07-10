@@ -618,6 +618,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tracing",
+ "unicode-normalization",
  "uuid",
 ]
 

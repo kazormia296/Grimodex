@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use grimodex_db::events::EventSink;
+use grimodex_db::ime_export::ImeExportRequestGate;
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
@@ -89,6 +90,13 @@ impl EventSink for EventQueue {
 pub struct AppState {
     pub ws: WorkspaceState,
     pub gs: GlobalSettingsPath,
+    /// IME 連携スナップショットの共有ルート (`<userData>/ime`)。
+    /// Electron main から注入された app data 配下だけを使用する。
+    pub ime_root: PathBuf,
+    /// snapshot/state の tmp+rename を Electron 内で直列化する。
+    pub ime_write_lock: Mutex<()>,
+    /// blocking pool がIPC到着順を逆転しても古い書出しを棄却する世代管理。
+    pub ime_request_gate: ImeExportRequestGate,
     pub events: EventQueue,
     /// Codex 名寄せマッチャ (Tauri の CodexMatcherState 相当 — Phase 3 バッチ1c)。
     /// rebuild 側と match 側が**同一インスタンス**を見ることが正しさの条件
@@ -117,6 +125,9 @@ impl AppState {
                 path: dir.join("global-settings.json"),
                 write_lock: Mutex::new(()),
             },
+            ime_root: dir.join("ime"),
+            ime_write_lock: Mutex::new(()),
+            ime_request_gate: ImeExportRequestGate::default(),
             events: EventQueue::new(),
             codex_matcher: Mutex::new(None),
         })

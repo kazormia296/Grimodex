@@ -22,6 +22,8 @@ import {
 import { inferReadings, YOMI_MAX_ENTRIES } from "@/features/codex/codexYomi";
 import { listCodexTypes } from "@/features/codex/typeApi";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { isJapaneseProjectLanguage } from "@/features/ime/language";
 
 interface WorkItem {
   id: string;
@@ -45,6 +47,8 @@ function chunk<T>(items: T[], size: number): T[][] {
  */
 export function ReadingsBackfillSection() {
   const { t } = useTranslation();
+  const projectLanguage = useSettingsStore((s) => s.projectLanguage);
+  const enabled = isJapaneseProjectLanguage(projectLanguage);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number }>({
     done: 0,
@@ -52,6 +56,7 @@ export function ReadingsBackfillSection() {
   });
 
   const run = async () => {
+    if (!enabled) return;
     const projectId = getCurrentProjectId();
     if (!projectId) return;
     // 先頭で 1 回だけ policy を検査する。ここで弾かないと chunk 毎に
@@ -156,6 +161,8 @@ export function ReadingsBackfillSection() {
       setRunning(false);
     }
   };
+
+  if (!enabled) return null;
 
   return (
     <SettingSection title={t("codex.readings.backfillTitle")}>

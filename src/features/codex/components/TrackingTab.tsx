@@ -15,6 +15,8 @@ interface TrackingTabProps {
   onReadingsChange: (next: ReadingMap) => void;
   onEstimateReadings: () => void;
   estimatingReadings: boolean;
+  /** Readings are a Japanese-project feature; tracking controls remain universal. */
+  showReadings: boolean;
 }
 
 export function TrackingTab({
@@ -27,17 +29,20 @@ export function TrackingTab({
   onReadingsChange,
   onEstimateReadings,
   estimatingReadings,
+  showReadings,
 }: TrackingTabProps) {
   return (
     <div className="space-y-3">
       <ContextModeSelector value={contextMode} onChange={onContextModeChange} />
-      <ReadingsField
-        surfaces={surfaces}
-        readings={readings}
-        onChange={onReadingsChange}
-        onEstimate={onEstimateReadings}
-        estimating={estimatingReadings}
-      />
+      {showReadings && (
+        <ReadingsField
+          surfaces={surfaces}
+          readings={readings}
+          onChange={onReadingsChange}
+          onEstimate={onEstimateReadings}
+          estimating={estimatingReadings}
+        />
+      )}
       <ExcludedAliasesField
         excludedAliases={excludedAliases}
         onChange={onExcludedAliasesChange}

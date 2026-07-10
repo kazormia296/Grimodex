@@ -5,8 +5,13 @@ import { projects } from "@/db/schema";
 import * as schema from "@/db/schema";
 
 const invokeMock = vi.fn().mockResolvedValue(undefined);
+const scheduleImeExportRefreshMock = vi.fn();
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+vi.mock("@/features/ime/scheduler", () => ({
+  scheduleImeExportRefresh: (...args: unknown[]) =>
+    scheduleImeExportRefreshMock(...args),
 }));
 
 const returningMock = vi.fn().mockResolvedValue([{ id: "p1", language: "en" }]);
@@ -134,7 +139,10 @@ describe("projects schema", () => {
 });
 
 describe("updateProject", () => {
-  beforeEach(() => invokeMock.mockClear());
+  beforeEach(() => {
+    invokeMock.mockClear();
+    scheduleImeExportRefreshMock.mockClear();
+  });
 
   it("rebuilds _en FTS when language is in the patch", async () => {
     await updateProject("p1", { language: "en" });
@@ -144,5 +152,18 @@ describe("updateProject", () => {
   it("does not rebuild _en FTS when language is absent", async () => {
     await updateProject("p1", { title: "New Title" });
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["title", "genre", "outline", "language"] as const)(
+    "%s changes refresh the IME snapshot",
+    async (field) => {
+      await updateProject("p1", { [field]: field === "language" ? "ja" : "x" });
+      expect(scheduleImeExportRefreshMock).toHaveBeenCalledWith("p1");
+    },
+  );
+
+  it("unrelated metadata does not refresh the IME snapshot", async () => {
+    await updateProject("p1", { pov: "first" });
+    expect(scheduleImeExportRefreshMock).not.toHaveBeenCalled();
   });
 });

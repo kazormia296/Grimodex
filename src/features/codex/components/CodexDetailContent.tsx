@@ -52,6 +52,7 @@ import { ResearchTab } from "./ResearchTab";
 import { TimelineTab } from "./TimelineTab";
 import { ForeshadowTab } from "./ForeshadowTab";
 import { ConsistencyTab } from "./ConsistencyTab";
+import { isJapaneseProjectLanguage } from "@/features/ime/language";
 
 function getTabs() {
   return [
@@ -125,6 +126,8 @@ export function CodexDetailContent({
   const update = useCodexStore((s) => s.update);
   const updateText = useCodexStore((s) => s.updateText);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
+  const projectLanguage = useSettingsStore((s) => s.projectLanguage);
+  const showReadings = isJapaneseProjectLanguage(projectLanguage);
 
   const [activeTab, setActiveTab] = useState(initialTab);
   const [type, setType] = useState<CodexEntryType>(
@@ -403,6 +406,7 @@ export function CodexDetailContent({
   // 既存の読みは上書きしない (ユーザー編集を尊重)。fire-and-forget で UI を止めない。
   const estimateReadingsFor = useCallback(
     async (targetSurfaces: string[], base: ReadingMap) => {
+      if (!showReadings) return;
       const need = targetSurfaces.filter(
         (s) => needsAiReading(s) && !(base[s]?.length ?? 0),
       );
@@ -440,7 +444,7 @@ export function CodexDetailContent({
       setReadings(next);
       await update(entry.id, { readings: serializeReadings(next) });
     },
-    [entry.id, resolveCategoryLabel, update],
+    [entry.id, resolveCategoryLabel, showReadings, update],
   );
 
   const handleEstimateReadings = () => {
@@ -523,6 +527,8 @@ export function CodexDetailContent({
         type={type}
         icon={icon}
         aliases={aliases}
+        readings={readings}
+        showReading={showReadings}
         selectedTags={selectedTags}
         tagsLoading={tagsLoading}
         onNameChange={setName}
@@ -533,6 +539,7 @@ export function CodexDetailContent({
           void update(entry.id, { icon: newIcon as never });
         }}
         onAliasesChange={(a) => void handleAliasesChange(a)}
+        onOpenReadings={() => setActiveTab("tracking")}
         onTagsChange={(tags) => {
           // アルファベット順に揃えてリストとの表示順を一致させる
           const sorted = [...tags].sort((a, b) => a.name.localeCompare(b.name));
@@ -589,6 +596,7 @@ export function CodexDetailContent({
             onReadingsChange={(next) => void handleReadingsChange(next)}
             onEstimateReadings={handleEstimateReadings}
             estimatingReadings={estimatingReadings}
+            showReadings={showReadings}
           />
         )}
         {activeTab === "mentions" && (

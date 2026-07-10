@@ -1087,6 +1087,21 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleDbExecuteBatch(args) as T;
       case "timelapse_append_batch":
         return (await handleTimelapseAppendBatch(args)) as T;
+      case "ime_export_get_status":
+      case "ime_export_refresh":
+      case "ime_export_set_active_project":
+        // Browser preview has no native filesystem. Keep the complete invoke
+        // contract while making the feature an explicit, side-effect-free no-op.
+        return {
+          rootPath: "",
+          consumers: [],
+          activeProjectId: null,
+          exportedProjectCount: 0,
+          effectiveEnabled: false,
+        } as T;
+      case "ime_export_clear_all":
+      case "ime_export_remove_project":
+        return null as T;
       case "open_log_dir":
         // ブラウザではファイルマネージャを開けない。no-op で成功扱い。
         return undefined as T;

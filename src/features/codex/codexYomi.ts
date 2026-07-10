@@ -18,6 +18,7 @@ import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
 import { normalizeReading, isHiraganaReading } from "./reading";
+import { isJapaneseProjectLanguage } from "@/features/ime/language";
 
 /** 1 表記の推定結果。yomi はひらがな正規化済み。 */
 export interface YomiResult {
@@ -45,9 +46,6 @@ export async function inferReadings(
   entries: ReadonlyArray<YomiEstimationEntry>,
 ): Promise<Map<string, YomiResult[]>> {
   const result = new Map<string, YomiResult[]>();
-  // 読みを Codex へ即書き込むため knowledgeWrite で gate する。
-  if (blockIfPolicyOff("knowledgeWrite")) return result;
-
   const targets = entries
     .map((e) => ({ ...e, surfaces: e.surfaces.filter((s) => s.trim()) }))
     .filter((e) => e.surfaces.length > 0)
@@ -61,6 +59,10 @@ export async function inferReadings(
   } catch {
     // ignore — ja 既定
   }
+  if (!isJapaneseProjectLanguage(lang)) return result;
+  // 読みを Codex へ即書き込むため knowledgeWrite で gate する。
+  // 日本語以外では policy toast すら出さず完全に no-op。
+  if (blockIfPolicyOff("knowledgeWrite")) return result;
 
   // hallucination 照合先: id → その id で許可された surface 集合。
   const validSurfacesById = new Map<string, Set<string>>(

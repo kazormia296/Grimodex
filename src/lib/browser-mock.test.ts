@@ -308,6 +308,48 @@ describe("createBrowserMock", () => {
     });
   });
 
+  describe("IME export Phase 2", () => {
+    it("returns a disabled in-memory status without touching the filesystem", async () => {
+      const status = await mock.invoke<{
+        rootPath: string;
+        consumers: unknown[];
+        activeProjectId: string | null;
+        exportedProjectCount: number;
+        effectiveEnabled: boolean;
+      }>("ime_export_get_status", { mode: "auto" });
+      expect(status).toEqual({
+        rootPath: "",
+        consumers: [],
+        activeProjectId: null,
+        exportedProjectCount: 0,
+        effectiveEnabled: false,
+      });
+    });
+
+    it("accepts all mutation commands as safe no-ops", async () => {
+      await expect(
+        mock.invoke("ime_export_refresh", {
+          projectId: "p1",
+          options: {
+            mode: "on",
+            excludeHidden: false,
+            includeProfile: true,
+          },
+        }),
+      ).resolves.toMatchObject({ rootPath: "" });
+      await expect(
+        mock.invoke("ime_export_set_active_project", {
+          projectId: "p1",
+          mode: "on",
+        }),
+      ).resolves.toMatchObject({ rootPath: "" });
+      await expect(mock.invoke("ime_export_clear_all", {})).resolves.toBeNull();
+      await expect(
+        mock.invoke("ime_export_remove_project", { projectId: "p1" }),
+      ).resolves.toBeNull();
+    });
+  });
+
   describe("unknown command", () => {
     it("throws for unsupported commands", async () => {
       await expect(mock.invoke("unknown_command", {})).rejects.toThrow();

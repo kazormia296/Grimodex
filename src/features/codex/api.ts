@@ -4,6 +4,20 @@ import { eq, and, inArray } from "drizzle-orm";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { CodexVersionConflictError } from "./occ";
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+
+const IME_EXPORT_FIELDS = new Set([
+  "type",
+  "name",
+  "aliases",
+  "excludedAliases",
+  "readings",
+  "contextMode",
+]);
+
+function affectsImeExport(data: Record<string, unknown>): boolean {
+  return Object.keys(data).some((key) => IME_EXPORT_FIELDS.has(key));
+}
 
 /**
  * impact-review: この Codex に紐づく伏線を「Codex 変更で再評価が必要」とマークする。
@@ -173,7 +187,10 @@ export async function createCodexEntry(
     .values({ ...data, createdAt: now, updatedAt: now })
     .returning();
   // 段階3: 新規エントリを semantic index へ (debounce + Rust 側 hash 再検証で冪等)。
-  if (rows[0]) scheduleCodexIndex(rows[0].id);
+  if (rows[0]) {
+    scheduleCodexIndex(rows[0].id);
+    scheduleImeExportRefresh(data.projectId);
+  }
   return rows[0];
 }
 
@@ -274,6 +291,8 @@ export async function updateCodexEntry(
     }
   }
 
+  if (affectsImeExport(data)) scheduleImeExportRefresh(projectId);
+
   return rows[0];
 }
 
@@ -284,6 +303,7 @@ export async function deleteCodexEntry(
   await db
     .delete(codexEntries)
     .where(and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)));
+  scheduleImeExportRefresh(projectId);
 }
 
 export async function listCodexEntriesByMessageId(

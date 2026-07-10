@@ -21,6 +21,7 @@ import {
   rebaselineEntitiesAtTail,
   type EntityBaselineRef,
 } from "@/features/timelapse/toggle";
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import {
   AUX_SCOPES,
   AUX_SCOPE_OWNER,
@@ -1314,6 +1315,9 @@ export async function restoreProjectSnapshot(
     snapshotId,
     scopes,
   );
+  if (scopes.has("codex")) {
+    scheduleImeExportRefresh(getCurrentProjectId());
+  }
   await recordRestoreAndRebaseline(
     snapshotId,
     "structural",

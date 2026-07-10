@@ -27,6 +27,7 @@ pub(crate) mod export;
 pub(crate) mod external_mount;
 pub(crate) mod fonts;
 pub(crate) mod foreshadow;
+pub(crate) mod ime_export;
 pub(crate) mod import_fs;
 pub(crate) mod integrity;
 pub(crate) mod license;

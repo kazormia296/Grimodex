@@ -41,6 +41,7 @@ import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
 import { invoke } from "@/lib/tauri";
 import i18next from "@/lib/i18n";
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 
 /**
  * 複数文を 1 tx (Rust 側 execute_batch_tx = BEGIN..COMMIT) で原子的に書く共通
@@ -971,6 +972,9 @@ export async function promoteSticky(
       toStatement(stickyDelete),
     ],
   });
+  if (targetType === "codex") {
+    scheduleImeExportRefresh(options.projectId);
+  }
 
   const updatedPosition: MapNodePosition = {
     ...existingPos,
@@ -1712,6 +1716,7 @@ export async function promoteFrame(
     toStatement(db.delete(mapFrames).where(eq(mapFrames.id, frameId)).toSQL()),
   );
   await invoke("db_execute_batch", { statements });
+  scheduleImeExportRefresh(options.projectId);
 
   // Create position for the new Codex entry at frame center (records a
   // position.create timelapse event; kept out of the batch to preserve it).
