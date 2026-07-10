@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@/lib/tauri";
+import { patchGlobalSettings } from "@/lib/globalSettings";
 import type { GlobalSettings } from "@/features/workspace/store";
 import { parseShowConfig } from "./mapApi";
 import { DEFAULT_SHOW, DEFAULT_GALAXY_FILTERS } from "./types";
@@ -169,9 +169,10 @@ useMapStore.subscribe((state) => {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const current = await invoke<GlobalSettings>("get_global_settings");
-      const updated = { ...current, map: JSON.parse(next) };
-      await invoke("save_global_settings", { settings: updated });
+      await patchGlobalSettings((current) => ({
+        ...current,
+        map: JSON.parse(next),
+      }));
     } catch {
       // persistence errors are non-fatal
     }

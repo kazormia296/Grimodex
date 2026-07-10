@@ -13,6 +13,8 @@ export interface DeriveRowsOpts {
   onlyUnedited?: boolean;
   /** Cell map used for hideEmpty check — keys are "sceneId::*" */
   cellMap?: Map<string, unknown>;
+  /** Comparator for sibling ordering; defaults to sortOrder ascending */
+  sortComparator?: (a: TreeNodeData, b: TreeNodeData) => number;
 }
 
 /**
@@ -33,7 +35,12 @@ export function deriveRows(
   searchQuery: string | null,
   opts: DeriveRowsOpts = {},
 ): MatrixRow[] {
-  const { hideEmpty = false, onlyUnedited = false, cellMap } = opts;
+  const {
+    hideEmpty = false,
+    onlyUnedited = false,
+    cellMap,
+    sortComparator,
+  } = opts;
 
   // Build parent→children map
   const childrenOf = new Map<string | null, TreeNodeData[]>();
@@ -43,9 +50,11 @@ export function deriveRows(
     childrenOf.get(parentKey)!.push(n);
   }
 
-  // Sort each bucket by sortOrder
+  // Sort each bucket with the active comparator (defaults to sortOrder).
+  const cmp =
+    sortComparator ?? ((a, b) => a.sortOrder.localeCompare(b.sortOrder));
   for (const bucket of childrenOf.values()) {
-    bucket.sort((a, b) => a.sortOrder.localeCompare(b.sortOrder));
+    bucket.sort(cmp);
   }
 
   const q = searchQuery?.trim().toLowerCase() ?? "";
@@ -60,6 +69,19 @@ export function deriveRows(
     hideEmpty && cellMap ? computeSceneIdsWithCells(cellMap) : null;
 
   const result: MatrixRow[] = [];
+
+  function subtreeHasVisibleScene(folderId: string): boolean {
+    for (const child of childrenOf.get(folderId) ?? []) {
+      if (matchingSubtreeIds && !matchingSubtreeIds.has(child.id)) continue;
+      if (child.nodeType !== "folder") {
+        if (onlyUnedited && (child.charCount ?? 0) > 0) continue;
+        if (sceneIdsWithCells && !sceneIdsWithCells.has(child.id)) continue;
+        return true;
+      }
+      if (subtreeHasVisibleScene(child.id)) return true;
+    }
+    return false;
+  }
 
   function walk(parentId: string | null, depth: number) {
     const children = childrenOf.get(parentId) ?? [];
@@ -81,9 +103,14 @@ export function deriveRows(
           walk(node.id, depth + 1);
         }
 
-        // If hideEmpty and no scene children were added, remove this folder too
-        if (sceneIdsWithCells && result.length === beforeLen + 1) {
-          result.splice(beforeLen, 1);
+        // If hideEmpty, decide emptiness from the subtree. A collapsed folder
+        // walks no children, so emitted-row count is not a valid emptiness
+        // signal — scan its subtree for a scene surviving the active filters.
+        if (sceneIdsWithCells) {
+          const empty = collapsedIds.has(node.id)
+            ? !subtreeHasVisibleScene(node.id)
+            : result.length === beforeLen + 1;
+          if (empty) result.splice(beforeLen, 1);
         }
       }
     }

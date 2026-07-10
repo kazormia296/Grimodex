@@ -271,6 +271,8 @@ pub fn run() {
             commands::license::deactivate_license,
             commands::export::export_save_text,
             commands::export::export_save_bytes,
+            commands::import_fs::import_open_text_file,
+            commands::import_fs::import_pick_folder_markdown,
             commands::logs::open_log_dir,
             commands::vivliostyle::vivliostyle_detect,
             commands::vivliostyle::vivliostyle_build,

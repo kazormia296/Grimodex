@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@/lib/tauri";
+import { patchGlobalSettings } from "@/lib/globalSettings";
 import type { GlobalSettings } from "@/features/workspace/store";
 import {
   loadContainerId,
@@ -298,9 +298,10 @@ useGridStore.subscribe((state) => {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      const current = await invoke<GlobalSettings>("get_global_settings");
-      const updated = { ...current, grid: JSON.parse(next) };
-      await invoke("save_global_settings", { settings: updated });
+      await patchGlobalSettings((current) => ({
+        ...current,
+        grid: JSON.parse(next),
+      }));
     } catch {
       // non-fatal
     }

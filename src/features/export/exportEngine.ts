@@ -401,6 +401,10 @@ function renderNode(node: PMNode, ctx: RenderCtx): string {
     case "codeBlock": {
       const lang = (node.attrs?.language as string) ?? "";
       const code = (node.content ?? []).map((c) => c.text ?? "").join("");
+      if (ctx.settings.format === "html") {
+        const cls = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+        return `<pre><code${cls}>${escapeHtml(code)}</code></pre>\n`;
+      }
       return "```" + lang + "\n" + code + "\n```\n";
     }
 

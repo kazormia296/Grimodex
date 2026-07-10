@@ -436,6 +436,71 @@ describe("generateExport - folder headings (html)", () => {
 });
 
 // ────────────────────────────────────────────────────────────────────
+// codeBlock serialization (format-gated; HTML must escape, not fence)
+// ────────────────────────────────────────────────────────────────────
+
+describe("generateExport - codeBlock serialization", () => {
+  function codeBlockDoc(code: string, language = ""): string {
+    return JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "codeBlock",
+          attrs: { language },
+          content: [{ type: "text", text: code }],
+        },
+      ],
+    });
+  }
+
+  it("html: code is escaped and wrapped in <pre><code>, not raw ``` fences", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: codeBlockDoc("</p><script>alert(1)</script>") },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html" }),
+      projectTitle: "Doc",
+      projectLanguage: "ja",
+    });
+    // 本文の生 HTML 注入を防ぐ: script/閉じタグは escape される
+    expect(result).toContain(
+      "<pre><code>&lt;/p&gt;&lt;script&gt;alert(1)&lt;/script&gt;</code></pre>",
+    );
+    expect(result).not.toContain("<script>alert(1)</script>");
+    // Markdown フェンスが HTML 本文に漏れない
+    expect(result).not.toContain("```");
+  });
+
+  it("html: language becomes an escaped class attribute", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: codeBlockDoc("x = 1", '"><img src=x>') },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html" }),
+      projectTitle: "Doc",
+      projectLanguage: "ja",
+    });
+    expect(result).toContain(
+      '<code class="language-&quot;&gt;&lt;img src=x&gt;">',
+    );
+    expect(result).not.toContain('"><img src=x>');
+  });
+
+  it("markdown: still emits triple-backtick fences (unchanged)", () => {
+    const s1 = makeScene("s1", "S");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: codeBlockDoc("const a = 1;", "ts") },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "markdown" }),
+    });
+    expect(result).toContain("```ts\nconst a = 1;\n```");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
 // Empty paragraph serialization (format-gated)
 // ────────────────────────────────────────────────────────────────────
 

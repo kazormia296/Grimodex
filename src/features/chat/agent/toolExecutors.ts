@@ -1,5 +1,5 @@
 import { invoke } from "@/lib/tauri";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContent, loadSceneContents } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import {
   tokenizeFtsQuery as tokenizeQuery,
@@ -1495,9 +1495,11 @@ async function getThreadScenes(
     note: string;
     excerpt: string;
   }> = [];
+  const contentMap = await loadSceneContents(capped.map((l) => l.nodeId)).catch(
+    () => new Map<string, string>(),
+  );
   for (const l of capped) {
-    const raw = await loadSceneContent(l.nodeId).catch(() => "");
-    const text = prosemirrorToText(raw ?? "");
+    const text = prosemirrorToText(contentMap.get(l.nodeId) ?? "");
     scenes.push({
       id: l.nodeId,
       title: titleById.get(l.nodeId) ?? "",

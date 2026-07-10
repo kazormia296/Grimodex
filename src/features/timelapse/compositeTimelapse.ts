@@ -16,7 +16,7 @@ import { buildReplayStart } from "./replayStart";
 import { loadLatestSnapshot } from "./snapshots";
 import {
   collectOpenPanels,
-  docStepEntityKeys,
+  entityKeyForEvent,
   formatEventCaption,
   isSceneEditorBodyStep,
   parseEventPayload,
@@ -194,20 +194,21 @@ function buildFrameCaptions(
 ): FormattedCaption[][] {
   const out: FormattedCaption[][] = schedule.map(() => []);
   let prevLayoutPanels: string[] | null = null;
-
+  // events is ascending by sequence and schedule is monotone non-decreasing,
+  // so walk one forward pointer instead of re-filtering per frame (was O(F×E)).
+  let evIdx = 0;
+  const docStepKeysUpToFrame = new Set<string>();
   for (let f = 0; f < schedule.length; f += 1) {
-    const prevTarget = f > 0 ? schedule[f - 1] : 0;
     const current = schedule[f];
-    const windowEvents = events.filter(
-      (e) => e.sequence > prevTarget && e.sequence <= current,
-    );
-    // Cumulative doc.step keys through this frame (not window-only) so
-    // entry.update after doc.step in an adjacent frame still suppresses diffs.
-    const docStepKeysUpToFrame = docStepEntityKeys(
-      events.filter((e) => e.sequence <= current && e.opType === "doc.step"),
-    );
+    const windowEvents: ChangeEvent[] = [];
+    while (evIdx < events.length && events[evIdx].sequence <= current) {
+      const ev = events[evIdx];
+      windowEvents.push(ev);
+      const key = entityKeyForEvent(ev);
+      if (key) docStepKeysUpToFrame.add(key);
+      evIdx += 1;
+    }
     const captions: FormattedCaption[] = [];
-
     for (const ev of windowEvents) {
       if (shouldSuppressCaption(ev, docStepKeysUpToFrame)) {
         if (ev.domain === "layout" && ev.opType === "layout.snapshot") {
@@ -221,7 +222,6 @@ function buildFrameCaptions(
         prevLayoutPanels = collectOpenPanels(parseEventPayload(ev));
       }
     }
-
     out[f] = captions.slice(-2);
   }
   return out;

@@ -110,6 +110,34 @@ describe("projectSnapshotApi", () => {
     expect(list.find((s) => s.id === snap.id)?.isStructural).toBe(true);
   });
 
+  it("listProjectSnapshots attributes entryCount to the right snapshot (batched count, no N+1 bleed)", async () => {
+    // First snapshot captures one scene → entryCount 1.
+    await seedScene('{"type":"doc","content":[{"type":"text","text":"v1"}]}', {
+      id: "s1",
+      sortOrder: "a0",
+    });
+    const one = await createProjectSnapshot({ name: "one-scene" });
+    expect(one.entryCount).toBe(1);
+
+    // Add a second scene, then a second snapshot → entryCount 2.
+    await seedScene('{"type":"doc","content":[{"type":"text","text":"w1"}]}', {
+      id: "s2",
+      sortOrder: "a1",
+    });
+    const two = await createProjectSnapshot({ name: "two-scenes" });
+    expect(two.entryCount).toBe(2);
+
+    // The batched GROUP BY must map each aggregate count back to its own
+    // snapshot; a mis-keyed Map would swap or share these counts.
+    const list = await listProjectSnapshots();
+    const oneMeta = list.find((s) => s.id === one.id);
+    const twoMeta = list.find((s) => s.id === two.id);
+    expect(oneMeta?.entryCount).toBe(1);
+    expect(twoMeta?.entryCount).toBe(2);
+    expect(oneMeta?.isStructural).toBe(true);
+    expect(twoMeta?.isStructural).toBe(true);
+  });
+
   it("create→restore preserves scene intent", async () => {
     await seedScene('{"type":"doc","content":[]}');
     const { db } = await import("@/db/client");

@@ -51,6 +51,10 @@ const SLOW_COMMANDS = new Set([
    *  保存先を選ぶまで分単位かかりうるので 10s では reject されてしまう。 */
   "export_save_text",
   "export_save_bytes",
+  /** import も同様: Rust 側でファイル/フォルダ選択ダイアログを開いている間
+   *  invoke がブロックするため、export_save_* と同じく長めのタイムアウトを与える。 */
+  "import_open_text_file",
+  "import_pick_folder_markdown",
   /** detect はログインシェル起動を伴う PATH 解決で 10s を超えうる。save は
    *  export_save_* と同じく保存ダイアログで invoke がブロックする。
    *  (vivliostyle_build は即 runId を返す fire-and-forget なので不要) */

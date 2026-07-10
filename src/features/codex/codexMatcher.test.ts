@@ -252,6 +252,25 @@ describe("excluded aliases (exclusion patterns)", () => {
     expect(matches).toHaveLength(1);
     expect(matches[0].entryId).toBe("codex-2");
   });
+
+  it("ignores an empty-string excluded alias without hanging", () => {
+    // 空文字の excludedAlias（非UI writer/import/壊れた JSON で混入しうる）は
+    // new RegExp("", "gi") の zero-width match で無限ループを起こしていた。
+    // このテストがタイムアウトせず完了することが回帰ガード。
+    const entries: CodexMatchTarget[] = [
+      {
+        id: "codex-1",
+        name: "青",
+        type: "character",
+        excludedAliases: ["", "青い"],
+      },
+    ];
+    const matcher = createCodexMatcher(entries);
+    // 空文字除外は無視され、"青は" は "青い" に覆われないので "青" が残る
+    const matches = matcher("青は振り返った");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ entryId: "codex-1", from: 0, to: 1 });
+  });
 });
 
 describe("CJK boundary checking", () => {
