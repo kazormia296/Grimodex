@@ -216,6 +216,30 @@ describe("SLOW_COMMANDS のタイムアウト選択（electron 分岐）", () =>
     await vi.advanceTimersByTimeAsync(290_000);
     await expectation;
   });
+
+  it("test_cli_connectionはnative authorization待ちを含む長いtimeoutを使う", async () => {
+    vi.useFakeTimers();
+    installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+
+    let settled = false;
+    const promise = invoke("test_cli_connection", {
+      binaryPath: "/opt/custom/claude",
+    });
+    promise.catch(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(settled).toBe(false);
+    const expectation = expect(promise).rejects.toThrow(
+      /IPC timeout after 300000ms/,
+    );
+    await vi.advanceTimersByTimeAsync(290_000);
+    await expectation;
+  });
 });
 
 describe("listen / emit の electron 分岐", () => {

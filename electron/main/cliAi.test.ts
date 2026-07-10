@@ -242,6 +242,26 @@ describe("CliAiManager", () => {
     );
   });
 
+  it("Windowsのforward-slash UNC pathはrealpath前に拒否する", async () => {
+    const runner = new FakeRunner();
+    const resolveRealPath = vi.fn(async (candidate: string) => candidate);
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "win32",
+      isFile: async () => true,
+      realPath: resolveRealPath,
+      authorizeExecutable: async () => true,
+    });
+
+    await expect(
+      manager.handlers.test_cli_connection({
+        binaryPath: "//attacker/share/codex.cmd",
+      }),
+    ).rejects.toThrow("network path");
+    expect(resolveRealPath).not.toHaveBeenCalled();
+    expect(runner.runCalls).toHaveLength(0);
+  });
+
   it("Claudeは静的model、Codex/OpenCodeは安全なargvの出力をparseする", async () => {
     const { manager, runner } = createHarness();
     const claude = await manager.handlers.list_cli_models({
@@ -538,6 +558,37 @@ describe("CliAiManager", () => {
     await expect(send).rejects.toThrow("CLI stream timed out after 20ms");
   });
 
+  it("main側deadlineはpath解決時間も含み、期限後にchildを起動しない", async () => {
+    const runner = new FakeRunner();
+    let resolveRealPath!: (candidate: string) => void;
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async () =>
+        new Promise<string>((resolve) => {
+          resolveRealPath = resolve;
+        }),
+      authorizeExecutable: async () => true,
+      streamTimeoutMs: 20,
+      forceKillAfterMs: 20,
+    });
+    const send = manager.handlers.send_cli_chat_stream({
+      payload: {
+        cli: "claude",
+        binaryPath: "/usr/local/bin/claude",
+        prompt: "hello",
+      },
+    });
+    await vi.waitFor(() => expect(resolveRealPath).toBeTypeOf("function"));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    resolveRealPath("/usr/local/bin/claude");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(runner.startCalls).toHaveLength(0);
+    await expect(send).rejects.toThrow("CLI stream timed out after 20ms");
+  });
+
   it("disposeAllはactive childを停止する", async () => {
     const { manager, runner } = createHarness();
     const send = manager.handlers.send_cli_chat_stream({
@@ -551,36 +602,65 @@ describe("CliAiManager", () => {
     runner.nextRunning.finish(null, "SIGTERM");
     await send;
   });
+
+  it("disposeAll後はcapture系handlerもfail-closedにする", async () => {
+    const { manager, runner } = createHarness();
+    manager.disposeAll();
+
+    await expect(
+      manager.handlers.test_cli_connection({
+        binaryPath: "/usr/local/bin/claude",
+      }),
+    ).rejects.toThrow("CLI manager is disposed");
+    expect(runner.runCalls).toHaveLength(0);
+  });
 });
 
 describe("createNodeCliProcessRunner", () => {
-  it(
-    "disposeAllは実childを即時回収する",
-    async () => {
-      const runner = createNodeCliProcessRunner(process.platform);
-      const running = runner.start({
-        executable: process.execPath,
-        args: [
-          "-e",
-          "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)",
-        ],
-      });
-      await new Promise<void>((resolve, reject) => {
-        running.stdout.once("data", () => resolve());
-        running.stdout.once("error", reject);
-      });
+  it("disposeAllは実childを即時回収する", async () => {
+    const runner = createNodeCliProcessRunner(process.platform);
+    const running = runner.start({
+      executable: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)",
+      ],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
-      if (!runner.disposeAll) {
-        running.terminate("SIGKILL");
-        await running.completion;
-        throw new Error("CliProcessRunner.disposeAll is missing");
-      }
-      runner.disposeAll();
-      const result = await running.completion;
-      expect(result.exitCode !== 0 || result.signal !== null).toBe(true);
-    },
-    10_000,
-  );
+    if (!runner.disposeAll) {
+      running.terminate("SIGKILL");
+      await running.completion;
+      throw new Error("CliProcessRunner.disposeAll is missing");
+    }
+    runner.disposeAll();
+    const result = await running.completion;
+    expect(result.exitCode !== 0 || result.signal !== null).toBe(true);
+  }, 10_000);
+
+  it("disposeAll後のrun/startは新しいchildを起動しない", async () => {
+    const runner = createNodeCliProcessRunner(process.platform);
+    const spec: CliCommandSpec = {
+      executable: process.execPath,
+      args: ["-e", ""],
+    };
+    runner.disposeAll?.();
+
+    let started: RunningCliProcess | null = null;
+    let startError: unknown;
+    try {
+      started = runner.start(spec);
+    } catch (cause) {
+      startError = cause;
+    }
+    if (started) await started.completion;
+    expect(startError).toEqual(
+      expect.objectContaining({ message: "CLI process runner is disposed" }),
+    );
+    await expect(
+      runner.run(spec, { timeoutMs: 1_000, maxOutputBytes: 1024 }),
+    ).rejects.toThrow("CLI process runner is disposed");
+  });
 });
 
 describe("detectCliBinaryMain", () => {
