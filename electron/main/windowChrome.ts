@@ -1,5 +1,5 @@
 /**
- * ウィンドウクロームの純関数部（設計書 §6.1 / §6.4、Phase 2 S6）。
+ * ウィンドウクロームの純関数部（設計書 §6.1 / §6.4 / §6.5、Phase 2 S6/S7）。
  *
  * electron を実行時 import しない（型のみ）純粋モジュール。
  * windows.ts が BrowserWindow / Menu / ipcMain へ配線するグルーを担い、
@@ -8,6 +8,8 @@
  * - applicationMenuPolicy: §6.1 メニュー方針（zoom ロールなし）
  * - createCloseVetoController: §6.4 close veto 非同期プロトコル
  *   （1,500ms タイマ満了パス含む）
+ * - isValidPanelLabel / buildPanelUrl / buildPanelWindowOptions:
+ *   §6.5 パネル別窓（label 検証 + URL は main が組み立てる）
  */
 import type { BrowserWindowConstructorOptions } from "electron";
 
@@ -89,6 +91,88 @@ export function buildMainWindowOptions(input: {
     // bounds が画面外でも maximized は現在のディスプレイで復元して安全
     startMaximized: savedState?.maximized === true,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6.5 パネル別窓（WebviewWindow → BrowserWindow）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * パネル窓 label の検証パターン（§6.5）。Tauri capability の
+ * windows scope glob `panel-*` の代替となる侵害時ガード —
+ * renderer が任意 label で窓を作れないよう列挙的な文字クラスに絞る。
+ */
+export const PANEL_LABEL_PATTERN = /^panel-[a-z0-9-]+$/;
+
+export const PANEL_WINDOW_LABEL_PREFIX = "panel-";
+
+export function isValidPanelLabel(label: unknown): label is string {
+  return typeof label === "string" && PANEL_LABEL_PATTERN.test(label);
+}
+
+/**
+ * パネル窓 URL は main が label から組み立てる（renderer 供給 URL 拒否 — §6.5）。
+ * - dev: `${ELECTRON_RENDERER_URL}/?window=panel&panel=<id>`
+ * - prod: `app://bundle/index.html?window=panel&panel=<id>`（app:// は S8）
+ * `<id>` は label から `panel-` プレフィックスを剥がしたもの
+ * （renderer 側 parsePanelWindowTarget の受理形式）。
+ */
+export function buildPanelUrl(
+  rendererUrl: string | undefined,
+  label: string,
+): string {
+  const id = label.slice(PANEL_WINDOW_LABEL_PREFIX.length);
+  const query = `window=panel&panel=${encodeURIComponent(id)}`;
+  if (rendererUrl) {
+    return `${rendererUrl.replace(/\/+$/, "")}/?${query}`;
+  }
+  return `app://bundle/index.html?${query}`;
+}
+
+/** feature 層 buildPanelWindowOptions（480×900）と同値のデフォルト。 */
+export const PANEL_WINDOW_DEFAULTS = { width: 480, height: 900 } as const;
+
+/** renderer 入力を信用しない寸法サニタイズ（非数・非正は default に落とす）。 */
+function sanePanelSize(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return Math.round(value);
+}
+
+/**
+ * §6.5: transparent / frame:false（全 OS — Tauri パネル窓の decorations:false
+ * と同挙動）/ requested サイズ / label 別 window-state 復元（requested より優先）。
+ * 親子関係は付けない（現行はフローティング独立窓）。
+ */
+export function buildPanelWindowOptions(input: {
+  savedState: WindowStateEntry | undefined;
+  displayWorkAreas: readonly WindowBounds[];
+  requested: { width?: unknown; height?: unknown; title?: unknown };
+}): MainWindowChrome {
+  const { savedState, displayWorkAreas, requested } = input;
+
+  const options: BrowserWindowConstructorOptions = {
+    width: sanePanelSize(requested.width, PANEL_WINDOW_DEFAULTS.width),
+    height: sanePanelSize(requested.height, PANEL_WINDOW_DEFAULTS.height),
+    title: typeof requested.title === "string" ? requested.title : "Grimodex",
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    show: false,
+  };
+
+  const restored = savedState
+    ? clampBoundsToDisplays(savedState.bounds, displayWorkAreas)
+    : null;
+  if (restored) {
+    options.x = restored.x;
+    options.y = restored.y;
+    options.width = restored.width;
+    options.height = restored.height;
+  }
+
+  return { options, startMaximized: savedState?.maximized === true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

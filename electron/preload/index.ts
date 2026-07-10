@@ -33,6 +33,28 @@ async function call<T>(channel: string, ...args: unknown[]): Promise<T> {
 type EventCallback = (payload: unknown) => void;
 const eventListeners = new Map<string, Set<EventCallback>>();
 
+/**
+ * §7.2: unlisten 呼び忘れ検出（dev のみ = ELECTRON_RENDERER_URL がある起動。
+ * sandbox preload の process ポリフィルは env を持つ）。同一チャネルの
+ * リスナ数が閾値を超えたら 1 回だけ warn し、閾値を下回れば再武装する。
+ */
+const LISTENER_LEAK_THRESHOLD = 32;
+const leakWarnedChannels = new Set<string>();
+
+function checkListenerLeak(channel: string, size: number): void {
+  if (!process.env.ELECTRON_RENDERER_URL) return;
+  if (size < LISTENER_LEAK_THRESHOLD) {
+    leakWarnedChannels.delete(channel);
+    return;
+  }
+  if (leakWarnedChannels.has(channel)) return;
+  leakWarnedChannels.add(channel);
+  console.warn(
+    `[grimodex] possible event listener leak: "${channel}" has ${size} ` +
+      "listeners (unlisten の呼び忘れを確認してください)",
+  );
+}
+
 ipcRenderer.on(IPC.event, (_event, channel: unknown, payload: unknown) => {
   if (typeof channel !== "string") return;
   const set = eventListeners.get(channel);
@@ -110,6 +132,7 @@ const bridge = {
       eventListeners.set(channel, set);
     }
     set.add(cb);
+    checkListenerLeak(channel, set.size);
     return () => {
       const current = eventListeners.get(channel);
       if (!current) return;
@@ -172,7 +195,7 @@ const bridge = {
     call(IPC.setZoomFactor, factor),
 
   panelWindow: {
-    // main 側実装は S7（§6.5）。S4 は IPC_UNIMPLEMENTED reject。
+    // 実体は main の windows.ts（§6.5 — label 検証 + URL は main が組み立て）。
     open: (
       label: string,
       opts: { width: number; height: number; title: string },

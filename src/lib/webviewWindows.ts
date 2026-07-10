@@ -7,7 +7,7 @@ import { isTauri } from "./tauri";
  * 現に使われている操作（getByLabel / 生成 / setFocus）のみ公開する。
  *
  * Electron シェルでは main の panelWindow ブリッジへ写像する（設計書 §6.5。
- * main 側実装は S7 — それまで bridge 側は IPC_UNIMPLEMENTED reject）。
+ * main 側実体は electron/main/windows.ts の openPanelWindow / focusPanelWindow）。
  */
 
 /** 抽象層が公開する別窓ハンドル。現に使う操作（setFocus）だけを持つ。 */

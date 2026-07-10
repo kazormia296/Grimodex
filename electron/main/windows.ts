@@ -8,17 +8,23 @@
  * - §6.4: close veto 非同期プロトコル（純関数 createCloseVetoController）
  * - §6.7: windowState.ts 接続（resize/move の debounce 保存 + 復元）
  * - §6.1: メニュー方針（win/linux は null、macOS は zoom ロールなしの最小構成）
- * - パネル別窓 panel-* は S7 で実装する（§6.5）。
+ * - §6.5: パネル別窓 panel-*（S7）— label 検証 + URL は main が組み立てる。
+ *   メイン窓 closed で全パネル窓を閉じる（window-all-closed → quit は index.ts）
  */
 import path from "node:path";
 
 import { app, BrowserWindow, ipcMain, Menu, screen } from "electron";
+import type { BrowserWindowConstructorOptions } from "electron";
 
 import { IPC } from "../shared/ipcContract.js";
 import {
   applicationMenuPolicy,
   buildMainWindowOptions,
+  buildPanelUrl,
+  buildPanelWindowOptions,
   createCloseVetoController,
+  isValidPanelLabel,
+  PANEL_WINDOW_LABEL_PREFIX,
 } from "./windowChrome.js";
 import type { CloseVetoController } from "./windowChrome.js";
 import { createWindowStateStore } from "./windowState.js";
@@ -149,39 +155,26 @@ function attachWindowChrome(
   });
 }
 
+/** 全窓共通の webPreferences（§5.1 セキュリティ前提）。 */
+function buildWebPreferences(): BrowserWindowConstructorOptions["webPreferences"] {
+  return {
+    preload: path.join(__dirname, "preload.cjs"),
+    contextIsolation: true,
+    sandbox: true,
+    nodeIntegration: false,
+  };
+}
+
 /**
- * メイン窓を生成する。既に生存していればフォーカスして返す。
- * tauri.conf.json とのパリティ + window-state 復元は §6.1 / §6.7
- * （組み立ては windowChrome.ts の純関数）。
+ * ready-to-show で表示 + 復元位置の再適用（メイン窓 / パネル窓共通）。
+ * maximize() は非表示窓を表示させる副作用があるため show の直前に行う。
  */
-export function createMainWindow(): BrowserWindow {
-  const existing = getWindow("main");
-  if (existing) {
-    existing.focus();
-    return existing;
-  }
-
-  const store = ensureChrome();
-  const { options, startMaximized } = buildMainWindowOptions({
-    platform: process.platform,
-    savedState: store.get("main"),
-    displayWorkAreas: screen.getAllDisplays().map((d) => d.workArea),
-  });
-
-  const win = new BrowserWindow({
-    ...options,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
-      contextIsolation: true,
-      sandbox: true,
-      nodeIntegration: false,
-    },
-  });
-  track("main", win);
-  attachWindowChrome("main", win, store);
-
+function showWhenReady(
+  win: BrowserWindow,
+  options: BrowserWindowConstructorOptions,
+  startMaximized: boolean,
+): void {
   win.once("ready-to-show", () => {
-    // maximize() は非表示窓を表示させる副作用があるため show の直前に行う
     if (startMaximized) win.maximize();
     win.show();
     // map 後に WM が constructor の x/y を上書きする環境がある
@@ -205,6 +198,40 @@ export function createMainWindow(): BrowserWindow {
       `[grimodex-electron] renderer loaded: ${win.webContents.getURL()}`,
     );
   });
+}
+
+/**
+ * メイン窓を生成する。既に生存していればフォーカスして返す。
+ * tauri.conf.json とのパリティ + window-state 復元は §6.1 / §6.7
+ * （組み立ては windowChrome.ts の純関数）。
+ */
+export function createMainWindow(): BrowserWindow {
+  const existing = getWindow("main");
+  if (existing) {
+    existing.focus();
+    return existing;
+  }
+
+  const store = ensureChrome();
+  const { options, startMaximized } = buildMainWindowOptions({
+    platform: process.platform,
+    savedState: store.get("main"),
+    displayWorkAreas: screen.getAllDisplays().map((d) => d.workArea),
+  });
+
+  const win = new BrowserWindow({
+    ...options,
+    webPreferences: buildWebPreferences(),
+  });
+  track("main", win);
+  attachWindowChrome("main", win, store);
+  showWhenReady(win, options, startMaximized);
+
+  // §6.5: メイン窓 closed で全パネル窓を閉じる（残った窓が無くなれば
+  // window-all-closed → app.quit()（index.ts）で終了する）。
+  win.on("closed", () => {
+    closeAllPanelWindows();
+  });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
   if (rendererUrl) {
@@ -218,4 +245,69 @@ export function createMainWindow(): BrowserWindow {
   }
 
   return win;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6.5 パネル別窓（S7）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * パネル窓を開く（`grim:panel-open` の実体 — ipc.ts が shellCommands の
+ * delegate として注入する）。
+ * - label は `/^panel-[a-z0-9-]+$/` で検証（不正は throw → envelope エラー）
+ * - URL は main が label から組み立てる（renderer 供給 URL 拒否 — §6.5）
+ * - 既存窓があれば focus のみ（Tauri の openPanelWindow と同じ冪等挙動）
+ * - window-state は label 別に復元/保存（attachWindowChrome を再利用）
+ */
+export function openPanelWindow(
+  label: string,
+  requested: { width?: unknown; height?: unknown; title?: unknown },
+): void {
+  if (!isValidPanelLabel(label)) {
+    throw new Error(`invalid panel window label: ${String(label)}`);
+  }
+  const existing = getWindow(label);
+  if (existing) {
+    if (existing.isMinimized()) existing.restore();
+    existing.focus();
+    return;
+  }
+
+  const store = ensureChrome();
+  const { options, startMaximized } = buildPanelWindowOptions({
+    savedState: store.get(label),
+    displayWorkAreas: screen.getAllDisplays().map((d) => d.workArea),
+    requested,
+  });
+
+  const win = new BrowserWindow({
+    ...options,
+    webPreferences: buildWebPreferences(),
+  });
+  track(label, win);
+  attachWindowChrome(label, win, store);
+  showWhenReady(win, options, startMaximized);
+
+  void win.loadURL(buildPanelUrl(process.env.ELECTRON_RENDERER_URL, label));
+}
+
+/**
+ * label のパネル窓が生存していれば focus して true（`grim:panel-focus-by-label`
+ * の実体）。renderer 側 getWebviewWindowByLabel の存在確認に使われる。
+ */
+export function focusPanelWindow(label: string): boolean {
+  if (!isValidPanelLabel(label)) return false;
+  const win = getWindow(label);
+  if (!win) return false;
+  if (win.isMinimized()) win.restore();
+  win.focus();
+  return true;
+}
+
+/** 生存中の全パネル窓に close を要求する（veto プロトコル §6.4 を通る）。 */
+function closeAllPanelWindows(): void {
+  for (const [label, win] of [...registry]) {
+    if (!label.startsWith(PANEL_WINDOW_LABEL_PREFIX)) continue;
+    if (!win.isDestroyed()) win.close();
+  }
 }

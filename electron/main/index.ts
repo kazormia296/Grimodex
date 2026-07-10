@@ -39,7 +39,11 @@ if (!gotSingleInstanceLock) {
     // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
     const backend = initBackend();
     registerIpcRouter(backend);
-    registerEventBus();
+    // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
+    // 登録時に flush される backend:ready は窓生成前のため renderer には
+    // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
+    // workspace:opened が担う）。
+    registerEventBus(backend);
     createMainWindow();
   });
 

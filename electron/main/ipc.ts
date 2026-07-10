@@ -24,6 +24,7 @@ import {
   buildShellCommandHandlers,
   registerShellBridgeHandlers,
 } from "./shellCommands.js";
+import { focusPanelWindow, openPanelWindow } from "./windows.js";
 
 function isRecord(value: unknown): value is CommandArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -59,5 +60,10 @@ export function registerIpcRouter(backend: NapiBackendLike | null): void {
     },
   );
 
-  registerShellBridgeHandlers();
+  // パネル別窓（§6.5、S7）の実体を注入する（shellCommands は windows.ts に
+  // 直接依存しない — PanelWindowDelegate のコメント参照）。
+  registerShellBridgeHandlers({
+    open: openPanelWindow,
+    focusByLabel: focusPanelWindow,
+  });
 }

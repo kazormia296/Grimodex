@@ -118,8 +118,24 @@ function resolveAppVersion(): string {
   return version;
 }
 
-/** ブリッジ native API（§5.4 の dialog / fs / openExternal / getVersion / zoom / windowControls）。 */
-export function registerShellBridgeHandlers(): void {
+/**
+ * パネル別窓操作の注入点（§6.5、S7）。実体は windows.ts の
+ * openPanelWindow / focusPanelWindow — ipc.ts が注入する。ここで直接
+ * import しないのは、shellCommands 単体テスト（electron モック）へ
+ * windows.ts の依存（Menu / screen / window-state fs）を持ち込まないため。
+ */
+export interface PanelWindowDelegate {
+  open(
+    label: string,
+    opts: { width?: unknown; height?: unknown; title?: unknown },
+  ): void;
+  focusByLabel(label: string): boolean;
+}
+
+/** ブリッジ native API（§5.4 の dialog / fs / openExternal / getVersion / zoom / windowControls / panelWindow）。 */
+export function registerShellBridgeHandlers(
+  panelWindows?: PanelWindowDelegate,
+): void {
   handleWithEnvelope(IPC.windowControl, (event, op) => {
     const win = senderWindow(event);
     switch (op) {
@@ -204,16 +220,18 @@ export function registerShellBridgeHandlers(): void {
     return null;
   });
 
-  // パネル別窓は S7（§6.5）。フル API 契約（§5.4）を満たすための明示スタブ。
-  ipcMain.handle(
-    IPC.panelOpen,
-    (): Envelope => ({ ok: false, error: unimplementedError("panelWindow.open") }),
-  );
-  ipcMain.handle(
-    IPC.panelFocus,
-    (): Envelope => ({
-      ok: false,
-      error: unimplementedError("panelWindow.focusByLabel"),
-    }),
-  );
+  // パネル別窓（§6.5、S7）。delegate 未注入（単体テスト等）は S4 と同じ
+  // IPC_UNIMPLEMENTED の明示エラーへ fail-soft する。
+  handleWithEnvelope(IPC.panelOpen, (_event, label, opts) => {
+    if (!panelWindows) throw new Error(unimplementedError("panelWindow.open"));
+    const o = (opts ?? {}) as { width?: unknown; height?: unknown; title?: unknown };
+    panelWindows.open(requireStringArg(label, "label"), o);
+    return null;
+  });
+  handleWithEnvelope(IPC.panelFocus, (_event, label) => {
+    if (!panelWindows) {
+      throw new Error(unimplementedError("panelWindow.focusByLabel"));
+    }
+    return panelWindows.focusByLabel(requireStringArg(label, "label"));
+  });
 }
