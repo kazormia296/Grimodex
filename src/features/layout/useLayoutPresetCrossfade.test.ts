@@ -27,6 +27,7 @@ describe("useLayoutPresetCrossfade", () => {
       activePresetId: "builtin:default",
       layoutLocked: false,
       maximizedPanelId: null,
+      initialized: true,
     });
   });
 
@@ -88,6 +89,29 @@ describe("useLayoutPresetCrossfade", () => {
     unmount();
     await Promise.resolve();
 
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not fade the startup layout hydration", async () => {
+    useLayoutStore.setState({
+      activePresetId: null,
+      initialized: false,
+    });
+    const { result } = renderHook(() => useLayoutPresetCrossfade());
+    const setSpy = vi.spyOn(result.current.crossfadeControls, "set");
+    const startSpy = vi.spyOn(result.current.crossfadeControls, "start");
+
+    act(() => {
+      useLayoutStore.setState({
+        activePresetId: "builtin:default",
+        initialized: true,
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(setSpy).not.toHaveBeenCalled();
     expect(startSpy).not.toHaveBeenCalled();
   });
 
