@@ -26,7 +26,7 @@ export function isSafeExternalUrl(url: string): boolean {
  */
 export function openExternalUrl(url: string): void {
   if (!isSafeExternalUrl(url)) return;
-  void import("@tauri-apps/plugin-opener")
+  void import("./opener")
     .then(({ openUrl }) => openUrl(url))
     .catch(() => {
       // opener 不在 (テスト等) では無視。

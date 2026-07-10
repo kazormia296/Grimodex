@@ -2439,3 +2439,21 @@ html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [dat
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Electron シェル: data-tauri-drag-region → app-region 写像 ────────────
+   (Electron移行Phase2設計書 §6.2。JSX 無変更で、main.tsx が立てる
+   html[data-shell="electron"] でのみ有効。Tauri の属性は「その要素自身への
+   mousedown」だけだが CSS app-region は子孫まで drag 化するため、2 つ目の
+   セレクタで子孫の対話要素を no-drag に戻して差分吸収する。) */
+html[data-shell="electron"] [data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+html[data-shell="electron"]
+  [data-tauri-drag-region]
+  :where(button, a, input, select, textarea,
+    [role="button"], [role="menuitem"], [data-tauri-drag-region="false"]) {
+  -webkit-app-region: no-drag;
+}
+html[data-shell="electron"] [data-tauri-drag-region="false"] {
+  -webkit-app-region: no-drag;
+}

@@ -34,6 +34,6 @@ argument-hint: [feature-description]
   - `pnpm test`
   - `npx tsc --noEmit`
   - `pnpm lint:fix`
-  - Rust 変更時: `cd src-tauri && cargo check && cargo test --no-default-features`
+  - Rust 変更時: `cd src-tauri && cargo check --workspace && cargo test --workspace --no-default-features`
   - レイアウト変更時（CenterStripe/RegionStripe/Splitter/LayoutShell 周辺）: `pnpm test:browser`
 - コミットは変更ファイルを個別 `git add`（`git add -A` 禁止）。master へ直接 commit せず branch を切り、push は branch + PR（master 直 push は hook でブロック済み）。

@@ -1,0 +1,16 @@
+{
+  "name": "grimodex-node",
+  "version": "0.1.0",
+  "private": true,
+  "napi": {
+    "name": "grimodex-node"
+  },
+  "scripts": {
+    "build": "napi build --release",
+    "build:debug": "napi build",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  }
+}

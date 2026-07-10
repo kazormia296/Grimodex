@@ -3,7 +3,8 @@ import { useMapStore } from "./mapStore";
 import { DEFAULT_GALAXY_FILTERS } from "./types";
 
 // Suppress global-settings persistence in unit tests
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn().mockResolvedValue({}),
 }));
 

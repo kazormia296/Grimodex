@@ -34,6 +34,7 @@ import {
 import type { MarkdownImportMode } from "../importTypes";
 import { prepareImportTarget, type ImportTarget } from "../importTarget";
 import { collectMarkdownFromDir } from "../markdownFolderReader";
+import { readDir, readTextFile } from "@/lib/fs";
 
 interface Props {
   importTarget: ImportTarget;
@@ -46,7 +47,6 @@ async function readDirRecursive(
   dirPath: string,
   basePath: string,
 ): Promise<{ relPath: string; content: string }[]> {
-  const { readDir, readTextFile } = await import("@tauri-apps/plugin-fs");
   return collectMarkdownFromDir(dirPath, basePath, { readDir, readTextFile });
 }
 

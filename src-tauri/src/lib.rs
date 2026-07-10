@@ -4,14 +4,23 @@ mod ai_responses;
 mod cli_provider;
 mod codex_matching;
 mod commands;
-mod database;
 mod external_mount;
 mod license;
 mod lint_logging;
 mod semantic;
 #[cfg(target_os = "linux")]
 mod webkit_features;
-mod workspace;
+
+// grimodex-db 抽出 (Electron 移行 Phase 2 S1) の互換シム。DB 層の実体は
+// crates/grimodex-db に移動したが、既存の `crate::database::…` /
+// `crate::workspace::…` パス (semantic / commands 配下 145 コマンド) は
+// 1 行も変えずにこの re-export で従来どおり解決する。
+pub(crate) mod database {
+    pub use grimodex_db::*;
+}
+pub(crate) mod workspace {
+    pub use grimodex_db::workspace::*;
+}
 
 use std::sync::{Arc, Mutex};
 use tauri::Manager;

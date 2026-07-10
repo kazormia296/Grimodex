@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@/lib/opener";
 import { ExternalLink, KeyRound } from "lucide-react";
 import { useLicenseStore } from "@/features/license/store";
 

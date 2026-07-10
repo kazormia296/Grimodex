@@ -17,7 +17,8 @@ vi.mock("@/features/tree/treeStore", () => ({
 }));
 
 // Mock invoke so the auto-persist subscriber doesn't fail
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn().mockResolvedValue({}),
 }));
 

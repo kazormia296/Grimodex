@@ -12,23 +12,23 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AppendChangeEvent {
-    pub(crate) event_uid: String,
-    pub(crate) scene_id: Option<String>,
-    pub(crate) domain: String,
-    pub(crate) op_type: String,
-    pub(crate) entity_type: Option<String>,
-    pub(crate) entity_id: Option<String>,
-    pub(crate) payload: String,
-    pub(crate) timestamp: i64,
+pub struct AppendChangeEvent {
+    pub event_uid: String,
+    pub scene_id: Option<String>,
+    pub domain: String,
+    pub op_type: String,
+    pub entity_type: Option<String>,
+    pub entity_id: Option<String>,
+    pub payload: String,
+    pub timestamp: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AppendResult {
-    pub(crate) inserted_count: usize,
-    pub(crate) tail_sequence: i64,
-    pub(crate) tail_hash: String,
+pub struct AppendResult {
+    pub inserted_count: usize,
+    pub tail_sequence: i64,
+    pub tail_hash: String,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -100,7 +100,7 @@ fn live_scene_id(conn: &Connection, scene_id: Option<&str>) -> anyhow::Result<Op
     Ok(exists.then(|| scene_id.to_string()))
 }
 
-pub(crate) fn append_change_events_in_tx(
+pub fn append_change_events_in_tx(
     conn: &Connection,
     project_id: &str,
     session_id: &str,
@@ -177,7 +177,7 @@ pub(crate) fn append_change_events_in_tx(
     })
 }
 
-pub(crate) fn append_change_events(
+pub fn append_change_events(
     conn: &Connection,
     project_id: &str,
     session_id: &str,
@@ -202,7 +202,7 @@ pub(crate) fn append_change_events(
 }
 
 impl Database {
-    pub(crate) fn append_change_events(
+    pub fn append_change_events(
         &self,
         project_id: &str,
         session_id: &str,
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn golden_hash_vectors_match_js_fixture() {
-        let raw = include_str!("../../../src/features/timelapse/hash-vectors.json");
+        let raw = include_str!("../../../../src/features/timelapse/hash-vectors.json");
         let vectors: Vec<HashVector> = serde_json::from_str(raw).unwrap();
         for vector in vectors {
             let body = vector.body;

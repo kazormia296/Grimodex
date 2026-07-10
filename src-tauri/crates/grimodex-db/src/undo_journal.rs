@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection};
 
 #[derive(Debug, Clone)]
-pub(crate) struct UndoJournalInsert<'a> {
+pub struct UndoJournalInsert<'a> {
     pub id: &'a str,
     pub project_id: &'a str,
     pub surface: &'a str,
@@ -16,7 +16,7 @@ pub(crate) struct UndoJournalInsert<'a> {
 }
 
 /// Insert an undo-journal row inside an open transaction.
-pub(crate) fn insert_undo_journal_in_tx(
+pub fn insert_undo_journal_in_tx(
     conn: &Connection,
     row: UndoJournalInsert<'_>,
 ) -> anyhow::Result<()> {

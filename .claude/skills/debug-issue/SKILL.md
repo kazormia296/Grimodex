@@ -21,5 +21,5 @@ argument-hint: [bug-description-or-error-message]
 
 - Tauri IPC 関連なら Rust 側とフロント側の両方を確認する。
 - レイアウト/幾何バグは happy-dom では実寸を測れない → `*.browser.test.tsx` で gate する。
-- 検証: `pnpm test` ＋（Rust 変更時）`cd src-tauri && cargo test --no-default-features`。
+- 検証: `pnpm test` ＋（Rust 変更時）`cd src-tauri && cargo test --workspace --no-default-features`。
 - コミットは変更ファイルを個別 `git add`（`git add -A` 禁止）。master へ直接 commit せず branch を切り、push は branch + PR（master 直 push は hook でブロック済み）。

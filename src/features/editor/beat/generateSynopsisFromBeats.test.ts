@@ -1,15 +1,12 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-type ListenHandler = (event: { payload: unknown }) => void;
+type ListenHandler = (payload: unknown) => void;
 const listeners = new Map<string, ListenHandler>();
 const invokeMock = vi.fn();
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (eventName: string, handler: ListenHandler) => {
     listeners.set(eventName, handler);
     return () => {
@@ -63,7 +60,7 @@ import { GeneratedProseBlockNode } from "@/features/editor/GeneratedProseBlockNo
 import { generateSynopsisFromBeats } from "./generateSynopsisFromBeats";
 
 function emit(event: string, payload: unknown) {
-  listeners.get(event)?.({ payload });
+  listeners.get(event)?.(payload);
 }
 
 function createEditorWithBeats(beats: { id: string; instructions: string }[]) {

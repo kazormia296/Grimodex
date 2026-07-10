@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-type ListenHandler = (event: { payload: unknown }) => void;
+type ListenHandler = (payload: unknown) => void;
 
 interface Registration {
   eventName: string;
@@ -15,9 +15,6 @@ const invokeMock = vi.fn();
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (eventName: string, handler: ListenHandler) => {
     const reg: Registration = {
       eventName,
@@ -39,7 +36,7 @@ function emit(event: string, payload: unknown) {
   // this event. If listeners have leaked from prior calls, they fire too —
   // which is exactly the regression we want to catch.
   for (const reg of registrations) {
-    if (reg.active && reg.eventName === event) reg.handler({ payload });
+    if (reg.active && reg.eventName === event) reg.handler(payload);
   }
 }
 

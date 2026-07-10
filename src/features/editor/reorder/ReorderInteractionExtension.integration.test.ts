@@ -20,7 +20,8 @@ import { clearBunsetsuCache, fetchBunsetsuUnits } from "./bunsetsuSegmenter";
 import { currentUnitsFromOrder } from "./reorderPermutation";
 import type { ReorderUnit } from "./types";
 
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn(async (_cmd: string, args: { text: string }) => {
     // テスト用の疑似文節分割: 2 文字ごとに区切る（文と明確に異なる境界数）。
     const text = args.text;

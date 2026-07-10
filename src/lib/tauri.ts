@@ -1,11 +1,19 @@
 import type { BrowserMock } from "./browser-mock";
 import { enqueueIpc } from "./ipcQueue";
+import { electronBridge, isElectron } from "./shell";
 export type { BrowserMock };
 
 /** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
+
+/**
+ * Electron シェル判定（設計書 §3.4）。実体は ./shell.ts（既存テストの
+ * 部分 vi.mock("@/lib/tauri") factory と干渉させないため）。
+ * 分岐順は isTauri → isElectron → browser-mock。
+ */
+export { isElectron } from "./shell";
 
 const IPC_TIMEOUT_MS = 10_000;
 
@@ -35,6 +43,10 @@ const SLOW_COMMANDS = new Set([
   "codex_index_entry",
   /** 中規模プロジェクトでは Aho-Corasick 構築に 10 秒超かかることがある */
   "codex_rebuild_matcher",
+  /** 初回呼び出しは lindera UniDic 埋め込み辞書のコールドロード（OnceLock、
+   *  morph.rs）で低速機だと 10s を超えうる。reject すると文節リオーダーが
+   *  文粒度フォールバックに退化するため長めのタイムアウトを与える。 */
+  "segment_bunsetsu",
   /** ネイティブ保存ダイアログを開いている間 invoke がブロックする。ユーザーが
    *  保存先を選ぶまで分単位かかりうるので 10s では reject されてしまう。 */
   "export_save_text",
@@ -90,6 +102,14 @@ export async function listen<T>(
     const { listen: tauriListen } = await import("@tauri-apps/api/event");
     return tauriListen<T>(event, (e) => handler(e.payload));
   }
+  if (isElectron()) {
+    // bridge.listen は同期 unlisten 返し（§5.4 — ここで Promise 化）。
+    // allowlist（electron/shared/ipcContract.ts の列挙制）外のチャネルは
+    // preload が throw し、この async 関数の reject になる。
+    return electronBridge().listen(event, (payload) => {
+      handler(payload as T);
+    });
+  }
   // Browser fallback: use CustomEvent
   const listener = (e: Event) => {
     const detail = (e as CustomEvent<T>).detail;
@@ -113,6 +133,12 @@ export async function emit<T = unknown>(
     await tauriEmit(event, payload);
     return;
   }
+  if (isElectron()) {
+    // main が allowlist 検証のうえ全窓へ broadcast（自己配信含む =
+    // Tauri v2 の emit 契約と同じ。§7.1）。
+    await electronBridge().emit(event, payload);
+    return;
+  }
   window.dispatchEvent(new CustomEvent(event, { detail: payload }));
 }
 
@@ -125,6 +151,26 @@ export async function invoke<T = unknown>(
     const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
     const ms = SLOW_COMMANDS.has(cmd) ? AI_IPC_TIMEOUT_MS : IPC_TIMEOUT_MS;
     return enqueueIpc(cmd, () => tauriInvoke<T>(cmd, args), ms);
+  }
+  if (isElectron()) {
+    console.debug(`[tauri] invoke: ${cmd} (electron)`);
+    const bridge = electronBridge();
+    const ms = SLOW_COMMANDS.has(cmd) ? AI_IPC_TIMEOUT_MS : IPC_TIMEOUT_MS;
+    return enqueueIpc(
+      cmd,
+      async () => {
+        const envelope = await bridge.invoke<T>(cmd, args);
+        if (!envelope.ok) {
+          // Tauri の invoke は reject 値が生文字列（AppError の文字列
+          // serialize）。envelope をここで解封して同一ワイヤにする —
+          // `WORKSPACE_SWITCHING` / `No workspace is open` 等のマーカー
+          // 部分一致判定（FE 126 箇所）の保存が目的（設計書 §5.2）。
+          throw envelope.error;
+        }
+        return envelope.value;
+      },
+      ms,
+    );
   }
   const mock = await getBrowserMock();
   return mock.invoke<T>(cmd, args);

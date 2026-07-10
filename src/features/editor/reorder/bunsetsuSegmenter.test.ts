@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/lib/tauri";
 import {
   clearBunsetsuCache,
   fetchBunsetsuUnits,
@@ -12,7 +12,8 @@ import StarterKit from "@tiptap/starter-kit";
 import { captureSwapSnapshot } from "./paragraphSnapshot";
 import { resolveParagraphAtSelection } from "./paragraphFlat";
 
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn(),
 }));
 

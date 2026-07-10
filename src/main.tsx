@@ -45,6 +45,14 @@ import "@fontsource/literata/latin-400-italic.css";
 import "@fontsource/literata/latin-700-italic.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
 import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
+import { isElectron } from "./lib/tauri";
+
+// Electron シェル判定フラグ。S6 の drag-region CSS
+// （html[data-shell="electron"] セレクタ、設計書 §6.2）がこの属性を条件に
+// data-tauri-drag-region → -webkit-app-region を有効化する。
+if (isElectron()) {
+  document.documentElement.dataset.shell = "electron";
+}
 
 window.addEventListener("unhandledrejection", (event) => {
   debugLog.error("Global", "unhandled rejection", errorDetail(event.reason));

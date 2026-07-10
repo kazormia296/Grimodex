@@ -53,3 +53,8 @@ src/features/chat/calibration/embeddings.generated.json
 # SDD scratch ledger
 .superpowers/
 .worktrees/
+
+# Electron シェル（Phase 2）: esbuild 出力 / napi クレートのビルド生成物
+dist-electron/
+electron/native/**/target/
+*.node

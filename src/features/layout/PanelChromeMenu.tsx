@@ -8,11 +8,11 @@ import {
 } from "@/components/ui/context-menu";
 import { useLayoutStore } from "./layoutStore";
 import type { PanelId } from "./panelIds";
-import { isTauri } from "@/lib/tauri";
 import {
   openPanelWindow,
   isPanelWindow,
   canOpenPanelWindow,
+  supportsPanelWindows,
 } from "./multiwindow/panelWindow";
 
 /**
@@ -107,14 +107,16 @@ export function PanelChromeMenu({ panelId, children }: PanelChromeMenuProps) {
         >
           {t("layout.panelMenu.collapse")}
         </ContextMenuItem>
-        {isTauri() && !isPanelWindow() && canOpenPanelWindow(panelId) && (
-          <ContextMenuItem
-            data-testid={`panel-ctx-open-window-${panelId}`}
-            onSelect={() => void openPanelWindow(panelId)}
-          >
-            {t("layout.panelMenu.openInWindow")}
-          </ContextMenuItem>
-        )}
+        {supportsPanelWindows() &&
+          !isPanelWindow() &&
+          canOpenPanelWindow(panelId) && (
+            <ContextMenuItem
+              data-testid={`panel-ctx-open-window-${panelId}`}
+              onSelect={() => void openPanelWindow(panelId)}
+            >
+              {t("layout.panelMenu.openInWindow")}
+            </ContextMenuItem>
+          )}
       </ContextMenuContent>
     </ContextMenu>
   );

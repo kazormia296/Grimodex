@@ -16,9 +16,9 @@ AIチャットパネルとCodex/Snippet抽出機能を組み合わせた小説�
 - ブラウザテスト: pnpm test:browser（実 Chromium + WebKit、`*.browser.test.tsx`。flex/grid 実寸など happy-dom で測れない幾何 invariant 用。WebKit は WKWebView/WebKitGTK と同系エンジンの近似ゲート — Arch 等の非 apt ホストでは `bash scripts/setup-webkit-host-libs.sh` を一度実行しないと WebKit 側は警告付き skip になる）
 - Lint: pnpm lint:fix
 - 型チェック: npx tsc --noEmit
-- Rustチェック: cd src-tauri && cargo check
-- Rust Lint: cd src-tauri && cargo clippy --all-targets
-- Rust テスト: cd src-tauri && cargo test --no-default-features（default features 有効時は libort_sys の glibc symbol mismatch でローカルリンク失敗）
+- Rustチェック: cd src-tauri && cargo check --workspace
+- Rust Lint: cd src-tauri && cargo clippy --workspace --all-targets
+- Rust テスト: cd src-tauri && cargo test --workspace --no-default-features（default features 有効時は libort_sys の glibc symbol mismatch でローカルリンク失敗。`--workspace` 必須 — DB 層は crates/grimodex-db 等のワークスペースメンバーにあり、root パッケージのみのテストでは走らない）
 
 ## テスト方針
 

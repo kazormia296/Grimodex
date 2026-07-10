@@ -5,7 +5,8 @@ import userEvent from "@testing-library/user-event";
 import type { GalaxyGraphInput } from "../galaxyGraph";
 
 // Suppress global-settings persistence (mapStore subscribe)
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn().mockResolvedValue({}),
 }));
 

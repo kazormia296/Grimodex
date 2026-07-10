@@ -3,9 +3,24 @@ import { useTranslation } from "react-i18next";
 import { Minus, Square, Copy, X } from "lucide-react";
 import { isMac } from "@/lib/platform";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import { isElectron } from "@/lib/shell";
+import { isTauri } from "@/lib/tauri";
+import {
+  closeWindow,
+  isWindowMaximized,
+  minimizeWindow,
+  onWindowResized,
+  toggleMaximizeWindow,
+} from "@/lib/windowControls";
 
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+/**
+ * デスクトップシェル（Tauri / Electron）でのみ描画する。
+ * Electron 判定は S6 のウィンドウクロームパリティ（frame:false の win/linux
+ * で操作系が空白になるのを防ぐ — 設計書 §6.3）。macOS はネイティブ信号機
+ * （Tauri は非表示運用、Electron は titleBarStyle:"hidden"）のため描画しない。
+ */
+function hasWindowChrome(): boolean {
+  return isTauri() || isElectron();
 }
 
 export function WindowControls() {
@@ -13,20 +28,17 @@ export function WindowControls() {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    if (!isTauri() || isMac()) return;
+    if (!hasWindowChrome() || isMac()) return;
 
     let unlisten: (() => void) | undefined;
 
     (async () => {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const win = getCurrentWindow();
-
       // Read initial state
-      setIsMaximized(await win.isMaximized());
+      setIsMaximized(await isWindowMaximized());
 
       // Track changes
-      unlisten = await win.onResized(async () => {
-        setIsMaximized(await win.isMaximized());
+      unlisten = await onWindowResized(() => {
+        void isWindowMaximized().then(setIsMaximized);
       });
     })();
 
@@ -35,24 +47,21 @@ export function WindowControls() {
     };
   }, []);
 
-  if (!isTauri() || isMac()) return null;
+  if (!hasWindowChrome() || isMac()) return null;
 
   async function minimize() {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().minimize();
+    await minimizeWindow();
   }
 
   async function toggleMaximize() {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().toggleMaximize();
+    await toggleMaximizeWindow();
   }
 
   async function close() {
     // 未確定の inline-AI diff があれば終了を止める (即時フィードバック)。
     // Mac ネイティブ閉じる / OS 経由の close は App の onCloseRequested が veto する。
     if (guardInlineAiPending()) return;
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().close();
+    await closeWindow();
   }
 
   return (

@@ -2,7 +2,7 @@ import {
   isPermissionGranted,
   requestPermission,
   sendNotification,
-} from "@tauri-apps/plugin-notification";
+} from "@/lib/notification";
 import i18next from "i18next";
 
 /**
@@ -84,7 +84,8 @@ export async function notifyRunTerminalIfUnfocused(
               })
             : i18next.t("kouetsu.progressToast.doneNoFindings");
 
-    sendNotification({ title: `${effectLabel} · ${scopeLabel}`, body });
+    // ラッパーは async なので、失敗をこの try/catch で握るため await する
+    await sendNotification({ title: `${effectLabel} · ${scopeLabel}`, body });
   } catch {
     /* 通知は best-effort。失敗しても run の結果表示 (トースト) は生きている */
   }

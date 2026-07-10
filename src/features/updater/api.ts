@@ -1,14 +1,14 @@
 import {
   check,
+  relaunch,
   type Update,
   type DownloadEvent,
-} from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+} from "@/lib/updater";
 import { isTauri } from "@/lib/tauri";
 import { useUpdaterStore } from "./updaterStore";
 
 /**
- * @tauri-apps/plugin-updater / plugin-process の薄いラッパ。
+ * updater 抽象層（@/lib/updater）の薄いラッパ。
  * store 遷移のうち check 系 (checking/available/upToDate/error) は
  * 呼び出し側 (hook / 設定 UI) が silent かどうかで出し分けるためここでは触らず、
  * ダウンロード進捗 (downloading/ready) のみ本モジュールが store に流す。

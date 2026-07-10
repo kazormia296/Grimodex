@@ -3,15 +3,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // Mock Tauri streaming primitives BEFORE importing the hook so the import
 // chain picks up the stub.
-type ListenHandler = (event: { payload: unknown }) => void;
+type ListenHandler = (payload: unknown) => void;
 const listeners = new Map<string, ListenHandler>();
 const invokeMock = vi.fn();
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (eventName: string, handler: ListenHandler) => {
     listeners.set(eventName, handler);
     return () => {
@@ -60,7 +57,7 @@ import { useRoleSuggestionsStore } from "./roleSuggestionsStore";
 import { useBeatGeneration } from "./useBeatGeneration";
 
 function emit(event: string, payload: unknown) {
-  listeners.get(event)?.({ payload });
+  listeners.get(event)?.(payload);
 }
 
 function createEditorWithBeat(beatId: string) {
