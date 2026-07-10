@@ -780,10 +780,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直12 + バッチ1の64 + 3aの4 + 3bの6）", () => {
+  it("napi コマンド表が揃っている（垂直12 + バッチ1の64 + 3a〜3d）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "abort_chat_stream",
       "abort_inline_ai_stream",
+      "abort_post_effect_run",
       "agent_accept_prose_stage",
       "agent_apply_undo_journal",
       "agent_codex_create",
@@ -859,6 +860,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "send_chat_message",
       "send_chat_message_stream",
       "send_inline_ai_stream",
+      "start_post_effect_run",
+      "start_post_effect_run_multi",
       "test_ai_connection",
       "timelapse_append_batch",
       "trash_bin_clear_all",
@@ -1914,4 +1917,371 @@ describe("AI Phase 3b コマンド", () => {
       error: `IPC_SECRETS_UNAVAILABLE: ${cmd}`,
     });
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Post-effect run（Phase 3d — fire-and-forget + optional secret snapshot）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Post-effect Phase 3d コマンド", () => {
+  const singleArgs = {
+    project_id: "p1",
+    effect_type: "review",
+    scope_type: "scene",
+    scope_target_id: "s1",
+    model: "base-model",
+    model_override: "review-model",
+    provider_override: "openai-compatible",
+    api_variant_override: "v1",
+    endpoint_id_override: "review-endpoint",
+    prompt_version: "review_v1.1",
+    input_hash: "hash-single",
+    codex_payload_json: "[]",
+    scene_text: "本文",
+    system_prompt: "校閲してください",
+  };
+
+  const multiArgs = {
+    project_id: "p1",
+    effect_type: "timeline_consistency",
+    scope_type: "project",
+    scope_target_id: null,
+    model: "base-model",
+    model_override: "timeline-model",
+    provider_override: "anthropic",
+    api_variant_override: null,
+    endpoint_id_override: null,
+    prompt_version: "timeline_consistency_v1.0",
+    input_hash: "hash-multi",
+    scenes: [
+      {
+        scene_id: "s1",
+        codex_payload_json: "[]",
+        scene_text: "第一場面",
+      },
+      {
+        scene_id: "s2",
+        codex_payload_json: "[]",
+        scene_text: "第二場面",
+      },
+    ],
+    system_prompt: "時系列を確認してください",
+  };
+
+  function makeBackend() {
+    const base = fakeBackend();
+    const methods = {
+      startPostEffectRun: vi
+        .fn()
+        .mockResolvedValue('{"run_id":"r-single","from_cache":false}'),
+      startPostEffectRunMulti: vi
+        .fn()
+        .mockResolvedValue('{"run_id":"r-multi","from_cache":true}'),
+      abortPostEffectRun: vi.fn().mockResolvedValue(undefined),
+    };
+    return {
+      ...base,
+      backend: Object.assign(base.backend, methods),
+      methods,
+    };
+  }
+
+  function secrets(optionalKey: string | null) {
+    return {
+      // post-effect は cache 判定後に背景 task が送信するため、必須キー解決
+      //（未登録で throw）ではなく optional snapshot を注入する。
+      resolveApiKeyForRequest: vi.fn(() => {
+        throw new Error("post-effect must not use required key lookup");
+      }),
+      getApiKeyForRequest: vi.fn().mockReturnValue(optionalKey),
+    };
+  }
+
+  it("start_post_effect_run は nested snake_case args を保持し、設定を1回だけ読んで結果JSONをparseする", async () => {
+    const { backend, calls, methods } = makeBackend();
+    const keyStore = secrets("sk-review");
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run",
+      { args: singleArgs },
+      { backend, shell: noShell, secrets: keyStore },
+    );
+
+    const settings = { provider: "openai", model: "gpt-x" };
+    expect(env).toEqual({
+      ok: true,
+      value: { run_id: "r-single", from_cache: false },
+    });
+    expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
+      settings,
+      "openai-compatible",
+      "review-endpoint",
+    );
+    expect(keyStore.resolveApiKeyForRequest).not.toHaveBeenCalled();
+    expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
+      singleArgs,
+      settings,
+      "sk-review",
+      null,
+    );
+    expect(
+      calls.filter((call) => call.method === "getAiSettings"),
+    ).toHaveLength(1);
+  });
+
+  it("start_post_effect_run_multi は scenes を含むsnake_case argsを保持し、optional key=nullでも開始する", async () => {
+    const { backend, calls, methods } = makeBackend();
+    const keyStore = secrets(null);
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run_multi",
+      { args: multiArgs },
+      { backend, shell: noShell, secrets: keyStore },
+    );
+
+    const settings = { provider: "openai", model: "gpt-x" };
+    expect(env).toEqual({
+      ok: true,
+      value: { run_id: "r-multi", from_cache: true },
+    });
+    expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
+      settings,
+      "anthropic",
+      null,
+    );
+    expect(methods.startPostEffectRunMulti).toHaveBeenCalledExactlyOnceWith(
+      multiArgs,
+      settings,
+      null,
+      null,
+    );
+    expect(
+      calls.filter((call) => call.method === "getAiSettings"),
+    ).toHaveLength(1);
+  });
+
+  it("safeStorage lookup失敗はinvoke rejectにせずsecret snapshotへ保存してnativeに渡す", async () => {
+    const { backend, calls, methods } = makeBackend();
+    const lookupError = "保存済み API キーを復号できません";
+    const keyStore = {
+      resolveApiKeyForRequest: vi.fn(),
+      getApiKeyForRequest: vi.fn(() => {
+        throw new Error(lookupError);
+      }),
+    };
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run",
+      { args: singleArgs },
+      { backend, shell: noShell, secrets: keyStore },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: { run_id: "r-single", from_cache: false },
+    });
+    expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
+      singleArgs,
+      { provider: "openai", model: "gpt-x" },
+      null,
+      lookupError,
+    );
+    expect(
+      calls.filter((call) => call.method === "getAiSettings"),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ["start_post_effect_run", "consistency"],
+    ["start_post_effect_run", "review"],
+    ["start_post_effect_run", "intent_drift"],
+    ["start_post_effect_run", "pseudo_comment"],
+    ["start_post_effect_run", "impact_review"],
+    ["start_post_effect_run_multi", "timeline_consistency"],
+  ])(
+    "%s の effect=%s は role provider/endpoint override でキーをlookupする",
+    async (cmd, effectType) => {
+      const { backend, methods } = makeBackend();
+      const keyStore = secrets("sk-role");
+      const baseArgs = cmd.endsWith("_multi") ? multiArgs : singleArgs;
+      const args = {
+        ...baseArgs,
+        effect_type: effectType,
+        provider_override: "openai-compatible",
+        endpoint_id_override: "role-endpoint",
+      };
+
+      const env = await dispatchInvoke(
+        cmd,
+        { args },
+        { backend, shell: noShell, secrets: keyStore },
+      );
+
+      expect(env.ok).toBe(true);
+      expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
+        { provider: "openai", model: "gpt-x" },
+        "openai-compatible",
+        "role-endpoint",
+      );
+      const method = cmd.endsWith("_multi")
+        ? methods.startPostEffectRunMulti
+        : methods.startPostEffectRun;
+      expect(method).toHaveBeenCalledExactlyOnceWith(
+        args,
+        { provider: "openai", model: "gpt-x" },
+        "sk-role",
+        null,
+      );
+    },
+  );
+
+  it.each(["typo_detection", "intra_scene_consistency", "meta_structure"])(
+    "effect=%s はrequestにoverrideがあってもdefault provider/endpointでキーをlookupする",
+    async (effectType) => {
+      const { backend, methods } = makeBackend();
+      const keyStore = secrets("sk-default");
+      const args = {
+        ...singleArgs,
+        effect_type: effectType,
+        provider_override: "anthropic",
+        endpoint_id_override: "must-be-ignored",
+      };
+
+      const env = await dispatchInvoke(
+        "start_post_effect_run",
+        { args },
+        { backend, shell: noShell, secrets: keyStore },
+      );
+
+      expect(env.ok).toBe(true);
+      expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
+        { provider: "openai", model: "gpt-x" },
+        undefined,
+        undefined,
+      );
+      expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
+        args,
+        { provider: "openai", model: "gpt-x" },
+        "sk-default",
+        null,
+      );
+    },
+  );
+
+  it("abort_post_effect_run は runId/projectId をpositional引数へ写像しunitをnullで返す", async () => {
+    const { backend, methods } = makeBackend();
+
+    const env = await dispatchInvoke(
+      "abort_post_effect_run",
+      { runId: "r1", projectId: "p1" },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({ ok: true, value: null });
+    expect(methods.abortPostEffectRun).toHaveBeenCalledExactlyOnceWith(
+      "r1",
+      "p1",
+    );
+  });
+
+  it.each(["start_post_effect_run", "start_post_effect_run_multi"])(
+    "%s は outer args の欠落・null・配列・文字列をbackend呼出し前に拒否する",
+    async (cmd) => {
+      for (const invokeArgs of [
+        {},
+        { args: null },
+        { args: [] },
+        { args: "not-an-object" },
+      ]) {
+        const { backend, methods } = makeBackend();
+        const env = await dispatchInvoke(cmd, invokeArgs, {
+          backend,
+          shell: noShell,
+          secrets: secrets(null),
+        });
+
+        expect(env.ok).toBe(false);
+        if (!env.ok) {
+          expect(env.error).toContain(
+            `invalid args \`args\` for command \`${cmd}\``,
+          );
+        }
+        expect(methods.startPostEffectRun).not.toHaveBeenCalled();
+        expect(methods.startPostEffectRunMulti).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    [{ projectId: "p1" }, "runId"],
+    [{ runId: "r1" }, "projectId"],
+    [{ runId: 42, projectId: "p1" }, "runId"],
+    [{ runId: "r1", projectId: [] }, "projectId"],
+  ])(
+    "abort_post_effect_run は不正な $1 をbackend呼出し前に拒否する",
+    async (invokeArgs, invalidKey) => {
+      const { backend, methods } = makeBackend();
+      const env = await dispatchInvoke("abort_post_effect_run", invokeArgs, {
+        backend,
+        shell: noShell,
+      });
+
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain(
+          `invalid args \`${invalidKey}\` for command \`abort_post_effect_run\``,
+        );
+      }
+      expect(methods.abortPostEffectRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["start_post_effect_run", { args: singleArgs }, "startPostEffectRun"],
+    [
+      "start_post_effect_run_multi",
+      { args: multiArgs },
+      "startPostEffectRunMulti",
+    ],
+    [
+      "abort_post_effect_run",
+      { runId: "r1", projectId: "p1" },
+      "abortPostEffectRun",
+    ],
+  ])(
+    "%s は旧native bindingでmethodが無ければ明示的なbackend unavailableを返す",
+    async (cmd, invokeArgs, methodName) => {
+      const { backend } = fakeBackend();
+      const env = await dispatchInvoke(cmd, invokeArgs, {
+        backend,
+        shell: noShell,
+        secrets: secrets(null),
+      });
+
+      expect(env).toEqual({
+        ok: false,
+        error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${methodName}`,
+      });
+    },
+  );
+
+  it.each(["start_post_effect_run", "start_post_effect_run_multi"])(
+    "%s はsecrets未注入を明示エラーにする",
+    async (cmd) => {
+      const { backend, methods } = makeBackend();
+      const invokeArgs = cmd.endsWith("_multi") ? multiArgs : singleArgs;
+      const env = await dispatchInvoke(
+        cmd,
+        { args: invokeArgs },
+        { backend, shell: noShell },
+      );
+
+      expect(env).toEqual({
+        ok: false,
+        error: `IPC_SECRETS_UNAVAILABLE: ${cmd}`,
+      });
+      expect(methods.startPostEffectRun).not.toHaveBeenCalled();
+      expect(methods.startPostEffectRunMulti).not.toHaveBeenCalled();
+    },
+  );
 });
