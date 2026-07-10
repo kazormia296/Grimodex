@@ -405,10 +405,13 @@ export type ShellCommandHandlers = Readonly<
   Record<string, (args: CommandArgs) => Promise<unknown>>
 >;
 
-/** main-TS 実装コマンド名（§4.3 の表）。 */
+/** main-TS 実装コマンド名（§4.3 の表 + Phase 3 追補の export / logs）。 */
 export const SHELL_COMMAND_NAMES: readonly string[] = [
   "set_window_vibrancy",
   "get_license_state",
+  "export_save_text",
+  "export_save_bytes",
+  "open_log_dir",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
