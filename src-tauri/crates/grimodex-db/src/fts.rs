@@ -351,7 +351,7 @@ fn to_fts_match(raw: &str) -> String {
 /// projects (`projects.language LIKE 'en%'`). `_en` tables are non-external,
 /// so a plain `DELETE FROM` + filtered `INSERT ... SELECT` is correct and the
 /// FTS5 `('rebuild')` external-content footgun does not apply.
-pub(crate) fn rebuild_en_fts_sql(conn: &Connection) -> rusqlite::Result<()> {
+pub fn rebuild_en_fts_sql(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "DELETE FROM codex_fts_en;
          INSERT INTO codex_fts_en(rowid, name, aliases, summary, tags_cache, content)

@@ -1687,22 +1687,22 @@ fn test_defer_foreign_keys_wipe_and_restore_round_trip() {
     // Wipe + restore as one transaction. Deliberately INSERT the scene
     // *before* the codex to prove the deferred check is at COMMIT time.
     let stmts = vec![
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "PRAGMA defer_foreign_keys = ON".into(),
             params: vec![],
             method: "run".into(),
         },
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "DELETE FROM tree_nodes WHERE project_id = ?".into(),
             params: vec![p("default-project")],
             method: "run".into(),
         },
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, pov_character_id, content, created_at, updated_at) VALUES (?, 'default-project', 'scene', 'S', 'a0', ?, '{}', datetime('now'), datetime('now'))".into(),
             params: vec![p("sc-1"), p("cx-1")],
             method: "run".into(),
         },
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "INSERT OR REPLACE INTO codex_entries (id, project_id, type, name, created_at, updated_at) VALUES (?, 'default-project', 'character', 'X', datetime('now'), datetime('now'))".into(),
             params: vec![p("cx-1")],
             method: "run".into(),
@@ -1746,12 +1746,12 @@ fn test_ai_tree_group_undo_preserves_existing_scene() {
     // INSERT は content/unplaced_beats_doc/char_count を省略し DB DEFAULT に委ねる
     // (buildForwardStatements と同じ列集合)。成功自体が NOT NULL 違反の不在を示す。
     let forward = vec![
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, created_at, updated_at) VALUES (?, 'default-project', NULL, 'folder', 'G', 'a1', datetime('now'), datetime('now'))".into(),
             params: vec![p("g-new")],
             method: "run".into(),
         },
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "UPDATE tree_nodes SET parent_id = ?, sort_order = 'a0', updated_at = datetime('now') WHERE id = ?".into(),
             params: vec![p("g-new"), p("sc-keep")],
             method: "run".into(),
@@ -1776,12 +1776,12 @@ fn test_ai_tree_group_undo_preserves_existing_scene() {
 
     // cascade-safe undo: (先) S を root へ復元 → (後) G を削除。
     let undo = vec![
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "UPDATE tree_nodes SET parent_id = NULL, sort_order = 'a0', updated_at = datetime('now') WHERE id = ?".into(),
             params: vec![p("sc-keep")],
             method: "run".into(),
         },
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "DELETE FROM tree_nodes WHERE id = ?".into(),
             params: vec![p("g-new")],
             method: "run".into(),
@@ -1835,12 +1835,12 @@ fn test_ai_tree_naive_undo_order_loses_existing_scene() {
 
     // 素朴な (誤った) undo 順: フォルダを先に削除 → cascade で sc-keep も消える。
     let naive = vec![
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "DELETE FROM tree_nodes WHERE id = ?".into(),
             params: vec![p("g-new")],
             method: "run".into(),
         },
-        crate::database::BatchStatement {
+        crate::BatchStatement {
             sql: "UPDATE tree_nodes SET parent_id = NULL WHERE id = ?".into(),
             params: vec![p("sc-keep")],
             method: "run".into(),

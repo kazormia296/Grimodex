@@ -37,8 +37,8 @@ use rusqlite::Connection;
 
 use super::Database;
 
-const SEED_SCHEMA_JA: &str = include_str!("../../../scripts/schema-seed-ja.sql");
-const SEED_SCHEMA_EN: &str = include_str!("../../../scripts/schema-seed-en.sql");
+const SEED_SCHEMA_JA: &str = include_str!("../../../../scripts/schema-seed-ja.sql");
+const SEED_SCHEMA_EN: &str = include_str!("../../../../scripts/schema-seed-en.sql");
 
 /// DEFAULT/NOT NULL/型 ドリフトゲートの意図的差分 allowlist（(table, column)）。
 /// 現状は空: seed の codex_fts 旧形状は「seed 側に列が無い」方向の差分なので

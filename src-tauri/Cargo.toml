@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/grimodex-core", "crates/grimodex-mcp", "crates/grimodex-lint"]
+members = [
+    "crates/grimodex-core",
+    "crates/grimodex-db",
+    "crates/grimodex-mcp",
+    "crates/grimodex-lint",
+]
 
 [package]
 name = "grimodex"
@@ -71,6 +76,9 @@ aho-corasick = "1"
 fontdb = "0.23"
 grimodex-lint = { path = "crates/grimodex-lint" }
 grimodex-core = { path = "crates/grimodex-core" }
+# DB 層 (Electron 移行 Phase 2 S1 で抽出)。`crate::database` / `crate::workspace`
+# は lib.rs の互換シム経由でこのクレートへ委譲する。
+grimodex-db = { path = "crates/grimodex-db" }
 # Codex 候補名の正規化 (NFC) に使用。固有名詞の NFC/NFD 揺れで重複検出が外れるのを防ぐ。
 unicode-normalization = "0.1"
 # MCP サーバを本体バイナリに統一する (src/main.rs の `mcp` サブコマンド分岐から

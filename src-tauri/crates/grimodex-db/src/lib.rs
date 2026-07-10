@@ -1,3 +1,12 @@
+//! Grimodex workspace DB 層 (Electron 移行 Phase 2 S1 で src-tauri から抽出)。
+//!
+//! SQLite の open/migrate/FTS/backup と workspace 状態 (`WorkspaceState` /
+//! `with_db_state` / `AppError` の文字列ワイヤ契約) を、Tauri コマンド層と
+//! napi バックエンド (`electron/native/grimodex-node`) の両方から呼べる形で
+//! 提供する。tauri:: には一切依存しない。src-tauri 側は `lib.rs` /
+//! `commands/mod.rs` の互換シム経由で従来のパス (`crate::database::…` /
+//! `crate::workspace::…` / `crate::commands::AppError` 等) のまま利用する。
+
 use rusqlite::Connection;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -34,7 +43,7 @@ fn gzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
 
 /// gzip の `src` を解凍して `dst` に書く（ストリーミング・一定メモリ）。
 /// バックアップ復元（Phase 2）で `.db.gz` を平文 `.db` に展開するのに使う。
-pub(crate) fn gunzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
+pub fn gunzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
     let input = std::fs::File::open(src)?;
     let mut decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(input));
     let mut output = std::fs::File::create(dst)?;
@@ -247,12 +256,24 @@ impl Database {
     }
 }
 
-pub(crate) mod change_events;
+pub mod change_events;
 mod execute;
 mod fts;
 mod integrity;
 mod migrate;
-pub(crate) mod undo_journal;
+pub mod undo_journal;
+
+pub mod error;
+pub mod events;
+pub mod open;
+pub mod state;
+pub mod workspace;
+
+// 旧 `commands/mod.rs` から移動した state / 契約型はクレートルートでも公開する
+// (src-tauri の互換シム `pub(crate) use grimodex_db::{…}` と napi 側の両方が
+// フラットに import できるように)。
+pub use error::{AppError, AppResult, QueryResult};
+pub use state::{with_db_state, ActiveWorkspace, GlobalSettingsPath, WorkspaceState};
 
 #[cfg(test)]
 mod seed_schema_parity;
