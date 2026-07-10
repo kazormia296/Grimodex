@@ -1,9 +1,20 @@
+import { isElectron } from "@/lib/shell";
 import { invoke, isTauri } from "@/lib/tauri";
 
 /** 保存ダイアログのファイル種別フィルタ。 */
 export interface SaveFilter {
   name: string;
   extensions: string[];
+}
+
+/**
+ * ネイティブ保存ダイアログ経由の export が使えるシェルか
+ * （supportsPanelWindows / supportsTrashBin と同作法の実行シェルゲート。
+ * Electron 側の実装は electron/main/shellCommands.ts — PIO-2 の
+ * 「renderer は保存先パスを渡さない」設計を維持した main プロセス実装）。
+ */
+function supportsNativeExport(): boolean {
+  return isTauri() || isElectron();
 }
 
 /** ブラウザ (dev サーバー / テスト) フォールバック: anchor でダウンロードさせる。 */
@@ -44,7 +55,7 @@ export async function saveTextFile(
   contents: string,
   mime = "text/plain",
 ): Promise<string | null> {
-  if (isTauri()) {
+  if (supportsNativeExport()) {
     return invoke<string | null>("export_save_text", {
       suggestedName,
       filterName: filter.name,
@@ -70,7 +81,7 @@ export async function saveBinaryFile(
   bytes: Uint8Array,
   mime = "application/octet-stream",
 ): Promise<string | null> {
-  if (isTauri()) {
+  if (supportsNativeExport()) {
     return invoke<string | null>("export_save_bytes", {
       suggestedName,
       filterName: filter.name,

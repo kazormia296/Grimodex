@@ -81,6 +81,70 @@ export declare class Backend {
    */
   trashBinPrune(projectId: string, retentionDays: number, maxCount: number): Promise<string>
   /**
+   * FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
+   * `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
+   * タイミングで呼ばれる fail-soft コマンド。
+   */
+  ftsOptimize(): Promise<void>
+  /** FTS 全再構築 (設定画面のデータカテゴリから明示実行)。 */
+  ftsRebuild(): Promise<void>
+  /** 英語 FTS の再構築 (英語プロジェクト作成時に fail-soft で呼ばれる)。 */
+  ftsRebuildEn(): Promise<void>
+  /**
+   * FTS 検索 (チャット recall / コマンドセンター検索 — 編集ループ常連)。
+   * 返り値: 行オブジェクト配列の JSON 文字列。
+   */
+  ftsSearch(projectId: string, query: string, scope: string, limit: number): Promise<string>
+  /**
+   * 整合性チェック (IntegrityCheckDialog)。
+   * 返り値: レポート object の JSON 文字列。
+   */
+  integrityCheck(): Promise<string>
+  /**
+   * 整合性修復 (IntegrityCheckDialog — 長時間になりうるが spawn_blocking
+   * なので Node main thread は塞がない)。
+   * 返り値: レポート object の JSON 文字列。
+   */
+  repairIntegrity(): Promise<string>
+  /**
+   * Linter 本体 (commands/lint.rs の写像 — grimodex-lint を Tauri と共用)。
+   * State 非依存だが、UniDic コールドロード (初回 >数秒) + CPU バウンドなので
+   * spawn_blocking。エラーは AppError ではなく **LintError の {type,data}
+   * JSON** を reason に載せる (convert::lint_err_to_napi — ipcContract の
+   * lint_text アダプタが object reject へ復元する)。
+   * 返り値: `LintResponse` の JSON 文字列。
+   */
+  lintText(blocks: any, language: string, scope: any, config: any, disables?: any | undefined | null): Promise<string>
+  /**
+   * 段落プレーンテキストの文節分割 (commands/reorder.rs の写像)。
+   * UniDic コールドロードで初回 10s 超えうる (FE 側 SLOW_COMMANDS 登録済み)。
+   * 返り値: `[{start, end, surface}, …]` (UTF-16 offset) の JSON 文字列。
+   */
+  segmentBunsetsu(text: string): Promise<string>
+  /**
+   * システムフォント列挙 (commands/fonts.rs の写像 — 実装本体は
+   * grimodex-fonts を Tauri と共用)。OS のフォントディレクトリスキャンは
+   * 数百 ms かかりうるため spawn_blocking。
+   * 返り値: family 名配列 (昇順・重複排除) の JSON 文字列。
+   */
+  listSystemFonts(): Promise<string>
+  /**
+   * Codex 名寄せマッチャの再構築 (commands/codex_matching.rs の写像 —
+   * 本体は grimodex-core::codex_matching を Tauri と共用)。`entries` は
+   * camelCase の MatchEntry 配列 (rustMatcher.ts が entryType/excludedAliases
+   * で送る)。Aho-Corasick 構築は CPU バウンドなので spawn_blocking。
+   * rebuild と match_text は AppState.codex_matcher の**同一インスタンス**を
+   * 見る (Tauri の CodexMatcherState 相当)。
+   */
+  codexRebuildMatcher(entries: any): Promise<void>
+  /**
+   * `text` を現在のマッチャで名寄せする (commands/codex_matching.rs の写像)。
+   * マッチャ未構築時は空配列 (Tauri 実装と同一の fail-soft)。高頻度 IPC だが
+   * 作法統一のため async + spawn_blocking。
+   * 返り値: `CodexMatch` (UTF-16 offset、camelCase) 配列の JSON 文字列。
+   */
+  codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>
+  /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
    * イベント (`backend:ready`) は登録時に emit 順で flush される。

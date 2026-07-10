@@ -9,7 +9,8 @@
  *    Promise reject に変換する）
  */
 import { readFileSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
@@ -28,6 +29,7 @@ import type {
   Envelope,
   ShellCommandHandlers,
 } from "../shared/ipcContract.js";
+import { FsScope } from "./fsScope.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Tauri コマンド互換（grim:invoke ルーターから呼ばれる）
@@ -39,13 +41,76 @@ export interface VibrancyWindowLike {
 }
 
 /**
+ * ログディレクトリ（Rust 側 `lint_logging::log_dir()` と同一パス:
+ * `~/.grimodex/logs`。home 解決不能時は tmp フォールバックも同じ）。
+ */
+export function defaultLogDir(): string {
+  const home = os.homedir();
+  const base = home !== "" ? home : os.tmpdir();
+  return path.join(base, ".grimodex", "logs");
+}
+
+function requireArgString(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): string {
+  const value = args[key];
+  if (typeof value !== "string") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a string`,
+    );
+  }
+  return value;
+}
+
+/**
+ * export 系の保存ダイアログ（Rust 側 `export::prompt_save_path` の写像 —
+ * PIO-2: renderer はデータ + 推奨ファイル名のみ渡し、書き込み先パスを
+ * 一切渡さない。パスはダイアログ由来の user-chosen path に限られる）。
+ * キャンセル時は null。
+ */
+async function promptSavePath(
+  win: VibrancyWindowLike | null,
+  cmd: string,
+  args: CommandArgs,
+): Promise<string | null> {
+  const suggestedName = requireArgString(args, "suggestedName", cmd);
+  const filterName = requireArgString(args, "filterName", cmd);
+  const extensions = Array.isArray(args.extensions)
+    ? args.extensions.filter((e): e is string => typeof e === "string")
+    : [];
+  const options = {
+    defaultPath: suggestedName,
+    filters: [{ name: filterName, extensions }],
+  };
+  // ipc.ts が渡す実体は BrowserWindow（VibrancyWindowLike は単体テスト向けの
+  // 構造的部分型）。保存ダイアログの親付けにのみ実型が要るためここで戻す。
+  const parent = win as unknown as BrowserWindow | null;
+  const result = parent
+    ? await dialog.showSaveDialog(parent, options)
+    : await dialog.showSaveDialog(options);
+  return result.canceled || !result.filePath ? null : result.filePath;
+}
+
+/** Buffer.from は不正文字を黙って読み飛ばすため、Rust 側 base64 crate と同じく明示拒否する。 */
+function decodeBase64Strict(b64: string): Buffer {
+  if (b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) {
+    throw new Error("invalid base64 export payload");
+  }
+  return Buffer.from(b64, "base64");
+}
+
+/**
  * invoke 1 件ぶんの main-TS コマンドハンドラを組み立てる。
- * `win` は送信元窓（set_window_vibrancy の対象。Rust 実装と同じく
- * macOS 以外は no-op — §6.6）。
+ * `win` は送信元窓（set_window_vibrancy の対象と保存ダイアログの親。
+ * vibrancy は Rust 実装と同じく macOS 以外は no-op — §6.6）。
+ * `logDir` はテスト注入点（既定は Rust と同一の `~/.grimodex/logs`）。
  */
 export function buildShellCommandHandlers(
   win: VibrancyWindowLike | null,
   platform: NodeJS.Platform = process.platform,
+  logDir: string = defaultLogDir(),
 ): ShellCommandHandlers {
   return {
     set_window_vibrancy: (args: CommandArgs) => {
@@ -57,6 +122,34 @@ export function buildShellCommandHandlers(
     },
     // licensing 無効ビルドと同一形状（§4.3。Phase 3 で napi へ差し替え）
     get_license_state: () => Promise.resolve({ ...DISABLED_LICENSE_STATE }),
+    // export 系（commands/export.rs の写像）: 保存できたら絶対パス、
+    // キャンセル時は null（Tauri ワイヤと同形）。
+    export_save_text: async (args: CommandArgs) => {
+      const contents = requireArgString(args, "contents", "export_save_text");
+      const picked = await promptSavePath(win, "export_save_text", args);
+      if (picked === null) return null;
+      await writeFile(picked, contents, "utf8");
+      return picked;
+    },
+    export_save_bytes: async (args: CommandArgs) => {
+      const bytes = decodeBase64Strict(
+        requireArgString(args, "contentsBase64", "export_save_bytes"),
+      );
+      const picked = await promptSavePath(win, "export_save_bytes", args);
+      if (picked === null) return null;
+      await writeFile(picked, bytes);
+      return picked;
+    },
+    // commands/logs.rs の写像: フォルダが無ければ作成を試み（best-effort）、
+    // OS のファイルマネージャで開く。
+    open_log_dir: async () => {
+      await mkdir(logDir, { recursive: true }).catch(() => {});
+      const openError = await shell.openPath(logDir);
+      if (openError !== "") {
+        throw new Error(`ログフォルダを開けませんでした: ${openError}`);
+      }
+      return null;
+    },
   };
 }
 
@@ -132,9 +225,17 @@ export interface PanelWindowDelegate {
   focusByLabel(label: string): boolean;
 }
 
-/** ブリッジ native API（§5.4 の dialog / fs / openExternal / getVersion / zoom / windowControls / panelWindow）。 */
+/**
+ * ブリッジ native API（§5.4 の dialog / fs / openExternal / getVersion /
+ * zoom / windowControls / panelWindow）。
+ *
+ * fs はダイアログ許可制（fsScope.ts）: dialog.openFolder / openFile で
+ * ユーザーが選んだパスだけがスコープに入り、readTextFile / readDir は
+ * スコープ外を FS_SCOPE_DENIED で拒否する。
+ */
 export function registerShellBridgeHandlers(
   panelWindows?: PanelWindowDelegate,
+  fsScope: FsScope = new FsScope(),
 ): void {
   handleWithEnvelope(IPC.windowControl, (event, op) => {
     const win = senderWindow(event);
@@ -166,7 +267,9 @@ export function registerShellBridgeHandlers(
     const result = win
       ? await dialog.showOpenDialog(win, options)
       : await dialog.showOpenDialog(options);
-    return result.canceled ? null : (result.filePaths[0] ?? null);
+    const picked = result.canceled ? null : (result.filePaths[0] ?? null);
+    if (picked !== null) await fsScope.allowDir(picked);
+    return picked;
   });
 
   handleWithEnvelope(IPC.dialogOpenFile, async (event, filter) => {
@@ -183,15 +286,25 @@ export function registerShellBridgeHandlers(
     const result = win
       ? await dialog.showOpenDialog(win, options)
       : await dialog.showOpenDialog(options);
-    return result.canceled ? null : (result.filePaths[0] ?? null);
+    const picked = result.canceled ? null : (result.filePaths[0] ?? null);
+    if (picked !== null) await fsScope.allowFile(picked);
+    return picked;
   });
 
-  handleWithEnvelope(IPC.fsReadTextFile, (_event, path) =>
-    readFile(requireStringArg(path, "path"), "utf8"),
-  );
+  handleWithEnvelope(IPC.fsReadTextFile, async (_event, path) => {
+    const real = await fsScope.assertReadable(
+      requireStringArg(path, "path"),
+      { asFile: true },
+    );
+    return readFile(real, "utf8");
+  });
 
   handleWithEnvelope(IPC.fsReadDir, async (_event, path) => {
-    const entries = await readdir(requireStringArg(path, "path"), {
+    const real = await fsScope.assertReadable(
+      requireStringArg(path, "path"),
+      { asFile: false },
+    );
+    const entries = await readdir(real, {
       withFileTypes: true,
     });
     // plugin-fs の DirEntry と同形（src/lib/fs.ts）

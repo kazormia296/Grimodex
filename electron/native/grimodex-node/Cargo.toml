@@ -26,6 +26,11 @@ napi = { version = "2", default-features = false, features = ["napi8", "async", 
 napi-derive = "2"
 grimodex-core = { path = "../../../src-tauri/crates/grimodex-core" }
 grimodex-db = { path = "../../../src-tauri/crates/grimodex-db" }
+# lint_text / segment_bunsetsu (Phase 3)。embed-unidic により .node が
+# +200MB 級になる — Tauri バイナリと同じトレードオフ (実測は Phase 3 記録)。
+grimodex-lint = { path = "../../../src-tauri/crates/grimodex-lint" }
+# list_system_fonts (Phase 3 — 日本語 family 名優先ロジックの完全パリティ)。
+grimodex-fonts = { path = "../../../src-tauri/crates/grimodex-fonts" }
 serde = "1"
 serde_json = "1"
 anyhow = "1"

@@ -3,7 +3,13 @@
  * vibrancy 分岐 / license スタブ形状 / openExternal スキーム再検証 /
  * fs・zoom・windowControl の envelope 化を検証する。
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -20,13 +26,18 @@ const handlers = new Map<
 >();
 
 const openExternalMock = vi.fn(() => Promise.resolve());
+const openPathMock = vi.fn(() => Promise.resolve(""));
 const showOpenDialogMock = vi.fn();
+const showSaveDialogMock = vi.fn();
 const fromWebContentsMock = vi.fn();
 
 vi.mock("electron", () => ({
   app: { getVersion: () => "1.0.0-test" },
-  dialog: { showOpenDialog: showOpenDialogMock },
-  shell: { openExternal: openExternalMock },
+  dialog: {
+    showOpenDialog: showOpenDialogMock,
+    showSaveDialog: showSaveDialogMock,
+  },
+  shell: { openExternal: openExternalMock, openPath: openPathMock },
   ipcMain: {
     handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -88,6 +99,107 @@ describe("buildShellCommandHandlers", () => {
   });
 });
 
+describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / logs.rs の写像）", () => {
+  const filterArgs = {
+    suggestedName: "out.txt",
+    filterName: "Text",
+    extensions: ["txt"],
+  };
+
+  it("export_save_text: 保存ダイアログ由来のパスへ書き込み、絶対パスを返す", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-export-"));
+    try {
+      const dest = path.join(dir, "out.txt");
+      showSaveDialogMock.mockResolvedValueOnce({
+        canceled: false,
+        filePath: dest,
+      });
+      const h = buildShellCommandHandlers(null, "linux");
+      await expect(
+        h.export_save_text({ ...filterArgs, contents: "本文テキスト" }),
+      ).resolves.toBe(dest);
+      expect(readFileSync(dest, "utf8")).toBe("本文テキスト");
+      // renderer からパスは渡っていない（PIO-2）— ダイアログ引数は名前+filter のみ
+      const options = showSaveDialogMock.mock.calls[0][0] as {
+        defaultPath: string;
+        filters: unknown[];
+      };
+      expect(options.defaultPath).toBe("out.txt");
+      expect(options.filters).toEqual([
+        { name: "Text", extensions: ["txt"] },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("export_save_text: キャンセル時は null を返し何も書かない", async () => {
+    showSaveDialogMock.mockResolvedValueOnce({ canceled: true });
+    const h = buildShellCommandHandlers(null, "linux");
+    await expect(
+      h.export_save_text({ ...filterArgs, contents: "x" }),
+    ).resolves.toBeNull();
+  });
+
+  it("export_save_bytes: base64 を復号して書き込む", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-export-"));
+    try {
+      const dest = path.join(dir, "out.bin");
+      showSaveDialogMock.mockResolvedValueOnce({
+        canceled: false,
+        filePath: dest,
+      });
+      const h = buildShellCommandHandlers(null, "linux");
+      await expect(
+        h.export_save_bytes({ ...filterArgs, contentsBase64: "aGVsbG8=" }),
+      ).resolves.toBe(dest);
+      expect(readFileSync(dest, "utf8")).toBe("hello");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("export_save_bytes: 不正 base64 はダイアログを開く前に拒否（Rust base64 crate と同挙動）", async () => {
+    showSaveDialogMock.mockClear();
+    const h = buildShellCommandHandlers(null, "linux");
+    await expect(
+      h.export_save_bytes({ ...filterArgs, contentsBase64: "%%%invalid%%%" }),
+    ).rejects.toThrow("invalid base64 export payload");
+    expect(showSaveDialogMock).not.toHaveBeenCalled();
+  });
+
+  it("open_log_dir: ログフォルダを作成してファイルマネージャで開く", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-logs-"));
+    try {
+      const logDir = path.join(dir, ".grimodex", "logs");
+      openPathMock.mockResolvedValueOnce("");
+      const h = buildShellCommandHandlers(null, "linux", logDir);
+      await expect(h.open_log_dir({})).resolves.toBeNull();
+      expect(existsSync(logDir)).toBe(true);
+      expect(openPathMock).toHaveBeenCalledWith(logDir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("open_log_dir: openPath がエラー文字列を返したら reject", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-logs-"));
+    try {
+      openPathMock.mockResolvedValueOnce("no file manager");
+      const h = buildShellCommandHandlers(
+        null,
+        "linux",
+        path.join(dir, "logs"),
+      );
+      await expect(h.open_log_dir({})).rejects.toThrow(
+        "ログフォルダを開けませんでした",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ブリッジ native API
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,11 +227,24 @@ describe("openExternal（scheme 再検証 = safeUrl.ts と二重防御）", () =
   );
 });
 
-describe("fs ブリッジ", () => {
-  it("readTextFile / readDir が実ファイルを読める", async () => {
+describe("fs ブリッジ（ダイアログ許可制スコープ — fsScope.ts）", () => {
+  /** dialog.openFolder をモックで成功させてスコープを付与する。 */
+  async function grantFolder(dir: string): Promise<void> {
+    fromWebContentsMock.mockReturnValue(null);
+    showOpenDialogMock.mockResolvedValueOnce({
+      canceled: false,
+      filePaths: [dir],
+    });
+    const picked = await invokeBridge(IPC.dialogOpenFolder, { sender: {} });
+    expect(picked).toEqual({ ok: true, value: dir });
+  }
+
+  it("dialog.openFolder で選んだフォルダ配下は readTextFile / readDir が読める", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-fs-"));
     try {
       writeFileSync(path.join(dir, "a.txt"), "こんにちは", "utf8");
+      await grantFolder(dir);
+
       const text = await invokeBridge(
         IPC.fsReadTextFile,
         { sender: {} },
@@ -139,16 +264,72 @@ describe("fs ブリッジ", () => {
     }
   });
 
-  it("存在しないファイルはメッセージのみの envelope エラー（throw しない）", async () => {
-    const env = await invokeBridge(
-      IPC.fsReadTextFile,
-      { sender: {} },
-      "/no/such/file.txt",
-    );
-    expect(env.ok).toBe(false);
-    if (!env.ok) {
-      expect(env.error).toContain("ENOENT");
-      expect(env.error.startsWith("Error:")).toBe(false);
+  it("dialog.openFile で選んだ単一ファイルは readTextFile が読める", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-fs-"));
+    try {
+      writeFileSync(path.join(dir, "pick.md"), "# picked", "utf8");
+      fromWebContentsMock.mockReturnValue(null);
+      showOpenDialogMock.mockResolvedValueOnce({
+        canceled: false,
+        filePaths: [path.join(dir, "pick.md")],
+      });
+      const picked = await invokeBridge(IPC.dialogOpenFile, { sender: {} }, {
+        name: "Markdown",
+        extensions: ["md"],
+      });
+      expect(picked).toEqual({ ok: true, value: path.join(dir, "pick.md") });
+
+      const text = await invokeBridge(
+        IPC.fsReadTextFile,
+        { sender: {} },
+        path.join(dir, "pick.md"),
+      );
+      expect(text).toEqual({ ok: true, value: "# picked" });
+
+      // file grant は readDir を許可しない
+      const listing = await invokeBridge(IPC.fsReadDir, { sender: {} }, dir);
+      expect(listing.ok).toBe(false);
+      if (!listing.ok) expect(listing.error).toContain("FS_SCOPE_DENIED:");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ダイアログで許可していないパスは FS_SCOPE_DENIED の envelope エラー", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-fs-deny-"));
+    try {
+      writeFileSync(path.join(dir, "secret.txt"), "ひみつ", "utf8");
+      const env = await invokeBridge(
+        IPC.fsReadTextFile,
+        { sender: {} },
+        path.join(dir, "secret.txt"),
+      );
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain("FS_SCOPE_DENIED:");
+        expect(env.error.startsWith("Error:")).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("スコープ内の不存在ファイルは従来どおり ENOENT の envelope エラー", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-fs-"));
+    try {
+      await grantFolder(dir);
+      const env = await invokeBridge(
+        IPC.fsReadTextFile,
+        { sender: {} },
+        path.join(dir, "no-such-file.txt"),
+      );
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain("ENOENT");
+        expect(env.error.startsWith("Error:")).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

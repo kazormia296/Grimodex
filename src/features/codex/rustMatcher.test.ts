@@ -5,11 +5,17 @@ import type { CodexMatchTarget } from "./codexMatcher";
 // Mock setup — simulate non-Tauri environment (fallback path)
 // ---------------------------------------------------------------------------
 
-// We test the JS fallback path since Tauri IPC is not available in Vitest
-// The Tauri path is covered by Rust unit tests in codex_matching.rs
+// We test the JS fallback path since native IPC is not available in Vitest
+// (neither Tauri nor Electron). The native path is covered by Rust unit tests
+// in grimodex-core codex_matching.rs + the napi node:test smoke suite.
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
+  isTauri: vi.fn().mockReturnValue(false),
+}));
+
+vi.mock("@/lib/shell", () => ({
+  isElectron: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("@/features/project/projectLoadGate", () => ({

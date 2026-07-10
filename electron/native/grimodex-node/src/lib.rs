@@ -26,6 +26,7 @@ use napi::threadsafe_function::ThreadSafeCallContext;
 use napi::JsFunction;
 use napi_derive::napi;
 
+use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::events::EventSink;
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
@@ -33,7 +34,7 @@ use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
 
-use convert::{app_err_to_napi, from_wire, join_err_to_napi, params_array};
+use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use state::{AppState, EventTsfn};
 
 /// spawn_blocking + `AppError` → `napi::Error` 写像の定形。Tauri 側 M3 方針
@@ -270,6 +271,226 @@ impl Backend {
             })
         })
         .await
+    }
+
+    /// FTS optimize (commands/integrity.rs の写像 — 実装は grimodex-db の
+    /// `Database::fts_optimize` を Tauri と共用)。workspace open 後のアイドル
+    /// タイミングで呼ばれる fail-soft コマンド。
+    #[napi]
+    pub async fn fts_optimize(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| db.fts_optimize())).await
+    }
+
+    /// FTS 全再構築 (設定画面のデータカテゴリから明示実行)。
+    #[napi]
+    pub async fn fts_rebuild(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| db.fts_rebuild())).await
+    }
+
+    /// 英語 FTS の再構築 (英語プロジェクト作成時に fail-soft で呼ばれる)。
+    #[napi]
+    pub async fn fts_rebuild_en(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || with_db_state(&state.ws, |db| db.rebuild_en_fts())).await
+    }
+
+    /// FTS 検索 (チャット recall / コマンドセンター検索 — 編集ループ常連)。
+    /// 返り値: 行オブジェクト配列の JSON 文字列。
+    #[napi]
+    pub async fn fts_search(
+        &self,
+        project_id: String,
+        query: String,
+        scope: String,
+        limit: u32,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let rows = db.search_fts(&project_id, &query, &scope, limit)?;
+                Ok(serde_json::to_string(&rows)?)
+            })
+        })
+        .await
+    }
+
+    /// 整合性チェック (IntegrityCheckDialog)。
+    /// 返り値: レポート object の JSON 文字列。
+    #[napi]
+    pub async fn integrity_check(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let report = db.integrity_check()?;
+                Ok(serde_json::to_string(&report)?)
+            })
+        })
+        .await
+    }
+
+    /// 整合性修復 (IntegrityCheckDialog — 長時間になりうるが spawn_blocking
+    /// なので Node main thread は塞がない)。
+    /// 返り値: レポート object の JSON 文字列。
+    #[napi]
+    pub async fn repair_integrity(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let report = db.repair_integrity()?;
+                Ok(serde_json::to_string(&report)?)
+            })
+        })
+        .await
+    }
+
+    /// Linter 本体 (commands/lint.rs の写像 — grimodex-lint を Tauri と共用)。
+    /// State 非依存だが、UniDic コールドロード (初回 >数秒) + CPU バウンドなので
+    /// spawn_blocking。エラーは AppError ではなく **LintError の {type,data}
+    /// JSON** を reason に載せる (convert::lint_err_to_napi — ipcContract の
+    /// lint_text アダプタが object reject へ復元する)。
+    /// 返り値: `LintResponse` の JSON 文字列。
+    #[napi]
+    pub async fn lint_text(
+        &self,
+        blocks: serde_json::Value,
+        language: String,
+        scope: serde_json::Value,
+        config: serde_json::Value,
+        disables: Option<serde_json::Value>,
+    ) -> Result<String> {
+        napi::tokio::task::spawn_blocking(move || -> Result<String> {
+            let blocks: Vec<grimodex_lint::LintBlock> =
+                from_wire("blocks", blocks).map_err(app_err_to_napi)?;
+            let scope: grimodex_lint::LintScope =
+                from_wire("scope", scope).map_err(app_err_to_napi)?;
+            let config: grimodex_lint::LintConfig =
+                from_wire("config", config).map_err(app_err_to_napi)?;
+            let disables: Vec<grimodex_lint::DisableDirective> = match disables {
+                Some(v) => from_wire("disables", v).map_err(app_err_to_napi)?,
+                None => Vec::new(),
+            };
+            // 言語分岐は commands/lint.rs と同一 (InvalidLanguage も LintError ワイヤ)
+            let lang = match language.as_str() {
+                "ja" => grimodex_lint::Language::Japanese,
+                "en" => grimodex_lint::Language::English,
+                other => {
+                    return Err(lint_err_to_napi(
+                        &grimodex_lint::LintError::InvalidLanguage(other.to_string()),
+                    ))
+                }
+            };
+            let response = grimodex_lint::lint(&blocks, lang, scope, &config, &disables)
+                .map_err(|e| lint_err_to_napi(&e))?;
+            serde_json::to_string(&response)
+                .map_err(|e| Error::from_reason(format!("failed to serialize LintResponse: {e}")))
+        })
+        .await
+        .map_err(join_err_to_napi)?
+    }
+
+    /// 段落プレーンテキストの文節分割 (commands/reorder.rs の写像)。
+    /// UniDic コールドロードで初回 10s 超えうる (FE 側 SLOW_COMMANDS 登録済み)。
+    /// 返り値: `[{start, end, surface}, …]` (UTF-16 offset) の JSON 文字列。
+    #[napi]
+    pub async fn segment_bunsetsu(&self, text: String) -> Result<String> {
+        #[derive(serde::Serialize)]
+        struct BunsetsuDto {
+            start: u32,
+            end: u32,
+            surface: String,
+        }
+        napi::tokio::task::spawn_blocking(move || -> Result<String> {
+            // サイズ上限とエラー文言は commands/reorder.rs と同一
+            if text.len() > grimodex_lint::MAX_INPUT_BYTES {
+                return Err(Error::from_reason(format!(
+                    "text exceeds maximum length of {} bytes",
+                    grimodex_lint::MAX_INPUT_BYTES
+                )));
+            }
+            let chunks = grimodex_lint::bunsetsu::segment_bunsetsu(&text)
+                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            let dtos: Vec<BunsetsuDto> = chunks
+                .into_iter()
+                .map(|c| BunsetsuDto {
+                    start: c.start,
+                    end: c.end,
+                    surface: c.surface,
+                })
+                .collect();
+            serde_json::to_string(&dtos)
+                .map_err(|e| Error::from_reason(format!("failed to serialize bunsetsu: {e}")))
+        })
+        .await
+        .map_err(join_err_to_napi)?
+    }
+
+    /// システムフォント列挙 (commands/fonts.rs の写像 — 実装本体は
+    /// grimodex-fonts を Tauri と共用)。OS のフォントディレクトリスキャンは
+    /// 数百 ms かかりうるため spawn_blocking。
+    /// 返り値: family 名配列 (昇順・重複排除) の JSON 文字列。
+    #[napi]
+    pub async fn list_system_fonts(&self) -> Result<String> {
+        napi::tokio::task::spawn_blocking(move || -> Result<String> {
+            let families = grimodex_fonts::list_system_fonts();
+            serde_json::to_string(&families)
+                .map_err(|e| Error::from_reason(format!("failed to serialize fonts: {e}")))
+        })
+        .await
+        .map_err(join_err_to_napi)?
+    }
+
+    /// Codex 名寄せマッチャの再構築 (commands/codex_matching.rs の写像 —
+    /// 本体は grimodex-core::codex_matching を Tauri と共用)。`entries` は
+    /// camelCase の MatchEntry 配列 (rustMatcher.ts が entryType/excludedAliases
+    /// で送る)。Aho-Corasick 構築は CPU バウンドなので spawn_blocking。
+    /// rebuild と match_text は AppState.codex_matcher の**同一インスタンス**を
+    /// 見る (Tauri の CodexMatcherState 相当)。
+    #[napi]
+    pub async fn codex_rebuild_matcher(&self, entries: serde_json::Value) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        napi::tokio::task::spawn_blocking(move || -> Result<()> {
+            let entries: Vec<MatchEntry> =
+                from_wire("entries", entries).map_err(app_err_to_napi)?;
+            let matcher = CachedMatcher::build(&entries)
+                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            let mut guard = state
+                .codex_matcher
+                .lock()
+                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            *guard = Some(matcher);
+            Ok(())
+        })
+        .await
+        .map_err(join_err_to_napi)?
+    }
+
+    /// `text` を現在のマッチャで名寄せする (commands/codex_matching.rs の写像)。
+    /// マッチャ未構築時は空配列 (Tauri 実装と同一の fail-soft)。高頻度 IPC だが
+    /// 作法統一のため async + spawn_blocking。
+    /// 返り値: `CodexMatch` (UTF-16 offset、camelCase) 配列の JSON 文字列。
+    #[napi]
+    pub async fn codex_match_text(
+        &self,
+        text: String,
+        exclude_entry_ids: Vec<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        napi::tokio::task::spawn_blocking(move || -> Result<String> {
+            let guard = state
+                .codex_matcher
+                .lock()
+                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            let matches: Vec<CodexMatch> = match guard.as_ref() {
+                None => vec![],
+                Some(matcher) => matcher.match_text(&text, &exclude_entry_ids),
+            };
+            serde_json::to_string(&matches)
+                .map_err(|e| Error::from_reason(format!("failed to serialize matches: {e}")))
+        })
+        .await
+        .map_err(join_err_to_napi)?
     }
 
     /// main 起動時に 1 回登録する (§7.1)。コールバックは
