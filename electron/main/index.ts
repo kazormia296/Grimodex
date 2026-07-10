@@ -8,12 +8,13 @@
  */
 import path from "node:path";
 
-import { app } from "electron";
+import { app, safeStorage } from "electron";
 
 import { initBackend } from "./backend.js";
 import { registerEventBus, broadcastEvent } from "./events.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerIpcRouter } from "./ipc.js";
+import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import {
   registerAppProtocolHandler,
   registerAppProtocolScheme,
@@ -71,7 +72,14 @@ if (!gotSingleInstanceLock) {
     app.on("will-quit", () => {
       void externalMount.disposeAll();
     });
-    registerIpcRouter(backend, externalMount.handlers);
+    // API キー保管（バッチ3a）: safeStorage 暗号化 + ai-keys.json。has/save/delete は
+    // shell ハンドラ、チャット送信のキー解決は dispatchInvoke へ secrets として注入。
+    const keyStore = createKeyStore(app.getPath("userData"), safeStorage);
+    registerIpcRouter(
+      backend,
+      { ...externalMount.handlers, ...buildKeyStoreShellHandlers(keyStore) },
+      keyStore,
+    );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は

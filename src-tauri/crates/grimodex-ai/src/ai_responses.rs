@@ -28,7 +28,7 @@
 //! echo する(build_agent_input / parse_output)。これにより Chat Completions と違い
 //! reasoning echo が必須な Responses でもツールエージェントが継続できる。
 
-use crate::ai::{
+use crate::{
     AgentMessage, AgentToolDef, AiProvider, AiSettings, ChatParams, ChatResponse, Citation,
     ProviderEndpoints, ResponseBlock, HERMES_BLOCKED_TOOL_NAMES,
 };
@@ -59,12 +59,12 @@ fn max_output_tokens(provider: &AiProvider, model: &str, reasoning_enabled: Opti
     // (Some(false) でも gpt-5.1+ は minimal を送り、reasoning トークンを消費する)
     let reasoning_active = reasoning_enabled == Some(true)
         || (reasoning_enabled == Some(false)
-            && crate::ai::openai_model_supports_reasoning_none(model))
+            && crate::openai_model_supports_reasoning_none(model))
         // OpenRouter 経由の reasoning モデル(gpt-5 / o系 / deepseek-r1 等)は hidden
         // reasoning も max_output_tokens に課金されるため、reasoning_enabled が未指定
         // でも名前で検出して予算を確保する(/chat/completions の openai_max_tokens と同根)。
         || (matches!(provider, AiProvider::OpenRouter)
-            && crate::ai::is_openrouter_reasoning_model(model));
+            && crate::is_openrouter_reasoning_model(model));
     // Sakana の fugu は全モデルが reasoning なので OpenAI 直と同様に常に 32k 確保する。
     if matches!(provider, AiProvider::OpenAI | AiProvider::Sakana) || reasoning_active {
         32_000
@@ -222,7 +222,7 @@ pub fn apply_reasoning(
                 _ => "medium",
             };
             // gpt-5-pro は high 固定(low/medium で 400)。
-            let effort = if crate::ai::openai_model_requires_high_effort(model) {
+            let effort = if crate::openai_model_requires_high_effort(model) {
                 "high"
             } else {
                 effort
@@ -231,7 +231,7 @@ pub fn apply_reasoning(
         }
         // OFF: Responses に "none" は無いので、最小値 minimal をサポートするモデル
         // (gpt-5.1+)のみ minimal を送る。o3/gpt-5 等には何も送らない(無効化不可)。
-        Some(false) if crate::ai::openai_model_supports_reasoning_none(model) => {
+        Some(false) if crate::openai_model_supports_reasoning_none(model) => {
             body["reasoning"] = json!({ "effort": "minimal" });
         }
         _ => {}
@@ -333,7 +333,7 @@ pub fn parse_output(result: &Value, opts: &ParseResponsesOptions) -> anyhow::Res
                                         continue;
                                     }
                                     if let Some(url) = ann["url"].as_str() {
-                                        crate::ai::push_unique_citation(
+                                        crate::push_unique_citation(
                                             &mut citations,
                                             Citation {
                                                 url: url.to_string(),
@@ -593,8 +593,8 @@ pub async fn send(
         params.model,
         params.reasoning_enabled
     ));
-    crate::ai::merge_extra_body(&mut body, &params.extra_body);
-    crate::ai::apply_openrouter_provider_pin(
+    crate::merge_extra_body(&mut body, &params.extra_body);
+    crate::apply_openrouter_provider_pin(
         &mut body,
         params.provider,
         params.openrouter_provider_pin,
@@ -651,8 +651,8 @@ pub async fn send_with_tools(
         params.model,
         params.reasoning_enabled
     ));
-    crate::ai::merge_extra_body(&mut body, &params.extra_body);
-    crate::ai::apply_openrouter_provider_pin(
+    crate::merge_extra_body(&mut body, &params.extra_body);
+    crate::apply_openrouter_provider_pin(
         &mut body,
         params.provider,
         params.openrouter_provider_pin,
@@ -660,7 +660,7 @@ pub async fn send_with_tools(
     // RAG: OpenRouter の Web 検索を注入(/chat/completions の Agent 経路と対称)。
     // 検索は agentic=server tool / 非 agentic=web plugin。引用は parse_output が
     // message.annotations の url_citation から収集する。
-    crate::ai::apply_openrouter_web_search_to_body(
+    crate::apply_openrouter_web_search_to_body(
         &mut body,
         params.provider,
         params.web_search.as_ref(),
@@ -670,7 +670,7 @@ pub async fn send_with_tools(
     parse_output(
         &result,
         &ParseResponsesOptions {
-            block_mutating_on_native: crate::ai::is_low_trust_native_provider(params.provider),
+            block_mutating_on_native: crate::is_low_trust_native_provider(params.provider),
         },
     )
 }
@@ -681,13 +681,13 @@ async fn send_and_parse_json(
     params: &ChatParams<'_>,
     body: &Value,
 ) -> anyhow::Result<Value> {
-    if crate::ai::ai_wire_log_enabled() {
+    if crate::ai_wire_log_enabled() {
         tracing::warn!(
             target: "ai_wire",
             "→ responses request (provider={:?} model={}): {}",
             params.provider,
             params.model,
-            crate::ai::truncate_for_log(&body.to_string(), 12000)
+            crate::truncate_for_log(&body.to_string(), 12000)
         );
     }
     let req = build_request(
@@ -697,28 +697,28 @@ async fn send_and_parse_json(
         params.endpoints,
         body,
     );
-    let resp = crate::ai::send_with_429_retry(req, params.retry_429, 3).await?;
+    let resp = crate::send_with_429_retry(req, params.retry_429, 3).await?;
     let status = resp.status();
     let body_text = resp.text().await?;
-    if crate::ai::ai_wire_log_enabled() {
+    if crate::ai_wire_log_enabled() {
         tracing::warn!(
             target: "ai_wire",
             "← responses response (status={}): {}",
             status,
-            crate::ai::truncate_for_log(&body_text, 12000)
+            crate::truncate_for_log(&body_text, 12000)
         );
     }
     if !status.is_success() {
         anyhow::bail!(
             "Responses API request failed (HTTP {}): {}",
             status,
-            crate::ai::truncate_for_log(&body_text, 1500)
+            crate::truncate_for_log(&body_text, 1500)
         );
     }
     serde_json::from_str(&body_text).map_err(|e| {
         anyhow::anyhow!(
             "Responses API JSON parse failed: {e}; body: {}",
-            crate::ai::truncate_for_log(&body_text, 500)
+            crate::truncate_for_log(&body_text, 500)
         )
     })
 }
@@ -729,11 +729,10 @@ pub async fn send_stream(
     params: &ChatParams<'_>,
     messages: &[(&str, &str)],
     abort_flag: Arc<std::sync::atomic::AtomicBool>,
-    app_handle: tauri::AppHandle,
+    emitter: &dyn crate::emit::StreamEmitter,
     event_prefix: &str,
 ) -> anyhow::Result<()> {
     use futures::StreamExt;
-    use tauri::Emitter;
 
     let chunk_event = format!("{}:stream-chunk", event_prefix);
     let done_event = format!("{}:stream-done", event_prefix);
@@ -753,8 +752,8 @@ pub async fn send_stream(
         params.model,
         params.reasoning_enabled
     ));
-    crate::ai::merge_extra_body(&mut body, &params.extra_body);
-    crate::ai::apply_openrouter_provider_pin(
+    crate::merge_extra_body(&mut body, &params.extra_body);
+    crate::apply_openrouter_provider_pin(
         &mut body,
         params.provider,
         params.openrouter_provider_pin,
@@ -767,7 +766,7 @@ pub async fn send_stream(
         params.endpoints,
         &body,
     );
-    let resp = crate::ai::send_with_429_retry(req, params.retry_429, 3).await?;
+    let resp = crate::send_with_429_retry(req, params.retry_429, 3).await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
@@ -788,16 +787,16 @@ pub async fn send_stream(
         }
         let bytes = chunk.map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
         buf.push_str(&String::from_utf8_lossy(&bytes));
-        if buf.len() > crate::ai::MAX_SSE_BUFFER_BYTES
-            && crate::ai::find_sse_frame_separator(&buf).is_none()
+        if buf.len() > crate::MAX_SSE_BUFFER_BYTES
+            && crate::find_sse_frame_separator(&buf).is_none()
         {
             return Err(anyhow::anyhow!(
                 "SSE buffer exceeded {} bytes without a frame separator",
-                crate::ai::MAX_SSE_BUFFER_BYTES
+                crate::MAX_SSE_BUFFER_BYTES
             ));
         }
 
-        while let Some((pos, sep_len)) = crate::ai::find_sse_frame_separator(&buf) {
+        while let Some((pos, sep_len)) = crate::find_sse_frame_separator(&buf) {
             let chunk_str = buf[..pos].to_string();
             buf.drain(..pos + sep_len);
 
@@ -814,21 +813,23 @@ pub async fn send_stream(
                 };
                 match interpret_stream_event(&json) {
                     StreamAction::TextDelta(d) => {
-                        let _ = app_handle.emit(
+                        emitter.emit(
                             &chunk_event,
-                            StreamChunkPayload {
+                            serde_json::to_value(StreamChunkPayload {
                                 delta: d,
                                 block_type: "text",
-                            },
+                            })
+                            .unwrap_or(serde_json::Value::Null),
                         );
                     }
                     StreamAction::ThinkingDelta(d) => {
-                        let _ = app_handle.emit(
+                        emitter.emit(
                             &chunk_event,
-                            StreamChunkPayload {
+                            serde_json::to_value(StreamChunkPayload {
                                 delta: d,
                                 block_type: "thinking",
-                            },
+                            })
+                            .unwrap_or(serde_json::Value::Null),
                         );
                     }
                     StreamAction::Completed {
@@ -860,7 +861,7 @@ pub async fn send_stream(
         }
     }
 
-    let _ = app_handle.emit(
+    emitter.emit(
         &done_event,
         json!({
             "stop_reason": stop_reason,
@@ -905,7 +906,7 @@ pub async fn post_effect(
     } else {
         4096
     });
-    crate::ai::apply_openrouter_provider_pin(
+    crate::apply_openrouter_provider_pin(
         &mut body,
         &settings.provider,
         settings.openrouter_provider_pin.as_deref(),
@@ -920,7 +921,7 @@ pub async fn post_effect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::{ResponseBlock, ThinkingPayload, ToolUsePayload};
+    use crate::{ResponseBlock, ThinkingPayload, ToolUsePayload};
 
     fn tool_use(id: &str, name: &str, input: Value) -> ToolUsePayload {
         ToolUsePayload {
@@ -1646,7 +1647,7 @@ mod tests {
 #[cfg(test)]
 mod responses_live_tests {
     use super::*;
-    use crate::ai::{
+    use crate::{
         AiNovelistMode, ChatParams, ResolvedToolProtocol, ThinkingPayload, ToolUsePayload,
     };
 
@@ -2005,7 +2006,7 @@ mod responses_live_tests {
         let settings = or_live_settings();
         let model = or_live_model();
         let mut params = live_params(&AiProvider::OpenRouter, &settings, &key, &model);
-        params.web_search = Some(crate::ai::WebSearchConfig {
+        params.web_search = Some(crate::WebSearchConfig {
             enabled: true,
             agentic: false,
             ..Default::default()

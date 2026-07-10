@@ -5,6 +5,7 @@ members = [
     "crates/grimodex-fonts",
     "crates/grimodex-mcp",
     "crates/grimodex-lint",
+    "crates/grimodex-ai",
 ]
 
 [package]
@@ -67,7 +68,8 @@ chrono = "0.4"
 # バックアップの gzip 圧縮 (backup restore Phase 2)。Cargo.lock に ort/tauri
 # bundler 経由で既に取り込まれているため直接依存化のコストはほぼゼロ。
 flate2 = "1"
-keyring = { version = "3", features = ["sync-secret-service", "windows-native", "apple-native"] }
+# keyring は crates/grimodex-ai へ移設（Electron 移行 Phase 3 バッチ3a）。
+# API キー保管は grimodex-ai の keyring feature 経由で有効化する（下記依存）。
 reqwest = { version = "0.13", features = ["json", "stream"] }
 futures = "0.3"
 tokio = { version = "1", features = ["macros", "process", "io-util", "rt", "sync", "time"] }
@@ -77,6 +79,11 @@ aho-corasick = "1"
 grimodex-fonts = { path = "crates/grimodex-fonts" }
 grimodex-lint = { path = "crates/grimodex-lint" }
 grimodex-core = { path = "crates/grimodex-core" }
+# AI プロバイダ層 (HTTP/SSE/provider/型) を抽出 (Electron 移行 Phase 3 バッチ3a —
+# napi と共用)。`crate::ai::*` は re-export shim 経由でこのクレートへ委譲し、
+# ai_responses / ai_novelist はクレート内部モジュールとして閉じる。keyring feature で
+# OS セキュアストレージ経路 (save/has/delete_api_key) を Tauri ビルドのみ有効化する。
+grimodex-ai = { path = "crates/grimodex-ai", features = ["keyring"] }
 # DB 層 (Electron 移行 Phase 2 S1 で抽出)。`crate::database` / `crate::workspace`
 # は lib.rs の互換シム経由でこのクレートへ委譲する。
 grimodex-db = { path = "crates/grimodex-db" }

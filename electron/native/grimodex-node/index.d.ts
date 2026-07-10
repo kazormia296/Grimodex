@@ -300,6 +300,33 @@ export declare class Backend {
   /** シーンの annotation を保存 (raw snake_case 配列、range_start/end は i64)。 */
   savePostEffectAnnotations(projectId: string, sceneId: string, annotations: any): Promise<void>
   /**
+   * AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
+   * 返り値: `AiSettings` の JSON 文字列 (camelCase)。
+   */
+  getAiSettings(): Promise<string>
+  /**
+   * 非ストリーミングのチャット送信 (Tauri の send_chat_message と同一ロジック。
+   * キーは注入)。`args` は camelCase の ChatRequest、`api_key` は解決済み平文。
+   * `settings` は **呼び側 (dispatchInvoke) が getAiSettings で1回だけ読んだ AiSettings
+   * スナップショット** — キー解決と送信を同一スナップショットで行い、Tauri の
+   * 単一 read_ai_settings と同じ原子性を保つ (2 度読みの TOCTOU 回避)。
+   * 返り値: `ChatResponse` の JSON 文字列 (camelCase)。
+   */
+  sendChatMessage(args: any, settings: any, apiKey: string): Promise<string>
+  /**
+   * ストリーミングのチャット送信 (Tauri の send_chat_message_stream と同一)。
+   * チャンクは `chat:stream-chunk` / 完了は `chat:stream-done` を EventQueue へ emit。
+   * 失敗時は `chat:stream-error` を emit してから reject する (Tauri と同一契約 —
+   * FE の fire-and-forget .catch と listen error の両経路を保つ)。
+   * **abort は self.state.chat_abort を共有** — abort_chat_stream と同一インスタンス。
+   */
+  sendChatMessageStream(args: any, settings: any, apiKey: string): Promise<void>
+  /**
+   * 実行中のチャットストリームを中止する (Tauri の abort_chat_stream と同一 —
+   * 純メモリの atomic store)。send_chat_message_stream と同一の chat_abort を立てる。
+   */
+  abortChatStream(): void
+  /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
    * イベント (`backend:ready`) は登録時に emit 順で flush される。

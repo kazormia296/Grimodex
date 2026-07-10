@@ -1994,13 +1994,13 @@ dependencies = [
  "flate2",
  "futures",
  "glib",
+ "grimodex-ai",
  "grimodex-core",
  "grimodex-db",
  "grimodex-fonts",
  "grimodex-lint",
  "grimodex-mcp",
  "hex",
- "keyring",
  "libc",
  "ndarray",
  "notify",
@@ -2030,6 +2030,20 @@ dependencies = [
  "webkit2gtk",
  "window-vibrancy 0.7.1",
  "wiremock",
+]
+
+[[package]]
+name = "grimodex-ai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "keyring",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

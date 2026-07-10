@@ -331,6 +331,19 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "savePostEffectAnnotations",
       Promise.resolve(undefined),
     ) as never,
+    getAiSettings: record(
+      "getAiSettings",
+      Promise.resolve('{"provider":"openai","model":"gpt-x"}'),
+    ) as never,
+    sendChatMessage: record(
+      "sendChatMessage",
+      Promise.resolve('{"blocks":[{"type":"text","content":"hi"}]}'),
+    ) as never,
+    sendChatMessageStream: record(
+      "sendChatMessageStream",
+      Promise.resolve(undefined),
+    ) as never,
+    abortChatStream: record("abortChatStream", undefined) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
   };
@@ -414,17 +427,18 @@ describe("toErrorString", () => {
 describe("dispatchInvoke", () => {
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
     const { backend } = fakeBackend();
+    // send_agent_message は 3a 時点で未実装（バッチ3b で napi 化予定）。
     const env = await dispatchInvoke(
-      "send_chat_message",
+      "send_agent_message",
       {},
       { backend, shell: noShell },
     );
     expect(env).toEqual({
       ok: false,
-      error: "IPC_UNIMPLEMENTED: send_chat_message",
+      error: "IPC_UNIMPLEMENTED: send_agent_message",
     });
     expect(
-      unimplementedError("send_chat_message").startsWith(
+      unimplementedError("send_agent_message").startsWith(
         IPC_UNIMPLEMENTED_MARKER,
       ),
     ).toBe(true);
@@ -722,8 +736,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直スライス 12 + Phase 3 バッチ1 の 64）", () => {
+  it("napi コマンド表が揃っている（垂直スライス 12 + バッチ1 の 64 + バッチ3a チャット 4）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
+      "abort_chat_stream",
       "agent_accept_prose_stage",
       "agent_apply_undo_journal",
       "agent_codex_create",
@@ -770,6 +785,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "fts_rebuild",
       "fts_rebuild_en",
       "fts_search",
+      "get_ai_settings",
       "get_global_settings",
       "integrity_check",
       "lint_text",
@@ -792,6 +808,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_global_settings",
       "save_post_effect_annotations",
       "segment_bunsetsu",
+      "send_chat_message",
+      "send_chat_message_stream",
       "timelapse_append_batch",
       "trash_bin_clear_all",
       "trash_bin_create",
@@ -1482,5 +1500,169 @@ describe("clampZoomFactor", () => {
     expect(clampZoomFactor(Number.NaN)).toBe(1);
     expect(clampZoomFactor(Number.POSITIVE_INFINITY)).toBe(1);
     expect(clampZoomFactor(undefined)).toBe(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI チャット（Phase 3 バッチ3a — キー注入 + secrets 経由の解決）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("AI チャットコマンド", () => {
+  const fakeSecrets = (key = "sk-resolved") => ({
+    resolveApiKeyForRequest: vi.fn().mockReturnValue(key),
+  });
+
+  it("get_ai_settings は backend.getAiSettings を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "get_ai_settings",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({
+      ok: true,
+      value: { provider: "openai", model: "gpt-x" },
+    });
+    expect(calls.some((c) => c.method === "getAiSettings")).toBe(true);
+  });
+
+  it("send_chat_message は設定を読み secrets でキー解決して注入する", async () => {
+    const { backend, calls } = fakeBackend();
+    const secrets = fakeSecrets("sk-abc");
+    const args = {
+      messages: [{ role: "user", content: "hi" }],
+      provider: "openai",
+    };
+    const env = await dispatchInvoke("send_chat_message", args, {
+      backend,
+      shell: noShell,
+      secrets,
+    });
+    expect(env).toEqual({
+      ok: true,
+      value: { blocks: [{ type: "text", content: "hi" }] },
+    });
+    // 設定 → secrets(settings, provider, endpointId) →
+    // sendChatMessage(args, settings, key) の順。
+    expect(secrets.resolveApiKeyForRequest).toHaveBeenCalledWith(
+      { provider: "openai", model: "gpt-x" },
+      "openai",
+      undefined,
+    );
+    // 送信は「キー解決に使った同一 settings スナップショット」を napi へ渡す（原子性）。
+    expect(calls).toContainEqual({
+      method: "sendChatMessage",
+      args: [args, { provider: "openai", model: "gpt-x" }, "sk-abc"],
+    });
+    // TOCTOU 回避: settings 読み込みは 1 回だけ（napi は再読込しない）。
+    expect(calls.filter((c) => c.method === "getAiSettings")).toHaveLength(1);
+  });
+
+  it("send_chat_message_stream はキーを注入し null を resolve する", async () => {
+    const { backend, calls } = fakeBackend();
+    const secrets = fakeSecrets("sk-stream");
+    const args = {
+      messages: [{ role: "user", content: "yo" }],
+      endpointId: "ep2",
+    };
+    const env = await dispatchInvoke("send_chat_message_stream", args, {
+      backend,
+      shell: noShell,
+      secrets,
+    });
+    expect(env).toEqual({ ok: true, value: null });
+    expect(secrets.resolveApiKeyForRequest).toHaveBeenCalledWith(
+      { provider: "openai", model: "gpt-x" },
+      undefined,
+      "ep2",
+    );
+    expect(calls).toContainEqual({
+      method: "sendChatMessageStream",
+      args: [args, { provider: "openai", model: "gpt-x" }, "sk-stream"],
+    });
+  });
+
+  it("abort_chat_stream は backend.abortChatStream を呼び null を返す（secrets 不要）", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "abort_chat_stream",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: true, value: null });
+    expect(calls).toContainEqual({ method: "abortChatStream", args: [] });
+  });
+
+  it("secrets 未注入のチャット送信は IPC_SECRETS_UNAVAILABLE で reject する", async () => {
+    const { backend } = fakeBackend();
+    const env = await dispatchInvoke(
+      "send_chat_message",
+      { messages: [] },
+      { backend, shell: noShell }, // secrets 無し
+    );
+    expect(env).toEqual({
+      ok: false,
+      error: "IPC_SECRETS_UNAVAILABLE: send_chat_message",
+    });
+  });
+
+  it("キー未設定（secrets が throw）は生文字列 reject に解封される", async () => {
+    const { backend } = fakeBackend();
+    const secrets = {
+      resolveApiKeyForRequest: vi.fn(() => {
+        throw new Error("No API key configured for anthropic");
+      }),
+    };
+    const env = await dispatchInvoke(
+      "send_chat_message",
+      { messages: [], provider: "anthropic" },
+      { backend, shell: noShell, secrets },
+    );
+    expect(env).toEqual({
+      ok: false,
+      error: "No API key configured for anthropic",
+    });
+  });
+
+  it("has/save/delete_api_key は shell ハンドラへ委譲される", async () => {
+    const { backend } = fakeBackend();
+    const shellCalls: Array<{ cmd: string; args: unknown }> = [];
+    const shell = {
+      has_api_key: (a: Record<string, unknown>) => {
+        shellCalls.push({ cmd: "has_api_key", args: a });
+        return Promise.resolve(true);
+      },
+      save_api_key: (a: Record<string, unknown>) => {
+        shellCalls.push({ cmd: "save_api_key", args: a });
+        return Promise.resolve(null);
+      },
+      delete_api_key: (a: Record<string, unknown>) => {
+        shellCalls.push({ cmd: "delete_api_key", args: a });
+        return Promise.resolve(null);
+      },
+    };
+    const has = await dispatchInvoke(
+      "has_api_key",
+      { provider: "openai" },
+      { backend, shell },
+    );
+    expect(has).toEqual({ ok: true, value: true });
+    const saved = await dispatchInvoke(
+      "save_api_key",
+      { provider: "openai", key: "sk-1" },
+      { backend, shell },
+    );
+    expect(saved).toEqual({ ok: true, value: null });
+    const del = await dispatchInvoke(
+      "delete_api_key",
+      { provider: "openai" },
+      { backend, shell },
+    );
+    expect(del).toEqual({ ok: true, value: null });
+    expect(shellCalls.map((c) => c.cmd)).toEqual([
+      "has_api_key",
+      "save_api_key",
+      "delete_api_key",
+    ]);
   });
 });

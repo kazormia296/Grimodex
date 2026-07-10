@@ -8,11 +8,10 @@
  *   `if (!res.ok) throw res.error;` で**生文字列 reject** に解封する —
  *   Tauri のエラー文字列契約（`WORKSPACE_SWITCHING` / `No workspace is open`
  *   マーカーの部分一致判定 126 箇所）の保存が最重要。
- * - **コマンド表**: napi 垂直スライス 12 コマンド（当初 7 + trash_bin 5 —
- *   workspace 読み込み時に必ず呼ばれる trash_bin_list が IPC_UNIMPLEMENTED で
- *   起動のたびにゴミ箱エラートーストを出したため追補）+ main-TS 2 コマンド。
- *   引数アダプタ（Tauri の camelCase→snake_case 自動変換の写像）はコマンド
- *   ごとに明示する。この表が Phase 3 の 145 コマンド一括対応の正本になる。
+ * - **コマンド表**: Phase 2 の napi 垂直スライス 12 コマンドを起点に、Phase 3 の
+ *   バッチごとに段階拡張する。引数アダプタ（Tauri の camelCase→snake_case
+ *   自動変換の写像）はコマンドごとに明示する。この表が実装済みコマンド写像の
+ *   正本になる（全145コマンドの静的棚卸し正本は docs のコマンド台帳）。
  * - **イベント allowlist**: 前方一致ではなく列挙制。listen / emit とも
  *   allowlist 外は拒否する（§5.4）。
  *
@@ -347,7 +346,38 @@ export interface NapiBackendLike {
     sceneId: string,
     annotations: unknown,
   ): Promise<void>;
+  // AI チャット（Phase 3 バッチ3a）。args は FE の camelCase 引数一式、settings は
+  // dispatchInvoke が getAiSettings で1回だけ読んだ AiSettings スナップショット
+  // （キー解決と送信を同一スナップショットで行い Tauri の原子的単一読込に揃える）、
+  // apiKey は main の safeStorage で解決した平文（napi は keyring を触らない）。
+  getAiSettings(): Promise<string>;
+  sendChatMessage(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<string>;
+  sendChatMessageStream(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<void>;
+  abortChatStream(): void;
   onEvent(callback: (...args: unknown[]) => unknown): void;
+}
+
+/**
+ * API キー解決の窓口（実体は electron/main/keyStore.ts の SecretsBridge）。
+ * napi のチャットコマンドは平文キーを引数注入で受けるため、dispatchInvoke が
+ * 送信直前に safeStorage 経由でキーを解決する。renderer には平文を出さない
+ * （解決は main プロセス内で完結）。keyStore の SecretsBridge が構造的に満たす。
+ */
+export interface SecretsResolver {
+  /** 設定 + FE 引数(provider/endpoint override) から実効 API キーを解決。空文字許容。 */
+  resolveApiKeyForRequest(
+    settings: unknown,
+    argProvider: unknown,
+    argEndpointId: unknown,
+  ): string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -432,11 +462,18 @@ export interface NapiCommandSpec {
    * FE 引数（Tauri 命名 = camelCase キー）→ Backend メソッド呼び出しへの
    * 明示写像。JSON 文字列返りは parse 済みオブジェクトにして Tauri の
    * invoke 返り値と同形にする。
+   *
+   * `deps` は AI チャット等がキー解決（secrets）を必要とするため渡す。大半の
+   * コマンドは backend / args のみで完結し `deps` を使わない。
    */
-  run(backend: NapiBackendLike, args: CommandArgs): Promise<unknown>;
+  run(
+    backend: NapiBackendLike,
+    args: CommandArgs,
+    deps: DispatchDeps,
+  ): Promise<unknown>;
 }
 
-/** napi 実装コマンド（垂直スライス 12 コマンド = 当初 7 + trash_bin 5、§4.3）。 */
+/** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
     run: async (b, a) =>
@@ -1104,7 +1141,73 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  // AI チャット（Phase 3 バッチ3a）。send 系は napi に api キーを持たせない設計:
+  // dispatch が getAiSettings で設定を読み、secrets(safeStorage) で実効キーを解決し、
+  // 同じ settings スナップショットを第2引数、平文キーを第3引数で注入する。
+  // args(camelCase 一式)は napi 側 ChatRequest が deserialize する（未知キーは無視）。
+  // 返り値は Tauri と同形（ChatResponse / unit）。
+  get_ai_settings: {
+    run: async (b) => parseWire(await b.getAiSettings()),
+  },
+  send_chat_message: {
+    run: async (b, a, d) => {
+      const { settings, apiKey } = await resolveChatKeyAndSettings(
+        b,
+        a,
+        d,
+        "send_chat_message",
+      );
+      return parseWire(await b.sendChatMessage(a, settings, apiKey));
+    },
+  },
+  send_chat_message_stream: {
+    // fire-and-forget ストリーム。チャンク/完了/エラーは chat:stream-* イベント経由。
+    // Tauri 同様、全ストリーム完了後に resolve（FE は SLOW_COMMANDS で 300s 許容）。
+    run: async (b, a, d) => {
+      const { settings, apiKey } = await resolveChatKeyAndSettings(
+        b,
+        a,
+        d,
+        "send_chat_message_stream",
+      );
+      await b.sendChatMessageStream(a, settings, apiKey);
+      return null;
+    },
+  },
+  abort_chat_stream: {
+    // 純メモリの atomic store（同一 Backend の chat_abort を立てる）。unit 返り。
+    run: async (b) => {
+      b.abortChatStream();
+      return null;
+    },
+  },
 };
+
+/**
+ * チャット送信の設定スナップショット取得 + API キー解決。**設定は getAiSettings で
+ * 1 回だけ読む**（返した `settings` を napi 送信へそのまま渡し、キー解決と送信を同一
+ * スナップショットで行う — Tauri の単一 read_ai_settings と同じ原子性。2 度読みの
+ * TOCTOU で「read#1 の provider のキーが read#2 の endpoint へ」流れる事故を防ぐ）。
+ * secrets 不在は構成エラーとして明示。キー未設定時は resolveApiKeyForRequest が Tauri と
+ * 同じ `No API key configured for <provider>` を throw する。
+ */
+async function resolveChatKeyAndSettings(
+  backend: NapiBackendLike,
+  args: CommandArgs,
+  deps: DispatchDeps,
+  cmd: string,
+): Promise<{ settings: unknown; apiKey: string }> {
+  if (!deps.secrets) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+  const settings = parseWire(await backend.getAiSettings());
+  const apiKey = deps.secrets.resolveApiKeyForRequest(
+    settings,
+    args.provider,
+    args.endpointId,
+  );
+  return { settings, apiKey };
+}
 
 /**
  * lint_text の napi reason（LintError の {type,data} JSON 文字列）を
@@ -1157,6 +1260,13 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   "external_mount_write_file",
   "external_mount_file_mtime",
   "external_mount_scan",
+  // API キー保管（Phase 3 バッチ3a — safeStorage）。ipc ルーターが keyStore
+  // (SecretsBridge) から extraShellHandlers として注入する（状態が invoke を跨いで
+  // 持続するため per-invoke の buildShellCommandHandlers には含めない）。has は bool、
+  // save/delete は unit。平文キーは save の引数としてのみ main へ渡り renderer に返さない。
+  "has_api_key",
+  "save_api_key",
+  "delete_api_key",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1167,6 +1277,12 @@ export interface DispatchDeps {
   /** .node ロード失敗時は null（fail-soft: 明示エラー envelope を返す）。 */
   backend: NapiBackendLike | null;
   shell: ShellCommandHandlers;
+  /**
+   * API キー解決の窓口（safeStorage）。AI チャットコマンドが送信直前にキーを
+   * 解決するために使う。未注入時、チャットコマンドは IPC_SECRETS_UNAVAILABLE で
+   * 明示 reject する（他コマンドは影響なし）。
+   */
+  secrets?: SecretsResolver;
 }
 
 /**
@@ -1191,7 +1307,7 @@ export async function dispatchInvoke(
       }
       return {
         ok: true,
-        value: await NAPI_COMMANDS[cmd].run(deps.backend, args),
+        value: await NAPI_COMMANDS[cmd].run(deps.backend, args, deps),
       };
     }
     return { ok: false, error: unimplementedError(cmd) };

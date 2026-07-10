@@ -81,6 +81,33 @@ where
     .await
 }
 
+/// チャット送信の 1 メッセージ (Tauri の `commands::ai::ChatMessagePayload` 相当)。
+#[derive(serde::Deserialize)]
+struct ChatMsgDto {
+    role: String,
+    content: String,
+}
+
+/// `send_chat_message` / `send_chat_message_stream` の FE 引数 (camelCase)。
+/// Tauri コマンドの引数群と 1:1。**API キーは含まない** — キーは main プロセスの
+/// safeStorage で解決した平文を別引数 `api_key` で注入する (Phase 3 バッチ3a)。
+/// Option フィールドは serde が欠落を None として扱う (Tauri の Option 引数と同挙動)。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatRequest {
+    messages: Vec<ChatMsgDto>,
+    thinking: Option<grimodex_ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    system_cache_segments: Option<Vec<String>>,
+    api_variant: Option<String>,
+    system_volatile_tail: Option<String>,
+    model: Option<String>,
+    provider: Option<grimodex_ai::AiProvider>,
+    endpoint_id: Option<String>,
+}
+
 #[napi]
 pub struct Backend {
     state: Arc<AppState>,
@@ -1290,6 +1317,153 @@ impl Backend {
             })
         })
         .await
+    }
+
+    // ─────────────────────── AI チャット (Phase 3 バッチ3a — grimodex-ai を
+    // Tauri と共用。HTTP/SSE/provider 分岐はクレート内で完結し、ストリーミングの
+    // emit は EventQueue(=StreamEmitter) 経由で TSFn → 全窓 broadcast へ載る) ──
+    //
+    // **キーは注入**: Tauri の resolve_api_key(keyring) と異なり、napi は main の
+    // safeStorage で解決した平文キーを `api_key` 引数で受ける。パラメータ準備
+    // (apply_provider_override / build_chat_params 等) は Tauri と同一の pure helper。
+
+    /// AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
+    /// 返り値: `AiSettings` の JSON 文字列 (camelCase)。
+    #[napi]
+    pub async fn get_ai_settings(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let settings = grimodex_ai::read_ai_settings(&state.ai_settings_path);
+            Ok(serde_json::to_string(&settings).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// 非ストリーミングのチャット送信 (Tauri の send_chat_message と同一ロジック。
+    /// キーは注入)。`args` は camelCase の ChatRequest、`api_key` は解決済み平文。
+    /// `settings` は **呼び側 (dispatchInvoke) が getAiSettings で1回だけ読んだ AiSettings
+    /// スナップショット** — キー解決と送信を同一スナップショットで行い、Tauri の
+    /// 単一 read_ai_settings と同じ原子性を保つ (2 度読みの TOCTOU 回避)。
+    /// 返り値: `ChatResponse` の JSON 文字列 (camelCase)。
+    #[napi]
+    pub async fn send_chat_message(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<String> {
+        let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let settings_for_call = grimodex_ai::apply_provider_override(
+            settings,
+            req.model.as_deref(),
+            req.provider,
+            req.endpoint_id.as_deref(),
+        );
+        let variant = req.api_variant.as_deref();
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+        let resolved_variant =
+            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings_for_call,
+            &api_key,
+            extra_body,
+            retry_429,
+            grimodex_ai::AiNovelistMode::Chat,
+            resolved_variant,
+            req.thinking,
+            req.effort,
+            req.reasoning_enabled,
+            req.reasoning_effort,
+            req.system_cache_segments,
+            req.system_volatile_tail,
+            None,
+        );
+        let msgs: Vec<(&str, &str)> = req
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        let result = grimodex_ai::send_chat(&params, &msgs)
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        serde_json::to_string(&result)
+            .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
+    }
+
+    /// ストリーミングのチャット送信 (Tauri の send_chat_message_stream と同一)。
+    /// チャンクは `chat:stream-chunk` / 完了は `chat:stream-done` を EventQueue へ emit。
+    /// 失敗時は `chat:stream-error` を emit してから reject する (Tauri と同一契約 —
+    /// FE の fire-and-forget .catch と listen error の両経路を保つ)。
+    /// **abort は self.state.chat_abort を共有** — abort_chat_stream と同一インスタンス。
+    #[napi]
+    pub async fn send_chat_message_stream(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<()> {
+        let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        // 開始時に abort フラグをリセット (Tauri と同一 — 新ストリームは前回の中止要求を握り潰す)。
+        self.state
+            .chat_abort
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let flag = Arc::clone(&self.state.chat_abort);
+        let settings_for_call = grimodex_ai::apply_provider_override(
+            settings,
+            req.model.as_deref(),
+            req.provider,
+            req.endpoint_id.as_deref(),
+        );
+        let variant = req.api_variant.as_deref();
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+        let resolved_variant =
+            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings_for_call,
+            &api_key,
+            extra_body,
+            retry_429,
+            grimodex_ai::AiNovelistMode::Chat,
+            resolved_variant,
+            req.thinking,
+            req.effort,
+            req.reasoning_enabled,
+            req.reasoning_effort,
+            req.system_cache_segments,
+            req.system_volatile_tail,
+            None,
+        );
+        let msgs: Vec<(&str, &str)> = req
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        let result =
+            grimodex_ai::send_chat_stream(&params, &msgs, flag, &self.state.events, "chat").await;
+        if let Err(e) = result {
+            EventSink::emit(
+                &self.state.events,
+                "chat:stream-error",
+                serde_json::json!({ "message": e.to_string() }),
+            );
+            return Err(Error::from_reason(e.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 実行中のチャットストリームを中止する (Tauri の abort_chat_stream と同一 —
+    /// 純メモリの atomic store)。send_chat_message_stream と同一の chat_abort を立てる。
+    #[napi]
+    pub fn abort_chat_stream(&self) {
+        self.state
+            .chat_abort
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// main 起動時に 1 回登録する (§7.1)。コールバックは

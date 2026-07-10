@@ -19,6 +19,7 @@ import type {
   CommandArgs,
   Envelope,
   NapiBackendLike,
+  SecretsResolver,
   ShellCommandHandlers,
 } from "../shared/ipcContract.js";
 import {
@@ -42,6 +43,7 @@ function isRecord(value: unknown): value is CommandArgs {
 export function registerIpcRouter(
   backend: NapiBackendLike | null,
   extraShellHandlers: ShellCommandHandlers = {},
+  secrets?: SecretsResolver,
 ): void {
   ipcMain.handle(
     IPC.invoke,
@@ -56,6 +58,7 @@ export function registerIpcRouter(
       const envelope = await dispatchInvoke(cmd, isRecord(args) ? args : {}, {
         backend,
         shell: { ...buildShellCommandHandlers(win), ...extraShellHandlers },
+        secrets,
       });
       if (
         !envelope.ok &&

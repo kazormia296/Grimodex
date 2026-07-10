@@ -1,7 +1,7 @@
 # Grimodex Electron移行 Phase 3 設計書 — ネイティブ再結線
 
 - 日付: 2026-07-10
-- ステータス: 実装中（バッチ1 全完了・PR #322 マージ済み / バッチ2 完了。バッチ3〜5 は計画）
+- ステータス: 実装中（バッチ1〜2・バッチ3a 完了。バッチ3b〜5 は計画）
 - 正本: `docs/Grimodex_Electron移行検討.md`（移行判断・全体フェーズ）/ `docs/Grimodex_Electron移行Phase2設計書.md`（シェル構築）
 - データ正本: `docs/Grimodex_Electron移行Phase3_優先順位表.md`（バッチ提案・イベント配線順）と `docs/Grimodex_Electron移行Phase3_コマンド台帳.json`（全 145 コマンドの静的棚卸し + FE コールサイト分析）
 - 積み先: ブランチ `feat/electron-phase3`
@@ -52,28 +52,27 @@ P1=61（主要パネル）/ P2=44（明示操作）/ P3=16（設定・低頻度�
 
 ## 2. 実装バッチ（優先順位表 (c) を実装単位に再構成）
 
-### バッチ 1: 純DB系 + 共用クレート抽出（進行中）
+### バッチ 1: 純DB系 + 共用クレート抽出【完了】
 
 Phase 2 で確立した「`with_db_state` + `run_blocking` + JSON 文字列返し」雛形を
 横展開する。`grimodex-lint` / `grimodex-core` / 新設 `grimodex-fonts` への依存を
 napi crate に足すのもこのバッチ。
 
-**完了済み（本ブランチ）**:
+**完了済み**:
 
 | コミット | 内容 |
 |---|---|
 | バッチ1a | `integrity_check` / `repair_integrity` / `fts_optimize` / `fts_rebuild` / `fts_rebuild_en` / `fts_search`（grimodex-db 共用、コード移動なし）|
 | バッチ1b | `lint_text` / `segment_bunsetsu`（grimodex-lint、UniDic 埋め込み）/ `list_system_fonts`（`grimodex-fonts` へ commands/fonts.rs を抽出）|
 | バッチ1c | `codex_rebuild_matcher` / `codex_match_text`（`grimodex-core::codex_matching` へ codex_matching.rs のコアを抽出、AppState に matcher State 追加）|
+| バッチ1d | plot_threads 8（`grimodex-db::plot_threads` へ抽出、XPROJ ガードを Electron 経路にも復活）|
+| バッチ1e | foreshadow 20（`grimodex-db::foreshadow` へ抽出。`foreshadow_list` は FE 到達不能のため対象外）|
+| バッチ1f | agent_writes 18 + post_effect pure-db 7（tracked write / XPROJ ガードをサーバー側に維持。dead 2件は対象外）|
 | （前提）| fs ブリッジのダイアログ許可制スコープ化（`electron/main/fsScope.ts`）、`export_save_text` / `export_save_bytes` / `open_log_dir`（main-TS）|
 
-**残り（バッチ1 内）**: foreshadow 21 / agent_writes 18 / plot_threads 8 /
-post_effect 非run系 10 の pure-db 群。すべて WorkspaceState + camelCase serde の
-同型なので、`grimodex-core`（undo_journal / tracked writes）依存を napi crate に
-足せば横展開できる。1 文 SQL 系（foreshadow link / plot_thread_delete 等）は
-FE 側で db_execute へ寄せる選択肢もあるが、**XPROJ ガード持ち
-（plot_thread_link_* / post_effect / agent_event）は必ずサーバサイド維持**
-（db_execute への分解は TOCTOU）。
+`get_post_effect_run` / `update_relation_status` は FE 到達不能、post_effect の run/abort/AI
+経路はバッチ3dへ送った。XPROJ ガード持ち（plot_thread_link_* / post_effect /
+agent_event）は db_execute へ分解せず、共有 Rust 層に維持している。
 
 ### バッチ 2: external_mount 一族（P0 残り、main-TS + chokidar）【完了】
 
@@ -124,7 +123,53 @@ ai.rs 13 / cli_ai 5（main-TS 化）/ post_effect run 系 3 / license network 3�
 cli 3ch → post_effect 4ch の順）。abort フラグ 3 種 + PostEffectAbortRegistry を
 addon グローバル（OnceLock）に集約し「開始側と中止側が同一インスタンスを見る」構造を
 最初に固める。**API キー平文を renderer に返さない**契約維持（`has_api_key` の bool）。
-keyring → Electron safeStorage 移行はここ。
+Electron 側のキー保管基盤を keyring から safeStorage へ切り替える。既存 Tauri keyring
+資格情報の自動インポートは Phase 4 の userData 移行に残し、3a 単体では再入力が必要。
+
+大きさゆえ 3a〜3e に分割する（3a = 基盤 + chat）:
+
+#### バッチ 3a: grimodex-ai 抽出 + emit 抽象化 + chat ストリーム【完了】
+
+ブランチ `feat/electron-phase3-batch3a-ai-chat`。
+
+- **クレート抽出**: `ai.rs`(6772) + `ai_responses.rs` + `ai_novelist.rs`（計9006行）を
+  `crates/grimodex-ai` へ移設。**AI クラスタは高度に自己完結**（外部依存 reqwest/keyring/
+  futures/serde/anyhow のみ、grimodex_db にも他 src-tauri にも非依存）。Tauri 結合点は
+  `send_chat_stream`(lib.rs) と `ai_responses::send_stream` の emit だけ。
+- **emit 抽象化**: `emit::StreamEmitter { fn emit(&self, channel: &str, payload: Value) }`
+  trait（`Send + Sync`）。Tauri=`TauriEmitter(AppHandle)` アダプタ（src/ai.rs shim）/
+  napi=`EventQueue`（既存 EventSink → TSFn → 全窓 broadcast にそのまま載る）。src-tauri は
+  `src/ai.rs = pub use grimodex_ai::*;` の re-export shim で `crate::ai::*` パスを温存
+  （`crate::ai_responses`/`crate::ai_novelist` は非参照になり mod 宣言ごと削除）。
+- **keyring は cargo feature**: save/get/delete_api_key + keyring_user/candidates/service を
+  `#[cfg(feature="keyring")]` でゲート。src-tauri は `features=["keyring"]`、grimodex-node は
+  無効。**実測: .node に libsecret 依存なし**（safeStorage 方針の実効性を ldd で確認）。
+- **純ヘルパー共用**: `apply_provider_override`（chat/inline/agent の override は同一と判明し
+  1 関数に統一）/ `build_chat_params` / `build_ai_novelist_extra_body` / `should_retry_429` /
+  `inline_effective_variant` を crate の `params` モジュールへ移し、Tauri コマンドと napi が同一
+  ロジックを共有（テストも移設）。
+- **napi**: Backend に `get_ai_settings` / `send_chat_message` / `send_chat_message_stream` /
+  `abort_chat_stream`。**キーは注入**: main の safeStorage で解決した平文キーを第3引数
+  （`args, settings, apiKey`）で渡す（napi は keyring を触らない）。AppState に
+  `chat_abort`(Arc<AtomicBool>) と `ai_settings_path`。
+- **キー保管 = safeStorage**（設計書当初案どおり、ユーザー判断 2026-07-11）: `aiKeyNaming.ts`
+  （service/account 命名 + resolve 規則の純関数移植、Tauri と一致）+ `keyStore.ts`
+  （safeStorage 暗号化 + `ai-keys.json` を tmp+rename で原子的に永続化）。has/save/delete は
+  shell ハンドラ、チャットのキー解決は dispatchInvoke に `secrets` を注入し、送信直前に
+  実効 provider/endpoint（`effectiveProviderEndpoint`）→ 平文を napi へ渡す。破損・復号失敗は
+  fail-closed（既存ファイルを空扱いして上書きしない）、Linux の `basic_text` / `unknown`
+  backend は拒否する。Tauri keyring からの自動移行は Phase 4 の出荷ゲート。
+- **FE 変更ゼロ**（AI 系は `@/lib/tauri` の invoke/listen に委譲、プラットフォームゲートなし）。
+  イベント allowlist も既登録。ipcContract のコマンド表追加のみ。
+- 検証: cargo test 全通過（grimodex_lib 408 / grimodex_ai 203）、mjs 56pass + 1skip
+  （新 chat.test.mjs で実 HTTP モックの非stream/Authorization注入/override/chunk/done/error/
+  実abortを end-to-end gate）、electron 300pass、tsc通過、lint 0 errors
+  （既存warning 42件）、FE 8710pass 回帰なし。
+
+**残り 3b〜3e**: 3b（inline-ai stream + abort + send_agent_message + 設定/接続系
+save_ai_settings/list_ai_models/test_ai_connection）/ 3c（cli_ai
+main-TS + child_process + NDJSON）/ 3d（post_effect run 系 + PostEffectAbortRegistry）/
+3e（license network + 6h 検証ループ + before-quit ライフサイクル）。
 
 ### バッチ 4: ort / lindera 重量級
 

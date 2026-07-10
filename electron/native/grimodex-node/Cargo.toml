@@ -31,6 +31,11 @@ grimodex-db = { path = "../../../src-tauri/crates/grimodex-db" }
 grimodex-lint = { path = "../../../src-tauri/crates/grimodex-lint" }
 # list_system_fonts (Phase 3 — 日本語 family 名優先ロジックの完全パリティ)。
 grimodex-fonts = { path = "../../../src-tauri/crates/grimodex-fonts" }
+# AI プロバイダ層 (HTTP/SSE/provider/型) を Tauri と共用 (Phase 3 バッチ3a)。
+# **keyring feature は付けない** — Electron 側 API キー保管は main プロセスの
+# safeStorage を使うため keyring ネイティブ依存を .node に link しない。キー解決済みの
+# 平文キーを send_chat_message* へ注入し、build_chat_params に渡す。
+grimodex-ai = { path = "../../../src-tauri/crates/grimodex-ai" }
 serde = "1"
 serde_json = "1"
 anyhow = "1"

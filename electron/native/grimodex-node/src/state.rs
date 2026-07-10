@@ -6,7 +6,8 @@
 //! コンストラクタで明示注入される (dirs:: を napi 内で解決しない。§4.2)。
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use grimodex_db::events::EventSink;
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
@@ -82,6 +83,15 @@ impl EventSink for EventQueue {
     }
 }
 
+/// grimodex-ai のストリーミング emit（`send_chat_stream` の chunk/done）を同じ
+/// EventQueue（＝TSFn → main → 全窓 broadcast）へ載せる（Phase 3 バッチ3a）。
+/// Tauri 側の `AppHandle::emit` と同じくベストエフォート。EventSink の実装へ委譲する。
+impl grimodex_ai::emit::StreamEmitter for EventQueue {
+    fn emit(&self, channel: &str, payload: serde_json::Value) {
+        <Self as EventSink>::emit(self, channel, payload);
+    }
+}
+
 /// `#[napi]` class `Backend` が Arc で保持する全状態 (設計書 §4.2)。
 /// Tauri の `app.manage(WorkspaceState)` / `app.manage(GlobalSettingsPath)` /
 /// `app.manage(CodexMatcherState)` の napi 版。Phase 3 で abort フラグ /
@@ -94,6 +104,13 @@ pub struct AppState {
     /// rebuild 側と match 側が**同一インスタンス**を見ることが正しさの条件
     /// (別インスタンス化すると「rebuild したのに match が空」になる)。
     pub codex_matcher: Mutex<Option<grimodex_core::codex_matching::CachedMatcher>>,
+    /// AI 設定ファイル `<app_data>/ai-settings.json`（Tauri の `AiSettingsPath` 相当）。
+    /// キーは含まず、renderer に返して安全（keyring/safeStorage と分離）。
+    pub ai_settings_path: PathBuf,
+    /// チャットストリームの中止フラグ (Tauri の `StreamAbortFlag` 相当 — Phase 3 バッチ3a)。
+    /// send_chat_message_stream 開始側と abort_chat_stream 中止側が**同一インスタンス**を
+    /// 見ることが「abort が効く」条件。単一フラグ設計（stream_id なし）は Tauri と同一。
+    pub chat_abort: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -119,6 +136,8 @@ impl AppState {
             },
             events: EventQueue::new(),
             codex_matcher: Mutex::new(None),
+            ai_settings_path: dir.join("ai-settings.json"),
+            chat_abort: Arc::new(AtomicBool::new(false)),
         })
     }
 }
