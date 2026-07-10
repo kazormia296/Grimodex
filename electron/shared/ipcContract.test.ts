@@ -427,18 +427,18 @@ describe("toErrorString", () => {
 describe("dispatchInvoke", () => {
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
     const { backend } = fakeBackend();
-    // send_agent_message は 3a 時点で未実装（バッチ3b で napi 化予定）。
+    // send_cli_chat_stream は3b時点で未実装（バッチ3cでmain-TS化予定）。
     const env = await dispatchInvoke(
-      "send_agent_message",
+      "send_cli_chat_stream",
       {},
       { backend, shell: noShell },
     );
     expect(env).toEqual({
       ok: false,
-      error: "IPC_UNIMPLEMENTED: send_agent_message",
+      error: "IPC_UNIMPLEMENTED: send_cli_chat_stream",
     });
     expect(
-      unimplementedError("send_agent_message").startsWith(
+      unimplementedError("send_cli_chat_stream").startsWith(
         IPC_UNIMPLEMENTED_MARKER,
       ),
     ).toBe(true);
@@ -736,9 +736,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直スライス 12 + バッチ1 の 64 + バッチ3a チャット 4）", () => {
+  it("napi コマンド表が揃っている（垂直12 + バッチ1の64 + 3aの4 + 3bの6）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "abort_chat_stream",
+      "abort_inline_ai_stream",
       "agent_accept_prose_stage",
       "agent_apply_undo_journal",
       "agent_codex_create",
@@ -789,6 +790,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "get_global_settings",
       "integrity_check",
       "lint_text",
+      "list_ai_models",
       "list_annotations_for_project",
       "list_annotations_for_scene",
       "list_post_effect_runs",
@@ -805,11 +807,15 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_update",
       "repair_integrity",
       "reply_to_annotation",
+      "save_ai_settings",
       "save_global_settings",
       "save_post_effect_annotations",
       "segment_bunsetsu",
+      "send_agent_message",
       "send_chat_message",
       "send_chat_message_stream",
+      "send_inline_ai_stream",
+      "test_ai_connection",
       "timelapse_append_batch",
       "trash_bin_clear_all",
       "trash_bin_create",
@@ -1664,5 +1670,204 @@ describe("AI チャットコマンド", () => {
       "save_api_key",
       "delete_api_key",
     ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Phase 3b（inline / agent / settings / models / connection）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("AI Phase 3b コマンド", () => {
+  function makeBackend() {
+    const base = fakeBackend();
+    const methods = {
+      saveAiSettings: vi.fn().mockResolvedValue(undefined),
+      sendInlineAiStream: vi.fn().mockResolvedValue(undefined),
+      abortInlineAiStream: vi.fn(),
+      sendAgentMessage: vi
+        .fn()
+        .mockResolvedValue(
+          '{"blocks":[{"type":"tool_use","id":"t1","name":"search","input":{}}],"stopReason":"tool_use"}',
+        ),
+      listAiModels: vi.fn().mockResolvedValue('[{"id":"m1","name":"Model 1"}]'),
+      testAiConnection: vi.fn().mockResolvedValue("Connection OK"),
+    };
+    return {
+      ...base,
+      backend: Object.assign(base.backend, methods),
+      methods,
+    };
+  }
+
+  function secrets(
+    requiredKey = "sk-required",
+    optionalKey: string | null = null,
+  ) {
+    return {
+      resolveApiKeyForRequest: vi.fn().mockReturnValue(requiredKey),
+      getApiKeyForRequest: vi.fn().mockReturnValue(optionalKey),
+    };
+  }
+
+  it("save_ai_settings は渡された設定を保存し、secrets を要求しない", async () => {
+    const { backend, methods } = makeBackend();
+    const settings = { provider: "openai", model: "gpt-x" };
+    const env = await dispatchInvoke(
+      "save_ai_settings",
+      { settings },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: true, value: null });
+    expect(methods.saveAiSettings).toHaveBeenCalledWith(settings);
+  });
+
+  it("save_ai_settings の settings 欠落は backend を呼ばず reject する", async () => {
+    const { backend, methods } = makeBackend();
+    const env = await dispatchInvoke(
+      "save_ai_settings",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    if (!env.ok) expect(env.error).toMatch(/invalid args `settings`/);
+    expect(methods.saveAiSettings).not.toHaveBeenCalled();
+  });
+
+  it("send_inline_ai_stream は1回の設定snapshotと必須キーを注入する", async () => {
+    const { backend, calls, methods } = makeBackend();
+    const keyStore = secrets("sk-inline");
+    const args = {
+      messages: [{ role: "user", content: "continue" }],
+      provider: "openai-compatible",
+      endpointId: "ep2",
+    };
+    const env = await dispatchInvoke("send_inline_ai_stream", args, {
+      backend,
+      shell: noShell,
+      secrets: keyStore,
+    });
+    const settings = { provider: "openai", model: "gpt-x" };
+    expect(env).toEqual({ ok: true, value: null });
+    expect(keyStore.resolveApiKeyForRequest).toHaveBeenCalledWith(
+      settings,
+      "openai-compatible",
+      "ep2",
+    );
+    expect(methods.sendInlineAiStream).toHaveBeenCalledWith(
+      args,
+      settings,
+      "sk-inline",
+    );
+    expect(calls.filter((c) => c.method === "getAiSettings")).toHaveLength(1);
+  });
+
+  it("abort_inline_ai_stream は専用 backend メソッドを呼ぶ", async () => {
+    const { backend, methods } = makeBackend();
+    const env = await dispatchInvoke(
+      "abort_inline_ai_stream",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: true, value: null });
+    expect(methods.abortInlineAiStream).toHaveBeenCalledOnce();
+  });
+
+  it("send_agent_message はtool payloadを保ち、応答JSONをparseする", async () => {
+    const { backend, methods } = makeBackend();
+    const keyStore = secrets("sk-agent");
+    const args = {
+      messages: [{ role: "user", content: "find it" }],
+      tools: [
+        {
+          name: "search",
+          description: "search",
+          inputSchema: { type: "object", properties: {}, required: [] },
+        },
+      ],
+      webSearch: { enabled: true, agentic: true },
+    };
+    const env = await dispatchInvoke("send_agent_message", args, {
+      backend,
+      shell: noShell,
+      secrets: keyStore,
+    });
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        blocks: [{ type: "tool_use", id: "t1", name: "search", input: {} }],
+        stopReason: "tool_use",
+      },
+    });
+    expect(methods.sendAgentMessage).toHaveBeenCalledWith(
+      args,
+      { provider: "openai", model: "gpt-x" },
+      "sk-agent",
+    );
+  });
+
+  it("list_ai_models はキー未設定を空文字にし、必須キー解決を使わない", async () => {
+    const { backend, methods } = makeBackend();
+    const keyStore = secrets("must-not-use", null);
+    const args = { provider: "anthropic", endpointId: null };
+    const env = await dispatchInvoke("list_ai_models", args, {
+      backend,
+      shell: noShell,
+      secrets: keyStore,
+    });
+    expect(env).toEqual({
+      ok: true,
+      value: [{ id: "m1", name: "Model 1" }],
+    });
+    expect(keyStore.getApiKeyForRequest).toHaveBeenCalledWith(
+      { provider: "openai", model: "gpt-x" },
+      "anthropic",
+      null,
+    );
+    expect(keyStore.resolveApiKeyForRequest).not.toHaveBeenCalled();
+    expect(methods.listAiModels).toHaveBeenCalledWith(
+      args,
+      { provider: "openai", model: "gpt-x" },
+      "",
+    );
+  });
+
+  it("test_ai_connection は必須キーを注入し、文字列をそのまま返す", async () => {
+    const { backend, methods } = makeBackend();
+    const keyStore = secrets("sk-test");
+    const args = {
+      provider: "openai-compatible",
+      model: "model-x",
+      apiVariant: "v1",
+      endpointId: "ep2",
+    };
+    const env = await dispatchInvoke("test_ai_connection", args, {
+      backend,
+      shell: noShell,
+      secrets: keyStore,
+    });
+    expect(env).toEqual({ ok: true, value: "Connection OK" });
+    expect(methods.testAiConnection).toHaveBeenCalledWith(
+      args,
+      { provider: "openai", model: "gpt-x" },
+      "sk-test",
+    );
+  });
+
+  it.each([
+    "send_inline_ai_stream",
+    "send_agent_message",
+    "list_ai_models",
+    "test_ai_connection",
+  ])("%s は secrets 未注入を明示エラーにする", async (cmd) => {
+    const { backend } = makeBackend();
+    const env = await dispatchInvoke(
+      cmd,
+      { provider: "openai", messages: [], tools: [], model: "m" },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({
+      ok: false,
+      error: `IPC_SECRETS_UNAVAILABLE: ${cmd}`,
+    });
   });
 });
