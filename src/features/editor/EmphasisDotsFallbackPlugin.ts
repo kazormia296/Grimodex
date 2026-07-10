@@ -3,23 +3,22 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 
 /**
- * 傍点（圏点）の WebKitGTK 縦書きフォールバック decoration プラグイン。
+ * 傍点（圏点）の WebKitGTK 縦書きワークアラウンド decoration プラグイン。
  *
- * WebKitGTK は vertical-rl の native text-emphasis 描画にエンジンバグを持つ:
- * 各マークが文字境界側へ半文字ずれ、run 先頭文字のマークは描画されない
- * （CSS 値の調整では修正不能）。そこで WebKitGTK×縦書きに限り native 描画を
- * CSS で止め（index.css: text-emphasis: none）、このプラグインが emphasisDots
- * マークの付いた text run を 1 文字（grapheme）ずつ `.emphasis-dot-char` の
- * inline decoration に割り、CSS が各 span の背景に傍点ドットを描く。
+ * WebKitGTK は vertical-rl の native text-emphasis 描画にエンジンバグを持ち、
+ * **複数文字の run** ではマークが欠落する（実測: 5 文字 run で 3 マークしか
+ * 描かれない。CSS 値の調整では修正不能）。一方、run を 1 文字ずつ別々の
+ * span に割ると native が全マークを正しい位置に描く（スクローラ非縦書き化
+ * 後の構造で実機ピクセル解析により確認）。
  *
- * ドットを ::after の abspos で描かないのは、WebKitGTK が縦書きで
- * 「inline を包含ブロックとする abspos」の paint を leading 分ズラす別バグを
- * 持つため（ShowInvisibles の空白マークと同じ理由で background 方式に統一。
- * 列間へのはみ出しはブロック軸 padding — 縦書き inline ではレイアウト非干渉 —
- * で確保する）。
+ * そこでこのプラグインは emphasisDots マークの付いた text run を 1 文字
+ * （grapheme）ずつ `.emphasis-dot-char` の inline decoration に割るだけを行う。
+ * **描画そのものは native text-emphasis (sesame) に任せる** — クラスに視覚
+ * スタイルは無い（過去の「native を止めて背景ドットを自前描画する」方式は、
+ * ゴマ点の見た目を保てないため廃止。分割 + native が正解の組み合わせ）。
  *
  * 登録は useEmphasisDotsFallback が isWebKitGtk() かつ縦書き時のみ行う。
- * 横書き・Chromium・WKWebView は native text-emphasis のまま。
+ * 横書き・Chromium・WKWebView は分割不要（native が run のままでも正しい）。
  */
 export const emphasisDotsFallbackKey = new PluginKey<DecorationSet>(
   "emphasisDotsFallback",

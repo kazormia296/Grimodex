@@ -1212,38 +1212,12 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
   text-emphasis-color: oklch(0.7 0 0);
 }
 
-/* 傍点の WebKitGTK 縦書きフォールバック。WebKitGTK の native text-emphasis は
-   vertical-rl でマークが文字境界へ半文字ズレ + run 先頭のマークが欠落する
-   エンジンバグがあり CSS 値では直せないため、native 描画を止めて
-   EmphasisDotsFallbackPlugin が 1 文字ずつ付ける .emphasis-dot-char の背景に
-   ドットを描く（文字セルの右・縦中央 = timelapse canvas 実装と同じ幾何）。
-   - padding-right は縦書き inline ではブロック軸 padding なのでレイアウト
-     （字送り・列送り）に影響せず、背景の描画域だけを列間へ広げる。
-   - abspos ::after にしないのは、WebKitGTK が縦書きで「inline を包含ブロックと
-     する abspos」の paint を leading 分ズラす別バグを踏むため（空白マークの
-     background 方式と同じ判断）。
-   - 縦書き専用スコープなので物理プロパティ（right）で確定的に書く。 */
-html[data-engine="webkitgtk"] .editor-vertical .tiptap .emphasis-dots {
-  -webkit-text-emphasis: none;
-  text-emphasis: none;
-}
-html[data-engine="webkitgtk"] .editor-vertical .tiptap .emphasis-dot-char {
-  --emphasis-dot-ink: currentColor;
-  padding-right: 0.5em;
-  background-image: radial-gradient(
-    circle at center,
-    var(--emphasis-dot-ink) calc(0.09em - 0.25px),
-    transparent calc(0.09em + 0.25px)
-  );
-  background-size: 0.4em 0.4em;
-  background-repeat: no-repeat;
-  background-position: right 0.1em center;
-}
-/* .dark は <html> 自身に付く（App.tsx applyTheme）ため、data-engine と同じ
-   要素上の複合セレクタで書く — 子孫結合子だと絶対にマッチしない dead rule。 */
-html[data-engine="webkitgtk"].dark .editor-vertical .tiptap .emphasis-dot-char {
-  --emphasis-dot-ink: oklch(0.7 0 0);
-}
+/* 傍点は WebKitGTK でも native text-emphasis (sesame) で描く。
+   WebKitGTK の縦書きは「複数文字 run だとマークが欠落する」エンジンバグを
+   持つため、EmphasisDotsFallbackPlugin が run を 1 文字ずつ
+   .emphasis-dot-char に分割して native に全マークを描かせる（分割のみで
+   視覚スタイルは持たせない — 旧方式の「native を止めて背景ドット自前描画」は
+   ゴマ点の見た目を保てないため廃止。実機ピクセル解析で 5/5 マーク描画を確認）。 */
 
 /* Task 2.4: Temporary highlight for AI-inserted text */
 .insert-highlight {
@@ -1720,6 +1694,11 @@ html[data-engine="webkitgtk"].dark .editor-vertical .tiptap .emphasis-dot-char {
    * scrollLeft の符号規約（0=右端・負方向=前方）は RTL スクローラでも
    * vertical-rl スクローラと同一で、editorLayout の前提は不変（実測確認済み）。 */
   direction: rtl;
+  /* flex にするのは行長キャップの中央寄せ復元のため: content wrapper の
+   * marginInline: auto（縦書きでは物理上下マージン）は、通常フローだと親の
+   * ブロック軸なので 0 に潰れるが、flex アイテムの交差軸 auto マージンとして
+   * は中央寄せが効く（あふれ時は 0 になり上詰め = safe）。 */
+  display: flex;
   /* スクロールアンカリング切り: 編集中の DOM 変異でエンジンが視点を動かす
    * 要因にしかならない（Chromium でも無害）。 */
   overflow-anchor: none;

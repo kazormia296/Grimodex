@@ -8,11 +8,11 @@ import {
 } from "./EmphasisDotsFallbackPlugin";
 
 /**
- * WebKitGTK かつ縦書きモード時のみ傍点フォールバックプラグインを動的登録する。
- * Chromium/WKWebView と横書きでは native text-emphasis が正しく描くため登録せず
- * （CSS 側も html[data-engine="webkitgtk"] .editor-vertical スコープで二重ガード）、
- * 無駄な per-char decoration 構築を避ける。useTateChuYoko と同じ
- * registerPlugin/unregisterPlugin ライフサイクル。
+ * WebKitGTK かつ縦書きモード時のみ傍点の per-char 分割プラグインを動的登録する
+ * （複数文字 run だと native のマークが欠落するエンジンバグの回避 — 詳細は
+ * EmphasisDotsFallbackPlugin.ts）。Chromium/WKWebView と横書きでは native が
+ * run のままでも正しく描くため登録せず、無駄な per-char decoration 構築を
+ * 避ける。useTateChuYoko と同じ registerPlugin/unregisterPlugin ライフサイクル。
  */
 export function useEmphasisDotsFallback(editor: Editor | null): void {
   const verticalMode = useSettingsStore((s) =>
