@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   clampZoomFactor,
-  DISABLED_LICENSE_STATE,
   dispatchInvoke,
   EVENT_CHANNEL_ALLOWLIST,
   IPC_BACKEND_UNAVAILABLE_MARKER,
@@ -353,6 +352,49 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
 
 const noShell = Object.freeze({});
 
+const LICENSED_LICENSE_STATE = {
+  licensingEnabled: true,
+  status: "licensed",
+  trialDaysRemaining: null,
+  graceDaysRemaining: null,
+  keyTail: "1234",
+  activatedAt: "2026-07-01T00:00:00Z",
+  lastValidatedAt: "2026-07-11T00:00:00Z",
+};
+
+const TRIAL_LICENSE_STATE = {
+  licensingEnabled: true,
+  status: "trial",
+  trialDaysRemaining: 23,
+  graceDaysRemaining: null,
+  keyTail: null,
+  activatedAt: null,
+  lastValidatedAt: null,
+};
+
+function fakeLicenseBackend() {
+  const base = fakeBackend();
+  const methods = {
+    getLicenseState: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(LICENSED_LICENSE_STATE)),
+    activateLicense: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(LICENSED_LICENSE_STATE)),
+    revalidateLicense: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(LICENSED_LICENSE_STATE)),
+    deactivateLicense: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(TRIAL_LICENSE_STATE)),
+  };
+  return {
+    ...base,
+    backend: Object.assign(base.backend, methods),
+    methods,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // イベント allowlist（列挙制）
 // ─────────────────────────────────────────────────────────────────────────────
@@ -526,31 +568,21 @@ describe("dispatchInvoke", () => {
     expect(env).toEqual({ ok: false, error: "WORKSPACE_SWITCHING" });
   });
 
-  it("shell ハンドラが napi 表より優先される", async () => {
-    const { backend, calls } = fakeBackend();
-    const shell = {
-      get_license_state: vi.fn(() =>
-        Promise.resolve({ ...DISABLED_LICENSE_STATE }),
-      ),
-    };
+  it("native license commandは残存shell stubに遮られない", async () => {
+    const { backend, methods } = fakeLicenseBackend();
+    const getLicenseStateStub = vi.fn().mockResolvedValue({
+      licensingEnabled: false,
+      status: "disabled",
+    });
     const env = await dispatchInvoke(
       "get_license_state",
       {},
-      { backend, shell },
+      { backend, shell: { get_license_state: getLicenseStateStub } },
     );
-    expect(env).toEqual({
-      ok: true,
-      value: {
-        licensingEnabled: false,
-        status: "disabled",
-        trialDaysRemaining: null,
-        graceDaysRemaining: null,
-        keyTail: null,
-        activatedAt: null,
-        lastValidatedAt: null,
-      },
-    });
-    expect(calls).toHaveLength(0);
+
+    expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
+    expect(methods.getLicenseState).toHaveBeenCalledExactlyOnceWith();
+    expect(getLicenseStateStub).not.toHaveBeenCalled();
   });
 
   it("プロトタイプ経由のコマンド名（constructor 等）は未実装扱い", async () => {
@@ -780,11 +812,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直12 + バッチ1の64 + 3a〜3d）", () => {
+  it("napi コマンド表が揃っている（垂直12 + バッチ1の64 + 3a〜3e）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "abort_chat_stream",
       "abort_inline_ai_stream",
       "abort_post_effect_run",
+      "activate_license",
       "agent_accept_prose_stage",
       "agent_apply_undo_journal",
       "agent_codex_create",
@@ -807,6 +840,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "codex_rebuild_matcher",
       "db_execute",
       "db_execute_batch",
+      "deactivate_license",
       "foreshadow_create",
       "foreshadow_delete",
       "foreshadow_get",
@@ -833,6 +867,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "fts_search",
       "get_ai_settings",
       "get_global_settings",
+      "get_license_state",
       "integrity_check",
       "lint_text",
       "list_ai_models",
@@ -852,6 +887,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_update",
       "repair_integrity",
       "reply_to_annotation",
+      "revalidate_license",
       "save_ai_settings",
       "save_global_settings",
       "save_post_effect_annotations",
@@ -872,6 +908,121 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "update_annotation_status",
       "validate_workspace_path",
     ]);
+  });
+
+  describe("License Phase 3e コマンド", () => {
+    const commandCases = [
+      ["get_license_state", "getLicenseState", {}],
+      ["activate_license", "activateLicense", { key: "GRIM-KEY-1234" }],
+      ["revalidate_license", "revalidateLicense", {}],
+      ["deactivate_license", "deactivateLicense", {}],
+    ] as const;
+
+    it("get_license_stateをmain-TS shell commandとして登録しない", () => {
+      expect(SHELL_COMMAND_NAMES).not.toContain("get_license_state");
+    });
+
+    it("get_license_stateは引数なしでnativeを呼び、JSON DTOをparseする", async () => {
+      const { backend, methods } = fakeLicenseBackend();
+
+      const env = await dispatchInvoke(
+        "get_license_state",
+        {},
+        {
+          backend,
+          shell: noShell,
+        },
+      );
+
+      expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
+      expect(methods.getLicenseState).toHaveBeenCalledExactlyOnceWith();
+    });
+
+    it("activate_licenseはkeyを位置引数へ写像し、JSON DTOをparseする", async () => {
+      const { backend, methods } = fakeLicenseBackend();
+
+      const env = await dispatchInvoke(
+        "activate_license",
+        { key: "GRIM-KEY-1234" },
+        { backend, shell: noShell },
+      );
+
+      expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
+      expect(methods.activateLicense).toHaveBeenCalledExactlyOnceWith(
+        "GRIM-KEY-1234",
+      );
+    });
+
+    it.each([
+      ["revalidate_license", "revalidateLicense", LICENSED_LICENSE_STATE],
+      ["deactivate_license", "deactivateLicense", TRIAL_LICENSE_STATE],
+    ] as const)(
+      "%sはbackendへ引数を渡さず、JSON DTOをparseする",
+      async (cmd, methodName, expectedState) => {
+        const { backend, methods } = fakeLicenseBackend();
+
+        const env = await dispatchInvoke(
+          cmd,
+          { ignoredExtraArg: true },
+          { backend, shell: noShell },
+        );
+
+        expect(env).toEqual({ ok: true, value: expectedState });
+        expect(methods[methodName]).toHaveBeenCalledExactlyOnceWith();
+      },
+    );
+
+    it.each([{}, { key: null }, { key: 42 }, { key: [] }])(
+      "activate_licenseは必須keyがstringでなければnative呼出し前に拒否する: %j",
+      async (args) => {
+        const { backend, methods } = fakeLicenseBackend();
+
+        const env = await dispatchInvoke("activate_license", args, {
+          backend,
+          shell: noShell,
+        });
+
+        expect(env.ok).toBe(false);
+        if (!env.ok) {
+          expect(env.error).toContain(
+            "invalid args `key` for command `activate_license`",
+          );
+        }
+        expect(methods.activateLicense).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(commandCases)(
+      "%sは旧native bindingで%sが無ければ明示的なbackend unavailableを返す",
+      async (cmd, methodName, args) => {
+        const { backend } = fakeBackend();
+
+        const env = await dispatchInvoke(cmd, args, {
+          backend,
+          shell: noShell,
+        });
+
+        expect(env).toEqual({
+          ok: false,
+          error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${methodName}`,
+        });
+      },
+    );
+
+    it.each(commandCases)(
+      "%sはbackend自体がnullならcommand単位のbackend unavailableを返す",
+      async (cmd, _methodName, args) => {
+        const env = await dispatchInvoke(cmd, args, {
+          backend: null,
+          shell: noShell,
+        });
+
+        expect(env).toEqual({
+          ok: false,
+          error: `${IPC_BACKEND_UNAVAILABLE_MARKER} ${cmd}`,
+        });
+      },
+    );
   });
 
   it("codex_rebuild_matcher は {entries} を素通しし null を resolve する", async () => {
