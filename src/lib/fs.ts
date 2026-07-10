@@ -23,9 +23,8 @@ function assertTauri(): void {
 
 export async function readTextFile(path: string): Promise<string> {
   assertTauri();
-  const { readTextFile: tauriReadTextFile } = await import(
-    "@tauri-apps/plugin-fs"
-  );
+  const { readTextFile: tauriReadTextFile } =
+    await import("@tauri-apps/plugin-fs");
   return tauriReadTextFile(path);
 }
 

@@ -19,8 +19,7 @@ export async function check(): Promise<Update | null> {
 /** アプリ再起動。非 Tauri は no-op。 */
 export async function relaunch(): Promise<void> {
   if (!isTauri()) return;
-  const { relaunch: tauriRelaunch } = await import(
-    "@tauri-apps/plugin-process"
-  );
+  const { relaunch: tauriRelaunch } =
+    await import("@tauri-apps/plugin-process");
   await tauriRelaunch();
 }

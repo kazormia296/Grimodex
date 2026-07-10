@@ -16,7 +16,9 @@ export interface WindowCloseRequestedEvent {
 
 async function currentWindow() {
   if (!isTauri()) {
-    throw new Error("window controls are unavailable outside the Tauri runtime");
+    throw new Error(
+      "window controls are unavailable outside the Tauri runtime",
+    );
   }
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   return getCurrentWindow();
