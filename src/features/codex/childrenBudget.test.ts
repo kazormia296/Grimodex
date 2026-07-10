@@ -38,6 +38,7 @@ function makeEntry(
     name,
     aliases: null,
     excludedAliases: null,
+    readings: null,
     summary: summary ?? null,
     content: "{}",
     icon: null,

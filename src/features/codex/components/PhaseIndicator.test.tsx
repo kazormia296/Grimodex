@@ -16,6 +16,7 @@ const mockEntry: CodexEntry = {
   icon: null,
   aliases: "[]",
   excludedAliases: "[]",
+  readings: null,
   tagsCache: null,
   contextMode: "mentioned",
   childrenBudget: "compact",

@@ -187,6 +187,11 @@ export const codexEntries = sqliteTable(
     name: text("name").notNull().default("Untitled"),
     aliases: text("aliases"), // JSON string[]
     excludedAliases: text("excluded_aliases"), // JSON string[]
+    // 表記 (name / 各 alias) → 読みの配列。IME 変換辞書注入・ルビ・五十音ソート
+    // 用の汎用データ (docs/Grimodex_IME連携設計書.md §3.1)。aliases と同じ流儀の
+    // nullable JSON 文字列カラム。値は Record<表記, string[]>。列は
+    // migrate.rs の add_column_if_missing で後付けされる (version と同じ経路)。
+    readings: text("readings"), // JSON Record<string, string[]>
     summary: text("summary"),
     content: text("content").notNull().default("{}"), // body (ProseMirror JSON)
     icon: text("icon"), // 128×128 WebP icon image as base64 data URL (nullable)

@@ -45,6 +45,7 @@ function makeEntry(id: string, name: string, type = "character"): CodexEntry {
     tagsCache: null,
     aliases: null,
     excludedAliases: null,
+    readings: null,
     sourceChatMessageId: null,
     notes: null,
     version: 0,

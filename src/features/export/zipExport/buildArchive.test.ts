@@ -65,6 +65,7 @@ describe("buildArchive (fixture assembly)", () => {
         name: "Alice",
         aliases: null,
         excludedAliases: null,
+        readings: null,
         summary: "Hero",
         content:
           '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hero"}]}]}',

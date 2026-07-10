@@ -71,11 +71,12 @@ export type CodexMatchRow = Pick<
 >;
 
 /**
- * AI 文脈構築用: icon / notes の 2 列だけを除いた行。content は L4 注入・
+ * AI 文脈構築用: icon / notes / readings の 3 列を除いた行。content は L4 注入・
  * children budget・reverse mention 走査が全件横断で読むため残す。
- * notes は「AI 文脈には注入しない」列 (schema comment 参照) なので除外して良い。
+ * notes は「AI 文脈には注入しない」列 (schema comment 参照)。readings は IME 辞書・
+ * ルビ・ソート用のメタデータで物語本文ではないため AI 文脈には注入しない。
  */
-export type CodexContextEntry = Omit<CodexEntry, "icon" | "notes">;
+export type CodexContextEntry = Omit<CodexEntry, "icon" | "notes" | "readings">;
 
 /**
  * mention 検出の match target 専用の軽量 projection。
@@ -160,6 +161,7 @@ export async function createCodexEntry(
         | "tagsCache"
         | "aliases"
         | "excludedAliases"
+        | "readings"
         | "parentId"
         | "sourceChatMessageId"
       >
@@ -188,6 +190,7 @@ export async function updateCodexEntry(
       | "tagsCache"
       | "aliases"
       | "excludedAliases"
+      | "readings"
       | "parentId"
       | "contextMode"
       | "icon"

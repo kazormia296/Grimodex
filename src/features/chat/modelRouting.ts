@@ -22,7 +22,7 @@
  *   - inline: inline_ai_stream
  *   - cheap: session_title, beat_role, summarization
  *       … summarization は chatStore の injected callback 経由で model を注入
- *   - structured: synopsis, foreshadow_*(3), map_branch, tree_scaffold, codex_judgment
+ *   - structured: synopsis, foreshadow_*(3), map_branch, tree_scaffold, codex_judgment, codex_yomi
  *   - review: post_effect_*(6)
  *       … start_post_effect_run(_multi) に model_override を渡し、各 process_*_scene が
  *         read_ai_settings 後に override（既存 model=input_hash/記録用とは独立軸）
@@ -144,6 +144,7 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
   map_branch: "structured",
   tree_scaffold: "structured",
   codex_judgment: "structured",
+  codex_yomi: "structured",
   // review — 校閲 post-effect（JSON 構造化）
   post_effect_intent_drift: "review",
   post_effect_review: "review",

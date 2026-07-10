@@ -26,6 +26,7 @@ function mkEntry(partial: Partial<CodexEntry> & { id: string }): CodexEntry {
     name: "Untitled",
     aliases: null,
     excludedAliases: null,
+    readings: null,
     summary: null,
     content: "{}",
     icon: null,

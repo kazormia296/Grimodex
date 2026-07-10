@@ -1215,6 +1215,7 @@
         "summarization": "Summarization",
         "context_creator": "Context Creator",
         "codex_judgment": "Proper-noun candidate judgment",
+        "codex_yomi": "Reading estimation",
         "plot_thread_extract": "Plot thread extraction",
         "chronicle_extract": "Chronicle event extraction"
       }
@@ -2182,6 +2183,19 @@
       "hidden": "Exclude from AI",
       "hiddenDesc": "Never inject into AI context"
     },
+    "readings": {
+      "label": "Readings (furigana)",
+      "estimate": "Estimate with AI",
+      "auto": "Auto: {{yomi}}",
+      "noSurfaces": "Set a name or aliases to add readings",
+      "backfillTitle": "Bulk reading estimation",
+      "backfillDesc": "AI estimates readings for kanji-bearing surfaces that have none. Used for IME dictionary injection, ruby, and kana sorting.",
+      "backfillRun": "Estimate all missing readings",
+      "backfillRunning": "Estimating… ({{done}}/{{total}})",
+      "backfillNone": "No surfaces need estimation",
+      "backfillDone": "Registered {{count}} readings",
+      "backfillFailed": "Bulk reading estimation failed"
+    },
     "mentions": {
       "sourceChat": "Source chat: {{title}}"
     },
@@ -2326,6 +2340,7 @@
       "tagsChanged": "Tags changed",
       "aliasesChanged": "Aliases changed",
       "excludedAliasesChanged": "Excluded aliases changed",
+      "readingsChanged": "Readings changed",
       "parentChanged": "Parent changed",
       "contextModeChanged": "Context mode changed",
       "iconChanged": "Icon changed",
