@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import type { Editor, EditorEvents } from "@tiptap/core";
 import { useTranslation } from "react-i18next";
+import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
@@ -170,7 +171,15 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
     handleFocusOut,
   ]);
 
+  // キャレット経路（selectionUpdate）はキーボード操作者向けのオプトイン
+  // （settings の editor.codexPopoverOnCaret、既定OFF）。マウスホバー経路は
+  // 設定に関わらず常に有効。
+  const caretPopoverEnabled = useSettingsStore((s) =>
+    s.getBoolean("editor.codexPopoverOnCaret", false),
+  );
+
   useEffect(() => {
+    if (!caretPopoverEnabled) return;
     if (!editor || editor.isDestroyed) return;
     // テスト用モック editor など emitter を持たない実装では購読しない
     if (typeof editor.on !== "function" || typeof editor.off !== "function") {
@@ -180,7 +189,7 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
     return () => {
       editor.off("selectionUpdate", handleSelectionUpdate);
     };
-  }, [editor, handleSelectionUpdate]);
+  }, [editor, handleSelectionUpdate, caretPopoverEnabled]);
 
   // Escape で閉じる（caret が同じ entry 上にある間は再表示しない）
   useEffect(() => {

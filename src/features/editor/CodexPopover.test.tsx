@@ -16,6 +16,18 @@ import { CodexPopover } from "./CodexPopover";
  * 実 TipTap は重いので editor は selectionUpdate emitter のスタブで代替する。
  */
 
+// editor.codexPopoverOnCaret（キャレット経路の有効/無効）をテストごとに切替える
+let mockCaretPopoverEnabled = true;
+vi.mock("@/features/settings/settingsStore", () => ({
+  useSettingsStore: (
+    sel: (s: { getBoolean: (k: string, d: boolean) => boolean }) => unknown,
+  ) =>
+    sel({
+      getBoolean: (k, d) =>
+        k === "editor.codexPopoverOnCaret" ? mockCaretPopoverEnabled : d,
+    }),
+}));
+
 vi.mock("@/features/codex/codexStore", () => ({
   useCodexStore: (sel: (s: { entries: unknown[] }) => unknown) =>
     sel({
@@ -93,6 +105,7 @@ describe("CodexPopover accessibility", () => {
   afterEach(() => {
     cleanup();
     document.body.innerHTML = "";
+    mockCaretPopoverEnabled = true;
   });
 
   it("opens on hover with role=dialog named after the entry", () => {
@@ -117,6 +130,26 @@ describe("CodexPopover accessibility", () => {
 
     act(() => emitSelection());
 
+    expect(screen.getByRole("dialog").getAttribute("aria-label")).toBe(
+      "アリス",
+    );
+  });
+
+  it("editor.codexPopoverOnCaret=false ではキャレット経路で開かない（ホバーは開く）", () => {
+    mockCaretPopoverEnabled = false;
+    const { container, span } = setupDom();
+    const { stub, emitSelection } = createEditorStub(
+      container,
+      () => span.firstChild!,
+    );
+    render(<CodexPopover editor={stub} />);
+
+    // キャレットがハイライトに入っても開かない
+    act(() => emitSelection());
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // マウスホバー経路は設定に関わらず有効なまま
+    fireEvent.mouseOver(span);
     expect(screen.getByRole("dialog").getAttribute("aria-label")).toBe(
       "アリス",
     );

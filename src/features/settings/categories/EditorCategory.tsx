@@ -224,6 +224,15 @@ export function EditorCategory() {
             defaultValue={false}
           />
         </SettingRow>
+        <SettingRow
+          label={t("settings.editor.codexPopoverOnCaret")}
+          description={t("settings.editor.codexPopoverOnCaretDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.codexPopoverOnCaret"
+            defaultValue={false}
+          />
+        </SettingRow>
       </SettingSection>
 
       <SettingSection title={t("settings.editor.inlineAi")}>

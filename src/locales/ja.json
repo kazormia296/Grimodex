@@ -641,6 +641,8 @@
       "autoPairBracketsDesc": "「『（【〔［〈｛ を入力すると対応する閉じ約物を自動挿入（閉じを打つと重複せず通過）",
       "showInvisibles": "空白と改行を表示",
       "showInvisiblesDesc": "半角空白 · / 全角空白 □ / タブ → / 段落末 ¶ / 改行 ↵ を淡色で可視化",
+      "codexPopoverOnCaret": "キャレットで Codex ポップオーバーを表示",
+      "codexPopoverOnCaretDesc": "入力カーソルが Codex ハイライトに入ったときにエントリのポップオーバーを表示（マウスホバーでの表示は常に有効）",
       "animation": "アニメーション",
       "disableAll": "すべてのアニメーションを無効化",
       "disableAllDesc": "以下の設定を一括でOFF",

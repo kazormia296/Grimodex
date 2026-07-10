@@ -641,6 +641,8 @@
       "autoPairBracketsDesc": "Typing 「『（【〔［〈｛ auto-inserts the matching close (typing the close steps over it instead of duplicating)",
       "showInvisibles": "Show whitespace & line breaks",
       "showInvisiblesDesc": "Reveal space ·, ideographic space □, tab →, paragraph end ¶, and line break ↵ in a faint color",
+      "codexPopoverOnCaret": "Show Codex popover at caret",
+      "codexPopoverOnCaretDesc": "Show the entry popover when the text caret enters a Codex highlight (hover display is always on)",
       "animation": "Animations",
       "disableAll": "Disable all animations",
       "disableAllDesc": "Turn off all settings below at once",
