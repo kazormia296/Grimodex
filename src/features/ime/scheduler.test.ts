@@ -45,8 +45,7 @@ describe("IME export refresh scheduler", () => {
   it("contains native export failures instead of rejecting the mutation path", async () => {
     refreshImeExportMock.mockRejectedValueOnce(new Error("disk full"));
     scheduleImeExportRefresh("p1");
-    await expect(
-      vi.advanceTimersByTimeAsync(IME_EXPORT_DEBOUNCE_MS),
-    ).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(IME_EXPORT_DEBOUNCE_MS);
+    expect(refreshImeExportMock).toHaveBeenCalledWith("p1");
   });
 });
