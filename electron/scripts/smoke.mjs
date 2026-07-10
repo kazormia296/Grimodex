@@ -103,6 +103,10 @@ async function launchApp() {
   const env = { ...process.env };
   delete env.ELECTRON_RENDERER_URL; // 本番経路（app://）を強制
   env.GRIMODEX_USER_DATA_DIR = userDataDir;
+  // headless/occluded な Electron 窓では renderer の rAF が完全停止し、
+  // Playwright の actionability（連続 frame での stable 判定）が進まない。
+  // 製品のバックグラウンド省電力設定は変えず、この自動操作だけ無効化する。
+  env.GRIMODEX_E2E_NO_THROTTLE = "1";
 
   const app = await _electron.launch({
     executablePath: electronBin,
@@ -227,17 +231,25 @@ async function phaseWrite() {
     await header.waitFor({ state: "visible", timeout: LAUNCH_TIMEOUT_MS });
     log("  editor ビュー到達（シーン一覧パネル表示）");
 
-    // 起動直後のlayout hydrationクロスフェードが最終状態へ戻っていること。
-    // opacity=0のまま固着するとlocator自体はvisibleでも操作不能になる。
+    // 起動直後の layout hydration が全レイヤーで最終状態になっていること。
+    // shell / region / editor のどれかが opacity=0 のまま固着すると、locator
+    // 自体は visible でも Playwright と実ユーザーの双方が操作できない。
     await page.waitForFunction(
       () => {
-        const shell = document.querySelector("[data-layout-shell]");
-        return shell !== null && getComputedStyle(shell).opacity === "1";
+        const layers = Array.from(
+          document.querySelectorAll(
+            "[data-layout-shell], [data-animated-region], [data-editor-area]",
+          ),
+        );
+        return (
+          layers.length > 0 &&
+          layers.every((layer) => getComputedStyle(layer).opacity === "1")
+        );
       },
       undefined,
       { timeout: 5_000 },
     );
-    log("  layout crossfade完了（opacity=1）");
+    log("  layout hydration完了（全レイヤー opacity=1）");
 
     // A1 相当の最小確認: windowControls ブリッジが応答する
     const maximized = await page.evaluate(() =>
