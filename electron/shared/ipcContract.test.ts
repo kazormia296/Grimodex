@@ -86,6 +86,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "imeExportSetActiveProject",
       IME_EXPORT_STATUS,
     ) as never,
+    imeExportDeactivateOnExit: record(
+      "imeExportDeactivateOnExit",
+      undefined,
+    ) as never,
     imeExportGetStatus: record(
       "imeExportGetStatus",
       IME_EXPORT_STATUS,

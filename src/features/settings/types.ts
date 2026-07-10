@@ -134,6 +134,10 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "display.layerAutoFollow": "global",
   // Codex — user preference (global)
   "codex.entryTitleFont": "global",
+  // IME dictionary bridge — OS/user environment preference (cross-workspace).
+  "ime.integrationMode": "global",
+  "ime.excludeHidden": "global",
+  "ime.includeProfile": "global",
   // AI — user preference (global)
   "ai.inlineModel": "global",
   "ai.sessionTitleModel": "global",
@@ -336,6 +340,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // (codexNameFont が ja=駅名標 / en=Helvetica系 を解決)。ユーザーが明示選択した
   // 値が勝つ。ピッカーでは空が「デフォルト (<言語の既定フォント名>)」として表示される。
   "codex.entryTitleFont": "",
+  // IME dictionary bridge: auto activates only when a consumer handshake exists.
+  "ime.integrationMode": "auto",
+  "ime.excludeHidden": "false",
+  "ime.includeProfile": "true",
   // AI
   "ai.inlineModel": "",
   "ai.sessionTitleModel": "",

@@ -10,7 +10,8 @@ import path from "node:path";
 
 import { app } from "electron";
 
-import { initBackend } from "./backend.js";
+import { getBackend, initBackend } from "./backend.js";
+import { registerImeShutdown } from "./imeShutdown.js";
 import { registerEventBus } from "./events.js";
 import { registerIpcRouter } from "./ipc.js";
 import {
@@ -44,6 +45,8 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  registerImeShutdown(app, getBackend);
+
   app.on("second-instance", () => {
     const main = getWindow("main");
     if (!main) return;

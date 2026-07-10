@@ -660,6 +660,36 @@ fn clear_and_remove_preserve_consumers_and_keep_state_from_pointing_at_missing_f
 }
 
 #[test]
+fn exit_deactivation_clears_the_pointer_without_deleting_the_snapshot() -> TestResult {
+    let fixture = Fixture::new()?;
+    seed_project(fixture.db(), "p-exit", "Exit", "ja", None, None)?;
+    seed_entry(
+        fixture.db(),
+        "entry-exit",
+        "p-exit",
+        "character",
+        "サクラ",
+        None,
+        None,
+        None,
+        "mentioned",
+    )?;
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "p-exit",
+        &options(ImeIntegrationMode::On),
+    )?;
+    set_active_project(&fixture.ime_root, Some("p-exit"), ImeIntegrationMode::On)?;
+
+    set_active_project(&fixture.ime_root, None, ImeIntegrationMode::On)?;
+
+    assert_eq!(read_active_project(&fixture.ime_root)?, None);
+    assert!(project_snapshot_path(&fixture.ime_root, "p-exit").exists());
+    Ok(())
+}
+
+#[test]
 fn project_id_path_traversal_is_rejected_without_touching_state() -> TestResult {
     let fixture = Fixture::new()?;
     seed_project(fixture.db(), "safe", "Safe", "ja", None, None)?;

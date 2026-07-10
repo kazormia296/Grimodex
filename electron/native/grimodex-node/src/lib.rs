@@ -4,8 +4,9 @@
 //! `#[napi]` class `Backend` が grimodex-db の `WorkspaceState` を保持し、
 //! 垂直スライスのコマンド群 + `onEvent` を Node (Electron main) へ公開する。
 //!
-//! - **全公開関数は async + `spawn_blocking`** (軽量 stat のみの
-//!   `validate_workspace_path` を除く)。同期 `#[napi]` は Node main thread =
+//! - **全公開関数は async + `spawn_blocking`** (軽量 stat の
+//!   `validate_workspace_path` と、終了を確実に待つ
+//!   `ime_export_deactivate_on_exit` を除く)。同期 `#[napi]` は Node main thread =
 //!   Electron main プロセス全体をブロックする (Phase 0 スパイク実証) —
 //!   busy_timeout 5s を踏んだ db_execute が全窓の IPC を止める事故を構造的に防ぐ。
 //! - 返り値は当面 **JSON 文字列** (rows の二重シリアライズは Phase 3 の最適化
@@ -34,6 +35,11 @@ use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
     PayoffAnchorInput, SetupAnchorInput, SetupCreateAiInput,
 };
+use grimodex_db::ime_export::{
+    clear_all_exports, get_status as get_ime_export_status, refresh_project_export,
+    remove_project_export, resolve_mode_from_preferences, resolve_options_from_preferences,
+    set_active_project, ImeExportOptions, ImeIntegrationMode,
+};
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
     self, PlotThreadCreatePayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
@@ -58,6 +64,38 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+fn authoritative_ime_options(
+    state: &AppState,
+    fallback: &ImeExportOptions,
+) -> std::result::Result<ImeExportOptions, AppError> {
+    let _guard = state
+        .gs
+        .write_lock
+        .lock()
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+    let settings = workspace::read_global_settings(&state.gs.path);
+    Ok(resolve_options_from_preferences(
+        &settings.user_preferences,
+        fallback,
+    ))
+}
+
+fn authoritative_ime_mode(
+    state: &AppState,
+    fallback: ImeIntegrationMode,
+) -> std::result::Result<ImeIntegrationMode, AppError> {
+    let _guard = state
+        .gs
+        .write_lock
+        .lock()
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+    let settings = workspace::read_global_settings(&state.gs.path);
+    Ok(resolve_mode_from_preferences(
+        &settings.user_preferences,
+        fallback,
+    ))
 }
 
 /// agent_writes 18 コマンドの定形写像。FE の `{ payload }` を DTO へ
@@ -233,6 +271,141 @@ impl Backend {
                 let result = db.append_change_events(&project_id, &session_id, &events)?;
                 Ok(serde_json::to_string(&result)?)
             })
+        })
+        .await
+    }
+
+    /// 現在の Codex 読みを `<userData>/ime/projects/<projectId>.json` へ再出力する。
+    /// options は Tauri と同じ camelCase `ImeExportOptions`。DB 読み取りと
+    /// ファイル I/O の双方を Node main thread の外で実行する。
+    #[napi]
+    pub async fn ime_export_refresh(
+        &self,
+        project_id: String,
+        options: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        let options: ImeExportOptions = from_wire("options", options).map_err(app_err_to_napi)?;
+        let request = state
+            .ime_request_gate
+            .register_refresh(&project_id, &options);
+        run_blocking(move || {
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            let options = authoritative_ime_options(&state, &options)?;
+            if !state.ime_request_gate.is_current(&request) {
+                let status = get_ime_export_status(&state.ime_root, options.mode)?;
+                return Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?);
+            }
+            with_db_state(&state.ws, |db| {
+                let status = refresh_project_export(db, &state.ime_root, &project_id, &options)?;
+                Ok(serde_json::to_string(&status)?)
+            })
+        })
+        .await
+    }
+
+    /// IME consumer が参照する active project を切り替える。`None` は明示的な
+    /// deactivation であり、renderer からの null をそのまま受ける。
+    #[napi]
+    pub async fn ime_export_set_active_project(
+        &self,
+        project_id: Option<String>,
+        mode: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        let mode: ImeIntegrationMode =
+            from_wire("mode", serde_json::Value::String(mode)).map_err(app_err_to_napi)?;
+        let request = state.ime_request_gate.register_active();
+        run_blocking(move || {
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            let mode = authoritative_ime_mode(&state, mode)?;
+            if !state.ime_request_gate.is_current(&request) {
+                let status = get_ime_export_status(&state.ime_root, mode)?;
+                return Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?);
+            }
+            let status = set_active_project(&state.ime_root, project_id.as_deref(), mode)?;
+            Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Electron の will-quit 専用。blocking pool の処理をタイムアウトで
+    /// 打ち切ると state.json が旧 project を指したまま終了し得るため、ここだけ
+    /// 同期的に writer mutex を待ち、active pointer の解除完了を保証する。
+    #[napi]
+    pub fn ime_export_deactivate_on_exit(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        let request = state.ime_request_gate.register_active();
+        let _guard = state
+            .ime_write_lock
+            .lock()
+            .map_err(|e| app_err_to_napi(AppError::Anyhow(anyhow::anyhow!("{e}"))))?;
+        if !state.ime_request_gate.is_current(&request) {
+            return Ok(());
+        }
+        set_active_project(&state.ime_root, None, ImeIntegrationMode::On)
+            .map(|_| ())
+            .map_err(|error| app_err_to_napi(AppError::Anyhow(error)))
+    }
+
+    /// consumer handshake と現在の export 状態を返す。
+    #[napi]
+    pub async fn ime_export_get_status(&self, mode: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let fallback: ImeIntegrationMode = from_wire("mode", serde_json::Value::String(mode))?;
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            let mode = authoritative_ime_mode(&state, fallback)?;
+            let status = get_ime_export_status(&state.ime_root, mode)?;
+            Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// consumer handshake は保持し、project snapshots と active state を消去する。
+    #[napi]
+    pub async fn ime_export_clear_all(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        let request = state.ime_request_gate.register_clear();
+        run_blocking(move || {
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            if !state.ime_request_gate.is_current(&request) {
+                return Ok(());
+            }
+            let result = clear_all_exports(&state.ime_root).map_err(AppError::from);
+            state.ime_request_gate.finish_clear(&request);
+            result
+        })
+        .await
+    }
+
+    /// 単一 project の snapshot を削除し、必要なら active state も解除する。
+    #[napi]
+    pub async fn ime_export_remove_project(&self, project_id: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        let request = state.ime_request_gate.register_remove(&project_id);
+        run_blocking(move || {
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            if !state.ime_request_gate.is_current(&request) {
+                return Ok(());
+            }
+            remove_project_export(&state.ime_root, &project_id)?;
+            Ok(())
         })
         .await
     }
