@@ -254,6 +254,9 @@ test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eve
     assert.equal(requestCount, 1);
     assert.equal(events.length, eventCountBeforeCache);
   } finally {
+    // 途中 assertion 失敗でも request handler の gate を解放して server.close を
+    // 永久待ちにしない。resolve は完了後に再度呼んでも no-op。
+    releaseResponse.resolve();
     await closeServer(server);
   }
 });
@@ -312,6 +315,7 @@ test("abortPostEffectRun はmultiとregistryを共有し、abort勝利時はcanc
       false,
     );
   } finally {
+    releaseResponse.resolve();
     await closeServer(server);
   }
 });
