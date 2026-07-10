@@ -398,7 +398,7 @@ CREATE INDEX idx_generation_logs_scene ON generation_logs(scene_node_id);
 | ④ UI | `src/features/attribution/ProvenanceAnalyticsSection.tsx` | 出所分析レポート表示 |
 | 統合 UI | `src/features/settings/categories/AiCategory.tsx` | ②③ 統合 |
 | 統合 UI | `src/features/settings/categories/UsageCategory.tsx` | ① + 台帳集計 |
-| DB | `src-tauri/src/database/migrate.rs` | 4テーブル定義 |
+| DB | `src-tauri/crates/grimodex-db/src/migrate.rs` | 4テーブル定義 |
 
 ---
 

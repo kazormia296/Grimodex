@@ -324,7 +324,7 @@ fn resolve_model_dir(app, spec) -> PathBuf {
 - spec 正本/byte-stability: `src-tauri/src/semantic/spec.rs:104-147`（SPEC_JA/EN）, `:80-82`（full_model_id）, `:151-157`（spec_for_language）, `:159-205`（regression test）, `:124-131`（EN calibration/MIT）
 - ローダ: `src-tauri/src/commands/semantic.rs:86-96`（resolve_model_dir）, `:100-123`（load/ensure_embedder）, `src-tauri/src/semantic/embedding.rs:53-84`（Embedder::load）
 - staleness: `src-tauri/src/semantic/index.rs:170-225`（collect_index_status）
-- 言語: `src-tauri/src/database/migrate.rs`（projects.language default 'ja'）, `src-tauri/src/semantic/index.rs:349-376`
+- 言語: `src-tauri/crates/grimodex-db/src/migrate.rs`（projects.language default 'ja'）, `src-tauri/src/semantic/index.rs:349-376`
 - DL 基盤: `src-tauri/Cargo.toml:55`（reqwest）, `src-tauri/src/license.rs:149-180`（timeout 例）, `src-tauri/src/ai.rs:2309-2326`（stream 例）, `src-tauri/src/external_mount/hash.rs:10-14`（sha256）, `src-tauri/src/lib.rs:74-77`（app_data_dir）
 - CSP/firewall: `src-tauri/tauri.conf.json:28`, `.devcontainer/init-firewall.sh:95-108`
 - degrade 経路: `src/features/chat/semanticRecall.ts:352-426`（fetchSemanticRecall）, `src/features/related-scenes/fetchRelatedScenes.ts:53-105`（fetchRelatedPastScenes）, `src/features/commandCenter/hooks/useCommandCenterSearch.ts:55-58`, `src-tauri/src/commands/semantic.rs:351-393`, `src/features/semantic-search/autoIndex.ts:15-21`

@@ -28,8 +28,8 @@
 
 | パネル | file | 価値 | 備考 |
 |---|---|---|---|
-| **Codex Quick** | `src/features/tree/CodexQuickPanel.tsx:14` | 高 | アクティブシーンに自動追従し、必要な用語/設定だけ出す。最軽量・read-mostly。**第一候補** |
-| **Related Scenes（関連シーン）** | `src/features/related-scenes/RelatedScenesPanel.tsx:36` | 高 | アクティブシーンに自動追従し、類似/関連シーンを hybrid 検索で提示。read 専用・glanceable で参照窓向き |
+| **Codex Quick** | `src/features/tree/CodexQuickSection.tsx:24` | 高 | アクティブシーンに自動追従し、必要な用語/設定だけ出す。最軽量・read-mostly。**第一候補** |
+| **Related Scenes（関連シーン）** | `src/features/related-scenes/RelatedScenesSection.tsx:45` | 高 | アクティブシーンに自動追従し、類似/関連シーンを hybrid 検索で提示。read 専用・glanceable で参照窓向き |
 | **Foreshadow（伏線）** | `src/features/foreshadow/ForeshadowPanel.tsx:259` | 高 | 未回収の設定を常時可視化。落とし防止。write は `setSetupStrength` 等の意図操作のみ |
 | **Matrix（シーン×キャラ出現表）** | `src/features/matrix/MatrixPanel.tsx:39` | 高 | 「X は 3 章以降出てる？」を一目で。継続性チェック。write は明示的セル toggle のみ |
 | **Timeline** | `src/features/timeline/TimelinePanel.tsx:17` | 高 | 時系列/構成の俯瞰。drag で storyTime 変更（`updateStoryTime` :116-138）はあるが意図操作 |
@@ -59,7 +59,7 @@ Chat / Chat History（フォーカスを奪う AI 入力・ナビ）／Command C
 
 | 資産 | file | 効能 |
 |---|---|---|
-| **共有 DB（`db_execute`）** | `src/db/client.ts:9` → `src-tauri/src/database.rs:13` | drizzle sqlite-proxy が全クエリを単一 `Mutex<Connection>`（WAL）へ。**DB は既に全窓共有**。窓 B が read するのは同じ invoke を撃つだけで**コード変更ゼロ** |
+| **共有 DB（`db_execute`）** | `src/db/client.ts:9` → `src-tauri/src/commands/db.rs:47` | drizzle sqlite-proxy が全クエリを単一 `Mutex<Connection>`（WAL）へ。**DB は既に全窓共有**。窓 B が read するのは同じ invoke を撃つだけで**コード変更ゼロ** |
 | **`externalWriteFeed`（change_events ポーリング）** | `src/features/concurrency/externalWriteFeed.ts:243`（起動 `projectStore.ts:165`） | 750ms ごとに `change_events` を `sequence>cursor AND sessionId!=self` で取得し、tree/codex/snippet/foreshadow を再ロード。MCP/エージェントの second-writer 用に作った仕組み。窓 B は自前 sessionId を持つので**窓 A の書き込みが窓 B には「外部書き込み」に見え、自動再ロードされる** |
 | **Rust→全窓 broadcast emit** | `src-tauri/src/external_mount/watch.rs:165-190`（FE: `useExternalMountListener.ts`） | `app.emit(channel, payload)` は Tauri v2 で**全ウィンドウへ配信**。debounce→typed channel→全窓 listen→re-sync の形が既に動いている。**「project データが変わった」汎用 emit の理想テンプレ** |
 

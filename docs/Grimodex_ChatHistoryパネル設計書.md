@@ -290,7 +290,7 @@ END;
 
 抽出数の集計は `chat_messages.metadata` JSONの `extractedCodex` / `extractedSnippets` 配列の長さをカウント。パフォーマンスが問題になった場合、`chat_sessions` に `codex_count` / `snippet_count` のデノーマライズドカラムを追加。
 
-> **現状の実装**: 抽出元の追跡は JSON メタデータではなく、`codex_entries.source_chat_message_id` / `snippets.source_chat_message_id` の **FK カラム**で行われている（`src/db/schema.ts`、`idx_codex_entries_src_msg` / `idx_snippets_src_msg` のインデックスあり）。`listSessionsWithStats` (`src/features/chat/chatHistoryApi.ts`) はセッション配下の `chat_messages.id` をまとめて引いたあと、この FK で `codexCount` / `snippetCount` を集計する。`listExtractionsBySession` も同じ FK を辿ってバッジクリック時のポップオーバー一覧を返す。FTS5 仮想テーブル `chat_messages_fts` および対応する `_ai` / `_ad` / `_au` トリガは `src-tauri/src/database/migrate.rs` に同等の DDL で実装済み。
+> **現状の実装**: 抽出元の追跡は JSON メタデータではなく、`codex_entries.source_chat_message_id` / `snippets.source_chat_message_id` の **FK カラム**で行われている（`src/db/schema.ts`、`idx_codex_entries_src_msg` / `idx_snippets_src_msg` のインデックスあり）。`listSessionsWithStats` (`src/features/chat/chatHistoryApi.ts`) はセッション配下の `chat_messages.id` をまとめて引いたあと、この FK で `codexCount` / `snippetCount` を集計する。`listExtractionsBySession` も同じ FK を辿ってバッジクリック時のポップオーバー一覧を返す。FTS5 仮想テーブル `chat_messages_fts` および対応する `_ai` / `_ad` / `_au` トリガは `src-tauri/crates/grimodex-db/src/migrate.rs` に同等の DDL で実装済み。
 >
 > **スコープアンカー列**: `chat_sessions` にはシーン紐づけ用の `node_id`（`treeNodes` 参照・`onDelete: set null`）に加え、Codex / Snippet にアンカーされたセッション用の **`codex_anchor_id`（`codexEntries` 参照）/ `snippet_anchor_id`（`snippets` 参照）の FK 列**がある（いずれも `onDelete: set null`）。複合インデックス `idx_chat_sessions_node` / `idx_chat_sessions_codex_anchor` / `idx_chat_sessions_snippet_anchor`（いずれも `project_id` 先頭）を持つ。これらの列がパネルのスコープグルーピング・フィルタ・検索結果ヘッダーの判定軸になる。列定義の正本は [Grimodex 統合DBスキーマ](./Grimodex_統合DBスキーマ.md) を参照。
 

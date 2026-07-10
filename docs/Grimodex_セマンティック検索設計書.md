@@ -9,7 +9,7 @@
 さらに Codex エントリのセマンティック検索と、チャット文脈への自動注入（Layer 4 RAG・
 dense+sparse ハイブリッド）まで拡張済み。
 
-実装上流のタスクコンテキストは [`temp/semantic-prose-search-context.md`](../temp/semantic-prose-search-context.md)。
+実装上流のタスクコンテキスト（作業用メモ `temp/semantic-prose-search-context.md`）は非追跡のため本リポジトリには含まれない。
 本書は **実装で確定した最終形** をまとめる正本であり、上流コンテキストとの差分
 （実装中に追加された防御層など）も明記する。
 
@@ -112,7 +112,7 @@ SQLite (scene_chunks / codex_chunks テーブル)
 ### `scene_chunks` テーブル
 
 Drizzle 定義: `src/db/schema.ts` (`sceneChunks`)、
-Rust マイグレーション: `src-tauri/src/database/migrate.rs` の trash_items の直後に
+Rust マイグレーション: `src-tauri/crates/grimodex-db/src/migrate.rs` の trash_items の直後に
 同じ `execute_batch` 内で `CREATE TABLE IF NOT EXISTS scene_chunks ...` として追加。
 
 | カラム | 型 | 説明 |

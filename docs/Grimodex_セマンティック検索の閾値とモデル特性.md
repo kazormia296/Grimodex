@@ -186,7 +186,7 @@ Q5 改善策 #4。密ベクトル（256/384 次元）は語彙完全一致を過
 - 関連シーンパネル: `src/features/related-scenes/selectRelatedScenes.ts`（RRF 融合＋dense 勝者アンカー）、
   `seedTerms.ts`（固有名詞 seed 拡張）、`liveEval/`（実 ONNX 埋め込み eval ハーネス）。
   設計書 `docs/Grimodex_関連する過去シーンパネル設計書.md`
-- sparse: `src-tauri/src/database/fts.rs`（`search_fts` scope=scenes, trigram bm25）、`src/lib/fts.ts`（sanitizer）
+- sparse: `src-tauri/crates/grimodex-db/src/fts.rs`（`search_fts` scope=scenes, trigram bm25）、`src/lib/fts.ts`（sanitizer）
 - 計測: `scripts/calibrate-embedding-threshold.py`、`scripts/fixtures/{ja,en}-calibration.jsonl`、
   dev の Run search eval（`src/features/semantic-search/searchEval.ts`）、Dump chunks
   （`semantic_debug_dump`）

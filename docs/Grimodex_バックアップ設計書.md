@@ -329,13 +329,13 @@ slim バックアップは埋め込み・FTS 索引が空なので、復元後�
 
 - `src-tauri/src/commands/workspace.rs` — `maybe_auto_backup` / `newest_backup_age_secs` /
   `rotate_backups` / `open_workspace`（:16-117）
-- `src-tauri/src/database.rs` — `backup_to`(:62) / `quick_check`(:93) / `prune_old_logs`(:76) /
-  WAL PRAGMA(:26-42) / `seed_schema_parity`(:123)
-- `src-tauri/src/database/migrate.rs` — チャンク 4 表(:1348-1444) / JA FTS(:540-644) /
+- `src-tauri/crates/grimodex-db/src/lib.rs` — `backup_to`(:176) / `quick_check`(:237) / `prune_old_logs`(:220) /
+  WAL PRAGMA(:130-133) / `seed_schema_parity`（`seed_schema_parity.rs`）
+- `src-tauri/crates/grimodex-db/src/migrate.rs` — チャンク 4 表(:1348-1444) / JA FTS(:540-644) /
   EN FTS(:2053-2210) / `change_events`(:3129)
-- `src-tauri/src/database/fts.rs` — `fts_rebuild`(:284) / `rebuild_en_fts_sql`(:327) /
+- `src-tauri/crates/grimodex-db/src/fts.rs` — `fts_rebuild`(:284) / `rebuild_en_fts_sql`(:327) /
   `fts_optimize`(:7)
-- `src-tauri/src/database/integrity.rs` — FTS 空検知が無いことの確認
+- `src-tauri/crates/grimodex-db/src/integrity.rs` — FTS 空検知が無いことの確認
 - `src/features/semantic-search/autoIndex.ts` — open 時 back-index / `resetIndexGuards`(:205) /
   セッションガード(:29-32)
 - `src/features/settings/types.ts`(:198-200,371-373) / `src/features/settings/categories/DataCategory.tsx`(:191-216) — 設定キーと UI

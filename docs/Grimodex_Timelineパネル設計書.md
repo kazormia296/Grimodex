@@ -783,7 +783,7 @@ ALTER TABLE projects ADD COLUMN phase_resolution_mode TEXT NOT NULL DEFAULT 'rea
 |--------|-----|------|
 | `phase_resolution_mode` | TEXT | Codex Phase の resolution で使う時間軸。新規プロジェクトは `auto` を推奨、既存プロジェクトは `reading` で後方互換 |
 
-> **現状の実装（SQL 既定値 と ORM 既定値の差異に注意）**: 実 DB の DDL（Rust `src-tauri/src/database/migrate.rs` および `browser-mock.ts`）は本設計書の通り `DEFAULT 'reading'` を採用し、既存プロジェクトの後方互換を保証する。一方、Drizzle スキーマ（`src/db/schema.ts:30-34`）は `.default("auto")` を宣言しており、`createProject`（`src/features/project/api.ts`）が `phaseResolutionMode` を明示指定しないため、Drizzle 経由で作成される新規プロジェクトには **ORM 既定値の `auto` が INSERT 時に注入される**（SQL 既定値の `reading` ではなく `auto` で着地する）。結果として「新規プロジェクト = `auto` / 既存プロジェクト = `reading`」という設計意図は満たされるが、SQL レベル（`reading`）と ORM レベル（`auto`）で既定値が二重化している点は将来的に統一を要検討（どちらか一方に揃え、必要なら `createProject` で明示設定する）。
+> **現状の実装（SQL 既定値 と ORM 既定値の差異に注意）**: 実 DB の DDL（Rust `src-tauri/crates/grimodex-db/src/migrate.rs` および `browser-mock.ts`）は本設計書の通り `DEFAULT 'reading'` を採用し、既存プロジェクトの後方互換を保証する。一方、Drizzle スキーマ（`src/db/schema.ts:30-34`）は `.default("auto")` を宣言しており、`createProject`（`src/features/project/api.ts`）が `phaseResolutionMode` を明示指定しないため、Drizzle 経由で作成される新規プロジェクトには **ORM 既定値の `auto` が INSERT 時に注入される**（SQL 既定値の `reading` ではなく `auto` で着地する）。結果として「新規プロジェクト = `auto` / 既存プロジェクト = `reading`」という設計意図は満たされるが、SQL レベル（`reading`）と ORM レベル（`auto`）で既定値が二重化している点は将来的に統一を要検討（どちらか一方に揃え、必要なら `createProject` で明示設定する）。
 
 **モードの挙動**:
 
