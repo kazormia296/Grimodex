@@ -251,6 +251,57 @@ export interface NapiBackendLike {
     projectId: string,
     minCount?: number | null,
   ): Promise<string>;
+  // Semantic Phase 3 Batch 4。optional は旧 .node とのversion skewを
+  // requireNapiMethodで明示エラーにするため。usize相当はIPCでu32へ狭める。
+  semanticDownloadModel?(language: string): Promise<string>;
+  semanticIndexScene?(sceneId: string): Promise<string>;
+  semanticSearch?(
+    projectId: string,
+    query: string,
+    limit: number,
+    sceneScope?: string | null,
+    descriptionMode?: boolean | null,
+  ): Promise<string>;
+  codexIndexEntry?(entryId: string): Promise<string>;
+  codexSemanticSearch?(
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  codexIndexStatus?(projectId: string): Promise<string>;
+  codexReindexAll?(projectId: string): Promise<string>;
+  eventsIndexEntry?(eventId: string): Promise<string>;
+  eventsSemanticSearch?(
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  eventsIndexStatus?(projectId: string): Promise<string>;
+  eventsReindexAll?(projectId: string): Promise<string>;
+  chatIndexMessage?(messageId: string): Promise<string>;
+  chatMessageSearch?(
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  chatIndexStatus?(projectId: string): Promise<string>;
+  chatReindexAll?(projectId: string): Promise<string>;
+  semanticIndexStatus?(projectId: string): Promise<string>;
+  semanticReindexAll?(
+    projectId: string,
+    runId?: string | null,
+  ): Promise<string>;
+  semanticChunkContext?(
+    sceneId: string,
+    charStart: number,
+    charEnd: number,
+    padding: number,
+  ): Promise<string>;
+  semanticDebugDump?(
+    projectId: string,
+    sceneId?: string | null,
+    limit?: number | null,
+  ): Promise<string>;
   plotThreadCreate(payload: unknown): Promise<string>;
   plotThreadUpdate(id: string, patch: unknown): Promise<string>;
   plotThreadDelete(id: string): Promise<void>;
@@ -506,6 +557,26 @@ function requireNumber(args: CommandArgs, key: string, cmd: string): number {
   return value;
 }
 
+/** Tauri の usize を napi の u32 へ安全に写像する（必須引数）。 */
+function requireUnsignedInteger(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): number {
+  const value = args[key];
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 0xffff_ffff
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected an unsigned integer`,
+    );
+  }
+  return value;
+}
+
 /** Tauri の Option<i64> 引数の写像（欠落 / null / undefined は None）。 */
 function optionalNumber(
   args: CommandArgs,
@@ -554,6 +625,41 @@ function optionalString(
   if (typeof value !== "string") {
     throw new Error(
       `invalid args \`${key}\` for command \`${cmd}\`: expected a string or null`,
+    );
+  }
+  return value;
+}
+
+/** FE生成のrun discriminator。空値/過長値をイベントpayloadへ持ち込ませない。 */
+function optionalOpaqueRunId(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): string | undefined {
+  const value = optionalString(args, key, cmd);
+  if (value === undefined) return undefined;
+  // Rust/Tauri側の `chars().count()` と揃え、astral characterをUTF-16の2単位で
+  // 数えない（emoji 256 code pointは受理、257は拒否）。
+  const codePointLength = Array.from(value).length;
+  if (codePointLength < 1 || codePointLength > 256) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected 1..256 characters or null`,
+    );
+  }
+  return value;
+}
+
+/** Tauri の Option<bool>（欠落 / null / undefined は None）。 */
+function optionalBoolean(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): boolean | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a boolean or null`,
     );
   }
   return value;
@@ -842,6 +948,216 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.extractCodexCandidates(
           requireString(a, "projectId", "extract_codex_candidates"),
           optionalUnsignedInteger(a, "minCount", "extract_codex_candidates"),
+        ),
+      ),
+  },
+  // Semantic Phase 3 Batch 4。native methodsはversion skewを許容する構造型にし、
+  // 実行時は必ず存在検証する。JSON文字列をparseしてTauri invokeと同じwireへ戻す。
+  semantic_download_model: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticDownloadModel,
+          "semanticDownloadModel",
+        )(requireString(a, "language", "semantic_download_model")),
+      ),
+  },
+  semantic_index_scene: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticIndexScene,
+          "semanticIndexScene",
+        )(requireString(a, "sceneId", "semantic_index_scene")),
+      ),
+  },
+  semantic_search: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.semanticSearch, "semanticSearch")(
+          requireString(a, "projectId", "semantic_search"),
+          requireString(a, "query", "semantic_search"),
+          requireUnsignedInteger(a, "limit", "semantic_search"),
+          optionalString(a, "sceneScope", "semantic_search"),
+          optionalBoolean(a, "descriptionMode", "semantic_search"),
+        ),
+      ),
+  },
+  codex_index_entry: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexIndexEntry,
+          "codexIndexEntry",
+        )(requireString(a, "entryId", "codex_index_entry")),
+      ),
+  },
+  codex_semantic_search: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexSemanticSearch,
+          "codexSemanticSearch",
+        )(
+          requireString(a, "projectId", "codex_semantic_search"),
+          requireString(a, "query", "codex_semantic_search"),
+          requireUnsignedInteger(a, "limit", "codex_semantic_search"),
+        ),
+      ),
+  },
+  codex_index_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexIndexStatus,
+          "codexIndexStatus",
+        )(requireString(a, "projectId", "codex_index_status")),
+      ),
+  },
+  codex_reindex_all: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexReindexAll,
+          "codexReindexAll",
+        )(requireString(a, "projectId", "codex_reindex_all")),
+      ),
+  },
+  events_index_entry: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventsIndexEntry,
+          "eventsIndexEntry",
+        )(requireString(a, "eventId", "events_index_entry")),
+      ),
+  },
+  events_semantic_search: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventsSemanticSearch,
+          "eventsSemanticSearch",
+        )(
+          requireString(a, "projectId", "events_semantic_search"),
+          requireString(a, "query", "events_semantic_search"),
+          requireUnsignedInteger(a, "limit", "events_semantic_search"),
+        ),
+      ),
+  },
+  events_index_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventsIndexStatus,
+          "eventsIndexStatus",
+        )(requireString(a, "projectId", "events_index_status")),
+      ),
+  },
+  events_reindex_all: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventsReindexAll,
+          "eventsReindexAll",
+        )(requireString(a, "projectId", "events_reindex_all")),
+      ),
+  },
+  chat_index_message: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chatIndexMessage,
+          "chatIndexMessage",
+        )(requireString(a, "messageId", "chat_index_message")),
+      ),
+  },
+  chat_message_search: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.chatMessageSearch, "chatMessageSearch")(
+          requireString(a, "projectId", "chat_message_search"),
+          requireString(a, "query", "chat_message_search"),
+          requireUnsignedInteger(a, "limit", "chat_message_search"),
+        ),
+      ),
+  },
+  chat_index_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chatIndexStatus,
+          "chatIndexStatus",
+        )(requireString(a, "projectId", "chat_index_status")),
+      ),
+  },
+  chat_reindex_all: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chatReindexAll,
+          "chatReindexAll",
+        )(requireString(a, "projectId", "chat_reindex_all")),
+      ),
+  },
+  semantic_index_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticIndexStatus,
+          "semanticIndexStatus",
+        )(requireString(a, "projectId", "semantic_index_status")),
+      ),
+  },
+  semantic_reindex_all: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticReindexAll,
+          "semanticReindexAll",
+        )(
+          requireString(a, "projectId", "semantic_reindex_all"),
+          optionalOpaqueRunId(a, "runId", "semantic_reindex_all"),
+        ),
+      ),
+  },
+  semantic_chunk_context: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticChunkContext,
+          "semanticChunkContext",
+        )(
+          requireString(a, "sceneId", "semantic_chunk_context"),
+          requireUnsignedInteger(a, "charStart", "semantic_chunk_context"),
+          requireUnsignedInteger(a, "charEnd", "semantic_chunk_context"),
+          requireUnsignedInteger(a, "padding", "semantic_chunk_context"),
+        ),
+      ),
+  },
+  semantic_debug_dump: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.semanticDebugDump, "semanticDebugDump")(
+          requireString(a, "projectId", "semantic_debug_dump"),
+          optionalString(a, "sceneId", "semantic_debug_dump"),
+          optionalUnsignedInteger(a, "limit", "semantic_debug_dump"),
         ),
       ),
   },

@@ -32,14 +32,15 @@ enum SinkState {
 
 /// `EventSink` の napi 実装 (設計書 §7.1)。NonBlocking で JS へ流す。
 /// Phase 3 で ai / post_effect の 19 チャネルはこの sink に載せ替える。
+#[derive(Clone)]
 pub struct EventQueue {
-    inner: Mutex<SinkState>,
+    inner: Arc<Mutex<SinkState>>,
 }
 
 impl EventQueue {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(SinkState::Pending(Vec::new())),
+            inner: Arc::new(Mutex::new(SinkState::Pending(Vec::new()))),
         }
     }
 
@@ -121,19 +122,39 @@ pub struct AppState {
     /// `<app_data>/license.json` を正本とする共有ライセンスruntime。通常の
     /// 開発/ベータbuildではfeature無効だが、IPC surfaceは常時公開する。
     pub license: Arc<grimodex_license::LicenseRuntime>,
+    /// 4 semantic search cache / embedder / download registryをシェル間共有する
+    /// runtime。EventQueue cloneは同じTSFn sinkを指すため、progress 2chも
+    /// backend.onEvent → main → 全窓broadcastへ載る。
+    pub semantic: Arc<grimodex_semantic::runtime::SemanticRuntime>,
 }
 
 impl AppState {
-    pub fn new(app_data_dir: &str) -> anyhow::Result<Self> {
+    pub fn new(app_data_dir: &str, semantic_resource_root: &str) -> anyhow::Result<Self> {
         let dir = PathBuf::from(app_data_dir);
         anyhow::ensure!(
             dir.is_absolute(),
             "appDataDir must be an absolute path: {app_data_dir}"
         );
+        let semantic_resource_root = PathBuf::from(semantic_resource_root);
+        anyhow::ensure!(
+            semantic_resource_root.is_absolute(),
+            "semanticResourceRoot must be an absolute path: {}",
+            semantic_resource_root.display()
+        );
         // Tauri 側 (lib.rs setup の `create_dir_all(&app_dir).ok()`) と同じ
         // best-effort。失敗しても global-settings の read は default へ
         // フォールバックし、write 時に改めてエラーになる。
         let _ = std::fs::create_dir_all(&dir);
+        // resource rootは存在を要求しない。パッケージ不備/モデル未DLでもBackend全体は
+        // 起動し、semantic invokeだけが明示的なmodel missing errorになる契約。
+        let events = EventQueue::new();
+        let semantic = Arc::new(grimodex_semantic::runtime::SemanticRuntime::new(
+            grimodex_semantic::runtime::SemanticPaths {
+                models_root: dir.join("models"),
+                resource_semantic_root: semantic_resource_root,
+            },
+            Arc::new(events.clone()),
+        ));
         Ok(Self {
             ws: WorkspaceState {
                 inner: Mutex::new(None),
@@ -144,7 +165,7 @@ impl AppState {
                 path: dir.join("global-settings.json"),
                 write_lock: Mutex::new(()),
             },
-            events: EventQueue::new(),
+            events,
             codex_matcher: Mutex::new(None),
             ai_settings_path: dir.join("ai-settings.json"),
             chat_abort: Arc::new(AtomicBool::new(false)),
@@ -153,6 +174,7 @@ impl AppState {
             license: Arc::new(grimodex_license::LicenseRuntime::new(
                 dir.join("license.json"),
             )),
+            semantic,
         })
     }
 }
@@ -165,18 +187,32 @@ mod tests {
     fn app_state_rejects_relative_app_data_dir() {
         // main からの明示注入が前提 (§4.2)。相対パスは cwd 依存の迷子ディレクトリ
         // を作るので構築時に拒否する。
-        let err = AppState::new("relative/app-data")
+        let resource_root = std::env::temp_dir().join("grimodex-semantic-resources");
+        let err = AppState::new("relative/app-data", &resource_root.to_string_lossy())
             .map(|_| ())
             .expect_err("相対パスは拒否");
         assert!(err.to_string().contains("absolute"));
     }
 
     #[test]
+    fn app_state_rejects_relative_semantic_resource_root() {
+        let app_data = std::env::temp_dir().join(format!("grimodex-node-state-{}", uuid_like()));
+        let err = AppState::new(&app_data.to_string_lossy(), "relative/semantic-resources")
+            .map(|_| ())
+            .expect_err("resource rootもcwd依存を拒否");
+        assert!(err.to_string().contains("semanticResourceRoot"));
+    }
+
+    #[test]
     fn app_state_builds_global_settings_path_under_app_data_dir() {
         let dir = std::env::temp_dir().join(format!("grimodex-node-state-{}", uuid_like()));
         let dir_str = dir.to_string_lossy().into_owned();
-        let state = AppState::new(&dir_str).expect("絶対パスで構築できる");
+        let resource_root = dir.join("semantic-resources");
+        let state = AppState::new(&dir_str, &resource_root.to_string_lossy())
+            .expect("絶対パスで構築できる");
         assert_eq!(state.gs.path, dir.join("global-settings.json"));
+        assert_eq!(state.semantic.paths().models_root, dir.join("models"));
+        assert_eq!(state.semantic.paths().resource_semantic_root, resource_root);
         assert!(
             state.ws.inner.lock().expect("lock").is_none(),
             "初期状態では workspace 未オープン"

@@ -9,7 +9,7 @@ export declare class Backend {
    * (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
    * com.miyakey.grimodex には触らない)。
    */
-  constructor(appDataDir: string)
+  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null)
   /**
    * 常時exportするライセンス状態IPC。feature無効buildでは共有crateが
    * exact disabled DTOを返し、license.jsonには一切触れない。
@@ -43,8 +43,8 @@ export declare class Backend {
   /**
    * workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
    * recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
-   * Tauri コマンドと同一経路。A3 相互運用の根拠)。`on_swapped` は napi 側
-   * no-op (semantic キャッシュは Tauri シェル固有。§4.1)。
+   * Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
+   * Codex matcher破棄 + semantic 4cache epoch rotateを行う。
    * 完了時に `workspace:opened` (FE 購読者なしのデバッグチャネル) を emit
    * する (§7.1 の end-to-end 実証チャネルその 2)。
    * 返り値: `{"name":…,"isExisting":…}` の JSON 文字列。
@@ -182,6 +182,30 @@ export declare class Backend {
    * 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
    */
   extractCodexCandidates(projectId: string, minCount?: number | undefined | null): Promise<string>
+  /**
+   * モデルが無ければbackground downloadを開始し、状態文字列を即返す。
+   * resource欠落はBackend constructorを失敗させず、このsemantic surfaceでのみ
+   * installed/unavailable/downloading または明示エラーとして扱う。
+   */
+  semanticDownloadModel(language: string): Promise<string>
+  semanticIndexScene(sceneId: string): Promise<string>
+  semanticSearch(projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
+  codexIndexEntry(entryId: string): Promise<string>
+  codexSemanticSearch(projectId: string, query: string, limit: number): Promise<string>
+  codexIndexStatus(projectId: string): Promise<string>
+  codexReindexAll(projectId: string): Promise<string>
+  eventsIndexEntry(eventId: string): Promise<string>
+  eventsSemanticSearch(projectId: string, query: string, limit: number): Promise<string>
+  eventsIndexStatus(projectId: string): Promise<string>
+  eventsReindexAll(projectId: string): Promise<string>
+  chatIndexMessage(messageId: string): Promise<string>
+  chatMessageSearch(projectId: string, query: string, limit: number): Promise<string>
+  chatIndexStatus(projectId: string): Promise<string>
+  chatReindexAll(projectId: string): Promise<string>
+  semanticIndexStatus(projectId: string): Promise<string>
+  semanticReindexAll(projectId: string, runId?: string | undefined | null): Promise<string>
+  semanticChunkContext(sceneId: string, charStart: number, charEnd: number, padding: number): Promise<string>
+  semanticDebugDump(projectId: string, sceneId?: string | undefined | null, limit?: number | undefined | null): Promise<string>
   /**
    * プロットスレッド作成 (commands/plot_threads.rs::plot_thread_create の写像)。
    * `payload` は camelCase の PlotThreadCreatePayload。

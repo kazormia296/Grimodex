@@ -42,6 +42,7 @@ use grimodex_db::plot_threads::{
     PlotThreadPatch,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
+use grimodex_db::state::active_database;
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
@@ -61,6 +62,34 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+/// Semantic commandの共通境界。blocking poolへ投入する**前**にruntimeの
+/// optimistic pin（epoch snapshot → active DB Arc → generation再確認）を完了し、
+/// closure中にworkspace/epochを再解決しない。これにより切替待ち行列中でも
+/// 1 commandが別DB/別cache generationへ跨らない。
+async fn run_semantic_wire<T, F>(state: Arc<AppState>, operation: F) -> Result<String>
+where
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce(
+            &grimodex_semantic::runtime::SemanticRuntime,
+            &grimodex_semantic::runtime::SemanticRequest,
+        ) -> anyhow::Result<T>
+        + Send
+        + 'static,
+{
+    let request = state
+        .semantic
+        .pin_request(|| active_database(&state.ws))
+        .map_err(app_err_to_napi)?;
+    let runtime = Arc::clone(&state.semantic);
+    napi::tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let value = operation(&runtime, &request)?;
+        Ok(serde_json::to_string(&value)?)
+    })
+    .await
+    .map_err(join_err_to_napi)?
+    .map_err(|error| Error::from_reason(format!("{error:#}")))
 }
 
 /// agent_writes 18 コマンドの定形写像。FE の `{ payload }` を DTO へ
@@ -178,9 +207,18 @@ impl Backend {
     /// (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
     /// com.miyakey.grimodex には触らない)。
     #[napi(constructor)]
-    pub fn new(app_data_dir: String) -> Result<Backend> {
-        let state =
-            AppState::new(&app_data_dir).map_err(|e| Error::from_reason(format!("{e:#}")))?;
+    pub fn new(app_data_dir: String, semantic_resource_root: Option<String>) -> Result<Backend> {
+        // 旧 .node E2E / 外部callerとのconstructor互換を維持する。省略時はcwdや
+        // build-time manifestへfallbackせず、必ず存在しないappData配下sentinelを使い、
+        // Backend全体ではなくsemantic invokeだけをmodel missingで失敗させる。
+        let semantic_resource_root = semantic_resource_root.unwrap_or_else(|| {
+            PathBuf::from(&app_data_dir)
+                .join("__missing_semantic_resources__")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let state = AppState::new(&app_data_dir, &semantic_resource_root)
+            .map_err(|e| Error::from_reason(format!("{e:#}")))?;
         // §7.1 の end-to-end 実証チャネルその 1。onEvent 登録前なので
         // EventQueue にバッファされ、登録時に flush される。schemaVersion は
         // スモークテストが PRAGMA user_version との一致検証に使う。
@@ -293,8 +331,8 @@ impl Backend {
 
     /// workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
     /// recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
-    /// Tauri コマンドと同一経路。A3 相互運用の根拠)。`on_swapped` は napi 側
-    /// no-op (semantic キャッシュは Tauri シェル固有。§4.1)。
+    /// Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
+    /// Codex matcher破棄 + semantic 4cache epoch rotateを行う。
     /// 完了時に `workspace:opened` (FE 購読者なしのデバッグチャネル) を emit
     /// する (§7.1 の end-to-end 実証チャネルその 2)。
     /// 返り値: `{"name":…,"isExisting":…}` の JSON 文字列。
@@ -302,7 +340,15 @@ impl Backend {
     pub async fn open_workspace(&self, path: String) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            let mut on_swapped = || {};
+            let state_for_hook = Arc::clone(&state);
+            let mut on_swapped = move || {
+                let mut matcher = match state_for_hook.codex_matcher.lock() {
+                    Ok(matcher) => matcher,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *matcher = None;
+                state_for_hook.semantic.rotate_workspace_epoch();
+            };
             let mut deps = OpenDeps {
                 gs_path: &state.gs,
                 on_swapped: &mut on_swapped,
@@ -350,6 +396,7 @@ impl Backend {
                     Err(poisoned) => poisoned.into_inner(),
                 };
                 *matcher = None;
+                state_for_hook.semantic.rotate_workspace_epoch();
             })
         })
         .await
@@ -723,6 +770,229 @@ impl Backend {
                 min_count,
             )?;
             Ok(serde_json::to_string(&candidates).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    // ─────────────────────── semantic Phase 3 Batch 4 ───────────────────
+    // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
+    // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。
+
+    /// モデルが無ければbackground downloadを開始し、状態文字列を即返す。
+    /// resource欠落はBackend constructorを失敗させず、このsemantic surfaceでのみ
+    /// installed/unavailable/downloading または明示エラーとして扱う。
+    #[napi]
+    pub async fn semantic_download_model(&self, language: String) -> Result<String> {
+        let start = self
+            .state
+            .semantic
+            .semantic_download_model(&language)
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        let status = start.status().to_string();
+        if let grimodex_semantic::runtime::ModelDownloadStart::Start(job) = start {
+            napi::tokio::spawn(async move {
+                // job自身が成功/失敗をdone eventへ載せ、Dropでinflightを必ず解除する。
+                let _ = job.run().await;
+            });
+        }
+        serde_json::to_string(&status).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    #[napi]
+    pub async fn semantic_index_scene(&self, scene_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_index_scene(request, &scene_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_search(
+        &self,
+        project_id: String,
+        query: String,
+        limit: u32,
+        scene_scope: Option<String>,
+        description_mode: Option<bool>,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_search(
+                request,
+                &project_id,
+                &query,
+                limit as usize,
+                scene_scope.as_deref(),
+                description_mode,
+            )
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_index_entry(&self, entry_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.codex_index_entry(request, &entry_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_semantic_search(
+        &self,
+        project_id: String,
+        query: String,
+        limit: u32,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.codex_semantic_search(request, &project_id, &query, limit as usize)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_index_status(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.codex_index_status(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_reindex_all(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.codex_reindex_all(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn events_index_entry(&self, event_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.events_index_entry(request, &event_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn events_semantic_search(
+        &self,
+        project_id: String,
+        query: String,
+        limit: u32,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.events_semantic_search(request, &project_id, &query, limit as usize)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn events_index_status(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.events_index_status(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn events_reindex_all(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.events_reindex_all(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn chat_index_message(&self, message_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.chat_index_message(request, &message_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn chat_message_search(
+        &self,
+        project_id: String,
+        query: String,
+        limit: u32,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.chat_message_search(request, &project_id, &query, limit as usize)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn chat_index_status(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.chat_index_status(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn chat_reindex_all(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.chat_reindex_all(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_index_status(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_index_status(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_reindex_all(
+        &self,
+        project_id: String,
+        run_id: Option<String>,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_reindex_all(request, &project_id, run_id.as_deref())
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_chunk_context(
+        &self,
+        scene_id: String,
+        char_start: u32,
+        char_end: u32,
+        padding: u32,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_chunk_context(
+                request,
+                &scene_id,
+                char_start as usize,
+                char_end as usize,
+                padding as usize,
+            )
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_debug_dump(
+        &self,
+        project_id: String,
+        scene_id: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_debug_dump(
+                request,
+                &project_id,
+                scene_id.as_deref(),
+                limit.map(|value| value as usize),
+            )
         })
         .await
     }
