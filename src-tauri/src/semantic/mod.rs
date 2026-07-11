@@ -1,15 +1,14 @@
 //! Tauri semantic adapter.
 //!
-//! Indexing, search, chunking, embedding, preview, and model specifications
-//! live in `grimodex-semantic`. Model download remains local because it owns
-//! the Tauri `AppHandle` event/resource-directory lifecycle.
+//! Indexing, search, chunking, embedding, model download, runtime lifecycle,
+//! preview, and model specifications live in `grimodex-semantic`.
 
 // Several paths are feature-gated consumers; retain the full compatibility
 // surface in both feature configurations.
 #[allow(unused_imports)]
 pub(crate) use grimodex_semantic::{
     chat_index, chat_search, chunker, codex_index, codex_search, events_index, events_search,
-    index, preview, search, spec,
+    index, preview, runtime, search, spec,
 };
 
 // Kept as part of the pre-extraction module surface even though only the
@@ -18,7 +17,5 @@ pub(crate) use grimodex_semantic::{
 pub(crate) use grimodex_semantic::chunker_en;
 
 #[cfg(feature = "semantic-embedding")]
+#[allow(unused_imports)]
 pub(crate) use grimodex_semantic::embedding;
-
-#[cfg(feature = "semantic-embedding")]
-pub(crate) mod download;

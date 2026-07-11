@@ -272,6 +272,21 @@ pub fn list_indexed_scene_ids(
     })
 }
 
+/// Verify that an explicitly scoped scene belongs to the requested project.
+/// This check must run before consulting the process-wide cache: scene ids are
+/// caller input and a cached foreign scene must never cross the project
+/// boundary.
+pub fn scene_belongs_to_project(db: &Database, scene_id: &str, project_id: &str) -> Result<bool> {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tree_nodes \
+             WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene')",
+            params![scene_id, project_id],
+            |row| row.get::<_, bool>(0),
+        )?)
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // スコアリング
 // ─────────────────────────────────────────────────────────────────────────────
@@ -335,7 +350,14 @@ pub fn run_search(
 
     // 1) 検索対象 scene_id リスト
     let scene_ids: Vec<String> = match scene_scope {
-        Some(s) => vec![s.to_string()],
+        Some(scene_id) => {
+            if !scene_belongs_to_project(db, scene_id, project_id)? {
+                return Err(anyhow!(
+                    "scene_scope '{scene_id}' does not belong to project '{project_id}'"
+                ));
+            }
+            vec![scene_id.to_string()]
+        }
         None => list_indexed_scene_ids(db, project_id, model_id, embedding_dim, chunker_version)?,
     };
 
@@ -771,6 +793,55 @@ mod tests {
         .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].scene_id, "s2");
+    }
+
+    #[test]
+    fn search_scope_rejects_scene_from_another_project_before_cache_access() {
+        let db = mem_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('p2', 'foreign')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (
+                    id, project_id, node_type, title, sort_order, content,
+                    created_at, updated_at
+                 ) VALUES (
+                    'foreign-scene', 'p2', 'scene', 'foreign', 'a0',
+                    '{\"type\":\"doc\"}', datetime('now'), datetime('now')
+                 )",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let cache = SearchCache::new();
+        // Even a pre-populated foreign cache entry must not bypass the DB
+        // ownership check.
+        cache
+            .put(
+                "foreign-scene".to_string(),
+                MODEL_ID.to_string(),
+                4,
+                CHUNKER_VERSION.to_string(),
+                Arc::new(Vec::new()),
+            )
+            .unwrap();
+        let error = run_search(
+            &db,
+            &cache,
+            &unit_vec(4, 0),
+            "p1",
+            Some("foreign-scene"),
+            5,
+            false,
+            MODEL_ID,
+            4,
+            CHUNKER_VERSION,
+        )
+        .expect_err("foreign scene scope must fail closed");
+        assert!(error.to_string().contains("does not belong"));
     }
 
     #[test]

@@ -7,7 +7,13 @@ description = "Tauri-independent semantic indexing, search, chunking, and embedd
 
 [features]
 default = []
-semantic-embedding = ["dep:ndarray", "dep:ort", "dep:tokenizers"]
+semantic-embedding = [
+    "dep:futures",
+    "dep:ndarray",
+    "dep:ort",
+    "dep:reqwest",
+    "dep:tokenizers",
+]
 
 [dependencies]
 aho-corasick = "1"
@@ -22,6 +28,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
 uuid = { version = "1", features = ["v4"] }
 
+futures = { version = "0.3", optional = true }
 ndarray = { version = "0.17", optional = true }
 ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = [
     "download-binaries",
@@ -32,5 +39,9 @@ ort = { version = "2.0.0-rc.10", optional = true, default-features = false, feat
 tokenizers = { version = "0.23", optional = true, default-features = false, features = [
     "fancy-regex",
 ] }
+reqwest = { version = "0.13", optional = true, features = ["stream"] }
 tracing = "0.1"
 unicode-normalization = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

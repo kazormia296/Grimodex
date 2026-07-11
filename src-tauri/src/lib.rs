@@ -27,7 +27,7 @@ use tauri::Manager;
 use codex_matching::CodexMatcherState;
 use commands::external_mount::ExternalMountState;
 #[cfg(feature = "semantic-embedding")]
-use commands::semantic::{ModelDownloadState, SemanticEmbedderState};
+use commands::semantic::TauriSemanticEventSink;
 use commands::{
     AiSettingsPath, AppResult, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag,
     LicenseRuntime, LogGuard, PostEffectAbortRegistry, StreamAbortFlag, WorkspaceState,
@@ -202,41 +202,44 @@ pub fn run() {
             // PostEffect run abort registry (run_id 単位)
             app.manage(PostEffectAbortRegistry::new());
 
-            // Semantic search: per-language ONNX Embedders (ja=ruri / en=...).
-            // Lazy load on first invoke, keyed by model dir name.
-            #[cfg(feature = "semantic-embedding")]
-            app.manage(SemanticEmbedderState {
-                inner: std::sync::Mutex::new(std::collections::HashMap::new()),
-            });
-
-            // オンデマンドモデル DL の in-flight 集合 (二重 DL ガード)。
-            #[cfg(feature = "semantic-embedding")]
-            app.manage(ModelDownloadState::default());
-
-            // モデル切替後に残る旧 app_data/models/<dir> を掃除する (現行 spec 以外の dir)。
-            // 起動を止めないよう spawn_blocking。models/ 未作成 (初回) なら no-op。
+            // Shared semantic runtime: explicit shell paths, four-cache epoch,
+            // per-language embedders/download flights, and event transport.
             #[cfg(feature = "semantic-embedding")]
             {
-                let handle = app.handle().clone();
+                let mut resource_semantic_root = match app.path().resource_dir() {
+                    Ok(resource_dir) => resource_dir.join("resources/semantic"),
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "resource directory unavailable; semantic models will degrade to FTS"
+                        );
+                        app_dir.join("__missing_bundled_semantic_resources__")
+                    }
+                };
+                // Dev-only explicit adapter path. Release runtime never embeds
+                // a build-machine CARGO_MANIFEST_DIR fallback.
+                #[cfg(debug_assertions)]
+                if !resource_semantic_root.exists() {
+                    let development_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources/semantic");
+                    if development_root.exists() {
+                        resource_semantic_root = development_root;
+                    }
+                }
+                let runtime = Arc::new(grimodex_semantic::runtime::SemanticRuntime::new(
+                    grimodex_semantic::runtime::SemanticPaths {
+                        models_root: app_dir.join("models"),
+                        resource_semantic_root,
+                    },
+                    Arc::new(TauriSemanticEventSink {
+                        app: app.handle().clone(),
+                    }),
+                ));
+                app.manage(Arc::clone(&runtime));
                 tauri::async_runtime::spawn_blocking(move || {
-                    semantic::download::gc_stale_model_dirs(&handle);
+                    runtime.gc_stale_model_dirs();
                 });
             }
-
-            // Semantic search: in-memory embedding cache (scene_id -> Vec<f32>).
-            // Cleared on workspace open; invalidated per-scene on index_scene.
-            app.manage(semantic::search::SearchCache::new());
-            // Codex semantic search cache (entry_id -> embedding). Same lifecycle:
-            // cleared on workspace open, invalidated per-entry on codex_index_entry.
-            // Non-gated so workspace.rs (also non-gated) can clear it.
-            app.manage(semantic::codex_search::CodexSearchCache::new());
-            // Chronicle event semantic search cache (event_id -> embedding). Same
-            // lifecycle: cleared on workspace open, invalidated per-event on
-            // events_index_entry. Non-gated so workspace.rs can clear it.
-            app.manage(semantic::events_search::EventsSearchCache::new());
-            // Chat episodic recall cache (message_id -> embedding). Same lifecycle:
-            // cleared on workspace open, invalidated per-message on chat_index_message.
-            app.manage(semantic::chat_search::ChatSearchCache::new());
 
             app.manage(ExternalMountWatchState::new());
             app.manage(ExternalMountState::new());

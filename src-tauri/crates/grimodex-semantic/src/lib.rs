@@ -15,8 +15,11 @@ pub mod events_index;
 pub mod events_search;
 pub mod index;
 pub mod preview;
+pub mod runtime;
 pub mod search;
 pub mod spec;
 
+#[cfg(feature = "semantic-embedding")]
+pub mod download;
 #[cfg(feature = "semantic-embedding")]
 pub mod embedding;

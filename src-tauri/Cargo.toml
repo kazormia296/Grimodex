@@ -73,7 +73,6 @@ chrono = "0.4"
 flate2 = "1"
 # keyring は crates/grimodex-ai へ移設（Electron 移行 Phase 3 バッチ3a）。
 # API キー保管は grimodex-ai の keyring feature 経由で有効化する（下記依存）。
-reqwest = { version = "0.13", features = ["json", "stream"] }
 futures = "0.3"
 tokio = { version = "1", features = ["macros", "process", "io-util", "rt", "sync", "time"] }
 # システムフォント列挙 (commands::fonts::list_system_fonts)。実装本体は

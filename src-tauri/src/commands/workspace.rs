@@ -1,12 +1,12 @@
 use serde::Serialize;
 use std::path::PathBuf;
+#[cfg(feature = "semantic-embedding")]
+use std::sync::Arc;
 use tauri::Manager;
 
-use crate::semantic::chat_search::ChatSearchCache;
-use crate::semantic::codex_search::CodexSearchCache;
-use crate::semantic::events_search::EventsSearchCache;
-use crate::semantic::search::SearchCache;
 use crate::workspace::{self, GlobalSettings};
+#[cfg(feature = "semantic-embedding")]
+use grimodex_semantic::runtime::SemanticRuntime;
 
 use super::{AppError, GlobalSettingsPath, WorkspaceState};
 
@@ -38,24 +38,12 @@ pub(crate) async fn restore_backup(
 ) -> Result<(), AppError> {
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
         let ws_state = app.state::<WorkspaceState>();
-        let semantic_cache = app.state::<SearchCache>();
-        let codex_semantic_cache = app.state::<CodexSearchCache>();
-        let events_semantic_cache = app.state::<EventsSearchCache>();
-        let chat_semantic_cache = app.state::<ChatSearchCache>();
+        #[cfg(feature = "semantic-embedding")]
+        let semantic_runtime = app.state::<Arc<SemanticRuntime>>();
 
         restore_backup_core(&ws_state, &file_name, || {
-            if let Err(error) = semantic_cache.clear() {
-                tracing::warn!("semantic cache clear after restore failed: {error}");
-            }
-            if let Err(error) = codex_semantic_cache.clear() {
-                tracing::warn!("codex semantic cache clear after restore failed: {error}");
-            }
-            if let Err(error) = events_semantic_cache.clear() {
-                tracing::warn!("events semantic cache clear after restore failed: {error}");
-            }
-            if let Err(error) = chat_semantic_cache.clear() {
-                tracing::warn!("chat semantic cache clear after restore failed: {error}");
-            }
+            #[cfg(feature = "semantic-embedding")]
+            semantic_runtime.rotate_workspace_epoch();
         })
     })
     .await
@@ -101,33 +89,18 @@ pub(crate) async fn open_workspace(
         tauri::async_runtime::spawn_blocking(move || -> Result<OpenWorkspaceResult, AppError> {
             let ws_state = app.state::<WorkspaceState>();
             let gs_path = app.state::<GlobalSettingsPath>();
-            let semantic_cache = app.state::<SearchCache>();
-            let codex_semantic_cache = app.state::<CodexSearchCache>();
-            let events_semantic_cache = app.state::<EventsSearchCache>();
-            let chat_semantic_cache = app.state::<ChatSearchCache>();
+            #[cfg(feature = "semantic-embedding")]
+            let semantic_runtime = app.state::<Arc<SemanticRuntime>>();
 
             // 本体 (open_lock 直列化 → backup → migrate → swap → SwitchingGuard →
             // recent-workspaces 更新) は grimodex_db::open::open_workspace_sync。
-            // Tauri 側にしか無い後処理 = semantic 系 in-memory cache のクリアを
-            // on_swapped フックで注入する (swap 直後・switching=true のまま呼ばれる)。
-            // 前 workspace の scene_id を握っているので切替時に必ず捨てる (UUID
-            // 衝突は起きないが、安全側に倒す)。失敗 (poisoned mutex) は stale
-            // cache を許容して続行 — 検索結果が一時的に古くなるだけで、次の
-            // clear / 再 index で回復する (swap 後 infallible 不変条件は
-            // open_workspace_sync 側コメント参照)。
+            // Tauri 側にしか無い後処理 = semantic cache epoch の rotation を
+            // on_swapped フックで注入する (DB swap 直後・switching=true のまま)。
+            // 新しい command は fresh cache Arc を取得し、切替前から走っている task
+            // が旧 cache へ遅れて put しても新 workspace からは不可視になる。
             let mut on_swapped = || {
-                if let Err(e) = semantic_cache.clear() {
-                    tracing::warn!("semantic cache clear on workspace open failed: {e}");
-                }
-                if let Err(e) = codex_semantic_cache.clear() {
-                    tracing::warn!("codex semantic cache clear on workspace open failed: {e}");
-                }
-                if let Err(e) = events_semantic_cache.clear() {
-                    tracing::warn!("events semantic cache clear on workspace open failed: {e}");
-                }
-                if let Err(e) = chat_semantic_cache.clear() {
-                    tracing::warn!("chat semantic cache clear on workspace open failed: {e}");
-                }
+                #[cfg(feature = "semantic-embedding")]
+                semantic_runtime.rotate_workspace_epoch();
             };
             let mut deps = OpenDeps {
                 gs_path: &gs_path,

@@ -2005,7 +2005,6 @@ dependencies = [
  "hex",
  "libc",
  "notify",
- "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2161,11 +2160,13 @@ dependencies = [
  "aho-corasick",
  "anyhow",
  "chrono",
+ "futures",
  "grimodex-db",
  "grimodex-lint",
  "hex",
  "ndarray",
  "ort",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2174,6 +2175,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
