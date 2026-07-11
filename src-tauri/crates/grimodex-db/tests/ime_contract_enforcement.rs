@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::{Duration, SecondsFormat, Utc};
 use grimodex_db::ime_export::{get_status, set_active_project, ImeIntegrationMode};
 use serde_json::{json, Value};
 
@@ -45,7 +46,7 @@ fn handshake(id: &str) -> Value {
         "version": "1.0.0",
         "platform": "linux",
         "capabilities": { "profile": true },
-        "last_seen": "2026-07-11T00:00:00.000Z"
+        "last_seen": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
     })
 }
 
@@ -70,10 +71,7 @@ fn consumer_detection_enforces_schema_but_ignores_future_platform_values() -> Te
     future_platform["capabilities"]["future_capability"] = json!(true);
     write_consumer(sandbox.path(), "future-platform", &future_platform)?;
 
-    let status = serde_json::to_value(get_status(
-        sandbox.path(),
-        ImeIntegrationMode::Auto,
-    )?)?;
+    let status = serde_json::to_value(get_status(sandbox.path(), ImeIntegrationMode::Auto)?)?;
     let consumers = status["consumers"]
         .as_array()
         .ok_or("consumers must be an array")?;
@@ -96,10 +94,7 @@ fn consumer_detection_enforces_the_timestamp_lexical_grammar() -> TestResult {
         write_consumer(sandbox.path(), id, &value)?;
     }
 
-    let status = serde_json::to_value(get_status(
-        sandbox.path(),
-        ImeIntegrationMode::Auto,
-    )?)?;
+    let status = serde_json::to_value(get_status(sandbox.path(), ImeIntegrationMode::Auto)?)?;
     assert_eq!(status["consumers"].as_array().map(Vec::len), Some(0));
     Ok(())
 }
@@ -111,11 +106,31 @@ fn consumer_detection_rejects_null_for_an_optional_typed_field() -> TestResult {
     value["platform"] = Value::Null;
     write_consumer(sandbox.path(), "null-platform", &value)?;
 
-    let status = serde_json::to_value(get_status(
-        sandbox.path(),
-        ImeIntegrationMode::Auto,
-    )?)?;
+    let status = serde_json::to_value(get_status(sandbox.path(), ImeIntegrationMode::Auto)?)?;
     assert_eq!(status["consumers"].as_array().map(Vec::len), Some(0));
+    Ok(())
+}
+
+#[test]
+fn consumer_detection_only_reports_fresh_heartbeats() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let now = Utc::now();
+    for (id, last_seen) in [
+        ("fresh", now - Duration::minutes(44)),
+        ("stale", now - Duration::minutes(46)),
+        ("far-future", now + Duration::minutes(6)),
+    ] {
+        let mut value = handshake(id);
+        value["last_seen"] = json!(last_seen.to_rfc3339_opts(SecondsFormat::Millis, true));
+        write_consumer(sandbox.path(), id, &value)?;
+    }
+
+    let status = serde_json::to_value(get_status(sandbox.path(), ImeIntegrationMode::Auto)?)?;
+    let consumers = status["consumers"]
+        .as_array()
+        .ok_or("consumers must be an array")?;
+    assert_eq!(consumers.len(), 1);
+    assert_eq!(consumers[0]["consumerId"], "fresh");
     Ok(())
 }
 
@@ -186,10 +201,7 @@ fn status_ignores_an_oversized_project_snapshot_before_parsing() -> TestResult {
         serde_json::to_vec(&oversized)?,
     )?;
 
-    let status = serde_json::to_value(get_status(
-        sandbox.path(),
-        ImeIntegrationMode::On,
-    )?)?;
+    let status = serde_json::to_value(get_status(sandbox.path(), ImeIntegrationMode::On)?)?;
     assert_eq!(status["exportedProjectCount"], 0);
     Ok(())
 }
@@ -210,10 +222,7 @@ fn status_does_not_count_a_project_with_a_schema_invalid_timestamp() -> TestResu
         }))?,
     )?;
 
-    let status = serde_json::to_value(get_status(
-        sandbox.path(),
-        ImeIntegrationMode::On,
-    )?)?;
+    let status = serde_json::to_value(get_status(sandbox.path(), ImeIntegrationMode::On)?)?;
     assert_eq!(status["exportedProjectCount"], 0);
     Ok(())
 }
@@ -250,10 +259,7 @@ fn status_rejects_null_or_missing_project_optional_shapes() -> TestResult {
         serde_json::to_vec(&missing_style)?,
     )?;
 
-    let status = serde_json::to_value(get_status(
-        sandbox.path(),
-        ImeIntegrationMode::On,
-    )?)?;
+    let status = serde_json::to_value(get_status(sandbox.path(), ImeIntegrationMode::On)?)?;
     assert_eq!(status["exportedProjectCount"], 0);
     Ok(())
 }
@@ -279,10 +285,7 @@ fn invalid_project_snapshots_cannot_become_active() -> TestResult {
         Some("invalid-active"),
         ImeIntegrationMode::On,
     )?;
-    let status = serde_json::to_value(get_status(
-        sandbox.path(),
-        ImeIntegrationMode::On,
-    )?)?;
+    let status = serde_json::to_value(get_status(sandbox.path(), ImeIntegrationMode::On)?)?;
     assert!(status["activeProjectId"].is_null());
     Ok(())
 }

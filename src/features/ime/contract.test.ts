@@ -134,6 +134,9 @@ describe("IME Protocol V1 contract fixtures", () => {
       consumer_version_max_chars: 64,
       consumer_platform_max_chars: 32,
       timestamp_max_chars: 64,
+      consumer_heartbeat_seconds: 900,
+      consumer_freshness_ttl_seconds: 2_700,
+      consumer_future_skew_seconds: 300,
     });
   });
 

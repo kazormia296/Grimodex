@@ -1649,6 +1649,39 @@ mod protocol_limit_tests {
     }
 }
 
+#[cfg(test)]
+mod consumer_freshness_tests {
+    use super::*;
+    use chrono::{Duration, TimeZone};
+
+    #[test]
+    fn consumer_heartbeat_freshness_has_strict_past_and_future_boundaries() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 7, 11, 12, 0, 0)
+            .single()
+            .expect("fixed UTC timestamp must be valid");
+        let timestamp =
+            |value: chrono::DateTime<Utc>| value.to_rfc3339_opts(SecondsFormat::Nanos, true);
+
+        assert!(consumer_last_seen_is_fresh_at(
+            &timestamp(now - Duration::minutes(45)),
+            now
+        ));
+        assert!(!consumer_last_seen_is_fresh_at(
+            &timestamp(now - Duration::minutes(45) - Duration::nanoseconds(1)),
+            now
+        ));
+        assert!(consumer_last_seen_is_fresh_at(
+            &timestamp(now + Duration::minutes(5)),
+            now
+        ));
+        assert!(!consumer_last_seen_is_fresh_at(
+            &timestamp(now + Duration::minutes(5) + Duration::nanoseconds(1)),
+            now
+        ));
+    }
+}
+
 #[cfg(all(test, windows))]
 mod atomic_replace_tests {
     use super::*;

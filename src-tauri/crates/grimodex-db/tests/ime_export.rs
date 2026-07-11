@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use grimodex_db::ime_export::{
     clear_all_exports, get_status, refresh_project_export, remove_project_export,
     remove_project_export_if_absent, set_active_project, ImeExportOptions, ImeExportRequestGate,
@@ -11,7 +12,7 @@ use grimodex_db::ime_export::{
 use grimodex_db::Database;
 use rusqlite::params;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -144,6 +145,34 @@ fn options(mode: ImeIntegrationMode) -> ImeExportOptions {
         exclude_hidden: false,
         include_profile: true,
     }
+}
+
+fn write_consumer_handshake(
+    root: &Path,
+    id: &str,
+    name: &str,
+    platform: Option<&str>,
+    capabilities: Value,
+    last_seen: DateTime<Utc>,
+) -> TestResult {
+    let consumers = root.join("consumers");
+    fs::create_dir_all(&consumers)?;
+    let mut handshake = json!({
+        "format_version": 1,
+        "consumer_id": id,
+        "name": name,
+        "version": "1.0.0",
+        "capabilities": capabilities,
+        "last_seen": last_seen.to_rfc3339_opts(SecondsFormat::Millis, true),
+    });
+    if let Some(platform) = platform {
+        handshake["platform"] = json!(platform);
+    }
+    fs::write(
+        consumers.join(format!("{id}.json")),
+        serde_json::to_vec(&handshake)?,
+    )?;
+    Ok(())
 }
 
 fn project_snapshot_path(root: &Path, project_id: &str) -> PathBuf {
@@ -712,11 +741,13 @@ fn auto_mode_requires_a_consumer_and_status_reports_effective_state() -> TestRes
     )?;
     assert!(!project_snapshot_path(&fixture.ime_root, "p-auto").exists());
 
-    let consumers = fixture.ime_root.join("consumers");
-    fs::create_dir_all(&consumers)?;
-    fs::write(
-        consumers.join("test-ime.json"),
-        br#"{"format_version":1,"consumer_id":"test-ime","name":"Test IME","version":"1.0.0","capabilities":{"profile":true},"last_seen":"2026-07-11T00:00:00.000Z"}"#,
+    write_consumer_handshake(
+        &fixture.ime_root,
+        "test-ime",
+        "Test IME",
+        None,
+        json!({"profile": true}),
+        Utc::now(),
     )?;
     let status = serde_json::to_value(get_status(&fixture.ime_root, ImeIntegrationMode::Auto)?)?;
     assert!(status_enabled(&status)?);
@@ -738,17 +769,75 @@ fn auto_mode_requires_a_consumer_and_status_reports_effective_state() -> TestRes
 }
 
 #[test]
+fn stale_consumer_disables_auto_mode_and_clears_existing_export() -> TestResult {
+    let fixture = Fixture::new()?;
+    seed_project(fixture.db(), "p-stale", "Stale", "ja", None, None)?;
+    seed_entry(
+        fixture.db(),
+        "entry-stale",
+        "p-stale",
+        "character",
+        "サクラ",
+        None,
+        None,
+        None,
+        "mentioned",
+    )?;
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "p-stale",
+        &options(ImeIntegrationMode::On),
+    )?;
+    set_active_project(&fixture.ime_root, Some("p-stale"), ImeIntegrationMode::On)?;
+    write_consumer_handshake(
+        &fixture.ime_root,
+        "stale-ime",
+        "Stale IME",
+        Some("linux"),
+        json!({"profile": true}),
+        Utc::now() - Duration::minutes(46),
+    )?;
+
+    let status = serde_json::to_value(get_status(&fixture.ime_root, ImeIntegrationMode::Auto)?)?;
+    assert!(!status_enabled(&status)?);
+    assert_eq!(status_consumer_count(&status)?, 0);
+
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "p-stale",
+        &options(ImeIntegrationMode::Auto),
+    )?;
+    assert!(!project_snapshot_path(&fixture.ime_root, "p-stale").exists());
+    assert_eq!(read_active_project(&fixture.ime_root)?, None);
+    Ok(())
+}
+
+#[test]
 fn consumer_status_supports_legacy_and_linux_phase3_capabilities() -> TestResult {
     let fixture = Fixture::new()?;
-    let consumers = fixture.ime_root.join("consumers");
-    fs::create_dir_all(&consumers)?;
-    fs::write(
-        consumers.join("legacy-ime.json"),
-        br#"{"format_version":1,"consumer_id":"legacy-ime","name":"Legacy IME","version":"1.0.0","capabilities":{"profile":true},"last_seen":"2026-07-11T00:00:00.000Z"}"#,
+    let now = Utc::now();
+    write_consumer_handshake(
+        &fixture.ime_root,
+        "legacy-ime",
+        "Legacy IME",
+        None,
+        json!({"profile": true}),
+        now,
     )?;
-    fs::write(
-        consumers.join("fcitx5-grimodex.json"),
-        br#"{"format_version":1,"consumer_id":"fcitx5-grimodex","name":"Grimodex IME for Linux","version":"0.1.0","platform":"linux","capabilities":{"profile":true,"dynamic_dictionary":true,"zenzai_v3_conditions":true,"application_scoping":true},"last_seen":"2026-07-11T00:00:00.000Z"}"#,
+    write_consumer_handshake(
+        &fixture.ime_root,
+        "fcitx5-grimodex",
+        "Grimodex IME for Linux",
+        Some("linux"),
+        json!({
+            "profile": true,
+            "dynamic_dictionary": true,
+            "zenzai_v3_conditions": true,
+            "application_scoping": true,
+        }),
+        now,
     )?;
 
     let value = serde_json::to_value(get_status(&fixture.ime_root, ImeIntegrationMode::Auto)?)?;
@@ -757,25 +846,35 @@ fn consumer_status_supports_legacy_and_linux_phase3_capabilities() -> TestResult
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "consumers must be an array"))?;
     let linux = consumers
         .iter()
-        .find(|consumer| json_field(consumer, &["consumerId", "consumer_id"]).ok() == Some(&Value::String("fcitx5-grimodex".to_owned())))
+        .find(|consumer| {
+            json_field(consumer, &["consumerId", "consumer_id"]).ok()
+                == Some(&Value::String("fcitx5-grimodex".to_owned()))
+        })
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Linux consumer missing"))?;
     assert_eq!(json_field(linux, &["platform"])?, "linux");
     assert_eq!(
         json_field(linux, &["capabilities"])?
             .get("dynamicDictionary")
-            .or_else(|| json_field(linux, &["capabilities"]).ok()?.get("dynamic_dictionary")),
+            .or_else(|| json_field(linux, &["capabilities"])
+                .ok()?
+                .get("dynamic_dictionary")),
         Some(&Value::Bool(true))
     );
 
     let legacy = consumers
         .iter()
-        .find(|consumer| json_field(consumer, &["consumerId", "consumer_id"]).ok() == Some(&Value::String("legacy-ime".to_owned())))
+        .find(|consumer| {
+            json_field(consumer, &["consumerId", "consumer_id"]).ok()
+                == Some(&Value::String("legacy-ime".to_owned()))
+        })
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "legacy consumer missing"))?;
     assert!(json_field(legacy, &["platform"])?.is_null());
     assert_eq!(
         json_field(legacy, &["capabilities"])?
             .get("dynamicDictionary")
-            .or_else(|| json_field(legacy, &["capabilities"]).ok()?.get("dynamic_dictionary")),
+            .or_else(|| json_field(legacy, &["capabilities"])
+                .ok()?
+                .get("dynamic_dictionary")),
         Some(&Value::Bool(false))
     );
     Ok(())
@@ -876,12 +975,13 @@ fn clear_and_remove_preserve_consumers_and_keep_state_from_pointing_at_missing_f
         )?;
     }
     let consumer = fixture.ime_root.join("consumers").join("keep-me.json");
-    fs::create_dir_all(consumer.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "consumer path has no parent")
-    })?)?;
-    fs::write(
-        &consumer,
-        br#"{"format_version":1,"consumer_id":"keep-me","name":"Keep Me","version":"1.0.0","capabilities":{"profile":false},"last_seen":"2026-07-11T00:00:00.000Z"}"#,
+    write_consumer_handshake(
+        &fixture.ime_root,
+        "keep-me",
+        "Keep Me",
+        None,
+        json!({"profile": false}),
+        Utc::now(),
     )?;
 
     set_active_project(&fixture.ime_root, Some("p-one"), ImeIntegrationMode::On)?;
