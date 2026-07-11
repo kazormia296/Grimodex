@@ -7,6 +7,7 @@ members = [
     "crates/grimodex-lint",
     "crates/grimodex-ai",
     "crates/grimodex-post-effect",
+    "crates/grimodex-license",
 ]
 
 [package]
@@ -39,7 +40,7 @@ semantic-embedding = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
 # ライセンス認証機構 (ライセンス認証設計書 §9.1)。ベータ配布ビルドでは無効のまま
 # (= 全ゲート素通り・License UI 非表示)。1.0 リリースビルドのみ --features licensing。
 # 無効でもコマンドは登録され、get_license_state が licensing_enabled:false を返す。
-licensing = ["grimodex-mcp/licensing"]
+licensing = ["grimodex-license/licensing", "grimodex-mcp/licensing"]
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api"] }
@@ -86,6 +87,7 @@ grimodex-core = { path = "crates/grimodex-core" }
 # OS セキュアストレージ経路 (save/has/delete_api_key) を Tauri ビルドのみ有効化する。
 grimodex-ai = { path = "crates/grimodex-ai", features = ["keyring"] }
 grimodex-post-effect = { path = "crates/grimodex-post-effect" }
+grimodex-license = { path = "crates/grimodex-license" }
 # DB 層 (Electron 移行 Phase 2 S1 で抽出)。`crate::database` / `crate::workspace`
 # は lib.rs の互換シム経由でこのクレートへ委譲する。
 grimodex-db = { path = "crates/grimodex-db" }
@@ -128,8 +130,3 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "2.0", features = ["v2_40"] }
 glib = "0.18"
-
-[dev-dependencies]
-# Polar クライアントのモックテスト (ライセンス認証設計書 §10)。
-# base URL を注入可能にした polar_*_at 関数に MockServer を当てる。
-wiremock = "0.6"

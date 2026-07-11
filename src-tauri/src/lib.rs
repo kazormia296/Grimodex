@@ -3,6 +3,7 @@ mod cli_provider;
 mod codex_matching;
 mod commands;
 mod external_mount;
+#[allow(unused_imports)]
 mod license;
 mod lint_logging;
 mod semantic;
@@ -29,7 +30,7 @@ use commands::external_mount::ExternalMountState;
 use commands::semantic::{ModelDownloadState, SemanticEmbedderState};
 use commands::{
     AiSettingsPath, AppResult, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag,
-    LicensePath, LogGuard, PostEffectAbortRegistry, StreamAbortFlag, WorkspaceState,
+    LicenseRuntime, LogGuard, PostEffectAbortRegistry, StreamAbortFlag, WorkspaceState,
 };
 use external_mount::watch::ExternalMountWatchState;
 
@@ -153,11 +154,7 @@ pub fn run() {
 
             // License file path (stays in AppData, alongside global-settings.json)
             let license_path = app_dir.join("license.json");
-            app.manage(LicensePath {
-                path: license_path,
-                write_lock: Mutex::new(()),
-                validate_in_flight: std::sync::atomic::AtomicBool::new(false),
-            });
+            app.manage(LicenseRuntime::new(license_path));
 
             // ライセンスのバックグラウンド再検証 (ライセンス認証設計書 §5.4)。
             // 起動直後 + 6 時間ごとに「最終検証から 7 日以上」をチェックして

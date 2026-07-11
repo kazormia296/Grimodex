@@ -1998,6 +1998,7 @@ dependencies = [
  "grimodex-core",
  "grimodex-db",
  "grimodex-fonts",
+ "grimodex-license",
  "grimodex-lint",
  "grimodex-mcp",
  "grimodex-post-effect",
@@ -2030,7 +2031,6 @@ dependencies = [
  "uuid",
  "webkit2gtk",
  "window-vibrancy 0.7.1",
- "wiremock",
 ]
 
 [[package]]
@@ -2085,6 +2085,23 @@ name = "grimodex-fonts"
 version = "0.1.0"
 dependencies = [
  "fontdb",
+]
+
+[[package]]
+name = "grimodex-license"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "grimodex-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

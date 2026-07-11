@@ -5,7 +5,7 @@
 //! lib.rs から本ファイルの型を参照する。
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::database::Database;
 
@@ -18,6 +18,7 @@ pub(crate) use grimodex_db::{
     WorkspaceState,
 };
 pub(crate) use grimodex_post_effect::PostEffectAbortRegistry;
+pub(crate) use grimodex_license::LicenseRuntime;
 
 pub(crate) mod agent_writes;
 pub(crate) mod ai;
@@ -77,21 +78,6 @@ pub(crate) struct LogGuard(
 /// Path to the AI settings file in AppData.
 pub(crate) struct AiSettingsPath {
     pub(crate) path: PathBuf,
-}
-
-/// Path to the license file in AppData (ライセンス認証設計書 §2)。
-/// global-settings.json と同階層の独立ファイル。メモリキャッシュは持たず
-/// ファイルを唯一の正本とする。
-pub(crate) struct LicensePath {
-    pub(crate) path: PathBuf,
-    /// license.json の read-modify-write を直列化する番兵。sync コマンド
-    /// (get_license_state) と async コマンド (activate 等) は別スレッドで
-    /// 並行しうるため、これが無いと lost update が起きる。
-    /// ガードは絶対に await を跨がないこと (std::sync::MutexGuard は !Send)。
-    pub(crate) write_lock: Mutex<()>,
-    /// validate の in-flight フラグ。手動再検証とバックグラウンドサイクルが
-    /// 同時に Polar へ validate を二重送信するのを防ぐ。
-    pub(crate) validate_in_flight: std::sync::atomic::AtomicBool,
 }
 
 // ---------------------------------------------------------------------------
