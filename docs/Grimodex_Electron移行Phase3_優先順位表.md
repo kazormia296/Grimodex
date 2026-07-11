@@ -2,7 +2,7 @@
 
 作成日: 2026-07-10 / 正本データ: `Grimodex_Electron移行Phase3_コマンド台帳.json`（同ディレクトリ、145 コマンドの静的棚卸し + FE コールサイト分析 = IPC_UNIMPLEMENTED 実測ログの代替）/ 進捗の現在地と本表の使い方は `Grimodex_Electron移行Phase3設計書.md` を参照
 
-> 実装確定差分（2026-07-11）: バッチ3は 3a〜3e に分割し、3a〜3c が完了。
+> 実装確定差分（2026-07-11）: バッチ3は 3a〜3e に分割し、3a〜3e が完了。
 > 当初の keyring / OnceLock 案は、main の safeStorage + `Backend` AppState へ変更した。
 > CLI は napi / AppState ではなく main 常駐 single-flight manager + `cross-spawn` で実装した。
 > 進捗と確定後の設計は Phase 3 設計書を正本とする。
@@ -109,9 +109,9 @@
 
 | コマンド | 分類 | trigger | State依存 | emits | napi 化メモ |
 | --- | --- | --- | --- | --- | --- |
-| start_post_effect_run | network | user-action | WorkspaceState + AiSettingsPath + PostEffectAbortRegistry | post_effect:×4 | fire-and-forget + 4ch ブリッジ。panic 時フォールバック error emit 再現 |
-| start_post_effect_run_multi | network | user-action | 同上 | post_effect:×4 | abort ポーリング・部分失敗着地（DB failed / FE done の非対称）に注意 |
-| abort_post_effect_run | db+state | user-action | PostEffectAbortRegistry + WorkspaceState | — | start 系と同一プロセスの共有 Map 必須 |
+| start_post_effect_run | network | user-action | WorkspaceState + AiSettingsPath + PostEffectAbortRegistry | post_effect:×4 | **バッチ3d完了**。共有crate + fire-and-forget + 4ch。開始DBを固定しworkspace切替後も同じrunを完走 |
+| start_post_effect_run_multi | network | user-action | 同上 | post_effect:×4 | **バッチ3d完了**。abort監視、部分失敗、role別routing、cache/secret境界を回帰固定 |
+| abort_post_effect_run | db+state | user-action | PostEffectAbortRegistry + WorkspaceState | — | **バッチ3d完了**。DB terminal CASとregistryを線形化し、wrong-project/late abortはno-op |
 | list_post_effect_runs / list_scene_lens_for_project / list_annotations_for_scene / list_annotations_for_project | pure-db | panel-open / editing-loop | WorkspaceState | — | scene_lens は **SQL を一字一句移植**（MAX 汚染回帰ガード） |
 | update_annotation_status / reply_to_annotation | pure-db | user-action | WorkspaceState | — | JSON1 (json_set) 前提。XPROJ fail-closed |
 
@@ -150,7 +150,7 @@
 
 | コマンド | 分類 | trigger | napi 化メモ |
 | --- | --- | --- | --- |
-| activate_license / revalidate_license / deactivate_license | network | settings | Node fetch 化可。validate_in_flight とバックグラウンド検証サイクル（license:state_changed）を main 側で共有実装 |
+| activate_license / revalidate_license / deactivate_license | network | settings | **バッチ3e完了**。`grimodex-license`共有runtimeをN-APIへ接続。single-flight/stale-response guard、feature無効時のディスク非接触、5秒後→完了後6h cycle + state_changedを実装 |
 | fts_rebuild / fts_rebuild_en / integrity_check / repair_integrity | pure-db | settings | grimodex-db 委譲の薄ラッパー。check/repair はペア移植 |
 | get_mcp_config | main-ts | settings | MCP サーバー起動形態の決定に依存 |
 | open_log_dir | main-ts | user-action | shell.openPath |
@@ -181,9 +181,9 @@
 ### バッチ 3: AI 系 — HTTP + safeStorage + abort フラグ + ストリームイベント（約 25 コマンド）
 - **対象**: ai.rs 13（送信 4 + abort 2 + 設定 2 + キー 3 + models/test 2）、cli_ai 5（main TS 化）、post_effect run 系 3（start / start_multi / abort）、license 4（get は done、network 3）
 - **狙い**: chat / inline-ai / post_effect は ThreadsafeFunction、CLI は main 直結の全窓 broadcast でストリームイベントを配線する。chat / inline の abort は同一 `Backend` AppState、CLI は main 常駐 manager、PostEffect は registry を開始側と中止側で共有する。
-- **クレート観点**: HTTP / SSE / provider 分岐は `grimodex-ai` に抽出し Tauri / napi で共用。API キーは main の safeStorage で解決し、同一設定 snapshot とともに napi へ注入する。平文を renderer へ返さない。license のバックグラウンド検証ループ（6h 周期 + license:state_changed）は後続バッチで main 起動時に移植。
-- **進捗**: 3a（chat）/ 3b（inline・agent・設定）/ 3c（CLI AI 5コマンド）が完了。3c は single-flight、auto/manual trust分離、kind別refresh generation、canonical target spawn、spawn前abort、send開始基準の絶対290秒、raw 64MiB + emitted 8MiB、全child追跡、disposed fail-closed、FE error dedupeを実装。敵対的レビューは初回7 + 後段5 + case/cache 2 + refresh race 1の計15回帰を赤固定して修正。CLI manager 24 tests、手動CLI fixture smoke、自動実child lifecycle testを確認した。残りは 3d post-effect / 3e license。
-- **起動 / 検証**: `ready-to-show` 未発火時は `did-finish-load` で冪等表示。startup hydration 中だけ layout crossfade / region / editor enter を抑止し、初期化後の motion は維持する。Electron 17 files / 345 passed、node 861 files passed + 8 skipped / 8,809 passed + 35 skipped、browser 73 files passed + 1 skipped / 309 passed + 1 skipped、`electron:build` / `electron:smoke` が green。smoke は3起動、全 layer opacity=1、scene autosave→再起動後DB/UI残存まで確認。
+- **クレート観点**: HTTP / SSE / provider分岐は `grimodex-ai`、post-effect実行本体は `grimodex-post-effect`、license状態機械/Polar通信は `grimodex-license` に抽出しTauri / napiで共用。APIキーはmain safeStorageで解決し、平文をrendererへ返さない。
+- **進捗**: 3a（chat）/ 3b（inline・agent・設定）/ 3c（CLI AI）/ 3d（post-effect）/ 3e（license）が完了。3dは開始DB固定、XPROJ、terminal CAS、abort TOCTOU、資格情報snapshotを回帰固定。3eはfeature無効のexact disabled/ディスク非接触、5秒後→cycle完了後6hの全窓state_changed、manual mutation/errorの全窓同期、activate single-flight + remote補償解除を実装。
+- **起動 / 検証**: `ready-to-show` fallbackとstartup hydration motion抑止を維持。Electron 18 files / 401 passed、実 `.node` native 70 pass + 1 skip、post-effect共有Rust 103、license共有Rustは旧Polar/DTO 27 + runtime/race 19 + disabled 1。N-API release build、TypeScript typecheck、Rust check/clippy（license feature有効/無効）がgreen。
 
 ### バッチ 4: ort / lindera 重量級（semantic 19 + lint 3、P2 中心）
 - **対象**: semantic 系 19（pure-db の status/chunk_context/debug_dump 含む — spec 定数・チャンカが Rust 側にあるため一括）、lint_text、segment_bunsetsu、extract_codex_candidates
@@ -203,13 +203,13 @@
 | 1 | chat:stream-chunk / done / error | critical | 無いとチャットが完全沈黙・スピナー永続。invoke fire-and-forget で代替経路なし |
 | 2 | inline-ai:stream-chunk / done / error | critical | インライン AI / Beat 生成の唯一の経路 |
 | 3 | external-mount://file-changed / added / removed / renamed | critical | 外部マウント同期の唯一の駆動源。**全窓 broadcast 契約** |
-| 4 | post_effect:done / error | critical | 校閲 runner の Promise resolve 終端契約。無いと UI 固着 |
+| 4 | post_effect:done / error | critical | **バッチ3dで配線済み**。校閲 runner の Promise resolve 終端契約 |
 | 5 | cli:stream-chunk / done / error | critical | **バッチ3cで配線済み**。main 常駐 manager から全窓 broadcast |
 | 6 | vivliostyle:done / error | critical | ビルド終端契約（バッチ 5 と同時でよい） |
-| 7 | license:state_changed | critical（fail-soft 寄り） | 稼働中の制限発動/解除。バックグラウンド検証ループ移植とセット |
+| 7 | license:state_changed | critical（fail-soft 寄り） | **バッチ3eで配線済み**。5秒後→完了後6hの検証cycleから全窓broadcast |
 | 8 | semantic:model_download_progress | progress（**機能フックあり**） | done 受信で back-index 自動再開 — 純表示ではない点に注意 |
-| 9 | post_effect:progress / semantic:reindex_progress / vivliostyle:log / vivliostyle:preview-exited | progress | 無くても機能は完走。各機能バッチに同梱 |
-| 10 | post_effect:partial | debug | **現状 FE 未購読**（onPartial を渡す呼び出しゼロ）。配線最下位。ipcContract.ts allowlist には収録済み |
+| 9 | post_effect:progress / semantic:reindex_progress / vivliostyle:log / vivliostyle:preview-exited | progress | post_effectは**3dで配線済み**。残りは各機能バッチに同梱 |
+| 10 | post_effect:partial | debug | **3dで配線済み**。現状FE未購読（onPartialを渡す呼び出しゼロ） |
 
 補足: 棚卸しでは「19ch」とされたが、listen 購読データからは上記 24ch を確認（emitter がコマンド外のもの: license:state_changed）。
 

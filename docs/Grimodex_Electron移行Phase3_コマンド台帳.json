@@ -2,9 +2,11 @@
   "meta": {
     "generatedAt": "2026-07-10",
     "purpose": "Grimodex Electron 移行 Phase 3: Tauri コマンドの napi / main-TS 化 正規化台帳（棚卸しデータ + lib.rs 正式リスト + FE コールサイトのマージ）",
-    "inventorySemantics": "doneCount / remainingCount / 各 status は生成時点の静的棚卸し値であり、現在進捗の再集計ではない。進捗正本は Phase 3 設計書。2026-07-11 時点で Phase 3c の CLI AI 5 コマンドは main-TS 実装済み",
+    "inventorySemantics": "doneCount / remainingCount / 各 classification は生成時点の静的棚卸し値であり、現在進捗の再集計ではない。進捗正本は Phase 3 設計書。2026-07-11 時点で Phase 3a〜3e は実装済み",
     "phase3cValidation": "2026-07-11: Electron 17 files / 345 passed、node 861 files passed + 8 skipped / 8809 passed + 35 skipped、browser 73 files passed + 1 skipped / 309 passed + 1 skipped。electron:build / electron:smoke PASS（3起動、全layout layer opacity=1、scene作成→autosave→再起動後DB/UI残存）",
     "phase3cShellHardening": "ready-to-show未発火時はdid-finish-loadで冪等表示。startup hydration中だけlayout crossfade / region chrome / editor enter animationを抑止し、初期化後のmotionは維持",
+    "phase3dValidation": "2026-07-11: post-effect 3コマンド + 4イベントを共有Rust/N-APIへ移植。開始DB固定、XPROJ、terminal CAS、abort TOCTOU、資格情報snapshotを回帰固定。共有Rust 103 tests、実.node post-effect E2E 5 tests PASS",
+    "phase3eValidation": "2026-07-11: license 4 IPC + 内部validate cycleを共有Rust/N-APIへ移植。feature無効のexact disabled/ディスク非接触、起動5秒後→完了後6h、manual success/errorの全窓state_changed、activate single-flight + remote補償解除を固定。Electron 18 files / 401 tests、native 70 pass + 1 skip、license Polar/DTO 27 + runtime/race 19 + disabled 1 PASS",
     "totalCommands": 145,
     "doneCount": 13,
     "remainingCount": 132,
@@ -159,12 +161,12 @@
       "priority": "P0",
       "args": [],
       "returns": "LicenseStateDto",
-      "stateDeps": ["LicensePath"],
+      "stateDeps": ["LicenseRuntime"],
       "appHandle": false,
       "emits": [],
       "isAsync": false,
       "summary": "起動時のライセンス状態取得。license.json を読み、試用使用日の登録・last_seen 単調更新・時計巻き戻し検出を行って DTO を返す",
-      "napiNotes": "napi 実装済み。副次分類 fs（license.json read-modify-write）。licensing 無効ビルドは disabled DTO を返す分岐を維持。write_lock (Mutex<()>) による直列化必須。chrono 依存（UTC now + ローカル暦日 'YYYY-MM-DD' 注入規約）",
+      "napiNotes": "Phase 3e実装済み。grimodex-license共有runtimeをTauri/N-APIで共用。license.json read-modify-writeは同一Mutexで直列化。feature無効buildはexact disabled DTOを返してファイルへ触れない",
       "callSites": [
         { "file": "src/features/license/store.ts", "trigger": "startup", "notes": "L54 refresh() — EditorScreen mount 時（App.tsx:360）。fail-open 設計（失敗でもゲートを閉じない）+ license:state_changed リスナと連動" }
       ]
@@ -172,15 +174,16 @@
     "activate_license": {
       "file": "license.rs",
       "classification": "network",
+      "status": "done",
       "priority": "P3",
       "args": ["key: String"],
       "returns": "LicenseStateDto",
-      "stateDeps": ["LicensePath"],
+      "stateDeps": ["LicenseRuntime"],
       "appHandle": false,
       "emits": [],
       "isAsync": true,
       "summary": "ライセンスキーを Polar API で activate し、benefit_id のメジャーバージョン照合後に license.json へ適用して新状態 DTO を返す",
-      "napiNotes": "reqwest → Node fetch/undici に置換可（POLAR_BASE_URL=https://api.polar.sh、10s タイムアウト）。副次分類 fs。await 中はロックを持たず、await 後にファイル読み直し→適用の規律を移植。benefit_mismatch（v2 アプリ + v1 キー拒否）と LICENSING_ENABLED ビルドフラグ相当が必要",
+      "napiNotes": "Phase 3e実装済み。grimodex-license共有crateのreqwest Polar clientをTauri/N-APIで共用。activateはsingle-flight。await中はfile lockを持たず、benefit照合後にatomic write。benefit不一致/local persist失敗は作成済みremote activationを補償解除。通常buildはfeature無効で同じ明示errorを返しlicense.jsonへ触れない",
       "callSites": [
         { "file": "src/features/license/store.ts", "trigger": "settings", "notes": "L75 activate()（settings/LicenseCategory）" }
       ]
@@ -188,15 +191,16 @@
     "revalidate_license": {
       "file": "license.rs",
       "classification": "network",
+      "status": "done",
       "priority": "P3",
       "args": [],
       "returns": "LicenseStateDto",
-      "stateDeps": ["LicensePath"],
+      "stateDeps": ["LicenseRuntime"],
       "appHandle": false,
       "emits": [],
       "isAsync": true,
       "summary": "手動再検証。Polar validate の明示 Invalid のみ revoked に落とし、通信失敗は fail-soft で状態を変えずエラーを返す",
-      "napiNotes": "副次分類 fs + 追加 State（LicensePath.validate_in_flight: AtomicBool の二重送信ガード — バックグラウンド検証サイクル run_validate_cycle と共有。同サイクルは command でなく license:state_changed を emit する別関数で、napi 化時に main 側で共有実装が必要）。RAII Drop → try/finally で再現。is_same_activation チェック（await 中の deactivate/再 activate 対策）を落とさない。通信失敗（5xx 含む）は状態不変でエラー返却",
+      "napiNotes": "Phase 3e実装済み。LicenseRuntimeのAtomicBool single-flightを手動/背景cycleで共有し、RAII Dropで成功・error・future cancel時も解除。await後のread-back + is_same_activationでstale responseを捨て、通信失敗は状態不変",
       "callSites": [
         { "file": "src/features/license/store.ts", "trigger": "settings", "notes": "L84 revalidate()（license_stale からの手動再検証ボタン）" }
       ]
@@ -204,15 +208,16 @@
     "deactivate_license": {
       "file": "license.rs",
       "classification": "network",
+      "status": "done",
       "priority": "P3",
       "args": [],
       "returns": "LicenseStateDto",
-      "stateDeps": ["LicensePath"],
+      "stateDeps": ["LicenseRuntime"],
       "appHandle": false,
       "emits": [],
       "isAsync": true,
       "summary": "この端末のライセンス解除。Polar deactivate 成功時のみローカルの license を破棄し、試用日数が残れば trial に戻る",
-      "napiNotes": "副次分類 fs。Polar deactivate 失敗時はローカル不変（成功時のみ破棄）。await 後の read-back + is_same_activation ガードを移植。write_lock 直列化と LICENSING_ENABLED ガードも必要",
+      "napiNotes": "Phase 3e実装済み。Polar失敗時はローカル不変、成功後もread-back + is_same_activationが一致した場合だけlocal activationを破棄。feature無効ではディスク非接触の明示error",
       "callSites": [
         { "file": "src/features/license/store.ts", "trigger": "settings", "notes": "L79 deactivate()（端末解除）" }
       ]
@@ -1781,6 +1786,7 @@
     "start_post_effect_run": {
       "file": "post_effect.rs",
       "classification": "network",
+      "status": "done",
       "priority": "P1",
       "args": ["args: StartPostEffectRunArgs"],
       "returns": "StartPostEffectRunResult",
@@ -1789,7 +1795,7 @@
       "emits": ["post_effect:progress", "post_effect:partial", "post_effect:done", "post_effect:error"],
       "isAsync": true,
       "summary": "単一シーンの post-effect 解析 run を fire-and-forget で開始し即 run_id を返す（キャッシュヒット時は既存 run_id を from_cache=true で返却）",
-      "napiNotes": "副次分類: db+state / keyring / lindera / fs。即 return 後 tokio::spawn で run_*_task 実行 → napi では async task + ThreadsafeFunction による4イベントブリッジ必須。依存: reqwest（LLM HTTP）、keyring（resolve_api_key）、grimodex_lint::morph（日本語 found_text 活用差アンカー）、read_ai_settings。PostEffectAbortRegistry は start/abort/終端 clear の3者で同一 Map 共有が必須。内側 task panic 時のフォールバック error emit（spinner 永久回転防止）も再現。ensure_post_effect_run のキャッシュ判定＋running 行 INSERT は spawn_blocking 相当で",
+      "napiNotes": "Phase 3d実装済み。grimodex-post-effect共有crate + Node runtime/AI adapter + EventQueue 4ch。cache hitはAI/key/eventを再実行しない。開始時Arc<Database>をworker/registryへ固定しworkspace切替後も同じDBへ終端。XPROJはINSERT/AI前に拒否",
       "callSites": [
         { "file": "src/features/post-effect/api.ts", "trigger": "user-action", "notes": "L61 startPostEffectRun ← runPostEffect ← kouetsu runners/usePseudoCommentRun（校閲実行ボタン）" }
       ]
@@ -1797,6 +1803,7 @@
     "start_post_effect_run_multi": {
       "file": "post_effect.rs",
       "classification": "network",
+      "status": "done",
       "priority": "P1",
       "args": ["args: StartPostEffectRunMultiArgs"],
       "returns": "StartPostEffectRunResult",
@@ -1805,7 +1812,7 @@
       "emits": ["post_effect:progress", "post_effect:partial", "post_effect:done", "post_effect:error"],
       "isAsync": true,
       "summary": "複数シーン（folder/project スコープ）の post-effect 解析 run を fire-and-forget で開始し、シーン逐次処理・部分失敗集計・中止監視を行う",
-      "napiNotes": "start_post_effect_run と同依存＋run_multi_task がシーンごとに Registry.is_aborted(run_id) をポーリングして中断 — abort と共有するメモリ内フラグが napi 側で必須。空シーン skip、decide_multi_outcome による部分失敗着地（DB は failed だが FE には done+summary を emit する非対称に注意）、meta_structure のみ部分失敗を error に倒す特例。timeline_consistency はこの multi 経路専用で prompt_version 未検証（TS 権威）。終端で Registry.clear(run_id)",
+      "napiNotes": "Phase 3d実装済み。singleと同じ共有runtime/開始DB/abort registryを使用。scene逐次中止、空scene skip、部分失敗summary、meta_structure特例、role別endpoint/key routingを維持。terminal CASのClaimed時だけdoneをemit",
       "callSites": [
         { "file": "src/features/post-effect/api.ts", "trigger": "user-action", "notes": "L69 startPostEffectRunMulti ← kouetsu runners（folder/project 一括）/ impact-review runImpactReview" }
       ]
@@ -1813,6 +1820,7 @@
     "abort_post_effect_run": {
       "file": "post_effect.rs",
       "classification": "db+state",
+      "status": "done",
       "priority": "P1",
       "args": ["run_id: String", "project_id: String"],
       "returns": "()",
@@ -1821,7 +1829,7 @@
       "emits": [],
       "isAsync": false,
       "summary": "指定 run_id の中止をメモリ内レジストリへ要求し、DB 上の running 行を cancelled に更新する（XPROJ ガード付き）",
-      "napiNotes": "PostEffectAbortRegistry は start 系タスクと同一プロセス共有の in-memory フラグ集合 — 別プロセス化すると中止が効かなくなる。DB UPDATE は project_id で fail-closed（他プロジェクトの run_id は 0 行 no-op）。spawn_blocking 推奨",
+      "napiNotes": "Phase 3d実装済み。start時にrun_id→開始DBをregistryへbindし、workspace切替後のabortも元DBを対象にする。registry lock内でproject付きDB terminal CAS→abort flag公開を線形化。wrong-project/late abortはno-op、cancelledは完了側に上書きされない",
       "callSites": [
         { "file": "src/features/post-effect/api.ts", "trigger": "user-action", "notes": "L78 abortPostEffectRun ← PostEffectProgressToast 中止ボタン・fullCheckStore" }
       ]

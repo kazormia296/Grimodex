@@ -1,7 +1,7 @@
 # Grimodex Electron移行 Phase 3 設計書 — ネイティブ再結線
 
 - 日付: 2026-07-10（最終更新: 2026-07-11）
-- ステータス: 実装中（バッチ1〜2・バッチ3a〜3c 完了。バッチ3d〜5 は計画）
+- ステータス: 実装中（バッチ1〜2・バッチ3a〜3e 完了。バッチ4〜5 は計画）
 - 正本: `docs/Grimodex_Electron移行検討.md`（移行判断・全体フェーズ）/ `docs/Grimodex_Electron移行Phase2設計書.md`（シェル構築）
 - データ正本: `docs/Grimodex_Electron移行Phase3_優先順位表.md`（バッチ提案・イベント配線順）と `docs/Grimodex_Electron移行Phase3_コマンド台帳.json`（全 145 コマンドの静的棚卸し + FE コールサイト分析）
 - 積み先: ブランチ `feat/electron-phase3`
@@ -271,8 +271,43 @@ Electron 側のキー保管基盤を keyring から safeStorage へ切り替え�
   `pnpm electron:build` と `pnpm electron:smoke` も通過し、3 回の起動すべてで全 layout layer の
   opacity=1、シーン作成 → autosave → 再起動後の DB / UI 残存を確認した。
 
-**残り 3d〜3e**: 3d（post_effect run 系 + PostEffectAbortRegistry）/
-3e（license network + 6h 検証ループ + before-quit ライフサイクル）。
+#### バッチ 3d: post-effect runner + abort + 4イベント【完了】
+
+- **共有crate化**: parser / annotation / 各effect runner / AI client境界 / abort registryを
+  `grimodex-post-effect` へ集約し、Tauri側を薄いadapterへ縮小した。Electronは
+  `NodePostEffectRuntime` / `NodePostEffectAiClient` だけを持ち、同じ実行本体を呼ぶ。
+- **3コマンド + 4ch**: `start_post_effect_run` / `start_post_effect_run_multi` /
+  `abort_post_effect_run` と `post_effect:{progress,partial,done,error}` をN-APIの
+  EventQueueへ接続。cache hitはAI・資格情報・イベントを再実行しない。
+- **資格情報境界**: mainがAI設定を1 snapshotだけ読み、safeStorageのkey値またはlookup
+  errorをnativeへ渡す。role系effectだけmodel/provider/endpoint overrideを使い、typo /
+  intra / metaはdefault設定を維持する。平文keyはrendererへ返さない。
+- **競合とproject境界**: target/sceneのXPROJ検査をINSERT/AIより前に実行する。開始時の
+  `Arc<Database>`をworkerとabort registryへ固定し、workspace A→B切替後もAのrunだけを
+  完走/中止する。abort要求とDB terminal CASを同じregistry lock内で線形化し、cancelledを
+  completedで上書きしない。terminal永続化に失敗した場合は誤ったdoneを送らずerrorへ落とす。
+- **検証**: 共有Rust 103 tests、native Rust 11 tests、実 `.node` のpost-effect E2E 5 testsを
+  含むnative 70 pass + 1 skip。workspace切替、wrong-project abort、終端CAS、secret error、
+  cache、role routingを回帰固定した。
+
+#### バッチ 3e: license network + 6h検証ループ【完了】
+
+- **共有crate化**: DTO / license.jsonのatomic read-modify-write / Polar client / single-flight /
+  stale-response guardを `grimodex-license` に集約し、Tauriは53行のcommand adapterへ縮小。
+  通常buildはfeature無効、v1/v2 releaseだけ `licensing` featureを明示的に有効化する。
+- **常設IPC**: feature無効でも `get/activate/revalidate/deactivate` と内部
+  `runLicenseValidateCycle` は常にexportする。getはexact disabled DTO、write 3件は同じ
+  明示error、backgroundはnullを返し、いずれも `license.json` に触れない。
+- **周期処理**: Electron mainで起動5秒後に初回、そのcycle完了から6時間後に次回を予約する。
+  重複実行を防ぎ、DTOが返った場合だけ `license:state_changed` を全窓broadcastする。
+  `will-quit`でdisposeし、in-flight完了後のemit/rescheduleも抑止する。
+- **レビューhardening**: manual activate/revalidate/deactivateの成功DTOと、revalidate失敗後の
+  current DTOも全窓へ同期する。Polar 3コマンドは外側IPCを300秒枠にしてnativeの15秒HTTP
+  timeoutより先にUIだけ失敗しない。activateはsingle-flight化し、benefit不一致またはlocal
+  persist失敗では作成済みremote activationを補償解除する（file lockはawait前に解放）。
+- **検証**: 旧Polar/DTO 27 tests、licensing有効runtime/race 19 tests、無効build 1 test、
+  Electron 18 files / 401 tests、実 `.node` native 70 pass + 1 skip。N-API release build、
+  TypeScript typecheck、Rust check/clippy（feature有効/無効）も通過。
 
 ### バッチ 4: ort / lindera 重量級
 
@@ -287,8 +322,7 @@ invalidate ライフサイクル（open_workspace の on_swapped フックに接
 
 vivliostyle 6 / mcp_config / seed_sample_workspace / list_backups / restore_backup /
 fts_rebuild 系 / set_window_vibrancy / dead code 疑い 4 件の判定。app ready /
-before-quit のライフサイクル（vivliostyle kill_all・cleanup_temp_root・license 検証
-ループ）を Electron に移植。
+before-quit の残りライフサイクル（vivliostyle kill_all・cleanup_temp_root）を Electron に移植。
 
 ## 3. イベント実配線の優先順位（24ch）
 
@@ -297,13 +331,14 @@ before-quit のライフサイクル（vivliostyle kill_all・cleanup_temp_root�
 1. `chat:stream-*`（3）— チャット応答の唯一経路（バッチ3aで配線済み）
 2. `inline-ai:stream-*`（3）— インライン AI / Beat 生成（バッチ3bで配線済み）
 3. `external-mount://*`（4）— 外部マウント同期。全窓 broadcast 契約（バッチ2で配線済み）
-4. `post_effect:done|error` — 校閲 runner の Promise 終端
+4. `post_effect:done|error` — 校閲 runner の Promise 終端（バッチ3dで配線済み）
 5. `cli:stream-*`（3）— CLI プロバイダ（バッチ3cで main → 全窓 broadcast 配線済み）
 6. `vivliostyle:done|error` — ビルド終端
-7. `license:state_changed` — 稼働中の制限発動/解除
+7. `license:state_changed` — 稼働中の制限発動/解除（バッチ3eで配線済み）
 8. `semantic:model_download_progress` — **done 受信で back-index 自動再開**（機能フック）
-9. progress 系（`post_effect:progress` / `semantic:reindex_progress` / `vivliostyle:log|preview-exited`）
-10. `post_effect:partial` — FE 未購読、最下位
+9. progress 系（`post_effect:progress` は3dで配線済み / `semantic:reindex_progress` /
+   `vivliostyle:log|preview-exited`）
+10. `post_effect:partial` — バッチ3dで配線済み（FEは現状未購読）
 
 Phase 2 で `Backend.on_event(tsfn)` の end-to-end は実証済み（`backend:ready` /
 `workspace:opened`）。napi 化するサブシステムはこの TSFn 経路へ載せ、main-TS 実装は
