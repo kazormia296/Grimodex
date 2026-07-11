@@ -8,9 +8,7 @@ import {
 
 const countCharacters = (text: string): number => Array.from(text).length;
 
-function route(
-  overrides: Partial<ResolvedTurnRoute> = {},
-): ResolvedTurnRoute {
+function route(overrides: Partial<ResolvedTurnRoute> = {}): ResolvedTurnRoute {
   return {
     surface: "chat",
     provider: "anthropic",
