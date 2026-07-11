@@ -1,9 +1,16 @@
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
-import { getCurrentProjectId } from "@/features/project/projectStore";
 import { semanticReindexAll } from "./api";
-import { useReindexProgressStore } from "./reindexProgressStore";
-import { ensureSemanticIndexesOnOpen, resetIndexGuards } from "./autoIndex";
+import {
+  createReindexRunId,
+  useReindexProgressStore,
+} from "./reindexProgressStore";
+import {
+  captureCurrentSemanticScope,
+  ensureSemanticIndexesOnOpen,
+  isSemanticScopeCurrent,
+  resetIndexGuards,
+} from "./autoIndex";
 
 /**
  * 意味検索インデックス（シーン）の全件再構築。多重起動は reindexProgressStore の
@@ -12,10 +19,24 @@ import { ensureSemanticIndexesOnOpen, resetIndexGuards } from "./autoIndex";
  * i18next を直接使う）。
  */
 export async function runSemanticReindex(): Promise<void> {
-  if (useReindexProgressStore.getState().running) return;
-  useReindexProgressStore.getState().setRunning(true);
+  const scope = captureCurrentSemanticScope();
+  if (!scope) return;
+  const runId = createReindexRunId();
+  if (
+    !useReindexProgressStore
+      .getState()
+      .begin(
+        scope.workspaceKey,
+        scope.workspaceOpenRevision,
+        scope.projectId,
+        runId,
+      )
+  ) {
+    return;
+  }
   try {
-    const chunks = await semanticReindexAll(getCurrentProjectId());
+    const chunks = await semanticReindexAll(scope.projectId, runId);
+    if (!isSemanticScopeCurrent(scope)) return;
     toast.success(
       i18next.t("settings.project.semanticReindexDone", {
         defaultValue: "インデックスを再構築しました（{{count}} チャンク）",
@@ -23,8 +44,9 @@ export async function runSemanticReindex(): Promise<void> {
       }),
     );
   } catch (e) {
-    // 失敗時は progress 表示を片付ける契約（reindexProgressStore）。
-    useReindexProgressStore.getState().clear();
+    // A の遅延失敗で B の progress を消さないよう token 一致時だけ fail。
+    useReindexProgressStore.getState().fail(runId);
+    if (!isSemanticScopeCurrent(scope)) return;
     toast.error(
       i18next.t(
         "settings.project.semanticReindexFailed",
@@ -33,7 +55,7 @@ export async function runSemanticReindex(): Promise<void> {
     );
     console.error("[semanticReindex]", e);
   } finally {
-    useReindexProgressStore.getState().setRunning(false);
+    useReindexProgressStore.getState().finish(runId);
   }
 }
 
@@ -44,13 +66,15 @@ export async function runSemanticReindex(): Promise<void> {
  *   代わりに 1セッションガードを解除し、次の open / モデル DL 完了 / 下記トースト操作で
  *   再インデックスが走れるようにする。
  * - すぐ直したい人向けに、ワンクリックの確認トーストを出す。押すと
- *   `ensureSemanticIndexesOnOpen`（モデル DL＋codex/chat/scene の再インデックス、
+ *   `ensureSemanticIndexesOnOpen`（モデル DL＋codex/events/chat/scene の再インデックス、
  *   モデル未着は DL 完了後に自動継続）を起動する。
  */
 export function notifyLanguageChangedReindex(projectId: string): void {
   if (!projectId) return;
+  const scope = captureCurrentSemanticScope(projectId);
+  if (!scope) return;
   // open 時オートインデックスと DL 完了リスナが「もう一度」走れるようにする。
-  resetIndexGuards(projectId);
+  resetIndexGuards(projectId, scope.workspaceKey);
   toast(
     i18next.t(
       "settings.project.languageChangedReindexPrompt",
@@ -61,7 +85,8 @@ export function notifyLanguageChangedReindex(projectId: string): void {
       action: {
         label: i18next.t("settings.project.semanticReindexButton", "再構築"),
         onClick: () => {
-          void ensureSemanticIndexesOnOpen(projectId);
+          if (!isSemanticScopeCurrent(scope)) return;
+          void ensureSemanticIndexesOnOpen(projectId, scope.workspaceKey);
         },
       },
     },

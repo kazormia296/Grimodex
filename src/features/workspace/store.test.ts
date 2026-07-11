@@ -15,6 +15,9 @@ function resetStore() {
     view: "loading",
     globalSettings: null,
     activeWorkspacePath: null,
+    workspaceOpenRevision: 0,
+    workspaceSwitchInProgress: false,
+    workspaceHydrated: false,
     activeWorkspaceName: null,
     error: null,
     pendingTrustPath: null,
@@ -133,6 +136,9 @@ describe("useWorkspaceStore", () => {
       expect(state.view).toBe("editor");
       expect(state.activeWorkspacePath).toBe("D:\\Novels\\MyNovel");
       expect(state.activeWorkspaceName).toBe("MyNovel");
+      expect(state.workspaceOpenRevision).toBe(1);
+      expect(state.workspaceSwitchInProgress).toBe(false);
+      expect(state.workspaceHydrated).toBe(true);
     });
 
     it("sets error on failure", async () => {
@@ -142,6 +148,27 @@ describe("useWorkspaceStore", () => {
       const state = useWorkspaceStore.getState();
       expect(state.view).not.toBe("editor");
       expect(state.error).toBeTruthy();
+      expect(state.workspaceOpenRevision).toBe(0);
+      expect(state.workspaceSwitchInProgress).toBe(false);
+      expect(state.workspaceHydrated).toBe(false);
+    });
+
+    it("restores the previous hydrated workspace when native open rejects before swap", async () => {
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: "D:\\Novels\\Existing",
+        activeWorkspaceName: "Existing",
+        workspaceOpenRevision: 3,
+        workspaceHydrated: true,
+      });
+      mockInvoke.mockRejectedValueOnce(new Error("new DB rejected"));
+
+      await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\Broken");
+      const state = useWorkspaceStore.getState();
+      expect(state.activeWorkspacePath).toBe("D:\\Novels\\Existing");
+      expect(state.workspaceOpenRevision).toBe(3);
+      expect(state.workspaceHydrated).toBe(true);
+      expect(state.workspaceSwitchInProgress).toBe(false);
     });
 
     // R4-1 系列A: 同一パス再オープン (例: チュートリアル再実行) では
@@ -179,9 +206,11 @@ describe("useWorkspaceStore", () => {
         useWorkspaceStore.setState({
           view: "editor",
           activeWorkspacePath: samePath,
+          workspaceOpenRevision: 4,
         });
         await useWorkspaceStore.getState().openWorkspace(samePath);
         expect(useWorkspaceStore.getState().error).toBeNull();
+        expect(useWorkspaceStore.getState().workspaceOpenRevision).toBe(5);
         expect(loadProjectSpy).toHaveBeenCalledTimes(1);
 
         // 2) 別パスへの切替 → remount (mount 時の loadProject) に任せる
@@ -191,6 +220,7 @@ describe("useWorkspaceStore", () => {
           activeWorkspacePath: "D:\\Novels\\Other",
         });
         await useWorkspaceStore.getState().openWorkspace(samePath);
+        expect(useWorkspaceStore.getState().workspaceOpenRevision).toBe(6);
         expect(loadProjectSpy).not.toHaveBeenCalled();
       } finally {
         useProjectStore.setState({ loadProject: prevLoadProject });

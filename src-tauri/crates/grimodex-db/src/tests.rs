@@ -3707,13 +3707,13 @@ fn test_slim_fts_lists_cover_all_fts_tables() {
 }
 
 #[test]
-fn test_slim_excludes_event_chunks() {
-    // events は open 時 back-index が無く復元後に再構築されないので、slim 対象から
-    // 除外する（敵対レビュー: slim で消すと Chronicle イベント意味検索が無音全滅）。
-    // scene/codex/chat は autoIndex が自己修復するので slim 対象。
+fn test_slim_preserves_event_chunks_for_offline_dense_search() {
+    // events にも open 時 back-index はあるが、検索は dense-only。復元直後に
+    // モデルを用意できない offline 環境でも検索を残すため slim 除外とする。
+    // scene/codex/chat は sparse fallback があり autoIndex で自己修復する。
     assert!(
         !SLIM_CHUNK_TABLES.contains(&"event_chunks"),
-        "event_chunks は slim で消さない（復元後に再構築されないため）"
+        "event_chunks は slim で消さない（offline 復元時の dense-only 検索を保つため）"
     );
     assert!(SLIM_CHUNK_TABLES.contains(&"scene_chunks"));
     assert!(SLIM_CHUNK_TABLES.contains(&"codex_chunks"));

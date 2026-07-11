@@ -59,9 +59,19 @@ export function semanticSearch(args: {
   });
 }
 
-/** project 内全 scene の再インデックス。戻り値は投入チャンク総数。 */
-export function semanticReindexAll(projectId: string): Promise<number> {
-  return invoke<number>("semantic_reindex_all", { projectId });
+/**
+ * project 内全 scene の再インデックス。戻り値は投入チャンク総数。
+ * `runId` は progress event と呼び出し側を結びつける optional token。
+ * 省略時は従来と同じ payload を送り、旧 Tauri backend との互換性を保つ。
+ */
+export function semanticReindexAll(
+  projectId: string,
+  runId?: string,
+): Promise<number> {
+  return invoke<number>("semantic_reindex_all", {
+    projectId,
+    ...(runId ? { runId } : {}),
+  });
 }
 
 /**

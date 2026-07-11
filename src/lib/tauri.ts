@@ -46,10 +46,20 @@ const SLOW_COMMANDS = new Set([
   /** embedder コールド時 (初回 ONNX ロード) は 1 scene でも 10s を超えうる。
    *  reindex_all だけ入っていた非対称の解消 (semantic-index-db-lock #2)。 */
   "semantic_index_scene",
+  "semantic_search",
   /** codex も同様: 全件 back-index は分単位、単件 index も embedder コールド時 >10s。
    *  semantic_* と対称に長めのタイムアウトを与える (段階3c)。 */
   "codex_reindex_all",
   "codex_index_entry",
+  "codex_semantic_search",
+  /** Chronicle / chat semantic index and query commands share the same ONNX cold-load
+   *  and full-project reindex costs as scene/codex. */
+  "events_index_entry",
+  "events_semantic_search",
+  "events_reindex_all",
+  "chat_index_message",
+  "chat_message_search",
+  "chat_reindex_all",
   /** 中規模プロジェクトでは Aho-Corasick 構築に 10 秒超かかることがある */
   "codex_rebuild_matcher",
   /** 初回呼び出しは lindera UniDic 埋め込み辞書のコールドロード（OnceLock、

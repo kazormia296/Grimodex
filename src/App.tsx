@@ -140,6 +140,13 @@ function applyTheme(theme: string, colorTheme?: string) {
 function App() {
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (s) => s.workspaceOpenRevision,
+  );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (s) => s.workspaceSwitchInProgress,
+  );
+  const workspaceHydrated = useWorkspaceStore((s) => s.workspaceHydrated);
   const initialize = useWorkspaceStore((s) => s.initialize);
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
@@ -158,13 +165,27 @@ function App() {
   useExternalMountListener();
   useLicenseStateListener();
 
-  // 段階3c: プロジェクトを開いたら codex / scene の未 index を自動補完する。
+  // プロジェクトを開いたら codex / events / chat / scene の未 index を自動補完する。
   // status は embedder 不要の軽量チェック → 未 index がある時だけ背景 reindex。
-  // 失敗は無音 (sparse で動く)。1 セッション 1 プロジェクト 1 回。
+  // workspace path も依存に含め、異なるDBが同じ default-project
+  // id を持つ場合も必ず別 scope として起動する。panel 窓は関数内で no-op。
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   useEffect(() => {
-    if (currentProjectId) void ensureSemanticIndexesOnOpen(currentProjectId);
-  }, [currentProjectId]);
+    if (
+      workspaceHydrated &&
+      !workspaceSwitchInProgress &&
+      currentProjectId &&
+      activeWorkspacePath
+    ) {
+      void ensureSemanticIndexesOnOpen(currentProjectId, activeWorkspacePath);
+    }
+  }, [
+    activeWorkspacePath,
+    currentProjectId,
+    workspaceHydrated,
+    workspaceOpenRevision,
+    workspaceSwitchInProgress,
+  ]);
 
   // Sync uiLanguage setting → i18next
   useEffect(() => {

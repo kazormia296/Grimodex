@@ -109,6 +109,16 @@ interface WorkspaceState {
   view: AppView;
   globalSettings: GlobalSettings | null;
   activeWorkspacePath: string | null;
+  /**
+   * In-memory identity for the currently opened DB instance. Incremented on
+   * every successful open, including a same-path reopen after sample reseed or
+   * restore, where `activeWorkspacePath` alone cannot signal a new database.
+   */
+  workspaceOpenRevision: number;
+  /** True from pre-open quiesce until all post-swap store hydration settles. */
+  workspaceSwitchInProgress: boolean;
+  /** True only after the active DB's project/settings hydration completed. */
+  workspaceHydrated: boolean;
   activeWorkspaceName: string | null;
   error: string | null;
   pendingTrustPath: string | null;
@@ -143,6 +153,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   view: "loading",
   globalSettings: null,
   activeWorkspacePath: null,
+  workspaceOpenRevision: 0,
+  workspaceSwitchInProgress: false,
+  workspaceHydrated: false,
   activeWorkspaceName: null,
   error: null,
   pendingTrustPath: null,
@@ -231,8 +244,14 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     // EditorScreen の key (activeWorkspacePath) が変わらず remount しない。
     const wasSamePathReopen =
       get().view === "editor" && get().activeWorkspacePath === path;
+    const previousWorkspaceHydrated = get().workspaceHydrated;
+    let swapDone = false;
     try {
-      set({ error: null });
+      set({
+        error: null,
+        workspaceSwitchInProgress: true,
+        workspaceHydrated: false,
+      });
       // DB コマンドの async 化 (M3) で save と open_workspace が並行しうる。
       // swap を跨いだ in-flight write が旧 workspace の内容を新 workspace の
       // DB に落とさないよう、切替前に書き込みを静止させる:
@@ -268,7 +287,6 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // 「旧 workspace の束縛で新 chain に書く」誤束縛にはならない。
       beginWorkspaceSwitch();
       let result: OpenWorkspaceResult;
-      let swapDone = false;
       try {
         result = await invoke<OpenWorkspaceResult>("open_workspace", {
           path,
@@ -289,12 +307,18 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       await useProjectStore.getState().initCurrentProject();
       // Re-read global settings after open_workspace updated them
       const settings = await invoke<GlobalSettings>("get_global_settings");
-      set({
+      // Publish path + DB revision only after currentProjectId is rebound. The
+      // editor is keyed by activeWorkspacePath, so exposing the new path before
+      // initCurrentProject would mount the new DB with the old project's state.
+      set((state) => ({
         view: "editor",
         activeWorkspacePath: path,
+        workspaceOpenRevision: state.workspaceOpenRevision + 1,
         activeWorkspaceName: result.name,
         globalSettings: settings,
-      });
+        workspaceSwitchInProgress: false,
+        workspaceHydrated: true,
+      }));
       // Migrate app_settings → userPreferences + project_settings (runs once per workspace)
       const {
         migrateAppSettingsToScopedStores,
@@ -359,10 +383,17 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // イベントは warn 付きで破棄される (誤束縛での混入より安全側)。
       set({
         error: e instanceof Error ? e.message : String(e),
+        // Native open rejected before swap: the previous DB/UI binding remains
+        // valid, so restore its semantic-ready state. A post-swap hydration
+        // failure must stay false to avoid issuing commands through stale UI.
+        ...(!swapDone ? { workspaceHydrated: previousWorkspaceHydrated } : {}),
         // If still on loading screen (called from initialize), recover to launcher
         ...(get().view === "loading" ? { view: "launcher" as const } : {}),
       });
     } finally {
+      if (get().workspaceSwitchInProgress) {
+        set({ workspaceSwitchInProgress: false });
+      }
       openWorkspaceInFlight = false;
     }
   },
