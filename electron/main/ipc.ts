@@ -39,11 +39,13 @@ function isRecord(value: unknown): value is CommandArgs {
  * コマンド（external_mount の registry/watcher など）を単一インスタンスから
  * 注入するための拡張点。invoke ごとの `buildShellCommandHandlers` の結果へ
  * merge する（キー衝突なし = 追加分のみ）。
+ * `broadcast` はmanual license mutationの返却DTOを全窓へ即時同期する窓口。
  */
 export function registerIpcRouter(
   backend: NapiBackendLike | null,
   extraShellHandlers: ShellCommandHandlers = {},
   secrets?: SecretsResolver,
+  broadcast?: (channel: string, payload: unknown) => void,
 ): void {
   ipcMain.handle(
     IPC.invoke,
@@ -59,6 +61,7 @@ export function registerIpcRouter(
         backend,
         shell: { ...buildShellCommandHandlers(win), ...extraShellHandlers },
         secrets,
+        broadcast,
       });
       if (
         !envelope.ok &&

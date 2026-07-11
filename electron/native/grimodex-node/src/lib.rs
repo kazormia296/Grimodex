@@ -192,6 +192,66 @@ impl Backend {
         })
     }
 
+    // ─────────────────────── license (Phase 3e) ──────────────────────────
+
+    /// 常時exportするライセンス状態IPC。feature無効buildでは共有crateが
+    /// exact disabled DTOを返し、license.jsonには一切触れない。
+    #[napi]
+    pub async fn get_license_state(&self) -> Result<String> {
+        let runtime = Arc::clone(&self.state.license);
+        napi::tokio::task::spawn_blocking(move || {
+            grimodex_license::get_license_state(&runtime)
+                .and_then(|dto| serde_json::to_string(&dto).map_err(Into::into))
+        })
+        .await
+        .map_err(join_err_to_napi)?
+        .map_err(|error| Error::from_reason(format!("{error:#}")))
+    }
+
+    /// Polar activate → atomic license.json更新。HTTP await中にfile lockは保持しない。
+    #[napi]
+    pub async fn activate_license(&self, key: String) -> Result<String> {
+        let runtime = Arc::clone(&self.state.license);
+        let dto = grimodex_license::activate_license(&runtime, key)
+            .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// 明示的な再検証。共有runtimeのsingle-flightとstale response guardを使う。
+    #[napi]
+    pub async fn revalidate_license(&self) -> Result<String> {
+        let runtime = Arc::clone(&self.state.license);
+        let dto = grimodex_license::revalidate_license(&runtime)
+            .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Polar側を解除してから、同じactivationである場合だけlocal stateを破棄する。
+    #[napi]
+    pub async fn deactivate_license(&self) -> Result<String> {
+        let runtime = Arc::clone(&self.state.license);
+        let dto = grimodex_license::deactivate_license(&runtime)
+            .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// 起動5秒後/以後6時間周期のmain schedulerから呼ぶfail-soft cycle。
+    /// disabled・not due・in-flightはJS null、実行後はJSON DTOを返す。
+    #[napi]
+    pub async fn run_license_validate_cycle(&self) -> Result<Option<String>> {
+        let runtime = Arc::clone(&self.state.license);
+        grimodex_license::run_validate_cycle(&runtime)
+            .await
+            .map(|dto| {
+                serde_json::to_string(&dto)
+                    .map_err(|error| Error::from_reason(error.to_string()))
+            })
+            .transpose()
+    }
+
     /// drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
     /// CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
     /// は "run" | "get" | "all" | "values"。

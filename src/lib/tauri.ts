@@ -33,6 +33,11 @@ const SLOW_COMMANDS = new Set([
   "send_inline_ai_stream",
   "abort_inline_ai_stream",
   "test_ai_connection",
+  /** Polar clientのHTTP timeoutは15s。外側10sで先にrejectするとnativeだけが
+   * license.jsonを後から更新し、再試行でactivation枠を重複消費しうる。 */
+  "activate_license",
+  "revalidate_license",
+  "deactivate_license",
   "list_ai_models",
   "list_cli_models",
   "start_post_effect_run",

@@ -118,6 +118,9 @@ pub struct AppState {
     /// post-effect run_id 単位の中止レジストリ。start/multi/abort が同じ Backend
     /// インスタンス上で共有し、並走runの一方だけを中止する。
     pub post_effect_abort: grimodex_post_effect::PostEffectAbortRegistry,
+    /// `<app_data>/license.json` を正本とする共有ライセンスruntime。通常の
+    /// 開発/ベータbuildではfeature無効だが、IPC surfaceは常時公開する。
+    pub license: Arc<grimodex_license::LicenseRuntime>,
 }
 
 impl AppState {
@@ -147,6 +150,9 @@ impl AppState {
             chat_abort: Arc::new(AtomicBool::new(false)),
             inline_ai_abort: Arc::new(AtomicBool::new(false)),
             post_effect_abort: grimodex_post_effect::PostEffectAbortRegistry::new(),
+            license: Arc::new(grimodex_license::LicenseRuntime::new(
+                dir.join("license.json"),
+            )),
         })
     }
 }

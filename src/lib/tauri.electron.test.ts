@@ -195,6 +195,36 @@ describe("SLOW_COMMANDS のタイムアウト選択（electron 分岐）", () =>
     expect(settled).toBe(true);
   });
 
+  it.each([
+    ["activate_license", { key: "GRIM-KEY-1234" }],
+    ["revalidate_license", undefined],
+    ["deactivate_license", undefined],
+  ] as const)(
+    "%sはPolarの15s timeoutより長い300s枠を使う",
+    async (command, args) => {
+      vi.useFakeTimers();
+      installBridge({
+        invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+      });
+      const { invoke } = await import("./tauri");
+
+      let settled = false;
+      const promise = invoke(command, args);
+      promise.catch(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(settled).toBe(false);
+
+      const expectation = expect(promise).rejects.toThrow(
+        /IPC timeout after 300000ms/,
+      );
+      await vi.advanceTimersByTimeAsync(284_000);
+      await expectation;
+    },
+  );
+
   it("detect_cli_binaryはlogin shell探索の内部timeoutより長い外側timeoutを使う", async () => {
     vi.useFakeTimers();
     installBridge({

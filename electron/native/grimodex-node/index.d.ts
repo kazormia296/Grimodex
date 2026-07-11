@@ -11,6 +11,22 @@ export declare class Backend {
    */
   constructor(appDataDir: string)
   /**
+   * 常時exportするライセンス状態IPC。feature無効buildでは共有crateが
+   * exact disabled DTOを返し、license.jsonには一切触れない。
+   */
+  getLicenseState(): Promise<string>
+  /** Polar activate → atomic license.json更新。HTTP await中にfile lockは保持しない。 */
+  activateLicense(key: string): Promise<string>
+  /** 明示的な再検証。共有runtimeのsingle-flightとstale response guardを使う。 */
+  revalidateLicense(): Promise<string>
+  /** Polar側を解除してから、同じactivationである場合だけlocal stateを破棄する。 */
+  deactivateLicense(): Promise<string>
+  /**
+   * 起動5秒後/以後6時間周期のmain schedulerから呼ぶfail-soft cycle。
+   * disabled・not due・in-flightはJS null、実行後はJSON DTOを返す。
+   */
+  runLicenseValidateCycle(): Promise<string | null>
+  /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
    * は "run" | "get" | "all" | "values"。

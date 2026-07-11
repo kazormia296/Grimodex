@@ -372,6 +372,11 @@ const TRIAL_LICENSE_STATE = {
   lastValidatedAt: null,
 };
 
+const STALE_LICENSE_STATE = {
+  ...LICENSED_LICENSE_STATE,
+  status: "license_stale",
+};
+
 function fakeLicenseBackend() {
   const base = fakeBackend();
   const methods = {
@@ -971,6 +976,88 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         expect(methods[methodName]).toHaveBeenCalledExactlyOnceWith();
       },
     );
+
+    it.each([
+      ["activate_license", { key: "GRIM-KEY-1234" }, LICENSED_LICENSE_STATE],
+      ["revalidate_license", {}, LICENSED_LICENSE_STATE],
+      ["deactivate_license", {}, TRIAL_LICENSE_STATE],
+    ] as const)(
+      "%s成功時は返却DTOをlicense:state_changedとして全窓broadcastへ渡す",
+      async (cmd, args, expectedState) => {
+        const { backend } = fakeLicenseBackend();
+        const broadcast = vi.fn();
+
+        const env = await dispatchInvoke(cmd, args, {
+          backend,
+          shell: noShell,
+          broadcast,
+        });
+
+        expect(env).toEqual({ ok: true, value: expectedState });
+        expect(broadcast).toHaveBeenCalledExactlyOnceWith(
+          "license:state_changed",
+          expectedState,
+        );
+      },
+    );
+
+    it("get_license_stateはreadだけなのでbroadcastしない", async () => {
+      const { backend } = fakeLicenseBackend();
+      const broadcast = vi.fn();
+
+      await dispatchInvoke("get_license_state", {}, {
+        backend,
+        shell: noShell,
+        broadcast,
+      });
+
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    it("全窓broadcast失敗は成功済みlicense mutationをinvoke失敗へ反転しない", async () => {
+      const { backend } = fakeLicenseBackend();
+      const broadcast = vi.fn(() => {
+        throw new Error("window closed during send");
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const env = await dispatchInvoke(
+        "activate_license",
+        { key: "GRIM-KEY-1234" },
+        { backend, shell: noShell, broadcast },
+      );
+
+      expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("license:state_changed broadcast failed"),
+        expect.any(Error),
+      );
+      warn.mockRestore();
+    });
+
+    it("手動revalidate失敗時も現在DTOをbroadcastして全窓のstaleConfirmedを同期する", async () => {
+      const { backend, methods } = fakeLicenseBackend();
+      methods.revalidateLicense.mockRejectedValueOnce(
+        new Error("Polar unavailable"),
+      );
+      methods.getLicenseState.mockResolvedValueOnce(
+        JSON.stringify(STALE_LICENSE_STATE),
+      );
+      const broadcast = vi.fn();
+
+      const env = await dispatchInvoke("revalidate_license", {}, {
+        backend,
+        shell: noShell,
+        broadcast,
+      });
+
+      expect(env).toEqual({ ok: false, error: "Polar unavailable" });
+      expect(methods.getLicenseState).toHaveBeenCalledExactlyOnceWith();
+      expect(broadcast).toHaveBeenCalledExactlyOnceWith(
+        "license:state_changed",
+        STALE_LICENSE_STATE,
+      );
+    });
 
     it.each([{}, { key: null }, { key: 42 }, { key: [] }])(
       "activate_licenseは必須keyがstringでなければnative呼出し前に拒否する: %j",

@@ -510,6 +510,39 @@ function parseWire(json: string): unknown {
   return JSON.parse(json) as unknown;
 }
 
+/** native mutationは既にcommit済みなので、window配信失敗でinvokeを失敗へ反転しない。 */
+function broadcastBestEffort(
+  deps: DispatchDeps,
+  channel: string,
+  payload: unknown,
+): void {
+  try {
+    deps.broadcast?.(channel, payload);
+  } catch (error) {
+    console.warn(`[ipc] ${channel} broadcast failed:`, error);
+  }
+}
+
+/** validate失敗も「検証を試みた」事実なので、現在stateを全窓へ同期する。 */
+async function broadcastCurrentLicenseStateBestEffort(
+  backend: NapiBackendLike,
+  deps: DispatchDeps,
+): Promise<void> {
+  if (!deps.broadcast) return;
+  try {
+    const state = parseWire(
+      await requireNapiMethod(
+        backend,
+        backend.getLicenseState,
+        "getLicenseState",
+      )(),
+    );
+    broadcastBestEffort(deps, "license:state_changed", state);
+  } catch (error) {
+    console.warn("[ipc] failed to read license state after revalidate error:", error);
+  }
+}
+
 export interface NapiCommandSpec {
   /**
    * FE 引数（Tauri 命名 = camelCase キー）→ Backend メソッド呼び出しへの
@@ -1203,26 +1236,44 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   activate_license: {
-    run: async (b, a) =>
-      parseWire(
+    run: async (b, a, d) => {
+      const state = parseWire(
         await requireNapiMethod(
           b,
           b.activateLicense,
           "activateLicense",
         )(requireString(a, "key", "activate_license")),
-      ),
+      );
+      broadcastBestEffort(d, "license:state_changed", state);
+      return state;
+    },
   },
   revalidate_license: {
-    run: async (b) =>
-      parseWire(
-        await requireNapiMethod(b, b.revalidateLicense, "revalidateLicense")(),
-      ),
+    run: async (b, _a, d) => {
+      try {
+        const state = parseWire(
+          await requireNapiMethod(
+            b,
+            b.revalidateLicense,
+            "revalidateLicense",
+          )(),
+        );
+        broadcastBestEffort(d, "license:state_changed", state);
+        return state;
+      } catch (error) {
+        await broadcastCurrentLicenseStateBestEffort(b, d);
+        throw error;
+      }
+    },
   },
   deactivate_license: {
-    run: async (b) =>
-      parseWire(
+    run: async (b, _a, d) => {
+      const state = parseWire(
         await requireNapiMethod(b, b.deactivateLicense, "deactivateLicense")(),
-      ),
+      );
+      broadcastBestEffort(d, "license:state_changed", state);
+      return state;
+    },
   },
   // post_effect run 系（Phase 3d）。FE の `{ args: snake_case DTO }` は nested
   // object のキーを一切変換せず native へ渡す。start は run_id を即返す
@@ -1607,6 +1658,11 @@ export interface DispatchDeps {
    * 明示 reject する（他コマンドは影響なし）。
    */
   secrets?: SecretsResolver;
+  /**
+   * mainから全窓へ送るイベント窓口。manual license mutationの返却DTOを
+   * 呼出元以外のZustand storeにも即時反映するために使う。
+   */
+  broadcast?: (channel: string, payload: unknown) => void;
 }
 
 /**

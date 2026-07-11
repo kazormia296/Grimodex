@@ -16,6 +16,7 @@ import { registerEventBus, broadcastEvent } from "./events.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
+import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import {
   registerAppProtocolHandler,
   registerAppProtocolScheme,
@@ -94,7 +95,13 @@ if (!gotSingleInstanceLock) {
         return response === 0;
       },
     });
+    const licenseValidation = createLicenseValidationScheduler(
+      backend,
+      broadcastEvent,
+    );
+    licenseValidation.start();
     app.on("will-quit", () => {
+      licenseValidation.dispose();
       cliAi.disposeAll();
       void externalMount.disposeAll();
     });
@@ -109,6 +116,7 @@ if (!gotSingleInstanceLock) {
         ...cliAi.handlers,
       },
       keyStore,
+      broadcastEvent,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
