@@ -36,6 +36,7 @@
     "storybook:build": "storybook build",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
+    "verify:frontend": "pnpm exec tsc --noEmit && pnpm lint && pnpm test:node --run",
     "tauri": "tauri",
     "electron:dev": "node electron/scripts/dev.mjs",
     "electron:build": "tsc -p electron/tsconfig.json --noEmit && node electron/scripts/build.mjs && pnpm build",
