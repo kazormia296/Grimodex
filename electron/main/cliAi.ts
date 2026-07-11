@@ -65,6 +65,8 @@ export interface CliCommandSpec {
   args: string[];
   /** process.env に重ねる追加環境変数。 */
   env?: NodeJS.ProcessEnv;
+  /** shellを介さずchildへ渡す作業ディレクトリ。Vivliostyle入力をtempへ閉じる。 */
+  cwd?: string;
 }
 
 export interface CliProcessResult {
@@ -78,6 +80,8 @@ export interface RunningCliProcess {
   pid: number | null;
   stdout: Readable;
   stderr: Readable;
+  /** OS が child の spawn 成功を通知した時点。旧 fake runner は省略可。 */
+  started?: Promise<void>;
   completion: Promise<{
     exitCode: number | null;
     signal: NodeJS.Signals | null;
@@ -277,6 +281,7 @@ export function createNodeCliProcessRunner(
             windowsHide: true,
             detached: platform !== "win32",
             env: mergedEnv(spec.env),
+            cwd: spec.cwd,
           });
         } catch (cause) {
           reject(toError(cause));
@@ -343,6 +348,7 @@ export function createNodeCliProcessRunner(
         windowsHide: true,
         detached: platform !== "win32",
         env: mergedEnv(spec.env),
+        cwd: spec.cwd,
       });
       track(child);
       if (!child.stdout || !child.stderr) {
@@ -366,11 +372,19 @@ export function createNodeCliProcessRunner(
           resolve({ exitCode, signal });
         });
       });
+      const started = new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+      // CLI stream は completion で spawn error を回収する一方、Vivliostyle
+      // preview は started を await する。未参照側でも unhandled にしない。
+      void started.catch(() => {});
 
       return {
         pid: child.pid ?? null,
         stdout: child.stdout,
         stderr: child.stderr,
+        started,
         completion,
         terminate: (signal) => terminateChildTree(child, platform, signal),
       };

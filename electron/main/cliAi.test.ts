@@ -584,6 +584,7 @@ describe("CliAiManager", () => {
         platform: "linux",
         isFile: async () => true,
         realPath: async (candidate) => candidate,
+        detectBinary: async (kind) => `/usr/local/bin/${kind}`,
         authorizeExecutable: async () => true,
         maxStreamBytes: 64,
         maxStreamLines: 100,
@@ -608,6 +609,7 @@ describe("CliAiManager", () => {
       platform: "linux",
       isFile: async () => true,
       realPath: async (candidate) => candidate,
+      detectBinary: async (kind) => `/usr/local/bin/${kind}`,
       authorizeExecutable: async () => true,
       maxStreamBytes: 1024,
       maxStreamLines: 2,
@@ -630,6 +632,7 @@ describe("CliAiManager", () => {
       platform: "linux",
       isFile: async () => true,
       realPath: async (candidate) => candidate,
+      detectBinary: async (kind) => `/usr/local/bin/${kind}`,
       authorizeExecutable: async () => true,
       streamTimeoutMs: 20,
       forceKillAfterMs: 20,
@@ -707,6 +710,22 @@ describe("CliAiManager", () => {
 });
 
 describe("createNodeCliProcessRunner", () => {
+  it("spec.cwdをshellを介さずchildの作業ディレクトリへ渡す", async () => {
+    const runner = createNodeCliProcessRunner(process.platform);
+    const cwd = process.cwd();
+    const result = await runner.run(
+      {
+        executable: process.execPath,
+        args: ["-e", "process.stdout.write(process.cwd())"],
+        cwd,
+      },
+      { timeoutMs: 5_000, maxOutputBytes: 1024 },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(cwd);
+    runner.disposeAll?.();
+  });
+
   it("disposeAllは実childを即時回収する", async () => {
     const runner = createNodeCliProcessRunner(process.platform);
     const running = runner.start({

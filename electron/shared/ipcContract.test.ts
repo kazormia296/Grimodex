@@ -537,6 +537,12 @@ describe("dispatchInvoke", () => {
         "list_cli_models",
         "send_cli_chat_stream",
         "abort_cli_chat_stream",
+        "vivliostyle_detect",
+        "vivliostyle_build",
+        "vivliostyle_abort_build",
+        "vivliostyle_save_output",
+        "vivliostyle_preview_start",
+        "vivliostyle_preview_stop",
       ]),
     );
   });

@@ -21,6 +21,8 @@ import {
   registerAppProtocolHandler,
   registerAppProtocolScheme,
 } from "./protocol.js";
+import { showSavePathDialog } from "./shellCommands.js";
+import { createVivliostyleManager } from "./vivliostyle.js";
 import { createMainWindow, getWindow } from "./windows.js";
 import {
   applySessionPermissionPolicy,
@@ -95,12 +97,40 @@ if (!gotSingleInstanceLock) {
         return response === 0;
       },
     });
+    // Vivliostyle（バッチ5）: build/preview child、成果物token、tempをmain lifetime
+    // で共有する。custom pathはnative確認を通したvivliostyle名だけを許可し、
+    // 保存先はrendererから受けずnative dialogで選ぶ。
+    const vivliostyle = createVivliostyleManager(broadcastEvent, {
+      authorizeExecutable: async (executable) => {
+        const { response } = await dialog.showMessageBox({
+          type: "warning",
+          title: "Vivliostyle CLI実行の確認",
+          message: "Vivliostyle CLIを実行しますか？",
+          detail: [
+            "Grimodexが次の実行ファイルを起動し、本の組版・プレビューを行います。",
+            "自分で設定した信頼できるCLIであることを確認してください。",
+            "",
+            executable,
+          ].join("\n"),
+          buttons: ["許可", "キャンセル"],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        });
+        return response === 0;
+      },
+      pickSavePath: (options) =>
+        showSavePathDialog(getWindow("main") ?? null, options),
+    });
     const licenseValidation = createLicenseValidationScheduler(
       backend,
       broadcastEvent,
     );
     licenseValidation.start();
     app.on("will-quit", () => {
+      // close veto を通過して終了が確定してから同期 KILL する。before-quit で
+      // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。
+      vivliostyle.disposeAll();
       licenseValidation.dispose();
       cliAi.disposeAll();
       void externalMount.disposeAll();
@@ -114,6 +144,7 @@ if (!gotSingleInstanceLock) {
         ...externalMount.handlers,
         ...buildKeyStoreShellHandlers(keyStore),
         ...cliAi.handlers,
+        ...vivliostyle.handlers,
       },
       keyStore,
       broadcastEvent,

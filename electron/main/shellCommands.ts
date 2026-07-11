@@ -39,6 +39,13 @@ export interface VibrancyWindowLike {
   setVibrancy(type: "under-window" | null): void;
 }
 
+/** export / Vivliostyle が共有する、renderer非指定のnative保存dialog入力。 */
+export interface SavePathDialogOptions {
+  suggestedName: string;
+  filterName: string;
+  extensions: string[];
+}
+
 /**
  * ログディレクトリ（Rust 側 `lint_logging::log_dir()` と同一パス:
  * `~/.grimodex/logs`。home 解決不能時は tmp フォールバックも同じ）。
@@ -65,6 +72,23 @@ function requireArgString(args: CommandArgs, key: string, cmd: string): string {
  * 一切渡さない。パスはダイアログ由来の user-chosen path に限られる）。
  * キャンセル時は null。
  */
+export async function showSavePathDialog(
+  win: VibrancyWindowLike | null,
+  options: SavePathDialogOptions,
+): Promise<string | null> {
+  const dialogOptions = {
+    defaultPath: options.suggestedName,
+    filters: [{ name: options.filterName, extensions: options.extensions }],
+  };
+  // ipc.ts が渡す実体は BrowserWindow（VibrancyWindowLike は単体テスト向けの
+  // 構造的部分型）。保存ダイアログの親付けにのみ実型が要るためここで戻す。
+  const parent = win as unknown as BrowserWindow | null;
+  const result = parent
+    ? await dialog.showSaveDialog(parent, dialogOptions)
+    : await dialog.showSaveDialog(dialogOptions);
+  return result.canceled || !result.filePath ? null : result.filePath;
+}
+
 async function promptSavePath(
   win: VibrancyWindowLike | null,
   cmd: string,
@@ -75,17 +99,11 @@ async function promptSavePath(
   const extensions = Array.isArray(args.extensions)
     ? args.extensions.filter((e): e is string => typeof e === "string")
     : [];
-  const options = {
-    defaultPath: suggestedName,
-    filters: [{ name: filterName, extensions }],
-  };
-  // ipc.ts が渡す実体は BrowserWindow（VibrancyWindowLike は単体テスト向けの
-  // 構造的部分型）。保存ダイアログの親付けにのみ実型が要るためここで戻す。
-  const parent = win as unknown as BrowserWindow | null;
-  const result = parent
-    ? await dialog.showSaveDialog(parent, options)
-    : await dialog.showSaveDialog(options);
-  return result.canceled || !result.filePath ? null : result.filePath;
+  return showSavePathDialog(win, {
+    suggestedName,
+    filterName,
+    extensions,
+  });
 }
 
 /** Buffer.from は不正文字を黙って読み飛ばすため、Rust 側 base64 crate と同じく明示拒否する。 */

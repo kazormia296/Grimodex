@@ -1723,6 +1723,14 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   "list_cli_models",
   "send_cli_chat_stream",
   "abort_cli_chat_stream",
+  // Vivliostyle（Phase 3 バッチ5）: main常駐managerがbuild/preview child、
+  // output token、native保存dialogをinvoke間で共有する。
+  "vivliostyle_detect",
+  "vivliostyle_build",
+  "vivliostyle_abort_build",
+  "vivliostyle_save_output",
+  "vivliostyle_preview_start",
+  "vivliostyle_preview_stop",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
