@@ -143,3 +143,22 @@ impl Drop for ServerProcess {
         let _ = self.child.wait();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn sandbox_runtime_directory_is_private() {
+        let sandbox = Sandbox::new().expect("create Linux IME E2E sandbox");
+        let permissions = fs::metadata(&sandbox.runtime_home)
+            .expect("read runtime directory metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(permissions, 0o700);
+    }
+}
