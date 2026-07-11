@@ -2,7 +2,7 @@
   "meta": {
     "generatedAt": "2026-07-10",
     "purpose": "Grimodex Electron 移行 Phase 3: Tauri コマンドの napi / main-TS 化 正規化台帳（棚卸しデータ + lib.rs 正式リスト + FE コールサイトのマージ）",
-    "inventorySemantics": "doneCount / remainingCount / 各 classification は生成時点の静的棚卸し値であり、現在進捗の再集計ではない。進捗正本は Phase 3 設計書。2026-07-11 時点で Phase 3a〜3e・Batch 4〜5とPhase 3コマンド移行は実装済み",
+    "inventorySemantics": "doneCount / remainingCount / 各 classification は生成時点の静的棚卸し値であり、現在進捗の再集計ではない。進捗正本は Phase 3 設計書。2026-07-11 時点で Phase 3a〜3e・Batch 4〜5とPhase 3コマンド移行は実装済み。Phase 4 の配布・更新・互換移行も実装済みだが、タグ作成とDraft release実行は未実施",
     "phase3cValidation": "2026-07-11: Electron 17 files / 345 passed、node 861 files passed + 8 skipped / 8809 passed + 35 skipped、browser 73 files passed + 1 skipped / 309 passed + 1 skipped。electron:build / electron:smoke PASS（3起動、全layout layer opacity=1、scene作成→autosave→再起動後DB/UI残存）",
     "phase3cShellHardening": "ready-to-show未発火時はdid-finish-loadで冪等表示。startup hydration中だけlayout crossfade / region chrome / editor enter animationを抑止し、初期化後のmotionは維持",
     "phase3dValidation": "2026-07-11: post-effect 3コマンド + 4イベントを共有Rust/N-APIへ移植。開始DB固定、XPROJ、terminal CAS、abort TOCTOU、資格情報snapshotを回帰固定。共有Rust 103 tests、実.node post-effect E2E 5 tests PASS",
@@ -13,6 +13,15 @@
     "phase3Batch4CandidateCommandCount": 1,
     "phase3Batch5Validation": "2026-07-11: seed_sample_workspaceをgrimodex-db共有コア/Tauri/N-APIへ移植し、get_mcp_configをstandalone sidecar + main-TSで実装。UUID不変generation、公開前失敗掃除、共通write_lock、published generation保持、executable/mtime resolver、main所有license argsPrefix、workspace/project revision guardを固定。grimodex-db 256 pass + 1 ignored、MCP licensing 151、native Node 86 pass + 1 skip、native Rust 12、Electron対象 196、renderer対象 27、両TypeScript check PASS。full suiteはElectron 23 files / 511 passed、renderer 866 files passed + 8 skipped / 8879 tests passed + 35 skipped（114s）PASS",
     "phase3Batch5CommandCount": 2,
+    "phase4Implementation": "2026-07-11: packaged userDataを既存Tauri data_dir/com.miyakey.grimodexへready/single-instance lock前に固定。product N-APIはlicensing,legacy-keyring-migrationを明示し、main-only keyring export→safeStorage atomic import→0600 markerのone-shot移行を実装（既存値優先、失敗時markerなし、旧keyring非削除）。packaged Linux MCPは起動時に<userData>/bin/grimodex-mcpへSHA-256比較・0755・fsync・atomic renameでeager refresh。electron-builder 26.15.3 / electron-updater 6.8.9、既存Tauri v1.0.0 assetの再ビルド禁止とv2 Electron workflow、immutable Tauri bridge manifest、公開鍵によるbridge署名検証、updater metadataのsize/SHA-512検証、Arch markerによるpacman委譲、実配布v1.0.0からElectron NSISへのWindows移行E2E、RPM posttransによるlauncher/AppArmor修復、Ubuntu 24.04 + GLIBC_2.39/deb・rpm dependency gateを実装。v2 release tag/Draft作成は未実施",
+    "phase4Commands": [
+      "pnpm electron:native:release",
+      "pnpm napi:verify:release",
+      "pnpm electron:package:dir",
+      "pnpm electron:package",
+      "pnpm test:electron --run",
+      "node --test scripts/validate-release-version.test.mjs scripts/generate-tauri-bridge-manifest.test.mjs scripts/release-workflows.test.mjs scripts/linux-release-abi.test.mjs scripts/arch-electron-package.test.mjs"
+    ],
     "deadCodeRemoval": "2026-07-11: FE本番コールサイトが存在しない foreshadow_list / external_mount_list / get_post_effect_run / update_relation_status を Tauri handler・Rust本体・TS wrapper・browser mock から撤去。Electron mirrorは追加しない",
     "totalCommands": 145,
     "doneCount": 13,
@@ -125,7 +134,7 @@
       "emits": [],
       "isAsync": false,
       "summary": "外部 MCP クライアント向けにstandalone sidecarの絶対path、active workspace、shell所有の安全なargsPrefixを返し、FEが `.mcp.json` 断片を組み立てる",
-      "napiNotes": "実装済み。N-APIはget_active_workspace_pathでactive DBのworkspace identityを返し、Electron mainがstandalone grimodex-mcp[.exe]を解決。strict絶対overrideとregular-file/非Windows X_OK検証、dev debug/releaseのmtime比較を行う。argsPrefixはrenderer入力ではなくmain所有の [--license-file, <userData>/license.json]。MCP CLIはlicense pathの絶対性を検証し、release buildはlicensing feature有効。FEはinvoke前後のworkspace path/open revision/hydration/switch/project IDと返却workspaceを再検証し、途中切替時はcopyを拒否。TauriはargsPrefix=[mcp]の従来アプリsubcommand adapterを維持",
+      "napiNotes": "実装済み。N-APIはget_active_workspace_pathでactive DBのworkspace identityを返し、Electron mainがstandalone grimodex-mcp[.exe]を解決。strict絶対overrideとregular-file/非Windows X_OK検証、dev debug/releaseのmtime比較を行う。packaged Linuxは起動時にsourceをexecutable regular non-symlinkとして再検証し、SHA-256比較・0755・fsync・atomic renameで<userData>/bin/grimodex-mcpへeager refreshするため、AppImage mount終了後もcommandが安定する。argsPrefixはrenderer入力ではなくmain所有の [--license-file, <userData>/license.json]。MCP CLIはlicense pathの絶対性を検証し、release buildはlicensing feature有効。FEはinvoke前後のworkspace path/open revision/hydration/switch/project IDと返却workspaceを再検証し、途中切替時はcopyを拒否。TauriはargsPrefix=[mcp]の従来アプリsubcommand adapterを維持",
       "callSites": [
         { "file": "src/features/settings/components/McpIntegrationSection.tsx", "trigger": "settings", "notes": "L36 handleCopy（.mcp.json スニペットのコピーボタン）" }
       ]

@@ -1,19 +1,13 @@
-name: Release
+name: Electron v2 Release
 
 on:
   push:
     tags:
-      - "v*"
-  workflow_dispatch:
-    inputs:
-      draft:
-        description: "ドラフトリリースとして作成する"
-        required: false
-        type: boolean
-        default: true
+      - "v2.*"
+  workflow_dispatch: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-electron-v2-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -22,39 +16,79 @@ permissions:
 jobs:
   ci:
     name: CI Checks
+    needs: release-gate
     uses: ./.github/workflows/ci.yml
 
-  build:
-    name: Build (${{ matrix.platform }})
-    needs: ci
-    permissions:
-      contents: write
-    # 3 レグとも tauri-action が同一の draft release を作成/再利用するため、
-    # どのレグが最後に outputs を書いても値は同じ (build-arch ジョブが参照)。
+  release-gate:
+    name: Validate v2 release identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
-      releaseId: ${{ steps.build.outputs.releaseId }}
-      releaseUploadUrl: ${{ steps.build.outputs.releaseUploadUrl }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Tag/package version hard gate
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+        run: >-
+          node scripts/validate-release-version.mjs
+          --tag "$RELEASE_TAG"
+          --ref-type "$RELEASE_REF_TYPE"
+          --package package.json
+          --major 2
+
+  build:
+    name: Build Electron (${{ matrix.id }})
+    needs: [ci, release-gate]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 150
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          # ort の prebuilt ONNX Runtime は glibc 2.38+ でビルドされており
-          # __isoc23_strtol 等を参照する。ubuntu-22.04 (glibc 2.35) では
-          # rust-lld が undefined symbol で落ちるため 24.04 以上必須。
-          # NOTE: このランナー OS の glibc が生成物の最低要求になる
-          # (ubuntu-24.04 = glibc 2.39)。ランナーを上げ下げしたら
-          # src-tauri/tauri.conf.json の bundle.linux.deb.depends の
-          # "libc6 (>= 2.39)" も必ず追従させること。
-          - platform: ubuntu-24.04
-          - platform: macos-latest
-          - platform: windows-latest
-    runs-on: ${{ matrix.platform }}
-
+          - id: linux
+            os: ubuntu-24.04
+            artifact: electron-linux
+            updaterMetadata: latest-linux.yml
+          - id: mac
+            # Grimodex の現行 macOS 配布は Apple Silicon (arm64) のみ。
+            # `macos-latest` の将来のarch変更を避け、GitHub標準M1 imageへ固定する。
+            os: macos-15
+            artifact: electron-mac
+            updaterMetadata: latest-mac.yml
+          - id: windows
+            os: windows-latest
+            artifact: electron-windows
+            updaterMetadata: latest.yml
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - name: Linux build dependencies
+        if: matrix.id == 'linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libdbus-1-dev \
+            libsecret-1-dev \
+            pkg-config \
+            rpm
+
+      - uses: pnpm/action-setup@f40ffcd9367d9b12939873eb1018b921a783ffaa # v4
         with:
           version: 10.33.0
 
@@ -63,77 +97,21 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - name: Linux 依存ライブラリのインストール
-        if: matrix.platform == 'ubuntu-24.04'
-        run: |
-          # GitHub Actions ランナー同梱の Microsoft apt リポジトリ(azure-cli / prod)が
-          # 403 / "no longer signed" を返し apt-get update を中断させることがある。
-          # 依存はすべて Ubuntu 標準アーカイブ由来で Microsoft リポジトリは不要なため、
-          # update 前に該当ソースを除去する。
-          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev \
-            pkg-config \
-            build-essential \
-            libdbus-1-dev \
-            libsecret-1-dev
-        env:
-          DEBIAN_FRONTEND: noninteractive
-
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          workspaces: src-tauri
-          key: ${{ matrix.platform }}
+          workspaces: |
+            src-tauri
+            electron/native/grimodex-node
+          key: electron-v2-${{ matrix.id }}
 
       - run: pnpm install --frozen-lockfile
 
-      # ライセンス機構 (ライセンス認証設計書 §9.1): v1.0.0 以降のリリースのみ
-      # `licensing` feature を有効化。バージョン由来の自動判定なので入力ミスが
-      # 入らない (ベータ v0.x は常に無効)。Settings > About でも目視確認可。
-      - name: licensing feature の判定 (v1.0.0 以降のみ有効)
-        id: licensing
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          MAJOR="${VERSION%%.*}"
-          if [ "$MAJOR" -ge 1 ]; then
-            echo "args=--features licensing" >> "$GITHUB_OUTPUT"
-          else
-            echo "args=" >> "$GITHUB_OUTPUT"
-          fi
-
-      # updater 署名の公開鍵がプレースホルダのままだと、配信後に全更新の署名
-      # 検証が必ず失敗する (実機で気づけない)。v1.0.0 以降のビルドで差し替え忘れを
-      # ここで落とす。
-      - name: updater pubkey が本番用に差し替え済みか検証 (v1.0.0 以降)
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          MAJOR="${VERSION%%.*}"
-          PUBKEY=$(node -p "require('./src-tauri/tauri.conf.json').plugins?.updater?.pubkey || ''")
-          if [ "$MAJOR" -ge 1 ] && { [ -z "$PUBKEY" ] || [ "$PUBKEY" = "__REPLACE_WITH_UPDATER_PUBKEY__" ]; }; then
-            echo "::error::updater pubkey がプレースホルダのままです。pnpm tauri signer generate で生成した公開鍵に差し替えてください。" >&2
-            exit 1
-          fi
-
-      # ── macOS コード署名 (Apple Developer 承認済) ────────────────────────────
-      # Developer ID Application 証明書を一時キーチェーンへインポートし、署名 ID を
-      # 後続 step 用に CERT_ID として公開する。macOS ランナーのみ。Tauri 公式の
-      # GitHub Actions 例と同じ「手動 import → CERT_ID を APPLE_SIGNING_IDENTITY へ」方式。
-      - name: Apple 証明書のインポート (macOS のみ)
-        if: matrix.platform == 'macos-latest'
+      - name: Import Apple Developer ID certificate
+        if: matrix.id == 'mac'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -142,7 +120,7 @@ jobs:
           set -euo pipefail
           CERT_PATH="$RUNNER_TEMP/certificate.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -150,226 +128,476 @@ jobs:
             -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          # 一時キーチェーンを既存の user 検索リストへ追加（codesign が鍵を見つけられるように）。
-          # bare 名でなくフルパスで既存キーチェーンも保持する。
           security list-keychains -d user -s "$KEYCHAIN_PATH" \
             $(security list-keychains -d user | sed s/\"//g)
-          # awk 単一パスで抽出（grep|head の非ゼロ終了で set -e が誤発火するのを回避）。
           CERT_ID=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
             | awk -F'"' '/Developer ID Application/ {print $2; exit}')
           if [ -z "$CERT_ID" ]; then
-            echo "::error::Developer ID Application 証明書がキーチェーンに見つかりません。APPLE_CERTIFICATE を確認してください。" >&2
-            security find-identity -v -p codesigning "$KEYCHAIN_PATH" >&2 || true
+            echo "::error::Developer ID Application certificate was not found." >&2
             exit 1
           fi
-          echo "CERT_ID=$CERT_ID" >> "$GITHUB_ENV"
-          echo "signing identity: $CERT_ID"
+          echo "CSC_NAME=$CERT_ID" >> "$GITHUB_ENV"
           rm -f "$CERT_PATH"
 
-      # App Store Connect API キー (.p8) をランナー上のファイルへ復元。
-      # tauri-action / Tauri CLI は APPLE_API_KEY_PATH に .p8 の「ファイルパス」を要求する。
-      - name: App Store Connect API キーの配置 (macOS のみ)
-        if: matrix.platform == 'macos-latest'
+      - name: Restore App Store Connect API key
+        if: matrix.id == 'mac'
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/authkey.p8"
+
+      - name: Build licensed native runtime and MCP sidecar
+        run: pnpm electron:native:release
+
+      - name: Electron unit tests
+        run: pnpm test:electron --run
+
+      - name: Build Electron main, preload, and renderer
+        run: pnpm electron:build
+
+      # Required repository secrets for Windows Authenticode:
+      # WINDOWS_CERTIFICATE (base64/PFX accepted by electron-builder) and
+      # WINDOWS_CERTIFICATE_PASSWORD.
+      - name: Require Windows Authenticode certificate
+        if: matrix.id == 'windows'
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)) {
+            Write-Error "WINDOWS_CERTIFICATE is required for Electron v2 releases."
+            exit 1
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_KEY_PASSWORD)) {
+            Write-Error "WINDOWS_CERTIFICATE_PASSWORD is required for Electron v2 releases."
+            exit 1
+          }
+          "CSC_LINK=$($env:WIN_CSC_LINK)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CSC_KEY_PASSWORD=$($env:WIN_CSC_KEY_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build signed host packages without publishing
+        env:
+          CSC_NAME: ${{ env.CSC_NAME }}
+          APPLE_API_KEY: ${{ runner.temp }}/authkey.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: pnpm exec electron-builder --publish never
+
+      - name: Verify Linux native ABI and deb dependency floor
+        if: matrix.id == 'linux'
         run: |
           set -euo pipefail
-          echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/authkey.p8"
-
-      - name: Tauri ビルド & リリース作成
-        id: build
-        uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS コード署名 + notarization（App Store Connect API キー方式）。
-          # 非 macOS ランナーでは env が空になるだけで無害。CERT_ID は上の import step が設定。
-          APPLE_SIGNING_IDENTITY: ${{ env.CERT_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_PATH: ${{ runner.temp }}/authkey.p8
-          # Windows / アップデーター署名（updater/NSIS 署名鍵。GitHub Secrets に登録）
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tauriScript: pnpm tauri
-          # updater overlay (createUpdaterArtifacts) を release ビルドのみ合成。
-          args: ${{ steps.licensing.outputs.args }} --config src-tauri/tauri.updater.conf.json
-          includeUpdaterJson: true
-          tagName: v__VERSION__
-          releaseName: "Grimodex v__VERSION__"
-          releaseBody: |
-            Grimodex v__VERSION__ をリリースしました。
-
-            ## インストール方法
-            下記 Assets から各プラットフォームのインストーラーをダウンロードしてください。
-
-            | OS | ファイル |
-            |----|---------|
-            | Linux (Debian/Ubuntu) | `.deb` |
-            | Linux (Arch) | `.pkg.tar.zst`（または AUR: `grimodex-bin`） |
-            | Linux (Universal) | `.AppImage` |
-            | macOS | `.dmg` |
-            | Windows | `.exe` |
-
-            ---
-            <!-- リリースノートをここに追記してください -->
-          # タグ push 時は常に Draft。手動実行時は inputs.draft（デフォルト true）で制御
-          releaseDraft: ${{ github.event_name != 'workflow_dispatch' || inputs.draft }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
-
-      # build-arch ジョブ (pacman パッケージ生成) へ .deb を受け渡す。
-      # draft release からの再ダウンロードは API 認証が絡むため、
-      # ビルド成果物をそのままアーティファクト経由で渡す。
-      - name: .deb をアーティファクトとして保存 (Linux のみ)
-        if: matrix.platform == 'ubuntu-24.04'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: deb-for-arch
-          path: src-tauri/target/release/bundle/deb/*.deb
-          if-no-files-found: error
-          retention-days: 1
-
-      # tauri/#7533: Tauri は .app を署名+notarize+staple するが .dmg はしない。
-      # 配布物である DMG を明示的に notarize + staple し、tauri-action が draft release へ
-      # アップ済みの未 staple DMG を staple 版で差し替える。未対応だと DL 後の DMG 初回
-      # マウントで Gatekeeper 警告（「開発元を確認できません」）が出る。release ID 経由で
-      # 差し替えるので draft（未公開タグ）でも成立する。
-      - name: DMG を notarize + staple して差し替え (macOS のみ)
-        if: matrix.platform == 'macos-latest'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          RELEASE_ID: ${{ steps.build.outputs.releaseId }}
-          RELEASE_UPLOAD_URL: ${{ steps.build.outputs.releaseUploadUrl }}
-        run: |
-          set -euo pipefail
-          DMG=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" -print -quit)
-          if [ -z "$DMG" ]; then
-            echo "::error::DMG が bundle/dmg に見つかりません。" >&2
+          NODE_BINARY=electron/native/grimodex-node/grimodex-node.node
+          MAX_GLIBC=$(objdump -T "$NODE_BINARY" \
+            | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' \
+            | sed 's/^GLIBC_//' | sort -Vu | tail -n1)
+          if [ -z "$MAX_GLIBC" ]; then
+            echo "::error::No GLIBC symbol versions found in $NODE_BINARY" >&2
             exit 1
           fi
-          echo "notarizing DMG: $DMG"
+          if ! dpkg --compare-versions "$MAX_GLIBC" le 2.39; then
+            echo "::error::.node requires GLIBC_${MAX_GLIBC}, above the declared 2.39 floor." >&2
+            exit 1
+          fi
+
+          shopt -s nullglob
+          DEBS=(release/electron/*.deb)
+          if [ "${#DEBS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one deb, found ${#DEBS[@]}." >&2
+            exit 1
+          fi
+          DEPENDS=$(dpkg-deb -f "${DEBS[0]}" Depends)
+          for required in \
+            'libc6 (>= 2.39)' \
+            'libstdc++6 (>= 12)' \
+            'libgcc-s1' \
+            'libdbus-1-3'; do
+            if ! grep -Fq "$required" <<<"$DEPENDS"; then
+              echo "::error::deb dependency floor is missing: $required" >&2
+              echo "Depends: $DEPENDS" >&2
+              exit 1
+            fi
+          done
+
+          RPMS=(release/electron/*.rpm)
+          if [ "${#RPMS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one rpm, found ${#RPMS[@]}." >&2
+            exit 1
+          fi
+          RPM_DEPENDS=$(rpm -qpR "${RPMS[0]}")
+          for required in \
+            'glibc >= 2.39' \
+            'libstdc++' \
+            'libgcc' \
+            'dbus-libs' \
+            'libsecret'; do
+            if ! grep -Fq "$required" <<<"$RPM_DEPENDS"; then
+              echo "::error::rpm dependency floor is missing: $required" >&2
+              echo "Requires: $RPM_DEPENDS" >&2
+              exit 1
+            fi
+          done
+
+          RPM_SCRIPTS=$(rpm -qp --scripts "${RPMS[0]}")
+          for required in \
+            'posttrans scriptlet' \
+            'rpm -q "${package_name}"' \
+            'update-alternatives --install' \
+            'chrome-sandbox' \
+            'apparmor-profile'; do
+            if ! grep -Fq "$required" <<<"$RPM_SCRIPTS"; then
+              echo "::error::rpm posttrans migration repair is missing: $required" >&2
+              echo "$RPM_SCRIPTS" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify Windows app and NSIS Authenticode signatures
+        if: matrix.id == 'windows'
+        shell: pwsh
+        run: |
+          $App = Get-ChildItem -Path release/electron/win-unpacked -Filter *.exe -File | Select-Object -First 1
+          $Installer = Get-ChildItem -Path release/electron -Filter *.exe -File | Select-Object -First 1
+          if ($null -eq $App -or $null -eq $Installer) {
+            Write-Error "Windows app executable or NSIS installer is missing."
+            exit 1
+          }
+          foreach ($File in @($App, $Installer)) {
+            $Signature = Get-AuthenticodeSignature -FilePath $File.FullName
+            if ($Signature.Status.ToString() -ne "Valid") {
+              Write-Error "Invalid Authenticode signature ($($Signature.Status)): $($File.FullName)"
+              exit 1
+            }
+          }
+
+      - name: Verify Tauri v1 to Electron migration
+        if: matrix.id == 'windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $Installer = @(Get-ChildItem -Path release/electron -Filter 'Grimodex-*-windows-x64.exe' -File)
+          if ($Installer.Count -ne 1) {
+            Write-Error "Expected exactly one Electron NSIS installer, found $($Installer.Count)."
+            exit 1
+          }
+          & ./scripts/verify-windows-tauri-migration.ps1 -InstallerPath $Installer[0].FullName
+
+      - name: Notarize and staple the distributable DMG
+        if: matrix.id == 'mac'
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          DMG=$(find release/electron -maxdepth 1 -name '*.dmg' -print -quit)
+          if [ -z "$DMG" ]; then
+            echo "::error::DMG is missing after electron-builder." >&2
+            exit 1
+          fi
           xcrun notarytool submit "$DMG" \
             --key "$RUNNER_TEMP/authkey.p8" \
-            --key-id "$APPLE_API_KEY" \
+            --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
             --wait
           xcrun stapler staple "$DMG"
           xcrun stapler validate "$DMG"
-          # 未 staple の同名アセットを削除 → staple 版をアップロード（release ID 経由）
-          ASSET_NAME=$(basename "$DMG")
-          OLD_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
-            --jq ".[] | select(.name==\"${ASSET_NAME}\") | .id" | head -n1 || true)
-          if [ -n "${OLD_ID:-}" ]; then
-            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${OLD_ID}"
-          fi
-          UPLOAD_BASE="${RELEASE_UPLOAD_URL%%\{*}"
-          curl -sSf -X POST "${UPLOAD_BASE}?name=${ASSET_NAME}" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @"$DMG"
-          echo "DMG replaced with notarized + stapled version: $ASSET_NAME"
 
-      # 署名・公証・staple を CI 内で静的検証（実機 Mac 不要）。いずれか失敗でビルドを落とす。
-      # ここが緑なら「署名済み・hardened runtime・secure timestamp・公証チケット staple 済み・
-      # Gatekeeper が accept」までが機械的に保証される（対話的な初回起動 UI と updater 実機
-      # 挙動だけは CI では検証不可 → クラウド Mac で1回確認）。
-      - name: 署名・公証・staple を検証 (macOS のみ)
-        if: matrix.platform == 'macos-latest'
+      - name: Verify Apple signature and notarization ticket
+        if: matrix.id == 'mac'
         run: |
           set -euo pipefail
-          APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" -print -quit)
-          DMG=$(find src-tauri/target/release/bundle/dmg -name "*.dmg" -print -quit)
+          APP=$(find release/electron -type d -name '*.app' -print -quit)
+          DMG=$(find release/electron -maxdepth 1 -name '*.dmg' -print -quit)
           if [ -z "$APP" ] || [ -z "$DMG" ]; then
-            echo "::error::.app または .dmg が見つかりません。" >&2
+            echo "::error::Signed .app or .dmg is missing." >&2
             exit 1
           fi
-          echo "== codesign --verify (app) =="
           codesign --verify --deep --strict --verbose=4 "$APP"
-          echo "== Developer ID + hardened runtime + secure timestamp =="
           codesign -dvvv "$APP" 2>&1 | grep -E 'Authority=Developer ID Application'
           codesign -dvvv "$APP" 2>&1 | grep -E 'flags=.*runtime'
-          codesign -dvvv "$APP" 2>&1 | grep -E 'Timestamp='
-          echo "== spctl assess (app / exec) =="
-          spctl -a -vvv -t exec --ignore-cache "$APP"
-          echo "== stapler validate (app + dmg) =="
           xcrun stapler validate "$APP"
           xcrun stapler validate "$DMG"
-          echo "== spctl assess (dmg container) =="
-          spctl -a -vvv -t open --context context:primary-signature --ignore-cache "$DMG"
-          # quarantine bit を付けた経路も確認（runner の Gatekeeper 状態依存なので warning 止まり）
-          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)" "$DMG" || true
-          spctl -a -vvv -t open --context context:primary-signature "$DMG" \
-            || echo "::warning::quarantine 付き spctl が accept しませんでした（runner 状態依存の可能性。要実機確認）。"
-          echo "✅ 署名・公証・staple すべて検証 OK"
 
-  # ── Arch Linux (pacman) パッケージ ──────────────────────────────────────────
-  # Tauri bundler に pacman ターゲットがないため、ubuntu-24.04 レグが作った .deb を
-  # packaging/arch/PKGBUILD で再パッケージし .pkg.tar.zst をリリースへ追加する。
-  # AUR (grimodex-bin) への公開は、リリース公開時に aur-publish.yml が別途行う。
+      - name: Create the Tauri-compatible macOS bridge archive
+        if: matrix.id == 'mac'
+        env:
+          VERSION: ${{ needs.release-gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          APP=$(find release/electron -type d -name '*.app' -print -quit)
+          case "$(uname -m)" in
+            x86_64) ARCH=x64 ;;
+            arm64) ARCH=arm64 ;;
+            *) echo "::error::Unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          tar -czf "release/electron/Grimodex-${VERSION}-mac-${ARCH}.app.tar.gz" \
+            -C "$(dirname "$APP")" "$(basename "$APP")"
+
+      - name: Require electron-updater metadata for this host
+        env:
+          UPDATE_METADATA: ${{ matrix.updaterMetadata }}
+        run: >-
+          node scripts/verify-electron-updater-metadata.mjs
+          --metadata "release/electron/$UPDATE_METADATA"
+
+      - name: Upload host packages and electron-updater metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            release/electron/*.AppImage
+            release/electron/*.deb
+            release/electron/*.rpm
+            release/electron/*.dmg
+            release/electron/*.zip
+            release/electron/*.app.tar.gz
+            release/electron/*.exe
+            release/electron/*.blockmap
+            release/electron/latest*.yml
+          if-no-files-found: error
+          retention-days: 7
+
   build-arch:
-    name: Build (arch pacman package)
-    needs: build
-    permissions:
-      contents: write
+    name: Build Electron (arch pacman package)
+    needs: [release-gate, build]
+    # Arch pkgver/pkgrel cannot preserve arbitrary SemVer prerelease ordering.
+    # Pre-release users use AppImage/deb/rpm; the pacman/AUR package starts at
+    # each stable release so the later stable version is always an upgrade.
+    if: needs.release-gate.outputs.prerelease == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
     container:
       image: archlinux:base-devel
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: パッケージングツールの導入
+      - name: Install Arch packaging tools
         run: pacman -Syu --noconfirm --needed pacman-contrib jq git
 
-      - name: .deb アーティファクトを取得
+      - name: Download Electron Linux artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: deb-for-arch
+          name: electron-linux
           path: packaging/arch
 
-      - name: makepkg で .pkg.tar.zst を生成
+      - name: Repackage the Electron deb with makepkg
+        env:
+          VERSION: ${{ needs.release-gate.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           cd packaging/arch
+          mapfile -t DEBS < <(find . -maxdepth 1 -type f \
+            -name "Grimodex-${VERSION}-linux-*.deb" | sort)
+          if [ "${#DEBS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Electron deb, found ${#DEBS[@]}." >&2
+            exit 1
+          fi
+          DEB=$(basename "${DEBS[0]}")
+          if [ "$DEB" != "Grimodex-${VERSION}-linux-amd64.deb" ]; then
+            echo "::error::Unexpected deb architecture name: $DEB" >&2
+            exit 1
+          fi
           sed "s/@PKGVER@/${VERSION}/" PKGBUILD > PKGBUILD.tmp
           mv PKGBUILD.tmp PKGBUILD
-          # source の URL (draft release は未公開) からは取得できないため、
-          # 同名のローカルファイルを置いて makepkg に拾わせる。
           cp ../../LICENSE "LICENSE-v${VERSION}"
-          # makepkg は root 実行を拒否するため専用ユーザーで実行する
           useradd -m builder
           chown -R builder: .
           runuser -u builder -- updpkgsums
           runuser -u builder -- makepkg -fd
-          ls -l ./*.pkg.tar.zst
-
-      - name: .pkg.tar.zst をリリースへアップロード
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ needs.build.outputs.releaseId }}
-          RELEASE_UPLOAD_URL: ${{ needs.build.outputs.releaseUploadUrl }}
-        run: |
-          set -euo pipefail
-          PKG=$(find packaging/arch -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)
-          if [ -z "$PKG" ]; then
-            echo "::error::.pkg.tar.zst が見つかりません。" >&2
+          mapfile -t PACKAGES < <(find . -maxdepth 1 -name '*.pkg.tar.zst' | sort)
+          if [ "${#PACKAGES[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Arch package, found ${#PACKAGES[@]}." >&2
             exit 1
           fi
-          ASSET_NAME=$(basename "$PKG")
-          # 再実行時の重複 (already_exists) を避けるため同名アセットを削除してから上げる
-          OLD_ID=$(curl -sSf -H "Authorization: Bearer ${GH_TOKEN}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
-            | jq -r --arg name "$ASSET_NAME" '.[] | select(.name==$name) | .id' | head -n1)
-          if [ -n "${OLD_ID:-}" ]; then
-            curl -sSf -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${OLD_ID}"
+          rm -rf package-check
+          mkdir package-check
+          bsdtar -xf "${PACKAGES[0]}" -C package-check
+          test -x package-check/opt/Grimodex/grimodex
+          test "$(readlink package-check/usr/bin/grimodex)" = '/opt/Grimodex/grimodex'
+          test "$(cat package-check/opt/Grimodex/resources/grimodex-package-channel)" = arch
+          test "$(stat -c '%a' package-check/opt/Grimodex/chrome-sandbox)" = 755
+          ls -l "${PACKAGES[0]}"
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: electron-arch
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Create one draft release
+    needs: [release-gate, build, build-arch]
+    if: >-
+      !cancelled() &&
+      needs.release-gate.result == 'success' &&
+      needs.build.result == 'success' &&
+      (needs.build-arch.result == 'success' ||
+       (needs.release-gate.outputs.prerelease == 'true' &&
+        needs.build-arch.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9b12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Download all host artifacts into one directory
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: electron-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Detect an already completed immutable bridge release
+        id: release-state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+          PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          echo "complete=false" >> "$GITHUB_OUTPUT"
+          if [ "$PRERELEASE" = "false" ] && gh release view "$TAG" >/dev/null 2>&1; then
+            mkdir -p existing-release-assets
+            if gh release download "$TAG" --pattern latest.json \
+              --dir existing-release-assets >/dev/null 2>&1; then
+              cp existing-release-assets/latest.json release-assets/latest.json
+              node --input-type=module -e \
+                "import fs from 'node:fs'; import {validateBridgeManifestSchema} from './scripts/generate-tauri-bridge-manifest.mjs'; const m=JSON.parse(fs.readFileSync('release-assets/latest.json','utf8')); validateBridgeManifestSchema(m); if(m.version!==process.env.VERSION) throw new Error('Existing bridge version mismatch');"
+              echo "complete=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
-          UPLOAD_BASE="${RELEASE_UPLOAD_URL%%\{*}"
-          curl -sSf -X POST "${UPLOAD_BASE}?name=${ASSET_NAME}" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @"$PKG"
-          echo "uploaded: $ASSET_NAME"
+
+      - name: Sign Electron installers for the final Tauri v1 bridge
+        if: >-
+          needs.release-gate.outputs.prerelease == 'false' &&
+          steps.release-state.outputs.complete != 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is required for stable bridge latest.json." >&2
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required for stable bridge latest.json." >&2
+            exit 1
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          PUBKEY_FILE="packaging/tauri-v1/updater-public-key.pub"
+          EMBEDDED_PUBKEY_FILE="$RUNNER_TEMP/tauri-updater-embedded.pub"
+          node -e "const c=require('./src-tauri/tauri.conf.json');process.stdout.write(Buffer.from(c.plugins.updater.pubkey,'base64'))" \
+            > "$EMBEDDED_PUBKEY_FILE"
+          test -s "$PUBKEY_FILE"
+          if ! cmp -s "$PUBKEY_FILE" "$EMBEDDED_PUBKEY_FILE"; then
+            echo "::error::Current Tauri updater public key differs from the published v1.0.0 key." >&2
+            exit 1
+          fi
+          mapfile -t BRIDGE_ASSETS < <(find release-assets -maxdepth 1 -type f \
+            \( -name "Grimodex-${VERSION}-windows-*.exe" \
+            -o -name "Grimodex-${VERSION}-mac-*.app.tar.gz" \
+            -o -name "Grimodex-${VERSION}-linux-*.AppImage" \
+            -o -name "Grimodex-${VERSION}-linux-*.deb" \
+            -o -name "Grimodex-${VERSION}-linux-*.rpm" \) | sort)
+          if [ "${#BRIDGE_ASSETS[@]}" -eq 0 ]; then
+            echo "::error::No Electron installers matched the Tauri bridge contract." >&2
+            exit 1
+          fi
+          for asset in "${BRIDGE_ASSETS[@]}"; do
+            pnpm tauri signer sign "$asset"
+            test -s "${asset}.sig"
+            DECODED_SIGNATURE="$RUNNER_TEMP/$(basename "$asset").minisig"
+            base64 --decode "${asset}.sig" > "$DECODED_SIGNATURE"
+            minisign -Vm "$asset" -x "$DECODED_SIGNATURE" -p "$PUBKEY_FILE"
+          done
+
+      - name: Generate immutable bridge latest.json for stable v1 clients
+        if: >-
+          needs.release-gate.outputs.prerelease == 'false' &&
+          steps.release-state.outputs.complete != 'true'
+        env:
+          VERSION: ${{ needs.release-gate.outputs.version }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PUB_DATE=$(git show -s --format=%cI "$TAG")
+          node scripts/generate-tauri-bridge-manifest.mjs \
+            --assets-dir release-assets \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --notes "Grimodex Electron v${VERSION} migration bridge" \
+            --pub-date "$PUB_DATE" \
+            --output release-assets/latest.json
+
+      - name: Preserve bridge manifest as a workflow artifact
+        if: needs.release-gate.outputs.prerelease == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tauri-v1-bridge-${{ needs.release-gate.outputs.version }}
+          path: release-assets/latest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create or update the single draft GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-gate.outputs.tag }}
+          VERSION: ${{ needs.release-gate.outputs.version }}
+          PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
+          RELEASE_COMPLETE: ${{ steps.release-state.outputs.complete }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_COMPLETE" = "true" ]; then
+            echo "Immutable bridge latest.json already exists; release is complete and will not be mutated."
+            exit 0
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "::error::Refusing to mutate an already published release without latest.json." >&2
+              exit 1
+            fi
+          else
+            CREATE_ARGS=(--draft --verify-tag --title "Grimodex v${VERSION}" \
+              --notes "Grimodex Electron v${VERSION} release. Review all assets before publishing.")
+            if [ "$PRERELEASE" = "true" ]; then
+              CREATE_ARGS+=(--prerelease)
+            fi
+            gh release create "$TAG" "${CREATE_ARGS[@]}"
+          fi
+
+          mapfile -t RELEASE_ASSETS < <(find release-assets -maxdepth 1 -type f | sort)
+          for asset in "${RELEASE_ASSETS[@]}"; do
+            if [ "$(basename "$asset")" = "latest.json" ]; then
+              continue
+            fi
+            gh release upload "$TAG" "$asset" --clobber
+          done
+          if [ "$PRERELEASE" = "false" ]; then
+            # Completion marker: upload only after every installer, signature,
+            # and electron-updater metadata asset succeeded. Never clobber it.
+            gh release upload "$TAG" release-assets/latest.json
+          fi

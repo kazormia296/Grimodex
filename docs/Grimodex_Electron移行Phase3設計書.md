@@ -24,19 +24,19 @@ Phase 3 はその実測ログ（＝どのコマンドが起動・編集フロー
 
 全 145 コマンドの内訳（詳細は台帳 JSON / 優先順位表を参照）:
 
-| 分類 | 件数 | napi 化方針 |
-|---|---:|---|
-| done | 13 | 実装済み（Phase 2 垂直スライス） |
-| pure-db | 68 | `WorkspaceState + spawn_blocking + camelCase serde` の同型量産。最大勢力 |
-| network | 12 | ai 6 / license 3 / post_effect 2 / semantic DL 1。reqwest を napi へ |
-| ort | 12 | semantic 系。ONNX ランタイム同梱 + glibc 隔離 |
-| fs | 10 | ai 設定 / external_mount / fonts / list_backups |
-| child-process | 10 | cli_ai 5 / vivliostyle 5。**main-TS + child_process 再実装が適切** |
-| main-ts | 5 | export 2 / logs / mcp_config / vivliostyle_save_output |
-| lindera | 3 | lint_text / segment_bunsetsu / extract_codex_candidates |
-| keyring | 3 | save/has/delete_api_key。safeStorage 移行 |
-| db+state | 3 | restore_backup / abort_post_effect_run / seed_sample_workspace |
-| other | 3 | abort フラグ / external_mount_list |
+| 分類          | 件数 | napi 化方針                                                              |
+| ------------- | ---: | ------------------------------------------------------------------------ |
+| done          |   13 | 実装済み（Phase 2 垂直スライス）                                         |
+| pure-db       |   68 | `WorkspaceState + spawn_blocking + camelCase serde` の同型量産。最大勢力 |
+| network       |   12 | ai 6 / license 3 / post_effect 2 / semantic DL 1。reqwest を napi へ     |
+| ort           |   12 | semantic 系。ONNX ランタイム同梱 + glibc 隔離                            |
+| fs            |   10 | ai 設定 / external_mount / fonts / list_backups                          |
+| child-process |   10 | cli_ai 5 / vivliostyle 5。**main-TS + child_process 再実装が適切**       |
+| main-ts       |    5 | export 2 / logs / mcp_config / vivliostyle_save_output                   |
+| lindera       |    3 | lint_text / segment_bunsetsu / extract_codex_candidates                  |
+| keyring       |    3 | save/has/delete_api_key。safeStorage 移行                                |
+| db+state      |    3 | restore_backup / abort_post_effect_run / seed_sample_workspace           |
+| other         |    3 | abort フラグ / external_mount_list                                       |
 
 優先度別（done 13 を除く 132）: **P0=11**（起動・workspace-open・編集ループ致命）/
 P1=61（主要パネル）/ P2=44（明示操作）/ P3=16（設定・低頻度・dead code 疑い）。
@@ -61,18 +61,18 @@ napi crate に足すのもこのバッチ。
 
 **完了済み**:
 
-| コミット | 内容 |
-|---|---|
-| バッチ1a | `integrity_check` / `repair_integrity` / `fts_optimize` / `fts_rebuild` / `fts_rebuild_en` / `fts_search`（grimodex-db 共用、コード移動なし）|
-| バッチ1b | `lint_text` / `segment_bunsetsu`（grimodex-lint、UniDic 埋め込み）/ `list_system_fonts`（`grimodex-fonts` へ commands/fonts.rs を抽出）|
-| バッチ1c | `codex_rebuild_matcher` / `codex_match_text`（`grimodex-core::codex_matching` へ codex_matching.rs のコアを抽出、AppState に matcher State 追加）|
-| バッチ1d | plot_threads 8（`grimodex-db::plot_threads` へ抽出、XPROJ ガードを Electron 経路にも復活）|
-| バッチ1e | foreshadow 20（`grimodex-db::foreshadow` へ抽出。旧 `foreshadow_list` は FE 到達不能のため移植せず、後に撤去）|
-| バッチ1f | agent_writes 18 + post_effect pure-db 7（tracked write / XPROJ ガードをサーバー側に維持。未使用2件は移植せず、後に撤去）|
-| （前提）| fs ブリッジのダイアログ許可制スコープ化（`electron/main/fsScope.ts`）、`export_save_text` / `export_save_bytes` / `open_log_dir`（main-TS）|
+| コミット | 内容                                                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| バッチ1a | `integrity_check` / `repair_integrity` / `fts_optimize` / `fts_rebuild` / `fts_rebuild_en` / `fts_search`（grimodex-db 共用、コード移動なし）     |
+| バッチ1b | `lint_text` / `segment_bunsetsu`（grimodex-lint、UniDic 埋め込み）/ `list_system_fonts`（`grimodex-fonts` へ commands/fonts.rs を抽出）           |
+| バッチ1c | `codex_rebuild_matcher` / `codex_match_text`（`grimodex-core::codex_matching` へ codex_matching.rs のコアを抽出、AppState に matcher State 追加） |
+| バッチ1d | plot_threads 8（`grimodex-db::plot_threads` へ抽出、XPROJ ガードを Electron 経路にも復活）                                                        |
+| バッチ1e | foreshadow 20（`grimodex-db::foreshadow` へ抽出。旧 `foreshadow_list` は FE 到達不能のため移植せず、後に撤去）                                    |
+| バッチ1f | agent_writes 18 + post_effect pure-db 7（tracked write / XPROJ ガードをサーバー側に維持。未使用2件は移植せず、後に撤去）                          |
+| （前提） | fs ブリッジのダイアログ許可制スコープ化（`electron/main/fsScope.ts`）、`export_save_text` / `export_save_bytes` / `open_log_dir`（main-TS）       |
 
-`get_post_effect_run` / `update_relation_status` は FE 到達不能のため撤去し、post_effect の run/abort/AI
-経路はバッチ3dへ送った。XPROJ ガード持ち（plot_thread_link_* / post_effect /
+`get_post_effect_run` / `update_relation_status` は FE 到達不能のため撤去し、post*effect の run/abort/AI
+経路はバッチ3dへ送った。XPROJ ガード持ち（plot_thread_link*\* / post_effect /
 agent_event）は db_execute へ分解せず、共有 Rust 層に維持している。
 
 ### バッチ 2: external_mount 一族（P0 残り、main-TS + chokidar）【完了】
@@ -112,10 +112,10 @@ overlap 検査を TS へ忠実移植。バッチ1 と依存なしで並行可。
   content-hash 照合が安全な担当層。既知差分 2 件（純粋 rename は差分なし）:
   ① dirty rename で `fileDeletedExternally` 警告トースト 1 回、
   ② 「外部編集 → 取り込み前に同ファイル rename」の競合で hash 不一致 → 新ノード作成 +
-     旧ノード archive（本文は無事だが node identity リセット）。稀な編集直後 rename のみ。
+  旧ノード archive（本文は無事だが node identity リセット）。稀な編集直後 rename のみ。
 - 実 chokidar 統合テスト（`externalMount.integration.test.ts`）で ignoreInitial・
   add/change/unlink 写像・rename の removed→added 順（厳密順序 assert は inotify=linux 限定、
-  macOS fsevents / Windows は Phase 4 実機検証）を gate。
+  macOS fsevents / Windows は別途実機検証）を gate。
 
 ### バッチ 3: AI 系 — HTTP + keyring + abort + ストリームイベント
 
@@ -126,7 +126,8 @@ main 常駐 manager から既存の全窓 broadcast へ載せる。abort 状態�
 いずれも「開始側と中止側が同一インスタンスを見る」構造を固める。**API キー平文を
 renderer に返さない**契約維持（`has_api_key` の bool）。
 Electron 側のキー保管基盤を keyring から safeStorage へ切り替える。既存 Tauri keyring
-資格情報の自動インポートは Phase 4 の userData 移行に残し、3a 単体では再入力が必要。
+資格情報の自動インポートは 3a 単体では再入力が必要だったが、Phase 4 で one-shot 移行を
+実装した（§6）。
 
 大きさゆえ 3a〜3e に分割する（3a = 基盤 + chat、3b = inline / agent +
 設定・モデル・接続、3c = CLI AI）:
@@ -145,8 +146,11 @@ Electron 側のキー保管基盤を keyring から safeStorage へ切り替え�
   `src/ai.rs = pub use grimodex_ai::*;` の re-export shim で `crate::ai::*` パスを温存
   （`crate::ai_responses`/`crate::ai_novelist` は非参照になり mod 宣言ごと削除）。
 - **keyring は cargo feature**: save/get/delete_api_key + keyring_user/candidates/service を
-  `#[cfg(feature="keyring")]` でゲート。src-tauri は `features=["keyring"]`、grimodex-node は
-  無効。**実測: .node に libsecret 依存なし**（safeStorage 方針の実効性を ldd で確認）。
+  `#[cfg(feature="keyring")]` でゲート。src-tauri は `features=["keyring"]`、grimodex-node の
+  通常 build は無効。**実測: default `.node` に libsecret 依存なし**（safeStorage 方針の
+  実効性を ldd で確認）。Phase 4 の product build だけは one-shot 読み出し用の
+  `legacy-keyring-migration` を有効化するため、libsecret / D-Bus runtime 依存を配布 metadata に
+  明示する（§6）。
 - **純ヘルパー共用**: `apply_provider_override`（chat/inline/agent の override は同一と判明し
   1 関数に統一）/ `build_chat_params` / `build_ai_novelist_extra_body` / `should_retry_429` /
   `inline_effective_variant` を crate の `params` モジュールへ移し、Tauri コマンドと napi が同一
@@ -161,7 +165,7 @@ Electron 側のキー保管基盤を keyring から safeStorage へ切り替え�
   shell ハンドラ、チャットのキー解決は dispatchInvoke に `secrets` を注入し、送信直前に
   実効 provider/endpoint（`effectiveProviderEndpoint`）→ 平文を napi へ渡す。破損・復号失敗は
   fail-closed（既存ファイルを空扱いして上書きしない）、Linux の `basic_text` / `unknown`
-  backend は拒否する。Tauri keyring からの自動移行は Phase 4 の出荷ゲート。
+  backend は拒否する。Tauri keyring からの自動移行は Phase 4 で実装済み（§6）。
 - **FE 変更ゼロ**（AI 系は `@/lib/tauri` の invoke/listen に委譲、プラットフォームゲートなし）。
   イベント allowlist も既登録。ipcContract のコマンド表追加のみ。
 - 検証: cargo test 全通過（grimodex_lib 408 / grimodex_ai 203）、mjs 56pass + 1skip
@@ -421,7 +425,7 @@ Phase 2 で `Backend.on_event(tsfn)` の end-to-end は実証済み（`backend:r
 4. **undefined/null の 3 値**: foreshadow / plot_threads の patch 型は `Option<Option<T>>`。
    napi 境界（JSON）で undefined と null の区別が落ちない受け渡しを雛形段階で確立する。
 5. **バイナリサイズと同梱**: embed-unidic（+200MB）/ onboarding サンプル JSON / ort モデルの
-   同梱方式をバッチ 4 前に決定。electron-builder の asarUnpack は Phase 4。
+   同梱方式をバッチ 4 前に決定。`.node` の electron-builder `asarUnpack` は Phase 4 で実装済み。
 6. **FE 実行シェルゲート**: feature 層の `__TAURI_INTERNALS__` / `isTauri()` ローカル判定は、
    対応コマンドが napi に載ったバッチで `isTauri() || isElectron()` 形のヘルパ
    （`supportsPanelWindows` / `supportsTrashBin` / `supportsNativeExport` /
@@ -433,8 +437,81 @@ FE コールサイト無し 4 件: `foreshadow_list` / `external_mount_list` /
 `get_post_effect_run` / `update_relation_status`。本番到達不能を確認し、Electron mirrorを
 追加せず、Tauri handler・実装本体・TS wrapper・browser mockの該当経路を撤去した。
 
-## 6. Phase 4 への申し送り
+## 6. Phase 4 実装結果（2026-07-11）
 
-electron-builder 全ターゲット（.node の asarUnpack）/ electron-updater + 署名 /
-**ブリッジ最終 Tauri リリース**（既存ユーザーの自動移行、tauri 形式 latest.json の
-永続同梱）/ userData・keyring→safeStorage 移行 / v2.0.0。詳細は正本 §Phase 4。
+Phase 3 の完了記録は上記のとおり固定し、申し送りだった配布・更新・データ互換を Phase 4 で
+実装した。実リリースのタグ作成・Draft 公開はまだ行っていない。
+
+- **userData 互換**: packaged 版は `ready` / single-instance lock より前に Electron の
+  `userData` を既存 Tauri `data_dir/com.miyakey.grimodex` と同じ場所へ固定する。Linux は
+  `${XDG_DATA_HOME:-$HOME/.local/share}/com.miyakey.grimodex`、macOS は
+  `~/Library/Application Support/com.miyakey.grimodex`、Windows は
+  `%APPDATA%\com.miyakey.grimodex`。dev は `<appData>/GrimodexElectronDev` のまま隔離し、
+  `GRIMODEX_USER_DATA_DIR` は絶対 path のみを許可する。
+- **資格情報の one-shot 移行**: product `.node` だけを
+  `licensing,legacy-keyring-migration` feature 付きで build する。main-only N-API が既存 OS
+  keyring を読み、renderer へ公開せず safeStorage で全件を暗号化・復号検証してから
+  `ai-keys.json` を一度だけ atomic 更新する。既存 safeStorage 値を優先し、成功時は
+  `legacy-keyring-migration-v1.json` を 0600 で記録する。失敗時は marker を作らず、旧 keyring
+  は rollback 用に削除しない。dev build は migration feature 無効で keyring に触れない。
+- **MCP の安定 path**: packaged Linux は起動時に sidecar を
+  `<userData>/bin/grimodex-mcp` へ eager refresh する。source を executable regular
+  non-symlink として検証し、SHA-256 比較、0755、fsync、同一ディレクトリ内 atomic rename で
+  更新するため、AppImage の一時 mount が消えた後もコピー済み `.mcp.json` が有効である。
+- **packaging / updater**: `electron-builder@26.15.3` で NSIS、DMG+zip、AppImage、deb、rpm を
+  host-native build し、`.node` は `asarUnpack`、MCP と tokenizer は `extraResources` に置く。
+  `electron-updater@6.8.9` は packaged main process だけで動作し、`autoDownload=false`、
+  check/download/install の operation 単位 single-flight、byte progress の全窓 broadcast、
+  download 完了前 install 拒否を実装した。renderer は Tauri / Electron 共通 wrapper を使う。
+  Arch/AUR 再パッケージは明示 marker で内蔵 updater を無効化し、pacman / AUR helper へ委譲する。
+  notarization 後に byte 列が変わる DMG は macOS updater metadata から除外して zip のみにし、
+  全 `latest*.yml` が参照する成果物の安全な basename・size・SHA-512 を upload 前に再計算する。
+- **release / ABI gate**: 実在する Tauri v1.0.0 tag / Draft asset は再ビルドせず凍結し、
+  新規 release workflow は `v2.*` の Electron 専用にした。branch dispatch から publisher の異なる
+  v1 asset を同じ Draft へ再生成できる経路も残さない。
+  Electron 側は tag と `package.json` の canonical semver / major=2 を一致させ、3 OS build 後に
+  1 個の Draft release を作る。macOS は現行サポートどおり arm64 のみとし、runner を
+  GitHub標準M1 image `macos-15` へ固定する。stable v2 では旧 Tauri updater 用 installer-specific
+  `latest.json` と minisign を生成し、埋め込み済み公開鍵を復元して `minisign -Vm` が全成果物を
+  検証してから manifest を作る。既存 manifest と異なる上書きも拒否する。Linux は
+  Ubuntu 24.04 で build し、`.node` の最大参照 symbol が `GLIBC_2.39` 以下であることと、deb の
+  `libc6 (>= 2.39)` / `libstdc++6 (>= 12)` / `libgcc-s1` / `libdbus-1-3` を CI で検証する。
+  release-only keyring 移行のため、deb/rpm は libsecret / D-Bus runtime 依存も明示する。
+  Windows は GitHub Actions secrets `WINDOWS_CERTIFICATE` / `WINDOWS_CERTIFICATE_PASSWORD` を
+  electron-builder へ渡して Authenticode 署名し、app exe と NSIS installer の両方が
+  `Status=Valid` でなければ失敗させる。この2 secret は v2 release 実行前の必須設定である。
+  custom NSIS hook は実配布 Tauri v1 の publisher=`miyakey`、product/uninstall key、旧 exe を
+  検証して `/P /R /UPDATE /ARGS` を変換する。通常 CI は Windows 上で最終 makensis pass を compile
+  し、release CI は固定 SHA-256 の v1.0.0 installer を使った移行・冪等・fail-closed E2E まで行う。
+  RPM は新 `%post` 後に旧 payload / `%postun` が launcher と AppArmor を消す順序へ対応し、
+  `%posttrans` で `/usr/bin/grimodex`、sandbox mode、AppArmor profile を冪等復元する。実 RPM の
+  `rpm -qp --scripts` も gate する。既存 Tauri v1 の Arch 版だけは build-time に deb channel が
+  固定されておりアプリ内 updater が `dpkg` を呼ぶため、pacman / AUR 経由の更新を必須とする。
+  SemVer prerelease は Arch `pkgver` と安全な版順を共有できないため Arch/AUR成果物を作らず、
+  AppImage / deb / rpm の Draft だけを公開する。stable は `build-arch` 成功を公開の必須条件に戻す。
+
+主要なローカル確認コマンド:
+
+```bash
+# licensing + legacy keyring migration を含む product native/MCP
+pnpm electron:native:release
+pnpm napi:verify:release
+
+# unpacked package / host の全 installer
+pnpm electron:package:dir
+pnpm electron:package
+
+# Phase 4 の main・配布契約
+pnpm test:electron --run
+node --test scripts/validate-release-version.test.mjs \
+  scripts/generate-tauri-bridge-manifest.test.mjs \
+  scripts/release-workflows.test.mjs \
+  scripts/linux-release-abi.test.mjs \
+  scripts/arch-electron-package.test.mjs \
+  scripts/verify-electron-updater-metadata.test.mjs \
+  scripts/windows-signing-workflow.test.mjs
+```
+
+`pnpm electron:package*` は host-native package のみを生成する。3 OS の署名・notarization・ABI
+検査と GitHub Draft 作成は `.github/workflows/release.yml` が正本であり、release 実行前に
+`package.json` を v2 系へ更新して同一 tag を付ける必要がある。

@@ -126,8 +126,9 @@ client が spawn する実行ファイルと先頭引数は desktop shell ごと
   `src-tauri/src/main.rs` が Tauri 初期化の**前**に argv を見て分岐し、
   `argv[1] == "mcp"` のとき `grimodex_mcp::run_blocking()` を呼ぶため GUI は開かない。
   本体 `grimodex` crate から `grimodex-mcp` への依存は一方向。
-- **Electron**: 本体 GUI ではなく、package の `resources/bin/grimodex-mcp[.exe]` に置く
-  standalone sidecar を直接起動する。Electron main が sidecar の絶対 path と
+- **Electron**: 本体 GUI ではなく、package に同梱した standalone sidecar を直接起動する。
+  macOS / Windows は `resources/bin/grimodex-mcp[.exe]`、packaged Linux は起動時に更新する
+  `<userData>/bin/grimodex-mcp` を使う。Electron main が sidecar の絶対 path と
   `<userData>/license.json` の絶対 path を決定し、後者を
   `--license-file <absolute-path>` として先頭引数へ固定する。renderer はこのライセンス
   authority を選べない。
@@ -984,7 +985,7 @@ MCP core は共通だが、配布物と `.mcp.json` の `command` / 先頭引数
 | Shell | `command` | `args` prefix | ライセンス path |
 |---|---|---|---|
 | Tauri | installer が配る本体アプリの絶対 path | `mcp` | 省略時に従来の Tauri app-data から解決 |
-| Electron | package の standalone `grimodex-mcp[.exe]` の絶対 path | `--license-file`, `<absolute userData/license.json>` | Electron main が所有・注入 |
+| Electron | standalone `grimodex-mcp[.exe]` の絶対 path（packaged Linux は `<userData>/bin/grimodex-mcp`） | `--license-file`, `<absolute userData/license.json>` | Electron main が所有・注入 |
 
 Tauri 本体の path 例:
 
@@ -1002,14 +1003,18 @@ Electron sidecar は release packaging 前に必ず licensing feature 付きで 
 pnpm mcp:build
 # Electron product sidecar（licensing feature あり）
 pnpm mcp:build:release
+# product N-API の feature 検証も含めた配布前 build
+pnpm electron:native:release
 ```
 
-> **Electron Linux AppImage は Phase 4 未完**: Batch 5 の resolver は現時点で
-> `process.resourcesPath/bin/grimodex-mcp` を返すが、AppImage の `resourcesPath` は一時 mount
-> 配下で、アプリ終了後に永続的な spawn path として使えない。Phase 4 で sidecar を
-> `<userData>` 等の安定 path へ materialize してから、その path をコピーする。これが入るまで
-> Electron AppImage の MCP config は出荷受け入れ済みとみなさない。Tauri AppImage は従来どおり
-> `$APPIMAGE` が指す元 AppImage を使うため、この未完事項の対象外。
+**Phase 4 実装済み**: packaged Linux は app 起動時に package 側 source を executable regular
+non-symlink file として検証し、`<userData>/bin/grimodex-mcp` へ eager refresh する。source と
+既存 destination の SHA-256 が同じなら mode を 0755 に補正し、異なる場合は 0600 の一時 file
+へ copy → 0755 → fsync → 同一 directory 内 rename の順で置換する。copy 中に source identity /
+size / mtime / ctime が変化した場合や更新に失敗した場合は未完成 file を削除し、既存の
+known-good destination を置換しない。したがって AppImage の一時 mount が app 終了後に消えても、
+コピー済み `.mcp.json` の `command` は安定している。これは AppImage に限らず packaged Linux
+で同じ契約を使い、更新版 sidecar は次回起動時に設定画面を開かなくても反映される。
 
 アプリ内（設定 → AI → MCP 連携）のコピーボタンは、実行 shell から返された
 `command` / `argsPrefix` と、現在の workspace / project identity を組み合わせて
@@ -1059,13 +1064,13 @@ Tauri（本体アプリ + `mcp` subcommand）:
 }
 ```
 
-Electron（standalone sidecar + main-owned license path）:
+Electron Linux（stable standalone sidecar + main-owned license path）:
 
 ```json
 {
   "mcpServers": {
     "grimodex": {
-      "command": "/absolute/installed/resources/bin/grimodex-mcp",
+      "command": "/absolute/electron-user-data/bin/grimodex-mcp",
       "args": [
         "--license-file",
         "/absolute/electron-user-data/license.json",

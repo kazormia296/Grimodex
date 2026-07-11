@@ -5,12 +5,16 @@
  * 取得・検証・install は electron-updater に委ねる。開発 build では updater を
  * 起動せず、check / download / install の全操作を明示的に拒否する。
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { app } from "electron";
 import { autoUpdater } from "electron-updater";
 
 import type { ShellCommandHandlers } from "../shared/ipcContract.js";
 
 const UPDATE_PROGRESS_CHANNEL = "updater:download-progress";
+export const PACKAGE_CHANNEL_MARKER = "grimodex-package-channel";
 
 type Broadcast = (channel: string, payload: unknown) => void;
 type UpdaterListener = (...args: unknown[]) => void;
@@ -59,10 +63,70 @@ export interface ElectronUpdaterManager {
 interface ElectronUpdaterDependencies {
   updater?: AutoUpdaterLike;
   isPackaged?: boolean;
+  availability?: ElectronUpdaterAvailability;
   warn?: (message: string, cause?: unknown) => void;
   /** quitAndInstall が起動済みだが close veto された場合の再終了要求。 */
   quitApplication?: () => void;
   subscribeBeforeQuit?: (listener: () => void) => () => void;
+}
+
+export interface ElectronUpdaterAvailability {
+  enabled: boolean;
+  reason: string;
+}
+
+interface UpdaterAvailabilityOptions {
+  isPackaged?: boolean;
+  resourcesPath?: string;
+  readMarker?: (markerPath: string) => string;
+}
+
+/**
+ * Detect packages managed by an external package manager. The Arch PKGBUILD
+ * writes an explicit marker because its payload originates from a `.deb` and
+ * would otherwise make electron-updater invoke `dpkg` on an Arch host.
+ */
+export function resolveElectronUpdaterAvailability(
+  options: UpdaterAvailabilityOptions = {},
+): ElectronUpdaterAvailability {
+  const isPackaged = options.isPackaged ?? app.isPackaged;
+  if (!isPackaged) {
+    return {
+      enabled: false,
+      reason: "Electron updater is unavailable in development builds",
+    };
+  }
+
+  const markerPath = path.join(
+    options.resourcesPath ?? process.resourcesPath,
+    PACKAGE_CHANNEL_MARKER,
+  );
+  let channel: string;
+  try {
+    channel = (options.readMarker ?? ((file) => readFileSync(file, "utf8")))(
+      markerPath,
+    ).trim();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
+      return { enabled: true, reason: "Electron updater is available" };
+    }
+    return {
+      enabled: false,
+      reason: `Electron updater package marker cannot be read: ${markerPath}`,
+    };
+  }
+
+  if (channel === "arch") {
+    return {
+      enabled: false,
+      reason:
+        "Electron updater is disabled for Arch packages; update with pacman or an AUR helper",
+    };
+  }
+  return {
+    enabled: false,
+    reason: `Electron updater package channel is unsupported: ${channel || "<empty>"}`,
+  };
 }
 
 function toError(cause: unknown): Error {
@@ -125,12 +189,18 @@ export function createElectronUpdaterManager(
   dependencies: ElectronUpdaterDependencies = {},
 ): ElectronUpdaterManager {
   const isPackaged = dependencies.isPackaged ?? app.isPackaged;
+  const availability = dependencies.availability ?? {
+    enabled: isPackaged,
+    reason: isPackaged
+      ? "Electron updater is available"
+      : "Electron updater is unavailable in development builds",
+  };
   // Accessing electron-updater's singleton constructs a platform updater and
   // validates app.getVersion(). A development Electron CLI reports `0.0`, so
   // even touching the singleton would throw before the first window exists.
   const updater =
     dependencies.updater ??
-    (isPackaged
+    (isPackaged && availability.enabled
       ? (autoUpdater as unknown as AutoUpdaterLike)
       : createDevelopmentUpdater());
   const warn =
@@ -215,6 +285,9 @@ export function createElectronUpdaterManager(
     ensureActive();
     if (!isPackaged) {
       throw new Error("Electron updater is unavailable in development builds");
+    }
+    if (!availability.enabled) {
+      throw new Error(availability.reason);
     }
   }
 

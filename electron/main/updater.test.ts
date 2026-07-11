@@ -6,7 +6,9 @@ vi.mock("electron", () => ({ app: { isPackaged: true } }));
 vi.mock("electron-updater", () => ({ autoUpdater: {} }));
 
 import {
+  PACKAGE_CHANNEL_MARKER,
   createElectronUpdaterManager,
+  resolveElectronUpdaterAvailability,
   type AutoUpdaterLike,
   type ElectronUpdaterManager,
 } from "./updater.js";
@@ -93,6 +95,62 @@ function availableResult(
 afterEach(() => {
   for (const manager of managers.splice(0)) manager.dispose();
   vi.restoreAllMocks();
+});
+
+describe("resolveElectronUpdaterAvailability", () => {
+  it("enables packaged electron-builder artifacts without a channel marker", () => {
+    expect(
+      resolveElectronUpdaterAvailability({
+        isPackaged: true,
+        resourcesPath: "/opt/Grimodex/resources",
+        readMarker: (markerPath) => {
+          expect(markerPath).toBe(
+            `/opt/Grimodex/resources/${PACKAGE_CHANNEL_MARKER}`,
+          );
+          throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        },
+      }),
+    ).toEqual({ enabled: true, reason: "Electron updater is available" });
+  });
+
+  it("disables the deb updater inside an Arch-repackaged payload", () => {
+    expect(
+      resolveElectronUpdaterAvailability({
+        isPackaged: true,
+        resourcesPath: "/opt/Grimodex/resources",
+        readMarker: () => "arch\n",
+      }),
+    ).toEqual({
+      enabled: false,
+      reason:
+        "Electron updater is disabled for Arch packages; update with pacman or an AUR helper",
+    });
+  });
+
+  it("fails closed for an unknown or unreadable package marker", () => {
+    expect(
+      resolveElectronUpdaterAvailability({
+        isPackaged: true,
+        resourcesPath: "/opt/Grimodex/resources",
+        readMarker: () => "future-channel",
+      }),
+    ).toMatchObject({
+      enabled: false,
+      reason: expect.stringContaining("unsupported"),
+    });
+    expect(
+      resolveElectronUpdaterAvailability({
+        isPackaged: true,
+        resourcesPath: "/locked/resources",
+        readMarker: () => {
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        },
+      }),
+    ).toEqual({
+      enabled: false,
+      reason: `Electron updater package marker cannot be read: /locked/resources/${PACKAGE_CHANNEL_MARKER}`,
+    });
+  });
 });
 
 describe("ElectronUpdaterManager check", () => {
@@ -307,6 +365,23 @@ describe("ElectronUpdaterManager download/install", () => {
 });
 
 describe("ElectronUpdaterManager lifecycle guards", () => {
+  it("rejects updates for an external package-manager channel without constructing the singleton", async () => {
+    const manager = createElectronUpdaterManager(vi.fn(), {
+      isPackaged: true,
+      availability: {
+        enabled: false,
+        reason:
+          "Electron updater is disabled for Arch packages; update with pacman or an AUR helper",
+      },
+      subscribeBeforeQuit: () => () => undefined,
+    });
+    managers.push(manager);
+
+    await expect(
+      Promise.resolve().then(() => manager.handlers.updater_check({})),
+    ).rejects.toThrow("update with pacman or an AUR helper");
+  });
+
   it("does not construct the real updater in an unpackaged app", async () => {
     const manager = createElectronUpdaterManager(vi.fn(), {
       isPackaged: false,

@@ -31,12 +31,21 @@ win:
     - nsis
   artifactName: "${productName}-${version}-windows-${arch}.${ext}"
 
+nsis:
+  include: electron/installer/tauri-v1-migration.nsh
+
 mac:
   target:
     - dmg
     - zip
   artifactName: "${productName}-${version}-mac-${arch}.${ext}"
   hardenedRuntime: true
+
+# The release workflow staples the DMG after electron-builder has finished.
+# Stapling mutates the DMG bytes, so it must not be referenced by the already
+# generated latest-mac.yml. The ZIP remains the sole macOS updater artifact.
+dmg:
+  writeUpdateInfo: false
 
 linux:
   target:
@@ -66,6 +75,8 @@ deb:
 
 rpm:
   packageName: grimodex
+  fpm:
+    - --rpm-posttrans=packaging/linux/rpm-posttrans.sh
   depends:
     - glibc >= 2.39
     - libstdc++

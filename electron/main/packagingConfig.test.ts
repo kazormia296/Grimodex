@@ -27,7 +27,9 @@ interface BuilderConfig {
     filter: string[];
   }>;
   win?: Record<string, unknown>;
+  nsis?: Record<string, unknown>;
   mac?: Record<string, unknown>;
+  dmg?: Record<string, unknown>;
   linux?: Record<string, unknown>;
   deb?: Record<string, unknown>;
   rpm?: Record<string, unknown>;
@@ -119,11 +121,15 @@ describe("Electron release packaging contract", () => {
       target: ["nsis"],
       artifactName: "${productName}-${version}-windows-${arch}.${ext}",
     });
+    expect(config.nsis).toEqual({
+      include: "electron/installer/tauri-v1-migration.nsh",
+    });
     expect(config.mac).toEqual({
       target: ["dmg", "zip"],
       artifactName: "${productName}-${version}-mac-${arch}.${ext}",
       hardenedRuntime: true,
     });
+    expect(config.dmg).toEqual({ writeUpdateInfo: false });
     expect(config.linux).toEqual({
       target: ["AppImage", "deb", "rpm"],
       artifactName: "${productName}-${version}-linux-${arch}.${ext}",
@@ -150,6 +156,7 @@ describe("Electron release packaging contract", () => {
     });
     expect(config.rpm).toEqual({
       packageName: "grimodex",
+      fpm: ["--rpm-posttrans=packaging/linux/rpm-posttrans.sh"],
       depends: [
         "glibc >= 2.39",
         "libstdc++",

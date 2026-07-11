@@ -29,7 +29,10 @@ import {
 } from "./protocol.js";
 import { showSavePathDialog } from "./shellCommands.js";
 import { configureAppUserData } from "./userData.js";
-import { createElectronUpdaterManager } from "./updater.js";
+import {
+  createElectronUpdaterManager,
+  resolveElectronUpdaterAvailability,
+} from "./updater.js";
 import { createVivliostyleManager } from "./vivliostyle.js";
 import { createMainWindow, getWindow } from "./windows.js";
 import {
@@ -184,7 +187,13 @@ if (!gotSingleInstanceLock) {
       pickSavePath: (options) =>
         showSavePathDialog(getWindow("main") ?? null, options),
     });
-    const updater = createElectronUpdaterManager(broadcastEvent);
+    const updaterAvailability = resolveElectronUpdaterAvailability();
+    if (app.isPackaged && !updaterAvailability.enabled) {
+      console.log(`[grimodex-electron] ${updaterAvailability.reason}`);
+    }
+    const updater = createElectronUpdaterManager(broadcastEvent, {
+      availability: updaterAvailability,
+    });
     const licenseValidation = createLicenseValidationScheduler(
       backend,
       broadcastEvent,

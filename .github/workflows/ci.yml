@@ -98,6 +98,189 @@ jobs:
       - name: pnpm audit
         run: pnpm audit --audit-level critical
 
+  electron:
+    name: Electron (workflow contract / type-check / test / build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9b12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Release workflow and manifest contract tests
+        run: >-
+          node --test
+          scripts/validate-release-version.test.mjs
+          scripts/generate-tauri-bridge-manifest.test.mjs
+          scripts/release-workflows.test.mjs
+          scripts/arch-electron-package.test.mjs
+          scripts/linux-release-abi.test.mjs
+          scripts/verify-electron-updater-metadata.test.mjs
+          scripts/windows-signing-workflow.test.mjs
+
+      - name: Electron type-check
+        run: pnpm exec tsc -p electron/tsconfig.json --noEmit
+
+      - name: Electron tests
+        run: pnpm test:electron --run
+
+      - name: Electron production build
+        run: pnpm electron:build
+
+  electron-windows-installer-contract:
+    name: Electron Windows installer (NSIS migration contract)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@f40ffcd9367d9b12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Parse the migration E2E PowerShell script
+        shell: pwsh
+        run: |
+          $Tokens = $null
+          $ParseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/verify-windows-tauri-migration.ps1),
+            [ref]$Tokens,
+            [ref]$ParseErrors
+          ) | Out-Null
+          if ($ParseErrors.Count -ne 0) {
+            $ParseErrors | Format-List -Force
+            exit 1
+          }
+
+      - name: Build Electron JavaScript
+        run: pnpm electron:build
+
+      # This job validates electron-builder's two makensis passes, not the
+      # platform runtime. Release-native binaries are built and exercised in
+      # electron-native and again in the signed release matrix.
+      - name: Prepare compile-only native placeholders
+        shell: pwsh
+        run: |
+          New-Item -ItemType File -Path electron/native/grimodex-node/grimodex-node.node -Force | Out-Null
+          New-Item -ItemType Directory -Path src-tauri/target/release -Force | Out-Null
+          New-Item -ItemType File -Path src-tauri/target/release/grimodex-mcp.exe -Force | Out-Null
+
+      - name: Compile the final NSIS installer with migration hooks
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          pnpm exec electron-builder --win nsis --x64 --publish never `
+            --config.directories.output=release/electron-contract
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $Installer = @(Get-ChildItem release/electron-contract -Filter 'Grimodex-*-windows-x64.exe' -File)
+          if ($Installer.Count -ne 1 -or $Installer[0].Length -eq 0) {
+            Write-Error "Final NSIS migration-contract installer is missing."
+            exit 1
+          }
+
+  electron-native:
+    name: Electron native (N-API / release features / MCP)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
+          df -h /
+
+      - name: Native build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libdbus-1-dev \
+            libsecret-1-dev \
+            pkg-config
+
+      - uses: pnpm/action-setup@f40ffcd9367d9b12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: |
+            src-tauri
+            electron/native/grimodex-node
+          key: electron-native
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build and test the development N-API module
+        run: |
+          pnpm napi:build
+          pnpm --dir electron/native/grimodex-node test
+
+      - name: Check both release-only native features
+        run: >-
+          cargo check
+          --manifest-path electron/native/grimodex-node/Cargo.toml
+          --features licensing,legacy-keyring-migration
+
+      - name: Clippy both release-only native features
+        run: >-
+          cargo clippy
+          --manifest-path electron/native/grimodex-node/Cargo.toml
+          --all-targets
+          --features licensing,legacy-keyring-migration
+          -- -D warnings
+
+      - name: Test both release-only native features
+        run: >-
+          cargo test
+          --manifest-path electron/native/grimodex-node/Cargo.toml
+          --features licensing,legacy-keyring-migration
+
+      - name: Test licensed MCP sidecar
+        run: >-
+          cargo test
+          --manifest-path src-tauri/Cargo.toml
+          -p grimodex-mcp
+          --features licensing
+
   rust:
     name: Rust (check / clippy / test)
     runs-on: ubuntu-latest
