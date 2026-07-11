@@ -14,12 +14,23 @@ export interface ImeExportOptions {
   includeProfile: boolean;
 }
 
+export type ImeConsumerPlatform = "linux" | "windows" | "macos";
+
+export interface ImeConsumerCapabilities {
+  profile: boolean;
+  dynamicDictionary: boolean;
+  zenzaiV3Conditions: boolean;
+  applicationScoping: boolean;
+  [capability: string]: boolean;
+}
+
 export interface ImeConsumerInfo {
   consumerId: string;
   name: string;
   version: string;
+  platform: ImeConsumerPlatform | null;
   lastSeen: string;
-  capabilities: Record<string, boolean>;
+  capabilities: ImeConsumerCapabilities;
 }
 
 export interface ImeExportStatus {

@@ -103,15 +103,12 @@ describe("IME Protocol V1 contract fixtures", () => {
     );
 
     const validateConsumer = compileSchema("consumer");
-    const consumer = readJson(
-      "fixtures/valid/consumer-linux.json",
-    ) as Record<string, unknown>;
-    expect(validateConsumer({ ...consumer, name: "C0\u0007text" })).toBe(
-      false,
-    );
-    expect(validateConsumer({ ...consumer, name: "C1\u009ftext" })).toBe(
-      false,
-    );
+    const consumer = readJson("fixtures/valid/consumer-linux.json") as Record<
+      string,
+      unknown
+    >;
+    expect(validateConsumer({ ...consumer, name: "C0\u0007text" })).toBe(false);
+    expect(validateConsumer({ ...consumer, name: "C1\u009ftext" })).toBe(false);
     expect(validateConsumer({ ...consumer, name: "lone\ud800surrogate" })).toBe(
       false,
     );
@@ -140,7 +137,7 @@ describe("IME Protocol V1 contract fixtures", () => {
     });
   });
 
-  it("fixes the initial AzooKey CID, MID, priority-cost, and deduplication policy", () => {
+  it("fixes the initial AzooKey CID, MID, priority-score, and deduplication policy", () => {
     const mapping = readJson("expected/mapped-entries.json") as {
       policy: unknown;
       mapped_entries: Array<Record<string, unknown>>;
@@ -150,8 +147,8 @@ describe("IME Protocol V1 contract fixtures", () => {
     expect(mapping.policy).toEqual({
       cid: { person: 1289, place: 1293, noun: 1288 },
       mid: 501,
-      priority_base_cost: { "1": -8, "2": -5, "3": -4 },
-      category_cost_adjustment: { person: 0, place: -1, noun: -1 },
+      priority_base_score: { "1": -8, "2": -5, "3": -4 },
+      category_score_adjustment: { person: 0, place: -1, noun: -1 },
     });
     expect(mapping.mapped_entries).toContainEqual({
       input: {
@@ -170,6 +167,26 @@ describe("IME Protocol V1 contract fixtures", () => {
       },
     });
     expect(mapping.deduplicated_entries).toHaveLength(3);
+  });
+
+  it("fixes the cross-OS Zenzai topic truncation policy", () => {
+    expect(readJson("expected/zenzai-topic.json")).toEqual({
+      policy: {
+        consumer_max_scalars: 25,
+        truncation: "unicode_scalar_prefix",
+        append_ellipsis: false,
+      },
+      cases: [
+        {
+          wire_topic: "溶鉄の星・軍事SF",
+          consumer_topic: "溶鉄の星・軍事SF",
+        },
+        {
+          wire_topic: "1234567890123456789012345・後半は切り捨て",
+          consumer_topic: "1234567890123456789012345",
+        },
+      ],
+    });
   });
 
   it("describes an atomic project switch without adopting a mixed snapshot", () => {

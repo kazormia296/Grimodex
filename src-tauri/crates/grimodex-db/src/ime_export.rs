@@ -4,7 +4,7 @@
 //! adapter stays thin and IME consumers only observe atomic JSON snapshots
 //! under the app data directory.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -21,7 +21,23 @@ use crate::Database;
 
 const FORMAT_VERSION: u32 = 1;
 const MAX_PROFILE_CHARS: usize = 400;
+const MAX_ZENZAI_TOPIC_CHARS: usize = 200;
+const MAX_ZENZAI_STYLE_CHARS: usize = 200;
+const MAX_ZENZAI_PREFERENCE_CHARS: usize = 200;
+const MAX_PROJECT_ID_CHARS: usize = 128;
+const MAX_PROJECT_NAME_CHARS: usize = 256;
+const MAX_ENTRY_YOMI_CHARS: usize = 256;
+const MAX_ENTRY_SURFACE_CHARS: usize = 256;
+const MAX_ENTRY_ID_CHARS: usize = 128;
+const MAX_PROJECT_ENTRIES: usize = 20_000;
+const MAX_PROJECT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STATE_BYTES: u64 = 64 * 1024;
 const MAX_CONSUMER_BYTES: u64 = 64 * 1024;
+const MAX_CONSUMER_ID_CHARS: usize = 128;
+const MAX_CONSUMER_NAME_CHARS: usize = 128;
+const MAX_CONSUMER_VERSION_CHARS: usize = 64;
+const MAX_CONSUMER_PLATFORM_CHARS: usize = 32;
+const MAX_TIMESTAMP_CHARS: usize = 64;
 
 /// User-selectable IME integration behavior.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -85,10 +101,26 @@ fn preference_bool(preferences: &HashMap<String, String>, key: &str, fallback: b
 }
 
 /// Consumer capability flags advertised in `consumers/<id>.json`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImeConsumerCapabilities {
+    #[serde(default)]
     pub profile: bool,
+    #[serde(default)]
+    pub dynamic_dictionary: bool,
+    #[serde(default)]
+    pub zenzai_v3_conditions: bool,
+    #[serde(default)]
+    pub application_scoping: bool,
+}
+
+/// Platform declared by an IME consumer handshake.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImeConsumerPlatform {
+    Linux,
+    Windows,
+    Macos,
 }
 
 /// Validated consumer information exposed to the settings UI.
@@ -98,6 +130,7 @@ pub struct ImeConsumerInfo {
     pub consumer_id: String,
     pub name: String,
     pub version: String,
+    pub platform: Option<ImeConsumerPlatform>,
     pub capabilities: ImeConsumerCapabilities,
     pub last_seen: String,
 }
@@ -403,6 +436,15 @@ struct ProjectSnapshot {
     entries: Vec<ExportEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zenzai_context: Option<ZenzaiContext>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ZenzaiContext {
+    topic: String,
+    style: Option<String>,
+    preference: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -427,8 +469,43 @@ struct ConsumerHandshake {
     consumer_id: String,
     name: String,
     version: String,
-    capabilities: ImeConsumerCapabilities,
+    #[serde(default)]
+    platform: Option<String>,
+    capabilities: ConsumerHandshakeCapabilities,
     last_seen: String,
+}
+
+/// The on-disk V1 handshake uses snake_case. Keep it separate from the
+/// camelCase status DTO exposed through N-API.
+#[derive(Debug, Default, Deserialize)]
+struct ConsumerHandshakeCapabilities {
+    profile: bool,
+    #[serde(default)]
+    dynamic_dictionary: bool,
+    #[serde(default)]
+    zenzai_v3_conditions: bool,
+    #[serde(default)]
+    application_scoping: bool,
+}
+
+impl From<ConsumerHandshakeCapabilities> for ImeConsumerCapabilities {
+    fn from(value: ConsumerHandshakeCapabilities) -> Self {
+        Self {
+            profile: value.profile,
+            dynamic_dictionary: value.dynamic_dictionary,
+            zenzai_v3_conditions: value.zenzai_v3_conditions,
+            application_scoping: value.application_scoping,
+        }
+    }
+}
+
+fn parse_consumer_platform(value: Option<&str>) -> Option<ImeConsumerPlatform> {
+    match value {
+        Some("linux") => Some(ImeConsumerPlatform::Linux),
+        Some("windows") => Some(ImeConsumerPlatform::Windows),
+        Some("macos") => Some(ImeConsumerPlatform::Macos),
+        _ => None,
+    }
 }
 
 /// Rebuild one Japanese project's dictionary snapshot and return current status.
@@ -466,7 +543,8 @@ pub fn refresh_project_export(
         return get_status(root, options.mode);
     }
 
-    let snapshot = build_snapshot(project, options);
+    let mut snapshot = build_snapshot(project, options);
+    fit_project_snapshot_to_limit(&mut snapshot)?;
     let path = project_snapshot_path(root, project_id);
     atomic_write_json(&path, &snapshot)?;
     get_status(root, options.mode)
@@ -492,7 +570,7 @@ pub fn set_active_project(
     }
 
     let desired = project_id
-        .filter(|id| project_snapshot_path(root, id).is_file())
+        .filter(|id| read_valid_project_snapshot(root, id).is_some())
         .map(str::to_owned);
 
     // Do not create the IME directory merely to persist an inactive state.
@@ -518,7 +596,7 @@ pub fn get_status(root: &Path, mode: ImeIntegrationMode) -> anyhow::Result<ImeEx
     let exported_project_count = count_project_snapshots(root)?;
     let active_project_id = read_state(root)?
         .and_then(|state| state.active_project_id)
-        .filter(|id| project_snapshot_path(root, id).is_file());
+        .filter(|id| read_valid_project_snapshot(root, id).is_some());
 
     Ok(ImeExportStatus {
         root_path: root.to_path_buf(),
@@ -600,6 +678,7 @@ pub fn remove_project_export_if_absent(
 
 fn validate_project_id(project_id: &str) -> anyhow::Result<()> {
     if project_id.is_empty()
+        || project_id.chars().count() > MAX_PROJECT_ID_CHARS
         || !project_id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
@@ -675,6 +754,7 @@ fn build_snapshot(project: ProjectData, options: &ImeExportOptions) -> ProjectSn
     for entry in &included {
         append_export_entries(entry, &mut entries);
     }
+    let entries = deduplicate_and_bound_entries(entries);
 
     let profile = options
         .include_profile
@@ -686,14 +766,26 @@ fn build_snapshot(project: ProjectData, options: &ImeExportOptions) -> ProjectSn
             )
         })
         .flatten();
+    let zenzai_context = options
+        .include_profile
+        .then(|| {
+            build_zenzai_context(
+                &project.title,
+                project.genre.as_deref(),
+                project.outline.as_deref(),
+            )
+        })
+        .flatten();
+    let project_name = bounded_project_name(&project.title, &project.id);
 
     ProjectSnapshot {
         format_version: FORMAT_VERSION,
         project_id: project.id,
-        project_name: project.title,
+        project_name,
         generated_at: timestamp(),
         entries,
         profile,
+        zenzai_context,
     }
 }
 
@@ -732,20 +824,98 @@ fn append_export_entries(entry: &CodexData, out: &mut Vec<ExportEntry>) {
                 .collect::<Vec<_>>(),
             None => derive_reading(&surface).into_iter().collect(),
         };
+        let normalized_surface: String = surface.nfc().collect();
 
         let mut seen_yomis = HashSet::new();
         for yomi in yomis {
-            if !seen_yomis.insert(yomi.clone()) {
+            if !valid_protocol_text(&yomi, MAX_ENTRY_YOMI_CHARS)
+                || !valid_protocol_text(&normalized_surface, MAX_ENTRY_SURFACE_CHARS)
+                || !valid_entry_id(&entry.id)
+                || !seen_yomis.insert(yomi.clone())
+            {
                 continue;
             }
             out.push(ExportEntry {
                 yomi,
-                surface: surface.clone(),
+                surface: normalized_surface.clone(),
                 category: category.to_owned(),
                 priority,
                 entry_id: entry.id.clone(),
             });
         }
+    }
+}
+
+fn deduplicate_and_bound_entries(entries: Vec<ExportEntry>) -> Vec<ExportEntry> {
+    let mut deduplicated: BTreeMap<(String, String, String), ExportEntry> = BTreeMap::new();
+    for entry in entries {
+        let key = (
+            entry.yomi.clone(),
+            entry.surface.clone(),
+            entry.category.clone(),
+        );
+        match deduplicated.get_mut(&key) {
+            Some(current)
+                if entry.priority > current.priority
+                    || (entry.priority == current.priority
+                        && entry.entry_id < current.entry_id) =>
+            {
+                *current = entry;
+            }
+            Some(_) => {}
+            None => {
+                deduplicated.insert(key, entry);
+            }
+        }
+    }
+
+    let mut entries: Vec<ExportEntry> = deduplicated.into_values().collect();
+    entries.sort_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.yomi.cmp(&right.yomi))
+            .then_with(|| left.surface.cmp(&right.surface))
+            .then_with(|| left.category.cmp(&right.category))
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    });
+    entries.truncate(MAX_PROJECT_ENTRIES);
+    entries
+}
+
+fn fit_project_snapshot_to_limit(snapshot: &mut ProjectSnapshot) -> anyhow::Result<()> {
+    let original_entry_count = snapshot.entries.len();
+    loop {
+        let encoded_size = serde_json::to_vec_pretty(&snapshot)
+            .context("measure IME project snapshot")?
+            .len()
+            + 1;
+        if encoded_size <= MAX_PROJECT_BYTES {
+            if snapshot.entries.len() < original_entry_count {
+                tracing::warn!(
+                    project_id = %snapshot.project_id,
+                    original_entry_count,
+                    exported_entry_count = snapshot.entries.len(),
+                    "truncated IME project snapshot to the protocol size limit"
+                );
+            }
+            return Ok(());
+        }
+        if snapshot.entries.is_empty() {
+            bail!("IME project metadata exceeds the protocol size limit");
+        }
+
+        let current_len = snapshot.entries.len();
+        let proportional_len = current_len
+            .saturating_mul(MAX_PROJECT_BYTES)
+            .checked_div(encoded_size)
+            .unwrap_or(0);
+        let next_len = proportional_len
+            .saturating_mul(98)
+            .checked_div(100)
+            .unwrap_or(0)
+            .min(current_len - 1);
+        snapshot.entries.truncate(next_len);
     }
 }
 
@@ -870,7 +1040,72 @@ fn build_profile(
     if parts.is_empty() {
         return None;
     }
-    Some(parts.join("。").chars().take(MAX_PROFILE_CHARS).collect())
+    Some(truncate_chars(
+        &sanitize_protocol_text(&parts.join("。")),
+        MAX_PROFILE_CHARS,
+    ))
+}
+
+fn build_zenzai_context(
+    project_name: &str,
+    genre: Option<&str>,
+    outline: Option<&str>,
+) -> Option<ZenzaiContext> {
+    let mut parts = Vec::new();
+    let genre = genre.map(japanese_genre_label);
+    for value in [Some(project_name), genre.as_deref(), outline]
+        .into_iter()
+        .flatten()
+    {
+        let value = sanitize_protocol_text(value);
+        let value = value.trim();
+        if !value.is_empty() {
+            parts.push(value.to_owned());
+        }
+    }
+    let topic = truncate_chars(&parts.join("・"), MAX_ZENZAI_TOPIC_CHARS);
+    if topic.is_empty() {
+        return None;
+    }
+    Some(ZenzaiContext {
+        topic,
+        style: None,
+        preference: None,
+    })
+}
+
+fn bounded_project_name(project_name: &str, project_id: &str) -> String {
+    let sanitized = sanitize_protocol_text(project_name);
+    let value = sanitized.trim();
+    if value.is_empty() {
+        return project_id.to_owned();
+    }
+    truncate_chars(value, MAX_PROJECT_NAME_CHARS)
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn sanitize_protocol_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect()
+}
+
+fn valid_protocol_text(value: &str, max_chars: usize) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= max_chars
+        && value.chars().all(|character| !character.is_control())
+}
+
+fn valid_entry_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= MAX_ENTRY_ID_CHARS
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 fn japanese_genre_label(genre: &str) -> String {
@@ -955,13 +1190,28 @@ fn detect_consumers(root: &Path) -> anyhow::Result<Vec<ImeConsumerInfo>> {
                 continue;
             }
         };
+        let wire_shape_is_valid = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .is_some_and(|object| {
+                !object
+                    .get("platform")
+                    .is_some_and(serde_json::Value::is_null)
+            });
         let file_id = path.file_stem().and_then(|value| value.to_str());
-        if handshake.format_version != FORMAT_VERSION
+        if !wire_shape_is_valid
+            || handshake.format_version != FORMAT_VERSION
             || file_id != Some(handshake.consumer_id.as_str())
             || !valid_consumer_id(&handshake.consumer_id)
             || handshake.name.trim().is_empty()
+            || !valid_protocol_text(&handshake.name, MAX_CONSUMER_NAME_CHARS)
             || handshake.version.trim().is_empty()
-            || handshake.last_seen.trim().is_empty()
+            || !valid_protocol_text(&handshake.version, MAX_CONSUMER_VERSION_CHARS)
+            || handshake
+                .platform
+                .as_deref()
+                .is_some_and(|value| !valid_platform_token(value))
+            || !valid_rfc3339_timestamp(&handshake.last_seen)
             || !seen_ids.insert(handshake.consumer_id.clone())
         {
             tracing::warn!(path = %path.display(), "ignoring incompatible IME consumer handshake");
@@ -971,7 +1221,8 @@ fn detect_consumers(root: &Path) -> anyhow::Result<Vec<ImeConsumerInfo>> {
             consumer_id: handshake.consumer_id,
             name: handshake.name,
             version: handshake.version,
-            capabilities: handshake.capabilities,
+            platform: parse_consumer_platform(handshake.platform.as_deref()),
+            capabilities: handshake.capabilities.into(),
             last_seen: handshake.last_seen,
         });
     }
@@ -981,10 +1232,159 @@ fn detect_consumers(root: &Path) -> anyhow::Result<Vec<ImeConsumerInfo>> {
 
 fn valid_consumer_id(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 128
+        && value.len() <= MAX_CONSUMER_ID_CHARS
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn valid_platform_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_CONSUMER_PLATFORM_CHARS
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn valid_rfc3339_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if !value.is_ascii()
+        || bytes.len() < 20
+        || bytes.len() > MAX_TIMESTAMP_CHARS
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || bytes.get(10) != Some(&b'T')
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+        || ![0..4, 5..7, 8..10, 11..13, 14..16, 17..19]
+            .into_iter()
+            .all(|range| bytes[range].iter().all(u8::is_ascii_digit))
+    {
+        return false;
+    }
+
+    let mut zone_index = 19;
+    if bytes.get(zone_index) == Some(&b'.') {
+        zone_index += 1;
+        let fraction_start = zone_index;
+        while bytes.get(zone_index).is_some_and(u8::is_ascii_digit) {
+            zone_index += 1;
+        }
+        if !(1..=9).contains(&zone_index.saturating_sub(fraction_start)) {
+            return false;
+        }
+    }
+
+    let valid_zone = match bytes.get(zone_index) {
+        Some(b'Z') => zone_index + 1 == bytes.len(),
+        Some(b'+' | b'-') => {
+            zone_index + 6 == bytes.len()
+                && bytes.get(zone_index + 3) == Some(&b':')
+                && bytes[zone_index + 1..zone_index + 3]
+                    .iter()
+                    .all(u8::is_ascii_digit)
+                && bytes[zone_index + 4..zone_index + 6]
+                    .iter()
+                    .all(u8::is_ascii_digit)
+        }
+        _ => false,
+    };
+    valid_zone && chrono::DateTime::parse_from_rfc3339(value).is_ok()
+}
+
+fn valid_optional_protocol_text(value: &str, max_chars: usize) -> bool {
+    value.chars().count() <= max_chars && value.chars().all(|character| !character.is_control())
+}
+
+fn valid_project_snapshot(snapshot: &ProjectSnapshot, expected_project_id: &str) -> bool {
+    snapshot.format_version == FORMAT_VERSION
+        && snapshot.project_id == expected_project_id
+        && validate_project_id(&snapshot.project_id).is_ok()
+        && valid_protocol_text(&snapshot.project_name, MAX_PROJECT_NAME_CHARS)
+        && valid_rfc3339_timestamp(&snapshot.generated_at)
+        && snapshot.entries.len() <= MAX_PROJECT_ENTRIES
+        && snapshot.entries.iter().all(|entry| {
+            valid_protocol_text(&entry.yomi, MAX_ENTRY_YOMI_CHARS)
+                && valid_protocol_text(&entry.surface, MAX_ENTRY_SURFACE_CHARS)
+                && matches!(entry.category.as_str(), "person" | "place" | "noun")
+                && (1..=3).contains(&entry.priority)
+                && valid_entry_id(&entry.entry_id)
+        })
+        && snapshot
+            .profile
+            .as_deref()
+            .is_none_or(|value| valid_optional_protocol_text(value, MAX_PROFILE_CHARS))
+        && snapshot.zenzai_context.as_ref().is_none_or(|context| {
+            valid_protocol_text(&context.topic, MAX_ZENZAI_TOPIC_CHARS)
+                && context
+                    .style
+                    .as_deref()
+                    .is_none_or(|value| valid_optional_protocol_text(value, MAX_ZENZAI_STYLE_CHARS))
+                && context.preference.as_deref().is_none_or(|value| {
+                    valid_optional_protocol_text(value, MAX_ZENZAI_PREFERENCE_CHARS)
+                })
+        })
+}
+
+fn valid_project_wire_shape(bytes: &[u8]) -> bool {
+    let Ok(serde_json::Value::Object(object)) = serde_json::from_slice(bytes) else {
+        return false;
+    };
+    if object
+        .get("profile")
+        .is_some_and(serde_json::Value::is_null)
+        || object
+            .get("zenzai_context")
+            .is_some_and(serde_json::Value::is_null)
+    {
+        return false;
+    }
+    let Some(context) = object.get("zenzai_context") else {
+        return true;
+    };
+    context
+        .as_object()
+        .is_some_and(|context| context.contains_key("style") && context.contains_key("preference"))
+}
+
+fn read_bounded_file(path: &Path, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!("IME contract file exceeds {max_bytes} bytes"),
+        ));
+    }
+    Ok(Some(bytes))
+}
+
+fn read_valid_project_snapshot(root: &Path, project_id: &str) -> Option<ProjectSnapshot> {
+    read_valid_project_snapshot_path(&project_snapshot_path(root, project_id), project_id)
+}
+
+fn read_valid_project_snapshot_path(
+    path: &Path,
+    expected_project_id: &str,
+) -> Option<ProjectSnapshot> {
+    let bytes = match read_bounded_file(path, MAX_PROJECT_BYTES as u64) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), "ignoring unreadable IME project snapshot: {error}");
+            return None;
+        }
+    };
+    if !valid_project_wire_shape(&bytes) {
+        return None;
+    }
+    let snapshot: ProjectSnapshot = serde_json::from_slice(&bytes).ok()?;
+    valid_project_snapshot(&snapshot, expected_project_id).then_some(snapshot)
 }
 
 fn count_project_snapshots(root: &Path) -> anyhow::Result<usize> {
@@ -1015,14 +1415,7 @@ fn count_project_snapshots(root: &Path) -> anyhow::Result<usize> {
         if validate_project_id(stem).is_err() {
             continue;
         }
-        let snapshot: ProjectSnapshot = match fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        {
-            Some(snapshot) => snapshot,
-            None => continue,
-        };
-        if snapshot.format_version == FORMAT_VERSION && snapshot.project_id == stem {
+        if read_valid_project_snapshot_path(&path, stem).is_some() {
             count += 1;
         }
     }
@@ -1031,11 +1424,17 @@ fn count_project_snapshots(root: &Path) -> anyhow::Result<usize> {
 
 fn read_state(root: &Path) -> anyhow::Result<Option<ExportState>> {
     let path = root.join("state.json");
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("read IME state"),
+    let bytes = match read_bounded_file(&path, MAX_STATE_BYTES).context("read IME state")? {
+        Some(bytes) => bytes,
+        None => return Ok(None),
     };
+    let has_active_project_id = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|object| object.contains_key("active_project_id"));
+    if !has_active_project_id {
+        bail!("IME state is missing active_project_id");
+    }
     let state: ExportState = serde_json::from_slice(&bytes).context("parse IME state")?;
     if state.format_version != FORMAT_VERSION {
         bail!(
@@ -1045,6 +1444,9 @@ fn read_state(root: &Path) -> anyhow::Result<Option<ExportState>> {
     }
     if let Some(project_id) = state.active_project_id.as_deref() {
         validate_project_id(project_id)?;
+    }
+    if !valid_rfc3339_timestamp(&state.updated_at) {
+        bail!("invalid IME state updated_at timestamp");
     }
     Ok(Some(state))
 }
@@ -1196,6 +1598,55 @@ fn sync_parent_directory(parent: &Path) -> anyhow::Result<()> {
 #[cfg(not(unix))]
 fn sync_parent_directory(_parent: &Path) -> anyhow::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod protocol_limit_tests {
+    use super::*;
+
+    fn entry(index: usize, surface: &str) -> ExportEntry {
+        ExportEntry {
+            yomi: format!("よみ{index}"),
+            surface: surface.to_owned(),
+            category: "noun".to_owned(),
+            priority: 1,
+            entry_id: format!("entry-{index}"),
+        }
+    }
+
+    #[test]
+    fn producer_caps_project_entries_at_the_protocol_limit() {
+        let entries = (0..=MAX_PROJECT_ENTRIES)
+            .map(|index| entry(index, "表記"))
+            .collect();
+
+        let bounded = deduplicate_and_bound_entries(entries);
+
+        assert_eq!(bounded.len(), MAX_PROJECT_ENTRIES);
+    }
+
+    #[test]
+    fn producer_truncates_a_snapshot_to_the_serialized_byte_limit() -> anyhow::Result<()> {
+        let large_surface = "界".repeat(MAX_ENTRY_SURFACE_CHARS);
+        let mut snapshot = ProjectSnapshot {
+            format_version: FORMAT_VERSION,
+            project_id: "byte-limit".to_owned(),
+            project_name: "Byte limit".to_owned(),
+            generated_at: "2026-07-11T00:00:00.000Z".to_owned(),
+            entries: (0..MAX_PROJECT_ENTRIES)
+                .map(|index| entry(index, &large_surface))
+                .collect(),
+            profile: None,
+            zenzai_context: None,
+        };
+        assert!(serde_json::to_vec_pretty(&snapshot)?.len() + 1 > MAX_PROJECT_BYTES);
+
+        fit_project_snapshot_to_limit(&mut snapshot)?;
+
+        assert!(snapshot.entries.len() < MAX_PROJECT_ENTRIES);
+        assert!(serde_json::to_vec_pretty(&snapshot)?.len() + 1 <= MAX_PROJECT_BYTES);
+        Ok(())
+    }
 }
 
 #[cfg(all(test, windows))]

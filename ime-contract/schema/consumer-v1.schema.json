@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.app/ime-contract/schema/consumer-v1.schema.json",
+  "title": "Grimodex IME consumer handshake format version 1",
+  "type": "object",
+  "required": [
+    "format_version",
+    "consumer_id",
+    "name",
+    "version",
+    "capabilities",
+    "last_seen"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "consumer_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,128}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["profile"],
+      "properties": {
+        "profile": {
+          "type": "boolean"
+        },
+        "dynamic_dictionary": {
+          "type": "boolean"
+        },
+        "zenzai_v3_conditions": {
+          "type": "boolean"
+        },
+        "application_scoping": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "last_seen": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    }
+  },
+  "additionalProperties": true
+}

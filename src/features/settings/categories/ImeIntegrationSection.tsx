@@ -16,6 +16,7 @@ import {
   type ImeExportStatus,
   type ImeIntegrationMode,
 } from "@/features/ime/api";
+import { ImeConsumerList } from "./ImeConsumerList";
 
 export function ImeIntegrationSection() {
   const { t } = useTranslation();
@@ -175,9 +176,7 @@ export function ImeIntegrationSection() {
           </p>
         )}
         {status && status.consumers.length > 0 && (
-          <p className="mt-1 text-muted-foreground">
-            {status.consumers.map((consumer) => consumer.name).join(", ")}
-          </p>
+          <ImeConsumerList consumers={status.consumers} />
         )}
       </div>
 

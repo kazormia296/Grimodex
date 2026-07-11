@@ -1,0 +1,10 @@
+{
+  "format_version": 1,
+  "consumer_id": "../outside",
+  "name": "Traversal",
+  "version": "1.0.0",
+  "capabilities": {
+    "profile": false
+  },
+  "last_seen": "2026-07-11T00:00:00.000Z"
+}
