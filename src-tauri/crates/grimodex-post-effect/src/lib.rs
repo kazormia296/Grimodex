@@ -25,6 +25,14 @@ use grimodex_db::{AppError, Database};
 /// monomorphize する。Tauri は AppHandle、napi は Arc<AppState> の薄い adapter で
 /// 実装し、DB・イベント・abort state の正本をそれぞれの常駐 state に保つ。
 pub trait PostEffectRuntime: Clone + Send + Sync + 'static {
+    /// 現在 workspace の DB をこの runtime clone へ固定する。start は cache 照合・
+    /// running INSERT より前に必ず呼び、detached worker の全 DB 操作を同じ Arc へ
+    /// 着弾させる。abort command は未 pin runtime のまま registry の binding を使う。
+    fn pin_database(&self) -> Result<Self, AppError>;
+
+    /// pin 済み DB。新規 run を abort registry へ束縛するために使う。
+    fn pinned_database(&self) -> Option<Arc<Database>>;
+
     fn with_db<T, F>(&self, f: F) -> Result<T, AppError>
     where
         F: FnOnce(&Database) -> anyhow::Result<T>;
@@ -32,9 +40,33 @@ pub trait PostEffectRuntime: Clone + Send + Sync + 'static {
     /// emit は従来どおり best-effort。シェル固有の失敗は adapter 側で握る。
     fn emit(&self, channel: &str, payload: Value);
 
-    fn request_abort(&self, run_id: &str);
-    fn is_aborted(&self, run_id: &str) -> bool;
-    fn clear_abort(&self, run_id: &str);
+    fn abort_registry(&self) -> &PostEffectAbortRegistry;
+
+    fn bind_abort_database(&self, run_id: &str) {
+        if let Some(db) = self.pinned_database() {
+            self.abort_registry().bind_database(run_id, db);
+        } else {
+            tracing::error!(run_id, "post-effect run has no pinned database to bind");
+        }
+    }
+
+    /// registry lock → DB CAS → aborted insert を1 critical sectionにする。
+    /// worker の `is_aborted` も同じ lock を取るため、CAS後かつflag前に次sceneを
+    /// 開始する TOCTOU window は存在しない。
+    fn request_abort_if<F>(&self, run_id: &str, request: F) -> Result<bool, AppError>
+    where
+        F: FnOnce(Option<&Arc<Database>>) -> Result<bool, AppError>,
+    {
+        self.abort_registry().request_if(run_id, request)
+    }
+
+    fn is_aborted(&self, run_id: &str) -> bool {
+        self.abort_registry().is_aborted(run_id)
+    }
+
+    fn clear_abort(&self, run_id: &str) {
+        self.abort_registry().clear(run_id);
+    }
 }
 
 /// 1 回の post-effect API 呼び出しに必要な値。
@@ -66,10 +98,18 @@ pub trait PostEffectAiClient: Clone + Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<PostEffectAiOutput>> + Send + 'a>>;
 }
 
-/// run_id 単位の中止要求集合。clone は同じ集合を共有する。
+/// run_id 単位の中止要求と開始元DB binding。clone は同じ state を共有する。
+#[derive(Default)]
+struct PostEffectAbortState {
+    aborted: HashSet<String>,
+    /// start 時の pinned DB。workspace switch 後の abort command も開始元 run を
+    /// cancel できるよう run_id と一緒に保持する。
+    databases: HashMap<String, Arc<Database>>,
+}
+
 #[derive(Clone, Default)]
 pub struct PostEffectAbortRegistry {
-    aborted: Arc<Mutex<HashSet<String>>>,
+    state: Arc<Mutex<PostEffectAbortState>>,
 }
 
 impl PostEffectAbortRegistry {
@@ -77,21 +117,41 @@ impl PostEffectAbortRegistry {
         Self::default()
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashSet<String>> {
+    fn lock(&self) -> MutexGuard<'_, PostEffectAbortState> {
         // poison は前保持者の panic 痕。フラグ集合は回復して継続できる。
-        self.aborted.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn request(&self, run_id: &str) {
-        self.lock().insert(run_id.to_string());
+        self.lock().aborted.insert(run_id.to_string());
+    }
+
+    pub fn bind_database(&self, run_id: &str, db: Arc<Database>) {
+        self.lock().databases.insert(run_id.to_string(), db);
+    }
+
+    /// lock を保持したまま DB ownership/running CAS を実行し、成功したときだけ
+    /// abort flag を立てる。`request` callback は binding 済み DB を優先利用する。
+    pub fn request_if<F>(&self, run_id: &str, request: F) -> Result<bool, AppError>
+    where
+        F: FnOnce(Option<&Arc<Database>>) -> Result<bool, AppError>,
+    {
+        let mut state = self.lock();
+        let changed = request(state.databases.get(run_id))?;
+        if changed {
+            state.aborted.insert(run_id.to_string());
+        }
+        Ok(changed)
     }
 
     pub fn is_aborted(&self, run_id: &str) -> bool {
-        self.lock().contains(run_id)
+        self.lock().aborted.contains(run_id)
     }
 
     pub fn clear(&self, run_id: &str) {
-        self.lock().remove(run_id);
+        let mut state = self.lock();
+        state.aborted.remove(run_id);
+        state.databases.remove(run_id);
     }
 }
 
@@ -4639,6 +4699,49 @@ mod abort_registry_tests {
         assert!(!reg.is_aborted("single")); // 永久残留しない（リーク防止）
         assert!(reg.is_aborted("other")); // 並走 run の要求は握り潰さない
     }
+
+    #[test]
+    fn request_if_holds_registry_lock_until_abort_flag_is_visible() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let reg = super::PostEffectAbortRegistry::new();
+        let (cas_entered_tx, cas_entered_rx) = mpsc::channel();
+        let (release_cas_tx, release_cas_rx) = mpsc::channel();
+        let request_reg = reg.clone();
+        let request = std::thread::spawn(move || {
+            request_reg
+                .request_if("run", |_bound_db| {
+                    cas_entered_tx.send(()).expect("signal CAS entered");
+                    release_cas_rx.recv().expect("release CAS");
+                    Ok(true)
+                })
+                .expect("request_if")
+        });
+
+        cas_entered_rx.recv().expect("CAS entered");
+        let (observing_tx, observing_rx) = mpsc::channel();
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let observer_reg = reg.clone();
+        let observer = std::thread::spawn(move || {
+            observing_tx.send(()).expect("signal observer started");
+            observed_tx
+                .send(observer_reg.is_aborted("run"))
+                .expect("send observed flag");
+        });
+
+        observing_rx.recv().expect("observer started");
+        assert!(
+            observed_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "worker の is_aborted は DB CAS→flag insert の critical section 中に割り込まない"
+        );
+        release_cas_tx.send(()).expect("release CAS");
+        assert!(observed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("observer completes after flag insert"));
+        assert!(request.join().expect("request thread"));
+        observer.join().expect("observer thread");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4961,6 +5064,22 @@ fn emit_cancelled<R: PostEffectRuntime>(runtime: &R, run_id: &str) {
     );
 }
 
+fn emit_terminal_persistence_error<R: PostEffectRuntime>(
+    runtime: &R,
+    run_id: &str,
+    terminal: &str,
+    detail: impl std::fmt::Display,
+) {
+    emit_event(
+        runtime,
+        "post_effect:error",
+        ErrorEvent {
+            run_id,
+            error: format!("post-effect の{terminal}状態を永続化できませんでした: {detail}"),
+        },
+    );
+}
+
 fn finish_success<R: PostEffectRuntime>(
     runtime: &R,
     run_id: &str,
@@ -4980,28 +5099,18 @@ fn finish_success<R: PostEffectRuntime>(
         ),
         Ok(other) => {
             tracing::error!(run_id, state = ?other, "post-effect completed without terminal CAS");
-            // DB 異常でも FE の spinner を残さないという従来契約を優先する。
-            emit_event(
+            // done は DB completed が正本になったときだけ送る。Missing/Already を
+            // 成功扱いすると FE と永続状態が食い違い、再起動後に結果が消える。
+            emit_terminal_persistence_error(
                 runtime,
-                "post_effect:done",
-                DoneEvent {
-                    run_id,
-                    annotation_count,
-                    summary,
-                },
+                run_id,
+                "完了",
+                format_args!("terminal CAS result={other:?}"),
             );
         }
         Err(error) => {
             tracing::error!(run_id, error = %error, "post-effect completion CAS failed");
-            emit_event(
-                runtime,
-                "post_effect:done",
-                DoneEvent {
-                    run_id,
-                    annotation_count,
-                    summary,
-                },
-            );
+            emit_terminal_persistence_error(runtime, run_id, "完了", error);
         }
     }
 }
@@ -5019,24 +5128,20 @@ fn finish_failure<R: PostEffectRuntime>(runtime: &R, run_id: &str, error_message
         ),
         Ok(other) => {
             tracing::error!(run_id, state = ?other, "post-effect failed without terminal CAS");
-            emit_event(
+            emit_terminal_persistence_error(
                 runtime,
-                "post_effect:error",
-                ErrorEvent {
-                    run_id,
-                    error: error_message.to_string(),
-                },
+                run_id,
+                "失敗",
+                format_args!("terminal CAS result={other:?}; original error={error_message}"),
             );
         }
         Err(error) => {
             tracing::error!(run_id, error = %error, "post-effect failure CAS failed");
-            emit_event(
+            emit_terminal_persistence_error(
                 runtime,
-                "post_effect:error",
-                ErrorEvent {
-                    run_id,
-                    error: error_message.to_string(),
-                },
+                run_id,
+                "失敗",
+                format_args!("{error}; original error={error_message}"),
             );
         }
     }
@@ -5061,26 +5166,20 @@ fn finish_partial<R: PostEffectRuntime>(
         ),
         Ok(other) => {
             tracing::error!(run_id, state = ?other, "post-effect partial run missed terminal CAS");
-            emit_event(
+            emit_terminal_persistence_error(
                 runtime,
-                "post_effect:done",
-                DoneEvent {
-                    run_id,
-                    annotation_count,
-                    summary: Some(summary),
-                },
+                run_id,
+                "部分失敗",
+                format_args!("terminal CAS result={other:?}; summary={summary}"),
             );
         }
         Err(error) => {
             tracing::error!(run_id, error = %error, "post-effect partial CAS failed");
-            emit_event(
+            emit_terminal_persistence_error(
                 runtime,
-                "post_effect:done",
-                DoneEvent {
-                    run_id,
-                    annotation_count,
-                    summary: Some(summary),
-                },
+                run_id,
+                "部分失敗",
+                format_args!("{error}; summary={summary}"),
             );
         }
     }
@@ -5275,6 +5374,10 @@ where
         );
     }
 
+    // cache照合・running INSERT・detached worker を同じ workspace DBへ固定する。
+    // pin は switching/no-workspace を fail-closed で拒否する shell adapter の責務。
+    let runtime = runtime.pin_database()?;
+
     // キャッシュチェック + running 行 INSERT (ensure_post_effect_run に集約)
     let run_id = match ensure_post_effect_run(
         &runtime,
@@ -5294,6 +5397,9 @@ where
         }
         EnsureRunOutcome::Created(run_id) => run_id,
     };
+    // start が run_id を外部へ返す前に binding を公開するため、abort command が
+    // workspace switch 後に来ても開始元 DB の running row を CAS できる。
+    runtime.bind_abort_database(&run_id);
 
     // scene_id は scope_target_id から取得 (scope_type='scene' のみ Phase 1b 対応)
     let scene_id = args.scope_target_id.clone().unwrap_or_default();
@@ -5483,6 +5589,8 @@ where
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());
     }
 
+    let runtime = runtime.pin_database()?;
+
     // XPROJ fail-closed: 1件でも別project / 不明sceneなら、cache照合・running INSERT・
     // AI開始のいずれよりも前に同期rejectする。
     ensure_multi_scenes_belong_to_project(&runtime, &args.project_id, &args.scenes)?;
@@ -5506,6 +5614,7 @@ where
         }
         EnsureRunOutcome::Created(run_id) => run_id,
     };
+    runtime.bind_abort_database(&run_id);
 
     let project_id = args.project_id.clone();
     let effect = args.effect_type.clone();
@@ -5564,20 +5673,26 @@ pub fn abort_post_effect_run<R: PostEffectRuntime>(
 ) -> Result<(), AppError> {
     // DB の所有権+running CASが取れたときだけ registry を立てる。これにより
     // cross-project run の停止と、terminal/cache runへのlate abortリークを防ぐ。
-    let changed = runtime.with_db(|db| {
-        db.with_conn(|conn| {
-            let changed = conn.execute(
-                "UPDATE post_effect_runs
-                    SET status = 'cancelled', completed_at = datetime('now')
-                  WHERE id = ? AND project_id = ? AND status = 'running'",
-                params![run_id, project_id],
-            )?;
-            Ok(changed)
-        })
+    runtime.request_abort_if(run_id, |bound_db| {
+        let cancel = |db: &Database| -> Result<bool, AppError> {
+            Ok(db.with_conn(|conn| {
+                let changed = conn.execute(
+                    "UPDATE post_effect_runs
+                        SET status = 'cancelled', completed_at = datetime('now')
+                      WHERE id = ? AND project_id = ? AND status = 'running'",
+                    params![run_id, project_id],
+                )?;
+                Ok(changed == 1)
+            })?)
+        };
+
+        match bound_db {
+            // start 時に bind 済みなら workspace switch 後も開始元 DB を cancel。
+            Some(db) => cancel(db),
+            // 移行前/手動seed run は現在 workspace 上で従来どおり照合する。
+            None => runtime.with_db(|db| Ok(cancel(db)?)),
+        }
     })?;
-    if changed == 1 {
-        runtime.request_abort(run_id);
-    }
     Ok(())
 }
 
@@ -5587,6 +5702,7 @@ mod runtime_contract_tests {
     use super::*;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
 
     const PROJECT: &str = "default-project";
     const OTHER_PROJECT: &str = "other-project";
@@ -5599,6 +5715,14 @@ mod runtime_contract_tests {
     }
 
     impl PostEffectRuntime for FakeRuntime {
+        fn pin_database(&self) -> Result<Self, AppError> {
+            Ok(self.clone())
+        }
+
+        fn pinned_database(&self) -> Option<Arc<Database>> {
+            Some(Arc::clone(&self.db))
+        }
+
         fn with_db<T, F>(&self, f: F) -> Result<T, AppError>
         where
             F: FnOnce(&Database) -> anyhow::Result<T>,
@@ -5613,16 +5737,101 @@ mod runtime_contract_tests {
                 .push((channel.to_string(), payload));
         }
 
-        fn request_abort(&self, run_id: &str) {
-            self.aborts.request(run_id);
+        fn abort_registry(&self) -> &PostEffectAbortRegistry {
+            &self.aborts
+        }
+    }
+
+    /// workspace 切替競合を再現する runtime。`active` は shell の現在 workspace、
+    /// `pinned` は start が worker 全体へ束縛した DB。command側 clone は None のまま
+    /// active B を見る一方、worker側 clone は A を保持する状況を再現できる。
+    #[derive(Clone)]
+    struct SwitchingRuntime {
+        active: Arc<Mutex<Arc<Database>>>,
+        pinned: Option<Arc<Database>>,
+        events: Arc<Mutex<Vec<(String, Value)>>>,
+        aborts: PostEffectAbortRegistry,
+    }
+
+    #[derive(Clone)]
+    struct FailingRuntime {
+        events: Arc<Mutex<Vec<(String, Value)>>>,
+        aborts: PostEffectAbortRegistry,
+    }
+
+    impl PostEffectRuntime for FailingRuntime {
+        fn pin_database(&self) -> Result<Self, AppError> {
+            Err(AppError::NoWorkspace)
         }
 
-        fn is_aborted(&self, run_id: &str) -> bool {
-            self.aborts.is_aborted(run_id)
+        fn pinned_database(&self) -> Option<Arc<Database>> {
+            None
         }
 
-        fn clear_abort(&self, run_id: &str) {
-            self.aborts.clear(run_id);
+        fn with_db<T, F>(&self, _f: F) -> Result<T, AppError>
+        where
+            F: FnOnce(&Database) -> anyhow::Result<T>,
+        {
+            Err(AppError::NoWorkspace)
+        }
+
+        fn emit(&self, channel: &str, payload: Value) {
+            self.events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((channel.to_string(), payload));
+        }
+
+        fn abort_registry(&self) -> &PostEffectAbortRegistry {
+            &self.aborts
+        }
+    }
+
+    impl PostEffectRuntime for SwitchingRuntime {
+        fn pin_database(&self) -> Result<Self, AppError> {
+            let db = Arc::clone(
+                &self
+                    .active
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
+            Ok(Self {
+                active: Arc::clone(&self.active),
+                pinned: Some(db),
+                events: Arc::clone(&self.events),
+                aborts: self.aborts.clone(),
+            })
+        }
+
+        fn pinned_database(&self) -> Option<Arc<Database>> {
+            self.pinned.as_ref().map(Arc::clone)
+        }
+
+        fn with_db<T, F>(&self, f: F) -> Result<T, AppError>
+        where
+            F: FnOnce(&Database) -> anyhow::Result<T>,
+        {
+            let db = match &self.pinned {
+                Some(db) => Arc::clone(db),
+                None => Arc::clone(
+                    &self
+                        .active
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()),
+                ),
+            };
+            Ok(f(&db)?)
+        }
+
+        fn emit(&self, channel: &str, payload: Value) {
+            self.events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((channel.to_string(), payload));
+        }
+
+        fn abort_registry(&self) -> &PostEffectAbortRegistry {
+            &self.aborts
         }
     }
 
@@ -5646,7 +5855,38 @@ mod runtime_contract_tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct GatedAi {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl PostEffectAiClient for GatedAi {
+        fn call<'a>(
+            &'a self,
+            _request: PostEffectAiRequest<'a>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<PostEffectAiOutput>> + Send + 'a>> {
+            Box::pin(async move {
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(PostEffectAiOutput {
+                    raw_response: r#"{"findings":[]}"#.to_string(),
+                    detected_model: "fake".to_string(),
+                })
+            })
+        }
+    }
+
     fn runtime() -> FakeRuntime {
+        let db = seeded_db();
+        FakeRuntime {
+            db,
+            events: Arc::new(Mutex::new(Vec::new())),
+            aborts: PostEffectAbortRegistry::new(),
+        }
+    }
+
+    fn seeded_db() -> Arc<Database> {
         let db = Arc::new(Database::new(Path::new(":memory:")).expect("in-memory db"));
         db.migrate().expect("migrate");
         db.with_conn(|conn| {
@@ -5666,8 +5906,13 @@ mod runtime_contract_tests {
             Ok(())
         })
         .expect("seed");
-        FakeRuntime {
-            db,
+        db
+    }
+
+    fn switching_runtime(db: Arc<Database>) -> SwitchingRuntime {
+        SwitchingRuntime {
+            active: Arc::new(Mutex::new(db)),
+            pinned: None,
             events: Arc::new(Mutex::new(Vec::new())),
             aborts: PostEffectAbortRegistry::new(),
         }
@@ -5779,6 +6024,54 @@ mod runtime_contract_tests {
             .collect()
     }
 
+    fn db_run_status(db: &Database, run_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT status FROM post_effect_runs WHERE id = ?",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .optional()?)
+        })
+        .expect("query run status")
+    }
+
+    async fn wait_for_terminal(db: &Database, run_id: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    db_run_status(db, run_id).as_deref(),
+                    Some("completed" | "failed" | "cancelled")
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("worker reaches terminal state");
+    }
+
+    async fn wait_for_event(runtime: &SwitchingRuntime, channel: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if runtime
+                    .events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .iter()
+                    .any(|(actual, _)| actual == channel)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("worker emits terminal event");
+    }
+
     #[tokio::test]
     async fn single_cross_project_target_rejects_before_insert_or_ai() {
         let runtime = runtime();
@@ -5827,6 +6120,174 @@ mod runtime_contract_tests {
         assert_eq!(run_count(&runtime), 1);
         assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
         assert!(event_channels(&runtime).is_empty());
+    }
+
+    #[tokio::test]
+    async fn single_worker_keeps_start_database_after_workspace_switch() {
+        let db_a = seeded_db();
+        let db_b = seeded_db();
+        let runtime = switching_runtime(Arc::clone(&db_a));
+        let ai = GatedAi::default();
+
+        let result = start_post_effect_run(
+            runtime.clone(),
+            ai.clone(),
+            single_args("scene-own", "switch-single"),
+        )
+        .await
+        .expect("start on workspace A");
+        assert_eq!(
+            db_run_status(&db_a, &result.run_id).as_deref(),
+            Some("running")
+        );
+
+        ai.entered.notified().await;
+        *runtime.active.lock().expect("active DB lock") = Arc::clone(&db_b);
+        ai.release.notify_waiters();
+
+        wait_for_terminal(&db_a, &result.run_id).await;
+        assert_eq!(
+            db_run_status(&db_a, &result.run_id).as_deref(),
+            Some("completed"),
+            "開始元 A の running 行を必ず終端する"
+        );
+        assert_eq!(
+            db_run_status(&db_b, &result.run_id),
+            None,
+            "切替先 B へ run/annotation を混入させない"
+        );
+        assert_eq!(
+            runtime
+                .events
+                .lock()
+                .expect("events")
+                .iter()
+                .filter(|(channel, _)| channel == "post_effect:done")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_worker_keeps_start_database_after_workspace_switch() {
+        let db_a = seeded_db();
+        let db_b = seeded_db();
+        let runtime = switching_runtime(Arc::clone(&db_a));
+        let ai = GatedAi::default();
+        let mut args = multi_args("scene-own");
+        args.effect_type = "review".to_string();
+        args.input_hash = "switch-multi".to_string();
+
+        let result = start_post_effect_run_multi(runtime.clone(), ai.clone(), args)
+            .await
+            .expect("start multi on workspace A");
+        assert_eq!(
+            db_run_status(&db_a, &result.run_id).as_deref(),
+            Some("running")
+        );
+
+        ai.entered.notified().await;
+        *runtime.active.lock().expect("active DB lock") = Arc::clone(&db_b);
+        ai.release.notify_waiters();
+
+        wait_for_terminal(&db_a, &result.run_id).await;
+        assert_eq!(
+            db_run_status(&db_a, &result.run_id).as_deref(),
+            Some("completed")
+        );
+        assert_eq!(db_run_status(&db_b, &result.run_id), None);
+        assert_eq!(
+            runtime
+                .events
+                .lock()
+                .expect("events")
+                .iter()
+                .filter(|(channel, _)| channel == "post_effect:done")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_after_workspace_switch_cancels_bound_start_database() {
+        let db_a = seeded_db();
+        let db_b = seeded_db();
+        let runtime = switching_runtime(Arc::clone(&db_a));
+        let ai = GatedAi::default();
+
+        let result = start_post_effect_run(
+            runtime.clone(),
+            ai.clone(),
+            single_args("scene-own", "switch-abort"),
+        )
+        .await
+        .expect("start on workspace A");
+        ai.entered.notified().await;
+        *runtime.active.lock().expect("active DB lock") = Arc::clone(&db_b);
+
+        abort_post_effect_run(&runtime, &result.run_id, PROJECT)
+            .expect("bound A run can be aborted while B is active");
+        assert_eq!(
+            db_run_status(&db_a, &result.run_id).as_deref(),
+            Some("cancelled")
+        );
+        assert_eq!(db_run_status(&db_b, &result.run_id), None);
+        assert!(runtime.is_aborted(&result.run_id));
+
+        ai.release.notify_waiters();
+        wait_for_event(&runtime, "post_effect:error").await;
+        assert!(runtime
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .all(|(channel, _)| channel != "post_effect:done"));
+        assert!(
+            !runtime.is_aborted(&result.run_id),
+            "worker 終端で flag とDB bindingを一緒に解放する"
+        );
+    }
+
+    #[test]
+    fn finish_success_missing_run_emits_persistence_error_not_done() {
+        let runtime = runtime();
+        finish_success(&runtime, "missing", 2, None);
+        let events = runtime.events.lock().expect("events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "post_effect:error");
+        assert!(events[0].1["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("永続化"));
+    }
+
+    #[test]
+    fn finish_partial_already_terminal_emits_persistence_error_not_done() {
+        let runtime = runtime();
+        insert_run(&runtime, "already", "completed", "already-hash");
+        finish_partial(&runtime, "already", 1, "partial".to_string());
+        let events = runtime.events.lock().expect("events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "post_effect:error");
+        assert!(events[0].1["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("永続化"));
+    }
+
+    #[test]
+    fn finish_failure_database_error_reports_persistence_failure() {
+        let runtime = FailingRuntime {
+            events: Arc::new(Mutex::new(Vec::new())),
+            aborts: PostEffectAbortRegistry::new(),
+        };
+        finish_failure(&runtime, "run", "AI failed");
+        let events = runtime.events.lock().expect("events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "post_effect:error");
+        let message = events[0].1["error"].as_str().unwrap_or_default();
+        assert!(message.contains("永続化"));
+        assert!(message.contains("AI failed"));
     }
 
     #[test]

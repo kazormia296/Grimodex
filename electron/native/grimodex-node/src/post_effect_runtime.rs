@@ -20,19 +20,35 @@ use crate::state::AppState;
 #[derive(Clone)]
 pub(crate) struct NodePostEffectRuntime {
     state: Arc<AppState>,
+    db: Option<Arc<Database>>,
 }
 
 impl NodePostEffectRuntime {
     pub(crate) fn new(state: Arc<AppState>) -> Self {
-        Self { state }
+        Self { state, db: None }
     }
 }
 
 impl PostEffectRuntime for NodePostEffectRuntime {
+    fn pin_database(&self) -> Result<Self, AppError> {
+        let db = grimodex_db::state::active_database(&self.state.ws)?;
+        Ok(Self {
+            state: Arc::clone(&self.state),
+            db: Some(db),
+        })
+    }
+
+    fn pinned_database(&self) -> Option<Arc<Database>> {
+        self.db.as_ref().map(Arc::clone)
+    }
+
     fn with_db<T, F>(&self, f: F) -> Result<T, AppError>
     where
         F: FnOnce(&Database) -> anyhow::Result<T>,
     {
+        if let Some(db) = &self.db {
+            return Ok(f(db)?);
+        }
         with_db_state(&self.state.ws, f)
     }
 
@@ -40,16 +56,8 @@ impl PostEffectRuntime for NodePostEffectRuntime {
         self.state.events.emit(channel, payload);
     }
 
-    fn request_abort(&self, run_id: &str) {
-        self.state.post_effect_abort.request(run_id);
-    }
-
-    fn is_aborted(&self, run_id: &str) -> bool {
-        self.state.post_effect_abort.is_aborted(run_id)
-    }
-
-    fn clear_abort(&self, run_id: &str) {
-        self.state.post_effect_abort.clear(run_id);
+    fn abort_registry(&self) -> &grimodex_post_effect::PostEffectAbortRegistry {
+        &self.state.post_effect_abort
     }
 }
 

@@ -50,22 +50,22 @@ pub struct GlobalSettingsPath {
     pub write_lock: Mutex<()>,
 }
 
-/// `tauri::State` を剥がした `with_db` 本体。単体テストや napi 側から
-/// `WorkspaceState` を直接組んで検証・実行できるように分離している。
-pub fn with_db_state<T>(
-    ws_state: &WorkspaceState,
-    f: impl FnOnce(&Database) -> anyhow::Result<T>,
-) -> AppResult<T> {
+/// 現在 workspace の DB を1回だけ解決する。
+///
+/// 長寿命の background task は開始時にこの `Arc` を保持し、workspace switch 後も
+/// 同じ DB へ完了/失敗を保存する。通常の短命 command は `with_db_state` 経由で毎回
+/// 解決する。どちらも switching / no-workspace の fail-closed 契約は同一。
+pub fn active_database(ws_state: &WorkspaceState) -> AppResult<Arc<Database>> {
     // ws_state.inner はアクティブ workspace の解決 (Option → Arc<Database>) と
-    // switching チェックのためだけに取得し、SQL 実行 (f) の前に必ず解放する。
-    // 以前は f をロック保持下で走らせていたため、ws_state Mutex が DB コール
+    // switching チェックのためだけに取得し、Arc を呼び出し元へ返す前に必ず解放する。
+    // 以前は closure をロック保持下で走らせていたため、ws_state Mutex が DB コール
     // 全体を直列化し、遅いライタの背後で全リーダが待たされていた (アーキ監査
     // 2026-07 の見出し指摘)。db を Arc<Database> にしたことで clone-then-drop
     // でき、実際の DB 直列化は Database 内部の conn: Mutex<Connection> が担う。
     // Phase 5 instrumentation: ws_state lock 取得待ちが 50ms 以上なら警告
     // (以前ほど長く保持しないが、取得待ち自体はリーダ数のシグナルとして残す)。
     let lock_started = std::time::Instant::now();
-    let db = {
+    {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let ws_lock_ms = lock_started.elapsed().as_millis();
         if ws_lock_ms >= 50 {
@@ -83,9 +83,18 @@ pub fn with_db_state<T>(
             return Err(AppError::WorkspaceSwitching);
         }
         let ws = inner.as_ref().ok_or(AppError::NoWorkspace)?;
-        Arc::clone(&ws.db)
-        // inner guard はこのブロック終端で drop = f 実行前に ws_state ロック解放。
-    };
+        Ok(Arc::clone(&ws.db))
+        // inner guard はこのブロック終端で drop = 呼び出し元の DB 操作前に解放。
+    }
+}
+
+/// `tauri::State` を剥がした `with_db` 本体。単体テストや napi 側から
+/// `WorkspaceState` を直接組んで検証・実行できるように分離している。
+pub fn with_db_state<T>(
+    ws_state: &WorkspaceState,
+    f: impl FnOnce(&Database) -> anyhow::Result<T>,
+) -> AppResult<T> {
+    let db = active_database(ws_state)?;
     Ok(f(&db)?)
 }
 
@@ -139,6 +148,19 @@ mod tests {
     }
 
     #[test]
+    fn active_database_rejects_while_switching() {
+        let state = workspace_state_with_db();
+        state
+            .switching
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let err = active_database(&state)
+            .err()
+            .expect("switching 中は DB を pin できない");
+        assert!(err.to_string().contains("WORKSPACE_SWITCHING"));
+    }
+
+    #[test]
     fn with_db_releases_inner_lock_before_running_closure() {
         // ③ DB並行 Slice1 の不変条件: with_db_state は f を走らせる前に
         // ws_state.inner ロックを解放しなければならない (監査見出し「ws_state
@@ -162,6 +184,19 @@ mod tests {
             open_lock: Mutex::new(()),
         };
         let err = with_db_state(&state, |_db| Ok(())).expect_err("未オープンはエラー");
+        assert!(err.to_string().contains("No workspace is open"));
+    }
+
+    #[test]
+    fn active_database_errors_when_no_workspace_open() {
+        let state = WorkspaceState {
+            inner: Mutex::new(None),
+            switching: std::sync::atomic::AtomicBool::new(false),
+            open_lock: Mutex::new(()),
+        };
+        let err = active_database(&state)
+            .err()
+            .expect("未オープンは DB を pin できない");
         assert!(err.to_string().contains("No workspace is open"));
     }
 }

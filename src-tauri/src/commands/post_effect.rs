@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use rusqlite::params;
 use serde_json::Value;
@@ -28,21 +29,43 @@ use grimodex_post_effect::{
 struct TauriPostEffectRuntime {
     app: AppHandle,
     aborts: PostEffectAbortRegistry,
+    db: Option<Arc<grimodex_db::Database>>,
 }
 
 impl TauriPostEffectRuntime {
     fn new(app: AppHandle) -> Self {
         let state = app.state::<PostEffectAbortRegistry>();
         let aborts = PostEffectAbortRegistry::clone(&state);
-        Self { app, aborts }
+        Self {
+            app,
+            aborts,
+            db: None,
+        }
     }
 }
 
 impl PostEffectRuntime for TauriPostEffectRuntime {
+    fn pin_database(&self) -> Result<Self, AppError> {
+        let state = self.app.state::<WorkspaceState>();
+        let db = grimodex_db::state::active_database(&state)?;
+        Ok(Self {
+            app: self.app.clone(),
+            aborts: self.aborts.clone(),
+            db: Some(db),
+        })
+    }
+
+    fn pinned_database(&self) -> Option<Arc<grimodex_db::Database>> {
+        self.db.as_ref().map(Arc::clone)
+    }
+
     fn with_db<T, F>(&self, f: F) -> Result<T, AppError>
     where
         F: FnOnce(&grimodex_db::Database) -> anyhow::Result<T>,
     {
+        if let Some(db) = &self.db {
+            return Ok(f(db)?);
+        }
         let state = self.app.state::<WorkspaceState>();
         super::with_db(&state, f)
     }
@@ -51,16 +74,8 @@ impl PostEffectRuntime for TauriPostEffectRuntime {
         let _ = self.app.emit(channel, payload);
     }
 
-    fn request_abort(&self, run_id: &str) {
-        self.aborts.request(run_id);
-    }
-
-    fn is_aborted(&self, run_id: &str) -> bool {
-        self.aborts.is_aborted(run_id)
-    }
-
-    fn clear_abort(&self, run_id: &str) {
-        self.aborts.clear(run_id);
+    fn abort_registry(&self) -> &PostEffectAbortRegistry {
+        &self.aborts
     }
 }
 
