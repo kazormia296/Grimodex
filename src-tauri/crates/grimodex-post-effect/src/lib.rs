@@ -2854,8 +2854,8 @@ where
                 // 過去に dismissed / resolved されている場合は新規 pair を
                 // 作らない (ユーザー判断を尊重)。同 dismiss_key の片側 a/b の
                 // どちらかが closed なら pair 全体を skip する (
-                // update_relation_status はカスケードで両側を同 status にする
-                // ため、片側だけ open になる正規ルートは存在しない)。
+                // relation pair は同じ dismiss_key を共有し、生成・再評価を pair
+                // 単位で扱うため、片側が closed なら pair 全体を処理済みとみなす)。
                 if is_annotation_previously_closed(
                     conn,
                     project_id,

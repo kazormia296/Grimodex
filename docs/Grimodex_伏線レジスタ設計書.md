@@ -863,10 +863,6 @@ foreshadow_update(id: String, patch: ForeshadowPatch) -> Result<Foreshadow>
 foreshadow_delete(id: String) -> Result<()>
 
 #[tauri::command]
-foreshadow_list(project_id: String, filter: ForeshadowFilter) -> Result<Vec<ForeshadowWithDerived>>
-// derived label, setup count を含む
-
-#[tauri::command]
 foreshadow_get(id: String) -> Result<ForeshadowDetail>
 // setup一覧、orphan setup含む
 
@@ -1744,7 +1740,7 @@ src/features/foreshadow/
 
 src-tauri/src/commands/foreshadow.rs       # foreshadow 関連 Tauri コマンド（lib.rs の invoke_handler に登録）
                                            # （foreshadow_create / foreshadow_update / foreshadow_delete /
-                                           #   foreshadow_list / foreshadow_list_with_labels /
+                                           #   foreshadow_list_with_labels /
                                            #   foreshadow_list_open_for_context / foreshadow_get /
                                            #   foreshadow_get_scene_info / foreshadow_get_scene_context /
                                            #   foreshadow_list_by_codex_entry / foreshadow_get_chapter_stats /

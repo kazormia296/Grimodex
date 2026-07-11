@@ -67,11 +67,11 @@ napi crate に足すのもこのバッチ。
 | バッチ1b | `lint_text` / `segment_bunsetsu`（grimodex-lint、UniDic 埋め込み）/ `list_system_fonts`（`grimodex-fonts` へ commands/fonts.rs を抽出）|
 | バッチ1c | `codex_rebuild_matcher` / `codex_match_text`（`grimodex-core::codex_matching` へ codex_matching.rs のコアを抽出、AppState に matcher State 追加）|
 | バッチ1d | plot_threads 8（`grimodex-db::plot_threads` へ抽出、XPROJ ガードを Electron 経路にも復活）|
-| バッチ1e | foreshadow 20（`grimodex-db::foreshadow` へ抽出。`foreshadow_list` は FE 到達不能のため対象外）|
-| バッチ1f | agent_writes 18 + post_effect pure-db 7（tracked write / XPROJ ガードをサーバー側に維持。dead 2件は対象外）|
+| バッチ1e | foreshadow 20（`grimodex-db::foreshadow` へ抽出。旧 `foreshadow_list` は FE 到達不能のため移植せず、後に撤去）|
+| バッチ1f | agent_writes 18 + post_effect pure-db 7（tracked write / XPROJ ガードをサーバー側に維持。未使用2件は移植せず、後に撤去）|
 | （前提）| fs ブリッジのダイアログ許可制スコープ化（`electron/main/fsScope.ts`）、`export_save_text` / `export_save_bytes` / `open_log_dir`（main-TS）|
 
-`get_post_effect_run` / `update_relation_status` は FE 到達不能、post_effect の run/abort/AI
+`get_post_effect_run` / `update_relation_status` は FE 到達不能のため撤去し、post_effect の run/abort/AI
 経路はバッチ3dへ送った。XPROJ ガード持ち（plot_thread_link_* / post_effect /
 agent_event）は db_execute へ分解せず、共有 Rust 層に維持している。
 
@@ -96,7 +96,7 @@ overlap 検査を TS へ忠実移植。バッチ1 と依存なしで並行可。
 - **FE / preload 変更ゼロ**: `features/external-mount/api.ts` は `invoke` を無条件呼び
   （`isTauri()` ゲート無し）、event は allowlist 駆動の汎用バス経由で 4ch とも既登録。
 - **dead code**: `external_mount_list` は FE 到達不能（`listRegisteredMounts` に live
-  caller 無し）のため移植せず IPC_UNIMPLEMENTED に落とす（バッチ1f の dead-code 方針と一致）。
+  caller 無し）のため移植せず、Tauri command と TS wrapper も撤去した。
 
 **chokidar 設定と notify との差分**（詳細は externalMount.ts 冒頭コメント）:
 
@@ -321,7 +321,7 @@ invalidate ライフサイクル（open_workspace の on_swapped フックに接
 ### バッチ 5: main-TS 残り + 周辺
 
 vivliostyle 6 / mcp_config / seed_sample_workspace / list_backups / restore_backup /
-fts_rebuild 系 / set_window_vibrancy / dead code 疑い 4 件の判定。app ready /
+fts_rebuild 系 / set_window_vibrancy。dead code 4件の撤去は先行完了。app ready /
 before-quit の残りライフサイクル（vivliostyle kill_all・cleanup_temp_root）を Electron に移植。
 
 ## 3. イベント実配線の優先順位（24ch）
@@ -372,10 +372,11 @@ Phase 2 で `Backend.on_event(tsfn)` の end-to-end は実証済み（`backend:r
    （`supportsPanelWindows` / `supportsTrashBin` / `supportsNativeExport` /
    `supportsNativeMatcher`）へ 1 ファイルずつ切り替える。
 
-## 5. dead code 判定（移植前に削除でポート対象を減らす）
+## 5. dead code 判定【完了】
 
 FE コールサイト無し 4 件: `foreshadow_list` / `external_mount_list` /
-`get_post_effect_run` / `update_relation_status`。移植前に削除判定する。
+`get_post_effect_run` / `update_relation_status`。本番到達不能を確認し、Electron mirrorを
+追加せず、Tauri handler・実装本体・TS wrapper・browser mockの該当経路を撤去した。
 
 ## 6. Phase 4 への申し送り
 

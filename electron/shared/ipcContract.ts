@@ -835,7 +835,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   // foreshadow 20 コマンド（Phase 3 バッチ1 — grimodex-db::foreshadow を Tauri と
-  // 共用。foreshadow_list は FE 到達不能な dead path のため mirror なし）。
+  // 共用。到達不能だった旧 foreshadow_list は両ランタイムから撤去済み）。
   // payload / patch / setups / payoffs は camelCase を素通し（from_wire が
   // serde rename_all + normalize_integer_numbers で受ける）。Value/応答 struct は
   // parse して返す。unit 返りは null。
@@ -1614,8 +1614,7 @@ export type ShellCommandHandlers = Readonly<
  * バッチ2 の external_mount）。external_mount 系は ipc ルーターが
  * ExternalMountManager から注入する（registry/watcher が invoke を跨いで
  * 持続するため per-invoke の buildShellCommandHandlers には含めない）。
- * external_mount_list は FE 到達不能な dead path のため移植せず
- * IPC_UNIMPLEMENTED に落とす（バッチ1 の dead code 方針と一致）。
+ * 到達不能だった旧 external_mount_list は両ランタイムから撤去済み。
  */
 export const SHELL_COMMAND_NAMES: readonly string[] = [
   "set_window_vibrancy",

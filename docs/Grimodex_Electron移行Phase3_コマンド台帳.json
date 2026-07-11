@@ -7,6 +7,7 @@
     "phase3cShellHardening": "ready-to-show未発火時はdid-finish-loadで冪等表示。startup hydration中だけlayout crossfade / region chrome / editor enter animationを抑止し、初期化後のmotionは維持",
     "phase3dValidation": "2026-07-11: post-effect 3コマンド + 4イベントを共有Rust/N-APIへ移植。開始DB固定、XPROJ、terminal CAS、abort TOCTOU、資格情報snapshotを回帰固定。共有Rust 103 tests、実.node post-effect E2E 5 tests PASS",
     "phase3eValidation": "2026-07-11: license 4 IPC + 内部validate cycleを共有Rust/N-APIへ移植。feature無効のexact disabled/ディスク非接触、起動5秒後→完了後6h、manual success/errorの全窓state_changed、activate single-flight + remote補償解除を固定。Electron 18 files / 401 tests、native 70 pass + 1 skip、license Polar/DTO 27 + runtime/race 19 + disabled 1 PASS",
+    "deadCodeRemoval": "2026-07-11: FE本番コールサイトが存在しない foreshadow_list / external_mount_list / get_post_effect_run / update_relation_status を Tauri handler・Rust本体・TS wrapper・browser mock から撤去。Electron mirrorは追加しない",
     "totalCommands": 145,
     "doneCount": 13,
     "remainingCount": 132,
@@ -1087,6 +1088,7 @@
     "foreshadow_list": {
       "file": "foreshadow.rs",
       "classification": "pure-db",
+      "status": "removed",
       "priority": "P3",
       "args": ["project_id: String", "filter: Option<ForeshadowFilter>"],
       "returns": "Vec<Value>",
@@ -1094,11 +1096,9 @@
       "appHandle": false,
       "emits": [],
       "isAsync": false,
-      "summary": "プロジェクトの伏線一覧を取得。include_abandoned で SQL 分岐、label は Rust 側でメモリ内フィルタ",
-      "napiNotes": "label フィルタは SQL でなく retain（payoff_confirmed/abandoned の i64==1 判定）— 保持か SQL 化。filter は Option — undefined 許容引数。FE 側に外部呼び出し元が見つからず優先度 P3（要 dead code 判定）",
-      "callSites": [
-        { "file": "src/features/foreshadow/api.ts", "trigger": "unknown", "notes": "L219 listForeshadows — src 内に外部呼び出し元が見つからない" }
-      ]
+      "summary": "未使用だった汎用伏線一覧 IPC。専用 foreshadow_list_with_labels 系とブラウザ用 Drizzle 経路だけを残し、2026-07-11 に撤去",
+      "napiNotes": "本番 FE から到達不能だったため Electron mirror は追加せず、Tauri handler・共有Rust関数・native runtime分岐を削除済み",
+      "callSites": []
     },
     "foreshadow_list_with_labels": {
       "file": "foreshadow.rs",
@@ -1853,6 +1853,7 @@
     "get_post_effect_run": {
       "file": "post_effect.rs",
       "classification": "pure-db",
+      "status": "removed",
       "priority": "P3",
       "args": ["run_id: String", "project_id: String"],
       "returns": "Value",
@@ -1860,11 +1861,9 @@
       "appHandle": false,
       "emits": [],
       "isAsync": false,
-      "summary": "run 1件を XPROJ ガード付きで取得し、annotations / relations / lens_data を合成した単一 JSON で返す",
-      "napiNotes": "run を project_id で検証すれば子テーブルも同プロジェクトに閉じる fail-closed 設計 — 検証順序を崩さない。4クエリの読み取り合成。FE ラッパーが現状未使用のため P3",
-      "callSites": [
-        { "file": "src/features/post-effect/api.ts", "trigger": "unknown", "notes": "L103 getPostEffectRun — 非テストコードからの呼び出し元なし（未使用ラッパー）" }
-      ]
+      "summary": "未使用だった post-effect run 詳細 IPC。2026-07-11 に撤去",
+      "napiNotes": "非テストコードからの呼び出しが無かったため Electron mirror は追加せず、Tauri handler・TS wrapper・browser mockを削除済み",
+      "callSites": []
     },
     "list_scene_lens_for_project": {
       "file": "post_effect.rs",
@@ -1933,6 +1932,7 @@
     "update_relation_status": {
       "file": "post_effect.rs",
       "classification": "pure-db",
+      "status": "removed",
       "priority": "P3",
       "args": ["relation_id: String", "status: String", "project_id: String"],
       "returns": "Value",
@@ -1940,11 +1940,9 @@
       "appHandle": false,
       "emits": [],
       "isAsync": false,
-      "summary": "relation の status を更新し、両端 annotation へ同 status をカスケード（dismiss_source='cascade'）する。全て XPROJ ガード付き・1トランザクション",
-      "napiNotes": "unchecked_transaction で relation 更新と両端カスケードを不可分に — napi 化でも明示トランザクション必須。0 行更新は bail。json_set 使用（JSON1 前提）。FE ラッパーが現状未使用のため P3",
-      "callSites": [
-        { "file": "src/features/post-effect/api.ts", "trigger": "unknown", "notes": "L172 updateRelationStatus — 非テストコードからの呼び出し元なし（未使用ラッパー）" }
-      ]
+      "summary": "未使用だった relation status 更新 IPC。2026-07-11 に撤去",
+      "napiNotes": "非テストコードからの呼び出しが無かったため Electron mirror は追加せず、Tauri handler・更新本体・専用test・TS wrapperを削除済み",
+      "callSites": []
     },
     "reply_to_annotation": {
       "file": "post_effect.rs",
@@ -2368,6 +2366,7 @@
     "external_mount_list": {
       "file": "external_mount.rs",
       "classification": "other",
+      "status": "removed",
       "priority": "P3",
       "args": [],
       "returns": "Vec<RegisteredRoot>",
@@ -2375,11 +2374,9 @@
       "appHandle": false,
       "emits": [],
       "isAsync": false,
-      "summary": "登録済み外部マウントルート（id/path/label、camelCase serialize）の一覧を返す",
-      "napiNotes": "fs も DB も触らない純メモリ読出し。registry を TS main の Map で持てばこのコマンド自体が不要になる（外部マウント一族 main-ts 化時の同梱対象）。FE 呼び出し元なし（dead code の可能性）",
-      "callSites": [
-        { "file": "src/features/external-mount/api.ts", "trigger": "unknown", "notes": "L32 listRegisteredMounts — src 内に呼び出し元が見つからない（dead code の可能性）" }
-      ]
+      "summary": "未使用だった登録済み外部マウント一覧 IPC。2026-07-11 に撤去",
+      "napiNotes": "Electron main の registry は manager 内部状態として保持し、公開一覧APIを必要とするFE callerが無いため両ランタイムから削除済み",
+      "callSites": []
     },
     "external_mount_file_mtime": {
       "file": "external_mount.rs",

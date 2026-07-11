@@ -1129,12 +1129,6 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return undefined as T;
       case "list_post_effect_runs":
         return [] as T;
-      case "get_post_effect_run":
-        return {
-          run: null,
-          annotations: getScreenshotAnnotations(now),
-          relations: [],
-        } as T;
       case "list_annotations_for_scene":
         return {
           annotations: getScreenshotAnnotations(now).filter(
@@ -1176,8 +1170,6 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return undefined as T;
       case "external_mount_read_file":
         return "" as T;
-      case "external_mount_list":
-        return [] as T;
       case "external_mount_scan":
         return { dirs: [], files: [] } as T;
       default:

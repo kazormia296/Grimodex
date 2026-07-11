@@ -5,6 +5,7 @@
 > 実装確定差分（2026-07-11）: バッチ3は 3a〜3e に分割し、3a〜3e が完了。
 > 当初の keyring / OnceLock 案は、main の safeStorage + `Backend` AppState へ変更した。
 > CLI は napi / AppState ではなく main 常駐 single-flight manager + `cross-spawn` で実装した。
+> FE 到達不能だった4コマンドは移植せず、Tauri側を含めて撤去済み。
 > 進捗と確定後の設計は Phase 3 設計書を正本とする。
 
 ---
@@ -155,9 +156,9 @@
 | get_mcp_config | main-ts | settings | MCP サーバー起動形態の決定に依存 |
 | open_log_dir | main-ts | user-action | shell.openPath |
 | list_system_fonts | fs | settings | fontdb を napi 側に温存（名前解決互換） |
-| foreshadow_list | pure-db | unknown | FE 呼び出し元なし — dead code 判定してから |
-| external_mount_list | other | unknown | dead code 疑い。main-ts 化なら自然消滅 |
-| get_post_effect_run / update_relation_status | pure-db | unknown | FE ラッパー未使用。契約だけ JSON に保存済み |
+| foreshadow_list | pure-db | removed | FE 呼び出し元なしを確認し、Tauri/共有Rust/TS runtime分岐を撤去済み |
+| external_mount_list | other | removed | FE 呼び出し元なしを確認し、Tauri command/TS wrapperを撤去済み |
+| get_post_effect_run / update_relation_status | pure-db | removed | FEラッパー未使用を確認し、Tauri command/TS wrapperを撤去済み |
 | semantic_debug_dump | pure-db | settings | 開発用ダンプ。最後でよい |
 | set_window_vibrancy | unknown(missing) | workspace-open（fail-soft） | Electron の BrowserWindow vibrancy/backgroundMaterial で main-ts 再実装見込み |
 
@@ -191,7 +192,7 @@
 - **注意**: 全経路 fail-soft（FTS 縮退）なのでリリースブロッカーではない。semantic:×2 progress チャネルもここで配線（model_download_progress は back-index 再開の機能フックあり）。
 
 ### バッチ 5: main-TS 残り + 周辺（P2/P3 の落ち穂拾い）
-- **対象**: vivliostyle 6、export 2、open_log_dir、get_mcp_config、list_system_fonts（napi/fontdb）、seed_sample_workspace、list_backups / restore_backup、fts_rebuild / fts_rebuild_en / integrity_check / repair_integrity、set_window_vibrancy、dead code 疑い 4 件の判定（foreshadow_list / external_mount_list / get_post_effect_run / update_relation_status）
+- **対象**: vivliostyle 6、export 2、open_log_dir、get_mcp_config、list_system_fonts（napi/fontdb）、seed_sample_workspace、list_backups / restore_backup、fts_rebuild / fts_rebuild_en / integrity_check / repair_integrity、set_window_vibrancy（dead code 4件の撤去は先行完了）
 - **狙い**: ダイアログユーティリティ（PIO-2 準拠）を export と vivliostyle_save_output で共通化。before-quit の vivliostyle kill_all と起動時 cleanup_temp_root もここで。
 
 ---
@@ -224,4 +225,4 @@
 5. **undefined/null の 3 値セマンティクス**: foreshadow/plot_threads の patch 型は Option<Option<T>>。napi 境界（JSON シリアライズ）で undefined と null の区別が落ちない受け渡し方式を雛形段階で確立する。
 6. **棚卸し漏れ 3 コマンド**: codex_rebuild_matcher / codex_match_text は編集ループ P0 なのに台帳未収載。Phase 3 着手前に src-tauri/src/codex_matching.rs の精読棚卸しを行うこと。set_window_vibrancy は main-ts 化見込みで低リスク。
 7. **アプリライフサイクル**: Tauri setup 相当（状態初期化順・license 検証ループ・gc_stale_model_dirs・cleanup_temp_root）と ExitRequested 時の vivliostyle kill_all を Electron の app ready / before-quit に移植。emit の「全窓配信」契約（フローティングパネル窓）を main の broadcast ヘルパーで保証する。
-8. **dead code 4 件**（foreshadow_list / external_mount_list / get_post_effect_run / update_relation_status）は移植前に削除判定するとポート対象を減らせる。
+8. **dead code 4 件**（foreshadow_list / external_mount_list / get_post_effect_run / update_relation_status）は本番到達不能を確認し、2026-07-11 に両ランタイムの公開面から撤去済み。

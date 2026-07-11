@@ -318,7 +318,6 @@ pub fn run() {
             commands::foreshadow::foreshadow_create,
             commands::foreshadow::foreshadow_update,
             commands::foreshadow::foreshadow_delete,
-            commands::foreshadow::foreshadow_list,
             commands::foreshadow::foreshadow_list_with_labels,
             commands::foreshadow::foreshadow_list_open_for_context,
             commands::foreshadow::foreshadow_get_scene_info,
@@ -364,12 +363,10 @@ pub fn run() {
             commands::post_effect::start_post_effect_run_multi,
             commands::post_effect::abort_post_effect_run,
             commands::post_effect::list_post_effect_runs,
-            commands::post_effect::get_post_effect_run,
             commands::post_effect::list_scene_lens_for_project,
             commands::post_effect::list_annotations_for_scene,
             commands::post_effect::list_annotations_for_project,
             commands::post_effect::update_annotation_status,
-            commands::post_effect::update_relation_status,
             commands::post_effect::reply_to_annotation,
             commands::post_effect::save_post_effect_annotations,
             commands::onboarding::seed_sample_workspace,
@@ -416,7 +413,6 @@ pub fn run() {
             commands::external_mount::external_mount_read_file,
             commands::external_mount::external_mount_write_file,
             commands::external_mount::external_mount_file_mtime,
-            commands::external_mount::external_mount_list,
             commands::external_mount::external_mount_scan,
         ])
         .build(tauri::generate_context!())

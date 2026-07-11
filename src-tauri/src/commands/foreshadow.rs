@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::database::foreshadow::{
-    self, AnchorMarkOutput, ForeshadowChapterStatsBundle, ForeshadowCreatePayload, ForeshadowFilter,
+    self, AnchorMarkOutput, ForeshadowChapterStatsBundle, ForeshadowCreatePayload,
     ForeshadowListWithLabelsResponse, ForeshadowPatch, ForeshadowSceneContextResponse,
     ForeshadowSceneInfoResponse, ForeshadowSetupPatch, OrphanResolvePayload, PayoffAnchorInput,
     SetupAnchorInput, SetupCreateAiInput,
@@ -39,15 +39,6 @@ pub(crate) fn foreshadow_delete(
     id: String,
 ) -> Result<(), AppError> {
     with_db(&ws_state, |db| foreshadow::delete(db, id))
-}
-
-#[tauri::command(async)]
-pub(crate) fn foreshadow_list(
-    ws_state: tauri::State<'_, WorkspaceState>,
-    project_id: String,
-    filter: Option<ForeshadowFilter>,
-) -> Result<Vec<Value>, AppError> {
-    with_db(&ws_state, |db| foreshadow::list(db, project_id, filter))
 }
 
 #[tauri::command(async)]

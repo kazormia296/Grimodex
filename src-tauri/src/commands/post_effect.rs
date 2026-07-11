@@ -8,17 +8,13 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use rusqlite::params;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::ai::resolve_api_key;
 use super::{AiSettingsPath, AppError, PostEffectAbortRegistry, WorkspaceState};
 use crate::ai::{call_post_effect_api, read_ai_settings};
-use crate::database::post_effect::{
-    self, row_to_annotation_value, row_to_lens_value, row_to_relation_value, row_to_run_value,
-    ReplyToAnnotationArgs,
-};
+use crate::database::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_post_effect::{
     apply_model_override, PostEffectAiClient, PostEffectAiOutput, PostEffectAiRequest,
     PostEffectRuntime, StartPostEffectRunArgs, StartPostEffectRunMultiArgs,
@@ -169,57 +165,6 @@ pub(crate) fn list_post_effect_runs(
 }
 
 #[tauri::command(async)]
-pub(crate) fn get_post_effect_run(
-    ws_state: State<'_, WorkspaceState>,
-    run_id: String,
-    project_id: String,
-) -> Result<Value, AppError> {
-    super::with_db(&ws_state, |db| {
-        db.with_conn(|conn| {
-            let run = conn.query_row(
-                "SELECT id, project_id, effect_type, scope_type, scope_target_id,
-                        model, prompt_version, input_hash, status, summary,
-                        error_message, started_at, completed_at
-                   FROM post_effect_runs WHERE id = ? AND project_id = ?",
-                params![run_id, project_id],
-                row_to_run_value,
-            )?;
-            let annotations = {
-                let mut stmt = conn.prepare(
-                    "SELECT * FROM post_effect_annotations WHERE run_id = ? ORDER BY created_at",
-                )?;
-                let rows: Result<Vec<_>, _> = stmt
-                    .query_map(params![run_id], row_to_annotation_value)?
-                    .collect();
-                rows?
-            };
-            let relations = {
-                let mut stmt = conn.prepare(
-                    "SELECT * FROM post_effect_annotation_relations WHERE run_id = ? ORDER BY created_at",
-                )?;
-                let rows: Result<Vec<_>, _> = stmt
-                    .query_map(params![run_id], row_to_relation_value)?
-                    .collect();
-                rows?
-            };
-            let lens_data = {
-                let mut stmt = conn.prepare(
-                    "SELECT * FROM scene_lens_data WHERE run_id = ? ORDER BY created_at",
-                )?;
-                let rows: Result<Vec<_>, _> =
-                    stmt.query_map(params![run_id], row_to_lens_value)?.collect();
-                rows?
-            };
-            let mut result = run;
-            result["annotations"] = Value::Array(annotations);
-            result["relations"] = Value::Array(relations);
-            result["lens_data"] = Value::Array(lens_data);
-            Ok(result)
-        })
-    })
-}
-
-#[tauri::command(async)]
 pub(crate) fn list_scene_lens_for_project(
     ws_state: State<'_, WorkspaceState>,
     project_id: String,
@@ -273,135 +218,6 @@ pub(crate) fn reply_to_annotation(
 ) -> Result<Value, AppError> {
     super::with_db(&ws_state, |db| {
         db.with_conn(|conn| post_effect::reply_to_annotation_inner(conn, &args))
-    })
-}
-
-fn update_relation_status_inner(
-    conn: &rusqlite::Connection,
-    relation_id: &str,
-    status: &str,
-    project_id: &str,
-) -> anyhow::Result<Value> {
-    let tx = conn.unchecked_transaction()?;
-    let affected = tx.execute(
-        "UPDATE post_effect_annotation_relations
-            SET status = ?, metadata = json_set(metadata, '$.updated_at', datetime('now'))
-          WHERE id = ? AND project_id = ?",
-        params![status, relation_id, project_id],
-    )?;
-    if affected == 0 {
-        anyhow::bail!("relation not found in project (id={relation_id})");
-    }
-    tx.execute(
-        "UPDATE post_effect_annotations
-            SET status = ?,
-                metadata = json_set(metadata, '$.dismiss_source', 'cascade'),
-                updated_at = datetime('now')
-          WHERE project_id = ?
-            AND id IN (
-                SELECT annotation_a_id FROM post_effect_annotation_relations
-                  WHERE id = ? AND project_id = ?
-                UNION
-                SELECT annotation_b_id FROM post_effect_annotation_relations
-                  WHERE id = ? AND project_id = ?
-            )",
-        params![
-            status,
-            project_id,
-            relation_id,
-            project_id,
-            relation_id,
-            project_id
-        ],
-    )?;
-    tx.commit()?;
-    Ok(conn.query_row(
-        "SELECT * FROM post_effect_annotation_relations WHERE id = ? AND project_id = ?",
-        params![relation_id, project_id],
-        row_to_relation_value,
-    )?)
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod update_relation_status_tests {
-    use super::update_relation_status_inner;
-    use rusqlite::{params, Connection};
-
-    fn open_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE post_effect_annotations (
-                id TEXT PRIMARY KEY, project_id TEXT, run_id TEXT, anchor_type TEXT,
-                scene_id TEXT, range_start INTEGER, range_end INTEGER, text_snapshot TEXT,
-                category TEXT NOT NULL, persona TEXT, severity TEXT, content TEXT,
-                author_role TEXT, parent_id TEXT, status TEXT NOT NULL,
-                metadata TEXT NOT NULL DEFAULT '{}', created_at TEXT, updated_at TEXT
-            );
-            CREATE TABLE post_effect_annotation_relations (
-                id TEXT PRIMARY KEY, project_id TEXT, run_id TEXT,
-                annotation_a_id TEXT NOT NULL, annotation_b_id TEXT NOT NULL,
-                relation_type TEXT NOT NULL, direction TEXT NOT NULL DEFAULT 'bidirectional',
-                description TEXT, status TEXT NOT NULL DEFAULT 'open',
-                metadata TEXT NOT NULL DEFAULT '{}', created_at TEXT
-            );",
-        )
-        .unwrap();
-        conn
-    }
-
-    fn insert_ann(conn: &Connection, id: &str, project_id: &str) {
-        conn.execute(
-            "INSERT INTO post_effect_annotations
-                (id, project_id, anchor_type, category, content, author_role,
-                 status, metadata, created_at, updated_at)
-             VALUES (?, ?, 'scene_range', 'consistency_anchor', 'c', 'ai',
-                     'open', '{}', '2024-01-01', '2024-01-01')",
-            params![id, project_id],
-        )
-        .unwrap();
-    }
-
-    fn status_of(conn: &Connection, id: &str) -> String {
-        conn.query_row(
-            "SELECT status FROM post_effect_annotations WHERE id = ?",
-            params![id],
-            |row| row.get(0),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn rejects_other_project_and_scopes_cascade() {
-        let conn = open_db();
-        insert_ann(&conn, "a1", "proj-A");
-        insert_ann(&conn, "a2", "proj-A");
-        conn.execute(
-            "INSERT INTO post_effect_annotation_relations
-                (id, project_id, annotation_a_id, annotation_b_id, relation_type,
-                 status, metadata, created_at)
-             VALUES ('rel1', 'proj-A', 'a1', 'a2', 'contradiction',
-                     'open', '{}', '2024-01-01')",
-            [],
-        )
-        .unwrap();
-        assert!(update_relation_status_inner(&conn, "rel1", "dismissed", "proj-B").is_err());
-        assert_eq!(status_of(&conn, "a1"), "open");
-        assert!(update_relation_status_inner(&conn, "rel1", "dismissed", "proj-A").is_ok());
-        assert_eq!(status_of(&conn, "a1"), "dismissed");
-        assert_eq!(status_of(&conn, "a2"), "dismissed");
-    }
-}
-
-#[tauri::command(async)]
-pub(crate) fn update_relation_status(
-    ws_state: State<'_, WorkspaceState>,
-    relation_id: String,
-    status: String,
-    project_id: String,
-) -> Result<Value, AppError> {
-    super::with_db(&ws_state, |db| {
-        db.with_conn(|conn| update_relation_status_inner(conn, &relation_id, &status, &project_id))
     })
 }
 

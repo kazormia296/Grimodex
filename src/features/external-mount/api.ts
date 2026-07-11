@@ -1,5 +1,5 @@
 import { invoke } from "@/lib/tauri";
-import type { ExternalRoot, ScanResult } from "./types";
+import type { ScanResult } from "./types";
 
 export async function registerMount(
   rootId: string,
@@ -26,10 +26,6 @@ export async function writeExternalFile(
   content: string,
 ): Promise<void> {
   return invoke("external_mount_write_file", { rootId, relPath, content });
-}
-
-export async function listRegisteredMounts(): Promise<ExternalRoot[]> {
-  return invoke<ExternalRoot[]>("external_mount_list");
 }
 
 export async function getExternalFileMtime(
