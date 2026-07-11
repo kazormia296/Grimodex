@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use grimodex_db::ime_export::{get_status, ImeIntegrationMode};
+use grimodex_db::ime_export::{get_status, set_active_project, ImeIntegrationMode};
 use serde_json::{json, Value};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -105,6 +105,21 @@ fn consumer_detection_enforces_the_timestamp_lexical_grammar() -> TestResult {
 }
 
 #[test]
+fn consumer_detection_rejects_null_for_an_optional_typed_field() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let mut value = handshake("null-platform");
+    value["platform"] = Value::Null;
+    write_consumer(sandbox.path(), "null-platform", &value)?;
+
+    let status = serde_json::to_value(get_status(
+        sandbox.path(),
+        ImeIntegrationMode::Auto,
+    )?)?;
+    assert_eq!(status["consumers"].as_array().map(Vec::len), Some(0));
+    Ok(())
+}
+
+#[test]
 fn status_rejects_an_oversized_state_file_before_parsing() -> TestResult {
     let sandbox = Sandbox::new()?;
     let oversized = json!({
@@ -131,6 +146,21 @@ fn status_rejects_a_state_with_a_schema_invalid_timestamp() -> TestResult {
             "format_version": 1,
             "active_project_id": null,
             "updated_at": "2026-07-11 00:00:00Z"
+        }))?,
+    )?;
+
+    assert!(get_status(sandbox.path(), ImeIntegrationMode::On).is_err());
+    Ok(())
+}
+
+#[test]
+fn status_rejects_a_state_missing_required_nullable_active_project_id() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    fs::write(
+        sandbox.path().join("state.json"),
+        serde_json::to_vec(&json!({
+            "format_version": 1,
+            "updated_at": "2026-07-11T00:00:00.000Z"
         }))?,
     )?;
 
@@ -185,5 +215,74 @@ fn status_does_not_count_a_project_with_a_schema_invalid_timestamp() -> TestResu
         ImeIntegrationMode::On,
     )?)?;
     assert_eq!(status["exportedProjectCount"], 0);
+    Ok(())
+}
+
+#[test]
+fn status_rejects_null_or_missing_project_optional_shapes() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let projects = sandbox.path().join("projects");
+    fs::create_dir_all(&projects)?;
+    let base = json!({
+        "format_version": 1,
+        "project_id": "placeholder",
+        "project_name": "Invalid shape",
+        "generated_at": "2026-07-11T00:00:00.000Z",
+        "entries": []
+    });
+
+    let mut null_profile = base.clone();
+    null_profile["project_id"] = json!("null-profile");
+    null_profile["profile"] = Value::Null;
+    fs::write(
+        projects.join("null-profile.json"),
+        serde_json::to_vec(&null_profile)?,
+    )?;
+
+    let mut missing_style = base;
+    missing_style["project_id"] = json!("missing-style");
+    missing_style["zenzai_context"] = json!({
+        "topic": "Topic",
+        "preference": null
+    });
+    fs::write(
+        projects.join("missing-style.json"),
+        serde_json::to_vec(&missing_style)?,
+    )?;
+
+    let status = serde_json::to_value(get_status(
+        sandbox.path(),
+        ImeIntegrationMode::On,
+    )?)?;
+    assert_eq!(status["exportedProjectCount"], 0);
+    Ok(())
+}
+
+#[test]
+fn invalid_project_snapshots_cannot_become_active() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let projects = sandbox.path().join("projects");
+    fs::create_dir_all(&projects)?;
+    fs::write(
+        projects.join("invalid-active.json"),
+        serde_json::to_vec(&json!({
+            "format_version": 1,
+            "project_id": "invalid-active",
+            "project_name": "Invalid active",
+            "generated_at": "invalid",
+            "entries": []
+        }))?,
+    )?;
+
+    set_active_project(
+        sandbox.path(),
+        Some("invalid-active"),
+        ImeIntegrationMode::On,
+    )?;
+    let status = serde_json::to_value(get_status(
+        sandbox.path(),
+        ImeIntegrationMode::On,
+    )?)?;
+    assert!(status["activeProjectId"].is_null());
     Ok(())
 }

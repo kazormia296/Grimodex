@@ -112,6 +112,9 @@ describe("IME Protocol V1 contract fixtures", () => {
     expect(validateConsumer({ ...consumer, name: "C1\u009ftext" })).toBe(
       false,
     );
+    expect(validateConsumer({ ...consumer, name: "lone\ud800surrogate" })).toBe(
+      false,
+    );
   });
 
   it("publishes the byte, count, and string limits consumed by every OS", () => {
@@ -127,9 +130,13 @@ describe("IME Protocol V1 contract fixtures", () => {
       entry_id_max_chars: 128,
       profile_max_chars: 400,
       zenzai_topic_max_chars: 200,
+      zenzai_style_max_chars: 200,
+      zenzai_preference_max_chars: 200,
       consumer_id_max_chars: 128,
       consumer_name_max_chars: 128,
       consumer_version_max_chars: 64,
+      consumer_platform_max_chars: 32,
+      timestamp_max_chars: 64,
     });
   });
 
