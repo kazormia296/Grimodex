@@ -8,7 +8,7 @@
   "scripts": {
     "build": "napi build --release",
     "build:debug": "napi build",
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test"
   },
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4"
