@@ -29,6 +29,7 @@ use napi_derive::napi;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
 use grimodex_db::agent_writes;
+use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
@@ -246,8 +247,7 @@ impl Backend {
         grimodex_license::run_validate_cycle(&runtime)
             .await
             .map(|dto| {
-                serde_json::to_string(&dto)
-                    .map_err(|error| Error::from_reason(error.to_string()))
+                serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
             })
             .transpose()
     }
@@ -322,6 +322,37 @@ impl Backend {
     pub fn validate_workspace_path(&self, path: String) -> bool {
         let p = PathBuf::from(&path);
         p.exists() && p.is_dir() && p.join("grimodex.db").exists()
+    }
+
+    /// アクティブworkspaceの復元候補を新しい順で返す。
+    /// 返り値は `BackupInfo[]` のcamelCase JSON文字列。
+    #[napi]
+    pub async fn list_backups(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let backups = list_backups(&state.ws)?;
+            Ok(serde_json::to_string(&backups).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// バックアップを検証・安全退避・原子置換し、同じworkspaceを再openする。
+    /// 再open時にDB由来のCodex matcherを破棄する。semantic cacheはBatch 4で
+    /// AppStateへ追加した時点で同じhookへ接続する。
+    #[napi]
+    pub async fn restore_backup(&self, file_name: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let state_for_hook = Arc::clone(&state);
+            restore_backup_core(&state.ws, &file_name, move || {
+                let mut matcher = match state_for_hook.codex_matcher.lock() {
+                    Ok(matcher) => matcher,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *matcher = None;
+            })
+        })
+        .await
     }
 
     /// 起動時に必ず呼ばれる (workspace/store.ts:152)。
@@ -795,8 +826,8 @@ impl Backend {
     // Value / Vec<Value> / 応答 struct は raw snake_case 行 or camelCase struct。
     // patch 型の Option<Option<T>> 3 値 + i64（save_anchors の from/to_pos、
     // setup_create_ai の pos 群）は from_wire (normalize_integer_numbers 込み) が
-    // Tauri の引数 deserialize と同一挙動で受ける。foreshadow_list は FE 到達不能な
-    // dead path のため napi ミラーは設けない。
+    // Tauri の引数 deserialize と同一挙動で受ける。到達不能だった旧
+    // foreshadow_list は両ランタイムから撤去済み。
 
     /// 伏線作成 (load_bearing 検証を含む)。`payload` は camelCase の
     /// ForeshadowCreatePayload。返り値: 作成行 (snake_case) の JSON 文字列。

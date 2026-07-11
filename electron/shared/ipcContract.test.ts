@@ -651,6 +651,97 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({ ok: true, value: true });
   });
 
+  it("list_backups: native JSON を BackupInfo 配列へ戻す", async () => {
+    const { backend } = fakeBackend();
+    const listBackups = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          fileName: "grimodex-20260711-120000.db.gz",
+          sizeBytes: 1234,
+          modifiedMs: 1_752_232_400_000,
+          format: "db.gz",
+        },
+      ]),
+    );
+    Object.assign(backend, { listBackups });
+
+    const env = await dispatchInvoke(
+      "list_backups",
+      {},
+      { backend, shell: noShell },
+    );
+
+    expect(listBackups).toHaveBeenCalledOnce();
+    expect(env).toEqual({
+      ok: true,
+      value: [
+        {
+          fileName: "grimodex-20260711-120000.db.gz",
+          sizeBytes: 1234,
+          modifiedMs: 1_752_232_400_000,
+          format: "db.gz",
+        },
+      ],
+    });
+  });
+
+  it("restore_backup: 安全な fileName だけを位置引数へ写像し unit を null にする", async () => {
+    const { backend } = fakeBackend();
+    const restoreBackup = vi.fn().mockResolvedValue(undefined);
+    Object.assign(backend, { restoreBackup });
+
+    for (const fileName of [
+      "grimodex-20260711-120000.db",
+      "grimodex-20260711-120000.db.gz",
+    ]) {
+      const env = await dispatchInvoke(
+        "restore_backup",
+        { fileName },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: null });
+    }
+
+    expect(restoreBackup.mock.calls).toEqual([
+      ["grimodex-20260711-120000.db"],
+      ["grimodex-20260711-120000.db.gz"],
+    ]);
+  });
+
+  it.each([
+    undefined,
+    null,
+    42,
+    "",
+    "../grimodex-20260711-120000.db",
+    "sub/grimodex-20260711-120000.db",
+    "grimodex\\20260711-120000.db",
+    "grimodex-../escape.db",
+    "backup-20260711-120000.db",
+    "grimodex-20260711-120000.db.tmp",
+  ])(
+    "restore_backup: 不正な fileName=%j はnativeを呼ばず拒否する",
+    async (fileName) => {
+      const { backend } = fakeBackend();
+      const restoreBackup = vi.fn().mockResolvedValue(undefined);
+      Object.assign(backend, { restoreBackup });
+
+      const env = await dispatchInvoke(
+        "restore_backup",
+        { fileName },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain(
+          "invalid args `fileName` for command `restore_backup`",
+        );
+      }
+      expect(restoreBackup).not.toHaveBeenCalled();
+    },
+  );
+
   it("get_global_settings: 引数なし、JSON parse 済みで返す", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -878,6 +969,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "list_ai_models",
       "list_annotations_for_project",
       "list_annotations_for_scene",
+      "list_backups",
       "list_post_effect_runs",
       "list_scene_lens_for_project",
       "list_system_fonts",
@@ -892,6 +984,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_update",
       "repair_integrity",
       "reply_to_annotation",
+      "restore_backup",
       "revalidate_license",
       "save_ai_settings",
       "save_global_settings",

@@ -14,8 +14,7 @@ use crate::database::Database;
 // 1 行も変えずに従来どおり解決する。AppError の文字列ワイヤ契約
 // (WORKSPACE_SWITCHING / No workspace is open) のテストも同クレートへ移動済み。
 pub(crate) use grimodex_db::{
-    with_db_state, ActiveWorkspace, AppError, AppResult, GlobalSettingsPath, QueryResult,
-    WorkspaceState,
+    with_db_state, AppError, AppResult, GlobalSettingsPath, QueryResult, WorkspaceState,
 };
 pub(crate) use grimodex_post_effect::PostEffectAbortRegistry;
 pub(crate) use grimodex_license::LicenseRuntime;

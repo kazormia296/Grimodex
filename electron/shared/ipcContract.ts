@@ -207,6 +207,8 @@ export interface NapiBackendLike {
   dbExecuteBatch(statements: unknown): Promise<string>;
   openWorkspace(path: string): Promise<string>;
   validateWorkspacePath(path: string): boolean;
+  listBackups?(): Promise<string>;
+  restoreBackup?(fileName: string): Promise<void>;
   getGlobalSettings(): Promise<string>;
   saveGlobalSettings(settings: unknown): Promise<void>;
   timelapseAppendBatch(
@@ -438,6 +440,33 @@ function requireString(args: CommandArgs, key: string, cmd: string): string {
   return value;
 }
 
+/** restore_backup は renderer 入力をそのままfilesystem pathへ渡さない。 */
+function requireBackupFileName(args: CommandArgs): string {
+  const command = "restore_backup";
+  const key = "fileName";
+  const value = requireString(args, key, command);
+  const supportedSuffix = value.endsWith(".db.gz")
+    ? ".db.gz"
+    : value.endsWith(".db")
+      ? ".db"
+      : null;
+  const stemLength = supportedSuffix
+    ? value.length - "grimodex-".length - supportedSuffix.length
+    : 0;
+  if (
+    !value.startsWith("grimodex-") ||
+    stemLength < 1 ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value.includes("..")
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a safe grimodex-*.db or grimodex-*.db.gz basename`,
+    );
+  }
+  return value;
+}
+
 function requirePresent(args: CommandArgs, key: string, cmd: string): unknown {
   if (!Object.hasOwn(args, key) || args[key] === undefined) {
     throw new Error(
@@ -592,6 +621,20 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireString(a, "path", "validate_workspace_path"),
         ),
       ),
+  },
+  list_backups: {
+    run: async (b) =>
+      parseWire(await requireNapiMethod(b, b.listBackups, "listBackups")()),
+  },
+  restore_backup: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.restoreBackup,
+        "restoreBackup",
+      )(requireBackupFileName(a));
+      return null;
+    },
   },
   get_global_settings: {
     run: async (b) => parseWire(await b.getGlobalSettings()),

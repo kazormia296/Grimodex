@@ -56,6 +56,17 @@ export declare class Backend {
    */
   validateWorkspacePath(path: string): boolean
   /**
+   * アクティブworkspaceの復元候補を新しい順で返す。
+   * 返り値は `BackupInfo[]` のcamelCase JSON文字列。
+   */
+  listBackups(): Promise<string>
+  /**
+   * バックアップを検証・安全退避・原子置換し、同じworkspaceを再openする。
+   * 再open時にDB由来のCodex matcherを破棄する。semantic cacheはBatch 4で
+   * AppStateへ追加した時点で同じhookへ接続する。
+   */
+  restoreBackup(fileName: string): Promise<void>
+  /**
    * 起動時に必ず呼ばれる (workspace/store.ts:152)。
    * 返り値: `GlobalSettings` の JSON 文字列 (camelCase — Tauri ワイヤと同形)。
    */

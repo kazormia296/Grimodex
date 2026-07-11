@@ -227,7 +227,7 @@ fn is_system_directory(path: &Path) -> bool {
 /// RAII: `WorkspaceState::switching` を全 exit (正常・エラー・panic 巻き戻し)
 /// で確実に false へ戻す。open_workspace が途中で `?` で抜けてもフラグが
 /// 立ちっぱなしにならない (立ちっぱなし = 全 DB コマンドが恒久拒否 = 文鎮化)。
-/// `restore_backup_core` (src-tauri 側) も同じガードを使う。
+/// `backup_restore::restore_backup_core` も同じガードを使う。
 pub struct SwitchingGuard<'a>(pub &'a std::sync::atomic::AtomicBool);
 
 impl Drop for SwitchingGuard<'_> {

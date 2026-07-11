@@ -257,6 +257,7 @@ impl Database {
 }
 
 pub mod agent_writes;
+pub mod backup_restore;
 pub mod change_events;
 mod execute;
 pub mod foreshadow;
