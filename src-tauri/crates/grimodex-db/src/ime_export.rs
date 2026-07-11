@@ -1669,7 +1669,7 @@ mod protocol_limit_tests {
         fit_project_snapshot_to_limit(&mut snapshot)?;
 
         assert!(snapshot.entries.len() < MAX_PROJECT_ENTRIES);
-        assert!(serde_json::to_vec_pretty(&snapshot)?.len() + 1 <= MAX_PROJECT_BYTES);
+        assert!(serde_json::to_vec_pretty(&snapshot)?.len() < MAX_PROJECT_BYTES);
         Ok(())
     }
 }
