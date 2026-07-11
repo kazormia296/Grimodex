@@ -29,6 +29,17 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 - 共有Rustチェック: cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 - 共有Rustテスト: cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 
+## GitHub認証（Codex sandbox）
+
+- 通常のユーザー端末では `gh auth status` が成功していても、Codex の sandbox 内では
+  OS keyring を参照できず、`The token in default is invalid` と誤判定されることがある。
+- sandbox 内の失敗だけを根拠に、ユーザーへ再ログインを依頼したり `gh auth logout` を
+  実行したりしない。まず同じ `gh auth status` を `require_escalated` で再実行し、
+  sandbox 外の keyring から認証状態を確認する。
+- 認証が sandbox 外で成功した場合、keyring／ネットワークを必要とする `gh`・`git`
+  操作も、必要な範囲に限定して escalation して続行する。トークン本体は出力しない。
+- sandbox 外でも失敗した場合に限り、`gh auth login -h github.com` をユーザーへ案内する。
+
 ## コード規約
 
 - ES modules（import/export）、CommonJS禁止
