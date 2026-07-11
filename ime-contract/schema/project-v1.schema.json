@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.app/ime-contract/schema/project-v1.schema.json",
+  "title": "Grimodex IME project snapshot format version 1",
+  "type": "object",
+  "required": [
+    "format_version",
+    "project_id",
+    "project_name",
+    "generated_at",
+    "entries"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+    },
+    "generated_at": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    },
+    "profile": {
+      "type": "string",
+      "maxLength": 400,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+    },
+    "zenzai_context": {
+      "$ref": "#/$defs/zenzai_context"
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["yomi", "surface", "category", "priority", "entry_id"],
+      "properties": {
+        "yomi": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+        },
+        "surface": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+        },
+        "category": {
+          "enum": ["person", "place", "noun"]
+        },
+        "priority": {
+          "enum": [1, 2, 3]
+        },
+        "entry_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        }
+      },
+      "additionalProperties": true
+    },
+    "zenzai_context": {
+      "type": "object",
+      "required": ["topic", "style", "preference"],
+      "properties": {
+        "topic": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+        },
+        "style": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preference": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 200,
+              "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F\\uD800-\\uDFFF]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

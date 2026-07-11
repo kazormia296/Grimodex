@@ -107,7 +107,12 @@ ime/
   "entries": [
     { "yomi": "せつな", "surface": "刹那", "category": "person", "priority": 2, "entry_id": "cdx_xxx" }
   ],
-  "profile": "軍事SF。主要人物: 刹那、…（zenz条件付け用の要約文字列）"
+  "profile": "軍事SF。主要人物: 刹那、…（旧consumer互換）",
+  "zenzai_context": {
+    "topic": "溶鉄の…・軍事SF・短い世界観",
+    "style": null,
+    "preference": null
+  }
 }
 ```
 
@@ -119,14 +124,15 @@ ime/
 
 フィールド仕様:
 
-- `yomi`: **ひらがな正規化済み**（カタカナ→ひらがな、NFKC、前後空白除去）。正規化はGrimodex側の責務とし、IME側は正規化済みを前提してよい。
-- `surface`: 表記そのまま。name と aliases、および複数読みを**展開済みのフラット配列**にする（1エントリ=1読み1表記）。
+- `yomi`: NFKC、カタカナ→ひらがな、前後空白除去を適用済み。明示的なASCII略称（`oo` / `xx`等）は保持するため、ひらがなだけに限定しない。IME側は日本語読みをカタカナへ変換し、ASCIIはそのまま扱う。
+- `surface`: 表記をNFC正規化した値。name と aliases、および複数読みを**展開済みのフラット配列**にする（1エントリ=1読み1表記）。
 - `category`: `person`（type slug `character`）/ `place`（`location`）/ `noun`（`item`・`lore`・カスタムtype）。IME側で品詞（人名/地名/固有名詞一般）にマップする。
 - `priority`: `1`=通常、`2`=優先（`contextMode: "always"` のエントリ等）、`3`=予約。IME側のコスト調整の**目安**であり、絶対値の意味は持たせない。
-- `profile`: zenz-v3のプロフィール条件付け用文字列（optional、zenz非搭載IMEは無視してよい）。生成材料は `projects.genre`（英語slugのため日本語ラベルへ変換して埋め込む）+ `projects.outline`（物語の意図・テーマの正本。AIコンテキストL2常時注入と同じ位置づけのため材料として最適）+ 主要エントリ名（`priority` 降順）。この順で連結し400字目安に切り詰める。genre/outline が空ならエントリ名のみで生成する。
+- `profile`: 旧consumer互換のoptional長文。生成材料は `projects.genre` + `projects.outline` + 主要エントリ名で、400文字を上限とする。
+- `zenzai_context`: V1のoptional拡張。`topic`へ作品名・ジャンル・短い世界観を最大200 Unicode scalar valuesで格納し、`style` / `preference`は明示情報がある場合だけ設定する。新consumerはC0/C1除去後の`topic`先頭25 scalar values（省略記号なし）をZenzaiへ渡し、未知フィールドとして扱う旧consumerとの互換性を保つ。
 - `entry_id`: 還流（v2）とデバッグ用のトレーサビリティ。
 
-エントリ数の上限はプロトコルとしては設けない。実効上限はIME側の動的辞書ロードと変換レイテンシに依存するため、Phase 3のベンチマークで実測して決める（必要になればIME側が `priority` 降順で間引く）。
+防御上限はproject snapshot 16 MiB、20,000 entriesとする。これはhard limitであり、実用上のsoft limitはPhase 3.1で100〜10,000件を実測して決める。全上限の正本は`ime-contract/protocol-v1-limits.json`とする。
 
 注入対象の選別:
 
@@ -136,7 +142,8 @@ ime/
 ### 5.3 互換性ポリシー
 
 - 後方互換の追加はフィールド追加で行い、`format_version` は破壊的変更時のみ上げる。
-- IME側は未知フィールドを無視する（must-ignore）。
+- IME側は未知フィールドと未知capabilityを無視する（must-ignore）。
+- Schemaとvalid/invalid/malicious/update-sequence fixtureの正本は`ime-contract/`とする。
 
 ### 5.4 consumers/&lt;consumer_id&gt;.json（IME→Grimodexハンドシェイク）
 
@@ -145,16 +152,23 @@ IME側がインストール時・起動時に作成/touchし、アンインス�
 ```json
 {
   "format_version": 1,
-  "consumer_id": "azookey-grimodex",
-  "name": "…",
-  "version": "…",
-  "capabilities": { "profile": true },
+  "consumer_id": "fcitx5-grimodex",
+  "name": "Grimodex IME for Linux",
+  "version": "0.1.0",
+  "platform": "linux",
+  "capabilities": {
+    "profile": true,
+    "dynamic_dictionary": true,
+    "zenzai_v3_conditions": true,
+    "application_scoping": true
+  },
   "last_seen": "2026-07-10T12:00:00.000Z"
 }
 ```
 
-- Grimodexはこのファイルの存在で「IMEインストール済み」を判定し、連携を自動ONにする（§8）。OS別のインストール痕跡探索はしない。
-- `capabilities` は還流（v2）等の将来のネゴシエーション用に予約。v1ではGrimodex側は参照しない（profileは常に書き出す）。
+- IMEは起動時と15分ごとに`last_seen`をatomic更新する。Grimodexは45分以内のheartbeatだけを「IMEインストール済み」として検出し、連携を自動ONにする（§8）。時計ずれは5分先まで許容する。古いファイルは削除せずconsumer不在として扱い、OS別のインストール痕跡探索はしない。
+- `platform`はoptionalな`linux` / `windows` / `macos`。旧consumerでは省略できる。
+- `capabilities`はsnake_caseのwire形式とし、Grimodex設定画面では対応能力を表示する。追加capabilityはV1 readerが無視する。
 
 ## 6. 書き出し実装（Grimodex側）
 
@@ -194,16 +208,16 @@ IME側がインストール時・起動時に作成/touchし、アンインス�
 2. `state.json` をファイル監視（macOS: FSEvents/DispatchSource、Linux: inotify、Windows: ReadDirectoryChangesW）
 3. `active_project_id` の変化 or 辞書ファイル更新 → パース → **動的ユーザ辞書を差し替え**
 4. 静的な辞書コストブーストは**控えめ**にする（強すぎると一般語を食う。「刹那」「先生」型の一般語衝突は文脈側=zenzの判断に委ねる）
-5. `profile` をzenz-v3のプロフィール条件付けに渡し、文脈バイアスで勝たせる（これがzenz系での本命の優先機構）
-6. スコープ: フォーカス中アプリがGrimodex（`com.miyakey.grimodex`）のとき自動有効化 + 「全アプリで有効」トグル
+5. `zenzai_context.topic`をZenzai v3のtopic条件へ渡す。`profile`は旧consumer fallbackに限定し、ユーザ自身の書き手profileを作品情報で上書きしない
+6. スコープ: フォーカス中アプリがGrimodexと確認できた場合だけ既定有効。判定不能は無効化し、「全アプリで有効」は明示トグルのみ
 
 OS別の注意点:
 
 | OS | ベース | 備考 |
 |---|---|---|
 | macOS | azooKey-Desktop フォーク | AzooKeyKanaKanjiConverterに動的ユーザ辞書追加機構あり。IMKitクライアントの bundleIdentifier でスコープ判定可能 |
-| Linux | fcitx5-hazkey フォーク | エンジンが同じAzooKeyKanaKanjiConverterのためmacOSと同等機能。ただしWaylandではフォーカスアプリ判定に制約 → 「全アプリで有効」トグル運用を既定とする |
-| Windows | mozkey フォーク or TSF自作 | mozc系のユーザ辞書機構へ注入。zenzプロフィール相当の有無は要調査（なければ辞書コストのみで運用）。監視対象JSONは読み取り後すぐ閉じる。handleを保持する場合は`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`を指定し、Grimodexのatomic replaceを妨げない |
+| Linux | fcitx5-hazkey フォーク | 参照実装。Wayland等でprogram判定不能ならfail-closedで無効。全アプリ適用は明示設定のみ |
+| Windows | azooKey-Windows フォーク | Linuxと同じ変換エンジンと契約を移植。監視handleは`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`でGrimodexのatomic replaceを妨げない |
 
 ## 8. セキュリティ・プライバシー
 
@@ -258,14 +272,15 @@ IME側の確定ログから未登録固有名詞候補をGrimodexへ戻し、`ca
 
 1. **Phase 1【完了】**: `readings` 列 + 編集UI + 自動導出 + AI読み推定（Grimodex単体で完結、ルビ等にも転用可）
 2. **Phase 2【完了・Electron-only】**: エクスポータ（`state.json` / `projects/*.json`）+ 連携モード設定（auto/on/off）+ consumer検出
-3. **Phase 3**: macOSアダプタ（azooKey-Desktopフォーク側の取り込み・スコープ判定・profile注入）+ macOS同梱インストール（§9）
-4. **Phase 4**: Linux（fcitx5-hazkey）/ Windows（mozkey）+ 各OSインストーラ同梱、還流の検討
+3. **Phase 3**: Linux参照実装（3.0 契約固定、3.1固定辞書スパイク、3.2実統合、3.3 Debian/AUR・E2E）
+4. **Phase 4**: Windows（azooKey-Windows）へ同じ契約・状態機械を移植
+5. **Phase 5**: macOS（azooKey-Desktop）へ後続移植し、署名・公証・pkg・実機E2Eを追加
 
-Phase 1-2 と Phase 3-4 はリポジトリが分かれる（本体 vs IMEフォーク）。本設計書はプロトコル仕様（§4-5）を両者の契約とする。
+Phase 1-2とPhase 3.0はGrimodex本体、Linux/Windows/macOS consumerは各IME Forkで実装する。`ime-contract/`を全リポジトリから参照する契約の正本とする。
 
 ## 13. 未決事項
 
-- mozc系エンジンでの `profile` 相当機能の有無（Windowsアダプタ選定時に調査）
+- Linux Phase 3.1 benchmark後の推奨soft limitとpriority score最終値
 
 ## 関連文書
 

@@ -1,0 +1,17 @@
+{
+  "policy": {
+    "consumer_max_scalars": 25,
+    "truncation": "unicode_scalar_prefix",
+    "append_ellipsis": false
+  },
+  "cases": [
+    {
+      "wire_topic": "溶鉄の星・軍事SF",
+      "consumer_topic": "溶鉄の星・軍事SF"
+    },
+    {
+      "wire_topic": "1234567890123456789012345・後半は切り捨て",
+      "consumer_topic": "1234567890123456789012345"
+    }
+  ]
+}

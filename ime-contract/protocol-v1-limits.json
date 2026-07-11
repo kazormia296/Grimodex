@@ -1,0 +1,23 @@
+{
+  "state_max_bytes": 65536,
+  "project_max_bytes": 16777216,
+  "consumer_max_bytes": 65536,
+  "project_max_entries": 20000,
+  "project_id_max_chars": 128,
+  "project_name_max_chars": 256,
+  "entry_yomi_max_chars": 256,
+  "entry_surface_max_chars": 256,
+  "entry_id_max_chars": 128,
+  "profile_max_chars": 400,
+  "zenzai_topic_max_chars": 200,
+  "zenzai_style_max_chars": 200,
+  "zenzai_preference_max_chars": 200,
+  "consumer_id_max_chars": 128,
+  "consumer_name_max_chars": 128,
+  "consumer_version_max_chars": 64,
+  "consumer_platform_max_chars": 32,
+  "timestamp_max_chars": 64,
+  "consumer_heartbeat_seconds": 900,
+  "consumer_freshness_ttl_seconds": 2700,
+  "consumer_future_skew_seconds": 300
+}

@@ -1,0 +1,112 @@
+{
+  "policy": {
+    "cid": {
+      "person": 1289,
+      "place": 1293,
+      "noun": 1288
+    },
+    "mid": 501,
+    "priority_base_score": {
+      "1": -8,
+      "2": -5,
+      "3": -4
+    },
+    "category_score_adjustment": {
+      "person": 0,
+      "place": -1,
+      "noun": -1
+    }
+  },
+  "mapped_entries": [
+    {
+      "input": {
+        "yomi": "せつな",
+        "surface": "刹那",
+        "category": "person",
+        "priority": 2,
+        "entry_id": "entry-setsuna"
+      },
+      "output": {
+        "ruby": "セツナ",
+        "word": "刹那",
+        "cid": 1289,
+        "mid": 501,
+        "value": -5
+      }
+    },
+    {
+      "input": {
+        "yomi": "せつな",
+        "surface": "刹那",
+        "category": "person",
+        "priority": 1,
+        "entry_id": "entry-setsuna-low"
+      },
+      "output": {
+        "ruby": "セツナ",
+        "word": "刹那",
+        "cid": 1289,
+        "mid": 501,
+        "value": -8
+      }
+    },
+    {
+      "input": {
+        "yomi": "りゅうせいこう",
+        "surface": "龍星港",
+        "category": "place",
+        "priority": 1,
+        "entry_id": "entry-port"
+      },
+      "output": {
+        "ruby": "リュウセイコウ",
+        "word": "龍星港",
+        "cid": 1293,
+        "mid": 501,
+        "value": -9
+      }
+    },
+    {
+      "input": {
+        "yomi": "きどうれき",
+        "surface": "軌道暦",
+        "category": "noun",
+        "priority": 2,
+        "entry_id": "entry-calendar"
+      },
+      "output": {
+        "ruby": "キドウレキ",
+        "word": "軌道暦",
+        "cid": 1288,
+        "mid": 501,
+        "value": -6
+      }
+    }
+  ],
+  "deduplicated_entries": [
+    {
+      "ruby": "セツナ",
+      "word": "刹那",
+      "cid": 1289,
+      "mid": 501,
+      "value": -5,
+      "entry_id": "entry-setsuna"
+    },
+    {
+      "ruby": "リュウセイコウ",
+      "word": "龍星港",
+      "cid": 1293,
+      "mid": 501,
+      "value": -9,
+      "entry_id": "entry-port"
+    },
+    {
+      "ruby": "キドウレキ",
+      "word": "軌道暦",
+      "cid": 1288,
+      "mid": 501,
+      "value": -6,
+      "entry_id": "entry-calendar"
+    }
+  ]
+}

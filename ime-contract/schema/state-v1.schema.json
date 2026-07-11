@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.app/ime-contract/schema/state-v1.schema.json",
+  "title": "Grimodex IME state format version 1",
+  "type": "object",
+  "required": ["format_version", "active_project_id", "updated_at"],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "active_project_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updated_at": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    }
+  },
+  "additionalProperties": true
+}
