@@ -4,7 +4,6 @@ import {
   type Update,
   type DownloadEvent,
 } from "@/lib/updater";
-import { isTauri } from "@/lib/tauri";
 import { useUpdaterStore } from "./updaterStore";
 
 /**
@@ -22,10 +21,9 @@ import { useUpdaterStore } from "./updaterStore";
 let pendingUpdate: Update | null = null;
 
 /**
- * 更新確認。非 Tauri 環境では no-op で null を返す。null は「更新なし」。
+ * 更新確認。shell 差分は updater 抽象層が吸収する。null は「更新なし」。
  */
 export async function checkForUpdate(): Promise<Update | null> {
-  if (!isTauri()) return null;
   const update = await check();
   pendingUpdate = update;
   return update;
@@ -78,11 +76,10 @@ export async function startUpdateDownload(): Promise<void> {
 }
 
 /**
- * アプリを再起動する。非 Tauri では no-op。失敗は握りつぶす
+ * アプリを再起動する。通常ブラウザでは no-op。失敗は握りつぶす
  * (Windows passive インストーラが再起動を担うケース等)。
  */
 export async function restartApp(): Promise<void> {
-  if (!isTauri()) return;
   try {
     await relaunch();
   } catch {

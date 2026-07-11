@@ -1,4 +1,4 @@
-FROM node:20
+FROM node:20-bookworm
 
 ARG TZ
 ENV TZ="$TZ"
@@ -6,7 +6,8 @@ ENV TZ="$TZ"
 ARG CLAUDE_CODE_VERSION=latest
 ARG CODEX_CLI_VERSION=latest
 
-# Install basic development tools, iptables/ipset, and Tauri v2 build dependencies
+# Install basic development tools, iptables/ipset, Electron runtime libraries,
+# and native N-API build dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
   less \
   git \
@@ -26,24 +27,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   jq \
   nano \
   vim \
-  # Tauri v2 build dependencies
+  # Native N-API build dependencies
   build-essential \
   curl \
   wget \
   file \
-  libgtk-3-dev \
-  libwebkit2gtk-4.1-dev \
-  libayatana-appindicator3-dev \
-  librsvg2-dev \
   patchelf \
   libssl-dev \
-  libsoup-3.0-dev \
-  libjavascriptcoregtk-4.1-dev \
+  libdbus-1-dev \
+  libsecret-1-dev \
   # SQLite development headers (for rusqlite bundled build)
   pkg-config \
   # GUI runtime dependencies (for running the app in-container via WSLg)
   dbus-x11 \
   libdbus-1-3 \
+  libgtk-3-0 \
+  libnss3 \
+  libxss1 \
+  libxtst6 \
+  libgbm1 \
+  libnotify4 \
+  libasound2 \
+  libsecret-1-0 \
   at-spi2-core \
   xdg-utils \
   fonts-noto-cjk \
@@ -108,7 +113,7 @@ ENV PATH=$PATH:/usr/local/share/npm-global/bin:$PNPM_HOME
 
 # Install pnpm, then project CLI tools globally through pnpm
 RUN npm install -g pnpm@10.33.0 && \
-  pnpm add -g @tauri-apps/cli @openai/codex@${CODEX_CLI_VERSION}
+  pnpm add -g @openai/codex@${CODEX_CLI_VERSION}
 
 # Set the default shell to zsh rather than sh
 ENV SHELL=/bin/zsh

@@ -3,8 +3,12 @@ import { projects, lintTermDictionary } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import {
+  cancelScheduledImeExports,
+  scheduleImeExportRefresh,
+} from "@/features/ime/scheduler";
 import { removeImeProjectExportWithRetry } from "@/features/ime/api";
+import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -98,6 +102,11 @@ export async function updateProject(
 }
 
 export async function deleteProject(id: string): Promise<void> {
+  const imeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
+  // A pending pre-delete refresh would otherwise race the native remove gate:
+  // refresh can become latest, fail on the deleted DB row, and leave the old
+  // plaintext snapshot behind.
+  cancelScheduledImeExports(id);
   // lint_term_dictionary.project_id is FK-cascaded only on fresh DBs; on DBs
   // upgraded via ALTER the column has no FK, so delete its rows explicitly to
   // avoid orphans (harmless on fresh DBs — the rows are already gone).
@@ -107,5 +116,8 @@ export async function deleteProject(id: string): Promise<void> {
   await db.delete(projects).where(eq(projects.id, id));
   // The DB delete is authoritative; cleanup has a bounded background retry so
   // a transient filesystem failure cannot leave plaintext indefinitely.
-  await removeImeProjectExportWithRetry(id);
+  // Cancel again after the awaited DB work: another window/local mutation may
+  // have scheduled while deletion was in flight.
+  cancelScheduledImeExports(id);
+  await removeImeProjectExportWithRetry(id, imeWorkspaceIdentity);
 }

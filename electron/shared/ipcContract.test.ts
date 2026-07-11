@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   clampZoomFactor,
-  DISABLED_LICENSE_STATE,
   dispatchInvoke,
   EVENT_CHANNEL_ALLOWLIST,
   IPC_BACKEND_UNAVAILABLE_MARKER,
@@ -14,6 +13,7 @@ import {
   isAllowedEventChannel,
   isSafeExternalUrl,
   NAPI_COMMANDS,
+  SHELL_COMMAND_NAMES,
   toErrorString,
   unimplementedError,
 } from "./ipcContract.js";
@@ -158,6 +158,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "codexMatchText",
       Promise.resolve(
         '[{"entryId":"c1","entryName":"太郎","entryType":"character","from":0,"to":2}]',
+      ),
+    ) as never,
+    extractCodexCandidates: record(
+      "extractCodexCandidates",
+      Promise.resolve(
+        '[{"surface":"京都","lemma":"京都","count":2,"firstSceneId":"s1","context":"京都へ行った。"}]',
       ),
     ) as never,
     // plot_threads 8 コマンド（Phase 3 バッチ1 — napi は SELECT * の生行 =
@@ -363,6 +369,19 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
       "savePostEffectAnnotations",
       Promise.resolve(undefined),
     ) as never,
+    getAiSettings: record(
+      "getAiSettings",
+      Promise.resolve('{"provider":"openai","model":"gpt-x"}'),
+    ) as never,
+    sendChatMessage: record(
+      "sendChatMessage",
+      Promise.resolve('{"blocks":[{"type":"text","content":"hi"}]}'),
+    ) as never,
+    sendChatMessageStream: record(
+      "sendChatMessageStream",
+      Promise.resolve(undefined),
+    ) as never,
+    abortChatStream: record("abortChatStream", undefined) as never,
     onEvent: record("onEvent", undefined) as never,
     ...overrides,
   };
@@ -370,6 +389,54 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
 }
 
 const noShell = Object.freeze({});
+
+const LICENSED_LICENSE_STATE = {
+  licensingEnabled: true,
+  status: "licensed",
+  trialDaysRemaining: null,
+  graceDaysRemaining: null,
+  keyTail: "1234",
+  activatedAt: "2026-07-01T00:00:00Z",
+  lastValidatedAt: "2026-07-11T00:00:00Z",
+};
+
+const TRIAL_LICENSE_STATE = {
+  licensingEnabled: true,
+  status: "trial",
+  trialDaysRemaining: 23,
+  graceDaysRemaining: null,
+  keyTail: null,
+  activatedAt: null,
+  lastValidatedAt: null,
+};
+
+const STALE_LICENSE_STATE = {
+  ...LICENSED_LICENSE_STATE,
+  status: "license_stale",
+};
+
+function fakeLicenseBackend() {
+  const base = fakeBackend();
+  const methods = {
+    getLicenseState: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(LICENSED_LICENSE_STATE)),
+    activateLicense: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(LICENSED_LICENSE_STATE)),
+    revalidateLicense: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(LICENSED_LICENSE_STATE)),
+    deactivateLicense: vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(TRIAL_LICENSE_STATE)),
+  };
+  return {
+    ...base,
+    backend: Object.assign(base.backend, methods),
+    methods,
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // イベント allowlist（列挙制）
@@ -385,6 +452,7 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     "post_effect:progress",
     "semantic:model_download_progress",
     "vivliostyle:preview-exited",
+    "updater:download-progress",
     // renderer 発 codex 窓間同期（§7.1 Phase 2 受け入れ対象）
     "codex:data-changed",
     "codex:lock-event",
@@ -446,20 +514,73 @@ describe("toErrorString", () => {
 describe("dispatchInvoke", () => {
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
     const { backend } = fakeBackend();
-    const env = await dispatchInvoke(
-      "send_chat_message",
-      {},
-      { backend, shell: noShell },
-    );
+    const command = "definitely_unknown_command";
+    const env = await dispatchInvoke(command, {}, { backend, shell: noShell });
     expect(env).toEqual({
       ok: false,
-      error: "IPC_UNIMPLEMENTED: send_chat_message",
+      error: `IPC_UNIMPLEMENTED: ${command}`,
     });
     expect(
-      unimplementedError("send_chat_message").startsWith(
-        IPC_UNIMPLEMENTED_MARKER,
-      ),
+      unimplementedError(command).startsWith(IPC_UNIMPLEMENTED_MARKER),
     ).toBe(true);
+  });
+
+  it("CLI AI 5コマンドはbackend不在でもmain shell handlerへ委譲される", async () => {
+    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
+    const shell = Object.fromEntries(
+      [
+        "detect_cli_binary",
+        "test_cli_connection",
+        "list_cli_models",
+        "send_cli_chat_stream",
+        "abort_cli_chat_stream",
+      ].map((command) => [
+        command,
+        async (args: Record<string, unknown>) => {
+          calls.push({ command, args });
+          return command === "detect_cli_binary" ? "/bin/claude" : null;
+        },
+      ]),
+    );
+
+    const detected = await dispatchInvoke(
+      "detect_cli_binary",
+      { cli: "claude" },
+      { backend: null, shell },
+    );
+    const sent = await dispatchInvoke(
+      "send_cli_chat_stream",
+      { payload: { cli: "claude", prompt: "hi" } },
+      { backend: null, shell },
+    );
+
+    expect(detected).toEqual({ ok: true, value: "/bin/claude" });
+    expect(sent).toEqual({ ok: true, value: null });
+    expect(calls).toEqual([
+      { command: "detect_cli_binary", args: { cli: "claude" } },
+      {
+        command: "send_cli_chat_stream",
+        args: { payload: { cli: "claude", prompt: "hi" } },
+      },
+    ]);
+    expect(SHELL_COMMAND_NAMES).toEqual(
+      expect.arrayContaining([
+        "detect_cli_binary",
+        "test_cli_connection",
+        "list_cli_models",
+        "send_cli_chat_stream",
+        "abort_cli_chat_stream",
+        "vivliostyle_detect",
+        "vivliostyle_build",
+        "vivliostyle_abort_build",
+        "vivliostyle_save_output",
+        "vivliostyle_preview_start",
+        "vivliostyle_preview_stop",
+        "updater_check",
+        "updater_download",
+        "updater_install",
+      ]),
+    );
   });
 
   it("backend 不在の napi コマンドは IPC_BACKEND_UNAVAILABLE", async () => {
@@ -500,31 +621,21 @@ describe("dispatchInvoke", () => {
     expect(env).toEqual({ ok: false, error: "WORKSPACE_SWITCHING" });
   });
 
-  it("shell ハンドラが napi 表より優先される", async () => {
-    const { backend, calls } = fakeBackend();
-    const shell = {
-      get_license_state: vi.fn(() =>
-        Promise.resolve({ ...DISABLED_LICENSE_STATE }),
-      ),
-    };
+  it("native license commandは残存shell stubに遮られない", async () => {
+    const { backend, methods } = fakeLicenseBackend();
+    const getLicenseStateStub = vi.fn().mockResolvedValue({
+      licensingEnabled: false,
+      status: "disabled",
+    });
     const env = await dispatchInvoke(
       "get_license_state",
       {},
-      { backend, shell },
+      { backend, shell: { get_license_state: getLicenseStateStub } },
     );
-    expect(env).toEqual({
-      ok: true,
-      value: {
-        licensingEnabled: false,
-        status: "disabled",
-        trialDaysRemaining: null,
-        graceDaysRemaining: null,
-        keyTail: null,
-        activatedAt: null,
-        lastValidatedAt: null,
-      },
-    });
-    expect(calls).toHaveLength(0);
+
+    expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
+    expect(methods.getLicenseState).toHaveBeenCalledExactlyOnceWith();
+    expect(getLicenseStateStub).not.toHaveBeenCalled();
   });
 
   it("プロトタイプ経由のコマンド名（constructor 等）は未実装扱い", async () => {
@@ -588,6 +699,97 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(env).toEqual({ ok: true, value: true });
   });
 
+  it("list_backups: native JSON を BackupInfo 配列へ戻す", async () => {
+    const { backend } = fakeBackend();
+    const listBackups = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          fileName: "grimodex-20260711-120000.db.gz",
+          sizeBytes: 1234,
+          modifiedMs: 1_752_232_400_000,
+          format: "db.gz",
+        },
+      ]),
+    );
+    Object.assign(backend, { listBackups });
+
+    const env = await dispatchInvoke(
+      "list_backups",
+      {},
+      { backend, shell: noShell },
+    );
+
+    expect(listBackups).toHaveBeenCalledOnce();
+    expect(env).toEqual({
+      ok: true,
+      value: [
+        {
+          fileName: "grimodex-20260711-120000.db.gz",
+          sizeBytes: 1234,
+          modifiedMs: 1_752_232_400_000,
+          format: "db.gz",
+        },
+      ],
+    });
+  });
+
+  it("restore_backup: 安全な fileName だけを位置引数へ写像し unit を null にする", async () => {
+    const { backend } = fakeBackend();
+    const restoreBackup = vi.fn().mockResolvedValue(undefined);
+    Object.assign(backend, { restoreBackup });
+
+    for (const fileName of [
+      "grimodex-20260711-120000.db",
+      "grimodex-20260711-120000.db.gz",
+    ]) {
+      const env = await dispatchInvoke(
+        "restore_backup",
+        { fileName },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: null });
+    }
+
+    expect(restoreBackup.mock.calls).toEqual([
+      ["grimodex-20260711-120000.db"],
+      ["grimodex-20260711-120000.db.gz"],
+    ]);
+  });
+
+  it.each([
+    undefined,
+    null,
+    42,
+    "",
+    "../grimodex-20260711-120000.db",
+    "sub/grimodex-20260711-120000.db",
+    "grimodex\\20260711-120000.db",
+    "grimodex-../escape.db",
+    "backup-20260711-120000.db",
+    "grimodex-20260711-120000.db.tmp",
+  ])(
+    "restore_backup: 不正な fileName=%j はnativeを呼ばず拒否する",
+    async (fileName) => {
+      const { backend } = fakeBackend();
+      const restoreBackup = vi.fn().mockResolvedValue(undefined);
+      Object.assign(backend, { restoreBackup });
+
+      const env = await dispatchInvoke(
+        "restore_backup",
+        { fileName },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain(
+          "invalid args `fileName` for command `restore_backup`",
+        );
+      }
+      expect(restoreBackup).not.toHaveBeenCalled();
+    },
+  );
+
   it("get_global_settings: 引数なし、JSON parse 済みで返す", async () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
@@ -628,7 +830,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
-  it("ime_export_refresh: {projectId, options} を位置引数へ写像し Status DTO を parse する", async () => {
+  it("ime_export_refresh: workspace identityを含む引数を位置引数へ写像し Status DTO を parse する", async () => {
     const { backend, calls } = fakeBackend();
     const options = {
       mode: "auto",
@@ -637,12 +839,19 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     };
     const env = await dispatchInvoke(
       "ime_export_refresh",
-      { projectId: "p1", options },
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/a",
+        options,
+      },
       { backend, shell: noShell },
     );
 
     expect(calls).toEqual([
-      { method: "imeExportRefresh", args: ["p1", options] },
+      {
+        method: "imeExportRefresh",
+        args: ["p1", "/workspaces/a", options],
+      },
     ]);
     expect(env).toEqual({ ok: true, value: IME_EXPORT_STATUS_VALUE });
   });
@@ -651,18 +860,25 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const { backend, calls } = fakeBackend();
     const active = await dispatchInvoke(
       "ime_export_set_active_project",
-      { projectId: "p1", mode: "auto" },
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/a",
+        mode: "auto",
+      },
       { backend, shell: noShell },
     );
     const inactive = await dispatchInvoke(
       "ime_export_set_active_project",
-      { projectId: null, mode: "off" },
+      { projectId: null, expectedWorkspacePath: null, mode: "off" },
       { backend, shell: noShell },
     );
 
     expect(calls).toEqual([
-      { method: "imeExportSetActiveProject", args: ["p1", "auto"] },
-      { method: "imeExportSetActiveProject", args: [null, "off"] },
+      {
+        method: "imeExportSetActiveProject",
+        args: ["p1", "/workspaces/a", "auto"],
+      },
+      { method: "imeExportSetActiveProject", args: [null, null, "off"] },
     ]);
     const status = { ok: true, value: IME_EXPORT_STATUS_VALUE };
     expect(active).toEqual(status);
@@ -673,7 +889,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const { backend, calls } = fakeBackend();
     const env = await dispatchInvoke(
       "ime_export_set_active_project",
-      { projectId: 42, mode: "auto" },
+      { projectId: 42, expectedWorkspacePath: "/workspaces/a", mode: "auto" },
       { backend, shell: noShell },
     );
 
@@ -707,13 +923,16 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     );
     const remove = await dispatchInvoke(
       "ime_export_remove_project",
-      { projectId: "p1" },
+      { projectId: "p1", expectedWorkspacePath: "/workspaces/a" },
       { backend, shell: noShell },
     );
 
     expect(calls).toEqual([
       { method: "imeExportClearAll", args: [] },
-      { method: "imeExportRemoveProject", args: ["p1"] },
+      {
+        method: "imeExportRemoveProject",
+        args: ["p1", "/workspaces/a"],
+      },
     ]);
     expect(clear).toEqual({ ok: true, value: null });
     expect(remove).toEqual({ ok: true, value: null });
@@ -845,8 +1064,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（既存 76 + IME Phase 2 の 5）", () => {
+  it("napi コマンド表が揃っている（Electron移行 + IME Phase 2）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
+      "abort_chat_stream",
+      "abort_inline_ai_stream",
+      "abort_post_effect_run",
+      "activate_license",
       "agent_accept_prose_stage",
       "agent_apply_undo_journal",
       "agent_codex_create",
@@ -865,10 +1088,24 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "agent_scene_event_unlink",
       "agent_snippet_create",
       "agent_write_bundle",
+      "chat_index_message",
+      "chat_index_status",
+      "chat_message_search",
+      "chat_reindex_all",
+      "codex_index_entry",
+      "codex_index_status",
       "codex_match_text",
       "codex_rebuild_matcher",
+      "codex_reindex_all",
+      "codex_semantic_search",
       "db_execute",
       "db_execute_batch",
+      "deactivate_license",
+      "events_index_entry",
+      "events_index_status",
+      "events_reindex_all",
+      "events_semantic_search",
+      "extract_codex_candidates",
       "foreshadow_create",
       "foreshadow_delete",
       "foreshadow_get",
@@ -893,7 +1130,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "fts_rebuild",
       "fts_rebuild_en",
       "fts_search",
+      "get_ai_settings",
       "get_global_settings",
+      "get_license_state",
       "ime_export_clear_all",
       "ime_export_get_status",
       "ime_export_refresh",
@@ -901,8 +1140,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "ime_export_set_active_project",
       "integrity_check",
       "lint_text",
+      "list_ai_models",
       "list_annotations_for_project",
       "list_annotations_for_scene",
+      "list_backups",
       "list_post_effect_runs",
       "list_scene_lens_for_project",
       "list_system_fonts",
@@ -917,9 +1158,27 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "plot_thread_update",
       "repair_integrity",
       "reply_to_annotation",
+      "restore_backup",
+      "revalidate_license",
+      "save_ai_settings",
       "save_global_settings",
       "save_post_effect_annotations",
+      "seed_sample_workspace",
       "segment_bunsetsu",
+      "semantic_chunk_context",
+      "semantic_debug_dump",
+      "semantic_download_model",
+      "semantic_index_scene",
+      "semantic_index_status",
+      "semantic_reindex_all",
+      "semantic_search",
+      "send_agent_message",
+      "send_chat_message",
+      "send_chat_message_stream",
+      "send_inline_ai_stream",
+      "start_post_effect_run",
+      "start_post_effect_run_multi",
+      "test_ai_connection",
       "timelapse_append_batch",
       "trash_bin_clear_all",
       "trash_bin_create",
@@ -929,6 +1188,211 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "update_annotation_status",
       "validate_workspace_path",
     ]);
+  });
+
+  describe("License Phase 3e コマンド", () => {
+    const commandCases = [
+      ["get_license_state", "getLicenseState", {}],
+      ["activate_license", "activateLicense", { key: "GRIM-KEY-1234" }],
+      ["revalidate_license", "revalidateLicense", {}],
+      ["deactivate_license", "deactivateLicense", {}],
+    ] as const;
+
+    it("get_license_stateをmain-TS shell commandとして登録しない", () => {
+      expect(SHELL_COMMAND_NAMES).not.toContain("get_license_state");
+    });
+
+    it("get_license_stateは引数なしでnativeを呼び、JSON DTOをparseする", async () => {
+      const { backend, methods } = fakeLicenseBackend();
+
+      const env = await dispatchInvoke(
+        "get_license_state",
+        {},
+        {
+          backend,
+          shell: noShell,
+        },
+      );
+
+      expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
+      expect(methods.getLicenseState).toHaveBeenCalledExactlyOnceWith();
+    });
+
+    it("activate_licenseはkeyを位置引数へ写像し、JSON DTOをparseする", async () => {
+      const { backend, methods } = fakeLicenseBackend();
+
+      const env = await dispatchInvoke(
+        "activate_license",
+        { key: "GRIM-KEY-1234" },
+        { backend, shell: noShell },
+      );
+
+      expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
+      expect(methods.activateLicense).toHaveBeenCalledExactlyOnceWith(
+        "GRIM-KEY-1234",
+      );
+    });
+
+    it.each([
+      ["revalidate_license", "revalidateLicense", LICENSED_LICENSE_STATE],
+      ["deactivate_license", "deactivateLicense", TRIAL_LICENSE_STATE],
+    ] as const)(
+      "%sはbackendへ引数を渡さず、JSON DTOをparseする",
+      async (cmd, methodName, expectedState) => {
+        const { backend, methods } = fakeLicenseBackend();
+
+        const env = await dispatchInvoke(
+          cmd,
+          { ignoredExtraArg: true },
+          { backend, shell: noShell },
+        );
+
+        expect(env).toEqual({ ok: true, value: expectedState });
+        expect(methods[methodName]).toHaveBeenCalledExactlyOnceWith();
+      },
+    );
+
+    it.each([
+      ["activate_license", { key: "GRIM-KEY-1234" }, LICENSED_LICENSE_STATE],
+      ["revalidate_license", {}, LICENSED_LICENSE_STATE],
+      ["deactivate_license", {}, TRIAL_LICENSE_STATE],
+    ] as const)(
+      "%s成功時は返却DTOをlicense:state_changedとして全窓broadcastへ渡す",
+      async (cmd, args, expectedState) => {
+        const { backend } = fakeLicenseBackend();
+        const broadcast = vi.fn();
+
+        const env = await dispatchInvoke(cmd, args, {
+          backend,
+          shell: noShell,
+          broadcast,
+        });
+
+        expect(env).toEqual({ ok: true, value: expectedState });
+        expect(broadcast).toHaveBeenCalledExactlyOnceWith(
+          "license:state_changed",
+          expectedState,
+        );
+      },
+    );
+
+    it("get_license_stateはreadだけなのでbroadcastしない", async () => {
+      const { backend } = fakeLicenseBackend();
+      const broadcast = vi.fn();
+
+      await dispatchInvoke(
+        "get_license_state",
+        {},
+        {
+          backend,
+          shell: noShell,
+          broadcast,
+        },
+      );
+
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    it("全窓broadcast失敗は成功済みlicense mutationをinvoke失敗へ反転しない", async () => {
+      const { backend } = fakeLicenseBackend();
+      const broadcast = vi.fn(() => {
+        throw new Error("window closed during send");
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const env = await dispatchInvoke(
+        "activate_license",
+        { key: "GRIM-KEY-1234" },
+        { backend, shell: noShell, broadcast },
+      );
+
+      expect(env).toEqual({ ok: true, value: LICENSED_LICENSE_STATE });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("license:state_changed broadcast failed"),
+        expect.any(Error),
+      );
+      warn.mockRestore();
+    });
+
+    it("手動revalidate失敗時も現在DTOをbroadcastして全窓のstaleConfirmedを同期する", async () => {
+      const { backend, methods } = fakeLicenseBackend();
+      methods.revalidateLicense.mockRejectedValueOnce(
+        new Error("Polar unavailable"),
+      );
+      methods.getLicenseState.mockResolvedValueOnce(
+        JSON.stringify(STALE_LICENSE_STATE),
+      );
+      const broadcast = vi.fn();
+
+      const env = await dispatchInvoke(
+        "revalidate_license",
+        {},
+        {
+          backend,
+          shell: noShell,
+          broadcast,
+        },
+      );
+
+      expect(env).toEqual({ ok: false, error: "Polar unavailable" });
+      expect(methods.getLicenseState).toHaveBeenCalledExactlyOnceWith();
+      expect(broadcast).toHaveBeenCalledExactlyOnceWith(
+        "license:state_changed",
+        STALE_LICENSE_STATE,
+      );
+    });
+
+    it.each([{}, { key: null }, { key: 42 }, { key: [] }])(
+      "activate_licenseは必須keyがstringでなければnative呼出し前に拒否する: %j",
+      async (args) => {
+        const { backend, methods } = fakeLicenseBackend();
+
+        const env = await dispatchInvoke("activate_license", args, {
+          backend,
+          shell: noShell,
+        });
+
+        expect(env.ok).toBe(false);
+        if (!env.ok) {
+          expect(env.error).toContain(
+            "invalid args `key` for command `activate_license`",
+          );
+        }
+        expect(methods.activateLicense).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(commandCases)(
+      "%sは旧native bindingで%sが無ければ明示的なbackend unavailableを返す",
+      async (cmd, methodName, args) => {
+        const { backend } = fakeBackend();
+
+        const env = await dispatchInvoke(cmd, args, {
+          backend,
+          shell: noShell,
+        });
+
+        expect(env).toEqual({
+          ok: false,
+          error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${methodName}`,
+        });
+      },
+    );
+
+    it.each(commandCases)(
+      "%sはbackend自体がnullならcommand単位のbackend unavailableを返す",
+      async (cmd, _methodName, args) => {
+        const env = await dispatchInvoke(cmd, args, {
+          backend: null,
+          shell: noShell,
+        });
+
+        expect(env).toEqual({
+          ok: false,
+          error: `${IPC_BACKEND_UNAVAILABLE_MARKER} ${cmd}`,
+        });
+      },
+    );
   });
 
   it("codex_rebuild_matcher は {entries} を素通しし null を resolve する", async () => {
@@ -974,6 +1438,64 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { method: "codexMatchText", args: ["太郎は走った", ["c2"]] },
     ]);
   });
+
+  it("extract_codex_candidates は projectId + minCount を写像し候補を parse する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "extract_codex_candidates",
+      { projectId: "p1", minCount: 2 },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: [
+        {
+          surface: "京都",
+          lemma: "京都",
+          count: 2,
+          firstSceneId: "s1",
+          context: "京都へ行った。",
+        },
+      ],
+    });
+    expect(calls).toEqual([
+      { method: "extractCodexCandidates", args: ["p1", 2] },
+    ]);
+  });
+
+  it("extract_codex_candidates の minCount 省略は undefined として写像する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "extract_codex_candidates",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(calls).toEqual([
+      { method: "extractCodexCandidates", args: ["p1", undefined] },
+    ]);
+  });
+
+  it.each([-1, 1.5, "2", Number.NaN, Number.POSITIVE_INFINITY])(
+    "extract_codex_candidates は不正な minCount=%j を native 前に拒否する",
+    async (minCount) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "extract_codex_candidates",
+        { projectId: "p1", minCount },
+        { backend, shell: noShell },
+      );
+
+      expect(env).toEqual({
+        ok: false,
+        error:
+          "invalid args `minCount` for command `extract_codex_candidates`: expected an unsigned integer or null",
+      });
+      expect(calls).toHaveLength(0);
+    },
+  );
 
   it("lint_text は引数を写像し LintResponse を parse して返す", async () => {
     const { backend, calls } = fakeBackend();
@@ -1611,4 +2133,734 @@ describe("clampZoomFactor", () => {
     expect(clampZoomFactor(Number.POSITIVE_INFINITY)).toBe(1);
     expect(clampZoomFactor(undefined)).toBe(1);
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI チャット（Phase 3 バッチ3a — キー注入 + secrets 経由の解決）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("AI チャットコマンド", () => {
+  const fakeSecrets = (key = "sk-resolved") => ({
+    resolveApiKeyForRequest: vi.fn().mockReturnValue(key),
+  });
+
+  it("get_ai_settings は backend.getAiSettings を parse して返す", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "get_ai_settings",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({
+      ok: true,
+      value: { provider: "openai", model: "gpt-x" },
+    });
+    expect(calls.some((c) => c.method === "getAiSettings")).toBe(true);
+  });
+
+  it("send_chat_message は設定を読み secrets でキー解決して注入する", async () => {
+    const { backend, calls } = fakeBackend();
+    const secrets = fakeSecrets("sk-abc");
+    const args = {
+      messages: [{ role: "user", content: "hi" }],
+      provider: "openai",
+    };
+    const env = await dispatchInvoke("send_chat_message", args, {
+      backend,
+      shell: noShell,
+      secrets,
+    });
+    expect(env).toEqual({
+      ok: true,
+      value: { blocks: [{ type: "text", content: "hi" }] },
+    });
+    // 設定 → secrets(settings, provider, endpointId) →
+    // sendChatMessage(args, settings, key) の順。
+    expect(secrets.resolveApiKeyForRequest).toHaveBeenCalledWith(
+      { provider: "openai", model: "gpt-x" },
+      "openai",
+      undefined,
+    );
+    // 送信は「キー解決に使った同一 settings スナップショット」を napi へ渡す（原子性）。
+    expect(calls).toContainEqual({
+      method: "sendChatMessage",
+      args: [args, { provider: "openai", model: "gpt-x" }, "sk-abc"],
+    });
+    // TOCTOU 回避: settings 読み込みは 1 回だけ（napi は再読込しない）。
+    expect(calls.filter((c) => c.method === "getAiSettings")).toHaveLength(1);
+  });
+
+  it("send_chat_message_stream はキーを注入し null を resolve する", async () => {
+    const { backend, calls } = fakeBackend();
+    const secrets = fakeSecrets("sk-stream");
+    const args = {
+      messages: [{ role: "user", content: "yo" }],
+      endpointId: "ep2",
+    };
+    const env = await dispatchInvoke("send_chat_message_stream", args, {
+      backend,
+      shell: noShell,
+      secrets,
+    });
+    expect(env).toEqual({ ok: true, value: null });
+    expect(secrets.resolveApiKeyForRequest).toHaveBeenCalledWith(
+      { provider: "openai", model: "gpt-x" },
+      undefined,
+      "ep2",
+    );
+    expect(calls).toContainEqual({
+      method: "sendChatMessageStream",
+      args: [args, { provider: "openai", model: "gpt-x" }, "sk-stream"],
+    });
+  });
+
+  it("abort_chat_stream は backend.abortChatStream を呼び null を返す（secrets 不要）", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "abort_chat_stream",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: true, value: null });
+    expect(calls).toContainEqual({ method: "abortChatStream", args: [] });
+  });
+
+  it("secrets 未注入のチャット送信は IPC_SECRETS_UNAVAILABLE で reject する", async () => {
+    const { backend } = fakeBackend();
+    const env = await dispatchInvoke(
+      "send_chat_message",
+      { messages: [] },
+      { backend, shell: noShell }, // secrets 無し
+    );
+    expect(env).toEqual({
+      ok: false,
+      error: "IPC_SECRETS_UNAVAILABLE: send_chat_message",
+    });
+  });
+
+  it("キー未設定（secrets が throw）は生文字列 reject に解封される", async () => {
+    const { backend } = fakeBackend();
+    const secrets = {
+      resolveApiKeyForRequest: vi.fn(() => {
+        throw new Error("No API key configured for anthropic");
+      }),
+    };
+    const env = await dispatchInvoke(
+      "send_chat_message",
+      { messages: [], provider: "anthropic" },
+      { backend, shell: noShell, secrets },
+    );
+    expect(env).toEqual({
+      ok: false,
+      error: "No API key configured for anthropic",
+    });
+  });
+
+  it("has/save/delete_api_key は shell ハンドラへ委譲される", async () => {
+    const { backend } = fakeBackend();
+    const shellCalls: Array<{ cmd: string; args: unknown }> = [];
+    const shell = {
+      has_api_key: (a: Record<string, unknown>) => {
+        shellCalls.push({ cmd: "has_api_key", args: a });
+        return Promise.resolve(true);
+      },
+      save_api_key: (a: Record<string, unknown>) => {
+        shellCalls.push({ cmd: "save_api_key", args: a });
+        return Promise.resolve(null);
+      },
+      delete_api_key: (a: Record<string, unknown>) => {
+        shellCalls.push({ cmd: "delete_api_key", args: a });
+        return Promise.resolve(null);
+      },
+    };
+    const has = await dispatchInvoke(
+      "has_api_key",
+      { provider: "openai" },
+      { backend, shell },
+    );
+    expect(has).toEqual({ ok: true, value: true });
+    const saved = await dispatchInvoke(
+      "save_api_key",
+      { provider: "openai", key: "sk-1" },
+      { backend, shell },
+    );
+    expect(saved).toEqual({ ok: true, value: null });
+    const del = await dispatchInvoke(
+      "delete_api_key",
+      { provider: "openai" },
+      { backend, shell },
+    );
+    expect(del).toEqual({ ok: true, value: null });
+    expect(shellCalls.map((c) => c.cmd)).toEqual([
+      "has_api_key",
+      "save_api_key",
+      "delete_api_key",
+    ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Phase 3b（inline / agent / settings / models / connection）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("AI Phase 3b コマンド", () => {
+  function makeBackend() {
+    const base = fakeBackend();
+    const methods = {
+      saveAiSettings: vi.fn().mockResolvedValue(undefined),
+      sendInlineAiStream: vi.fn().mockResolvedValue(undefined),
+      abortInlineAiStream: vi.fn(),
+      sendAgentMessage: vi
+        .fn()
+        .mockResolvedValue(
+          '{"blocks":[{"type":"tool_use","id":"t1","name":"search","input":{}}],"stopReason":"tool_use"}',
+        ),
+      listAiModels: vi.fn().mockResolvedValue('[{"id":"m1","name":"Model 1"}]'),
+      testAiConnection: vi.fn().mockResolvedValue("Connection OK"),
+    };
+    return {
+      ...base,
+      backend: Object.assign(base.backend, methods),
+      methods,
+    };
+  }
+
+  function secrets(
+    requiredKey = "sk-required",
+    optionalKey: string | null = null,
+  ) {
+    return {
+      resolveApiKeyForRequest: vi.fn().mockReturnValue(requiredKey),
+      getApiKeyForRequest: vi.fn().mockReturnValue(optionalKey),
+    };
+  }
+
+  it("save_ai_settings は渡された設定を保存し、secrets を要求しない", async () => {
+    const { backend, methods } = makeBackend();
+    const settings = { provider: "openai", model: "gpt-x" };
+    const env = await dispatchInvoke(
+      "save_ai_settings",
+      { settings },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: true, value: null });
+    expect(methods.saveAiSettings).toHaveBeenCalledWith(settings);
+  });
+
+  it("save_ai_settings の settings 欠落は backend を呼ばず reject する", async () => {
+    const { backend, methods } = makeBackend();
+    const env = await dispatchInvoke(
+      "save_ai_settings",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(env.ok).toBe(false);
+    if (!env.ok) expect(env.error).toMatch(/invalid args `settings`/);
+    expect(methods.saveAiSettings).not.toHaveBeenCalled();
+  });
+
+  it("send_inline_ai_stream は1回の設定snapshotと必須キーを注入する", async () => {
+    const { backend, calls, methods } = makeBackend();
+    const keyStore = secrets("sk-inline");
+    const args = {
+      messages: [{ role: "user", content: "continue" }],
+      provider: "openai-compatible",
+      endpointId: "ep2",
+    };
+    const env = await dispatchInvoke("send_inline_ai_stream", args, {
+      backend,
+      shell: noShell,
+      secrets: keyStore,
+    });
+    const settings = { provider: "openai", model: "gpt-x" };
+    expect(env).toEqual({ ok: true, value: null });
+    expect(keyStore.resolveApiKeyForRequest).toHaveBeenCalledWith(
+      settings,
+      "openai-compatible",
+      "ep2",
+    );
+    expect(methods.sendInlineAiStream).toHaveBeenCalledWith(
+      args,
+      settings,
+      "sk-inline",
+    );
+    expect(calls.filter((c) => c.method === "getAiSettings")).toHaveLength(1);
+  });
+
+  it("abort_inline_ai_stream は専用 backend メソッドを呼ぶ", async () => {
+    const { backend, methods } = makeBackend();
+    const env = await dispatchInvoke(
+      "abort_inline_ai_stream",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({ ok: true, value: null });
+    expect(methods.abortInlineAiStream).toHaveBeenCalledOnce();
+  });
+
+  it("send_agent_message はtool payloadを保ち、応答JSONをparseする", async () => {
+    const { backend, methods } = makeBackend();
+    const keyStore = secrets("sk-agent");
+    const args = {
+      messages: [{ role: "user", content: "find it" }],
+      tools: [
+        {
+          name: "search",
+          description: "search",
+          inputSchema: { type: "object", properties: {}, required: [] },
+        },
+      ],
+      webSearch: { enabled: true, agentic: true },
+    };
+    const env = await dispatchInvoke("send_agent_message", args, {
+      backend,
+      shell: noShell,
+      secrets: keyStore,
+    });
+    expect(env).toEqual({
+      ok: true,
+      value: {
+        blocks: [{ type: "tool_use", id: "t1", name: "search", input: {} }],
+        stopReason: "tool_use",
+      },
+    });
+    expect(methods.sendAgentMessage).toHaveBeenCalledWith(
+      args,
+      { provider: "openai", model: "gpt-x" },
+      "sk-agent",
+    );
+  });
+
+  it("list_ai_models はキー未設定を空文字にし、必須キー解決を使わない", async () => {
+    const { backend, methods } = makeBackend();
+    const keyStore = secrets("must-not-use", null);
+    const args = { provider: "anthropic", endpointId: null };
+    const env = await dispatchInvoke("list_ai_models", args, {
+      backend,
+      shell: noShell,
+      secrets: keyStore,
+    });
+    expect(env).toEqual({
+      ok: true,
+      value: [{ id: "m1", name: "Model 1" }],
+    });
+    expect(keyStore.getApiKeyForRequest).toHaveBeenCalledWith(
+      { provider: "openai", model: "gpt-x" },
+      "anthropic",
+      null,
+    );
+    expect(keyStore.resolveApiKeyForRequest).not.toHaveBeenCalled();
+    expect(methods.listAiModels).toHaveBeenCalledWith(
+      args,
+      { provider: "openai", model: "gpt-x" },
+      "",
+    );
+  });
+
+  it("test_ai_connection は必須キーを注入し、文字列をそのまま返す", async () => {
+    const { backend, methods } = makeBackend();
+    const keyStore = secrets("sk-test");
+    const args = {
+      provider: "openai-compatible",
+      model: "model-x",
+      apiVariant: "v1",
+      endpointId: "ep2",
+    };
+    const env = await dispatchInvoke("test_ai_connection", args, {
+      backend,
+      shell: noShell,
+      secrets: keyStore,
+    });
+    expect(env).toEqual({ ok: true, value: "Connection OK" });
+    expect(methods.testAiConnection).toHaveBeenCalledWith(
+      args,
+      { provider: "openai", model: "gpt-x" },
+      "sk-test",
+    );
+  });
+
+  it.each([
+    "send_inline_ai_stream",
+    "send_agent_message",
+    "list_ai_models",
+    "test_ai_connection",
+  ])("%s は secrets 未注入を明示エラーにする", async (cmd) => {
+    const { backend } = makeBackend();
+    const env = await dispatchInvoke(
+      cmd,
+      { provider: "openai", messages: [], tools: [], model: "m" },
+      { backend, shell: noShell },
+    );
+    expect(env).toEqual({
+      ok: false,
+      error: `IPC_SECRETS_UNAVAILABLE: ${cmd}`,
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Post-effect run（Phase 3d — fire-and-forget + optional secret snapshot）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Post-effect Phase 3d コマンド", () => {
+  const singleArgs = {
+    project_id: "p1",
+    effect_type: "review",
+    scope_type: "scene",
+    scope_target_id: "s1",
+    model: "base-model",
+    model_override: "review-model",
+    provider_override: "openai-compatible",
+    api_variant_override: "v1",
+    endpoint_id_override: "review-endpoint",
+    prompt_version: "review_v1.1",
+    input_hash: "hash-single",
+    codex_payload_json: "[]",
+    scene_text: "本文",
+    system_prompt: "校閲してください",
+  };
+
+  const multiArgs = {
+    project_id: "p1",
+    effect_type: "timeline_consistency",
+    scope_type: "project",
+    scope_target_id: null,
+    model: "base-model",
+    model_override: "timeline-model",
+    provider_override: "anthropic",
+    api_variant_override: null,
+    endpoint_id_override: null,
+    prompt_version: "timeline_consistency_v1.0",
+    input_hash: "hash-multi",
+    scenes: [
+      {
+        scene_id: "s1",
+        codex_payload_json: "[]",
+        scene_text: "第一場面",
+      },
+      {
+        scene_id: "s2",
+        codex_payload_json: "[]",
+        scene_text: "第二場面",
+      },
+    ],
+    system_prompt: "時系列を確認してください",
+  };
+
+  function makeBackend() {
+    const base = fakeBackend();
+    const methods = {
+      startPostEffectRun: vi
+        .fn()
+        .mockResolvedValue('{"run_id":"r-single","from_cache":false}'),
+      startPostEffectRunMulti: vi
+        .fn()
+        .mockResolvedValue('{"run_id":"r-multi","from_cache":true}'),
+      abortPostEffectRun: vi.fn().mockResolvedValue(undefined),
+    };
+    return {
+      ...base,
+      backend: Object.assign(base.backend, methods),
+      methods,
+    };
+  }
+
+  function secrets(optionalKey: string | null) {
+    return {
+      // post-effect は cache 判定後に背景 task が送信するため、必須キー解決
+      //（未登録で throw）ではなく optional snapshot を注入する。
+      resolveApiKeyForRequest: vi.fn(() => {
+        throw new Error("post-effect must not use required key lookup");
+      }),
+      getApiKeyForRequest: vi.fn().mockReturnValue(optionalKey),
+    };
+  }
+
+  it("start_post_effect_run は nested snake_case args を保持し、設定を1回だけ読んで結果JSONをparseする", async () => {
+    const { backend, calls, methods } = makeBackend();
+    const keyStore = secrets("sk-review");
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run",
+      { args: singleArgs },
+      { backend, shell: noShell, secrets: keyStore },
+    );
+
+    const settings = { provider: "openai", model: "gpt-x" };
+    expect(env).toEqual({
+      ok: true,
+      value: { run_id: "r-single", from_cache: false },
+    });
+    expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
+      settings,
+      "openai-compatible",
+      "review-endpoint",
+    );
+    expect(keyStore.resolveApiKeyForRequest).not.toHaveBeenCalled();
+    expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
+      singleArgs,
+      settings,
+      "sk-review",
+      null,
+    );
+    expect(
+      calls.filter((call) => call.method === "getAiSettings"),
+    ).toHaveLength(1);
+  });
+
+  it("start_post_effect_run_multi は scenes を含むsnake_case argsを保持し、optional key=nullでも開始する", async () => {
+    const { backend, calls, methods } = makeBackend();
+    const keyStore = secrets(null);
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run_multi",
+      { args: multiArgs },
+      { backend, shell: noShell, secrets: keyStore },
+    );
+
+    const settings = { provider: "openai", model: "gpt-x" };
+    expect(env).toEqual({
+      ok: true,
+      value: { run_id: "r-multi", from_cache: true },
+    });
+    expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
+      settings,
+      "anthropic",
+      null,
+    );
+    expect(methods.startPostEffectRunMulti).toHaveBeenCalledExactlyOnceWith(
+      multiArgs,
+      settings,
+      null,
+      null,
+    );
+    expect(
+      calls.filter((call) => call.method === "getAiSettings"),
+    ).toHaveLength(1);
+  });
+
+  it("safeStorage lookup失敗はinvoke rejectにせずsecret snapshotへ保存してnativeに渡す", async () => {
+    const { backend, calls, methods } = makeBackend();
+    const lookupError = "保存済み API キーを復号できません";
+    const keyStore = {
+      resolveApiKeyForRequest: vi.fn(),
+      getApiKeyForRequest: vi.fn(() => {
+        throw new Error(lookupError);
+      }),
+    };
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run",
+      { args: singleArgs },
+      { backend, shell: noShell, secrets: keyStore },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: { run_id: "r-single", from_cache: false },
+    });
+    expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
+      singleArgs,
+      { provider: "openai", model: "gpt-x" },
+      null,
+      lookupError,
+    );
+    expect(
+      calls.filter((call) => call.method === "getAiSettings"),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ["start_post_effect_run", "consistency"],
+    ["start_post_effect_run", "review"],
+    ["start_post_effect_run", "intent_drift"],
+    ["start_post_effect_run", "pseudo_comment"],
+    ["start_post_effect_run", "impact_review"],
+    ["start_post_effect_run_multi", "timeline_consistency"],
+  ])(
+    "%s の effect=%s は role provider/endpoint override でキーをlookupする",
+    async (cmd, effectType) => {
+      const { backend, methods } = makeBackend();
+      const keyStore = secrets("sk-role");
+      const baseArgs = cmd.endsWith("_multi") ? multiArgs : singleArgs;
+      const args = {
+        ...baseArgs,
+        effect_type: effectType,
+        provider_override: "openai-compatible",
+        endpoint_id_override: "role-endpoint",
+      };
+
+      const env = await dispatchInvoke(
+        cmd,
+        { args },
+        { backend, shell: noShell, secrets: keyStore },
+      );
+
+      expect(env.ok).toBe(true);
+      expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
+        { provider: "openai", model: "gpt-x" },
+        "openai-compatible",
+        "role-endpoint",
+      );
+      const method = cmd.endsWith("_multi")
+        ? methods.startPostEffectRunMulti
+        : methods.startPostEffectRun;
+      expect(method).toHaveBeenCalledExactlyOnceWith(
+        args,
+        { provider: "openai", model: "gpt-x" },
+        "sk-role",
+        null,
+      );
+    },
+  );
+
+  it.each(["typo_detection", "intra_scene_consistency", "meta_structure"])(
+    "effect=%s はrequestにoverrideがあってもdefault provider/endpointでキーをlookupする",
+    async (effectType) => {
+      const { backend, methods } = makeBackend();
+      const keyStore = secrets("sk-default");
+      const args = {
+        ...singleArgs,
+        effect_type: effectType,
+        provider_override: "anthropic",
+        endpoint_id_override: "must-be-ignored",
+      };
+
+      const env = await dispatchInvoke(
+        "start_post_effect_run",
+        { args },
+        { backend, shell: noShell, secrets: keyStore },
+      );
+
+      expect(env.ok).toBe(true);
+      expect(keyStore.getApiKeyForRequest).toHaveBeenCalledExactlyOnceWith(
+        { provider: "openai", model: "gpt-x" },
+        undefined,
+        undefined,
+      );
+      expect(methods.startPostEffectRun).toHaveBeenCalledExactlyOnceWith(
+        args,
+        { provider: "openai", model: "gpt-x" },
+        "sk-default",
+        null,
+      );
+    },
+  );
+
+  it("abort_post_effect_run は runId/projectId をpositional引数へ写像しunitをnullで返す", async () => {
+    const { backend, methods } = makeBackend();
+
+    const env = await dispatchInvoke(
+      "abort_post_effect_run",
+      { runId: "r1", projectId: "p1" },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({ ok: true, value: null });
+    expect(methods.abortPostEffectRun).toHaveBeenCalledExactlyOnceWith(
+      "r1",
+      "p1",
+    );
+  });
+
+  it.each(["start_post_effect_run", "start_post_effect_run_multi"])(
+    "%s は outer args の欠落・null・配列・文字列をbackend呼出し前に拒否する",
+    async (cmd) => {
+      for (const invokeArgs of [
+        {},
+        { args: null },
+        { args: [] },
+        { args: "not-an-object" },
+      ]) {
+        const { backend, methods } = makeBackend();
+        const env = await dispatchInvoke(cmd, invokeArgs, {
+          backend,
+          shell: noShell,
+          secrets: secrets(null),
+        });
+
+        expect(env.ok).toBe(false);
+        if (!env.ok) {
+          expect(env.error).toContain(
+            `invalid args \`args\` for command \`${cmd}\``,
+          );
+        }
+        expect(methods.startPostEffectRun).not.toHaveBeenCalled();
+        expect(methods.startPostEffectRunMulti).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    [{ projectId: "p1" }, "runId"],
+    [{ runId: "r1" }, "projectId"],
+    [{ runId: 42, projectId: "p1" }, "runId"],
+    [{ runId: "r1", projectId: [] }, "projectId"],
+  ])(
+    "abort_post_effect_run は不正な $1 をbackend呼出し前に拒否する",
+    async (invokeArgs, invalidKey) => {
+      const { backend, methods } = makeBackend();
+      const env = await dispatchInvoke("abort_post_effect_run", invokeArgs, {
+        backend,
+        shell: noShell,
+      });
+
+      expect(env.ok).toBe(false);
+      if (!env.ok) {
+        expect(env.error).toContain(
+          `invalid args \`${invalidKey}\` for command \`abort_post_effect_run\``,
+        );
+      }
+      expect(methods.abortPostEffectRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["start_post_effect_run", { args: singleArgs }, "startPostEffectRun"],
+    [
+      "start_post_effect_run_multi",
+      { args: multiArgs },
+      "startPostEffectRunMulti",
+    ],
+    [
+      "abort_post_effect_run",
+      { runId: "r1", projectId: "p1" },
+      "abortPostEffectRun",
+    ],
+  ])(
+    "%s は旧native bindingでmethodが無ければ明示的なbackend unavailableを返す",
+    async (cmd, invokeArgs, methodName) => {
+      const { backend } = fakeBackend();
+      const env = await dispatchInvoke(cmd, invokeArgs, {
+        backend,
+        shell: noShell,
+        secrets: secrets(null),
+      });
+
+      expect(env).toEqual({
+        ok: false,
+        error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${methodName}`,
+      });
+    },
+  );
+
+  it.each(["start_post_effect_run", "start_post_effect_run_multi"])(
+    "%s はsecrets未注入を明示エラーにする",
+    async (cmd) => {
+      const { backend, methods } = makeBackend();
+      const invokeArgs = cmd.endsWith("_multi") ? multiArgs : singleArgs;
+      const env = await dispatchInvoke(
+        cmd,
+        { args: invokeArgs },
+        { backend, shell: noShell },
+      );
+
+      expect(env).toEqual({
+        ok: false,
+        error: `IPC_SECRETS_UNAVAILABLE: ${cmd}`,
+      });
+      expect(methods.startPostEffectRun).not.toHaveBeenCalled();
+      expect(methods.startPostEffectRunMulti).not.toHaveBeenCalled();
+    },
+  );
 });

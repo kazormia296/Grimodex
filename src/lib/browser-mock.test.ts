@@ -330,6 +330,7 @@ describe("createBrowserMock", () => {
       await expect(
         mock.invoke("ime_export_refresh", {
           projectId: "p1",
+          expectedWorkspacePath: "/workspaces/a",
           options: {
             mode: "on",
             excludeHidden: false,
@@ -340,12 +341,16 @@ describe("createBrowserMock", () => {
       await expect(
         mock.invoke("ime_export_set_active_project", {
           projectId: "p1",
+          expectedWorkspacePath: "/workspaces/a",
           mode: "on",
         }),
       ).resolves.toMatchObject({ rootPath: "" });
       await expect(mock.invoke("ime_export_clear_all", {})).resolves.toBeNull();
       await expect(
-        mock.invoke("ime_export_remove_project", { projectId: "p1" }),
+        mock.invoke("ime_export_remove_project", {
+          projectId: "p1",
+          expectedWorkspacePath: "/workspaces/a",
+        }),
       ).resolves.toBeNull();
     });
   });

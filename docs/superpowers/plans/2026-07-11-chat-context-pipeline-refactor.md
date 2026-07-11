@@ -17,8 +17,15 @@ Application Service へ移し、L4 から `ContextItem` 化する。最終形は
 `Sources -> TemporalResolver -> VisibilityPolicy -> BudgetSelector -> Renderer ->
 ExactPayloadVerifier`。Zustand は UI / session / streaming state に限定する。
 
-**Tech Stack:** TypeScript 6 / React 19 / Zustand / Drizzle ORM / Tauri v2 / Rust /
-Vitest / tiktoken / SQLite FTS5。
+**Tech Stack:** TypeScript 6 / React 19 / Zustand / Drizzle ORM / Electron /
+typed preload IPC / Rust (`grimodex-ai`, `grimodex-db`) / N-API / Vitest /
+tiktoken / SQLite FTS5。
+
+**Desktop boundary:** renderer は `window.grimodex` のtyped preload APIだけを使い、
+Electron mainの`electron/shared/ipcContract.ts`で引数を再検証してから
+`electron/native/grimodex-node`を呼ぶ。AI provider実装の正本は
+`src-tauri/crates/grimodex-ai`である。`src-tauri`直下のTauri shellはv1互換確認用の
+凍結legacyであり、本計画の実装先・テスト対象にしない。
 
 **Predecessor:**
 `docs/superpowers/plans/2026-06-15-chat-prompt-builder-unification.md`。
@@ -452,7 +459,9 @@ PR 3 の Chat visibility 変更はレビュー可能性のため分ける。
 - Create: `src/features/chat/context/contextSurfaceParity.test.ts`
 - Modify: `src/features/chat/contextBuilder.test.ts`
 - Modify: `src/features/chat/chatStore.test.ts`
-- Modify: `src-tauri/src/ai.rs` tests only
+- Modify: `src-tauri/crates/grimodex-ai/src/lib.rs` tests only
+- Modify: `electron/native/grimodex-node/test/chat.test.mjs`
+- Modify: `electron/shared/ipcContract.test.ts`
 
 ### Steps
 
@@ -477,7 +486,10 @@ PR 3 の Chat visibility 変更はレビュー可能性のため分ける。
 pnpm test --run src/features/chat/contextBuilder.test.ts
 pnpm test --run src/features/chat/chatStore.test.ts
 pnpm test --run src/features/chat/context/contextDelivery.contract.test.ts
-cd src-tauri && cargo test ai::tests::build_system_payload
+cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-ai build_system_payload
+pnpm test:electron --run electron/shared/ipcContract.test.ts
+pnpm napi:build
+node --test electron/native/grimodex-node/test/chat.test.mjs
 ```
 
 **Expected:** 新しい characterization tests を含め green。既知不具合はテスト名と
@@ -505,8 +517,10 @@ test(chat): context pipeline の現行 delivery 契約を固定
 - Modify: `src/features/chat/chatApi.ts`
 - Modify: `src/features/chat/agent/agentLoop.ts`
 - Modify: `src/features/chat/agent/modelLimits.ts`
-- Modify: `src-tauri/src/commands/ai.rs`
-- Modify: `src-tauri/src/ai.rs`
+- Modify: `src-tauri/crates/grimodex-ai/src/lib.rs`
+- Modify: `electron/native/grimodex-node/src/lib.rs`
+- Modify: `electron/shared/ipcContract.ts`
+- Modify: corresponding shared Rust / N-API / typed IPC tests
 
 ### Red tests
 
@@ -530,12 +544,13 @@ test(chat): context pipeline の現行 delivery 契約を固定
 - [ ] `finalizeTurnPayload()` で exact delivered values を計測する。
 - [ ] output reservation と safety margin を含めて invariant を検査する。
 - [ ] Agent loop の `sendToLLM` 直前にも finalizer を通す。
-- [ ] P0 では既存 IPC 引数を内部で組み立ててもよいが、finalizer の immutable result を
-  transport と snapshot の両方へ渡す。
+- [ ] P0 では既存typed preload IPC引数を内部で組み立ててもよいが、finalizerの
+      immutable resultをtransportとsnapshotの両方へ渡す。Electron mainはDTOを再検証し、
+      N-API経由で`grimodex-ai`へそのまま渡す。
 
 ### Acceptance
 
-- [ ] `SystemDelivery` に存在しない文字列が Rust 側で復活しない。
+- [ ] `SystemDelivery` に存在しない文字列が共有`grimodex-ai`側で復活しない。
 - [ ] route table の全ケースで budget invariant が成立する。
 - [ ] stable L4 の既知不具合テストが安全側の期待値へ反転する。
 - [ ] provider cache 無効化は正常な fallback として扱われ、ユーザー入力を失わない。
@@ -547,7 +562,10 @@ pnpm test --run src/features/ai-context/finalizeTurnPayload.test.ts
 pnpm test --run src/features/chat/contextBuilder.test.ts
 pnpm test --run src/features/chat/chatStore.test.ts
 pnpm test --run src/features/chat/agent/agentLoop.test.ts
-cd src-tauri && cargo test ai::tests
+cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-ai
+pnpm test:electron --run electron/shared/ipcContract.test.ts
+pnpm napi:build
+node --test electron/native/grimodex-node/test/chat.test.mjs
 ```
 
 **Suggested commit:**
@@ -828,8 +846,10 @@ refactor(chat): L4 context を typed item selection へ移行
 - Modify: `src/features/chat/turn/turnCoordinator.ts`
 - Modify: `src/features/chat/chatStore.ts`
 - Modify: `src/features/chat/chatApi.ts`
-- Modify: `src-tauri/src/commands/ai.rs`
-- Modify: `src-tauri/src/ai.rs`
+- Modify: `src-tauri/crates/grimodex-ai/src/lib.rs`
+- Modify: `electron/native/grimodex-node/src/lib.rs`
+- Modify: `electron/shared/ipcContract.ts`
+- Modify: corresponding shared Rust / N-API / typed IPC tests
 
 ### Sources
 
@@ -863,8 +883,9 @@ refactor(chat): L4 context を typed item selection へ移行
 - [ ] source result を temporal -> policy -> budget の順で処理する。
 - [ ] renderer は selected items だけを文字列化する。
 - [ ] prompt hardening / reserved tag escape を renderer boundary へ残す。
-- [ ] provider payload は TypeScript の `SystemDelivery` DTO を Rust がそのまま消費し、
-  Rust 側で fallback と segments から意味内容を再構築しない。
+- [ ] provider payload はTypeScriptの`SystemDelivery` DTOをtyped preload IPCから
+      Electron mainの再検証、N-APIを経て共有`grimodex-ai`がそのまま消費し、
+      Rust側でfallbackとsegmentsから意味内容を再構築しない。
 - [ ] preview / copy / send / Agent の個別 builder 分岐を TurnCoordinator へ置換する。
 - [ ] rollout は scene -> codex/snippet -> folder/project/thread の順で行う。
 - [ ] 内部 feature flag / shadow compare は全 scope 切替後に削除する。
@@ -883,7 +904,10 @@ pnpm test --run src/features/chat/context/contextSurfaceParity.test.ts
 pnpm test --run src/features/chat/chatStore.test.ts
 pnpm test --run src/features/chat/ChatPanel.test.tsx
 pnpm test --run src/features/chat/components/ContextBar.test.tsx
-cd src-tauri && cargo test ai::tests
+cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-ai
+pnpm test:electron --run electron/shared/ipcContract.test.ts
+pnpm napi:build
+node --test electron/native/grimodex-node/test/chat.test.mjs
 ```
 
 **Suggested commit:**
@@ -908,7 +932,8 @@ refactor(chat): 全 scope と送信 surface を ContextPlanner へ統合
 - Modify: `src/features/codex/codexRelationApi.ts`
 - Modify: `src/features/chat/chatApi.ts` pin projections
 - Modify: `src/features/chat/context/sources/codexSource.ts`
-- Optional, only after measurement: dedicated Tauri batch command
+- Optional, only after measurement: dedicated typed preload IPC + N-API batch method
+  backed by `grimodex-db`
 
 ### Stage 1: Catalog
 
@@ -987,8 +1012,9 @@ entry version は Phase / detail 更新では上がらないため、単独で�
 - [ ] normal scene turn の full content rows は selected closure のみ。
 - [ ] catalog query、hydrate query、relation query の件数を perf log で確認できる。
 - [ ] 100 / 1,000 / 5,000 entry fixture で transferred content bytes を記録する。
-- [ ] generic Drizzle bulk query で十分か計測し、IPC が支配的な場合だけ dedicated bundle
-  command を別 commit で追加する。
+- [ ] generic Drizzle bulk queryで十分か計測し、IPCが支配的な場合だけ
+      `electron/shared/ipcContract.ts`でproject-scoped引数を検証するdedicated bundle IPCと、
+      `grimodex-db`を呼ぶN-API methodを別commitで追加する。
 
 ### Verification
 
@@ -1081,7 +1107,10 @@ pnpm test --run src/features/chat/components/ContextBar.test.tsx
 pnpm test --run src/features/chat/components/ContextBar.browser.test.tsx
 pnpm test --run src/db/schema.test.ts
 pnpm test --run src/db/schema.version.test.ts
-cd src-tauri && cargo test --workspace
+cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
+pnpm test:electron --run electron/shared/ipcContract.test.ts
+pnpm napi:build
+pnpm --dir electron/native/grimodex-node test
 ```
 
 **Suggested commit:**
@@ -1189,18 +1218,16 @@ MCP 共有は、app pipeline 完了後に shared golden fixtures を用意して
 
 ```bash
 pnpm exec tsc --noEmit
+pnpm exec tsc -p electron/tsconfig.json --noEmit
 pnpm lint
 pnpm test --run
 pnpm test:browser --run
-(cd src-tauri && cargo check)
-(cd src-tauri && cargo clippy --all-targets)
-(cd src-tauri && cargo test --workspace)
-```
-
-必要に応じて Electron contract tests も実行する。
-
-```bash
 pnpm test:electron --run
+pnpm napi:build
+pnpm --dir electron/native/grimodex-node test
+cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
+cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 ```
 
 ### Definition of Done
@@ -1215,4 +1242,5 @@ pnpm test:electron --run
 - [ ] ContextBar が token 内訳と item selection reason を説明できる。
 - [ ] `chatStore.ts` が domain context の application kernel ではなくなっている。
 - [ ] legacy builder、L4 marker trim、stale prompt send path が削除されている。
-- [ ] TypeScript / lint / frontend tests / browser tests / Rust checks が green。
+- [ ] renderer/Electron TypeScript、lint、frontend/browser/Electron tests、実N-API、
+      root Tauri shellを除くshared Rust feature-on checksがgreen。

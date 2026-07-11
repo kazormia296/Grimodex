@@ -34,6 +34,19 @@ vi.mock("sonner", () => ({ toast: toastMock }));
 vi.mock("@/features/project/projectStore", () => ({
   getCurrentProjectId: () => "proj-test",
   getCurrentProjectLanguage: () => "ja",
+  useProjectStore: {
+    getState: () => ({ currentProjectId: "proj-test" }),
+  },
+}));
+vi.mock("@/features/workspace/store", () => ({
+  useWorkspaceStore: {
+    getState: () => ({
+      activeWorkspacePath: "/workspace/test",
+      workspaceOpenRevision: 1,
+      workspaceSwitchInProgress: false,
+      workspaceHydrated: true,
+    }),
+  },
 }));
 
 import { SemanticIndexSection } from "./SemanticIndexSection";
@@ -56,7 +69,10 @@ describe("SemanticIndexSection (Data タブ)", () => {
     fireEvent.click(btn);
 
     await waitFor(() =>
-      expect(apiMock.semanticReindexAll).toHaveBeenCalledWith("proj-test"),
+      expect(apiMock.semanticReindexAll).toHaveBeenCalledWith(
+        "proj-test",
+        expect.any(String),
+      ),
     );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
   });
@@ -113,14 +129,14 @@ describe("SemanticIndexSection (Data タブ)", () => {
 
   it("失敗時は progress 表示を片付けて error toast を出す", async () => {
     apiMock.semanticReindexAll.mockRejectedValueOnce(new Error("boom"));
-    const clearSpy = vi.spyOn(useReindexProgressStore.getState(), "clear");
+    const failSpy = vi.spyOn(useReindexProgressStore.getState(), "fail");
     render(<SemanticIndexSection />);
     const btn = screen.getByRole("button", { name: "再構築" });
 
     fireEvent.click(btn);
 
     await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
-    expect(clearSpy).toHaveBeenCalled();
+    expect(failSpy).toHaveBeenCalledWith(expect.any(String));
     expect(useReindexProgressStore.getState().running).toBe(false);
   });
 });

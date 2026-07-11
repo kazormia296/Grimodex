@@ -8,11 +8,10 @@
  *   `if (!res.ok) throw res.error;` で**生文字列 reject** に解封する —
  *   Tauri のエラー文字列契約（`WORKSPACE_SWITCHING` / `No workspace is open`
  *   マーカーの部分一致判定 126 箇所）の保存が最重要。
- * - **コマンド表**: napi 垂直スライス 12 コマンド（当初 7 + trash_bin 5 —
- *   workspace 読み込み時に必ず呼ばれる trash_bin_list が IPC_UNIMPLEMENTED で
- *   起動のたびにゴミ箱エラートーストを出したため追補）+ main-TS 2 コマンド。
- *   引数アダプタ（Tauri の camelCase→snake_case 自動変換の写像）はコマンド
- *   ごとに明示する。この表が Phase 3 の 145 コマンド一括対応の正本になる。
+ * - **コマンド表**: Phase 2 の napi 垂直スライス 12 コマンドを起点に、Phase 3 の
+ *   バッチごとに段階拡張する。引数アダプタ（Tauri の camelCase→snake_case
+ *   自動変換の写像）はコマンドごとに明示する。この表が実装済みコマンド写像の
+ *   正本になる（全145コマンドの静的棚卸し正本は docs のコマンド台帳）。
  * - **イベント allowlist**: 前方一致ではなく列挙制。listen / emit とも
  *   allowlist 外は拒否する（§5.4）。
  *
@@ -146,6 +145,8 @@ export const EVENT_CHANNEL_ALLOWLIST: readonly string[] = [
   "vivliostyle:done",
   "vivliostyle:error",
   "vivliostyle:preview-exited",
+  // Electron main 発: electron-updater の byte progress（Phase 4）
+  "updater:download-progress",
   // renderer 発: codex 窓間同期（codexWindowSync.ts。§7.1 で Phase 2 受け入れ対象）
   "codex:data-changed",
   "codex:lock-event",
@@ -199,24 +200,6 @@ export function clampZoomFactor(factor: unknown): number {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// get_license_state スタブの形状（licensing 無効ビルドと同一 — §4.3）
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * src-tauri/src/license.rs `disabled_dto()` のワイヤ写像（camelCase）。
- * Phase 3 で grimodex-core の状態機械（napi 経由）へ差し替える。
- */
-export const DISABLED_LICENSE_STATE = {
-  licensingEnabled: false,
-  status: "disabled",
-  trialDaysRemaining: null,
-  graceDaysRemaining: null,
-  keyTail: null,
-  activatedAt: null,
-  lastValidatedAt: null,
-} as const;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // napi Backend の構造型（electron/native/grimodex-node/index.d.ts と同形。
 // 生成物 index.js は gitignore のため import せず構造的に一致させる）
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,23 +209,40 @@ export interface NapiBackendLike {
   dbExecuteBatch(statements: unknown): Promise<string>;
   openWorkspace(path: string): Promise<string>;
   validateWorkspacePath(path: string): boolean;
+  /** Main-only one-shot bridge; intentionally absent from NAPI_COMMANDS. */
+  readLegacyApiKeysForMigration?(): Promise<string>;
+  /** Main/CI-only release feature gate; intentionally absent from IPC. */
+  getNativeBuildCapabilities?(): Promise<string>;
+  /** Main-only bridge used to build standalone MCP sidecar config. */
+  getActiveWorkspacePath?(): Promise<string>;
+  listBackups?(): Promise<string>;
+  restoreBackup?(fileName: string): Promise<void>;
   getGlobalSettings(): Promise<string>;
   saveGlobalSettings(settings: unknown): Promise<void>;
+  seedSampleWorkspace?(language: string, aiPolicy: string): Promise<string>;
   timelapseAppendBatch(
     projectId: string,
     sessionId: string,
     events: unknown,
   ): Promise<string>;
-  imeExportRefresh(projectId: string, options: unknown): Promise<string>;
+  imeExportRefresh(
+    projectId: string,
+    expectedWorkspacePath: string,
+    options: unknown,
+  ): Promise<string>;
   imeExportSetActiveProject(
     projectId: string | null | undefined,
+    expectedWorkspacePath: string | null | undefined,
     mode: string,
   ): Promise<string>;
   /** Electron main の終了処理専用。renderer IPC には公開しない。 */
   imeExportDeactivateOnExit(): void;
   imeExportGetStatus(mode: string): Promise<string>;
   imeExportClearAll(): Promise<void>;
-  imeExportRemoveProject(projectId: string): Promise<void>;
+  imeExportRemoveProject(
+    projectId: string,
+    expectedWorkspacePath: string,
+  ): Promise<void>;
   trashBinCreate(payload: unknown): Promise<string>;
   trashBinList(projectId: string, limit?: number | null): Promise<string>;
   trashBinDelete(id: string): Promise<void>;
@@ -274,6 +274,61 @@ export interface NapiBackendLike {
   listSystemFonts(): Promise<string>;
   codexRebuildMatcher(entries: unknown): Promise<void>;
   codexMatchText(text: string, excludeEntryIds: string[]): Promise<string>;
+  extractCodexCandidates(
+    projectId: string,
+    minCount?: number | null,
+  ): Promise<string>;
+  // Semantic Phase 3 Batch 4。optional は旧 .node とのversion skewを
+  // requireNapiMethodで明示エラーにするため。usize相当はIPCでu32へ狭める。
+  semanticDownloadModel?(language: string): Promise<string>;
+  semanticIndexScene?(sceneId: string): Promise<string>;
+  semanticSearch?(
+    projectId: string,
+    query: string,
+    limit: number,
+    sceneScope?: string | null,
+    descriptionMode?: boolean | null,
+  ): Promise<string>;
+  codexIndexEntry?(entryId: string): Promise<string>;
+  codexSemanticSearch?(
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  codexIndexStatus?(projectId: string): Promise<string>;
+  codexReindexAll?(projectId: string): Promise<string>;
+  eventsIndexEntry?(eventId: string): Promise<string>;
+  eventsSemanticSearch?(
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  eventsIndexStatus?(projectId: string): Promise<string>;
+  eventsReindexAll?(projectId: string): Promise<string>;
+  chatIndexMessage?(messageId: string): Promise<string>;
+  chatMessageSearch?(
+    projectId: string,
+    query: string,
+    limit: number,
+  ): Promise<string>;
+  chatIndexStatus?(projectId: string): Promise<string>;
+  chatReindexAll?(projectId: string): Promise<string>;
+  semanticIndexStatus?(projectId: string): Promise<string>;
+  semanticReindexAll?(
+    projectId: string,
+    runId?: string | null,
+  ): Promise<string>;
+  semanticChunkContext?(
+    sceneId: string,
+    charStart: number,
+    charEnd: number,
+    padding: number,
+  ): Promise<string>;
+  semanticDebugDump?(
+    projectId: string,
+    sceneId?: string | null,
+    limit?: number | null,
+  ): Promise<string>;
   plotThreadCreate(payload: unknown): Promise<string>;
   plotThreadUpdate(id: string, patch: unknown): Promise<string>;
   plotThreadDelete(id: string): Promise<void>;
@@ -357,7 +412,94 @@ export interface NapiBackendLike {
     sceneId: string,
     annotations: unknown,
   ): Promise<void>;
+  // license（Phase 3e）。optional は旧 .node とのversion skewを明示エラーに
+  // するため。runLicenseValidateCycleはrenderer commandではなくmain scheduler専用。
+  getLicenseState?(): Promise<string>;
+  activateLicense?(key: string): Promise<string>;
+  revalidateLicense?(): Promise<string>;
+  deactivateLicense?(): Promise<string>;
+  runLicenseValidateCycle?(): Promise<string | null>;
+  // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
+  // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が
+  // 失敗した場合は apiKeyError に生メッセージを載せる。native は cache hit なら
+  // secret snapshot を使わず返せるため、lookup失敗をここでinvoke rejectにしない。
+  // optional は旧 .node とのversion skewをrequireNapiMethodで明示エラー化するため。
+  startPostEffectRun?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string | null,
+    apiKeyError: string | null,
+  ): Promise<string>;
+  startPostEffectRunMulti?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string | null,
+    apiKeyError: string | null,
+  ): Promise<string>;
+  abortPostEffectRun?(runId: string, projectId: string): Promise<void>;
+  // AI チャット（Phase 3 バッチ3a）。args は FE の camelCase 引数一式、settings は
+  // dispatchInvoke が getAiSettings で1回だけ読んだ AiSettings スナップショット
+  // （キー解決と送信を同一スナップショットで行い Tauri の原子的単一読込に揃える）、
+  // apiKey は main の safeStorage で解決した平文（napi は keyring を触らない）。
+  getAiSettings(): Promise<string>;
+  sendChatMessage(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<string>;
+  sendChatMessageStream(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<void>;
+  abortChatStream(): void;
+  // AI Phase 3b（settings snapshot + safeStorage key注入は3a chatと同じ）。
+  // optional は旧 .node とのバージョンスキューを型境界で表すため。コマンド実行時は
+  // requireNapiMethod が必ず存在確認し、欠落を明示エラーにする。
+  saveAiSettings?(settings: unknown): Promise<void>;
+  sendInlineAiStream?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<void>;
+  abortInlineAiStream?(): void;
+  sendAgentMessage?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<string>;
+  listAiModels?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<string>;
+  testAiConnection?(
+    args: unknown,
+    settings: unknown,
+    apiKey: string,
+  ): Promise<string>;
   onEvent(callback: (...args: unknown[]) => unknown): void;
+}
+
+/**
+ * API キー解決の窓口（実体は electron/main/keyStore.ts の SecretsBridge）。
+ * napi のチャットコマンドは平文キーを引数注入で受けるため、dispatchInvoke が
+ * 送信直前に safeStorage 経由でキーを解決する。renderer には平文を出さない
+ * （解決は main プロセス内で完結）。keyStore の SecretsBridge が構造的に満たす。
+ */
+export interface SecretsResolver {
+  /** 設定 + FE 引数(provider/endpoint override) から実効 API キーを解決。空文字許容。 */
+  resolveApiKeyForRequest(
+    settings: unknown,
+    argProvider: unknown,
+    argEndpointId: unknown,
+  ): string;
+  /** list_ai_models用。未登録はnull、ストア/復号エラーはthrow。 */
+  getApiKeyForRequest?(
+    settings: unknown,
+    argProvider: unknown,
+    argEndpointId: unknown,
+  ): string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -380,6 +522,33 @@ function requireString(args: CommandArgs, key: string, cmd: string): string {
   return value;
 }
 
+/** restore_backup は renderer 入力をそのままfilesystem pathへ渡さない。 */
+function requireBackupFileName(args: CommandArgs): string {
+  const command = "restore_backup";
+  const key = "fileName";
+  const value = requireString(args, key, command);
+  const supportedSuffix = value.endsWith(".db.gz")
+    ? ".db.gz"
+    : value.endsWith(".db")
+      ? ".db"
+      : null;
+  const stemLength = supportedSuffix
+    ? value.length - "grimodex-".length - supportedSuffix.length
+    : 0;
+  if (
+    !value.startsWith("grimodex-") ||
+    stemLength < 1 ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value.includes("..")
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a safe grimodex-*.db or grimodex-*.db.gz basename`,
+    );
+  }
+  return value;
+}
+
 function requirePresent(args: CommandArgs, key: string, cmd: string): unknown {
   if (!Object.hasOwn(args, key) || args[key] === undefined) {
     throw new Error(
@@ -389,12 +558,47 @@ function requirePresent(args: CommandArgs, key: string, cmd: string): unknown {
   return args[key];
 }
 
+/** Tauri の nested struct 引数の近似（null / 配列 / primitive は拒否）。 */
+function requireRecord(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): CommandArgs {
+  const value = requirePresent(args, key, cmd);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected an object`,
+    );
+  }
+  return value as CommandArgs;
+}
+
 /** Tauri の i64 引数の写像（非 number は deserialize 失敗と同等に扱う）。 */
 function requireNumber(args: CommandArgs, key: string, cmd: string): number {
   const value = args[key];
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(
       `invalid args \`${key}\` for command \`${cmd}\`: expected a number`,
+    );
+  }
+  return value;
+}
+
+/** Tauri の usize を napi の u32 へ安全に写像する（必須引数）。 */
+function requireUnsignedInteger(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): number {
+  const value = args[key];
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 0xffff_ffff
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected an unsigned integer`,
     );
   }
   return value;
@@ -416,6 +620,27 @@ function optionalNumber(
   return value;
 }
 
+/** Tauri の Option<usize> を napi の Option<u32> へ安全に写像する。 */
+function optionalUnsignedInteger(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): number | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 0xffff_ffff
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected an unsigned integer or null`,
+    );
+  }
+  return value;
+}
+
 /** Tauri の Option<String> 引数の写像（欠落 / null は None。文字列以外は拒否）。 */
 function optionalString(
   args: CommandArgs,
@@ -427,6 +652,41 @@ function optionalString(
   if (typeof value !== "string") {
     throw new Error(
       `invalid args \`${key}\` for command \`${cmd}\`: expected a string or null`,
+    );
+  }
+  return value;
+}
+
+/** FE生成のrun discriminator。空値/過長値をイベントpayloadへ持ち込ませない。 */
+function optionalOpaqueRunId(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): string | undefined {
+  const value = optionalString(args, key, cmd);
+  if (value === undefined) return undefined;
+  // Rust/Tauri側の `chars().count()` と揃え、astral characterをUTF-16の2単位で
+  // 数えない（emoji 256 code pointは受理、257は拒否）。
+  const codePointLength = Array.from(value).length;
+  if (codePointLength < 1 || codePointLength > 256) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected 1..256 characters or null`,
+    );
+  }
+  return value;
+}
+
+/** Tauri の Option<bool>（欠落 / null / undefined は None）。 */
+function optionalBoolean(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): boolean | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a boolean or null`,
     );
   }
   return value;
@@ -453,16 +713,59 @@ function parseWire(json: string): unknown {
   return JSON.parse(json) as unknown;
 }
 
+/** native mutationは既にcommit済みなので、window配信失敗でinvokeを失敗へ反転しない。 */
+function broadcastBestEffort(
+  deps: DispatchDeps,
+  channel: string,
+  payload: unknown,
+): void {
+  try {
+    deps.broadcast?.(channel, payload);
+  } catch (error) {
+    console.warn(`[ipc] ${channel} broadcast failed:`, error);
+  }
+}
+
+/** validate失敗も「検証を試みた」事実なので、現在stateを全窓へ同期する。 */
+async function broadcastCurrentLicenseStateBestEffort(
+  backend: NapiBackendLike,
+  deps: DispatchDeps,
+): Promise<void> {
+  if (!deps.broadcast) return;
+  try {
+    const state = parseWire(
+      await requireNapiMethod(
+        backend,
+        backend.getLicenseState,
+        "getLicenseState",
+      )(),
+    );
+    broadcastBestEffort(deps, "license:state_changed", state);
+  } catch (error) {
+    console.warn(
+      "[ipc] failed to read license state after revalidate error:",
+      error,
+    );
+  }
+}
+
 export interface NapiCommandSpec {
   /**
    * FE 引数（Tauri 命名 = camelCase キー）→ Backend メソッド呼び出しへの
    * 明示写像。JSON 文字列返りは parse 済みオブジェクトにして Tauri の
    * invoke 返り値と同形にする。
+   *
+   * `deps` は AI チャット等がキー解決（secrets）を必要とするため渡す。大半の
+   * コマンドは backend / args のみで完結し `deps` を使わない。
    */
-  run(backend: NapiBackendLike, args: CommandArgs): Promise<unknown>;
+  run(
+    backend: NapiBackendLike,
+    args: CommandArgs,
+    deps: DispatchDeps,
+  ): Promise<unknown>;
 }
 
-/** napi 実装コマンド（垂直スライス 12 コマンド = 当初 7 + trash_bin 5、§4.3）。 */
+/** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
     run: async (b, a) =>
@@ -496,6 +799,20 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  list_backups: {
+    run: async (b) =>
+      parseWire(await requireNapiMethod(b, b.listBackups, "listBackups")()),
+  },
+  restore_backup: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.restoreBackup,
+        "restoreBackup",
+      )(requireBackupFileName(a));
+      return null;
+    },
+  },
   get_global_settings: {
     run: async (b) => parseWire(await b.getGlobalSettings()),
   },
@@ -508,6 +825,19 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  seed_sample_workspace: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.seedSampleWorkspace,
+          "seedSampleWorkspace",
+        )(
+          requireString(a, "language", "seed_sample_workspace"),
+          requireString(a, "aiPolicy", "seed_sample_workspace"),
+        ),
+      ),
+  },
   timelapse_append_batch: {
     run: async (b, a) =>
       parseWire(
@@ -518,13 +848,14 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
-  // IME 連携 Phase 2。status は napi の JSON 文字列を Tauri と同形の
+  // IME 連携 Phase 2。status は napi の JSON 文字列を typed renderer の
   // camelCase object に戻し、unit コマンドは null を返す。
   ime_export_refresh: {
     run: async (b, a) =>
       parseWire(
         await b.imeExportRefresh(
           requireString(a, "projectId", "ime_export_refresh"),
+          requireString(a, "expectedWorkspacePath", "ime_export_refresh"),
           requirePresent(a, "options", "ime_export_refresh"),
         ),
       ),
@@ -534,6 +865,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.imeExportSetActiveProject(
           nullableString(a, "projectId", "ime_export_set_active_project"),
+          nullableString(
+            a,
+            "expectedWorkspacePath",
+            "ime_export_set_active_project",
+          ),
           requireString(a, "mode", "ime_export_set_active_project"),
         ),
       ),
@@ -556,6 +892,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) => {
       await b.imeExportRemoveProject(
         requireString(a, "projectId", "ime_export_remove_project"),
+        requireString(a, "expectedWorkspacePath", "ime_export_remove_project"),
       );
       return null;
     },
@@ -708,6 +1045,227 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
     },
   },
+  // Codex 未確定候補 (Phase 3 Batch 4)。Tauri 側 Option<usize> は main 境界で
+  // u32 に狭めて検証し、native は開始時に active DB を pin してから解析する。
+  extract_codex_candidates: {
+    run: async (b, a) =>
+      parseWire(
+        await b.extractCodexCandidates(
+          requireString(a, "projectId", "extract_codex_candidates"),
+          optionalUnsignedInteger(a, "minCount", "extract_codex_candidates"),
+        ),
+      ),
+  },
+  // Semantic Phase 3 Batch 4。native methodsはversion skewを許容する構造型にし、
+  // 実行時は必ず存在検証する。JSON文字列をparseしてTauri invokeと同じwireへ戻す。
+  semantic_download_model: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticDownloadModel,
+          "semanticDownloadModel",
+        )(requireString(a, "language", "semantic_download_model")),
+      ),
+  },
+  semantic_index_scene: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticIndexScene,
+          "semanticIndexScene",
+        )(requireString(a, "sceneId", "semantic_index_scene")),
+      ),
+  },
+  semantic_search: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.semanticSearch, "semanticSearch")(
+          requireString(a, "projectId", "semantic_search"),
+          requireString(a, "query", "semantic_search"),
+          requireUnsignedInteger(a, "limit", "semantic_search"),
+          optionalString(a, "sceneScope", "semantic_search"),
+          optionalBoolean(a, "descriptionMode", "semantic_search"),
+        ),
+      ),
+  },
+  codex_index_entry: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexIndexEntry,
+          "codexIndexEntry",
+        )(requireString(a, "entryId", "codex_index_entry")),
+      ),
+  },
+  codex_semantic_search: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexSemanticSearch,
+          "codexSemanticSearch",
+        )(
+          requireString(a, "projectId", "codex_semantic_search"),
+          requireString(a, "query", "codex_semantic_search"),
+          requireUnsignedInteger(a, "limit", "codex_semantic_search"),
+        ),
+      ),
+  },
+  codex_index_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexIndexStatus,
+          "codexIndexStatus",
+        )(requireString(a, "projectId", "codex_index_status")),
+      ),
+  },
+  codex_reindex_all: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexReindexAll,
+          "codexReindexAll",
+        )(requireString(a, "projectId", "codex_reindex_all")),
+      ),
+  },
+  events_index_entry: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventsIndexEntry,
+          "eventsIndexEntry",
+        )(requireString(a, "eventId", "events_index_entry")),
+      ),
+  },
+  events_semantic_search: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventsSemanticSearch,
+          "eventsSemanticSearch",
+        )(
+          requireString(a, "projectId", "events_semantic_search"),
+          requireString(a, "query", "events_semantic_search"),
+          requireUnsignedInteger(a, "limit", "events_semantic_search"),
+        ),
+      ),
+  },
+  events_index_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventsIndexStatus,
+          "eventsIndexStatus",
+        )(requireString(a, "projectId", "events_index_status")),
+      ),
+  },
+  events_reindex_all: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventsReindexAll,
+          "eventsReindexAll",
+        )(requireString(a, "projectId", "events_reindex_all")),
+      ),
+  },
+  chat_index_message: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chatIndexMessage,
+          "chatIndexMessage",
+        )(requireString(a, "messageId", "chat_index_message")),
+      ),
+  },
+  chat_message_search: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.chatMessageSearch, "chatMessageSearch")(
+          requireString(a, "projectId", "chat_message_search"),
+          requireString(a, "query", "chat_message_search"),
+          requireUnsignedInteger(a, "limit", "chat_message_search"),
+        ),
+      ),
+  },
+  chat_index_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chatIndexStatus,
+          "chatIndexStatus",
+        )(requireString(a, "projectId", "chat_index_status")),
+      ),
+  },
+  chat_reindex_all: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chatReindexAll,
+          "chatReindexAll",
+        )(requireString(a, "projectId", "chat_reindex_all")),
+      ),
+  },
+  semantic_index_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticIndexStatus,
+          "semanticIndexStatus",
+        )(requireString(a, "projectId", "semantic_index_status")),
+      ),
+  },
+  semantic_reindex_all: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticReindexAll,
+          "semanticReindexAll",
+        )(
+          requireString(a, "projectId", "semantic_reindex_all"),
+          optionalOpaqueRunId(a, "runId", "semantic_reindex_all"),
+        ),
+      ),
+  },
+  semantic_chunk_context: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.semanticChunkContext,
+          "semanticChunkContext",
+        )(
+          requireString(a, "sceneId", "semantic_chunk_context"),
+          requireUnsignedInteger(a, "charStart", "semantic_chunk_context"),
+          requireUnsignedInteger(a, "charEnd", "semantic_chunk_context"),
+          requireUnsignedInteger(a, "padding", "semantic_chunk_context"),
+        ),
+      ),
+  },
+  semantic_debug_dump: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.semanticDebugDump, "semanticDebugDump")(
+          requireString(a, "projectId", "semantic_debug_dump"),
+          optionalString(a, "sceneId", "semantic_debug_dump"),
+          optionalUnsignedInteger(a, "limit", "semantic_debug_dump"),
+        ),
+      ),
+  },
   // plot_threads 8 コマンド（Phase 3 バッチ1 — grimodex-db::plot_threads を
   // Tauri と共用）。Tauri 側 fn 署名（src-tauri/src/commands/plot_threads.rs）:
   //   create(payload) / update(id, patch) / delete(id) / list(project_id) /
@@ -780,7 +1338,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   // foreshadow 20 コマンド（Phase 3 バッチ1 — grimodex-db::foreshadow を Tauri と
-  // 共用。foreshadow_list は FE 到達不能な dead path のため mirror なし）。
+  // 共用。到達不能だった旧 foreshadow_list は両ランタイムから撤去済み）。
   // payload / patch / setups / payoffs は camelCase を素通し（from_wire が
   // serde rename_all + normalize_integer_numbers で受ける）。Value/応答 struct は
   // parse して返す。unit 返りは null。
@@ -1172,7 +1730,356 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  // license（Phase 3e）。状態機械/Polar通信/license.jsonは共有Rust backendが
+  // 一括して扱い、rendererへはキーを含まないDTOだけを返す。
+  get_license_state: {
+    run: async (b) =>
+      parseWire(
+        await requireNapiMethod(b, b.getLicenseState, "getLicenseState")(),
+      ),
+  },
+  activate_license: {
+    run: async (b, a, d) => {
+      const state = parseWire(
+        await requireNapiMethod(
+          b,
+          b.activateLicense,
+          "activateLicense",
+        )(requireString(a, "key", "activate_license")),
+      );
+      broadcastBestEffort(d, "license:state_changed", state);
+      return state;
+    },
+  },
+  revalidate_license: {
+    run: async (b, _a, d) => {
+      try {
+        const state = parseWire(
+          await requireNapiMethod(
+            b,
+            b.revalidateLicense,
+            "revalidateLicense",
+          )(),
+        );
+        broadcastBestEffort(d, "license:state_changed", state);
+        return state;
+      } catch (error) {
+        await broadcastCurrentLicenseStateBestEffort(b, d);
+        throw error;
+      }
+    },
+  },
+  deactivate_license: {
+    run: async (b, _a, d) => {
+      const state = parseWire(
+        await requireNapiMethod(b, b.deactivateLicense, "deactivateLicense")(),
+      );
+      broadcastBestEffort(d, "license:state_changed", state);
+      return state;
+    },
+  },
+  // post_effect run 系（Phase 3d）。FE の `{ args: snake_case DTO }` は nested
+  // object のキーを一切変換せず native へ渡す。start は run_id を即返す
+  // fire-and-forgetで、進捗/終端は既存 post_effect:* event 経路が担う。
+  start_post_effect_run: {
+    run: async (b, a, d) => {
+      const args = requireRecord(a, "args", "start_post_effect_run");
+      const startPostEffectRun = requireNapiMethod(
+        b,
+        b.startPostEffectRun,
+        "startPostEffectRun",
+      );
+      const { settings, apiKey, apiKeyError } =
+        await resolvePostEffectAiSnapshot(b, args, d, "start_post_effect_run");
+      return parseWire(
+        await startPostEffectRun(args, settings, apiKey, apiKeyError),
+      );
+    },
+  },
+  start_post_effect_run_multi: {
+    run: async (b, a, d) => {
+      const args = requireRecord(a, "args", "start_post_effect_run_multi");
+      const startPostEffectRunMulti = requireNapiMethod(
+        b,
+        b.startPostEffectRunMulti,
+        "startPostEffectRunMulti",
+      );
+      const { settings, apiKey, apiKeyError } =
+        await resolvePostEffectAiSnapshot(
+          b,
+          args,
+          d,
+          "start_post_effect_run_multi",
+        );
+      return parseWire(
+        await startPostEffectRunMulti(args, settings, apiKey, apiKeyError),
+      );
+    },
+  },
+  abort_post_effect_run: {
+    run: async (b, a) => {
+      const runId = requireString(a, "runId", "abort_post_effect_run");
+      const projectId = requireString(a, "projectId", "abort_post_effect_run");
+      await requireNapiMethod(
+        b,
+        b.abortPostEffectRun,
+        "abortPostEffectRun",
+      )(runId, projectId);
+      return null;
+    },
+  },
+  // AI チャット（Phase 3 バッチ3a）。send 系は napi に api キーを持たせない設計:
+  // dispatch が getAiSettings で設定を読み、secrets(safeStorage) で実効キーを解決し、
+  // 同じ settings スナップショットを第2引数、平文キーを第3引数で注入する。
+  // args(camelCase 一式)は napi 側 ChatRequest が deserialize する（未知キーは無視）。
+  // 返り値は Tauri と同形（ChatResponse / unit）。
+  get_ai_settings: {
+    run: async (b) => parseWire(await b.getAiSettings()),
+  },
+  send_chat_message: {
+    run: async (b, a, d) => {
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "send_chat_message",
+      );
+      return parseWire(await b.sendChatMessage(a, settings, apiKey));
+    },
+  },
+  send_chat_message_stream: {
+    // fire-and-forget ストリーム。チャンク/完了/エラーは chat:stream-* イベント経由。
+    // Tauri 同様、全ストリーム完了後に resolve（FE は SLOW_COMMANDS で 300s 許容）。
+    run: async (b, a, d) => {
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "send_chat_message_stream",
+      );
+      await b.sendChatMessageStream(a, settings, apiKey);
+      return null;
+    },
+  },
+  abort_chat_stream: {
+    // 純メモリの atomic store（同一 Backend の chat_abort を立てる）。unit 返り。
+    run: async (b) => {
+      b.abortChatStream();
+      return null;
+    },
+  },
+  // AI Phase 3b。inline/agent/test は必須キー規則、models だけoptional lookup。
+  save_ai_settings: {
+    run: async (b, a) => {
+      await requireNapiMethod(
+        b,
+        b.saveAiSettings,
+        "saveAiSettings",
+      )(requirePresent(a, "settings", "save_ai_settings"));
+      return null;
+    },
+  },
+  send_inline_ai_stream: {
+    run: async (b, a, d) => {
+      requirePresent(a, "messages", "send_inline_ai_stream");
+      const sendInlineAiStream = requireNapiMethod(
+        b,
+        b.sendInlineAiStream,
+        "sendInlineAiStream",
+      );
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "send_inline_ai_stream",
+      );
+      await sendInlineAiStream(a, settings, apiKey);
+      return null;
+    },
+  },
+  abort_inline_ai_stream: {
+    run: async (b) => {
+      requireNapiMethod(b, b.abortInlineAiStream, "abortInlineAiStream")();
+      return null;
+    },
+  },
+  send_agent_message: {
+    run: async (b, a, d) => {
+      requirePresent(a, "messages", "send_agent_message");
+      requirePresent(a, "tools", "send_agent_message");
+      const sendAgentMessage = requireNapiMethod(
+        b,
+        b.sendAgentMessage,
+        "sendAgentMessage",
+      );
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "send_agent_message",
+      );
+      return parseWire(await sendAgentMessage(a, settings, apiKey));
+    },
+  },
+  list_ai_models: {
+    run: async (b, a, d) => {
+      requireString(a, "provider", "list_ai_models");
+      const listAiModels = requireNapiMethod(b, b.listAiModels, "listAiModels");
+      const { settings, apiKey } = await resolveOptionalAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "list_ai_models",
+      );
+      return parseWire(await listAiModels(a, settings, apiKey));
+    },
+  },
+  test_ai_connection: {
+    run: async (b, a, d) => {
+      requireString(a, "provider", "test_ai_connection");
+      requireString(a, "model", "test_ai_connection");
+      const testAiConnection = requireNapiMethod(
+        b,
+        b.testAiConnection,
+        "testAiConnection",
+      );
+      const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
+        b,
+        a,
+        d,
+        "test_ai_connection",
+      );
+      return testAiConnection(a, settings, apiKey);
+    },
+  },
 };
+
+/**
+ * Tauri `post_effect.rs` で role provider/model override を適用する effect。
+ * typo / intra / meta_structure は既定 AI settings を読む従来契約なので、DTO に
+ * override が混入してもキーlookupへ持ち込まない（別providerのキー誤注入防止）。
+ */
+const POST_EFFECT_ROLE_OVERRIDE_TYPES: ReadonlySet<string> = new Set([
+  "consistency",
+  "review",
+  "intent_drift",
+  "pseudo_comment",
+  "impact_review",
+  "timeline_consistency",
+]);
+
+interface PostEffectAiSnapshot {
+  settings: unknown;
+  apiKey: string | null;
+  apiKeyError: string | null;
+}
+
+/**
+ * post-effect専用のAI設定/secret snapshot。
+ *
+ * start command はcache hitならHTTPを行わないため、キー未登録だけでなく
+ * safeStorage破損/復号失敗もここではinvoke rejectにしない。lookup例外を文字列へ
+ * 固定してnativeへ渡し、cache miss時の背景taskが post_effect:error とDB failedへ
+ * 着地させる。これによりFEがrun_id確定前イベントをbufferする既存契約も保てる。
+ */
+async function resolvePostEffectAiSnapshot(
+  backend: NapiBackendLike,
+  args: CommandArgs,
+  deps: DispatchDeps,
+  cmd: string,
+): Promise<PostEffectAiSnapshot> {
+  if (!deps.secrets) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+  const getApiKey = deps.secrets.getApiKeyForRequest;
+  if (!getApiKey) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+
+  // 設定read・キーroute解決・native呼出しは同一snapshotを共有（TOCTOU防止）。
+  const settings = parseWire(await backend.getAiSettings());
+  const usesRoleOverride =
+    typeof args.effect_type === "string" &&
+    POST_EFFECT_ROLE_OVERRIDE_TYPES.has(args.effect_type);
+  const provider = usesRoleOverride ? args.provider_override : undefined;
+  const endpointId = usesRoleOverride ? args.endpoint_id_override : undefined;
+
+  try {
+    return {
+      settings,
+      apiKey:
+        getApiKey.call(deps.secrets, settings, provider, endpointId) ?? null,
+      apiKeyError: null,
+    };
+  } catch (error) {
+    return {
+      settings,
+      apiKey: null,
+      apiKeyError: toErrorString(error),
+    };
+  }
+}
+
+/**
+ * チャット送信の設定スナップショット取得 + API キー解決。**設定は getAiSettings で
+ * 1 回だけ読む**（返した `settings` を napi 送信へそのまま渡し、キー解決と送信を同一
+ * スナップショットで行う — Tauri の単一 read_ai_settings と同じ原子性。2 度読みの
+ * TOCTOU で「read#1 の provider のキーが read#2 の endpoint へ」流れる事故を防ぐ）。
+ * secrets 不在は構成エラーとして明示。キー未設定時は resolveApiKeyForRequest が Tauri と
+ * 同じ `No API key configured for <provider>` を throw する。
+ */
+async function resolveRequiredAiKeyAndSettings(
+  backend: NapiBackendLike,
+  args: CommandArgs,
+  deps: DispatchDeps,
+  cmd: string,
+): Promise<{ settings: unknown; apiKey: string }> {
+  if (!deps.secrets) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+  const settings = parseWire(await backend.getAiSettings());
+  const apiKey = deps.secrets.resolveApiKeyForRequest(
+    settings,
+    args.provider,
+    args.endpointId,
+  );
+  return { settings, apiKey };
+}
+
+/** 旧 native binding を誤って組み合わせた場合も TypeError ではなく明示的に失敗させる。 */
+function requireNapiMethod<T extends (...args: never[]) => unknown>(
+  backend: NapiBackendLike,
+  method: T | undefined,
+  methodName: string,
+): T {
+  if (typeof method !== "function") {
+    throw new Error(
+      `${IPC_BACKEND_UNAVAILABLE_MARKER} native method ${methodName}`,
+    );
+  }
+  return method.bind(backend) as T;
+}
+
+/** list_ai_models専用: 未登録キーだけを空文字へ畳み、破損/復号エラーは伝播。 */
+async function resolveOptionalAiKeyAndSettings(
+  backend: NapiBackendLike,
+  args: CommandArgs,
+  deps: DispatchDeps,
+  cmd: string,
+): Promise<{ settings: unknown; apiKey: string }> {
+  if (!deps.secrets) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+  const getApiKey = deps.secrets.getApiKeyForRequest;
+  if (!getApiKey) {
+    throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
+  }
+  const settings = parseWire(await backend.getAiSettings());
+  const apiKey =
+    getApiKey.call(deps.secrets, settings, args.provider, args.endpointId) ??
+    "";
+  return { settings, apiKey };
+}
 
 /**
  * lint_text の napi reason（LintError の {type,data} JSON 文字列）を
@@ -1205,13 +2112,54 @@ export type ShellCommandHandlers = Readonly<
   Record<string, (args: CommandArgs) => Promise<unknown>>
 >;
 
-/** main-TS 実装コマンド名（§4.3 の表 + Phase 3 追補の export / logs）。 */
+/**
+ * main-TS 実装コマンド名（§4.3 の表 + Phase 3 追補の export / logs +
+ * バッチ2 の external_mount）。external_mount 系は ipc ルーターが
+ * ExternalMountManager から注入する（registry/watcher が invoke を跨いで
+ * 持続するため per-invoke の buildShellCommandHandlers には含めない）。
+ * 到達不能だった旧 external_mount_list は両ランタイムから撤去済み。
+ */
 export const SHELL_COMMAND_NAMES: readonly string[] = [
   "set_window_vibrancy",
-  "get_license_state",
   "export_save_text",
   "export_save_bytes",
   "open_log_dir",
+  "external_mount_register",
+  "external_mount_unregister",
+  "external_mount_read_file",
+  "external_mount_write_file",
+  "external_mount_file_mtime",
+  "external_mount_scan",
+  // API キー保管（Phase 3 バッチ3a — safeStorage）。ipc ルーターが keyStore
+  // (SecretsBridge) から extraShellHandlers として注入する（状態が invoke を跨いで
+  // 持続するため per-invoke の buildShellCommandHandlers には含めない）。has は bool、
+  // save/delete は unit。平文キーは save の引数としてのみ main へ渡り renderer に返さない。
+  "has_api_key",
+  "save_api_key",
+  "delete_api_key",
+  // CLI AI（Phase 3 バッチ3c）: main の常駐 child-process manager。napi backend
+  // 不在時も利用でき、send/abort は同一 manager の active process を共有する。
+  "detect_cli_binary",
+  "test_cli_connection",
+  "list_cli_models",
+  "send_cli_chat_stream",
+  "abort_cli_chat_stream",
+  // Vivliostyle（Phase 3 バッチ5）: main常駐managerがbuild/preview child、
+  // output token、native保存dialogをinvoke間で共有する。
+  "vivliostyle_detect",
+  "vivliostyle_build",
+  "vivliostyle_abort_build",
+  "vivliostyle_save_output",
+  "vivliostyle_preview_start",
+  "vivliostyle_preview_stop",
+  // MCP（Phase 3 Batch 5）: mainがstandalone sidecarを解決し、workspaceは
+  // native Backendから取得する。rendererへは実行可能pathとargsだけを返す。
+  "get_mcp_config",
+  // Electron updater（Phase 4）: main の単一 manager が check/download/install
+  // state と electron-updater listener を invoke 間で共有する。
+  "updater_check",
+  "updater_download",
+  "updater_install",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1222,11 +2170,23 @@ export interface DispatchDeps {
   /** .node ロード失敗時は null（fail-soft: 明示エラー envelope を返す）。 */
   backend: NapiBackendLike | null;
   shell: ShellCommandHandlers;
+  /**
+   * API キー解決の窓口（safeStorage）。AI チャットコマンドが送信直前にキーを
+   * 解決するために使う。未注入時、チャットコマンドは IPC_SECRETS_UNAVAILABLE で
+   * 明示 reject する（他コマンドは影響なし）。
+   */
+  secrets?: SecretsResolver;
+  /**
+   * mainから全窓へ送るイベント窓口。manual license mutationの返却DTOを
+   * 呼出元以外のZustand storeにも即時反映するために使う。
+   */
+  broadcast?: (channel: string, payload: unknown) => void;
 }
 
 /**
  * コマンド 1 件を実行して Envelope に畳む。**決して throw しない**（§5.2）。
- * 優先順位: main-TS ハンドラ → napi コマンド表 → IPC_UNIMPLEMENTED。
+ * 優先順位: napi コマンド表 → main-TS ハンドラ → IPC_UNIMPLEMENTED。
+ * 移植済みcommandを古いshell stubが遮蔽しないよう、明示NAPI表を権威にする。
  */
 export async function dispatchInvoke(
   cmd: string,
@@ -1234,9 +2194,6 @@ export async function dispatchInvoke(
   deps: DispatchDeps,
 ): Promise<Envelope> {
   try {
-    if (Object.hasOwn(deps.shell, cmd)) {
-      return { ok: true, value: await deps.shell[cmd](args) };
-    }
     if (Object.hasOwn(NAPI_COMMANDS, cmd)) {
       if (!deps.backend) {
         return {
@@ -1246,8 +2203,11 @@ export async function dispatchInvoke(
       }
       return {
         ok: true,
-        value: await NAPI_COMMANDS[cmd].run(deps.backend, args),
+        value: await NAPI_COMMANDS[cmd].run(deps.backend, args, deps),
       };
+    }
+    if (Object.hasOwn(deps.shell, cmd)) {
+      return { ok: true, value: await deps.shell[cmd](args) };
     }
     return { ok: false, error: unimplementedError(cmd) };
   } catch (e) {

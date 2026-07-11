@@ -12,7 +12,16 @@ import { app, dialog } from "electron";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 
 interface GrimodexNodeModule {
-  Backend: new (appDataDir: string) => NapiBackendLike;
+  Backend: new (
+    appDataDir: string,
+    semanticResourceRoot?: string | null,
+  ) => NapiBackendLike;
+}
+
+interface SemanticResourceResolution {
+  isPackaged: boolean;
+  resourcesPath: string;
+  mainDir: string;
 }
 
 let instance: NapiBackendLike | null = null;
@@ -42,12 +51,37 @@ export function resolveNodeBinaryPath(): string {
 }
 
 /**
- * app ready 後に 1 回だけ呼ぶ。Backend コンストラクタには
- * `app.getPath("userData")` を明示注入する（§4.2 / §6.8 — Phase 2 は
- * GrimodexElectronDev 名の userData に隔離し Tauri のデータに触らない）。
+ * Semantic tokenizer / optional bundled model root. Native側でcwdやbuild時の
+ * CARGO_MANIFEST_DIRへfallbackせず、実行シェルがdev/packageの配置を確定して渡す。
+ * package側はPhase 4のelectron-builder extraResources配置と対応する。
+ */
+export function resolveSemanticResourceRoot(
+  resolution: SemanticResourceResolution = {
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    mainDir: __dirname,
+  },
+): string {
+  if (resolution.isPackaged) {
+    return path.join(resolution.resourcesPath, "resources", "semantic");
+  }
+  return path.join(
+    resolution.mainDir,
+    "..",
+    "src-tauri",
+    "resources",
+    "semantic",
+  );
+}
+
+/**
+ * app ready 後に 1 回だけ呼ぶ。Backend コンストラクタには起動ロック前に
+ * `configureAppUserData` が確定した `app.getPath("userData")` を明示注入する。
+ * packaged版は既存Tauriのdata_dir、developmentはGrimodexElectronDevを使う。
  */
 export function initBackend(): NapiBackendLike | null {
   const binaryPath = resolveNodeBinaryPath();
+  const semanticResourceRoot = resolveSemanticResourceRoot();
   try {
     if (!existsSync(binaryPath)) {
       throw new Error(
@@ -58,7 +92,7 @@ export function initBackend(): NapiBackendLike | null {
     // esbuild バンドル外の実行時 require（*.node は external — §3.2）
     const requireNative = createRequire(__filename);
     const mod = requireNative(binaryPath) as GrimodexNodeModule;
-    instance = new mod.Backend(app.getPath("userData"));
+    instance = new mod.Backend(app.getPath("userData"), semanticResourceRoot);
     console.log(`[grimodex-electron] napi backend loaded: ${binaryPath}`);
     return instance;
   } catch (e) {

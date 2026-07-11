@@ -59,12 +59,12 @@ pub fn gunzip_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
 /// slim で全削除するチャンク表（埋め込み BLOB + 重複 text、再生成可）。トリガ・被参照
 /// FK が無いので素の DELETE で安全（migrate.rs:1348-1444 で確認）。
 ///
-/// **`event_chunks` は意図的に除外**する。scene/codex/chat の埋め込みは復元後 reload で
-/// フロント `ensureSemanticIndexesOnOpen`（autoIndex.ts）が back-index して自己修復するが、
-/// **events の open 時 back-index は存在せず**（`ensureEventsIndexed` なし・`events_reindex_all`
-/// に FE 呼び出し元なし）、events 検索は dense-only なので slim で消すと Chronicle イベントの
-/// 意味検索が無音で全滅し復旧手段が無い（敵対レビュー）。events 埋め込みは短く容量影響も小さい
-/// ので、events の open 時 back-index を足すまではバックアップに残す。
+/// **`event_chunks` は意図的に除外**する。復元後はフロント
+/// `ensureSemanticIndexesOnOpen`（autoIndex.ts）が scene/codex/events/chat を
+/// back-index するが、events 検索だけは sparse/FTS fallback が無い。
+/// モデル未導入・オフラインの復元直後も Chronicle 意味検索を使えるよう、
+/// 容量影響の小さい event embedding は backup に残す。slim 対象化は
+/// restore→events back-index の統合テストと offline UX の方針決定後に行う。
 const SLIM_CHUNK_TABLES: &[&str] = &["scene_chunks", "codex_chunks", "chat_message_chunks"];
 
 /// slim で索引を空にする JA FTS（external content, `content=...`）。`'delete-all'` で
@@ -257,6 +257,7 @@ impl Database {
 }
 
 pub mod agent_writes;
+pub mod backup_restore;
 pub mod change_events;
 mod execute;
 pub mod foreshadow;
@@ -266,6 +267,7 @@ mod integrity;
 mod migrate;
 pub mod plot_threads;
 pub mod post_effect;
+pub mod sample_seed;
 pub mod trash_bin;
 pub mod undo_journal;
 

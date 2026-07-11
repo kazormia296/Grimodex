@@ -1023,7 +1023,7 @@ type GridChapterPayload = {
 
 ## 17. 検証方法
 
-1. `pnpm tauri dev` で起動
+1. `pnpm electron:dev` で起動
 2. **文字屑系**:
    - シーンでテキスト選択 → 削除 → ゴミ箱に文字片が落下
    - Backspace 連打 → 1 つに合体されてから落下

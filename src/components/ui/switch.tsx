@@ -27,8 +27,7 @@ export interface SwitchProps extends Omit<
 
 /**
  * アプリ共通のトグルスイッチ。`--switch-*` トークンと `.ui-switch` ベーススタイル
- * (index.css) で描画する。WebKitGTK は role=switch に OS ネイティブ UI を乗せるため
- * appearance を無効化し、全画面で同一のコントラストを保証する。
+ * (index.css) で描画し、全画面で同一のコントラストを保証する。
  */
 export const Switch = React.forwardRef<HTMLButtonElement, SwitchProps>(
   function Switch(

@@ -12,12 +12,13 @@ argument-hint: [feature-or-file-path]
 
 1. 対象コードを読み、テストすべきケースを洗い出す
 2. 正常系・異常系・エッジケースをカバーするテストを作成
-3. テストファイルはソースと同階層に *.test.ts として配置
-4. Rustコードの場合は src-tauri 内に #[cfg(test)] モジュール
-5. `pnpm test` / `cargo test` を実行し、結果を報告
+3. テストファイルはソースと同階層に \*.test.ts として配置
+4. Rustコードの場合は共有crateまたはN-API adapter内に `#[cfg(test)]` モジュール
+5. `pnpm test` / `pnpm test:electron --run` / 対象crateの `cargo test` を実行し、結果を報告
 6. 失敗がある場合、テストコードに問題がないか確認してから修正
 
 カバレッジの観点:
+
 - 主要な分岐がすべてテストされているか
 - エラーハンドリングが検証されているか
-- Tauri IPC境界の型安全性
+- Electron IPC境界のallowlist・引数変換・Envelope型安全性

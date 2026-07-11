@@ -1,5 +1,8 @@
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { useProjectStore } from "@/features/project/projectStore";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import { ensureSemanticIndexesOnOpen } from "./autoIndex";
 import { useModelDownloadStore } from "./modelDownloadStore";
 
 /**
@@ -13,6 +16,7 @@ export function ModelDownloadToast() {
   const { t } = useTranslation();
   const active = useModelDownloadStore((s) => s.active);
   const current = useModelDownloadStore((s) => s.current);
+  const clear = useModelDownloadStore((s) => s.clear);
   if (!active || !current) return null;
 
   const { downloaded, total, done, error } = current;
@@ -41,6 +45,14 @@ export function ModelDownloadToast() {
       })
     : `${(downloaded / MIB).toFixed(1)} / ${(total / MIB).toFixed(1)} MiB`;
 
+  const retry = () => {
+    const workspaceKey = useWorkspaceStore.getState().activeWorkspacePath;
+    const projectId = useProjectStore.getState().currentProjectId;
+    if (!workspaceKey || !projectId) return;
+    clear();
+    void ensureSemanticIndexesOnOpen(projectId, workspaceKey);
+  };
+
   return createPortal(
     <div
       role="status"
@@ -58,7 +70,7 @@ export function ModelDownloadToast() {
         padding: "10px 12px",
         fontSize: 12,
         color: "var(--foreground)",
-        pointerEvents: "none",
+        pointerEvents: isError ? "auto" : "none",
       }}
     >
       <div
@@ -91,6 +103,26 @@ export function ModelDownloadToast() {
       >
         {detail}
       </div>
+      {isError && (
+        <button
+          type="button"
+          onClick={retry}
+          style={{
+            marginTop: 8,
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            background: "var(--background)",
+            color: "var(--foreground)",
+            padding: "4px 10px",
+            cursor: "pointer",
+            fontSize: 11,
+          }}
+        >
+          {t("semanticSearch.retryModelDownload", {
+            defaultValue: "再試行",
+          })}
+        </button>
+      )}
     </div>,
     document.body,
   );

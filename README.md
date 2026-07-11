@@ -6,11 +6,11 @@ AI統合デスクトップ小説執筆エディタ / AI-integrated desktop novel
 
 ## What is Grimodex? / Grimodexとは
 
-Grimodex is a desktop novel-writing editor with AI chat and knowledge extraction built in. It's a Novelcrafter-like follower — same shape (manuscript + AI chat + Codex), different stack (Tauri + React, local SQLite storage).
+Grimodex is a desktop novel-writing editor with AI chat and knowledge extraction built in. It's a Novelcrafter-like follower — same shape (manuscript + AI chat + Codex), different stack (Electron + React, local SQLite storage).
 
 The core loop: chat with an AI, extract characters / worldbuilding / snippets from that chat, then pull them into your manuscript. Everything you insert keeps its origin (human / ai / unknown) so you can tell later what came from where.
 
-Grimodexは、AIチャットとナレッジ抽出を組み込んだデスクトップ小説執筆エディタです。位置づけとしてはNovelcrafterライクなフォロワーで、形は同じ（本文 + AIチャット + Codex）ですがスタックが違います（Tauri + React、ローカルSQLite保存）。
+Grimodexは、AIチャットとナレッジ抽出を組み込んだデスクトップ小説執筆エディタです。位置づけとしてはNovelcrafterライクなフォロワーで、形は同じ（本文 + AIチャット + Codex）ですがスタックが違います（Electron + React、ローカルSQLite保存）。
 
 コアの流れは、AIと会話し、そこから登場人物 / 世界観 / スニペットを抽出して本文に取り込むこと。挿入したテキストは出所（human / ai / unknown）が記録されるので、あとから何がどこから来たか追えます。
 
@@ -20,11 +20,11 @@ Grimodexは、AIチャットとナレッジ抽出を組み込んだデスクト�
 
 Download the installer for your platform from the [latest release](../../releases/latest).
 
-| Platform | File                  |
-| -------- | --------------------- |
-| Windows  | `.exe`                |
-| macOS    | `.dmg`                |
-| Linux    | `.AppImage` or `.deb` |
+| Platform | File                           |
+| -------- | ------------------------------ |
+| Windows  | `.exe`                         |
+| macOS    | `.dmg`                         |
+| Linux    | `.AppImage`, `.deb`, or `.rpm` |
 
 No runtime required — just install and launch. AI chat works with a cloud API key (OpenRouter / OpenAI / Anthropic), a local Ollama model, or an agentic CLI — see Features below.
 
@@ -73,48 +73,56 @@ _Chat — AIチャットと会話履歴を並べたビュー_
 
 ## Stack / 技術スタック
 
-- **Desktop shell:** Tauri v2 (Rust)
+- **Desktop shell:** Electron (Chromium)
 - **Frontend:** React 19 + TypeScript (strict)
+- **Native bridge:** typed preload IPC + N-API (Rust)
 - **Editor:** TipTap / ProseMirror
 - **State:** Zustand (global) + Jotai (local)
-- **DB:** SQLite via Drizzle ORM, WAL mode, FTS5 enabled
+- **DB:** Drizzle ORM + SQLite/rusqlite, WAL mode, FTS5 enabled
 - **Semantic search:** Ruri v3 embeddings (ONNX Runtime) + UniDic morphology (lindera)
-- **Test:** Vitest
+- **MCP:** standalone Rust sidecar sharing the application crates
+- **Test:** Vitest + Playwright Electron smoke tests
+
+The supported runtime is Electron. The Tauri app package at the `src-tauri` root remains in the tree as frozen legacy code for v1 compatibility and migration validation; active Rust domain crates under `src-tauri/crates/` are shared by the Electron N-API module and the standalone MCP server.
+
+サポート対象のランタイムは Electron です。`src-tauri` 直下の Tauri app package は v1 互換・移行検証用の frozen legacy として残しています。一方、`src-tauri/crates/` の Rust ドメイン実装は Electron の N-API モジュールと standalone MCP サーバーから引き続き共用します。
 
 ---
 
 ## Development / 開発
 
-Prerequisites: Node.js, pnpm, a Rust toolchain, Python 3 (only for generating the embedding model), and the platform dependencies required by Tauri.
+Prerequisites: Node.js 20+, pnpm, and a stable Rust toolchain. Python 3 is needed only when regenerating the embedding model. Electron bundles Chromium, so an external web-engine SDK is not required.
 
 ```sh
 pnpm install
-pnpm tauri dev          # full app in dev
+pnpm napi:build          # build the Rust N-API module (first run / after Rust changes)
+pnpm electron:dev       # full desktop app in dev
 pnpm dev                # frontend only
-pnpm tauri build        # production build
+pnpm electron:build     # production JavaScript build
+pnpm electron:package   # native release artifacts + platform package
 pnpm test               # frontend tests (Vitest)
+pnpm test:electron --run
+pnpm electron:smoke
 pnpm lint:fix
 npx tsc --noEmit        # type check
 
-cd src-tauri
-cargo check
-cargo clippy --all-targets
-cargo test
+cargo check --manifest-path electron/native/grimodex-node/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 ```
 
 ### First-build setup / 初回ビルドの準備
 
-- **ONNX Runtime & UniDic** — The first Rust build downloads the ONNX Runtime binaries (`ort`) and the UniDic dictionary (`lindera`, embedded for the Japanese prose linter). Network access is required, so the first build is slow.
-- **Embedding model** — The semantic-search model (`model.onnx` / `model_int8.onnx`, ~150 MB) is **not** committed to the repo. Generate it from the upstream `cl-nagoya/ruri-v3-30m` weights:
+- **N-API, ONNX Runtime & UniDic** — Run `pnpm napi:build` before the first Electron launch and after native Rust changes. The first Rust build downloads the ONNX Runtime binaries (`ort`) and the UniDic dictionary (`lindera`, embedded for the Japanese prose linter). Network access is required, so the first build is slow.
+- **Embedding models** — Large ONNX model files are neither committed nor bundled. The packaged app downloads the language-specific, SHA-256-pinned `model_int8.onnx` from the `semantic-models-v1` GitHub Release on first use; tokenizer files are bundled. Normal development does not require a local model. Only when updating a published model asset, regenerate it from the upstream weights and update the pinned URL/hash:
 
   ```sh
   pip install "optimum[onnxruntime]" sentencepiece protobuf
   python3 scripts/export-ruri-onnx.py
   ```
 
-  The files are written to `src-tauri/resources/semantic/ruri-v3-30m/`. Without them the app still builds and runs, but semantic search stays disabled. Passing `--no-default-features` to `cargo` skips the embedding path entirely.
+  The files are written to `src-tauri/resources/semantic/ruri-v3-30m/` for verification and upload; the ONNX file is not included in the desktop package. Passing `--no-default-features` to a targeted Cargo command remains available for pure-logic work, while the active CI gate explicitly enables `grimodex-semantic/semantic-embedding`.
 
-初回のRustビルドでは ONNX Runtime バイナリ（`ort`）と UniDic 辞書（`lindera`、日本語リンター用に同梱）がダウンロードされます（ネットワーク必須・初回は時間がかかります）。セマンティック検索用の埋め込みモデル（`model.onnx` / `model_int8.onnx`、約150MB）はリポジトリに含まれていないため、`pip install "optimum[onnxruntime]" sentencepiece protobuf` のうえ `python3 scripts/export-ruri-onnx.py` を実行し `cl-nagoya/ruri-v3-30m` から `src-tauri/resources/semantic/ruri-v3-30m/` へ再生成してください。生成しなくてもアプリのビルド・起動はできますが、セマンティック検索は無効になります。`cargo` に `--no-default-features` を渡すと埋め込み経路ごとスキップできます。
+初回起動前と native Rust 変更後は `pnpm napi:build` を実行してください。初回のRustビルドでは ONNX Runtime バイナリ（`ort`）と UniDic 辞書（`lindera`、日本語リンター用に同梱）がダウンロードされます（ネットワーク必須・初回は時間がかかります）。大きな埋め込みモデルはリポジトリにもデスクトップパッケージにも含めず、言語別の `model_int8.onnx` を初回利用時に `semantic-models-v1` GitHub Release から取得して、固定SHA-256で検証します。tokenizerは同梱済みなので、通常の開発でモデル生成は不要です。配布モデルを更新するときだけ上記exportを実行し、assetのURL/hashも更新してください。pure-logicだけを対象にする個別Cargoコマンドでは`--no-default-features`も使えますが、現行CIは`grimodex-semantic/semantic-embedding`を明示して実経路を検証します。
 
 ---
 

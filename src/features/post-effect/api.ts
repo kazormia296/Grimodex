@@ -13,14 +13,12 @@ import {
 import type {
   PostEffectRun,
   PostEffectAnnotation,
-  PostEffectAnnotationRelation,
   PostEffectStatus,
   PostEffectType,
   StartPostEffectRunRequest,
   StartPostEffectRunMultiRequest,
   StartPostEffectRunResult,
   AnnotationsForSceneResponse,
-  RunDetailResponse,
   PostEffectProgressEvent,
   PostEffectPartialEvent,
   PostEffectDoneEvent,
@@ -96,13 +94,6 @@ export async function listPostEffectRuns(params: {
   });
 }
 
-export async function getPostEffectRun(
-  runId: string,
-  projectId: string,
-): Promise<RunDetailResponse> {
-  return invoke<RunDetailResponse>("get_post_effect_run", { runId, projectId });
-}
-
 export async function listAnnotationsForScene(params: {
   projectId: string;
   sceneId: string;
@@ -160,29 +151,6 @@ export async function updateAnnotationStatus(
     entityType: "post_effect_annotation",
     entityId: annotationId,
     payload: { annotationId, status },
-  });
-  return result;
-}
-
-export async function updateRelationStatus(
-  relationId: string,
-  status: PostEffectStatus,
-  projectId: string,
-): Promise<PostEffectAnnotationRelation> {
-  const result = await invoke<PostEffectAnnotationRelation>(
-    "update_relation_status",
-    {
-      relationId,
-      status,
-      projectId,
-    },
-  );
-  recordChangeEvent({
-    domain: "review",
-    opType: "relation.status",
-    entityType: "post_effect_relation",
-    entityId: relationId,
-    payload: { relationId, status },
   });
   return result;
 }

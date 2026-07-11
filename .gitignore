@@ -56,5 +56,6 @@ src/features/chat/calibration/embeddings.generated.json
 
 # Electron シェル（Phase 2）: esbuild 出力 / napi クレートのビルド生成物
 dist-electron/
+release/electron/
 electron/native/**/target/
 *.node

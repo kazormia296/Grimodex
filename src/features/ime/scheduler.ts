@@ -1,4 +1,5 @@
 import { refreshImeExport } from "./api";
+import { getCurrentImeWorkspaceIdentity } from "./workspaceScope";
 
 export const IME_EXPORT_DEBOUNCE_MS = 1_500;
 
@@ -9,6 +10,8 @@ const timers = new Map<string, ReturnType<typeof setTimeout>>();
  * 書出し失敗はオートセーブや AI 書き込みを失敗させない。
  */
 export function scheduleImeExportRefresh(projectId: string): void {
+  const workspaceIdentity = getCurrentImeWorkspaceIdentity();
+  if (!workspaceIdentity) return;
   const existing = timers.get(projectId);
   if (existing) clearTimeout(existing);
 
@@ -16,7 +19,7 @@ export function scheduleImeExportRefresh(projectId: string): void {
     projectId,
     setTimeout(() => {
       timers.delete(projectId);
-      void refreshImeExport(projectId).catch(() => {
+      void refreshImeExport(projectId, workspaceIdentity).catch(() => {
         // fail-open: IME は付加機能であり、Codex 保存の成否に影響させない。
       });
     }, IME_EXPORT_DEBOUNCE_MS),

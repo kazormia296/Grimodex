@@ -194,6 +194,113 @@ describe("SLOW_COMMANDS のタイムアウト選択（electron 分岐）", () =>
     await expectation;
     expect(settled).toBe(true);
   });
+
+  it.each([
+    "semantic_search",
+    "codex_semantic_search",
+    "events_index_entry",
+    "events_semantic_search",
+    "events_reindex_all",
+    "chat_index_message",
+    "chat_message_search",
+    "chat_reindex_all",
+  ])("%s はsemantic推論/全件処理用の300s枠を使う", async (command) => {
+    vi.useFakeTimers();
+    installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+
+    let settled = false;
+    const promise = invoke(command);
+    promise.catch(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(settled).toBe(false);
+
+    const expectation = expect(promise).rejects.toThrow(
+      /IPC timeout after 300000ms/,
+    );
+    await vi.advanceTimersByTimeAsync(290_000);
+    await expectation;
+  });
+
+  it.each([
+    ["activate_license", { key: "GRIM-KEY-1234" }],
+    ["revalidate_license", undefined],
+    ["deactivate_license", undefined],
+  ] as const)(
+    "%sはPolarの15s timeoutより長い300s枠を使う",
+    async (command, args) => {
+      vi.useFakeTimers();
+      installBridge({
+        invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+      });
+      const { invoke } = await import("./tauri");
+
+      let settled = false;
+      const promise = invoke(command, args);
+      promise.catch(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(settled).toBe(false);
+
+      const expectation = expect(promise).rejects.toThrow(
+        /IPC timeout after 300000ms/,
+      );
+      await vi.advanceTimersByTimeAsync(284_000);
+      await expectation;
+    },
+  );
+
+  it("detect_cli_binaryはlogin shell探索の内部timeoutより長い外側timeoutを使う", async () => {
+    vi.useFakeTimers();
+    installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+
+    let settled = false;
+    const promise = invoke("detect_cli_binary", { cli: "claude" });
+    promise.catch(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(settled).toBe(false);
+    const expectation = expect(promise).rejects.toThrow(
+      /IPC timeout after 300000ms/,
+    );
+    await vi.advanceTimersByTimeAsync(290_000);
+    await expectation;
+  });
+
+  it("test_cli_connectionはnative authorization待ちを含む長いtimeoutを使う", async () => {
+    vi.useFakeTimers();
+    installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+
+    let settled = false;
+    const promise = invoke("test_cli_connection", {
+      binaryPath: "/opt/custom/claude",
+    });
+    promise.catch(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(settled).toBe(false);
+    const expectation = expect(promise).rejects.toThrow(
+      /IPC timeout after 300000ms/,
+    );
+    await vi.advanceTimersByTimeAsync(290_000);
+    await expectation;
+  });
 });
 
 describe("listen / emit の electron 分岐", () => {

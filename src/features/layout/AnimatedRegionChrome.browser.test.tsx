@@ -28,10 +28,12 @@
  *   settled computed が `inset(0px 0% 0px 0px)` になり、各 region で本テストが
  *   「offset must be < 0」で fail する。
  */
-import { describe, it, expect } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { beforeEach, describe, it, expect } from "vitest";
+import { act, render, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { AnimatedRegionChrome } from "./AnimatedRegionChrome";
 import { REGION_CLIP_PATH, type RegionChromeId } from "./layoutAnimation";
+import { useLayoutStore } from "./layoutStore";
 
 /** settled な `inset(...)` から数値 offset を取り出す。`none` 等は [] を返す。 */
 function insetOffsets(clipPath: string): number[] {
@@ -43,6 +45,75 @@ function insetOffsets(clipPath: string): number[] {
 const REGIONS = Object.keys(REGION_CLIP_PATH) as RegionChromeId[];
 
 describe("AnimatedRegionChrome open clip-path invariant", () => {
+  beforeEach(() => {
+    useLayoutStore.setState({ initialized: true });
+  });
+
+  it("shows startup hydration at its final opacity without an enter animation", () => {
+    useLayoutStore.setState({ initialized: false });
+    const child = <div>child</div>;
+    const { rerender, container } = render(
+      <AnimatedRegionChrome region="left" open={false}>
+        {child}
+      </AnimatedRegionChrome>,
+    );
+
+    act(() => {
+      useLayoutStore.setState({ initialized: true });
+      rerender(
+        <AnimatedRegionChrome region="left" open>
+          {child}
+        </AnimatedRegionChrome>,
+      );
+    });
+
+    const node = container.querySelector<HTMLElement>(
+      '[data-animated-region="left"]',
+    );
+    expect(node).not.toBeNull();
+    expect(getComputedStyle(node!).opacity).toBe("1");
+  });
+
+  it("restores enter motion after startup hydration on the same StrictMode instance", async () => {
+    useLayoutStore.setState({ initialized: false });
+    const child = <div>child</div>;
+    const view = (open: boolean) => (
+      <StrictMode>
+        <AnimatedRegionChrome region="left" open={open}>
+          {child}
+        </AnimatedRegionChrome>
+      </StrictMode>
+    );
+    const { rerender, container } = render(view(false));
+
+    act(() => {
+      useLayoutStore.setState({ initialized: true });
+      rerender(view(true));
+    });
+    const hydrated = container.querySelector<HTMLElement>(
+      '[data-animated-region="left"]',
+    );
+    expect(hydrated).not.toBeNull();
+    expect(getComputedStyle(hydrated!).opacity).toBe("1");
+
+    rerender(view(false));
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-animated-region="left"]'),
+      ).toBeNull();
+    });
+
+    rerender(view(true));
+    const reopened = container.querySelector<HTMLElement>(
+      '[data-animated-region="left"]',
+    );
+    expect(reopened).not.toBeNull();
+    expect(parseFloat(getComputedStyle(reopened!).opacity)).toBeLessThan(1);
+    await waitFor(() => {
+      expect(getComputedStyle(reopened!).opacity).toBe("1");
+    });
+  });
+
   it.each(REGIONS)(
     "settled open clip-path clips OUTSIDE the border-box (region=%s)",
     async (region) => {

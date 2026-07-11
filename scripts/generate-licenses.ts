@@ -3,10 +3,10 @@
  *
  * Usage: npx tsx scripts/generate-licenses.ts
  */
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { formatLicensesMarkdown } from "../src/features/licenses/formatter";
 import type { LicenseEntry } from "../src/features/licenses/types";
 
@@ -27,12 +27,18 @@ function findLicenseFile(pkgDir: string): string | undefined {
       files.find((f) => /^licen[cs]e/i.test(f)) ??
       files.find((f) => /^(ofl|copying)/i.test(f));
     if (licenseFile) {
-      return readFileSync(join(pkgDir, licenseFile), "utf-8");
+      return normalizeLicenseText(
+        readFileSync(join(pkgDir, licenseFile), "utf-8"),
+      );
     }
   } catch {
     // directory not readable
   }
   return undefined;
+}
+
+export function normalizeLicenseText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "");
 }
 
 function normalizeRepository(repo: unknown): string | undefined {
@@ -77,12 +83,23 @@ function gatherNpmLicenses(): LicenseEntry[] {
 /* ------------------------------------------------------------------ */
 
 interface CargoMetadataPackage {
+  id: string;
   name: string;
   version: string;
   license: string | null;
   repository: string | null;
   manifest_path: string;
 }
+
+interface CargoMetadata {
+  packages: CargoMetadataPackage[];
+  workspace_members: string[];
+}
+
+export const CARGO_MANIFEST_RELATIVE_PATHS = [
+  "src-tauri/Cargo.toml",
+  "electron/native/grimodex-node/Cargo.toml",
+] as const;
 
 /**
  * `cargo metadata` の workspace_members の ID を `name@version` に正規化する。
@@ -105,73 +122,97 @@ function parseWorkspaceMemberId(id: string): string | undefined {
   return undefined;
 }
 
-function gatherCargoLicenses(): LicenseEntry[] {
-  const cargoDir = join(ROOT, "src-tauri");
-  if (!existsSync(join(cargoDir, "Cargo.toml"))) {
-    console.warn(
-      "Warning: src-tauri/Cargo.toml not found, skipping Cargo licenses",
-    );
-    return [];
-  }
+function packageKey(pkg: CargoMetadataPackage): string {
+  return `${pkg.name}@${pkg.version}`;
+}
 
-  // workspace member の `name@version` 集合を取得（ワークスペース自身の crate を除外するため）
-  let workspaceMemberIds = new Set<string>();
-  try {
-    const wsJson = execSync("cargo metadata --format-version 1 --no-deps", {
-      cwd: cargoDir,
-      encoding: "utf-8",
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    const wsMetadata = JSON.parse(wsJson);
-    const rawIds: string[] = wsMetadata.workspace_members ?? [];
-    workspaceMemberIds = new Set<string>(
-      rawIds
-        .map(parseWorkspaceMemberId)
-        .filter((id): id is string => id !== undefined),
-    );
-  } catch {
-    console.warn(
-      "Warning: cargo metadata --no-deps failed, workspace members may appear in output",
-    );
-  }
+function comparePackageKeys(
+  a: Pick<CargoMetadataPackage, "name" | "version">,
+  b: Pick<CargoMetadataPackage, "name" | "version">,
+): number {
+  if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+  if (a.version !== b.version) return a.version < b.version ? -1 : 1;
+  return 0;
+}
 
-  // フルメタデータで全依存（推移依存含む）を取得。
-  // 旧コードは `--no-deps` の結果数で fallback 判定していたが、
-  // workspace member が複数あると常に「依存取得済み」と誤判定して
-  // 推移依存が漏れる。常にフル取得する方が確実。
-  let allPackages: CargoMetadataPackage[];
-  try {
-    const fullJson = execSync("cargo metadata --format-version 1", {
-      cwd: cargoDir,
-      encoding: "utf-8",
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    allPackages = JSON.parse(fullJson).packages ?? [];
-  } catch {
-    console.warn(
-      "Warning: cargo metadata (full) failed, skipping Cargo licenses",
-    );
-    return [];
-  }
-
-  const entries: LicenseEntry[] = [];
-  for (const pkg of allPackages) {
-    // workspace member（自分たちのクレート）は除外
-    const pkgId = `${pkg.name}@${pkg.version}`;
-    if (workspaceMemberIds.has(pkgId)) {
-      continue;
+/**
+ * 複数の Cargo dependency graph をサードパーティ crate 一覧へ統合する。
+ *
+ * workspace member は先に全 graph から集約して除外する。N-API manifest は独立した
+ * 空 workspace のため、src-tauri/crates/* が path dependency として再登場するが、
+ * それらを Grimodex 自身ではなく third-party と誤認しないためである。
+ */
+export function buildCargoLicenseEntries(
+  metadataList: readonly CargoMetadata[],
+): LicenseEntry[] {
+  const workspaceMemberKeys = new Set<string>();
+  for (const metadata of metadataList) {
+    const packagesById = new Map(metadata.packages.map((pkg) => [pkg.id, pkg]));
+    for (const memberId of metadata.workspace_members) {
+      const member = packagesById.get(memberId);
+      const key = member
+        ? packageKey(member)
+        : parseWorkspaceMemberId(memberId);
+      if (key) workspaceMemberKeys.add(key);
     }
+  }
 
-    const manifestDir = dirname(pkg.manifest_path);
-    entries.push({
+  const dependencyPackages = new Map<string, CargoMetadataPackage>();
+  for (const metadata of metadataList) {
+    for (const pkg of metadata.packages) {
+      const key = packageKey(pkg);
+      if (!workspaceMemberKeys.has(key) && !dependencyPackages.has(key)) {
+        dependencyPackages.set(key, pkg);
+      }
+    }
+  }
+
+  return [...dependencyPackages.values()]
+    .sort(comparePackageKeys)
+    .map((pkg) => ({
       name: pkg.name,
       version: pkg.version,
       license: pkg.license ?? "UNKNOWN",
       repository: pkg.repository ?? undefined,
-      licenseText: findLicenseFile(manifestDir),
-    });
+      licenseText: findLicenseFile(dirname(pkg.manifest_path)),
+    }));
+}
+
+function gatherCargoLicenses(): LicenseEntry[] {
+  const metadataList: CargoMetadata[] = [];
+
+  for (const relativeManifestPath of CARGO_MANIFEST_RELATIVE_PATHS) {
+    const manifestPath = join(ROOT, relativeManifestPath);
+    if (!existsSync(manifestPath)) {
+      console.warn(
+        `Warning: ${relativeManifestPath} not found, skipping its Cargo licenses`,
+      );
+      continue;
+    }
+
+    try {
+      const metadataJson = execFileSync(
+        "cargo",
+        ["metadata", "--format-version", "1", "--manifest-path", manifestPath],
+        {
+          cwd: ROOT,
+          encoding: "utf-8",
+          maxBuffer: 50 * 1024 * 1024,
+        },
+      );
+      const metadata = JSON.parse(metadataJson) as Partial<CargoMetadata>;
+      metadataList.push({
+        packages: metadata.packages ?? [],
+        workspace_members: metadata.workspace_members ?? [],
+      });
+    } catch {
+      console.warn(
+        `Warning: cargo metadata failed for ${relativeManifestPath}, skipping its Cargo licenses`,
+      );
+    }
   }
-  return entries;
+
+  return buildCargoLicenseEntries(metadataList);
 }
 
 /* ------------------------------------------------------------------ */
@@ -684,4 +725,7 @@ function main() {
   console.log("Done!");
 }
 
-main();
+const invokedScript = process.argv[1];
+if (invokedScript && import.meta.url === pathToFileURL(invokedScript).href) {
+  main();
+}

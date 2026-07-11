@@ -1,6 +1,6 @@
 # Grimodex 縦書きライブ編集 MODE 設計書
 
-最終更新: 2026-06-12（IME 変換対応の方針 + 診断ツール追記）
+最終更新: 2026-07-11（Electron / Chromium 移行後の実機QAへ更新）
 
 ## 概要
 
@@ -20,10 +20,11 @@ per-project トグル（`editor.verticalMode`、project_settings KV）で TipTap
    style 生成（`editorLayout.buildEditorContentStyle`）にモード分岐は無い。
    ※ 行長 = inline-size（縦書きでは物理高さ）。`max-block-size` ではない。
 
-2. **writing-mode はスクロールコンテナに付与**
-   `.editor-vertical` クラスを EditorDropDiv（タブ）/ LinearEditorView の
-   scrollRef（連続表示）に付ける。スクロール軸の反転はコンテナ自身の
-   writing-mode で決まり、`.tiptap` へは継承で波及。再マウント不要。
+2. **スクローラと縦書き本文を分離**
+   `.editor-vertical` は EditorDropDiv（タブ）/ LinearEditorView の scrollRef
+   （連続表示）に付けるが、スクローラ自体は `horizontal-tb + direction: rtl` の
+   横スクロール軸を使う。直下の content wrapper から `vertical-rl` を開始し、
+   `.tiptap` へ継承する。再マウントは不要。
 
 3. **スクロールの論理化は 2 関数に閉じ込め**
    Chromium の vertical-rl は scrollLeft=0 が先頭（右端）・末尾方向が負値。
@@ -205,7 +206,7 @@ Grimodex のスタック（Tauri WebView + TipTap/PM）に当てはめた確定�
 
 ### 実機 QA 手順（Windows: MS-IME / Google日本語入力 / 任意で ATOK）
 
-QA ビルドは `pnpm tauri build` に devtools feature 付与を推奨（コンソール保険）。
+QA は `pnpm electron:dev` または署名済み Electron package で行う。
 
 1. 縦書き ON + IME診断 ON →「きしゃのきしゃはきしゃできしゃした」を入力。
 2. Space 変換 → Shift+←/→ で文節移動しつつ、各文節での候補窓位置を
@@ -214,20 +215,20 @@ QA ビルドは `pnpm tauri build` に devtools feature 付与を推奨（コン
 4. 位置バリエーション: 行頭 / 行末（折返し境界）/ 画面左端近くの列 /
    スクロール後（論理オフセット > 0）。
 5. 同操作を `/ime-test.html` でも再現し、`dumpImeLog()` の JSON を保存。
-6. macOS（WKWebView）でも同手順（scrollLeft 符号チェックと同時に）。
+6. macOS / Linux（Wayland と X11）でも同手順（scrollLeft 符号チェックと同時に）。
 
 ### 決定表（観察 → 次アクション）
 
 | 観察結果                                         | 判定          | 次アクション                   |
 | ------------------------------------------------ | ------------- | ------------------------------ |
 | 候補窓がキャレット近傍（横向きでも可読位置）     | 許容          | 既知制限に追記して完了         |
-| 画面隅/前回位置/ウィンドウ外、ime-test.html も同 | WebView 制約  | フォールバック 2 の設計着手    |
+| 画面隅/前回位置/ウィンドウ外、ime-test.html も同 | Chromium/OS IME 制約 | Wayland/X11 flag と fallback を再評価 |
 | ime-test.html は正常、本体エディタのみズレ       | アプリ起因    | imeLog の rect 突合せで個別修正 |
 | 未確定文字列が縦にならない                       | CSS 継承バグ  | node-island リセット等の修正   |
 
 ## 実機 QA ゲート（コードで検証不能・リリース判定チェックリスト）
 
-- [ ] **IME 変換窓**（最重要）: Windows WebView2 / macOS WKWebView で縦書き
+- [ ] **IME 変換窓**（最重要）: Windows / macOS / Linux の Electron Chromium で縦書き
       キャレットに候補窓が追従するか。文節変換・再変換・確定直後 undo。
       安全弁 = per-project トグルで即横書きに戻せること。
       手順・判定基準・診断ツールは上の「IME 変換対応の方針」を参照。
@@ -242,7 +243,7 @@ QA ビルドは `pnpm tauri build` に devtools feature 付与を推奨（コン
       `-drawsVerticallyForCharacterAtIndex:` を未実装のため WKWebView も
       横向き・キャレット近傍が天井（Windows と同結論）。ネイティブ縦候補窓は
       実装しないと判断。詳細は「IME 変換対応の方針」の macOS 項を参照。
-- [ ] scrollLeft 符号のエンジン差: WKWebView / WebKitGTK 実機で
+- [ ] scrollLeft 符号: 3 OS の Chromium 実機で
       get/setLogicalScrollOffset の前提（0 起点・負方向）を確認。
 - [ ] 句読点・括弧・長音の縦書き字形（vert/vpal）: Noto Serif JP + 任意フォント。
 - [ ] ルビ実挙動: 列の右側に出るか、選択・キャレット通過・Backspace。

@@ -9,6 +9,7 @@ import { registerEditorFocusHandler, useLayoutStore } from "./layoutStore";
 export const EditorArea = memo(function EditorArea() {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorOpen = useLayoutStore((s) => s.layout.center.editorOpen);
+  const initialized = useLayoutStore((s) => s.initialized);
   const prevOpenRef = useRef(editorOpen);
   const reduced = useReducedMotion();
 
@@ -44,7 +45,9 @@ export const EditorArea = memo(function EditorArea() {
         ref={containerRef}
         data-editor-area
         tabIndex={-1}
-        initial={reduced ? false : { opacity: 0 }}
+        // 起動 hydration 中の mount はユーザー操作ではないため静的に表示する。
+        // 初期化後に editor を開き直した mount では従来どおり enter を残す。
+        initial={reduced || !initialized ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={
           reduced

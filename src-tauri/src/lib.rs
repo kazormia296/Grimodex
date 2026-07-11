@@ -1,15 +1,12 @@
 mod ai;
-mod ai_novelist;
-mod ai_responses;
 mod cli_provider;
 mod codex_matching;
 mod commands;
 mod external_mount;
+#[allow(unused_imports)]
 mod license;
 mod lint_logging;
 mod semantic;
-#[cfg(target_os = "linux")]
-mod webkit_features;
 
 // grimodex-db 抽出 (Electron 移行 Phase 2 S1) の互換シム。DB 層の実体は
 // crates/grimodex-db に移動したが、既存の `crate::database::…` /
@@ -27,12 +24,11 @@ use tauri::Manager;
 
 use codex_matching::CodexMatcherState;
 use commands::external_mount::ExternalMountState;
-use commands::ime_export::ImeExportState;
 #[cfg(feature = "semantic-embedding")]
-use commands::semantic::{ModelDownloadState, SemanticEmbedderState};
+use commands::semantic::TauriSemanticEventSink;
 use commands::{
     AiSettingsPath, AppResult, CliStreamAbortFlag, GlobalSettingsPath, InlineAiAbortFlag,
-    LicensePath, LogGuard, PostEffectAbortRegistry, StreamAbortFlag, WorkspaceState,
+    LicenseRuntime, LogGuard, PostEffectAbortRegistry, StreamAbortFlag, WorkspaceState,
 };
 use external_mount::watch::ExternalMountWatchState;
 
@@ -67,55 +63,8 @@ fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> AppResult<()> {
     Ok(())
 }
 
-fn deactivate_ime_on_exit(app: &tauri::AppHandle) {
-    let state = app.state::<ImeExportState>();
-    let request = state.request_gate.register_active();
-    let _guard = match state.write_lock.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if !state.request_gate.is_current(&request) {
-        return;
-    }
-    if let Err(error) = grimodex_db::ime_export::set_active_project(
-        &state.root,
-        None,
-        grimodex_db::ime_export::ImeIntegrationMode::On,
-    ) {
-        tracing::warn!("failed to deactivate IME state during shutdown: {error:#}");
-    }
-}
-
-/// NVIDIA + WebKitGTK では DMABUF レンダラーが GBM バッファ確保に失敗し、
-/// ウィンドウが真っ白になる（ネイティブ Wayland では
-/// "Error 71 dispatching to Wayland display"、XWayland では
-/// "Failed to create GBM buffer" が出る）。`WEBKIT_DISABLE_DMABUF_RENDERER=1`
-/// で動作する合成パスにフォールバックする。NVIDIA 検出時のみ設定するため、
-/// AMD/Intel は高速な既定パスのまま。ユーザーが環境変数を明示している場合
-/// （=0 で強制有効化するなど）はそれを尊重する。
-#[cfg(target_os = "linux")]
-fn workaround_nvidia_dmabuf() {
-    // 明示設定があれば触らない。
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
-        return;
-    }
-    // プロプライエタリ／オープンいずれの NVIDIA カーネルモジュールでも
-    // ロード時に `/sys/module/nvidia` が存在する。
-    if std::path::Path::new("/sys/module/nvidia").exists() {
-        // `run()` の最初、GTK/WebKit 初期化やワーカースレッド生成より前に
-        // 呼ばれるため、環境変数への並行アクセスは発生しない。
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn workaround_nvidia_dmabuf() {}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK ↔ NVIDIA workaround. Must run before any GTK/WebKit init.
-    workaround_nvidia_dmabuf();
-
     // Daily-rotating file log under `~/.grimodex/logs/lint-tauri-*.log`
     // plus stderr. The guard must outlive `tauri::Builder::run` so file
     // writes are flushed; stash it on the manager state.
@@ -124,19 +73,6 @@ pub fn run() {
     let mut builder = tauri::Builder::default();
     if let Some(guard) = log_guard {
         builder = builder.manage(LogGuard(guard));
-    }
-    // IME state is process-global under app_data_dir. Match the Electron shell's
-    // single-instance contract so two Tauri processes cannot race its pointer
-    // and snapshots. The plugin must be registered before every other plugin.
-    #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }));
     }
     builder
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -150,38 +86,11 @@ pub fn run() {
         // 校閲 run 終端のデスクトップ通知 (非フォーカス時のみ FE 側が送る)
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // WebKitGTK: フォームコントロールの縦書きを許可する機能フラグ
-            // VerticalFormControls を有効化する（既定 OFF。詳細は
-            // webkit_features.rs）。起動直後の初期ロードに対して web process
-            // を再起動して適用するため、ユーザー状態には影響しない。
-            // 失敗時（< 2.42 等）はフロントの island CSS フォールバックが生きる。
-            // URL は closure の外で取得して渡す — この時点の初期ナビゲーションは
-            // まだ provisional で、view 側の URI (about:blank) は再ロード先に
-            // 使えない（webkit_features.rs の黒画面注意書き参照）。
-            #[cfg(target_os = "linux")]
-            if let Some(window) = app.get_webview_window("main") {
-                let app_url = window.url().ok().map(|u| u.to_string());
-                let _ = window.with_webview(move |webview| {
-                    webkit_features::apply_vertical_form_controls(
-                        &webview.inner(),
-                        app_url.as_deref(),
-                    );
-                });
-            }
-
             let app_dir = app
                 .path()
                 .app_data_dir()
                 .expect("failed to get app data dir");
             std::fs::create_dir_all(&app_dir).ok();
-
-            // IME snapshots are created lazily: auto mode with no registered
-            // consumer must not create the `ime/` directory at all.
-            app.manage(ImeExportState {
-                root: app_dir.join("ime"),
-                write_lock: Mutex::new(()),
-                request_gate: Default::default(),
-            });
 
             // Global settings path (stays in AppData)
             let gs_path = app_dir.join("global-settings.json");
@@ -196,11 +105,7 @@ pub fn run() {
 
             // License file path (stays in AppData, alongside global-settings.json)
             let license_path = app_dir.join("license.json");
-            app.manage(LicensePath {
-                path: license_path,
-                write_lock: Mutex::new(()),
-                validate_in_flight: std::sync::atomic::AtomicBool::new(false),
-            });
+            app.manage(LicenseRuntime::new(license_path));
 
             // ライセンスのバックグラウンド再検証 (ライセンス認証設計書 §5.4)。
             // 起動直後 + 6 時間ごとに「最終検証から 7 日以上」をチェックして
@@ -248,41 +153,44 @@ pub fn run() {
             // PostEffect run abort registry (run_id 単位)
             app.manage(PostEffectAbortRegistry::new());
 
-            // Semantic search: per-language ONNX Embedders (ja=ruri / en=...).
-            // Lazy load on first invoke, keyed by model dir name.
-            #[cfg(feature = "semantic-embedding")]
-            app.manage(SemanticEmbedderState {
-                inner: std::sync::Mutex::new(std::collections::HashMap::new()),
-            });
-
-            // オンデマンドモデル DL の in-flight 集合 (二重 DL ガード)。
-            #[cfg(feature = "semantic-embedding")]
-            app.manage(ModelDownloadState::default());
-
-            // モデル切替後に残る旧 app_data/models/<dir> を掃除する (現行 spec 以外の dir)。
-            // 起動を止めないよう spawn_blocking。models/ 未作成 (初回) なら no-op。
+            // Shared semantic runtime: explicit shell paths, four-cache epoch,
+            // per-language embedders/download flights, and event transport.
             #[cfg(feature = "semantic-embedding")]
             {
-                let handle = app.handle().clone();
+                let mut resource_semantic_root = match app.path().resource_dir() {
+                    Ok(resource_dir) => resource_dir.join("resources/semantic"),
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "resource directory unavailable; semantic models will degrade to FTS"
+                        );
+                        app_dir.join("__missing_bundled_semantic_resources__")
+                    }
+                };
+                // Dev-only explicit adapter path. Release runtime never embeds
+                // a build-machine CARGO_MANIFEST_DIR fallback.
+                #[cfg(debug_assertions)]
+                if !resource_semantic_root.exists() {
+                    let development_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("resources/semantic");
+                    if development_root.exists() {
+                        resource_semantic_root = development_root;
+                    }
+                }
+                let runtime = Arc::new(grimodex_semantic::runtime::SemanticRuntime::new(
+                    grimodex_semantic::runtime::SemanticPaths {
+                        models_root: app_dir.join("models"),
+                        resource_semantic_root,
+                    },
+                    Arc::new(TauriSemanticEventSink {
+                        app: app.handle().clone(),
+                    }),
+                ));
+                app.manage(Arc::clone(&runtime));
                 tauri::async_runtime::spawn_blocking(move || {
-                    semantic::download::gc_stale_model_dirs(&handle);
+                    runtime.gc_stale_model_dirs();
                 });
             }
-
-            // Semantic search: in-memory embedding cache (scene_id -> Vec<f32>).
-            // Cleared on workspace open; invalidated per-scene on index_scene.
-            app.manage(semantic::search::SearchCache::new());
-            // Codex semantic search cache (entry_id -> embedding). Same lifecycle:
-            // cleared on workspace open, invalidated per-entry on codex_index_entry.
-            // Non-gated so workspace.rs (also non-gated) can clear it.
-            app.manage(semantic::codex_search::CodexSearchCache::new());
-            // Chronicle event semantic search cache (event_id -> embedding). Same
-            // lifecycle: cleared on workspace open, invalidated per-event on
-            // events_index_entry. Non-gated so workspace.rs can clear it.
-            app.manage(semantic::events_search::EventsSearchCache::new());
-            // Chat episodic recall cache (message_id -> embedding). Same lifecycle:
-            // cleared on workspace open, invalidated per-message on chat_index_message.
-            app.manage(semantic::chat_search::ChatSearchCache::new());
 
             app.manage(ExternalMountWatchState::new());
             app.manage(ExternalMountState::new());
@@ -322,11 +230,6 @@ pub fn run() {
             commands::vivliostyle::vivliostyle_preview_start,
             commands::vivliostyle::vivliostyle_preview_stop,
             commands::fonts::list_system_fonts,
-            commands::ime_export::ime_export_refresh,
-            commands::ime_export::ime_export_set_active_project,
-            commands::ime_export::ime_export_get_status,
-            commands::ime_export::ime_export_clear_all,
-            commands::ime_export::ime_export_remove_project,
             commands::db::db_execute,
             commands::db::db_execute_batch,
             commands::timelapse::timelapse_append_batch,
@@ -369,7 +272,6 @@ pub fn run() {
             commands::foreshadow::foreshadow_create,
             commands::foreshadow::foreshadow_update,
             commands::foreshadow::foreshadow_delete,
-            commands::foreshadow::foreshadow_list,
             commands::foreshadow::foreshadow_list_with_labels,
             commands::foreshadow::foreshadow_list_open_for_context,
             commands::foreshadow::foreshadow_get_scene_info,
@@ -415,12 +317,10 @@ pub fn run() {
             commands::post_effect::start_post_effect_run_multi,
             commands::post_effect::abort_post_effect_run,
             commands::post_effect::list_post_effect_runs,
-            commands::post_effect::get_post_effect_run,
             commands::post_effect::list_scene_lens_for_project,
             commands::post_effect::list_annotations_for_scene,
             commands::post_effect::list_annotations_for_project,
             commands::post_effect::update_annotation_status,
-            commands::post_effect::update_relation_status,
             commands::post_effect::reply_to_annotation,
             commands::post_effect::save_post_effect_annotations,
             commands::onboarding::seed_sample_workspace,
@@ -467,7 +367,6 @@ pub fn run() {
             commands::external_mount::external_mount_read_file,
             commands::external_mount::external_mount_write_file,
             commands::external_mount::external_mount_file_mtime,
-            commands::external_mount::external_mount_list,
             commands::external_mount::external_mount_scan,
         ])
         .build(tauri::generate_context!())
@@ -483,7 +382,6 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 let state = app_handle.state::<commands::vivliostyle::VivliostyleState>();
                 commands::vivliostyle::kill_all(&state);
-                deactivate_ime_on_exit(app_handle);
             }
             _ => {}
         });

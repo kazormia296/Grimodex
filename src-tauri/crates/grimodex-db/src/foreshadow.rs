@@ -41,13 +41,6 @@ pub struct ForeshadowPatch {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ForeshadowFilter {
-    label: Option<String>,
-    include_abandoned: Option<bool>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct OrphanResolvePayload {
     setup_id: String,
     action: String,
@@ -313,57 +306,6 @@ pub fn delete(db: &Database, id: String) -> anyhow::Result<()> {
         "run",
     )?;
     Ok(())
-}
-
-/// FE の invoke("foreshadow_list") は到達不能な dead path（Electron 移行の
-/// コールサイト分析で確認済み。napi ミラーは設けない）が、Tauri コマンドは
-/// ハンドラ登録済みのため実装本体はここに残す。
-pub fn list(
-    db: &Database,
-    project_id: String,
-    filter: Option<ForeshadowFilter>,
-) -> anyhow::Result<Vec<Value>> {
-    let include_abandoned = filter
-        .as_ref()
-        .and_then(|f| f.include_abandoned)
-        .unwrap_or(true);
-    let rows = if include_abandoned {
-        db.execute(
-            "SELECT * FROM foreshadows WHERE project_id = ? ORDER BY updated_at DESC",
-            &[Value::String(project_id)],
-            "all",
-        )?
-    } else {
-        db.execute(
-            "SELECT * FROM foreshadows WHERE project_id = ? AND abandoned = 0 ORDER BY updated_at DESC",
-            &[Value::String(project_id)],
-            "all",
-        )?
-    };
-
-    let label_filter = filter.and_then(|f| f.label);
-    let mut values: Vec<Value> = rows.into_iter().map(Value::Object).collect();
-    if let Some(label) = label_filter {
-        values.retain(|row| {
-            let obj = match row {
-                Value::Object(obj) => obj,
-                _ => return false,
-            };
-            let payoff_confirmed = obj
-                .get("payoff_confirmed")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0)
-                == 1;
-            let abandoned = obj.get("abandoned").and_then(|v| v.as_i64()).unwrap_or(0) == 1;
-            match label.as_str() {
-                "abandoned" => abandoned,
-                "paid" => !abandoned && payoff_confirmed,
-                "planned" => !abandoned && !payoff_confirmed,
-                _ => true,
-            }
-        });
-    }
-    Ok(values)
 }
 
 /// List foreshadows and their setup rows in a single DB lock acquisition.

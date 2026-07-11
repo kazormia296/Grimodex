@@ -2,8 +2,8 @@
 #
 # bootstrap-build-env.sh — Grimodex ネイティブ（非 Docker / 非 devcontainer）ビルド環境セットアップ
 #
-# devcontainer を使わずローカルホスト上で `pnpm tauri dev` / `pnpm tauri build` を
-# 実行できる状態を作る。冪等（再実行しても安全）。対応 OS:
+# devcontainer を使わずローカルホスト上で Electron / N-API / 共有 Rust crate を
+# 開発できる状態を作る。冪等（再実行しても安全）。対応 OS:
 #   - Debian / Ubuntu 系 (apt)
 #   - Arch / Manjaro 系 (pacman)
 #   - macOS (Homebrew + Xcode CLT)
@@ -31,11 +31,15 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1) OS 別システム依存（Tauri v2 ビルド依存）
+# 1) OS 別システム依存（Electron runtime + N-API release build）
 # ---------------------------------------------------------------------------
 install_debian_deps() {
-  log "apt: Tauri v2 ビルド依存を導入します"
+  log "apt: Electron / N-API 依存を導入します"
   $SUDO apt-get update
+  local alsa_package="libasound2"
+  if apt-cache show libasound2t64 >/dev/null 2>&1; then
+    alsa_package="libasound2t64"
+  fi
   $SUDO apt-get install -y --no-install-recommends \
     build-essential \
     curl \
@@ -43,21 +47,25 @@ install_debian_deps() {
     file \
     pkg-config \
     libssl-dev \
-    libgtk-3-dev \
-    libwebkit2gtk-4.1-dev \
-    libsoup-3.0-dev \
-    libjavascriptcoregtk-4.1-dev \
-    libayatana-appindicator3-dev \
-    librsvg2-dev \
+    libdbus-1-dev \
+    libsecret-1-dev \
+    libgtk-3-0 \
+    libnss3 \
+    libxss1 \
+    libxtst6 \
+    libgbm1 \
+    libnotify4 \
+    libatspi2.0-0 \
+    "$alsa_package" \
+    xdg-utils \
     patchelf \
     fonts-noto-cjk
 }
 
 install_arch_deps() {
   # Arch はパッケージを -dev で分割しないため、ヘッダは本体パッケージに含まれる。
-  # webkit2gtk-4.1 が libsoup3 / javascriptcoregtk-4.1 を依存として引き込む。
   # base-devel に pkgconf(pkg-config) が含まれる。
-  log "pacman: Tauri v2 ビルド依存を導入します"
+  log "pacman: Electron / N-API 依存を導入します"
   $SUDO pacman -Sy --needed --noconfirm \
     base-devel \
     curl \
@@ -65,10 +73,16 @@ install_arch_deps() {
     file \
     openssl \
     gtk3 \
-    webkit2gtk-4.1 \
-    libsoup3 \
-    librsvg \
-    libappindicator-gtk3 \
+    nss \
+    alsa-lib \
+    libxss \
+    libxtst \
+    mesa \
+    libnotify \
+    at-spi2-core \
+    libsecret \
+    dbus \
+    xdg-utils \
     patchelf \
     noto-fonts-cjk
 }
@@ -79,7 +93,7 @@ install_linux_deps() {
   elif have pacman; then
     install_arch_deps
   else
-    die "対応するパッケージマネージャ(apt-get / pacman)が見つかりません。他のディストリは Tauri 公式手順を参照してください。"
+    die "対応するパッケージマネージャ(apt-get / pacman)が見つかりません。"
   fi
 }
 
@@ -88,8 +102,7 @@ install_macos_deps() {
     log "Xcode Command Line Tools を導入します（GUI ダイアログが出る場合があります）"
     xcode-select --install || true
   fi
-  # Tauri v2 は macOS 標準の WKWebView を使うため追加の GUI ライブラリは不要。
-  # pkg-config は rusqlite(bundled) 等のビルドで無くても動くが、あると安全。
+  # Electron は Chromium を同梱するため追加の WebView ライブラリは不要。
   if have brew && ! have pkg-config; then
     log "brew: pkg-config を導入します"
     brew install pkg-config || true
@@ -159,13 +172,18 @@ cat <<'EOF'
   pnpm lint               # ESLint
   pnpm test:node --run    # Vitest（node 環境）
 
-  # Rust / Tauri
-  ( cd src-tauri && cargo check --workspace )
-  ( cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings )
-  ( cd src-tauri && cargo test --workspace --no-default-features )   # ONNX バイナリ不要の pure-logic テスト
+  # Electron / N-API
+  pnpm napi:build
+  pnpm electron:build
+  pnpm test:electron --run
+
+  # 共有 Rust crates（凍結した root Tauri shell は除外）
+  cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
+  cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings
+  cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 
   # 起動 / リリースビルド
-  pnpm tauri dev
-  pnpm tauri build
+  pnpm electron:dev
+  pnpm electron:package
 
 EOF

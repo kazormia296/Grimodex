@@ -15,6 +15,9 @@
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
 mod convert;
+#[cfg(feature = "legacy-keyring-migration")]
+mod legacy_keyring;
+mod post_effect_runtime;
 mod state;
 #[cfg(test)]
 mod test_link_stubs;
@@ -28,17 +31,19 @@ use napi::JsFunction;
 use napi_derive::napi;
 
 use grimodex_core::codex_matching::{CachedMatcher, CodexMatch, MatchEntry};
+use grimodex_db::agent_writes;
+use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::events::EventSink;
-use grimodex_db::agent_writes;
 use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
     PayoffAnchorInput, SetupAnchorInput, SetupCreateAiInput,
 };
 use grimodex_db::ime_export::{
     clear_all_exports, get_status as get_ime_export_status, refresh_project_export,
-    remove_project_export, resolve_mode_from_preferences, resolve_options_from_preferences,
-    set_active_project, ImeExportOptions, ImeIntegrationMode,
+    remove_project_export_if_absent, resolve_mode_from_preferences,
+    resolve_options_from_preferences, set_active_project, ImeExportOptions, ImeExportRequestGate,
+    ImeExportRequestToken, ImeIntegrationMode,
 };
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
@@ -46,11 +51,16 @@ use grimodex_db::plot_threads::{
     PlotThreadPatch,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
+use grimodex_db::sample_seed;
+use grimodex_db::state::{
+    active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
+};
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
+use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventTsfn};
 
 /// spawn_blocking + `AppError` → `napi::Error` 写像の定形。Tauri 側 M3 方針
@@ -64,6 +74,34 @@ where
         .await
         .map_err(join_err_to_napi)?
         .map_err(app_err_to_napi)
+}
+
+/// Semantic commandの共通境界。blocking poolへ投入する**前**にruntimeの
+/// optimistic pin（epoch snapshot → active DB Arc → generation再確認）を完了し、
+/// closure中にworkspace/epochを再解決しない。これにより切替待ち行列中でも
+/// 1 commandが別DB/別cache generationへ跨らない。
+async fn run_semantic_wire<T, F>(state: Arc<AppState>, operation: F) -> Result<String>
+where
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce(
+            &grimodex_semantic::runtime::SemanticRuntime,
+            &grimodex_semantic::runtime::SemanticRequest,
+        ) -> anyhow::Result<T>
+        + Send
+        + 'static,
+{
+    let request = state
+        .semantic
+        .pin_request(|| active_database(&state.ws))
+        .map_err(app_err_to_napi)?;
+    let runtime = Arc::clone(&state.semantic);
+    napi::tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let value = operation(&runtime, &request)?;
+        Ok(serde_json::to_string(&value)?)
+    })
+    .await
+    .map_err(join_err_to_napi)?
+    .map_err(|error| Error::from_reason(format!("{error:#}")))
 }
 
 fn authoritative_ime_options(
@@ -98,6 +136,53 @@ fn authoritative_ime_mode(
     ))
 }
 
+/// Linearization barrier for a native workspace replacement. The swap hook
+/// waits for an old snapshot writer to finish, rotates the request generation,
+/// and deactivates the shared pointer before any new writer can enter.
+fn rotate_ime_workspace(state: &AppState) {
+    let _writer = match state.ime_write_lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    state.ime_request_gate.rotate_workspace();
+    if let Err(error) = set_active_project(&state.ime_root, None, ImeIntegrationMode::On) {
+        eprintln!("failed to deactivate IME pointer during workspace swap: {error}");
+    }
+}
+
+fn validate_ime_workspace(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_workspace_path: &str,
+) -> std::result::Result<(), AppError> {
+    let expected = PathBuf::from(expected_workspace_path);
+    if workspace.path != expected {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "IME_WORKSPACE_CHANGED: expected {}, active {}",
+            expected.display(),
+            workspace.path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Optimistically bind one request token to the exact DB/path snapshot seen at
+/// IPC arrival. A concurrent swap either makes `active_workspace_snapshot`
+/// fail closed or changes the gate generation so registration retries.
+fn pin_ime_workspace_request(
+    state: &AppState,
+    expected_workspace_path: &str,
+    mut register: impl FnMut(&ImeExportRequestGate, u64) -> Option<ImeExportRequestToken>,
+) -> std::result::Result<(ActiveWorkspaceSnapshot, ImeExportRequestToken), AppError> {
+    loop {
+        let generation = state.ime_request_gate.workspace_generation();
+        let workspace = active_workspace_snapshot(&state.ws)?;
+        validate_ime_workspace(&workspace, expected_workspace_path)?;
+        if let Some(request) = register(&state.ime_request_gate, generation) {
+            return Ok((workspace, request));
+        }
+    }
+}
+
 /// agent_writes 18 コマンドの定形写像。FE の `{ payload }` を DTO へ
 /// deserialize し、共有 impl を with_db_state 上で呼んで結果 Value を JSON 文字列
 /// で返す (Tauri の `with_db(&ws, |db| agent_xxx_impl(db, payload))` の写像)。
@@ -119,6 +204,89 @@ where
     .await
 }
 
+/// チャット送信の 1 メッセージ (Tauri の `commands::ai::ChatMessagePayload` 相当)。
+#[derive(serde::Deserialize)]
+struct ChatMsgDto {
+    role: String,
+    content: String,
+}
+
+/// `send_chat_message` / `send_chat_message_stream` の FE 引数 (camelCase)。
+/// Tauri コマンドの引数群と 1:1。**API キーは含まない** — キーは main プロセスの
+/// safeStorage で解決した平文を別引数 `api_key` で注入する (Phase 3 バッチ3a)。
+/// Option フィールドは serde が欠落を None として扱う (Tauri の Option 引数と同挙動)。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatRequest {
+    messages: Vec<ChatMsgDto>,
+    thinking: Option<grimodex_ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    system_cache_segments: Option<Vec<String>>,
+    api_variant: Option<String>,
+    system_volatile_tail: Option<String>,
+    model: Option<String>,
+    provider: Option<grimodex_ai::AiProvider>,
+    endpoint_id: Option<String>,
+}
+
+/// `send_inline_ai_stream` の FE 引数 (camelCase)。チャットと同じ message / reasoning
+/// 形だが、prompt cache / web search は受けず、AI のべりすとでは Completion mode を使う。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InlineAiRequest {
+    messages: Vec<ChatMsgDto>,
+    thinking: Option<grimodex_ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    model: Option<String>,
+    api_variant: Option<String>,
+    provider: Option<grimodex_ai::AiProvider>,
+    endpoint_id: Option<String>,
+}
+
+/// `send_agent_message` の FE 引数 (camelCase)。AgentMessage / AgentToolDef の
+/// serde 定義を直接使い、toolUses / thinkingBlocks / inputSchema のワイヤをTauriと共有する。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRequest {
+    messages: Vec<grimodex_ai::AgentMessage>,
+    tools: Vec<grimodex_ai::AgentToolDef>,
+    thinking: Option<grimodex_ai::ThinkingConfig>,
+    effort: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
+    system_cache_segments: Option<Vec<String>>,
+    api_variant: Option<String>,
+    web_search: Option<grimodex_ai::WebSearchConfig>,
+    system_volatile_tail: Option<String>,
+    model: Option<String>,
+    provider: Option<grimodex_ai::AiProvider>,
+    endpoint_id: Option<String>,
+}
+
+/// `list_ai_models` の FE 引数。API キーは一覧取得では任意なので main が
+/// safeStorage から取得できた値（未設定なら空文字）を別引数で注入する。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListAiModelsRequest {
+    provider: grimodex_ai::AiProvider,
+    endpoint_id: Option<String>,
+}
+
+/// `test_ai_connection` の FE 引数。接続先 provider/model は必須、variant / endpoint
+/// は任意で、既知 endpoint だけを一時的に active へ切り替える。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestAiConnectionRequest {
+    provider: grimodex_ai::AiProvider,
+    model: String,
+    api_variant: Option<String>,
+    endpoint_id: Option<String>,
+}
+
 #[napi]
 pub struct Backend {
     state: Arc<AppState>,
@@ -130,9 +298,18 @@ impl Backend {
     /// (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
     /// com.miyakey.grimodex には触らない)。
     #[napi(constructor)]
-    pub fn new(app_data_dir: String) -> Result<Backend> {
-        let state =
-            AppState::new(&app_data_dir).map_err(|e| Error::from_reason(format!("{e:#}")))?;
+    pub fn new(app_data_dir: String, semantic_resource_root: Option<String>) -> Result<Backend> {
+        // 旧 .node E2E / 外部callerとのconstructor互換を維持する。省略時はcwdや
+        // build-time manifestへfallbackせず、必ず存在しないappData配下sentinelを使い、
+        // Backend全体ではなくsemantic invokeだけをmodel missingで失敗させる。
+        let semantic_resource_root = semantic_resource_root.unwrap_or_else(|| {
+            PathBuf::from(&app_data_dir)
+                .join("__missing_semantic_resources__")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let state = AppState::new(&app_data_dir, &semantic_resource_root)
+            .map_err(|e| Error::from_reason(format!("{e:#}")))?;
         // §7.1 の end-to-end 実証チャネルその 1。onEvent 登録前なので
         // EventQueue にバッファされ、登録時に flush される。schemaVersion は
         // スモークテストが PRAGMA user_version との一致検証に使う。
@@ -143,6 +320,100 @@ impl Backend {
         Ok(Backend {
             state: Arc::new(state),
         })
+    }
+
+    // ─────────────────────── license (Phase 3e) ──────────────────────────
+
+    /// Main-process-only bridge used during the Electron v2 first-run
+    /// credential migration. This method is deliberately absent from
+    /// `NAPI_COMMANDS`, so renderer IPC cannot request plaintext credentials.
+    /// Feature-off development builds return a disabled envelope and never
+    /// touch the OS keyring.
+    #[napi]
+    pub async fn read_legacy_api_keys_for_migration(&self) -> Result<String> {
+        #[cfg(feature = "legacy-keyring-migration")]
+        {
+            let settings_path = self.state.ai_settings_path.clone();
+            run_blocking(move || {
+                let export = legacy_keyring::read_legacy_api_keys(&settings_path)?;
+                Ok(serde_json::to_string(&export).map_err(anyhow::Error::from)?)
+            })
+            .await
+        }
+
+        #[cfg(not(feature = "legacy-keyring-migration"))]
+        {
+            Ok(r#"{"available":false,"entries":[]}"#.to_string())
+        }
+    }
+
+    /// Main/CI-only build gate. Packaging verifies both release-only features
+    /// before electron-builder runs; this method is not registered in renderer
+    /// IPC and contains no user data.
+    #[napi]
+    pub async fn get_native_build_capabilities(&self) -> Result<String> {
+        Ok(serde_json::json!({
+            "licensing": cfg!(feature = "licensing"),
+            "legacyKeyringMigration": cfg!(feature = "legacy-keyring-migration"),
+        })
+        .to_string())
+    }
+
+    /// 常時exportするライセンス状態IPC。feature無効buildでは共有crateが
+    /// exact disabled DTOを返し、license.jsonには一切触れない。
+    #[napi]
+    pub async fn get_license_state(&self) -> Result<String> {
+        let runtime = Arc::clone(&self.state.license);
+        napi::tokio::task::spawn_blocking(move || {
+            grimodex_license::get_license_state(&runtime)
+                .and_then(|dto| serde_json::to_string(&dto).map_err(Into::into))
+        })
+        .await
+        .map_err(join_err_to_napi)?
+        .map_err(|error| Error::from_reason(format!("{error:#}")))
+    }
+
+    /// Polar activate → atomic license.json更新。HTTP await中にfile lockは保持しない。
+    #[napi]
+    pub async fn activate_license(&self, key: String) -> Result<String> {
+        let runtime = Arc::clone(&self.state.license);
+        let dto = grimodex_license::activate_license(&runtime, key)
+            .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// 明示的な再検証。共有runtimeのsingle-flightとstale response guardを使う。
+    #[napi]
+    pub async fn revalidate_license(&self) -> Result<String> {
+        let runtime = Arc::clone(&self.state.license);
+        let dto = grimodex_license::revalidate_license(&runtime)
+            .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Polar側を解除してから、同じactivationである場合だけlocal stateを破棄する。
+    #[napi]
+    pub async fn deactivate_license(&self) -> Result<String> {
+        let runtime = Arc::clone(&self.state.license);
+        let dto = grimodex_license::deactivate_license(&runtime)
+            .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// 起動5秒後/以後6時間周期のmain schedulerから呼ぶfail-soft cycle。
+    /// disabled・not due・in-flightはJS null、実行後はJSON DTOを返す。
+    #[napi]
+    pub async fn run_license_validate_cycle(&self) -> Result<Option<String>> {
+        let runtime = Arc::clone(&self.state.license);
+        grimodex_license::run_validate_cycle(&runtime)
+            .await
+            .map(|dto| {
+                serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
+            })
+            .transpose()
     }
 
     /// drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
@@ -186,8 +457,8 @@ impl Backend {
 
     /// workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
     /// recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
-    /// Tauri コマンドと同一経路。A3 相互運用の根拠)。`on_swapped` は napi 側
-    /// no-op (semantic キャッシュは Tauri シェル固有。§4.1)。
+    /// Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
+    /// Codex matcher破棄 + semantic 4cache epoch rotateを行う。
     /// 完了時に `workspace:opened` (FE 購読者なしのデバッグチャネル) を emit
     /// する (§7.1 の end-to-end 実証チャネルその 2)。
     /// 返り値: `{"name":…,"isExisting":…}` の JSON 文字列。
@@ -195,7 +466,16 @@ impl Backend {
     pub async fn open_workspace(&self, path: String) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            let mut on_swapped = || {};
+            let state_for_hook = Arc::clone(&state);
+            let mut on_swapped = move || {
+                rotate_ime_workspace(&state_for_hook);
+                let mut matcher = match state_for_hook.codex_matcher.lock() {
+                    Ok(matcher) => matcher,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *matcher = None;
+                state_for_hook.semantic.rotate_workspace_epoch();
+            };
             let mut deps = OpenDeps {
                 gs_path: &state.gs,
                 on_swapped: &mut on_swapped,
@@ -215,6 +495,60 @@ impl Backend {
     pub fn validate_workspace_path(&self, path: String) -> bool {
         let p = PathBuf::from(&path);
         p.exists() && p.is_dir() && p.join("grimodex.db").exists()
+    }
+
+    /// Electron main専用の内部境界。standalone MCP sidecarへ渡す現在の
+    /// workspace directoryを返す。renderer commandとしては公開せず、mainの
+    /// `get_mcp_config` handlerだけが利用する。
+    #[napi]
+    pub async fn get_active_workspace_path(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let path = active_workspace_path(&state.ws)?;
+            path.into_os_string().into_string().map_err(|_| {
+                AppError::Anyhow(anyhow::anyhow!("Active workspace path is not valid UTF-8"))
+            })
+        })
+        .await
+    }
+
+    /// アクティブworkspaceの復元候補を新しい順で返す。
+    /// 返り値は `BackupInfo[]` のcamelCase JSON文字列。
+    #[napi]
+    pub async fn list_backups(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let backups = list_backups(&state.ws)?;
+            Ok(serde_json::to_string(&backups).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// バックアップを検証・安全退避・原子置換し、同じworkspaceを再openする。
+    /// 再open時にDB由来のCodex matcherを破棄し、semantic 4-cache epochも
+    /// rotateして復元前DBへのlate writeを不可視にする。
+    #[napi]
+    pub async fn restore_backup(&self, file_name: String) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let state_for_hook = Arc::clone(&state);
+            restore_backup_core(&state.ws, &file_name, move || {
+                rotate_ime_workspace(&state_for_hook);
+                let mut matcher = match state_for_hook.codex_matcher.lock() {
+                    Ok(matcher) => matcher,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *matcher = None;
+                state_for_hook.semantic.rotate_workspace_epoch();
+            })?;
+            let path = active_workspace_path(&state.ws)?;
+            state.events.emit(
+                "workspace:opened",
+                serde_json::json!({ "path": path, "reason": "restore" }),
+            );
+            Ok(())
+        })
+        .await
     }
 
     /// 起動時に必ず呼ばれる (workspace/store.ts:152)。
@@ -252,6 +586,23 @@ impl Backend {
         .await
     }
 
+    /// AppData配下に一意なsample-workspace世代を共有coreで公開する。
+    /// GlobalSettingsのwrite_lockをget/save/openと共有し、同時seedも同じ
+    /// critical sectionへ入る。公開済み世代はアクティブDB/MCPが保持し得るため削除しない。
+    #[napi]
+    pub async fn seed_sample_workspace(
+        &self,
+        language: String,
+        ai_policy: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let result = sample_seed::seed_sample_workspace(&state.gs, &language, &ai_policy)?;
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     /// 監査チェーン append (commands/timelapse.rs の写像。編集ループ常連の
     /// 軽量 DB 書き込み。§4.3)。`events` は camelCase の AppendChangeEvent 配列
     /// (Tauri の camelCase→snake_case 自動変換は serde の rename_all が担う)。
@@ -276,19 +627,22 @@ impl Backend {
     }
 
     /// 現在の Codex 読みを `<userData>/ime/projects/<projectId>.json` へ再出力する。
-    /// options は Tauri と同じ camelCase `ImeExportOptions`。DB 読み取りと
+    /// options は typed IPC と同じ camelCase `ImeExportOptions`。DB 読み取りと
     /// ファイル I/O の双方を Node main thread の外で実行する。
     #[napi]
     pub async fn ime_export_refresh(
         &self,
         project_id: String,
+        expected_workspace_path: String,
         options: serde_json::Value,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         let options: ImeExportOptions = from_wire("options", options).map_err(app_err_to_napi)?;
-        let request = state
-            .ime_request_gate
-            .register_refresh(&project_id, &options);
+        let (workspace, request) =
+            pin_ime_workspace_request(&state, &expected_workspace_path, |gate, generation| {
+                gate.register_refresh_for_generation(&project_id, &options, generation)
+            })
+            .map_err(app_err_to_napi)?;
         run_blocking(move || {
             let _guard = state
                 .ime_write_lock
@@ -299,10 +653,13 @@ impl Backend {
                 let status = get_ime_export_status(&state.ime_root, options.mode)?;
                 return Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?);
             }
-            with_db_state(&state.ws, |db| {
-                let status = refresh_project_export(db, &state.ime_root, &project_id, &options)?;
-                Ok(serde_json::to_string(&status)?)
-            })
+            let status = refresh_project_export(
+                workspace.db.as_ref(),
+                &state.ime_root,
+                &project_id,
+                &options,
+            )?;
+            Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -313,12 +670,28 @@ impl Backend {
     pub async fn ime_export_set_active_project(
         &self,
         project_id: Option<String>,
+        expected_workspace_path: Option<String>,
         mode: String,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         let mode: ImeIntegrationMode =
             from_wire("mode", serde_json::Value::String(mode)).map_err(app_err_to_napi)?;
-        let request = state.ime_request_gate.register_active();
+        let request = if project_id.is_some() {
+            let expected_workspace_path = expected_workspace_path.ok_or_else(|| {
+                Error::from_reason(
+                    "expectedWorkspacePath is required when activating an IME project",
+                )
+            })?;
+            let (_, request) = pin_ime_workspace_request(
+                &state,
+                &expected_workspace_path,
+                ImeExportRequestGate::register_active_for_generation,
+            )
+            .map_err(app_err_to_napi)?;
+            request
+        } else {
+            state.ime_request_gate.register_active()
+        };
         run_blocking(move || {
             let _guard = state
                 .ime_write_lock
@@ -393,18 +766,34 @@ impl Backend {
 
     /// 単一 project の snapshot を削除し、必要なら active state も解除する。
     #[napi]
-    pub async fn ime_export_remove_project(&self, project_id: String) -> Result<()> {
+    pub async fn ime_export_remove_project(
+        &self,
+        project_id: String,
+        expected_workspace_path: String,
+    ) -> Result<()> {
         let state = Arc::clone(&self.state);
-        let request = state.ime_request_gate.register_remove(&project_id);
+        let (workspace, request) =
+            pin_ime_workspace_request(&state, &expected_workspace_path, |gate, generation| {
+                gate.register_remove_for_generation(&project_id, generation)
+            })
+            .map_err(app_err_to_napi)?;
         run_blocking(move || {
             let _guard = state
                 .ime_write_lock
                 .lock()
                 .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
             if !state.ime_request_gate.is_current(&request) {
+                if !state
+                    .ime_request_gate
+                    .is_workspace_generation_current(&request)
+                {
+                    return Err(AppError::Anyhow(anyhow::anyhow!(
+                        "IME_WORKSPACE_CHANGED: snapshot cleanup must be retried"
+                    )));
+                }
                 return Ok(());
             }
-            remove_project_export(&state.ime_root, &project_id)?;
+            remove_project_export_if_absent(workspace.db.as_ref(), &state.ime_root, &project_id)?;
             Ok(())
         })
         .await
@@ -657,8 +1046,8 @@ impl Backend {
         napi::tokio::task::spawn_blocking(move || -> Result<()> {
             let entries: Vec<MatchEntry> =
                 from_wire("entries", entries).map_err(app_err_to_napi)?;
-            let matcher = CachedMatcher::build(&entries)
-                .map_err(|e| Error::from_reason(format!("{e}")))?;
+            let matcher =
+                CachedMatcher::build(&entries).map_err(|e| Error::from_reason(format!("{e}")))?;
             let mut guard = state
                 .codex_matcher
                 .lock()
@@ -697,6 +1086,256 @@ impl Backend {
         .map_err(join_err_to_napi)?
     }
 
+    /// 本文から未知の固有名詞候補を抽出する
+    /// (`grimodex_semantic::codex_candidates` を Tauri と共用)。
+    ///
+    /// workspace DB は blocking pool へ投入する**前**に一度だけ pin する。これにより
+    /// 待ち行列中に workspace が切り替わってもコマンド途中で別 DB を解決せず、開始時
+    /// snapshot の scenes/known names を読む。共有コアは DB phase を単一 connection
+    /// lock に閉じ、UniDic + Aho-Corasick の CPU phase は lock 外で実行する。
+    /// 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
+    #[napi]
+    pub async fn extract_codex_candidates(
+        &self,
+        project_id: String,
+        min_count: Option<u32>,
+    ) -> Result<String> {
+        let db = grimodex_db::state::active_database(&self.state.ws).map_err(app_err_to_napi)?;
+        let min_count = min_count.map(|value| value as usize);
+        run_blocking(move || {
+            let candidates = grimodex_semantic::codex_candidates::extract_codex_candidates(
+                &db,
+                &project_id,
+                min_count,
+            )?;
+            Ok(serde_json::to_string(&candidates).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    // ─────────────────────── semantic Phase 3 Batch 4 ───────────────────
+    // 全DB commandはrun_semantic_wireがinvoke開始時のDB Arc + 4cache epochを
+    // 一貫pinする。各closureは共有runtimeだけを呼び、workspaceを再解決しない。
+
+    /// モデルが無ければbackground downloadを開始し、状態文字列を即返す。
+    /// resource欠落はBackend constructorを失敗させず、このsemantic surfaceでのみ
+    /// installed/unavailable/downloading または明示エラーとして扱う。
+    #[napi]
+    pub async fn semantic_download_model(&self, language: String) -> Result<String> {
+        let start = self
+            .state
+            .semantic
+            .semantic_download_model(&language)
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        let status = start.status().to_string();
+        if let grimodex_semantic::runtime::ModelDownloadStart::Start(job) = start {
+            napi::tokio::spawn(async move {
+                // job自身が成功/失敗をdone eventへ載せ、Dropでinflightを必ず解除する。
+                let _ = job.run().await;
+            });
+        }
+        serde_json::to_string(&status).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    #[napi]
+    pub async fn semantic_index_scene(&self, scene_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_index_scene(request, &scene_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_search(
+        &self,
+        project_id: String,
+        query: String,
+        limit: u32,
+        scene_scope: Option<String>,
+        description_mode: Option<bool>,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_search(
+                request,
+                &project_id,
+                &query,
+                limit as usize,
+                scene_scope.as_deref(),
+                description_mode,
+            )
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_index_entry(&self, entry_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.codex_index_entry(request, &entry_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_semantic_search(
+        &self,
+        project_id: String,
+        query: String,
+        limit: u32,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.codex_semantic_search(request, &project_id, &query, limit as usize)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_index_status(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.codex_index_status(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_reindex_all(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.codex_reindex_all(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn events_index_entry(&self, event_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.events_index_entry(request, &event_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn events_semantic_search(
+        &self,
+        project_id: String,
+        query: String,
+        limit: u32,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.events_semantic_search(request, &project_id, &query, limit as usize)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn events_index_status(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.events_index_status(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn events_reindex_all(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.events_reindex_all(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn chat_index_message(&self, message_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.chat_index_message(request, &message_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn chat_message_search(
+        &self,
+        project_id: String,
+        query: String,
+        limit: u32,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.chat_message_search(request, &project_id, &query, limit as usize)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn chat_index_status(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.chat_index_status(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn chat_reindex_all(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.chat_reindex_all(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_index_status(&self, project_id: String) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_index_status(request, &project_id)
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_reindex_all(
+        &self,
+        project_id: String,
+        run_id: Option<String>,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_reindex_all(request, &project_id, run_id.as_deref())
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_chunk_context(
+        &self,
+        scene_id: String,
+        char_start: u32,
+        char_end: u32,
+        padding: u32,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_chunk_context(
+                request,
+                &scene_id,
+                char_start as usize,
+                char_end as usize,
+                padding as usize,
+            )
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn semantic_debug_dump(
+        &self,
+        project_id: String,
+        scene_id: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<String> {
+        run_semantic_wire(Arc::clone(&self.state), move |runtime, request| {
+            runtime.semantic_debug_dump(
+                request,
+                &project_id,
+                scene_id.as_deref(),
+                limit.map(|value| value as usize),
+            )
+        })
+        .await
+    }
+
     // ─────────────────────── plot_threads (Phase 3 バッチ1 — grimodex-db の
     // plot_threads モジュールを Tauri と共用。commands/plot_threads.rs の写像) ──
     //
@@ -726,11 +1365,7 @@ impl Backend {
     /// PlotThreadPatch (color / description は Option<Option<String>>)。
     /// 返り値: 更新後行の JSON 文字列。
     #[napi]
-    pub async fn plot_thread_update(
-        &self,
-        id: String,
-        patch: serde_json::Value,
-    ) -> Result<String> {
+    pub async fn plot_thread_update(&self, id: String, patch: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let patch: PlotThreadPatch = from_wire("patch", patch)?;
@@ -827,8 +1462,8 @@ impl Backend {
     // Value / Vec<Value> / 応答 struct は raw snake_case 行 or camelCase struct。
     // patch 型の Option<Option<T>> 3 値 + i64（save_anchors の from/to_pos、
     // setup_create_ai の pos 群）は from_wire (normalize_integer_numbers 込み) が
-    // Tauri の引数 deserialize と同一挙動で受ける。foreshadow_list は FE 到達不能な
-    // dead path のため napi ミラーは設けない。
+    // Tauri の引数 deserialize と同一挙動で受ける。到達不能だった旧
+    // foreshadow_list は両ランタイムから撤去済み。
 
     /// 伏線作成 (load_bearing 検証を含む)。`payload` は camelCase の
     /// ForeshadowCreatePayload。返り値: 作成行 (snake_case) の JSON 文字列。
@@ -1383,8 +2018,7 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
-                let v =
-                    post_effect::list_annotations_for_scene(db, project_id, scene_id, status)?;
+                let v = post_effect::list_annotations_for_scene(db, project_id, scene_id, status)?;
                 Ok(serde_json::to_string(&v)?)
             })
         })
@@ -1465,6 +2099,400 @@ impl Backend {
         .await
     }
 
+    // ─────────────────────── post_effect runner (Phase 3d — shared Rust
+    // engine + EventQueue 4ch + run_id単位abort registry) ─────────────────
+
+    /// 単一sceneの校閲runを開始し、AI完了を待たず `{run_id,from_cache}` を返す。
+    /// `settings` とsecretはElectron mainが同じinvokeで取得したsnapshot。API key
+    /// 未登録 (`None`) と保存済み空文字 (`Some("")`) を区別し、lookup errorも
+    /// cache hitを壊さないよう背景taskまで遅延させる。
+    #[napi]
+    pub async fn start_post_effect_run(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: Option<String>,
+        api_key_error: Option<String>,
+    ) -> Result<String> {
+        let args: grimodex_post_effect::StartPostEffectRunArgs =
+            from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let runtime = NodePostEffectRuntime::new(Arc::clone(&self.state));
+        let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error);
+        let result = grimodex_post_effect::start_post_effect_run(runtime, ai, args)
+            .await
+            .map_err(app_err_to_napi)?;
+        serde_json::to_string(&result).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// 複数sceneの校閲run。処理はscene境界でabort registryを確認し、イベントは
+    /// `post_effect:{progress,partial,done,error}` をEventQueueへ配信する。
+    #[napi]
+    pub async fn start_post_effect_run_multi(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: Option<String>,
+        api_key_error: Option<String>,
+    ) -> Result<String> {
+        let args: grimodex_post_effect::StartPostEffectRunMultiArgs =
+            from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let runtime = NodePostEffectRuntime::new(Arc::clone(&self.state));
+        let ai = NodePostEffectAiClient::new(settings, api_key, api_key_error);
+        let result = grimodex_post_effect::start_post_effect_run_multi(runtime, ai, args)
+            .await
+            .map_err(app_err_to_napi)?;
+        serde_json::to_string(&result).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// 同一BackendのregistryとDB rowを一緒に更新する。DB上のproject ownershipを
+    /// 確認できたrunning runだけにabort flagを立てるため、cross-project/late abort
+    /// は別runや将来runへ波及しない。
+    #[napi]
+    pub async fn abort_post_effect_run(&self, run_id: String, project_id: String) -> Result<()> {
+        let runtime = NodePostEffectRuntime::new(Arc::clone(&self.state));
+        run_blocking(move || {
+            grimodex_post_effect::abort_post_effect_run(&runtime, &run_id, &project_id)
+        })
+        .await
+    }
+
+    // ─────────────────────── AI チャット (Phase 3 バッチ3a — grimodex-ai を
+    // Tauri と共用。HTTP/SSE/provider 分岐はクレート内で完結し、ストリーミングの
+    // emit は EventQueue(=StreamEmitter) 経由で TSFn → 全窓 broadcast へ載る) ──
+    //
+    // **キーは注入**: Tauri の resolve_api_key(keyring) と異なり、napi は main の
+    // safeStorage で解決した平文キーを `api_key` 引数で受ける。パラメータ準備
+    // (apply_provider_override / build_chat_params 等) は Tauri と同一の pure helper。
+
+    /// AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
+    /// 返り値: `AiSettings` の JSON 文字列 (camelCase)。
+    #[napi]
+    pub async fn get_ai_settings(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let settings = grimodex_ai::read_ai_settings(&state.ai_settings_path);
+            Ok(serde_json::to_string(&settings).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// AI 設定を `<appData>/ai-settings.json` へ保存する (Tauri の
+    /// `save_ai_settings` と同一)。API キーは別の safeStorage 経路なので含まない。
+    #[napi]
+    pub async fn save_ai_settings(&self, settings: serde_json::Value) -> Result<()> {
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            grimodex_ai::write_ai_settings(&state.ai_settings_path, &settings)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 非ストリーミングのチャット送信 (Tauri の send_chat_message と同一ロジック。
+    /// キーは注入)。`args` は camelCase の ChatRequest、`api_key` は解決済み平文。
+    /// `settings` は **呼び側 (dispatchInvoke) が getAiSettings で1回だけ読んだ AiSettings
+    /// スナップショット** — キー解決と送信を同一スナップショットで行い、Tauri の
+    /// 単一 read_ai_settings と同じ原子性を保つ (2 度読みの TOCTOU 回避)。
+    /// 返り値: `ChatResponse` の JSON 文字列 (camelCase)。
+    #[napi]
+    pub async fn send_chat_message(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<String> {
+        let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let settings_for_call = grimodex_ai::apply_provider_override(
+            settings,
+            req.model.as_deref(),
+            req.provider,
+            req.endpoint_id.as_deref(),
+        );
+        let variant = req.api_variant.as_deref();
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+        let resolved_variant =
+            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings_for_call,
+            &api_key,
+            extra_body,
+            retry_429,
+            grimodex_ai::AiNovelistMode::Chat,
+            resolved_variant,
+            req.thinking,
+            req.effort,
+            req.reasoning_enabled,
+            req.reasoning_effort,
+            req.system_cache_segments,
+            req.system_volatile_tail,
+            None,
+        );
+        let msgs: Vec<(&str, &str)> = req
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        let result = grimodex_ai::send_chat(&params, &msgs)
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        serde_json::to_string(&result)
+            .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
+    }
+
+    /// ストリーミングのチャット送信 (Tauri の send_chat_message_stream と同一)。
+    /// チャンクは `chat:stream-chunk` / 完了は `chat:stream-done` を EventQueue へ emit。
+    /// 失敗時は `chat:stream-error` を emit してから reject する (Tauri と同一契約 —
+    /// FE の fire-and-forget .catch と listen error の両経路を保つ)。
+    /// **abort は self.state.chat_abort を共有** — abort_chat_stream と同一インスタンス。
+    #[napi]
+    pub async fn send_chat_message_stream(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<()> {
+        let req: ChatRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        // 開始時に abort フラグをリセット (Tauri と同一 — 新ストリームは前回の中止要求を握り潰す)。
+        self.state
+            .chat_abort
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let flag = Arc::clone(&self.state.chat_abort);
+        let settings_for_call = grimodex_ai::apply_provider_override(
+            settings,
+            req.model.as_deref(),
+            req.provider,
+            req.endpoint_id.as_deref(),
+        );
+        let variant = req.api_variant.as_deref();
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+        let resolved_variant =
+            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings_for_call,
+            &api_key,
+            extra_body,
+            retry_429,
+            grimodex_ai::AiNovelistMode::Chat,
+            resolved_variant,
+            req.thinking,
+            req.effort,
+            req.reasoning_enabled,
+            req.reasoning_effort,
+            req.system_cache_segments,
+            req.system_volatile_tail,
+            None,
+        );
+        let msgs: Vec<(&str, &str)> = req
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        let result =
+            grimodex_ai::send_chat_stream(&params, &msgs, flag, &self.state.events, "chat").await;
+        if let Err(e) = result {
+            EventSink::emit(
+                &self.state.events,
+                "chat:stream-error",
+                serde_json::json!({ "message": e.to_string() }),
+            );
+            return Err(Error::from_reason(e.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 実行中のチャットストリームを中止する (Tauri の abort_chat_stream と同一 —
+    /// 純メモリの atomic store)。send_chat_message_stream と同一の chat_abort を立てる。
+    #[napi]
+    pub fn abort_chat_stream(&self) {
+        self.state
+            .chat_abort
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
+    /// AI のべりすとでは Completion mode を使う。チャットとは独立した abort flag。
+    #[napi]
+    pub async fn send_inline_ai_stream(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<()> {
+        let req: InlineAiRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+
+        self.state
+            .inline_ai_abort
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let flag = Arc::clone(&self.state.inline_ai_abort);
+        let settings_for_call = grimodex_ai::apply_provider_override(
+            settings,
+            req.model.as_deref(),
+            req.provider,
+            req.endpoint_id.as_deref(),
+        );
+        let effective_variant =
+            grimodex_ai::inline_effective_variant(&settings_for_call, req.api_variant.as_deref());
+        let variant = effective_variant.as_deref();
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+        let resolved_variant =
+            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings_for_call,
+            &api_key,
+            extra_body,
+            retry_429,
+            grimodex_ai::AiNovelistMode::Completion,
+            resolved_variant,
+            req.thinking,
+            req.effort,
+            req.reasoning_enabled,
+            req.reasoning_effort,
+            None,
+            None,
+            None,
+        );
+        let msgs: Vec<(&str, &str)> = req
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        let result =
+            grimodex_ai::send_chat_stream(&params, &msgs, flag, &self.state.events, "inline-ai")
+                .await;
+        if let Err(e) = result {
+            EventSink::emit(
+                &self.state.events,
+                "inline-ai:stream-error",
+                serde_json::json!({ "message": e.to_string() }),
+            );
+            return Err(Error::from_reason(e.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 実行中のインライン AI ストリームを中止する。chat_abort とは独立。
+    #[napi]
+    pub fn abort_inline_ai_stream(&self) {
+        self.state
+            .inline_ai_abort
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Tool Use 対応の Agent 送信。tool protocol 解決・Hermes/native の安全ゲートを
+    /// 含む `grimodex_ai::send_chat_with_tools` をTauriと共用する。
+    #[napi]
+    pub async fn send_agent_message(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<String> {
+        let req: AgentRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        let settings_for_call = grimodex_ai::apply_provider_override(
+            settings,
+            req.model.as_deref(),
+            req.provider,
+            req.endpoint_id.as_deref(),
+        );
+        let variant = req.api_variant.as_deref();
+        let extra_body = grimodex_ai::build_ai_novelist_extra_body(&settings_for_call, variant);
+        let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
+        let resolved_variant =
+            grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
+        let params = grimodex_ai::build_chat_params(
+            &settings_for_call,
+            &api_key,
+            extra_body,
+            retry_429,
+            grimodex_ai::AiNovelistMode::Chat,
+            resolved_variant,
+            req.thinking,
+            req.effort,
+            req.reasoning_enabled,
+            req.reasoning_effort,
+            req.system_cache_segments,
+            req.system_volatile_tail,
+            req.web_search,
+        );
+        let result = grimodex_ai::send_chat_with_tools(&params, &req.messages, &req.tools)
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        serde_json::to_string(&result)
+            .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
+    }
+
+    /// provider のモデル一覧を取得する。`settings` はmainが1回読んだsnapshot、
+    /// `api_key` はsafeStorageにキーが無い場合も空文字で注入される。
+    #[napi]
+    pub async fn list_ai_models(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<String> {
+        let req: ListAiModelsRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let mut settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        if let Some(endpoint_id) = req.endpoint_id.as_deref().filter(|id| !id.is_empty()) {
+            if settings.has_openai_compatible_endpoint(endpoint_id) {
+                settings.active_openai_compatible_endpoint_id = Some(endpoint_id.to_string());
+            }
+        }
+        let models = grimodex_ai::fetch_models(&req.provider, &api_key, settings.endpoints())
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        serde_json::to_string(&models)
+            .map_err(|e| Error::from_reason(format!("failed to serialize AI models: {e}")))
+    }
+
+    /// 最小リクエストでAI接続を確認する。variant解決はテスト対象providerを設定へ
+    /// 反映してから行い、OpenAI互換endpointの既定variantを正しく選ぶ。
+    #[napi]
+    pub async fn test_ai_connection(
+        &self,
+        args: serde_json::Value,
+        settings: serde_json::Value,
+        api_key: String,
+    ) -> Result<String> {
+        let req: TestAiConnectionRequest = from_wire("args", args).map_err(app_err_to_napi)?;
+        let mut settings: grimodex_ai::AiSettings =
+            from_wire("settings", settings).map_err(app_err_to_napi)?;
+        settings.provider = req.provider.clone();
+        if let Some(endpoint_id) = req.endpoint_id.as_deref().filter(|id| !id.is_empty()) {
+            if settings.has_openai_compatible_endpoint(endpoint_id) {
+                settings.active_openai_compatible_endpoint_id = Some(endpoint_id.to_string());
+            }
+        }
+        let variant =
+            grimodex_ai::resolve_api_variant(req.api_variant.as_deref(), &settings, &req.model);
+        grimodex_ai::test_connection(
+            &req.provider,
+            &req.model,
+            &api_key,
+            settings.endpoints(),
+            variant.as_deref(),
+        )
+        .await
+        .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// main 起動時に 1 回登録する (§7.1)。コールバックは
     /// `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された
     /// イベント (`backend:ready`) は登録時に emit 順で flush される。
@@ -1483,5 +2511,104 @@ impl Backend {
         tsfn.unref(&env)?;
         self.state.events.register(tsfn);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod ime_workspace_tests {
+    use super::*;
+    use grimodex_db::state::ActiveWorkspace;
+    use grimodex_db::Database;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn workspace_rotation_waits_for_the_snapshot_writer_then_invalidates_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-node-ime-workspace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let resources = dir.join("resources");
+        let state = Arc::new(
+            AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state"),
+        );
+        let options = ImeExportOptions {
+            mode: ImeIntegrationMode::On,
+            exclude_hidden: false,
+            include_profile: true,
+        };
+        let old_request = state
+            .ime_request_gate
+            .register_refresh("default-project", &options);
+        let writer = state.ime_write_lock.lock().expect("writer lock");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let state_for_thread = Arc::clone(&state);
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).expect("started");
+            rotate_ime_workspace(&state_for_thread);
+            done_tx.send(()).expect("done");
+        });
+
+        started_rx.recv().expect("rotation started");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(30)).is_err(),
+            "rotation must not pass the writer barrier"
+        );
+        drop(writer);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("rotation completes after writer release");
+        thread.join().expect("rotation thread");
+
+        assert!(!state.ime_request_gate.is_current(&old_request));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mismatched_workspace_path_does_not_invalidate_a_legitimate_request() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-node-ime-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let resources = dir.join("resources");
+        let state =
+            AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
+        let workspace_path = dir.join("workspace-a");
+        std::fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
+            db: Arc::new(db),
+            path: workspace_path.clone(),
+        });
+        let options = ImeExportOptions {
+            mode: ImeIntegrationMode::On,
+            exclude_hidden: false,
+            include_profile: true,
+        };
+        let legitimate = state
+            .ime_request_gate
+            .register_refresh("default-project", &options);
+
+        let result = pin_ime_workspace_request(
+            &state,
+            &dir.join("workspace-b").to_string_lossy(),
+            |gate, generation| {
+                gate.register_refresh_for_generation("default-project", &options, generation)
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(state.ime_request_gate.is_current(&legitimate));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

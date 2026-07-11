@@ -125,9 +125,8 @@ vi.mock("electron", () => ({
   },
 }));
 
-const { createMainWindow, focusPanelWindow, openPanelWindow } = await import(
-  "./windows.js"
-);
+const { createMainWindow, focusPanelWindow, openPanelWindow } =
+  await import("./windows.js");
 
 const savedRendererUrl = process.env.ELECTRON_RENDERER_URL;
 
@@ -162,7 +161,11 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
   });
 
   it("生成: URL は main が label から組み立てる（renderer 供給 URL なし）", () => {
-    openPanelWindow("panel-codex", { width: 500, height: 700, title: "Codex" });
+    openPanelWindow("panel-codex", {
+      width: 500,
+      height: 700,
+      title: "Codex",
+    });
 
     expect(FakeBrowserWindow.instances).toHaveLength(1);
     const win = FakeBrowserWindow.instances[0];
@@ -180,6 +183,22 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
     expect(webPreferences.contextIsolation).toBe(true);
     expect(webPreferences.sandbox).toBe(true);
     expect(webPreferences.nodeIntegration).toBe(false);
+  });
+
+  it("ready-to-show が来なくても did-finish-load で窓を表示する", () => {
+    const win = FakeBrowserWindow.instances[0];
+    expect(win.show).not.toHaveBeenCalled();
+
+    const didFinishLoad = win.webContents.on.mock.calls.find(
+      ([event]) => event === "did-finish-load",
+    )?.[1] as (() => void) | undefined;
+    expect(didFinishLoad).toBeTypeOf("function");
+    didFinishLoad?.();
+    expect(win.show).toHaveBeenCalledTimes(1);
+
+    // 遅れて ready-to-show が届いても二重表示しない。
+    win.emit("ready-to-show");
+    expect(win.show).toHaveBeenCalledTimes(1);
   });
 
   it("同一 label の再 open は新窓を作らず focus する（冪等）", () => {

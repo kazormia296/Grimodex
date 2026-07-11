@@ -3,7 +3,7 @@
  *
  * 2 系統ある:
  * 1. **Tauri コマンド互換**（grim:invoke ルーター経由、Envelope は ipcContract の
- *    dispatchInvoke が畳む）: set_window_vibrancy / get_license_state スタブ
+ *    dispatchInvoke が畳む）: set_window_vibrancy / export / logs
  * 2. **ブリッジ native API**（dialog / fs / openExternal / getVersion / zoom /
  *    windowControls — 専用チャネル + Envelope。preload 側で解封して
  *    Promise reject に変換する）
@@ -18,7 +18,6 @@ import type { IpcMainInvokeEvent } from "electron";
 
 import {
   clampZoomFactor,
-  DISABLED_LICENSE_STATE,
   IPC,
   isSafeExternalUrl,
   toErrorString,
@@ -40,6 +39,13 @@ export interface VibrancyWindowLike {
   setVibrancy(type: "under-window" | null): void;
 }
 
+/** export / Vivliostyle が共有する、renderer非指定のnative保存dialog入力。 */
+export interface SavePathDialogOptions {
+  suggestedName: string;
+  filterName: string;
+  extensions: string[];
+}
+
 /**
  * ログディレクトリ（Rust 側 `lint_logging::log_dir()` と同一パス:
  * `~/.grimodex/logs`。home 解決不能時は tmp フォールバックも同じ）。
@@ -50,11 +56,7 @@ export function defaultLogDir(): string {
   return path.join(base, ".grimodex", "logs");
 }
 
-function requireArgString(
-  args: CommandArgs,
-  key: string,
-  cmd: string,
-): string {
+function requireArgString(args: CommandArgs, key: string, cmd: string): string {
   const value = args[key];
   if (typeof value !== "string") {
     throw new Error(
@@ -70,6 +72,23 @@ function requireArgString(
  * 一切渡さない。パスはダイアログ由来の user-chosen path に限られる）。
  * キャンセル時は null。
  */
+export async function showSavePathDialog(
+  win: VibrancyWindowLike | null,
+  options: SavePathDialogOptions,
+): Promise<string | null> {
+  const dialogOptions = {
+    defaultPath: options.suggestedName,
+    filters: [{ name: options.filterName, extensions: options.extensions }],
+  };
+  // ipc.ts が渡す実体は BrowserWindow（VibrancyWindowLike は単体テスト向けの
+  // 構造的部分型）。保存ダイアログの親付けにのみ実型が要るためここで戻す。
+  const parent = win as unknown as BrowserWindow | null;
+  const result = parent
+    ? await dialog.showSaveDialog(parent, dialogOptions)
+    : await dialog.showSaveDialog(dialogOptions);
+  return result.canceled || !result.filePath ? null : result.filePath;
+}
+
 async function promptSavePath(
   win: VibrancyWindowLike | null,
   cmd: string,
@@ -80,17 +99,11 @@ async function promptSavePath(
   const extensions = Array.isArray(args.extensions)
     ? args.extensions.filter((e): e is string => typeof e === "string")
     : [];
-  const options = {
-    defaultPath: suggestedName,
-    filters: [{ name: filterName, extensions }],
-  };
-  // ipc.ts が渡す実体は BrowserWindow（VibrancyWindowLike は単体テスト向けの
-  // 構造的部分型）。保存ダイアログの親付けにのみ実型が要るためここで戻す。
-  const parent = win as unknown as BrowserWindow | null;
-  const result = parent
-    ? await dialog.showSaveDialog(parent, options)
-    : await dialog.showSaveDialog(options);
-  return result.canceled || !result.filePath ? null : result.filePath;
+  return showSavePathDialog(win, {
+    suggestedName,
+    filterName,
+    extensions,
+  });
 }
 
 /** Buffer.from は不正文字を黙って読み飛ばすため、Rust 側 base64 crate と同じく明示拒否する。 */
@@ -120,8 +133,6 @@ export function buildShellCommandHandlers(
       }
       return Promise.resolve(null);
     },
-    // licensing 無効ビルドと同一形状（§4.3。Phase 3 で napi へ差し替え）
-    get_license_state: () => Promise.resolve({ ...DISABLED_LICENSE_STATE }),
     // export 系（commands/export.rs の写像）: 保存できたら絶対パス、
     // キャンセル時は null（Tauri ワイヤと同形）。
     export_save_text: async (args: CommandArgs) => {
@@ -191,7 +202,7 @@ let cachedVersion: string | null = null;
 /**
  * dev（default_app 経由の `electron dist-electron/main.cjs` 起動）では
  * app.getVersion() が package.json を解決できず "0.0" を返すため、
- * リポジトリルートの package.json（正本 4 箇所の一つ）へフォールバックする。
+ * リポジトリルートの package.json（Electron版バージョンの唯一の正本）へフォールバックする。
  * パッケージ配布（Phase 4）では app.getVersion() がそのまま正になる。
  */
 function resolveAppVersion(): string {
@@ -292,18 +303,16 @@ export function registerShellBridgeHandlers(
   });
 
   handleWithEnvelope(IPC.fsReadTextFile, async (_event, path) => {
-    const real = await fsScope.assertReadable(
-      requireStringArg(path, "path"),
-      { asFile: true },
-    );
+    const real = await fsScope.assertReadable(requireStringArg(path, "path"), {
+      asFile: true,
+    });
     return readFile(real, "utf8");
   });
 
   handleWithEnvelope(IPC.fsReadDir, async (_event, path) => {
-    const real = await fsScope.assertReadable(
-      requireStringArg(path, "path"),
-      { asFile: false },
-    );
+    const real = await fsScope.assertReadable(requireStringArg(path, "path"), {
+      asFile: false,
+    });
     const entries = await readdir(real, {
       withFileTypes: true,
     });
@@ -337,7 +346,11 @@ export function registerShellBridgeHandlers(
   // IPC_UNIMPLEMENTED の明示エラーへ fail-soft する。
   handleWithEnvelope(IPC.panelOpen, (_event, label, opts) => {
     if (!panelWindows) throw new Error(unimplementedError("panelWindow.open"));
-    const o = (opts ?? {}) as { width?: unknown; height?: unknown; title?: unknown };
+    const o = (opts ?? {}) as {
+      width?: unknown;
+      height?: unknown;
+      title?: unknown;
+    };
     panelWindows.open(requireStringArg(label, "label"), o);
     return null;
   });

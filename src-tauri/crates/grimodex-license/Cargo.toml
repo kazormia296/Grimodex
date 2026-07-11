@@ -1,0 +1,23 @@
+[package]
+name = "grimodex-license"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+licensing = []
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+chrono = "0.4"
+grimodex-core = { path = "../grimodex-core" }
+reqwest = { version = "0.13", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+wiremock = "0.6"

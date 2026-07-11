@@ -2,9 +2,8 @@
  * Electron 開発オーケストレータ（設計書 §3.2 / §3.3）。
  *
  * 1. vite dev server を port 1430 / strictPort で起動
- *    （1420 は `pnpm tauri dev` 専有のまま。JS API の InlineConfig で上書きするので
- *    vite.config.ts は無改修。vite 8 は bin の直接 require を exports で塞いでいる
- *    ため CLI spawn ではなく createServer を使う）
+ *    （vite 8 は bin の直接 require を exports で塞いでいるため、CLI spawn
+ *    ではなく createServer を使う）
  * 2. esbuild watch で electron/main + electron/preload → dist-electron/
  * 3. ELECTRON_RENDERER_URL=http://localhost:1430 で Electron を起動
  *    （main / preload の再ビルドで Electron を再起動。renderer の HMR は vite が担う）

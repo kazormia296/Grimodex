@@ -1,12 +1,12 @@
 //! Grimodex -> IME dictionary snapshot exporter (protocol format version 1).
 //!
-//! The exporter intentionally lives in `grimodex-db`: both the Tauri and
-//! Electron command layers use this implementation, while IME consumers only
-//! observe atomic JSON snapshots under the app data directory.
+//! The exporter intentionally lives in `grimodex-db` so the Electron N-API
+//! adapter stays thin and IME consumers only observe atomic JSON snapshots
+//! under the app data directory.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -127,6 +127,7 @@ pub struct ImeExportRequestGate {
 
 #[derive(Debug, Default)]
 struct ImeExportRequestVersions {
+    workspace_generation: u64,
     latest_options: Option<ImeExportOptions>,
     latest_clear: u64,
     pending_clear: Option<u64>,
@@ -146,12 +147,16 @@ enum ImeExportRequestKind {
     Refresh {
         project_id: String,
         options: ImeExportOptions,
+        workspace_generation: u64,
     },
     Clear,
     Remove {
         project_id: String,
+        workspace_generation: u64,
     },
-    Active,
+    Active {
+        workspace_generation: u64,
+    },
 }
 
 impl ImeExportRequestGate {
@@ -171,19 +176,43 @@ impl ImeExportRequestGate {
         project_id: &str,
         options: &ImeExportOptions,
     ) -> ImeExportRequestToken {
-        let sequence = self.next();
+        loop {
+            let generation = self.workspace_generation();
+            if let Some(token) =
+                self.register_refresh_for_generation(project_id, options, generation)
+            {
+                return token;
+            }
+        }
+    }
+
+    pub fn workspace_generation(&self) -> u64 {
+        self.lock_versions().workspace_generation
+    }
+
+    pub fn register_refresh_for_generation(
+        &self,
+        project_id: &str,
+        options: &ImeExportOptions,
+        workspace_generation: u64,
+    ) -> Option<ImeExportRequestToken> {
         let mut versions = self.lock_versions();
+        if versions.workspace_generation != workspace_generation {
+            return None;
+        }
+        let sequence = self.next();
         versions.latest_options = Some(options.clone());
         versions
             .latest_refresh_by_project
             .insert(project_id.to_owned(), sequence);
-        ImeExportRequestToken {
+        Some(ImeExportRequestToken {
             sequence,
             kind: ImeExportRequestKind::Refresh {
                 project_id: project_id.to_owned(),
                 options: options.clone(),
+                workspace_generation,
             },
-        }
+        })
     }
 
     pub fn register_clear(&self) -> ImeExportRequestToken {
@@ -198,25 +227,71 @@ impl ImeExportRequestGate {
     }
 
     pub fn register_remove(&self, project_id: &str) -> ImeExportRequestToken {
-        let sequence = self.next();
-        self.lock_versions()
-            .latest_remove_by_project
-            .insert(project_id.to_owned(), sequence);
-        ImeExportRequestToken {
-            sequence,
-            kind: ImeExportRequestKind::Remove {
-                project_id: project_id.to_owned(),
-            },
+        loop {
+            let generation = self.workspace_generation();
+            if let Some(token) = self.register_remove_for_generation(project_id, generation) {
+                return token;
+            }
         }
     }
 
-    pub fn register_active(&self) -> ImeExportRequestToken {
-        let sequence = self.next();
-        self.lock_versions().latest_active = sequence;
-        ImeExportRequestToken {
-            sequence,
-            kind: ImeExportRequestKind::Active,
+    pub fn register_remove_for_generation(
+        &self,
+        project_id: &str,
+        workspace_generation: u64,
+    ) -> Option<ImeExportRequestToken> {
+        let mut versions = self.lock_versions();
+        if versions.workspace_generation != workspace_generation {
+            return None;
         }
+        let sequence = self.next();
+        versions
+            .latest_remove_by_project
+            .insert(project_id.to_owned(), sequence);
+        Some(ImeExportRequestToken {
+            sequence,
+            kind: ImeExportRequestKind::Remove {
+                project_id: project_id.to_owned(),
+                workspace_generation,
+            },
+        })
+    }
+
+    pub fn register_active(&self) -> ImeExportRequestToken {
+        loop {
+            let generation = self.workspace_generation();
+            if let Some(token) = self.register_active_for_generation(generation) {
+                return token;
+            }
+        }
+    }
+
+    pub fn register_active_for_generation(
+        &self,
+        workspace_generation: u64,
+    ) -> Option<ImeExportRequestToken> {
+        let mut versions = self.lock_versions();
+        if versions.workspace_generation != workspace_generation {
+            return None;
+        }
+        let sequence = self.next();
+        versions.latest_active = sequence;
+        Some(ImeExportRequestToken {
+            sequence,
+            kind: ImeExportRequestKind::Active {
+                workspace_generation,
+            },
+        })
+    }
+
+    /// Invalidate every request bound to the previous active database. This is
+    /// called from the shell's swap hook while holding its IME writer mutex.
+    pub fn rotate_workspace(&self) {
+        let mut versions = self.lock_versions();
+        versions.workspace_generation = versions.workspace_generation.wrapping_add(1);
+        versions.latest_refresh_by_project.clear();
+        versions.latest_remove_by_project.clear();
+        versions.latest_active = 0;
     }
 
     pub fn is_current(&self, token: &ImeExportRequestToken) -> bool {
@@ -225,8 +300,10 @@ impl ImeExportRequestGate {
             ImeExportRequestKind::Refresh {
                 project_id,
                 options,
+                workspace_generation,
             } => {
-                versions.pending_clear.is_none()
+                versions.workspace_generation == *workspace_generation
+                    && versions.pending_clear.is_none()
                     && versions.latest_options.as_ref() == Some(options)
                     && versions.latest_clear < token.sequence
                     && versions
@@ -239,15 +316,47 @@ impl ImeExportRequestGate {
                 versions.latest_clear == token.sequence
                     && versions.pending_clear == Some(token.sequence)
             }
-            ImeExportRequestKind::Remove { project_id } => {
-                versions.latest_remove_by_project.get(project_id) == Some(&token.sequence)
+            ImeExportRequestKind::Remove {
+                project_id,
+                workspace_generation,
+            } => {
+                versions.workspace_generation == *workspace_generation
+                    && versions.latest_remove_by_project.get(project_id) == Some(&token.sequence)
                     && versions
                         .latest_refresh_by_project
                         .get(project_id)
                         .is_none_or(|sequence| *sequence < token.sequence)
             }
-            ImeExportRequestKind::Active => versions.latest_active == token.sequence,
+            ImeExportRequestKind::Active {
+                workspace_generation,
+            } => {
+                versions.workspace_generation == *workspace_generation
+                    && versions.latest_active == token.sequence
+            }
         }
+    }
+
+    /// Whether a workspace-scoped token still belongs to the active native DB
+    /// generation. This deliberately ignores same-generation latest-wins
+    /// supersession so adapters can distinguish "retry after swap" from a
+    /// harmless newer request for the same resource.
+    pub fn is_workspace_generation_current(&self, token: &ImeExportRequestToken) -> bool {
+        let versions = self.lock_versions();
+        let token_generation = match &token.kind {
+            ImeExportRequestKind::Refresh {
+                workspace_generation,
+                ..
+            }
+            | ImeExportRequestKind::Remove {
+                workspace_generation,
+                ..
+            }
+            | ImeExportRequestKind::Active {
+                workspace_generation,
+            } => Some(*workspace_generation),
+            ImeExportRequestKind::Clear => None,
+        };
+        token_generation.is_none_or(|generation| generation == versions.workspace_generation)
     }
 
     /// Release the global clear barrier after the matching clear job has
@@ -344,7 +453,14 @@ pub fn refresh_project_export(
         return get_status(root, options.mode);
     }
 
-    let project = load_project(db, project_id)?;
+    let Some(project) = load_project(db, project_id)? else {
+        // A refresh already queued in another renderer may outlive Project
+        // deletion and become newer than the explicit remove request. Treat
+        // that specific absence as convergent cleanup; real SQL errors still
+        // propagate unchanged.
+        remove_project_export(root, project_id)?;
+        return get_status(root, options.mode);
+    };
     if !is_japanese_language(&project.language) {
         remove_project_export(root, project_id)?;
         return get_status(root, options.mode);
@@ -455,6 +571,33 @@ pub fn remove_project_export(root: &Path, project_id: &str) -> anyhow::Result<()
     Ok(())
 }
 
+/// Remove a delayed deletion snapshot only while the pinned database still
+/// confirms that the Project is absent. A same-path restore/recreate can reuse
+/// the same id; in that case the old cleanup request must not delete the new
+/// Project's snapshot.
+pub fn remove_project_export_if_absent(
+    db: &Database,
+    root: &Path,
+    project_id: &str,
+) -> anyhow::Result<bool> {
+    validate_project_id(project_id)?;
+    let exists = db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM projects WHERE id = ?1",
+                params![project_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    })?;
+    if exists {
+        return Ok(false);
+    }
+    remove_project_export(root, project_id)?;
+    Ok(true)
+}
+
 fn validate_project_id(project_id: &str) -> anyhow::Result<()> {
     if project_id.is_empty()
         || !project_id
@@ -470,9 +613,9 @@ fn project_snapshot_path(root: &Path, project_id: &str) -> PathBuf {
     root.join("projects").join(format!("{project_id}.json"))
 }
 
-fn load_project(db: &Database, project_id: &str) -> anyhow::Result<ProjectData> {
+fn load_project(db: &Database, project_id: &str) -> anyhow::Result<Option<ProjectData>> {
     db.with_conn(|conn| {
-        let project = conn
+        let Some(project) = conn
             .query_row(
                 "SELECT id, title, language, genre, outline FROM projects WHERE id = ?1",
                 params![project_id],
@@ -488,7 +631,9 @@ fn load_project(db: &Database, project_id: &str) -> anyhow::Result<ProjectData> 
                 },
             )
             .optional()?
-            .ok_or_else(|| anyhow!("project not found: {project_id}"))?;
+        else {
+            return Ok(None);
+        };
 
         let mut statement = conn.prepare(
             "SELECT id, type, name, aliases, excluded_aliases, readings, context_mode
@@ -512,7 +657,7 @@ fn load_project(db: &Database, project_id: &str) -> anyhow::Result<ProjectData> 
         for row in rows {
             project.entries.push(row?);
         }
-        Ok(project)
+        Ok(Some(project))
     })
 }
 
@@ -956,7 +1101,7 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
             .context("write IME export staging file")?;
         file.sync_all().context("sync IME export staging file")?;
         drop(file);
-        fs::rename(&temp, path).context("atomically replace IME export JSON")?;
+        atomic_replace(&temp, path).context("atomically replace IME export JSON")?;
         sync_parent_directory(parent)?;
         Ok(())
     })();
@@ -964,6 +1109,81 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(staged, destination)
+}
+
+#[cfg(windows)]
+fn atomic_replace(staged: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let staged_parent = staged.parent().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            "IME export staging path has no parent",
+        )
+    })?;
+    let destination_parent = destination.parent().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            "IME export destination path has no parent",
+        )
+    })?;
+    // `canonicalize` returns extended-length (`\\?\`) paths on Windows. Resolve
+    // both parents independently so long redirected APPDATA/userData paths work,
+    // then require one directory to keep the replacement a same-volume rename.
+    let staged_parent = fs::canonicalize(staged_parent)?;
+    let destination_parent = fs::canonicalize(destination_parent)?;
+    if staged_parent != destination_parent {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "IME export staging and destination files must share one directory",
+        ));
+    }
+
+    let staged = staged_parent.join(staged.file_name().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            "IME export staging path has no filename",
+        )
+    })?);
+    let destination = destination_parent.join(destination.file_name().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            "IME export destination path has no filename",
+        )
+    })?);
+    let destination_wide: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let staged_wide: Vec<u16> = staged
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: both UTF-16 buffers are NUL-terminated and live through the call.
+    // Their canonical parents are identical, so COPY_ALLOWED is intentionally
+    // omitted and Windows performs one same-volume replacement.
+    let moved = unsafe {
+        MoveFileExW(
+            staged_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -976,6 +1196,78 @@ fn sync_parent_directory(parent: &Path) -> anyhow::Result<()> {
 #[cfg(not(unix))]
 fn sync_parent_directory(_parent: &Path) -> anyhow::Result<()> {
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod atomic_replace_tests {
+    use super::*;
+    use std::os::windows::ffi::OsStrExt;
+
+    fn exercise_atomic_write_twice(destination: &Path) -> anyhow::Result<()> {
+        fs::write(destination, br#"{"generation":0}"#)?;
+        atomic_write_json(
+            destination,
+            &serde_json::json!({"generation": 1, "entries": ["first"]}),
+        )?;
+        atomic_write_json(
+            destination,
+            &serde_json::json!({"generation": 2, "entries": ["final"]}),
+        )?;
+
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(destination)?)?;
+        assert_eq!(
+            value,
+            serde_json::json!({"generation": 2, "entries": ["final"]})
+        );
+        let parent = destination
+            .parent()
+            .ok_or_else(|| anyhow!("test destination has no parent: {}", destination.display()))?;
+        for entry in fs::read_dir(parent)? {
+            let name = entry?.file_name();
+            assert!(
+                !name.to_string_lossy().contains(".tmp."),
+                "atomic staging file must be consumed: {}",
+                name.to_string_lossy()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn windows_atomic_write_replaces_existing_destination_twice() -> anyhow::Result<()> {
+        let sandbox = std::env::temp_dir().join(format!(
+            "grimodex-ime-atomic-replace-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&sandbox)?;
+        let destination = sandbox.join("snapshot.json");
+        let result = exercise_atomic_write_twice(&destination);
+        let _ = fs::remove_dir_all(&sandbox);
+        result
+    }
+
+    #[test]
+    fn windows_atomic_write_supports_parent_longer_than_max_path() -> anyhow::Result<()> {
+        let sandbox = std::env::temp_dir().join(format!(
+            "grimodex-ime-atomic-long-path-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut long_parent = sandbox.clone();
+        let mut segment = 0_u32;
+        while long_parent.as_os_str().encode_wide().count() <= 260 {
+            long_parent.push(format!("segment-{segment:02}-{}", "x".repeat(24)));
+            segment += 1;
+        }
+        fs::create_dir_all(&long_parent)?;
+        assert!(long_parent.as_os_str().encode_wide().count() > 260);
+
+        let destination = long_parent.join("snapshot.json");
+        let result = exercise_atomic_write_twice(&destination);
+        let _ = fs::remove_dir_all(&sandbox);
+
+        result?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1057,6 +1349,60 @@ mod request_gate_tests {
         let new_active = gate.register_active();
         assert!(!gate.is_current(&old_active));
         assert!(gate.is_current(&new_active));
+    }
+
+    #[test]
+    fn workspace_rotation_invalidates_old_requests_even_when_project_ids_match() {
+        let gate = ImeExportRequestGate::default();
+        let opts = options(ImeIntegrationMode::On, true);
+        let old_refresh = gate.register_refresh("default-project", &opts);
+        let old_remove = gate.register_remove("default-project");
+        let old_active = gate.register_active();
+
+        gate.rotate_workspace();
+
+        let new_refresh = gate.register_refresh("default-project", &opts);
+        let new_active = gate.register_active();
+        assert!(!gate.is_current(&old_refresh));
+        assert!(!gate.is_current(&old_remove));
+        assert!(!gate.is_current(&old_active));
+        assert!(gate.is_current(&new_refresh));
+        assert!(gate.is_current(&new_active));
+    }
+
+    #[test]
+    fn conditional_registration_never_mutates_a_new_workspace_generation() {
+        let gate = ImeExportRequestGate::default();
+        let opts = options(ImeIntegrationMode::On, true);
+        let old_generation = gate.workspace_generation();
+        gate.rotate_workspace();
+
+        assert!(gate
+            .register_refresh_for_generation("default-project", &opts, old_generation)
+            .is_none());
+        assert!(gate
+            .register_remove_for_generation("default-project", old_generation)
+            .is_none());
+        assert!(gate
+            .register_active_for_generation(old_generation)
+            .is_none());
+
+        let current = gate.register_refresh("default-project", &opts);
+        assert!(gate.is_current(&current));
+    }
+
+    #[test]
+    fn generation_check_distinguishes_swap_from_same_workspace_supersession() {
+        let gate = ImeExportRequestGate::default();
+        let opts = options(ImeIntegrationMode::On, true);
+        let remove = gate.register_remove("default-project");
+        let refresh = gate.register_refresh("default-project", &opts);
+        assert!(!gate.is_current(&remove));
+        assert!(gate.is_workspace_generation_current(&remove));
+
+        gate.rotate_workspace();
+        assert!(!gate.is_workspace_generation_current(&remove));
+        assert!(!gate.is_workspace_generation_current(&refresh));
     }
 
     #[test]

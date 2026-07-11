@@ -1,8 +1,7 @@
 //! ライセンス状態機械と license.json のスキーマ / IO。
 //!
-//! Tauri アプリ (src-tauri/src/license.rs + commands/license.rs) と MCP サーバー
-//! (grimodex-mcp、Phase 2 で write ツールをゲート) の双方からリンクされるため
-//! grimodex-core に置く。grimodex-mcp は src-tauri 本体をリンクできない。
+//! Electron N-API backend、frozen Tauri v1 shell、MCP サーバー
+//! (grimodex-mcp、write ツールをゲート) から共有するため grimodex-core に置く。
 //!
 //! 規約: 時刻は全て引数で注入する。このモジュール内で `Utc::now()` /
 //! `Local::now()` を呼ばないこと (workspace.rs の時刻注入パターンに従う)。
@@ -24,16 +23,16 @@ pub const VALIDATE_INTERVAL_DAYS: i64 = 7;
 /// 最終検証成功からのオフライン猶予。超過で `LicenseStale`。
 pub const GRACE_DAYS: i64 = 30;
 
-/// Tauri の bundle identifier (tauri.conf.json の `identifier`)。
-/// MCP サーバーが Tauri AppHandle なしで license.json のパスを解決するための
-/// 正本 — `dirs::data_dir()/{APP_IDENTIFIER}/license.json` が Tauri の
-/// `app_data_dir()` と同一パスになる。tauri.conf.json との一致は
-/// src-tauri/src/license.rs の unit test が保証する。
+/// デスクトップアプリの永続identifier（Electron appId / frozen Tauri v1 identifier）。
+/// MCP サーバーがGUI runtimeなしでlicense.jsonのpathを解決するための正本。
+/// `dirs::data_dir()/{APP_IDENTIFIER}/license.json` はElectronが明示固定する
+/// userData pathと同じrootになる。active Electron appId / frozen Tauri v1 identifier
+/// との一致はlicense testが保証する。
 pub const APP_IDENTIFIER: &str = "com.miyakey.grimodex";
 
 /// `{app_data_dir}/license.json` のディスク上スキーマ。キーは snake_case
 /// (Polar API のペイロード命名と揃える)。フロントへ返す DTO は別構造体で
-/// camelCase (src-tauri 側) — ディスクと IPC の命名を混ぜない。
+/// camelCase (Electron IPC DTO) — ディスクと IPC の命名を混ぜない。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LicenseFile {
     #[serde(default = "default_schema_version")]

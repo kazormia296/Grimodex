@@ -75,8 +75,7 @@ import {
 } from "@/features/project/projectStore";
 import { getProject } from "@/features/project/api";
 import { usePhaseStore } from "@/features/codex/phaseStore";
-import { isMac, isWebKitGtk, matchesMod } from "@/lib/platform";
-import { supportsVerticalFormControls } from "@/lib/verticalFormControls";
+import { isMac, matchesMod } from "@/lib/platform";
 import {
   PANEL_COMMANDS,
   getMergedBindings,
@@ -141,6 +140,13 @@ function applyTheme(theme: string, colorTheme?: string) {
 function App() {
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
+  const workspaceOpenRevision = useWorkspaceStore(
+    (s) => s.workspaceOpenRevision,
+  );
+  const workspaceSwitchInProgress = useWorkspaceStore(
+    (s) => s.workspaceSwitchInProgress,
+  );
+  const workspaceHydrated = useWorkspaceStore((s) => s.workspaceHydrated);
   const initialize = useWorkspaceStore((s) => s.initialize);
   const theme = useWorkspaceStore((s) => s.globalSettings?.theme ?? "system");
   const colorTheme = useWorkspaceStore((s) => s.globalSettings?.colorTheme);
@@ -159,13 +165,27 @@ function App() {
   useExternalMountListener();
   useLicenseStateListener();
 
-  // 段階3c: プロジェクトを開いたら codex / scene の未 index を自動補完する。
+  // プロジェクトを開いたら codex / events / chat / scene の未 index を自動補完する。
   // status は embedder 不要の軽量チェック → 未 index がある時だけ背景 reindex。
-  // 失敗は無音 (sparse で動く)。1 セッション 1 プロジェクト 1 回。
+  // workspace path も依存に含め、異なるDBが同じ default-project
+  // id を持つ場合も必ず別 scope として起動する。panel 窓は関数内で no-op。
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   useEffect(() => {
-    if (currentProjectId) void ensureSemanticIndexesOnOpen(currentProjectId);
-  }, [currentProjectId]);
+    if (
+      workspaceHydrated &&
+      !workspaceSwitchInProgress &&
+      currentProjectId &&
+      activeWorkspacePath
+    ) {
+      void ensureSemanticIndexesOnOpen(currentProjectId, activeWorkspacePath);
+    }
+  }, [
+    activeWorkspacePath,
+    currentProjectId,
+    workspaceHydrated,
+    workspaceOpenRevision,
+    workspaceSwitchInProgress,
+  ]);
 
   // Sync uiLanguage setting → i18next
   useEffect(() => {
@@ -362,24 +382,6 @@ function EditorScreen() {
   // 取得まで・失敗時はゲートが fail-open なので執筆は止まらない。
   useEffect(() => {
     void useLicenseStore.getState().refresh();
-  }, []);
-
-  // レンダリングエンジンを <html data-engine> に一度だけ記録する。WebKitGTK
-  // (Linux Tauri, WEBKIT_DISABLE_DMABUF_RENDERER=1 のソフトウェア合成) では
-  // index.css が backdrop-filter blur / fixed 背景を切ってダイアログの重さを
-  // 軽減する。エンジンはプロセス生存中に変わらないので mount 時一回で十分。
-  useEffect(() => {
-    if (isWebKitGtk()) {
-      document.documentElement.dataset.engine = "webkitgtk";
-      // フォームコントロールの縦書き対応 (VerticalFormControls) を probe。
-      // Rust 側 (webkit_features.rs) が有効化に成功したビルドでは true になり、
-      // index.css の Beat chrome 横書き島フォールバックが外れて Chromium と
-      // 同じ縦帯 chrome になる。フラグはページ提供時スナップショットなので
-      // プロセス生存中に変わらず、mount 時一回で十分。
-      if (supportsVerticalFormControls()) {
-        document.documentElement.dataset.vfc = "on";
-      }
-    }
   }, []);
 
   useEffect(() => {

@@ -958,11 +958,11 @@ LLM ベースの誤字脱字検出。Linter（確定論ルール）では拾え�
 | `start_post_effect_run_multi` | `{ ..., scenes: [{ scene_id, codex_payload_json, scene_text }] }` | `{ run_id, from_cache }` | ✓ (folder / project scope の per-scene iteration ランナー) |
 | `abort_post_effect_run` | `{ run_id }` | `()` | ✓ |
 | `list_post_effect_runs` | `{ project_id, effect_type?, limit?, offset? }` | `Run[]` | ✓ |
-| `get_post_effect_run` | `{ run_id }` | `Run & { annotations, lens_data, relations }` | ✓ |
+| `get_post_effect_run` | `{ run_id }` | `Run & { annotations, lens_data, relations }` | 撤去（本番 caller なし、2026-07-11） |
 | `list_annotations_for_scene` | `{ project_id, scene_id, status? }` | `{ annotations: Annotation[], relations: Relation[] }`（`relations` は両端の少なくとも一方が `annotations` に含まれるもの。intra_scene_consistency / 伏線・テーマの hydration に必須）| ✓ |
 | `list_annotations_for_project` | `{ project_id, status? }` | `{ annotations: Annotation[] }`（全シーン横断ビュー用）| ✓ |
 | `update_annotation_status` | `{ annotation_id, status }` | `Annotation`（relation 経由なら端点もまとめて更新）| ✓ |
-| `update_relation_status` | `{ relation_id, status }` | `Relation`（両端 annotation にカスケード）| ✓ |
+| `update_relation_status` | `{ relation_id, status }` | `Relation`（両端 annotation にカスケード）| 撤去（本番 caller なし、2026-07-11） |
 | `reply_to_annotation` | `{ parent_id, content, author_role }` | 新 `Annotation` | ✓ (親の `project_id` / `scene_id` / `run_id` / `persona` を継承して `category='pseudo_comment'` の子を作成。§4 のとおり親の `run_id` を継承) |
 | `save_post_effect_annotations` | `{ scene_id, annotations[] }` | scene 保存時の同期用（`saveAuthorshipSpans` と同タイミングで呼ぶ）| ✓ |
 | `extract_codex_candidates` | `{ project_id, min_count? }` | `CodexCandidate[]`（`{surface, lemma, count, first_scene_id, context}`）| ✓ (2026-06-20 / PR #130。日本語専用＝lindera UniDic。全シーンを読書順 DFS で形態素解析→固有名詞を完全列挙→既存 Codex name/alias 差引。post_effect_run には乗らない独立コマンド。LLM 判定なし＝B1 のみ。`min_count` 既定 2) |

@@ -21,7 +21,7 @@ context: fork
 - クロスプロジェクト混線(XPROJ): read-by-id / 内部FK二次読取の project_id スコープ漏れ・fail-open
 - 異常系・境界（空/null/巨大/不正型/順序依存）、途中失敗、競合(race)、キャッシュ無効化漏れ
 - TipTap: doc破壊・authorship伝搬の抜け・本文wipe
-- Tauri IPC: capabilities未設定、unwrap()によるpanic、型不一致
+- Electron IPC: allowlist漏れ、引数未検証、Envelope破壊、preload越しの過剰権限
 - Rust所有権: 不要な.clone()、Arc<T>で解決すべき箇所
 - テスト: 実挙動でなくmock検証で通っていないか。攻撃ケースが無ければ「未検証」と報告
 

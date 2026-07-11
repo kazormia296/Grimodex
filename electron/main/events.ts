@@ -8,7 +8,7 @@
  * - napi ThreadsafeFunction 発: `backend.onEvent((channel, payloadJson) => …)`
  *   を main 起動時に 1 回登録し、同じ broadcast に載せる。Phase 2 は
  *   `backend:ready` / `workspace:opened` で end-to-end を実証し、Phase 3 で
- *   19 チャネルをこの配線に載せるだけの状態にする（§7.1）。
+ *   棚卸し済みの24チャネルをこの配線に載せる（§7.1）。
  */
 import { BrowserWindow, ipcMain } from "electron";
 

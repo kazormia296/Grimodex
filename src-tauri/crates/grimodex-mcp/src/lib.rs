@@ -16,6 +16,12 @@ use std::path::PathBuf;
 pub struct Cli {
     #[arg(short, long, help = "Path to the Grimodex workspace directory")]
     pub workspace: PathBuf,
+    #[arg(
+        long,
+        value_name = "ABSOLUTE_PATH",
+        help = "Path to license.json (defaults to the legacy Grimodex app data directory)"
+    )]
+    pub license_file: Option<PathBuf>,
     #[arg(short, long, help = "Project ID (defaults to first project in DB)")]
     pub project: Option<String>,
     #[arg(long, help = "Read-only mode (disables write tools)")]
@@ -49,6 +55,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     // Keep the guard alive for this function's lifetime. Dropping it flushes
     // pending lines synchronously; binding to `_` would discard logs.
     let _log_guard = init_mcp_logging(env_filter);
+
+    // Electron owns its userData directory, which can differ from Tauri's
+    // historical app-data location. Resolve the optional main-process-owned
+    // override once at startup; individual write calls still re-read the file
+    // so activation changes take effect without restarting the MCP process.
+    let license_file_path = license_gate::resolve_license_file_path(cli.license_file)?;
 
     // Validate workspace
     let db_path = cli.workspace.join("grimodex.db");
@@ -95,13 +107,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     );
 
     // Build and run server
-    let handler = server::GrimodexServer::new(
+    let handler = server::GrimodexServer::new_with_license_file(
         conn,
         project_id,
         cli.all_projects,
         readonly,
         session_id,
         policy,
+        license_file_path,
     );
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let service = rmcp::serve_server(handler, (stdin, stdout)).await?;

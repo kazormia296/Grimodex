@@ -227,14 +227,6 @@ export async function getForeshadow(id: string): Promise<ForeshadowRow | null> {
 export async function listForeshadows(
   projectId: string,
 ): Promise<ForeshadowRow[]> {
-  if (isTauriRuntime()) {
-    const rows = await invoke<unknown[]>("foreshadow_list", {
-      projectId,
-      filter: null,
-    });
-    return rows.map(normalizeForeshadowRow);
-  }
-
   return db
     .select()
     .from(foreshadows)

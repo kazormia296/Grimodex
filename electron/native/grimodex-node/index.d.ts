@@ -9,7 +9,37 @@ export declare class Backend {
    * (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
    * com.miyakey.grimodex には触らない)。
    */
-  constructor(appDataDir: string)
+  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null)
+  /**
+   * Main-process-only bridge used during the Electron v2 first-run
+   * credential migration. This method is deliberately absent from
+   * `NAPI_COMMANDS`, so renderer IPC cannot request plaintext credentials.
+   * Feature-off development builds return a disabled envelope and never
+   * touch the OS keyring.
+   */
+  readLegacyApiKeysForMigration(): Promise<string>
+  /**
+   * Main/CI-only build gate. Packaging verifies both release-only features
+   * before electron-builder runs; this method is not registered in renderer
+   * IPC and contains no user data.
+   */
+  getNativeBuildCapabilities(): Promise<string>
+  /**
+   * 常時exportするライセンス状態IPC。feature無効buildでは共有crateが
+   * exact disabled DTOを返し、license.jsonには一切触れない。
+   */
+  getLicenseState(): Promise<string>
+  /** Polar activate → atomic license.json更新。HTTP await中にfile lockは保持しない。 */
+  activateLicense(key: string): Promise<string>
+  /** 明示的な再検証。共有runtimeのsingle-flightとstale response guardを使う。 */
+  revalidateLicense(): Promise<string>
+  /** Polar側を解除してから、同じactivationである場合だけlocal stateを破棄する。 */
+  deactivateLicense(): Promise<string>
+  /**
+   * 起動5秒後/以後6時間周期のmain schedulerから呼ぶfail-soft cycle。
+   * disabled・not due・in-flightはJS null、実行後はJSON DTOを返す。
+   */
+  runLicenseValidateCycle(): Promise<string | null>
   /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
@@ -27,8 +57,8 @@ export declare class Backend {
   /**
    * workspace を開く: backup → migrate → swap → RAII SwitchingGuard →
    * recent-workspaces 更新 (`grimodex_db::open::open_workspace_sync` —
-   * Tauri コマンドと同一経路。A3 相互運用の根拠)。`on_swapped` は napi 側
-   * no-op (semantic キャッシュは Tauri シェル固有。§4.1)。
+   * Tauri コマンドと同一経路。A3 相互運用の根拠)。swap直後hookで
+   * Codex matcher破棄 + semantic 4cache epoch rotateを行う。
    * 完了時に `workspace:opened` (FE 購読者なしのデバッグチャネル) を emit
    * する (§7.1 の end-to-end 実証チャネルその 2)。
    * 返り値: `{"name":…,"isExisting":…}` の JSON 文字列。
@@ -40,6 +70,23 @@ export declare class Backend {
    */
   validateWorkspacePath(path: string): boolean
   /**
+   * Electron main専用の内部境界。standalone MCP sidecarへ渡す現在の
+   * workspace directoryを返す。renderer commandとしては公開せず、mainの
+   * `get_mcp_config` handlerだけが利用する。
+   */
+  getActiveWorkspacePath(): Promise<string>
+  /**
+   * アクティブworkspaceの復元候補を新しい順で返す。
+   * 返り値は `BackupInfo[]` のcamelCase JSON文字列。
+   */
+  listBackups(): Promise<string>
+  /**
+   * バックアップを検証・安全退避・原子置換し、同じworkspaceを再openする。
+   * 再open時にDB由来のCodex matcherを破棄し、semantic 4-cache epochも
+   * rotateして復元前DBへのlate writeを不可視にする。
+   */
+  restoreBackup(fileName: string): Promise<void>
+  /**
    * 起動時に必ず呼ばれる (workspace/store.ts:152)。
    * 返り値: `GlobalSettings` の JSON 文字列 (camelCase — Tauri ワイヤと同形)。
    */
@@ -50,6 +97,12 @@ export declare class Backend {
    */
   saveGlobalSettings(settings: any): Promise<void>
   /**
+   * AppData配下に一意なsample-workspace世代を共有coreで公開する。
+   * GlobalSettingsのwrite_lockをget/save/openと共有し、同時seedも同じ
+   * critical sectionへ入る。公開済み世代はアクティブDB/MCPが保持し得るため削除しない。
+   */
+  seedSampleWorkspace(language: string, aiPolicy: string): Promise<string>
+  /**
    * 監査チェーン append (commands/timelapse.rs の写像。編集ループ常連の
    * 軽量 DB 書き込み。§4.3)。`events` は camelCase の AppendChangeEvent 配列
    * (Tauri の camelCase→snake_case 自動変換は serde の rename_all が担う)。
@@ -59,15 +112,15 @@ export declare class Backend {
   timelapseAppendBatch(projectId: string, sessionId: string, events: any): Promise<string>
   /**
    * 現在の Codex 読みを `<userData>/ime/projects/<projectId>.json` へ再出力する。
-   * options は Tauri と同じ camelCase `ImeExportOptions`。DB 読み取りと
+   * options は typed IPC と同じ camelCase `ImeExportOptions`。DB 読み取りと
    * ファイル I/O の双方を Node main thread の外で実行する。
    */
-  imeExportRefresh(projectId: string, options: any): Promise<string>
+  imeExportRefresh(projectId: string, expectedWorkspacePath: string, options: any): Promise<string>
   /**
    * IME consumer が参照する active project を切り替える。`None` は明示的な
    * deactivation であり、renderer からの null をそのまま受ける。
    */
-  imeExportSetActiveProject(projectId: string | undefined | null, mode: string): Promise<string>
+  imeExportSetActiveProject(projectId: string | undefined | null, expectedWorkspacePath: string | undefined | null, mode: string): Promise<string>
   /**
    * Electron の will-quit 専用。blocking pool の処理をタイムアウトで
    * 打ち切ると state.json が旧 project を指したまま終了し得るため、ここだけ
@@ -79,7 +132,7 @@ export declare class Backend {
   /** consumer handshake は保持し、project snapshots と active state を消去する。 */
   imeExportClearAll(): Promise<void>
   /** 単一 project の snapshot を削除し、必要なら active state も解除する。 */
-  imeExportRemoveProject(projectId: string): Promise<void>
+  imeExportRemoveProject(projectId: string, expectedWorkspacePath: string): Promise<void>
   /**
    * 文字屑ゴミ箱: 作成 (commands/trash_bin.rs の写像 — 実装本体は
    * `grimodex_db::trash_bin` を Tauri コマンドと共用)。trash_bin 5 コマンドは
@@ -167,6 +220,41 @@ export declare class Backend {
    * 返り値: `CodexMatch` (UTF-16 offset、camelCase) 配列の JSON 文字列。
    */
   codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>
+  /**
+   * 本文から未知の固有名詞候補を抽出する
+   * (`grimodex_semantic::codex_candidates` を Tauri と共用)。
+   *
+   * workspace DB は blocking pool へ投入する**前**に一度だけ pin する。これにより
+   * 待ち行列中に workspace が切り替わってもコマンド途中で別 DB を解決せず、開始時
+   * snapshot の scenes/known names を読む。共有コアは DB phase を単一 connection
+   * lock に閉じ、UniDic + Aho-Corasick の CPU phase は lock 外で実行する。
+   * 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
+   */
+  extractCodexCandidates(projectId: string, minCount?: number | undefined | null): Promise<string>
+  /**
+   * モデルが無ければbackground downloadを開始し、状態文字列を即返す。
+   * resource欠落はBackend constructorを失敗させず、このsemantic surfaceでのみ
+   * installed/unavailable/downloading または明示エラーとして扱う。
+   */
+  semanticDownloadModel(language: string): Promise<string>
+  semanticIndexScene(sceneId: string): Promise<string>
+  semanticSearch(projectId: string, query: string, limit: number, sceneScope?: string | undefined | null, descriptionMode?: boolean | undefined | null): Promise<string>
+  codexIndexEntry(entryId: string): Promise<string>
+  codexSemanticSearch(projectId: string, query: string, limit: number): Promise<string>
+  codexIndexStatus(projectId: string): Promise<string>
+  codexReindexAll(projectId: string): Promise<string>
+  eventsIndexEntry(eventId: string): Promise<string>
+  eventsSemanticSearch(projectId: string, query: string, limit: number): Promise<string>
+  eventsIndexStatus(projectId: string): Promise<string>
+  eventsReindexAll(projectId: string): Promise<string>
+  chatIndexMessage(messageId: string): Promise<string>
+  chatMessageSearch(projectId: string, query: string, limit: number): Promise<string>
+  chatIndexStatus(projectId: string): Promise<string>
+  chatReindexAll(projectId: string): Promise<string>
+  semanticIndexStatus(projectId: string): Promise<string>
+  semanticReindexAll(projectId: string, runId?: string | undefined | null): Promise<string>
+  semanticChunkContext(sceneId: string, charStart: number, charEnd: number, padding: number): Promise<string>
+  semanticDebugDump(projectId: string, sceneId?: string | undefined | null, limit?: number | undefined | null): Promise<string>
   /**
    * プロットスレッド作成 (commands/plot_threads.rs::plot_thread_create の写像)。
    * `payload` は camelCase の PlotThreadCreatePayload。
@@ -322,6 +410,78 @@ export declare class Backend {
   replyToAnnotation(args: any): Promise<string>
   /** シーンの annotation を保存 (raw snake_case 配列、range_start/end は i64)。 */
   savePostEffectAnnotations(projectId: string, sceneId: string, annotations: any): Promise<void>
+  /**
+   * 単一sceneの校閲runを開始し、AI完了を待たず `{run_id,from_cache}` を返す。
+   * `settings` とsecretはElectron mainが同じinvokeで取得したsnapshot。API key
+   * 未登録 (`None`) と保存済み空文字 (`Some("")`) を区別し、lookup errorも
+   * cache hitを壊さないよう背景taskまで遅延させる。
+   */
+  startPostEffectRun(args: any, settings: any, apiKey?: string | undefined | null, apiKeyError?: string | undefined | null): Promise<string>
+  /**
+   * 複数sceneの校閲run。処理はscene境界でabort registryを確認し、イベントは
+   * `post_effect:{progress,partial,done,error}` をEventQueueへ配信する。
+   */
+  startPostEffectRunMulti(args: any, settings: any, apiKey?: string | undefined | null, apiKeyError?: string | undefined | null): Promise<string>
+  /**
+   * 同一BackendのregistryとDB rowを一緒に更新する。DB上のproject ownershipを
+   * 確認できたrunning runだけにabort flagを立てるため、cross-project/late abort
+   * は別runや将来runへ波及しない。
+   */
+  abortPostEffectRun(runId: string, projectId: string): Promise<void>
+  /**
+   * AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
+   * 返り値: `AiSettings` の JSON 文字列 (camelCase)。
+   */
+  getAiSettings(): Promise<string>
+  /**
+   * AI 設定を `<appData>/ai-settings.json` へ保存する (Tauri の
+   * `save_ai_settings` と同一)。API キーは別の safeStorage 経路なので含まない。
+   */
+  saveAiSettings(settings: any): Promise<void>
+  /**
+   * 非ストリーミングのチャット送信 (Tauri の send_chat_message と同一ロジック。
+   * キーは注入)。`args` は camelCase の ChatRequest、`api_key` は解決済み平文。
+   * `settings` は **呼び側 (dispatchInvoke) が getAiSettings で1回だけ読んだ AiSettings
+   * スナップショット** — キー解決と送信を同一スナップショットで行い、Tauri の
+   * 単一 read_ai_settings と同じ原子性を保つ (2 度読みの TOCTOU 回避)。
+   * 返り値: `ChatResponse` の JSON 文字列 (camelCase)。
+   */
+  sendChatMessage(args: any, settings: any, apiKey: string): Promise<string>
+  /**
+   * ストリーミングのチャット送信 (Tauri の send_chat_message_stream と同一)。
+   * チャンクは `chat:stream-chunk` / 完了は `chat:stream-done` を EventQueue へ emit。
+   * 失敗時は `chat:stream-error` を emit してから reject する (Tauri と同一契約 —
+   * FE の fire-and-forget .catch と listen error の両経路を保つ)。
+   * **abort は self.state.chat_abort を共有** — abort_chat_stream と同一インスタンス。
+   */
+  sendChatMessageStream(args: any, settings: any, apiKey: string): Promise<void>
+  /**
+   * 実行中のチャットストリームを中止する (Tauri の abort_chat_stream と同一 —
+   * 純メモリの atomic store)。send_chat_message_stream と同一の chat_abort を立てる。
+   */
+  abortChatStream(): void
+  /**
+   * インライン AI のストリーミング送信。`inline-ai:stream-*` へ emit し、
+   * AI のべりすとでは Completion mode を使う。チャットとは独立した abort flag。
+   */
+  sendInlineAiStream(args: any, settings: any, apiKey: string): Promise<void>
+  /** 実行中のインライン AI ストリームを中止する。chat_abort とは独立。 */
+  abortInlineAiStream(): void
+  /**
+   * Tool Use 対応の Agent 送信。tool protocol 解決・Hermes/native の安全ゲートを
+   * 含む `grimodex_ai::send_chat_with_tools` をTauriと共用する。
+   */
+  sendAgentMessage(args: any, settings: any, apiKey: string): Promise<string>
+  /**
+   * provider のモデル一覧を取得する。`settings` はmainが1回読んだsnapshot、
+   * `api_key` はsafeStorageにキーが無い場合も空文字で注入される。
+   */
+  listAiModels(args: any, settings: any, apiKey: string): Promise<string>
+  /**
+   * 最小リクエストでAI接続を確認する。variant解決はテスト対象providerを設定へ
+   * 反映してから行い、OpenAI互換endpointの既定variantを正しく選ぶ。
+   */
+  testAiConnection(args: any, settings: any, apiKey: string): Promise<string>
   /**
    * main 起動時に 1 回登録する (§7.1)。コールバックは
    * `(channel: string, payloadJson: string)` の 2 引数。登録前に emit された

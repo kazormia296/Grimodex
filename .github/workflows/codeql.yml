@@ -3,8 +3,8 @@ name: CodeQL
 # advanced setup。GitHub の default setup を置き換える。
 # 目的: Rust の解析品質("Low Rust analysis quality"警告)の改善。
 #
-# 経緯: system 依存(libwebkit2gtk 等)の投入では call target 解決率は 48% から
-# 動かなかった(主因は FFI ではなく proc-macro 展開と依存本体の非抽出)。そこで
+# 経緯: system 依存の追加では call target 解決率は 48% から動かなかった
+# (主因は FFI ではなく proc-macro 展開と依存本体の非抽出)。そこで
 # extractor オプション extract_dependencies_as_source=true で依存の全ソースを
 # 抽出し、call target が閾値(50%)を超えるか検証する。
 #
@@ -51,8 +51,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # Rust の FFI クレートの build script が pkg-config でシステムライブラリを
-      # 解決できるようにする。ci.yml の rust ジョブと同一の依存リスト。
+      # 共有 Rust crate の build script 用。凍結した Tauri shell は解析時に
+      # build しないため WebKitGTK / AppIndicator は不要。
       - name: システム依存ライブラリのインストール (Rust)
         if: matrix.language == 'rust'
         run: |
@@ -63,11 +63,8 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
             build-essential \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
+            libssl-dev
         env:
           DEBIAN_FRONTEND: noninteractive
 

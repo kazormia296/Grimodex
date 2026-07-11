@@ -18,9 +18,7 @@ import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { EditorBodyWithLoading } from "@/features/editor/EditorContentSkeleton";
 import { EditorDropDiv } from "@/features/editor/EditorDropDiv";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
-import { isWebKitGtk } from "@/lib/platform";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
-import { useWebKitGtkVerticalScrollResetGuard } from "@/features/editor/useWebKitGtkVerticalScrollResetGuard";
 import type { EditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import type { FilterSource } from "@/features/attribution/attributionStore";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
@@ -94,12 +92,6 @@ export function EditorContentArea({
   const isEnglish = useCurrentProject()?.language === "en";
   // 縦書きではホイールの縦回転を読み進み方向 (横) のスクロールに変換する
   useVerticalWheelScroll(editorContainerRef, editorSettings.verticalMode);
-  // WebKitGTK: DOM 変異 relayout で vertical-rl の scrollLeft が先頭(0)へ
-  // リセットされるエンジンバグの検出即復元（Codex ホバーポップオーバー等）。
-  useWebKitGtkVerticalScrollResetGuard(
-    editorContainerRef,
-    editorSettings.verticalMode,
-  );
   return (
     <>
       <FindReplaceBar
@@ -142,10 +134,7 @@ export function EditorContentArea({
             isEnglish && "editor-en-typography",
           )}
           style={{
-            ...buildEditorContentStyle(editorSettings, {
-              vertical: editorSettings.verticalMode,
-              webkitGtk: isWebKitGtk(),
-            }),
+            ...buildEditorContentStyle(editorSettings),
             ...(gutterReserve
               ? ({ "--gutter-reserve": gutterReserve } as React.CSSProperties)
               : {}),

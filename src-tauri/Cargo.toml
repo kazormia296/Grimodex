@@ -5,6 +5,10 @@ members = [
     "crates/grimodex-fonts",
     "crates/grimodex-mcp",
     "crates/grimodex-lint",
+    "crates/grimodex-ai",
+    "crates/grimodex-post-effect",
+    "crates/grimodex-license",
+    "crates/grimodex-semantic",
 ]
 
 [package]
@@ -33,11 +37,11 @@ devtools = ["tauri/devtools"]
 # 本文セマンティック検索の ONNX 推論経路 (Step 4 以降)。production ビルドでは default 有効。
 # `cargo test --no-default-features` で off にすれば chunker などの pure-logic テストが
 # onnxruntime バイナリ無しで走る (Tauri ビルド時に download-binaries が dl)。
-semantic-embedding = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
+semantic-embedding = ["grimodex-semantic/semantic-embedding"]
 # ライセンス認証機構 (ライセンス認証設計書 §9.1)。ベータ配布ビルドでは無効のまま
 # (= 全ゲート素通り・License UI 非表示)。1.0 リリースビルドのみ --features licensing。
 # 無効でもコマンドは登録され、get_license_state が licensing_enabled:false を返す。
-licensing = ["grimodex-mcp/licensing"]
+licensing = ["grimodex-license/licensing", "grimodex-mcp/licensing"]
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api"] }
@@ -67,21 +71,26 @@ chrono = "0.4"
 # バックアップの gzip 圧縮 (backup restore Phase 2)。Cargo.lock に ort/tauri
 # bundler 経由で既に取り込まれているため直接依存化のコストはほぼゼロ。
 flate2 = "1"
-keyring = { version = "3", features = ["sync-secret-service", "windows-native", "apple-native"] }
-reqwest = { version = "0.13", features = ["json", "stream"] }
+# keyring は crates/grimodex-ai へ移設（Electron 移行 Phase 3 バッチ3a）。
+# API キー保管は grimodex-ai の keyring feature 経由で有効化する（下記依存）。
 futures = "0.3"
 tokio = { version = "1", features = ["macros", "process", "io-util", "rt", "sync", "time"] }
-aho-corasick = "1"
 # システムフォント列挙 (commands::fonts::list_system_fonts)。実装本体は
 # crates/grimodex-fonts へ抽出済み (Electron 移行 Phase 3 — napi と共用)。
 grimodex-fonts = { path = "crates/grimodex-fonts" }
 grimodex-lint = { path = "crates/grimodex-lint" }
 grimodex-core = { path = "crates/grimodex-core" }
+# AI プロバイダ層 (HTTP/SSE/provider/型) を抽出 (Electron 移行 Phase 3 バッチ3a —
+# napi と共用)。`crate::ai::*` は re-export shim 経由でこのクレートへ委譲し、
+# ai_responses / ai_novelist はクレート内部モジュールとして閉じる。keyring feature で
+# OS セキュアストレージ経路 (save/has/delete_api_key) を Tauri ビルドのみ有効化する。
+grimodex-ai = { path = "crates/grimodex-ai", features = ["keyring"] }
+grimodex-post-effect = { path = "crates/grimodex-post-effect" }
+grimodex-license = { path = "crates/grimodex-license" }
+grimodex-semantic = { path = "crates/grimodex-semantic", default-features = false }
 # DB 層 (Electron 移行 Phase 2 S1 で抽出)。`crate::database` / `crate::workspace`
 # は lib.rs の互換シム経由でこのクレートへ委譲する。
 grimodex-db = { path = "crates/grimodex-db" }
-# Codex 候補名の正規化 (NFC) に使用。固有名詞の NFC/NFD 揺れで重複検出が外れるのを防ぐ。
-unicode-normalization = "0.1"
 # MCP サーバを本体バイナリに統一する (src/main.rs の `mcp` サブコマンド分岐から
 # run_blocking を呼ぶ)。一方向依存・循環なし: grimodex-mcp は grimodex-core のみ
 # に依存し src-tauri を参照しない。grimodex_lib 側へ import しないこと。
@@ -90,40 +99,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 dirs = "6"
-# 本文セマンティック検索 (temp/semantic-prose-search-context.md §2.3)。
-# ort: ONNX Runtime バインディング。download-binaries で初回ビルド時に prebuilt ORT を取得する。
-# tokenizers: HuggingFace tokenizers (ruri-v3 ONNX に同梱の tokenizer.json をロード)。
-# ndarray: ONNX 入出力テンソルの構築・mean pooling 演算に使用。
-ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = [
-    "download-binaries",
-    "std",
-    "ndarray",
-    # download-binaries は build-time に prebuilt ORT を取りに行く。TLS feature を選ばないと
-    # ort-sys のビルドが落ちる。rustls は pure-Rust で system OpenSSL に依存しないため Tauri
-    # 配布物との相性が良い。
-    "tls-rustls",
-] }
-# fancy-regex を選ぶと pure-Rust のまま Oniguruma を避けられる。ruri-v3 の tokenizer.json は BPE 系。
-tokenizers = { version = "0.23", optional = true, default-features = false, features = [
-    "fancy-regex",
-] }
-ndarray = { version = "0.17", optional = true }
-
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "2"
-
-# WebKitGTK の機能フラグ操作 (webkit_features.rs)。wry が同じ crate を使うため
-# 新規のネイティブ依存は増えない。feature API (2.42+) 自体は未バインドで dlsym
-# 解決する — ここでは WebView/Settings 型と terminate_web_process/reload の
-# バインディングだけを使う。
-[target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = { version = "2.0", features = ["v2_40"] }
-glib = "0.18"
-
-[dev-dependencies]
-# Polar クライアントのモックテスト (ライセンス認証設計書 §10)。
-# base URL を注入可能にした polar_*_at 関数に MockServer を当てる。
-wiremock = "0.6"

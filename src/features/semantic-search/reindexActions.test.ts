@@ -7,6 +7,13 @@ const apiMock = vi.hoisted(() => ({
 const autoIndexMock = vi.hoisted(() => ({
   ensureSemanticIndexesOnOpen: vi.fn(() => Promise.resolve()),
   resetIndexGuards: vi.fn(),
+  captureCurrentSemanticScope: vi.fn(() => ({
+    workspaceKey: "/workspace/a",
+    workspaceOpenRevision: 1,
+    projectId: "proj-test",
+    guardKey: '["/workspace/a",1,"proj-test"]',
+  })),
+  isSemanticScopeCurrent: vi.fn(() => true),
 }));
 const toastMock = vi.hoisted(() => {
   const fn = vi.fn();
@@ -38,7 +45,10 @@ beforeEach(() => {
 describe("runSemanticReindex", () => {
   it("現在プロジェクトを再構築し success toast を出す", async () => {
     await runSemanticReindex();
-    expect(apiMock.semanticReindexAll).toHaveBeenCalledWith("proj-test");
+    expect(apiMock.semanticReindexAll).toHaveBeenCalledWith(
+      "proj-test",
+      expect.any(String),
+    );
     expect(toastMock.success).toHaveBeenCalled();
     expect(useReindexProgressStore.getState().running).toBe(false);
   });
@@ -49,12 +59,12 @@ describe("runSemanticReindex", () => {
     expect(apiMock.semanticReindexAll).not.toHaveBeenCalled();
   });
 
-  it("失敗時は clear して error toast", async () => {
+  it("失敗時は自分のrun tokenだけfailして error toast", async () => {
     apiMock.semanticReindexAll.mockRejectedValueOnce(new Error("boom"));
-    const clearSpy = vi.spyOn(useReindexProgressStore.getState(), "clear");
+    const failSpy = vi.spyOn(useReindexProgressStore.getState(), "fail");
     await runSemanticReindex();
     expect(toastMock.error).toHaveBeenCalled();
-    expect(clearSpy).toHaveBeenCalled();
+    expect(failSpy).toHaveBeenCalledWith(expect.any(String));
     expect(useReindexProgressStore.getState().running).toBe(false);
   });
 });
@@ -63,7 +73,10 @@ describe("notifyLanguageChangedReindex", () => {
   it("ガードを解除し、確認トーストを出す（トグル時は重い処理を起こさない）", () => {
     notifyLanguageChangedReindex("proj-test");
     // 1セッションガードを解除（次の open / DL 完了 / トースト操作で再インデックス可）。
-    expect(autoIndexMock.resetIndexGuards).toHaveBeenCalledWith("proj-test");
+    expect(autoIndexMock.resetIndexGuards).toHaveBeenCalledWith(
+      "proj-test",
+      "/workspace/a",
+    );
     // トグル時点では reindex/DL を起動しない。
     expect(apiMock.semanticReindexAll).not.toHaveBeenCalled();
     expect(autoIndexMock.ensureSemanticIndexesOnOpen).not.toHaveBeenCalled();
@@ -83,6 +96,7 @@ describe("notifyLanguageChangedReindex", () => {
     opts.action.onClick();
     expect(autoIndexMock.ensureSemanticIndexesOnOpen).toHaveBeenCalledWith(
       "proj-test",
+      "/workspace/a",
     );
   });
 

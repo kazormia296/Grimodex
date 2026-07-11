@@ -59,7 +59,13 @@ precondition(
 );
 const nodeBinary =
   process.env.GRIMODEX_NODE_PATH ??
-  path.join(rootDir, "electron", "native", "grimodex-node", "grimodex-node.node");
+  path.join(
+    rootDir,
+    "electron",
+    "native",
+    "grimodex-node",
+    "grimodex-node.node",
+  );
 precondition(
   existsSync(nodeBinary),
   `grimodex-node.node がありません: ${nodeBinary}\n\`pnpm napi:build\` を先に実行してください。`,
@@ -72,7 +78,10 @@ function readEulaVersion() {
     "utf8",
   );
   const m = src.match(/EULA_VERSION\s*=\s*"([^"]+)"/);
-  precondition(m, "EULA_VERSION を src/features/legal/constants.ts から読めませんでした");
+  precondition(
+    m,
+    "EULA_VERSION を src/features/legal/constants.ts から読めませんでした",
+  );
   return m[1];
 }
 
@@ -142,7 +151,9 @@ async function waitUntil(fn, label, timeoutMs = 30_000, intervalMs = 500) {
     if (Date.now() > deadline) {
       throw new Error(
         `timeout waiting for: ${label}` +
-          (lastError ? `\n  last error: ${lastError.message ?? lastError}` : ""),
+          (lastError
+            ? `\n  last error: ${lastError.message ?? lastError}`
+            : ""),
       );
     }
     await new Promise((r) => setTimeout(r, intervalMs));
@@ -182,7 +193,9 @@ async function phaseSeed() {
     const opened = await invokeOk(page, "open_workspace", {
       path: workspaceDir,
     });
-    log(`  open_workspace: name=${opened?.name} isExisting=${opened?.isExisting}`);
+    log(
+      `  open_workspace: name=${opened?.name} isExisting=${opened?.isExisting}`,
+    );
 
     // 次回起動を editor ビュー直行にする: 信頼リスト + launcher スキップ +
     // 初回系ダイアログ（welcome / EULA / リリースノート）の抑止
@@ -214,6 +227,26 @@ async function phaseWrite() {
     await header.waitFor({ state: "visible", timeout: LAUNCH_TIMEOUT_MS });
     log("  editor ビュー到達（シーン一覧パネル表示）");
 
+    // 起動直後の layout hydration が全レイヤーで最終状態になっていること。
+    // shell / region / editor のどれかが opacity=0 のまま固着すると、locator
+    // 自体は visible でも Playwright と実ユーザーの双方が操作できない。
+    await page.waitForFunction(
+      () => {
+        const layers = Array.from(
+          document.querySelectorAll(
+            "[data-layout-shell], [data-animated-region], [data-editor-area]",
+          ),
+        );
+        return (
+          layers.length > 0 &&
+          layers.every((layer) => getComputedStyle(layer).opacity === "1")
+        );
+      },
+      undefined,
+      { timeout: 5_000 },
+    );
+    log("  layout hydration完了（全レイヤー opacity=1）");
+
     // A1 相当の最小確認: windowControls ブリッジが応答する
     const maximized = await page.evaluate(() =>
       globalThis.grimodex.windowControls.isMaximized(),
@@ -233,10 +266,7 @@ async function phaseWrite() {
     log(`  シーン作成（既定タイトル: ${DEFAULT_SCENE_TITLE}）`);
 
     // シーンを開いて本文を入力
-    await page
-      .getByText(DEFAULT_SCENE_TITLE, { exact: true })
-      .first()
-      .click();
+    await page.getByText(DEFAULT_SCENE_TITLE, { exact: true }).first().click();
     const editor = page.locator('.ProseMirror[contenteditable="true"]').first();
     await editor.waitFor({ state: "visible", timeout: 30_000 });
     await editor.click();
@@ -273,10 +303,7 @@ async function phaseAssertAfterRestart() {
     log("  DB 残存確認");
 
     // UI レベル: シーンを開いてエディタに本文が出る
-    await page
-      .getByText(DEFAULT_SCENE_TITLE, { exact: true })
-      .first()
-      .click();
+    await page.getByText(DEFAULT_SCENE_TITLE, { exact: true }).first().click();
     await page
       .locator(`.ProseMirror:has-text("${SMOKE_TEXT}")`)
       .first()

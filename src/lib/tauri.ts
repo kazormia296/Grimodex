@@ -25,10 +25,19 @@ const SLOW_COMMANDS = new Set([
   "send_chat_message_stream",
   /** CLI は invoke が子プロセス終了までブロックするため HTTP ストリームと同様に長めのタイムアウト */
   "send_cli_chat_stream",
+  /** GUI起動時のPATH補完はlogin shell / toolchain探索を行い、内部timeoutが10秒近くなる。 */
+  "detect_cli_binary",
+  /** 手入力pathはElectron mainのnative authorization応答を待つ。 */
+  "test_cli_connection",
   "send_agent_message",
   "send_inline_ai_stream",
   "abort_inline_ai_stream",
   "test_ai_connection",
+  /** Polar clientのHTTP timeoutは15s。外側10sで先にrejectするとnativeだけが
+   * license.jsonを後から更新し、再試行でactivation枠を重複消費しうる。 */
+  "activate_license",
+  "revalidate_license",
+  "deactivate_license",
   "list_ai_models",
   "list_cli_models",
   "start_post_effect_run",
@@ -37,10 +46,20 @@ const SLOW_COMMANDS = new Set([
   /** embedder コールド時 (初回 ONNX ロード) は 1 scene でも 10s を超えうる。
    *  reindex_all だけ入っていた非対称の解消 (semantic-index-db-lock #2)。 */
   "semantic_index_scene",
+  "semantic_search",
   /** codex も同様: 全件 back-index は分単位、単件 index も embedder コールド時 >10s。
    *  semantic_* と対称に長めのタイムアウトを与える (段階3c)。 */
   "codex_reindex_all",
   "codex_index_entry",
+  "codex_semantic_search",
+  /** Chronicle / chat semantic index and query commands share the same ONNX cold-load
+   *  and full-project reindex costs as scene/codex. */
+  "events_index_entry",
+  "events_semantic_search",
+  "events_reindex_all",
+  "chat_index_message",
+  "chat_message_search",
+  "chat_reindex_all",
   /** 中規模プロジェクトでは Aho-Corasick 構築に 10 秒超かかることがある */
   "codex_rebuild_matcher",
   /** 初回呼び出しは lindera UniDic 埋め込み辞書のコールドロード（OnceLock、
@@ -60,6 +79,11 @@ const SLOW_COMMANDS = new Set([
    *  (vivliostyle_build は即 runId を返す fire-and-forget なので不要) */
   "vivliostyle_detect",
   "vivliostyle_save_output",
+  /** Electronでは手入力pathのnative authorization応答を待ってからpreviewをspawnする。 */
+  "vivliostyle_preview_start",
+  /** updater の network check / package download は 10s を超えうる。 */
+  "updater_check",
+  "updater_download",
   /** M3 で async 化した長時間 DB コマンド群。JS 側 10s タイムアウトだと
    *  「Rust 側は実行継続しているのに失敗扱い → 再クリックで多重実行」になる。
    *  FTS 全再構築/修復は分単位、open/seed は migrate + VACUUM INTO を含み、

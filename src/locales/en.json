@@ -674,7 +674,7 @@
     "ai": {
       "mcp": {
         "title": "MCP Integration",
-        "description": "Copy a .mcp.json to the clipboard for external MCP clients (Claude Code / Hermes Agent); the app binary runs as the MCP server. Pick a scope and write permission. \"Read-only\" adds --readonly (cloud-safe default). \"Per policy\" omits --readonly, leaving writes governed by the project's AI policy (knowledgeWrite/bodyWrite) — for local/trusted clients.",
+        "description": "Copy a .mcp.json to the clipboard for external MCP clients (Claude Code / Hermes Agent); it launches the MCP server command provided by Grimodex. Pick a scope and write permission. \"Read-only\" adds --readonly (cloud-safe default). \"Per policy\" omits --readonly, leaving writes governed by the project's AI policy (knowledgeWrite/bodyWrite) — for local/trusted clients.",
         "scopeProject": "This project",
         "scopeProjectDesc": "Current project only (pinned via --project)",
         "scopeAll": "All projects (local)",

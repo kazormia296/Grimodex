@@ -292,9 +292,9 @@ async function saveWebmBlob(blob: Blob, filename: string): Promise<boolean> {
 
 ## 10. プラットフォーム / CSP
 
-- **VP9 WebM 録画**は WebView2（Windows）では良好だが、**WKWebView（macOS）/ WebKitGTK（Linux）で未サポートの可能性**。bundle は3 OS 全部を出す（`tauri.conf.json:34`）。ユニットテストは `MediaRecorderCtor` を stub するため **この差異を検出できない**（要実機検証）。
+- **VP9 WebM 録画**は3 OSとも Electron Chromium の `MediaRecorder` を使う。ただし配布物ごとの codec 可否はユニットテスト（`MediaRecorderCtor` stub）で検出できないため、Windows / macOS / Linux の署名済み package で実機確認する。
   - 対策: `MediaRecorder.isTypeSupported('video/webm;codecs=vp9')` を feature-detect → 非対応なら mime フォールバック列（`video/webm;codecs=vp8` → `video/webm`）を試し、全滅ならボタンを無効化＋`videoUnsupported` を表示。
-- **CSP に `media-src` 無し**（`tauri.conf.json:28`）→ media は `default-src 'self'` にフォールバック。**`blob:` の `<video>` プレビューは現状ブロックされる**。アプリ内で録画結果をプレビューしたいなら CSP に `media-src 'self' blob:` を追加。保存（writeFile）はプレビュー不要なので CSP 変更なしで可。
+- **CSP に `media-src` 無し**（`electron/main/protocol.ts`）→ media は `default-src 'self'` にフォールバック。**`blob:` の `<video>` プレビューは現状ブロックされる**。アプリ内で録画結果をプレビューしたいなら CSP に `media-src 'self' blob:` を追加。保存（main processのsave handler）はプレビュー不要なので CSP 変更なしで可。
 - sandbox egress とは無関係（ローカル生成のみ）。[[grimodex-sandbox-egress-firewall]] / [[grimodex-csp-ipc-fallback]] の方針に矛盾しないこと。
 
 ---
@@ -516,7 +516,7 @@ ON→OFF（`enabled === false`）:
 3. **frame schedule**: clamped-timestamp（既定 `maxIdle=2000ms`）で idle 圧縮し 30s/30fps にサンプル（§5.5 通り、`frameProducer.ts`）。
 4. **replay 起点**: baseline snapshot があれば seed、無ければ空 doc（`buildReplayStart`、C1）。baseline は記録 ON 時に scene ごと anchorSequence=0 で焼く（`toggle.ts`）。
 5. **VP9 feature-detect**: `pickSupportedWebmMime`（vp9→vp8→webm）で対応 mime を選び、null ならパネルのボタンを無効化（A6）。
-6. **コミット**: A1→A6 / B1→B6 / C1 を green-build 単位で master 直 commit（`replayEngine`/`recorder`/`settings`/`toggle`/`frameProducer`/`exportTimelapse`/`videoExport`/`TimelapsePanel` ほか）。実機（macOS WKWebView / Linux WebKitGTK）での VP9 録画可否は未検証（要 MANUAL_TEST_CHECKLIST）。
+6. **コミット**: A1→A6 / B1→B6 / C1 を green-build 単位で master 直 commit（`replayEngine`/`recorder`/`settings`/`toggle`/`frameProducer`/`exportTimelapse`/`videoExport`/`TimelapsePanel` ほか）。Electron移行後は3 OSの Chromium package で VP9 録画可否を MANUAL_TEST_CHECKLIST に沿って確認する。
 7. **【実機バグ修正】blob → hex/JSON TEXT 化**（commit 70687944）: recorder/snapshots は当初 `blob(mode:'buffer')` + `Buffer.from` を使っていたが、**webview に `Buffer` が無く（Node グローバル）、かつ drizzle sqlite-proxy 経由では BLOB が round-trip できない**（Rust の param 変換は文字列化のみ・BLOB 読み出しは `[blob N bytes]` プレースホルダ。embeddings だけ専用 Rust command で別経路）。結果 `recorder.flush` が `ReferenceError: Buffer is not defined` で全失敗し、**change_events が一度も書かれていなかった**（記録基盤が本番未動作だった）。修正: `change_events.prevHash/hash` を **hex TEXT**、`state_snapshots.payload` を **plain JSON TEXT**（gzip 廃止）に変更。インメモリのハッシュ計算は Uint8Array のまま、DB 境界のみ `bytesToHex`/`hexToBytes`。SQLite BLOB affinity 列は TEXT 値をそのまま保持するため migration 不要。ユニットは db をモックするため本バグを検出できなかった（修正後も同様 → 実機確認が必須）。
 
 ---

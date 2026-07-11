@@ -27,6 +27,7 @@ describe("useLayoutPresetCrossfade", () => {
       activePresetId: "builtin:default",
       layoutLocked: false,
       maximizedPanelId: null,
+      initialized: true,
     });
   });
 
@@ -34,7 +35,7 @@ describe("useLayoutPresetCrossfade", () => {
     vi.useRealTimers();
   });
 
-  it("re-triggers an opacity fade (set 0 → start 1) when preset changes", () => {
+  it("sets opacity 0 and starts the fade without remounting", () => {
     const { result } = renderHook(() => useLayoutPresetCrossfade());
     const setSpy = vi.spyOn(result.current.crossfadeControls, "set");
     const startSpy = vi.spyOn(result.current.crossfadeControls, "start");
@@ -68,6 +69,39 @@ describe("useLayoutPresetCrossfade", () => {
     expect(startSpy).toHaveBeenCalledWith(
       expect.objectContaining({ opacity: 1 }),
     );
+  });
+
+  it("does not fade the startup layout hydration", async () => {
+    useLayoutStore.setState({
+      activePresetId: null,
+      initialized: false,
+    });
+    const { result } = renderHook(() => useLayoutPresetCrossfade());
+    const setSpy = vi.spyOn(result.current.crossfadeControls, "set");
+    const startSpy = vi.spyOn(result.current.crossfadeControls, "start");
+
+    act(() => {
+      // loadPresets(): initialized=false のまま保存済み preset id を先に読む。
+      useLayoutStore.setState({ activePresetId: "builtin:default" });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(startSpy).not.toHaveBeenCalled();
+
+    act(() => {
+      // initializeLayout(): layout hydration と同時に initialized=true になる。
+      useLayoutStore.setState({
+        initialized: true,
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(startSpy).not.toHaveBeenCalled();
   });
 
   it("does not re-trigger the fade on re-render while preset is unchanged", () => {

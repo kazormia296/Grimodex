@@ -68,8 +68,6 @@ import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
-import { useEmphasisDotsFallback } from "@/features/editor/useEmphasisDotsFallback";
-import { createWebKitFocusScrollGuard } from "@/features/editor/webkitFocusScrollGuard";
 import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
@@ -251,9 +249,6 @@ export function EditorPane({
     to: number;
     scrollOffset: number | null;
   } | null>(null);
-  // WebKitGTK の focus 時 selection 先頭リセット → scrollToSelection ジャンプの
-  // 抑止ガード（editorProps.handleScrollToSelection と onFocus で使う）。
-  const focusScrollGuardRef = useRef(createWebKitFocusScrollGuard());
   // count 系 state (charCount/beat) は EditorStatsFooter に分離済み。本体に
   // 置くとタイピング休止ごとの stat 更新で 2200 行ペイン全体が再レンダー
   // されるため、footer が editor の update イベントを自前購読して再計算する。
@@ -593,12 +588,6 @@ export function EditorPane({
           role: "textbox",
           "aria-multiline": "true",
         },
-        // WebKitGTK: focus 時の DOM selection 先頭リセットに対する PM の
-        // scrollToSelection が「先頭へスクロール」ジャンプになるのを抑止
-        // （詳細は webkitFocusScrollGuard.ts）。
-        handleScrollToSelection(view) {
-          return focusScrollGuardRef.current.handleScrollToSelection(view);
-        },
         handlePaste(view, event, slice) {
           const html = event.clipboardData?.getData("text/html");
           const plainText = event.clipboardData?.getData("text/plain") ?? "";
@@ -914,7 +903,6 @@ export function EditorPane({
       },
       onSelectionUpdate() {},
       onFocus() {
-        focusScrollGuardRef.current.noteFocus();
         onFocus();
         // Trash bin の D&D 復元先として「最後にフォーカスしていたエディタ」を共有。
         // editor 参照も渡し、text-fragment 挿入時に直接 chain().insertContent を呼べるように。
@@ -1328,7 +1316,6 @@ export function EditorPane({
   useImeDiagnostics(mountedEditor);
   useCharacterFade(mountedEditor);
   useTateChuYoko(mountedEditor);
-  useEmphasisDotsFallback(mountedEditor);
   useShowInvisibles(mountedEditor);
   useAttribution(dbNativeEditor);
 

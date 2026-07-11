@@ -32,68 +32,6 @@ export function isMac(): boolean {
 }
 
 /**
- * Pure UA classifier: true when `ua` is a WebKit (Safari / WKWebView /
- * WebKitGTK) engine rather than a Chromium/Blink one.
- *
- * Blink UAs always carry a "Chrome/" token (Edge adds "Edg/", iOS Chrome
- * "CriOS/"); WebKit UAs carry "AppleWebKit/" WITHOUT any of those. Split on
- * that. Exported for unit testing; runtime callers use {@link isWebKit}.
- */
-export function isWebKitUA(ua: string): boolean {
-  return /AppleWebKit\//.test(ua) && !/(Chrome|Chromium|CriOS|Edg)\//.test(ua);
-}
-
-let isWebKitCache: boolean | null = null;
-let isWebKitOverride: boolean | null = null;
-/**
- * Test-only: force {@link isWebKit}'s result (pass null to restore detection).
- * Lets Chromium-based browser tests exercise the WebKit-only code paths.
- */
-export function __setIsWebKitForTests(v: boolean | null): void {
-  isWebKitOverride = v;
-}
-
-/**
- * True when the rendering engine is WebKit — Safari, macOS WKWebView, or Linux
- * WebKitGTK — i.e. NOT Chromium/Blink (Chrome, Chromium, Edge/WebView2).
- *
- * Tauri ships WKWebView on macOS and WebKitGTK on Linux; both diverge from
- * Blink on vertical-rl caret motion (↑/↓ move across columns) and on native
- * `<select>`/form-control theming. Dev servers, the Vitest browser runner, and
- * Windows (WebView2) all run on Blink, so bugs only surface in the packaged
- * WebKit builds. This is the single gate for those WebKit-only workarounds.
- * Cached (the engine can't change mid-process).
- */
-export function isWebKit(): boolean {
-  if (isWebKitOverride !== null) return isWebKitOverride;
-  if (isWebKitCache !== null) return isWebKitCache;
-  if (typeof navigator === "undefined") return false;
-  isWebKitCache = isWebKitUA(navigator.userAgent);
-  return isWebKitCache;
-}
-
-/** True on Linux desktop (excludes Android). navigator-based; safe outside the browser. */
-export function isLinux(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const nav = navigator as Navigator & {
-    userAgentData?: { platform?: string };
-  };
-  const platform = nav.userAgentData?.platform ?? navigator.platform ?? "";
-  return /linux/i.test(platform) && !/android/i.test(platform);
-}
-
-/**
- * True for WebKitGTK on Linux — Tauri's Linux webview, which runs with
- * WEBKIT_DISABLE_DMABUF_RENDERER=1 (software compositing). Under software
- * rendering `backdrop-filter: blur()` is pathologically slow, so callers gate
- * the heavy glass/blur effects off here (see the `[data-engine="webkitgtk"]`
- * rules in index.css).
- */
-export function isWebKitGtk(): boolean {
-  return isWebKit() && isLinux();
-}
-
-/**
  * Primary-modifier test: ⌘ on macOS, Ctrl elsewhere.
  *
  * Use this in place of a bare `e.ctrlKey` check so a shortcut authored as

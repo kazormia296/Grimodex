@@ -2,12 +2,13 @@
 
 リリース前 / 大きめの変更後の手作業確認用。  
 各項目は **ゴールデンパス → 主なエッジケース → 副作用監視** の順。  
-DevTools の Console / Network / Performance タブ、Tauri のターミナルログを開いた状態で実施すること。
+DevTools の Console / Network / Performance タブと Electron main process のターミナルログを開いた状態で実施すること。
 
 ## 0. 事前準備
 
-- [ ] `pnpm tauri dev` 起動。Rust ビルド警告・パニック・`unwrap` 由来エラーが出ていない
+- [ ] native 変更後は `pnpm napi:build`、通常は `pnpm electron:dev` で起動。preload / main / N-API のロードエラーや Rust panic が出ていない
 - [ ] DevTools Console にエラーなし（Source Map 警告除く）
+- [ ] `window.grimodex.shell === "electron"`。renderer から Node API が見えず、preload API だけが公開されている
 - [ ] WAL ジャーナル (`*.db-wal`, `*.db-shm`) がプロジェクト DB と同階層に作成されている
 - [ ] 既存プロジェクトを 1 つ開いた状態でスナップショットを取り、ロールバック可能にしておく
 - [ ] テスト用に「空プロジェクト」と「データ盛り済プロジェクト」を 2 つ用意
@@ -47,7 +48,8 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 
 ### 4.1 基本入力
 
-- [ ] 日本語 IME 入力中に確定前テキストが消えない
+- [ ] Chromium で日本語 IME 入力中に確定前テキストが消えず、確定時に重複しない
+- [ ] Linux Wayland セッションで横書き・縦書きの変換候補位置、composition、確定後の caret が崩れない（可能なら XWayland とも比較）
 - [ ] タイピング coalesce が効き、保存が高頻度に走らない
 - [ ] Undo / Redo（履歴ボタン + ⌘Z / ⌘⇧Z）
 - [ ] 大量貼り付け（5万字程度）で固まらない
@@ -296,8 +298,8 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] DevTools Performance で 1 分タイピング録画: 大きな longtask（>200ms）がない
 - [ ] Memory tab: 30 分操作してリーク傾向がない
 - [ ] 大量シーン（200+）のプロジェクトで Grid / Tree 開閉
-- [ ] **Release ビルドで CSP 違反が出ない**（memory: csp-ipc-fallback。`connect-src` に `ipc: http://ipc.localhost`、`script-src` に `'wasm-unsafe-eval'` が必要）
-- [ ] Rust 側 panic / `unwrap` の発生有無（ターミナルログ）
+- [ ] **Release ビルドで `app://bundle/` がロードされ CSP 違反が出ない**（`connect-src 'self'`、`script-src 'self' 'wasm-unsafe-eval'`。`ipc:` URL へ依存しない）
+- [ ] Electron main / preload の未処理例外、N-API 側 panic / `unwrap` の発生有無（ターミナルログ）
 
 ## 30. リグレッション固定ポイント（過去事故）
 
@@ -309,34 +311,82 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] Framer Motion clip-path 補間（open 側 inset(-200px)）
 - [ ] projectStore.test.ts のテスト分離問題（フルスイートでのみ落ちる、許容）
 
-## 31. MCP 連携（本体バイナリ統一）
+## 31. MCP 連携（Electron + standalone sidecar）
 
-- [ ] 設定 → AI → **MCP 連携** に「この作品 / 全作品（ローカル用）」× 「読み取り専用 / ポリシー準拠」の
-      コピーボタンが表示される（トグルではなく各ボタン＝即時コピー）
-- [ ] ワークスペース未 open 時はボタンが disabled、open 時は有効
-- [ ] 「この作品・読み取り専用」押下で `.mcp.json` がクリップボードへ。`command` が実 spawn 可能な本体パス
-      （macOS は `…/Contents/MacOS/Grimodex`、Linux AppImage は `$APPIMAGE` の元ファイル）、
-      `args` が `["mcp","--workspace","<dir>","--project","<現在のID>","--readonly"]`
-- [ ] 「ポリシー準拠」押下では `--readonly` が**付かない**（書込は AI ポリシーに委譲）。
-      「全作品」押下では `--project` の代わりに `--all-projects` が入る
-- [ ] **統合パス（本体経由）**: `Grimodex mcp --workspace <ws> --readonly`（dev は
-      `cargo run -- mcp …`）で stdio に `initialize` + `tools/list` を流し、現状 28 ツールが返る
-      （プロジェクト管理 2 + read 20 + write 6）。GUI ウィンドウは開かない
-- [ ] **プロジェクトスコープ（既定=pinned）**: `list_projects` が **bound 1 件のみ**返す。
-      `select_project` を呼ぶと「pinned… start with --all-projects」エラー（他作品の id/title を漏らさない）
-- [ ] **`--all-projects`（ローカル/信頼用）**: 付けて起動すると `list_projects` が全作品を列挙、
-      `select_project(<別id>)` で切替成功。切替後に当該プロジェクトの read-by-id が読める。
-      存在しない id は not found。クラウド用途では付けない（付けるなら `--readonly` 併用）
-- [ ] **残置 standalone bin**: `cargo run -p grimodex-mcp -- --workspace <ws> --readonly` が
-      従来どおり動く（repo-root `.mcp.json` の dev 設定も）
-- [ ] **write gate**: `--readonly` 時に write 6 ツール（`create_foreshadow` / `update_foreshadow` /
-      `create_snippet` / `create_codex_entry` / `update_codex_entry` / `propose_scene_body`）がエラー応答
-- [ ] **XPROJ**: project A スコープのクライアントから project B の scene_id/entry_id を
-      read-by-id しても not found（本体統一でエンドユーザー到達面が増えた点に注意）
-- [ ] 🔴 **[要実機] Windows release**: GUI-subsystem 本体を実 MCP クライアントが spawn して
-      stdio で tools/list が取れる（debug=console は容易だが release を証明しない）
-- [ ] Linux headless: 本体は `libwebkit2gtk` を load-time リンクするため webkit 無し環境では
-      `mcp` サブコマンドが起動しない（lean bin を使う）ことを確認・記録
+- [ ] 設定 → AI → **MCP 連携** に「この作品 / 全作品（ローカル用）」×
+      「読み取り専用 / ポリシー準拠」のコピーボタンが表示される
+      （トグルではなく各ボタン＝即時コピー）
+- [ ] workspace 未 open・未 hydration・switch 中はボタンが disabled。config 取得中に
+      workspace path / open revision / project ID が変わった場合も clipboard へ書かずエラー表示
+- [ ] **コピー契約**: `command` は本体 GUI ではなく standalone
+      `grimodex-mcp[.exe]` の絶対 path。`args` は
+      `["--license-file","<絶対 userData/license.json>","--workspace","<dir>","--project","<現在のID>","--readonly"]`。
+      license path は Backend と同じ `userData` 配下で、renderer 入力から変更できない
+- [ ] Linux AppImage では sidecar が一時的な `/tmp/.mount_*/…/resources/bin` ではなく
+      `<userData>` 配下の安定 path へ materialize され、GUI 終了後・再起動後・update 後にも
+      コピー済み config から spawn できる
+- [ ] 「ポリシー準拠」では `--readonly` が付かない（書込は AI ポリシーに委譲）。
+      「全作品」では `--project` の代わりに `--all-projects` が入る
+- [ ] **Electron standalone path**: UI がコピーした `command` / `args` をそのまま MCP client で
+      起動し、`initialize` + `tools/list` が成功する。product sidecar は
+      `pnpm mcp:build:release`（`licensing` feature 有効）の成果物である
+- [ ] **license authority parity**: Electron の activation / trial 状態と sidecar の write gate が
+      同じ `<userData>/license.json` を参照する。expired / stale / revoked では read は成功し、
+      write は拒否される
+- [ ] **プロジェクトスコープ（既定=pinned）**: `list_projects` が bound 1 件のみ返す。
+      `select_project` は pinned error（他作品の id/title を漏らさない）
+- [ ] **`--all-projects`（ローカル/信頼用）**: `list_projects` が全作品を列挙し、
+      `select_project(<別id>)` 後に当該 project の read-by-id が読める。存在しない id は not found。
+      クラウド用途では付けない（付けるなら `--readonly` 併用）
+- [ ] **dev / headless standalone**: `cargo run -p grimodex-mcp -- --workspace <ws> --readonly`
+      が動く。Electron parity を見る場合は `--license-file <absolute path>` も付ける
+- [ ] **write gate**: `--readonly` 時に write 14 ツール（foreshadow 2 / snippet 1 /
+      codex 2 / scene prose 1 / chronicle 8）がすべて call-time error。list-time では隠れない
+- [ ] **XPROJ**: project A スコープの client から project B の scene_id / entry_id を
+      read-by-id しても not found
+- [ ] **[要実機] Windows release**: packaged `resources/bin/grimodex-mcp.exe` を実 MCP client が
+      spawn し、stdio で `initialize` + `tools/list` が取れる
+- [ ] Linux headless: standalone sidecar が GUI session や desktop shell library なしで起動できる
+
+## 32. Tauri v1 → Electron 移行（legacy 互換）
+
+- [ ] disposable Windows VM / CI user profile で、署名済み release candidate に対し
+      `pwsh scripts/verify-windows-tauri-migration.ps1 -InstallerPath <Electron installer>` が完走する
+- [ ] スクリプトが pinned Tauri v1 installer の SHA-256 を検証してからインストールする
+- [ ] v1 の roaming / local user-data に置いた sentinel の存在と SHA-256 が移行後も変わらない
+- [ ] v1 の `/P /R /UPDATE /ARGS` 呼び出しが Electron installer の silent install + restart に
+      変換され、新 Electron executable の Authenticode 署名が有効
+- [ ] v1 executable / uninstaller / registry 登録は除去され、Electron の uninstall 登録と
+      Start Menu shortcut が各 1 件だけ残る
+- [ ] Electron installer を再実行しても同じ状態を保ち、ユーザーデータを変更しない（idempotent）
+- [ ] v1 uninstaller を壊した negative case は fail-closed で非 0 終了し、v1 本体・登録・
+      user-data を削除しない
+- [ ] 既存 v1 workspace を Electron で開き、DB migration 後も本文・Codex・チャット・設定が保持される
+- [ ] release build 初回起動で既知の v1 keyring 資格情報を Electron `safeStorage` へ移せる。
+      移行元は rollback 用に保持され、移行失敗時も破壊しない
+
+## 33. IME 辞書連携（Electron）
+
+- [ ] 日本語プロジェクトで読み付きCodex項目を作り、設定 → Codex → IME連携に
+      `<userData>/ime/` の状態、検出consumer、書き出し件数が表示される
+- [ ] **auto / consumerなし**: `consumers/` に有効なhandshakeがなければ
+      `effectiveEnabled=false`で、`state.json`と`projects/*.json`を作成しない
+- [ ] **auto / consumerあり**: 有効な`consumers/<id>.json`を配置してウィンドウを
+      再フォーカスすると自動検出され、再起動なしでsnapshotとactive stateが作成される
+- [ ] **on**: consumerがなくても書き出す。**off**: consumerがあっても常に優先して
+      `state.json`と全project snapshotを削除し、その後のCodex編集でも復活しない
+- [ ] **atomic repeated refresh**: name / alias / excluded alias / readings / typeを短時間に連続変更してもdebounce後の
+      最終状態だけが反映され、監視中の全時点でJSONをparseできる。一時ファイルが残らず、
+      refresh / off / clear / removeを重ねても古い要求が新しい状態を巻き戻さない
+- [ ] 日本語project AからBへ切り替えると`state.json.active_project_id`がBだけを指す。
+      projectを閉じる、main windowを閉じる、またはアプリを終了すると`null`へ解除され、
+      floating panelだけを閉じてもmain windowのactive pointerは解除されない
+- [ ] 作品言語を`ja`から非日本語へ変更すると保存済み`readings`は保持したまま、
+      そのprojectのsnapshotが削除されactiveも解除される。`ja` / `ja-*`へ戻すと再生成される
+- [ ] project削除で対応する`projects/<id>.json`が消え、削除projectがactiveなら
+      `state.json`も解除される。他projectのsnapshotとconsumer handshakeは維持される
+- [ ] 「書き出し済み辞書をすべて削除」で`state.json`と全project snapshotが消え、
+      `consumers/*.json`は保持される。statusの書き出し件数は0になり、再refresh可能
 
 ---
 

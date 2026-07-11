@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use grimodex_db::ime_export::{
     clear_all_exports, get_status, refresh_project_export, remove_project_export,
-    set_active_project, ImeExportOptions, ImeIntegrationMode,
+    remove_project_export_if_absent, set_active_project, ImeExportOptions, ImeExportRequestGate,
+    ImeIntegrationMode,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -233,6 +234,99 @@ fn assert_no_tmp_files(root: &Path) -> Result<(), Box<dyn Error>> {
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn late_refresh_after_project_deletion_removes_the_stale_snapshot() -> TestResult {
+    let fixture = Fixture::new()?;
+    seed_project(
+        fixture.db(),
+        "deleted-project",
+        "Before Delete",
+        "ja",
+        None,
+        None,
+    )?;
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "deleted-project",
+        &options(ImeIntegrationMode::On),
+    )?;
+    set_active_project(
+        &fixture.ime_root,
+        Some("deleted-project"),
+        ImeIntegrationMode::On,
+    )?;
+    fixture.db().with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM projects WHERE id = ?1",
+            params!["deleted-project"],
+        )?;
+        Ok(())
+    })?;
+
+    // A different renderer can enqueue a refresh after the explicit remove.
+    // The request gate correctly makes the remove stale; the winning missing-
+    // row refresh must therefore perform the same cleanup itself.
+    let gate = ImeExportRequestGate::default();
+    let export_options = options(ImeIntegrationMode::On);
+    let remove_request = gate.register_remove("deleted-project");
+    let refresh_request = gate.register_refresh("deleted-project", &export_options);
+    assert!(!gate.is_current(&remove_request));
+    assert!(gate.is_current(&refresh_request));
+
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "deleted-project",
+        &export_options,
+    )?;
+
+    assert!(!project_snapshot_path(&fixture.ime_root, "deleted-project").exists());
+    assert_eq!(read_active_project(&fixture.ime_root)?, None);
+    Ok(())
+}
+
+#[test]
+fn delayed_remove_checks_the_pinned_database_before_deleting_a_reused_id() -> TestResult {
+    let fixture = Fixture::new()?;
+    seed_project(
+        fixture.db(),
+        "reused-project",
+        "Recreated",
+        "ja",
+        None,
+        None,
+    )?;
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "reused-project",
+        &options(ImeIntegrationMode::On),
+    )?;
+
+    assert!(!remove_project_export_if_absent(
+        fixture.db(),
+        &fixture.ime_root,
+        "reused-project",
+    )?);
+    assert!(project_snapshot_path(&fixture.ime_root, "reused-project").exists());
+
+    fixture.db().with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM projects WHERE id = ?1",
+            params!["reused-project"],
+        )?;
+        Ok(())
+    })?;
+    assert!(remove_project_export_if_absent(
+        fixture.db(),
+        &fixture.ime_root,
+        "reused-project",
+    )?);
+    assert!(!project_snapshot_path(&fixture.ime_root, "reused-project").exists());
     Ok(())
 }
 

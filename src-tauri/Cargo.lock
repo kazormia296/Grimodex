@@ -1986,26 +1986,24 @@ dependencies = [
 name = "grimodex"
 version = "1.0.0"
 dependencies = [
- "aho-corasick",
  "anyhow",
  "base64 0.22.1",
  "chrono",
  "dirs",
  "flate2",
  "futures",
- "glib",
+ "grimodex-ai",
  "grimodex-core",
  "grimodex-db",
  "grimodex-fonts",
+ "grimodex-license",
  "grimodex-lint",
  "grimodex-mcp",
+ "grimodex-post-effect",
+ "grimodex-semantic",
  "hex",
- "keyring",
  "libc",
- "ndarray",
  "notify",
- "ort",
- "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2017,20 +2015,29 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tauri-plugin-process",
- "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
  "thiserror 2.0.18",
- "tokenizers",
  "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "unicode-normalization",
  "uuid",
- "webkit2gtk",
  "window-vibrancy 0.7.1",
- "wiremock",
+]
+
+[[package]]
+name = "grimodex-ai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "keyring",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2065,6 +2072,7 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2072,6 +2080,23 @@ name = "grimodex-fonts"
 version = "0.1.0"
 dependencies = [
  "fontdb",
+]
+
+[[package]]
+name = "grimodex-license"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "grimodex-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -2107,6 +2132,49 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "grimodex-post-effect"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "grimodex-ai",
+ "grimodex-db",
+ "grimodex-lint",
+ "hex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "grimodex-semantic"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "anyhow",
+ "chrono",
+ "futures",
+ "grimodex-db",
+ "grimodex-lint",
+ "hex",
+ "ndarray",
+ "ort",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokenizers",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5874,21 +5942,6 @@ checksum = "d55511a7bf6cd70c8767b02c97bf8134fa434daf3926cfc1be0a0f94132d165a"
 dependencies = [
  "tauri",
  "tauri-plugin",
-]
-
-[[package]]
-name = "tauri-plugin-single-instance"
-version = "2.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c8f29386f5e9fdc699182388a33ee80a56de436d91b67459e86afef426282af"
-dependencies = [
- "serde",
- "serde_json",
- "tauri",
- "thiserror 2.0.18",
- "tracing",
- "windows-sys 0.60.2",
- "zbus",
 ]
 
 [[package]]

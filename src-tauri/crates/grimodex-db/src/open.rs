@@ -227,7 +227,7 @@ fn is_system_directory(path: &Path) -> bool {
 /// RAII: `WorkspaceState::switching` を全 exit (正常・エラー・panic 巻き戻し)
 /// で確実に false へ戻す。open_workspace が途中で `?` で抜けてもフラグが
 /// 立ちっぱなしにならない (立ちっぱなし = 全 DB コマンドが恒久拒否 = 文鎮化)。
-/// `restore_backup_core` (src-tauri 側) も同じガードを使う。
+/// `backup_restore::restore_backup_core` も同じガードを使う。
 pub struct SwitchingGuard<'a>(pub &'a std::sync::atomic::AtomicBool);
 
 impl Drop for SwitchingGuard<'_> {
@@ -317,6 +317,10 @@ pub fn open_workspace_sync(
         db: std::sync::Arc::new(database),
         path: ws_path,
     });
+    // Shell swap hooks may wait for other subsystem writers (IME snapshot
+    // barrier, semantic epoch rotation). Do not retain the workspace mutex
+    // across those waits; `switching=true` already rejects fresh DB pins.
+    drop(inner);
 
     // =================================================================
     // 不変条件: swap (上の *inner = Some(...)) 以降は絶対に Err を
