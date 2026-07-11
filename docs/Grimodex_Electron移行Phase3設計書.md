@@ -1,10 +1,10 @@
 # Grimodex Electron移行 Phase 3 設計書 — ネイティブ再結線
 
 - 日付: 2026-07-10（最終更新: 2026-07-11）
-- ステータス: 実装中（バッチ1〜2・バッチ3a〜3e 完了。バッチ4〜5 は計画）
+- ステータス: **Phase 3 コマンド移行完了**（バッチ1〜2・バッチ3a〜3e・バッチ4〜5 完了）
 - 正本: `docs/Grimodex_Electron移行検討.md`（移行判断・全体フェーズ）/ `docs/Grimodex_Electron移行Phase2設計書.md`（シェル構築）
 - データ正本: `docs/Grimodex_Electron移行Phase3_優先順位表.md`（バッチ提案・イベント配線順）と `docs/Grimodex_Electron移行Phase3_コマンド台帳.json`（全 145 コマンドの静的棚卸し + FE コールサイト分析）
-- 積み先: ブランチ `feat/electron-phase3`
+- 積み先: ブランチ `codex/electron-migration-complete`
 
 ## 0. スコープ（TL;DR）
 
@@ -309,20 +309,75 @@ Electron 側のキー保管基盤を keyring から safeStorage へ切り替え�
   Electron 18 files / 401 tests、実 `.node` native 70 pass + 1 skip。N-API release build、
   TypeScript typecheck、Rust check/clippy（feature有効/無効）も通過。
 
-### バッチ 4: ort / lindera 重量級
+### バッチ 4: ort / lindera 重量級【完了】
 
-semantic 19 + extract_codex_candidates。**embed-unidic による .node +200MB 問題の
-意思決定**（辞書埋め込み継続 or 外部ファイル化）を先に済ませる。バッチ1b で
-lint_text/segment_bunsetsu を入れた時点で `.node` は 4.2MB → 211MB に増えている
-（実測）。ort ランタイム同梱・split-lock 構造・ロック順・4 検索キャッシュの
-invalidate ライフサイクル（open_workspace の on_swapped フックに接続）を移植。
-全経路 fail-soft（FTS 縮退）なのでリリースブロッカーではない。
+semantic 19 + `extract_codex_candidates` を移植した。UniDic はバッチ1bから引き続き
+埋め込みを維持し、Electron native crate の通常buildでは
+`grimodex-semantic/semantic-embedding`（ort + tokenizers）も明示的に有効化する。
 
-### バッチ 5: main-TS 残り + 周辺
+- **共有runtime**: chunk/index/search/preview/download と scene/codex/events/chat の4系統を
+  `src-tauri/crates/grimodex-semantic` へ集約した。`runtime::SemanticRuntime` が言語別
+  Embedder、model download in-flight、4検索cacheのepoch、domain/model/project単位の
+  reindex single-flight、event sinkを一体で保持する。Tauri `commands/semantic.rs` と
+  Electron `grimodex-node` は薄いadapterで、同じ19メソッドを呼ぶ。
+- **DB + cache epoch pin**: download以外の18コマンドはblocking pool投入前に
+  `SemanticRuntime::pin_request` で active `Arc<Database>` と `SemanticEpoch` を一貫pinする。
+  epoch lockを保持したままworkspace lockを取らず、snapshot→DB pin→generation再確認の
+  optimistic loopでABBAを避ける。workspace切替後も1コマンドが別DB/cacheへ跨がない。
+- **切替ライフサイクル**: `open_workspace` の `OpenDeps::on_swapped` と
+  `restore_backup` の再活性化hookで `rotate_workspace_epoch()` を呼ぶ。旧taskが旧cacheへ
+  遅れてputしても新workspaceから不可視で、Electron側は既存Codex matcherも同時に破棄する。
+- **single-flight**: scene/codex/events/chatの全件reindexを、cache generation + domain +
+  project +実効model/chunker identityで合流させる。待機側は自身の`runId`でterminal eventを
+  受け取り、panic/errorでも全waiterを解放する。identityが切替中に変われば旧flightへ
+  合流せず再競合する。
+- **リソースpath**: 共有crateはcwdやbuild-machine `CARGO_MANIFEST_DIR`へfallbackしない。
+  `SemanticPaths { models_root, resource_semantic_root }` を各shellが明示注入する。Electronは
+  dev=`<repo>/src-tauri/resources/semantic`、package=`process.resourcesPath/resources/semantic`、
+  download=`<userData>/models`。root/モデル欠落でもBackend全体は起動し、semantic invokeだけを
+  明示エラー→FTS縮退へ落とす。Tauri releaseも`resource_dir`とapp dataを明示注入する。
+- **イベント**: `semantic:model_download_progress` と `semantic:reindex_progress` を共有
+  `EventSink`からTauri emitter / Electron `EventQueue`（TSFn→main→全窓）へ配線した。
+  model download成功時は`ensureSemanticIndexesOnOpen`を再実行し、reindex progressは
+  `projectId`/`runId`で別workspace・旧runのeventを拒否する。
+- **候補抽出**: `codex_candidates`本体も共有crateへ移し、開始時DB snapshot、単一connection
+  read、lock外UniDic/Aho-Corasick解析をTauri/N-APIで共有する。
+- **検証（2026-07-11）**: shared Rust feature-off 181 / feature-on 217 tests、両featureの
+  strict clippy、Tauri off/on checkを通過。最新runtime再link後の実`.node` semantic E2E 6、
+  native Node 85 pass + 1 skip、native Rust 12、Electron IPC/backend 226、Electron full
+  21 files / 491 tests、renderer/Electron typecheckを通過した。
 
-vivliostyle 6 / mcp_config / seed_sample_workspace / list_backups / restore_backup /
-fts_rebuild 系 / set_window_vibrancy。dead code 4件の撤去は先行完了。app ready /
-before-quit の残りライフサイクル（vivliostyle kill_all・cleanup_temp_root）を Electron に移植。
+### バッチ 5: main-TS 残り + 周辺【完了】
+
+Vivliostyle 6、`list_backups` / `restore_backup`、FTS rebuild系、
+`set_window_vibrancy`、dead code 4件撤去、app終了時のVivliostyle process/temp cleanupに加え、
+最後の `seed_sample_workspace` / `get_mcp_config` を移植した。
+
+- **サンプル生成の共有コア**: seed本体を `grimodex-db::sample_seed` へ集約し、
+  Tauri command / N-API は薄いadapterとした。出力先は
+  `<appData>/sample-workspace-<UUID>` の不変generationで、create→migrate→seed→
+  GlobalSettings公開の全体を共通 `GlobalSettingsPath.write_lock` で直列化する。
+  公開前の失敗generationはRAIIで掃除する。coreが`sampleWorkspacePath`を公開した後、
+  rendererの`seedAndOpenSample`が`trustedWorkspaces`の旧サンプルentryを新generationへ
+  置換してからopenする。一方、公開後のgenerationは、
+  生存中のdesktop taskや
+  外部MCP processが旧DBを参照し続ける可能性があるため意図的に保持し、
+  published DBのunlink/スロット再利用は行わない。生成後のactive workspace切替は従来どおり呼び出し側が行う。
+- **standalone MCP sidecar**: Electronはアプリバイナリのsubcommandではなく
+  `grimodex-mcp[.exe]` の絶対pathをmainで解決する。明示overrideは不正時にfallbackせず、
+  通常候補はregular file（POSIXは加えてexecutable）のみ許可し、devのdebug/release両方が
+  存在するときはmtimeが新しい方を選ぶ。`get_mcp_config` はN-APIのactive workspaceと
+  `argsPrefix` を返し、Electron mainが所有する `<userData>/license.json` の絶対pathを
+  `--license-file` としてprefixへ固定する。MCP CLIは相対license pathを拒否し、各write時に
+  同じfileを再読込する。release sidecarは `licensing` feature有効でbuildする。
+- **copy時のidentity guard**: rendererはinvoke前のworkspace path / open revision / hydration /
+  switching / project IDをsnapshotし、invoke完了後にすべてと返却workspaceを再検証する。
+  待機中にworkspace/projectが切り替わった場合は古い `.mcp.json` をclipboardへ書かない。
+- **集中検証（2026-07-11）**: `grimodex-db` 256 passed + 1 ignored、
+  MCP licensing 151 passed、実 `.node` 86 passed + 1 skipped、native Rust 12 passed、
+  Electron対象 196 passed、renderer対象 27 passed、renderer/Electron両TypeScript checkを通過した。
+  その後のfull suiteもElectron 23 files / 511 passed、renderer 866 files passed + 8 skipped /
+  8,879 tests passed + 35 skipped（114s）で通過した。
 
 ## 3. イベント実配線の優先順位（24ch）
 
@@ -335,8 +390,8 @@ before-quit の残りライフサイクル（vivliostyle kill_all・cleanup_temp
 5. `cli:stream-*`（3）— CLI プロバイダ（バッチ3cで main → 全窓 broadcast 配線済み）
 6. `vivliostyle:done|error` — ビルド終端
 7. `license:state_changed` — 稼働中の制限発動/解除（バッチ3eで配線済み）
-8. `semantic:model_download_progress` — **done 受信で back-index 自動再開**（機能フック）
-9. progress 系（`post_effect:progress` は3dで配線済み / `semantic:reindex_progress` /
+8. `semantic:model_download_progress` — バッチ4で配線済み。**done 受信で back-index 自動再開**（機能フック）
+9. progress 系（`post_effect:progress` は3dで配線済み / `semantic:reindex_progress` は4で配線済み /
    `vivliostyle:log|preview-exited`）
 10. `post_effect:partial` — バッチ3dで配線済み（FEは現状未購読）
 
@@ -351,7 +406,7 @@ Phase 2 で `Backend.on_event(tsfn)` の end-to-end は実証済み（`backend:r
 1. **共有ミュータブル状態の一体移植**: chat / inline の abort フラグと CLI の single-flight
    active child manager（いずれも実装済み）+ PostEffectAbortRegistry +
    CodexMatcherState（バッチ1c で実装済み）+ ExternalMountState + VivliostyleState +
-   SemanticEmbedderState + 4 検索キャッシュ + write_lock 群。**開始側と中止側
+   `SemanticRuntime`（Embedder/download/single-flight + 4cache epoch）+ write_lock 群。**開始側と中止側
    （read/write）が同一 AppState または main manager インスタンスを見る**ことが正しさの
    条件。別プロセス化・二重初期化は「abort が効かない」「lost update」を再発させる。
 2. **文字列/object ワイヤ契約**: `WORKSPACE_SWITCHING` / `No workspace is open`（文字列、

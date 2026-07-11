@@ -210,9 +210,11 @@
 
 1. `db.backup_to(&tmp)` でフルコピー（既存）。
 2. `Connection::open(&tmp)` で**コピー側のみ**開く（`foreign_keys` は **OFF** のまま。cascade 事故回避）。
-3. **チャンク 4 表を素の `DELETE`**:
-   `DELETE FROM scene_chunks; DELETE FROM codex_chunks; DELETE FROM event_chunks; DELETE FROM chat_message_chunks;`
-   （トリガ・被参照 FK なし＝`migrate.rs:1348-1444` で確認済。重複 `text` も同時に消える）
+3. **再生成可能なチャンク 3 表を素の `DELETE`**:
+   `DELETE FROM scene_chunks; DELETE FROM codex_chunks; DELETE FROM chat_message_chunks;`
+   （トリガ・被参照 FK なし＝`migrate.rs:1348-1444` で確認済。重複 `text` も同時に消える）。
+   `event_chunks` は削除しない。open時back-indexは実装済みだが、Chronicle検索はdense-only
+   なので、モデル未DL・オフライン復元直後にも検索を維持するためバックアップへ残す。
 4. **FTS5 索引を空にする（JA / EN で方法が違う ← 最重要の取り違えポイント）**:
    - **JA（external content, `content=...`）**: `INSERT INTO <fts>(<fts>) VALUES('delete-all');`
      （**DROP TABLE は有害** — `*_fts_ai/ad/au` トリガが復元後の書き込みで即エラーになる。
@@ -243,7 +245,8 @@
 
 ### 5.2 復元側（再構築）
 
-slim バックアップは埋め込み・FTS 索引が空なので、復元後に再生成する。
+slim バックアップはscene/codex/chat埋め込みとFTS索引が空なので、復元後に再生成する。
+`event_chunks` は保持される。
 
 1. **FTS 再構築 = 既存の `db.fts_rebuild()`（`fts.rs:284`）を無条件で呼ぶ**。
    この関数は既に **JA（external content の `'rebuild'`）と EN（`rebuild_en_fts_sql` の
@@ -252,11 +255,11 @@ slim バックアップは埋め込み・FTS 索引が空なので、復元後�
    - **無音故障の防止（最重要）**: external content FTS は索引が空でもエラーを出さず、
      検索が「0 件ヒット」で**静かに壊れる**（`integrity.rs` に FTS 空検知はない）。
      slim マーカー判定に頼らず**無条件 rebuild**（冪等・安価）にするのが単純で安全。
-2. **埋め込み再 index**: 追加実装はほぼ不要。open 時の back-index（`autoIndex.ts`、PR#251）が
-   「充足していないチャンク」を自動で埋める。ただし
-   **同一セッション内で復元した場合は `resetIndexGuards(projectId)`（`autoIndex.ts:205`）を
-   必ず呼ぶ**（`sceneAttempted` 等「1 セッション 1 プロジェクト 1 回」ガードを解除しないと
-   back-index が走らない、`autoIndex.ts:29-32`）。
+2. **埋め込み再 index**: open 時の back-index（`autoIndex.ts`）がscene/codex/events/chatの
+   充足状況を別々に確認し、不足分を自動で埋める。復元成功後はreload/open経路で
+   workspace identity付きguardが作り直されるため、旧`resetIndexGuards(projectId)`前提は不要。
+   eventsも`events_index_status`→`events_reindex_all`のopen back-indexを持つが、上記のとおり
+   offline dense-only検索を復元直後から維持するためslim対象にはしない。
    - モデル未 DL 時: on-demand DL（`download.rs`）が走る。オフラインなら既存契約どおり
      dense 検索が一時 degrade するだけで執筆機能は無傷（災害復旧は稀という前提で妥当）。
 
@@ -269,8 +272,8 @@ slim バックアップは埋め込み・FTS 索引が空なので、復元後�
 ### 5.4 Phase 3 テスト
 
 - **slim → gzip → restore → `fts_rebuild` → FTS ヒット確認**のラウンドトリップ（seed_schema ベース）。
-- 復元後、埋め込みの充足判定（`semanticIndexStatus`）が incomplete を検知し、back-index が
-  `resetIndexGuards` 経由で走ること。
+- 復元後、scene/codex/chatの充足判定が incomplete を検知し、workspace identity付き
+  open back-indexが走ること。eventsは保持済みでもstatus checkが正常に完了すること。
 - **除外テーブル定数 ↔ `fts_rebuild`/`fts_optimize` 対象**の parity テスト。
 - JA/EN で消し方が違うことの回帰（EN に `delete-all` を使うと失敗する契約を明示的に固定）。
 
@@ -299,18 +302,16 @@ slim バックアップは埋め込み・FTS 索引が空なので、復元後�
 |---|---|---|---|
 | **1** | ✅ 実装済 | アプリ内リストア＋堅牢化 | `restore_backup`/`list_backups` コマンド、稼働中 DB 置換（直列化契約・wal 削除・安全退避・原子 rename）、`backup_to` の `.tmp`→`rename` |
 | **2** | ✅ 実装済 | gzip 圧縮 | `flate2` 直接依存、`GzEncoder`/`GzDecoder`（`.db.gz`）、`is_backup_file` 集約＋両フィルタ更新、restore は解凍→verify→原子 rename |
-| **3** | ✅ 実装済 | slim 化＋復元時再構築 | コピー側 slim（chunk `DELETE`＋JA `delete-all`/EN `DELETE`＋`VACUUM`）、`SLIM_*` 除外定数＋parity テスト、復元時 `fts_rebuild()`（埋め込みは reload 後 autoIndex が再構築＝`resetIndexGuards` 不要） |
+| **3** | ✅ 実装済 | slim 化＋復元時再構築 | コピー側 slim（scene/codex/chat chunk `DELETE`、event_chunks保持＋JA `delete-all`/EN `DELETE`＋`VACUUM`）、`SLIM_*` 除外定数＋parity テスト、復元時 `fts_rebuild()`（埋め込みは reload 後 autoIndex が再構築＝`resetIndexGuards` 不要） |
 
 補足（実装＋敵対レビューで確定）:
 - 復元時の再オープン失敗は安定マーカー `RESTORE_SESSION_LOST` で FE に reload を促し、
   置換前失敗は元 DB を開き直してセッションを復帰（`reactivate_workspace`）。
 - 安全退避は best-effort（破損 DB でも復元を諦めさせない）＋ quiesce 後に取得。
-- **slim で `event_chunks` は除外**する。scene/codex/chat の埋め込みは reload 後の
-  `ensureSemanticIndexesOnOpen`（autoIndex）が自己修復するが、**events の open 時
-  back-index は存在しない**（`events_reindex_all` に FE 呼び出し元なし・events 検索は
-  dense-only）ため、slim で消すと Chronicle イベント意味検索が無音全滅し復旧手段が無い。
-  events 埋め込みは短く容量影響も小さいのでバックアップに残す（events back-index 実装は
-  follow-up）。
+- **slim で `event_chunks` は除外しない**。scene/codex/chatに加えeventsのopen時back-indexも
+  実装済みだが、events検索はdense-onlyであり、モデル未DL・オフライン復元直後に消去すると
+  再生成まで検索結果が0件になる。events埋め込みは1 event 1 vectorで容量影響も小さいため、
+  可用性を優先してバックアップへ残す。
 - **open 時 FTS 自己修復（実装済）**: `slim_backup_copy` が `app_settings['fts.slim_backup']='1'`
   マーカーをバックアップに書き、`rebuild_fts_if_stale`（`open_workspace` と `restore` の
   happy path に配線）がそれを見て `fts_rebuild` ＋ マーカー消去する。復元の happy path 以外
@@ -321,7 +322,7 @@ slim バックアップは埋め込み・FTS 索引が空なので、復元後�
   次回 open で再試行（eventually-consistent）。
 - バックアップ名にミリ秒（`%3f`）を付与し同一秒衝突での世代喪失を防ぐ。
 - 残: 実機 E2E（Windows 稼働中ファイル置換 / newer-schema 復元 / 大 DB の slim+gzip 時間・
-  復元後の再 index 挙動）／ events の open 時 back-index（events を slim 対象化するなら前提）。
+  復元後の再 index 挙動）。
 
 ---
 

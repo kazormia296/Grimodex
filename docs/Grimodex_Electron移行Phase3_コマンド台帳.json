@@ -2,11 +2,17 @@
   "meta": {
     "generatedAt": "2026-07-10",
     "purpose": "Grimodex Electron 移行 Phase 3: Tauri コマンドの napi / main-TS 化 正規化台帳（棚卸しデータ + lib.rs 正式リスト + FE コールサイトのマージ）",
-    "inventorySemantics": "doneCount / remainingCount / 各 classification は生成時点の静的棚卸し値であり、現在進捗の再集計ではない。進捗正本は Phase 3 設計書。2026-07-11 時点で Phase 3a〜3e は実装済み",
+    "inventorySemantics": "doneCount / remainingCount / 各 classification は生成時点の静的棚卸し値であり、現在進捗の再集計ではない。進捗正本は Phase 3 設計書。2026-07-11 時点で Phase 3a〜3e・Batch 4〜5とPhase 3コマンド移行は実装済み",
     "phase3cValidation": "2026-07-11: Electron 17 files / 345 passed、node 861 files passed + 8 skipped / 8809 passed + 35 skipped、browser 73 files passed + 1 skipped / 309 passed + 1 skipped。electron:build / electron:smoke PASS（3起動、全layout layer opacity=1、scene作成→autosave→再起動後DB/UI残存）",
     "phase3cShellHardening": "ready-to-show未発火時はdid-finish-loadで冪等表示。startup hydration中だけlayout crossfade / region chrome / editor enter animationを抑止し、初期化後のmotionは維持",
     "phase3dValidation": "2026-07-11: post-effect 3コマンド + 4イベントを共有Rust/N-APIへ移植。開始DB固定、XPROJ、terminal CAS、abort TOCTOU、資格情報snapshotを回帰固定。共有Rust 103 tests、実.node post-effect E2E 5 tests PASS",
     "phase3eValidation": "2026-07-11: license 4 IPC + 内部validate cycleを共有Rust/N-APIへ移植。feature無効のexact disabled/ディスク非接触、起動5秒後→完了後6h、manual success/errorの全窓state_changed、activate single-flight + remote補償解除を固定。Electron 18 files / 401 tests、native 70 pass + 1 skip、license Polar/DTO 27 + runtime/race 19 + disabled 1 PASS",
+    "phase3Batch4Validation": "2026-07-11: semantic 19 IPC + extract_codex_candidatesをgrimodex-semantic共有runtime/N-APIへ移植。DB+4cache epoch pin、open/restore rotate、domain/project/model single-flight、明示resource root、2 progress eventsを固定。shared Rust feature-off 181 / feature-on 217、実.node semantic E2E 6、native Node 85 pass + 1 skip、native Rust 12、Electron IPC/backend 226、Electron full 21 files / 491 tests、両TypeScript check PASS",
+    "phase3Batch4CommandCount": 20,
+    "phase3Batch4SemanticCommandCount": 19,
+    "phase3Batch4CandidateCommandCount": 1,
+    "phase3Batch5Validation": "2026-07-11: seed_sample_workspaceをgrimodex-db共有コア/Tauri/N-APIへ移植し、get_mcp_configをstandalone sidecar + main-TSで実装。UUID不変generation、公開前失敗掃除、共通write_lock、published generation保持、executable/mtime resolver、main所有license argsPrefix、workspace/project revision guardを固定。grimodex-db 256 pass + 1 ignored、MCP licensing 151、native Node 86 pass + 1 skip、native Rust 12、Electron対象 196、renderer対象 27、両TypeScript check PASS。full suiteはElectron 23 files / 511 passed、renderer 866 files passed + 8 skipped / 8879 tests passed + 35 skipped（114s）PASS",
+    "phase3Batch5CommandCount": 2,
     "deadCodeRemoval": "2026-07-11: FE本番コールサイトが存在しない foreshadow_list / external_mount_list / get_post_effect_run / update_relation_status を Tauri handler・Rust本体・TS wrapper・browser mock から撤去。Electron mirrorは追加しない",
     "totalCommands": 145,
     "doneCount": 13,
@@ -97,12 +103,12 @@
       "priority": "P0",
       "args": ["path: String"],
       "returns": "OpenWorkspaceResult",
-      "stateDeps": ["WorkspaceState", "GlobalSettingsPath", "SearchCache", "CodexSearchCache", "EventsSearchCache", "ChatSearchCache"],
+      "stateDeps": ["WorkspaceState", "GlobalSettingsPath", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "workspace を開く（backup→migrate→swap→SwitchingGuard→recent-workspaces 更新）。本体は grimodex_db::open::open_workspace_sync に抽出済み",
-      "napiNotes": "napi 実装済み。semantic 系4キャッシュのクリアは OpenDeps::on_swapped フック注入（napi 側は no-op と open.rs に明記）。spawn_blocking で包む。reject_unsafe_workspace_path も grimodex-db 側へ移動済み",
+      "napiNotes": "napi実装済み。OpenDeps::on_swappedでSemanticRuntime.rotate_workspace_epoch()を呼び、scene/codex/events/chatの4cacheを新世代へ原子的に交換する。Electronは同hookでCodex matcherも破棄。spawn_blocking、reject_unsafe_workspace_path、DB swap本体はgrimodex-db共有",
       "callSites": [
         { "file": "src/features/workspace/store.ts", "trigger": "workspace-open", "notes": "L272 openWorkspace（DB swap 本体、SLOW_COMMANDS 300s、beginWorkspaceSwitch〜endWorkspaceSwitch）" }
       ]
@@ -110,15 +116,16 @@
     "get_mcp_config": {
       "file": "workspace.rs",
       "classification": "main-ts",
+      "status": "done",
       "priority": "P3",
       "args": [],
-      "returns": "McpConfigInfo",
+      "returns": "McpConfigInfo { command, workspace, argsPrefix }",
       "stateDeps": ["WorkspaceState"],
       "appHandle": false,
       "emits": [],
       "isAsync": false,
-      "summary": "外部 MCP クライアント向けに自アプリ実行バイナリの絶対パスと開いている workspace パスを返す（FE が .mcp.json 断片を組み立てる）",
-      "napiNotes": "Electron では process.execPath（Linux AppImage は APPIMAGE 環境変数優先）で main TS 再実装が自然。ただし『Grimodex mcp サブコマンド』としてアプリバイナリ自身を spawn させる契約なので、Electron 移行時は MCP サーバーの起動形態（バイナリ同梱 or 別プロセス）の決定に依存。workspace パス取得経路を main TS 側に用意する必要。McpConfigInfo は camelCase serialize（command/workspace）",
+      "summary": "外部 MCP クライアント向けにstandalone sidecarの絶対path、active workspace、shell所有の安全なargsPrefixを返し、FEが `.mcp.json` 断片を組み立てる",
+      "napiNotes": "実装済み。N-APIはget_active_workspace_pathでactive DBのworkspace identityを返し、Electron mainがstandalone grimodex-mcp[.exe]を解決。strict絶対overrideとregular-file/非Windows X_OK検証、dev debug/releaseのmtime比較を行う。argsPrefixはrenderer入力ではなくmain所有の [--license-file, <userData>/license.json]。MCP CLIはlicense pathの絶対性を検証し、release buildはlicensing feature有効。FEはinvoke前後のworkspace path/open revision/hydration/switch/project IDと返却workspaceを再検証し、途中切替時はcopyを拒否。TauriはargsPrefix=[mcp]の従来アプリsubcommand adapterを維持",
       "callSites": [
         { "file": "src/features/settings/components/McpIntegrationSection.tsx", "trigger": "settings", "notes": "L36 handleCopy（.mcp.json スニペットのコピーボタン）" }
       ]
@@ -1593,6 +1600,7 @@
     "extract_codex_candidates": {
       "file": "codex_candidates.rs",
       "classification": "lindera",
+      "status": "done",
       "priority": "P2",
       "args": ["project_id: String", "min_count: Option<usize>"],
       "returns": "Vec<CodexCandidate>",
@@ -1601,7 +1609,7 @@
       "emits": [],
       "isAsync": true,
       "summary": "全シーン本文を読書順に lindera (UniDic) で形態素解析し、既存 Codex の name/alias に無い固有名詞を出現数・初出シーン・文脈付き候補として返す（日本語プロジェクト専用、min_count 未満は除外）",
-      "napiNotes": "副次分類 pure-db（SELECT のみ）。依存: grimodex-lint (lindera+UniDic tokenize_block)、aho-corasick、unicode-normalization、serde_json、rusqlite。CPU バウンド → napi でも AsyncTask/spawn_blocking 必須。DB ロックはフェーズ1（読出し）のみ保持し解析はロック外 — 2フェーズ構造を維持。napi では DB ハンドルを直接渡せば AppHandle 不要。semantic::chunker::extract_paragraph_texts と semantic::index::project_language の移植も必要。normalize_name（trim+NFC+ASCII小文字化）はフロント codexCandidates.ts の candidateKey と規則一致が必須の契約",
+      "napiNotes": "実装済み。grimodex-semantic::codex_candidatesへ本体を集約し、Tauri/N-APIとも開始時のArc<Database>を1回pin。DB snapshotを単一connection lockで読み、UniDic/Aho-Corasick解析はlock外。normalize_nameとFE candidateKeyの一致、u32境界を回帰固定",
       "callSites": [
         { "file": "src/features/codex/candidateExtractor.ts", "trigger": "panel-open", "notes": "L36 extractCodexCandidates ← CodexCandidatesReport.tsx L83（候補レポート表示時）" }
       ]
@@ -1770,6 +1778,7 @@
     "seed_sample_workspace": {
       "file": "onboarding.rs",
       "classification": "db+state",
+      "status": "done",
       "priority": "P2",
       "args": ["language: String", "ai_policy: String"],
       "returns": "SeedResult { path: String, projectId: String }",
@@ -1777,8 +1786,8 @@
       "appHandle": true,
       "emits": [],
       "isAsync": true,
-      "summary": "AppData 下に sample-workspace を（再）作成し、UI言語に合ったサンプルJSON（ja/en）で新規DBを migrate + seed して、そのパスを GlobalSettings に記録する（open_workspace は呼び出し側の責務）",
-      "napiNotes": "WorkspaceState 不使用 — rusqlite で任意パスに新規 Database::new + migrate + 一括 INSERT する独自経路（napi 実装済 db_execute は既存 workspace DB 前提で流用不可）。GlobalSettingsPath.write_lock により save_global_settings / open_workspace（napi 実装済）と直列化 — napi 側でも同一ロックを共有しないと lost update 再発。spawn_blocking 必須。副次分類 fs: create_dir_all・既存 grimodex.db の remove_file・ensure_workspace_meta・GlobalSettings JSON 書込。サンプルデータは include_str! で v1.json / v1_en.json 埋め込み — 同梱方式（埋め込み継続 or resources 配布）の決定が必要。返り値は camelCase（projectId）",
+      "summary": "AppData下に不変な `sample-workspace-<UUID>` generationを新規作成し、UI言語に合った埋込みサンプルJSON（ja/en）でDBをmigrate + seedし、そのpathをGlobalSettingsに公開する（open_workspaceは呼び出し側の責務）",
+      "napiNotes": "実装済み。本体はgrimodex-db::sample_seed共有コア、Tauri/N-APIはspawn_blockingの薄いadapter。create→migrate→seed→sampleWorkspacePath公開をGlobalSettingsPath.write_lockでsave/openと直列化する。未公開generationは失敗時にRAII掃除。その後rendererのseedAndOpenSampleがtrustedWorkspacesの旧サンプルentryを新pathへ置換してopenする。公開後generationは生存中desktop task/外部MCPの古いDB handleを壊さないため意図的に保持し、unlinkや固定slot再利用は行わない。埋込みv1.json/v1_en.json、返り値はcamelCase projectId",
       "callSites": [
         { "file": "src/features/workspace/store.ts", "trigger": "user-action", "notes": "L509 seedAndOpenSample（オンボーディング『サンプルを試す』→ openWorkspace へ連鎖）" }
       ]
@@ -1979,16 +1988,17 @@
     "semantic_download_model": {
       "file": "semantic.rs",
       "classification": "network",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["language: String"],
       "returns": "String",
-      "stateDeps": ["ModelDownloadState", "SemanticEmbedderState"],
+      "stateDeps": ["SemanticRuntime"],
       "appHandle": true,
       "emits": ["semantic:model_download_progress"],
       "isAsync": true,
       "summary": "指定言語の埋め込みモデルが未インストールならバックグラウンドDLを開始し、即座に installed/downloading/unavailable の状態文字列を返す",
-      "napiNotes": "reqwest で artifact_url から HTTP DL（副次分類 fs: app_data/models 書込 + sha256 sidecar 検証）。DL 本体は fire-and-forget → napi では detached tokio task + ThreadsafeFunction で進捗 emit を中継。State 拡張要: ModelDownloadState（inflight HashSet の二重DLガード）と SemanticEmbedderState（DL 成功時に旧 Embedder キャッシュ破棄）を napi 側プロセスグローバル（OnceLock<Mutex>）に移植。emit は ~1MiB ごと間引き、done=true/error で完了通知。ファイル全体が #[cfg(feature = 'semantic-embedding')] gate 下",
+      "napiNotes": "実装済み。SemanticRuntimeが明示SemanticPaths、download in-flight、言語別Embedderを保持。共有download jobをdetached taskで実行し、EventSink→Tauri emitter/Electron EventQueueへprogressを配信。成功時は該当Embedderを破棄しFEがopen back-indexを再開。Backend全体はresource欠落でもfail-soft起動",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L75 downloadSemanticModel ← autoIndex.ensureSemanticIndexesOnOpen（背景モデル DL、fail-soft）" }
       ]
@@ -1996,16 +2006,17 @@
     "semantic_index_scene": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["scene_id: String"],
       "returns": "usize",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "SearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "シーン1件を読み出し→ONNX埋め込み→scene_chunks へ upsert し、投入チャンク数を返す（Indexed 時は SearchCache を invalidate）",
-      "napiNotes": "ort + tokenizers 依存。spawn_blocking 必須（ONNX 推論は秒単位）。副次分類 db+state。index_scene_split_lock で『読み出し→embed→upsert』を分割し推論中に workspace lock を持たない設計を維持。embedder lock→workspace lock の取得順固定も踏襲。Embedder は dir_name ごと HashMap で lazy load（ensure_embedder）",
+      "napiNotes": "実装済み。adapterでDB Arc+SemanticEpochをblocking投入前にpinし、shared runtimeがread→lock外embed→hash再確認upsertを実行。成功時はpin済みscene cacheをinvalidate。Electron通常buildでsemantic-embedding有効",
       "callSites": [
         { "file": "src/features/semantic-search/scheduler.ts", "trigger": "editing-loop", "notes": "L37 scheduleSceneIndex ← persistSceneBody（autosave、2.5s debounce、fail-soft .catch(debugLog.warn)）・external-mount writeBack/mountManager" }
       ]
@@ -2013,16 +2024,17 @@
     "semantic_search": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String", "query: String", "limit: usize", "scene_scope: Option<String>", "description_mode: Option<bool>"],
       "returns": "Vec<SearchHit>",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "SearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "クエリを埋め込み scene_chunks に総当たりコサインで Top-K を返す本文セマンティック検索（description_mode で会話チャンク減点）",
-      "napiNotes": "ort 依存・spawn_blocking 必須。副次分類 db+state（SearchCache は埋め込み BLOB のメモリキャッシュ）。クエリ埋め込み後に embedder lock を drop してからスコアリングする並行性最適化を維持。query_prefix 付与は embed_query 側。description_mode 省略時 false",
+      "napiNotes": "実装済み。DB+epoch pin済みSemanticRequestをshared runtimeへ渡し、言語specのquery embeddingとscene cache Top-Kを実行。IPC limitは0..u32、sceneScope/descriptionModeはnull/undefinedを厳格変換。SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L53 semanticSearch ← chat semanticRecall・commandCenter semanticSearchProvider・related-scenes（シーン切替 debounce）・impact-review narrowing・searchEval" }
       ]
@@ -2030,16 +2042,17 @@
     "semantic_index_status": {
       "file": "semantic.rs",
       "classification": "pure-db",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String"],
       "returns": "IndexStatusReport",
-      "stateDeps": ["WorkspaceState"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "scene_chunks の index 充足/stale 状況を SQL 集計で返し、未 chunk scene 本文を現行チャンカに掛けて nonempty_scene_count を補正する",
-      "napiNotes": "Embedder 不要だが count_indexable_scenes が純 CPU のチャンカ（semantic::chunker）を lock 解放後に回すためチャンカ実装を Rust 側に残す必要あり。spawn_blocking 推奨（大規模未 index プロジェクトで全 scene 本文を読む初回パス）",
+      "napiNotes": "実装済み。shared runtimeのpure-DB経路。開始時DB+epoch pin後、SQL集計とlock外count_indexable_scenesをblocking workerで実行。resource/model欠落時も利用可能",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L236 semanticIndexStatus ← autoIndex（open 時）・settings SemanticIndexSection・searchEval" }
       ]
@@ -2047,16 +2060,17 @@
     "semantic_reindex_all": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
-      "args": ["project_id: String"],
+      "args": ["project_id: String", "run_id: Option<String>"],
       "returns": "usize",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "SearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": ["semantic:reindex_progress"],
       "isAsync": true,
       "summary": "project 配下の全 scene を順次再 index し、scene 完了ごとに progress event を emit（total_scenes=0 でも done=true を1回送る）。合計 chunk 数を返す",
-      "napiNotes": "ort 依存・spawn_blocking 必須。emit を ThreadsafeFunction / webContents.send へ差し替え — payload は camelCase の SemanticReindexProgress {sceneIndex, sceneId, totalScenes, chunksIndexed, done}。FE の useReindexProgressListener が listen。1 scene 失敗で即エラー中断（強い整合性）と、scene ごとの lock 分割で autosave の db_execute を通す設計を維持",
+      "napiNotes": "実装済み。generation/domain/project/model identity単位single-flight、panic/error時waiter解放、identity変更時retry。progress payloadはsceneIndex/sceneId/totalScenes/chunksIndexed/done/projectId/runIdで、合流callerにも自身runIdのterminal eventを配信。IPC runIdはUnicode code point 1..256",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L64 semanticReindexAll ← autoIndex.ensureSemanticIndexesOnOpen（SLOW_COMMANDS 300s）・reindexActions（設定ボタン）" }
       ]
@@ -2064,16 +2078,17 @@
     "semantic_chunk_context": {
       "file": "semantic.rs",
       "classification": "pure-db",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["scene_id: String", "char_start: usize", "char_end: usize", "padding: usize"],
       "returns": "PreviewContext",
-      "stateDeps": ["WorkspaceState"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "semantic hit の前後文脈を切り出して返す hover プレビュー用（scene content JSON→段落抽出→slice_context_verified）",
-      "napiNotes": "Embedder 不要・DB 読み出し + 純ロジック（semantic::preview::slice_context_verified、chunker::extract_paragraph_texts）。生 SQL 2 本を直接叩く珍しい経路。indexed_chunk 照合で再 index 前の char offset ズレを補正するため preview/chunker モジュールを一緒に移植。scene 不在時は空 PreviewContext（エラーにしない）",
+      "napiNotes": "実装済み。shared runtimeのpure-DB経路でpin済みDBのみ参照。preview/chunkerを共有しindexed_chunk照合でoffsetずれを補正。charStart/charEnd/paddingはIPCで0..u32検証、scene不在は空DTO",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L256 getSemanticChunkContext ← commandCenter/preview/semanticPreview（検索ヒット hover）" }
       ]
@@ -2081,16 +2096,17 @@
     "semantic_debug_dump": {
       "file": "semantic.rs",
       "classification": "pure-db",
+      "status": "done",
       "priority": "P3",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String", "scene_id: Option<String>", "limit: Option<usize>"],
       "returns": "DebugDumpReport",
-      "stateDeps": ["WorkspaceState"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "開発者向けに scene_chunks を検査用ダンプ（本文プレビュー・model_id・embedding L2 ノルム・stale 判定）。limit 省略時 200 / 上限 2000",
-      "napiNotes": "Embedder 不要・DB 読み出しのみ。L2 ノルム計算（little-endian f32 パック前提）と stale 判定（spec_for_language 由来の現行 model/dim/chunker 比較）を伴うので spec 定数の共有が必要。デバッグ専用で優先度低",
+      "napiNotes": "実装済み。shared runtimeのpure-DB経路。pin済みDBからL2 norm/stale判定を返す。sceneIdはoptional string、limitはoptional 0..u32をIPCで検証。resource/model欠落時も利用可能",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "settings", "notes": "L303 semanticDebugDump ← settings SemanticIndexSection の開発用ダンプボタン" }
       ]
@@ -2098,16 +2114,17 @@
     "codex_semantic_search": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String", "query: String", "limit: usize"],
       "returns": "Vec<CodexSearchHit>",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "CodexSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "Codex セマンティック検索の dense arm。クエリ埋め込み→codex_chunks 総当たりコサイン Top-K（JS 側で FTS と RRF 融合）",
-      "napiNotes": "ort 依存・spawn_blocking 必須。副次分類 db+state（CodexSearchCache）。JS 側 search_codex が sparse(FTS) と融合する前提なので CodexSearchHit の camelCase serialize を維持",
+      "napiNotes": "実装済み。DB+epoch pin済みshared runtimeでCodex cache dense Top-Kを実行し、camelCase JSON wireをN-API/IPCで復元。limitは0..u32厳格検証、SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L97 codexSemanticSearch ← chat/agent toolExecutors（AI ツール＝チャット送信起点）" }
       ]
@@ -2115,16 +2132,17 @@
     "codex_index_entry": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["entry_id: String"],
       "returns": "usize",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "CodexSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "Codex entry 1件を埋め込み codex_chunks へ upsert（不在/hash 不一致は 0、成功時 CodexSearchCache を invalidate）",
-      "napiNotes": "ort 依存・spawn_blocking 必須。codex_index_split_lock（読み出し→embed→upsert 分割）と hash 再確認による race 吸収を踏襲。scene 版と同型で共通ヘルパーに畳める",
+      "napiNotes": "実装済み。開始時DB+epoch pin、shared runtimeでread→lock外embed→hash再確認upsert、成功時pin済みCodex cacheをinvalidate。SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "editing-loop", "notes": "L106 codexIndexEntry ← scheduler.scheduleCodexIndex ← codex/api 保存・agent-writes/codex" }
       ]
@@ -2132,16 +2150,17 @@
     "codex_index_status": {
       "file": "semantic.rs",
       "classification": "pure-db",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String"],
       "returns": "CodexIndexStatus",
-      "stateDeps": ["WorkspaceState"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "Codex index の充足状況（indexed/total 件数など）を返す cheap クエリ。Embedder 不要",
-      "napiNotes": "DB 読み出しのみで napi 化容易。spec（model_id/embedding_dim/chunker_version）定数は Rust 側 spec_for_language に依存 — spec 定義を Rust に残すか定数共有が必要。AppHandle は state 取得のみ",
+      "napiNotes": "実装済み。shared runtimeのpure-DB status。spec/model identityも共有crate内で算出し、resource/model欠落時もN-APIから利用可能",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L120 codexIndexStatus ← autoIndex.ensureSemanticIndexesOnOpen" }
       ]
@@ -2149,16 +2168,17 @@
     "codex_reindex_all": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String"],
       "returns": "usize",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "CodexSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "project 配下の全 Codex entry を一括再 index し投入ベクトル総数を返す（bulk back-index、progress event なし）",
-      "napiNotes": "ort 依存・spawn_blocking 必須。全 entry を 1 つの embedder guard で回すが entry ごとに workspace lock は分割。大規模化するなら scene 版の progress 機構を流用可",
+      "napiNotes": "実装済み。pin済みDB/epochとdomain/project/model identity single-flightを共有。entryごとにlock外embed→upsertしCodex cacheをinvalidate。SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L125 codexReindexAll ← autoIndex（未 index 検出時の back-index）" }
       ]
@@ -2166,16 +2186,17 @@
     "events_index_entry": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["event_id: String"],
       "returns": "usize",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "EventsSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "Chronicle event 1件を埋め込み event_chunks へ upsert（不在/hash 不一致は 0、成功時 EventsSearchCache を invalidate）",
-      "napiNotes": "ort 依存・spawn_blocking 必須。codex_index_entry と完全同型（events_index_split_lock）。codex/events/chat の split-lock ヘルパー3種を generics で統合できる",
+      "napiNotes": "実装済み。開始時DB+epoch pin、shared runtimeでlock外embed→hash再確認upsert、成功時Events cacheをinvalidate。SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "editing-loop", "notes": "L155 eventsIndexEntry ← scheduler.scheduleEventIndex ← chronicle/api・agent-writes/event" }
       ]
@@ -2183,16 +2204,17 @@
     "events_semantic_search": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String", "query: String", "limit: usize"],
       "returns": "Vec<EventSearchHit>",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "EventsSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "Chronicle event のセマンティック検索（dense のみ・FTS 融合なし）。JS の search_events agent ツールが呼ぶ",
-      "napiNotes": "ort 依存・spawn_blocking 必須。codex_semantic_search と同型",
+      "napiNotes": "実装済み。DB+epoch pin済みshared runtimeでdense-only event cache検索。limitは0..u32厳格検証、SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L146 eventsSemanticSearch ← chat/agent toolExecutors" }
       ]
@@ -2200,16 +2222,17 @@
     "events_index_status": {
       "file": "semantic.rs",
       "classification": "pure-db",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String"],
       "returns": "EventsIndexStatus",
-      "stateDeps": ["WorkspaceState"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "Chronicle event index の充足状況を返す cheap クエリ。Embedder 不要",
-      "napiNotes": "DB 読み出しのみで napi 化容易。codex_index_status と同型。spec 定数依存のみ注意",
+      "napiNotes": "実装済み。shared runtimeのpure-DB status。open時autoIndexが充足不足を検知しevents_reindex_allへ繋ぐ",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L171 eventsIndexStatus ← autoIndex.ensureSemanticIndexesOnOpen" }
       ]
@@ -2217,16 +2240,17 @@
     "events_reindex_all": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String"],
       "returns": "usize",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "EventsSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "project 配下の全 Chronicle event を一括再 index し投入ベクトル総数を返す（progress event なし）",
-      "napiNotes": "ort 依存・spawn_blocking 必須。codex_reindex_all と同型",
+      "napiNotes": "実装済み。pin済みDB/epochとdomain/project/model identity single-flightを共有。open時back-indexのFE callerも実装済み。SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L176 eventsReindexAll ← autoIndex（back-index）" }
       ]
@@ -2234,16 +2258,17 @@
     "chat_index_message": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["message_id: String"],
       "returns": "usize",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "ChatSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "チャットメッセージ1件を episodic index に upsert（system/空本文/不在は embedder load 前に即 0 で返す事前 read あり）",
-      "napiNotes": "ort 依存・spawn_blocking 必須。非対象メッセージで ONNX load を省く安価な事前 read（read_chat_message_for_index の None チェック）を維持 — updateMessageMetadata からデバウンス経由で高頻度に呼ばれる",
+      "napiNotes": "実装済み。開始時DB+epoch pin。shared runtimeは非対象messageをEmbedder load前に0返却し、対象はlock外embed→hash再確認upsert、成功時Chat cacheをinvalidate。SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "editing-loop", "notes": "L210 chatIndexMessage ← scheduler.scheduleChatIndex ← chatApi（メッセージ永続化後）" }
       ]
@@ -2251,16 +2276,17 @@
     "chat_message_search": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String", "query: String", "limit: usize"],
       "returns": "Vec<ChatSearchHit>",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "ChatSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "chat episodic dense 検索。生 cosine + 信号を返し、重み付けは JS 側 chatRecall が行う",
-      "napiNotes": "ort 依存・spawn_blocking 必須。codex_semantic_search と同型",
+      "napiNotes": "実装済み。DB+epoch pin済みshared runtimeでepisodic Chat cache検索。camelCase JSON wire、limit 0..u32、SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "user-action", "notes": "L201 chatMessageSearch ← chat/chatRecall（episodic recall、チャット送信時）" }
       ]
@@ -2268,16 +2294,17 @@
     "chat_index_status": {
       "file": "semantic.rs",
       "classification": "pure-db",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String"],
       "returns": "ChatIndexStatus",
-      "stateDeps": ["WorkspaceState"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "chat episodic index の充足状況を返す cheap クエリ。Embedder 不要",
-      "napiNotes": "DB 読み出しのみで napi 化容易。codex/events の status と同型",
+      "napiNotes": "実装済み。shared runtimeのpure-DB status。open時autoIndexが既存chat messageの不足を検知してback-indexする",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L224 chatIndexStatus ← autoIndex.ensureSemanticIndexesOnOpen" }
       ]
@@ -2285,16 +2312,17 @@
     "chat_reindex_all": {
       "file": "semantic.rs",
       "classification": "ort",
+      "status": "done",
       "priority": "P2",
       "featureGate": "semantic-embedding",
       "args": ["project_id: String"],
       "returns": "usize",
-      "stateDeps": ["WorkspaceState", "SemanticEmbedderState", "ChatSearchCache"],
+      "stateDeps": ["WorkspaceState", "SemanticRuntime"],
       "appHandle": true,
       "emits": [],
       "isAsync": true,
       "summary": "project 配下の全 index 対象チャットメッセージを一括再 index し投入ベクトル総数を返す",
-      "napiNotes": "ort 依存・spawn_blocking 必須。codex_reindex_all と同型（progress event なし）",
+      "napiNotes": "実装済み。pin済みDB/epochとdomain/project/model identity single-flightを共有し、open時back-indexへ接続。SLOW_COMMANDS 300s",
       "callSites": [
         { "file": "src/features/semantic-search/api.ts", "trigger": "workspace-open", "notes": "L229 chatReindexAll ← autoIndex（back-index）" }
       ]
@@ -2431,8 +2459,8 @@
     { "channel": "vivliostyle:error", "emitter": "vivliostyle_build", "subscribers": ["src/features/vivliostyle/api.ts"], "importance": "critical", "notes": "ビルドのエラー終端。無いと失敗が沈黙し phase 固着" },
     { "channel": "license:state_changed", "emitter": "license バックグラウンド検証サイクル（run_validate_cycle、コマンド外）", "subscribers": ["src/features/license/useLicenseStateListener.ts"], "importance": "critical", "notes": "App.tsx 単一マウント。稼働中のライセンス制限発動/解除の反映を担う。初期状態は get_license_state で取れるため fail-soft 寄りだが正当性チャネル" },
     { "channel": "post_effect:progress", "emitter": "start_post_effect_run / multi", "subscribers": ["src/features/post-effect/api.ts"], "importance": "progress", "notes": "run ごとに無条件購読 → usePostEffectRunStore.updateProgress（グローバル進捗トースト）。runId フィルタ + 確定前バッファ。無くても run は完了" },
-    { "channel": "semantic:model_download_progress", "emitter": "semantic_download_model", "subscribers": ["src/features/semantic-search/useModelDownloadListener.ts"], "importance": "progress", "notes": "純表示専用ではない: done && !error 受信時に ensureSemanticIndexesOnOpen を再実行する機能フックあり — 無いと DL 完了後の back-index 自動再開が起きずセッション中 semantic 検索が FTS 縮退のまま（次回起動で回復）" },
-    { "channel": "semantic:reindex_progress", "emitter": "semantic_reindex_all", "subscribers": ["src/features/semantic-search/useReindexProgressListener.ts"], "importance": "progress", "notes": "App.tsx 単一マウント。reindexProgressStore へ流すだけ。無くても再インデックスは完走" },
+    { "channel": "semantic:model_download_progress", "emitter": "semantic_download_model", "subscribers": ["src/features/semantic-search/useModelDownloadListener.ts"], "importance": "progress", "notes": "Batch4配線済み。shared EventSink→Tauri emitter / Electron EventQueue(TSFn→全窓)。done && !errorで現在workspace identityのensureSemanticIndexesOnOpenを再実行し4domain back-indexを再開" },
+    { "channel": "semantic:reindex_progress", "emitter": "semantic_reindex_all", "subscribers": ["src/features/semantic-search/useReindexProgressListener.ts"], "importance": "progress", "notes": "Batch4配線済み。payloadはsceneIndex/sceneId/totalScenes/chunksIndexed/done/projectId/runId。listenerはcurrent workspace/project/runだけを反映し、single-flight followerにもcaller自身のrunIdでterminal eventを配信" },
     { "channel": "vivliostyle:log", "emitter": "vivliostyle_build", "subscribers": ["src/features/vivliostyle/api.ts"], "importance": "progress", "notes": "onLog callback がある場合のみ購読。実消費者は runStore.startBuild（ビルドログパネル、MAX_LOG_LINES リングバッファ）。runId gate + 確定前バッファ" },
     { "channel": "vivliostyle:preview-exited", "emitter": "vivliostyle_preview_start（wait タスク）", "subscribers": ["src/features/vivliostyle/api.ts", "src/features/vivliostyle/runStore.ts"], "importance": "progress", "notes": "プレビュー自然終了検知 → previewRunning=false 同期のみ。fail-soft 明記あり（無いとボタン状態が stale になるだけ）" },
     { "channel": "post_effect:partial", "emitter": "start_post_effect_run / multi", "subscribers": ["src/features/post-effect/api.ts（条件付き）"], "importance": "debug", "notes": "onPartial callback が渡された場合のみ購読だが、現状 FE に onPartial を渡す呼び出しがゼロ = 実質未購読。配線優先度最下位。ipcContract.ts allowlist には収録済み" }
@@ -2448,15 +2476,10 @@
     "InlineAiAbortFlag { flag: Arc<AtomicBool> } — インライン AI 用（チャットとは別フラグ）",
     "CliStreamAbortFlag { flag: Arc<AtomicBool> } — CLI プロバイダ（サブプロセス）ストリーム中断用",
     "PostEffectAbortRegistry — run_id 単位の中断レジストリ",
-    "SemanticEmbedderState { inner: Mutex<HashMap<..>> } [cfg semantic-embedding] — 言語別 ONNX Embedder の遅延ロード",
-    "ModelDownloadState [cfg semantic-embedding] — モデル DL の in-flight 集合（二重 DL ガード）",
-    "SearchCache — scene_id -> embedding のインメモリキャッシュ（feature 非ゲート）",
-    "CodexSearchCache — entry_id -> embedding（非ゲート、workspace.rs から clear 可能にするため）",
-    "EventsSearchCache — event_id -> embedding（非ゲート）",
-    "ChatSearchCache — message_id -> embedding",
+    "Arc<grimodex_semantic::runtime::SemanticRuntime> [cfg semantic-embedding] — explicit SemanticPaths、言語別Embedder、download in-flight、scene/codex/events/chatのSemanticEpoch caches、reindex single-flight、EventSinkを一体保持。open/restoreでepoch rotate",
     "ExternalMountWatchState (external_mount::watch)",
     "ExternalMountState (commands::external_mount)",
     "VivliostyleState — Vivliostyle CLI build run / 成果物レジストリ"
   ],
-  "setupNotes": "setup フックは src-tauri/src/lib.rs 119-256 行にインライン定義。処理順: (1) [Linux] main window に webkit_features::apply_vertical_form_controls（Electron 移行では不要になる想定）。(2) app_data_dir 取得・create_dir_all。(3) GlobalSettingsPath / AiSettingsPath / LicensePath を manage。(4) ライセンス再検証ループを spawn — 起動 5 秒後に run_validate_cycle、以後 6 時間ごと（『最終検証から 7 日以上』で validate、結果は license:state_changed を push。licensing feature 無効ビルドでは即 return）。(5) WorkspaceState（空）・CodexMatcherState・3 abort フラグ・PostEffectAbortRegistry を manage。(6) [semantic-embedding] SemanticEmbedderState / ModelDownloadState を manage し spawn_blocking で gc_stale_model_dirs（旧 models/<dir> 掃除）。(7) 4 つの検索キャッシュを manage（workspace open 時 clear・個別 index 時 invalidate のライフサイクル）。(8) ExternalMountWatchState / ExternalMountState を manage。(9) VivliostyleState を manage し spawn_blocking で cleanup_temp_root（前回セッション残留 temp 掃除）。run() 冒頭では workaround_nvidia_dmabuf()（Linux/NVIDIA、Electron では不要）と lint_logging::init_tauri_logging()（~/.grimodex/logs 日次ローテーション）。プラグイン: window_state / dialog / fs / opener / process / updater / notification。.run イベントハンドラで ExitRequested|Exit 時に vivliostyle::kill_all（実行中 build とプレビューをプロセスグループごと kill）— Electron では before-quit に移植必須"
+  "setupNotes": "setup フックは src-tauri/src/lib.rs に定義。処理順: (1) [Linux] webkit feature適用。(2) app_data_dir取得。(3) GlobalSettingsPath / AiSettingsPath / LicenseRuntimeをmanage。(4) license検証loop。(5) WorkspaceState・CodexMatcherState・abort群・PostEffect registry。(6) [semantic-embedding] resource_dir/resources/semanticとappData/modelsをSemanticPathsへ明示注入したArc<SemanticRuntime>をmanageし、gc_stale_model_dirsをspawn_blocking。4cacheはruntime内SemanticEpochでopen/restore時rotate。(7) ExternalMount states。(8) Vivliostyle lifecycle。Electronはmain/backend.tsがdev/package resource rootをN-API constructorへ注入し、AppStateが同じSemanticRuntimeを保持する"
 }

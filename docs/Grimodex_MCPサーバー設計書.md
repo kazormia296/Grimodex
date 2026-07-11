@@ -45,12 +45,12 @@ Claude Code などの AI エージェントから自然言語で操作できる�
 └────────┬─────────────┘
          │ stdio (JSON-RPC 2.0)
          │
-┌────────▼─────────────┐
-│  Grimodex 本体        │
-│  `mcp` サブコマンド   │
-│  = stdio MCP サーバ   │
-│  (GUI は開かない)     │
-└────────┬─────────────┘
+┌────────▼──────────────────────────────┐
+│ shell 別 launcher                     │
+│ Tauri: Grimodex 本体 + `mcp`          │
+│ Electron: standalone grimodex-mcp     │
+└────────┬──────────────────────────────┘
+         │ 共通 grimodex-mcp::run_blocking
          │ 直接アクセス
     ┌────┴────┐
     │         │
@@ -60,17 +60,17 @@ Claude Code などの AI エージェントから自然言語で操作できる�
 └───────┘ └─────────────┘
     ▲
     │  ← GUI 起動時の本体と同じ DB を共有
-┌───┴────────────┐
-│  Grimodex      │
-│  (Tauri GUI)   │
-└────────────────┘
+┌───┴────────────────┐
+│  Grimodex GUI      │
+│  (Tauri/Electron)  │
+└────────────────────┘
 ```
 
 ### 設計判断
 
 | 決定事項 | 選択 | 理由 |
 |---------|------|------|
-| 配置形態 | 本体バイナリの `mcp` サブコマンド（統一） | 配布物は本体1つ（externalBin/サイドカー無し）。Grimodex GUI 未起動でも動作（クライアントが必要時に本体を spawn）。standalone `[[bin]]` は dev/CI/headless 用に残置 |
+| 配置形態 | 実行コア共通・shell 別 launcher | Tauri は本体 + `mcp`、Electron は standalone sidecar + main-owned `--license-file`。どちらも GUI 未起動で動作し、同じ `run_blocking` を呼ぶ |
 | トランスポート | stdio | ローカル用途、設定がシンプル、MCP 標準 |
 | DB 同時アクセス | WAL モード + busy_timeout | 読み取り中心なら安全、書き込みは Codex のみ (v1) |
 | シーン書き込み | v1 では不可（読み取り専用） | エディタ内バッファとの競合を回避 |
@@ -117,18 +117,24 @@ src-tauri/
 (`grimodex-core`) に抽出し、Tauri アプリと MCP サーバーの両方から
 参照する構成にする。v1 では MCP サーバー側に必要最低限のコードを複製している。
 
-### エントリポイント（本体統一）
+### エントリポイント（実行コア共通・shell 別起動）
 
-MCP サーバは **本体アプリバイナリの `mcp` サブコマンド**として起動する。本体
-`src-tauri/src/main.rs` が Tauri 初期化の**前**に argv を見て分岐し、
-`argv[1] == "mcp"` のとき `grimodex_mcp::run_blocking()` を呼んで stdio MCP
-サーバを実行し、`process::exit` する（GUI は開かない）。本体 `grimodex` クレートは
-`grimodex-mcp` に path 依存（一方向・循環なし）。
+MCP の実行コアは `grimodex-mcp` crate の `run_blocking()` に統一する一方、外部 MCP
+client が spawn する実行ファイルと先頭引数は desktop shell ごとに異なる。
 
-`grimodex-mcp` の `[[bin]]`（standalone `grimodex-mcp` 実行ファイル）は **dev/CI/
-headless 用に残置**する。本体バイナリは `ort`（onnxruntime）と Linux では
-`libwebkit2gtk` を load-time でリンクするため、ビルドが速く headless でも起動できる
-lean bin を開発・テスト経路として温存する（[[#6 設定]] 参照）。
+- **Tauri**: 本体アプリバイナリを `mcp` サブコマンド付きで起動する。
+  `src-tauri/src/main.rs` が Tauri 初期化の**前**に argv を見て分岐し、
+  `argv[1] == "mcp"` のとき `grimodex_mcp::run_blocking()` を呼ぶため GUI は開かない。
+  本体 `grimodex` crate から `grimodex-mcp` への依存は一方向。
+- **Electron**: 本体 GUI ではなく、package の `resources/bin/grimodex-mcp[.exe]` に置く
+  standalone sidecar を直接起動する。Electron main が sidecar の絶対 path と
+  `<userData>/license.json` の絶対 path を決定し、後者を
+  `--license-file <absolute-path>` として先頭引数へ固定する。renderer はこのライセンス
+  authority を選べない。
+
+standalone `[[bin]]` は Electron の product sidecar に加え、dev / CI / headless の lean
+実行経路としても残置する。本体バイナリが load-time link する `ort` や Linux の
+`libwebkit2gtk` を必要としないため、GUI 非依存の検証にも使える（[[#6 設定]] 参照）。
 
 ### DB 接続
 
@@ -973,11 +979,14 @@ ProseMirror JSON 以外（プレーンテキスト）が入っていた場合は
 
 ### ビルド
 
-MCP サーバは **本体アプリバイナリに統一**されている。installer が配る Grimodex
-本体を `mcp` サブコマンド付きで起動すると stdio MCP サーバとして動作する（GUI は
-開かない・本体 GUI 未起動でも動く）。**別バイナリのビルドは不要**。
+MCP core は共通だが、配布物と `.mcp.json` の `command` / 先頭引数は shell 別である。
 
-OS 別の本体バイナリパス（`command` に指定する spawn 対象）:
+| Shell | `command` | `args` prefix | ライセンス path |
+|---|---|---|---|
+| Tauri | installer が配る本体アプリの絶対 path | `mcp` | 省略時に従来の Tauri app-data から解決 |
+| Electron | package の standalone `grimodex-mcp[.exe]` の絶対 path | `--license-file`, `<absolute userData/license.json>` | Electron main が所有・注入 |
+
+Tauri 本体の path 例:
 
 | OS | パス例 |
 |----|--------|
@@ -986,39 +995,50 @@ OS 別の本体バイナリパス（`command` に指定する spawn 対象）:
 | Linux (deb/rpm) | `/usr/bin/grimodex` |
 | Linux (AppImage) | AppImage ファイル自体（`Grimodex_x.y.z.AppImage`） |
 
-> アプリ内（設定 → AI → MCP 連携）の **コピーボタン**が、実行中の本体パス
-> （`current_exe()` / AppImage は `$APPIMAGE`）と現在のワークスペース・プロジェクト ID を
-> 埋めた `.mcp.json` をクリップボードへ出力する。手動でパスを探すより確実。
-> スコープ（この作品＝`--project` / 全作品＝`--all-projects`）× 書込権限
-> （**読み取り専用**＝`--readonly` / **ポリシー準拠**＝`--readonly` なしで AI ポリシーに委譲）
-> の組み合わせを明示ボタンで選んでコピーする（トグルではなく各ボタン＝即時コピー）。
-
-起動例（DB 直読・書き込み無効）:
+Electron sidecar は release packaging 前に必ず licensing feature 付きで build する。
 
 ```bash
-/Applications/Grimodex.app/Contents/MacOS/Grimodex \
-  mcp \
-  --workspace /absolute/path/to/grimodex-workspace \
-  --readonly
+# dev / beta（licensing feature なし）
+pnpm mcp:build
+# Electron product sidecar（licensing feature あり）
+pnpm mcp:build:release
 ```
 
-`--project <ID>` は任意。省略時は `projects ORDER BY created_at LIMIT 1` の先頭を使用。
+> **Electron Linux AppImage は Phase 4 未完**: Batch 5 の resolver は現時点で
+> `process.resourcesPath/bin/grimodex-mcp` を返すが、AppImage の `resourcesPath` は一時 mount
+> 配下で、アプリ終了後に永続的な spawn path として使えない。Phase 4 で sidecar を
+> `<userData>` 等の安定 path へ materialize してから、その path をコピーする。これが入るまで
+> Electron AppImage の MCP config は出荷受け入れ済みとみなさない。Tauri AppImage は従来どおり
+> `$APPIMAGE` が指す元 AppImage を使うため、この未完事項の対象外。
 
-**dev / CI / headless**: standalone `grimodex-mcp` バイナリ（`[[bin]]`）は残置している。
-本体バイナリは `ort`/`libwebkit2gtk` を load-time リンクするため、lean bin の方が
-ビルドが速く headless サーバでも起動できる。
+アプリ内（設定 → AI → MCP 連携）のコピーボタンは、実行 shell から返された
+`command` / `argsPrefix` と、現在の workspace / project identity を組み合わせて
+`.mcp.json` を出力する。スコープ（この作品＝`--project` / 全作品＝`--all-projects`）×
+書込権限（読み取り専用＝`--readonly` / ポリシー準拠＝`--readonly` なし）を明示ボタンで
+選ぶ。workspace switch 中や、取得中に workspace / project が変わった場合はコピーしない。
+
+`--project <ID>` は任意。省略時は `projects ORDER BY created_at LIMIT 1` の先頭を使用する。
+
+dev / CI / headless では standalone bin を直接 build・実行してよい。Electron product と同じ
+ライセンス authority を検証するときは `--license-file` に絶対 path を明示する。
 
 ```bash
 cd src-tauri
-# lean standalone bin（従来どおり）
-cargo build --release -p grimodex-mcp     # → src-tauri/target/release/grimodex-mcp
-# 統合パスの dev 検証（本体経由・debug）
+cargo build --release -p grimodex-mcp
+./target/release/grimodex-mcp \
+  --license-file /absolute/app-data/license.json \
+  --workspace /abs/ws \
+  --readonly
+
+# Tauri 統合 path の dev 検証
 cargo run -- mcp --workspace /abs/ws --readonly
 ```
 
 ### .mcp.json（Claude Code / Desktop）
 
 **クラウド LLM では `--readonly` を必ず付ける**（write 14 ツールを call-time で無効化）。
+
+Tauri（本体アプリ + `mcp` subcommand）:
 
 ```json
 {
@@ -1039,16 +1059,42 @@ cargo run -- mcp --workspace /abs/ws --readonly
 }
 ```
 
-`command` は OS 別の本体バイナリパス（前掲表）。`args` 先頭は必ず `"mcp"`。
-ローカルで Codex 書き込みも使う場合のみ、末尾の `"--readonly"` を外す。
+Electron（standalone sidecar + main-owned license path）:
+
+```json
+{
+  "mcpServers": {
+    "grimodex": {
+      "command": "/absolute/installed/resources/bin/grimodex-mcp",
+      "args": [
+        "--license-file",
+        "/absolute/electron-user-data/license.json",
+        "--workspace",
+        "/absolute/path/to/grimodex-workspace",
+        "--project",
+        "<project-id>",
+        "--readonly"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+Tauri の `args` prefix は `"mcp"`、Electron の prefix は
+`"--license-file", "<absolute path>"` であり、相互に置換できない。Electron の
+license path は renderer や MCP client の入力ではなく Electron main が現在の `userData` から
+生成する。ローカルで Codex 書き込みも使う場合のみ末尾の `"--readonly"` を外す。
 
 ### Hermes Agent `mcp_servers`
 
 [Nous Hermes Agent](https://github.com/NousResearch/hermes-agent) 等の MCP クライアントでも
-同じ stdio 設定を使う。`command` / `--workspace` は **absolute path** を推奨。
+同じ stdio 設定を使う。`command` / `--workspace` / Electron の `--license-file` は
+**absolute path** を使う。次は Tauri の例であり、Electron では直前の JSON 例と同じ
+standalone command / license prefix に置き換える。
 
 ```yaml
-# 例: Hermes Agent 設定の mcp_servers 節（YAML 形式の場合）
+# Tauri 例: Hermes Agent 設定の mcp_servers 節（YAML 形式の場合）
 mcp_servers:
   grimodex:
     command: /Applications/Grimodex.app/Contents/MacOS/Grimodex
@@ -1063,17 +1109,24 @@ mcp_servers:
 接続後 `tools/list` が **40 ツール**（プロジェクト管理 2 + read 24 + write 14）を返すことを確認する。write 14 種は
 `--readonly` でも list には載るが、呼び出すと call-time でエラー応答する（list-time では隠れない）。
 
-### .mcp.json（standalone dev bin / readonly なし・非推奨例）
+### .mcp.json（standalone dev / headless）
 
-dev で残置 standalone bin を直に指す最小例（`mcp` サブコマンドを**付けない**点に注意。
-クラウド利用では `--readonly` 無しは非推奨）:
+dev で standalone bin を直に指す例。`mcp` サブコマンドを**付けない**点は Electron と
+同じだが、Electron product config では main が `--license-file` を必ず付与する。次の例も
+licensing feature を有効にして product parity を確認する場合は実在する絶対 license path を使う。
 
 ```json
 {
   "mcpServers": {
     "grimodex": {
-      "command": "./src-tauri/target/release/grimodex-mcp",
-      "args": ["--workspace", "/path/to/your/novel-project"],
+      "command": "/absolute/repo/src-tauri/target/release/grimodex-mcp",
+      "args": [
+        "--license-file",
+        "/absolute/app-data/license.json",
+        "--workspace",
+        "/path/to/your/novel-project",
+        "--readonly"
+      ],
       "env": {}
     }
   }
@@ -1087,6 +1140,10 @@ grimodex-mcp [OPTIONS]
 
 Options:
   -w, --workspace <PATH>   Grimodex ワークスペースのパス（必須）
+      --license-file <ABSOLUTE_PATH>
+                           license.json の絶対パス。Electron product は main が
+                           <userData>/license.json を注入。省略時は従来の Tauri
+                           app-data path を使う
   -p, --project <ID>       プロジェクトID（省略時は最初のプロジェクトを使用。
                            --all-projects 時は初期 current として扱う）
       --readonly           書き込みツールを無効化（call-time gate）
@@ -1112,17 +1169,19 @@ Options:
 
 ### 起動時の検証
 
-**現状の実装** (`grimodex-mcp/src/lib.rs::run`。本体 `src-tauri/src/main.rs` の
-`mcp` サブコマンド分岐は `run_blocking` に委譲するだけ):
+**現状の実装** (`grimodex-mcp/src/lib.rs::run`。Tauri 本体 subcommand と Electron
+standalone sidecar はどちらも `run_blocking` に委譲する):
 
-1. `--workspace` パスに `grimodex.db` が存在するか確認
-2. DB を WAL モードで開く（`busy_timeout = 5000`、`foreign_keys = ON`）
-3. **スキーマバージョン検証**: `PRAGMA user_version` を読み、`grimodex_core::SCHEMA_VERSION`
+1. `--license-file` があれば絶対 path であることを検証し、なければ従来の Tauri
+   app-data path を解決する。Electron product では main が前者を必ず注入する
+2. `--workspace` パスに `grimodex.db` が存在するか確認
+3. DB を WAL モードで開く（`busy_timeout = 5000`、`foreign_keys = ON`）
+4. **スキーマバージョン検証**: `PRAGMA user_version` を読み、`grimodex_core::SCHEMA_VERSION`
    と不一致なら **readonly に降格**して `warn` ログを出す（`bail` はしない＝古い/新しい
    DB でも read は通す。書き込みだけ止めて破壊を防ぐ）
-4. `--project` 未指定時は `SELECT id FROM projects ORDER BY created_at LIMIT 1` で先頭プロジェクトを採用
-5. ログ出力先（stderr ＋ `~/.grimodex/logs/lint-mcp-*.log` の日次ローテーション）を初期化
-6. MCP サーバーを stdio で起動
+5. `--project` 未指定時は `SELECT id FROM projects ORDER BY created_at LIMIT 1` で先頭プロジェクトを採用
+6. ログ出力先（stderr ＋ `~/.grimodex/logs/lint-mcp-*.log` の日次ローテーション）を初期化
+7. MCP サーバーを stdio で起動。write tool は呼出しごとに同じ license file を再読込する
 
 ※ 現状未実装: Content Dir パスの解決（§5 のとおりファイルを使わないため）。
 DB スキーマの詳細は `docs/Grimodex_統合DBスキーマ.md` を参照。
@@ -1134,11 +1193,12 @@ DB スキーマの詳細は `docs/Grimodex_統合DBスキーマ.md` を参照。
 ### データアクセス
 
 - MCP サーバーは**ローカルのみ**で動作（stdio）。ネットワーク公開しない
-- API キーにはアクセスしない（keyring は Tauri 側のみ）
+- API キーにはアクセスしない（Tauri keyring / Electron safeStorage のどちらにも非依存）
 - `--readonly` フラグで書き込みを完全に無効化可能
-- **本体統一に伴う到達面の変化**: MCP サーバは installer 済みの本体バイナリ
-  （`mcp` サブコマンド）として **エンドユーザーから到達可能**になった（旧: 別途
-  ビルドが必要な非同梱 bin）。単一 `grimodex.db` に全プロジェクトを持つため、
+- **配布同梱に伴う到達面の変化**: MCP サーバは Tauri の installer 済み本体
+  （`mcp` サブコマンド）または Electron の同梱 standalone sidecar として
+  **エンドユーザーから到達可能**になった（旧: 別途ビルドが必要な非同梱 bin）。
+  単一 `grimodex.db` に全プロジェクトを持つため、
   read-by-id 系ツールは `server.project_id` でスコープし、クライアントが渡す bare
   id で他プロジェクトを読めないようにすること（§3.9 XPROJ 防御参照）。新規 read-by-id
   ツールを足すときも project_id スコープを必須とする。
@@ -1164,9 +1224,10 @@ write 系ツールはライセンス状態でも制限する（`--readonly` と�
   / `Revoked`（キー失効）の 3 状態。`Trial` / `Licensed` / `Grace` では許可。
 - **再読み込み**: 呼び出しごとに `license.json` を読み直す（`reload_policy` と同じ思想。
   アプリ側での再アクティベートを MCP 再起動なしで反映する。write 呼び出しは低頻度ゆえ I/O 許容）。
-- **パス解決**: `license_gate::license_file_path()` が `dirs::data_dir()` ＋
-  `grimodex_core::license::APP_IDENTIFIER` で Tauri 側と同一の `license.json` を指す
-  （MCP は `AppHandle` を持たないため自前解決）。
+- **パス解決**: `license_gate::resolve_license_file_path()` は、明示された
+  `--license-file` が絶対 path であることを検証する。Electron product は main が Backend と
+  同じ `<userData>/license.json` を明示注入する。Tauri subcommand / dev で省略した場合だけ、
+  `dirs::data_dir()` ＋ `grimodex_core::license::APP_IDENTIFIER` の従来 path に fallback する。
 - **fail-soft**: `licensing` feature 無効ビルド（ベータ）、`license.json` の欠損・破損、
   パス解決不能はいずれも **許可側に倒す**（read は default = 試用初期状態を返すため）。
 - **ゲート順序**: 各 write ツールは `--readonly`（call-time）→ `ensure_license_allows_write()`

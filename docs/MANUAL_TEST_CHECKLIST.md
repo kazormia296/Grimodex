@@ -309,34 +309,51 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] Framer Motion clip-path 補間（open 側 inset(-200px)）
 - [ ] projectStore.test.ts のテスト分離問題（フルスイートでのみ落ちる、許容）
 
-## 31. MCP 連携（本体バイナリ統一）
+## 31. MCP 連携（実行コア共通・shell 別起動）
 
-- [ ] 設定 → AI → **MCP 連携** に「この作品 / 全作品（ローカル用）」× 「読み取り専用 / ポリシー準拠」の
-      コピーボタンが表示される（トグルではなく各ボタン＝即時コピー）
-- [ ] ワークスペース未 open 時はボタンが disabled、open 時は有効
-- [ ] 「この作品・読み取り専用」押下で `.mcp.json` がクリップボードへ。`command` が実 spawn 可能な本体パス
-      （macOS は `…/Contents/MacOS/Grimodex`、Linux AppImage は `$APPIMAGE` の元ファイル）、
-      `args` が `["mcp","--workspace","<dir>","--project","<現在のID>","--readonly"]`
-- [ ] 「ポリシー準拠」押下では `--readonly` が**付かない**（書込は AI ポリシーに委譲）。
-      「全作品」押下では `--project` の代わりに `--all-projects` が入る
-- [ ] **統合パス（本体経由）**: `Grimodex mcp --workspace <ws> --readonly`（dev は
-      `cargo run -- mcp …`）で stdio に `initialize` + `tools/list` を流し、現状 28 ツールが返る
-      （プロジェクト管理 2 + read 20 + write 6）。GUI ウィンドウは開かない
-- [ ] **プロジェクトスコープ（既定=pinned）**: `list_projects` が **bound 1 件のみ**返す。
-      `select_project` を呼ぶと「pinned… start with --all-projects」エラー（他作品の id/title を漏らさない）
-- [ ] **`--all-projects`（ローカル/信頼用）**: 付けて起動すると `list_projects` が全作品を列挙、
-      `select_project(<別id>)` で切替成功。切替後に当該プロジェクトの read-by-id が読める。
-      存在しない id は not found。クラウド用途では付けない（付けるなら `--readonly` 併用）
-- [ ] **残置 standalone bin**: `cargo run -p grimodex-mcp -- --workspace <ws> --readonly` が
-      従来どおり動く（repo-root `.mcp.json` の dev 設定も）
-- [ ] **write gate**: `--readonly` 時に write 6 ツール（`create_foreshadow` / `update_foreshadow` /
-      `create_snippet` / `create_codex_entry` / `update_codex_entry` / `propose_scene_body`）がエラー応答
-- [ ] **XPROJ**: project A スコープのクライアントから project B の scene_id/entry_id を
-      read-by-id しても not found（本体統一でエンドユーザー到達面が増えた点に注意）
-- [ ] 🔴 **[要実機] Windows release**: GUI-subsystem 本体を実 MCP クライアントが spawn して
-      stdio で tools/list が取れる（debug=console は容易だが release を証明しない）
-- [ ] Linux headless: 本体は `libwebkit2gtk` を load-time リンクするため webkit 無し環境では
-      `mcp` サブコマンドが起動しない（lean bin を使う）ことを確認・記録
+- [ ] 設定 → AI → **MCP 連携** に「この作品 / 全作品（ローカル用）」×
+      「読み取り専用 / ポリシー準拠」のコピーボタンが表示される
+      （トグルではなく各ボタン＝即時コピー）
+- [ ] workspace 未 open・未 hydration・switch 中はボタンが disabled。config 取得中に
+      workspace path / open revision / project ID が変わった場合も clipboard へ書かずエラー表示
+- [ ] **Tauri のコピー契約**: `command` は実 spawn 可能な本体アプリの絶対 path
+      （Linux AppImage は `$APPIMAGE` の元ファイル）、`args` は
+      `["mcp","--workspace","<dir>","--project","<現在のID>","--readonly"]`
+- [ ] **Electron のコピー契約**: `command` は本体 GUI ではなく standalone
+      `grimodex-mcp[.exe]` の絶対 path。`args` は
+      `["--license-file","<絶対 userData/license.json>","--workspace","<dir>","--project","<現在のID>","--readonly"]`。
+      license path は Backend と同じ `userData` 配下で、renderer 入力から変更できない
+- [ ] 🔴 **[Phase 4 未完 / Electron Linux AppImage]**: sidecar を一時的な
+      `/tmp/.mount_*/…/resources/bin` ではなく `<userData>` 等の安定 path へ materialize し、
+      コピーした config が GUI 終了後・再起動後・update 後にも spawn できる。これが通るまで
+      Electron AppImage の MCP config を release 受け入れ済みにしない
+- [ ] 「ポリシー準拠」では `--readonly` が付かない（書込は AI ポリシーに委譲）。
+      「全作品」では `--project` の代わりに `--all-projects` が入る
+- [ ] **Tauri 統合 path**: `Grimodex mcp --workspace <ws> --readonly`（dev は
+      `cargo run -- mcp …`）へ `initialize` + `tools/list` を流し、GUI を開かず **40 ツール**
+      （プロジェクト管理 2 + read 24 + write 14）が返る
+- [ ] **Electron standalone path**: UI がコピーした `command` / `args` をそのまま MCP client で
+      起動し、`initialize` + `tools/list` が成功する。product sidecar は
+      `pnpm mcp:build:release`（`licensing` feature 有効）の成果物である
+- [ ] **license authority parity**: Electron の activation / trial 状態と sidecar の write gate が
+      同じ `<userData>/license.json` を参照する。expired / stale / revoked では read は成功し、
+      write は拒否される
+- [ ] **プロジェクトスコープ（既定=pinned）**: `list_projects` が bound 1 件のみ返す。
+      `select_project` は pinned error（他作品の id/title を漏らさない）
+- [ ] **`--all-projects`（ローカル/信頼用）**: `list_projects` が全作品を列挙し、
+      `select_project(<別id>)` 後に当該 project の read-by-id が読める。存在しない id は not found。
+      クラウド用途では付けない（付けるなら `--readonly` 併用）
+- [ ] **dev / headless standalone**: `cargo run -p grimodex-mcp -- --workspace <ws> --readonly`
+      が動く。Electron parity を見る場合は `--license-file <absolute path>` も付ける
+- [ ] **write gate**: `--readonly` 時に write 14 ツール（foreshadow 2 / snippet 1 /
+      codex 2 / scene prose 1 / chronicle 8）がすべて call-time error。list-time では隠れない
+- [ ] **XPROJ**: project A スコープの client から project B の scene_id / entry_id を
+      read-by-id しても not found
+- [ ] 🔴 **[要実機] Windows release**: Tauri は GUI-subsystem 本体 + `mcp`、Electron は packaged
+      `resources/bin/grimodex-mcp.exe` を実 MCP client が spawn し、どちらも stdio で
+      `tools/list` が取れる
+- [ ] Linux headless: Tauri 本体は `libwebkit2gtk` 無しでは起動できない一方、Electron product /
+      lean standalone sidecar は GUI library 無しで起動できることを確認・記録
 
 ---
 
