@@ -1986,7 +1986,6 @@ dependencies = [
 name = "grimodex"
 version = "1.0.0"
 dependencies = [
- "aho-corasick",
  "anyhow",
  "base64 0.22.1",
  "chrono",
@@ -2025,7 +2024,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "unicode-normalization",
  "uuid",
  "webkit2gtk",
  "window-vibrancy 0.7.1",
@@ -2160,6 +2158,7 @@ dependencies = [
 name = "grimodex-semantic"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "chrono",
  "grimodex-db",
@@ -2172,6 +2171,8 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tokenizers",
+ "tracing",
+ "unicode-normalization",
  "uuid",
 ]
 

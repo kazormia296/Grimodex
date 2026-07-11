@@ -10,6 +10,7 @@ default = []
 semantic-embedding = ["dep:ndarray", "dep:ort", "dep:tokenizers"]
 
 [dependencies]
+aho-corasick = "1"
 anyhow = "1"
 chrono = "0.4"
 grimodex-db = { path = "../grimodex-db" }
@@ -31,3 +32,5 @@ ort = { version = "2.0.0-rc.10", optional = true, default-features = false, feat
 tokenizers = { version = "0.23", optional = true, default-features = false, features = [
     "fancy-regex",
 ] }
+tracing = "0.1"
+unicode-normalization = "0.1"

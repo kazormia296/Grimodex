@@ -8,6 +8,7 @@ pub mod chat_index;
 pub mod chat_search;
 pub mod chunker;
 pub mod chunker_en;
+pub mod codex_candidates;
 pub mod codex_index;
 pub mod codex_search;
 pub mod events_index;

@@ -76,7 +76,6 @@ flate2 = "1"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 futures = "0.3"
 tokio = { version = "1", features = ["macros", "process", "io-util", "rt", "sync", "time"] }
-aho-corasick = "1"
 # システムフォント列挙 (commands::fonts::list_system_fonts)。実装本体は
 # crates/grimodex-fonts へ抽出済み (Electron 移行 Phase 3 — napi と共用)。
 grimodex-fonts = { path = "crates/grimodex-fonts" }
@@ -93,8 +92,6 @@ grimodex-semantic = { path = "crates/grimodex-semantic", default-features = fals
 # DB 層 (Electron 移行 Phase 2 S1 で抽出)。`crate::database` / `crate::workspace`
 # は lib.rs の互換シム経由でこのクレートへ委譲する。
 grimodex-db = { path = "crates/grimodex-db" }
-# Codex 候補名の正規化 (NFC) に使用。固有名詞の NFC/NFD 揺れで重複検出が外れるのを防ぐ。
-unicode-normalization = "0.1"
 # MCP サーバを本体バイナリに統一する (src/main.rs の `mcp` サブコマンド分岐から
 # run_blocking を呼ぶ)。一方向依存・循環なし: grimodex-mcp は grimodex-core のみ
 # に依存し src-tauri を参照しない。grimodex_lib 側へ import しないこと。

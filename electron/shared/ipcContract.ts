@@ -247,6 +247,10 @@ export interface NapiBackendLike {
   listSystemFonts(): Promise<string>;
   codexRebuildMatcher(entries: unknown): Promise<void>;
   codexMatchText(text: string, excludeEntryIds: string[]): Promise<string>;
+  extractCodexCandidates(
+    projectId: string,
+    minCount?: number | null,
+  ): Promise<string>;
   plotThreadCreate(payload: unknown): Promise<string>;
   plotThreadUpdate(id: string, patch: unknown): Promise<string>;
   plotThreadDelete(id: string): Promise<void>;
@@ -518,6 +522,27 @@ function optionalNumber(
   return value;
 }
 
+/** Tauri の Option<usize> を napi の Option<u32> へ安全に写像する。 */
+function optionalUnsignedInteger(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): number | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 0xffff_ffff
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected an unsigned integer or null`,
+    );
+  }
+  return value;
+}
+
 /** Tauri の Option<String> 引数の写像（欠落 / null は None。文字列以外は拒否）。 */
 function optionalString(
   args: CommandArgs,
@@ -568,7 +593,10 @@ async function broadcastCurrentLicenseStateBestEffort(
     );
     broadcastBestEffort(deps, "license:state_changed", state);
   } catch (error) {
-    console.warn("[ipc] failed to read license state after revalidate error:", error);
+    console.warn(
+      "[ipc] failed to read license state after revalidate error:",
+      error,
+    );
   }
 }
 
@@ -805,6 +833,17 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       );
     },
+  },
+  // Codex 未確定候補 (Phase 3 Batch 4)。Tauri 側 Option<usize> は main 境界で
+  // u32 に狭めて検証し、native は開始時に active DB を pin してから解析する。
+  extract_codex_candidates: {
+    run: async (b, a) =>
+      parseWire(
+        await b.extractCodexCandidates(
+          requireString(a, "projectId", "extract_codex_candidates"),
+          optionalUnsignedInteger(a, "minCount", "extract_codex_candidates"),
+        ),
+      ),
   },
   // plot_threads 8 コマンド（Phase 3 バッチ1 — grimodex-db::plot_threads を
   // Tauri と共用）。Tauri 側 fn 署名（src-tauri/src/commands/plot_threads.rs）:

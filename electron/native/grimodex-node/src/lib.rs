@@ -700,6 +700,33 @@ impl Backend {
         .map_err(join_err_to_napi)?
     }
 
+    /// 本文から未知の固有名詞候補を抽出する
+    /// (`grimodex_semantic::codex_candidates` を Tauri と共用)。
+    ///
+    /// workspace DB は blocking pool へ投入する**前**に一度だけ pin する。これにより
+    /// 待ち行列中に workspace が切り替わってもコマンド途中で別 DB を解決せず、開始時
+    /// snapshot の scenes/known names を読む。共有コアは DB phase を単一 connection
+    /// lock に閉じ、UniDic + Aho-Corasick の CPU phase は lock 外で実行する。
+    /// 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
+    #[napi]
+    pub async fn extract_codex_candidates(
+        &self,
+        project_id: String,
+        min_count: Option<u32>,
+    ) -> Result<String> {
+        let db = grimodex_db::state::active_database(&self.state.ws).map_err(app_err_to_napi)?;
+        let min_count = min_count.map(|value| value as usize);
+        run_blocking(move || {
+            let candidates = grimodex_semantic::codex_candidates::extract_codex_candidates(
+                &db,
+                &project_id,
+                min_count,
+            )?;
+            Ok(serde_json::to_string(&candidates).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
     // ─────────────────────── plot_threads (Phase 3 バッチ1 — grimodex-db の
     // plot_threads モジュールを Tauri と共用。commands/plot_threads.rs の写像) ──
     //

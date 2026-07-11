@@ -35,6 +35,9 @@ grimodex-db = { path = "../../../src-tauri/crates/grimodex-db" }
 # lint_text / segment_bunsetsu (Phase 3)。embed-unidic により .node が
 # +200MB 級になる — Tauri バイナリと同じトレードオフ (実測は Phase 3 記録)。
 grimodex-lint = { path = "../../../src-tauri/crates/grimodex-lint" }
+# extract_codex_candidates (Phase 3 Batch 4)。embedding feature は不要で、
+# DB snapshot + UniDic/AC 候補抽出コアだけを Tauri と共有する。
+grimodex-semantic = { path = "../../../src-tauri/crates/grimodex-semantic", default-features = false }
 # list_system_fonts (Phase 3 — 日本語 family 名優先ロジックの完全パリティ)。
 grimodex-fonts = { path = "../../../src-tauri/crates/grimodex-fonts" }
 # AI プロバイダ層 (HTTP/SSE/provider/型) を Tauri と共用 (Phase 3 バッチ3a)。

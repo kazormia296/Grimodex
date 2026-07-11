@@ -757,6 +757,7 @@ dependencies = [
  "grimodex-license",
  "grimodex-lint",
  "grimodex-post-effect",
+ "grimodex-semantic",
  "napi",
  "napi-build",
  "napi-derive",
@@ -779,6 +780,25 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "grimodex-semantic"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "anyhow",
+ "chrono",
+ "grimodex-db",
+ "grimodex-lint",
+ "hex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "unicode-normalization",
  "uuid",
 ]
 

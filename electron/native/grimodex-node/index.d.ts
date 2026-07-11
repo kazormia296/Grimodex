@@ -172,6 +172,17 @@ export declare class Backend {
    */
   codexMatchText(text: string, excludeEntryIds: Array<string>): Promise<string>
   /**
+   * 本文から未知の固有名詞候補を抽出する
+   * (`grimodex_semantic::codex_candidates` を Tauri と共用)。
+   *
+   * workspace DB は blocking pool へ投入する**前**に一度だけ pin する。これにより
+   * 待ち行列中に workspace が切り替わってもコマンド途中で別 DB を解決せず、開始時
+   * snapshot の scenes/known names を読む。共有コアは DB phase を単一 connection
+   * lock に閉じ、UniDic + Aho-Corasick の CPU phase は lock 外で実行する。
+   * 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
+   */
+  extractCodexCandidates(projectId: string, minCount?: number | undefined | null): Promise<string>
+  /**
    * プロットスレッド作成 (commands/plot_threads.rs::plot_thread_create の写像)。
    * `payload` は camelCase の PlotThreadCreatePayload。
    * 返り値: 作成行 (`SELECT *`、列名 snake_case) の JSON 文字列。

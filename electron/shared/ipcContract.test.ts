@@ -128,6 +128,12 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
         '[{"entryId":"c1","entryName":"太郎","entryType":"character","from":0,"to":2}]',
       ),
     ) as never,
+    extractCodexCandidates: record(
+      "extractCodexCandidates",
+      Promise.resolve(
+        '[{"surface":"京都","lemma":"京都","count":2,"firstSceneId":"s1","context":"京都へ行った。"}]',
+      ),
+    ) as never,
     // plot_threads 8 コマンド（Phase 3 バッチ1 — napi は SELECT * の生行 =
     // snake_case 列名 / Vec<Value> を返す）
     plotThreadCreate: record(
@@ -937,6 +943,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "db_execute",
       "db_execute_batch",
       "deactivate_license",
+      "extract_codex_candidates",
       "foreshadow_create",
       "foreshadow_delete",
       "foreshadow_get",
@@ -1098,11 +1105,15 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       const { backend } = fakeLicenseBackend();
       const broadcast = vi.fn();
 
-      await dispatchInvoke("get_license_state", {}, {
-        backend,
-        shell: noShell,
-        broadcast,
-      });
+      await dispatchInvoke(
+        "get_license_state",
+        {},
+        {
+          backend,
+          shell: noShell,
+          broadcast,
+        },
+      );
 
       expect(broadcast).not.toHaveBeenCalled();
     });
@@ -1138,11 +1149,15 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       );
       const broadcast = vi.fn();
 
-      const env = await dispatchInvoke("revalidate_license", {}, {
-        backend,
-        shell: noShell,
-        broadcast,
-      });
+      const env = await dispatchInvoke(
+        "revalidate_license",
+        {},
+        {
+          backend,
+          shell: noShell,
+          broadcast,
+        },
+      );
 
       expect(env).toEqual({ ok: false, error: "Polar unavailable" });
       expect(methods.getLicenseState).toHaveBeenCalledExactlyOnceWith();
@@ -1248,6 +1263,64 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { method: "codexMatchText", args: ["太郎は走った", ["c2"]] },
     ]);
   });
+
+  it("extract_codex_candidates は projectId + minCount を写像し候補を parse する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "extract_codex_candidates",
+      { projectId: "p1", minCount: 2 },
+      { backend, shell: noShell },
+    );
+
+    expect(env).toEqual({
+      ok: true,
+      value: [
+        {
+          surface: "京都",
+          lemma: "京都",
+          count: 2,
+          firstSceneId: "s1",
+          context: "京都へ行った。",
+        },
+      ],
+    });
+    expect(calls).toEqual([
+      { method: "extractCodexCandidates", args: ["p1", 2] },
+    ]);
+  });
+
+  it("extract_codex_candidates の minCount 省略は undefined として写像する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "extract_codex_candidates",
+      { projectId: "p1" },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(calls).toEqual([
+      { method: "extractCodexCandidates", args: ["p1", undefined] },
+    ]);
+  });
+
+  it.each([-1, 1.5, "2", Number.NaN, Number.POSITIVE_INFINITY])(
+    "extract_codex_candidates は不正な minCount=%j を native 前に拒否する",
+    async (minCount) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "extract_codex_candidates",
+        { projectId: "p1", minCount },
+        { backend, shell: noShell },
+      );
+
+      expect(env).toEqual({
+        ok: false,
+        error:
+          "invalid args `minCount` for command `extract_codex_candidates`: expected an unsigned integer or null",
+      });
+      expect(calls).toHaveLength(0);
+    },
+  );
 
   it("lint_text は引数を写像し LintResponse を parse して返す", async () => {
     const { backend, calls } = fakeBackend();
