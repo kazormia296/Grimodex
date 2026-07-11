@@ -17,6 +17,7 @@ import {
   type ImeIntegrationMode,
 } from "@/features/ime/api";
 import { ImeConsumerList } from "./ImeConsumerList";
+import { LinuxImeInstallGuide } from "./LinuxImeInstallGuide";
 
 export function ImeIntegrationSection() {
   const { t } = useTranslation();
@@ -179,6 +180,8 @@ export function ImeIntegrationSection() {
           <ImeConsumerList consumers={status.consumers} />
         )}
       </div>
+
+      {status && <LinuxImeInstallGuide consumers={status.consumers} />}
 
       <button
         type="button"
