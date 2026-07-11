@@ -12,7 +12,9 @@ function readJson(relativePath: string): unknown {
   return JSON.parse(readFileSync(join(contractRoot, relativePath), "utf8"));
 }
 
-function compileSchema(name: "state" | "project" | "consumer"): ValidateFunction {
+function compileSchema(
+  name: "state" | "project" | "consumer",
+): ValidateFunction {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   return ajv.compile(readJson(`schema/${name}-v1.schema.json`) as AnySchema);
 }
@@ -63,19 +65,25 @@ describe("IME Protocol V1 contract fixtures", () => {
       }
       for (const relativePath of invalid) {
         const fixture = readJson(`fixtures/${relativePath}`);
-        expect(validate(fixture), `${relativePath} must be rejected`).toBe(false);
+        expect(validate(fixture), `${relativePath} must be rejected`).toBe(
+          false,
+        );
       }
     },
   );
 
   it("keeps V1 forward-compatible while enforcing defensive project limits", () => {
     const validate = compileSchema("project");
-    const fixture = readJson("fixtures/valid/project-with-zenzai-context.json") as {
+    const fixture = readJson(
+      "fixtures/valid/project-with-zenzai-context.json",
+    ) as {
       entries: unknown[];
       [key: string]: unknown;
     };
 
-    expect(validate({ ...fixture, future_optional_field: { enabled: true } })).toBe(true);
+    expect(
+      validate({ ...fixture, future_optional_field: { enabled: true } }),
+    ).toBe(true);
     expect(
       validate({
         ...fixture,
@@ -136,7 +144,9 @@ describe("IME Protocol V1 contract fixtures", () => {
   });
 
   it("describes an atomic project switch without adopting a mixed snapshot", () => {
-    const sequence = readJson("fixtures/update-sequences/project-switch.json") as {
+    const sequence = readJson(
+      "fixtures/update-sequences/project-switch.json",
+    ) as {
       initial_active_project_id: string;
       steps: Array<{
         operation: string;
