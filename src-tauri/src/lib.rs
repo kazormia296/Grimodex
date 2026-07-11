@@ -7,8 +7,6 @@ mod external_mount;
 mod license;
 mod lint_logging;
 mod semantic;
-#[cfg(target_os = "linux")]
-mod webkit_features;
 
 // grimodex-db 抽出 (Electron 移行 Phase 2 S1) の互換シム。DB 層の実体は
 // crates/grimodex-db に移動したが、既存の `crate::database::…` /
@@ -65,36 +63,8 @@ fn set_window_vibrancy(app: tauri::AppHandle, enabled: bool) -> AppResult<()> {
     Ok(())
 }
 
-/// NVIDIA + WebKitGTK では DMABUF レンダラーが GBM バッファ確保に失敗し、
-/// ウィンドウが真っ白になる（ネイティブ Wayland では
-/// "Error 71 dispatching to Wayland display"、XWayland では
-/// "Failed to create GBM buffer" が出る）。`WEBKIT_DISABLE_DMABUF_RENDERER=1`
-/// で動作する合成パスにフォールバックする。NVIDIA 検出時のみ設定するため、
-/// AMD/Intel は高速な既定パスのまま。ユーザーが環境変数を明示している場合
-/// （=0 で強制有効化するなど）はそれを尊重する。
-#[cfg(target_os = "linux")]
-fn workaround_nvidia_dmabuf() {
-    // 明示設定があれば触らない。
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
-        return;
-    }
-    // プロプライエタリ／オープンいずれの NVIDIA カーネルモジュールでも
-    // ロード時に `/sys/module/nvidia` が存在する。
-    if std::path::Path::new("/sys/module/nvidia").exists() {
-        // `run()` の最初、GTK/WebKit 初期化やワーカースレッド生成より前に
-        // 呼ばれるため、環境変数への並行アクセスは発生しない。
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn workaround_nvidia_dmabuf() {}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK ↔ NVIDIA workaround. Must run before any GTK/WebKit init.
-    workaround_nvidia_dmabuf();
-
     // Daily-rotating file log under `~/.grimodex/logs/lint-tauri-*.log`
     // plus stderr. The guard must outlive `tauri::Builder::run` so file
     // writes are flushed; stash it on the manager state.
@@ -116,25 +86,6 @@ pub fn run() {
         // 校閲 run 終端のデスクトップ通知 (非フォーカス時のみ FE 側が送る)
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // WebKitGTK: フォームコントロールの縦書きを許可する機能フラグ
-            // VerticalFormControls を有効化する（既定 OFF。詳細は
-            // webkit_features.rs）。起動直後の初期ロードに対して web process
-            // を再起動して適用するため、ユーザー状態には影響しない。
-            // 失敗時（< 2.42 等）はフロントの island CSS フォールバックが生きる。
-            // URL は closure の外で取得して渡す — この時点の初期ナビゲーションは
-            // まだ provisional で、view 側の URI (about:blank) は再ロード先に
-            // 使えない（webkit_features.rs の黒画面注意書き参照）。
-            #[cfg(target_os = "linux")]
-            if let Some(window) = app.get_webview_window("main") {
-                let app_url = window.url().ok().map(|u| u.to_string());
-                let _ = window.with_webview(move |webview| {
-                    webkit_features::apply_vertical_form_controls(
-                        &webview.inner(),
-                        app_url.as_deref(),
-                    );
-                });
-            }
-
             let app_dir = app
                 .path()
                 .app_data_dir()

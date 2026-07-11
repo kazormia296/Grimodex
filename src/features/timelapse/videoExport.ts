@@ -23,8 +23,8 @@ export const WEBM_MIME_CANDIDATES = [
 
 /**
  * Return the first WebM mime the runtime can actually record, or null if none.
- * MediaRecorder may be absent, or WebM recording unsupported on this webview
- * (historically WKWebView / WebKitGTK). Callers should disable export when null.
+ * MediaRecorder may be absent, or WebM recording unsupported at runtime.
+ * Callers should disable export when null.
  */
 export function pickSupportedWebmMime(
   candidates: readonly string[] = WEBM_MIME_CANDIDATES,

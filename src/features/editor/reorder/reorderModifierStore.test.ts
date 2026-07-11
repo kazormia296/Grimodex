@@ -1,23 +1,11 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-// keyup 補正は WebKitGTK 限定（Blink/WKWebView は keyup の modifier state が
-// 正しいため）。テストではエンジンを切り替えて両分岐を検証する。
-let mockWebKitGtk = false;
-vi.mock("@/lib/platform", async (importOriginal) => {
-  const mod = await importOriginal<typeof import("@/lib/platform")>();
-  return { ...mod, isWebKitGtk: () => mockWebKitGtk };
-});
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   acquireModifierListeners,
   computeModifierMode,
   useReorderModifierStore,
 } from "./reorderModifierStore";
-
-beforeEach(() => {
-  mockWebKitGtk = false;
-});
 
 afterEach(() => {
   // ストアと refcount を素の状態へ。
@@ -101,57 +89,7 @@ describe("acquireModifierListeners", () => {
     expect(useReorderModifierStore.getState().mode).toBe("none");
   });
 
-  it("clears mode on WebKitGTK-style Alt keyup (altKey still true on release)", () => {
-    // WebKitGTK (GDK) は Alt 自身の keyup で altKey=true のまま届く。
-    // key/code から「離されたキー自身」のフラグを落とせることを gate する。
-    mockWebKitGtk = true;
-    const release = acquireModifierListeners();
-
-    window.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Alt", altKey: true }),
-    );
-    expect(useReorderModifierStore.getState().mode).toBe("alt");
-
-    window.dispatchEvent(
-      new KeyboardEvent("keyup", { key: "Alt", altKey: true }),
-    );
-    expect(useReorderModifierStore.getState().mode).toBe("none");
-
-    // code のみでも判定できる（key が 'AltGraph' 以外の変種で届く環境向け）
-    window.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Alt", altKey: true }),
-    );
-    window.dispatchEvent(
-      new KeyboardEvent("keyup", { key: "", code: "AltLeft", altKey: true }),
-    );
-    expect(useReorderModifierStore.getState().mode).toBe("none");
-
-    release();
-  });
-
-  it("drops altShift to alt on WebKitGTK-style Shift keyup", () => {
-    mockWebKitGtk = true;
-    const release = acquireModifierListeners();
-
-    window.dispatchEvent(
-      new KeyboardEvent("keydown", { altKey: true, shiftKey: true }),
-    );
-    expect(useReorderModifierStore.getState().mode).toBe("altShift");
-
-    // WebKitGTK では Shift 離しの keyup にも shiftKey=true が残る
-    window.dispatchEvent(
-      new KeyboardEvent("keyup", {
-        key: "Shift",
-        altKey: true,
-        shiftKey: true,
-      }),
-    );
-    expect(useReorderModifierStore.getState().mode).toBe("alt");
-
-    release();
-  });
-
-  it("keeps Blink-style keyup behavior (altKey=false on release) working", () => {
+  it("uses the Chromium keyup modifier state", () => {
     const release = acquireModifierListeners();
 
     window.dispatchEvent(
@@ -167,23 +105,9 @@ describe("acquireModifierListeners", () => {
     release();
   });
 
-  it("does not clear modifiers on keydown of the modifier itself", () => {
-    mockWebKitGtk = true;
-    const release = acquireModifierListeners();
-
-    // keyup 限定の補正であること: keydown {key:'Alt', altKey:true} は alt のまま
-    window.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Alt", altKey: true }),
-    );
-    expect(useReorderModifierStore.getState().mode).toBe("alt");
-
-    release();
-  });
-
-  it("Blink では keyup 補正を掛けない（左右 Alt 同時押しの片方離しを守る）", () => {
-    // Blink/WKWebView の keyup modifier state は正確: 左右 Alt を両方押して
+  it("preserves Alt when Chromium reports another Alt key is still held", () => {
+    // 左右 Alt を両方押して
     // 片方だけ離すと altKey=true の keyup が届き、alt は維持されるべき。
-    mockWebKitGtk = false;
     const release = acquireModifierListeners();
 
     window.dispatchEvent(

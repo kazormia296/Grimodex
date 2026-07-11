@@ -33,7 +33,6 @@ import {
 } from "@/features/editor/editorLayout";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useVerticalWheelScroll } from "@/features/editor/useVerticalWheelScroll";
-import { useWebKitGtkVerticalScrollResetGuard } from "@/features/editor/useWebKitGtkVerticalScrollResetGuard";
 import { isMac } from "@/lib/platform";
 import {
   getMergedBindings,
@@ -374,9 +373,6 @@ export function LinearEditorView() {
 
   // 縦書きではホイールの縦回転を読み進み方向 (横) のスクロールに変換する
   useVerticalWheelScroll(scrollRef, verticalMode);
-  // WebKitGTK: DOM 変異 relayout で vertical-rl の scrollLeft が先頭(0)へ
-  // リセットされるエンジンバグの検出即復元（Codex ホバーポップオーバー等）。
-  useWebKitGtkVerticalScrollResetGuard(scrollRef, verticalMode);
 
   // --- Scene meta panel (EditorPane と同じ設定キー・レイアウト永続化) ---
   const sceneMetaPanelOpen = editorSettings.sceneMetaPanelOpen;

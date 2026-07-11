@@ -3,9 +3,8 @@
  *
  * - `app://bundle/<path>` を `dist/`（vite build 成果物）から配信する。
  *   URL は main しか組み立てない（windows.ts / windowChrome.buildPanelUrl）。
- * - Content-Security-Policy は **現行 tauri.conf.json の csp から
- *   `ipc: http://ipc.localhost` を除去した版**を HTML ドキュメントに付ける
- *   （protocol.test.ts が tauri.conf.json との導出関係を gate する）。
+ * - Content-Security-Policy は Electron production document の正本をここに置き、
+ *   HTML レスポンスへ付ける（protocol.test.ts が許可schemeと主要directiveをgateする）。
  * - 純関数部（resolveAppRequestPath / contentTypeForPath /
  *   createAppProtocolHandler）は electron 実行時 API に依存せず、
  *   vitest node 環境（vitest.electron.config.ts）で単体テストする。
@@ -22,10 +21,9 @@ export const APP_BUNDLE_HOST = "bundle";
 export const PROD_INDEX_URL = `${APP_PROTOCOL_SCHEME}://${APP_BUNDLE_HOST}/index.html`;
 
 /**
- * tauri.conf.json の csp から connect-src の `ipc: http://ipc.localhost`
- * （Tauri IPC 専用の許可）を除去した版（§8 S8）。それ以外のディレクティブは
- * Tauri ビルドと完全同一に保つ — 乖離すると「Tauri では動くのに Electron で
- * 動かない」資産ロード差が生まれるため、protocol.test.ts で導出関係を検査する。
+ * Electron production document のCSP正本。凍結したTauri v1 configからは独立させ、
+ * rendererが必要とするlocal assetだけを列挙する。変更時はprotocol.test.tsの
+ * scheme/directive gateとSecurity reviewを同時に更新する。
  */
 export const APP_CONTENT_SECURITY_POLICY =
   "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; " +

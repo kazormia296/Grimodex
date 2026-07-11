@@ -11,12 +11,8 @@
  * 描画する方式に変更した。
  *
  * さらに図形は「abspos ::before」ではなく「span 自身の background / mask」で
- * 描く。WebKitGTK は縦書き (vertical-rl) で inline を包含ブロックとする abspos
- * の paint を leading 分ズラすバグを持ち、computed style は正常値のまま paint
- * だけズレるため Chromium 実行のこのスイートでは直接検出できない。よってここでは
- * (a) span が文字間の隙間の中央にいること、(b) WebKitGTK で壊れる技法
- * (inline+abspos) に依存していないこと (::before 非使用・background/mask 使用・
- * ↵/¶ アンカーの inline-block 化) を gate する。
+ * 描く。このスイートでは span が文字間の隙間の中央にいることと、
+ * inline+abspos に依存していないことを Chromium で gate する。
  */
 import { describe, it, expect, afterEach, beforeAll } from "vitest";
 import { Editor, Extension } from "@tiptap/core";
@@ -123,8 +119,7 @@ function gapCenterDeltaVertical(
 /**
  * マークの描画スタイル。図形は span 自身の background / mask で描く
  * (background は span ボックス基準なので、box 中央配置がエンジン保証される)。
- * ::before が none であることは「WebKitGTK 縦書きで paint がズレる
- * inline+abspos 技法に戻っていない」ことの gate。
+ * ::before が none であることは inline+abspos 技法に戻っていないことの gate。
  */
 function markStyle(span: HTMLElement) {
   const s = getComputedStyle(span);
@@ -353,7 +348,7 @@ describe("空白・改行可視化の幾何", () => {
     expect(spanRect.width).toBeGreaterThan(EM * 0.7);
     expect(spanRect.width).toBeLessThan(EM * 1.3);
     // マークは span 背景の CSS 図形 (中空四角 = 4 本のストライプ)。
-    // ::before が none = inline+abspos 技法に依存していない (WebKitGTK gate)。
+    // ::before が none = inline+abspos 技法に依存していない。
     expect(m.beforeContent).toBe("none");
     expect(m.backgroundImage.match(/linear-gradient/g)?.length).toBe(4);
     // 色は --pm-ws-ink (muted-foreground 45%) が gradient へ焼き込まれる。
@@ -400,8 +395,7 @@ describe("空白・改行可視化の幾何", () => {
 
     expect(spanRect.width).toBeGreaterThan(0);
     expect(spanRect.width).toBeLessThan(EM);
-    // 中黒相当のドット = span 背景の radial-gradient。::before 非使用
-    // (WebKitGTK 縦書き abspos paint バグ回避技法の gate)。
+    // 中黒相当のドット = span 背景の radial-gradient。::before は使わない。
     expect(m.beforeContent).toBe("none");
     expect(m.backgroundImage).toContain("radial-gradient");
     // 色の alpha 0 (不可視) への退行を gate。
@@ -480,9 +474,7 @@ describe("空白・改行可視化の幾何", () => {
   it.each([1.0, 2.0, 3.0])(
     "縦書き lh=%s: 全角空白マークが background 方式で隙間中央にいる",
     (lineHeight) => {
-      // line-height をパラメタライズする理由: WebKitGTK の abspos paint ズレは
-      // leading に比例し、lh=2 でだけ偶然相殺して見える修正案 (translate 方式)
-      // が存在した。技法 gate (background) は lh 非依存で成立すること。
+      // background 方式が line-height に依存せず成立することを gate する。
       const { el, editor } = mount(para("あ　い"), {
         vertical: true,
         editorSettings: { ...JA_EDITOR_SETTINGS, lineHeight },
@@ -496,7 +488,7 @@ describe("空白・改行可視化の幾何", () => {
       expect(span).toBeTruthy();
       const p = el.querySelector(".tiptap > p") as HTMLElement;
       const m = markStyle(span);
-      // WebKitGTK で paint がズレる inline+abspos 技法に依存しない (::before 無し)
+      // inline+abspos 技法に依存しない (::before 無し)
       expect(m.beforeContent).toBe("none");
       expect(m.backgroundImage).toContain("linear-gradient");
       // 縦書きでは字送り軸 (縦) の隙間中央に span がいる
@@ -506,7 +498,7 @@ describe("空白・改行可視化の幾何", () => {
     },
   );
 
-  it("↵/¶ アンカーは inline-block (WebKitGTK 縦書き abspos paint バグ回避)", () => {
+  it("↵/¶ アンカーは inline-block の包含ブロックを作る", () => {
     const doc = {
       type: "doc",
       content: [
@@ -532,7 +524,7 @@ describe("空白・改行可視化の幾何", () => {
     expect(paraEnd).toBeTruthy();
     for (const anchor of [br, paraEnd]) {
       const cs = getComputedStyle(anchor);
-      // inline 包含ブロックだと WebKitGTK 縦書きで ::before が列から外れる
+      // inline-block の包含ブロックで ::before の配置を安定させる
       expect(cs.display).toBe("inline-block");
       expect(cs.width).toBe("0px");
       expect(cs.overflow).toBe("visible");

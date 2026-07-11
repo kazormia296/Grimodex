@@ -36,62 +36,13 @@ export function buildEditorMeasureStyle(
   };
 }
 
-/**
- * 同梱 fontsource フォント → vert を持つシステム CJK フォントへの差し替え表。
- *
- * WebKitGTK は縦組み字形 (vert/vrt2) を font 側の GSUB に依存する。同梱の fontsource
- * フォントは web 最適化のサブセット化で vert/vrt2 を欠く (fonttools で確認済み) ため、
- * WebKitGTK の縦書きでは長音符・句読点が崩れる。これら既知フォントを、同系統で vert を
- * 持つシステムフォントへマップする。値はユーザ選択に最も近い系統 (明朝↔明朝 / ゴシック↔
- * ゴシック) を優先する。
- */
-const BUNDLED_VERT_SUBSTITUTE: Record<string, string> = {
-  "Noto Serif JP": '"Noto Serif CJK JP", "Source Han Serif JP"',
-  "M PLUS 1": '"Noto Sans CJK JP", "Source Han Sans JP"',
-  "LINE Seed JP": '"Noto Sans CJK JP", "Source Han Sans JP"',
-  "Gen Interface JP": '"Noto Sans CJK JP", "Source Han Sans JP"',
-  Literata: '"Noto Serif CJK JP", "Source Han Serif JP"',
-};
-const VERT_CJK_FALLBACK = '"Noto Serif CJK JP", "Source Han Serif JP", serif';
-
-/**
- * 縦書き × WebKitGTK 用に font-family を解決する。
- *
- * WebKitGTK の縦書きは vert を持つフォントでないと縦組み字形にならない。横書き / 非
- * WebKitGTK では変換せずユーザ設定をそのまま返す (Chromium は Unicode の縦書き字形
- * フォールバックを内蔵するので web フォントでも正しい)。WebKitGTK 縦書きのときだけ:
- *  - 同梱フォント (vert 欠落) は同系統のシステム CJK フォントを先頭に差し替える
- *    （元指定も残すので、システムに無い環境では従来どおりにフォールバック）。
- *  - それ以外 (= ユーザ指定のシステムフォント) はそのまま尊重し、CJK の vert
- *    フォールバックを末尾に足すだけ。
- * これで「設定したフォントが反映される」を保ちつつ縦組み字形も正す。
- */
-export function resolveEditorFontFamily(
-  fontFamily: string,
-  opts: { vertical: boolean; webkitGtk: boolean },
-): string {
-  if (!opts.vertical || !opts.webkitGtk) return fontFamily;
-  for (const [bundled, systemStack] of Object.entries(
-    BUNDLED_VERT_SUBSTITUTE,
-  )) {
-    if (fontFamily.includes(bundled)) {
-      return `${systemStack}, ${fontFamily}, ${VERT_CJK_FALLBACK}`;
-    }
-  }
-  return `${fontFamily}, ${VERT_CJK_FALLBACK}`;
-}
-
 /** Full content wrapper style (EditorContentArea / LinearSceneBlock). */
 export function buildEditorContentStyle(
   s: EditorContentStyleSettings,
-  opts: { vertical?: boolean; webkitGtk?: boolean } = {},
 ): React.CSSProperties {
   return {
     ...buildEditorMeasureStyle(s.maxContentWidth),
-    fontFamily: resolveEditorFontFamily(s.fontFamily, {
-      vertical: opts.vertical ?? false,
-      webkitGtk: opts.webkitGtk ?? false,
-    }),
+    fontFamily: s.fontFamily,
     fontSize: `${s.fontSize}px`,
     lineHeight: s.lineHeight,
     wordBreak: s.wordBreak as React.CSSProperties["wordBreak"],

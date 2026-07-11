@@ -1992,7 +1992,6 @@ dependencies = [
  "dirs",
  "flate2",
  "futures",
- "glib",
  "grimodex-ai",
  "grimodex-core",
  "grimodex-db",
@@ -2024,7 +2023,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
- "webkit2gtk",
  "window-vibrancy 0.7.1",
 ]
 

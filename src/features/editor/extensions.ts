@@ -211,7 +211,7 @@ export function getEditorExtensions(
     ParagraphReorderExtension,
     // Alt=段落ハンドルドラッグ / Alt+Shift=文/文節 色帯+grab ドラッグ
     ReorderInteractionExtension,
-    // 縦書き時の ←/→ 列移動 (Chromium hardBreak バグ) + WebKit の ↑/↓ 列内移動バグ対策
+    // 縦書き時の ←/→ 列移動 (Chromium hardBreak バグ対策)
     VerticalCaretNavExtension,
     // Custom marks/nodes
     AuthorshipMark,

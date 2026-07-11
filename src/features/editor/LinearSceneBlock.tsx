@@ -34,8 +34,6 @@ import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
-import { useEmphasisDotsFallback } from "@/features/editor/useEmphasisDotsFallback";
-import { createWebKitFocusScrollGuard } from "@/features/editor/webkitFocusScrollGuard";
 import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
 import {
   loadAuthorshipSpans,
@@ -44,7 +42,6 @@ import {
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useCurrentProject } from "@/features/project/projectStore";
 import { buildEditorContentStyle } from "@/features/editor/editorLayout";
-import { isWebKitGtk } from "@/lib/platform";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import {
@@ -138,9 +135,6 @@ function MountedSceneBlock({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
-  // WebKitGTK の focus 時 selection 先頭リセット → scrollToSelection ジャンプの
-  // 抑止ガード（editorProps.handleScrollToSelection と onFocus で使う）。
-  const focusScrollGuardRef = useRef(createWebKitFocusScrollGuard());
   const isApplyingExternalUpdate = useRef(false);
   const wasEmptyRef = useRef(false);
   // 「ロードに成功した本物の doc」以外は保存禁止 — 空/欠損 doc の autosave が
@@ -222,12 +216,6 @@ function MountedSceneBlock({
         attributes: {
           role: "textbox",
           "aria-multiline": "true",
-        },
-        // WebKitGTK: focus 時の DOM selection 先頭リセットに対する PM の
-        // scrollToSelection が「先頭へスクロール」ジャンプになるのを抑止
-        // （EditorPane と同じガード。詳細は webkitFocusScrollGuard.ts）。
-        handleScrollToSelection(view) {
-          return focusScrollGuardRef.current.handleScrollToSelection(view);
         },
         handlePaste(_view, event) {
           // 外部テキストの Markdown 変換は共有ハンドラに委譲 (EditorPane と同経路)。
@@ -323,7 +311,6 @@ function MountedSceneBlock({
         }, 200);
       },
       onFocus() {
-        focusScrollGuardRef.current.noteFocus();
         const ed = editorRef.current;
         if (ed) onFocus(sceneId, ed);
       },
@@ -492,7 +479,6 @@ function MountedSceneBlock({
   useCursorOverlay(editor);
   useImeDiagnostics(editor);
   useTateChuYoko(editor);
-  useEmphasisDotsFallback(editor);
   useShowInvisibles(editor);
 
   // Load content
@@ -653,10 +639,7 @@ function MountedSceneBlock({
           editorSettings.showInvisibles && "editor-show-invisibles",
           isEnglish && "editor-en-typography",
         )}
-        style={buildEditorContentStyle(editorSettings, {
-          vertical: editorSettings.verticalMode,
-          webkitGtk: isWebKitGtk(),
-        })}
+        style={buildEditorContentStyle(editorSettings)}
         // contenteditable は spellcheck 属性を祖先から継承する
         spellCheck={editorSettings.spellCheck}
       >

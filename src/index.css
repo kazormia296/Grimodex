@@ -26,10 +26,7 @@
 
 :root {
   /* ネイティブ UI (select のドロップダウン一覧・スクロールバー・チェックボックス
-     等) をライトで描画させる。WebKitGTK / WKWebView は <option> ポップアップを
-     GTK/OS 側で描くため CSS の color/background が効かず、ダークテーマだと
-     color-scheme 未指定では白地×白文字で文字が読めなくなる。テーマは .dark で
-     dark に切り替える。 */
+     等) をライトで描画させる。テーマは .dark で dark に切り替える。 */
   color-scheme: light;
   /* Auxiliary UI scale factor (1 = 100%); overridden from JS — see syncUiScaleFromGlobalSettings */
   --ui-scale: 1;
@@ -147,8 +144,7 @@
   --glass-tint-a: var(--primary);
   --glass-tint-b: var(--content-accent);
 
-  /* トグルスイッチ専用トークン。ダークの --primary はほぼ白のため ON トラックに
-   * そのまま使うと WebKitGTK のネイティブ丸と同色になり見えなくなる。 */
+  /* トグルスイッチ専用トークン。 */
   --switch-track-off: var(--muted);
   --switch-track-on: var(--primary);
   --switch-thumb: var(--background);
@@ -186,8 +182,7 @@
 }
 
 .dark {
-  /* ネイティブ UI (select ドロップダウン一覧・スクロールバー等) をダークで描画。
-     これが無いと WebKitGTK でダークテーマ時にドロップダウンが白地×白文字になる。 */
+  /* ネイティブ UI (select ドロップダウン一覧・スクロールバー等) をダークで描画。 */
   color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
@@ -268,9 +263,7 @@
 }
 
 /* ── トグルスイッチ (Switch) ─────────────────────────────────────────────
- * WebKitGTK / WKWebView は button[role=switch] に GTK ネイティブ描画を適用し、
- * Tailwind の bg-* が無視されてダークテーマで白丸×白地になる。appearance を切り
- * 専用トークン (--switch-*) で全画面のスイッチを統一描画する。 */
+ * appearance を切り、専用トークン (--switch-*) で統一描画する。 */
 .ui-switch,
 button[role="switch"] {
   -webkit-appearance: none;
@@ -287,15 +280,6 @@ button[role="switch"][aria-checked="true"] {
   background-color: var(--switch-thumb);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.28);
 }
-/* Linux Tauri (WebKitGTK) は上記だけではネイティブ switch が残ることがある */
-html[data-engine="webkitgtk"] .ui-switch,
-html[data-engine="webkitgtk"] button[role="switch"] {
-  -webkit-appearance: none !important;
-  appearance: none !important;
-  background-image: none !important;
-  border: 2px solid transparent !important;
-}
-
 @theme inline {
   /* UI 書体。--ui-font は App.tsx が display.uiFontFamily 設定から実行時に
      html へ setProperty する。未設定時は同梱 M PLUS 1 → system stack に fallback。
@@ -619,45 +603,6 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   }
 }
 
-/* ── WebKitGTK (Linux Tauri) ソフトウェア合成向けフォールバック ──
- * Linux ビルドは WEBKIT_DISABLE_DMABUF_RENDERER=1 で GPU 合成が無効なため、
- * backdrop-filter: blur() と background-attachment: fixed が per-frame の全面
- * 再描画を誘発し、ダイアログ (エクスポート / 設定) やポップオーバーの開閉・
- * スクロールが目に見えて重くなる。WebKitGTK のときだけ両者を切り、半透明ガラス面は
- * @supports フォールバックと同じ不透明背景 (--glass-bg-strong) に落として可読性を
- * 保つ。他プラットフォーム (WebView2 / GPU 有効な WKWebView) は影響を受けない。
- * data-engine 属性は isWebKitGtk() が App 起動時に付与する (src/App.tsx)。 */
-html[data-engine="webkitgtk"] {
-  --glass-blur: 0px;
-}
-html[data-engine="webkitgtk"] .glass-surface,
-html[data-engine="webkitgtk"] .glass-shell,
-html[data-engine="webkitgtk"] .glass-chat,
-html[data-engine="webkitgtk"] .glass-editor-chrome,
-html[data-engine="webkitgtk"] .glass-editor-body,
-html[data-engine="webkitgtk"] [role="dialog"],
-html[data-engine="webkitgtk"] .bg-popover,
-html[data-engine="webkitgtk"] [data-radix-popper-content-wrapper] > *,
-html[data-engine="webkitgtk"] .dv-content-container,
-html[data-engine="webkitgtk"] .dv-tabs-and-actions-container,
-html[data-engine="webkitgtk"] .dv-active-sash {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  background-attachment: scroll !important;
-}
-/* blur を失う半透明面は不透明寄りに引き上げて可読性を確保する。ダイアログ /
- * ポップオーバーは既に --glass-bg-strong を使うのでそのまま、パネル・シェル・チャット・
- * エディタ chrome の --glass-bg 面を strong に寄せる。 */
-html[data-engine="webkitgtk"][data-glass-enabled="true"] .glass-surface,
-html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-shell="true"]
-  .glass-shell,
-html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-chat="true"]
-  .glass-chat,
-html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrome="true"]
-  .glass-editor-chrome {
-  background-color: var(--glass-bg-strong);
-}
-
 /* ───────────────────────────────────────────────────────────
    Card layout system (D案)
 
@@ -938,12 +883,8 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
    内で偏るフォールバックフォント(= ユーザーの Windows 実機)では □/· が横(左)ずれ
    する — これが「テストは緑・日本語実機だけ左寄り」の真因。
 
-   図形は擬似要素ではなく span 自身の background で描く。WebKitGTK は縦書き
-   (vertical-rl) で「position:relative な inline を包含ブロックとする abspos」の
-   paint を leading (line-height − 1em) 分ブロック軸へズラして描画するバグを
-   持ち、abspos ::before 方式は列中心から外れる (computed style は正常値を返し
-   paint だけズレるため computed 検証では検出不能)。background なら包含ブロックを
-   経由せず span ボックスに直接描くのでこのバグを回避でき、図形が点対称なので
+   図形は擬似要素ではなく span 自身の background で描く。background なら
+   包含ブロックを経由せず span ボックスに直接描画でき、図形が点対称なので
    物理指定の background-position: center が縦書きでもそのまま成立する。span
    ボックスは空白文字そのもの(=文字間の隙間)なので、図形が span 中央にいれば
    隙間の中央に見え、全 OS・全フォント・縦横どちらでも一致する。
@@ -981,8 +922,7 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
 }
 
 /* タブ (→) も span 自身の background で描く。グリフ ::before の abspos 方式は
-   (a) vertical-rl で論理 inset-inline-start と物理 top が衝突する、
-   (b) WebKitGTK 縦書きの abspos paint ズレ、の 2 点で破綻するため廃止。
+   vertical-rl で論理 inset-inline-start と物理 top が衝突するため使わない。
    mask 方式にしないこと: mask は span と内容の描画全体（選択ハイライトや
    同一 span にマージされる attribution/find 系の background-color を含む）を
    矢印形に切り抜いてしまう。background-image なら他レイヤーと共存できる。
@@ -1009,9 +949,7 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
 }
 
 /* hardBreak ↵ / 段落末 ¶ — フロー幅ゼロ widget。グリフは ::before で描画。
-   アンカーは inline-block: WebKitGTK は縦書きで「inline を包含ブロックとする
-   abspos」の paint を leading 分ズラすため、inline のままだと ↵/¶ が列から
-   外れる (inline-block 包含ブロックなら正しく描く)。この widget は実文字を
+   アンカーは安定した包含ブロックを作るため inline-block にする。この widget は実文字を
    包まない空 span なので inline-block でも幻の改行は生まない — 実文字を包む
    .pm-ws-space 系の inline 装飾は inline-block 化禁止のまま。 */
 .pm-ws-br,
@@ -1211,13 +1149,6 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
   -webkit-text-emphasis-color: oklch(0.7 0 0);
   text-emphasis-color: oklch(0.7 0 0);
 }
-
-/* 傍点は WebKitGTK でも native text-emphasis (sesame) で描く。
-   WebKitGTK の縦書きは「複数文字 run だとマークが欠落する」エンジンバグを
-   持つため、EmphasisDotsFallbackPlugin が run を 1 文字ずつ
-   .emphasis-dot-char に分割して native に全マークを描かせる（分割のみで
-   視覚スタイルは持たせない — 旧方式の「native を止めて背景ドット自前描画」は
-   ゴマ点の見た目を保てないため廃止。実機ピクセル解析で 5/5 マーク描画を確認）。 */
 
 /* Task 2.4: Temporary highlight for AI-inserted text */
 .insert-highlight {
@@ -1682,17 +1613,9 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
  * so the scroll axis flips and writing-mode inherits down to .tiptap, where
  * the logical properties above resolve against vertical-rl. */
 .editor-vertical {
-  /* ★スクロールコンテナ自身は縦書きにしない★
-   * WebKitGTK は「vertical-rl なスクロールコンテナ」に対し、DOM 変異
-   * （ポップオーバー portal・decoration 再構築・入力後の再マッチ等、コンテナ外
-   * の変異でも）の relayout でスクロール位置を origin(0=先頭) へリセットする
-   * エンジンバグを持つ（実測。JS 関与ゼロ・overflow-anchor でも止まらない）。
-   * スクローラを horizontal-tb のまま direction: rtl にすると「右端起点・
-   * 負方向へ読み進む」横スクロール軸だけを借りられ、リセットは一切発火しない
-   * （実測: 対照 9 回 → 0 回。Linux で縦書きが動作している MirrorShard_2 と
-   * 同じ構造）。縦書きは直下の子（content wrapper）から開始する。
-   * scrollLeft の符号規約（0=右端・負方向=前方）は RTL スクローラでも
-   * vertical-rl スクローラと同一で、editorLayout の前提は不変（実測確認済み）。 */
+  /* スクロールコンテナ自身は横書きのまま、右端起点・負方向へ読み進む
+   * 横スクロール軸だけを借りる。縦書きは直下の content wrapper から開始する。
+   * scrollLeft の符号規約（0=右端・負方向=前方）は editorLayout の前提と一致する。 */
   direction: rtl;
   /* flex にするのは行長キャップの中央寄せ復元のため: content wrapper の
    * marginInline: auto（縦書きでは物理上下マージン）は、通常フローだと親の
@@ -1703,11 +1626,11 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
    * 要因にしかならない（Chromium でも無害）。 */
   overflow-anchor: none;
   /* 縦組み用字形 (縦向きの長音符・右上寄せの句読点) を有効化（継承で本文へ届く）。
-     フォントが vert/vrt2 GSUB を持てば有効になる。同梱の fontsource web フォントは
-     サブセット化で vert を欠くため、WebKitGTK では下の [data-engine="webkitgtk"]
-     ルールで vert 対応のシステムフォントに切り替える。"vpal" は縦組み
-     プロポーショナル字間詰め。 */
-  font-feature-settings: "vert" 1, "vrt2" 1, "vpal" 1;
+     "vpal" は縦組みプロポーショナル字間詰め。 */
+  font-feature-settings:
+    "vert" 1,
+    "vrt2" 1,
+    "vpal" 1;
 }
 /* 縦書きの実体はスクローラ直下の子から（両エディタとも直下は content wrapper
  * 1 つ。direction は rtl をスクロール軸にだけ借りたので ltr へ戻す）。
@@ -1725,19 +1648,6 @@ html[data-engine="webkitgtk"][data-glass-enabled="true"][data-glass-editor-chrom
   font-size: 0.5em;
 }
 
-/* ── WebKitGTK 縦書きの字形修正（診断ページ パネルC/G で実証済み）──
- * WebKitGTK は Chromium と違い縦組み字形 (vert/vrt2) を自動適用しないため、明示が要る。
- * これが無いと長音符が横倒し・句読点が左下寄せになる。vpal は列中心からのズレの原因に
- * なるので付けない (vert/vrt2 のみで字形は正しく出る)。
- * フォント側の要件 (vert を持つフォントであること) は JS の resolveEditorFontFamily が
- * 担う（同梱 web フォントのみ vert 対応システムフォントへ差し替え、ユーザ選択は尊重）。
- * font-feature-settings は .tiptap に直接置く — 親 .editor-vertical への指定では本文へ
- * 効かないケースがあったため。data-engine は isWebKitGtk() が App 起動時に付与。 */
-html[data-engine="webkitgtk"] .editor-vertical .tiptap {
-  font-feature-settings:
-    "vert" 1,
-    "vrt2" 1 !important;
-}
 /* 縦中横（tate-chu-yoko）— .tcy span 内を正立・横並びに結合する。
  * .tcy が付く経路は2つ:
  *  1. TateChuYokoPlugin の自動 decoration（縦書き時のみ登録）。
@@ -1767,8 +1677,8 @@ html[data-engine="webkitgtk"] .editor-vertical .tiptap {
  * in vertical linear mode.
  * scene-beat は本文も操作 UI（header / footer / アクションバー / エラー帯）も
  * まるごと縦書きフローに参加する（vertical-rl を継承し縦帯になる）。操作 UI の
- * writing-mode は下の別ルールで明示的に vertical-rl へ揃える（WebKit の flex 子孫
- * 伝播漏れ対策）。操作ポップオーバーは document.body へ portal される
+ * writing-mode は下の別ルールで明示的に vertical-rl へ揃える。操作ポップオーバーは
+ * document.body へ portal される
  * （useAnchoredPopover）ため縦書きフロー外で、既定の横書き・トリガー矩形基準の
  * fixed 配置で描画される。 */
 .editor-vertical .tiptap .scene-break,
@@ -1779,9 +1689,7 @@ html[data-engine="webkitgtk"] .editor-vertical .tiptap {
 }
 
 /* Beat の操作 UI（header / footer / アクションバー / エラー帯）も本文と同じく縦組みに
- * する。Beat ノードは vertical-rl を継承するが、WebKit では flex コンテナの子孫へ
- * writing-mode が伝播しきらず「一部だけ横書きのまま」残ることがある。chrome とその
- * 子孫に vertical-rl を明示して全エンジンで縦帯に揃える。SVG アイコンは writing-mode
+ * する。chrome とその子孫に vertical-rl を明示して縦帯に揃える。SVG アイコンは writing-mode
  * の影響を受けない。ポップオーバーは body へ portal されるので対象外（横書きのまま）。 */
 .editor-vertical .tiptap [data-type="scene-beat"] > header,
 .editor-vertical .tiptap [data-type="scene-beat"] > footer,
@@ -1790,34 +1698,6 @@ html[data-engine="webkitgtk"] .editor-vertical .tiptap {
 .editor-vertical .tiptap [data-type="scene-beat"] > footer *,
 .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
   writing-mode: vertical-rl;
-}
-
-/* WebKitGTK のフォールバック: Beat chrome を横書き島に戻す。WebKitGTK は
- * フォームコントロール (<button> 等) の縦書きを機能フラグ
- * VerticalFormControls（2.52 時点でも既定 OFF）で拒否し、style adjuster が
- * computed writing-mode を horizontal-tb へ強制するため CSS では覆せない。
- * chrome 内で span=縦 / button=横（「フリー」チップ等）が混在するとチップ
- * だけ横倒しになり隣接要素と重なるので、chrome 全体を horizontal-tb に統一
- * する。ただし横書き島は orthogonal flow になり header/footer が Beat 帯
- * 上端に張り付く妥協形のため、本命は Rust 側 (webkit_features.rs) の
- * VerticalFormControls 有効化 — 成功時は App が <html data-vfc="on"> を立て
- * （probe: src/lib/verticalFormControls.ts）、この島ルールは外れて上の縦帯
- * chrome（Chromium と同形）が生きる。:not([data-vfc="on"]) はその切替ゲート。
- * Chromium (M119+) / WKWebView (17.4+) は data-engine なしで常に縦帯ルール。
- * 注意: Beat chrome にテキスト入り <button> を追加しても span ラッパーでは
- * 回避不可 — この島ルールの対象に含めること。 */
-html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > header,
-html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > footer,
-html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider,
-html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > header *,
-html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > footer *,
-html[data-engine="webkitgtk"]:not([data-vfc="on"]) .editor-vertical .tiptap [data-type="scene-beat"] > .beat-divider * {
-  writing-mode: horizontal-tb;
-  /* 上の .tiptap 縦組み字形強制 (vert/vrt2 !important) は継承でここへも届く。
-   * 横書き島に縦組み字形が乗ると、UI フォントが vert GSUB を持つ構成
-   * (システムフォント選択時) で長音符・約物が縦字形のまま横に並ぶため
-   * 打ち消す。継承値には直接宣言が常に勝つので !important 不要。 */
-  font-feature-settings: normal;
 }
 
 /* Beat ノードのブロック軸スタイル — Tailwind コアに block 軸の論理
@@ -2450,8 +2330,16 @@ html[data-shell="electron"] [data-tauri-drag-region] {
 }
 html[data-shell="electron"]
   [data-tauri-drag-region]
-  :where(button, a, input, select, textarea,
-    [role="button"], [role="menuitem"], [data-tauri-drag-region="false"]) {
+  :where(
+    button,
+    a,
+    input,
+    select,
+    textarea,
+    [role="button"],
+    [role="menuitem"],
+    [data-tauri-drag-region="false"]
+  ) {
   -webkit-app-region: no-drag;
 }
 html[data-shell="electron"] [data-tauri-drag-region="false"] {

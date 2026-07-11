@@ -28,8 +28,7 @@ function buildLinearFixture(vertical: boolean): {
   container.style.cssText = "width: 400px; height: 400px; overflow: auto;";
   // 実アプリと同じく「スクローラ > wrapper > シーン」の3層にする。
   // スクローラ自身は縦書きにせず、wrapper（直下の子）から vertical-rl が
-  // 始まる（index.css の .editor-vertical > * — WebKitGTK のスクロール
-  // リセットバグ回避の構造契約）。
+  // 始まる（index.css の .editor-vertical > * と同じ構造契約）。
   const wrapper = document.createElement("div");
   container.appendChild(wrapper);
   const blocks: HTMLElement[] = [];

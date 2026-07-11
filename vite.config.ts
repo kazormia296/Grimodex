@@ -5,15 +5,13 @@ import { visualizer } from "rollup-plugin-visualizer";
 import path from "path";
 
 // @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST;
-// @ts-expect-error process is a nodejs global
 const analyze = process.env.ANALYZE === "1";
 
 /**
  * 同梱フォント (@fontsource) の CSS から legacy `.woff` フォールバックを除去する。
  * fontsource の @font-face は `url(...woff2) format('woff2'), url(...woff) format('woff')`
- * の両方を参照するため Vite が .woff も asset として emit する。Tauri の webview
- * (WKWebView / WebView2 / WebKitGTK) は全て woff2 対応なので .woff はデッドウェイト。
+ * の両方を参照するため Vite が .woff も asset として emit する。Electron の
+ * Chromium は woff2 対応なので .woff はデッドウェイト。
  * `enforce: 'pre'` で Vite が url() を解決する前に .woff 参照を消し、emit させない。
  */
 function stripWoffFromFontsource() {
@@ -55,24 +53,13 @@ export default defineConfig(async () => ({
     },
   },
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent Vite from obscuring rust errors
+  // Keep build errors visible and use the same renderer port as electron:dev.
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    port: 1430,
     strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
+      // Native Rust changes are rebuilt by the N-API workflow, not Vite HMR.
       ignored: ["**/src-tauri/**"],
     },
     proxy: {

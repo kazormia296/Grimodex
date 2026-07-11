@@ -1,16 +1,14 @@
 /**
  * app:// プロトコルの単体テスト（設計書 §8 S8。vitest node 環境 + electron モック）。
  *
- * - CSP が「tauri.conf.json の csp から `ipc: http://ipc.localhost` を除去した版」
- *   である導出関係を gate する（どちらかを変えたらもう片方も変える契約）
+ * - Electron CSP のscheme / directive allowlistをgateする
  * - resolveAppRequestPath の traversal 遮断 / host・scheme 検証
  * - createAppProtocolHandler の 200/404/405 + Content-Type + CSP ヘッダ
  * - PROD_INDEX_URL と windowChrome.buildPanelUrl（prod 分岐）の整合
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { afterAll, describe, expect, it, vi } from "vitest";
 
@@ -42,25 +40,18 @@ afterAll(() => {
   rmSync(distRoot, { recursive: true, force: true });
 });
 
-describe("APP_CONTENT_SECURITY_POLICY（§8 S8: 現行 CSP からの導出）", () => {
-  it("tauri.conf.json の csp から `ipc: http://ipc.localhost` を除去した版と一致する", () => {
-    const conf = JSON.parse(
-      readFileSync(
-        fileURLToPath(
-          new URL("../../src-tauri/tauri.conf.json", import.meta.url),
-        ),
-        "utf8",
-      ),
-    ) as { app: { security: { csp: string } } };
-    const derived = conf.app.security.csp.replace(
-      " ipc: http://ipc.localhost",
-      "",
+describe("APP_CONTENT_SECURITY_POLICY（Electron production正本）", () => {
+  it("local assetだけを許可し、危険なobject/外部接続/Tauri IPCを拒否する", () => {
+    expect(APP_CONTENT_SECURITY_POLICY).toContain("default-src 'self'");
+    expect(APP_CONTENT_SECURITY_POLICY).toContain(
+      "script-src 'self' 'wasm-unsafe-eval'",
     );
-    expect(derived).not.toBe(conf.app.security.csp); // 除去対象が実在すること
-    expect(APP_CONTENT_SECURITY_POLICY).toBe(derived);
-  });
-
-  it("Tauri IPC 専用の許可が残っていない", () => {
+    expect(APP_CONTENT_SECURITY_POLICY).toContain("connect-src 'self'");
+    expect(APP_CONTENT_SECURITY_POLICY).toContain("object-src 'none'");
+    expect(APP_CONTENT_SECURITY_POLICY).toContain("base-uri 'self'");
+    expect(APP_CONTENT_SECURITY_POLICY).toContain("form-action 'self'");
+    expect(APP_CONTENT_SECURITY_POLICY).not.toContain("'unsafe-eval'");
+    expect(APP_CONTENT_SECURITY_POLICY).not.toMatch(/connect-src[^;]*https?:/);
     expect(APP_CONTENT_SECURITY_POLICY).not.toContain("ipc:");
     expect(APP_CONTENT_SECURITY_POLICY).not.toContain("http://ipc.localhost");
   });
@@ -99,7 +90,9 @@ describe("resolveAppRequestPath", () => {
 
   it("app: 以外のスキーム / bundle 以外のホストは null", () => {
     expect(resolveAppRequestPath("file:///etc/passwd", distRoot)).toBeNull();
-    expect(resolveAppRequestPath("app://other/index.html", distRoot)).toBeNull();
+    expect(
+      resolveAppRequestPath("app://other/index.html", distRoot),
+    ).toBeNull();
     expect(resolveAppRequestPath("not a url", distRoot)).toBeNull();
   });
 
