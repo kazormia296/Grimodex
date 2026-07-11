@@ -92,6 +92,28 @@ describe("IME Protocol V1 contract fixtures", () => {
     ).toBe(false);
   });
 
+  it("rejects C0 and C1 control characters in protocol text", () => {
+    const validateProject = compileSchema("project");
+    const project = readJson("fixtures/valid/project-minimal.json") as Record<
+      string,
+      unknown
+    >;
+    expect(validateProject({ ...project, project_name: "C1\u0085text" })).toBe(
+      false,
+    );
+
+    const validateConsumer = compileSchema("consumer");
+    const consumer = readJson(
+      "fixtures/valid/consumer-linux.json",
+    ) as Record<string, unknown>;
+    expect(validateConsumer({ ...consumer, name: "C0\u0007text" })).toBe(
+      false,
+    );
+    expect(validateConsumer({ ...consumer, name: "C1\u009ftext" })).toBe(
+      false,
+    );
+  });
+
   it("publishes the byte, count, and string limits consumed by every OS", () => {
     expect(readJson("protocol-v1-limits.json")).toEqual({
       state_max_bytes: 65_536,

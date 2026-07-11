@@ -84,6 +84,27 @@ fn consumer_detection_enforces_schema_but_ignores_future_platform_values() -> Te
 }
 
 #[test]
+fn consumer_detection_enforces_the_timestamp_lexical_grammar() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    for (id, timestamp) in [
+        ("lowercase-z", "2026-07-11T00:00:00.000z"),
+        ("space-separator", "2026-07-11 00:00:00.000Z"),
+        ("long-fraction", "2026-07-11T00:00:00.0000000000Z"),
+    ] {
+        let mut value = handshake(id);
+        value["last_seen"] = json!(timestamp);
+        write_consumer(sandbox.path(), id, &value)?;
+    }
+
+    let status = serde_json::to_value(get_status(
+        sandbox.path(),
+        ImeIntegrationMode::Auto,
+    )?)?;
+    assert_eq!(status["consumers"].as_array().map(Vec::len), Some(0));
+    Ok(())
+}
+
+#[test]
 fn status_rejects_an_oversized_state_file_before_parsing() -> TestResult {
     let sandbox = Sandbox::new()?;
     let oversized = json!({
@@ -95,6 +116,22 @@ fn status_rejects_an_oversized_state_file_before_parsing() -> TestResult {
     fs::write(
         sandbox.path().join("state.json"),
         serde_json::to_vec(&oversized)?,
+    )?;
+
+    assert!(get_status(sandbox.path(), ImeIntegrationMode::On).is_err());
+    Ok(())
+}
+
+#[test]
+fn status_rejects_a_state_with_a_schema_invalid_timestamp() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    fs::write(
+        sandbox.path().join("state.json"),
+        serde_json::to_vec(&json!({
+            "format_version": 1,
+            "active_project_id": null,
+            "updated_at": "2026-07-11 00:00:00Z"
+        }))?,
     )?;
 
     assert!(get_status(sandbox.path(), ImeIntegrationMode::On).is_err());
@@ -117,6 +154,30 @@ fn status_ignores_an_oversized_project_snapshot_before_parsing() -> TestResult {
     fs::write(
         projects.join("oversized.json"),
         serde_json::to_vec(&oversized)?,
+    )?;
+
+    let status = serde_json::to_value(get_status(
+        sandbox.path(),
+        ImeIntegrationMode::On,
+    )?)?;
+    assert_eq!(status["exportedProjectCount"], 0);
+    Ok(())
+}
+
+#[test]
+fn status_does_not_count_a_project_with_a_schema_invalid_timestamp() -> TestResult {
+    let sandbox = Sandbox::new()?;
+    let projects = sandbox.path().join("projects");
+    fs::create_dir_all(&projects)?;
+    fs::write(
+        projects.join("invalid-time.json"),
+        serde_json::to_vec(&json!({
+            "format_version": 1,
+            "project_id": "invalid-time",
+            "project_name": "Invalid time",
+            "generated_at": "2026-07-11T00:00:00z",
+            "entries": []
+        }))?,
     )?;
 
     let status = serde_json::to_value(get_status(
