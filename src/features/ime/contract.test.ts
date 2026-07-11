@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
+import Ajv2020, {
+  type AnySchema,
+  type ValidateFunction,
+} from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
 const contractRoot = join(process.cwd(), "ime-contract");
@@ -11,7 +14,7 @@ function readJson(relativePath: string): unknown {
 
 function compileSchema(name: "state" | "project" | "consumer"): ValidateFunction {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
-  return ajv.compile(readJson(`schema/${name}-v1.schema.json`));
+  return ajv.compile(readJson(`schema/${name}-v1.schema.json`) as AnySchema);
 }
 
 describe("IME Protocol V1 contract fixtures", () => {
