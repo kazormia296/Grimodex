@@ -588,11 +588,14 @@ pub async fn send(
         params.reasoning_enabled,
         &params.reasoning_effort,
     );
-    body["max_output_tokens"] = json!(max_output_tokens(
-        params.provider,
-        params.model,
-        params.reasoning_enabled
-    ));
+    body["max_output_tokens"] =
+        json!(params
+            .request_max_output_tokens
+            .unwrap_or_else(|| max_output_tokens(
+                params.provider,
+                params.model,
+                params.reasoning_enabled
+            )));
     crate::merge_extra_body(&mut body, &params.extra_body);
     crate::apply_openrouter_provider_pin(
         &mut body,
@@ -646,11 +649,14 @@ pub async fn send_with_tools(
         params.reasoning_enabled,
         &params.reasoning_effort,
     );
-    body["max_output_tokens"] = json!(max_output_tokens(
-        params.provider,
-        params.model,
-        params.reasoning_enabled
-    ));
+    body["max_output_tokens"] =
+        json!(params
+            .request_max_output_tokens
+            .unwrap_or_else(|| max_output_tokens(
+                params.provider,
+                params.model,
+                params.reasoning_enabled
+            )));
     crate::merge_extra_body(&mut body, &params.extra_body);
     crate::apply_openrouter_provider_pin(
         &mut body,
@@ -747,11 +753,14 @@ pub async fn send_stream(
         params.reasoning_enabled,
         &params.reasoning_effort,
     );
-    body["max_output_tokens"] = json!(max_output_tokens(
-        params.provider,
-        params.model,
-        params.reasoning_enabled
-    ));
+    body["max_output_tokens"] =
+        json!(params
+            .request_max_output_tokens
+            .unwrap_or_else(|| max_output_tokens(
+                params.provider,
+                params.model,
+                params.reasoning_enabled
+            )));
     crate::merge_extra_body(&mut body, &params.extra_body);
     crate::apply_openrouter_provider_pin(
         &mut body,
@@ -1731,6 +1740,7 @@ mod responses_live_tests {
             openrouter_provider_pin: None,
             system_cache_segments: None,
             system_volatile_tail: None,
+            request_max_output_tokens: None,
             api_variant: Some("responses".to_string()),
             web_search: None,
             fusion: None,

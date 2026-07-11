@@ -2196,6 +2196,7 @@ describe("AI チャットコマンド", () => {
     const args = {
       messages: [{ role: "user", content: "yo" }],
       endpointId: "ep2",
+      requestMaxOutputTokens: 32_000,
     };
     const env = await dispatchInvoke("send_chat_message_stream", args, {
       backend,
@@ -2212,6 +2213,24 @@ describe("AI チャットコマンド", () => {
       method: "sendChatMessageStream",
       args: [args, { provider: "openai", model: "gpt-x" }, "sk-stream"],
     });
+  });
+
+  it("send_chat_message_stream は不正な requestMaxOutputTokens を main 境界で拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "send_chat_message_stream",
+      {
+        messages: [{ role: "user", content: "yo" }],
+        requestMaxOutputTokens: 0,
+      },
+      { backend, shell: noShell, secrets: fakeSecrets() },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(env).toMatchObject({ error: expect.stringMatching(/requestMaxOutputTokens/) });
+    expect(calls.some((call) => call.method === "sendChatMessageStream")).toBe(
+      false,
+    );
   });
 
   it("abort_chat_stream は backend.abortChatStream を呼び null を返す（secrets 不要）", async () => {

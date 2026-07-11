@@ -2309,32 +2309,60 @@ describe("prompt injection hardening", () => {
       }
     });
 
-    it("keeps cache-side stable L4 as a complete block when trim empties prompt-side L4", () => {
-      // 極端な trim で effectiveL4 (prompt 側) が全滅しても、trim を通らない
-      // l4StableSegment は cacheSegments に完結ブロックのまま残り、prompt 側に
-      // 閉じタグだけが浮く等のタグ不整合を出さないこと。
+    it("does not restore stable L4 in cache delivery after trim removes it", () => {
+      // provider cache 経路も prompt と同じ trim survivor 集合から materialize する。
+      // stable は cache 優先度であり、context window を無視する免除ではない。
       const longContent = "長い本文。".repeat(2000);
       const result = buildSystemPrompt({
         scene: { id: "s1", title: "t", content: longContent },
         codexEntries: [
           { id: "c1", type: "character", name: "Alice", summary: "a" },
         ] as CodexContext[],
-        contextWindow: 500,
+        contextWindow: 800,
         maxOutputTokens: 100,
+        outputReservationTokens: 100,
         conversationTokens: 0,
+        deliveryMode: "cache",
       });
       expect(result.trimmedLayers).toContain("L4");
       const body = result.prompt.slice(JA_CHAT_SYSTEM.baseText.length);
       expect(body).not.toContain(`</${PROMPT_DATA_TAGS.l4}>`);
-      const l4Segment =
-        result.cacheSegments?.find((seg) => seg.includes("Alice")) ?? "";
-      expect(l4Segment.trimStart().startsWith("<codex_entries>")).toBe(true);
-      expect(l4Segment.trimEnd().endsWith("</codex_entries>")).toBe(true);
-      // リマインダーは両経路に残る
+      expect(result.cacheSegments?.some((seg) => seg.includes("Alice"))).toBe(
+        false,
+      );
+      expect(result.volatileTail ?? "").not.toContain("Alice");
+      expect(result.totalTokens + 100).toBeLessThanOrEqual(800);
+      expect(result.payloadBudget).toMatchObject({
+        outputReservedTokens: 100,
+        overflowTokens: 0,
+      });
+      // データが残る限りリマインダーは両経路に残る。
       expect(result.prompt).toContain(JA_CHAT_SYSTEM.dataBoundaryReminder);
       expect(result.volatileTail).toContain(
         JA_CHAT_SYSTEM.dataBoundaryReminder,
       );
+    });
+
+    it("trims an oversized focus body as the last variable layer", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        focusSubject: {
+          kind: "snippet",
+          name: "巨大スニペット",
+          body: `FOCUS_START\n${"x".repeat(20_000)}\nFOCUS_END`,
+        },
+        contextWindow: 1_000,
+        outputReservationTokens: 100,
+        conversationTokens: 0,
+        deliveryMode: "plain",
+      });
+
+      expect(result.trimmedLayers).toContain("FOCUS");
+      expect(result.prompt).toContain("<focus_subject>");
+      expect(result.prompt).toContain("FOCUS_START");
+      expect(result.prompt).not.toContain("FOCUS_END");
+      expect(result.totalTokens + 100).toBeLessThanOrEqual(1_000);
+      expect(result.payloadBudget?.overflowTokens).toBe(0);
     });
 
     it("escapes reserved tags in semantic recall chunks and keeps the reminder for RAG-only data", () => {

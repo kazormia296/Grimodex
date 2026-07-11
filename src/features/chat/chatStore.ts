@@ -4,11 +4,7 @@ import i18next from "@/lib/i18n";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import * as chatApi from "./chatApi";
-import {
-  resolveModelForPath,
-  resolveRolePathConfig,
-  resolveRoleSendOverride,
-} from "./modelRouting";
+import { resolveModelForPath, resolveRolePathConfig } from "./modelRouting";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
 // ---------------------------------------------------------------------------
@@ -27,7 +23,7 @@ function classifyError(
   if (/429|rate.?limit|too.?many.?request/i.test(msg)) return "rate_limit";
   if (/network|connect|timeout|fetch|ECONNREFUSED/i.test(msg)) return "network";
   if (
-    /context.length.exceeded|maximum.context|token.limit|too.long|content.too.large/i.test(
+    /AI_CONTEXT_WINDOW_EXCEEDED|context.window.exceeded|context.length.exceeded|maximum.context|token.limit|too.long|content.too.large/i.test(
       msg,
     )
   )
@@ -74,6 +70,18 @@ import {
 } from "./agent/modelLimits";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
 import type { AiProvider } from "./types";
+import {
+  finalizeTurnPayload,
+  selectsCacheSystemDelivery,
+} from "@/features/ai-context/finalizeTurnPayload";
+import {
+  resolveChatTurnRoute,
+  type ResolvedChatTurnRoute,
+} from "./turn/resolveTurnRoute";
+import {
+  renderAgentConversationPayloads,
+  renderAgentToolPayloads,
+} from "./turn/renderAgentPayload";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
 import {
@@ -91,7 +99,6 @@ import {
   type RecallPromoteSuggestion,
 } from "./chatRecallPromote";
 import { stripToolProtocol } from "./toolProtocol";
-import { isHermesProtocol } from "./toolProtocolParse";
 import {
   buildWebSearchConfig,
   parseWebSearchControls,
@@ -146,6 +153,57 @@ function flattenMessagesForCli(
   messages: { role: string; content: string }[],
 ): string {
   return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
+}
+
+const TURN_PAYLOAD_SAFETY_MARGIN_TOKENS = 32;
+
+function estimateMessageEnvelopeTokens(
+  messages: ReadonlyArray<{ role: string; content: string }>,
+): number {
+  // Provider tokenizers account for role/message boundaries differently. Keep
+  // this explicit and conservative; exact text content is measured separately.
+  return messages.length * 4 + (messages.length > 0 ? 2 : 0);
+}
+
+function finalizeChatTurnPayload(input: {
+  route: ResolvedChatTurnRoute;
+  fallbackSystemPrompt: string;
+  cacheSegments?: string[];
+  volatileTail?: string;
+  messages: AgentMessagePayload[] | Array<{ role: string; content: string }>;
+  tools?: AgentToolDefinition[];
+  webSearch?: WebSearchConfig | null;
+}) {
+  const isAgentPayload = input.tools !== undefined;
+  const renderedToolPayloads = isAgentPayload
+    ? renderAgentToolPayloads(input.route, input.tools ?? [], input.webSearch)
+    : input.webSearch?.enabled
+      ? [JSON.stringify(input.webSearch)]
+      : [];
+  const renderedConversationPayloads = isAgentPayload
+    ? renderAgentConversationPayloads(
+        input.route,
+        input.messages as AgentMessagePayload[],
+      )
+    : undefined;
+  return finalizeTurnPayload(
+    {
+      route: input.route,
+      system: {
+        fallback: input.fallbackSystemPrompt,
+        cacheSegments: input.cacheSegments,
+        volatileTail: input.volatileTail,
+      },
+      messages: input.messages,
+      renderedConversationPayloads,
+      renderedToolPayloads,
+      envelopeTokens: isAgentPayload
+        ? 0
+        : estimateMessageEnvelopeTokens(input.messages),
+      safetyMarginTokens: TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+    },
+    countTokens,
+  );
 }
 import type {
   AgentMessagePayload,
@@ -490,6 +548,8 @@ interface ChatState {
   activeSceneId: string;
   activeProjectId: string | null;
   contextTokenCount: number;
+  /** Context window used by the finalized turn route (null before resolution). */
+  contextWindowSize: number | null;
   contextLayers: LayerBreakdown[];
   lastSystemPrompt: string;
   /** lastSystemPrompt がどのスコープ構成（scope/anchor/scene/session）で
@@ -741,6 +801,8 @@ interface ChatState {
      * override 送信で lastSystemPrompt が永続トグル基準で組まれてしまうのを防ぐ。
      * 省略時は get().agentMode にフォールバック。 */
     agentModeOverride?: boolean;
+    /** Internal immutable route for an in-flight send. */
+    turnRoute?: ResolvedChatTurnRoute;
   }) => Promise<void>;
   clearMessages: () => void;
   clearError: () => void;
@@ -868,16 +930,49 @@ async function maybeRunSummarization(
       candidates,
       // cheap ロール: 要約は injected callback 経由で model/provider/endpoint override を渡す。
       (messages, thinkingParams) => {
-        const ov = resolveRoleSendOverride("summarization");
+        const aiState = useAiSettingsStore.getState();
+        const role = resolveRolePathConfig("summarization");
+        const route = aiState.settings
+          ? resolveChatTurnRoute({
+              surface: "chat",
+              activeSettings: aiState.settings,
+              activeApiVariant: getChatApiVariant(aiState.settings.model),
+              role: role
+                ? {
+                    model: role.model,
+                    provider: role.provider,
+                    apiVariant: role.provider
+                      ? role.variant
+                      : getChatApiVariant(role.model),
+                    endpointId: role.endpointId,
+                  }
+                : null,
+              taskEffort: "low",
+              thinkingDisplay: "summarized",
+              thinkingEnabled: aiState.settings.thinkingEnabled,
+              reasoningEffortOverride:
+                aiState.settings.reasoningEffortOverride ?? undefined,
+            })
+          : null;
+        if (route) {
+          finalizeChatTurnPayload({
+            route,
+            fallbackSystemPrompt: "",
+            messages,
+          });
+        }
         return chatApi.sendChatMessageWithThinking(
           messages,
-          thinkingParams,
+          route?.thinking ?? thinkingParams,
           undefined,
-          ov.apiVariant,
+          route?.apiVariant ?? null,
           undefined,
-          ov.model,
-          ov.provider,
-          ov.endpointId,
+          route?.model ?? role?.model ?? null,
+          route ? route.providerOverride : (role?.provider ?? null),
+          route ? route.endpointId : (role?.endpointId ?? null),
+          route?.outputBudget.requestMaxOutputTokens ?? null,
+          route?.provider ?? null,
+          route?.resolvedEndpointId ?? null,
         );
       },
       {
@@ -1618,6 +1713,9 @@ let _resolveUserQuestion: ((result: ToolResult) => void) | null = null;
 // agent ループの中断要求フラグ。Stop / セッション切替で true にし、runAgentLoop
 // の shouldAbort から参照する（stop が agent path を止められない問題への対処）。
 let _agentAborted = false;
+// Stop must target the transport selected for the in-flight turn, not mutable
+// settings that may have changed after the request started.
+let _activeTurnRoute: ResolvedChatTurnRoute | null = null;
 // プロンプトプレビューの seed / 表示用に、ChatInput の入力中テキストを on-demand
 // で取得する DI。打鍵毎にストアへ書かず、プレビューを開いた瞬間だけ読む。
 // ChatInput が mount 時に登録し unmount で null 解除する。
@@ -1998,6 +2096,8 @@ async function buildSceneContextPrompt(opts: {
   /** 実送信経路のみ true。chat episodic recall の「Codex に昇格」頻度を数えるのは
    * 実際に送ったターンだけ — プレビュー/コピー/ライブ更新では数えない。 */
   trackRecallPromote?: boolean;
+  /** Actual immutable route selected for this turn. Preview/live callers may omit it. */
+  turnRoute?: ResolvedChatTurnRoute;
 }): Promise<SceneContextPayload> {
   const {
     sceneCtx,
@@ -2021,12 +2121,22 @@ async function buildSceneContextPrompt(opts: {
   const chatModel =
     useAiSettingsStore.getState().chatModelOverride ?? aiSettings?.model ?? "";
   const chatApiVariant = xprov ? xprov.variant : getChatApiVariant(chatModel);
-  const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
+  const fallbackCapabilities = resolveModelCapabilities(
     chatModel,
     aiSettings,
     chatApiVariant,
   );
-  const budgets = allocateLayerBudgets(contextWindow, { maxOutputTokens });
+  const contextWindow =
+    opts.turnRoute?.contextWindow ?? fallbackCapabilities.contextWindow;
+  const maxOutputTokens =
+    opts.turnRoute?.capabilities.maxOutputTokens ??
+    fallbackCapabilities.maxOutputTokens;
+  const responseReservationTokens =
+    opts.turnRoute?.outputBudget.responseReservationTokens;
+  const budgets = allocateLayerBudgets(contextWindow, {
+    maxOutputTokens,
+    responseReservationTokens,
+  });
   const L4_TOTAL_BUDGET = budgets.l4;
 
   // G12: context_mode filter (Codex + Note)
@@ -2683,6 +2793,11 @@ async function buildSceneContextPrompt(opts: {
     conversationTokens,
     contextWindow,
     maxOutputTokens,
+    outputReservationTokens: responseReservationTokens,
+    deliveryMode:
+      opts.turnRoute && selectsCacheSystemDelivery(opts.turnRoute)
+        ? "cache"
+        : "plain",
     conversationSummary,
     pendingBeatsSection,
     sceneLabels: sceneLabels.length > 0 ? sceneLabels : undefined,
@@ -2803,6 +2918,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeSceneId: "",
   activeProjectId: null,
   contextTokenCount: 0,
+  contextWindowSize: null,
   contextLayers: [],
   lastSystemPrompt: "",
   lastSystemPromptKey: null,
@@ -3420,24 +3536,73 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const agentModeForThisSend = options?.overrideAgentMode ?? get().agentMode;
     const aiSendState = useAiSettingsStore.getState();
     const xprov = getCrossProviderChatOverride();
-    const aiProvider = xprov?.provider ?? aiSendState.settings?.provider;
-    // openrouter/fusion はツール経路に入ると OpenRouter がカスタムパネルを無視して
-    // 既定パネルに落とす(合議モデルは tool-calling 不可)。常にプレーン経路へ通し、
-    // tools 無し・Web検索なしで fusion plugin(custom analysis_models)を効かせる。
-    const isFusionModel =
-      (aiSendState.chatModelOverride ?? aiSendState.settings?.model) ===
-      "openrouter/fusion";
-    // RAG (Web 検索) が ON かつ対応プロバイダ (OpenRouter / Anthropic) のときは、
-    // agentMode の有無に関わらず構造化 (非ストリーミング) パスに通す。引用パースを
-    // send_agent_message の1経路に集約するため (設計判断)。fusion は除外。
-    const ragActive =
-      get().ragEnabled && isRagCapableProvider(aiProvider) && !isFusionModel;
-    // CLI は subprocess 専用。Agent モードでも HTTP の send_agent_message に落とすと
-    // 空応答・無応答になるため、常に通常モードの sendCliChatStream へ回す。
+    const composerModel = aiSendState.chatModelOverride;
+    const resolveRouteForSurface = (surface: "chat" | "agent") => {
+      if (!aiSendState.settings) return null;
+      const role = resolveRolePathConfig(
+        surface === "agent" ? "chat_agent_main" : "chat_stream_non_agent",
+      );
+      return resolveChatTurnRoute({
+        surface,
+        activeSettings: aiSendState.settings,
+        activeApiVariant: getChatApiVariant(aiSendState.settings.model),
+        composer: composerModel
+          ? {
+              model: composerModel,
+              provider: xprov?.provider ?? null,
+              apiVariant: xprov
+                ? (xprov.variant ?? null)
+                : (getChatApiVariant(composerModel) ?? null),
+              endpointId: xprov?.endpointId ?? null,
+            }
+          : null,
+        role: role
+          ? {
+              model: role.model,
+              provider: role.provider,
+              apiVariant: role.provider
+                ? role.variant
+                : getChatApiVariant(role.model),
+              endpointId: role.endpointId,
+            }
+          : null,
+        taskEffort: getEffortForTask(surface),
+        thinkingDisplay: "summarized",
+        thinkingEnabled: aiSendState.settings.thinkingEnabled,
+        reasoningEffortOverride:
+          aiSendState.settings.reasoningEffortOverride ?? undefined,
+      });
+    };
+
+    // Route selection precedes all mode/transport decisions. RAG first checks
+    // the conversation route, then switches once to the Agent role if that
+    // provider can actually serve Web search.
+    let turnRoute = resolveRouteForSurface(
+      agentModeForThisSend ? "agent" : "chat",
+    );
+    let isFusionModel =
+      (turnRoute?.model ??
+        aiSendState.chatModelOverride ??
+        aiSendState.settings?.model) === "openrouter/fusion";
+    let ragActive =
+      get().ragEnabled &&
+      isRagCapableProvider(turnRoute?.provider) &&
+      !isFusionModel;
+    if (!agentModeForThisSend && ragActive) {
+      turnRoute = resolveRouteForSurface("agent");
+      isFusionModel = turnRoute?.model === "openrouter/fusion";
+      ragActive =
+        get().ragEnabled &&
+        isRagCapableProvider(turnRoute?.provider) &&
+        !isFusionModel;
+    }
+    // CLI is subprocess-only; Fusion is chat-completions-only. Both stay on
+    // the plain path even when the Agent toggle is enabled.
     const useAgentPath =
       (agentModeForThisSend || ragActive) &&
-      aiProvider !== "cli" &&
+      turnRoute?.provider !== "cli" &&
       !isFusionModel;
+    _activeTurnRoute = turnRoute;
 
     const sessionId = activeSessionId ?? "";
 
@@ -3544,16 +3709,25 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const projectCtxLang = projectCtx?.language ?? "ja";
         let agentMessages = prevMessages;
         if (sessionIdForPersist) {
-          const agentApiVariant = xprov
-            ? xprov.variant
-            : getChatApiVariant(chatModelEarly);
-          const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
+          const agentApiVariant = turnRoute
+            ? turnRoute.apiVariant
+            : xprov
+              ? xprov.variant
+              : getChatApiVariant(chatModelEarly);
+          const fallbackCaps = resolveModelCapabilities(
             chatModelEarly,
             aiSettingsEarly,
             agentApiVariant,
           );
+          const contextWindow =
+            turnRoute?.contextWindow ?? fallbackCaps.contextWindow;
+          const maxOutputTokens =
+            turnRoute?.capabilities.maxOutputTokens ??
+            fallbackCaps.maxOutputTokens;
           const budgets = allocateLayerBudgets(contextWindow, {
             maxOutputTokens,
+            responseReservationTokens:
+              turnRoute?.outputBudget.responseReservationTokens,
           });
           agentMessages = await maybeRunSummarization(
             sessionIdForPersist,
@@ -3594,6 +3768,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             semanticRecallSeedMessage: content,
             excludedAutoEntryIds: get().excludedAutoEntryIds,
             trackRecallPromote: true,
+            turnRoute: turnRoute ?? undefined,
           });
           systemPromptForAgent = ctxResult.prompt;
           systemCacheSegmentsForAgent = ctxResult.cacheSegments;
@@ -3604,6 +3779,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }
           set({
             contextTokenCount: ctxResult.totalTokens,
+            contextWindowSize: turnRoute?.contextWindow ?? null,
             contextLayers: ctxResult.layers,
             lastSystemPrompt: ctxResult.prompt,
             lastSystemPromptKey: contextPromptKey(get()),
@@ -3622,6 +3798,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             // 一回限り override で送るときも、その agentMode で集約 tier を組む
             // （永続トグル基準で組むと pull 委譲が override 送信に効かない）。
             agentModeOverride: agentModeForThisSend,
+            turnRoute: turnRoute ?? undefined,
           });
           systemPromptForAgent = get().lastSystemPrompt;
           const dbPinned = sessionIdForPersist
@@ -3656,8 +3833,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             projectCtx?.language ?? "ja",
           ).agentControl;
           const useHermesRag =
-            agentModeForThisSend &&
-            isHermesProtocol(useAiSettingsStore.getState().settings);
+            agentModeForThisSend && turnRoute?.toolProtocol === "hermes";
           const ragInstruction = useHermesRag
             ? ragAgentControl.webSearchInstructionHermes
             : ragAgentControl.webSearchInstruction;
@@ -3710,14 +3886,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // agent_research_subagent は同一 "agent" ロールなので、ここで解決した
         // provider/endpoint/variant をサブエージェント送信にも流用する。
         const agentRole = resolveRolePathConfig("chat_agent_main");
-        const currentModel = xprov
-          ? xprov.model
-          : (agentRole?.model ?? chatModelOverride ?? aiSettings?.model ?? "");
-        const agentApiVariant = xprov
-          ? xprov.variant
-          : agentRole?.provider
-            ? agentRole.variant
-            : getChatApiVariant(currentModel);
+        const currentModel =
+          turnRoute?.model ??
+          (xprov
+            ? xprov.model
+            : (agentRole?.model ??
+              chatModelOverride ??
+              aiSettings?.model ??
+              ""));
+        const agentApiVariant = turnRoute
+          ? turnRoute.apiVariant
+          : xprov
+            ? xprov.variant
+            : agentRole?.provider
+              ? agentRole.variant
+              : getChatApiVariant(currentModel);
         const tokenBudget = getToolTokenBudget(currentModel);
         // model-aware なツール呼び出し上限。大窓モデルほど多段探索を許す。
         const parentMaxToolCalls = getAgentToolCallBudget(currentModel);
@@ -3726,15 +3909,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // 厳しめに絞る。各呼び出しは parentMaxToolCalls も 1 消費する。
         const MAX_SUBAGENT_CALLS = 4;
         let subAgentCallCount = 0;
-        const agentThinkingParams = buildThinkingParams(
-          currentModel,
-          getEffortForTask("agent"),
-          "summarized",
-          aiSettings?.thinkingEnabled ?? true,
-          aiSettings,
-          agentApiVariant,
-          aiSettings?.reasoningEffortOverride ?? undefined,
-        );
+        const agentThinkingParams =
+          turnRoute?.thinking ??
+          buildThinkingParams(
+            currentModel,
+            getEffortForTask("agent"),
+            "summarized",
+            aiSettings?.thinkingEnabled ?? true,
+            aiSettings,
+            agentApiVariant,
+            aiSettings?.reasoningEffortOverride ?? undefined,
+          );
 
         // Accumulate tool calls for live metadata update
         const accToolCalls: ToolCallRecord[] = [];
@@ -3837,31 +4022,44 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 // 漏らさないようにする。
                 callLimitMessage: agentControl.researchLimitMessage,
                 tokenBudgetMessage: agentControl.researchLimitMessage,
-                sendToLLM: (msgs, tools) =>
-                  chatApi.sendAgentMessage(
+                sendToLLM: (msgs, tools) => {
+                  const finalized = turnRoute
+                    ? finalizeChatTurnPayload({
+                        route: turnRoute,
+                        fallbackSystemPrompt: msgs
+                          .filter((message) => message.role === "system")
+                          .map((message) => message.content)
+                          .join("\n"),
+                        messages: msgs,
+                        tools,
+                      })
+                    : null;
+                  return chatApi.sendAgentMessage(
                     msgs,
                     tools,
                     agentThinkingParams,
                     // 子は親の cacheSegments / volatileTail を使わず、専用の
                     // system prompt を持つ。Web 検索も無効（null）。
-                    undefined,
+                    finalized?.transport.systemCacheSegments,
                     agentApiVariant,
                     null,
-                    undefined,
-                    // 別プロバイダ override 中はサブエージェントも同じ provider/model/variant/
-                    // endpoint に揃える(親 sendToLLM と同契約)。variant(=agentApiVariant)は既に
-                    // override 値なので、provider/model/endpoint を揃えないと「variant だけ
-                    // override・送信先は既定」の不整合になる(別プロバイダ/別エンドポイントの
-                    // 調査が既定へサイレントに流れる)。
-                    xprov
-                      ? xprov.model
-                      : (agentRole?.model ??
-                          resolveModelForPath("agent_research_subagent")),
-                    xprov ? xprov.provider : (agentRole?.provider ?? null),
-                    xprov
-                      ? (xprov.endpointId ?? null)
-                      : (agentRole?.endpointId ?? null),
-                  ),
+                    finalized?.transport.systemVolatileTail,
+                    turnRoute?.model ??
+                      (xprov
+                        ? xprov.model
+                        : (agentRole?.model ??
+                          resolveModelForPath("agent_research_subagent"))),
+                    turnRoute
+                      ? turnRoute.providerOverride
+                      : (xprov?.provider ?? agentRole?.provider ?? null),
+                    turnRoute
+                      ? turnRoute.endpointId
+                      : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
+                    turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
+                    turnRoute?.provider ?? null,
+                    turnRoute?.resolvedEndpointId ?? null,
+                  );
+                },
                 executeTool: executeReadOnlyTool,
                 onProgress: (p) => set({ subAgentProgress: p }),
                 onTextChunk: () => {},
@@ -3969,28 +4167,54 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           callLimitMessage: agentControl.callLimitMessage,
           tokenBudgetMessage: agentControl.tokenBudgetMessage,
           userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
-          sendToLLM: (msgs, tools) =>
-            chatApi.sendAgentMessage(
+          sendToLLM: (msgs, tools) => {
+            const finalized = turnRoute
+              ? finalizeChatTurnPayload({
+                  route: turnRoute,
+                  fallbackSystemPrompt: systemPromptForAgent,
+                  cacheSegments: systemCacheSegmentsForAgent,
+                  volatileTail: systemVolatileTailForAgent,
+                  messages: msgs,
+                  tools,
+                  webSearch: webSearchConfig,
+                })
+              : null;
+            if (finalized) {
+              set({
+                contextTokenCount: finalized.usage.inputTokens,
+                contextWindowSize: finalized.route.contextWindow,
+                ...(finalized.cacheDowngradeReason === "budget"
+                  ? { cacheInvalidatedReason: "budget" as const }
+                  : {}),
+              });
+            }
+            return chatApi.sendAgentMessage(
               msgs,
               tools,
               agentThinkingParams,
-              systemCacheSegmentsForAgent,
+              finalized
+                ? finalized.transport.systemCacheSegments
+                : systemCacheSegmentsForAgent,
               agentApiVariant,
               webSearchConfig,
-              systemVolatileTailForAgent,
-              // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
-              // byte-identical(キャッシュ温存)。別プロバイダ override 時はそれが最優先。
-              xprov
-                ? xprov.model
-                : (agentRole?.model ?? chatModelOverride ?? null),
-              // 別プロバイダ override 時のみ provider を渡す。role に横断割り当てが
-              // あればそれを送る(同一プロバイダは null=既定)。
-              xprov ? xprov.provider : (agentRole?.provider ?? null),
-              // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
-              xprov
-                ? (xprov.endpointId ?? null)
-                : (agentRole?.endpointId ?? null),
-            ),
+              finalized
+                ? finalized.transport.systemVolatileTail
+                : systemVolatileTailForAgent,
+              turnRoute?.model ??
+                (xprov
+                  ? xprov.model
+                  : (agentRole?.model ?? chatModelOverride ?? null)),
+              turnRoute
+                ? turnRoute.providerOverride
+                : (xprov?.provider ?? agentRole?.provider ?? null),
+              turnRoute
+                ? turnRoute.endpointId
+                : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
+              turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
+              turnRoute?.provider ?? null,
+              turnRoute?.resolvedEndpointId ?? null,
+            );
+          },
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
             set({ agentProgress: progress });
@@ -4086,7 +4310,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 systemPrompt: systemPromptForAgent,
                 layers: get().contextLayers,
                 totalTokens: get().contextTokenCount,
-                model: useAiSettingsStore.getState().settings?.model ?? null,
+                model: currentModel || null,
               })
               .catch((e) =>
                 debugLog.warn("ChatStore", "saveMessagePrompt", errorDetail(e)),
@@ -4179,6 +4403,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
         get()._cancelPendingUserQuestion();
         _agentAborted = false;
+        if (_activeTurnRoute === turnRoute) {
+          _activeTurnRoute = null;
+        }
         set({
           isStreaming: false,
           agentProgress: null,
@@ -4213,20 +4440,32 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // 未設定なら従来どおり model のみ（active provider）。composer の一時 override
       // (xprov) が最優先。
       const convRole = resolveRolePathConfig("chat_stream_non_agent");
-      const chatModel = xprov
-        ? xprov.model
-        : (convRole?.model ?? chatModelOverride ?? aiSettings?.model ?? "");
-      const chatApiVariant = xprov
-        ? xprov.variant
-        : convRole?.provider
-          ? convRole.variant
-          : getChatApiVariant(chatModel);
-      const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
+      const chatModel =
+        turnRoute?.model ??
+        (xprov
+          ? xprov.model
+          : (convRole?.model ?? chatModelOverride ?? aiSettings?.model ?? ""));
+      const chatApiVariant = turnRoute
+        ? turnRoute.apiVariant
+        : xprov
+          ? xprov.variant
+          : convRole?.provider
+            ? convRole.variant
+            : getChatApiVariant(chatModel);
+      const fallbackCaps = resolveModelCapabilities(
         chatModel,
         aiSettings,
         chatApiVariant,
       );
-      const budgets = allocateLayerBudgets(contextWindow, { maxOutputTokens });
+      const contextWindow =
+        turnRoute?.contextWindow ?? fallbackCaps.contextWindow;
+      const maxOutputTokens =
+        turnRoute?.capabilities.maxOutputTokens ?? fallbackCaps.maxOutputTokens;
+      const budgets = allocateLayerBudgets(contextWindow, {
+        maxOutputTokens,
+        responseReservationTokens:
+          turnRoute?.outputBudget.responseReservationTokens,
+      });
 
       let currentMessages = get().messages;
       if (sessionIdForPersist) {
@@ -4320,6 +4559,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           semanticRecallSeedMessage: content,
           excludedAutoEntryIds: get().excludedAutoEntryIds,
           trackRecallPromote: true,
+          turnRoute: turnRoute ?? undefined,
         });
 
         if (get().sessionStableCodexIds.length === 0) {
@@ -4330,6 +4570,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         set({
           contextTokenCount: ctxResult.totalTokens,
+          contextWindowSize: turnRoute?.contextWindow ?? null,
           contextLayers: ctxResult.layers,
           lastSystemPrompt: ctxResult.prompt,
           lastSystemPromptKey: contextPromptKey(get()),
@@ -4371,8 +4612,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               ? {
                   mentionedSceneIds: options?.mentionedSceneIds,
                   mentionedCodexIds: options?.mentionedCodexIds,
+                  turnRoute: turnRoute ?? undefined,
                 }
-              : undefined,
+              : { turnRoute: turnRoute ?? undefined },
           );
         }
         const fallbackPrompt = get().lastSystemPrompt;
@@ -4389,21 +4631,59 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
       }
 
-      const chatThinkingParams = buildThinkingParams(
-        chatModel,
-        getEffortForTask("chat"),
-        "summarized",
-        aiSettings?.thinkingEnabled ?? true,
-        aiSettings,
-        chatApiVariant,
-        aiSettings?.reasoningEffortOverride ?? undefined,
-      );
+      const chatThinkingParams =
+        turnRoute?.thinking ??
+        buildThinkingParams(
+          chatModel,
+          getEffortForTask("chat"),
+          "summarized",
+          aiSettings?.thinkingEnabled ?? true,
+          aiSettings,
+          chatApiVariant,
+          aiSettings?.reasoningEffortOverride ?? undefined,
+        );
       const apiPayload = messagesForApi.map((m) => ({
         role: m.role,
         // assistant 履歴の擬似ツール記法を除去してからモデルへ戻す（模倣抑止）。
         content:
           m.role === "assistant" ? stripToolProtocol(m.content) : m.content,
       }));
+      if (turnRoute) {
+        const finalized =
+          turnRoute.provider === "cli"
+            ? finalizeTurnPayload(
+                {
+                  route: turnRoute,
+                  system: { fallback: "" },
+                  messages: [],
+                  renderedToolPayloads: [flattenMessagesForCli(apiPayload)],
+                  envelopeTokens: 0,
+                  safetyMarginTokens: TURN_PAYLOAD_SAFETY_MARGIN_TOKENS,
+                },
+                countTokens,
+              )
+            : finalizeChatTurnPayload({
+                route: turnRoute,
+                fallbackSystemPrompt:
+                  sentSystemPrompt ||
+                  apiPayload
+                    .filter((message) => message.role === "system")
+                    .map((message) => message.content)
+                    .join("\n"),
+                cacheSegments: systemCacheSegments,
+                volatileTail: systemVolatileTail,
+                messages: apiPayload,
+              });
+        systemCacheSegments = finalized.transport.systemCacheSegments;
+        systemVolatileTail = finalized.transport.systemVolatileTail;
+        set({
+          contextTokenCount: finalized.usage.inputTokens,
+          contextWindowSize: finalized.route.contextWindow,
+          ...(finalized.cacheDowngradeReason === "budget"
+            ? { cacheInvalidatedReason: "budget" as const }
+            : {}),
+        });
+      }
       const chatStartTime = performance.now();
 
       // Accumulate thinking text locally during streaming
@@ -4416,7 +4696,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // 平坦化する。
       // 別プロバイダ override 中は HTTP 経路(別プロバイダは cli 非対象)に流すため、
       // active provider が cli でも cli subprocess 経路には落とさない。
-      const isCliProvider = !xprov && aiSettings?.provider === "cli";
+      const isCliProvider = turnRoute
+        ? turnRoute.provider === "cli"
+        : !xprov && aiSettings?.provider === "cli";
       const cliConfig = aiSettings?.cli ?? {
         kind: "claude" as const,
         binaryPath: "",
@@ -4649,7 +4931,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               {
                 cli: cliConfig.kind,
                 binaryPath: cliConfig.binaryPath || undefined,
-                model: cliConfig.model || undefined,
+                model:
+                  (turnRoute?.provider === "cli"
+                    ? turnRoute.model
+                    : cliConfig.model) || undefined,
                 prompt: flattenMessagesForCli(apiPayload),
               },
               callbacks,
@@ -4663,16 +4948,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               systemVolatileTail,
               // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
               // byte-identical(キャッシュ温存)。agent 経路と同契約。別プロバイダ override 最優先。
-              xprov
-                ? xprov.model
-                : (convRole?.model ?? chatModelOverride ?? null),
+              turnRoute?.model ??
+                (xprov
+                  ? xprov.model
+                  : (convRole?.model ?? chatModelOverride ?? null)),
               // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
               // role に横断割り当てがあればそれを送る。
-              xprov ? xprov.provider : (convRole?.provider ?? null),
+              turnRoute
+                ? turnRoute.providerOverride
+                : (xprov?.provider ?? convRole?.provider ?? null),
               // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
-              xprov
-                ? (xprov.endpointId ?? null)
-                : (convRole?.endpointId ?? null),
+              turnRoute
+                ? turnRoute.endpointId
+                : (xprov?.endpointId ?? convRole?.endpointId ?? null),
+              turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
+              turnRoute?.provider ?? null,
+              turnRoute?.resolvedEndpointId ?? null,
             );
 
         streamPromise
@@ -4742,6 +5033,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       if (get().isStreaming) {
         set({ isStreaming: false });
       }
+      if (_activeTurnRoute === turnRoute) {
+        _activeTurnRoute = null;
+      }
     }
   },
 
@@ -4768,13 +5062,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     });
     // 一回限りの Agent mode override（送信経路から渡る）を優先。無ければ永続トグル。
     const effectiveAgentMode = opts?.agentModeOverride ?? get().agentMode;
+    const refreshTurnRoute = opts?.turnRoute;
     // synopsis の pull 委譲は「実際にツールループが走る」provider でのみ安全。
     // CLI はツール無しで非 agent 経路に落ちる（useAgentPath の aiProvider !== "cli"）。
     // CLI で pull 委譲すると outline + 使えない取得ツール指示 + synopsis 皆無となり、
     // pull 委譲前（全 synopsis push）より文脈が悪化する。よって CLI では push を維持する。
     const xprov = getCrossProviderChatOverride();
     const aiProvider =
-      xprov?.provider ?? useAiSettingsStore.getState().settings?.provider;
+      refreshTurnRoute?.provider ??
+      xprov?.provider ??
+      useAiSettingsStore.getState().settings?.provider;
     const agentPullWillRunTools = effectiveAgentMode && aiProvider !== "cli";
     // Phase 3b: スレッド focus 中は scene を主題にしない（縦糸を <focus_subject>
     // へ載せる非 scene 枝へ落とす）。chatScope は変えない＝session 保存先不変。
@@ -5094,11 +5391,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // ここでトリムしておけば実送信もトリム済みになる。
         const aiSettingsForTrim = useAiSettingsStore.getState().settings;
         const modelForTrim = aiSettingsForTrim?.model ?? "";
-        const { contextWindow, maxOutputTokens } = resolveModelCapabilities(
+        const fallbackCaps = resolveModelCapabilities(
           modelForTrim,
           aiSettingsForTrim,
           getChatApiVariant(modelForTrim),
         );
+        const contextWindow =
+          refreshTurnRoute?.contextWindow ?? fallbackCaps.contextWindow;
+        const maxOutputTokens =
+          refreshTurnRoute?.capabilities.maxOutputTokens ??
+          fallbackCaps.maxOutputTokens;
         const conversationTokens = get()
           .messages.filter((m) => m.role !== "system" && !m.isSummarized)
           .reduce((sum, m) => sum + countTokens(m.content), 0);
@@ -5177,11 +5479,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             .get("aiPrompt.custom.chat", ""),
           contextWindow,
           maxOutputTokens,
+          outputReservationTokens:
+            refreshTurnRoute?.outputBudget.responseReservationTokens,
+          // Non-scene context currently stores only the fallback prompt; cache
+          // segments are not persisted in Zustand, so delivery is plain.
+          deliveryMode: "plain",
           conversationTokens,
         });
 
         set({
           contextTokenCount: promptResult.totalTokens,
+          contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
           contextLayers: promptResult.layers,
           lastSystemPrompt: promptResult.prompt,
           lastSystemPromptKey: promptKey,
@@ -5194,6 +5502,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       } catch {
         set({
           contextTokenCount: 0,
+          contextWindowSize: null,
           contextLayers: [],
           scopeAnchor: null,
           projectOutline: undefined,
@@ -5228,10 +5537,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         mentionedSceneIds: opts?.mentionedSceneIds,
         mentionedCodexIds: opts?.mentionedCodexIds,
         excludedAutoEntryIds: get().excludedAutoEntryIds,
+        turnRoute: refreshTurnRoute,
       });
 
       set({
         contextTokenCount: ctxResult.totalTokens,
+        contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
         contextLayers: ctxResult.layers,
         lastSystemPrompt: ctxResult.prompt,
         lastSystemPromptKey: promptKey,
@@ -5430,7 +5741,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // active provider が cli でも HTTP 側を abort する(誤チャネル abort を防ぐ)。
     const xprov = getCrossProviderChatOverride();
     const provider =
-      xprov?.provider ?? useAiSettingsStore.getState().settings?.provider;
+      _activeTurnRoute?.provider ??
+      xprov?.provider ??
+      useAiSettingsStore.getState().settings?.provider;
     if (provider === "cli") {
       void cliApi.abortCliChatStream().catch(() => {});
     } else {

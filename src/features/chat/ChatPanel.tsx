@@ -121,6 +121,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const editUserMessage = useChatStore((s) => s.editUserMessage);
   const regenerate = useChatStore((s) => s.regenerate);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
+  const contextWindowSize = useChatStore((s) => s.contextWindowSize);
   const contextLayers = useChatStore((s) => s.contextLayers);
   const pinsVersion = useChatStore((s) => s.pinsVersion);
   const projectOutline = useChatStore((s) => s.projectOutline);
@@ -1024,6 +1025,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onUnpinEntry={handleUnpin}
         onTogglePinChildren={handleTogglePinChildren}
         contextTokenCount={contextTokenCount}
+        contextWindowOverride={contextWindowSize}
         contextLayers={contextLayers}
         systemPrompt={systemPrompt}
         model={currentModel}

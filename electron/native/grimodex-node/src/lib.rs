@@ -229,6 +229,7 @@ struct ChatRequest {
     model: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    request_max_output_tokens: Option<u32>,
 }
 
 /// `send_inline_ai_stream` の FE 引数 (camelCase)。チャットと同じ message / reasoning
@@ -265,6 +266,7 @@ struct AgentRequest {
     model: Option<String>,
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
+    request_max_output_tokens: Option<u32>,
 }
 
 /// `list_ai_models` の FE 引数。API キーは一覧取得では任意なので main が
@@ -2221,7 +2223,7 @@ impl Backend {
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
         let resolved_variant =
             grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
-        let params = grimodex_ai::build_chat_params(
+        let mut params = grimodex_ai::build_chat_params(
             &settings_for_call,
             &api_key,
             extra_body,
@@ -2236,6 +2238,7 @@ impl Backend {
             req.system_volatile_tail,
             None,
         );
+        params.request_max_output_tokens = req.request_max_output_tokens;
         let msgs: Vec<(&str, &str)> = req
             .messages
             .iter()
@@ -2279,7 +2282,7 @@ impl Backend {
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
         let resolved_variant =
             grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
-        let params = grimodex_ai::build_chat_params(
+        let mut params = grimodex_ai::build_chat_params(
             &settings_for_call,
             &api_key,
             extra_body,
@@ -2294,6 +2297,7 @@ impl Backend {
             req.system_volatile_tail,
             None,
         );
+        params.request_max_output_tokens = req.request_max_output_tokens;
         let msgs: Vec<(&str, &str)> = req
             .messages
             .iter()
@@ -2416,7 +2420,7 @@ impl Backend {
         let retry_429 = grimodex_ai::should_retry_429(&settings_for_call);
         let resolved_variant =
             grimodex_ai::resolve_api_variant(variant, &settings_for_call, &settings_for_call.model);
-        let params = grimodex_ai::build_chat_params(
+        let mut params = grimodex_ai::build_chat_params(
             &settings_for_call,
             &api_key,
             extra_body,
@@ -2431,6 +2435,7 @@ impl Backend {
             req.system_volatile_tail,
             req.web_search,
         );
+        params.request_max_output_tokens = req.request_max_output_tokens;
         let result = grimodex_ai::send_chat_with_tools(&params, &req.messages, &req.tools)
             .await
             .map_err(|e| Error::from_reason(e.to_string()))?;
