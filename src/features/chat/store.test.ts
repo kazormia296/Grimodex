@@ -413,6 +413,29 @@ describe("useAiSettingsStore", () => {
       await useAiSettingsStore.getState().loadModels();
       expect(mockListAiModels).not.toHaveBeenCalled();
     });
+
+    it("discards a stale model response after the provider changes", async () => {
+      let resolveOld!: (models: AiModel[]) => void;
+      mockListAiModels.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveOld = resolve)),
+      );
+      useAiSettingsStore.setState({
+        settings: { ...defaultSettings, provider: "ai-novelist" },
+        models: [{ id: "old", name: "Old" }],
+      });
+
+      const pending = useAiSettingsStore.getState().loadModels();
+      mockSaveAiSettings.mockResolvedValueOnce(undefined);
+      await useAiSettingsStore.getState().saveSettings({
+        ...defaultSettings,
+        provider: "openrouter",
+      });
+
+      expect(useAiSettingsStore.getState().models).toEqual([]);
+      resolveOld([{ id: "ai-novelist-v1", name: "AI Novelist" }]);
+      await pending;
+      expect(useAiSettingsStore.getState().models).toEqual([]);
+    });
   });
 
   describe("loadSettings — CLI binary detection", () => {

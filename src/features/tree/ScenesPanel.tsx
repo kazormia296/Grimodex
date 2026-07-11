@@ -38,6 +38,10 @@ import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { recordMark } from "@/lib/perfLog";
 import { useExternalRootStore } from "@/features/external-mount/externalRootStore";
 import { TreeRowSkeletonList } from "@/components/ui/skeleton-patterns";
+import {
+  selectProviderReadiness,
+  useAiSettingsStore,
+} from "@/features/chat/store";
 
 const EMPTY_CHAR_COUNTS: Record<string, number> = {};
 
@@ -70,6 +74,7 @@ export function ScenesPanel() {
   const autoRevealActiveScene = useTreeStore((s) => s.autoRevealActiveScene);
   const pendingRevealId = useTreeStore((s) => s.pendingRevealId);
   const projectId = useTreeStore((s) => s.projectId);
+  const aiReadiness = useAiSettingsStore(selectProviderReadiness);
   const loadLens = useLensStore((s) => s.load);
   const mountInitialized = useExternalRootStore((s) => s.isInitialized);
   const createNode = useTreeStore((s) => s.createNode);
@@ -397,6 +402,7 @@ export function ScenesPanel() {
                     <Button
                       variant="outline"
                       size="xs"
+                      disabled={aiReadiness !== "ready"}
                       onClick={() =>
                         setAiTree({ mode: "scaffold", rootRef: null })
                       }

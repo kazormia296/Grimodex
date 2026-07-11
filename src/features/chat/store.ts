@@ -177,6 +177,8 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
       // 同時にクリアする(切替後のアクティブ設定と矛盾させない)。
       ...(providerSwitched
         ? {
+            models: [],
+            isLoadingModels: false,
             chatModelOverride: null,
             chatProviderOverride: null,
             chatModelVariantOverride: null,
@@ -255,6 +257,16 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     const { settings } = get();
     if (!settings) return;
 
+    const requestedProvider = settings.provider;
+    const requestedEndpointId = settings.activeOpenaiCompatibleEndpointId;
+    const isCurrentRequest = () => {
+      const current = get().settings;
+      return (
+        current?.provider === requestedProvider &&
+        current.activeOpenaiCompatibleEndpointId === requestedEndpointId
+      );
+    };
+
     set({ isLoadingModels: true });
     try {
       if (settings.provider === "cli") {
@@ -262,16 +274,18 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
           settings.cli?.kind ?? "claude",
           settings.cli?.binaryPath,
         );
+        if (!isCurrentRequest()) return;
         set({ models, isLoadingModels: false });
         return;
       }
       // それ以外は Rust 側 fetch_models に委譲
       // (Anthropic / AiNovelist は静的リストを返す、OpenAI 互換は active エンドポイントを叩く)
       const models = await api.listAiModels(
-        settings.provider,
-        settings.activeOpenaiCompatibleEndpointId,
+        requestedProvider,
+        requestedEndpointId,
       );
-      if (settings.provider === "openrouter") {
+      if (!isCurrentRequest()) return;
+      if (requestedProvider === "openrouter") {
         registerDynamicModelCaps(models);
         set({
           models,
@@ -282,6 +296,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
         set({ models, isLoadingModels: false });
       }
     } catch {
+      if (!isCurrentRequest()) return;
       set({ models: [], isLoadingModels: false });
     }
   },

@@ -361,6 +361,29 @@ describe("ReorderInteractionExtension", () => {
     expect(editor.state.doc.textBetween(from, to)).toBe("CD");
   });
 
+  it("character swap next to ruby keeps the ruby atom singular", () => {
+    editor = makeEditor("<p>甲乙</p>");
+    editor.commands.setTextSelection({ from: 1, to: 2 });
+    editor.commands.setRuby("漢字", "かんじ");
+    editor.commands.insertContent("AB");
+    editor.commands.setReorderGranularity("character");
+
+    const rubyPos = editor.state.doc.content.findIndex(0).offset + 1;
+    editor.commands.setTextSelection(rubyPos + 1);
+    expect(editor.commands.swapUnitDownInner()).toBe(true);
+
+    const rubies: Array<{ base: string; annotation: string }> = [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "ruby") {
+        rubies.push({
+          base: node.attrs.base as string,
+          annotation: node.attrs.annotation as string,
+        });
+      }
+    });
+    expect(rubies).toEqual([{ base: "漢字", annotation: "かんじ" }]);
+  });
+
   it("bunsetsu + selection straddling boundaries: swap keeps every character (regression: data loss)", async () => {
     clearBunsetsuCache();
     editor = makeEditor("<p>あいうえおか</p>");

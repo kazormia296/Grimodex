@@ -43,12 +43,41 @@ export function splitCharacters(
   return units;
 }
 
+/** ruby atom の base 全体を不可分な1 unitとして扱う文字分割。 */
+function splitCharactersPreservingRuby(
+  resolved: ResolvedParagraph,
+  from = 0,
+  to = resolved.flat.text.length,
+): ReorderUnit[] {
+  const { text, flatIsRuby, flatPmPos } = resolved.flat;
+  const units: ReorderUnit[] = [];
+  const end = Math.min(to, text.length);
+  let i = Math.max(0, from);
+  while (i < end) {
+    let unitEnd = i + 1;
+    if (flatIsRuby[i]) {
+      const rubyPmPos = flatPmPos[i];
+      while (
+        unitEnd < end &&
+        flatIsRuby[unitEnd] &&
+        flatPmPos[unitEnd] === rubyPmPos
+      ) {
+        unitEnd += 1;
+      }
+    }
+    units.push({ from: i, to: unitEnd, surface: text.slice(i, unitEnd) });
+    i = unitEnd;
+  }
+  return units;
+}
+
 /**
  * 段落 flat 上の [regionFrom, regionTo) を粒度どおり unit 化（絶対 offset）。
  * **必ず領域全体を連続被覆する**（隙間を作らない）。permutation は units 外の
  * テキストを保持しないため、被覆に穴があるとその文字が段落 replace で消失する。
  */
 function segmentRegionAbsolute(
+  resolved: ResolvedParagraph,
   text: string,
   regionFrom: number,
   regionTo: number,
@@ -58,7 +87,7 @@ function segmentRegionAbsolute(
 ): ReorderUnit[] {
   if (regionFrom >= regionTo) return [];
   if (granularity === "character") {
-    return splitCharacters(text, regionFrom, regionTo);
+    return splitCharactersPreservingRuby(resolved, regionFrom, regionTo);
   }
   if (granularity === "phrase" && isEnglishLanguage(language)) {
     const slice = text.slice(regionFrom, regionTo);
@@ -113,7 +142,7 @@ export function buildReorderUnits(
 
   if (!selectionRange) {
     if (granularity === "character") {
-      const units = splitCharacters(text);
+      const units = splitCharactersPreservingRuby(resolved);
       return units.length > 1 ? units : null;
     }
     if (granularity === "phrase" && isEnglishLanguage(language)) {
@@ -134,7 +163,15 @@ export function buildReorderUnits(
   const { from: selFrom, to: selTo } = selectionRange;
   const parts: ReorderUnit[] = [];
   parts.push(
-    ...segmentRegionAbsolute(text, 0, selFrom, granularity, language, bunsetsu),
+    ...segmentRegionAbsolute(
+      resolved,
+      text,
+      0,
+      selFrom,
+      granularity,
+      language,
+      bunsetsu,
+    ),
   );
   parts.push({
     from: selFrom,
@@ -143,6 +180,7 @@ export function buildReorderUnits(
   });
   parts.push(
     ...segmentRegionAbsolute(
+      resolved,
       text,
       selTo,
       text.length,
