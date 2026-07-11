@@ -202,7 +202,7 @@ let cachedVersion: string | null = null;
 /**
  * dev（default_app 経由の `electron dist-electron/main.cjs` 起動）では
  * app.getVersion() が package.json を解決できず "0.0" を返すため、
- * リポジトリルートの package.json（正本 4 箇所の一つ）へフォールバックする。
+ * リポジトリルートの package.json（Electron版バージョンの唯一の正本）へフォールバックする。
  * パッケージ配布（Phase 4）では app.getVersion() がそのまま正になる。
  */
 function resolveAppVersion(): string {

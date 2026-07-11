@@ -1,4 +1,4 @@
-//! Regression coverage migrated verbatim from the Tauri glue module.
+//! Shared license runtime regression coverage.
 
 use grimodex_core::license::LicenseFile;
 use grimodex_license::{
@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn dto_serializes_camel_case() {
-        // IPC 境界の命名規約 (Tauri 規約 = camelCase) の回帰テスト。
+        // Electron IPC 境界のcamelCase命名規約の回帰テスト。
         let file = LicenseFile::default();
         let snap = compute_snapshot(&file, utc(NOW), TODAY);
         let value = serde_json::to_value(build_dto(&file, &snap)).expect("serialize");
@@ -80,15 +80,18 @@ mod tests {
     }
 
     #[test]
-    fn app_identifier_matches_tauri_conf() {
+    fn app_identifier_matches_active_and_legacy_app_ids() {
         // MCP が dirs::data_dir()/{APP_IDENTIFIER} で license.json を解決する
-        // 前提の保証 (ライセンス認証設計書 §5.1)。identifier を変えたら
-        // grimodex_core::license::APP_IDENTIFIER も追従させること。
-        let conf: serde_json::Value =
+        // 前提の保証。active appIdを変えたらAPP_IDENTIFIERとv1移行pathも追従させる。
+        let builder = include_str!("../../../../electron-builder.yml");
+        let expected = format!("appId: {}", grimodex_core::license::APP_IDENTIFIER);
+        assert!(builder.lines().any(|line| line.trim() == expected));
+
+        let legacy: serde_json::Value =
             serde_json::from_str(include_str!("../../../tauri.conf.json"))
                 .expect("tauri.conf.json parses");
         assert_eq!(
-            conf["identifier"].as_str(),
+            legacy["identifier"].as_str(),
             Some(grimodex_core::license::APP_IDENTIFIER)
         );
     }

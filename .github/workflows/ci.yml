@@ -61,15 +61,15 @@ jobs:
         uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f # v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium-webkit
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-chromium
 
       - name: Playwright Chromium + システム依存をインストール
         if: steps.pw-cache.outputs.cache-hit != 'true'
-        run: pnpm exec playwright install --with-deps chromium webkit
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: システム依存のみインストール (キャッシュヒット時)
         if: steps.pw-cache.outputs.cache-hit == 'true'
-        run: pnpm exec playwright install-deps chromium webkit
+        run: pnpm exec playwright install-deps chromium
 
       - name: ブラウザテスト
         run: pnpm test:browser --run
@@ -126,6 +126,8 @@ jobs:
           scripts/linux-release-abi.test.mjs
           scripts/verify-electron-updater-metadata.test.mjs
           scripts/windows-signing-workflow.test.mjs
+          scripts/electron-v2-cleanup.test.mjs
+          scripts/generate-licenses.test.mjs
 
       - name: Electron type-check
         run: pnpm exec tsc -p electron/tsconfig.json --noEmit
@@ -282,7 +284,7 @@ jobs:
           --features licensing
 
   rust:
-    name: Rust (check / clippy / test)
+    name: Shared Rust crates (check / clippy / test)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -297,7 +299,7 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
           df -h /
 
-      - name: システム依存ライブラリのインストール
+      - name: Native build dependencies
         run: |
           # GitHub Actions ランナー同梱の Microsoft apt リポジトリ(azure-cli / prod)が
           # 403 / "no longer signed" を返し apt-get update を中断させることがある。
@@ -306,11 +308,8 @@ jobs:
           sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
             build-essential \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
+            libssl-dev
         env:
           DEBIAN_FRONTEND: noninteractive
 
@@ -325,19 +324,22 @@ jobs:
 
       - name: cargo check
         working-directory: src-tauri
-        run: cargo check --workspace
-
-      - name: cargo check (licensing feature)
-        working-directory: src-tauri
-        run: cargo check --workspace --features licensing
+        run: >-
+          cargo check --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: >-
+          cargo clippy --workspace --exclude grimodex --all-targets
+          --features grimodex-semantic/semantic-embedding
+          -- -D warnings
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test --workspace
+        run: >-
+          cargo test --workspace --exclude grimodex
+          --features grimodex-semantic/semantic-embedding
 
       # 通常buildではlicensingが無効なため、共有runtimeのnetwork/race testsは
       # workspace testだけだとcfgで0件になる。releaseと同じfeatureを明示する。
