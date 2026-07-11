@@ -166,7 +166,7 @@ IME側がインストール時・起動時に作成/touchし、アンインス�
 }
 ```
 
-- Grimodexはこのファイルの存在で「IMEインストール済み」を判定し、連携を自動ONにする（§8）。OS別のインストール痕跡探索はしない。
+- IMEは起動時と15分ごとに`last_seen`をatomic更新する。Grimodexは45分以内のheartbeatだけを「IMEインストール済み」として検出し、連携を自動ONにする（§8）。時計ずれは5分先まで許容する。古いファイルは削除せずconsumer不在として扱い、OS別のインストール痕跡探索はしない。
 - `platform`はoptionalな`linux` / `windows` / `macos`。旧consumerでは省略できる。
 - `capabilities`はsnake_caseのwire形式とし、Grimodex設定画面では対応能力を表示する。追加capabilityはV1 readerが無視する。
 

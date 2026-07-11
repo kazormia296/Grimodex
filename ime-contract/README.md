@@ -24,6 +24,12 @@
 protocol textはC0 / C1制御文字を許可せず、timestampはSchemaの字句形式とRFC 3339の
 暦・時差の両方を満たす必要があります。
 
+consumerは900秒ごとに`last_seen`をatomic更新します。GrimodexはSchema妥当性とは
+別にruntime鮮度を判定し、現在時刻の45分前から5分後までの`last_seen`だけを検出
+します。範囲外のファイルは削除せず、consumer不在として扱います。これにより、
+clock skewを小さく許容しつつ、アンインストールやクラッシュ後の古いhandshakeで
+`auto`が永続的に有効になることを防ぎます。
+
 `yomi`はGrimodex側でNFKCとカタカナ→ひらがな変換を適用します。明示的な読みとして
 ASCII略称（`oo` / `xx`等）も許可するため、ひらがなだけに限定しません。consumerは
 日本語の読みをカタカナへ変換し、ASCIIはそのまま辞書APIへ渡します。`surface`はNFCへ

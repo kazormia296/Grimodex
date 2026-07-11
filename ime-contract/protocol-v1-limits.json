@@ -16,5 +16,8 @@
   "consumer_name_max_chars": 128,
   "consumer_version_max_chars": 64,
   "consumer_platform_max_chars": 32,
-  "timestamp_max_chars": 64
+  "timestamp_max_chars": 64,
+  "consumer_heartbeat_seconds": 900,
+  "consumer_freshness_ttl_seconds": 2700,
+  "consumer_future_skew_seconds": 300
 }

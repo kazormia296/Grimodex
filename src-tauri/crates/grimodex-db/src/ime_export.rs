@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use anyhow::{anyhow, bail, Context};
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -38,6 +38,8 @@ const MAX_CONSUMER_NAME_CHARS: usize = 128;
 const MAX_CONSUMER_VERSION_CHARS: usize = 64;
 const MAX_CONSUMER_PLATFORM_CHARS: usize = 32;
 const MAX_TIMESTAMP_CHARS: usize = 64;
+const CONSUMER_FRESHNESS_TTL_SECONDS: i64 = 2_700;
+const CONSUMER_FUTURE_SKEW_SECONDS: i64 = 300;
 
 /// User-selectable IME integration behavior.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -1129,6 +1131,10 @@ fn is_japanese_language(language: &str) -> bool {
 }
 
 fn detect_consumers(root: &Path) -> anyhow::Result<Vec<ImeConsumerInfo>> {
+    detect_consumers_at(root, Utc::now())
+}
+
+fn detect_consumers_at(root: &Path, now: DateTime<Utc>) -> anyhow::Result<Vec<ImeConsumerInfo>> {
     let dir = root.join("consumers");
     let read_dir = match fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -1212,9 +1218,16 @@ fn detect_consumers(root: &Path) -> anyhow::Result<Vec<ImeConsumerInfo>> {
                 .as_deref()
                 .is_some_and(|value| !valid_platform_token(value))
             || !valid_rfc3339_timestamp(&handshake.last_seen)
-            || !seen_ids.insert(handshake.consumer_id.clone())
         {
             tracing::warn!(path = %path.display(), "ignoring incompatible IME consumer handshake");
+            continue;
+        }
+        if !consumer_last_seen_is_fresh_at(&handshake.last_seen, now) {
+            tracing::debug!(path = %path.display(), "ignoring stale IME consumer handshake");
+            continue;
+        }
+        if !seen_ids.insert(handshake.consumer_id.clone()) {
+            tracing::warn!(path = %path.display(), "ignoring duplicate IME consumer handshake");
             continue;
         }
         consumers.push(ImeConsumerInfo {
@@ -1290,6 +1303,18 @@ fn valid_rfc3339_timestamp(value: &str) -> bool {
         _ => false,
     };
     valid_zone && chrono::DateTime::parse_from_rfc3339(value).is_ok()
+}
+
+fn consumer_last_seen_is_fresh_at(value: &str, now: DateTime<Utc>) -> bool {
+    if !valid_rfc3339_timestamp(value) {
+        return false;
+    }
+    let Ok(last_seen) = DateTime::parse_from_rfc3339(value) else {
+        return false;
+    };
+    let last_seen = last_seen.with_timezone(&Utc);
+    last_seen >= now - Duration::seconds(CONSUMER_FRESHNESS_TTL_SECONDS)
+        && last_seen <= now + Duration::seconds(CONSUMER_FUTURE_SKEW_SECONDS)
 }
 
 fn valid_optional_protocol_text(value: &str, max_chars: usize) -> bool {
