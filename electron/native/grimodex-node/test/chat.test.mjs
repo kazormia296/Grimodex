@@ -149,6 +149,7 @@ test("sendChatMessage がキー注入 + provider/endpoint/model override を保�
           provider: "openai-compatible",
           endpointId: "other",
           model: "override-model",
+          requestMaxOutputTokens: 1234,
         },
         settings,
         "sk-injected",
@@ -158,6 +159,7 @@ test("sendChatMessage がキー注入 + provider/endpoint/model override を保�
     assert.equal(received.url, "/chat/completions");
     assert.equal(received.authorization, "Bearer sk-injected");
     assert.equal(received.body.model, "override-model");
+    assert.equal(received.body.max_tokens, 1234);
     assert.deepEqual(result.blocks, [
       { type: "text", content: "Non-stream reply" },
     ]);

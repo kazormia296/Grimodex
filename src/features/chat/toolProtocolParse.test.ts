@@ -26,6 +26,12 @@ describe("resolveToolProtocol", () => {
     ).toBe("native");
   });
 
+  it("keeps Sakana in sync with the Rust OpenAI-compatible Hermes gate", () => {
+    expect(resolveToolProtocol("sakana", "fugu-hermes", "hermes")).toBe(
+      "hermes",
+    );
+  });
+
   it("auto detects only model names containing 'hermes'", () => {
     expect(
       resolveToolProtocol("openrouter", "nousresearch/Hermes-3-Llama", "auto"),

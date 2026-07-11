@@ -5321,7 +5321,7 @@ mod tests {
     #[test]
     fn test_openai_max_tokens_openrouter_reasoning_headroom() {
         // OpenRouter provider で model 名だけ差し替えて openai_max_tokens を測る。
-        fn mt(settings: &AiSettings, model: &'static str) -> u32 {
+        fn mt(settings: &AiSettings, model: &'static str, override_tokens: Option<u32>) -> u32 {
             let params = ChatParams {
                 provider: &AiProvider::OpenRouter,
                 model,
@@ -5337,6 +5337,7 @@ mod tests {
                 openrouter_provider_pin: None,
                 system_cache_segments: None,
                 system_volatile_tail: None,
+                request_max_output_tokens: override_tokens,
                 api_variant: None,
                 web_search: None,
                 fusion: None,
@@ -5346,13 +5347,15 @@ mod tests {
         }
         let settings = AiSettings::default();
         // OpenRouter 経由の reasoning モデルは 32k へ(hidden reasoning 予算枯渇の回避)。
-        assert_eq!(mt(&settings, "openai/gpt-5"), 32_000);
-        assert_eq!(mt(&settings, "openai/gpt-5-pro"), 32_000);
-        assert_eq!(mt(&settings, "deepseek/deepseek-r1"), 32_000);
+        assert_eq!(mt(&settings, "openai/gpt-5", None), 32_000);
+        assert_eq!(mt(&settings, "openai/gpt-5-pro", None), 32_000);
+        assert_eq!(mt(&settings, "deepseek/deepseek-r1", None), 32_000);
         // 非 reasoning は従来どおり 4096。
-        assert_eq!(mt(&settings, "openai/gpt-4o-mini"), 4096);
+        assert_eq!(mt(&settings, "openai/gpt-4o-mini", None), 4096);
         // gpt-5-chat は非 reasoning 扱いで 4096。
-        assert_eq!(mt(&settings, "openai/gpt-5-chat"), 4096);
+        assert_eq!(mt(&settings, "openai/gpt-5-chat", None), 4096);
+        // renderer で確定した予約値があれば、Rust は同じ値を wire へ写像する。
+        assert_eq!(mt(&settings, "openai/gpt-4o-mini", Some(12_345)), 12_345);
     }
 
     #[test]
