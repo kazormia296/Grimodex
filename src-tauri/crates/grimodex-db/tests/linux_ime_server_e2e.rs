@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 #[path = "support/linux_ime_server.rs"]
 mod linux_ime_server;
 
@@ -19,7 +21,10 @@ fn linux_server_process_registers_a_fresh_grimodex_consumer() -> anyhow::Result<
         .iter()
         .find(|consumer| consumer.consumer_id == LINUX_CONSUMER_ID)
         .expect("the running Linux IME server must register its canonical consumer ID");
-    assert!(matches!(consumer.platform, Some(ImeConsumerPlatform::Linux)));
+    assert!(matches!(
+        consumer.platform,
+        Some(ImeConsumerPlatform::Linux)
+    ));
     assert!(consumer.capabilities.profile);
     assert!(consumer.capabilities.dynamic_dictionary);
     assert!(consumer.capabilities.zenzai_v3_conditions);

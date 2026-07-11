@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -98,6 +99,8 @@ impl Sandbox {
             fs::create_dir_all(directory)
                 .with_context(|| format!("create E2E directory {}", directory.display()))?;
         }
+        fs::set_permissions(&sandbox.runtime_home, fs::Permissions::from_mode(0o700))
+            .context("make Linux IME E2E runtime directory private")?;
         Ok(sandbox)
     }
 }
@@ -146,8 +149,6 @@ impl Drop for ServerProcess {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     #[test]
