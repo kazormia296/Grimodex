@@ -98,6 +98,9 @@ export interface TrimInput {
   /** chat episodic recall (エピソード記憶) セクション。最も投機的な層なので
    * 予算超過時は RAG よりさらに先に削られる (trim 順の先頭)。未指定は空文字と等価。 */
   episodicText?: string;
+  /** Codex/Snippet/Plot Thread scope anchor. Kept until every lower-priority
+   * variable layer has been reduced, then head-trimmed as the final fallback. */
+  focusText?: string;
 }
 
 export interface TrimResult {
@@ -123,6 +126,13 @@ export interface BuildSystemPromptInput {
    * 応答予約計算で min(maxOutputTokens, contextWindow*5%) のクランプに使用。
    */
   maxOutputTokens?: number;
+  /**
+   * Provider request bodyへ実際に設定する出力上限と同じ予約値。
+   * 指定時は legacy の比率ベース `maxOutputTokens` 計算より優先する。
+   */
+  outputReservationTokens?: number;
+  /** `totalTokens` を実provider system表現に合わせる。未指定はplain互換。 */
+  deliveryMode?: "plain" | "cache";
   /** G9: 会話履歴のトークン数（trimToFit使用時に必要） */
   conversationTokens?: number;
   /** G25: トリムで除外するレイヤー（空文字に置換される） */
@@ -340,12 +350,14 @@ const INPUT_FLOOR_TOTAL = 4_500; // L1 500 + L2 500 + L3 2000 + L4 500 + L5 1000
  */
 export function allocateLayerBudgets(
   contextWindow: number,
-  opts?: { maxOutputTokens?: number },
+  opts?: {
+    maxOutputTokens?: number;
+    responseReservationTokens?: number;
+  },
 ): LayerBudgets {
-  const responseReservation = computeResponseReservation(
-    contextWindow,
-    opts?.maxOutputTokens,
-  );
+  const responseReservation =
+    opts?.responseReservationTokens ??
+    computeResponseReservation(contextWindow, opts?.maxOutputTokens);
   const available = Math.max(0, contextWindow - responseReservation);
 
   if (available < INPUT_FLOOR_TOTAL) {
@@ -392,6 +404,16 @@ export interface SystemPromptResult {
    * 破棄するため、ここに乗せないと これらが届かない。
    */
   volatileTail?: string;
+  /** Materialize後の実system表現 + 会話 + 出力予約による最終検査。 */
+  payloadBudget?: {
+    systemTokens: number;
+    conversationTokens: number;
+    inputTokens: number;
+    outputReservedTokens: number;
+    reservedTotalTokens: number;
+    contextWindow: number;
+    overflowTokens: number;
+  };
 }
 
 // tiktoken (WASM) を o200k_base ranks + lite ランタイムだけ動的 import する。
@@ -760,6 +782,28 @@ function trimChronicleText(text: string, targetTokens: number): string {
   return trimRagText(text, targetTokens);
 }
 
+/** Explicit focus is protected until all other variable layers have yielded.
+ * If it alone is too large, preserve the identifying head and discard the tail. */
+function trimFocusText(text: string, targetTokens: number): string {
+  if (countTokens(text) <= targetTokens) return text;
+  if (targetTokens <= 0) return "";
+
+  const chars = Array.from(text);
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const candidate = `${chars.slice(0, mid).join("")}…`;
+    if (countTokens(candidate) <= targetTokens) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (lo === 0) return "";
+  return `${chars.slice(0, lo).join("")}…`;
+}
+
 /** semantic recall (RAG): 末尾 (低スコア側) の抜粋ブロックから丸ごと削る。
  * 抜粋が 1 つも残らない場合はヘッダだけ残しても無意味なので空にする。 */
 function trimRagText(text: string, targetTokens: number): string {
@@ -800,7 +844,8 @@ export function trimToFit(
     countTokens(t.ragText ?? "") +
     countTokens(t.plotThreadScenesText ?? "") +
     countTokens(t.chronicleSnapshotText ?? "") +
-    countTokens(t.episodicText ?? "");
+    countTokens(t.episodicText ?? "") +
+    countTokens(t.focusText ?? "");
 
   const total = sumTokens(layers);
   if (total <= budget) {
@@ -838,6 +883,7 @@ export function trimToFit(
     { key: "l2Text", name: "L2", fn: trimL2Text },
     { key: "l3Text", name: "L3", fn: (t, n) => trimL3Text(t, n, markers.l3) },
     { key: "l1Text", name: "L1", fn: (t, n) => trimL1Text(t, n, markers.l1) },
+    { key: "focusText", name: "FOCUS", fn: trimFocusText },
   ];
 
   for (const { key, name, fn } of trimOrder) {
@@ -1185,7 +1231,9 @@ export function buildSystemPrompt(
   ]);
   let l4Text = "";
   const l4StableIds = new Set(input.sessionStableCodexIds ?? []);
+  const splitL4ByStability = l4StableIds.size > 0;
   let l4StableSegment = "";
+  const l4StableLines: string[] = [];
   const l4VolatileLines: string[] = [];
   const hasPinnedSnippets =
     input.pinnedSnippets && input.pinnedSnippets.length > 0;
@@ -1201,7 +1249,6 @@ export function buildSystemPrompt(
     hasMapBoard
   ) {
     const lines = [s.headers.codexSection];
-    const stableLines = [s.headers.codexSection];
     for (const entry of allCodex) {
       const priority = computeL4Priority({
         isChild: pinnedChildIds.has(entry.id),
@@ -1219,7 +1266,7 @@ export function buildSystemPrompt(
       lines.push(blockText);
       const isStable = l4StableIds.size === 0 || l4StableIds.has(entry.id);
       if (isStable) {
-        stableLines.push(blockText);
+        l4StableLines.push(blockText);
       } else {
         l4VolatileLines.push(blockText);
       }
@@ -1250,7 +1297,7 @@ export function buildSystemPrompt(
       const blockText = blockLines.join("\n");
       lines.push(blockText);
       if (l4StableIds.size === 0 || l4StableIds.has(note.id)) {
-        stableLines.push(blockText);
+        l4StableLines.push(blockText);
       } else {
         l4VolatileLines.push(blockText);
       }
@@ -1259,7 +1306,7 @@ export function buildSystemPrompt(
       const snippetBlock = `<!-- l4pri:${L4_PRI_PINNED} -->\n- **${snippet.title}** (Snippet): ${snippet.content}`;
       lines.push(snippetBlock);
       if (l4StableIds.size === 0 || l4StableIds.has(snippet.id)) {
-        stableLines.push(snippetBlock);
+        l4StableLines.push(snippetBlock);
       } else {
         l4VolatileLines.push(snippetBlock);
       }
@@ -1277,7 +1324,7 @@ export function buildSystemPrompt(
       const stickyBlock = blockLines.join("\n");
       lines.push(stickyBlock);
       if (l4StableIds.size === 0 || l4StableIds.has(sticky.id)) {
-        stableLines.push(stickyBlock);
+        l4StableLines.push(stickyBlock);
       } else {
         l4VolatileLines.push(stickyBlock);
       }
@@ -1286,12 +1333,9 @@ export function buildSystemPrompt(
     if (hasMapBoard) {
       const mapBlock = `<!-- l4pri:${L4_PRI_PINNED} -->\n${input.mapBoardMarkdown!.trim()}`;
       lines.push(mapBlock);
-      stableLines.push(mapBlock);
+      l4StableLines.push(mapBlock);
     }
     l4Text = lines.join("\n");
-    // stable segment は trimL4Text を通らないため、この時点で marker を strip して
-    // cacheSegments (= LLM に届く content blocks) に marker が漏れないようにする。
-    l4StableSegment = stripL4Markers(stableLines.join("\n"));
   }
 
   // semantic recall (Layer4 RAG): 意味検索による過去シーン抜粋。クエリ
@@ -1425,15 +1469,13 @@ export function buildSystemPrompt(
   let effectivePlotThread = plotThreadText;
   let effectiveChronicle = chronicleText;
   let effectiveEpisodic = episodicText;
+  let effectiveFocusText = focusText;
   const exclude = input.excludeLayers ?? [];
   if (exclude.includes("L1")) effectiveL1 = "";
   if (exclude.includes("L2")) effectiveL2 = "";
   if (exclude.includes("L3")) effectiveL3 = "";
   if (exclude.includes("L4")) {
     effectiveL4 = "";
-    // stable segment は trim 前に構築済みのため、ここで空にしないと
-    // cacheSegments (l4StableSegment || effectiveL4) 経由で L4 が残ってしまう
-    l4StableSegment = "";
   }
   if (exclude.includes("L5")) effectiveL5 = "";
   if (exclude.includes("L6")) effectiveL6 = "";
@@ -1449,18 +1491,17 @@ export function buildSystemPrompt(
     input.contextWindow !== undefined &&
     input.conversationTokens !== undefined
   ) {
-    const responseReservation = computeResponseReservation(
-      input.contextWindow,
-      input.maxOutputTokens,
-    );
+    const responseReservation =
+      input.outputReservationTokens ??
+      computeResponseReservation(input.contextWindow, input.maxOutputTokens);
     // タグラッパーと境界リマインダーは trim 後に付加されるため、その分を
     // 予算から先に差し引く。定数文字列なので countTokens はキャッシュヒットする。
     // 空レイヤーはラッパーを出さないので非空レイヤーぶんだけ予約する。
-    // RAG は trim で最初に丸ごと消える投機的レイヤーなので予約しない
-    // (生き残るのは予算に余裕がある時だけで、超過 ~10 tok は
-    // responseReservation の余裕内に収まる)。
     const wrapperOverhead = (tag: string) =>
       countTokens(`\n<${tag}>\n\n</${tag}>`);
+    // Every rendered route is measured again below. Reserve fixed wrappers for
+    // author-controlled layers here; speculative layers are commonly removed
+    // by this pass, so their wrappers are handled by the final measurement.
     let hardeningOverhead = countTokens(s.dataBoundaryReminder) + 1;
     if (effectiveL1.trim())
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l1);
@@ -1468,11 +1509,10 @@ export function buildSystemPrompt(
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l2);
     if (effectiveL3.trim())
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l3);
-    // focus は trimToFit に渡さず常に注入するため、ラッパー + 本文ぶんを丸ごと
-    // 予算から先取りして他レイヤーの trim 余地を確保する。
-    if (focusText.trim())
-      hardeningOverhead +=
-        wrapperOverhead(PROMPT_DATA_TAGS.focus) + countTokens(focusText);
+    if (effectiveFocusText.trim())
+      // Separate raw/wrapped BPE boundaries can add a few tokens; keep a small
+      // deterministic guard so the protected focus trim converges in one pass.
+      hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.focus) + 4;
     if (effectiveL4.trim()) {
       hardeningOverhead += wrapperOverhead(PROMPT_DATA_TAGS.l4);
       // stable/volatile 分割時は codex_entries ブロックが 2 つになる
@@ -1498,6 +1538,7 @@ export function buildSystemPrompt(
       plotThreadScenesText: effectivePlotThread,
       chronicleSnapshotText: effectiveChronicle,
       episodicText: effectiveEpisodic,
+      focusText: effectiveFocusText,
     };
     // 言語別 trim マーカーを渡す: en では L1/L3 のヘッダが英語になるため、
     // ja 既定の regex では一致せず trim が効かない (s = lang の chatSystem)。
@@ -1512,25 +1553,29 @@ export function buildSystemPrompt(
     effectivePlotThread = result.trimmedTexts.plotThreadScenesText ?? "";
     effectiveChronicle = result.trimmedTexts.chronicleSnapshotText ?? "";
     effectiveEpisodic = result.trimmedTexts.episodicText ?? "";
+    effectiveFocusText = result.trimmedTexts.focusText ?? "";
     if (result.trimmedLayers.length > 0) {
       trimmedLayers = result.trimmedLayers;
     }
   }
 
-  // 非 stable な L4 ブロック (セッション途中で言及された codex 等) のうち trim を
-  // 生き残ったものを volatileTail 用に抽出する。stable segment は byte 安定性の
-  // ため意図的に trim を通さないが、揮発側は予算を尊重して trim 後を正とする。
+  // stable / volatile の双方を、trim 後に生き残った同じ L4 block 集合から抽出する。
+  // stability は cache placement の優先であって、window budget の免除ではない。
   let l4VolatileSegment = "";
-  if (l4StableSegment && l4VolatileLines.length > 0) {
-    const presentBlocks = new Set(
-      effectiveL4.split(/(?=<!-- l4pri:\d+ -->)/).map((b) => b.trimEnd()),
+  const presentBlocks = new Set(
+    effectiveL4.split(/(?=<!-- l4pri:\d+ -->)/).map((block) => block.trimEnd()),
+  );
+  const withL4Header = (blocks: string[]) =>
+    blocks.length > 0 ? [s.headers.codexSection, ...blocks].join("\n") : "";
+  if (splitL4ByStability) {
+    const keptStable = l4StableLines.filter((block) =>
+      presentBlocks.has(block.trimEnd()),
     );
-    const keptVolatile = l4VolatileLines.filter((b) =>
-      presentBlocks.has(b.trimEnd()),
+    const keptVolatile = l4VolatileLines.filter((block) =>
+      presentBlocks.has(block.trimEnd()),
     );
-    if (keptVolatile.length > 0) {
-      l4VolatileSegment = stripL4Markers(keptVolatile.join("\n"));
-    }
+    l4StableSegment = stripL4Markers(withL4Header(keptStable));
+    l4VolatileSegment = stripL4Markers(withL4Header(keptVolatile));
   }
 
   // trim 後 (or trim をスキップした場合の素の l4Text) から marker を strip。
@@ -1545,7 +1590,10 @@ export function buildSystemPrompt(
   effectiveL1 = wrapDataLayer(effectiveL1, PROMPT_DATA_TAGS.l1);
   effectiveL2 = wrapDataLayer(effectiveL2, PROMPT_DATA_TAGS.l2);
   effectiveL3 = wrapDataLayer(effectiveL3, PROMPT_DATA_TAGS.l3);
-  const effectiveFocus = wrapDataLayer(focusText, PROMPT_DATA_TAGS.focus);
+  const effectiveFocus = wrapDataLayer(
+    effectiveFocusText,
+    PROMPT_DATA_TAGS.focus,
+  );
   effectiveL4 = wrapDataLayer(effectiveL4, PROMPT_DATA_TAGS.l4);
   l4StableSegment = wrapDataLayer(l4StableSegment, PROMPT_DATA_TAGS.l4);
   l4VolatileSegment = wrapDataLayer(l4VolatileSegment, PROMPT_DATA_TAGS.l4);
@@ -1565,9 +1613,7 @@ export function buildSystemPrompt(
   effectiveL5 = wrapDataLayer(effectiveL5, PROMPT_DATA_TAGS.l5);
 
   // サンドイッチ: 全データレイヤーの直後・L6 (正当な指示) の前に境界リマインダー
-  // を置く。データレイヤーが 1 つも無ければ付けない。l4StableSegment は trim を
-  // 通らないため、effectiveL4 が trim で空になっても cache 経路にデータが残る
-  // ケースを拾う。
+  // を置く。データレイヤーが 1 つも無ければ付けない。
   const hasDataLayers = [
     effectiveL1,
     effectiveL2,
@@ -1584,7 +1630,6 @@ export function buildSystemPrompt(
   const reminderText = hasDataLayers ? s.dataBoundaryReminder : "";
 
   // 各 layer のトークン数を 1 度だけ計算 (cache hit でも text 全長 hash コストを避ける)
-  const baseTokens = countTokens(baseText);
   const l1Tokens = countTokens(effectiveL1);
   const l2Tokens = countTokens(effectiveL2);
   const l3Tokens = countTokens(effectiveL3);
@@ -1670,6 +1715,14 @@ export function buildSystemPrompt(
       used: l6Tokens,
     });
   }
+  const conversationTokens = input.conversationTokens ?? 0;
+  if (conversationTokens > 0) {
+    layers.push({
+      layer: "CONVERSATION",
+      label: i18next.t("chat.context.layer.CONVERSATION"),
+      used: conversationTokens,
+    });
+  }
 
   const prompt = [
     baseText,
@@ -1698,7 +1751,7 @@ export function buildSystemPrompt(
     `${baseText}${effectiveL1}`,
     effectiveL2,
     l3CacheSegment,
-    l4StableSegment || effectiveL4,
+    splitL4ByStability ? l4StableSegment : effectiveL4,
   ].filter((seg) => seg.trim().length > 0);
 
   // cacheSegments を使うプロバイダ向けの揮発層。cacheSegments の直後に
@@ -1717,26 +1770,38 @@ export function buildSystemPrompt(
     .filter((seg) => seg.trim().length > 0)
     .join("\n");
 
-  // 結合後の全文を再 tokenize しない: 各 layer 合計 + join した \n 分 (BPE で各 1 token)。
-  // リマインダーが入ると join 要素が 1 つ増えるため \n も 1 個分加算する。
-  const reminderTokens = reminderText ? countTokens(reminderText) : 0;
-  const totalTokens =
-    baseTokens +
-    l1Tokens +
-    l2Tokens +
-    l3Tokens +
-    focusTokens +
-    chronicleTokens +
-    l4Tokens +
-    plotThreadTokens +
-    ragTokens +
-    episodicTokens +
-    l5Tokens +
-    l6Tokens +
-    reminderTokens +
-    // prompt 配列の固定要素は baseText/L1/L2/L3/focus/chronicle/L4/plot_thread/rag/episodic/L5/L6 = 12。
-    // join("\n") の区切りは要素数 -1。reminder が入ると要素が 1 増える。
-    (reminderText ? 12 : 11);
+  // Materialize 後の実 delivery を再 tokenize する。cache provider は fallback
+  // prompt を破棄するため、content block の text と volatile tail だけを数える。
+  const systemTokens =
+    input.deliveryMode === "cache"
+      ? cacheSegments.reduce((sum, segment) => sum + countTokens(segment), 0) +
+        countTokens(volatileTail)
+      : countTokens(prompt);
+  const totalTokens = systemTokens + conversationTokens;
+  const payloadBudget =
+    input.contextWindow !== undefined && input.conversationTokens !== undefined
+      ? (() => {
+          const outputReservedTokens =
+            input.outputReservationTokens ??
+            computeResponseReservation(
+              input.contextWindow!,
+              input.maxOutputTokens,
+            );
+          const reservedTotalTokens = totalTokens + outputReservedTokens;
+          return {
+            systemTokens,
+            conversationTokens,
+            inputTokens: totalTokens,
+            outputReservedTokens,
+            reservedTotalTokens,
+            contextWindow: input.contextWindow!,
+            overflowTokens: Math.max(
+              0,
+              reservedTotalTokens - input.contextWindow!,
+            ),
+          };
+        })()
+      : undefined;
 
   return {
     prompt,
@@ -1745,6 +1810,7 @@ export function buildSystemPrompt(
     ...(trimmedLayers ? { trimmedLayers } : {}),
     cacheSegments,
     ...(volatileTail ? { volatileTail } : {}),
+    ...(payloadBudget ? { payloadBudget } : {}),
   };
 }
 

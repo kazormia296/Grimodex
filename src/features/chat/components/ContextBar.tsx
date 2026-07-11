@@ -111,6 +111,7 @@ interface ContextBarProps {
   onUnpinEntry: (entryId: string) => void;
   onTogglePinChildren: (entryId: string, withChildren: boolean) => void;
   contextTokenCount: number;
+  contextWindowOverride?: number | null;
   contextLayers: LayerBreakdown[];
   systemPrompt: string;
   model: string;
@@ -146,6 +147,7 @@ export function ContextBar({
   onUnpinEntry,
   onTogglePinChildren,
   contextTokenCount,
+  contextWindowOverride,
   contextLayers,
   systemPrompt,
   model,
@@ -317,7 +319,9 @@ export function ContextBar({
       : `${t("chat.scope.snippet")}: ${scopeAnchor.title}`
     : null;
 
-  const contextWindow = model ? getModelCapabilities(model).contextWindow : 0;
+  const contextWindow =
+    contextWindowOverride ??
+    (model ? getModelCapabilities(model).contextWindow : 0);
   const ctxWindowLabel = model ? formatContextWindow(contextWindow) : null;
   const windowFillPct =
     contextWindow > 0

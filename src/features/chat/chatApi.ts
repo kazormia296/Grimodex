@@ -205,6 +205,11 @@ export async function sendAgentMessage(
    * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
    */
   endpointId?: string | null,
+  /** Finalized output limit; backend uses this exact value on the provider wire. */
+  requestMaxOutputTokens?: number | null,
+  /** Immutable route snapshot; takes precedence over the legacy override. */
+  resolvedProvider?: string | null,
+  resolvedEndpointId?: string | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -218,8 +223,9 @@ export async function sendAgentMessage(
     webSearch: webSearch ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
-    provider: provider ?? null,
-    endpointId: endpointId ?? null,
+    provider: resolvedProvider ?? provider ?? null,
+    endpointId: resolvedEndpointId ?? endpointId ?? null,
+    ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
   });
 }
 
@@ -256,6 +262,9 @@ export async function sendChatMessageWithThinking(
    * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
    */
   endpointId?: string | null,
+  requestMaxOutputTokens?: number | null,
+  resolvedProvider?: string | null,
+  resolvedEndpointId?: string | null,
 ): Promise<ChatMessageResult> {
   const response = await invoke<ChatResponsePayload>("send_chat_message", {
     messages,
@@ -267,8 +276,9 @@ export async function sendChatMessageWithThinking(
     apiVariant: apiVariant ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
-    provider: provider ?? null,
-    endpointId: endpointId ?? null,
+    provider: resolvedProvider ?? provider ?? null,
+    endpointId: resolvedEndpointId ?? endpointId ?? null,
+    ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
   });
   const text = response.blocks
     .filter((b) => b.type === "text")
@@ -358,6 +368,11 @@ export async function sendChatMessageStream(
    * null/未指定なら設定の active エンドポイント。provider!=互換 では無視される。
    */
   endpointId?: string | null,
+  /** Finalized output limit shared with the context reservation. */
+  requestMaxOutputTokens?: number | null,
+  /** Immutable route snapshot; takes precedence over the legacy override. */
+  resolvedProvider?: string | null,
+  resolvedEndpointId?: string | null,
 ): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen<StreamChunkPayload>("chat:stream-chunk", (payload) => {
@@ -397,8 +412,9 @@ export async function sendChatMessageStream(
     apiVariant: apiVariant ?? null,
     systemVolatileTail: systemVolatileTail ?? null,
     model: model ?? null,
-    provider: provider ?? null,
-    endpointId: endpointId ?? null,
+    provider: resolvedProvider ?? provider ?? null,
+    endpointId: resolvedEndpointId ?? endpointId ?? null,
+    ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
   }).catch((e: unknown) => {
     // Error is also emitted as chat:stream-error from Rust, but handle here too
     const msg = e instanceof Error ? e.message : String(e);

@@ -29,6 +29,7 @@ const HTTP_OPENAI_COMPAT: readonly AiProvider[] = [
   "ollama",
   "openai-compatible",
   "ai-novelist",
+  "sakana",
 ];
 
 /**

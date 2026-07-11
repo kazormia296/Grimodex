@@ -690,7 +690,9 @@ pub(crate) fn is_openrouter_reasoning_model(model: &str) -> bool {
 }
 
 fn openai_max_tokens(params: &ChatParams<'_>) -> u32 {
-    if is_ainoverist_v1(params) {
+    if let Some(tokens) = params.request_max_output_tokens {
+        tokens
+    } else if is_ainoverist_v1(params) {
         ai_novelist::length_for(params.model)
     } else if matches!(params.provider, AiProvider::OpenAI | AiProvider::Sakana)
         || is_openrouter_reasoning_model(params.model)
@@ -1360,6 +1362,9 @@ pub struct ChatParams<'a> {
     /// 乗せないと揮発層がモデルへ届かない。cache_segments 不使用経路では
     /// fallback (= prompt 全文) が揮発層を含むので付与不要。
     pub system_volatile_tail: Option<String>,
+    /// Renderer-finalized output limit. When present this exact value is used
+    /// on the provider wire; legacy callers fall back to provider heuristics.
+    pub request_max_output_tokens: Option<u32>,
     /// AI のべりすと: "legacy" | "v1"。FE から渡される API 経路。
     pub api_variant: Option<String>,
     /// Web 検索 (RAG) 設定。None または `enabled=false` なら検索を注入しない。
@@ -1602,7 +1607,7 @@ async fn send_chat_ainoverist(
             "AI のべりすと: base URL が設定されていません"
         ));
     }
-    let body = match params.ai_novelist_mode {
+    let mut body = match params.ai_novelist_mode {
         AiNovelistMode::Chat => {
             build_ainoverist_chat_body(params.model, messages, &params.extra_body)
         }
@@ -1610,6 +1615,13 @@ async fn send_chat_ainoverist(
             build_ainoverist_body(params.model, messages, &params.extra_body)
         }
     };
+    if let Some(tokens) = params.request_max_output_tokens {
+        let key = match params.ai_novelist_mode {
+            AiNovelistMode::Chat => "max_tokens",
+            AiNovelistMode::Completion => "length",
+        };
+        body[key] = serde_json::json!(tokens);
+    }
 
     let req = client
         .post(&url)
@@ -1967,7 +1979,7 @@ pub async fn send_chat(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": 4096,
+                "max_tokens": params.request_max_output_tokens.unwrap_or(4096),
                 "messages": chat_messages,
             });
             let system_payload = build_system_payload(
@@ -3113,7 +3125,7 @@ pub async fn send_chat_with_tools(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": 4096,
+                "max_tokens": params.request_max_output_tokens.unwrap_or(4096),
                 "messages": anthropic_messages,
                 "tools": anthropic_tools
             });
@@ -3759,7 +3771,7 @@ pub async fn send_chat_stream(
 
             let mut body = serde_json::json!({
                 "model": params.model,
-                "max_tokens": 4096,
+                "max_tokens": params.request_max_output_tokens.unwrap_or(4096),
                 "messages": chat_messages,
                 "stream": true,
             });
@@ -6434,6 +6446,7 @@ mod tests {
             openrouter_provider_pin: None,
             system_cache_segments: Some(segments),
             system_volatile_tail: None,
+            request_max_output_tokens: None,
             api_variant: None,
             web_search: None,
             fusion: None,
@@ -6465,6 +6478,7 @@ mod tests {
             openrouter_provider_pin: None,
             system_cache_segments: None,
             system_volatile_tail: None,
+            request_max_output_tokens: None,
             api_variant: None,
             web_search: None,
             fusion: None,
@@ -6638,6 +6652,7 @@ mod ab_provider_live_tests {
             openrouter_provider_pin: None,
             system_cache_segments: None,
             system_volatile_tail: None,
+            request_max_output_tokens: None,
             api_variant,
             web_search: None,
             fusion: None,
@@ -6792,6 +6807,7 @@ mod ab_provider_live_tests {
             openrouter_provider_pin: None,
             system_cache_segments: None,
             system_volatile_tail: None,
+            request_max_output_tokens: None,
             api_variant: None,
             web_search: None,
             fusion: Some(&cfg),

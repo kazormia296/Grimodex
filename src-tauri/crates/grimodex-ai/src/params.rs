@@ -152,6 +152,7 @@ pub fn build_chat_params<'a>(
         openrouter_provider_pin: settings.openrouter_provider_pin.as_deref(),
         system_cache_segments,
         system_volatile_tail,
+        request_max_output_tokens: None,
         api_variant,
         web_search,
         fusion: Some(&settings.fusion),

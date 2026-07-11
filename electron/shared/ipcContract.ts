@@ -604,6 +604,27 @@ function requireUnsignedInteger(
   return value;
 }
 
+/** Optional provider output limit. Present values must fit the native u32 and
+ * be strictly positive; zero would create an unusable request body. */
+function validateOptionalPositiveU32(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): void {
+  const value = args[key];
+  if (value === undefined || value === null) return;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value <= 0 ||
+    value > 0xffff_ffff
+  ) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a positive u32`,
+    );
+  }
+}
+
 /** Tauri の Option<i64> 引数の写像（欠落 / null / undefined は None）。 */
 function optionalNumber(
   args: CommandArgs,
@@ -1838,6 +1859,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   },
   send_chat_message: {
     run: async (b, a, d) => {
+      validateOptionalPositiveU32(
+        a,
+        "requestMaxOutputTokens",
+        "send_chat_message",
+      );
       const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
         b,
         a,
@@ -1851,6 +1877,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     // fire-and-forget ストリーム。チャンク/完了/エラーは chat:stream-* イベント経由。
     // Tauri 同様、全ストリーム完了後に resolve（FE は SLOW_COMMANDS で 300s 許容）。
     run: async (b, a, d) => {
+      validateOptionalPositiveU32(
+        a,
+        "requestMaxOutputTokens",
+        "send_chat_message_stream",
+      );
       const { settings, apiKey } = await resolveRequiredAiKeyAndSettings(
         b,
         a,
@@ -1907,6 +1938,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a, d) => {
       requirePresent(a, "messages", "send_agent_message");
       requirePresent(a, "tools", "send_agent_message");
+      validateOptionalPositiveU32(
+        a,
+        "requestMaxOutputTokens",
+        "send_agent_message",
+      );
       const sendAgentMessage = requireNapiMethod(
         b,
         b.sendAgentMessage,

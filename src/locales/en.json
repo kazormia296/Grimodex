@@ -1945,7 +1945,8 @@
         "RAG": "Related scenes (semantic)",
         "EPISODIC": "Past conversation memory",
         "L5": "Conversation summary",
-        "L6": "Command instruction"
+        "L6": "Command instruction",
+        "CONVERSATION": "Conversation history"
       },
       "promptPreviewLoading": "Building prompt…",
       "promptSnapshotMissing": "No sent-prompt record for this message (it was sent before this feature was added).",
