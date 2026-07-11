@@ -113,4 +113,36 @@ describe("ImeIntegrationSection", () => {
       refreshImeExportMock.mock.invocationCallOrder[0]!,
     );
   });
+
+  it("identifies a Linux Phase 3 consumer and its negotiated capabilities", async () => {
+    getImeExportStatusMock.mockResolvedValueOnce({
+      rootPath: "/tmp/ime",
+      consumers: [
+        {
+          consumerId: "fcitx5-grimodex",
+          name: "Grimodex IME",
+          version: "0.1.0",
+          platform: "linux",
+          lastSeen: "2026-07-11T00:00:00.000Z",
+          capabilities: {
+            profile: true,
+            dynamicDictionary: true,
+            zenzaiV3Conditions: true,
+            applicationScoping: true,
+          },
+        },
+      ],
+      activeProjectId: "p1",
+      exportedProjectCount: 1,
+      effectiveEnabled: true,
+    });
+
+    render(<ImeIntegrationSection />);
+
+    expect(await screen.findByText("Grimodex IME")).toBeInTheDocument();
+    expect(screen.getByText("Linux")).toBeInTheDocument();
+    expect(screen.getByText("動的辞書")).toBeInTheDocument();
+    expect(screen.getByText("Zenzai v3")).toBeInTheDocument();
+    expect(screen.getByText("アプリ限定")).toBeInTheDocument();
+  });
 });

@@ -59,6 +59,15 @@ struct ProjectSnapshot {
     entries: Vec<ExportEntry>,
     #[serde(default)]
     profile: Option<String>,
+    #[serde(default)]
+    zenzai_context: Option<ZenzaiContext>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct ZenzaiContext {
+    topic: String,
+    style: Option<String>,
+    preference: Option<String>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -393,6 +402,14 @@ fn explicit_readings_are_flattened_as_reading_surface_pairs() -> TestResult {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "profile missing"))?;
     assert!(profile.contains("二人の名前をめぐる物語"));
     assert!(profile.contains("OO"));
+    assert_eq!(
+        snapshot.zenzai_context,
+        Some(ZenzaiContext {
+            topic: "Pair Project・ファンタジー・二人の名前をめぐる物語".to_owned(),
+            style: None,
+            preference: None,
+        })
+    );
     Ok(())
 }
 
@@ -457,10 +474,65 @@ fn derives_readings_for_kana_and_maps_builtin_and_custom_categories() -> TestRes
         "noun"
     );
     assert!(snapshot.profile.is_none());
+    assert!(snapshot.zenzai_context.is_none());
     let raw = read_snapshot_value(&fixture.ime_root, "p-ja")?;
     assert!(
         raw.get("profile").is_none(),
         "disabled profile must be omitted rather than serialized as null"
+    );
+    assert!(
+        raw.get("zenzai_context").is_none(),
+        "disabling project context must omit both legacy profile and structured Zenzai data"
+    );
+    Ok(())
+}
+
+#[test]
+fn duplicate_dictionary_entries_keep_the_highest_priority_deterministically() -> TestResult {
+    let fixture = Fixture::new()?;
+    seed_project(fixture.db(), "p-dedupe", "Dedupe", "ja", None, None)?;
+    for (id, entry_type, context_mode) in [
+        ("entry-low", "character", "mentioned"),
+        ("entry-high", "character", "always"),
+        ("entry-place", "location", "mentioned"),
+    ] {
+        seed_entry(
+            fixture.db(),
+            id,
+            "p-dedupe",
+            entry_type,
+            "刹那",
+            None,
+            None,
+            Some(r#"{"刹那":["せつな"]}"#),
+            context_mode,
+        )?;
+    }
+
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "p-dedupe",
+        &options(ImeIntegrationMode::On),
+    )?;
+    let snapshot = read_snapshot(&fixture.ime_root, "p-dedupe")?;
+    let people: Vec<&ExportEntry> = snapshot
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.yomi == "せつな" && entry.surface == "刹那" && entry.category == "person"
+        })
+        .collect();
+
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0].entry_id, "entry-high");
+    assert_eq!(people[0].priority, 2);
+    assert!(
+        snapshot
+            .entries
+            .iter()
+            .any(|entry| entry.entry_id == "entry-place" && entry.category == "place"),
+        "different categories map to different CIDs and must not be collapsed"
     );
     Ok(())
 }
@@ -627,6 +699,50 @@ fn auto_mode_requires_a_consumer_and_status_reports_effective_state() -> TestRes
     assert!(
         !status_enabled(&off)?,
         "off must override consumer detection"
+    );
+    Ok(())
+}
+
+#[test]
+fn consumer_status_supports_legacy_and_linux_phase3_capabilities() -> TestResult {
+    let fixture = Fixture::new()?;
+    let consumers = fixture.ime_root.join("consumers");
+    fs::create_dir_all(&consumers)?;
+    fs::write(
+        consumers.join("legacy-ime.json"),
+        br#"{"format_version":1,"consumer_id":"legacy-ime","name":"Legacy IME","version":"1.0.0","capabilities":{"profile":true},"last_seen":"2026-07-11T00:00:00.000Z"}"#,
+    )?;
+    fs::write(
+        consumers.join("fcitx5-grimodex.json"),
+        br#"{"format_version":1,"consumer_id":"fcitx5-grimodex","name":"Grimodex IME for Linux","version":"0.1.0","platform":"linux","capabilities":{"profile":true,"dynamic_dictionary":true,"zenzai_v3_conditions":true,"application_scoping":true},"last_seen":"2026-07-11T00:00:00.000Z"}"#,
+    )?;
+
+    let value = serde_json::to_value(get_status(&fixture.ime_root, ImeIntegrationMode::Auto)?)?;
+    let consumers = json_field(&value, &["consumers"])?
+        .as_array()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "consumers must be an array"))?;
+    let linux = consumers
+        .iter()
+        .find(|consumer| json_field(consumer, &["consumerId", "consumer_id"]).ok() == Some(&Value::String("fcitx5-grimodex".to_owned())))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Linux consumer missing"))?;
+    assert_eq!(json_field(linux, &["platform"])?, "linux");
+    assert_eq!(
+        json_field(linux, &["capabilities"])?
+            .get("dynamicDictionary")
+            .or_else(|| json_field(linux, &["capabilities"]).ok()?.get("dynamic_dictionary")),
+        Some(&Value::Bool(true))
+    );
+
+    let legacy = consumers
+        .iter()
+        .find(|consumer| json_field(consumer, &["consumerId", "consumer_id"]).ok() == Some(&Value::String("legacy-ime".to_owned())))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "legacy consumer missing"))?;
+    assert!(json_field(legacy, &["platform"])?.is_null());
+    assert_eq!(
+        json_field(legacy, &["capabilities"])?
+            .get("dynamicDictionary")
+            .or_else(|| json_field(legacy, &["capabilities"]).ok()?.get("dynamic_dictionary")),
+        Some(&Value::Bool(false))
     );
     Ok(())
 }
