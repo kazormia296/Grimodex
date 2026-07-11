@@ -43,32 +43,35 @@ export function splitCharacters(
   return units;
 }
 
-/** ruby atom の base 全体を不可分な1 unitとして扱う文字分割。 */
-function splitCharactersPreservingRuby(
+/**
+ * 複数の flat 文字が同一 PM 位置を共有する expanded inline atom を不可分にする。
+ * 現在は ruby が該当するが、node 名ではなく位置契約で判定するため、将来同じ
+ * flatten 規約の inline atom が増えても unit 境界が atom 内へ入らない。
+ */
+export function mergeUnitsAcrossExpandedAtoms(
+  units: ReorderUnit[],
   resolved: ResolvedParagraph,
-  from = 0,
-  to = resolved.flat.text.length,
 ): ReorderUnit[] {
-  const { text, flatIsRuby, flatPmPos } = resolved.flat;
-  const units: ReorderUnit[] = [];
-  const end = Math.min(to, text.length);
-  let i = Math.max(0, from);
-  while (i < end) {
-    let unitEnd = i + 1;
-    if (flatIsRuby[i]) {
-      const rubyPmPos = flatPmPos[i];
-      while (
-        unitEnd < end &&
-        flatIsRuby[unitEnd] &&
-        flatPmPos[unitEnd] === rubyPmPos
-      ) {
-        unitEnd += 1;
-      }
+  if (units.length <= 1) return units;
+  const { text, flatPmPos } = resolved.flat;
+  const merged: ReorderUnit[] = [];
+  for (const unit of units) {
+    const previous = merged[merged.length - 1];
+    const boundary = unit.from;
+    const splitsExpandedAtom =
+      previous !== undefined &&
+      previous.to === boundary &&
+      boundary > 0 &&
+      boundary < flatPmPos.length &&
+      flatPmPos[boundary - 1] === flatPmPos[boundary];
+    if (splitsExpandedAtom) {
+      previous.to = unit.to;
+      previous.surface = text.slice(previous.from, previous.to);
+    } else {
+      merged.push({ ...unit });
     }
-    units.push({ from: i, to: unitEnd, surface: text.slice(i, unitEnd) });
-    i = unitEnd;
   }
-  return units;
+  return merged;
 }
 
 /**
@@ -77,7 +80,6 @@ function splitCharactersPreservingRuby(
  * テキストを保持しないため、被覆に穴があるとその文字が段落 replace で消失する。
  */
 function segmentRegionAbsolute(
-  resolved: ResolvedParagraph,
   text: string,
   regionFrom: number,
   regionTo: number,
@@ -87,7 +89,7 @@ function segmentRegionAbsolute(
 ): ReorderUnit[] {
   if (regionFrom >= regionTo) return [];
   if (granularity === "character") {
-    return splitCharactersPreservingRuby(resolved, regionFrom, regionTo);
+    return splitCharacters(text, regionFrom, regionTo);
   }
   if (granularity === "phrase" && isEnglishLanguage(language)) {
     const slice = text.slice(regionFrom, regionTo);
@@ -128,6 +130,10 @@ export function buildReorderUnits(
 ): ReorderUnit[] | null {
   const text = resolved.flat.text;
   const selectionRange = getSelectionFlatRange(state, resolved);
+  const finalize = (units: ReorderUnit[]): ReorderUnit[] | null => {
+    const atomSafeUnits = mergeUnitsAcrossExpandedAtoms(units, resolved);
+    return atomSafeUnits.length > 1 ? atomSafeUnits : null;
+  };
 
   const bunsetsu =
     granularity === "bunsetsu" && isJapanese(language)
@@ -142,36 +148,24 @@ export function buildReorderUnits(
 
   if (!selectionRange) {
     if (granularity === "character") {
-      const units = splitCharactersPreservingRuby(resolved);
-      return units.length > 1 ? units : null;
+      return finalize(splitCharacters(text));
     }
     if (granularity === "phrase" && isEnglishLanguage(language)) {
-      const units = splitPhrasesEn(text);
-      return units.length > 1 ? units : null;
+      return finalize(splitPhrasesEn(text));
     }
     if (granularity === "word" && isEnglishLanguage(language)) {
-      const units = splitWordsEn(text);
-      return units.length > 1 ? units : null;
+      return finalize(splitWordsEn(text));
     }
     if (granularity === "bunsetsu" && isJapanese(language)) {
-      return bunsetsu && bunsetsu.length > 1 ? bunsetsu : null;
+      return bunsetsu ? finalize(bunsetsu) : null;
     }
-    const units = splitSentences(text, language);
-    return units.length > 1 ? units : null;
+    return finalize(splitSentences(text, language));
   }
 
   const { from: selFrom, to: selTo } = selectionRange;
   const parts: ReorderUnit[] = [];
   parts.push(
-    ...segmentRegionAbsolute(
-      resolved,
-      text,
-      0,
-      selFrom,
-      granularity,
-      language,
-      bunsetsu,
-    ),
+    ...segmentRegionAbsolute(text, 0, selFrom, granularity, language, bunsetsu),
   );
   parts.push({
     from: selFrom,
@@ -180,7 +174,6 @@ export function buildReorderUnits(
   });
   parts.push(
     ...segmentRegionAbsolute(
-      resolved,
       text,
       selTo,
       text.length,
@@ -189,7 +182,7 @@ export function buildReorderUnits(
       bunsetsu,
     ),
   );
-  return parts.length > 1 ? parts : null;
+  return finalize(parts);
 }
 
 /** 選択強制 unit か（装飾用）。 */

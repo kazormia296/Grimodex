@@ -368,8 +368,8 @@ describe("ReorderInteractionExtension", () => {
     editor.commands.insertContent("AB");
     editor.commands.setReorderGranularity("character");
 
-    const rubyPos = editor.state.doc.content.findIndex(0).offset + 1;
-    editor.commands.setTextSelection(rubyPos + 1);
+    // paragraph content starts at PM position 1; the ruby atom occupies [1,2).
+    editor.commands.setTextSelection(2);
     expect(editor.commands.swapUnitDownInner()).toBe(true);
 
     const rubies: Array<{ base: string; annotation: string }> = [];
@@ -382,6 +382,39 @@ describe("ReorderInteractionExtension", () => {
       }
     });
     expect(rubies).toEqual([{ base: "漢字", annotation: "かんじ" }]);
+  });
+
+  it("sentence swap never splits a ruby atom containing punctuation", () => {
+    editor = makeEditor("");
+    editor.commands.setContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "ruby",
+              attrs: { base: "漢。字", annotation: "かんじ" },
+            },
+            { type: "text", text: "後。次。" },
+          ],
+        },
+      ],
+    });
+    editor.commands.setTextSelection(1);
+    editor.commands.setReorderGranularity("sentence");
+
+    expect(editor.commands.swapUnitDownInner()).toBe(true);
+    const rubies: Array<{ base: string; annotation: string }> = [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "ruby") {
+        rubies.push({
+          base: node.attrs.base as string,
+          annotation: node.attrs.annotation as string,
+        });
+      }
+    });
+    expect(rubies).toEqual([{ base: "漢。字", annotation: "かんじ" }]);
   });
 
   it("bunsetsu + selection straddling boundaries: swap keeps every character (regression: data loss)", async () => {
