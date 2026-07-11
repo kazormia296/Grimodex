@@ -6072,6 +6072,16 @@ mod runtime_contract_tests {
         .expect("worker emits terminal event");
     }
 
+    async fn wait_for_abort_clear(runtime: &SwitchingRuntime, run_id: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.is_aborted(run_id) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("worker clears abort state");
+    }
+
     #[tokio::test]
     async fn single_cross_project_target_rejects_before_insert_or_ai() {
         let runtime = runtime();
@@ -6143,7 +6153,7 @@ mod runtime_contract_tests {
 
         ai.entered.notified().await;
         *runtime.active.lock().expect("active DB lock") = Arc::clone(&db_b);
-        ai.release.notify_waiters();
+        ai.release.notify_one();
 
         wait_for_terminal(&db_a, &result.run_id).await;
         assert_eq!(
@@ -6188,7 +6198,7 @@ mod runtime_contract_tests {
 
         ai.entered.notified().await;
         *runtime.active.lock().expect("active DB lock") = Arc::clone(&db_b);
-        ai.release.notify_waiters();
+        ai.release.notify_one();
 
         wait_for_terminal(&db_a, &result.run_id).await;
         assert_eq!(
@@ -6234,8 +6244,9 @@ mod runtime_contract_tests {
         assert_eq!(db_run_status(&db_b, &result.run_id), None);
         assert!(runtime.is_aborted(&result.run_id));
 
-        ai.release.notify_waiters();
+        ai.release.notify_one();
         wait_for_event(&runtime, "post_effect:error").await;
+        wait_for_abort_clear(&runtime, &result.run_id).await;
         assert!(runtime
             .events
             .lock()
