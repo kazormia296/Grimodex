@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 /**
- * Tauri アプリ更新 (tauri-plugin-updater) の進行表示用 store。
+ * desktop shell（Tauri / Electron）アプリ更新の進行表示用 store。
  * `useUpdateChecker` が起動後にサイレント check() を投げ、`api.ts` が
  * downloadAndInstall のイベントを本 store に流し込む。`UpdateToast` が読んで
  * 描画する。終端状態のうち `upToDate` / `error` のみ AUTO_CLEAR_MS 後に

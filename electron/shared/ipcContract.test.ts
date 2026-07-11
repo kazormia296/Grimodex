@@ -420,6 +420,7 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     "post_effect:progress",
     "semantic:model_download_progress",
     "vivliostyle:preview-exited",
+    "updater:download-progress",
     // renderer 発 codex 窓間同期（§7.1 Phase 2 受け入れ対象）
     "codex:data-changed",
     "codex:lock-event",
@@ -543,6 +544,9 @@ describe("dispatchInvoke", () => {
         "vivliostyle_save_output",
         "vivliostyle_preview_start",
         "vivliostyle_preview_stop",
+        "updater_check",
+        "updater_download",
+        "updater_install",
       ]),
     );
   });

@@ -201,6 +201,123 @@ describe("createKeyStore", () => {
     expect(() => ks.hasApiKey("openai", null)).toThrow(/形式が不正/);
     expect(readFileSync(file, "utf8")).toBe(malformed);
   });
+
+  it("legacy keys are encrypted, verified, and persisted in one batch", () => {
+    const ks = createKeyStore(dir, fakeStorage());
+    expect(
+      ks.importLegacyApiKeys([
+        { provider: "openai", endpointId: null, key: "sk-openai" },
+        {
+          provider: "openai-compatible",
+          endpointId: "endpoint-a",
+          key: "sk-endpoint",
+        },
+      ]),
+    ).toEqual({ imported: 2, skippedExisting: 0 });
+
+    const stored = JSON.parse(
+      readFileSync(path.join(dir, "ai-keys.json"), "utf8"),
+    ) as Record<string, Record<string, string>>;
+    expect(stored["grimodex-openai"]["grimodex-user"]).toBe(
+      Buffer.from("enc:sk-openai").toString("base64"),
+    );
+    expect(stored["grimodex-openai-compatible"]["endpoint-a"]).toBe(
+      Buffer.from("enc:sk-endpoint").toString("base64"),
+    );
+    expect(JSON.stringify(stored)).not.toContain("sk-openai");
+  });
+
+  it("existing safeStorage values win, including the default legacy fallback", () => {
+    const ks = createKeyStore(dir, fakeStorage());
+    ks.saveApiKey("openai", null, "safe-existing");
+    ks.saveApiKey("openai-compatible", null, "safe-legacy");
+
+    expect(
+      ks.importLegacyApiKeys([
+        { provider: "openai", endpointId: null, key: "old-openai" },
+        {
+          provider: "openai-compatible",
+          endpointId: "default",
+          key: "old-compatible",
+        },
+      ]),
+    ).toEqual({ imported: 0, skippedExisting: 2 });
+    expect(
+      ks.resolveApiKeyForRequest({ provider: "openai" }, undefined, undefined),
+    ).toBe("safe-existing");
+    expect(
+      ks.resolveApiKeyForRequest(
+        {
+          provider: "openai-compatible",
+          openaiCompatibleEndpoints: [{ id: "default" }],
+          activeOpenaiCompatibleEndpointId: "default",
+        },
+        undefined,
+        undefined,
+      ),
+    ).toBe("safe-legacy");
+  });
+
+  it("preserves a default-specific key when the same migration batch also has the legacy fallback", () => {
+    const ks = createKeyStore(dir, fakeStorage());
+
+    expect(
+      ks.importLegacyApiKeys([
+        {
+          provider: "openai-compatible",
+          endpointId: null,
+          key: "legacy-old",
+        },
+        {
+          provider: "openai-compatible",
+          endpointId: "default",
+          key: "default-new",
+        },
+      ]),
+    ).toEqual({ imported: 2, skippedExisting: 0 });
+    expect(
+      ks.resolveApiKeyForRequest(
+        {
+          provider: "openai-compatible",
+          openaiCompatibleEndpoints: [{ id: "default" }],
+          activeOpenaiCompatibleEndpointId: "default",
+        },
+        undefined,
+        undefined,
+      ),
+    ).toBe("default-new");
+  });
+
+  it("batch encryption failure leaves no partially migrated key file", () => {
+    const storage = fakeStorage();
+    let calls = 0;
+    storage.encryptString = (plain) => {
+      calls += 1;
+      if (calls === 2) throw new Error("encryption failed");
+      return Buffer.from(`enc:${plain}`);
+    };
+    const ks = createKeyStore(dir, storage);
+
+    expect(() =>
+      ks.importLegacyApiKeys([
+        { provider: "openai", endpointId: null, key: "first" },
+        { provider: "anthropic", endpointId: null, key: "second" },
+      ]),
+    ).toThrow("encryption failed");
+    expect(existsSync(path.join(dir, "ai-keys.json"))).toBe(false);
+  });
+
+  it("verification mismatch fails closed before persistence", () => {
+    const storage = fakeStorage();
+    storage.decryptString = () => "wrong-key";
+    const ks = createKeyStore(dir, storage);
+    expect(() =>
+      ks.importLegacyApiKeys([
+        { provider: "openai", endpointId: null, key: "expected" },
+      ]),
+    ).toThrow(/verification mismatch/);
+    expect(existsSync(path.join(dir, "ai-keys.json"))).toBe(false);
+  });
 });
 
 describe("buildKeyStoreShellHandlers", () => {

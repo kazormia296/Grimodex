@@ -14,6 +14,8 @@
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
 mod convert;
+#[cfg(feature = "legacy-keyring-migration")]
+mod legacy_keyring;
 mod post_effect_runtime;
 mod state;
 #[cfg(test)]
@@ -233,6 +235,41 @@ impl Backend {
     }
 
     // ─────────────────────── license (Phase 3e) ──────────────────────────
+
+    /// Main-process-only bridge used during the Electron v2 first-run
+    /// credential migration. This method is deliberately absent from
+    /// `NAPI_COMMANDS`, so renderer IPC cannot request plaintext credentials.
+    /// Feature-off development builds return a disabled envelope and never
+    /// touch the OS keyring.
+    #[napi]
+    pub async fn read_legacy_api_keys_for_migration(&self) -> Result<String> {
+        #[cfg(feature = "legacy-keyring-migration")]
+        {
+            let settings_path = self.state.ai_settings_path.clone();
+            run_blocking(move || {
+                let export = legacy_keyring::read_legacy_api_keys(&settings_path)?;
+                Ok(serde_json::to_string(&export).map_err(anyhow::Error::from)?)
+            })
+            .await
+        }
+
+        #[cfg(not(feature = "legacy-keyring-migration"))]
+        {
+            Ok(r#"{"available":false,"entries":[]}"#.to_string())
+        }
+    }
+
+    /// Main/CI-only build gate. Packaging verifies both release-only features
+    /// before electron-builder runs; this method is not registered in renderer
+    /// IPC and contains no user data.
+    #[napi]
+    pub async fn get_native_build_capabilities(&self) -> Result<String> {
+        Ok(serde_json::json!({
+            "licensing": cfg!(feature = "licensing"),
+            "legacyKeyringMigration": cfg!(feature = "legacy-keyring-migration"),
+        })
+        .to_string())
+    }
 
     /// 常時exportするライセンス状態IPC。feature無効buildでは共有crateが
     /// exact disabled DTOを返し、license.jsonには一切触れない。

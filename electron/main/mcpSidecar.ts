@@ -14,6 +14,10 @@ import type {
   NapiBackendLike,
   ShellCommandHandlers,
 } from "../shared/ipcContract.js";
+import {
+  materializeMcpSidecar,
+  type McpSidecarMaterializer,
+} from "./mcpSidecarInstall.js";
 
 interface SidecarCandidateMetadata {
   mtimeMs: number;
@@ -32,7 +36,10 @@ export interface McpSidecarResolution {
   /** Directory containing the bundled Electron main entry (`dist-electron`). */
   mainDir: string;
   platform: NodeJS.Platform;
+  /** Required only for packaged Linux AppImage materialization. */
+  userDataDir?: string;
   probeCandidate?: SidecarCandidateProbe;
+  materializeSidecar?: McpSidecarMaterializer;
 }
 
 async function defaultProbeCandidate(
@@ -67,7 +74,12 @@ function defaultResolution(): McpSidecarResolution {
     resourcesPath: process.resourcesPath,
     mainDir: __dirname,
     platform: process.platform,
+    userDataDir:
+      app.isPackaged && process.platform === "linux"
+        ? app.getPath("userData")
+        : undefined,
     probeCandidate: defaultProbeCandidate,
+    materializeSidecar: materializeMcpSidecar,
   };
 }
 
@@ -89,7 +101,9 @@ export async function resolveMcpSidecarPath(
     resourcesPath,
     mainDir,
     platform,
+    userDataDir,
     probeCandidate = defaultProbeCandidate,
+    materializeSidecar = materializeMcpSidecar,
   } = resolution;
   const pathApi = platform === "win32" ? path.win32 : path.posix;
 
@@ -142,7 +156,17 @@ export async function resolveMcpSidecarPath(
     }
   }
 
-  if (selected !== null) return selected.path;
+  if (selected !== null) {
+    if (isPackaged && platform === "linux") {
+      if (!userDataDir || !path.posix.isAbsolute(userDataDir)) {
+        throw new Error(
+          `Packaged Linux MCP sidecar requires an absolute userData path: ${userDataDir ?? "<missing>"}`,
+        );
+      }
+      return materializeSidecar(selected.path, userDataDir);
+    }
+    return selected.path;
+  }
 
   throw new Error(`MCP sidecar not found; checked: ${candidates.join(", ")}`);
 }
@@ -153,7 +177,22 @@ export interface McpConfigInfo {
   argsPrefix: readonly string[];
 }
 
-type McpSidecarPathResolver = () => Promise<string>;
+export type McpSidecarPathResolver = () => Promise<string>;
+
+/**
+ * Resolve packaged sidecars during application startup. On Linux this also
+ * refreshes the stable userData copy before an existing `.mcp.json` can launch
+ * it; the returned resolver reuses the validated path for renderer requests.
+ * Development remains lazy so `pnpm electron:dev` does not require MCP builds.
+ */
+export async function prepareMcpSidecarForStartup(
+  isPackaged: boolean,
+  resolveSidecar: McpSidecarPathResolver = () => resolveMcpSidecarPath(),
+): Promise<McpSidecarPathResolver> {
+  if (!isPackaged) return resolveSidecar;
+  const command = await resolveSidecar();
+  return () => Promise.resolve(command);
+}
 
 /**
  * Main-process implementation of `get_mcp_config`. Workspace identity remains
@@ -195,8 +234,7 @@ export function buildMcpConfigShellHandlers(
         workspace,
         // This prefix is owned by Electron main, not renderer input. The
         // sidecar therefore evaluates the exact license file used by the
-        // active Electron userData directory even when it differs from the
-        // historical Tauri app-data location.
+        // active Electron userData directory (including smoke-test overrides).
         argsPrefix: ["--license-file", licenseFilePath],
       } satisfies McpConfigInfo;
     },

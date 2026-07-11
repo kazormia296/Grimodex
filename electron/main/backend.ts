@@ -75,9 +75,9 @@ export function resolveSemanticResourceRoot(
 }
 
 /**
- * app ready 後に 1 回だけ呼ぶ。Backend コンストラクタには
- * `app.getPath("userData")` を明示注入する（§4.2 / §6.8 — Phase 2 は
- * GrimodexElectronDev 名の userData に隔離し Tauri のデータに触らない）。
+ * app ready 後に 1 回だけ呼ぶ。Backend コンストラクタには起動ロック前に
+ * `configureAppUserData` が確定した `app.getPath("userData")` を明示注入する。
+ * packaged版は既存Tauriのdata_dir、developmentはGrimodexElectronDevを使う。
  */
 export function initBackend(): NapiBackendLike | null {
   const binaryPath = resolveNodeBinaryPath();

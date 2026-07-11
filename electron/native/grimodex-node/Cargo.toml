@@ -17,6 +17,10 @@ default = []
 # 1.0 release builds opt in explicitly. Development/beta builds keep the
 # methods exported but return the exact disabled contract without touching disk.
 licensing = ["grimodex-license/licensing"]
+# Electron v2 first-run migration only. Release builds enable this explicitly
+# so main can copy legacy Tauri keyring entries into safeStorage. The method is
+# never registered in renderer IPC, and old credentials stay for rollback.
+legacy-keyring-migration = ["grimodex-ai/keyring"]
 
 # 空 workspace: src-tauri workspace へ吸収させない (Phase 0 スパイク実証)
 [workspace]

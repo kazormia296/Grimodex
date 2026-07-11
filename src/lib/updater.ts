@@ -1,29 +1,101 @@
-import type { Update } from "@tauri-apps/plugin-updater";
-import { isTauri } from "./tauri";
+import { isElectron } from "./shell";
+import { invoke, isTauri, listen } from "./tauri";
 
-/**
- * 自動更新（updater / process）の抽象層。本体コードは
- * @tauri-apps/plugin-updater / plugin-process を直接 import せず
- * ここを経由する。store 遷移などの意味論は features/updater/api.ts が担う。
- *
- * Electron シェルは Phase 2 では意図的に非 Tauri と同挙動
- * （check → null / relaunch → no-op）。electron-updater への実装は
- * Phase 4（設計書 §3.4 の表）。
- */
+/** updater shell 間の共通 download event（Tauri plugin と同形）。 */
+export type DownloadEvent =
+  | { event: "Started"; data: { contentLength?: number } }
+  | { event: "Progress"; data: { chunkLength: number } }
+  | { event: "Finished" };
 
-export type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
-
-/** 更新確認。非 Tauri（ブラウザ / Electron Phase 2）は null（=更新なし）。 */
-export async function check(): Promise<Update | null> {
-  if (!isTauri()) return null;
-  const { check: tauriCheck } = await import("@tauri-apps/plugin-updater");
-  return tauriCheck();
+/** features/updater が必要とする最小 Update 契約。 */
+export interface Update {
+  version: string;
+  body?: string | null;
+  downloadAndInstall(onEvent?: (event: DownloadEvent) => void): Promise<void>;
 }
 
-/** アプリ再起動。非 Tauri（ブラウザ / Electron Phase 2）は no-op。 */
+interface ElectronUpdateInfo {
+  version: string;
+  body: string | null;
+}
+
+interface ElectronDownloadProgress {
+  downloaded: number;
+  total: number;
+}
+
+const ELECTRON_PROGRESS_EVENT = "updater:download-progress";
+
+function electronUpdate(info: ElectronUpdateInfo): Update {
+  return {
+    version: info.version,
+    body: info.body,
+    async downloadAndInstall(onEvent): Promise<void> {
+      let started = false;
+      let previousDownloaded = 0;
+      const unlisten = await listen<ElectronDownloadProgress>(
+        ELECTRON_PROGRESS_EVENT,
+        (progress) => {
+          const total =
+            Number.isFinite(progress.total) && progress.total > 0
+              ? progress.total
+              : 0;
+          const downloaded =
+            Number.isFinite(progress.downloaded) && progress.downloaded > 0
+              ? progress.downloaded
+              : 0;
+          if (!started) {
+            started = true;
+            onEvent?.({ event: "Started", data: { contentLength: total } });
+          }
+          const chunkLength = Math.max(0, downloaded - previousDownloaded);
+          previousDownloaded = Math.max(previousDownloaded, downloaded);
+          if (chunkLength > 0) {
+            onEvent?.({ event: "Progress", data: { chunkLength } });
+          }
+        },
+      );
+      try {
+        await invoke<null>("updater_download");
+        if (!started) {
+          onEvent?.({ event: "Started", data: { contentLength: 0 } });
+        }
+        onEvent?.({ event: "Finished" });
+      } finally {
+        unlisten();
+      }
+    },
+  };
+}
+
+/**
+ * 更新確認。Tauri は plugin-updater、Electron は main の electron-updater、
+ * 通常ブラウザは null（更新なし）へ縮退する。
+ */
+export async function check(): Promise<Update | null> {
+  if (isTauri()) {
+    const { check: tauriCheck } = await import("@tauri-apps/plugin-updater");
+    return tauriCheck();
+  }
+  if (isElectron()) {
+    const update = await invoke<ElectronUpdateInfo | null>("updater_check");
+    return update ? electronUpdate(update) : null;
+  }
+  return null;
+}
+
+/**
+ * 更新済みアプリへの切り替え。Tauri は plugin-process、Electron は download
+ * 完了を検証する main handler へ委譲し、通常ブラウザでは no-op。
+ */
 export async function relaunch(): Promise<void> {
-  if (!isTauri()) return;
-  const { relaunch: tauriRelaunch } =
-    await import("@tauri-apps/plugin-process");
-  await tauriRelaunch();
+  if (isTauri()) {
+    const { relaunch: tauriRelaunch } =
+      await import("@tauri-apps/plugin-process");
+    await tauriRelaunch();
+    return;
+  }
+  if (isElectron()) {
+    await invoke<null>("updater_install");
+  }
 }

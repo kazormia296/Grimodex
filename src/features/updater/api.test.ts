@@ -1,15 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { Update, DownloadEvent } from "@/lib/updater";
 
-vi.mock("@/lib/tauri", () => ({
-  isTauri: vi.fn(),
-}));
 vi.mock("@/lib/updater", () => ({
   check: vi.fn(),
   relaunch: vi.fn(),
 }));
 
-import { isTauri } from "@/lib/tauri";
 import { check, relaunch } from "@/lib/updater";
 import {
   checkForUpdate,
@@ -19,7 +15,6 @@ import {
 } from "./api";
 import { useUpdaterStore, _resetUpdaterForTests } from "./updaterStore";
 
-const mockIsTauri = vi.mocked(isTauri);
 const mockCheck = vi.mocked(check);
 const mockRelaunch = vi.mocked(relaunch);
 
@@ -48,8 +43,7 @@ describe("updater/api", () => {
   });
 
   describe("checkForUpdate", () => {
-    it("returns the Update when one is available (Tauri)", async () => {
-      mockIsTauri.mockReturnValue(true);
+    it("returns the Update when the shell abstraction finds one", async () => {
       const update = fakeUpdate();
       mockCheck.mockResolvedValueOnce(update);
       const result = await checkForUpdate();
@@ -58,24 +52,23 @@ describe("updater/api", () => {
     });
 
     it("returns null when up to date (check resolves null)", async () => {
-      mockIsTauri.mockReturnValue(true);
       mockCheck.mockResolvedValueOnce(null);
       const result = await checkForUpdate();
       expect(result).toBeNull();
       expect(mockCheck).toHaveBeenCalledTimes(1);
     });
 
-    it("is a no-op returning null outside Tauri (check not called)", async () => {
-      mockIsTauri.mockReturnValue(false);
-      const result = await checkForUpdate();
-      expect(result).toBeNull();
-      expect(mockCheck).not.toHaveBeenCalled();
+    it("propagates shell check failures to the caller", async () => {
+      mockCheck.mockRejectedValueOnce(new Error("check failed"));
+
+      await expect(checkForUpdate()).rejects.toThrow("check failed");
+
+      expect(mockCheck).toHaveBeenCalledOnce();
     });
   });
 
   describe("startUpdateDownload", () => {
     it("streams download events into the store and relaunches", async () => {
-      mockIsTauri.mockReturnValue(true);
       const update = fakeUpdate();
       mockCheck.mockResolvedValueOnce(update);
       await checkForUpdate(); // pendingUpdate をセット
@@ -100,7 +93,6 @@ describe("updater/api", () => {
       // Finished 発火後に署名検証が落ちる (不正 pubkey 等) 実挙動を模す。
       // 旧実装は Finished で ready にし reject を握らず、偽の準備完了 →
       // 未更新版へ再起動ループになっていた。修正後は error で止まる。
-      mockIsTauri.mockReturnValue(true);
       const update = {
         version: "2.0.0",
         body: null,
@@ -127,17 +119,15 @@ describe("updater/api", () => {
 
   describe("restartApp", () => {
     it("swallows a relaunch rejection (installer handles restart)", async () => {
-      mockIsTauri.mockReturnValue(true);
       mockRelaunch.mockRejectedValueOnce(
         new Error("no relaunch on this target"),
       );
       await expect(restartApp()).resolves.toBeUndefined();
     });
 
-    it("does not call relaunch outside Tauri", async () => {
-      mockIsTauri.mockReturnValue(false);
+    it("always delegates environment fallback behavior to the shell abstraction", async () => {
       await restartApp();
-      expect(mockRelaunch).not.toHaveBeenCalled();
+      expect(mockRelaunch).toHaveBeenCalledOnce();
     });
   });
 });

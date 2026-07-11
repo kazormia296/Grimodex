@@ -17,6 +17,7 @@ vi.mock("electron", () => ({
 
 import {
   buildMcpConfigShellHandlers,
+  prepareMcpSidecarForStartup,
   resolveMcpSidecarPath,
 } from "./mcpSidecar.js";
 import { IPC_BACKEND_UNAVAILABLE_MARKER } from "../shared/ipcContract.js";
@@ -146,11 +147,14 @@ describe("resolveMcpSidecarPath", () => {
     ]);
   });
 
-  it("uses the packaged resources/bin sidecar and never falls back to dev", async () => {
+  it("materializes a packaged Linux sidecar into stable userData storage", async () => {
     const packaged = "/opt/Grimodex/resources/bin/grimodex-mcp";
+    const stable =
+      "/home/writer/.local/share/com.miyakey.grimodex/bin/grimodex-mcp";
     const probeCandidate = vi.fn(async (candidate: string) =>
       candidate === packaged ? { mtimeMs: 100 } : null,
     );
+    const materializeSidecar = vi.fn(async () => stable);
 
     await expect(
       resolveMcpSidecarPath({
@@ -158,10 +162,40 @@ describe("resolveMcpSidecarPath", () => {
         resourcesPath: "/opt/Grimodex/resources",
         mainDir: "/opt/Grimodex/resources/app.asar/dist-electron",
         platform: "linux",
+        userDataDir: "/home/writer/.local/share/com.miyakey.grimodex",
         probeCandidate,
+        materializeSidecar,
+      }),
+    ).resolves.toBe(stable);
+    expect(probeCandidate).toHaveBeenCalledExactlyOnceWith(packaged, "linux");
+    expect(materializeSidecar).toHaveBeenCalledExactlyOnceWith(
+      packaged,
+      "/home/writer/.local/share/com.miyakey.grimodex",
+    );
+  });
+
+  it("keeps packaged non-Linux sidecars at their resource path", async () => {
+    const packaged =
+      "/Applications/Grimodex.app/Contents/Resources/bin/grimodex-mcp";
+    const probeCandidate = vi.fn(async (candidate: string) =>
+      candidate === packaged ? { mtimeMs: 100 } : null,
+    );
+    const materializeSidecar = vi.fn(async () => "/should/not/be/used");
+
+    await expect(
+      resolveMcpSidecarPath({
+        isPackaged: true,
+        resourcesPath: "/Applications/Grimodex.app/Contents/Resources",
+        mainDir:
+          "/Applications/Grimodex.app/Contents/Resources/app.asar/dist-electron",
+        platform: "darwin",
+        userDataDir:
+          "/Users/writer/Library/Application Support/com.miyakey.grimodex",
+        probeCandidate,
+        materializeSidecar,
       }),
     ).resolves.toBe(packaged);
-    expect(probeCandidate).toHaveBeenCalledExactlyOnceWith(packaged, "linux");
+    expect(materializeSidecar).not.toHaveBeenCalled();
   });
 
   it("uses the .exe suffix for Windows candidates", async () => {
@@ -271,6 +305,37 @@ describe("resolveMcpSidecarPath", () => {
         platform: "linux",
       }),
     ).resolves.toBe(release);
+  });
+});
+
+describe("prepareMcpSidecarForStartup", () => {
+  it("eagerly refreshes a packaged sidecar and reuses its stable path", async () => {
+    const resolveSidecar = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValue("/home/writer/.local/share/grimodex/bin/grimodex-mcp");
+
+    const prepared = await prepareMcpSidecarForStartup(true, resolveSidecar);
+
+    expect(resolveSidecar).toHaveBeenCalledOnce();
+    await expect(prepared()).resolves.toBe(
+      "/home/writer/.local/share/grimodex/bin/grimodex-mcp",
+    );
+    await expect(prepared()).resolves.toBe(
+      "/home/writer/.local/share/grimodex/bin/grimodex-mcp",
+    );
+    expect(resolveSidecar).toHaveBeenCalledOnce();
+  });
+
+  it("keeps development resolution lazy", async () => {
+    const resolveSidecar = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValue("/repo/src-tauri/target/debug/grimodex-mcp");
+
+    const prepared = await prepareMcpSidecarForStartup(false, resolveSidecar);
+
+    expect(resolveSidecar).not.toHaveBeenCalled();
+    await expect(prepared()).resolves.toContain("target/debug/grimodex-mcp");
+    expect(resolveSidecar).toHaveBeenCalledOnce();
   });
 });
 

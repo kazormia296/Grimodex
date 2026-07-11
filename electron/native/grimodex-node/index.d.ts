@@ -11,6 +11,20 @@ export declare class Backend {
    */
   constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null)
   /**
+   * Main-process-only bridge used during the Electron v2 first-run
+   * credential migration. This method is deliberately absent from
+   * `NAPI_COMMANDS`, so renderer IPC cannot request plaintext credentials.
+   * Feature-off development builds return a disabled envelope and never
+   * touch the OS keyring.
+   */
+  readLegacyApiKeysForMigration(): Promise<string>
+  /**
+   * Main/CI-only build gate. Packaging verifies both release-only features
+   * before electron-builder runs; this method is not registered in renderer
+   * IPC and contains no user data.
+   */
+  getNativeBuildCapabilities(): Promise<string>
+  /**
    * 常時exportするライセンス状態IPC。feature無効buildでは共有crateが
    * exact disabled DTOを返し、license.jsonには一切触れない。
    */

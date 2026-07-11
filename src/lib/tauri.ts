@@ -81,6 +81,9 @@ const SLOW_COMMANDS = new Set([
   "vivliostyle_save_output",
   /** Electronでは手入力pathのnative authorization応答を待ってからpreviewをspawnする。 */
   "vivliostyle_preview_start",
+  /** updater の network check / package download は 10s を超えうる。 */
+  "updater_check",
+  "updater_download",
   /** M3 で async 化した長時間 DB コマンド群。JS 側 10s タイムアウトだと
    *  「Rust 側は実行継続しているのに失敗扱い → 再クリックで多重実行」になる。
    *  FTS 全再構築/修復は分単位、open/seed は migrate + VACUUM INTO を含み、

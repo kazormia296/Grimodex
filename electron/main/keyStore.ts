@@ -12,7 +12,17 @@
  * で原子的（Tauri の ai-settings.json が非原子だった点を Electron 側で是正）。破損・
  * 読取・復号エラーは fail-closed とし、Linux の弱い basic_text backend は使用しない。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 import type {
@@ -45,6 +55,18 @@ export interface SafeStorageLike {
   decryptString(encrypted: Buffer): string;
 }
 
+/** Plaintext exists only in Electron main during the one-shot migration. */
+export interface LegacyApiKeyEntry {
+  provider: string;
+  endpointId: string | null;
+  key: string;
+}
+
+export interface LegacyApiKeyImportResult {
+  imported: number;
+  skippedExisting: number;
+}
+
 /** dispatchInvoke / shell ハンドラへ注入する API キーの窓口。 */
 export interface SecretsBridge {
   /** キーの有無だけ返す（平文は返さない）。 */
@@ -65,6 +87,10 @@ export interface SecretsBridge {
     argProvider: unknown,
     argEndpointId: unknown,
   ): string | null;
+  /** Main-only atomic import. Existing safeStorage entries always win. */
+  importLegacyApiKeys(
+    entries: readonly LegacyApiKeyEntry[],
+  ): LegacyApiKeyImportResult;
 }
 
 /** 暗号文ストア形: `{ [service]: { [account]: base64(safeStorage ciphertext) } }`。 */
@@ -141,9 +167,19 @@ export function createKeyStore(
 
   function persist(store: KeyFile): void {
     mkdirSync(userDataDir, { recursive: true });
-    const tmp = `${filePath}.tmp`;
-    writeFileSync(tmp, JSON.stringify(store, null, 2), "utf8");
-    renameSync(tmp, filePath);
+    const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    let descriptor: number | null = null;
+    try {
+      descriptor = openSync(tmp, "wx", 0o600);
+      writeFileSync(descriptor, JSON.stringify(store, null, 2), "utf8");
+      fsyncSync(descriptor);
+      closeSync(descriptor);
+      descriptor = null;
+      renameSync(tmp, filePath);
+    } finally {
+      if (descriptor !== null) closeSync(descriptor);
+      rmSync(tmp, { force: true });
+    }
   }
 
   function requireSecureStorage(): void {
@@ -210,6 +246,73 @@ export function createKeyStore(
         delete store[service];
       }
       if (changed) persist(store);
+    },
+
+    importLegacyApiKeys(entries) {
+      if (entries.length > 512) {
+        throw new Error("Legacy API key export exceeds the migration limit");
+      }
+      requireSecureStorage();
+      const store = load();
+      const existingAccounts = new Map(
+        Object.entries(store).map(([service, bucket]) => [
+          service,
+          new Set(Object.keys(bucket)),
+        ]),
+      );
+      let imported = 0;
+      let skippedExisting = 0;
+
+      // Build the complete encrypted next state in memory. Nothing is written
+      // until every encryption and verification succeeds, so a single bad
+      // key/backend response cannot leave a partially migrated key file.
+      for (const entry of entries) {
+        if (
+          typeof entry.provider !== "string" ||
+          (entry.endpointId !== null && typeof entry.endpointId !== "string") ||
+          typeof entry.key !== "string"
+        ) {
+          throw new Error("Legacy API key export has an invalid shape");
+        }
+        if (entry.key.length > 64 * 1024) {
+          throw new Error("Legacy API key exceeds the migration size limit");
+        }
+
+        const endpointId = entry.endpointId || null;
+        const service = keyringService(entry.provider);
+        const existingBucket = existingAccounts.get(service);
+        if (
+          existingBucket &&
+          keyringUserCandidates(entry.provider, endpointId).some((account) =>
+            existingBucket.has(account),
+          )
+        ) {
+          skippedExisting += 1;
+          continue;
+        }
+
+        const encrypted = storage.encryptString(entry.key);
+        let verified: string;
+        try {
+          verified = storage.decryptString(encrypted);
+        } catch (cause) {
+          throw new Error("Legacy API key encryption verification failed", {
+            cause,
+          });
+        }
+        if (verified !== entry.key) {
+          throw new Error("Legacy API key encryption verification mismatch");
+        }
+
+        const account = keyringUser(entry.provider, endpointId);
+        (store[service] ??= Object.create(null) as Record<string, string>)[
+          account
+        ] = encrypted.toString("base64");
+        imported += 1;
+      }
+
+      if (imported > 0) persist(store);
+      return { imported, skippedExisting };
     },
 
     resolveApiKeyForRequest(settings, argProvider, argEndpointId) {

@@ -145,6 +145,8 @@ export const EVENT_CHANNEL_ALLOWLIST: readonly string[] = [
   "vivliostyle:done",
   "vivliostyle:error",
   "vivliostyle:preview-exited",
+  // Electron main 発: electron-updater の byte progress（Phase 4）
+  "updater:download-progress",
   // renderer 発: codex 窓間同期（codexWindowSync.ts。§7.1 で Phase 2 受け入れ対象）
   "codex:data-changed",
   "codex:lock-event",
@@ -207,6 +209,10 @@ export interface NapiBackendLike {
   dbExecuteBatch(statements: unknown): Promise<string>;
   openWorkspace(path: string): Promise<string>;
   validateWorkspacePath(path: string): boolean;
+  /** Main-only one-shot bridge; intentionally absent from NAPI_COMMANDS. */
+  readLegacyApiKeysForMigration?(): Promise<string>;
+  /** Main/CI-only release feature gate; intentionally absent from IPC. */
+  getNativeBuildCapabilities?(): Promise<string>;
   /** Main-only bridge used to build standalone MCP sidecar config. */
   getActiveWorkspacePath?(): Promise<string>;
   listBackups?(): Promise<string>;
@@ -2066,6 +2072,11 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   // MCP（Phase 3 Batch 5）: mainがstandalone sidecarを解決し、workspaceは
   // native Backendから取得する。rendererへは実行可能pathとargsだけを返す。
   "get_mcp_config",
+  // Electron updater（Phase 4）: main の単一 manager が check/download/install
+  // state と electron-updater listener を invoke 間で共有する。
+  "updater_check",
+  "updater_download",
+  "updater_install",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
