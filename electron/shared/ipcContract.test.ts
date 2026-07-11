@@ -35,6 +35,16 @@ const AGENT_WRITE_RESULT = Promise.resolve(
 const PROSE_STAGE_RESULT = Promise.resolve(
   '{"stagingId":"st1","sceneId":"s1","status":"proposed"}',
 );
+const IME_EXPORT_STATUS_VALUE = {
+  rootPath: "/tmp/grimodex/ime",
+  consumers: [],
+  activeProjectId: "p1",
+  exportedProjectCount: 1,
+  effectiveEnabled: true,
+};
+const IME_EXPORT_STATUS = Promise.resolve(
+  JSON.stringify(IME_EXPORT_STATUS_VALUE),
+);
 
 function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
   backend: NapiBackendLike;
@@ -69,6 +79,28 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     timelapseAppendBatch: record(
       "timelapseAppendBatch",
       Promise.resolve('{"insertedCount":1,"tailSequence":2,"tailHash":"h"}'),
+    ) as never,
+    // IME 連携 Phase 2（Status DTO は JSON 文字列、clear/remove は unit）
+    imeExportRefresh: record("imeExportRefresh", IME_EXPORT_STATUS) as never,
+    imeExportSetActiveProject: record(
+      "imeExportSetActiveProject",
+      IME_EXPORT_STATUS,
+    ) as never,
+    imeExportDeactivateOnExit: record(
+      "imeExportDeactivateOnExit",
+      undefined,
+    ) as never,
+    imeExportGetStatus: record(
+      "imeExportGetStatus",
+      IME_EXPORT_STATUS,
+    ) as never,
+    imeExportClearAll: record(
+      "imeExportClearAll",
+      Promise.resolve(undefined),
+    ) as never,
+    imeExportRemoveProject: record(
+      "imeExportRemoveProject",
+      Promise.resolve(undefined),
     ) as never,
     // trash_bin 5 コマンド（napi は SELECT * の生行 = snake_case 列名を返す）
     trashBinCreate: record(
@@ -798,6 +830,114 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
   });
 
+  it("ime_export_refresh: workspace identityを含む引数を位置引数へ写像し Status DTO を parse する", async () => {
+    const { backend, calls } = fakeBackend();
+    const options = {
+      mode: "auto",
+      excludeHidden: true,
+      includeProfile: false,
+    };
+    const env = await dispatchInvoke(
+      "ime_export_refresh",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/a",
+        options,
+      },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([
+      {
+        method: "imeExportRefresh",
+        args: ["p1", "/workspaces/a", options],
+      },
+    ]);
+    expect(env).toEqual({ ok: true, value: IME_EXPORT_STATUS_VALUE });
+  });
+
+  it("ime_export_set_active_project: projectId の string / null を保持し Status DTO を parse する", async () => {
+    const { backend, calls } = fakeBackend();
+    const active = await dispatchInvoke(
+      "ime_export_set_active_project",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/a",
+        mode: "auto",
+      },
+      { backend, shell: noShell },
+    );
+    const inactive = await dispatchInvoke(
+      "ime_export_set_active_project",
+      { projectId: null, expectedWorkspacePath: null, mode: "off" },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([
+      {
+        method: "imeExportSetActiveProject",
+        args: ["p1", "/workspaces/a", "auto"],
+      },
+      { method: "imeExportSetActiveProject", args: [null, null, "off"] },
+    ]);
+    const status = { ok: true, value: IME_EXPORT_STATUS_VALUE };
+    expect(active).toEqual(status);
+    expect(inactive).toEqual(status);
+  });
+
+  it("ime_export_set_active_project: projectId は null / string 以外を拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "ime_export_set_active_project",
+      { projectId: 42, expectedWorkspacePath: "/workspaces/a", mode: "auto" },
+      { backend, shell: noShell },
+    );
+
+    expect(env.ok).toBe(false);
+    if (!env.ok) {
+      expect(env.error).toContain(
+        "invalid args `projectId` for command `ime_export_set_active_project`",
+      );
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("ime_export_get_status: {mode} を写像し Status DTO を parse する", async () => {
+    const { backend, calls } = fakeBackend();
+    const env = await dispatchInvoke(
+      "ime_export_get_status",
+      { mode: "auto" },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([{ method: "imeExportGetStatus", args: ["auto"] }]);
+    expect(env).toEqual({ ok: true, value: IME_EXPORT_STATUS_VALUE });
+  });
+
+  it("ime_export_clear_all / remove_project: unit 返りは null（Tauri ワイヤ同形）", async () => {
+    const { backend, calls } = fakeBackend();
+    const clear = await dispatchInvoke(
+      "ime_export_clear_all",
+      {},
+      { backend, shell: noShell },
+    );
+    const remove = await dispatchInvoke(
+      "ime_export_remove_project",
+      { projectId: "p1", expectedWorkspacePath: "/workspaces/a" },
+      { backend, shell: noShell },
+    );
+
+    expect(calls).toEqual([
+      { method: "imeExportClearAll", args: [] },
+      {
+        method: "imeExportRemoveProject",
+        args: ["p1", "/workspaces/a"],
+      },
+    ]);
+    expect(clear).toEqual({ ok: true, value: null });
+    expect(remove).toEqual({ ok: true, value: null });
+  });
+
   it("trash_bin_create: {payload}（struct 内 camelCase）を素通しし作成行を parse して返す", async () => {
     const { backend, calls } = fakeBackend();
     // Tauri 実装（trash_bin.rs）は payload struct の中身を serde rename_all の
@@ -924,7 +1064,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（Phase 2垂直slice + Phase 3 Batch 1〜5）", () => {
+  it("napi コマンド表が揃っている（Electron移行 + IME Phase 2）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "abort_chat_stream",
       "abort_inline_ai_stream",
@@ -993,6 +1133,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "get_ai_settings",
       "get_global_settings",
       "get_license_state",
+      "ime_export_clear_all",
+      "ime_export_get_status",
+      "ime_export_refresh",
+      "ime_export_remove_project",
+      "ime_export_set_active_project",
       "integrity_check",
       "lint_text",
       "list_ai_models",

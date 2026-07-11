@@ -4,8 +4,9 @@
 //! `#[napi]` class `Backend` が grimodex-db の `WorkspaceState` を保持し、
 //! 垂直スライスのコマンド群 + `onEvent` を Node (Electron main) へ公開する。
 //!
-//! - **全公開関数は async + `spawn_blocking`** (軽量 stat のみの
-//!   `validate_workspace_path` を除く)。同期 `#[napi]` は Node main thread =
+//! - **全公開関数は async + `spawn_blocking`** (軽量 stat の
+//!   `validate_workspace_path` と、終了を確実に待つ
+//!   `ime_export_deactivate_on_exit` を除く)。同期 `#[napi]` は Node main thread =
 //!   Electron main プロセス全体をブロックする (Phase 0 スパイク実証) —
 //!   busy_timeout 5s を踏んだ db_execute が全窓の IPC を止める事故を構造的に防ぐ。
 //! - 返り値は当面 **JSON 文字列** (rows の二重シリアライズは Phase 3 の最適化
@@ -38,6 +39,12 @@ use grimodex_db::foreshadow::{
     self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
     PayoffAnchorInput, SetupAnchorInput, SetupCreateAiInput,
 };
+use grimodex_db::ime_export::{
+    clear_all_exports, get_status as get_ime_export_status, refresh_project_export,
+    remove_project_export_if_absent, resolve_mode_from_preferences,
+    resolve_options_from_preferences, set_active_project, ImeExportOptions, ImeExportRequestGate,
+    ImeExportRequestToken, ImeIntegrationMode,
+};
 use grimodex_db::open::{open_workspace_sync, OpenDeps};
 use grimodex_db::plot_threads::{
     self, PlotThreadCreatePayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
@@ -45,7 +52,9 @@ use grimodex_db::plot_threads::{
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::sample_seed;
-use grimodex_db::state::{active_database, active_workspace_path};
+use grimodex_db::state::{
+    active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
+};
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
@@ -93,6 +102,85 @@ where
     .await
     .map_err(join_err_to_napi)?
     .map_err(|error| Error::from_reason(format!("{error:#}")))
+}
+
+fn authoritative_ime_options(
+    state: &AppState,
+    fallback: &ImeExportOptions,
+) -> std::result::Result<ImeExportOptions, AppError> {
+    let _guard = state
+        .gs
+        .write_lock
+        .lock()
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+    let settings = workspace::read_global_settings(&state.gs.path);
+    Ok(resolve_options_from_preferences(
+        &settings.user_preferences,
+        fallback,
+    ))
+}
+
+fn authoritative_ime_mode(
+    state: &AppState,
+    fallback: ImeIntegrationMode,
+) -> std::result::Result<ImeIntegrationMode, AppError> {
+    let _guard = state
+        .gs
+        .write_lock
+        .lock()
+        .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+    let settings = workspace::read_global_settings(&state.gs.path);
+    Ok(resolve_mode_from_preferences(
+        &settings.user_preferences,
+        fallback,
+    ))
+}
+
+/// Linearization barrier for a native workspace replacement. The swap hook
+/// waits for an old snapshot writer to finish, rotates the request generation,
+/// and deactivates the shared pointer before any new writer can enter.
+fn rotate_ime_workspace(state: &AppState) {
+    let _writer = match state.ime_write_lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    state.ime_request_gate.rotate_workspace();
+    if let Err(error) = set_active_project(&state.ime_root, None, ImeIntegrationMode::On) {
+        eprintln!("failed to deactivate IME pointer during workspace swap: {error}");
+    }
+}
+
+fn validate_ime_workspace(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_workspace_path: &str,
+) -> std::result::Result<(), AppError> {
+    let expected = PathBuf::from(expected_workspace_path);
+    if workspace.path != expected {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "IME_WORKSPACE_CHANGED: expected {}, active {}",
+            expected.display(),
+            workspace.path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Optimistically bind one request token to the exact DB/path snapshot seen at
+/// IPC arrival. A concurrent swap either makes `active_workspace_snapshot`
+/// fail closed or changes the gate generation so registration retries.
+fn pin_ime_workspace_request(
+    state: &AppState,
+    expected_workspace_path: &str,
+    mut register: impl FnMut(&ImeExportRequestGate, u64) -> Option<ImeExportRequestToken>,
+) -> std::result::Result<(ActiveWorkspaceSnapshot, ImeExportRequestToken), AppError> {
+    loop {
+        let generation = state.ime_request_gate.workspace_generation();
+        let workspace = active_workspace_snapshot(&state.ws)?;
+        validate_ime_workspace(&workspace, expected_workspace_path)?;
+        if let Some(request) = register(&state.ime_request_gate, generation) {
+            return Ok((workspace, request));
+        }
+    }
 }
 
 /// agent_writes 18 コマンドの定形写像。FE の `{ payload }` を DTO へ
@@ -380,6 +468,7 @@ impl Backend {
         run_blocking(move || {
             let state_for_hook = Arc::clone(&state);
             let mut on_swapped = move || {
+                rotate_ime_workspace(&state_for_hook);
                 let mut matcher = match state_for_hook.codex_matcher.lock() {
                     Ok(matcher) => matcher,
                     Err(poisoned) => poisoned.into_inner(),
@@ -444,13 +533,20 @@ impl Backend {
         run_blocking(move || {
             let state_for_hook = Arc::clone(&state);
             restore_backup_core(&state.ws, &file_name, move || {
+                rotate_ime_workspace(&state_for_hook);
                 let mut matcher = match state_for_hook.codex_matcher.lock() {
                     Ok(matcher) => matcher,
                     Err(poisoned) => poisoned.into_inner(),
                 };
                 *matcher = None;
                 state_for_hook.semantic.rotate_workspace_epoch();
-            })
+            })?;
+            let path = active_workspace_path(&state.ws)?;
+            state.events.emit(
+                "workspace:opened",
+                serde_json::json!({ "path": path, "reason": "restore" }),
+            );
+            Ok(())
         })
         .await
     }
@@ -526,6 +622,179 @@ impl Backend {
                 let result = db.append_change_events(&project_id, &session_id, &events)?;
                 Ok(serde_json::to_string(&result)?)
             })
+        })
+        .await
+    }
+
+    /// 現在の Codex 読みを `<userData>/ime/projects/<projectId>.json` へ再出力する。
+    /// options は typed IPC と同じ camelCase `ImeExportOptions`。DB 読み取りと
+    /// ファイル I/O の双方を Node main thread の外で実行する。
+    #[napi]
+    pub async fn ime_export_refresh(
+        &self,
+        project_id: String,
+        expected_workspace_path: String,
+        options: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        let options: ImeExportOptions = from_wire("options", options).map_err(app_err_to_napi)?;
+        let (workspace, request) =
+            pin_ime_workspace_request(&state, &expected_workspace_path, |gate, generation| {
+                gate.register_refresh_for_generation(&project_id, &options, generation)
+            })
+            .map_err(app_err_to_napi)?;
+        run_blocking(move || {
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            let options = authoritative_ime_options(&state, &options)?;
+            if !state.ime_request_gate.is_current(&request) {
+                let status = get_ime_export_status(&state.ime_root, options.mode)?;
+                return Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?);
+            }
+            let status = refresh_project_export(
+                workspace.db.as_ref(),
+                &state.ime_root,
+                &project_id,
+                &options,
+            )?;
+            Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// IME consumer が参照する active project を切り替える。`None` は明示的な
+    /// deactivation であり、renderer からの null をそのまま受ける。
+    #[napi]
+    pub async fn ime_export_set_active_project(
+        &self,
+        project_id: Option<String>,
+        expected_workspace_path: Option<String>,
+        mode: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        let mode: ImeIntegrationMode =
+            from_wire("mode", serde_json::Value::String(mode)).map_err(app_err_to_napi)?;
+        let request = if project_id.is_some() {
+            let expected_workspace_path = expected_workspace_path.ok_or_else(|| {
+                Error::from_reason(
+                    "expectedWorkspacePath is required when activating an IME project",
+                )
+            })?;
+            let (_, request) = pin_ime_workspace_request(
+                &state,
+                &expected_workspace_path,
+                ImeExportRequestGate::register_active_for_generation,
+            )
+            .map_err(app_err_to_napi)?;
+            request
+        } else {
+            state.ime_request_gate.register_active()
+        };
+        run_blocking(move || {
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            let mode = authoritative_ime_mode(&state, mode)?;
+            if !state.ime_request_gate.is_current(&request) {
+                let status = get_ime_export_status(&state.ime_root, mode)?;
+                return Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?);
+            }
+            let status = set_active_project(&state.ime_root, project_id.as_deref(), mode)?;
+            Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Electron の will-quit 専用。blocking pool の処理をタイムアウトで
+    /// 打ち切ると state.json が旧 project を指したまま終了し得るため、ここだけ
+    /// 同期的に writer mutex を待ち、active pointer の解除完了を保証する。
+    #[napi]
+    pub fn ime_export_deactivate_on_exit(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        let request = state.ime_request_gate.register_active();
+        let _guard = state
+            .ime_write_lock
+            .lock()
+            .map_err(|e| app_err_to_napi(AppError::Anyhow(anyhow::anyhow!("{e}"))))?;
+        if !state.ime_request_gate.is_current(&request) {
+            return Ok(());
+        }
+        set_active_project(&state.ime_root, None, ImeIntegrationMode::On)
+            .map(|_| ())
+            .map_err(|error| app_err_to_napi(AppError::Anyhow(error)))
+    }
+
+    /// consumer handshake と現在の export 状態を返す。
+    #[napi]
+    pub async fn ime_export_get_status(&self, mode: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let fallback: ImeIntegrationMode = from_wire("mode", serde_json::Value::String(mode))?;
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            let mode = authoritative_ime_mode(&state, fallback)?;
+            let status = get_ime_export_status(&state.ime_root, mode)?;
+            Ok(serde_json::to_string(&status).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// consumer handshake は保持し、project snapshots と active state を消去する。
+    #[napi]
+    pub async fn ime_export_clear_all(&self) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        let request = state.ime_request_gate.register_clear();
+        run_blocking(move || {
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            if !state.ime_request_gate.is_current(&request) {
+                return Ok(());
+            }
+            let result = clear_all_exports(&state.ime_root).map_err(AppError::from);
+            state.ime_request_gate.finish_clear(&request);
+            result
+        })
+        .await
+    }
+
+    /// 単一 project の snapshot を削除し、必要なら active state も解除する。
+    #[napi]
+    pub async fn ime_export_remove_project(
+        &self,
+        project_id: String,
+        expected_workspace_path: String,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        let (workspace, request) =
+            pin_ime_workspace_request(&state, &expected_workspace_path, |gate, generation| {
+                gate.register_remove_for_generation(&project_id, generation)
+            })
+            .map_err(app_err_to_napi)?;
+        run_blocking(move || {
+            let _guard = state
+                .ime_write_lock
+                .lock()
+                .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
+            if !state.ime_request_gate.is_current(&request) {
+                if !state
+                    .ime_request_gate
+                    .is_workspace_generation_current(&request)
+                {
+                    return Err(AppError::Anyhow(anyhow::anyhow!(
+                        "IME_WORKSPACE_CHANGED: snapshot cleanup must be retried"
+                    )));
+                }
+                return Ok(());
+            }
+            remove_project_export_if_absent(workspace.db.as_ref(), &state.ime_root, &project_id)?;
+            Ok(())
         })
         .await
     }
@@ -2242,5 +2511,104 @@ impl Backend {
         tsfn.unref(&env)?;
         self.state.events.register(tsfn);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod ime_workspace_tests {
+    use super::*;
+    use grimodex_db::state::ActiveWorkspace;
+    use grimodex_db::Database;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn workspace_rotation_waits_for_the_snapshot_writer_then_invalidates_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-node-ime-workspace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let resources = dir.join("resources");
+        let state = Arc::new(
+            AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state"),
+        );
+        let options = ImeExportOptions {
+            mode: ImeIntegrationMode::On,
+            exclude_hidden: false,
+            include_profile: true,
+        };
+        let old_request = state
+            .ime_request_gate
+            .register_refresh("default-project", &options);
+        let writer = state.ime_write_lock.lock().expect("writer lock");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let state_for_thread = Arc::clone(&state);
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).expect("started");
+            rotate_ime_workspace(&state_for_thread);
+            done_tx.send(()).expect("done");
+        });
+
+        started_rx.recv().expect("rotation started");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(30)).is_err(),
+            "rotation must not pass the writer barrier"
+        );
+        drop(writer);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("rotation completes after writer release");
+        thread.join().expect("rotation thread");
+
+        assert!(!state.ime_request_gate.is_current(&old_request));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mismatched_workspace_path_does_not_invalidate_a_legitimate_request() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-node-ime-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let resources = dir.join("resources");
+        let state =
+            AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
+        let workspace_path = dir.join("workspace-a");
+        std::fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
+            db: Arc::new(db),
+            path: workspace_path.clone(),
+        });
+        let options = ImeExportOptions {
+            mode: ImeIntegrationMode::On,
+            exclude_hidden: false,
+            include_profile: true,
+        };
+        let legitimate = state
+            .ime_request_gate
+            .register_refresh("default-project", &options);
+
+        let result = pin_ime_workspace_request(
+            &state,
+            &dir.join("workspace-b").to_string_lossy(),
+            |gate, generation| {
+                gate.register_refresh_for_generation("default-project", &options, generation)
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(state.ime_request_gate.is_current(&legitimate));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

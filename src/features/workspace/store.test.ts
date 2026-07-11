@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useWorkspaceStore } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 
+const cancelScheduledImeExportsMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/features/ime/scheduler", () => ({
+  cancelScheduledImeExports: cancelScheduledImeExportsMock,
+}));
+
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
 }));
@@ -129,6 +135,37 @@ describe("useWorkspaceStore", () => {
   });
 
   describe("openWorkspace", () => {
+    it("cancels pending IME exports before invoking the native workspace swap", async () => {
+      const order: string[] = [];
+      cancelScheduledImeExportsMock.mockImplementation(() => {
+        order.push("cancel-ime");
+      });
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "open_workspace") {
+          order.push("open-workspace");
+          return { name: "MyNovel", isExisting: true };
+        }
+        if (command === "get_global_settings") {
+          return {
+            recentWorkspaces: [],
+            lastActiveWorkspace: "D:\\Novels\\MyNovel",
+            theme: "system",
+            uiLanguage: "ja",
+            uiScale: 100,
+            showLauncherOnStartup: false,
+          };
+        }
+        return { rows: [] };
+      });
+
+      await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\MyNovel");
+
+      expect(order).toContain("cancel-ime");
+      expect(order.indexOf("cancel-ime")).toBeLessThan(
+        order.indexOf("open-workspace"),
+      );
+    });
+
     it("sets editor view and active workspace on success", async () => {
       mockInvoke.mockResolvedValueOnce({ name: "MyNovel" });
 

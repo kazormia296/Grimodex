@@ -20,6 +20,10 @@
 > CI/dev環境を撤去し、Electron/Chromium契約とv2.0.0 version/release notesへ更新済み。
 > Chromiumの←/→ hardBreak caret、v1 updater/installer/data/keyring移行は維持。
 > 詳細はPhase 3設計書 §7。tag/Draft releaseは未実施。
+>
+> Post-Phase 5追記（2026-07-11）: master #326のIME辞書連携5 IPCは
+> Electron-only（typed preload IPC → N-API → `grimodex-db`）で統合した後発機能であり、
+> 本表の静的Tauri inventory 145件・分類集計には加算しない。詳細はPhase 3設計書 §8。
 
 ---
 

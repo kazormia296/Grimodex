@@ -24,6 +24,11 @@ import {
 } from "@/features/project/projectStore";
 import { toast } from "sonner";
 import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
+import { cancelScheduledImeExports } from "@/features/ime/scheduler";
+import {
+  getCurrentImeWorkspaceIdentity,
+  setCurrentImeWorkspaceIdentity,
+} from "@/features/ime/workspaceScope";
 
 export interface RecentWorkspace {
   path: string;
@@ -245,8 +250,13 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
     const wasSamePathReopen =
       get().view === "editor" && get().activeWorkspacePath === path;
     const previousWorkspaceHydrated = get().workspaceHydrated;
+    const previousImeWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
     let swapDone = false;
     try {
+      // Debounced snapshot writes carry the old Project id. Stop them before
+      // any await so they cannot wake up against the replacement database.
+      cancelScheduledImeExports();
+      setCurrentImeWorkspaceIdentity(null);
       set({
         error: null,
         workspaceSwitchInProgress: true,
@@ -319,6 +329,10 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         workspaceSwitchInProgress: false,
         workspaceHydrated: true,
       }));
+      setCurrentImeWorkspaceIdentity({
+        path,
+        openRevision: get().workspaceOpenRevision,
+      });
       // Migrate app_settings → userPreferences + project_settings (runs once per workspace)
       const {
         migrateAppSettingsToScopedStores,
@@ -390,6 +404,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
         // If still on loading screen (called from initialize), recover to launcher
         ...(get().view === "loading" ? { view: "launcher" as const } : {}),
       });
+      if (!swapDone && previousWorkspaceHydrated) {
+        setCurrentImeWorkspaceIdentity(previousImeWorkspaceIdentity);
+      }
     } finally {
       if (get().workspaceSwitchInProgress) {
         set({ workspaceSwitchInProgress: false });

@@ -99,6 +99,7 @@ import {
 import { useCodexSelectionSync } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { startCodexLockListener } from "@/features/codex/multiwindow/codexEditLockStore";
 import { cn } from "@/lib/utils";
+import { useImeExportSync } from "@/features/ime/useImeExportSync";
 
 /* ── App root ── */
 
@@ -358,6 +359,9 @@ function EditorScreen() {
     s.getBoolean("display.glassSurfaceEditorChrome", true),
   );
   const mac = isMac();
+
+  // IME dictionary snapshot + active-project pointer (Tauri/Electron/browser-safe).
+  useImeExportSync();
 
   // AI 応答ストリームの開始/完了を SR へ読み上げる (a11y)。単一マウント。
   useAiStreamingAnnouncer();

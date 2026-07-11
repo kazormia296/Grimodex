@@ -38,6 +38,15 @@ pub struct WorkspaceState {
     pub open_lock: Mutex<()>,
 }
 
+/// Database and path captured under one `WorkspaceState::inner` lock.
+/// Long-running shell adapters keep this value instead of resolving the
+/// active workspace again after entering a blocking queue.
+#[derive(Clone)]
+pub struct ActiveWorkspaceSnapshot {
+    pub db: Arc<Database>,
+    pub path: PathBuf,
+}
+
 /// Path to the global settings file in AppData.
 pub struct GlobalSettingsPath {
     pub path: PathBuf,
@@ -55,7 +64,7 @@ pub struct GlobalSettingsPath {
 /// 長寿命の background task は開始時にこの `Arc` を保持し、workspace switch 後も
 /// 同じ DB へ完了/失敗を保存する。通常の短命 command は `with_db_state` 経由で毎回
 /// 解決する。どちらも switching / no-workspace の fail-closed 契約は同一。
-pub fn active_database(ws_state: &WorkspaceState) -> AppResult<Arc<Database>> {
+pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveWorkspaceSnapshot> {
     // ws_state.inner はアクティブ workspace の解決 (Option → Arc<Database>) と
     // switching チェックのためだけに取得し、Arc を呼び出し元へ返す前に必ず解放する。
     // 以前は closure をロック保持下で走らせていたため、ws_state Mutex が DB コール
@@ -83,9 +92,16 @@ pub fn active_database(ws_state: &WorkspaceState) -> AppResult<Arc<Database>> {
             return Err(AppError::WorkspaceSwitching);
         }
         let ws = inner.as_ref().ok_or(AppError::NoWorkspace)?;
-        Ok(Arc::clone(&ws.db))
+        Ok(ActiveWorkspaceSnapshot {
+            db: Arc::clone(&ws.db),
+            path: ws.path.clone(),
+        })
         // inner guard はこのブロック終端で drop = 呼び出し元の DB 操作前に解放。
     }
+}
+
+pub fn active_database(ws_state: &WorkspaceState) -> AppResult<Arc<Database>> {
+    Ok(active_workspace_snapshot(ws_state)?.db)
 }
 
 /// Resolve the currently-open workspace directory without exposing the
@@ -93,17 +109,7 @@ pub fn active_database(ws_state: &WorkspaceState) -> AppResult<Arc<Database>> {
 /// contract as [`active_database`] applies, so an MCP config can never capture
 /// a path midway through a native workspace swap.
 pub fn active_workspace_path(ws_state: &WorkspaceState) -> AppResult<PathBuf> {
-    let inner = ws_state
-        .inner
-        .lock()
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(AppError::WorkspaceSwitching);
-    }
-    inner
-        .as_ref()
-        .map(|workspace| workspace.path.clone())
-        .ok_or(AppError::NoWorkspace)
+    Ok(active_workspace_snapshot(ws_state)?.path)
 }
 
 /// `tauri::State` を剥がした `with_db` 本体。単体テストや napi 側から
@@ -235,5 +241,25 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let error = active_workspace_path(&state).expect_err("switching must fail closed");
         assert!(error.to_string().contains("WORKSPACE_SWITCHING"));
+    }
+
+    #[test]
+    fn active_workspace_snapshot_pins_database_and_path_from_one_workspace() {
+        let state = workspace_state_with_db();
+        let snapshot = active_workspace_snapshot(&state).expect("workspace snapshot");
+
+        let replacement = Database::new(Path::new(":memory:")).expect("replacement db");
+        *state.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
+            db: Arc::new(replacement),
+            path: PathBuf::from("/tmp/replacement-ws"),
+        });
+
+        assert_eq!(snapshot.path, PathBuf::from("/tmp/test-ws"));
+        assert!(!Arc::ptr_eq(
+            &snapshot.db,
+            &active_workspace_snapshot(&state)
+                .expect("replacement snapshot")
+                .db,
+        ));
     }
 }

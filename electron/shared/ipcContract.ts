@@ -225,6 +225,24 @@ export interface NapiBackendLike {
     sessionId: string,
     events: unknown,
   ): Promise<string>;
+  imeExportRefresh(
+    projectId: string,
+    expectedWorkspacePath: string,
+    options: unknown,
+  ): Promise<string>;
+  imeExportSetActiveProject(
+    projectId: string | null | undefined,
+    expectedWorkspacePath: string | null | undefined,
+    mode: string,
+  ): Promise<string>;
+  /** Electron main の終了処理専用。renderer IPC には公開しない。 */
+  imeExportDeactivateOnExit(): void;
+  imeExportGetStatus(mode: string): Promise<string>;
+  imeExportClearAll(): Promise<void>;
+  imeExportRemoveProject(
+    projectId: string,
+    expectedWorkspacePath: string,
+  ): Promise<void>;
   trashBinCreate(payload: unknown): Promise<string>;
   trashBinList(projectId: string, limit?: number | null): Promise<string>;
   trashBinDelete(id: string): Promise<void>;
@@ -674,6 +692,22 @@ function optionalBoolean(
   return value;
 }
 
+/** Tauri の Option<String> を napi へ渡す際、明示 null を失わない写像。 */
+function nullableString(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): string | null | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected a string or null`,
+    );
+  }
+  return value;
+}
+
 /** napi は JSON 文字列を返す（Tauri ワイヤと同形にするため parse して返す）。 */
 function parseWire(json: string): unknown {
   return JSON.parse(json) as unknown;
@@ -813,6 +847,55 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requirePresent(a, "events", "timelapse_append_batch"),
         ),
       ),
+  },
+  // IME 連携 Phase 2。status は napi の JSON 文字列を typed renderer の
+  // camelCase object に戻し、unit コマンドは null を返す。
+  ime_export_refresh: {
+    run: async (b, a) =>
+      parseWire(
+        await b.imeExportRefresh(
+          requireString(a, "projectId", "ime_export_refresh"),
+          requireString(a, "expectedWorkspacePath", "ime_export_refresh"),
+          requirePresent(a, "options", "ime_export_refresh"),
+        ),
+      ),
+  },
+  ime_export_set_active_project: {
+    run: async (b, a) =>
+      parseWire(
+        await b.imeExportSetActiveProject(
+          nullableString(a, "projectId", "ime_export_set_active_project"),
+          nullableString(
+            a,
+            "expectedWorkspacePath",
+            "ime_export_set_active_project",
+          ),
+          requireString(a, "mode", "ime_export_set_active_project"),
+        ),
+      ),
+  },
+  ime_export_get_status: {
+    run: async (b, a) =>
+      parseWire(
+        await b.imeExportGetStatus(
+          requireString(a, "mode", "ime_export_get_status"),
+        ),
+      ),
+  },
+  ime_export_clear_all: {
+    run: async (b) => {
+      await b.imeExportClearAll();
+      return null;
+    },
+  },
+  ime_export_remove_project: {
+    run: async (b, a) => {
+      await b.imeExportRemoveProject(
+        requireString(a, "projectId", "ime_export_remove_project"),
+        requireString(a, "expectedWorkspacePath", "ime_export_remove_project"),
+      );
+      return null;
+    },
   },
   // trash_bin 5 コマンド（起動時の trash_bin_list IPC_UNIMPLEMENTED 修正）。
   // Tauri 側 fn 署名（src-tauri/src/commands/trash_bin.rs）との対応:

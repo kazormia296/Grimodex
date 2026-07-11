@@ -3,7 +3,7 @@ name = "grimodex-db"
 version = "0.1.0"
 edition = "2021"
 license = "Elastic-2.0"
-description = "Grimodex workspace DB layer (SQLite open/migrate/FTS/backup + workspace state) shared by the Tauri command layer and the napi backend"
+description = "Grimodex workspace DB layer shared by the Electron N-API backend, MCP server, and frozen Tauri compatibility shell"
 
 [dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
@@ -17,6 +17,7 @@ anyhow = "1"
 thiserror = "2"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
+unicode-normalization = "0.1"
 grimodex-core = { path = "../grimodex-core" }
 
 [target.'cfg(windows)'.dependencies]

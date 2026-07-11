@@ -45,7 +45,12 @@ async function persistSetting(key: string, value: string): Promise<void> {
   const scope = KEY_SCOPE[key];
   if (scope === "global") {
     const { useWorkspaceStore } = await import("@/features/workspace/store");
-    await useWorkspaceStore.getState().updateUserPreference(key, value);
+    const saved = await useWorkspaceStore
+      .getState()
+      .updateUserPreference(key, value);
+    if (saved === false) {
+      throw new Error(`Failed to persist global setting: ${key}`);
+    }
   } else if (scope === "project") {
     await api.setProjectSetting(PROJECT_ID, key, value);
   } else {
@@ -164,11 +169,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     state._pending.set(key, value);
 
     const timer = setTimeout(async () => {
-      await persistSetting(key, value);
-      state._timers.delete(key);
-      // 後続の set で pending が更新されている場合は消さない
-      // （その値は新しいタイマーが persist する）。
-      if (state._pending.get(key) === value) state._pending.delete(key);
+      try {
+        await persistSetting(key, value);
+      } catch (error) {
+        console.error(`[settings] persist failed for ${key}`, error);
+      } finally {
+        state._timers.delete(key);
+        // 後続の set で pending が更新されている場合は消さない
+        // （その値は新しいタイマーが persist する）。
+        if (state._pending.get(key) === value) state._pending.delete(key);
+      }
     }, 300);
 
     state._timers.set(key, timer);
@@ -176,16 +186,22 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   flushPending: async () => {
     const state = get();
+    let firstError: unknown;
     for (const [key, timer] of state._timers.entries()) {
       clearTimeout(timer);
       // cache は loadAll で pending 未反映の値に巻き戻り得るため、
       // 「書くべき値」の正は _pending。
       const value = state._pending.get(key) ?? state.cache[key];
       if (value !== undefined) {
-        await persistSetting(key, value);
+        try {
+          await persistSetting(key, value);
+        } catch (error) {
+          firstError ??= error;
+        }
       }
     }
     state._timers.clear();
     state._pending.clear();
+    if (firstError) throw firstError;
   },
 }));

@@ -365,6 +365,29 @@ DevTools の Console / Network / Performance タブと Electron main process の
 - [ ] release build 初回起動で既知の v1 keyring 資格情報を Electron `safeStorage` へ移せる。
       移行元は rollback 用に保持され、移行失敗時も破壊しない
 
+## 33. IME 辞書連携（Electron）
+
+- [ ] 日本語プロジェクトで読み付きCodex項目を作り、設定 → Codex → IME連携に
+      `<userData>/ime/` の状態、検出consumer、書き出し件数が表示される
+- [ ] **auto / consumerなし**: `consumers/` に有効なhandshakeがなければ
+      `effectiveEnabled=false`で、`state.json`と`projects/*.json`を作成しない
+- [ ] **auto / consumerあり**: 有効な`consumers/<id>.json`を配置してウィンドウを
+      再フォーカスすると自動検出され、再起動なしでsnapshotとactive stateが作成される
+- [ ] **on**: consumerがなくても書き出す。**off**: consumerがあっても常に優先して
+      `state.json`と全project snapshotを削除し、その後のCodex編集でも復活しない
+- [ ] **atomic repeated refresh**: name / alias / excluded alias / readings / typeを短時間に連続変更してもdebounce後の
+      最終状態だけが反映され、監視中の全時点でJSONをparseできる。一時ファイルが残らず、
+      refresh / off / clear / removeを重ねても古い要求が新しい状態を巻き戻さない
+- [ ] 日本語project AからBへ切り替えると`state.json.active_project_id`がBだけを指す。
+      projectを閉じる、main windowを閉じる、またはアプリを終了すると`null`へ解除され、
+      floating panelだけを閉じてもmain windowのactive pointerは解除されない
+- [ ] 作品言語を`ja`から非日本語へ変更すると保存済み`readings`は保持したまま、
+      そのprojectのsnapshotが削除されactiveも解除される。`ja` / `ja-*`へ戻すと再生成される
+- [ ] project削除で対応する`projects/<id>.json`が消え、削除projectがactiveなら
+      `state.json`も解除される。他projectのsnapshotとconsumer handshakeは維持される
+- [ ] 「書き出し済み辞書をすべて削除」で`state.json`と全project snapshotが消え、
+      `consumers/*.json`は保持される。statusの書き出し件数は0になり、再refresh可能
+
 ---
 
 ## 実施記録テンプレ

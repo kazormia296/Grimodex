@@ -10,11 +10,12 @@ import path from "node:path";
 
 import { app, dialog, safeStorage } from "electron";
 
-import { initBackend } from "./backend.js";
+import { getBackend, initBackend } from "./backend.js";
 import { createCliAiManager } from "./cliAi.js";
 import { migrateLegacyKeyringToSafeStorage } from "./credentialMigration.js";
 import { registerEventBus, broadcastEvent } from "./events.js";
 import { createExternalMountManager } from "./externalMount.js";
+import { registerImeShutdown } from "./imeShutdown.js";
 import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
@@ -55,6 +56,8 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  registerImeShutdown(app, getBackend);
+
   app.on("second-instance", () => {
     const main = getWindow("main");
     if (!main) return;

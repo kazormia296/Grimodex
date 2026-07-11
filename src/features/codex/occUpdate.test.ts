@@ -20,6 +20,11 @@ vi.mock("@/db/client", () => ({
 vi.mock("@/features/semantic-search/scheduler", () => ({
   scheduleCodexIndex: vi.fn(),
 }));
+const scheduleImeExportRefreshMock = vi.fn();
+vi.mock("@/features/ime/scheduler", () => ({
+  scheduleImeExportRefresh: (...args: unknown[]) =>
+    scheduleImeExportRefreshMock(...args),
+}));
 vi.mock("./mentionRescanQueue", () => ({ enqueueRescan: vi.fn() }));
 
 import { updateCodexEntry } from "./api";
@@ -28,6 +33,7 @@ import { CodexVersionConflictError } from "./occ";
 beforeEach(() => {
   returningMock.mockReset();
   limitMock.mockReset();
+  scheduleImeExportRefreshMock.mockReset();
 });
 
 describe("updateCodexEntry OCC (base_version)", () => {
@@ -72,5 +78,43 @@ describe("updateCodexEntry OCC (base_version)", () => {
     expect(r?.id).toBe("e1");
     // OCC を使っていないので存在チェック (limit) は呼ばれない
     expect(limitMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateCodexEntry IME refresh trigger", () => {
+  const relevantPatches: Array<
+    [string, Parameters<typeof updateCodexEntry>[2]]
+  > = [
+    ["type", { type: "character" }],
+    ["name", { name: "changed" }],
+    ["aliases", { aliases: "[]" }],
+    ["excludedAliases", { excludedAliases: "[]" }],
+    ["readings", { readings: "{}" }],
+    ["contextMode", { contextMode: "hidden" }],
+  ];
+
+  it.each(relevantPatches)(
+    "refreshes after a successful %s mutation",
+    async (_, patch) => {
+      returningMock.mockResolvedValueOnce([
+        { id: "e1", projectId: "p", version: 0 },
+      ]);
+      await updateCodexEntry("p", "e1", patch);
+      expect(scheduleImeExportRefreshMock).toHaveBeenCalledWith("p");
+    },
+  );
+
+  it("does not refresh for content-only mutations", async () => {
+    returningMock.mockResolvedValueOnce([
+      { id: "e1", projectId: "p", version: 0, content: "x" },
+    ]);
+    await updateCodexEntry("p", "e1", { content: "x" });
+    expect(scheduleImeExportRefreshMock).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh when no row was updated", async () => {
+    returningMock.mockResolvedValueOnce([]);
+    await updateCodexEntry("p", "e1", { name: "changed" });
+    expect(scheduleImeExportRefreshMock).not.toHaveBeenCalled();
   });
 });

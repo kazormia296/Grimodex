@@ -53,3 +53,17 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — chat episodic recall toggle", () => {
     expect(DEFAULT_SETTINGS["ai.chatRecall"]).toBe("true");
   });
 });
+
+describe("DEFAULT_SETTINGS / KEY_SCOPE — IME integration Phase 2", () => {
+  it("IME settings are global user preferences", () => {
+    expect(KEY_SCOPE["ime.integrationMode"]).toBe("global");
+    expect(KEY_SCOPE["ime.excludeHidden"]).toBe("global");
+    expect(KEY_SCOPE["ime.includeProfile"]).toBe("global");
+  });
+
+  it("defaults to consumer-aware auto mode with profile enabled", () => {
+    expect(DEFAULT_SETTINGS["ime.integrationMode"]).toBe("auto");
+    expect(DEFAULT_SETTINGS["ime.excludeHidden"]).toBe("false");
+    expect(DEFAULT_SETTINGS["ime.includeProfile"]).toBe("true");
+  });
+});

@@ -23,6 +23,7 @@ import {
   type PendingProseProposal,
 } from "@/features/agent-writes/proseStagingStore";
 import { loadLatestProposedProse } from "@/features/agent-writes/prose";
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 
 const POLL_MS = 750;
 
@@ -148,6 +149,7 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   }
   if (domains.has("codex")) {
     await useCodexStore.getState().loadEntries();
+    scheduleImeExportRefresh(projectId);
   }
   if (domains.has("snippet")) {
     await useSnippetStore.getState().loadEntries();

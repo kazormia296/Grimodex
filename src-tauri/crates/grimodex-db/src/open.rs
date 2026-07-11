@@ -317,6 +317,10 @@ pub fn open_workspace_sync(
         db: std::sync::Arc::new(database),
         path: ws_path,
     });
+    // Shell swap hooks may wait for other subsystem writers (IME snapshot
+    // barrier, semantic epoch rotation). Do not retain the workspace mutex
+    // across those waits; `switching=true` already rejects fresh DB pins.
+    drop(inner);
 
     // =================================================================
     // 不変条件: swap (上の *inner = Some(...)) 以降は絶対に Err を

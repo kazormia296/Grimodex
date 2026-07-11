@@ -111,6 +111,29 @@ export declare class Backend {
    */
   timelapseAppendBatch(projectId: string, sessionId: string, events: any): Promise<string>
   /**
+   * 現在の Codex 読みを `<userData>/ime/projects/<projectId>.json` へ再出力する。
+   * options は typed IPC と同じ camelCase `ImeExportOptions`。DB 読み取りと
+   * ファイル I/O の双方を Node main thread の外で実行する。
+   */
+  imeExportRefresh(projectId: string, expectedWorkspacePath: string, options: any): Promise<string>
+  /**
+   * IME consumer が参照する active project を切り替える。`None` は明示的な
+   * deactivation であり、renderer からの null をそのまま受ける。
+   */
+  imeExportSetActiveProject(projectId: string | undefined | null, expectedWorkspacePath: string | undefined | null, mode: string): Promise<string>
+  /**
+   * Electron の will-quit 専用。blocking pool の処理をタイムアウトで
+   * 打ち切ると state.json が旧 project を指したまま終了し得るため、ここだけ
+   * 同期的に writer mutex を待ち、active pointer の解除完了を保証する。
+   */
+  imeExportDeactivateOnExit(): void
+  /** consumer handshake と現在の export 状態を返す。 */
+  imeExportGetStatus(mode: string): Promise<string>
+  /** consumer handshake は保持し、project snapshots と active state を消去する。 */
+  imeExportClearAll(): Promise<void>
+  /** 単一 project の snapshot を削除し、必要なら active state も解除する。 */
+  imeExportRemoveProject(projectId: string, expectedWorkspacePath: string): Promise<void>
+  /**
    * 文字屑ゴミ箱: 作成 (commands/trash_bin.rs の写像 — 実装本体は
    * `grimodex_db::trash_bin` を Tauri コマンドと共用)。trash_bin 5 コマンドは
    * workspace 読み込み時に `trash_bin_list` が必ず呼ばれるため、垂直スライスに

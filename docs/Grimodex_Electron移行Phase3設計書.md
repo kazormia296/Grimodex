@@ -561,3 +561,12 @@ cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex 
 cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 ```
+
+## 8. Post-Phase 5 master同期（2026-07-11）
+
+`origin/master` の #326 / #328 を同期した。IME辞書連携はElectron-onlyとして、
+rendererのtyped preload IPC 5本からN-APIを経て共有`grimodex-db`へ接続し、
+will-quit時のactive解除と旧Tauri `userData`互換も維持した。root Tauri command adapterは
+削除し、凍結legacy shellへは追加しない。5 IPCはPhase 5後の追加なので、本書のPhase 3完了と
+生成時点の静的Tauri inventory 145件は再集計しない。#328のChat Context Pipeline計画も、
+現役`grimodex-ai` / N-API / typed IPCを実装先とするElectron境界へ更新した。

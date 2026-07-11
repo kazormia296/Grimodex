@@ -15,6 +15,7 @@ import { applyUndoJournal } from "./undoJournal";
 import type { CodexEntry } from "@/features/codex/api";
 import { getCodexEntryVersion } from "@/features/codex/version";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 
 export interface AgentCodexCreateInput {
   type: string;
@@ -157,6 +158,7 @@ export async function agentCreateCodexEntry(
   // 段階3: agent 経路の codex 作成も semantic index へ (api.ts は通らないため
   // ここで明示フック)。debounce + Rust 側 hash 再検証で冪等。
   scheduleCodexIndex(result.entityId);
+  scheduleImeExportRefresh(projectId);
 
   const entry = useCodexStore
     .getState()
@@ -177,10 +179,12 @@ export async function agentCreateCodexEntry(
       async undo() {
         await applyUndoJournal(journalId, "undo");
         await useCodexStore.getState().loadEntries();
+        scheduleImeExportRefresh(projectId);
       },
       async redo() {
         await applyUndoJournal(journalId, "redo");
         await useCodexStore.getState().loadEntries();
+        scheduleImeExportRefresh(projectId);
       },
     });
   }
@@ -249,6 +253,9 @@ export async function agentUpdateCodexEntry(
 
   // 段階3: agent 経路の codex 更新も semantic index へ (api.ts は通らない)。
   scheduleCodexIndex(result.entityId);
+  if (input.name !== undefined || input.aliases !== undefined) {
+    scheduleImeExportRefresh(projectId);
+  }
 
   const entry = useCodexStore
     .getState()
@@ -269,10 +276,12 @@ export async function agentUpdateCodexEntry(
       async undo() {
         await applyUndoJournal(journalId, "undo");
         await useCodexStore.getState().loadEntries();
+        scheduleImeExportRefresh(projectId);
       },
       async redo() {
         await applyUndoJournal(journalId, "redo");
         await useCodexStore.getState().loadEntries();
+        scheduleImeExportRefresh(projectId);
       },
     });
   }

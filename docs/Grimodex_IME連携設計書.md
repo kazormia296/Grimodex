@@ -6,17 +6,19 @@
 
 第一想定の消費者は開発予定のzenz系IME（azooKeyフォーク）だが、**プロトコルはIME非依存**とし、mozc系（mozkey等）や他のIMEも同じファイルを取り込めるようにする。
 
-対象OS: macOS / Windows / Linux（Grimodex本体がTauri v2で3OS対応のため、プロトコルも3OS対応を必須とする）。iOSキーボード拡張はApp Group等の共有境界が別問題のためスコープ外。
+対象OS: macOS / Windows / Linux（現行のElectron版が3OS対応のため、プロトコルも3OS対応を必須とする）。iOSキーボード拡張はApp Group等の共有境界が別問題のためスコープ外。
 
 ## 2. 全体アーキテクチャ
 
 ```
-┌─────────────── Grimodex (Tauri) ───────────────┐
-│ codex_entries (+readings)                       │
-│   └→ mutation イベント (debounce)               │
-│        └→ [Rust] ime_export: 辞書スナップ生成    │
-│             └→ <app_data_dir>/ime/ へ atomic 書出│
-└─────────────────────────────────────────────────┘
+┌──────────────── Grimodex (Electron) ─────────────────┐
+│ renderer: codex mutation / project lifecycle         │
+│   └→ window.grimodex typed preload IPC（5コマンド）   │
+│        └→ Electron main: 引数検証                     │
+│             └→ grimodex-node (N-API): DB・書込直列化 │
+│                  └→ grimodex-db::ime_export          │
+│                       └→ <userData>/ime/ へ atomic書出│
+└───────────────────────────────────────────────────────┘
                        │ ファイル watch（OS別API）
 ┌─────────────── IME側アダプタ（OS別） ────────────┐
 │ macOS: azooKey-Desktop fork (IMKit)             │
@@ -40,7 +42,7 @@
 
 - 型: `TEXT`（JSON、`Record<string, string[]>` = 表記→読みの配列）。同一表記の複数読み（ルビ揺れ・呼び分け）を許容する。`aliases` / `excludedAliases` と同じJSON文字列カラムの流儀。
 - キーは `name` および `aliases[]` の各表記。並列配列にしない（aliases編集で対応関係が壊れるため、表記をキーにしたマップとする）。
-- マイグレーション: `src-tauri/src/database/migrate.rs` の `add_column_if_missing` 流儀（`version` 列の前例に従う）+ `src/db/schema.ts` への宣言。
+- マイグレーション: 現役共有crate `src-tauri/crates/grimodex-db/src/migrate.rs` の `add_column_if_missing` 流儀（`version` 列の前例に従う）+ `src/db/schema.ts` への宣言。
 - 改名・別名変更時は `readings` のキーを追随させる（改名波及はGrimodex_Codex改名波及設計書の機構に載せる）。
 
 ### 3.2 読みの解決順序（エクスポート時）
@@ -53,10 +55,16 @@
 
 - エントリ編集UIに読みフィールドを追加（表記ごと、複数読み可）。読みはIME連携以外にもルビ振り・五十音ソート（codexSort）・検索の将来利用を想定した汎用データとする。
 - 漢字を含む表記は、エントリ作成時・表記追加/変更時にAIが読みを**自動推定して即保存する**（承認フローは設けない）。誤推定はUIでの修正を訂正経路とする。既存エントリへの一括推定バックフィルもPhase 1で提供。
+- 項目名の代表読み（`readings[name][0]`）は Codex Hero で項目名の上に小さく表示し、複数読みがある場合は残数を併記する。alias はピル表示を維持し、alias を含む全表記の読み編集は Tracking タブへ集約する。
+- 読みUI・AI読み推定・バックフィルは、作品の内容言語が日本語（`projects.language` が `ja` または `ja-*`）のときだけ表示・実行する。UI表示言語には連動しない。日本語以外へ変更しても保存済みの `readings` は消さず、IMEスナップショットだけを無効化・削除する。連携の停止・プライバシー設定・全削除はグローバル設定なので、非日本語作品を開いている間も操作可能にする。
 
 ## 4. エクスポート先パスとファイル構成
 
-Tauri v2 の `app_data_dir`（identifier: `com.miyakey.grimodex`）配下に `ime/` を切る。
+packaged Electron の `app.getPath("userData")` 配下に `ime/` を切る。production の
+`userData` は `ready` / single-instance lock より前に、旧Tauri版の
+`data_dir/com.miyakey.grimodex` と同じ場所へ固定するため、既定監視先の契約と既存の
+辞書スナップショットは移行後もそのまま利用できる。development は
+`GrimodexElectronDev` へ隔離し、実機試験では `GRIMODEX_USER_DATA_DIR` で上書きできる。
 
 | OS | 既定パス |
 |---|---|
@@ -102,6 +110,12 @@ ime/
   "profile": "軍事SF。主要人物: 刹那、…（zenz条件付け用の要約文字列）"
 }
 ```
+
+`readings` は表記とのペアを保ったまま展開する。たとえば項目名 `OO` に alias
+`XX` があり、`readings` が `{"OO":["oo"],"XX":["xx"]}` なら、出力は
+`{ "yomi": "oo", "surface": "OO" }` と
+`{ "yomi": "xx", "surface": "XX" }` の2件になる。alias の読み `xx` を
+項目名 `OO` の surface へ付け替えてはならない。
 
 フィールド仕様:
 
@@ -149,8 +163,27 @@ IME側がインストール時・起動時に作成/touchし、アンインス�
   - state.json — プロジェクトopen/close、ウィンドウフォーカス変化
   - projects/*.json — codex mutation のうち name / aliases / excludedAliases / readings / type / エントリ削除（`content` 等の本文変更では書き出さない）
 - **debounce**: 1〜2秒。連続編集で書き出しが暴れないようにする。
-- **atomic write**: 一時ファイル→`rename`。IME側が中途半端なJSONを読まないための必須要件。
-- **実装位置**: フロントの `features/codex/api.ts` 層のmutation後イベント→Tauriコマンド `ime_export_refresh(project_id)` をdebounce呼び出し。JSON生成とファイルI/OはRust側に一元化する（マルチウィンドウでも書き手はTauriメインプロセス1つなので、プロセス内mutexで直列化すれば競合しない）。
+- **atomic write**: 一時ファイルを同一ディレクトリに同期してから置換する。Unix系は
+  `rename`、Windowsはextended-length pathへ正規化して
+  `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`を使い、IME側から
+  中途半端なJSONが見えないことと連続refreshで確実に上書きできることを保証する。
+- **renderer境界**: Codex mutationは `src/features/ime/scheduler.ts` から
+  `ime_export_refresh` をdebounce呼び出しする。project open/switch、window focus/pagehide、
+  設定変更は `useImeExportSync` がactive projectとスナップショットを同期する。rendererは
+  Node/N-APIを直接importせず、`window.grimodex` のtyped preload APIだけを使う。
+- **5 IPC**: `ime_export_refresh` / `ime_export_set_active_project` /
+  `ime_export_get_status` / `ime_export_clear_all` / `ime_export_remove_project`。
+  `electron/shared/ipcContract.ts` が引数を再検証し、Electron mainから
+  `grimodex-node` N-APIへ渡す。
+- **共有実装の正本**: JSON生成・consumer検出・atomic write・request順序判定は
+  `src-tauri/crates/grimodex-db/src/ime_export.rs` に置く。N-API側はapp data path、
+  active DB、writer mutexを注入する薄いadapterとし、古いrefreshが後発のoff/clear/removeを
+  巻き戻さないようrequest gateでlatest-winsを保証する。
+- **終了境界**: rendererの`pagehide`はawaitできないため、Electron mainの`will-quit`で
+  renderer IPCには公開しない同期N-API `imeExportDeactivateOnExit()` を呼び、
+  `state.json` のactive project解除完了を待ってから終了する。
+- **legacy方針**: `src-tauri`直下のTauri command adapterは削除済みで、root Tauri shellは
+  v1互換確認用の凍結legacyである。IME機能をそこへ再実装しない。
 - **クリーンアップ**: プロジェクト削除時に対応する `projects/<id>.json` を削除。設定画面に「書き出し済み辞書をすべて削除」を用意。
 
 ## 7. IME側アダプタ（参考実装ガイド）
@@ -170,7 +203,7 @@ OS別の注意点:
 |---|---|---|
 | macOS | azooKey-Desktop フォーク | AzooKeyKanaKanjiConverterに動的ユーザ辞書追加機構あり。IMKitクライアントの bundleIdentifier でスコープ判定可能 |
 | Linux | fcitx5-hazkey フォーク | エンジンが同じAzooKeyKanaKanjiConverterのためmacOSと同等機能。ただしWaylandではフォーカスアプリ判定に制約 → 「全アプリで有効」トグル運用を既定とする |
-| Windows | mozkey フォーク or TSF自作 | mozc系のユーザ辞書機構へ注入。zenzプロフィール相当の有無は要調査（なければ辞書コストのみで運用） |
+| Windows | mozkey フォーク or TSF自作 | mozc系のユーザ辞書機構へ注入。zenzプロフィール相当の有無は要調査（なければ辞書コストのみで運用）。監視対象JSONは読み取り後すぐ閉じる。handleを保持する場合は`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`を指定し、Grimodexのatomic replaceを妨げない |
 
 ## 8. セキュリティ・プライバシー
 
@@ -211,15 +244,20 @@ IME側の確定ログから未登録固有名詞候補をGrimodexへ戻し、`ca
 
 ## 11. テスト方針
 
-- Rust（エクスポータ）: スナップショット生成・読み正規化・atomic write の単体テスト（`cargo test --no-default-features`）
-- フロント: mutation→debounce→invoke 呼び出しの単体テスト（Vitest、ソース同階層）
+- 共有Rust（`grimodex-db`）: スナップショット生成・読み正規化・consumer検証・
+  atomic write・request競合のintegration test
+  （`cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test ime_export`）
+- N-API / typed IPC: 5 IPCの引数・wire変換・unit戻り値と、`will-quit`時の同期active解除を
+  Electron testで固定する。実`.node`は`pnpm napi:build`後のnative testでも確認する
+- renderer: mutation→debounce→invoke、project/focus lifecycle、設定UIの単体テスト
+  （Vitest、ソース同階層）
 - 読み正規化（カタカナ/半角カナ/濁点合成）は表駆動でケースを固定
 - レイアウト非関与のためbrowser testは不要
 
 ## 12. 実装フェーズ
 
-1. **Phase 1**: `readings` 列 + 編集UI + 自動導出 + AI読み推定（Grimodex単体で完結、ルビ等にも転用可）
-2. **Phase 2**: エクスポータ（state.json / projects/*.json）+ 連携モード設定（auto/on/off）+ consumer検出
+1. **Phase 1【完了】**: `readings` 列 + 編集UI + 自動導出 + AI読み推定（Grimodex単体で完結、ルビ等にも転用可）
+2. **Phase 2【完了・Electron-only】**: エクスポータ（`state.json` / `projects/*.json`）+ 連携モード設定（auto/on/off）+ consumer検出
 3. **Phase 3**: macOSアダプタ（azooKey-Desktopフォーク側の取り込み・スコープ判定・profile注入）+ macOS同梱インストール（§9）
 4. **Phase 4**: Linux（fcitx5-hazkey）/ Windows（mozkey）+ 各OSインストーラ同梱、還流の検討
 
