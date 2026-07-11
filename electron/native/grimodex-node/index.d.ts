@@ -56,14 +56,20 @@ export declare class Backend {
    */
   validateWorkspacePath(path: string): boolean
   /**
+   * Electron main専用の内部境界。standalone MCP sidecarへ渡す現在の
+   * workspace directoryを返す。renderer commandとしては公開せず、mainの
+   * `get_mcp_config` handlerだけが利用する。
+   */
+  getActiveWorkspacePath(): Promise<string>
+  /**
    * アクティブworkspaceの復元候補を新しい順で返す。
    * 返り値は `BackupInfo[]` のcamelCase JSON文字列。
    */
   listBackups(): Promise<string>
   /**
    * バックアップを検証・安全退避・原子置換し、同じworkspaceを再openする。
-   * 再open時にDB由来のCodex matcherを破棄する。semantic cacheはBatch 4で
-   * AppStateへ追加した時点で同じhookへ接続する。
+   * 再open時にDB由来のCodex matcherを破棄し、semantic 4-cache epochも
+   * rotateして復元前DBへのlate writeを不可視にする。
    */
   restoreBackup(fileName: string): Promise<void>
   /**
@@ -76,6 +82,12 @@ export declare class Backend {
    * 原子的書き込みと write_lock 直列化は Tauri コマンドと同一経路。
    */
   saveGlobalSettings(settings: any): Promise<void>
+  /**
+   * AppData配下に一意なsample-workspace世代を共有coreで公開する。
+   * GlobalSettingsのwrite_lockをget/save/openと共有し、同時seedも同じ
+   * critical sectionへ入る。公開済み世代はアクティブDB/MCPが保持し得るため削除しない。
+   */
+  seedSampleWorkspace(language: string, aiPolicy: string): Promise<string>
   /**
    * 監査チェーン append (commands/timelapse.rs の写像。編集ループ常連の
    * 軽量 DB 書き込み。§4.3)。`events` は camelCase の AppendChangeEvent 配列

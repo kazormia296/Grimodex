@@ -21,6 +21,7 @@ function resetStore() {
     activeWorkspaceName: null,
     error: null,
     pendingTrustPath: null,
+    showSampleTour: false,
   });
 }
 
@@ -305,6 +306,58 @@ describe("useWorkspaceStore", () => {
       useWorkspaceStore.setState({ view: "editor" });
       useWorkspaceStore.getState().showLauncher();
       expect(useWorkspaceStore.getState().view).toBe("launcher");
+    });
+  });
+
+  describe("seedAndOpenSample", () => {
+    it("replaces the previous immutable sample generation in trusted workspaces", async () => {
+      const oldSample =
+        "/data/sample-workspace-11111111-1111-1111-1111-111111111111";
+      const newSample =
+        "/data/sample-workspace-22222222-2222-2222-2222-222222222222";
+      const userWorkspace = "/novels/main";
+      const originalOpenWorkspace = useWorkspaceStore.getState().openWorkspace;
+      const openWorkspace = vi.fn().mockResolvedValue(undefined);
+      useWorkspaceStore.setState({
+        openWorkspace,
+        globalSettings: {
+          recentWorkspaces: [],
+          lastActiveWorkspace: oldSample,
+          theme: "system",
+          uiLanguage: "ja",
+          uiScale: 100,
+          showLauncherOnStartup: false,
+          trustedWorkspaces: [userWorkspace, oldSample],
+          sampleWorkspacePath: oldSample,
+        },
+      });
+      mockInvoke
+        .mockResolvedValueOnce({
+          path: newSample,
+          projectId: "default-project",
+        })
+        .mockResolvedValueOnce({
+          ...useWorkspaceStore.getState().globalSettings,
+          sampleWorkspacePath: newSample,
+        })
+        .mockResolvedValueOnce(undefined);
+
+      try {
+        await useWorkspaceStore
+          .getState()
+          .seedAndOpenSample("ja", '{"preset":"full"}');
+
+        expect(mockInvoke).toHaveBeenNthCalledWith(3, "save_global_settings", {
+          settings: expect.objectContaining({
+            trustedWorkspaces: [userWorkspace, newSample],
+            sampleWorkspacePath: newSample,
+          }),
+        });
+        expect(openWorkspace).toHaveBeenCalledWith(newSample);
+        expect(useWorkspaceStore.getState().showSampleTour).toBe(true);
+      } finally {
+        useWorkspaceStore.setState({ openWorkspace: originalOpenWorkspace });
+      }
     });
   });
 

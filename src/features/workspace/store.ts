@@ -555,15 +555,25 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
   async seedAndOpenSample(language: string, aiPolicy: string) {
     try {
       set({ error: null });
+      const previousSamplePath = get().globalSettings?.sampleWorkspacePath;
       const result = await invoke<{ path: string; projectId: string }>(
         "seed_sample_workspace",
         { language, aiPolicy },
       );
-      // Add to trusted workspaces so the trust dialog is bypassed
+      // Each restart publishes a new immutable sample generation so a live DB
+      // or external MCP reader is never unlinked. Replace the previous sample's
+      // trust entry instead of accumulating one entry per tutorial restart.
       const currentTrusted = get().globalSettings?.trustedWorkspaces ?? [];
-      if (!currentTrusted.includes(result.path)) {
+      const nextTrusted = currentTrusted.filter(
+        (path) => path !== previousSamplePath && path !== result.path,
+      );
+      nextTrusted.push(result.path);
+      if (
+        nextTrusted.length !== currentTrusted.length ||
+        nextTrusted.some((path, index) => path !== currentTrusted[index])
+      ) {
         await get().updateGlobalSettings({
-          trustedWorkspaces: [...currentTrusted, result.path],
+          trustedWorkspaces: nextTrusted,
         });
       }
       await get().openWorkspace(result.path);

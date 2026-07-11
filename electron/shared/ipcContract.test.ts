@@ -920,7 +920,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("napi コマンド表が揃っている（垂直12 + バッチ1の64 + 3a〜3e）", () => {
+  it("napi コマンド表が揃っている（Phase 2垂直slice + Phase 3 Batch 1〜5）", () => {
     expect(Object.keys(NAPI_COMMANDS).sort()).toEqual([
       "abort_chat_stream",
       "abort_inline_ai_stream",
@@ -1014,6 +1014,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_ai_settings",
       "save_global_settings",
       "save_post_effect_annotations",
+      "seed_sample_workspace",
       "segment_bunsetsu",
       "semantic_chunk_context",
       "semantic_debug_dump",

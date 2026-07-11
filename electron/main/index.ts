@@ -17,6 +17,7 @@ import { createExternalMountManager } from "./externalMount.js";
 import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
+import { buildMcpConfigShellHandlers } from "./mcpSidecar.js";
 import {
   registerAppProtocolHandler,
   registerAppProtocolScheme,
@@ -137,7 +138,8 @@ if (!gotSingleInstanceLock) {
     });
     // API キー保管（バッチ3a）: safeStorage 暗号化 + ai-keys.json。has/save/delete は
     // shell ハンドラ、チャット送信のキー解決は dispatchInvoke へ secrets として注入。
-    const keyStore = createKeyStore(app.getPath("userData"), safeStorage);
+    const userDataDir = app.getPath("userData");
+    const keyStore = createKeyStore(userDataDir, safeStorage);
     registerIpcRouter(
       backend,
       {
@@ -145,6 +147,10 @@ if (!gotSingleInstanceLock) {
         ...buildKeyStoreShellHandlers(keyStore),
         ...cliAi.handlers,
         ...vivliostyle.handlers,
+        ...buildMcpConfigShellHandlers(
+          backend,
+          path.join(userDataDir, "license.json"),
+        ),
       },
       keyStore,
       broadcastEvent,

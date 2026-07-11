@@ -88,6 +88,24 @@ pub fn active_database(ws_state: &WorkspaceState) -> AppResult<Arc<Database>> {
     }
 }
 
+/// Resolve the currently-open workspace directory without exposing the
+/// `WorkspaceState` lock to shell adapters. The same switching fail-closed
+/// contract as [`active_database`] applies, so an MCP config can never capture
+/// a path midway through a native workspace swap.
+pub fn active_workspace_path(ws_state: &WorkspaceState) -> AppResult<PathBuf> {
+    let inner = ws_state
+        .inner
+        .lock()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(AppError::WorkspaceSwitching);
+    }
+    inner
+        .as_ref()
+        .map(|workspace| workspace.path.clone())
+        .ok_or(AppError::NoWorkspace)
+}
+
 /// `tauri::State` を剥がした `with_db` 本体。単体テストや napi 側から
 /// `WorkspaceState` を直接組んで検証・実行できるように分離している。
 pub fn with_db_state<T>(
@@ -198,5 +216,24 @@ mod tests {
             .err()
             .expect("未オープンは DB を pin できない");
         assert!(err.to_string().contains("No workspace is open"));
+    }
+
+    #[test]
+    fn active_workspace_path_returns_the_pinned_directory() {
+        let state = workspace_state_with_db();
+        assert_eq!(
+            active_workspace_path(&state).expect("workspace path"),
+            PathBuf::from("/tmp/test-ws")
+        );
+    }
+
+    #[test]
+    fn active_workspace_path_rejects_during_switch() {
+        let state = workspace_state_with_db();
+        state
+            .switching
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let error = active_workspace_path(&state).expect_err("switching must fail closed");
+        assert!(error.to_string().contains("WORKSPACE_SWITCHING"));
     }
 }

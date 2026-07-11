@@ -31,6 +31,27 @@ describe("buildMcpConfigJson", () => {
     expect(parsed.mcpServers.grimodex.args).toContain("--readonly");
   });
 
+  it("places Electron's main-owned license path before the common MCP flags", () => {
+    const parsed = JSON.parse(
+      buildMcpConfigJson({
+        command: "/opt/Grimodex/resources/bin/grimodex-mcp",
+        argsPrefix: ["--license-file", "/electron-user-data/license.json"],
+        workspace: "/ws",
+        projectId: "project-1",
+      }),
+    );
+
+    expect(parsed.mcpServers.grimodex.args).toEqual([
+      "--license-file",
+      "/electron-user-data/license.json",
+      "--workspace",
+      "/ws",
+      "--project",
+      "project-1",
+      "--readonly",
+    ]);
+  });
+
   it("omits --readonly when readonly is false", () => {
     const parsed = JSON.parse(
       buildMcpConfigJson({

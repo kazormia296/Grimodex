@@ -1,5 +1,6 @@
 //! GrimodexServer – rmcp ServerHandler implementation.
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rmcp::handler::server::wrapper::Parameters;
@@ -36,12 +37,16 @@ pub struct GrimodexServer {
     pub all_projects: bool,
     pub readonly: bool,
     pub session_id: String,
+    /// Resolved once at startup by the trusted launcher. The file contents are
+    /// re-read for every write so activation changes apply without restart.
+    license_file_path: Option<PathBuf>,
     /// Startup snapshot only; mutating tools call `reload_policy()`.
     #[allow(dead_code)]
     pub policy: grimodex_core::policy::AiPolicyToggles,
 }
 
 impl GrimodexServer {
+    #[cfg(test)]
     pub fn new(
         conn: Connection,
         project_id: String,
@@ -50,6 +55,29 @@ impl GrimodexServer {
         session_id: String,
         policy: grimodex_core::policy::AiPolicyToggles,
     ) -> Self {
+        Self::new_with_license_file(
+            conn,
+            project_id,
+            all_projects,
+            readonly,
+            session_id,
+            policy,
+            // The convenience constructor is used by isolated tool tests.
+            // Production launchers always call `new_with_license_file` with
+            // their resolved app-data path.
+            None,
+        )
+    }
+
+    pub fn new_with_license_file(
+        conn: Connection,
+        project_id: String,
+        all_projects: bool,
+        readonly: bool,
+        session_id: String,
+        policy: grimodex_core::policy::AiPolicyToggles,
+        license_file_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             conn: Mutex::new(conn),
             current_project: Mutex::new(project_id),
@@ -57,6 +85,7 @@ impl GrimodexServer {
             readonly,
             session_id,
             policy,
+            license_file_path,
         }
     }
 
@@ -101,14 +130,13 @@ impl GrimodexServer {
         if !cfg!(feature = "licensing") {
             return Ok(());
         }
-        let Some(path) = crate::license_gate::license_file_path() else {
-            return Ok(());
-        };
-        let file = grimodex_core::license::read_license_file(&path);
         let now = chrono::Utc::now();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let snapshot = grimodex_core::license::compute_snapshot(&file, now, &today);
-        if snapshot.status.is_write_restricted() {
+        if !crate::license_gate::license_allows_write(
+            self.license_file_path.as_deref(),
+            now,
+            &today,
+        ) {
             return Err(ErrorData::invalid_params(
                 "License is not active (trial expired, validation stale, or revoked); \
                  write tools are disabled. Read tools remain available.",
@@ -549,5 +577,66 @@ impl GrimodexServer {
 impl rmcp::ServerHandler for GrimodexServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    }
+}
+
+#[cfg(all(test, feature = "licensing"))]
+mod license_tests {
+    use super::*;
+    use grimodex_core::license::{ActivatedLicense, LicenseFile};
+
+    fn server_with_license_path(path: PathBuf) -> GrimodexServer {
+        GrimodexServer::new_with_license_file(
+            Connection::open_in_memory().expect("open in-memory DB"),
+            "project-test".to_string(),
+            false,
+            false,
+            "session-test".to_string(),
+            grimodex_core::policy::AiPolicyToggles {
+                chat: true,
+                body_write: true,
+                analysis: true,
+                structure_write: true,
+                knowledge_write: true,
+            },
+            Some(path),
+        )
+    }
+
+    #[test]
+    fn injected_revoked_file_reaches_the_server_write_gate() {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-mcp-server-license-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = root.join("license.json");
+        let file = LicenseFile {
+            license: Some(ActivatedLicense {
+                key: "GRIM-TEST".to_string(),
+                activation_id: "activation-test".to_string(),
+                benefit_id: None,
+                activated_at: None,
+                last_validated_at: None,
+                revoked_at: Some("2026-07-11T00:00:00Z".to_string()),
+            }),
+            ..LicenseFile::default()
+        };
+        grimodex_core::license::write_license_file(&path, &file).expect("write revoked fixture");
+
+        let server = server_with_license_path(path);
+        assert!(server.ensure_license_allows_write().is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_injected_file_reaches_fail_soft_trial_access() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "grimodex-mcp-server-missing-{}",
+                uuid::Uuid::new_v4()
+            ))
+            .join("license.json");
+        let server = server_with_license_path(path);
+        assert!(server.ensure_license_allows_write().is_ok());
     }
 }

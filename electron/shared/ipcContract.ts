@@ -207,10 +207,13 @@ export interface NapiBackendLike {
   dbExecuteBatch(statements: unknown): Promise<string>;
   openWorkspace(path: string): Promise<string>;
   validateWorkspacePath(path: string): boolean;
+  /** Main-only bridge used to build standalone MCP sidecar config. */
+  getActiveWorkspacePath?(): Promise<string>;
   listBackups?(): Promise<string>;
   restoreBackup?(fileName: string): Promise<void>;
   getGlobalSettings(): Promise<string>;
   saveGlobalSettings(settings: unknown): Promise<void>;
+  seedSampleWorkspace?(language: string, aiPolicy: string): Promise<string>;
   timelapseAppendBatch(
     projectId: string,
     sessionId: string,
@@ -781,6 +784,19 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       );
       return null;
     },
+  },
+  seed_sample_workspace: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.seedSampleWorkspace,
+          "seedSampleWorkspace",
+        )(
+          requireString(a, "language", "seed_sample_workspace"),
+          requireString(a, "aiPolicy", "seed_sample_workspace"),
+        ),
+      ),
   },
   timelapse_append_batch: {
     run: async (b, a) =>
@@ -2047,6 +2063,9 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   "vivliostyle_save_output",
   "vivliostyle_preview_start",
   "vivliostyle_preview_stop",
+  // MCP（Phase 3 Batch 5）: mainがstandalone sidecarを解決し、workspaceは
+  // native Backendから取得する。rendererへは実行可能pathとargsだけを返す。
+  "get_mcp_config",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

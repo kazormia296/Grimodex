@@ -42,7 +42,8 @@ use grimodex_db::plot_threads::{
     PlotThreadPatch,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
-use grimodex_db::state::active_database;
+use grimodex_db::sample_seed;
+use grimodex_db::state::{active_database, active_workspace_path};
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
 use grimodex_db::workspace::{self, GlobalSettings};
 use grimodex_db::{with_db_state, AppError, BatchStatement, QueryResult};
@@ -370,6 +371,21 @@ impl Backend {
         p.exists() && p.is_dir() && p.join("grimodex.db").exists()
     }
 
+    /// Electron main専用の内部境界。standalone MCP sidecarへ渡す現在の
+    /// workspace directoryを返す。renderer commandとしては公開せず、mainの
+    /// `get_mcp_config` handlerだけが利用する。
+    #[napi]
+    pub async fn get_active_workspace_path(&self) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let path = active_workspace_path(&state.ws)?;
+            path.into_os_string().into_string().map_err(|_| {
+                AppError::Anyhow(anyhow::anyhow!("Active workspace path is not valid UTF-8"))
+            })
+        })
+        .await
+    }
+
     /// アクティブworkspaceの復元候補を新しい順で返す。
     /// 返り値は `BackupInfo[]` のcamelCase JSON文字列。
     #[napi]
@@ -383,8 +399,8 @@ impl Backend {
     }
 
     /// バックアップを検証・安全退避・原子置換し、同じworkspaceを再openする。
-    /// 再open時にDB由来のCodex matcherを破棄する。semantic cacheはBatch 4で
-    /// AppStateへ追加した時点で同じhookへ接続する。
+    /// 再open時にDB由来のCodex matcherを破棄し、semantic 4-cache epochも
+    /// rotateして復元前DBへのlate writeを不可視にする。
     #[napi]
     pub async fn restore_backup(&self, file_name: String) -> Result<()> {
         let state = Arc::clone(&self.state);
@@ -433,6 +449,23 @@ impl Backend {
                 .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
             workspace::write_global_settings(&state.gs.path, &settings)?;
             Ok(())
+        })
+        .await
+    }
+
+    /// AppData配下に一意なsample-workspace世代を共有coreで公開する。
+    /// GlobalSettingsのwrite_lockをget/save/openと共有し、同時seedも同じ
+    /// critical sectionへ入る。公開済み世代はアクティブDB/MCPが保持し得るため削除しない。
+    #[napi]
+    pub async fn seed_sample_workspace(
+        &self,
+        language: String,
+        ai_policy: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let result = sample_seed::seed_sample_workspace(&state.gs, &language, &ai_policy)?;
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
         .await
     }

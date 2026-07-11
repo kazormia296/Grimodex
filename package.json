@@ -32,6 +32,8 @@
     "electron:start": "node electron/scripts/start.mjs",
     "electron:smoke": "node electron/scripts/smoke.mjs",
     "napi:build": "pnpm --dir electron/native/grimodex-node build",
+    "mcp:build": "cargo build --manifest-path src-tauri/Cargo.toml -p grimodex-mcp --bin grimodex-mcp",
+    "mcp:build:release": "cargo build --release --manifest-path src-tauri/Cargo.toml -p grimodex-mcp --bin grimodex-mcp --features licensing",
     "screenshot": "tsx scripts/capture-screenshots.ts",
     "screenshot:one": "tsx scripts/capture-screenshots.ts",
     "generate:licenses": "tsx scripts/generate-licenses.ts",

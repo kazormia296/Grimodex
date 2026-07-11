@@ -19,6 +19,7 @@ use grimodex_db::backup_restore::list_backups as list_backups_shared;
 pub(crate) use grimodex_db::backup_restore::{restore_backup_core, BackupInfo};
 pub(crate) use grimodex_db::open::reject_unsafe_workspace_path;
 use grimodex_db::open::{open_workspace_sync, OpenDeps, OpenWorkspaceResult};
+use grimodex_db::state::active_workspace_path;
 
 /// アクティブ workspace のバックアップ一覧。列挙・filter・sort の実体は
 /// tauri非依存の `grimodex_db::backup_restore` に置く。
@@ -122,26 +123,30 @@ pub(crate) struct McpConfigInfo {
     command: String,
     /// The currently-open workspace directory (`--workspace` argument).
     workspace: String,
+    /// Arguments inserted before `--workspace`. The unified Tauri executable
+    /// needs its `mcp` subcommand; Electron's standalone sidecar inserts the
+    /// trusted main-process `--license-file` path instead.
+    args_prefix: Vec<String>,
 }
 
 /// Return the data an external MCP client needs to spawn this app as its
 /// MCP server: the absolute path to the app binary and the open workspace
-/// dir. The frontend assembles the `.mcp.json` snippet from this (adding the
-/// `mcp` subcommand, `--project`, and `--readonly`). Errors if no workspace
-/// is open.
+/// dir. The frontend assembles the `.mcp.json` snippet from this (using the
+/// shell-provided `argsPrefix`, then adding `--project` and `--readonly`).
+/// Errors if no workspace is open or a workspace switch is in progress.
 #[tauri::command(async)]
 pub(crate) fn get_mcp_config(
     ws_state: tauri::State<'_, WorkspaceState>,
 ) -> Result<McpConfigInfo, AppError> {
     let command = current_mcp_command_path()?;
-    let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-    let workspace = inner
-        .as_ref()
-        .ok_or(AppError::NoWorkspace)?
-        .path
+    let workspace = active_workspace_path(&ws_state)?
         .to_string_lossy()
         .into_owned();
-    Ok(McpConfigInfo { command, workspace })
+    Ok(McpConfigInfo {
+        command,
+        workspace,
+        args_prefix: vec!["mcp".to_string()],
+    })
 }
 
 /// Resolve the absolute path an MCP client should spawn.

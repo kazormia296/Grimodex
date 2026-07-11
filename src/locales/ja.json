@@ -674,7 +674,7 @@
     "ai": {
       "mcp": {
         "title": "MCP 連携",
-        "description": "Claude Code / Hermes Agent などの外部 MCP クライアント用の .mcp.json をクリップボードにコピーします（本体バイナリを MCP サーバとして起動）。スコープと書き込み権限を選んでコピーしてください。「読み取り専用」は --readonly 付きでクラウド向けの安全な既定。「ポリシー準拠」は --readonly を付けず、書き込みを各プロジェクトの AI ポリシー（knowledgeWrite/bodyWrite）に委ねます（ローカル/信頼クライアント向け）。",
+        "description": "Claude Code / Hermes Agent などの外部 MCP クライアント用の .mcp.json をクリップボードにコピーします（Grimodex が提供する MCP サーバコマンドを起動）。スコープと書き込み権限を選んでコピーしてください。「読み取り専用」は --readonly 付きでクラウド向けの安全な既定。「ポリシー準拠」は --readonly を付けず、書き込みを各プロジェクトの AI ポリシー（knowledgeWrite/bodyWrite）に委ねます（ローカル/信頼クライアント向け）。",
         "scopeProject": "この作品",
         "scopeProjectDesc": "現在の作品のみ（--project で固定）",
         "scopeAll": "全作品（ローカル用）",
