@@ -2,7 +2,7 @@ import { Copy, ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import type { ImeConsumerInfo } from "@/features/ime/api";
-import { isLinux } from "@/lib/platform";
+import { isLinuxImeHost } from "@/features/ime/linuxPlatform";
 import { openExternalUrl } from "@/lib/safeUrl";
 
 const LINUX_IME_CONSUMER_ID = "fcitx5-grimodex";
@@ -20,7 +20,7 @@ export function LinuxImeInstallGuide({ consumers }: LinuxImeInstallGuideProps) {
     (consumer) => consumer.consumerId === LINUX_IME_CONSUMER_ID,
   );
 
-  if (!isLinux() || consumerPresent) return null;
+  if (!isLinuxImeHost() || consumerPresent) return null;
 
   const copyPackageName = async () => {
     try {

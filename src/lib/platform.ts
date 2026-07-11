@@ -31,16 +31,6 @@ export function isMac(): boolean {
   return isMacCache;
 }
 
-/** True when running on Linux (navigator-based; safe outside the browser). */
-export function isLinux(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const nav = navigator as Navigator & {
-    userAgentData?: { platform?: string };
-  };
-  const platform = nav.userAgentData?.platform ?? navigator.platform ?? "";
-  return /linux/i.test(platform);
-}
-
 /**
  * Primary-modifier test: ⌘ on macOS, Ctrl elsewhere.
  *

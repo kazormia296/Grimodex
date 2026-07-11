@@ -21,8 +21,8 @@ const setActiveImeProjectMock = vi.fn();
 const clearImeExportsMock = vi.fn();
 const getImeExportStatusMock = vi.fn();
 
-vi.mock("@/lib/platform", () => ({
-  isLinux: () => platformRuntime.linux,
+vi.mock("@/features/ime/linuxPlatform", () => ({
+  isLinuxImeHost: () => platformRuntime.linux,
 }));
 
 vi.mock("@/lib/safeUrl", () => ({
