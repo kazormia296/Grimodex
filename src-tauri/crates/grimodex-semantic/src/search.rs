@@ -28,7 +28,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use crate::database::Database;
+use grimodex_db::Database;
 
 /// 1 つのチャンクが in-memory に保持される形式。`embedding` は f32 配列に decode 済み。
 #[derive(Debug, Clone)]
@@ -160,6 +160,10 @@ impl SearchCache {
 
     pub fn len(&self) -> usize {
         self.inner.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -398,7 +402,7 @@ pub fn run_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::index::{compute_content_hash, upsert_scene_chunks, ChunkPayload};
+    use crate::index::{compute_content_hash, upsert_scene_chunks, ChunkPayload};
     use rusqlite::params;
     use std::path::Path;
 

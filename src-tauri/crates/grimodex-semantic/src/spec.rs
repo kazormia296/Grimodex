@@ -26,7 +26,7 @@
 // ja-regression test run under `cargo test --no-default-features`. A
 // feature-gated test in `embedding.rs` cross-checks these against the real
 // constants so the two can never silently drift.
-use crate::semantic::chunker::{ChunkerConfig, CHUNKER_VERSION};
+use crate::chunker::{ChunkerConfig, CHUNKER_VERSION};
 
 /// How an ONNX model's per-token hidden states are reduced to one vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

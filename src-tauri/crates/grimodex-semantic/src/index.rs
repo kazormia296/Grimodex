@@ -25,7 +25,7 @@ use anyhow::{ensure, Result};
 use rusqlite::params;
 use sha2::{Digest, Sha256};
 
-use crate::database::Database;
+use grimodex_db::Database;
 
 /// upsert の結果。チャンク数を返すか、破棄理由を返す。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,10 +283,10 @@ pub fn list_unindexed_scene_contents(db: &Database, project_id: &str) -> Result<
 /// チャンク分割は純 CPU なので呼び出し側は DB lock の外で回すこと。
 pub fn count_indexable_scenes(
     contents: &[String],
-    spec: &crate::semantic::spec::EmbeddingModelSpec,
+    spec: &crate::spec::EmbeddingModelSpec,
 ) -> usize {
-    use crate::semantic::chunker::{chunk_scene, CHUNKER_VERSION};
-    use crate::semantic::chunker_en::chunk_scene_en;
+    use crate::chunker::{chunk_scene, CHUNKER_VERSION};
+    use crate::chunker_en::chunk_scene_en;
     let config = spec.chunker_config();
     contents
         .iter()
@@ -335,13 +335,13 @@ pub fn read_scene_for_index(db: &Database, scene_id: &str) -> Result<Option<(Str
 /// initial hash を再確認して負けた側を捨てるので整合は保たれる。
 #[cfg(feature = "semantic-embedding")]
 pub fn embed_scene_payloads(
-    embedder: &mut crate::semantic::embedding::Embedder,
+    embedder: &mut crate::embedding::Embedder,
     scene_id: &str,
     content: &str,
-    spec: &'static crate::semantic::spec::EmbeddingModelSpec,
+    spec: &'static crate::spec::EmbeddingModelSpec,
 ) -> Result<Vec<ChunkPayload>> {
-    use crate::semantic::chunker::{chunk_scene, CHUNKER_VERSION};
-    use crate::semantic::chunker_en::chunk_scene_en;
+    use crate::chunker::{chunk_scene, CHUNKER_VERSION};
+    use crate::chunker_en::chunk_scene_en;
     use anyhow::anyhow;
 
     let doc: serde_json::Value = serde_json::from_str(content)
@@ -386,10 +386,10 @@ pub fn embed_scene_payloads(
 #[cfg(feature = "semantic-embedding")]
 pub fn index_scene(
     db: &Database,
-    embedder: &mut crate::semantic::embedding::Embedder,
+    embedder: &mut crate::embedding::Embedder,
     scene_id: &str,
     model_id: &str,
-    spec: &'static crate::semantic::spec::EmbeddingModelSpec,
+    spec: &'static crate::spec::EmbeddingModelSpec,
 ) -> Result<UpsertOutcome> {
     let Some((content, initial_hash)) = read_scene_for_index(db, scene_id)? else {
         return Ok(UpsertOutcome::SkippedNotScene);
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn count_indexable_scenes_excludes_empty_and_unparsable() {
-        let spec = crate::semantic::spec::spec_for_language("ja");
+        let spec = crate::spec::spec_for_language("ja");
         let contents = vec![
             NONEMPTY_DOC.to_string(),
             EMPTY_DOC.to_string(),
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn nonempty_scene_count_ignores_empty_scenes() {
         let db = mem_db();
-        let spec = crate::semantic::spec::spec_for_language("ja");
+        let spec = crate::spec::spec_for_language("ja");
         seed_scene(&db, "s_real", NONEMPTY_DOC);
         upsert_scene_chunks(
             &db,
@@ -851,7 +851,7 @@ mod tests {
     #[test]
     fn nonempty_scene_count_counts_unindexed_nonempty_scene() {
         let db = mem_db();
-        let spec = crate::semantic::spec::spec_for_language("ja");
+        let spec = crate::spec::spec_for_language("ja");
         seed_scene(&db, "s_real", NONEMPTY_DOC);
         upsert_scene_chunks(
             &db,

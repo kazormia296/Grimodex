@@ -10,7 +10,7 @@
 //!   `list_indexed_codex_entry_ids` 側で効かせる** (XPROJ)。
 //! - `run_codex_search`: pure logic。query_embedding は呼び出し側が用意するため
 //!   Embedder 非依存で `--no-default-features` でも build/test できる。
-//! - スコアは `crate::semantic::search::dot_product` を流用 (正規化済み → cosine)。
+//! - スコアは `crate::search::dot_product` を流用 (正規化済み → cosine)。
 //!   codex に dialogue_ratio は無いので減点は行わない。
 
 #![allow(dead_code)]
@@ -22,8 +22,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use crate::database::Database;
-use crate::semantic::search::dot_product;
+use crate::search::dot_product;
+use grimodex_db::Database;
 
 /// in-memory に保持される 1 entry のベクトル + 表示メタ。
 #[derive(Debug, Clone)]
@@ -188,6 +188,10 @@ impl CodexSearchCache {
 
     pub fn len(&self) -> usize {
         self.inner.lock().map(|g| g.map.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -383,7 +387,7 @@ pub fn run_codex_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::codex_index::{read_codex_for_index, upsert_codex_chunk};
+    use crate::codex_index::{read_codex_for_index, upsert_codex_chunk};
     use std::path::Path;
 
     const MODEL_ID: &str = "test/model";
@@ -440,7 +444,7 @@ mod tests {
                 .unwrap();
         assert!(matches!(
             outcome,
-            crate::semantic::codex_index::CodexUpsertOutcome::Indexed(1)
+            crate::codex_index::CodexUpsertOutcome::Indexed(1)
         ));
     }
 

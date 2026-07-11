@@ -27,7 +27,7 @@ use ort::session::Session;
 use ort::value::TensorRef;
 use tokenizers::{Tokenizer, TruncationParams};
 
-use crate::semantic::spec::{EmbeddingModelSpec, Pooling};
+use crate::spec::{EmbeddingModelSpec, Pooling};
 
 /// ruri-v3 の検索クエリ用 prefix。検索時の入力に付与する。
 pub const QUERY_PREFIX: &str = "検索クエリ: ";
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn spec_ja_matches_legacy_consts() {
-        use crate::semantic::spec::SPEC_JA;
+        use crate::spec::SPEC_JA;
         assert_eq!(SPEC_JA.model_id, MODEL_ID_RURI_V3_30M);
         assert_eq!(SPEC_JA.embedding_dim, EMBEDDING_DIM_RURI_V3_30M);
         assert_eq!(SPEC_JA.query_prefix, QUERY_PREFIX);
@@ -459,7 +459,7 @@ mod tests {
 #[cfg(test)]
 mod golden {
     use super::{cosine_similarity, Embedder};
-    use crate::semantic::spec::{EmbeddingModelSpec, Pooling, SPEC_EN, SPEC_JA};
+    use crate::spec::{EmbeddingModelSpec, Pooling, SPEC_EN, SPEC_JA};
     use serde::Deserialize;
     use std::fs;
     use std::path::PathBuf;
@@ -486,8 +486,8 @@ mod golden {
         embedding: Vec<f32>,
     }
 
-    fn manifest_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    fn tauri_manifest_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
     fn pooling_label(p: Pooling) -> &'static str {
@@ -521,10 +521,10 @@ mod golden {
     /// 1 spec 分の fixture + ONNX を検証する。fixture/model が無ければ skip して
     /// 失敗 0 件で返す (CI/サンドボックスでは silent skip)。
     fn verify_spec(spec: &'static EmbeddingModelSpec) -> Vec<String> {
-        let fixture = manifest_dir()
+        let fixture = tauri_manifest_dir()
             .join("tests/fixtures")
             .join(spec.golden_fixture);
-        let dir = manifest_dir()
+        let dir = tauri_manifest_dir()
             .join("resources/semantic")
             .join(spec.dir_name);
         let tokenizer = dir.join("tokenizer.json");
@@ -614,7 +614,7 @@ mod golden {
     /// model/tokenizer aren't present (CI/sandbox without resources).
     #[test]
     fn over_long_input_is_truncated_not_crashed() {
-        let dir = manifest_dir()
+        let dir = tauri_manifest_dir()
             .join("resources/semantic")
             .join(SPEC_EN.dir_name);
         let tokenizer = dir.join("tokenizer.json");

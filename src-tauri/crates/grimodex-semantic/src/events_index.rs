@@ -27,7 +27,7 @@ use anyhow::{ensure, Result};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
-use crate::database::Database;
+use grimodex_db::Database;
 
 /// `events` 1 行の hash 入力フィールド: (title, kind, note, primary_codex_id, location_codex_id)。
 /// `upsert_event_chunk` の TX 内 re-SELECT 結果の型 (clippy::type_complexity 回避)。
@@ -358,10 +358,7 @@ pub fn project_language_for_event(db: &Database, event_id: &str) -> Result<Strin
 /// text を embed して LE f32 バイト列 (1 ベクトル) を返す。チャンカーは通さない。
 /// DB に触れない純 CPU 処理。呼び出し側は workspace lock の外で呼ぶこと。
 #[cfg(feature = "semantic-embedding")]
-pub fn embed_event_text(
-    embedder: &mut crate::semantic::embedding::Embedder,
-    text: &str,
-) -> Result<Vec<u8>> {
+pub fn embed_event_text(embedder: &mut crate::embedding::Embedder, text: &str) -> Result<Vec<u8>> {
     let embedding_dim = embedder.embedding_dim();
     let vec = embedder.embed_document(text)?;
     ensure!(

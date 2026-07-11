@@ -21,9 +21,7 @@ use serde_json::Value;
 
 use grimodex_lint::textscan::en;
 
-use crate::semantic::chunker::{
-    extract_paragraph_texts, pack_units, ChunkerConfig, SceneChunk, Unit,
-};
+use crate::chunker::{extract_paragraph_texts, pack_units, ChunkerConfig, SceneChunk, Unit};
 
 /// Scene doc → SceneChunk list (English).
 pub fn chunk_scene_en(doc: &Value, config: &ChunkerConfig) -> Result<Vec<SceneChunk>> {

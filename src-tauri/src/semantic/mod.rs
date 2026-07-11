@@ -1,29 +1,24 @@
-//! 本文セマンティック検索 (詳細: temp/semantic-prose-search-context.md)。
+//! Tauri semantic adapter.
 //!
-//! MVP の責務分割:
-//! - `chunker`: ProseMirror doc → 段落抽出・ビート分類・括弧対応文分割・パッキング。埋め込みに依存しない純ロジック。
-//! - `embedding`: ort + tokenizers で ruri-v3 ONNX 推論。Embedder の load + embed_query/document と
-//!   pure-logic helper (mean_pool, l2_normalize, cosine)。Python golden との一致検証は
-//!   tests/embedding_golden.rs で gated に行う。
-//! - `index`: scene_chunks DB upsert と content_hash race 検証 (Step 6)。
-//!   pure 部分は feature 無しで build できる。`index_scene` のみ Embedder 経由のため
-//!   `semantic-embedding` feature 内。
-//! - `search`: in-memory cache + 総当たりコサイン + dialogue_ratio 減点 (Step 7、別セッションで追加予定)。
+//! Indexing, search, chunking, embedding, preview, and model specifications
+//! live in `grimodex-semantic`. Model download remains local because it owns
+//! the Tauri `AppHandle` event/resource-directory lifecycle.
 
-pub(crate) mod chat_index;
-pub(crate) mod chat_search;
-pub(crate) mod chunker;
-pub(crate) mod chunker_en;
-pub(crate) mod codex_index;
-pub(crate) mod codex_search;
-pub(crate) mod events_index;
-pub(crate) mod events_search;
-pub(crate) mod index;
-pub(crate) mod preview;
-pub(crate) mod search;
-pub(crate) mod spec;
+// Several paths are feature-gated consumers; retain the full compatibility
+// surface in both feature configurations.
+#[allow(unused_imports)]
+pub(crate) use grimodex_semantic::{
+    chat_index, chat_search, chunker, codex_index, codex_search, events_index, events_search,
+    index, preview, search, spec,
+};
+
+// Kept as part of the pre-extraction module surface even though only the
+// shared crate currently composes it directly.
+#[allow(unused_imports)]
+pub(crate) use grimodex_semantic::chunker_en;
+
+#[cfg(feature = "semantic-embedding")]
+pub(crate) use grimodex_semantic::embedding;
 
 #[cfg(feature = "semantic-embedding")]
 pub(crate) mod download;
-#[cfg(feature = "semantic-embedding")]
-pub(crate) mod embedding;

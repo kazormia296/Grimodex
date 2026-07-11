@@ -9,7 +9,7 @@
 //! - `run_chat_search`: pure logic。**生 cosine と signal 列をそのまま返す**。
 //!   「効いた発話」の重み付け (signals × cosine) と gate/floor は JS 側 chatRecall に
 //!   寄せ、閾値ロジックを 1 箇所に集約する (scene/codex の選別と同じ哲学)。
-//! - スコアは `crate::semantic::search::dot_product` を流用 (正規化済み → cosine)。
+//! - スコアは `crate::search::dot_product` を流用 (正規化済み → cosine)。
 //!   project スコープは `list_indexed_chat_message_ids` の `project_id = ?` が正本。
 
 #![allow(dead_code)]
@@ -21,8 +21,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use crate::database::Database;
-use crate::semantic::search::dot_product;
+use crate::search::dot_product;
+use grimodex_db::Database;
 
 /// in-memory に保持される 1 メッセージのベクトル + 表示メタ + 効果信号。
 #[derive(Debug, Clone)]
@@ -188,6 +188,10 @@ impl ChatSearchCache {
 
     pub fn len(&self) -> usize {
         self.inner.lock().map(|g| g.map.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -388,7 +392,7 @@ pub fn run_chat_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::chat_index::{read_chat_message_for_index, upsert_chat_chunk};
+    use crate::chat_index::{read_chat_message_for_index, upsert_chat_chunk};
     use std::path::Path;
 
     const MODEL_ID: &str = "test/model";
@@ -469,7 +473,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             outcome,
-            crate::semantic::chat_index::ChatUpsertOutcome::Indexed(1)
+            crate::chat_index::ChatUpsertOutcome::Indexed(1)
         ));
     }
 

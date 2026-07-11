@@ -30,7 +30,7 @@ use rusqlite::params;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::database::Database;
+use grimodex_db::Database;
 
 /// upsert の結果。chat は 1 message 1 ベクトルなので Indexed は 0 か 1。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,10 +354,7 @@ pub fn project_language_for_chat_message(db: &Database, message_id: &str) -> Res
 /// text を embed して LE f32 バイト列 (1 ベクトル) を返す。チャンカーは通さない。
 /// DB に触れない純 CPU 処理。呼び出し側は workspace lock の外で呼ぶこと。
 #[cfg(feature = "semantic-embedding")]
-pub fn embed_chat_text(
-    embedder: &mut crate::semantic::embedding::Embedder,
-    text: &str,
-) -> Result<Vec<u8>> {
+pub fn embed_chat_text(embedder: &mut crate::embedding::Embedder, text: &str) -> Result<Vec<u8>> {
     let embedding_dim = embedder.embedding_dim();
     let vec = embedder.embed_document(text)?;
     ensure!(
