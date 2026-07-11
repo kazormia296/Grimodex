@@ -538,6 +538,40 @@ fn duplicate_dictionary_entries_keep_the_highest_priority_deterministically() ->
 }
 
 #[test]
+fn canonically_equivalent_surfaces_are_nfc_normalized_before_deduplication() -> TestResult {
+    let fixture = Fixture::new()?;
+    seed_project(fixture.db(), "p-nfc", "NFC", "ja", None, None)?;
+    seed_entry(
+        fixture.db(),
+        "entry-nfc",
+        "p-nfc",
+        "lore",
+        "ガ",
+        Some(r#"["ガ"]"#),
+        None,
+        Some(r#"{"ガ":["が"],"ガ":["が"]}"#),
+        "mentioned",
+    )?;
+
+    refresh_project_export(
+        fixture.db(),
+        &fixture.ime_root,
+        "p-nfc",
+        &options(ImeIntegrationMode::On),
+    )?;
+    let snapshot = read_snapshot(&fixture.ime_root, "p-nfc")?;
+    let matching: Vec<&ExportEntry> = snapshot
+        .entries
+        .iter()
+        .filter(|entry| entry.yomi == "が" && entry.surface == "ガ")
+        .collect();
+
+    assert_eq!(matching.len(), 1);
+    assert!(snapshot.entries.iter().all(|entry| entry.surface != "ガ"));
+    Ok(())
+}
+
+#[test]
 fn exclude_hidden_filters_hidden_and_suppress_entries_from_words_and_profile() -> TestResult {
     let fixture = Fixture::new()?;
     seed_project(
