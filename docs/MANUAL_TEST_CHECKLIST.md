@@ -2,12 +2,13 @@
 
 リリース前 / 大きめの変更後の手作業確認用。  
 各項目は **ゴールデンパス → 主なエッジケース → 副作用監視** の順。  
-DevTools の Console / Network / Performance タブ、Tauri のターミナルログを開いた状態で実施すること。
+DevTools の Console / Network / Performance タブと Electron main process のターミナルログを開いた状態で実施すること。
 
 ## 0. 事前準備
 
-- [ ] `pnpm tauri dev` 起動。Rust ビルド警告・パニック・`unwrap` 由来エラーが出ていない
+- [ ] native 変更後は `pnpm napi:build`、通常は `pnpm electron:dev` で起動。preload / main / N-API のロードエラーや Rust panic が出ていない
 - [ ] DevTools Console にエラーなし（Source Map 警告除く）
+- [ ] `window.grimodex.shell === "electron"`。renderer から Node API が見えず、preload API だけが公開されている
 - [ ] WAL ジャーナル (`*.db-wal`, `*.db-shm`) がプロジェクト DB と同階層に作成されている
 - [ ] 既存プロジェクトを 1 つ開いた状態でスナップショットを取り、ロールバック可能にしておく
 - [ ] テスト用に「空プロジェクト」と「データ盛り済プロジェクト」を 2 つ用意
@@ -47,7 +48,8 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 
 ### 4.1 基本入力
 
-- [ ] 日本語 IME 入力中に確定前テキストが消えない
+- [ ] Chromium で日本語 IME 入力中に確定前テキストが消えず、確定時に重複しない
+- [ ] Linux Wayland セッションで横書き・縦書きの変換候補位置、composition、確定後の caret が崩れない（可能なら XWayland とも比較）
 - [ ] タイピング coalesce が効き、保存が高頻度に走らない
 - [ ] Undo / Redo（履歴ボタン + ⌘Z / ⌘⇧Z）
 - [ ] 大量貼り付け（5万字程度）で固まらない
@@ -296,8 +298,8 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] DevTools Performance で 1 分タイピング録画: 大きな longtask（>200ms）がない
 - [ ] Memory tab: 30 分操作してリーク傾向がない
 - [ ] 大量シーン（200+）のプロジェクトで Grid / Tree 開閉
-- [ ] **Release ビルドで CSP 違反が出ない**（memory: csp-ipc-fallback。`connect-src` に `ipc: http://ipc.localhost`、`script-src` に `'wasm-unsafe-eval'` が必要）
-- [ ] Rust 側 panic / `unwrap` の発生有無（ターミナルログ）
+- [ ] **Release ビルドで `app://bundle/` がロードされ CSP 違反が出ない**（`connect-src 'self'`、`script-src 'self' 'wasm-unsafe-eval'`。`ipc:` URL へ依存しない）
+- [ ] Electron main / preload の未処理例外、N-API 側 panic / `unwrap` の発生有無（ターミナルログ）
 
 ## 30. リグレッション固定ポイント（過去事故）
 
@@ -309,29 +311,22 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
 - [ ] Framer Motion clip-path 補間（open 側 inset(-200px)）
 - [ ] projectStore.test.ts のテスト分離問題（フルスイートでのみ落ちる、許容）
 
-## 31. MCP 連携（実行コア共通・shell 別起動）
+## 31. MCP 連携（Electron + standalone sidecar）
 
 - [ ] 設定 → AI → **MCP 連携** に「この作品 / 全作品（ローカル用）」×
       「読み取り専用 / ポリシー準拠」のコピーボタンが表示される
       （トグルではなく各ボタン＝即時コピー）
 - [ ] workspace 未 open・未 hydration・switch 中はボタンが disabled。config 取得中に
       workspace path / open revision / project ID が変わった場合も clipboard へ書かずエラー表示
-- [ ] **Tauri のコピー契約**: `command` は実 spawn 可能な本体アプリの絶対 path
-      （Linux AppImage は `$APPIMAGE` の元ファイル）、`args` は
-      `["mcp","--workspace","<dir>","--project","<現在のID>","--readonly"]`
-- [ ] **Electron のコピー契約**: `command` は本体 GUI ではなく standalone
+- [ ] **コピー契約**: `command` は本体 GUI ではなく standalone
       `grimodex-mcp[.exe]` の絶対 path。`args` は
       `["--license-file","<絶対 userData/license.json>","--workspace","<dir>","--project","<現在のID>","--readonly"]`。
       license path は Backend と同じ `userData` 配下で、renderer 入力から変更できない
-- [ ] 🔴 **[Phase 4 未完 / Electron Linux AppImage]**: sidecar を一時的な
-      `/tmp/.mount_*/…/resources/bin` ではなく `<userData>` 等の安定 path へ materialize し、
-      コピーした config が GUI 終了後・再起動後・update 後にも spawn できる。これが通るまで
-      Electron AppImage の MCP config を release 受け入れ済みにしない
+- [ ] Linux AppImage では sidecar が一時的な `/tmp/.mount_*/…/resources/bin` ではなく
+      `<userData>` 配下の安定 path へ materialize され、GUI 終了後・再起動後・update 後にも
+      コピー済み config から spawn できる
 - [ ] 「ポリシー準拠」では `--readonly` が付かない（書込は AI ポリシーに委譲）。
       「全作品」では `--project` の代わりに `--all-projects` が入る
-- [ ] **Tauri 統合 path**: `Grimodex mcp --workspace <ws> --readonly`（dev は
-      `cargo run -- mcp …`）へ `initialize` + `tools/list` を流し、GUI を開かず **40 ツール**
-      （プロジェクト管理 2 + read 24 + write 14）が返る
 - [ ] **Electron standalone path**: UI がコピーした `command` / `args` をそのまま MCP client で
       起動し、`initialize` + `tools/list` が成功する。product sidecar は
       `pnpm mcp:build:release`（`licensing` feature 有効）の成果物である
@@ -349,11 +344,26 @@ DevTools の Console / Network / Performance タブ、Tauri のターミナル�
       codex 2 / scene prose 1 / chronicle 8）がすべて call-time error。list-time では隠れない
 - [ ] **XPROJ**: project A スコープの client から project B の scene_id / entry_id を
       read-by-id しても not found
-- [ ] 🔴 **[要実機] Windows release**: Tauri は GUI-subsystem 本体 + `mcp`、Electron は packaged
-      `resources/bin/grimodex-mcp.exe` を実 MCP client が spawn し、どちらも stdio で
-      `tools/list` が取れる
-- [ ] Linux headless: Tauri 本体は `libwebkit2gtk` 無しでは起動できない一方、Electron product /
-      lean standalone sidecar は GUI library 無しで起動できることを確認・記録
+- [ ] **[要実機] Windows release**: packaged `resources/bin/grimodex-mcp.exe` を実 MCP client が
+      spawn し、stdio で `initialize` + `tools/list` が取れる
+- [ ] Linux headless: standalone sidecar が GUI session や desktop shell library なしで起動できる
+
+## 32. Tauri v1 → Electron 移行（legacy 互換）
+
+- [ ] disposable Windows VM / CI user profile で、署名済み release candidate に対し
+      `pwsh scripts/verify-windows-tauri-migration.ps1 -InstallerPath <Electron installer>` が完走する
+- [ ] スクリプトが pinned Tauri v1 installer の SHA-256 を検証してからインストールする
+- [ ] v1 の roaming / local user-data に置いた sentinel の存在と SHA-256 が移行後も変わらない
+- [ ] v1 の `/P /R /UPDATE /ARGS` 呼び出しが Electron installer の silent install + restart に
+      変換され、新 Electron executable の Authenticode 署名が有効
+- [ ] v1 executable / uninstaller / registry 登録は除去され、Electron の uninstall 登録と
+      Start Menu shortcut が各 1 件だけ残る
+- [ ] Electron installer を再実行しても同じ状態を保ち、ユーザーデータを変更しない（idempotent）
+- [ ] v1 uninstaller を壊した negative case は fail-closed で非 0 終了し、v1 本体・登録・
+      user-data を削除しない
+- [ ] 既存 v1 workspace を Electron で開き、DB migration 後も本文・Codex・チャット・設定が保持される
+- [ ] release build 初回起動で既知の v1 keyring 資格情報を Electron `safeStorage` へ移せる。
+      移行元は rollback 用に保持され、移行失敗時も破壊しない
 
 ---
 

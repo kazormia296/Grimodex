@@ -280,7 +280,7 @@ per-project 化、Rust 側の変更（`default-project` 常設はそのまま）
 - **新規テスト**：2 つ目の Project 行と双方の codex/snippet を作り、
   `listCodexEntries` / `listSnippets` が `currentProjectId` 側のみ返すことを検証
   （潜在リークバグ修正の回帰防止）。
-- `pnpm tauri dev` — ワークスペースを開き、tree / codex / snippet / chat / grid /
+- `pnpm electron:dev` — ワークスペースを開き、tree / codex / snippet / chat / grid /
   map / foreshadow / trash / lint が従来どおり表示されることを目視確認。
 
 ---

@@ -1,7 +1,7 @@
 # Grimodex Electron移行検討
 
 - 日付: 2026-07-10
-- ステータス: **移行を推奨**（採用判断が確定したら ADR-003 として記録する）
+- ステータス: **Electron移行のPhase 0〜5実装完了、v2 release実行前**
 - 調査方法: コードベース精査4系統＋Web技術リサーチ4系統を並列実行し、判断を左右する5つの主張を一次情報（tauri-plugin-updater / better-sqlite3 / electron-updater のソースコード、npm registry 実体、crbug / bugs.webkit.org、実機 webkit2gtk 2.52.4）で敵対的に検証した。
 
 ## 結論（TL;DR）
@@ -166,7 +166,7 @@ WebKitGTK 起因の縦書きエンジンバグ6種（button縦書き拒否 / inl
 - **Phase 2 — Electron シェル**: main/preload、ウィンドウクローム（app-region CSS）、db_execute ブリッジ、イベントチャネル、close veto / パネル別窓（BrowserWindow）再設計
 - **Phase 3 — ネイティブ再結線**: napi-rs パッケージング CI（3OS）、chokidar、safeStorage 移行、queryLocalFonts（日本語 family 名優先ロジックの実機確認）、vivliostyle 子プロセス、MCP extraResources
 - **Phase 4 — リリース/updater（実装完了、リリース実行前）**: electron-builder 全ターゲット、electron-updater + Apple 署名/notarization、既存 Tauri v1.0.0 asset の凍結、tauri 形式 latest.json の immutable 同梱ジョブ、userData/API キー移行、release-only native feature、Linux GLIBC 2.39 / RPM posttrans gate。v2 tag / Draft release は未作成
-- **Phase 5 — 撤去**: WebKitGTK 回避コード約2,030行 + webkit_features.rs + webkit2gtk 依存の削除、CLAUDE.md / スキル（bump-version 等のバージョン正本4箇所）更新、MANUAL_TEST_CHECKLIST 改訂
+- **Phase 5 — 撤去（実装完了）**: WebKitGTK専用回避を41対象ファイルで `+87/-2,157`（net `-2,070`）削除。`webkit_features.rs`、NVIDIA DMABUF回避、直接`webkit2gtk`/`glib`依存、WebKit browser gateを撤去し、Chromium固有caret・CSS prefixは維持。CI/devcontainer/skill/MANUAL_TEST_CHECKLISTをElectronへ更新し、version正本を`package.json`へ一本化、v2.0.0 release notesを追加。Tauri root shell全撤去は純ロジックテスト80件の移設を伴うため別フェーズ
 
 ### 移行期間中の運用
 

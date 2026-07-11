@@ -1,10 +1,14 @@
 # Grimodex Electron移行 Phase 3 設計書 — ネイティブ再結線
 
 - 日付: 2026-07-10（最終更新: 2026-07-11）
-- ステータス: **Phase 3 コマンド移行完了**（バッチ1〜2・バッチ3a〜3e・バッチ4〜5 完了）
+- ステータス: **Phase 3〜5 実装完了、v2 release実行前**
 - 正本: `docs/Grimodex_Electron移行検討.md`（移行判断・全体フェーズ）/ `docs/Grimodex_Electron移行Phase2設計書.md`（シェル構築）
 - データ正本: `docs/Grimodex_Electron移行Phase3_優先順位表.md`（バッチ提案・イベント配線順）と `docs/Grimodex_Electron移行Phase3_コマンド台帳.json`（全 145 コマンドの静的棚卸し + FE コールサイト分析）
 - 積み先: ブランチ `codex/electron-migration-complete`
+
+> 2026-07-11 追記: §0〜5 は移行当時の段階計画を記録した履歴であり、
+> 「Tauriと並走する」という記述は現行運用ではない。現在のサポート対象は
+> Electronで、Tauri root shellはv1移行確認用のfrozen legacyである。
 
 ## 0. スコープ（TL;DR）
 
@@ -515,3 +519,45 @@ node --test scripts/validate-release-version.test.mjs \
 `pnpm electron:package*` は host-native package のみを生成する。3 OS の署名・notarization・ABI
 検査と GitHub Draft 作成は `.github/workflows/release.yml` が正本であり、release 実行前に
 `package.json` を v2 系へ更新して同一 tag を付ける必要がある。
+
+## 7. Phase 5 撤去結果（2026-07-11）
+
+Phase 5 は「WebKitGTK専用回避の撤去」と「Tauri shell全撤去」を分離した。
+前者は完了し、後者はroot shell内の純ロジックテスト80件を共有crateへ移す必要があるため、
+別フェーズとした。既存v1利用者のinstaller・updater・userData・資格情報移行契約は維持する。
+
+- **frontend**: `useWebKitGtkVerticalScrollResetGuard`、`webkitFocusScrollGuard`、
+  `EmphasisDotsFallbackPlugin`、`verticalFormControls` と配線・テストを削除した。
+  `data-engine="webkitgtk"` / `data-vfc` CSSを撤去し、platform・縦書きfont・Alt keyup・
+  WebKit専用↑/↓caret分岐も削除した。41対象ファイルで `+87/-2,157`（net `-2,070`）。
+- **保持したChromium契約**: `VerticalCaretNavExtension` の←/→ hardBreak列移動、
+  `cursorCoords`、native `text-emphasis`、汎用 `scrollIntoView:false`、論理スクロール、
+  `-webkit-app-region` / backdrop / scrollbar等のChromium用prefixは残した。
+- **Rust**: `src-tauri/src/webkit_features.rs`、NVIDIA
+  `WEBKIT_DISABLE_DMABUF_RENDERER`、`with_webview` feature適用と直接
+  `webkit2gtk` / `glib` 依存を削除した。frozen Tauri/Wry経由の推移依存はlockに残る。
+- **test / environment**: Vitest browserをChromium単独へし、host互換lib script、
+  CI/devcontainer/bootstrapのWebKitGTK・AppIndicator依存を撤去した。共有Rust CIは
+  `--workspace --exclude grimodex --features grimodex-semantic/semantic-embedding` で
+  active cratesとElectronのsemantic経路を検証する。
+- **運用**: Electron IPC skill、開発・Security・manual QA文書へ更新し、Electron版の
+  version正本を`package.json` 1箇所へ固定した。Tauri config/Cargoの`1.0.0`はfrozen v1、
+  Electron初版は`2.0.0`とし、日英release notesを追加した。tag/Draftは未作成。
+- **license**: third-party generatorはroot Cargo workspaceとElectron N-API manifestの
+  dependency graphをunionし、自前workspace memberと重複を除外する。N-API固有crateを
+  回帰テストで固定し、root/public noticeをbyte一致で再生成した。
+
+Phase 5 のローカルgate:
+
+```bash
+node --test scripts/electron-v2-cleanup.test.mjs
+node --test scripts/generate-licenses.test.mjs
+pnpm test:node --run
+pnpm test:browser --run
+pnpm test:electron --run
+pnpm exec tsc --noEmit
+pnpm exec tsc -p electron/tsconfig.json --noEmit
+cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
+cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
+```

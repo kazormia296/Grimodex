@@ -15,6 +15,11 @@
 > size/SHA-512 検証、Tauri署名の公開鍵検証、Arch updater marker、実配布 v1.0.0 からの Windows
 > NSIS移行E2E、RPM `%posttrans` 移行修復を実装済み。v2タグ作成と Draft release 実行は未実施。詳細と実行コマンドは
 > Phase 3 設計書 §6 を参照。
+>
+> Phase 5 追記（2026-07-11）: WebKitGTK専用frontend/Rust回避、直接依存、browser gate、
+> CI/dev環境を撤去し、Electron/Chromium契約とv2.0.0 version/release notesへ更新済み。
+> Chromiumの←/→ hardBreak caret、v1 updater/installer/data/keyring移行は維持。
+> 詳細はPhase 3設計書 §7。tag/Draft releaseは未実施。
 
 ---
 

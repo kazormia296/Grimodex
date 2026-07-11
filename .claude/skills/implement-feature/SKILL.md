@@ -4,7 +4,7 @@ description: >
   機能を実装する。手順は superpowers の方法論スキルに委譲し、ここでは
   プロジェクト固有の制約と検証だけを足す。
   Use when: 新機能の追加、既存機能の拡張、「実装して」「作って」「追加して」
-  と言われたとき。UIコンポーネント、DB操作、Tauri Command追加を含む。
+  と言われたとき。UIコンポーネント、DB操作、Electron IPC追加を含む。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
 argument-hint: [feature-description]
 ---
@@ -27,13 +27,14 @@ argument-hint: [feature-description]
 
 ## このプロジェクト固有で必ず守ること
 
-- 探索時、Tauri IPC が絡むなら Rust 側とフロント側の両方を確認する。
-  IPC コマンド追加なら `/add-tauri-command` の 4 点同時更新に従う。
+- 探索時、Electron IPC が絡むなら renderer / preload / main / N-API の境界を確認する。
+  IPC コマンド追加なら `/add-electron-command` の契約・実装・テスト更新に従う。
 - 状態管理: グローバル=Zustand / 局所=Jotai。DB は Drizzle 経由（生 SQL 禁止）。
 - 検証コマンド（verification-before-completion の証拠として出力を確認する）:
   - `pnpm test`
   - `npx tsc --noEmit`
   - `pnpm lint:fix`
-  - Rust 変更時: `cd src-tauri && cargo check --workspace && cargo test --workspace --no-default-features`
+  - 共有 Rust 変更時: `cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding` と同条件の `cargo test`
+  - N-API adapter 変更時: `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml` と同 manifest の `cargo test`
   - レイアウト変更時（CenterStripe/RegionStripe/Splitter/LayoutShell 周辺）: `pnpm test:browser`
 - コミットは変更ファイルを個別 `git add`（`git add -A` 禁止）。master へ直接 commit せず branch を切り、push は branch + PR（master 直 push は hook でブロック済み）。

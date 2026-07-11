@@ -66,7 +66,7 @@ import {
  * and the single-undo requirement rules out mixing native editor transactions
  * with the DB batch. See docs/Grimodex_Codex改名波及設計書.md §5.3.
  *
- * I/O orchestration — must be verified in-app (`pnpm tauri dev`); the pure cores
+ * I/O orchestration — must be verified in-app (`pnpm electron:dev`); the pure cores
  * (detect / flatten / replace) are unit-tested separately.
  */
 

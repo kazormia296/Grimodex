@@ -12,12 +12,12 @@ argument-hint: [bug-description-or-error-message]
 
 1. エラーメッセージ・再現手順を確認する
 2. 関連コードを探索し、根本原因を特定する
-   - Tauri IPC関連なら Rust側とTypeScript側の両方を確認
+   - Electron IPC関連なら renderer / preload / main / N-API の各境界を確認
 3. 修正方針を報告し、承認を得てから実装する
 4. 修正を実装する
 5. 既存テストが通過することを確認する
 6. 再発防止のためのテストを追加する
-7. `pnpm test` + `cargo test` で全テスト通過を確認
+7. `pnpm test` + `pnpm test:electron --run` + 対象 Rust crate の `cargo test` で確認
 8. 変更をコミットする
 
 **推測で修正しない。原因を特定してから修正すること。**
