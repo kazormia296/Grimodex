@@ -19,6 +19,7 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 - パッケージ: pnpm electron:package
 - テスト: pnpm test
 - テスト(単体): pnpm test --run [ファイルパス]
+- フロントCI相当: pnpm verify:frontend
 - Electronテスト: pnpm test:electron --run
 - N-APIビルド: pnpm napi:build
 - N-APIテスト（上記ビルド後）: pnpm --dir electron/native/grimodex-node test
@@ -59,6 +60,11 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 - renderer は Node/Electron/N-API を直接 import せず、`window.grimodex` の typed preload API を使う
 - IPC の正本は `electron/shared/ipcContract.ts`。main 側で引数を再検証し、N-API backend を呼ぶ
 - Rust のドメイン実装は `src-tauri/crates/` に置き、Electron 用 binding は `electron/native/grimodex-node/` に置く
+- 既存経路の責務・型・契約・データフローを renderer／Electron IPC／N-API／shared Rust／MCP、
+  または複数 AI provider 経路のうち2つ以上で協調変更する場合は、`/refactor-cross-boundaries` を使用し、実装前に影響マトリクスを作る
+- 新機能は `/implement-feature`、新規 Electron IPC command は `/add-electron-command` を優先する
+- バグ修正は `/debug-issue` を主フローとし、上記の横断条件を満たす場合は影響マトリクスも併用する
+- version 更新を含むリリース作業は `/bump-version` を主フローとし、release commit 後の push／PR／merge だけを `/ship-branch` へ渡す
 - SQLite WALモード、FTS5有効
 - エディタ: チャプター/シーンごとに独立TipTapインスタンス
 - AIチャット: シーンごとに独立した会話履歴を保持
@@ -66,12 +72,15 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 
 ## スキル発火条件
 
-| トリガーワード                                 | 発動スキル            | 動作             |
-| ---------------------------------------------- | --------------------- | ---------------- |
-| 「調べて」「調査」                             | /explore-codebase     | コード探索       |
-| 「実装して」「作って」                         | /implement-feature    | 実装フロー       |
-| 「レビュー」                                   | /review-code          | コードレビュー   |
-| 「テスト」                                     | /test-feature         | テスト作成・実行 |
-| 「デバッグ」「修正」                           | /debug-issue          | デバッグフロー   |
-| 「Electronコマンド」「IPC」「invoke」          | /add-electron-command | IPC一括追加      |
-| 「アニメ」「トランジション」「動き」「磨いて」 | /polish-motion        | UIモーション規律 |
+| トリガーワード                                                 | 発動スキル                 | 動作                                   |
+| -------------------------------------------------------------- | -------------------------- | -------------------------------------- |
+| 「調べて」「調査」                                             | /explore-codebase          | コード探索                             |
+| 「実装して」「作って」                                         | /implement-feature         | 実装フロー                             |
+| 「レビュー」                                                   | /review-code               | コードレビュー                         |
+| 「テスト」                                                     | /test-feature              | テスト作成・実行                       |
+| 「デバッグ」「修正」                                           | /debug-issue               | デバッグフロー                         |
+| 「Electronコマンド」「IPC」「invoke」                          | /add-electron-command      | IPC一括追加                            |
+| 「アニメ」「トランジション」「動き」「磨いて」                 | /polish-motion             | UIモーション規律                       |
+| 「横断リファクタ」「境界整理」「責務移動」「パイプライン再編」 | /refactor-cross-boundaries | 影響マトリクス→段階レビュー→CI相当検証 |
+| 「バージョン上げて」「リリースタグ」「リリース準備」           | /bump-version              | version→PR→注釈付きtag                 |
+| 「PR出して」「プルリク作って」「pushしてマージ」「shipして」   | /ship-branch               | push→PR→CI・レビュー→squash merge      |

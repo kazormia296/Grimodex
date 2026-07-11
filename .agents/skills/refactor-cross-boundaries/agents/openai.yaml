@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cross-Boundary Refactor"
+  short_description: "Plan and verify cross-layer Grimodex refactors"
+  default_prompt: "Use $refactor-cross-boundaries to plan and execute this cross-layer refactor safely."
