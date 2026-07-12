@@ -20,6 +20,8 @@ import { AiTreeDialog } from "./aiScaffold/AiTreeDialog";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { NodeIcon } from "./TreeNodeItem";
 import { StructureTemplatePicker } from "@/features/grid/StructureTemplatePicker";
 import { StatusDot } from "./StatusDot";
@@ -258,7 +260,16 @@ export function ScenesPanel() {
       createNode({ nodeType: type, parentId, afterId: activeSceneId })
         .then((newNode) => {
           if (newNode.nodeType === "scene" || newNode.nodeType === "note") {
-            useTabStore.getState().openPinned(newNode.id);
+            openEditorDocument(
+              {
+                target: { kind: "scene", documentId: newNode.id },
+                mode: "pinned",
+                revealEditor: true,
+                focusEditor: false,
+                syncSceneContext: true,
+              },
+              defaultEditorNavigationPorts,
+            );
           }
         })
         .catch(() => {});

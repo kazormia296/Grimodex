@@ -19,6 +19,7 @@ import { useTrashBinStore } from "@/features/trash-bin/trashBinStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
+import { _clearCodexCrossMentionCaches } from "./codexCrossMentions";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
   computeBodyDiff,
@@ -160,6 +161,8 @@ interface CodexState {
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
   requestSelectEntry: (id: string) => void;
   clearPendingEntry: () => void;
+  /** Drop project-owned entries, filters, selections, and derived caches. */
+  resetForProject: () => void;
 }
 
 // mount eager load の in-flight dedup (詳細は ensureEntriesLoaded の docs)
@@ -528,6 +531,18 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
   requestSelectEntry: (id) => set({ pendingEntryId: id }),
   clearPendingEntry: () => set({ pendingEntryId: null }),
+  resetForProject: () => {
+    _clearCodexCrossMentionCaches();
+    set({
+      entries: [],
+      types: [],
+      searchQuery: "",
+      filterType: null,
+      pendingEntryId: null,
+      selectedEntry: null,
+      previewPhaseByEntry: {},
+    });
+  },
 
   setFilterType: async (type) => {
     set({ filterType: type, isLoading: true });

@@ -15,6 +15,8 @@ interface PromptLibraryState {
   load: () => Promise<void>;
   /** 未ロード or プロジェクト切替時のみ読み込む（mount 用）。 */
   ensureLoaded: () => Promise<void>;
+  /** Clear project-owned templates before a reload. */
+  resetForProject: () => void;
   /** 新規テンプレートを作成して返す（失敗時 null）。 */
   create: (title: string, content: string) => Promise<PromptTemplate | null>;
   /** タイトル / 本文を更新。 */
@@ -32,6 +34,8 @@ export const usePromptLibraryStore = create<PromptLibraryState>((set, get) => ({
   templates: [],
   isLoading: false,
   loadedProjectId: null,
+  resetForProject: () =>
+    set({ templates: [], loadedProjectId: null, isLoading: false }),
 
   load: async () => {
     const projectId = getCurrentProjectId();

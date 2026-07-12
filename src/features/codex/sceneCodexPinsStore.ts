@@ -16,6 +16,8 @@ interface SceneCodexPinsState {
 
   loadPinsForScene: (sceneId: string) => Promise<void>;
   loadAllForProject: (projectId: string) => Promise<void>;
+  /** Clear project-owned pin cache before a reload. */
+  resetForProject: () => void;
   addPin: (sceneId: string, entryId: string) => Promise<void>;
   removePin: (sceneId: string, entryId: string) => Promise<void>;
 }
@@ -35,6 +37,8 @@ export const useSceneCodexPinsStore = create<SceneCodexPinsState>()(
   (set, get) => ({
     pinsByScene: {},
     bulkLoadedProjectId: null,
+
+    resetForProject: () => set({ pinsByScene: {}, bulkLoadedProjectId: null }),
 
     loadAllForProject: async (projectId) => {
       const rows = await listAllPinsForProject(projectId);

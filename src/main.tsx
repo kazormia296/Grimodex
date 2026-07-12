@@ -46,6 +46,9 @@ import "@fontsource/literata/latin-700-italic.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
 import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
 import { isElectron } from "./lib/tauri";
+import { installDefaultEditorNavigation } from "./features/editor/editorNavigationPorts";
+
+installDefaultEditorNavigation();
 
 // Electron シェル判定フラグ。S6 の drag-region CSS
 // （html[data-shell="electron"] セレクタ、設計書 §6.2）がこの属性を条件に

@@ -23,7 +23,10 @@ vi.mock("@/lib/tauri", () => ({
     (invokeMock as unknown as (...x: unknown[]) => unknown)(...a),
 }));
 
-import { patchGlobalSettings } from "./globalSettings";
+import {
+  globalSettingsRepository,
+  patchGlobalSettings,
+} from "./globalSettings/repository";
 
 // テスト内の疑似 GlobalSettings は {a,b} だけを持つ簡易オブジェクト。
 type Patch = Parameters<typeof patchGlobalSettings>[0];
@@ -56,5 +59,21 @@ describe("patchGlobalSettings", () => {
 
     await patch((c) => ({ ...c, b: 7 }));
     expect(disk.current).toEqual({ a: 0, b: 7 });
+  });
+
+  it("global user preference を最新設定へマージして保存する", async () => {
+    disk.current = { userPreferences: { "editor.fontSize": "16" } };
+
+    await globalSettingsRepository.updateUserPreference(
+      "display.reduceMotion",
+      "true",
+    );
+
+    expect(disk.current).toEqual({
+      userPreferences: {
+        "editor.fontSize": "16",
+        "display.reduceMotion": "true",
+      },
+    });
   });
 });

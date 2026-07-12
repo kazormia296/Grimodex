@@ -27,6 +27,10 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { cmpKeys, generateKeyBetween } from "./fractionalIndex";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { moveTreeNode } from "@/application/tree/moveTreeNode";
+import { createTreeNode } from "@/application/tree/createTreeNode";
+import { deleteTreeSubtree } from "@/application/tree/deleteTreeSubtree";
+import { requestOpenEditorDocument } from "@/application/editor/editorNavigationRegistry";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -454,143 +458,7 @@ function nextSortOrder(
   return generateKeyBetween(after.sortOrder, next ? next.sortOrder : null);
 }
 
-/** Extract trailing integer from a title like "シーン 3" → 3, or null */
-function extractTrailingNumber(title: string, prefix: string): number | null {
-  if (!prefix) return null;
-  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const m = title.match(new RegExp(`^${escaped}\\s*(\\d+)$`));
-  return m ? parseInt(m[1], 10) : null;
-}
-
-/**
- * Compute the next number for a scene or note, filling gaps at the insertion point.
- * scope="project": uses numbers across all nodes of that type in the project.
- * scope="folder":  uses numbers only within the same parent.
- */
-function computeNextNumber(
-  nodeType: "scene" | "note",
-  parentId: string | null,
-  afterId: string | null | undefined,
-  allNodes: TreeNodeData[],
-  prefix: string,
-  scope: string,
-): number {
-  const scopeNodes =
-    scope === "folder"
-      ? allNodes.filter(
-          (n) => n.nodeType === nodeType && n.parentId === parentId,
-        )
-      : allNodes.filter((n) => n.nodeType === nodeType);
-
-  const usedNumbers = new Set(
-    scopeNodes
-      .map((n) => extractTrailingNumber(n.title, prefix))
-      .filter((n): n is number => n !== null),
-  );
-
-  // Siblings in insertion-order for boundary detection
-  const siblings = allNodes
-    .filter((n) => n.nodeType === nodeType && n.parentId === parentId)
-    .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-
-  let numBefore = 0;
-  let numAfter = Infinity;
-
-  if (afterId != null) {
-    const afterNode = allNodes.find((n) => n.id === afterId);
-    if (afterNode) {
-      numBefore = extractTrailingNumber(afterNode.title, prefix) ?? 0;
-    }
-    const afterIdx = siblings.findIndex((n) => n.id === afterId);
-    if (afterIdx >= 0 && afterIdx + 1 < siblings.length) {
-      numAfter =
-        extractTrailingNumber(siblings[afterIdx + 1].title, prefix) ?? Infinity;
-    }
-  } else {
-    // Appending at end: look at all scope nodes for the max
-    numBefore = usedNumbers.size > 0 ? Math.max(...usedNumbers) : 0;
-    numAfter = Infinity;
-  }
-
-  // Smallest integer in (numBefore, numAfter) not yet used
-  for (
-    let x = Math.max(1, numBefore + 1);
-    x < numAfter && x < numBefore + 1000;
-    x++
-  ) {
-    if (!usedNumbers.has(x)) return x;
-  }
-
-  // Fallback: max + 1
-  return usedNumbers.size > 0 ? Math.max(...usedNumbers) + 1 : 1;
-}
-
-/**
- * Compute the auto-generated folder title based on nesting depth.
- * Depth 0 (root): "Part.{N}"
- * Depth 1 (inside root folder): "Chapter {N}"
- * Depth 2+: フォルダー (no numbering)
- */
-function computeFolderTitle(
-  parentId: string | null,
-  allNodes: TreeNodeData[],
-  folderNaming: string,
-): string {
-  if (folderNaming !== "auto") return i18next.t("tree.defaultFolder");
-
-  // Determine depth by counting ancestors
-  let depth = 0;
-  let cur = parentId;
-  while (cur !== null) {
-    depth++;
-    cur = allNodes.find((n) => n.id === cur)?.parentId ?? null;
-  }
-
-  if (depth === 0) {
-    // Root level → Part.{N}
-    const prefix = "Part.";
-    const usedNums = new Set(
-      allNodes
-        .filter((n) => n.nodeType === "folder" && n.parentId === null)
-        .map((n) => extractTrailingNumber(n.title, prefix))
-        .filter((n): n is number => n !== null),
-    );
-    let i = 1;
-    while (usedNums.has(i)) i++;
-    return `${prefix}${i}`;
-  } else if (depth === 1) {
-    // One level deep → Chapter {N}
-    const prefix = "Chapter ";
-    const usedNums = new Set(
-      allNodes
-        .filter((n) => n.nodeType === "folder" && n.parentId === parentId)
-        .map((n) => extractTrailingNumber(n.title, prefix))
-        .filter((n): n is number => n !== null),
-    );
-    let i = 1;
-    while (usedNums.has(i)) i++;
-    return `${prefix}${i}`;
-  }
-
-  return i18next.t("tree.defaultFolder");
-}
-
 /** Sort nodes so parents appear before their children (for restore operations). */
-function topologicalSort(nodes: TreeNodeData[]): TreeNodeData[] {
-  const ids = new Set(nodes.map((n) => n.id));
-  const result: TreeNodeData[] = [];
-  const visited = new Set<string>();
-  function visit(node: TreeNodeData) {
-    if (visited.has(node.id)) return;
-    if (node.parentId && ids.has(node.parentId)) {
-      visit(nodes.find((n) => n.id === node.parentId)!);
-    }
-    visited.add(node.id);
-    result.push(node);
-  }
-  for (const node of nodes) visit(node);
-  return result;
-}
 
 export const useTreeStore = create<TreeState>()((set, get) => ({
   nodes: [],
@@ -858,159 +726,104 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   // --- New tree operations ---
   async createNode({ nodeType, parentId, afterId, title }) {
-    if (blockIfUnlicensed()) throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
-    const { projectId, nodes } = get();
-    const siblings = nodes.filter((n) => n.parentId === parentId);
-    const sortOrder = nextSortOrder(siblings, afterId);
-    const settingsState = useSettingsStore.getState();
-    const scenePrefix = settingsState.get(
-      "tree.sceneNaming",
-      i18next.t("tree.defaultScene"),
-    );
-    const notePrefix = settingsState.get(
-      "tree.noteNaming",
-      i18next.t("tree.defaultNote"),
-    );
-    const folderNaming = settingsState.get("tree.folderNaming", "auto");
-    const numberingScope = settingsState.get("tree.numberingScope", "project");
-
-    let defaultTitle: string;
-    if (title !== undefined) {
-      defaultTitle = title;
-    } else if (nodeType === "folder") {
-      defaultTitle = computeFolderTitle(parentId, nodes, folderNaming);
-    } else {
-      const prefix = nodeType === "scene" ? scenePrefix : notePrefix;
-      if (prefix) {
-        const n = computeNextNumber(
-          nodeType,
-          parentId,
-          afterId,
-          nodes,
-          prefix,
-          numberingScope,
-        );
-        defaultTitle = `${prefix} ${n}`;
-      } else {
-        defaultTitle =
-          nodeType === "scene"
-            ? i18next.t("tree.defaultScene")
-            : i18next.t("tree.defaultNote");
-      }
-    }
-    const created = await api.createNode({
-      id: crypto.randomUUID(),
-      projectId,
-      parentId: parentId ?? undefined,
-      nodeType,
-      title: defaultTitle,
-      sortOrder,
-    });
-    const newNode = toNodeData(created);
-    set((state) => {
-      const updated = [...state.nodes, newNode];
-      const newScenes = computeScenes(updated);
-      // Expand parent folder so the new node is visible
-      const expandedIds =
-        parentId && !state.expandedIds.includes(parentId)
-          ? [...state.expandedIds, parentId]
-          : state.expandedIds;
-      return {
-        nodes: updated,
-        scenes: newScenes,
-        // pending 中は新規シーンへ activeScene を切り替えない。切り替えると
-        // ensure-tab → openPreview(新ID) が guard で弾かれて activeSceneId と
-        // activeTabId が乖離する。ノードは作るが focus は据え置き、pending 解消後に
-        // 開けるようにする (owner エディタの未確定 diff を守る)。
-        activeSceneId:
-          nodeType === "scene" && !isInlineAiPending()
-            ? newNode.id
-            : state.activeSceneId,
-        expandedIds,
-        pendingRenameId: newNode.id,
-        // Folders don't open a tab, so trigger reveal explicitly to scroll
-        // the new folder into view. Scenes/notes scroll via the activeSceneId
-        // path (notes through tab open → setActiveScene), so leave those.
-        // Gate on autoRevealActiveScene to keep parity with scene/note —
-        // turning the setting off should suppress folder auto-scroll too.
-        pendingRevealId:
-          nodeType === "folder" && state.autoRevealActiveScene
-            ? newNode.id
-            : state.pendingRevealId,
-      };
-    });
-    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-
-    recordChangeEvent({
-      domain: "grid",
-      opType: "node.create",
-      entityType: newNode.nodeType,
-      entityId: newNode.id,
-      sceneId: newNode.nodeType === "scene" ? newNode.id : null,
-      payload: {
-        parentId: newNode.parentId,
-        sortOrder: newNode.sortOrder,
-        title: newNode.title,
-        nodeType: newNode.nodeType,
-      },
-    });
-
-    if (!useGlobalHistoryStore.getState().isReplaying) {
-      const captured = { ...newNode };
-      const createLabel =
-        newNode.nodeType === "scene"
-          ? i18next.t("tree.undo.sceneCreated")
-          : newNode.nodeType === "folder"
-            ? i18next.t("tree.undo.folderCreated")
-            : i18next.t("tree.undo.noteCreated");
-      useGlobalHistoryStore.getState().push({
-        kind: "scenes",
-        label: createLabel,
-        async undo() {
-          await api.deleteNode(captured.id);
-          set((state) => {
-            const nodes = state.nodes.filter((n) => n.id !== captured.id);
-            return { nodes, scenes: computeScenes(nodes) };
-          });
-          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-          useTabStore.getState().closeTab(captured.id);
-          useTabStore.getState().closeSecondaryTab(captured.id);
-        },
-        async redo() {
-          const recreated = await api.createNode({
-            id: captured.id,
-            projectId: captured.projectId,
-            parentId: captured.parentId ?? undefined,
-            nodeType: captured.nodeType,
-            title: captured.title,
-            sortOrder: captured.sortOrder,
-            status: captured.status ?? undefined,
-          });
-          const node = toNodeData(recreated);
-          set((state) => {
-            const updated = [...state.nodes, node];
-            const expandedIds =
-              captured.parentId &&
-              !state.expandedIds.includes(captured.parentId)
-                ? [...state.expandedIds, captured.parentId]
-                : state.expandedIds;
-            return {
-              nodes: updated,
-              scenes: computeScenes(updated),
-              activeSceneId:
-                node.nodeType === "scene" ? node.id : state.activeSceneId,
-              expandedIds,
-            };
-          });
-          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-          if (node.nodeType === "scene" || node.nodeType === "note") {
-            useTabStore.getState().openPinned(node.id);
+    return createTreeNode(
+      { nodeType, parentId, afterId, title },
+      {
+        ensureWritable: () => {
+          if (blockIfUnlicensed()) {
+            throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
           }
         },
-      });
-    }
-
-    return newNode;
+        getProjectId: () => get().projectId,
+        getNodes: () => get().nodes,
+        getSetting: (key, fallback) =>
+          useSettingsStore.getState().get(key, fallback),
+        createPersisted: async (record) => {
+          const created = await api.createNode({
+            id: record.id,
+            projectId: record.projectId,
+            parentId: record.parentId ?? undefined,
+            nodeType: record.nodeType,
+            title: record.title,
+            sortOrder: record.sortOrder,
+          });
+          return toNodeData(created);
+        },
+        deletePersisted: (id) => api.deleteNode(id),
+        recreatePersisted: async (node) => {
+          const recreated = await api.createNode({
+            id: node.id,
+            projectId: node.projectId,
+            parentId: node.parentId ?? undefined,
+            nodeType: node.nodeType,
+            title: node.title,
+            sortOrder: node.sortOrder,
+            synopsis: node.synopsis ?? undefined,
+            status: node.status ?? undefined,
+          });
+          return toNodeData(recreated);
+        },
+        applyCreated: (node, mode) => {
+          set((state) => {
+            const nodes = [...state.nodes, node];
+            const expandedIds =
+              node.parentId && !state.expandedIds.includes(node.parentId)
+                ? [...state.expandedIds, node.parentId]
+                : state.expandedIds;
+            return {
+              nodes,
+              scenes: computeScenes(nodes),
+              activeSceneId:
+                node.nodeType === "scene" &&
+                (mode === "redo" || !isInlineAiPending())
+                  ? node.id
+                  : state.activeSceneId,
+              expandedIds,
+              pendingRenameId:
+                mode === "create" ? node.id : state.pendingRenameId,
+              pendingRevealId:
+                mode === "create" &&
+                node.nodeType === "folder" &&
+                state.autoRevealActiveScene
+                  ? node.id
+                  : state.pendingRevealId,
+            };
+          });
+        },
+        applyRemoved: (id) => {
+          set((state) => {
+            const nodes = state.nodes.filter((node) => node.id !== id);
+            return { nodes, scenes: computeScenes(nodes) };
+          });
+        },
+        recomputeSceneOrder: (nodes) =>
+          usePhaseStore.getState().recomputeSceneOrder([...nodes]),
+        closeTabs: (id) => {
+          useTabStore.getState().closeTab(id);
+          useTabStore.getState().closeSecondaryTab(id);
+        },
+        revealEditorDocument: (id) =>
+          requestOpenEditorDocument({
+            target: { kind: "scene", documentId: id },
+            mode: "pinned",
+            revealEditor: true,
+            focusEditor: false,
+            syncSceneContext: false,
+          }),
+        isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
+        pushHistory: (command) =>
+          useGlobalHistoryStore.getState().push(command),
+        recordChange: ({ entityType, entityId, sceneId, payload }) =>
+          recordChangeEvent({
+            domain: "grid",
+            opType: "node.create",
+            entityType,
+            entityId,
+            sceneId,
+            payload,
+          }),
+      },
+    );
   },
 
   async updateNodeTitle(id, title) {
@@ -1047,182 +860,66 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async deleteNode(id) {
-    // pending 中の削除は active scene を作り替え owner エディタを破棄しうる。
-    if (guardInlineAiPending()) return;
-    const { nodes, activeSceneId } = get();
-    // Collect all descendants to delete
-    const toDelete = new Set<string>();
-    const queue = [id];
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      toDelete.add(cur);
-      nodes.filter((n) => n.parentId === cur).forEach((c) => queue.push(c.id));
-    }
-
-    // Capture snapshots before deletion so we can restore on undo
-    const trackHistory = !useGlobalHistoryStore.getState().isReplaying;
-    const deletedNodes = nodes.filter((n) => toDelete.has(n.id));
-    const contentSnapshots: Record<string, string> = {};
-    if (trackHistory) {
-      for (const node of deletedNodes) {
-        if (node.nodeType === "scene") {
-          try {
-            contentSnapshots[node.id] = await api.loadSceneContent(node.id);
-          } catch {
-            contentSnapshots[node.id] = "";
-          }
-        }
-      }
-    }
-    const prevActiveSceneId = activeSceneId;
-
-    // Delete from DB (leaf-first to avoid FK issues). Track ids that
-    // succeeded so a partial failure leaves in-memory state and DB in sync
-    // and we can skip pushing an un-redoable history entry.
-    const successfullyDeleted = new Set<string>();
-    let partialFailure = false;
-    for (const delId of [...toDelete].reverse()) {
-      try {
-        await api.deleteNode(delId);
-        successfullyDeleted.add(delId);
-      } catch (err) {
-        partialFailure = true;
-        toast.error(i18next.t("tree.errors.deleteFailed"), {
-          description: String(err),
-        });
-        break;
-      }
-    }
-    const remaining = nodes.filter((n) => !successfullyDeleted.has(n.id));
-    const newScenes = computeScenes(remaining);
-    const newActive = successfullyDeleted.has(activeSceneId)
-      ? (newScenes[0]?.id ?? "")
-      : activeSceneId;
-    set({ nodes: remaining, scenes: newScenes, activeSceneId: newActive });
-    usePhaseStore.getState().recomputeSceneOrder(remaining);
-    if (successfullyDeleted.size > 0) {
-      recordChangeEvent({
-        domain: "grid",
-        opType: "node.delete",
-        entityType: "node",
-        entityId: id,
-        sceneId: null,
-        payload: {
-          rootId: id,
-          deletedIds: [...successfullyDeleted],
-          partialFailure,
-          prevActiveSceneId,
-        },
-      });
-    }
-    // Close editor tabs only for nodes that actually got deleted.
-    const tabStore = useTabStore.getState();
-    for (const delId of successfullyDeleted) {
-      tabStore.closeTab(delId);
-      tabStore.closeSecondaryTab(delId);
-    }
-
-    // Partial failure: undo would try to recreate rows still present in DB
-    // and redo would re-traverse a tree whose shape we never finished
-    // mutating. Skip the history push entirely so the timeline cannot
-    // replay an inconsistent state.
-    if (partialFailure) return;
-
-    // Trash 連携: 削除に成功した scene のみをキャプチャ。
-    // フォルダ自体はキャプチャしない (中の scene だけが trash に積まれる仕様)。
-    // note も対象外 (未対応 subKind)。
-    const trashTempIds = new Map<string, string>();
-    if (trackHistory) {
-      for (const node of deletedNodes) {
-        if (!successfullyDeleted.has(node.id)) continue;
-        if (node.nodeType !== "scene") continue;
-        const tempId = `trash-${node.nodeType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${node.id}`;
-        trashTempIds.set(node.id, tempId);
-        const folderHintName =
-          deletedNodes.find((n) => n.id === node.parentId)?.title ??
-          nodes.find((n) => n.id === node.parentId)?.title ??
-          null;
-        captureSceneDeletion({
+    await deleteTreeSubtree(id, {
+      guardPending: guardInlineAiPending,
+      getNodes: () => get().nodes,
+      getActiveSceneId: () => get().activeSceneId,
+      loadSceneContent: (nodeId) => api.loadSceneContent(nodeId),
+      deletePersisted: (nodeId) => api.deleteNode(nodeId),
+      restorePersisted: async (node) => {
+        await api.createNode({
+          id: node.id,
           projectId: node.projectId,
-          node,
-          content: contentSnapshots[node.id] ?? "",
-          folderHintName,
-          tempId,
+          parentId: node.parentId ?? undefined,
+          nodeType: node.nodeType,
+          title: node.title,
+          synopsis: node.synopsis ?? undefined,
+          sortOrder: node.sortOrder,
+          status: node.status ?? undefined,
         });
-      }
-    }
-
-    if (trackHistory) {
-      useGlobalHistoryStore.getState().push({
-        kind: "scenes",
-        label: i18next.t("tree.undo.deleted"),
-        async undo() {
-          // 1500ms 以内 Ctrl+Z 吸収: trash 保留を全 cancel
-          for (const tempId of trashTempIds.values()) {
-            useTrashBinStore.getState().cancelPending({ tempId });
-          }
-          // Restore nodes (parents before children)
-          const sorted = topologicalSort(deletedNodes);
-          for (const node of sorted) {
-            await api.createNode({
-              id: node.id,
-              projectId: node.projectId,
-              parentId: node.parentId ?? undefined,
-              nodeType: node.nodeType,
-              title: node.title,
-              synopsis: node.synopsis ?? undefined,
-              sortOrder: node.sortOrder,
-              status: node.status ?? undefined,
-            });
-            if (
-              node.nodeType === "scene" &&
-              contentSnapshots[node.id] !== undefined
-            ) {
-              await api.saveSceneContent(node.id, contentSnapshots[node.id]);
-            }
-          }
-          set((state) => {
-            const updated = [...state.nodes, ...deletedNodes];
-            return {
-              nodes: updated,
-              scenes: computeScenes(updated),
-              activeSceneId: prevActiveSceneId,
-            };
-          });
-          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-        },
-        async redo() {
-          // Re-delete from the same root, collecting current descendants
-          const currentNodes = get().nodes;
-          const currentToDelete = new Set<string>();
-          const q = [id];
-          while (q.length > 0) {
-            const cur = q.shift()!;
-            if (!currentNodes.find((n) => n.id === cur)) continue;
-            currentToDelete.add(cur);
-            currentNodes
-              .filter((n) => n.parentId === cur)
-              .forEach((c) => q.push(c.id));
-          }
-          for (const delId of [...currentToDelete].reverse()) {
-            await api.deleteNode(delId);
-          }
-          const rem = currentNodes.filter((n) => !currentToDelete.has(n.id));
-          const sc = computeScenes(rem);
-          const curActive = get().activeSceneId;
-          const nextActive = currentToDelete.has(curActive)
-            ? (sc[0]?.id ?? "")
-            : curActive;
-          set({ nodes: rem, scenes: sc, activeSceneId: nextActive });
-          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-          const tb = useTabStore.getState();
-          for (const delId of [...currentToDelete]) {
-            tb.closeTab(delId);
-            tb.closeSecondaryTab(delId);
-          }
-        },
-      });
-    }
+      },
+      saveSceneContent: (nodeId, content) =>
+        api.saveSceneContent(nodeId, content).then(() => {}),
+      applyNodes: (nodes, activeSceneId) =>
+        set({ nodes, scenes: computeScenes(nodes), activeSceneId }),
+      recomputeSceneOrder: (nodes) =>
+        usePhaseStore.getState().recomputeSceneOrder([...nodes]),
+      isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
+      pushHistory: (command) => useGlobalHistoryStore.getState().push(command),
+      closeTabs: (nodeId) => {
+        useTabStore.getState().closeTab(nodeId);
+        useTabStore.getState().closeSecondaryTab(nodeId);
+      },
+      captureTrash: (input) => captureSceneDeletion(input),
+      cancelTrash: (tempId) =>
+        useTrashBinStore.getState().cancelPending({ tempId }),
+      makeTrashTempId: (node) =>
+        `trash-${node.nodeType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${node.id}`,
+      recordChange: ({
+        rootId,
+        deletedIds,
+        partialFailure,
+        previousActiveSceneId,
+      }) =>
+        recordChangeEvent({
+          domain: "grid",
+          opType: "node.delete",
+          entityType: "node",
+          entityId: id,
+          sceneId: null,
+          payload: {
+            rootId,
+            deletedIds,
+            partialFailure,
+            prevActiveSceneId: previousActiveSceneId,
+          },
+        }),
+      notifyDeleteFailure: (error) =>
+        toast.error(i18next.t("tree.errors.deleteFailed"), {
+          description: String(error),
+        }),
+      deletedLabel: i18next.t("tree.undo.deleted"),
+    });
   },
 
   async updateSynopsis(id, synopsis) {
@@ -1620,112 +1317,24 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async moveNode(id, newParentId, afterId) {
-    const { nodes } = get();
-    const node = nodes.find((n) => n.id === id);
-    if (!node) return;
-    const siblings = nodes
-      .filter((n) => n.parentId === newParentId && n.id !== id)
-      .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-
-    // afterId semantics:
-    //   null      → insert before first sibling (prepend)
-    //   undefined → append after last sibling
-    //   string    → insert after the named sibling
-    let sortOrder: string;
-    if (afterId === null) {
-      const first = siblings[0];
-      sortOrder = generateKeyBetween(null, first ? first.sortOrder : null);
-    } else if (afterId === undefined) {
-      const last = siblings[siblings.length - 1];
-      sortOrder = generateKeyBetween(last ? last.sortOrder : null, null);
-    } else {
-      const idx = siblings.findIndex((n) => n.id === afterId);
-      if (idx === -1) {
-        const last = siblings[siblings.length - 1];
-        sortOrder = generateKeyBetween(last ? last.sortOrder : null, null);
-      } else {
-        const after = siblings[idx];
-        const next = siblings[idx + 1];
-        sortOrder = generateKeyBetween(
-          after.sortOrder,
-          next ? next.sortOrder : null,
-        );
-      }
-    }
-
-    const oldParentId = node.parentId;
-    const oldSortOrder = node.sortOrder;
-
-    // Optimistic update: apply state change immediately so the UI reflects the
-    // new order without waiting for the DB round-trip.
-    set((state) => {
-      const updated = state.nodes.map((n) =>
-        n.id === id ? { ...n, parentId: newParentId, sortOrder } : n,
-      );
-      return { nodes: updated, scenes: computeScenes(updated) };
-    });
-    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-    recordChangeEvent({
-      domain: "grid",
-      opType: "node.move",
-      entityType: node.nodeType,
-      entityId: id,
-      sceneId: node.nodeType === "scene" ? id : null,
-      payload: {
-        parentBefore: oldParentId,
-        parentAfter: newParentId,
-        sortBefore: oldSortOrder,
-        sortAfter: sortOrder,
-      },
-    });
-
-    // Register Undo immediately, BEFORE the DB await. The in-memory state is
-    // already updated; making Undo wait on the DB round-trip means a freshly-
-    // dropped card cannot be undone for 100s of ms (visible UX glitch under
-    // slow disk). Both undo() and redo() do their own api.updateNode call, so
-    // ordering with the foreground write is fine.
-    if (!useGlobalHistoryStore.getState().isReplaying) {
-      useGlobalHistoryStore.getState().push({
-        kind: "scenes",
-        label: i18next.t("tree.undo.moved"),
-        async undo() {
-          await api.updateNode(id, {
-            parentId: oldParentId,
-            sortOrder: oldSortOrder,
-          });
-          set((state) => {
-            const updated = state.nodes.map((n) =>
-              n.id === id
-                ? { ...n, parentId: oldParentId, sortOrder: oldSortOrder }
-                : n,
-            );
-            return { nodes: updated, scenes: computeScenes(updated) };
-          });
-          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-        },
-        async redo() {
-          await api.updateNode(id, {
-            parentId: newParentId,
-            sortOrder,
-          });
-          set((state) => {
-            const updated = state.nodes.map((n) =>
-              n.id === id ? { ...n, parentId: newParentId, sortOrder } : n,
-            );
-            return { nodes: updated, scenes: computeScenes(updated) };
-          });
-          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
-        },
-      });
-    }
-
-    // NOTE: pass `newParentId` directly — `?? undefined` would coerce null to
-    // undefined, and Drizzle omits undefined keys from the SET clause, so the
-    // parent_id column would never be cleared. That made "move to root" silently
-    // skip the DB write while still applying the optimistic in-memory update.
-    await api.updateNode(id, {
-      parentId: newParentId,
-      sortOrder,
+    await moveTreeNode(id, newParentId, afterId, {
+      getNodes: () => get().nodes,
+      applyNodes: (nodes) => set({ nodes, scenes: computeScenes(nodes) }),
+      persist: (nodeId, patch) => api.updateNode(nodeId, patch).then(() => {}),
+      recomputeSceneOrder: (nodes) =>
+        usePhaseStore.getState().recomputeSceneOrder([...nodes]),
+      isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
+      pushHistory: (command) => useGlobalHistoryStore.getState().push(command),
+      recordChange: ({ entityType, entityId, sceneId, payload }) =>
+        recordChangeEvent({
+          domain: "grid",
+          opType: "node.move",
+          entityType,
+          entityId,
+          sceneId,
+          payload,
+        }),
+      movedLabel: i18next.t("tree.undo.moved"),
     });
   },
 

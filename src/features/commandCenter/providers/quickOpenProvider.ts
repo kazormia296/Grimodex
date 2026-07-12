@@ -4,6 +4,8 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import type {
   CommandCenterItem,
   CommandCenterProvider,
@@ -55,8 +57,16 @@ function gatherMatches(query: string, limit: number): CommandCenterItem[] {
         title,
         badge: { label: "Scene", tone: "scene" },
         onSelect: () => {
-          useTreeStore.getState().setActiveScene(node.id);
-          useLayoutStore.getState().showPanel("editor");
+          openEditorDocument(
+            {
+              target: { kind: "scene", documentId: node.id },
+              mode: "pinned",
+              revealEditor: true,
+              focusEditor: false,
+              syncSceneContext: true,
+            },
+            defaultEditorNavigationPorts,
+          );
         },
       },
     });

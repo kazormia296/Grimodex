@@ -33,16 +33,21 @@ vi.mock("@/features/editor/tabStore", () => ({
   ),
 }));
 
-vi.mock("@/features/tree/treeStore", () => ({
-  useTreeStore: vi.fn((sel: (s: unknown) => unknown) =>
-    sel({
-      nodes: [],
-      setActiveScene: vi.fn(),
-      updateStoryTime: vi.fn(),
-      deleteNode: mockDeleteNode,
-    }),
-  ),
-}));
+vi.mock("@/features/tree/treeStore", () => {
+  return {
+    useTreeStore: Object.assign(
+      vi.fn((sel: (s: unknown) => unknown) =>
+        sel({
+          nodes: [],
+          setActiveScene: vi.fn(),
+          updateStoryTime: vi.fn(),
+          deleteNode: mockDeleteNode,
+        }),
+      ),
+      { getState: () => ({ setActiveScene: vi.fn() }) },
+    ),
+  };
+});
 
 vi.mock("@/features/layout/layoutStore", () => ({
   useLayoutStore: Object.assign(

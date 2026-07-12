@@ -14,8 +14,8 @@ import { findPosByNodeId, buildUpsertArgs } from "../utils/nodeIdCodec";
 import type { MapNodePositionRecord } from "../types";
 import type { MapSticky } from "@/db/schema";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { useTabStore } from "@/features/editor/tabStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useChatStore } from "@/features/chat/chatStore";
 import * as chatApi from "@/features/chat/chatApi";
 import i18next from "@/lib/i18n";
@@ -37,7 +37,8 @@ interface UseMapContextMenuInput {
   setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
   setStickies: React.Dispatch<React.SetStateAction<MapSticky[]>>;
   setDeletingStickyIds: React.Dispatch<React.SetStateAction<Set<string>>>;
-  setActiveScene: (id: string) => void;
+  /** @deprecated Navigation is coordinated by openEditorDocument. */
+  setActiveScene?: (id: string) => void;
   onAfterPromote?: (targetType: PromoteTargetType) => void;
 }
 
@@ -49,7 +50,6 @@ export function useMapContextMenu({
   setPositions,
   setStickies,
   setDeletingStickyIds,
-  setActiveScene,
   onAfterPromote,
 }: UseMapContextMenuInput) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -164,10 +164,17 @@ export function useMapContextMenu({
   const handleContextMenuOpen = useCallback(() => {
     if (!contextMenu) return;
     const sceneId = contextMenu.nodeId.slice("scene:".length);
-    useTabStore.getState().openPinned(sceneId);
-    useLayoutStore.getState().showPanel("editor");
-    setActiveScene(sceneId);
-  }, [contextMenu, setActiveScene]);
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: sceneId },
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
+  }, [contextMenu]);
 
   const ensurePositionForNodeId = useCallback(
     async (nodeId: string): Promise<MapNodePositionRecord | undefined> => {

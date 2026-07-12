@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
+import { useEditorSessionStore } from "./editorSessionStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -28,6 +29,8 @@ import type {
   PhaseResolutionMode,
   SceneTimeIndex,
 } from "@/features/codex/context/sceneTimeIndex";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 
 export const DRAG_DATA_KEY = "application/grimodex-tab";
 /** Per-group marker so drop zones can detect source group during dragover. */
@@ -81,7 +84,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const secondaryTabs = useTabStore((s) => s.secondaryTabs);
   const secondaryActiveTabId = useTabStore((s) => s.secondaryActiveTabId);
   const isSyncedScene = useTabStore((s) => s.isSyncedScene);
-  const dirtyTabIds = useTabStore((s) => s.dirtyTabIds);
+  const dirtyTabIds = useEditorSessionStore((s) => s.dirtyDocumentIds);
 
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
@@ -215,7 +218,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
 
   function handleTabClose(e: React.MouseEvent, nodeId: string) {
     e.stopPropagation();
-    if (useTabStore.getState().dirtyTabIds.has(nodeId)) {
+    if (useEditorSessionStore.getState().dirtyDocumentIds.has(nodeId)) {
       setPendingClose({ nodeIds: [nodeId] });
       return;
     }
@@ -234,8 +237,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   }
 
   function handleCloseSecondaryGroup() {
-    const { secondaryTabs: tabsInGroup, dirtyTabIds: dirty } =
-      useTabStore.getState();
+    const tabsInGroup = useTabStore.getState().secondaryTabs;
+    const dirty = useEditorSessionStore.getState().dirtyDocumentIds;
     const dirtyIds = tabsInGroup
       .map((t) => t.nodeId)
       .filter((id) => dirty.has(id));
@@ -252,7 +255,16 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   function handleTabDoubleClick(nodeId: string, isPreview: boolean) {
     if (!isPreview) return;
     if (isPrimary) {
-      useTabStore.getState().openPinned(nodeId);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: nodeId },
+          mode: "pinned",
+          revealEditor: true,
+          focusEditor: true,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
     } else {
       useTabStore.getState().pinSecondaryTab(nodeId);
     }

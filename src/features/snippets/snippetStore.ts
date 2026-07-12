@@ -73,6 +73,8 @@ interface SnippetState {
   setSortOrder: (order: SnippetSortOrder) => void;
   requestSelectEntry: (id: string) => void;
   clearPendingEntry: () => void;
+  /** Drop project-owned entries, filters, and selection before a reload. */
+  resetForProject: () => void;
   create: (
     data: Pick<NewSnippet, "title" | "content"> &
       Partial<
@@ -121,6 +123,13 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
   setSortOrder: (order) => set({ sortOrder: order }),
   requestSelectEntry: (id) => set({ pendingEntryId: id }),
   clearPendingEntry: () => set({ pendingEntryId: null }),
+  resetForProject: () =>
+    set({
+      entries: [],
+      searchQuery: "",
+      pendingEntryId: null,
+      selectedSnippet: null,
+    }),
 
   loadEntries: async () => {
     const run = (async () => {

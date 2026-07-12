@@ -3,7 +3,7 @@ import {
   jaReleaseNotesPath,
 } from "./resolveReleaseNotesPath";
 import { EULA_VERSION } from "@/features/legal/constants";
-import type { GlobalSettings } from "@/features/workspace/store";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import { isNewer } from "./semver";
 import { useReleaseNotesStore } from "./releaseNotesStore";
 import { getVersion } from "@/lib/appInfo";

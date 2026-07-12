@@ -6,6 +6,7 @@ import {
   LANGUAGE_DEFAULT_OVERRIDES,
 } from "./types";
 import { PROJECT_ID } from "@/features/project/constants";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 
 type Layer = Record<string, string>;
 
@@ -39,18 +40,10 @@ interface SettingsState {
 }
 
 // Route a key/value write to the correct persistent store.
-// Dynamic import of workspace store breaks the circular dep
-// (workspace/store → settingsStore → workspace/store).
 async function persistSetting(key: string, value: string): Promise<void> {
   const scope = KEY_SCOPE[key];
   if (scope === "global") {
-    const { useWorkspaceStore } = await import("@/features/workspace/store");
-    const saved = await useWorkspaceStore
-      .getState()
-      .updateUserPreference(key, value);
-    if (saved === false) {
-      throw new Error(`Failed to persist global setting: ${key}`);
-    }
+    await globalSettingsRepository.updateUserPreference(key, value);
   } else if (scope === "project") {
     await api.setProjectSetting(PROJECT_ID, key, value);
   } else {
@@ -90,14 +83,12 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   _pending: new Map(),
 
   loadAll: async () => {
-    const [legacyAll, workspaceModule, projectAll] = await Promise.all([
+    const [legacyAll, globalSettings, projectAll] = await Promise.all([
       api.getSettingsByPrefix(""),
-      import("@/features/workspace/store"),
+      globalSettingsRepository.read(),
       api.getAllProjectSettings(PROJECT_ID),
     ]);
-    const globalPrefs =
-      workspaceModule.useWorkspaceStore.getState().globalSettings
-        ?.userPreferences ?? {};
+    const globalPrefs = globalSettings.userPreferences ?? {};
     set((s) => {
       const layers = {
         legacy: { ...legacyAll },

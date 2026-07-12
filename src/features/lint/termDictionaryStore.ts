@@ -220,6 +220,8 @@ interface TermDictionaryState {
   sortBy: "preferred" | "updatedAt" | "severity" | "sortOrder";
 
   load: () => Promise<void>;
+  /** Clear project-owned dictionary rows before a reload. */
+  resetForProject: () => void;
   upsert: (
     input: {
       preferred: string;
@@ -260,6 +262,8 @@ export const useTermDictionaryStore = create<TermDictionaryState>()(
     loading: false,
     searchQuery: "",
     sortBy: "sortOrder",
+
+    resetForProject: () => set({ rows: [], isLoaded: false, loading: false }),
 
     load: async () => {
       if (get().loading) return;

@@ -22,7 +22,7 @@ import {
   unregisterSaveHandler,
   dirtyGatedSaveHandler,
 } from "@/features/editor/editorSaveRegistry";
-import { useTabStore } from "@/features/editor/tabStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { subscribeLiveContentRafCoalesced } from "@/features/editor/sceneContentStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
@@ -192,7 +192,7 @@ function MountedSceneBlock({
     // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
     // (editGenerationRef のコメント参照)。
     if (editGenerationRef.current === editGenAtStart) {
-      useTabStore.getState().setTabDirty(sceneId, false);
+      useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
     }
   }, [sceneId]);
 
@@ -280,7 +280,7 @@ function MountedSceneBlock({
         // 上書きする。解除は coreSave 成功時と unmount cleanup。
         // 世代カウンタは dirty 立てと同時に ++ (coreSave の条件付き解除用)。
         editGenerationRef.current += 1;
-        useTabStore.getState().setTabDirty(sceneId, true);
+        useEditorSessionStore.getState().setDocumentDirty(sceneId, true);
 
         // Auto-transition outline → draft: wasEmptyRef が true の間だけ
         // 全文 walk する (EditorPane.onUpdate と同じ制限 — 一度本文を観測
@@ -390,7 +390,7 @@ function MountedSceneBlock({
   // (onUpdate で同期セット / coreSave 成功時とunmount で解除)。
   useEffect(() => {
     const handler = dirtyGatedSaveHandler(
-      () => useTabStore.getState().dirtyTabIds.has(sceneId),
+      () => useEditorSessionStore.getState().dirtyDocumentIds.has(sceneId),
       saveFn,
     );
     registerSaveHandler(sceneId, handler);
@@ -401,7 +401,8 @@ function MountedSceneBlock({
   // unmount flush (useAutoSave cleanup) が保存を引き受けるため、残った
   // dirty フラグは「閉じたエディタの幽霊 dirty」になる。
   useEffect(() => {
-    return () => useTabStore.getState().setTabDirty(sceneId, false);
+    return () =>
+      useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
   }, [sceneId]);
 
   // 打鍵 debounce タイマーの後始末 (unmount 後の setState を防ぐ)。
@@ -460,7 +461,7 @@ function MountedSceneBlock({
             : "";
         ed.commands.setContent(parsed, { emitUpdate: false });
         resetEditorHistory(ed.view);
-        useTabStore.getState().setTabDirty(sceneId, false);
+        useEditorSessionStore.getState().setDocumentDirty(sceneId, false);
       } finally {
         isApplyingExternalUpdate.current = false;
       }

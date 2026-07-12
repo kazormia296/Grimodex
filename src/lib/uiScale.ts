@@ -1,4 +1,4 @@
-import type { GlobalSettings } from "@/features/workspace/store";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import {
   SCREENSHOT_CAPTURE_UI_SCALE_MAX_PCT,
   SCREENSHOT_CAPTURE_UI_SCALE_MIN_PCT,

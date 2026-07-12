@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { patchGlobalSettings } from "@/lib/globalSettings";
-import type { GlobalSettings } from "@/features/workspace/store";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import { parseShowConfig } from "./mapApi";
 import { DEFAULT_SHOW, DEFAULT_GALAXY_FILTERS } from "./types";
 import type {
@@ -53,6 +53,8 @@ interface MapState {
   setFocusedNode: (id: string | null) => void;
   setPendingExport: (type: "svg" | "png" | "json" | null) => void;
   bumpBoardDataVersion: () => void;
+  /** Clear transient project-switch state without changing the active board. */
+  resetForProject: () => void;
   loadFromSettings: (settings: GlobalSettings) => void;
   hydrateFromBoard: (board: MapBoardRecord) => void;
 }
@@ -102,6 +104,13 @@ export const useMapStore = create<MapState>((set) => ({
   setPendingExport: (type) => set({ pendingExport: type }),
   bumpBoardDataVersion: () =>
     set((s) => ({ boardDataVersion: s.boardDataVersion + 1 })),
+  resetForProject: () =>
+    set({
+      focusedNodeId: null,
+      searchVisible: false,
+      pendingAutoArrange: null,
+      pendingExport: null,
+    }),
 
   loadFromSettings: (settings) => {
     const saved = settings.map as MapPersistentState | undefined;
@@ -169,7 +178,7 @@ useMapStore.subscribe((state) => {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      await patchGlobalSettings((current) => ({
+      await globalSettingsRepository.patch((current) => ({
         ...current,
         map: JSON.parse(next),
       }));

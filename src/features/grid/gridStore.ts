@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { patchGlobalSettings } from "@/lib/globalSettings";
-import type { GlobalSettings } from "@/features/workspace/store";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import {
   loadContainerId,
   saveContainerId,
@@ -298,7 +298,7 @@ useGridStore.subscribe((state) => {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      await patchGlobalSettings((current) => ({
+      await globalSettingsRepository.patch((current) => ({
         ...current,
         grid: JSON.parse(next),
       }));

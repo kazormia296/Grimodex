@@ -11,7 +11,8 @@ import { Box, RefreshCw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useEnsureCodexTypeColors } from "@/features/codex/useEnsureCodexTypeColors";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
@@ -106,7 +107,16 @@ export function MapGalaxyView() {
 
   const handleOpenNode = useCallback((node: GalaxyNode) => {
     if (node.kind === "scene") {
-      useTabStore.getState().openPinned(node.refId);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: node.refId },
+          mode: "pinned",
+          revealEditor: true,
+          focusEditor: false,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
     } else if (node.kind === "codex") {
       useCodexStore.getState().requestSelectEntry(node.refId);
     }

@@ -5,7 +5,8 @@ import { sceneCodexMentions, codexTags, sceneBeatPovCache } from "@/db/schema";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useGridStore } from "@/features/grid/gridStore";
 import {
   upsertScenePin,
@@ -260,8 +261,16 @@ export function MatrixPanel() {
 
   // Actions
   function openScene(sceneId: string) {
-    useTabStore.getState().openPinned(sceneId);
-    useLayoutStore.getState().showPanel("editor");
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: sceneId },
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
   }
 
   async function handlePin(sceneId: string, entryId: string) {

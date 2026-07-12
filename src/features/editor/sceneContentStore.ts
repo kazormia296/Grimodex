@@ -20,6 +20,8 @@ interface SceneContentState {
 
   /** Remove cached content when a scene is no longer open in any pane */
   clearContent: (sceneId: string) => void;
+  /** Clear all project-owned live content before a project reload. */
+  resetForProject: () => void;
 
   /**
    * Subscribe to content updates for a scene.
@@ -60,6 +62,10 @@ export function hasLiveContentSubscriber(sceneId: string): boolean {
 
 export const useSceneContentStore = create<SceneContentState>()((set) => ({
   liveContent: {},
+
+  resetForProject() {
+    set({ liveContent: {} });
+  },
 
   setLiveContent(sceneId, content, sourceGroupIndex) {
     set((state) => ({
