@@ -3,7 +3,6 @@ import { generateKeyBetween } from "fractional-indexing";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { computeTimelineSceneOrder } from "./timelineSceneOrder";
 import { computeFolderGroups } from "./timelineLabels";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTranslation } from "react-i18next";
@@ -17,20 +16,15 @@ import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useProjectStore } from "@/features/project/projectStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
-import { computeFitZoom, ZOOM_STEP, STEP_BASE } from "./timelineZoom";
 import { TimelineHeader } from "./TimelineHeader";
-import {
-  TimelineViewport,
-  PAD_LEFT,
-  PAD_RIGHT,
-  SUBWAY_LABEL_GUTTER,
-} from "./TimelineViewport";
+import { TimelineViewport } from "./TimelineViewport";
 import { TimelineInspector } from "./TimelineInspector";
 import { PlotMarkerInspector } from "@/features/plot-threads/PlotMarkerInspector";
 import { PlotMarkerDeleteConfirmDialog } from "@/features/plot-threads/PlotMarkerDeleteConfirmDialog";
 import { PlotStructureAnalysis } from "@/features/plot-threads/PlotStructureAnalysis";
 import type { PhasePinData } from "./TimelineViewport";
 import { recordMark } from "@/lib/perfLog";
+import { useTimelineKeyboardController } from "./useTimelineKeyboardController";
 
 /** ビューポート↔インスペクタ間の縦 Splitter 帯の固定幅(px)。 */
 const INSPECTOR_SPLITTER_PX = 8;
@@ -233,292 +227,16 @@ export function TimelinePanel() {
     [axisMode, sceneNodes],
   );
 
-  useEffect(() => {
-    function handlePlainKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.shiftKey && e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-      if (!containerRef.current?.contains(document.activeElement)) return;
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        active &&
-        (active.tagName === "INPUT" ||
-          active.tagName === "TEXTAREA" ||
-          active.isContentEditable)
-      )
-        return;
-
-      // プロットスレッド表示中の 2D マーカーナビ。↑/↓=スレッド(行)移動・列は維持して
-      // 最寄りマーカーへ / ←/→=同スレッド内のマーカー(列)移動。plot 選択中のみ ←/→ を
-      // 横取りする（未選択なら false を返しシーンナビに委ねる）。handled なら true。
-      function plotNav(dir: "up" | "down" | "left" | "right"): boolean {
-        const tl = useTimelineStore.getState();
-        if (!tl.showThreads) return false;
-        const ts = usePlotThreadStore.getState().threads;
-        const ls = usePlotThreadStore.getState().links;
-        if (ts.length === 0) return false;
-        const horizontal = dir === "left" || dir === "right";
-        const hasSel = !!(tl.selectedPlotLinkId || tl.selectedPlotThreadId);
-        if (horizontal && !hasSel) return false; // ←/→ はシーンナビに任せる
-        const ordered = [...ts].sort((a, b) => {
-          const c = cmpKeys(a.sortOrder, b.sortOrder);
-          return c !== 0 ? c : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-        });
-        const colOf = (nodeId: string) =>
-          scenes.findIndex((s) => s.id === nodeId);
-        const markersOf = (tid: string) =>
-          ls
-            .filter((l) => l.threadId === tid && colOf(l.nodeId) >= 0)
-            .sort((a, b) => colOf(a.nodeId) - colOf(b.nodeId));
-        const select = (next: { threadId?: string; linkId?: string }) => {
-          if (next.linkId) {
-            const t = ls.find((l) => l.id === next.linkId)?.threadId ?? null;
-            tl.setSelectedPlotThreadId(t);
-            tl.setSelectedPlotLinkId(next.linkId);
-          } else {
-            tl.setSelectedPlotThreadId(next.threadId ?? null);
-            tl.setSelectedPlotLinkId(null);
-          }
-          if (!tl.inspectorOpen) toggleInspector();
-          // インスペクタ再描画でフォーカスが移っても次キーが効くようパネルへ戻す。
-          containerRef.current?.focus();
-        };
-        const curLink = tl.selectedPlotLinkId
-          ? ls.find((l) => l.id === tl.selectedPlotLinkId)
-          : undefined;
-        const curThreadId = curLink?.threadId ?? tl.selectedPlotThreadId;
-        const curCol = curLink ? colOf(curLink.nodeId) : null;
-
-        if (horizontal) {
-          if (!curThreadId) return false;
-          const ms = markersOf(curThreadId);
-          if (ms.length === 0) return true;
-          if (!curLink) {
-            select({
-              linkId: dir === "right" ? ms[0].id : ms[ms.length - 1].id,
-            });
-            return true;
-          }
-          const i = ms.findIndex((m) => m.id === curLink.id);
-          const ni = Math.min(
-            ms.length - 1,
-            Math.max(0, i + (dir === "right" ? 1 : -1)),
-          );
-          select({ linkId: ms[ni].id });
-          return true;
-        }
-
-        // up / down: スレッド(行)を移動。
-        const ci = curThreadId
-          ? ordered.findIndex((t) => t.id === curThreadId)
-          : -1;
-        const d = dir === "down" ? 1 : -1;
-        const ni =
-          ci === -1
-            ? d === 1
-              ? 0
-              : ordered.length - 1
-            : Math.min(ordered.length - 1, Math.max(0, ci + d));
-        const nt = ordered[ni];
-        if (!nt) return true;
-        const ms = markersOf(nt.id);
-        if (ms.length === 0) {
-          select({ threadId: nt.id });
-          return true;
-        }
-        if (curCol == null) {
-          select({ linkId: ms[0].id });
-          return true;
-        }
-        // 同じ列、無ければ最寄り列のマーカーを選ぶ。
-        let best = ms[0];
-        let bestD = Math.abs(colOf(best.nodeId) - curCol);
-        for (const m of ms) {
-          const dd = Math.abs(colOf(m.nodeId) - curCol);
-          if (dd < bestD) {
-            best = m;
-            bestD = dd;
-          }
-        }
-        select({ linkId: best.id });
-        return true;
-      }
-
-      switch (e.key) {
-        case "Escape":
-          e.preventDefault();
-          clearSelection();
-          useTimelineStore.getState().setSelectedPlotThreadId(null);
-          useTimelineStore.getState().setSelectedPlotLinkId(null);
-          break;
-        case "1":
-          e.preventDefault();
-          setAxisMode("reading");
-          break;
-        case "2":
-          e.preventDefault();
-          setAxisMode("story");
-          break;
-        case "3":
-          e.preventDefault();
-          setAxisMode("write");
-          break;
-        case "Delete": {
-          // オートリピート（長押し）で破壊的削除が連鎖しないよう、最初の押下のみ処理。
-          // 空スレッド即削除→選択クリア後にリピートがシーン削除分岐へ落ちる回帰を防ぐ。
-          if (e.repeat) {
-            e.preventDefault();
-            break;
-          }
-          const ps = useTimelineStore.getState();
-          // マーカー選択中は Delete でそのマーカーを削除。スレッドのみ選択中は
-          // そのスレッド（＋所属マーカー/分岐は CASCADE）を削除。いずれも undo 可で、
-          // シーンには作用させない（最後に選択したシーンを誤って消さない）。
-          if (ps.selectedPlotLinkId) {
-            e.preventDefault();
-            const linkId = ps.selectedPlotLinkId;
-            useTimelineStore.getState().setSelectedPlotLinkId(null);
-            void usePlotThreadStore.getState().deleteMarker(linkId);
-            break;
-          }
-          if (ps.selectedPlotThreadId) {
-            e.preventDefault();
-            const threadId = ps.selectedPlotThreadId;
-            const pts = usePlotThreadStore.getState();
-            // スレッド削除で一緒に消えるマーカー数・分岐/合流数（インスペクタと同条件）。
-            const markerCount = pts.links.filter(
-              (l) => l.threadId === threadId,
-            ).length;
-            const edgeCount = pts.branches.filter(
-              (b) => b.fromThreadId === threadId || b.toThreadId === threadId,
-            ).length;
-            if (markerCount > 0 || edgeCount > 0) {
-              // 中身があれば確認 DLG（他経路と同じく）。name は描画時に fallback。
-              const th = pts.threads.find((x) => x.id === threadId);
-              setPendingThreadDelete({
-                id: threadId,
-                name: th?.name ?? "",
-                markerCount,
-                edgeCount,
-              });
-            } else {
-              // 空スレッドは確認なしで即削除（インスペクタの removeSelectedThread と同じ）。
-              // 選択を全クリア（シーン選択が残ると後続 Delete が誤ってシーンを消す）。
-              clearSelection();
-              void pts.deleteThread(threadId);
-            }
-            break;
-          }
-          const { selectedNodeIds: ids } = ps;
-          if (ids.length > 0) {
-            e.preventDefault();
-            for (const id of [...ids]) void deleteNode(id);
-          }
-          break;
-        }
-        case "Enter": {
-          const ps = useTimelineStore.getState();
-          if (ps.selectedPlotLinkId || ps.selectedPlotThreadId) break;
-          const { selectedNodeIds: ids } = ps;
-          if (ids.length > 0) {
-            e.preventDefault();
-            openEditorDocument(
-              {
-                target: { kind: "scene", documentId: ids[0] },
-                mode: "pinned",
-                revealEditor: true,
-                focusEditor: false,
-                syncSceneContext: true,
-              },
-              defaultEditorNavigationPorts,
-            );
-          }
-          break;
-        }
-        case "F2": {
-          const {
-            axisMode: curMode,
-            selectedNodeIds: ids,
-            inspectorOpen: isOpen,
-            selectedPlotLinkId: pl,
-            selectedPlotThreadId: pt,
-          } = useTimelineStore.getState();
-          if (pl || pt) break;
-          if (curMode === "story" && ids.length > 0) {
-            const targetId = ids[0];
-            if (!nodes.some((n) => n.id === targetId)) break;
-            e.preventDefault();
-            setPendingEditNodeId(targetId);
-            if (!isOpen) toggleInspector();
-          }
-          break;
-        }
-        case "ArrowRight": {
-          if (plotNav("right")) {
-            e.preventDefault();
-            break;
-          }
-          const { selectedNodeIds: ids } = useTimelineStore.getState();
-          e.preventDefault();
-          if (ids.length === 0 && scenes.length > 0) {
-            selectNode(scenes[0].id);
-            break;
-          }
-          const refId = ids[ids.length - 1];
-          const idx = scenes.findIndex((s) => s.id === refId);
-          if (idx !== -1 && idx < scenes.length - 1) {
-            const nextId = scenes[idx + 1].id;
-            if (e.shiftKey) {
-              rangeSelectTo(
-                nextId,
-                scenes.map((s) => s.id),
-              );
-            } else {
-              selectNode(nextId);
-            }
-          }
-          break;
-        }
-        case "ArrowLeft": {
-          if (plotNav("left")) {
-            e.preventDefault();
-            break;
-          }
-          const { selectedNodeIds: ids } = useTimelineStore.getState();
-          e.preventDefault();
-          if (ids.length === 0 && scenes.length > 0) {
-            selectNode(scenes[scenes.length - 1].id);
-            break;
-          }
-          const refId = ids[0];
-          const idx = scenes.findIndex((s) => s.id === refId);
-          if (idx > 0) {
-            const prevId = scenes[idx - 1].id;
-            if (e.shiftKey) {
-              rangeSelectTo(
-                prevId,
-                scenes.map((s) => s.id),
-              );
-            } else {
-              selectNode(prevId);
-            }
-          }
-          break;
-        }
-        case "ArrowUp": {
-          if (plotNav("up")) e.preventDefault();
-          break;
-        }
-        case "ArrowDown": {
-          if (plotNav("down")) e.preventDefault();
-          break;
-        }
-      }
-    }
-    document.addEventListener("keydown", handlePlainKeyDown);
-    return () => document.removeEventListener("keydown", handlePlainKeyDown);
-  }, [
+  useTimelineKeyboardController({
+    containerRef,
+    viewportRef,
     nodes,
     scenes,
+    showThreads,
+    scheduledCount,
+    weights,
+    zoom,
+    setZoom,
     clearSelection,
     setAxisMode,
     deleteNode,
@@ -526,95 +244,8 @@ export function TimelinePanel() {
     setPendingEditNodeId,
     rangeSelectTo,
     toggleInspector,
-  ]);
-
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (!e.ctrlKey && !e.metaKey) return;
-      // Don't steal shortcuts while a text input or TipTap editor is focused
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        active &&
-        (active.tagName === "INPUT" ||
-          active.tagName === "TEXTAREA" ||
-          active.isContentEditable)
-      )
-        return;
-      switch (e.key) {
-        case "Enter": {
-          if (!containerRef.current?.contains(document.activeElement)) break;
-          const { selectedNodeIds: ids } = useTimelineStore.getState();
-          if (ids.length > 0) {
-            e.preventDefault();
-            openEditorDocument(
-              {
-                target: { kind: "scene", documentId: ids[0] },
-                group: 1,
-                mode: "pinned",
-                revealEditor: true,
-                focusEditor: false,
-                syncSceneContext: true,
-              },
-              defaultEditorNavigationPorts,
-            );
-          }
-          break;
-        }
-        case "0":
-          e.preventDefault();
-          if (viewportRef.current) {
-            // Proportional mode: SVG width = PAD_LEFT + visibleForWidth*STEP*2 + PAD_RIGHT
-            // Uniform mode:      SVG width = PAD_LEFT + scenes.length*STEP + PAD_RIGHT
-            const visibleForFit =
-              scheduledCount !== null
-                ? Math.max(scheduledCount, 1)
-                : scenes.length;
-            const baseCount =
-              weights != null ? visibleForFit * 2 : scenes.length;
-            // スレッド表示時は左ラベルガター分だけ content を右へ寄せる。fit がそのぶんを
-            // 確保しないと過ズームで右端がはみ出す。
-            const padLeftForFit = showThreads ? SUBWAY_LABEL_GUTTER : PAD_LEFT;
-            setZoom(
-              computeFitZoom(
-                baseCount,
-                viewportRef.current.clientWidth,
-                STEP_BASE,
-                padLeftForFit + PAD_RIGHT,
-              ),
-            );
-          }
-          break;
-        case "+":
-        case "=":
-          e.preventDefault();
-          setZoom(zoom * ZOOM_STEP);
-          break;
-        case "-":
-          e.preventDefault();
-          setZoom(zoom / ZOOM_STEP);
-          break;
-        case "ArrowLeft":
-        case "ArrowRight":
-        case "ArrowUp":
-        case "ArrowDown": {
-          // ホイールズーム・中ボタンパンのキーボード代替（Ctrl+矢印でパン）。
-          // パネル内フォーカス時のみ（素の矢印キーはシーン/マーカーナビに使用済み）。
-          if (!containerRef.current?.contains(document.activeElement)) break;
-          const el = viewportRef.current;
-          if (!el) break;
-          e.preventDefault();
-          const step = 80;
-          if (e.key === "ArrowLeft") el.scrollLeft -= step;
-          else if (e.key === "ArrowRight") el.scrollLeft += step;
-          else if (e.key === "ArrowUp") el.scrollTop -= step;
-          else el.scrollTop += step;
-          break;
-        }
-      }
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [zoom, setZoom, scenes.length, weights, scheduledCount, showThreads]);
+    setPendingThreadDelete,
+  });
 
   const __renderResult = (
     <div
