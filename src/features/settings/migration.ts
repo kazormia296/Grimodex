@@ -1,6 +1,7 @@
 import * as api from "./api";
 import { DEFAULT_SETTINGS, KEY_SCOPE } from "./types";
 import { PROJECT_ID } from "@/features/project/constants";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 
 const SCHEMA_VERSION_KEY = "meta.settingsSchemaVersion";
 const CURRENT_VERSION = 1;
@@ -13,8 +14,8 @@ const CURRENT_VERSION = 1;
  * Reads migration version from app_settings["meta.settingsSchemaVersion"].
  * Safe to call multiple times (idempotent after version bump).
  *
- * Must be called after the workspace DB is open AND GlobalSettings are loaded
- * into useWorkspaceStore, but before useSettingsStore.loadAll().
+ * Must be called after the workspace DB is open and its GlobalSettings file is
+ * available, but before useSettingsStore.loadAll().
  */
 export async function migrateAppSettingsToScopedStores(): Promise<void> {
   const versionStr = await api.getSetting(SCHEMA_VERSION_KEY);
@@ -38,17 +39,13 @@ export async function migrateAppSettingsToScopedStores(): Promise<void> {
 
   // Batch-write global preferences (last-open-wins for cross-workspace conflicts)
   if (Object.keys(globalUpdates).length > 0) {
-    const { useWorkspaceStore } = await import("@/features/workspace/store");
-    const ws = useWorkspaceStore.getState();
-    const current = ws.globalSettings;
-    if (current) {
-      await ws.updateGlobalSettings({
-        userPreferences: {
-          ...(current.userPreferences ?? {}),
-          ...globalUpdates,
-        },
-      });
-    }
+    await globalSettingsRepository.patch((current) => ({
+      ...current,
+      userPreferences: {
+        ...(current.userPreferences ?? {}),
+        ...globalUpdates,
+      },
+    }));
   }
 
   // Insert project settings idempotently (skip if already present)
@@ -71,15 +68,14 @@ const CARD_LAYOUT_KEY = "display.cardLayout";
  * Idempotent — acts only while the legacy key is present and the new one absent.
  */
 export async function migrateCardLayoutKey(): Promise<void> {
-  const { useWorkspaceStore } = await import("@/features/workspace/store");
-  const ws = useWorkspaceStore.getState();
-  const prefs = ws.globalSettings?.userPreferences;
+  const prefs = (await globalSettingsRepository.read()).userPreferences;
   if (!prefs || !(LEGACY_CARD_LAYOUT_KEY in prefs)) return;
   if (CARD_LAYOUT_KEY in prefs) return;
   const { [LEGACY_CARD_LAYOUT_KEY]: legacyValue, ...rest } = prefs;
-  await ws.updateGlobalSettings({
+  await globalSettingsRepository.patch((current) => ({
+    ...current,
     userPreferences: { ...rest, [CARD_LAYOUT_KEY]: legacyValue },
-  });
+  }));
 }
 
 // 旧「死に設定」モデルキー → 機能別ロールキーの吸収マッピング。
@@ -103,9 +99,7 @@ const LEGACY_ROLE_MODEL_KEYS: ReadonlyArray<readonly [string, string]> = [
  * 再生産されることはなく、二度目以降の呼び出しは旧キー不在で no-op になる。
  */
 export async function migrateModelRoleKeys(): Promise<void> {
-  const { useWorkspaceStore } = await import("@/features/workspace/store");
-  const ws = useWorkspaceStore.getState();
-  const prefs = ws.globalSettings?.userPreferences;
+  const prefs = (await globalSettingsRepository.read()).userPreferences;
   if (!prefs) return;
 
   const next: Record<string, string> = { ...prefs };
@@ -121,7 +115,10 @@ export async function migrateModelRoleKeys(): Promise<void> {
     changed = true;
   }
   if (!changed) return;
-  await ws.updateGlobalSettings({ userPreferences: next });
+  await globalSettingsRepository.patch((current) => ({
+    ...current,
+    userPreferences: next,
+  }));
 }
 
 /**
@@ -130,18 +127,17 @@ export async function migrateModelRoleKeys(): Promise<void> {
  * glass effect off. Idempotent: acts only while both are effectively enabled.
  */
 export async function resolveCardLayoutGlassConflict(): Promise<void> {
-  const { useWorkspaceStore } = await import("@/features/workspace/store");
-  const ws = useWorkspaceStore.getState();
-  const prefs = ws.globalSettings?.userPreferences;
+  const prefs = (await globalSettingsRepository.read()).userPreferences;
   if (!prefs) return;
   const isEnabled = (key: string) =>
     (prefs[key] ?? DEFAULT_SETTINGS[key]) === "true";
   if (!isEnabled(CARD_LAYOUT_KEY) || !isEnabled("display.glassEffectEnabled")) {
     return;
   }
-  await ws.updateGlobalSettings({
+  await globalSettingsRepository.patch((current) => ({
+    ...current,
     userPreferences: { ...prefs, "display.glassEffectEnabled": "false" },
-  });
+  }));
 }
 
 /**
@@ -153,9 +149,8 @@ export async function resolveCardLayoutGlassConflict(): Promise<void> {
 export async function seedProjectSettingsFromDefaults(
   projectId: string = PROJECT_ID,
 ): Promise<void> {
-  const { useWorkspaceStore } = await import("@/features/workspace/store");
   const defaults =
-    useWorkspaceStore.getState().globalSettings?.projectDefaults ?? {};
+    (await globalSettingsRepository.read()).projectDefaults ?? {};
   for (const [key, value] of Object.entries(defaults)) {
     const existing = await api.getProjectSetting(projectId, key);
     if (existing === null) {
