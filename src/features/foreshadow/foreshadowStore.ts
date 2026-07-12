@@ -80,6 +80,8 @@ interface ForeshadowState {
   setupsByForeshadowId: Record<string, ForeshadowSetupRow[]>;
 
   load: (projectId: string) => Promise<void>;
+  /** Clear project-owned rows and derived caches before a reload. */
+  resetForProject: () => void;
   create: (
     data: Pick<ForeshadowRow, "projectId" | "title" | "intent" | "loadBearing">,
   ) => Promise<ForeshadowWithLabel>;
@@ -131,6 +133,20 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   proposingForForeshadowIds: new Set<string>(),
   auditingChapterIds: new Set<string>(),
   auditResults: {},
+
+  resetForProject: () =>
+    set({
+      items: [],
+      isLoading: false,
+      sceneInfoBySceneId: {},
+      setupScenesByForeshadowId: {},
+      setupsByForeshadowId: {},
+      evaluatingSetupIds: new Set<string>(),
+      proposeResults: {},
+      proposingForForeshadowIds: new Set<string>(),
+      auditingChapterIds: new Set<string>(),
+      auditResults: {},
+    }),
 
   load: async (projectId) => {
     set({ isLoading: true });

@@ -53,6 +53,8 @@ interface MapState {
   setFocusedNode: (id: string | null) => void;
   setPendingExport: (type: "svg" | "png" | "json" | null) => void;
   bumpBoardDataVersion: () => void;
+  /** Clear transient project-switch state without changing the active board. */
+  resetForProject: () => void;
   loadFromSettings: (settings: GlobalSettings) => void;
   hydrateFromBoard: (board: MapBoardRecord) => void;
 }
@@ -102,6 +104,13 @@ export const useMapStore = create<MapState>((set) => ({
   setPendingExport: (type) => set({ pendingExport: type }),
   bumpBoardDataVersion: () =>
     set((s) => ({ boardDataVersion: s.boardDataVersion + 1 })),
+  resetForProject: () =>
+    set({
+      focusedNodeId: null,
+      searchVisible: false,
+      pendingAutoArrange: null,
+      pendingExport: null,
+    }),
 
   loadFromSettings: (settings) => {
     const saved = settings.map as MapPersistentState | undefined;

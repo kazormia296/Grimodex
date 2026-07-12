@@ -84,39 +84,16 @@ export async function reloadProjectData(projectId: string): Promise<void> {
     resetPhaseStateForProject();
     useGlobalHistoryStore.getState().clear();
 
-    const tabStore = useTabStore.getState();
-    tabStore.closeAllTabsInGroup(0);
-    tabStore.closeAllTabsInGroup(1);
-    useTabStore.setState({
-      secondaryGroupOpen: false,
-      activeGroupIndex: 0,
-    });
+    useTabStore.getState().resetForProject();
 
     useChatHistoryStore.getState().resetForProject();
     useCodexStore.getState().resetForProject();
     useSnippetStore.getState().resetForProject();
 
-    useForeshadowStore.setState({
-      items: [],
-      setupsByForeshadowId: {},
-      sceneInfoBySceneId: {},
-    });
-
-    useSceneCodexPinsStore.setState({
-      pinsByScene: {},
-      bulkLoadedProjectId: null,
-    });
-
-    useSceneBeatPovStore.setState({
-      povIdsByScene: {},
-      bulkLoadedProjectId: null,
-    });
-
-    useLabelStore.setState({
-      labels: [],
-      nodeLabels: {},
-      projectId: null,
-    });
+    useForeshadowStore.getState().resetForProject();
+    useSceneCodexPinsStore.getState().resetForProject();
+    useSceneBeatPovStore.getState().resetForProject();
+    useLabelStore.getState().resetForProject();
 
     useGridStore.getState().clearSelection();
     // Timeline の選択（シーン + プロットのマーカー/スレッド）を破棄。残すと
@@ -136,7 +113,7 @@ export async function reloadProjectData(projectId: string): Promise<void> {
     useFocusedContentEditorStore.getState().setCurrent(null, null);
     // sceneId キーの live content（複数ペイン同期用の in-memory TipTap JSON）を
     // 全消去。clearContent は個別 id 削除のみで全消去手段が無かった。
-    useSceneContentStore.setState({ liveContent: {} });
+    useSceneContentStore.getState().resetForProject();
     useBarStore.getState().reset();
     usePanelStore.getState().reset();
     useResultsPanelStore.getState().reset();
@@ -144,30 +121,17 @@ export async function reloadProjectData(projectId: string): Promise<void> {
 
     // 用語辞書は project スコープ (lint_term_dictionary)。isLoaded を倒して
     // 次回 lint / 設定パネル参照時に新 Project 分を読み直させる。
-    useTermDictionaryStore.setState({
-      rows: [],
-      isLoaded: false,
-      loading: false,
-    });
+    useTermDictionaryStore.getState().resetForProject();
 
     // Map の transient UI のみ破棄。board 選択 (activeBoardId) は
     // useMapBoardData が projectId 変化を検知して「このプロジェクトのボード」へ
     // 再解決する唯一の権威。ここで null にすると切替中に init effect と競合し、
     // 旧プロジェクトのボード/データが残る (または選択が消える) ため触らない。
-    useMapStore.setState({
-      focusedNodeId: null,
-      searchVisible: false,
-      pendingAutoArrange: null,
-      pendingExport: null,
-    });
+    useMapStore.getState().resetForProject();
 
     // プロンプトライブラリは project スコープ。loadedProjectId を倒して
     // 次回 ensureLoaded 参照時に新 Project 分を読み直させる。
-    usePromptLibraryStore.setState({
-      templates: [],
-      loadedProjectId: null,
-      isLoading: false,
-    });
+    usePromptLibraryStore.getState().resetForProject();
 
     // 1 ストアのロード失敗で切替全体を中断しない (他パネルは読み直せる)。
     // tree は activeSceneId の起点なので失敗しても後続を進める。

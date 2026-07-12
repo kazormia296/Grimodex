@@ -251,6 +251,9 @@ interface TabState {
 
   /** Stop auto-saving (cleanup subscription). */
   disposeAutoSave?: () => void;
+
+  /** Clear all editor session state when switching projects. */
+  resetForProject: () => void;
 }
 
 /** Secondary group へ追加するエントリを、既存タブ(primary/secondary)の
@@ -292,6 +295,20 @@ export const useTabStore = create<TabState>()((set, get) => {
     splitDirection: "right",
     isLinearMode: false,
     isDraggingTab: false,
+    resetForProject() {
+      _editorFocusRequested[0] = false;
+      _editorFocusRequested[1] = false;
+      set({
+        tabs: [],
+        activeTabId: null,
+        secondaryTabs: [],
+        secondaryActiveTabId: null,
+        secondaryGroupOpen: false,
+        activeGroupIndex: 0,
+        isDraggingTab: false,
+        dirtyTabIds: new Set<string>(),
+      });
+    },
     setIsDraggingTab(v) {
       set({ isDraggingTab: v });
     },
