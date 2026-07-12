@@ -39,6 +39,16 @@ export type LoadedEditorBinding =
   | { kind: "snippet"; id: string }
   | { kind: "chronicle-event"; id: string };
 
+export type EditorDocumentContent = string | Record<string, unknown>;
+
+export interface LoadedEditorDocument {
+  /** Candidate binding; the session commits it only after setContent succeeds. */
+  binding: LoadedEditorBinding;
+  content: EditorDocumentContent;
+  title?: string;
+  unplacedBeatsDoc?: string;
+}
+
 /** Build the loaded binding for the current tab after its content is applied. */
 export function createLoadedEditorBinding(
   contentType: TabContentType,

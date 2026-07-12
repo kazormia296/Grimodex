@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Clock, BookOpen, Files, CalendarDays } from "lucide-react";
-import { tiptapContentFromDb } from "@/lib/prosemirror";
 import { useEditor } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
@@ -14,7 +13,7 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { loadSceneFull, savePlacedBeatPreviewOnly } from "@/features/tree/api";
+import { savePlacedBeatPreviewOnly } from "@/features/tree/api";
 import { EditorStatsFooter } from "@/features/editor/EditorStatsFooter";
 import {
   extractPlacedBeatPreview,
@@ -23,8 +22,6 @@ import {
 import { extractUnplacedBeatPreview } from "@/features/editor/beat/unplacedBeatPreview";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
-import { getCodexEntry } from "@/features/codex/api";
-import { getEvent } from "@/features/chronicle/api";
 import { uiUpdateEvent } from "@/features/agent-writes/event";
 import type {
   CodexMentionPopupState,
@@ -33,15 +30,10 @@ import type {
 } from "@/features/codex/CodexMentionExtension";
 import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import { usePhaseStore } from "@/features/codex/phaseStore";
-import {
-  resolveApplicablePhases,
-  resolvePhaseEditState,
-} from "@/features/codex/context/resolveApplicablePhases";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { buildInlineAiContext } from "@/features/editor/inlineAi/inlineAiContext";
-import { getSnippet } from "@/features/snippets/api";
 import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
@@ -54,10 +46,11 @@ import {
   defaultEditorDocumentServices,
   saveEditorDocument,
 } from "@/features/editor/document/saveEditorDocument";
+import { type LoadedEditorBinding } from "@/features/editor/document/types";
 import {
-  createLoadedEditorBinding,
-  type LoadedEditorBinding,
-} from "@/features/editor/document/types";
+  loadEditorDocument,
+  targetFromTab,
+} from "@/features/editor/document/loadEditorDocument";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -549,6 +542,7 @@ export function EditorPane({
   // useEditor onRender effect call editor.setOptions each render (schema/
   // plugin churn). setMentionPopupState/setMentionIndex are stable setters.
   const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
+  const treeNodeType = activeNode?.nodeType === "note" ? "note" : "scene";
 
   const editorExtensions = useMemo(
     () =>
@@ -1457,169 +1451,81 @@ export function EditorPane({
         // would persist a doc with no setup marks and orphan every setup row.
         isApplyingExternalUpdate.current = true;
         try {
-          let loadedPhaseIdForBinding: string | null = null;
-          if (isCodexMode) {
-            // Load codex entry content (ProseMirror JSON)
-            const entry = await getCodexEntry(getCurrentProjectId(), nodeId);
-            if (cancelled) return;
-
-            // Load phases into store so TabBar and banner can display the phase label
-            await usePhaseStore.getState().loadPhasesForEntry(nodeId);
-            if (cancelled) return;
-
-            const phaseStore = usePhaseStore.getState();
-            const phases = phaseStore.phasesByEntry[nodeId] ?? [];
-            let phaseContentOverride: string | null = null;
-            let resolvedPhaseId: string | null = null;
-
-            if (overridePhaseId === "__base__") {
-              // Explicit base: skip phase resolution, show entry.content as-is
-            } else if (overridePhaseId) {
-              // Explicit Phase preview: resolve cumulatively through the exact
-              // Phase identity. A scene-only cutoff would also apply later
-              // siblings anchored to the same scene. Always save edits to the
-              // selected target, even when its initial content is inherited.
-              const targetPhase = phases.find((p) => p.id === overridePhaseId);
-              if (targetPhase && phaseSceneTimeIndex && phaseResolutionMode) {
-                const resolution = resolveApplicablePhases({
-                  phases,
-                  index: phaseSceneTimeIndex,
-                  mode: phaseResolutionMode,
-                  anchor: { kind: "phase", phaseId: targetPhase.id },
-                });
-                phaseContentOverride = resolvePhaseEditState(resolution, {
-                  summary: entry?.summary ?? null,
-                  content: entry?.content ?? "{}",
-                }).content;
-                resolvedPhaseId = targetPhase.id;
-              }
-            } else {
-              // Auto-resolve: use the phase active at the current scene
-              if (
-                phaseResolutionSceneId &&
-                phaseSceneTimeIndex &&
-                phaseResolutionMode
-              ) {
-                const resolution = resolveApplicablePhases({
-                  phases,
-                  index: phaseSceneTimeIndex,
-                  mode: phaseResolutionMode,
-                  anchor: {
-                    kind: "scene",
-                    sceneId: phaseResolutionSceneId,
-                  },
-                });
-                const editState = resolvePhaseEditState(resolution, {
-                  summary: entry?.summary ?? null,
-                  content: entry?.content ?? "{}",
-                });
-                if (editState.targetPhase) {
-                  phaseContentOverride = editState.content;
-                  resolvedPhaseId = editState.targetPhase.id;
-                }
-              }
-            }
-            loadedPhaseIdForBinding = resolvedPhaseId;
-            setLoadedPhaseId(resolvedPhaseId);
-
-            const rawContent = phaseContentOverride ?? entry?.content ?? null;
-            markStart("sceneLoad.parseContent.codex");
-            const parsed =
-              rawContent && rawContent !== "{}" ? JSON.parse(rawContent) : "";
-            markEnd("sceneLoad.parseContent.codex");
-            markStart("sceneLoad.setContent.codex");
-            editor!.commands.setContent(parsed, {
-              emitUpdate: false,
-              errorOnInvalidContent: true,
-            });
-            markEnd("sceneLoad.setContent.codex");
-          } else if (isSnippetMode) {
-            const snippet = await getSnippet(getCurrentProjectId(), nodeId);
-            if (cancelled) return;
-            markStart("sceneLoad.setContent.snippet");
-            editor!.commands.setContent(tiptapContentFromDb(snippet?.content), {
-              emitUpdate: false,
-            });
-            markEnd("sceneLoad.setContent.snippet");
-          } else if (isChronicleEventMode) {
-            // 出来事の詳細（ProseMirror JSON）をロード。タイトルはリボン表示用。
-            const ev = await getEvent(getCurrentProjectId(), nodeId);
-            if (cancelled) return;
-            setChronicleEventTitle(ev?.title ?? "");
-            markStart("sceneLoad.setContent.chronicle");
-            editor!.commands.setContent(tiptapContentFromDb(ev?.detail), {
-              emitUpdate: false,
-            });
-            markEnd("sceneLoad.setContent.chronicle");
-          } else {
-            // Load scene/note content + unplaced beats in one query
-            markStart("sceneLoad.loadSceneFull");
-            const { content, unplacedBeatsDoc } = await loadSceneFull(nodeId);
-            markEnd("sceneLoad.loadSceneFull");
-            if (cancelled) return;
-            markStart(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
-            const parsed =
-              content && content !== "{}" ? JSON.parse(content) : "";
-            markEnd(`sceneLoad.parseContent.scene.${content?.length ?? 0}`);
-            markStart(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
-            // errorOnInvalidContent: スキーマ未知ノードを TipTap の silent
-            // fallback (空 doc 化) に流さず throw → 下の catch で保存停止。
-            editor!.commands.setContent(parsed, {
-              emitUpdate: false,
-              errorOnInvalidContent: true,
-            });
-            markEnd(`sceneLoad.setContent.scene.${content?.length ?? 0}`);
+          const target = targetFromTab(contentType, nodeId, {
+            tree: {
+              nodeType: treeNodeType,
+              storage: isFileBacked ? "file" : "database",
+            },
+            phaseIdOverride: overridePhaseId,
+            sceneId: phaseResolutionSceneId,
+          });
+          const phaseContext =
+            target.kind !== "codex"
+              ? { mode: "base" as const }
+              : target.phase.mode === "base"
+                ? { mode: "base" as const }
+                : target.phase.mode === "explicit"
+                  ? { mode: "explicit" as const, phaseId: target.phase.phaseId }
+                  : { mode: "auto" as const, sceneId: target.phase.sceneId };
+          const loaded = await loadEditorDocument(target, {
+            codex: {
+              phase: phaseContext,
+              sceneTimeIndex: phaseSceneTimeIndex,
+              resolutionMode: phaseResolutionMode,
+            },
+          });
+          if (cancelled) return;
+          if (loaded.title !== undefined) {
+            setChronicleEventTitle(loaded.title);
+          }
+          const strictContent =
+            loaded.binding.kind === "tree" || loaded.binding.kind === "codex";
+          markStart(`sceneLoad.setContent.${loaded.binding.kind}`);
+          editor!.commands.setContent(loaded.content, {
+            emitUpdate: false,
+            ...(strictContent ? { errorOnInvalidContent: true } : {}),
+          });
+          markEnd(`sceneLoad.setContent.${loaded.binding.kind}`);
+          if (loaded.binding.kind === "tree") {
+            const contentLength =
+              typeof loaded.content === "string"
+                ? loaded.content.length
+                : JSON.stringify(loaded.content).length;
             debugLog.info(
               "EditorPane",
               `load ${nodeId.slice(0, 8)}`,
               JSON.stringify({
-                dbLen: content?.length ?? 0,
+                dbLen: contentLength,
                 docLen: getDocText(editor!.state.doc).length,
                 fileBacked: isFileBacked,
               }),
             );
             try {
-              const beats = JSON.parse(unplacedBeatsDoc);
+              const beats = JSON.parse(loaded.unplacedBeatsDoc ?? "[]");
               useUnplacedBeatsStore.getState().setBeats(nodeId, beats, "load");
             } catch {
               useUnplacedBeatsStore.getState().setBeats(nodeId, [], "load");
             }
-
-            // Lazy backfill of placed_beat_preview for legacy scenes that have
-            // placed sceneBeat nodes but no cached preview yet.
             const curPreview = useTreeStore.getState().nodePreviews[nodeId];
             if (curPreview?.placed == null) {
               const preview = extractPlacedBeatPreview(editor!.getJSON());
               if (preview !== "[]") {
-                const next = preview;
-                savePlacedBeatPreviewOnly(nodeId, next).catch(() => {});
+                savePlacedBeatPreviewOnly(nodeId, preview).catch(() => {});
                 useTreeStore
                   .getState()
-                  .setNodePreview(nodeId, { placed: next });
+                  .setNodePreview(nodeId, { placed: preview });
               }
             }
           }
+          const loadedBinding = loaded.binding;
+          setLoadedPhaseId(
+            loadedBinding.kind === "codex" ? loadedBinding.phaseId : null,
+          );
 
           // 3 ブランチとも setContent 成功 = エディタ内 doc はロード済み本物。
           // ここで初めて保存を解禁する。
           if (cancelled) return;
-          const loadedTreeNode = useTreeStore
-            .getState()
-            .nodes.find((node) => node.id === nodeId);
-          loadedBindingRef.current = createLoadedEditorBinding(
-            contentType,
-            nodeId,
-            loadedTreeNode
-              ? {
-                  nodeType:
-                    loadedTreeNode.nodeType === "note" ? "note" : "scene",
-                  storage: isFileBackedNode(loadedTreeNode.sourceUri)
-                    ? "file"
-                    : "database",
-                }
-              : undefined,
-            loadedPhaseIdForBinding,
-          );
+          loadedBindingRef.current = loadedBinding;
           loadFailedRef.current = false;
 
           if (!cancelled) {
@@ -1881,6 +1787,7 @@ export function EditorPane({
     isChronicleEventMode,
     isEntryMode,
     isFileBacked,
+    treeNodeType,
     contentType,
     overridePhaseId,
     groupIndex,
