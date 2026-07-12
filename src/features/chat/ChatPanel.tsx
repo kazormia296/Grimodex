@@ -1,9 +1,8 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { SlotPanelProps } from "@/features/layout/layoutTypes";
 import { useTranslation } from "react-i18next";
 import { motion } from "motion/react";
 import { Play } from "lucide-react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { useReducedMotion } from "@/lib/animation";
 import type { Editor } from "@tiptap/core";
 import { toast } from "sonner";
@@ -55,6 +54,7 @@ import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useChatSessionLifecycle } from "./useChatSessionLifecycle";
 import { useChatPinsController } from "./useChatPinsController";
+import { useChatMessageViewport } from "./useChatMessageViewport";
 
 /**
  * メッセージ全文を抽出 (Codex/Snippet) / エディタ挿入 / コピーに使う前の正規化。
@@ -282,108 +282,18 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     refreshContextLayers,
   });
 
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // 末尾追従 (stick) フラグ。更新規則は handleListScroll のコメント参照。
-  // virtualizer の補正述語からも読むため宣言だけ先に置く。
-  const stickToBottomRef = useRef(true);
-  const lastScrollTopRef = useRef(0);
-
-  // 描画対象メッセージ (system / 要約済みを除外)。仮想化の count と
-  // getItemKey の正本になるので、render 毎の filter 再生成を避けて memo する。
-  const visibleMessages = useMemo(
-    () => messages.filter((m) => m.role !== "system" && !m.isSummarized),
-    [messages],
-  );
-
-  // メッセージ一覧の仮想化 (perf 2026-06-10: 非仮想化・全件 ReactMarkdown・
-  // isStreaming トグルで全件再描画の解消)。高さは行ごとにまちまちなので
-  // measureElement による動的測定に任せ、estimateSize は初期推定のみ。
-  const virtualizer = useVirtualizer({
-    count: visibleMessages.length,
-    getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => 120,
-    overscan: 6,
-    // id キーで測定キャッシュを安定させる (index キーだと削除で全行ズレる)
-    getItemKey: (index) => visibleMessages[index]?.id ?? index,
-    // anchorTo: "end" / followOnAppend は使わない: virtual-core の at-end
-    // scrollTop 補正は React が sized div の height を再レンダーする前に走る
-    // ため旧 height でクランプされ、その時点の scroll イベントが
-    // stickToBottomRef を false に倒して末尾追従が恒久停止する競合がある
-    // (browser test 3 が gate)。末尾追従は下の stick + totalSize effect に
-    // 一本化する。
+  const {
+    bottomRef,
+    scrollContainerRef,
+    visibleMessages,
+    virtualizer,
+    entranceAnim,
+    handleListScroll,
+  } = useChatMessageViewport({
+    messages,
+    isLoadingMessages,
+    activeSessionId,
   });
-
-  // 末尾追従中は virtual-core 内蔵の「サイズ変化時 scrollTop 補正」を無効化
-  // する (オプションではなくインスタンス公開フィールド)。isStreaming トグルで
-  // 表示中の全 bubble が一斉に縮む (ChatMessage の showActions) と、デフォルト
-  // 述語が負 delta を scrollTo で反映して scrollTop が上方向に動き、その
-  // scroll イベントを handleListScroll がユーザーの上スクロールと誤認して
-  // stick を恒久 OFF にするレースがある (遅いマシンで顕在化、browser test 3
-  // が gate)。追従中のアンカー権威は下の totalSize effect ただ一つ。
-  // 非追従中 (履歴読み) は読書位置の安定のためデフォルト相当の補正を残す。
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
-    item,
-    _delta,
-    instance,
-  ) =>
-    !stickToBottomRef.current &&
-    item.start < (instance.scrollOffset ?? 0) &&
-    instance.scrollDirection !== "backward";
-
-  // 仮想化では行が scroll out/in のたびに remount するため、AnimatePresence や
-  // 無条件 initial では過去メッセージの入場アニメが再生されてしまう。
-  // 「直前の messages からこの render で新規 append された user メッセージ」
-  // だけに入場アニメを付ける。messages の遷移ごとに 1 回だけ確定させ、無関係な
-  // 再レンダー (pinsVersion 等の非同期更新) では維持したいので、render 中の
-  // 派生 state 調整 (adjust-state-on-render) で持つ。セッション読込直後
-  // (prevLoading) は一括ロードなので全件アニメ無し (従来の AnimatePresence
-  // initial={false} と同じ見え方)。
-  const [entranceAnim, setEntranceAnim] = useState<{
-    prevMessages: ChatMessageType[] | null;
-    prevLoading: boolean;
-    animateIds: ReadonlySet<string>;
-  }>({ prevMessages: null, prevLoading: true, animateIds: new Set() });
-  if (
-    entranceAnim.prevMessages !== visibleMessages ||
-    entranceAnim.prevLoading !== isLoadingMessages
-  ) {
-    const prev = entranceAnim.prevMessages;
-    // ストリーミング delta は「同一 id 列のまま末尾 content だけが伸びる」更新。
-    // チャット操作に長さ不変のまま中間 id が入れ替わる経路は無いので、
-    // 長さ + 先頭/末尾 id の O(1) 比較で検出し、O(n) の id 差分も
-    // render-phase setState (= 二重 render) も毎 delta で踏まないようにする。
-    // prevMessages は古い参照のまま残るが、id 列が同じなので次の差分計算は
-    // 壊れない (gate: ChatPanel.virtualization.test.tsx の render 回数 assert)。
-    const isPureDelta =
-      prev !== null &&
-      entranceAnim.prevLoading === isLoadingMessages &&
-      prev.length === visibleMessages.length &&
-      prev.length > 0 &&
-      prev[0].id === visibleMessages[0].id &&
-      prev[prev.length - 1].id ===
-        visibleMessages[visibleMessages.length - 1].id;
-    if (!isPureDelta) {
-      const canAnimate = prev !== null && !entranceAnim.prevLoading;
-      let animateIds: ReadonlySet<string>;
-      if (canAnimate) {
-        const prevIds = new Set(prev!.map((m) => m.id));
-        animateIds = new Set(
-          visibleMessages
-            .filter((m) => m.role === "user" && !prevIds.has(m.id))
-            .map((m) => m.id),
-        );
-      } else {
-        animateIds = new Set();
-      }
-      setEntranceAnim({
-        prevMessages: visibleMessages,
-        prevLoading: isLoadingMessages,
-        animateIds,
-      });
-    }
-  }
-
   // Codex extraction dialog
   const [extractionDialog, setExtractionDialog] = useState<{
     open: boolean;
@@ -491,80 +401,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     },
     [createSnippet],
   );
-
-  const scrollToBottom = useCallback(() => {
-    const node = bottomRef.current;
-    if (node && typeof node.scrollIntoView === "function") {
-      // smooth だと delta 毎に進行中アニメを cancel+restart してレイアウトを
-      // 強制するため auto。stick ガードと併せてストリーミング中のカクつき
-      // と「上スクロールしても下端に引き戻される」UX バグを解消する。
-      node.scrollIntoView({ behavior: "auto" });
-    }
-  }, []);
-
-  // 末尾追従 (stick) の更新規則:
-  //   - 最下部 120px 以内に入ったら ON (旧 isNearBottom と同じ閾値)
-  //   - 「上方向への移動 かつ 120px 超」のときだけ OFF
-  //   - 下方向の移動で 120px 超のままでも維持する
-  // 最後の条件が肝: ストリーミング中は自前の再アンカー (scrollIntoView) が
-  // 測定途中の旧 height に短着地して distance>120 の scroll イベントを発火
-  // しうる。distance だけで OFF にすると自分のスクロールで追従を殺して
-  // ドリフトが恒久化する (browser test 3 が gate)。上方向はユーザーの
-  // 履歴読みだけなので、方向で意図を分離できる。
-  // (ref の宣言は virtualizer の補正述語から参照するため上方にある)
-  const handleListScroll = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distance < 120) {
-      stickToBottomRef.current = true;
-    } else if (el.scrollTop < lastScrollTopRef.current) {
-      stickToBottomRef.current = false;
-    }
-    lastScrollTopRef.current = el.scrollTop;
-  }, []);
-
-  // 動的測定で totalSize が確定 / 伸長するたび、追従中なら末尾へ貼り直す。
-  // render 後 (= sized div の height が新しい) の effect で再アンカーするのが
-  // 唯一の追従機構。新規 append (count 変化) もストリーミング伸長 (測定変化)
-  // もどちらも totalSize に現れるのでこの 1 本で覆える。
-  const totalSize = virtualizer.getTotalSize();
-  useEffect(() => {
-    // 保険: 実際は最下部近傍に居るのに stick が倒れていたら立て直す。
-    // プログラム起因 scroll の誤検知が補正述語の無効化をすり抜けても、
-    // 次の伸長で追従に復帰できる (恒久停止だけは構造的に防ぐ)。
-    if (!stickToBottomRef.current) {
-      const el = scrollContainerRef.current;
-      if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
-        stickToBottomRef.current = true;
-      }
-    }
-    if (stickToBottomRef.current) scrollToBottom();
-  }, [totalSize, scrollToBottom]);
-
-  // セッション切替後、メッセージ load が完了した最初の render で必ず末尾へ
-  // ジャンプする。selectSession は activeSessionId を切り替えた瞬間に
-  // messages を空 + isLoadingMessages=true にし、load 完了時に messages と
-  // isLoadingMessages=false を 1 回の set で同時更新する (chatStore.selectSession)。
-  // そのため activeSessionId だけを deps にすると、本文到着前 (空) に
-  // ジャンプして履歴のあるセッションを開くたび先頭に着地する回帰になる。
-  // load 完了を待ってジャンプする。
-  //
-  // ジャンプ先は推定 totalSize 由来でズレうるが、stick を立てておけば以降の
-  // 動的測定差分は totalSize effect の再アンカーで収束する。同一セッション内の
-  // ストリーミング追従も同 effect に任せる (旧実装の messages 依存
-  // isNearBottom 追従 effect は廃止)。
-  const lastJumpedSessionRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (
-      activeSessionId !== lastJumpedSessionRef.current &&
-      !isLoadingMessages
-    ) {
-      lastJumpedSessionRef.current = activeSessionId;
-      stickToBottomRef.current = true;
-      scrollToBottom();
-    }
-  }, [activeSessionId, isLoadingMessages, scrollToBottom]);
 
   const rawInsertFromChat = useEditorStore((s) => s.insertFromChat);
 
