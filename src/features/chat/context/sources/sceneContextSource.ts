@@ -1,5 +1,8 @@
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
-import type { CodexContextEntry } from "@/features/codex/api";
+import type {
+  CodexContextEntry,
+  CodexContextMetadataEntry,
+} from "@/features/codex/api";
 import type { ContextDecision } from "@/features/ai-context/types";
 import type {
   CodexEntryPhase,
@@ -70,9 +73,24 @@ import type {
   RecalledMessageForPromotion,
 } from "../contextPlannerDeps";
 import type { SceneTurnContextRequest } from "../turnContextRequest";
+import {
+  orderEntriesByIds,
+  stripCodexContent,
+  toCodexContextIndexEntries,
+  uniqueIds,
+  type CodexContextIndexEntry,
+  type CodexNameLookupEntry,
+} from "./codexContextIndex";
 
 export interface SceneContextSourceDeps {
   listCodexEntries: (projectId: string) => Promise<CodexContextEntry[]>;
+  listCodexContextMetadata: (
+    projectId: string,
+  ) => Promise<CodexContextMetadataEntry[]>;
+  listCodexEntriesByIds: (
+    projectId: string,
+    ids: readonly string[],
+  ) => Promise<CodexContextEntry[]>;
   listTreeNodes: (projectId: string) => TreeNodeData[];
   getTemporalResolution: (projectId: string) => {
     sceneTimeIndex: SceneTimeIndex;
@@ -138,7 +156,7 @@ export interface SceneContextSourceDeps {
   listCodexRelations: (projectId: string) => Promise<CodexRelationRow[]>;
   loadMapBoardMarkdown: (
     request: SceneTurnContextRequest,
-    entries: CodexContextEntry[],
+    entries: CodexNameLookupEntry[],
   ) => Promise<string | undefined>;
   buildChronicleSnapshot: (input: {
     request: SceneTurnContextRequest;
@@ -160,8 +178,10 @@ const EMPTY_FORESHADOW: SceneForeshadowContext = { setups: [], payoffs: [] };
 export function createSceneContextSourceDeps(
   overrides: Partial<SceneContextSourceDeps> = {},
 ): SceneContextSourceDeps {
-  return {
+  const deps: SceneContextSourceDeps = {
     listCodexEntries: async () => [],
+    listCodexContextMetadata: async () => [],
+    listCodexEntriesByIds: async () => [],
     listTreeNodes: () => [],
     getTemporalResolution: () => ({
       sceneTimeIndex: buildSceneTimeIndex([]),
@@ -192,6 +212,15 @@ export function createSceneContextSourceDeps(
     markEnd: () => {},
     ...overrides,
   };
+  if (!overrides.listCodexContextMetadata) {
+    deps.listCodexContextMetadata = async (projectId) =>
+      (await deps.listCodexEntries(projectId)).map(stripCodexContent);
+  }
+  if (!overrides.listCodexEntriesByIds) {
+    deps.listCodexEntriesByIds = async (projectId, ids) =>
+      orderEntriesByIds(ids, await deps.listCodexEntries(projectId));
+  }
+  return deps;
 }
 
 function parseAliases(json: string | null | undefined): string[] | undefined {
@@ -272,7 +301,7 @@ async function resolveEntriesForContext(
 
 async function enrichWithCustomDetails<T extends CodexContext>(
   entries: T[],
-  allEntries: CodexContextEntry[],
+  allEntries: readonly CodexNameLookupEntry[],
   resolvedById: ReadonlyMap<string, ResolvedCodexState>,
   deps: SceneContextSourceDeps,
 ): Promise<T[]> {
@@ -361,10 +390,13 @@ export async function collectSceneContext(
     content: request.includeBodies ? snapshot.scene.content : "",
   };
   const project = snapshot.project;
-  const allEntries: CodexContextEntry[] = snapshot.prefetchedCodexEntries
+  const prefetchedEntries = snapshot.prefetchedCodexEntries
     ? [...snapshot.prefetchedCodexEntries]
-    : await deps.listCodexEntries(request.projectId);
-  if (allEntries.some((entry) => entry.projectId !== request.projectId)) {
+    : null;
+  const allMetadata = prefetchedEntries
+    ? prefetchedEntries.map(stripCodexContent)
+    : await deps.listCodexContextMetadata(request.projectId);
+  if (allMetadata.some((entry) => entry.projectId !== request.projectId)) {
     throw new Error("scene context source returned a foreign-project row");
   }
 
@@ -381,20 +413,32 @@ export async function collectSceneContext(
     kind: "scene",
     sceneId: request.sceneId,
   };
-  const { resolved: resolvedById, phases: phasesByEntry } =
-    await resolveEntriesForContext(allEntries, temporalAnchor, request, deps);
-  const effectiveEntries = allEntries.map((entry) => {
-    const resolved = resolvedById.get(entry.id);
-    return resolved ? materializeResolvedCodexContext(entry, resolved) : entry;
-  });
   type TemporalMetadata = NonNullable<
     BuildSystemPromptInput["contextTemporal"]
   >;
   const contextTemporal: TemporalMetadata = { asOfSceneId: request.sceneId };
-  const contextTemporalBySourceId: Record<string, TemporalMetadata> = {};
-  for (const entry of effectiveEntries) {
-    const resolved = resolvedById.get(entry.id);
-    contextTemporalBySourceId[entry.id] = {
+  const indexEntries = toCodexContextIndexEntries(allMetadata);
+  const { resolved: resolvedIndexById } = await resolveEntriesForContext(
+    indexEntries,
+    temporalAnchor,
+    request,
+    deps,
+  );
+  const effectiveIndexEntries: CodexContextIndexEntry[] = indexEntries.map(
+    (entry) => {
+      const resolved = resolvedIndexById.get(entry.id);
+      return resolved
+        ? materializeResolvedCodexContext(entry, resolved)
+        : entry;
+    },
+  );
+  const effectiveIndexById = new Map(
+    effectiveIndexEntries.map((entry) => [entry.id, entry] as const),
+  );
+  const indexContextTemporalBySourceId: Record<string, TemporalMetadata> = {};
+  for (const entry of effectiveIndexEntries) {
+    const resolved = resolvedIndexById.get(entry.id);
+    indexContextTemporalBySourceId[entry.id] = {
       ...contextTemporal,
       ...(resolved?.axisUsed ? { axis: resolved.axisUsed } : {}),
       ...(resolved?.activePhaseId ? { phaseId: resolved.activePhaseId } : {}),
@@ -403,9 +447,6 @@ export async function collectSceneContext(
         : {}),
     };
   }
-  const effectiveEntryById = new Map(
-    effectiveEntries.map((entry) => [entry.id, entry]),
-  );
 
   // Pins are a selection trigger, not a source of prompt data. Resolve their
   // current entry first, then apply the explicit-pin exception for suppress.
@@ -418,7 +459,7 @@ export async function collectSceneContext(
   );
   const allPinnedIds = new Set([...dbPinnedIds, ...inputPinnedIds]);
   const contextDecisions = [...allPinnedIds].flatMap<ContextDecision>((id) => {
-    const entry = effectiveEntryById.get(id);
+    const entry = effectiveIndexById.get(id);
     if (!entry) {
       return [
         {
@@ -443,23 +484,31 @@ export async function collectSceneContext(
     }
     return [];
   });
-  const contextEligibleEntries = effectiveEntries.filter((entry) =>
+  const visiblePinnedIds = new Set(
+    [...allPinnedIds].filter((id) => {
+      const entry = effectiveIndexById.get(id);
+      return entry
+        ? canIncludeResolvedCodexContext(entry.contextMode, "explicit-pin")
+        : false;
+    }),
+  );
+  const contextEligibleIndexEntries = effectiveIndexEntries.filter((entry) =>
     canIncludeResolvedCodexContext(
       entry.contextMode,
       allPinnedIds.has(entry.id) ? "explicit-pin" : "derived",
     ),
   );
   const contextEligibleIds = new Set(
-    contextEligibleEntries.map((entry) => entry.id),
+    contextEligibleIndexEntries.map((entry) => entry.id),
   );
 
   const excludedAutoIds = new Set(request.excludedAutoEntryIds);
-  const detectableCodex = effectiveEntries.filter(
+  const detectableCodex = effectiveIndexEntries.filter(
     (entry) =>
       !excludedAutoIds.has(entry.id) &&
       canIncludeResolvedCodexContext(entry.contextMode, "mention"),
   );
-  const alwaysCodex = effectiveEntries.filter(
+  const alwaysCodexIndex = effectiveIndexEntries.filter(
     (entry) => entry.contextMode === "always" && !excludedAutoIds.has(entry.id),
   );
   const detectableNotes = noteNodes.filter((node) => {
@@ -497,22 +546,86 @@ export async function collectSceneContext(
     matchTargets,
   );
   deps.markEnd("buildSceneCtx.findMentionedEntriesAsync");
-  const mentioned = mentionedAll
+  const mentionedIndex = mentionedAll
     .filter((entry) => entry.type !== "note" && !excludedAutoIds.has(entry.id))
-    .map((entry) => effectiveEntryById.get(entry.id))
-    .filter((entry): entry is CodexContextEntry => entry !== undefined)
+    .map((entry) => effectiveIndexById.get(entry.id))
+    .filter((entry): entry is CodexContextIndexEntry => entry !== undefined)
     .filter((entry) =>
       canIncludeResolvedCodexContext(entry.contextMode, "mention"),
     );
   const mentionedNotes = mentionedAll.filter((entry) => entry.type === "note");
-  const mentionedIds = new Set(mentioned.map((entry) => entry.id));
-  const alwaysNotMentioned = alwaysCodex.filter(
+  const mentionedIds = new Set(mentionedIndex.map((entry) => entry.id));
+  const alwaysNotMentionedIndex = alwaysCodexIndex.filter(
     (entry) => !mentionedIds.has(entry.id),
   );
-  const rawCodexEntries = stableSortEntries([
-    ...mentioned,
-    ...alwaysNotMentioned,
+  const rawCodexIds = stableSortEntries([
+    ...mentionedIndex,
+    ...alwaysNotMentionedIndex,
+  ]).map((entry) => entry.id);
+  const l4SeedIds = new Set([...rawCodexIds, ...visiblePinnedIds]);
+  const relationContextIds = new Set<string>();
+  let relations: CodexRelationRow[] = [];
+  let relationCodexEntries: CodexContext[] | undefined;
+  let intraContextRelations: IntraContextRelationEdge[] | undefined;
+  if (l4SeedIds.size > 0) {
+    relations = await deps
+      .listCodexRelations(request.projectId)
+      .catch(() => []);
+    const excludedRelationIds = new Set([
+      ...l4SeedIds,
+      ...collectBudgetedDescendantIds(l4SeedIds, contextEligibleIndexEntries),
+    ]);
+    for (const context of expandCodexRelationsBFS(
+      [...l4SeedIds],
+      relations,
+      contextEligibleIndexEntries,
+      excludedRelationIds,
+      { maxDepth: 1 },
+    )) {
+      relationContextIds.add(context.id);
+    }
+  }
+
+  const activeTabCodexId =
+    request.activeTab?.contentType === "codex"
+      ? request.activeTab.nodeId
+      : null;
+  const contentSeedIds = uniqueIds([
+    ...rawCodexIds,
+    ...visiblePinnedIds,
+    ...relationContextIds,
+    ...(activeTabCodexId ? [activeTabCodexId] : []),
+    ...collectBudgetedDescendantIds(
+      [...rawCodexIds, ...visiblePinnedIds],
+      contextEligibleIndexEntries,
+    ),
   ]);
+  const loadedEntries = prefetchedEntries
+    ? orderEntriesByIds(contentSeedIds, prefetchedEntries)
+    : await deps.listCodexEntriesByIds(request.projectId, contentSeedIds);
+  if (loadedEntries.some((entry) => entry.projectId !== request.projectId)) {
+    throw new Error("scene context source returned a foreign-project row");
+  }
+  const { resolved: resolvedById, phases: phasesByEntry } =
+    await resolveEntriesForContext(
+      loadedEntries,
+      temporalAnchor,
+      request,
+      deps,
+    );
+  const effectiveEntries = loadedEntries.map((entry) => {
+    const resolved = resolvedById.get(entry.id);
+    return resolved ? materializeResolvedCodexContext(entry, resolved) : entry;
+  });
+  const contextTemporalBySourceId = indexContextTemporalBySourceId;
+  const effectiveEntryById = new Map(
+    effectiveEntries.map((entry) => [entry.id, entry]),
+  );
+  const rawCodexEntries = stableSortEntries(
+    rawCodexIds
+      .map((id) => effectiveEntryById.get(id))
+      .filter((entry): entry is CodexContextEntry => entry !== undefined),
+  );
 
   const buildCodexContext = (entry: CodexContextEntry): CodexContext => {
     const summary = entry.summary ?? "";
@@ -550,7 +663,7 @@ export async function collectSceneContext(
   deps.markStart("buildSceneCtx.enrichWithCustomDetails");
   const enrichedCodexEntries = await enrichWithCustomDetails(
     withChildren,
-    contextEligibleEntries,
+    contextEligibleIndexEntries,
     resolvedById,
     deps,
   );
@@ -630,21 +743,22 @@ export async function collectSceneContext(
   }
   pinnedCodexEntries = await enrichWithCustomDetails(
     pinnedCodexEntries,
-    contextEligibleEntries,
+    contextEligibleIndexEntries,
     resolvedById,
     deps,
   );
   const pinnedIds = new Set(pinnedCodexEntries.map((entry) => entry.id));
-  const detectedEntries = mentioned
+  const detectedEntries = mentionedIndex
     .filter((entry) => !pinnedIds.has(entry.id))
     .map((entry) => effectiveEntryById.get(entry.id))
     .filter((entry): entry is CodexContextEntry => entry !== undefined);
-  const alwaysEntries = alwaysCodex.filter(
-    (entry) => !pinnedIds.has(entry.id) && !mentionedIds.has(entry.id),
-  );
+  const alwaysEntries = alwaysCodexIndex
+    .filter((entry) => !pinnedIds.has(entry.id) && !mentionedIds.has(entry.id))
+    .map((entry) => effectiveEntryById.get(entry.id))
+    .filter((entry): entry is CodexContextEntry => entry !== undefined);
   // UI lists deduplicate mentioned-vs-always, but priority is semantic. An
   // effective always entry remains always even when its name also matched.
-  const alwaysEntryIdsForPrompt = alwaysCodex
+  const alwaysEntryIdsForPrompt = alwaysCodexIndex
     .filter((entry) => !pinnedIds.has(entry.id))
     .map((entry) => entry.id);
 
@@ -758,7 +872,7 @@ export async function collectSceneContext(
   try {
     mapBoardMarkdown = await deps.loadMapBoardMarkdown(
       request,
-      contextEligibleEntries,
+      contextEligibleIndexEntries,
     );
   } catch {
     mapBoardMarkdown = undefined;
@@ -832,7 +946,7 @@ export async function collectSceneContext(
         unplacedBeats: deps.getUnplacedBeats(scene.id),
         resolveCharacterName: (id) =>
           contextEligibleIds.has(id)
-            ? (effectiveEntryById.get(id)?.name ?? null)
+            ? (effectiveIndexById.get(id)?.name ?? null)
             : null,
         currentBeatId: null,
         scenePovCharacterId: currentScene?.povCharacterId ?? null,
@@ -926,24 +1040,18 @@ export async function collectSceneContext(
     scene.id,
   );
 
-  let relationCodexEntries: CodexContext[] | undefined;
-  let intraContextRelations: IntraContextRelationEdge[] | undefined;
-  const l4SeedIds = new Set([
-    ...codexEntries.map((entry) => entry.id),
-    ...pinnedCodexEntries.map((entry) => entry.id),
-  ]);
   if (l4SeedIds.size > 0) {
-    const relations = await deps
-      .listCodexRelations(request.projectId)
-      .catch(() => []);
+    const relationExpansionEntries = contextEligibleIndexEntries.map(
+      (entry) => effectiveEntryById.get(entry.id) ?? entry,
+    );
     const excludedRelationIds = new Set([
       ...l4SeedIds,
-      ...collectBudgetedDescendantIds(l4SeedIds, contextEligibleEntries),
+      ...collectBudgetedDescendantIds(l4SeedIds, contextEligibleIndexEntries),
     ]);
     const expanded = expandCodexRelationsBFS(
       [...l4SeedIds],
       relations,
-      contextEligibleEntries,
+      relationExpansionEntries,
       excludedRelationIds,
       { maxDepth: 1 },
     );
@@ -951,7 +1059,7 @@ export async function collectSceneContext(
     const intra = collectIntraContextRelations(
       [...l4SeedIds],
       relations,
-      contextEligibleEntries,
+      contextEligibleIndexEntries,
     );
     intraContextRelations = intra.length > 0 ? intra : undefined;
   }
@@ -963,7 +1071,7 @@ export async function collectSceneContext(
         request,
         language: project?.language ?? "ja",
         codexNames: new Map(
-          contextEligibleEntries.map(
+          contextEligibleIndexEntries.map(
             (entry) => [entry.id, entry.name] as const,
           ),
         ),

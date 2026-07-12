@@ -82,6 +82,7 @@ interface RequestOverrides {
   sceneContent?: string;
   inputPinnedEntryIds?: string[];
   activeTabId?: string;
+  prefetch?: boolean;
 }
 
 function request(overrides: RequestOverrides = {}) {
@@ -122,7 +123,9 @@ function request(overrides: RequestOverrides = {}) {
         content: overrides.sceneContent ?? "Body",
       },
       project: { title: "Project", language: "en" },
-      prefetchedCodexEntries: overrides.entries ?? [],
+      ...(overrides.prefetch === false
+        ? {}
+        : { prefetchedCodexEntries: overrides.entries ?? [] }),
     },
   });
 }
@@ -191,6 +194,57 @@ describe("collectSceneContext", () => {
 
     expect(result.scene.content).toBe("");
     expect(result.promptInput.scene.content).toBe("");
+  });
+
+  it("loads full Codex bodies only after metadata selection", async () => {
+    const alice = entry({
+      id: "alice",
+      name: "Alice",
+      summary: null,
+      content: doc("Alice full body"),
+    });
+    const bob = entry({
+      id: "bob",
+      name: "Bob",
+      summary: null,
+      content: doc("Bob full body"),
+    });
+    const allEntries = [alice, bob];
+    const listCodexEntries = vi.fn(async () => {
+      throw new Error("full all-entry load must not be used");
+    });
+    const listCodexContextMetadata = vi.fn(async () =>
+      allEntries.map(({ content: _content, ...metadata }) => metadata),
+    );
+    const listCodexEntriesByIds = vi.fn(
+      async (_projectId, ids: readonly string[]) =>
+        ids.flatMap(
+          (id) => allEntries.find((candidate) => candidate.id === id) ?? [],
+        ),
+    );
+
+    const result = await collectSceneContext(
+      request({
+        prefetch: false,
+        sceneContent: "Alice appears",
+      }),
+      {
+        ...phaseDeps([]),
+        listCodexEntries,
+        listCodexContextMetadata,
+        listCodexEntriesByIds,
+      },
+    );
+
+    expect(listCodexContextMetadata).toHaveBeenCalledWith("project-1");
+    expect(listCodexEntries).not.toHaveBeenCalled();
+    expect(listCodexEntriesByIds).toHaveBeenCalledWith("project-1", ["alice"]);
+    expect(result.promptInput.codexEntries?.map((item) => item.id)).toEqual([
+      "alice",
+    ]);
+    expect(result.promptInput.codexEntries?.[0]?.contentFallback).toBe(
+      "Alice full body",
+    );
   });
 
   it("contains no direct Chat store or implicit current-project reads", () => {

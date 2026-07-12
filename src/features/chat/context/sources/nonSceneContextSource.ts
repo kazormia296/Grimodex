@@ -1,4 +1,8 @@
-import type { CodexContextEntry, CodexEntry } from "@/features/codex/api";
+import type {
+  CodexContextEntry,
+  CodexContextMetadataEntry,
+  CodexEntry,
+} from "@/features/codex/api";
 import type { ContextDecision } from "@/features/ai-context/types";
 import type {
   CodexEntryPhase,
@@ -19,6 +23,7 @@ import {
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import {
   buildChildrenContext,
+  collectBudgetedDescendantIds,
   computeChildrenTokenBudget,
   getChildrenFromArray,
   getDescendantsBFS,
@@ -51,6 +56,14 @@ import type {
   ProjectContext,
 } from "../../contextBuilder";
 import type { NonSceneTurnContextRequest } from "../turnContextRequest";
+import {
+  orderEntriesByIds,
+  stripCodexContent,
+  toCodexContextIndexEntries,
+  uniqueIds,
+  type CodexContextIndexEntry,
+  type CodexNameLookupEntry,
+} from "./codexContextIndex";
 
 export type NonSceneScopeAnchor =
   | { kind: "codex"; id: string; name: string }
@@ -72,9 +85,9 @@ export interface AggregatedSceneInput {
   includeBodies: boolean;
   activeSceneId: string | null;
   prefacePolicy: "folder" | "project";
-  allEntries: CodexContextEntry[];
+  allEntries: CodexContextIndexEntry[];
   /** Mention-only candidates; always entries remain available for derived labels. */
-  detectableEntries: CodexContextEntry[];
+  detectableEntries: CodexContextIndexEntry[];
   allNodes?: TreeNodeData[];
   agentMode: boolean;
   injectBeats: boolean;
@@ -94,6 +107,13 @@ export interface CodexScopeBlocks {
 export interface NonSceneContextSourceDeps {
   fetchProjectContext: (projectId: string) => Promise<ProjectContext | null>;
   listCodexEntries: (projectId: string) => Promise<CodexContextEntry[]>;
+  listCodexContextMetadata: (
+    projectId: string,
+  ) => Promise<CodexContextMetadataEntry[]>;
+  listCodexEntriesByIds: (
+    projectId: string,
+    ids: readonly string[],
+  ) => Promise<CodexContextEntry[]>;
   getTemporalResolution: (projectId: string) => {
     sceneTimeIndex: SceneTimeIndex;
     resolutionMode: PhaseResolutionMode;
@@ -138,16 +158,18 @@ export interface NonSceneContextSourceDeps {
   >;
   loadMapBoardMarkdown: (
     request: NonSceneTurnContextRequest,
-    entries: CodexContextEntry[],
+    entries: CodexNameLookupEntry[],
   ) => Promise<string | undefined>;
 }
 
 export function createNonSceneContextSourceDeps(
   overrides: Partial<NonSceneContextSourceDeps> = {},
 ): NonSceneContextSourceDeps {
-  return {
+  const deps: NonSceneContextSourceDeps = {
     fetchProjectContext: async () => null,
     listCodexEntries: async () => [],
+    listCodexContextMetadata: async () => [],
+    listCodexEntriesByIds: async () => [],
     getTemporalResolution: () => ({
       sceneTimeIndex: buildSceneTimeIndex([]),
       resolutionMode: "reading",
@@ -166,6 +188,15 @@ export function createNonSceneContextSourceDeps(
     loadMapBoardMarkdown: async () => undefined,
     ...overrides,
   };
+  if (!overrides.listCodexContextMetadata) {
+    deps.listCodexContextMetadata = async (projectId) =>
+      (await deps.listCodexEntries(projectId)).map(stripCodexContent);
+  }
+  if (!overrides.listCodexEntriesByIds) {
+    deps.listCodexEntriesByIds = async (projectId, ids) =>
+      orderEntriesByIds(ids, await deps.listCodexEntries(projectId));
+  }
+  return deps;
 }
 
 function parseAliases(json: string | null | undefined): string[] | undefined {
@@ -233,7 +264,7 @@ function buildChildrenCtxForEntry(
 
 async function enrichWithCustomDetails<T extends CodexContext>(
   entries: T[],
-  allEntries: CodexContextEntry[],
+  allEntries: readonly CodexNameLookupEntry[],
   resolvedById: ReadonlyMap<string, ResolvedCodexState>,
   deps: NonSceneContextSourceDeps,
 ): Promise<T[]> {
@@ -508,11 +539,11 @@ export async function collectNonSceneContext(
     scopeOutlines.reverse();
   }
 
-  const [project, allEntries] = await Promise.all([
+  const [project, allMetadata] = await Promise.all([
     deps.fetchProjectContext(request.projectId),
-    deps.listCodexEntries(request.projectId),
+    deps.listCodexContextMetadata(request.projectId),
   ]);
-  const foreignEntry = allEntries.find(
+  const foreignEntry = allMetadata.find(
     (entry) => entry.projectId !== request.projectId,
   );
   if (foreignEntry) {
@@ -522,7 +553,7 @@ export async function collectNonSceneContext(
   }
   if (request.scope.kind === "codex") {
     const codexScope = request.scope;
-    if (!allEntries.some((entry) => entry.id === codexScope.entryId)) {
+    if (!allMetadata.some((entry) => entry.id === codexScope.entryId)) {
       throw new Error("required codex context anchor is unavailable");
     }
   }
@@ -533,16 +564,24 @@ export async function collectNonSceneContext(
       : request.activeSceneId.trim()
         ? { kind: "scene", sceneId: request.activeSceneId }
         : { kind: "base" };
-  const resolvedContexts = await resolveEntriesForContext(
-    allEntries,
+  const indexEntries = toCodexContextIndexEntries(allMetadata);
+  const resolvedIndexContexts = await resolveEntriesForContext(
+    indexEntries,
     temporalAnchor,
     request,
     deps,
   );
-  const effectiveEntries = allEntries.map((entry) => {
-    const resolved = resolvedContexts.resolvedById.get(entry.id);
-    return resolved ? materializeResolvedCodexContext(entry, resolved) : entry;
-  });
+  const effectiveIndexEntries: CodexContextIndexEntry[] = indexEntries.map(
+    (entry) => {
+      const resolved = resolvedIndexContexts.resolvedById.get(entry.id);
+      return resolved
+        ? materializeResolvedCodexContext(entry, resolved)
+        : entry;
+    },
+  );
+  const effectiveIndexById = new Map(
+    effectiveIndexEntries.map((entry) => [entry.id, entry] as const),
+  );
   type TemporalMetadata = NonNullable<
     BuildSystemPromptInput["contextTemporal"]
   >;
@@ -551,8 +590,8 @@ export async function collectNonSceneContext(
       ? { asOfSceneId: temporalAnchor.sceneId }
       : { fallbackReason: temporalAnchor.kind };
   const contextTemporalBySourceId: Record<string, TemporalMetadata> = {};
-  for (const entry of effectiveEntries) {
-    const resolved = resolvedContexts.resolvedById.get(entry.id);
+  for (const entry of effectiveIndexEntries) {
+    const resolved = resolvedIndexContexts.resolvedById.get(entry.id);
     contextTemporalBySourceId[entry.id] = {
       ...contextTemporal,
       ...(resolved?.axisUsed ? { axis: resolved.axisUsed } : {}),
@@ -562,30 +601,36 @@ export async function collectNonSceneContext(
         : {}),
     };
   }
-  const mentionEligibleEntries = effectiveEntries.filter(
+  const mentionEligibleIndexEntries = effectiveIndexEntries.filter(
     (entry) => entry.contextMode === "mentioned",
   );
-  const derivedEligibleEntries = effectiveEntries.filter((entry) =>
+  const derivedEligibleIndexEntries = effectiveIndexEntries.filter((entry) =>
     canIncludeResolvedCodexContext(entry.contextMode, "derived"),
   );
 
-  const codexBlocks =
-    request.scope.kind === "codex"
-      ? await buildResolvedCodexScopeBlocks({
-          request,
-          selectedEntryId: request.scope.entryId,
-          effectiveEntries,
-          mentionEligibleEntries,
-          derivedEligibleEntries,
-          resolvedById: resolvedContexts.resolvedById,
-          phasesByEntry: resolvedContexts.phasesByEntry,
-          lang: project?.language,
-          deps,
-        })
-      : null;
-  if (request.scope.kind === "codex" && !codexBlocks) {
-    throw new Error("required codex context anchor is unavailable or hidden");
-  }
+  const resolveFullEntries = async (ids: readonly string[]) => {
+    const entries = await deps.listCodexEntriesByIds(
+      request.projectId,
+      uniqueIds(ids),
+    );
+    if (entries.some((entry) => entry.projectId !== request.projectId)) {
+      throw new Error(
+        `non-scene context project mismatch: ${entries.find((entry) => entry.projectId !== request.projectId)?.projectId}`,
+      );
+    }
+    const resolved = await resolveEntriesForContext(
+      entries,
+      temporalAnchor,
+      request,
+      deps,
+    );
+    const effective = entries.map((entry) => {
+      const state = resolved.resolvedById.get(entry.id);
+      return state ? materializeResolvedCodexContext(entry, state) : entry;
+    });
+    const byId = new Map(effective.map((entry) => [entry.id, entry] as const));
+    return { effective, byId, resolved };
+  };
   let snippetAnchor: Snippet | undefined;
   if (request.scope.kind === "snippet") {
     snippetAnchor = await deps.getSnippet(
@@ -601,7 +646,7 @@ export async function collectNonSceneContext(
   }
 
   let aggregatedScene: AggregatedSceneResult["aggregatedScene"] | null = null;
-  let aggregatedDetected: CodexContextEntry[] = [];
+  let aggregatedDetected: CodexContextIndexEntry[] = [];
   if (request.scope.kind === "thread") {
     const threadScope = request.scope;
     const memberIds = new Set(
@@ -620,8 +665,8 @@ export async function collectNonSceneContext(
         includeBodies: true,
         activeSceneId: request.activeSceneId,
         prefacePolicy: "folder",
-        allEntries: derivedEligibleEntries,
-        detectableEntries: mentionEligibleEntries,
+        allEntries: derivedEligibleIndexEntries,
+        detectableEntries: mentionEligibleIndexEntries,
         agentMode: request.agentToolsAvailable,
         injectBeats: request.settings.injectBeats,
       });
@@ -641,8 +686,8 @@ export async function collectNonSceneContext(
         includeBodies: request.includeBodies,
         activeSceneId: request.activeSceneId,
         prefacePolicy: "folder",
-        allEntries: derivedEligibleEntries,
-        detectableEntries: mentionEligibleEntries,
+        allEntries: derivedEligibleIndexEntries,
+        detectableEntries: mentionEligibleIndexEntries,
         agentMode: request.agentToolsAvailable,
         injectBeats: request.settings.injectBeats,
       });
@@ -659,8 +704,8 @@ export async function collectNonSceneContext(
       includeBodies: request.includeBodies,
       activeSceneId: request.activeSceneId,
       prefacePolicy: "project",
-      allEntries: derivedEligibleEntries,
-      detectableEntries: mentionEligibleEntries,
+      allEntries: derivedEligibleIndexEntries,
+      detectableEntries: mentionEligibleIndexEntries,
       allNodes,
       agentMode: request.agentToolsAvailable,
       injectBeats: request.settings.injectBeats,
@@ -672,7 +717,7 @@ export async function collectNonSceneContext(
   }
 
   const excludedAutoIds = new Set(request.excludedAutoEntryIds);
-  const globalAlwaysEntries = effectiveEntries.filter(
+  const globalAlwaysIndexEntries = effectiveIndexEntries.filter(
     (entry) => entry.contextMode === "always" && !excludedAutoIds.has(entry.id),
   );
   const l4Budget = 60_000;
@@ -686,7 +731,7 @@ export async function collectNonSceneContext(
   const allPinnedIds = new Set([...dbPinnedIds, ...inputPinnedIds]);
 
   const contextDecisions = [...allPinnedIds].flatMap<ContextDecision>((id) => {
-    const entry = effectiveEntries.find((candidate) => candidate.id === id);
+    const entry = effectiveIndexById.get(id);
     if (!entry) {
       return [
         {
@@ -711,10 +756,67 @@ export async function collectNonSceneContext(
     }
     return [];
   });
-
-  const effectiveById = new Map(
-    effectiveEntries.map((entry) => [entry.id, entry] as const),
+  const visiblePinnedIds = new Set(
+    [...allPinnedIds].filter((id) => {
+      const entry = effectiveIndexById.get(id);
+      return entry
+        ? canIncludeResolvedCodexContext(entry.contextMode, "explicit-pin")
+        : false;
+    }),
   );
+
+  const codexScopeContentIds =
+    request.scope.kind === "codex"
+      ? [
+          request.scope.entryId,
+          ...mentionEligibleIndexEntries.map((entry) => entry.id),
+          ...derivedEligibleIndexEntries.map((entry) => entry.id),
+        ]
+      : [];
+  const contentSeedIds = uniqueIds([
+    ...globalAlwaysIndexEntries.map((entry) => entry.id),
+    ...aggregatedDetected.map((entry) => entry.id),
+    ...visiblePinnedIds,
+    ...codexScopeContentIds,
+    ...collectBudgetedDescendantIds(
+      [
+        ...globalAlwaysIndexEntries.map((entry) => entry.id),
+        ...aggregatedDetected.map((entry) => entry.id),
+        ...visiblePinnedIds,
+      ],
+      derivedEligibleIndexEntries,
+    ),
+  ]);
+  const resolvedFull = await resolveFullEntries(contentSeedIds);
+  const effectiveEntries = resolvedFull.effective;
+  const effectiveById = resolvedFull.byId;
+  const resolvedContexts = resolvedFull.resolved;
+
+  const mentionEligibleEntries = mentionEligibleIndexEntries
+    .map((entry) => effectiveById.get(entry.id))
+    .filter((entry): entry is CodexContextEntry => entry !== undefined);
+  const derivedEligibleEntries = derivedEligibleIndexEntries
+    .map((entry) => effectiveById.get(entry.id))
+    .filter((entry): entry is CodexContextEntry => entry !== undefined);
+
+  const codexBlocks =
+    request.scope.kind === "codex"
+      ? await buildResolvedCodexScopeBlocks({
+          request,
+          selectedEntryId: request.scope.entryId,
+          effectiveEntries,
+          mentionEligibleEntries,
+          derivedEligibleEntries,
+          resolvedById: resolvedContexts.resolvedById,
+          phasesByEntry: resolvedContexts.phasesByEntry,
+          lang: project?.language,
+          deps,
+        })
+      : null;
+  if (request.scope.kind === "codex" && !codexBlocks) {
+    throw new Error("required codex context anchor is unavailable or hidden");
+  }
+
   const buildPinnedContext = (
     entry: CodexContextEntry,
     withChildren: boolean,
@@ -802,10 +904,10 @@ export async function collectNonSceneContext(
   }
 
   const explicitlyVisibleIds = new Set([
-    ...allPinnedIds,
+    ...visiblePinnedIds,
     ...(codexBlocks?.selectedPinned ? [codexBlocks.selectedPinned.id] : []),
   ]);
-  const detailReferenceEntries = effectiveEntries.filter(
+  const detailReferenceEntries = effectiveIndexEntries.filter(
     (entry) =>
       canIncludeResolvedCodexContext(entry.contextMode, "derived") ||
       (explicitlyVisibleIds.has(entry.id) &&
@@ -833,17 +935,27 @@ export async function collectNonSceneContext(
         !mergedPinnedIds.has(entry.id) && !excludedAutoIds.has(entry.id),
     ) ?? [];
   const detectedNotPinned = stableSortById([
-    ...aggregatedDetected.filter(
-      (entry) =>
-        !mergedPinnedIds.has(entry.id) && !excludedAutoIds.has(entry.id),
-    ),
+    ...aggregatedDetected
+      .filter(
+        (entry) =>
+          !mergedPinnedIds.has(entry.id) && !excludedAutoIds.has(entry.id),
+      )
+      .flatMap((entry) => {
+        const full = effectiveById.get(entry.id);
+        return full ? [full] : [];
+      }),
     ...relatedNotPinned,
   ]);
   const detectedIds = new Set(detectedNotPinned.map((entry) => entry.id));
   const alwaysNotDetected = stableSortById(
-    globalAlwaysEntries.filter(
-      (entry) => !mergedPinnedIds.has(entry.id) && !detectedIds.has(entry.id),
-    ),
+    globalAlwaysIndexEntries
+      .filter(
+        (entry) => !mergedPinnedIds.has(entry.id) && !detectedIds.has(entry.id),
+      )
+      .flatMap((entry) => {
+        const full = effectiveById.get(entry.id);
+        return full ? [full] : [];
+      }),
   );
   const baseGlobalCodexEntries: CodexContext[] = [
     ...detectedNotPinned,
@@ -936,7 +1048,7 @@ export async function collectNonSceneContext(
       relationCodexEntries: codexBlocks?.relationExpanded.length
         ? codexBlocks.relationExpanded
         : undefined,
-      alwaysEntryIds: globalAlwaysEntries.map((entry) => entry.id),
+      alwaysEntryIds: globalAlwaysIndexEntries.map((entry) => entry.id),
       contextTemporal,
       contextTemporalBySourceId,
       contextDecisions,

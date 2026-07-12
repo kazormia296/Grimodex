@@ -125,6 +125,51 @@ function request(
 }
 
 describe("collectNonSceneContext", () => {
+  it("uses Codex metadata first and loads full bodies only for selected non-scene context ids", async () => {
+    const alice = codexEntry("alice");
+    const bob = codexEntry("bob");
+    const allEntries = [alice, bob];
+    const metadata = allEntries.map(({ content: _content, ...entry }) => entry);
+    const listCodexEntries = vi.fn(async () => {
+      throw new Error("full all-entry load must not be used");
+    });
+    const listCodexContextMetadata = vi.fn(async () => metadata);
+    const listCodexEntriesByIds = vi.fn(
+      async (_projectId, ids: readonly string[]) =>
+        ids.flatMap(
+          (id) => allEntries.find((candidate) => candidate.id === id) ?? [],
+        ),
+    );
+    const buildAggregatedScene = vi.fn(async (input: AggregatedSceneInput) => ({
+      aggregatedScene: {
+        id: input.anchorId,
+        title: input.anchorTitle,
+        content: "Alice appears in project synopsis",
+      },
+      aggregatedDetected: input.detectableEntries.filter(
+        (entry) => entry.id === "alice",
+      ),
+    }));
+
+    const result = await collectNonSceneContext(
+      request({ scope: { kind: "project" } }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries,
+        listCodexContextMetadata,
+        listCodexEntriesByIds,
+        buildAggregatedScene,
+      }),
+    );
+
+    expect(listCodexContextMetadata).toHaveBeenCalledWith("project-1");
+    expect(listCodexEntries).not.toHaveBeenCalled();
+    expect(listCodexEntriesByIds).toHaveBeenCalledWith("project-1", ["alice"]);
+    expect(result.promptInput.codexEntries?.map((entry) => entry.id)).toEqual([
+      "alice",
+    ]);
+  });
+
   it("builds a thread focus from its snapshotted members even in eco mode", async () => {
     const buildAggregatedScene = vi.fn(async () => ({
       aggregatedScene: {

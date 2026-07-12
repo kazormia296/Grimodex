@@ -264,7 +264,12 @@ import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { listCodexEntriesForContext } from "@/features/codex/api";
+import {
+  listCodexContextMetadata,
+  listCodexEntriesForContext,
+  listCodexEntriesForContextByIds,
+  listCodexMatchTargets,
+} from "@/features/codex/api";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import {
   listEvents,
@@ -1863,7 +1868,7 @@ interface SceneContextPayload {
  * （重複 fetch 防止）。tree / aiBranch / snippet は内部で lookup。
  */
 async function loadMapBoardMarkdown(
-  allEntries: CodexContextEntry[],
+  allEntries: Array<Pick<CodexContextEntry, "id" | "name">>,
   selection?: {
     enabled: boolean;
     boardId: string | null;
@@ -2323,6 +2328,8 @@ function createProductionSceneContextSourceDeps(
 
   return createSceneContextSourceDeps({
     listCodexEntries: listCodexEntriesForContext,
+    listCodexContextMetadata,
+    listCodexEntriesByIds: listCodexEntriesForContextByIds,
     listTreeNodes: (requestedProjectId) =>
       requestedProjectId === capturedProjectId ? treeNodes : [],
     getTemporalResolution: (requestedProjectId) => {
@@ -3802,15 +3809,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         // 通常モードと同じく、@言及/CodexHighlight 経由でメッセージ内に検出された
         // Codex エントリを送信時に自動 Spotlight する。
-        // listCodexEntriesForContext の結果は buildSceneContextPrompt に prefetchedEntries
-        // として渡し、二重 fetch を避ける。
-        const allEntriesForCtx = sceneCtx
-          ? await listCodexEntriesForContext(turnProjectId)
+        // 自動 pin 判定は名前/alias だけで足りるため、本文 projection は読まない。
+        const codexMatchTargets = sceneCtx
+          ? await listCodexMatchTargets(turnProjectId)
           : [];
         if (sessionIdForPersist && sceneCtx) {
           const chatMentioned = await findMentionedEntriesAsync(
             content,
-            allEntriesForCtx,
+            codexMatchTargets,
           );
           for (const entry of chatMentioned) {
             await chatApi
@@ -3885,7 +3891,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             activeSessionId: sessionIdForPersist ?? activeSessionId,
             conversationMessages: messagesForCtx,
             commandInstruction,
-            prefetchedEntries: allEntriesForCtx,
             mentionedSceneIds: options?.mentionedSceneIds,
             mentionedCodexIds: options?.mentionedCodexIds,
             semanticRecallSeedMessage: content,
@@ -4663,13 +4668,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       let sentContextTokenCount: number | null = null;
 
       if (sceneCtx) {
-        const allEntries = await listCodexEntriesForContext(turnProjectId);
+        const codexMatchTargets = await listCodexMatchTargets(turnProjectId);
 
         // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
         if (sessionIdForPersist) {
           const chatMentioned = await findMentionedEntriesAsync(
             content,
-            allEntries,
+            codexMatchTargets,
           );
           for (const entry of chatMentioned) {
             await chatApi
@@ -4688,7 +4693,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             try {
               const oldMentioned = await findMentionedEntriesAsync(
                 _editingOldContent,
-                allEntries,
+                codexMatchTargets,
               );
               const newMentionedIds = new Set(chatMentioned.map((e) => e.id));
               const removedIds = oldMentioned
@@ -4718,7 +4723,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           activeSessionId: sessionIdForPersist ?? activeSessionId,
           conversationMessages: messagesForApi,
           commandInstruction,
-          prefetchedEntries: allEntries,
           mentionedSceneIds: options?.mentionedSceneIds,
           mentionedCodexIds: options?.mentionedCodexIds,
           semanticRecallSeedMessage: content,
@@ -5419,6 +5423,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             source: {
               fetchProjectContext: fetchRequiredProjectContext,
               listCodexEntries: listCodexEntriesForContext,
+              listCodexContextMetadata,
+              listCodexEntriesByIds: listCodexEntriesForContextByIds,
               getTemporalResolution: (sourceProjectId) => {
                 if (sourceProjectId !== request.projectId) {
                   throw new Error("non-scene temporal project mismatch");

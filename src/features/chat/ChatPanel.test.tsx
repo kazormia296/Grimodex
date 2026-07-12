@@ -154,16 +154,51 @@ vi.mock("@/features/editor/editorStore", async () => {
   return { useEditorStore: store };
 });
 
-vi.mock("@/features/codex/api", () => ({
-  listCodexEntries: vi.fn(() => Promise.resolve([])),
-  listCodexEntriesForContext: vi.fn(() => Promise.resolve([])),
-  listCodexMatchTargets: vi.fn(() => Promise.resolve([])),
-  getCodexEntry: vi.fn(),
-  createCodexEntry: vi.fn(),
-  updateCodexEntry: vi.fn(),
-  deleteCodexEntry: vi.fn(),
-  listCodexEntriesByMessageId: vi.fn(() => Promise.resolve([])),
-}));
+vi.mock("@/features/codex/api", () => {
+  const listCodexEntriesForContext = vi.fn(
+    async (_projectId?: string): Promise<Array<Record<string, unknown>>> => [],
+  );
+  const withoutContent = (entry: Record<string, unknown>) => {
+    const { content: _content, ...metadata } = entry;
+    return metadata;
+  };
+  const pickMatchTarget = (entry: Record<string, unknown>) => ({
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    aliases: entry.aliases,
+    excludedAliases: entry.excludedAliases,
+  });
+  return {
+    listCodexEntries: vi.fn(() => Promise.resolve([])),
+    listCodexEntriesForContext,
+    listCodexContextMetadata: vi.fn(async (projectId: string) =>
+      (await listCodexEntriesForContext(projectId)).map(withoutContent),
+    ),
+    listCodexEntriesForContextByIds: vi.fn(
+      async (projectId: string, ids: readonly string[]) => {
+        const byId = new Map(
+          (await listCodexEntriesForContext(projectId)).map((entry) => [
+            entry.id,
+            entry,
+          ]),
+        );
+        return [...new Set(ids)].flatMap((id) => {
+          const entry = byId.get(id);
+          return entry ? [entry] : [];
+        });
+      },
+    ),
+    listCodexMatchTargets: vi.fn(async (projectId: string) =>
+      (await listCodexEntriesForContext(projectId)).map(pickMatchTarget),
+    ),
+    getCodexEntry: vi.fn(),
+    createCodexEntry: vi.fn(),
+    updateCodexEntry: vi.fn(),
+    deleteCodexEntry: vi.fn(),
+    listCodexEntriesByMessageId: vi.fn(() => Promise.resolve([])),
+  };
+});
 
 vi.mock("@/features/snippets/api", () => ({
   listSnippets: vi.fn(() => Promise.resolve([])),

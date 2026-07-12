@@ -91,6 +91,34 @@ export type CodexMatchRow = Pick<
  * ルビ・ソート用のメタデータで物語本文ではないため AI 文脈には注入しない。
  */
 export type CodexContextEntry = Omit<CodexEntry, "icon" | "notes" | "readings">;
+export type CodexContextMetadataEntry = Omit<CodexContextEntry, "content">;
+
+function codexContextMetadataSelection() {
+  return {
+    id: codexEntries.id,
+    projectId: codexEntries.projectId,
+    parentId: codexEntries.parentId,
+    type: codexEntries.type,
+    name: codexEntries.name,
+    aliases: codexEntries.aliases,
+    excludedAliases: codexEntries.excludedAliases,
+    summary: codexEntries.summary,
+    tagsCache: codexEntries.tagsCache,
+    contextMode: codexEntries.contextMode,
+    childrenBudget: codexEntries.childrenBudget,
+    sourceChatMessageId: codexEntries.sourceChatMessageId,
+    createdAt: codexEntries.createdAt,
+    updatedAt: codexEntries.updatedAt,
+    version: codexEntries.version,
+  };
+}
+
+function codexContextEntrySelection() {
+  return {
+    ...codexContextMetadataSelection(),
+    content: codexEntries.content,
+  };
+}
 
 /**
  * mention 検出の match target 専用の軽量 projection。
@@ -123,26 +151,50 @@ export async function listCodexEntriesForContext(
 ): Promise<CodexContextEntry[]> {
   const scope = eq(codexEntries.projectId, projectId);
   return db
-    .select({
-      id: codexEntries.id,
-      projectId: codexEntries.projectId,
-      parentId: codexEntries.parentId,
-      type: codexEntries.type,
-      name: codexEntries.name,
-      aliases: codexEntries.aliases,
-      excludedAliases: codexEntries.excludedAliases,
-      summary: codexEntries.summary,
-      content: codexEntries.content,
-      tagsCache: codexEntries.tagsCache,
-      contextMode: codexEntries.contextMode,
-      childrenBudget: codexEntries.childrenBudget,
-      sourceChatMessageId: codexEntries.sourceChatMessageId,
-      createdAt: codexEntries.createdAt,
-      updatedAt: codexEntries.updatedAt,
-      version: codexEntries.version,
-    })
+    .select(codexContextEntrySelection())
     .from(codexEntries)
     .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
+}
+
+/**
+ * AI 文脈候補選抜用 projection。全件横断で必要な名前・階層・visibility・
+ * summary だけを返し、PM JSON 本文(content)を転送しない。
+ */
+export async function listCodexContextMetadata(
+  projectId: string,
+  type?: CodexEntryType,
+): Promise<CodexContextMetadataEntry[]> {
+  const scope = eq(codexEntries.projectId, projectId);
+  return db
+    .select(codexContextMetadataSelection())
+    .from(codexEntries)
+    .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
+}
+
+/**
+ * AI 文脈の本文 materialize 用 projection。候補選抜後の ID だけを読み込む。
+ * 戻り順は呼び出し元の ids 順に揃える。
+ */
+export async function listCodexEntriesForContextByIds(
+  projectId: string,
+  ids: readonly string[],
+): Promise<CodexContextEntry[]> {
+  const uniqueIds = [...new Set(ids)];
+  if (uniqueIds.length === 0) return [];
+  const rows = await db
+    .select(codexContextEntrySelection())
+    .from(codexEntries)
+    .where(
+      and(
+        eq(codexEntries.projectId, projectId),
+        inArray(codexEntries.id, uniqueIds),
+      ),
+    );
+  const byId = new Map(rows.map((row) => [row.id, row] as const));
+  return uniqueIds.flatMap((id) => {
+    const row = byId.get(id);
+    return row ? [row] : [];
+  });
 }
 
 /** timelapse ベースライン記録用: id + content (PM JSON) のみ。 */
