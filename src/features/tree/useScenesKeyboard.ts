@@ -127,6 +127,7 @@ export function useScenesKeyboard({
         e.preventDefault();
         const cur = nodeMap[activeSceneId];
         if (cur && (cur.nodeType === "scene" || cur.nodeType === "note")) {
+          setActiveScene(cur.id);
           openEditorDocument(
             {
               target: { kind: "scene", documentId: cur.id },

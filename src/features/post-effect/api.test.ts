@@ -30,6 +30,12 @@ vi.mock("@/features/editor/tabStore", () => ({
   },
 }));
 
+vi.mock("@/features/editor/editorSessionStore", () => ({
+  useEditorSessionStore: {
+    getState: () => ({ dirtyDocumentIds: mockDirtyTabIds }),
+  },
+}));
+
 import { flushPendingSceneSaves, runPostEffect } from "./api";
 import { usePostEffectRunStore } from "./runStore";
 import {
