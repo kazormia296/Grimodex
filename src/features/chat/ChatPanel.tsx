@@ -48,16 +48,13 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
 import { recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
-import type {
-  PinnedSnippetEntryWithData,
-  PinnedStickyEntryWithData,
-  MessagePromptSnapshot,
-} from "./chatApi";
+import type { MessagePromptSnapshot } from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
 import { stripToolProtocol } from "./toolProtocol";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useChatSessionLifecycle } from "./useChatSessionLifecycle";
+import { useChatPinsController } from "./useChatPinsController";
 
 /**
  * メッセージ全文を抽出 (Codex/Snippet) / エディタ挿入 / コピーに使う前の正規化。
@@ -152,7 +149,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const removeEntryFromAuto = useChatStore((s) => s.removeEntryFromAuto);
   const excludeEntryFromAuto = useChatStore((s) => s.excludeEntryFromAuto);
   const clearAutoExclusion = useChatStore((s) => s.clearAutoExclusion);
-  const setInputPinnedEntryIds = useChatStore((s) => s.setInputPinnedEntryIds);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentMode = useChatStore((s) => s.agentMode);
   const agentProgress = useChatStore((s) => s.agentProgress);
@@ -236,6 +232,36 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const allCodexEntries = useCodexStore((s) => s.entries);
 
+  const {
+    pinnedEntries,
+    pinnedSnippets,
+    pinnedStickies,
+    pinnedIds,
+    pinnedSnippetIds,
+    inputPinnedEntries,
+    inputPinnedIds,
+    dismissedViaChildIds,
+    handleDetectedEntries,
+    resetInputDismissed,
+    handlePin,
+    handleUnpin,
+    handleReturnToAuto,
+    handleRemoveAuto,
+    handleRemoveEntry,
+    handleDismissViaChild,
+    handleTogglePinChildren,
+  } = useChatPinsController({
+    isActive,
+    activeSessionId,
+    pinsVersion,
+    allCodexEntries,
+    ensureSession,
+    removeEntryFromAuto,
+    excludeEntryFromAuto,
+    clearAutoExclusion,
+    refreshContextLayers,
+  });
+
   useChatSessionLifecycle({
     isActive,
     treeActiveSceneId,
@@ -255,186 +281,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     selectSession,
     refreshContextLayers,
   });
-
-  // Pinned codex entries
-  const [pinnedEntries, setPinnedEntries] = useState<
-    import("./chatApi").PinnedCodexEntryWithData[]
-  >([]);
-  const [pinnedSnippets, setPinnedSnippets] = useState<
-    PinnedSnippetEntryWithData[]
-  >([]);
-  // Map "Spotlight" stickies (chatSessionPinnedCodex with stickyId set).
-  // Internal naming keeps "pinned" to match the underlying DB column /
-  // chat API; the user-visible label says Spotlight.
-  const [pinnedStickies, setPinnedStickies] = useState<
-    PinnedStickyEntryWithData[]
-  >([]);
-
-  useEffect(() => {
-    if (!isActive) return;
-    if (!activeSessionId) {
-      setPinnedEntries([]);
-      setPinnedSnippets([]);
-      setPinnedStickies([]);
-      return;
-    }
-    chatApi.listPinnedCodexEntries(activeSessionId).then(setPinnedEntries);
-    chatApi.listPinnedSnippetEntries(activeSessionId).then(setPinnedSnippets);
-    chatApi.listPinnedStickyEntries(activeSessionId).then(setPinnedStickies);
-    setDismissedViaChildIds(new Set());
-    // pinsVersion bumps after any refreshContextLayers run; including it
-    // in deps lets us pick up Map / Codex / Sticky pin changes that
-    // happen outside this panel. hidden 中は bail し再アクティブ化で catch up。
-  }, [isActive, activeSessionId, pinsVersion]);
-
-  const pinnedIds = useMemo(
-    () => new Set(pinnedEntries.map((e) => e.id)),
-    [pinnedEntries],
-  );
-  const pinnedSnippetIds = useMemo(
-    () => new Set(pinnedSnippets.map((s) => s.id)),
-    [pinnedSnippets],
-  );
-
-  // 入力欄でリアルタイム検出されたCodexエントリID
-  const [inputDetectedIds, setInputDetectedIds] = useState<string[]>([]);
-  // ユーザーが × で明示却下したID（送信まで保持）
-  const [inputDismissedIds, setInputDismissedIds] = useState<Set<string>>(
-    new Set(),
-  );
-  // via表示の子エントリで × を押して一時非表示にしたID（セッション切替でリセット）
-  const [dismissedViaChildIds, setDismissedViaChildIds] = useState<Set<string>>(
-    new Set(),
-  );
-  const handleDetectedEntries = useCallback((ids: string[]) => {
-    setInputDetectedIds(ids);
-  }, []);
-
-  // 入力欄検出エントリを chat_mention ピン済みとして扱う
-  // （DB未確定のインメモリ状態。送信時に P2-5 が DB に永続化する）
-  const inputPinnedEntries = useMemo(() => {
-    return inputDetectedIds
-      .filter((id) => !inputDismissedIds.has(id) && !pinnedIds.has(id))
-      .map((id) => allCodexEntries.find((e) => e.id === id))
-      .filter((e): e is (typeof allCodexEntries)[0] => e !== undefined)
-      .map((e) => ({
-        ...e,
-        // UI-only flag: prompt uses the G21 block independently
-        withChildren: true,
-        pinnedType: "codex" as const,
-        pinSource: "chat_mention" as const,
-      }));
-  }, [inputDetectedIds, inputDismissedIds, allCodexEntries, pinnedIds]);
-
-  const inputPinnedIds = useMemo(
-    () => new Set(inputPinnedEntries.map((e) => e.id)),
-    [inputPinnedEntries],
-  );
-
-  // G21: chatStore に inputPinnedEntryIds を同期して prompt preview / copy に反映
-  useEffect(() => {
-    setInputPinnedEntryIds(inputPinnedEntries.map((e) => e.id));
-  }, [inputPinnedEntries, setInputPinnedEntryIds]);
-
-  const handlePin = useCallback(
-    async (entryId: string, type: "codex" | "snippet" = "codex") => {
-      // 新規シーンでメッセージ未送信のときは activeSessionId がまだ無い。
-      // sendMessage と同じく、ピン操作時にもセッションを自動作成して紐づける。
-      const sessionId = await ensureSession();
-      if (!sessionId) return;
-      await chatApi.pinCodexEntry(sessionId, entryId, false, "manual", type);
-      // Bug#1: ピン直後にautoリストから即時除去
-      removeEntryFromAuto(entryId);
-      // ピン＝ユーザーがエントリを再び使い始めた合図。過去に × で auto 除外
-      // されていても解除し、後で「autoに戻す」したときに再表示されるようにする。
-      clearAutoExclusion(entryId);
-      const [updatedCodex, updatedSnippets] = await Promise.all([
-        chatApi.listPinnedCodexEntries(sessionId),
-        chatApi.listPinnedSnippetEntries(sessionId),
-      ]);
-      setPinnedEntries(updatedCodex);
-      setPinnedSnippets(updatedSnippets);
-      await refreshContextLayers();
-    },
-    [
-      ensureSession,
-      removeEntryFromAuto,
-      clearAutoExclusion,
-      refreshContextLayers,
-    ],
-  );
-
-  const handleUnpin = useCallback(
-    async (entryId: string) => {
-      if (!activeSessionId) return;
-      await chatApi.unpinCodexEntry(activeSessionId, entryId);
-      const [updatedCodex, updatedSnippets] = await Promise.all([
-        chatApi.listPinnedCodexEntries(activeSessionId),
-        chatApi.listPinnedSnippetEntries(activeSessionId),
-      ]);
-      setPinnedEntries(updatedCodex);
-      setPinnedSnippets(updatedSnippets);
-    },
-    [activeSessionId],
-  );
-
-  // 手動ピンをautoに戻す: unpin後にコンテキスト再構築してautoリストへ即時反映
-  const handleReturnToAuto = useCallback(
-    async (entryId: string) => {
-      clearAutoExclusion(entryId);
-      await handleUnpin(entryId);
-      await refreshContextLayers();
-    },
-    [clearAutoExclusion, handleUnpin, refreshContextLayers],
-  );
-
-  // ピンエントリをコンテキストから完全除去: unpin + auto 注入からも除外。
-  // always エントリは表示配列の除去だけでは次の refresh で復活するため、
-  // excludeEntryFromAuto で除外 ID を記録する。
-  const handleRemoveFromContext = useCallback(
-    async (entryId: string) => {
-      await handleUnpin(entryId);
-      excludeEntryFromAuto(entryId);
-    },
-    [handleUnpin, excludeEntryFromAuto],
-  );
-
-  // autoエントリをコンテキストから除去（DBへの書き込みなし・セッション内で持続）
-  const handleRemoveAuto = useCallback(
-    (entryId: string) => {
-      excludeEntryFromAuto(entryId);
-    },
-    [excludeEntryFromAuto],
-  );
-
-  // ピン除去の統合ハンドラ:
-  // - 入力欄検出（インメモリ）ピン → 却下セットに追加（DB操作なし）
-  // - DB確定ピン → handleRemoveFromContext
-  const handleRemoveEntry = useCallback(
-    async (entryId: string) => {
-      if (inputPinnedIds.has(entryId)) {
-        setInputDismissedIds((prev) => new Set([...prev, entryId]));
-      } else {
-        await handleRemoveFromContext(entryId);
-      }
-    },
-    [inputPinnedIds, handleRemoveFromContext],
-  );
-
-  const handleDismissViaChild = useCallback((childId: string) => {
-    setDismissedViaChildIds((prev) => new Set([...prev, childId]));
-  }, []);
-
-  const handleTogglePinChildren = useCallback(
-    async (entryId: string, withChildren: boolean) => {
-      const sessionId = await ensureSession();
-      if (!sessionId) return;
-      await chatApi.togglePinChildren(sessionId, entryId, withChildren);
-      const updated = await chatApi.listPinnedCodexEntries(sessionId);
-      setPinnedEntries(updated);
-    },
-    [ensureSession],
-  );
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -840,7 +686,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       const trimmed = markdown.trim();
       if (!trimmed || isStreaming) return;
       // 送信時に却下セットをリセット（次のメッセージでは再検出可能にする）
-      setInputDismissedIds(new Set());
+      resetInputDismissed();
       // スラッシュコマンド由来の一回限りの指示 (/brainstorm の VS 等) は
       // sendMessage の commandInstruction (L6) へ。残りは送信オプションとして渡す。
       const { commandInstruction, ...rest } = options ?? {};
@@ -851,7 +697,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       };
       void flushAndSend();
     },
-    [isStreaming, sendMessage, chatSceneId],
+    [isStreaming, sendMessage, chatSceneId, resetInputDismissed],
   );
 
   const handleScopeChange = useCallback(
