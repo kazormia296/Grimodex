@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { patchGlobalSettings } from "@/lib/globalSettings";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 
 export interface ChronicleSettings {
   zoom: number;
@@ -167,7 +167,10 @@ useChronicleStore.subscribe((state) => {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      await patchGlobalSettings((current) => ({ ...current, chronicle: next }));
+      await globalSettingsRepository.patch((current) => ({
+        ...current,
+        chronicle: next,
+      }));
     } catch (e) {
       if (import.meta.env.MODE !== "test") {
         console.warn("[chronicle] save failed:", e);

@@ -1,9 +1,8 @@
 import { create } from "zustand";
 import i18next from "@/lib/i18n";
-import { invoke } from "@/lib/tauri";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
-import type { GlobalSettings } from "@/features/workspace/store";
-import { patchGlobalSettings } from "@/lib/globalSettings";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 import {
   getScreenshotCaptureId,
   getScreenshotPanelId,
@@ -421,7 +420,7 @@ function scheduleSave(get: () => LayoutStoreState) {
           hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
       };
 
-      await patchGlobalSettings((current) => ({
+      await globalSettingsRepository.patch((current) => ({
         ...current,
         layoutVersion: LAYOUT_SCHEMA_VERSION,
         layout: persisted,
@@ -448,7 +447,7 @@ async function persistPresets(
   builtinOverrides?: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
 ) {
   try {
-    await patchGlobalSettings((current) => ({
+    await globalSettingsRepository.patch((current) => ({
       ...current,
       layoutPresets: presets.map((p) => ({
         id: p.id,
@@ -473,7 +472,7 @@ async function persistBuiltinOverrides(
   overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
 ) {
   try {
-    await patchGlobalSettings((current) => ({
+    await globalSettingsRepository.patch((current) => ({
       ...current,
       builtinLayoutPresetOverrides: serializeBuiltinOverrides(overrides),
     }));
@@ -484,7 +483,7 @@ async function persistBuiltinOverrides(
 
 export async function clearSavedLayout() {
   try {
-    await patchGlobalSettings((current) => {
+    await globalSettingsRepository.patch((current) => {
       const {
         layout: _l,
         toolWindows: _t,
@@ -1434,12 +1433,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     }
 
     try {
-      const settings = await invoke<
-        GlobalSettings & {
-          layout?: unknown;
-          layoutVersion?: number;
-        }
-      >("get_global_settings");
+      const settings = await globalSettingsRepository.read();
 
       const rawLayout = settings.layout;
       if (isPersistedLayoutV3(rawLayout)) {
@@ -1646,7 +1640,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   async loadPresets() {
     try {
-      const settings = await invoke<GlobalSettings>("get_global_settings");
+      const settings = await globalSettingsRepository.read();
       const raw = settings.layoutPresets;
       const customPresets: CustomLayoutPreset[] = Array.isArray(raw)
         ? raw

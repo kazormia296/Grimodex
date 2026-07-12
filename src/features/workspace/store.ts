@@ -2,7 +2,8 @@ import { create } from "zustand";
 import i18next from "@/lib/i18n";
 import { invoke } from "@/lib/tauri";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import { patchGlobalSettings } from "@/lib/globalSettings";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import { flushAllAutoSaves } from "@/hooks/useAutoSave";
 import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
 import {
@@ -13,9 +14,7 @@ import {
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { loadAndSyncTimelineSettings } from "@/features/timeline/timelineStore";
-import type { TimelineSettings } from "@/features/timeline/timelineStore";
 import { loadAndSyncChronicleSettings } from "@/features/chronicle/chronicleStore";
-import type { ChronicleSettings } from "@/features/chronicle/chronicleStore";
 import { useMapStore } from "@/features/map/mapStore";
 import { useGridStore } from "@/features/grid/gridStore";
 import {
@@ -30,78 +29,10 @@ import {
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
 
-export interface RecentWorkspace {
-  path: string;
-  lastOpened: string;
-}
-
-export interface GlobalSettings {
-  recentWorkspaces: RecentWorkspace[];
-  lastActiveWorkspace: string | null;
-  theme: string;
-  uiLanguage: string;
-  uiScale: number;
-  showLauncherOnStartup: boolean;
-  /** Region/slot layout v2 (PersistedLayout) */
-  layout?: unknown;
-  layoutVersion?: number;
-  /** User-saved layout presets (LayoutState snapshots) */
-  layoutPresets?: Array<{
-    id: string;
-    name: string;
-    state: unknown;
-    hiddenStripePanels?: string[];
-  }>;
-  /** User overrides for built-in layout presets (keyed by builtin:* id) */
-  builtinLayoutPresetOverrides?: Record<
-    string,
-    { state: unknown; hiddenStripePanels?: string[] }
-  >;
-  /** ID of the last-applied layout preset */
-  activeLayoutPresetId?: string | null;
-  /** Per-panel tool window state (slot / view mode / undock size) */
-  toolWindows?: Record<string, unknown>;
-  /** Panel ids that have icons on the stripe (persist across close so icon doesn't disappear) */
-  stripePanelIds?: string[];
-  /** Stripe (left/right/bottom) widths in px */
-  stripeSizes?: Record<string, number>;
-  /** Stripe visibility per region */
-  stripeVisibility?: Record<string, boolean>;
-  /** Named color theme (e.g. "dark-academia"). Undefined = default theme. */
-  colorTheme?: string;
-  /** Workspace paths the user has explicitly trusted. */
-  trustedWorkspaces?: string[];
-  /** Whether the user has already seen the welcome tour. */
-  hasSeenWelcome?: boolean;
-  /** Version of the EULA the user has accepted. Mismatch with current version triggers modal. */
-  acceptedEulaVersion?: string;
-  /** Last app version for which the user has seen release notes (e.g. "0.10.4"). */
-  lastSeenReleaseNotesVersion?: string;
-  /** Persisted timeline panel state */
-  timeline?: TimelineSettings;
-  /** Persisted chronicle (作中年表) panel state */
-  chronicle?: ChronicleSettings;
-  /** Persisted map panel state */
-  map?: unknown;
-  /** Persisted grid panel display settings */
-  grid?: unknown;
-  /** Persisted matrix panel settings */
-  matrix?: unknown;
-  /**
-   * User-preference settings (cross-workspace): editor visuals, keys, display, data, revision.
-   * Keyed by the same key strings used in app_settings (e.g. "editor.fontFamily").
-   */
-  userPreferences?: Record<string, string>;
-  /**
-   * Default values applied to new projects on creation.
-   * Covers work-specific settings (tree.*, export.*, beat.*, editor.targetCharCount, ai.contextBudget.*).
-   */
-  projectDefaults?: Record<string, string>;
-  /** Default AI policy preset applied to new projects (JSON-serialized AiPolicy). */
-  defaultAiPolicy?: string;
-  /** Path to the sample workspace created during onboarding. Used for re-run flow. */
-  sampleWorkspacePath?: string;
-}
+export type {
+  GlobalSettings,
+  RecentWorkspace,
+} from "@/lib/globalSettings/GlobalSettings";
 
 export type AppView = "loading" | "welcome" | "launcher" | "editor";
 
@@ -168,7 +99,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
 
   initialize: async () => {
     try {
-      let settings = await invoke<GlobalSettings>("get_global_settings");
+      let settings = await globalSettingsRepository.read();
       set({ globalSettings: settings });
 
       // Migration: trust all existing recent workspaces for existing users
@@ -178,9 +109,9 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       ) {
         const trusted = settings.recentWorkspaces.map((ws) => ws.path);
         const migrated = { ...settings, trustedWorkspaces: trusted };
-        await invoke("save_global_settings", { settings: migrated });
+        await globalSettingsRepository.write(migrated);
         settings = migrated;
-        set({ globalSettings: migrated });
+        set({ globalSettings: settings });
       }
 
       // フローティング パネル窓は main 窓と同じワークスペースに追従する。
@@ -316,7 +247,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // panels reading currentProjectId have a value to work with.
       await useProjectStore.getState().initCurrentProject();
       // Re-read global settings after open_workspace updated them
-      const settings = await invoke<GlobalSettings>("get_global_settings");
+      const settings = await globalSettingsRepository.read();
       // Publish path + DB revision only after currentProjectId is rebound. The
       // editor is keyed by activeWorkspacePath, so exposing the new path before
       // initCurrentProject would mount the new DB with the old project's state.
@@ -485,7 +416,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       // ディスクの最新値へマージして保存する。layout/map/grid 等、所有 store が
       // セッション中に直接ディスクへ書いた slice を、開いた時点の stale な
       // in-memory スナップショットで潰さないため（旧実装のリグレッション）。
-      const saved = await patchGlobalSettings((disk) => ({
+      const saved = await globalSettingsRepository.patch((disk) => ({
         ...disk,
         ...updates,
       }));
@@ -513,7 +444,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       },
     });
     try {
-      const saved = await patchGlobalSettings((disk) => ({
+      const saved = await globalSettingsRepository.patch((disk) => ({
         ...disk,
         userPreferences: { ...(disk.userPreferences ?? {}), [key]: value },
       }));
@@ -540,7 +471,7 @@ export const useWorkspaceStore = create<WorkspaceState>()((set, get) => ({
       },
     });
     try {
-      const saved = await patchGlobalSettings((disk) => ({
+      const saved = await globalSettingsRepository.patch((disk) => ({
         ...disk,
         projectDefaults: { ...(disk.projectDefaults ?? {}), ...updates },
       }));

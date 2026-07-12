@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { patchGlobalSettings } from "@/lib/globalSettings";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 
 export type AxisMode = "reading" | "story" | "write";
 export type SpacingMode = "uniform" | "proportional";
@@ -192,7 +192,10 @@ useTimelineStore.subscribe((state) => {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      await patchGlobalSettings((current) => ({ ...current, timeline: next }));
+      await globalSettingsRepository.patch((current) => ({
+        ...current,
+        timeline: next,
+      }));
     } catch (e) {
       if (import.meta.env.MODE !== "test") {
         console.warn("[timeline] save failed:", e);

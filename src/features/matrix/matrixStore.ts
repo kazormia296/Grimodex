@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { patchGlobalSettings } from "@/lib/globalSettings";
-import type { GlobalSettings } from "@/features/workspace/store";
+import { globalSettingsRepository } from "@/lib/globalSettings/repository";
+import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import type { ShowMode } from "./lib/deriveColumns";
 
 export type SortMode = "reading" | "story-time" | "word-count" | "last-edited";
@@ -274,7 +274,7 @@ useMatrixStore.subscribe((state) => {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      await patchGlobalSettings((current) => ({
+      await globalSettingsRepository.patch((current) => ({
         ...current,
         matrix: JSON.parse(next),
       }));

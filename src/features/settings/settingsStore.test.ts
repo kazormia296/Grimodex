@@ -10,13 +10,12 @@ vi.mock("./api", () => ({
   setProjectSetting: vi.fn(async () => {}),
   setSetting: vi.fn(async () => {}),
 }));
-const updateUserPreferenceSpy = vi.fn(async () => {});
-vi.mock("@/features/workspace/store", () => ({
-  useWorkspaceStore: {
-    getState: () => ({
-      globalSettings: { userPreferences: {} },
-      updateUserPreference: updateUserPreferenceSpy,
-    }),
+const updateUserPreferenceSpy = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("@/lib/globalSettings/repository", () => ({
+  globalSettingsRepository: {
+    read: vi.fn(async () => ({ userPreferences: {} })),
+    write: vi.fn(async () => {}),
+    updateUserPreference: updateUserPreferenceSpy,
   },
 }));
 
