@@ -66,14 +66,17 @@ import type {
 import { LAYOUT_SCHEMA_VERSION } from "./layoutTypes";
 import { dragTargetsEqual, type DragOverTarget } from "./layoutDnD";
 import type { PanelId } from "./panelIds";
-import { recordLayoutSnapshot } from "@/features/timelapse/captureLayout";
 import { reduceLayout } from "./layoutReducer";
+import {
+  persistBuiltinOverrides,
+  persistPresets,
+  scheduleSave as scheduleLayoutSave,
+} from "./layoutPersistence";
 
 export type { PanelId };
 export { PANEL_DRAG_TYPE } from "./panelIds";
 export { dragTargetsEqual, TOOL_WINDOW_REASSIGN_TYPE } from "./layoutDnD";
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let editorFocusHandler: (() => void) | null = null;
 
 export function registerEditorFocusHandler(handler: (() => void) | null) {
@@ -87,6 +90,10 @@ export function getPanelTitle(id: PanelId): string {
 function getViewport(): { width: number; height: number } {
   if (typeof window === "undefined") return { width: 1200, height: 800 };
   return { width: window.innerWidth, height: window.innerHeight };
+}
+
+function scheduleSave(get: () => LayoutStoreState): void {
+  scheduleLayoutSave(get, getViewport);
 }
 
 /**
@@ -345,24 +352,6 @@ function unhideStripePanel(
   return next;
 }
 
-function serializeBuiltinOverrides(
-  overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
-): GlobalSettings["builtinLayoutPresetOverrides"] {
-  const entries = Object.entries(overrides).filter(
-    ([id, o]) => isBuiltinPresetId(id) && o != null,
-  ) as [BuiltinPresetId, BuiltinPresetOverride][];
-  if (entries.length === 0) return undefined;
-  return Object.fromEntries(
-    entries.map(([id, o]) => [
-      id,
-      {
-        state: o.state,
-        hiddenStripePanels: o.hiddenStripePanels,
-      },
-    ]),
-  );
-}
-
 function parseBuiltinOverrides(
   raw: GlobalSettings["builtinLayoutPresetOverrides"],
 ): Partial<Record<BuiltinPresetId, BuiltinPresetOverride>> {
@@ -374,110 +363,14 @@ function parseBuiltinOverrides(
     }
     const entry = value as { state?: unknown; hiddenStripePanels?: unknown };
     if (entry.state == null) continue;
-    const rawHidden = entry.hiddenStripePanels;
     result[id] = {
       state: ensureLayoutStateV3(entry.state as LayoutState),
-      hiddenStripePanels: Array.isArray(rawHidden)
-        ? (rawHidden as ToolWindowPanelId[])
+      hiddenStripePanels: Array.isArray(entry.hiddenStripePanels)
+        ? (entry.hiddenStripePanels as ToolWindowPanelId[])
         : undefined,
     };
   }
   return result;
-}
-
-function scheduleSave(get: () => LayoutStoreState) {
-  if (saveTimer !== null) clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    try {
-      const {
-        layout,
-        activePresetId,
-        customPresets,
-        builtinPresetOverrides,
-        hiddenStripePanels,
-      } = get();
-      const check = validateLayoutState(layout, { viewport: getViewport() });
-      if (!check.valid) return;
-
-      // 執筆タイムラプス: 確定したレイアウト状態を forward-only 記録 (§17 P0)。
-      // scheduleSave は live ドラッグ(setRegionSizeLive)では呼ばれず、500ms
-      // デバウンスが burst を 1 スナップショットに畳むため volume bomb にならない。
-      // recorder は flush 時に payload を stringify するので clone を渡す
-      // (queue から flush までの間に layout が mutate しても記録が壊れない)。
-      recordLayoutSnapshot({
-        layout: cloneLayoutState(layout),
-        activePresetId,
-        hiddenStripePanels:
-          hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
-      });
-
-      const persisted: PersistedLayout = {
-        layoutVersion: LAYOUT_SCHEMA_VERSION,
-        state: cloneLayoutState(layout),
-        activePresetId: activePresetId ?? undefined,
-        hiddenStripePanels:
-          hiddenStripePanels.size > 0 ? [...hiddenStripePanels] : undefined,
-      };
-
-      await globalSettingsRepository.patch((current) => ({
-        ...current,
-        layoutVersion: LAYOUT_SCHEMA_VERSION,
-        layout: persisted,
-        activeLayoutPresetId: activePresetId ?? null,
-        layoutPresets: customPresets.map((p) => ({
-          id: p.id,
-          name: p.name,
-          state: p.state,
-          hiddenStripePanels: p.hiddenStripePanels,
-        })),
-        builtinLayoutPresetOverrides: serializeBuiltinOverrides(
-          builtinPresetOverrides,
-        ),
-      }));
-    } catch {
-      /* ignore */
-    }
-  }, 500);
-}
-
-async function persistPresets(
-  presets: CustomLayoutPreset[],
-  activeId: string | null,
-  builtinOverrides?: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
-) {
-  try {
-    await globalSettingsRepository.patch((current) => ({
-      ...current,
-      layoutPresets: presets.map((p) => ({
-        id: p.id,
-        name: p.name,
-        state: p.state,
-        hiddenStripePanels: p.hiddenStripePanels,
-      })),
-      activeLayoutPresetId: activeId,
-      ...(builtinOverrides !== undefined
-        ? {
-            builtinLayoutPresetOverrides:
-              serializeBuiltinOverrides(builtinOverrides),
-          }
-        : {}),
-    }));
-  } catch {
-    /* ignore */
-  }
-}
-
-async function persistBuiltinOverrides(
-  overrides: Partial<Record<BuiltinPresetId, BuiltinPresetOverride>>,
-) {
-  try {
-    await globalSettingsRepository.patch((current) => ({
-      ...current,
-      builtinLayoutPresetOverrides: serializeBuiltinOverrides(overrides),
-    }));
-  } catch {
-    /* ignore */
-  }
 }
 
 export async function clearSavedLayout() {
