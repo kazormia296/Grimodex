@@ -274,7 +274,7 @@ IME側の確定ログから未登録固有名詞候補をGrimodexへ戻し、`ca
 2. **Phase 2【完了・Electron-only】**: エクスポータ（`state.json` / `projects/*.json`）+ 連携モード設定（auto/on/off）+ consumer検出
 3. **Phase 3**: Linux参照実装（3.0 契約固定、3.1固定辞書スパイク、3.2実統合、3.3 Debian/AUR・E2E）
 4. **Phase 4**: Windows（azooKey-Windows）へ同じ契約・状態機械を移植
-5. **Phase 5【実装・hosted CI検証中】**: macOS（azooKey-Desktop fork）へ移植。署名・公証workflow、system pkg、実`ConverterServer` + watcher process E2Eを追加。InputMethodKitを通る実打鍵だけは対話可能な実機/self-hosted runnerが得られた時の任意追加gateとする
+5. **Phase 5【完了・hosted CI検証済み】**: macOS（azooKey-Desktop fork）へ移植。署名・公証workflow、system pkg、実`ConverterServer` + watcher process E2Eを追加。InputMethodKitを通る実打鍵だけは対話可能な実機/self-hosted runnerが得られた時の任意追加gateとする
 
 Phase 1-2とPhase 3.0はGrimodex本体、Linux/Windows/macOS consumerは各IME Forkで実装する。`ime-contract/`を全リポジトリから参照する契約の正本とする。
 
