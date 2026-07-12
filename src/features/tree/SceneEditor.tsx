@@ -12,6 +12,8 @@ import { AsciiSplash } from "@/features/editor/AsciiSplash";
 import { cn } from "@/lib/utils";
 import { DRAG_DATA_KEY, DRAG_GROUP_KEY } from "@/features/editor/TabBar";
 import type { GroupIndex } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 
 interface DragPayload {
   nodeId: string;
@@ -184,7 +186,16 @@ export function SceneEditor() {
       tabs.some((t) => t.nodeId === activeSceneId) ||
       secondaryTabs.some((t) => t.nodeId === activeSceneId);
     if (!inAnyGroup) {
-      useTabStore.getState().openPreview(activeSceneId);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: activeSceneId },
+          mode: "preview",
+          revealEditor: false,
+          focusEditor: false,
+          syncSceneContext: false,
+        },
+        defaultEditorNavigationPorts,
+      );
     }
   }, [activeSceneId]);
 

@@ -1,6 +1,6 @@
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useForeshadowNavStore } from "./foreshadowNavStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 
 /**
  * 伏線パネル / レーダーから本文へのジャンプ要求の正本。
@@ -20,6 +20,14 @@ export function requestForeshadowJump(
   if (typeof fromPos === "number" && typeof toPos === "number") {
     useForeshadowNavStore.getState().requestJump({ sceneId, fromPos, toPos });
   }
-  useTreeStore.getState().setActiveScene(sceneId);
-  useLayoutStore.getState().showPanel("editor");
+  openEditorDocument(
+    {
+      target: { kind: "scene", documentId: sceneId },
+      mode: "pinned",
+      revealEditor: true,
+      focusEditor: false,
+      syncSceneContext: true,
+    },
+    defaultEditorNavigationPorts,
+  );
 }

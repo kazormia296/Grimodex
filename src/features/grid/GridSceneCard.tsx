@@ -2,8 +2,8 @@ import { memo, useLayoutEffect, useRef, useState } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { GripVertical } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useTabStore } from "@/features/editor/tabStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { useNodeBeatPreview, useTreeStore } from "@/features/tree/treeStore";
 import { StatusBadge } from "@/features/tree/StatusBadge";
 import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatFromGrid";
@@ -111,9 +111,16 @@ function GridSceneCardImpl({
   });
 
   function openInEditor() {
-    useTabStore.getState().openPinned(scene.id);
-    useTreeStore.getState().setActiveScene(scene.id);
-    useLayoutStore.getState().showPanel("editor");
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: scene.id },
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
   }
 
   async function commitBeat() {
@@ -158,8 +165,16 @@ function GridSceneCardImpl({
       markStart("grid.cardClick.single");
       try {
         selectOnly(scene.id);
-        useTabStore.getState().openPreview(scene.id);
-        useTreeStore.getState().setActiveScene(scene.id);
+        openEditorDocument(
+          {
+            target: { kind: "scene", documentId: scene.id },
+            mode: "preview",
+            revealEditor: false,
+            focusEditor: false,
+            syncSceneContext: true,
+          },
+          defaultEditorNavigationPorts,
+        );
       } finally {
         markEnd("grid.cardClick.single");
       }

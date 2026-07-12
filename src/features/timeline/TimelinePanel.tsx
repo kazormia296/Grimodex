@@ -13,7 +13,8 @@ import {
   INSPECTOR_WIDTH_MAX,
 } from "./timelineStore";
 import { Splitter } from "@/features/layout/Splitter";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { useProjectStore } from "@/features/project/projectStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { computeFitZoom, ZOOM_STEP, STEP_BASE } from "./timelineZoom";
@@ -38,7 +39,6 @@ export function TimelinePanel() {
   const __perfStart = performance.now();
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
-  const setActiveScene = useTreeStore((s) => s.setActiveScene);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
   const axisMode = useTimelineStore((s) => s.axisMode);
   const spacingMode = useTimelineStore((s) => s.spacingMode);
@@ -187,18 +187,21 @@ export function TimelinePanel() {
       // シングルクリックは「選択 + プレビュータブで開く」のみ。インスペクタは
       // 自動オープンしない（⋮ で明示的に開く）。
       selectNode(id);
-      useTabStore.getState().openPreview(id);
-      setActiveScene(id);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: id },
+          mode: "preview",
+          revealEditor: false,
+          focusEditor: false,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
       // プロット選択を解除し、開いているインスペクタをシーン用に切り替える。
       setSelectedPlotLinkId(null);
       setSelectedPlotThreadId(null);
     },
-    [
-      selectNode,
-      setActiveScene,
-      setSelectedPlotLinkId,
-      setSelectedPlotThreadId,
-    ],
+    [selectNode, setSelectedPlotLinkId, setSelectedPlotThreadId],
   );
 
   const handleSelectMarker = useCallback(
@@ -418,8 +421,16 @@ export function TimelinePanel() {
           const { selectedNodeIds: ids } = ps;
           if (ids.length > 0) {
             e.preventDefault();
-            useTabStore.getState().openPinned(ids[0]);
-            setActiveScene(ids[0]);
+            openEditorDocument(
+              {
+                target: { kind: "scene", documentId: ids[0] },
+                mode: "pinned",
+                revealEditor: true,
+                focusEditor: false,
+                syncSceneContext: true,
+              },
+              defaultEditorNavigationPorts,
+            );
           }
           break;
         }
@@ -512,7 +523,6 @@ export function TimelinePanel() {
     setAxisMode,
     deleteNode,
     selectNode,
-    setActiveScene,
     setPendingEditNodeId,
     rangeSelectTo,
     toggleInspector,
@@ -536,8 +546,17 @@ export function TimelinePanel() {
           const { selectedNodeIds: ids } = useTimelineStore.getState();
           if (ids.length > 0) {
             e.preventDefault();
-            useTabStore.getState().openInSecondaryGroup(ids[0]);
-            setActiveScene(ids[0]);
+            openEditorDocument(
+              {
+                target: { kind: "scene", documentId: ids[0] },
+                group: 1,
+                mode: "pinned",
+                revealEditor: true,
+                focusEditor: false,
+                syncSceneContext: true,
+              },
+              defaultEditorNavigationPorts,
+            );
           }
           break;
         }
@@ -595,15 +614,7 @@ export function TimelinePanel() {
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [
-    zoom,
-    setZoom,
-    scenes.length,
-    weights,
-    scheduledCount,
-    setActiveScene,
-    showThreads,
-  ]);
+  }, [zoom, setZoom, scenes.length, weights, scheduledCount, showThreads]);
 
   const __renderResult = (
     <div

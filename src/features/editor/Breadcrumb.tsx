@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import { ChevronRight, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useTabStore } from "./tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import type { TreeNodeData, NodeType } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 
@@ -138,8 +139,16 @@ export function Breadcrumb() {
     const node = nodeMap[id];
     if (!node) return;
     if (node.nodeType === "scene" || node.nodeType === "note") {
-      useTabStore.getState().openPinned(id);
-      useTreeStore.getState().setActiveScene(id);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: id },
+          mode: "pinned",
+          revealEditor: true,
+          focusEditor: false,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
     }
   }
 

@@ -6,7 +6,8 @@ import type { Editor } from "@tiptap/core";
 
 import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { listNodes, loadSceneContent } from "@/features/tree/api";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -88,7 +89,6 @@ export function DisablesView() {
   const editor = useEditorStore((s) => s.editor);
   const currentSceneId = useLintStore((s) => s.currentSceneId);
   const requestJump = useLintProjectStore((s) => s.requestJump);
-  const openPinned = useTabStore((s) => s.openPinned);
 
   const [otherScenes, setOtherScenes] = useState<SceneDisables[]>([]);
   const [loading, setLoading] = useState(true);
@@ -183,9 +183,18 @@ export function DisablesView() {
         sceneId: scene.sceneId,
         range: { start: d.range.start, end: d.range.end },
       });
-      openPinned(scene.sceneId);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: scene.sceneId },
+          mode: "pinned",
+          revealEditor: true,
+          focusEditor: false,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
     },
-    [editor, currentSceneId, requestJump, openPinned],
+    [editor, currentSceneId, requestJump],
   );
 
   const onRemove = useCallback(

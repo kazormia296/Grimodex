@@ -13,7 +13,8 @@ import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { PanelHeader } from "@/features/layout/PanelHeader";
 import { SessionCard } from "./components/SessionCard";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { SortMode } from "./chatHistoryStore";
 import { ChatHistorySkeletonList } from "@/components/ui/skeleton-patterns";
@@ -402,8 +403,16 @@ export function ChatHistoryPanel() {
                   <button
                     type="button"
                     onClick={() => {
-                      useTreeStore.getState().setActiveScene(group.nodeId!);
-                      useTabStore.getState().openPinned(group.nodeId!);
+                      openEditorDocument(
+                        {
+                          target: { kind: "scene", documentId: group.nodeId! },
+                          mode: "pinned",
+                          revealEditor: true,
+                          focusEditor: false,
+                          syncSceneContext: true,
+                        },
+                        defaultEditorNavigationPorts,
+                      );
                     }}
                     className="mb-1 w-full text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
                   >

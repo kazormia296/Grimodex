@@ -3,8 +3,8 @@ import i18next from "@/lib/i18n";
 import { useDebouncedCallback } from "@/lib/useDebounce";
 import type { Node, Edge, Connection } from "@xyflow/react";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useTabStore } from "@/features/editor/tabStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { createUserEdge, deleteUserEdge } from "../mapApi";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { NewMapEdge } from "@/db/schema";
@@ -26,8 +26,9 @@ interface UseMapCallbacksInput {
   userEdges: MapEdge[];
   positions: MapNodePositionRecord[];
   focusedNodeId: string | null;
+  /** @deprecated Navigation is coordinated by openEditorDocument. */
+  setActiveScene?: (id: string) => void;
   setUserEdges: React.Dispatch<React.SetStateAction<MapEdge[]>>;
-  setActiveScene: (id: string) => void;
   setSearchVisible: (v: boolean) => void;
   getViewport: () => { x: number; y: number; zoom: number };
   setViewport: (vp: { x: number; y: number; zoom: number }) => void;
@@ -46,7 +47,6 @@ export function useMapCallbacks({
   positions,
   focusedNodeId,
   setUserEdges,
-  setActiveScene,
   setSearchVisible,
   getViewport,
   setViewport,
@@ -99,21 +99,35 @@ export function useMapCallbacks({
     (_event: React.MouseEvent, node: Node) => {
       if (node.id.startsWith("scene:")) {
         const id = node.id.slice("scene:".length);
-        useTabStore.getState().openPinned(id);
-        useLayoutStore.getState().showPanel("editor");
-        setActiveScene(id);
+        openEditorDocument(
+          {
+            target: { kind: "scene", documentId: id },
+            mode: "pinned",
+            revealEditor: true,
+            focusEditor: false,
+            syncSceneContext: true,
+          },
+          defaultEditorNavigationPorts,
+        );
       } else if (node.id.startsWith("note:")) {
         const id = node.id.slice("note:".length);
-        useTabStore.getState().openPinned(id);
-        useLayoutStore.getState().showPanel("editor");
-        setActiveScene(id);
+        openEditorDocument(
+          {
+            target: { kind: "scene", documentId: id },
+            mode: "pinned",
+            revealEditor: true,
+            focusEditor: false,
+            syncSceneContext: true,
+          },
+          defaultEditorNavigationPorts,
+        );
       } else if (node.id.startsWith("codex:")) {
         useCodexStore
           .getState()
           .requestSelectEntry(node.id.slice("codex:".length));
       }
     },
-    [setActiveScene],
+    [],
   );
 
   const aiContextLines = useCallback((): string[] => {

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useMemo } from "react";
 import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
-import { useTabStore } from "@/features/editor/tabStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import {
   updateFrame,
@@ -64,11 +64,12 @@ interface UseMapNodesInput {
   setAiBranches: React.Dispatch<React.SetStateAction<MapAiBranch[]>>;
   setPositions: React.Dispatch<React.SetStateAction<MapNodePositionRecord[]>>;
   setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
+  /** @deprecated Navigation is coordinated by openEditorDocument. */
+  setActiveScene?: (id: string) => void;
   setForceLayoutRunning: (v: boolean) => void;
   setForceAlpha: (v: number) => void;
   updateNodeTitle: (id: string, title: string) => Promise<void>;
   updateSynopsis: (id: string, synopsis: string) => Promise<void>;
-  setActiveScene: (id: string) => void;
   groupDraggingRef: React.MutableRefObject<Set<string>>;
   persistingRef: React.MutableRefObject<Set<string>>;
   deletingStickyIds?: Set<string>;
@@ -104,7 +105,6 @@ export function useMapNodes({
   setForceAlpha,
   updateNodeTitle,
   updateSynopsis,
-  setActiveScene,
   groupDraggingRef,
   persistingRef,
   deletingStickyIds,
@@ -363,9 +363,16 @@ export function useMapNodes({
                   await updateSynopsis(n.id, synopsis);
                 },
                 onOpen: () => {
-                  useTabStore.getState().openPinned(n.id);
-                  useLayoutStore.getState().showPanel("editor");
-                  setActiveScene(n.id);
+                  openEditorDocument(
+                    {
+                      target: { kind: "scene", documentId: n.id },
+                      mode: "pinned",
+                      revealEditor: true,
+                      focusEditor: false,
+                      syncSceneContext: true,
+                    },
+                    defaultEditorNavigationPorts,
+                  );
                 },
                 onBranchFrom: (dir: "left" | "right") =>
                   onBranchFrom?.(key, dir),
@@ -453,9 +460,16 @@ export function useMapNodes({
                 title: n.title,
                 content: n.synopsis ?? "",
                 onOpen: () => {
-                  useTabStore.getState().openPinned(n.id);
-                  useLayoutStore.getState().showPanel("editor");
-                  setActiveScene(n.id);
+                  openEditorDocument(
+                    {
+                      target: { kind: "scene", documentId: n.id },
+                      mode: "pinned",
+                      revealEditor: true,
+                      focusEditor: false,
+                      syncSceneContext: true,
+                    },
+                    defaultEditorNavigationPorts,
+                  );
                 },
                 onBranchFrom: (dir: "left" | "right") =>
                   onBranchFrom?.(key, dir),
@@ -691,7 +705,6 @@ export function useMapNodes({
     setForceAlpha,
     updateNodeTitle,
     updateSynopsis,
-    setActiveScene,
     groupDraggingRef,
     persistingRef,
     deletingStickyIds,

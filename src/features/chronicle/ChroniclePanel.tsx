@@ -10,7 +10,8 @@ import {
   type ChronicleDatePatch,
 } from "@/features/tree/treeStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { useChronicleStore } from "./chronicleStore";
 import {
   listEvents,
@@ -1351,7 +1352,16 @@ export function ChroniclePanel() {
 
   // シーンをエディタで開く（ピン留めタブ）。
   const handleOpenScene = useCallback((sceneId: string) => {
-    useTabStore.getState().openPinned(sceneId);
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: sceneId },
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
   }, []);
   const handleOpenSceneForEvent = useCallback(
     (eventId: string) => {

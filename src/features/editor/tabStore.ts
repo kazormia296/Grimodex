@@ -1,20 +1,7 @@
 import { create } from "zustand";
 import { getSetting, setSetting } from "@/features/settings/api";
 import { markStart, markEnd } from "@/lib/perfLog";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { guardInlineAiPending } from "./inlineAi/pendingGuard";
-
-// Editor タブを開く全経路で Editor パネルを可視化する。Map / Grid /
-// Matrix / Timeline / ChatHistory / Lint 等のあちこちで openPinned が
-// 呼ばれるたび個別に showPanel("editor") を書くのは漏れやすい。
-// 既に open のときは scheduleSave / scheduleEditorFocus の副作用を
-// 避けるため呼ばない。
-function ensureEditorVisible(): void {
-  const layout = useLayoutStore.getState().layout;
-  if (!layout.center.editorOpen) {
-    useLayoutStore.getState().showPanel("editor");
-  }
-}
 
 const TAB_STATE_KEY = "editor.tabState";
 const SAVE_DEBOUNCE_MS = 500;
@@ -372,7 +359,6 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     openPinned(nodeId) {
       if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
-      ensureEditorVisible();
       const { tabs } = get();
       const existing = tabs.find((t) => t.nodeId === nodeId);
 
@@ -456,7 +442,6 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     openCodexTab(entryId, phaseId) {
       if (entryId !== get().activeTabId && guardInlineAiPending()) return;
-      ensureEditorVisible();
       const { tabs } = get();
       const existing = tabs.find((t) => t.nodeId === entryId);
       if (existing) {
@@ -511,7 +496,6 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     openChronicleEventTab(eventId, label) {
       if (eventId !== get().activeTabId && guardInlineAiPending()) return;
-      ensureEditorVisible();
       const { tabs } = get();
       const existing = tabs.find((t) => t.nodeId === eventId);
       if (existing) {

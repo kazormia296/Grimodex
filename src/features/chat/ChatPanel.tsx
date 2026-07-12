@@ -43,7 +43,6 @@ import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useTabStore } from "@/features/editor/tabStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
@@ -56,6 +55,8 @@ import type {
 } from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
 import { stripToolProtocol } from "./toolProtocol";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 
 /**
  * メッセージ全文を抽出 (Codex/Snippet) / エディタ挿入 / コピーに使う前の正規化。
@@ -83,11 +84,16 @@ function wholeMessageContent(msg: ChatMessageType | undefined): string {
  * 伝播するため、Editor 非表示でもチャットの scene anchor は追従する。
  */
 export function selectSceneFromChat(sceneId: string): void {
-  if (useLayoutStore.getState().isPanelActive("editor")) {
-    useTabStore.getState().openPinned(sceneId);
-    useLayoutStore.getState().showPanel("editor");
-  }
-  useTreeStore.getState().setActiveScene(sceneId);
+  openEditorDocument(
+    {
+      target: { kind: "scene", documentId: sceneId },
+      mode: "pinned",
+      revealEditor: useLayoutStore.getState().isPanelActive("editor"),
+      focusEditor: false,
+      syncSceneContext: true,
+    },
+    defaultEditorNavigationPorts,
+  );
 }
 
 interface SnippetDialogState {

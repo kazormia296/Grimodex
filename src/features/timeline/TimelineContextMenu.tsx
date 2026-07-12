@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/platform";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { StatusDot } from "@/features/tree/StatusDot";
 import type { TreeNodeData, SceneStatus } from "@/features/tree/treeStore";
 import type { AxisMode } from "./timelineStore";
@@ -39,7 +40,20 @@ export function TimelineContextMenu({ node, x, y, onClose, axisMode }: Props) {
   const deleteNode = useTreeStore((s) => s.deleteNode);
   const updateStoryTime = useTreeStore((s) => s.updateStoryTime);
   const revealInTree = useTreeStore((s) => s.revealInTree);
-  const setActiveScene = useTreeStore((s) => s.setActiveScene);
+
+  function openInEditor(group: 0 | 1): void {
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: node.id },
+        group,
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: true,
+      },
+      defaultEditorNavigationPorts,
+    );
+  }
 
   useEffect(() => {
     function handleMouseDown(e: MouseEvent) {
@@ -112,16 +126,14 @@ export function TimelineContextMenu({ node, x, y, onClose, axisMode }: Props) {
       {item(
         t("timeline.ctx.openInEditor", "Editor で開く"),
         () => {
-          useTabStore.getState().openPinned(node.id);
-          setActiveScene(node.id);
+          openInEditor(0);
         },
         "Enter",
       )}
       {item(
         t("timeline.ctx.openInSide", "サイドで開く"),
         () => {
-          useTabStore.getState().openInSecondaryGroup(node.id);
-          setActiveScene(node.id);
+          openInEditor(1);
         },
         "Ctrl+Enter",
       )}

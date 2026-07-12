@@ -1,8 +1,9 @@
 import i18next from "@/lib/i18n";
 import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
-import { useTabStore } from "@/features/editor/tabStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useLintProjectStore } from "@/features/lint/lintProjectStore";
@@ -34,11 +35,16 @@ import type { IssueCat, UnifiedIssue } from "./issueModel";
  * （ChatPanel.selectSceneFromChat の軽量複製 — 重い依存の連鎖を避ける）。
  */
 export function openSceneInEditor(sceneId: string): void {
-  if (useLayoutStore.getState().isPanelActive("editor")) {
-    useTabStore.getState().openPinned(sceneId);
-    useLayoutStore.getState().showPanel("editor");
-  }
-  useTreeStore.getState().setActiveScene(sceneId);
+  openEditorDocument(
+    {
+      target: { kind: "scene", documentId: sceneId },
+      mode: "pinned",
+      revealEditor: useLayoutStore.getState().isPanelActive("editor"),
+      focusEditor: false,
+      syncSceneContext: true,
+    },
+    defaultEditorNavigationPorts,
+  );
 }
 
 /** 越境ジャンプ後に annotation mark が現れるまで待つ上限（≒1s）。 */
@@ -86,7 +92,7 @@ export function jumpToIssue(issue: UnifiedIssue): void {
     // 非アクティブシーン: LinterPanel の project モードと同じ deferred jump
     //（EditorPane がシーン読込後に consumeJump で選択する）。
     useLintProjectStore.getState().requestJump({ sceneId, range: diag.range });
-    useTabStore.getState().openPinned(sceneId);
+    openSceneInEditor(sceneId);
     return;
   }
   if (issue.source.kind === "lens") {

@@ -28,6 +28,8 @@ import type {
   PhaseResolutionMode,
   SceneTimeIndex,
 } from "@/features/codex/context/sceneTimeIndex";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 
 export const DRAG_DATA_KEY = "application/grimodex-tab";
 /** Per-group marker so drop zones can detect source group during dragover. */
@@ -252,7 +254,16 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   function handleTabDoubleClick(nodeId: string, isPreview: boolean) {
     if (!isPreview) return;
     if (isPrimary) {
-      useTabStore.getState().openPinned(nodeId);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: nodeId },
+          mode: "pinned",
+          revealEditor: true,
+          focusEditor: true,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
     } else {
       useTabStore.getState().pinSecondaryTab(nodeId);
     }

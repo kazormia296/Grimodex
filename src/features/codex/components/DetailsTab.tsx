@@ -10,7 +10,8 @@ import { extractPlainText } from "../prosemirrorTextExtractor";
 import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { usePhaseStore } from "../phaseStore";
 import { useCodexStore } from "../codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -355,12 +356,20 @@ export function DetailsTab({
           <button
             type="button"
             onClick={() =>
-              useTabStore
-                .getState()
-                .openCodexTab(
-                  entry.id,
-                  isPreviewMode ? previewPhaseId : undefined,
-                )
+              openEditorDocument(
+                {
+                  target: {
+                    kind: "codex",
+                    documentId: entry.id,
+                    phaseId: isPreviewMode ? previewPhaseId : undefined,
+                  },
+                  mode: "pinned",
+                  revealEditor: true,
+                  focusEditor: false,
+                  syncSceneContext: false,
+                },
+                defaultEditorNavigationPorts,
+              )
             }
             className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent"
             title={t("codex.detail.openInEditor")}

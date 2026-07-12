@@ -19,7 +19,8 @@ import {
 import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { saveTextFile } from "@/lib/exportFile";
 import type { Diagnostic, RuleWarning, Severity } from "./types";
@@ -956,7 +957,6 @@ function ProjectLinterView() {
   const replaceSceneDiagnostics = useLintProjectStore(
     (s) => s.replaceSceneDiagnostics,
   );
-  const openPinned = useTabStore((s) => s.openPinned);
   const addIgnore = useLintIgnoreStore((s) => s.addIgnore);
   const setRule = useLintConfigStore((s) => s.setRule);
 
@@ -1102,9 +1102,18 @@ function ProjectLinterView() {
         }
       }
       requestJump({ sceneId: scene.sceneId, range: d.range });
-      openPinned(scene.sceneId);
+      openEditorDocument(
+        {
+          target: { kind: "scene", documentId: scene.sceneId },
+          mode: "pinned",
+          revealEditor: true,
+          focusEditor: false,
+          syncSceneContext: true,
+        },
+        defaultEditorNavigationPorts,
+      );
     },
-    [editor, currentSceneId, requestJump, openPinned],
+    [editor, currentSceneId, requestJump],
   );
 
   /**

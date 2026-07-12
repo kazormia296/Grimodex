@@ -1,6 +1,7 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { useEditorStore } from "@/features/editor/editorStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 import type { HumanComment } from "./commentsAggregation";
 
 export interface CommentMatcher {
@@ -90,7 +91,16 @@ const MAX_JUMP_FRAMES = 60;
  * tryJump と同方式。シーンを開く動作は確実、範囲選択は best-effort。
  */
 export function jumpToComment(comment: HumanComment): void {
-  useTabStore.getState().openPinned(comment.sceneId);
+  openEditorDocument(
+    {
+      target: { kind: "scene", documentId: comment.sceneId },
+      mode: "pinned",
+      revealEditor: true,
+      focusEditor: false,
+      syncSceneContext: true,
+    },
+    defaultEditorNavigationPorts,
+  );
   const matcher: CommentMatcher = {
     text: comment.text,
     createdAt: comment.createdAt,

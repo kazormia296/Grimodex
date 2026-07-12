@@ -1,6 +1,6 @@
-import { useTreeStore } from "@/features/tree/treeStore";
-import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useSemanticNavStore } from "./semanticNavStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
 
 /**
  * シーンを開いてチャンク位置へスクロール+選択ハイライトするジャンプ要求の共通実装。
@@ -17,6 +17,14 @@ export function requestSceneChunkJump(
   chunkText: string,
 ): void {
   useSemanticNavStore.getState().requestJump({ sceneId, chunkText });
-  useTreeStore.getState().setActiveScene(sceneId);
-  useLayoutStore.getState().showPanel("editor");
+  openEditorDocument(
+    {
+      target: { kind: "scene", documentId: sceneId },
+      mode: "pinned",
+      revealEditor: true,
+      focusEditor: false,
+      syncSceneContext: true,
+    },
+    defaultEditorNavigationPorts,
+  );
 }
