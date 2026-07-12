@@ -51,6 +51,10 @@ import {
   targetFromTab,
 } from "@/features/editor/document/loadEditorDocument";
 import {
+  applySceneSidecars,
+  loadSceneSidecars,
+} from "@/features/editor/document/sceneSidecars";
+import {
   createEditorMutationGate,
   type EditorMutationGate,
   type SaveSnapshot,
@@ -82,21 +86,7 @@ import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import {
-  loadAuthorshipSpans,
-  spansToMarkData,
-} from "@/features/attribution/api";
-import {
-  loadForeshadowAnchors,
-  clearAllForeshadowMarks,
-} from "@/features/foreshadow/saveAnchors";
-import { listAnnotationsForScene } from "@/features/post-effect/api";
-import {
-  clampMarkRange,
-  resolveAnchorLoads,
-} from "@/features/editor/anchorLoads";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
-import { applyAnnotationsToEditor } from "@/features/post-effect/applyAnnotationsToEditor";
 import { useFocusMode } from "@/features/editor/useFocusMode";
 import { gutterReserveInlineSize } from "@/features/editor/GutterMarksPlugin";
 import {
@@ -1524,110 +1514,11 @@ export function EditorPane({
           wasEmptyRef.current = count === 0;
 
           if (!isEntryMode) {
-            // 帰属/伏線/疑似コメントは互いにデータ依存の無い独立リード。直列 await
-            // だと各 IPC 往復 + drizzle warmed microtask(~150ms/件)が積み上がるので
-            // 並列化して往復レイテンシを重ねる（所見#4）。SQLite 実行自体は単一
-            // Mutex で直列化されるが、往復 + await microtask は隠せる。allSettled で
-            // 1 つの失敗が他のマーク適用を巻き込まないようにする(部分適用維持)。
-            markStart("sceneLoad.loadAnchors.parallel");
-            const [spansR, foreshadowR, annotationR] = await Promise.allSettled(
-              [
-                loadAuthorshipSpans(nodeId),
-                loadForeshadowAnchors(nodeId),
-                listAnnotationsForScene({
-                  projectId: useTreeStore.getState().projectId,
-                  sceneId: nodeId,
-                }),
-              ],
+            const sidecars = await loadSceneSidecars(
+              nodeId,
+              useTreeStore.getState().projectId,
             );
-            markEnd("sceneLoad.loadAnchors.parallel");
-
-            // 結果解決(fulfilled→value / rejected→欠落値) と rejected の収集は
-            // resolveAnchorLoads(純関数) に切り出し。dispatch / clamp / store 書き込み
-            // / !cancelled ガードは下のとおり当コンポーネントに残す(部分適用維持)。
-            const { spans, foreshadowMarks, annotations, errors } =
-              resolveAnchorLoads(spansR, foreshadowR, annotationR);
-
-            // allSettled で 1 件の失敗は部分適用に留めるが、無音だと
-            // マーク欠落の原因が追えない。rejected は最低限ログに残す
-            // (旧直列 await は throw→unhandledrejection で console に出ていた)。
-            for (const { label, reason } of errors) {
-              debugLog.error(
-                "EditorPane",
-                `sceneLoad.loadAnchors:${label} failed`,
-                errorDetail(reason),
-              );
-            }
-
-            if (!cancelled) {
-              const markData = spans.length > 0 ? spansToMarkData(spans) : [];
-              const authorshipType = editor!.schema.marks["authorship"];
-              const willApplyAuthorship =
-                markData.length > 0 && !!authorshipType;
-              const willApplyForeshadow =
-                foreshadowMarks.length > 0 && !!editor;
-
-              // 帰属マークと伏線マークは別 mark type・別 range で互いに干渉しない。
-              // 1 本の chain にまとめて view.dispatch を 2→1 に減らす(AnnotationPlugin
-              // の余分な full-doc walk も 1 回削減)。
-              if (willApplyAuthorship || willApplyForeshadow) {
-                markStart(
-                  `sceneLoad.applyAnchorMarks.${markData.length}+${foreshadowMarks.length}`,
-                );
-                editor!
-                  .chain()
-                  .command(({ tr }) => {
-                    tr.setMeta("programmaticInsert", true);
-                    if (willApplyAuthorship) {
-                      for (const { from, to, attrs } of markData) {
-                        const r = clampMarkRange(from, to, tr.doc.content.size);
-                        if (r) {
-                          tr.addMark(
-                            r.from,
-                            r.to,
-                            authorshipType!.create(attrs),
-                          );
-                        }
-                      }
-                    }
-                    if (willApplyForeshadow) {
-                      clearAllForeshadowMarks((fn) => fn(tr));
-                      const schema = tr.doc.type.schema;
-                      for (const {
-                        from,
-                        to,
-                        markName,
-                        attrs,
-                      } of foreshadowMarks) {
-                        const markType = schema.marks[markName];
-                        if (!markType) continue;
-                        const r = clampMarkRange(from, to, tr.doc.content.size);
-                        if (r) tr.addMark(r.from, r.to, markType.create(attrs));
-                      }
-                    }
-                    return true;
-                  })
-                  .run();
-                markEnd(
-                  `sceneLoad.applyAnchorMarks.${markData.length}+${foreshadowMarks.length}`,
-                );
-              }
-            }
-
-            // Load and apply post-effect annotation anchors。store 書き込みは元
-            // コードどおり無条件、editor へのマーク適用のみ !cancelled でガードする。
-            // annotations は resolveAnchorLoads が fulfilled 時に response object、
-            // rejected 時に null を返すので、旧 annotationR.status==="fulfilled" と等価。
-            if (annotations) {
-              const annotationResp = annotations;
-              useAnnotationStore.getState().setFocusedAnnotationId(null);
-              useAnnotationStore
-                .getState()
-                .setAnnotations(nodeId, annotationResp.annotations);
-              if (!cancelled && editor) {
-                applyAnnotationsToEditor(editor, annotationResp.annotations);
-              }
-            }
+            applySceneSidecars(editor!, nodeId, sidecars, () => cancelled);
           }
         } finally {
           isApplyingExternalUpdate.current = false;
