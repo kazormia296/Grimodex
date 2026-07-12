@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use grimodex_db::ime_export::{
     clear_all_exports, get_status, refresh_project_export, remove_project_export,
-    remove_project_export_if_absent, set_active_project, ImeExportOptions, ImeExportRequestGate,
-    ImeIntegrationMode,
+    remove_project_export_if_absent, set_active_project, ImeConsumerPlatform, ImeExportOptions,
+    ImeExportRequestGate, ImeIntegrationMode,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -877,6 +877,41 @@ fn consumer_status_supports_legacy_and_linux_phase3_capabilities() -> TestResult
                 .get("dynamic_dictionary")),
         Some(&Value::Bool(false))
     );
+    Ok(())
+}
+
+#[test]
+fn consumer_status_supports_macos_phase5_capabilities() -> TestResult {
+    let fixture = Fixture::new()?;
+    write_consumer_handshake(
+        &fixture.ime_root,
+        "azookey-grimodex",
+        "Grimodex IME for macOS",
+        Some("macos"),
+        json!({
+            "profile": true,
+            "dynamic_dictionary": true,
+            "zenzai_v3_conditions": true,
+            "application_scoping": true,
+        }),
+        Utc::now(),
+    )?;
+
+    let status = get_status(&fixture.ime_root, ImeIntegrationMode::Auto)?;
+    assert!(status.effective_enabled);
+    let consumer = status
+        .consumers
+        .iter()
+        .find(|consumer| consumer.consumer_id == "azookey-grimodex")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "macOS consumer missing"))?;
+    assert!(matches!(
+        consumer.platform,
+        Some(ImeConsumerPlatform::Macos)
+    ));
+    assert!(consumer.capabilities.profile);
+    assert!(consumer.capabilities.dynamic_dictionary);
+    assert!(consumer.capabilities.zenzai_v3_conditions);
+    assert!(consumer.capabilities.application_scoping);
     Ok(())
 }
 

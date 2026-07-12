@@ -1,16 +1,21 @@
 #![cfg(target_os = "linux")]
 
-#[path = "support/linux_ime_server.rs"]
-mod linux_ime_server;
+#[path = "support/ime_consumer_process.rs"]
+mod ime_consumer_process;
 
 use grimodex_db::ime_export::ImeConsumerPlatform;
 
 const LINUX_CONSUMER_ID: &str = "fcitx5-grimodex";
+const LINUX_SERVER_ENV: &str = "GRIMODEX_LINUX_IME_SERVER";
 
 #[test]
 #[ignore = "requires GRIMODEX_LINUX_IME_SERVER pointing to fcitx5-grimodex-server"]
 fn linux_server_process_registers_a_fresh_grimodex_consumer() -> anyhow::Result<()> {
-    let status = linux_ime_server::spawn_and_wait_for_consumer(LINUX_CONSUMER_ID)?;
+    let status = ime_consumer_process::spawn_and_wait_for_consumer(
+        LINUX_SERVER_ENV,
+        "fcitx5-grimodex-server",
+        LINUX_CONSUMER_ID,
+    )?;
 
     assert!(
         status.effective_enabled,

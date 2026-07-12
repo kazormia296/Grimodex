@@ -240,7 +240,7 @@ Grimodexのインストール時にIMEを同時インストールし、インス
 
 | OS | 同梱方法 | 備考 |
 |---|---|---|
-| macOS | 初回起動アシスタントがIME .app を `~/Library/Input Methods/` へ配置（ユーザ権限で可、管理者不要） | 入力ソースの有効化はOS仕様上ユーザ操作が必要になり得るため、TIS APIでの登録を試み、不可ならシステム設定へ誘導 |
+| macOS | Phase 5 の独立配布は署名・公証済みpkgで `/Library/Input Methods/` へ配置（管理者承認あり）。Grimodex同梱時は初回起動アシスタントが `.app` を `~/Library/Input Methods/` へ配置する管理者不要経路を別途担う | pkg/ユーザ配置のどちらも、入力ソースの有効化はOS仕様上ユーザ操作が必要になり得るためシステム設定へ誘導する |
 | Windows | Grimodexインストーラ（NSIS）のオプションコンポーネントとしてIMEインストーラをチェーン実行 | TSFのDLL登録に管理者権限が必要なため初回起動アシスタント方式は不可 |
 | Linux | IMEはパッケージ（deb/rpm/AUR）として別途提供。Grimodexのdebは `Recommends` 指定 | fcitx5アドオンはシステムパス配置が必要でアプリからの直接インストール不可。初回起動時に fcitx5/ibus 環境を検出して導線を表示 |
 
@@ -274,7 +274,7 @@ IME側の確定ログから未登録固有名詞候補をGrimodexへ戻し、`ca
 2. **Phase 2【完了・Electron-only】**: エクスポータ（`state.json` / `projects/*.json`）+ 連携モード設定（auto/on/off）+ consumer検出
 3. **Phase 3**: Linux参照実装（3.0 契約固定、3.1固定辞書スパイク、3.2実統合、3.3 Debian/AUR・E2E）
 4. **Phase 4**: Windows（azooKey-Windows）へ同じ契約・状態機械を移植
-5. **Phase 5**: macOS（azooKey-Desktop）へ後続移植し、署名・公証・pkg・実機E2Eを追加
+5. **Phase 5【完了・hosted CI検証済み】**: macOS（azooKey-Desktop fork）へ移植。署名・公証workflow、system pkg、実`ConverterServer` + watcher process E2Eを追加。InputMethodKitを通る実打鍵だけは対話可能な実機/self-hosted runnerが得られた時の任意追加gateとする
 
 Phase 1-2とPhase 3.0はGrimodex本体、Linux/Windows/macOS consumerは各IME Forkで実装する。`ime-contract/`を全リポジトリから参照する契約の正本とする。
 
