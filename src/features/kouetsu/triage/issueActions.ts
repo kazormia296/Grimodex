@@ -34,12 +34,17 @@ import type { IssueCat, UnifiedIssue } from "./issueModel";
  * シーンを選んだときのエディタ移動。KouetsuScopeBar 由来のロジック
  * （ChatPanel.selectSceneFromChat の軽量複製 — 重い依存の連鎖を避ける）。
  */
-export function openSceneInEditor(sceneId: string): void {
+export function openSceneInEditor(
+  sceneId: string,
+  options: { revealEditor?: boolean } = {},
+): void {
   openEditorDocument(
     {
       target: { kind: "scene", documentId: sceneId },
       mode: "pinned",
-      revealEditor: useLayoutStore.getState().isPanelActive("editor"),
+      revealEditor:
+        options.revealEditor ??
+        useLayoutStore.getState().isPanelActive("editor"),
       focusEditor: false,
       syncSceneContext: true,
     },
@@ -92,7 +97,7 @@ export function jumpToIssue(issue: UnifiedIssue): void {
     // 非アクティブシーン: LinterPanel の project モードと同じ deferred jump
     //（EditorPane がシーン読込後に consumeJump で選択する）。
     useLintProjectStore.getState().requestJump({ sceneId, range: diag.range });
-    openSceneInEditor(sceneId);
+    openSceneInEditor(sceneId, { revealEditor: true });
     return;
   }
   if (issue.source.kind === "lens") {

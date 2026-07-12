@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -23,8 +23,8 @@ async function collectSourceFiles(directory) {
   return files;
 }
 
-function relativeSource(absolute) {
-  return path.relative(repoRoot, absolute).split(path.sep).join("/");
+function relativeSource(absolute, currentRepoRoot = repoRoot) {
+  return path.relative(currentRepoRoot, absolute).split(path.sep).join("/");
 }
 
 function featureFromSource(source) {
@@ -54,9 +54,25 @@ function importSpecifiers(source) {
 
 function runtimeImportSpecifiers(source) {
   const result = [];
-  const pattern = /(?:^|[\n;])\s*import\s+([\s\S]*?)\s+from\s+["']([^"']+)["']/g;
+  const pattern =
+    /(?:^|[\n;])\s*import\s+(?!type\b)(?!["'])([\s\S]*?)\s+from\s+["']([^"']+)["']/g;
   for (const match of source.matchAll(pattern)) {
-    if (!match[1].trim().startsWith("type ")) result.push(match[2]);
+    result.push(match[2]);
+  }
+  for (const match of source.matchAll(
+    /(?:^|[\n;])\s*import\s*["']([^"']+)["']/g,
+  )) {
+    result.push(match[1]);
+  }
+  for (const match of source.matchAll(
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+  )) {
+    result.push(match[1]);
+  }
+  for (const match of source.matchAll(
+    /(?:^|[\n;])\s*export\s+(?!type\b)([\s\S]*?)\s+from\s+["']([^"']+)["']/g,
+  )) {
+    result.push(match[2]);
   }
   return result;
 }
@@ -80,14 +96,35 @@ function importedStoreBindings(source) {
   return bindings;
 }
 
-function resolveImport(_importer, specifier) {
-  if (!specifier.startsWith("@/")) return null;
-  const withoutAlias = specifier.slice(2);
-  const base = path.join(sourceRoot, withoutAlias);
+function isFile(candidate) {
+  try {
+    return existsSync(candidate) && statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function resolveImport(
+  importer,
+  specifier,
+  currentSourceRoot = sourceRoot,
+) {
+  let base;
+  if (specifier.startsWith("@/")) {
+    base = path.join(currentSourceRoot, specifier.slice(2));
+  } else if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    base = path.resolve(path.dirname(importer), specifier);
+  } else {
+    return null;
+  }
   return (
-    [base, `${base}.ts`, `${base}.tsx`, path.join(base, "index.ts")].find(
-      (candidate) => existsSync(candidate),
-    ) ?? null
+    [
+      base,
+      `${base}.ts`,
+      `${base}.tsx`,
+      path.join(base, "index.ts"),
+      path.join(base, "index.tsx"),
+    ].find(isFile) ?? null
   );
 }
 
@@ -96,7 +133,7 @@ function canonicalCycle(component) {
   return sorted.join(" -> ");
 }
 
-function findCycles(graph) {
+function findCycles(graph, currentRepoRoot = repoRoot) {
   let nextIndex = 0;
   const indices = new Map();
   const lowLinks = new Map();
@@ -129,7 +166,7 @@ function findCycles(graph) {
     do {
       current = stack.pop();
       onStack.delete(current);
-      component.push(relativeSource(current));
+      component.push(relativeSource(current, currentRepoRoot));
     } while (current !== node);
     if (component.length > 1) components.push(canonicalCycle(component));
   }
@@ -140,8 +177,11 @@ function findCycles(graph) {
   return components;
 }
 
-export async function collectFindings() {
-  const files = await collectSourceFiles(sourceRoot);
+export async function collectFindings(options = {}) {
+  const currentRepoRoot = options.repoRoot ?? repoRoot;
+  const currentSourceRoot =
+    options.sourceRoot ?? path.join(currentRepoRoot, "src");
+  const files = await collectSourceFiles(currentSourceRoot);
   const findings = {
     "cross-feature-store-import": [],
     "cross-feature-store-mutation": [],
@@ -152,12 +192,13 @@ export async function collectFindings() {
   const graph = new Map(files.map((file) => [file, new Set()]));
 
   for (const file of files) {
-    const relative = relativeSource(file);
+    const relative = relativeSource(file, currentRepoRoot);
     const fromFeature = featureFromSource(relative);
     const source = await readFile(file, "utf8");
 
     for (const specifier of importSpecifiers(source)) {
       const toFeature = featureFromSpecifier(specifier);
+      const resolved = resolveImport(file, specifier, currentSourceRoot);
       if (
         fromFeature &&
         toFeature &&
@@ -169,7 +210,7 @@ export async function collectFindings() {
           `${relative}:${fromFeature}->${toFeature}:${specifier}`,
         );
       }
-      if (/^src\/application/.test(relative) && /\.tsx?$/.test(specifier)) {
+      if (/^src\/application/.test(relative) && resolved?.endsWith(".tsx")) {
         findings["application-component-import"].push(
           `${relative}:${specifier}`,
         );
@@ -177,7 +218,7 @@ export async function collectFindings() {
     }
 
     for (const specifier of runtimeImportSpecifiers(source)) {
-      const resolved = resolveImport(file, specifier);
+      const resolved = resolveImport(file, specifier, currentSourceRoot);
       if (resolved && graph.has(resolved)) graph.get(file).add(resolved);
     }
 
@@ -206,7 +247,7 @@ export async function collectFindings() {
     }
   }
 
-  findings["feature-cycle"] = findCycles(graph);
+  findings["feature-cycle"] = findCycles(graph, currentRepoRoot);
   for (const values of Object.values(findings)) values.sort();
   return findings;
 }

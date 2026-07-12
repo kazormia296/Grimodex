@@ -46,6 +46,23 @@ describe("openEditorDocument", () => {
     expect(navigation.layout.showEditor).not.toHaveBeenCalled();
   });
 
+  it("reveals a pinned document when scene sync is disabled", () => {
+    const navigation = ports();
+
+    openEditorDocument(
+      {
+        target: { kind: "scene", documentId: "scene-redo" },
+        mode: "pinned",
+        revealEditor: true,
+        focusEditor: false,
+        syncSceneContext: false,
+      },
+      navigation,
+    );
+
+    expect(navigation.calls).toEqual(["pinned:scene-redo", "layout"]);
+  });
+
   it("does not partially update tabs, tree, or layout while blocked", () => {
     const navigation = ports();
     navigation.isNavigationBlocked = () => true;

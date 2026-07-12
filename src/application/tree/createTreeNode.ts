@@ -28,7 +28,7 @@ export interface CreateTreeNodePorts {
   applyRemoved(id: string): void;
   recomputeSceneOrder(nodes: readonly TreeNodeData[]): void;
   closeTabs(id: string): void;
-  openPinned(id: string): void;
+  revealEditorDocument(id: string): void;
   isReplaying(): boolean;
   pushHistory(command: HistoryCommand): void;
   recordChange(input: {
@@ -242,7 +242,7 @@ export async function createTreeNode(
         ports.applyCreated(recreated, "redo");
         ports.recomputeSceneOrder(ports.getNodes());
         if (recreated.nodeType === "scene" || recreated.nodeType === "note") {
-          ports.openPinned(recreated.id);
+          ports.revealEditorDocument(recreated.id);
         }
       },
     });

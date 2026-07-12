@@ -30,6 +30,7 @@ import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { moveTreeNode } from "@/application/tree/moveTreeNode";
 import { createTreeNode } from "@/application/tree/createTreeNode";
 import { deleteTreeSubtree } from "@/application/tree/deleteTreeSubtree";
+import { requestOpenEditorDocument } from "@/application/editor/editorNavigationRegistry";
 
 export type NodeType = "folder" | "scene" | "note";
 export type SceneStatus =
@@ -801,7 +802,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           useTabStore.getState().closeTab(id);
           useTabStore.getState().closeSecondaryTab(id);
         },
-        openPinned: (id) => useTabStore.getState().openPinned(id),
+        revealEditorDocument: (id) =>
+          requestOpenEditorDocument({
+            target: { kind: "scene", documentId: id },
+            mode: "pinned",
+            revealEditor: true,
+            focusEditor: false,
+            syncSceneContext: false,
+          }),
         isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
         pushHistory: (command) =>
           useGlobalHistoryStore.getState().push(command),

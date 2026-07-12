@@ -48,7 +48,7 @@ function ports(nodes: TreeNodeData[]): CreateTreeNodePorts & {
     },
     recomputeSceneOrder: vi.fn(),
     closeTabs: vi.fn(),
-    openPinned: vi.fn(),
+    revealEditorDocument: vi.fn(),
     isReplaying: () => false,
     pushHistory: (command) => history.push(command),
     recordChange: vi.fn(),
@@ -68,6 +68,6 @@ describe("createTreeNode", () => {
     await testPorts.history[0]!.undo();
     expect(testPorts.closeTabs).toHaveBeenCalledWith(created.id);
     await testPorts.history[0]!.redo();
-    expect(testPorts.openPinned).toHaveBeenCalledWith(created.id);
+    expect(testPorts.revealEditorDocument).toHaveBeenCalledWith(created.id);
   });
 });

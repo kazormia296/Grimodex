@@ -1,6 +1,8 @@
-import { useLayoutStore } from "@/features/layout/layoutStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { openEditorDocument } from "@/application/editor/openEditorDocument";
+import { registerEditorDocumentOpener } from "@/application/editor/editorNavigationRegistry";
 import { isInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
+import { useTabStore } from "@/features/editor/tabStore";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { EditorNavigationPorts } from "@/application/editor/openEditorDocument";
 
@@ -33,3 +35,10 @@ export const defaultEditorNavigationPorts: EditorNavigationPorts = {
   },
   isNavigationBlocked: isInlineAiPending,
 };
+
+/** Install the application-level navigation sink once from the renderer root. */
+export function installDefaultEditorNavigation(): void {
+  registerEditorDocumentOpener((command) =>
+    openEditorDocument(command, defaultEditorNavigationPorts),
+  );
+}
