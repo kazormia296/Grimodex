@@ -54,11 +54,8 @@ import {
   applySceneSidecars,
   loadSceneSidecars,
 } from "@/features/editor/document/sceneSidecars";
-import {
-  createEditorMutationGate,
-  type EditorMutationGate,
-  type SaveSnapshot,
-} from "@/features/editor/document/mutationGate";
+import { type SaveSnapshot } from "@/features/editor/document/mutationGate";
+import { useEditorDocumentSession } from "@/features/editor/document/useEditorDocumentSession";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -253,9 +250,7 @@ export function EditorPane({
   const externalReloadNonce = useExternalWriteStore(
     (s) => s.reloadNonce[nodeId] ?? 0,
   );
-  const [isDirty, setIsDirty] = useState(false);
   const [isSceneContentLoading, setIsSceneContentLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
   const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
   const statusPopoverRef = useRef<HTMLDivElement>(null);
   const statusBadgeRef = useRef<HTMLButtonElement>(null);
@@ -363,24 +358,21 @@ export function EditorPane({
   // レンダー後 effect まで遅れるため、外部 flush (saveScene) の dirty ゲート
   // (dirtyGatedSaveHandler) は打鍵と同じ tick で更新されるこの ref を正とする。
   // 更新は setIsDirtyRef 経由に一本化してあり、両者は乖離しない。
-  const isDirtyRef = useRef(false);
-  const mutationGateRef = useRef<EditorMutationGate | null>(null);
-  if (mutationGateRef.current === null) {
-    mutationGateRef.current = createEditorMutationGate();
-  }
-  const mutationGate = mutationGateRef.current;
-  const setIsDirtyRef = useRef<(dirty: boolean) => void>(() => {});
-  setIsDirtyRef.current = (dirty: boolean) => {
-    if (dirty) mutationGate.markEdited();
-    isDirtyRef.current = dirty;
-    setIsDirty(dirty);
-  };
+  const {
+    mutationGate,
+    isDirty,
+    isSaving,
+    loadedPhaseId,
+    isDirtyRef,
+    setDirtyRef: setIsDirtyRef,
+    setSaving: setIsSaving,
+    setLoadedPhaseId,
+  } = useEditorDocumentSession();
 
   const saveSceneIdRef = useRef(nodeId);
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
   // stable getter（inline arrow だと footer の購読が毎レンダー再構築される）。
   const getStatsSceneId = useCallback(() => saveSceneIdRef.current, []);
-  const [loadedPhaseId, setLoadedPhaseId] = useState<string | null>(null);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   // Prevent feedback loop when applying external content sync.
@@ -477,7 +469,14 @@ export function EditorPane({
         );
       }
     }
-  }, [coreSave, mutationGate, shouldAutoRevision, recordAutoRevision]);
+  }, [
+    coreSave,
+    mutationGate,
+    setIsDirtyRef,
+    setIsSaving,
+    shouldAutoRevision,
+    recordAutoRevision,
+  ]);
 
   // Register this pane's save function so external callers (tab context menu,
   // agent writes, rename cascade, …) can flush it. dirty ゲート付き:
@@ -486,7 +485,7 @@ export function EditorPane({
     const handler = dirtyGatedSaveHandler(() => isDirtyRef.current, saveFn);
     registerSaveHandler(nodeId, handler);
     return () => unregisterSaveHandler(nodeId, handler);
-  }, [nodeId, saveFn]);
+  }, [nodeId, saveFn, isDirtyRef]);
 
   // Sync isDirty to the tab store for unsaved-changes detection
   useEffect(() => {
@@ -1376,7 +1375,7 @@ export function EditorPane({
         });
       });
     return unsubscribe;
-  }, [nodeId, isEntryMode, schedule, mutationGate]);
+  }, [nodeId, isEntryMode, schedule, mutationGate, setIsDirtyRef]);
 
   // Load content when nodeId changes
   useEffect(() => {
@@ -1674,6 +1673,8 @@ export function EditorPane({
     phaseSceneTimeIndex,
     phaseResolutionMode,
     mutationGate,
+    setIsDirtyRef,
+    setLoadedPhaseId,
   ]);
 
   useEffect(() => {
@@ -1703,7 +1704,7 @@ export function EditorPane({
         "external-mount:reload-scene",
         onExternalReload,
       );
-  }, [nodeId, mutationGate]);
+  }, [nodeId, mutationGate, setIsDirtyRef]);
 
   const isNote = !isEntryMode && activeNode?.nodeType === "note";
 
