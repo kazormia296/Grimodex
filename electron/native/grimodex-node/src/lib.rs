@@ -267,6 +267,7 @@ struct AgentRequest {
     provider: Option<grimodex_ai::AiProvider>,
     endpoint_id: Option<String>,
     request_max_output_tokens: Option<u32>,
+    resolved_tool_protocol: Option<grimodex_ai::ResolvedToolProtocol>,
 }
 
 /// `list_ai_models` の FE 引数。API キーは一覧取得では任意なので main が
@@ -2436,6 +2437,9 @@ impl Backend {
             req.web_search,
         );
         params.request_max_output_tokens = req.request_max_output_tokens;
+        if let Some(resolved_tool_protocol) = req.resolved_tool_protocol {
+            params.resolved_tool_protocol = resolved_tool_protocol;
+        }
         let result = grimodex_ai::send_chat_with_tools(&params, &req.messages, &req.tools)
             .await
             .map_err(|e| Error::from_reason(e.to_string()))?;

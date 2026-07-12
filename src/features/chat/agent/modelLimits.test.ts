@@ -93,6 +93,8 @@ describe("getModelCapabilities", () => {
     expect(caps.supportsTools).toBe(true);
     expect(caps.supportsThinking).toBe(false);
     expect(caps.supportsAdaptiveThinking).toBe(false);
+    expect(caps.defaultVisibleOutputTokens).toBe(4_096);
+    expect(caps.defaultReasoningReservationTokens).toBe(32_000);
   });
 
   it("OpenRouter プレフィックス付きモデルを解決する", () => {
@@ -584,6 +586,7 @@ describe("動的 capability レジストリ統合", () => {
     for (const model of ["fugu", "fugu-ultra", "fugu-ultra-20260615"]) {
       const caps = resolveModelCapabilities(model, { provider: "sakana" });
       expect(caps.contextWindow).toBe(1_000_000);
+      expect(caps.defaultVisibleOutputTokens).toBe(32_000);
       expect(caps.supportsTools).toBe(true);
       // orchestration 系で native reasoning ではないので余計な reasoning は送らない。
       expect(caps.supportsReasoning).toBe(false);

@@ -17,6 +17,7 @@ import type {
 } from "@/features/codex/phaseResolver";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import {
+  canExposeResolvedCodexIdentity,
   canIncludeResolvedCodexContext,
   materializeResolvedCodexContext,
   resolveCodexContexts,
@@ -24,7 +25,6 @@ import {
 import {
   getDescendantsBFS,
   getChildrenFromArray,
-  buildChildrenContext,
   computeChildrenTokenBudget,
   collectBudgetedDescendantIds,
 } from "@/features/codex/childrenBudget";
@@ -69,6 +69,7 @@ import {
   type PinnedStickyContext,
 } from "../../contextBuilder";
 import type {
+  ContextDiagnostic,
   RequiredSceneContext,
   RecalledMessageForPromotion,
 } from "../contextPlannerDeps";
@@ -174,6 +175,46 @@ export interface SceneContextSourceDeps {
 }
 
 const EMPTY_FORESHADOW: SceneForeshadowContext = { setups: [], payoffs: [] };
+
+interface OptionalSourceDescriptor {
+  source: string;
+  code: string;
+  message: string;
+}
+
+interface OptionalSourceResult<T> {
+  value: T;
+  diagnostic?: ContextDiagnostic;
+}
+
+async function collectOptionalSource<T>(
+  descriptor: OptionalSourceDescriptor,
+  load: () => Promise<T>,
+  fallback: T,
+): Promise<OptionalSourceResult<T>> {
+  const startedAt = Date.now();
+  try {
+    return { value: await load() };
+  } catch (cause) {
+    return {
+      value: fallback,
+      diagnostic: {
+        ...descriptor,
+        severity: "warning",
+        latencyMs: Date.now() - startedAt,
+        cause,
+      },
+    };
+  }
+}
+
+function appendOptionalDiagnostic<T>(
+  diagnostics: ContextDiagnostic[],
+  result: OptionalSourceResult<T>,
+): T {
+  if (result.diagnostic) diagnostics.push(result.diagnostic);
+  return result.value;
+}
 
 export function createSceneContextSourceDeps(
   overrides: Partial<SceneContextSourceDeps> = {},
@@ -353,21 +394,30 @@ function buildChildrenContextForEntry(
 ): string | undefined {
   const preset = entry.childrenBudget ?? "compact";
   if (preset === "none") return undefined;
-  const descendants = getDescendantsBFS(entry.id, allEntries).filter(
-    (descendant) =>
-      !excludeIds?.has(descendant.id) &&
-      canIncludeResolvedCodexContext(
-        resolvedById?.get(descendant.id)?.contextMode ?? descendant.contextMode,
-        "derived",
-      ),
-  );
-  return (
-    buildChildrenContext(
-      descendants,
-      computeChildrenTokenBudget(preset, l4Budget),
-      resolvedById,
-    ) || undefined
-  );
+  const budget = computeChildrenTokenBudget(preset, l4Budget);
+  if (budget <= 0) return undefined;
+  const lines: string[] = [];
+  let usedTokens = 0;
+  for (const descendant of getDescendantsBFS(entry.id, allEntries)) {
+    if (excludeIds?.has(descendant.id)) continue;
+    const resolved = resolvedById?.get(descendant.id);
+    const mode = resolved?.contextMode ?? descendant.contextMode;
+    if (!canExposeResolvedCodexIdentity(mode, "child")) continue;
+
+    const resolvedSummary = resolved ? resolved.summary : descendant.summary;
+    const resolvedContent = resolved ? resolved.content : descendant.content;
+    const summary =
+      resolvedSummary?.trim() || extractPlainText(resolvedContent) || "";
+    const line =
+      canIncludeResolvedCodexContext(mode, "child") && summary
+        ? `  - ${descendant.name}: ${summary}`
+        : `  - ${descendant.name} (${descendant.type}; id: ${descendant.id})`;
+    const lineTokens = countTokens(line);
+    if (usedTokens + lineTokens > budget) break;
+    lines.push(line);
+    usedTokens += lineTokens;
+  }
+  return lines.join("\n") || undefined;
 }
 
 function stableSortEntries<T extends { id: string }>(entries: T[]): T[] {
@@ -384,6 +434,7 @@ export async function collectSceneContext(
   request: SceneTurnContextRequest,
   deps: SceneContextSourceDeps,
 ): Promise<RequiredSceneContext> {
+  const diagnostics: ContextDiagnostic[] = [];
   const snapshot = request.sourceSnapshot;
   const scene = {
     ...snapshot.scene,
@@ -453,11 +504,10 @@ export async function collectSceneContext(
   const pinnedFromDb = request.sessionId
     ? await deps.listPinnedCodex(request.sessionId)
     : [];
-  const dbPinnedIds = new Set(pinnedFromDb.map((entry) => entry.id));
-  const inputPinnedIds = request.inputPinnedEntryIds.filter(
-    (id) => !dbPinnedIds.has(id),
+  const manualPinnedFromDb = pinnedFromDb.filter(
+    (entry) => entry.pinSource !== "chat_mention",
   );
-  const allPinnedIds = new Set([...dbPinnedIds, ...inputPinnedIds]);
+  const allPinnedIds = new Set(manualPinnedFromDb.map((entry) => entry.id));
   const contextDecisions = [...allPinnedIds].flatMap<ContextDecision>((id) => {
     const entry = effectiveIndexById.get(id);
     if (!entry) {
@@ -492,28 +542,72 @@ export async function collectSceneContext(
         : false;
     }),
   );
-  const contextEligibleIndexEntries = effectiveIndexEntries.filter((entry) =>
-    canIncludeResolvedCodexContext(
-      entry.contextMode,
-      allPinnedIds.has(entry.id) ? "explicit-pin" : "derived",
-    ),
-  );
-  const contextEligibleIds = new Set(
-    contextEligibleIndexEntries.map((entry) => entry.id),
-  );
-
   const excludedAutoIds = new Set(request.excludedAutoEntryIds);
+  const manualDirectChildIds = new Set(
+    manualPinnedFromDb.flatMap((pin) => {
+      const parent = effectiveIndexById.get(pin.id);
+      if (
+        !pin.withChildren ||
+        !parent ||
+        !canIncludeResolvedCodexContext(parent.contextMode, "explicit-pin")
+      ) {
+        return [];
+      }
+      return getChildrenFromArray(pin.id, effectiveIndexEntries)
+        .filter((child) => !allPinnedIds.has(child.id))
+        .filter((child) =>
+          canIncludeResolvedCodexContext(child.contextMode, "explicit-pin"),
+        )
+        .map((child) => child.id);
+    }),
+  );
+  const childIdentityEligibleIndexEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      !excludedAutoIds.has(entry.id) &&
+      canExposeResolvedCodexIdentity(entry.contextMode, "child"),
+  );
+  const childIdentityEligibleIds = new Set(
+    childIdentityEligibleIndexEntries.map((entry) => entry.id),
+  );
+  const childContentEligibleIds = new Set(
+    childIdentityEligibleIndexEntries
+      .filter((entry) =>
+        canIncludeResolvedCodexContext(entry.contextMode, "child"),
+      )
+      .map((entry) => entry.id),
+  );
+  const relationIdentityEligibleIndexEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      !excludedAutoIds.has(entry.id) &&
+      canExposeResolvedCodexIdentity(entry.contextMode, "relation"),
+  );
+  const relationIdentityEligibleIds = new Set(
+    relationIdentityEligibleIndexEntries.map((entry) => entry.id),
+  );
+  const detailIdentityEligibleIndexEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      !excludedAutoIds.has(entry.id) &&
+      canExposeResolvedCodexIdentity(entry.contextMode, "detail-reference"),
+  );
+  const detailIdentityEligibleIds = new Set(
+    detailIdentityEligibleIndexEntries.map((entry) => entry.id),
+  );
+  const mapIdentityEligibleIndexEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      !excludedAutoIds.has(entry.id) &&
+      canExposeResolvedCodexIdentity(entry.contextMode, "map-reference"),
+  );
   const detectableCodex = effectiveIndexEntries.filter(
     (entry) =>
       !excludedAutoIds.has(entry.id) &&
-      canIncludeResolvedCodexContext(entry.contextMode, "mention"),
+      canIncludeResolvedCodexContext(entry.contextMode, "current-mention"),
   );
   const alwaysCodexIndex = effectiveIndexEntries.filter(
     (entry) => entry.contextMode === "always" && !excludedAutoIds.has(entry.id),
   );
   const detectableNotes = noteNodes.filter((node) => {
     const mode = node.contextMode ?? "mentioned";
-    return mode !== "hidden" && mode !== "suppress";
+    return canIncludeResolvedCodexContext(mode, "current-mention");
   });
   const alwaysNotes = noteNodes.filter(
     (node) => (node.contextMode ?? "mentioned") === "always",
@@ -534,16 +628,23 @@ export async function collectSceneContext(
       excludedAliases: node.excludedAliases ?? "[]",
     })),
   ];
-  const mentionText = [
-    scene.content,
-    ...request.messages
-      .filter((message) => message.role === "user")
-      .map((message) => message.content),
-  ].join("\n");
+  const mentionText = [scene.content, request.outgoingUserMessage].join("\n");
   deps.markStart("buildSceneCtx.findMentionedEntriesAsync");
-  const mentionedAll = await deps.findMentionedEntries(
+  const matchedMentions = await deps.findMentionedEntries(
     mentionText,
     matchTargets,
+  );
+  const structuredMentionIds = new Set([
+    ...request.mentionedCodexIds,
+    ...request.inputPinnedEntryIds,
+  ]);
+  const mentionedAll = Array.from(
+    new Map(
+      [
+        ...matchedMentions,
+        ...matchTargets.filter((target) => structuredMentionIds.has(target.id)),
+      ].map((entry) => [entry.id, entry] as const),
+    ).values(),
   );
   deps.markEnd("buildSceneCtx.findMentionedEntriesAsync");
   const mentionedIndex = mentionedAll
@@ -551,7 +652,7 @@ export async function collectSceneContext(
     .map((entry) => effectiveIndexById.get(entry.id))
     .filter((entry): entry is CodexContextIndexEntry => entry !== undefined)
     .filter((entry) =>
-      canIncludeResolvedCodexContext(entry.contextMode, "mention"),
+      canIncludeResolvedCodexContext(entry.contextMode, "current-mention"),
     );
   const mentionedNotes = mentionedAll.filter((entry) => entry.type === "note");
   const mentionedIds = new Set(mentionedIndex.map((entry) => entry.id));
@@ -563,22 +664,48 @@ export async function collectSceneContext(
     ...alwaysNotMentionedIndex,
   ]).map((entry) => entry.id);
   const l4SeedIds = new Set([...rawCodexIds, ...visiblePinnedIds]);
+  const relationTraversalEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      l4SeedIds.has(entry.id) || relationIdentityEligibleIds.has(entry.id),
+  );
+  const childTraversalEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      l4SeedIds.has(entry.id) || childIdentityEligibleIds.has(entry.id),
+  );
+  const detailReferenceEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      l4SeedIds.has(entry.id) ||
+      manualDirectChildIds.has(entry.id) ||
+      detailIdentityEligibleIds.has(entry.id),
+  );
+  const contextEligibleIds = new Set(
+    relationTraversalEntries.map((entry) => entry.id),
+  );
   const relationContextIds = new Set<string>();
   let relations: CodexRelationRow[] = [];
   let relationCodexEntries: CodexContext[] | undefined;
   let intraContextRelations: IntraContextRelationEdge[] | undefined;
   if (l4SeedIds.size > 0) {
-    relations = await deps
-      .listCodexRelations(request.projectId)
-      .catch(() => []);
+    relations = appendOptionalDiagnostic(
+      diagnostics,
+      await collectOptionalSource<CodexRelationRow[]>(
+        {
+          source: "codex-relations",
+          code: "CODEX_RELATIONS_UNAVAILABLE",
+          message: "Codex relations are unavailable; continuing without them.",
+        },
+        () => deps.listCodexRelations(request.projectId),
+        [],
+      ),
+    );
     const excludedRelationIds = new Set([
       ...l4SeedIds,
-      ...collectBudgetedDescendantIds(l4SeedIds, contextEligibleIndexEntries),
+      ...collectBudgetedDescendantIds(l4SeedIds, childTraversalEntries),
     ]);
     for (const context of expandCodexRelationsBFS(
       [...l4SeedIds],
       relations,
-      contextEligibleIndexEntries,
+      relationTraversalEntries,
       excludedRelationIds,
       { maxDepth: 1 },
     )) {
@@ -590,15 +717,38 @@ export async function collectSceneContext(
     request.activeTab?.contentType === "codex"
       ? request.activeTab.nodeId
       : null;
+  const activeTabIndexEntry = activeTabCodexId
+    ? effectiveIndexById.get(activeTabCodexId)
+    : undefined;
+  const activeTabReason =
+    activeTabCodexId &&
+    (allPinnedIds.has(activeTabCodexId) ||
+      manualDirectChildIds.has(activeTabCodexId))
+      ? "explicit-pin"
+      : "active-tab";
+  const visibleActiveTabCodexId =
+    activeTabCodexId &&
+    activeTabIndexEntry &&
+    (activeTabReason === "explicit-pin" ||
+      !excludedAutoIds.has(activeTabCodexId)) &&
+    canIncludeResolvedCodexContext(
+      activeTabIndexEntry.contextMode,
+      activeTabReason,
+    )
+      ? activeTabCodexId
+      : null;
   const contentSeedIds = uniqueIds([
     ...rawCodexIds,
     ...visiblePinnedIds,
+    ...manualDirectChildIds,
     ...relationContextIds,
-    ...(activeTabCodexId ? [activeTabCodexId] : []),
-    ...collectBudgetedDescendantIds(
-      [...rawCodexIds, ...visiblePinnedIds],
-      contextEligibleIndexEntries,
-    ),
+    ...(visibleActiveTabCodexId ? [visibleActiveTabCodexId] : []),
+    ...[
+      ...collectBudgetedDescendantIds(
+        [...rawCodexIds, ...visiblePinnedIds],
+        childTraversalEntries,
+      ),
+    ].filter((id) => childContentEligibleIds.has(id)),
   ]);
   const loadedEntries = prefetchedEntries
     ? orderEntriesByIds(contentSeedIds, prefetchedEntries)
@@ -620,6 +770,9 @@ export async function collectSceneContext(
   const contextTemporalBySourceId = indexContextTemporalBySourceId;
   const effectiveEntryById = new Map(
     effectiveEntries.map((entry) => [entry.id, entry]),
+  );
+  const automaticChildEntries = childTraversalEntries.map(
+    (entry) => effectiveEntryById.get(entry.id) ?? entry,
   );
   const rawCodexEntries = stableSortEntries(
     rawCodexIds
@@ -653,7 +806,7 @@ export async function collectSceneContext(
     if (!full) return context;
     const childrenContext = buildChildrenContextForEntry(
       full,
-      effectiveEntries,
+      automaticChildEntries,
       l4Budget,
       allPinnedIds,
       resolvedById,
@@ -663,7 +816,7 @@ export async function collectSceneContext(
   deps.markStart("buildSceneCtx.enrichWithCustomDetails");
   const enrichedCodexEntries = await enrichWithCustomDetails(
     withChildren,
-    contextEligibleIndexEntries,
+    detailReferenceEntries,
     resolvedById,
     deps,
   );
@@ -677,32 +830,41 @@ export async function collectSceneContext(
     if (!canIncludeResolvedCodexContext(entry.contextMode, "explicit-pin")) {
       return null;
     }
-    const children = withChildren
+    const directChildren = withChildren
       ? getChildrenFromArray(entry.id, effectiveEntries)
           .filter((child) => !allPinnedIds.has(child.id))
           .filter((child) =>
-            canIncludeResolvedCodexContext(child.contextMode, "derived"),
+            canIncludeResolvedCodexContext(child.contextMode, "explicit-pin"),
           )
-          .map((child) => {
-            const aliases = parseAliases(child.aliases);
-            const summary = child.summary ?? "";
-            return {
-              id: child.id,
-              type: child.type,
-              name: child.name,
-              summary,
-              contentFallback: summary.trim()
-                ? undefined
-                : extractPlainText(child.content) || undefined,
-              ...(aliases ? { aliases } : {}),
-            };
-          })
-      : undefined;
+      : [];
+    const children = directChildren.map<CodexContext>((child) => {
+      const aliases = parseAliases(child.aliases);
+      const tags = parseTags(child.tagsCache);
+      const childResolved = resolvedById.get(child.id);
+      const childPhases = phasesByEntry.get(child.id) ?? [];
+      const childActivePhase = childResolved?.activePhaseId
+        ? childPhases.find((phase) => phase.id === childResolved.activePhaseId)
+        : undefined;
+      return {
+        id: child.id,
+        type: child.type,
+        name: child.name,
+        summary: child.summary ?? "",
+        fullContent: extractPlainText(child.content) || undefined,
+        ...(aliases ? { aliases } : {}),
+        ...(tags ? { tags } : {}),
+        ...(childActivePhase ? { phaseLabel: childActivePhase.label } : {}),
+      };
+    });
+    const automaticChildExclusions = new Set([
+      ...allPinnedIds,
+      ...directChildren.map((child) => child.id),
+    ]);
     const childrenContext = buildChildrenContextForEntry(
       entry,
-      effectiveEntries,
+      automaticChildEntries,
       l4Budget,
-      allPinnedIds,
+      automaticChildExclusions,
       resolvedById,
     );
     const aliases = parseAliases(entry.aliases);
@@ -719,47 +881,57 @@ export async function collectSceneContext(
       summary: entry.summary ?? "",
       fullContent: extractPlainText(entry.content) || undefined,
       withChildren,
-      children,
+      children: withChildren ? children : undefined,
       ...(aliases ? { aliases } : {}),
       ...(tags ? { tags } : {}),
       ...(childrenContext ? { childrenContext } : {}),
       ...(activePhase ? { phaseLabel: activePhase.label } : {}),
     };
   };
-  let pinnedCodexEntries: PinnedCodexContext[] = pinnedFromDb.flatMap((pin) => {
-    const entry = effectiveEntryById.get(pin.id);
-    if (!entry) return [];
-    const context = buildPinnedContext(entry, pin.withChildren);
-    return context ? [context] : [];
-  });
-  const extraPinned = inputPinnedIds.flatMap((id) => {
-    const entry = effectiveEntryById.get(id);
-    if (!entry) return [];
-    const context = buildPinnedContext(entry, false);
-    return context ? [context] : [];
-  });
-  if (extraPinned.length > 0) {
-    pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
-  }
-  pinnedCodexEntries = await enrichWithCustomDetails(
-    pinnedCodexEntries,
-    contextEligibleIndexEntries,
+  let pinnedCodexEntries: PinnedCodexContext[] = manualPinnedFromDb.flatMap(
+    (pin) => {
+      const entry = effectiveEntryById.get(pin.id);
+      if (!entry) return [];
+      const context = buildPinnedContext(entry, pin.withChildren);
+      return context ? [context] : [];
+    },
+  );
+  const pinnedContextsToEnrich = pinnedCodexEntries.flatMap<CodexContext>(
+    (pinned) => [pinned, ...(pinned.children ?? [])],
+  );
+  const enrichedPinnedContexts = await enrichWithCustomDetails(
+    pinnedContextsToEnrich,
+    detailReferenceEntries,
     resolvedById,
     deps,
   );
+  const enrichedPinnedById = new Map(
+    enrichedPinnedContexts.map((entry) => [entry.id, entry] as const),
+  );
+  pinnedCodexEntries = pinnedCodexEntries.map((pinned) => ({
+    ...(enrichedPinnedById.get(pinned.id) ?? pinned),
+    withChildren: pinned.withChildren,
+    children: pinned.children?.map(
+      (child) => enrichedPinnedById.get(child.id) ?? child,
+    ),
+  }));
   const pinnedIds = new Set(pinnedCodexEntries.map((entry) => entry.id));
+  const explicitPinnedIds = new Set([...pinnedIds, ...manualDirectChildIds]);
   const detectedEntries = mentionedIndex
-    .filter((entry) => !pinnedIds.has(entry.id))
+    .filter((entry) => !explicitPinnedIds.has(entry.id))
     .map((entry) => effectiveEntryById.get(entry.id))
     .filter((entry): entry is CodexContextEntry => entry !== undefined);
   const alwaysEntries = alwaysCodexIndex
-    .filter((entry) => !pinnedIds.has(entry.id) && !mentionedIds.has(entry.id))
+    .filter(
+      (entry) =>
+        !explicitPinnedIds.has(entry.id) && !mentionedIds.has(entry.id),
+    )
     .map((entry) => effectiveEntryById.get(entry.id))
     .filter((entry): entry is CodexContextEntry => entry !== undefined);
   // UI lists deduplicate mentioned-vs-always, but priority is semantic. An
   // effective always entry remains always even when its name also matched.
   const alwaysEntryIdsForPrompt = alwaysCodexIndex
-    .filter((entry) => !pinnedIds.has(entry.id))
+    .filter((entry) => !explicitPinnedIds.has(entry.id))
     .map((entry) => entry.id);
 
   const noteById = new Map(noteNodes.map((node) => [node.id, node]));
@@ -846,46 +1018,71 @@ export async function collectSceneContext(
   let pinnedSnippets: PinnedSnippetContext[] = [];
   let pinnedStickies: PinnedStickyContext[] = [];
   if (request.sessionId) {
-    try {
-      const snippets = await deps.listPinnedSnippets(request.sessionId);
-      pinnedSnippets = snippets.map((snippet) => ({
-        id: snippet.id,
-        title: snippet.title,
-        content: extractPlainText(snippet.content) || snippet.title,
-      }));
-    } catch {
-      pinnedSnippets = [];
-    }
-    try {
-      const stickies = await deps.listPinnedStickies(request.sessionId);
-      pinnedStickies = stickies.map((sticky) => ({
-        id: sticky.id,
-        title: sticky.title,
-        content: sticky.content,
-      }));
-    } catch {
-      pinnedStickies = [];
-    }
+    const snippets = appendOptionalDiagnostic(
+      diagnostics,
+      await collectOptionalSource<PinnedSnippetEntryWithData[]>(
+        {
+          source: "pinned-snippets",
+          code: "PINNED_SNIPPETS_UNAVAILABLE",
+          message: "Pinned snippets are unavailable; continuing without them.",
+        },
+        () => deps.listPinnedSnippets(request.sessionId!),
+        [],
+      ),
+    );
+    pinnedSnippets = snippets.map((snippet) => ({
+      id: snippet.id,
+      title: snippet.title,
+      content: extractPlainText(snippet.content) || snippet.title,
+    }));
+
+    const stickies = appendOptionalDiagnostic(
+      diagnostics,
+      await collectOptionalSource<PinnedStickyEntryWithData[]>(
+        {
+          source: "pinned-stickies",
+          code: "PINNED_STICKIES_UNAVAILABLE",
+          message: "Pinned stickies are unavailable; continuing without them.",
+        },
+        () => deps.listPinnedStickies(request.sessionId!),
+        [],
+      ),
+    );
+    pinnedStickies = stickies.map((sticky) => ({
+      id: sticky.id,
+      title: sticky.title,
+      content: sticky.content,
+    }));
   }
 
-  let mapBoardMarkdown: string | undefined;
-  try {
-    mapBoardMarkdown = await deps.loadMapBoardMarkdown(
-      request,
-      contextEligibleIndexEntries,
-    );
-  } catch {
-    mapBoardMarkdown = undefined;
-  }
+  const mapBoardMarkdown = appendOptionalDiagnostic(
+    diagnostics,
+    await collectOptionalSource<string | undefined>(
+      {
+        source: "map",
+        code: "MAP_CONTEXT_UNAVAILABLE",
+        message: "Map context is unavailable; continuing without it.",
+      },
+      () => deps.loadMapBoardMarkdown(request, mapIdentityEligibleIndexEntries),
+      undefined,
+    ),
+  );
 
   let activeTabContent: BuildSystemPromptInput["activeTabContent"];
   try {
     if (request.activeTab?.contentType === "codex") {
       const entry = effectiveEntryById.get(request.activeTab.nodeId);
-      const reason = allPinnedIds.has(request.activeTab.nodeId)
-        ? "explicit-pin"
-        : "active-tab";
-      if (entry && canIncludeResolvedCodexContext(entry.contextMode, reason)) {
+      const reason =
+        allPinnedIds.has(request.activeTab.nodeId) ||
+        manualDirectChildIds.has(request.activeTab.nodeId)
+          ? "explicit-pin"
+          : "active-tab";
+      if (
+        entry &&
+        (reason === "explicit-pin" ||
+          !excludedAutoIds.has(request.activeTab.nodeId)) &&
+        canIncludeResolvedCodexContext(entry.contextMode, reason)
+      ) {
         activeTabContent = {
           type: "codex",
           title: entry.name,
@@ -905,21 +1102,36 @@ export async function collectSceneContext(
         };
       }
     }
-  } catch {
+  } catch (cause) {
     activeTabContent = undefined;
+    diagnostics.push({
+      source: "active-tab",
+      severity: "warning",
+      code: "ACTIVE_TAB_CONTEXT_UNAVAILABLE",
+      message: "Active-tab context is unavailable; continuing without it.",
+      cause,
+    });
   }
 
   let conversationSummary: string | undefined;
   if (request.sessionId) {
-    try {
-      const summaries = await deps.listSummaries(request.sessionId);
-      if (summaries.length > 0) {
-        conversationSummary = summaries
-          .map((summary) => summary.summary)
-          .join("\n\n");
-      }
-    } catch {
-      conversationSummary = undefined;
+    const summaries = appendOptionalDiagnostic(
+      diagnostics,
+      await collectOptionalSource<ChatSummary[]>(
+        {
+          source: "conversation-summaries",
+          code: "CONVERSATION_SUMMARIES_UNAVAILABLE",
+          message:
+            "Conversation summaries are unavailable; continuing without them.",
+        },
+        () => deps.listSummaries(request.sessionId!),
+        [],
+      ),
+    );
+    if (summaries.length > 0) {
+      conversationSummary = summaries
+        .map((summary) => summary.summary)
+        .join("\n\n");
     }
   }
   deps.markStart(
@@ -951,8 +1163,15 @@ export async function collectSceneContext(
         currentBeatId: null,
         scenePovCharacterId: currentScene?.povCharacterId ?? null,
       });
-    } catch {
+    } catch (cause) {
       pendingBeatsSection = undefined;
+      diagnostics.push({
+        source: "pending-beats",
+        severity: "warning",
+        code: "PENDING_BEATS_UNAVAILABLE",
+        message: "Pending beats are unavailable; continuing without them.",
+        cause,
+      });
     }
   }
 
@@ -972,36 +1191,94 @@ export async function collectSceneContext(
       : "";
   deps.markStart("buildSceneCtx.fetchLabelsAndForeshadow");
   const [
-    sceneLabelRows,
-    sceneForeshadow,
-    openForeshadows,
-    semanticRecall,
-    episodicRecall,
+    sceneLabelResult,
+    sceneForeshadowResult,
+    openForeshadowResult,
+    semanticRecallResult,
+    episodicRecallResult,
   ] = await Promise.all([
-    deps.listNodeLabels(scene.id).catch(() => []),
-    deps.getSceneForeshadow(scene.id).catch(() => EMPTY_FORESHADOW),
-    deps.listOpenForeshadows(request.projectId).catch(() => []),
+    collectOptionalSource<Label[]>(
+      {
+        source: "scene-labels",
+        code: "SCENE_LABELS_UNAVAILABLE",
+        message: "Scene labels are unavailable; continuing without them.",
+      },
+      () => deps.listNodeLabels(scene.id),
+      [],
+    ),
+    collectOptionalSource<SceneForeshadowContext>(
+      {
+        source: "scene-foreshadow",
+        code: "SCENE_FORESHADOW_UNAVAILABLE",
+        message: "Scene foreshadow is unavailable; continuing without it.",
+      },
+      () => deps.getSceneForeshadow(scene.id),
+      EMPTY_FORESHADOW,
+    ),
+    collectOptionalSource<OpenForeshadowForContext[]>(
+      {
+        source: "open-foreshadows",
+        code: "OPEN_FORESHADOWS_UNAVAILABLE",
+        message: "Open foreshadows are unavailable; continuing without them.",
+      },
+      () => deps.listOpenForeshadows(request.projectId),
+      [],
+    ),
     semanticQuery
-      ? deps
-          .fetchSemanticRecall({
-            projectId: request.projectId,
-            query: semanticQuery,
-            excludeSceneIds: [scene.id, ...request.mentionedSceneIds],
-            hybrid: request.settings.hybridRecallEnabled,
-          })
-          .catch(() => [])
-      : Promise.resolve([] as SemanticRecallChunk[]),
+      ? collectOptionalSource<SemanticRecallChunk[]>(
+          {
+            source: "semantic-recall",
+            code: "SEMANTIC_RECALL_UNAVAILABLE",
+            message: "Semantic recall is unavailable; continuing without it.",
+          },
+          () =>
+            deps.fetchSemanticRecall({
+              projectId: request.projectId,
+              query: semanticQuery,
+              excludeSceneIds: [scene.id, ...request.mentionedSceneIds],
+              hybrid: request.settings.hybridRecallEnabled,
+            }),
+          [],
+        )
+      : Promise.resolve({ value: [] as SemanticRecallChunk[] }),
     episodicQuery
-      ? deps
-          .fetchChatRecall({
-            projectId: request.projectId,
-            query: episodicQuery,
-            excludeSessionIds: request.sessionId ? [request.sessionId] : [],
-            hybrid: request.settings.hybridRecallEnabled,
-          })
-          .catch(() => [])
-      : Promise.resolve([] as ChatRecallMessage[]),
+      ? collectOptionalSource<ChatRecallMessage[]>(
+          {
+            source: "episodic-recall",
+            code: "EPISODIC_RECALL_UNAVAILABLE",
+            message: "Episodic recall is unavailable; continuing without it.",
+          },
+          () =>
+            deps.fetchChatRecall({
+              projectId: request.projectId,
+              query: episodicQuery,
+              excludeSessionIds: request.sessionId ? [request.sessionId] : [],
+              hybrid: request.settings.hybridRecallEnabled,
+            }),
+          [],
+        )
+      : Promise.resolve({ value: [] as ChatRecallMessage[] }),
   ]);
+  const sceneLabelRows = appendOptionalDiagnostic(
+    diagnostics,
+    sceneLabelResult,
+  );
+  const sceneForeshadow = appendOptionalDiagnostic(
+    diagnostics,
+    sceneForeshadowResult,
+  );
+  const openForeshadows = appendOptionalDiagnostic(
+    diagnostics,
+    openForeshadowResult,
+  );
+  const semanticRecall = appendOptionalDiagnostic(
+    diagnostics,
+    semanticRecallResult,
+  );
+  const episodicRecall = appendOptionalDiagnostic(
+    diagnostics,
+    episodicRecallResult,
+  );
   deps.markEnd("buildSceneCtx.fetchLabelsAndForeshadow");
   const sceneLabels = sceneLabelRows.map((label) => label.name);
   const sceneForeshadowInput: BuildSystemPromptInput["sceneForeshadow"] =
@@ -1041,12 +1318,12 @@ export async function collectSceneContext(
   );
 
   if (l4SeedIds.size > 0) {
-    const relationExpansionEntries = contextEligibleIndexEntries.map(
+    const relationExpansionEntries = relationTraversalEntries.map(
       (entry) => effectiveEntryById.get(entry.id) ?? entry,
     );
     const excludedRelationIds = new Set([
       ...l4SeedIds,
-      ...collectBudgetedDescendantIds(l4SeedIds, contextEligibleIndexEntries),
+      ...collectBudgetedDescendantIds(l4SeedIds, childTraversalEntries),
     ]);
     const expanded = expandCodexRelationsBFS(
       [...l4SeedIds],
@@ -1059,35 +1336,43 @@ export async function collectSceneContext(
     const intra = collectIntraContextRelations(
       [...l4SeedIds],
       relations,
-      contextEligibleIndexEntries,
+      relationTraversalEntries,
     );
     intraContextRelations = intra.length > 0 ? intra : undefined;
   }
 
   let chronicleSnapshotText: string | undefined;
   if (request.settings.chronicleEnabled) {
-    try {
-      chronicleSnapshotText = await deps.buildChronicleSnapshot({
-        request,
-        language: project?.language ?? "ja",
-        codexNames: new Map(
-          contextEligibleIndexEntries.map(
-            (entry) => [entry.id, entry.name] as const,
-          ),
-        ),
-        sceneCodexIds: codexEntries.map((entry) => entry.id),
-        mentionedCodexIds: Array.from(
-          new Set([
-            ...request.mentionedCodexIds.filter((id) =>
-              contextEligibleIds.has(id),
+    chronicleSnapshotText = appendOptionalDiagnostic(
+      diagnostics,
+      await collectOptionalSource<string | undefined>(
+        {
+          source: "chronicle",
+          code: "CHRONICLE_CONTEXT_UNAVAILABLE",
+          message: "Chronicle context is unavailable; continuing without it.",
+        },
+        () =>
+          deps.buildChronicleSnapshot({
+            request,
+            language: project?.language ?? "ja",
+            codexNames: new Map(
+              relationTraversalEntries.map(
+                (entry) => [entry.id, entry.name] as const,
+              ),
             ),
-            ...pinnedCodexEntries.map((entry) => entry.id),
-          ]),
-        ),
-      });
-    } catch {
-      chronicleSnapshotText = undefined;
-    }
+            sceneCodexIds: codexEntries.map((entry) => entry.id),
+            mentionedCodexIds: Array.from(
+              new Set([
+                ...request.mentionedCodexIds.filter((id) =>
+                  contextEligibleIds.has(id),
+                ),
+                ...pinnedCodexEntries.map((entry) => entry.id),
+              ]),
+            ),
+          }),
+        undefined,
+      ),
+    );
   }
   const plotThreadScenes = deps.buildPlotThreadScenes(
     request.projectId,
@@ -1184,5 +1469,6 @@ export async function collectSceneContext(
     projectOutline: project?.outline?.trim() ? project.outline : undefined,
     chapterOutlines,
     recalledMessages,
+    diagnostics,
   };
 }

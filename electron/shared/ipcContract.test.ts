@@ -2473,6 +2473,7 @@ describe("AI Phase 3b コマンド", () => {
         },
       ],
       webSearch: { enabled: true, agentic: true },
+      resolvedToolProtocol: "hermes",
     };
     const env = await dispatchInvoke("send_agent_message", args, {
       backend,
@@ -2491,6 +2492,25 @@ describe("AI Phase 3b コマンド", () => {
       { provider: "openai", model: "gpt-x" },
       "sk-agent",
     );
+  });
+
+  it("send_agent_message は不正な resolvedToolProtocol を main 境界で拒否する", async () => {
+    const { backend, methods } = makeBackend();
+    const env = await dispatchInvoke(
+      "send_agent_message",
+      {
+        messages: [{ role: "user", content: "find it" }],
+        tools: [],
+        resolvedToolProtocol: "auto",
+      },
+      { backend, shell: noShell, secrets: secrets() },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(env).toMatchObject({
+      error: expect.stringMatching(/resolvedToolProtocol/),
+    });
+    expect(methods.sendAgentMessage).not.toHaveBeenCalled();
   });
 
   it("list_ai_models はキー未設定を空文字にし、必須キー解決を使わない", async () => {

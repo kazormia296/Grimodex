@@ -8,6 +8,11 @@ import type {
   PinnedCodexEntryWithData,
 } from "./chatApi";
 
+const manualCodexPins = (
+  entries: PinnedCodexEntryWithData[],
+): PinnedCodexEntryWithData[] =>
+  entries.filter((entry) => entry.pinSource !== "chat_mention");
+
 export interface ChatPinsControllerOptions {
   isActive: boolean;
   activeSessionId: string | null;
@@ -15,7 +20,8 @@ export interface ChatPinsControllerOptions {
   allCodexEntries: readonly CodexEntry[];
   ensureSession(): Promise<string | null>;
   removeEntryFromAuto(entryId: string): void;
-  excludeEntryFromAuto(entryId: string): void;
+  /** Returns true only when this call created a new exclusion. */
+  excludeEntryFromAuto(entryId: string): boolean;
   clearAutoExclusion(entryId: string): void;
   refreshContextLayers(): Promise<unknown>;
 }
@@ -49,7 +55,7 @@ export interface ChatPinsControllerResult {
   ): Promise<void>;
 }
 
-/** Owns session pin reads, mention pins, and their context-removal commands. */
+/** Owns session pin reads, current-input mention pills, and context-removal commands. */
 export function useChatPinsController({
   isActive,
   activeSessionId,
@@ -75,9 +81,18 @@ export function useChatPinsController({
   const [inputDismissedIds, setInputDismissedIds] = useState<Set<string>>(
     new Set(),
   );
+  /** Exclusions created by a current-input dismissal; cleared after its send. */
+  const [inputAutoExcludedIds, setInputAutoExcludedIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [dismissedViaChildIds, setDismissedViaChildIds] = useState<Set<string>>(
     new Set(),
   );
+
+  useEffect(() => {
+    setInputDismissedIds(new Set());
+    setInputAutoExcludedIds(new Set());
+  }, [isActive, activeSessionId]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -87,7 +102,9 @@ export function useChatPinsController({
       setPinnedStickies([]);
       return;
     }
-    void chatApi.listPinnedCodexEntries(activeSessionId).then(setPinnedEntries);
+    void chatApi
+      .listPinnedCodexEntries(activeSessionId)
+      .then((entries) => setPinnedEntries(manualCodexPins(entries)));
     void chatApi
       .listPinnedSnippetEntries(activeSessionId)
       .then(setPinnedSnippets);
@@ -113,7 +130,9 @@ export function useChatPinsController({
         .filter((entry): entry is CodexEntry => entry !== undefined)
         .map((entry) => ({
           ...entry,
-          withChildren: true,
+          // Current-input mentions are a turn trigger, not a persisted
+          // Spotlight pin. Descendants must pass their own visibility policy.
+          withChildren: false,
           pinnedType: "codex" as const,
           pinSource: "chat_mention" as const,
         })),
@@ -135,7 +154,11 @@ export function useChatPinsController({
   }, []);
   const resetInputDismissed = useCallback(() => {
     setInputDismissedIds(new Set());
-  }, []);
+    for (const entryId of inputAutoExcludedIds) {
+      clearAutoExclusion(entryId);
+    }
+    setInputAutoExcludedIds(new Set());
+  }, [clearAutoExclusion, inputAutoExcludedIds]);
 
   const handlePin = useCallback(
     async (entryId: string, type: "codex" | "snippet" = "codex") => {
@@ -148,7 +171,7 @@ export function useChatPinsController({
         chatApi.listPinnedCodexEntries(sessionId),
         chatApi.listPinnedSnippetEntries(sessionId),
       ]);
-      setPinnedEntries(updatedCodex);
+      setPinnedEntries(manualCodexPins(updatedCodex));
       setPinnedSnippets(updatedSnippets);
       await refreshContextLayers();
     },
@@ -168,7 +191,7 @@ export function useChatPinsController({
         chatApi.listPinnedCodexEntries(activeSessionId),
         chatApi.listPinnedSnippetEntries(activeSessionId),
       ]);
-      setPinnedEntries(updatedCodex);
+      setPinnedEntries(manualCodexPins(updatedCodex));
       setPinnedSnippets(updatedSnippets);
     },
     [activeSessionId],
@@ -197,11 +220,19 @@ export function useChatPinsController({
     async (entryId: string) => {
       if (inputPinnedIds.has(entryId)) {
         setInputDismissedIds((previous) => new Set([...previous, entryId]));
+        // The source matcher also sees the outgoing text. Exclude it from this
+        // turn's authority snapshot, then reset that exclusion after send so a
+        // later turn can detect the entry again.
+        if (excludeEntryFromAuto(entryId)) {
+          setInputAutoExcludedIds(
+            (previous) => new Set([...previous, entryId]),
+          );
+        }
       } else {
         await handleRemoveFromContext(entryId);
       }
     },
-    [inputPinnedIds, handleRemoveFromContext],
+    [inputPinnedIds, excludeEntryFromAuto, handleRemoveFromContext],
   );
   const handleDismissViaChild = useCallback((childId: string) => {
     setDismissedViaChildIds((previous) => new Set([...previous, childId]));
@@ -211,7 +242,9 @@ export function useChatPinsController({
       const sessionId = await ensureSession();
       if (!sessionId) return;
       await chatApi.togglePinChildren(sessionId, entryId, withChildren);
-      setPinnedEntries(await chatApi.listPinnedCodexEntries(sessionId));
+      setPinnedEntries(
+        manualCodexPins(await chatApi.listPinnedCodexEntries(sessionId)),
+      );
     },
     [ensureSession],
   );

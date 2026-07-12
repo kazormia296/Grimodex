@@ -5,6 +5,7 @@ import { buildSceneTimeIndex } from "./sceneTimeIndex";
 import {
   canIncludeResolvedCodexContext,
   materializeResolvedCodexContext,
+  resolveCodexContextExposure,
   resolveCodexContexts,
 } from "./resolvedCodexContext";
 
@@ -79,18 +80,62 @@ describe("resolveCodexContexts", () => {
 });
 
 describe("canIncludeResolvedCodexContext", () => {
-  it("allows suppress only for an explicit pin and never allows hidden", () => {
-    expect(canIncludeResolvedCodexContext("suppress", "mention")).toBe(false);
-    expect(canIncludeResolvedCodexContext("suppress", "explicit-pin")).toBe(
-      true,
-    );
-    expect(canIncludeResolvedCodexContext("hidden", "explicit-pin")).toBe(
-      false,
-    );
+  const triggers = [
+    "explicit-pin",
+    "current-mention",
+    "active-scope",
+    "active-tab",
+    "always",
+    "child",
+    "relation",
+    "detail-reference",
+    "map-reference",
+  ] as const;
+
+  it.each([
+    { mode: "hidden", allowed: [] },
+    { mode: "suppress", allowed: ["explicit-pin", "active-scope"] },
+    {
+      mode: "mentioned",
+      allowed: [
+        "explicit-pin",
+        "current-mention",
+        "active-scope",
+        "active-tab",
+      ],
+    },
+    { mode: "always", allowed: triggers },
+  ] as const)("applies the $mode trigger matrix", ({ mode, allowed }) => {
+    const allowedTriggers = new Set<string>(allowed);
+    for (const trigger of triggers) {
+      expect(
+        canIncludeResolvedCodexContext(mode, trigger),
+        `${mode} via ${trigger}`,
+      ).toBe(allowedTriggers.has(trigger));
+    }
   });
 
-  it("allows mentioned/always through derived context paths", () => {
-    expect(canIncludeResolvedCodexContext("mentioned", "derived")).toBe(true);
-    expect(canIncludeResolvedCodexContext("always", "derived")).toBe(true);
+  it("fails closed for an unknown persisted mode", () => {
+    for (const mode of [
+      "future-mode",
+      "toString",
+      "constructor",
+      "__proto__",
+    ]) {
+      for (const trigger of triggers) {
+        expect(canIncludeResolvedCodexContext(mode, trigger)).toBe(false);
+      }
+    }
   });
+
+  it.each(["child", "relation", "detail-reference", "map-reference"] as const)(
+    "limits a mentioned %s trigger to identity-only exposure",
+    (trigger) => {
+      expect(resolveCodexContextExposure("mentioned", trigger)).toBe(
+        "identity-only",
+      );
+      expect(canIncludeResolvedCodexContext("mentioned", trigger)).toBe(false);
+      expect(resolveCodexContextExposure("always", trigger)).toBe("content");
+    },
+  );
 });

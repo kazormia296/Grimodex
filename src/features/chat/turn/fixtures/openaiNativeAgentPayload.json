@@ -1,0 +1,95 @@
+{
+  "input": {
+    "messages": [
+      { "role": "user", "content": "find moon" },
+      {
+        "role": "assistant",
+        "content": "",
+        "toolUses": [
+          {
+            "id": "previous-1",
+            "name": "search_codex",
+            "input": { "query": "sun" }
+          }
+        ],
+        "thinkingBlocks": []
+      },
+      {
+        "role": "tool_result",
+        "toolUseId": "previous-1",
+        "content": "found",
+        "isError": false
+      }
+    ],
+    "tools": [
+      {
+        "name": "search_codex",
+        "description": "Search",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "query": { "type": "string" } },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "update_codex_entry",
+        "description": "Update",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "id": { "type": "string" } },
+          "required": ["id"]
+        }
+      }
+    ]
+  },
+  "expected": {
+    "messages": [
+      { "role": "user", "content": "find moon" },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "previous-1",
+            "type": "function",
+            "function": {
+              "name": "search_codex",
+              "arguments": "{\"query\":\"sun\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "previous-1",
+        "content": "found"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "search_codex",
+          "description": "Search",
+          "parameters": {
+            "type": "object",
+            "properties": { "query": { "type": "string" } },
+            "required": ["query"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "update_codex_entry",
+          "description": "Update",
+          "parameters": {
+            "type": "object",
+            "properties": { "id": { "type": "string" } },
+            "required": ["id"]
+          }
+        }
+      }
+    ]
+  }
+}

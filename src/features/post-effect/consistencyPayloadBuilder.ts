@@ -153,7 +153,7 @@ async function buildCodexPayload(
     effectiveEntries.map((entry) => [entry.id, entry]),
   );
   const detectableEntries = effectiveEntries.filter((entry) =>
-    canIncludeResolvedCodexContext(entry.contextMode, "mention"),
+    canIncludeResolvedCodexContext(entry.contextMode, "current-mention"),
   );
   const alwaysEntries = effectiveEntries.filter(
     (entry) => entry.contextMode === "always",

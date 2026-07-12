@@ -61,6 +61,7 @@ describe("planNonSceneChatContext", () => {
       scopeAnchor: null,
       projectOutline: "Outline",
       chapterOutlines: [],
+      diagnostics: [],
     }));
     const renderPrompt = vi.fn(() => ({
       prompt: "rendered",
@@ -93,5 +94,6 @@ describe("planNonSceneChatContext", () => {
     expect(result.volatileTail).toBe("volatile");
     expect(result.contextPlan.requestId).toBe("non-scene-request");
     expect(result.projectOutline).toBe("Outline");
+    expect(result.diagnostics).toEqual([]);
   });
 });

@@ -397,12 +397,15 @@ pub fn parse_output(result: &Value, opts: &ParseResponsesOptions) -> anyhow::Res
 
     let input_tokens = result["usage"]["input_tokens"].as_u64();
     let output_tokens = result["usage"]["output_tokens"].as_u64();
+    let cache_read_tokens = result["usage"]["input_tokens_details"]["cached_tokens"].as_u64();
 
     Ok(ChatResponse {
         blocks,
         stop_reason,
         input_tokens,
         output_tokens,
+        cache_read_tokens,
+        cache_write_tokens: None,
         citations,
         cost: None,
     })
@@ -1151,7 +1154,11 @@ mod tests {
                 { "type": "message", "role": "assistant",
                   "content": [{ "type": "output_text", "text": "Hello world" }] }
             ],
-            "usage": { "input_tokens": 12, "output_tokens": 5 }
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 5,
+                "input_tokens_details": { "cached_tokens": 7 }
+            }
         });
         let resp = parse_output(
             &result,
@@ -1163,6 +1170,8 @@ mod tests {
         assert_eq!(resp.stop_reason, "end_turn");
         assert_eq!(resp.input_tokens, Some(12));
         assert_eq!(resp.output_tokens, Some(5));
+        assert_eq!(resp.cache_read_tokens, Some(7));
+        assert_eq!(resp.cache_write_tokens, None);
         assert_eq!(resp.blocks.len(), 1);
         match &resp.blocks[0] {
             ResponseBlock::Text { content } => assert_eq!(content, "Hello world"),

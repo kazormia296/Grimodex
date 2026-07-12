@@ -23,8 +23,8 @@ Grimodex はチャットのシステムプロンプトに、プロジェクト�
 
 | レイヤー | セクション | 主なデータソース | トリム時の挙動 |
 |---------|-----------|----------------|--------------|
-| L0 | ベース + エージェント指示 | 静的プロンプトカタログ | トリムしない |
-| L1 | プロジェクト情報 | `projects`（ジャンル・視点・文体など） | 通常トリムでは**最後まで保護**（trimToFit 順で最終）。styleGuide→aiInstructions→genre/pov/tense の順で除去しタイトルは残す。damsel 等の縮退モードでは L2/L4 と共にゼロ化 |
+| L0 | アプリ方針 + `<author_instructions>` + エージェント指示 | 静的プロンプト、`styleGuide`、`aiInstructions`、チャット追加指示 | アプリ方針とhard constraintは保護。作者方針は参照データタグの外に置き、他レイヤーが尽きた後に予算内へbounded trim |
+| L1 | プロジェクト情報 | `projects`（タイトル・ジャンル・視点・時制） | 通常トリムでは**最後まで保護**（trimToFit 順で最終）。genre/pov/tense の順で除去しタイトルは残す。damsel 等の縮退モードでは L2/L4 と共にゼロ化 |
 | L2 | これまでの物語 + アウトライン + 未回収伏線 | シーン要約、フォルダ要約、`projects.outline`、未回収伏線 | 先頭エントリから削る。末尾の `projectOutline` は最後まで残る |
 | L3 | 現在のシーン | シーン本文、ラベル、Beat、シーン伏線、story-time 隣接、`@scene` ピン | 本文は先頭から削る。ヘッダー・伏線ブロックは保護 |
 | L4 | Codex / Note / Snippet / Sticky | メンションまたはピン留めされたエンティティ | 優先度（pri）に基づくブロック単位の削除（下記） |
@@ -50,11 +50,12 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 |-----|---------|-----|
 | 0 | 自動派生（子孫） | Codex `children_budget` サブツリー |
 | 1 | 自動派生（リレーション） | Codex relation BFS |
-| 2 | メンション | シーン本文またはチャット入力で検出された Codex / Note |
-| 3 | ユーザーピン（セッション） | Spotlight Codex、Snippet ピン、Sticky ピン |
+| 2 | メンション | 現在シーン本文または現在ターンのチャット入力で検出された Codex / Note |
+| 3 | ユーザーピン（セッション） | 手動Spotlight Codex、Snippet ピン、Sticky ピン |
 | 4 | 常時注入 | Codex / Note の `context_mode=always` |
 
 `l4pri` マーカーがない L4 ブロックはデフォルト **pri 2**（mentioned）として扱う。
+`Pin with children` で選ばれた直下子は自動派生ではなく個別の明示 pin として扱い、タグ・カスタムディテール・全文を含む **pri 3** のブロックになる。
 
 ---
 
@@ -62,12 +63,12 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 
 | ソース | レイヤー | 備考 |
 |--------|---------|------|
-| **Codex** | L4 | `context_mode`、別名、Spotlight ピン、メンション検出。Phase の **Wiki 限定**（effective suppress/hidden）は AI 露出から除外 |
+| **Codex** | L4 | `context_mode`、別名、現在シーン本文 / 現在ターンのチャット入力でのメンション検出。自動 child / relation / 選択 Codex 本文からの cross-mention では `mentioned` は identity-only、`always` は本文を含む。`Pin with children` の直下子は `mentioned` / `suppress` / `always` を明示 pin として全文注入し、`hidden` は全経路で除外 |
 | **Note**（`tree_nodes.node_type=note`） | L4 | Codex と同じモード。本文は `prosemirrorToText` 経由 |
 | **Snippet** | L4（ピン時のみ） | セッションピンテーブル（`pinnedSnippets`）。同一 Snippet がアクティブタブの場合は L3（`activeTabContent`）にも別経路で載りうる（下記参照） |
 | **Map Sticky** | L4（ピン時のみ） | セッションピンテーブル（`pinnedStickies`）。`<sticky>` ラッパー |
 | **focus_subject**（スコープアンカー） | L3 と L4 の間（`<focus_subject>`） | Codex / Snippet スコープでアンカーした「この会話の主題」。**trim 対象外** |
-| **activeTabContent**（参照中のコンテンツ） | L3 | アクティブタブが Codex / Snippet のとき L3 末尾に注入 |
+| **activeTabContent**（参照中のコンテンツ） | L3 | Scene / non-Scene とも、アクティブタブが Codex / Snippet のとき L3 末尾に注入。同じ Codex / Snippet が `focus_subject` の場合は重複させない |
 | **semantic recall** | RAG（`<related_scenes>`） | クエリ依存・`volatileTail` のみ |
 | **chat episodic recall** | EPISODIC（`<chat_history>`） | クエリ依存・trim 最優先で削る |
 | **chronicle snapshot** | CHRONICLE（`<chronicle_snapshot>`） | L3 cache セグメント同梱（`volatileTail` ではない）。`aiPrompt.chronicle.enabled`（既定 ON）で gate |
@@ -81,7 +82,7 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 > **`focus_subject` は独立スロット（L0〜L6 の外）**：L3 の直後・L4 の前。trim では削られない。
 >
 > **注入順序**（プロンプト配列、`contextBuilder.ts` 1667–1681）:
-> `baseText → L1 → L2 → L3 → focus → CHRONICLE → L4 → PLOT_THREAD → RAG → EPISODIC → L5 → reminder → L6`
+> `application policy → author_instructions → L1 → L2 → L3 → focus → CHRONICLE → L4 → PLOT_THREAD → RAG → EPISODIC → L5 → reminder → L6`
 >
 > **cache 配置**（`cacheSegments`）: `[L0+L1, L2, L3+focus+chronicle（有効時）, L4stable]`
 >
@@ -110,7 +111,8 @@ L4 のトークン予算超過時、**数値が小さいブロックほど先に
 - 帰属（Attribution）スパン
 - ゴミ箱の内容
 - 他チャットセッションのタイトル
-- Phase **Wiki 限定**（effective suppress/hidden）の summary / content
+- effective `hidden` の summary / content
+- effective `suppress` の自動注入（Spotlight / Codex スコープ、または `Pin with children` 直下子の明示選択時だけ許可）
 
 ---
 

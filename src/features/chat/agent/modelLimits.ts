@@ -12,6 +12,10 @@ export type ThinkingDisplay = "summarized" | "omitted";
 
 export interface ModelCapabilities {
   contextWindow: number;
+  /** Default user-visible response cap used for both reservation and wire. */
+  defaultVisibleOutputTokens?: number;
+  /** Reservation/wire cap for models whose output includes hidden reasoning. */
+  defaultReasoningReservationTokens?: number;
   /**
    * モデル固有のハード出力上限（明確な制約があるモデルにのみ設定）。
    * undefined の場合は contextBuilder 側のデフォルト応答予約ロジックに従う。
@@ -46,6 +50,8 @@ export interface ModelCapabilities {
 
 const DEFAULT_CAPABILITIES: ModelCapabilities = {
   contextWindow: 8_000,
+  defaultVisibleOutputTokens: 4_096,
+  defaultReasoningReservationTokens: 32_000,
   supportsTools: true,
   supportsThinking: false,
   supportsAdaptiveThinking: false,
@@ -424,6 +430,9 @@ function mergeDynamicCaps(
   return {
     contextWindow: dyn.ctx ?? hardcoded.contextWindow,
     maxOutputTokens: dyn.out ?? hardcoded.maxOutputTokens,
+    defaultVisibleOutputTokens: hardcoded.defaultVisibleOutputTokens,
+    defaultReasoningReservationTokens:
+      hardcoded.defaultReasoningReservationTokens,
     supportsTools: dyn.tools,
     supportsThinking: false,
     supportsAdaptiveThinking: false,
@@ -448,9 +457,19 @@ function mergeDynamicCaps(
  * 未知のモデルはデフォルト値を返す。
  */
 export function getModelCapabilities(model: string): ModelCapabilities {
+  const hardcoded = resolveHardcoded(model);
+  const withOutputDefaults: ModelCapabilities = {
+    ...hardcoded,
+    defaultVisibleOutputTokens:
+      hardcoded.defaultVisibleOutputTokens ??
+      DEFAULT_CAPABILITIES.defaultVisibleOutputTokens,
+    defaultReasoningReservationTokens:
+      hardcoded.defaultReasoningReservationTokens ??
+      DEFAULT_CAPABILITIES.defaultReasoningReservationTokens,
+  };
   const dyn = getDynamicModelMeta(model);
-  if (dyn) return mergeDynamicCaps(dyn, resolveHardcoded(model));
-  return resolveHardcoded(model);
+  if (dyn) return mergeDynamicCaps(dyn, withOutputDefaults);
+  return withOutputDefaults;
 }
 
 /**
@@ -574,12 +593,13 @@ export function resolveModelCapabilities(
   // どちらにも載らず DEFAULT(8k)に落ちてプロンプトが過小充填になるため、ここで明示する。
   // native reasoning モデルではない(orchestration はサーバ側)ので supportsReasoning は
   // false にして余計な reasoning/effort パラメータを送らない（ライブ検証も無 reasoning 構成で
-  // green）。orchestration トークンが出力予算を食う点は Rust 側が OpenAI 同列の 32k で吸収する。
+  // green）。orchestration トークンが出力予算を食う点は model capability の 32k 既定で吸収する。
   if (settings.provider === "sakana") {
     return {
       ...base,
       contextWindow: 1_000_000,
       maxOutputTokens: 32_000,
+      defaultVisibleOutputTokens: 32_000,
       supportsTools: true,
       supportsThinking: false,
       supportsAdaptiveThinking: false,

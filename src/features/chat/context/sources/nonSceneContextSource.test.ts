@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CodexContextEntry } from "@/features/codex/api";
+import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
+import type { CodexRelationRow } from "@/features/codex/codexRelationApi";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
+import type { Snippet } from "@/features/snippets/api";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { PinnedCodexEntryWithData } from "../../chatApi";
+import { buildSystemPrompt } from "../../contextBuilder";
 import {
   createNonSceneTurnContextRequest,
   type CreateNonSceneTurnContextRequestInput,
@@ -13,6 +17,13 @@ import {
   createNonSceneContextSourceDeps,
   type AggregatedSceneInput,
 } from "./nonSceneContextSource";
+
+function doc(text: string): string {
+  return JSON.stringify({
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+  });
+}
 
 function scene(id: string, sortOrder: string): TreeNodeData {
   return {
@@ -75,6 +86,39 @@ function phase(
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
+  };
+}
+
+function pinnedCodex(
+  entry: CodexContextEntry,
+  pinSource: "manual" | "chat_mention",
+  withChildren = false,
+): PinnedCodexEntryWithData {
+  return {
+    ...entry,
+    withChildren,
+    pinnedType: "codex",
+    pinSource,
+  } as PinnedCodexEntryWithData;
+}
+
+function relation(
+  id: string,
+  fromCodexId: string,
+  toCodexId: string,
+  label: string,
+): CodexRelationRow {
+  return {
+    id,
+    projectId: "project-1",
+    fromCodexId,
+    toCodexId,
+    relationType: "custom",
+    label,
+    depthHint: null,
+    sourceMapEdgeId: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
   };
 }
 
@@ -168,6 +212,367 @@ describe("collectNonSceneContext", () => {
     expect(result.promptInput.codexEntries?.map((entry) => entry.id)).toEqual([
       "alice",
     ]);
+  });
+
+  it("materializes a visible non-scene Codex active tab and seeds only its selected body", async () => {
+    const active = codexEntry("active-tab-codex", {
+      name: "Active Codex",
+      content: doc("ACTIVE_TAB_BODY"),
+    });
+    const unrelated = codexEntry("unrelated-codex", {
+      content: doc("UNRELATED_BODY"),
+    });
+    const entries = [active, unrelated];
+    const listCodexEntriesByIds = vi.fn(
+      async (_projectId: string, ids: readonly string[]) =>
+        ids.flatMap(
+          (id) => entries.find((candidate) => candidate.id === id) ?? [],
+        ),
+    );
+
+    const result = await collectNonSceneContext(
+      request({
+        activeTab: { nodeId: active.id, contentType: "codex" },
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        listCodexEntriesByIds,
+      }),
+    );
+
+    expect(listCodexEntriesByIds).toHaveBeenCalledWith("project-1", [
+      active.id,
+    ]);
+    expect(result.promptInput.activeTabContent).toEqual({
+      type: "codex",
+      title: "Active Codex",
+      content: "ACTIVE_TAB_BODY",
+    });
+    expect(buildSystemPrompt(result.promptInput).prompt).toContain(
+      "ACTIVE_TAB_BODY",
+    );
+  });
+
+  it("honors active-tab visibility, manual-pin authority, and focus de-duplication", async () => {
+    const excluded = codexEntry("excluded-active-tab", {
+      content: doc("EXCLUDED_ACTIVE_TAB_BODY"),
+    });
+    const manual = codexEntry("manual-active-tab", {
+      contextMode: "suppress",
+      content: doc("MANUAL_ACTIVE_TAB_BODY"),
+    });
+    const entries = [excluded, manual];
+    const excludedResult = await collectNonSceneContext(
+      request({
+        activeTab: { nodeId: excluded.id, contentType: "codex" },
+        excludedAutoEntryIds: [excluded.id],
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+      }),
+    );
+    expect(excludedResult.promptInput.activeTabContent).toBeUndefined();
+
+    const manualResult = await collectNonSceneContext(
+      request({
+        sessionId: "session-1",
+        activeTab: { nodeId: manual.id, contentType: "codex" },
+        excludedAutoEntryIds: [manual.id],
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        listPinnedCodex: async () => [pinnedCodex(manual, "manual")],
+      }),
+    );
+    expect(manualResult.promptInput.activeTabContent?.content).toBe(
+      "MANUAL_ACTIVE_TAB_BODY",
+    );
+
+    const focusResult = await collectNonSceneContext(
+      request({
+        scope: { kind: "codex", entryId: manual.id },
+        containerScope: "codex",
+        scopeAnchorId: manual.id,
+        activeTab: { nodeId: manual.id, contentType: "codex" },
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+      }),
+    );
+    expect(focusResult.promptInput.focusSubject?.kind).toBe("codex");
+    expect(focusResult.promptInput.activeTabContent).toBeUndefined();
+  });
+
+  it("materializes a non-scene snippet active tab except when it is already the focus", async () => {
+    const snippet: Snippet = {
+      id: "snippet-1",
+      projectId: "project-1",
+      sceneId: null,
+      title: "Active Snippet",
+      content: doc("ACTIVE_SNIPPET_BODY"),
+      version: 0,
+      tagsCache: null,
+      sourceChatMessageId: null,
+      usageCount: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const getSnippet = vi.fn(
+      async (_projectId: string, _snippetId: string) => snippet,
+    );
+    const activeResult = await collectNonSceneContext(
+      request({ activeTab: { nodeId: snippet.id, contentType: "snippet" } }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        getSnippet,
+      }),
+    );
+    expect(activeResult.promptInput.activeTabContent).toEqual({
+      type: "snippet",
+      title: snippet.title,
+      content: "ACTIVE_SNIPPET_BODY",
+    });
+
+    const focusResult = await collectNonSceneContext(
+      request({
+        scope: { kind: "snippet", snippetId: snippet.id },
+        containerScope: "snippet",
+        scopeAnchorId: snippet.id,
+        activeTab: { nodeId: snippet.id, contentType: "snippet" },
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        getSnippet,
+      }),
+    );
+    expect(focusResult.promptInput.focusSubject?.kind).toBe("snippet");
+    expect(focusResult.promptInput.activeTabContent).toBeUndefined();
+  });
+
+  it("reports an unavailable active snippet without aborting the plan", async () => {
+    const result = await collectNonSceneContext(
+      request({
+        activeTab: { nodeId: "missing-snippet", contentType: "snippet" },
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        getSnippet: async () => undefined,
+      }),
+    );
+
+    expect(result.promptInput.activeTabContent).toBeUndefined();
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        source: "active-tab",
+        code: "ACTIVE_TAB_SNIPPET_UNAVAILABLE",
+        severity: "warning",
+      }),
+    ]);
+  });
+
+  it("selects text and structured current-turn mentions without promoting them to pins", async () => {
+    const textMention = codexEntry("text-mention", { name: "Alice" });
+    const structuredMention = codexEntry("structured-mention");
+    const inputMention = codexEntry("input-mention");
+    const entries = [textMention, structuredMention, inputMention];
+    const findMentionedEntries = vi.fn(
+      async (text: string, candidates: CodexMatchTarget[]) =>
+        text.includes("Alice")
+          ? candidates.filter((entry) => entry.id === textMention.id)
+          : [],
+    );
+
+    const result = await collectNonSceneContext(
+      request({
+        outgoingUserMessage: "Tell me about Alice",
+        mentionedCodexIds: [structuredMention.id],
+        inputPinnedEntryIds: [inputMention.id],
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        findMentionedEntries,
+      }),
+    );
+
+    expect(findMentionedEntries).toHaveBeenCalledWith(
+      "Tell me about Alice",
+      expect.arrayContaining(
+        entries.map((entry) => expect.objectContaining({ id: entry.id })),
+      ),
+    );
+    expect(result.detectedEntries.map((entry) => entry.id)).toEqual([
+      inputMention.id,
+      structuredMention.id,
+      textMention.id,
+    ]);
+    expect(result.promptInput.pinnedCodexEntries).toBeUndefined();
+  });
+
+  it("does not escalate current-turn mentions to the suppress explicit-pin exception", async () => {
+    const suppressed = codexEntry("suppressed-current", {
+      name: "Classified",
+      contextMode: "suppress",
+    });
+
+    const result = await collectNonSceneContext(
+      request({
+        outgoingUserMessage: "Discuss Classified",
+        mentionedCodexIds: [suppressed.id],
+        inputPinnedEntryIds: [suppressed.id],
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => [suppressed],
+        findMentionedEntries: async (_text, entries) => entries,
+      }),
+    );
+
+    expect(result.detectedEntries).toEqual([]);
+    expect(result.promptInput.codexEntries).toBeUndefined();
+    expect(result.promptInput.pinnedCodexEntries).toBeUndefined();
+    expect(result.promptInput.contextDecisions).toEqual([
+      expect.objectContaining({
+        key: `codex:${suppressed.id}`,
+        status: "excluded",
+        reason: "policy-suppress",
+      }),
+    ]);
+  });
+
+  it("ignores legacy chat-mention DB pins but keeps manual suppress pins", async () => {
+    const legacyMentionPin = codexEntry("legacy-chat-mention", {
+      contextMode: "suppress",
+    });
+    const manualPin = codexEntry("manual-suppress", {
+      contextMode: "suppress",
+    });
+
+    const result = await collectNonSceneContext(
+      request({ sessionId: "session-1" }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => [legacyMentionPin, manualPin],
+        listPinnedCodex: async () => [
+          pinnedCodex(legacyMentionPin, "chat_mention"),
+          pinnedCodex(manualPin, "manual"),
+        ],
+      }),
+    );
+
+    expect(
+      result.promptInput.pinnedCodexEntries?.map((entry) => entry.id),
+    ).toEqual([manualPin.id]);
+    expect(result.promptInput.pinnedCodexEntries?.[0]).toEqual(
+      expect.objectContaining({
+        id: manualPin.id,
+        summary: manualPin.summary,
+      }),
+    );
+    const finalPrompt = buildSystemPrompt(result.promptInput).prompt;
+    expect(finalPrompt).not.toContain(legacyMentionPin.id);
+    expect(finalPrompt).not.toContain(legacyMentionPin.summary ?? "");
+  });
+
+  it("treats visible direct children of a manual withChildren pin as full explicit pins", async () => {
+    const parent = codexEntry("manual-parent", { contextMode: "suppress" });
+    const mentionedChild = codexEntry("manual-mentioned-child", {
+      parentId: parent.id,
+      content: doc("NON_SCENE_MENTIONED_CHILD_BODY"),
+      tagsCache: JSON.stringify(["non-scene-child-tag"]),
+    });
+    const suppressChild = codexEntry("manual-suppress-child", {
+      parentId: parent.id,
+      contextMode: "suppress",
+      content: doc("NON_SCENE_SUPPRESS_CHILD_BODY"),
+    });
+    const hiddenChild = codexEntry("manual-hidden-child", {
+      parentId: parent.id,
+      contextMode: "hidden",
+      content: doc("NON_SCENE_HIDDEN_CHILD_BODY"),
+    });
+    const entries = [parent, mentionedChild, suppressChild, hiddenChild];
+    const result = await collectNonSceneContext(
+      request({ sessionId: "session-1" }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        listPinnedCodex: async () => [pinnedCodex(parent, "manual", true)],
+        listContextDetails: async () => [
+          {
+            entryId: suppressChild.id,
+            definitionId: "role",
+            fieldName: "Role",
+            fieldType: "text",
+            value: "Explicit non-scene child detail",
+          },
+        ],
+      }),
+    );
+
+    const pinnedParent = result.promptInput.pinnedCodexEntries?.[0];
+    expect(pinnedParent?.children?.map((child) => child.id)).toEqual([
+      mentionedChild.id,
+      suppressChild.id,
+    ]);
+    const prompt = buildSystemPrompt(result.promptInput).prompt;
+    expect(prompt).toContain("NON_SCENE_MENTIONED_CHILD_BODY");
+    expect(prompt).toContain("NON_SCENE_SUPPRESS_CHILD_BODY");
+    expect(prompt).toContain("non-scene-child-tag");
+    expect(prompt).toContain("Explicit non-scene child detail");
+    expect(prompt).not.toContain("NON_SCENE_HIDDEN_CHILD_BODY");
+  });
+
+  it("renders automatic mentioned descendants as identity-only and keeps hidden descendants closed", async () => {
+    const parent = codexEntry("automatic-parent", {
+      contextMode: "always",
+      childrenBudget: "expanded",
+    });
+    const mentionedChild = codexEntry("automatic-mentioned-child", {
+      name: "Automatic Mentioned Child",
+      parentId: parent.id,
+      summary: "AUTOMATIC_CHILD_SECRET_SUMMARY",
+      content: doc("AUTOMATIC_CHILD_SECRET_BODY"),
+    });
+    const hiddenChild = codexEntry("automatic-hidden-child", {
+      name: "Automatic Hidden Child",
+      parentId: parent.id,
+      contextMode: "hidden",
+      summary: "AUTOMATIC_HIDDEN_SECRET",
+    });
+    const entries = [parent, mentionedChild, hiddenChild];
+    const listCodexEntriesByIds = vi.fn(
+      async (_projectId: string, ids: readonly string[]) =>
+        ids.flatMap(
+          (id) => entries.find((candidate) => candidate.id === id) ?? [],
+        ),
+    );
+    const result = await collectNonSceneContext(
+      request(),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        listCodexEntriesByIds,
+      }),
+    );
+
+    const prompt = buildSystemPrompt(result.promptInput).prompt;
+    expect(prompt).toContain("Automatic Mentioned Child");
+    expect(prompt).not.toContain("AUTOMATIC_CHILD_SECRET_SUMMARY");
+    expect(prompt).not.toContain("AUTOMATIC_CHILD_SECRET_BODY");
+    expect(prompt).not.toContain("Automatic Hidden Child");
+    expect(prompt).not.toContain("AUTOMATIC_HIDDEN_SECRET");
+    const loadedIds = listCodexEntriesByIds.mock.calls.flatMap(([, ids]) => [
+      ...ids,
+    ]);
+    expect(loadedIds).toContain(parent.id);
+    expect(loadedIds).not.toEqual(
+      expect.arrayContaining([mentionedChild.id, hiddenChild.id]),
+    );
   });
 
   it("builds a thread focus from its snapshotted members even in eco mode", async () => {
@@ -490,6 +895,8 @@ describe("collectNonSceneContext", () => {
       }),
       phase("p-manual-child", manualChild.id, "scene-1", {
         summaryOverride: "child phase summary",
+        contentOverride: doc("child phase full body"),
+        contextModeOverride: "always",
       }),
       phase("p-always", always.id, "scene-1", {
         summaryOverride: "always phase summary",
@@ -579,13 +986,18 @@ describe("collectNonSceneContext", () => {
         content: "revealed phase content",
       }),
     ]);
-    expect(result.alwaysEntries).toEqual([
-      expect.objectContaining({
-        id: always.id,
-        summary: "always phase summary",
-        contextMode: "always",
-      }),
-    ]);
+    expect(result.alwaysEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: always.id,
+          summary: "always phase summary",
+          contextMode: "always",
+        }),
+      ]),
+    );
+    expect(result.alwaysEntries.map((entry) => entry.id)).not.toContain(
+      manualChild.id,
+    );
     expect(result.promptInput.pinnedCodexEntries).toEqual([
       expect.objectContaining({
         id: manual.id,
@@ -594,11 +1006,14 @@ describe("collectNonSceneContext", () => {
           expect.objectContaining({
             id: manualChild.id,
             summary: "child phase summary",
+            fullContent: "child phase full body",
           }),
         ],
-        childrenContext: expect.stringContaining("child phase summary"),
       }),
     ]);
+    expect(
+      result.promptInput.pinnedCodexEntries?.[0]?.childrenContext ?? "",
+    ).not.toContain("child phase summary");
     expect(result.promptInput.codexEntries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -615,10 +1030,276 @@ describe("collectNonSceneContext", () => {
     ).not.toContain(hiddenPin.id);
   });
 
-  it("uses latest for a user-selected Codex scope and resolves related entries", async () => {
+  it("keeps excluded-auto entries out of current mentions and every closure path", async () => {
+    const selected = codexEntry("selected-scope", {
+      contextMode: "suppress",
+      childrenBudget: "expanded",
+    });
+    const excludedCurrent = codexEntry("excluded-current", {
+      name: "Excluded Current",
+    });
+    const excludedAlways = codexEntry("excluded-always", {
+      contextMode: "always",
+    });
+    const excludedChild = codexEntry("excluded-child", {
+      parentId: selected.id,
+      contextMode: "always",
+      summary: "EXCLUDED_CHILD_SECRET",
+    });
+    const excludedRelation = codexEntry("excluded-relation", {
+      summary: "EXCLUDED_RELATION_SECRET",
+    });
+    const excludedDetail = codexEntry("excluded-detail", {
+      name: "Excluded Detail Name",
+    });
+    const allowedAlways = codexEntry("allowed-always", {
+      contextMode: "always",
+    });
+    const entries = [
+      selected,
+      excludedCurrent,
+      excludedAlways,
+      excludedChild,
+      excludedRelation,
+      excludedDetail,
+      allowedAlways,
+    ];
+    const excludedIds = [
+      excludedCurrent.id,
+      excludedAlways.id,
+      excludedChild.id,
+      excludedRelation.id,
+      excludedDetail.id,
+    ];
+    const listCodexEntriesByIds = vi.fn(
+      async (_projectId: string, ids: readonly string[]) =>
+        ids.flatMap(
+          (id) => entries.find((candidate) => candidate.id === id) ?? [],
+        ),
+    );
+    const loadMapBoardMarkdown = vi.fn(
+      async (
+        _request: CreateNonSceneTurnContextRequestInput,
+        _entries: Array<{ id: string; name: string }>,
+      ) => undefined,
+    );
+
+    const result = await collectNonSceneContext(
+      request({
+        scope: { kind: "codex", entryId: selected.id },
+        containerScope: "codex",
+        scopeAnchorId: selected.id,
+        outgoingUserMessage: "Excluded Current",
+        mentionedCodexIds: [excludedCurrent.id],
+        inputPinnedEntryIds: [excludedCurrent.id],
+        excludedAutoEntryIds: excludedIds,
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        listCodexEntriesByIds,
+        findMentionedEntries: async (_text, candidates) =>
+          candidates.filter((entry) => entry.id === excludedCurrent.id),
+        listCodexRelations: async () => [
+          relation(
+            "excluded-relation-edge",
+            selected.id,
+            excludedRelation.id,
+            "must-not-surface",
+          ),
+        ],
+        listContextDetails: async () => [
+          {
+            entryId: selected.id,
+            definitionId: "excluded-reference",
+            fieldName: "Secret reference",
+            fieldType: "codex_reference",
+            value: excludedDetail.id,
+          },
+        ],
+        loadMapBoardMarkdown,
+      }),
+    );
+
+    const loadedIds = listCodexEntriesByIds.mock.calls.flatMap(
+      ([, ids]) => ids,
+    );
+    expect(loadedIds).toEqual(
+      expect.arrayContaining([selected.id, allowedAlways.id]),
+    );
+    expect(loadedIds).not.toEqual(expect.arrayContaining(excludedIds));
+    expect(result.detectedEntries).toEqual([]);
+    expect(result.alwaysEntries.map((entry) => entry.id)).toEqual([
+      allowedAlways.id,
+    ]);
+    expect(result.promptInput.relationCodexEntries).toBeUndefined();
+    expect(result.promptInput.focusSubject?.kind).toBe("codex");
+    const focusEntry =
+      result.promptInput.focusSubject?.kind === "codex"
+        ? result.promptInput.focusSubject.entry
+        : undefined;
+    expect(focusEntry?.childrenContext ?? "").not.toContain(
+      "EXCLUDED_CHILD_SECRET",
+    );
+    expect(focusEntry?.customDetails).toBeUndefined();
+    expect(loadMapBoardMarkdown).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.not.arrayContaining(
+        excludedIds.map((id) => expect.objectContaining({ id })),
+      ),
+    );
+  });
+
+  it("passes only map-reference identity candidates to the non-scene map adapter", async () => {
+    const mentioned = codexEntry("map-mentioned", {
+      contextMode: "mentioned",
+    });
+    const always = codexEntry("map-always", { contextMode: "always" });
+    const suppressPin = codexEntry("map-suppress-pin", {
+      contextMode: "suppress",
+    });
+    const hidden = codexEntry("map-hidden", { contextMode: "hidden" });
+    const excluded = codexEntry("map-excluded", {
+      contextMode: "mentioned",
+    });
+    const entries = [mentioned, always, suppressPin, hidden, excluded];
+    const loadMapBoardMarkdown = vi.fn(
+      async (
+        _request: CreateNonSceneTurnContextRequestInput,
+        _entries: Array<{ id: string; name: string }>,
+      ) => undefined,
+    );
+
+    await collectNonSceneContext(
+      request({
+        sessionId: "session-1",
+        map: { enabled: true, boardId: "board-1", activeBoardId: null },
+        excludedAutoEntryIds: [excluded.id],
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        listPinnedCodex: async () => [pinnedCodex(suppressPin, "manual")],
+        loadMapBoardMarkdown,
+      }),
+    );
+
+    expect(loadMapBoardMarkdown).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({ id: mentioned.id }),
+        expect.objectContaining({ id: always.id }),
+      ]),
+    );
+    const mapEntries = loadMapBoardMarkdown.mock.calls[0]![1];
+    expect(mapEntries.map((entry) => entry.id)).not.toEqual(
+      expect.arrayContaining([suppressPin.id, hidden.id, excluded.id]),
+    );
+  });
+
+  it("renders mentioned relation targets as identity-only and keeps always targets canonical", async () => {
+    const selected = codexEntry("relation-root", {
+      contextMode: "suppress",
+      summary: "selected summary",
+      content: "selected content",
+    });
+    const summaryTarget = codexEntry("relation-summary-target", {
+      name: "Summary Target",
+      summary: "RELATION_SECRET_SUMMARY",
+      content: "summary target body",
+    });
+    const contentTarget = codexEntry("relation-content-target", {
+      name: "Content Target",
+      summary: "",
+      content: doc("RELATION_SECRET_CONTENT"),
+    });
+    const alwaysTarget = codexEntry("relation-always-target", {
+      name: "Always Target",
+      contextMode: "always",
+      summary: "ALWAYS_CANONICAL_SUMMARY",
+    });
+    const entries = [selected, summaryTarget, contentTarget, alwaysTarget];
+
+    const result = await collectNonSceneContext(
+      request({
+        scope: { kind: "codex", entryId: selected.id },
+        containerScope: "codex",
+        scopeAnchorId: selected.id,
+      }),
+      createNonSceneContextSourceDeps({
+        fetchProjectContext: async () => ({ title: "Project", language: "en" }),
+        listCodexEntries: async () => entries,
+        findMentionedEntries: async () => [],
+        listCodexRelations: async () => [
+          relation(
+            "summary-edge",
+            selected.id,
+            summaryTarget.id,
+            "summary-link",
+          ),
+          relation(
+            "content-edge",
+            selected.id,
+            contentTarget.id,
+            "content-link",
+          ),
+          relation("always-edge", selected.id, alwaysTarget.id, "always-link"),
+        ],
+      }),
+    );
+
+    expect(result.promptInput.relationCodexEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: summaryTarget.id,
+          summary: "",
+          relationVia: expect.stringContaining("summary-link"),
+        }),
+        expect.objectContaining({
+          id: contentTarget.id,
+          summary: "",
+          relationVia: expect.stringContaining("content-link"),
+        }),
+      ]),
+    );
+    for (const entry of result.promptInput.relationCodexEntries ?? []) {
+      expect(entry.contentFallback).toBeUndefined();
+      expect(entry.customDetails).toBeUndefined();
+    }
+    expect(result.promptInput.codexEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: alwaysTarget.id,
+          summary: "ALWAYS_CANONICAL_SUMMARY",
+        }),
+      ]),
+    );
+    expect(
+      result.promptInput.codexEntries?.find(
+        (entry) => entry.id === alwaysTarget.id,
+      ),
+    ).not.toHaveProperty("relationVia");
+
+    const finalPrompt = buildSystemPrompt(result.promptInput).prompt;
+    expect(finalPrompt).toContain(summaryTarget.name);
+    expect(finalPrompt).toContain(contentTarget.name);
+    expect(finalPrompt).toContain("summary-link");
+    expect(finalPrompt).toContain("content-link");
+    expect(finalPrompt).not.toContain("RELATION_SECRET_SUMMARY");
+    expect(finalPrompt).not.toContain("RELATION_SECRET_CONTENT");
+    expect(finalPrompt).toContain("ALWAYS_CANONICAL_SUMMARY");
+  });
+
+  it("uses latest for a user-selected Codex scope and projects body matches as identity-only", async () => {
     const selected = codexEntry("selected", { contextMode: "suppress" });
-    const related = codexEntry("related");
-    const relationTarget = codexEntry("relation-target");
+    const related = codexEntry("related", {
+      name: "Related Identity",
+      summary: "RELATED_MATCH_SECRET_SUMMARY",
+      content: doc("RELATED_MATCH_SECRET_BODY"),
+    });
+    const relationTarget = codexEntry("relation-target", {
+      contextMode: "always",
+    });
     const early = scene("scene-1", "a0");
     const late = scene("scene-2", "a1");
     const phases = [
@@ -688,15 +1369,27 @@ describe("collectNonSceneContext", () => {
       id: selected.id,
       name: selected.name,
     });
-    expect(result.detectedEntries).toEqual([
-      expect.objectContaining({ id: related.id, summary: "related latest" }),
-    ]);
+    expect(result.detectedEntries).toEqual([]);
     expect(result.promptInput.relationCodexEntries).toEqual([
       expect.objectContaining({
-        id: relationTarget.id,
-        summary: "relation latest",
-        relationVia: expect.stringContaining("knows"),
+        id: related.id,
+        name: "Related Identity",
+        summary: "",
+        relationVia: expect.any(String),
       }),
     ]);
+    expect(result.promptInput.codexEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: relationTarget.id,
+          summary: "relation latest",
+        }),
+      ]),
+    );
+    const finalPrompt = buildSystemPrompt(result.promptInput).prompt;
+    expect(finalPrompt).toContain("Related Identity");
+    expect(finalPrompt).not.toContain("related latest");
+    expect(finalPrompt).not.toContain("RELATED_MATCH_SECRET_SUMMARY");
+    expect(finalPrompt).not.toContain("RELATED_MATCH_SECRET_BODY");
   });
 });

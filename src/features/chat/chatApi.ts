@@ -43,6 +43,7 @@ import { getPromptCatalog } from "@/prompts/index";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { getProject } from "@/features/project/api";
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
+import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload";
 
 // --- AI message sending (existing) ---
 
@@ -210,6 +211,8 @@ export async function sendAgentMessage(
   /** Immutable route snapshot; takes precedence over the legacy override. */
   resolvedProvider?: string | null,
   resolvedEndpointId?: string | null,
+  /** Turn-start protocol snapshot; prevents backend settings drift mid-turn. */
+  resolvedToolProtocol?: TurnToolProtocol | null,
 ): Promise<AgentLLMResponse> {
   return invoke<AgentLLMResponse>("send_agent_message", {
     messages,
@@ -226,6 +229,7 @@ export async function sendAgentMessage(
     provider: resolvedProvider ?? provider ?? null,
     endpointId: resolvedEndpointId ?? endpointId ?? null,
     ...(requestMaxOutputTokens != null ? { requestMaxOutputTokens } : {}),
+    ...(resolvedToolProtocol != null ? { resolvedToolProtocol } : {}),
   });
 }
 
@@ -862,7 +866,7 @@ export async function updateSessionTitle(
 export type PinnedCodexEntryWithData = CodexEntry & {
   withChildren: boolean;
   pinnedType: "codex" | "snippet";
-  /** ピンの起源: "manual" = 手動ピン, "chat_mention" = チャット@メンション */
+  /** ピンの起源。`chat_mention` は旧バージョンが保存した互換値。 */
   pinSource?: "manual" | "chat_mention";
 };
 
@@ -1058,7 +1062,28 @@ export async function pinCodexEntry(
           withChildren: withChildren ? 1 : 0,
           pinSource: source,
         };
-  await db.insert(chatSessionPinnedCodex).values(values).onConflictDoNothing();
+  const insert = db.insert(chatSessionPinnedCodex).values(values);
+  if (source === "manual") {
+    // Older releases persisted current-input mentions in the same unique row
+    // with pinSource=chat_mention. Promote that row atomically when the user
+    // explicitly chooses Spotlight instead of silently ignoring the insert.
+    const conflictTarget =
+      type === "snippet"
+        ? [chatSessionPinnedCodex.sessionId, chatSessionPinnedCodex.snippetId]
+        : [
+            chatSessionPinnedCodex.sessionId,
+            chatSessionPinnedCodex.codexEntryId,
+          ];
+    await insert.onConflictDoUpdate({
+      target: conflictTarget,
+      set: {
+        pinSource: "manual",
+        withChildren: withChildren ? 1 : 0,
+      },
+    });
+  } else {
+    await insert.onConflictDoNothing();
+  }
 }
 
 /**

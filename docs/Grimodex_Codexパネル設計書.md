@@ -51,7 +51,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - **DB スキーマ**: `codex_types` / `codex_entries`（`contextMode` / `childrenBudget` / `notes` / `icon` / `parentId` 等）/ `codex_tags` / `codex_entry_tags` / `codex_detail_definitions` / `codex_detail_values` / `codex_relations`（対人リレーション）/ `codex_dismissed_relations`（親子提案の却下記録）/ `codex_quick_pins` / `codex_entry_phases` / `codex_phase_detail_overrides` / `scene_codex_pins` / `scene_codex_mentions` 全て存在。`tree_nodes.story_time_order` / `story_time_label` / `projects.phase_resolution_mode` / `authorship_spans.phase_id` も存在
 - **API モジュール分割**: `tagApi` / `phaseApi` / `relationApi` / `detailApi` / `typeApi` の 5 分割（設計書通り）+ 対人リレーション用 `codexRelationApi` を実装済み
 - **`CodexCommandPalette`** + Aliases / ExcludedAliases / Tags 構造化管理 UI（`AliasesField` / `ExcludedAliasesField` / `TagSelector`）
-- **Chat 注入連携**: `chat/context/sources/` が Scene / non-Scene の source adapter を担当し、Phase 解決後の effective `contextMode` で visibility を判定する。`hidden` は全経路で除外、`suppress` は明示 pin のみ許可し、`always` / `mentioned` は trigger policy に従う。`childrenBudget` ベースの BFS 子孫注入（`buildChildrenContext` + `computeChildrenTokenBudget`）、プロジェクトスコープでの `formatTimelineContext` も同じ解決済み状態を使う
+- **Chat 注入連携**: `chat/context/sources/` が Scene / non-Scene の source adapter を担当し、Phase 解決後の effective `contextMode` と型付き trigger matrix で visibility を判定する。`hidden` は全経路で除外、`suppress` は Spotlight / Codex スコープ / `Pin with children` の明示選択のみ許可する。`mentioned` は現在シーン / 現在ターンの mention、明示選択、active tab で本文を注入し、自動 child / relation / cross-mention では identity-only。`always` は常時本文を注入する
 
 ### 設計と乖離している箇所（部分実装）
 
@@ -800,8 +800,8 @@ Trackingタブ内に「Context:」ドロップダウンを配置。エントリ�
 | モード | ラベル | 動作 |
 |--------|--------|------|
 | `always` | Always include | シーン内の言及有無に関わらず常に注入。ピン留め可 |
-| `mentioned` | When mentioned（デフォルト） | シーン内で検出された場合に注入。ピン留め可 |
-| `suppress` | Manual only | 自動検出では注入しない。ピン留めで上書き可 |
+| `mentioned` | When mentioned（デフォルト） | 現在シーン本文 / 現在ターンの入力で検出された場合、Spotlight / Codex スコープ / `Pin with children` で明示選択された場合、または active tab 表示時に注入 |
+| `suppress` | Manual only | 自動検出では注入しない。Spotlight / Codex スコープ / `Pin with children` で明示選択された場合のみ注入 |
 | `hidden` | Exclude from AI | AIコンテキストに一切含めない。ピン留め不可 |
 
 - ドロップダウンの各選択肢にはモードの説明をサブテキストで表示
@@ -1599,13 +1599,16 @@ function injectDescendants(parentId: string, budget: number): DescendantContext[
     visited.add(child.id);
 
     // 子エントリも個別にcontext_modeを判定（親のモードは伝播しない）
-    if (child.context_mode === 'hidden') continue;
-    if (child.context_mode === 'suppress' && !isPinned(child.id)) continue;
+    if (child.context_mode === 'hidden' || child.context_mode === 'suppress') continue;
 
-    const tokens = estimateTokens(child.summary || child.content);
+    const identityOnly = child.context_mode === 'mentioned';
+    const rendered = identityOnly
+      ? `${child.name} (${child.type}; id: ${child.id})`
+      : (child.summary || child.content);
+    const tokens = estimateTokens(rendered);
     if (tokens > remaining) break;  // 予算不足で打ち切り
 
-    results.push({ entry: child, tokens, depth: getDepthFrom(parentId, child.id) });
+    results.push({ entry: child, tokens, identityOnly, depth: getDepthFrom(parentId, child.id) });
     remaining -= tokens;
 
     // depth 2+ の子を末尾に追加（BFS: 幅優先で深掘り）
@@ -1633,7 +1636,9 @@ function buildCodexContext(matchedEntryIds: string[]): string {
     const descendants = injectDescendants(entryId, childBudget);
     for (const desc of descendants) {
       if (injectedIds.has(desc.entry.id)) continue;
-      contextParts.push(formatChildContext(desc.entry));  // summaryのみ
+      contextParts.push(desc.identityOnly
+        ? formatChildIdentity(desc.entry)
+        : formatChildContext(desc.entry));
       injectedIds.add(desc.entry.id);
     }
   }
@@ -1648,10 +1653,10 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 
 | 注入トリガー | 親エントリ | 子孫エントリ（自動注入） |
 |-------------|-----------|----------------------|
-| 自動検出（シーン本文にnameが出現） | フェーズ解決後のsummary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はフェーズ解決後のcontent全文をフォールバック** | フェーズ解決後のsummaryをBFS順に `children_budget`（デフォルト: compact = Layer 4の15%）まで注入 |
-| チャットメッセージ内で言及 | **自動ピン留め**: フェーズ解決後のcontent全文 + カスタムディテール（include_in_context=1） | フェーズ解決後のsummaryをBFS順に `children_budget` まで注入 |
-| ピン留め（手動） | フェーズ解決後のcontent全文 + カスタムディテール（include_in_context=1） | フェーズ解決後のsummaryをBFS順に `children_budget` まで注入 |
-| Pin with children（手動） | content全文 + カスタムディテール | **予算無視**: 直接子のcontent全文を注入（個別除外可能） |
+| 現在シーン本文で name / alias を検出 | フェーズ解決後のsummary + カスタムディテール（include_in_context=1）。**summaryが未記入の場合はフェーズ解決後のcontent全文をフォールバック** | `always` 子孫はsummary / content、`mentioned` 子孫はidentity-only行をBFS順に `children_budget`（デフォルト: compact = Layer 4の15%）まで注入 |
+| 現在ターンのチャット入力で name / alias または構造化 `@mention` を検出 | フェーズ解決後のsummary + カスタムディテール（include_in_context=1） | `always` 子孫はsummary / content、`mentioned` 子孫はidentity-only行を `children_budget` まで注入 |
+| Spotlight / Codex スコープ（明示選択） | フェーズ解決後のcontent全文 + カスタムディテール（include_in_context=1） | 同上 |
+| Pin with children（手動） | content全文 + カスタムディテール | **予算無視**: `mentioned` / `suppress` / `always` の直接子を個別の明示pinとしてcontent全文・タグ・カスタムディテール付きで注入。`hidden` は拒否 |
 
 **context_mode による制御**:
 
@@ -1660,9 +1665,9 @@ function buildCodexContext(matchedEntryIds: string[]): string {
 ```
 1. hidden → 注入リストから除外（ピンリストにあっても除外）
 2. always → 自動検出の有無に関わらず注入リストに追加
-3. mentioned → 現行ロジック（自動検出時のみ）
-4. suppress → 自動検出結果から除外。ピンリストに存在する場合のみ注入
-5. 子エントリも個別にcontext_modeを判定（親のモードは伝播しない）
+3. mentioned → 現在シーン / 現在ターンの検出、Spotlight / Codex スコープ / Pin with children、active tab で注入
+4. suppress → 自動検出結果から除外。Spotlight / Codex スコープ / Pin with children で明示選択された場合のみ注入
+5. 自動 child / relation / cross-mention では mentioned は identity-only、always は本文を含み、suppress / hidden は除外
 ```
 
 **カスタムディテールの注入**: `include_in_context = 1` のフィールドの値をsummaryに付加してコンテキストに含める。`codex_reference` フィールドは参照先エントリのnameに解決して表示。
@@ -1859,16 +1864,17 @@ DBスキーマの正規版は [統合DBスキーマ設計書](./Grimodex_統合D
 - `context_mode_override`: NULL = 変更なし。値は `always` / `mentioned` / `suppress` / `hidden`。
 - `anchor_node_id`: `ON DELETE SET NULL` — アンカーシーン削除時はNULLになり、Phaseは無効化（UIで警告表示）。
 
-**AI 露出 vs Wiki 限定（2026-06-28 追記）:**
+**AI 露出・手動のみ・非公開（2026-07-12 更新）:**
 
-Phase の effective `context_mode` が `suppress` または `hidden` のとき、UI では **「Wiki 限定 / AI に見せない」** と表示する（`phaseResolver.ts` の `aiVisible` 分解）。意味:
+Phase の effective `context_mode` は次の3区分で扱う。Timeline の集計表示では `suppress` と `hidden` を「自動除外」として合算するが、手動選択可否は異なる。
 
 | 区分 | effective context_mode | AI 文脈 | 用途 |
 |------|------------------------|---------|------|
-| **AI 露出** | `always` / `mentioned` | Phase summary 等が注入対象 | 物語上の状態変化を AI に覚えさせる |
-| **Wiki 限定** | `suppress` / `hidden` | **注入しない**（prompt 重量に無影響） | 設計メモ・純粋な記録・AI に見せたくない下書き |
+| **AI 露出** | `always` / `mentioned` | always は常時、mentioned は現在シーン / 現在ターンの検出または明示選択時に注入対象 | 物語上の状態変化を AI に覚えさせる |
+| **手動のみ** | `suppress` | 自動注入しない。Spotlight / Codex スコープ / `Pin with children` の明示選択時のみ注入 | 必要な会話だけで参照する設定 |
+| **非公開** | `hidden` | **どの経路でも注入しない** | AI に見せない下書き・記録 |
 
-Timeline タブの exposure バッジ（`exposureWikiCount` / `exposureAiCount`）と `maxAiVisibleSummaryChars` 警告は、この分解を可視化する。Base entry の `context_mode` も Phase override と同様に Wiki 限定判定に使う。
+Timeline タブの exposure バッジ（`exposureWikiCount` / `exposureAiCount`）と `maxAiVisibleSummaryChars` 警告は、自動候補と自動除外の分解を可視化する。Base entry の `context_mode` も Phase override と同じ matrix を使う。
 
 **Phase と時間軸の関係（設計不変条件）**:
 - **Phase の anchor は常に Scene**。「作中時間」への切り替えは、アンカーを書き換えるのではなく、同じアンカーを異なる軸で並べ替えることで行う。
@@ -2368,9 +2374,9 @@ CodexQuick の各行とホバーポップオーバーには、**アクティブ�
 
 **シーンスコープChat**（`isGlobalChat = false`）:
 - シーン本文で自動検出されたCodexエントリの**フェーズ解決後の** summary がChatのシステムプロンプト Layer 4 に注入される（summaryが未記入の場合はフェーズ解決後のcontent全文をフォールバック）
-- チャットメッセージ内で言及されたCodexエントリは自動的にピン留めされ、フェーズ解決後のcontent全文が注入される
+- 現在ターンのチャット入力で言及されたCodexエントリは、そのターンだけフェーズ解決後のsummaryを注入する。Spotlightへ自動昇格せずDBへ永続化しない
 - 手動ピン留めされたエントリはフェーズ解決後の content 全文が注入される
-- 親エントリが注入される場合、子孫エントリのフェーズ解決後のsummaryがサブツリートークン予算の範囲内でBFS順に自動注入される（「エントリ間リレーション」セクション参照）
+- 親エントリが注入される場合、`always` 子孫のフェーズ解決後summary / contentと `mentioned` 子孫のidentity-only行がサブツリートークン予算の範囲内でBFS順に自動注入される（「エントリ間リレーション」セクション参照）
 - 自動注入された子エントリはコンテキストバーに薄いスタイルのピルで表示される
 - フェーズが適用されているエントリは、コンテキストにフェーズラベルが付記される（例: `## エララ (キャラクター) [反乱参加]`）
 

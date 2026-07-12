@@ -4,6 +4,11 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import type { L1TrimMarkers, L3TrimMarkers } from "@/prompts/shared/types";
 import {
+  AUTHOR_POLICY_TAG,
+  PROMPT_DATA_TAGS,
+  PROMPT_RESERVED_TAG_NAMES,
+} from "@/prompts/shared/dataLayerRegistry";
+import {
   JA_L1_TRIM_MARKERS,
   JA_L3_TRIM_MARKERS,
 } from "@/prompts/ja/chatSystem";
@@ -74,7 +79,9 @@ export interface CodexContext {
 
 export interface PinnedCodexContext extends CodexContext {
   withChildren?: boolean;
-  children?: CodexContext[]; // full content children (budget ignored)
+  /** Direct children explicitly selected by `withChildren`; full content,
+   * pinned retention priority, subtree budget ignored. */
+  children?: CodexContext[];
 }
 
 export interface PinnedSnippetContext {
@@ -91,6 +98,11 @@ export interface PinnedStickyContext {
 
 export interface TrimInput {
   baseText: string;
+  /** Application-enforced instruction that must remain after author policy. */
+  fixedPolicyText?: string;
+  /** Author-controlled instructions. Protected from ordinary L1 trimming but
+   * bounded when the final context window cannot fit them wholesale. */
+  authorPolicyText?: string;
   l1Text: string;
   l2Text: string;
   l3Text: string;
@@ -458,6 +470,11 @@ let encoder: Tiktoken | null = null;
 let encoderLoadingPromise: Promise<Tiktoken | null> | null = null;
 let _heuristicWarned = false;
 
+/** Estimator identity persisted with usage-drift telemetry. */
+export function getTokenEstimatorFamily(): "o200k_base" | "cjk_heuristic_v1" {
+  return encoder ? "o200k_base" : "cjk_heuristic_v1";
+}
+
 export async function ensureTokenizer(): Promise<void> {
   const __t0 = performance.now();
   if (encoder) {
@@ -539,25 +556,18 @@ export function sanitizeSceneContent(html: string): string {
  * ため、セキュリティ境界はこのタグが担い、内部の `##` ヘッダは書式として温存する。
  * trim 関数群は `##` ヘッダ形式に依存するため、ラップは必ず trim 後に行うこと。
  */
-export const PROMPT_DATA_TAGS = {
-  l1: "project_info",
-  l2: "story_so_far",
-  l3: "current_scene",
-  focus: "focus_subject",
-  l4: "codex_entries",
-  plotThreadScenes: "plot_thread_scenes",
-  chronicle: "chronicle_snapshot",
-  rag: "related_scenes",
-  episodic: "chat_history",
-  l5: "conversation_summary",
-} as const;
+export { PROMPT_DATA_TAGS };
 
 // 予約タグ名の開閉タグ風文字列 (大文字小文字・空白変種を含む) を導く `<`。
 // データ内に閉じタグが混入するとブロック境界の終了を偽装できるため、`<` の
 // 直後に `\` を挿入して無害化する。挿入後は `<` の次が `\` になり再マッチ
 // しない (冪等)。`<note>` `<sticky>` `<map>` は予約外なので素通しになる。
-const RESERVED_TAG_RE =
-  /<(?=\s*\/?\s*(?:project_info|story_so_far|current_scene|focus_subject|codex_entries|plot_thread_scenes|chronicle_snapshot|related_scenes|chat_history|conversation_summary)\b)/gi;
+const escapeRegex = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const RESERVED_TAG_RE = new RegExp(
+  `<(?=\\s*\\/?\\s*(?:${PROMPT_RESERVED_TAG_NAMES.map(escapeRegex).join("|")})\\b)`,
+  "gi",
+);
 
 /** データ内の予約タグ偽装をエスケープする (`</current_scene>` → `<\/current_scene>`)。 */
 export function escapeReservedTags(text: string): string {
@@ -568,11 +578,15 @@ export function escapeReservedTags(text: string): string {
  * trim 済みのレイヤーテキストを予約タグで包む。空白のみなら空文字を返し、
  * 空レイヤーに `<story_so_far></story_so_far>` のような空ブロックを出さない。
  */
-export function wrapDataLayer(text: string, tag: string): string {
+function wrapPromptLayer(text: string, tag: string): string {
   if (!text.trim()) return "";
   const escaped = escapeReservedTags(text);
   const body = escaped.startsWith("\n") ? escaped.slice(1) : escaped;
   return `\n<${tag}>\n${body}\n</${tag}>`;
+}
+
+export function wrapDataLayer(text: string, tag: string): string {
+  return wrapPromptLayer(text, tag);
 }
 
 function mergeCodexContextsById(entries: CodexContext[]): CodexContext[] {
@@ -828,6 +842,24 @@ function trimFocusTextPreservingMinimum(
     : minimumText;
 }
 
+/** Trim author instructions only after reference layers have yielded. */
+function trimAuthorPolicyText(text: string, targetTokens: number): string {
+  if (countTokens(text) <= targetTokens) return text;
+  if (targetTokens <= 0) return "";
+
+  const chars = Array.from(text);
+  const suffix = "\n…";
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const candidate = `${chars.slice(0, mid).join("")}${suffix}`;
+    if (countTokens(candidate) <= targetTokens) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo > 0 ? `${chars.slice(0, lo).join("")}${suffix}` : "";
+}
+
 /** semantic recall (RAG): 末尾 (低スコア側) の抜粋ブロックから丸ごと削る。
  * 抜粋が 1 つも残らない場合はヘッダだけ残しても無意味なので空にする。 */
 function trimRagText(text: string, targetTokens: number): string {
@@ -865,6 +897,8 @@ export function trimToFit(
 ): TrimResult {
   const sumTokens = (t: TrimInput) =>
     countTokens(t.baseText) +
+    countTokens(t.fixedPolicyText ?? "") +
+    countTokens(t.authorPolicyText ?? "") +
     countTokens(t.l1Text) +
     countTokens(t.l2Text) +
     countTokens(t.l3Text) +
@@ -922,6 +956,11 @@ export function trimToFit(
     { key: "l3Text", name: "L3", fn: (t, n) => trimL3Text(t, n, markers.l3) },
     { key: "l1Text", name: "L1", fn: (t, n) => trimL1Text(t, n, markers.l1) },
     {
+      key: "authorPolicyText",
+      name: "AUTHOR_POLICY",
+      fn: trimAuthorPolicyText,
+    },
+    {
       key: "focusText",
       name: "FOCUS",
       fn: options?.focusTrimmer ?? trimFocusText,
@@ -964,23 +1003,40 @@ export function buildSystemPrompt(
   const fsCountSuffix = isEnLang ? "" : "件";
   const layers: LayerBreakdown[] = [];
 
-  // Base instruction (L0)。Agent モード時は agentInstruction を付加。
-  let baseText = input.agentMode
+  // Application policy (L0)。Agent モード時は agentInstruction を付加。
+  const baseText = input.agentMode
     ? `${s.baseText}\n\n${s.agentInstruction}`
     : s.baseText;
-  // ユーザー定義のチャット追記指示 (口調・振る舞い・ペルソナ)。
-  // bodyWriteDisabledInstruction と同様 L0 末尾に置くことで trim 免除され常に効く。
-  // 空文字なら baseText は現行のまま (byte-identical / cache 非破壊)。
-  // agentInstruction の後ろに置き、組み込みツール運用規約を上書きする印象を避ける。
-  if (input.customChatInstruction?.trim()) {
-    baseText += `\n\n${input.customChatInstruction.trim()}`;
+  let fixedPolicyText = "";
+  // Author/project instructions are intentional instructions, not reference
+  // data. Keep them outside <project_info> and give them a separate trim slot
+  // so a large but valid project configuration cannot make every request
+  // overflow the window.
+  const authorPolicyLines: string[] = [];
+  if (input.project?.styleGuide?.trim()) {
+    authorPolicyLines.push(
+      `${s.labels.styleGuide}:\n${input.project.styleGuide.trim()}`,
+    );
   }
-  // AiPolicy で本文書き込みが無効なプロジェクトでは、チャットからの本文代筆を
-  // 抑止する指示を L0 に追加する (bodyWrite=ON のデフォルトでは何も足さない)。
-  // L0 は trim 対象外なので、この hard constraint は常に残る。
-  // ユーザー custom より後ろに置き、自由文で policy が弱まらない順序にする。
+  if (input.project?.aiInstructions?.trim()) {
+    authorPolicyLines.push(
+      `${s.labels.aiInstructions}:\n${input.project.aiInstructions.trim()}`,
+    );
+  }
+  if (input.customChatInstruction?.trim()) {
+    authorPolicyLines.push(
+      `${s.labels.customChatInstruction}:\n${input.customChatInstruction.trim()}`,
+    );
+  }
+  const authorPolicyText = wrapPromptLayer(
+    authorPolicyLines.join("\n\n"),
+    AUTHOR_POLICY_TAG,
+  );
+
+  // Keep the application hard constraint after free-form author policy so the
+  // final instruction in this policy prefix cannot appear to relax it.
   if (input.project?.bodyWriteDisabled) {
-    baseText += `\n\n${s.bodyWriteDisabledInstruction}`;
+    fixedPolicyText = `\n\n${s.bodyWriteDisabledInstruction}`;
   }
 
   // L1: Project info
@@ -991,9 +1047,6 @@ export function buildSystemPrompt(
     if (p.genre) info.push(`${s.labels.genre}: ${p.genre}`);
     if (p.pov) info.push(`${s.labels.pov}: ${p.pov}`);
     if (p.tense) info.push(`${s.labels.tense}: ${p.tense}`);
-    if (p.styleGuide) info.push(`${s.labels.styleGuide}:\n${p.styleGuide}`);
-    if (p.aiInstructions)
-      info.push(`${s.labels.aiInstructions}:\n${p.aiInstructions}`);
     l1Text = `${s.headers.projectInfo}\n${info.join("\n")}`;
   }
 
@@ -1248,27 +1301,30 @@ export function buildSystemPrompt(
   };
 
   // L4: Codex entries
-  // Build pinned entries with children injected (full content, budget ignored)
-  const pinnedChildIds = new Set<string>();
+  // `withChildren` is a manual request to select each direct child, not an
+  // automatic hierarchy expansion. Keep those children at pin authority even
+  // if the same id is also globally `always`.
+  const manualChildIds = new Set<string>();
   const pinnedWithChildren: CodexContext[] = [];
   for (const pinned of input.pinnedCodexEntries ?? []) {
     pinnedWithChildren.push(pinned);
     if (pinned.withChildren && pinned.children) {
       for (const child of pinned.children) {
-        if (!pinnedChildIds.has(child.id)) {
-          pinnedChildIds.add(child.id);
+        if (!manualChildIds.has(child.id)) {
+          manualChildIds.add(child.id);
           pinnedWithChildren.push(child);
         }
       }
     }
   }
 
-  const pinnedIds = new Set((input.pinnedCodexEntries ?? []).map((e) => e.id));
+  const pinnedIds = new Set([
+    ...(input.pinnedCodexEntries ?? []).map((entry) => entry.id),
+    ...manualChildIds,
+  ]);
   const alwaysEntryIdSet = new Set(input.alwaysEntryIds ?? []);
   const allCodex = mergeCodexContextsById([
-    ...(input.codexEntries ?? []).filter(
-      (e) => !pinnedChildIds.has(e.id) && !pinnedIds.has(e.id),
-    ),
+    ...(input.codexEntries ?? []).filter((entry) => !pinnedIds.has(entry.id)),
     ...(input.relationCodexEntries ?? []),
     ...pinnedWithChildren,
   ]);
@@ -1290,12 +1346,9 @@ export function buildSystemPrompt(
   };
   const rawL4Items: ChatContextItem[] = [];
   for (const entry of allCodex) {
-    const isChild =
-      pinnedChildIds.has(entry.id) &&
-      !pinnedIds.has(entry.id) &&
-      !alwaysEntryIdSet.has(entry.id);
-    const isAlways = alwaysEntryIdSet.has(entry.id);
     const isPinned = pinnedIds.has(entry.id);
+    const isChild = false;
+    const isAlways = alwaysEntryIdSet.has(entry.id) && !isPinned;
     const hasRelationVia = Boolean(entry.relationVia);
     const priority = computeL4Priority({
       isChild,
@@ -1612,6 +1665,7 @@ export function buildSystemPrompt(
   let effectiveChronicle = chronicleText;
   let effectiveEpisodic = episodicText;
   let effectiveFocusText = focusText;
+  let effectiveAuthorPolicyText = authorPolicyText;
   const exclude = input.excludeLayers ?? [];
   const excludeL4 = exclude.includes("L4");
   if (exclude.includes("L1")) effectiveL1 = "";
@@ -1703,6 +1757,8 @@ export function buildSystemPrompt(
       hardeningOverhead;
     const trimInput: TrimInput = {
       baseText,
+      fixedPolicyText,
+      authorPolicyText: effectiveAuthorPolicyText,
       l1Text: effectiveL1,
       l2Text: effectiveL2,
       l3Text: effectiveL3,
@@ -1732,6 +1788,7 @@ export function buildSystemPrompt(
     effectiveChronicle = result.trimmedTexts.chronicleSnapshotText ?? "";
     effectiveEpisodic = result.trimmedTexts.episodicText ?? "";
     effectiveFocusText = result.trimmedTexts.focusText ?? "";
+    effectiveAuthorPolicyText = result.trimmedTexts.authorPolicyText ?? "";
     if (result.trimmedLayers.length > 0) {
       trimmedLayers = result.trimmedLayers;
     }
@@ -1773,6 +1830,7 @@ export function buildSystemPrompt(
       PROMPT_DATA_TAGS.episodic,
     );
     const wrappedL5 = wrapDataLayer(effectiveL5, PROMPT_DATA_TAGS.l5);
+    const policyPrefix = `${baseText}${effectiveAuthorPolicyText}${fixedPolicyText}`;
     const hasDataLayers = [
       wrappedL1,
       wrappedL2,
@@ -1788,7 +1846,7 @@ export function buildSystemPrompt(
     ].some((segment) => segment.trim().length > 0);
     const reminder = hasDataLayers ? s.dataBoundaryReminder : "";
     const prompt = [
-      baseText,
+      policyPrefix,
       wrappedL1,
       wrappedL2,
       wrappedL3,
@@ -1806,7 +1864,7 @@ export function buildSystemPrompt(
       .filter((segment) => segment.trim().length > 0)
       .join("\n");
     const cacheSegments = [
-      `${baseText}${wrappedL1}`,
+      `${policyPrefix}${wrappedL1}`,
       wrappedL2,
       l3CacheSegment,
       splitL4ByStability ? wrappedStableL4 : wrappedL4,

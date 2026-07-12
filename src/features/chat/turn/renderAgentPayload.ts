@@ -242,7 +242,12 @@ function webSearchPayload(webSearch: WebSearchConfig): unknown | null {
   if (!webSearch.enabled) return null;
   const allowed = webSearch.allowedDomains?.filter(Boolean) ?? [];
   const blocked = webSearch.blockedDomains?.filter(Boolean) ?? [];
+  const forceExa =
+    allowed.length > 0 ||
+    blocked.length > 0 ||
+    (webSearch.maxContentTokens ?? 0) > 0;
   const controls = {
+    ...(forceExa ? { engine: "exa" } : {}),
     ...(allowed.length > 0
       ? { allowed_domains: allowed }
       : blocked.length > 0

@@ -368,6 +368,28 @@ export function ContextBar({
         : windowFillPct >= 50
           ? "stroke-amber-500"
           : "stroke-primary";
+  const omittedDecisions = (contextPlan?.decisions ?? [])
+    .filter((decision) => decision.status !== "selected")
+    .sort((left, right) => {
+      const statusOrder = { unavailable: 0, trimmed: 1, excluded: 2 } as const;
+      return (
+        statusOrder[left.status as keyof typeof statusOrder] -
+          statusOrder[right.status as keyof typeof statusOrder] ||
+        left.key.localeCompare(right.key) ||
+        left.reason.localeCompare(right.reason)
+      );
+    });
+  const omittedDecisionCounts = {
+    unavailable: omittedDecisions.filter(
+      (decision) => decision.status === "unavailable",
+    ).length,
+    trimmed: omittedDecisions.filter(
+      (decision) => decision.status === "trimmed",
+    ).length,
+    excluded: omittedDecisions.filter(
+      (decision) => decision.status === "excluded",
+    ).length,
+  };
 
   return (
     <>
@@ -437,6 +459,94 @@ export function ContextBar({
                     ? t("chat.context.cacheRebuiltInstructions")
                     : t("chat.context.cacheRebuiltBudget")}
               </button>
+            )}
+            {omittedDecisions.length > 0 && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    data-testid="context-decision-summary"
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
+                    aria-label={t("chat.context.decisionSummary", {
+                      count: omittedDecisions.length,
+                    })}
+                    title={t("chat.context.decisionSummary", {
+                      count: omittedDecisions.length,
+                    })}
+                  >
+                    <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
+                    {t("chat.context.decisionSummary", {
+                      count: omittedDecisions.length,
+                    })}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="end"
+                  sideOffset={6}
+                  data-testid="context-decision-popover"
+                  className="w-96 max-w-[min(28rem,calc(100vw-1rem))]"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="mb-2 text-xs font-medium text-foreground">
+                    {t("chat.context.decisionSummaryTitle")}
+                  </div>
+                  <div className="mb-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+                    {omittedDecisionCounts.unavailable > 0 && (
+                      <span>
+                        {t("chat.context.decisionUnavailable")}:{" "}
+                        {omittedDecisionCounts.unavailable}
+                      </span>
+                    )}
+                    {omittedDecisionCounts.trimmed > 0 && (
+                      <span>
+                        {t("chat.context.decisionTrimmed")}:{" "}
+                        {omittedDecisionCounts.trimmed}
+                      </span>
+                    )}
+                    {omittedDecisionCounts.excluded > 0 && (
+                      <span>
+                        {t("chat.context.decisionExcluded")}:{" "}
+                        {omittedDecisionCounts.excluded}
+                      </span>
+                    )}
+                  </div>
+                  <ul className="max-h-64 space-y-1.5 overflow-y-auto text-[11px]">
+                    {omittedDecisions.slice(0, 8).map((decision, index) => (
+                      <li
+                        key={`${decision.status}:${decision.key}:${decision.reason}:${index}`}
+                        className="rounded bg-muted/60 px-2 py-1.5"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <code className="break-all text-foreground">
+                            {decision.key}
+                          </code>
+                          <span className="shrink-0 text-muted-foreground">
+                            {decision.status === "unavailable"
+                              ? t("chat.context.decisionUnavailable")
+                              : decision.status === "trimmed"
+                                ? t("chat.context.decisionTrimmed")
+                                : t("chat.context.decisionExcluded")}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 break-all text-muted-foreground">
+                          {decision.reason} · {decision.tokensBefore}
+                          {" → "}
+                          {decision.tokensAfter} tokens
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {omittedDecisions.length > 8 && (
+                    <div className="mt-2 text-[11px] text-muted-foreground">
+                      {t("chat.context.decisionMore", {
+                        count: omittedDecisions.length - 8,
+                      })}
+                    </div>
+                  )}
+                </PopoverContent>
+              </Popover>
             )}
             {contextTokenCount > 0 &&
               (() => {

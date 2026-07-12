@@ -16,13 +16,13 @@ import type {
 } from "@/features/codex/phaseResolver";
 import { formatTimelineContext } from "@/features/codex/phaseResolver";
 import {
+  canExposeResolvedCodexIdentity,
   canIncludeResolvedCodexContext,
   materializeResolvedCodexContext,
   resolveCodexContexts,
 } from "@/features/codex/context/resolvedCodexContext";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import {
-  buildChildrenContext,
   collectBudgetedDescendantIds,
   computeChildrenTokenBudget,
   getChildrenFromArray,
@@ -48,14 +48,16 @@ import type {
   PinnedCodexEntryWithData,
   PinnedSnippetEntryWithData,
 } from "../../chatApi";
-import type {
-  BuildSystemPromptInput,
-  CodexContext,
-  PinnedCodexContext,
-  PinnedSnippetContext,
-  ProjectContext,
+import {
+  countTokens,
+  type BuildSystemPromptInput,
+  type CodexContext,
+  type PinnedCodexContext,
+  type PinnedSnippetContext,
+  type ProjectContext,
 } from "../../contextBuilder";
 import type { NonSceneTurnContextRequest } from "../turnContextRequest";
+import type { ContextDiagnostic } from "../contextPlannerDeps";
 import {
   orderEntriesByIds,
   stripCodexContent,
@@ -76,6 +78,7 @@ export interface NonSceneContextCollection {
   scopeAnchor: NonSceneScopeAnchor | null;
   projectOutline: string | undefined;
   chapterOutlines: Array<{ title: string; outline: string }>;
+  diagnostics: ContextDiagnostic[];
 }
 
 export interface AggregatedSceneInput {
@@ -100,7 +103,7 @@ export interface AggregatedSceneResult {
 
 export interface CodexScopeBlocks {
   selectedPinned: PinnedCodexContext;
-  relatedMentioned: CodexContextEntry[];
+  relatedMentioned: CodexContext[];
   relationExpanded: CodexContext[];
 }
 
@@ -254,12 +257,29 @@ function buildChildrenCtxForEntry(
   const preset = entry.childrenBudget ?? "compact";
   if (preset === "none") return undefined;
   const budget = computeChildrenTokenBudget(preset, l4Budget);
-  const descendants = getDescendantsBFS(entry.id, allEntries).filter(
-    (descendant) =>
-      !excludeIds?.has(descendant.id) &&
-      canIncludeResolvedCodexContext(descendant.contextMode, "derived"),
-  );
-  return buildChildrenContext(descendants, budget, resolvedById) || undefined;
+  if (budget <= 0) return undefined;
+  const lines: string[] = [];
+  let usedTokens = 0;
+  for (const descendant of getDescendantsBFS(entry.id, allEntries)) {
+    if (excludeIds?.has(descendant.id)) continue;
+    const resolved = resolvedById?.get(descendant.id);
+    const mode = resolved?.contextMode ?? descendant.contextMode;
+    if (!canExposeResolvedCodexIdentity(mode, "child")) continue;
+
+    const resolvedSummary = resolved ? resolved.summary : descendant.summary;
+    const resolvedContent = resolved ? resolved.content : descendant.content;
+    const summary =
+      resolvedSummary?.trim() || extractPlainText(resolvedContent) || "";
+    const line =
+      canIncludeResolvedCodexContext(mode, "child") && summary
+        ? `  - ${descendant.name}: ${summary}`
+        : `  - ${descendant.name} (${descendant.type}; id: ${descendant.id})`;
+    const lineTokens = countTokens(line);
+    if (usedTokens + lineTokens > budget) break;
+    lines.push(line);
+    usedTokens += lineTokens;
+  }
+  return lines.join("\n") || undefined;
 }
 
 async function enrichWithCustomDetails<T extends CodexContext>(
@@ -341,7 +361,7 @@ async function buildResolvedCodexScopeBlocks(input: {
   selectedEntryId: string;
   effectiveEntries: CodexContextEntry[];
   mentionEligibleEntries: CodexContextEntry[];
-  derivedEligibleEntries: CodexContextEntry[];
+  identityEligibleEntries: CodexContextEntry[];
   resolvedById: ReadonlyMap<string, ResolvedCodexState>;
   phasesByEntry: ReadonlyMap<string, CodexEntryPhase[]>;
   lang?: string | null;
@@ -352,7 +372,7 @@ async function buildResolvedCodexScopeBlocks(input: {
     selectedEntryId,
     effectiveEntries,
     mentionEligibleEntries,
-    derivedEligibleEntries,
+    identityEligibleEntries,
     resolvedById,
     phasesByEntry,
     lang,
@@ -363,7 +383,7 @@ async function buildResolvedCodexScopeBlocks(input: {
   );
   if (
     !selected ||
-    !canIncludeResolvedCodexContext(selected.contextMode, "explicit-pin")
+    !canIncludeResolvedCodexContext(selected.contextMode, "active-scope")
   ) {
     return null;
   }
@@ -428,7 +448,7 @@ async function buildResolvedCodexScopeBlocks(input: {
   selectedPinned = (
     await enrichWithCustomDetails(
       [selectedPinned],
-      [selected, ...derivedEligibleEntries],
+      [selected, ...identityEligibleEntries],
       resolvedById,
       deps,
     )
@@ -437,6 +457,7 @@ async function buildResolvedCodexScopeBlocks(input: {
   const detectable = mentionEligibleEntries.filter(
     (entry) => entry.id !== selected.id,
   );
+  const detectableIds = new Set(detectable.map((entry) => entry.id));
   const forwardMatched = await deps.findMentionedEntries(
     getEntryScanText(selected),
     detectable,
@@ -455,13 +476,25 @@ async function buildResolvedCodexScopeBlocks(input: {
     effectiveEntries.map((entry) => [entry.id, entry] as const),
   );
   const relatedIds = new Set<string>();
-  const relatedMentioned: CodexContextEntry[] = [];
+  const relatedMentioned: CodexContext[] = [];
   for (const match of [...forwardMatched, ...reverseMatched]) {
-    if (match.id === selected.id || relatedIds.has(match.id)) continue;
+    if (
+      match.id === selected.id ||
+      relatedIds.has(match.id) ||
+      !detectableIds.has(match.id)
+    ) {
+      continue;
+    }
     const entry = effectiveById.get(match.id);
     if (!entry || entry.contextMode !== "mentioned") continue;
     relatedIds.add(entry.id);
-    relatedMentioned.push(entry);
+    relatedMentioned.push({
+      id: entry.id,
+      type: entry.type,
+      name: entry.name,
+      summary: "",
+      relationVia: `referenced from ${selected.name}`,
+    });
   }
 
   const relations = await deps
@@ -470,16 +503,26 @@ async function buildResolvedCodexScopeBlocks(input: {
   const relationContexts = expandCodexRelationsBFS(
     [selected.id],
     relations,
-    [selected, ...derivedEligibleEntries],
-    new Set([selected.id, ...relatedIds]),
+    [selected, ...identityEligibleEntries],
+    // `always` targets are already selected as canonical global entries. Do
+    // not re-add them as relation-only blocks, which would merge relationVia
+    // over their full summary and silently downgrade the stronger trigger.
+    new Set([
+      selected.id,
+      ...relatedIds,
+      ...identityEligibleEntries
+        .filter((entry) => entry.contextMode === "always")
+        .map((entry) => entry.id),
+    ]),
     { maxDepth: 1 },
   );
-  const relationExpanded = await enrichWithCustomDetails(
-    relationContexts,
-    [selected, ...derivedEligibleEntries],
-    resolvedById,
-    deps,
-  );
+  const relationExpanded = relationContexts.map<CodexContext>((entry) => ({
+    id: entry.id,
+    type: entry.type,
+    name: entry.name,
+    summary: "",
+    ...(entry.relationVia ? { relationVia: entry.relationVia } : {}),
+  }));
 
   return { selectedPinned, relatedMentioned, relationExpanded };
 }
@@ -493,6 +536,7 @@ export async function collectNonSceneContext(
   request: NonSceneTurnContextRequest,
   deps: NonSceneContextSourceDeps,
 ): Promise<NonSceneContextCollection> {
+  const diagnostics: ContextDiagnostic[] = [];
   const mentionedScenes = await deps.loadMentionedScenes(
     request.projectId,
     request.mentionedSceneIds,
@@ -582,6 +626,7 @@ export async function collectNonSceneContext(
   const effectiveIndexById = new Map(
     effectiveIndexEntries.map((entry) => [entry.id, entry] as const),
   );
+  const excludedAutoIds = new Set(request.excludedAutoEntryIds);
   type TemporalMetadata = NonNullable<
     BuildSystemPromptInput["contextTemporal"]
   >;
@@ -602,11 +647,62 @@ export async function collectNonSceneContext(
     };
   }
   const mentionEligibleIndexEntries = effectiveIndexEntries.filter(
-    (entry) => entry.contextMode === "mentioned",
+    (entry) =>
+      !excludedAutoIds.has(entry.id) &&
+      canIncludeResolvedCodexContext(entry.contextMode, "current-mention"),
   );
-  const derivedEligibleIndexEntries = effectiveIndexEntries.filter((entry) =>
-    canIncludeResolvedCodexContext(entry.contextMode, "derived"),
+  const mentionEligibleIds = new Set(
+    mentionEligibleIndexEntries.map((entry) => entry.id),
   );
+  const identityEligibleIndexEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      !excludedAutoIds.has(entry.id) &&
+      canExposeResolvedCodexIdentity(entry.contextMode, "relation"),
+  );
+  const mapIdentityEligibleIndexEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      !excludedAutoIds.has(entry.id) &&
+      canExposeResolvedCodexIdentity(entry.contextMode, "map-reference"),
+  );
+  const childIdentityEligibleIndexEntries = effectiveIndexEntries.filter(
+    (entry) =>
+      !excludedAutoIds.has(entry.id) &&
+      canExposeResolvedCodexIdentity(entry.contextMode, "child"),
+  );
+  const childContentEligibleIds = new Set(
+    childIdentityEligibleIndexEntries
+      .filter((entry) =>
+        canIncludeResolvedCodexContext(entry.contextMode, "child"),
+      )
+      .map((entry) => entry.id),
+  );
+  const matchedCurrentMentions = request.outgoingUserMessage.trim()
+    ? await deps.findMentionedEntries(
+        request.outgoingUserMessage,
+        mentionEligibleIndexEntries,
+      )
+    : [];
+  const structuredCurrentMentionIds = new Set([
+    ...request.mentionedCodexIds,
+    ...request.inputPinnedEntryIds,
+  ]);
+  const currentMentionIds = new Set([
+    ...matchedCurrentMentions
+      .map((entry) => entry.id)
+      .filter((id) => mentionEligibleIds.has(id)),
+    ...mentionEligibleIndexEntries
+      .filter((entry) => structuredCurrentMentionIds.has(entry.id))
+      .map((entry) => entry.id),
+  ]);
+  const currentMentionIndexEntries = stableSortById(
+    mentionEligibleIndexEntries.filter((entry) =>
+      currentMentionIds.has(entry.id),
+    ),
+  );
+  const filterDetectedEntries = (
+    entries: readonly CodexContextEntry[],
+  ): CodexContextIndexEntry[] =>
+    entries.filter((entry) => mentionEligibleIds.has(entry.id));
 
   const resolveFullEntries = async (ids: readonly string[]) => {
     const entries = await deps.listCodexEntriesByIds(
@@ -665,14 +761,14 @@ export async function collectNonSceneContext(
         includeBodies: true,
         activeSceneId: request.activeSceneId,
         prefacePolicy: "folder",
-        allEntries: derivedEligibleIndexEntries,
+        allEntries: identityEligibleIndexEntries,
         detectableEntries: mentionEligibleIndexEntries,
         agentMode: request.agentToolsAvailable,
         injectBeats: request.settings.injectBeats,
       });
       if (result) {
         aggregatedScene = result.aggregatedScene;
-        aggregatedDetected = result.aggregatedDetected;
+        aggregatedDetected = filterDetectedEntries(result.aggregatedDetected);
       }
     }
   } else if (request.scope.kind === "folder") {
@@ -686,14 +782,14 @@ export async function collectNonSceneContext(
         includeBodies: request.includeBodies,
         activeSceneId: request.activeSceneId,
         prefacePolicy: "folder",
-        allEntries: derivedEligibleIndexEntries,
+        allEntries: identityEligibleIndexEntries,
         detectableEntries: mentionEligibleIndexEntries,
         agentMode: request.agentToolsAvailable,
         injectBeats: request.settings.injectBeats,
       });
       if (result) {
         aggregatedScene = result.aggregatedScene;
-        aggregatedDetected = result.aggregatedDetected;
+        aggregatedDetected = filterDetectedEntries(result.aggregatedDetected);
       }
     }
   } else if (request.scope.kind === "project") {
@@ -704,7 +800,7 @@ export async function collectNonSceneContext(
       includeBodies: request.includeBodies,
       activeSceneId: request.activeSceneId,
       prefacePolicy: "project",
-      allEntries: derivedEligibleIndexEntries,
+      allEntries: identityEligibleIndexEntries,
       detectableEntries: mentionEligibleIndexEntries,
       allNodes,
       agentMode: request.agentToolsAvailable,
@@ -712,11 +808,10 @@ export async function collectNonSceneContext(
     });
     if (result) {
       aggregatedScene = result.aggregatedScene;
-      aggregatedDetected = result.aggregatedDetected;
+      aggregatedDetected = filterDetectedEntries(result.aggregatedDetected);
     }
   }
 
-  const excludedAutoIds = new Set(request.excludedAutoEntryIds);
   const globalAlwaysIndexEntries = effectiveIndexEntries.filter(
     (entry) => entry.contextMode === "always" && !excludedAutoIds.has(entry.id),
   );
@@ -724,38 +819,49 @@ export async function collectNonSceneContext(
   const pinnedFromDb = request.sessionId
     ? await deps.listPinnedCodex(request.sessionId)
     : [];
-  const dbPinnedIds = new Set(pinnedFromDb.map((entry) => entry.id));
-  const inputPinnedIds = request.inputPinnedEntryIds.filter(
-    (id) => !dbPinnedIds.has(id),
+  const manualPinnedFromDb = pinnedFromDb.filter(
+    (entry) => entry.pinSource !== "chat_mention",
   );
-  const allPinnedIds = new Set([...dbPinnedIds, ...inputPinnedIds]);
+  const allPinnedIds = new Set(manualPinnedFromDb.map((entry) => entry.id));
+  const selectionReasonById = new Map<
+    string,
+    "current-mention" | "explicit-pin"
+  >();
+  for (const id of structuredCurrentMentionIds) {
+    selectionReasonById.set(id, "current-mention");
+  }
+  for (const id of allPinnedIds) {
+    selectionReasonById.set(id, "explicit-pin");
+  }
 
-  const contextDecisions = [...allPinnedIds].flatMap<ContextDecision>((id) => {
-    const entry = effectiveIndexById.get(id);
-    if (!entry) {
-      return [
-        {
-          key: `codex:${id}`,
-          status: "unavailable" as const,
-          reason: "missing-source",
-          tokensBefore: 0,
-          tokensAfter: 0,
-        },
-      ];
-    }
-    if (!canIncludeResolvedCodexContext(entry.contextMode, "explicit-pin")) {
-      return [
-        {
-          key: `codex:${id}`,
-          status: "excluded" as const,
-          reason: `policy-${entry.contextMode}`,
-          tokensBefore: 0,
-          tokensAfter: 0,
-        },
-      ];
-    }
-    return [];
-  });
+  const contextDecisions = [...selectionReasonById].flatMap<ContextDecision>(
+    ([id, reason]) => {
+      const entry = effectiveIndexById.get(id);
+      if (!entry) {
+        return [
+          {
+            key: `codex:${id}`,
+            status: "unavailable" as const,
+            reason: "missing-source",
+            tokensBefore: 0,
+            tokensAfter: 0,
+          },
+        ];
+      }
+      if (!canIncludeResolvedCodexContext(entry.contextMode, reason)) {
+        return [
+          {
+            key: `codex:${id}`,
+            status: "excluded" as const,
+            reason: `policy-${entry.contextMode}`,
+            tokensBefore: 0,
+            tokensAfter: 0,
+          },
+        ];
+      }
+      return [];
+    },
+  );
   const visiblePinnedIds = new Set(
     [...allPinnedIds].filter((id) => {
       const entry = effectiveIndexById.get(id);
@@ -764,38 +870,101 @@ export async function collectNonSceneContext(
         : false;
     }),
   );
+  const manualDirectChildIds = new Set(
+    manualPinnedFromDb.flatMap((pin) => {
+      const parent = effectiveIndexById.get(pin.id);
+      if (
+        !pin.withChildren ||
+        !parent ||
+        !canIncludeResolvedCodexContext(parent.contextMode, "explicit-pin")
+      ) {
+        return [];
+      }
+      return getChildrenFromArray(pin.id, effectiveIndexEntries)
+        .filter((child) => !allPinnedIds.has(child.id))
+        .filter((child) =>
+          canIncludeResolvedCodexContext(child.contextMode, "explicit-pin"),
+        )
+        .map((child) => child.id);
+    }),
+  );
+
+  const activeTabCodexId =
+    request.activeTab?.contentType === "codex" &&
+    !(
+      request.scope.kind === "codex" &&
+      request.scope.entryId === request.activeTab.nodeId
+    )
+      ? request.activeTab.nodeId
+      : null;
+  const activeTabIndexEntry = activeTabCodexId
+    ? effectiveIndexById.get(activeTabCodexId)
+    : undefined;
+  const activeTabReason =
+    activeTabCodexId &&
+    (allPinnedIds.has(activeTabCodexId) ||
+      manualDirectChildIds.has(activeTabCodexId))
+      ? "explicit-pin"
+      : "active-tab";
+  const visibleActiveTabCodexId =
+    activeTabCodexId &&
+    activeTabIndexEntry &&
+    (activeTabReason === "explicit-pin" ||
+      !excludedAutoIds.has(activeTabCodexId)) &&
+    canIncludeResolvedCodexContext(
+      activeTabIndexEntry.contextMode,
+      activeTabReason,
+    )
+      ? activeTabCodexId
+      : null;
 
   const codexScopeContentIds =
     request.scope.kind === "codex"
       ? [
           request.scope.entryId,
           ...mentionEligibleIndexEntries.map((entry) => entry.id),
-          ...derivedEligibleIndexEntries.map((entry) => entry.id),
+          ...identityEligibleIndexEntries.map((entry) => entry.id),
         ]
       : [];
+  const closureSeedIds = [
+    ...globalAlwaysIndexEntries.map((entry) => entry.id),
+    ...aggregatedDetected.map((entry) => entry.id),
+    ...currentMentionIndexEntries.map((entry) => entry.id),
+    ...visiblePinnedIds,
+  ];
   const contentSeedIds = uniqueIds([
     ...globalAlwaysIndexEntries.map((entry) => entry.id),
     ...aggregatedDetected.map((entry) => entry.id),
+    ...currentMentionIndexEntries.map((entry) => entry.id),
     ...visiblePinnedIds,
+    ...manualDirectChildIds,
     ...codexScopeContentIds,
-    ...collectBudgetedDescendantIds(
-      [
-        ...globalAlwaysIndexEntries.map((entry) => entry.id),
-        ...aggregatedDetected.map((entry) => entry.id),
-        ...visiblePinnedIds,
-      ],
-      derivedEligibleIndexEntries,
-    ),
+    ...(visibleActiveTabCodexId ? [visibleActiveTabCodexId] : []),
+    ...[
+      ...collectBudgetedDescendantIds(
+        closureSeedIds,
+        childIdentityEligibleIndexEntries,
+      ),
+    ].filter((id) => childContentEligibleIds.has(id)),
   ]);
   const resolvedFull = await resolveFullEntries(contentSeedIds);
   const effectiveEntries = resolvedFull.effective;
   const effectiveById = resolvedFull.byId;
   const resolvedContexts = resolvedFull.resolved;
+  const automaticChildEntries = childIdentityEligibleIndexEntries.map(
+    (entry) => effectiveById.get(entry.id) ?? entry,
+  );
+  for (const seedId of closureSeedIds) {
+    const seed = effectiveById.get(seedId) ?? effectiveIndexById.get(seedId);
+    if (seed && !automaticChildEntries.some((entry) => entry.id === seed.id)) {
+      automaticChildEntries.push(seed);
+    }
+  }
 
   const mentionEligibleEntries = mentionEligibleIndexEntries
     .map((entry) => effectiveById.get(entry.id))
     .filter((entry): entry is CodexContextEntry => entry !== undefined);
-  const derivedEligibleEntries = derivedEligibleIndexEntries
+  const identityEligibleEntries = identityEligibleIndexEntries
     .map((entry) => effectiveById.get(entry.id))
     .filter((entry): entry is CodexContextEntry => entry !== undefined);
 
@@ -806,7 +975,7 @@ export async function collectNonSceneContext(
           selectedEntryId: request.scope.entryId,
           effectiveEntries,
           mentionEligibleEntries,
-          derivedEligibleEntries,
+          identityEligibleEntries,
           resolvedById: resolvedContexts.resolvedById,
           phasesByEntry: resolvedContexts.phasesByEntry,
           lang: project?.language,
@@ -824,32 +993,41 @@ export async function collectNonSceneContext(
     if (!canIncludeResolvedCodexContext(entry.contextMode, "explicit-pin")) {
       return null;
     }
-    const children = withChildren
+    const directChildren = withChildren
       ? getChildrenFromArray(entry.id, effectiveEntries)
           .filter((child) => !allPinnedIds.has(child.id))
           .filter((child) =>
-            canIncludeResolvedCodexContext(child.contextMode, "derived"),
+            canIncludeResolvedCodexContext(child.contextMode, "explicit-pin"),
           )
-          .map((child) => {
-            const aliases = parseAliases(child.aliases);
-            const summary = child.summary ?? "";
-            return {
-              id: child.id,
-              type: child.type,
-              name: child.name,
-              summary,
-              contentFallback: summary.trim()
-                ? undefined
-                : extractPlainText(child.content) || undefined,
-              ...(aliases ? { aliases } : {}),
-            };
-          })
-      : undefined;
+      : [];
+    const children = directChildren.map<CodexContext>((child) => {
+      const aliases = parseAliases(child.aliases);
+      const tags = parseTags(child.tagsCache);
+      const childResolved = resolvedContexts.resolvedById.get(child.id);
+      const childPhases = resolvedContexts.phasesByEntry.get(child.id) ?? [];
+      const childActivePhase = childResolved?.activePhaseId
+        ? childPhases.find((phase) => phase.id === childResolved.activePhaseId)
+        : undefined;
+      return {
+        id: child.id,
+        type: child.type,
+        name: child.name,
+        summary: child.summary ?? "",
+        fullContent: extractPlainText(child.content) || undefined,
+        ...(aliases ? { aliases } : {}),
+        ...(tags ? { tags } : {}),
+        ...(childActivePhase ? { phaseLabel: childActivePhase.label } : {}),
+      };
+    });
+    const automaticChildExclusions = new Set([
+      ...allPinnedIds,
+      ...directChildren.map((child) => child.id),
+    ]);
     const childrenContext = buildChildrenCtxForEntry(
       entry,
-      effectiveEntries,
+      automaticChildEntries,
       l4Budget,
-      allPinnedIds,
+      automaticChildExclusions,
       resolvedContexts.resolvedById,
     );
     const aliases = parseAliases(entry.aliases);
@@ -866,7 +1044,7 @@ export async function collectNonSceneContext(
       summary: entry.summary ?? "",
       fullContent: extractPlainText(entry.content) || undefined,
       withChildren,
-      children,
+      children: withChildren ? children : undefined,
       ...(aliases ? { aliases } : {}),
       ...(tags ? { tags } : {}),
       ...(childrenContext ? { childrenContext } : {}),
@@ -874,19 +1052,12 @@ export async function collectNonSceneContext(
     };
   };
 
-  let pinnedCodex = pinnedFromDb.flatMap((pin) => {
+  const pinnedCodex = manualPinnedFromDb.flatMap((pin) => {
     const entry = effectiveById.get(pin.id);
     if (!entry) return [];
     const context = buildPinnedContext(entry, pin.withChildren);
     return context ? [context] : [];
   });
-  const extraPinned = inputPinnedIds.flatMap((id) => {
-    const entry = effectiveById.get(id);
-    if (!entry) return [];
-    const context = buildPinnedContext(entry, false);
-    return context ? [context] : [];
-  });
-  pinnedCodex = [...pinnedCodex, ...extraPinned];
 
   let pinnedSnippets: PinnedSnippetContext[] = [];
   if (request.sessionId) {
@@ -905,26 +1076,46 @@ export async function collectNonSceneContext(
 
   const explicitlyVisibleIds = new Set([
     ...visiblePinnedIds,
+    ...manualDirectChildIds,
     ...(codexBlocks?.selectedPinned ? [codexBlocks.selectedPinned.id] : []),
   ]);
   const detailReferenceEntries = effectiveIndexEntries.filter(
     (entry) =>
-      canIncludeResolvedCodexContext(entry.contextMode, "derived") ||
+      (!excludedAutoIds.has(entry.id) &&
+        canExposeResolvedCodexIdentity(
+          entry.contextMode,
+          "detail-reference",
+        )) ||
       (explicitlyVisibleIds.has(entry.id) &&
         canIncludeResolvedCodexContext(entry.contextMode, "explicit-pin")),
   );
-  let mergedPinnedCodex = await enrichWithCustomDetails(
-    pinnedCodex,
+  const pinnedContextsToEnrich = pinnedCodex.flatMap<CodexContext>((pinned) => [
+    pinned,
+    ...(pinned.children ?? []),
+  ]);
+  const enrichedPinnedContexts = await enrichWithCustomDetails(
+    pinnedContextsToEnrich,
     detailReferenceEntries,
     resolvedContexts.resolvedById,
     deps,
   );
+  const enrichedPinnedById = new Map(
+    enrichedPinnedContexts.map((entry) => [entry.id, entry] as const),
+  );
+  let mergedPinnedCodex = pinnedCodex.map<PinnedCodexContext>((pinned) => ({
+    ...(enrichedPinnedById.get(pinned.id) ?? pinned),
+    withChildren: pinned.withChildren,
+    children: pinned.children?.map(
+      (child) => enrichedPinnedById.get(child.id) ?? child,
+    ),
+  }));
   if (codexBlocks?.selectedPinned) {
     mergedPinnedCodex = mergedPinnedCodex.filter(
       (entry) => entry.id !== codexBlocks.selectedPinned.id,
     );
   }
   const mergedPinnedIds = new Set(mergedPinnedCodex.map((entry) => entry.id));
+  for (const id of manualDirectChildIds) mergedPinnedIds.add(id);
   if (codexBlocks?.selectedPinned) {
     mergedPinnedIds.add(codexBlocks.selectedPinned.id);
   }
@@ -934,19 +1125,33 @@ export async function collectNonSceneContext(
       (entry) =>
         !mergedPinnedIds.has(entry.id) && !excludedAutoIds.has(entry.id),
     ) ?? [];
-  const detectedNotPinned = stableSortById([
-    ...aggregatedDetected
-      .filter(
-        (entry) =>
-          !mergedPinnedIds.has(entry.id) && !excludedAutoIds.has(entry.id),
-      )
-      .flatMap((entry) => {
-        const full = effectiveById.get(entry.id);
-        return full ? [full] : [];
-      }),
-    ...relatedNotPinned,
-  ]);
+  const detectedById = new Map(
+    [
+      ...aggregatedDetected
+        .filter(
+          (entry) =>
+            !mergedPinnedIds.has(entry.id) && !excludedAutoIds.has(entry.id),
+        )
+        .flatMap((entry) => {
+          const full = effectiveById.get(entry.id);
+          return full ? [full] : [];
+        }),
+      ...currentMentionIndexEntries
+        .filter(
+          (entry) =>
+            !mergedPinnedIds.has(entry.id) && !excludedAutoIds.has(entry.id),
+        )
+        .flatMap((entry) => {
+          const full = effectiveById.get(entry.id);
+          return full ? [full] : [];
+        }),
+    ].map((entry) => [entry.id, entry] as const),
+  );
+  const detectedNotPinned = stableSortById([...detectedById.values()]);
   const detectedIds = new Set(detectedNotPinned.map((entry) => entry.id));
+  const relatedIdentityEntries = relatedNotPinned.filter(
+    (entry) => !detectedIds.has(entry.id),
+  );
   const alwaysNotDetected = stableSortById(
     globalAlwaysIndexEntries
       .filter(
@@ -985,7 +1190,7 @@ export async function collectNonSceneContext(
     if (!entry) return context;
     const childrenContext = buildChildrenCtxForEntry(
       entry,
-      effectiveEntries,
+      automaticChildEntries,
       l4Budget,
       allPinnedIds,
       resolvedContexts.resolvedById,
@@ -1001,8 +1206,56 @@ export async function collectNonSceneContext(
 
   const mapBoardMarkdown = await deps.loadMapBoardMarkdown(
     request,
-    detailReferenceEntries,
+    mapIdentityEligibleIndexEntries,
   );
+  let activeTabContent: BuildSystemPromptInput["activeTabContent"];
+  try {
+    if (visibleActiveTabCodexId) {
+      const entry = effectiveById.get(visibleActiveTabCodexId);
+      if (entry) {
+        activeTabContent = {
+          type: "codex",
+          title: entry.name,
+          content: extractPlainText(entry.content) || entry.summary || "",
+        };
+      }
+    } else if (
+      request.activeTab?.contentType === "snippet" &&
+      !(
+        request.scope.kind === "snippet" &&
+        request.scope.snippetId === request.activeTab.nodeId
+      )
+    ) {
+      const snippet = await deps.getSnippet(
+        request.projectId,
+        request.activeTab.nodeId,
+      );
+      if (snippet) {
+        activeTabContent = {
+          type: "snippet",
+          title: snippet.title,
+          content: extractPlainText(snippet.content) || snippet.title,
+        };
+      } else {
+        diagnostics.push({
+          source: "active-tab",
+          severity: "warning",
+          code: "ACTIVE_TAB_SNIPPET_UNAVAILABLE",
+          message:
+            "The active snippet could not be loaded; continuing without it.",
+        });
+      }
+    }
+  } catch (cause) {
+    diagnostics.push({
+      source: "active-tab",
+      severity: "warning",
+      code: "ACTIVE_TAB_UNAVAILABLE",
+      message: "The active tab could not be loaded; continuing without it.",
+      cause,
+    });
+    activeTabContent = undefined;
+  }
   let focusSubject: BuildSystemPromptInput["focusSubject"];
   let scopeAnchor: NonSceneScopeAnchor | null = null;
   if (request.scope.kind === "thread") {
@@ -1045,10 +1298,17 @@ export async function collectNonSceneContext(
       pinnedSnippets: pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
       chapterOutlines: scopeOutlines.length > 0 ? scopeOutlines : undefined,
       mentionedScenes: mentionedScenes.length > 0 ? mentionedScenes : undefined,
-      relationCodexEntries: codexBlocks?.relationExpanded.length
-        ? codexBlocks.relationExpanded
-        : undefined,
-      alwaysEntryIds: globalAlwaysIndexEntries.map((entry) => entry.id),
+      relationCodexEntries:
+        relatedIdentityEntries.length > 0 ||
+        codexBlocks?.relationExpanded.length
+          ? [
+              ...relatedIdentityEntries,
+              ...(codexBlocks?.relationExpanded ?? []),
+            ]
+          : undefined,
+      alwaysEntryIds: globalAlwaysIndexEntries
+        .filter((entry) => !mergedPinnedIds.has(entry.id))
+        .map((entry) => entry.id),
       contextTemporal,
       contextTemporalBySourceId,
       contextDecisions,
@@ -1056,6 +1316,7 @@ export async function collectNonSceneContext(
       sessionStableContextInitialized:
         request.sessionStableContextInitialized === true,
       focusSubject,
+      activeTabContent,
       lang: project?.language ?? "ja",
       mapBoardMarkdown,
       mapBoardId:
@@ -1068,5 +1329,6 @@ export async function collectNonSceneContext(
     scopeAnchor,
     projectOutline: project?.outline ?? undefined,
     chapterOutlines: scopeOutlines,
+    diagnostics,
   };
 }

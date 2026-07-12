@@ -13,6 +13,12 @@ describe("resolveOutputBudgetPlan", () => {
       provider: "openai" as const,
       model: "gpt-4o",
       apiVariant: null,
+      expected: 4_096,
+    },
+    {
+      provider: "openai" as const,
+      model: "o1",
+      apiVariant: "responses",
       expected: 32_000,
     },
     {
@@ -20,6 +26,7 @@ describe("resolveOutputBudgetPlan", () => {
       model: "fugu",
       apiVariant: "responses",
       expected: 32_000,
+      defaultVisibleOutputTokens: 32_000,
     },
     {
       provider: "openrouter" as const,
@@ -45,23 +52,46 @@ describe("resolveOutputBudgetPlan", () => {
       apiVariant: null,
       expected: 4_096,
     },
-  ])(
-    "matches the existing $provider/$model wire limit",
-    ({ provider, model, apiVariant, expected }) => {
-      expect(
-        resolveOutputBudgetPlan({
-          provider,
-          model,
-          apiVariant,
-          contextWindow: 1_000_000,
-        }),
-      ).toMatchObject({
-        requestMaxOutputTokens: expected,
-        responseReservationTokens: expected,
-        exactOnWire: true,
-      });
-    },
-  );
+  ])("uses the resolved capability for $provider/$model", (testCase) => {
+    const { provider, model, apiVariant, expected } = testCase;
+    expect(
+      resolveOutputBudgetPlan({
+        provider,
+        model,
+        apiVariant,
+        contextWindow: 1_000_000,
+        defaultVisibleOutputTokens:
+          "defaultVisibleOutputTokens" in testCase
+            ? testCase.defaultVisibleOutputTokens
+            : undefined,
+      }),
+    ).toMatchObject({
+      requestMaxOutputTokens: expected,
+      responseReservationTokens: expected,
+      exactOnWire: true,
+    });
+  });
+
+  it("uses distinct visible and reasoning defaults from model capabilities", () => {
+    expect(
+      resolveOutputBudgetPlan({
+        provider: "openai-compatible",
+        model: "plain-model",
+        contextWindow: 128_000,
+        defaultVisibleOutputTokens: 6_000,
+        defaultReasoningReservationTokens: 24_000,
+      }).requestMaxOutputTokens,
+    ).toBe(6_000);
+    expect(
+      resolveOutputBudgetPlan({
+        provider: "openai-compatible",
+        model: "gpt-5",
+        contextWindow: 128_000,
+        defaultVisibleOutputTokens: 6_000,
+        defaultReasoningReservationTokens: 24_000,
+      }).requestMaxOutputTokens,
+    ).toBe(24_000);
+  });
 
   it("uses the model-specific AI Novelist limit for legacy and v1 routes", () => {
     expect(

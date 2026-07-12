@@ -715,6 +715,21 @@ function optionalString(
   return value;
 }
 
+/** Turn-start Agent protocol snapshot. Only the two resolved values are valid. */
+function validateOptionalResolvedToolProtocol(
+  args: CommandArgs,
+  key: string,
+  cmd: string,
+): void {
+  const value = optionalString(args, key, cmd);
+  if (value === undefined) return;
+  if (value !== "native" && value !== "hermes") {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${cmd}\`: expected native, hermes, or null`,
+    );
+  }
+}
+
 /** FE生成のrun discriminator。空値/過長値をイベントpayloadへ持ち込ませない。 */
 function optionalOpaqueRunId(
   args: CommandArgs,
@@ -1978,6 +1993,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       validateOptionalPositiveU32(
         a,
         "requestMaxOutputTokens",
+        "send_agent_message",
+      );
+      validateOptionalResolvedToolProtocol(
+        a,
+        "resolvedToolProtocol",
         "send_agent_message",
       );
       const sendAgentMessage = requireNapiMethod(

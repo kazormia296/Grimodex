@@ -59,7 +59,8 @@ pub enum ToolProtocolMode {
 }
 
 /// 解決後のツールプロトコル（曖昧さを排した二値）。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum ResolvedToolProtocol {
     Native,
     Hermes,
@@ -1741,6 +1742,8 @@ fn parse_ainoverist_response(result: &serde_json::Value) -> anyhow::Result<ChatR
         stop_reason,
         input_tokens,
         output_tokens,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         citations: Vec::new(),
         cost: None,
     })
@@ -2170,6 +2173,13 @@ pub struct ChatResponse {
     pub stop_reason: String,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Prompt cache reads. Anthropic reports these outside input_tokens;
+    /// OpenAI-family providers report them as a subset of prompt_tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// Prompt cache creation/write tokens when exposed by the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
     /// Web 検索の引用 (RAG 無効時は空)。
     #[serde(default)]
     pub citations: Vec<Citation>,
@@ -2278,12 +2288,16 @@ fn parse_anthropic_response(result: &serde_json::Value) -> anyhow::Result<ChatRe
 
     let input_tokens = result["usage"]["input_tokens"].as_u64();
     let output_tokens = result["usage"]["output_tokens"].as_u64();
+    let (cache_read_tokens, cache_write_tokens) =
+        extract_cache_tokens(&result["usage"], &AiProvider::Anthropic);
 
     Ok(ChatResponse {
         blocks,
         stop_reason,
         input_tokens,
         output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
         citations,
         // Anthropic 直叩きは usage.cost を返さない。FE で modelPricing 概算。
         cost: None,
@@ -2734,6 +2748,8 @@ fn parse_openai_response(
 
     let input_tokens = result["usage"]["prompt_tokens"].as_u64();
     let output_tokens = result["usage"]["completion_tokens"].as_u64();
+    let (cache_read_tokens, cache_write_tokens) =
+        extract_cache_tokens(&result["usage"], &AiProvider::OpenAI);
     // OpenRouter は usage.cost (USD) を返す。他の OpenAI 互換は通常返さない。
     let cost = result["usage"]["cost"].as_f64();
 
@@ -2742,6 +2758,8 @@ fn parse_openai_response(
         stop_reason,
         input_tokens,
         output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
         citations,
         cost,
     })
@@ -5739,6 +5757,15 @@ mod tests {
         // serialize は camelCase + lowercase 値で出力する。
         let json = serde_json::to_value(&with).unwrap();
         assert_eq!(json["toolProtocolMode"], "hermes");
+
+        // Turn-start snapshot wire uses only the ambiguity-free resolved values.
+        let resolved: ResolvedToolProtocol = serde_json::from_str(r#""native""#).unwrap();
+        assert_eq!(resolved, ResolvedToolProtocol::Native);
+        assert_eq!(
+            serde_json::to_value(ResolvedToolProtocol::Hermes).unwrap(),
+            "hermes"
+        );
+        assert!(serde_json::from_str::<ResolvedToolProtocol>(r#""auto""#).is_err());
     }
 
     // ----- Hermes 送信側 (Phase B) -----
@@ -6158,7 +6185,12 @@ mod tests {
                     ]
                 }
             ],
-            "usage": { "input_tokens": 10, "output_tokens": 20 }
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "cache_read_input_tokens": 120,
+                "cache_creation_input_tokens": 30
+            }
         });
         let resp = parse_anthropic_response(&json).unwrap();
         assert_eq!(resp.stop_reason, "end_turn");
@@ -6168,6 +6200,8 @@ mod tests {
         assert_eq!(resp.citations.len(), 1);
         assert_eq!(resp.citations[0].url, "https://example.com/edo");
         assert_eq!(resp.citations[0].cited_text, "一両は四千文に相当した");
+        assert_eq!(resp.cache_read_tokens, Some(120));
+        assert_eq!(resp.cache_write_tokens, Some(30));
         assert_eq!(resp.cost, None);
     }
 
@@ -6192,12 +6226,22 @@ mod tests {
                     ]
                 }
             }],
-            "usage": { "prompt_tokens": 5, "completion_tokens": 7, "cost": 0.0123 }
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 7,
+                "cost": 0.0123,
+                "prompt_tokens_details": {
+                    "cached_tokens": 4,
+                    "cache_write_tokens": 2
+                }
+            }
         });
         let resp = parse_openai_response(&json, &ParseOpenAIOptions::default()).unwrap();
         assert_eq!(resp.citations.len(), 1);
         assert_eq!(resp.citations[0].url, "https://news.example/article");
         assert_eq!(resp.citations[0].cited_text, "引用抜粋");
+        assert_eq!(resp.cache_read_tokens, Some(4));
+        assert_eq!(resp.cache_write_tokens, Some(2));
         assert_eq!(resp.cost, Some(0.0123));
     }
 
