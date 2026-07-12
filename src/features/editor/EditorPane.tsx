@@ -15,7 +15,6 @@ import type { ToolbarActions } from "@/features/editor/Toolbar";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { loadSceneFull, savePlacedBeatPreviewOnly } from "@/features/tree/api";
-import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import { EditorStatsFooter } from "@/features/editor/EditorStatsFooter";
 import {
   extractPlacedBeatPreview,
@@ -50,7 +49,15 @@ import {
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { useAutoSave, AlreadyNotifiedSaveError } from "@/hooks/useAutoSave";
+import { useAutoSave } from "@/hooks/useAutoSave";
+import {
+  defaultEditorDocumentServices,
+  saveEditorDocument,
+} from "@/features/editor/document/saveEditorDocument";
+import {
+  createLoadedEditorBinding,
+  type LoadedEditorBinding,
+} from "@/features/editor/document/types";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -387,16 +394,9 @@ export function EditorPane({
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
   // stable getter（inline arrow だと footer の購読が毎レンダー再構築される）。
   const getStatsSceneId = useCallback(() => saveSceneIdRef.current, []);
-  // Tracks the contentType of whatever doc is currently loaded into the editor.
-  // Updated atomically with `saveSceneIdRef` inside switchScene so that
-  // pending autosave flushes route to the same backend the in-editor content
-  // belongs to — even when the prop has already flipped to a new tab's type.
-  // Reading from the prop directly would misroute scene A's pending edits to
-  // codex/snippet on tab switch within the autosave window.
-  const saveContentTypeRef = useRef<TabContentType>(contentType);
-  // Codex mode: non-null when the loaded content came from a phase contentOverride → save back to that phase
-  const activePhaseIdRef = useRef<string | null>(null);
-  // Reactive version of activePhaseIdRef for display purposes
+  // A binding is committed only after the corresponding document has been
+  // loaded and applied successfully. Pending saves never route from props.
+  const loadedBindingRef = useRef<LoadedEditorBinding | null>(null);
   const [loadedPhaseId, setLoadedPhaseId] = useState<string | null>(null);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
@@ -430,63 +430,19 @@ export function EditorPane({
   }, [activeStatus, nodeId, isEntryMode]);
 
   const coreSave = useCallback(async () => {
-    const id = saveSceneIdRef.current;
+    const binding = loadedBindingRef.current;
     const ed = editorRef.current;
-    if (!id || !ed) return;
-    if (loadFailedRef.current) {
-      debugLog.warn(
-        "EditorPane",
-        `save skipped: load failed ${id.slice(0, 8)}`,
-      );
+    if (!binding || !ed || loadFailedRef.current) {
+      debugLog.warn("EditorPane", "save skipped: document is not loaded");
       return;
     }
     markStart("editor.coreSave");
-    // Branch on the ref, not the closure-captured prop, so a pending autosave
-    // flush always saves to the backend matching the doc currently in the
-    // editor — even mid-tab-switch when the prop has already flipped.
-    const ctx = saveContentTypeRef.current;
-    if (ctx === "codex") {
-      const content = JSON.stringify(ed.getJSON());
-      const phaseId = activePhaseIdRef.current;
-      if (phaseId) {
-        await usePhaseStore
-          .getState()
-          .updatePhase(phaseId, { contentOverride: content });
-      } else {
-        // updateText goes through codexStore so the in-memory entries[] is
-        // refreshed too — otherwise the Codex panel keeps the pre-edit doc
-        // and reverts visually on entry-navigation until a filter / reload
-        // pulls fresh data from DB.
-        await useCodexStore.getState().updateText(id, { content });
-      }
-    } else if (ctx === "snippet") {
-      const content = ed.getHTML();
-      // updateSnippet 直呼び + store.update の二重 DB 書き込みを store 経由の
-      // 1 回に集約 (entries 反映 / timelapse 記録 / undo 履歴も store が担う)。
-      // 二重のままだと store 側の OCC (baseVersion) が直呼びの更新と自己衝突する。
-      //
-      // store.update は false の全経路 (OCC 衝突 / 行なし=削除済み / 失敗)
-      // をユーザ通知 (conflict handler / toast) 済みの上で返す契約 (snippetStore
-      // 参照)。ここで throw に変換して saveFn へ伝播させ、setIsDirty(false) を
-      // 走らせない — 旧・直呼び (throw) と同じく「保存されていないのに clean
-      // 表示」で編集が失われるのを防ぐ。通知済みなので AlreadyNotifiedSaveError:
-      // useAutoSave の catch は autoSave.failed トーストを重ねない (二重防止)。
-      const saved = await useSnippetStore.getState().update(id, { content });
-      if (!saved) {
-        throw new AlreadyNotifiedSaveError(
-          `snippet save not persisted (version conflict or update failure): ${id}`,
-        );
-      }
-    } else if (ctx === "chronicle_event") {
-      // 出来事の詳細（ProseMirror JSON）。インスペクタと同じ tracked-write 経路
-      // （uiUpdateEvent）で保存し、undo/redo・鮮度カウンタを一貫させる。
-      const content = JSON.stringify(ed.getJSON());
-      await uiUpdateEvent({ eventId: id, detail: content });
-    } else {
-      // 本文保存の全副作用カスケードは persistSceneBody が正本。
-      // ライブエディタもエージェントの off-screen 自動適用も同じ経路を通す。
-      await persistSceneBody(id, ed.state.doc);
-    }
+    await saveEditorDocument(binding, ed.state.doc, {
+      ...defaultEditorDocumentServices,
+      // TipTap's live serializer preserves the exact HTML representation used
+      // by the existing snippet editor.
+      serializeSnippet: () => ed.getHTML(),
+    });
     markEnd("editor.coreSave");
   }, []);
 
@@ -520,9 +476,10 @@ export function EditorPane({
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
     // Codex/snippet tabs don't use the revision system
-    if (saveContentTypeRef.current === "scene") {
+    const loadedBinding = loadedBindingRef.current;
+    if (loadedBinding?.kind === "tree") {
       try {
-        const id = saveSceneIdRef.current;
+        const id = loadedBinding.id;
         const ed = editorRef.current;
         if (!id || !ed) return;
         const intervalMs =
@@ -1486,10 +1443,9 @@ export function EditorPane({
         }
         cancel();
         saveSceneIdRef.current = nodeId;
-        // Update *after* flush() above so the flush still routes scene A's
-        // pending edits to the scene backend, even though the prop has already
-        // flipped to the new tab's contentType.
-        saveContentTypeRef.current = contentType;
+        // Invalidate the save binding before loading the next document. The
+        // old binding remains valid only until the pre-switch flush completes.
+        loadedBindingRef.current = null;
         // ここから新コンテンツの適用が成功するまで、エディタ内の doc は
         // 保存禁止 (coreSave が skip)。途中失敗した doc を autosave が
         // 書き戻すと本文消失になるため。
@@ -1501,6 +1457,7 @@ export function EditorPane({
         // would persist a doc with no setup marks and orphan every setup row.
         isApplyingExternalUpdate.current = true;
         try {
+          let loadedPhaseIdForBinding: string | null = null;
           if (isCodexMode) {
             // Load codex entry content (ProseMirror JSON)
             const entry = await getCodexEntry(getCurrentProjectId(), nodeId);
@@ -1562,7 +1519,7 @@ export function EditorPane({
                 }
               }
             }
-            activePhaseIdRef.current = resolvedPhaseId;
+            loadedPhaseIdForBinding = resolvedPhaseId;
             setLoadedPhaseId(resolvedPhaseId);
 
             const rawContent = phaseContentOverride ?? entry?.content ?? null;
@@ -1645,6 +1602,24 @@ export function EditorPane({
 
           // 3 ブランチとも setContent 成功 = エディタ内 doc はロード済み本物。
           // ここで初めて保存を解禁する。
+          if (cancelled) return;
+          const loadedTreeNode = useTreeStore
+            .getState()
+            .nodes.find((node) => node.id === nodeId);
+          loadedBindingRef.current = createLoadedEditorBinding(
+            contentType,
+            nodeId,
+            loadedTreeNode
+              ? {
+                  nodeType:
+                    loadedTreeNode.nodeType === "note" ? "note" : "scene",
+                  storage: isFileBackedNode(loadedTreeNode.sourceUri)
+                    ? "file"
+                    : "database",
+                }
+              : undefined,
+            loadedPhaseIdForBinding,
+          );
           loadFailedRef.current = false;
 
           if (!cancelled) {
