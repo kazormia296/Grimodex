@@ -62,6 +62,7 @@ import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
 import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
+import { shouldHandleEditorUpdate } from "@/features/editor/editorEventPolicy";
 
 // sceneContentStore の source-group sentinel。EditorPane の 0/1、agent resync
 // (autoApplyProse / renameEngine) の -1 と衝突しない値であること — 一致すると
@@ -239,10 +240,20 @@ function MountedSceneBlock({
         }
       },
       onUpdate({ editor: e, transaction }) {
-        if (isApplyingExternalUpdate.current) return;
+        const aiState = useInlineAiStore.getState();
         // setEditable 等の doc 未変更 'update' を保存に流さない
         // (EditorPane.onUpdate と同じガード — 詳細はそちらのコメント参照)。
-        if (!transaction.docChanged) return;
+        if (
+          !shouldHandleEditorUpdate({
+            docChanged: transaction.docChanged,
+            isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+            inlineAiStatus: aiState.status,
+            activeEditor: aiState.activeEditor,
+            editor: e,
+          })
+        ) {
+          return;
+        }
         // インライン AI の生成中・diff 表示中は "このエディタ" の編集をオート
         // セーブしない (EditorPane.onUpdate と同じ契約)。未 accept の生成テキスト
         // が autosave で焼き込まれる (= 未帰属保存・本文消失) のを防ぐ。Accept/
@@ -250,8 +261,6 @@ function MountedSceneBlock({
         // schedule する。owner 判定 (activeEditor === e) なので、別シーンで AI
         // 実行中でも当シーンの通常編集は通常どおり保存される (リニアは複数
         // エディタがグローバル単一 store を共有するため status だけでは不可)。
-        const aiState = useInlineAiStore.getState();
-        if (aiState.status !== "idle" && aiState.activeEditor === e) return;
         if (loadFailedRef.current) {
           // 調査ログ: 未ロード窓で doc を変更している犯人の特定用。
           // 保存自体は coreSave 側 guard で skip される。

@@ -24,7 +24,7 @@ import type { FilterSource } from "@/features/attribution/attributionStore";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useCurrentProject } from "@/features/project/projectStore";
 
-interface EditorContentAreaProps {
+export interface EditorContentAreaProps {
   editor: Editor | null;
   editorContainerRef: React.MutableRefObject<HTMLDivElement | null>;
   toolbarActionsRef: React.MutableRefObject<ToolbarActions | null>;

@@ -4,26 +4,13 @@ import i18next from "@/lib/i18n";
 import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
+import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
+export { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
 
 export interface AutoSave {
   schedule: () => void;
   cancel: () => void;
   flush: () => Promise<void>;
-}
-
-/**
- * 保存失敗のうち「ユーザ通知は発生源で済んでいる」ことを表す marker エラー。
- * 例: snippet の OCC 衝突は snippetStore が editConflict をトースト済みで、
- * ここでさらに autoSave.failed を重ねると同一失敗の二重トーストになる。
- * runSave の catch はこれを見て toast だけをスキップする — 失敗としての
- * 扱い (呼び出し側の dirty 維持・debugLog・回復時の announce) は通常の
- * 失敗と同じ。
- */
-export class AlreadyNotifiedSaveError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AlreadyNotifiedSaveError";
-  }
 }
 
 /**
