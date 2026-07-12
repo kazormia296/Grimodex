@@ -46,11 +46,15 @@ import {
   defaultEditorDocumentServices,
   saveEditorDocument,
 } from "@/features/editor/document/saveEditorDocument";
-import { type LoadedEditorBinding } from "@/features/editor/document/types";
 import {
   loadEditorDocument,
   targetFromTab,
 } from "@/features/editor/document/loadEditorDocument";
+import {
+  createEditorMutationGate,
+  type EditorMutationGate,
+  type SaveSnapshot,
+} from "@/features/editor/document/mutationGate";
 import { createRevision } from "@/features/revision/api";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { useEditorStore } from "@/features/editor/editorStore";
@@ -370,15 +374,14 @@ export function EditorPane({
   // (dirtyGatedSaveHandler) は打鍵と同じ tick で更新されるこの ref を正とする。
   // 更新は setIsDirtyRef 経由に一本化してあり、両者は乖離しない。
   const isDirtyRef = useRef(false);
-  // 編集世代カウンタ: dirty を立てる (=編集イベント) たびに ++。saveFn は
-  // save 開始時の世代を記録し、「同世代のときのみ」dirty をクリアする。
-  // coreSave の await 中に入った編集の dirty=true を無条件クリアでクロバー
-  // すると、外部 flush の dirty ゲートが clean 誤判定 → headless 適用
-  // (autoApplyProse) の resync が未保存編集を上書き消失させるため。
-  const editGenerationRef = useRef(0);
+  const mutationGateRef = useRef<EditorMutationGate | null>(null);
+  if (mutationGateRef.current === null) {
+    mutationGateRef.current = createEditorMutationGate();
+  }
+  const mutationGate = mutationGateRef.current;
   const setIsDirtyRef = useRef<(dirty: boolean) => void>(() => {});
   setIsDirtyRef.current = (dirty: boolean) => {
-    if (dirty) editGenerationRef.current += 1;
+    if (dirty) mutationGate.markEdited();
     isDirtyRef.current = dirty;
     setIsDirty(dirty);
   };
@@ -387,23 +390,11 @@ export function EditorPane({
   // EditorStatsFooter が tree 同期時に fire 時点のロード済み id を読むための
   // stable getter（inline arrow だと footer の購読が毎レンダー再構築される）。
   const getStatsSceneId = useCallback(() => saveSceneIdRef.current, []);
-  // A binding is committed only after the corresponding document has been
-  // loaded and applied successfully. Pending saves never route from props.
-  const loadedBindingRef = useRef<LoadedEditorBinding | null>(null);
   const [loadedPhaseId, setLoadedPhaseId] = useState<string | null>(null);
   const { shouldAutoRevision, recordAutoRevision } = useRevisionStore();
 
   // Prevent feedback loop when applying external content sync.
   const isApplyingExternalUpdate = useRef(false);
-
-  // 「ロードに成功した本物の doc」以外は保存禁止 — 空/欠損 doc の autosave が
-  // DB (file-backed なら writeBack でファイル) を上書きする本文消失の最終防衛線。
-  // **初期値は true**: mount 直後のエディタは content:"" の空 doc であり、
-  // switchScene 冒頭の flush() はロードより前に走る。ここが false だと、
-  // ロード前の窓で何かが autosave を arm しただけで空 doc が DB に保存される
-  // (実際に起きた「リニアモード解除で本文全消失」の正体)。
-  // switchScene 開始でも悲観的に true、コンテンツ適用成功時のみ false。
-  const loadFailedRef = useRef(true);
 
   // Auto-draft: true when scene was empty at load time
   const wasEmptyRef = useRef(false);
@@ -422,15 +413,14 @@ export function EditorPane({
     }
   }, [activeStatus, nodeId, isEntryMode]);
 
-  const coreSave = useCallback(async () => {
-    const binding = loadedBindingRef.current;
+  const coreSave = useCallback(async (snapshot: SaveSnapshot) => {
     const ed = editorRef.current;
-    if (!binding || !ed || loadFailedRef.current) {
+    if (!ed) {
       debugLog.warn("EditorPane", "save skipped: document is not loaded");
       return;
     }
     markStart("editor.coreSave");
-    await saveEditorDocument(binding, ed.state.doc, {
+    await saveEditorDocument(snapshot.binding, ed.state.doc, {
       ...defaultEditorDocumentServices,
       // TipTap's live serializer preserves the exact HTML representation used
       // by the existing snippet editor.
@@ -440,39 +430,31 @@ export function EditorPane({
   }, []);
 
   const saveFn = useCallback(async () => {
-    if (loadFailedRef.current) {
+    const snapshot = mutationGate.captureSave();
+    if (!snapshot) {
       // coreSave 側でも skip するが、ここで弾かないと後続の auto-revision が
       // 未ロードの空 doc を getJSON してリビジョン履歴に書き込んでしまう
       // (実機ログで確認: save skipped 直後に空 doc の revision insert)。
       // dirty 解除も「保存していないのに消す」ことになるので丸ごと skip する。
-      debugLog.warn(
-        "EditorPane",
-        `saveFn skipped: load failed ${saveSceneIdRef.current?.slice(0, 8) ?? ""}`,
-      );
+      debugLog.warn("EditorPane", "saveFn skipped: document is not loaded");
       return;
     }
-    // save 開始時の編集世代 (下の条件付き dirty クリア用)。ここから coreSave の
-    // doc 捕捉までは同期区間なので、捕捉に入った編集を取りこぼさない。
-    const editGenAtStart = editGenerationRef.current;
     setIsSaving(true);
     try {
-      await coreSave();
+      await coreSave(snapshot);
     } finally {
       setIsSaving(false);
     }
-    // coreSave の await 中に編集が入っていた場合 (世代不一致) は dirty を維持
-    // する。無条件クリアだと外部 flush の dirty ゲートが clean 誤判定し、
-    // headless 適用の resync がその編集を上書き消失させる。
-    if (editGenerationRef.current === editGenAtStart) {
+    // coreSave の await 中に編集や文書切替が入った場合は dirty を維持する。
+    if (mutationGate.mayClearDirty(snapshot)) {
       setIsDirtyRef.current(false);
     }
 
     // Auto-revision is non-critical — don't let it trigger "save failed" toast
     // Codex/snippet tabs don't use the revision system
-    const loadedBinding = loadedBindingRef.current;
-    if (loadedBinding?.kind === "tree") {
+    if (snapshot.binding.kind === "tree") {
       try {
-        const id = loadedBinding.id;
+        const id = snapshot.binding.id;
         const ed = editorRef.current;
         if (!id || !ed) return;
         const intervalMs =
@@ -505,7 +487,7 @@ export function EditorPane({
         );
       }
     }
-  }, [coreSave, shouldAutoRevision, recordAutoRevision]);
+  }, [coreSave, mutationGate, shouldAutoRevision, recordAutoRevision]);
 
   // Register this pane's save function so external callers (tab context menu,
   // agent writes, rename cascade, …) can flush it. dirty ゲート付き:
@@ -684,7 +666,7 @@ export function EditorPane({
           const ai = useInlineAiStore.getState();
           if (ai.status !== "idle" && ai.activeEditor === e) return;
         }
-        if (loadFailedRef.current) {
+        if (mutationGate.captureSave() === null) {
           // 調査ログ: 未ロード窓 (mount〜コンテンツ適用成功の間) で doc を
           // 変更している犯人の特定用。保存自体は saveFn 側 guard で skip される。
           debugLog.warn(
@@ -1092,8 +1074,9 @@ export function EditorPane({
     await flush();
     if (isEntryMode) return; // Codex/snippet entries: no revision on manual save
     // 未ロード doc は手動保存リビジョンにも残さない (空 doc 汚染防止)
-    if (loadFailedRef.current) return;
-    const id = saveSceneIdRef.current;
+    const snapshot = mutationGate.captureSave();
+    if (!snapshot || snapshot.binding.kind !== "tree") return;
+    const id = snapshot.binding.id;
     const ed = editorRef.current;
     if (!id || !ed) return;
     const content = JSON.stringify(ed.getJSON());
@@ -1103,7 +1086,7 @@ export function EditorPane({
       content,
       snapshotType: "manual",
     });
-  }, [flush, isEntryMode]);
+  }, [flush, isEntryMode, mutationGate]);
 
   useEditorKeyboard({
     paneRef,
@@ -1366,17 +1349,19 @@ export function EditorPane({
     return subscribeLiveContentRafCoalesced(nodeId, groupIndex, (next) => {
       isApplyingExternalUpdate.current = true;
       try {
-        markStart("editor.externalSync.setContent");
-        editor.commands.setContent(
-          next as Parameters<typeof editor.commands.setContent>[0],
-          { emitUpdate: false },
-        );
-        markEnd("editor.externalSync.setContent");
+        mutationGate.runProgrammatic(() => {
+          markStart("editor.externalSync.setContent");
+          editor.commands.setContent(
+            next as Parameters<typeof editor.commands.setContent>[0],
+            { emitUpdate: false },
+          );
+          markEnd("editor.externalSync.setContent");
+        });
       } finally {
         isApplyingExternalUpdate.current = false;
       }
     });
-  }, [nodeId, groupIndex, editor]);
+  }, [nodeId, groupIndex, editor, mutationGate]);
 
   // Subscribe to unplaced beats changes → mark dirty and schedule save,
   // and live-sync the Grid preview cache for immediate UI feedback.
@@ -1385,7 +1370,7 @@ export function EditorPane({
     const unsubscribe = useUnplacedBeatsStore
       .getState()
       .subscribe(nodeId, () => {
-        if (loadFailedRef.current) {
+        if (mutationGate.captureSave() === null) {
           // 調査ログ: 未ロード窓で autosave を arm する経路の特定用。
           debugLog.warn(
             "EditorPane",
@@ -1401,7 +1386,7 @@ export function EditorPane({
         });
       });
     return unsubscribe;
-  }, [nodeId, isEntryMode, schedule]);
+  }, [nodeId, isEntryMode, schedule, mutationGate]);
 
   // Load content when nodeId changes
   useEffect(() => {
@@ -1439,11 +1424,10 @@ export function EditorPane({
         saveSceneIdRef.current = nodeId;
         // Invalidate the save binding before loading the next document. The
         // old binding remains valid only until the pre-switch flush completes.
-        loadedBindingRef.current = null;
+        mutationGate.beginLoad();
         // ここから新コンテンツの適用が成功するまで、エディタ内の doc は
         // 保存禁止 (coreSave が skip)。途中失敗した doc を autosave が
         // 書き戻すと本文消失になるため。
-        loadFailedRef.current = true;
 
         // Hold the external-update guard for the entire scene-switch sequence
         // (setContent + authorship load + foreshadow load). Releasing it earlier
@@ -1480,12 +1464,14 @@ export function EditorPane({
           }
           const strictContent =
             loaded.binding.kind === "tree" || loaded.binding.kind === "codex";
-          markStart(`sceneLoad.setContent.${loaded.binding.kind}`);
-          editor!.commands.setContent(loaded.content, {
-            emitUpdate: false,
-            ...(strictContent ? { errorOnInvalidContent: true } : {}),
+          mutationGate.runProgrammatic(() => {
+            markStart(`sceneLoad.setContent.${loaded.binding.kind}`);
+            editor!.commands.setContent(loaded.content, {
+              emitUpdate: false,
+              ...(strictContent ? { errorOnInvalidContent: true } : {}),
+            });
+            markEnd(`sceneLoad.setContent.${loaded.binding.kind}`);
           });
-          markEnd(`sceneLoad.setContent.${loaded.binding.kind}`);
           if (loaded.binding.kind === "tree") {
             const contentLength =
               typeof loaded.content === "string"
@@ -1525,8 +1511,7 @@ export function EditorPane({
           // 3 ブランチとも setContent 成功 = エディタ内 doc はロード済み本物。
           // ここで初めて保存を解禁する。
           if (cancelled) return;
-          loadedBindingRef.current = loadedBinding;
-          loadFailedRef.current = false;
+          mutationGate.commitLoad(loadedBinding);
 
           if (!cancelled) {
             setIsSceneContentLoading(false);
@@ -1650,7 +1635,7 @@ export function EditorPane({
 
         // シーン/Codex ロード完了後: 使い回しエディタの undo スタックを空にする。
         // 残すと Ctrl+Z が前シーンの doc スナップショットを復元して本文が消える。
-        if (!cancelled && !loadFailedRef.current && editor) {
+        if (!cancelled && mutationGate.captureSave() && editor) {
           resetEditorHistory(editor.view);
         }
 
@@ -1754,8 +1739,9 @@ export function EditorPane({
         }
       } catch (err) {
         if (!cancelled) {
+          mutationGate.failLoad();
           setIsSceneContentLoading(false);
-          // loadFailedRef は true のまま = この doc は保存されない。無言で
+          // mutation gate は未ロード状態のまま = この doc は保存されない。無言で
           // rethrow すると「空のエディタが出て本文が消えた」ようにしか見えない
           // ため、ログ + トーストで可視化する。
           debugLog.error(
@@ -1796,6 +1782,7 @@ export function EditorPane({
     phaseResolutionSceneId,
     phaseSceneTimeIndex,
     phaseResolutionMode,
+    mutationGate,
   ]);
 
   useEffect(() => {
@@ -1810,7 +1797,9 @@ export function EditorPane({
           detail.content && detail.content !== "{}"
             ? JSON.parse(detail.content)
             : "";
-        editorRef.current.commands.setContent(parsed, { emitUpdate: false });
+        mutationGate.runProgrammatic(() => {
+          editorRef.current!.commands.setContent(parsed, { emitUpdate: false });
+        });
         resetEditorHistory(editorRef.current.view);
         setIsDirtyRef.current(false);
       } finally {
@@ -1823,7 +1812,7 @@ export function EditorPane({
         "external-mount:reload-scene",
         onExternalReload,
       );
-  }, [nodeId]);
+  }, [nodeId, mutationGate]);
 
   const isNote = !isEntryMode && activeNode?.nodeType === "note";
 
