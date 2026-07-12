@@ -1,20 +1,14 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Clock, BookOpen, Files, CalendarDays } from "lucide-react";
 import { useEditor } from "@tiptap/react";
 import { getEditorExtensions } from "@/features/editor/extensions";
 import { resetEditorHistory } from "@/features/editor/editorDocumentLoad";
 import { getFileBackedEditorExtensions } from "@/features/external-mount/fileBackedEditorExtensions";
 import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
-import { FileBackedSceneBanner } from "@/features/external-mount/components/FileBackedSceneBanner";
-import { NoteContextControls } from "@/features/editor/NoteContextControls";
 import { Toolbar } from "@/features/editor/Toolbar";
 import type { ToolbarActions } from "@/features/editor/Toolbar";
-import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { savePlacedBeatPreviewOnly } from "@/features/tree/api";
-import { EditorStatsFooter } from "@/features/editor/EditorStatsFooter";
 import {
   extractPlacedBeatPreview,
   extractPlacedBeatPreviewFromDoc,
@@ -28,7 +22,6 @@ import type {
   MentionItem,
   MentionRole,
 } from "@/features/codex/CodexMentionExtension";
-import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
@@ -39,7 +32,6 @@ import {
   getCurrentProjectLanguage,
 } from "@/features/project/projectStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
-import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import {
@@ -70,8 +62,6 @@ import { useGhostPreview } from "@/features/editor/useGhostPreview";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { useAttribution } from "@/features/attribution/useAttribution";
 import { useAttributionStore } from "@/features/attribution/attributionStore";
-import { AttributionLegend } from "@/features/attribution/AttributionLegend";
-import { ReorderModeHint } from "@/features/editor/reorder/ReorderModeHint";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useCursorOverlay } from "@/features/editor/useCursorOverlay";
 import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
@@ -103,15 +93,10 @@ import {
 } from "@/features/editor/editorLayout";
 import { useInlineAiDiff } from "@/features/editor/inlineAi/useInlineAiDiff";
 import { useAgentProseStaging } from "@/features/editor/inlineAi/useAgentProseStaging";
-import { InlineAIPalette } from "@/features/editor/inlineAi/InlineAIPalette";
 import {
   buildSystemPrompt as buildInlineSystemPrompt,
   buildUserPrompt as buildInlineUserPrompt,
 } from "@/features/editor/inlineAi/inlineAiApi";
-import { AbInlineDialog } from "@/features/ab-test/AbInlineDialog";
-import type { AbMessage } from "@/features/ab-test/abHarness";
-import { InlineAIToolbar } from "@/features/editor/inlineAi/InlineAIToolbar";
-import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
@@ -131,10 +116,6 @@ import { shouldPromptSynopsis } from "@/features/editor/synopsisSuggestion";
 import { useSynopsisSuggestionStore } from "@/features/editor/synopsisSuggestionStore";
 import { getDocText } from "@/features/editor/RubyNode";
 import { useLinter } from "@/features/lint/useLinter";
-import { StatusBarIndicator } from "@/features/lint/StatusBarIndicator";
-import { AiPolicyBadge } from "@/features/ai-policy/AiPolicyBadge";
-import { LicenseBadge } from "@/features/license/LicenseBadge";
-import { LicenseRestrictionBanner } from "@/features/license/LicenseRestrictionBanner";
 import { useForeshadowNavStore } from "@/features/foreshadow/foreshadowNavStore";
 import { useSemanticNavStore } from "@/features/semantic-search/semanticNavStore";
 import { findChunkInDoc } from "@/features/semantic-search/findChunkInDoc";
@@ -144,11 +125,8 @@ import { markStart, markEnd, recordMark } from "@/lib/perfLog";
 import i18next from "i18next";
 import type { SceneStatus } from "@/features/tree/treeStore";
 import type { GroupIndex, TabContentType } from "@/features/editor/tabStore";
-import { DndContext, DragOverlay } from "@dnd-kit/core";
 import type { UnplacedBeat } from "@/features/editor/beat/unplacedBeatsStore";
-import { EditorContentArea } from "@/features/editor/EditorContentArea";
 import { useParagraphReorderOverlay } from "@/features/editor/reorder/useParagraphReorderOverlay";
-import { ReorderOverlay } from "@/features/editor/reorder/ReorderOverlay";
 import { useBeatDragDrop } from "@/features/editor/useBeatDragDrop";
 import { useEditorKeyboard } from "@/features/editor/useEditorKeyboard";
 import { useTrashBinCapture } from "@/features/editor/useTrashBinCapture";
@@ -156,29 +134,13 @@ import { useDropTarget } from "@/features/trash-bin/useDropTarget";
 import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore";
 import type { TrashOrigin } from "@/features/trash-bin/types";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
+import { EditorPaneRibbon } from "@/features/editor/EditorPaneRibbon";
+import { EditorPaneViewport } from "@/features/editor/EditorPaneViewport";
+import { EditorPaneStatusBar } from "@/features/editor/EditorPaneStatusBar";
 import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable";
-
-function getStatusLabels(): Record<SceneStatus, string> {
-  return {
-    outline: i18next.t("editor.status.outline"),
-    draft: i18next.t("editor.status.draft"),
-    complete: i18next.t("editor.status.complete"),
-    revision: i18next.t("editor.status.revision"),
-    final: i18next.t("editor.status.final"),
-  };
-}
-
-const STATUS_COLORS: Record<SceneStatus, string> = {
-  outline: "text-muted-foreground",
-  draft: "text-yellow-500",
-  complete: "text-green-500",
-  revision: "text-purple-400",
-  final: "text-blue-400",
-};
+  EditorPaneOverlays,
+  type AbInlineState,
+} from "@/features/editor/EditorPaneOverlays";
 
 /** Read the vertical-mode flag at call time — scroll save/restore runs inside
  *  async effects and editor callbacks where a captured value could be stale. */
@@ -256,9 +218,6 @@ export function EditorPane({
     (s) => s.reloadNonce[nodeId] ?? 0,
   );
   const [isSceneContentLoading, setIsSceneContentLoading] = useState(true);
-  const [statusPopoverOpen, setStatusPopoverOpen] = useState(false);
-  const statusPopoverRef = useRef<HTMLDivElement>(null);
-  const statusBadgeRef = useRef<HTMLButtonElement>(null);
 
   const activeNode = useTreeStore((s) =>
     isEntryMode ? null : s.nodes.find((n) => n.id === nodeId),
@@ -348,13 +307,7 @@ export function EditorPane({
   const [palettePreselect, setPalettePreselect] =
     useState<InlineAiCommand | null>(null);
   // A/B 比較 (③): インライン AI を 2 構成で並列生成して見比べるモーダル。
-  const [abInline, setAbInline] = useState<{
-    messages: AbMessage[];
-    mode: "insert" | "replace";
-    originalRange: { from: number; to: number } | null;
-    insertPos: number | null;
-    projectId: string;
-  } | null>(null);
+  const [abInline, setAbInline] = useState<AbInlineState | null>(null);
   const [mentionPopup, setMentionPopupState] =
     useState<CodexMentionPopupState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -1099,21 +1052,6 @@ export function EditorPane({
     setPaletteOpen,
   });
 
-  // Close status popover on outside click
-  useEffect(() => {
-    if (!statusPopoverOpen) return;
-    function onMouseDown(e: MouseEvent) {
-      const target = e.target as Node;
-      if (
-        !statusBadgeRef.current?.contains(target) &&
-        !statusPopoverRef.current?.contains(target)
-      )
-        setStatusPopoverOpen(false);
-    }
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, [statusPopoverOpen]);
-
   const activeGroupIndex = useTabStore((s) => s.activeGroupIndex);
   const isActiveGroup = groupIndex === activeGroupIndex;
 
@@ -1788,6 +1726,138 @@ export function EditorPane({
     [mentionPopup],
   );
 
+  const editorContentAreaProps = {
+    editor,
+    editorContainerRef,
+    toolbarActionsRef,
+    findOpen,
+    findShowReplace,
+    setFindOpen,
+    showForeshadowMarks,
+    gutterReserve,
+    focusModeHideBeats,
+    focusMode,
+    typewriterMode: effectiveTypewriter,
+    filterSource,
+    editorSettings,
+    editorTitle,
+    loadedPhaseLabel,
+    titleEditing,
+    titleDraft,
+    setTitleDraft,
+    handleTitleSave,
+    handleTitleCancel,
+    handleTitleEditStart,
+    isSceneContentLoading,
+    sceneId: nodeId,
+    onInlineAiCommand: dbNativeEditor ? handleInlineAiCommand : undefined,
+  };
+
+  const beatDragDrop = {
+    sensors: beatSensors,
+    collisionDetection: beatCollisionDetection,
+    draggingBeat,
+    onDragStart: handleBeatDragStart,
+    onDragEnd: handleBeatDragEnd,
+  };
+
+  const handlePaletteSubmit = useCallback(
+    (command: InlineAiCommand, prompt: string) => {
+      if (!editor) return;
+      const node = useTreeStore
+        .getState()
+        .nodes.find((candidate) => candidate.id === nodeId);
+      const projectTitle =
+        useWorkspaceStore.getState().activeWorkspaceName ?? "";
+      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
+      const codexEntries = useCodexStore.getState().entries;
+      const context = buildInlineAiContext({
+        editor,
+        projectTitle,
+        sceneTitle: node?.title ?? "",
+        matchedCodexIds,
+        codexEntries,
+        arg: prompt || undefined,
+      });
+      generate(command, context);
+    },
+    [editor, generate, nodeId],
+  );
+
+  const handlePaletteSubmitAb = useCallback(
+    (command: InlineAiCommand, prompt: string) => {
+      if (!editor) return;
+      const node = useTreeStore
+        .getState()
+        .nodes.find((candidate) => candidate.id === nodeId);
+      const projectTitle =
+        useWorkspaceStore.getState().activeWorkspaceName ?? "";
+      const matchedCodexIds = useCodexHighlightStore.getState().matchedEntryIds;
+      const codexEntries = useCodexStore.getState().entries;
+      const context = buildInlineAiContext({
+        editor,
+        projectTitle,
+        sceneTitle: node?.title ?? "",
+        matchedCodexIds,
+        codexEntries,
+        arg: prompt || undefined,
+      });
+      const lang = getCurrentProjectLanguage();
+      const messages: AbInlineState["messages"] = [
+        {
+          role: "system",
+          content: buildInlineSystemPrompt(command, context, lang),
+        },
+        {
+          role: "user",
+          content: buildInlineUserPrompt(command, context, lang),
+        },
+      ];
+      const { from, to } = editor.state.selection;
+      const isReplace = command.mode === "replace" && from !== to;
+      setAbInline({
+        messages,
+        mode: isReplace ? "replace" : "insert",
+        originalRange: isReplace ? { from, to } : null,
+        insertPos: isReplace ? null : from,
+        projectId: getCurrentProjectId(),
+      });
+    },
+    [editor, nodeId],
+  );
+
+  const handleAdoptAb = useCallback(
+    (text: string) => {
+      if (!abInline) return;
+      showProvidedText(text, {
+        mode: abInline.mode,
+        originalRange: abInline.originalRange ?? undefined,
+        insertPos: abInline.insertPos ?? undefined,
+      });
+      setAbInline(null);
+    },
+    [abInline, showProvidedText],
+  );
+
+  const handleStatusChange = useCallback(
+    (status: SceneStatus) => {
+      useTreeStore
+        .getState()
+        .setStatus(nodeId, status)
+        .catch(() => {});
+    },
+    [nodeId],
+  );
+
+  const handleOpenRevisionHistory = useCallback(() => {
+    const id = saveSceneIdRef.current;
+    const ed = editorRef.current;
+    if (id && ed) {
+      const content = JSON.stringify(ed.getJSON());
+      useRevisionStore.getState().openHistory("scene", id, content);
+    }
+  }, []);
+
   const __renderResult = (
     <div
       ref={setPaneRef}
@@ -1811,381 +1881,76 @@ export function EditorPane({
         }
         reorderDisabled={!dbNativeEditor || readOnly}
       />
-      <LicenseRestrictionBanner />
-      {isFileBacked && !isEntryMode && <FileBackedSceneBanner />}
-      <ExternalEditConflictBanner nodeId={nodeId} />
-      {isNote && (
-        <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
-          <span className="font-medium">{t("editor.ribbon.noteEditing")}</span>
-          <span className="text-amber-500/60">
-            — {t("editor.ribbon.noteDescription")}
-          </span>
-        </div>
-      )}
-      {isNote && <NoteContextControls nodeId={nodeId} />}
-      {isCodexMode && (
-        <div className="flex items-center gap-1.5 border-b border-purple-500/30 bg-purple-500/10 px-3 py-1 text-xs text-purple-600 dark:text-purple-400">
-          <span className="flex items-center gap-1 font-medium">
-            <BookOpen className="h-3 w-3" aria-hidden />
-            {t("editor.ribbon.codexEditing")}
-          </span>
-          {activeCodexEntry && (
-            <span className="text-purple-500/60">
-              — {activeCodexEntry.name}
-            </span>
-          )}
-          {loadedPhaseLabel && (
-            <span className="ml-auto rounded bg-purple-500/20 px-1.5 py-0.5 font-medium">
-              {loadedPhaseLabel}
-            </span>
-          )}
-        </div>
-      )}
-      {isSnippetMode && (
-        <div className="flex items-center gap-1.5 border-b border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-600 dark:text-emerald-400">
-          <span className="flex items-center gap-1 font-medium">
-            <Files className="h-3 w-3" aria-hidden />
-            {t("editor.ribbon.snippetEditing")}
-          </span>
-          {activeSnippetEntry && (
-            <span className="text-emerald-500/60">
-              — {activeSnippetEntry.title}
-            </span>
-          )}
-        </div>
-      )}
-      {isChronicleEventMode && (
-        <div className="flex items-center gap-1.5 border-b border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs text-sky-600 dark:text-sky-400">
-          <span className="flex items-center gap-1 font-medium">
-            <CalendarDays className="h-3 w-3" aria-hidden />
-            {t("editor.ribbon.chronicleEditing")}
-          </span>
-          {chronicleEventTitle && (
-            <span className="text-sky-500/60">— {chronicleEventTitle}</span>
-          )}
-        </div>
-      )}
-      <DndContext
-        sensors={beatSensors}
-        collisionDetection={beatCollisionDetection}
-        onDragStart={handleBeatDragStart}
-        onDragEnd={handleBeatDragEnd}
-      >
-        {isPanelVisible ? (
-          <ResizablePanelGroup
-            orientation="horizontal"
-            className="min-h-0 flex-1"
-            onLayoutChanged={handlePanelLayoutChanged}
-          >
-            <ResizablePanel
-              id="editor-main"
-              minSize="40%"
-              className="flex flex-col overflow-hidden"
-            >
-              <EditorContentArea
-                editor={editor}
-                editorContainerRef={editorContainerRef}
-                toolbarActionsRef={toolbarActionsRef}
-                findOpen={findOpen}
-                findShowReplace={findShowReplace}
-                setFindOpen={setFindOpen}
-                showForeshadowMarks={showForeshadowMarks}
-                gutterReserve={gutterReserve}
-                focusModeHideBeats={focusModeHideBeats}
-                focusMode={focusMode}
-                typewriterMode={effectiveTypewriter}
-                filterSource={filterSource}
-                editorSettings={editorSettings}
-                editorTitle={editorTitle}
-                loadedPhaseLabel={loadedPhaseLabel}
-                titleEditing={titleEditing}
-                titleDraft={titleDraft}
-                setTitleDraft={setTitleDraft}
-                handleTitleSave={handleTitleSave}
-                handleTitleCancel={handleTitleCancel}
-                handleTitleEditStart={handleTitleEditStart}
-                isSceneContentLoading={isSceneContentLoading}
-                sceneId={nodeId}
-                onInlineAiCommand={
-                  dbNativeEditor ? handleInlineAiCommand : undefined
-                }
-              />
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel
-              id="scene-meta"
-              minSize="15%"
-              maxSize="50%"
-              defaultSize={`${sceneMetaPanelWidth}%`}
-              className="flex flex-col overflow-hidden"
-            >
-              <SceneMetaPanel
-                sceneId={nodeId}
-                editor={editor}
-                setMentionPopup={setMentionPopupState}
-              />
-            </ResizablePanel>
-          </ResizablePanelGroup>
-        ) : (
-          <div className="flex min-h-0 flex-1 overflow-hidden">
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              <EditorContentArea
-                editor={editor}
-                editorContainerRef={editorContainerRef}
-                toolbarActionsRef={toolbarActionsRef}
-                findOpen={findOpen}
-                findShowReplace={findShowReplace}
-                setFindOpen={setFindOpen}
-                showForeshadowMarks={showForeshadowMarks}
-                gutterReserve={gutterReserve}
-                focusModeHideBeats={focusModeHideBeats}
-                focusMode={focusMode}
-                typewriterMode={effectiveTypewriter}
-                filterSource={filterSource}
-                editorSettings={editorSettings}
-                editorTitle={editorTitle}
-                loadedPhaseLabel={loadedPhaseLabel}
-                titleEditing={titleEditing}
-                titleDraft={titleDraft}
-                setTitleDraft={setTitleDraft}
-                handleTitleSave={handleTitleSave}
-                handleTitleCancel={handleTitleCancel}
-                handleTitleEditStart={handleTitleEditStart}
-                isSceneContentLoading={isSceneContentLoading}
-                sceneId={nodeId}
-                onInlineAiCommand={
-                  dbNativeEditor ? handleInlineAiCommand : undefined
-                }
-              />
-            </div>
-          </div>
-        )}
-        <DragOverlay dropAnimation={null}>
-          {draggingBeat && (
-            <div
-              className="rounded border border-border bg-popover px-2 py-1 text-xs shadow-md opacity-90 whitespace-nowrap"
-              style={{ width: "max-content", maxWidth: "320px" }}
-            >
-              {draggingBeat.content
-                .map((c) => ("text" in c ? String(c.text ?? "") : ""))
-                .join("")
-                .slice(0, 40) || "Beat"}
-            </div>
-          )}
-        </DragOverlay>
-      </DndContext>
-      <div className="glass-editor-chrome flex flex-shrink-0 items-center justify-between border-t border-border px-3 py-1 text-xs text-muted-foreground">
-        {/* Left: status badge */}
-        <div className="relative flex min-w-0 items-center gap-2">
-          {activeStatus ? (
-            <>
-              <button
-                ref={statusBadgeRef}
-                type="button"
-                title={i18next.t("editor.status.changeStatus")}
-                onClick={() => setStatusPopoverOpen((v) => !v)}
-                className={`rounded px-1.5 py-0.5 font-medium hover:bg-accent ${STATUS_COLORS[activeStatus]}`}
-              >
-                {getStatusLabels()[activeStatus]}
-              </button>
-              {statusPopoverOpen && (
-                <div
-                  ref={statusPopoverRef}
-                  className="absolute bottom-full left-0 z-50 mb-1 min-w-[120px] rounded border border-border bg-popover py-1 shadow-md"
-                >
-                  {(
-                    Object.entries(getStatusLabels()) as [SceneStatus, string][]
-                  ).map(([s, label]) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => {
-                        useTreeStore
-                          .getState()
-                          .setStatus(nodeId, s)
-                          .catch(() => {});
-                        setStatusPopoverOpen(false);
-                      }}
-                      className={`flex w-full items-center px-3 py-1.5 text-left text-xs hover:bg-accent ${s === activeStatus ? "font-medium" : ""} ${STATUS_COLORS[s]}`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : null}
-          {/* Attribution overlay legend — only while the overlay is on, kept on
-             the left away from the purple AI-ratio badge to avoid color clash. */}
-          {showAttribution && (
-            <AttributionLegend className="text-[10px] text-muted-foreground" />
-          )}
-          {/* 推敲リオーダー（Alt=段落 / Alt+Shift=文・文節）の操作案内 */}
-          <ReorderModeHint className="text-[10px] text-muted-foreground" />
-        </div>
-        {/* Right: stats + save state + history */}
-        <div className="flex flex-shrink-0 items-center gap-3">
-          <AiPolicyBadge />
-          <LicenseBadge />
-          <StatusBarIndicator />
-          {showAttribution && aiRatio > 0 && (
-            <button
-              type="button"
-              title={i18next.t("editor.status.openAttribution")}
-              onClick={() => togglePanel("attribution")}
-              className="tabular-nums text-attribution-ai hover:text-foreground"
-            >
-              AI: {aiRatio}%
-            </button>
-          )}
-          <EditorStatsFooter
-            editor={editor}
-            getSyncSceneId={getStatsSceneId}
-            syncToTree={!isEntryMode}
-            isLoading={isSceneContentLoading}
-          />
-          {isSaving ? (
-            <span className="opacity-50">{t("editor.status.saving")}</span>
-          ) : isDirty ? (
-            <span className="text-amber-500">{t("editor.status.unsaved")}</span>
-          ) : (
-            <span className="opacity-40">{t("editor.status.saved")}</span>
-          )}
-          <button
-            type="button"
-            title={i18next.t("editor.status.revisionHistory")}
-            onClick={() => {
-              const id = saveSceneIdRef.current;
-              const ed = editorRef.current;
-              if (id && ed) {
-                const content = JSON.stringify(ed.getJSON());
-                useRevisionStore.getState().openHistory("scene", id, content);
-              }
-            }}
-            className="hover:text-foreground"
-          >
-            <Clock className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-      {editor && (
-        <InlineAIPalette
-          editor={editor}
-          open={paletteOpen}
-          preselectedCommand={palettePreselect}
-          onClose={() => setPaletteOpen(false)}
-          onSubmit={(command, prompt) => {
-            const node = useTreeStore
-              .getState()
-              .nodes.find((n) => n.id === nodeId);
-            const projectTitle =
-              useWorkspaceStore.getState().activeWorkspaceName ?? "";
-            const matchedCodexIds =
-              useCodexHighlightStore.getState().matchedEntryIds;
-            const codexEntries = useCodexStore.getState().entries;
-            const context = buildInlineAiContext({
-              editor,
-              projectTitle,
-              sceneTitle: node?.title ?? "",
-              matchedCodexIds,
-              codexEntries,
-              arg: prompt || undefined,
-            });
-            generate(command, context);
-          }}
-          onSubmitAb={(command, prompt) => {
-            if (!editor) return;
-            const node = useTreeStore
-              .getState()
-              .nodes.find((n) => n.id === nodeId);
-            const projectTitle =
-              useWorkspaceStore.getState().activeWorkspaceName ?? "";
-            const matchedCodexIds =
-              useCodexHighlightStore.getState().matchedEntryIds;
-            const codexEntries = useCodexStore.getState().entries;
-            const context = buildInlineAiContext({
-              editor,
-              projectTitle,
-              sceneTitle: node?.title ?? "",
-              matchedCodexIds,
-              codexEntries,
-              arg: prompt || undefined,
-            });
-            const lang = getCurrentProjectLanguage();
-            const messages: AbMessage[] = [
-              {
-                role: "system",
-                content: buildInlineSystemPrompt(command, context, lang),
-              },
-              {
-                role: "user",
-                content: buildInlineUserPrompt(command, context, lang),
-              },
-            ];
-            // 採用後に showProvidedText で diff 挿入できるよう、起動時点の
-            // 選択範囲 / 挿入位置を確定して保持する。
-            const { from, to } = editor.state.selection;
-            const isReplace = command.mode === "replace" && from !== to;
-            setAbInline({
-              messages,
-              mode: isReplace ? "replace" : "insert",
-              originalRange: isReplace ? { from, to } : null,
-              insertPos: isReplace ? null : from,
-              projectId: getCurrentProjectId(),
-            });
-          }}
-        />
-      )}
-      {abInline && (
-        <AbInlineDialog
-          open
-          onOpenChange={(next) => {
-            if (!next) setAbInline(null);
-          }}
-          projectId={abInline.projectId}
-          messages={abInline.messages}
-          onAdopt={(text) => {
-            showProvidedText(text, {
-              mode: abInline.mode,
-              originalRange: abInline.originalRange ?? undefined,
-              insertPos: abInline.insertPos ?? undefined,
-            });
-            setAbInline(null);
-          }}
-        />
-      )}
-      <InlineAIToolbar
+      <EditorPaneRibbon
+        nodeId={nodeId}
+        isEntryMode={isEntryMode}
+        isFileBacked={isFileBacked}
+        isNote={isNote}
+        isCodexMode={isCodexMode}
+        isSnippetMode={isSnippetMode}
+        isChronicleEventMode={isChronicleEventMode}
+        activeCodexEntry={activeCodexEntry}
+        activeSnippetEntry={activeSnippetEntry}
+        loadedPhaseLabel={loadedPhaseLabel}
+        chronicleEventTitle={chronicleEventTitle}
+      />
+      <EditorPaneViewport
+        isPanelVisible={isPanelVisible}
+        sceneMetaPanelWidth={sceneMetaPanelWidth}
+        onPanelLayoutChanged={handlePanelLayoutChanged}
+        contentAreaProps={editorContentAreaProps}
+        sceneId={nodeId}
+        editor={editor}
+        setMentionPopup={setMentionPopupState}
+        beatDragDrop={beatDragDrop}
+      />
+      <EditorPaneStatusBar
+        activeStatus={activeStatus}
+        editor={editor}
+        getStatsSceneId={getStatsSceneId}
+        isEntryMode={isEntryMode}
+        isSceneContentLoading={isSceneContentLoading}
+        showAttribution={showAttribution}
+        aiRatio={aiRatio}
+        isSaving={isSaving}
+        isDirty={isDirty}
+        onStatusChange={handleStatusChange}
+        onOpenAttribution={() => togglePanel("attribution")}
+        onOpenRevisionHistory={handleOpenRevisionHistory}
+      />
+      <EditorPaneOverlays
+        editor={editor}
+        paletteOpen={paletteOpen}
+        palettePreselect={palettePreselect}
+        onClosePalette={() => setPaletteOpen(false)}
+        onSubmitPalette={handlePaletteSubmit}
+        onSubmitPaletteAb={handlePaletteSubmitAb}
+        abInline={abInline}
+        onCloseAb={() => setAbInline(null)}
+        onAdoptAb={handleAdoptAb}
         onAccept={acceptWithStaging}
         onReject={rejectWithStaging}
         onRetry={retry}
         anchorRef={editorContainerRef}
-        isOwner={isInlineAiOwner}
-      />
-      <SlashCommandPopup />
-      {mentionPopup &&
-        createPortal(
-          <MentionPopup
-            items={mentionPopup.items}
-            selectedIndex={mentionIndex}
-            onSelect={handleMentionSelect}
-            onChangeIndex={setMentionIndex}
-            clientRect={mentionPopup.clientRect}
-            onSelectWithRole={handleMentionSelectWithRole}
-          />,
-          document.body,
-        )}
-      <ReorderOverlay
-        open={paragraphReorder.open}
-        units={paragraphReorder.units}
-        order={paragraphReorder.order}
-        onOrderChange={paragraphReorder.setOrder}
-        granularity={paragraphReorder.granularity}
-        onGranularityChange={paragraphReorder.setGranularity}
-        loading={paragraphReorder.loading}
-        errorMessage={paragraphReorder.errorMessage}
-        canConfirm={paragraphReorder.canConfirm}
-        onConfirm={paragraphReorder.confirm}
-        onCancel={paragraphReorder.closeOverlay}
+        isInlineAiOwner={isInlineAiOwner}
+        mentionPopup={mentionPopup}
+        mentionIndex={mentionIndex}
+        onMentionSelect={handleMentionSelect}
+        onMentionIndexChange={setMentionIndex}
+        onMentionSelectWithRole={handleMentionSelectWithRole}
+        paragraphReorder={{
+          open: paragraphReorder.open,
+          units: paragraphReorder.units,
+          order: paragraphReorder.order,
+          onOrderChange: paragraphReorder.setOrder,
+          granularity: paragraphReorder.granularity,
+          onGranularityChange: paragraphReorder.setGranularity,
+          loading: paragraphReorder.loading,
+          errorMessage: paragraphReorder.errorMessage,
+          canConfirm: paragraphReorder.canConfirm,
+          onConfirm: paragraphReorder.confirm,
+          onCancel: paragraphReorder.closeOverlay,
+        }}
         bunsetsuAvailable={bunsetsuAvailable}
         phraseAvailable={phraseAvailable}
         wordAvailable={wordAvailable}
