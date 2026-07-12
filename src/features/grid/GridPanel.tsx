@@ -29,15 +29,12 @@ import { GridContainerOutline } from "./GridContainerOutline";
 import { GridContainerSceneColumn } from "./GridContainerSceneColumn";
 import { GridDisplayToolbar } from "./GridDisplayToolbar";
 import { ManageLabelsDialog } from "@/features/labels/ManageLabelsDialog";
-import { useLabelStore } from "@/features/labels/labelStore";
-import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { GridColumn } from "./GridColumn";
 import { GridLooseColumn } from "./GridLooseColumn";
 import { GridStatusBar } from "./GridStatusBar";
 import { GridSelectionToolbar } from "./GridSelectionToolbar";
 import { StructureTemplatePicker } from "./StructureTemplatePicker";
 import { moveScenesToChapter } from "./bulkSceneOps";
-import { resolveContainerForScene } from "./gridReveal";
 import {
   activeDragKind,
   computeSceneDropTarget,
@@ -65,6 +62,7 @@ import {
 } from "./gridDndLog";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { recordMark } from "@/lib/perfLog";
+import { useGridPanelLifecycle } from "./useGridPanelLifecycle";
 
 /**
  * Walk up from `el` looking for the first ancestor that scrolls vertically.
@@ -269,12 +267,6 @@ export function GridPanel() {
   }
   const [columnAxisLockActive, setColumnAxisLockActive] = useState(false);
 
-  useEffect(() => {
-    void loadForProject(projectId);
-    void useLabelStore.getState().load(projectId);
-    void useForeshadowStore.getState().load(projectId);
-  }, [projectId, loadForProject]);
-
   // Recompute axis-lock shifts from current pointer + scroll state. Called
   // from both pointermove and the scrollable column's scroll event — moving
   // either input changes which siblings the dragged card has passed.
@@ -380,41 +372,18 @@ export function GridPanel() {
     return () => window.removeEventListener("pointermove", handler);
   }, []);
 
-  // Esc: clear selection
-  useEffect(() => {
-    function isEditableTarget(): boolean {
-      const el = document.activeElement;
-      if (!el) return false;
-      const tag = el.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT")
-        return true;
-      return (el as HTMLElement).isContentEditable;
-    }
-    function handleKey(e: KeyboardEvent) {
-      if (isEditableTarget()) return;
-      if (e.key === "Escape" && !deleteConfirmIds) {
-        clearSelection();
-      }
-      // Cmd/Ctrl+A: select all visible scenes (only when panel is focused)
-      if (
-        (e.key === "a" || e.key === "A") &&
-        (e.metaKey || e.ctrlKey) &&
-        !e.shiftKey
-      ) {
-        const panel = panelRef.current;
-        if (
-          panel &&
-          (panel.contains(document.activeElement) ||
-            panel === document.activeElement)
-        ) {
-          e.preventDefault();
-          selectAll(flatOrder);
-        }
-      }
-    }
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [clearSelection, selectAll, flatOrder, deleteConfirmIds]);
+  useGridPanelLifecycle({
+    projectId,
+    loadForProject,
+    pendingRevealSceneId,
+    nodes,
+    flatOrder,
+    setContainerId,
+    clearSelection,
+    selectAll,
+    panelRef,
+    deleteConfirmOpen: deleteConfirmIds !== null,
+  });
 
   // Click outside: clear selection
   function handlePanelClick(e: React.MouseEvent<HTMLDivElement>) {
@@ -428,45 +397,6 @@ export function GridPanel() {
       clearSelection();
     }
   }
-
-  // Reveal: respond to pendingRevealSceneId from Matrix → Grid cross-nav
-  useEffect(() => {
-    if (!pendingRevealSceneId) return;
-    useGridStore.getState().clearPendingReveal();
-
-    const nodesById = Object.fromEntries(nodes.map((n) => [n.id, n]));
-    const resolution = resolveContainerForScene(
-      pendingRevealSceneId,
-      nodesById,
-    );
-
-    if (resolution.type === "not_found") {
-      console.warn("[Grid] reveal: scene not found", pendingRevealSceneId);
-      return;
-    }
-
-    if (resolution.type === "set") {
-      void setContainerId(projectId, resolution.containerId);
-    }
-
-    const sceneId = pendingRevealSceneId;
-    let attempts = 0;
-    function tryScroll() {
-      const el = document.querySelector(`[data-grid-scene-id="${sceneId}"]`);
-      if (el) {
-        el.scrollIntoView({ block: "center", behavior: "smooth" });
-        useGridStore.getState().setRevealedSceneId(sceneId);
-        useGridStore.getState().selectOnly(sceneId);
-        setTimeout(() => {
-          useGridStore.getState().clearRevealedSceneId();
-        }, 1200);
-      } else if (attempts < 15) {
-        attempts++;
-        requestAnimationFrame(tryScroll);
-      }
-    }
-    requestAnimationFrame(tryScroll);
-  }, [pendingRevealSceneId, nodes, projectId, setContainerId]);
 
   // Bulk delete handler
   const handleDeleteScenes = useCallback(
