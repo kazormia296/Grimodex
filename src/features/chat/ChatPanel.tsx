@@ -11,34 +11,24 @@ import { useMapBoardAutoActivate } from "./useMapBoardAutoActivate";
 import { useMapStore } from "@/features/map/mapStore";
 import { getMapBoard } from "@/features/map/mapApi";
 import { useSceneStore } from "@/features/tree/store";
-import { useEditorStore } from "@/features/editor/editorStore";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
-import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { ChatMessage } from "./components/ChatMessage";
-import { ChatMessageContextMenu } from "./components/ChatMessageContextMenu";
+import type { ChatContextMenuState } from "./components/ChatDialogs";
+import { ChatDialogs } from "./components/ChatDialogs";
 import { ChatPanelHeader } from "./components/ChatPanelHeader";
-import { ChatInput, restoreSceneMentionChips } from "./components/ChatInput";
+import { ChatInput } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
 import { UserQuestionCard } from "./components/UserQuestionCard";
 import { QuickActionStrip } from "./components/QuickActionStrip";
 import { ChatRecallPromoteBanner } from "./components/ChatRecallPromoteBanner";
-import { CodexExtractionDialog } from "@/features/codex/CodexExtractionDialog";
-import { SnippetExtractionDialog } from "@/features/snippets/SnippetExtractionDialog";
 import { ContextBar } from "./components/ContextBar";
-import { PromptPreviewModal } from "./components/PromptPreviewModal";
-import {
-  getModelCapabilities,
-  resolveModelCapabilities,
-} from "./agent/modelLimits";
+import { resolveModelCapabilities } from "./agent/modelLimits";
 import { resolveAinoveristApiVariant } from "./aiNovelist";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
-import { SessionsPanel } from "./components/SessionsPanel";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
-import { normalizeModelId } from "@/features/attribution/AuthorshipMark";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { copyWithAttribution } from "@/lib/clipboardAttribution";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -49,25 +39,15 @@ import { recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type { MessagePromptSnapshot } from "./chatApi";
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
-import { stripToolProtocol } from "./toolProtocol";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useChatSessionLifecycle } from "./useChatSessionLifecycle";
 import { useChatPinsController } from "./useChatPinsController";
 import { useChatMessageViewport } from "./useChatMessageViewport";
-
-/**
- * メッセージ全文を抽出 (Codex/Snippet) / エディタ挿入 / コピーに使う前の正規化。
- * assistant 本文に混入した擬似ツール記法 (<tool_call>/<tool_response>) を除去し、
- * ナレッジベースや本文への焼き込みを防ぐ。選択テキスト経路は描画 DOM 由来で
- * 既に浄化済みのため対象外（呼び出し側で selectedText を優先する）。
- */
-function wholeMessageContent(msg: ChatMessageType | undefined): string {
-  if (!msg) return "";
-  return msg.role === "assistant"
-    ? stripToolProtocol(msg.content)
-    : msg.content;
-}
+import {
+  useChatMessageActions,
+  wholeMessageContent,
+} from "./useChatMessageActions";
 
 /**
  * チャットのシーンスコープ選択からエディタへシーンを同期する。
@@ -99,22 +79,6 @@ export function selectSceneFromChat(sceneId: string): void {
   );
 }
 
-interface SnippetDialogState {
-  open: boolean;
-  messageId: string;
-  initialContent: string;
-  messageRole: "user" | "assistant";
-}
-
-interface ContextMenuState {
-  messageId: string;
-  messageRole: "user" | "assistant";
-  messageContent: string;
-  selectedText: string | null;
-  x: number;
-  y: number;
-}
-
 export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
@@ -126,9 +90,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
-  const deleteMessage = useChatStore((s) => s.deleteMessage);
-  const editUserMessage = useChatStore((s) => s.editUserMessage);
-  const regenerate = useChatStore((s) => s.regenerate);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const contextWindowSize = useChatStore((s) => s.contextWindowSize);
   const contextModel = useChatStore((s) => s.contextModel);
@@ -294,168 +255,31 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     isLoadingMessages,
     activeSessionId,
   });
-  // Codex extraction dialog
-  const [extractionDialog, setExtractionDialog] = useState<{
-    open: boolean;
-    messageId: string;
-    content: string;
-    messageRole: "user" | "assistant";
-  }>({ open: false, messageId: "", content: "", messageRole: "assistant" });
-
-  const createCodexEntry = useCodexStore((s) => s.create);
-
-  // NOTE: ChatMessage は memo 化されている。これらのハンドラを messages 依存に
-  // すると delta 毎に新参照になり memo が全 bubble で破綻するため、最新 messages
-  // は呼び出し時に getState() から読む（イベントハンドラなので call-time 読みで正)。
-  const handleExtractCodexDetailed = useCallback(
-    (messageId: string, selectedText: string | null) => {
-      const msg = useChatStore
-        .getState()
-        .messages.find((m) => m.id === messageId);
-      const content = selectedText ?? wholeMessageContent(msg);
-      const messageRole =
-        msg?.role === "user" ? ("user" as const) : ("assistant" as const);
-      setExtractionDialog({ open: true, messageId, content, messageRole });
-    },
-    [],
-  );
-
-  const handleExtractCodexQuick = useCallback(
-    async (messageId: string) => {
-      const msg = useChatStore
-        .getState()
-        .messages.find((m) => m.id === messageId);
-      if (!msg) return;
-      const text = wholeMessageContent(msg);
-      const name =
-        text.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
-      const entry = await createCodexEntry({
-        name,
-        type: "lore",
-        summary: text,
-        sourceChatMessageId: messageId,
-      });
-      if (entry) {
-        await chatApi.updateMessageMetadata(messageId, {
-          extractedCodex: [entry.id],
-        });
-        void requestOpenInCodex(entry.id);
-      }
-    },
-    [createCodexEntry],
-  );
-
-  // Snippet extraction dialog
-  const [snippetDialog, setSnippetDialog] = useState<SnippetDialogState>({
-    open: false,
-    messageId: "",
-    initialContent: "",
-    messageRole: "assistant",
+  const {
+    extractionDialog,
+    snippetDialog,
+    handleExtractCodexDetailed,
+    handleExtractCodexQuick,
+    handleSaveSnippetDetailed,
+    handleSaveSnippetQuick,
+    saveCodexExtraction,
+    saveSnippetExtraction,
+    closeCodexExtraction,
+    closeSnippetExtraction,
+    insertFromChat,
+    handleEditMessage,
+    handleDeleteMessage,
+    handleRegenerate,
+    handleRetryWithAgent,
+  } = useChatMessageActions({
+    aiSettings,
+    chatEditorRef,
+    syncInsertedToEditorMetadata,
   });
-
-  const createSnippet = useSnippetStore((s) => s.create);
-
-  const handleSaveSnippetDetailed = useCallback(
-    (messageId: string, selectedText: string | null) => {
-      const msg = useChatStore
-        .getState()
-        .messages.find((m) => m.id === messageId);
-      const content = selectedText ?? wholeMessageContent(msg);
-      const messageRole =
-        msg?.role === "user" ? ("user" as const) : ("assistant" as const);
-      setSnippetDialog({
-        open: true,
-        messageId,
-        initialContent: content,
-        messageRole,
-      });
-    },
-    [],
-  );
-
-  const handleSaveSnippetQuick = useCallback(
-    async (messageId: string) => {
-      const msg = useChatStore
-        .getState()
-        .messages.find((m) => m.id === messageId);
-      if (!msg) return;
-      const content = wholeMessageContent(msg);
-      const title =
-        content.replace(/\n/g, " ").slice(0, 30).trimEnd() || "Untitled";
-      const snippet = await createSnippet(
-        {
-          title,
-          content,
-          sourceChatMessageId: messageId,
-          contentSource: msg.role === "assistant" ? "ai" : "human",
-        },
-        { silent: true },
-      );
-      if (snippet) {
-        await chatApi.updateMessageMetadata(messageId, {
-          extractedSnippets: [snippet.id],
-        });
-        useLayoutStore.getState().showPanel("snippets");
-        useSnippetStore.getState().requestSelectEntry(snippet.id);
-      }
-    },
-    [createSnippet],
-  );
-
-  const rawInsertFromChat = useEditorStore((s) => s.insertFromChat);
-
-  const insertFromChat = useCallback(
-    (content: string, messageId: string) => {
-      const model = aiSettings?.model
-        ? normalizeModelId(aiSettings.provider, aiSettings.model)
-        : null;
-      const ok = rawInsertFromChat(content, messageId, model ?? undefined);
-      if (ok) {
-        syncInsertedToEditorMetadata(messageId);
-      }
-    },
-    [rawInsertFromChat, aiSettings, syncInsertedToEditorMetadata],
-  );
-
-  const handleEditMessage = useCallback(
-    (messageId: string) => {
-      const { content, mentionedSceneIds } = editUserMessage(messageId);
-      if (content && chatEditorRef.current) {
-        chatEditorRef.current.commands.setContent(content);
-        // tiptap-markdown が mention を `@Title` に潰すため metadata から
-        // chip を再構築する (詳細は restoreSceneMentionChips のコメント参照)。
-        if (mentionedSceneIds && mentionedSceneIds.length > 0) {
-          restoreSceneMentionChips(chatEditorRef.current, mentionedSceneIds);
-        }
-        chatEditorRef.current.commands.focus("end");
-      }
-    },
-    [editUserMessage],
-  );
-
-  const handleDeleteMessage = useCallback(
-    (messageId: string) => {
-      deleteMessage(messageId);
-    },
-    [deleteMessage],
-  );
-
-  const handleRegenerate = useCallback(
-    (messageId: string) => {
-      regenerate(messageId);
-    },
-    [regenerate],
-  );
-
-  const handleRetryWithAgent = useCallback(
-    (messageId: string) => {
-      regenerate(messageId, { withAgentMode: true });
-    },
-    [regenerate],
-  );
-
   // Context menu state
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [contextMenu, setContextMenu] = useState<ChatContextMenuState | null>(
+    null,
+  );
 
   // 過去メッセージのプロンプト表示: 送信時に保存したスナップショットを遅延取得。
   const [promptViewOpen, setPromptViewOpen] = useState(false);
@@ -862,98 +686,34 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         </>
       )}
 
-      <CodexExtractionDialog
-        open={extractionDialog.open}
-        messageId={extractionDialog.messageId}
-        initialContent={extractionDialog.content}
-        messageRole={extractionDialog.messageRole}
-        onSave={async (data) => {
-          const entry = await createCodexEntry(data);
-          if (entry && extractionDialog.messageId) {
-            await chatApi.updateMessageMetadata(extractionDialog.messageId, {
-              extractedCodex: [entry.id],
-            });
-          }
-          setExtractionDialog({
-            open: false,
-            messageId: "",
-            content: "",
-            messageRole: "assistant",
-          });
-          if (entry) {
-            void requestOpenInCodex(entry.id);
-          }
+      <ChatDialogs
+        extractionDialog={extractionDialog}
+        snippetDialog={snippetDialog}
+        onSaveCodex={saveCodexExtraction}
+        onCloseCodex={closeCodexExtraction}
+        onSaveSnippet={saveSnippetExtraction}
+        onCloseSnippet={closeSnippetExtraction}
+        sessionsPanelOpen={sessionsPanelOpen}
+        sceneTitle={sceneTitle}
+        activeSceneId={treeActiveSceneId}
+        onCloseSessions={() => setSessionsPanelOpen(false)}
+        contextMenu={contextMenu}
+        onCloseContextMenu={() => setContextMenu(null)}
+        contextActions={{
+          onInsert: insertFromChat,
+          onExtractCodexQuick: handleExtractCodexQuick,
+          onExtractCodexDetailed: handleExtractCodexDetailed,
+          onSaveSnippetQuick: handleSaveSnippetQuick,
+          onSaveSnippetDetailed: handleSaveSnippetDetailed,
+          onCopy: handleContextCopy,
+          onEdit: handleEditMessage,
+          onDelete: handleDeleteMessage,
+          onRegenerate: handleRegenerate,
         }}
-        onClose={() =>
-          setExtractionDialog({
-            open: false,
-            messageId: "",
-            content: "",
-            messageRole: "assistant",
-          })
-        }
+        promptViewOpen={promptViewOpen}
+        promptViewSnapshot={promptViewSnapshot}
+        onClosePrompt={() => setPromptViewOpen(false)}
       />
-      <SnippetExtractionDialog
-        open={snippetDialog.open}
-        initialContent={snippetDialog.initialContent}
-        messageId={snippetDialog.messageId}
-        messageRole={snippetDialog.messageRole}
-        onSave={async (data) => {
-          const snippet = await createSnippet(data, { silent: true });
-          if (snippet && snippetDialog.messageId) {
-            await chatApi.updateMessageMetadata(snippetDialog.messageId, {
-              extractedSnippets: [snippet.id],
-            });
-          }
-          if (snippet) {
-            useLayoutStore.getState().showPanel("snippets");
-            useSnippetStore.getState().requestSelectEntry(snippet.id);
-          }
-        }}
-        onClose={() => setSnippetDialog((s) => ({ ...s, open: false }))}
-      />
-      {sessionsPanelOpen && (
-        <SessionsPanel
-          sceneTitle={sceneTitle}
-          activeSceneId={treeActiveSceneId}
-          onClose={() => setSessionsPanelOpen(false)}
-        />
-      )}
-      {contextMenu && (
-        <ChatMessageContextMenu
-          messageId={contextMenu.messageId}
-          messageRole={contextMenu.messageRole}
-          messageContent={contextMenu.messageContent}
-          selectedText={contextMenu.selectedText}
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onInsert={insertFromChat}
-          onExtractCodexQuick={handleExtractCodexQuick}
-          onExtractCodexDetailed={handleExtractCodexDetailed}
-          onSaveSnippetQuick={handleSaveSnippetQuick}
-          onSaveSnippetDetailed={handleSaveSnippetDetailed}
-          onCopy={handleContextCopy}
-          onEdit={handleEditMessage}
-          onDelete={handleDeleteMessage}
-          onRegenerate={handleRegenerate}
-        />
-      )}
-
-      {promptViewOpen && promptViewSnapshot && (
-        <PromptPreviewModal
-          systemPrompt={promptViewSnapshot.systemPrompt}
-          layers={promptViewSnapshot.layers}
-          totalTokens={promptViewSnapshot.totalTokens ?? 0}
-          model={promptViewSnapshot.model ?? undefined}
-          contextWindow={
-            promptViewSnapshot.model
-              ? getModelCapabilities(promptViewSnapshot.model).contextWindow
-              : 0
-          }
-          onClose={() => setPromptViewOpen(false)}
-        />
-      )}
     </div>
   );
   recordMark("chatPanel.render", performance.now() - __perfStart, __perfStart);

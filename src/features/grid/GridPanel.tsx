@@ -8,19 +8,13 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import type {
-  DragEndEvent,
-  DragOverEvent,
-  DragStartEvent,
-  Modifier,
-} from "@dnd-kit/core";
+import type { Modifier } from "@dnd-kit/core";
 import { getEventCoordinates } from "@dnd-kit/utilities";
 import { gridCollisionDetection } from "./gridCollisionDetection";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSceneCodexPinsStore } from "@/features/codex/sceneCodexPinsStore";
 import { useEnsureCodexTypeColors } from "@/features/codex/useEnsureCodexTypeColors";
-import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { useGridStore } from "./gridStore";
 import { useGridDerivedData, useGridFlatSceneOrder } from "./gridSelectors";
 import { useGridCardVisibility } from "./useGridCardVisibility";
@@ -35,70 +29,9 @@ import { GridStatusBar } from "./GridStatusBar";
 import { GridSelectionToolbar } from "./GridSelectionToolbar";
 import { StructureTemplatePicker } from "./StructureTemplatePicker";
 import { moveScenesToChapter } from "./bulkSceneOps";
-import {
-  activeDragKind,
-  computeSceneDropTarget,
-  computeColumnDropTarget,
-  computeSceneDropIndicator,
-  computeColumnDropIndicator,
-  computeSceneAxisLockTarget,
-  computeColumnAxisLockTarget,
-  findFolderBlockLastVisibleId,
-} from "./gridDndUtils";
-import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
-import {
-  glog,
-  gperfStart,
-  gperfMark,
-  gperfMarkAsync,
-  gperfFlush,
-} from "./gridDndLog";
-import type { TreeNodeData } from "@/features/tree/treeStore";
 import { recordMark } from "@/lib/perfLog";
 import { useGridPanelLifecycle } from "./useGridPanelLifecycle";
-import { useGridAxisLockController } from "./useGridAxisLockController";
-
-/**
- * Walk up from `el` looking for the first ancestor that scrolls vertically.
- * Used at scene-drag start to anchor pointer<->cached-rect comparisons against
- * the column's scroll position so axis-lock keeps working when the column
- * auto-scrolls (cached rects are viewport coords and would otherwise drift).
- */
-function findScrollableParent(el: HTMLElement): HTMLElement | null {
-  let cur: HTMLElement | null = el.parentElement;
-  while (cur) {
-    const style = window.getComputedStyle(cur);
-    if (
-      (style.overflowY === "auto" || style.overflowY === "scroll") &&
-      cur.scrollHeight > cur.clientHeight
-    ) {
-      return cur;
-    }
-    cur = cur.parentElement;
-  }
-  return null;
-}
-
-/**
- * Horizontal counterpart to findScrollableParent — used at column-drag start
- * so column axis-lock keeps working when the columns row auto-scrolls or the
- * user wheels mid-drag (cached column rects are viewport coords and would
- * otherwise drift).
- */
-function findHorizontallyScrollableParent(el: HTMLElement): HTMLElement | null {
-  let cur: HTMLElement | null = el.parentElement;
-  while (cur) {
-    const style = window.getComputedStyle(cur);
-    if (
-      (style.overflowX === "auto" || style.overflowX === "scroll") &&
-      cur.scrollWidth > cur.clientWidth
-    ) {
-      return cur;
-    }
-    cur = cur.parentElement;
-  }
-  return null;
-}
+import { useGridDragController } from "./useGridDragController";
 
 /**
  * Pin the DragOverlay's center to the pointer. The actual draggable element
@@ -163,42 +96,50 @@ export function GridPanel() {
   const { chapters, looseScenes, orderedColumns, totalChapters, totalScenes } =
     useGridDerivedData(containerId);
   const flatOrder = useGridFlatSceneOrder(containerId);
+  const orderedScenes = useMemo(
+    () => [
+      ...chapters.flatMap((chapter) =>
+        chapter.descendants
+          .filter((descendant) => descendant.node.nodeType === "scene")
+          .map((descendant) => ({
+            id: descendant.node.id,
+            parentId: descendant.node.parentId,
+          })),
+      ),
+      ...looseScenes.map((scene) => ({
+        id: scene.id,
+        parentId: scene.parentId,
+      })),
+    ],
+    [chapters, looseScenes],
+  );
 
   const toolbarOpen = useGridStore((s) => s.toolbarOpen);
   const setToolbarOpen = useGridStore((s) => s.setToolbarOpen);
 
   const [manageLabelsOpen, setManageLabelsOpen] = useState(false);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(
-    null,
-  );
-  const [columnDropIndicator, setColumnDropIndicator] =
-    useState<ColumnDropIndicator | null>(null);
   const [deleteConfirmIds, setDeleteConfirmIds] = useState<string[] | null>(
     null,
   );
   const panelRef = useRef<HTMLDivElement>(null);
+  const dragController = useGridDragController({
+    nodes,
+    orderedScenes,
+    flatOrder,
+    containerId,
+    selectedSceneIds,
+    moveNode,
+  });
   const {
-    pointerXRef,
-    pointerYRef,
-    lastDragOverKeyRef,
-    axisLockSessionRef,
-    columnAxisLockSessionRef,
-    axisLockScrollListenerRef,
-    columnAxisLockScrollListenerRef,
+    activeDragNode,
+    activeDragIsMultiSelect,
+    dropIndicator,
+    columnDropIndicator,
     axisLockOffsets,
-    setAxisLockOffsets,
     columnAxisLockOffsets,
-    setColumnAxisLockOffsets,
     axisLockActive,
-    setAxisLockActive,
     columnAxisLockActive,
-    setColumnAxisLockActive,
-    recomputeAxisLock,
-    recomputeColumnAxisLock,
-    detachAxisLockScrollListener,
-    detachColumnAxisLockScrollListener,
-  } = useGridAxisLockController();
+  } = dragController;
 
   useGridPanelLifecycle({
     projectId,
@@ -249,600 +190,6 @@ export function GridPanel() {
     useSensor(KeyboardSensor),
   );
 
-  function handleDragStart(e: DragStartEvent) {
-    // Open a perf session so DragOver / recomputeAxisLock / DragEnd can
-    // accumulate per-label timings. Flushed at DragEnd / DragCancel.
-    gperfStart();
-    gperfMark("DragStart", () => handleDragStartInner(e));
-  }
-
-  function handleDragStartInner(e: DragStartEvent) {
-    const id = String(e.active.id);
-    const kind = activeDragKind(id);
-    glog("DragStart", "active", {
-      id,
-      kind,
-      pointer: { x: pointerXRef.current, y: pointerYRef.current },
-    });
-    lastDragOverKeyRef.current = "";
-    setActiveId(id);
-    setDropIndicator(null);
-    setColumnDropIndicator(null);
-    axisLockSessionRef.current = null;
-    setAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
-    columnAxisLockSessionRef.current = null;
-    setColumnAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
-
-    if (kind === "scene") {
-      const sceneId = id.replace(/^scene-/, "");
-      const sceneNode = nodes.find((n) => n.id === sceneId);
-      if (!sceneNode) return;
-      const parentId = sceneNode.parentId;
-      // Axis-lock siblings include BOTH scenes and folder cards at the active
-      // scene's parent depth — both kinds occupy a slot in the rendered list
-      // (see gridSelectors.flattenSubtree). Filtering folders out caused the
-      // axis-lock visual to ignore the vertical space the folder card occupies,
-      // leaving cards visually misaligned vs the post-drop sort order.
-      const siblings = nodes
-        .filter(
-          (n) =>
-            n.parentId === parentId &&
-            (n.nodeType === "scene" || n.nodeType === "folder"),
-        )
-        .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-      if (siblings.length <= 1) return;
-      const collapsedFolderIds = useGridStore.getState().collapsedFolderIds;
-      const siblingRects: Record<string, { top: number; bottom: number }> = {};
-      for (const sib of siblings) {
-        const attr =
-          sib.nodeType === "folder"
-            ? "data-grid-folder-id"
-            : "data-grid-scene-id";
-        const el = document.querySelector(`[${attr}="${sib.id}"]`);
-        if (!(el instanceof HTMLElement)) continue;
-        const r = el.getBoundingClientRect();
-        const top = r.top;
-        let bottom = r.bottom;
-        // For an expanded folder, the visible block extends past the folder
-        // card itself to include its rendered descendants. Without the union,
-        // the axis-lock midpoint sits at the folder card's center — well above
-        // the bottom of the actual block — so the active scene would "pass"
-        // the folder long before the user has dragged past its rendered
-        // contents, leaving the descendants visually dangling.
-        if (sib.nodeType === "folder") {
-          const lastId = findFolderBlockLastVisibleId(
-            sib.id,
-            nodes,
-            collapsedFolderIds,
-          );
-          if (lastId) {
-            const lastNode = nodes.find((n) => n.id === lastId);
-            const lastAttr =
-              lastNode?.nodeType === "folder"
-                ? "data-grid-folder-id"
-                : "data-grid-scene-id";
-            const lastEl = document.querySelector(`[${lastAttr}="${lastId}"]`);
-            if (lastEl instanceof HTMLElement) {
-              bottom = lastEl.getBoundingClientRect().bottom;
-            }
-          }
-        }
-        siblingRects[sib.id] = { top, bottom };
-      }
-      if (!siblingRects[sceneId]) return;
-      const activeEl = document.querySelector(
-        `[data-grid-scene-id="${sceneId}"]`,
-      );
-      const scrollEl =
-        activeEl instanceof HTMLElement ? findScrollableParent(activeEl) : null;
-      axisLockSessionRef.current = {
-        mode: "axis-locked",
-        startX: pointerXRef.current,
-        activeSceneId: sceneId,
-        siblingRects,
-        orderedSiblings: siblings.map((s) => ({
-          id: s.id,
-          parentId: s.parentId,
-        })),
-        scrollEl,
-        initialScrollTop: scrollEl?.scrollTop ?? 0,
-      };
-      if (scrollEl) {
-        const onScroll = () => recomputeAxisLock.current();
-        scrollEl.addEventListener("scroll", onScroll, { passive: true });
-        axisLockScrollListenerRef.current = { el: scrollEl, fn: onScroll };
-      }
-      setAxisLockActive(true);
-    }
-
-    if (kind === "column") {
-      const folderId = id.replace(/^column-/, "");
-      const folderNode = nodes.find((n) => n.id === folderId);
-      if (!folderNode) return;
-      const parentId = folderNode.parentId;
-      const siblings = nodes
-        .filter((n) => n.parentId === parentId && n.nodeType === "folder")
-        .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-      if (siblings.length <= 1) return;
-      // Nested folders share the column- drag id (GridFolderCard also uses
-      // columnDraggableId) but only top-level GridColumn carries
-      // data-grid-folder-id. For a nested-folder drag the active rect is
-      // missing and we bail below, falling through to the free-DnD column path.
-      const siblingRects: Record<string, { left: number; right: number }> = {};
-      for (const sib of siblings) {
-        const el = document.querySelector(`[data-grid-folder-id="${sib.id}"]`);
-        if (!(el instanceof HTMLElement)) continue;
-        const r = el.getBoundingClientRect();
-        siblingRects[sib.id] = { left: r.left, right: r.right };
-      }
-      if (!siblingRects[folderId]) return;
-      const activeEl = document.querySelector(
-        `[data-grid-folder-id="${folderId}"]`,
-      );
-      const scrollEl =
-        activeEl instanceof HTMLElement
-          ? findHorizontallyScrollableParent(activeEl)
-          : null;
-      columnAxisLockSessionRef.current = {
-        mode: "axis-locked",
-        startY: pointerYRef.current,
-        activeFolderId: folderId,
-        siblingRects,
-        orderedSiblings: siblings.map((s) => ({
-          id: s.id,
-          parentId: s.parentId,
-        })),
-        scrollEl,
-        initialScrollLeft: scrollEl?.scrollLeft ?? 0,
-      };
-      if (scrollEl) {
-        const onScroll = () => recomputeColumnAxisLock.current();
-        scrollEl.addEventListener("scroll", onScroll, { passive: true });
-        columnAxisLockScrollListenerRef.current = {
-          el: scrollEl,
-          fn: onScroll,
-        };
-      }
-      setColumnAxisLockActive(true);
-    }
-  }
-
-  function handleDragOver(e: DragOverEvent) {
-    const activeIdStr = String(e.active.id);
-    const kind = activeDragKind(activeIdStr);
-    const overId = e.over ? String(e.over.id) : "";
-
-    if (kind === "scene") {
-      gperfMark("DragOver.scene", () =>
-        handleDragOverScene(e, activeIdStr, overId),
-      );
-      return;
-    }
-    if (kind === "column") {
-      gperfMark("DragOver.column", () =>
-        handleDragOverColumn(e, activeIdStr, overId),
-      );
-    }
-  }
-
-  function handleDragOverScene(
-    e: DragOverEvent,
-    activeIdStr: string,
-    overId: string,
-  ) {
-    const sceneId = activeIdStr.replace(/^scene-/, "");
-    // In axis-locked mode, suppress the normal drop bar — sibling
-    // slot-shifts are the only feedback.
-    if (axisLockSessionRef.current?.mode === "axis-locked") {
-      setDropIndicator(null);
-      setColumnDropIndicator(null);
-      return;
-    }
-    const rect = e.over?.rect ?? { top: 0, height: 60 };
-    const indicator = computeSceneDropIndicator(
-      sceneId,
-      overId,
-      pointerYRef.current,
-      { top: rect.top, height: rect.height },
-    );
-    const key = `scene|${overId}|${indicator?.targetId ?? ""}|${indicator?.position ?? ""}`;
-    if (key !== lastDragOverKeyRef.current) {
-      lastDragOverKeyRef.current = key;
-      glog("DragOver(scene)", "state change", {
-        activeId: activeIdStr,
-        overId,
-        pointer: { x: pointerXRef.current, y: pointerYRef.current },
-        rect,
-        indicator,
-      });
-    }
-    setDropIndicator(indicator);
-    setColumnDropIndicator(null);
-  }
-
-  function handleDragOverColumn(
-    e: DragOverEvent,
-    activeIdStr: string,
-    overId: string,
-  ) {
-    // In axis-locked column drag, suppress the normal column indicator —
-    // sibling column slot-shifts are the only feedback.
-    if (columnAxisLockSessionRef.current?.mode === "axis-locked") {
-      setDropIndicator(null);
-      setColumnDropIndicator(null);
-      return;
-    }
-    const folderId = activeIdStr.replace(/^column-/, "");
-    const activeNode = nodes.find((n) => n.id === folderId);
-    const activeParent = activeNode?.parentId ?? null;
-
-    if (overId.startsWith("scene-drop-")) {
-      const sceneId = overId.slice("scene-drop-".length);
-      const sceneNode = nodes.find((n) => n.id === sceneId);
-      if (sceneNode && sceneNode.parentId === activeParent) {
-        const rect = e.over?.rect ?? { top: 0, height: 60 };
-        const midY = rect.top + rect.height / 2;
-        const position: "before" | "after" =
-          pointerYRef.current <= midY ? "before" : "after";
-        const key = `col-as-scene|${overId}|${sceneId}|${position}`;
-        if (key !== lastDragOverKeyRef.current) {
-          lastDragOverKeyRef.current = key;
-          glog("DragOver(column)", "sibling-scene path", {
-            activeFolderId: folderId,
-            targetSceneId: sceneId,
-            activeParent,
-            position,
-          });
-        }
-        setDropIndicator({ targetId: sceneId, position });
-        setColumnDropIndicator(null);
-        return;
-      }
-    }
-
-    const folderParentMap: Record<string, string | null> = {};
-    const orderedSiblings: Array<{ id: string; parentId: string | null }> = [];
-    const sceneParentMap: Record<string, string | null> = {};
-    const sortedNodes = [...nodes].sort((a, b) =>
-      cmpKeys(a.sortOrder, b.sortOrder),
-    );
-    for (const n of sortedNodes) {
-      if (n.nodeType === "folder") {
-        folderParentMap[n.id] = n.parentId;
-      }
-      if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
-      if (n.nodeType === "folder" || n.nodeType === "scene") {
-        orderedSiblings.push({ id: n.id, parentId: n.parentId });
-      }
-    }
-    const rect = e.over?.rect ?? {
-      left: 0,
-      width: 200,
-      top: 0,
-      height: 0,
-    };
-    const indicator = computeColumnDropIndicator(
-      folderId,
-      overId,
-      pointerXRef.current,
-      pointerYRef.current,
-      {
-        left: rect.left,
-        width: rect.width,
-        top: rect.top,
-        height: rect.height,
-      },
-      sceneParentMap,
-      folderParentMap,
-      orderedSiblings,
-      containerId,
-    );
-    const key = `col|${overId}|${indicator?.targetId ?? ""}|${indicator?.position ?? ""}`;
-    if (key !== lastDragOverKeyRef.current) {
-      lastDragOverKeyRef.current = key;
-      glog("DragOver(column)", "state change", {
-        activeFolderId: folderId,
-        overId,
-        pointer: { x: pointerXRef.current, y: pointerYRef.current },
-        rect,
-        indicator,
-      });
-    }
-    setColumnDropIndicator(indicator);
-    setDropIndicator(null);
-  }
-
-  function handleDragEnd(e: DragEndEvent) {
-    gperfMark("DragEnd", () => handleDragEndInner(e));
-    // Flush the per-session perf summary at gesture end. The async commits
-    // (moveNode / moveScenesToChapter) log their own resolution time inline
-    // via gperfMarkAsync below — their resolution typically happens after
-    // this flush, so they're not part of the summary.
-    gperfFlush({
-      activeId: String(e.active.id),
-      overId: e.over ? String(e.over.id) : "",
-      nodeCount: nodes.length,
-    });
-  }
-
-  function handleDragEndInner(e: DragEndEvent) {
-    setActiveId(null);
-    setDropIndicator(null);
-    setColumnDropIndicator(null);
-    const activeIdStr = String(e.active.id);
-    const overIdStr = e.over ? String(e.over.id) : "";
-    glog("DragEnd", "entry", {
-      activeId: activeIdStr,
-      overId: overIdStr,
-      kind: activeDragKind(activeIdStr),
-      pointer: { x: pointerXRef.current, y: pointerYRef.current },
-    });
-
-    const kind = activeDragKind(activeIdStr);
-    const session = axisLockSessionRef.current;
-    axisLockSessionRef.current = null;
-    detachAxisLockScrollListener();
-    setAxisLockActive(false);
-    setAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
-    const columnSession = columnAxisLockSessionRef.current;
-    columnAxisLockSessionRef.current = null;
-    detachColumnAxisLockScrollListener();
-    setColumnAxisLockActive(false);
-    setColumnAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
-
-    // Axis-locked column drag commits via captured session state. Same as the
-    // scene axis-lock path: no "over" requirement — pointerX vs. cached rects
-    // alone decides the swap. Multi-select doesn't apply (columns are
-    // dragged singly).
-    if (
-      kind === "column" &&
-      columnSession &&
-      columnSession.mode === "axis-locked"
-    ) {
-      const folderId = activeIdStr.replace(/^column-/, "");
-      const scrollDelta = columnSession.scrollEl
-        ? columnSession.scrollEl.scrollLeft - columnSession.initialScrollLeft
-        : 0;
-      const target = computeColumnAxisLockTarget(
-        folderId,
-        pointerXRef.current + scrollDelta,
-        columnSession.orderedSiblings,
-        columnSession.siblingRects,
-      );
-      if (target) {
-        glog("DragEnd(column)", "axis-lock", {
-          folderId,
-          targetParentId: target.targetParentId,
-          afterId: target.afterId,
-        });
-        void gperfMarkAsync(
-          "moveNode(column, axis-lock)",
-          moveNode(folderId, target.targetParentId, target.afterId),
-        );
-      } else {
-        glog("DragEnd(column)", "axis-lock no-op");
-      }
-      return;
-    }
-
-    // Axis-locked scene drag commits via captured session state — there is no
-    // dnd-kit "over" target requirement (the user can release anywhere in the
-    // viewport, the swap is decided purely from pointerY vs. captured rects).
-    if (kind === "scene" && session && session.mode === "axis-locked") {
-      const sceneId = activeIdStr.replace(/^scene-/, "");
-      const scrollDelta = session.scrollEl
-        ? session.scrollEl.scrollTop - session.initialScrollTop
-        : 0;
-      const target = computeSceneAxisLockTarget(
-        sceneId,
-        pointerYRef.current + scrollDelta,
-        session.orderedSiblings,
-        session.siblingRects,
-      );
-      if (target) {
-        if (selectedSceneIds.has(sceneId) && selectedSceneIds.size > 1) {
-          const orderedSelected = flatOrder.filter((id) =>
-            selectedSceneIds.has(id),
-          );
-          glog("DragEnd(scene)", "axis-lock multi-select", {
-            sceneIds: orderedSelected,
-            targetParentId: target.targetParentId,
-            afterId: target.afterId,
-          });
-          void gperfMarkAsync(
-            "moveScenesToChapter(axis-lock multi-select)",
-            moveScenesToChapter(orderedSelected, target.targetParentId),
-          );
-        } else {
-          glog("DragEnd(scene)", "axis-lock single", {
-            sceneId,
-            targetParentId: target.targetParentId,
-            afterId: target.afterId,
-          });
-          void gperfMarkAsync(
-            "moveNode(scene, axis-lock)",
-            moveNode(sceneId, target.targetParentId, target.afterId),
-          );
-        }
-      } else {
-        glog("DragEnd(scene)", "axis-lock no-op");
-      }
-      return;
-    }
-
-    if (!overIdStr) {
-      glog("DragEnd", "cancelled: no over target");
-      return;
-    }
-
-    if (kind === "scene") {
-      const sceneId = activeIdStr.replace(/^scene-/, "");
-      const orderedScenes = [
-        ...chapters.flatMap((ch) =>
-          ch.descendants
-            .filter((d) => d.node.nodeType === "scene")
-            .map((d) => ({ id: d.node.id, parentId: d.node.parentId })),
-        ),
-        ...looseScenes.map((s) => ({ id: s.id, parentId: s.parentId })),
-      ];
-      const overNode = e.over;
-      const rect = overNode?.rect ?? { top: 0, height: 60 };
-
-      const target = computeSceneDropTarget(
-        sceneId,
-        overIdStr,
-        pointerYRef.current,
-        { top: rect.top, height: rect.height },
-        orderedScenes,
-        containerId,
-      );
-      if (target) {
-        // Multi-select D&D: move entire selection if dragged scene is in selection
-        if (selectedSceneIds.has(sceneId) && selectedSceneIds.size > 1) {
-          const orderedSelected = flatOrder.filter((id) =>
-            selectedSceneIds.has(id),
-          );
-          glog("DragEnd(scene)", "moveScenesToChapter (multi-select)", {
-            sceneIds: orderedSelected,
-            targetParentId: target.targetParentId,
-          });
-          void gperfMarkAsync(
-            "moveScenesToChapter(free multi-select)",
-            moveScenesToChapter(orderedSelected, target.targetParentId),
-          );
-        } else {
-          glog("DragEnd(scene)", "moveNode (single)", {
-            sceneId,
-            targetParentId: target.targetParentId,
-            afterId: target.afterId,
-          });
-          void gperfMarkAsync(
-            "moveNode(scene, free)",
-            moveNode(sceneId, target.targetParentId, target.afterId),
-          );
-        }
-      } else {
-        glog("DragEnd(scene)", "no target → no-op");
-      }
-      return;
-    }
-
-    if (kind === "column") {
-      const folderId = activeIdStr.replace(/^column-/, "");
-      const activeNode = nodes.find((n) => n.id === folderId);
-      const activeParent = activeNode?.parentId ?? null;
-
-      if (overIdStr.startsWith("scene-drop-")) {
-        const sceneId = overIdStr.slice("scene-drop-".length);
-        const sceneNode = nodes.find((n) => n.id === sceneId);
-        if (sceneNode && sceneNode.parentId === activeParent) {
-          const rect = e.over?.rect ?? { top: 0, height: 60 };
-          const midY = rect.top + rect.height / 2;
-          const insertBefore = pointerYRef.current <= midY;
-          const siblings = nodes
-            .filter((n) => n.parentId === activeParent && n.id !== folderId)
-            .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-          let afterId: string | null | undefined;
-          if (insertBefore) {
-            const idx = siblings.findIndex((s) => s.id === sceneId);
-            afterId = idx > 0 ? (siblings[idx - 1]?.id ?? null) : null;
-          } else {
-            afterId = sceneId;
-          }
-          glog("DragEnd(column)", "moveNode (sibling-scene path)", {
-            folderId,
-            activeParent,
-            afterId,
-            viaSceneId: sceneId,
-          });
-          void gperfMarkAsync(
-            "moveNode(column, sibling-scene)",
-            moveNode(folderId, activeParent, afterId),
-          );
-          return;
-        }
-      }
-
-      const folderParentMap: Record<string, string | null> = {};
-      const orderedSiblings: Array<{ id: string; parentId: string | null }> =
-        [];
-      const sceneParentMap: Record<string, string | null> = {};
-      const sortedNodes = [...nodes].sort((a, b) =>
-        cmpKeys(a.sortOrder, b.sortOrder),
-      );
-      for (const n of sortedNodes) {
-        if (n.nodeType === "folder") {
-          folderParentMap[n.id] = n.parentId;
-        }
-        if (n.nodeType === "scene") sceneParentMap[n.id] = n.parentId;
-        if (n.nodeType === "folder" || n.nodeType === "scene") {
-          orderedSiblings.push({ id: n.id, parentId: n.parentId });
-        }
-      }
-      const rect = e.over?.rect ?? {
-        left: 0,
-        width: 200,
-        top: 0,
-        height: 0,
-      };
-      const target = computeColumnDropTarget(
-        folderId,
-        overIdStr,
-        pointerXRef.current,
-        pointerYRef.current,
-        {
-          left: rect.left,
-          width: rect.width,
-          top: rect.top,
-          height: rect.height,
-        },
-        folderParentMap,
-        orderedSiblings,
-        sceneParentMap,
-        containerId,
-      );
-      if (target) {
-        glog("DragEnd(column)", "moveNode", {
-          folderId,
-          targetParentId: target.targetParentId,
-          afterId: target.afterId,
-        });
-        void gperfMarkAsync(
-          "moveNode(column, free)",
-          moveNode(folderId, target.targetParentId, target.afterId),
-        );
-      } else {
-        glog("DragEnd(column)", "no target → no-op");
-      }
-    }
-  }
-
-  function handleDragCancel() {
-    setActiveId(null);
-    setDropIndicator(null);
-    setColumnDropIndicator(null);
-    axisLockSessionRef.current = null;
-    detachAxisLockScrollListener();
-    setAxisLockActive(false);
-    setAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
-    columnAxisLockSessionRef.current = null;
-    detachColumnAxisLockScrollListener();
-    setColumnAxisLockActive(false);
-    setColumnAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
-    // Flush so a cancelled gesture's accumulator doesn't leak into the next.
-    gperfFlush({ reason: "cancel" });
-  }
-
-  const activeDragNode: TreeNodeData | null = activeId
-    ? (nodes.find((n) => n.id === activeId.replace(/^(scene|column)-/, "")) ??
-      null)
-    : null;
-  const activeDragIsMultiSelect =
-    activeId !== null &&
-    activeDragKind(activeId) === "scene" &&
-    selectedSceneIds.has(activeId.replace(/^scene-/, "")) &&
-    selectedSceneIds.size > 1;
-
   const nestedFolderIds = useMemo(() => {
     const ids: string[] = [];
     const walk = (parentId: string) => {
@@ -887,10 +234,10 @@ export function GridPanel() {
       // 列やカードの実 rect が動く局面でも dnd-kit の measure 結果は使われない
       // ため、BeforeDragging に切替えて drag 開始時のみ measure する。
       measuring={{ droppable: { strategy: MeasuringStrategy.BeforeDragging } }}
-      onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
-      onDragEnd={handleDragEnd}
-      onDragCancel={handleDragCancel}
+      onDragStart={dragController.handleDragStart}
+      onDragOver={dragController.handleDragOver}
+      onDragEnd={dragController.handleDragEnd}
+      onDragCancel={dragController.handleDragCancel}
     >
       <div
         ref={panelRef}

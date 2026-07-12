@@ -37,12 +37,7 @@ import type { SceneLinkMode } from "./SceneLinkField";
 import { directCauses, directEffects } from "./causalTraversal";
 import { findCausalityConflicts, causalIssueEventIds } from "./eventCausality";
 import { findTwoPlacesConflicts, twoPlacesEventIds } from "./twoPlaces";
-import {
-  effectiveDays,
-  fitAll,
-  zoomByCenter,
-  type View,
-} from "./chronicleAxis";
+import { effectiveDays } from "./chronicleAxis";
 import {
   buildChronicleLayout,
   causalConflictPairSet,
@@ -77,6 +72,7 @@ import { ChronicleExtractDialog } from "./ChronicleExtractDialog";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { useSeasonConflicts } from "./useSeasonConflicts";
 import { useChronicleQuery } from "./useChronicleQuery";
+import { useChronicleViewportController } from "./useChronicleViewportController";
 import { announce } from "@/lib/a11y/announcer";
 
 /**
@@ -93,7 +89,6 @@ export function ChroniclePanel() {
   const selectedEventIds = useChronicleStore((s) => s.selectedEventIds);
   const setSelectedEventId = useChronicleStore((s) => s.setSelectedEventId);
   const setSelection = useChronicleStore((s) => s.setSelection);
-  const setChronicleView = useChronicleStore((s) => s.setChronicleView);
   const locked = useChronicleStore((s) => s.locked);
   const toggleLock = useChronicleStore((s) => s.toggleLock);
   const selectedDay = useChronicleStore((s) => s.selectedDay);
@@ -142,6 +137,9 @@ export function ChroniclePanel() {
   );
 
   const [reloadKey, setReloadKey] = useState(0);
+  const resetViewportForProjectRef = useRef<(projectId: string | null) => void>(
+    () => undefined,
+  );
 
   const resetProjectTransientState = useCallback(
     (nextProjectId: string | null) => {
@@ -154,9 +152,7 @@ export function ChroniclePanel() {
       lastPersistedOrderRef.current = [];
       // 永続ビューがあれば維持（再フィットしない）、無ければ新規プロジェクトに
       // 合わせて全体フィットし直す。
-      fittedRef.current = nextProjectId
-        ? useChronicleStore.getState().pxPerDay != null
-        : false;
+      resetViewportForProjectRef.current(nextProjectId);
     },
     [setSelectedEventId, setSelectedPosition],
   );
@@ -192,73 +188,6 @@ export function ChroniclePanel() {
       onProjectLoaded: handleProjectLoaded,
       onEventsLoaded: handleProjectEventsLoaded,
     });
-
-  // ビュー状態（pan/zoom）はローカル。永続値が chronicleStore にあれば復元し、
-  // 無ければ初回計測時に全体へフィットする。trackW はビューポートが計測。
-  const [view, setView] = useState<View>(() => {
-    const s = useChronicleStore.getState();
-    return s.pxPerDay != null && s.viewStartDay != null
-      ? { pxPerDay: s.pxPerDay, viewStartDay: s.viewStartDay }
-      : { pxPerDay: 1, viewStartDay: 0 };
-  });
-  const [trackW, setTrackW] = useState(0);
-  // フィット時にトラックの**現在**幅を同期読みするための実要素参照（trackW state は
-  // ResizeObserver 非同期でインスペクタ開閉直後は stale になりうる）。
-  const trackElRef = useRef<HTMLDivElement | null>(null);
-  // 永続ビューがあれば「フィット済み」とみなし初回オートフィットを抑止する。
-  const fittedRef = useRef(useChronicleStore.getState().pxPerDay != null);
-  // ドラッグ書き戻し時に現在のルーラー解像度（時刻 zoom か否か）を参照する。
-  // 代入は layout 算出後（下方）。ズーム通知の debounce 後読みにも使う。
-  const rulerLevelRef = useRef<string>("day");
-
-  // ズーム操作の SR 通知。wheel/ツールバー/キーボードの全ズームが applyView 経由で
-  // pxPerDay を変えるのでそこで検出する。連打で煩くならないよう debounce し、
-  // 確定後のルーラー粒度（再レンダ済みの rulerLevelRef）を短文で読み上げる。
-  const zoomAnnounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const scheduleZoomAnnounce = useCallback(() => {
-    if (zoomAnnounceTimerRef.current)
-      clearTimeout(zoomAnnounceTimerRef.current);
-    zoomAnnounceTimerRef.current = setTimeout(() => {
-      zoomAnnounceTimerRef.current = null;
-      const level = rulerLevelRef.current;
-      const unit =
-        level === "year"
-          ? t("chronicle.year", "年")
-          : level === "month"
-            ? t("chronicle.month", "月")
-            : level === "day"
-              ? t("chronicle.day", "日")
-              : level === "hour"
-                ? t("chronicle.dialHour", "時")
-                : level === "minute"
-                  ? t("chronicle.dialMinute", "分")
-                  : t("chronicle.readingOrder", "読む順");
-      announce(t("chronicle.a11yZoomLevel", "ズーム: {{unit}}単位", { unit }));
-    }, 400);
-  }, [t]);
-  useEffect(
-    () => () => {
-      if (zoomAnnounceTimerRef.current)
-        clearTimeout(zoomAnnounceTimerRef.current);
-    },
-    [],
-  );
-  const lastPxPerDayRef = useRef(view.pxPerDay);
-
-  // ユーザー操作由来のビュー変更は永続化する（drag/zoom/fit/警告ジャンプ）。
-  const applyView = useCallback(
-    (v: View) => {
-      if (v.pxPerDay !== lastPxPerDayRef.current) {
-        lastPxPerDayRef.current = v.pxPerDay;
-        scheduleZoomAnnounce();
-      }
-      setView(v);
-      setChronicleView(v.pxPerDay, v.viewStartDay);
-    },
-    [setChronicleView, scheduleZoomAnnounce],
-  );
 
   // 表示オプション（ローカル・非永続）。
   const [density, setDensity] = useState<LaneDensity>("standard");
@@ -419,21 +348,15 @@ export function ChroniclePanel() {
       .sort((a, b) => a - b);
     return days.length ? days[Math.floor(days.length / 2)] : 0;
   }, [eff]);
-
-  // trackW 計測後に未フィットなら全体表示にフィット。
-  useEffect(() => {
-    if (trackW > 0 && !fittedRef.current && renderEvents.length > 0) {
-      fittedRef.current = true;
-      setView(
-        fitAll({
-          dataStart: eff.dataStart,
-          dataEnd: eff.dataEnd,
-          trackW,
-          focusDay: fitFocusDay,
-        }),
-      );
-    }
-  }, [trackW, renderEvents.length, eff.dataStart, eff.dataEnd, fitFocusDay]);
+  const viewport = useChronicleViewportController({
+    dataStart: eff.dataStart,
+    dataEnd: eff.dataEnd,
+    eventCount: renderEvents.length,
+    focusDay: fitFocusDay,
+  });
+  resetViewportForProjectRef.current = viewport.resetForProject;
+  const { view, trackW, trackElRef, rulerLevelRef, setTrackW, applyView } =
+    viewport;
 
   // 参加者（追加レーン所属）の eventId → codexId[]。
   const participantsByEvent = useMemo(() => {
@@ -654,36 +577,15 @@ export function ChroniclePanel() {
   }, [selected, entries]);
 
   // ── 表示操作（いずれも applyView で永続化する） ───────────
-  const handleFit = useCallback(() => {
-    // インスペクタ開閉直後は trackW state が stale なので、可視トラックの現在幅を同期読みして
-    // インスペクタ領域を除いた実表示域にフィットさせる（トラックは flex sibling で縮む）。
-    const liveW = trackElRef.current?.clientWidth || trackW;
-    applyView(
-      fitAll({
-        dataStart: eff.dataStart,
-        dataEnd: eff.dataEnd,
-        trackW: liveW,
-        focusDay: fitFocusDay,
-      }),
-    );
-  }, [eff.dataStart, eff.dataEnd, trackW, applyView, fitFocusDay]);
-  const handleZoom = useCallback(
-    (factor: number) => applyView(zoomByCenter({ view, trackW, factor })),
-    [view, trackW, applyView],
-  );
+  const { fit: handleFit, zoom: handleZoom, centerOnDay } = viewport;
   const handleGotoConflict = useCallback(() => {
     const ids = [...issueIds];
     if (ids.length === 0) return;
     const id = ids[0];
     setSelectedEventId(id);
     const ed = eff.byId.get(id);
-    if (ed) {
-      applyView({
-        pxPerDay: view.pxPerDay,
-        viewStartDay: ed.startDay - trackW / 2 / view.pxPerDay,
-      });
-    }
-  }, [issueIds, eff, trackW, view, applyView, setSelectedEventId]);
+    if (ed) centerOnDay(ed.startDay);
+  }, [issueIds, eff, centerOnDay, setSelectedEventId]);
 
   // 一覧クリック＝ナビゲーション（選択＋当該イベントをビュー中央へ寄せる）。
   // 暦軸/並び順どちらのモードでも ed.startDay へ寄せる（handleGotoConflict と同じ挙動）。
@@ -691,14 +593,9 @@ export function ChroniclePanel() {
     (id: string) => {
       setSelectedEventId(id);
       const ed = eff.byId.get(id);
-      if (ed && view.pxPerDay > 0 && trackW > 0) {
-        applyView({
-          pxPerDay: view.pxPerDay,
-          viewStartDay: ed.startDay - trackW / 2 / view.pxPerDay,
-        });
-      }
+      if (ed) centerOnDay(ed.startDay);
     },
-    [eff, view, trackW, applyView, setSelectedEventId],
+    [eff, centerOnDay, setSelectedEventId],
   );
 
   // コンテキスト「原因/結果を選択」: 1 世代上/下（複数可）を選択し先頭へスクロール。
@@ -712,14 +609,9 @@ export function ChroniclePanel() {
       if (ids.length === 0) return;
       setSelection(ids, ids[0]); // 複数選択（primary=先頭）
       const ed = eff.byId.get(ids[0]);
-      if (ed && view.pxPerDay > 0 && trackW > 0) {
-        applyView({
-          pxPerDay: view.pxPerDay,
-          viewStartDay: ed.startDay - trackW / 2 / view.pxPerDay,
-        });
-      }
+      if (ed) centerOnDay(ed.startDay);
     },
-    [relations, setSelection, eff, view, trackW, applyView],
+    [relations, setSelection, eff, centerOnDay],
   );
   const handleSelectCauses = useCallback(
     (eventId: string) => selectRelatedGeneration(eventId, "causes"),
