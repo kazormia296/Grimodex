@@ -177,7 +177,7 @@ impl Sandbox {
         let projects = self.ime_root.join("projects");
         let destination = projects.join(format!("{PROCESS_E2E_PROJECT_ID}.json"));
         let data = format!(
-            "{{\"format_version\":1,\"project_id\":\"{PROCESS_E2E_PROJECT_ID}\",\"project_name\":\"星海年代記\",\"generated_at\":\"2026-07-12T00:00:00.000Z\",\"entries\":[{{\"yomi\":\"りゅうせいこう\",\"surface\":\"{surface}\",\"category\":\"place\",\"priority\":2,\"entry_id\":\"entry-port\"}}],\"profile\":null,\"zenzai_context\":{{\"topic\":\"{topic}\",\"style\":null,\"preference\":null}}}}"
+            "{{\"format_version\":1,\"project_id\":\"{PROCESS_E2E_PROJECT_ID}\",\"project_name\":\"星海年代記\",\"generated_at\":\"2026-07-12T00:00:00.000Z\",\"entries\":[{{\"yomi\":\"りゅうせいこう\",\"surface\":\"{surface}\",\"category\":\"place\",\"priority\":2,\"entry_id\":\"entry-port\"}}],\"zenzai_context\":{{\"topic\":\"{topic}\",\"style\":null,\"preference\":null}}}}"
         );
         if atomic {
             let temporary = projects.join(".process-e2e-project.tmp");
