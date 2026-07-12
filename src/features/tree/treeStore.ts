@@ -726,6 +726,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       const nodes = [...state.nodes, newNode];
       return { nodes, scenes: computeScenes(nodes) };
     });
+    usePhaseStore.getState().recomputeSceneOrder(get().nodes);
     recordChangeEvent({
       domain: "grid",
       opType: "scene.create",
@@ -971,6 +972,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             const nodes = state.nodes.filter((n) => n.id !== captured.id);
             return { nodes, scenes: computeScenes(nodes) };
           });
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
           useTabStore.getState().closeTab(captured.id);
           useTabStore.getState().closeSecondaryTab(captured.id);
         },
@@ -1000,6 +1002,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
               expandedIds,
             };
           });
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
           if (node.nodeType === "scene" || node.nodeType === "note") {
             useTabStore.getState().openPinned(node.id);
           }
@@ -1186,6 +1189,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
               activeSceneId: prevActiveSceneId,
             };
           });
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
         },
         async redo() {
           // Re-delete from the same root, collecting current descendants
@@ -1210,6 +1214,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             ? (sc[0]?.id ?? "")
             : curActive;
           set({ nodes: rem, scenes: sc, activeSceneId: nextActive });
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
           const tb = useTabStore.getState();
           for (const delId of [...currentToDelete]) {
             tb.closeTab(delId);
@@ -1330,7 +1335,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     const oldOrder = node.storyTimeOrder;
     const oldLabel = node.storyTimeLabel;
     const patch: Parameters<typeof api.updateNode>[1] = {
-      storyTimeOrder: order ?? undefined,
+      // null is a persisted value (Unscheduled), while undefined means
+      // "leave unchanged" to Drizzle. Never collapse null into undefined.
+      storyTimeOrder: order,
     };
     if (label !== undefined) patch.storyTimeLabel = label;
     await api.updateNode(id, patch);
@@ -1352,8 +1359,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         label: i18next.t("tree.undo.storyTimeChanged"),
         async undo() {
           const undoPatch: Parameters<typeof api.updateNode>[1] = {
-            storyTimeOrder: oldOrder ?? undefined,
-            storyTimeLabel: oldLabel ?? undefined,
+            storyTimeOrder: oldOrder,
+            storyTimeLabel: oldLabel,
           };
           await api.updateNode(id, undoPatch);
           set((state) => ({
@@ -1694,6 +1701,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             );
             return { nodes: updated, scenes: computeScenes(updated) };
           });
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
         },
         async redo() {
           await api.updateNode(id, {
@@ -1706,6 +1714,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             );
             return { nodes: updated, scenes: computeScenes(updated) };
           });
+          usePhaseStore.getState().recomputeSceneOrder(get().nodes);
         },
       });
     }

@@ -3,11 +3,21 @@ import * as api from "./api";
 import { useTreeStore } from "./treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 
+const { mockRecomputeSceneOrder } = vi.hoisted(() => ({
+  mockRecomputeSceneOrder: vi.fn(),
+}));
+
 vi.mock("./api", () => ({
   listNodes: vi.fn().mockResolvedValue([]),
   createNode: vi.fn().mockResolvedValue(undefined),
   updateNode: vi.fn().mockResolvedValue(undefined),
   deleteNode: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/features/codex/phaseStore", () => ({
+  usePhaseStore: {
+    getState: () => ({ recomputeSceneOrder: mockRecomputeSceneOrder }),
+  },
 }));
 
 const updateNode = vi.mocked(api.updateNode);
@@ -119,5 +129,24 @@ describe("moveNode parentId persistence", () => {
     const [, data] = updateNode.mock.calls[0]!;
     expect(data.parentId).toBeNull();
     expect("parentId" in data).toBe(true);
+  });
+
+  it("recomputes Phase scene time after move undo and redo", async () => {
+    await useTreeStore.getState().moveNode("ch1", null, "P");
+    const command = useGlobalHistoryStore.getState().past.at(-1);
+    expect(command).toBeDefined();
+
+    mockRecomputeSceneOrder.mockClear();
+    await command!.undo();
+    expect(mockRecomputeSceneOrder).toHaveBeenCalledTimes(1);
+    expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
+      useTreeStore.getState().nodes,
+    );
+
+    await command!.redo();
+    expect(mockRecomputeSceneOrder).toHaveBeenCalledTimes(2);
+    expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
+      useTreeStore.getState().nodes,
+    );
   });
 });

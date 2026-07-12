@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import * as api from "./api";
 import { useTreeStore } from "./treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+
+const { mockRecomputeSceneOrder } = vi.hoisted(() => ({
+  mockRecomputeSceneOrder: vi.fn(),
+}));
 
 vi.mock("./api", () => ({
   listNodes: vi.fn().mockResolvedValue([]),
@@ -44,7 +49,7 @@ vi.mock("./codexQuickPinApi", () => ({
 
 vi.mock("@/features/codex/phaseStore", () => ({
   usePhaseStore: {
-    getState: () => ({ recomputeSceneOrder: vi.fn() }),
+    getState: () => ({ recomputeSceneOrder: mockRecomputeSceneOrder }),
   },
 }));
 
@@ -68,6 +73,8 @@ const baseNode = {
 };
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(api.deleteNode).mockReset().mockResolvedValue(undefined);
   useTreeStore.setState({
     nodes: [],
     projectId: "proj-1",
@@ -78,9 +85,37 @@ beforeEach(() => {
   useGlobalHistoryStore.getState().clear();
 });
 
+describe("treeStore.deleteNode Phase scene-time invalidation", () => {
+  it("recomputes the index after delete undo and redo", async () => {
+    useTreeStore.setState({ nodes: [{ ...baseNode, id: "folder" }] });
+
+    await useTreeStore.getState().deleteNode("folder");
+    const command = useGlobalHistoryStore.getState().past.at(-1);
+    expect(command).toBeDefined();
+
+    mockRecomputeSceneOrder.mockClear();
+    await command!.undo();
+    expect(mockRecomputeSceneOrder).toHaveBeenCalledTimes(1);
+    expect(useTreeStore.getState().nodes).toContainEqual(
+      expect.objectContaining({ id: "folder" }),
+    );
+    expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
+      useTreeStore.getState().nodes,
+    );
+
+    await command!.redo();
+    expect(mockRecomputeSceneOrder).toHaveBeenCalledTimes(2);
+    expect(useTreeStore.getState().nodes).not.toContainEqual(
+      expect.objectContaining({ id: "folder" }),
+    );
+    expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
+      useTreeStore.getState().nodes,
+    );
+  });
+});
+
 describe("treeStore.deleteNode partial failure", () => {
   it("on partial failure, syncs only successfully-deleted ids and skips history push", async () => {
-    const api = await import("./api");
     // Tree:  parent -> [childA, childB]
     useTreeStore.setState({
       nodes: [
@@ -93,13 +128,11 @@ describe("treeStore.deleteNode partial failure", () => {
     // Leaf-first reverse iteration: childB, childA, parent.
     // Make childA fail. childB should be deleted; childA + parent retained.
     let callCount = 0;
-    (api.deleteNode as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-      async (id: string) => {
-        callCount++;
-        if (id === "childA") throw new Error("FK violation");
-        return undefined;
-      },
-    );
+    vi.mocked(api.deleteNode).mockImplementation(async (id: string) => {
+      callCount++;
+      if (id === "childA") throw new Error("FK violation");
+      return undefined;
+    });
 
     await useTreeStore.getState().deleteNode("parent");
 

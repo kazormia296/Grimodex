@@ -23,6 +23,11 @@ import { UnsavedDialog } from "./UnsavedDialog";
 import { saveScene } from "./editorSaveRegistry";
 import type { GroupIndex, TabEntry } from "./tabStore";
 import type { CodexEntryPhase } from "@/features/codex/phaseApi";
+import { resolveApplicablePhases } from "@/features/codex/context/resolveApplicablePhases";
+import type {
+  PhaseResolutionMode,
+  SceneTimeIndex,
+} from "@/features/codex/context/sceneTimeIndex";
 
 export const DRAG_DATA_KEY = "application/grimodex-tab";
 /** Per-group marker so drop zones can detect source group during dragover. */
@@ -32,7 +37,8 @@ export const DRAG_GROUP_KEY = (g: 0 | 1) => `application/grimodex-tab-g${g}`;
 function getTabPhaseLabel(
   tab: TabEntry,
   phasesByEntry: Record<string, CodexEntryPhase[]>,
-  globalSceneOrder: Map<string, number>,
+  sceneTimeIndex: SceneTimeIndex,
+  resolutionMode: PhaseResolutionMode,
   activeSceneId: string | null,
 ): string | null {
   if (tab.contentType !== "codex") return null;
@@ -45,21 +51,13 @@ function getTabPhaseLabel(
   }
   // Auto-resolve from active scene
   if (!activeSceneId) return null;
-  const currentOrder = globalSceneOrder.get(activeSceneId);
-  if (currentOrder === undefined) return null;
-  const applicable = phases
-    .filter(
-      (p) =>
-        p.anchorNodeId != null &&
-        globalSceneOrder.has(p.anchorNodeId) &&
-        globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-    )
-    .sort(
-      (a, b) =>
-        globalSceneOrder.get(a.anchorNodeId!)! -
-        globalSceneOrder.get(b.anchorNodeId!)!,
-    );
-  return applicable[applicable.length - 1]?.label ?? null;
+  const resolution = resolveApplicablePhases({
+    phases,
+    index: sceneTimeIndex,
+    mode: resolutionMode,
+    anchor: { kind: "scene", sceneId: activeSceneId },
+  });
+  return resolution.applicablePhases.at(-1)?.label ?? null;
 }
 
 interface DragPayload {
@@ -90,7 +88,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const codexEntries = useCodexStore((s) => s.entries);
   const snippetEntries = useSnippetStore((s) => s.entries);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
-  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
+  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
 
   const hasSecondaryGroup = useTabStore((s) => s.secondaryGroupOpen);
   const isLinearMode = useTabStore((s) => s.isLinearMode);
@@ -382,7 +381,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
             const phaseLabel = getTabPhaseLabel(
               tab,
               phasesByEntry,
-              globalSceneOrder,
+              sceneTimeIndex,
+              resolutionMode,
               activeSceneId,
             );
             const synced = isSyncedScene(tab.nodeId);
@@ -665,7 +665,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
                 const overflowPhaseLabel = getTabPhaseLabel(
                   tab,
                   phasesByEntry,
-                  globalSceneOrder,
+                  sceneTimeIndex,
+                  resolutionMode,
                   activeSceneId,
                 );
                 return (

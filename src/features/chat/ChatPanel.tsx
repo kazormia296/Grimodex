@@ -122,7 +122,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const regenerate = useChatStore((s) => s.regenerate);
   const contextTokenCount = useChatStore((s) => s.contextTokenCount);
   const contextWindowSize = useChatStore((s) => s.contextWindowSize);
+  const contextModel = useChatStore((s) => s.contextModel);
   const contextLayers = useChatStore((s) => s.contextLayers);
+  const contextPlan = useChatStore((s) => s.contextPlan);
   const pinsVersion = useChatStore((s) => s.pinsVersion);
   const projectOutline = useChatStore((s) => s.projectOutline);
   const chapterOutlines = useChatStore((s) => s.chapterOutlines);
@@ -191,11 +193,13 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   );
 
   const aiSettings = useAiSettingsStore((s) => s.settings);
+  const chatModelOverride = useAiSettingsStore((s) => s.chatModelOverride);
   const loadAiSettings = useAiSettingsStore((s) => s.loadSettings);
   const aiModels = useAiSettingsStore((s) => s.models);
   // 動的 capability レジストリ（OpenRouter /models 等）更新時に再計算する。
   useAiSettingsStore((s) => s.modelCapsRevision);
-  const currentModel = aiSettings?.model ?? "";
+  const currentModel =
+    contextModel ?? chatModelOverride ?? aiSettings?.model ?? "";
 
   // Context Creator（AIコンテキスト提案）は Codex/Snippet 検索ツールを使う
   // エージェント実行のため、現在のモデル/プロバイダが Tool Use 対応のときだけ
@@ -299,6 +303,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     // provider も同様: pull 委譲は CLI（ツール無し）では無効化されるため、
     // OpenRouter↔CLI の切替で集約 tier が変わる。切替時に再構築が要る。
     aiSettings?.provider,
+    currentModel,
     includeMapBoard,
     mapBoardIdFromStore,
     allCodexEntries,
@@ -995,6 +1000,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
       <ContextBar
         scopeAnchor={scopeAnchor}
+        contextPlan={contextPlan}
         pinnedEntries={[...pinnedEntries, ...inputPinnedEntries]}
         pinnedSnippets={pinnedSnippets}
         pinnedStickies={pinnedStickies}

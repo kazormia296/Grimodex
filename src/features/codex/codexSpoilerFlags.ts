@@ -7,6 +7,11 @@ import { listForeshadowsByCodexEntry } from "@/features/foreshadow/api";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { usePhaseStore } from "./phaseStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import {
+  compareSceneTime,
+  type PhaseResolutionMode,
+  type SceneTimeIndex,
+} from "./context/sceneTimeIndex";
 
 export interface UnrevealedForeshadow {
   id: string;
@@ -15,13 +20,13 @@ export interface UnrevealedForeshadow {
 
 export function computeUnrevealedSecretForeshadows(
   linkedByEntry: Map<string, ForeshadowRow[]>,
-  sceneOrder: Map<string, number>,
+  sceneTimeIndex: SceneTimeIndex,
+  resolutionMode: PhaseResolutionMode,
   currentSceneId: string | null,
 ): Map<string, UnrevealedForeshadow[]> {
   const out = new Map<string, UnrevealedForeshadow[]>();
   if (!currentSceneId) return out;
-  const currentOrder = sceneOrder.get(currentSceneId);
-  if (currentOrder === undefined) return out;
+  if (!sceneTimeIndex.readingOrder.has(currentSceneId)) return out;
 
   for (const [entryId, foreshadows] of linkedByEntry) {
     const unrevealed: UnrevealedForeshadow[] = [];
@@ -33,8 +38,13 @@ export function computeUnrevealedSecretForeshadows(
         if (!f.payoffConfirmed) unrevealed.push({ id: f.id, title: f.title });
         continue;
       }
-      const payoffOrder = sceneOrder.get(f.payoffSceneId);
-      if (payoffOrder === undefined || payoffOrder > currentOrder) {
+      const payoffVsCurrent = compareSceneTime(
+        sceneTimeIndex,
+        resolutionMode,
+        f.payoffSceneId,
+        currentSceneId,
+      );
+      if (payoffVsCurrent === null || payoffVsCurrent > 0) {
         unrevealed.push({ id: f.id, title: f.title });
       }
     }
@@ -47,7 +57,8 @@ export function useUnrevealedSecretForeshadows(
   entryIds: string[],
 ): Map<string, UnrevealedForeshadow[]> {
   const idsKey = entryIds.join("|");
-  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
+  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const [linkedByEntry, setLinkedByEntry] = useState<
     Record<string, ForeshadowWithLabel[]>
@@ -109,8 +120,9 @@ export function useUnrevealedSecretForeshadows(
     for (const id of idSet) map.set(id, linkedByEntry[id] ?? []);
     return computeUnrevealedSecretForeshadows(
       map,
-      globalSceneOrder,
+      sceneTimeIndex,
+      resolutionMode,
       activeSceneId || null,
     );
-  }, [idsKey, linkedByEntry, globalSceneOrder, activeSceneId]);
+  }, [idsKey, linkedByEntry, sceneTimeIndex, resolutionMode, activeSceneId]);
 }

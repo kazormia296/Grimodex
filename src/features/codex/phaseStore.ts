@@ -6,20 +6,29 @@ import * as phaseApi from "./phaseApi";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "./phaseApi";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import {
-  computeSceneTimeIndex,
   resolveCodexState,
   type PhaseResolutionMode,
   type ResolvedCodexState,
 } from "./phaseResolver";
+import {
+  buildSceneTimeIndex,
+  linearizeSceneTimeIndex,
+  type SceneTimeIndex,
+} from "./context/sceneTimeIndex";
 
-interface PhaseState {
+export interface PhaseState {
+  /** Project-bound async work is allowed to publish only within this epoch. */
+  projectEpoch: number;
   phasesByEntry: Record<string, CodexEntryPhase[]>;
   detailOverrides: Record<string, CodexPhaseDetailOverride[]>; // phaseId → overrides
   globalSceneOrder: Map<string, number>;
+  /** Mode-independent temporal index used by semantic Phase resolution. */
+  sceneTimeIndex: SceneTimeIndex;
   resolvedStates: Record<string, ResolvedCodexState>; // entryId → resolved (キャッシュ)
   resolutionMode: PhaseResolutionMode;
   cachedNodes: TreeNodeData[];
 
+  resetForProject(): void;
   loadPhasesForEntry(entryId: string): Promise<void>;
   createPhase(data: {
     entryId: string;
@@ -59,21 +68,72 @@ interface PhaseState {
   getResolvedState(entryId: string): ResolvedCodexState | null;
 }
 
+const phaseEntryGenerations = new Map<string, number>();
+
+function phaseEntryGeneration(entryId: string): number {
+  return phaseEntryGenerations.get(entryId) ?? 0;
+}
+
+function invalidatePhaseEntryLoads(entryId: string | undefined): void {
+  if (!entryId) return;
+  phaseEntryGenerations.set(entryId, phaseEntryGeneration(entryId) + 1);
+}
+
+function findEntryIdForPhase(
+  state: PhaseState,
+  phaseId: string,
+): string | undefined {
+  for (const [entryId, phases] of Object.entries(state.phasesByEntry)) {
+    if (phases.some((phase) => phase.id === phaseId)) return entryId;
+  }
+  return undefined;
+}
+
 export const usePhaseStore = create<PhaseState>()((set, get) => ({
+  projectEpoch: 0,
   phasesByEntry: {},
   detailOverrides: {},
   globalSceneOrder: new Map(),
+  sceneTimeIndex: buildSceneTimeIndex([]),
   resolvedStates: {},
   resolutionMode: "reading",
   cachedNodes: [],
 
+  resetForProject() {
+    phaseEntryGenerations.clear();
+    set((state) => ({
+      projectEpoch: state.projectEpoch + 1,
+      phasesByEntry: {},
+      detailOverrides: {},
+      globalSceneOrder: new Map(),
+      sceneTimeIndex: buildSceneTimeIndex(
+        [],
+        state.sceneTimeIndex.revision + 1,
+      ),
+      resolvedStates: {},
+      resolutionMode: state.resolutionMode,
+      cachedNodes: [],
+    }));
+  },
+
   async loadPhasesForEntry(entryId) {
+    const epoch = get().projectEpoch;
+    const entryGeneration = phaseEntryGeneration(entryId);
+    const restartIfSuperseded = (): boolean => {
+      const state = get();
+      if (state.projectEpoch !== epoch) return true;
+      if (phaseEntryGeneration(entryId) === entryGeneration) return false;
+      void state.loadPhasesForEntry(entryId);
+      return true;
+    };
     let phases: CodexEntryPhase[];
     let allOverrides: CodexPhaseDetailOverride[];
     try {
       phases = await phaseApi.listPhasesByEntry(entryId);
+      if (restartIfSuperseded()) return;
       const phaseIds = phases.map((p) => p.id);
       allOverrides = await phaseApi.listDetailOverridesByPhaseIds(phaseIds);
+      if (restartIfSuperseded()) return;
     } catch {
       return; // DB未接続時などは無視
     }
@@ -84,19 +144,39 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       overridesByPhase[ov.phaseId].push(ov);
     }
 
-    set((state) => ({
-      phasesByEntry: { ...state.phasesByEntry, [entryId]: phases },
-      detailOverrides: { ...state.detailOverrides, ...overridesByPhase },
-    }));
+    if (restartIfSuperseded()) return;
+    set((state) => {
+      if (state.projectEpoch !== epoch) return state;
+
+      // The DB response is authoritative for this entry. Remove every cached
+      // override belonging to the prior/current phase set before publishing it,
+      // including the empty-result case.
+      const nextOverrides = { ...state.detailOverrides };
+      for (const phase of state.phasesByEntry[entryId] ?? []) {
+        delete nextOverrides[phase.id];
+      }
+      for (const phase of phases) delete nextOverrides[phase.id];
+      Object.assign(nextOverrides, overridesByPhase);
+
+      return {
+        phasesByEntry: { ...state.phasesByEntry, [entryId]: phases },
+        detailOverrides: nextOverrides,
+      };
+    });
   },
 
   async createPhase(data) {
+    const epoch = get().projectEpoch;
+    invalidatePhaseEntryLoads(data.entryId);
     const id = crypto.randomUUID();
     const phase = await phaseApi.createPhase({
       id,
       ...data,
     });
+    if (get().projectEpoch !== epoch) return phase;
+    invalidatePhaseEntryLoads(phase.entryId);
     set((state) => {
+      if (state.projectEpoch !== epoch) return state;
       const existing = state.phasesByEntry[phase.entryId] ?? [];
       return {
         phasesByEntry: {
@@ -107,42 +187,58 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     });
 
     if (!useGlobalHistoryStore.getState().isReplaying) {
-      const cap = { ...phase };
+      const cap = { phase: { ...phase }, projectEpoch: epoch };
       useGlobalHistoryStore.getState().push({
         kind: "phase",
         label: i18next.t("phase.history.created"),
         async undo() {
-          await phaseApi.deletePhase(cap.id);
-          set((state) => ({
-            phasesByEntry: {
-              ...state.phasesByEntry,
-              [cap.entryId]: (state.phasesByEntry[cap.entryId] ?? []).filter(
-                (p) => p.id !== cap.id,
-              ),
-            },
-          }));
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.phase.entryId);
+          await phaseApi.deletePhase(cap.phase.id);
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.phase.entryId);
+          set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
+            return {
+              phasesByEntry: {
+                ...state.phasesByEntry,
+                [cap.phase.entryId]: (
+                  state.phasesByEntry[cap.phase.entryId] ?? []
+                ).filter((p) => p.id !== cap.phase.id),
+              },
+            };
+          });
         },
         async redo() {
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.phase.entryId);
           await phaseApi.createPhase({
-            id: cap.id,
-            entryId: cap.entryId,
-            anchorNodeId: cap.anchorNodeId ?? null,
-            label: cap.label,
-            summaryOverride: cap.summaryOverride ?? null,
-            contentOverride: cap.contentOverride ?? null,
-            contextModeOverride: cap.contextModeOverride ?? null,
+            id: cap.phase.id,
+            entryId: cap.phase.entryId,
+            anchorNodeId: cap.phase.anchorNodeId ?? null,
+            label: cap.phase.label,
+            summaryOverride: cap.phase.summaryOverride ?? null,
+            contentOverride: cap.phase.contentOverride ?? null,
+            contextModeOverride: cap.phase.contextModeOverride ?? null,
+            createdAt: cap.phase.createdAt,
+            updatedAt: cap.phase.updatedAt,
           });
-          set((state) => ({
-            phasesByEntry: {
-              ...state.phasesByEntry,
-              [cap.entryId]: [
-                ...(state.phasesByEntry[cap.entryId] ?? []).filter(
-                  (p) => p.id !== cap.id,
-                ),
-                cap,
-              ],
-            },
-          }));
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.phase.entryId);
+          set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
+            return {
+              phasesByEntry: {
+                ...state.phasesByEntry,
+                [cap.phase.entryId]: [
+                  ...(state.phasesByEntry[cap.phase.entryId] ?? []).filter(
+                    (p) => p.id !== cap.phase.id,
+                  ),
+                  cap.phase,
+                ],
+              },
+            };
+          });
         },
       });
     }
@@ -151,6 +247,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
   },
 
   async updatePhase(id, data) {
+    const epoch = get().projectEpoch;
     // Capture before-state of patched fields for undo
     let before: CodexEntryPhase | undefined;
     for (const phases of Object.values(get().phasesByEntry)) {
@@ -160,10 +257,14 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
         break;
       }
     }
+    invalidatePhaseEntryLoads(before?.entryId);
 
     const updated = await phaseApi.updatePhase(id, data);
+    if (get().projectEpoch !== epoch) return;
     if (!updated) return;
+    invalidatePhaseEntryLoads(updated.entryId);
     set((state) => {
+      if (state.projectEpoch !== epoch) return state;
       const entryId = updated.entryId;
       const phases = (state.phasesByEntry[entryId] ?? []).map((p) =>
         p.id === id ? updated : p,
@@ -182,14 +283,25 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       // @ts-expect-error narrow union not assignable here
       undoPatch[key] = v ?? null;
     }
-    const cap = { id, before: { ...before }, undoPatch, redoPatch: data };
+    const cap = {
+      id,
+      before: { ...before },
+      undoPatch,
+      redoPatch: { ...data },
+      projectEpoch: epoch,
+    };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
       label: i18next.t("phase.history.updated"),
       async undo() {
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.before.entryId);
         const restored = await phaseApi.updatePhase(cap.id, cap.undoPatch);
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.before.entryId);
         if (restored) {
           set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
             const entryId = restored.entryId;
             const phases = (state.phasesByEntry[entryId] ?? []).map((p) =>
               p.id === cap.id ? restored : p,
@@ -201,9 +313,14 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
         }
       },
       async redo() {
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.before.entryId);
         const reapplied = await phaseApi.updatePhase(cap.id, cap.redoPatch);
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.before.entryId);
         if (reapplied) {
           set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
             const entryId = reapplied.entryId;
             const phases = (state.phasesByEntry[entryId] ?? []).map((p) =>
               p.id === cap.id ? reapplied : p,
@@ -218,6 +335,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
   },
 
   async deletePhase(id) {
+    const epoch = get().projectEpoch;
     // Find entryId and full phase data before deleting
     let entryId: string | undefined;
     let beforePhase: CodexEntryPhase | undefined;
@@ -230,10 +348,14 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       }
     }
     const beforeOverrides = [...(get().detailOverrides[id] ?? [])];
+    invalidatePhaseEntryLoads(entryId);
 
     await phaseApi.deletePhase(id);
+    if (get().projectEpoch !== epoch) return;
+    invalidatePhaseEntryLoads(entryId);
 
     set((state) => {
+      if (state.projectEpoch !== epoch) return state;
       const next: Record<string, CodexEntryPhase[]> = {
         ...state.phasesByEntry,
       };
@@ -254,11 +376,14 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     const cap = {
       phase: { ...beforePhase },
       overrides: beforeOverrides.map((ov) => ({ ...ov })),
+      projectEpoch: epoch,
     };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
       label: i18next.t("phase.history.deleted"),
       async undo() {
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.phase.entryId);
         await phaseApi.createPhase({
           id: cap.phase.id,
           entryId: cap.phase.entryId,
@@ -267,32 +392,46 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
           summaryOverride: cap.phase.summaryOverride ?? null,
           contentOverride: cap.phase.contentOverride ?? null,
           contextModeOverride: cap.phase.contextModeOverride ?? null,
+          createdAt: cap.phase.createdAt,
+          updatedAt: cap.phase.updatedAt,
         });
+        if (get().projectEpoch !== cap.projectEpoch) return;
         // Restore detail overrides
         for (const ov of cap.overrides) {
+          if (get().projectEpoch !== cap.projectEpoch) return;
           await phaseApi.upsertDetailOverride(
             cap.phase.id,
             ov.definitionId,
             ov.value ?? null,
           );
         }
-        set((state) => ({
-          phasesByEntry: {
-            ...state.phasesByEntry,
-            [cap.phase.entryId]: [
-              ...(state.phasesByEntry[cap.phase.entryId] ?? []),
-              cap.phase,
-            ],
-          },
-          detailOverrides: {
-            ...state.detailOverrides,
-            [cap.phase.id]: cap.overrides,
-          },
-        }));
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.phase.entryId);
+        set((state) => {
+          if (state.projectEpoch !== cap.projectEpoch) return state;
+          return {
+            phasesByEntry: {
+              ...state.phasesByEntry,
+              [cap.phase.entryId]: [
+                ...(state.phasesByEntry[cap.phase.entryId] ?? []),
+                cap.phase,
+              ],
+            },
+            detailOverrides: {
+              ...state.detailOverrides,
+              [cap.phase.id]: cap.overrides,
+            },
+          };
+        });
       },
       async redo() {
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.phase.entryId);
         await phaseApi.deletePhase(cap.phase.id);
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.phase.entryId);
         set((state) => {
+          if (state.projectEpoch !== cap.projectEpoch) return state;
           const next = {
             ...state.phasesByEntry,
             [cap.phase.entryId]: (
@@ -308,6 +447,9 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
   },
 
   async upsertDetailOverride(phaseId, definitionId, value) {
+    const epoch = get().projectEpoch;
+    const entryId = findEntryIdForPhase(get(), phaseId);
+    invalidatePhaseEntryLoads(entryId);
     // Capture before-state: was there an existing override?
     const beforeOverride = (get().detailOverrides[phaseId] ?? []).find(
       (ov) => ov.definitionId === definitionId,
@@ -319,7 +461,10 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
       definitionId,
       value,
     );
+    if (get().projectEpoch !== epoch) return;
+    invalidatePhaseEntryLoads(entryId);
     set((state) => {
+      if (state.projectEpoch !== epoch) return state;
       const existing = (state.detailOverrides[phaseId] ?? []).filter(
         (ov) => ov.definitionId !== definitionId,
       );
@@ -333,69 +478,101 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
 
     if (useGlobalHistoryStore.getState().isReplaying) return;
 
-    const cap = { phaseId, definitionId, beforeValue, afterValue: value };
+    const cap = {
+      phaseId,
+      definitionId,
+      beforeValue,
+      afterValue: value,
+      entryId,
+      projectEpoch: epoch,
+    };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
       label: i18next.t("phase.history.detailOverrideUpdated"),
       async undo() {
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.entryId);
         if (cap.beforeValue === undefined) {
           // Was missing → delete
           await phaseApi.deleteDetailOverride(cap.phaseId, cap.definitionId);
-          set((state) => ({
-            detailOverrides: {
-              ...state.detailOverrides,
-              [cap.phaseId]: (state.detailOverrides[cap.phaseId] ?? []).filter(
-                (ov) => ov.definitionId !== cap.definitionId,
-              ),
-            },
-          }));
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.entryId);
+          set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
+            return {
+              detailOverrides: {
+                ...state.detailOverrides,
+                [cap.phaseId]: (
+                  state.detailOverrides[cap.phaseId] ?? []
+                ).filter((ov) => ov.definitionId !== cap.definitionId),
+              },
+            };
+          });
         } else {
           const restored = await phaseApi.upsertDetailOverride(
             cap.phaseId,
             cap.definitionId,
             cap.beforeValue,
           );
-          set((state) => ({
+          if (get().projectEpoch !== cap.projectEpoch) return;
+          invalidatePhaseEntryLoads(cap.entryId);
+          set((state) => {
+            if (state.projectEpoch !== cap.projectEpoch) return state;
+            return {
+              detailOverrides: {
+                ...state.detailOverrides,
+                [cap.phaseId]: [
+                  ...(state.detailOverrides[cap.phaseId] ?? []).filter(
+                    (ov) => ov.definitionId !== cap.definitionId,
+                  ),
+                  restored,
+                ],
+              },
+            };
+          });
+        }
+      },
+      async redo() {
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.entryId);
+        const reapplied = await phaseApi.upsertDetailOverride(
+          cap.phaseId,
+          cap.definitionId,
+          cap.afterValue,
+        );
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.entryId);
+        set((state) => {
+          if (state.projectEpoch !== cap.projectEpoch) return state;
+          return {
             detailOverrides: {
               ...state.detailOverrides,
               [cap.phaseId]: [
                 ...(state.detailOverrides[cap.phaseId] ?? []).filter(
                   (ov) => ov.definitionId !== cap.definitionId,
                 ),
-                restored,
+                reapplied,
               ],
             },
-          }));
-        }
-      },
-      async redo() {
-        const reapplied = await phaseApi.upsertDetailOverride(
-          cap.phaseId,
-          cap.definitionId,
-          cap.afterValue,
-        );
-        set((state) => ({
-          detailOverrides: {
-            ...state.detailOverrides,
-            [cap.phaseId]: [
-              ...(state.detailOverrides[cap.phaseId] ?? []).filter(
-                (ov) => ov.definitionId !== cap.definitionId,
-              ),
-              reapplied,
-            ],
-          },
-        }));
+          };
+        });
       },
     });
   },
 
   async deleteDetailOverride(phaseId, definitionId) {
+    const epoch = get().projectEpoch;
+    const entryId = findEntryIdForPhase(get(), phaseId);
+    invalidatePhaseEntryLoads(entryId);
     const beforeOverride = (get().detailOverrides[phaseId] ?? []).find(
       (ov) => ov.definitionId === definitionId,
     );
 
     await phaseApi.deleteDetailOverride(phaseId, definitionId);
+    if (get().projectEpoch !== epoch) return;
+    invalidatePhaseEntryLoads(entryId);
     set((state) => {
+      if (state.projectEpoch !== epoch) return state;
       const filtered = (state.detailOverrides[phaseId] ?? []).filter(
         (ov) => ov.definitionId !== definitionId,
       );
@@ -410,55 +587,81 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     if (!beforeOverride) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
 
-    const cap = { ...beforeOverride };
+    const cap = {
+      override: { ...beforeOverride },
+      entryId,
+      projectEpoch: epoch,
+    };
     useGlobalHistoryStore.getState().push({
       kind: "phase",
       label: i18next.t("phase.history.detailOverrideDeleted"),
       async undo() {
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.entryId);
         const restored = await phaseApi.upsertDetailOverride(
-          cap.phaseId,
-          cap.definitionId,
-          cap.value ?? null,
+          cap.override.phaseId,
+          cap.override.definitionId,
+          cap.override.value ?? null,
         );
-        set((state) => ({
-          detailOverrides: {
-            ...state.detailOverrides,
-            [cap.phaseId]: [
-              ...(state.detailOverrides[cap.phaseId] ?? []).filter(
-                (ov) => ov.definitionId !== cap.definitionId,
-              ),
-              restored,
-            ],
-          },
-        }));
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.entryId);
+        set((state) => {
+          if (state.projectEpoch !== cap.projectEpoch) return state;
+          return {
+            detailOverrides: {
+              ...state.detailOverrides,
+              [cap.override.phaseId]: [
+                ...(state.detailOverrides[cap.override.phaseId] ?? []).filter(
+                  (ov) => ov.definitionId !== cap.override.definitionId,
+                ),
+                restored,
+              ],
+            },
+          };
+        });
       },
       async redo() {
-        await phaseApi.deleteDetailOverride(cap.phaseId, cap.definitionId);
-        set((state) => ({
-          detailOverrides: {
-            ...state.detailOverrides,
-            [cap.phaseId]: (state.detailOverrides[cap.phaseId] ?? []).filter(
-              (ov) => ov.definitionId !== cap.definitionId,
-            ),
-          },
-        }));
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.entryId);
+        await phaseApi.deleteDetailOverride(
+          cap.override.phaseId,
+          cap.override.definitionId,
+        );
+        if (get().projectEpoch !== cap.projectEpoch) return;
+        invalidatePhaseEntryLoads(cap.entryId);
+        set((state) => {
+          if (state.projectEpoch !== cap.projectEpoch) return state;
+          return {
+            detailOverrides: {
+              ...state.detailOverrides,
+              [cap.override.phaseId]: (
+                state.detailOverrides[cap.override.phaseId] ?? []
+              ).filter((ov) => ov.definitionId !== cap.override.definitionId),
+            },
+          };
+        });
       },
     });
   },
 
   recomputeSceneOrder(nodes) {
-    const order = computeSceneTimeIndex(nodes, get().resolutionMode);
-    set({ globalSceneOrder: order, cachedNodes: nodes });
+    const sceneTimeIndex = buildSceneTimeIndex(
+      nodes,
+      get().sceneTimeIndex.revision + 1,
+    );
+    const order = linearizeSceneTimeIndex(sceneTimeIndex, get().resolutionMode);
+    set({ globalSceneOrder: order, sceneTimeIndex, cachedNodes: nodes });
   },
 
   setResolutionMode(mode) {
     set({ resolutionMode: mode });
-    const order = computeSceneTimeIndex(get().cachedNodes, mode);
+    const order = linearizeSceneTimeIndex(get().sceneTimeIndex, mode);
     set({ globalSceneOrder: order });
   },
 
   resolveForScene(entries, baseDetails, currentSceneId) {
-    const { phasesByEntry, detailOverrides, globalSceneOrder } = get();
+    const { phasesByEntry, detailOverrides, sceneTimeIndex, resolutionMode } =
+      get();
     const resolved: Record<string, ResolvedCodexState> = {};
 
     for (const entry of entries) {
@@ -479,8 +682,11 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
         phases,
         phaseDetailsMap,
         entryBaseDetails,
-        currentSceneId,
-        globalSceneOrder,
+        currentSceneId
+          ? { kind: "scene", sceneId: currentSceneId }
+          : { kind: "base" },
+        sceneTimeIndex,
+        resolutionMode,
       );
     }
 

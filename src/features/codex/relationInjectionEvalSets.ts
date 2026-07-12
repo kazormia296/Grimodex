@@ -14,6 +14,7 @@ import type { CodexEntry } from "./api";
 import type { CodexRelationRow } from "./codexRelationApi";
 import type { CodexEntryPhase } from "@/db/schema";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import type { PhaseResolutionMode } from "./context/sceneTimeIndex";
 
 const T = "2026-01-01T00:00:00.000Z";
 const PID = "p-eval";
@@ -102,6 +103,7 @@ function mkScene(id: string, sortOrder: string): TreeNodeData {
 
 export interface RelationInjectionCorpus {
   nodes: TreeNodeData[];
+  resolutionMode: PhaseResolutionMode;
   entries: CodexEntry[];
   relations: CodexRelationRow[];
   phasesByEntry: Map<string, CodexEntryPhase[]>;
@@ -197,6 +199,7 @@ export function buildEvalCorpus(): RelationInjectionCorpus {
 
   return {
     nodes,
+    resolutionMode: "reading",
     entries,
     relations,
     phasesByEntry,
@@ -231,6 +234,7 @@ export function buildBenefitCorpus(): RelationInjectionCorpus {
   ];
   return {
     nodes,
+    resolutionMode: "reading",
     entries,
     relations,
     phasesByEntry: new Map(),
@@ -267,6 +271,7 @@ export function buildIntraContextCorpus(): RelationInjectionCorpus {
   ];
   return {
     nodes,
+    resolutionMode: "reading",
     entries,
     relations,
     phasesByEntry: new Map(),
@@ -306,6 +311,7 @@ export function buildIntraSymmetricCorpus(): RelationInjectionCorpus {
   ];
   return {
     nodes,
+    resolutionMode: "reading",
     entries,
     relations,
     phasesByEntry: new Map(),

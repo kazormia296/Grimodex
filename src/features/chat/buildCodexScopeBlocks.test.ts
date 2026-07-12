@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { CodexEntry } from "@/features/codex/api";
+import type { CodexEntryPhase } from "@/features/codex/phaseApi";
+import type { TreeNodeData } from "@/features/tree/treeStore";
 import { buildCodexScopeBlocks } from "./chatStore";
 
 vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
@@ -40,7 +42,19 @@ vi.mock("@/features/tree/treeStore", () => ({
 }));
 
 vi.mock("@/features/codex/phaseStore", () => ({
-  usePhaseStore: { getState: vi.fn(() => ({ globalSceneOrder: new Map() })) },
+  usePhaseStore: {
+    getState: vi.fn(() => ({
+      resolutionMode: "reading",
+      sceneTimeIndex: {
+        readingOrder: new Map(),
+        explicitStoryOrder: new Map(),
+        inheritedStoryOrder: new Map(),
+        liveSceneCount: 0,
+        scheduledSceneCount: 0,
+        revision: 0,
+      },
+    })),
+  },
 }));
 
 vi.mock("@/features/project/projectStore", () => ({
@@ -50,10 +64,16 @@ vi.mock("@/features/project/projectStore", () => ({
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { findReverseMentioningEntries } from "@/features/codex/codexCrossMentions";
 import { listCodexRelations } from "@/features/codex/codexRelationApi";
+import { listPhasesByEntryIds } from "@/features/codex/phaseApi";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 
 const mockFindMentioned = vi.mocked(findMentionedEntriesAsync);
 const mockFindReverse = vi.mocked(findReverseMentioningEntries);
 const mockListRelations = vi.mocked(listCodexRelations);
+const mockListPhases = vi.mocked(listPhasesByEntryIds);
+const mockPhaseState = vi.mocked(usePhaseStore.getState);
+const mockTreeState = vi.mocked(useTreeStore.getState);
 
 function makeEntry(
   overrides: Partial<CodexEntry> & { id: string; name: string },
@@ -84,6 +104,21 @@ describe("buildCodexScopeBlocks", () => {
     mockFindMentioned.mockResolvedValue([]);
     mockFindReverse.mockReturnValue([]);
     mockListRelations.mockResolvedValue([]);
+    mockListPhases.mockResolvedValue([]);
+    mockPhaseState.mockReturnValue({
+      resolutionMode: "reading",
+      sceneTimeIndex: {
+        readingOrder: new Map(),
+        explicitStoryOrder: new Map(),
+        inheritedStoryOrder: new Map(),
+        liveSceneCount: 0,
+        scheduledSceneCount: 0,
+        revision: 0,
+      },
+    } as ReturnType<typeof usePhaseStore.getState>);
+    mockTreeState.mockReturnValue({ nodes: [] } as unknown as ReturnType<
+      typeof useTreeStore.getState
+    >);
   });
 
   it("returns null when selected entry is not in allEntries", async () => {
@@ -150,5 +185,90 @@ describe("buildCodexScopeBlocks", () => {
       expect.not.arrayContaining([expect.objectContaining({ id: "hidden" })]),
     );
     expect(result!.relatedMentioned).toEqual([]);
+  });
+
+  it("renders the phase timeline in the resolver's story-time order", async () => {
+    const selected = makeEntry({ id: "hero", name: "Hero" });
+    const nodes = [
+      {
+        id: "later-scene",
+        projectId: "proj-1",
+        parentId: null,
+        nodeType: "scene",
+        title: "Later scene",
+        sortOrder: "a0",
+        storyTimeOrder: "z0",
+      },
+      {
+        id: "earlier-scene",
+        projectId: "proj-1",
+        parentId: null,
+        nodeType: "scene",
+        title: "Earlier scene",
+        sortOrder: "a1",
+        storyTimeOrder: "a0",
+      },
+    ] as TreeNodeData[];
+    const phases: CodexEntryPhase[] = [
+      {
+        id: "later-phase",
+        entryId: selected.id,
+        anchorNodeId: "later-scene",
+        label: "Later phase",
+        summaryOverride: "later summary",
+        contentOverride: null,
+        contextModeOverride: null,
+        createdAt: "2026-01-02T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      },
+      {
+        id: "earlier-phase",
+        entryId: selected.id,
+        anchorNodeId: "earlier-scene",
+        label: "Earlier phase",
+        summaryOverride: "earlier summary",
+        contentOverride: null,
+        contextModeOverride: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    mockListPhases.mockResolvedValue(phases);
+    mockPhaseState.mockReturnValue({
+      resolutionMode: "story",
+      sceneTimeIndex: {
+        readingOrder: new Map([
+          ["later-scene", 0],
+          ["earlier-scene", 1],
+        ]),
+        explicitStoryOrder: new Map([
+          ["later-scene", "z0"],
+          ["earlier-scene", "a0"],
+        ]),
+        inheritedStoryOrder: new Map([
+          ["later-scene", "z0"],
+          ["earlier-scene", "a0"],
+        ]),
+        liveSceneCount: 2,
+        scheduledSceneCount: 2,
+        revision: 1,
+      },
+    } as ReturnType<typeof usePhaseStore.getState>);
+    mockTreeState.mockReturnValue({ nodes } as ReturnType<
+      typeof useTreeStore.getState
+    >);
+
+    const result = await buildCodexScopeBlocks({
+      selectedEntryId: selected.id,
+      allEntries: [selected],
+    });
+
+    const fullContent = result?.selectedPinned.fullContent ?? "";
+    expect(fullContent.indexOf("Earlier phase")).toBeGreaterThanOrEqual(0);
+    expect(fullContent.indexOf("Later phase")).toBeGreaterThan(
+      fullContent.indexOf("Earlier phase"),
+    );
+    expect(result?.selectedPinned.summary).toBe("later summary");
+    expect(result?.selectedPinned.phaseLabel).toBe("Later phase");
   });
 });

@@ -207,6 +207,8 @@ interface DetailFieldRowProps {
   activePhase: { id: string; label: string } | null;
   /** activePhase におけるこのフィールドの上書き値（undefined = 上書きなし） */
   overrideValue?: string | null;
+  /** 以前の applicable Phase から継承した解決値（undefined = Base を継承） */
+  inheritedValue?: string | null;
   onUpsertOverride: (definitionId: string, value: string | null) => void;
   onDeleteOverride: (definitionId: string) => void;
 }
@@ -229,12 +231,22 @@ function DetailFieldRow({
   previewMode,
   activePhase,
   overrideValue,
+  inheritedValue,
   onUpsertOverride,
   onDeleteOverride,
 }: DetailFieldRowProps) {
   const { t } = useTranslation();
   const basePlain = detailValueToPlainText(currentValue);
   const hasOverride = overrideValue !== undefined;
+  const hasInheritedValue = inheritedValue !== undefined;
+  const inheritedPlain = hasInheritedValue
+    ? detailValueToPlainText(inheritedValue)
+    : "";
+  const overrideSeed = hasInheritedValue
+    ? inheritedValue === null
+      ? null
+      : inheritedPlain
+    : basePlain;
 
   return (
     <div className="space-y-1">
@@ -245,7 +257,7 @@ function DetailFieldRow({
             <button
               type="button"
               data-testid={`detail-field-override-add-${definition.id}`}
-              onClick={() => onUpsertOverride(definition.id, basePlain)}
+              onClick={() => onUpsertOverride(definition.id, overrideSeed)}
               className="rounded p-0.5 text-xs text-muted-foreground hover:bg-accent"
               title={t("codex.detail.overrideForPhase", {
                 label: activePhase.label,
@@ -265,23 +277,25 @@ function DetailFieldRow({
               <RotateCcw className="h-3 w-3" />
             </button>
           )}
-          <button
-            type="button"
-            data-testid={`detail-include-context-${definition.id}`}
-            onClick={() => void onToggleContext(definition)}
-            className={`rounded p-0.5 text-xs ${
-              definition.includeInContext === 1
-                ? "text-primary"
-                : "text-muted-foreground"
-            }`}
-            title={
-              definition.includeInContext === 1
-                ? t("codex.detail.aiContextEnabled")
-                : t("codex.detail.aiContextDisabled")
-            }
-          >
-            <Bot className="h-3 w-3" />
-          </button>
+          {!previewMode && (
+            <button
+              type="button"
+              data-testid={`detail-include-context-${definition.id}`}
+              onClick={() => void onToggleContext(definition)}
+              className={`rounded p-0.5 text-xs ${
+                definition.includeInContext === 1
+                  ? "text-primary"
+                  : "text-muted-foreground"
+              }`}
+              title={
+                definition.includeInContext === 1
+                  ? t("codex.detail.aiContextEnabled")
+                  : t("codex.detail.aiContextDisabled")
+              }
+            >
+              <Bot className="h-3 w-3" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -344,6 +358,27 @@ function DetailFieldRow({
             </p>
           )}
         </div>
+      ) : activePhase && hasInheritedValue ? (
+        // The active Phase does not own an override, but an earlier applicable
+        // Phase does. Show that effective value without editing the earlier
+        // Phase (the Layers button creates a new override on activePhase).
+        <div
+          data-testid={`detail-field-inherited-${definition.id}`}
+          className="border-l-2 border-primary/60 pl-2"
+        >
+          <p className="rounded-md border border-input bg-background px-2 py-1.5 text-sm">
+            {inheritedPlain || (
+              <span className="text-muted-foreground">
+                {t("codex.detail.empty")}
+              </span>
+            )}
+          </p>
+          {basePlain && (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Base: {basePlain}
+            </p>
+          )}
+        </div>
       ) : (
         <>
           {definition.fieldType === "text" && (
@@ -379,13 +414,16 @@ interface DetailsSectionProps {
   /** アクティブフェーズ（DetailsTab から。上書き編集の対象） */
   activePhase?: { id: string; label: string } | null;
   /** フェーズプレビュー中の解決済み detail 値（null = プレビューでない） */
-  previewDetailValues?: Map<string, string | null> | null;
+  previewDetailValues?: ReadonlyMap<string, string | null> | null;
+  /** アクティブ時点の Phase-owned 解決値（Base 値は含めない） */
+  activeResolvedDetailValues?: ReadonlyMap<string, string | null> | null;
 }
 
 export function DetailsSection({
   entry,
   activePhase = null,
   previewDetailValues = null,
+  activeResolvedDetailValues = null,
 }: DetailsSectionProps) {
   const { t } = useTranslation();
   const [definitions, setDefinitions] = useState<CodexDetailDefinition[]>([]);
@@ -449,27 +487,29 @@ export function DetailsSection({
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           {t("codex.detail.customDetailsTitle")}
         </span>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            data-testid="details-add-field-button"
-            onClick={() => setIsManageOpen(true)}
-            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
-            title={t("codex.detail.addField")}
-          >
-            <Plus className="h-3 w-3" />
-            {t("codex.detail.addField")}
-          </button>
-          <button
-            type="button"
-            data-testid="details-manage-button"
-            onClick={() => setIsManageOpen(true)}
-            className="rounded p-1 text-muted-foreground hover:bg-accent"
-            title={t("codex.detail.manageFields")}
-          >
-            <Settings className="h-3 w-3" />
-          </button>
-        </div>
+        {!previewMode && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              data-testid="details-add-field-button"
+              onClick={() => setIsManageOpen(true)}
+              className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent"
+              title={t("codex.detail.addField")}
+            >
+              <Plus className="h-3 w-3" />
+              {t("codex.detail.addField")}
+            </button>
+            <button
+              type="button"
+              data-testid="details-manage-button"
+              onClick={() => setIsManageOpen(true)}
+              className="rounded p-1 text-muted-foreground hover:bg-accent"
+              title={t("codex.detail.manageFields")}
+            >
+              <Settings className="h-3 w-3" />
+            </button>
+          </div>
+        )}
       </div>
 
       {isLoading ? (
@@ -498,6 +538,14 @@ export function DetailsSection({
               }
               activePhase={previewMode ? null : activePhase}
               overrideValue={previewMode ? undefined : overrideValueFor(def.id)}
+              inheritedValue={
+                !previewMode &&
+                activePhase &&
+                overrideValueFor(def.id) === undefined &&
+                activeResolvedDetailValues?.has(def.id)
+                  ? activeResolvedDetailValues.get(def.id)
+                  : undefined
+              }
               onUpsertOverride={(definitionId, value) => {
                 if (!activePhase) return;
                 void upsertDetailOverride(activePhase.id, definitionId, value);

@@ -51,7 +51,7 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 - **DB スキーマ**: `codex_types` / `codex_entries`（`contextMode` / `childrenBudget` / `notes` / `icon` / `parentId` 等）/ `codex_tags` / `codex_entry_tags` / `codex_detail_definitions` / `codex_detail_values` / `codex_relations`（対人リレーション）/ `codex_dismissed_relations`（親子提案の却下記録）/ `codex_quick_pins` / `codex_entry_phases` / `codex_phase_detail_overrides` / `scene_codex_pins` / `scene_codex_mentions` 全て存在。`tree_nodes.story_time_order` / `story_time_label` / `projects.phase_resolution_mode` / `authorship_spans.phase_id` も存在
 - **API モジュール分割**: `tagApi` / `phaseApi` / `relationApi` / `detailApi` / `typeApi` の 5 分割（設計書通り）+ 対人リレーション用 `codexRelationApi` を実装済み
 - **`CodexCommandPalette`** + Aliases / ExcludedAliases / Tags 構造化管理 UI（`AliasesField` / `ExcludedAliasesField` / `TagSelector`）
-- **Chat 注入連携**: `chatStore.ts` で `contextMode` フィルタ（`hidden` / `suppress` 除外、`always` 常時注入）、`childrenBudget` ベースの BFS 子孫注入（`buildChildrenContext` + `computeChildrenTokenBudget`）、プロジェクトスコープでの `formatTimelineContext` 統合
+- **Chat 注入連携**: `chat/context/sources/` が Scene / non-Scene の source adapter を担当し、Phase 解決後の effective `contextMode` で visibility を判定する。`hidden` は全経路で除外、`suppress` は明示 pin のみ許可し、`always` / `mentioned` は trigger policy に従う。`childrenBudget` ベースの BFS 子孫注入（`buildChildrenContext` + `computeChildrenTokenBudget`）、プロジェクトスコープでの `formatTimelineContext` も同じ解決済み状態を使う
 
 ### 設計と乖離している箇所（部分実装）
 
@@ -65,10 +65,12 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
   - カスタムフィールドの override セクション（`codex_phase_detail_overrides` テーブル・API は存在するが、ダイアログ UI から個別フィールド override を編集できない）
   - Anchor scene 選択時の `story_time_label` / reading-order インデックス表示
   - Resolution mode の現在値表示（読み取り専用、設定へのリンク）
-- **フェーズ解決アルゴリズム（`phaseResolver.ts`）が設計書と異なる**:
-  - 設計書: `SceneTimeIndex`（`readingOrder` / `storyTimeOrder` / `storyTimeInherited` の 3 Map）+ `SceneTime` 判別ユニオン（`{axis: 'reading', value: number}` / `{axis: 'story', value: string}`）+ `compareSceneTime` + **エントリ単位の all-or-nothing reading-order フォールバック**
-  - 実装: 単一 `Map<string, number>`。`computeSceneTimeIndex(nodes, mode)` が `mode='story'/'auto'` 時に「`storyTimeOrder` が設定されたシーンを `storyTimeOrder` 昇順に並べ、未設定シーンは reading-order でその後ろに追加」して連番化する単純な実装。軸不一致の all-or-nothing フォールバックは未実装、`storyTimeInherited`（未設定シーンへの直前値継承）も未実装
-  - tie-break ロジック（同値時 reading-order → `created_at` 優先）は明示的に実装されていない
+- **フェーズ解決 core は 2026-07-12 に設計へ収束**:
+  - `src/features/codex/context/sceneTimeIndex.ts`: mode 非依存の `SceneTimeIndex`（`readingOrder` / `explicitStoryOrder` / `inheritedStoryOrder` + coverage / revision）
+  - `src/features/codex/context/resolveApplicablePhases.ts`: `reading` / safe `auto` / explicit `story`、エントリ単位 all-or-nothing fallback、TemporalAnchor (`base` / `latest` / `scene` / exact `phase`)、決定的 tie-break の正本
+  - `src/features/codex/context/resolvedCodexContext.ts`: candidate を一括 Phase 解決してから visibility policy を適用する正本
+  - `phaseResolver.ts`: applicable Phase の override 適用と旧 `Map<string, number>` 呼び出しの互換 overload。旧 `computeSceneTimeIndex` は legacy UI 用 total-order projection として deprecated
+  - semantic consumer は新 API へ移行済み。未開示伏線警告も `SceneTimeIndex` 上で current / payoff Scene の pair を同じ軸・fallback 規則で比較する。legacy total-order projection は関連シーン表示などの表示互換用途だけに残し、Phase state や spoiler 判定の正本として再利用しない
 - **`codex_reference` フィールドの値編集 UI**: 設計書では「検索 UI でエントリを選択しピル表示（クリックで遷移）」を求めているが、現状は単純なテキスト入力（エントリ ID を直接入力するプレースホルダー）
 - **検索バーの FTS5 trigram + 1-2 文字 LIKE フォールバック**: `searchCodexEntries`（`search.ts`）で実装済みを確認。`toFtsMatchQuery` が trigram MATCH 式を組み立て、3 codepoint 未満のトークンしか無く式が空になる場合に name / summary / tags_cache / content の LIKE フォールバックへ倒す。**`content`（本文）も検索対象**（FTS パス・LIKE フォールバックの両方、PR #109）
 - **ヘッダーソート選択肢のラベル**: 設計書の「By category」「Name (A→Z)」等の表記が、実装側では i18n キー (`codex.sortCategory` 等) を介した翻訳になっている。動作は同等
@@ -1848,7 +1850,7 @@ DBスキーマの正規版は [統合DBスキーマ設計書](./Grimodex_統合D
 - `codex_phase_detail_overrides`: Phase 内のフィールド単位 override。複合 PK `(phase_id, definition_id)`。**粒度はエントリ × フェーズ × フィールドで、Summary / Content / 各カスタムディテールをそれぞれ独立に override できる**（ある Phase で Summary だけ上書きする、別 Phase では Content とカスタムフィールド A だけ上書きする、といった構成が可能）。未上書きフィールドは直前の Phase もしくは Base の値を継承する。
 - `tree_nodes.story_time_order` (TEXT NULL): Sceneの作中時間順序キー。`sort_order` と同じ **文字列 fractional indexing**（npm `fractional-indexing` 互換）で、SQLite の `COLLATE BINARY` による辞書順比較のみを使う。数値としての意味は持たない。
 - `tree_nodes.story_time_label` (TEXT NULL): Sceneの作中時間表示用ラベル。
-- `projects.phase_resolution_mode` (TEXT): `'auto' | 'reading' | 'story'`。SQLデフォルト `'reading'`、新規プロジェクトのアプリ層デフォルトは `'auto'`。
+- `projects.phase_resolution_mode` (TEXT): `'auto' | 'reading' | 'story'`。現行 SQL / Drizzle デフォルトはともに `'auto'`。project 未ロード時の in-memory bootstrap のみ `'reading'`。
 - `authorship_spans.phase_id`: Phaseの content_override への帰属追跡用。
 
 上書きセマンティクス:
@@ -1887,132 +1889,88 @@ Phase 解決には「シーン A がシーン B より前か」を判定する�
 
 write-order（`created_at` 順）は**意図的に除外**する（Phase と時間軸の関係、前節参照）。
 
-#### `getSceneTime(sceneId, mode)`
+#### mode 非依存の `SceneTimeIndex`
 
-各 Scene を「軸 + 値」の組に写像する関数。値は同じ軸同士でのみ比較する（数値そのものではなく、軸付きの値として扱う）。
+時間軸データと mode 選択を分ける。Index はツリー・story key の変更時だけ再構築し、mode 変更では再利用する。
 
 ```typescript
-type TimeAxis = 'reading' | 'story';
-type ResolutionMode = 'auto' | 'reading' | 'story';
-
-// 読者順は Index 構築時に連番化した number、story-time は fractional-indexing の文字列キーを使う。
-// 軸ごとに値の型が異なるため、判別可能ユニオンにする。比較は `compareSceneTime` 経由で行う。
-type SceneTime =
-  | { axis: 'reading'; value: number }
-  | { axis: 'story'; value: string };
+type ResolutionMode = "reading" | "auto" | "story";
+type ResolutionAxis = "reading" | "story";
 
 interface SceneTimeIndex {
-  readingOrder: Map<string, number>;       // 全 Scene に存在（DFS 展開時の連番）
-  storyTimeOrder: Map<string, string>;     // story_time_order が設定されている Scene のみ
-  storyTimeInherited: Map<string, string>; // story モード時、未設定 Scene に直前の story-time を継承した表
+  readingOrder: Map<string, number>;
+  explicitStoryOrder: Map<string, string>;
+  inheritedStoryOrder: Map<string, string>;
+  liveSceneCount: number;
+  scheduledSceneCount: number;
+  revision: number;
 }
 
-function getSceneTime(
-  sceneId: string,
-  mode: ResolutionMode,
-  index: SceneTimeIndex,
-): SceneTime | null {
-  switch (mode) {
-    case 'reading': {
-      const v = index.readingOrder.get(sceneId);
-      return v === undefined ? null : { axis: 'reading', value: v };
-    }
-    case 'story': {
-      // 未設定 Scene は直前の story_time_order を継承（inherited テーブル参照）
-      const v = index.storyTimeInherited.get(sceneId);
-      return v === undefined ? null : { axis: 'story', value: v };
-    }
-    case 'auto': {
-      // 自 Scene に story_time_order があれば story 軸、なければ reading 軸にフォールバック
-      const s = index.storyTimeOrder.get(sceneId);
-      if (s !== undefined) return { axis: 'story', value: s };
-      const r = index.readingOrder.get(sceneId);
-      return r === undefined ? null : { axis: 'reading', value: r };
-    }
-  }
-}
-
-// 同一軸の SceneTime 同士の比較。軸が異なる値を渡した場合は呼び出し側のバグ。
-function compareSceneTime(a: SceneTime, b: SceneTime): number {
-  if (a.axis !== b.axis) {
-    throw new Error('compareSceneTime: axis mismatch');
-  }
-  if (a.axis === 'reading') {
-    return a.value - (b.value as number);
-  }
-  // story 軸: 文字列 fractional indexing キーの辞書順比較
-  const av = a.value;
-  const bv = b.value as string;
-  return av < bv ? -1 : av > bv ? 1 : 0;
-}
+type TemporalAnchor =
+  | { kind: "scene"; sceneId: string }
+  | { kind: "phase"; phaseId: string }
+  | { kind: "latest" }
+  | { kind: "base" };
 ```
+
+`story_time_order` は trim し、空文字・whitespace-only は未設定とする。`auto` の coverage は `scheduledSceneCount === liveSceneCount && liveSceneCount > 0` のときだけ成立する。継承値は coverage へ数えない。
 
 #### `SceneTimeIndex` の構築
 
 ```typescript
 function buildSceneTimeIndex(nodes: TreeNode[]): SceneTimeIndex {
-  const readingOrder = new Map<string, number>();
-  const storyTimeOrder = new Map<string, string>();
-  const storyTimeInherited = new Map<string, string>();
+  // 1. live Scene を tree DFS + sort_order + id tie-break で連番化
+  const readingOrder = buildReadingOrder(nodes);
+  const explicitStoryOrder = collectNormalizedExplicitKeys(nodes);
+  const inheritedStoryOrder = new Map<string, string>();
 
-  // 1. 読者順: ツリーDFS。sort_order も文字列 fractional indexing キーなので辞書順で比較する。
-  let i = 0;
-  const dfs = (parentId: string | null) => {
-    const children = nodes
-      .filter(n => n.parentId === parentId)
-      .sort((a, b) => (a.sortOrder < b.sortOrder ? -1 : a.sortOrder > b.sortOrder ? 1 : 0));
-    for (const child of children) {
-      if (child.nodeType === 'scene') {
-        readingOrder.set(child.id, i++);
-        if (child.storyTimeOrder !== null) {
-          storyTimeOrder.set(child.id, child.storyTimeOrder);
-        }
-      }
-      dfs(child.id);
-    }
-  };
-  dfs(null);
-
-  // 2. 読者順に走査しつつ、直前の story_time_order を継承して inherited テーブルを作る
+  // 2. reading 順で直前の明示 key を forward-fill
   let lastStory: string | null = null;
-  const sortedByReading = [...readingOrder.entries()].sort((a, b) => a[1] - b[1]);
+  const sortedByReading = [...readingOrder.entries()].sort(
+    (a, b) => a[1] - b[1],
+  );
   for (const [sceneId] of sortedByReading) {
-    const explicit = storyTimeOrder.get(sceneId);
-    if (explicit !== undefined) {
-      lastStory = explicit;
-    }
-    if (lastStory !== null) {
-      storyTimeInherited.set(sceneId, lastStory);
-    }
-    // lastStory がまだ null（作品冒頭の未設定シーン）は inherited に入れない → story モードで解決不可と扱う
+    const explicit = explicitStoryOrder.get(sceneId);
+    if (explicit !== undefined) lastStory = explicit;
+    if (lastStory !== null) inheritedStoryOrder.set(sceneId, lastStory);
   }
 
-  return { readingOrder, storyTimeOrder, storyTimeInherited };
+  return {
+    readingOrder,
+    explicitStoryOrder,
+    inheritedStoryOrder,
+    liveSceneCount,
+    scheduledSceneCount: explicitStoryOrder.size,
+    revision,
+  };
 }
 ```
 
+作品冒頭の未設定連続領域は `inheritedStoryOrder` に入らない。入力 DB 行順には依存せず、同一 `sort_order` は Scene ID で決定化する。
+
 #### 軸不一致時のフォールバック（all-or-nothing）
 
-Phase アンカーシーンと currentScene で**軸が食い違う**ことがある（例: `mode=story` だがアンカーシーンに `story_time_order` が未設定で、かつ作品冒頭で継承元もない）。story-time の値（文字列 fractional indexing キー）と reading-order の値（DFS 連番 number）は別の値空間にあり、型も異なるため混在ソートが意味を持たない。そのため**エントリ単位の all-or-nothing フォールバック**を採用する:
+`story` では Phase アンカーと current Scene が同じ story 軸で引けない場合がある。story key と reading 連番は別の値空間なので混在比較せず、**エントリ単位の all-or-nothing fallback**を採用する。
 
-- エントリ内の全 Phase のアンカーが currentScene と同じ軸で引けるなら、その軸で解決する
-- 1 つでも軸不一致があれば、そのエントリの **全 Phase を reading-order にフォールバック**して解決する（story-time 値と reading-order 値を混ぜない）
-- reading-order すら引けない Phase（anchor 削除済み）は単にスキップする
+1. `anchor_node_id = NULL` または reading index に存在しない Phase（削除済み anchor）を先に skip
+2. current または残った valid Phase anchor のどれかが `inheritedStoryOrder` に無ければ、その entry の全 valid Phase を reading で解決
+3. 全件が story 軸で引ける場合だけ story で解決
 
-これにより「story モード時でも、story_time_order が未設定のシーンをまたぐ Phase があれば、そのエントリは読者順に沿って解決される」という安全側の挙動になる。フォールバックの粒度は **Phase 単位ではなくエントリ単位**である点に注意。
+削除済み Phase は fallback を誘発しない。`auto` は entry 単位判定ではなく project-wide coverage gate を使い、coverage 未達なら全 entry が reading となる。
 
 **キャッシュ戦略**: `SceneTimeIndex` はツリー構造変更時（ノード追加/削除/移動）または `story_time_order` 変更時に再計算。Zustand ストアに保持。`phase_resolution_mode` の変更は Index 自体の再計算を伴わない（どの Map を引くかが変わるだけ）。
 
 ### 状態解決アルゴリズム
 
-> **実装状況**: 以下に記述する 2 軸 `SceneTimeIndex`（`readingOrder` / `storyTimeOrder` / `storyTimeInherited`）、判別ユニオン `SceneTime`、`compareSceneTime`、エントリ単位の all-or-nothing reading-order フォールバックは**現時点（2026-05-16）の `phaseResolver.ts` には未実装**。実装は単一 `Map<string, number>` のシーン順序キャッシュで、`computeSceneTimeIndex(nodes, mode)` が `mode='story'/'auto'` のときに「`storyTimeOrder` が設定されたシーンを `storyTimeOrder` 昇順で並べ、未設定シーンは reading-order でその後ろに連結」した連番マップを返す簡易実装になっている。軸混在時の安全フォールバックや `storyTimeInherited`（直前値継承）は未対応。本節の設計（all-or-nothing フォールバック含む）は今後実装側を寄せていく際のターゲット仕様として残す。
+> **実装状況 (2026-07-12)**: pure core は `sceneTimeIndex.ts`、`resolveApplicablePhases.ts`、`resolvedCodexContext.ts` に実装済み。`phaseStore.resolveForScene` と `phaseResolver.resolveCodexState` の新 overload はこの core を使用する。semantic consumer は移行済みで、`computeSceneTimeIndex` は project-wide total order を必要とする表示互換用途にのみ残す。
 
-#### フェーズ解決パイプライン（2 段構成）
+#### フェーズ解決パイプライン（3 段構成）
 
-フェーズ解決は `phaseResolver` モジュール内で 2 段のパイプラインとして実装される:
+フェーズ解決は 3 段のパイプラインとして実装する:
 
-1. **`phaseResolver.computeSceneTimeIndex(nodes)`**: ツリー構造と `tree_nodes.story_time_order` から `SceneTimeIndex`（`readingOrder` / `storyTimeOrder` / `storyTimeInherited`）を構築する。ツリー変更・`story_time_order` 変更のときだけ再計算し、Zustand ストアにキャッシュする。
-2. **`resolveCodexState(entry, phases, phaseDetails, baseDetails, currentSceneId, sceneTimeIndex, resolutionMode)`**: 構築済み Index と現在シーンから `ResolvedCodexState`（summary / content / contextMode / detailValues + activePhaseId / label）を返す。`projects.phase_resolution_mode`（`reading` / `story` / `auto`）を尊重して軸を選択し、必要なら all-or-nothing で reading-order にフォールバックする。
+1. **`buildSceneTimeIndex(nodes, revision)`**: mode 非依存 Index を構築し、ツリー・story key 変更時だけ store で更新
+2. **`resolveApplicablePhases({ phases, index, mode, anchor })`**: valid anchor の選別、軸決定、fallback、cutoff、決定的 sort を一括処理
+3. **`resolveCodexState(...)`**: applicable Phase の summary / content / contextMode / detail overrides を Base へ適用
 
 呼び出し元:
 
@@ -2025,120 +1983,59 @@ Phase アンカーシーンと currentScene で**軸が食い違う**ことが�
 
 ```typescript
 interface ResolvedCodexState {
-  summary: string;
-  content: string | null;
-  contextMode: ContextMode;
-  detailValues: Map<string, string>;  // definitionId → value
-  activePhaseId: string | null;       // 適用中のフェーズID（UI表示用）
+  summary: string | null;
+  content: string;
+  contextMode: string;
+  detailValues: Map<string, string | null>;
+  appliedPhaseIds: string[];
+  activePhaseId: string | null;
   activePhaseLabel: string | null;
+  axisUsed: "reading" | "story" | null;
+  fallbackReason:
+    | "auto-incomplete-story-coverage"
+    | "story-current-unresolved"
+    | "story-anchor-unresolved"
+    | "current-scene-missing"
+    | "phase-target-missing"
+    | "phase-anchor-missing"
+    | null;
 }
 
 function resolveCodexState(
   entry: CodexEntry,
   phases: CodexEntryPhase[],
-  phaseDetails: Map<string, PhaseDetailOverride[]>,  // phaseId → overrides
-  baseDetails: Map<string, string>,                   // definitionId → value
-  currentSceneId: string | null,
+  phaseDetails: Map<string, PhaseDetailOverride[]>,
+  baseDetails: Map<string, string | null>,
+  anchor: TemporalAnchor,
   sceneTimeIndex: SceneTimeIndex,
-  resolutionMode: ResolutionMode,                     // projects.phase_resolution_mode
+  resolutionMode: ResolutionMode,
 ): ResolvedCodexState {
-  // 1. Base state
-  const state: ResolvedCodexState = {
-    summary: entry.summary ?? '',
-    content: entry.content,
-    contextMode: entry.contextMode,
-    detailValues: new Map(baseDetails),
-    activePhaseId: null,
-    activePhaseLabel: null,
-  };
-
-  if (!currentSceneId) return state;
-
-  // 2. 現在シーンの時間軸上の位置を決定
-  const currentTime = getSceneTime(currentSceneId, resolutionMode, sceneTimeIndex);
-  if (currentTime === null) return state;
-
-  // 3. 各フェーズのアンカーシーンも同じモードで引き、「現在シーンと軸が揃うか」を判定する。
-  //    一つでも軸不一致があれば、このエントリは **エントリ単位で reading-order にフォールバック** して
-  //    全フェーズをまとめて reading-order で解決する（all-or-nothing フォールバック）。
-  //    これは story-time 値（文字列）と reading-order 値（数値）が別の値空間のため、混在ソートが意味を持たないため。
-  const anchorTimes = phases.map(p => ({
-    phase: p,
-    time: getSceneTime(p.anchorNodeId, resolutionMode, sceneTimeIndex),
-  }));
-  const hasAxisMismatch = anchorTimes.some(
-    x => x.time === null || x.time.axis !== currentTime.axis,
-  );
-
-  // 4. 比較に使う SceneTime を軸を揃えて作る。story 軸は文字列キー、reading 軸は数値。
-  let currentCompareTime: SceneTime;
-  const phaseCompareTimes: { phase: CodexEntryPhase; time: SceneTime }[] = [];
-  if (hasAxisMismatch) {
-    // エントリ単位で reading-order フォールバック
-    const cR = sceneTimeIndex.readingOrder.get(currentSceneId);
-    if (cR === undefined) return state;
-    currentCompareTime = { axis: 'reading', value: cR };
-    for (const { phase } of anchorTimes) {
-      const v = sceneTimeIndex.readingOrder.get(phase.anchorNodeId);
-      if (v !== undefined) phaseCompareTimes.push({ phase, time: { axis: 'reading', value: v } });
-      // reading-order も引けないフェーズは anchor 削除済みのためスキップ
-    }
-  } else {
-    currentCompareTime = currentTime;
-    for (const { phase, time } of anchorTimes) {
-      if (time !== null) phaseCompareTimes.push({ phase, time });
-    }
-  }
-
-  // 5. 適用可能フェーズ（アンカー位置 ≤ 現在位置）をその軸の順序でソート。
-  //    比較は `compareSceneTime`（reading 軸は数値、story 軸は文字列 fractional indexing キーの辞書順）。
-  //    tie-break は「アンカーシーンの reading-order → created_at」の順。
-  //    これによりパラレルストーリー等で同じ story_time_order を持つ異なるシーンの
-  //    Phase 同士でも決定的な順序になる。
-  const applicablePhases = phaseCompareTimes
-    .filter(x => compareSceneTime(x.time, currentCompareTime) <= 0)
-    .sort((a, b) => {
-      const diff = compareSceneTime(a.time, b.time);
-      if (diff !== 0) return diff;
-      const ra = sceneTimeIndex.readingOrder.get(a.phase.anchorNodeId) ?? 0;
-      const rb = sceneTimeIndex.readingOrder.get(b.phase.anchorNodeId) ?? 0;
-      if (ra !== rb) return ra - rb;
-      return a.phase.createdAt.localeCompare(b.phase.createdAt);
-    })
-    .map(x => x.phase);
-
-  // 6. フェーズを順に適用（上書きがあるフィールドのみ）
-  for (const phase of applicablePhases) {
-    if (phase.summaryOverride !== null) {
-      state.summary = phase.summaryOverride;
-    }
-    if (phase.contentOverride !== null) {
-      state.content = phase.contentOverride;
-    }
-    if (phase.contextModeOverride !== null) {
-      state.contextMode = phase.contextModeOverride;
-    }
-    const overrides = phaseDetails.get(phase.id) ?? [];
-    for (const ov of overrides) {
-      state.detailValues.set(ov.definitionId, ov.value);
-    }
-    state.activePhaseId = phase.id;
-    state.activePhaseLabel = phase.label;
-  }
-
-  return state;
+  const resolution = resolveApplicablePhases({
+    phases,
+    index: sceneTimeIndex,
+    mode: resolutionMode,
+    anchor,
+  });
+  return applyPhaseOverrides(entry, phaseDetails, baseDetails, resolution);
 }
 ```
 
+`resolveApplicablePhases` は story key だけで cutoff 判定しない。同じ story key の場合は anchor Scene の reading-order も比較し、reading 上後方の Phase が前方 Scene へ漏れるのを防ぐ。Phase の sort は `story key → anchor reading-order → created_at → phase.id` で決定的にする。
+
+TemporalAnchor の cutoff は用途別に区別する。`{ kind: "scene", sceneId }` はその Scene にアンカーされた全 Phase を inclusive に適用する。`{ kind: "phase", phaseId }` は決定的順序上の対象 Phase を含む直後で厳密に切り、同一 Scene の後続 sibling Phase をプレビューへ漏らさない。対象 Phase が無い場合は `phase-target-missing`、対象の anchor Scene が無い場合は `phase-anchor-missing` として適用なしを返す。
+
 **軸切り替え・不一致時の挙動まとめ**:
 
-| ケース | 挙動 |
-|-------|------|
-| `mode = 'reading'` | 常に `sort_order` の DFS 展開で比較。`story_time_order` は参照しない |
-| `mode = 'story'`、全 Scene に story_time_order が設定済み | 作中時間で比較。パラレルストーリー等で同値の Scene は reading-order がタイブレイクに入る（同値 Scene 間で Phase 順序がぶれないよう、tie-break は `anchor_scene` の reading-order → `created_at` の順） |
-| `mode = 'story'`、一部 Scene が未設定 | 未設定 Scene は直前の `story_time_order` を継承（冒頭の未設定連続領域のみ `storyTimeInherited` に入らない）。Phase のどれか 1 つでも軸不一致（null or reading）になれば、**そのエントリの全 Phase を reading-order で解決**（all-or-nothing フォールバック） |
-| `mode = 'auto'` | Scene 単位で軸を決める（自 Scene の `story_time_order` が設定済みなら story、なければ reading）。エントリ内で軸が混在する場合は **エントリ単位で reading-order に all-or-nothing フォールバック**（story-time 値と reading-order 値を混ぜない） |
-| フラッシュバック Phase | `story_time_order` を過去値で設定すれば、作中時間上は過去に適用される。読者が該当シーンを読むまでは UI 上 Inactive 表示（Timeline パネル側で表現） |
+| ケース                                                            | 挙動                                                                                                                                               |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode = 'reading'`                                                | 常に `sort_order` の DFS 展開で比較。`story_time_order` は参照しない                                                                               |
+| `mode = 'auto'`、coverage < 100%                                  | project 全体を reading で解決。`fallbackReason='auto-incomplete-story-coverage'`                                                                   |
+| `mode = 'auto'`、coverage = 100%                                  | 明示 story key で解決。継承値は coverage に数えない                                                                                                |
+| `mode = 'story'`、current / valid anchors を全て story で解決可能 | explicit / inherited story key で比較。同値の Scene は anchor reading-order、同一 anchor は `created_at → phase.id` で tie-break                   |
+| `mode = 'story'`、current または valid anchor が story で解決不能 | その entry の全 valid Phase を reading で解決（all-or-nothing fallback）                                                                           |
+| null / 削除済み anchor                                            | Phase を skip。fallback 判定には含めない                                                                                                           |
+| `anchor = phase(phaseId)`                                         | 対象 Phase までを inclusive に適用。同一 Scene の後続 Phase は除外                                                                                 |
+| フラッシュバック Phase                                            | `story_time_order` を過去値で設定すれば、`story` / story 軸が有効な `auto` では読者順のアンカー到達前でも遁及的に Active 表示する。`reading` のみ該当シーンまで Inactive |
 
 ### Content上書きの仕様
 
@@ -2345,8 +2242,8 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 |---------|-----------|
 | フェーズの追加/削除/編集 | 該当エントリのフェーズ解決済み状態を再計算 → コンテキスト再構築、ポップオーバー更新 |
 | アクティブシーンの切り替え | 全エントリのフェーズ解決済み状態を再計算（キャッシュ活用で高速化） |
-| ツリー構造の変更（シーン移動/追加/削除） | `SceneTimeIndex`（`readingOrder` および `storyTimeInherited`）を再計算 → 全エントリのフェーズ解決を再実行 |
-| `tree_nodes.story_time_order` の変更 | `SceneTimeIndex.storyTimeOrder` と `storyTimeInherited` を再計算（`readingOrder` は不変） → 全エントリのフェーズ解決を再実行（`mode ≠ 'reading'` の場合のみ実質影響あり） |
+| ツリー構造の変更（シーン移動/追加/削除） | `SceneTimeIndex`（`readingOrder` / `inheritedStoryOrder` / coverage / revision）を再計算 → 全エントリのフェーズ解決を再実行 |
+| `tree_nodes.story_time_order` の変更 | `explicitStoryOrder` / `inheritedStoryOrder` / coverage / revision を再計算 → 全エントリのフェーズ解決を再実行（`mode ≠ 'reading'` の場合のみ実質影響あり） |
 | `projects.phase_resolution_mode` の変更 | `SceneTimeIndex` 自体は不変。どの Map を引くかが変わるのみ。全エントリのフェーズ解決のみ再実行 |
 | フェーズのアンカーシーン変更 | Index 再計算は不要。該当エントリのフェーズ解決のみ |
 
@@ -2374,7 +2271,7 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 
 #### 複数フェーズが同一シーンにアンカー
 
-同一エントリ内で複数のフェーズが同じシーンにアンカーされている場合、時間軸上の位置が完全一致するため tie-break のみで順序が決まる。アンカーが同一なら reading-order も一致するので、最終的に `created_at` の昇順で適用される。UI の Timeline タブでは同一シーンのフェーズが連続して表示される。
+同一エントリ内で複数のフェーズが同じシーンにアンカーされている場合、時間軸上の位置が完全一致するため tie-break のみで順序が決まる。アンカーが同一なら reading-order も一致するので、`created_at`、それも同値なら Phase ID の昇順で適用される。UI の Timeline タブでは同一シーンのフェーズが連続して表示される。Scene 時点の解決は同一アンカーの全 Phase を含むが、個別 Phase プレビューは選択 Phase で exact cutoff し、後続 sibling を含めない。
 
 #### 異なるシーンが同じ story_time_order を持つ（パラレル・同時刻）
 
@@ -2454,7 +2351,7 @@ CodexHighlightのポップオーバーもフェーズ解決済み状態を表示
 CodexQuick の各行とホバーポップオーバーには、**アクティブシーン時点のフェーズ解決結果**と**未開示伏線の警告**が反映される（`CodexQuickSection.tsx`）:
 
 - **今の真実バッジ**: `useResolvedCodexStates(entryIds)`（`resolveCodexStatesFor` + `phaseResolver.resolveCodexState`）が、アクティブシーン（`treeStore.activeSceneId`）に応じてフェーズ解決後の summary と適用中フェーズの `phaseLabel` を返す。フェーズを持つ行はラベルを `primary` 色のピルで表示し、ホバーポップオーバーには解決後 summary を渡す（フェーズ未設定エントリは Base の summary のまま）
-- **未開示伏線警告**: `useUnrevealedSecretForeshadows(entryIds)`（`codexSpoilerFlags.ts`）が、当該エントリにリンクされた `secret` 伏線のうち、現在シーンの読者順位置（`phaseStore.globalSceneOrder`）でまだ payoff に到達していないものを検出し、該当行に `EyeOff` 警告アイコン（amber）を出す。`abandoned` 伏線・回収済み（`payoffConfirmed`）は警告しない。ツールチップは `codex.spoiler.unrevealedTooltip`（「このシーン時点で未開示: …」）
+- **未開示伏線警告**: `useUnrevealedSecretForeshadows(entryIds)`（`codexSpoilerFlags.ts`）が、当該エントリにリンクされた `secret` 伏線の current Scene / payoff Scene を `SceneTimeIndex` の同一軸で pair 比較し、まだ payoff に到達していないものを検出して該当行に `EyeOff` 警告アイコン（amber）を出す。`story` の解決不能時は reading へ pair 単位で fallback し、`abandoned` 伏線・回収済み（`payoffConfirmed`）は警告しない。ツールチップは `codex.spoiler.unrevealedTooltip`（「このシーン時点で未開示: …」）
 - いずれも read-only バッジで、取得失敗時は警告を出さない安全側に倒す（DB へは書き込まない）
 
 ### ← Chat

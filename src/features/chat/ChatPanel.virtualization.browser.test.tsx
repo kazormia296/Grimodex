@@ -123,7 +123,7 @@ describe("ChatPanel virtualization (real Chromium)", () => {
       // DB へ向かう store action はテストでは何もしない
       loadSessions: async () => {},
       selectSession: async () => {},
-      refreshContextLayers: async () => {},
+      refreshContextLayers: async () => null,
     });
     useAiSettingsStore.setState({ loadSettings: async () => {} });
   });

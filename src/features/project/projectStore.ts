@@ -47,6 +47,29 @@ interface ProjectState {
 }
 
 let loadProjectGeneration = 0;
+let projectLoadCommitTail: Promise<void> = Promise.resolve();
+let timelapseInitTail: Promise<void> = Promise.resolve();
+let externalWriteFeedStartTail: Promise<void> = Promise.resolve();
+
+function isCurrentProjectLoad(generation: number): boolean {
+  return generation === loadProjectGeneration;
+}
+
+/**
+ * Project store reloads mutate a shared set of singleton stores.  Once one has
+ * started it cannot be cancelled halfway through, so serialize the commit
+ * section and re-check authority before and after every awaited mutation.  A
+ * newer load therefore always runs last, even if the older reload was already
+ * in flight when it was superseded.
+ */
+async function commitProjectLoad<T>(operation: () => Promise<T>): Promise<T> {
+  const run = projectLoadCommitTail.then(operation);
+  projectLoadCommitTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
 
 /** Workspace-scoped app_settings key for the last active project. */
 export const LAST_ACTIVE_PROJECT_KEY = "workspace.lastActiveProjectId";
@@ -54,11 +77,6 @@ export const LAST_ACTIVE_PROJECT_KEY = "workspace.lastActiveProjectId";
 async function readLastActiveProjectId(): Promise<string | null> {
   const { getSetting } = await import("@/features/settings/api");
   return getSetting(LAST_ACTIVE_PROJECT_KEY);
-}
-
-async function persistLastActiveProjectId(projectId: string): Promise<void> {
-  const { setSetting } = await import("@/features/settings/api");
-  await setSetting(LAST_ACTIVE_PROJECT_KEY, projectId);
 }
 
 function resolveInitialProjectId(
@@ -85,6 +103,97 @@ function isRealBrowserRuntime(): boolean {
     ) &&
     !(typeof process !== "undefined" && process.env?.VITEST)
   );
+}
+
+function scheduleTimelapseInitialization(
+  projectId: string,
+  generation: number,
+): void {
+  const run = timelapseInitTail.then(async () => {
+    if (!isCurrentProjectLoad(generation)) return;
+
+    const [toggle, recorder] = await Promise.all([
+      import("@/features/timelapse/toggle"),
+      import("@/features/timelapse/recorder"),
+    ]);
+    if (!isCurrentProjectLoad(generation)) return;
+
+    // Drain the previous project's pending queue BEFORE calling
+    // setRecorderEnabled so the flush still runs with the old project's
+    // enabled=true state (flushNow is a no-op when the queue is empty).
+    // workspace 切替後 (束縛無効中) はこの drain 自体が no-op — 旧
+    // キューは beginWorkspaceSwitch で破棄済みで、ここで流すと旧
+    // イベントが新 workspace の chain に混入する (M3 review C1)。
+    await recorder.flushNow().catch(() => {});
+    if (!isCurrentProjectLoad(generation)) return;
+
+    const enabled = await toggle.isTimelapseEnabled(projectId);
+    if (!isCurrentProjectLoad(generation)) return;
+
+    // setRecorderEnabled must precede init: when disabled, init only binds
+    // projectId and skips the chain-tail read (recorder.ts).
+    recorder.setRecorderEnabled(enabled);
+    const bound = await recorder.initRecorderForProject(projectId);
+    if (!isCurrentProjectLoad(generation)) return;
+
+    if (enabled && bound) {
+      // default-ON 経路では明示トグルが無く scene baseline が焼かれない
+      // ため、genesis (記録履歴が空) のとき一度だけ焼く。
+      await toggle.ensureGenesisBaselines(projectId);
+      if (!isCurrentProjectLoad(generation)) return;
+
+      const { seedWorkspaceSnapshot } =
+        await import("@/features/timelapse/seedSession");
+      if (!isCurrentProjectLoad(generation)) return;
+      await seedWorkspaceSnapshot(projectId);
+    }
+  });
+
+  // Rebinds are serialized so an already-started stale init must finish before
+  // the latest project binds.  This keeps the latest project authoritative.
+  timelapseInitTail = run.catch((err) => {
+    console.warn("[timelapse] recorder init failed", err);
+  });
+}
+
+function scheduleExternalWriteFeedStart(
+  projectId: string,
+  generation: number,
+): void {
+  const run = externalWriteFeedStartTail.then(async () => {
+    if (!isCurrentProjectLoad(generation)) return;
+
+    const feed = await import("@/features/concurrency/externalWriteFeed");
+    if (!isCurrentProjectLoad(generation)) return;
+
+    await feed.startExternalWriteFeed(projectId);
+    if (!isCurrentProjectLoad(generation)) {
+      // A newer load has already stopped the previous feed. start may have
+      // resumed after that stop while reading its cursor, so close it again;
+      // the serialized latest start runs immediately after this task.
+      feed.stopExternalWriteFeed();
+      return;
+    }
+
+    const { setupAutoAcceptProseConsumer, drainProposedProse } =
+      await import("@/features/agent-writes/autoAcceptFeed");
+    if (!isCurrentProjectLoad(generation)) {
+      feed.stopExternalWriteFeed();
+      return;
+    }
+
+    setupAutoAcceptProseConsumer();
+    await drainProposedProse(projectId);
+    if (!isCurrentProjectLoad(generation)) {
+      feed.stopExternalWriteFeed();
+    }
+  });
+
+  // startExternalWriteFeed reads its initial cursor asynchronously. Serialize
+  // starts so a late cursor read from A can never finish after B's start.
+  externalWriteFeedStartTail = run.catch((err) => {
+    console.warn("[externalWriteFeed] start failed", err);
+  });
 }
 
 export const useProjectStore = create<ProjectState>()((set, get) => ({
@@ -130,103 +239,61 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     }
     const generation = ++loadProjectGeneration;
     const previousId = get().currentProjectId;
-    if (isRealBrowserRuntime()) {
+    const realBrowserRuntime = isRealBrowserRuntime();
+    if (realBrowserRuntime) {
       const { stopExternalWriteFeed } =
         await import("@/features/concurrency/externalWriteFeed");
+      if (!isCurrentProjectLoad(generation)) return;
       stopExternalWriteFeed();
     }
-    useGlobalHistoryStore.getState().clear();
-    // reloadProjectData 内の各ストアは getCurrentProjectId() を読むため、
-    // 再ロード前に currentProjectId を確定させておく必要がある。
-    set({ currentProjectId: projectId });
     try {
       const p = await getProject(projectId);
-      if (p?.language && typeof document !== "undefined") {
-        document.documentElement.lang = p.language;
-      }
-      if (p?.language) {
-        // Re-point settings defaults at the project's language (en gets
-        // Literata / 1.6 line-height / smart quotes etc. for *unset* keys).
-        // Dynamic import keeps projectStore free of a settings-store cycle.
-        const { useSettingsStore } =
-          await import("@/features/settings/settingsStore");
-        useSettingsStore.getState().applyProjectLanguage(p.language);
-      }
-      if (p?.phaseResolutionMode) {
-        usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
-      }
-      const { reloadProjectData } = await import("./reloadProjectData");
-      await reloadProjectData(projectId);
-      await persistLastActiveProjectId(projectId);
-      // 執筆タイムラプス recorder を本 project に bind。失敗しても本流は止めない
-      // (chain init は best-effort、次の event で再試行される)。記録の ON/OFF は
-      // per-project 設定 (timelapse.enabled, 既定 ON) で決まる (§15.5)。
-      // 執筆タイムラプス recorder: real browser only. Skip in tests and SSR
-      // — VITEST env signals vitest; tauri-host process has neither flag.
-      if (isRealBrowserRuntime()) {
-        void (async () => {
-          const { isTimelapseEnabled, ensureGenesisBaselines } =
-            await import("@/features/timelapse/toggle");
-          const { flushNow, setRecorderEnabled, initRecorderForProject } =
-            await import("@/features/timelapse/recorder");
-          // Drain the previous project's pending queue BEFORE calling
-          // setRecorderEnabled so the flush still runs with the old project's
-          // enabled=true state (flushNow is a no-op when the queue is empty).
-          // workspace 切替後 (束縛無効中) はこの drain 自体が no-op — 旧
-          // キューは beginWorkspaceSwitch で破棄済みで、ここで流すと旧
-          // イベントが新 workspace の chain に混入する (M3 review C1)。
-          await flushNow().catch(() => {});
-          // setRecorderEnabled must precede init: when disabled, init only
-          // binds projectId and skips the chain-tail read (recorder.ts).
-          const enabled = await isTimelapseEnabled(projectId);
-          setRecorderEnabled(enabled);
-          // 正規 rebind — 束縛を有効化する唯一の経路 (r5 状態機械)。切替中の
-          // bystander init / 世代跨ぎの旧 init は束縛を書かず false を返す。
-          // その場合 lastSequence が旧 workspace の値のままなので、seed
-          // snapshot (anchorSequence 依存) を焼いてはならない。
-          const bound = await initRecorderForProject(projectId);
-          // §17 P0.4: 毎セッション開始時に現在のレイアウトを seed snapshot として
-          // 焼き、replay の初期 UI 状態を確定させる (forward layout イベントの起点)。
-          if (enabled && bound) {
-            // default-ON 経路では明示トグルが無く scene baseline が焼かれない
-            // ため、genesis (記録履歴が空) のとき一度だけ焼く。これが無いと
-            // 記録 ON 前から本文のあるシーンが動画 export で replay 不能になる。
-            await ensureGenesisBaselines(projectId);
-            const { seedWorkspaceSnapshot } =
-              await import("@/features/timelapse/seedSession");
-            await seedWorkspaceSnapshot(projectId);
-          }
-        })().catch((err) => {
-          // init 失敗 = 有効な束縛が無い。記録は再開されず、イベントは warn
-          // 付きで破棄される (recorder 側の不変条件)。次の loadProject /
-          // 再オープンの正規 rebind で自動再開する。
-          console.warn("[timelapse] recorder init failed", err);
-        });
-      }
-      if (isRealBrowserRuntime()) {
-        if (generation === loadProjectGeneration) {
-          void import("@/features/concurrency/externalWriteFeed").then(
-            ({ startExternalWriteFeed }) => {
-              if (generation !== loadProjectGeneration) return;
-              void startExternalWriteFeed(projectId)
-                .then(() => import("@/features/agent-writes/autoAcceptFeed"))
-                .then(
-                  ({ setupAutoAcceptProseConsumer, drainProposedProse }) => {
-                    if (generation !== loadProjectGeneration) return;
-                    // Register the live auto-apply handler (idempotent) and sweep
-                    // the proposed-prose backlog accumulated while closed.
-                    setupAutoAcceptProseConsumer();
-                    void drainProposedProse(projectId);
-                  },
-                )
-                .catch((err) =>
-                  console.warn("[externalWriteFeed] start failed", err),
-                );
-            },
-          );
+      if (!isCurrentProjectLoad(generation)) return;
+
+      const [{ reloadProjectData }, { setSetting }] = await Promise.all([
+        import("./reloadProjectData"),
+        import("@/features/settings/api"),
+      ]);
+      if (!isCurrentProjectLoad(generation)) return;
+
+      await commitProjectLoad(async () => {
+        if (!isCurrentProjectLoad(generation)) return;
+
+        useGlobalHistoryStore.getState().clear();
+        // reloadProjectData 内の各ストアは getCurrentProjectId() を読むため、
+        // serialized commit の直前に currentProjectId を確定させる。
+        set({ currentProjectId: projectId });
+
+        if (p?.language && typeof document !== "undefined") {
+          document.documentElement.lang = p.language;
         }
-      }
+        if (p?.language) {
+          // Re-point settings defaults at the project's language (en gets
+          // Literata / 1.6 line-height / smart quotes etc. for *unset* keys).
+          useSettingsStore.getState().applyProjectLanguage(p.language);
+        }
+        if (p?.phaseResolutionMode) {
+          usePhaseStore.getState().setResolutionMode(p.phaseResolutionMode);
+        }
+
+        await reloadProjectData(projectId);
+        if (!isCurrentProjectLoad(generation)) return;
+
+        await setSetting(LAST_ACTIVE_PROJECT_KEY, projectId);
+        if (!isCurrentProjectLoad(generation)) return;
+
+        // Both background integrations have their own serialized tails and
+        // repeat this generation check after every await. A late A task cannot
+        // finish after (or overwrite) B's authoritative binding.
+        if (realBrowserRuntime) {
+          scheduleTimelapseInitialization(projectId, generation);
+          scheduleExternalWriteFeedStart(projectId, generation);
+        }
+      });
     } catch (e) {
+      // A superseded load is cancellation, not a failure. In particular it
+      // must not roll currentProjectId back after the newer load has committed.
+      if (!isCurrentProjectLoad(generation)) return;
       // 切替失敗 — パネルがロードされていない Project を指したままにしない。
       set({ currentProjectId: previousId });
       // recorder はここで触らない (r5): project がロードされていない =

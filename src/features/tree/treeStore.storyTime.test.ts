@@ -94,6 +94,7 @@ describe("updateStoryTime", () => {
   });
 
   it("order=null で Unscheduled にクリアする", async () => {
+    const { updateNode } = await import("./api");
     useTreeStore.setState({
       nodes: [{ ...SCENE, storyTimeOrder: "a0V", storyTimeLabel: "旧ラベル" }],
     });
@@ -102,6 +103,9 @@ describe("updateStoryTime", () => {
     expect(node?.storyTimeOrder).toBeNull();
     // label は null クリア時も保持される（設計書 L288）
     expect(node?.storyTimeLabel).toBe("旧ラベル");
+    expect(updateNode).toHaveBeenCalledWith("scene-1", {
+      storyTimeOrder: null,
+    });
   });
 
   it("recomputeSceneOrder を呼び出す", async () => {
@@ -142,8 +146,8 @@ describe("updateStoryTime", () => {
     expect(node?.storyTimeLabel).toBeNull();
     expect(mockRecomputeSceneOrder).toHaveBeenCalledOnce();
     expect(updateNode).toHaveBeenCalledWith("scene-1", {
-      storyTimeOrder: undefined,
-      storyTimeLabel: undefined,
+      storyTimeOrder: null,
+      storyTimeLabel: null,
     });
   });
 

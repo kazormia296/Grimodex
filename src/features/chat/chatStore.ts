@@ -32,8 +32,6 @@ function classifyError(
 }
 
 import {
-  buildSystemPrompt,
-  buildStorySoFar,
   countTokens,
   allocateLayerBudgets,
   ensureTokenizer,
@@ -43,7 +41,6 @@ import type {
   ProjectContext,
   CodexContext,
   LayerBreakdown,
-  NoteContext,
   BuildSystemPromptInput,
 } from "./contextBuilder";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
@@ -74,6 +71,27 @@ import {
   finalizeTurnPayload,
   selectsCacheSystemDelivery,
 } from "@/features/ai-context/finalizeTurnPayload";
+import { planChatContext } from "./context/chatContextPlanner";
+import {
+  createNonSceneTurnContextRequest,
+  createSceneTurnContextRequest,
+  type CreateNonSceneTurnContextRequestInput,
+  type ContextPlanningPurpose,
+  type ContextScopeTarget,
+  type SceneTurnContextRequest,
+} from "./context/turnContextRequest";
+import { createDefaultContextPlannerDeps } from "./context/defaultContextPlannerDeps";
+import {
+  collectSceneContext,
+  createSceneContextSourceDeps,
+  type SceneContextSourceDeps,
+} from "./context/sources/sceneContextSource";
+import type { ChatContextPlan } from "./context/types";
+import {
+  createNonSceneContextPlannerDeps,
+  planNonSceneChatContext,
+} from "./context/nonSceneContextPlanner";
+import { renderLegacyPrompt } from "./context/legacyPromptAdapter";
 import {
   resolveChatTurnRoute,
   type ResolvedChatTurnRoute,
@@ -85,12 +103,10 @@ import {
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
 import {
-  buildSemanticRecallQuery,
   fetchSemanticRecall,
   SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS,
-  type SemanticRecallChunk,
 } from "./semanticRecall";
-import { fetchChatRecall, type ChatRecallMessage } from "./chatRecall";
+import { fetchChatRecall } from "./chatRecall";
 import {
   createRecallPromoteTracker,
   trackRecallForPromote,
@@ -205,6 +221,14 @@ function finalizeChatTurnPayload(input: {
     countTokens,
   );
 }
+
+function materializeSystemDeliverySnapshot(
+  finalized: ReturnType<typeof finalizeChatTurnPayload>,
+): string {
+  return finalized.systemDelivery.kind === "plain"
+    ? finalized.systemDelivery.text
+    : finalized.systemDelivery.blocks.map((block) => block.text).join("");
+}
 import type {
   AgentMessagePayload,
   ToolCallRecord,
@@ -230,12 +254,7 @@ export interface PendingUserQuestion {
   /** dismiss / abort 時に LLM へ返す制御メッセージ（ask 時の言語で確定）。 */
   dismissNote: string;
 }
-import {
-  useTreeStore,
-  getAncestorFolders,
-  getAllProjectScenesInOrder,
-  getDescendantScenesInOrder,
-} from "@/features/tree/treeStore";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { loadSceneContent, loadScenesFull, getNode } from "@/features/tree/api";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
@@ -259,12 +278,14 @@ import type { SceneChronicle } from "@/features/chronicle/resolveSceneAnchor";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";
 import { calendarFromRow } from "@/features/chronicle/chronicleTime";
 import type { EventPrecision } from "@/db/schema";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  getCurrentProjectId,
+  useProjectStore,
+} from "@/features/project/projectStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { markStart, markEnd } from "@/lib/perfLog";
 import {
   getDescendantsBFS,
-  getChildrenFromArray,
   buildChildrenContext,
   computeChildrenTokenBudget,
   collectBudgetedDescendantIds,
@@ -293,7 +314,11 @@ import {
   resolveCodexState,
   formatTimelineContext,
 } from "@/features/codex/phaseResolver";
-import type { ResolvedCodexState } from "@/features/codex/phaseResolver";
+import type {
+  PhaseResolutionMode,
+  ResolvedCodexState,
+  SceneTimeIndex,
+} from "@/features/codex/phaseResolver";
 import {
   getEntryScanText,
   findReverseMentioningEntries,
@@ -302,7 +327,6 @@ import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
-import type { Snippet } from "@/features/snippets/api";
 import { setSnippetDeletedHandler } from "@/features/snippets/anchorNotify";
 import { listPinnedSnippetEntries, listPinnedStickyEntries } from "./chatApi";
 import { useMapStore } from "@/features/map/mapStore";
@@ -316,10 +340,6 @@ import {
 } from "@/features/map/mapApi";
 import { buildMapContextMarkdown } from "@/features/map/mapToContextPrompt";
 import type { ResolvedLabel } from "@/features/map/mapToContextPrompt";
-import type {
-  PinnedSnippetContext,
-  PinnedStickyContext,
-} from "./contextBuilder";
 import { useUnplacedBeatsStore } from "@/features/editor/beat/unplacedBeatsStore";
 import { buildPendingBeatsSection } from "@/features/editor/beat/pendingBeatsContext";
 import { getPromptCatalog } from "@/prompts/index";
@@ -329,11 +349,7 @@ import {
 } from "@/features/foreshadow/api";
 import { listNodeLabels } from "@/features/labels/labelApi";
 import { listCodexRelations } from "@/features/codex/codexRelationApi";
-import {
-  expandCodexRelationsBFS,
-  collectIntraContextRelations,
-  type IntraContextRelationEdge,
-} from "@/features/codex/relationExpansion";
+import { expandCodexRelationsBFS } from "@/features/codex/relationExpansion";
 
 // フェーズ解決ヘルパー: エントリ配列に対してフェーズを一括解決する
 // (M10: icon/notes は読まないので context projection 行を受ける。全列行も可)
@@ -386,7 +402,12 @@ async function resolveEntriesForContext(
     detailsByEntry.set(row.entryId, m);
   }
 
-  const globalSceneOrder = usePhaseStore.getState().globalSceneOrder;
+  const phaseState = usePhaseStore.getState();
+  const temporalAnchor = opts?.applyAllPhases
+    ? ({ kind: "latest" } as const)
+    : effectiveSceneId
+      ? ({ kind: "scene", sceneId: effectiveSceneId } as const)
+      : ({ kind: "base" } as const);
 
   for (const entry of entries) {
     const phases = phasesByEntry.get(entry.id) ?? [];
@@ -414,9 +435,9 @@ async function resolveEntriesForContext(
         phases,
         phaseDetailsMap,
         baseDetails,
-        effectiveSceneId,
-        globalSceneOrder,
-        opts,
+        temporalAnchor,
+        phaseState.sceneTimeIndex,
+        phaseState.resolutionMode,
       ),
     );
   }
@@ -534,6 +555,26 @@ function buildChildrenCtxForEntry(
   return buildChildrenContext(descendants, budget, resolvedById) || undefined;
 }
 
+type CapturedNonSceneRequestSeed = Omit<
+  CreateNonSceneTurnContextRequestInput,
+  | "requestId"
+  | "purpose"
+  | "sessionId"
+  | "messages"
+  | "outgoingUserMessage"
+  | "commandInstruction"
+  | "mentionedSceneIds"
+  | "mentionedCodexIds"
+>;
+
+interface CapturedNonSceneContextAuthority {
+  requestSeed: CapturedNonSceneRequestSeed;
+  temporalResolution: {
+    sceneTimeIndex: SceneTimeIndex;
+    resolutionMode: PhaseResolutionMode;
+  };
+}
+
 interface ChatState {
   // Session management
   sessions: ChatSession[];
@@ -550,7 +591,11 @@ interface ChatState {
   contextTokenCount: number;
   /** Context window used by the finalized turn route (null before resolution). */
   contextWindowSize: number | null;
+  /** Model paired with contextTokenCount/contextWindowSize. */
+  contextModel: string | null;
   contextLayers: LayerBreakdown[];
+  /** Typed selection plan behind contextLayers and the rendered prompt. */
+  contextPlan: ChatContextPlan | null;
   lastSystemPrompt: string;
   /** lastSystemPrompt がどのスコープ構成（scope/anchor/scene/session）で
    * 構築されたかの識別キー（contextPromptKey）。null = 未構築。
@@ -788,6 +833,18 @@ interface ChatState {
     options?: { withAgentMode?: boolean },
   ) => Promise<void>;
   refreshContextLayers: (opts?: {
+    /** Caller surface. Send/copy/preview must not be rebuilt as a live turn. */
+    purpose?: ContextPlanningPurpose;
+    /** Exact conversation snapshot for this turn; defaults to current store messages. */
+    conversationMessages?: ChatMessage[];
+    /** Current composer text used by turn-scoped recall and diagnostics. */
+    outgoingUserMessage?: string;
+    /** One-turn instruction captured with the same immutable request. */
+    commandInstruction?: string;
+    /** Fail the caller after clearing stale prompt state when planning fails. */
+    strict?: boolean;
+    /** Internal send-time snapshot captured before the turn's first await. */
+    capturedNonSceneAuthority?: CapturedNonSceneContextAuthority;
     /** @scene mention 由来の一時 pin (per-send-only)。
      * UI 表示用の context bar 更新（プリビュー）には渡さず、sendMessage
      * 内部から folder/project スコープのプロンプト再構築時にだけ使う。 */
@@ -803,7 +860,15 @@ interface ChatState {
     agentModeOverride?: boolean;
     /** Internal immutable route for an in-flight send. */
     turnRoute?: ResolvedChatTurnRoute;
-  }) => Promise<void>;
+  }) => Promise<{
+    prompt: string;
+    totalTokens: number;
+    layers: LayerBreakdown[];
+    contextPlan: ChatContextPlan;
+    cacheSegments?: string[];
+    volatileTail?: string;
+    fullyInjectedIds: string[];
+  } | null>;
   clearMessages: () => void;
   clearError: () => void;
   /** 「Codex に昇格」候補を却下する (再提案しない)。 */
@@ -842,6 +907,7 @@ interface ChatState {
   dismissCacheInvalidated: () => void;
   /** Session-scoped Codex IDs present at session start (L4 cache marker) */
   sessionStableCodexIds: string[];
+  sessionStableContextInitialized: boolean;
   /** Immutable agent tool snapshot for the active session */
   sessionAgentToolsSnapshot: AgentToolDefinition[] | null;
   /** Start a new session while keeping reference to the current one */
@@ -875,17 +941,6 @@ function parseMentionedSceneIdsFromMetadata(
   return undefined;
 }
 
-/** L4 append-only: preserve first-appearance order, tie-break by entry_id. */
-function stableSortCodexEntries<T extends { id: string }>(entries: T[]): T[] {
-  return entries
-    .map((entry, index) => ({ entry, index }))
-    .sort((a, b) => {
-      const idCmp = a.entry.id.localeCompare(b.entry.id);
-      return idCmp !== 0 ? idCmp : a.index - b.index;
-    })
-    .map(({ entry }) => entry);
-}
-
 async function maybeRunSummarization(
   sessionId: string,
   messages: ChatMessage[],
@@ -894,24 +949,29 @@ async function maybeRunSummarization(
   set: (
     partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>),
   ) => void,
+  isAuthorized: () => boolean,
 ): Promise<ChatMessage[]> {
   await ensureTokenizer();
+  if (!isAuthorized()) return messages;
   let summaries: Awaited<ReturnType<typeof chatApi.listSummaries>> = [];
   try {
     summaries = await chatApi.listSummaries(sessionId);
   } catch {
     return messages;
   }
+  if (!isAuthorized()) return messages;
 
   const summaryTexts = summaries.map((s) => s.summary);
   const l5Used = computeL5UsedTokens(messages, summaryTexts, l5Budget);
   const maxGen =
     summaries.length > 0 ? Math.max(...summaries.map((s) => s.generation)) : 0;
 
-  set({
-    summaryCount: summaries.length,
-    maxSummaryGeneration: maxGen,
-  });
+  if (isAuthorized()) {
+    set({
+      summaryCount: summaries.length,
+      maxSummaryGeneration: maxGen,
+    });
+  }
 
   if (!shouldSummarize(messages, l5Budget, l5Used)) {
     return messages;
@@ -922,6 +982,7 @@ async function maybeRunSummarization(
 
   try {
     const generation = await chatApi.getSummaryGeneration(sessionId);
+    if (!isAuthorized()) return messages;
     const previousSummary = getPreviousSummaryText(summaries);
     const candidateIds = candidates.map((m) => m.id);
     const lastMsgId = candidateIds[candidateIds.length - 1]!;
@@ -930,6 +991,9 @@ async function maybeRunSummarization(
       candidates,
       // cheap ロール: 要約は injected callback 経由で model/provider/endpoint override を渡す。
       (messages, thinkingParams) => {
+        if (!isAuthorized()) {
+          return Promise.reject(new Error("chat turn authority changed"));
+        }
         const aiState = useAiSettingsStore.getState();
         const role = resolveRolePathConfig("summarization");
         const route = aiState.settings
@@ -983,8 +1047,10 @@ async function maybeRunSummarization(
         lastMsgId,
       },
     );
+    if (!isAuthorized()) return messages;
 
     const tokenCount = estimateSummaryTokenCount(summaryText);
+    if (!isAuthorized()) return messages;
     const chatSummary = await chatApi.addSummary(
       sessionId,
       summaryText,
@@ -996,10 +1062,13 @@ async function maybeRunSummarization(
         lastMsgId,
       },
     );
+    if (!isAuthorized()) return messages;
     await chatApi.markMessagesSummarized(candidateIds);
+    if (!isAuthorized()) return messages;
 
     let resultMessages = messages;
     set((s) => {
+      if (!isAuthorized()) return {};
       const updatedMessages = s.messages.map((m) =>
         candidateIds.includes(m.id) ? { ...m, isSummarized: 1 } : m,
       );
@@ -1048,9 +1117,10 @@ async function maybeRunSummarization(
 async function loadMentionedScenes(
   ids: string[] | undefined,
   currentSceneId: string | null,
+  treeNodesSnapshot?: readonly TreeNodeData[],
 ): Promise<Array<{ id: string; title: string; content: string }>> {
   if (!ids || ids.length === 0) return [];
-  const allNodes = useTreeStore.getState().nodes;
+  const allNodes = treeNodesSnapshot ?? useTreeStore.getState().nodes;
   const out: Array<{ id: string; title: string; content: string }> = [];
   const seen = new Set<string>();
   for (const id of ids) {
@@ -1074,25 +1144,34 @@ async function loadMentionedScenes(
 
 async function fetchSceneContext(
   sceneId: string,
+  expectedProjectId: string,
 ): Promise<SceneContext | null> {
+  let node: Awaited<ReturnType<typeof getNode>>;
+  let content: Awaited<ReturnType<typeof loadSceneContent>>;
   try {
-    const [node, content] = await Promise.all([
+    [node, content] = await Promise.all([
       getNode(sceneId),
       loadSceneContent(sceneId),
     ]);
-    if (!node) return null;
-    return {
-      id: node.id,
-      title: node.title,
-      synopsis: node.synopsis ?? undefined,
-      intent: node.intent ?? undefined,
-      content: prosemirrorToText(content ?? ""),
-      contentJson: content ?? "",
-      storyTimeLabel: node.storyTimeLabel ?? null,
-    };
   } catch {
     return null;
   }
+  if (!node) return null;
+  // Persisted tree rows always carry projectId. The optional guard only keeps
+  // legacy test doubles compatible while production fails closed on a stale
+  // scene id left behind by a project switch.
+  if (node.projectId && node.projectId !== expectedProjectId) {
+    throw new Error("scene context project mismatch");
+  }
+  return {
+    id: node.id,
+    title: node.title,
+    synopsis: node.synopsis ?? undefined,
+    intent: node.intent ?? undefined,
+    content: prosemirrorToText(content ?? ""),
+    contentJson: content ?? "",
+    storyTimeLabel: node.storyTimeLabel ?? null,
+  };
 }
 
 // fetchProjectContext は features/project/contextAtoms に切り出して
@@ -1101,6 +1180,17 @@ async function fetchProjectContext(
   projectId: string | null,
 ): Promise<ProjectContext | null> {
   return fetchProjectContextAtom(projectId);
+}
+
+/** A turn with a captured project must not silently lose L1 policy/instructions. */
+async function fetchRequiredProjectContext(
+  projectId: string,
+): Promise<ProjectContext> {
+  const project = await fetchProjectContext(projectId);
+  if (!project) {
+    throw new Error("required project context is unavailable");
+  }
+  return project;
 }
 
 type AggregatedPrefacePolicy = "folder" | "project";
@@ -1261,19 +1351,16 @@ export async function buildCodexScopeBlocks(opts: {
   if (!resolvedState) return null;
 
   const phases = phasesMap.get(selected.id) ?? [];
-  const globalSceneOrder = usePhaseStore.getState().globalSceneOrder;
   const allNodes = useTreeStore.getState().nodes;
-
-  const validPhases = phases
-    .filter((phase) => {
-      if (phase.anchorNodeId === null) return false;
-      return globalSceneOrder.has(phase.anchorNodeId);
-    })
-    .sort((a, b) => {
-      const orderA = globalSceneOrder.get(a.anchorNodeId!)!;
-      const orderB = globalSceneOrder.get(b.anchorNodeId!)!;
-      return orderA - orderB;
-    });
+  const phaseById = new Map(phases.map((phase) => [phase.id, phase] as const));
+  // The resolver owns mixed story-time fallback and deterministic tie-breaks.
+  // Reusing its applied order keeps the timeline text byte-consistent with the
+  // overrides that produced resolvedState; the compatibility total-order map
+  // cannot represent entry-specific story fallback.
+  const validPhases = resolvedState.appliedPhaseIds.flatMap((phaseId) => {
+    const phase = phaseById.get(phaseId);
+    return phase ? [phase] : [];
+  });
 
   const timelinePhases = validPhases.map((phase) => {
     const anchorNode = allNodes.find((n) => n.id === phase.anchorNodeId);
@@ -1303,10 +1390,8 @@ export async function buildCodexScopeBlocks(opts: {
       ? `${finalContent}\n\n${timelineText}`
       : finalContent;
 
-  const lastPhaseId =
-    resolvedState.appliedPhaseIds[resolvedState.appliedPhaseIds.length - 1];
-  const lastPhase = lastPhaseId
-    ? phases.find((p) => p.id === lastPhaseId)
+  const lastPhase = resolvedState.activePhaseId
+    ? phaseById.get(resolvedState.activePhaseId)
     : undefined;
 
   // Phase Cb: 子孫 summary も seed と同じ基準（focus は applyAllPhases）で
@@ -1400,8 +1485,12 @@ async function buildAggregatedScene(opts: {
   activeSceneId: string | null;
   prefacePolicy: AggregatedPrefacePolicy;
   allEntries: CodexContextEntry[];
+  /** Resolved mention-only trigger candidates (always is not mention-driven). */
+  detectableEntries?: CodexContextEntry[];
   /** project スコープのフォルダ階層グループ化に必須 */
   allNodes?: TreeNodeData[];
+  /** Immutable turn setting; do not re-read SettingsStore after source IO. */
+  injectBeats: boolean;
   /**
    * Agent mode（Tool Use ループ）か。project スコープでは ON のとき
    * synopsis 集約（Tier 2）を pull 委譲に切り替える: 事前注入は folder
@@ -1427,8 +1516,10 @@ async function buildAggregatedScene(opts: {
     activeSceneId,
     prefacePolicy,
     allEntries,
+    detectableEntries,
     allNodes,
     agentMode,
+    injectBeats,
   } = opts;
 
   const isProjectGrouped = prefacePolicy === "project" && !!allNodes?.length;
@@ -1491,7 +1582,7 @@ async function buildAggregatedScene(opts: {
     joined: string,
   ): Promise<CodexContextEntry[]> {
     try {
-      const detectable = allEntries.filter(
+      const detectable = (detectableEntries ?? allEntries).filter(
         (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
       );
       const matched = await findMentionedEntriesAsync(joined, detectable);
@@ -1597,10 +1688,6 @@ async function buildAggregatedScene(opts: {
   }
 
   if (canTier2) {
-    const injectBeats = useSettingsStore
-      .getState()
-      .getBoolean("beat.injectIntoContext", true);
-
     const beatSectionBySceneId = new Map<string, string>();
     if (injectBeats && descendants.length > 0) {
       const resolveCharacterName = (id: string): string | null =>
@@ -1704,15 +1791,32 @@ async function buildAggregatedScene(opts: {
 let _streamCleanup: (() => void) | null = null;
 // Stop 経路から coalesce バッファを同期 flush するためのフック（sendMessage が設定）。
 let _flushPendingDelta: (() => void) | null = null;
+// Normal streaming Stop finalizes/persists the partial turn synchronously
+// before listener cleanup invalidates its callback authority.
+let _finalizeStoppedStream: (() => void) | null = null;
 // Debounce timer for refreshContextLayers when input-detected entry IDs change.
 // Token counting (WASM tiktoken) は同期で長文 scene でも数百 ms。打鍵が落ち着いてから走らせる。
 let _inputPinnedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 // ask_user の遅延 Promise を解決するクロージャ（guardedExecuteTool が設定）。
 // シリアライズ不可なので state ではなく module-local に持つ。
 let _resolveUserQuestion: ((result: ToolResult) => void) | null = null;
-// agent ループの中断要求フラグ。Stop / セッション切替で true にし、runAgentLoop
-// の shouldAbort から参照する（stop が agent path を止められない問題への対処）。
-let _agentAborted = false;
+// Identity of the send that is still authorized to start a transport. Stop
+// clears it so an older turn cannot resume after tokenizer/context awaits.
+let _activeSendTurnId: string | null = null;
+interface SendTurnControl {
+  id: string;
+  surface: "chat" | "agent";
+  aborted: boolean;
+  userMessageId: string;
+  assistantMessageId: string;
+  transportStarted: boolean;
+}
+let _activeSendControl: SendTurnControl | null = null;
+// Async session reads can finish after a scope/project transition. Only the
+// newest request for each surface may publish its result.
+let _sessionListGeneration = 0;
+let _sessionSelectionGeneration = 0;
+let _contextRefreshGeneration = 0;
 // Stop must target the transport selected for the in-flight turn, not mutable
 // settings that may have changed after the request started.
 let _activeTurnRoute: ResolvedChatTurnRoute | null = null;
@@ -1735,6 +1839,7 @@ interface SceneContextPayload {
   prompt: string;
   totalTokens: number;
   layers: LayerBreakdown[];
+  contextPlan: ChatContextPlan;
   detectedEntries: CodexContextEntry[];
   alwaysEntries: CodexContextEntry[];
   /** L4 に full body + custom details + aliases が完全注入されたエントリの ID。
@@ -1759,10 +1864,20 @@ interface SceneContextPayload {
  */
 async function loadMapBoardMarkdown(
   allEntries: CodexContextEntry[],
+  selection?: {
+    enabled: boolean;
+    boardId: string | null;
+    activeBoardId: string | null;
+    projectId: string;
+    treeNodes?: readonly TreeNodeData[];
+  },
 ): Promise<string | undefined> {
-  const { includeMapBoard, mapBoardId } = useChatStore.getState();
+  const chatState = selection ? null : useChatStore.getState();
+  const includeMapBoard = selection?.enabled ?? chatState!.includeMapBoard;
   if (!includeMapBoard) return undefined;
-  const resolvedBoardId = mapBoardId ?? useMapStore.getState().activeBoardId;
+  const resolvedBoardId = selection
+    ? (selection.boardId ?? selection.activeBoardId)
+    : (chatState!.mapBoardId ?? useMapStore.getState().activeBoardId);
   if (!resolvedBoardId) return undefined;
   try {
     const [board, mapStickies, mapEdges, mapFrames, mapPositions, aiBranches] =
@@ -1774,9 +1889,13 @@ async function loadMapBoardMarkdown(
         listMapNodePositions(resolvedBoardId),
         listMapAiBranches(resolvedBoardId),
       ]);
-    if (!board) return undefined;
+    if (!board || (selection && board.projectId !== selection.projectId)) {
+      return undefined;
+    }
     const treeNodesById = new Map(
-      useTreeStore.getState().nodes.map((n) => [n.id, n] as const),
+      (selection?.treeNodes ?? useTreeStore.getState().nodes).map(
+        (node) => [node.id, node] as const,
+      ),
     );
     const codexById = new Map(allEntries.map((e) => [e.id, e] as const));
     const aiBranchById = new Map(aiBranches.map((a) => [a.id, a] as const));
@@ -1786,7 +1905,7 @@ async function loadMapBoardMarkdown(
     const fillSnippetTitle = (id: string): string | null => {
       const cached = snippetCache.get(id);
       if (cached !== undefined) return cached;
-      getSnippet(getCurrentProjectId(), id)
+      getSnippet(selection?.projectId ?? getCurrentProjectId(), id)
         .then((s) => {
           if (s) snippetCache.set(id, s.title);
         })
@@ -1849,6 +1968,7 @@ async function buildOutgoingScenePrompt(
   get: () => ChatState,
   effectiveSceneId: string,
   opts: {
+    purpose: Extract<ContextPlanningPurpose, "preview" | "copy">;
     inputText: string;
     mentionedSceneIds?: string[];
     mentionedCodexIds?: string[];
@@ -1858,17 +1978,8 @@ async function buildOutgoingScenePrompt(
   layers: LayerBreakdown[];
   totalTokens: number;
 } | null> {
-  await ensureTokenizer();
-  const {
-    activeProjectId,
-    activeSessionId,
-    inputPinnedEntryIds,
-    excludedAutoEntryIds,
-    agentMode,
-    ragEnabled,
-    includeBodies,
-    messages,
-  } = get();
+  const { activeProjectId, activeSessionId, agentMode, ragEnabled, messages } =
+    get();
 
   // send (sendMessage) は agentMode トグル OFF でも web 検索 RAG が有効な対応
   // プロバイダ時は agent パスに入り agentMode:true で L0 に agentInstruction を足す。
@@ -1887,10 +1998,29 @@ async function buildOutgoingScenePrompt(
     ragEnabled && isRagCapableProvider(aiProvider) && !isFusionModel;
   const effectiveAgentMode =
     (agentMode || ragActive) && aiProvider !== "cli" && !isFusionModel;
+  const projectId = activeProjectId ?? getCurrentProjectId();
+  const activeSession = activeSessionId
+    ? get().sessions.find((session) => session.id === activeSessionId)
+    : undefined;
+  if (activeSession && activeSession.projectId !== projectId) {
+    throw new Error("chat session project mismatch");
+  }
+  const authority = captureSceneTurnAuthority({
+    projectId,
+    sceneId: effectiveSceneId,
+    agentMode: effectiveAgentMode,
+  });
+  await ensureTokenizer();
+  if (
+    activeSessionId &&
+    !(await chatApi.getSessionForProject(activeSessionId, projectId))
+  ) {
+    throw new Error("chat session project mismatch");
+  }
 
   const [sceneCtx, projectCtx] = await Promise.all([
-    fetchSceneContext(effectiveSceneId),
-    fetchProjectContext(activeProjectId),
+    fetchSceneContext(effectiveSceneId, projectId),
+    fetchRequiredProjectContext(projectId),
   ]);
   if (!sceneCtx) return null;
 
@@ -1905,11 +2035,6 @@ async function buildOutgoingScenePrompt(
     input ||
     lastUserMessage?.trim() ||
     sceneCtx.content.slice(-SEMANTIC_RECALL_SEED_BODY_TAIL_CHARS);
-
-  // eco モード: send / refreshContextLayers と揃えて本文を空にする。
-  if (!includeBodies) {
-    sceneCtx.content = "";
-  }
 
   // 会話履歴 + これから送るメッセージ(send の messagesForCtx と同形)。
   const conversationMessages: ChatMessage[] = [
@@ -1930,16 +2055,14 @@ async function buildOutgoingScenePrompt(
   // sessionStableCodexIds / prefetchedEntries は send 専用(cacheSegments 分割と
   // fetch 重複排除のみで、返す prompt 文字列には影響しない)ため preview/copy では省く。
   const { prompt, layers, totalTokens } = await buildSceneContextPrompt({
+    purpose: opts.purpose,
+    authority,
     sceneCtx,
     projectCtx,
     activeSessionId,
-    effectiveSceneId,
-    inputPinnedEntryIds,
     conversationMessages,
-    agentMode: effectiveAgentMode,
     mentionedSceneIds: opts.mentionedSceneIds,
     mentionedCodexIds: opts.mentionedCodexIds,
-    excludedAutoEntryIds,
     semanticRecallSeedMessage: seed,
   });
   return { prompt, layers, totalTokens };
@@ -1956,21 +2079,22 @@ const PLOT_THREAD_MAX_MARKERS = 24;
 async function buildChronicleSnapshotTextForScene(
   projectId: string,
   sceneId: string,
+  treeNodes: TreeNodeData[],
   lang: string,
   codexNames: Map<string, string>,
   sceneCodexIds: string[],
   mentionedCodexIds: string[],
+  enabledOverride?: boolean,
 ): Promise<string | undefined> {
-  const enabled = useSettingsStore
-    .getState()
-    .getBoolean("aiPrompt.chronicle.enabled", true);
+  const enabled =
+    enabledOverride ??
+    useSettingsStore.getState().getBoolean("aiPrompt.chronicle.enabled", true);
   if (!enabled) return undefined;
   const events = await listEvents(projectId);
 
   // シーン自身の暦日付（scene-own アンカー源）を tree store から構築。
-  const nodes = useTreeStore.getState().nodes;
   const sceneChronicle = new Map<string, SceneChronicle>();
-  for (const n of nodes) {
+  for (const n of treeNodes) {
     if (n.nodeType !== "scene") continue;
     sceneChronicle.set(n.id, {
       startTime: n.chronicleStartTime ?? null,
@@ -1999,7 +2123,7 @@ async function buildChronicleSnapshotTextForScene(
   // 落とさない。旧インラインパースは季節/月/曜日/閏のみで元号等を捨てていた）。
   const calendar = calendarRow ? calendarFromRow(calendarRow) : null;
 
-  const readingOrder = computeGlobalSceneOrder(nodes);
+  const readingOrder = computeGlobalSceneOrder(treeNodes);
   return assembleChronicleSnapshotText({
     sceneId,
     events,
@@ -2064,16 +2188,215 @@ function buildPlotThreadScenesInput(
   });
 }
 
-async function buildSceneContextPrompt(opts: {
+interface CapturedSceneTurnAuthority {
+  projectId: string;
+  sceneId: string;
+  mode: "chat" | "agent";
+  route: ResolvedChatTurnRoute | null;
+  budget: SceneTurnContextRequest["budget"];
+  includeBodies: boolean;
+  map: SceneTurnContextRequest["map"];
+  activeTab: SceneTurnContextRequest["activeTab"];
+  settings: SceneTurnContextRequest["settings"];
+  inputPinnedEntryIds: readonly string[];
+  excludedAutoEntryIds: readonly string[];
+  sessionStableCodexIds: readonly string[];
+  sessionStableContextInitialized: boolean;
+  sourceDeps: SceneContextSourceDeps;
+}
+
+/** Capture every mutable store input before the first async source read. */
+function captureSceneTurnAuthority(input: {
+  projectId: string;
+  sceneId: string;
+  agentMode: boolean;
+  turnRoute?: ResolvedChatTurnRoute;
+  inputOverheadTokens?: number;
+}): CapturedSceneTurnAuthority {
+  const aiState = useAiSettingsStore.getState();
+  const aiSettings = aiState.settings;
+  const xprov = getCrossProviderChatOverride();
+  const chatModel = aiState.chatModelOverride ?? aiSettings?.model ?? "";
+  const apiVariant = xprov ? xprov.variant : getChatApiVariant(chatModel);
+  const fallbackCapabilities = resolveModelCapabilities(
+    chatModel,
+    aiSettings,
+    apiVariant,
+  );
+  const chatState = useChatStore.getState();
+  const mapState = useMapStore.getState();
+  const settingsState = useSettingsStore.getState();
+  const tabState = useTabStore.getState();
+  const activeTab = tabState.tabs.find(
+    (tab) => tab.nodeId === tabState.activeTabId,
+  );
+
+  return {
+    projectId: input.projectId,
+    sceneId: input.sceneId,
+    mode: input.agentMode ? "agent" : "chat",
+    route: input.turnRoute ?? null,
+    budget: {
+      contextWindow:
+        input.turnRoute?.contextWindow ?? fallbackCapabilities.contextWindow,
+      maxOutputTokens:
+        input.turnRoute?.capabilities.maxOutputTokens ??
+        fallbackCapabilities.maxOutputTokens,
+      responseReservationTokens:
+        input.turnRoute?.outputBudget.responseReservationTokens,
+      inputOverheadTokens: input.inputOverheadTokens,
+      deliveryMode:
+        input.turnRoute && selectsCacheSystemDelivery(input.turnRoute)
+          ? "cache"
+          : "plain",
+    },
+    includeBodies: chatState.includeBodies,
+    map: {
+      enabled: chatState.includeMapBoard,
+      boardId: chatState.mapBoardId,
+      activeBoardId: mapState.activeBoardId,
+    },
+    activeTab:
+      activeTab?.contentType === "codex" || activeTab?.contentType === "snippet"
+        ? { nodeId: activeTab.nodeId, contentType: activeTab.contentType }
+        : null,
+    settings: {
+      injectBeats: settingsState.getBoolean("beat.injectIntoContext", true),
+      chronicleEnabled: settingsState.getBoolean(
+        "aiPrompt.chronicle.enabled",
+        true,
+      ),
+      semanticRecallEnabled: settingsState.getBoolean(
+        "ai.semanticRecall",
+        true,
+      ),
+      episodicRecallEnabled: settingsState.getBoolean("ai.chatRecall", true),
+      hybridRecallEnabled: settingsState.getBoolean("ai.hybridRecall", true),
+      customChatInstruction: settingsState.get("aiPrompt.custom.chat", ""),
+    },
+    inputPinnedEntryIds: [...chatState.inputPinnedEntryIds],
+    excludedAutoEntryIds: [...chatState.excludedAutoEntryIds],
+    sessionStableCodexIds: [...chatState.sessionStableCodexIds],
+    sessionStableContextInitialized: chatState.sessionStableContextInitialized,
+    sourceDeps: createProductionSceneContextSourceDeps(
+      input.projectId,
+      input.sceneId,
+    ),
+  };
+}
+
+/**
+ * Production composition root for the scene source. Turn-owned mutable inputs
+ * enter through the request snapshot; application IO stays behind explicit
+ * adapters instead of leaking into the source implementation.
+ */
+function createProductionSceneContextSourceDeps(
+  capturedProjectId: string,
+  capturedSceneId: string,
+): SceneContextSourceDeps {
+  const treeNodes = useTreeStore
+    .getState()
+    .nodes.filter((node) => node.projectId === capturedProjectId)
+    .map((node) => ({ ...node }));
+  const phaseState = usePhaseStore.getState();
+  const temporalResolution = {
+    sceneTimeIndex: {
+      ...phaseState.sceneTimeIndex,
+      readingOrder: new Map(phaseState.sceneTimeIndex.readingOrder),
+      explicitStoryOrder: new Map(phaseState.sceneTimeIndex.explicitStoryOrder),
+      inheritedStoryOrder: new Map(
+        phaseState.sceneTimeIndex.inheritedStoryOrder,
+      ),
+    },
+    resolutionMode: phaseState.resolutionMode,
+  };
+  // Plot Thread is entirely store-backed, so materialize it synchronously at
+  // the composition boundary instead of re-reading stores after source IO.
+  const plotThreadScenes = buildPlotThreadScenesInput(capturedSceneId);
+  const unplacedBeats = useUnplacedBeatsStore
+    .getState()
+    .getBeats(capturedSceneId)
+    .map((beat) => ({
+      ...beat,
+      content: beat.content.map((node) => ({ ...node })),
+    }));
+
+  return createSceneContextSourceDeps({
+    listCodexEntries: listCodexEntriesForContext,
+    listTreeNodes: (requestedProjectId) =>
+      requestedProjectId === capturedProjectId ? treeNodes : [],
+    getTemporalResolution: (requestedProjectId) => {
+      if (requestedProjectId !== capturedProjectId) {
+        throw new Error("scene context temporal project mismatch");
+      }
+      return temporalResolution;
+    },
+    listPhases: listPhasesByEntryIds,
+    listPhaseDetailOverrides: listDetailOverridesByPhaseIds,
+    listRawDetailValues: listRawDetailValuesByEntryIds,
+    listContextDetails: listContextDetailsByEntryIds,
+    findMentionedEntries: findMentionedEntriesAsync,
+    listPinnedCodex: chatApi.listPinnedCodexEntries,
+    listPinnedSnippets: (sessionId) => listPinnedSnippetEntries(sessionId),
+    listPinnedStickies: (sessionId) => listPinnedStickyEntries(sessionId),
+    getSnippet,
+    getUnplacedBeats: (requestedSceneId) =>
+      requestedSceneId === capturedSceneId ? unplacedBeats : [],
+    listSummaries: chatApi.listSummaries,
+    listNodeLabels,
+    getSceneForeshadow: getSceneForeshadowContext,
+    listOpenForeshadows: listOpenForeshadowsForContext,
+    fetchSemanticRecall,
+    fetchChatRecall,
+    loadMentionedScenes: (requestedProjectId, ids, currentSceneId) =>
+      requestedProjectId === capturedProjectId
+        ? loadMentionedScenes([...ids], currentSceneId, treeNodes)
+        : Promise.resolve([]),
+    listCodexRelations,
+    loadMapBoardMarkdown: (sourceRequest, entries) =>
+      loadMapBoardMarkdown(entries, {
+        enabled: sourceRequest.map.enabled,
+        boardId: sourceRequest.map.boardId,
+        activeBoardId: sourceRequest.map.activeBoardId,
+        projectId: sourceRequest.projectId,
+        treeNodes,
+      }),
+    buildChronicleSnapshot: ({
+      request: sourceRequest,
+      language,
+      codexNames,
+      sceneCodexIds,
+      mentionedCodexIds,
+    }) =>
+      buildChronicleSnapshotTextForScene(
+        sourceRequest.projectId,
+        sourceRequest.sceneId,
+        treeNodes,
+        language,
+        codexNames,
+        sceneCodexIds,
+        mentionedCodexIds,
+        sourceRequest.settings.chronicleEnabled,
+      ),
+    buildPlotThreadScenes: (requestedProjectId, requestedSceneId) =>
+      requestedProjectId === capturedProjectId &&
+      requestedSceneId === capturedSceneId
+        ? plotThreadScenes
+        : undefined,
+    markStart,
+    markEnd,
+  });
+}
+
+interface BuildSceneContextPromptOptions {
+  purpose: ContextPlanningPurpose;
+  authority: CapturedSceneTurnAuthority;
   sceneCtx: SceneContext;
   projectCtx: ProjectContext | null;
   activeSessionId: string | null;
-  effectiveSceneId: string | null;
-  inputPinnedEntryIds: string[];
   conversationMessages: ChatMessage[];
   commandInstruction?: string;
   prefetchedEntries?: CodexContextEntry[];
-  agentMode?: boolean;
   /** @scene mention で per-message pin される scene ID 群。本関数内で
    * tree から本文を読み込み、buildSystemPrompt の mentionedScenes として
    * 注入される (eco モードでも必ず注入)。 */
@@ -2082,7 +2405,6 @@ async function buildSceneContextPrompt(opts: {
    * 作中年表スナップショットの人物プールへ最優先 seed として渡す（言及した人物の
    * 状態/年表を必ず載せる）。本文 L4 注入とは独立。 */
   mentionedCodexIds?: string[];
-  sessionStableCodexIds?: string[];
   /** semantic recall (Layer4 RAG) のクエリ seed に使う「これから送る本文」。
    * 送信 (sendMessage) は content、プレビュー / コピーは buildOutgoingScenePrompt
    * 経由で入力中テキスト(無ければ直近 user 発話 / 本文末尾)を渡す。未指定なら
@@ -2092,784 +2414,76 @@ async function buildSceneContextPrompt(opts: {
    * mentioned（自動検出）の両方から取り除く — UI の × は detected/always を
    * 区別せず付くため、片方だけ除外すると detected の × が次の refresh で
    * 即復活する。pinned 経路には影響しない（pin は除外を解除する）。 */
-  excludedAutoEntryIds?: string[];
   /** 実送信経路のみ true。chat episodic recall の「Codex に昇格」頻度を数えるのは
    * 実際に送ったターンだけ — プレビュー/コピー/ライブ更新では数えない。 */
   trackRecallPromote?: boolean;
-  /** Actual immutable route selected for this turn. Preview/live callers may omit it. */
-  turnRoute?: ResolvedChatTurnRoute;
-}): Promise<SceneContextPayload> {
-  const {
-    sceneCtx,
-    projectCtx,
-    activeSessionId,
-    effectiveSceneId,
-    inputPinnedEntryIds,
-    conversationMessages,
-    commandInstruction,
-  } = opts;
+  /** Guard planner-adjacent side effects against a stopped/replaced turn. */
+  isAuthorized?: () => boolean;
+}
 
-  await ensureTokenizer();
-  const allEntries =
-    opts.prefetchedEntries ??
-    (await listCodexEntriesForContext(getCurrentProjectId()));
-
-  const aiSettings = useAiSettingsStore.getState().settings;
-  // チャット用の一時モデル(あれば)を既定より優先。コンテキスト予算を実際に送る
-  // モデルのウィンドウから算出して送信時とずれないようにする。
-  const xprov = getCrossProviderChatOverride();
-  const chatModel =
-    useAiSettingsStore.getState().chatModelOverride ?? aiSettings?.model ?? "";
-  const chatApiVariant = xprov ? xprov.variant : getChatApiVariant(chatModel);
-  const fallbackCapabilities = resolveModelCapabilities(
-    chatModel,
-    aiSettings,
-    chatApiVariant,
-  );
-  const contextWindow =
-    opts.turnRoute?.contextWindow ?? fallbackCapabilities.contextWindow;
-  const maxOutputTokens =
-    opts.turnRoute?.capabilities.maxOutputTokens ??
-    fallbackCapabilities.maxOutputTokens;
-  const responseReservationTokens =
-    opts.turnRoute?.outputBudget.responseReservationTokens;
-  const budgets = allocateLayerBudgets(contextWindow, {
-    maxOutputTokens,
-    responseReservationTokens,
+async function buildSceneContextPrompt(
+  opts: BuildSceneContextPromptOptions,
+): Promise<SceneContextPayload> {
+  const { authority } = opts;
+  if (opts.sceneCtx.id !== authority.sceneId) {
+    throw new Error("scene context authority mismatch");
+  }
+  const request = createSceneTurnContextRequest({
+    requestId: crypto.randomUUID(),
+    purpose: opts.purpose,
+    projectId: authority.projectId,
+    sessionId: opts.activeSessionId,
+    sceneId: authority.sceneId,
+    mode: authority.mode,
+    route: authority.route,
+    budget: authority.budget,
+    messages: opts.conversationMessages,
+    outgoingUserMessage: opts.semanticRecallSeedMessage ?? "",
+    commandInstruction: opts.commandInstruction,
+    mentionedSceneIds: opts.mentionedSceneIds ?? [],
+    mentionedCodexIds: opts.mentionedCodexIds ?? [],
+    inputPinnedEntryIds: authority.inputPinnedEntryIds,
+    excludedAutoEntryIds: authority.excludedAutoEntryIds,
+    sessionStableCodexIds: authority.sessionStableCodexIds,
+    sessionStableContextInitialized: authority.sessionStableContextInitialized,
+    includeBodies: authority.includeBodies,
+    map: authority.map,
+    activeTab: authority.activeTab,
+    settings: authority.settings,
+    trackRecallPromote: opts.trackRecallPromote ?? false,
+    sourceSnapshot: {
+      scene: opts.sceneCtx,
+      project: opts.projectCtx,
+      prefetchedCodexEntries: opts.prefetchedEntries,
+    },
   });
-  const L4_TOTAL_BUDGET = budgets.l4;
-
-  // G12: context_mode filter (Codex + Note)
-  const allNodesEarly = useTreeStore.getState().nodes;
-  const noteNodes = allNodesEarly.filter((n) => n.nodeType === "note");
-  const detectableCodex = allEntries.filter(
-    (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
-  );
-  const excludedAutoIds = new Set(opts.excludedAutoEntryIds ?? []);
-  const alwaysCodexEntries = allEntries.filter(
-    (e) => e.contextMode === "always" && !excludedAutoIds.has(e.id),
-  );
-  const detectableNotes = noteNodes.filter((n) => {
-    const mode = n.contextMode ?? "mentioned";
-    return mode !== "hidden" && mode !== "suppress";
-  });
-  const alwaysNoteNodes = noteNodes.filter(
-    (n) => (n.contextMode ?? "mentioned") === "always",
-  );
-
-  const noteToMatchTarget = (node: TreeNodeData) => ({
-    id: node.id,
-    name: node.title,
-    type: "note",
-    aliases: node.aliases ?? "[]",
-    excludedAliases: node.excludedAliases ?? "[]",
-  });
-
-  const detectableMatchTargets = [
-    ...detectableCodex.map((e) => ({
-      id: e.id,
-      name: e.name,
-      type: e.type,
-      aliases: e.aliases,
-      excludedAliases: e.excludedAliases,
-    })),
-    ...detectableNotes.map(noteToMatchTarget),
-  ];
-
-  const mentionText = [
-    sceneCtx.content,
-    ...conversationMessages
-      .filter((m) => m.role === "user")
-      .map((m) => m.content),
-  ].join("\n");
-
-  markStart("buildSceneCtx.findMentionedEntriesAsync");
-  const mentionedAll = await findMentionedEntriesAsync(
-    mentionText,
-    detectableMatchTargets,
-  );
-  markEnd("buildSceneCtx.findMentionedEntriesAsync");
-
-  // × で除外されたエントリは検出経路からも外す（注入・ピル両方）。
-  // 本文に語が残る限り再検出されるため、ここで弾かないと excludeEntryFromAuto
-  // 直後の refresh で detected ピルが即復活する。
-  const mentioned = mentionedAll.filter(
-    (e) => e.type !== "note" && !excludedAutoIds.has(e.id),
-  );
-  const mentionedNotes = mentionedAll.filter((e) => e.type === "note");
-
-  const mentionedIds = new Set(mentioned.map((e) => e.id));
-  const alwaysNotMentioned = alwaysCodexEntries.filter(
-    (e) => !mentionedIds.has(e.id),
-  );
-  const rawCodexEntries = stableSortCodexEntries([
-    ...mentioned,
-    ...alwaysNotMentioned,
-  ]);
-
-  const buildCodexCtx = (e: CodexContextEntry): CodexContext => {
-    const summary = e.summary ?? "";
-    const contentFallback = summary.trim()
-      ? undefined
-      : extractPlainText(e.content) || undefined;
-    const aliases = parseAliases(e.aliases);
-    return {
-      id: e.id,
-      type: e.type,
-      name: e.name,
-      summary,
-      contentFallback,
-      ...(aliases ? { aliases } : {}),
-    };
-  };
-
-  const baseCodexEntries: CodexContext[] = rawCodexEntries.map((e) => {
-    const full = allEntries.find((a) => a.id === e.id);
-    return full
-      ? buildCodexCtx(full)
-      : { id: e.id, type: e.type, name: e.name, summary: "" };
-  });
-
-  // Children context (subtree token budget)
-  // Phase Cb: detected seed は phase 解決されるので、その子孫 summary も同じ
-  // effectiveSceneId 時点で解決してから注入する（生注入だと過去シーンに子孫の
-  // 未来/旧状態を漏らす relation と同型の時点リーク）。予算内子孫を一括解決。
-  const detectedDescIds = collectBudgetedDescendantIds(
-    rawCodexEntries.map((e) => e.id),
-    allEntries,
-  );
-  const { resolved: resolvedDescendants } = await resolveEntriesForContext(
-    allEntries.filter((e) => detectedDescIds.has(e.id)),
-    effectiveSceneId,
-  );
-  const withChildrenCtx: CodexContext[] = baseCodexEntries.map((ctx) => {
-    const fullEntry = allEntries.find((e) => e.id === ctx.id);
-    if (!fullEntry) return ctx;
-    const preset = fullEntry.childrenBudget ?? "compact";
-    if (preset === "none") return ctx;
-    const budget = computeChildrenTokenBudget(preset, L4_TOTAL_BUDGET);
-    const descendants = getDescendantsBFS(fullEntry.id, allEntries);
-    const childrenContext = buildChildrenContext(
-      descendants,
-      budget,
-      resolvedDescendants,
-    );
-    return childrenContext ? { ...ctx, childrenContext } : ctx;
-  });
-
-  // G14: enrich with custom details
-  markStart("buildSceneCtx.enrichWithCustomDetails");
-  const enrichedCodexEntries = await enrichWithCustomDetails(
-    withChildrenCtx,
-    allEntries,
-  );
-  markEnd("buildSceneCtx.enrichWithCustomDetails");
-
-  // Phase resolution
-  const rawFullEntries = rawCodexEntries
-    .map((e) => allEntries.find((a) => a.id === e.id))
-    .filter((e): e is CodexContextEntry => e !== undefined);
-  const { resolved: phaseResolved, phases: entryPhases } =
-    await resolveEntriesForContext(rawFullEntries, effectiveSceneId);
-
-  const codexEntries: CodexContext[] = enrichedCodexEntries.map((ctx) => {
-    const rs = phaseResolved.get(ctx.id);
-    if (!rs) return ctx;
-    const phases = entryPhases.get(ctx.id) ?? [];
-    const lastPhaseId = rs.appliedPhaseIds[rs.appliedPhaseIds.length - 1];
-    const lastPhase = lastPhaseId
-      ? phases.find((p) => p.id === lastPhaseId)
-      : undefined;
-    return {
-      ...ctx,
-      summary: rs.summary ?? ctx.summary,
-      ...(lastPhase ? { phaseLabel: lastPhase.label } : {}),
-    };
-  });
-
-  // Compute full pin set upfront (DB + G21 in-memory) to avoid duplicate injection
-  const pinnedFromDB = activeSessionId
-    ? await chatApi.listPinnedCodexEntries(activeSessionId)
-    : [];
-  const dbPinnedIdSet = new Set(pinnedFromDB.map((e) => e.id));
-  const g21Ids = inputPinnedEntryIds.filter((id) => !dbPinnedIdSet.has(id));
-  const allPinnedIdSet = new Set([...dbPinnedIdSet, ...g21Ids]);
-
-  // Pinned codex entries (from DB — includes any just-auto-pinned entries)
-  let pinnedCodexEntries: import("./contextBuilder").PinnedCodexContext[] =
-    pinnedFromDB.map((e) => {
-      const children = e.withChildren
-        ? getChildrenFromArray(e.id, allEntries)
-            .filter((c) => !allPinnedIdSet.has(c.id))
-            .map((c) => {
-              const childAliases = parseAliases(c.aliases);
-              return {
-                id: c.id,
-                type: c.type,
-                name: c.name,
-                summary: c.summary ?? "",
-                ...(childAliases ? { aliases: childAliases } : {}),
-              };
-            })
-        : undefined;
-      const childrenCtx = buildChildrenCtxForEntry(
-        e,
-        allEntries,
-        L4_TOTAL_BUDGET,
-        allPinnedIdSet,
-      );
-      const aliases = parseAliases(e.aliases);
-      const tags = parseTags(e.tagsCache);
-      return {
-        id: e.id,
-        type: e.type,
-        name: e.name,
-        summary: e.summary ?? "",
-        fullContent: extractPlainText(e.content) || undefined,
-        withChildren: e.withChildren,
-        children,
-        ...(aliases ? { aliases } : {}),
-        ...(tags ? { tags } : {}),
-        ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-      };
-    });
-
-  // G21: include input-typed detected entries not yet pinned to DB
-  {
-    const extraPinned = g21Ids.flatMap((id) => {
-      const e = allEntries.find((a) => a.id === id);
-      if (!e) return [];
-      const childrenCtx = buildChildrenCtxForEntry(
-        e,
-        allEntries,
-        L4_TOTAL_BUDGET,
-        allPinnedIdSet,
-      );
-      const aliases = parseAliases(e.aliases);
-      const tags = parseTags(e.tagsCache);
-      const ctx: import("./contextBuilder").PinnedCodexContext = {
-        id: e.id,
-        type: e.type,
-        name: e.name,
-        summary: e.summary ?? "",
-        fullContent: extractPlainText(e.content) || undefined,
-        withChildren: false,
-        ...(aliases ? { aliases } : {}),
-        ...(tags ? { tags } : {}),
-        ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-      };
-      return [ctx];
-    });
-    if (extraPinned.length > 0) {
-      pinnedCodexEntries = [...pinnedCodexEntries, ...extraPinned];
-    }
-  }
-
-  // Spotlight された pinned エントリにも customDetails を付ける。
-  // L4 描画は `pinnedIds.has(entry.id) && entry.customDetails?.length` で
-  // pinned 限定なので、ここで詰めないと customDetails 行が永遠に出ない。
-  pinnedCodexEntries = await enrichWithCustomDetails(
-    pinnedCodexEntries,
-    allEntries,
-  );
-
-  // G15: compute detectedEntries / alwaysEntries (excluding pinned) for caller
-  const pinnedIdSet = new Set(pinnedCodexEntries.map((e) => e.id));
-  const detectedNotPinned = mentioned
-    .filter((e) => !pinnedIdSet.has(e.id))
-    .map((e) => allEntries.find((a) => a.id === e.id))
-    .filter((e): e is CodexContextEntry => e !== undefined);
-  const alwaysNotPinned = alwaysCodexEntries.filter(
-    (e) => !pinnedIdSet.has(e.id) && !mentionedIds.has(e.id),
-  );
-
-  // Note L4 entries (mentioned + always-not-mentioned)
-  const mentionedNoteIds = new Set(mentionedNotes.map((n) => n.id));
-  const noteById = new Map(noteNodes.map((n) => [n.id, n]));
-  const buildNoteCtx = (node: TreeNodeData): NoteContext => {
-    const aliases = parseAliases(node.aliases);
-    return {
-      id: node.id,
-      title: node.title,
-      content: prosemirrorToText(node.content ?? ""),
-      ...(aliases ? { aliases } : {}),
-    };
-  };
-  const rawNoteEntries: NoteContext[] = [
-    ...mentionedNotes
-      .map((m) => noteById.get(m.id))
-      .filter((n): n is TreeNodeData => n !== undefined)
-      .map(buildNoteCtx),
-    ...alwaysNoteNodes
-      .filter((n) => !mentionedNoteIds.has(n.id))
-      .map(buildNoteCtx),
-  ];
-  const noteEntries = rawNoteEntries.length > 0 ? rawNoteEntries : undefined;
-  const alwaysNoteIds =
-    alwaysNoteNodes.length > 0 ? alwaysNoteNodes.map((n) => n.id) : undefined;
-
-  // Story so far
-  const allNodes = useTreeStore.getState().nodes;
-  const currentScene = allNodes.find((n) => n.id === sceneCtx.id);
-  markStart("buildSceneCtx.buildStorySoFar");
-  const storySoFar = buildStorySoFar(sceneCtx.id, allNodes, budgets.l2);
-  markEnd("buildSceneCtx.buildStorySoFar");
-
-  // Phase 4: 祖先 folder の outline (= synopsis) を root まで walk して収集。
-  // 非空の synopsis を持つ folder のみ採用し、outermost (root に近い) →
-  // innermost (現シーン直接親) の順で並べる。L2 で chapter outlines として注入。
-  const chapterOutlines: Array<{ title: string; outline: string }> = [];
-  {
-    const path: { title: string; outline: string }[] = [];
-    let cursor: typeof currentScene | undefined = currentScene;
-    while (cursor?.parentId) {
-      const parent = allNodes.find((n) => n.id === cursor!.parentId);
-      if (!parent) break;
-      if (parent.nodeType === "folder" && parent.synopsis?.trim()) {
-        path.push({ title: parent.title, outline: parent.synopsis.trim() });
-      }
-      cursor = parent;
-    }
-    chapterOutlines.push(...path.reverse()); // outermost first
-  }
-
-  // G11: previousScene (reading-order)
-  const previousSceneNode = currentScene
-    ? allNodes
-        .filter(
-          (n) =>
-            n.nodeType === "scene" &&
-            n.id !== sceneCtx.id &&
-            cmpKeys(n.sortOrder, currentScene.sortOrder) < 0 &&
-            n.synopsis != null &&
-            n.synopsis.trim() !== "",
-        )
-        .sort((a, b) => cmpKeys(b.sortOrder, a.sortOrder))[0]
-    : undefined;
-  const previousScene = previousSceneNode
-    ? {
-        title: previousSceneNode.title,
-        synopsis: previousSceneNode.synopsis as string,
-      }
-    : undefined;
-
-  // Phase 2: ストーリー時系列の直前シーン。reading-order の previousScene と
-  // 異なる場合のみ注入する。current の storyTimeOrder が未設定なら無効。
-  const storyTimePreviousNode =
-    currentScene && currentScene.storyTimeOrder
-      ? allNodes
-          .filter(
-            (n) =>
-              n.nodeType === "scene" &&
-              n.id !== sceneCtx.id &&
-              n.storyTimeOrder != null &&
-              cmpKeys(n.storyTimeOrder, currentScene.storyTimeOrder!) < 0 &&
-              n.synopsis != null &&
-              n.synopsis.trim() !== "",
-          )
-          .sort((a, b) =>
-            cmpKeys(b.storyTimeOrder as string, a.storyTimeOrder as string),
-          )[0]
-      : undefined;
-  const storyTimePreviousScene =
-    storyTimePreviousNode && storyTimePreviousNode.id !== previousSceneNode?.id
-      ? {
-          title: storyTimePreviousNode.title,
-          synopsis: storyTimePreviousNode.synopsis as string,
-          storyTimeLabel: storyTimePreviousNode.storyTimeLabel ?? null,
-        }
-      : undefined;
-
-  // G16: pinned snippets
-  let pinnedSnippets: PinnedSnippetContext[] = [];
-  let pinnedStickies: PinnedStickyContext[] = [];
-  if (activeSessionId) {
-    try {
-      const snippetItems = await listPinnedSnippetEntries(activeSessionId);
-      pinnedSnippets = snippetItems.map((s) => ({
-        id: s.id,
-        title: s.title,
-        content: extractPlainText(s.content) || s.title,
-      }));
-    } catch {
-      // 取得失敗は無視
-    }
-    try {
-      const stickyItems = await listPinnedStickyEntries(activeSessionId);
-      pinnedStickies = stickyItems.map((s) => ({
-        id: s.id,
-        title: s.title,
-        content: s.content,
-      }));
-    } catch {
-      // 取得失敗は無視
-    }
-  }
-
-  // Map overlay: scope と直交する独立トグル。ON のとき active board
-  // 全体（Sticky / Edge / Frame）を 1 ブロックとして L4 に注入する。
-  const mapBoardMarkdown = await loadMapBoardMarkdown(allEntries);
-
-  // G19: active tab content
-  let activeTabContent:
-    | { type: "codex" | "snippet"; title: string; content: string }
-    | undefined;
-  try {
-    const tabState = useTabStore.getState();
-    const activeTab = tabState.tabs.find(
-      (t) => t.nodeId === tabState.activeTabId,
-    );
-    if (activeTab?.contentType === "codex") {
-      const codexEntry = allEntries.find((e) => e.id === activeTab.nodeId);
-      if (codexEntry) {
-        activeTabContent = {
-          type: "codex",
-          title: codexEntry.name,
-          content:
-            extractPlainText(codexEntry.content) || codexEntry.summary || "",
-        };
-      }
-    } else if (activeTab?.contentType === "snippet") {
-      const snippet = await getSnippet(
-        getCurrentProjectId(),
-        activeTab.nodeId,
-      ).catch(() => undefined);
-      if (snippet) {
-        activeTabContent = {
-          type: "snippet",
-          title: snippet.title,
-          content: extractPlainText(snippet.content) || snippet.title,
-        };
-      }
-    }
-  } catch {
-    // 無視
-  }
-
-  // G17: conversation summary
-  let conversationSummary: string | undefined;
-  if (activeSessionId) {
-    try {
-      const summaries = await chatApi.listSummaries(activeSessionId);
-      if (summaries.length > 0) {
-        conversationSummary = summaries.map((s) => s.summary).join("\n\n");
-      }
-    } catch {
-      // 無視
-    }
-  }
-
-  markStart(
-    `buildSceneCtx.conversationTokenize.${conversationMessages.length}`,
-  );
-  const conversationTokens = conversationMessages
-    .filter((m) => m.role !== "system")
-    .reduce((sum, m) => sum + countTokens(m.content), 0);
-  markEnd(`buildSceneCtx.conversationTokenize.${conversationMessages.length}`);
-
-  // C-3: Build "pending beats" section if injection is enabled.
-  // contentJson が undefined/空/JSON parse 失敗のいずれでも、Unplaced beat の
-  // ヒントだけは落とさず注入する（旧 HTML 形式 scene 等のフォールバック）。
-  const injectBeats = useSettingsStore
-    .getState()
-    .getBoolean("beat.injectIntoContext", true);
-  let pendingBeatsSection: string | undefined;
-  if (injectBeats) {
-    let docJson: unknown = null;
-    if (sceneCtx.contentJson) {
-      try {
-        docJson = JSON.parse(sceneCtx.contentJson);
-      } catch {
-        docJson = null;
-      }
-    }
-    try {
-      const unplacedBeats = useUnplacedBeatsStore
-        .getState()
-        .getBeats(sceneCtx.id);
-      pendingBeatsSection = buildPendingBeatsSection({
-        sceneDocJson: docJson,
-        unplacedBeats,
-        resolveCharacterName: (id) =>
-          allEntries.find((e) => e.id === id)?.name ?? null,
-        currentBeatId: null,
-        scenePovCharacterId: currentScene?.povCharacterId ?? null,
-      });
-    } catch {
-      // 無視
-    }
-  }
-
-  // Phase 1+2: シーンラベル / シーン直結伏線 / 全体未回収伏線 を並列取得。
-  // すべて DB アクセスのみで in-memory store に依存しない。個別に try/catch して
-  // フォールバックで空にすることで、データが無くても既存挙動は維持される。
-  const projectIdForFs = useTreeStore.getState().projectId;
-
-  // semantic recall (Layer4 RAG): 送信経路でのみ seed が渡る。設定 OFF /
-  // seed 無し (プレビュー・コピー経路) / projectId 不明なら何もしない。
-  // seed の本文は DB 保存値 (sceneCtx.content) ベース — eco モードで本文が
-  // 空のときはユーザー発話のみで検索する。失敗は fetchSemanticRecall 内で
-  // 空配列フォールバック済み (feature 無効ビルド / 未 index)。
-  const semanticRecallEnabled = useSettingsStore
-    .getState()
-    .getBoolean("ai.semanticRecall", true);
-  // ハイブリッド検索 (dense + sparse/bm25 RRF 融合)。semanticRecall が前提。
-  const hybridRecallEnabled = useSettingsStore
-    .getState()
-    .getBoolean("ai.hybridRecall", true);
-  const recallQuery =
-    semanticRecallEnabled && opts.semanticRecallSeedMessage
-      ? buildSemanticRecallQuery({
-          userMessage: opts.semanticRecallSeedMessage,
-          sceneBody: sceneCtx.content,
-        })
-      : "";
-
-  // chat episodic recall (エピソード記憶): 過去の対話を意味検索で注入する。scene RAG
-  // とは独立トグル (ai.chatRecall) で、無効にすればシーン RAG を残したまま記憶だけ切れる。
-  // hybrid 融合 (sparse/bm25) は scene RAG と同じ ai.hybridRecall を共有する。クエリ seed
-  // も同じ (ユーザー発話 + 現在シーン本文末尾)。現セッションは除外し進行中ターンを
-  // 記憶として引き戻さない。
-  const chatRecallEnabled = useSettingsStore
-    .getState()
-    .getBoolean("ai.chatRecall", true);
-  const chatRecallQuery =
-    chatRecallEnabled && opts.semanticRecallSeedMessage
-      ? buildSemanticRecallQuery({
-          userMessage: opts.semanticRecallSeedMessage,
-          sceneBody: sceneCtx.content,
-        })
-      : "";
-
-  markStart("buildSceneCtx.fetchLabelsAndForeshadow");
-  const [
-    sceneLabelRows,
-    sceneForeshadow,
-    openForeshadowRows,
-    semanticRecallChunks,
-    chatRecallMessages,
-  ] = await Promise.all([
-    listNodeLabels(sceneCtx.id).catch(() => []),
-    getSceneForeshadowContext(sceneCtx.id).catch(() => ({
-      setups: [],
-      payoffs: [],
-    })),
-    projectIdForFs
-      ? listOpenForeshadowsForContext(projectIdForFs).catch(() => [])
-      : Promise.resolve([]),
-    recallQuery && projectIdForFs
-      ? fetchSemanticRecall({
-          projectId: projectIdForFs,
-          query: recallQuery,
-          excludeSceneIds: [sceneCtx.id, ...(opts.mentionedSceneIds ?? [])],
-          hybrid: hybridRecallEnabled,
-        })
-      : Promise.resolve([] as SemanticRecallChunk[]),
-    chatRecallQuery && projectIdForFs
-      ? fetchChatRecall({
-          projectId: projectIdForFs,
-          query: chatRecallQuery,
-          excludeSessionIds: activeSessionId ? [activeSessionId] : [],
-          hybrid: hybridRecallEnabled,
-        })
-      : Promise.resolve([] as ChatRecallMessage[]),
-  ]);
-  markEnd("buildSceneCtx.fetchLabelsAndForeshadow");
-  const sceneLabels = sceneLabelRows.map((l) => l.name);
-  const openForeshadowsInput =
-    openForeshadowRows.length > 0
-      ? openForeshadowRows.map((r) => ({
-          title: r.title,
-          intent: r.intent,
-          loadBearing: r.loadBearing,
-          setupCount: r.setupCount,
-          derivedLabel: r.derivedLabel,
-        }))
-      : undefined;
-  const sceneForeshadowInput =
-    sceneForeshadow.setups.length > 0 || sceneForeshadow.payoffs.length > 0
-      ? {
-          setups: sceneForeshadow.setups.map((s) => ({
-            title: s.title,
-            intent: s.intent,
-            derivedLabel: s.derivedLabel,
-            strength: s.strength ?? null,
-            excerpt: s.excerpt ?? null,
-          })),
-          payoffs: sceneForeshadow.payoffs.map((p) => ({
-            title: p.title,
-            intent: p.intent,
-            setupSceneTitle: p.setupSceneTitle,
-            derivedLabel: p.derivedLabel,
-            strength: p.strength ?? null,
-            excerpt: p.excerpt ?? null,
-          })),
-        }
-      : undefined;
-
-  // @scene mention の本文ロード (per-send only)。buildSystemPrompt の中で
-  // 現在シーン id と同一のものは除外されるが、ここでも loadSceneContent の
-  // 二重呼び出しを避けるため明示的に弾いている。
-  const mentionedScenes = await loadMentionedScenes(
-    opts.mentionedSceneIds,
-    sceneCtx.id,
-  );
-
-  // Phase Cb: BFS-expand formal Codex relations from entries already in L4.
-  const projectIdForRel = useTreeStore.getState().projectId;
-  let relationCodexEntries: CodexContext[] | undefined;
-  let intraContextRelations: IntraContextRelationEdge[] | undefined;
-  if (projectIdForRel) {
-    const l4SeedIds = new Set([
-      ...codexEntries.map((e) => e.id),
-      ...pinnedCodexEntries.map((e) => e.id),
-    ]);
-    if (l4SeedIds.size > 0) {
-      const relations = await listCodexRelations(projectIdForRel).catch(
-        () => [],
-      );
-      // Descendants already surfaced via childrenContext (the 階層/親子 path)
-      // must not be re-injected as relation blocks, or an entry that is both a
-      // hierarchy child and a typed-relation neighbor would appear twice in L4.
-      const relExcludeIds = new Set([
-        ...l4SeedIds,
-        ...collectBudgetedDescendantIds(l4SeedIds, allEntries),
-      ]);
-      // depth 2 の「相手の相手」(師匠のライバル等) は現シーンとほぼ無関係な
-      // ノイズになりやすいため、focus 経路と揃えて直接の相手 (depth 1) のみに絞る。
-      const expanded = expandCodexRelationsBFS(
-        [...l4SeedIds],
-        relations,
-        allEntries,
-        relExcludeIds,
-        { maxDepth: 1 },
-      );
-      relationCodexEntries = expanded.length > 0 ? expanded : undefined;
-      // surfacing: 両端とも seed (両方が文脈にいる) の関係はラベルのみ各エントリへ。
-      // discovery (片側 seed → 相手を引き込む) とは別軸で、無関係ノイズを増やさない。
-      const intra = collectIntraContextRelations(
-        [...l4SeedIds],
-        relations,
-        allEntries,
-      );
-      intraContextRelations = intra.length > 0 ? intra : undefined;
-    }
-  }
-
-  // 作中年表スナップショット（push・L3 cache 同梱）。codexNames は全 project codex
-  // (allEntries) から、sceneCodexIds は自動検出された L4 codex から。
-  // mentionedCodexIds（最優先 seed・cap でも生存）には @mention 人物に加え、
-  // Spotlight（ピン留め）した人物も足す。Spotlight は @mention より強い明示フォーカス
-  // 信号なので、その人物の年表（生死/年齢/所在/関連イベント）も必ず載せる。
-  const chronicleSnapshotText = projectIdForFs
-    ? await buildChronicleSnapshotTextForScene(
-        projectIdForFs,
-        sceneCtx.id,
-        projectCtx?.language ?? "ja",
-        new Map(allEntries.map((e) => [e.id, e.name] as const)),
-        codexEntries.map((e) => e.id),
-        Array.from(
-          new Set([
-            ...(opts.mentionedCodexIds ?? []),
-            ...pinnedCodexEntries.map((e) => e.id),
-          ]),
-        ),
-      )
-    : undefined;
+  const sceneSourceDeps = authority.sourceDeps;
 
   markStart("buildSceneCtx.buildSystemPrompt");
-  const promptResult = buildSystemPrompt({
-    scene: sceneCtx,
-    project: projectCtx ?? undefined,
-    storySoFar: storySoFar || undefined,
-    previousScene,
-    codexEntries,
-    pinnedCodexEntries,
-    pinnedSnippets: pinnedSnippets.length > 0 ? pinnedSnippets : undefined,
-    pinnedStickies: pinnedStickies.length > 0 ? pinnedStickies : undefined,
-    mapBoardMarkdown,
-    activeTabContent,
-    commandInstruction,
-    conversationTokens,
-    contextWindow,
-    maxOutputTokens,
-    outputReservationTokens: responseReservationTokens,
-    deliveryMode:
-      opts.turnRoute && selectsCacheSystemDelivery(opts.turnRoute)
-        ? "cache"
-        : "plain",
-    conversationSummary,
-    pendingBeatsSection,
-    sceneLabels: sceneLabels.length > 0 ? sceneLabels : undefined,
-    sceneForeshadow: sceneForeshadowInput,
-    openForeshadows: openForeshadowsInput,
-    storyTimePreviousScene,
-    projectOutline: projectCtx?.outline ?? undefined,
-    chapterOutlines: chapterOutlines.length > 0 ? chapterOutlines : undefined,
-    mentionedScenes: mentionedScenes.length > 0 ? mentionedScenes : undefined,
-    lang: projectCtx?.language ?? "ja",
-    agentMode: opts.agentMode,
-    customChatInstruction: useSettingsStore
-      .getState()
-      .get("aiPrompt.custom.chat", ""),
-    sessionStableCodexIds: opts.sessionStableCodexIds,
-    alwaysEntryIds: alwaysNotPinned.map((e) => e.id),
-    noteEntries,
-    alwaysNoteIds,
-    relationCodexEntries,
-    intraContextRelations,
-    semanticRecall:
-      semanticRecallChunks.length > 0
-        ? semanticRecallChunks.map((c) => ({
-            sceneTitle: c.sceneTitle,
-            chunkText: c.chunkText,
-          }))
-        : undefined,
-    chatRecall:
-      chatRecallMessages.length > 0
-        ? chatRecallMessages.map((m) => ({ label: m.label, text: m.text }))
-        : undefined,
-    // Phase 3a: 現在シーンが属する縦糸の構成（本文なし・位置づけのみ）。
-    plotThreadScenes: buildPlotThreadScenesInput(sceneCtx.id),
-    // Phase 1: 作中年表スナップショット（作中時刻の世界状態・矛盾防止）。
-    chronicleSnapshotText,
-  });
+  const result = await planChatContext(
+    request,
+    createDefaultContextPlannerDeps({
+      collectRequiredSceneContext: (sourceRequest) =>
+        collectSceneContext(sourceRequest, sceneSourceDeps),
+    }),
+  );
   markEnd("buildSceneCtx.buildSystemPrompt");
 
-  // 「Codex に昇格しますか？」: 同じ過去発言が閾値回数 recall されたら既存の抽出 UI を
-  // 促す候補を立てる (柔→硬は人が渡る)。実送信ターンのみ数える。
-  if (opts.trackRecallPromote && chatRecallMessages.length > 0) {
+  if (
+    request.trackRecallPromote &&
+    (opts.isAuthorized?.() ?? true) &&
+    result.recalledMessages.length > 0
+  ) {
     const suggestion = trackRecallForPromote(
       recallPromoteTracker,
-      chatRecallMessages.map((m) => ({ messageId: m.messageId, text: m.text })),
+      result.recalledMessages,
     );
     if (suggestion) {
       useChatStore.setState({ chatRecallPromoteSuggestion: suggestion });
     }
   }
 
-  const stableCodexIds = [
-    ...allPinnedIdSet,
-    ...rawCodexEntries.map((e) => e.id),
-    ...(noteEntries?.map((n) => n.id) ?? []),
-    ...(relationCodexEntries?.map((e) => e.id) ?? []),
-  ];
-
-  return {
-    prompt: promptResult.prompt,
-    totalTokens: promptResult.totalTokens,
-    layers: promptResult.layers,
-    detectedEntries: detectedNotPinned,
-    alwaysEntries: alwaysNotPinned,
-    fullyInjectedIds: pinnedCodexEntries.map((e) => e.id),
-    stableCodexIds: [...new Set(stableCodexIds)],
-    cacheSegments: promptResult.cacheSegments,
-    volatileTail: promptResult.volatileTail,
-    projectOutline: projectCtx?.outline?.trim()
-      ? projectCtx.outline
-      : undefined,
-    chapterOutlines,
-  };
+  return result;
 }
 
 /**
@@ -2901,6 +2515,130 @@ export function contextPromptKey(
 }
 
 /**
+ * Snapshot every mutable non-scene source selector before a send can yield.
+ * Conversation messages may be replaced by the deterministic summarization
+ * result later, but source membership/configuration never re-reads Zustand.
+ */
+function captureNonSceneContextAuthority(input: {
+  state: ChatState;
+  projectId: string;
+  mode: "chat" | "agent";
+  agentToolsAvailable: boolean;
+  route: ResolvedChatTurnRoute | null;
+  inputOverheadTokens?: number;
+}): CapturedNonSceneContextAuthority {
+  const { state, projectId, route } = input;
+  const aiSettings = useAiSettingsStore.getState().settings;
+  const model = route?.model ?? aiSettings?.model ?? "";
+  const fallbackCapabilities = resolveModelCapabilities(
+    model,
+    aiSettings,
+    getChatApiVariant(model),
+  );
+  const contextWindow =
+    route?.contextWindow ?? fallbackCapabilities.contextWindow;
+  const maxOutputTokens =
+    route?.capabilities.maxOutputTokens ?? fallbackCapabilities.maxOutputTokens;
+  const settingsState = useSettingsStore.getState();
+  const mapState = useMapStore.getState();
+  const treeNodes = useTreeStore
+    .getState()
+    .nodes.filter((node) => !node.projectId || node.projectId === projectId)
+    .map((node) => (node.projectId ? { ...node } : { ...node, projectId }));
+  const phaseState = usePhaseStore.getState();
+  const plotThreadState = usePlotThreadStore.getState();
+
+  let scope: Exclude<ContextScopeTarget, { kind: "scene" }>;
+  if (state.threadFocusOverride) {
+    scope = {
+      kind: "thread",
+      threadId: state.threadFocusOverride.threadId,
+      title: state.threadFocusOverride.title,
+    };
+  } else if (state.chatScope === "folder" && state.scopeAnchorId) {
+    scope = { kind: "folder", folderId: state.scopeAnchorId };
+  } else if (state.chatScope === "project") {
+    scope = { kind: "project" };
+  } else if (state.chatScope === "codex" && state.scopeAnchorId) {
+    scope = { kind: "codex", entryId: state.scopeAnchorId };
+  } else if (state.chatScope === "snippet" && state.scopeAnchorId) {
+    scope = { kind: "snippet", snippetId: state.scopeAnchorId };
+  } else {
+    scope = { kind: "global" };
+  }
+
+  return {
+    requestSeed: {
+      projectId,
+      scope,
+      containerScope: state.chatScope,
+      scopeAnchorId: state.scopeAnchorId,
+      activeSceneId: state.activeSceneId,
+      activeProjectId: state.activeProjectId,
+      agentToolsAvailable: input.agentToolsAvailable,
+      mode: input.mode,
+      route,
+      budget: {
+        contextWindow,
+        maxOutputTokens,
+        responseReservationTokens:
+          route?.outputBudget.responseReservationTokens,
+        inputOverheadTokens: input.inputOverheadTokens,
+        deliveryMode:
+          route && selectsCacheSystemDelivery(route) ? "cache" : "plain",
+      },
+      inputPinnedEntryIds: [...state.inputPinnedEntryIds],
+      excludedAutoEntryIds: [...state.excludedAutoEntryIds],
+      sessionStableCodexIds: [...state.sessionStableCodexIds],
+      sessionStableContextInitialized: state.sessionStableContextInitialized,
+      includeBodies: state.includeBodies,
+      map: {
+        enabled: state.includeMapBoard,
+        boardId: state.mapBoardId,
+        activeBoardId: mapState.activeBoardId,
+      },
+      activeTab: null,
+      settings: {
+        injectBeats: settingsState.getBoolean("beat.injectIntoContext", true),
+        chronicleEnabled: settingsState.getBoolean(
+          "aiPrompt.chronicle.enabled",
+          true,
+        ),
+        semanticRecallEnabled: settingsState.getBoolean(
+          "ai.semanticRecall",
+          true,
+        ),
+        episodicRecallEnabled: settingsState.getBoolean("ai.chatRecall", true),
+        hybridRecallEnabled: settingsState.getBoolean("ai.hybridRecall", true),
+        customChatInstruction: settingsState.get("aiPrompt.custom.chat", ""),
+      },
+      trackRecallPromote: false,
+      sourceSnapshot: {
+        treeNodes,
+        plotThreadIds: plotThreadState.threads.map((thread) => thread.id),
+        plotThreadLinks: plotThreadState.links.map(({ threadId, nodeId }) => ({
+          threadId,
+          nodeId,
+        })),
+      },
+    },
+    temporalResolution: {
+      sceneTimeIndex: {
+        ...phaseState.sceneTimeIndex,
+        readingOrder: new Map(phaseState.sceneTimeIndex.readingOrder),
+        explicitStoryOrder: new Map(
+          phaseState.sceneTimeIndex.explicitStoryOrder,
+        ),
+        inheritedStoryOrder: new Map(
+          phaseState.sceneTimeIndex.inheritedStoryOrder,
+        ),
+      },
+      resolutionMode: phaseState.resolutionMode,
+    },
+  };
+}
+
+/**
  * chat episodic recall の「Codex に昇格しますか？」頻度トラッカー (per-session・
  * in-memory)。store 外の module 状態にして、毎ターンの recall カウントで store の
  * re-render を起こさない (提案が立った瞬間だけ store state を更新する)。
@@ -2919,7 +2657,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeProjectId: null,
   contextTokenCount: 0,
   contextWindowSize: null,
+  contextModel: null,
   contextLayers: [],
+  contextPlan: null,
   lastSystemPrompt: "",
   lastSystemPromptKey: null,
   chatRecallPromoteSuggestion: null,
@@ -2949,6 +2689,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   maxSummaryGeneration: 0,
   cacheInvalidatedReason: null,
   sessionStableCodexIds: [],
+  sessionStableContextInitialized: false,
   sessionAgentToolsSnapshot: null,
   _lastCachedModel: null,
 
@@ -3003,6 +2744,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         codexAnchorId,
         snippetAnchorId,
       );
+      if (
+        session.projectId !== projectId ||
+        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
+      ) {
+        return;
+      }
       set((state) => ({
         sessions: [session, ...state.sessions],
         activeSessionId: session.id,
@@ -3010,6 +2757,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         summaryCount: 0,
         maxSummaryGeneration: 0,
         sessionStableCodexIds: [],
+        sessionStableContextInitialized: false,
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
         excludedAutoEntryIds: [],
@@ -3024,7 +2772,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             sessionId: ref.id,
           }),
         );
-        set({ messages: [linkMsg] });
+        if (
+          (get().activeProjectId ?? getCurrentProjectId()) === projectId &&
+          get().activeSessionId === session.id
+        ) {
+          set({ messages: [linkMsg] });
+        }
       }
     } catch (e) {
       toast.error(i18next.t("chat.createSessionFailed"));
@@ -3114,16 +2867,33 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     codexAnchorId?: string | null,
     snippetAnchorId?: string | null,
   ) => {
+    const generation = ++_sessionListGeneration;
+    const projectId = get().activeProjectId ?? getCurrentProjectId();
     set({ isLoadingSessions: true });
     try {
       const sessions = await chatApi.listSessions(
-        get().activeProjectId ?? getCurrentProjectId(),
+        projectId,
         nodeId,
         codexAnchorId,
         snippetAnchorId,
       );
+      if (
+        generation !== _sessionListGeneration ||
+        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
+      ) {
+        return;
+      }
+      if (sessions.some((session) => session.projectId !== projectId)) {
+        throw new Error("chat session project mismatch");
+      }
       set({ sessions, isLoadingSessions: false });
     } catch (e) {
+      if (
+        generation !== _sessionListGeneration ||
+        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
+      ) {
+        return;
+      }
       set({ isLoadingSessions: false });
       toast.error(i18next.t("chat.loadSessionsFailed"));
       debugLog.error("ChatStore", "loadSessions", errorDetail(e));
@@ -3131,6 +2901,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   selectSession: async (sessionId: string | null) => {
+    const generation = ++_sessionSelectionGeneration;
+    const projectId = get().activeProjectId ?? getCurrentProjectId();
+    if (get().isStreaming) get().stopGeneration();
     // セッションを切り替える前に、回答待ちの ask_user を sentinel 解決して
     // resolver リーク・別セッションでのカード誤表示を防ぐ（null/切替の両分岐共通）。
     get()._cancelPendingUserQuestion();
@@ -3145,6 +2918,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         summaryCount: 0,
         maxSummaryGeneration: 0,
         sessionStableCodexIds: [],
+        sessionStableContextInitialized: false,
         sessionAgentToolsSnapshot: null,
         excludedAutoEntryIds: [],
         threadFocusOverride: null,
@@ -3165,10 +2939,28 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       subAgentProgress: null,
     });
     try {
+      const session = await chatApi.getSessionForProject(sessionId, projectId);
+      if (
+        generation !== _sessionSelectionGeneration ||
+        (get().activeProjectId ?? getCurrentProjectId()) !== projectId ||
+        get().activeSessionId !== sessionId
+      ) {
+        return;
+      }
+      if (!session) {
+        throw new Error("chat session project mismatch");
+      }
       const [messages, summaries] = await Promise.all([
         chatApi.listMessages(sessionId),
         chatApi.listSummaries(sessionId),
       ]);
+      if (
+        generation !== _sessionSelectionGeneration ||
+        (get().activeProjectId ?? getCurrentProjectId()) !== projectId ||
+        get().activeSessionId !== sessionId
+      ) {
+        return;
+      }
       set({
         activeSessionId: sessionId,
         messages,
@@ -3179,13 +2971,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             ? Math.max(...summaries.map((s) => s.generation))
             : 0,
         sessionStableCodexIds: [],
+        sessionStableContextInitialized: false,
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
         excludedAutoEntryIds: [],
         threadFocusOverride: null,
       });
     } catch (e) {
-      set({ isLoadingMessages: false });
+      if (
+        generation !== _sessionSelectionGeneration ||
+        (get().activeProjectId ?? getCurrentProjectId()) !== projectId ||
+        get().activeSessionId !== sessionId
+      ) {
+        return;
+      }
+      set({ activeSessionId: null, messages: [], isLoadingMessages: false });
       toast.error(i18next.t("chat.loadMessagesFailed"));
       debugLog.error("ChatStore", "selectSession", errorDetail(e));
     }
@@ -3206,6 +3006,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         codexAnchorId,
         snippetAnchorId,
       );
+      if (
+        session.projectId !== projectId ||
+        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
+      ) {
+        return;
+      }
       set((state) => ({
         sessions: [session, ...state.sessions],
         activeSessionId: session.id,
@@ -3213,6 +3019,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         summaryCount: 0,
         maxSummaryGeneration: 0,
         sessionStableCodexIds: [],
+        sessionStableContextInitialized: false,
         sessionAgentToolsSnapshot: snapshotAgentTools(),
         cacheInvalidatedReason: null,
         excludedAutoEntryIds: [],
@@ -3238,14 +3045,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       activeSceneId,
       scopeAnchorId,
     );
+    const projectId = activeProjectId ?? getCurrentProjectId();
     try {
       const session = await chatApi.createSession(
-        activeProjectId ?? getCurrentProjectId(),
+        projectId,
         "New session",
         nodeId === null ? undefined : nodeId,
         codexAnchorId,
         snippetAnchorId,
       );
+      if (
+        session.projectId !== projectId ||
+        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
+      ) {
+        return null;
+      }
       set((state) => ({
         sessions: [session, ...state.sessions],
         activeSessionId: session.id,
@@ -3370,7 +3184,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     userInput: string,
     options?: { mentionedSceneIds?: string[]; mentionedCodexIds?: string[] },
   ): Promise<string> => {
-    await ensureTokenizer();
     const {
       activeSceneId,
       chatScope,
@@ -3384,53 +3197,48 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         : null;
 
     const parts: string[] = [];
-    let contextLoaded = false;
     let needsMentionCleanup = false;
 
     try {
       if (effectiveSceneId) {
         const built = await buildOutgoingScenePrompt(get, effectiveSceneId, {
+          purpose: "copy",
           inputText: userInput,
           mentionedSceneIds: options?.mentionedSceneIds,
           mentionedCodexIds: options?.mentionedCodexIds,
         });
         if (built) {
           parts.push(`[system]\n${built.prompt}`);
-          contextLoaded = true;
         }
-      } else if (
-        chatScope === "folder" ||
-        chatScope === "project" ||
-        chatScope === "codex" ||
-        chatScope === "snippet"
-      ) {
-        // folder / project / codex / snippet: sendMessage / agent と同じく refreshContextLayers の
-        // lastSystemPrompt を流用（空 scene で buildSystemPrompt しない）。
+      } else {
+        // Every non-scene scope builds a copy-specific immutable TurnRequest.
+        // lastSystemPrompt は UI cache であり、copy correctness には流用しない。
         // mentions 込みで refresh すると lastSystemPrompt に @scene pin が焼き込まれ、
         // ユーザーが mention を消して送信した次回送信でも古い pin を吸う。Copy 後に
         // mentions 無しで refresh し直して state を巻き戻す（後段の finally で実行）。
         const hadMentions =
           !!options?.mentionedSceneIds && options.mentionedSceneIds.length > 0;
-        if (hadMentions) {
-          await get().refreshContextLayers({
-            mentionedSceneIds: options!.mentionedSceneIds,
-          });
-          needsMentionCleanup = true;
-        } else {
-          // sendMessage の非 scene 分岐と同じ stale 判定（空 or スコープ構成
-          // 不一致なら再構築）。コピーが実送信と違うプロンプトを出さないように。
-          const builtKey = get().lastSystemPromptKey;
-          if (
-            !get().lastSystemPrompt ||
-            (builtKey !== null && builtKey !== contextPromptKey(get()))
-          ) {
-            await get().refreshContextLayers();
-          }
-        }
-        const prompt = get().lastSystemPrompt;
+        const refreshed = await get().refreshContextLayers({
+          purpose: "copy",
+          conversationMessages: [
+            ...prevMessages,
+            {
+              id: "copy-outgoing",
+              sessionId: get().activeSessionId ?? "",
+              role: "user",
+              content: userInput,
+              createdAt: new Date().toISOString(),
+            },
+          ],
+          outgoingUserMessage: userInput,
+          mentionedSceneIds: options?.mentionedSceneIds,
+          mentionedCodexIds: options?.mentionedCodexIds,
+          strict: true,
+        });
+        needsMentionCleanup = hadMentions;
+        const prompt = refreshed?.prompt ?? "";
         if (prompt) {
           parts.push(`[system]\n${prompt}`);
-          contextLoaded = true;
         }
       }
     } catch (e) {
@@ -3444,13 +3252,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         await get().refreshContextLayers();
       } catch (e) {
         console.error("[buildPromptForCopy] cleanup refresh failed:", e);
-      }
-    }
-
-    if (!contextLoaded) {
-      const fallback = get().lastSystemPrompt;
-      if (fallback) {
-        parts.push(`[system]\n${fallback}`);
       }
     }
 
@@ -3481,15 +3282,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   ) => {
     const {
       isStreaming,
+      isLoadingMessages,
       activeSceneId,
       activeProjectId,
       activeSessionId,
       chatScope,
       scopeAnchorId,
       threadFocusOverride,
+      messages: initialMessages,
+      sessions: initialSessions,
     } = get();
-    if (isStreaming) return;
-    await ensureTokenizer();
+    if (isStreaming || isLoadingMessages) return;
     if (!content.trim()) return;
     // 新規送信が始まったら直前ターンの「続行」ボタンは無効化する
     // （ボタンは常に最新ターンに対してのみ出す）。
@@ -3523,8 +3326,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } else {
       set({ cacheInvalidatedReason: null });
     }
-    if (!get().sessionAgentToolsSnapshot) {
-      set({ sessionAgentToolsSnapshot: snapshotAgentTools() });
+    const existingAgentToolsSnapshot = get().sessionAgentToolsSnapshot;
+    const turnAgentToolsSnapshot = existingAgentToolsSnapshot
+      ? structuredClone(existingAgentToolsSnapshot)
+      : snapshotAgentTools();
+    if (!existingAgentToolsSnapshot) {
+      set({ sessionAgentToolsSnapshot: turnAgentToolsSnapshot });
     }
     set({ _lastCachedModel: chatModelEarly });
 
@@ -3602,10 +3409,77 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       (agentModeForThisSend || ragActive) &&
       turnRoute?.provider !== "cli" &&
       !isFusionModel;
-    _activeTurnRoute = turnRoute;
-
+    const settingsStateAtTurnStart = useSettingsStore.getState();
+    const webSearchControlsAtTurnStart = parseWebSearchControls({
+      domainMode: settingsStateAtTurnStart.get(
+        "ai.webSearch.domainMode",
+        "off",
+      ),
+      domainsJson: settingsStateAtTurnStart.get("ai.webSearch.domains", "[]"),
+      maxContentTokensRaw: settingsStateAtTurnStart.get(
+        "ai.webSearch.maxContentTokens",
+        "",
+      ),
+    });
+    const webSearchConfigAtTurnStart: WebSearchConfig | null =
+      buildWebSearchConfig(
+        ragActive,
+        agentModeForThisSend,
+        webSearchControlsAtTurnStart,
+      );
+    const useHermesRagInstruction =
+      agentModeForThisSend && turnRoute?.toolProtocol === "hermes";
+    const ragInstructionTokenReserve = ragActive
+      ? Math.max(
+          ...(["ja", "en"] as const).map((language) => {
+            const control = getPromptCatalog(language).agentControl;
+            const instruction = useHermesRagInstruction
+              ? control.webSearchInstructionHermes
+              : control.webSearchInstruction;
+            return countTokens(`\n\n${instruction}`);
+          }),
+        )
+      : 0;
+    const contextInputOverheadTokens =
+      TURN_PAYLOAD_SAFETY_MARGIN_TOKENS +
+      ragInstructionTokenReserve +
+      (useAgentPath && turnRoute
+        ? renderAgentToolPayloads(
+            turnRoute,
+            agentModeForThisSend ? turnAgentToolsSnapshot : [],
+            webSearchConfigAtTurnStart,
+          ).reduce((sum, payload) => sum + countTokens(payload), 0)
+        : estimateMessageEnvelopeTokens([
+            { role: "system", content: "" },
+            ...initialMessages
+              .filter((message) => !message.isSummarized)
+              .map((message) => ({
+                role: message.role,
+                content: message.content,
+              })),
+            { role: "user", content },
+          ]));
+    const turnProjectId = activeProjectId ?? getCurrentProjectId();
+    const activeSessionAtTurnStart = activeSessionId
+      ? initialSessions.find((session) => session.id === activeSessionId)
+      : undefined;
+    if (
+      activeSessionAtTurnStart &&
+      activeSessionAtTurnStart.projectId !== turnProjectId
+    ) {
+      set({ error: "chat session project mismatch" });
+      return;
+    }
+    const sceneTurnAuthority = effectiveSceneId
+      ? captureSceneTurnAuthority({
+          projectId: turnProjectId,
+          sceneId: effectiveSceneId,
+          agentMode: useAgentPath,
+          turnRoute: turnRoute ?? undefined,
+          inputOverheadTokens: contextInputOverheadTokens,
+        })
+      : null;
     const sessionId = activeSessionId ?? "";
-
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       sessionId,
@@ -3613,7 +3487,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content,
       createdAt: new Date().toISOString(),
     };
-
     const assistantMsg: ChatMessage = {
       id: crypto.randomUUID(),
       sessionId,
@@ -3621,13 +3494,151 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content: "",
       createdAt: new Date().toISOString(),
     };
-
-    const prevMessages = get().messages;
+    const capturedNonSceneAuthority = effectiveSceneId
+      ? undefined
+      : captureNonSceneContextAuthority({
+          state: get(),
+          projectId: turnProjectId,
+          mode: useAgentPath ? "agent" : "chat",
+          agentToolsAvailable: useAgentPath && agentModeForThisSend,
+          route: turnRoute,
+          inputOverheadTokens: contextInputOverheadTokens,
+        });
+    const sendTurnId = crypto.randomUUID();
+    const sendControl: SendTurnControl = {
+      id: sendTurnId,
+      surface: useAgentPath ? "agent" : "chat",
+      aborted: false,
+      userMessageId: userMsg.id,
+      assistantMessageId: assistantMsg.id,
+      transportStarted: false,
+    };
+    // A turn that starts without a persisted session is allowed to adopt the
+    // session it creates below. Any other session transition invalidates it.
+    let turnSessionId = activeSessionId;
+    let transportStarted = false;
+    _activeSendTurnId = sendTurnId;
+    _activeSendControl = sendControl;
+    _finalizeStoppedStream = null;
+    const isCurrentTurn = (): boolean =>
+      _activeSendTurnId === sendTurnId && _activeSendControl === sendControl;
+    const capturedProjectIsCurrent = (): boolean => {
+      const liveProjectIds = [
+        get().activeProjectId,
+        useTreeStore.getState().projectId,
+        useProjectStore.getState().currentProjectId,
+      ].filter((id): id is string => Boolean(id));
+      return liveProjectIds.every((id) => id === turnProjectId);
+    };
+    const capturedChatAuthorityIsCurrent = (): boolean => {
+      const current = get();
+      const currentProjectId = current.activeProjectId ?? getCurrentProjectId();
+      const sameThreadFocus =
+        current.threadFocusOverride?.threadId === threadFocusOverride?.threadId;
+      const sameTemporalAnchor =
+        effectiveSceneId !== null
+          ? turnSessionId !== null || current.activeSceneId === activeSceneId
+          : current.activeSceneId === activeSceneId;
+      return (
+        currentProjectId === turnProjectId &&
+        current.activeSessionId === turnSessionId &&
+        current.chatScope === chatScope &&
+        current.scopeAnchorId === scopeAnchorId &&
+        sameThreadFocus &&
+        sameTemporalAnchor
+      );
+    };
+    const shouldAbortTurn = (): boolean =>
+      sendControl.aborted ||
+      !isCurrentTurn() ||
+      !capturedProjectIsCurrent() ||
+      !capturedChatAuthorityIsCurrent();
+    const assertTurnAuthority = (): void => {
+      if (shouldAbortTurn()) {
+        sendControl.aborted = true;
+        throw new Error("chat turn authority changed");
+      }
+    };
+    const removeOwnedTurnMessages = (): void => {
+      set((state) => ({
+        messages: state.messages.filter(
+          (message) =>
+            message.id !== userMsg.id && message.id !== assistantMsg.id,
+        ),
+      }));
+    };
+    const cancelBeforeTransport = (): boolean => {
+      if (!shouldAbortTurn()) return false;
+      const ownedInvalidTurn = isCurrentTurn();
+      if (ownedInvalidTurn) {
+        sendControl.aborted = true;
+        _activeSendTurnId = null;
+        _activeSendControl = null;
+      }
+      removeOwnedTurnMessages();
+      if (ownedInvalidTurn) set({ isStreaming: false });
+      if (_activeTurnRoute === turnRoute) _activeTurnRoute = null;
+      return true;
+    };
+    const failBeforeTransport = (error: unknown): void => {
+      if (shouldAbortTurn()) {
+        cancelBeforeTransport();
+        return;
+      }
+      sendControl.aborted = true;
+      removeOwnedTurnMessages();
+      set({
+        isStreaming: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (_activeTurnRoute === turnRoute) _activeTurnRoute = null;
+      _activeSendTurnId = null;
+      _activeSendControl = null;
+    };
+    const prevMessages = initialMessages;
+    // Guard concurrent sends before tokenizer initialization yields control.
     set({
       messages: [...prevMessages, userMsg, assistantMsg],
       isStreaming: true,
       error: null,
     });
+    // Route + every mutable context input are fixed before this first await.
+    try {
+      await ensureTokenizer();
+    } catch (error) {
+      if (isCurrentTurn()) {
+        set({
+          messages: prevMessages,
+          isStreaming: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        _activeSendTurnId = null;
+        _activeSendControl = null;
+      } else {
+        cancelBeforeTransport();
+      }
+      return;
+    }
+    if (cancelBeforeTransport()) return;
+    _activeTurnRoute = turnRoute;
+
+    // Session-scoped pins and summaries are keyed only by session id. Validate
+    // ownership against persisted state before any such source is read.
+    if (turnSessionId) {
+      try {
+        const persistedSession = await chatApi.getSessionForProject(
+          turnSessionId,
+          turnProjectId,
+        );
+        if (!persistedSession) {
+          throw new Error("chat session project mismatch");
+        }
+      } catch (error) {
+        failBeforeTransport(error);
+        return;
+      }
+      if (cancelBeforeTransport()) return;
+    }
 
     // -----------------------------------------------------------------------
     // セッションが未作成の場合は自動作成 (P0-2)
@@ -3641,13 +3652,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       );
       try {
         const session = await chatApi.createSession(
-          activeProjectId ?? getCurrentProjectId(),
+          turnProjectId,
           "New session",
           nodeId === null ? undefined : nodeId,
           codexAnchorId,
           snippetAnchorId,
         );
+        if (cancelBeforeTransport()) return;
+        if (session.projectId !== turnProjectId) {
+          throw new Error("chat session project mismatch");
+        }
         sessionIdForPersist = session.id;
+        turnSessionId = session.id;
         set((state) => ({
           sessions: [session, ...state.sessions],
           activeSessionId: session.id,
@@ -3658,8 +3674,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }));
       } catch (e) {
         debugLog.error("ChatStore", "auto-create session", errorDetail(e));
+        failBeforeTransport(e);
+        return;
       }
     }
+    if (cancelBeforeTransport()) return;
 
     // -----------------------------------------------------------------------
     // Agent mode path — tool-use loop
@@ -3670,24 +3689,123 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // 叩いて未注入エントリの探索や詳細深掘りを行う、という階層的アクセス前提。
     // -----------------------------------------------------------------------
     if (useAgentPath) {
+      let systemPromptForAgent = "";
+      let sentSystemPromptForAgent = "";
+      let sentAgentContextLayers: LayerBreakdown[] = [];
+      let sentAgentContextTokenCount: number | null = null;
+      let currentAgentModel = "";
+      const canFinalizeStoppedAgentTurn = (): boolean =>
+        sendControl.aborted && isCurrentTurn() && transportStarted;
+      const finalizeStoppedAgentTurnAfterTransport =
+        async (): Promise<boolean> => {
+          if (!canFinalizeStoppedAgentTurn()) return false;
+
+          const assistant = get().messages.find(
+            (message) => message.id === assistantMsg.id,
+          );
+          let metadata: Record<string, unknown> = {};
+          if (assistant?.metadata) {
+            try {
+              const parsed = JSON.parse(assistant.metadata);
+              if (
+                parsed &&
+                typeof parsed === "object" &&
+                !Array.isArray(parsed)
+              ) {
+                metadata = parsed as Record<string, unknown>;
+              }
+            } catch {
+              metadata = {};
+            }
+          }
+          const stoppedMetadata = JSON.stringify({
+            ...metadata,
+            stopped: true,
+          });
+          set((s) => ({
+            messages: s.messages.map((message) =>
+              message.id === assistantMsg.id
+                ? { ...message, metadata: stoppedMetadata }
+                : message,
+            ),
+          }));
+
+          if (!sessionIdForPersist) return true;
+
+          try {
+            const userMetadata =
+              options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
+                ? JSON.stringify({
+                    mentioned_scene_ids: options.mentionedSceneIds,
+                  })
+                : undefined;
+            await chatApi.addMessage(sessionIdForPersist, "user", content, {
+              id: userMsg.id,
+              ...(userMetadata ? { metadata: userMetadata } : {}),
+            });
+
+            const promptSnapshot =
+              sentSystemPromptForAgent || systemPromptForAgent;
+            if (promptSnapshot) {
+              void chatApi
+                .saveMessagePrompt(userMsg.id, {
+                  systemPrompt: promptSnapshot,
+                  layers: sentAgentContextLayers,
+                  totalTokens: sentAgentContextTokenCount,
+                  model: currentAgentModel || null,
+                })
+                .catch((error) =>
+                  debugLog.warn(
+                    "ChatStore",
+                    "saveMessagePrompt",
+                    errorDetail(error),
+                  ),
+                );
+            }
+
+            const latestAssistant = get().messages.find(
+              (message) => message.id === assistantMsg.id,
+            );
+            if (
+              latestAssistant?.role === "assistant" &&
+              latestAssistant.content
+            ) {
+              await chatApi.addMessage(
+                sessionIdForPersist,
+                "assistant",
+                latestAssistant.content,
+                {
+                  id: assistantMsg.id,
+                  model: currentAgentModel || undefined,
+                  metadata: stoppedMetadata,
+                },
+              );
+            }
+          } catch (error) {
+            debugLog.warn(
+              "ChatStore",
+              "persist stopped agent turn",
+              errorDetail(error),
+            );
+          }
+          return true;
+        };
       try {
         const sceneCtx = effectiveSceneId
-          ? await fetchSceneContext(effectiveSceneId)
+          ? await fetchSceneContext(effectiveSceneId, turnProjectId)
           : null;
-        const projectCtx = await fetchProjectContext(activeProjectId);
-
-        // scene scope の eco モード: refreshContextLayers と同じく実送信でも
-        // 本文を除外する (UI 表示と送信内容を一致させる)。
-        if (sceneCtx && !get().includeBodies) {
-          sceneCtx.content = "";
+        if (effectiveSceneId && !sceneCtx) {
+          throw new Error("required scene context is unavailable");
         }
+        const projectCtx = await fetchRequiredProjectContext(turnProjectId);
+        if (cancelBeforeTransport()) return;
 
         // 通常モードと同じく、@言及/CodexHighlight 経由でメッセージ内に検出された
         // Codex エントリを送信時に自動 Spotlight する。
         // listCodexEntriesForContext の結果は buildSceneContextPrompt に prefetchedEntries
         // として渡し、二重 fetch を避ける。
         const allEntriesForCtx = sceneCtx
-          ? await listCodexEntriesForContext(getCurrentProjectId())
+          ? await listCodexEntriesForContext(turnProjectId)
           : [];
         if (sessionIdForPersist && sceneCtx) {
           const chatMentioned = await findMentionedEntriesAsync(
@@ -3735,11 +3853,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             budgets.l5,
             projectCtxLang,
             set,
+            () => !shouldAbortTurn(),
           );
+          if (cancelBeforeTransport()) return;
         }
+        const summarizedAgentHistory = agentMessages.filter(
+          (message) =>
+            message.id !== userMsg.id &&
+            message.id !== assistantMsg.id &&
+            !message.isSummarized,
+        );
 
         const agentMsgs: AgentMessagePayload[] = [];
-        let systemPromptForAgent = "";
         let systemCacheSegmentsForAgent: string[] | undefined;
         let systemVolatileTailForAgent: string | undefined;
         // Spotlight された (= L4 に full body + custom details + aliases が
@@ -3749,73 +3874,81 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         let fullyInjectedIds: Set<string> = new Set();
         if (sceneCtx) {
           const messagesForCtx: ChatMessage[] = [
-            ...agentMessages.filter((m) => !m.isSummarized),
+            ...summarizedAgentHistory,
             userMsg,
           ];
           const ctxResult = await buildSceneContextPrompt({
+            purpose: "send",
+            authority: sceneTurnAuthority!,
             sceneCtx,
             projectCtx,
             activeSessionId: sessionIdForPersist ?? activeSessionId,
-            effectiveSceneId,
-            inputPinnedEntryIds: get().inputPinnedEntryIds,
             conversationMessages: messagesForCtx,
             commandInstruction,
             prefetchedEntries: allEntriesForCtx,
-            agentMode: true,
             mentionedSceneIds: options?.mentionedSceneIds,
             mentionedCodexIds: options?.mentionedCodexIds,
-            sessionStableCodexIds: get().sessionStableCodexIds,
             semanticRecallSeedMessage: content,
-            excludedAutoEntryIds: get().excludedAutoEntryIds,
             trackRecallPromote: true,
-            turnRoute: turnRoute ?? undefined,
+            isAuthorized: () => !shouldAbortTurn(),
           });
+          if (cancelBeforeTransport()) return;
           systemPromptForAgent = ctxResult.prompt;
           systemCacheSegmentsForAgent = ctxResult.cacheSegments;
           systemVolatileTailForAgent = ctxResult.volatileTail;
+          sentAgentContextLayers = ctxResult.layers.map((layer) => ({
+            ...layer,
+          }));
+          sentAgentContextTokenCount = ctxResult.totalTokens;
           fullyInjectedIds = new Set(ctxResult.fullyInjectedIds);
-          if (get().sessionStableCodexIds.length === 0) {
-            set({ sessionStableCodexIds: ctxResult.stableCodexIds });
+          if (!get().sessionStableContextInitialized) {
+            set({
+              sessionStableCodexIds: ctxResult.stableCodexIds,
+              sessionStableContextInitialized: true,
+            });
           }
           set({
             contextTokenCount: ctxResult.totalTokens,
             contextWindowSize: turnRoute?.contextWindow ?? null,
+            contextModel: turnRoute?.model ?? null,
             contextLayers: ctxResult.layers,
+            contextPlan: ctxResult.contextPlan,
             lastSystemPrompt: ctxResult.prompt,
             lastSystemPromptKey: contextPromptKey(get()),
             detectedEntries: ctxResult.detectedEntries,
             alwaysEntries: ctxResult.alwaysEntries,
             scopeAnchor: null,
           });
-        } else if (projectCtx) {
+        } else {
           // グローバルチャット: refreshContextLayers が事前に組んだ
           // L1 + Spotlight L4 (codex/snippet) + always エントリ込みの prompt を流用。
           // 入力側で新たに Spotlight された場合に備え再計算してから使う。
           // @scene mention は per-send の一時 pin として渡す。
-          await get().refreshContextLayers({
+          if (cancelBeforeTransport()) return;
+          const refreshed = await get().refreshContextLayers({
+            purpose: "send",
+            conversationMessages: [...summarizedAgentHistory, userMsg],
+            outgoingUserMessage: content,
+            commandInstruction,
             mentionedSceneIds: options?.mentionedSceneIds,
             mentionedCodexIds: options?.mentionedCodexIds,
             // 一回限り override で送るときも、その agentMode で集約 tier を組む
             // （永続トグル基準で組むと pull 委譲が override 送信に効かない）。
-            agentModeOverride: agentModeForThisSend,
+            agentModeOverride: useAgentPath,
             turnRoute: turnRoute ?? undefined,
+            strict: true,
+            capturedNonSceneAuthority,
           });
-          systemPromptForAgent = get().lastSystemPrompt;
-          const dbPinned = sessionIdForPersist
-            ? await chatApi
-                .listPinnedCodexEntries(sessionIdForPersist)
-                .catch(() => [])
-            : [];
-          const { chatScope: scopeForInject, scopeAnchorId: anchorForInject } =
-            get();
-          fullyInjectedIds = new Set([
-            ...dbPinned.map((e) => e.id),
-            ...get().inputPinnedEntryIds,
-            ...(scopeForInject === "codex" && anchorForInject
-              ? [anchorForInject]
-              : []),
-          ]);
+          systemPromptForAgent = refreshed?.prompt ?? "";
+          systemCacheSegmentsForAgent = refreshed?.cacheSegments;
+          systemVolatileTailForAgent = refreshed?.volatileTail;
+          sentAgentContextLayers = (refreshed?.layers ?? []).map((layer) => ({
+            ...layer,
+          }));
+          sentAgentContextTokenCount = refreshed?.totalTokens ?? null;
+          fullyInjectedIds = new Set(refreshed?.fullyInjectedIds ?? []);
         }
+        if (cancelBeforeTransport()) return;
 
         // RAG 有効ターンは Web 検索の安全指示を system 末尾へ付与する
         // (本文をクエリに混入させない / 引用捏造の抑止 / 取得指示の無視)。
@@ -3857,9 +3990,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
 
         // Convert conversation history
-        for (const msg of prevMessages) {
+        for (const msg of summarizedAgentHistory) {
           if (msg.role === "system") continue;
-          if (msg.isSummarized) continue;
           if (msg.role === "user") {
             agentMsgs.push({ role: "user", content: msg.content });
           } else if (msg.role === "assistant") {
@@ -3894,6 +4026,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               chatModelOverride ??
               aiSettings?.model ??
               ""));
+        currentAgentModel = currentModel;
         const agentApiVariant = turnRoute
           ? turnRoute.apiVariant
           : xprov
@@ -3937,6 +4070,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           toolCallId,
           params,
         ) => {
+          assertTurnAuthority();
           // ask_user: 遅延 Promise を返し、UI の回答で resolve されるまでループを
           // 待機させる。resolve クロージャは module-local に退避し、renderable な
           // 仕様のみ state に置く。
@@ -3948,7 +4082,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 "ask_user requires a non-empty questions[] array.",
               );
             }
-            const sessionId = get().activeSessionId;
+            const sessionId = sessionIdForPersist ?? activeSessionId;
             const dismissNote = agentControl.userDismissMessage;
             return await new Promise<ToolResult>((resolve) => {
               _resolveUserQuestion = resolve;
@@ -4016,7 +4150,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 tokenBudget: childTokenBudget,
                 maxToolCalls: childMaxCalls,
                 // 親 Stop / セッション切替を子にも伝播させる。
-                shouldAbort: () => _agentAborted,
+                shouldAbort: shouldAbortTurn,
                 // 子内部の上限メッセージは「続行」ボタン案内を含まない専用文言。
                 // 子に Continue ボタンは無く、その案内を要約へ取り込んで親へ
                 // 漏らさないようにする。
@@ -4060,8 +4194,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     turnRoute?.resolvedEndpointId ?? null,
                   );
                 },
-                executeTool: executeReadOnlyTool,
-                onProgress: (p) => set({ subAgentProgress: p }),
+                executeTool: async (name, toolCallId, params) => {
+                  assertTurnAuthority();
+                  return executeReadOnlyTool(name, toolCallId, params);
+                },
+                onProgress: (p) => {
+                  if (isCurrentTurn()) set({ subAgentProgress: p });
+                },
                 onTextChunk: () => {},
               });
             } catch (e) {
@@ -4078,7 +4217,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 error: msg,
               };
             } finally {
-              set({ subAgentProgress: null });
+              if (isCurrentTurn()) set({ subAgentProgress: null });
             }
 
             // 子の LLM usage（input/output/コスト）は親メッセージと同じ traceId で
@@ -4128,28 +4267,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // クライアントツールは agentMode のときだけ渡す。RAG 単独 (agent OFF)
         // ターンは tools=[] とし、Web 検索を一発注入 (OpenRouter web plugin /
         // Anthropic native) で完結させる (plugin と function-tool の混在を避ける)。
-        const agentTools = agentModeForThisSend
-          ? (get().sessionAgentToolsSnapshot ?? snapshotAgentTools())
-          : [];
+        const agentTools = agentModeForThisSend ? turnAgentToolsSnapshot : [];
         // RAG ターンのみ Web 検索設定を Rust へ渡す。agentMode 併用時は
         // OpenRouter で server tool / 単独時は web plugin を選ばせる (agentic)。
         // Phase 2: 永続設定 (settingsStore の ai.webSearch.*) のドメイン制御 /
         // content cap を載せる。
-        const settingsState = useSettingsStore.getState();
-        const webSearchConfig: WebSearchConfig | null = buildWebSearchConfig(
-          ragActive,
-          agentModeForThisSend,
-          parseWebSearchControls({
-            domainMode: settingsState.get("ai.webSearch.domainMode", "off"),
-            domainsJson: settingsState.get("ai.webSearch.domains", "[]"),
-            maxContentTokensRaw: settingsState.get(
-              "ai.webSearch.maxContentTokens",
-              "",
-            ),
-          }),
-        );
-        // 中断フラグをこのターンの開始時にリセット（前ターンの取り残しを排除）。
-        _agentAborted = false;
+        const webSearchConfig = webSearchConfigAtTurnStart;
         const {
           toolCallRecords,
           finalThinkingBlocks,
@@ -4163,11 +4286,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           tools: agentTools,
           tokenBudget,
           maxToolCalls: parentMaxToolCalls,
-          shouldAbort: () => _agentAborted,
+          shouldAbort: shouldAbortTurn,
           callLimitMessage: agentControl.callLimitMessage,
           tokenBudgetMessage: agentControl.tokenBudgetMessage,
           userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
           sendToLLM: (msgs, tools) => {
+            assertTurnAuthority();
             const finalized = turnRoute
               ? finalizeChatTurnPayload({
                   route: turnRoute,
@@ -4180,14 +4304,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 })
               : null;
             if (finalized) {
+              sentSystemPromptForAgent =
+                materializeSystemDeliverySnapshot(finalized);
+              sentAgentContextTokenCount = finalized.usage.inputTokens;
               set({
                 contextTokenCount: finalized.usage.inputTokens,
                 contextWindowSize: finalized.route.contextWindow,
+                contextModel: finalized.route.model,
                 ...(finalized.cacheDowngradeReason === "budget"
                   ? { cacheInvalidatedReason: "budget" as const }
                   : {}),
               });
             }
+            transportStarted = true;
+            sendControl.transportStarted = true;
             return chatApi.sendAgentMessage(
               msgs,
               tools,
@@ -4217,16 +4347,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           },
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
-            set({ agentProgress: progress });
+            if (isCurrentTurn() && !sendControl.aborted) {
+              set({ agentProgress: progress });
+            }
           },
           onToolComplete: (record) => {
+            if (!isCurrentTurn() || sendControl.aborted) return;
             accToolCalls.push(record);
             set((s) => {
               const msgs = [...s.messages];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === "assistant") {
-                msgs[msgs.length - 1] = {
-                  ...last,
+              const index = msgs.findIndex(
+                (message) => message.id === assistantMsg.id,
+              );
+              const assistant = index >= 0 ? msgs[index] : undefined;
+              if (assistant?.role === "assistant") {
+                msgs[index] = {
+                  ...assistant,
                   metadata: JSON.stringify({ tool_calls: accToolCalls }),
                 };
               }
@@ -4234,13 +4370,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             });
           },
           onTextChunk: (text) => {
+            if (!isCurrentTurn() || sendControl.aborted) return;
             set((s) => {
               const msgs = [...s.messages];
-              const last = msgs[msgs.length - 1];
-              if (last?.role === "assistant") {
-                const prev = last.content;
-                msgs[msgs.length - 1] = {
-                  ...last,
+              const index = msgs.findIndex(
+                (message) => message.id === assistantMsg.id,
+              );
+              const assistant = index >= 0 ? msgs[index] : undefined;
+              if (assistant?.role === "assistant") {
+                const prev = assistant.content;
+                msgs[index] = {
+                  ...assistant,
                   content: prev ? `${prev}\n\n${text}` : text,
                 };
               }
@@ -4248,6 +4388,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             });
           },
         });
+
+        const stoppedAgentTurnCanFinalize = canFinalizeStoppedAgentTurn();
+        if (shouldAbortTurn() && !stoppedAgentTurnCanFinalize) return;
 
         // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
         // 続行対象外（ユーザー回答待ちで止まる性質なので新予算で再開しても無意味）。
@@ -4261,7 +4404,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // 引用の事後検証: 不正 URL を排除 + 本文中の裏付けなし URL を検出。
         const safeCitations = sanitizeCitations(citations);
         const answerForCheck =
-          get().messages[get().messages.length - 1]?.content ?? "";
+          get().messages.find((message) => message.id === assistantMsg.id)
+            ?.content ?? "";
         const unbackedUrls = findUnbackedUrls(answerForCheck, safeCitations);
         if (unbackedUrls.length > 0) {
           debugLog.warn(
@@ -4275,6 +4419,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // in-memory メッセージ (UI 即時表示) と DB 永続化で共有する。
         const finalAgentMetadata = JSON.stringify({
           tool_calls: toolCallRecords,
+          ...(stoppedAgentTurnCanFinalize ? { stopped: true } : {}),
           ...(finalThinkingBlocks.length > 0
             ? { thinking_blocks: finalThinkingBlocks }
             : {}),
@@ -4283,9 +4428,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         });
         set((s) => {
           const msgs = [...s.messages];
-          const last = msgs[msgs.length - 1];
-          if (last?.role === "assistant") {
-            msgs[msgs.length - 1] = { ...last, metadata: finalAgentMetadata };
+          const index = msgs.findIndex(
+            (message) => message.id === assistantMsg.id,
+          );
+          const assistant = index >= 0 ? msgs[index] : undefined;
+          if (assistant?.role === "assistant") {
+            msgs[index] = { ...assistant, metadata: finalAgentMetadata };
           }
           return { messages: msgs };
         });
@@ -4303,21 +4451,26 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             ...(userMetadata ? { metadata: userMetadata } : {}),
           });
           // 過去メッセージのプロンプト確認用スナップショット (fire-and-forget)。
-          // systemPromptForAgent は RAG 指示追記後の最終送信文字列。
-          if (systemPromptForAgent) {
+          // Cache/plain のうち、最後の Agent iteration が実際に送った system
+          // representation を保存する。canonical fallback は次 iteration の
+          // budget downgrade 用に不変で保持する。
+          const promptSnapshot =
+            sentSystemPromptForAgent || systemPromptForAgent;
+          if (promptSnapshot) {
             void chatApi
               .saveMessagePrompt(userMsg.id, {
-                systemPrompt: systemPromptForAgent,
-                layers: get().contextLayers,
-                totalTokens: get().contextTokenCount,
+                systemPrompt: promptSnapshot,
+                layers: sentAgentContextLayers,
+                totalTokens: sentAgentContextTokenCount,
                 model: currentModel || null,
               })
               .catch((e) =>
                 debugLog.warn("ChatStore", "saveMessagePrompt", errorDetail(e)),
               );
           }
-          const finalMessages = get().messages;
-          const lastMsg = finalMessages[finalMessages.length - 1];
+          const lastMsg = get().messages.find(
+            (message) => message.id === assistantMsg.id,
+          );
           if (lastMsg?.role === "assistant" && lastMsg.content) {
             // 実際に使用したモデル（xprov / agent ロール / chat 一時 override を
             // 反映した currentModel）で永続化・usage 記録する。既定モデルを再読み
@@ -4388,8 +4541,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }
         }
       } catch (e) {
+        if (shouldAbortTurn()) {
+          if (await finalizeStoppedAgentTurnAfterTransport()) {
+            return;
+          }
+          cancelBeforeTransport();
+          return;
+        }
         const kind = classifyError(e);
         const msg = e instanceof Error ? e.message : String(e);
+        if (!transportStarted) removeOwnedTurnMessages();
         if (kind === "auth") {
           toast.error(i18next.t("chat.invalidApiKey"));
         } else if (kind === "network") {
@@ -4401,16 +4562,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       } finally {
         // 例外で抜けた場合も含め、回答待ちの ask_user を確実に解決して
         // awaiting 中のループ Promise をリークさせない。中断フラグもリセット。
-        get()._cancelPendingUserQuestion();
-        _agentAborted = false;
-        if (_activeTurnRoute === turnRoute) {
-          _activeTurnRoute = null;
+        if (isCurrentTurn()) {
+          get()._cancelPendingUserQuestion();
+          if (_activeTurnRoute === turnRoute) {
+            _activeTurnRoute = null;
+          }
+          _activeSendTurnId = null;
+          _activeSendControl = null;
+          set({
+            isStreaming: false,
+            agentProgress: null,
+            subAgentProgress: null,
+          });
+        } else if (_activeSendControl === sendControl) {
+          _activeSendControl = null;
         }
-        set({
-          isStreaming: false,
-          agentProgress: null,
-          subAgentProgress: null,
-        });
       }
       return;
     }
@@ -4420,15 +4586,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // -----------------------------------------------------------------------
     try {
       const sceneCtx = effectiveSceneId
-        ? await fetchSceneContext(effectiveSceneId)
+        ? await fetchSceneContext(effectiveSceneId, turnProjectId)
         : null;
-      const projectCtx = await fetchProjectContext(activeProjectId);
-
-      // scene scope の eco モード: refreshContextLayers と同じく実送信でも
-      // 本文を除外する (UI 表示と送信内容を一致させる)。
-      if (sceneCtx && !get().includeBodies) {
-        sceneCtx.content = "";
+      if (effectiveSceneId && !sceneCtx) {
+        throw new Error("required scene context is unavailable");
       }
+      const projectCtx = await fetchRequiredProjectContext(turnProjectId);
+      if (cancelBeforeTransport()) return;
 
       const aiSettings = useAiSettingsStore.getState().settings;
       // チャットパネルで一時選択したモデル(あれば)。role 未設定時に既定より優先する。
@@ -4467,7 +4631,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           turnRoute?.outputBudget.responseReservationTokens,
       });
 
-      let currentMessages = get().messages;
+      let currentMessages = prevMessages;
       if (sessionIdForPersist) {
         currentMessages = await maybeRunSummarization(
           sessionIdForPersist,
@@ -4475,7 +4639,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           budgets.l5,
           projectCtx?.language ?? "ja",
           set,
+          () => !shouldAbortTurn(),
         );
+        if (cancelBeforeTransport()) return;
       }
 
       // APIペイロードを構築（要約済みメッセージを除外）
@@ -4493,11 +4659,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // プロンプトを退避し、persist 時に userMsg.id へひも付けて保存する。
       // 空 = この経路では system メッセージを送らなかった (スナップショット不要)。
       let sentSystemPrompt = "";
+      let sentContextLayers: LayerBreakdown[] = [];
+      let sentContextTokenCount: number | null = null;
 
       if (sceneCtx) {
-        const allEntries = await listCodexEntriesForContext(
-          getCurrentProjectId(),
-        );
+        const allEntries = await listCodexEntriesForContext(turnProjectId);
 
         // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
         if (sessionIdForPersist) {
@@ -4545,33 +4711,39 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
 
         const ctxResult = await buildSceneContextPrompt({
+          purpose: "send",
+          authority: sceneTurnAuthority!,
           sceneCtx,
           projectCtx,
           activeSessionId: sessionIdForPersist ?? activeSessionId,
-          effectiveSceneId,
-          inputPinnedEntryIds: get().inputPinnedEntryIds,
           conversationMessages: messagesForApi,
           commandInstruction,
           prefetchedEntries: allEntries,
           mentionedSceneIds: options?.mentionedSceneIds,
           mentionedCodexIds: options?.mentionedCodexIds,
-          sessionStableCodexIds: get().sessionStableCodexIds,
           semanticRecallSeedMessage: content,
-          excludedAutoEntryIds: get().excludedAutoEntryIds,
           trackRecallPromote: true,
-          turnRoute: turnRoute ?? undefined,
+          isAuthorized: () => !shouldAbortTurn(),
         });
+        if (cancelBeforeTransport()) return;
 
-        if (get().sessionStableCodexIds.length === 0) {
-          set({ sessionStableCodexIds: ctxResult.stableCodexIds });
+        if (!get().sessionStableContextInitialized) {
+          set({
+            sessionStableCodexIds: ctxResult.stableCodexIds,
+            sessionStableContextInitialized: true,
+          });
         }
         systemCacheSegments = ctxResult.cacheSegments;
         systemVolatileTail = ctxResult.volatileTail;
+        sentContextLayers = ctxResult.layers.map((layer) => ({ ...layer }));
+        sentContextTokenCount = ctxResult.totalTokens;
 
         set({
           contextTokenCount: ctxResult.totalTokens,
           contextWindowSize: turnRoute?.contextWindow ?? null,
+          contextModel: turnRoute?.model ?? null,
           contextLayers: ctxResult.layers,
+          contextPlan: ctxResult.contextPlan,
           lastSystemPrompt: ctxResult.prompt,
           lastSystemPromptKey: contextPromptKey(get()),
           detectedEntries: ctxResult.detectedEntries,
@@ -4593,31 +4765,29 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         };
         messagesForApi.unshift(systemMsg);
       } else {
-        // シーンコンテキストなし（グローバルチャットまたはシーン未選択）:
-        // @scene mention があるときは lastSystemPrompt を一時 pin 付きで再構築する。
-        // それ以外でも、計算済み lastSystemPrompt が空、または現在と異なる
-        // スコープ構成で組まれている場合（スコープ切替直後の即送信で
-        // ChatPanel の refresh effect が未完了のレース）は、同期的に再構築
-        // してから流用する。キー未記録 (null) はテスト等の手動 setState を
-        // 尊重して照合をスキップする。
-        const hasMentions =
-          !!options?.mentionedSceneIds && options.mentionedSceneIds.length > 0;
-        const builtKey = get().lastSystemPromptKey;
-        const promptStale =
-          !get().lastSystemPrompt ||
-          (builtKey !== null && builtKey !== contextPromptKey(get()));
-        if (hasMentions || promptStale) {
-          await get().refreshContextLayers(
-            hasMentions
-              ? {
-                  mentionedSceneIds: options?.mentionedSceneIds,
-                  mentionedCodexIds: options?.mentionedCodexIds,
-                  turnRoute: turnRoute ?? undefined,
-                }
-              : { turnRoute: turnRoute ?? undefined },
-          );
-        }
-        const fallbackPrompt = get().lastSystemPrompt;
+        // Non-scene send always creates a fresh immutable TurnRequest. The UI
+        // `lastSystemPrompt` remains a display cache and is never a correctness
+        // input: its source revisions cannot be represented by a small key.
+        if (cancelBeforeTransport()) return;
+        const refreshed = await get().refreshContextLayers({
+          purpose: "send",
+          conversationMessages: messagesForApi,
+          outgoingUserMessage: content,
+          commandInstruction,
+          mentionedSceneIds: options?.mentionedSceneIds,
+          mentionedCodexIds: options?.mentionedCodexIds,
+          agentModeOverride: useAgentPath,
+          turnRoute: turnRoute ?? undefined,
+          strict: true,
+          capturedNonSceneAuthority,
+        });
+        const fallbackPrompt = refreshed?.prompt ?? "";
+        systemCacheSegments = refreshed?.cacheSegments;
+        systemVolatileTail = refreshed?.volatileTail;
+        sentContextLayers = (refreshed?.layers ?? []).map((layer) => ({
+          ...layer,
+        }));
+        sentContextTokenCount = refreshed?.totalTokens ?? null;
         if (fallbackPrompt) {
           const fallbackSystemMsg: ChatMessage = {
             id: "system",
@@ -4676,14 +4846,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               });
         systemCacheSegments = finalized.transport.systemCacheSegments;
         systemVolatileTail = finalized.transport.systemVolatileTail;
+        sentContextTokenCount = finalized.usage.inputTokens;
+        if (turnRoute.provider !== "cli") {
+          sentSystemPrompt = materializeSystemDeliverySnapshot(finalized);
+        }
         set({
           contextTokenCount: finalized.usage.inputTokens,
           contextWindowSize: finalized.route.contextWindow,
+          contextModel: finalized.route.model,
           ...(finalized.cacheDowngradeReason === "budget"
             ? { cacheInvalidatedReason: "budget" as const }
             : {}),
         });
       }
+      if (cancelBeforeTransport()) return;
       const chatStartTime = performance.now();
 
       // Accumulate thinking text locally during streaming
@@ -4699,11 +4875,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const isCliProvider = turnRoute
         ? turnRoute.provider === "cli"
         : !xprov && aiSettings?.provider === "cli";
-      const cliConfig = aiSettings?.cli ?? {
-        kind: "claude" as const,
-        binaryPath: "",
-        model: "",
-      };
+      const cliConfig = turnRoute?.effectiveSettings.cli ??
+        aiSettings?.cli ?? {
+          kind: "claude" as const,
+          binaryPath: "",
+          model: "",
+        };
 
       // Start streaming — returns a Promise<cleanup_fn>
       await new Promise<void>((resolve, reject) => {
@@ -4713,12 +4890,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // onDone/onError/stop では必ず同期 flush して末尾を取りこぼさない。
         let pendingDelta = "";
         let flushHandle: number | null = null;
+        let callbacksSettled = false;
+        let turnStreamCleanup: (() => void) | null = null;
         const flushDelta = () => {
           if (flushHandle !== null) {
             if (typeof cancelAnimationFrame === "function") {
               cancelAnimationFrame(flushHandle);
             }
             flushHandle = null;
+          }
+          if (!isCurrentTurn()) {
+            pendingDelta = "";
+            return;
           }
           if (!pendingDelta) return;
           const chunk = pendingDelta;
@@ -4746,12 +4929,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         };
         _flushPendingDelta = flushDelta;
 
-        const callbacks = {
+        const callbacks: chatApi.StreamCallbacks = {
           onTextDelta: (delta: string) => {
+            if (!isCurrentTurn()) return;
             pendingDelta += delta;
             scheduleFlush();
           },
           onThinkingDelta: (delta: string) => {
+            if (!isCurrentTurn()) return;
             thinkingAccumulator += delta;
           },
           onDone: (info: {
@@ -4762,9 +4947,28 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             cacheReadTokens?: number;
             cacheWriteTokens?: number;
           }) => {
+            if (callbacksSettled) return;
+            callbacksSettled = true;
+            if (_finalizeStoppedStream === finalizeStoppedStream) {
+              _finalizeStoppedStream = null;
+            }
+            if (!isCurrentTurn()) {
+              pendingDelta = "";
+              if (flushHandle !== null) {
+                if (typeof cancelAnimationFrame === "function") {
+                  cancelAnimationFrame(flushHandle);
+                }
+                flushHandle = null;
+              }
+              turnStreamCleanup?.();
+              resolve();
+              return;
+            }
             // 末尾の buffered delta を確定前に同期反映。
             flushDelta();
-            _flushPendingDelta = null;
+            if (_flushPendingDelta === flushDelta) {
+              _flushPendingDelta = null;
+            }
             const chatDurationMs = Math.round(
               performance.now() - chatStartTime,
             );
@@ -4810,8 +5014,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             // Persist to DB
             const persistToDb = async () => {
               if (!sessionIdForPersist) return;
-              const finalMessages = get().messages;
-              const lastMsg = finalMessages[finalMessages.length - 1];
+              const lastMsg = get().messages.find(
+                (message) => message.id === assistantMsg.id,
+              );
               const userMetadata =
                 options?.mentionedSceneIds &&
                 options.mentionedSceneIds.length > 0
@@ -4829,8 +5034,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 void chatApi
                   .saveMessagePrompt(userMsg.id, {
                     systemPrompt: sentSystemPrompt,
-                    layers: get().contextLayers,
-                    totalTokens: get().contextTokenCount,
+                    layers: sentContextLayers,
+                    totalTokens: sentContextTokenCount,
                     model: chatModel || null,
                   })
                   .catch((e) =>
@@ -4910,22 +5115,46 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 );
               })
               .finally(() => {
-                _streamCleanup?.();
-                _streamCleanup = null;
-                set({ isStreaming: false });
+                turnStreamCleanup?.();
+                if (_streamCleanup === turnStreamCleanup) {
+                  _streamCleanup = null;
+                }
+                if (isCurrentTurn()) set({ isStreaming: false });
                 resolve();
               });
           },
           onError: (message: string) => {
+            if (callbacksSettled) return;
+            callbacksSettled = true;
+            if (_finalizeStoppedStream === finalizeStoppedStream) {
+              _finalizeStoppedStream = null;
+            }
+            if (!isCurrentTurn()) {
+              pendingDelta = "";
+              turnStreamCleanup?.();
+              resolve();
+              return;
+            }
             // エラー時も partial content を保持するため同期 flush。
             flushDelta();
-            _flushPendingDelta = null;
-            _streamCleanup?.();
-            _streamCleanup = null;
+            if (_flushPendingDelta === flushDelta) {
+              _flushPendingDelta = null;
+            }
+            turnStreamCleanup?.();
+            if (_streamCleanup === turnStreamCleanup) {
+              _streamCleanup = null;
+            }
             reject(new Error(message));
           },
         };
 
+        const finalizeStoppedStream = () => {
+          callbacks.onDone({ stopReason: "stopped" });
+        };
+        _finalizeStoppedStream = finalizeStoppedStream;
+
+        transportStarted = true;
+        sendControl.transportStarted = true;
         const streamPromise = isCliProvider
           ? cliApi.sendCliChatStream(
               {
@@ -4968,13 +5197,26 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         streamPromise
           .then((cleanup) => {
-            _streamCleanup = cleanup;
+            turnStreamCleanup = cleanup;
+            if (callbacksSettled || !isCurrentTurn()) {
+              cleanup();
+            } else {
+              _streamCleanup = cleanup;
+            }
           })
-          .catch(reject);
+          .catch((error) => {
+            if (isCurrentTurn()) reject(error);
+            else resolve();
+          });
       });
     } catch (e) {
+      if (shouldAbortTurn()) {
+        cancelBeforeTransport();
+        return;
+      }
       const kind = classifyError(e);
       const msg = e instanceof Error ? e.message : String(e);
+      if (!transportStarted) removeOwnedTurnMessages();
 
       if (kind === "auth") {
         toast.error(i18next.t("chat.invalidApiKey"), {
@@ -5028,21 +5270,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
       set({ error: msg });
     } finally {
-      // isStreaming is set to false inside onDone/onError callbacks
-      // but guard here in case of early exit
-      if (get().isStreaming) {
-        set({ isStreaming: false });
-      }
-      if (_activeTurnRoute === turnRoute) {
-        _activeTurnRoute = null;
+      if (isCurrentTurn()) {
+        // isStreaming is set to false inside onDone/onError callbacks
+        // but guard here in case of early exit.
+        if (get().isStreaming) set({ isStreaming: false });
+        if (_activeTurnRoute === turnRoute) _activeTurnRoute = null;
+        _activeSendTurnId = null;
+        _activeSendControl = null;
+      } else if (_activeSendControl === sendControl) {
+        _activeSendControl = null;
       }
     }
   },
 
   refreshContextLayers: async (opts) => {
-    markStart("refreshContextLayers.ensureTokenizer");
-    await ensureTokenizer();
-    markEnd("refreshContextLayers.ensureTokenizer");
+    const refreshGeneration = ++_contextRefreshGeneration;
     const {
       activeSceneId,
       activeProjectId,
@@ -5050,7 +5292,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       chatScope,
       scopeAnchorId,
       threadFocusOverride,
+      sessions,
     } = get();
+    const conversationMessages = (
+      opts?.conversationMessages ?? get().messages
+    ).map((message) => ({ ...message }));
+    const sceneConversationMessages = opts?.conversationMessages
+      ? conversationMessages
+      : conversationMessages.filter((message) => !message.isSummarized);
     // 構築開始時点のスコープ構成キー。完了時に lastSystemPrompt とペアで保存し、
     // 送信側の stale 判定（構成が変わったプロンプトの流用防止）に使う。
     const promptKey = contextPromptKey({
@@ -5075,486 +5324,247 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const agentPullWillRunTools = effectiveAgentMode && aiProvider !== "cli";
     // Phase 3b: スレッド focus 中は scene を主題にしない（縦糸を <focus_subject>
     // へ載せる非 scene 枝へ落とす）。chatScope は変えない＝session 保存先不変。
-    const effectiveSceneId =
-      chatScope === "scene" && !threadFocusOverride ? activeSceneId : null;
-    if (!effectiveSceneId) {
-      // @scene mention の per-message pin (sendMessage 経由でのみ渡される)。
-      // 通常の context bar 更新では undefined のままで従来挙動。
-      // scene scope では buildSceneContextPrompt が内部で読み込むため
-      // ここでは folder/project ブロックのみで取得する。
-      const mentionedScenes = await loadMentionedScenes(
-        opts?.mentionedSceneIds,
-        effectiveSceneId,
-      );
-      // Folder: anchor + 祖先 folder の synopsis（outermost first）。
-      // Project: フォルダ outline は L3 集約ブロックの === 見出し に含める（L2 重複回避）。
-      const scopeOutlines: Array<{ title: string; outline: string }> = [];
-      const allNodesForScope = useTreeStore.getState().nodes;
-      if (chatScope === "folder" && scopeAnchorId) {
-        const anchor = allNodesForScope.find((n) => n.id === scopeAnchorId);
-        const ancestors = getAncestorFolders(allNodesForScope, scopeAnchorId);
-        const chain = anchor ? [anchor, ...ancestors] : ancestors;
-        for (const f of chain) {
-          if (f.nodeType === "folder" && f.synopsis?.trim()) {
-            scopeOutlines.push({
-              title: f.title,
-              outline: f.synopsis.trim(),
-            });
-          }
-        }
-        scopeOutlines.reverse(); // outermost first
-      }
-      // グローバルチャット: L1(project) + L4(pinned + always) のみ計算
-      try {
-        const [projectCtx, allEntries] = await Promise.all([
-          fetchProjectContext(activeProjectId),
-          listCodexEntriesForContext(getCurrentProjectId()),
-        ]);
-
-        // Phase 3b: スレッド focus 中は焦点が「縦糸」なので codex/snippet の
-        // focus 取得はスキップ（thread が <focus_subject> を占有する）。
-        const codexBlocks =
-          chatScope === "codex" && scopeAnchorId && !threadFocusOverride
-            ? await buildCodexScopeBlocks({
-                selectedEntryId: scopeAnchorId,
-                allEntries,
-                lang: projectCtx?.language,
-              })
-            : null;
-
-        // Snippet スコープ: anchor snippet を取得して L4 pinnedSnippets の
-        // 先頭へ注入する（下の globalPinnedSnippets マージ参照）。
-        let snippetAnchor: Snippet | undefined;
-        if (chatScope === "snippet" && scopeAnchorId && !threadFocusOverride) {
-          try {
-            snippetAnchor = await getSnippet(
-              getCurrentProjectId(),
-              scopeAnchorId,
-            );
-          } catch {
-            snippetAnchor = undefined;
-          }
-        }
-
-        // Phase 2 / 2.5: folder / project スコープでは 3 段階の集約 tier。
-        //   Tier 1 (body 集約): includeBodies=true かつ scene≤30 かつ chars≤100k
-        //   Tier 2 (synopsis 集約): scene≤200。本文は注入せず title+synopsis のみ
-        //   Tier 3 (outline only): それ以上 — scopeOutlines のみ
-        // project スコープ + agent mode では Tier 2 を pull 委譲（outline only）に
-        // 切り替える（buildAggregatedScene 内 agentPullProject 参照）。
-        let aggregatedScene: {
-          id: string;
-          title: string;
-          content: string;
-        } | null = null;
-        let aggregatedDetected: CodexContextEntry[] = [];
-        const includeBodies = get().includeBodies;
-        if (threadFocusOverride) {
-          // Phase 3b: スレッド所属シーンを集約して <focus_subject> へ。folder/project
-          // 集約とは排他（thread が最優先）。所属シーンは tree(reading)順に並べる。
-          const { links } = usePlotThreadStore.getState();
-          const memberIds = new Set(
-            links
-              .filter((l) => l.threadId === threadFocusOverride.threadId)
-              .map((l) => l.nodeId),
-          );
-          const descendants = allNodesForScope.filter(
-            (n) => n.nodeType === "scene" && memberIds.has(n.id),
-          );
-          if (descendants.length > 0) {
-            const result = await buildAggregatedScene({
-              anchorId: threadFocusOverride.threadId,
-              anchorTitle: threadFocusOverride.title,
-              descendants,
-              // スレッド focus の主題は「この糸そのもの」なので本文を必ず注入する
-              // （下地スコープの eco includeBodies に引きずられて synopsis/空にしない）。
-              // buildAggregatedScene の scene/char 上限が過大スレッドを Tier2 へ守る。
-              includeBodies: true,
-              activeSceneId,
-              prefacePolicy: "folder",
-              allEntries,
-              agentMode: agentPullWillRunTools,
-            });
-            if (result) {
-              aggregatedScene = result.aggregatedScene;
-              aggregatedDetected = result.aggregatedDetected;
-            }
-          }
-        } else if (chatScope === "folder" && scopeAnchorId) {
-          const anchorFolder = allNodesForScope.find(
-            (n) => n.id === scopeAnchorId,
-          );
-          const descendants = getDescendantScenesInOrder(
-            allNodesForScope,
-            scopeAnchorId,
-          );
-          if (anchorFolder) {
-            const result = await buildAggregatedScene({
-              anchorId: anchorFolder.id,
-              anchorTitle: anchorFolder.title,
-              descendants,
-              includeBodies,
-              activeSceneId,
-              prefacePolicy: "folder",
-              allEntries,
-              agentMode: agentPullWillRunTools,
-            });
-            if (result) {
-              aggregatedScene = result.aggregatedScene;
-              aggregatedDetected = result.aggregatedDetected;
-            }
-          }
-        } else if (chatScope === "project") {
-          const descendants = getAllProjectScenesInOrder(allNodesForScope);
-          const result = await buildAggregatedScene({
-            anchorId: activeProjectId ?? "",
-            anchorTitle: projectCtx?.title ?? "Project",
-            descendants,
-            includeBodies,
-            activeSceneId,
-            prefacePolicy: "project",
-            allEntries,
-            allNodes: allNodesForScope,
-            agentMode: agentPullWillRunTools,
-          });
-          if (result) {
-            aggregatedScene = result.aggregatedScene;
-            aggregatedDetected = result.aggregatedDetected;
-          }
-        }
-
-        // scene 経路 (buildSceneContextPrompt) と同様、× で除外された
-        // always エントリは再収集しない。この経路は buildSceneContextPrompt
-        // を通らずインラインで always を組むため、ここでも直接フィルタする。
-        const excludedAutoIdSet = new Set(get().excludedAutoEntryIds);
-        const globalAlwaysEntries = allEntries.filter(
-          (e) => e.contextMode === "always" && !excludedAutoIdSet.has(e.id),
-        );
-
-        const L4_TOTAL_BUDGET = 60_000;
-        let globalPinnedCodex: import("./contextBuilder").PinnedCodexContext[] =
-          [];
-        let globalPinnedSnippets: PinnedSnippetContext[] = [];
-        // Compute full pin set upfront (DB + G21 in-memory) to avoid duplicate injection
-        const pinnedFromDB = activeSessionId
-          ? await chatApi.listPinnedCodexEntries(activeSessionId)
-          : [];
-        const dbPinnedIdSet = new Set(pinnedFromDB.map((e) => e.id));
-        const inputIds = get().inputPinnedEntryIds;
-        const g21Ids = inputIds.filter((id) => !dbPinnedIdSet.has(id));
-        const allPinnedIdSet = new Set([...dbPinnedIdSet, ...g21Ids]);
-
-        if (activeSessionId) {
-          const snippetItems = await listPinnedSnippetEntries(activeSessionId);
-          globalPinnedCodex = pinnedFromDB.map((e) => {
-            const children = e.withChildren
-              ? getChildrenFromArray(e.id, allEntries)
-                  .filter((c) => !allPinnedIdSet.has(c.id))
-                  .map((c) => {
-                    const childAliases = parseAliases(c.aliases);
-                    return {
-                      id: c.id,
-                      type: c.type,
-                      name: c.name,
-                      summary: c.summary ?? "",
-                      ...(childAliases ? { aliases: childAliases } : {}),
-                    };
-                  })
-              : undefined;
-            const childrenCtx = buildChildrenCtxForEntry(
-              e,
-              allEntries,
-              L4_TOTAL_BUDGET,
-              allPinnedIdSet,
-            );
-            const aliases = parseAliases(e.aliases);
-            const tags = parseTags(e.tagsCache);
-            return {
-              id: e.id,
-              type: e.type,
-              name: e.name,
-              summary: e.summary ?? "",
-              fullContent: extractPlainText(e.content) || undefined,
-              withChildren: e.withChildren,
-              children,
-              ...(aliases ? { aliases } : {}),
-              ...(tags ? { tags } : {}),
-              ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-            };
-          });
-          globalPinnedSnippets = snippetItems.map((s) => ({
-            id: s.id,
-            title: s.title,
-            content: extractPlainText(s.content) || s.title,
-          }));
-        }
-
-        // Snippet スコープ: anchor snippet は <focus_subject> へフル本文を注入する
-        // (buildSystemPrompt focusSubject 参照) ため、L4 の pinnedSnippets からは
-        // 除外して重複させない。session pin に同一 snippet があっても focus を優先。
-        if (snippetAnchor) {
-          globalPinnedSnippets = globalPinnedSnippets.filter(
-            (sn) => sn.id !== snippetAnchor.id,
-          );
-        }
-
-        // G21: include input-typed detected entries not yet pinned to DB
-        const extraPinned = g21Ids.flatMap((id) => {
-          const e = allEntries.find((a) => a.id === id);
-          if (!e) return [];
-          const childrenCtx = buildChildrenCtxForEntry(
-            e,
-            allEntries,
-            L4_TOTAL_BUDGET,
-            allPinnedIdSet,
-          );
-          const aliases = parseAliases(e.aliases);
-          const tags = parseTags(e.tagsCache);
-          const ctx: import("./contextBuilder").PinnedCodexContext = {
-            id: e.id,
-            type: e.type,
-            name: e.name,
-            summary: e.summary ?? "",
-            fullContent: extractPlainText(e.content) || undefined,
-            withChildren: false,
-            ...(aliases ? { aliases } : {}),
-            ...(tags ? { tags } : {}),
-            ...(childrenCtx ? { childrenContext: childrenCtx } : {}),
-          };
-          return [ctx];
-        });
-        let mergedGlobalPinnedCodex = await enrichWithCustomDetails(
-          [...globalPinnedCodex, ...extraPinned],
-          allEntries,
-        );
-        if (codexBlocks?.selectedPinned) {
-          // codex スコープのアンカーは <focus_subject> へフル本文を注入するため、
-          // L4 の pinnedCodexEntries からは除外して重複させない。
-          mergedGlobalPinnedCodex = mergedGlobalPinnedCodex.filter(
-            (e) => e.id !== codexBlocks.selectedPinned.id,
-          );
-        }
-        const mergedGlobalPinnedIdSet = new Set(
-          mergedGlobalPinnedCodex.map((e) => e.id),
-        );
-        // スコープアンカー (focus_subject 側に注入済み) は detected / related /
-        // always のどの L4 経路にも復活させない。pinned 集合へ id を足して二重防御。
-        if (codexBlocks?.selectedPinned) {
-          mergedGlobalPinnedIdSet.add(codexBlocks.selectedPinned.id);
-        }
-
-        const alwaysNotPinned = globalAlwaysEntries.filter(
-          (e) => !mergedGlobalPinnedIdSet.has(e.id),
-        );
-        // Phase 2: 集約した detected をピン重複を除外して合流。
-        // Codex スコープ: 関連 mention も detected 相当で合流。
-        // L5 light 入り口の `codexEntries` に detected → always の順で乗せる。
-        // scene 経路と同様、× で除外されたエントリは detected/related からも
-        // 外す（ピル即復活と注入の両方を止める）。
-        const relatedNotPinned =
-          codexBlocks?.relatedMentioned.filter(
-            (e) =>
-              !mergedGlobalPinnedIdSet.has(e.id) &&
-              !excludedAutoIdSet.has(e.id),
-          ) ?? [];
-        const detectedNotPinned = [
-          ...aggregatedDetected.filter(
-            (e) =>
-              !mergedGlobalPinnedIdSet.has(e.id) &&
-              !excludedAutoIdSet.has(e.id),
-          ),
-          ...relatedNotPinned,
-        ];
-        const detectedIdSet = new Set(detectedNotPinned.map((e) => e.id));
-        const alwaysNotDetected = alwaysNotPinned.filter(
-          (e) => !detectedIdSet.has(e.id),
-        );
-        const codexLightSource = [...detectedNotPinned, ...alwaysNotDetected];
-        const globalCodexEntries: CodexContext[] = codexLightSource.map((e) => {
-          const aliases = parseAliases(e.aliases);
-          return {
-            id: e.id,
-            type: e.type,
-            name: e.name,
-            summary: e.summary ?? "",
-            ...(aliases ? { aliases } : {}),
-          };
-        });
-
-        // Map overlay: scope と直交するため folder/project 経路でも注入する。
-        const mapBoardMarkdown = await loadMapBoardMarkdown(allEntries);
-
-        // folder/project/codex スコープも scene 経路と同様に trimToFit を効かせる。
-        // contextWindow/conversationTokens を渡さないと buildSystemPrompt は
-        // トリムせず、Tier1 集約 (最大 100k 文字) が小窓モデルの窓を溢れさせる。
-        // sendMessage の folder/project 送信は lastSystemPrompt を流用するため、
-        // ここでトリムしておけば実送信もトリム済みになる。
-        const aiSettingsForTrim = useAiSettingsStore.getState().settings;
-        const modelForTrim = aiSettingsForTrim?.model ?? "";
-        const fallbackCaps = resolveModelCapabilities(
-          modelForTrim,
-          aiSettingsForTrim,
-          getChatApiVariant(modelForTrim),
-        );
-        const contextWindow =
-          refreshTurnRoute?.contextWindow ?? fallbackCaps.contextWindow;
-        const maxOutputTokens =
-          refreshTurnRoute?.capabilities.maxOutputTokens ??
-          fallbackCaps.maxOutputTokens;
-        const conversationTokens = get()
-          .messages.filter((m) => m.role !== "system" && !m.isSummarized)
-          .reduce((sum, m) => sum + countTokens(m.content), 0);
-
-        // codex/snippet スコープのアンカー: プロンプトの <focus_subject> へ注入し
-        // (focusSubject)、同じ対象を ContextBar 固定チップへ反映する
-        // (scopeAnchorState)。L4 からは上で除外済みなので重複しない。
-        let focusSubject:
-          | { kind: "codex"; entry: import("./contextBuilder").CodexContext }
-          | { kind: "snippet"; name: string; body: string }
-          | { kind: "thread"; name: string; body: string }
-          | undefined;
-        let scopeAnchorState: ChatState["scopeAnchor"] = null;
-        if (threadFocusOverride) {
-          // Phase 3b: スレッド所属シーンの集約を <focus_subject> へ（scene L3 には
-          // 載せない＝下の scene スロットは空にして二重注入を防ぐ）。ContextBar 固定
-          // チップは使わず header の補助チップで表示するため scopeAnchorState は null。
-          focusSubject = {
-            kind: "thread",
-            name: threadFocusOverride.title,
-            body: aggregatedScene?.content ?? "",
-          };
-        } else if (codexBlocks?.selectedPinned) {
-          // selectedPinned は enrichWithCustomDetails 済みのフル PinnedCodexContext。
-          // Spotlight (pinned) 相当の構造化レンダリングで <focus_subject> へ渡す。
-          const sel = codexBlocks.selectedPinned;
-          focusSubject = { kind: "codex", entry: sel };
-          scopeAnchorState = { kind: "codex", id: sel.id, name: sel.name };
-        } else if (snippetAnchor) {
-          focusSubject = {
-            kind: "snippet",
-            name: snippetAnchor.title,
-            body: extractPlainText(snippetAnchor.content),
-          };
-          scopeAnchorState = {
-            kind: "snippet",
-            id: snippetAnchor.id,
-            title: snippetAnchor.title,
-          };
-        }
-
-        const promptResult = buildSystemPrompt({
-          // Phase 3b: スレッド focus 時は集約本文を focus_subject に載せたので
-          // scene(L3) は空にして二重注入を防ぐ。
-          scene:
-            aggregatedScene && !threadFocusOverride
-              ? {
-                  id: aggregatedScene.id,
-                  title: aggregatedScene.title,
-                  content: aggregatedScene.content,
-                }
-              : { id: "", title: "", content: "" },
-          project: projectCtx ?? undefined,
-          codexEntries:
-            globalCodexEntries.length > 0 ? globalCodexEntries : undefined,
-          pinnedCodexEntries:
-            mergedGlobalPinnedCodex.length > 0
-              ? mergedGlobalPinnedCodex
-              : undefined,
-          pinnedSnippets:
-            globalPinnedSnippets.length > 0 ? globalPinnedSnippets : undefined,
-          chapterOutlines: scopeOutlines.length > 0 ? scopeOutlines : undefined,
-          mentionedScenes:
-            mentionedScenes.length > 0 ? mentionedScenes : undefined,
-          relationCodexEntries:
-            codexBlocks?.relationExpanded &&
-            codexBlocks.relationExpanded.length > 0
-              ? codexBlocks.relationExpanded
-              : undefined,
-          focusSubject,
-          lang: projectCtx?.language ?? "ja",
+    const effectiveSceneId = opts?.capturedNonSceneAuthority
+      ? null
+      : chatScope === "scene" && !threadFocusOverride
+        ? activeSceneId
+        : null;
+    const sceneAuthority = effectiveSceneId
+      ? captureSceneTurnAuthority({
+          projectId: activeProjectId ?? getCurrentProjectId(),
+          sceneId: effectiveSceneId,
           agentMode: effectiveAgentMode,
-          mapBoardMarkdown,
-          customChatInstruction: useSettingsStore
-            .getState()
-            .get("aiPrompt.custom.chat", ""),
-          contextWindow,
-          maxOutputTokens,
-          outputReservationTokens:
-            refreshTurnRoute?.outputBudget.responseReservationTokens,
-          // Non-scene context currently stores only the fallback prompt; cache
-          // segments are not persisted in Zustand, so delivery is plain.
-          deliveryMode: "plain",
-          conversationTokens,
+          turnRoute: refreshTurnRoute,
+        })
+      : null;
+    const refreshProjectId =
+      opts?.capturedNonSceneAuthority?.requestSeed.projectId ??
+      sceneAuthority?.projectId ??
+      activeProjectId ??
+      getCurrentProjectId();
+    const refreshAuthorityIsCurrent = (): boolean => {
+      const current = get();
+      return (
+        refreshGeneration === _contextRefreshGeneration &&
+        (current.activeProjectId ?? getCurrentProjectId()) ===
+          refreshProjectId &&
+        contextPromptKey(current) === promptKey
+      );
+    };
+    const activeSessionAtRefresh = activeSessionId
+      ? sessions.find((session) => session.id === activeSessionId)
+      : undefined;
+    if (
+      activeSessionAtRefresh &&
+      activeSessionAtRefresh.projectId !== refreshProjectId
+    ) {
+      const error = new Error("chat session project mismatch");
+      set({
+        contextTokenCount: 0,
+        contextWindowSize: null,
+        contextModel: null,
+        contextLayers: [],
+        contextPlan: null,
+        lastSystemPrompt: "",
+        lastSystemPromptKey: null,
+      });
+      if (opts?.strict) throw error;
+      return null;
+    }
+    // All mutable turn inputs above (and the non-scene request below) are
+    // captured synchronously before this promise is awaited.
+    markStart("refreshContextLayers.ensureTokenizer");
+    const tokenizerReady = ensureTokenizer();
+    if (!effectiveSceneId) {
+      const nonSceneAuthority =
+        opts?.capturedNonSceneAuthority ??
+        captureNonSceneContextAuthority({
+          state: get(),
+          projectId: refreshProjectId,
+          mode: effectiveAgentMode ? "agent" : "chat",
+          agentToolsAvailable: agentPullWillRunTools,
+          route: refreshTurnRoute ?? null,
         });
+      const temporalResolution = nonSceneAuthority.temporalResolution;
+      const request = createNonSceneTurnContextRequest({
+        ...nonSceneAuthority.requestSeed,
+        requestId: crypto.randomUUID(),
+        purpose: opts?.purpose ?? "live",
+        sessionId: activeSessionId,
+        messages: conversationMessages,
+        outgoingUserMessage: opts?.outgoingUserMessage ?? "",
+        commandInstruction: opts?.commandInstruction,
+        mentionedSceneIds: opts?.mentionedSceneIds ?? [],
+        mentionedCodexIds: opts?.mentionedCodexIds ?? [],
+      });
 
-        set({
-          contextTokenCount: promptResult.totalTokens,
-          contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
-          contextLayers: promptResult.layers,
-          lastSystemPrompt: promptResult.prompt,
-          lastSystemPromptKey: promptKey,
-          detectedEntries: detectedNotPinned,
-          alwaysEntries: alwaysNotDetected,
-          scopeAnchor: scopeAnchorState,
-          projectOutline: projectCtx?.outline ?? undefined,
-          chapterOutlines: scopeOutlines,
-        });
-      } catch {
-        set({
-          contextTokenCount: 0,
-          contextWindowSize: null,
-          contextLayers: [],
-          scopeAnchor: null,
-          projectOutline: undefined,
-          chapterOutlines: [],
-        });
+      try {
+        await tokenizerReady;
+        markEnd("refreshContextLayers.ensureTokenizer");
+        if (
+          activeSessionId &&
+          !(await chatApi.getSessionForProject(
+            activeSessionId,
+            refreshProjectId,
+          ))
+        ) {
+          throw new Error("chat session project mismatch");
+        }
+        const planned = await planNonSceneChatContext(
+          request,
+          createNonSceneContextPlannerDeps({
+            // refreshContextLayers initializes it before capturing the request.
+            ensureTokenizer: async () => {},
+            renderPrompt: renderLegacyPrompt,
+            source: {
+              fetchProjectContext: fetchRequiredProjectContext,
+              listCodexEntries: listCodexEntriesForContext,
+              getTemporalResolution: (sourceProjectId) => {
+                if (sourceProjectId !== request.projectId) {
+                  throw new Error("non-scene temporal project mismatch");
+                }
+                return temporalResolution;
+              },
+              listPhases: listPhasesByEntryIds,
+              listPhaseDetailOverrides: listDetailOverridesByPhaseIds,
+              listRawDetailValues: listRawDetailValuesByEntryIds,
+              findMentionedEntries: findMentionedEntriesAsync,
+              listCodexRelations,
+              loadMentionedScenes: (sourceProjectId, ids) => {
+                if (sourceProjectId !== request.projectId) {
+                  throw new Error("non-scene mentioned scene project mismatch");
+                }
+                return loadMentionedScenes(
+                  [...ids],
+                  null,
+                  request.sourceSnapshot.treeNodes,
+                );
+              },
+              getSnippet,
+              buildAggregatedScene,
+              listPinnedCodex: chatApi.listPinnedCodexEntries,
+              listPinnedSnippets: listPinnedSnippetEntries,
+              listContextDetails: listContextDetailsByEntryIds,
+              loadMapBoardMarkdown: (sourceRequest, entries) =>
+                loadMapBoardMarkdown(entries, {
+                  enabled: sourceRequest.map.enabled,
+                  boardId: sourceRequest.map.boardId,
+                  activeBoardId: sourceRequest.map.activeBoardId,
+                  projectId: sourceRequest.projectId,
+                  treeNodes: sourceRequest.sourceSnapshot.treeNodes,
+                }),
+            },
+          }),
+        );
+        if (refreshAuthorityIsCurrent()) {
+          const initializeStableContext =
+            opts?.purpose === "send" && !get().sessionStableContextInitialized;
+          set({
+            contextTokenCount: planned.totalTokens,
+            contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
+            contextModel: refreshTurnRoute?.model ?? null,
+            contextLayers: planned.layers,
+            contextPlan: planned.contextPlan,
+            lastSystemPrompt: planned.prompt,
+            lastSystemPromptKey: promptKey,
+            detectedEntries: planned.detectedEntries,
+            alwaysEntries: planned.alwaysEntries,
+            scopeAnchor: planned.scopeAnchor,
+            projectOutline: planned.projectOutline,
+            chapterOutlines: planned.chapterOutlines,
+            ...(initializeStableContext
+              ? {
+                  sessionStableCodexIds: planned.stableContextIds,
+                  sessionStableContextInitialized: true,
+                }
+              : {}),
+          });
+        }
+        return planned;
+      } catch (error) {
+        if (refreshAuthorityIsCurrent()) {
+          set({
+            contextTokenCount: 0,
+            contextWindowSize: null,
+            contextModel: null,
+            contextLayers: [],
+            contextPlan: null,
+            lastSystemPrompt: "",
+            lastSystemPromptKey: null,
+            scopeAnchor: null,
+            projectOutline: undefined,
+            chapterOutlines: [],
+          });
+        }
+        if (opts?.strict) throw error;
+        return null;
       }
-      return;
     }
     try {
+      await tokenizerReady;
+      markEnd("refreshContextLayers.ensureTokenizer");
+      if (
+        activeSessionId &&
+        !(await chatApi.getSessionForProject(
+          activeSessionId,
+          sceneAuthority!.projectId,
+        ))
+      ) {
+        throw new Error("chat session project mismatch");
+      }
       const [sceneCtx, projectCtx] = await Promise.all([
-        fetchSceneContext(effectiveSceneId),
-        fetchProjectContext(activeProjectId),
+        fetchSceneContext(effectiveSceneId, sceneAuthority!.projectId),
+        fetchRequiredProjectContext(sceneAuthority!.projectId),
       ]);
-      if (!sceneCtx) return;
-
-      // scene scope の eco モード: includeBodies=false なら content を空に
-      // して buildSystemPrompt の `### シーン本文` セクションを抑制する。
-      // synopsis や foreshadow など本文以外の情報はそのまま残る。
-      // 副作用として codex auto-detect も synopsis ベースになる。
-      if (!get().includeBodies) {
-        sceneCtx.content = "";
+      if (!sceneCtx) {
+        throw new Error("required scene context is unavailable");
       }
 
       const ctxResult = await buildSceneContextPrompt({
+        purpose: opts?.purpose ?? "live",
+        authority: sceneAuthority!,
         sceneCtx,
         projectCtx,
         activeSessionId,
-        effectiveSceneId,
-        inputPinnedEntryIds: get().inputPinnedEntryIds,
-        conversationMessages: get().messages.filter((m) => !m.isSummarized),
-        agentMode: get().agentMode,
+        conversationMessages: sceneConversationMessages,
+        commandInstruction: opts?.commandInstruction,
         mentionedSceneIds: opts?.mentionedSceneIds,
         mentionedCodexIds: opts?.mentionedCodexIds,
-        excludedAutoEntryIds: get().excludedAutoEntryIds,
-        turnRoute: refreshTurnRoute,
+        semanticRecallSeedMessage: opts?.outgoingUserMessage,
       });
 
-      set({
-        contextTokenCount: ctxResult.totalTokens,
-        contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
-        contextLayers: ctxResult.layers,
-        lastSystemPrompt: ctxResult.prompt,
-        lastSystemPromptKey: promptKey,
-        detectedEntries: ctxResult.detectedEntries,
-        alwaysEntries: ctxResult.alwaysEntries,
-        scopeAnchor: null,
-        projectOutline: ctxResult.projectOutline,
-        chapterOutlines: ctxResult.chapterOutlines,
-        pinsVersion: get().pinsVersion + 1,
-      });
-    } catch {
-      // コンテキスト計算失敗は無視（送信時に再計算される）
+      if (refreshAuthorityIsCurrent()) {
+        set({
+          contextTokenCount: ctxResult.totalTokens,
+          contextWindowSize: refreshTurnRoute?.contextWindow ?? null,
+          contextModel: refreshTurnRoute?.model ?? null,
+          contextLayers: ctxResult.layers,
+          contextPlan: ctxResult.contextPlan,
+          lastSystemPrompt: ctxResult.prompt,
+          lastSystemPromptKey: promptKey,
+          detectedEntries: ctxResult.detectedEntries,
+          alwaysEntries: ctxResult.alwaysEntries,
+          scopeAnchor: null,
+          projectOutline: ctxResult.projectOutline,
+          chapterOutlines: ctxResult.chapterOutlines,
+          pinsVersion: get().pinsVersion + 1,
+        });
+      }
+      return ctxResult;
+    } catch (error) {
+      if (refreshAuthorityIsCurrent()) {
+        set({
+          contextTokenCount: 0,
+          contextWindowSize: null,
+          contextModel: null,
+          contextLayers: [],
+          contextPlan: null,
+          lastSystemPrompt: "",
+          lastSystemPromptKey: null,
+        });
+      }
+      if (opts?.strict) throw error;
+      return null;
     }
   },
 
@@ -5588,14 +5598,54 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       totalTokens: contextTokenCount,
       userMessage: draft.markdown,
     };
-    // semantic recall は scene スコープ限定。それ以外はライブ値が実送信と一致。
-    // Phase 3b: スレッド focus 中はライブ値（非 scene 枝で構築済み）を使う。
+    // semantic recall は scene スコープ限定。非 scene でも preview 固有の
+    // immutable TurnRequest を作り、UI cache の stale prompt は使わない。
     const effectiveSceneId =
       chatScope === "scene" && !threadFocusOverride ? activeSceneId : null;
-    if (!effectiveSceneId) return live;
+    if (!effectiveSceneId) {
+      try {
+        const previewMessages = [
+          ...get().messages,
+          ...(draft.markdown
+            ? [
+                {
+                  id: "preview-outgoing",
+                  sessionId: get().activeSessionId ?? "",
+                  role: "user" as const,
+                  content: draft.markdown,
+                  createdAt: new Date().toISOString(),
+                },
+              ]
+            : []),
+        ];
+        const refreshed = await get().refreshContextLayers({
+          purpose: "preview",
+          conversationMessages: previewMessages,
+          outgoingUserMessage: draft.markdown,
+          mentionedSceneIds: draft.mentionedSceneIds,
+          mentionedCodexIds: draft.mentionedCodexIds,
+          strict: true,
+        });
+        return {
+          prompt: refreshed?.prompt ?? "",
+          layers: refreshed?.layers ?? [],
+          totalTokens: refreshed?.totalTokens ?? 0,
+          userMessage: draft.markdown,
+        };
+      } catch {
+        // refresh clears stale prompt state before rethrowing.
+        return {
+          prompt: "",
+          layers: [],
+          totalTokens: 0,
+          userMessage: draft.markdown,
+        };
+      }
+    }
 
     try {
       const built = await buildOutgoingScenePrompt(get, effectiveSceneId, {
+        purpose: "preview",
         inputText: draft.markdown,
         mentionedSceneIds: draft.mentionedSceneIds,
         mentionedCodexIds: draft.mentionedCodexIds,
@@ -5662,6 +5712,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   _cancelPendingUserQuestion: () => {
+    if (_activeSendControl) _activeSendControl.aborted = true;
     if (_resolveUserQuestion) {
       // 非自発的キャンセル（Stop / セッション切替 / error）の単一ファネル。
       // Promise を sentinel 解決するだけでは、再開したループが tool_result を
@@ -5669,7 +5720,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // フラグも立て、resolve で再開したループが shouldAbort を見て即 return
       // するようにする。自発的な Answer/dismiss は resolveUserQuestion 経由で
       // この関数を通らないため、フラグは立たずループは正常継続する。
-      _agentAborted = true;
       const pending = get().pendingUserQuestion;
       _resolveUserQuestion(
         dismissedAskUserResult(
@@ -5733,7 +5783,33 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // フラグを先に立てるので、resolve で再開したループは shouldAbort を見て
     // tool_result を送らずに即 return する（stop が agent path を止められない
     // 問題への対処）。フラグ→resolve の順序が肝。
-    _agentAborted = true;
+    const stoppedControl = _activeSendControl;
+    if (stoppedControl) {
+      stoppedControl.aborted = true;
+      if (!stoppedControl.transportStarted) {
+        set((state) => ({
+          messages: state.messages.filter(
+            (message) =>
+              message.id !== stoppedControl.userMessageId &&
+              message.id !== stoppedControl.assistantMessageId,
+          ),
+        }));
+      }
+    }
+    // Flush while this turn still owns the identity; flushDelta deliberately
+    // rejects stale owners, so clearing the id first would drop the final frame.
+    _flushPendingDelta?.();
+    _flushPendingDelta = null;
+    const agentTransportWillFinalize = Boolean(
+      stoppedControl?.transportStarted && stoppedControl.surface === "agent",
+    );
+    if (stoppedControl?.transportStarted && stoppedControl.surface === "chat") {
+      _finalizeStoppedStream?.();
+    }
+    if (!agentTransportWillFinalize) {
+      _activeSendTurnId = null;
+      _activeSendControl = null;
+    }
     // CLI subprocess と HTTP ベースのストリームは別系統なので、
     // 現在のプロバイダに合わせた abort を発火する。両方発火しても害は無いが、
     // CLI 用フラグはアプリ全体で 1 つしかないため不要な reset を避ける。
@@ -5749,13 +5825,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     } else {
       void chatApi.abortChatStream().catch(() => {});
     }
-    // abort 前に buffered delta を確定（onDone/onError が来ない hard-abort 対策）。
-    _flushPendingDelta?.();
-    _flushPendingDelta = null;
-    _streamCleanup?.();
-    _streamCleanup = null;
+    if (!agentTransportWillFinalize) {
+      _streamCleanup?.();
+      _streamCleanup = null;
+    }
     get()._cancelPendingUserQuestion();
-    set({ isStreaming: false, agentProgress: null });
+    set({
+      isStreaming: agentTransportWillFinalize,
+      agentProgress: null,
+    });
   },
 
   // --- P2-2: メッセージ削除 ---

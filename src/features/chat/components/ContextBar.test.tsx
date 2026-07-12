@@ -102,6 +102,70 @@ const defaultProps = {
 };
 
 describe("ContextBar グループ化", () => {
+  it("renders only items selected by the materialized ContextPlan", () => {
+    const selected = makePinnedEntry("selected", "Selected");
+    const trimmed = makePinnedEntry("trimmed", "Trimmed");
+    render(
+      <ContextBar
+        {...defaultProps}
+        pinnedEntries={[selected, trimmed]}
+        contextPlan={
+          {
+            requestId: "request-1",
+            items: [
+              {
+                key: "codex:selected",
+                kind: "codex",
+                authority: "canonical",
+                priority: 3,
+                stability: "turn-volatile",
+                trim: { mode: "atomic", minTokens: 0, maxTokens: 1 },
+                provenance: { sourceType: "codex-pin", sourceId: "selected" },
+                payload: {
+                  kind: "codex",
+                  entry: {
+                    id: "selected",
+                    type: "character",
+                    name: "Selected",
+                    summary: "",
+                  },
+                  includePinnedExtras: true,
+                },
+              },
+            ],
+            decisions: [
+              {
+                key: "codex:selected",
+                status: "selected",
+                reason: "within-budget",
+                tokensBefore: 1,
+                tokensAfter: 1,
+              },
+              {
+                key: "codex:trimmed",
+                status: "trimmed",
+                reason: "budget-priority",
+                tokensBefore: 1,
+                tokensAfter: 0,
+              },
+            ],
+            usage: {
+              candidateTokens: 2,
+              selectedTokens: 1,
+              trimmedTokens: 1,
+              budgetTokens: 1,
+            },
+            digest: "ctx-test",
+          } as never
+        }
+      />,
+    );
+
+    const pills = screen.getByTestId("pills-visible");
+    expect(within(pills).getByText("Selected")).toBeInTheDocument();
+    expect(within(pills).queryByText("Trimmed")).not.toBeInTheDocument();
+  });
+
   it("6件以下では個別ピルを表示する", () => {
     const entries = Array.from({ length: 6 }, (_, i) =>
       makePinnedEntry(`e${i}`, `エントリ${i}`),
