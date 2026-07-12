@@ -8,6 +8,13 @@ const chatHarness = vi.hoisted(() => {
       events.push("stop");
     }),
   };
+  const resetForProject = vi.fn((projectId: string) => {
+    if (state.isStreaming) state.stopGeneration();
+    events.push("reset");
+    state.isStreaming = false;
+    Object.assign(state, { activeProjectId: projectId });
+  });
+  Object.assign(state, { resetForProject });
   const setState = vi.fn((patch: Record<string, unknown>) => {
     events.push("reset");
     Object.assign(state, patch);
@@ -22,7 +29,7 @@ const chatHarness = vi.hoisted(() => {
     },
   );
 
-  return { events, state, setState, useChatStore };
+  return { events, state, resetForProject, setState, useChatStore };
 });
 
 const phaseHarness = vi.hoisted(() => {
@@ -96,6 +103,7 @@ describe("resetChatForProject", () => {
     chatHarness.events.length = 0;
     chatHarness.state.isStreaming = true;
     chatHarness.state.stopGeneration.mockClear();
+    chatHarness.resetForProject.mockClear();
     chatHarness.setState.mockClear();
   });
 
@@ -104,44 +112,7 @@ describe("resetChatForProject", () => {
 
     expect(chatHarness.events.slice(0, 2)).toEqual(["stop", "reset"]);
     expect(chatHarness.state.stopGeneration).toHaveBeenCalledOnce();
-    expect(chatHarness.setState).toHaveBeenCalledOnce();
-    expect(chatHarness.setState.mock.calls[0]?.[0]).toMatchObject({
-      activeSessionId: null,
-      isLoadingSessions: false,
-      isLoadingMessages: false,
-      sessions: [],
-      messages: [],
-      isStreaming: false,
-      activeProjectId: "project-b",
-      activeSceneId: "",
-      contextTokenCount: 0,
-      contextWindowSize: null,
-      contextLayers: [],
-      contextPlan: null,
-      lastSystemPrompt: "",
-      lastSystemPromptKey: null,
-      projectOutline: undefined,
-      chapterOutlines: [],
-      detectedEntries: [],
-      alwaysEntries: [],
-      scopeAnchor: null,
-      threadFocusOverride: null,
-      excludedAutoEntryIds: [],
-      inputPinnedEntryIds: [],
-      agentProgress: null,
-      subAgentProgress: null,
-      agentContinuation: null,
-      pendingUserQuestion: null,
-      chatScope: "scene",
-      scopeAnchorId: null,
-      includeBodies: true,
-      includeMapBoard: false,
-      mapBoardId: null,
-      summaryCount: 0,
-      maxSummaryGeneration: 0,
-      sessionStableCodexIds: [],
-      sessionAgentToolsSnapshot: null,
-    });
+    expect(chatHarness.resetForProject).toHaveBeenCalledWith("project-b");
   });
 
   it("does not issue an abort when no generation is active", () => {
@@ -150,6 +121,7 @@ describe("resetChatForProject", () => {
     resetChatForProject("project-c");
 
     expect(chatHarness.state.stopGeneration).not.toHaveBeenCalled();
+    expect(chatHarness.resetForProject).toHaveBeenCalledWith("project-c");
     expect(chatHarness.events).toEqual(["reset"]);
   });
 });

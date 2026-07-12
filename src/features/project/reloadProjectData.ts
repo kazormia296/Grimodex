@@ -1,7 +1,6 @@
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
-import { _clearCodexCrossMentionCaches } from "@/features/codex/codexCrossMentions";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useChatHistoryStore } from "@/features/chat/chatHistoryStore";
 import { useChatStore } from "@/features/chat/chatStore";
@@ -38,57 +37,7 @@ import { initializeExternalMounts } from "@/features/external-mount/mountManager
  * 必ず先に turn を中断してから新 Project の初期状態へ切り替える。
  */
 export function resetChatForProject(projectId: string): void {
-  const chat = useChatStore.getState();
-  if (chat.isStreaming) chat.stopGeneration();
-
-  useChatStore.setState({
-    activeSessionId: null,
-    isLoadingSessions: false,
-    isLoadingMessages: false,
-    messages: [],
-    sessions: [],
-    isStreaming: false,
-    activeProjectId: projectId,
-    activeSceneId: "",
-    error: null,
-    contextTokenCount: 0,
-    contextWindowSize: null,
-    contextModel: null,
-    contextLayers: [],
-    contextPlan: null,
-    lastSystemPrompt: "",
-    lastSystemPromptKey: null,
-    chatRecallPromoteSuggestion: null,
-    pinsVersion: 0,
-    projectOutline: undefined,
-    chapterOutlines: [],
-    detectedEntries: [],
-    alwaysEntries: [],
-    scopeAnchor: null,
-    threadFocusOverride: null,
-    excludedAutoEntryIds: [],
-    inputPinnedEntryIds: [],
-    agentMode: false,
-    agentProgress: null,
-    subAgentProgress: null,
-    agentContinuation: null,
-    pendingUserQuestion: null,
-    ragEnabled: false,
-    chatScope: "scene",
-    scopeAnchorId: null,
-    includeBodies: true,
-    includeMapBoard: false,
-    mapBoardId: null,
-    _editingOldContent: null,
-    pendingLookupText: null,
-    summaryCount: 0,
-    maxSummaryGeneration: 0,
-    cacheInvalidatedReason: null,
-    sessionStableCodexIds: [],
-    sessionStableContextInitialized: false,
-    sessionAgentToolsSnapshot: null,
-    _lastCachedModel: null,
-  });
+  useChatStore.getState().resetForProject(projectId);
 }
 
 /**
@@ -143,31 +92,9 @@ export async function reloadProjectData(projectId: string): Promise<void> {
       activeGroupIndex: 0,
     });
 
-    useChatHistoryStore.setState({
-      sessions: [],
-      searchQuery: "",
-      searchResults: [],
-      isSearchMode: false,
-      sceneFilter: null,
-    });
-
-    useCodexStore.setState({
-      entries: [],
-      types: [],
-      searchQuery: "",
-      filterType: null,
-      pendingEntryId: null,
-      selectedEntry: null,
-      previewPhaseByEntry: {},
-    });
-    _clearCodexCrossMentionCaches();
-
-    useSnippetStore.setState({
-      entries: [],
-      searchQuery: "",
-      pendingEntryId: null,
-      selectedSnippet: null,
-    });
+    useChatHistoryStore.getState().resetForProject();
+    useCodexStore.getState().resetForProject();
+    useSnippetStore.getState().resetForProject();
 
     useForeshadowStore.setState({
       items: [],
@@ -250,7 +177,7 @@ export async function reloadProjectData(projectId: string): Promise<void> {
       .catch(() => {});
 
     const activeSceneId = useTreeStore.getState().activeSceneId;
-    useChatStore.setState({ activeSceneId });
+    useChatStore.getState().setActiveSceneId(activeSceneId);
 
     await loadProjectStoresInBatches(projectId);
 

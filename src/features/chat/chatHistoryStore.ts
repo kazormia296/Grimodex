@@ -164,6 +164,8 @@ interface ChatHistoryState {
 
   // Actions
   loadSessions: (projectId: string) => Promise<void>;
+  /** Clear project-owned sessions and search state before a reload. */
+  resetForProject: () => void;
   setSearchQuery: (q: string) => void;
   runSearch: (projectId: string) => Promise<void>;
   setSceneFilter: (nodeId: string | null) => void;
@@ -183,6 +185,16 @@ export const useChatHistoryStore = create<ChatHistoryState>()((set, get) => ({
   hasExtractionsOnly: false,
   projectScopeOnly: false,
   sortMode: "recent",
+
+  resetForProject: () =>
+    set({
+      sessions: [],
+      searchQuery: "",
+      searchResults: [],
+      isSearchMode: false,
+      isSearching: false,
+      sceneFilter: null,
+    }),
 
   async loadSessions(projectId) {
     set({ isLoading: true });

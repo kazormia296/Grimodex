@@ -876,6 +876,8 @@ interface ChatState {
   } | null>;
   clearMessages: () => void;
   clearError: () => void;
+  /** Drop all project-scoped chat/session state before another project is bound. */
+  resetForProject: (projectId: string) => void;
   /** 「Codex に昇格」候補を却下する (再提案しない)。 */
   dismissChatRecallPromote: (messageId: string) => void;
   setActiveSceneId: (id: string) => void;
@@ -2699,6 +2701,58 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   sessionStableContextInitialized: false,
   sessionAgentToolsSnapshot: null,
   _lastCachedModel: null,
+
+  resetForProject: (projectId) => {
+    if (get().isStreaming) get().stopGeneration();
+    set({
+      activeSessionId: null,
+      isLoadingSessions: false,
+      isLoadingMessages: false,
+      messages: [],
+      sessions: [],
+      isStreaming: false,
+      activeProjectId: projectId,
+      activeSceneId: "",
+      error: null,
+      contextTokenCount: 0,
+      contextWindowSize: null,
+      contextModel: null,
+      contextLayers: [],
+      contextPlan: null,
+      lastSystemPrompt: "",
+      lastSystemPromptKey: null,
+      chatRecallPromoteSuggestion: null,
+      pinsVersion: 0,
+      projectOutline: undefined,
+      chapterOutlines: [],
+      detectedEntries: [],
+      alwaysEntries: [],
+      scopeAnchor: null,
+      threadFocusOverride: null,
+      excludedAutoEntryIds: [],
+      inputPinnedEntryIds: [],
+      agentMode: false,
+      agentProgress: null,
+      subAgentProgress: null,
+      agentContinuation: null,
+      pendingUserQuestion: null,
+      ragEnabled: false,
+      chatScope: "scene",
+      scopeAnchorId: null,
+      includeBodies: true,
+      includeMapBoard: false,
+      mapBoardId: null,
+      _editingOldContent: null,
+      pendingLookupText: null,
+      summaryCount: 0,
+      maxSummaryGeneration: 0,
+      cacheInvalidatedReason: null,
+      sessionStableCodexIds: [],
+      sessionStableContextInitialized: false,
+      sessionAgentToolsSnapshot: null,
+      _lastCachedModel: null,
+    });
+  },
 
   invalidateContextCache: (reason) => {
     set({ cacheInvalidatedReason: reason });
