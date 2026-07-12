@@ -2,7 +2,13 @@
 
 ## 概要
 
-全設計書に散在するDBスキーマ定義を1つに統合した正規版。実装時はこのドキュメントをSingle Source of Truthとし、個別設計書のSQLは参考として扱う。
+全設計書に散在するDBスキーマ定義を説明用に統合した資料。**実行時の物理スキーマの正本は
+`src-tauri/crates/grimodex-db` の migration** であり、この文書は schema contract から
+生成・更新される概要資料として扱う。個別設計書のSQLは参考であり、実行時の正本ではない。
+
+物理スキーマの構造契約は [`src/db/generated/schema-contract.json`](../src/db/generated/schema-contract.json)
+に出力する。更新コマンドは `pnpm generate:db-contract`、authority の詳細は
+[`ADR 003`](adr/003-db-authority-and-schema-contract.md) を参照する。
 
 データベース: SQLite（WALモード有効）
 ORM: Drizzle ORM（sqlite-proxy）
@@ -2675,16 +2681,20 @@ CREATE INDEX IF NOT EXISTS idx_lint_term_dict_project ON lint_term_dictionary(pr
 | `post_effect_runs.effect_type` CHECK 拡張 | 5→9（`typo_detection` / `intent_drift` / `timeline_consistency` / `impact_review` を追加） |
 | `post_effect_annotations.category` CHECK 拡張 | 5→9（`typo_anchor` / `intent_anchor` / `timeline_anchor` / `impact_review_anchor` を追加） |
 
-### Drizzle ↔ Rust スキーマの差分
+### Drizzle ↔ Rust スキーマの projection 差分
 
-`src-tauri/crates/grimodex-db/src/migrate.rs`（実 DB の正本）と `src/db/schema.ts`（アプリ層ミラー）の現状差分。いずれも意図的か、Drizzle が遅れているだけで実害はない。
+`src-tauri/crates/grimodex-db/src/migrate.rs`（実 DB の正本）と `src/db/schema.ts`
+（アプリ層 projection）の差分。正確な table / column / index / FK の現状は
+`schema-contract.json` と parity test を参照する。この表は、Drizzle に投影しない
+Rust 専用領域と互換上の注意点だけを説明する。
 
 | 項目 | 状態 |
 |------|------|
-| `codex_chunks` / `undo_journal` | Rust のみ。FTS 仮想テーブルと同じく Rust 管理で Drizzle には定義しない（意図的） |
-| `tree_nodes.version` / `codex_entries.version` / `snippets.version` | Rust のみ（楽観ロック列）。Drizzle 未反映 |
+| `chat_message_chunks` / `event_chunks` / `fts_meta` / `undo_journal` | Rust のみ。native の索引・監査・Undo 用で Drizzle には定義しない（意図的） |
+| FTS5 仮想テーブル | Rust migration のみで管理し、Drizzle/browser projection には定義しない（意図的） |
+| `tree_nodes.version` / `codex_entries.version` / `snippets.version` | 楽観ロック列。Drizzle にも宣言し、contract test で存在を固定する |
 | `projects.is_sample` | Rust のみ。Drizzle 未反映 |
-| FTS5 / CHECK 制約 / 部分・UNIQUE インデックス / seed・cascade トリガー | すべて `migrate.rs` のみに存在（Drizzle では表現しない設計） |
+| FTS5 / CHECK 制約 / 部分・UNIQUE インデックス / seed・cascade トリガー | `migrate.rs` のみに存在する物理制約。Drizzle は列と基本 FK の projection を担う |
 
 ### マイグレーション方針について
 

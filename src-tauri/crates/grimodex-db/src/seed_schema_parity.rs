@@ -33,9 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use rusqlite::Connection;
-
-use super::Database;
+use super::{schema_contract::inspect_connection, Database};
 
 const SEED_SCHEMA_JA: &str = include_str!("../../../../scripts/schema-seed-ja.sql");
 const SEED_SCHEMA_EN: &str = include_str!("../../../../scripts/schema-seed-en.sql");
@@ -92,39 +90,30 @@ struct SchemaObjects {
 
 fn snapshot(db: &Database) -> SchemaObjects {
     db.with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT name FROM pragma_table_list \
-             WHERE schema = 'main' AND type IN ('table', 'virtual') \
-               AND name NOT LIKE 'sqlite_%' \
-             ORDER BY name",
-        )?;
-        let names = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut tables = BTreeMap::new();
-        for name in names {
-            tables.insert(name.clone(), table_columns(conn, &name)?);
-        }
-
-        let mut stmt = conn.prepare(
-            "SELECT name FROM sqlite_master \
-             WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%' \
-             ORDER BY name",
-        )?;
-        let indexes = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<BTreeSet<_>, _>>()?;
-
-        let mut stmt = conn
-            .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name")?;
-        let triggers = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    normalize_sql(&row.get::<_, String>(1)?),
-                ))
-            })?
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let contract = inspect_connection(conn)?;
+        let tables = contract
+            .tables
+            .into_iter()
+            .map(|(name, table)| {
+                let columns = table
+                    .columns
+                    .into_iter()
+                    .map(|(column_name, column)| {
+                        (
+                            column_name,
+                            ColumnInfo {
+                                decl_type: column.declared_type,
+                                notnull: column.not_null,
+                                dflt_value: column.default,
+                            },
+                        )
+                    })
+                    .collect();
+                (name, columns)
+            })
+            .collect();
+        let indexes = contract.indexes.into_keys().collect::<BTreeSet<_>>();
+        let triggers = contract.triggers;
 
         Ok(SchemaObjects {
             tables,
@@ -133,39 +122,6 @@ fn snapshot(db: &Database) -> SchemaObjects {
         })
     })
     .expect("snapshot schema")
-}
-
-fn table_columns(conn: &Connection, table: &str) -> anyhow::Result<BTreeMap<String, ColumnInfo>> {
-    let mut stmt =
-        conn.prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info(?1)")?;
-    let cols = stmt
-        .query_map([table], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                ColumnInfo {
-                    decl_type: normalize_type(&row.get::<_, String>(1)?),
-                    notnull: row.get::<_, bool>(2)?,
-                    dflt_value: row.get::<_, Option<String>>(3)?,
-                },
-            ))
-        })?
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    Ok(cols)
-}
-
-/// 型宣言の表記ゆれ（大文字小文字・空白）だけを吸収する。意味の違いは残す。
-fn normalize_type(decl: &str) -> String {
-    decl.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_uppercase()
-}
-
-/// CREATE 文の空白（改行・インデント）だけを潰して比較可能にする。
-/// 大文字小文字は保持する（本体の実質差を隠さない）。なお sqlite_master は
-/// `IF NOT EXISTS` を保存しないため、その有無の差は自然に吸収される。
-fn normalize_sql(sql: &str) -> String {
-    sql.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn migrated_db() -> Database {
