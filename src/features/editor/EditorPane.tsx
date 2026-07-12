@@ -80,6 +80,11 @@ import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
 import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
+import {
+  getEditorTimelapseCapture,
+  serializeTransactionSteps,
+  shouldHandleEditorUpdate,
+} from "@/features/editor/editorEventPolicy";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { useEditorSettings } from "@/features/settings/hooks/useEditorSettings";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -639,22 +644,28 @@ export function EditorPane({
         },
       },
       onUpdate({ editor: e, transaction }) {
-        if (isApplyingExternalUpdate.current) return;
+        const ai = useInlineAiStore.getState();
         // TipTap は setEditable 等の「doc 未変更」イベントでも 'update' を
         // emit する (transaction.steps が空)。これを保存に流すと、未ロードの
         // 空 doc に pending が arm され本文消失の引き金になる (実機で
         // useLicenseEditableSync の mount 同期がこれを踏んでいた)。
         // 実際に doc が変わった transaction だけを保存系に通す。
-        if (!transaction.docChanged) return;
+        if (
+          !shouldHandleEditorUpdate({
+            docChanged: transaction.docChanged,
+            isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+            inlineAiStatus: ai.status,
+            activeEditor: ai.activeEditor,
+            editor: e,
+          })
+        ) {
+          return;
+        }
         // インライン AI の生成中・diff 表示中はオートセーブを止める。
         // Accept/Reject が呼ばれて idle に戻った時点で reset + dispatch によって
         // 再度 onUpdate が走り、その時に通常の schedule が実行される。
         // owner 判定 (activeEditor === e) なので、分割ビューで別ペインが生成中でも
         // このペインの通常編集は保存される (LinearSceneBlock.onUpdate と同契約)。
-        {
-          const ai = useInlineAiStore.getState();
-          if (ai.status !== "idle" && ai.activeEditor === e) return;
-        }
         if (mutationGate.captureSave() === null) {
           // 調査ログ: 未ロード窓 (mount〜コンテンツ適用成功の間) で doc を
           // 変更している犯人の特定用。保存自体は saveFn 側 guard で skip される。
@@ -744,26 +755,25 @@ export function EditorPane({
         // は両方 step として残り「AI が X を提案→ユーザーが削除」と忠実に再現される。
         // Chronicle event detail は執筆タイムラプスの対象外（scene/codex/snippet の
         // body ではないメタデータ）。誤った entityType で記録しないよう skip。
-        if (sid && !isApplyingExternalUpdate.current && !isChronicleEventMode) {
+        const capture = getEditorTimelapseCapture({
+          id: sid,
+          isEntryMode,
+          isCodexMode,
+          isSnippetMode,
+          isChronicleEventMode,
+          isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+        });
+        if (capture) {
           try {
-            const steps = transaction.steps.map((s) => s.toJSON());
-            const domain = isCodexMode
-              ? "codex"
-              : isSnippetMode
-                ? "snippet"
-                : "editor";
-            const entityType = isCodexMode
-              ? "codex_entry"
-              : isSnippetMode
-                ? "snippet"
-                : "scene";
             recordChangeEvent({
-              domain,
+              domain: capture.domain,
               opType: "doc.step",
-              sceneId: !isEntryMode ? sid : null,
-              entityType,
-              entityId: sid,
-              payload: { steps },
+              sceneId: capture.sceneId,
+              entityType: capture.entityType,
+              entityId: capture.entityId,
+              payload: {
+                steps: serializeTransactionSteps(transaction.steps),
+              },
             });
           } catch (err) {
             // 防御的: capture 失敗で本流の onTransaction を止めない。
