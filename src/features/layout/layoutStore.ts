@@ -700,28 +700,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
     set((state) => {
       const opening = location.slot.activePanel !== toolPanel;
-      let next = state.layout;
-
-      if (location.region === "center") {
-        next = updateCenterToolSegment(next, location.slot.id, (segment) => ({
-          ...segment,
-          activePanel: segment.activePanel === toolPanel ? null : toolPanel,
-        }));
-      } else {
-        next = updateRegion(next, location.region, (region) => ({
-          ...region,
-          slots: region.slots.map((slot) => {
-            if (slot.id !== location.slot.id) return slot;
-            return {
-              ...slot,
-              activePanel: slot.activePanel === toolPanel ? null : toolPanel,
-            };
-          }),
-        }));
-      }
-
       return {
-        layout: applyValidatedLayout(next, state.layout),
+        layout: reduceLayout(state.layout, {
+          type: "panel/toggle",
+          panel: toolPanel,
+        }),
         hiddenStripePanels: opening
           ? unhideStripePanel(state.hiddenStripePanels, toolPanel)
           : state.hiddenStripePanels,
@@ -742,26 +725,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     if (location.slot.activePanel === toolPanel) return;
 
     set((state) => {
-      let next = state.layout;
-
-      if (location.region === "center") {
-        next = updateCenterToolSegment(next, location.slot.id, (segment) => ({
-          ...segment,
-          activePanel: toolPanel,
-        }));
-      } else {
-        next = updateRegion(next, location.region, (region) => ({
-          ...region,
-          slots: region.slots.map((slot) =>
-            slot.id === location.slot.id
-              ? { ...slot, activePanel: toolPanel }
-              : slot,
-          ),
-        }));
-      }
-
       return {
-        layout: applyValidatedLayout(next, state.layout),
+        layout: reduceLayout(state.layout, {
+          type: "panel/show",
+          panel: toolPanel,
+        }),
         hiddenStripePanels: unhideStripePanel(
           state.hiddenStripePanels,
           toolPanel,
