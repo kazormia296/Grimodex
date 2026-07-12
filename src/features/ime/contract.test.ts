@@ -44,7 +44,11 @@ describe("IME Protocol V1 contract fixtures", () => {
     },
     {
       schema: "consumer" as const,
-      valid: ["valid/consumer-legacy.json", "valid/consumer-linux.json"],
+      valid: [
+        "valid/consumer-legacy.json",
+        "valid/consumer-linux.json",
+        "valid/consumer-macos.json",
+      ],
       invalid: [
         "invalid/consumer-missing-name.json",
         "malicious/consumer-path-traversal.json",

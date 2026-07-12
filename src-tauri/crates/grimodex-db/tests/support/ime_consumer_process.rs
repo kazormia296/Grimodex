@@ -9,26 +9,29 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context};
 use grimodex_db::ime_export::{get_status, ImeExportStatus, ImeIntegrationMode};
 
-const SERVER_ENV: &str = "GRIMODEX_LINUX_IME_SERVER";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-pub fn spawn_and_wait_for_consumer(consumer_id: &str) -> anyhow::Result<ImeExportStatus> {
-    let server = env::var_os(SERVER_ENV)
+pub fn spawn_and_wait_for_consumer(
+    server_env: &str,
+    process_label: &str,
+    consumer_id: &str,
+) -> anyhow::Result<ImeExportStatus> {
+    let server = env::var_os(server_env)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .with_context(|| {
             format!(
-                "{SERVER_ENV} must point to the fcitx5-grimodex-server executable; \
+                "{server_env} must point to the {process_label} executable; \
                  this test is opt-in and must be run with --ignored"
             )
         })?;
     if !server.is_file() {
-        bail!("{SERVER_ENV} is not a file: {}", server.display());
+        bail!("{server_env} is not a file: {}", server.display());
     }
 
-    let sandbox = Sandbox::new()?;
-    let mut process = ServerProcess::spawn(&server, &sandbox)?;
+    let sandbox = Sandbox::new(process_label)?;
+    let mut process = ServerProcess::spawn(&server, &sandbox, process_label)?;
     let started_at = Instant::now();
 
     loop {
@@ -40,7 +43,7 @@ pub fn spawn_and_wait_for_consumer(consumer_id: &str) -> anyhow::Result<ImeExpor
         }
 
         let status = get_status(&sandbox.ime_root, ImeIntegrationMode::Auto)
-            .context("read Grimodex IME status while polling the Linux server")?;
+            .with_context(|| format!("read Grimodex IME status while polling {process_label}"))?;
         if status
             .consumers
             .iter()
@@ -73,9 +76,19 @@ struct Sandbox {
 }
 
 impl Sandbox {
-    fn new() -> anyhow::Result<Self> {
+    fn new(process_label: &str) -> anyhow::Result<Self> {
+        let safe_label: String = process_label
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect();
         let root = env::temp_dir().join(format!(
-            "grimodex-linux-ime-process-e2e-{}",
+            "grimodex-{safe_label}-process-e2e-{}",
             uuid::Uuid::new_v4()
         ));
         let sandbox = Self {
@@ -98,9 +111,9 @@ impl Sandbox {
         ] {
             fs::create_dir_all(directory)
                 .with_context(|| format!("create E2E directory {}", directory.display()))?;
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("make E2E directory private: {}", directory.display()))?;
         }
-        fs::set_permissions(&sandbox.runtime_home, fs::Permissions::from_mode(0o700))
-            .context("make Linux IME E2E runtime directory private")?;
         Ok(sandbox)
     }
 }
@@ -113,12 +126,14 @@ impl Drop for Sandbox {
 
 struct ServerProcess {
     child: Child,
+    process_label: String,
 }
 
 impl ServerProcess {
-    fn spawn(server: &Path, sandbox: &Sandbox) -> anyhow::Result<Self> {
+    fn spawn(server: &Path, sandbox: &Sandbox, process_label: &str) -> anyhow::Result<Self> {
         let child = Command::new(server)
             .env("GRIMODEX_IME_ROOT", &sandbox.ime_root)
+            .env("GRIMODEX_PROCESS_E2E", "1")
             .env("XDG_RUNTIME_DIR", &sandbox.runtime_home)
             .env("XDG_DATA_HOME", &sandbox.data_home)
             .env("XDG_CONFIG_HOME", &sandbox.config_home)
@@ -129,12 +144,17 @@ impl ServerProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
-            .with_context(|| format!("start Linux IME server {}", server.display()))?;
-        Ok(Self { child })
+            .with_context(|| format!("start {process_label} {}", server.display()))?;
+        Ok(Self {
+            child,
+            process_label: process_label.to_owned(),
+        })
     }
 
     fn try_wait(&mut self) -> anyhow::Result<Option<std::process::ExitStatus>> {
-        self.child.try_wait().context("poll Linux IME server")
+        self.child
+            .try_wait()
+            .with_context(|| format!("poll {} process", self.process_label))
     }
 }
 
@@ -152,14 +172,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sandbox_runtime_directory_is_private() {
-        let sandbox = Sandbox::new().expect("create Linux IME E2E sandbox");
-        let permissions = fs::metadata(&sandbox.runtime_home)
-            .expect("read runtime directory metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-
-        assert_eq!(permissions, 0o700);
+    fn sandbox_directories_are_private() {
+        let sandbox = Sandbox::new("contract-test").expect("create IME E2E sandbox");
+        for directory in [
+            &sandbox.runtime_home,
+            &sandbox.data_home,
+            &sandbox.config_home,
+            &sandbox.state_home,
+            &sandbox.cache_home,
+            &sandbox.home,
+        ] {
+            let permissions = fs::metadata(directory)
+                .expect("read E2E directory metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(permissions, 0o700, "{}", directory.display());
+        }
     }
 }
