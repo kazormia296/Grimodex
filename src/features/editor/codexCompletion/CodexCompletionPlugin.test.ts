@@ -213,9 +213,7 @@ describe("Codex completion ProseMirror plugin", () => {
   it("does not recompute in a blurred editor after a peer document update", () => {
     const initial = createState();
     let state = focusAndType(initial.state, "Se");
-    state = state.apply(
-      state.tr.setMeta(codexCompletionKey, { type: "blur" }),
-    );
+    state = state.apply(state.tr.setMeta(codexCompletionKey, { type: "blur" }));
     state = state.apply(state.tr.insertText("t"));
 
     expect(codexCompletionKey.getState(state)).toMatchObject({

@@ -100,10 +100,7 @@ function textblockPrefix($from: ResolvedPos): TextblockPrefix {
   $from.parent.forEach((node, offset) => {
     if (offset >= $from.parentOffset) return;
     if (node.isText && node.text) {
-      const length = Math.min(
-        node.text.length,
-        $from.parentOffset - offset,
-      );
+      const length = Math.min(node.text.length, $from.parentOffset - offset);
       text += node.text.slice(0, length);
       for (let index = 0; index < length; index += 1) {
         positions.push(blockStart + offset + index);
