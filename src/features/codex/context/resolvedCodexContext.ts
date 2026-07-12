@@ -6,6 +6,13 @@ import {
   type SceneTimeIndex,
   type TemporalAnchor,
 } from "../phaseResolver";
+export {
+  canExposeResolvedCodexIdentity,
+  canIncludeResolvedCodexContext,
+  type CodexContextInclusionReason,
+  type CodexContextExposure,
+  resolveCodexContextExposure,
+} from "./codexVisibilityPolicy";
 
 export type ResolvableCodexContextEntry = {
   id: string;
@@ -77,27 +84,6 @@ export function resolveCodexContexts<
   }
 
   return { resolvedById, phasesByEntry, entriesById };
-}
-
-export type CodexContextInclusionReason =
-  | "always"
-  | "mention"
-  | "explicit-pin"
-  | "derived"
-  | "active-tab";
-
-/**
- * Shared fail-closed AI exposure policy for a Phase-resolved context mode.
- * `suppress` is the manual-only state and is admitted solely by an explicit
- * pin. `hidden` is never admitted, including through pins or derived paths.
- */
-export function canIncludeResolvedCodexContext(
-  contextMode: string,
-  reason: CodexContextInclusionReason,
-): boolean {
-  if (contextMode === "hidden") return false;
-  if (contextMode === "suppress") return reason === "explicit-pin";
-  return contextMode === "always" || contextMode === "mentioned";
 }
 
 export function materializeResolvedCodexContext<

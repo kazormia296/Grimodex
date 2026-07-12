@@ -138,6 +138,9 @@ export function resolveChatTurnRoute(
     apiVariant,
     contextWindow: capabilities.contextWindow,
     modelMaxOutputTokens: capabilities.maxOutputTokens,
+    defaultVisibleOutputTokens: capabilities.defaultVisibleOutputTokens,
+    defaultReasoningReservationTokens:
+      capabilities.defaultReasoningReservationTokens,
     thinking,
   });
   const responsesRoute =

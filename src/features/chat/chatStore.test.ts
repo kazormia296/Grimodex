@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useChatStore, contextPromptKey } from "./chatStore";
 import { useAiSettingsStore, DEFAULT_AI_SETTINGS } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
+import { useTabStore } from "@/features/editor/tabStore";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 
 vi.mock("./chatApi", () => ({
@@ -38,6 +39,7 @@ vi.mock("./chatApi", () => ({
   generateSessionTitle: vi.fn(() => Promise.resolve(null)),
   listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
   listPinnedSnippetEntries: vi.fn(() => Promise.resolve([])),
+  listPinnedStickyEntries: vi.fn(() => Promise.resolve([])),
   pinCodexEntry: vi.fn(),
   unpinCodexEntry: vi.fn(),
 }));
@@ -60,6 +62,11 @@ vi.mock("./contextBuilder", () => ({
     degraded: false,
   })),
   ensureTokenizer: vi.fn(() => Promise.resolve()),
+  getTokenEstimatorFamily: vi.fn(() => "o200k_base"),
+}));
+
+vi.mock("@/features/ai-usage/recordAiUsage", () => ({
+  recordAiUsage: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
@@ -204,9 +211,11 @@ vi.mock("@/features/semantic-search/api", () => ({
 import * as chatApi from "./chatApi";
 import type { ChatMessageResult, StreamCallbacks } from "./chatApi";
 import * as contextBuilder from "./contextBuilder";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 const mockSendChatMessageStream = vi.mocked(chatApi.sendChatMessageStream);
 const mockSendAgentMessage = vi.mocked(chatApi.sendAgentMessage);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
+const mockRecordAiUsage = vi.mocked(recordAiUsage);
 
 /**
  * Helper: set up sendChatMessageStream mock to immediately call onTextDelta + onDone.
@@ -337,6 +346,7 @@ describe("useChatStore", () => {
     // policy 既定はクリア（projects 空 → fail-open=full）。chat ガードを
     // 素通りさせ、既存の sendMessage テストを従来どおり走らせる。
     useProjectStore.setState({ currentProjectId: null, projects: [] });
+    useTabStore.setState({ tabs: [], activeTabId: null });
     // プロンプトプレビューの入力ドラフト DI をテスト間でリセット
     useChatStore.getState().registerInputDraftProvider(null);
     mockCreateSession.mockImplementation(
@@ -801,6 +811,82 @@ describe("useChatStore", () => {
       expect(isStreaming).toBe(false);
     });
 
+    it("records normalized chat input drift with the immutable route/provider/project", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+        },
+      });
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "telemetry system prompt",
+        totalTokens: 42,
+        layers: [],
+        contextPlan: {
+          requestId: "request-telemetry",
+          items: [],
+          decisions: [],
+          usage: {
+            candidateTokens: 0,
+            selectedTokens: 0,
+            trimmedTokens: 0,
+            budgetTokens: 1_000,
+          },
+          digest: "ctx-telemetry",
+        },
+      });
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          callbacks.onTextDelta("ok");
+          callbacks.onDone({
+            stopReason: "end_turn",
+            inputTokens: 50,
+            outputTokens: 10,
+            cacheReadTokens: 1_200,
+            cacheWriteTokens: 300,
+          });
+          return () => {};
+        },
+      );
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      const usage = mockRecordAiUsage.mock.calls.find(
+        ([input]) => input.surface === "chat",
+      )?.[0];
+      expect(usage).toMatchObject({
+        provider: "anthropic",
+        projectId: "proj-1",
+        tokensIn: 50,
+        cacheReadTokens: 1_200,
+        cacheWriteTokens: 300,
+      });
+      const drift = usage?.metadata?.["inputTokenDrift"] as
+        | Record<string, unknown>
+        | undefined;
+      expect(drift).toMatchObject({
+        scope: "chat",
+        provider: "anthropic",
+        projectId: "proj-1",
+        estimatorFamily: "o200k_base",
+        language: "ja",
+        safetyMarginTokens: 32,
+        contextPlanDigest: expect.stringMatching(/^ctx-/),
+        normalizedActualInputTokens: 1_550,
+        requestCount: 1,
+        route: expect.objectContaining({
+          surface: "chat",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          toolProtocol: "native",
+        }),
+      });
+      expect(drift?.["deltaInputTokens"]).toBe(
+        1_550 - Number(drift?.["estimatedInputTokens"]),
+      );
+    });
+
     it("非エージェント送信は chatModelOverride(一時モデル)を transport へ渡し、既定モデルは書き換えない", async () => {
       // 回帰: 一時モデルが送信に効かず既定へフォールバックしていた(非エージェント
       // 経路で override を transport に渡し忘れていた)バグの gate。
@@ -1065,6 +1151,128 @@ describe("useChatStore", () => {
             ),
           ),
         ).toMatchObject({ stopped: true });
+      } finally {
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
+    it("accumulates parent and research Agent drift without changing aggregate tokens", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        agentMode: true,
+        ragEnabled: false,
+      });
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "agent telemetry system prompt",
+        totalTokens: 42,
+        layers: [],
+        contextPlan: {
+          requestId: "request-agent-telemetry",
+          items: [],
+          decisions: [],
+          usage: {
+            candidateTokens: 0,
+            selectedTokens: 0,
+            trimmedTokens: 0,
+            budgetTokens: 1_000,
+          },
+          digest: "ctx-agent-telemetry",
+        },
+      });
+      mockSendAgentMessage
+        .mockResolvedValueOnce({
+          blocks: [
+            {
+              type: "tool_use",
+              id: "research-1",
+              name: "run_research",
+              input: { task: "moon archives" },
+            },
+          ],
+          stopReason: "tool_use",
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 100,
+          cacheWriteTokens: 20,
+        })
+        .mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "research findings" }],
+          stopReason: "end_turn",
+          inputTokens: 30,
+          outputTokens: 6,
+          cacheReadTokens: 200,
+          cacheWriteTokens: 40,
+        })
+        .mockResolvedValueOnce({
+          blocks: [{ type: "text", content: "final answer" }],
+          stopReason: "end_turn",
+          inputTokens: 20,
+          outputTokens: 7,
+          cacheReadTokens: 300,
+          cacheWriteTokens: 60,
+        });
+
+      try {
+        await useChatStore.getState().sendMessage("調べて");
+
+        const agentUsage = mockRecordAiUsage.mock.calls
+          .map(([input]) => input)
+          .filter((input) => input.surface === "agent");
+        const byScope = new Map(
+          agentUsage.map((input) => {
+            const drift = input.metadata?.["inputTokenDrift"] as Record<
+              string,
+              unknown
+            >;
+            return [drift["scope"], { input, drift }];
+          }),
+        );
+        const research = byScope.get("agent-research");
+        const parent = byScope.get("agent-parent");
+
+        expect(research?.input).toMatchObject({
+          provider: "anthropic",
+          projectId: "proj-1",
+          tokensIn: 30,
+          tokensOut: 6,
+          cacheReadTokens: 200,
+          cacheWriteTokens: 40,
+        });
+        expect(research?.drift).toMatchObject({
+          contextPlanDigest: null,
+          language: "ja",
+          normalizedActualInputTokens: 270,
+          requestCount: 1,
+        });
+        expect(parent?.input).toMatchObject({
+          provider: "anthropic",
+          projectId: "proj-1",
+          // Existing Agent aggregate semantics stay as raw provider input sums.
+          tokensIn: 30,
+          tokensOut: 12,
+          cacheReadTokens: 400,
+          cacheWriteTokens: 80,
+        });
+        expect(parent?.drift).toMatchObject({
+          contextPlanDigest: expect.stringMatching(/^ctx-/),
+          language: "ja",
+          normalizedActualInputTokens: 510,
+          requestCount: 2,
+          safetyMarginTokens: 64,
+        });
+        expect(parent?.drift["deltaInputTokens"]).toBe(
+          510 - Number(parent?.drift["estimatedInputTokens"]),
+        );
       } finally {
         useChatStore.setState({ agentMode: false, ragEnabled: false });
         useAiSettingsStore.setState({ settings: null });
@@ -1897,6 +2105,68 @@ describe("useChatStore", () => {
       ).toBe(undefined);
     });
 
+    it("captures the non-scene active tab at the send click", async () => {
+      const { getSnippet } = await import("@/features/snippets/api");
+      let releaseTokenizer!: () => void;
+      vi.mocked(contextBuilder.ensureTokenizer).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseTokenizer = resolve;
+        }),
+      );
+      vi.mocked(getSnippet).mockResolvedValueOnce({
+        id: "snippet-captured",
+        projectId: "proj-1",
+        title: "Captured Snippet",
+        content: "captured body",
+      } as never);
+      mockBuildSystemPrompt.mockReturnValueOnce({
+        prompt: "captured active-tab prompt",
+        totalTokens: 1,
+        layers: [],
+      });
+      mockStreamResponse("回答");
+      useTabStore.setState({
+        tabs: [
+          {
+            nodeId: "snippet-captured",
+            contentType: "snippet",
+            isPreview: false,
+          },
+        ],
+        activeTabId: "snippet-captured",
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        chatScope: "project",
+      });
+
+      const send = useChatStore.getState().sendMessage("テスト");
+      useTabStore.setState({
+        tabs: [
+          {
+            nodeId: "snippet-late",
+            contentType: "snippet",
+            isPreview: false,
+          },
+        ],
+        activeTabId: "snippet-late",
+      });
+      releaseTokenizer();
+      await send;
+
+      expect(getSnippet).toHaveBeenCalledWith("proj-1", "snippet-captured");
+      expect(
+        mockBuildSystemPrompt.mock.calls.at(-1)?.[0].activeTabContent,
+      ).toEqual({
+        type: "snippet",
+        title: "Captured Snippet",
+        content: "Captured Snippet",
+      });
+    });
+
     it("does not let an older same-key refresh overwrite the newer result", async () => {
       const { getProject } = await import("@/features/project/api");
       let resolveOldProject!: (value: {
@@ -2304,7 +2574,7 @@ describe("useChatStore", () => {
   // --- Regression: global chat pin + mention should not duplicate summary ---
 
   describe("refreshContextLayers global chat pinned+mention dedup", () => {
-    it("excludes mentioned child from DB-pinned parent's children and childrenContext", async () => {
+    it("treats every visible direct child of a DB-pinned withChildren parent as an explicit child pin", async () => {
       const { listCodexEntriesForContext } =
         await import("@/features/codex/api");
       const mockListCodex = vi.mocked(listCodexEntriesForContext);
@@ -2345,6 +2615,7 @@ describe("useChatStore", () => {
         parentId: "A",
         name: "子Y",
         summary: "Y-summary",
+        contextMode: "always",
       };
 
       mockListCodex.mockResolvedValue([parent, childX, childY]);
@@ -2371,19 +2642,21 @@ describe("useChatStore", () => {
       expect(mockBuildSystemPrompt).toHaveBeenCalled();
       const args = mockBuildSystemPrompt.mock.calls.at(-1)?.[0];
       const pinned = args?.pinnedCodexEntries ?? [];
+      const detected = args?.codexEntries ?? [];
       const parentCtx = pinned.find((p) => p.id === "A");
-      const childCtx = pinned.find((p) => p.id === "X");
+      const childCtx = detected.find((entry) => entry.id === "X");
 
       expect(parentCtx).toBeDefined();
-      expect(childCtx).toBeDefined();
+      expect(childCtx).toBeUndefined();
 
-      // A の children 配列に X が含まれてはならない（G21 pin されているため重複防止）
-      expect(parentCtx?.children?.map((c) => c.id) ?? []).not.toContain("X");
-      // A の childrenContext にも X-summary が含まれてはならない
+      // withChildren は直下子を個別の explicit selection として扱うため、
+      // current mention の有無に関係なく X/Y は full child block になる。
+      expect(parentCtx?.children?.map((c) => c.id) ?? []).toEqual(
+        expect.arrayContaining(["X", "Y"]),
+      );
+      // direct child の summary は childrenContext に重ねて出さない。
       expect(parentCtx?.childrenContext ?? "").not.toContain("X-summary");
-      // Y は依然として children/childrenContext に含まれるべき
-      expect(parentCtx?.children?.map((c) => c.id) ?? []).toContain("Y");
-      expect(parentCtx?.childrenContext ?? "").toContain("Y-summary");
+      expect(parentCtx?.childrenContext ?? "").not.toContain("Y-summary");
     });
 
     it("resolves non-scene mentions from the captured project tree", async () => {

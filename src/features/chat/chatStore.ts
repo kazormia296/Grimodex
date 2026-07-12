@@ -35,6 +35,7 @@ import {
   countTokens,
   allocateLayerBudgets,
   ensureTokenizer,
+  getTokenEstimatorFamily,
 } from "./contextBuilder";
 import type {
   SceneContext,
@@ -101,6 +102,12 @@ import {
   renderAgentToolPayloads,
 } from "./turn/renderAgentPayload";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
+import {
+  accumulateInputTokenDrift,
+  buildInputTokenDriftMetadata,
+  createInputTokenDriftTotals,
+  type InputTokenRouteSnapshot,
+} from "@/features/ai-usage/inputTokenDrift";
 import { sanitizeCitations, findUnbackedUrls } from "./citationVerify";
 import {
   fetchSemanticRecall,
@@ -229,6 +236,21 @@ function materializeSystemDeliverySnapshot(
     ? finalized.systemDelivery.text
     : finalized.systemDelivery.blocks.map((block) => block.text).join("");
 }
+
+function snapshotInputTokenRoute(
+  route: ResolvedChatTurnRoute,
+): InputTokenRouteSnapshot {
+  return {
+    surface: route.surface,
+    provider: route.provider,
+    model: route.model,
+    apiVariant: route.apiVariant,
+    requestedEndpointId: route.endpointId,
+    resolvedEndpointId: route.resolvedEndpointId,
+    toolProtocol: route.toolProtocol,
+    contextWindow: route.contextWindow,
+  };
+}
 import type {
   AgentMessagePayload,
   ToolCallRecord,
@@ -268,7 +290,6 @@ import {
   listCodexContextMetadata,
   listCodexEntriesForContext,
   listCodexEntriesForContextByIds,
-  listCodexMatchTargets,
 } from "@/features/codex/api";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import {
@@ -884,15 +905,14 @@ interface ChatState {
   setActiveProjectId: (id: string | null) => void;
   /** Editor Insert 後に in-memory metadata を同期 */
   syncInsertedToEditorMetadata: (messageId: string) => void;
-  /** G20: stores old message content when editing, to detect removed @mentions */
-  _editingOldContent: string | null;
   /** autoリストから特定エントリを即時除去（ピン直後のBug#1修正用） */
   removeEntryFromAuto: (entryId: string) => void;
   /** コンテキストバーの × による auto 注入からの除外。表示配列の除去に
    * 加えて excludedAutoEntryIds に記録する — always エントリは毎ビルドで
    * allEntries から無条件再収集されるため、表示除去だけでは次の refresh で
    * プロンプト・ピルとも復活する。 */
-  excludeEntryFromAuto: (entryId: string) => void;
+  /** Add a session auto-exclusion and report whether this call created it. */
+  excludeEntryFromAuto: (entryId: string) => boolean;
   /** auto 除外の解除（pin など、ユーザーがエントリを再び使い始めた経路で呼ぶ） */
   clearAutoExclusion: (entryId: string) => void;
   /** Codex anchor エントリ削除時に codex スコープを scene に戻す */
@@ -2234,9 +2254,13 @@ function captureSceneTurnAuthority(input: {
   const mapState = useMapStore.getState();
   const settingsState = useSettingsStore.getState();
   const tabState = useTabStore.getState();
-  const activeTab = tabState.tabs.find(
-    (tab) => tab.nodeId === tabState.activeTabId,
-  );
+  const focusedTabs =
+    tabState.activeGroupIndex === 1 ? tabState.secondaryTabs : tabState.tabs;
+  const focusedTabId =
+    tabState.activeGroupIndex === 1
+      ? tabState.secondaryActiveTabId
+      : tabState.activeTabId;
+  const activeTab = focusedTabs.find((tab) => tab.nodeId === focusedTabId);
 
   return {
     projectId: input.projectId,
@@ -2556,6 +2580,14 @@ function captureNonSceneContextAuthority(input: {
     .map((node) => (node.projectId ? { ...node } : { ...node, projectId }));
   const phaseState = usePhaseStore.getState();
   const plotThreadState = usePlotThreadStore.getState();
+  const tabState = useTabStore.getState();
+  const focusedTabs =
+    tabState.activeGroupIndex === 1 ? tabState.secondaryTabs : tabState.tabs;
+  const focusedTabId =
+    tabState.activeGroupIndex === 1
+      ? tabState.secondaryActiveTabId
+      : tabState.activeTabId;
+  const activeTab = focusedTabs.find((tab) => tab.nodeId === focusedTabId);
 
   let scope: Exclude<ContextScopeTarget, { kind: "scene" }>;
   if (state.threadFocusOverride) {
@@ -2606,7 +2638,11 @@ function captureNonSceneContextAuthority(input: {
         boardId: state.mapBoardId,
         activeBoardId: mapState.activeBoardId,
       },
-      activeTab: null,
+      activeTab:
+        activeTab?.contentType === "codex" ||
+        activeTab?.contentType === "snippet"
+          ? { nodeId: activeTab.nodeId, contentType: activeTab.contentType }
+          : null,
       settings: {
         injectBeats: settingsState.getBoolean("beat.injectIntoContext", true),
         chronicleEnabled: settingsState.getBoolean(
@@ -2692,7 +2728,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   includeBodies: true,
   includeMapBoard: false,
   mapBoardId: null,
-  _editingOldContent: null,
   pendingLookupText: null,
   summaryCount: 0,
   maxSummaryGeneration: 0,
@@ -2742,7 +2777,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       includeBodies: true,
       includeMapBoard: false,
       mapBoardId: null,
-      _editingOldContent: null,
       pendingLookupText: null,
       summaryCount: 0,
       maxSummaryGeneration: 0,
@@ -2854,6 +2888,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   excludeEntryFromAuto: (entryId: string) => {
+    const wasExcluded = get().excludedAutoEntryIds.includes(entryId);
     set((state) => ({
       excludedAutoEntryIds: state.excludedAutoEntryIds.includes(entryId)
         ? state.excludedAutoEntryIds
@@ -2864,6 +2899,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // 除外を lastSystemPrompt に即時反映する（× の直後に送信しても
     // 旧プロンプト経由で注入されないように）。
     void get().refreshContextLayers();
+    return !wasExcluded;
   },
 
   clearAutoExclusion: (entryId: string) => {
@@ -3861,29 +3897,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         const projectCtx = await fetchRequiredProjectContext(turnProjectId);
         if (cancelBeforeTransport()) return;
 
-        // 通常モードと同じく、@言及/CodexHighlight 経由でメッセージ内に検出された
-        // Codex エントリを送信時に自動 Spotlight する。
-        // 自動 pin 判定は名前/alias だけで足りるため、本文 projection は読まない。
-        const codexMatchTargets = sceneCtx
-          ? await listCodexMatchTargets(turnProjectId)
-          : [];
-        if (sessionIdForPersist && sceneCtx) {
-          const chatMentioned = await findMentionedEntriesAsync(
-            content,
-            codexMatchTargets,
-          );
-          for (const entry of chatMentioned) {
-            await chatApi
-              .pinCodexEntry(
-                sessionIdForPersist,
-                entry.id,
-                false,
-                "chat_mention",
-              )
-              .catch(() => {});
-          }
-        }
-
         const projectCtxLang = projectCtx?.language ?? "ja";
         let agentMessages = prevMessages;
         if (sessionIdForPersist) {
@@ -4086,6 +4099,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               aiSettings?.model ??
               ""));
         currentAgentModel = currentModel;
+        const currentProvider =
+          turnRoute?.provider ??
+          xprov?.provider ??
+          agentRole?.provider ??
+          aiSettings?.provider ??
+          "unknown";
+        const agentUsageRoute = turnRoute
+          ? snapshotInputTokenRoute(turnRoute)
+          : null;
+        const tokenEstimatorFamily = getTokenEstimatorFamily();
+        const agentContextPlanDigest = get().contextPlan?.digest ?? null;
         const agentApiVariant = turnRoute
           ? turnRoute.apiVariant
           : xprov
@@ -4201,6 +4225,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               { role: "user", content: task },
             ];
 
+            let researchInputTokenDrift = createInputTokenDriftTotals();
             let childResult;
             try {
               childResult = await runAgentLoop({
@@ -4215,7 +4240,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 // 漏らさないようにする。
                 callLimitMessage: agentControl.researchLimitMessage,
                 tokenBudgetMessage: agentControl.researchLimitMessage,
-                sendToLLM: (msgs, tools) => {
+                sendToLLM: async (msgs, tools) => {
                   const finalized = turnRoute
                     ? finalizeChatTurnPayload({
                         route: turnRoute,
@@ -4227,7 +4252,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                         tools,
                       })
                     : null;
-                  return chatApi.sendAgentMessage(
+                  const response = await chatApi.sendAgentMessage(
                     msgs,
                     tools,
                     agentThinkingParams,
@@ -4251,7 +4276,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                     turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
                     turnRoute?.provider ?? null,
                     turnRoute?.resolvedEndpointId ?? null,
+                    turnRoute?.toolProtocol ?? null,
                   );
+                  researchInputTokenDrift = accumulateInputTokenDrift(
+                    researchInputTokenDrift,
+                    currentProvider,
+                    {
+                      estimatedInputTokens:
+                        finalized?.usage.inputTokens ?? null,
+                      safetyMarginTokens:
+                        finalized?.usage.safetyMarginTokens ?? null,
+                      inputTokens: response.inputTokens,
+                      cacheReadTokens: response.cacheReadTokens,
+                      cacheWriteTokens: response.cacheWriteTokens,
+                    },
+                  );
+                  return response;
                 },
                 executeTool: async (name, toolCallId, params) => {
                   assertTurnAuthority();
@@ -4284,11 +4324,26 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             void recordAiUsage({
               surface: "agent",
               model: currentModel,
+              provider: currentProvider,
+              projectId: turnProjectId,
               tokensIn: childResult.tokensIn,
               tokensOut: childResult.tokensOut,
+              cacheReadTokens: researchInputTokenDrift.cacheReadTokens,
+              cacheWriteTokens: researchInputTokenDrift.cacheWriteTokens,
               costUsd: childResult.cost,
               traceId: assistantMsg.id,
               refId: assistantMsg.id,
+              metadata: agentUsageRoute
+                ? buildInputTokenDriftMetadata({
+                    scope: "agent-research",
+                    projectId: turnProjectId,
+                    route: agentUsageRoute,
+                    estimatorFamily: tokenEstimatorFamily,
+                    language: projectCtxLang,
+                    contextPlanDigest: null,
+                    totals: researchInputTokenDrift,
+                  })
+                : null,
             });
 
             const findings = childResult.finalText.trim() || "(no findings)";
@@ -4332,6 +4387,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // Phase 2: 永続設定 (settingsStore の ai.webSearch.*) のドメイン制御 /
         // content cap を載せる。
         const webSearchConfig = webSearchConfigAtTurnStart;
+        let parentInputTokenDrift = createInputTokenDriftTotals();
         const {
           toolCallRecords,
           finalThinkingBlocks,
@@ -4349,7 +4405,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           callLimitMessage: agentControl.callLimitMessage,
           tokenBudgetMessage: agentControl.tokenBudgetMessage,
           userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
-          sendToLLM: (msgs, tools) => {
+          sendToLLM: async (msgs, tools) => {
             assertTurnAuthority();
             const finalized = turnRoute
               ? finalizeChatTurnPayload({
@@ -4377,7 +4433,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             }
             transportStarted = true;
             sendControl.transportStarted = true;
-            return chatApi.sendAgentMessage(
+            const response = await chatApi.sendAgentMessage(
               msgs,
               tools,
               agentThinkingParams,
@@ -4402,7 +4458,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
               turnRoute?.provider ?? null,
               turnRoute?.resolvedEndpointId ?? null,
+              turnRoute?.toolProtocol ?? null,
             );
+            parentInputTokenDrift = accumulateInputTokenDrift(
+              parentInputTokenDrift,
+              currentProvider,
+              {
+                estimatedInputTokens: finalized?.usage.inputTokens ?? null,
+                safetyMarginTokens: finalized?.usage.safetyMarginTokens ?? null,
+                inputTokens: response.inputTokens,
+                cacheReadTokens: response.cacheReadTokens,
+                cacheWriteTokens: response.cacheWriteTokens,
+              },
+            );
+            return response;
           },
           executeTool: guardedExecuteTool,
           onProgress: (progress) => {
@@ -4555,11 +4624,26 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             void recordAiUsage({
               surface: "agent",
               model: agentModel,
+              provider: currentProvider,
+              projectId: turnProjectId,
               tokensIn: agentTokensIn,
               tokensOut: agentTokensOut,
+              cacheReadTokens: parentInputTokenDrift.cacheReadTokens,
+              cacheWriteTokens: parentInputTokenDrift.cacheWriteTokens,
               costUsd: cost,
               traceId: assistantMsg.id,
               refId: assistantMsg.id,
+              metadata: agentUsageRoute
+                ? buildInputTokenDriftMetadata({
+                    scope: "agent-parent",
+                    projectId: turnProjectId,
+                    route: agentUsageRoute,
+                    estimatorFamily: tokenEstimatorFamily,
+                    language: projectCtxLang,
+                    contextPlanDigest: agentContextPlanDigest,
+                    totals: parentInputTokenDrift,
+                  })
+                : null,
             });
 
             // セッションタイトル自動生成 (P1-2) — fire-and-forget
@@ -4668,6 +4752,16 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         (xprov
           ? xprov.model
           : (convRole?.model ?? chatModelOverride ?? aiSettings?.model ?? ""));
+      const chatProvider =
+        turnRoute?.provider ??
+        xprov?.provider ??
+        convRole?.provider ??
+        aiSettings?.provider ??
+        "unknown";
+      const chatUsageRoute = turnRoute
+        ? snapshotInputTokenRoute(turnRoute)
+        : null;
+      const tokenEstimatorFamily = getTokenEstimatorFamily();
       const chatApiVariant = turnRoute
         ? turnRoute.apiVariant
         : xprov
@@ -4722,53 +4816,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       let sentContextTokenCount: number | null = null;
 
       if (sceneCtx) {
-        const codexMatchTargets = await listCodexMatchTargets(turnProjectId);
-
-        // P2-5: チャットメッセージ内のCodex言及を検出し自動ピン留め
-        if (sessionIdForPersist) {
-          const chatMentioned = await findMentionedEntriesAsync(
-            content,
-            codexMatchTargets,
-          );
-          for (const entry of chatMentioned) {
-            await chatApi
-              .pinCodexEntry(
-                sessionIdForPersist,
-                entry.id,
-                false,
-                "chat_mention",
-              )
-              .catch(() => {});
-          }
-
-          // G20: メッセージ編集時に削除された@言及のピンを解除
-          const { _editingOldContent } = get();
-          if (_editingOldContent !== null) {
-            try {
-              const oldMentioned = await findMentionedEntriesAsync(
-                _editingOldContent,
-                codexMatchTargets,
-              );
-              const newMentionedIds = new Set(chatMentioned.map((e) => e.id));
-              const removedIds = oldMentioned
-                .filter((e) => !newMentionedIds.has(e.id))
-                .map((e) => e.id);
-              if (removedIds.length > 0) {
-                await chatApi
-                  .unpinCodexEntriesByIds(
-                    sessionIdForPersist,
-                    removedIds,
-                    "chat_mention",
-                  )
-                  .catch(() => {});
-              }
-            } catch {
-              // 解除失敗は無視
-            }
-            set({ _editingOldContent: null });
-          }
-        }
-
         const ctxResult = await buildSceneContextPrompt({
           purpose: "send",
           authority: sceneTurnAuthority!,
@@ -4876,6 +4923,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         content:
           m.role === "assistant" ? stripToolProtocol(m.content) : m.content,
       }));
+      const chatContextPlanDigest = get().contextPlan?.digest ?? null;
+      let estimatedChatInputTokens: number | null = null;
+      let chatSafetyMarginTokens: number | null = null;
       if (turnRoute) {
         const finalized =
           turnRoute.provider === "cli"
@@ -4904,6 +4954,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               });
         systemCacheSegments = finalized.transport.systemCacheSegments;
         systemVolatileTail = finalized.transport.systemVolatileTail;
+        estimatedChatInputTokens = finalized.usage.inputTokens;
+        chatSafetyMarginTokens = finalized.usage.safetyMarginTokens;
         sentContextTokenCount = finalized.usage.inputTokens;
         if (turnRoute.provider !== "cli") {
           sentSystemPrompt = materializeSystemDeliverySnapshot(finalized);
@@ -5030,12 +5082,25 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             const chatDurationMs = Math.round(
               performance.now() - chatStartTime,
             );
+            const chatInputTokenDrift = accumulateInputTokenDrift(
+              createInputTokenDriftTotals(),
+              chatProvider,
+              {
+                estimatedInputTokens: estimatedChatInputTokens,
+                safetyMarginTokens: chatSafetyMarginTokens,
+                inputTokens: info.inputTokens,
+                cacheReadTokens: info.cacheReadTokens,
+                cacheWriteTokens: info.cacheWriteTokens,
+              },
+            );
 
             // N4: 通常チャットの usage を台帳に記録 (chat_messages.tokens_* とは
             // 別に、集計用の単一台帳に集約する。cost は OpenRouter streaming 実値)。
             void recordAiUsage({
               surface: "chat",
               model: chatModel || undefined,
+              provider: chatProvider,
+              projectId: turnProjectId,
               tokensIn: info.inputTokens,
               tokensOut: info.outputTokens,
               costUsd: info.cost ?? null,
@@ -5044,6 +5109,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               durationMs: chatDurationMs,
               traceId: assistantMsg.id,
               refId: assistantMsg.id,
+              metadata: chatUsageRoute
+                ? buildInputTokenDriftMetadata({
+                    scope: "chat",
+                    projectId: turnProjectId,
+                    route: chatUsageRoute,
+                    estimatorFamily: tokenEstimatorFamily,
+                    language: projectCtx?.language ?? null,
+                    contextPlanDigest: chatContextPlanDigest,
+                    totals: chatInputTokenDrift,
+                  })
+                : null,
             });
 
             // Build metadata: thinking blocks + stopped flag
@@ -5939,8 +6015,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         debugLog.error("ChatStore", "editUserMessage", errorDetail(e)),
       );
     }
-    // G20: save old content to detect removed @mentions on re-send
-    set({ messages: messages.slice(0, idx), _editingOldContent: content });
+    set({ messages: messages.slice(0, idx) });
     return mentionedSceneIds ? { content, mentionedSceneIds } : { content };
   },
 

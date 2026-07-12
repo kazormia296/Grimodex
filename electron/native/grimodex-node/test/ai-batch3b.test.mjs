@@ -3,7 +3,7 @@
 // ローカル OpenAI 互換モックで end-to-end 検証する。
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -14,6 +14,24 @@ import { test } from "node:test";
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
+const agentPayloadFixture = JSON.parse(
+  readFileSync(
+    join(
+      here,
+      "..",
+      "..",
+      "..",
+      "..",
+      "src",
+      "features",
+      "chat",
+      "turn",
+      "fixtures",
+      "openaiNativeAgentPayload.json",
+    ),
+    "utf8",
+  ),
+);
 
 const roots = [];
 process.on("exit", () => {
@@ -140,59 +158,33 @@ test("sendAgentMessage がcamelCase tool履歴を送り、低信頼providerのwr
             },
           },
         ],
-        usage: { prompt_tokens: 7, completion_tokens: 3 },
+        usage: {
+          prompt_tokens: 7,
+          completion_tokens: 3,
+          prompt_tokens_details: {
+            cached_tokens: 5,
+            cache_write_tokens: 2,
+          },
+        },
       }),
     );
   });
   try {
     const { backend } = makeBackend();
-    const settings = settingsWithEndpoints("http://127.0.0.1:1", baseUrl);
+    const settings = {
+      ...settingsWithEndpoints("http://127.0.0.1:1", baseUrl),
+      // A settings re-read would choose Hermes. The turn-start snapshot below
+      // must keep the already-budgeted native payload shape.
+      toolProtocolMode: "hermes",
+    };
     const args = {
-      messages: [
-        { role: "user", content: "find moon" },
-        {
-          role: "assistant",
-          content: "",
-          toolUses: [
-            {
-              id: "previous-1",
-              name: "search_codex",
-              input: { query: "sun" },
-            },
-          ],
-          thinkingBlocks: [],
-        },
-        {
-          role: "tool_result",
-          toolUseId: "previous-1",
-          content: "found",
-          isError: false,
-        },
-      ],
-      tools: [
-        {
-          name: "search_codex",
-          description: "Search",
-          inputSchema: {
-            type: "object",
-            properties: { query: { type: "string" } },
-            required: ["query"],
-          },
-        },
-        {
-          name: "update_codex_entry",
-          description: "Update",
-          inputSchema: {
-            type: "object",
-            properties: { id: { type: "string" } },
-            required: ["id"],
-          },
-        },
-      ],
+      messages: agentPayloadFixture.input.messages,
+      tools: agentPayloadFixture.input.tools,
       provider: "openai-compatible",
       endpointId: "other",
       model: "agent-model",
       webSearch: null,
+      resolvedToolProtocol: "native",
     };
     const result = JSON.parse(
       await backend.sendAgentMessage(args, settings, "sk-agent"),
@@ -201,18 +193,18 @@ test("sendAgentMessage がcamelCase tool履歴を送り、低信頼providerのwr
     assert.equal(request.url, "/chat/completions");
     assert.equal(request.authorization, "Bearer sk-agent");
     assert.equal(request.body.model, "agent-model");
-    assert.ok(
-      request.body.messages.some(
-        (message) =>
-          message.role === "assistant" &&
-          message.tool_calls?.[0]?.id === "previous-1",
-      ),
+    assert.deepEqual(
+      request.body.messages,
+      agentPayloadFixture.expected.messages,
     );
-    assert.ok(
-      request.body.messages.some(
-        (message) =>
-          message.role === "tool" && message.tool_call_id === "previous-1",
-      ),
+    assert.deepEqual(request.body.tools, agentPayloadFixture.expected.tools);
+    assert.equal(
+      JSON.stringify({
+        messages: request.body.messages,
+        tools: request.body.tools,
+      }),
+      JSON.stringify(agentPayloadFixture.expected),
+      "Rust wireのmessages/toolsは共有fixtureとcanonical JSONでも一致する",
     );
     assert.deepEqual(
       result.blocks.filter((block) => block.type === "tool_use"),
@@ -227,9 +219,31 @@ test("sendAgentMessage がcamelCase tool履歴を送り、低信頼providerのwr
       "read-only toolは維持し、mutating toolは破棄する",
     );
     assert.equal(result.stopReason, "tool_use");
+    assert.equal(result.cacheReadTokens, 5);
+    assert.equal(result.cacheWriteTokens, 2);
   } finally {
     await closeServer(server);
   }
+});
+
+test("sendAgentMessage は unresolved tool protocol をN-API境界で拒否する", async () => {
+  const { backend } = makeBackend();
+  const settings = settingsWithEndpoints(
+    "http://127.0.0.1:1",
+    "http://127.0.0.1:1",
+  );
+  await assert.rejects(
+    backend.sendAgentMessage(
+      {
+        messages: [],
+        tools: [],
+        resolvedToolProtocol: "auto",
+      },
+      settings,
+      "sk-agent",
+    ),
+    /failed to deserialize args|unknown variant.*auto/,
+  );
 });
 
 test("listAiModels はendpoint overrideを使い、空キーならAuthorizationを付けない", async () => {

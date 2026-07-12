@@ -345,15 +345,19 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     ) => {
       const trimmed = markdown.trim();
       if (!trimmed || isStreaming) return;
-      // 送信時に却下セットをリセット（次のメッセージでは再検出可能にする）
-      resetInputDismissed();
       // スラッシュコマンド由来の一回限りの指示 (/brainstorm の VS 等) は
       // sendMessage の commandInstruction (L6) へ。残りは送信オプションとして渡す。
       const { commandInstruction, ...rest } = options ?? {};
       // Flush any pending editor save so sendMessage reads latest scene content from DB.
       const flushAndSend = async () => {
-        if (chatSceneId) await saveScene(chatSceneId);
-        sendMessage(trimmed, commandInstruction, rest);
+        try {
+          if (chatSceneId) await saveScene(chatSceneId);
+          await sendMessage(trimmed, commandInstruction, rest);
+        } finally {
+          // Keep current-input dismissals in the send authority snapshot. They
+          // become eligible for detection again only after this turn finishes.
+          resetInputDismissed();
+        }
       };
       void flushAndSend();
     },
@@ -679,7 +683,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             disabled={isStreaming}
             policyDisabled={chatGate.presentation !== "enabled"}
             editorRef={chatEditorRef}
-            onMentionPin={(id) => handlePin(id, "codex")}
             onDetectedEntries={handleDetectedEntries}
             onHasTextChange={setInputHasText}
           />

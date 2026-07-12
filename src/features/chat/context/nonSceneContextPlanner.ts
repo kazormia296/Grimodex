@@ -18,7 +18,10 @@ import {
   type ChatContextPayload,
   type ChatContextPlan,
 } from "./types";
-import { ContextPlanningError } from "./chatContextPlanner";
+import {
+  attachDiagnosticDecisions,
+  ContextPlanningError,
+} from "./chatContextPlanner";
 
 export interface NonSceneContextPlannerDeps {
   ensureTokenizer: () => Promise<void>;
@@ -44,6 +47,7 @@ export interface NonSceneContextPlanResult {
   scopeAnchor: NonSceneScopeAnchor | null;
   projectOutline: string | undefined;
   chapterOutlines: Array<{ title: string; outline: string }>;
+  diagnostics: NonSceneContextCollection["diagnostics"];
 }
 
 function emptyContextPlan(requestId: string): ChatContextPlan {
@@ -108,8 +112,10 @@ export async function planNonSceneChatContext(
     deliveryMode: request.budget.deliveryMode,
     conversationTokens,
   });
-  const contextPlan =
-    rendered.contextPlan ?? emptyContextPlan(request.requestId);
+  const contextPlan = attachDiagnosticDecisions(
+    rendered.contextPlan ?? emptyContextPlan(request.requestId),
+    collected.diagnostics,
+  );
 
   return {
     prompt: rendered.prompt,
@@ -127,6 +133,7 @@ export async function planNonSceneChatContext(
     scopeAnchor: collected.scopeAnchor,
     projectOutline: collected.projectOutline,
     chapterOutlines: collected.chapterOutlines,
+    diagnostics: collected.diagnostics,
   };
 }
 

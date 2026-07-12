@@ -663,7 +663,7 @@ CREATE UNIQUE INDEX uq_chat_pin_snippet ON chat_session_pinned_codex(session_id,
 
 `pin_source`:
 - `'manual'` — 「+」ボタン、ピルプレビューのPin等のユーザー明示操作
-- `'chat_mention'` — チャット入力欄で @ メンションされて送信された時の自動ピン
+- `'chat_mention'` — 旧バージョン互換用。現在の @ メンションはターン内候補としてのみ扱い、新規行を永続化しない。既存行もコンテキスト計画では明示ピンとして扱わない
 
 ### chat_messages
 

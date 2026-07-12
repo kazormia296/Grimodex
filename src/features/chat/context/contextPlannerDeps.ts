@@ -13,6 +13,15 @@ export interface RecalledMessageForPromotion {
   text: string;
 }
 
+export interface ContextDiagnostic {
+  source: string;
+  severity: "warning" | "fatal";
+  code: string;
+  message: string;
+  latencyMs?: number;
+  cause?: unknown;
+}
+
 export interface RequiredSceneContext {
   scene: SceneContext;
   project: ProjectContext | null;
@@ -23,6 +32,7 @@ export interface RequiredSceneContext {
   projectOutline: string | undefined;
   chapterOutlines: Array<{ title: string; outline: string }>;
   recalledMessages: RecalledMessageForPromotion[];
+  diagnostics: ContextDiagnostic[];
 }
 
 export type OptionalSceneContext = Partial<BuildSystemPromptInput>;

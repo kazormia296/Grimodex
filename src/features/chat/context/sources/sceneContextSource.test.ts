@@ -4,6 +4,9 @@ import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
 import type { CodexContextEntry } from "@/features/codex/api";
 import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import type { PinnedCodexEntryWithData } from "../../chatApi";
+import type { ChatMessage } from "../../chatTypes";
+import { buildSystemPrompt } from "../../contextBuilder";
 import { createSceneTurnContextRequest } from "../turnContextRequest";
 import {
   collectSceneContext,
@@ -83,6 +86,12 @@ interface RequestOverrides {
   inputPinnedEntryIds?: string[];
   activeTabId?: string;
   prefetch?: boolean;
+  messages?: ChatMessage[];
+  outgoingUserMessage?: string;
+  mentionedCodexIds?: string[];
+  sessionId?: string | null;
+  excludedAutoEntryIds?: string[];
+  semanticRecallEnabled?: boolean;
 }
 
 function request(overrides: RequestOverrides = {}) {
@@ -90,17 +99,17 @@ function request(overrides: RequestOverrides = {}) {
     requestId: "request-1",
     purpose: "live",
     projectId: "project-1",
-    sessionId: null,
+    sessionId: overrides.sessionId ?? null,
     sceneId: "scene-1",
     mode: "chat",
     route: null,
     budget: { contextWindow: 16_384, deliveryMode: "plain" },
-    messages: [],
-    outgoingUserMessage: "",
+    messages: overrides.messages ?? [],
+    outgoingUserMessage: overrides.outgoingUserMessage ?? "",
     mentionedSceneIds: [],
-    mentionedCodexIds: [],
+    mentionedCodexIds: overrides.mentionedCodexIds ?? [],
     inputPinnedEntryIds: overrides.inputPinnedEntryIds ?? [],
-    excludedAutoEntryIds: [],
+    excludedAutoEntryIds: overrides.excludedAutoEntryIds ?? [],
     sessionStableCodexIds: [],
     includeBodies: overrides.includeBodies ?? true,
     map: { enabled: false, boardId: null, activeBoardId: null },
@@ -110,7 +119,7 @@ function request(overrides: RequestOverrides = {}) {
     settings: {
       injectBeats: false,
       chronicleEnabled: false,
-      semanticRecallEnabled: false,
+      semanticRecallEnabled: overrides.semanticRecallEnabled ?? false,
       episodicRecallEnabled: false,
       hybridRecallEnabled: false,
       customChatInstruction: "",
@@ -128,6 +137,22 @@ function request(overrides: RequestOverrides = {}) {
         : { prefetchedCodexEntries: overrides.entries ?? [] }),
     },
   });
+}
+
+function pinnedCodex(
+  candidate: CodexContextEntry,
+  pinSource: "manual" | "chat_mention" = "manual",
+  withChildren = false,
+): PinnedCodexEntryWithData {
+  return {
+    ...candidate,
+    icon: null,
+    readings: null,
+    notes: null,
+    withChildren,
+    pinnedType: "codex",
+    pinSource,
+  };
 }
 
 interface PhaseDepsOptions {
@@ -184,6 +209,51 @@ describe("collectSceneContext", () => {
     expect(result.scene.id).toBe("scene-1");
     expect(result.project?.title).toBe("Project");
     expect(result.promptInput.scene.content).toBe("Body");
+    expect(result).toMatchObject({ diagnostics: [] });
+  });
+
+  it("retains independent optional source failures as deterministic diagnostics", async () => {
+    const result = await collectSceneContext(
+      request({
+        sessionId: "session-1",
+        outgoingUserMessage: "Find related material",
+        semanticRecallEnabled: true,
+      }),
+      createSceneContextSourceDeps({
+        listTreeNodes: () => [sceneNode],
+        listPinnedSnippets: async () => {
+          throw new Error("snippet database offline");
+        },
+        fetchSemanticRecall: async () => {
+          throw new Error("embedding service offline");
+        },
+      }),
+    );
+
+    expect(result.promptInput.pinnedSnippets).toBeUndefined();
+    expect(result.promptInput.semanticRecall).toBeUndefined();
+    expect(result).toMatchObject({
+      diagnostics: [
+        {
+          source: "pinned-snippets",
+          severity: "warning",
+          code: "PINNED_SNIPPETS_UNAVAILABLE",
+          message: "Pinned snippets are unavailable; continuing without them.",
+          cause: expect.any(Error),
+        },
+        {
+          source: "semantic-recall",
+          severity: "warning",
+          code: "SEMANTIC_RECALL_UNAVAILABLE",
+          message: "Semantic recall is unavailable; continuing without it.",
+          cause: expect.any(Error),
+        },
+      ],
+    });
+    for (const diagnostic of result.diagnostics) {
+      expect(diagnostic.latencyMs).toEqual(expect.any(Number));
+      expect(diagnostic.latencyMs).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it("applies eco mode from the immutable request snapshot", async () => {
@@ -247,6 +317,88 @@ describe("collectSceneContext", () => {
     );
   });
 
+  it("uses only the current turn and structured mentions as chat triggers", async () => {
+    const alice = entry({ id: "alice", name: "Alice" });
+    const historicalMessage: ChatMessage = {
+      id: "message-1",
+      sessionId: "session-1",
+      role: "user",
+      content: "Alice appeared in an earlier turn",
+      createdAt: NOW,
+    };
+
+    const historicalOnly = await collectSceneContext(
+      request({ entries: [alice], messages: [historicalMessage] }),
+      phaseDeps([]),
+    );
+    expect(historicalOnly.promptInput.codexEntries).toEqual([]);
+
+    const currentText = await collectSceneContext(
+      request({ entries: [alice], outgoingUserMessage: "Ask about Alice" }),
+      phaseDeps([]),
+    );
+    expect(
+      currentText.promptInput.codexEntries?.map((item) => item.id),
+    ).toEqual([alice.id]);
+
+    const structured = await collectSceneContext(
+      request({ entries: [alice], mentionedCodexIds: [alice.id] }),
+      phaseDeps([]),
+    );
+    expect(structured.promptInput.codexEntries?.map((item) => item.id)).toEqual(
+      [alice.id],
+    );
+  });
+
+  it("does not promote a current-turn mention to an explicit pin", async () => {
+    const suppressed = entry({
+      id: "suppressed",
+      name: "Suppressed",
+      contextMode: "suppress",
+      summary: "Must stay private",
+    });
+
+    for (const mention of [
+      { outgoingUserMessage: "Ask about Suppressed" },
+      { inputPinnedEntryIds: [suppressed.id] },
+      { mentionedCodexIds: [suppressed.id] },
+    ]) {
+      const result = await collectSceneContext(
+        request({ entries: [suppressed], ...mention }),
+        phaseDeps([]),
+      );
+
+      expect(result.promptInput.codexEntries).toEqual([]);
+      expect(result.promptInput.pinnedCodexEntries).toEqual([]);
+      expect(JSON.stringify(result.promptInput)).not.toContain(
+        "Must stay private",
+      );
+    }
+  });
+
+  it("ignores legacy persisted chat-mention pins", async () => {
+    const suppressed = entry({
+      id: "legacy-chat-mention",
+      name: "Legacy",
+      contextMode: "suppress",
+      summary: "Legacy private body",
+    });
+    const result = await collectSceneContext(
+      request({ entries: [suppressed], sessionId: "session-1" }),
+      {
+        ...phaseDeps([]),
+        listPinnedCodex: async () => [pinnedCodex(suppressed, "chat_mention")],
+      },
+    );
+
+    expect(result.promptInput.codexEntries).toEqual([]);
+    expect(result.promptInput.pinnedCodexEntries).toEqual([]);
+    expect(result.promptInput.contextDecisions).toEqual([]);
+    expect(JSON.stringify(result.promptInput)).not.toContain(
+      "Legacy private body",
+    );
+  });
+
   it("contains no direct Chat store or implicit current-project reads", () => {
     const source = readFileSync(
       new URL("./sceneContextSource.ts", import.meta.url),
@@ -256,18 +408,14 @@ describe("collectSceneContext", () => {
     expect(source).not.toMatch(/getCurrentProjectId/);
   });
 
-  it.each([
-    { mode: "hidden", pinned: true },
-    { mode: "suppress", pinned: false },
-  ])(
-    "excludes Base-mentioned entries after Phase $mode resolution",
-    async ({ mode, pinned }) => {
+  it.each(["hidden", "suppress"])(
+    "excludes Base-mentioned entries after Phase %s resolution",
+    async (mode) => {
       const alice = entry({ id: "alice", name: "Alice" });
       const result = await collectSceneContext(
         request({
           entries: [alice],
           sceneContent: "Alice appears",
-          inputPinnedEntryIds: pinned ? [alice.id] : [],
         }),
         phaseDeps([
           phase({
@@ -340,9 +488,15 @@ describe("collectSceneContext", () => {
     const result = await collectSceneContext(
       request({
         entries: [hidden],
-        inputPinnedEntryIds: [hidden.id, "missing-pin"],
+        sessionId: "session-1",
       }),
-      phaseDeps([]),
+      {
+        ...phaseDeps([]),
+        listPinnedCodex: async () => [
+          pinnedCodex(hidden),
+          pinnedCodex({ ...hidden, id: "missing-pin", name: "Missing" }),
+        ],
+      },
     );
 
     expect(result.promptInput.contextDecisions).toEqual([
@@ -387,17 +541,20 @@ describe("collectSceneContext", () => {
       request({
         entries: [alice],
         sceneContent: "No mention",
-        inputPinnedEntryIds: [alice.id],
+        sessionId: "session-1",
       }),
-      phaseDeps([
-        phase({
-          id: "phase-1",
-          entryId: alice.id,
-          summaryOverride: "Pinned phase summary",
-          contentOverride: doc("Pinned phase body"),
-          contextModeOverride: "suppress",
-        }),
-      ]),
+      {
+        ...phaseDeps([
+          phase({
+            id: "phase-1",
+            entryId: alice.id,
+            summaryOverride: "Pinned phase summary",
+            contentOverride: doc("Pinned phase body"),
+            contextModeOverride: "suppress",
+          }),
+        ]),
+        listPinnedCodex: async () => [pinnedCodex(alice)],
+      },
     );
 
     expect(result.promptInput.codexEntries).toEqual([]);
@@ -447,32 +604,35 @@ describe("collectSceneContext", () => {
     const alice = entry({ id: "alice", name: "Alice" });
     const currentPhase = phase({ id: "phase-1", entryId: alice.id });
     const result = await collectSceneContext(
-      request({ entries: [alice], inputPinnedEntryIds: [alice.id] }),
-      phaseDeps([currentPhase], {
-        detailOverrides: [
-          {
-            phaseId: currentPhase.id,
-            definitionId: "detail-role",
-            value: null,
-          },
-        ],
-        rawDetails: [
-          {
-            entryId: alice.id,
-            definitionId: "detail-role",
-            value: "Base role",
-          },
-        ],
-        contextDetails: [
-          {
-            entryId: alice.id,
-            definitionId: "detail-role",
-            fieldName: "Role",
-            fieldType: "text",
-            value: "Base role",
-          },
-        ],
-      }),
+      request({ entries: [alice], sessionId: "session-1" }),
+      {
+        ...phaseDeps([currentPhase], {
+          detailOverrides: [
+            {
+              phaseId: currentPhase.id,
+              definitionId: "detail-role",
+              value: null,
+            },
+          ],
+          rawDetails: [
+            {
+              entryId: alice.id,
+              definitionId: "detail-role",
+              value: "Base role",
+            },
+          ],
+          contextDetails: [
+            {
+              entryId: alice.id,
+              definitionId: "detail-role",
+              fieldName: "Role",
+              fieldType: "text",
+              value: "Base role",
+            },
+          ],
+        }),
+        listPinnedCodex: async () => [pinnedCodex(alice)],
+      },
     );
 
     expect(
@@ -494,28 +654,47 @@ describe("collectSceneContext", () => {
       contextMode: "hidden",
       summary: "",
     });
+    const mentionedChild = entry({
+      id: "mentioned-child",
+      name: "Mentioned child",
+      parentId: parent.id,
+      summary: "Mentioned child summary",
+    });
     const hiddenChild = entry({
       id: "hidden-child",
       name: "Hidden child",
       parentId: parent.id,
       summary: "Base hidden summary",
     });
+    const entries = [parent, visibleChild, mentionedChild, hiddenChild];
+    const phases = [
+      phase({
+        id: "phase-visible",
+        entryId: visibleChild.id,
+        contentOverride: doc("Resolved child body"),
+        contextModeOverride: "always",
+      }),
+      phase({
+        id: "phase-hidden",
+        entryId: hiddenChild.id,
+        summaryOverride: "Phase hidden summary",
+        contextModeOverride: "hidden",
+      }),
+    ];
+    const listCodexEntriesByIds = vi.fn(
+      async (_projectId: string, ids: readonly string[]) =>
+        ids.flatMap(
+          (id) => entries.find((candidate) => candidate.id === id) ?? [],
+        ),
+    );
     const result = await collectSceneContext(
-      request({ entries: [parent, visibleChild, hiddenChild] }),
-      phaseDeps([
-        phase({
-          id: "phase-visible",
-          entryId: visibleChild.id,
-          contentOverride: doc("Resolved child body"),
-          contextModeOverride: "mentioned",
-        }),
-        phase({
-          id: "phase-hidden",
-          entryId: hiddenChild.id,
-          summaryOverride: "Phase hidden summary",
-          contextModeOverride: "hidden",
-        }),
-      ]),
+      request({ entries, prefetch: false }),
+      {
+        ...phaseDeps(phases),
+        listCodexContextMetadata: async () =>
+          entries.map(({ content: _content, ...metadata }) => metadata),
+        listCodexEntriesByIds,
+      },
     );
 
     const parentContext = result.promptInput.codexEntries?.find(
@@ -526,6 +705,253 @@ describe("collectSceneContext", () => {
     expect(parentContext?.childrenContext).not.toContain(
       "Phase hidden summary",
     );
+    expect(parentContext?.childrenContext).not.toContain(
+      "Mentioned child summary",
+    );
+    expect(parentContext?.childrenContext).toContain("Mentioned child");
+    const prompt = buildSystemPrompt(result.promptInput).prompt;
+    expect(prompt).toContain("Mentioned child");
+    expect(prompt).not.toContain("Mentioned child summary");
+    const loadedIds = listCodexEntriesByIds.mock.calls.flatMap(([, ids]) => [
+      ...ids,
+    ]);
+    expect(loadedIds).toEqual(
+      expect.arrayContaining([parent.id, visibleChild.id]),
+    );
+    expect(loadedIds).not.toEqual(
+      expect.arrayContaining([mentionedChild.id, hiddenChild.id]),
+    );
+  });
+
+  it("treats every visible direct child of a manual withChildren pin as explicitly selected", async () => {
+    const parent = entry({
+      id: "manual-parent",
+      name: "Manual parent",
+      contextMode: "suppress",
+      summary: "Parent summary",
+    });
+    const mentionedChild = entry({
+      id: "manual-mentioned-child",
+      name: "Manual mentioned child",
+      parentId: parent.id,
+      contextMode: "mentioned",
+      summary: "MANUAL_MENTIONED_SUMMARY",
+      content: doc("MANUAL_MENTIONED_BODY"),
+      tagsCache: JSON.stringify(["manual-child-tag"]),
+    });
+    const suppressChild = entry({
+      id: "manual-suppress-child",
+      name: "Manual suppress child",
+      parentId: parent.id,
+      contextMode: "suppress",
+      summary: "MANUAL_SUPPRESS_SUMMARY",
+      content: doc("MANUAL_SUPPRESS_BODY"),
+    });
+    const alwaysChild = entry({
+      id: "manual-always-child",
+      name: "Manual always child",
+      parentId: parent.id,
+      contextMode: "always",
+      summary: "MANUAL_ALWAYS_SUMMARY",
+      content: doc("MANUAL_ALWAYS_BODY"),
+    });
+    const hiddenChild = entry({
+      id: "manual-hidden-child",
+      name: "Manual hidden child",
+      parentId: parent.id,
+      contextMode: "hidden",
+      summary: "MANUAL_HIDDEN_SUMMARY",
+      content: doc("MANUAL_HIDDEN_BODY"),
+    });
+    const entries = [
+      parent,
+      mentionedChild,
+      suppressChild,
+      alwaysChild,
+      hiddenChild,
+    ];
+    const result = await collectSceneContext(
+      request({ entries, sessionId: "session-1" }),
+      {
+        ...phaseDeps([], {
+          contextDetails: [
+            {
+              entryId: suppressChild.id,
+              definitionId: "role",
+              fieldName: "Role",
+              fieldType: "text",
+              value: "Explicit child detail",
+            },
+          ],
+        }),
+        listPinnedCodex: async () => [pinnedCodex(parent, "manual", true)],
+      },
+    );
+
+    const pinnedParent = result.promptInput.pinnedCodexEntries?.[0];
+    expect(pinnedParent?.children?.map((child) => child.id)).toEqual(
+      expect.arrayContaining([
+        mentionedChild.id,
+        suppressChild.id,
+        alwaysChild.id,
+      ]),
+    );
+    expect(pinnedParent?.children).toHaveLength(3);
+    expect(pinnedParent?.childrenContext ?? "").not.toContain(
+      "MANUAL_ALWAYS_SUMMARY",
+    );
+    const prompt = buildSystemPrompt(result.promptInput).prompt;
+    expect(prompt).toContain("MANUAL_MENTIONED_BODY");
+    expect(prompt).toContain("MANUAL_SUPPRESS_BODY");
+    expect(prompt).toContain("MANUAL_ALWAYS_BODY");
+    expect(prompt).toContain("manual-child-tag");
+    expect(prompt).toContain("Explicit child detail");
+    expect(prompt).not.toContain("MANUAL_HIDDEN_SUMMARY");
+    expect(prompt).not.toContain("MANUAL_HIDDEN_BODY");
+    expect(prompt.match(/MANUAL_ALWAYS_SUMMARY/g)).toHaveLength(1);
+  });
+
+  it("keeps an excluded outgoing and structured mention unloaded and unrendered", async () => {
+    const excluded = entry({
+      id: "dismissed-entry",
+      name: "Dismissed Entry",
+      summary: "DISMISSED_SECRET_SUMMARY",
+      content: doc("DISMISSED_SECRET_BODY"),
+    });
+    const listCodexEntriesByIds = vi.fn(
+      async (_projectId: string, ids: readonly string[]) =>
+        ids.includes(excluded.id) ? [excluded] : [],
+    );
+    const result = await collectSceneContext(
+      request({
+        entries: [excluded],
+        prefetch: false,
+        outgoingUserMessage: "Ask about Dismissed Entry",
+        mentionedCodexIds: [excluded.id],
+        inputPinnedEntryIds: [excluded.id],
+        excludedAutoEntryIds: [excluded.id],
+      }),
+      {
+        ...phaseDeps([]),
+        listCodexContextMetadata: async () => {
+          const { content: _content, ...metadata } = excluded;
+          return [metadata];
+        },
+        listCodexEntriesByIds,
+        findMentionedEntries: async () => [excluded],
+      },
+    );
+
+    const loadedIds = listCodexEntriesByIds.mock.calls.flatMap(([, ids]) =>
+      ids ? [...ids] : [],
+    );
+    expect(loadedIds).not.toContain(excluded.id);
+    const prompt = buildSystemPrompt(result.promptInput).prompt;
+    expect(prompt).not.toContain("Dismissed Entry");
+    expect(prompt).not.toContain("DISMISSED_SECRET_SUMMARY");
+    expect(prompt).not.toContain("DISMISSED_SECRET_BODY");
+  });
+
+  it("keeps excluded automatic children and relations out of the prompt", async () => {
+    const parent = entry({
+      id: "parent",
+      name: "Parent",
+      contextMode: "always",
+      summary: "Parent summary",
+    });
+    const child = entry({
+      id: "excluded-child",
+      name: "Excluded child",
+      parentId: parent.id,
+      contextMode: "always",
+      summary: "Excluded child summary",
+    });
+    const related = entry({
+      id: "excluded-relation",
+      name: "Excluded relation",
+      contextMode: "always",
+      summary: "Excluded relation summary",
+    });
+    const result = await collectSceneContext(
+      request({
+        entries: [parent, child, related],
+        excludedAutoEntryIds: [child.id, related.id],
+      }),
+      {
+        ...phaseDeps([]),
+        listCodexRelations: async () => [
+          {
+            id: "relation-1",
+            projectId: "project-1",
+            fromCodexId: parent.id,
+            toCodexId: related.id,
+            relationType: "ally",
+            label: "ally",
+            depthHint: null,
+            sourceMapEdgeId: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    );
+
+    const parentContext = result.promptInput.codexEntries?.find(
+      (candidate) => candidate.id === parent.id,
+    );
+    expect(parentContext?.childrenContext).toBeUndefined();
+    expect(result.promptInput.relationCodexEntries).toBeUndefined();
+    expect(result.alwaysEntries.map((candidate) => candidate.id)).toEqual([
+      parent.id,
+    ]);
+    expect(JSON.stringify(result.promptInput)).not.toContain(
+      "Excluded child summary",
+    );
+    expect(JSON.stringify(result.promptInput)).not.toContain(
+      "Excluded relation summary",
+    );
+  });
+
+  it("renders a mentioned relation target as identity-only", async () => {
+    const parent = entry({
+      id: "parent",
+      name: "Parent",
+      contextMode: "always",
+      summary: "Parent summary",
+    });
+    const related = entry({
+      id: "related",
+      name: "Related identity",
+      contextMode: "mentioned",
+      summary: "Related secret summary",
+      content: doc("Related secret body"),
+    });
+    const result = await collectSceneContext(
+      request({ entries: [parent, related] }),
+      {
+        ...phaseDeps([]),
+        listCodexRelations: async () => [
+          {
+            id: "relation-1",
+            projectId: "project-1",
+            fromCodexId: parent.id,
+            toCodexId: related.id,
+            relationType: "ally",
+            label: "ally",
+            depthHint: null,
+            sourceMapEdgeId: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    );
+    const prompt = buildSystemPrompt(result.promptInput).prompt;
+
+    expect(prompt).toContain("Related identity");
+    expect(prompt).toContain("ally");
+    expect(prompt).not.toContain("Related secret summary");
+    expect(prompt).not.toContain("Related secret body");
   });
 
   it("does not expose an effective hidden Codex through active-tab content", async () => {
@@ -534,7 +960,6 @@ describe("collectSceneContext", () => {
       request({
         entries: [alice],
         activeTabId: alice.id,
-        inputPinnedEntryIds: [alice.id],
       }),
       phaseDeps([
         phase({

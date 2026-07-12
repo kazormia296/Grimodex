@@ -60,7 +60,7 @@ Chatパネルのグローバルチャット（🌐ボタン）でプロジェク
 └──────────────────────────────────────────────────┘
 ```
 
-- 選択されたエントリは `chat_session_pinned_codex` に `pin_source: 'manual'` として追加（実装上の table 名は `chat_session_pinned_codex`。`pinSource` には他に `'chat_mention'` がある）
+- 選択されたエントリは `chat_session_pinned_codex` に `pin_source: 'manual'` として追加（実装上の table 名は `chat_session_pinned_codex`。`'chat_mention'` は旧バージョン互換値で、新しい現在ターン言及は永続化しない）
 - コンテキストクリエイターは通常のChatセッションのコンテキスト組み立てを支援するだけで、会話履歴には残らない（ワンショット）
 - 実装: 内部的に `runAgentLoop` を再利用しつつ、ツールサブセット（`search_codex` / `list_codex_by_type` / `search_codex_by_tags` / `search_snippets`）と `effort: chat` (低 effort)、固定 2,000 トークン予算で実行する（`src/features/chat/contextCreatorApi.ts`）。LLM には最終応答として `[{id, name, type, summary, reason}]` 形式の JSON 配列を返すよう指示する
 

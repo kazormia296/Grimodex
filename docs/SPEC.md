@@ -318,8 +318,8 @@ LLM APIのシステムプロンプトに以下のレイヤーを階層的に注�
 **Layer 4: Codex entries + Snippets + Notes**
 - `context_mode` フィルタ: 各エントリの `context_mode` により注入可否を判定
   - `always`: 常に注入
-  - `mentioned`: 現在のシーン内容にマッチした場合のみ
-  - `suppress`: 手動ピン留め時のみ
+  - `mentioned`: 現在シーン本文または現在ターンのチャット入力で検出された場合、または Spotlight / Codex スコープで明示選択された場合
+  - `suppress`: Spotlight / Codex スコープで明示選択された場合のみ
   - `hidden`: 一切注入しない
 - ピン留めされたCodexエントリ/Snippetの全文
 - 子エントリの自動注入: マッチした親エントリの子孫エントリのsummaryをサブツリートークン予算の範囲内でBFS順に自動追加
@@ -1099,7 +1099,7 @@ Mod は macOS では Cmd、Windows/Linux では Ctrl に置き換わります。
 | **Timeline プロットスレッド** | reading-order 上の through-line。`threads` ビューで Plottr 型スイムレーン | `plot_threads`, `plot_thread_scene_links` |
 | **Plot-thread AI 注入** | 現在シーンが属する縦糸の構成を `<plot_thread_scenes>` で静的注入 | `contextBuilder.ts` |
 | **Chronicle AI 注入** | 作中時刻の世界状態スナップショットを `<chronicle_snapshot>` で注入（設定 `aiPrompt.chronicle.enabled`） | `chronicleSnapshot.ts`, agent read/write tools |
-| **Phase AI 露出 / Wiki 限定** | Phase の effective `context_mode` が suppress/hidden のとき AI 文脈から除外（設計メモ用途） | `phaseResolver.ts` |
+| **Phase AI 露出 / 手動のみ / 非公開** | `always` は常時、`mentioned` は現在シーン / 現在ターンの検出または明示選択時、`suppress` は Spotlight / Codex スコープの明示選択時のみ注入し、`hidden` は全経路で除外 | `phaseResolver.ts` |
 
 詳細: [`docs/superpowers/specs/2026-06-26-chronicle-timeline-design.md`](superpowers/specs/2026-06-26-chronicle-timeline-design.md)、[`CONTEXT_INJECTION.md`](CONTEXT_INJECTION.md)。
 

@@ -27,6 +27,8 @@ vi.mock("@/db/schema", () => ({
   codexEntries: { id: "id" },
   chatSessionPinnedCodex: {
     sessionId: "sessionId",
+    codexEntryId: "codexEntryId",
+    snippetId: "snippetId",
     stickyId: "stickyId",
   },
 }));
@@ -62,6 +64,7 @@ import {
   unpinStickyEntry,
   saveMessagePrompt,
   getMessagePrompt,
+  pinCodexEntry,
 } from "./chatApi";
 import type { ChatSession } from "./chatTypes";
 
@@ -80,6 +83,8 @@ function mockInsertChain(rows: Record<string, unknown>[]) {
   const chain = {
     values: vi.fn().mockReturnThis(),
     returning: vi.fn().mockResolvedValue(rows),
+    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+    onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
   };
   mockDb.insert.mockReturnValue(chain as never);
   return chain;
@@ -115,6 +120,20 @@ function mockDeleteChain() {
 describe("chatApi - session/message persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe("pinCodexEntry", () => {
+    it("promotes a legacy chat mention row when Spotlight is selected", async () => {
+      const chain = mockInsertChain([]);
+
+      await pinCodexEntry("session-1", "entry-1", false, "manual", "codex");
+
+      expect(chain.onConflictDoUpdate).toHaveBeenCalledWith({
+        target: ["sessionId", "codexEntryId"],
+        set: { pinSource: "manual", withChildren: 0 },
+      });
+      expect(chain.onConflictDoNothing).not.toHaveBeenCalled();
+    });
   });
 
   describe("listSessions", () => {

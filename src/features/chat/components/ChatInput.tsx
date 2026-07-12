@@ -84,7 +84,6 @@ interface ChatInputProps {
   /** AIポリシーまたはプロバイダ未設定により送信不可の場合 true */
   policyDisabled?: boolean;
   editorRef?: MutableRefObject<Editor | null>;
-  onMentionPin?: (entryId: string) => void;
   onDetectedEntries?: (entryIds: string[]) => void;
   /** 入力欄にテキストがあるかどうかを親に通知（QuickActionStrip の表示制御用） */
   onHasTextChange?: (hasText: boolean) => void;
@@ -147,7 +146,6 @@ export function ChatInput({
   disabled,
   policyDisabled,
   editorRef,
-  onMentionPin,
   onDetectedEntries,
   onHasTextChange,
 }: ChatInputProps) {
@@ -586,18 +584,15 @@ export function ChatInput({
     await saveSettings({ ...aiSettings, reasoningEffortOverride: value });
   };
 
-  // @メンション選択: エントリ挿入 + (codex のみ) 自動ピン
-  // scene mention は送信時に metadata 経由で per-message pin されるので
-  // ここでは何もしない。
+  // @メンション選択: エントリを入力 doc に挿入するだけにする。
+  // Codex は CodexHighlight / mentionedCodexIds 経由で現在ターン候補になり、
+  // Spotlight への昇格は ContextBar の明示操作だけが担当する。
   const handleMentionSelect = useCallback(
     (item: MentionItem) => {
       mentionPopup?.command?.(item);
       setMentionPopup(null);
-      if (item.kind === "codex") {
-        onMentionPin?.(item.id);
-      }
     },
-    [mentionPopup, onMentionPin],
+    [mentionPopup],
   );
 
   // /コマンド選択

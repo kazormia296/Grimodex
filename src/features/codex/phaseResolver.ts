@@ -206,7 +206,7 @@ export function resolveCodexState(
 export interface PhaseExposureBreakdown {
   /** AI に露出する Phase 数（always/mentioned が effective） */
   aiVisibleCount: number;
-  /** Wiki 限定 Phase 数（suppress/hidden が effective） */
+  /** 自動注入対象外の Phase 数（manual-only suppress + never-visible hidden） */
   wikiOnlyCount: number;
   /** Phase 総数 */
   total: number;
@@ -215,7 +215,7 @@ export interface PhaseExposureBreakdown {
   /**
    * AI 露出状態における summary 文字数の最大値。
    * Base が AI-visible なら base.summary 長を初期値に、各 AI-visible Phase の
-   * resolved summary 長と比較して最大を取る。Wiki-only 状態の値は無視。
+   * resolved summary 長と比較して最大を取る。自動注入対象外の状態は無視。
    */
   maxAiVisibleSummaryChars: number;
 }
@@ -225,7 +225,7 @@ function isAiVisibleMode(mode: string): boolean {
 }
 
 /**
- * Phase 群を Base から順に走査し、AI 露出 / Wiki 限定の分解と
+ * Phase 群を Base から順に走査し、自動 AI 露出 / 自動注入対象外の分解と
  * AI 露出時の summary 文字数の最大値を算出する。
  * Phases は anchor シーン順にソート済みである前提。
  */

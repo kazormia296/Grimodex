@@ -1,7 +1,7 @@
 import type { AiProvider } from "@/features/chat/types";
 
 const DEFAULT_VISIBLE_OUTPUT_TOKENS = 4_096;
-const REASONING_OUTPUT_TOKENS = 32_000;
+const DEFAULT_REASONING_RESERVATION_TOKENS = 32_000;
 const MINIMUM_INPUT_HEADROOM_TOKENS = 1_024;
 
 interface ThinkingLike {
@@ -20,6 +20,10 @@ export interface ResolveOutputBudgetPlanInput {
   apiVariant?: string | null;
   contextWindow: number;
   modelMaxOutputTokens?: number;
+  /** Model capability default for user-visible response tokens. */
+  defaultVisibleOutputTokens?: number;
+  /** Model capability reservation when hidden reasoning shares the output cap. */
+  defaultReasoningReservationTokens?: number;
   thinking?: ThinkingLike;
 }
 
@@ -104,10 +108,28 @@ export function resolveOutputBudgetPlan(
       "modelMaxOutputTokens",
     );
   }
+  if (input.defaultVisibleOutputTokens !== undefined) {
+    requirePositiveSafeInteger(
+      input.defaultVisibleOutputTokens,
+      "defaultVisibleOutputTokens",
+    );
+  }
+  if (input.defaultReasoningReservationTokens !== undefined) {
+    requirePositiveSafeInteger(
+      input.defaultReasoningReservationTokens,
+      "defaultReasoningReservationTokens",
+    );
+  }
+
+  const visibleOutputTokens =
+    input.defaultVisibleOutputTokens ?? DEFAULT_VISIBLE_OUTPUT_TOKENS;
+  const reasoningReservationTokens =
+    input.defaultReasoningReservationTokens ??
+    DEFAULT_REASONING_RESERVATION_TOKENS;
 
   if (input.provider === "cli") {
     const policyReservation = Math.max(
-      DEFAULT_VISIBLE_OUTPUT_TOKENS,
+      visibleOutputTokens,
       Math.round(input.contextWindow * 0.05),
     );
     return {
@@ -124,27 +146,21 @@ export function resolveOutputBudgetPlan(
   } else if (input.provider === "anthropic") {
     const thinkingBudget = manualThinkingBudget(input.thinking);
     requestMaxOutputTokens = thinkingBudget
-      ? thinkingBudget + DEFAULT_VISIBLE_OUTPUT_TOKENS
-      : DEFAULT_VISIBLE_OUTPUT_TOKENS;
+      ? thinkingBudget + visibleOutputTokens
+      : visibleOutputTokens;
   } else if (usesResponsesApi(input)) {
     const reasoningActive =
       input.thinking?.reasoningEnabled === true ||
       (input.thinking?.reasoningEnabled === false &&
         supportsReasoningNone(input.model)) ||
-      (input.provider === "openrouter" && isReasoningModelName(input.model));
-    requestMaxOutputTokens =
-      input.provider === "openai" ||
-      input.provider === "sakana" ||
-      reasoningActive
-        ? REASONING_OUTPUT_TOKENS
-        : DEFAULT_VISIBLE_OUTPUT_TOKENS;
+      isReasoningModelName(input.model);
+    requestMaxOutputTokens = reasoningActive
+      ? reasoningReservationTokens
+      : visibleOutputTokens;
   } else {
-    requestMaxOutputTokens =
-      input.provider === "openai" ||
-      input.provider === "sakana" ||
-      isReasoningModelName(input.model)
-        ? REASONING_OUTPUT_TOKENS
-        : DEFAULT_VISIBLE_OUTPUT_TOKENS;
+    requestMaxOutputTokens = isReasoningModelName(input.model)
+      ? reasoningReservationTokens
+      : visibleOutputTokens;
   }
 
   requirePositiveSafeInteger(requestMaxOutputTokens, "requestMaxOutputTokens");
