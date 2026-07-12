@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -41,18 +41,11 @@ import {
   computeColumnDropTarget,
   computeSceneDropIndicator,
   computeColumnDropIndicator,
-  computeSceneAxisLockPxOffsets,
   computeSceneAxisLockTarget,
-  computeColumnAxisLockPxOffsets,
   computeColumnAxisLockTarget,
   findFolderBlockLastVisibleId,
-  resolveSceneDragMode,
 } from "./gridDndUtils";
-import type {
-  DropIndicator,
-  ColumnDropIndicator,
-  SceneDragMode,
-} from "./gridDndUtils";
+import type { DropIndicator, ColumnDropIndicator } from "./gridDndUtils";
 import {
   glog,
   gperfStart,
@@ -63,6 +56,7 @@ import {
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { recordMark } from "@/lib/perfLog";
 import { useGridPanelLifecycle } from "./useGridPanelLifecycle";
+import { useGridAxisLockController } from "./useGridAxisLockController";
 
 /**
  * Walk up from `el` looking for the first ancestor that scrolls vertically.
@@ -183,194 +177,28 @@ export function GridPanel() {
   const [deleteConfirmIds, setDeleteConfirmIds] = useState<string[] | null>(
     null,
   );
-  const pointerYRef = useRef(0);
-  const pointerXRef = useRef(0);
   const panelRef = useRef<HTMLDivElement>(null);
-  // Dedupe key for dragOver logging — handler fires ~60Hz, but the meaningful
-  // state ({ overId, indicator }) changes only at zone boundaries.
-  const lastDragOverKeyRef = useRef<string>("");
-
-  // Scene Y-axis "axis-lock" reorder mode. While the cursor stays within
-  // SCENE_AXIS_LOCK_THRESHOLD_PX of the drag start in the X direction, the
-  // drag is restricted to same-parent reordering and the normal drop
-  // indicators are suppressed in favor of sibling slot-shifts (see
-  // computeSceneAxisLockShifts). Once the cursor exceeds the threshold the
-  // session commits to "free" full-DnD mode for the rest of the gesture
-  // (hysteresis — bouncing back would flicker the visual feedback).
-  const SCENE_AXIS_LOCK_THRESHOLD_PX = 120;
-  const axisLockSessionRef = useRef<{
-    mode: SceneDragMode;
-    startX: number;
-    activeSceneId: string;
-    siblingRects: Record<string, { top: number; bottom: number }>;
-    orderedSiblings: Array<{ id: string; parentId: string | null }>;
-    /** Inner column scroll container, captured at drag start. Used to keep
-     *  pointer<->rect comparisons valid when the column auto-scrolls mid-drag. */
-    scrollEl: HTMLElement | null;
-    initialScrollTop: number;
-  } | null>(null);
-  // Pixel translateY offsets keyed by sceneId. Includes both passing siblings
-  // (one slot) and the active card itself (multi-slot, in the opposite
-  // direction) — so the dragged card visually travels with the swap instead
-  // of leaving an empty slot wandering between siblings.
-  const [axisLockOffsets, setAxisLockOffsets] = useState<Map<string, number>>(
-    () => new Map(),
-  );
-  const axisLockScrollListenerRef = useRef<{
-    el: HTMLElement;
-    fn: () => void;
-  } | null>(null);
-  function detachAxisLockScrollListener() {
-    const reg = axisLockScrollListenerRef.current;
-    if (reg) {
-      reg.el.removeEventListener("scroll", reg.fn);
-      axisLockScrollListenerRef.current = null;
-    }
-  }
-  // Mirrors axisLockSessionRef.current.mode === "axis-locked" as state, so
-  // the DragOverlay can be hidden during axis-lock (the sibling slide is the
-  // only feedback we want; the floating pill is noise).
-  const [axisLockActive, setAxisLockActive] = useState(false);
-
-  // Column X-axis "axis-lock" reorder mode. Mirror of the scene axis-lock but
-  // for chapter-column drags — pure-X drag is restricted to same-parent folder
-  // swaps until the cursor strays >COLUMN_AXIS_LOCK_THRESHOLD_PX off-axis (Y).
-  // Hysteresis: once free, never reverts within the gesture.
-  const COLUMN_AXIS_LOCK_THRESHOLD_PX = 120;
-  const columnAxisLockSessionRef = useRef<{
-    mode: SceneDragMode;
-    startY: number;
-    activeFolderId: string;
-    siblingRects: Record<string, { left: number; right: number }>;
-    orderedSiblings: Array<{ id: string; parentId: string | null }>;
-    /** Horizontal scroll container of the columns row, captured at drag start.
-     *  Keeps pointer<->cached-rect comparisons valid when the row auto-scrolls. */
-    scrollEl: HTMLElement | null;
-    initialScrollLeft: number;
-  } | null>(null);
-  /** Pixel translateX offsets keyed by folderId. Includes the active column
-   *  itself (multi-slot, opposite direction of its passed siblings) so the
-   *  dragged column visually travels with the swap. */
-  const [columnAxisLockOffsets, setColumnAxisLockOffsets] = useState<
-    Map<string, number>
-  >(() => new Map());
-  const columnAxisLockScrollListenerRef = useRef<{
-    el: HTMLElement;
-    fn: () => void;
-  } | null>(null);
-  function detachColumnAxisLockScrollListener() {
-    const reg = columnAxisLockScrollListenerRef.current;
-    if (reg) {
-      reg.el.removeEventListener("scroll", reg.fn);
-      columnAxisLockScrollListenerRef.current = null;
-    }
-  }
-  const [columnAxisLockActive, setColumnAxisLockActive] = useState(false);
-
-  // Recompute axis-lock shifts from current pointer + scroll state. Called
-  // from both pointermove and the scrollable column's scroll event — moving
-  // either input changes which siblings the dragged card has passed.
-  const recomputeAxisLock = useRef<() => void>(() => {});
-  recomputeAxisLock.current = () => {
-    gperfMark("recomputeAxisLock", () => {
-      const session = axisLockSessionRef.current;
-      if (!session) return;
-      const deltaX = pointerXRef.current - session.startX;
-      const nextMode = resolveSceneDragMode(
-        session.mode,
-        deltaX,
-        SCENE_AXIS_LOCK_THRESHOLD_PX,
-      );
-      if (nextMode !== session.mode) {
-        session.mode = nextMode;
-        if (nextMode === "free") {
-          detachAxisLockScrollListener();
-          setAxisLockActive(false);
-          setAxisLockOffsets((prev) => (prev.size === 0 ? prev : new Map()));
-          return;
-        }
-      }
-      if (session.mode !== "axis-locked") return;
-      const scrollDelta = session.scrollEl
-        ? session.scrollEl.scrollTop - session.initialScrollTop
-        : 0;
-      const next = computeSceneAxisLockPxOffsets(
-        session.activeSceneId,
-        pointerYRef.current + scrollDelta,
-        session.orderedSiblings,
-        session.siblingRects,
-        8,
-      );
-      setAxisLockOffsets((prev) => {
-        if (prev.size !== next.size) return next;
-        for (const [id, off] of next) {
-          if (prev.get(id) !== off) return next;
-        }
-        return prev;
-      });
-    });
-  };
-
-  // Recompute column-axis-lock shifts from current pointer + horizontal scroll.
-  const recomputeColumnAxisLock = useRef<() => void>(() => {});
-  recomputeColumnAxisLock.current = () => {
-    gperfMark("recomputeColumnAxisLock", () => {
-      const session = columnAxisLockSessionRef.current;
-      if (!session) return;
-      // Off-axis (Y) delta triggers the escape to free mode for column drags.
-      // resolveSceneDragMode is axis-agnostic: it just compares |delta| to
-      // threshold; we feed it deltaY here instead of deltaX.
-      const deltaY = pointerYRef.current - session.startY;
-      const nextMode = resolveSceneDragMode(
-        session.mode,
-        deltaY,
-        COLUMN_AXIS_LOCK_THRESHOLD_PX,
-      );
-      if (nextMode !== session.mode) {
-        session.mode = nextMode;
-        if (nextMode === "free") {
-          detachColumnAxisLockScrollListener();
-          setColumnAxisLockActive(false);
-          setColumnAxisLockOffsets((prev) =>
-            prev.size === 0 ? prev : new Map(),
-          );
-          return;
-        }
-      }
-      if (session.mode !== "axis-locked") return;
-      const scrollDelta = session.scrollEl
-        ? session.scrollEl.scrollLeft - session.initialScrollLeft
-        : 0;
-      // gap-3 = 12px between columns in the orderedColumns flex row.
-      const next = computeColumnAxisLockPxOffsets(
-        session.activeFolderId,
-        pointerXRef.current + scrollDelta,
-        session.orderedSiblings,
-        session.siblingRects,
-        12,
-      );
-      setColumnAxisLockOffsets((prev) => {
-        if (prev.size !== next.size) return next;
-        for (const [id, off] of next) {
-          if (prev.get(id) !== off) return next;
-        }
-        return prev;
-      });
-    });
-  };
-
-  useEffect(() => {
-    const handler = (e: PointerEvent) => {
-      pointerXRef.current = e.clientX;
-      pointerYRef.current = e.clientY;
-      // handleDragOver fires only when `over` changes — within a single card
-      // we'd otherwise miss intra-card pointer movement.
-      recomputeAxisLock.current();
-      recomputeColumnAxisLock.current();
-    };
-    window.addEventListener("pointermove", handler);
-    return () => window.removeEventListener("pointermove", handler);
-  }, []);
+  const {
+    pointerXRef,
+    pointerYRef,
+    lastDragOverKeyRef,
+    axisLockSessionRef,
+    columnAxisLockSessionRef,
+    axisLockScrollListenerRef,
+    columnAxisLockScrollListenerRef,
+    axisLockOffsets,
+    setAxisLockOffsets,
+    columnAxisLockOffsets,
+    setColumnAxisLockOffsets,
+    axisLockActive,
+    setAxisLockActive,
+    columnAxisLockActive,
+    setColumnAxisLockActive,
+    recomputeAxisLock,
+    recomputeColumnAxisLock,
+    detachAxisLockScrollListener,
+    detachColumnAxisLockScrollListener,
+  } = useGridAxisLockController();
 
   useGridPanelLifecycle({
     projectId,
