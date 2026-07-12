@@ -4,7 +4,7 @@ import { ChevronRight, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import type { TreeNodeData, NodeType } from "@/features/tree/treeStore";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 

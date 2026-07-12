@@ -2,7 +2,7 @@ import { useEffect, useRef, useMemo } from "react";
 import type { Node } from "@xyflow/react";
 import { useChatStore } from "@/features/chat/chatStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import {
   updateFrame,

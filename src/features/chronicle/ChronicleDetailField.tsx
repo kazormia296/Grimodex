@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { CodexContentEditor } from "@/features/codex/components/CodexContentEditor";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import type { EventRow } from "./api";
 

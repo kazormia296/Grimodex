@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { DRAG_DATA_KEY, DRAG_GROUP_KEY } from "@/features/editor/TabBar";
 import type { GroupIndex } from "@/features/editor/tabStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 
 interface DragPayload {
   nodeId: string;

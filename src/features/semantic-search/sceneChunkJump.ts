@@ -1,6 +1,6 @@
 import { useSemanticNavStore } from "./semanticNavStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 
 /**
  * シーンを開いてチャンク位置へスクロール+選択ハイライトするジャンプ要求の共通実装。

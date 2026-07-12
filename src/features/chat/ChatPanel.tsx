@@ -56,7 +56,7 @@ import type {
 import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
 import { stripToolProtocol } from "./toolProtocol";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 
 /**
  * メッセージ全文を抽出 (Codex/Snippet) / エディタ挿入 / コピーに使う前の正規化。

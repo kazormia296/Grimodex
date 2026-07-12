@@ -33,7 +33,7 @@ import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSnippetStore } from "./snippetStore";
 import {

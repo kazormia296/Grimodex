@@ -28,11 +28,9 @@ import {
   getOpenSlotPixelSizes,
   nudgeAdjacentCenterSegmentPixelSizes,
   getOpenSlots,
-  isCenterContentVisible,
   migrateLayoutStateV2toV3,
   normalizeCenterSegmentRatios,
   normalizeSlotRatios,
-  redistributeSpaceOnEditorClose,
   removePanelFromCenterSegment,
   removePanelFromSlot,
   reorderPanelInCenterSegment,
@@ -69,6 +67,7 @@ import { LAYOUT_SCHEMA_VERSION } from "./layoutTypes";
 import { dragTargetsEqual, type DragOverTarget } from "./layoutDnD";
 import type { PanelId } from "./panelIds";
 import { recordLayoutSnapshot } from "@/features/timelapse/captureLayout";
+import { reduceLayout } from "./layoutReducer";
 
 export type { PanelId };
 export { PANEL_DRAG_TYPE } from "./panelIds";
@@ -678,48 +677,12 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     )
       return;
     const vp = getViewport();
-    set((state) => {
-      const wasOpen = state.layout.center.editorOpen;
-      if (wasOpen === open) return state;
-
-      // toggle で sizeRatio を再正規化すると hide→show が非可逆になり、
-      // editor の幅が復元されない。比率は描画側 (normalizeFlexGrow 等) が
-      // 都度正規化するため、ここでは editorOpen フラグのみを変更する。
-      let next = updateCenter(state.layout, (center) => ({
-        ...center,
-        editorOpen: open,
-      }));
-
-      if (!open) {
-        // center が完全に隠れる場合 redistributeSpaceOnEditorClose が region を
-        // 破壊的に拡大する。再表示で editor 幅を復元できるよう、閉じる直前の
-        // region サイズを記憶しておく。
-        if (!isCenterContentVisible(next)) {
-          next = {
-            ...next,
-            collapsedEditorRegionSizes: {
-              left: state.layout.regions.left.size,
-              right: state.layout.regions.right.size,
-            },
-          };
-        }
-        next = redistributeSpaceOnEditorClose(next, vp);
-      } else if (state.layout.collapsedEditorRegionSizes) {
-        // 再表示: 記憶した region サイズを復元し editor 幅を再現する。
-        const memory = state.layout.collapsedEditorRegionSizes;
-        next = {
-          ...next,
-          regions: {
-            ...next.regions,
-            left: { ...next.regions.left, size: memory.left },
-            right: { ...next.regions.right, size: memory.right },
-          },
-        };
-        delete next.collapsedEditorRegionSizes;
-      }
-
-      return { layout: applyValidatedLayout(next, state.layout, vp) };
-    });
+    set((state) => ({
+      layout: reduceLayout(state.layout, {
+        type: open ? "editor/open" : "editor/close",
+        viewport: vp,
+      }),
+    }));
     scheduleSave(get);
     if (open) scheduleEditorFocus();
   },
@@ -1169,21 +1132,14 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   setRegionSizeLive: (region, size, viewport) => {
     if (get().layoutLocked) return;
     const vp = viewport ?? getViewport();
-    set((state) => {
-      const clamped = clampRegionSize(
+    set((state) => ({
+      layout: reduceLayout(state.layout, {
+        type: "resize/live",
         region,
         size,
-        vp,
-        buildRegionSizeClampContext(state.layout),
-      );
-      const current = state.layout.regions[region].size;
-      if (clamped === current) return state;
-      const next = cloneLayoutState(state.layout);
-      next.regions[region] = { ...next.regions[region], size: clamped };
-      // 手動リサイズしたら editor collapse の復元メモリは破棄する。
-      delete next.collapsedEditorRegionSizes;
-      return { layout: applyValidatedLayout(next, state.layout, vp) };
-    });
+        viewport: vp,
+      }),
+    }));
   },
 
   nudgeRegionSize: (region, deltaPx, viewport) => {

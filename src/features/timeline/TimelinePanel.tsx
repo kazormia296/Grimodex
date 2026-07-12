@@ -14,7 +14,7 @@ import {
 } from "./timelineStore";
 import { Splitter } from "@/features/layout/Splitter";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useProjectStore } from "@/features/project/projectStore";
 import { usePlotThreadStore } from "@/features/plot-threads/plotThreadStore";
 import { computeFitZoom, ZOOM_STEP, STEP_BASE } from "./timelineZoom";

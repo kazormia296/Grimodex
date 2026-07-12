@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import type { RefObject } from "react";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useTreeStore } from "./treeStore";
 import type { TreeNodeData } from "./treeStore";
 import {

@@ -11,7 +11,7 @@ import {
 } from "@/features/tree/treeStore";
 import { useTimelineStore } from "@/features/timeline/timelineStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useChronicleStore } from "./chronicleStore";
 import {
   listEvents,

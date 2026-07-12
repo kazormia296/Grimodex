@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useLintProjectStore } from "@/features/lint/lintProjectStore";

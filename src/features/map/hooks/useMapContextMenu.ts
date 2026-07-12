@@ -15,7 +15,7 @@ import type { MapNodePositionRecord } from "../types";
 import type { MapSticky } from "@/db/schema";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useChatStore } from "@/features/chat/chatStore";
 import * as chatApi from "@/features/chat/chatApi";
 import i18next from "@/lib/i18n";

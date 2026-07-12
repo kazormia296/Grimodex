@@ -23,7 +23,6 @@
     "src/features/editor/cursorSettingsStore.ts:editor->settings:@/features/settings/settingsStore",
     "src/features/editor/editorStore.ts:editor->project:@/features/project/projectStore",
     "src/features/editor/synopsisSuggestionStore.ts:editor->tree:@/features/tree/treeStore",
-    "src/features/editor/tabStore.ts:editor->layout:@/features/layout/layoutStore",
     "src/features/foreshadow/foreshadowStore.ts:foreshadow->editor:@/features/editor/editorStore",
     "src/features/foreshadow/foreshadowStore.ts:foreshadow->project:@/features/project/projectStore",
     "src/features/foreshadow/foreshadowStore.ts:foreshadow->trash-bin:@/features/trash-bin/trashBinStore",
@@ -83,6 +82,6 @@
   ],
   "application-component-import": [],
   "feature-cycle": [
-    "src/features/agent-writes/autoAcceptFeed.ts -> src/features/agent-writes/autoApplyProse.ts -> src/features/agent-writes/prose.ts -> src/features/ai-policy/policyGuard.ts -> src/features/ai-usage/recordAiUsage.ts -> src/features/chat/chatApi.ts -> src/features/chat/chatStore.ts -> src/features/chat/contextBuilder.ts -> src/features/codex/CodexMentionExtension.ts -> src/features/codex/childrenBudget.ts -> src/features/codex/codexStore.ts -> src/features/codex/phaseResolver.ts -> src/features/codex/phaseStore.ts -> src/features/codex/relationExpansion.ts -> src/features/concurrency/externalWriteFeed.ts -> src/features/editor/AutoPairBracketsExtension.ts -> src/features/editor/TrashBinCapturePlugin.ts -> src/features/editor/beat/extractBeatMentions.ts -> src/features/editor/editorStore.ts -> src/features/editor/extensions.ts -> src/features/editor/persistSceneBody.ts -> src/features/editor/reorder/ParagraphReorderExtension.ts -> src/features/editor/reorder/ReorderInteractionExtension.ts -> src/features/editor/tabStore.ts -> src/features/foreshadow/api.ts -> src/features/foreshadow/foreshadowStore.ts -> src/features/kouetsu/kouetsuStore.ts -> src/features/layout/layoutStore.ts -> src/features/map/mapApi.ts -> src/features/plot-threads/plotThreadStore.ts -> src/features/project/contextAtoms.ts -> src/features/project/projectStore.ts -> src/features/snippets/snippetStore.ts -> src/features/timelapse/seedSession.ts -> src/features/tree/treeStore.ts -> src/screenshot-scenes/screenshotBootstrap.ts"
+    "src/features/chat/chatStore.ts -> src/features/codex/codexStore.ts -> src/features/foreshadow/api.ts"
   ]
 }

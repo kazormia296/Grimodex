@@ -2,8 +2,17 @@ import { create } from "zustand";
 import { getSetting, setSetting } from "@/features/settings/api";
 import { markStart, markEnd } from "@/lib/perfLog";
 import { guardInlineAiPending } from "./inlineAi/pendingGuard";
+import {
+  reduceTabState,
+  type TabAction,
+  type TabReducerState,
+} from "./tabReducer";
+import {
+  parseTabPersistence,
+  serializeTabPersistence,
+  TAB_STATE_KEY,
+} from "./tabPersistence";
 
-const TAB_STATE_KEY = "editor.tabState";
 const SAVE_DEBOUNCE_MS = 500;
 
 export type TabContentType = "scene" | "codex" | "snippet" | "chronicle_event";
@@ -28,17 +37,6 @@ export interface TabEntry {
 }
 
 export type GroupIndex = 0 | 1;
-
-interface PersistedTabState {
-  tabs: TabEntry[];
-  activeTabId: string | null;
-  secondaryTabs: TabEntry[];
-  secondaryActiveTabId: string | null;
-  activeGroupIndex: GroupIndex;
-  secondaryGroupOpen: boolean;
-  splitDirection: "right" | "below";
-  isLinearMode: boolean;
-}
 
 interface TabState {
   // ---- Primary group ----
@@ -247,20 +245,20 @@ interface TabState {
  *  contentType/label を引き継いで生成する。codex/snippet/chronicle_event の
  *  タブを split したとき contentType が "scene" に化けて EditorPane が
  *  loadSceneFull(非シーン id) で空ロード→誤保存するのを防ぐ。 */
-function secondaryEntryFor(
-  tabs: TabEntry[],
-  secondaryTabs: TabEntry[],
-  nodeId: string,
-): TabEntry {
-  const src =
-    tabs.find((t) => t.nodeId === nodeId) ??
-    secondaryTabs.find((t) => t.nodeId === nodeId);
+function tabReducerState(state: TabState): TabReducerState {
   return {
-    nodeId,
-    isPreview: false,
-    contentType: src?.contentType ?? "scene",
-    ...(src?.label !== undefined ? { label: src.label } : {}),
+    tabs: state.tabs,
+    activeTabId: state.activeTabId,
+    secondaryTabs: state.secondaryTabs,
+    secondaryActiveTabId: state.secondaryActiveTabId,
+    secondaryGroupOpen: state.secondaryGroupOpen,
+    activeGroupIndex: state.activeGroupIndex,
+    splitDirection: state.splitDirection,
   };
+}
+
+function reduceTabs(state: TabState, action: TabAction): TabReducerState {
+  return reduceTabState(tabReducerState(state), action);
 }
 
 export const useTabStore = create<TabState>()((set, get) => {
@@ -325,33 +323,7 @@ export const useTabStore = create<TabState>()((set, get) => {
       if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
       markStart("tabStore.openPreview");
       try {
-        const { tabs } = get();
-        const existing = tabs.find((t) => t.nodeId === nodeId);
-
-        if (existing) {
-          // Remove any stale preview tab for other nodes
-          const cleaned = tabs.filter(
-            (t) => !t.isPreview || t.nodeId === nodeId,
-          );
-          set({ tabs: cleaned, activeTabId: nodeId, activeGroupIndex: 0 });
-          return;
-        }
-
-        const withoutPreview = tabs.filter((t) => !t.isPreview);
-        const hadPreview = withoutPreview.length < tabs.length;
-        set({
-          tabs: [
-            ...withoutPreview,
-            {
-              nodeId,
-              isPreview: true,
-              contentType: "scene",
-              animateIn: !hadPreview,
-            },
-          ],
-          activeTabId: nodeId,
-          activeGroupIndex: 0,
-        });
+        set(reduceTabs(get(), { type: "preview/open", nodeId }));
       } finally {
         markEnd("tabStore.openPreview");
       }
@@ -359,31 +331,7 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     openPinned(nodeId) {
       if (nodeId !== get().activeTabId && guardInlineAiPending()) return;
-      const { tabs } = get();
-      const existing = tabs.find((t) => t.nodeId === nodeId);
-
-      if (existing) {
-        if (existing.isPreview) {
-          set({
-            tabs: tabs.map((t) => {
-              if (t.nodeId !== nodeId) return t;
-              const { animateIn: _a, ...rest } = t;
-              return { ...rest, isPreview: false };
-            }),
-            activeTabId: nodeId,
-            activeGroupIndex: 0,
-          });
-        } else {
-          set({ activeTabId: nodeId, activeGroupIndex: 0 });
-        }
-        return;
-      }
-
-      set({
-        tabs: [...tabs, { nodeId, isPreview: false, contentType: "scene" }],
-        activeTabId: nodeId,
-        activeGroupIndex: 0,
-      });
+      set(reduceTabs(get(), { type: "pinned/open", nodeId }));
     },
 
     pinTab(nodeId) {
@@ -442,86 +390,17 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     openCodexTab(entryId, phaseId) {
       if (entryId !== get().activeTabId && guardInlineAiPending()) return;
-      const { tabs } = get();
-      const existing = tabs.find((t) => t.nodeId === entryId);
-      if (existing) {
-        // Update overridePhaseId so EditorPane reloads with the correct phase
-        set({
-          tabs: tabs.map((t) =>
-            t.nodeId === entryId
-              ? { ...t, overridePhaseId: phaseId ?? null }
-              : t,
-          ),
-          activeTabId: entryId,
-          activeGroupIndex: 0,
-        });
-        return;
-      }
-      // Remove any stale preview tab before adding the codex tab
-      const withoutPreview = tabs.filter((t) => !t.isPreview);
-      set({
-        tabs: [
-          ...withoutPreview,
-          {
-            nodeId: entryId,
-            isPreview: false,
-            contentType: "codex",
-            overridePhaseId: phaseId ?? null,
-          },
-        ],
-        activeTabId: entryId,
-        activeGroupIndex: 0,
-      });
+      set(reduceTabs(get(), { type: "codex/open", entryId, phaseId }));
     },
 
     openSnippetTab(snippetId) {
       if (snippetId !== get().activeTabId && guardInlineAiPending()) return;
-      const { tabs } = get();
-      const existing = tabs.find((t) => t.nodeId === snippetId);
-      if (existing) {
-        set({ activeTabId: snippetId, activeGroupIndex: 0 });
-        return;
-      }
-      // Remove any stale preview tab before adding the snippet tab
-      const withoutPreview = tabs.filter((t) => !t.isPreview);
-      set({
-        tabs: [
-          ...withoutPreview,
-          { nodeId: snippetId, isPreview: false, contentType: "snippet" },
-        ],
-        activeTabId: snippetId,
-        activeGroupIndex: 0,
-      });
+      set(reduceTabs(get(), { type: "snippet/open", snippetId }));
     },
 
     openChronicleEventTab(eventId, label) {
       if (eventId !== get().activeTabId && guardInlineAiPending()) return;
-      const { tabs } = get();
-      const existing = tabs.find((t) => t.nodeId === eventId);
-      if (existing) {
-        // Refresh the cached label (title may have changed) and activate.
-        set({
-          tabs: tabs.map((t) => (t.nodeId === eventId ? { ...t, label } : t)),
-          activeTabId: eventId,
-          activeGroupIndex: 0,
-        });
-        return;
-      }
-      // Remove any stale preview tab before adding the chronicle event tab
-      const withoutPreview = tabs.filter((t) => !t.isPreview);
-      set({
-        tabs: [
-          ...withoutPreview,
-          {
-            nodeId: eventId,
-            isPreview: false,
-            contentType: "chronicle_event",
-            label,
-          },
-        ],
-        activeTabId: eventId,
-        activeGroupIndex: 0,
-      });
+      set(reduceTabs(get(), { type: "chronicle-event/open", eventId, label }));
     },
 
     // ---- Secondary group ----
@@ -529,27 +408,7 @@ export const useTabStore = create<TabState>()((set, get) => {
     openInSecondaryGroup(nodeId) {
       if (nodeId !== get().secondaryActiveTabId && guardInlineAiPending())
         return;
-      const { secondaryTabs } = get();
-      const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
-
-      if (existing) {
-        set({
-          secondaryActiveTabId: nodeId,
-          activeGroupIndex: 1,
-          secondaryGroupOpen: true,
-        });
-        return;
-      }
-
-      set({
-        secondaryTabs: [
-          ...secondaryTabs,
-          secondaryEntryFor(get().tabs, secondaryTabs, nodeId),
-        ],
-        secondaryActiveTabId: nodeId,
-        activeGroupIndex: 1,
-        secondaryGroupOpen: true,
-      });
+      set(reduceTabs(get(), { type: "secondary/open", nodeId }));
     },
 
     createEmptySecondaryGroup(direction) {
@@ -792,27 +651,13 @@ export const useTabStore = create<TabState>()((set, get) => {
     openInSecondaryGroupDirectional(nodeId, direction) {
       if (nodeId !== get().secondaryActiveTabId && guardInlineAiPending())
         return;
-      const { secondaryTabs } = get();
-      const existing = secondaryTabs.find((t) => t.nodeId === nodeId);
-      if (existing) {
-        set({
-          secondaryActiveTabId: nodeId,
-          activeGroupIndex: 1,
-          splitDirection: direction,
-          secondaryGroupOpen: true,
-        });
-        return;
-      }
-      set({
-        secondaryTabs: [
-          ...secondaryTabs,
-          secondaryEntryFor(get().tabs, secondaryTabs, nodeId),
-        ],
-        secondaryActiveTabId: nodeId,
-        activeGroupIndex: 1,
-        splitDirection: direction,
-        secondaryGroupOpen: true,
-      });
+      set(
+        reduceTabs(get(), {
+          type: "secondary/open",
+          nodeId,
+          direction,
+        }),
+      );
     },
 
     // ---- Dirty-tab tracking ----
@@ -850,61 +695,7 @@ export const useTabStore = create<TabState>()((set, get) => {
           return;
         }
 
-        const parsed: PersistedTabState = JSON.parse(json);
-
-        // Migrate old persisted data that lacks contentType
-        let tabs = (parsed.tabs ?? []).map((t) => ({
-          ...t,
-          contentType: t.contentType ?? "scene",
-        })) as TabEntry[];
-        let secondaryTabs = (parsed.secondaryTabs ?? []).map((t) => ({
-          ...t,
-          contentType: t.contentType ?? "scene",
-        })) as TabEntry[];
-
-        if (validNodeIds) {
-          // Only filter scene/note tabs against tree node IDs; codex/snippet/
-          // chronicle_event tabs reference non-tree entities and are validated lazily.
-          const isLazyEntity = (t: TabEntry) =>
-            t.contentType === "codex" ||
-            t.contentType === "snippet" ||
-            t.contentType === "chronicle_event";
-          tabs = tabs.filter(
-            (t) => isLazyEntity(t) || validNodeIds.has(t.nodeId),
-          );
-          secondaryTabs = secondaryTabs.filter(
-            (t) => isLazyEntity(t) || validNodeIds.has(t.nodeId),
-          );
-        }
-
-        const activeTabId = tabs.find((t) => t.nodeId === parsed.activeTabId)
-          ? parsed.activeTabId
-          : (tabs[0]?.nodeId ?? null);
-
-        const secondaryActiveTabId = secondaryTabs.find(
-          (t) => t.nodeId === parsed.secondaryActiveTabId,
-        )
-          ? parsed.secondaryActiveTabId
-          : (secondaryTabs[0]?.nodeId ?? null);
-
-        const secondaryGroupOpen =
-          parsed.secondaryGroupOpen ?? secondaryTabs.length > 0;
-        const activeGroupIndex = !secondaryGroupOpen
-          ? 0
-          : (parsed.activeGroupIndex ?? 0);
-        const splitDirection = parsed.splitDirection ?? "right";
-        const isLinearMode = parsed.isLinearMode ?? false;
-
-        set({
-          tabs,
-          activeTabId,
-          secondaryTabs,
-          secondaryActiveTabId,
-          secondaryGroupOpen,
-          activeGroupIndex,
-          splitDirection,
-          isLinearMode,
-        });
+        set(parseTabPersistence(json, validNodeIds));
       } catch {
         // Corrupted or missing — keep current state
       }
@@ -912,27 +703,20 @@ export const useTabStore = create<TabState>()((set, get) => {
 
     async saveTabState() {
       try {
-        const {
-          tabs,
-          activeTabId,
-          secondaryTabs,
-          secondaryActiveTabId,
-          secondaryGroupOpen,
-          activeGroupIndex,
-          splitDirection,
-          isLinearMode,
-        } = get();
-        const data: PersistedTabState = {
-          tabs,
-          activeTabId,
-          secondaryTabs,
-          secondaryActiveTabId,
-          secondaryGroupOpen,
-          activeGroupIndex,
-          splitDirection,
-          isLinearMode,
-        };
-        await setSetting(TAB_STATE_KEY, JSON.stringify(data));
+        const state = get();
+        await setSetting(
+          TAB_STATE_KEY,
+          serializeTabPersistence({
+            tabs: state.tabs,
+            activeTabId: state.activeTabId,
+            secondaryTabs: state.secondaryTabs,
+            secondaryActiveTabId: state.secondaryActiveTabId,
+            secondaryGroupOpen: state.secondaryGroupOpen,
+            activeGroupIndex: state.activeGroupIndex,
+            splitDirection: state.splitDirection,
+            isLinearMode: state.isLinearMode,
+          }),
+        );
       } catch {
         // Ignore save errors
       }

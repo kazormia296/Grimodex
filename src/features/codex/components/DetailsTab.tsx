@@ -11,7 +11,7 @@ import { generateSynopsisFromContent } from "@/features/chat/chatApi";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { usePhaseStore } from "../phaseStore";
 import { useCodexStore } from "../codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";

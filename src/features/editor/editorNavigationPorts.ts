@@ -2,8 +2,9 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { isInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { useTreeStore } from "@/features/tree/treeStore";
-import type { EditorNavigationPorts } from "./openEditorDocument";
+import type { EditorNavigationPorts } from "@/application/editor/openEditorDocument";
 
+/** Composition adapter: feature stores are wired here, outside the pure command. */
 export const defaultEditorNavigationPorts: EditorNavigationPorts = {
   tabs: {
     openPreview: (documentId) => useTabStore.getState().openPreview(documentId),

@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/platform";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { StatusDot } from "@/features/tree/StatusDot";
 import type { TreeNodeData, SceneStatus } from "@/features/tree/treeStore";
 import type { AxisMode } from "./timelineStore";

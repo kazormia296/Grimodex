@@ -7,7 +7,7 @@ import type { Editor } from "@tiptap/core";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { listNodes, loadSceneContent } from "@/features/tree/api";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { getCurrentProjectId } from "@/features/project/projectStore";

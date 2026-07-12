@@ -3,7 +3,7 @@ import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { GripVertical } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useNodeBeatPreview, useTreeStore } from "@/features/tree/treeStore";
 import { StatusBadge } from "@/features/tree/StatusBadge";
 import { addUnplacedBeatFromGrid } from "@/features/editor/beat/addUnplacedBeatFromGrid";

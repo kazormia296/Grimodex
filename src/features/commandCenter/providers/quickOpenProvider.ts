@@ -5,7 +5,7 @@ import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionR
 import { useSnippetStore } from "@/features/snippets/snippetStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import type {
   CommandCenterItem,
   CommandCenterProvider,

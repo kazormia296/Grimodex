@@ -21,7 +21,7 @@ import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTabStore } from "@/features/editor/tabStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { NodeIcon } from "./TreeNodeItem";
 import { StructureTemplatePicker } from "@/features/grid/StructureTemplatePicker";
 import { StatusDot } from "./StatusDot";

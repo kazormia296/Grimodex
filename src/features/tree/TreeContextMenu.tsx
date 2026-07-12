@@ -3,7 +3,7 @@ import i18next from "@/lib/i18n";
 import { MapPin, Settings, Tag, Sparkles } from "lucide-react";
 import { useTreeStore } from "./treeStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useLabelStore } from "@/features/labels/labelStore";
 import { resolveLabelColor } from "@/lib/labelPalette";
 import { formatShortcut } from "@/lib/platform";

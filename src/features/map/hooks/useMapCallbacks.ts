@@ -4,7 +4,7 @@ import { useDebouncedCallback } from "@/lib/useDebounce";
 import type { Node, Edge, Connection } from "@xyflow/react";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { createUserEdge, deleteUserEdge } from "../mapApi";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { NewMapEdge } from "@/db/schema";

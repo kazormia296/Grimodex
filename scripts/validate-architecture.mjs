@@ -52,6 +52,15 @@ function importSpecifiers(source) {
   ].map((match) => match[1]);
 }
 
+function runtimeImportSpecifiers(source) {
+  const result = [];
+  const pattern = /(?:^|[\n;])\s*import\s+([\s\S]*?)\s+from\s+["']([^"']+)["']/g;
+  for (const match of source.matchAll(pattern)) {
+    if (!match[1].trim().startsWith("type ")) result.push(match[2]);
+  }
+  return result;
+}
+
 function importedStoreBindings(source) {
   const bindings = new Map();
   const importPattern =
@@ -165,6 +174,9 @@ export async function collectFindings() {
           `${relative}:${specifier}`,
         );
       }
+    }
+
+    for (const specifier of runtimeImportSpecifiers(source)) {
       const resolved = resolveImport(file, specifier);
       if (resolved && graph.has(resolved)) graph.get(file).add(resolved);
     }

@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { Sparkles } from "lucide-react";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import {
   ContextMenuContent,
   ContextMenuItem,

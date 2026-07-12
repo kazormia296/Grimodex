@@ -1,6 +1,6 @@
 import { useForeshadowNavStore } from "./foreshadowNavStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 
 /**
  * 伏線パネル / レーダーから本文へのジャンプ要求の正本。

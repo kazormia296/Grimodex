@@ -1,7 +1,7 @@
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import type { HumanComment } from "./commentsAggregation";
 
 export interface CommentMatcher {

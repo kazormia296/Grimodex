@@ -29,7 +29,7 @@ import type {
   SceneTimeIndex,
 } from "@/features/codex/context/sceneTimeIndex";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 
 export const DRAG_DATA_KEY = "application/grimodex-tab";
 /** Per-group marker so drop zones can detect source group during dragover. */

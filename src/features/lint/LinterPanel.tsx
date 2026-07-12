@@ -20,7 +20,7 @@ import { useEditorStore } from "@/features/editor/editorStore";
 import { buildOffsetMap, strOffsetToPmPos } from "@/features/editor/offsetMap";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { saveTextFile } from "@/lib/exportFile";
 import type { Diagnostic, RuleWarning, Severity } from "./types";

@@ -6,7 +6,7 @@ import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useGridStore } from "@/features/grid/gridStore";
 import {
   upsertScenePin,

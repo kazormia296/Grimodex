@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useEnsureCodexTypeColors } from "@/features/codex/useEnsureCodexTypeColors";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useChronicleStore } from "@/features/chronicle/chronicleStore";

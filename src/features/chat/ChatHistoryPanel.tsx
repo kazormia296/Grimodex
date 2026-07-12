@@ -14,7 +14,7 @@ import { PanelHeader } from "@/features/layout/PanelHeader";
 import { SessionCard } from "./components/SessionCard";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import type { SortMode } from "./chatHistoryStore";
 import { ChatHistorySkeletonList } from "@/components/ui/skeleton-patterns";

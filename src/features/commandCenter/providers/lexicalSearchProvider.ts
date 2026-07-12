@@ -1,7 +1,7 @@
 import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
-import { defaultEditorNavigationPorts } from "@/application/editor/defaultEditorNavigation";
+import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
 import { requestOpenInCodex } from "@/features/codex/multiwindow/codexSelectionRouting";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
