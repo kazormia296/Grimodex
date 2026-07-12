@@ -89,9 +89,12 @@ describe("getEditorTimelapseCapture", () => {
       getEditorTimelapseCapture({ ...base, isChronicleEventMode: true }),
     ).toBeNull();
     expect(getEditorTimelapseCapture({ ...base, id: null })).toBeNull();
-    expect(
-      getEditorTimelapseCapture({ ...base, isEntryMode: true }).sceneId,
-    ).toBeNull();
+    const entryCapture = getEditorTimelapseCapture({
+      ...base,
+      isEntryMode: true,
+    });
+    expect(entryCapture).not.toBeNull();
+    expect(entryCapture?.sceneId).toBeNull();
   });
 });
 
