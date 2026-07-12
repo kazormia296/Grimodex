@@ -89,7 +89,7 @@ export function ChatDialogs({
       {sessionsPanelOpen && (
         <SessionsPanel
           sceneTitle={sceneTitle}
-          activeSceneId={activeSceneId}
+          activeSceneId={activeSceneId ?? ""}
           onClose={onCloseSessions}
         />
       )}
