@@ -1205,6 +1205,19 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   opacity: 0.7;
 }
 
+/* Local Codex completion is a ProseMirror widget, not document content. It is
+   deliberately quiet and non-interactive so it never competes with IME or
+   selection/copy behavior. */
+.codex-completion-ghost {
+  color: currentColor;
+  opacity: 0.42;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre;
+  writing-mode: inherit;
+  text-orientation: inherit;
+}
+
 /* ── 推敲リオーダー（Alt=段落 / Alt+Shift=文・文節）─────────────────
    Alt+Shift 押下中に段落内の入れ替え単位を色帯で示す。隣接単位を見分け
    やすいよう 5 色を循環し、カーソル位置の単位は --primary のリングで強調。

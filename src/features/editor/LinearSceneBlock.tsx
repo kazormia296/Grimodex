@@ -35,6 +35,7 @@ import { useAttribution } from "@/features/attribution/useAttribution";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
 import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
+import { useCodexCompletion } from "@/features/editor/codexCompletion/useCodexCompletion";
 import {
   loadAuthorshipSpans,
   spansToMarkData,
@@ -490,6 +491,7 @@ function MountedSceneBlock({
   useImeDiagnostics(editor);
   useTateChuYoko(editor);
   useShowInvisibles(editor);
+  useCodexCompletion(editor);
 
   // Load content
   useEffect(() => {

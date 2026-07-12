@@ -85,6 +85,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.showLineNumbers": "global",
   "editor.aozoraInput": "global",
   "editor.showInvisibles": "global",
+  "editor.codexCompletion": "global",
   "editor.autoPairBrackets": "global",
   "editor.codexPopoverOnCaret": "global",
   // Editor — work-specific (project)
@@ -285,6 +286,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.aozoraInput": "true",
   // 空白・改行(¶/↵/半角・全角空白/タブ)の可視化。既定OFF。
   "editor.showInvisibles": "false",
+  // Codex name/alias ghost completion. Local only; no AI or translation.
+  "editor.codexCompletion": "true",
   // 約物ペア(「」『』（）等)の自動補完。既定ON。
   "editor.autoPairBrackets": "true",
   // キャレットが Codex ハイライトに入ったときのポップオーバー表示
