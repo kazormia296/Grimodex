@@ -35,6 +35,9 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Architecture boundary baseline
+        run: pnpm validate:architecture
+
       - name: テスト
         run: pnpm test:node --run
 
