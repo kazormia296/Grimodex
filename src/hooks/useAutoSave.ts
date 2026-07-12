@@ -158,9 +158,14 @@ export function useAutoSave(
   delayMs = 2000,
 ): AutoSave {
   const autoSaveRef = useRef<AutoSave | null>(null);
+  const latestSaveFnRef = useRef(saveFn);
+  latestSaveFnRef.current = saveFn;
 
   if (autoSaveRef.current === null) {
-    autoSaveRef.current = createAutoSave(saveFn, delayMs);
+    autoSaveRef.current = createAutoSave(
+      () => latestSaveFnRef.current(),
+      delayMs,
+    );
   }
 
   const schedule = useCallback(() => {

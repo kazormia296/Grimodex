@@ -5,8 +5,24 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Hoisted mocks (必ず vi.hoisted で参照を確保してから vi.mock)
 // ---------------------------------------------------------------------------
 
-const { mockGetState, mockDb, mockComputeInputHash } = vi.hoisted(() => ({
+const {
+  mockGetState,
+  mockPhaseGetState,
+  mockResolveCodexState,
+  mockListPhases,
+  mockListOverrides,
+  mockFindMentioned,
+  mockExtractPlainText,
+  mockDb,
+  mockComputeInputHash,
+} = vi.hoisted(() => ({
   mockGetState: vi.fn(),
+  mockPhaseGetState: vi.fn(),
+  mockResolveCodexState: vi.fn(),
+  mockListPhases: vi.fn(),
+  mockListOverrides: vi.fn(),
+  mockFindMentioned: vi.fn(),
+  mockExtractPlainText: vi.fn(),
   mockDb: {
     select: vi.fn(),
   },
@@ -35,27 +51,22 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 vi.mock("@/features/codex/phaseApi", () => ({
-  listPhasesByEntryIds: vi.fn().mockResolvedValue([]),
-  listDetailOverridesByPhaseIds: vi.fn().mockResolvedValue([]),
+  listPhasesByEntryIds: mockListPhases,
+  listDetailOverridesByPhaseIds: mockListOverrides,
 }));
 
 vi.mock("@/features/codex/phaseResolver", () => ({
-  resolveCodexState: vi.fn().mockReturnValue({
-    summary: null,
-    content: "{}",
-    contextMode: "always",
-    detailValues: new Map(),
-  }),
+  resolveCodexState: mockResolveCodexState,
 }));
 
 vi.mock("@/features/codex/phaseStore", () => ({
   usePhaseStore: {
-    getState: vi.fn().mockReturnValue({ globalSceneOrder: [] }),
+    getState: mockPhaseGetState,
   },
 }));
 
 vi.mock("@/features/codex/prosemirrorTextExtractor", () => ({
-  extractPlainText: vi.fn().mockReturnValue(""),
+  extractPlainText: mockExtractPlainText,
 }));
 
 vi.mock("@/lib/prosemirror", () => ({
@@ -63,7 +74,7 @@ vi.mock("@/lib/prosemirror", () => ({
 }));
 
 vi.mock("@/features/codex/rustMatcher", () => ({
-  findMentionedEntriesAsync: vi.fn().mockResolvedValue([]),
+  findMentionedEntriesAsync: mockFindMentioned,
 }));
 
 vi.mock("./canonicalize", () => ({
@@ -76,6 +87,7 @@ vi.mock("./canonicalize", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  buildConsistencyPayload,
   getSceneIdsForScope,
   buildMultiPayload,
   CONSISTENCY_PROMPT_VERSION,
@@ -84,6 +96,7 @@ import {
 import { REVIEW_PROMPT_VERSION } from "./reviewPayloadBuilder";
 import { META_STRUCTURE_PROMPT_VERSION } from "./metaStructurePayloadBuilder";
 import type { TreeNodeData } from "@/features/tree/treeStore";
+import { buildSceneTimeIndex } from "@/features/codex/context/sceneTimeIndex";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -113,6 +126,43 @@ function makeNode(
     createdAt: "2026-01-01",
     updatedAt: "2026-01-01",
   };
+}
+
+function mockConsistencyDb(
+  entry: {
+    id: string;
+    projectId: string;
+    type: string;
+    name: string;
+    summary: string | null;
+    content: string;
+    contextMode: string;
+  },
+  details: Array<{
+    entryId: string;
+    definitionId: string;
+    value: string | null;
+    name: string;
+  }> = [],
+): void {
+  const sceneChain = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockResolvedValue([{ content: "{}" }]),
+  };
+  const entriesChain = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockResolvedValue([entry]),
+  };
+  const detailsChain = {
+    from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    leftJoin: vi.fn().mockReturnThis(),
+    where: vi.fn().mockResolvedValue(details),
+  };
+  mockDb.select
+    .mockReturnValueOnce(sceneChain)
+    .mockReturnValueOnce(entriesChain)
+    .mockReturnValueOnce(detailsChain);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +248,20 @@ describe("buildMultiPayload", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockComputeInputHash.mockResolvedValue("hash-abc");
+    mockListPhases.mockResolvedValue([]);
+    mockListOverrides.mockResolvedValue([]);
+    mockFindMentioned.mockResolvedValue([]);
+    mockExtractPlainText.mockImplementation((value: string) => value);
+    mockPhaseGetState.mockReturnValue({
+      sceneTimeIndex: buildSceneTimeIndex([]),
+      resolutionMode: "reading",
+    });
+    mockResolveCodexState.mockReturnValue({
+      summary: null,
+      content: "{}",
+      contextMode: "always",
+      detailValues: new Map(),
+    });
 
     // db.select チェーンのモック (getScenePlainText 内)
     const chainMock = {
@@ -205,6 +269,238 @@ describe("buildMultiPayload", () => {
       where: vi.fn().mockResolvedValue([]),
     };
     mockDb.select.mockReturnValue(chainMock);
+  });
+
+  it("consistency は対象 scene の TemporalAnchor と store の index/mode で Phase 解決する", async () => {
+    const sceneTimeIndex = buildSceneTimeIndex([makeNode("scene-1", "scene")]);
+    mockPhaseGetState.mockReturnValue({
+      sceneTimeIndex,
+      resolutionMode: "auto",
+    });
+
+    const sceneChain = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([{ content: "{}" }]),
+    };
+    const entriesChain = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "entry-1",
+          projectId: "proj-1",
+          type: "character",
+          name: "アリス",
+          summary: "主人公",
+          content: "{}",
+          contextMode: "always",
+        },
+      ]),
+    };
+    const detailsChain = {
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      leftJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([]),
+    };
+    mockDb.select
+      .mockReturnValueOnce(sceneChain)
+      .mockReturnValueOnce(entriesChain)
+      .mockReturnValueOnce(detailsChain);
+
+    await buildConsistencyPayload("proj-1", "scene-1", "gpt-4o-mini");
+
+    expect(mockResolveCodexState).toHaveBeenCalledWith(
+      expect.objectContaining({ summary: "主人公" }),
+      [],
+      expect.any(Map),
+      expect.any(Map),
+      { kind: "scene", sceneId: "scene-1" },
+      sceneTimeIndex,
+      "auto",
+    );
+  });
+
+  it.each(["hidden", "suppress"])(
+    "consistency excludes a Base-mentioned entry after Phase %s resolution",
+    async (contextMode) => {
+      mockResolveCodexState.mockReturnValue({
+        summary: "Phase secret",
+        content: "Phase secret body",
+        contextMode,
+        detailValues: new Map(),
+        appliedPhaseIds: ["phase-1"],
+        activePhaseId: "phase-1",
+        activePhaseLabel: "Current",
+        axisUsed: "reading",
+        fallbackReason: null,
+      });
+      mockFindMentioned.mockImplementation(async (_text, entries) => entries);
+      mockConsistencyDb({
+        id: "entry-1",
+        projectId: "proj-1",
+        type: "character",
+        name: "Alice",
+        summary: "Base summary",
+        content: "Base body",
+        contextMode: "mentioned",
+      });
+
+      const result = await buildConsistencyPayload(
+        "proj-1",
+        "scene-1",
+        "gpt-4o-mini",
+      );
+
+      expect(mockFindMentioned).toHaveBeenCalledWith("", []);
+      expect(result.codexPayload).toEqual([]);
+      expect(result.codexPayloadJson).not.toContain("Phase secret");
+    },
+  );
+
+  it.each(["mentioned", "always"])(
+    "consistency selects a Base-hidden entry after Phase %s resolution",
+    async (contextMode) => {
+      mockResolveCodexState.mockReturnValue({
+        summary: "Phase summary",
+        content: "Phase body",
+        contextMode,
+        detailValues: new Map(),
+        appliedPhaseIds: ["phase-1"],
+        activePhaseId: "phase-1",
+        activePhaseLabel: "Current",
+        axisUsed: "reading",
+        fallbackReason: null,
+      });
+      mockFindMentioned.mockImplementation(async (_text, entries) =>
+        contextMode === "mentioned" ? entries : [],
+      );
+      mockConsistencyDb({
+        id: "entry-1",
+        projectId: "proj-1",
+        type: "character",
+        name: "Alice",
+        summary: "Base summary",
+        content: "Base body",
+        contextMode: "hidden",
+      });
+
+      const result = await buildConsistencyPayload(
+        "proj-1",
+        "scene-1",
+        "gpt-4o-mini",
+      );
+
+      expect(result.codexPayload).toEqual([
+        expect.objectContaining({
+          id: "entry-1",
+          summary: "Phase summary",
+          content_plain: "Phase body",
+        }),
+      ]);
+    },
+  );
+
+  it("keeps an explicit null Phase detail clear omitted instead of restoring Base", async () => {
+    mockResolveCodexState.mockReturnValue({
+      summary: "Phase summary",
+      content: "Phase body",
+      contextMode: "always",
+      detailValues: new Map([["detail-1", null]]),
+      appliedPhaseIds: ["phase-1"],
+      activePhaseId: "phase-1",
+      activePhaseLabel: "Current",
+      axisUsed: "reading",
+      fallbackReason: null,
+    });
+    mockConsistencyDb(
+      {
+        id: "entry-1",
+        projectId: "proj-1",
+        type: "character",
+        name: "Alice",
+        summary: "Base summary",
+        content: "Base body",
+        contextMode: "always",
+      },
+      [
+        {
+          entryId: "entry-1",
+          definitionId: "detail-1",
+          value: "Base detail",
+          name: "Role",
+        },
+      ],
+    );
+
+    const result = await buildConsistencyPayload(
+      "proj-1",
+      "scene-1",
+      "gpt-4o-mini",
+    );
+
+    expect(result.codexPayload[0]?.detail_values).toEqual([]);
+    expect(result.codexPayloadJson).not.toContain("Base detail");
+  });
+
+  it("uses definition metadata for a Phase-only context detail without a Base value row", async () => {
+    mockResolveCodexState.mockReturnValue({
+      summary: "Phase summary",
+      content: "Phase body",
+      contextMode: "always",
+      detailValues: new Map([["detail-phase-only", "Phase role"]]),
+      appliedPhaseIds: ["phase-1"],
+      activePhaseId: "phase-1",
+      activePhaseLabel: "Current",
+      axisUsed: "reading",
+      fallbackReason: null,
+    });
+    const sceneChain = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([{ content: "{}" }]),
+    };
+    const entriesChain = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "entry-1",
+          projectId: "proj-1",
+          type: "character",
+          name: "Alice",
+          summary: "Base summary",
+          content: "Base body",
+          contextMode: "always",
+        },
+      ]),
+    };
+    const detailsChain = {
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      leftJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([
+        {
+          entryId: "entry-1",
+          definitionId: "detail-phase-only",
+          value: null,
+          name: "Role",
+        },
+      ]),
+    };
+    mockDb.select
+      .mockReturnValueOnce(sceneChain)
+      .mockReturnValueOnce(entriesChain)
+      .mockReturnValueOnce(detailsChain);
+
+    const result = await buildConsistencyPayload(
+      "proj-1",
+      "scene-1",
+      "gpt-4o-mini",
+    );
+
+    expect(detailsChain.leftJoin).toHaveBeenCalledTimes(1);
+    expect(result.codexPayload[0]?.detail_values).toEqual([
+      { name: "Role", value: "Phase role" },
+    ]);
+    expect(result.codexPayloadJson).not.toContain("detail-phase-only");
   });
 
   it("ノードがゼロのとき scenes は空配列", async () => {
@@ -240,6 +536,69 @@ describe("buildMultiPayload", () => {
     const ids = result.scenes.map((s) => s.scene_id);
     expect(ids).toContain("s1");
     expect(ids).toContain("s2");
+  });
+
+  it("multi consistency は各 payload をその scene anchor で解決する", async () => {
+    const nodes = [makeNode("s1", "scene"), makeNode("s2", "scene")];
+    mockGetState.mockReturnValue({ nodes });
+    const sceneTimeIndex = buildSceneTimeIndex(nodes);
+    mockPhaseGetState.mockReturnValue({
+      sceneTimeIndex,
+      resolutionMode: "story",
+    });
+
+    const sceneChain = () => ({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([{ content: "{}" }]),
+    });
+    const entriesChain = () => ({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([
+        {
+          id: "entry-1",
+          projectId: "proj-1",
+          type: "character",
+          name: "アリス",
+          summary: "主人公",
+          content: "{}",
+          contextMode: "always",
+        },
+      ]),
+    });
+    const detailsChain = () => ({
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      leftJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([]),
+    });
+    mockDb.select
+      .mockReturnValueOnce(sceneChain())
+      .mockReturnValueOnce(entriesChain())
+      .mockReturnValueOnce(detailsChain())
+      .mockReturnValueOnce(sceneChain())
+      .mockReturnValueOnce(entriesChain())
+      .mockReturnValueOnce(detailsChain());
+
+    await buildMultiPayload(
+      "proj-1",
+      "project",
+      null,
+      "gpt-4o-mini",
+      "consistency",
+    );
+
+    expect(mockResolveCodexState.mock.calls.map((call) => call[4])).toEqual([
+      { kind: "scene", sceneId: "s1" },
+      { kind: "scene", sceneId: "s2" },
+    ]);
+    expect(mockResolveCodexState.mock.calls[0]?.slice(5)).toEqual([
+      sceneTimeIndex,
+      "story",
+    ]);
+    expect(mockResolveCodexState.mock.calls[1]?.slice(5)).toEqual([
+      sceneTimeIndex,
+      "story",
+    ]);
   });
 
   it("intra_scene_consistency では codex_payload_json が '[]'", async () => {

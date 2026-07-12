@@ -48,8 +48,11 @@ export async function createPhase(data: {
   summaryOverride?: string | null;
   contentOverride?: string | null;
   contextModeOverride?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 }): Promise<CodexEntryPhase> {
   const now = new Date().toISOString();
+  const createdAt = data.createdAt ?? now;
   const rows = await db
     .insert(codexEntryPhases)
     .values({
@@ -60,8 +63,8 @@ export async function createPhase(data: {
       summaryOverride: data.summaryOverride ?? null,
       contentOverride: data.contentOverride ?? null,
       contextModeOverride: data.contextModeOverride ?? null,
-      createdAt: now,
-      updatedAt: now,
+      createdAt,
+      updatedAt: data.updatedAt ?? createdAt,
     })
     .returning();
   return rows[0];

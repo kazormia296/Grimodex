@@ -15,6 +15,11 @@ import { usePhaseStore } from "../phaseStore";
 import { useCodexStore } from "../codexStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { resolveCodexState } from "../phaseResolver";
+import type { TemporalAnchor } from "../phaseResolver";
+import {
+  resolveApplicablePhases,
+  resolvePhaseEditState,
+} from "../context/resolveApplicablePhases";
 import { useAutoSave } from "@/hooks/useAutoSave";
 
 interface DetailsTabProps {
@@ -51,7 +56,8 @@ export function DetailsTab({
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const phases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const detailOverrides = usePhaseStore((s) => s.detailOverrides);
-  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
+  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const updatePhase = usePhaseStore((s) => s.updatePhase);
 
   // アクティブシーン変更時にプレビューをリセット
@@ -59,41 +65,55 @@ export function DetailsTab({
     setPreviewPhase(entry.id, null);
   }, [activeSceneId, entry.id, setPreviewPhase]);
 
-  // シーン順でソートされたフェーズ
-  const sortedPhases = useMemo(() => {
-    if (!phases) return [];
-    return [...phases]
-      .filter(
-        (p) => p.anchorNodeId != null && globalSceneOrder.has(p.anchorNodeId),
-      )
-      .sort(
-        (a, b) =>
-          globalSceneOrder.get(a.anchorNodeId!)! -
-          globalSceneOrder.get(b.anchorNodeId!)!,
-      );
-  }, [phases, globalSceneOrder]);
+  const currentPhaseResolution = useMemo(
+    () =>
+      activeSceneId
+        ? resolveApplicablePhases({
+            phases: phases ?? [],
+            index: sceneTimeIndex,
+            mode: resolutionMode,
+            anchor: { kind: "scene", sceneId: activeSceneId },
+          })
+        : null,
+    [activeSceneId, phases, sceneTimeIndex, resolutionMode],
+  );
 
-  // 現在のアクティブフェーズ（シーン基準で自動解決）
-  const activePhase = useMemo(() => {
-    if (!activeSceneId) return null;
-    const currentOrder = globalSceneOrder.get(activeSceneId);
-    if (currentOrder === undefined) return null;
-    const applicable = sortedPhases.filter(
-      (p) => globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-    );
-    return applicable[applicable.length - 1] ?? null;
-  }, [sortedPhases, globalSceneOrder, activeSceneId]);
+  const activePhaseEditState = useMemo(
+    () =>
+      currentPhaseResolution
+        ? resolvePhaseEditState(currentPhaseResolution, {
+            summary: entry.summary ?? null,
+            content: entry.content ?? "{}",
+          })
+        : null,
+    [currentPhaseResolution, entry.summary, entry.content],
+  );
+  const activePhase = activePhaseEditState?.targetPhase ?? null;
+  const activeResolvedDetailValues = useMemo(() => {
+    if (!activePhase || !currentPhaseResolution) return null;
+
+    // Keep only Phase-owned values here. DetailsSection already owns the Base
+    // values and falls back to them when no Phase has touched a definition.
+    // Applying every applicable Phase in resolver order preserves inheritance
+    // when the active Phase leaves a field unset.
+    const values = new Map<string, string | null>();
+    for (const phase of currentPhaseResolution.applicablePhases) {
+      for (const override of detailOverrides[phase.id] ?? []) {
+        values.set(override.definitionId, override.value ?? null);
+      }
+    }
+    return values;
+  }, [activePhase, currentPhaseResolution, detailOverrides]);
 
   // プレビュー用の解決済み状態を計算（プレビューモード時のみ）
   const previewResolvedState = useMemo(() => {
     if (previewPhaseId == null || !phases) return null;
 
-    let previewSceneId: string | null;
+    let previewAnchor: TemporalAnchor;
     if (previewPhaseId === "__base__") {
-      previewSceneId = null;
+      previewAnchor = { kind: "base" };
     } else {
-      const targetPhase = phases.find((p) => p.id === previewPhaseId);
-      previewSceneId = targetPhase?.anchorNodeId ?? null;
+      previewAnchor = { kind: "phase", phaseId: previewPhaseId };
     }
 
     const phaseDetailsMap = new Map(
@@ -109,14 +129,16 @@ export function DetailsTab({
       phases,
       phaseDetailsMap,
       new Map(),
-      previewSceneId,
-      globalSceneOrder,
+      previewAnchor,
+      sceneTimeIndex,
+      resolutionMode,
     );
   }, [
     previewPhaseId,
     phases,
     detailOverrides,
-    globalSceneOrder,
+    sceneTimeIndex,
+    resolutionMode,
     entry.summary,
     entry.content,
     entry.contextMode,
@@ -124,21 +146,19 @@ export function DetailsTab({
 
   // モードフラグ
   const isPreviewMode = previewPhaseId != null;
-  const isActivePhaseSummaryMode =
-    !isPreviewMode && (activePhase?.summaryOverride ?? null) !== null;
-  const isActivePhaseContentMode =
-    !isPreviewMode && (activePhase?.contentOverride ?? null) !== null;
+  const isActivePhaseSummaryMode = !isPreviewMode && activePhase !== null;
+  const isActivePhaseContentMode = !isPreviewMode && activePhase !== null;
 
   // フェーズsummaryのローカル状態（入力ラグ防止）
   const [phaseSummaryLocal, setPhaseSummaryLocal] = useState(
-    activePhase?.summaryOverride ?? "",
+    activePhaseEditState?.summary ?? "",
   );
   const phaseSummaryRef = useRef(phaseSummaryLocal);
   phaseSummaryRef.current = phaseSummaryLocal;
 
   // アクティブフェーズが変わったときにローカル状態を同期
   useEffect(() => {
-    setPhaseSummaryLocal(activePhase?.summaryOverride ?? "");
+    setPhaseSummaryLocal(activePhaseEditState?.summary ?? "");
     // intentional: sync only when phase identity changes, not on value update
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePhase?.id]);
@@ -181,7 +201,7 @@ export function DetailsTab({
       : "base";
 
   const contentForEditor = isActivePhaseContentMode
-    ? (activePhase?.contentOverride ?? "")
+    ? (activePhaseEditState?.content ?? "")
     : emptyContent
       ? ""
       : entry.content;
@@ -273,7 +293,7 @@ export function DetailsTab({
             data-testid="codex-detail-summary"
             value={summary}
             onChange={(e) => handleSummaryChange(e.target.value)}
-            readOnly={readOnly}
+            readOnly={readOnly || isPreviewMode}
             rows={3}
             className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm read-only:opacity-60"
             placeholder="Short description..."
@@ -364,7 +384,7 @@ export function DetailsTab({
             entryId={contentEntryId}
             onExternalSync={contentExternalSync}
             externalContent={contentExternalContent}
-            readOnly={readOnly}
+            readOnly={readOnly || isPreviewMode}
           />
         </div>
 
@@ -404,6 +424,7 @@ export function DetailsTab({
             ? { id: activePhase.id, label: activePhase.label }
             : null
         }
+        activeResolvedDetailValues={activeResolvedDetailValues}
         previewDetailValues={
           isPreviewMode
             ? (previewResolvedState?.detailValues ?? new Map())

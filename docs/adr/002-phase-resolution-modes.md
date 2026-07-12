@@ -2,7 +2,7 @@
 
 ## ステータス
 
-採用済み (2026-05-13)
+採用済み (2026-05-13)、mixed story-time semantics 改訂 (2026-07-12)
 
 ## コンテキスト
 
@@ -11,23 +11,52 @@ Codex（キャラクター/世界観/設定エントリ）は物語の進行に�
 - Phase は **アンカーシーン** を持つ
 - DetailsTab / AI 文脈ビルダーが「ある scene を編集中」に Codex の現在状態を計算する時、アンカーが「その scene 以前」にある Phase を順に積み上げて summary / content / detail-values を上書きする (`phaseResolver.ts:resolveCodexState`)
 
-「以前」かどうかの判定にはシーンに **順序インデックス** を振る必要がある。この順序の作り方が `PhaseResolutionMode` で 3 種類 (`reading` / `story` / `auto`) ある (`phaseResolver.ts:computeSceneTimeIndex`)。
+「以前」かどうかの判定には reading / story の両軸を持つ `SceneTimeIndex` が必要で、`PhaseResolutionMode` (`reading` / `story` / `auto`) が使用軸と fallback policy を決める。
 
 このモードがなぜ複数あるのか、なぜ統合・削除できないのかを記録しておく（経験上、設計意図が時間とともに自分でも分からなくなるため）。
 
 ## モード定義
 
-| モード | 順序計算 | 想定読者 |
-|---|---|---|
-| `reading` | TipTap ツリーの DFS 順（執筆順 / 読者開示順） | 叙述トリック・ミステリー作品 |
-| `story` | `scenes.story_time_order` 昇順 → 未設定は reading 順で末尾追加 | フラッシュバック・時系列入れ替え作品 |
-| `auto` | story と実装は同一 | 既定推奨。storyTime 設定の有無で挙動が自動調整される |
+| モード    | 順序計算                                                                                                                                                        | 想定読者                                            |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `reading` | live Scene のツリー DFS 順（執筆順 / 読者開示順）                                                                                                               | 叙述トリック・ミステリー作品                        |
+| `auto`    | live Scene **全件**に明示的な非空 `story_time_order` が揃うまでは project 全体を reading。揃った時点で story                                                    | 既定推奨。story-time 編集途中の未来情報漏洩を防ぐ   |
+| `story`   | 明示 story key と reading 順の forward-fill 継承を使う。current または当該 entry の有効 Phase anchor が story 軸で引けなければ entry 全体を reading へ fallback | 部分設定中でも story-time を明示的に使う power user |
 
-`story` と `auto` は現状 `computeSceneTimeIndex` 内で実装が完全一致。`auto` は将来「project に storyTime 設定済み scene が 1 件もなければ reading 動作に倒す」など差別化する余地として名前を分けてある。現実装では同じ。
+`auto` と `story` は意図的に異なる。`auto` は project-wide coverage gate を持つ安全既定、`story` は entry 単位の all-or-nothing fallback を持つ明示モードである。`null`、空文字、whitespace-only の `story_time_order` はすべて未設定として扱う。
 
 ## 決定
 
 3 モードをそのまま維持する。特に `reading` モードは削除しない。
+
+順序計算と Phase 適用を分離する。
+
+- `SceneTimeIndex` は mode 非依存で `readingOrder`、`explicitStoryOrder`、`inheritedStoryOrder`、coverage 件数を保持する
+- `resolveApplicablePhases` が mode、TemporalAnchor、entry の Phase 群を受け、適用対象・使用軸・fallback 理由を一意に返す
+- `resolveCodexState` は適用対象 Phase の override を Base へ順番に重ねる
+
+単一の `Map<sceneId, number>` は entry 単位 fallback を表現できないため、Phase semantics の正本にはしない。移行期間中のみ legacy UI 用の total-order projection を残す。
+
+## mixed story-time と安全 fallback
+
+旧実装は scheduled Scene をすべて先に並べ、unscheduled Scene を reading 順で末尾へ置いていた。例えば Ch.8 だけを scheduled にすると `order(Ch.8) < order(Ch.1)` になり、Ch.8 anchor の未来 Phase が Ch.1 に適用され得た。
+
+改訂後は次の規則を採る。
+
+1. `auto` の coverage 対象は削除・archive されていない Scene 全件。0 Scene は reading 扱い
+2. `auto` は coverage が 100% になるまで reading。継承値は coverage を満たしたとは数えない
+3. `story` は reading 順に直前の明示 story key を forward-fill する。作品冒頭の未設定連続領域は継承不可
+4. null/deleted anchor は先に無効 Phase として除外し、fallback 判定を誘発させない
+5. `story` で current または残った有効 anchor のどれかが story 軸で引けなければ、その entry の全 Phase を reading で解決する
+
+同一 story key の決定的順序は `anchor reading-order → phase.created_at → phase.id`。適用 cutoff にも anchor reading-order を使い、同じ story bucket の reading 上後方にある Phase が前方 Scene へ漏れないようにする。Scene 時点の解決では、同じ current Scene にアンカーされた Phase をすべて inclusive に適用する。一方、特定 Phase のプレビューでは決定的順序上の対象 Phase で厳密に cutoff し、同じ Scene にアンカーされた後続 sibling Phase を含めない。
+
+`currentSceneId = null` の多義性は廃止方向とし、TemporalAnchor を明示する。
+
+- `base`: Phase を 1 件も適用しない
+- `latest`: null/deleted anchor を除く全 valid Phase を決定的順序で適用する
+- `scene(sceneId)`: その Scene 時点までを適用する
+- `phase(phaseId)`: 対象 Phase を含む直後の状態までを適用する。同一アンカー Scene の後続 Phase は除外する。対象 Phase またはその Scene anchor が存在しない場合は適用なしとして理由を返す
 
 ## なぜ統合できないか — AI に叙述トリックが漏れる例
 
@@ -46,12 +75,12 @@ Codex（キャラクター/世界観/設定エントリ）は物語の進行に�
 
 ### 処理の流れ
 
-`chatStore.ts:188` → `resolveCodexState(entry, phases, ..., effectiveSceneId="scene-7", globalSceneOrder)` で計算:
+`resolveApplicablePhases({ phases, index, mode, anchor: scene("scene-7") })` で計算:
 
-1. globalSceneOrder を resolutionMode に従って生成
-2. `currentOrder = order("scene-7")`
-3. 各 phase について `anchorOrder = order("scene-15")` を比較
-4. `anchorOrder ≤ currentOrder` なら phase を適用
+1. mode に従って entry の使用軸を決定
+2. current Scene と valid Phase anchors を同じ軸の値へ写像
+3. story key 同値時は reading-order も含めて cutoff を比較
+4. applicable Phase を決定的に sort して `resolveCodexState` が適用
 
 ### `reading` モード
 
@@ -79,18 +108,18 @@ Codex（キャラクター/世界観/設定エントリ）は物語の進行に�
 
 ## auto を既定に推奨する根拠
 
-`auto` は意味として「storyTime が設定されているなら時系列を尊重、未設定なら reading 順にフォールバック」。
+`auto` は「作中時系列が project 全体について宣言済みになった時だけ story 軸へ切り替える」。
 
-- storyTime を一切設定しないユーザー → 全 scene が「未設定」扱い → 実質 reading 動作
-- 一部だけ設定 → 設定済み scene は時系列、未設定は manuscript 末尾で fallback
-- 全部設定 → 完全に時系列
+- storyTime を一切設定しないユーザー → reading 動作
+- 一部だけ設定 → project 全体で reading を維持し、編集中の部分設定を semantic order に混ぜない
+- 全部設定 → story 動作
 
-ユーザーの操作量に対して常に妥当な結果になる。新規プロジェクトの既定値として安全。
+これにより story-time 編集途中に Phase が過去へ遡及する事故を避けつつ、設定完了後は自動的に story-time を利用できる。明示的に部分設定を使いたい場合だけ `story` を選ぶ。
 
 ただし「既定値」には **2 つのレイヤ** があり、値が食い違っている点に注意（2026-06-20 追記）:
 
-1. **in-memory ストアの初期値**: `phaseStore.ts:67` は `resolutionMode` を `"reading"` で初期化する。これはプロジェクトが 1 件もロードされる前のブートストラップ用フォールバック。
-2. **DB スキーマの既定値**: `schema.ts:30-34` は `projects.phaseResolutionMode` を `.default("auto")` で定義する。したがって新規作成プロジェクトは DB 上で `"auto"` を受け取る。
+1. **in-memory ストアの初期値**: `phaseStore.ts` は `resolutionMode` を `"reading"` で初期化する。これはプロジェクトが 1 件もロードされる前のブートストラップ用フォールバック。
+2. **DB スキーマの既定値**: `schema.ts` と Rust migration は `projects.phaseResolutionMode` を `"auto"` で定義する。したがって新規作成プロジェクトは DB 上で `"auto"` を受け取る。
 
 プロジェクトがロードされると (`projectStore.ts:106-108`)、DB の値が取得され `setResolutionMode()` 経由で in-memory ストアへ同期される。つまり:
 
@@ -98,7 +127,7 @@ Codex（キャラクター/世界観/設定エントリ）は物語の進行に�
 - 新規プロジェクト → DB 上は `"auto"`
 - auto 導入前から存在する既存プロジェクト → 保存済みのモードを保持、または DB の既定値にフォールバック
 
-in-memory の `"reading"` 既定はレガシーであり、既存プロジェクトの `phase_resolution_mode` カラムの `NULL` 値を `"auto"` へマイグレーションし終えれば deprecated にできる余地がある。このマイグレーション（NULL を `"auto"` に置換するか、`"reading"` を維持するか）は別 PR で扱う。
+カラムは NOT NULL であり、mixed semantics 改訂に DB migration は不要。保存済み mode は維持し、`auto` の意味だけを安全側へ更新する。`reading` の挙動は不変である。
 
 ## reading モードの品質トレードオフ
 
@@ -150,9 +179,13 @@ AI が「アリス = 真犯人」を **知らない** 状態で scene-7 を書�
 
 ## 関連箇所
 
-- `src/features/codex/phaseResolver.ts` — 順序計算 (`computeGlobalSceneOrder`, `computeSceneTimeIndex`) と Phase 適用 (`resolveCodexState`)
-- `src/features/codex/phaseStore.ts:67` — `resolutionMode` 状態の in-memory 初期値 (`"reading"`)
-- `src/features/chat/chatStore.ts:188` — AI 文脈構築での `resolveCodexState` 呼び出し
+- `src/features/codex/context/sceneTimeIndex.ts` — mode 非依存 Index と legacy total-order projection
+- `src/features/codex/context/resolveApplicablePhases.ts` — mode / TemporalAnchor / fallback / deterministic sort の正本
+- `src/features/codex/context/resolvedCodexContext.ts` — batch Phase 解決と effective visibility policy の正本
+- `src/features/codex/phaseResolver.ts` — Base への Phase override 適用と legacy API 互換
+- `src/features/codex/phaseStore.ts` — Index キャッシュと `resolutionMode` の in-memory 初期値 (`"reading"`)
+- `src/features/chat/context/sources/sceneContextSource.ts` — Scene AI 文脈の temporal / visibility 適用
+- `src/features/chat/context/sources/nonSceneContextSource.ts` — folder / project / Codex 等の AI 文脈 source adapter
 - `src/features/settings/categories/ProjectCategory.tsx:202` — Settings UI
 - `src/features/codex/components/TimelineTab.tsx` — モード表示バッジ + Popover
 - `src/db/schema.ts` の `projects.phaseResolutionMode` カラム — DB 永続化

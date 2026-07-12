@@ -32,6 +32,7 @@ import type {
   PinnedStickyEntryWithData,
 } from "../chatApi";
 import type { LayerBreakdown } from "../contextBuilder";
+import type { ChatContextPlan } from "../context/types";
 import { PromptPreviewModal } from "./PromptPreviewModal";
 import { ContextCreatorButton } from "./ContextCreatorButton";
 import { ContextCreatorDialog } from "./ContextCreatorDialog";
@@ -81,6 +82,9 @@ interface ContextBarProps {
     | { kind: "snippet"; id: string; title: string }
     | null;
   pinnedEntries: PinnedCodexEntryWithData[];
+  /** Last materialized plan is the display authority. Source arrays describe
+   * candidates only and may contain budget-trimmed or policy-excluded rows. */
+  contextPlan?: ChatContextPlan | null;
   /** G15: auto-detected entries (excluding pinned)。M10: icon なし projection 行 */
   detectedEntries?: CodexContextEntry[];
   /** G15: always-mode entries (excluding pinned and detected) */
@@ -129,11 +133,12 @@ interface ContextBarProps {
 
 export function ContextBar({
   scopeAnchor = null,
-  pinnedEntries,
-  detectedEntries = [],
-  alwaysEntries = [],
-  pinnedSnippets = [],
-  pinnedStickies = [],
+  pinnedEntries: candidatePinnedEntries,
+  contextPlan = null,
+  detectedEntries: candidateDetectedEntries = [],
+  alwaysEntries: candidateAlwaysEntries = [],
+  pinnedSnippets: candidatePinnedSnippets = [],
+  pinnedStickies: candidatePinnedStickies = [],
   onUnpinSticky,
   onReturnToAuto,
   onRemove,
@@ -194,6 +199,27 @@ export function ContextBar({
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const allCodexEntries = useCodexStore((s) => s.entries);
 
+  const selectedPlanKeys = contextPlan
+    ? new Set(contextPlan.items.map((item) => item.key))
+    : null;
+  const isSelected = (kind: string, id: string) =>
+    selectedPlanKeys === null || selectedPlanKeys.has(`${kind}:${id}`);
+  const pinnedEntries = candidatePinnedEntries.filter((entry) =>
+    isSelected("codex", entry.id),
+  );
+  const detectedEntries = candidateDetectedEntries.filter((entry) =>
+    isSelected("codex", entry.id),
+  );
+  const alwaysEntries = candidateAlwaysEntries.filter((entry) =>
+    isSelected("codex", entry.id),
+  );
+  const pinnedSnippets = candidatePinnedSnippets.filter((entry) =>
+    isSelected("snippet", entry.id),
+  );
+  const pinnedStickies = candidatePinnedStickies.filter((entry) =>
+    isSelected("sticky", entry.id),
+  );
+
   // M10: detected/always は icon 列を持たない projection 行。ピルのホバー
   // ポップオーバーに出すアイコンは codexStore の全列行から補完する
   // (store 未 hydrate 時は従来の色ドット表示にフォールバック)。
@@ -208,10 +234,15 @@ export function ContextBar({
     ...alwaysEntries.map((e) => e.id),
   ]);
   const dismissedSet = dismissedViaChildIds ?? new Set<string>();
-  const viaChildren: ViaChild[] = pinnedEntries.flatMap((entry) => {
+  const viaChildren: ViaChild[] = candidatePinnedEntries.flatMap((entry) => {
     if (!entry.withChildren) return [];
     return getChildrenFromArray(entry.id, allCodexEntries)
-      .filter((c) => !alreadyShownIds.has(c.id) && !dismissedSet.has(c.id))
+      .filter(
+        (c) =>
+          isSelected("codex", c.id) &&
+          !alreadyShownIds.has(c.id) &&
+          !dismissedSet.has(c.id),
+      )
       .map((c) => ({
         child: c,
         viaParentId: entry.id,
@@ -292,7 +323,9 @@ export function ContextBar({
     }
   }
 
-  const pinnedIds = pinnedEntries.map((e) => e.id);
+  // Mutation controls reflect persisted candidate state; only the visible pill
+  // projection is plan-filtered.
+  const pinnedIds = candidatePinnedEntries.map((entry) => entry.id);
 
   async function handleCreatorSearch(
     instruction: string,
@@ -892,7 +925,7 @@ export function ContextBar({
                   // ダイアログでも「ピン済み」扱いにして重複手動ピンを防ぐ。
                   pinnedIds={
                     new Set([
-                      ...pinnedEntries.map((e) => e.id),
+                      ...candidatePinnedEntries.map((e) => e.id),
                       ...(scopeAnchor?.kind === "codex"
                         ? [scopeAnchor.id]
                         : []),
@@ -900,7 +933,7 @@ export function ContextBar({
                   }
                   withChildrenIds={
                     new Set(
-                      pinnedEntries
+                      candidatePinnedEntries
                         .filter((e) => e.withChildren)
                         .map((e) => e.id),
                     )

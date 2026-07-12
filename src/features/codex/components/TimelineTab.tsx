@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Clock,
@@ -14,7 +14,11 @@ import {
 import type { CodexEntry } from "../api";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
-import { computePhaseExposureBreakdown } from "../phaseResolver";
+import {
+  computePhaseExposureBreakdown,
+  type PhaseResolutionMode,
+  type SceneTimeIndex,
+} from "../phaseResolver";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { PhaseDialog } from "./PhaseDialog";
 import {
@@ -23,6 +27,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TimelineItemSkeletonList } from "@/components/ui/skeleton-patterns";
+import { resolveApplicablePhases } from "../context/resolveApplicablePhases";
 
 interface TimelineTabProps {
   entry: CodexEntry;
@@ -30,11 +35,58 @@ interface TimelineTabProps {
 
 const EMPTY_PHASES: CodexEntryPhase[] = [];
 
+export function resolvePhaseContentSeed(input: {
+  phases: CodexEntryPhase[];
+  index: SceneTimeIndex;
+  mode: PhaseResolutionMode;
+  anchorNodeId: string;
+  baseContent: string;
+  targetPhaseId?: string;
+}): string {
+  const targetId = input.targetPhaseId ?? "__new_phase_content_seed__";
+  const existingTarget = input.phases.find(
+    (phase) => phase.id === input.targetPhaseId,
+  );
+  const phases = existingTarget
+    ? input.phases.map((phase) =>
+        phase.id === existingTarget.id
+          ? { ...phase, anchorNodeId: input.anchorNodeId }
+          : phase,
+      )
+    : [
+        ...input.phases,
+        {
+          id: targetId,
+          entryId: input.phases[0]?.entryId ?? "__new_entry__",
+          label: "",
+          anchorNodeId: input.anchorNodeId,
+          summaryOverride: null,
+          contentOverride: null,
+          contextModeOverride: null,
+          // New siblings are appended by the current createdAt tie-break. A
+          // far-future synthetic timestamp models that insertion explicitly.
+          createdAt: "9999-12-31T23:59:59.999Z",
+          updatedAt: "9999-12-31T23:59:59.999Z",
+        },
+      ];
+  const resolution = resolveApplicablePhases({
+    phases,
+    index: input.index,
+    mode: input.mode,
+    anchor: { kind: "phase", phaseId: targetId },
+  });
+  for (let i = resolution.applicablePhases.length - 1; i >= 0; i--) {
+    const content = resolution.applicablePhases[i].contentOverride;
+    if (content !== null) return content;
+  }
+  return input.baseContent;
+}
+
 export function TimelineTab({ entry }: TimelineTabProps) {
   const { t } = useTranslation();
   const rawPhases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const phases = rawPhases ?? EMPTY_PHASES;
-  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
   const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const loadPhasesForEntry = usePhaseStore((s) => s.loadPhasesForEntry);
   const deletePhase = usePhaseStore((s) => s.deletePhase);
@@ -51,77 +103,88 @@ export function TimelineTab({ entry }: TimelineTabProps) {
     void loadPhasesForEntry(entry.id);
   }, [entry.id, loadPhasesForEntry]);
 
-  // シーン順でソートされたフェーズ
-  const sortedPhases = useMemo(() => {
-    return [...phases]
-      .filter(
-        (p) => p.anchorNodeId != null && globalSceneOrder.has(p.anchorNodeId),
-      )
-      .sort(
-        (a, b) =>
-          globalSceneOrder.get(a.anchorNodeId!)! -
-          globalSceneOrder.get(b.anchorNodeId!)!,
-      );
-  }, [phases, globalSceneOrder]);
+  const latestPhaseResolution = useMemo(
+    () =>
+      resolveApplicablePhases({
+        phases,
+        index: sceneTimeIndex,
+        mode: resolutionMode,
+        anchor: { kind: "latest" },
+      }),
+    [phases, sceneTimeIndex, resolutionMode],
+  );
 
-  // 現在有効なコンテンツ（新規フェーズ作成時のContent初期値として使用）
-  // sortedPhasesを後ろから走査して最初のcontentOverrideを返す、なければベース
-  const currentEffectiveContent = useMemo(() => {
-    for (let i = sortedPhases.length - 1; i >= 0; i--) {
-      if (sortedPhases[i].contentOverride !== null) {
-        return sortedPhases[i].contentOverride!;
-      }
-    }
-    return entry.content ?? "{}";
-  }, [sortedPhases, entry.content]);
+  const currentPhaseResolution = useMemo(
+    () =>
+      activeSceneId
+        ? resolveApplicablePhases({
+            phases,
+            index: sceneTimeIndex,
+            mode: resolutionMode,
+            anchor: { kind: "scene", sceneId: activeSceneId },
+          })
+        : null,
+    [activeSceneId, phases, sceneTimeIndex, resolutionMode],
+  );
+
+  const timelinePhaseResolution =
+    currentPhaseResolution?.axisUsed != null
+      ? currentPhaseResolution
+      : latestPhaseResolution;
+  const sortedPhases = timelinePhaseResolution.orderedPhases;
+
+  // Resolve the seed only after the dialog has selected an anchor. A global
+  // latest value would copy future Phase content into an earlier Phase.
+  const resolveContentAtAnchor = useCallback(
+    (anchorNodeId: string, targetPhaseId?: string): string =>
+      resolvePhaseContentSeed({
+        phases,
+        index: sceneTimeIndex,
+        mode: resolutionMode,
+        anchorNodeId,
+        baseContent: entry.content ?? "{}",
+        targetPhaseId,
+      }),
+    [entry.content, phases, resolutionMode, sceneTimeIndex],
+  );
 
   // アンカーなし（順序不明）のフェーズ
   const unsortedPhases = useMemo(() => {
-    return phases.filter(
-      (p) => p.anchorNodeId == null || !globalSceneOrder.has(p.anchorNodeId),
-    );
-  }, [phases, globalSceneOrder]);
+    const skippedIds = new Set(timelinePhaseResolution.skippedPhaseIds);
+    return phases.filter((phase) => skippedIds.has(phase.id));
+  }, [phases, timelinePhaseResolution]);
 
   // 現在のアクティブフェーズID
   const activePhaseId = useMemo(() => {
-    if (!activeSceneId) return null;
-    const currentOrder = globalSceneOrder.get(activeSceneId);
-    if (currentOrder === undefined) return null;
-    const applicable = sortedPhases.filter(
-      (p) => globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-    );
-    return applicable[applicable.length - 1]?.id ?? null;
-  }, [sortedPhases, globalSceneOrder, activeSceneId]);
+    return currentPhaseResolution?.applicablePhases.at(-1)?.id ?? null;
+  }, [currentPhaseResolution]);
 
   // 現在地マーカー: activeSceneId の order と phase アンカーを比較し、
   // ① 該当 scene が phase アンカー上なら既存 ◉ に任せて ▶ 行は出さない
   // ② アンカー間なら sortedPhases の差込位置 (insertBefore) を算出
   // ③ activeSceneId が未解決 / 未設定なら isMissingContext = true で pill を出す
   const currentMarker = useMemo(() => {
-    if (!activeSceneId) return { missing: true as const };
-    const currentOrder = globalSceneOrder.get(activeSceneId);
-    if (currentOrder === undefined) return { missing: true as const };
+    if (!activeSceneId || currentPhaseResolution?.axisUsed == null) {
+      return { missing: true as const };
+    }
     const exactMatch = sortedPhases.some(
-      (p) => globalSceneOrder.get(p.anchorNodeId!) === currentOrder,
+      (phase) => phase.anchorNodeId === activeSceneId,
     );
     if (exactMatch) return { missing: false as const, insertBefore: null };
-    const idx = sortedPhases.findIndex(
-      (p) => globalSceneOrder.get(p.anchorNodeId!)! > currentOrder,
-    );
     return {
       missing: false as const,
-      insertBefore: idx === -1 ? sortedPhases.length : idx,
+      insertBefore: currentPhaseResolution.applicablePhases.length,
     };
-  }, [activeSceneId, globalSceneOrder, sortedPhases]);
+  }, [activeSceneId, currentPhaseResolution, sortedPhases]);
 
   const exposure = useMemo(
     () =>
       computePhaseExposureBreakdown({
         baseSummary: entry.summary,
         baseContextMode: entry.contextMode,
-        phases: sortedPhases,
+        phases: latestPhaseResolution.orderedPhases,
       }),
-    [entry.summary, entry.contextMode, sortedPhases],
+    [entry.summary, entry.contextMode, latestPhaseResolution],
   );
 
   const currentSceneTitle = activeSceneId
@@ -189,7 +252,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
             entryId={entry.id}
             phase={null}
             onClose={handleClose}
-            currentContent={currentEffectiveContent}
+            resolveCurrentContent={resolveContentAtAnchor}
           />
         )}
       </div>
@@ -503,7 +566,7 @@ export function TimelineTab({ entry }: TimelineTabProps) {
           entryId={entry.id}
           phase={editingPhase}
           onClose={handleClose}
-          currentContent={currentEffectiveContent}
+          resolveCurrentContent={resolveContentAtAnchor}
         />
       )}
 

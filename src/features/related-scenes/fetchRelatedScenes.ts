@@ -89,9 +89,9 @@ export async function fetchRelatedPastScenes(
     }),
   ]);
 
-  // 順序軸はプロジェクトの phase_resolution_mode に従う (Codex フェーズ解決と統一)。
-  // reading=読書順（既読＝原稿で手前）／ story・auto=作中時系列（storyTimeOrder 順、
-  // 未設定シーンは読書順末尾）。reading は computeGlobalSceneOrder と同義なので既定挙動は不変。
+  // Related Scenes の「過去」は一覧の表示・絞り込み用の total order。entry 単位の
+  // Codex Phase applicability ではないため、mode 対応の線形 projection を意図的に使う。
+  // semantic Phase consumer は SceneTimeIndex + resolveApplicablePhases を使うこと。
   const sceneOrder = computeSceneTimeIndex(
     useTreeStore.getState().nodes,
     usePhaseStore.getState().resolutionMode,

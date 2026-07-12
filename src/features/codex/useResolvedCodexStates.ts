@@ -12,12 +12,15 @@ export function useResolvedCodexStates(
 ): Map<string, ResolvedCodexBadge> {
   const idsKey = entryIds.join("|");
   const entries = useCodexStore((s) => s.entries);
+  const projectEpoch = usePhaseStore((s) => s.projectEpoch);
   const phasesByEntry = usePhaseStore((s) => s.phasesByEntry);
   const detailOverrides = usePhaseStore((s) => s.detailOverrides);
-  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
+  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
-  // フェーズの「初回ロード」のみ one-shot（未ロードの id だけ取得）。
+  // フェーズは Project epoch ごとに「初回ロード」のみ one-shot
+  // （その epoch で未ロードの id だけ取得）。
   // 以降のバッジ鮮度は usePhaseStore の購読（phasesByEntry / detailOverrides）が担保する:
   // フェーズの追加・編集がストアへ反映されれば下の useMemo が再計算されるため、
   // ここで再ロードする必要はない（再ロードすると更新ループになる）。
@@ -28,7 +31,7 @@ export function useResolvedCodexStates(
     for (const id of idsKey ? idsKey.split("|") : []) {
       if (!loaded[id]) void loadPhasesForEntry(id);
     }
-  }, [idsKey]);
+  }, [idsKey, projectEpoch]);
 
   return useMemo(() => {
     const idSet = new Set(idsKey ? idsKey.split("|") : []);
@@ -37,15 +40,19 @@ export function useResolvedCodexStates(
       selected,
       phasesByEntry,
       detailOverrides,
-      globalSceneOrder,
-      activeSceneId || null,
+      sceneTimeIndex,
+      resolutionMode,
+      activeSceneId
+        ? { kind: "scene", sceneId: activeSceneId }
+        : { kind: "base" },
     );
   }, [
     idsKey,
     entries,
     phasesByEntry,
     detailOverrides,
-    globalSceneOrder,
+    sceneTimeIndex,
+    resolutionMode,
     activeSceneId,
   ]);
 }

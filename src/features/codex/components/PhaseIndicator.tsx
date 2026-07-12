@@ -5,6 +5,7 @@ import type { CodexEntry } from "../api";
 import type { CodexEntryPhase } from "../phaseApi";
 import { usePhaseStore } from "../phaseStore";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { resolveApplicablePhases } from "../context/resolveApplicablePhases";
 
 const EMPTY_PHASES: CodexEntryPhase[] = [];
 
@@ -22,7 +23,8 @@ export function PhaseIndicator({
   const { t } = useTranslation();
   const rawPhases = usePhaseStore((s) => s.phasesByEntry[entry.id]);
   const phases = rawPhases ?? EMPTY_PHASES;
-  const globalSceneOrder = usePhaseStore((s) => s.globalSceneOrder);
+  const sceneTimeIndex = usePhaseStore((s) => s.sceneTimeIndex);
+  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
   const loadPhasesForEntry = usePhaseStore((s) => s.loadPhasesForEntry);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
   const nodes = useTreeStore((s) => s.nodes);
@@ -46,29 +48,37 @@ export function PhaseIndicator({
     return () => document.removeEventListener("mousedown", handler);
   }, [dropdownOpen]);
 
-  // シーン順でソートされたフェーズ
-  const sortedPhases = useMemo(() => {
-    return [...phases]
-      .filter(
-        (p) => p.anchorNodeId != null && globalSceneOrder.has(p.anchorNodeId),
-      )
-      .sort(
-        (a, b) =>
-          globalSceneOrder.get(a.anchorNodeId!)! -
-          globalSceneOrder.get(b.anchorNodeId!)!,
-      );
-  }, [phases, globalSceneOrder]);
+  const latestPhaseResolution = useMemo(
+    () =>
+      resolveApplicablePhases({
+        phases,
+        index: sceneTimeIndex,
+        mode: resolutionMode,
+        anchor: { kind: "latest" },
+      }),
+    [phases, sceneTimeIndex, resolutionMode],
+  );
 
-  // 現在のアクティブフェーズ（シーン基準で自動解決）
-  const activePhase = useMemo(() => {
-    if (!activeSceneId) return null;
-    const currentOrder = globalSceneOrder.get(activeSceneId);
-    if (currentOrder === undefined) return null;
-    const applicable = sortedPhases.filter(
-      (p) => globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-    );
-    return applicable[applicable.length - 1] ?? null;
-  }, [sortedPhases, globalSceneOrder, activeSceneId]);
+  const currentPhaseResolution = useMemo(
+    () =>
+      activeSceneId
+        ? resolveApplicablePhases({
+            phases,
+            index: sceneTimeIndex,
+            mode: resolutionMode,
+            anchor: { kind: "scene", sceneId: activeSceneId },
+          })
+        : null,
+    [activeSceneId, phases, sceneTimeIndex, resolutionMode],
+  );
+
+  const sortedPhases =
+    currentPhaseResolution?.axisUsed != null
+      ? currentPhaseResolution.orderedPhases
+      : latestPhaseResolution.orderedPhases;
+  const activePhase = currentPhaseResolution
+    ? (currentPhaseResolution.applicablePhases.at(-1) ?? null)
+    : null;
 
   const getSceneTitle = (nodeId: string | null): string => {
     if (!nodeId) return "─";

@@ -4,6 +4,8 @@ import { projects, codexTypes, codexEntries } from "@/db/schema";
 import {
   listCodexMatchTargets,
   listCodexEntriesForContext,
+  listCodexContextMetadata,
+  listCodexEntriesForContextByIds,
   listCodexContentsForBaseline,
 } from "./api";
 
@@ -123,6 +125,52 @@ describe("listCodexEntriesForContext", () => {
 
     const b = await listCodexEntriesForContext(PROJECT_B);
     expect(b.map((r) => r.id)).toEqual(["m10-bob"]);
+  });
+});
+
+describe("listCodexContextMetadata", () => {
+  it("AI 文脈候補用に content/icon/notes を含まない", async () => {
+    const rows = await listCodexContextMetadata(PROJECT_A);
+    const alice = rows.find((r) => r.id === "m10-alice");
+    expect(alice).toBeDefined();
+    const keys = Object.keys(alice!);
+    expect(keys).not.toContain("content");
+    expect(keys).not.toContain("icon");
+    expect(keys).not.toContain("notes");
+    expect(alice!.summary).toBe("主人公");
+    expect(alice!.contextMode).toBe("always");
+    expect(alice!.childrenBudget).toBe("standard");
+    expect(alice!.projectId).toBe(PROJECT_A);
+  });
+
+  it("project / type スコープが効く", async () => {
+    const a = await listCodexContextMetadata(PROJECT_A);
+    expect(a.map((r) => r.id).sort()).toEqual(["m10-alice", "m10-forest"]);
+
+    const aChars = await listCodexContextMetadata(PROJECT_A, "character");
+    expect(aChars.map((r) => r.id)).toEqual(["m10-alice"]);
+
+    const b = await listCodexContextMetadata(PROJECT_B);
+    expect(b.map((r) => r.id)).toEqual(["m10-bob"]);
+  });
+});
+
+describe("listCodexEntriesForContextByIds", () => {
+  it("指定IDだけ content 付きで返し、入力順を保つ", async () => {
+    const rows = await listCodexEntriesForContextByIds(PROJECT_A, [
+      "m10-forest",
+      "m10-alice",
+      "m10-forest",
+      "missing",
+    ]);
+    expect(rows.map((row) => row.id)).toEqual(["m10-forest", "m10-alice"]);
+    expect(rows[1]!.content).toBe(CONTENT_A);
+  });
+
+  it("空IDではDB projection結果を返さない", async () => {
+    await expect(
+      listCodexEntriesForContextByIds(PROJECT_A, []),
+    ).resolves.toEqual([]);
   });
 });
 

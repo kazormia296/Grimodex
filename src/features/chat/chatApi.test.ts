@@ -53,6 +53,7 @@ const mockScheduleChatIndex = vi.mocked(scheduleChatIndex);
 
 import {
   listSessions,
+  getSessionForProject,
   createSession,
   deleteSession,
   listMessages,
@@ -81,6 +82,16 @@ function mockInsertChain(rows: Record<string, unknown>[]) {
     returning: vi.fn().mockResolvedValue(rows),
   };
   mockDb.insert.mockReturnValue(chain as never);
+  return chain;
+}
+
+function mockSelectLimitChain(rows: Record<string, unknown>[]) {
+  const chain = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    limit: vi.fn().mockResolvedValue(rows),
+  };
+  mockDb.select.mockReturnValue(chain as never);
   return chain;
 }
 
@@ -194,6 +205,60 @@ describe("chatApi - session/message persistence", () => {
       expect(mockDb.select).toHaveBeenCalled();
       expect(result).toHaveLength(1);
       expect(result[0].snippetAnchorId).toBe("snip-1");
+    });
+  });
+
+  describe("getSessionForProject", () => {
+    const session: ChatSession = {
+      id: "session-1",
+      projectId: "proj-1",
+      nodeId: "node-1",
+      codexAnchorId: null,
+      snippetAnchorId: null,
+      title: "会話1",
+      titleManual: 0,
+      model: "openrouter/anthropic/claude-sonnet-4.6",
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
+    };
+
+    it("constrains the lookup by both session and project authority", async () => {
+      const { eq, and } = await import("drizzle-orm");
+      const chain = mockSelectLimitChain([
+        session as unknown as Record<string, unknown>,
+      ]);
+
+      const result = await getSessionForProject("session-1", "proj-1");
+
+      expect(vi.mocked(eq)).toHaveBeenNthCalledWith(1, "id", "session-1");
+      expect(vi.mocked(eq)).toHaveBeenNthCalledWith(2, "projectId", "proj-1");
+      expect(vi.mocked(and)).toHaveBeenCalledWith(
+        { eq: ["id", "session-1"] },
+        { eq: ["projectId", "proj-1"] },
+      );
+      expect(chain.limit).toHaveBeenCalledWith(1);
+      expect(result).toEqual(session);
+    });
+
+    it("returns null when no session belongs to the project", async () => {
+      mockSelectLimitChain([]);
+
+      await expect(
+        getSessionForProject("missing-session", "proj-1"),
+      ).resolves.toBeNull();
+    });
+
+    it("rejects a mismatched row defensively", async () => {
+      mockSelectLimitChain([
+        { ...session, projectId: "proj-2" } as unknown as Record<
+          string,
+          unknown
+        >,
+      ]);
+
+      await expect(
+        getSessionForProject("session-1", "proj-1"),
+      ).resolves.toBeNull();
     });
   });
 

@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useTreeStore } from "./treeStore";
+import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+
+const { mockRecomputeSceneOrder } = vi.hoisted(() => ({
+  mockRecomputeSceneOrder: vi.fn(),
+}));
 
 vi.mock("./api", () => ({
   listNodes: vi.fn().mockResolvedValue([]),
@@ -10,6 +15,12 @@ vi.mock("./api", () => ({
     ),
   updateNode: vi.fn().mockResolvedValue(undefined),
   deleteNode: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/features/codex/phaseStore", () => ({
+  usePhaseStore: {
+    getState: () => ({ recomputeSceneOrder: mockRecomputeSceneOrder }),
+  },
 }));
 
 const DEFAULTS = {
@@ -27,6 +38,8 @@ const DEFAULTS = {
 } as const;
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  useGlobalHistoryStore.getState().clear();
   useTreeStore.setState({
     nodes: [],
     projectId: "proj-1",
@@ -34,6 +47,44 @@ beforeEach(() => {
     activeSceneId: "",
     expandedIds: [],
     pendingRevealId: null,
+  });
+});
+
+describe("createNode Phase scene-time invalidation", () => {
+  it("recomputes the index through the backward-compatible createScene path", async () => {
+    await useTreeStore.getState().createScene();
+
+    expect(mockRecomputeSceneOrder).toHaveBeenCalledTimes(1);
+    expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
+      useTreeStore.getState().nodes,
+    );
+  });
+
+  it("recomputes the index after create undo and redo", async () => {
+    const created = await useTreeStore
+      .getState()
+      .createNode({ nodeType: "scene", parentId: null });
+    const command = useGlobalHistoryStore.getState().past.at(-1);
+    expect(command).toBeDefined();
+
+    mockRecomputeSceneOrder.mockClear();
+    await command!.undo();
+    expect(mockRecomputeSceneOrder).toHaveBeenCalledTimes(1);
+    expect(useTreeStore.getState().nodes).not.toContainEqual(
+      expect.objectContaining({ id: created.id }),
+    );
+    expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
+      useTreeStore.getState().nodes,
+    );
+
+    await command!.redo();
+    expect(mockRecomputeSceneOrder).toHaveBeenCalledTimes(2);
+    expect(useTreeStore.getState().nodes).toContainEqual(
+      expect.objectContaining({ id: created.id }),
+    );
+    expect(mockRecomputeSceneOrder).toHaveBeenLastCalledWith(
+      useTreeStore.getState().nodes,
+    );
   });
 });
 

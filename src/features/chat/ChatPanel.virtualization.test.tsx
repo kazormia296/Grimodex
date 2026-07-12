@@ -135,7 +135,7 @@ describe("ChatPanel virtualization contract", () => {
       // render 回数の assert を汚さないよう、store action を stub する
       loadSessions: async () => {},
       selectSession: async () => {},
-      refreshContextLayers: async () => {},
+      refreshContextLayers: async () => null,
     });
     virtualizerCapture.opts = null;
     perfCapture.marks.length = 0;

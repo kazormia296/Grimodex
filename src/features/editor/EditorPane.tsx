@@ -34,6 +34,10 @@ import type {
 } from "@/features/codex/CodexMentionExtension";
 import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import {
+  resolveApplicablePhases,
+  resolvePhaseEditState,
+} from "@/features/codex/context/resolveApplicablePhases";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useCodexHighlightStore } from "@/features/editor/codexHighlightStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
@@ -282,6 +286,28 @@ export function EditorPane({
   // Phases for this codex entry (populated into store during load)
   const codexPhases = usePhaseStore((s) =>
     isCodexMode ? (s.phasesByEntry[nodeId] ?? null) : null,
+  );
+  // Content/summary edits do not require a full editor reload, but structural
+  // changes can change the active write target at the same scene. Keep the
+  // dependency narrow so create/delete/re-anchor reruns resolution without an
+  // autosave feedback loop on every phase body update.
+  const codexPhaseStructureKey =
+    codexPhases === null
+      ? "unloaded"
+      : codexPhases
+          .map(
+            (phase) =>
+              `${phase.id}\u0000${phase.anchorNodeId ?? ""}\u0000${phase.createdAt}`,
+          )
+          .join("\u0001");
+  const phaseResolutionSceneId = useTreeStore((s) =>
+    isCodexMode ? s.activeSceneId : null,
+  );
+  const phaseSceneTimeIndex = usePhaseStore((s) =>
+    isCodexMode ? s.sceneTimeIndex : null,
+  );
+  const phaseResolutionMode = usePhaseStore((s) =>
+    isCodexMode ? s.resolutionMode : null,
   );
   const updateNodeTitle = useTreeStore((s) => s.updateNodeTitle);
   const updateCodexEntryStore = useCodexStore((s) => s.update);
@@ -1486,42 +1512,53 @@ export function EditorPane({
 
             const phaseStore = usePhaseStore.getState();
             const phases = phaseStore.phasesByEntry[nodeId] ?? [];
-            const globalSceneOrder = phaseStore.globalSceneOrder;
             let phaseContentOverride: string | null = null;
             let resolvedPhaseId: string | null = null;
 
             if (overridePhaseId === "__base__") {
               // Explicit base: skip phase resolution, show entry.content as-is
             } else if (overridePhaseId) {
-              // Explicit phase ID from preview: load that phase's contentOverride
+              // Explicit Phase preview: resolve cumulatively through the exact
+              // Phase identity. A scene-only cutoff would also apply later
+              // siblings anchored to the same scene. Always save edits to the
+              // selected target, even when its initial content is inherited.
               const targetPhase = phases.find((p) => p.id === overridePhaseId);
-              if (targetPhase?.contentOverride != null) {
-                phaseContentOverride = targetPhase.contentOverride;
+              if (targetPhase && phaseSceneTimeIndex && phaseResolutionMode) {
+                const resolution = resolveApplicablePhases({
+                  phases,
+                  index: phaseSceneTimeIndex,
+                  mode: phaseResolutionMode,
+                  anchor: { kind: "phase", phaseId: targetPhase.id },
+                });
+                phaseContentOverride = resolvePhaseEditState(resolution, {
+                  summary: entry?.summary ?? null,
+                  content: entry?.content ?? "{}",
+                }).content;
                 resolvedPhaseId = targetPhase.id;
               }
             } else {
               // Auto-resolve: use the phase active at the current scene
-              const activeSceneId = useTreeStore.getState().activeSceneId;
-              if (activeSceneId) {
-                const currentOrder = globalSceneOrder.get(activeSceneId);
-                if (currentOrder !== undefined) {
-                  const applicable = phases
-                    .filter(
-                      (p) =>
-                        p.anchorNodeId != null &&
-                        globalSceneOrder.has(p.anchorNodeId) &&
-                        globalSceneOrder.get(p.anchorNodeId!)! <= currentOrder,
-                    )
-                    .sort(
-                      (a, b) =>
-                        globalSceneOrder.get(a.anchorNodeId!)! -
-                        globalSceneOrder.get(b.anchorNodeId!)!,
-                    );
-                  const activePhase = applicable[applicable.length - 1] ?? null;
-                  if (activePhase?.contentOverride != null) {
-                    phaseContentOverride = activePhase.contentOverride;
-                    resolvedPhaseId = activePhase.id;
-                  }
+              if (
+                phaseResolutionSceneId &&
+                phaseSceneTimeIndex &&
+                phaseResolutionMode
+              ) {
+                const resolution = resolveApplicablePhases({
+                  phases,
+                  index: phaseSceneTimeIndex,
+                  mode: phaseResolutionMode,
+                  anchor: {
+                    kind: "scene",
+                    sceneId: phaseResolutionSceneId,
+                  },
+                });
+                const editState = resolvePhaseEditState(resolution, {
+                  summary: entry?.summary ?? null,
+                  content: entry?.content ?? "{}",
+                });
+                if (editState.targetPhase) {
+                  phaseContentOverride = editState.content;
+                  resolvedPhaseId = editState.targetPhase.id;
                 }
               }
             }
@@ -1867,9 +1904,16 @@ export function EditorPane({
     isCodexMode,
     isSnippetMode,
     isChronicleEventMode,
+    isEntryMode,
+    isFileBacked,
+    contentType,
     overridePhaseId,
     groupIndex,
     externalReloadNonce,
+    codexPhaseStructureKey,
+    phaseResolutionSceneId,
+    phaseSceneTimeIndex,
+    phaseResolutionMode,
   ]);
 
   useEffect(() => {

@@ -10,15 +10,18 @@ interface PhaseDialogProps {
   entryId: string;
   phase?: CodexEntryPhase | null;
   onClose: () => void;
-  /** 新規作成時のContent初期値（直前フェーズ or ベースコンテンツ） */
-  currentContent?: string;
+  /** Resolve the inherited Content at the anchor selected for a new Phase. */
+  resolveCurrentContent?: (
+    anchorNodeId: string,
+    targetPhaseId?: string,
+  ) => string;
 }
 
 export function PhaseDialog({
   entryId,
   phase,
   onClose,
-  currentContent,
+  resolveCurrentContent,
 }: PhaseDialogProps) {
   const { t } = useTranslation();
   const createPhase = usePhaseStore((s) => s.createPhase);
@@ -54,7 +57,7 @@ export function PhaseDialog({
   const canSubmit = label.trim() && anchorNodeId && hasOverride;
 
   const handleSubmit = async () => {
-    if (!canSubmit) return;
+    if (!canSubmit || !anchorNodeId) return;
     setIsSubmitting(true);
     try {
       const data = {
@@ -62,7 +65,9 @@ export function PhaseDialog({
         anchorNodeId,
         summaryOverride: summaryEnabled ? summaryValue.trim() || "" : null,
         contentOverride: contentEnabled
-          ? (phase?.contentOverride ?? currentContent ?? null)
+          ? (phase?.contentOverride ??
+            resolveCurrentContent?.(anchorNodeId, phase?.id) ??
+            null)
           : null,
         contextModeOverride: aiExposureValue === "" ? null : aiExposureValue,
       };

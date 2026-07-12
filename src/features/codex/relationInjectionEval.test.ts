@@ -26,6 +26,24 @@ describe("relation injection 3-arm eval (deterministic)", () => {
     expect(atSc4).toContain("裏切り者");
   });
 
+  it("mixed auto uses the same safe reading fallback as Phase resolution", () => {
+    const base = corpus.entries.find((e) => e.id === "bob")!.summary;
+    const bobPhase = corpus.phasesByEntry.get("bob")![0];
+    const mixed = {
+      ...corpus,
+      resolutionMode: "auto" as const,
+      nodes: [
+        { ...corpus.nodes[0], id: "chapter-1", storyTimeOrder: null },
+        { ...corpus.nodes[1], id: "chapter-8", storyTimeOrder: "a0" },
+      ],
+      phasesByEntry: new Map([
+        ["bob", [{ ...bobPhase, anchorNodeId: "chapter-8" }]],
+      ]),
+    };
+
+    expect(resolveSummaryAtScene(mixed, "bob", "chapter-1")).toBe(base);
+  });
+
   it("off arm injects nothing", () => {
     const m = computeArmMetrics("off", corpus);
     expect(m.injectedCount).toBe(0);

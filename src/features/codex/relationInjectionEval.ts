@@ -11,7 +11,8 @@
  */
 import type { CodexContext } from "@/features/chat/contextBuilder";
 import { expandCodexRelationsBFS } from "./relationExpansion";
-import { resolveCodexState, computeGlobalSceneOrder } from "./phaseResolver";
+import { resolveCodexState } from "./phaseResolver";
+import { buildSceneTimeIndex } from "./context/sceneTimeIndex";
 import type { RelationInjectionCorpus } from "./relationInjectionEvalSets";
 
 export type ArmId = "off" | "label-only" | "legacy";
@@ -41,7 +42,7 @@ export function resolveSummaryAtScene(
 ): string | null {
   const entry = corpus.entries.find((e) => e.id === entryId);
   if (!entry) return null;
-  const sceneOrder = computeGlobalSceneOrder(corpus.nodes);
+  const sceneTimeIndex = buildSceneTimeIndex(corpus.nodes);
   const resolved = resolveCodexState(
     {
       summary: entry.summary,
@@ -51,8 +52,9 @@ export function resolveSummaryAtScene(
     corpus.phasesByEntry.get(entryId) ?? [],
     new Map(),
     new Map(),
-    sceneId,
-    sceneOrder,
+    sceneId ? { kind: "scene", sceneId } : { kind: "base" },
+    sceneTimeIndex,
+    corpus.resolutionMode,
   );
   return resolved.summary;
 }

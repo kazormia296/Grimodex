@@ -3,7 +3,6 @@ import {
   buildSystemPrompt,
   trimToFit,
   trimL3Text,
-  trimL4Text,
   trimL5Text,
   countTokens,
   sanitizeSceneContent,
@@ -510,7 +509,7 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("花子のfullContent");
     });
 
-    it("withChildren親の子エントリが別のpinnedとして渡された場合、deduplicateByIdで重複を排除する", () => {
+    it("withChildren親の子エントリが別のpinnedとして渡された場合、明示pinの全文を保持して統合する", () => {
       // chatStoreのbuildSceneContextPromptがallPinnedIdSetを使って子を除外した後の
       // 正常な状態をbuildSystemPromptが正しく処理できることを検証する
       const scene: SceneContext = {
@@ -548,10 +547,16 @@ describe("contextBuilder", () => {
         pinnedCodexEntries: [entryA, childB],
       });
 
-      // deduplicateByIdにより花子のエントリは1回（via側が優先されfullContentは失われる）
-      // このケースはchatStoreのallPinnedIdSet修正で防ぐべき状態
+      // ID統合により花子のエントリは1回、より明示的なpinの全文は保持される。
       const nameMatches = result.prompt.match(/\*\*花子\*\*/g);
       expect(nameMatches).toHaveLength(1);
+      expect(result.prompt).toContain("花子のfullContent");
+      expect(result.contextPlan?.items).toContainEqual(
+        expect.objectContaining({
+          key: "codex:B",
+          provenance: expect.objectContaining({ sourceType: "codex-pin" }),
+        }),
+      );
     });
 
     it("mapBoardMarkdown 指定時に L4 に <map> ブロックが含まれる", () => {
@@ -1696,48 +1701,6 @@ describe("contextBuilder", () => {
     });
   });
 
-  describe("trimToFit L4 priority", () => {
-    it("removes lower-priority L4 entries before always entries", () => {
-      const l4Text =
-        "\n## 登場キャラクター・設定情報\n" +
-        "<!-- l4pri:2 -->\n- **Mentioned** (character)\n  id: m1\n  summary: m\n" +
-        "<!-- l4pri:4 -->\n- **Always** (lore)\n  id: a1\n  summary: a\n";
-      const layers = {
-        baseText: "base instruction",
-        l1Text: "",
-        l2Text: "",
-        l3Text: "",
-        l4Text,
-        l5Text: "",
-        l6Text: "",
-      };
-      const fullTokens = countTokens(layers.baseText) + countTokens(l4Text);
-      const result = trimToFit(layers, fullTokens - 10);
-      expect(result.trimmedTexts.l4Text).toContain("Always");
-      expect(result.trimmedTexts.l4Text).not.toContain("Mentioned");
-    });
-
-    it("trimL4Text removes pinned (pri 3) before always (pri 4)", () => {
-      const l4Text =
-        "\n## 登場キャラクター・設定情報\n" +
-        "<!-- l4pri:3 -->\n- **Pinned** (Snippet): pinned body\n" +
-        "<!-- l4pri:4 -->\n- **Always** (lore)\n  id: a1\n  summary: a\n";
-      const trimmed = trimL4Text(l4Text, countTokens(l4Text) - 5);
-      expect(trimmed).toContain("Always");
-      expect(trimmed).not.toContain("Pinned");
-    });
-
-    it("trimL4Text treats markerless blocks as mentioned (pri 2)", () => {
-      const l4Text =
-        "\n## 登場キャラクター・設定情報\n" +
-        "- **NoMarker** (character)\n  id: n1\n  summary: n\n" +
-        "<!-- l4pri:4 -->\n- **Always** (lore)\n  id: a1\n  summary: a\n";
-      const trimmed = trimL4Text(l4Text, countTokens(l4Text) - 5);
-      expect(trimmed).toContain("Always");
-      expect(trimmed).not.toContain("NoMarker");
-    });
-  });
-
   describe("buildSystemPrompt — noteEntries / storyTimeLabel (Phase A)", () => {
     it("injects note entries into L4 with note tags", () => {
       const result = buildSystemPrompt({
@@ -1853,7 +1816,7 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("NORMAL_SEED_SUMMARY");
     });
 
-    it("strips l4pri markers from final prompt and cacheSegments (LLM never sees them)", () => {
+    it("never emits legacy l4pri markers in prompt or cache segments", () => {
       const result = buildSystemPrompt({
         scene: { id: "s1", title: "Scene", content: "body" },
         codexEntries: [
@@ -2528,6 +2491,48 @@ describe("prompt injection hardening", () => {
       expect(occurrences).toBe(1);
     });
 
+    it("preserves required focus identity and summary when trimming a long body", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        focusSubject: {
+          kind: "codex",
+          entry: {
+            id: "required-focus-id",
+            type: "character",
+            name: "UNIQUE_REQUIRED_FOCUS_NAME",
+            summary: "REQUIRED_FOCUS_SUMMARY",
+            fullContent: "very long optional body ".repeat(5_000),
+          },
+        },
+        contextWindow: 1_200,
+        conversationTokens: 0,
+        outputReservationTokens: 100,
+      });
+
+      expect(result.trimmedLayers).toContain("FOCUS");
+      expect(result.prompt).toContain("UNIQUE_REQUIRED_FOCUS_NAME");
+      expect(result.prompt).toContain("required-focus-id");
+      expect(result.prompt).toContain("REQUIRED_FOCUS_SUMMARY");
+      expect(result.prompt).toContain(`</${TAG.focus}>`);
+    });
+
+    it("renders includeInContext custom details for detected codex entries", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "s1", title: "Scene", content: "Body" },
+        codexEntries: [
+          {
+            id: "hero-detected",
+            type: "character",
+            name: "検出キャラ",
+            summary: "概要",
+            customDetails: [{ fieldName: "Phase mood", value: "警戒" }],
+          },
+        ],
+      });
+
+      expect(result.prompt).toContain("Phase mood: 警戒");
+    });
+
     it("renders the codex focusSubject with Spotlight-equivalent fields (tags / custom details / full content)", () => {
       const result = buildSystemPrompt({
         scene: { id: "", title: "", content: "" },
@@ -2596,6 +2601,280 @@ describe("prompt injection hardening", () => {
       });
       expect(result.prompt).not.toContain(`</${TAG.focus}>`);
       expect(result.layers.find((l) => l.layer === "FOCUS")).toBeUndefined();
+    });
+  });
+
+  describe("buildSystemPrompt — typed ContextPlan L4", () => {
+    const l4Input = {
+      scene: { id: "s", title: "Scene", content: "本文" },
+      codexEntries: [
+        {
+          id: "stable",
+          type: "character",
+          name: "安定人物",
+          summary: "安定した設定",
+        },
+        {
+          id: "volatile",
+          type: "location",
+          name: "揮発地点",
+          summary: "今回だけの設定",
+        },
+      ],
+      sessionStableCodexIds: ["stable"],
+    } satisfies Parameters<typeof buildSystemPrompt>[0];
+
+    it("adds a deterministic plan without changing plain/cache selected keys", () => {
+      const plain = buildSystemPrompt({ ...l4Input, deliveryMode: "plain" });
+      const cache = buildSystemPrompt({ ...l4Input, deliveryMode: "cache" });
+      const repeated = buildSystemPrompt({ ...l4Input, deliveryMode: "plain" });
+
+      expect(plain.contextPlan!.digest).toBe(repeated.contextPlan!.digest);
+      expect(plain.contextPlan!.items.map((item) => item.key)).toEqual([
+        "codex:stable",
+        "codex:volatile",
+      ]);
+      expect(cache.contextPlan!.items.map((item) => item.key)).toEqual(
+        plain.contextPlan!.items.map((item) => item.key),
+      );
+      expect(plain.contextPlan!.decisions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            key: "codex:stable",
+            status: "selected",
+            reason: "within-budget",
+          }),
+          expect.objectContaining({
+            key: "codex:volatile",
+            status: "selected",
+            reason: "within-budget",
+          }),
+        ]),
+      );
+      expect(plain.prompt).not.toContain("l4pri:");
+      expect(plain.cacheSegments?.join("\n")).not.toContain("l4pri:");
+      expect(plain.volatileTail).not.toContain("l4pri:");
+    });
+
+    it("reports L4 usage from the split cache delivery representation", () => {
+      const result = buildSystemPrompt({ ...l4Input, deliveryMode: "cache" });
+      const stableBlock = result.cacheSegments?.at(-1) ?? "";
+      const volatileTail = result.volatileTail ?? "";
+      const open = volatileTail.indexOf("<codex_entries>");
+      const close = volatileTail.indexOf("</codex_entries>");
+      const volatileBlock = volatileTail.slice(
+        Math.max(0, open - 1),
+        close + "</codex_entries>".length,
+      );
+
+      expect(result.layers.find((layer) => layer.layer === "L4")?.used).toBe(
+        countTokens(stableBlock) + countTokens(volatileBlock),
+      );
+    });
+
+    it("preserves interleaved L4 semantic order in cached delivery", () => {
+      const input = {
+        scene: { id: "scene-1", title: "Scene", content: "body" },
+        codexEntries: [
+          { id: "a", type: "character", name: "Stable A", summary: "A" },
+          { id: "b", type: "character", name: "Volatile B", summary: "B" },
+          { id: "c", type: "character", name: "Stable C", summary: "C" },
+        ],
+        sessionStableCodexIds: ["a", "c"],
+        deliveryMode: "cache" as const,
+      };
+
+      const result = buildSystemPrompt(input);
+      const delivered = [
+        ...(result.cacheSegments ?? []),
+        result.volatileTail ?? "",
+      ].join("\n");
+
+      expect(result.contextPlan?.items.map((item) => item.key)).toEqual([
+        "codex:a",
+        "codex:b",
+        "codex:c",
+      ]);
+      expect(delivered.indexOf("Stable A")).toBeLessThan(
+        delivered.indexOf("Volatile B"),
+      );
+      expect(delivered.indexOf("Volatile B")).toBeLessThan(
+        delivered.indexOf("Stable C"),
+      );
+    });
+
+    it("treats all L4 items as volatile after an initialized empty stable baseline", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "scene-1", title: "Scene", content: "body" },
+        codexEntries: [
+          {
+            id: "new-a",
+            type: "character",
+            name: "New A",
+            summary: "A",
+          },
+          {
+            id: "new-b",
+            type: "character",
+            name: "New B",
+            summary: "B",
+          },
+        ],
+        sessionStableCodexIds: [],
+        sessionStableContextInitialized: true,
+        deliveryMode: "cache",
+      });
+
+      expect(result.contextPlan?.items.map((item) => item.stability)).toEqual([
+        "turn-volatile",
+        "turn-volatile",
+      ]);
+      expect(result.cacheSegments?.join("\n")).not.toContain("New A");
+      expect(result.cacheSegments?.join("\n")).not.toContain("New B");
+      expect(result.volatileTail).toContain("New A");
+      expect(result.volatileTail).toContain("New B");
+    });
+
+    it("records an explicit exclusion decision when L4 is disabled", () => {
+      const result = buildSystemPrompt({ ...l4Input, excludeLayers: ["L4"] });
+
+      expect(result.contextPlan!.items).toEqual([]);
+      expect(result.contextPlan!.decisions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            key: "codex:stable",
+            status: "excluded",
+            reason: "excluded-layer",
+            tokensAfter: 0,
+          }),
+          expect.objectContaining({
+            key: "codex:volatile",
+            status: "excluded",
+            reason: "excluded-layer",
+            tokensAfter: 0,
+          }),
+        ]),
+      );
+    });
+
+    it("allows a session-stable item to be trimmed and records why", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        codexEntries: [
+          {
+            id: "large-stable",
+            type: "character",
+            name: "巨大設定",
+            summary: "設定".repeat(4_000),
+          },
+        ],
+        sessionStableCodexIds: ["large-stable"],
+        contextWindow: 800,
+        maxOutputTokens: 400,
+        conversationTokens: 0,
+      });
+
+      expect(result.contextPlan!.items).toEqual([]);
+      expect(result.contextPlan!.decisions).toContainEqual(
+        expect.objectContaining({
+          key: "codex:large-stable",
+          status: "trimmed",
+          reason: "budget-priority",
+          tokensAfter: 0,
+        }),
+      );
+    });
+
+    it("reselects L4 after exact wrapping would overflow the final delivery", () => {
+      const optional = {
+        id: "optional",
+        type: "lore",
+        name: "Optional",
+        summary: "x".repeat(300),
+      };
+      const unconstrained = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        codexEntries: [optional],
+        deliveryMode: "plain",
+      });
+      const outputReservationTokens = 100;
+      const inputOverheadTokens = 32;
+      const constrained = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        codexEntries: [optional],
+        deliveryMode: "plain",
+        contextWindow:
+          unconstrained.totalTokens +
+          outputReservationTokens +
+          inputOverheadTokens -
+          1,
+        outputReservationTokens,
+        inputOverheadTokens,
+        conversationTokens: 0,
+      });
+
+      expect(constrained.contextPlan?.items).toEqual([]);
+      expect(constrained.contextPlan?.decisions).toContainEqual(
+        expect.objectContaining({
+          key: "codex:optional",
+          status: "trimmed",
+          reason: "budget-priority",
+        }),
+      );
+      expect(constrained.payloadBudget?.overflowTokens).toBe(0);
+      expect(constrained.payloadBudget?.inputOverheadTokens).toBe(32);
+    });
+
+    it("attaches explicit non-scene temporal provenance to every L4 item", () => {
+      const result = buildSystemPrompt({
+        ...l4Input,
+        contextTemporal: { asOfSceneId: "active-scene", axis: "story" },
+        noteEntries: [{ id: "note-1", title: "Note", content: "body" }],
+        pinnedSnippets: [
+          { id: "snippet-1", title: "Snippet", content: "body" },
+        ],
+        pinnedStickies: [{ id: "sticky-1", title: "Sticky", content: "body" }],
+        mapBoardMarkdown: "map body",
+      });
+
+      expect(result.contextPlan?.items.map((item) => item.key)).toEqual(
+        expect.arrayContaining([
+          "codex:stable",
+          "note:note-1",
+          "snippet:snippet-1",
+          "sticky:sticky-1",
+          "map:active-board",
+        ]),
+      );
+      for (const item of result.contextPlan?.items ?? []) {
+        expect(item.temporal).toEqual({
+          asOfSceneId: "active-scene",
+          axis: "story",
+        });
+      }
+    });
+
+    it("retains source-level unavailable decisions in the final plan", () => {
+      const result = buildSystemPrompt({
+        scene: { id: "", title: "", content: "" },
+        contextDecisions: [
+          {
+            key: "codex:missing",
+            status: "unavailable",
+            reason: "missing-source",
+            tokensBefore: 0,
+            tokensAfter: 0,
+          },
+        ],
+      });
+
+      expect(result.contextPlan?.decisions).toContainEqual({
+        key: "codex:missing",
+        status: "unavailable",
+        reason: "missing-source",
+        tokensBefore: 0,
+        tokensAfter: 0,
+      });
     });
   });
 });

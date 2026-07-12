@@ -2,9 +2,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { db } from "@/db/client";
 import { projects } from "@/db/schema";
-import { useProjectStore } from "./projectStore";
+import { LAST_ACTIVE_PROJECT_KEY, useProjectStore } from "./projectStore";
 import { PROJECT_ID } from "./constants";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { useSettingsStore } from "@/features/settings/settingsStore";
+import { usePhaseStore } from "@/features/codex/phaseStore";
+import * as projectApi from "./api";
+import type { Project } from "./api";
 
 vi.mock("./reloadProjectData", () => ({
   reloadProjectData: vi.fn().mockResolvedValue(undefined),
@@ -39,8 +43,23 @@ const mockedEnsureBuiltin = vi.mocked(ensureBuiltinTypes);
 const mockedGetSetting = vi.mocked(getSetting);
 const mockedSetSetting = vi.mocked(setSetting);
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(async () => {
-  mockedReload.mockClear();
+  mockedReload.mockReset();
+  mockedReload.mockResolvedValue(undefined);
   mockedSeed.mockClear();
   mockedEnsureBuiltin.mockClear();
   mockedGetSetting.mockReset();
@@ -145,6 +164,167 @@ describe("useProjectStore", () => {
 
       expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
       expect(useGlobalHistoryStore.getState().future).toHaveLength(0);
+    });
+
+    it("keeps the latest project authoritative when lookups finish in reverse order", async () => {
+      const now = new Date().toISOString();
+      await db.insert(projects).values([
+        {
+          id: "proj-a",
+          title: "Project A",
+          language: "ja",
+          phaseResolutionMode: "reading",
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "proj-b",
+          title: "Project B",
+          language: "en",
+          phaseResolutionMode: "story",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+      const projectA = await projectApi.getProject("proj-a");
+      const projectB = await projectApi.getProject("proj-b");
+      expect(projectA).toBeDefined();
+      expect(projectB).toBeDefined();
+
+      const lookupA = deferred<Project | undefined>();
+      const lookupB = deferred<Project | undefined>();
+      const getProjectSpy = vi
+        .spyOn(projectApi, "getProject")
+        .mockImplementation((id) => {
+          if (id === "proj-a") return lookupA.promise;
+          if (id === "proj-b") return lookupB.promise;
+          return Promise.resolve(undefined);
+        });
+
+      document.documentElement.lang = "ja";
+      useSettingsStore.getState().applyProjectLanguage("ja");
+      usePhaseStore.getState().setResolutionMode("reading");
+
+      try {
+        const loadA = useProjectStore.getState().loadProject("proj-a");
+        const loadB = useProjectStore.getState().loadProject("proj-b");
+
+        lookupB.resolve(projectB);
+        await loadB;
+        lookupA.resolve(projectA);
+        await loadA;
+
+        expect(useProjectStore.getState().currentProjectId).toBe("proj-b");
+        expect(document.documentElement.lang).toBe("en");
+        expect(useSettingsStore.getState().projectLanguage).toBe("en");
+        expect(usePhaseStore.getState().resolutionMode).toBe("story");
+        expect(mockedReload).toHaveBeenCalledTimes(1);
+        expect(mockedReload).toHaveBeenCalledWith("proj-b");
+        expect(mockedSetSetting).toHaveBeenCalledTimes(1);
+        expect(mockedSetSetting).toHaveBeenCalledWith(
+          LAST_ACTIVE_PROJECT_KEY,
+          "proj-b",
+        );
+      } finally {
+        getProjectSpy.mockRestore();
+      }
+    });
+
+    it("does not let a stale lookup failure roll back the latest project", async () => {
+      const now = new Date().toISOString();
+      await db.insert(projects).values({
+        id: "proj-b",
+        title: "Project B",
+        language: "en",
+        createdAt: now,
+        updatedAt: now,
+      });
+      const projectB = await projectApi.getProject("proj-b");
+      expect(projectB).toBeDefined();
+
+      const lookupA = deferred<Project | undefined>();
+      const getProjectSpy = vi
+        .spyOn(projectApi, "getProject")
+        .mockImplementation((id) => {
+          if (id === "proj-a") return lookupA.promise;
+          if (id === "proj-b") return Promise.resolve(projectB);
+          return Promise.resolve(undefined);
+        });
+
+      try {
+        const loadA = useProjectStore.getState().loadProject("proj-a");
+        const loadB = useProjectStore.getState().loadProject("proj-b");
+        await loadB;
+
+        lookupA.reject(new Error("late Project A lookup failure"));
+        await expect(loadA).resolves.toBeUndefined();
+
+        expect(useProjectStore.getState().currentProjectId).toBe("proj-b");
+        expect(mockedReload).toHaveBeenCalledTimes(1);
+        expect(mockedReload).toHaveBeenCalledWith("proj-b");
+        expect(mockedSetSetting).toHaveBeenCalledTimes(1);
+        expect(mockedSetSetting).toHaveBeenCalledWith(
+          LAST_ACTIVE_PROJECT_KEY,
+          "proj-b",
+        );
+      } finally {
+        getProjectSpy.mockRestore();
+      }
+    });
+
+    it("serializes an already-started reload so the latest project commits last", async () => {
+      const now = new Date().toISOString();
+      await db.insert(projects).values([
+        {
+          id: "proj-a",
+          title: "Project A",
+          language: "ja",
+          phaseResolutionMode: "reading",
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: "proj-b",
+          title: "Project B",
+          language: "en",
+          phaseResolutionMode: "story",
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]);
+
+      const reloadA = deferred<void>();
+      mockedReload.mockImplementation((projectId) => {
+        if (projectId === "proj-a") return reloadA.promise;
+        return Promise.resolve();
+      });
+      document.documentElement.lang = "ja";
+      useSettingsStore.getState().applyProjectLanguage("ja");
+      usePhaseStore.getState().setResolutionMode("reading");
+
+      const loadA = useProjectStore.getState().loadProject("proj-a");
+      await vi.waitFor(() => {
+        expect(mockedReload).toHaveBeenCalledWith("proj-a");
+      });
+
+      const loadB = useProjectStore.getState().loadProject("proj-b");
+      reloadA.resolve();
+      await Promise.all([loadA, loadB]);
+
+      expect(mockedReload.mock.calls.map(([id]) => id)).toEqual([
+        "proj-a",
+        "proj-b",
+      ]);
+      expect(useProjectStore.getState().currentProjectId).toBe("proj-b");
+      expect(document.documentElement.lang).toBe("en");
+      expect(useSettingsStore.getState().projectLanguage).toBe("en");
+      expect(usePhaseStore.getState().resolutionMode).toBe("story");
+      // A became stale while its reload was in flight, so only B is persisted.
+      expect(mockedSetSetting).toHaveBeenCalledTimes(1);
+      expect(mockedSetSetting).toHaveBeenCalledWith(
+        LAST_ACTIVE_PROJECT_KEY,
+        "proj-b",
+      );
     });
   });
 

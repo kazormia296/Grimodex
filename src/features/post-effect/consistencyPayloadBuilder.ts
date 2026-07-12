@@ -17,8 +17,16 @@ import {
   listPhasesByEntryIds,
   listDetailOverridesByPhaseIds,
 } from "@/features/codex/phaseApi";
-import { resolveCodexState } from "@/features/codex/phaseResolver";
+import {
+  canIncludeResolvedCodexContext,
+  materializeResolvedCodexContext,
+  resolveCodexContexts,
+} from "@/features/codex/context/resolvedCodexContext";
 import { usePhaseStore } from "@/features/codex/phaseStore";
+import type {
+  PhaseResolutionMode,
+  SceneTimeIndex,
+} from "@/features/codex/phaseResolver";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { detailValueToPlainText } from "@/features/codex/detailCleanup";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -59,7 +67,12 @@ export const IMPACT_REVIEW_PROMPT_VERSION = "impact_review_v1.1";
  */
 async function buildCodexPayload(
   projectId: string,
+  sceneId: string,
   sceneText: string,
+  temporal: {
+    sceneTimeIndex: SceneTimeIndex;
+    resolutionMode: PhaseResolutionMode;
+  },
 ): Promise<CodexPayloadEntry[]> {
   // プロジェクトの全 Codex エントリを取得
   const allEntries = await db
@@ -67,68 +80,43 @@ async function buildCodexPayload(
     .from(codexEntries)
     .where(eq(codexEntries.projectId, projectId));
 
-  const allEntriesById = new Map(allEntries.map((e) => [e.id, e]));
+  if (allEntries.length === 0) return [];
+  const entryIds = allEntries.map((entry) => entry.id);
 
-  const detectableEntries = allEntries.filter(
-    (e) => e.contextMode !== "hidden" && e.contextMode !== "suppress",
-  );
-  const alwaysEntries = allEntries.filter((e) => e.contextMode === "always");
-
-  // mention 検出 (rustMatcher) — CodexMatchTarget[] を返すが ID のみを使用
-  const mentioned = await findMentionedEntriesAsync(
-    sceneText,
-    detectableEntries,
-  );
-  const mentionedIds = new Set(mentioned.map((e) => e.id));
-  const alwaysNotMentionedIds = alwaysEntries
-    .filter((e) => !mentionedIds.has(e.id))
-    .map((e) => e.id);
-
-  const selectedIds = [...mentionedIds, ...alwaysNotMentionedIds];
-  // フル entry を allEntries から解決 (CodexMatchTarget は id/name/type のみのため)
-  const selectedEntries = selectedIds
-    .map((id) => allEntriesById.get(id))
-    .filter((e): e is NonNullable<typeof e> => e !== undefined);
-
-  if (selectedEntries.length === 0) return [];
-
-  const entryIds = selectedEntries.map((e) => e.id);
-
-  // フェーズ解決
+  // Resolve the complete candidate set before mention/always selection. A
+  // Base-hidden entry may become mentioned/always, while the reverse must be
+  // removed before its summary/content reaches the matcher or payload.
   const allPhases = await listPhasesByEntryIds(entryIds);
   const phaseIds = allPhases.map((p) => p.id);
   const allOverrides = await listDetailOverridesByPhaseIds(phaseIds);
 
-  const overridesByPhase = new Map<string, (typeof allOverrides)[0][]>();
-  for (const ov of allOverrides) {
-    const arr = overridesByPhase.get(ov.phaseId) ?? [];
-    arr.push(ov);
-    overridesByPhase.set(ov.phaseId, arr);
-  }
-  const phasesByEntry = new Map<string, (typeof allPhases)[0][]>();
-  for (const phase of allPhases) {
-    const arr = phasesByEntry.get(phase.entryId) ?? [];
-    arr.push(phase);
-    phasesByEntry.set(phase.entryId, arr);
-  }
-
-  // ベース DetailValues (includeInContext=1 のみ)
+  // Context-enabled definitions applicable to each entry type, with an
+  // optional Base value. Starting from codexEntries is important: a detail may
+  // exist only as a Phase override and therefore have no codexDetailValues row.
   const rawDetails = await db
     .select({
-      entryId: codexDetailValues.entryId,
-      definitionId: codexDetailValues.definitionId,
+      entryId: codexEntries.id,
+      definitionId: codexDetailDefinitions.id,
       value: codexDetailValues.value,
       name: codexDetailDefinitions.name,
     })
-    .from(codexDetailValues)
+    .from(codexEntries)
     .innerJoin(
       codexDetailDefinitions,
       and(
-        eq(codexDetailValues.definitionId, codexDetailDefinitions.id),
+        eq(codexDetailDefinitions.projectId, codexEntries.projectId),
+        eq(codexDetailDefinitions.typeSlug, codexEntries.type),
         eq(codexDetailDefinitions.includeInContext, 1),
       ),
     )
-    .where(inArray(codexDetailValues.entryId, entryIds));
+    .leftJoin(
+      codexDetailValues,
+      and(
+        eq(codexDetailValues.entryId, codexEntries.id),
+        eq(codexDetailValues.definitionId, codexDetailDefinitions.id),
+      ),
+    )
+    .where(inArray(codexEntries.id, entryIds));
 
   const detailsByEntry = new Map<
     string,
@@ -148,40 +136,56 @@ async function buildCodexPayload(
     baseDetailValuesById.set(entryId, m);
   }
 
-  const globalSceneOrder = usePhaseStore.getState().globalSceneOrder;
+  const resolvedContexts = resolveCodexContexts({
+    entries: allEntries,
+    phases: allPhases,
+    phaseDetailOverrides: allOverrides,
+    baseDetailsByEntry: baseDetailValuesById,
+    anchor: { kind: "scene", sceneId },
+    sceneTimeIndex: temporal.sceneTimeIndex,
+    resolutionMode: temporal.resolutionMode,
+  });
+  const effectiveEntries = allEntries.map((entry) => {
+    const resolved = resolvedContexts.resolvedById.get(entry.id);
+    return resolved ? materializeResolvedCodexContext(entry, resolved) : entry;
+  });
+  const effectiveById = new Map(
+    effectiveEntries.map((entry) => [entry.id, entry]),
+  );
+  const detectableEntries = effectiveEntries.filter((entry) =>
+    canIncludeResolvedCodexContext(entry.contextMode, "mention"),
+  );
+  const alwaysEntries = effectiveEntries.filter(
+    (entry) => entry.contextMode === "always",
+  );
+  const mentioned = await findMentionedEntriesAsync(
+    sceneText,
+    detectableEntries,
+  );
+  const mentionedIds = new Set(
+    mentioned.map((entry) => entry.id).filter((id) => effectiveById.has(id)),
+  );
+  const selectedIds = new Set([
+    ...mentionedIds,
+    ...alwaysEntries.map((entry) => entry.id),
+  ]);
+  const selectedEntries = effectiveEntries.filter((entry) =>
+    selectedIds.has(entry.id),
+  );
 
-  // 対象 scene の ID は scope_target_id だが、ここでは引数で受け取った sceneText を
-  // 使用して mention 検出しているため、sceneId を直接参照しない。
-  // phase 解決には現在の sceneId が必要なため、呼び出し側 (buildConsistencyPayload) から渡す。
-  // この関数は sceneId なしで呼ばれる場合は null（Phase Base のみ）として解決する。
   const result: CodexPayloadEntry[] = [];
   for (const entry of selectedEntries) {
-    const phases = phasesByEntry.get(entry.id) ?? [];
-    const phaseDetailsMap = new Map<string, (typeof allOverrides)[0][]>();
-    for (const phase of phases) {
-      phaseDetailsMap.set(phase.id, overridesByPhase.get(phase.id) ?? []);
-    }
-    const baseDetails = baseDetailValuesById.get(entry.id) ?? new Map();
-
-    // NOTE: sceneId は buildConsistencyPayload から上書きされる。null = Base のみ。
-    const resolved = resolveCodexState(
-      {
-        summary: entry.summary ?? null,
-        content: entry.content,
-        contextMode: entry.contextMode,
-      },
-      phases,
-      phaseDetailsMap,
-      baseDetails,
-      null, // sceneId はここでは null; buildConsistencyPayload で再解決する場合は上書き可
-      globalSceneOrder,
-    );
+    const resolved = resolvedContexts.resolvedById.get(entry.id);
+    if (!resolved) continue;
 
     const detailValues: Array<{ name: string; value: string }> = [];
     for (const [defId, resolvedVal] of resolved.detailValues) {
       const meta = detailsByEntry.get(entry.id)?.get(defId);
       const name = meta?.name ?? defId;
-      const val = resolvedVal ?? meta?.value ?? null;
+      // null is an explicit Phase clear. Only undefined means the resolved map
+      // has no value and may fall back to Base metadata.
+      const val =
+        resolvedVal === undefined ? (meta?.value ?? null) : resolvedVal;
       // text 値は PM JSON で保存されている。生 JSON を payload に入れない
       const plain = detailValueToPlainText(val);
       if (plain.trim() !== "") detailValues.push({ name, value: plain });
@@ -198,6 +202,22 @@ async function buildCodexPayload(
   }
 
   return result;
+}
+
+function captureTemporalResolution(): {
+  sceneTimeIndex: SceneTimeIndex;
+  resolutionMode: PhaseResolutionMode;
+} {
+  const { sceneTimeIndex, resolutionMode } = usePhaseStore.getState();
+  return {
+    sceneTimeIndex: {
+      ...sceneTimeIndex,
+      readingOrder: new Map(sceneTimeIndex.readingOrder),
+      explicitStoryOrder: new Map(sceneTimeIndex.explicitStoryOrder),
+      inheritedStoryOrder: new Map(sceneTimeIndex.inheritedStoryOrder),
+    },
+    resolutionMode,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +251,14 @@ export async function buildConsistencyPayload(
   customInstruction: string = "",
   route?: HashRoute,
 ): Promise<ConsistencyPayloadResult> {
+  const temporal = captureTemporalResolution();
   const sceneText = await getScenePlainText(sceneId);
-  const codexPayload = await buildCodexPayload(projectId, sceneText);
+  const codexPayload = await buildCodexPayload(
+    projectId,
+    sceneId,
+    sceneText,
+    temporal,
+  );
   const codexPayloadJson = JSON.stringify(codexPayload);
   const inputHash = await computeInputHash({
     promptVersion: CONSISTENCY_PROMPT_VERSION,
@@ -324,14 +350,20 @@ export async function buildMultiPayload(
   customInstruction: string = "",
   route?: HashRoute,
 ): Promise<MultiPayloadResult> {
-  const { nodes } = useTreeStore.getState();
+  const temporal = captureTemporalResolution();
+  const nodes = useTreeStore.getState().nodes.map((node) => ({ ...node }));
   const sceneIds = getSceneIdsForScope(nodes, scopeType, scopeTargetId);
 
   const scenes: MultiSceneEntry[] = [];
   for (const sceneId of sceneIds) {
     const sceneText = await getScenePlainText(sceneId);
     if (effectType === "consistency") {
-      const codexPayload = await buildCodexPayload(projectId, sceneText);
+      const codexPayload = await buildCodexPayload(
+        projectId,
+        sceneId,
+        sceneText,
+        temporal,
+      );
       scenes.push({
         scene_id: sceneId,
         codex_payload_json: JSON.stringify(codexPayload),

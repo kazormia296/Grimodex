@@ -598,6 +598,30 @@ export async function listSessions(
   return rows.map(toSession);
 }
 
+/**
+ * Resolve a session only when both authorities match the persisted row.
+ * Turn setup must use this instead of trusting a session id captured from UI
+ * state, because session ids alone do not establish project ownership.
+ */
+export async function getSessionForProject(
+  sessionId: string,
+  projectId: string,
+): Promise<ChatSession | null> {
+  const rows = await db
+    .select()
+    .from(chatSessions)
+    .where(
+      and(
+        eq(chatSessions.id, sessionId),
+        eq(chatSessions.projectId, projectId),
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.id !== sessionId || row.projectId !== projectId) return null;
+  return toSession(row);
+}
+
 export async function createSession(
   projectId: string,
   title: string,
