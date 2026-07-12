@@ -43,7 +43,12 @@ vi.mock("electron", () => ({
   },
 }));
 
-const { broadcastEvent, registerEventBus } = await import("./events.js");
+const {
+  broadcastBackendEvent,
+  broadcastEvent,
+  broadcastMainEvent,
+  registerEventBus,
+} = await import("./events.js");
 
 function makeBackend(): NapiBackendLike & {
   capturedCallback: ((...args: unknown[]) => unknown) | null;
@@ -149,9 +154,24 @@ describe("registerEventBus: renderer 発 emit", () => {
     emitFromRenderer(w, "evil:injected", { x: 1 });
 
     expect(w.webContents.send).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("evil:injected"),
-    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("evil:injected"));
+  });
+
+  it.each([
+    "chat:stream-done",
+    "license:state_changed",
+    "backend:ready",
+    "updater:download-progress",
+  ])("renderer は backend/main event %s を emit できない", (channel) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerEventBus(null);
+    const w = makeWindow(1);
+    allWindows.push(w);
+
+    emitFromRenderer(w, channel, { fake: true });
+
+    expect(w.webContents.send).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(channel));
   });
 
   it("channel が文字列でない場合も破棄する", () => {
@@ -210,6 +230,22 @@ describe("registerEventBus: napi TSFn 配線", () => {
     );
   });
 
+  it.each(["codex:data-changed", "updater:download-progress"])(
+    "napi 発では renderer/main event %s を配信しない",
+    (channel) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const backend = makeBackend();
+      registerEventBus(backend);
+      const w = makeWindow(1);
+      allWindows.push(w);
+
+      backend.capturedCallback?.(channel, "{}");
+
+      expect(w.webContents.send).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(channel));
+    },
+  );
+
   it("JSON でない payload は warn しつつ生のまま配信する（ベストエフォート契約）", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const backend = makeBackend();
@@ -225,5 +261,35 @@ describe("registerEventBus: napi TSFn 配線", () => {
       "not-json",
     );
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("trusted event broadcast", () => {
+  it("backend event は backend allowlist のみ配信する", () => {
+    const w = makeWindow(1);
+    allWindows.push(w);
+
+    broadcastBackendEvent("chat:stream-done", { messageId: "m1" });
+    broadcastBackendEvent("updater:download-progress", { downloaded: 1 });
+
+    expect(w.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "chat:stream-done",
+      { messageId: "m1" },
+    );
+  });
+
+  it("main event は main allowlist のみ配信する", () => {
+    const w = makeWindow(1);
+    allWindows.push(w);
+
+    broadcastMainEvent("updater:download-progress", { downloaded: 1 });
+    broadcastMainEvent("backend:ready", { fake: true });
+
+    expect(w.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "updater:download-progress",
+      { downloaded: 1 },
+    );
   });
 });
