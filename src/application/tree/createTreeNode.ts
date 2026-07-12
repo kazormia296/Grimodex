@@ -96,7 +96,7 @@ function nextNumber(
     .filter((node) => node.nodeType === nodeType && node.parentId === parentId)
     .slice()
     .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
-  let before = 0;
+  let before: number;
   let after = Infinity;
   if (afterId != null) {
     const afterNode = nodes.find((node) => node.id === afterId);
