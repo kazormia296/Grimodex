@@ -16,6 +16,9 @@ export interface CodexCompletionIndex {
   find(prefix: string): CodexCompletionCandidate[];
 }
 
+let sharedSource: readonly CodexCompletionSourceEntry[] | null = null;
+let sharedIndex: CodexCompletionIndex | null = null;
+
 function normalizeSurface(surface: string): string {
   return surface.normalize("NFC").toLowerCase();
 }
@@ -134,4 +137,18 @@ export function buildCodexCompletionIndex(
         .sort((a, b) => compareForPrefix(prefix, a, b));
     },
   };
+}
+
+/**
+ * Reuse the immutable index across every mounted editor. Zustand preserves the
+ * source array identity until Codex matching fields actually change.
+ */
+export function getSharedCodexCompletionIndex(
+  entries: readonly CodexCompletionSourceEntry[],
+): CodexCompletionIndex {
+  if (entries !== sharedSource || sharedIndex == null) {
+    sharedSource = entries;
+    sharedIndex = buildCodexCompletionIndex(entries);
+  }
+  return sharedIndex;
 }

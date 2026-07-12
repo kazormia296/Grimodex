@@ -1,5 +1,6 @@
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
+import { closeHistory, isHistoryTransaction } from "@tiptap/pm/history";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { EditorView } from "@tiptap/pm/view";
 import type { ResolvedPos } from "@tiptap/pm/model";
@@ -16,11 +17,15 @@ export interface CodexCompletionState {
   prefix: string;
   suffix: string;
   composing: boolean;
+  focused: boolean;
+  activeInput: boolean;
 }
 
 type CodexCompletionMeta =
   | { type: "compositionStart" }
   | { type: "compositionEnd" }
+  | { type: "focus" }
+  | { type: "blur" }
   | { type: "clear" }
   | { type: "refresh" }
   | { type: "recompute" };
@@ -39,7 +44,11 @@ const BLOCKED_ANCESTORS = new Set([
   "listItem",
 ]);
 
-function emptyState(composing = false): CodexCompletionState {
+function emptyState(
+  composing = false,
+  focused = false,
+  activeInput = false,
+): CodexCompletionState {
   return {
     candidate: null,
     prefixFrom: null,
@@ -47,6 +56,8 @@ function emptyState(composing = false): CodexCompletionState {
     prefix: "",
     suffix: "",
     composing,
+    focused,
+    activeInput,
   };
 }
 
@@ -70,34 +81,85 @@ function canCompleteAt($from: ResolvedPos): boolean {
   return true;
 }
 
+interface TextblockPrefix {
+  text: string;
+  /** UTF-16 text offset → absolute ProseMirror position. */
+  positions: number[];
+}
+
+/**
+ * `Node.textContent` omits inline atoms while ProseMirror positions count each
+ * atom as one offset. Preserve those boundaries with a sentinel and retain an
+ * explicit text-offset → document-position mapping.
+ */
+function textblockPrefix($from: ResolvedPos): TextblockPrefix {
+  const blockStart = $from.start();
+  let text = "";
+  const positions: number[] = [];
+
+  $from.parent.forEach((node, offset) => {
+    if (offset >= $from.parentOffset) return;
+    if (node.isText && node.text) {
+      const length = Math.min(
+        node.text.length,
+        $from.parentOffset - offset,
+      );
+      text += node.text.slice(0, length);
+      for (let index = 0; index < length; index += 1) {
+        positions.push(blockStart + offset + index);
+      }
+      return;
+    }
+    if (node.isInline) {
+      text += "\uFFFC";
+      positions.push(blockStart + offset);
+    }
+  });
+
+  return { text, positions };
+}
+
 function computeState(
   state: EditorState,
   index: CodexCompletionIndex,
   composing: boolean,
+  focused: boolean,
+  activeInput: boolean,
   enabled: boolean,
 ): CodexCompletionState {
-  if (composing || !enabled || !state.selection.empty) {
-    return emptyState(composing);
+  if (
+    composing ||
+    !focused ||
+    !activeInput ||
+    !enabled ||
+    !state.selection.empty
+  ) {
+    return emptyState(composing, focused, activeInput);
   }
 
   const { $from } = state.selection;
-  if (!canCompleteAt($from)) return emptyState(false);
+  if (!canCompleteAt($from)) return emptyState(false, focused, activeInput);
+
+  const prefix = textblockPrefix($from);
 
   const match = findCodexCompletionMatch(
-    $from.parent.textContent,
-    $from.parentOffset,
+    prefix.text,
+    prefix.text.length,
     index,
   );
-  if (!match) return emptyState(false);
+  if (!match) return emptyState(false, focused, activeInput);
 
-  const blockStart = $from.start();
+  const prefixFrom = prefix.positions[match.from];
+  if (prefixFrom == null) return emptyState(false, focused, activeInput);
   return {
     candidate: match.candidate,
-    prefixFrom: blockStart + match.from,
-    prefixTo: blockStart + match.to,
+    prefixFrom,
+    prefixTo: $from.pos,
     prefix: match.prefix,
     suffix: match.suffix,
     composing: false,
+    focused,
+    activeInput,
   };
 }
 
@@ -128,9 +190,36 @@ function isModifierPressed(event: KeyboardEvent): boolean {
   return event.ctrlKey || event.altKey || event.metaKey || event.shiftKey;
 }
 
+function isProgrammaticOrBulkTransaction(tr: Transaction): boolean {
+  const uiEvent = tr.getMeta("uiEvent");
+  return (
+    isHistoryTransaction(tr) ||
+    tr.getMeta("history$") !== undefined ||
+    tr.getMeta("paste") !== undefined ||
+    uiEvent === "paste" ||
+    uiEvent === "drop" ||
+    uiEvent === "cut" ||
+    tr.getMeta("programmaticInsert") === true ||
+    tr.getMeta("preventUpdate") !== undefined ||
+    tr.getMeta("addToHistory") === false
+  );
+}
+
+function isDirectTextInput(
+  tr: Transaction,
+  oldEditorState: EditorState,
+  newEditorState: EditorState,
+): boolean {
+  return (
+    !isProgrammaticOrBulkTransaction(tr) &&
+    oldEditorState.doc.textContent !== newEditorState.doc.textContent
+  );
+}
+
 function applyMeta(
   oldState: CodexCompletionState,
   tr: Transaction,
+  oldEditorState: EditorState,
   newState: EditorState,
   index: CodexCompletionIndex,
   enabled: boolean,
@@ -138,17 +227,58 @@ function applyMeta(
   const meta = tr.getMeta(codexCompletionKey) as
     | CodexCompletionMeta
     | undefined;
-  if (meta?.type === "compositionStart") return emptyState(true);
-  if (meta?.type === "compositionEnd") return emptyState(false);
-  if (meta?.type === "clear") return emptyState(oldState.composing);
+  if (meta?.type === "compositionStart") {
+    return emptyState(true, oldState.focused, false);
+  }
+  if (meta?.type === "compositionEnd") {
+    return emptyState(false, oldState.focused, oldState.focused);
+  }
+  if (meta?.type === "focus") return emptyState(false, true, false);
+  if (meta?.type === "blur") return emptyState(false, false, false);
+  if (meta?.type === "clear") {
+    return emptyState(oldState.composing, oldState.focused, false);
+  }
   if (meta?.type === "refresh" || meta?.type === "recompute") {
-    return computeState(newState, index, oldState.composing, enabled);
+    return computeState(
+      newState,
+      index,
+      oldState.composing,
+      oldState.focused,
+      oldState.activeInput,
+      enabled,
+    );
   }
 
-  if (oldState.composing && tr.docChanged) return emptyState(true);
-  if (tr.selectionSet && !tr.docChanged) return emptyState(oldState.composing);
+  if (oldState.composing && tr.docChanged) {
+    return emptyState(true, oldState.focused, false);
+  }
+  if (isProgrammaticOrBulkTransaction(tr)) {
+    return emptyState(oldState.composing, oldState.focused, false);
+  }
+  if (tr.selectionSet && !tr.docChanged) {
+    return emptyState(oldState.composing, oldState.focused, false);
+  }
   if (tr.docChanged) {
-    return computeState(newState, index, oldState.composing, enabled);
+    // Authorship and similar append-transactions may only change marks after a
+    // direct keystroke. They keep both text and positions stable, so preserve
+    // the candidate produced by the originating text transaction.
+    if (
+      oldEditorState.doc.textContent === newState.doc.textContent &&
+      oldEditorState.doc.content.size === newState.doc.content.size
+    ) {
+      return oldState;
+    }
+    if (!oldState.focused || !isDirectTextInput(tr, oldEditorState, newState)) {
+      return emptyState(oldState.composing, oldState.focused, false);
+    }
+    return computeState(
+      newState,
+      index,
+      oldState.composing,
+      oldState.focused,
+      true,
+      enabled,
+    );
   }
   return oldState;
 }
@@ -156,14 +286,21 @@ function applyMeta(
 export function createCodexCompletionPlugin(
   getIndex: () => CodexCompletionIndex,
   isEnabled: () => boolean = () => true,
+  isFocused: () => boolean = () => false,
 ): Plugin<CodexCompletionState> {
   return new Plugin<CodexCompletionState>({
     key: codexCompletionKey,
     state: {
-      init: (_config, state) =>
-        computeState(state, getIndex(), false, isEnabled()),
-      apply: (tr, oldState, _oldEditorState, newEditorState) =>
-        applyMeta(oldState, tr, newEditorState, getIndex(), isEnabled()),
+      init: () => emptyState(false, isFocused(), false),
+      apply: (tr, oldState, oldEditorState, newEditorState) =>
+        applyMeta(
+          oldState,
+          tr,
+          oldEditorState,
+          newEditorState,
+          getIndex(),
+          isEnabled(),
+        ),
     },
     props: {
       decorations(state) {
@@ -213,18 +350,21 @@ export function createCodexCompletionPlugin(
         }
 
         event.preventDefault();
-        view.dispatch(
-          view.state.tr
-            .insertText(
-              completion.candidate.surface,
-              completion.prefixFrom,
-              completion.prefixTo,
-            )
-            .scrollIntoView(),
+        const tr = closeHistory(view.state.tr).insertText(
+          completion.candidate.surface,
+          completion.prefixFrom,
+          completion.prefixTo,
         );
+        view.dispatch(tr.scrollIntoView());
         return true;
       },
       handleDOMEvents: {
+        focus(view) {
+          view.dispatch(
+            view.state.tr.setMeta(codexCompletionKey, { type: "focus" }),
+          );
+          return false;
+        },
         compositionstart(view) {
           view.dispatch(
             view.state.tr.setMeta(codexCompletionKey, {
@@ -244,7 +384,7 @@ export function createCodexCompletionPlugin(
         },
         blur(view) {
           view.dispatch(
-            view.state.tr.setMeta(codexCompletionKey, { type: "clear" }),
+            view.state.tr.setMeta(codexCompletionKey, { type: "blur" }),
           );
           return false;
         },

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCodexCompletionIndex,
+  getSharedCodexCompletionIndex,
   type CodexCompletionSourceEntry,
 } from "./codexCompletionIndex";
 
@@ -80,5 +81,16 @@ describe("Codex completion index", () => {
 
     expect(index.find("setsuna")).toEqual([]);
     expect(index.find("Setsuna")).toEqual([]);
+  });
+
+  it("reuses one immutable index for all editors observing the same targets", () => {
+    const targets = [entry()];
+
+    const first = getSharedCodexCompletionIndex(targets);
+    const second = getSharedCodexCompletionIndex(targets);
+    const refreshed = getSharedCodexCompletionIndex([...targets]);
+
+    expect(second).toBe(first);
+    expect(refreshed).not.toBe(first);
   });
 });

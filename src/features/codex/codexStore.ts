@@ -5,11 +5,17 @@ import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import {
   listCodexEntries,
+  listCodexMatchTargets,
   createCodexEntry,
   updateCodexEntry,
   deleteCodexEntry,
 } from "./api";
-import type { CodexEntry, CodexEntryType, NewCodexEntry } from "./api";
+import type {
+  CodexEntry,
+  CodexEntryType,
+  CodexMatchRow,
+  NewCodexEntry,
+} from "./api";
 import { CodexVersionConflictError } from "./occ";
 import { listCodexTypes, type CodexType } from "./typeApi";
 import { searchCodexEntries } from "./search";
@@ -104,6 +110,11 @@ function labelForPatch(data: StructuralPatch): string {
 
 interface CodexState {
   entries: CodexEntry[];
+  /**
+   * Search/filter independent lightweight rows used by local matching features.
+   * Unlike `entries`, this collection always represents the whole project.
+   */
+  completionTargets: CodexMatchRow[];
   /** type slug → CodexType の lookup 用キャッシュ。loadEntries で更新。 */
   types: CodexType[];
   searchQuery: string;
@@ -171,8 +182,50 @@ function entriesLoadKey(filterType: CodexEntryType | null): string {
   return `${getCurrentProjectId()}|${filterType ?? ""}`;
 }
 
+function toCompletionTarget(entry: CodexEntry): CodexMatchRow {
+  return {
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    aliases: entry.aliases,
+    excludedAliases: entry.excludedAliases,
+  };
+}
+
+function sameCompletionTarget(a: CodexMatchRow, b: CodexMatchRow): boolean {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.type === b.type &&
+    a.aliases === b.aliases &&
+    a.excludedAliases === b.excludedAliases
+  );
+}
+
+function upsertCompletionTarget(
+  targets: CodexMatchRow[],
+  entry: CodexEntry,
+): CodexMatchRow[] {
+  const target = toCompletionTarget(entry);
+  const index = targets.findIndex((candidate) => candidate.id === target.id);
+  if (index < 0) return [target, ...targets];
+  if (sameCompletionTarget(targets[index], target)) return targets;
+  const next = [...targets];
+  next[index] = target;
+  return next;
+}
+
+function removeCompletionTarget(
+  targets: CodexMatchRow[],
+  entryId: string,
+): CodexMatchRow[] {
+  const next = targets.filter((target) => target.id !== entryId);
+  return next.length === targets.length ? targets : next;
+}
+
 export const useCodexStore = create<CodexState>()((set, get) => ({
   entries: [],
+  completionTargets: [],
   types: [],
   searchQuery: "",
   filterType: null,
@@ -204,11 +257,12 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       try {
         const { filterType } = get();
         const projectId = getCurrentProjectId();
-        const [entries, types] = await Promise.all([
+        const [entries, types, completionTargets] = await Promise.all([
           listCodexEntries(projectId, filterType ?? undefined),
           listCodexTypes(projectId),
+          listCodexMatchTargets(projectId),
         ]);
-        set({ entries, types, isLoading: false });
+        set({ entries, types, completionTargets, isLoading: false });
       } catch (e) {
         set({ isLoading: false });
         toast.error(i18next.t("codex.store.loadFailed"));
@@ -274,9 +328,16 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         ...data,
       });
       const { filterType } = get();
-      if (!filterType || filterType === entry.type) {
-        set((state) => ({ entries: [entry, ...state.entries] }));
-      }
+      set((state) => ({
+        entries:
+          !filterType || filterType === entry.type
+            ? [entry, ...state.entries]
+            : state.entries,
+        completionTargets: upsertCompletionTarget(
+          state.completionTargets,
+          entry,
+        ),
+      }));
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const captured = { ...entry };
@@ -288,6 +349,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
             await deleteCodexEntry(captured.projectId, captured.id);
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
+              completionTargets: removeCompletionTarget(
+                state.completionTargets,
+                captured.id,
+              ),
             }));
           },
           async redo() {
@@ -313,9 +378,16 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               notes: captured.notes ?? undefined,
             });
             const { filterType } = get();
-            if (!filterType || filterType === captured.type) {
-              set((state) => ({ entries: [captured, ...state.entries] }));
-            }
+            set((state) => ({
+              entries:
+                !filterType || filterType === captured.type
+                  ? [captured, ...state.entries]
+                  : state.entries,
+              completionTargets: upsertCompletionTarget(
+                state.completionTargets,
+                captured,
+              ),
+            }));
           },
         });
       }
@@ -346,6 +418,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       if (updated) {
         set((state) => ({
           entries: state.entries.map((e) => (e.id === id ? updated : e)),
+          completionTargets: upsertCompletionTarget(
+            state.completionTargets,
+            updated,
+          ),
         }));
       }
     } catch (e) {
@@ -391,6 +467,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         if (restored) {
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? restored : e)),
+            completionTargets: upsertCompletionTarget(
+              state.completionTargets,
+              restored,
+            ),
           }));
         }
       },
@@ -403,6 +483,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         if (reapplied) {
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? reapplied : e)),
+            completionTargets: upsertCompletionTarget(
+              state.completionTargets,
+              reapplied,
+            ),
           }));
         }
       },
@@ -535,6 +619,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     _clearCodexCrossMentionCaches();
     set({
       entries: [],
+      completionTargets: [],
       types: [],
       searchQuery: "",
       filterType: null,

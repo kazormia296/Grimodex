@@ -8,6 +8,7 @@ import type { CodexEntry } from "./api";
 
 vi.mock("./api", () => ({
   listCodexEntries: vi.fn(() => Promise.resolve([])),
+  listCodexMatchTargets: vi.fn(() => Promise.resolve([])),
   createCodexEntry: vi.fn(),
   updateCodexEntry: vi.fn(),
   deleteCodexEntry: vi.fn(),

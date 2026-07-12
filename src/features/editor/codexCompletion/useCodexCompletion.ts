@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { Editor } from "@tiptap/core";
 import { useCodexStore } from "@/features/codex/codexStore";
-import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
-import { buildCodexCompletionIndex } from "./codexCompletionIndex";
+import { getSharedCodexCompletionIndex } from "./codexCompletionIndex";
 import {
   codexCompletionKey,
   createCodexCompletionPlugin,
@@ -17,30 +16,12 @@ export function useCodexCompletion(
   const settingEnabled = useSettingsStore((s) =>
     s.getBoolean("editor.codexCompletion", true),
   );
-  const entries = useCodexStore((s) => s.entries);
-  const projectId = useCurrentProjectId();
-  const index = useMemo(
-    () =>
-      buildCodexCompletionIndex(
-        entries.map((entry) => ({
-          id: entry.id,
-          name: entry.name,
-          type: entry.type,
-          aliases: entry.aliases,
-          excludedAliases: entry.excludedAliases,
-        })),
-      ),
-    [entries],
-  );
+  const completionTargets = useCodexStore((s) => s.completionTargets);
+  const index = getSharedCodexCompletionIndex(completionTargets);
   const indexRef = useRef(index);
   indexRef.current = index;
 
   const active = enabled && settingEnabled;
-
-  useEffect(() => {
-    if (!active) return;
-    void useCodexStore.getState().ensureEntriesLoaded();
-  }, [active, projectId]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed || !active) return;
@@ -48,6 +29,7 @@ export function useCodexCompletion(
       createCodexCompletionPlugin(
         () => indexRef.current,
         () => active && editor.isEditable,
+        () => editor.view.hasFocus(),
       ),
     );
     return () => {
