@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
+import { useEditorSessionStore } from "./editorSessionStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import { saveScene } from "./editorSaveRegistry";
@@ -39,7 +40,7 @@ export function TabContextMenu({
     groupIndex === 0 ? s.activeTabId : s.secondaryActiveTabId,
   );
   const secondaryGroupOpen = useTabStore((s) => s.secondaryGroupOpen);
-  const dirtyTabIds = useTabStore((s) => s.dirtyTabIds);
+  const dirtyTabIds = useEditorSessionStore((s) => s.dirtyDocumentIds);
   const node = useTreeStore((s) => s.nodes.find((n) => n.id === nodeId));
 
   const tabIndex = tabs.findIndex((t) => t.nodeId === nodeId);

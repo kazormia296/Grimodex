@@ -5,7 +5,7 @@ import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
-import { useTabStore } from "@/features/editor/tabStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import {
   useGlobalHistoryStore,
   setUndoConflictHandler,
@@ -72,7 +72,7 @@ function handleUndoConflict(cmd: HistoryCommand): void {
   const domain = domainForHistoryKind(cmd.kind);
   if (!entityId || !domain) return;
   const extStore = useExternalWriteStore.getState();
-  const dirtyTabIds = useTabStore.getState().dirtyTabIds;
+  const dirtyTabIds = useEditorSessionStore.getState().dirtyDocumentIds;
   if (dirtyTabIds.has(entityId) || isInlineAiPending()) {
     extStore.pushConflict({
       sceneId: entityId,
@@ -187,7 +187,7 @@ async function fanOut(events: ChangeEventRow[]): Promise<void> {
   const editorEvents = events.filter(
     (e) => e.domain === "editor" && e.sceneId != null,
   );
-  const dirtyTabIds = useTabStore.getState().dirtyTabIds;
+  const dirtyTabIds = useEditorSessionStore.getState().dirtyDocumentIds;
   const extStore = useExternalWriteStore.getState();
   const inlineAiPending = isInlineAiPending();
 

@@ -21,6 +21,7 @@ import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useChatStore } from "@/features/chat/chatStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import * as mountApi from "./api";
 import { useExternalRootStore } from "./externalRootStore";
 import { markdownToPmJson, pmJsonToMarkdown } from "./markdownBridge";
@@ -560,8 +561,9 @@ async function handleFileChanged(
 
   const content = await mountApi.readExternalFile(root.id, relPath);
   const fileMtime = await mountApi.getExternalFileMtime(root.id, relPath);
-  const { useTabStore } = await import("@/features/editor/tabStore");
-  const isDirty = useTabStore.getState().dirtyTabIds.has(node.id);
+  const isDirty = useEditorSessionStore
+    .getState()
+    .dirtyDocumentIds.has(node.id);
 
   if (isDirty) {
     useExternalRootStore.getState().enqueueConflict({
@@ -649,9 +651,9 @@ async function applyExternalContent(
   // LinearSceneBlock) に反映する。リニアはタブを持たないので tab リスト
   // だけのゲートでは取りこぼし、editor の古い doc が次の autosave で
   // 取り込み分を上書きしてしまう。
-  const { useTabStore } = await import("@/features/editor/tabStore");
   const { useLinearEditorStore } =
     await import("@/features/editor/linearEditorStore");
+  const { useTabStore } = await import("@/features/editor/tabStore");
   const tabState = useTabStore.getState();
   const hasLiveEditor =
     tabState.tabs.some((t) => t.nodeId === nodeId) ||
@@ -716,8 +718,9 @@ async function handleFileRemoved(
     });
   }
 
-  const { useTabStore } = await import("@/features/editor/tabStore");
-  const isDirty = useTabStore.getState().dirtyTabIds.has(node.id);
+  const isDirty = useEditorSessionStore
+    .getState()
+    .dirtyDocumentIds.has(node.id);
   if (isDirty) {
     toast.warning(i18next.t("externalMount.toast.fileDeletedExternally"));
     return;

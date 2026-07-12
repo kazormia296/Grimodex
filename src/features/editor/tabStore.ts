@@ -12,6 +12,7 @@ import {
   serializeTabPersistence,
   TAB_STATE_KEY,
 } from "./tabPersistence";
+import { useEditorSessionStore } from "./editorSessionStore";
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -262,14 +263,6 @@ function reduceTabs(state: TabState, action: TabAction): TabReducerState {
 }
 
 export const useTabStore = create<TabState>()((set, get) => {
-  // Closure-scoped flags per group: does not need Zustand reactivity.
-  // Set by TabBar on explicit tab click; consumed once by the matching EditorPane.
-  // Using a Record so each group has an independent slot, preventing races in split-view.
-  const _editorFocusRequested: Record<GroupIndex, boolean> = {
-    0: false,
-    1: false,
-  };
-
   return {
     tabs: [],
     activeTabId: null,
@@ -281,8 +274,7 @@ export const useTabStore = create<TabState>()((set, get) => {
     isLinearMode: false,
     isDraggingTab: false,
     resetForProject() {
-      _editorFocusRequested[0] = false;
-      _editorFocusRequested[1] = false;
+      useEditorSessionStore.getState().resetForProject();
       set({
         tabs: [],
         activeTabId: null,
@@ -307,12 +299,10 @@ export const useTabStore = create<TabState>()((set, get) => {
     },
     dirtyTabIds: new Set<string>(),
     requestEditorFocus(group: GroupIndex) {
-      _editorFocusRequested[group] = true;
+      useEditorSessionStore.getState().requestEditorFocus(group);
     },
     consumeEditorFocusRequest(group: GroupIndex) {
-      const val = _editorFocusRequested[group];
-      _editorFocusRequested[group] = false;
-      return val;
+      return useEditorSessionStore.getState().consumeEditorFocusRequest(group);
     },
 
     // ---- Primary group ----
@@ -663,6 +653,7 @@ export const useTabStore = create<TabState>()((set, get) => {
     // ---- Dirty-tab tracking ----
 
     setTabDirty(nodeId, dirty) {
+      useEditorSessionStore.getState().setDocumentDirty(nodeId, dirty);
       const cur = get().dirtyTabIds;
       // Idempotent: skip the store update (and subscriber notify) when the
       // dirty state is unchanged. Without this guard every redundant call —

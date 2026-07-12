@@ -5,6 +5,7 @@
 
 import { invoke, listen } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import { usePostEffectRunStore } from "./runStore";
 import {
   ensureNotificationPermission,
@@ -42,10 +43,7 @@ export async function flushPendingSceneSaves(sceneId?: string): Promise<void> {
     await saveScene(sceneId);
     return;
   }
-  // tabStore は layoutStore/i18n を引き込むため、本モジュールを import する
-  // 純関数モジュールの test graph を汚さないよう遅延 import に留める。
-  const { useTabStore } = await import("@/features/editor/tabStore");
-  const ids = [...useTabStore.getState().dirtyTabIds];
+  const ids = [...useEditorSessionStore.getState().dirtyDocumentIds];
   await Promise.all(ids.map((id) => saveScene(id)));
 }
 

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTabStore } from "./tabStore";
+import { useEditorSessionStore } from "./editorSessionStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useSnippetStore } from "@/features/snippets/snippetStore";
@@ -83,7 +84,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   const secondaryTabs = useTabStore((s) => s.secondaryTabs);
   const secondaryActiveTabId = useTabStore((s) => s.secondaryActiveTabId);
   const isSyncedScene = useTabStore((s) => s.isSyncedScene);
-  const dirtyTabIds = useTabStore((s) => s.dirtyTabIds);
+  const dirtyTabIds = useEditorSessionStore((s) => s.dirtyDocumentIds);
 
   const nodes = useTreeStore((s) => s.nodes);
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
@@ -217,7 +218,7 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
 
   function handleTabClose(e: React.MouseEvent, nodeId: string) {
     e.stopPropagation();
-    if (useTabStore.getState().dirtyTabIds.has(nodeId)) {
+    if (useEditorSessionStore.getState().dirtyDocumentIds.has(nodeId)) {
       setPendingClose({ nodeIds: [nodeId] });
       return;
     }
@@ -236,8 +237,8 @@ export function TabBar({ groupIndex = 0 }: TabBarProps) {
   }
 
   function handleCloseSecondaryGroup() {
-    const { secondaryTabs: tabsInGroup, dirtyTabIds: dirty } =
-      useTabStore.getState();
+    const tabsInGroup = useTabStore.getState().secondaryTabs;
+    const dirty = useEditorSessionStore.getState().dirtyDocumentIds;
     const dirtyIds = tabsInGroup
       .map((t) => t.nodeId)
       .filter((id) => dirty.has(id));

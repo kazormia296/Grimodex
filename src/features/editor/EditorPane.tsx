@@ -101,6 +101,7 @@ import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
 import type { InlineAiCommand } from "@/features/editor/inlineAi/inlineAiTypes";
 import { useTabStore } from "@/features/editor/tabStore";
+import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
 import {
   registerSaveHandler,
   unregisterSaveHandler,
@@ -447,8 +448,9 @@ export function EditorPane({
 
   // Sync isDirty to the tab store for unsaved-changes detection
   useEffect(() => {
-    useTabStore.getState().setTabDirty(nodeId, isDirty);
-    return () => useTabStore.getState().setTabDirty(nodeId, false);
+    useEditorSessionStore.getState().setDocumentDirty(nodeId, isDirty);
+    return () =>
+      useEditorSessionStore.getState().setDocumentDirty(nodeId, false);
   }, [nodeId, isDirty]);
 
   const editorSettings = useEditorSettings();
@@ -1488,7 +1490,7 @@ export function EditorPane({
 
         // Decide whether to focus the editor immediately.
         // Tab clicks set the flag; Scenes-panel navigation does not.
-        const focusNow = useTabStore
+        const focusNow = useEditorSessionStore
           .getState()
           .consumeEditorFocusRequest(groupIndex);
 
