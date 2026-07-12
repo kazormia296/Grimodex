@@ -11,7 +11,7 @@ const MACOS_SERVER_ENV: &str = "GRIMODEX_MACOS_IME_SERVER";
 #[test]
 #[ignore = "requires GRIMODEX_MACOS_IME_SERVER pointing to the real ConverterServer"]
 fn macos_server_process_registers_a_fresh_grimodex_consumer() -> anyhow::Result<()> {
-    let status = ime_consumer_process::spawn_and_wait_for_consumer(
+    let status = ime_consumer_process::spawn_and_wait_for_consumer_with_ready_probe(
         MACOS_SERVER_ENV,
         "Grimodex macOS ConverterServer",
         MACOS_CONSUMER_ID,
@@ -34,6 +34,10 @@ fn macos_server_process_registers_a_fresh_grimodex_consumer() -> anyhow::Result<
     assert!(consumer.capabilities.dynamic_dictionary);
     assert!(consumer.capabilities.zenzai_v3_conditions);
     assert!(consumer.capabilities.application_scoping);
+    assert_eq!(
+        status.active_project_id.as_deref(),
+        Some("process-e2e-project")
+    );
 
     Ok(())
 }
