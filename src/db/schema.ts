@@ -122,9 +122,9 @@ export const treeNodes = sqliteTable(
     /** Note-only: AI context injection mode (null for folder/scene). */
     contextMode: text("context_mode"), // 'always' | 'mentioned' | 'suppress' | 'hidden'
     /** Note-only: alternate names for mention detection (JSON array). */
-    aliases: text("aliases").default("[]"),
+    aliases: text("aliases").notNull().default("[]"),
     /** Note-only: aliases excluded from mention detection (JSON array). */
-    excludedAliases: text("excluded_aliases").default("[]"),
+    excludedAliases: text("excluded_aliases").notNull().default("[]"),
     createdAt: text("created_at")
       .notNull()
       .$defaultFn(() => new Date().toISOString()),

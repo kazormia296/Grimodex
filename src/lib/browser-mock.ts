@@ -40,7 +40,7 @@ const SCHEMA_DDL = `
     outline TEXT,
     target_readers TEXT,
     phase_resolution_mode TEXT NOT NULL DEFAULT 'auto' CHECK(phase_resolution_mode IN ('reading', 'story', 'auto')),
-    ai_policy TEXT NOT NULL DEFAULT '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true}}',
+    ai_policy TEXT NOT NULL DEFAULT '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false,"knowledgeWrite":false}}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -95,7 +95,6 @@ const SCHEMA_DDL = `
     tags_cache TEXT,
     context_mode TEXT NOT NULL DEFAULT 'mentioned',
     children_budget TEXT NOT NULL DEFAULT 'compact',
-    tags TEXT,
     source_chat_message_id TEXT,
     notes TEXT,
     created_at TEXT NOT NULL,
@@ -123,10 +122,9 @@ const SCHEMA_DDL = `
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT 'Untitled',
-    content TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '{}',
     tags_cache TEXT,
     content_source TEXT,
-    tags TEXT,
     scene_id TEXT,
     source_chat_message_id TEXT,
     usage_count INTEGER NOT NULL DEFAULT 0,
@@ -139,10 +137,10 @@ const SCHEMA_DDL = `
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     node_id TEXT,
     codex_anchor_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL,
+    snippet_anchor_id TEXT REFERENCES snippets(id) ON DELETE SET NULL,
     title TEXT NOT NULL DEFAULT 'New session',
     title_manual INTEGER NOT NULL DEFAULT 0,
     model TEXT NOT NULL DEFAULT 'openrouter/anthropic/claude-sonnet-4.6',
-    pinned_codex TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -150,6 +148,8 @@ const SCHEMA_DDL = `
     ON chat_sessions(project_id, node_id);
   CREATE INDEX IF NOT EXISTS idx_chat_sessions_codex_anchor
     ON chat_sessions(project_id, codex_anchor_id);
+  CREATE INDEX IF NOT EXISTS idx_chat_sessions_snippet_anchor
+    ON chat_sessions(project_id, snippet_anchor_id);
   CREATE TABLE IF NOT EXISTS chat_messages (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
@@ -177,13 +177,19 @@ const SCHEMA_DDL = `
     created_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS chat_session_pinned_codex (
+    id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     codex_entry_id TEXT REFERENCES codex_entries(id) ON DELETE CASCADE,
     snippet_id TEXT REFERENCES snippets(id) ON DELETE CASCADE,
+    sticky_id TEXT REFERENCES map_stickies(id) ON DELETE CASCADE,
     with_children INTEGER NOT NULL DEFAULT 0,
     pin_source TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, codex_entry_id, snippet_id)
+    CHECK (
+      (CASE WHEN codex_entry_id IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN snippet_id IS NOT NULL THEN 1 ELSE 0 END +
+       CASE WHEN sticky_id IS NOT NULL THEN 1 ELSE 0 END) = 1
+    )
   );
   CREATE TABLE IF NOT EXISTS chat_summaries (
     id TEXT PRIMARY KEY,

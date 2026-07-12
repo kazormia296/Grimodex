@@ -53,6 +53,7 @@
     "screenshot": "tsx scripts/capture-screenshots.ts",
     "screenshot:one": "tsx scripts/capture-screenshots.ts",
     "generate:licenses": "tsx scripts/generate-licenses.ts",
+    "generate:db-contract": "cargo run --manifest-path src-tauri/crates/grimodex-db/Cargo.toml --bin schema-contract -- src/db/generated/schema-contract.json",
     "seed:sample-en": "python3 scripts/seed-sample-en.py",
     "seed:sample-ja": "python3 scripts/seed-sample-ja.py"
   },
