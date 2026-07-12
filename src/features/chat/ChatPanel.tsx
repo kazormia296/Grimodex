@@ -46,7 +46,7 @@ import { useLayoutStore } from "@/features/layout/layoutStore";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
-import { markStart, markEnd, recordMark } from "@/lib/perfLog";
+import { recordMark } from "@/lib/perfLog";
 import type { ChatMessage as ChatMessageType } from "./chatTypes";
 import type {
   PinnedSnippetEntryWithData,
@@ -57,6 +57,7 @@ import { MessageBubbleSkeletonList } from "@/components/ui/skeleton-patterns";
 import { stripToolProtocol } from "./toolProtocol";
 import { openEditorDocument } from "@/application/editor/openEditorDocument";
 import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigationPorts";
+import { useChatSessionLifecycle } from "./useChatSessionLifecycle";
 
 /**
  * メッセージ全文を抽出 (Codex/Snippet) / エディタ挿入 / コピーに使う前の正規化。
@@ -84,11 +85,16 @@ function wholeMessageContent(msg: ChatMessageType | undefined): string {
  * 伝播するため、Editor 非表示でもチャットの scene anchor は追従する。
  */
 export function selectSceneFromChat(sceneId: string): void {
+  const editorVisible = useLayoutStore.getState().isPanelActive("editor");
+  if (!editorVisible) {
+    useTreeStore.getState().setActiveScene(sceneId);
+    return;
+  }
   openEditorDocument(
     {
       target: { kind: "scene", documentId: sceneId },
       mode: "pinned",
-      revealEditor: useLayoutStore.getState().isPanelActive("editor"),
+      revealEditor: true,
       focusEditor: false,
       syncSceneContext: true,
     },
@@ -221,10 +227,6 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     ),
   ).supportsTools;
 
-  useEffect(() => {
-    loadAiSettings();
-  }, [loadAiSettings]);
-
   const [sessionsPanelOpen, setSessionsPanelOpen] = useState(false);
   const [inputHasText, setInputHasText] = useState(false);
   const chatEditorRef = useRef<Editor | null>(null);
@@ -234,87 +236,25 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
   const allCodexEntries = useCodexStore((s) => s.entries);
 
-  // ツリーのシーン変更を chatStore に伝播
-  useEffect(() => {
-    markStart("chatPanel.mirrorEffect");
-    try {
-      setActiveSceneId(treeActiveSceneId);
-    } finally {
-      markEnd("chatPanel.mirrorEffect");
-    }
-  }, [treeActiveSceneId, setActiveSceneId]);
-
-  // スコープ切替 / シーン切替時にセッションを自動ロードし最新を選択 (P0-1)
-  // scene スコープでシーン未確定の場合は何もしない。
-  // keepalive で hidden のときはシーン追従の load を bail し、再アクティブ化時に
-  // isActive deps 経由で最終シーンの値で 1 回再実行して catch up する
-  // (selectSession/loadSessions は replace-semantics なので中間シーンの残渣なし)。
-  useEffect(() => {
-    if (!isActive) return;
-    if (chatScope === "scene" && !treeActiveSceneId) return;
-    let stale = false;
-    const {
-      nodeId: effectiveNodeId,
-      codexAnchorId,
-      snippetAnchorId,
-    } = resolveScopeSessionKey(chatScope, treeActiveSceneId, scopeAnchorId);
-    (async () => {
-      markStart("chatPanel.loadSessions");
-      try {
-        await loadSessions(effectiveNodeId, codexAnchorId, snippetAnchorId);
-      } finally {
-        markEnd("chatPanel.loadSessions");
-      }
-      if (stale) return;
-      const { sessions } = useChatStore.getState();
-      markStart("chatPanel.selectSessionAfterLoad");
-      try {
-        if (sessions.length > 0) {
-          await selectSession(sessions[0].id);
-        } else {
-          await selectSession(null);
-        }
-      } finally {
-        markEnd("chatPanel.selectSessionAfterLoad");
-      }
-    })();
-    return () => {
-      stale = true;
-    };
-  }, [
+  useChatSessionLifecycle({
     isActive,
     treeActiveSceneId,
     chatScope,
     scopeAnchorId,
+    activeSessionId,
+    includeBodies,
+    includeMapBoard,
+    mapBoardId: mapBoardIdFromStore,
+    agentMode,
+    provider: aiSettings?.provider,
+    currentModel,
+    allCodexEntries,
+    loadAiSettings,
+    setActiveSceneId,
     loadSessions,
     selectSession,
-  ]);
-
-  // hidden 中は context layer の再構築 (DB 読込 + prompt 再構築 + lastSystemPrompt
-  // 書込) を bail。再アクティブ化時に最終状態で 1 回再実行 (set は replace-semantics)。
-  useEffect(() => {
-    if (!isActive) return;
-    refreshContextLayers();
-  }, [
-    isActive,
-    treeActiveSceneId,
-    activeSessionId,
-    chatScope,
-    scopeAnchorId,
-    includeBodies,
-    // agentMode は project スコープの集約 tier（push 全 synopsis vs pull 委譲）を
-    // 左右するため deps に含める。これが無いとトグルしても lastSystemPrompt /
-    // context bar が再構築されず、非 agent / CLI 送信は古い prompt を流用してしまう。
-    agentMode,
-    // provider も同様: pull 委譲は CLI（ツール無し）では無効化されるため、
-    // OpenRouter↔CLI の切替で集約 tier が変わる。切替時に再構築が要る。
-    aiSettings?.provider,
-    currentModel,
-    includeMapBoard,
-    mapBoardIdFromStore,
-    allCodexEntries,
     refreshContextLayers,
-  ]);
+  });
 
   // Pinned codex entries
   const [pinnedEntries, setPinnedEntries] = useState<
