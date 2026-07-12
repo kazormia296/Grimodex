@@ -9,6 +9,16 @@ import { createBrowserMock } from "@/lib/browser-mock";
 import * as schema from "./schema";
 import contract from "./generated/schema-contract.json";
 
+type SchemaForeignKey = {
+  id: number;
+  sequence: number;
+  table: string;
+  from: string;
+  to: string | null;
+  onDelete: string;
+  onUpdate: string;
+};
+
 type SchemaContract = {
   tables: Record<
     string,
@@ -22,13 +32,7 @@ type SchemaContract = {
           primaryKey: number;
         }
       >;
-      foreignKeys: {
-        table: string;
-        from: string;
-        to: string | null;
-        onDelete: string;
-        onUpdate: string;
-      }[];
+      foreignKeys: SchemaForeignKey[];
       uniqueConstraints: { columns: string[] }[];
     }
   >;
@@ -117,6 +121,48 @@ const BROWSER_SCHEMA_TABLES = [
   "tree_nodes",
 ].sort();
 
+// browser mock は時刻と一部 UUID を呼び出し側から決定論的に注入する。
+// production default の省略を許す列はここへ明示し、暗黙の default 欠落は失敗させる。
+const BROWSER_DEFAULT_OMISSIONS = new Set([
+  "chat_messages.created_at",
+  "chat_session_pinned_codex.created_at",
+  "chat_sessions.created_at",
+  "chat_sessions.updated_at",
+  "chat_summaries.created_at",
+  "codex_detail_definitions.created_at",
+  "codex_entries.created_at",
+  "codex_entries.updated_at",
+  "codex_quick_pins.created_at",
+  "codex_relations.created_at",
+  "codex_relations.updated_at",
+  "codex_tags.created_at",
+  "codex_types.created_at",
+  "content_versions.id",
+  "content_versions.created_at",
+  "generation_logs.created_at",
+  "labels.created_at",
+  "map_ai_branches.created_at",
+  "map_ai_branches.updated_at",
+  "map_boards.created_at",
+  "map_boards.updated_at",
+  "map_edges.created_at",
+  "map_edges.updated_at",
+  "map_frames.created_at",
+  "map_frames.updated_at",
+  "map_node_positions.created_at",
+  "map_node_positions.updated_at",
+  "map_stickies.created_at",
+  "map_stickies.updated_at",
+  "project_snapshots.id",
+  "project_snapshots.created_at",
+  "projects.created_at",
+  "projects.updated_at",
+  "snippets.created_at",
+  "snippets.updated_at",
+  "tree_nodes.created_at",
+  "tree_nodes.updated_at",
+]);
+
 function collectDrizzleTables(): Record<string, SQLiteTable> {
   const tables: Record<string, SQLiteTable> = {};
   for (const value of Object.values(schema) as unknown[]) {
@@ -141,7 +187,12 @@ function normalizeType(value: string): string {
 function normalizeDefault(value: unknown): string | null | undefined {
   if (value === undefined || value === null) return value;
   if (typeof value === "number") return String(value);
-  if (typeof value !== "string") return undefined;
+  if (typeof value === "boolean") return value ? "1" : "0";
+  if (typeof value !== "string") {
+    throw new Error(
+      `unsupported Drizzle default: ${Object.prototype.toString.call(value)}`,
+    );
+  }
   const trimmed = value.trim();
   if (/^-?(?:\d+\.?\d*|\.\d+)$/.test(trimmed)) {
     return String(Number(trimmed));
@@ -154,6 +205,54 @@ function normalizeDefault(value: unknown): string | null | undefined {
 
 function normalizeForeignKeyAction(value: string | undefined): string {
   return (value ?? "no action").toUpperCase();
+}
+
+function matchesPhysicalForeignKey(
+  physicalForeignKeys: SchemaForeignKey[],
+  expected: {
+    table: string;
+    columns: { from: string; to: string }[];
+    onDelete: string;
+    onUpdate: string;
+  },
+): boolean {
+  const groups = new Map<number, SchemaForeignKey[]>();
+  for (const foreignKey of physicalForeignKeys) {
+    const group = groups.get(foreignKey.id) ?? [];
+    group.push(foreignKey);
+    groups.set(foreignKey.id, group);
+  }
+
+  return [...groups.values()].some((group) => {
+    const ordered = [...group].sort(
+      (left, right) => left.sequence - right.sequence,
+    );
+    return (
+      ordered.length === expected.columns.length &&
+      ordered.every((candidate, index) => {
+        const expectedColumn = expected.columns[index];
+        return (
+          candidate.sequence === index &&
+          candidate.table === expected.table &&
+          candidate.from === expectedColumn.from &&
+          candidate.to === expectedColumn.to &&
+          candidate.onDelete === expected.onDelete &&
+          candidate.onUpdate === expected.onUpdate
+        );
+      })
+    );
+  });
+}
+
+function browserDefaultMatches(
+  browserDefault: unknown,
+  expectedDefault: string | null,
+  allowMissingDefault = false,
+): boolean {
+  if (browserDefault === null || browserDefault === undefined) {
+    return expectedDefault === null || allowMissingDefault;
+  }
+  return browserDefault === expectedDefault;
 }
 
 function queryRows(result: unknown): Record<string, unknown>[] {
@@ -193,13 +292,72 @@ function assertBrowserTableSubset(
       expect(Boolean(Number(column.notnull)) || Number(column.pk) > 0).toBe(
         expected.notNull || expected.primaryKey > 0,
       );
-      if (column.dflt_value !== null && column.dflt_value !== undefined) {
-        expect(column.dflt_value).toBe(expected.default);
-      }
+      const defaultKey = `${tableName}.${columnName}`;
+      expect
+        .soft(
+          browserDefaultMatches(
+            column.dflt_value,
+            expected.default,
+            BROWSER_DEFAULT_OMISSIONS.has(defaultKey),
+          ),
+          `browser DEFAULT drift on ${defaultKey}`,
+        )
+        .toBe(true);
       expect(Number(column.pk)).toBe(expected.primaryKey);
     }
   }
 }
+
+describe("schema contract comparison helpers", () => {
+  it("normalizes SQLite boolean defaults", () => {
+    expect(normalizeDefault(false)).toBe("0");
+    expect(normalizeDefault(true)).toBe("1");
+  });
+
+  it("fails closed for unsupported Drizzle defaults", () => {
+    expect(() => normalizeDefault({})).toThrow("unsupported Drizzle default");
+  });
+
+  it("does not accept separate single-column FKs as one composite FK", () => {
+    const splitForeignKeys: SchemaForeignKey[] = [
+      {
+        id: 0,
+        sequence: 0,
+        table: "codex_types",
+        from: "project_id",
+        to: "project_id",
+        onDelete: "RESTRICT",
+        onUpdate: "CASCADE",
+      },
+      {
+        id: 1,
+        sequence: 0,
+        table: "codex_types",
+        from: "type",
+        to: "slug",
+        onDelete: "RESTRICT",
+        onUpdate: "CASCADE",
+      },
+    ];
+
+    expect(
+      matchesPhysicalForeignKey(splitForeignKeys, {
+        table: "codex_types",
+        columns: [
+          { from: "project_id", to: "project_id" },
+          { from: "type", to: "slug" },
+        ],
+        onDelete: "RESTRICT",
+        onUpdate: "CASCADE",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a missing browser default unless explicitly allowed", () => {
+    expect(browserDefaultMatches(null, "0")).toBe(false);
+    expect(browserDefaultMatches(null, "0", true)).toBe(true);
+  });
+});
 
 describe("schema contract", () => {
   it("keeps every Drizzle table and renderer column inside the Rust physical schema", () => {
@@ -262,22 +420,18 @@ describe("schema contract", () => {
         const reference = foreignKey.reference();
         const foreignTable = getTableConfig(reference.foreignTable).name;
         expect(reference.columns).toHaveLength(reference.foreignColumns.length);
-        for (const [index, localColumn] of reference.columns.entries()) {
-          const foreignColumn = reference.foreignColumns[index];
-          expect(
-            physical.foreignKeys.some(
-              (candidate) =>
-                candidate.table === foreignTable &&
-                candidate.from === localColumn.name &&
-                candidate.to === foreignColumn.name &&
-                candidate.onDelete ===
-                  normalizeForeignKeyAction(foreignKey.onDelete) &&
-                candidate.onUpdate ===
-                  normalizeForeignKeyAction(foreignKey.onUpdate),
-            ),
-            `${tableName}.${localColumn.name} FK drift`,
-          ).toBe(true);
-        }
+        expect(
+          matchesPhysicalForeignKey(physical.foreignKeys, {
+            table: foreignTable,
+            columns: reference.columns.map((localColumn, index) => ({
+              from: localColumn.name,
+              to: reference.foreignColumns[index].name,
+            })),
+            onDelete: normalizeForeignKeyAction(foreignKey.onDelete),
+            onUpdate: normalizeForeignKeyAction(foreignKey.onUpdate),
+          }),
+          `${tableName} FK drift`,
+        ).toBe(true);
       }
 
       const declaredPrimaryKeyColumns = tableConfig.primaryKeys.flatMap(
