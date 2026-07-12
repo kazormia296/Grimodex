@@ -13,7 +13,11 @@ import { app, dialog, safeStorage } from "electron";
 import { getBackend, initBackend } from "./backend.js";
 import { createCliAiManager } from "./cliAi.js";
 import { migrateLegacyKeyringToSafeStorage } from "./credentialMigration.js";
-import { registerEventBus, broadcastEvent } from "./events.js";
+import {
+  broadcastBackendEvent,
+  broadcastMainEvent,
+  registerEventBus,
+} from "./events.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerImeShutdown } from "./imeShutdown.js";
 import { registerIpcRouter } from "./ipc.js";
@@ -138,12 +142,12 @@ if (!gotSingleInstanceLock) {
     }
     // external_mount（§2 バッチ2）: registry + chokidar watcher を持つ常駐
     // マネージャを 1 個生成し、その shell コマンドハンドラを invoke ルーターへ
-    // 注入する。watcher イベントは broadcastEvent で全窓へ配信（external-mount://
+    // 注入する。watcher イベントは backend event として全窓へ配信（external-mount://
     // の全窓 broadcast 契約）。
-    const externalMount = createExternalMountManager(broadcastEvent);
+    const externalMount = createExternalMountManager(broadcastBackendEvent);
     // CLI AI（バッチ3c）: active child / abort / process-tree kill を invoke を跨いで
     // 共有する単一 manager。イベントは固定 cli:stream-* を全窓へ配信する。
-    const cliAi = createCliAiManager(broadcastEvent, {
+    const cliAi = createCliAiManager(broadcastBackendEvent, {
       // 自動検出外のpathはrendererの文字列だけでは信頼しない。ユーザーがpathを
       // 見た上でnative dialogを明示許可した場合だけ、session allowlistへ入れる。
       authorizeExecutable: async (kind, executable) => {
@@ -168,7 +172,7 @@ if (!gotSingleInstanceLock) {
     // Vivliostyle（バッチ5）: build/preview child、成果物token、tempをmain lifetime
     // で共有する。custom pathはnative確認を通したvivliostyle名だけを許可し、
     // 保存先はrendererから受けずnative dialogで選ぶ。
-    const vivliostyle = createVivliostyleManager(broadcastEvent, {
+    const vivliostyle = createVivliostyleManager(broadcastBackendEvent, {
       authorizeExecutable: async (executable) => {
         const { response } = await dialog.showMessageBox({
           type: "warning",
@@ -194,12 +198,12 @@ if (!gotSingleInstanceLock) {
     if (app.isPackaged && !updaterAvailability.enabled) {
       console.log(`[grimodex-electron] ${updaterAvailability.reason}`);
     }
-    const updater = createElectronUpdaterManager(broadcastEvent, {
+    const updater = createElectronUpdaterManager(broadcastMainEvent, {
       availability: updaterAvailability,
     });
     const licenseValidation = createLicenseValidationScheduler(
       backend,
-      broadcastEvent,
+      broadcastBackendEvent,
     );
     licenseValidation.start();
     app.on("will-quit", () => {
@@ -228,7 +232,7 @@ if (!gotSingleInstanceLock) {
         ),
       },
       keyStore,
-      broadcastEvent,
+      broadcastBackendEvent,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には

@@ -5,14 +5,20 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  BACKEND_EVENT_CHANNEL_ALLOWLIST,
   clampZoomFactor,
   dispatchInvoke,
   EVENT_CHANNEL_ALLOWLIST,
   IPC_BACKEND_UNAVAILABLE_MARKER,
   IPC_UNIMPLEMENTED_MARKER,
+  isAllowedBackendEventChannel,
   isAllowedEventChannel,
+  isAllowedMainEventChannel,
+  isAllowedRendererEventChannel,
   isSafeExternalUrl,
+  MAIN_EVENT_CHANNEL_ALLOWLIST,
   NAPI_COMMANDS,
+  RENDERER_EVENT_CHANNEL_ALLOWLIST,
   SHELL_COMMAND_NAMES,
   toErrorString,
   unimplementedError,
@@ -483,6 +489,41 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
   it("列挙に重複がない", () => {
     expect(new Set(EVENT_CHANNEL_ALLOWLIST).size).toBe(
       EVENT_CHANNEL_ALLOWLIST.length,
+    );
+  });
+
+  it("送信元別 allowlist に重複がない", () => {
+    const channels = [
+      ...BACKEND_EVENT_CHANNEL_ALLOWLIST,
+      ...MAIN_EVENT_CHANNEL_ALLOWLIST,
+      ...RENDERER_EVENT_CHANNEL_ALLOWLIST,
+    ];
+    expect(new Set(channels).size).toBe(channels.length);
+  });
+
+  it.each([
+    "chat:stream-done",
+    "license:state_changed",
+    "backend:ready",
+    "workspace:opened",
+  ])("renderer 発ではない %s は renderer allowlist から除外する", (channel) => {
+    expect(isAllowedRendererEventChannel(channel)).toBe(false);
+  });
+
+  it.each(["codex:data-changed", "updater:download-progress"])(
+    "%s は backend allowlist から除外する",
+    (channel) => {
+      expect(isAllowedBackendEventChannel(channel)).toBe(false);
+    },
+  );
+
+  it("updater event は main allowlist だけに属する", () => {
+    expect(isAllowedMainEventChannel("updater:download-progress")).toBe(true);
+    expect(isAllowedRendererEventChannel("updater:download-progress")).toBe(
+      false,
+    );
+    expect(isAllowedBackendEventChannel("updater:download-progress")).toBe(
+      false,
     );
   });
 });
@@ -2227,7 +2268,9 @@ describe("AI チャットコマンド", () => {
     );
 
     expect(env.ok).toBe(false);
-    expect(env).toMatchObject({ error: expect.stringMatching(/requestMaxOutputTokens/) });
+    expect(env).toMatchObject({
+      error: expect.stringMatching(/requestMaxOutputTokens/),
+    });
     expect(calls.some((call) => call.method === "sendChatMessageStream")).toBe(
       false,
     );

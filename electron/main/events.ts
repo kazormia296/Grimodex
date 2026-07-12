@@ -1,7 +1,7 @@
 /**
  * EventBus（設計書 §7.1、Phase 2 S7）。
  *
- * - renderer 発 emit: `ipcRenderer.send("grim:emit")` → main が allowlist
+ * - renderer 発 emit: `ipcRenderer.send("grim:emit")` → renderer 専用 allowlist
  *   検証（列挙制、§5.4）→ **全窓に broadcast（送信元窓を含む）**。
  *   Tauri v2 の emit 契約（全窓配信 + 自己配信）と一致させる —
  *   codexWindowSync.ts のロック収束と external_mount 契約が依存する性質。
@@ -12,7 +12,12 @@
  */
 import { BrowserWindow, ipcMain } from "electron";
 
-import { IPC, isAllowedEventChannel } from "../shared/ipcContract.js";
+import {
+  IPC,
+  isAllowedBackendEventChannel,
+  isAllowedMainEventChannel,
+  isAllowedRendererEventChannel,
+} from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 
 /** 全窓（送信元含む）へ 1 イベントを配信する。 */
@@ -23,15 +28,35 @@ export function broadcastEvent(channel: string, payload: unknown): void {
   }
 }
 
+/** backend / trusted manager 発イベントを検証して配信する。 */
+export function broadcastBackendEvent(channel: string, payload: unknown): void {
+  if (!isAllowedBackendEventChannel(channel)) {
+    console.warn(
+      `[backend:event] rejected non-backend channel: ${String(channel)}`,
+    );
+    return;
+  }
+  broadcastEvent(channel, payload);
+}
+
+/** Electron main 専用イベントを検証して配信する。 */
+export function broadcastMainEvent(channel: string, payload: unknown): void {
+  if (!isAllowedMainEventChannel(channel)) {
+    console.warn(`[main:event] rejected non-main channel: ${String(channel)}`);
+    return;
+  }
+  broadcastEvent(channel, payload);
+}
+
 /**
- * napi 発イベント 1 件の検証 + 配信。channel は renderer 発 emit と同じ
- * allowlist を通す（Phase 3 でチャネルを増やす際、ipcContract の allowlist
- * 更新漏れをここの warn で顕在化させる）。payload は EventSink 契約
+ * napi 発イベント 1 件の検証 + 配信。channel は backend 専用 allowlist
+ * を通す（Phase 3 でチャネルを増やす際、ipcContract の allowlist 更新漏れを
+ * ここの warn で顕在化させる）。payload は EventSink 契約
  * （serde_json::Value の to_string）どおり JSON 文字列で届くので parse して
  * Tauri の event.payload と同形にする。
  */
 function handleBackendEvent(channel: unknown, payloadJson: unknown): void {
-  if (typeof channel !== "string" || !isAllowedEventChannel(channel)) {
+  if (typeof channel !== "string" || !isAllowedBackendEventChannel(channel)) {
     console.warn(
       `[backend:event] dropped non-allowlisted channel: ${String(channel)}`,
     );
@@ -58,7 +83,10 @@ function handleBackendEvent(channel: unknown, payloadJson: unknown): void {
  */
 export function registerEventBus(backend: NapiBackendLike | null): void {
   ipcMain.on(IPC.emit, (_event, channel: unknown, payload: unknown) => {
-    if (typeof channel !== "string" || !isAllowedEventChannel(channel)) {
+    if (
+      typeof channel !== "string" ||
+      !isAllowedRendererEventChannel(channel)
+    ) {
       console.warn(
         `[grim:emit] rejected non-allowlisted channel: ${String(channel)}`,
       );

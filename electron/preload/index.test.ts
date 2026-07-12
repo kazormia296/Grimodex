@@ -168,4 +168,29 @@ describe("イベント多重化（§7.2 — grim:event 1 本）", () => {
       undefined,
     );
   });
+
+  it.each([
+    "chat:stream-done",
+    "license:state_changed",
+    "backend:ready",
+    "updater:download-progress",
+  ])("renderer は %s を emit できない", async (channel) => {
+    const bridge = await loadPreload();
+    expect(() => bridge.emit(channel)).toThrow("EVENT_CHANNEL_NOT_ALLOWED");
+    expect(mocks.send).not.toHaveBeenCalledWith(IPC.emit, channel, undefined);
+  });
+
+  it("listen は backend / main event を受信できる", async () => {
+    const bridge = await loadPreload();
+    const backendCb = vi.fn();
+    const mainCb = vi.fn();
+    bridge.listen("chat:stream-done", backendCb);
+    bridge.listen("updater:download-progress", mainCb);
+
+    fire(IPC.event, "chat:stream-done", { messageId: "m1" });
+    fire(IPC.event, "updater:download-progress", { downloaded: 1 });
+
+    expect(backendCb).toHaveBeenCalledWith({ messageId: "m1" });
+    expect(mainCb).toHaveBeenCalledWith({ downloaded: 1 });
+  });
 });

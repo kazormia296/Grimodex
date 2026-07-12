@@ -16,7 +16,11 @@
  */
 import { contextBridge, ipcRenderer } from "electron";
 
-import { IPC, isAllowedEventChannel } from "../shared/ipcContract.js";
+import {
+  IPC,
+  isAllowedEventChannel,
+  isAllowedRendererEventChannel,
+} from "../shared/ipcContract.js";
 import type { Envelope } from "../shared/ipcContract.js";
 
 function unwrap<T>(envelope: Envelope<T>): T {
@@ -110,8 +114,14 @@ ipcRenderer.on(IPC.windowResized, () => {
 
 // ── GrimodexBridge（§5.4 契約） ──────────────────────────────────────────────
 
-function assertAllowedChannel(channel: string): void {
+function assertAllowedListenChannel(channel: string): void {
   if (!isAllowedEventChannel(channel)) {
+    throw new Error(`EVENT_CHANNEL_NOT_ALLOWED: ${channel}`);
+  }
+}
+
+function assertAllowedRendererEventChannel(channel: string): void {
+  if (!isAllowedRendererEventChannel(channel)) {
     throw new Error(`EVENT_CHANNEL_NOT_ALLOWED: ${channel}`);
   }
 }
@@ -125,7 +135,7 @@ const bridge = {
 
   /** 同期 unlisten 返し（wrapper 側で Promise 化 — §5.4）。 */
   listen(channel: string, cb: (payload: unknown) => void): () => void {
-    assertAllowedChannel(channel);
+    assertAllowedListenChannel(channel);
     let set = eventListeners.get(channel);
     if (!set) {
       set = new Set();
@@ -143,14 +153,15 @@ const bridge = {
 
   /** 全窓配信 + 自己配信（Tauri v2 emit 契約）。main が allowlist を再検証する。 */
   emit(channel: string, payload?: unknown): Promise<void> {
-    assertAllowedChannel(channel);
+    assertAllowedRendererEventChannel(channel);
     ipcRenderer.send(IPC.emit, channel, payload);
     return Promise.resolve();
   },
 
   windowControls: {
     minimize: (): Promise<void> => call(IPC.windowControl, "minimize"),
-    toggleMaximize: (): Promise<void> => call(IPC.windowControl, "toggleMaximize"),
+    toggleMaximize: (): Promise<void> =>
+      call(IPC.windowControl, "toggleMaximize"),
     close: (): Promise<void> => call(IPC.windowControl, "close"),
     isMaximized: (): Promise<boolean> => call(IPC.windowControl, "isMaximized"),
     onResized(cb: () => void): () => void {
@@ -183,7 +194,12 @@ const bridge = {
     readDir: (
       path: string,
     ): Promise<
-      { name: string; isDirectory: boolean; isFile: boolean; isSymlink: boolean }[]
+      {
+        name: string;
+        isDirectory: boolean;
+        isFile: boolean;
+        isSymlink: boolean;
+      }[]
     > => call(IPC.fsReadDir, path),
   },
 

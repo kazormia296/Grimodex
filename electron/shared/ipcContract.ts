@@ -12,8 +12,8 @@
  *   バッチごとに段階拡張する。引数アダプタ（Tauri の camelCase→snake_case
  *   自動変換の写像）はコマンドごとに明示する。この表が実装済みコマンド写像の
  *   正本になる（全145コマンドの静的棚卸し正本は docs のコマンド台帳）。
- * - **イベント allowlist**: 前方一致ではなく列挙制。listen / emit とも
- *   allowlist 外は拒否する（§5.4）。
+ * - **イベント allowlist**: 前方一致ではなく列挙制。listen は全イベントを
+ *   受け付けるが、emit / backend 配信は送信元別の allowlist で制限する（§5.4）。
  *
  * このモジュールは main / preload の両方にバンドルされるため、electron にも
  * Node 組み込みにも依存しない純粋モジュールに保つ（vitest.electron.config.ts
@@ -117,12 +117,21 @@ export const IPC = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Rust 発チャネル（src-tauri の emit 実測。Phase 3 で TSFn 経路へ実配線）
- * + renderer 発 codex 窓間同期 3ch + external-mount watcher 4ch
- * + napi Phase 2 実証チャネル 2ch（§7.1）。
+ * renderer が全窓へ配信できるイベント。送信元窓を含む自己配信が必要な
+ * Codex 窓間同期だけを許可する。
  */
-export const EVENT_CHANNEL_ALLOWLIST: readonly string[] = [
-  // Rust 発: AI ストリーミング（ai.rs / ai_responses.rs / cli_ai.rs の
+export const RENDERER_EVENT_CHANNEL_ALLOWLIST = [
+  "codex:data-changed",
+  "codex:lock-event",
+  "codex:select-entry",
+] as const;
+
+/**
+ * native backend と main 内の trusted manager が発行するイベント。renderer
+ * の `emit` からは送信できない。
+ */
+export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
+  // AI ストリーミング（ai.rs / ai_responses.rs / cli_ai.rs の
   // format!("{prefix}:stream-…") 展開形）
   "chat:stream-chunk",
   "chat:stream-done",
@@ -133,7 +142,7 @@ export const EVENT_CHANNEL_ALLOWLIST: readonly string[] = [
   "inline-ai:stream-chunk",
   "inline-ai:stream-done",
   "inline-ai:stream-error",
-  // Rust 発: license / post_effect / semantic / vivliostyle
+  // backend / trusted manager 発: license / post_effect / semantic / vivliostyle
   "license:state_changed",
   "post_effect:progress",
   "post_effect:partial",
@@ -145,26 +154,54 @@ export const EVENT_CHANNEL_ALLOWLIST: readonly string[] = [
   "vivliostyle:done",
   "vivliostyle:error",
   "vivliostyle:preview-exited",
-  // Electron main 発: electron-updater の byte progress（Phase 4）
-  "updater:download-progress",
-  // renderer 発: codex 窓間同期（codexWindowSync.ts。§7.1 で Phase 2 受け入れ対象）
-  "codex:data-changed",
-  "codex:lock-event",
-  "codex:select-entry",
-  // Rust 発: external-mount watcher（useExternalMountListener.ts）
+  // external-mount watcher（useExternalMountListener.ts）
   "external-mount://file-added",
   "external-mount://file-changed",
   "external-mount://file-removed",
   "external-mount://file-renamed",
-  // napi 発: Phase 2 の TSFn end-to-end 実証チャネル（§7.1、FE 購読者なし）
+  // napi の TSFn end-to-end 実証チャネル（§7.1、FE 購読者なし）
   "backend:ready",
   "workspace:opened",
+] as const;
+
+/** Electron main 専用のイベント。renderer / backend callback からは送れない。 */
+export const MAIN_EVENT_CHANNEL_ALLOWLIST = [
+  // electron-updater の byte progress（Phase 4）
+  "updater:download-progress",
+] as const;
+
+/** listen 用の全イベント一覧。送信元別 allowlist の union。 */
+export const EVENT_CHANNEL_ALLOWLIST: readonly string[] = [
+  ...BACKEND_EVENT_CHANNEL_ALLOWLIST,
+  ...MAIN_EVENT_CHANNEL_ALLOWLIST,
+  ...RENDERER_EVENT_CHANNEL_ALLOWLIST,
 ];
 
 const EVENT_CHANNEL_SET: ReadonlySet<string> = new Set(EVENT_CHANNEL_ALLOWLIST);
+const RENDERER_EVENT_CHANNEL_SET: ReadonlySet<string> = new Set(
+  RENDERER_EVENT_CHANNEL_ALLOWLIST,
+);
+const BACKEND_EVENT_CHANNEL_SET: ReadonlySet<string> = new Set(
+  BACKEND_EVENT_CHANNEL_ALLOWLIST,
+);
+const MAIN_EVENT_CHANNEL_SET: ReadonlySet<string> = new Set(
+  MAIN_EVENT_CHANNEL_ALLOWLIST,
+);
 
 export function isAllowedEventChannel(channel: string): boolean {
   return EVENT_CHANNEL_SET.has(channel);
+}
+
+export function isAllowedRendererEventChannel(channel: string): boolean {
+  return RENDERER_EVENT_CHANNEL_SET.has(channel);
+}
+
+export function isAllowedBackendEventChannel(channel: string): boolean {
+  return BACKEND_EVENT_CHANNEL_SET.has(channel);
+}
+
+export function isAllowedMainEventChannel(channel: string): boolean {
+  return MAIN_EVENT_CHANNEL_SET.has(channel);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
