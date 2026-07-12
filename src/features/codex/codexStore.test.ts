@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useCodexStore } from "./codexStore";
-import type { CodexEntry } from "./api";
+import type { CodexEntry, CodexMatchRow } from "./api";
 
 const mockEntry: CodexEntry = {
   id: "codex-1",
@@ -48,6 +48,7 @@ const mockEntry2: CodexEntry = {
 
 vi.mock("./api", () => ({
   listCodexEntries: vi.fn(),
+  listCodexMatchTargets: vi.fn(),
   createCodexEntry: vi.fn(),
   updateCodexEntry: vi.fn(),
   deleteCodexEntry: vi.fn(),
@@ -78,6 +79,7 @@ vi.mock("@/features/chat/chatStore", () => ({
 
 import {
   listCodexEntries,
+  listCodexMatchTargets,
   createCodexEntry,
   updateCodexEntry,
   deleteCodexEntry,
@@ -87,6 +89,7 @@ import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { announce } from "@/lib/a11y/announcer";
 
 const mockListCodexEntries = vi.mocked(listCodexEntries);
+const mockListCodexMatchTargets = vi.mocked(listCodexMatchTargets);
 const mockCreateCodexEntry = vi.mocked(createCodexEntry);
 const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
 const mockDeleteCodexEntry = vi.mocked(deleteCodexEntry);
@@ -101,6 +104,21 @@ function pmDoc(text: string): string {
   });
 }
 
+function completionTarget(entry: CodexEntry): CodexMatchRow {
+  return {
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    aliases: entry.aliases,
+    excludedAliases: entry.excludedAliases,
+  };
+}
+
+const allCompletionTargets = [
+  completionTarget(mockEntry),
+  completionTarget(mockEntry2),
+];
+
 function findCodexUpdateEvent() {
   return mockRecord.mock.calls.find(([arg]) => arg.opType === "entry.update");
 }
@@ -110,11 +128,13 @@ describe("codexStore", () => {
     vi.clearAllMocks();
     useCodexStore.setState({
       entries: [],
+      completionTargets: [],
       searchQuery: "",
       filterType: null,
       isLoading: false,
       sortOrder: "name-asc",
     });
+    mockListCodexMatchTargets.mockResolvedValue(allCompletionTargets);
   });
 
   describe("loadEntries", () => {
@@ -128,6 +148,9 @@ describe("codexStore", () => {
         undefined,
       );
       expect(useCodexStore.getState().entries).toEqual([mockEntry, mockEntry2]);
+      expect(useCodexStore.getState().completionTargets).toEqual(
+        allCompletionTargets,
+      );
       expect(useCodexStore.getState().isLoading).toBe(false);
     });
 
@@ -142,6 +165,9 @@ describe("codexStore", () => {
         "character",
       );
       expect(useCodexStore.getState().entries).toEqual([mockEntry]);
+      expect(useCodexStore.getState().completionTargets).toEqual(
+        allCompletionTargets,
+      );
     });
 
     it("sets isLoading during load", async () => {
@@ -163,6 +189,7 @@ describe("codexStore", () => {
 
   describe("search", () => {
     it("searches entries and updates results", async () => {
+      useCodexStore.setState({ completionTargets: allCompletionTargets });
       mockSearchCodexEntries.mockResolvedValue([mockEntry]);
 
       await useCodexStore.getState().search("アリス");
@@ -174,6 +201,9 @@ describe("codexStore", () => {
       );
       expect(useCodexStore.getState().entries).toEqual([mockEntry]);
       expect(useCodexStore.getState().searchQuery).toBe("アリス");
+      expect(useCodexStore.getState().completionTargets).toEqual(
+        allCompletionTargets,
+      );
     });
 
     it("loads all entries when query is empty", async () => {
@@ -267,6 +297,9 @@ describe("codexStore", () => {
 
       // Entry must be in store immediately after create() resolves
       expect(useCodexStore.getState().entries).toContainEqual(mockEntry);
+      expect(useCodexStore.getState().completionTargets).toContainEqual(
+        completionTarget(mockEntry),
+      );
       // loadEntries must NOT have been called (no isLoading cycle)
       expect(mockListCodexEntries).not.toHaveBeenCalled();
       // isLoading must remain false
@@ -338,13 +371,19 @@ describe("codexStore", () => {
     });
 
     it("optimistically updates entries in store without reloading", async () => {
-      useCodexStore.setState({ entries: [mockEntry] });
+      useCodexStore.setState({
+        entries: [mockEntry],
+        completionTargets: [completionTarget(mockEntry)],
+      });
       const updated = { ...mockEntry, name: "アリス改" };
       mockUpdateCodexEntry.mockResolvedValue(updated);
 
       await useCodexStore.getState().update("codex-1", { name: "アリス改" });
 
       expect(useCodexStore.getState().entries[0].name).toBe("アリス改");
+      expect(useCodexStore.getState().completionTargets[0].name).toBe(
+        "アリス改",
+      );
       expect(mockListCodexEntries).not.toHaveBeenCalled();
     });
 
@@ -427,6 +466,7 @@ describe("codexStore", () => {
 
   describe("setFilterType", () => {
     it("sets filter type and reloads", async () => {
+      useCodexStore.setState({ completionTargets: allCompletionTargets });
       mockListCodexEntries.mockResolvedValue([mockEntry]);
 
       await useCodexStore.getState().setFilterType("character");
@@ -435,6 +475,9 @@ describe("codexStore", () => {
       expect(mockListCodexEntries).toHaveBeenCalledWith(
         "default-project",
         "character",
+      );
+      expect(useCodexStore.getState().completionTargets).toEqual(
+        allCompletionTargets,
       );
     });
 

@@ -68,6 +68,7 @@ import { useImeDiagnostics } from "@/features/editor/useImeDiagnostics";
 import { useCharacterFade } from "@/features/editor/useCharacterFade";
 import { useTateChuYoko } from "@/features/editor/useTateChuYoko";
 import { useShowInvisibles } from "@/features/editor/useShowInvisibles";
+import { useCodexCompletion } from "@/features/editor/codexCompletion/useCodexCompletion";
 import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
 import {
@@ -1216,6 +1217,7 @@ export function EditorPane({
   useCharacterFade(mountedEditor);
   useTateChuYoko(mountedEditor);
   useShowInvisibles(mountedEditor);
+  useCodexCompletion(mountedEditor, !isEntryMode && !readOnly);
   useAttribution(dbNativeEditor);
 
   // インライン AI コマンドの起動を1箇所に集約する。slash メニュー(下の

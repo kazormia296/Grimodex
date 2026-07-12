@@ -225,6 +225,15 @@ export function EditorCategory() {
           />
         </SettingRow>
         <SettingRow
+          label={t("settings.editor.codexCompletion")}
+          description={t("settings.editor.codexCompletionDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.codexCompletion"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
           label={t("settings.editor.codexPopoverOnCaret")}
           description={t("settings.editor.codexPopoverOnCaretDesc")}
         >
