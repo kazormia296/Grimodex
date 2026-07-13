@@ -132,16 +132,17 @@ if (!gotSingleInstanceLock) {
     const cliAi = createCliAiManager(broadcastBackendEvent, {
       // 自動検出外のpathはrendererの文字列だけでは信頼しない。ユーザーがpathを
       // 見た上でnative dialogを明示許可した場合だけ、session allowlistへ入れる。
-      authorizeExecutable: async (kind, executable) => {
+      authorizeExecutable: async (kind, executable, identity) => {
         const { response } = await dialog.showMessageBox({
           type: "warning",
           title: "CLI実行の確認",
           message: `${kind} CLIを実行しますか？`,
           detail: [
-            "Grimodexが次の実行ファイルを起動し、入力したプロンプトを渡します。",
+            "Grimodexが次のcanonical実行ファイルを起動し、プロンプトをstdinで渡します。",
             "自分で設定した信頼できるCLIであることを確認してください。",
             "",
             executable,
+            `SHA-256: ${identity.sha256 ?? "取得できませんでした"}`,
           ].join("\n"),
           buttons: ["許可", "キャンセル"],
           defaultId: 1,

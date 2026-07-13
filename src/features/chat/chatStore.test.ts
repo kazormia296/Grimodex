@@ -1157,6 +1157,47 @@ describe("useChatStore", () => {
       }
     });
 
+    it("public RAGはprivate historyを除外しつつcommandInstructionを保持する", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [makeMessage("assistant", "PRIVATE HISTORY")],
+        agentMode: false,
+        ragEnabled: true,
+      });
+      mockSendAgentMessage.mockResolvedValueOnce({
+        blocks: [{ type: "text", content: "public answer" }],
+        stopReason: "end_turn",
+      });
+
+      try {
+        await useChatStore
+          .getState()
+          .sendMessage("public question", "TRUSTED COMMAND INSTRUCTION");
+
+        const sentMessages = mockSendAgentMessage.mock.calls.at(-1)?.[0] ?? [];
+        expect(sentMessages).toContainEqual({
+          role: "system",
+          content: expect.stringContaining("TRUSTED COMMAND INSTRUCTION"),
+        });
+        expect(sentMessages).toContainEqual({
+          role: "user",
+          content: "public question",
+        });
+        expect(JSON.stringify(sentMessages)).not.toContain("PRIVATE HISTORY");
+      } finally {
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
     it("accumulates parent and research Agent drift without changing aggregate tokens", async () => {
       useAiSettingsStore.setState({
         settings: {

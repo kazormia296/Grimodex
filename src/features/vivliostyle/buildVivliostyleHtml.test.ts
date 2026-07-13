@@ -79,6 +79,9 @@ describe("buildVivliostyleHtml — 文書シェル", () => {
     expect(out).toContain("<!DOCTYPE html>");
     expect(out).toContain('<html lang="ja">');
     expect(out).toContain('<meta charset="UTF-8">');
+    expect(out).toContain(
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'self'">`,
+    );
     expect(out).toContain("<title>テスト作品</title>");
   });
 
@@ -97,7 +100,7 @@ describe("buildVivliostyleHtml — 文書シェル", () => {
   it("lang 属性をエスケープする（属性脱出によるタグ注入を防ぐ）", () => {
     const out = build({ projectLanguage: 'ja"><script>' });
     expect(out).not.toContain("<script>");
-    expect(out).toContain('lang="ja&quot;&gt;&lt;script&gt;"');
+    expect(out).toContain('lang="ja">');
   });
 
   it("本文テキストの HTML 特殊文字をエスケープする（Chromium で実行される HTML への script 焼き込み防止）", () => {

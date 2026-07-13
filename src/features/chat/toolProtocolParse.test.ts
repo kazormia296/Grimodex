@@ -76,6 +76,12 @@ describe("hermesAllowedToolNames", () => {
     for (const m of MUTATING_TOOL_NAMES) expect(allowed).not.toContain(m);
   });
 
+  it("drops undeclared manifest-unknown tools by default", () => {
+    expect(
+      hermesAllowedToolNames(["search_codex", "future_unknown_tool"]),
+    ).toEqual(["search_codex"]);
+  });
+
   it("a mutating body tool_call is not parsed into a call", () => {
     const body =
       '<tool_call>{"name":"create_codex_entry","arguments":{"name":"x"}}</tool_call>';

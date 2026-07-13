@@ -4,13 +4,19 @@
  * Rust テストを移植し、ワイヤ / セキュリティ契約の parity を gate する。
  */
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
+  readFileSync,
+  readdirSync,
   ftruncateSync,
   closeSync,
+  lstatSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -127,9 +133,91 @@ describe("atomicWriteText / readTextFile / fileMtimeIso", () => {
     const dir = tempDir("atomic-tmp");
     const file = path.join(dir, "t.md");
     await atomicWriteText(file, "x");
-    const { existsSync } = await import("node:fs");
     expect(existsSync(`${file}.tmp`)).toBe(false);
+    expect(readdirSync(dir).some((name) => name.startsWith(".t.md-"))).toBe(
+      false,
+    );
     expect(await readTextFile(file)).toBe("x");
+  });
+
+  it("POSIXではatomic rename後も既存ファイルのpermission bitsを保持する", async () => {
+    if (process.platform === "win32") return;
+    const dir = tempDir("atomic-mode");
+    const file = path.join(dir, "shared.md");
+    writeFileSync(file, "before");
+    chmodSync(file, 0o664);
+
+    await atomicWriteText(file, "after");
+
+    expect(statSync(file).mode & 0o777).toBe(0o664);
+  });
+
+  it("POSIXでは読込対象のsymlinkを追従しない", async () => {
+    if (process.platform === "win32") return;
+    const dir = tempDir("read-symlink");
+    const target = path.join(dir, "outside.txt");
+    const link = path.join(dir, "chapter.md");
+    writeFileSync(target, "must not be read through a link");
+    try {
+      symlinkSync(target, link);
+    } catch {
+      return; // symlink 不可環境は skip
+    }
+
+    await expect(readTextFile(link)).rejects.toMatchObject({ code: "ELOOP" });
+  });
+
+  it("一時ファイルのsymlinkを追従せず、既存パスを削除もしない", async () => {
+    const dir = tempDir("atomic-symlink");
+    const file = path.join(dir, "chapter.md");
+    const outside = path.join(dir, "outside.txt");
+    const tmp = path.join(dir, `.chapter.md-${process.pid}-fixed-id.tmp`);
+    writeFileSync(file, "original");
+    writeFileSync(outside, "must survive");
+    try {
+      symlinkSync(outside, tmp);
+    } catch {
+      return; // symlink 不可環境は skip
+    }
+
+    await expect(
+      atomicWriteText(file, "attacker-controlled", {
+        randomId: () => "fixed-id",
+      }),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readFileSync(file, "utf8")).toBe("original");
+    expect(readFileSync(outside, "utf8")).toBe("must survive");
+    expect(lstatSync(tmp).isSymbolicLink()).toBe(true);
+  });
+
+  it("保存先がsymlinkへ交換されてもリンク先を上書きしない", async () => {
+    if (process.platform === "win32") return;
+    const dir = tempDir("atomic-destination-symlink");
+    const file = path.join(dir, "chapter.md");
+    const outside = path.join(dir, "outside.txt");
+    writeFileSync(outside, "must survive");
+    try {
+      symlinkSync(outside, file);
+    } catch {
+      return; // symlink 不可環境は skip
+    }
+
+    await atomicWriteText(file, "replacement");
+    expect(readFileSync(outside, "utf8")).toBe("must survive");
+    expect(readFileSync(file, "utf8")).toBe("replacement");
+  });
+
+  it("同時保存は競合せず、ランダムtmpを片付ける", async () => {
+    const dir = tempDir("atomic-concurrent");
+    const file = path.join(dir, "chapter.md");
+    await Promise.all([
+      atomicWriteText(file, "first"),
+      atomicWriteText(file, "second"),
+    ]);
+    expect(["first", "second"]).toContain(readFileSync(file, "utf8"));
+    expect(
+      readdirSync(dir).filter((name) => name.startsWith(".chapter.md-")),
+    ).toEqual([]);
   });
 
   it("32 MiB 超過ファイルを拒否（RUST-DOS-01）", async () => {

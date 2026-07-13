@@ -79,6 +79,7 @@ function wrapVivliostyleHtml(
 <html lang="${escapeHtml(lang)}">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'self'">
   <title>${escapeHtml(title)}</title>
   <link rel="stylesheet" href="${VIVLIOSTYLE_THEME_FILENAME}">
 </head>

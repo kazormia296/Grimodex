@@ -30,7 +30,7 @@
 
 use crate::{
     AgentMessage, AgentToolDef, AiProvider, AiSettings, ChatParams, ChatResponse, Citation,
-    ProviderEndpoints, ResponseBlock, HERMES_BLOCKED_TOOL_NAMES,
+    ProviderEndpoints, ResponseBlock, HERMES_READ_ONLY_TOOL_NAMES,
 };
 use serde_json::{json, Value};
 use std::sync::{atomic::Ordering, Arc};
@@ -358,7 +358,7 @@ pub fn parse_output(result: &Value, opts: &ParseResponsesOptions) -> anyhow::Res
                     let name = item["name"].as_str().unwrap_or("").to_string();
                     // 低信頼 provider では mutating ツールを silent drop(Chat 経路と対称)。
                     if opts.block_mutating_on_native
-                        && HERMES_BLOCKED_TOOL_NAMES.contains(&name.as_str())
+                        && !HERMES_READ_ONLY_TOOL_NAMES.contains(&name.as_str())
                     {
                         continue;
                     }
@@ -1232,33 +1232,40 @@ mod tests {
 
     #[test]
     fn parse_output_drops_mutating_tool_on_low_trust() {
-        let result = json!({
-            "status": "completed",
-            "output": [
-                { "type": "function_call", "call_id": "c1",
-                  "name": "update_codex_entry", "arguments": "{}" }
-            ]
-        });
-        // 低信頼: mutating は drop され tool_use は残らない → end_turn。
-        let resp = parse_output(
-            &result,
-            &ParseResponsesOptions {
-                block_mutating_on_native: true,
-            },
-        )
-        .unwrap();
-        assert_eq!(resp.stop_reason, "end_turn");
-        assert!(resp.blocks.is_empty());
-        // 高信頼: drop しない。
-        let resp2 = parse_output(
-            &result,
-            &ParseResponsesOptions {
-                block_mutating_on_native: false,
-            },
-        )
-        .unwrap();
-        assert_eq!(resp2.stop_reason, "tool_use");
-        assert_eq!(resp2.blocks.len(), 1);
+        for name in [
+            "update_codex_entry",
+            "create_event",
+            "delete_event",
+            "future_unknown_tool",
+        ] {
+            let result = json!({
+                "status": "completed",
+                "output": [
+                    { "type": "function_call", "call_id": "c1",
+                      "name": name, "arguments": "{}" }
+                ]
+            });
+            // 低信頼: mutating は drop され tool_use は残らない → end_turn。
+            let resp = parse_output(
+                &result,
+                &ParseResponsesOptions {
+                    block_mutating_on_native: true,
+                },
+            )
+            .unwrap();
+            assert_eq!(resp.stop_reason, "end_turn");
+            assert!(resp.blocks.is_empty(), "{name} must be blocked");
+            // 高信頼: drop しない。
+            let resp2 = parse_output(
+                &result,
+                &ParseResponsesOptions {
+                    block_mutating_on_native: false,
+                },
+            )
+            .unwrap();
+            assert_eq!(resp2.stop_reason, "tool_use");
+            assert_eq!(resp2.blocks.len(), 1);
+        }
     }
 
     #[test]

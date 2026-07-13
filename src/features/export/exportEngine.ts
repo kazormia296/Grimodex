@@ -556,7 +556,10 @@ function applyMarks(text: string, marks: PMMark[], ctx: RenderCtx): string {
         if (ctx.settings.format === "markdown") {
           result = `[${result}](${href})`;
         } else if (ctx.settings.format === "html") {
-          result = `<a href="${escapeHtml(href)}">${result}</a>`;
+          const safeHref = sanitizeHtmlHref(href);
+          if (safeHref !== null) {
+            result = `<a href="${escapeHtml(safeHref)}">${result}</a>`;
+          }
         }
         break;
       }
@@ -808,11 +811,69 @@ function getSceneDivider(settings: ExportSettings): string {
 // HTML ラッパー
 // ────────────────────────────────────────────────────────────────────
 
+const HTML_EXPORT_CSP =
+  "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'";
+const URI_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+const HTML_UNSAFE_HREF_CHARACTERS = /[<>"']/;
+
+function hasHtmlControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** HTML artifact の lang 属性を BCP 47 の妥当な値へ限定する。 */
+function sanitizeHtmlLanguage(lang: string): string {
+  const candidate = lang.trim();
+  if (!candidate || candidate !== lang || hasHtmlControlCharacters(candidate)) {
+    return "ja";
+  }
+  try {
+    const [canonical] = Intl.getCanonicalLocales(candidate);
+    if (
+      !canonical ||
+      !/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(canonical)
+    ) {
+      return "ja";
+    }
+    return canonical;
+  } catch {
+    return "ja";
+  }
+}
+
+/** HTML artifact のリンクで実行可能な URL scheme を許可しない。 */
+function sanitizeHtmlHref(href: string): string | null {
+  if (
+    !href ||
+    href !== href.trim() ||
+    hasHtmlControlCharacters(href) ||
+    HTML_UNSAFE_HREF_CHARACTERS.test(href) ||
+    href.startsWith("//")
+  ) {
+    return null;
+  }
+  if (!URI_SCHEME.test(href)) {
+    // Relative paths, root-relative paths, query strings, and fragments are
+    // safe in a standalone export and stay within the artifact's origin.
+    return href;
+  }
+  try {
+    const protocol = new URL(href).protocol.toLowerCase();
+    return ["http:", "https:", "mailto:"].includes(protocol) ? href : null;
+  } catch {
+    return null;
+  }
+}
+
 function wrapHtml(body: string, title: string, lang: string): string {
   return `<!DOCTYPE html>
-<html lang="${lang}">
+<html lang="${sanitizeHtmlLanguage(lang)}">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="${HTML_EXPORT_CSP}">
   <title>${escapeHtml(title)}</title>
   <style>
     body { max-width: 40em; margin: 2em auto; font-family: serif; line-height: 1.8; }
@@ -1003,7 +1064,11 @@ export function generateExport(input: GenerateExportInput): string {
   }
 
   if (settings.format === "html") {
-    return (htmlWrapper ?? wrapHtml)(result, projectTitle, projectLanguage);
+    return (htmlWrapper ?? wrapHtml)(
+      result,
+      projectTitle,
+      sanitizeHtmlLanguage(projectLanguage),
+    );
   }
 
   return result;

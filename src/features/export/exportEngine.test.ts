@@ -429,9 +429,78 @@ describe("generateExport - folder headings (html)", () => {
     });
     expect(result).toContain("<!DOCTYPE html>");
     expect(result).toContain('<html lang="ja">');
+    expect(result).toContain(
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'">`,
+    );
     expect(result).toContain("<title>My Novel</title>");
     expect(result).toContain("<body>");
     expect(result).toContain("</body>");
+  });
+
+  it("lang 属性を BCP 47 に限定し、属性脱出をフォールバックする", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const result = generateExport({
+      nodes: [s1],
+      contentMap: { s1: doc(para("本文")) },
+      checkedIds: new Set(["s1"]),
+      settings: settings({ format: "html" }),
+      projectLanguage: 'ja"><script>alert(1)</script>',
+    });
+    expect(result).toContain('<html lang="ja">');
+    expect(result).not.toContain("<script>");
+  });
+
+  it("HTMLリンクは安全なschemeと相対URLだけを出力する", () => {
+    const s1 = makeScene("s1", "シーン1");
+    const linked = (href: string): string =>
+      JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "link",
+                marks: [{ type: "link", attrs: { href } }],
+              },
+            ],
+          },
+        ],
+      });
+
+    for (const href of [
+      "https://example.com/page",
+      "mailto:writer@example.com",
+      "/chapter/1",
+      "#scene-1",
+    ]) {
+      const result = generateExport({
+        nodes: [s1],
+        contentMap: { s1: linked(href) },
+        checkedIds: new Set(["s1"]),
+        settings: settings({ format: "html" }),
+      });
+      expect(result).toContain(`<a href="${href}">link</a>`);
+    }
+
+    for (const href of [
+      "javascript:alert(1)",
+      "data:text/html,<script>alert(1)</script>",
+      "vbscript:msgbox(1)",
+      "//evil.example/collect",
+      '"><script>alert(1)</script>',
+    ]) {
+      const result = generateExport({
+        nodes: [s1],
+        contentMap: { s1: linked(href) },
+        checkedIds: new Set(["s1"]),
+        settings: settings({ format: "html" }),
+      });
+      expect(result).not.toContain("<a ");
+      expect(result).not.toContain("<script>");
+      expect(result).toContain("link");
+    }
   });
 });
 
