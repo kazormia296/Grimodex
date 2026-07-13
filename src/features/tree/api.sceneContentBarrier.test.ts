@@ -21,16 +21,25 @@ vi.mock("@/db/client", () => ({
   db: {
     update: () => ({
       set: () => ({
-        where: () => {
-          state.events.push("update:dispatched");
-          return new Promise<void>((res, rej) => {
-            state.resolveUpdate = () => {
-              state.events.push("update:resolved");
-              res();
-            };
-            state.rejectUpdate = rej;
-          });
-        },
+        where: () => ({
+          returning: () => {
+            state.events.push("update:dispatched");
+            return new Promise<
+              Array<{ contentVersion: number; contentUpdatedAt: string }>
+            >((res, rej) => {
+              state.resolveUpdate = () => {
+                state.events.push("update:resolved");
+                res([
+                  {
+                    contentVersion: 1,
+                    contentUpdatedAt: "2026-07-13T00:00:01.000Z",
+                  },
+                ]);
+              };
+              state.rejectUpdate = rej;
+            });
+          },
+        }),
       }),
     }),
     select: () => ({

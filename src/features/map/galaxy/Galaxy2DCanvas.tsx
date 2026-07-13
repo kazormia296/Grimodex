@@ -58,8 +58,7 @@ export function Galaxy2DCanvas({
   const reducedMotion = useReducedMotion();
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
 
-  // autoPauseRedraw=false で毎フレーム accessor が再評価されるため、
-  // hover は ref に置くだけで反映される（re-render 不要）
+  // hover は ref に置き、停止中は必要なフレームだけ refresh() する。
   const hoverRef = useRef<{ nodeId: string | null; neighbors: Set<string> }>({
     nodeId: null,
     neighbors: new Set(),
@@ -174,6 +173,10 @@ export function Galaxy2DCanvas({
       hoverRef.current = node
         ? { nodeId: node.id, neighbors: adjacency.get(node.id) ?? new Set() }
         : { nodeId: null, neighbors: new Set() };
+      const graphMethods = fgRef.current as
+        | (ForceGraphMethods & { refresh?: () => void })
+        | undefined;
+      graphMethods?.refresh?.();
     },
     [adjacency],
   );
@@ -210,9 +213,6 @@ export function Galaxy2DCanvas({
           backgroundColor={BACKGROUND}
           warmupTicks={80}
           cooldownTime={reducedMotion ? 0 : 3000}
-          // hover ハイライトは外部 ref を読む custom 描画のため、エンジン停止後の
-          // 再描画自動停止（既定 true）を無効にしないと停止後に反映されなくなる
-          autoPauseRedraw={false}
           onEngineStop={() => {
             // 初回収束時のみ全体が収まるようフィットする
             if (didFitRef.current) return;

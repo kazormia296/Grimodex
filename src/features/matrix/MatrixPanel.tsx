@@ -117,7 +117,7 @@ export function MatrixPanel() {
     needsBodyBackfill()
       .then((needed) => {
         if (needed) {
-          enqueueRescan(null);
+          void enqueueRescan(null);
           useMatrixStore.setState({ bodyBackfillCompleted: true });
         } else {
           useMatrixStore.setState({ bodyBackfillCompleted: true });

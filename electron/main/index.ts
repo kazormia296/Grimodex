@@ -27,6 +27,7 @@ import {
   buildMcpConfigShellHandlers,
   prepareMcpSidecarForStartup,
   resolveMcpSidecarPath,
+  scheduleMcpSidecarWarmup,
 } from "./mcpSidecar.js";
 import {
   registerAppProtocolHandler,
@@ -72,6 +73,7 @@ if (!gotSingleInstanceLock) {
   registerSecurityHandlers(app);
 
   void app.whenReady().then(async () => {
+    performance.mark("grimodex:electron-when-ready");
     applySessionPermissionPolicy();
     // 本番ロード（§8 S8）: vite build 成果物 dist/ を app://bundle/ で配信。
     // main.cjs は <repo>/dist-electron/ に出るため dist は 1 つ上の隣。
@@ -116,30 +118,10 @@ if (!gotSingleInstanceLock) {
       });
     }
     // Packaged Linux copies the MCP binary out of a transient AppImage mount.
-    // Do this on every app startup so an already-copied `.mcp.json` receives
-    // the current sidecar without requiring the user to open Settings again.
-    let resolveMcpSidecar = () => resolveMcpSidecarPath();
-    try {
-      resolveMcpSidecar = await prepareMcpSidecarForStartup(
-        app.isPackaged,
-        resolveMcpSidecar,
-      );
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      console.error(
-        `[grimodex-electron] MCP sidecar startup preparation failed: ${detail}`,
-      );
-      await dialog.showMessageBox({
-        type: "warning",
-        title: "MCP連携を更新できませんでした",
-        message:
-          "Grimodex本体は起動できますが、MCP連携は設定画面で再試行してください。",
-        detail,
-        buttons: ["OK"],
-        defaultId: 0,
-        noLink: true,
-      });
-    }
+    // Resolution is lazy and singleflight so it cannot delay first window paint.
+    const resolveMcpSidecar = prepareMcpSidecarForStartup(app.isPackaged, () =>
+      resolveMcpSidecarPath(),
+    );
     // external_mount（§2 バッチ2）: registry + chokidar watcher を持つ常駐
     // マネージャを 1 個生成し、その shell コマンドハンドラを invoke ルーターへ
     // 注入する。watcher イベントは backend event として全窓へ配信（external-mount://
@@ -239,7 +221,22 @@ if (!gotSingleInstanceLock) {
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
     // workspace:opened が担う）。
     registerEventBus(backend);
-    createMainWindow();
+    performance.mark("grimodex:electron-create-main-window");
+    const mainWindow = createMainWindow();
+    mainWindow.webContents.once("did-finish-load", () => {
+      performance.mark("grimodex:renderer-finished-load");
+    });
+    if (app.isPackaged && process.platform === "linux") {
+      scheduleMcpSidecarWarmup(mainWindow, resolveMcpSidecar, (error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(
+          `[grimodex-electron] MCP sidecar background preparation failed: ${detail}`,
+        );
+      });
+    }
+    mainWindow.once("ready-to-show", () => {
+      performance.mark("grimodex:electron-ready-to-show");
+    });
   });
 
   // 単一アプリ窓の現行挙動に合わせ、macOS 含め全窓クローズで終了する（§6.5）。

@@ -180,18 +180,50 @@ export interface McpConfigInfo {
 export type McpSidecarPathResolver = () => Promise<string>;
 
 /**
- * Resolve packaged sidecars during application startup. On Linux this also
- * refreshes the stable userData copy before an existing `.mcp.json` can launch
- * it; the returned resolver reuses the validated path for renderer requests.
- * Development remains lazy so `pnpm electron:dev` does not require MCP builds.
+ * Create a singleflight resolver for the packaged sidecar. Both packaged and
+ * development resolution remain lazy so the first window can paint before MCP
+ * filesystem work begins.
  */
-export async function prepareMcpSidecarForStartup(
-  isPackaged: boolean,
+export function prepareMcpSidecarForStartup(
+  _isPackaged: boolean,
   resolveSidecar: McpSidecarPathResolver = () => resolveMcpSidecarPath(),
-): Promise<McpSidecarPathResolver> {
-  if (!isPackaged) return resolveSidecar;
-  const command = await resolveSidecar();
-  return () => Promise.resolve(command);
+): McpSidecarPathResolver {
+  // Both packaged and development paths are resolved lazily. The resolver is
+  // singleflight so concurrent MCP requests share the same filesystem work.
+  let inFlight: Promise<string> | null = null;
+  return () => {
+    if (inFlight) return inFlight;
+    const operation = Promise.resolve().then(resolveSidecar);
+    const tracked = operation.catch((error: unknown) => {
+      if (inFlight === tracked) inFlight = null;
+      throw error;
+    });
+    inFlight = tracked;
+    return inFlight;
+  };
+}
+
+export interface McpSidecarWarmupTarget {
+  once(event: "ready-to-show", listener: () => void): void;
+  webContents: {
+    once(event: "did-finish-load", listener: () => void): void;
+  };
+}
+
+/** Start packaged Linux preparation after either window-ready signal. */
+export function scheduleMcpSidecarWarmup(
+  target: McpSidecarWarmupTarget,
+  resolveSidecar: McpSidecarPathResolver,
+  onError: (error: unknown) => void,
+): void {
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    void resolveSidecar().catch(onError);
+  };
+  target.once("ready-to-show", start);
+  target.webContents.once("did-finish-load", start);
 }
 
 /**

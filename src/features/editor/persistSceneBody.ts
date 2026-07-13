@@ -19,6 +19,77 @@ import { useCodexStore } from "@/features/codex/codexStore";
 import { useChatStore } from "@/features/chat/chatStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { recordBodyMentionScans } from "@/features/codex/bodyMentionIndexState";
+
+interface PendingBodyMentionScan {
+  projectId: string;
+  docJsonStr: string;
+  allEntries: Parameters<typeof upsertSceneBodyMentions>[2];
+  sceneVersion: number;
+  sceneUpdatedAt: string;
+}
+
+const pendingBodyMentionScans = new Map<string, PendingBodyMentionScan>();
+const bodyMentionScanTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const bodyMentionScanRunning = new Set<string>();
+
+function scheduleBodyMentionScan(
+  projectId: string,
+  id: string,
+  docJsonStr: string,
+  allEntries: PendingBodyMentionScan["allEntries"],
+  sceneVersion: number,
+  sceneUpdatedAt: string,
+): void {
+  pendingBodyMentionScans.set(id, {
+    projectId,
+    docJsonStr,
+    allEntries,
+    sceneVersion,
+    sceneUpdatedAt,
+  });
+  if (bodyMentionScanTimers.has(id) || bodyMentionScanRunning.has(id)) return;
+
+  const run = async () => {
+    bodyMentionScanTimers.delete(id);
+    const scan = pendingBodyMentionScans.get(id);
+    pendingBodyMentionScans.delete(id);
+    if (!scan) return;
+    bodyMentionScanRunning.add(id);
+
+    markStart("editor.coreSave.bodyMentionUpsert");
+    try {
+      await upsertSceneBodyMentions(id, scan.docJsonStr, scan.allEntries);
+      await recordBodyMentionScans(scan.projectId, scan.allEntries, [
+        {
+          sceneId: id,
+          version: scan.sceneVersion,
+          updatedAt: scan.sceneUpdatedAt,
+        },
+      ]);
+    } catch (e) {
+      debugLog.error(
+        "persistSceneBody",
+        "upsertSceneBodyMentions failed",
+        errorDetail(e),
+      );
+    } finally {
+      markEnd("editor.coreSave.bodyMentionUpsert");
+      bodyMentionScanRunning.delete(id);
+      if (pendingBodyMentionScans.has(id) && !bodyMentionScanTimers.has(id)) {
+        bodyMentionScanTimers.set(
+          id,
+          setTimeout(() => void run(), 0),
+        );
+      }
+    }
+  };
+
+  bodyMentionScanTimers.set(
+    id,
+    setTimeout(() => void run(), 0),
+  );
+}
 
 /**
  * Persist a scene body document and orchestrate every doc-derived side-effect.
@@ -54,6 +125,7 @@ export async function persistSceneBody(
   markStart("editor.coreSave.getJSON");
   const sceneJsonStr = JSON.stringify(doc.toJSON());
   markEnd("editor.coreSave.getJSON");
+  const projectId = useTreeStore.getState().projectId;
 
   const fileBackedUri = useTreeStore
     .getState()
@@ -68,30 +140,32 @@ export async function persistSceneBody(
   // 非チェーンの saveSceneContentInner を使う — 公開 saveSceneContent を呼ぶと
   // 同一チェーンへの自己 await でデッドロックする。file-backed scene は
   // schema 依存 cascade をスキップする既存挙動を維持 (単位は content のみ)。
-  const { placedBeatPreview, unplacedBeatPreview } = await serializeSceneWrite(
-    id,
-    async () => {
-      markStart("editor.coreSave.invokeSave");
-      const previews = await saveSceneContentInner(id, {
-        content: sceneJsonStr,
-        unplacedBeatsDoc,
-        charCount,
-      });
-      markEnd("editor.coreSave.invokeSave");
-      if (!isFileBacked) {
-        markStart("editor.coreSave.saveAuthorship");
-        await saveAuthorshipSpans(id, doc);
-        markEnd("editor.coreSave.saveAuthorship");
-        markStart("editor.coreSave.saveForeshadow");
-        await saveForeshadowAnchors(id, doc);
-        markEnd("editor.coreSave.saveForeshadow");
-        markStart("editor.coreSave.saveAnnotations");
-        await saveAnnotationAnchors(useTreeStore.getState().projectId, id, doc);
-        markEnd("editor.coreSave.saveAnnotations");
-      }
-      return previews;
-    },
-  );
+  const {
+    placedBeatPreview,
+    unplacedBeatPreview,
+    contentVersion,
+    contentUpdatedAt,
+  } = await serializeSceneWrite(id, async () => {
+    markStart("editor.coreSave.invokeSave");
+    const previews = await saveSceneContentInner(id, {
+      content: sceneJsonStr,
+      unplacedBeatsDoc,
+      charCount,
+    });
+    markEnd("editor.coreSave.invokeSave");
+    if (!isFileBacked) {
+      markStart("editor.coreSave.saveAuthorship");
+      await saveAuthorshipSpans(id, doc);
+      markEnd("editor.coreSave.saveAuthorship");
+      markStart("editor.coreSave.saveForeshadow");
+      await saveForeshadowAnchors(id, doc);
+      markEnd("editor.coreSave.saveForeshadow");
+      markStart("editor.coreSave.saveAnnotations");
+      await saveAnnotationAnchors(projectId, id, doc);
+      markEnd("editor.coreSave.saveAnnotations");
+    }
+    return previews;
+  });
 
   if (fileBackedUri && isFileBacked) {
     scheduleWriteBack(id, fileBackedUri, sceneJsonStr);
@@ -104,20 +178,14 @@ export async function persistSceneBody(
     // file-backed editor 拡張で外しているため空打ちになるのでスキップ。
     const allEntries = useCodexStore.getState().entries;
     if (allEntries.length > 0) {
-      setTimeout(() => {
-        markStart("editor.coreSave.bodyMentionUpsert");
-        upsertSceneBodyMentions(id, sceneJsonStr, allEntries)
-          .catch((e) => {
-            debugLog.error(
-              "persistSceneBody",
-              "upsertSceneBodyMentions failed (file-backed)",
-              errorDetail(e),
-            );
-          })
-          .finally(() => {
-            markEnd("editor.coreSave.bodyMentionUpsert");
-          });
-      }, 0);
+      scheduleBodyMentionScan(
+        projectId,
+        id,
+        sceneJsonStr,
+        allEntries,
+        contentVersion,
+        contentUpdatedAt,
+      );
     }
     const chatState = useChatStore.getState();
     if (chatState.activeSceneId === id) {
@@ -165,23 +233,14 @@ export async function persistSceneBody(
   // Deferred body-mention scan — does not block the save response
   const allEntries = useCodexStore.getState().entries;
   if (allEntries.length > 0) {
-    markStart("editor.coreSave.bodyMentionGetJSON");
-    const docJsonStr = JSON.stringify(doc.toJSON());
-    markEnd("editor.coreSave.bodyMentionGetJSON");
-    setTimeout(() => {
-      markStart("editor.coreSave.bodyMentionUpsert");
-      upsertSceneBodyMentions(id, docJsonStr, allEntries)
-        .catch((e) => {
-          debugLog.error(
-            "persistSceneBody",
-            "upsertSceneBodyMentions failed",
-            errorDetail(e),
-          );
-        })
-        .finally(() => {
-          markEnd("editor.coreSave.bodyMentionUpsert");
-        });
-    }, 0);
+    scheduleBodyMentionScan(
+      projectId,
+      id,
+      sceneJsonStr,
+      allEntries,
+      contentVersion,
+      contentUpdatedAt,
+    );
   }
   markStart("editor.coreSave.refreshAiRatio");
   useTreeStore

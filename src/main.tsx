@@ -48,6 +48,8 @@ import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
 import { isElectron } from "./lib/tauri";
 import { installDefaultEditorNavigation } from "./features/editor/editorNavigationPorts";
 
+performance.mark("grimodex:renderer-bootstrap");
+
 installDefaultEditorNavigation();
 
 // Electron シェル判定フラグ。S6 の drag-region CSS
@@ -91,6 +93,10 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </ErrorBoundary>
   </React.StrictMode>,
 );
+
+requestAnimationFrame(() => {
+  performance.mark("grimodex:renderer-first-frame");
+});
 
 // Warm up tiktoken WASM during idle so the first chat-flow `await
 // ensureTokenizer()` returns immediately instead of paying ~30ms init cost

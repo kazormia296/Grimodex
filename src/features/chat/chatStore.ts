@@ -128,6 +128,7 @@ import {
 } from "./webSearchConfig";
 import * as cliApi from "./cliApi";
 import { resolveSendApiVariant } from "./aiNovelist";
+import { createAgentTextBatcher } from "./agent/agentTextBatcher";
 
 function getChatApiVariant(model: string): string | undefined {
   const { settings, models } = useAiSettingsStore.getState();
@@ -4388,6 +4389,136 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         // content cap を載せる。
         const webSearchConfig = webSearchConfigAtTurnStart;
         let parentInputTokenDrift = createInputTokenDriftTotals();
+        const agentTextBatcher = createAgentTextBatcher((text) => {
+          if (!isCurrentTurn() || sendControl.aborted) return;
+          set((s) => {
+            const msgs = [...s.messages];
+            const index = msgs.findIndex(
+              (message) => message.id === assistantMsg.id,
+            );
+            const assistant = index >= 0 ? msgs[index] : undefined;
+            if (assistant?.role === "assistant") {
+              msgs[index] = {
+                ...assistant,
+                content: assistant.content + text,
+              };
+            }
+            return { messages: msgs };
+          });
+        });
+        let agentLoopResult!: Awaited<ReturnType<typeof runAgentLoop>>;
+        try {
+          agentLoopResult = await runAgentLoop({
+            messages: agentMsgs,
+            tools: agentTools,
+            tokenBudget,
+            maxToolCalls: parentMaxToolCalls,
+            shouldAbort: shouldAbortTurn,
+            callLimitMessage: agentControl.callLimitMessage,
+            tokenBudgetMessage: agentControl.tokenBudgetMessage,
+            userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
+            sendToLLM: async (msgs, tools) => {
+              assertTurnAuthority();
+              const finalized = turnRoute
+                ? finalizeChatTurnPayload({
+                    route: turnRoute,
+                    fallbackSystemPrompt: systemPromptForAgent,
+                    cacheSegments: systemCacheSegmentsForAgent,
+                    volatileTail: systemVolatileTailForAgent,
+                    messages: msgs,
+                    tools,
+                    webSearch: webSearchConfig,
+                  })
+                : null;
+              if (finalized) {
+                sentSystemPromptForAgent =
+                  materializeSystemDeliverySnapshot(finalized);
+                sentAgentContextTokenCount = finalized.usage.inputTokens;
+                set({
+                  contextTokenCount: finalized.usage.inputTokens,
+                  contextWindowSize: finalized.route.contextWindow,
+                  contextModel: finalized.route.model,
+                  ...(finalized.cacheDowngradeReason === "budget"
+                    ? { cacheInvalidatedReason: "budget" as const }
+                    : {}),
+                });
+              }
+              transportStarted = true;
+              sendControl.transportStarted = true;
+              const response = await chatApi.sendAgentMessage(
+                msgs,
+                tools,
+                agentThinkingParams,
+                finalized
+                  ? finalized.transport.systemCacheSegments
+                  : systemCacheSegmentsForAgent,
+                agentApiVariant,
+                webSearchConfig,
+                finalized
+                  ? finalized.transport.systemVolatileTail
+                  : systemVolatileTailForAgent,
+                turnRoute?.model ??
+                  (xprov
+                    ? xprov.model
+                    : (agentRole?.model ?? chatModelOverride ?? null)),
+                turnRoute
+                  ? turnRoute.providerOverride
+                  : (xprov?.provider ?? agentRole?.provider ?? null),
+                turnRoute
+                  ? turnRoute.endpointId
+                  : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
+                turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
+                turnRoute?.provider ?? null,
+                turnRoute?.resolvedEndpointId ?? null,
+                turnRoute?.toolProtocol ?? null,
+              );
+              parentInputTokenDrift = accumulateInputTokenDrift(
+                parentInputTokenDrift,
+                currentProvider,
+                {
+                  estimatedInputTokens: finalized?.usage.inputTokens ?? null,
+                  safetyMarginTokens:
+                    finalized?.usage.safetyMarginTokens ?? null,
+                  inputTokens: response.inputTokens,
+                  cacheReadTokens: response.cacheReadTokens,
+                  cacheWriteTokens: response.cacheWriteTokens,
+                },
+              );
+              return response;
+            },
+            executeTool: guardedExecuteTool,
+            onProgress: (progress) => {
+              if (isCurrentTurn() && !sendControl.aborted) {
+                set({ agentProgress: progress });
+              }
+            },
+            onToolComplete: (record) => {
+              if (!isCurrentTurn() || sendControl.aborted) return;
+              accToolCalls.push(record);
+              set((s) => {
+                const msgs = [...s.messages];
+                const index = msgs.findIndex(
+                  (message) => message.id === assistantMsg.id,
+                );
+                const assistant = index >= 0 ? msgs[index] : undefined;
+                if (assistant?.role === "assistant") {
+                  msgs[index] = {
+                    ...assistant,
+                    metadata: JSON.stringify({ tool_calls: accToolCalls }),
+                  };
+                }
+                return { messages: msgs };
+              });
+            },
+            onTextChunk: (text) => {
+              if (!isCurrentTurn() || sendControl.aborted) return;
+              agentTextBatcher.push(text);
+            },
+          });
+        } finally {
+          agentTextBatcher.flush();
+          agentTextBatcher.dispose();
+        }
         const {
           toolCallRecords,
           finalThinkingBlocks,
@@ -4396,126 +4527,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           tokensIn: agentTokensIn,
           tokensOut: agentTokensOut,
           stoppedReason: agentStoppedReason,
-        } = await runAgentLoop({
-          messages: agentMsgs,
-          tools: agentTools,
-          tokenBudget,
-          maxToolCalls: parentMaxToolCalls,
-          shouldAbort: shouldAbortTurn,
-          callLimitMessage: agentControl.callLimitMessage,
-          tokenBudgetMessage: agentControl.tokenBudgetMessage,
-          userQuestionLimitMessage: agentControl.userQuestionLimitMessage,
-          sendToLLM: async (msgs, tools) => {
-            assertTurnAuthority();
-            const finalized = turnRoute
-              ? finalizeChatTurnPayload({
-                  route: turnRoute,
-                  fallbackSystemPrompt: systemPromptForAgent,
-                  cacheSegments: systemCacheSegmentsForAgent,
-                  volatileTail: systemVolatileTailForAgent,
-                  messages: msgs,
-                  tools,
-                  webSearch: webSearchConfig,
-                })
-              : null;
-            if (finalized) {
-              sentSystemPromptForAgent =
-                materializeSystemDeliverySnapshot(finalized);
-              sentAgentContextTokenCount = finalized.usage.inputTokens;
-              set({
-                contextTokenCount: finalized.usage.inputTokens,
-                contextWindowSize: finalized.route.contextWindow,
-                contextModel: finalized.route.model,
-                ...(finalized.cacheDowngradeReason === "budget"
-                  ? { cacheInvalidatedReason: "budget" as const }
-                  : {}),
-              });
-            }
-            transportStarted = true;
-            sendControl.transportStarted = true;
-            const response = await chatApi.sendAgentMessage(
-              msgs,
-              tools,
-              agentThinkingParams,
-              finalized
-                ? finalized.transport.systemCacheSegments
-                : systemCacheSegmentsForAgent,
-              agentApiVariant,
-              webSearchConfig,
-              finalized
-                ? finalized.transport.systemVolatileTail
-                : systemVolatileTailForAgent,
-              turnRoute?.model ??
-                (xprov
-                  ? xprov.model
-                  : (agentRole?.model ?? chatModelOverride ?? null)),
-              turnRoute
-                ? turnRoute.providerOverride
-                : (xprov?.provider ?? agentRole?.provider ?? null),
-              turnRoute
-                ? turnRoute.endpointId
-                : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
-              turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
-              turnRoute?.provider ?? null,
-              turnRoute?.resolvedEndpointId ?? null,
-              turnRoute?.toolProtocol ?? null,
-            );
-            parentInputTokenDrift = accumulateInputTokenDrift(
-              parentInputTokenDrift,
-              currentProvider,
-              {
-                estimatedInputTokens: finalized?.usage.inputTokens ?? null,
-                safetyMarginTokens: finalized?.usage.safetyMarginTokens ?? null,
-                inputTokens: response.inputTokens,
-                cacheReadTokens: response.cacheReadTokens,
-                cacheWriteTokens: response.cacheWriteTokens,
-              },
-            );
-            return response;
-          },
-          executeTool: guardedExecuteTool,
-          onProgress: (progress) => {
-            if (isCurrentTurn() && !sendControl.aborted) {
-              set({ agentProgress: progress });
-            }
-          },
-          onToolComplete: (record) => {
-            if (!isCurrentTurn() || sendControl.aborted) return;
-            accToolCalls.push(record);
-            set((s) => {
-              const msgs = [...s.messages];
-              const index = msgs.findIndex(
-                (message) => message.id === assistantMsg.id,
-              );
-              const assistant = index >= 0 ? msgs[index] : undefined;
-              if (assistant?.role === "assistant") {
-                msgs[index] = {
-                  ...assistant,
-                  metadata: JSON.stringify({ tool_calls: accToolCalls }),
-                };
-              }
-              return { messages: msgs };
-            });
-          },
-          onTextChunk: (text) => {
-            if (!isCurrentTurn() || sendControl.aborted) return;
-            set((s) => {
-              const msgs = [...s.messages];
-              const index = msgs.findIndex(
-                (message) => message.id === assistantMsg.id,
-              );
-              const assistant = index >= 0 ? msgs[index] : undefined;
-              if (assistant?.role === "assistant") {
-                const prev = assistant.content;
-                msgs[index] = {
-                  ...assistant,
-                  content: prev ? `${prev}\n\n${text}` : text,
-                };
-              }
-              return { messages: msgs };
-            });
-          },
-        });
+        } = agentLoopResult;
 
         const stoppedAgentTurnCanFinalize = canFinalizeStoppedAgentTurn();
         if (shouldAbortTurn() && !stoppedAgentTurnCanFinalize) return;

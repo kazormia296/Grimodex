@@ -118,7 +118,8 @@ export function GalaxyCanvas({
     bloomAddedRef.current = true;
   }, [size.width, size.height]);
 
-  // 自動回転: reduced-motion では無効。最初のユーザー操作で停止。
+  // 自動回転は初期表示の短時間だけ。ユーザー操作、非表示化、blur、
+  // reduced-motion のいずれかで停止し、放置中のGPUレンダーを抑える。
   useEffect(() => {
     const controls = fgRef.current?.controls?.() as
       | {
@@ -129,13 +130,36 @@ export function GalaxyCanvas({
         }
       | undefined;
     if (!controls) return;
-    controls.autoRotate = !reducedMotion;
     controls.autoRotateSpeed = 0.35;
+    let stopped = reducedMotion;
+    const updateRotation = () => {
+      controls.autoRotate =
+        !stopped &&
+        document.visibilityState === "visible" &&
+        document.hasFocus();
+    };
     const stop = () => {
+      stopped = true;
       controls.autoRotate = false;
     };
+    const onVisibilityChange = () => updateRotation();
+    const onWindowFocus = () => updateRotation();
+    const onWindowBlur = () => {
+      controls.autoRotate = false;
+    };
+    updateRotation();
     controls.addEventListener?.("start", stop);
-    return () => controls.removeEventListener?.("start", stop);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onWindowFocus);
+    window.addEventListener("blur", onWindowBlur);
+    const timer = window.setTimeout(stop, 5_000);
+    return () => {
+      window.clearTimeout(timer);
+      controls.removeEventListener?.("start", stop);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("blur", onWindowBlur);
+    };
   }, [reducedMotion, size.width]);
 
   const nodeColor = useCallback(

@@ -322,7 +322,7 @@ export async function updateCodexEntry(
     data.aliases !== undefined ||
     data.excludedAliases !== undefined
   ) {
-    enqueueRescan(id);
+    void enqueueRescan(id);
   }
 
   // 段階3: 埋め込み対象 (name/aliases/summary/content) が変わったら再 index。

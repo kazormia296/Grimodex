@@ -236,6 +236,9 @@ export interface DerivedPreviews {
   placedBeatPreview: string | null;
   /** Recomputed from `unplacedBeatsDoc` when that field is part of the payload. */
   unplacedBeatPreview?: string | null;
+  /** Exact scene revision written with this content. */
+  contentVersion: number;
+  contentUpdatedAt: string;
 }
 
 /**
@@ -296,6 +299,8 @@ export async function saveSceneContentInner(
     JSON.stringify({ contentLen: payload.content.length }),
   );
 
+  const contentUpdatedAt = new Date().toISOString();
+
   // Promise.resolve で drizzle の thenable を即 1 回だけ実行に固定してから
   // track する（thenable のまま 2 箇所で await すると UPDATE が二重実行される）。
   const write = Promise.resolve(
@@ -317,14 +322,23 @@ export async function saveSceneContentInner(
         // stale 検知)。human-human 競合は change_events ベースの
         // externalWriteFeed ガードが従来通り担当する。
         version: sql`${treeNodes.version} + 1`,
-        updatedAt: new Date().toISOString(),
+        updatedAt: contentUpdatedAt,
       })
-      .where(eq(treeNodes.id, sceneId)),
+      .where(eq(treeNodes.id, sceneId))
+      .returning({
+        contentVersion: treeNodes.version,
+        contentUpdatedAt: treeNodes.updatedAt,
+      }),
   );
   trackSceneContentWrite(sceneId, write);
-  await write;
+  const rows = await write;
 
-  return { placedBeatPreview, unplacedBeatPreview };
+  return {
+    placedBeatPreview,
+    unplacedBeatPreview,
+    contentVersion: rows[0]?.contentVersion ?? 0,
+    contentUpdatedAt: rows[0]?.contentUpdatedAt ?? contentUpdatedAt,
+  };
 }
 
 /**

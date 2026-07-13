@@ -1,11 +1,16 @@
 import { create } from "zustand";
 import { db } from "@/db/client";
 import { treeNodes, sceneCodexMentions } from "@/db/schema";
-import { eq, and, count, inArray } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { listCodexMatchTargets } from "./api";
 import type { CodexMatchTarget } from "./codexMatcher";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import {
+  isBodyMentionIndexReady,
+  recordBodyMentionScans,
+  type BodyMentionSceneRevision,
+} from "./bodyMentionIndexState";
 
 // ---------------------------------------------------------------------------
 // Queue state (Zustand — drives status bar "Scanning... N/Total")
@@ -30,8 +35,14 @@ export const useRescanStore = create<RescanState>()(() => ({
 let runningPromise: Promise<void> | null = null;
 
 async function runRescan(
+  projectId: string,
   allEntries: CodexMatchTarget[],
-  scenes: { id: string; content: string }[],
+  scenes: Array<{
+    id: string;
+    content: string;
+    version: number;
+    updatedAt: string;
+  }>,
 ): Promise<void> {
   useRescanStore.setState({
     isRunning: true,
@@ -39,16 +50,23 @@ async function runRescan(
     total: scenes.length,
   });
 
+  const successfulScans: BodyMentionSceneRevision[] = [];
   try {
     for (let i = 0; i < scenes.length; i++) {
       const { id, content } = scenes[i];
       try {
         await upsertSceneBodyMentions(id, content, allEntries);
+        successfulScans.push({
+          sceneId: id,
+          version: scenes[i].version,
+          updatedAt: scenes[i].updatedAt,
+        });
       } catch {
         // Non-fatal: skip this scene, log nothing to avoid noise
       }
       useRescanStore.setState({ progress: i + 1 });
     }
+    await recordBodyMentionScans(projectId, allEntries, successfulScans);
   } finally {
     runningPromise = null;
     useRescanStore.setState({ isRunning: false, progress: 0, total: 0 });
@@ -66,11 +84,14 @@ async function runRescan(
  * Concurrent calls are coalesced: a new call while a run is in progress is a
  * no-op (the current run already covers the needed work).
  */
-export function enqueueRescan(forEntryId: string | null = null): void {
-  if (runningPromise !== null) return;
+export function enqueueRescan(
+  forEntryId: string | null = null,
+  projectId: string = getCurrentProjectId(),
+): Promise<void> {
+  if (runningPromise !== null) return runningPromise;
 
-  runningPromise = (async () => {
-    const allEntries = await listCodexMatchTargets(getCurrentProjectId());
+  const scheduled = (async () => {
+    const allEntries = await listCodexMatchTargets(projectId);
     const matchTargets: CodexMatchTarget[] = allEntries.map((e) => ({
       id: e.id,
       name: e.name,
@@ -82,9 +103,13 @@ export function enqueueRescan(forEntryId: string | null = null): void {
     // For a partial rescan we still pass all entries to the matcher (changing
     // one entry's pattern can affect other entries' matches via Aho-Corasick).
     // We limit the *scene* set for performance only when a single entry changed.
-    let scenes: { id: string; content: string }[];
+    let scenes: Array<{
+      id: string;
+      content: string;
+      version: number;
+      updatedAt: string;
+    }>;
     if (forEntryId !== null) {
-      const projectId = getCurrentProjectId();
       // Scenes that currently mention this entry (source='body').
       const mentioned = await db
         .select({ sceneId: sceneCodexMentions.sceneId })
@@ -103,7 +128,12 @@ export function enqueueRescan(forEntryId: string | null = null): void {
         // rescan stripped every row before the new name existed in prose).
         // Scan every scene.
         scenes = await db
-          .select({ id: treeNodes.id, content: treeNodes.content })
+          .select({
+            id: treeNodes.id,
+            content: treeNodes.content,
+            version: treeNodes.version,
+            updatedAt: treeNodes.updatedAt,
+          })
           .from(treeNodes)
           .where(
             and(
@@ -137,59 +167,48 @@ export function enqueueRescan(forEntryId: string | null = null): void {
           targetIds.length === 0
             ? []
             : await db
-                .select({ id: treeNodes.id, content: treeNodes.content })
+                .select({
+                  id: treeNodes.id,
+                  content: treeNodes.content,
+                  version: treeNodes.version,
+                  updatedAt: treeNodes.updatedAt,
+                })
                 .from(treeNodes)
                 .where(inArray(treeNodes.id, targetIds));
       }
     } else {
       scenes = await db
-        .select({ id: treeNodes.id, content: treeNodes.content })
+        .select({
+          id: treeNodes.id,
+          content: treeNodes.content,
+          version: treeNodes.version,
+          updatedAt: treeNodes.updatedAt,
+        })
         .from(treeNodes)
         .where(
           and(
             eq(treeNodes.nodeType, "scene"),
-            eq(treeNodes.projectId, getCurrentProjectId()),
+            eq(treeNodes.projectId, projectId),
           ),
         );
     }
 
-    await runRescan(matchTargets, scenes);
+    await runRescan(projectId, matchTargets, scenes);
   })().catch(() => {
     runningPromise = null;
     useRescanStore.setState({ isRunning: false, progress: 0, total: 0 });
   });
+  runningPromise = scheduled;
+  return scheduled;
 }
 
 /**
- * Check if a startup backfill is needed: returns true when fewer than 80% of
- * scenes have a body mention row.
+ * Check whether every current scene revision has been scanned with the current
+ * Codex matcher inputs. Zero-mention scenes are represented by the state marker.
  */
-export async function needsBodyBackfill(): Promise<boolean> {
-  const [sceneCountRow] = await db
-    .select({ c: count() })
-    .from(treeNodes)
-    .where(
-      and(
-        eq(treeNodes.nodeType, "scene"),
-        eq(treeNodes.projectId, getCurrentProjectId()),
-      ),
-    );
-  const sceneCount = sceneCountRow?.c ?? 0;
-  if (sceneCount === 0) return false;
-
-  const [bodyCountRow] = await db
-    .select({ c: count() })
-    .from(sceneCodexMentions)
-    .innerJoin(treeNodes, eq(sceneCodexMentions.sceneId, treeNodes.id))
-    .where(
-      and(
-        eq(sceneCodexMentions.source, "body"),
-        eq(treeNodes.projectId, getCurrentProjectId()),
-      ),
-    );
-  const bodyCount = bodyCountRow?.c ?? 0;
-
-  // bodyCount counts (scene, entry) pairs, not unique scenes.
-  // Use sceneCount as the threshold proxy: if no body rows exist at all, backfill.
-  return bodyCount === 0 || bodyCount / sceneCount < 0.8;
+export async function needsBodyBackfill(
+  projectId: string = getCurrentProjectId(),
+): Promise<boolean> {
+  const entries = await listCodexMatchTargets(projectId);
+  return !(await isBodyMentionIndexReady(projectId, entries));
 }

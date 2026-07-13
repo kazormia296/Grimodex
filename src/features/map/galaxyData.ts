@@ -1,4 +1,4 @@
-import { buildCrossReferenceReportForProject } from "@/features/codex/crossReference";
+import { buildGalaxyCrossReferenceForProject } from "@/features/codex/crossReference";
 import { listCodexRelations } from "@/features/codex/codexRelationApi";
 import {
   listEvents,
@@ -33,7 +33,7 @@ export async function loadGalaxyGraphInput(
     threads,
     threadLinks,
   ] = await Promise.all([
-    buildCrossReferenceReportForProject(projectId),
+    buildGalaxyCrossReferenceForProject(projectId),
     listCodexRelations(projectId),
     listEvents(projectId),
     listSceneEventsForProject(projectId),

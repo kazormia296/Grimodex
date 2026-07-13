@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from "react";
+import { lazy, Suspense, useEffect, useCallback, useState } from "react";
 import { Toaster, toast } from "sonner";
 
 import { WelcomeScreen } from "@/features/workspace/WelcomeScreen";
@@ -11,13 +11,8 @@ import { ReleaseNotesDialog } from "@/features/release-notes/ReleaseNotesDialog"
 import { useReleaseNotesGate } from "@/features/release-notes/useReleaseNotesGate";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useSyncUiScale } from "@/features/workspace/useSyncUiScale";
-import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import type { SettingsCategory } from "@/features/settings/types";
-import { ProjectSnapshotModal } from "@/features/revision/ProjectSnapshotModal";
-import {
-  TransferDialog,
-  type TransferTab,
-} from "@/features/transfer/TransferDialog";
+import type { TransferTab } from "@/features/transfer/TransferDialog";
 import { PanelToggleDropdown } from "@/features/layout/PanelToggleDropdown";
 import { LayoutPresetDropdown } from "@/features/layout/LayoutPresetDropdown";
 import { useLayoutStore } from "@/features/layout/layoutStore";
@@ -49,7 +44,6 @@ import {
 } from "@/features/editor/inlineAi/pendingGuard";
 import { DebugLogViewer } from "@/lib/DebugLogViewer";
 import { Settings, FileOutput } from "lucide-react";
-import { ExportDialog } from "@/features/export/ExportDialog";
 import type { ExportDialogMode } from "@/features/export/ExportDialog";
 import {
   COLOR_THEMES,
@@ -83,7 +77,6 @@ import {
 } from "@/features/settings/keybindings";
 import { invoke } from "@/lib/tauri";
 import { onWindowCloseRequested } from "@/lib/windowControls";
-import { SampleTour } from "@/features/onboarding/SampleTour";
 import {
   getScreenshotPanelId,
   isScreenshotCapture,
@@ -100,6 +93,32 @@ import { useCodexSelectionSync } from "@/features/codex/multiwindow/codexSelecti
 import { startCodexLockListener } from "@/features/codex/multiwindow/codexEditLockStore";
 import { cn } from "@/lib/utils";
 import { useImeExportSync } from "@/features/ime/useImeExportSync";
+
+const SettingsDialog = lazy(() =>
+  import("@/features/settings/SettingsDialog").then((m) => ({
+    default: m.SettingsDialog,
+  })),
+);
+const ProjectSnapshotModal = lazy(() =>
+  import("@/features/revision/ProjectSnapshotModal").then((m) => ({
+    default: m.ProjectSnapshotModal,
+  })),
+);
+const TransferDialog = lazy(() =>
+  import("@/features/transfer/TransferDialog").then((m) => ({
+    default: m.TransferDialog,
+  })),
+);
+const ExportDialog = lazy(() =>
+  import("@/features/export/ExportDialog").then((m) => ({
+    default: m.ExportDialog,
+  })),
+);
+const SampleTour = lazy(() =>
+  import("@/features/onboarding/SampleTour").then((m) => ({
+    default: m.SampleTour,
+  })),
+);
 
 /* ── App root ── */
 
@@ -788,27 +807,37 @@ function EditorScreen() {
           }
         />
       )}
-      <SettingsDialog
-        open={showSettings}
-        onClose={() => setShowSettings(false)}
-        initialCategory={settingsInitialCategory}
-      />
-      <ExportDialog
-        open={showExport}
-        onClose={() => setShowExport(false)}
-        modeRequest={exportModeRequest}
-      />
-      <ProjectSnapshotModal
-        open={showSnapshotModal}
-        onClose={() => setShowSnapshotModal(false)}
-      />
-      <TransferDialog
-        open={showTransferDialog}
-        tab={transferTab}
-        onTabChange={setTransferTab}
-        onClose={() => setShowTransferDialog(false)}
-      />
-      {showSampleTour && <SampleTour />}
+      <Suspense fallback={null}>
+        {showSettings && (
+          <SettingsDialog
+            open
+            onClose={() => setShowSettings(false)}
+            initialCategory={settingsInitialCategory}
+          />
+        )}
+        {showExport && (
+          <ExportDialog
+            open
+            onClose={() => setShowExport(false)}
+            modeRequest={exportModeRequest}
+          />
+        )}
+        {showSnapshotModal && (
+          <ProjectSnapshotModal
+            open
+            onClose={() => setShowSnapshotModal(false)}
+          />
+        )}
+        {showTransferDialog && (
+          <TransferDialog
+            open
+            tab={transferTab}
+            onTabChange={setTransferTab}
+            onClose={() => setShowTransferDialog(false)}
+          />
+        )}
+        {showSampleTour && <SampleTour />}
+      </Suspense>
       <ReindexProgressToast />
       <ModelDownloadToast />
       <PostEffectProgressToast />
