@@ -515,6 +515,71 @@ impl Backend {
         .await
     }
 
+    /// Main-only Codex App Server binding lookup. This method is intentionally
+    /// not registered in `NAPI_COMMANDS`: renderer cannot select an external
+    /// thread or bypass the project/session ownership check.
+    #[napi]
+    pub async fn get_chat_runtime_thread_binding(
+        &self,
+        project_id: String,
+        session_id: String,
+        runtime: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                let binding = db.get_chat_runtime_thread_binding(
+                    &project_id,
+                    &session_id,
+                    &runtime,
+                )?;
+                Ok(serde_json::to_string(&binding).map_err(anyhow::Error::from)?)
+            })
+        })
+        .await
+    }
+
+    /// Main-only Codex App Server binding upsert. The shared DB layer verifies
+    /// that session_id belongs to project_id and that the external id is not
+    /// already attached to another runtime session.
+    #[napi]
+    pub async fn upsert_chat_runtime_thread_binding(
+        &self,
+        binding: serde_json::Value,
+    ) -> Result<()> {
+        let binding = from_wire::<grimodex_db::runtime_threads::RuntimeThreadBinding>(
+            "binding",
+            binding,
+        )
+        .map_err(app_err_to_napi)?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                db.upsert_chat_runtime_thread_binding(&binding)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Main-only Codex App Server binding deletion with project/session guard.
+    #[napi]
+    pub async fn delete_chat_runtime_thread_binding(
+        &self,
+        project_id: String,
+        session_id: String,
+        runtime: String,
+    ) -> Result<()> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            with_db_state(&state.ws, |db| {
+                db.delete_chat_runtime_thread_binding(&project_id, &session_id, &runtime)?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
     /// アクティブworkspaceの復元候補を新しい順で返す。
     /// 返り値は `BackupInfo[]` のcamelCase JSON文字列。
     #[napi]

@@ -940,6 +940,98 @@
       "uniqueConstraints": [],
       "createSql": "CREATE VIRTUAL TABLE chat_messages_fts_en USING fts5( content, tokenize='porter unicode61' )"
     },
+    "chat_runtime_threads": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "external_thread_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "history_revision": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "last_turn_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "runtime": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "session_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "chat_sessions",
+          "from": "session_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "runtime",
+            "external_thread_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE chat_runtime_threads ( session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, runtime TEXT NOT NULL, external_thread_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, history_revision TEXT, last_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, runtime), UNIQUE (runtime, external_thread_id) )"
+    },
     "chat_session_pinned_codex": {
       "kind": "table",
       "columns": {
@@ -7687,6 +7779,22 @@
         }
       ],
       "createSql": "CREATE INDEX idx_chat_pin_session ON chat_session_pinned_codex(session_id, created_at)"
+    },
+    "idx_chat_runtime_threads_project": {
+      "table": "chat_runtime_threads",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "runtime"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_chat_runtime_threads_project ON chat_runtime_threads(project_id, runtime)"
     },
     "idx_chat_sessions_codex_anchor": {
       "table": "chat_sessions",

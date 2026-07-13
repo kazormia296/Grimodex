@@ -19,6 +19,7 @@ import { ChatPanelHeader } from "./components/ChatPanelHeader";
 import { ChatInput } from "./components/ChatInput";
 import { AgentProgressBar } from "./components/AgentProgressBar";
 import { UserQuestionCard } from "./components/UserQuestionCard";
+import { CodexApprovalCard } from "./components/CodexApprovalCard";
 import { QuickActionStrip } from "./components/QuickActionStrip";
 import { ChatRecallPromoteBanner } from "./components/ChatRecallPromoteBanner";
 import { ContextBar } from "./components/ContextBar";
@@ -27,6 +28,9 @@ import { resolveAinoveristApiVariant } from "./aiNovelist";
 import { computeSpotlightCandidates } from "./spotlightSuggestion";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import * as chatApi from "./chatApi";
+import { listen } from "@/lib/tauri";
+import { respondToCodexServerRequest } from "./codexAppApi";
+import type { CodexAppEventEnvelope } from "@/../electron/shared/codexAppProtocol";
 import { useAiSettingsStore, isRagCapableProvider } from "./store";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -123,6 +127,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const selectSession = useChatStore((s) => s.selectSession);
   const createNewSession = useChatStore((s) => s.createNewSession);
   const ensureSession = useChatStore((s) => s.ensureSession);
+  const activeProjectId = useChatStore((s) => s.activeProjectId);
   const chatScope = useChatStore((s) => s.chatScope);
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
   const setChatScope = useChatStore((s) => s.setChatScope);
@@ -134,6 +139,13 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const ragEnabled = useChatStore((s) => s.ragEnabled);
   const setRagEnabled = useChatStore((s) => s.setRagEnabled);
   const [mapBoardTitle, setMapBoardTitle] = useState<string | null>(null);
+  const [codexApproval, setCodexApproval] = useState<{
+    envelope: CodexAppEventEnvelope;
+    request: Extract<
+      CodexAppEventEnvelope["event"],
+      { type: "approval-requested" }
+    >;
+  } | null>(null);
   const syncInsertedToEditorMetadata = useChatStore(
     (s) => s.syncInsertedToEditorMetadata,
   );
@@ -414,6 +426,75 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     };
   }, [includeMapBoard, resolvedMapBoardId]);
 
+  // Approval requests are rendered outside the message virtualizer so a
+  // session switch cannot leave an old request attached to another chat.
+  useEffect(() => {
+    setCodexApproval(null);
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    const projectId = activeProjectId ?? getCurrentProjectId();
+    void listen<unknown>("codex-app:event", (raw) => {
+      if (
+        cancelled ||
+        typeof raw !== "object" ||
+        raw === null ||
+        Array.isArray(raw)
+      ) {
+        return;
+      }
+      const envelope = raw as CodexAppEventEnvelope;
+      if (
+        envelope.projectId !== projectId ||
+        envelope.sessionId !== activeSessionId ||
+        typeof envelope.event !== "object" ||
+        envelope.event === null
+      ) {
+        return;
+      }
+      if (envelope.event.type === "approval-requested") {
+        setCodexApproval({ envelope, request: envelope.event });
+        return;
+      }
+      if (
+        envelope.event.type === "turn-completed" ||
+        envelope.event.type === "turn-error"
+      ) {
+        setCodexApproval((current) =>
+          current?.envelope.grimodexTurnId === envelope.grimodexTurnId
+            ? null
+            : current,
+        );
+      }
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [activeProjectId, activeSessionId]);
+
+  const handleCodexApprovalDecision = useCallback(
+    async (decision: "accept" | "decline") => {
+      if (!codexApproval) return;
+      try {
+        await respondToCodexServerRequest({
+          projectId: codexApproval.envelope.projectId,
+          sessionId: codexApproval.envelope.sessionId,
+          grimodexTurnId: codexApproval.envelope.grimodexTurnId,
+          requestId: codexApproval.request.requestId,
+          decision,
+        });
+        setCodexApproval(null);
+      } catch (cause) {
+        toast.error(cause instanceof Error ? cause.message : String(cause));
+        throw cause;
+      }
+    },
+    [codexApproval],
+  );
+
   const handleToggleMapOverlay = useCallback(() => {
     const next = !includeMapBoard;
     setIncludeMapBoard(next, {
@@ -581,6 +662,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             {/* 質問カード / streaming indicator はスペーサ外の通常フロー。
                 高さは virtualizer の totalSize に乗らないが、scrollToBottom
                 が bottomRef (全兄弟の後) に着地するため末尾はズレない。 */}
+            {codexApproval && (
+              <CodexApprovalCard
+                request={codexApproval.request}
+                onDecision={handleCodexApprovalDecision}
+              />
+            )}
             {pendingUserQuestion &&
               pendingUserQuestion.sessionId === activeSessionId && (
                 <UserQuestionCard

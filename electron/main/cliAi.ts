@@ -110,7 +110,7 @@ export interface CliExecutableIdentity {
   sha256: string | null;
 }
 
-interface CliDetectDependencies {
+export interface CliDetectDependencies {
   runner: CliProcessRunner;
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;
@@ -211,6 +211,7 @@ const BASE_CLI_ENV_KEYS = [
   "LC_ALL",
   "TERM",
   "COLORTERM",
+  "CODEX_HOME",
 ] as const;
 
 const CLI_ENV_KEYS: Record<CliKind, readonly string[]> = {
@@ -368,6 +369,17 @@ function mergedEnv(
     }
   }
   return environment;
+}
+
+/**
+ * App Serverを含むCLI系main managerが共有する環境allowlist。
+ * rendererから任意の環境変数を受け取らず、既存CLI経路と同じ固定allowlistを使う。
+ */
+export function buildCliEnvironment(
+  kind: CliKind,
+  cwd?: string,
+): NodeJS.ProcessEnv {
+  return mergedEnv(kind, undefined, undefined, cwd);
 }
 
 function terminateChildTree(

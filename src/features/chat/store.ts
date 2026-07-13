@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as api from "./api";
 import * as cliApi from "./cliApi";
+import * as codexAppApi from "./codexAppApi";
 import { resolveModelApiVariant } from "./aiNovelist";
 import type {
   AiProvider,
@@ -270,10 +271,16 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     set({ isLoadingModels: true });
     try {
       if (settings.provider === "cli") {
-        const models = await cliApi.listCliModels(
-          settings.cli?.kind ?? "claude",
-          settings.cli?.binaryPath,
-        );
+        const useCodexAppServer =
+          settings.cli?.kind === "codex" &&
+          settings.cli.codexTransport !== "exec" &&
+          settings.cli.codexTransport !== undefined;
+        const models = useCodexAppServer
+          ? await codexAppApi.listCodexAppModels()
+          : await cliApi.listCliModels(
+              settings.cli?.kind ?? "claude",
+              settings.cli?.binaryPath,
+            );
         if (!isCurrentRequest()) return;
         set({ models, isLoadingModels: false });
         return;

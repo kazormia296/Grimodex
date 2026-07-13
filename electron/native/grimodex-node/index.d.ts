@@ -76,6 +76,20 @@ export declare class Backend {
    */
   getActiveWorkspacePath(): Promise<string>
   /**
+   * Main-only Codex App Server binding lookup. This method is intentionally
+   * not registered in `NAPI_COMMANDS`: renderer cannot select an external
+   * thread or bypass the project/session ownership check.
+   */
+  getChatRuntimeThreadBinding(projectId: string, sessionId: string, runtime: string): Promise<string>
+  /**
+   * Main-only Codex App Server binding upsert. The shared DB layer verifies
+   * that session_id belongs to project_id and that the external id is not
+   * already attached to another runtime session.
+   */
+  upsertChatRuntimeThreadBinding(binding: any): Promise<void>
+  /** Main-only Codex App Server binding deletion with project/session guard. */
+  deleteChatRuntimeThreadBinding(projectId: string, sessionId: string, runtime: string): Promise<void>
+  /**
    * アクティブworkspaceの復元候補を新しい順で返す。
    * 返り値は `BackupInfo[]` のcamelCase JSON文字列。
    */

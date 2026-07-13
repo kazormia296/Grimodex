@@ -7,6 +7,7 @@ import {
   useAiSettingsStore,
   isRagCapableProvider,
 } from "@/features/chat/store";
+import { useChatStore } from "@/features/chat/chatStore";
 import { normalizeDomainList } from "@/features/chat/webSearchConfig";
 import { ModelPicker } from "@/features/chat/ModelPicker";
 import { getProviderLabel } from "@/features/chat/providerLabels";
@@ -26,6 +27,11 @@ import type {
   ToolProtocolMode,
 } from "@/features/chat/types";
 import { detectCliBinary, testCliConnection } from "@/features/chat/cliApi";
+import {
+  archiveCodexSessionThread,
+  testCodexAppServerConnection,
+} from "@/features/chat/codexAppApi";
+import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
   MODEL_ROLES,
@@ -47,10 +53,20 @@ import { SettingSection } from "../components/SettingSection";
 import { McpIntegrationSection } from "../components/McpIntegrationSection";
 import { SettingScopeHeader } from "../components/SettingScopeHeader";
 import { SettingRow } from "../components/SettingRow";
-import { SettingToggle } from "../components/SettingToggle";
+import { ControlledToggle, SettingToggle } from "../components/SettingToggle";
 import { Switch } from "@/components/ui/switch";
 import { SettingTextarea } from "../components/SettingTextarea";
 import { AiProjectSettings } from "./AiProjectSettings";
+
+async function archiveActiveCodexThreads(): Promise<void> {
+  const projectId = getCurrentProjectId();
+  const sessions = useChatStore
+    .getState()
+    .sessions.filter((session) => session.projectId === projectId);
+  await Promise.allSettled(
+    sessions.map((session) => archiveCodexSessionThread(projectId, session.id)),
+  );
+}
 import {
   MODEL_BY_PROVIDER_KEY,
   readModelByProvider,
@@ -241,6 +257,15 @@ export function AiCategory() {
   }, [hasApiKey, settings?.provider, handleLoadModels]);
 
   async function handleProviderChange(provider: AiProvider) {
+    const leavingCodexAppServer =
+      localSettings?.provider === "cli" &&
+      localSettings.cli?.kind === "codex" &&
+      localSettings.cli.codexTransport !== "exec" &&
+      localSettings.cli.codexTransport !== undefined &&
+      provider !== "cli";
+    if (leavingCodexAppServer) {
+      await archiveActiveCodexThreads();
+    }
     // 切替元の(モデル+variant)を per-provider マップへ焼き込み、切替先は前回の
     // 記憶を復元する。これにより別プロバイダへ移って戻っても選び直す必要がない。
     const { map: modelMap, restored } = applyProviderSwitch(
@@ -652,6 +677,17 @@ export function AiCategory() {
             const updateCli = async (
               patch: Partial<typeof cli>,
             ): Promise<void> => {
+              const wasCodexAppServer =
+                cli.kind === "codex" &&
+                cli.codexTransport !== "exec" &&
+                cli.codexTransport !== undefined;
+              const leavesCodexAppServer =
+                (patch.kind !== undefined && patch.kind !== "codex") ||
+                (patch.codexTransport !== undefined &&
+                  patch.codexTransport === "exec");
+              if (wasCodexAppServer && leavesCodexAppServer) {
+                await archiveActiveCodexThreads();
+              }
               const updated = {
                 ...localSettings,
                 cli: { ...cli, ...patch },
@@ -682,6 +718,44 @@ export function AiCategory() {
                     <option value="opencode">OpenCode (opencode)</option>
                   </select>
                 </SettingRow>
+                {cli.kind === "codex" && (
+                  <SettingRow
+                    label={t("settings.ai.codexTransport")}
+                    description={t("settings.ai.codexTransportDesc")}
+                  >
+                    <select
+                      value={cli.codexTransport ?? "exec"}
+                      onChange={(e) =>
+                        void updateCli({
+                          codexTransport: e.target.value as
+                            | "exec"
+                            | "app-server"
+                            | "auto",
+                        }).then(() => handleLoadModels())
+                      }
+                      className="rounded-md border border-input bg-background px-2 py-1 text-sm focus:outline-none"
+                    >
+                      <option value="exec">codex exec</option>
+                      <option value="app-server">Codex App Server</option>
+                      <option value="auto">App Server → exec fallback</option>
+                    </select>
+                  </SettingRow>
+                )}
+                {cli.kind === "codex" &&
+                  cli.codexTransport !== "exec" &&
+                  cli.codexTransport !== undefined && (
+                    <SettingRow
+                      label={t("settings.ai.codexAllowApprovals")}
+                      description={t("settings.ai.codexAllowApprovalsDesc")}
+                    >
+                      <ControlledToggle
+                        value={cli.codexAllowApprovals === true}
+                        onChange={(value) =>
+                          void updateCli({ codexAllowApprovals: value })
+                        }
+                      />
+                    </SettingRow>
+                  )}
                 <p className="mb-2 text-xs text-muted-foreground">
                   {t("settings.ai.cliAuthNoteBefore")}
                   <code className="font-mono">
@@ -783,6 +857,33 @@ export function AiCategory() {
                   >
                     {t("settings.ai.connectionTestVersion")}
                   </button>
+                  {cli.kind === "codex" &&
+                    cli.codexTransport !== "exec" &&
+                    cli.codexTransport !== undefined && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const status = await testCodexAppServerConnection();
+                            toast.success(
+                              t("settings.ai.codexAppServerConnected", {
+                                status: JSON.stringify(status),
+                              }),
+                            );
+                          } catch (e) {
+                            toast.error(
+                              t("settings.ai.codexAppServerConnectionFailed", {
+                                error:
+                                  e instanceof Error ? e.message : String(e),
+                              }),
+                            );
+                          }
+                        }}
+                        className="ml-2 rounded-md bg-secondary px-3 py-1.5 text-sm text-secondary-foreground hover:bg-secondary/80"
+                      >
+                        {t("settings.ai.codexAppServerTest")}
+                      </button>
+                    )}
                 </div>
               </>
             );

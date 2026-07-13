@@ -19,6 +19,7 @@ import { ToolCallBlock } from "./ToolCallBlock";
 import { AnsweredQuestionBlock } from "./AnsweredQuestionBlock";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { SummaryBlock } from "./SummaryBlock";
+import { CodexItemList } from "./CodexItemList";
 import {
   copyChatMessageWithAttribution,
   handleCopyWithAttribution,
@@ -40,6 +41,8 @@ interface ParsedMetadata {
   citations?: Citation[];
   /** リクエストの概算コスト (USD)。OpenRouter のみ実値。 */
   cost?: number;
+  codex_items?: unknown[];
+  codex_warnings?: string[];
 }
 
 function parseMetadata(metadata: string | null | undefined): ParsedMetadata {
@@ -198,6 +201,13 @@ function ChatMessageImpl({
                 )}
               </div>
             )}
+            <CodexItemList raw={parsedMeta.codex_items} />
+            {parsedMeta.codex_warnings &&
+              parsedMeta.codex_warnings.length > 0 && (
+                <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-700 dark:text-amber-300">
+                  {parsedMeta.codex_warnings.join("\n")}
+                </div>
+              )}
             <div className="prose prose-sm max-w-none dark:prose-invert">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -209,12 +219,14 @@ function ChatMessageImpl({
             {citations.length > 0 && <CitationList citations={citations} />}
             {/* G3: Meta info row */}
             {(msg.model ||
+              msg.tokensIn != null ||
               msg.tokensOut != null ||
               msg.durationMs != null ||
               ragCost != null) && (
               <div className="mt-1 text-[10px] text-muted-foreground/60">
                 {[
                   msg.model,
+                  msg.tokensIn != null ? `${msg.tokensIn} in` : null,
                   msg.tokensOut != null ? `${msg.tokensOut} tok` : null,
                   msg.durationMs != null
                     ? `${(msg.durationMs / 1000).toFixed(1)}s`

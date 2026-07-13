@@ -12,6 +12,8 @@ import { app, dialog, safeStorage } from "electron";
 
 import { getBackend, initBackend } from "./backend.js";
 import { createCliAiManager } from "./cliAi.js";
+import { createCodexAppServerManager } from "./codexAppServer/manager.js";
+import { createRuntimeThreadBindingStore } from "./codexAppServer/threadBindingStore.js";
 import { migrateLegacyKeyringToSafeStorage } from "./credentialMigration.js";
 import {
   broadcastBackendEvent,
@@ -122,6 +124,11 @@ if (!gotSingleInstanceLock) {
     const resolveMcpSidecar = prepareMcpSidecarForStartup(app.isPackaged, () =>
       resolveMcpSidecarPath(),
     );
+    const mcpConfigHandlers = buildMcpConfigShellHandlers(
+      backend,
+      path.join(configuredUserDataDir, "license.json"),
+      resolveMcpSidecar,
+    );
     // external_mount（§2 バッチ2）: registry + chokidar watcher を持つ常駐
     // マネージャを 1 個生成し、その shell コマンドハンドラを invoke ルーターへ
     // 注入する。watcher イベントは backend event として全窓へ配信（external-mount://
@@ -150,6 +157,72 @@ if (!gotSingleInstanceLock) {
           noLink: true,
         });
         return response === 0;
+      },
+    });
+    // Codex App Serverはlazy起動。rendererには高水準commandだけを公開し、
+    // workspace path / thread binding / read-only policyはmain側で確定する。
+    const codexApp = createCodexAppServerManager({
+      broadcast: broadcastBackendEvent,
+      getWorkspacePath: backend?.getActiveWorkspacePath
+        ? () => backend.getActiveWorkspacePath!()
+        : undefined,
+      threadBindings: createRuntimeThreadBindingStore(backend),
+      appVersion: app.getVersion(),
+      getAllowApprovals: async () => {
+        if (!backend) return false;
+        try {
+          const raw = JSON.parse(await backend.getAiSettings()) as unknown;
+          if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+            return false;
+          }
+          const settings = raw as Record<string, unknown>;
+          const cli = settings.cli;
+          return (
+            settings.provider === "cli" &&
+            typeof cli === "object" &&
+            cli !== null &&
+            !Array.isArray(cli) &&
+            (cli as Record<string, unknown>).kind === "codex" &&
+            (cli as Record<string, unknown>).codexAllowApprovals === true
+          );
+        } catch {
+          return false;
+        }
+      },
+      getReadOnlyMcpServer: async (projectId) => {
+        const info = await mcpConfigHandlers.get_mcp_config({});
+        if (typeof info !== "object" || info === null || Array.isArray(info)) {
+          throw new Error("MCP config response is invalid");
+        }
+        const record = info as Record<string, unknown>;
+        const command = record.command;
+        const workspace = record.workspace;
+        const argsPrefix = record.argsPrefix;
+        if (
+          typeof command !== "string" ||
+          typeof workspace !== "string" ||
+          !path.isAbsolute(command) ||
+          !path.isAbsolute(workspace)
+        ) {
+          throw new Error("MCP config contains non-absolute paths");
+        }
+        const prefix = Array.isArray(argsPrefix)
+          ? argsPrefix.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [];
+        return {
+          command,
+          args: [
+            ...prefix,
+            "--workspace",
+            workspace,
+            "--project",
+            projectId,
+            "--readonly",
+          ],
+          env: {},
+        };
       },
     });
     // Vivliostyle（バッチ5）: build/preview child、成果物token、tempをmain lifetime
@@ -196,6 +269,7 @@ if (!gotSingleInstanceLock) {
       updater.dispose();
       licenseValidation.dispose();
       cliAi.disposeAll();
+      void codexApp.dispose();
       void externalMount.disposeAll();
     });
     // API キー保管（バッチ3a）: safeStorage 暗号化 + ai-keys.json。has/save/delete は
@@ -206,13 +280,10 @@ if (!gotSingleInstanceLock) {
         ...externalMount.handlers,
         ...buildKeyStoreShellHandlers(keyStore),
         ...cliAi.handlers,
+        ...codexApp.handlers,
         ...vivliostyle.handlers,
         ...updater.handlers,
-        ...buildMcpConfigShellHandlers(
-          backend,
-          path.join(configuredUserDataDir, "license.json"),
-          resolveMcpSidecar,
-        ),
+        ...mcpConfigHandlers,
       },
       keyStore,
       broadcastBackendEvent,

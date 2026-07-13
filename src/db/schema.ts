@@ -450,6 +450,36 @@ export const chatSessions = sqliteTable(
   ],
 );
 
+/** External runtime thread binding (Codex App Server and future runtimes). */
+export const chatRuntimeThreads = sqliteTable(
+  "chat_runtime_threads",
+  {
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    runtime: text("runtime").notNull(),
+    externalThreadId: text("external_thread_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    historyRevision: text("history_revision"),
+    lastTurnId: text("last_turn_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.sessionId, table.runtime] }),
+    uniqueIndex("uq_chat_runtime_threads_external").on(
+      table.runtime,
+      table.externalThreadId,
+    ),
+    index("idx_chat_runtime_threads_project").on(
+      table.projectId,
+      table.runtime,
+    ),
+  ],
+);
+
 export const chatMessages = sqliteTable(
   "chat_messages",
   {

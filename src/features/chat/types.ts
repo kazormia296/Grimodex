@@ -26,6 +26,9 @@ export type ToolProtocolMode = "auto" | "native" | "hermes";
 /** CLI エージェント種別 (Claude Code / Codex CLI / OpenCode) */
 export type CliKind = "claude" | "codex" | "opencode";
 
+/** Codex CLI を単発実行するか、常駐 App Server に接続するか。 */
+export type CliTransport = "exec" | "app-server" | "auto";
+
 /** CLI プロバイダ用設定 */
 export interface CliSettings {
   /** 使用する CLI 種別 */
@@ -37,6 +40,10 @@ export interface CliSettings {
   binaryPath?: string;
   /** CLI に渡すモデル名。空なら CLI のデフォルトモデル */
   model?: string;
+  /** kind === "codex" のときだけ有効。未設定は既存互換の exec。 */
+  codexTransport?: CliTransport;
+  /** Codex App Serverの承認付きworkspace writeを明示的に許可する。 */
+  codexAllowApprovals?: boolean;
 }
 
 /** カスタム OpenAI 互換プロバイダの設定。 */
