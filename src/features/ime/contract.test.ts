@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import Ajv2020, {
   type AnySchema,
@@ -226,5 +226,109 @@ describe("IME Protocol V1 contract fixtures", () => {
         expected_generation: 2,
       },
     ]);
+  });
+});
+
+describe("Composition Behavior Contract v1", () => {
+  const behaviorRoot = join(contractRoot, "composition-behavior-v1");
+
+  it("validates every semantic action and snapshot fixture", () => {
+    const ajv = new Ajv2020({ allErrors: true, strict: true });
+    const validateAction = ajv.compile(
+      JSON.parse(
+        readFileSync(join(behaviorRoot, "actions.schema.json"), "utf8"),
+      ) as AnySchema,
+    );
+    const validateSnapshot = ajv.compile(
+      JSON.parse(
+        readFileSync(join(behaviorRoot, "snapshots.schema.json"), "utf8"),
+      ) as AnySchema,
+    );
+    const validateScenario = ajv.compile(
+      JSON.parse(
+        readFileSync(join(behaviorRoot, "scenario.schema.json"), "utf8"),
+      ) as AnySchema,
+    );
+    const scenarios = readdirSync(join(behaviorRoot, "scenarios"))
+      .filter((name) => name.endsWith(".json"))
+      .map(
+        (name) =>
+          JSON.parse(
+            readFileSync(join(behaviorRoot, "scenarios", name), "utf8"),
+          ) as {
+            contract_version: string;
+            scenario_id: string;
+            actions: unknown[];
+            statuses: unknown[];
+            snapshots: unknown[];
+          },
+      );
+
+    expect(scenarios.map((scenario) => scenario.scenario_id).sort()).toEqual([
+      "composing-basic",
+      "cursor-editing",
+      "escape-backspace",
+      "partial-commit",
+      "secure-input",
+      "segment-editing",
+      "server-failure",
+      "stale-candidate",
+      "unicode-caret",
+    ]);
+    for (const scenario of scenarios) {
+      expect(scenario.contract_version).toBe("composition-behavior-v1");
+      expect(
+        validateScenario(scenario),
+        `${scenario.scenario_id}: ${JSON.stringify(validateScenario.errors)}`,
+      ).toBe(true);
+      expect(scenario.statuses).toHaveLength(scenario.actions.length);
+      expect(scenario.snapshots).toHaveLength(scenario.actions.length);
+      for (const action of scenario.actions) {
+        expect(
+          validateAction(action),
+          JSON.stringify(validateAction.errors),
+        ).toBe(true);
+      }
+      for (const snapshot of scenario.snapshots) {
+        expect(
+          validateSnapshot(snapshot),
+          JSON.stringify(validateSnapshot.errors),
+        ).toBe(true);
+      }
+    }
+
+    expect(validateAction({ type: "insert_text" })).toBe(false);
+    expect(
+      validateAction({
+        type: "select_candidate",
+        candidate_id: "candidate-a",
+        generation: 0,
+      }),
+    ).toBe(false);
+    expect(
+      validateAction({
+        type: "reconvert",
+        text: "対象",
+        left_context: "左",
+        right_context: "右",
+      }),
+    ).toBe(false);
+
+    const invalidEffectSnapshot = {
+      revision: 1,
+      phase: "idle",
+      preedit: [],
+      caret_utf8_byte_offset: null,
+      candidate_window: {
+        generation: 0,
+        items: [],
+        selected_index: null,
+        page_size: 0,
+      },
+      effects: [{ effect_id: 1, type: "commit_text" }],
+      recovery: null,
+      aux: null,
+    };
+    expect(validateSnapshot(invalidEffectSnapshot)).toBe(false);
   });
 });
