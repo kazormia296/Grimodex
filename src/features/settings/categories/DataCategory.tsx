@@ -90,7 +90,7 @@ export function DataCategory() {
   const rescanTotal = useRescanStore((s) => s.total);
 
   function handleRebuildMentionCache() {
-    enqueueRescan(null);
+    void enqueueRescan(null);
   }
 
   useEffect(() => {

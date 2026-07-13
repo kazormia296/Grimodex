@@ -21,6 +21,8 @@ const h = vi.hoisted(() => ({
   saveSceneContent: vi.fn(async () => ({
     placedBeatPreview: null,
     unplacedBeatPreview: null,
+    contentVersion: 1,
+    contentUpdatedAt: "2026-07-13T00:00:01.000Z",
   })),
   saveAuthorshipSpans: vi.fn(async () => {}),
   saveForeshadowAnchors: vi.fn(async () => {}),
@@ -28,6 +30,7 @@ const h = vi.hoisted(() => ({
   upsertSceneBeatMentions: vi.fn(() => Promise.resolve()),
   upsertSceneBeatPovOverrides: vi.fn(() => Promise.resolve()),
   upsertSceneBodyMentions: vi.fn(() => Promise.resolve()),
+  recordBodyMentionScans: vi.fn(() => Promise.resolve()),
   scheduleSceneIndex: vi.fn(),
   scheduleWriteBack: vi.fn(),
   setCharCount: vi.fn(),
@@ -95,6 +98,9 @@ vi.mock("@/features/editor/beat/beatPovCacheApi", () => ({
 vi.mock("@/features/editor/beat/bodyMentionApi", () => ({
   upsertSceneBodyMentions: h.upsertSceneBodyMentions,
 }));
+vi.mock("@/features/codex/bodyMentionIndexState", () => ({
+  recordBodyMentionScans: h.recordBodyMentionScans,
+}));
 vi.mock("@/features/codex/codexStore", () => ({
   useCodexStore: { getState: () => ({ entries: h.state.codexEntries }) },
 }));
@@ -148,6 +154,17 @@ describe("persistSceneBody — DB-native scene", () => {
       "scene-1",
       JSON.stringify(DOC_JSON),
       h.state.codexEntries,
+    );
+    expect(h.recordBodyMentionScans).toHaveBeenCalledWith(
+      "proj-1",
+      h.state.codexEntries,
+      [
+        {
+          sceneId: "scene-1",
+          version: 1,
+          updatedAt: "2026-07-13T00:00:01.000Z",
+        },
+      ],
     );
   });
 
@@ -243,12 +260,22 @@ describe("persistSceneBody — write-write serialization (M3 review I1)", () => 
         call = 1;
         order.push("content_A");
         await gateA;
-        return { placedBeatPreview: null, unplacedBeatPreview: null };
+        return {
+          placedBeatPreview: null,
+          unplacedBeatPreview: null,
+          contentVersion: 1,
+          contentUpdatedAt: "2026-07-13T00:00:01.000Z",
+        };
       })
       .mockImplementationOnce(async () => {
         call = 2;
         order.push("content_B");
-        return { placedBeatPreview: null, unplacedBeatPreview: null };
+        return {
+          placedBeatPreview: null,
+          unplacedBeatPreview: null,
+          contentVersion: 2,
+          contentUpdatedAt: "2026-07-13T00:00:02.000Z",
+        };
       });
     h.saveAuthorshipSpans
       .mockImplementationOnce(async () => {

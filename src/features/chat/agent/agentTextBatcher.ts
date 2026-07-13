@@ -29,6 +29,7 @@ export function createAgentTextBatcher(
   let pending = "";
   let handle: number | null = null;
   let disposed = false;
+  let hasPublished = false;
 
   const flush = () => {
     if (handle !== null) {
@@ -42,11 +43,12 @@ export function createAgentTextBatcher(
     const text = pending;
     pending = "";
     publish(text);
+    hasPublished = true;
   };
 
   const push = (text: string) => {
     if (disposed || !text) return;
-    pending += pending ? `\n\n${text}` : text;
+    pending += pending || hasPublished ? `\n\n${text}` : text;
     if (handle === null) handle = schedule(flush);
   };
 

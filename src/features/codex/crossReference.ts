@@ -8,7 +8,8 @@ import type { CodexMatchRow } from "./api";
 import { createCodexMatcher } from "./codexMatcher";
 import { rebuildMatcher, matchText } from "./rustMatcher";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { needsBodyBackfill } from "@/features/codex/mentionRescanQueue";
+import { enqueueRescan } from "@/features/codex/mentionRescanQueue";
+import { isBodyMentionIndexReady } from "@/features/codex/bodyMentionIndexState";
 import { and, eq } from "drizzle-orm";
 
 interface QueryResult {
@@ -184,7 +185,11 @@ export async function buildGalaxyCrossReferenceForProject(
 ): Promise<CrossReferenceEntry[]> {
   const entries = await listCodexMatchTargets(projectId);
   if (entries.length === 0) return [];
-  if (await needsBodyBackfill(projectId)) {
+  if (!(await isBodyMentionIndexReady(projectId, entries))) {
+    await enqueueRescan(null, projectId);
+    if (await isBodyMentionIndexReady(projectId, entries)) {
+      return buildCrossReferenceFromMentionIndex(projectId, entries);
+    }
     return buildCrossReferenceReportForProject(projectId);
   }
   return buildCrossReferenceFromMentionIndex(projectId, entries);

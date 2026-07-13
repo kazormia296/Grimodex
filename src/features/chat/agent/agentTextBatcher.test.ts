@@ -30,4 +30,26 @@ describe("createAgentTextBatcher", () => {
     expect(publish).toHaveBeenCalledTimes(1);
     expect(publish).toHaveBeenCalledWith("tail");
   });
+
+  it("preserves paragraph separators across scheduled frames", () => {
+    const scheduled: Array<() => void> = [];
+    let content = "";
+    const batcher = createAgentTextBatcher(
+      (text) => {
+        content += text;
+      },
+      (callback) => {
+        scheduled.push(callback);
+        return scheduled.length;
+      },
+      vi.fn(),
+    );
+
+    batcher.push("first");
+    scheduled.shift()?.();
+    batcher.push("second");
+    scheduled.shift()?.();
+
+    expect(content).toBe("first\n\nsecond");
+  });
 });

@@ -60,10 +60,15 @@ beforeAll(async () => {
 
 describe("saveSceneContent version bump", () => {
   it("保存のたびに version が +1 される (2回保存 → 2)", async () => {
-    await saveSceneContent(SCENE, DOC);
+    const first = await saveSceneContent(SCENE, DOC);
+    expect(first.contentVersion).toBe(1);
     await expect(versionOf(SCENE)).resolves.toBe(1);
 
-    await saveSceneContent(SCENE, { content: DOC, charCount: 0 });
+    const second = await saveSceneContent(SCENE, {
+      content: DOC,
+      charCount: 0,
+    });
+    expect(second.contentVersion).toBe(2);
     await expect(versionOf(SCENE)).resolves.toBe(2);
   });
 

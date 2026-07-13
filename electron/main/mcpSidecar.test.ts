@@ -19,6 +19,7 @@ import {
   buildMcpConfigShellHandlers,
   prepareMcpSidecarForStartup,
   resolveMcpSidecarPath,
+  scheduleMcpSidecarWarmup,
 } from "./mcpSidecar.js";
 import { IPC_BACKEND_UNAVAILABLE_MARKER } from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
@@ -348,6 +349,40 @@ describe("prepareMcpSidecarForStartup", () => {
     await expect(prepared()).rejects.toThrow("sidecar unavailable");
     await expect(prepared()).resolves.toBe("/tmp/grimodex-mcp");
     expect(resolveSidecar).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("scheduleMcpSidecarWarmup", () => {
+  it("uses did-finish-load as a fallback and starts only once", async () => {
+    let onReadyToShow: (() => void) | undefined;
+    let onDidFinishLoad: (() => void) | undefined;
+    const resolveSidecar = vi.fn(async () => "/tmp/grimodex-mcp");
+    const onError = vi.fn();
+
+    scheduleMcpSidecarWarmup(
+      {
+        once: (event, listener) => {
+          expect(event).toBe("ready-to-show");
+          onReadyToShow = listener;
+        },
+        webContents: {
+          once: (event, listener) => {
+            expect(event).toBe("did-finish-load");
+            onDidFinishLoad = listener;
+          },
+        },
+      },
+      resolveSidecar,
+      onError,
+    );
+
+    onDidFinishLoad?.();
+    await vi.waitFor(() => expect(resolveSidecar).toHaveBeenCalledOnce());
+    onReadyToShow?.();
+    await Promise.resolve();
+
+    expect(resolveSidecar).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
   });
 });
 

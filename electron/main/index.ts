@@ -27,6 +27,7 @@ import {
   buildMcpConfigShellHandlers,
   prepareMcpSidecarForStartup,
   resolveMcpSidecarPath,
+  scheduleMcpSidecarWarmup,
 } from "./mcpSidecar.js";
 import {
   registerAppProtocolHandler,
@@ -226,20 +227,16 @@ if (!gotSingleInstanceLock) {
       performance.mark("grimodex:renderer-finished-load");
     });
     if (app.isPackaged && process.platform === "linux") {
-      mainWindow.once("ready-to-show", () => {
-        performance.mark("grimodex:electron-ready-to-show");
-        void resolveMcpSidecar().catch((error) => {
-          const detail = error instanceof Error ? error.message : String(error);
-          console.error(
-            `[grimodex-electron] MCP sidecar background preparation failed: ${detail}`,
-          );
-        });
-      });
-    } else {
-      mainWindow.once("ready-to-show", () => {
-        performance.mark("grimodex:electron-ready-to-show");
+      scheduleMcpSidecarWarmup(mainWindow, resolveMcpSidecar, (error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(
+          `[grimodex-electron] MCP sidecar background preparation failed: ${detail}`,
+        );
       });
     }
+    mainWindow.once("ready-to-show", () => {
+      performance.mark("grimodex:electron-ready-to-show");
+    });
   });
 
   // 単一アプリ窓の現行挙動に合わせ、macOS 含め全窓クローズで終了する（§6.5）。

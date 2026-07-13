@@ -510,7 +510,7 @@ export async function applyRenamePropagation(
     for (const [id, content] of live) setLive(id, content, RESYNC_GROUP);
     // Re-establish body-mention rows/highlights stripped by the rename commit's
     // own enqueueRescan (which ran with the NEW name before the prose existed).
-    enqueueRescan(entryId);
+    void enqueueRescan(entryId);
   };
 
   const eventUid = crypto.randomUUID();

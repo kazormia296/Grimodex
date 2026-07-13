@@ -472,7 +472,11 @@ describe("importChapters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateNode.mockResolvedValue({} as never);
-    mockSaveSceneContent.mockResolvedValue({ placedBeatPreview: null });
+    mockSaveSceneContent.mockResolvedValue({
+      placedBeatPreview: null,
+      contentVersion: 1,
+      contentUpdatedAt: "2026-07-13T00:00:01.000Z",
+    });
   });
 
   function makeChapter(overrides: Partial<ParsedChapter> = {}): ParsedChapter {

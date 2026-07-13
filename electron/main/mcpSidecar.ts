@@ -203,6 +203,29 @@ export function prepareMcpSidecarForStartup(
   };
 }
 
+export interface McpSidecarWarmupTarget {
+  once(event: "ready-to-show", listener: () => void): void;
+  webContents: {
+    once(event: "did-finish-load", listener: () => void): void;
+  };
+}
+
+/** Start packaged Linux preparation after either window-ready signal. */
+export function scheduleMcpSidecarWarmup(
+  target: McpSidecarWarmupTarget,
+  resolveSidecar: McpSidecarPathResolver,
+  onError: (error: unknown) => void,
+): void {
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    void resolveSidecar().catch(onError);
+  };
+  target.once("ready-to-show", start);
+  target.webContents.once("did-finish-load", start);
+}
+
 /**
  * Main-process implementation of `get_mcp_config`. Workspace identity remains
  * native-owned; only the executable-path decision belongs to Electron main.
