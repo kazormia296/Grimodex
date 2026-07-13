@@ -15,6 +15,9 @@ import {
   type ToolProtocolMode,
 } from "./types";
 import { stripToolProtocol } from "./toolProtocol";
+import { HERMES_ALLOWED_TOOL_NAMES } from "./agent/toolManifest";
+
+export { MUTATING_TOOL_NAMES } from "./agent/toolManifest";
 
 /** 解決後のプロトコル（曖昧さを排した二値）。 */
 export type ResolvedToolProtocol = "native" | "hermes";
@@ -109,27 +112,9 @@ function coerceArgs(raw: unknown): Record<string, unknown> {
  * Must stay in sync with `MUTATING_EXECUTORS` in toolExecutors.ts — a test in
  * toolExecutors.test.ts asserts the two never drift apart.
  */
-export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "create_codex_entry",
-  "update_codex_entry",
-  "create_foreshadow",
-  "update_foreshadow",
-  "create_snippet",
-  "apply_ai_tree_plan",
-  "propose_scene_body",
-  "create_event",
-  "update_event",
-  "delete_event",
-  "stamp_scene_event",
-  "unstamp_scene_event",
-  "set_event_participants",
-  "add_event_relation",
-  "remove_event_relation",
-]);
-
 /** Hermes allow-list = declared tool names minus mutating ones (write block). */
 export function hermesAllowedToolNames(names: readonly string[]): string[] {
-  return names.filter((n) => !MUTATING_TOOL_NAMES.has(n));
+  return names.filter((n) => HERMES_ALLOWED_TOOL_NAMES.includes(n));
 }
 
 /**

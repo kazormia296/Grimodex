@@ -4,7 +4,8 @@
  * renderer からは既存 Tauri command 互換の5コマンドだけを受け、実行ファイル・argv・
  * process tree・NDJSON を main が管理する。prompt や model を shell 文字列へ連結しない。
  */
-import type { Dirent } from "node:fs";
+import { createReadStream, readFileSync, statSync, type Dirent } from "node:fs";
+import { createHash } from "node:crypto";
 import { readdir, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -63,8 +64,14 @@ const CLAUDE_MODELS = [
 export interface CliCommandSpec {
   executable: string;
   args: string[];
-  /** process.env に重ねる追加環境変数。 */
+  /** CLI種別ごとの環境変数allowlistを選ぶための内部識別子。 */
+  kind?: CliKind;
+  /** allowlistへ追加する内部環境変数。任意のrenderer値は受け付けない。 */
   env?: NodeJS.ProcessEnv;
+  /** 選択したproviderが必要とする追加の環境変数名。 */
+  envKeys?: readonly string[];
+  /** argvへ載せずstdinへ渡す機密入力。 */
+  input?: string;
   /** shellを介さずchildへ渡す作業ディレクトリ。Vivliostyle入力をtempへ閉じる。 */
   cwd?: string;
 }
@@ -99,6 +106,10 @@ export interface CliProcessRunner {
   disposeAll?(): void;
 }
 
+export interface CliExecutableIdentity {
+  sha256: string | null;
+}
+
 interface CliDetectDependencies {
   runner: CliProcessRunner;
   platform: NodeJS.Platform;
@@ -116,8 +127,13 @@ interface CliAiDependencies {
   isFile?: (candidate: string) => Promise<boolean>;
   realPath?: (candidate: string) => Promise<string>;
   readDir?: (candidate: string) => Promise<Dirent[]>;
+  hashFile?: (candidate: string) => Promise<string | null>;
   detectBinary?: (kind: CliKind) => Promise<string | null>;
-  authorizeExecutable?: (kind: CliKind, executable: string) => Promise<boolean>;
+  authorizeExecutable?: (
+    kind: CliKind,
+    executable: string,
+    identity: CliExecutableIdentity,
+  ) => Promise<boolean>;
   forceKillAfterMs?: number;
   streamTimeoutMs?: number;
   maxStreamBytes?: number;
@@ -175,8 +191,183 @@ function parseCliKind(value: unknown): CliKind {
   return value as CliKind;
 }
 
-function mergedEnv(extra: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
-  return extra ? { ...process.env, ...extra } : { ...process.env };
+const BASE_CLI_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "USER",
+  "USERNAME",
+  "USERPROFILE",
+  "SHELL",
+  "ComSpec",
+  "SystemRoot",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_RUNTIME_DIR",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "COLORTERM",
+] as const;
+
+const CLI_ENV_KEYS: Record<CliKind, readonly string[]> = {
+  // Credential stores are preferred; these are the only direct API keys that
+  // each CLI is allowed to receive when the user explicitly configured one.
+  claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+  codex: ["OPENAI_API_KEY"],
+  opencode: [
+    "OPENCODE_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_CONTENT",
+  ],
+};
+
+const SAFE_EXTRA_ENV_KEYS = new Set(["OPENCODE_PERMISSION"]);
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const MAX_OPENCODE_CONFIG_BYTES = 1024 * 1024;
+
+const OPENCODE_PROVIDER_ENV_KEYS: Record<string, readonly string[]> = {
+  "amazon-bedrock": [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
+  ],
+  azure: [
+    "AZURE_API_KEY",
+    "AZURE_RESOURCE_NAME",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_VERSION",
+  ],
+  "google-vertex": [
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_VERTEX_PROJECT",
+    "GOOGLE_VERTEX_LOCATION",
+  ],
+  github: ["GITHUB_TOKEN", "GH_TOKEN"],
+  cloudflare: [
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_TOKEN",
+    "CLOUDFLARE_API_KEY",
+  ],
+};
+
+function extractEnvReferences(content: string): string[] {
+  const keys = new Set<string>();
+  for (const match of content.matchAll(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/gu)) {
+    keys.add(match[1]);
+  }
+  return [...keys];
+}
+
+function readOpenCodeConfig(candidate: string): string | null {
+  try {
+    const metadata = statSync(candidate);
+    if (!metadata.isFile() || metadata.size > MAX_OPENCODE_CONFIG_BYTES) {
+      return null;
+    }
+    return readFileSync(candidate, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function openCodeReferencedEnvKeys(cwd?: string): string[] {
+  const keys = new Set<string>();
+  const inlineConfig = process.env.OPENCODE_CONFIG_CONTENT;
+  if (inlineConfig) {
+    for (const key of extractEnvReferences(inlineConfig)) keys.add(key);
+  }
+
+  const workingDirectory = cwd ?? process.cwd();
+  const homeDirectory = process.env.HOME ?? process.env.USERPROFILE;
+  const xdgConfigDirectory =
+    process.env.XDG_CONFIG_HOME ??
+    (homeDirectory ? path.join(homeDirectory, ".config") : undefined);
+  const explicitConfig = process.env.OPENCODE_CONFIG;
+  const configCandidates = [
+    explicitConfig ? path.resolve(workingDirectory, explicitConfig) : undefined,
+    xdgConfigDirectory
+      ? path.join(xdgConfigDirectory, "opencode", "opencode.json")
+      : undefined,
+    xdgConfigDirectory
+      ? path.join(xdgConfigDirectory, "opencode", "opencode.jsonc")
+      : undefined,
+    path.join(workingDirectory, "opencode.json"),
+    path.join(workingDirectory, "opencode.jsonc"),
+    path.join(workingDirectory, ".opencode", "opencode.json"),
+    path.join(workingDirectory, ".opencode", "opencode.jsonc"),
+  ];
+  for (const candidate of configCandidates) {
+    if (!candidate) continue;
+    const content = readOpenCodeConfig(candidate);
+    if (!content) continue;
+    for (const key of extractEnvReferences(content)) keys.add(key);
+  }
+  return [...keys];
+}
+
+function openCodeProviderEnvKeys(model: string | null | undefined): string[] {
+  if (!model) return [];
+  const provider = model.split("/", 1)[0]?.trim().toLowerCase();
+  if (!provider) return [];
+  const prefix = provider.replace(/[^a-z0-9]+/gu, "_").toUpperCase();
+  return [
+    `${prefix}_API_KEY`,
+    `${prefix}_TOKEN`,
+    `${prefix}_BASE_URL`,
+    `${prefix}_ENDPOINT`,
+    `${prefix}_ACCOUNT_ID`,
+    `${prefix}_PROJECT`,
+    `${prefix}_REGION`,
+    ...(OPENCODE_PROVIDER_ENV_KEYS[provider] ?? []),
+  ];
+}
+
+function mergedEnv(
+  kind: CliKind | undefined,
+  extra: NodeJS.ProcessEnv | undefined,
+  envKeys: readonly string[] | undefined,
+  cwd: string | undefined,
+): NodeJS.ProcessEnv {
+  const keys = new Set<string>(BASE_CLI_ENV_KEYS);
+  if (kind) {
+    for (const key of CLI_ENV_KEYS[kind]) keys.add(key);
+  }
+  if (kind === "opencode") {
+    for (const key of envKeys ?? []) {
+      if (ENV_KEY_PATTERN.test(key)) keys.add(key);
+    }
+    for (const key of openCodeReferencedEnvKeys(cwd)) keys.add(key);
+  }
+  const environment: NodeJS.ProcessEnv = {};
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  if (extra) {
+    for (const [key, value] of Object.entries(extra)) {
+      if (SAFE_EXTRA_ENV_KEYS.has(key) && value !== undefined) {
+        environment[key] = value;
+      }
+    }
+  }
+  return environment;
 }
 
 function terminateChildTree(
@@ -276,11 +467,15 @@ export function createNodeCliProcessRunner(
         let child: ChildProcess;
         try {
           child = crossSpawn(spec.executable, spec.args, {
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: [
+              spec.input === undefined ? "ignore" : "pipe",
+              "pipe",
+              "pipe",
+            ],
             shell: false,
             windowsHide: true,
             detached: platform !== "win32",
-            env: mergedEnv(spec.env),
+            env: mergedEnv(spec.kind, spec.env, spec.envKeys, spec.cwd),
             cwd: spec.cwd,
           });
         } catch (cause) {
@@ -331,6 +526,15 @@ export function createNodeCliProcessRunner(
           });
         });
 
+        if (spec.input !== undefined) {
+          if (!child.stdin) {
+            finishReject(new Error("CLI stdin is unavailable"));
+          } else {
+            child.stdin.once("error", finishReject);
+            child.stdin.end(spec.input);
+          }
+        }
+
         timer = setTimeout(() => {
           finishReject(
             new Error(`CLI command timed out after ${options.timeoutMs}ms`),
@@ -343,17 +547,25 @@ export function createNodeCliProcessRunner(
     start(spec) {
       if (disposed) throw new Error("CLI process runner is disposed");
       const child = crossSpawn(spec.executable, spec.args, {
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [spec.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
         detached: platform !== "win32",
-        env: mergedEnv(spec.env),
+        env: mergedEnv(spec.kind, spec.env, spec.envKeys, spec.cwd),
         cwd: spec.cwd,
       });
       track(child);
       if (!child.stdout || !child.stderr) {
         child.kill("SIGKILL");
         throw new Error("CLI child stdio missing");
+      }
+      if (spec.input !== undefined) {
+        if (!child.stdin) {
+          child.kill("SIGKILL");
+          throw new Error("CLI stdin is unavailable");
+        }
+        child.stdin.once("error", () => {});
+        child.stdin.end(spec.input);
       }
 
       const completion = new Promise<{
@@ -511,7 +723,8 @@ export function buildCliInvocation(
     case "claude": {
       const args = [
         "-p",
-        options.prompt,
+        "--input-format",
+        "text",
         "--output-format",
         "stream-json",
         "--verbose",
@@ -521,22 +734,24 @@ export function buildCliInvocation(
         "default",
       ];
       if (model) args.push("--model", model);
-      return { executable, args };
+      return { executable, kind, args, input: options.prompt };
     }
     case "codex": {
       const args = ["exec", "--json", "--sandbox", "read-only"];
       if (model) args.push("--model", model);
-      args.push(options.prompt);
-      return { executable, args };
+      args.push("-");
+      return { executable, kind, args, input: options.prompt };
     }
     case "opencode": {
       const args = ["--print-logs", "run", "--format", "json"];
       if (model) args.push("--model", model);
-      args.push(options.prompt);
       return {
         executable,
+        kind,
         args,
+        input: options.prompt,
         env: { OPENCODE_PERMISSION },
+        envKeys: openCodeProviderEnvKeys(model),
       };
     }
     default:
@@ -562,6 +777,16 @@ async function defaultReadDir(candidate: string): Promise<Dirent[]> {
   } catch {
     return [];
   }
+}
+
+async function defaultHashFile(candidate: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(candidate);
+    stream.on("data", (chunk: string | Buffer) => hash.update(chunk));
+    stream.once("error", () => resolve(null));
+    stream.once("end", () => resolve(hash.digest("hex")));
+  });
 }
 
 function firstOutputLine(stdout: string): string | null {
@@ -1073,6 +1298,7 @@ export function createCliAiManager(
   const isFile = supplied.isFile ?? defaultIsFile;
   const resolveRealPath = supplied.realPath ?? defaultRealPath;
   const readDir = supplied.readDir ?? defaultReadDir;
+  const hashFile = supplied.hashFile ?? defaultHashFile;
   const runner = supplied.runner ?? createNodeCliProcessRunner(platform);
   const detectBinary =
     supplied.detectBinary ??
@@ -1160,6 +1386,16 @@ export function createCliAiManager(
     );
     ensureNotDisposed();
     if (!isLatest()) return latestResult();
+    const identity: CliExecutableIdentity = {
+      sha256: await hashFile(validated.executable),
+    };
+    if (!(await authorizeExecutable(kind, validated.executable, identity))) {
+      throw new Error(
+        `CLI executable was not authorized: ${validated.executable}`,
+      );
+    }
+    ensureNotDisposed();
+    if (!isLatest()) return latestResult();
     detectedExecutables.set(kind, validated);
     return validated;
   };
@@ -1193,7 +1429,10 @@ export function createCliAiManager(
     if (isTrustedExecutable(kind, validated.executable)) {
       return validated.executable;
     }
-    if (!(await authorizeExecutable(kind, validated.executable))) {
+    const identity: CliExecutableIdentity = {
+      sha256: await hashFile(validated.executable),
+    };
+    if (!(await authorizeExecutable(kind, validated.executable, identity))) {
       throw new Error(
         `CLI executable was not authorized: ${validated.executable}`,
       );
@@ -1453,6 +1692,7 @@ export function createCliAiManager(
       const executable = await resolveExecutable(kind, rawBinary);
       const spec: CliCommandSpec = {
         executable,
+        kind,
         args: kind === "codex" ? ["debug", "models", "--bundled"] : ["models"],
       };
       const result = await runCapturedChecked(runner, spec);

@@ -13,8 +13,19 @@
  * - `scanRoot`: `.md` のみ・symlink 非追従・深さ/件数/バイト上限、rel/name camelCase。
  * - `contentHash`: LF 正規化後の SHA-256 hex（Rust `external_mount::hash` と一致）。
  */
-import { createHash } from "node:crypto";
-import { mkdir, open, readdir, realpath, rename, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import {
+  mkdir,
+  lstat,
+  open,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,14 +221,19 @@ export async function resolveUnderRoot(
 
 /** UTF-8 テキスト読込（32 MiB 上限 + CRLF→LF）。Rust `read_text_file`。 */
 export async function readTextFile(absPath: string): Promise<string> {
-  const meta = await stat(absPath);
-  if (meta.size > MAX_TEXT_FILE_BYTES) {
-    throw new Error(
-      `file too large to read (${meta.size} bytes, limit ${MAX_TEXT_FILE_BYTES} bytes): ${absPath}`,
-    );
-  }
-  const fh = await open(absPath, "r");
+  // Open before inspecting size so the check and read refer to the same file.
+  // POSIX O_NOFOLLOW also prevents a path swap from redirecting the read to a
+  // symlink target after resolveUnderRoot() has canonicalized the path.
+  const noFollow =
+    process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
+  const fh = await open(absPath, constants.O_RDONLY | noFollow);
   try {
+    const meta = await fh.stat();
+    if (meta.size > MAX_TEXT_FILE_BYTES) {
+      throw new Error(
+        `file too large to read (${meta.size} bytes, limit ${MAX_TEXT_FILE_BYTES} bytes): ${absPath}`,
+      );
+    }
     const raw = await fh.readFile("utf8");
     return raw.replace(/\r\n/g, "\n");
   } finally {
@@ -225,23 +241,85 @@ export async function readTextFile(absPath: string): Promise<string> {
   }
 }
 
-/** tmp + fsync + rename のアトミック書込（LF 出力）。Rust `atomic_write_text`。 */
+export interface AtomicWriteTextOptions {
+  /** テスト用の一時ファイル名生成器。通常は暗号学的乱数を使う。 */
+  randomId?: () => string;
+}
+
+function exclusiveWriteFlags(): number {
+  // O_EXCL makes creation atomic even on platforms without O_NOFOLLOW. On
+  // POSIX, O_NOFOLLOW additionally protects against a pre-existing symlink.
+  const noFollow =
+    process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0);
+  return constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow;
+}
+
+/**
+ * POSIX の rename durability を少し強めるため、親ディレクトリも sync する。
+ * Windows ではディレクトリ FileHandle の sync が利用できないため省略する。
+ */
+async function syncParentDirectory(parent: string): Promise<void> {
+  if (process.platform === "win32") return;
+  let handle: FileHandle | null = null;
+  try {
+    handle = await open(parent, constants.O_RDONLY);
+    await handle.sync();
+  } catch {
+    // Directory fsync is best-effort on filesystems that do not expose it.
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+/**
+ * 排他的なランダム tmp + fsync + rename のアトミック書込（LF 出力）。
+ * Rust `atomic_write_text` と同様、tmp の symlink 追従と名前競合を防ぐ。
+ */
 export async function atomicWriteText(
   absPath: string,
   content: string,
+  options: AtomicWriteTextOptions = {},
 ): Promise<void> {
   const parent = path.dirname(absPath);
   await mkdir(parent, { recursive: true });
   const normalized = content.replace(/\r\n/g, "\n");
-  const tmpPath = `${absPath}.tmp`;
-  const fh = await open(tmpPath, "w");
+  const randomId = options.randomId ?? randomUUID;
+  const destinationMode =
+    process.platform === "win32"
+      ? null
+      : await lstat(absPath)
+          .then((metadata) =>
+            metadata.isFile() ? metadata.mode & 0o777 : null,
+          )
+          .catch(() => null);
+  const tmpPath = path.join(
+    parent,
+    `.${path.basename(absPath)}-${process.pid}-${randomId()}.tmp`,
+  );
+  let fh: FileHandle | null = null;
+  let tempCreated = false;
   try {
+    fh = await open(tmpPath, exclusiveWriteFlags(), 0o600);
+    tempCreated = true;
     await fh.writeFile(normalized, "utf8");
+    // tmp は書込中 0600 のまま保ち、内容が完成してから既存ファイルの
+    // permission bits を復元する。rename 後も共有マウントの権限を維持する。
+    if (destinationMode !== null) {
+      await fh.chmod(destinationMode);
+    }
     await fh.sync();
-  } finally {
     await fh.close();
+    fh = null;
+    await rename(tmpPath, absPath);
+    await syncParentDirectory(parent);
+  } finally {
+    await fh?.close().catch(() => undefined);
+    // Do not remove a path we failed to create: it may be an attacker-owned
+    // symlink that caused O_EXCL to reject the open.
+    if (tempCreated) {
+      await rm(tmpPath, { force: true }).catch(() => undefined);
+    }
   }
-  await rename(tmpPath, absPath);
 }
 
 /** mtime を ISO 8601（RFC3339 相当）文字列で返す。Rust `file_mtime_iso`。 */

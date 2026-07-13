@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -100,16 +103,18 @@ function createHarness() {
 }
 
 describe("buildCliInvocation", () => {
-  it("Claudeはpromptを単一argvに保ち、全toolを無効化する", () => {
+  it("Claudeはpromptをargvへ載せずstdinへ渡し、全toolを無効化する", () => {
     const prompt = 'hello"; rm -rf / #';
     const spec = buildCliInvocation("claude", "/opt/bin/claude", {
       model: "sonnet",
       prompt,
     });
     expect(spec.executable).toBe("/opt/bin/claude");
+    expect(spec.input).toBe(prompt);
     expect(spec.args).toEqual([
       "-p",
-      prompt,
+      "--input-format",
+      "text",
       "--output-format",
       "stream-json",
       "--verbose",
@@ -137,21 +142,17 @@ describe("buildCliInvocation", () => {
         "read-only",
         "--model",
         "gpt-5",
-        "write?",
+        "-",
       ],
+      input: "write?",
     });
 
     const opencode = buildCliInvocation("opencode", "opencode", {
       model: null,
       prompt: "hello",
     });
-    expect(opencode.args).toEqual([
-      "--print-logs",
-      "run",
-      "--format",
-      "json",
-      "hello",
-    ]);
+    expect(opencode.args).toEqual(["--print-logs", "run", "--format", "json"]);
+    expect(opencode.input).toBe("hello");
     expect(JSON.parse(opencode.env?.OPENCODE_PERMISSION ?? "")).toEqual({
       permission: {
         read: "deny",
@@ -168,6 +169,19 @@ describe("buildCliInvocation", () => {
         external_directory: "deny",
       },
     });
+
+    const bedrock = buildCliInvocation("opencode", "opencode", {
+      model: "amazon-bedrock/anthropic.claude-sonnet",
+      prompt: "hello",
+    });
+    expect(bedrock.envKeys).toEqual(
+      expect.arrayContaining([
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_PROFILE",
+        "AWS_REGION",
+      ]),
+    );
   });
 });
 
@@ -228,6 +242,7 @@ describe("CliAiManager", () => {
       platform: "linux",
       isFile: async () => true,
       realPath: async (candidate) => candidate,
+      hashFile: async () => "abc123",
       authorizeExecutable,
     });
     runner.runResult.stdout = "claude 1.2.3\n";
@@ -239,7 +254,33 @@ describe("CliAiManager", () => {
     expect(authorizeExecutable).toHaveBeenCalledWith(
       "claude",
       "/opt/custom/claude",
+      { sha256: "abc123" },
     );
+  });
+
+  it("PATH自動検出されたcanonical pathも初回authorizationを要求する", async () => {
+    const runner = new FakeRunner();
+    const detectBinary = vi.fn(async () => "/usr/local/bin/claude");
+    const authorizeExecutable = vi.fn(async () => false);
+    const manager = createCliAiManager(() => {}, {
+      runner,
+      platform: "linux",
+      isFile: async () => true,
+      realPath: async (candidate) => candidate,
+      hashFile: async () => "abc123",
+      detectBinary,
+      authorizeExecutable,
+    });
+
+    await expect(
+      manager.handlers.detect_cli_binary({ cli: "claude" }),
+    ).rejects.toThrow("CLI executable was not authorized");
+    expect(authorizeExecutable).toHaveBeenCalledWith(
+      "claude",
+      "/usr/local/bin/claude",
+      { sha256: "abc123" },
+    );
+    expect(runner.runCalls).toHaveLength(0);
   });
 
   it("Windowsのforward-slash UNC pathはrealpath前に拒否する", async () => {
@@ -295,6 +336,7 @@ describe("CliAiManager", () => {
       platform: "linux",
       isFile: async () => true,
       realPath: async (candidate) => candidate,
+      authorizeExecutable: async () => true,
       detectBinary,
     });
 
@@ -391,6 +433,7 @@ describe("CliAiManager", () => {
       { id: "openai/gpt-5", name: "gpt-5" },
       { id: "anthropic/claude", name: "claude" },
     ]);
+    expect(runner.runCalls.at(-1)?.spec.kind).toBe("opencode");
   });
 
   it("streamはchunkを配信し、adapter Doneを終端で一度だけemitする", async () => {
@@ -710,6 +753,116 @@ describe("CliAiManager", () => {
 });
 
 describe("createNodeCliProcessRunner", () => {
+  it("passes prompt input through stdin instead of argv", async () => {
+    const runner = createNodeCliProcessRunner(process.platform);
+    const result = await runner.run(
+      {
+        executable: process.execPath,
+        kind: "claude",
+        args: [
+          "-e",
+          "let s=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', c => s += c); process.stdin.on('end', () => process.stdout.write(s));",
+        ],
+        input: 'secret prompt "not in argv"',
+      },
+      { timeoutMs: 5_000, maxOutputBytes: 1024 },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('secret prompt "not in argv"');
+    runner.disposeAll?.();
+  });
+
+  it("does not inherit unrelated environment secrets", async () => {
+    vi.stubEnv("GRIMODEX_UNRELATED_SECRET", "must-not-leak");
+    try {
+      const runner = createNodeCliProcessRunner(process.platform);
+      const result = await runner.run(
+        {
+          executable: process.execPath,
+          kind: "claude",
+          args: [
+            "-e",
+            "process.stdout.write(process.env.GRIMODEX_UNRELATED_SECRET || 'absent')",
+          ],
+        },
+        { timeoutMs: 5_000, maxOutputBytes: 1024 },
+      );
+      expect(result.stdout).toBe("absent");
+      runner.disposeAll?.();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("passes only environment keys referenced by OpenCode config", async () => {
+    vi.stubEnv(
+      "OPENCODE_CONFIG_CONTENT",
+      JSON.stringify({
+        provider: {
+          custom: {
+            options: { apiKey: "{env:CUSTOM_LLM_TOKEN}" },
+          },
+        },
+      }),
+    );
+    vi.stubEnv("CUSTOM_LLM_TOKEN", "allowed-token");
+    vi.stubEnv("UNRELATED_PAYMENT_TOKEN", "must-not-leak");
+    try {
+      const runner = createNodeCliProcessRunner(process.platform);
+      const result = await runner.run(
+        {
+          executable: process.execPath,
+          kind: "opencode",
+          args: [
+            "-e",
+            "process.stdout.write(JSON.stringify({ allowed: process.env.CUSTOM_LLM_TOKEN, unrelated: process.env.UNRELATED_PAYMENT_TOKEN }))",
+          ],
+        },
+        { timeoutMs: 5_000, maxOutputBytes: 1024 },
+      );
+      expect(JSON.parse(result.stdout)).toEqual({ allowed: "allowed-token" });
+      runner.disposeAll?.();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("passes environment keys referenced by an OpenCode config file", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "grimodex-opencode-env-"));
+    const configPath = path.join(dir, "opencode.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        provider: {
+          custom: {
+            options: { apiKey: "{env:FILE_LLM_TOKEN}" },
+          },
+        },
+      }),
+    );
+    vi.stubEnv("OPENCODE_CONFIG", configPath);
+    vi.stubEnv("FILE_LLM_TOKEN", "file-token");
+    try {
+      const runner = createNodeCliProcessRunner(process.platform);
+      const result = await runner.run(
+        {
+          executable: process.execPath,
+          kind: "opencode",
+          args: [
+            "-e",
+            "process.stdout.write(process.env.FILE_LLM_TOKEN || 'absent')",
+          ],
+        },
+        { timeoutMs: 5_000, maxOutputBytes: 1024 },
+      );
+      expect(result.stdout).toBe("file-token");
+      runner.disposeAll?.();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("spec.cwdをshellを介さずchildの作業ディレクトリへ渡す", async () => {
     const runner = createNodeCliProcessRunner(process.platform);
     const cwd = process.cwd();

@@ -1,11 +1,18 @@
 import { describe, it, expect } from "vitest";
 import {
+  AGENT_TOOLS,
   getDeterministicAgentTools,
   getResearchSubagentTools,
   snapshotAgentTools,
   READ_ONLY_TOOL_NAMES,
   RESEARCH_SUBAGENT_TOOL,
 } from "./toolDefinitions";
+import {
+  HERMES_ALLOWED_TOOL_NAMES,
+  MANIFEST_TOOL_NAMES,
+  MUTATING_TOOL_NAMES,
+  READ_ONLY_TOOL_NAMES as MANIFEST_READ_ONLY_TOOL_NAMES,
+} from "./toolManifest";
 
 describe("toolDefinitions", () => {
   it("sorts tools by name deterministically", () => {
@@ -41,6 +48,29 @@ describe("toolDefinitions", () => {
     expect(tool).toBeDefined();
     expect(tool!.inputSchema.properties.task?.type).toBe("string");
     expect(tool!.inputSchema.required).toEqual(["task"]);
+  });
+
+  it("keeps the tool definitions and security manifest in exact parity", () => {
+    expect([...new Set(AGENT_TOOLS.map((tool) => tool.name))].sort()).toEqual(
+      [...MANIFEST_TOOL_NAMES].sort(),
+    );
+    expect([...READ_ONLY_TOOL_NAMES].sort()).toEqual(
+      [...MANIFEST_READ_ONLY_TOOL_NAMES].sort(),
+    );
+    expect([...HERMES_ALLOWED_TOOL_NAMES].sort()).toEqual(
+      [...MANIFEST_TOOL_NAMES]
+        .filter((name) => !MUTATING_TOOL_NAMES.has(name))
+        .sort(),
+    );
+    expect(
+      [...MANIFEST_TOOL_NAMES]
+        .filter((name) => MUTATING_TOOL_NAMES.has(name))
+        .sort(),
+    ).toEqual(
+      [...MANIFEST_TOOL_NAMES]
+        .filter((name) => !HERMES_ALLOWED_TOOL_NAMES.includes(name))
+        .sort(),
+    );
   });
 });
 

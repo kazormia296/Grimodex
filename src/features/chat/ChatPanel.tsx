@@ -450,6 +450,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         mapDisabled={!mapPanelActive}
         onToggleIncludeMapBoard={handleToggleMapOverlay}
         ragEnabled={ragEnabled}
+        agentMode={agentMode}
         ragDisabled={!ragCapable}
         onToggleRag={handleToggleRag}
       />

@@ -1,4 +1,6 @@
 import type { AgentToolDefinition } from "./agentTypes";
+import { READ_ONLY_TOOL_NAMES } from "./toolManifest";
+export { READ_ONLY_TOOL_NAMES } from "./toolManifest";
 
 /** エージェントが使用できる全ツール定義 */
 export const AGENT_TOOLS: AgentToolDefinition[] = [
@@ -784,30 +786,6 @@ export const RESEARCH_SUBAGENT_TOOL = "run_research";
  * toolDefinitions.test.ts でドリフトを gate する。ここを正本にすることで
  * toolDefinitions → toolExecutors の重い import 依存（DB コード）を避ける。
  */
-export const READ_ONLY_TOOL_NAMES: readonly string[] = [
-  "search_codex",
-  "list_codex_by_type",
-  "get_codex_entry",
-  "list_codex_tags",
-  "search_codex_by_tags",
-  "find_related_entries",
-  "list_chapters",
-  "get_scene",
-  "search_scenes",
-  "list_plot_threads",
-  "get_thread_scenes",
-  "search_snippets",
-  "get_chapter_summaries",
-  "list_open_foreshadows",
-  "get_foreshadow_detail",
-  "get_scene_timeline_neighbors",
-  "list_events",
-  "get_event_detail",
-  "get_character_timeline",
-  "get_chronicle_state",
-  "search_events",
-];
-
 /**
  * リサーチ・サブエージェントに渡すツール定義（読み取り専用サブセット）。
  * run_research 自身を含まないため、子はさらにサブエージェントを起動できず、

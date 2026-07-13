@@ -766,7 +766,7 @@
       "webSearch": {
         "title": "Web search (RAG) domain control",
         "providerNote": "Only effective with OpenRouter / Anthropic.",
-        "privacyNote": "Enabling web search sends your search queries to a third-party search provider (via OpenRouter / Anthropic). The AI is instructed not to search your manuscript text verbatim, but this is not enforced. Also, fetched web pages may contain hidden instructions that try to manipulate the AI (prompt injection). Don't take results at face value, and review outputs especially when combined with agent mode.",
+        "privacyNote": "Enabling web search sends your current request to a third-party search provider (via OpenRouter / Anthropic). Public web-search turns do not include project context or chat history; private Agent turns disable Web search. Fetched pages may still contain hidden prompt-injection instructions, so review results before using them.",
         "domainMode": "Domain filter",
         "domainModeDesc": "Restrict search results with an allow or block list. Allow and block cannot be used together.",
         "domainModeOff": "No filter",
@@ -1786,6 +1786,7 @@
       "on": "Web search ON (click to turn off)",
       "off": "Enable web search (click to turn on)",
       "unavailable": "This provider does not support web search (OpenRouter / Anthropic only)",
+      "agentPrivacyNote": "Private Agent mode disables Web search for this turn so project data stays separate.",
       "searching": "Searching the web…",
       "egressNote": "Search queries are sent to a third-party search provider.",
       "injectionNote": "Fetched web content may contain instructions that try to manipulate the AI. Review the output.",

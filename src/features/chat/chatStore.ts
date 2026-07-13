@@ -47,6 +47,7 @@ import type {
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { fetchProjectContext as fetchProjectContextAtom } from "@/features/project/contextAtoms";
 import { runAgentLoop } from "./agent/agentLoop";
+import { resolveAgentPrivacyPlan } from "./agent/agentPrivacy";
 import { executeTool, executeReadOnlyTool } from "./agent/toolExecutors";
 import {
   snapshotAgentTools,
@@ -3519,15 +3520,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         "",
       ),
     });
-    const webSearchConfigAtTurnStart: WebSearchConfig | null =
+    const configuredWebSearchConfigAtTurnStart: WebSearchConfig | null =
       buildWebSearchConfig(
         ragActive,
         agentModeForThisSend,
         webSearchControlsAtTurnStart,
       );
+    const agentPrivacyPlan = resolveAgentPrivacyPlan({
+      agentMode: agentModeForThisSend,
+      ragActive,
+      webSearchConfig: configuredWebSearchConfigAtTurnStart,
+    });
+    const webSearchConfigAtTurnStart = agentPrivacyPlan.webSearchConfig;
+    const publicWebSearchPath = agentPrivacyPlan.contextMode === "public-web";
     const useHermesRagInstruction =
-      agentModeForThisSend && turnRoute?.toolProtocol === "hermes";
-    const ragInstructionTokenReserve = ragActive
+      publicWebSearchPath && turnRoute?.toolProtocol === "hermes";
+    const ragInstructionTokenReserve = publicWebSearchPath
       ? Math.max(
           ...(["ja", "en"] as const).map((language) => {
             const control = getPromptCatalog(language).agentControl;
@@ -3538,9 +3546,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           }),
         )
       : 0;
+    const publicCommandInstructionTokenReserve =
+      publicWebSearchPath && commandInstruction
+        ? countTokens(commandInstruction)
+        : 0;
     const contextInputOverheadTokens =
       TURN_PAYLOAD_SAFETY_MARGIN_TOKENS +
       ragInstructionTokenReserve +
+      publicCommandInstructionTokenReserve +
       (useAgentPath && turnRoute
         ? renderAgentToolPayloads(
             turnRoute,
@@ -3889,18 +3902,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           return true;
         };
       try {
-        const sceneCtx = effectiveSceneId
-          ? await fetchSceneContext(effectiveSceneId, turnProjectId)
-          : null;
-        if (effectiveSceneId && !sceneCtx) {
+        // Public RAG is a separate agent: it must not load scene/project
+        // context or conversation history before sending the search request.
+        const sceneCtx = publicWebSearchPath
+          ? null
+          : effectiveSceneId
+            ? await fetchSceneContext(effectiveSceneId, turnProjectId)
+            : null;
+        if (!publicWebSearchPath && effectiveSceneId && !sceneCtx) {
           throw new Error("required scene context is unavailable");
         }
         const projectCtx = await fetchRequiredProjectContext(turnProjectId);
         if (cancelBeforeTransport()) return;
 
         const projectCtxLang = projectCtx?.language ?? "ja";
-        let agentMessages = prevMessages;
-        if (sessionIdForPersist) {
+        let agentMessages = publicWebSearchPath ? [] : prevMessages;
+        if (sessionIdForPersist && !publicWebSearchPath) {
           const agentApiVariant = turnRoute
             ? turnRoute.apiVariant
             : xprov
@@ -3992,7 +4009,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             alwaysEntries: ctxResult.alwaysEntries,
             scopeAnchor: null,
           });
-        } else {
+        } else if (!publicWebSearchPath) {
           // グローバルチャット: refreshContextLayers が事前に組んだ
           // L1 + Spotlight L4 (codex/snippet) + always エントリ込みの prompt を流用。
           // 入力側で新たに Spotlight された場合に備え再計算してから使う。
@@ -4023,18 +4040,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
         if (cancelBeforeTransport()) return;
 
-        // RAG 有効ターンは Web 検索の安全指示を system 末尾へ付与する
+        // Public RAG ターンだけ Web 検索の安全指示を system 末尾へ付与する。
+        // Private Agent ターンには Web 検索設定自体を渡さないため、指示も不要。
         // (本文をクエリに混入させない / 引用捏造の抑止 / 取得指示の無視)。
-        // 注意: Anthropic 直叩きは system を cacheSegments + volatileTail から
-        // 再構築し system message 本文を無視する一方、OpenRouter (非 Claude) は
-        // system message 本文を直接使う。全経路に確実に届けるため prompt と
-        // volatileTail の両方へ付与する (どの経路も両方は読まず、重複しない。
-        // cache 対象 segment に混ぜるとトグルのたびに cache を割るため tail に置く)。
-        if (ragActive) {
-          // Hermes プロトコル × agent mode（declared client tools あり）のときだけ
-          // Hermes 用 RAG 指示を使う。標準版は全 `<tool_call>` を禁止しており、Hermes の
-          // 正規ツール呼び出しと矛盾するため。RAG 単独（agent OFF=client tools なし）は
-          // 全面禁止のままで正しい。
+        // cacheSegments がある経路は system を cache blocks + volatileTail から
+        // 再構築するため、安全指示を tail にも付与する。Public RAG は private
+        // context を持たず cacheSegments もないので fallback system 本文を使う。
+        if (publicWebSearchPath) {
+          // 公開検索へ private scene/history は渡さないが、スラッシュコマンドから
+          // 生成した信頼済みの system 指示はこのターンの意図として保持する。
+          systemPromptForAgent = commandInstruction ?? "";
+          // Public RAG は client tools を宣言しないため、標準版の指示を使う。
+          // Hermes 用指示は private Agent と Web 検索を併用する旧経路を残さないため
+          // 到達しないが、wire 互換のため条件は保持する。
           const ragAgentControl = getPromptCatalog(
             projectCtx?.language ?? "ja",
           ).agentControl;
@@ -4379,12 +4397,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           return executeTool(name, toolCallId, params);
         };
 
-        // クライアントツールは agentMode のときだけ渡す。RAG 単独 (agent OFF)
-        // ターンは tools=[] とし、Web 検索を一発注入 (OpenRouter web plugin /
-        // Anthropic native) で完結させる (plugin と function-tool の混在を避ける)。
+        // クライアントツールは private Agent のときだけ渡す。Public RAG は
+        // tools=[] とし、Web検索だけを使う分離済み経路にする。
         const agentTools = agentModeForThisSend ? turnAgentToolsSnapshot : [];
-        // RAG ターンのみ Web 検索設定を Rust へ渡す。agentMode 併用時は
-        // OpenRouter で server tool / 単独時は web plugin を選ばせる (agentic)。
+        // Web検索設定はpublic RAGにだけ渡す。private Agentでは常にnull。
         // Phase 2: 永続設定 (settingsStore の ai.webSearch.*) のドメイン制御 /
         // content cap を載せる。
         const webSearchConfig = webSearchConfigAtTurnStart;

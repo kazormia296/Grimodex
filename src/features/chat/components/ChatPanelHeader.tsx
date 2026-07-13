@@ -78,6 +78,8 @@ interface ChatPanelHeaderProps {
   onToggleIncludeMapBoard: () => void;
   /** Web 検索 (RAG) トグルの状態。 */
   ragEnabled: boolean;
+  /** private Agent と public Web 検索を同時に有効化しないための表示ゲート。 */
+  agentMode?: boolean;
   /** RAG 非対応プロバイダ等で操作不可のとき true (トグルを無効化)。 */
   ragDisabled: boolean;
   /** 無効時のツールチップ理由文 (例: ollama は非対応)。 */
@@ -102,11 +104,14 @@ export function ChatPanelHeader({
   mapDisabled,
   onToggleIncludeMapBoard,
   ragEnabled,
+  agentMode = false,
   ragDisabled,
   ragDisabledReason,
   onToggleRag,
 }: ChatPanelHeaderProps) {
   const { t } = useTranslation();
+  const privacyRagDisabled = agentMode;
+  const effectiveRagDisabled = ragDisabled || privacyRagDisabled;
   const nodes = useTreeStore((s) => s.nodes);
   const codexEntries = useCodexStore((s) => s.entries);
   const snippetEntries = useSnippetStore((s) => s.entries);
@@ -484,17 +489,19 @@ export function ChatPanelHeader({
         <button
           type="button"
           onClick={onToggleRag}
-          disabled={ragDisabled}
+          disabled={effectiveRagDisabled}
           aria-pressed={ragEnabled}
           aria-label={
             ragEnabled ? t("chat.webSearch.on") : t("chat.webSearch.off")
           }
           // 第三者送信の開示は title (ホバー専用) に頼らず aria-describedby で
           // スクリーンリーダー/タッチにも到達させる（security review F-1）。
-          aria-describedby={ragDisabled ? undefined : "rag-egress-note"}
+          aria-describedby="rag-egress-note"
           title={
-            ragDisabled
-              ? (ragDisabledReason ?? t("chat.webSearch.unavailable"))
+            effectiveRagDisabled
+              ? privacyRagDisabled
+                ? t("chat.webSearch.agentPrivacyNote")
+                : (ragDisabledReason ?? t("chat.webSearch.unavailable"))
               : `${
                   ragEnabled ? t("chat.webSearch.on") : t("chat.webSearch.off")
                 }\n${t("chat.webSearch.egressNote")}\n${t(
@@ -503,7 +510,7 @@ export function ChatPanelHeader({
           }
           className={[
             "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors",
-            ragDisabled
+            effectiveRagDisabled
               ? "cursor-not-allowed text-muted-foreground/40"
               : ragEnabled
                 ? "bg-primary/10 text-primary hover:bg-primary/15"
@@ -518,7 +525,7 @@ export function ChatPanelHeader({
         <span id="rag-egress-note" className="sr-only">
           {`${t("chat.webSearch.egressNote")} ${t(
             "chat.webSearch.injectionNote",
-          )}`}
+          )}${agentMode ? ` ${t("chat.webSearch.agentPrivacyNote")}` : ""}`}
         </span>
       </div>
 
