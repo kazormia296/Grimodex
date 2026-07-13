@@ -32,6 +32,7 @@
     "test:browser": "vitest --config vitest.browser.config.ts",
     "test:electron": "vitest --config vitest.electron.config.ts",
     "test:storybook": "vitest --config vitest.storybook.config.ts",
+    "perf:budget": "node scripts/check-performance-budgets.mjs",
     "validate:architecture": "node --test scripts/validate-architecture.test.mjs && node scripts/validate-architecture.mjs",
     "storybook": "storybook dev -p 6006",
     "storybook:build": "storybook build",

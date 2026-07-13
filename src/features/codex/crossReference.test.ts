@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { buildCrossReferenceFromTexts } from "./crossReference";
+import {
+  buildCrossReferenceFromMentionRows,
+  buildCrossReferenceFromTexts,
+} from "./crossReference";
 
 describe("buildCrossReferenceFromTexts", () => {
   const entries = [
@@ -62,5 +65,42 @@ describe("buildCrossReferenceFromTexts", () => {
     const names = result.map((r) => r.entryName);
     const sorted = [...names].sort((a, b) => a.localeCompare(b));
     expect(names).toEqual(sorted);
+  });
+});
+
+describe("buildCrossReferenceFromMentionRows", () => {
+  const mentionEntries = [
+    {
+      id: "codex-1",
+      name: "太郎",
+      type: "character",
+      aliases: null,
+      excludedAliases: null,
+    },
+    {
+      id: "codex-2",
+      name: "花子",
+      type: "character",
+      aliases: null,
+      excludedAliases: null,
+    },
+  ];
+
+  it("builds scene links from the incremental mention index without duplicate edges", () => {
+    const result = buildCrossReferenceFromMentionRows(mentionEntries, [
+      { entryId: "codex-1", sceneId: "s1", sceneTitle: "シーン1" },
+      { entryId: "codex-1", sceneId: "s1", sceneTitle: "シーン1" },
+      { entryId: "codex-1", sceneId: "s2", sceneTitle: "シーン2" },
+    ]);
+
+    expect(result.find((entry) => entry.entryId === "codex-1")?.scenes).toEqual(
+      [
+        { sceneId: "s1", sceneTitle: "シーン1", count: 1 },
+        { sceneId: "s2", sceneTitle: "シーン2", count: 1 },
+      ],
+    );
+    expect(result.find((entry) => entry.entryId === "codex-2")?.scenes).toEqual(
+      [],
+    );
   });
 });

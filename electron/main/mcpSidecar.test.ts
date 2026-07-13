@@ -309,14 +309,14 @@ describe("resolveMcpSidecarPath", () => {
 });
 
 describe("prepareMcpSidecarForStartup", () => {
-  it("eagerly refreshes a packaged sidecar and reuses its stable path", async () => {
+  it("defers packaged sidecar resolution until MCP is requested and reuses it", async () => {
     const resolveSidecar = vi
       .fn<() => Promise<string>>()
       .mockResolvedValue("/home/writer/.local/share/grimodex/bin/grimodex-mcp");
 
-    const prepared = await prepareMcpSidecarForStartup(true, resolveSidecar);
+    const prepared = prepareMcpSidecarForStartup(true, resolveSidecar);
 
-    expect(resolveSidecar).toHaveBeenCalledOnce();
+    expect(resolveSidecar).not.toHaveBeenCalled();
     await expect(prepared()).resolves.toBe(
       "/home/writer/.local/share/grimodex/bin/grimodex-mcp",
     );
@@ -331,11 +331,23 @@ describe("prepareMcpSidecarForStartup", () => {
       .fn<() => Promise<string>>()
       .mockResolvedValue("/repo/src-tauri/target/debug/grimodex-mcp");
 
-    const prepared = await prepareMcpSidecarForStartup(false, resolveSidecar);
+    const prepared = prepareMcpSidecarForStartup(false, resolveSidecar);
 
     expect(resolveSidecar).not.toHaveBeenCalled();
     await expect(prepared()).resolves.toContain("target/debug/grimodex-mcp");
     expect(resolveSidecar).toHaveBeenCalledOnce();
+  });
+
+  it("allows a later MCP request to retry after background preparation fails", async () => {
+    const resolveSidecar = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error("sidecar unavailable"))
+      .mockResolvedValueOnce("/tmp/grimodex-mcp");
+    const prepared = prepareMcpSidecarForStartup(true, resolveSidecar);
+
+    await expect(prepared()).rejects.toThrow("sidecar unavailable");
+    await expect(prepared()).resolves.toBe("/tmp/grimodex-mcp");
+    expect(resolveSidecar).toHaveBeenCalledTimes(2);
   });
 });
 

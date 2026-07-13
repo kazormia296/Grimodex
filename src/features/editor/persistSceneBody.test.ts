@@ -134,6 +134,46 @@ describe("persistSceneBody — DB-native scene", () => {
     });
   });
 
+  it("reuses the save serialization for deferred body mention indexing", async () => {
+    const toJSON = vi.fn(() => DOC_JSON);
+    h.state.codexEntries = [{ id: "codex-1" }];
+
+    await persistSceneBody("scene-1", {
+      toJSON,
+    } as unknown as ProseMirrorNode);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(toJSON).toHaveBeenCalledTimes(1);
+    expect(h.upsertSceneBodyMentions).toHaveBeenCalledWith(
+      "scene-1",
+      JSON.stringify(DOC_JSON),
+      h.state.codexEntries,
+    );
+  });
+
+  it("coalesces deferred body mention scans to the latest saved document", async () => {
+    h.state.codexEntries = [{ id: "codex-1" }];
+    const firstDoc = {
+      toJSON: () => ({ type: "doc", content: [{ text: "first" }] }),
+    } as unknown as ProseMirrorNode;
+    const secondDoc = {
+      toJSON: () => ({ type: "doc", content: [{ text: "second" }] }),
+    } as unknown as ProseMirrorNode;
+
+    await Promise.all([
+      persistSceneBody("scene-1", firstDoc),
+      persistSceneBody("scene-1", secondDoc),
+    ]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(h.upsertSceneBodyMentions).toHaveBeenCalledTimes(1);
+    expect(h.upsertSceneBodyMentions).toHaveBeenCalledWith(
+      "scene-1",
+      JSON.stringify({ type: "doc", content: [{ text: "second" }] }),
+      h.state.codexEntries,
+    );
+  });
+
   it("runs the schema-dependent anchor/provenance cascade against the doc", async () => {
     await persistSceneBody("scene-1", fakeDoc);
     expect(h.saveAuthorshipSpans).toHaveBeenCalledWith("scene-1", fakeDoc);

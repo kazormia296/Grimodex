@@ -141,6 +141,9 @@ jobs:
       - name: Electron production build
         run: pnpm electron:build
 
+      - name: Renderer performance budget
+        run: pnpm perf:budget
+
   electron-windows-installer-contract:
     name: Electron Windows installer (NSIS migration contract)
     runs-on: windows-latest

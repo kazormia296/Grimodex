@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { db } from "@/db/client";
 import { treeNodes, sceneCodexMentions } from "@/db/schema";
-import { eq, and, count, inArray } from "drizzle-orm";
+import { eq, and, count, countDistinct, inArray } from "drizzle-orm";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { listCodexMatchTargets } from "./api";
 import type { CodexMatchTarget } from "./codexMatcher";
@@ -164,32 +164,31 @@ export function enqueueRescan(forEntryId: string | null = null): void {
  * Check if a startup backfill is needed: returns true when fewer than 80% of
  * scenes have a body mention row.
  */
-export async function needsBodyBackfill(): Promise<boolean> {
+export async function needsBodyBackfill(
+  projectId: string = getCurrentProjectId(),
+): Promise<boolean> {
   const [sceneCountRow] = await db
     .select({ c: count() })
     .from(treeNodes)
     .where(
-      and(
-        eq(treeNodes.nodeType, "scene"),
-        eq(treeNodes.projectId, getCurrentProjectId()),
-      ),
+      and(eq(treeNodes.nodeType, "scene"), eq(treeNodes.projectId, projectId)),
     );
   const sceneCount = sceneCountRow?.c ?? 0;
   if (sceneCount === 0) return false;
 
   const [bodyCountRow] = await db
-    .select({ c: count() })
+    .select({ c: countDistinct(sceneCodexMentions.sceneId) })
     .from(sceneCodexMentions)
     .innerJoin(treeNodes, eq(sceneCodexMentions.sceneId, treeNodes.id))
     .where(
       and(
         eq(sceneCodexMentions.source, "body"),
-        eq(treeNodes.projectId, getCurrentProjectId()),
+        eq(treeNodes.projectId, projectId),
       ),
     );
   const bodyCount = bodyCountRow?.c ?? 0;
 
-  // bodyCount counts (scene, entry) pairs, not unique scenes.
-  // Use sceneCount as the threshold proxy: if no body rows exist at all, backfill.
+  // Count unique scenes, not (scene, entry) pairs, so projects with many
+  // mentions in a few scenes do not appear fully indexed by accident.
   return bodyCount === 0 || bodyCount / sceneCount < 0.8;
 }

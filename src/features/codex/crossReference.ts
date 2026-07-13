@@ -1,4 +1,6 @@
 import { invoke } from "@/lib/tauri";
+import { db } from "@/db/client";
+import { sceneCodexMentions, treeNodes } from "@/db/schema";
 import { loadSceneContent } from "@/features/tree/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { listCodexMatchTargets } from "./api";
@@ -6,6 +8,8 @@ import type { CodexMatchRow } from "./api";
 import { createCodexMatcher } from "./codexMatcher";
 import { rebuildMatcher, matchText } from "./rustMatcher";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { needsBodyBackfill } from "@/features/codex/mentionRescanQueue";
+import { and, eq } from "drizzle-orm";
 
 interface QueryResult {
   rows: Array<{ id: string; title: string; parent_id: string | null }>;
@@ -24,6 +28,62 @@ export interface CrossReferenceEntry {
   scenes: SceneMention[];
 }
 
+export interface SceneCodexMentionRow {
+  entryId: string;
+  sceneId: string;
+  sceneTitle: string;
+}
+
+/** Build the Galaxy cross-reference shape from the incremental mention index. */
+export function buildCrossReferenceFromMentionRows(
+  entries: CodexMatchRow[],
+  rows: SceneCodexMentionRow[],
+): CrossReferenceEntry[] {
+  const scenesByEntry = new Map<string, Map<string, SceneMention>>();
+  for (const row of rows) {
+    const entryScenes = scenesByEntry.get(row.entryId) ?? new Map();
+    if (!entryScenes.has(row.sceneId)) {
+      entryScenes.set(row.sceneId, {
+        sceneId: row.sceneId,
+        sceneTitle: row.sceneTitle,
+        count: 1,
+      });
+    }
+    scenesByEntry.set(row.entryId, entryScenes);
+  }
+
+  return entries
+    .map((entry) => ({
+      entryId: entry.id,
+      entryName: entry.name,
+      entryType: entry.type,
+      scenes: Array.from(scenesByEntry.get(entry.id)?.values() ?? []),
+    }))
+    .sort((a, b) => a.entryName.localeCompare(b.entryName));
+}
+
+async function buildCrossReferenceFromMentionIndex(
+  projectId: string,
+  entries: CodexMatchRow[],
+): Promise<CrossReferenceEntry[]> {
+  const rows = await db
+    .select({
+      entryId: sceneCodexMentions.codexEntryId,
+      sceneId: sceneCodexMentions.sceneId,
+      sceneTitle: treeNodes.title,
+    })
+    .from(sceneCodexMentions)
+    .innerJoin(treeNodes, eq(sceneCodexMentions.sceneId, treeNodes.id))
+    .where(
+      and(
+        eq(sceneCodexMentions.source, "body"),
+        eq(treeNodes.projectId, projectId),
+        eq(treeNodes.nodeType, "scene"),
+      ),
+    );
+  return buildCrossReferenceFromMentionRows(entries, rows);
+}
+
 /** 互換 wrapper: hidden global の projectId を解決して projectId 明示版へ委譲する。 */
 export async function buildCrossReferenceReport(): Promise<
   CrossReferenceEntry[]
@@ -34,7 +94,6 @@ export async function buildCrossReferenceReport(): Promise<
 export async function buildCrossReferenceReportForProject(
   projectId: string,
 ): Promise<CrossReferenceEntry[]> {
-  // matcher と id/name/type の逆引きにしか使わないので match projection で十分。
   const entries = await listCodexMatchTargets(projectId);
   if (entries.length === 0) return [];
 
@@ -113,6 +172,22 @@ export async function buildCrossReferenceReportForProject(
   }
 
   return result;
+}
+
+/**
+ * Galaxy only needs scene-entry connectivity, not occurrence counts. Use the
+ * incremental body index there while preserving the full report's exact counts
+ * for Codex references and co-occurrence consumers.
+ */
+export async function buildGalaxyCrossReferenceForProject(
+  projectId: string,
+): Promise<CrossReferenceEntry[]> {
+  const entries = await listCodexMatchTargets(projectId);
+  if (entries.length === 0) return [];
+  if (await needsBodyBackfill(projectId)) {
+    return buildCrossReferenceReportForProject(projectId);
+  }
+  return buildCrossReferenceFromMentionIndex(projectId, entries);
 }
 
 /** Simpler version: accepts pre-loaded scene texts, for testing */

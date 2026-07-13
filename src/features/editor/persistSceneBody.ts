@@ -20,6 +20,57 @@ import { useChatStore } from "@/features/chat/chatStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 
+interface PendingBodyMentionScan {
+  docJsonStr: string;
+  allEntries: Parameters<typeof upsertSceneBodyMentions>[2];
+}
+
+const pendingBodyMentionScans = new Map<string, PendingBodyMentionScan>();
+const bodyMentionScanTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const bodyMentionScanRunning = new Set<string>();
+
+function scheduleBodyMentionScan(
+  id: string,
+  docJsonStr: string,
+  allEntries: PendingBodyMentionScan["allEntries"],
+): void {
+  pendingBodyMentionScans.set(id, { docJsonStr, allEntries });
+  if (bodyMentionScanTimers.has(id) || bodyMentionScanRunning.has(id)) return;
+
+  const run = async () => {
+    bodyMentionScanTimers.delete(id);
+    const scan = pendingBodyMentionScans.get(id);
+    pendingBodyMentionScans.delete(id);
+    if (!scan) return;
+    bodyMentionScanRunning.add(id);
+
+    markStart("editor.coreSave.bodyMentionUpsert");
+    try {
+      await upsertSceneBodyMentions(id, scan.docJsonStr, scan.allEntries);
+    } catch (e) {
+      debugLog.error(
+        "persistSceneBody",
+        "upsertSceneBodyMentions failed",
+        errorDetail(e),
+      );
+    } finally {
+      markEnd("editor.coreSave.bodyMentionUpsert");
+      bodyMentionScanRunning.delete(id);
+      if (pendingBodyMentionScans.has(id) && !bodyMentionScanTimers.has(id)) {
+        bodyMentionScanTimers.set(
+          id,
+          setTimeout(() => void run(), 0),
+        );
+      }
+    }
+  };
+
+  bodyMentionScanTimers.set(
+    id,
+    setTimeout(() => void run(), 0),
+  );
+}
+
 /**
  * Persist a scene body document and orchestrate every doc-derived side-effect.
  *
@@ -104,20 +155,7 @@ export async function persistSceneBody(
     // file-backed editor 拡張で外しているため空打ちになるのでスキップ。
     const allEntries = useCodexStore.getState().entries;
     if (allEntries.length > 0) {
-      setTimeout(() => {
-        markStart("editor.coreSave.bodyMentionUpsert");
-        upsertSceneBodyMentions(id, sceneJsonStr, allEntries)
-          .catch((e) => {
-            debugLog.error(
-              "persistSceneBody",
-              "upsertSceneBodyMentions failed (file-backed)",
-              errorDetail(e),
-            );
-          })
-          .finally(() => {
-            markEnd("editor.coreSave.bodyMentionUpsert");
-          });
-      }, 0);
+      scheduleBodyMentionScan(id, sceneJsonStr, allEntries);
     }
     const chatState = useChatStore.getState();
     if (chatState.activeSceneId === id) {
@@ -165,23 +203,7 @@ export async function persistSceneBody(
   // Deferred body-mention scan — does not block the save response
   const allEntries = useCodexStore.getState().entries;
   if (allEntries.length > 0) {
-    markStart("editor.coreSave.bodyMentionGetJSON");
-    const docJsonStr = JSON.stringify(doc.toJSON());
-    markEnd("editor.coreSave.bodyMentionGetJSON");
-    setTimeout(() => {
-      markStart("editor.coreSave.bodyMentionUpsert");
-      upsertSceneBodyMentions(id, docJsonStr, allEntries)
-        .catch((e) => {
-          debugLog.error(
-            "persistSceneBody",
-            "upsertSceneBodyMentions failed",
-            errorDetail(e),
-          );
-        })
-        .finally(() => {
-          markEnd("editor.coreSave.bodyMentionUpsert");
-        });
-    }, 0);
+    scheduleBodyMentionScan(id, sceneJsonStr, allEntries);
   }
   markStart("editor.coreSave.refreshAiRatio");
   useTreeStore
