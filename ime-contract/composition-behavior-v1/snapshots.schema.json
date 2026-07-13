@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.app/ime-contract/composition-behavior-v1/snapshots.schema.json",
+  "title": "Grimodex semantic IME snapshot",
+  "type": "object",
+  "required": ["revision", "phase", "preedit", "candidate_window", "effects"],
+  "properties": {
+    "revision": { "type": "integer", "minimum": 0 },
+    "phase": { "enum": ["idle", "composing", "previewing", "selecting", "reconverting", "unicode_input"] },
+    "preedit": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "style"],
+        "properties": {
+          "text": { "type": "string" },
+          "style": { "enum": ["plain", "underline", "active"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "caret_utf8_byte_offset": { "type": ["integer", "null"], "minimum": 0 },
+    "candidate_window": {
+      "type": "object",
+      "required": ["generation", "items", "selected_index", "page_size"],
+      "properties": {
+        "generation": { "type": "integer", "minimum": 0 },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "text", "consuming_count"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "text": { "type": "string" },
+              "annotation": { "type": ["string", "null"] },
+              "consuming_count": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "selected_index": { "type": ["integer", "null"], "minimum": 0 },
+        "page_size": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "effects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["effect_id", "type"],
+        "properties": {
+          "effect_id": { "type": "integer", "minimum": 1 },
+          "type": { "enum": ["commit_text", "delete_surrounding_text", "switch_input_mode", "notify"] },
+          "text": { "type": "string" },
+          "before": { "type": "integer", "minimum": 0 },
+          "after": { "type": "integer", "minimum": 0 },
+          "mode": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "type": { "const": "commit_text" } } },
+            "then": { "properties": { "text": true }, "required": ["text"] }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "delete_surrounding_text" } }
+            },
+            "then": {
+              "properties": { "before": true, "after": true },
+              "required": ["before", "after"]
+            }
+          },
+          {
+            "if": { "properties": { "type": { "const": "switch_input_mode" } } },
+            "then": { "properties": { "mode": true }, "required": ["mode"] }
+          },
+          {
+            "if": { "properties": { "type": { "const": "notify" } } },
+            "then": {
+              "properties": { "message": true },
+              "required": ["message"]
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "recovery": { "type": ["object", "null"] },
+    "aux": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

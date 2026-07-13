@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.app/ime-contract/composition-behavior-v1/actions.schema.json",
+  "title": "Grimodex semantic IME action",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {
+      "enum": [
+        "insert_text", "delete_backward", "delete_forward", "move_cursor",
+        "move_cursor_to_start", "move_cursor_to_end", "start_conversion",
+        "navigate_candidate", "navigate_candidate_page", "resize_segment",
+        "commit_selected", "commit_all", "cancel", "select_candidate",
+        "transform_active_segment", "forget_candidate", "reconvert",
+        "secure_input_changed", "capability_changed", "deactivate",
+        "focus_changed", "server_restarted"
+      ]
+    },
+    "text": { "type": "string", "minLength": 1 },
+    "offset": { "type": "integer" },
+    "delta": { "type": "integer" },
+    "candidate_id": { "type": "string", "minLength": 1 },
+    "generation": { "type": "integer", "minimum": 1 },
+    "transform": {
+      "enum": [
+        "hiragana", "katakana_fullwidth", "katakana_halfwidth",
+        "alphabet_fullwidth", "alphabet_halfwidth"
+      ]
+    },
+    "secure_input": { "type": "boolean" },
+    "client_preedit": { "type": "boolean" },
+    "left_context": { "type": "string" },
+    "right_context": { "type": "string" },
+    "delete_before": { "type": "integer", "minimum": 0 },
+    "delete_after": { "type": "integer", "minimum": 0 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "insert_text" } } },
+      "then": { "properties": { "text": true }, "required": ["text"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "move_cursor" } } },
+      "then": { "properties": { "offset": true }, "required": ["offset"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": ["navigate_candidate", "navigate_candidate_page", "resize_segment"]
+          }
+        }
+      },
+      "then": { "properties": { "delta": true }, "required": ["delta"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "enum": ["select_candidate", "forget_candidate"] }
+        }
+      },
+      "then": {
+        "properties": { "candidate_id": true, "generation": true },
+        "required": ["candidate_id", "generation"]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "transform_active_segment" } } },
+      "then": { "properties": { "transform": true }, "required": ["transform"] }
+    },
+    {
+      "if": { "properties": { "type": { "const": "secure_input_changed" } } },
+      "then": {
+        "properties": { "secure_input": true },
+        "required": ["secure_input"]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "capability_changed" } } },
+      "then": {
+        "properties": { "client_preedit": true },
+        "required": ["client_preedit"]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "reconvert" } } },
+      "then": {
+        "properties": {
+          "text": true,
+          "left_context": true,
+          "right_context": true,
+          "delete_before": true,
+          "delete_after": true
+        },
+        "required": [
+          "text", "left_context", "right_context", "delete_before", "delete_after"
+        ]
+      }
+    }
+  ],
+  "additionalProperties": false
+}
