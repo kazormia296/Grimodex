@@ -234,26 +234,35 @@ describe("Composition Behavior Contract v1", () => {
 
   it("validates every semantic action and snapshot fixture", () => {
     const ajv = new Ajv2020({ allErrors: true, strict: true });
-    const validateAction = ajv.compile(JSON.parse(
-      readFileSync(join(behaviorRoot, "actions.schema.json"), "utf8"),
-    ) as AnySchema);
-    const validateSnapshot = ajv.compile(JSON.parse(
-      readFileSync(join(behaviorRoot, "snapshots.schema.json"), "utf8"),
-    ) as AnySchema);
-    const validateScenario = ajv.compile(JSON.parse(
-      readFileSync(join(behaviorRoot, "scenario.schema.json"), "utf8"),
-    ) as AnySchema);
+    const validateAction = ajv.compile(
+      JSON.parse(
+        readFileSync(join(behaviorRoot, "actions.schema.json"), "utf8"),
+      ) as AnySchema,
+    );
+    const validateSnapshot = ajv.compile(
+      JSON.parse(
+        readFileSync(join(behaviorRoot, "snapshots.schema.json"), "utf8"),
+      ) as AnySchema,
+    );
+    const validateScenario = ajv.compile(
+      JSON.parse(
+        readFileSync(join(behaviorRoot, "scenario.schema.json"), "utf8"),
+      ) as AnySchema,
+    );
     const scenarios = readdirSync(join(behaviorRoot, "scenarios"))
       .filter((name) => name.endsWith(".json"))
-      .map((name) => JSON.parse(
-        readFileSync(join(behaviorRoot, "scenarios", name), "utf8"),
-      ) as {
-        contract_version: string;
-        scenario_id: string;
-        actions: unknown[];
-        statuses: unknown[];
-        snapshots: unknown[];
-      });
+      .map(
+        (name) =>
+          JSON.parse(
+            readFileSync(join(behaviorRoot, "scenarios", name), "utf8"),
+          ) as {
+            contract_version: string;
+            scenario_id: string;
+            actions: unknown[];
+            statuses: unknown[];
+            snapshots: unknown[];
+          },
+      );
 
     expect(scenarios.map((scenario) => scenario.scenario_id).sort()).toEqual([
       "composing-basic",
@@ -275,9 +284,10 @@ describe("Composition Behavior Contract v1", () => {
       expect(scenario.statuses).toHaveLength(scenario.actions.length);
       expect(scenario.snapshots).toHaveLength(scenario.actions.length);
       for (const action of scenario.actions) {
-        expect(validateAction(action), JSON.stringify(validateAction.errors)).toBe(
-          true,
-        );
+        expect(
+          validateAction(action),
+          JSON.stringify(validateAction.errors),
+        ).toBe(true);
       }
       for (const snapshot of scenario.snapshots) {
         expect(
@@ -288,17 +298,21 @@ describe("Composition Behavior Contract v1", () => {
     }
 
     expect(validateAction({ type: "insert_text" })).toBe(false);
-    expect(validateAction({
-      type: "select_candidate",
-      candidate_id: "candidate-a",
-      generation: 0,
-    })).toBe(false);
-    expect(validateAction({
-      type: "reconvert",
-      text: "対象",
-      left_context: "左",
-      right_context: "右",
-    })).toBe(false);
+    expect(
+      validateAction({
+        type: "select_candidate",
+        candidate_id: "candidate-a",
+        generation: 0,
+      }),
+    ).toBe(false);
+    expect(
+      validateAction({
+        type: "reconvert",
+        text: "対象",
+        left_context: "左",
+        right_context: "右",
+      }),
+    ).toBe(false);
 
     const invalidEffectSnapshot = {
       revision: 1,
