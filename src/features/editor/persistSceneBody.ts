@@ -16,6 +16,7 @@ import { extractBeatPovOverrides } from "@/features/editor/beat/extractBeatPovOv
 import { upsertSceneBeatPovOverrides } from "@/features/editor/beat/beatPovCacheApi";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { useCodexStore } from "@/features/codex/codexStore";
+import { listCodexMatchTargets } from "@/features/codex/api";
 import { useChatStore } from "@/features/chat/chatStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -24,7 +25,8 @@ import { recordBodyMentionScans } from "@/features/codex/bodyMentionIndexState";
 interface PendingBodyMentionScan {
   projectId: string;
   docJsonStr: string;
-  allEntries: Parameters<typeof upsertSceneBodyMentions>[2];
+  /** Compatibility input for callers backed by the pre-completionTargets store. */
+  allEntries?: Parameters<typeof upsertSceneBodyMentions>[2];
   sceneVersion: number;
   sceneUpdatedAt: string;
 }
@@ -59,8 +61,13 @@ function scheduleBodyMentionScan(
 
     markStart("editor.coreSave.bodyMentionUpsert");
     try {
-      await upsertSceneBodyMentions(id, scan.docJsonStr, scan.allEntries);
-      await recordBodyMentionScans(scan.projectId, scan.allEntries, [
+      // Always resolve the complete project projection at execution time. The
+      // panel's `entries` collection is filter-dependent, while even the
+      // completion cache can be empty/stale during a project switch.
+      const allEntries =
+        scan.allEntries ?? (await listCodexMatchTargets(scan.projectId));
+      await upsertSceneBodyMentions(id, scan.docJsonStr, allEntries);
+      await recordBodyMentionScans(scan.projectId, allEntries, [
         {
           sceneId: id,
           version: scan.sceneVersion,
@@ -88,6 +95,33 @@ function scheduleBodyMentionScan(
   bodyMentionScanTimers.set(
     id,
     setTimeout(() => void run(), 0),
+  );
+}
+
+function scheduleCurrentBodyMentionScan(
+  projectId: string,
+  id: string,
+  docJsonStr: string,
+  sceneVersion: number,
+  sceneUpdatedAt: string,
+): void {
+  const codexState = useCodexStore.getState() as {
+    entries: Parameters<typeof upsertSceneBodyMentions>[2];
+    completionTargets?: Parameters<typeof upsertSceneBodyMentions>[2];
+  };
+  // Current stores expose completionTargets, so the deferred job performs an
+  // authoritative project-scoped read. The fallback keeps older embedded
+  // store implementations functional during rolling upgrades.
+  const legacyEntries =
+    codexState.completionTargets === undefined ? codexState.entries : undefined;
+  if (legacyEntries && legacyEntries.length === 0) return;
+  scheduleBodyMentionScan(
+    projectId,
+    id,
+    docJsonStr,
+    legacyEntries,
+    sceneVersion,
+    sceneUpdatedAt,
   );
 }
 
@@ -176,17 +210,13 @@ export async function persistSceneBody(
     // context 再構築は実行する。他の schema 依存処理
     // (authorship/foreshadow/annotation/sceneBeat/aiRatio) は
     // file-backed editor 拡張で外しているため空打ちになるのでスキップ。
-    const allEntries = useCodexStore.getState().entries;
-    if (allEntries.length > 0) {
-      scheduleBodyMentionScan(
-        projectId,
-        id,
-        sceneJsonStr,
-        allEntries,
-        contentVersion,
-        contentUpdatedAt,
-      );
-    }
+    scheduleCurrentBodyMentionScan(
+      projectId,
+      id,
+      sceneJsonStr,
+      contentVersion,
+      contentUpdatedAt,
+    );
     const chatState = useChatStore.getState();
     if (chatState.activeSceneId === id) {
       markStart("editor.coreSave.refreshContextLayers");
@@ -231,17 +261,13 @@ export async function persistSceneBody(
     })
     .finally(() => markEnd("editor.coreSave.upsertBeatPovOverrides"));
   // Deferred body-mention scan — does not block the save response
-  const allEntries = useCodexStore.getState().entries;
-  if (allEntries.length > 0) {
-    scheduleBodyMentionScan(
-      projectId,
-      id,
-      sceneJsonStr,
-      allEntries,
-      contentVersion,
-      contentUpdatedAt,
-    );
-  }
+  scheduleCurrentBodyMentionScan(
+    projectId,
+    id,
+    sceneJsonStr,
+    contentVersion,
+    contentUpdatedAt,
+  );
   markStart("editor.coreSave.refreshAiRatio");
   useTreeStore
     .getState()

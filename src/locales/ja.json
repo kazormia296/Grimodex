@@ -2215,7 +2215,9 @@
       "searching": "検索中...",
       "checkOccurrences": "出現シーンを確認",
       "noMentions": "本文中での言及なし",
-      "appearsIn": "登場シーン"
+      "appearsIn": "登場シーン",
+      "automatic": "自動検出",
+      "semantic": "明示リンク"
     },
     "tracking": {
       "contextLabel": "コンテキスト",
@@ -2280,6 +2282,7 @@
       "started": "{{count}} 件のシーンを確認中…（結果は校閲パネルに表示されます）",
       "noChange": "変更がありません（前回チェック以降）",
       "noCandidates": "影響しそうなシーンは見つかりませんでした",
+      "sourceChanged": "実行直前に設定または本文が更新されました。もう一度お試しください",
       "done": "影響レビュー完了",
       "error": "影響チェックに失敗しました"
     },
@@ -3507,7 +3510,18 @@
       "label": "選択ツールバー",
       "comment": "コメントを追加",
       "foreshadow": "伏線として登録",
+      "semanticLink": "Codex エントリにリンク",
       "ai": "AI で編集"
+    },
+    "semanticLink": {
+      "pickerLabel": "Codex セマンティックリンク",
+      "heading": "Codex エントリにリンク",
+      "search": "Codex エントリを検索",
+      "searchPlaceholder": "名前・別名で検索…",
+      "noResults": "見つかりません",
+      "remove": "Codex リンクを解除",
+      "deletedEntry": "削除済みのCodexエントリ",
+      "danglingHelp": "リンク先は削除されています。文字列を選択して再割り当てするか、リンクを解除してください。"
     },
     "toolbar": {
       "bold": "太字 (Ctrl+B)",
@@ -3626,6 +3640,7 @@
       "noSnippet": "スニペットがありません",
       "setRuby": "ルビを付ける…",
       "addToCodex": "コデックスに追加",
+      "semanticLink": "既存の Codex エントリにリンク…",
       "registerAsExcludedAlias": "「{{name}}」の除外エイリアスに登録",
       "excludedAliasRegistered": "「{{name}}」の除外エイリアスに登録しました",
       "excludedAliasAlreadyExists": "既に除外エイリアスに登録されています",
@@ -5695,6 +5710,7 @@
       "removeFromSet": "セットから削除"
     },
     "sources": {
+      "semantic": "明示セマンティックリンク",
       "body": "本文言及",
       "beat": "Beat メンション",
       "relation": "明示リレーション"

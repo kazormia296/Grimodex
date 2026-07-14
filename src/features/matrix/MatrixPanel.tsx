@@ -49,7 +49,6 @@ export function MatrixPanel() {
   const groupCodexByType = useMatrixStore((s) => s.groupCodexByType);
   const searchQuery = useMatrixStore((s) => s.searchQuery);
   const collapsedRowIds = useMatrixStore((s) => s.collapsedRowIds);
-  const bodyBackfillCompleted = useMatrixStore((s) => s.bodyBackfillCompleted);
   const subplotTagName = useMatrixStore((s) => s.subplotTagName);
   const customSets = useMatrixStore((s) => s.customSets);
   const activeCustomSetId = useMatrixStore((s) => s.activeCustomSetId);
@@ -111,9 +110,11 @@ export function MatrixPanel() {
       .catch(() => {});
   }, []);
 
-  // Startup backfill: run once when body rows are insufficient
+  // Startup backfill: always consult the versioned, project-scoped index marker
+  // once per mount. `bodyBackfillCompleted` is a legacy persisted UI flag, so an
+  // old true value must not bypass a newer bodyMentionIndexState format (v2 adds
+  // semantic-link rows) or a previously failed scan.
   useEffect(() => {
-    if (bodyBackfillCompleted) return;
     needsBodyBackfill()
       .then((needed) => {
         if (needed) {
@@ -124,7 +125,7 @@ export function MatrixPanel() {
         }
       })
       .catch(() => {});
-  }, [bodyBackfillCompleted]);
+  }, []);
 
   // 兄弟ノードの並び順コンパレータ。deriveRows は親ごとに子バケットを再ソート
   // するため、フラット配列を事前ソートしても捨てられてしまう（sortOrder 以外の

@@ -82,7 +82,7 @@ describe("upsertSceneBodyMentions", () => {
       { id: "e1", name: "太郎", type: "character" } as never,
     ]);
 
-    expect(ops).toEqual(["insert", "delete"]);
+    expect(ops).toEqual(["insert", "delete", "delete"]);
   });
 
   it("inserts one row per matched entry with source='body' and role='mentioned'", async () => {
@@ -115,7 +115,7 @@ describe("upsertSceneBodyMentions", () => {
     ]);
 
     expect(mockDb.insert).not.toHaveBeenCalled();
-    expect(mockDb.delete).toHaveBeenCalledTimes(1);
+    expect(mockDb.delete).toHaveBeenCalledTimes(2);
   });
 
   it("does nothing when entries array is empty", async () => {
@@ -126,7 +126,7 @@ describe("upsertSceneBodyMentions", () => {
     expect(mockDb.delete).not.toHaveBeenCalled();
   });
 
-  it("prunes stale body rows (not in new match set)", async () => {
+  it("prunes stale body and semantic rows (not in each new match set)", async () => {
     mockInsertChain();
     const deleteChain = mockDeleteChain();
     mockFindMentioned.mockResolvedValue([
@@ -138,6 +138,82 @@ describe("upsertSceneBodyMentions", () => {
       { id: "e2", name: "花子", type: "character" } as never,
     ]);
 
-    expect(deleteChain.where).toHaveBeenCalledTimes(1);
+    expect(deleteChain.where).toHaveBeenCalledTimes(2);
+  });
+
+  it("indexes semantic links independently from automatic body matches", async () => {
+    const insertChain = mockInsertChain();
+    mockDeleteChain();
+    mockFindMentioned.mockResolvedValue([
+      { id: "e1", name: "太郎", type: "character" } as never,
+    ]);
+    const document = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "彼女",
+              marks: [
+                {
+                  type: "codexSemanticLink",
+                  attrs: { entryId: "e2", label: "花子" },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    await upsertSceneBodyMentions("s1", document, [
+      { id: "e1", name: "太郎", type: "character" } as never,
+      { id: "e2", name: "花子", type: "character" } as never,
+    ]);
+
+    expect(insertChain.values).toHaveBeenCalledWith([
+      { sceneId: "s1", codexEntryId: "e1", source: "body", role: "mentioned" },
+      {
+        sceneId: "s1",
+        codexEntryId: "e2",
+        source: "semantic",
+        role: "mentioned",
+      },
+    ]);
+  });
+
+  it("ignores dangling semantic-link ids that are not in the project", async () => {
+    const insertChain = mockInsertChain();
+    mockDeleteChain();
+    mockFindMentioned.mockResolvedValue([]);
+    const document = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "失われた参照",
+              marks: [
+                {
+                  type: "codexSemanticLink",
+                  attrs: { entryId: "deleted-entry", label: "削除済み" },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    await upsertSceneBodyMentions("s1", document, [
+      { id: "e1", name: "太郎", type: "character" } as never,
+    ]);
+
+    expect(insertChain.values).not.toHaveBeenCalled();
+    expect(mockDb.insert).not.toHaveBeenCalled();
   });
 });

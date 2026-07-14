@@ -91,7 +91,6 @@ Codexパネルはプロジェクトの世界設定データベース。キャラ
 ### 完全に未実装（設計書通り「将来対応」）
 
 - 将来対応: **シーン単位 Codex タグ**（手動タグ付け）
-- 将来対応: **スパン単位セマンティックリンク**（任意範囲への明示的 Codex リンク）
 - 将来対応の拡張: フェーズ tags 上書き、フェーズ間 diff 表示、AI フェーズ提案、フェーズテンプレート
 
 ---
@@ -2523,7 +2522,7 @@ Mentionsタブの「Manuscript」セクションに、手動タグ由来の関�
 
 ---
 
-## 将来対応: スパン単位セマンティックリンク（未実装）
+## スパン単位セマンティックリンク（実装済み）
 
 ### 概要
 
@@ -2550,9 +2549,23 @@ Mentionsタブの「Manuscript」セクションに、手動タグ由来の関�
 ### 設計上の考慮事項
 
 - TipTap Markとして実装する場合、テキスト編集時のMark維持・分割の挙動を慎重に設計する必要がある
-- 視覚的表現: CodexHighlight（自動検出）との区別が必要。スタイルの差別化方針は要検討
-- AIコンテキスト注入: セマンティックリンクが付与された範囲とCodexエントリの対応をどの粒度でAIに伝えるか要検討
+- 視覚的表現: CodexHighlight（自動検出）との区別が必要
+- AIコンテキスト注入: セマンティックリンクが付与された範囲とCodexエントリの対応を明示する
 - ネタバレ漏洩リスクは伏線レジスタ側で扱う（叙述トリック系がそちらに移管されたため、セマンティックリンク単体では原則発生しない）
+
+### 実装仕様
+
+- 対象はプロジェクトDBに保存される `scene` 本文。外部Markdownシーンは独自Markを安全にラウンドトリップできないため、編集UIを表示しない
+- 正本は本文ProseMirror JSON内の `codexSemanticLink` Mark。属性は安定IDの `entryId` と、削除後の表示に使うフォールバック `label`
+- Markは `inclusive: false` / `keepOnSplit: false` とし、範囲末尾への追記や改段落へ意味リンクを自動延長しない。通常の「書式をクリア」では削除せず、専用の解除操作を使う
+- 選択ツールバーと右クリックメニューから既存Codexエントリを検索し、選択範囲へ付与・再割当・解除できる。候補検索はCodexパネルの表示フィルタに依存せず、nameとaliasを対象とする
+- 自動 `CodexHighlight` とは独立して共存し、明示リンクは二重下線で区別する。両者が重なった場合のPopover対象は明示リンクを優先する
+- `scene_codex_mentions(source = 'semantic')` はMatrix / Galaxy向けの再構築可能な派生キャッシュとして保存する。本文Markが常に正本で、新規DB migrationは不要。Impact Reviewは保存直後の派生キャッシュ遅延を避けるため、プロジェクト内シーンの本文Markを直接確認する
+- Mentions表示では自動一致数と明示リンク数を分けて表示する。同一Codexが同一シーンで両方に該当しても統合消去しない
+- Chatでは、リンク先エントリを既存のPhase解決・`context_mode`・除外ポリシーに通したうえでLayer 4候補に加える。さらにLayer 3の本文直前へ `選択範囲 → 現在のCodex名 (entryId)` の対応を渡し、文脈依存のdisambiguationを保持する
+- Consistency / Impact Reviewも明示リンクを候補選定に使用する。`hidden` / `suppress`、明示除外、削除済みIDはAIへ渡さない
+- Impact Reviewは送信直前にCodex・フェーズ・baseline CAS・候補集合・候補シーン本文を再照合し、一致した最終読取時点のSQLite接続epoch / `total_changes()` / `data_version`をsource guardとして渡す。候補集合を変えない派生mention/indexだけの遅延更新は最新guardへ安全に張り直す。開始時はshared Rustが`BEGIN IMMEDIATE`内でguard照合→cache判定→run作成を原子的に行う。候補ゼロ時のbaseline更新も同じguardとbaseline CASを単一SQLite文で検証する。最終照合後の同一接続Undo/restore、別接続MCP更新、workspace交換、baseline前進、候補追加、または送信元本文・設定の変化が介在した場合はAI送信もbaseline更新もせず再実行を促す
+- Codex削除後のMarkは本文から破壊的に消さず、`label`付きのdangling linkとして残す。通常Undoで同じIDが復元されれば再接続し、そうでなければユーザーが解除または再割当する
 
 ---
 

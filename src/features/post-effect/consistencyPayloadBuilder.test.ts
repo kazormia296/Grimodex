@@ -144,10 +144,11 @@ function mockConsistencyDb(
     value: string | null;
     name: string;
   }> = [],
+  sceneContent = "{}",
 ): void {
   const sceneChain = {
     from: vi.fn().mockReturnThis(),
-    where: vi.fn().mockResolvedValue([{ content: "{}" }]),
+    where: vi.fn().mockResolvedValue([{ content: sceneContent }]),
   };
   const entriesChain = {
     from: vi.fn().mockReturnThis(),
@@ -397,6 +398,116 @@ describe("buildMultiPayload", () => {
           content_plain: "Phase body",
         }),
       ]);
+    },
+  );
+
+  it("includes a mentioned Codex entry selected only by a semantic link", async () => {
+    mockResolveCodexState.mockReturnValue({
+      summary: "Phase summary",
+      content: "Phase body",
+      contextMode: "mentioned",
+      detailValues: new Map(),
+    });
+    mockFindMentioned.mockResolvedValue([]);
+    const sceneContent = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "彼女",
+              marks: [
+                {
+                  type: "codexSemanticLink",
+                  attrs: { entryId: "entry-1", label: "Alice" },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    mockConsistencyDb(
+      {
+        id: "entry-1",
+        projectId: "proj-1",
+        type: "character",
+        name: "Alice",
+        summary: "Base summary",
+        content: "Base body",
+        contextMode: "mentioned",
+      },
+      [],
+      sceneContent,
+    );
+
+    const result = await buildConsistencyPayload(
+      "proj-1",
+      "scene-1",
+      "gpt-4o-mini",
+    );
+
+    expect(mockFindMentioned).toHaveBeenCalledWith("", [
+      expect.objectContaining({ id: "entry-1" }),
+    ]);
+    expect(result.codexPayload).toEqual([
+      expect.objectContaining({ id: "entry-1", name: "Alice" }),
+    ]);
+  });
+
+  it.each(["hidden", "suppress"])(
+    "does not let a semantic link bypass resolved %s policy",
+    async (contextMode) => {
+      mockResolveCodexState.mockReturnValue({
+        summary: "Secret",
+        content: "Secret body",
+        contextMode,
+        detailValues: new Map(),
+      });
+      const sceneContent = JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "彼女",
+                marks: [
+                  {
+                    type: "codexSemanticLink",
+                    attrs: { entryId: "entry-1", label: "Alice" },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      mockConsistencyDb(
+        {
+          id: "entry-1",
+          projectId: "proj-1",
+          type: "character",
+          name: "Alice",
+          summary: "Base summary",
+          content: "Base body",
+          contextMode: "mentioned",
+        },
+        [],
+        sceneContent,
+      );
+
+      const result = await buildConsistencyPayload(
+        "proj-1",
+        "scene-1",
+        "gpt-4o-mini",
+      );
+
+      expect(result.codexPayload).toEqual([]);
+      expect(result.codexPayloadJson).not.toContain("Secret");
     },
   );
 
@@ -664,6 +775,7 @@ describe("buildMultiPayload", () => {
     const call = mockComputeInputHash.mock.calls[0][0] as {
       promptVersion: string;
     };
+    expect(CONSISTENCY_PROMPT_VERSION).toBe("consistency_v1.4");
     expect(call.promptVersion).toBe(CONSISTENCY_PROMPT_VERSION);
   });
 

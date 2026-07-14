@@ -38,6 +38,8 @@ const EST_WIDTH = 560;
 interface EditorBubbleMenuProps {
   editor: Editor | null;
   toolbarActionsRef: React.RefObject<ToolbarActions | null>;
+  /** DB-backed sceneだけが明示Codexリンクを作成できる。 */
+  canEditCodexSemanticLink?: boolean;
   /** 選択系インライン AI コマンド (rewrite/shorten/expand/tone/translate) の
    *  起動ハンドラ。未指定なら AI サブメニューを出さない。 */
   onInlineAiCommand?: (cmd: InlineAiCommand) => void;
@@ -144,6 +146,7 @@ export function Sep() {
 export function EditorBubbleMenu({
   editor,
   toolbarActionsRef,
+  canEditCodexSemanticLink = false,
   onInlineAiCommand,
 }: EditorBubbleMenuProps) {
   const { t } = useTranslation();
@@ -367,6 +370,22 @@ export function EditorBubbleMenu({
         >
           <Link2 className="h-3.5 w-3.5" />
         </BubbleButton>
+        {canEditCodexSemanticLink && (
+          <BubbleButton
+            testId="bubble-semantic-link"
+            label={t(
+              "editor.bubbleMenu.semanticLink",
+              "Codex エントリにリンク",
+            )}
+            onClick={() =>
+              useCursorSettingsStore
+                .getState()
+                .setSemanticLinkPickerOpen(true, editor)
+            }
+          >
+            <Link2 className="h-3.5 w-3.5 text-primary" />
+          </BubbleButton>
+        )}
 
         <Sep />
         <BubbleButton

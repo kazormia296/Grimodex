@@ -2722,6 +2722,135 @@ describe("Post-effect Phase 3d コマンド", () => {
     ).toHaveLength(1);
   });
 
+  it("start_post_effect_run_multi は Impact Review の SQLite source_guard をそのまま保持する", async () => {
+    const { backend, methods } = makeBackend();
+    const guardedArgs = {
+      ...multiArgs,
+      effect_type: "impact_review",
+      source_guard: {
+        kind: "sqlite_revision_v1",
+        expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
+        expected_total_changes: "42",
+        expected_data_version: "7",
+      },
+    };
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run_multi",
+      { args: guardedArgs },
+      { backend, shell: noShell, secrets: secrets(null) },
+    );
+
+    expect(env.ok).toBe(true);
+    expect(methods.startPostEffectRunMulti).toHaveBeenCalledWith(
+      guardedArgs,
+      expect.any(Object),
+      null,
+      null,
+    );
+  });
+
+  it.each([
+    ["missing", undefined, "impact_review"],
+    ["null", null, "impact_review"],
+    ["array", [], "impact_review"],
+    [
+      "wrong effect",
+      {
+        kind: "sqlite_revision_v1",
+        expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
+        expected_total_changes: "1",
+        expected_data_version: "1",
+      },
+      "timeline_consistency",
+    ],
+    [
+      "wrong kind",
+      {
+        kind: "other",
+        expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
+        expected_total_changes: "1",
+        expected_data_version: "1",
+      },
+      "impact_review",
+    ],
+    [
+      "missing epoch",
+      {
+        kind: "sqlite_revision_v1",
+        expected_total_changes: "1",
+        expected_data_version: "1",
+      },
+      "impact_review",
+    ],
+    [
+      "number total",
+      {
+        kind: "sqlite_revision_v1",
+        expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
+        expected_total_changes: 1,
+        expected_data_version: "1",
+      },
+      "impact_review",
+    ],
+    [
+      "leading zero",
+      {
+        kind: "sqlite_revision_v1",
+        expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
+        expected_total_changes: "01",
+        expected_data_version: "1",
+      },
+      "impact_review",
+    ],
+    [
+      "u64 overflow",
+      {
+        kind: "sqlite_revision_v1",
+        expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
+        expected_total_changes: "18446744073709551616",
+        expected_data_version: "1",
+      },
+      "impact_review",
+    ],
+    [
+      "extra key",
+      {
+        kind: "sqlite_revision_v1",
+        expected_connection_epoch: "5c469be0-51e3-4f31-95e0-9bf457806c56",
+        expected_total_changes: "1",
+        expected_data_version: "1",
+        extra: true,
+      },
+      "impact_review",
+    ],
+  ])(
+    "source_guard の不正値を native 呼出し前に拒否する: %s",
+    async (_name, sourceGuard, effectType) => {
+      const { backend, methods, calls } = makeBackend();
+      const keyStore = secrets(null);
+
+      const env = await dispatchInvoke(
+        "start_post_effect_run_multi",
+        {
+          args: {
+            ...multiArgs,
+            effect_type: effectType,
+            source_guard: sourceGuard,
+          },
+        },
+        { backend, shell: noShell, secrets: keyStore },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(methods.startPostEffectRunMulti).not.toHaveBeenCalled();
+      expect(
+        calls.filter((call) => call.method === "getAiSettings"),
+      ).toHaveLength(0);
+      expect(keyStore.getApiKeyForRequest).not.toHaveBeenCalled();
+    },
+  );
+
   it("safeStorage lookup失敗はinvoke rejectにせずsecret snapshotへ保存してnativeに渡す", async () => {
     const { backend, calls, methods } = makeBackend();
     const lookupError = "保存済み API キーを復号できません";
@@ -2758,7 +2887,6 @@ describe("Post-effect Phase 3d コマンド", () => {
     ["start_post_effect_run", "review"],
     ["start_post_effect_run", "intent_drift"],
     ["start_post_effect_run", "pseudo_comment"],
-    ["start_post_effect_run", "impact_review"],
     ["start_post_effect_run_multi", "timeline_consistency"],
   ])(
     "%s の effect=%s は role provider/endpoint override でキーをlookupする",
@@ -2796,6 +2924,30 @@ describe("Post-effect Phase 3d コマンド", () => {
       );
     },
   );
+
+  it("単発 impact_review は guard 必須の multi 経路へ寄せ、secret 解決前に拒否する", async () => {
+    const { backend, methods, calls } = makeBackend();
+    const keyStore = secrets("sk-role");
+
+    const env = await dispatchInvoke(
+      "start_post_effect_run",
+      {
+        args: {
+          ...singleArgs,
+          effect_type: "impact_review",
+          prompt_version: "impact_review_v1.1",
+        },
+      },
+      { backend, shell: noShell, secrets: keyStore },
+    );
+
+    expect(env.ok).toBe(false);
+    expect(methods.startPostEffectRun).not.toHaveBeenCalled();
+    expect(calls.filter((call) => call.method === "getAiSettings")).toHaveLength(
+      0,
+    );
+    expect(keyStore.getApiKeyForRequest).not.toHaveBeenCalled();
+  });
 
   it.each(["typo_detection", "intra_scene_consistency", "meta_structure"])(
     "effect=%s はrequestにoverrideがあってもdefault provider/endpointでキーをlookupする",

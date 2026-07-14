@@ -209,6 +209,53 @@ describe("runPostEffect 自動 cleanup", () => {
     }
   });
 
+  it("beforeStart を listener 登録後かつ backend dispatch 直前に実行する", async () => {
+    const order: string[] = [];
+    mockInvoke.mockImplementation(async () => {
+      order.push("invoke");
+      return { run_id: "r1", from_cache: false };
+    });
+    const beforeStart = vi.fn(async () => {
+      order.push("beforeStart");
+      expect(subs.map((subscription) => subscription.channel)).toEqual([
+        "post_effect:progress",
+        "post_effect:done",
+        "post_effect:error",
+      ]);
+    });
+
+    await runPostEffect(baseReq, { beforeStart });
+
+    expect(order).toEqual(["beforeStart", "invoke"]);
+    expect(beforeStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("subscribe が部分失敗したら成功済み listener を解除して dispatch しない", async () => {
+    mockListen.mockImplementation(
+      async (channel: EventChannel, handler: Handler) => {
+        if (channel === "post_effect:done") {
+          throw new Error("done subscribe failed");
+        }
+        const unlisten = vi.fn();
+        subs.push({ channel, handler, unlisten });
+        return unlisten;
+      },
+    );
+
+    await expect(runPostEffect(baseReq, {})).rejects.toThrow(
+      "done subscribe failed",
+    );
+
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(subs.map((subscription) => subscription.channel)).toEqual([
+      "post_effect:progress",
+      "post_effect:error",
+    ]);
+    for (const subscription of subs) {
+      expect(subscription.unlisten).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("from_cache:true なら done イベントを待たず直ちに onDone を fire し cleanup する", async () => {
     // バックエンドはキャッシュヒット時にタスクを spawn しない。
     // そのまま放置すると spinner 永続なので、合成 onDone を発火する必要がある。

@@ -22,6 +22,33 @@ function doc(text: string): string {
   });
 }
 
+function semanticDoc(
+  text: string,
+  entryId: string,
+  fallbackLabel: string,
+): string {
+  return JSON.stringify({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text,
+            marks: [
+              {
+                type: "codexSemanticLink",
+                attrs: { entryId, label: fallbackLabel },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+}
+
 function entry(
   overrides: Partial<CodexContextEntry> &
     Pick<CodexContextEntry, "id" | "name">,
@@ -83,6 +110,7 @@ interface RequestOverrides {
   includeBodies?: boolean;
   entries?: CodexContextEntry[];
   sceneContent?: string;
+  sceneContentJson?: string;
   inputPinnedEntryIds?: string[];
   activeTabId?: string;
   prefetch?: boolean;
@@ -130,6 +158,9 @@ function request(overrides: RequestOverrides = {}) {
         id: "scene-1",
         title: "Scene",
         content: overrides.sceneContent ?? "Body",
+        ...(overrides.sceneContentJson
+          ? { contentJson: overrides.sceneContentJson }
+          : {}),
       },
       project: { title: "Project", language: "en" },
       ...(overrides.prefetch === false
@@ -137,6 +168,22 @@ function request(overrides: RequestOverrides = {}) {
         : { prefetchedCodexEntries: overrides.entries ?? [] }),
     },
   });
+}
+
+function semanticLinksFrom(
+  result: Awaited<ReturnType<typeof collectSceneContext>>,
+): Array<{ entryId: string; entryName: string; text: string }> {
+  return (
+    (
+      result.promptInput.scene as typeof result.promptInput.scene & {
+        semanticLinks?: Array<{
+          entryId: string;
+          entryName: string;
+          text: string;
+        }>;
+      }
+    ).semanticLinks ?? []
+  );
 }
 
 function pinnedCodex(
@@ -348,6 +395,121 @@ describe("collectSceneContext", () => {
     expect(structured.promptInput.codexEntries?.map((item) => item.id)).toEqual(
       [alice.id],
     );
+  });
+
+  it("selects a mentioned Codex entry from a semantic Mark and exposes its live-name mapping", async () => {
+    const elara = entry({ id: "elara", name: "Elara" });
+    const result = await collectSceneContext(
+      request({
+        entries: [elara],
+        sceneContent: "The silver witch smiled.",
+        sceneContentJson: semanticDoc(
+          "The silver witch",
+          elara.id,
+          "Old fallback name",
+        ),
+      }),
+      phaseDeps([]),
+    );
+
+    expect(result.detectedEntries.map((candidate) => candidate.id)).toEqual([
+      elara.id,
+    ]);
+    expect(
+      result.promptInput.codexEntries?.map((candidate) => candidate.id),
+    ).toEqual([elara.id]);
+    expect(semanticLinksFrom(result)).toEqual([
+      {
+        entryId: elara.id,
+        entryName: "Elara",
+        text: "The silver witch",
+      },
+    ]);
+  });
+
+  it.each(["hidden", "suppress"] as const)(
+    "does not select a semantic Mark whose effective context mode is %s",
+    async (contextMode) => {
+      const privateEntry = entry({
+        id: `private-${contextMode}`,
+        name: "Private Entry",
+        contextMode,
+        summary: "Private summary",
+      });
+      const result = await collectSceneContext(
+        request({
+          entries: [privateEntry],
+          sceneContent: "The silver witch smiled.",
+          sceneContentJson: semanticDoc(
+            "The silver witch",
+            privateEntry.id,
+            "Private Entry",
+          ),
+        }),
+        phaseDeps([]),
+      );
+
+      expect(result.promptInput.codexEntries).toEqual([]);
+      expect(result.detectedEntries).toEqual([]);
+      expect(semanticLinksFrom(result)).toEqual([]);
+      expect(JSON.stringify(result.promptInput)).not.toContain(
+        "Private summary",
+      );
+    },
+  );
+
+  it("lets excludedAutoEntryIds suppress a semantic Mark candidate and mapping", async () => {
+    const elara = entry({ id: "elara", name: "Elara" });
+    const result = await collectSceneContext(
+      request({
+        entries: [elara],
+        sceneContent: "The silver witch smiled.",
+        sceneContentJson: semanticDoc("The silver witch", elara.id, "Elara"),
+        excludedAutoEntryIds: [elara.id],
+      }),
+      phaseDeps([]),
+    );
+
+    expect(result.promptInput.codexEntries).toEqual([]);
+    expect(result.detectedEntries).toEqual([]);
+    expect(semanticLinksFrom(result)).toEqual([]);
+  });
+
+  it("does not use body semantic Marks when includeBodies is false", async () => {
+    const elara = entry({ id: "elara", name: "Elara" });
+    const result = await collectSceneContext(
+      request({
+        entries: [elara],
+        includeBodies: false,
+        sceneContent: "The silver witch smiled.",
+        sceneContentJson: semanticDoc("The silver witch", elara.id, "Elara"),
+      }),
+      phaseDeps([]),
+    );
+
+    expect(result.promptInput.scene.content).toBe("");
+    expect(result.promptInput.codexEntries).toEqual([]);
+    expect(result.detectedEntries).toEqual([]);
+    expect(semanticLinksFrom(result)).toEqual([]);
+  });
+
+  it("ignores a semantic Mark that points to a dangling Codex id", async () => {
+    const result = await collectSceneContext(
+      request({
+        entries: [],
+        sceneContent: "The silver witch smiled.",
+        sceneContentJson: semanticDoc(
+          "The silver witch",
+          "deleted-entry",
+          "Deleted Entry",
+        ),
+      }),
+      phaseDeps([]),
+    );
+
+    expect(result.promptInput.codexEntries).toEqual([]);
+    expect(result.detectedEntries).toEqual([]);
+    expect(semanticLinksFrom(result)).toEqual([]);
   });
 
   it("does not promote a current-turn mention to an explicit pin", async () => {

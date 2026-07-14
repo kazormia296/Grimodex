@@ -14,6 +14,8 @@ export const JA_L1_TRIM_MARKERS: L1TrimMarkers = {
 
 export const JA_L3_TRIM_MARKERS: L3TrimMarkers = {
   bodyHeaderRegex: /([\s\S]*?### シーン本文\n)/,
+  semanticLinksBlockRegex:
+    /\n\n### 作者指定のCodexリンク[\s\S]*?(?=\n\n### シーン本文\n)/,
 };
 
 export const JA_TYPE_LABELS: Record<string, string> = {
@@ -94,6 +96,9 @@ export const JA_CHAT_SYSTEM = {
     previousScene: "\n## 直前のシーン",
     currentScene: "\n## 現在のシーン",
     sceneBody: "\n\n### シーン本文",
+    /** L3: 本文中で作者が明示した span → Codex の対応。本文直前に置き、
+     * 文字列マッチより強い文脈依存の参照としてモデルへ伝える。 */
+    semanticLinks: "\n\n### 作者指定のCodexリンク",
     /** focus_subject: Codex/Snippet スコープのアンカー (= この会話の主題)。
      * L3 スロット直後・L4 の前に注入し、会話の焦点を LLM に明示する。 */
     focusSubject: "\n## この会話の焦点",

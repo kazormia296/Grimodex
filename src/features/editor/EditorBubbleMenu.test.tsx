@@ -32,11 +32,26 @@ function actionsRef(
   };
 }
 
+function setSemanticLinkPickerOpen(open: boolean) {
+  useCursorSettingsStore.setState({ semanticLinkPickerOpen: open } as never);
+}
+
+function isSemanticLinkPickerOpen(): boolean {
+  return (
+    (
+      useCursorSettingsStore.getState() as unknown as {
+        semanticLinkPickerOpen?: boolean;
+      }
+    ).semanticLinkPickerOpen === true
+  );
+}
+
 describe("EditorBubbleMenu", () => {
   beforeEach(() => {
     setBubble(true);
     useCursorSettingsStore.getState().setCommentPickerOpen(false);
     useCursorSettingsStore.getState().setForeshadowPickerOpen(false);
+    setSemanticLinkPickerOpen(false);
   });
   afterEach(() => cleanup());
 
@@ -118,6 +133,49 @@ describe("EditorBubbleMenu", () => {
     expect(useCursorSettingsStore.getState().commentPickerOpen).toBe(true);
     editor.destroy();
   });
+
+  it("opens the Codex semantic-link picker when scene editing allows it", () => {
+    const editor = makeEditor("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    render(
+      <EditorBubbleMenu
+        editor={editor}
+        toolbarActionsRef={actionsRef()}
+        canEditCodexSemanticLink
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("bubble-semantic-link"));
+
+    expect(isSemanticLinkPickerOpen()).toBe(true);
+    editor.destroy();
+  });
+
+  it.each([
+    ["omitted", undefined],
+    ["false", false],
+  ] as const)(
+    "hides the Codex semantic-link action when the capability is %s",
+    (_label, canEditCodexSemanticLink) => {
+      const editor = makeEditor("<p>hello world</p>");
+      editor.commands.setTextSelection({ from: 1, to: 6 });
+      render(
+        <EditorBubbleMenu
+          editor={editor}
+          toolbarActionsRef={actionsRef()}
+          {...(canEditCodexSemanticLink === undefined
+            ? {}
+            : { canEditCodexSemanticLink })}
+        />,
+      );
+
+      expect(
+        screen.queryByTestId("bubble-semantic-link"),
+      ).not.toBeInTheDocument();
+      expect(isSemanticLinkPickerOpen()).toBe(false);
+      editor.destroy();
+    },
+  );
 
   it("reflects active marks via aria-pressed", () => {
     const editor = makeEditor("<p>hello world</p>");

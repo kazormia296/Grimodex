@@ -35,6 +35,8 @@ interface EditorContextMenuProps {
   editor: Editor | null;
   containerRef: React.RefObject<HTMLElement | null>;
   toolbarActionsRef?: React.RefObject<ToolbarActions | null>;
+  /** DB-backed sceneだけが明示Codexリンクを作成できる。 */
+  canEditCodexSemanticLink?: boolean;
 }
 
 /**
@@ -45,6 +47,7 @@ export function EditorContextMenu({
   editor,
   containerRef,
   toolbarActionsRef,
+  canEditCodexSemanticLink = false,
 }: EditorContextMenuProps) {
   const { t } = useTranslation();
   const [pos, setPos] = useState<Position | null>(null);
@@ -80,6 +83,9 @@ export function EditorContextMenu({
   const chatGate = useAiGate("chat");
   const openForeshadowPicker = useCursorSettingsStore(
     (s) => s.openForeshadowPicker,
+  );
+  const setSemanticLinkPickerOpen = useCursorSettingsStore(
+    (s) => s.setSemanticLinkPickerOpen,
   );
 
   const [snippetPickerPos, setSnippetPickerPos] = useState<Position | null>(
@@ -278,6 +284,11 @@ export function EditorContextMenu({
   const handleAddComment = () => {
     close();
     useCursorSettingsStore.getState().setCommentPickerOpen(true);
+  };
+
+  const handleOpenSemanticLinkPicker = () => {
+    close();
+    setSemanticLinkPickerOpen(true, editor);
   };
 
   const handleRequestForeshadow = () => {
@@ -525,6 +536,19 @@ export function EditorContextMenu({
             >
               {t("editor.contextMenu.addToCodex")}
             </button>
+            {canEditCodexSemanticLink && (
+              <button
+                type="button"
+                data-testid="context-semantic-link"
+                className="px-3 py-1.5 text-left text-sm hover:bg-primary hover:text-primary-foreground"
+                onClick={handleOpenSemanticLinkPicker}
+              >
+                {t(
+                  "editor.contextMenu.semanticLink",
+                  "既存の Codex エントリにリンク…",
+                )}
+              </button>
+            )}
             {singleMatchedCodex && (
               <button
                 type="button"

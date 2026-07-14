@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BookOpen } from "lucide-react";
-import { buildCrossReferenceReport } from "../crossReference";
+import { buildCrossReferenceReportForProject } from "../crossReference";
 import { useTreeStore } from "@/features/tree/treeStore";
 import type { CodexEntry } from "../api";
 import type { SceneMention } from "../crossReference";
@@ -19,7 +19,7 @@ export function ReferencesSection({ entry }: ReferencesSectionProps) {
   const handleLoad = async () => {
     setIsLoading(true);
     try {
-      const report = await buildCrossReferenceReport();
+      const report = await buildCrossReferenceReportForProject(entry.projectId);
       const found = report.find((r) => r.entryId === entry.id);
       setScenes(found?.scenes ?? []);
     } finally {
@@ -67,12 +67,36 @@ export function ReferencesSection({ entry }: ReferencesSectionProps) {
                 className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs hover:bg-accent"
               >
                 <span className="truncate">{scene.sceneTitle}</span>
-                <span
-                  data-testid={`references-count-${scene.sceneId}`}
-                  className="ml-2 shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                >
-                  {scene.count}
-                </span>
+                {scene.automaticCount !== undefined ||
+                scene.semanticCount !== undefined ? (
+                  <span className="ml-2 flex shrink-0 items-center gap-1">
+                    {(scene.automaticCount ?? 0) > 0 && (
+                      <span
+                        data-testid={`references-automatic-count-${scene.sceneId}`}
+                        title={t("codex.references.automatic")}
+                        className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                      >
+                        {scene.automaticCount}
+                      </span>
+                    )}
+                    {(scene.semanticCount ?? 0) > 0 && (
+                      <span
+                        data-testid={`references-semantic-count-${scene.sceneId}`}
+                        title={t("codex.references.semantic")}
+                        className="rounded-full border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-600 dark:text-violet-300"
+                      >
+                        {scene.semanticCount}
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <span
+                    data-testid={`references-count-${scene.sceneId}`}
+                    className="ml-2 shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                  >
+                    {scene.count}
+                  </span>
+                )}
               </button>
             </li>
           ))}

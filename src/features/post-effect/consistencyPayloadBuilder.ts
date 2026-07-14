@@ -29,6 +29,7 @@ import type {
 } from "@/features/codex/phaseResolver";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { detailValueToPlainText } from "@/features/codex/detailCleanup";
+import { getCodexSemanticLinkEntryIds } from "@/features/codex/semanticLinks";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import {
@@ -48,11 +49,146 @@ import { META_STRUCTURE_PROMPT_VERSION } from "./metaStructurePayloadBuilder";
 // Prompt versions (semver 定数)
 // プロンプトの本質的変更時に minor/major を上げる。
 // ---------------------------------------------------------------------------
-export const CONSISTENCY_PROMPT_VERSION = "consistency_v1.3";
+export const CONSISTENCY_PROMPT_VERSION = "consistency_v1.4";
 export const INTRA_CONSISTENCY_PROMPT_VERSION = "intra_scene_consistency_v1.2";
 // impact_review (影響度レビュー): 変更された Codex 設定 (old→new) と本文の矛盾を
 // 指摘する。Rust 側 IMPACT_REVIEW_PROMPT_VERSION と必ず同値であること。
 export const IMPACT_REVIEW_PROMPT_VERSION = "impact_review_v1.1";
+
+// Codex data shares the model context with the scene and the prompt. Keep the
+// serialized Codex array bounded even when a scene contains many explicit
+// semantic links or an entry stores a very large rich-text body.
+const CONSISTENCY_CODEX_PAYLOAD_MAX_CHARS = 24_000;
+const CONSISTENCY_CODEX_ENTRY_MAX_CHARS = 6_000;
+const CONSISTENCY_CODEX_ID_MAX_CHARS = 128;
+const CONSISTENCY_CODEX_NAME_MAX_CHARS = 256;
+const CONSISTENCY_CODEX_TYPE_MAX_CHARS = 64;
+const CONSISTENCY_CODEX_SUMMARY_MAX_CHARS = 1_024;
+const CONSISTENCY_CODEX_CONTENT_MAX_CHARS = 4_096;
+const CONSISTENCY_CODEX_DETAIL_NAME_MAX_CHARS = 160;
+const CONSISTENCY_CODEX_DETAIL_VALUE_MAX_CHARS = 768;
+const PAYLOAD_TRUNCATION_SUFFIX = "…";
+
+function truncatePayloadField(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  if (maxChars <= 0) return "";
+  if (maxChars === 1) return PAYLOAD_TRUNCATION_SUFFIX;
+
+  let end = maxChars - PAYLOAD_TRUNCATION_SUFFIX.length;
+  // Do not leave a dangling UTF-16 high surrogate before the suffix.
+  const finalCodeUnit = value.charCodeAt(end - 1);
+  if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff) end -= 1;
+  return `${value.slice(0, end)}${PAYLOAD_TRUNCATION_SUFFIX}`;
+}
+
+function serializedLength(entry: CodexPayloadEntry): number {
+  return JSON.stringify(entry).length;
+}
+
+/**
+ * Shrink one already field-capped string just enough for the complete entry to
+ * fit. Keeping this separate from the normal per-field caps means ordinary
+ * short payloads remain byte-for-byte unchanged.
+ */
+function shrinkFieldToEntryBudget(
+  value: string,
+  entry: CodexPayloadEntry,
+  charBudget: number,
+  assign: (next: string) => void,
+): void {
+  if (serializedLength(entry) <= charBudget) return;
+
+  assign("");
+  // Other fields may also need shrinking before the entry fits.
+  if (serializedLength(entry) > charBudget) return;
+
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    assign(truncatePayloadField(value, mid));
+    if (serializedLength(entry) <= charBudget) low = mid;
+    else high = mid - 1;
+  }
+  assign(truncatePayloadField(value, low));
+}
+
+function boundCodexPayloadEntry(
+  raw: CodexPayloadEntry,
+  charBudget: number,
+): CodexPayloadEntry | null {
+  // IDs must remain exact so annotations can still refer back to the entry.
+  // Invalid/hostile oversized identifiers are omitted instead of truncated.
+  if (raw.id.length > CONSISTENCY_CODEX_ID_MAX_CHARS) return null;
+
+  const entry: CodexPayloadEntry = {
+    id: raw.id,
+    name: truncatePayloadField(raw.name, CONSISTENCY_CODEX_NAME_MAX_CHARS),
+    type: truncatePayloadField(raw.type, CONSISTENCY_CODEX_TYPE_MAX_CHARS),
+    summary:
+      raw.summary === null
+        ? null
+        : truncatePayloadField(
+            raw.summary,
+            CONSISTENCY_CODEX_SUMMARY_MAX_CHARS,
+          ),
+    content_plain: truncatePayloadField(
+      raw.content_plain,
+      CONSISTENCY_CODEX_CONTENT_MAX_CHARS,
+    ),
+    detail_values: [],
+  };
+
+  const content = entry.content_plain;
+  shrinkFieldToEntryBudget(content, entry, charBudget, (next) => {
+    entry.content_plain = next;
+  });
+
+  if (entry.summary !== null && serializedLength(entry) > charBudget) {
+    const summary = entry.summary;
+    shrinkFieldToEntryBudget(summary, entry, charBudget, (next) => {
+      entry.summary = next;
+    });
+  }
+
+  if (serializedLength(entry) > charBudget) {
+    const name = entry.name;
+    shrinkFieldToEntryBudget(name, entry, charBudget, (next) => {
+      entry.name = next;
+    });
+  }
+
+  if (serializedLength(entry) > charBudget) {
+    const type = entry.type;
+    shrinkFieldToEntryBudget(type, entry, charBudget, (next) => {
+      entry.type = next;
+    });
+  }
+
+  if (serializedLength(entry) > charBudget) return null;
+
+  // Preserve detail ordering for normal payloads. Once the entry budget is
+  // reached, lower-priority detail fields are simply omitted.
+  for (const detail of raw.detail_values) {
+    const boundedDetail = {
+      name: truncatePayloadField(
+        detail.name,
+        CONSISTENCY_CODEX_DETAIL_NAME_MAX_CHARS,
+      ),
+      value: truncatePayloadField(
+        detail.value,
+        CONSISTENCY_CODEX_DETAIL_VALUE_MAX_CHARS,
+      ),
+    };
+    const nextDetails = [...entry.detail_values, boundedDetail];
+    entry.detail_values = nextDetails;
+    if (serializedLength(entry) > charBudget) {
+      entry.detail_values = nextDetails.slice(0, -1);
+    }
+  }
+
+  return entry;
+}
 
 // ---------------------------------------------------------------------------
 // Codex payload builder (consistency のみ使用)
@@ -62,13 +198,12 @@ export const IMPACT_REVIEW_PROMPT_VERSION = "impact_review_v1.1";
  * プロジェクトの Codex エントリを選定し、フェーズ解決済みの payload 配列を返す。
  * 選定: Always-mode + sceneText に mention されたエントリ全件。
  * 除外: Notes（検査対象外、設計書参照）、context_mode='suppress'|'hidden'。
- *
- * // TODO: SemanticLink 統合ポイント（将来: payload builder の選定にエディタ上の明示リンクを追加）
  */
 async function buildCodexPayload(
   projectId: string,
   sceneId: string,
   sceneText: string,
+  semanticEntryIds: readonly string[],
   temporal: {
     sceneTimeIndex: SceneTimeIndex;
     resolutionMode: PhaseResolutionMode;
@@ -162,18 +297,39 @@ async function buildCodexPayload(
     sceneText,
     detectableEntries,
   );
-  const mentionedIds = new Set(
-    mentioned.map((entry) => entry.id).filter((id) => effectiveById.has(id)),
+  const detectableIds = new Set(detectableEntries.map((entry) => entry.id));
+  const semanticIds = new Set(
+    semanticEntryIds.filter(
+      (id) => detectableIds.has(id) && effectiveById.has(id),
+    ),
+  );
+  const textualMentionIds = new Set(
+    mentioned
+      .map((entry) => entry.id)
+      .filter((id) => detectableIds.has(id) && effectiveById.has(id)),
   );
   const selectedIds = new Set([
-    ...mentionedIds,
+    ...semanticIds,
+    ...textualMentionIds,
     ...alwaysEntries.map((entry) => entry.id),
   ]);
-  const selectedEntries = effectiveEntries.filter((entry) =>
-    selectedIds.has(entry.id),
-  );
+  const selectionPriority = (entryId: string): number => {
+    if (semanticIds.has(entryId)) return 0;
+    if (textualMentionIds.has(entryId)) return 1;
+    return 2;
+  };
+  const selectedEntries = effectiveEntries
+    .filter((entry) => selectedIds.has(entry.id))
+    .sort((a, b) => {
+      const priorityDelta = selectionPriority(a.id) - selectionPriority(b.id);
+      if (priorityDelta !== 0) return priorityDelta;
+      if (a.id === b.id) return 0;
+      return a.id < b.id ? -1 : 1;
+    });
 
   const result: CodexPayloadEntry[] = [];
+  // JSON array brackets are present even for an empty payload.
+  let payloadChars = 2;
   for (const entry of selectedEntries) {
     const resolved = resolvedContexts.resolvedById.get(entry.id);
     if (!resolved) continue;
@@ -191,14 +347,29 @@ async function buildCodexPayload(
       if (plain.trim() !== "") detailValues.push({ name, value: plain });
     }
 
-    result.push({
+    const rawEntry: CodexPayloadEntry = {
       id: entry.id,
       name: entry.name,
       type: entry.type,
       summary: resolved.summary,
       content_plain: extractPlainText(resolved.content),
       detail_values: detailValues,
-    });
+    };
+
+    const separatorChars = result.length > 0 ? 1 : 0;
+    const remainingChars =
+      CONSISTENCY_CODEX_PAYLOAD_MAX_CHARS - payloadChars - separatorChars;
+    if (remainingChars <= 0) break;
+
+    const boundedEntry = boundCodexPayloadEntry(
+      rawEntry,
+      Math.min(CONSISTENCY_CODEX_ENTRY_MAX_CHARS, remainingChars),
+    );
+    if (!boundedEntry) continue;
+
+    const entryChars = serializedLength(boundedEntry);
+    result.push(boundedEntry);
+    payloadChars += separatorChars + entryChars;
   }
 
   return result;
@@ -224,13 +395,23 @@ function captureTemporalResolution(): {
 // Scene text extractor
 // ---------------------------------------------------------------------------
 
-async function getScenePlainText(sceneId: string): Promise<string> {
+interface SceneBodySnapshot {
+  sceneText: string;
+  semanticEntryIds: string[];
+}
+
+async function getSceneBodySnapshot(
+  sceneId: string,
+): Promise<SceneBodySnapshot> {
   const rows = await db
     .select({ content: treeNodes.content })
     .from(treeNodes)
     .where(eq(treeNodes.id, sceneId));
-  if (!rows[0]) return "";
-  return prosemirrorToText(rows[0].content ?? "{}");
+  const contentJson = rows[0]?.content ?? "{}";
+  return {
+    sceneText: prosemirrorToText(contentJson),
+    semanticEntryIds: getCodexSemanticLinkEntryIds(contentJson),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -252,11 +433,12 @@ export async function buildConsistencyPayload(
   route?: HashRoute,
 ): Promise<ConsistencyPayloadResult> {
   const temporal = captureTemporalResolution();
-  const sceneText = await getScenePlainText(sceneId);
+  const { sceneText, semanticEntryIds } = await getSceneBodySnapshot(sceneId);
   const codexPayload = await buildCodexPayload(
     projectId,
     sceneId,
     sceneText,
+    semanticEntryIds,
     temporal,
   );
   const codexPayloadJson = JSON.stringify(codexPayload);
@@ -288,7 +470,7 @@ export async function buildIntraPayload(
   customInstruction: string = "",
   route?: HashRoute,
 ): Promise<IntraPayloadResult> {
-  const sceneText = await getScenePlainText(sceneId);
+  const { sceneText } = await getSceneBodySnapshot(sceneId);
   const inputHash = await computeInputHash({
     promptVersion: INTRA_CONSISTENCY_PROMPT_VERSION,
     model,
@@ -356,12 +538,13 @@ export async function buildMultiPayload(
 
   const scenes: MultiSceneEntry[] = [];
   for (const sceneId of sceneIds) {
-    const sceneText = await getScenePlainText(sceneId);
+    const { sceneText, semanticEntryIds } = await getSceneBodySnapshot(sceneId);
     if (effectType === "consistency") {
       const codexPayload = await buildCodexPayload(
         projectId,
         sceneId,
         sceneText,
+        semanticEntryIds,
         temporal,
       );
       scenes.push({

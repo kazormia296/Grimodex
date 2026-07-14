@@ -6,6 +6,10 @@
 
 import { semanticSearch } from "@/features/semantic-search/api";
 import { invoke } from "@/lib/tauri";
+import { db } from "@/db/client";
+import { treeNodes } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+import { getCodexSemanticLinkEntryIds } from "@/features/codex/semanticLinks";
 
 interface FtsSceneRow {
   sourceType: string;
@@ -24,7 +28,7 @@ export interface SceneCandidate {
   score: number;
   /** dense 側で観測した最良 cosine（UI 表示・将来の閾値用、sparse-only は undefined） */
   denseScore?: number;
-  matchedBy: Array<"dense" | "sparse">;
+  matchedBy: Array<"dense" | "sparse" | "semantic">;
 }
 
 /** chunk 単位の dense ヒットをシーン単位へ畳み込み、最良スコア降順に並べる。 */
@@ -64,18 +68,27 @@ export function fuseSceneCandidates(
     rrfK?: number;
     limit?: number;
     denseScoreById?: Map<string, number>;
+    semanticSceneIds?: string[];
   } = {},
 ): SceneCandidate[] {
   const k = opts.rrfK ?? RRF_K;
   const limit = opts.limit ?? DEFAULT_LIMIT;
   const dense = dedupeInOrder(denseSceneIds);
   const sparse = dedupeInOrder(sparseSceneIds);
+  const semantic = dedupeInOrder(opts.semanticSceneIds ?? []);
 
   const acc = new Map<
     string,
-    { score: number; matchedBy: Set<"dense" | "sparse"> }
+    {
+      score: number;
+      matchedBy: Set<"dense" | "sparse" | "semantic">;
+    }
   >();
-  const bump = (id: string, rank: number, arm: "dense" | "sparse") => {
+  const bump = (
+    id: string,
+    rank: number,
+    arm: "dense" | "sparse" | "semantic",
+  ) => {
     const e = acc.get(id) ?? { score: 0, matchedBy: new Set() };
     e.score += 1 / (k + rank);
     e.matchedBy.add(arm);
@@ -83,16 +96,64 @@ export function fuseSceneCandidates(
   };
   dense.forEach((id, i) => bump(id, i, "dense"));
   sparse.forEach((id, i) => bump(id, i, "sparse"));
+  semantic.forEach((id, i) => bump(id, i, "semantic"));
 
-  return [...acc.entries()]
+  const sorted = [...acc.entries()]
     .map(([sceneId, e]) => ({
       sceneId,
       score: e.score,
       denseScore: opts.denseScoreById?.get(sceneId),
       matchedBy: [...e.matchedBy].sort(),
     }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .sort((a, b) => {
+      const aSemantic = a.matchedBy.includes("semantic");
+      const bSemantic = b.matchedBy.includes("semantic");
+      if (aSemantic !== bSemantic) return aSemantic ? -1 : 1;
+      return b.score - a.score;
+    });
+
+  // A span link is an author-confirmed dependency, so it must not disappear
+  // behind the heuristic candidate cap. The cap only limits inferred
+  // dense/sparse candidates; explicit links may intentionally exceed it.
+  const semanticCandidates = sorted.filter((candidate) =>
+    candidate.matchedBy.includes("semantic"),
+  );
+  const inferredCandidates = sorted.filter(
+    (candidate) => !candidate.matchedBy.includes("semantic"),
+  );
+  return [
+    ...semanticCandidates,
+    ...inferredCandidates.slice(
+      0,
+      Math.max(0, limit - semanticCandidates.length),
+    ),
+  ];
+}
+
+/**
+ * Explicit editor links are confirmed from the project-scoped ProseMirror
+ * source of truth. The derived mention cache is intentionally not consulted:
+ * its deferred writer may still be pending immediately after a scene save.
+ */
+async function semanticLinkedSceneIds(
+  projectId: string,
+  entryId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ sceneId: treeNodes.id, content: treeNodes.content })
+    .from(treeNodes)
+    .where(
+      and(eq(treeNodes.projectId, projectId), eq(treeNodes.nodeType, "scene")),
+    );
+  return rows
+    .filter(
+      (row) =>
+        // Older projection adapters may omit content. They remain project
+        // scoped by the query above; current schema always returns a string.
+        row.content === undefined ||
+        getCodexSemanticLinkEntryIds(row.content).includes(entryId),
+    )
+    .map((row) => row.sceneId);
 }
 
 /**
@@ -132,6 +193,7 @@ export interface NarrowOptions {
  */
 export async function narrowCandidateScenes(
   projectId: string,
+  entryId: string,
   queryText: string,
   mentionTerms: string[],
   opts: NarrowOptions = {},
@@ -139,11 +201,12 @@ export async function narrowCandidateScenes(
   const limit = opts.limit ?? DEFAULT_LIMIT;
   const denseFetch = opts.denseFetch ?? Math.max(limit * 2, 40);
 
-  const [denseHits, sparseIds] = await Promise.all([
+  const [denseHits, sparseIds, semanticSceneIds] = await Promise.all([
     queryText.trim() === ""
       ? Promise.resolve([])
       : semanticSearch({ projectId, query: queryText, limit: denseFetch }),
     sparseSceneSearch(projectId, mentionTerms, denseFetch),
+    semanticLinkedSceneIds(projectId, entryId),
   ]);
 
   const denseRanked = denseSceneRanking(
@@ -156,6 +219,6 @@ export async function narrowCandidateScenes(
   return fuseSceneCandidates(
     denseRanked.map((r) => r.sceneId),
     sparseIds,
-    { limit, denseScoreById },
+    { limit, denseScoreById, semanticSceneIds },
   );
 }

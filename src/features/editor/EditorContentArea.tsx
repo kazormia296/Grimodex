@@ -8,6 +8,7 @@ import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorBubbleMenu } from "@/features/editor/EditorBubbleMenu";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
 import { CommentAddPopover } from "@/features/editor/CommentAddPopover";
+import { CodexSemanticLinkPopover } from "@/features/editor/CodexSemanticLinkPopover";
 import { CommentHoverPopover } from "@/features/editor/CommentHoverPopover";
 import { PseudoCommentBubble } from "@/features/post-effect/PseudoCommentBubble";
 import { AnnotationHoverPopover } from "@/features/post-effect/AnnotationHoverPopover";
@@ -49,6 +50,8 @@ export interface EditorContentAreaProps {
   handleTitleEditStart: () => void;
   isSceneContentLoading: boolean;
   sceneId: string;
+  /** DB-backed sceneでのみ、選択範囲からCodex明示リンクを編集できる。 */
+  canEditCodexSemanticLink?: boolean;
   /** バブルメニューの AI サブメニューから起動されるインライン AI コマンドの
    *  ハンドラ。未指定 (file-backed シーン等) のときはバブルに AI ボタンを出さない。 */
   onInlineAiCommand?: (cmd: InlineAiCommand) => void;
@@ -84,6 +87,7 @@ export function EditorContentArea({
   handleTitleEditStart,
   isSceneContentLoading,
   sceneId,
+  canEditCodexSemanticLink = false,
   onInlineAiCommand,
 }: EditorContentAreaProps) {
   const { t } = useTranslation();
@@ -201,9 +205,13 @@ export function EditorContentArea({
             <EditorBubbleMenu
               editor={editor}
               toolbarActionsRef={toolbarActionsRef}
+              canEditCodexSemanticLink={canEditCodexSemanticLink}
               onInlineAiCommand={onInlineAiCommand}
             />
             <CommentAddPopover editor={editor} />
+            {canEditCodexSemanticLink && (
+              <CodexSemanticLinkPopover editor={editor} />
+            )}
             <ForeshadowMarkPopover editor={editor} />
             <ForeshadowMarkHoverPopover
               editor={editor}
@@ -227,6 +235,7 @@ export function EditorContentArea({
               editor={editor}
               containerRef={editorContainerRef}
               toolbarActionsRef={toolbarActionsRef}
+              canEditCodexSemanticLink={canEditCodexSemanticLink}
             />
           </EditorBodyWithLoading>
         </div>

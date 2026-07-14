@@ -2220,7 +2220,9 @@
       "searching": "Searching...",
       "checkOccurrences": "Check occurrences",
       "noMentions": "Not mentioned in text",
-      "appearsIn": "Appears in"
+      "appearsIn": "Appears in",
+      "automatic": "Automatic match",
+      "semantic": "Explicit link"
     },
     "tracking": {
       "contextLabel": "Context",
@@ -2285,6 +2287,7 @@
       "started": "Checking {{count}} scenes… (results appear in the Review panel)",
       "noChange": "No changes since the last check",
       "noCandidates": "No affected scenes were found",
+      "sourceChanged": "Settings or scene text changed before launch. Please try again",
       "done": "Impact review complete",
       "error": "Impact check failed"
     },
@@ -3512,7 +3515,18 @@
       "label": "Selection toolbar",
       "comment": "Add comment",
       "foreshadow": "Mark as foreshadowing",
+      "semanticLink": "Link to Codex entry",
       "ai": "Edit with AI"
+    },
+    "semanticLink": {
+      "pickerLabel": "Codex semantic link",
+      "heading": "Link to Codex entry",
+      "search": "Search Codex entries",
+      "searchPlaceholder": "Search names and aliases…",
+      "noResults": "No entries found",
+      "remove": "Remove Codex link",
+      "deletedEntry": "Deleted Codex entry",
+      "danglingHelp": "The linked entry was deleted. Select the text to reassign or remove the link."
     },
     "toolbar": {
       "bold": "Bold (Ctrl+B)",
@@ -3632,6 +3646,7 @@
       "noSnippet": "No snippets available",
       "setRuby": "Set Ruby…",
       "addToCodex": "Add to Codex",
+      "semanticLink": "Link to an existing Codex entry…",
       "registerAsExcludedAlias": "Register as excluded alias of \"{{name}}\"",
       "excludedAliasRegistered": "Registered as excluded alias of \"{{name}}\"",
       "excludedAliasAlreadyExists": "Already registered as an excluded alias",
@@ -5709,6 +5724,7 @@
       "removeFromSet": "Remove from set"
     },
     "sources": {
+      "semantic": "Explicit semantic link",
       "body": "Body mention",
       "beat": "Beat mention",
       "relation": "Explicit relation"

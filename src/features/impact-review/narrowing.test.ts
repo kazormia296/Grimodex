@@ -1,5 +1,36 @@
-import { describe, it, expect } from "vitest";
-import { denseSceneRanking, fuseSceneCandidates } from "./narrowing";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+
+const h = vi.hoisted(() => {
+  const dbWhere = vi.fn();
+  const dbFrom = vi.fn(() => ({ where: dbWhere }));
+  const dbSelect = vi.fn(() => ({ from: dbFrom }));
+  return {
+    dbWhere,
+    dbFrom,
+    dbSelect,
+    semanticSearch: vi.fn(),
+    invoke: vi.fn(),
+  };
+});
+
+vi.mock("@/db/client", () => ({ db: { select: h.dbSelect } }));
+vi.mock("@/features/semantic-search/api", () => ({
+  semanticSearch: h.semanticSearch,
+}));
+vi.mock("@/lib/tauri", () => ({ invoke: h.invoke }));
+
+import {
+  denseSceneRanking,
+  fuseSceneCandidates,
+  narrowCandidateScenes,
+} from "./narrowing";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.dbWhere.mockResolvedValue([]);
+  h.semanticSearch.mockResolvedValue([]);
+  h.invoke.mockResolvedValue([]);
+});
 
 describe("denseSceneRanking", () => {
   it("collapses chunk hits to scenes keeping the best score, sorted desc", () => {
@@ -47,6 +78,29 @@ describe("fuseSceneCandidates", () => {
     expect(out.length).toBe(30);
   });
 
+  it("keeps a semantic-linked scene when dense and sparse return no hits", () => {
+    const out = fuseSceneCandidates([], [], {
+      semanticSceneIds: ["semantic-scene"],
+    });
+    expect(out).toEqual([
+      expect.objectContaining({
+        sceneId: "semantic-scene",
+        matchedBy: ["semantic"],
+      }),
+    ]);
+  });
+
+  it("prioritizes semantic-linked scenes before applying the result limit", () => {
+    const out = fuseSceneCandidates(["dense-1", "dense-2"], [], {
+      semanticSceneIds: ["semantic-scene"],
+      limit: 2,
+    });
+    expect(out.map((candidate) => candidate.sceneId)).toEqual([
+      "semantic-scene",
+      "dense-1",
+    ]);
+  });
+
   it("dedupes a scene id repeated within one arm", () => {
     const out = fuseSceneCandidates(["s1", "s1", "s2"], []);
     expect(out.map((c) => c.sceneId)).toEqual(["s1", "s2"]);
@@ -54,5 +108,22 @@ describe("fuseSceneCandidates", () => {
 
   it("returns [] when both arms empty", () => {
     expect(fuseSceneCandidates([], [])).toEqual([]);
+  });
+});
+
+describe("narrowCandidateScenes", () => {
+  it("returns semantic-linked scenes even when dense and sparse both miss", async () => {
+    h.dbWhere.mockResolvedValue([{ sceneId: "semantic-scene" }]);
+
+    const out = await narrowCandidateScenes("project-1", "entry-1", "", [], {
+      limit: 1,
+    });
+
+    expect(out).toEqual([
+      expect.objectContaining({
+        sceneId: "semantic-scene",
+        matchedBy: ["semantic"],
+      }),
+    ]);
   });
 });

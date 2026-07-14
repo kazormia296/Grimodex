@@ -65,7 +65,9 @@ function makeSection(type: string): MatrixColumnOrHeader {
   return { key: `section::${type}`, isSectionHeader: true, sectionType: type };
 }
 
-function cellInfo(sources: ("body" | "beat" | "relation")[]): CellInfo {
+function cellInfo(
+  sources: ("semantic" | "body" | "beat" | "relation")[],
+): CellInfo {
   return {
     sources: new Set(sources) as CellInfo["sources"],
     topSource: sources[0] as CellInfo["topSource"],
@@ -92,6 +94,24 @@ describe("buildCsvString", () => {
     ]);
     const csv = buildCsvString(rows, cols, cellMap);
     expect(csv.split("\n")[1]).toBe("s1,S1,BRM");
+  });
+
+  it("encodes semantic links with source code S", () => {
+    const rows = [makeScene("s1", "S1")];
+    const cols = [makeCol("e1", "Bob")];
+    const cellMap = new Map([["s1::e1", cellInfo(["semantic"])]]);
+    const csv = buildCsvString(rows, cols, cellMap);
+    expect(csv.split("\n")[1]).toBe("s1,S1,S");
+  });
+
+  it("places semantic source before B/R/M in combined cells", () => {
+    const rows = [makeScene("s1", "S1")];
+    const cols = [makeCol("e1", "Bob")];
+    const cellMap = new Map([
+      ["s1::e1", cellInfo(["semantic", "body", "beat", "relation"])],
+    ]);
+    const csv = buildCsvString(rows, cols, cellMap);
+    expect(csv.split("\n")[1]).toBe("s1,S1,SBRM");
   });
 
   it("outputs empty string for cell with no mention", () => {

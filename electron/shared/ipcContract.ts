@@ -693,6 +693,77 @@ function validateOptionalPositiveU32(
   }
 }
 
+const SQLITE_U64_MAX_DECIMAL = "18446744073709551615";
+
+function isCanonicalU64Decimal(value: unknown): value is string {
+  if (typeof value !== "string" || !/^(0|[1-9]\d*)$/.test(value)) {
+    return false;
+  }
+  return (
+    value.length < SQLITE_U64_MAX_DECIMAL.length ||
+    (value.length === SQLITE_U64_MAX_DECIMAL.length &&
+      value <= SQLITE_U64_MAX_DECIMAL)
+  );
+}
+
+/** Validate the Impact-only SQLite revision guard without changing nested keys. */
+function validateOptionalSqliteSourceGuard(
+  args: CommandArgs,
+  cmd: string,
+): void {
+  const value = args.source_guard;
+  if (value === undefined) {
+    if (args.effect_type === "impact_review") {
+      throw new Error(
+        `invalid args \`source_guard\` for command \`${cmd}\`: required for impact_review`,
+      );
+    }
+    return;
+  }
+  if (args.effect_type !== "impact_review") {
+    throw new Error(
+      `invalid args \`source_guard\` for command \`${cmd}\`: only impact_review may use a source guard`,
+    );
+  }
+  const guard = requireRecord(args, "source_guard", cmd);
+  const allowedKeys = new Set([
+    "kind",
+    "expected_connection_epoch",
+    "expected_total_changes",
+    "expected_data_version",
+  ]);
+  if (Object.keys(guard).some((key) => !allowedKeys.has(key))) {
+    throw new Error(
+      `invalid args \`source_guard\` for command \`${cmd}\`: unexpected key`,
+    );
+  }
+  if (guard.kind !== "sqlite_revision_v1") {
+    throw new Error(
+      `invalid args \`source_guard.kind\` for command \`${cmd}\`: expected sqlite_revision_v1`,
+    );
+  }
+  if (
+    typeof guard.expected_connection_epoch !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      guard.expected_connection_epoch,
+    )
+  ) {
+    throw new Error(
+      `invalid args \`source_guard.expected_connection_epoch\` for command \`${cmd}\`: expected a canonical UUID`,
+    );
+  }
+  for (const key of [
+    "expected_total_changes",
+    "expected_data_version",
+  ] as const) {
+    if (!isCanonicalU64Decimal(guard[key])) {
+      throw new Error(
+        `invalid args \`source_guard.${key}\` for command \`${cmd}\`: expected a canonical u64 decimal string`,
+      );
+    }
+  }
+}
+
 /** Tauri の Option<i64> 引数の写像（欠落 / null / undefined は None）。 */
 function optionalNumber(
   args: CommandArgs,
@@ -1888,6 +1959,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   start_post_effect_run: {
     run: async (b, a, d) => {
       const args = requireRecord(a, "args", "start_post_effect_run");
+      if (args.effect_type === "impact_review") {
+        throw new Error(
+          "invalid args `effect_type` for command `start_post_effect_run`: impact_review requires start_post_effect_run_multi with source_guard",
+        );
+      }
       const startPostEffectRun = requireNapiMethod(
         b,
         b.startPostEffectRun,
@@ -1903,6 +1979,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   start_post_effect_run_multi: {
     run: async (b, a, d) => {
       const args = requireRecord(a, "args", "start_post_effect_run_multi");
+      validateOptionalSqliteSourceGuard(args, "start_post_effect_run_multi");
       const startPostEffectRunMulti = requireNapiMethod(
         b,
         b.startPostEffectRunMulti,

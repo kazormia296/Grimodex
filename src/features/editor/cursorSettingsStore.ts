@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { Editor } from "@tiptap/core";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { LayerSetOptions } from "@/features/post-effect/annotationStore";
 
@@ -34,6 +35,11 @@ interface CursorSettingsState {
   /** Whether the "add comment" input popover is open. */
   commentPickerOpen: boolean;
   setCommentPickerOpen: (open: boolean) => void;
+  /** Whether the Codex semantic-link entry picker is open. */
+  semanticLinkPickerOpen: boolean;
+  /** Editor that owns the semantic-link picker in split/linear views. */
+  semanticLinkPickerOwner: Editor | null;
+  setSemanticLinkPickerOpen: (open: boolean, owner?: Editor | null) => void;
   /** Whether the foreshadow mark picker is open. */
   foreshadowPickerOpen: boolean;
   setForeshadowPickerOpen: (open: boolean) => void;
@@ -131,6 +137,14 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
 
     commentPickerOpen: false,
     setCommentPickerOpen: (open) => set({ commentPickerOpen: open }),
+
+    semanticLinkPickerOpen: false,
+    semanticLinkPickerOwner: null,
+    setSemanticLinkPickerOpen: (open, owner = null) =>
+      set({
+        semanticLinkPickerOpen: open,
+        semanticLinkPickerOwner: open ? owner : null,
+      }),
 
     foreshadowPickerOpen: false,
     setForeshadowPickerOpen: (open) =>

@@ -5,10 +5,15 @@
 
 import { db } from "@/db/client";
 import { impactReviewBaselines } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { stableStringify } from "@/features/post-effect/canonicalize";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import type { SqliteSourceRevisionGuard } from "@/features/post-effect/types";
 import type { CodexSnapshot } from "./diff";
+
+const BASELINE_CONTENT_HASH_SYMBOL = Symbol.for(
+  "grimodex.impactReviewBaseline.contentHash",
+);
 
 function stableHash(s: string): string {
   let h = 0x811c9dc5;
@@ -24,33 +29,110 @@ export async function getBaseline(
   entryId: string,
 ): Promise<CodexSnapshot | null> {
   const rows = await db
-    .select({ snapshotJson: impactReviewBaselines.snapshotJson })
+    .select({
+      snapshotJson: impactReviewBaselines.snapshotJson,
+      contentHash: impactReviewBaselines.contentHash,
+    })
     .from(impactReviewBaselines)
     .where(eq(impactReviewBaselines.entryId, entryId));
   if (!rows[0]) return null;
   try {
-    return JSON.parse(rows[0].snapshotJson) as CodexSnapshot;
+    const snapshot = JSON.parse(rows[0].snapshotJson) as CodexSnapshot;
+    Object.defineProperty(snapshot, BASELINE_CONTENT_HASH_SYMBOL, {
+      value: rows[0].contentHash,
+      enumerable: false,
+    });
+    return snapshot;
   } catch {
     return null;
   }
 }
 
-/** レビュー基準を現在のスナップショットへ upsert する。 */
+/**
+ * レビュー基準を保存する。expectedContentHash 指定時は visibility metadata
+ * writer と競合しないよう CAS し、古い snapshot による上書きを拒否する。
+ * null は「行が存在しないこと」を期待する初回 insert。
+ */
 export async function saveBaseline(
   projectId: string,
   entryId: string,
   snapshot: CodexSnapshot,
-): Promise<void> {
+  expectedContentHash?: string | null,
+  sourceGuard?: SqliteSourceRevisionGuard,
+): Promise<string> {
   const snapshotJson = stableStringify(snapshot);
   const contentHash = stableHash(snapshotJson);
   const reviewedAt = new Date().toISOString();
-  await db
-    .insert(impactReviewBaselines)
-    .values({ entryId, projectId, snapshotJson, contentHash, reviewedAt })
-    .onConflictDoUpdate({
-      target: impactReviewBaselines.entryId,
-      set: { projectId, snapshotJson, contentHash, reviewedAt },
-    });
+  let saved: Array<{ entryId: string }>;
+  const sourceRevisionPredicate: SQL | undefined = sourceGuard
+    ? sql`(SELECT epoch FROM temp.grimodex_connection_meta WHERE singleton = 1) = ${sourceGuard.expected_connection_epoch}
+        AND CAST(total_changes() AS TEXT) = ${sourceGuard.expected_total_changes}
+        AND CAST((SELECT data_version FROM pragma_data_version) AS TEXT) = ${sourceGuard.expected_data_version}`
+    : undefined;
+  const guardedValues = sourceGuard
+    ? db
+        .select({
+          entryId: sql<string>`${entryId}`.as("entry_id"),
+          projectId: sql<string>`${projectId}`.as("project_id"),
+          snapshotJson: sql<string>`${snapshotJson}`.as("snapshot_json"),
+          contentHash: sql<string>`${contentHash}`.as("content_hash"),
+          reviewedAt: sql<string>`${reviewedAt}`.as("reviewed_at"),
+        })
+        .from(sql`temp.grimodex_connection_meta`)
+        .where(and(sql`singleton = 1`, sourceRevisionPredicate))
+    : null;
+
+  if (expectedContentHash === undefined && guardedValues) {
+    saved = await db
+      .insert(impactReviewBaselines)
+      .select(guardedValues)
+      .onConflictDoUpdate({
+        target: impactReviewBaselines.entryId,
+        set: { projectId, snapshotJson, contentHash, reviewedAt },
+      })
+      .returning({ entryId: impactReviewBaselines.entryId });
+  } else if (expectedContentHash === undefined) {
+    saved = await db
+      .insert(impactReviewBaselines)
+      .values({ entryId, projectId, snapshotJson, contentHash, reviewedAt })
+      .onConflictDoUpdate({
+        target: impactReviewBaselines.entryId,
+        set: { projectId, snapshotJson, contentHash, reviewedAt },
+      })
+      .returning({ entryId: impactReviewBaselines.entryId });
+  } else if (expectedContentHash === null && guardedValues) {
+    saved = await db
+      .insert(impactReviewBaselines)
+      .select(guardedValues)
+      .onConflictDoNothing()
+      .returning({ entryId: impactReviewBaselines.entryId });
+  } else if (expectedContentHash === null) {
+    saved = await db
+      .insert(impactReviewBaselines)
+      .values({ entryId, projectId, snapshotJson, contentHash, reviewedAt })
+      .onConflictDoNothing()
+      .returning({ entryId: impactReviewBaselines.entryId });
+  } else {
+    saved = await db
+      .update(impactReviewBaselines)
+      .set({ projectId, snapshotJson, contentHash, reviewedAt })
+      .where(
+        and(
+          eq(impactReviewBaselines.entryId, entryId),
+          eq(impactReviewBaselines.contentHash, expectedContentHash),
+          sourceRevisionPredicate,
+        ),
+      )
+      .returning({ entryId: impactReviewBaselines.entryId });
+  }
+  if (saved.length === 0) {
+    if (sourceGuard) {
+      throw new Error(
+        "IMPACT_SOURCE_CHANGED: baseline or source revision changed concurrently",
+      );
+    }
+    throw new Error("Impact baseline changed concurrently");
+  }
   recordChangeEvent({
     domain: "review",
     opType: "baseline.save",
@@ -58,4 +140,5 @@ export async function saveBaseline(
     entityId: entryId,
     payload: { entryId, contentHash },
   });
+  return contentHash;
 }

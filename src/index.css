@@ -1205,6 +1205,19 @@ html[data-glass-enabled="true"][data-glass-popovers="true"]
   opacity: 0.7;
 }
 
+/* Author-defined Codex links are persisted Marks, not automatic match
+   decorations. A double underline keeps the explicit semantic decision
+   visible even when the same span also receives a colored Codex highlight. */
+.codex-semantic-link {
+  cursor: help;
+  text-decoration-line: underline;
+  text-decoration-style: double;
+  text-decoration-color: color-mix(in srgb, var(--primary) 85%, currentColor);
+  text-decoration-thickness: 1px;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+}
+
 /* Local Codex completion is a ProseMirror widget, not document content. It is
    deliberately quiet and non-interactive so it never competes with IME or
    selection/copy behavior. */
