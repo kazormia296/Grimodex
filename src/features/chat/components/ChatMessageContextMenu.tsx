@@ -34,6 +34,7 @@ interface ChatMessageContextMenuProps {
   onEdit: (messageId: string) => void;
   onDelete: (messageId: string) => void;
   onRegenerate: (messageId: string) => void;
+  mutationsDisabled?: boolean;
 }
 
 export function ChatMessageContextMenu({
@@ -53,6 +54,7 @@ export function ChatMessageContextMenu({
   onEdit,
   onDelete,
   onRegenerate,
+  mutationsDisabled = false,
 }: ChatMessageContextMenuProps) {
   const { t } = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -225,43 +227,47 @@ export function ChatMessageContextMenu({
             t("chat.contextMenu.copy"),
             handleCopy,
           )}
-          {menuItem(
-            "ctx-regenerate",
-            <RefreshCw className="h-3 w-3" />,
-            t("chat.contextMenu.regenerate"),
-            handleRegenerate,
-          )}
-          {separator("sep-delete")}
-          {menuItem(
-            "ctx-delete",
-            <Trash2 className="h-3 w-3" />,
-            t("chat.contextMenu.delete"),
-            handleDelete,
-            true,
-          )}
+          {!mutationsDisabled &&
+            menuItem(
+              "ctx-regenerate",
+              <RefreshCw className="h-3 w-3" />,
+              t("chat.contextMenu.regenerate"),
+              handleRegenerate,
+            )}
+          {!mutationsDisabled && separator("sep-delete")}
+          {!mutationsDisabled &&
+            menuItem(
+              "ctx-delete",
+              <Trash2 className="h-3 w-3" />,
+              t("chat.contextMenu.delete"),
+              handleDelete,
+              true,
+            )}
         </>
       ) : (
         <>
-          {menuItem(
-            "ctx-edit",
-            <Pencil className="h-3 w-3" />,
-            t("chat.contextMenu.edit"),
-            handleEdit,
-          )}
+          {!mutationsDisabled &&
+            menuItem(
+              "ctx-edit",
+              <Pencil className="h-3 w-3" />,
+              t("chat.contextMenu.edit"),
+              handleEdit,
+            )}
           {menuItem(
             "ctx-copy",
             <Copy className="h-3 w-3" />,
             t("chat.contextMenu.copy"),
             handleCopy,
           )}
-          {separator("sep-delete")}
-          {menuItem(
-            "ctx-delete",
-            <Trash2 className="h-3 w-3" />,
-            t("chat.contextMenu.delete"),
-            handleDelete,
-            true,
-          )}
+          {!mutationsDisabled && separator("sep-delete")}
+          {!mutationsDisabled &&
+            menuItem(
+              "ctx-delete",
+              <Trash2 className="h-3 w-3" />,
+              t("chat.contextMenu.delete"),
+              handleDelete,
+              true,
+            )}
         </>
       )}
     </div>,

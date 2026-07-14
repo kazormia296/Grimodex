@@ -32,6 +32,7 @@ interface ChatDialogsProps {
   activeSceneId: string | null;
   onCloseSessions: () => void;
   contextMenu: ChatContextMenuState | null;
+  contextMutationsDisabled: boolean;
   onCloseContextMenu: () => void;
   contextActions: Pick<
     ComponentProps<typeof ChatMessageContextMenu>,
@@ -62,6 +63,7 @@ export function ChatDialogs({
   activeSceneId,
   onCloseSessions,
   contextMenu,
+  contextMutationsDisabled,
   onCloseContextMenu,
   contextActions,
   promptViewOpen,
@@ -91,11 +93,13 @@ export function ChatDialogs({
           sceneTitle={sceneTitle}
           activeSceneId={activeSceneId ?? ""}
           onClose={onCloseSessions}
+          mutationsDisabled={contextMutationsDisabled}
         />
       )}
       {contextMenu && (
         <ChatMessageContextMenu
           {...contextMenu}
+          mutationsDisabled={contextMutationsDisabled}
           onClose={onCloseContextMenu}
           {...contextActions}
         />

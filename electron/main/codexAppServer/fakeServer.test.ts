@@ -58,11 +58,11 @@ describe("fake Codex App Server fixture", () => {
     });
     try {
       await expect(connection.request("initialize")).resolves.toMatchObject({
-        serverInfo: { version: "fixture-1" },
+        userAgent: "fake-codex/fixture-1",
       });
       connection.notify("initialized");
       await expect(connection.request("model/list")).resolves.toMatchObject({
-        models: [{ id: "fake-model" }],
+        data: [{ id: "fake-model" }],
       });
       const thread = await connection.request("thread/start", {
         cwd: "/workspace",

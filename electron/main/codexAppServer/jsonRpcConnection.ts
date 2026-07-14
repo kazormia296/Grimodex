@@ -69,7 +69,6 @@ const DEFAULT_RETRY_BASE_DELAY_MS = 100;
 export class JsonRpcConnection {
   private readonly decoder = new StringDecoder("utf8");
   private pendingText = "";
-  private bufferedBytes = 0;
   private nextId = 1;
   private closed = false;
   private readonly pending = new Map<JsonRpcId, PendingRequest>();
@@ -91,7 +90,7 @@ export class JsonRpcConnection {
       | "retryBaseDelayMs"
       | "random"
     >;
-  private readonly unlisten: Array<() => void>;
+  private readonly unlisten: Array<() => void> = [];
 
   constructor(
     private readonly wire: JsonRpcWire,
@@ -108,11 +107,13 @@ export class JsonRpcConnection {
       onUnknownMessage: options.onUnknownMessage,
       onClosed: options.onClosed,
     };
-    this.unlisten = [
-      wire.onData((chunk) => this.handleData(chunk)),
+    this.addWireListener(() => wire.onData((chunk) => this.handleData(chunk)));
+    this.addWireListener(() =>
       wire.onClose((cause) => this.handleClose(cause)),
+    );
+    this.addWireListener(() =>
       wire.onError((cause) => this.handleClose(cause)),
-    ];
+    );
   }
 
   request(
@@ -143,7 +144,6 @@ export class JsonRpcConnection {
   notify(method: string, params?: unknown): void {
     if (this.closed) throw new Error("Codex app-server connection is closed");
     this.write({
-      jsonrpc: "2.0",
       method,
       ...(params === undefined ? {} : { params }),
     });
@@ -168,12 +168,18 @@ export class JsonRpcConnection {
     }
     const id = this.nextId++;
     this.pending.set(id, pending);
-    this.write({
-      jsonrpc: "2.0",
-      id,
-      method: pending.method,
-      ...(pending.params === undefined ? {} : { params: pending.params }),
-    });
+    try {
+      this.write({
+        id,
+        method: pending.method,
+        ...(pending.params === undefined ? {} : { params: pending.params }),
+      });
+    } catch (cause) {
+      this.handleClose(
+        cause instanceof Error ? cause : new Error(String(cause)),
+      );
+      return;
+    }
     pending.timer = setTimeout(() => {
       if (!this.pending.delete(id)) return;
       if (pending.timer) clearTimeout(pending.timer);
@@ -190,19 +196,18 @@ export class JsonRpcConnection {
 
   private handleData(chunk: Buffer | string): void {
     if (this.closed) return;
-    const bytes = Buffer.isBuffer(chunk)
-      ? chunk.byteLength
-      : Buffer.byteLength(chunk, "utf8");
-    this.bufferedBytes += bytes;
-    if (this.bufferedBytes > this.options.maxBufferedBytes) {
-      this.handleClose(
-        new Error("Codex app-server output exceeds total byte limit"),
-      );
-      return;
-    }
     this.pendingText += Buffer.isBuffer(chunk)
       ? this.decoder.write(chunk)
       : chunk;
+    if (
+      Buffer.byteLength(this.pendingText, "utf8") >
+      this.options.maxBufferedBytes
+    ) {
+      this.handleClose(
+        new Error("Codex app-server output exceeds buffered byte limit"),
+      );
+      return;
+    }
     let newline = this.pendingText.indexOf("\n");
     try {
       while (newline >= 0) {
@@ -231,7 +236,6 @@ export class JsonRpcConnection {
       const handler = this.options.onServerRequest;
       if (!handler) {
         this.write({
-          jsonrpc: "2.0",
           id: message.id,
           error: { code: -32601, message: "Server request is not supported" },
         });
@@ -239,11 +243,10 @@ export class JsonRpcConnection {
       }
       void handler(message.method, message.id, message.params)
         .then((result) => {
-          this.write({ jsonrpc: "2.0", id: message.id, result });
+          this.writeResponse({ id: message.id, result });
         })
         .catch((cause: unknown) => {
-          this.write({
-            jsonrpc: "2.0",
+          this.writeResponse({
             id: message.id,
             error: {
               code: -32000,
@@ -300,5 +303,26 @@ export class JsonRpcConnection {
     }
     this.pending.clear();
     this.options.onClosed?.(error);
+    this.wire.close();
+  }
+
+  private addWireListener(register: () => () => void): void {
+    const remove = register();
+    if (this.closed) {
+      remove();
+      return;
+    }
+    this.unlisten.push(remove);
+  }
+
+  private writeResponse(message: Record<string, unknown>): void {
+    if (this.closed) return;
+    try {
+      this.write(message);
+    } catch (cause) {
+      this.handleClose(
+        cause instanceof Error ? cause : new Error(String(cause)),
+      );
+    }
   }
 }

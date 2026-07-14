@@ -4,11 +4,18 @@ import { JsonRpcConnection } from "./jsonRpcConnection.js";
 
 class FakeWire {
   readonly writes: string[] = [];
+  closeCalls = 0;
+  writeCalls = 0;
+  writeFailure: { call: number; cause: Error } | null = null;
   private dataListeners = new Set<(chunk: string) => void>();
   private closeListeners = new Set<(cause?: Error) => void>();
   private errorListeners = new Set<(cause: Error) => void>();
 
   write(line: string): void {
+    this.writeCalls += 1;
+    if (this.writeFailure?.call === this.writeCalls) {
+      throw this.writeFailure.cause;
+    }
     this.writes.push(line);
   }
 
@@ -28,6 +35,7 @@ class FakeWire {
   }
 
   close(): void {
+    this.closeCalls += 1;
     this.emitClose();
   }
 
@@ -52,7 +60,7 @@ describe("JsonRpcConnection", () => {
     expect(wire.writes).toHaveLength(1);
     const sent = JSON.parse(wire.writes[0]!) as { id: number };
 
-    wire.emitData(`{"jsonrpc":"2.0","id":${sent.id},"res`);
+    wire.emitData(`{"id":${sent.id},"res`);
     wire.emitData('ult":{"models":[{"id":"gpt"}]}}\r\n');
 
     await expect(request).resolves.toEqual({ models: [{ id: "gpt" }] });
@@ -67,6 +75,34 @@ describe("JsonRpcConnection", () => {
     await expect(request).rejects.toThrow("crashed");
   });
 
+  it("closes and clears pending state when the initial write throws", async () => {
+    const wire = new FakeWire();
+    wire.writeFailure = { call: 1, cause: new Error("stdin is closed") };
+    const onClosed = vi.fn();
+    const connection = new JsonRpcConnection(wire, {
+      requestTimeoutMs: 1000,
+      onClosed,
+    });
+
+    const request = connection.request("model/list", {});
+
+    await expect(request).rejects.toThrow("stdin is closed");
+    expect(wire.writeCalls).toBe(1);
+    expect(wire.writes).toHaveLength(0);
+    expect(wire.closeCalls).toBe(1);
+    expect(onClosed).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        connection as unknown as {
+          pending: Map<unknown, unknown>;
+        }
+      ).pending.size,
+    ).toBe(0);
+    await expect(connection.request("model/list", {})).rejects.toThrow(
+      "connection is closed",
+    );
+  });
+
   it("does not retry turn/start after an overloaded response", async () => {
     vi.useFakeTimers();
     const wire = new FakeWire();
@@ -78,7 +114,6 @@ describe("JsonRpcConnection", () => {
     const first = JSON.parse(wire.writes[0]!) as { id: number };
     wire.emitData(
       JSON.stringify({
-        jsonrpc: "2.0",
         id: first.id,
         error: { code: -32001, message: "Server overloaded; retry later." },
       }) + "\n",
@@ -100,7 +135,6 @@ describe("JsonRpcConnection", () => {
     const first = JSON.parse(wire.writes[0]!) as { id: number };
     wire.emitData(
       JSON.stringify({
-        jsonrpc: "2.0",
         id: first.id,
         error: { code: -32001, message: "Server overloaded; retry later." },
       }) + "\n",
@@ -109,11 +143,48 @@ describe("JsonRpcConnection", () => {
     expect(wire.writes).toHaveLength(2);
     const second = JSON.parse(wire.writes[1]!) as { id: number };
     wire.emitData(
-      JSON.stringify({ jsonrpc: "2.0", id: second.id, result: { ok: true } }) +
-        "\n",
+      JSON.stringify({ id: second.id, result: { ok: true } }) + "\n",
     );
     await expect(request).resolves.toEqual({ ok: true });
     connection.dispose();
+    vi.useRealTimers();
+  });
+
+  it("rejects and closes when a retry timer write throws", async () => {
+    vi.useFakeTimers();
+    const wire = new FakeWire();
+    wire.writeFailure = { call: 2, cause: new Error("retry write failed") };
+    const onClosed = vi.fn();
+    const connection = new JsonRpcConnection(wire, {
+      requestTimeoutMs: 1000,
+      retryBaseDelayMs: 10,
+      random: () => 0,
+      onClosed,
+    });
+    const request = connection.request("model/list", {}, { retry: true });
+    const first = JSON.parse(wire.writes[0]!) as { id: number };
+    wire.emitData(
+      JSON.stringify({
+        id: first.id,
+        error: { code: -32001, message: "Server overloaded; retry later." },
+      }) + "\n",
+    );
+    const rejection = expect(request).rejects.toThrow("retry write failed");
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    await rejection;
+    expect(wire.writeCalls).toBe(2);
+    expect(wire.writes).toHaveLength(1);
+    expect(wire.closeCalls).toBe(1);
+    expect(onClosed).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        connection as unknown as {
+          pending: Map<unknown, unknown>;
+        }
+      ).pending.size,
+    ).toBe(0);
     vi.useRealTimers();
   });
 
@@ -122,7 +193,6 @@ describe("JsonRpcConnection", () => {
     const connection = new JsonRpcConnection(wire, { requestTimeoutMs: 1000 });
     wire.emitData(
       JSON.stringify({
-        jsonrpc: "2.0",
         id: 99,
         method: "item/commandApproval",
         params: {},
@@ -134,5 +204,31 @@ describe("JsonRpcConnection", () => {
       error: { code: -32601 },
     });
     connection.dispose();
+  });
+
+  it("limits only the currently buffered partial line, not lifetime bytes", () => {
+    const wire = new FakeWire();
+    const onNotification = vi.fn();
+    const onClosed = vi.fn();
+    new JsonRpcConnection(wire, {
+      maxLineBytes: 100,
+      maxBufferedBytes: 24,
+      onNotification,
+      onClosed,
+    });
+
+    for (let index = 0; index < 20; index += 1) {
+      wire.emitData('{"method":"tick"}\n');
+    }
+    expect(onNotification).toHaveBeenCalledTimes(20);
+    expect(onClosed).not.toHaveBeenCalled();
+
+    wire.emitData("x".repeat(25));
+    expect(onClosed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "Codex app-server output exceeds buffered byte limit",
+      }),
+    );
+    expect(wire.closeCalls).toBe(1);
   });
 });

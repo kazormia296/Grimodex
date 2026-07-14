@@ -59,6 +59,8 @@ interface ChatPanelHeaderProps {
   /** シーンをクリックしたとき: エディタ移動 + scope=scene を発火 */
   onSelectScene: (sceneId: string) => void;
   onNewSession: () => void;
+  /** A running turn owns its current session until Stop/finalization. */
+  sessionMutationsDisabled?: boolean;
   /** 本文を context に含めるか (eco モード相当)。project でも Tier 1 閾値内なら有効 */
   includeBodies: boolean;
   onToggleIncludeBodies: () => void;
@@ -97,6 +99,7 @@ export function ChatPanelHeader({
   onScopeChange,
   onSelectScene,
   onNewSession,
+  sessionMutationsDisabled = false,
   includeBodies,
   onToggleIncludeBodies,
   includeMapBoard,
@@ -540,9 +543,10 @@ export function ChatPanelHeader({
         <button
           type="button"
           onClick={onNewSession}
+          disabled={sessionMutationsDisabled}
           title={t("chat.newSession")}
           aria-label={t("chat.newSession")}
-          className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>

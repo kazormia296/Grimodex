@@ -3,6 +3,7 @@ import { useChatStore, contextPromptKey } from "./chatStore";
 import { useAiSettingsStore, DEFAULT_AI_SETTINGS } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useTabStore } from "@/features/editor/tabStore";
+import { setCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import type { ChatMessage, ChatSession } from "./chatTypes";
 
 vi.mock("./chatApi", () => ({
@@ -42,6 +43,14 @@ vi.mock("./chatApi", () => ({
   listPinnedStickyEntries: vi.fn(() => Promise.resolve([])),
   pinCodexEntry: vi.fn(),
   unpinCodexEntry: vi.fn(),
+}));
+
+vi.mock("./codexAppApi", () => ({
+  sendCodexAppTurn: vi.fn(),
+  advanceCodexHistoryRevision: vi.fn(),
+  abortCodexAppTurn: vi.fn(() => Promise.resolve()),
+  setCodexSessionThreadName: vi.fn(() => Promise.resolve()),
+  archiveCodexSessionThread: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("./contextBuilder", () => ({
@@ -209,10 +218,15 @@ vi.mock("@/features/semantic-search/api", () => ({
 }));
 
 import * as chatApi from "./chatApi";
+import * as codexAppApi from "./codexAppApi";
 import type { ChatMessageResult, StreamCallbacks } from "./chatApi";
 import * as contextBuilder from "./contextBuilder";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 const mockSendChatMessageStream = vi.mocked(chatApi.sendChatMessageStream);
+const mockSendCodexAppTurn = vi.mocked(codexAppApi.sendCodexAppTurn);
+const mockAdvanceCodexHistoryRevision = vi.mocked(
+  codexAppApi.advanceCodexHistoryRevision,
+);
 const mockSendAgentMessage = vi.mocked(chatApi.sendAgentMessage);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
 const mockRecordAiUsage = vi.mocked(recordAiUsage);
@@ -337,6 +351,10 @@ describe("useChatStore", () => {
   beforeEach(() => {
     resetStore();
     vi.clearAllMocks();
+    setCurrentImeWorkspaceIdentity({
+      path: "/workspace/chat-store-test",
+      openRevision: 1,
+    });
     // チャット用一時モデルはテスト間で漏れると後続の送信モデル判定を汚すので初期化。
     useAiSettingsStore.setState({
       chatModelOverride: null,
@@ -442,6 +460,32 @@ describe("useChatStore", () => {
       const state = useChatStore.getState();
       expect(state.activeSessionId).toBeNull();
       expect(state.messages).toEqual([]);
+    });
+
+    it("does not run a queued selection after the scope changes", async () => {
+      useChatStore.setState({
+        sessions: [session1, session2],
+        activeSessionId: session1.id,
+      });
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "first", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const selection = useChatStore.getState().selectSession(session2.id);
+
+      useChatStore.setState({ activeSceneId: "scene-2" });
+      resolveCreate(session2);
+      await Promise.all([create, selection]);
+
+      expect(mockGetSessionForProject).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
     });
   });
 
@@ -549,6 +593,177 @@ describe("useChatStore", () => {
       expect(state.sessions).toContainEqual(session1);
       expect(state.activeSessionId).toBe("session-1");
     });
+
+    it("does not replace the active session while a turn is streaming", async () => {
+      useChatStore.setState({ isStreaming: true });
+
+      await useChatStore
+        .getState()
+        .createNewSession("proj-1", "blocked", "scene-1");
+
+      expect(mockCreateSession).not.toHaveBeenCalled();
+    });
+
+    it("finishes a previously requested session creation before Send captures authority", async () => {
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      mockStreamResponse("new-session answer");
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "new", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const send = useChatStore.getState().sendMessage("new-session question");
+      await Promise.resolve();
+
+      expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+      resolveCreate(session2);
+      await create;
+      await send;
+
+      expect(mockCreateSession).toHaveBeenCalledOnce();
+      expect(useChatStore.getState().activeSessionId).toBe(session2.id);
+      expect(
+        useChatStore.getState().messages.map((message) => message.sessionId),
+      ).toEqual([session2.id, session2.id]);
+    });
+
+    it("does not let a later session creation overtake a Send start", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      let streamCallbacks: StreamCallbacks | undefined;
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, callbacks: StreamCallbacks) => {
+          streamCallbacks = callbacks;
+          return () => {};
+        },
+      );
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("existing-session question");
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "too late", "scene-1");
+      await vi.waitFor(() => expect(streamCallbacks).toBeDefined());
+      await create;
+
+      expect(mockCreateSession).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+      streamCallbacks?.onTextDelta("existing-session answer");
+      streamCallbacks?.onDone({ stopReason: "completed" });
+      await send;
+    });
+
+    it("does not publish a created session after the workspace identity changes", async () => {
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "stale", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+
+      setCurrentImeWorkspaceIdentity({
+        path: "/workspace/chat-store-test",
+        openRevision: 2,
+      });
+      resolveCreate(session1);
+      await create;
+
+      expect(useChatStore.getState().activeSessionId).toBeNull();
+      expect(useChatStore.getState().sessions).toEqual([]);
+    });
+  });
+
+  describe("createLinkedSession", () => {
+    it("does not replace the active session while a turn is streaming", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        isStreaming: true,
+      });
+
+      await useChatStore.getState().createLinkedSession();
+
+      expect(mockCreateSession).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+    });
+
+    it("does not retarget a queued link operation after the scope changes", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      let resolveFirstCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveFirstCreate = resolve;
+        }),
+      );
+
+      const firstCreate = useChatStore
+        .getState()
+        .createNewSession("proj-1", "first", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const linkedCreate = useChatStore.getState().createLinkedSession();
+
+      useChatStore.setState({ activeSceneId: "scene-2" });
+      resolveFirstCreate(session2);
+      await Promise.all([firstCreate, linkedCreate]);
+
+      expect(mockCreateSession).toHaveBeenCalledOnce();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+    });
+  });
+
+  describe("ensureSession authority", () => {
+    it("does not reuse a session from a different resolved scope", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        activeSceneId: "scene-2",
+      });
+
+      expect(await useChatStore.getState().ensureSession()).toBeNull();
+      expect(mockCreateSession).not.toHaveBeenCalled();
+    });
+
+    it("does not retarget a queued ensure after a workspace reopen", async () => {
+      let resolveCreate!: (session: ChatSession) => void;
+      mockCreateSession.mockReturnValueOnce(
+        new Promise<ChatSession>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+
+      const create = useChatStore
+        .getState()
+        .createNewSession("proj-1", "first", "scene-1");
+      await vi.waitFor(() => expect(mockCreateSession).toHaveBeenCalledOnce());
+      const ensured = useChatStore.getState().ensureSession();
+
+      setCurrentImeWorkspaceIdentity({
+        path: "/workspace/chat-store-test",
+        openRevision: 2,
+      });
+      resolveCreate(session1);
+      await create;
+
+      expect(await ensured).toBeNull();
+      expect(mockCreateSession).toHaveBeenCalledOnce();
+      expect(useChatStore.getState().activeSessionId).toBeNull();
+    });
   });
 
   describe("deleteSession", () => {
@@ -567,6 +782,11 @@ describe("useChatStore", () => {
       expect(state.sessions[0].id).toBe("session-2");
       expect(state.activeSessionId).toBeNull();
       expect(state.messages).toEqual([]);
+      expect(codexAppApi.archiveCodexSessionThread).toHaveBeenCalledWith({
+        projectId: "proj-1",
+        sessionId: "session-1",
+        expectedWorkspacePath: "/workspace/chat-store-test",
+      });
     });
 
     it("does not clear selection when deleting non-active session", async () => {
@@ -583,6 +803,63 @@ describe("useChatStore", () => {
       expect(state.sessions).toHaveLength(1);
       expect(state.activeSessionId).toBe("session-1");
       expect(state.messages).toEqual([msg1]);
+    });
+
+    it("does not delete a session while a turn is streaming", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        isStreaming: true,
+      });
+
+      await useChatStore.getState().deleteSession(session1.id);
+
+      expect(mockDeleteSession).not.toHaveBeenCalled();
+      expect(codexAppApi.archiveCodexSessionThread).not.toHaveBeenCalled();
+      expect(useChatStore.getState().activeSessionId).toBe(session1.id);
+    });
+
+    it("does not delete when the session is not owned by the captured project", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      mockGetSessionForProject.mockResolvedValueOnce(null);
+
+      await useChatStore.getState().deleteSession(session1.id);
+
+      expect(mockDeleteSession).not.toHaveBeenCalled();
+      expect(codexAppApi.archiveCodexSessionThread).not.toHaveBeenCalled();
+    });
+
+    it("does not continue deletion after a same-path workspace reopen", async () => {
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+      });
+      let resolveOwnership!: (session: ChatSession | null) => void;
+      mockGetSessionForProject.mockReturnValueOnce(
+        new Promise<ChatSession | null>((resolve) => {
+          resolveOwnership = resolve;
+        }),
+      );
+
+      const deletion = useChatStore.getState().deleteSession(session1.id);
+      await vi.waitFor(() =>
+        expect(mockGetSessionForProject).toHaveBeenCalledWith(
+          session1.id,
+          "proj-1",
+        ),
+      );
+      setCurrentImeWorkspaceIdentity({
+        path: "/workspace/chat-store-test",
+        openRevision: 2,
+      });
+      resolveOwnership(session1);
+      await deletion;
+
+      expect(mockDeleteSession).not.toHaveBeenCalled();
+      expect(codexAppApi.archiveCodexSessionThread).not.toHaveBeenCalled();
     });
   });
 
@@ -809,6 +1086,255 @@ describe("useChatStore", () => {
       expect(messages[1].role).toBe("assistant");
       expect(messages[1].content).toBe("こんにちは！");
       expect(isStreaming).toBe(false);
+    });
+
+    it("advances a completed Codex App Server turn only after both messages persist", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      mockSendCodexAppTurn.mockImplementation(async (_payload, callbacks) => {
+        callbacks.onTurnStarted?.({
+          threadId: "codex-thread-1",
+          turnId: "codex-turn-1",
+        });
+        callbacks.onTextDelta("App Server 応答");
+        callbacks.onDone({ stopReason: "completed" });
+        return () => {};
+      });
+      mockAdvanceCodexHistoryRevision.mockResolvedValue({
+        status: "advanced",
+      });
+
+      await useChatStore.getState().sendMessage("App Server 質問");
+
+      expect(mockAddMessage).toHaveBeenCalledTimes(2);
+      const startPayload = mockSendCodexAppTurn.mock.calls[0]?.[0];
+      expect(startPayload).toBeDefined();
+      expect(mockAdvanceCodexHistoryRevision).toHaveBeenCalledWith({
+        projectId: "proj-1",
+        sessionId: "session-1",
+        grimodexTurnId: startPayload?.grimodexTurnId,
+        codexThreadId: "codex-thread-1",
+        codexTurnId: "codex-turn-1",
+        expectedHistoryRevision: startPayload?.historyRevision,
+        nextHistoryRevision: expect.any(String),
+      });
+      expect(mockAddMessage.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        mockAdvanceCodexHistoryRevision.mock.invocationCallOrder[0] ?? 0,
+      );
+      expect(
+        mockAdvanceCodexHistoryRevision.mock.calls[0]?.[0].nextHistoryRevision,
+      ).not.toBe(startPayload?.historyRevision);
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("keeps the current user message out of App Server bootstrap after summarization", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      const history = Array.from({ length: 5 }, (_, index) => [
+        makeMessage("user", `past-user-${index}`, `past-user-${index}`),
+        makeMessage(
+          "assistant",
+          `past-assistant-${index}`,
+          `past-assistant-${index}`,
+        ),
+      ]).flat();
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: history,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      vi.mocked(contextBuilder.allocateLayerBudgets).mockReturnValueOnce({
+        responseReservation: 1,
+        l1: 1,
+        l2: 1,
+        l3: 1,
+        l4: 1,
+        l5: 1,
+        degraded: false,
+      });
+      vi.mocked(chatApi.sendChatMessageWithThinking).mockResolvedValueOnce({
+        text: "summary result",
+        thinkingBlocks: [],
+        inputTokens: 1,
+        outputTokens: 1,
+      });
+      mockSendCodexAppTurn.mockImplementation(async (_payload, callbacks) => {
+        callbacks.onTurnStarted?.({
+          threadId: "codex-thread-summary",
+          turnId: "codex-turn-summary",
+        });
+        callbacks.onTextDelta("summary-safe answer");
+        callbacks.onDone({ stopReason: "completed" });
+        return () => {};
+      });
+
+      await useChatStore.getState().sendMessage("CURRENT-USER-QUESTION");
+
+      expect(chatApi.addSummary).toHaveBeenCalledOnce();
+      const payload = mockSendCodexAppTurn.mock.calls[0]?.[0];
+      expect(payload?.userMessage).toBe("CURRENT-USER-QUESTION");
+      expect(payload?.bootstrapHistory).not.toContain("CURRENT-USER-QUESTION");
+      expect(mockAdvanceCodexHistoryRevision).toHaveBeenCalledOnce();
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("does not advance Codex history when assistant persistence fails", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      mockSendCodexAppTurn.mockImplementation(async (_payload, callbacks) => {
+        callbacks.onTurnStarted?.({
+          threadId: "codex-thread-1",
+          turnId: "codex-turn-1",
+        });
+        callbacks.onTextDelta("App Server 応答");
+        callbacks.onDone({ stopReason: "completed" });
+        return () => {};
+      });
+      mockAddMessage
+        .mockResolvedValueOnce(msg1)
+        .mockRejectedValueOnce(new Error("assistant insert failed"));
+
+      await useChatStore.getState().sendMessage("App Server 質問");
+
+      expect(mockAddMessage).toHaveBeenCalledTimes(2);
+      expect(mockAdvanceCodexHistoryRevision).not.toHaveBeenCalled();
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("does not advance Codex history when prior messages change during the turn", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [msg1],
+        agentMode: false,
+        ragEnabled: false,
+      });
+      let streamCallbacks: codexAppApi.CodexAppStreamCallbacks | undefined;
+      mockSendCodexAppTurn.mockImplementation(async (_payload, callbacks) => {
+        streamCallbacks = callbacks;
+        callbacks.onTurnStarted?.({
+          threadId: "codex-thread-1",
+          turnId: "codex-turn-1",
+        });
+        callbacks.onTextDelta("App Server 応答");
+        return () => {};
+      });
+
+      const send = useChatStore.getState().sendMessage("App Server 質問");
+      await vi.waitFor(() => expect(streamCallbacks).toBeDefined());
+      useChatStore.setState((state) => ({
+        messages: state.messages.filter((message) => message.id !== msg1.id),
+      }));
+      streamCallbacks?.onDone({ stopReason: "completed" });
+      await send;
+
+      expect(mockAddMessage).toHaveBeenCalledTimes(2);
+      expect(mockAdvanceCodexHistoryRevision).not.toHaveBeenCalled();
+      useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("stops a Codex App Server turn with its captured project and session ids", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeProjectId: "proj-1",
+        activeSessionId: session1.id,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      mockSendCodexAppTurn.mockResolvedValue(() => {});
+
+      const send = useChatStore.getState().sendMessage("Stop target");
+      await vi.waitFor(() => expect(mockSendCodexAppTurn).toHaveBeenCalled());
+      const payload = mockSendCodexAppTurn.mock.calls[0]?.[0];
+      useChatStore.setState({
+        activeProjectId: "proj-2",
+        activeSessionId: "session-2",
+      });
+
+      useChatStore.getState().stopGeneration();
+
+      await vi.waitFor(() =>
+        expect(codexAppApi.abortCodexAppTurn).toHaveBeenCalledWith({
+          projectId: "proj-1",
+          sessionId: session1.id,
+          grimodexTurnId: payload?.grimodexTurnId,
+        }),
+      );
+      await send;
+      useAiSettingsStore.setState({ settings: null });
     });
 
     it("records normalized chat input drift with the immutable route/provider/project", async () => {

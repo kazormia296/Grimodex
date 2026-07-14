@@ -83,6 +83,69 @@ export function selectSceneFromChat(sceneId: string): void {
   );
 }
 
+export type CodexApproval = {
+  envelope: CodexAppEventEnvelope;
+  request: Extract<
+    CodexAppEventEnvelope["event"],
+    { type: "approval-requested" }
+  >;
+};
+
+function codexApprovalKey(approval: CodexApproval): string {
+  const requestId = approval.request.requestId;
+  return JSON.stringify([
+    approval.envelope.projectId,
+    approval.envelope.sessionId,
+    approval.envelope.grimodexTurnId,
+    typeof requestId,
+    requestId,
+  ]);
+}
+
+export function enqueueCodexApproval(
+  current: CodexApproval[],
+  approval: CodexApproval,
+): CodexApproval[] {
+  const key = codexApprovalKey(approval);
+  return current.some((item) => codexApprovalKey(item) === key)
+    ? current
+    : [...current, approval];
+}
+
+export function removeCodexApproval(
+  current: CodexApproval[],
+  approval: CodexApproval,
+): CodexApproval[] {
+  const key = codexApprovalKey(approval);
+  return current.filter((item) => codexApprovalKey(item) !== key);
+}
+
+export function removeCodexApprovalsForTurn(
+  current: CodexApproval[],
+  grimodexTurnId: string,
+): CodexApproval[] {
+  return current.filter(
+    (item) => item.envelope.grimodexTurnId !== grimodexTurnId,
+  );
+}
+
+export async function declineCodexApprovals(
+  approvals: readonly CodexApproval[],
+  respond: typeof respondToCodexServerRequest = respondToCodexServerRequest,
+): Promise<void> {
+  await Promise.allSettled(
+    approvals.map((approval) =>
+      respond({
+        projectId: approval.envelope.projectId,
+        sessionId: approval.envelope.sessionId,
+        grimodexTurnId: approval.envelope.grimodexTurnId,
+        requestId: approval.request.requestId,
+        decision: "decline",
+      }),
+    ),
+  );
+}
+
 export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const __perfStart = performance.now();
   const { t } = useTranslation();
@@ -139,13 +202,18 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const ragEnabled = useChatStore((s) => s.ragEnabled);
   const setRagEnabled = useChatStore((s) => s.setRagEnabled);
   const [mapBoardTitle, setMapBoardTitle] = useState<string | null>(null);
-  const [codexApproval, setCodexApproval] = useState<{
-    envelope: CodexAppEventEnvelope;
-    request: Extract<
-      CodexAppEventEnvelope["event"],
-      { type: "approval-requested" }
-    >;
-  } | null>(null);
+  const [codexApprovals, setCodexApprovals] = useState<CodexApproval[]>([]);
+  const codexApprovalsRef = useRef<CodexApproval[]>([]);
+  const codexApprovalEpochRef = useRef(0);
+  const updateCodexApprovals = useCallback(
+    (update: (current: CodexApproval[]) => CodexApproval[]) => {
+      const next = update(codexApprovalsRef.current);
+      codexApprovalsRef.current = next;
+      setCodexApprovals(next);
+    },
+    [],
+  );
+  const codexApproval = codexApprovals[0] ?? null;
   const syncInsertedToEditorMetadata = useChatStore(
     (s) => s.syncInsertedToEditorMetadata,
   );
@@ -388,6 +456,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   }, []);
 
   const handleNewSession = useCallback(() => {
+    if (isStreaming) return;
     const { nodeId, codexAnchorId, snippetAnchorId } = resolveScopeSessionKey(
       chatScope,
       chatSceneId,
@@ -400,7 +469,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       codexAnchorId,
       snippetAnchorId,
     );
-  }, [createNewSession, chatScope, scopeAnchorId, chatSceneId]);
+  }, [createNewSession, chatScope, scopeAnchorId, chatSceneId, isStreaming]);
 
   // Map overlay chip 表示用の board title 取得。includeMapBoard が ON のとき
   // のみ fetch する（OFF 時に余計な DB アクセスを発生させない）。
@@ -429,7 +498,10 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   // Approval requests are rendered outside the message virtualizer so a
   // session switch cannot leave an old request attached to another chat.
   useEffect(() => {
-    setCodexApproval(null);
+    const epoch = codexApprovalEpochRef.current + 1;
+    codexApprovalEpochRef.current = epoch;
+    codexApprovalsRef.current = [];
+    setCodexApprovals([]);
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     const projectId = activeProjectId ?? getCurrentProjectId();
@@ -452,17 +524,19 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         return;
       }
       if (envelope.event.type === "approval-requested") {
-        setCodexApproval({ envelope, request: envelope.event });
+        const approval = { envelope, request: envelope.event };
+        updateCodexApprovals((current) =>
+          enqueueCodexApproval(current, approval),
+        );
         return;
       }
       if (
         envelope.event.type === "turn-completed" ||
-        envelope.event.type === "turn-error"
+        (envelope.event.type === "turn-error" &&
+          envelope.event.retryable !== true)
       ) {
-        setCodexApproval((current) =>
-          current?.envelope.grimodexTurnId === envelope.grimodexTurnId
-            ? null
-            : current,
+        updateCodexApprovals((current) =>
+          removeCodexApprovalsForTurn(current, envelope.grimodexTurnId),
         );
       }
     }).then((cleanup) => {
@@ -471,13 +545,21 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     });
     return () => {
       cancelled = true;
+      if (codexApprovalEpochRef.current === epoch) {
+        codexApprovalEpochRef.current += 1;
+      }
+      const pendingApprovals = codexApprovalsRef.current;
+      codexApprovalsRef.current = [];
+      void declineCodexApprovals(pendingApprovals);
       unlisten?.();
     };
-  }, [activeProjectId, activeSessionId]);
+  }, [activeProjectId, activeSessionId, updateCodexApprovals]);
 
   const handleCodexApprovalDecision = useCallback(
     async (decision: "accept" | "decline") => {
       if (!codexApproval) return;
+      const resolvedApproval = codexApproval;
+      const responseEpoch = codexApprovalEpochRef.current;
       try {
         await respondToCodexServerRequest({
           projectId: codexApproval.envelope.projectId,
@@ -486,13 +568,18 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
           requestId: codexApproval.request.requestId,
           decision,
         });
-        setCodexApproval(null);
+        if (codexApprovalEpochRef.current === responseEpoch) {
+          updateCodexApprovals((current) =>
+            removeCodexApproval(current, resolvedApproval),
+          );
+        }
       } catch (cause) {
+        if (codexApprovalEpochRef.current !== responseEpoch) return;
         toast.error(cause instanceof Error ? cause.message : String(cause));
         throw cause;
       }
     },
-    [codexApproval],
+    [codexApproval, updateCodexApprovals],
   );
 
   const handleToggleMapOverlay = useCallback(() => {
@@ -524,6 +611,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         onScopeChange={handleScopeChange}
         onSelectScene={handleSelectScene}
         onNewSession={handleNewSession}
+        sessionMutationsDisabled={isStreaming}
         includeBodies={includeBodies}
         onToggleIncludeBodies={() => setIncludeBodies(!includeBodies)}
         includeMapBoard={includeMapBoard}
@@ -578,7 +666,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         chapterOutlines={chapterOutlines}
         summaryCount={summaryCount}
         maxSummaryGeneration={maxSummaryGeneration}
-        onCreateLinkedSession={() => void createLinkedSession()}
+        onCreateLinkedSession={
+          isStreaming ? undefined : () => void createLinkedSession()
+        }
         cacheInvalidatedReason={cacheInvalidatedReason}
         onDismissCacheInvalidated={dismissCacheInvalidated}
       />
@@ -664,6 +754,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
                 が bottomRef (全兄弟の後) に着地するため末尾はズレない。 */}
             {codexApproval && (
               <CodexApprovalCard
+                key={codexApprovalKey(codexApproval)}
                 request={codexApproval.request}
                 onDecision={handleCodexApprovalDecision}
               />
@@ -789,6 +880,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         activeSceneId={treeActiveSceneId}
         onCloseSessions={() => setSessionsPanelOpen(false)}
         contextMenu={contextMenu}
+        contextMutationsDisabled={isStreaming}
         onCloseContextMenu={() => setContextMenu(null)}
         contextActions={{
           onInsert: insertFromChat,

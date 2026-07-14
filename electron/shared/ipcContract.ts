@@ -259,12 +259,29 @@ export interface NapiBackendLike {
     projectId: string,
     sessionId: string,
     runtime: string,
+    expectedWorkspacePath: string,
   ): Promise<string>;
-  upsertChatRuntimeThreadBinding?(binding: unknown): Promise<void>;
+  upsertChatRuntimeThreadBinding?(
+    binding: unknown,
+    expectedWorkspacePath: string,
+  ): Promise<void>;
+  /** Main-only pending-to-committed CAS bridge; absent from NAPI_COMMANDS. */
+  advanceChatRuntimeThreadHistoryRevision?(
+    expectedWorkspacePath: string,
+    projectId: string,
+    sessionId: string,
+    runtime: string,
+    externalThreadId: string,
+    lastTurnId: string,
+    pendingHistoryRevision: string,
+    nextHistoryRevision: string,
+    updatedAt: string,
+  ): Promise<boolean>;
   deleteChatRuntimeThreadBinding?(
     projectId: string,
     sessionId: string,
     runtime: string,
+    expectedWorkspacePath: string,
   ): Promise<void>;
   listBackups?(): Promise<string>;
   restoreBackup?(fileName: string): Promise<void>;
@@ -2258,6 +2275,7 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   "codex_app_list_models",
   "codex_app_start_turn",
   "codex_app_interrupt_turn",
+  "codex_app_update_history_revision",
   "codex_app_respond_to_request",
   "codex_app_archive_session_thread",
   "codex_app_set_thread_name",

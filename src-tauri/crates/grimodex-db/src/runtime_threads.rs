@@ -110,6 +110,49 @@ impl Database {
         })
     }
 
+    /// Atomically commit a completed runtime turn's history revision.
+    ///
+    /// `pending_history_revision` is the durable marker written before
+    /// `turn/start`. Every ownership and runtime identity field is part of the
+    /// compare-and-swap predicate, so only the matching completed turn can replace
+    /// that marker with the renderer's committed local-history revision.
+    #[allow(clippy::too_many_arguments)]
+    pub fn advance_chat_runtime_thread_history_revision(
+        &self,
+        project_id: &str,
+        session_id: &str,
+        runtime: &str,
+        external_thread_id: &str,
+        last_turn_id: &str,
+        pending_history_revision: &str,
+        next_history_revision: &str,
+        updated_at: &str,
+    ) -> anyhow::Result<bool> {
+        self.with_conn(|conn| {
+            let updated = conn.execute(
+                "UPDATE chat_runtime_threads
+                 SET history_revision = ?1, updated_at = ?2
+                 WHERE project_id = ?3
+                   AND session_id = ?4
+                   AND runtime = ?5
+                   AND external_thread_id = ?6
+                   AND last_turn_id = ?7
+                   AND history_revision = ?8",
+                params![
+                    next_history_revision,
+                    updated_at,
+                    project_id,
+                    session_id,
+                    runtime,
+                    external_thread_id,
+                    last_turn_id,
+                    pending_history_revision,
+                ],
+            )?;
+            Ok(updated == 1)
+        })
+    }
+
     /// Delete only the binding owned by project_id/session_id.
     pub fn delete_chat_runtime_thread_binding(
         &self,
@@ -134,6 +177,8 @@ mod tests {
     use super::*;
     use crate::Database;
     use std::path::Path;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     fn fixture() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("db");
@@ -191,5 +236,173 @@ mod tests {
             .get_chat_runtime_thread_binding("p2", "s1", CODEX_APP_SERVER_RUNTIME)
             .expect_err("project mismatch");
         assert!(error.to_string().contains("project mismatch"));
+    }
+
+    #[test]
+    fn history_revision_compare_and_swap_advances_matching_binding() {
+        let db = fixture();
+        let mut original = binding();
+        original.history_revision = Some("__grimodex_pending_v1__:turn-local-1".to_string());
+        original.last_turn_id = Some("turn-1".to_string());
+        db.upsert_chat_runtime_thread_binding(&original)
+            .expect("insert binding");
+
+        let advanced = db
+            .advance_chat_runtime_thread_history_revision(
+                "p1",
+                "s1",
+                CODEX_APP_SERVER_RUNTIME,
+                "thread-1",
+                "turn-1",
+                "__grimodex_pending_v1__:turn-local-1",
+                "rev-2",
+                "2026-07-14T00:01:00.000Z",
+            )
+            .expect("advance revision");
+
+        assert!(advanced);
+        let updated = db
+            .get_chat_runtime_thread_binding("p1", "s1", CODEX_APP_SERVER_RUNTIME)
+            .expect("get binding")
+            .expect("binding exists");
+        assert_eq!(updated.history_revision.as_deref(), Some("rev-2"));
+        assert_eq!(updated.updated_at, "2026-07-14T00:01:00.000Z");
+        assert_eq!(updated.external_thread_id, "thread-1");
+        assert_eq!(updated.last_turn_id.as_deref(), Some("turn-1"));
+    }
+
+    #[test]
+    fn history_revision_compare_and_swap_rejects_every_stale_identity_field() {
+        let db = fixture();
+        let mut original = binding();
+        original.history_revision = Some("__grimodex_pending_v1__:turn-local-1".to_string());
+        original.last_turn_id = Some("turn-1".to_string());
+        db.upsert_chat_runtime_thread_binding(&original)
+            .expect("insert binding");
+
+        let stale_inputs = [
+            (
+                "wrong project",
+                "p2",
+                "s1",
+                CODEX_APP_SERVER_RUNTIME,
+                "thread-1",
+                "turn-1",
+                "__grimodex_pending_v1__:turn-local-1",
+            ),
+            (
+                "wrong session",
+                "p1",
+                "s2",
+                CODEX_APP_SERVER_RUNTIME,
+                "thread-1",
+                "turn-1",
+                "__grimodex_pending_v1__:turn-local-1",
+            ),
+            (
+                "wrong runtime",
+                "p1",
+                "s1",
+                "another-runtime",
+                "thread-1",
+                "turn-1",
+                "__grimodex_pending_v1__:turn-local-1",
+            ),
+            (
+                "wrong thread",
+                "p1",
+                "s1",
+                CODEX_APP_SERVER_RUNTIME,
+                "thread-2",
+                "turn-1",
+                "__grimodex_pending_v1__:turn-local-1",
+            ),
+            (
+                "wrong turn",
+                "p1",
+                "s1",
+                CODEX_APP_SERVER_RUNTIME,
+                "thread-1",
+                "turn-2",
+                "__grimodex_pending_v1__:turn-local-1",
+            ),
+            (
+                "wrong revision",
+                "p1",
+                "s1",
+                CODEX_APP_SERVER_RUNTIME,
+                "thread-1",
+                "turn-1",
+                "__grimodex_pending_v1__:stale-turn",
+            ),
+        ];
+
+        for (label, project_id, session_id, runtime, thread_id, turn_id, revision) in stale_inputs {
+            let advanced = db
+                .advance_chat_runtime_thread_history_revision(
+                    project_id,
+                    session_id,
+                    runtime,
+                    thread_id,
+                    turn_id,
+                    revision,
+                    "rev-2",
+                    "2026-07-14T00:01:00.000Z",
+                )
+                .expect(label);
+            assert!(!advanced, "{label}");
+        }
+
+        let unchanged = db
+            .get_chat_runtime_thread_binding("p1", "s1", CODEX_APP_SERVER_RUNTIME)
+            .expect("get binding")
+            .expect("binding exists");
+        assert_eq!(
+            unchanged.history_revision.as_deref(),
+            Some("__grimodex_pending_v1__:turn-local-1")
+        );
+        assert_eq!(unchanged.updated_at, original.updated_at);
+    }
+
+    #[test]
+    fn competing_history_revision_advances_have_exactly_one_winner() {
+        let db = Arc::new(fixture());
+        let mut original = binding();
+        original.history_revision = Some("__grimodex_pending_v1__:turn-local-1".to_string());
+        original.last_turn_id = Some("turn-1".to_string());
+        db.upsert_chat_runtime_thread_binding(&original)
+            .expect("insert binding");
+
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = ["rev-2-window-a", "rev-2-window-b"].map(|next_revision| {
+            let db = Arc::clone(&db);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                db.advance_chat_runtime_thread_history_revision(
+                    "p1",
+                    "s1",
+                    CODEX_APP_SERVER_RUNTIME,
+                    "thread-1",
+                    "turn-1",
+                    "__grimodex_pending_v1__:turn-local-1",
+                    next_revision,
+                    "2026-07-14T00:01:00.000Z",
+                )
+                .expect("advance revision")
+            })
+        });
+
+        barrier.wait();
+        let results = handles.map(|handle| handle.join().expect("worker completed"));
+        assert_eq!(results.into_iter().filter(|advanced| *advanced).count(), 1);
+
+        let winner = db
+            .get_chat_runtime_thread_binding("p1", "s1", CODEX_APP_SERVER_RUNTIME)
+            .expect("get binding")
+            .expect("binding exists")
+            .history_revision
+            .expect("revision exists");
+        assert!(winner == "rev-2-window-a" || winner == "rev-2-window-b");
     }
 }
