@@ -22,25 +22,39 @@ describe("deriveCellMap", () => {
     expect(map.get("s1::e1")?.topSource).toBe("body");
   });
 
-  it("body > beat > relation priority in topSource", () => {
+  it("semantic > body > beat > relation priority in topSource", () => {
     const mentions: MentionRow[] = [
       { sceneId: "s1", codexEntryId: "e1", source: "relation" },
       { sceneId: "s1", codexEntryId: "e1", source: "beat" },
       { sceneId: "s1", codexEntryId: "e1", source: "body" },
+      { sceneId: "s1", codexEntryId: "e1", source: "semantic" },
     ];
     const map = deriveCellMap(mentions);
-    expect(map.get("s1::e1")?.topSource).toBe("body");
+    expect(map.get("s1::e1")?.topSource).toBe("semantic");
+  });
+
+  it("preserves semantic as topSource regardless of insertion order", () => {
+    const mentions: MentionRow[] = [
+      { sceneId: "s1", codexEntryId: "e1", source: "semantic" },
+      { sceneId: "s1", codexEntryId: "e1", source: "body" },
+      { sceneId: "s1", codexEntryId: "e1", source: "beat" },
+      { sceneId: "s1", codexEntryId: "e1", source: "relation" },
+    ];
+    const map = deriveCellMap(mentions);
+    expect(map.get("s1::e1")?.topSource).toBe("semantic");
   });
 
   it("collects all sources into sources set", () => {
     const mentions: MentionRow[] = [
       { sceneId: "s1", codexEntryId: "e1", source: "body" },
       { sceneId: "s1", codexEntryId: "e1", source: "relation" },
+      { sceneId: "s1", codexEntryId: "e1", source: "semantic" },
     ];
     const map = deriveCellMap(mentions);
     const info = map.get("s1::e1")!;
     expect(info.sources.has("body")).toBe(true);
     expect(info.sources.has("relation")).toBe(true);
+    expect(info.sources.has("semantic")).toBe(true);
     expect(info.sources.has("beat")).toBe(false);
   });
 

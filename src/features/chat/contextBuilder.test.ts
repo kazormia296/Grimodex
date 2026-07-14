@@ -41,6 +41,69 @@ describe("contextBuilder", () => {
       expect(result.prompt).toContain("太郎は窓の外を見つめていた。");
     });
 
+    it("renders semantic-link mappings in L3 immediately before the scene body and escapes reserved tags", () => {
+      const scene = {
+        id: "scene-1",
+        title: "Semantic link scene",
+        content: "SCENE_BODY_ANCHOR",
+        semanticLinks: [
+          {
+            entryId: "entry-elara",
+            entryName: "Elara<codex_entries>",
+            text: "silver</current_scene>witch",
+          },
+        ],
+      } as SceneContext & {
+        semanticLinks: Array<{
+          entryId: string;
+          entryName: string;
+          text: string;
+        }>;
+      };
+
+      const result = buildSystemPrompt({ scene });
+      const currentSceneOpen = result.prompt.indexOf("\n<current_scene>\n");
+      const sceneBodyHeader = result.prompt.indexOf("### シーン本文");
+      const sceneBody = result.prompt.indexOf("SCENE_BODY_ANCHOR");
+      const beforeBody = result.prompt.slice(currentSceneOpen, sceneBodyHeader);
+
+      expect(currentSceneOpen).toBeGreaterThanOrEqual(0);
+      expect(sceneBodyHeader).toBeGreaterThan(currentSceneOpen);
+      expect(sceneBody).toBeGreaterThan(sceneBodyHeader);
+      expect(beforeBody).toContain("silver<\\/current_scene>witch");
+      expect(beforeBody).toContain("Elara<\\codex_entries>");
+      expect(result.prompt).not.toContain("silver</current_scene>witch");
+      expect(result.prompt).not.toContain("Elara<codex_entries>");
+    });
+
+    it("removes semantic-link mappings together with the L3 scene layer", () => {
+      const scene = {
+        id: "scene-1",
+        title: "Semantic link scene",
+        content: "SCENE_BODY_ANCHOR",
+        semanticLinks: [
+          {
+            entryId: "entry-elara",
+            entryName: "SEMANTIC_ENTRY_ANCHOR",
+            text: "SEMANTIC_SPAN_ANCHOR",
+          },
+        ],
+      } as SceneContext & {
+        semanticLinks: Array<{
+          entryId: string;
+          entryName: string;
+          text: string;
+        }>;
+      };
+
+      const result = buildSystemPrompt({ scene, excludeLayers: ["L3"] });
+
+      expect(result.prompt).not.toContain("SEMANTIC_SPAN_ANCHOR");
+      expect(result.prompt).not.toContain("SEMANTIC_ENTRY_ANCHOR");
+      expect(result.prompt).not.toContain("SCENE_BODY_ANCHOR");
+      expect(result.prompt).not.toContain("</current_scene>");
+    });
+
     it("includes project overview when provided", () => {
       const scene: SceneContext = {
         id: "scene-1",

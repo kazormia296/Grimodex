@@ -29,10 +29,28 @@ vi.mock("@/features/settings/settingsStore", () => ({
 }));
 
 vi.mock("@/features/codex/codexStore", () => ({
-  useCodexStore: (sel: (s: { entries: unknown[] }) => unknown) =>
+  useCodexStore: (
+    sel: (s: { entries: unknown[]; completionTargets: unknown[] }) => unknown,
+  ) =>
     sel({
       entries: [
         { id: "e1", name: "アリス", type: "character", summary: "主人公" },
+      ],
+      completionTargets: [
+        {
+          id: "e1",
+          name: "アリス",
+          type: "character",
+          aliases: "[]",
+          excludedAliases: "[]",
+        },
+        {
+          id: "e2",
+          name: "ボブ",
+          type: "character",
+          aliases: "[]",
+          excludedAliases: "[]",
+        },
       ],
     }),
 }));
@@ -101,6 +119,21 @@ function setupDom() {
   return { container, span, outsideTextNode: outside.firstChild! };
 }
 
+function setupOverlappingDom() {
+  const container = document.createElement("div");
+  const semantic = document.createElement("span");
+  semantic.className = "codex-highlight codex-semantic-link";
+  semantic.setAttribute("data-codex-entry-id", "e2");
+  const automatic = document.createElement("span");
+  automatic.className = "codex-highlight";
+  automatic.setAttribute("data-codex-entry-id", "e1");
+  automatic.textContent = "彼女";
+  semantic.appendChild(automatic);
+  container.appendChild(semantic);
+  document.body.appendChild(container);
+  return { automatic, container, semantic };
+}
+
 describe("CodexPopover accessibility", () => {
   afterEach(() => {
     cleanup();
@@ -118,6 +151,18 @@ describe("CodexPopover accessibility", () => {
     const dialog = screen.getByRole("dialog");
     expect(dialog.getAttribute("aria-label")).toBe("アリス");
     expect(dialog.getAttribute("data-testid")).toBe("codex-popover");
+  });
+
+  it("prefers the explicit semantic target over an overlapping auto highlight", () => {
+    const { automatic, container } = setupOverlappingDom();
+    const { stub } = createEditorStub(container, () => automatic.firstChild!);
+    render(<CodexPopover editor={stub} />);
+
+    fireEvent.mouseOver(automatic);
+
+    expect(screen.getByRole("dialog").getAttribute("aria-label")).toBe(
+      "ボブ",
+    );
   });
 
   it("opens when the caret enters a codex highlight (keyboard access)", () => {

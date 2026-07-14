@@ -83,6 +83,24 @@ describe("runImpactReview", () => {
     expect(saveBaseline).toHaveBeenCalledWith("p1", "e1", snap);
   });
 
+  it("passes the changed entry id so narrowing can load semantic-linked scenes", async () => {
+    vi.mocked(getBaseline).mockResolvedValue({
+      ...snap,
+      details: [{ name: "年齢", value: "12" }],
+    });
+    vi.mocked(narrowCandidateScenes).mockResolvedValue([]);
+
+    await runImpactReview("e1");
+
+    expect(narrowCandidateScenes).toHaveBeenCalledWith(
+      "p1",
+      "e1",
+      expect.any(String),
+      ["アリス", "アリー"],
+      { limit: 30 },
+    );
+  });
+
   it("starts a run with impact_review payload when candidates exist", async () => {
     vi.mocked(getBaseline).mockResolvedValue({
       ...snap,

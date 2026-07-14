@@ -3,15 +3,18 @@ import { deriveCellDisplay } from "./deriveCellRender";
 import type { CellInfo } from "./deriveCells";
 
 function makeInfo(
-  topSource: "body" | "beat" | "relation",
-  opts: { sources?: ("body" | "beat" | "relation")[]; role?: string } = {},
+  topSource: "semantic" | "body" | "beat" | "relation",
+  opts: {
+    sources?: ("semantic" | "body" | "beat" | "relation")[];
+    role?: string;
+  } = {},
 ): CellInfo {
   const sources = new Set(opts.sources ?? [topSource]) as Set<
-    "body" | "beat" | "relation"
+    "semantic" | "body" | "beat" | "relation"
   >;
   return {
-    topSource,
-    sources,
+    topSource: topSource as CellInfo["topSource"],
+    sources: sources as CellInfo["sources"],
     role: (opts.role ?? "mentioned") as "mentioned" | "actor" | "target",
   };
 }
@@ -34,6 +37,13 @@ describe("deriveCellDisplay – dot mode", () => {
     const result = deriveCellDisplay(info, "e1", null, null, "dot");
     expect(result?.kind).toBe("dot");
     if (result?.kind === "dot") expect(result.source).toBe("relation");
+  });
+
+  it("returns dot display for semantic source", () => {
+    const info = makeInfo("semantic");
+    const result = deriveCellDisplay(info, "e1", null, null, "dot");
+    expect(result?.kind).toBe("dot");
+    if (result?.kind === "dot") expect(result.source).toBe("semantic");
   });
 });
 
@@ -79,6 +89,13 @@ describe("deriveCellDisplay – heatmap mode", () => {
   it("intensity 3 for body source", () => {
     const info = makeInfo("body");
     const result = deriveCellDisplay(info, "e1", null, null, "heatmap");
+    if (result?.kind === "heatmap") expect(result.intensity).toBe(3);
+  });
+
+  it("intensity 3 for semantic source", () => {
+    const info = makeInfo("semantic");
+    const result = deriveCellDisplay(info, "e1", null, null, "heatmap");
+    expect(result?.kind).toBe("heatmap");
     if (result?.kind === "heatmap") expect(result.intensity).toBe(3);
   });
 });

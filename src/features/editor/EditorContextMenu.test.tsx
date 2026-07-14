@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { useRef } from "react";
 import type { Editor } from "@tiptap/react";
+import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 
 // vi.hoisted ensures these are available when vi.mock factories run
 const {
@@ -113,11 +114,37 @@ function makeEditor(text: string): Editor {
   } as unknown as Editor;
 }
 
-function Wrapper({ editor }: { editor: Editor | null }) {
+function setSemanticLinkPickerOpen(open: boolean) {
+  useCursorSettingsStore.setState({ semanticLinkPickerOpen: open } as never);
+}
+
+function isSemanticLinkPickerOpen(): boolean {
+  return (
+    useCursorSettingsStore.getState() as unknown as {
+      semanticLinkPickerOpen?: boolean;
+    }
+  ).semanticLinkPickerOpen === true;
+}
+
+function Wrapper({
+  editor,
+  canEditCodexSemanticLink,
+}: {
+  editor: Editor | null;
+  canEditCodexSemanticLink?: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
+  const semanticLinkProps =
+    canEditCodexSemanticLink === undefined
+      ? {}
+      : { canEditCodexSemanticLink };
   return (
     <div ref={ref} data-testid="container">
-      <EditorContextMenu editor={editor} containerRef={ref} />
+      <EditorContextMenu
+        editor={editor}
+        containerRef={ref}
+        {...semanticLinkProps}
+      />
     </div>
   );
 }
@@ -131,6 +158,7 @@ describe("EditorContextMenu - Codexに追加", () => {
     mockToastSuccess.mockClear();
     mockToastInfo.mockClear();
     codexEntriesHolder.entries = [];
+    setSemanticLinkPickerOpen(false);
   });
 
   it("Codex追加後にshowPanel('codex')とrequestSelectEntryを呼ぶ", async () => {
@@ -180,6 +208,50 @@ describe("EditorContextMenu - Codexに追加", () => {
     expect(mockShowPanel).not.toHaveBeenCalled();
     expect(mockRequestSelectEntry).not.toHaveBeenCalled();
   });
+
+  it("DB-backed scene では選択範囲から semantic-link picker を開く", async () => {
+    const editor = makeEditor("既存Codexへ結び付ける範囲");
+    const { getByTestId } = render(
+      <Wrapper editor={editor} canEditCodexSemanticLink />,
+    );
+
+    fireEvent.contextMenu(getByTestId("container"), {
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.click(await screen.findByTestId("context-semantic-link"));
+
+    expect(isSemanticLinkPickerOpen()).toBe(true);
+  });
+
+  it.each(
+    [
+      ["omitted", undefined],
+      ["false", false],
+    ] as const,
+  )(
+    "semantic-link action is hidden when the capability is %s",
+    async (_label, canEditCodexSemanticLink) => {
+      const editor = makeEditor("選択範囲");
+      const { getByTestId } = render(
+        <Wrapper
+          editor={editor}
+          canEditCodexSemanticLink={canEditCodexSemanticLink}
+        />,
+      );
+
+      fireEvent.contextMenu(getByTestId("container"), {
+        clientX: 100,
+        clientY: 100,
+      });
+
+      await screen.findByText("コデックスに追加");
+      expect(
+        screen.queryByTestId("context-semantic-link"),
+      ).not.toBeInTheDocument();
+      expect(isSemanticLinkPickerOpen()).toBe(false);
+    },
+  );
 });
 
 describe("EditorContextMenu - 除外エイリアスとして登録", () => {
