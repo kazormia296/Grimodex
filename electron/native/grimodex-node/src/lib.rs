@@ -533,7 +533,7 @@ impl Backend {
                     &session_id,
                     &runtime,
                 )?;
-                Ok(serde_json::to_string(&binding).map_err(anyhow::Error::from)?)
+                serde_json::to_string(&binding).map_err(anyhow::Error::from)
             })
         })
         .await
