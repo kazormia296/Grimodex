@@ -2,7 +2,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ChatPanel, selectSceneFromChat } from "./ChatPanel";
+import {
+  ChatPanel,
+  declineCodexApprovals,
+  enqueueCodexApproval,
+  removeCodexApproval,
+  removeCodexApprovalsForTurn,
+  selectSceneFromChat,
+  type CodexApproval,
+} from "./ChatPanel";
 import { useChatStore } from "./chatStore";
 import { useAiSettingsStore } from "./store";
 import { DEFAULT_AI_SETTINGS } from "./types";
@@ -357,6 +365,92 @@ describe("ChatPanel", () => {
     expect(
       screen.queryByRole("button", { name: /送信/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("queues approval requests and clears only the answered request", () => {
+    const approval = (
+      requestId: string,
+      title: string,
+      grimodexTurnId = "turn-1",
+    ): CodexApproval => {
+      const request: CodexApproval["request"] = {
+        type: "approval-requested",
+        requestId,
+        kind: "command",
+        title,
+        summary: title,
+      };
+      return {
+        envelope: {
+          projectId: "proj-1",
+          sessionId: "session-1",
+          grimodexTurnId,
+          event: request,
+        },
+        request,
+      };
+    };
+    const first = approval("request-1", "First approval");
+    const second = approval("request-2", "Second approval");
+    const otherTurn = approval("request-3", "Other turn", "turn-2");
+
+    let queue = enqueueCodexApproval([], first);
+    queue = enqueueCodexApproval(queue, second);
+
+    expect(enqueueCodexApproval(queue, first)).toBe(queue);
+    expect(removeCodexApproval(queue, first)).toEqual([second]);
+    expect(
+      removeCodexApprovalsForTurn([...queue, otherTurn], "turn-1"),
+    ).toEqual([otherTurn]);
+  });
+
+  it("best-effort declines every pending approval when releasing a session", async () => {
+    const request = (requestId: string, sessionId: string): CodexApproval => {
+      const approvalRequest: CodexApproval["request"] = {
+        type: "approval-requested",
+        requestId,
+        kind: "permission",
+        title: requestId,
+        summary: requestId,
+      };
+      return {
+        envelope: {
+          projectId: "proj-1",
+          sessionId,
+          grimodexTurnId: `turn-${requestId}`,
+          event: approvalRequest,
+        },
+        request: approvalRequest,
+      };
+    };
+    const respond = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("request already settled"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(
+      declineCodexApprovals(
+        [request("request-1", "session-1"), request("request-2", "session-1")],
+        respond,
+      ),
+    ).resolves.toBeUndefined();
+    expect(respond).toHaveBeenCalledTimes(2);
+    expect(respond).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        sessionId: "session-1",
+        requestId: "request-1",
+        decision: "decline",
+      }),
+    );
+    expect(respond).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        sessionId: "session-1",
+        requestId: "request-2",
+        decision: "decline",
+      }),
+    );
   });
 
   it("disables send button when input is empty", () => {

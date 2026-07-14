@@ -43,6 +43,7 @@ function truncate(
 function normalizeItem(
   params: unknown,
   fallbackType: CodexAppItem["type"] = "unknown",
+  fallbackStatus: CodexAppItem["status"] = "unknown",
 ): CodexAppItem | null {
   if (!isRecord(params)) return null;
   const rawItem = isRecord(params.item) ? params.item : params;
@@ -70,27 +71,52 @@ function normalizeItem(
     statusValue === "failed" ||
     statusValue === "interrupted"
       ? statusValue
-      : "unknown";
+      : fallbackStatus;
+  const changes = Array.isArray(rawItem.changes)
+    ? rawItem.changes.filter(isRecord)
+    : [];
+  const changePaths = changes
+    .map((change) => change.path)
+    .filter((value): value is string => typeof value === "string")
+    .slice(0, 256);
+  const changeDiff = truncate(
+    changes
+      .map((change) => change.diff)
+      .filter((value): value is string => typeof value === "string")
+      .join("\n"),
+  );
   return {
     id,
     type,
     status,
     title: stringValue(rawItem.title, rawItem.name),
     text: truncate(stringValue(rawItem.text, rawItem.message, rawItem.content)),
-    command: Array.isArray(rawItem.command)
-      ? rawItem.command
-          .filter((value): value is string => typeof value === "string")
-          .slice(0, 128)
-      : undefined,
+    command:
+      typeof rawItem.command === "string"
+        ? [rawItem.command]
+        : Array.isArray(rawItem.command)
+          ? rawItem.command
+              .filter((value): value is string => typeof value === "string")
+              .slice(0, 128)
+          : undefined,
     output: truncate(
-      stringValue(rawItem.output, rawItem.stdout, rawItem.result),
+      stringValue(
+        rawItem.output,
+        rawItem.stdout,
+        rawItem.result,
+        rawItem.aggregatedOutput,
+        rawItem.delta,
+      ),
     ),
-    affectedPaths: Array.isArray(rawItem.affectedPaths)
-      ? rawItem.affectedPaths
-          .filter((value): value is string => typeof value === "string")
-          .slice(0, 256)
-      : undefined,
-    diff: truncate(stringValue(rawItem.diff)),
+    affectedPaths:
+      changePaths.length > 0
+        ? changePaths
+        : Array.isArray(rawItem.affectedPaths)
+          ? rawItem.affectedPaths
+              .filter((value): value is string => typeof value === "string")
+              .slice(0, 256)
+          : undefined,
+    diff: changeDiff || truncate(stringValue(rawItem.diff)),
     raw: rawItem,
   };
 }
@@ -143,7 +169,7 @@ export function mapCodexNotification(
       : null;
   }
   if (method === "item/started") {
-    const normalized = normalizeItem(params);
+    const normalized = normalizeItem(params, "unknown", "started");
     return normalized
       ? eventEnvelope(
           withTurn,
@@ -153,7 +179,7 @@ export function mapCodexNotification(
       : null;
   }
   if (method === "item/completed") {
-    const normalized = normalizeItem(params);
+    const normalized = normalizeItem(params, "unknown", "completed");
     return normalized
       ? eventEnvelope(
           withTurn,
@@ -163,7 +189,12 @@ export function mapCodexNotification(
       : null;
   }
   if (method === "thread/tokenUsage/updated") {
-    const usage = recordValue(params, "usage") ?? record;
+    const tokenUsage = recordValue(params, "tokenUsage");
+    const usage =
+      recordValue(tokenUsage, "last") ??
+      recordValue(tokenUsage, "total") ??
+      recordValue(params, "usage") ??
+      record;
     return eventEnvelope(withTurn, {
       type: "usage",
       inputTokens: numberValue(usage.inputTokens, usage.input_tokens),
@@ -176,6 +207,26 @@ export function mapCodexNotification(
   }
   if (method === "turn/completed") {
     const status = recordValue(params, "status") ?? turn;
+    const turnStatus = stringValue(
+      turn?.status,
+      status?.status,
+      record.stopReason,
+      record.stop_reason,
+    );
+    if (turnStatus === "failed") {
+      const failure =
+        recordValue(turn, "error") ??
+        recordValue(status, "error") ??
+        recordValue(params, "error");
+      return eventEnvelope(withTurn, {
+        type: "turn-error",
+        message:
+          stringValue(failure?.message, record.message) ??
+          "Codex app-server turn failed",
+        code: stringValue(failure?.code, record.code),
+        retryable: false,
+      });
+    }
     const stopReason =
       stringValue(
         record.stopReason,
@@ -199,7 +250,7 @@ export function mapCodexNotification(
       message:
         stringValue(record.message, error?.message) ?? "Codex app-server error",
       code: stringValue(record.code, error?.code),
-      retryable: record.retryable === true,
+      retryable: record.willRetry === true || record.retryable === true,
     });
   }
   if (method === "warning") {
@@ -216,9 +267,19 @@ export function mapCodexNotification(
     method === "item/commandExecution/outputDelta" ||
     method === "item/mcpToolCall/progress" ||
     method === "item/fileChange/outputDelta" ||
+    method === "item/fileChange/patchUpdated" ||
     method === "item/plan/delta"
   ) {
-    const normalized = normalizeItem(params);
+    const fallbackType: CodexAppItem["type"] = method.includes(
+      "commandExecution",
+    )
+      ? "command"
+      : method.includes("mcpToolCall")
+        ? "mcp-tool"
+        : method.includes("fileChange")
+          ? "file-change"
+          : "plan";
+    const normalized = normalizeItem(params, fallbackType, "started");
     return normalized
       ? eventEnvelope(
           withTurn,

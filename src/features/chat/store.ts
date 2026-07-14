@@ -94,6 +94,15 @@ export interface AiSettingsState {
 
 // in-flight ガード（多重発火防止）
 let capsRefreshInFlight = false;
+let modelLoadRequestGeneration = 0;
+
+async function resolveCliBinaryAvailability(
+  settings: AiSettings,
+): Promise<boolean> {
+  if (settings.cli?.binaryPath?.trim()) return true;
+  const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
+  return path !== null;
+}
 
 async function maybeRefreshDynamicCaps(): Promise<void> {
   if (capsRefreshInFlight) return;
@@ -137,8 +146,7 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     );
     let cliBinaryAvailable: boolean | null = null;
     if (settings.provider === "cli") {
-      const path = await cliApi.detectCliBinary(settings.cli?.kind ?? "claude");
-      cliBinaryAvailable = path !== null;
+      cliBinaryAvailable = await resolveCliBinaryAvailability(settings);
     }
     set({ settings, hasApiKey: keyPresent, cliBinaryAvailable });
     void maybeRefreshDynamicCaps();
@@ -151,11 +159,10 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     if (settings.provider === "cli") {
       const providerChanged = prev?.provider !== "cli";
       const kindChanged = prev?.cli?.kind !== settings.cli?.kind;
-      if (providerChanged || kindChanged) {
-        const path = await cliApi.detectCliBinary(
-          settings.cli?.kind ?? "claude",
-        );
-        cliBinaryAvailable = path !== null;
+      const binaryPathChanged =
+        (prev?.cli?.binaryPath ?? "") !== (settings.cli?.binaryPath ?? "");
+      if (providerChanged || kindChanged || binaryPathChanged) {
+        cliBinaryAvailable = await resolveCliBinaryAvailability(settings);
       }
     } else {
       cliBinaryAvailable = null;
@@ -258,13 +265,22 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     const { settings } = get();
     if (!settings) return;
 
+    const requestGeneration = ++modelLoadRequestGeneration;
     const requestedProvider = settings.provider;
     const requestedEndpointId = settings.activeOpenaiCompatibleEndpointId;
+    const requestedCliKind = settings.cli?.kind ?? "claude";
+    const requestedCliTransport = settings.cli?.codexTransport ?? "exec";
+    const requestedCliBinaryPath = settings.cli?.binaryPath;
     const isCurrentRequest = () => {
       const current = get().settings;
       return (
+        requestGeneration === modelLoadRequestGeneration &&
         current?.provider === requestedProvider &&
-        current.activeOpenaiCompatibleEndpointId === requestedEndpointId
+        current.activeOpenaiCompatibleEndpointId === requestedEndpointId &&
+        (requestedProvider !== "cli" ||
+          ((current.cli?.kind ?? "claude") === requestedCliKind &&
+            (current.cli?.codexTransport ?? "exec") === requestedCliTransport &&
+            (current.cli?.binaryPath ?? "") === (requestedCliBinaryPath ?? "")))
       );
     };
 
@@ -272,14 +288,12 @@ export const useAiSettingsStore = create<AiSettingsState>()((set, get) => ({
     try {
       if (settings.provider === "cli") {
         const useCodexAppServer =
-          settings.cli?.kind === "codex" &&
-          settings.cli.codexTransport !== "exec" &&
-          settings.cli.codexTransport !== undefined;
+          requestedCliKind === "codex" && requestedCliTransport !== "exec";
         const models = useCodexAppServer
           ? await codexAppApi.listCodexAppModels()
           : await cliApi.listCliModels(
-              settings.cli?.kind ?? "claude",
-              settings.cli?.binaryPath,
+              requestedCliKind,
+              requestedCliBinaryPath,
             );
         if (!isCurrentRequest()) return;
         set({ models, isLoadingModels: false });
@@ -341,6 +355,7 @@ export function selectProviderReadiness(s: AiSettingsState): ProviderReadiness {
     case "ollama":
       return settings.ollamaEndpoint ? "ready" : "no-provider";
     case "cli":
+      if (settings.cli?.binaryPath?.trim()) return "ready";
       if (cliBinaryAvailable === null) return "pending";
       return cliBinaryAvailable ? "ready" : "no-provider";
     default: {

@@ -1,25 +1,32 @@
 import type { ChatMessage } from "./chatTypes";
+import { stripToolProtocol } from "./toolProtocol";
+
+function activeCodexHistory(messages: readonly ChatMessage[]) {
+  return messages.flatMap((message) => {
+    if (message.isSummarized) return [];
+    // App Server history is another model-consumption boundary. Apply the
+    // same assistant-history sanitizer as the HTTP/exec payload path while
+    // preserving persisted system messages such as linked-session context.
+    // Dynamic prompt packets never enter this projection: callers pass the
+    // persisted pre-turn conversation before adding the current system prompt.
+    const content =
+      message.role === "assistant"
+        ? stripToolProtocol(message.content)
+        : message.content;
+    if (content.trim().length === 0) return [];
+    return [{ role: message.role, content }];
+  });
+}
 
 /**
  * Stable revision for the user-visible conversation that is imported into a
- * newly-created Codex thread. System prompt snapshots are intentionally not
- * included: the current Grimodex context is sent as a separate packet.
+ * newly-created Codex thread. The current dynamic Grimodex context is sent as
+ * a separate packet and is therefore absent from this persisted projection.
  */
 export async function computeChatHistoryRevision(
   messages: readonly ChatMessage[],
 ): Promise<string> {
-  const canonical = JSON.stringify(
-    messages
-      .filter((message) => message.role !== "system")
-      .map((message) => ({
-        id: message.id,
-        role: message.role,
-        content: message.content,
-        model: message.model ?? null,
-        metadata: message.metadata ?? null,
-        isSummarized: message.isSummarized ?? 0,
-      })),
-  );
+  const canonical = JSON.stringify(activeCodexHistory(messages));
   const bytes = new TextEncoder().encode(canonical);
   const subtle = globalThis.crypto?.subtle;
   if (subtle) {
@@ -42,8 +49,8 @@ export async function computeChatHistoryRevision(
 export function buildCodexBootstrapHistory(
   messages: readonly ChatMessage[],
 ): string | undefined {
-  const lines = messages
-    .filter((message) => message.role !== "system" && message.content.trim())
-    .map((message) => `[${message.role}]\n${message.content}`);
+  const lines = activeCodexHistory(messages).map(
+    (message) => `[${message.role}]\n${message.content}`,
+  );
   return lines.length > 0 ? lines.join("\n\n") : undefined;
 }

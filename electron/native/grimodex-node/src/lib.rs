@@ -165,6 +165,31 @@ fn validate_ime_workspace(
     Ok(())
 }
 
+fn validate_codex_workspace(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_workspace_path: &str,
+) -> std::result::Result<(), AppError> {
+    let active = workspace
+        .path
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    // Canonicalize on the same side of the N-API boundary. Node and Rust can
+    // use different lexical representations for the same Windows/UNC path
+    // (for example Rust's verbatim `\\?\` prefix), so comparing a Rust
+    // canonical path with a raw JS string rejects a legitimate workspace.
+    let expected = PathBuf::from(expected_workspace_path)
+        .canonicalize()
+        .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
+    if active != expected {
+        return Err(AppError::Anyhow(anyhow::anyhow!(
+            "CODEX_WORKSPACE_CHANGED: expected {}, active {}",
+            expected.display(),
+            active.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Optimistically bind one request token to the exact DB/path snapshot seen at
 /// IPC arrival. A concurrent swap either makes `active_workspace_snapshot`
 /// fail closed or changes the gate generation so registration retries.
@@ -524,17 +549,17 @@ impl Backend {
         project_id: String,
         session_id: String,
         runtime: String,
+        expected_workspace_path: String,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            with_db_state(&state.ws, |db| {
-                let binding = db.get_chat_runtime_thread_binding(
-                    &project_id,
-                    &session_id,
-                    &runtime,
-                )?;
-                serde_json::to_string(&binding).map_err(anyhow::Error::from)
-            })
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_codex_workspace(&workspace, &expected_workspace_path)?;
+            let binding =
+                workspace
+                    .db
+                    .get_chat_runtime_thread_binding(&project_id, &session_id, &runtime)?;
+            Ok(serde_json::to_string(&binding).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -546,18 +571,51 @@ impl Backend {
     pub async fn upsert_chat_runtime_thread_binding(
         &self,
         binding: serde_json::Value,
+        expected_workspace_path: String,
     ) -> Result<()> {
-        let binding = from_wire::<grimodex_db::runtime_threads::RuntimeThreadBinding>(
-            "binding",
-            binding,
-        )
-        .map_err(app_err_to_napi)?;
+        let binding =
+            from_wire::<grimodex_db::runtime_threads::RuntimeThreadBinding>("binding", binding)
+                .map_err(app_err_to_napi)?;
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            with_db_state(&state.ws, |db| {
-                db.upsert_chat_runtime_thread_binding(&binding)?;
-                Ok(())
-            })
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_codex_workspace(&workspace, &expected_workspace_path)?;
+            workspace.db.upsert_chat_runtime_thread_binding(&binding)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Main-only compare-and-swap bridge for committing a completed Codex turn's
+    /// pending history revision. A stale or competing completion returns `false`.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn advance_chat_runtime_thread_history_revision(
+        &self,
+        expected_workspace_path: String,
+        project_id: String,
+        session_id: String,
+        runtime: String,
+        external_thread_id: String,
+        last_turn_id: String,
+        pending_history_revision: String,
+        next_history_revision: String,
+        updated_at: String,
+    ) -> Result<bool> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_codex_workspace(&workspace, &expected_workspace_path)?;
+            Ok(workspace.db.advance_chat_runtime_thread_history_revision(
+                &project_id,
+                &session_id,
+                &runtime,
+                &external_thread_id,
+                &last_turn_id,
+                &pending_history_revision,
+                &next_history_revision,
+                &updated_at,
+            )?)
         })
         .await
     }
@@ -569,13 +627,16 @@ impl Backend {
         project_id: String,
         session_id: String,
         runtime: String,
+        expected_workspace_path: String,
     ) -> Result<()> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            with_db_state(&state.ws, |db| {
-                db.delete_chat_runtime_thread_binding(&project_id, &session_id, &runtime)?;
-                Ok(())
-            })
+            let workspace = active_workspace_snapshot(&state.ws)?;
+            validate_codex_workspace(&workspace, &expected_workspace_path)?;
+            workspace
+                .db
+                .delete_chat_runtime_thread_binding(&project_id, &session_id, &runtime)?;
+            Ok(())
         })
         .await
     }
@@ -2682,6 +2743,38 @@ mod ime_workspace_tests {
 
         assert!(result.is_err());
         assert!(state.ime_request_gate.is_current(&legitimate));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn codex_workspace_validation_canonicalizes_both_path_representations() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-node-codex-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let resources = dir.join("resources");
+        let state =
+            AppState::new(&dir.to_string_lossy(), &resources.to_string_lossy()).expect("app state");
+        let workspace_path = dir.join("workspace");
+        let nested = workspace_path.join("nested");
+        std::fs::create_dir_all(&nested).expect("workspace dirs");
+        let db = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace {
+            db: Arc::new(db),
+            path: workspace_path.clone(),
+        });
+        let snapshot = active_workspace_snapshot(&state.ws).expect("workspace snapshot");
+        let equivalent_but_noncanonical = nested.join("..");
+
+        validate_codex_workspace(&snapshot, &equivalent_but_noncanonical.to_string_lossy())
+            .expect("equivalent workspace path");
+
+        drop(snapshot);
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

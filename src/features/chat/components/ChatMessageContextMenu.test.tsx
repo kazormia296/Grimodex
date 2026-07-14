@@ -179,6 +179,30 @@ describe("ChatMessageContextMenu", () => {
     });
   });
 
+  describe("履歴変更が無効なとき", () => {
+    it("assistant の再生成と削除を隠す", () => {
+      render(
+        <ChatMessageContextMenu {...defaultProps} mutationsDisabled={true} />,
+      );
+      expect(screen.getByTestId("ctx-copy")).toBeInTheDocument();
+      expect(screen.queryByTestId("ctx-regenerate")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("ctx-delete")).not.toBeInTheDocument();
+    });
+
+    it("user の編集と削除を隠す", () => {
+      render(
+        <ChatMessageContextMenu
+          {...defaultProps}
+          messageRole="user"
+          mutationsDisabled={true}
+        />,
+      );
+      expect(screen.getByTestId("ctx-copy")).toBeInTheDocument();
+      expect(screen.queryByTestId("ctx-edit")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("ctx-delete")).not.toBeInTheDocument();
+    });
+  });
+
   describe("テキスト選択モード", () => {
     const selectedProps = {
       ...defaultProps,

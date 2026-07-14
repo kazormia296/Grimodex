@@ -1,11 +1,17 @@
 import { invoke, listen } from "@/lib/tauri";
 import * as cliApi from "./cliApi";
+import { CODEX_APP_SERVER_WORKSPACE_STALE_CODE } from "@/../electron/shared/codexAppProtocol";
 import type {
+  ArchiveCodexSessionThreadPayload,
+  AdvanceCodexHistoryRevisionPayload,
+  AdvanceCodexHistoryRevisionResult,
   CodexAppEventEnvelope,
   CodexAppItem,
   CodexModel,
   InterruptCodexAppTurnPayload,
+  SetCodexThreadNamePayload,
   StartCodexAppTurnPayload,
+  StartCodexAppTurnResult,
 } from "@/../electron/shared/codexAppProtocol";
 
 export type { CodexAppItem } from "@/../electron/shared/codexAppProtocol";
@@ -51,12 +57,27 @@ function isEnvelope(value: unknown): value is CodexAppEventEnvelope {
   );
 }
 
-function stringField(value: unknown, key: string): string | undefined {
+function isStartTurnResult(value: unknown): value is StartCodexAppTurnResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
+    return false;
   }
-  const field = (value as Record<string, unknown>)[key];
-  return typeof field === "string" && field.length > 0 ? field : undefined;
+  const record = value as Record<string, unknown>;
+  if (record.status === "started") {
+    return (
+      typeof record.codexThreadId === "string" &&
+      record.codexThreadId.length > 0 &&
+      typeof record.codexTurnId === "string" &&
+      record.codexTurnId.length > 0 &&
+      typeof record.reusedThread === "boolean"
+    );
+  }
+  return (
+    record.status === "rejected-before-turn" &&
+    typeof record.code === "string" &&
+    record.code.length > 0 &&
+    typeof record.message === "string" &&
+    record.message.length > 0
+  );
 }
 
 /** Adapt normalized main-process events to the existing ChatStore stream callbacks. */
@@ -66,6 +87,11 @@ export async function sendCodexAppTurn(
 ): Promise<() => void> {
   let settled = false;
   let started = false;
+  // cleanup can win the race with the long-running start_turn invoke. In that
+  // case the main process may only learn the authoritative Codex turn id after
+  // the renderer has stopped listening, so issue a second, late interrupt once
+  // start_turn resolves.
+  let cancelledBeforeStartResolved = false;
   let fallbackCleanup: (() => void) | null = null;
   let latestUsage: {
     inputTokens?: number;
@@ -117,6 +143,10 @@ export async function sendCodexAppTurn(
         };
         return;
       case "approval-requested":
+        // A server request proves that the App Server turn is already active.
+        // Falling back to `codex exec` after this point could execute the same
+        // request twice while the original turn is still waiting for approval.
+        started = true;
         callbacks.onApprovalRequested?.(event);
         return;
       case "warning":
@@ -135,6 +165,14 @@ export async function sendCodexAppTurn(
         });
         return;
       case "turn-error":
+        if (event.retryable === true) {
+          // Codex may emit a transient error before retrying the same turn. Keep
+          // the correlated listener alive and surface it as a warning; a later
+          // turn-completed or non-retryable error remains authoritative.
+          started = true;
+          callbacks.onWarning?.(event.message);
+          return;
+        }
         settled = true;
         callbacks.onError(event.message);
         return;
@@ -142,47 +180,98 @@ export async function sendCodexAppTurn(
   });
 
   const cleanup = (): void => {
+    if (!settled) cancelledBeforeStartResolved = true;
     settled = true;
     unlisten();
     fallbackCleanup?.();
     fallbackCleanup = null;
   };
 
+  const startFallback = async (
+    fallbackCli: cliApi.CliChatPayload,
+  ): Promise<void> => {
+    unlisten();
+    callbacks.onFallback?.();
+    if (settled) return;
+    try {
+      const resolvedFallbackCleanup = await cliApi.sendCliChatStream(
+        fallbackCli,
+        callbacks,
+      );
+      if (settled) {
+        resolvedFallbackCleanup();
+        return;
+      }
+      fallbackCleanup = resolvedFallbackCleanup;
+    } catch (fallbackCause) {
+      if (settled) return;
+      settled = true;
+      callbacks.onError(
+        fallbackCause instanceof Error
+          ? fallbackCause.message
+          : String(fallbackCause),
+      );
+    }
+  };
+
   const { transport, fallbackCli, ...requestPayload } = payload;
-  invoke<unknown>("codex_app_start_turn", requestPayload)
+  invoke<StartCodexAppTurnResult>("codex_app_start_turn", requestPayload)
     .then((result) => {
+      if (cancelledBeforeStartResolved) {
+        // A proven pre-turn rejection has nothing to interrupt. Any other
+        // result may represent a real turn and is interrupted fail-closed.
+        if (!isStartTurnResult(result) || result.status === "started") {
+          void abortCodexAppTurn({
+            projectId: payload.projectId,
+            sessionId: payload.sessionId,
+            grimodexTurnId: payload.grimodexTurnId,
+          }).catch(() => {});
+        }
+        return;
+      }
       if (settled) return;
-      const threadId = stringField(result, "codexThreadId");
-      const turnId = stringField(result, "codexTurnId");
-      if (!threadId && !turnId) return;
-      started = true;
-      callbacks.onTurnStarted?.({
-        ...(threadId ? { threadId } : {}),
-        ...(turnId ? { turnId } : {}),
-      });
-    })
-    .catch(async (cause: unknown) => {
-      if (settled) return;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      if (!started && transport === "auto" && fallbackCli) {
-        unlisten();
-        callbacks.onFallback?.();
-        try {
-          fallbackCleanup = await cliApi.sendCliChatStream(
-            fallbackCli,
-            callbacks,
-          );
-          return;
-        } catch (fallbackCause) {
-          settled = true;
-          callbacks.onError(
-            fallbackCause instanceof Error
-              ? fallbackCause.message
-              : String(fallbackCause),
-          );
+      if (!isStartTurnResult(result)) {
+        void abortCodexAppTurn({
+          projectId: payload.projectId,
+          sessionId: payload.sessionId,
+          grimodexTurnId: payload.grimodexTurnId,
+        }).catch(() => {});
+        settled = true;
+        callbacks.onError("Codex App Server returned an invalid start result");
+        return;
+      }
+      if (result.status === "rejected-before-turn") {
+        if (
+          !started &&
+          transport === "auto" &&
+          fallbackCli &&
+          result.code !== CODEX_APP_SERVER_WORKSPACE_STALE_CODE
+        ) {
+          void startFallback(fallbackCli);
           return;
         }
+        settled = true;
+        callbacks.onError(result.message);
+        return;
       }
+      started = true;
+      callbacks.onTurnStarted?.({
+        threadId: result.codexThreadId,
+        turnId: result.codexTurnId,
+      });
+    })
+    .catch((cause: unknown) => {
+      // Rejection is deliberately unclassified: IPC itself can fail after
+      // main accepted the turn. Always issue an idempotent fail-closed abort;
+      // a proven pre-turn outcome is returned as a typed result above.
+      void abortCodexAppTurn({
+        projectId: payload.projectId,
+        sessionId: payload.sessionId,
+        grimodexTurnId: payload.grimodexTurnId,
+      }).catch(() => {});
+      if (cancelledBeforeStartResolved) return;
+      if (settled) return;
+      const message = cause instanceof Error ? cause.message : String(cause);
       settled = true;
       callbacks.onError(message);
     });
@@ -194,6 +283,15 @@ export async function abortCodexAppTurn(
   payload: InterruptCodexAppTurnPayload,
 ): Promise<void> {
   await invoke<void>("codex_app_interrupt_turn", { ...payload });
+}
+
+export async function advanceCodexHistoryRevision(
+  payload: AdvanceCodexHistoryRevisionPayload,
+): Promise<AdvanceCodexHistoryRevisionResult> {
+  return invoke<AdvanceCodexHistoryRevisionResult>(
+    "codex_app_update_history_revision",
+    { ...payload },
+  );
 }
 
 export async function getCodexAppServerStatus(): Promise<unknown> {
@@ -219,23 +317,17 @@ export async function respondToCodexServerRequest(input: {
 }
 
 export async function archiveCodexSessionThread(
-  projectId: string,
-  sessionId: string,
+  payload: ArchiveCodexSessionThreadPayload,
 ): Promise<void> {
   await invoke<void>("codex_app_archive_session_thread", {
-    projectId,
-    sessionId,
+    ...payload,
   });
 }
 
 export async function setCodexSessionThreadName(
-  projectId: string,
-  sessionId: string,
-  name: string,
+  payload: SetCodexThreadNamePayload,
 ): Promise<void> {
   await invoke<void>("codex_app_set_thread_name", {
-    projectId,
-    sessionId,
-    name,
+    ...payload,
   });
 }

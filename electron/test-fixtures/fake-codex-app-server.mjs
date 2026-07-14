@@ -14,19 +14,22 @@ function send(message) {
 }
 
 function response(id, result) {
-  send({ jsonrpc: "2.0", id, result });
+  send({ id, result });
 }
 
 function error(id, code, message) {
-  send({ jsonrpc: "2.0", id, error: { code, message } });
+  send({ id, error: { code, message } });
 }
 
 function notify(method, params) {
-  send({ jsonrpc: "2.0", method, params });
+  send({ method, params });
 }
 
 function emitTurn(threadId, turnId) {
-  notify("turn/started", { threadId, turnId });
+  notify("turn/started", {
+    threadId,
+    turn: { id: turnId, status: "inProgress", items: [] },
+  });
   notify("item/started", {
     turnId,
     item: { id: `${turnId}-reasoning`, type: "reasoning", status: "started" },
@@ -48,13 +51,14 @@ function emitTurn(threadId, turnId) {
   notify("item/agentMessage/delta", { turnId, delta: "日本語の応答です。" });
   notify("thread/tokenUsage/updated", {
     turnId,
-    usage: { inputTokens: 12, outputTokens: 8, cachedInputTokens: 2 },
+    tokenUsage: {
+      last: { inputTokens: 12, outputTokens: 8, cachedInputTokens: 2 },
+      total: { inputTokens: 12, outputTokens: 8, cachedInputTokens: 2 },
+    },
   });
   notify("turn/completed", {
     threadId,
-    turnId,
-    status: { status: "completed" },
-    usage: { inputTokens: 12, outputTokens: 8 },
+    turn: { id: turnId, status: "completed", items: [] },
   });
   activeTurns.delete(turnId);
 }
@@ -62,21 +66,22 @@ function emitTurn(threadId, turnId) {
 function handleRequest(message) {
   if (message.method === "initialize") {
     response(message.id, {
-      serverInfo: { name: "fake-codex", version: "fixture-1" },
+      userAgent: "fake-codex/fixture-1",
     });
     return;
   }
   if (message.method === "initialized") return;
   if (message.method === "model/list") {
     response(message.id, {
-      models: [{ id: "fake-model", name: "Fake Model" }],
+      data: [{ id: "fake-model", displayName: "Fake Model" }],
+      nextCursor: null,
     });
     return;
   }
   if (message.method === "thread/start") {
     if (
       process.env.FAKE_CODEX_REJECT_MCP === "1" &&
-      message.params?.mcpServers
+      message.params?.config?.mcp_servers
     ) {
       error(message.id, -32602, "unknown field mcpServers");
       return;
@@ -106,16 +111,19 @@ function handleRequest(message) {
       const requestId = `approval-${turnId}`;
       pending.set(requestId, { threadId, turnId });
       send({
-        jsonrpc: "2.0",
         id: requestId,
         method: "item/commandExecution/requestApproval",
         params: {
           threadId,
           turnId,
+          itemId: `${turnId}-command`,
+          startedAtMs: Date.now(),
+          environmentId: null,
           summary: "Run the fixture command",
-          command: ["echo", "fixture"],
-          affectedPaths: ["notes/example.txt"],
-          diff: "+ fixture change",
+          reason: "Run the fixture command",
+          command: "echo fixture",
+          cwd: process.cwd(),
+          availableDecisions: ["accept", "decline"],
         },
       });
     } else {

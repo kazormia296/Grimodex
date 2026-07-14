@@ -32,6 +32,7 @@ import {
   testCodexAppServerConnection,
 } from "@/features/chat/codexAppApi";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { resolveModelCapabilities } from "@/features/chat/agent/modelLimits";
 import {
   MODEL_ROLES,
@@ -60,11 +61,19 @@ import { AiProjectSettings } from "./AiProjectSettings";
 
 async function archiveActiveCodexThreads(): Promise<void> {
   const projectId = getCurrentProjectId();
+  const workspaceIdentity = getCurrentImeWorkspaceIdentity();
+  if (!workspaceIdentity) return;
   const sessions = useChatStore
     .getState()
     .sessions.filter((session) => session.projectId === projectId);
   await Promise.allSettled(
-    sessions.map((session) => archiveCodexSessionThread(projectId, session.id)),
+    sessions.map((session) =>
+      archiveCodexSessionThread({
+        projectId,
+        sessionId: session.id,
+        expectedWorkspacePath: workspaceIdentity.path,
+      }),
+    ),
   );
 }
 import {

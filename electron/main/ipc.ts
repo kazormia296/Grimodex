@@ -28,6 +28,10 @@ import {
 } from "./shellCommands.js";
 import { focusPanelWindow, openPanelWindow } from "./windows.js";
 
+export type ExtraShellHandlers =
+  | ShellCommandHandlers
+  | ((win: BrowserWindow | null) => ShellCommandHandlers);
+
 function isRecord(value: unknown): value is CommandArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -43,7 +47,7 @@ function isRecord(value: unknown): value is CommandArgs {
  */
 export function registerIpcRouter(
   backend: NapiBackendLike | null,
-  extraShellHandlers: ShellCommandHandlers = {},
+  extraShellHandlers: ExtraShellHandlers = {},
   secrets?: SecretsResolver,
   broadcast?: (channel: string, payload: unknown) => void,
 ): void {
@@ -57,9 +61,13 @@ export function registerIpcRouter(
         };
       }
       const win = BrowserWindow.fromWebContents(event.sender);
+      const injectedHandlers =
+        typeof extraShellHandlers === "function"
+          ? extraShellHandlers(win)
+          : extraShellHandlers;
       const envelope = await dispatchInvoke(cmd, isRecord(args) ? args : {}, {
         backend,
-        shell: { ...buildShellCommandHandlers(win), ...extraShellHandlers },
+        shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
         secrets,
         broadcast,
       });

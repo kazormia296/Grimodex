@@ -3,6 +3,11 @@ import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
 import { blockIfUnlicensed } from "@/features/license/gate";
+import {
+  getCurrentImeWorkspaceIdentity,
+  isCurrentImeWorkspaceIdentity,
+  type ImeWorkspaceIdentity,
+} from "@/features/ime/workspaceScope";
 import * as chatApi from "./chatApi";
 import { resolveModelForPath, resolveRolePathConfig } from "./modelRouting";
 import { debugLog, errorDetail } from "@/lib/debugLog";
@@ -356,7 +361,11 @@ import {
   getEntryScanText,
   findReverseMentioningEntries,
 } from "@/features/codex/codexCrossMentions";
-import { resolveScopeSessionKey, type ChatScope } from "./chatScope";
+import {
+  resolveScopeSessionKey,
+  type ChatScope,
+  type ScopeSessionKey,
+} from "./chatScope";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { useTabStore } from "@/features/editor/tabStore";
 import { getSnippet } from "@/features/snippets/api";
@@ -1839,6 +1848,8 @@ let _resolveUserQuestion: ((result: ToolResult) => void) | null = null;
 let _activeSendTurnId: string | null = null;
 interface SendTurnControl {
   id: string;
+  projectId: string;
+  sessionId: string | null;
   surface: "chat" | "agent";
   aborted: boolean;
   userMessageId: string;
@@ -1852,6 +1863,150 @@ let _activeSendControl: SendTurnControl | null = null;
 let _sessionListGeneration = 0;
 let _sessionSelectionGeneration = 0;
 let _contextRefreshGeneration = 0;
+// Session create/select/delete operations cross IPC and can otherwise finish
+// after a later Send has captured the old session. Serialize those mutations,
+// and make Send wait for every mutation that was requested before it. A
+// mutation requested after Send starts re-checks `isStreaming` inside the
+// queue and either stops intentionally (select) or becomes a no-op.
+let _sessionMutationTail: Promise<void> = Promise.resolve();
+let _pendingSessionMutationCount = 0;
+
+interface SessionMutationAuthority {
+  workspaceIdentity: ImeWorkspaceIdentity | null;
+  projectId: string;
+  chatScope: ChatScope;
+  scopeKey: ScopeSessionKey;
+}
+
+function captureSessionMutationAuthority(
+  state: Pick<
+    ChatState,
+    "activeProjectId" | "activeSceneId" | "chatScope" | "scopeAnchorId"
+  >,
+): SessionMutationAuthority {
+  return {
+    workspaceIdentity: getCurrentImeWorkspaceIdentity(),
+    projectId: state.activeProjectId ?? getCurrentProjectId(),
+    chatScope: state.chatScope,
+    scopeKey: resolveScopeSessionKey(
+      state.chatScope,
+      state.activeSceneId,
+      state.scopeAnchorId,
+    ),
+  };
+}
+
+function sameScopeSessionKey(
+  left: ScopeSessionKey,
+  right: ScopeSessionKey,
+): boolean {
+  return (
+    left.nodeId === right.nodeId &&
+    left.codexAnchorId === right.codexAnchorId &&
+    left.snippetAnchorId === right.snippetAnchorId
+  );
+}
+
+function isCapturedWorkspaceCurrent(
+  workspaceIdentity: ImeWorkspaceIdentity | null,
+): boolean {
+  if (workspaceIdentity) {
+    return isCurrentImeWorkspaceIdentity(workspaceIdentity);
+  }
+  return getCurrentImeWorkspaceIdentity() === null;
+}
+
+function isSessionMutationAuthorityCurrent(
+  authority: SessionMutationAuthority,
+  state: Pick<
+    ChatState,
+    "activeProjectId" | "activeSceneId" | "chatScope" | "scopeAnchorId"
+  >,
+): boolean {
+  if (!isCapturedWorkspaceCurrent(authority.workspaceIdentity)) return false;
+  if (
+    (state.activeProjectId ?? getCurrentProjectId()) !== authority.projectId
+  ) {
+    return false;
+  }
+  if (state.chatScope !== authority.chatScope) return false;
+  return sameScopeSessionKey(
+    resolveScopeSessionKey(
+      state.chatScope,
+      state.activeSceneId,
+      state.scopeAnchorId,
+    ),
+    authority.scopeKey,
+  );
+}
+
+function isSessionTargetForAuthority(
+  session: Pick<
+    ChatSession,
+    "projectId" | "nodeId" | "codexAnchorId" | "snippetAnchorId"
+  >,
+  authority: SessionMutationAuthority,
+): boolean {
+  if (session.projectId !== authority.projectId) return false;
+  switch (authority.chatScope) {
+    case "scene":
+    case "folder":
+      return (
+        typeof authority.scopeKey.nodeId === "string" &&
+        session.nodeId === authority.scopeKey.nodeId &&
+        (session.codexAnchorId ?? null) === null &&
+        (session.snippetAnchorId ?? null) === null
+      );
+    case "project":
+      return (
+        (session.nodeId ?? null) === null &&
+        (session.codexAnchorId ?? null) === null &&
+        (session.snippetAnchorId ?? null) === null
+      );
+    case "codex":
+      return (
+        typeof authority.scopeKey.codexAnchorId === "string" &&
+        (session.nodeId ?? null) === null &&
+        session.codexAnchorId === authority.scopeKey.codexAnchorId &&
+        (session.snippetAnchorId ?? null) === null
+      );
+    case "snippet":
+      return (
+        typeof authority.scopeKey.snippetAnchorId === "string" &&
+        (session.nodeId ?? null) === null &&
+        (session.codexAnchorId ?? null) === null &&
+        session.snippetAnchorId === authority.scopeKey.snippetAnchorId
+      );
+  }
+}
+
+function isSameCapturedSession(
+  current: ChatSession,
+  captured: ChatSession,
+): boolean {
+  return (
+    current.id === captured.id &&
+    current.projectId === captured.projectId &&
+    (current.nodeId ?? null) === (captured.nodeId ?? null) &&
+    (current.codexAnchorId ?? null) === (captured.codexAnchorId ?? null) &&
+    (current.snippetAnchorId ?? null) === (captured.snippetAnchorId ?? null)
+  );
+}
+
+function enqueueSessionMutation<T>(operation: () => Promise<T>): Promise<T> {
+  _pendingSessionMutationCount += 1;
+  const pending = _sessionMutationTail.then(operation, operation);
+  _sessionMutationTail = pending.then(
+    () => {
+      _pendingSessionMutationCount -= 1;
+    },
+    () => {
+      _pendingSessionMutationCount -= 1;
+    },
+  );
+  return pending;
+}
+
 // Stop must target the transport selected for the in-flight turn, not mutable
 // settings that may have changed after the request started.
 let _activeTurnRoute: ResolvedChatTurnRoute | null = null;
@@ -2825,67 +2980,80 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   createLinkedSession: async () => {
-    const {
-      activeSessionId,
-      activeProjectId,
-      activeSceneId,
-      chatScope,
-      sessions,
-    } = get();
-    const ref = sessions.find((s) => s.id === activeSessionId);
-    const projectId = activeProjectId ?? getCurrentProjectId();
-    const { nodeId, codexAnchorId, snippetAnchorId } = resolveScopeSessionKey(
-      chatScope,
-      activeSceneId,
-      get().scopeAnchorId,
+    const invocationState = get();
+    if (invocationState.isStreaming) return;
+    const authority = captureSessionMutationAuthority(invocationState);
+    const ref = invocationState.sessions.find(
+      (session) => session.id === invocationState.activeSessionId,
     );
-    try {
-      const session = await chatApi.createSession(
-        projectId,
-        ref ? `Linked: ${ref.title}` : "New session",
-        nodeId === null ? undefined : nodeId,
-        codexAnchorId,
-        snippetAnchorId,
-      );
+    if (ref && !isSessionTargetForAuthority(ref, authority)) return;
+    return enqueueSessionMutation(async () => {
+      const queuedState = get();
       if (
-        session.projectId !== projectId ||
-        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
+        queuedState.isStreaming ||
+        !isSessionMutationAuthorityCurrent(authority, queuedState) ||
+        queuedState.activeSessionId !== (ref?.id ?? null)
       ) {
         return;
       }
-      set((state) => ({
-        sessions: [session, ...state.sessions],
-        activeSessionId: session.id,
-        messages: [],
-        summaryCount: 0,
-        maxSummaryGeneration: 0,
-        sessionStableCodexIds: [],
-        sessionStableContextInitialized: false,
-        sessionAgentToolsSnapshot: snapshotAgentTools(),
-        cacheInvalidatedReason: null,
-        excludedAutoEntryIds: [],
-        threadFocusOverride: null,
-      }));
-      if (ref) {
-        const linkMsg = await chatApi.addMessage(
-          session.id,
-          "system",
-          i18next.t("chat.linkedSessionReference", {
-            title: ref.title,
-            sessionId: ref.id,
-          }),
+      const { projectId, scopeKey } = authority;
+      try {
+        const session = await chatApi.createSession(
+          projectId,
+          ref ? `Linked: ${ref.title}` : "New session",
+          scopeKey.nodeId === null ? undefined : scopeKey.nodeId,
+          scopeKey.codexAnchorId,
+          scopeKey.snippetAnchorId,
         );
         if (
-          (get().activeProjectId ?? getCurrentProjectId()) === projectId &&
-          get().activeSessionId === session.id
+          get().isStreaming ||
+          session.projectId !== projectId ||
+          !isSessionTargetForAuthority(session, authority) ||
+          !isSessionMutationAuthorityCurrent(authority, get()) ||
+          get().activeSessionId !== (ref?.id ?? null)
         ) {
-          set({ messages: [linkMsg] });
+          return;
         }
+        set((state) => ({
+          sessions: [session, ...state.sessions],
+          activeSessionId: session.id,
+          messages: [],
+          summaryCount: 0,
+          maxSummaryGeneration: 0,
+          sessionStableCodexIds: [],
+          sessionStableContextInitialized: false,
+          sessionAgentToolsSnapshot: snapshotAgentTools(),
+          cacheInvalidatedReason: null,
+          excludedAutoEntryIds: [],
+          threadFocusOverride: null,
+        }));
+        if (ref) {
+          if (
+            !isSessionMutationAuthorityCurrent(authority, get()) ||
+            get().activeSessionId !== session.id
+          ) {
+            return;
+          }
+          const linkMsg = await chatApi.addMessage(
+            session.id,
+            "system",
+            i18next.t("chat.linkedSessionReference", {
+              title: ref.title,
+              sessionId: ref.id,
+            }),
+          );
+          if (
+            isSessionMutationAuthorityCurrent(authority, get()) &&
+            get().activeSessionId === session.id
+          ) {
+            set({ messages: [linkMsg] });
+          }
+        }
+      } catch (e) {
+        toast.error(i18next.t("chat.createSessionFailed"));
+        debugLog.error("ChatStore", "createLinkedSession", errorDetail(e));
       }
-    } catch (e) {
-      toast.error(i18next.t("chat.createSessionFailed"));
-      debugLog.error("ChatStore", "createLinkedSession", errorDetail(e));
-    }
+    });
   },
 
   removeEntryFromAuto: (entryId: string) => {
@@ -3006,94 +3174,106 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   selectSession: async (sessionId: string | null) => {
-    const generation = ++_sessionSelectionGeneration;
-    const projectId = get().activeProjectId ?? getCurrentProjectId();
-    if (get().isStreaming) get().stopGeneration();
-    // セッションを切り替える前に、回答待ちの ask_user を sentinel 解決して
-    // resolver リーク・別セッションでのカード誤表示を防ぐ（null/切替の両分岐共通）。
-    get()._cancelPendingUserQuestion();
-    // エピソード recall 昇格トラッカーは per-session。切替時にリセットして、前
-    // セッションの頻度・dismiss を持ち越さない。
-    resetRecallPromote(recallPromoteTracker);
-    if (sessionId === null) {
+    const authority = captureSessionMutationAuthority(get());
+    const { projectId } = authority;
+    return enqueueSessionMutation(async () => {
+      const generation = ++_sessionSelectionGeneration;
+      if (!isSessionMutationAuthorityCurrent(authority, get())) {
+        return;
+      }
+      if (get().isStreaming) get().stopGeneration();
+      if (!isSessionMutationAuthorityCurrent(authority, get())) return;
+      // セッションを切り替える前に、回答待ちの ask_user を sentinel 解決して
+      // resolver リーク・別セッションでのカード誤表示を防ぐ（null/切替の両分岐共通）。
+      get()._cancelPendingUserQuestion();
+      // エピソード recall 昇格トラッカーは per-session。切替時にリセットして、前
+      // セッションの頻度・dismiss を持ち越さない。
+      resetRecallPromote(recallPromoteTracker);
+      if (sessionId === null) {
+        set({
+          activeSessionId: null,
+          messages: [],
+          isLoadingMessages: false,
+          summaryCount: 0,
+          maxSummaryGeneration: 0,
+          sessionStableCodexIds: [],
+          sessionStableContextInitialized: false,
+          sessionAgentToolsSnapshot: null,
+          excludedAutoEntryIds: [],
+          threadFocusOverride: null,
+          chatRecallPromoteSuggestion: null,
+          // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
+          agentContinuation: null,
+          subAgentProgress: null,
+        });
+        return;
+      }
       set({
-        activeSessionId: null,
+        isLoadingMessages: true,
+        activeSessionId: sessionId,
         messages: [],
-        isLoadingMessages: false,
-        summaryCount: 0,
-        maxSummaryGeneration: 0,
-        sessionStableCodexIds: [],
-        sessionStableContextInitialized: false,
-        sessionAgentToolsSnapshot: null,
-        excludedAutoEntryIds: [],
-        threadFocusOverride: null,
         chatRecallPromoteSuggestion: null,
         // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
         agentContinuation: null,
         subAgentProgress: null,
       });
-      return;
-    }
-    set({
-      isLoadingMessages: true,
-      activeSessionId: sessionId,
-      messages: [],
-      chatRecallPromoteSuggestion: null,
-      // 前セッションの「続行」/サブエージェント進捗を持ち越さない。
-      agentContinuation: null,
-      subAgentProgress: null,
+      try {
+        if (!isSessionMutationAuthorityCurrent(authority, get())) return;
+        const session = await chatApi.getSessionForProject(
+          sessionId,
+          projectId,
+        );
+        if (
+          generation !== _sessionSelectionGeneration ||
+          !isSessionMutationAuthorityCurrent(authority, get()) ||
+          get().activeSessionId !== sessionId
+        ) {
+          return;
+        }
+        if (!session) {
+          throw new Error("chat session project mismatch");
+        }
+        if (!isSessionMutationAuthorityCurrent(authority, get())) return;
+        const [messages, summaries] = await Promise.all([
+          chatApi.listMessages(sessionId),
+          chatApi.listSummaries(sessionId),
+        ]);
+        if (
+          generation !== _sessionSelectionGeneration ||
+          !isSessionMutationAuthorityCurrent(authority, get()) ||
+          get().activeSessionId !== sessionId
+        ) {
+          return;
+        }
+        set({
+          activeSessionId: sessionId,
+          messages,
+          isLoadingMessages: false,
+          summaryCount: summaries.length,
+          maxSummaryGeneration:
+            summaries.length > 0
+              ? Math.max(...summaries.map((s) => s.generation))
+              : 0,
+          sessionStableCodexIds: [],
+          sessionStableContextInitialized: false,
+          sessionAgentToolsSnapshot: snapshotAgentTools(),
+          cacheInvalidatedReason: null,
+          excludedAutoEntryIds: [],
+          threadFocusOverride: null,
+        });
+      } catch (e) {
+        if (
+          generation !== _sessionSelectionGeneration ||
+          !isSessionMutationAuthorityCurrent(authority, get()) ||
+          get().activeSessionId !== sessionId
+        ) {
+          return;
+        }
+        set({ activeSessionId: null, messages: [], isLoadingMessages: false });
+        toast.error(i18next.t("chat.loadMessagesFailed"));
+        debugLog.error("ChatStore", "selectSession", errorDetail(e));
+      }
     });
-    try {
-      const session = await chatApi.getSessionForProject(sessionId, projectId);
-      if (
-        generation !== _sessionSelectionGeneration ||
-        (get().activeProjectId ?? getCurrentProjectId()) !== projectId ||
-        get().activeSessionId !== sessionId
-      ) {
-        return;
-      }
-      if (!session) {
-        throw new Error("chat session project mismatch");
-      }
-      const [messages, summaries] = await Promise.all([
-        chatApi.listMessages(sessionId),
-        chatApi.listSummaries(sessionId),
-      ]);
-      if (
-        generation !== _sessionSelectionGeneration ||
-        (get().activeProjectId ?? getCurrentProjectId()) !== projectId ||
-        get().activeSessionId !== sessionId
-      ) {
-        return;
-      }
-      set({
-        activeSessionId: sessionId,
-        messages,
-        isLoadingMessages: false,
-        summaryCount: summaries.length,
-        maxSummaryGeneration:
-          summaries.length > 0
-            ? Math.max(...summaries.map((s) => s.generation))
-            : 0,
-        sessionStableCodexIds: [],
-        sessionStableContextInitialized: false,
-        sessionAgentToolsSnapshot: snapshotAgentTools(),
-        cacheInvalidatedReason: null,
-        excludedAutoEntryIds: [],
-        threadFocusOverride: null,
-      });
-    } catch (e) {
-      if (
-        generation !== _sessionSelectionGeneration ||
-        (get().activeProjectId ?? getCurrentProjectId()) !== projectId ||
-        get().activeSessionId !== sessionId
-      ) {
-        return;
-      }
-      set({ activeSessionId: null, messages: [], isLoadingMessages: false });
-      toast.error(i18next.t("chat.loadMessagesFailed"));
-      debugLog.error("ChatStore", "selectSession", errorDetail(e));
-    }
   },
 
   createNewSession: async (
@@ -3103,116 +3283,201 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     codexAnchorId?: string,
     snippetAnchorId?: string,
   ) => {
-    try {
-      const session = await chatApi.createSession(
-        projectId,
-        title,
-        nodeId,
-        codexAnchorId,
-        snippetAnchorId,
-      );
+    const invocationState = get();
+    if (invocationState.isStreaming) return;
+    const authority = captureSessionMutationAuthority(invocationState);
+    if (
+      !isSessionTargetForAuthority(
+        {
+          projectId,
+          nodeId: nodeId ?? null,
+          codexAnchorId: codexAnchorId ?? null,
+          snippetAnchorId: snippetAnchorId ?? null,
+        },
+        authority,
+      )
+    ) {
+      return;
+    }
+    return enqueueSessionMutation(async () => {
       if (
-        session.projectId !== projectId ||
-        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
+        get().isStreaming ||
+        !isSessionMutationAuthorityCurrent(authority, get())
       ) {
         return;
       }
-      set((state) => ({
-        sessions: [session, ...state.sessions],
-        activeSessionId: session.id,
-        messages: [],
-        summaryCount: 0,
-        maxSummaryGeneration: 0,
-        sessionStableCodexIds: [],
-        sessionStableContextInitialized: false,
-        sessionAgentToolsSnapshot: snapshotAgentTools(),
-        cacheInvalidatedReason: null,
-        excludedAutoEntryIds: [],
-        threadFocusOverride: null,
-      }));
-    } catch (e) {
-      toast.error(i18next.t("chat.createSessionFailed"));
-      debugLog.error("ChatStore", "createNewSession", errorDetail(e));
-    }
+      try {
+        const session = await chatApi.createSession(
+          projectId,
+          title,
+          nodeId,
+          codexAnchorId,
+          snippetAnchorId,
+        );
+        if (
+          get().isStreaming ||
+          !isSessionTargetForAuthority(session, authority) ||
+          !isSessionMutationAuthorityCurrent(authority, get())
+        ) {
+          return;
+        }
+        set((state) => ({
+          sessions: [session, ...state.sessions],
+          activeSessionId: session.id,
+          messages: [],
+          summaryCount: 0,
+          maxSummaryGeneration: 0,
+          sessionStableCodexIds: [],
+          sessionStableContextInitialized: false,
+          sessionAgentToolsSnapshot: snapshotAgentTools(),
+          cacheInvalidatedReason: null,
+          excludedAutoEntryIds: [],
+          threadFocusOverride: null,
+        }));
+      } catch (e) {
+        toast.error(i18next.t("chat.createSessionFailed"));
+        debugLog.error("ChatStore", "createNewSession", errorDetail(e));
+      }
+    });
   },
 
   ensureSession: async () => {
-    const {
-      activeSessionId,
-      activeProjectId,
-      activeSceneId,
-      chatScope,
-      scopeAnchorId,
-    } = get();
-    if (activeSessionId) return activeSessionId;
-    const { nodeId, codexAnchorId, snippetAnchorId } = resolveScopeSessionKey(
-      chatScope,
-      activeSceneId,
-      scopeAnchorId,
-    );
-    const projectId = activeProjectId ?? getCurrentProjectId();
-    try {
-      const session = await chatApi.createSession(
-        projectId,
-        "New session",
-        nodeId === null ? undefined : nodeId,
-        codexAnchorId,
-        snippetAnchorId,
-      );
+    const invocationState = get();
+    const authority = captureSessionMutationAuthority(invocationState);
+    const capturedSessionId = invocationState.activeSessionId;
+    const capturedSession = capturedSessionId
+      ? invocationState.sessions.find(
+          (session) => session.id === capturedSessionId,
+        )
+      : undefined;
+    if (
+      capturedSessionId &&
+      (!capturedSession ||
+        !isSessionTargetForAuthority(capturedSession, authority))
+    ) {
+      return null;
+    }
+    return enqueueSessionMutation(async () => {
+      const queuedState = get();
       if (
-        session.projectId !== projectId ||
-        (get().activeProjectId ?? getCurrentProjectId()) !== projectId
+        queuedState.isStreaming ||
+        !isSessionMutationAuthorityCurrent(authority, queuedState) ||
+        queuedState.activeSessionId !== capturedSessionId
       ) {
         return null;
       }
-      set((state) => ({
-        sessions: [session, ...state.sessions],
-        activeSessionId: session.id,
-      }));
-      return session.id;
-    } catch (e) {
-      debugLog.error("ChatStore", "ensureSession", errorDetail(e));
-      return null;
-    }
+      if (capturedSessionId) return capturedSessionId;
+      const { projectId, scopeKey } = authority;
+      try {
+        const session = await chatApi.createSession(
+          projectId,
+          "New session",
+          scopeKey.nodeId === null ? undefined : scopeKey.nodeId,
+          scopeKey.codexAnchorId,
+          scopeKey.snippetAnchorId,
+        );
+        if (
+          get().isStreaming ||
+          !isSessionTargetForAuthority(session, authority) ||
+          !isSessionMutationAuthorityCurrent(authority, get()) ||
+          get().activeSessionId !== capturedSessionId
+        ) {
+          return null;
+        }
+        set((state) => ({
+          sessions: [session, ...state.sessions],
+          activeSessionId: session.id,
+        }));
+        return session.id;
+      } catch (e) {
+        debugLog.error("ChatStore", "ensureSession", errorDetail(e));
+        return null;
+      }
+    });
   },
 
   deleteSession: async (sessionId: string) => {
-    try {
-      const projectId = get().activeProjectId ?? getCurrentProjectId();
-      const session = get().sessions.find((item) => item.id === sessionId);
-      if (session?.projectId === projectId) {
-        // The local DB cascade removes the binding, but archive the external
-        // thread first so a later Codex process cannot retain an orphaned turn.
-        await codexAppApi
-          .archiveCodexSessionThread(projectId, sessionId)
-          .catch((error: unknown) =>
-            debugLog.warn(
-              "ChatStore",
-              "archive Codex session thread",
-              errorDetail(error),
-            ),
-          );
-      }
-      await chatApi.deleteSession(sessionId);
-      const { activeSessionId } = get();
-      set((state) => ({
-        sessions: state.sessions.filter((s) => s.id !== sessionId),
-        ...(activeSessionId === sessionId
-          ? {
-              activeSessionId: null,
-              messages: [],
-              // 他のセッションライフサイクル操作（select/create）と同じく
-              // auto 除外をクリアする。残すと削除直後の refresh や送信時の
-              // auto-create セッションに前セッションの除外がリークする。
-              excludedAutoEntryIds: [],
-              threadFocusOverride: null,
-            }
-          : {}),
-      }));
-    } catch (e) {
-      toast.error(i18next.t("chat.deleteSessionFailed"));
-      debugLog.error("ChatStore", "deleteSession", errorDetail(e));
+    const invocationState = get();
+    if (invocationState.isStreaming) return;
+    const authority = captureSessionMutationAuthority(invocationState);
+    const capturedSession = invocationState.sessions.find(
+      (session) => session.id === sessionId,
+    );
+    if (
+      !capturedSession ||
+      !isSessionTargetForAuthority(capturedSession, authority)
+    ) {
+      return;
     }
+    return enqueueSessionMutation(async () => {
+      if (
+        get().isStreaming ||
+        !isSessionMutationAuthorityCurrent(authority, get())
+      ) {
+        return;
+      }
+      try {
+        const { projectId, workspaceIdentity } = authority;
+        // `deleteSession` is id-only at the Drizzle boundary. Resolve ownership
+        // in the captured project first, then re-check the full renderer
+        // authority before issuing that unscoped mutation.
+        const ownedSession = await chatApi.getSessionForProject(
+          sessionId,
+          projectId,
+        );
+        if (
+          !ownedSession ||
+          !isSameCapturedSession(ownedSession, capturedSession) ||
+          !isSessionTargetForAuthority(ownedSession, authority) ||
+          !isSessionMutationAuthorityCurrent(authority, get())
+        ) {
+          return;
+        }
+        if (workspaceIdentity) {
+          // The local DB cascade removes the binding, but archive the external
+          // thread first so a later Codex process cannot retain an orphaned turn.
+          await codexAppApi
+            .archiveCodexSessionThread({
+              projectId,
+              sessionId,
+              expectedWorkspacePath: workspaceIdentity.path,
+            })
+            .catch((error: unknown) =>
+              debugLog.warn(
+                "ChatStore",
+                "archive Codex session thread",
+                errorDetail(error),
+              ),
+            );
+        }
+        if (
+          get().isStreaming ||
+          !isSessionMutationAuthorityCurrent(authority, get())
+        ) {
+          return;
+        }
+        await chatApi.deleteSession(sessionId);
+        if (!isSessionMutationAuthorityCurrent(authority, get())) return;
+        const { activeSessionId } = get();
+        set((state) => ({
+          sessions: state.sessions.filter((s) => s.id !== sessionId),
+          ...(activeSessionId === sessionId
+            ? {
+                activeSessionId: null,
+                messages: [],
+                // 他のセッションライフサイクル操作（select/create）と同じく
+                // auto 除外をクリアする。残すと削除直後の refresh や送信時の
+                // auto-create セッションに前セッションの除外がリークする。
+                excludedAutoEntryIds: [],
+                threadFocusOverride: null,
+              }
+            : {}),
+        }));
+      } catch (e) {
+        toast.error(i18next.t("chat.deleteSessionFailed"));
+        debugLog.error("ChatStore", "deleteSession", errorDetail(e));
+      }
+    });
   },
 
   persistMessage: async (role: MessageRole, content: string) => {
@@ -3400,6 +3665,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       _rateLimitRetry?: number;
     },
   ) => {
+    // Preserve Send's synchronous authority snapshot on the normal fast path.
+    // Only yield when a session mutation was already requested; a mutation
+    // requested after this check cannot interleave before `isStreaming` is set
+    // because the code below has no await before publishing the placeholders.
+    if (_pendingSessionMutationCount > 0) {
+      await _sessionMutationTail;
+    }
+    const turnWorkspaceIdentity = getCurrentImeWorkspaceIdentity();
     const {
       isStreaming,
       isLoadingMessages,
@@ -3639,6 +3912,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const sendTurnId = crypto.randomUUID();
     const sendControl: SendTurnControl = {
       id: sendTurnId,
+      projectId: turnProjectId,
+      sessionId: activeSessionId,
       surface: useAgentPath ? "agent" : "chat",
       aborted: false,
       userMessageId: userMsg.id,
@@ -3799,6 +4074,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         }
         sessionIdForPersist = session.id;
         turnSessionId = session.id;
+        sendControl.sessionId = session.id;
         set((state) => ({
           sessions: [session, ...state.sessions],
           activeSessionId: session.id,
@@ -4848,13 +5124,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         );
         if (cancelBeforeTransport()) return;
       }
+      // Summarization publishes its result through the live store, which also
+      // contains this turn's optimistic user/assistant pair. Keep a single
+      // explicit pre-turn projection for App Server bootstrap and revision
+      // hashing so the current user message is never imported and sent twice.
+      const priorHistoryMessages = currentMessages.filter(
+        (message) =>
+          message.id !== userMsg.id && message.id !== assistantMsg.id,
+      );
 
       // APIペイロードを構築（要約済みメッセージを除外）
       const messagesForApi: ChatMessage[] = [
-        ...currentMessages.filter(
-          (m) =>
-            m.id !== userMsg.id && m.id !== assistantMsg.id && !m.isSummarized,
-        ),
+        ...priorHistoryMessages.filter((message) => !message.isSummarized),
         userMsg,
       ];
 
@@ -4980,6 +5261,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         turnRoute?.transport ??
         (turnRoute?.provider === "cli" ? "cli-exec" : "http");
       const isCodexAppServer = turnTransport === "codex-app-server";
+      const codexExpectedWorkspacePath = isCodexAppServer
+        ? turnWorkspaceIdentity?.path
+        : undefined;
+      if (isCodexAppServer && !codexExpectedWorkspacePath) {
+        throw new Error("Active workspace is unavailable for Codex App Server");
+      }
       let estimatedChatInputTokens: number | null = null;
       let chatSafetyMarginTokens: number | null = null;
       if (turnRoute) {
@@ -5049,11 +5336,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         };
       const codexTransport = cliConfig.codexTransport ?? "exec";
       const codexHistoryRevision = isCodexAppServer
-        ? await computeChatHistoryRevision(currentMessages)
+        ? await computeChatHistoryRevision(priorHistoryMessages)
         : null;
       const codexBootstrapHistory = isCodexAppServer
-        ? buildCodexBootstrapHistory(currentMessages)
+        ? buildCodexBootstrapHistory(priorHistoryMessages)
         : undefined;
+      // Web Crypto yields while hashing the imported history. Stop/session
+      // changes during that await must be observed before start_turn is issued.
+      if (cancelBeforeTransport()) return;
       let codexThreadId: string | undefined;
       let codexTurnId: string | undefined;
       const codexItems = new Map<string, codexAppApi.CodexAppItem>();
@@ -5232,6 +5522,46 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               return { messages: msgs };
             });
 
+            // A binding stores the history that existed before this turn. Once
+            // both messages are durable, advance it to the exact active-history
+            // projection that the next turn will hash. Synthetic local Stop and
+            // exec fallback deliberately leave the old revision in place, which
+            // forces a safe new thread on the next send.
+            const completedCodexBinding =
+              sendControl.transport === "codex-app-server" &&
+              info.stopReason !== "stopped" &&
+              codexHistoryRevision !== null &&
+              codexThreadId &&
+              codexTurnId &&
+              get().messages.some(
+                (message) =>
+                  message.id === assistantMsg.id &&
+                  message.role === "assistant" &&
+                  message.content.length > 0,
+              )
+                ? {
+                    threadId: codexThreadId,
+                    turnId: codexTurnId,
+                    expectedHistoryRevision: codexHistoryRevision,
+                    // Hash the exact pre-turn projection plus only the two
+                    // messages owned by this turn. A live-store mutation must
+                    // not become the revision of an already-running thread.
+                    nextHistoryRevision: computeChatHistoryRevision([
+                      ...priorHistoryMessages.map((message) => ({
+                        ...message,
+                      })),
+                      { ...userMsg },
+                      {
+                        ...assistantMsg,
+                        content:
+                          get().messages.find(
+                            (message) => message.id === assistantMsg.id,
+                          )?.content ?? "",
+                      },
+                    ]),
+                  }
+                : null;
+
             // Persist to DB
             const persistToDb = async () => {
               if (!sessionIdForPersist) return;
@@ -5283,6 +5613,42 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                 );
               }
 
+              if (completedCodexBinding) {
+                try {
+                  const nextHistoryRevision =
+                    await completedCodexBinding.nextHistoryRevision;
+                  const liveHistoryRevision = await computeChatHistoryRevision(
+                    get().messages.map((message) => ({ ...message })),
+                  );
+                  if (liveHistoryRevision !== nextHistoryRevision) {
+                    debugLog.warn(
+                      "ChatStore",
+                      "skip Codex history revision after concurrent history mutation",
+                    );
+                  } else {
+                    await codexAppApi.advanceCodexHistoryRevision({
+                      projectId: turnProjectId,
+                      sessionId: sessionIdForPersist,
+                      grimodexTurnId: sendTurnId,
+                      codexThreadId: completedCodexBinding.threadId,
+                      codexTurnId: completedCodexBinding.turnId,
+                      expectedHistoryRevision:
+                        completedCodexBinding.expectedHistoryRevision,
+                      nextHistoryRevision,
+                    });
+                  }
+                } catch (error: unknown) {
+                  // Persistence already succeeded. Keeping the old revision is
+                  // the fail-safe: the next send archives instead of resuming a
+                  // thread whose local history could be stale.
+                  debugLog.warn(
+                    "ChatStore",
+                    "advance Codex history revision",
+                    errorDetail(error),
+                  );
+                }
+              }
+
               // セッションタイトル自動生成 (P1-2) — fire-and-forget
               const currentSession = get().sessions.find(
                 (s) => s.id === sessionIdForPersist,
@@ -5310,13 +5676,14 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                         sessionIdForPersist,
                         title,
                       );
-                      if (isCodexAppServer) {
+                      if (isCodexAppServer && turnWorkspaceIdentity) {
                         void codexAppApi
-                          .setCodexSessionThreadName(
-                            turnProjectId,
-                            sessionIdForPersist,
-                            title,
-                          )
+                          .setCodexSessionThreadName({
+                            projectId: turnProjectId,
+                            sessionId: sessionIdForPersist,
+                            expectedWorkspacePath: turnWorkspaceIdentity.path,
+                            name: title,
+                          })
                           .catch((error: unknown) =>
                             debugLog.warn(
                               "ChatStore",
@@ -5434,6 +5801,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
               {
                 projectId: turnProjectId,
                 sessionId: sessionIdForPersist,
+                expectedWorkspacePath: codexExpectedWorkspacePath!,
                 grimodexTurnId: sendTurnId,
                 clientUserMessageId: userMsg.id,
                 model: turnRoute?.model || cliConfig.model || undefined,
@@ -6039,6 +6407,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   },
 
   setChatScope: (scope, anchorId) => {
+    if (get().isStreaming) get().stopGeneration();
     // scope === "folder" / "codex" / "snippet" のとき anchorId 必須。空指定なら scene に fallback。
     // includeBodies は scope ごとのデフォルトに揃え直す: scene=true, それ以外=false。
     // project では本文集約しないので値自体は影響しないが false に揃える。
@@ -6091,8 +6460,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // 問題への対処）。フラグ→resolve の順序が肝。
     const stoppedControl = _activeSendControl;
     const stoppedTurnId = _activeSendTurnId;
-    const stoppedSessionId = get().activeSessionId;
-    const stoppedProjectId = get().activeProjectId ?? getCurrentProjectId();
+    const stoppedSessionId = stoppedControl?.sessionId ?? get().activeSessionId;
+    const stoppedProjectId =
+      stoppedControl?.projectId ??
+      get().activeProjectId ??
+      getCurrentProjectId();
     if (stoppedControl) {
       stoppedControl.aborted = true;
       if (!stoppedControl.transportStarted) {
@@ -6246,7 +6618,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     );
   },
 
-  clearMessages: () => set({ messages: [], agentContinuation: null }),
+  clearMessages: () => {
+    if (get().isStreaming) return;
+    set({ messages: [], agentContinuation: null });
+  },
   clearError: () => set({ error: null }),
   dismissChatRecallPromote: (messageId: string) => {
     dismissRecallPromote(recallPromoteTracker, messageId);
@@ -6265,6 +6640,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // anchor は user 選択を維持する（=セッションも維持）。
       if (id !== activeSceneId) {
         if (chatScope === "scene") {
+          if (get().isStreaming) get().stopGeneration();
           set({
             activeSceneId: id,
             activeSessionId: null,
@@ -6280,7 +6656,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       markEnd("chatStore.setActiveSceneId");
     }
   },
-  setActiveProjectId: (id: string | null) => set({ activeProjectId: id }),
+  setActiveProjectId: (id: string | null) => {
+    if (get().activeProjectId !== id && get().isStreaming) {
+      get().stopGeneration();
+    }
+    set({ activeProjectId: id });
+  },
 }));
 
 // Snippet 削除 → snippet スコープを scene へ戻す。snippetStore からの直接 import は

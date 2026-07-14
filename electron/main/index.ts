@@ -7,18 +7,21 @@
  *   （設計書 docs/Grimodex_Electron移行Phase2設計書.md §2 / §8 S4 / S8）
  */
 import path from "node:path";
+import { realpathSync } from "node:fs";
 
 import { app, dialog, safeStorage } from "electron";
 
 import { getBackend, initBackend } from "./backend.js";
 import { createCliAiManager } from "./cliAi.js";
 import { createCodexAppServerManager } from "./codexAppServer/manager.js";
+import { readPersistedCodexAppServerSettings } from "./codexAppServer/persistedSettings.js";
 import { createRuntimeThreadBindingStore } from "./codexAppServer/threadBindingStore.js";
 import { migrateLegacyKeyringToSafeStorage } from "./credentialMigration.js";
 import {
   broadcastBackendEvent,
   broadcastMainEvent,
   registerEventBus,
+  sendBackendEventToWindow,
 } from "./events.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerImeShutdown } from "./imeShutdown.js";
@@ -163,33 +166,37 @@ if (!gotSingleInstanceLock) {
     // workspace path / thread binding / read-only policyはmain側で確定する。
     const codexApp = createCodexAppServerManager({
       broadcast: broadcastBackendEvent,
+      sendToOwner: sendBackendEventToWindow,
       getWorkspacePath: backend?.getActiveWorkspacePath
         ? () => backend.getActiveWorkspacePath!()
         : undefined,
       threadBindings: createRuntimeThreadBindingStore(backend),
       appVersion: app.getVersion(),
-      getAllowApprovals: async () => {
-        if (!backend) return false;
-        try {
-          const raw = JSON.parse(await backend.getAiSettings()) as unknown;
-          if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-            return false;
-          }
-          const settings = raw as Record<string, unknown>;
-          const cli = settings.cli;
-          return (
-            settings.provider === "cli" &&
-            typeof cli === "object" &&
-            cli !== null &&
-            !Array.isArray(cli) &&
-            (cli as Record<string, unknown>).kind === "codex" &&
-            (cli as Record<string, unknown>).codexAllowApprovals === true
-          );
-        } catch {
-          return false;
-        }
+      codexHomeDir: path.join(configuredUserDataDir, "codex-app-server"),
+      getConfiguredExecutable: async () =>
+        (await readPersistedCodexAppServerSettings(backend)).binaryPath,
+      authorizeExecutable: async ({ executable, sha256 }) => {
+        const { response } = await dialog.showMessageBox({
+          type: "warning",
+          title: "Codex App Server実行の確認",
+          message: "Codex App Serverを実行しますか？",
+          detail: [
+            "Grimodexが次のcanonical実行ファイルを常駐起動します。",
+            "自分でインストールした信頼できるCodex CLIであることを確認してください。",
+            "",
+            executable,
+            `SHA-256: ${sha256 ?? "取得できませんでした"}`,
+          ].join("\n"),
+          buttons: ["許可", "キャンセル"],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        });
+        return response === 0;
       },
-      getReadOnlyMcpServer: async (projectId) => {
+      getAllowApprovals: async () =>
+        (await readPersistedCodexAppServerSettings(backend)).allowApprovals,
+      getReadOnlyMcpServer: async (projectId, expectedWorkspacePath) => {
         const info = await mcpConfigHandlers.get_mcp_config({});
         if (typeof info !== "object" || info === null || Array.isArray(info)) {
           throw new Error("MCP config response is invalid");
@@ -206,6 +213,9 @@ if (!gotSingleInstanceLock) {
         ) {
           throw new Error("MCP config contains non-absolute paths");
         }
+        if (realpathSync.native(workspace) !== expectedWorkspacePath) {
+          throw new Error("MCP config does not match the active workspace");
+        }
         const prefix = Array.isArray(argsPrefix)
           ? argsPrefix.filter(
               (value): value is string => typeof value === "string",
@@ -216,7 +226,7 @@ if (!gotSingleInstanceLock) {
           args: [
             ...prefix,
             "--workspace",
-            workspace,
+            expectedWorkspacePath,
             "--project",
             projectId,
             "--readonly",
@@ -274,16 +284,32 @@ if (!gotSingleInstanceLock) {
     });
     // API キー保管（バッチ3a）: safeStorage 暗号化 + ai-keys.json。has/save/delete は
     // shell ハンドラ、チャット送信のキー解決は dispatchInvoke へ secrets として注入。
+    const sharedShellHandlers = {
+      ...externalMount.handlers,
+      ...buildKeyStoreShellHandlers(keyStore),
+      ...cliAi.handlers,
+      ...vivliostyle.handlers,
+      ...updater.handlers,
+      ...mcpConfigHandlers,
+    };
+    const codexOwnerLifecycleBound = new Set<number>();
     registerIpcRouter(
       backend,
-      {
-        ...externalMount.handlers,
-        ...buildKeyStoreShellHandlers(keyStore),
-        ...cliAi.handlers,
-        ...codexApp.handlers,
-        ...vivliostyle.handlers,
-        ...updater.handlers,
-        ...mcpConfigHandlers,
+      (win) => {
+        if (win && !codexOwnerLifecycleBound.has(win.webContents.id)) {
+          const ownerId = win.webContents.id;
+          codexOwnerLifecycleBound.add(ownerId);
+          const releaseOwner = (): void => {
+            if (!codexOwnerLifecycleBound.delete(ownerId)) return;
+            void codexApp.handleOwnerDestroyed(ownerId);
+          };
+          win.webContents.once("render-process-gone", releaseOwner);
+          win.webContents.once("destroyed", releaseOwner);
+        }
+        return {
+          ...sharedShellHandlers,
+          ...(win ? codexApp.handlersForOwner(win.webContents.id) : {}),
+        };
       },
       keyStore,
       broadcastBackendEvent,
@@ -292,7 +318,11 @@ if (!gotSingleInstanceLock) {
     // 登録時に flush される backend:ready は窓生成前のため renderer には
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
     // workspace:opened が担う）。
-    registerEventBus(backend);
+    registerEventBus(backend, (channel) => {
+      if (channel === "workspace:opened") {
+        void codexApp.handleWorkspaceChanged();
+      }
+    });
     performance.mark("grimodex:electron-create-main-window");
     const mainWindow = createMainWindow();
     mainWindow.webContents.once("did-finish-load", () => {

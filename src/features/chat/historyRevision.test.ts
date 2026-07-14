@@ -27,13 +27,55 @@ describe("historyRevision", () => {
     expect(first).toMatch(/^(?:[0-9a-f]{64}|fnv1a-[0-9a-f]{8})$/);
   });
 
-  it("omits system messages from the imported bootstrap", () => {
+  it("ignores storage-only fields when computing the revision", async () => {
+    const first = await computeChatHistoryRevision([
+      message({
+        id: "m1",
+        model: "model-a",
+        metadata: "first",
+      }),
+    ]);
+    const sameConversation = await computeChatHistoryRevision([
+      message({
+        id: "different-id",
+        model: "model-b",
+        metadata: "second",
+      }),
+    ]);
+
+    expect(first).toBe(sameConversation);
+  });
+
+  it("uses the same persisted messages for the revision and bootstrap", async () => {
+    const activeMessages = [
+      message({ role: "user", content: "質問" }),
+      message({ id: "m2", role: "assistant", content: "回答" }),
+    ];
+    const messagesWithExcludedHistory = [
+      message({ role: "system", content: "linked session: previous-session" }),
+      message({ id: "old", content: "summarized", isSummarized: 1 }),
+      message({ id: "blank", content: "   " }),
+      ...activeMessages,
+    ];
+
+    expect(buildCodexBootstrapHistory(messagesWithExcludedHistory)).toBe(
+      "[system]\nlinked session: previous-session\n\n[user]\n質問\n\n[assistant]\n回答",
+    );
     expect(
-      buildCodexBootstrapHistory([
-        message({ role: "system", content: "volatile prompt" }),
-        message({ role: "user", content: "質問" }),
-        message({ id: "m2", role: "assistant", content: "回答" }),
-      ]),
-    ).toBe("[user]\n質問\n\n[assistant]\n回答");
+      await computeChatHistoryRevision(messagesWithExcludedHistory),
+    ).not.toBe(await computeChatHistoryRevision(activeMessages));
+  });
+
+  it("strips pseudo-tool blocks from imported assistant history", async () => {
+    const raw = message({
+      role: "assistant",
+      content: '回答\n<tool_call>{"name":"fake"}</tool_call>',
+    });
+    const sanitized = message({ role: "assistant", content: "回答" });
+
+    expect(buildCodexBootstrapHistory([raw])).toBe("[assistant]\n回答");
+    expect(await computeChatHistoryRevision([raw])).toBe(
+      await computeChatHistoryRevision([sanitized]),
+    );
   });
 });

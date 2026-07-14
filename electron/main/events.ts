@@ -39,6 +39,34 @@ export function broadcastBackendEvent(channel: string, payload: unknown): void {
   broadcastEvent(channel, payload);
 }
 
+/**
+ * backend / trusted manager event を特定 renderer のみに配信する。
+ * Approval のような authority-bearing event は全窓 broadcast しない。
+ */
+export function sendBackendEventToWindow(
+  webContentsId: number,
+  channel: string,
+  payload: unknown,
+): void {
+  if (!isAllowedBackendEventChannel(channel)) {
+    console.warn(
+      `[backend:event] rejected non-backend channel: ${String(channel)}`,
+    );
+    return;
+  }
+  const target = BrowserWindow.getAllWindows().find(
+    (win) => !win.isDestroyed() && win.webContents.id === webContentsId,
+  );
+  if (!target) return;
+  try {
+    target.webContents.send(IPC.event, channel, payload);
+  } catch (cause) {
+    console.warn(
+      `[backend:event] target ${webContentsId} became unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+}
+
 /** Electron main 専用イベントを検証して配信する。 */
 export function broadcastMainEvent(channel: string, payload: unknown): void {
   if (!isAllowedMainEventChannel(channel)) {
@@ -55,7 +83,11 @@ export function broadcastMainEvent(channel: string, payload: unknown): void {
  * （serde_json::Value の to_string）どおり JSON 文字列で届くので parse して
  * Tauri の event.payload と同形にする。
  */
-function handleBackendEvent(channel: unknown, payloadJson: unknown): void {
+function handleBackendEvent(
+  channel: unknown,
+  payloadJson: unknown,
+  observer?: (channel: string, payload: unknown) => void,
+): void {
   if (typeof channel !== "string" || !isAllowedBackendEventChannel(channel)) {
     console.warn(
       `[backend:event] dropped non-allowlisted channel: ${String(channel)}`,
@@ -72,6 +104,13 @@ function handleBackendEvent(channel: unknown, payloadJson: unknown): void {
       console.warn(`[backend:event] non-JSON payload on ${channel}`);
     }
   }
+  try {
+    observer?.(channel, payload);
+  } catch (cause) {
+    console.warn(
+      `[backend:event] observer failed on ${channel}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
   broadcastEvent(channel, payload);
 }
 
@@ -81,7 +120,10 @@ function handleBackendEvent(channel: unknown, payloadJson: unknown): void {
  * onEvent 登録時、登録前に emit されたイベント（`backend:ready`）が
  * emit 順で flush される（grimodex-node EventQueue の契約）。
  */
-export function registerEventBus(backend: NapiBackendLike | null): void {
+export function registerEventBus(
+  backend: NapiBackendLike | null,
+  observer?: (channel: string, payload: unknown) => void,
+): void {
   ipcMain.on(IPC.emit, (_event, channel: unknown, payload: unknown) => {
     if (
       typeof channel !== "string" ||
@@ -96,6 +138,6 @@ export function registerEventBus(backend: NapiBackendLike | null): void {
   });
 
   backend?.onEvent((channel: unknown, payloadJson: unknown) => {
-    handleBackendEvent(channel, payloadJson);
+    handleBackendEvent(channel, payloadJson, observer);
   });
 }

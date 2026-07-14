@@ -48,6 +48,7 @@ const {
   broadcastEvent,
   broadcastMainEvent,
   registerEventBus,
+  sendBackendEventToWindow,
 } = await import("./events.js");
 
 function makeBackend(): NapiBackendLike & {
@@ -215,6 +216,25 @@ describe("registerEventBus: napi TSFn 配線", () => {
     }
   });
 
+  it("workspace observer を broadcast より先に通知する", () => {
+    const backend = makeBackend();
+    const order: string[] = [];
+    const observer = vi.fn(() => order.push("observer"));
+    registerEventBus(backend, observer);
+    const win = makeWindow(1);
+    win.webContents.send.mockImplementation(() => {
+      order.push("broadcast");
+    });
+    allWindows.push(win);
+
+    backend.capturedCallback?.("workspace:opened", '{"path":"/tmp/ws"}');
+
+    expect(observer).toHaveBeenCalledWith("workspace:opened", {
+      path: "/tmp/ws",
+    });
+    expect(order).toEqual(["observer", "broadcast"]);
+  });
+
   it("napi 発でも allowlist 外チャネルは warn して破棄する（Phase 3 の更新漏れ検出）", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const backend = makeBackend();
@@ -291,5 +311,44 @@ describe("trusted event broadcast", () => {
       "updater:download-progress",
       { downloaded: 1 },
     );
+  });
+
+  it("authority-bearing backend event は指定した窓だけへ配信する", () => {
+    const owner = makeWindow(11);
+    const other = makeWindow(12);
+    allWindows.push(owner, other);
+
+    sendBackendEventToWindow(11, "codex-app:event", { requestId: 7 });
+
+    expect(owner.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "codex-app:event",
+      { requestId: 7 },
+    );
+    expect(other.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("対象窓が破棄済みなら authority-bearing event を配信しない", () => {
+    const owner = makeWindow(11);
+    owner.destroyed = true;
+    allWindows.push(owner);
+
+    sendBackendEventToWindow(11, "codex-app:event", { requestId: 7 });
+
+    expect(owner.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("targeted send と renderer destruction の競合を main へ伝播させない", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const owner = makeWindow(11);
+    owner.webContents.send.mockImplementation(() => {
+      throw new Error("renderer gone");
+    });
+    allWindows.push(owner);
+
+    expect(() =>
+      sendBackendEventToWindow(11, "codex-app:event", { requestId: 7 }),
+    ).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("renderer gone"));
   });
 });

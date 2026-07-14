@@ -611,6 +611,7 @@ describe("dispatchInvoke", () => {
         "list_cli_models",
         "send_cli_chat_stream",
         "abort_cli_chat_stream",
+        "codex_app_update_history_revision",
         "vivliostyle_detect",
         "vivliostyle_build",
         "vivliostyle_abort_build",

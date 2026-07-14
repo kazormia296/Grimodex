@@ -7,6 +7,10 @@
 
 export type JsonRpcId = string | number;
 
+/** A renderer request was captured for a workspace that is no longer active. */
+export const CODEX_APP_SERVER_WORKSPACE_STALE_CODE =
+  "CODEX_APP_SERVER_WORKSPACE_STALE";
+
 export interface JsonRpcErrorShape {
   code: number;
   message: string;
@@ -14,26 +18,27 @@ export interface JsonRpcErrorShape {
 }
 
 export interface JsonRpcRequest {
-  jsonrpc: "2.0";
+  /** Codex omits this header; explicit JSON-RPC peers may still include it. */
+  jsonrpc?: "2.0";
   id: JsonRpcId;
   method: string;
   params?: unknown;
 }
 
 export interface JsonRpcNotification {
-  jsonrpc: "2.0";
+  jsonrpc?: "2.0";
   method: string;
   params?: unknown;
 }
 
 export interface JsonRpcSuccessResponse {
-  jsonrpc: "2.0";
+  jsonrpc?: "2.0";
   id: JsonRpcId;
   result: unknown;
 }
 
 export interface JsonRpcErrorResponse {
-  jsonrpc: "2.0";
+  jsonrpc?: "2.0";
   id: JsonRpcId;
   error: JsonRpcErrorShape;
 }
@@ -80,6 +85,8 @@ export interface CodexRuntimeThreadBinding {
 export interface StartCodexAppTurnPayload {
   projectId: string;
   sessionId: string;
+  /** Renderer-captured workspace identity used only as a main-side equality precondition. */
+  expectedWorkspacePath: string;
   grimodexTurnId: string;
   clientUserMessageId: string;
   model?: string;
@@ -90,10 +97,45 @@ export interface StartCodexAppTurnPayload {
   userMessage: string;
 }
 
+/**
+ * Main-to-renderer result for starting a turn.
+ *
+ * `rejected-before-turn` is intentionally a resolved result instead of a
+ * generic IPC rejection. Main emits it only when it can prove that no
+ * `turn/start` request was accepted, which makes an `auto` transport fallback
+ * safe from duplicate execution.
+ */
+export type StartCodexAppTurnResult =
+  | {
+      status: "started";
+      codexThreadId: string;
+      codexTurnId: string;
+      reusedThread: boolean;
+    }
+  | {
+      status: "rejected-before-turn";
+      code: string;
+      message: string;
+    };
+
 export interface InterruptCodexAppTurnPayload {
   projectId: string;
   sessionId: string;
   grimodexTurnId: string;
+}
+
+export interface AdvanceCodexHistoryRevisionPayload {
+  projectId: string;
+  sessionId: string;
+  grimodexTurnId: string;
+  codexThreadId: string;
+  codexTurnId: string;
+  expectedHistoryRevision: string;
+  nextHistoryRevision: string;
+}
+
+export interface AdvanceCodexHistoryRevisionResult {
+  status: "advanced" | "already-advanced";
 }
 
 export interface RespondCodexServerRequestPayload {
@@ -107,7 +149,16 @@ export interface RespondCodexServerRequestPayload {
 export interface SetCodexThreadNamePayload {
   projectId: string;
   sessionId: string;
+  /** Renderer-captured workspace identity used only as a main-side equality precondition. */
+  expectedWorkspacePath: string;
   name: string;
+}
+
+export interface ArchiveCodexSessionThreadPayload {
+  projectId: string;
+  sessionId: string;
+  /** Renderer-captured workspace identity used only as a main-side equality precondition. */
+  expectedWorkspacePath: string;
 }
 
 export type CodexAppEvent =
@@ -217,7 +268,8 @@ function isJsonRpcId(value: unknown): value is JsonRpcId {
 
 /** Minimum JSON-RPC validation. Method params remain version-tolerant unknown. */
 export function isJsonRpcMessage(value: unknown): value is JsonRpcMessage {
-  if (!isRecord(value) || value.jsonrpc !== "2.0") return false;
+  if (!isRecord(value)) return false;
+  if (Object.hasOwn(value, "jsonrpc") && value.jsonrpc !== "2.0") return false;
   const hasId = Object.hasOwn(value, "id");
   if (hasId && !isJsonRpcId(value.id)) return false;
 

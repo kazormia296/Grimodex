@@ -4,14 +4,39 @@ import type {
 } from "../../shared/codexAppProtocol.js";
 import type { NapiBackendLike } from "../../shared/ipcContract.js";
 
+export interface AdvanceHistoryRevisionRequest {
+  expectedWorkspacePath: string;
+  projectId: string;
+  sessionId: string;
+  runtime: string;
+  externalThreadId: string;
+  lastTurnId: string;
+  /** Main-owned durable sentinel written before turn/start. */
+  pendingHistoryRevision: string;
+  nextHistoryRevision: string;
+  updatedAt: string;
+}
+
 export interface RuntimeThreadBindingStore {
   get(
     projectId: string,
     sessionId: string,
     runtime: string,
+    expectedWorkspacePath: string,
   ): Promise<CodexRuntimeThreadBinding | null>;
-  upsert(binding: CodexRuntimeThreadBinding): Promise<void>;
-  delete(projectId: string, sessionId: string, runtime: string): Promise<void>;
+  upsert(
+    binding: CodexRuntimeThreadBinding,
+    expectedWorkspacePath: string,
+  ): Promise<void>;
+  advanceHistoryRevision(
+    request: AdvanceHistoryRevisionRequest,
+  ): Promise<boolean>;
+  delete(
+    projectId: string,
+    sessionId: string,
+    runtime: string,
+    expectedWorkspacePath: string,
+  ): Promise<void>;
 }
 
 function parseBinding(value: unknown): CodexRuntimeThreadBinding | null {
@@ -55,7 +80,7 @@ export function createRuntimeThreadBindingStore(
   backend: NapiBackendLike | null,
 ): RuntimeThreadBindingStore {
   return {
-    async get(projectId, sessionId, runtime) {
+    async get(projectId, sessionId, runtime, expectedWorkspacePath) {
       if (!backend?.getChatRuntimeThreadBinding) throw unavailable();
       return parseBinding(
         JSON.parse(
@@ -63,20 +88,45 @@ export function createRuntimeThreadBindingStore(
             projectId,
             sessionId,
             runtime,
+            expectedWorkspacePath,
           ),
         ) as unknown,
       );
     },
-    async upsert(binding) {
+    async upsert(binding, expectedWorkspacePath) {
       if (!backend?.upsertChatRuntimeThreadBinding) throw unavailable();
-      await backend.upsertChatRuntimeThreadBinding(binding);
+      await backend.upsertChatRuntimeThreadBinding(
+        binding,
+        expectedWorkspacePath,
+      );
     },
-    async delete(projectId, sessionId, runtime) {
+    async advanceHistoryRevision(request) {
+      if (!backend?.advanceChatRuntimeThreadHistoryRevision) {
+        throw unavailable();
+      }
+      const advanced = await backend.advanceChatRuntimeThreadHistoryRevision(
+        request.expectedWorkspacePath,
+        request.projectId,
+        request.sessionId,
+        request.runtime,
+        request.externalThreadId,
+        request.lastTurnId,
+        request.pendingHistoryRevision,
+        request.nextHistoryRevision,
+        request.updatedAt,
+      );
+      if (typeof advanced !== "boolean") {
+        throw new Error("Invalid runtime thread history revision response");
+      }
+      return advanced;
+    },
+    async delete(projectId, sessionId, runtime, expectedWorkspacePath) {
       if (!backend?.deleteChatRuntimeThreadBinding) throw unavailable();
       await backend.deleteChatRuntimeThreadBinding(
         projectId,
         sessionId,
         runtime,
+        expectedWorkspacePath,
       );
     },
   };

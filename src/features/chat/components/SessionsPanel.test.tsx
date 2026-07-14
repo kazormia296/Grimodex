@@ -65,6 +65,22 @@ describe("SessionsPanel — snippet スコープのセッションキー伝播",
     );
   }
 
+  it("disables create, rename, and delete while session mutations are blocked", () => {
+    render(
+      <SessionsPanel
+        sceneTitle=""
+        activeSceneId=""
+        onClose={vi.fn()}
+        mutationsDisabled
+      />,
+    );
+
+    expect(screen.getByText("New session")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "chat.sessionMenu" }));
+    expect(screen.getByText("chat.sessionRename")).toBeDisabled();
+    expect(screen.getByText("common.delete")).toBeDisabled();
+  });
+
   it("初回ロードが snippetAnchorId でフィルタする", () => {
     renderPanel();
     expect(mockLoadSessions).toHaveBeenCalledWith(
