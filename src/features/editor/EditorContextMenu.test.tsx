@@ -120,10 +120,12 @@ function setSemanticLinkPickerOpen(open: boolean) {
 
 function isSemanticLinkPickerOpen(): boolean {
   return (
-    useCursorSettingsStore.getState() as unknown as {
-      semanticLinkPickerOpen?: boolean;
-    }
-  ).semanticLinkPickerOpen === true;
+    (
+      useCursorSettingsStore.getState() as unknown as {
+        semanticLinkPickerOpen?: boolean;
+      }
+    ).semanticLinkPickerOpen === true
+  );
 }
 
 function Wrapper({
@@ -135,9 +137,7 @@ function Wrapper({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const semanticLinkProps =
-    canEditCodexSemanticLink === undefined
-      ? {}
-      : { canEditCodexSemanticLink };
+    canEditCodexSemanticLink === undefined ? {} : { canEditCodexSemanticLink };
   return (
     <div ref={ref} data-testid="container">
       <EditorContextMenu
@@ -224,12 +224,10 @@ describe("EditorContextMenu - Codexに追加", () => {
     expect(isSemanticLinkPickerOpen()).toBe(true);
   });
 
-  it.each(
-    [
-      ["omitted", undefined],
-      ["false", false],
-    ] as const,
-  )(
+  it.each([
+    ["omitted", undefined],
+    ["false", false],
+  ] as const)(
     "semantic-link action is hidden when the capability is %s",
     async (_label, canEditCodexSemanticLink) => {
       const editor = makeEditor("選択範囲");

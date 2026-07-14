@@ -92,7 +92,9 @@ describe("CodexSemanticLinkPopover", () => {
     const editor = makeEditor();
     try {
       render(<CodexSemanticLinkPopover editor={editor} />);
-      await userEvent.click(screen.getByTestId("semantic-link-entry-entry-elara"));
+      await userEvent.click(
+        screen.getByTestId("semantic-link-entry-entry-elara"),
+      );
 
       expect(editor.getJSON().content?.[0]?.content?.[0]).toMatchObject({
         text: "銀の魔女",
@@ -103,9 +105,9 @@ describe("CodexSemanticLinkPopover", () => {
           },
         ],
       });
-      expect(
-        useCursorSettingsStore.getState().semanticLinkPickerOpen,
-      ).toBe(false);
+      expect(useCursorSettingsStore.getState().semanticLinkPickerOpen).toBe(
+        false,
+      );
     } finally {
       editor.destroy();
     }

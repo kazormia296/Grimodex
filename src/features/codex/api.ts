@@ -5,6 +5,7 @@ import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { CodexVersionConflictError } from "./occ";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { markImpactBaselinePhasesRestricted } from "./impactBaselineVisibility";
 
 const IME_EXPORT_FIELDS = new Set([
   "type",
@@ -246,29 +247,44 @@ export async function createCodexEntry(
   return rows[0];
 }
 
+type CodexEntryUpdateData = Partial<
+  Pick<
+    NewCodexEntry,
+    | "type"
+    | "name"
+    | "summary"
+    | "content"
+    | "tagsCache"
+    | "aliases"
+    | "excludedAliases"
+    | "readings"
+    | "parentId"
+    | "contextMode"
+    | "icon"
+    | "childrenBudget"
+    | "notes"
+  >
+>;
+
+interface CodexEntryUpdateOptions {
+  baseVersion?: number;
+}
+
 export async function updateCodexEntry(
   projectId: string,
   id: string,
-  data: Partial<
-    Pick<
-      NewCodexEntry,
-      | "type"
-      | "name"
-      | "summary"
-      | "content"
-      | "tagsCache"
-      | "aliases"
-      | "excludedAliases"
-      | "readings"
-      | "parentId"
-      | "contextMode"
-      | "icon"
-      | "childrenBudget"
-      | "notes"
-    >
-  >,
-  opts?: { baseVersion?: number },
+  data: CodexEntryUpdateData,
+  opts?: CodexEntryUpdateOptions,
 ): Promise<CodexEntry | undefined> {
+  if (
+    Object.prototype.hasOwnProperty.call(data, "contextMode") &&
+    data.contextMode !== "always" &&
+    data.contextMode !== "mentioned"
+  ) {
+    // Base visibility is inherited by phases. Record the fail-closed marker
+    // before a hidden/suppressed/unknown mode can become observable.
+    await markImpactBaselinePhasesRestricted(id);
+  }
   // OCC: baseVersion 指定時のみ条件付き UPDATE (version 照合 + インクリメント)。
   // 省略時は従来通りの blind UPDATE で完全後方互換 (version 列は触らない)。
   const useOcc = opts?.baseVersion !== undefined;

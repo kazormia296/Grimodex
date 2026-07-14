@@ -6,7 +6,7 @@
 //!     → tokio::spawn で run_consistency_task / run_intra_task を実行
 //!     → post_effect:progress / :partial / :done / :error イベントを emit
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use uuid::Uuid;
 
 use grimodex_ai::{AiProvider, AiSettings};
-use grimodex_db::{AppError, Database};
+use grimodex_db::{read_sqlite_source_revision, AppError, Database};
 
 /// PostEffect runner がシェルへ要求する最小機能。
 ///
@@ -161,7 +161,7 @@ impl PostEffectAbortRegistry {
 // 両側を同期して bump し、cache key が新しい input_hash と再計算される。
 // ---------------------------------------------------------------------------
 
-const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.3";
+const CONSISTENCY_PROMPT_VERSION: &str = "consistency_v1.4";
 const INTRA_PROMPT_VERSION: &str = "intra_scene_consistency_v1.2";
 // impact_review (影響度レビュー): 変更された Codex 設定 (old→new) に対し本文中の
 // 矛盾箇所を指摘する。FE 側 (consistencyPayloadBuilder.ts) と必ず同値であること。
@@ -236,6 +236,22 @@ pub struct ScenePayload {
 }
 
 #[derive(Clone, Deserialize)]
+enum SqliteSourceRevisionKind {
+    #[serde(rename = "sqlite_revision_v1")]
+    SqliteRevisionV1,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SqliteSourceRevisionGuard {
+    #[serde(rename = "kind")]
+    _kind: SqliteSourceRevisionKind,
+    expected_connection_epoch: String,
+    expected_total_changes: String,
+    expected_data_version: String,
+}
+
+#[derive(Clone, Deserialize)]
 pub struct StartPostEffectRunMultiArgs {
     project_id: String,
     effect_type: String,
@@ -257,6 +273,10 @@ pub struct StartPostEffectRunMultiArgs {
     endpoint_id_override: Option<String>,
     prompt_version: String,
     input_hash: String,
+    /// Snapshot guard. Required for Impact Review and rejected for every other
+    /// multi-run effect.
+    #[serde(default)]
+    source_guard: Option<SqliteSourceRevisionGuard>,
     scenes: Vec<ScenePayload>,
     /// System prompt 本文。FE catalog (src/prompts/ja/postEffect.ts) から渡される。
     system_prompt: String,
@@ -5186,11 +5206,122 @@ fn finish_partial<R: PostEffectRuntime>(
 }
 
 /// キャッシュ照合と running 行 INSERT の結果。
+#[derive(Debug)]
 enum EnsureRunOutcome {
     /// 同一 input_hash の completed run が存在し再利用する（既存 run_id）
     Cached(String),
     /// 新規に running 行を INSERT した（新規 run_id）
     Created(String),
+}
+
+const IMPACT_SOURCE_CHANGED_MARKER: &str = "IMPACT_SOURCE_CHANGED";
+
+fn parse_canonical_u64(field: &str, value: &str) -> anyhow::Result<u64> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        anyhow::bail!("{field} must be a canonical u64 decimal string");
+    }
+    value
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("{field} must fit in u64"))
+}
+
+/// Guarded Impact Review acceptance. BEGIN IMMEDIATE prevents an external
+/// writer from committing after the revision check, while Database::with_conn
+/// keeps same-connection writers out until cache lookup / run creation has
+/// reached its linearization point.
+#[allow(clippy::too_many_arguments)]
+fn ensure_guarded_post_effect_run(
+    runtime: &impl PostEffectRuntime,
+    project_id: &str,
+    effect_type: &str,
+    scope_type: &str,
+    scope_target_id: Option<&str>,
+    model: &str,
+    prompt_version: &str,
+    input_hash: &str,
+    guard: &SqliteSourceRevisionGuard,
+) -> Result<EnsureRunOutcome, AppError> {
+    let expected_connection_epoch = Uuid::parse_str(&guard.expected_connection_epoch)
+        .map_err(|_| anyhow::anyhow!("source_guard.expected_connection_epoch must be a UUID"))?;
+    if expected_connection_epoch.to_string() != guard.expected_connection_epoch {
+        return Err(anyhow::anyhow!(
+            "source_guard.expected_connection_epoch must be a canonical UUID"
+        )
+        .into());
+    }
+    let expected_total_changes = parse_canonical_u64(
+        "source_guard.expected_total_changes",
+        &guard.expected_total_changes,
+    )?;
+    let expected_data_version = parse_canonical_u64(
+        "source_guard.expected_data_version",
+        &guard.expected_data_version,
+    )?;
+
+    runtime.with_db(|db| {
+        db.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            let current = read_sqlite_source_revision(&tx)?;
+            if current.connection_epoch != guard.expected_connection_epoch
+                || current.total_changes != expected_total_changes
+                || current.data_version != expected_data_version
+            {
+                anyhow::bail!(
+                    "{IMPACT_SOURCE_CHANGED_MARKER}: workspace source revision changed before dispatch"
+                );
+            }
+
+            let cached_run_id: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM post_effect_runs
+                      WHERE project_id = ?
+                        AND effect_type = ?
+                        AND scope_type = ?
+                        AND COALESCE(scope_target_id, '') = COALESCE(?, '')
+                        AND input_hash = ?
+                        AND status = 'completed'
+                      ORDER BY started_at DESC
+                      LIMIT 1",
+                    params![
+                        project_id,
+                        effect_type,
+                        scope_type,
+                        scope_target_id,
+                        input_hash,
+                    ],
+                    |row: &rusqlite::Row<'_>| row.get::<_, String>(0),
+                )
+                .optional()?;
+
+            if let Some(existing_id) = cached_run_id {
+                tx.commit()?;
+                return Ok(EnsureRunOutcome::Cached(existing_id));
+            }
+
+            let run_id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO post_effect_runs
+                    (id, project_id, effect_type, scope_type, scope_target_id,
+                     model, prompt_version, input_hash, status, started_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', datetime('now'))",
+                params![
+                    run_id,
+                    project_id,
+                    effect_type,
+                    scope_type,
+                    scope_target_id,
+                    model,
+                    prompt_version,
+                    input_hash,
+                ],
+            )?;
+            tx.commit()?;
+            Ok(EnsureRunOutcome::Created(run_id))
+        })
+    })
 }
 
 /// start_post_effect_run / start_post_effect_run_multi が共有する
@@ -5207,9 +5338,24 @@ fn ensure_post_effect_run(
     model: &str,
     prompt_version: &str,
     input_hash: &str,
+    source_guard: Option<&SqliteSourceRevisionGuard>,
 ) -> Result<EnsureRunOutcome, AppError> {
     if let Some(target_id) = scope_target_id {
         ensure_tree_node_belongs_to_project(runtime, project_id, target_id, "scope_target_id")?;
+    }
+
+    if let Some(guard) = source_guard {
+        return ensure_guarded_post_effect_run(
+            runtime,
+            project_id,
+            effect_type,
+            scope_type,
+            scope_target_id,
+            model,
+            prompt_version,
+            input_hash,
+            guard,
+        );
     }
 
     let cached_run_id: Option<String> = runtime.with_db(|db| {
@@ -5339,6 +5485,12 @@ where
     // 単発 run は abort を見ないため中止レジストリには一切触れない。
 
     let effect_type = args.effect_type.as_str();
+    if effect_type == "impact_review" {
+        return Err(anyhow::anyhow!(
+            "impact_review requires start_post_effect_run_multi with source_guard"
+        )
+        .into());
+    }
     let supported = matches!(
         effect_type,
         "consistency"
@@ -5348,7 +5500,6 @@ where
             | "review"
             | "pseudo_comment"
             | "meta_structure"
-            | "impact_review"
     );
     if !supported {
         return Err(
@@ -5363,7 +5514,6 @@ where
         "intent_drift" => INTENT_DRIFT_PROMPT_VERSION,
         "pseudo_comment" => PSEUDO_COMMENT_PROMPT_VERSION,
         "meta_structure" => META_STRUCTURE_PROMPT_VERSION,
-        "impact_review" => IMPACT_REVIEW_PROMPT_VERSION,
         _ => INTRA_PROMPT_VERSION,
     };
     if args.prompt_version != prompt_version {
@@ -5388,6 +5538,7 @@ where
         &args.model,
         &args.prompt_version,
         &args.input_hash,
+        None,
     )? {
         EnsureRunOutcome::Cached(existing_id) => {
             return Ok(StartPostEffectRunResult {
@@ -5588,6 +5739,19 @@ where
     if !supported {
         return Err(anyhow::anyhow!("effect_type '{}' は未実装です", effect_type).into());
     }
+    if effect_type == "impact_review" && args.source_guard.is_none() {
+        return Err(anyhow::anyhow!("source_guard is required for impact_review").into());
+    }
+    if effect_type != "impact_review" && args.source_guard.is_some() {
+        return Err(anyhow::anyhow!("source_guard is only supported for impact_review").into());
+    }
+    if effect_type == "impact_review" && args.prompt_version != IMPACT_REVIEW_PROMPT_VERSION {
+        tracing::warn!(
+            "prompt_version mismatch: got '{}', expected '{}'",
+            args.prompt_version,
+            IMPACT_REVIEW_PROMPT_VERSION
+        );
+    }
 
     let runtime = runtime.pin_database()?;
 
@@ -5605,6 +5769,7 @@ where
         &args.model,
         &args.prompt_version,
         &args.input_hash,
+        args.source_guard.as_ref(),
     )? {
         EnsureRunOutcome::Cached(existing_id) => {
             return Ok(StartPostEffectRunResult {
@@ -5951,6 +6116,7 @@ mod runtime_contract_tests {
             endpoint_id_override: None,
             prompt_version: "timeline_v1".to_string(),
             input_hash: "multi-hash".to_string(),
+            source_guard: None,
             scenes: vec![ScenePayload {
                 scene_id: scene_id.to_string(),
                 codex_payload_json: "[]".to_string(),
@@ -5984,6 +6150,38 @@ mod runtime_contract_tests {
                 })
             })
             .expect("insert run");
+    }
+
+    fn source_guard(db: &Database) -> SqliteSourceRevisionGuard {
+        let revision = db
+            .with_conn(read_sqlite_source_revision)
+            .expect("read source revision");
+        SqliteSourceRevisionGuard {
+            _kind: SqliteSourceRevisionKind::SqliteRevisionV1,
+            expected_connection_epoch: revision.connection_epoch,
+            expected_total_changes: revision.total_changes.to_string(),
+            expected_data_version: revision.data_version.to_string(),
+        }
+    }
+
+    fn insert_impact_cache(runtime: &FakeRuntime, input_hash: &str) {
+        runtime
+            .with_db(|db| {
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO post_effect_runs
+                            (id, project_id, effect_type, scope_type,
+                             model, prompt_version, input_hash, status,
+                             started_at, completed_at)
+                         VALUES ('impact-cache', ?, 'impact_review', 'project',
+                                 'audit-model', ?, ?, 'completed',
+                                 datetime('now'), datetime('now'))",
+                        params![PROJECT, IMPACT_REVIEW_PROMPT_VERSION, input_hash],
+                    )?;
+                    Ok(())
+                })
+            })
+            .expect("insert impact cache");
     }
 
     fn run_status(runtime: &FakeRuntime, id: &str) -> String {
@@ -6100,6 +6298,25 @@ mod runtime_contract_tests {
     }
 
     #[tokio::test]
+    async fn single_impact_run_is_rejected_without_the_guarded_multi_contract() {
+        let runtime = runtime();
+        let ai = FakeAi::default();
+        let mut args = single_args("scene-own", "impact-single");
+        args.effect_type = "impact_review".to_string();
+        args.prompt_version = IMPACT_REVIEW_PROMPT_VERSION.to_string();
+
+        let error = start_post_effect_run(runtime.clone(), ai.clone(), args)
+            .await
+            .expect_err("single impact path has no source guard");
+
+        assert!(error
+            .to_string()
+            .contains("requires start_post_effect_run_multi with source_guard"));
+        assert_eq!(run_count(&runtime), 0);
+        assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn multi_cross_project_scene_rejects_before_insert_or_ai() {
         let runtime = runtime();
         let ai = FakeAi::default();
@@ -6111,6 +6328,43 @@ mod runtime_contract_tests {
         assert_eq!(run_count(&runtime), 0);
         assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
         assert!(event_channels(&runtime).is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_guard_is_rejected_for_non_impact_multi_run() {
+        let runtime = runtime();
+        let ai = FakeAi::default();
+        let mut args = multi_args("scene-own");
+        args.source_guard = Some(source_guard(&runtime.db));
+
+        let error = start_post_effect_run_multi(runtime.clone(), ai.clone(), args)
+            .await
+            .expect_err("non-impact guard must fail");
+
+        assert!(error
+            .to_string()
+            .contains("only supported for impact_review"));
+        assert_eq!(run_count(&runtime), 0);
+        assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn source_guard_is_required_for_impact_multi_run() {
+        let runtime = runtime();
+        let ai = FakeAi::default();
+        let mut args = multi_args("scene-own");
+        args.effect_type = "impact_review".to_string();
+        args.prompt_version = IMPACT_REVIEW_PROMPT_VERSION.to_string();
+
+        let error = start_post_effect_run_multi(runtime.clone(), ai.clone(), args)
+            .await
+            .expect_err("impact run without a source guard must fail");
+
+        assert!(error
+            .to_string()
+            .contains("source_guard is required for impact_review"));
+        assert_eq!(run_count(&runtime), 0);
+        assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -6130,6 +6384,128 @@ mod runtime_contract_tests {
         assert_eq!(run_count(&runtime), 1);
         assert_eq!(ai.calls.load(Ordering::SeqCst), 0);
         assert!(event_channels(&runtime).is_empty());
+    }
+
+    #[test]
+    fn matching_source_guard_creates_run_at_atomic_acceptance_point() {
+        let runtime = runtime();
+        let guard = source_guard(&runtime.db);
+
+        let outcome = ensure_post_effect_run(
+            &runtime,
+            PROJECT,
+            "impact_review",
+            "project",
+            None,
+            "audit-model",
+            IMPACT_REVIEW_PROMPT_VERSION,
+            "guard-match",
+            Some(&guard),
+        )
+        .expect("matching source guard");
+
+        assert!(matches!(outcome, EnsureRunOutcome::Created(_)));
+        assert_eq!(run_count(&runtime), 1);
+    }
+
+    #[test]
+    fn stale_same_connection_guard_rejects_before_cache_lookup() {
+        let runtime = runtime();
+        insert_impact_cache(&runtime, "guard-cache");
+        let guard = source_guard(&runtime.db);
+        runtime
+            .with_db(|db| {
+                db.execute(
+                    "UPDATE projects SET title = 'changed' WHERE id = ?",
+                    &[Value::String(PROJECT.to_string())],
+                    "run",
+                )?;
+                Ok(())
+            })
+            .expect("mutate source connection");
+
+        let error = ensure_post_effect_run(
+            &runtime,
+            PROJECT,
+            "impact_review",
+            "project",
+            None,
+            "audit-model",
+            IMPACT_REVIEW_PROMPT_VERSION,
+            "guard-cache",
+            Some(&guard),
+        )
+        .expect_err("stale guard must beat cache hit");
+
+        assert!(error.to_string().contains(IMPACT_SOURCE_CHANGED_MARKER));
+        assert_eq!(run_count(&runtime), 1, "cached row only");
+    }
+
+    #[test]
+    fn stale_external_connection_guard_is_detected_by_data_version() {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-post-effect-source-guard-{}.db",
+            Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::new(&path).expect("file database"));
+        db.migrate().expect("migrate file database");
+        let runtime = FakeRuntime {
+            db: Arc::clone(&db),
+            events: Arc::new(Mutex::new(Vec::new())),
+            aborts: PostEffectAbortRegistry::new(),
+        };
+        let guard = source_guard(&db);
+        let external = rusqlite::Connection::open(&path).expect("external connection");
+        external
+            .execute(
+                "UPDATE projects SET title = 'external change' WHERE id = ?",
+                params![PROJECT],
+            )
+            .expect("external write");
+
+        let error = ensure_post_effect_run(
+            &runtime,
+            PROJECT,
+            "impact_review",
+            "project",
+            None,
+            "audit-model",
+            IMPACT_REVIEW_PROMPT_VERSION,
+            "guard-external",
+            Some(&guard),
+        )
+        .expect_err("external commit must invalidate data_version");
+
+        assert!(error.to_string().contains(IMPACT_SOURCE_CHANGED_MARKER));
+        drop(external);
+        drop(runtime);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn guard_from_replaced_database_is_rejected_by_connection_epoch() {
+        let runtime_a = runtime();
+        let runtime_b = runtime();
+        let guard = source_guard(&runtime_a.db);
+
+        let error = ensure_post_effect_run(
+            &runtime_b,
+            PROJECT,
+            "impact_review",
+            "project",
+            None,
+            "audit-model",
+            IMPACT_REVIEW_PROMPT_VERSION,
+            "guard-epoch",
+            Some(&guard),
+        )
+        .expect_err("another Database connection must have another epoch");
+
+        assert!(error.to_string().contains(IMPACT_SOURCE_CHANGED_MARKER));
+        assert_eq!(run_count(&runtime_b), 0);
     }
 
     #[tokio::test]

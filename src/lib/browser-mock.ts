@@ -298,6 +298,38 @@ const SCHEMA_DDL = `
     definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
     value TEXT
   );
+  CREATE TABLE IF NOT EXISTS codex_entry_phases (
+    id TEXT PRIMARY KEY,
+    entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+    anchor_node_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
+    label TEXT NOT NULL DEFAULT '',
+    summary_override TEXT,
+    content_override TEXT,
+    context_mode_override TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_codex_phases_entry
+    ON codex_entry_phases(entry_id);
+  CREATE INDEX IF NOT EXISTS idx_codex_phases_anchor
+    ON codex_entry_phases(anchor_node_id);
+  CREATE TABLE IF NOT EXISTS codex_phase_detail_overrides (
+    phase_id TEXT NOT NULL REFERENCES codex_entry_phases(id) ON DELETE CASCADE,
+    definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE,
+    value TEXT,
+    PRIMARY KEY (phase_id, definition_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_phase_detail_overrides_phase
+    ON codex_phase_detail_overrides(phase_id);
+  CREATE TABLE IF NOT EXISTS impact_review_baselines (
+    entry_id TEXT PRIMARY KEY REFERENCES codex_entries(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    snapshot_json TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_impact_baselines_project
+    ON impact_review_baselines(project_id);
   CREATE TABLE IF NOT EXISTS labels (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -653,6 +685,14 @@ export async function createBrowserMock(): Promise<BrowserMock> {
   const db: Database = new SQL.Database();
   db.run("PRAGMA foreign_keys = ON;");
   db.run(SCHEMA_DDL);
+  db.run(`CREATE TEMP TABLE grimodex_connection_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    epoch TEXT NOT NULL
+  )`);
+  db.run(
+    "INSERT INTO temp.grimodex_connection_meta (singleton, epoch) VALUES (1, ?)",
+    [crypto.randomUUID()],
+  );
 
   // Seed default project only — folder/scenes are no longer auto-created
   // so a fresh workspace stays empty (mirrors src-tauri/src/database.rs).

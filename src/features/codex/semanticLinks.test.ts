@@ -88,9 +88,7 @@ describe("extractCodexSemanticLinks", () => {
             {
               type: "text",
               text: "ignored",
-              marks: [
-                { type: "codexSemanticLink", attrs: { entryId: "  " } },
-              ],
+              marks: [{ type: "codexSemanticLink", attrs: { entryId: "  " } }],
             },
             {
               type: "text",

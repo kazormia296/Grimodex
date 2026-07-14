@@ -474,6 +474,11 @@ export function EditorPane({
   // useEditor onRender effect call editor.setOptions each render (schema/
   // plugin churn). setMentionPopupState/setMentionIndex are stable setters.
   const isFileBacked = isFileBackedNode(activeNode?.sourceUri);
+  const canEditCodexSemanticLink =
+    contentType === "scene" &&
+    activeNode?.nodeType === "scene" &&
+    !isFileBacked &&
+    !readOnly;
   const treeNodeType = activeNode?.nodeType === "note" ? "note" : "scene";
 
   const editorExtensions = useMemo(
@@ -1754,6 +1759,8 @@ export function EditorPane({
     handleTitleEditStart,
     isSceneContentLoading,
     sceneId: nodeId,
+    canEditCodexSemanticLink:
+      canEditCodexSemanticLink && editor?.isEditable === true,
     onInlineAiCommand: dbNativeEditor ? handleInlineAiCommand : undefined,
   };
 

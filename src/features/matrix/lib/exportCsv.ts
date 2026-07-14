@@ -23,7 +23,8 @@ function csvEscape(value: string): string {
  *
  * Columns: scene_id, scene_title, <codex name>...
  * Rows: scene rows only (folders skipped), section headers skipped.
- * Cell codes: B=body, R=relation, M=beat-mention (combined, e.g. "BRM").
+ * Cell codes: S=semantic link, B=body, R=relation, M=beat-mention
+ * (combined, e.g. "SBRM").
  * Empty cell → quoted empty string.
  */
 export function buildCsvString(
@@ -46,6 +47,7 @@ export function buildCsvString(
         const info = cellMap.get(`${r.node.id}::${col.entry!.id}`);
         if (!info) return '""';
         let code = "";
+        if (info.sources.has("semantic")) code += "S";
         if (info.sources.has("body")) code += "B";
         if (info.sources.has("relation")) code += "R";
         if (info.sources.has("beat")) code += "M";

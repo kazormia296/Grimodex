@@ -73,9 +73,7 @@ describe("buildCrossReferenceFromTexts", () => {
         id: "s1",
         title: "シーン1",
         content: "彼女は振り返った。",
-        semanticLinks: [
-          { entryId: "codex-2", label: "花子", text: "彼女" },
-        ],
+        semanticLinks: [{ entryId: "codex-2", label: "花子", text: "彼女" }],
       },
     ]);
 

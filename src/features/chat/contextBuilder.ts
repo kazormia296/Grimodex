@@ -28,12 +28,23 @@ import type {
   ChatContextPayload,
 } from "./context/types";
 
+export interface SceneSemanticLink {
+  /** Stable Codex entry identifier stored on the editor Mark. */
+  entryId: string;
+  /** Live Codex name resolved for this turn after visibility policy. */
+  entryName: string;
+  /** Author-selected scene text that carries the semantic Mark. */
+  text: string;
+}
+
 export interface SceneContext {
   id: string;
   title: string;
   content: string;
   /** Raw ProseMirror JSON string (DB value). Used to extract Placed beats for context injection. */
   contentJson?: string;
+  /** Author-declared span-to-Codex mappings eligible for this turn. */
+  semanticLinks?: SceneSemanticLink[];
   synopsis?: string;
   /** Author-declared goal for this scene (treeNodes.intent). Injected into L3 as steering
    * info right after synopsis. Chat only — graders (review/meta_structure) must NOT receive
@@ -689,16 +700,53 @@ export function trimL3Text(
   if (targetTokens <= 0) return "";
 
   const bodyHeaderMatch = text.match(markers.bodyHeaderRegex);
-  if (!bodyHeaderMatch) return text;
+  if (!bodyHeaderMatch) return "";
 
-  const sceneHeader = bodyHeaderMatch[1];
-  const sceneBody = text.slice(sceneHeader.length);
+  const originalSceneHeader = bodyHeaderMatch[1];
+  const sceneBody = text.slice(originalSceneHeader.length);
+  let sceneHeader = originalSceneHeader;
+
+  // Semantic mappings are rendered immediately before the body header for
+  // readability, but unlike scene identity metadata they must not become an
+  // unbounded, non-trimmable prefix. Drop mapping lines from the end until the
+  // fixed header fits; remove the heading too when no mapping remains.
+  const semanticMatch = markers.semanticLinksBlockRegex
+    ? sceneHeader.match(markers.semanticLinksBlockRegex)
+    : null;
+  if (
+    semanticMatch?.index !== undefined &&
+    countTokens(sceneHeader) > targetTokens
+  ) {
+    const block = semanticMatch[0];
+    const blockLines = block.split("\n");
+    const firstItemIndex = blockLines.findIndex((line) =>
+      line.startsWith("- "),
+    );
+    const headingLines =
+      firstItemIndex >= 0 ? blockLines.slice(0, firstItemIndex) : blockLines;
+    const itemLines =
+      firstItemIndex >= 0 ? blockLines.slice(firstItemIndex) : [];
+    const before = sceneHeader.slice(0, semanticMatch.index);
+    const after = sceneHeader.slice(semanticMatch.index + block.length);
+    let keepCount = itemLines.length;
+    while (keepCount > 0) {
+      const replacement = [
+        ...headingLines,
+        ...itemLines.slice(0, keepCount),
+      ].join("\n");
+      const candidate = before + replacement + after;
+      if (countTokens(candidate) <= targetTokens) {
+        sceneHeader = candidate;
+        break;
+      }
+      keepCount -= 1;
+    }
+    if (keepCount === 0) sceneHeader = before + after;
+  }
 
   const headerTokens = countTokens(sceneHeader);
-  if (headerTokens >= targetTokens) {
-    // Can't fit even the header; return just the header
-    return sceneHeader;
-  }
+  if (headerTokens > targetTokens) return "";
+  if (headerTokens === targetTokens) return sceneHeader;
 
   const bodyBudget = targetTokens - headerTokens;
 
@@ -1200,6 +1248,25 @@ export function buildSystemPrompt(
       }
       l3Text += lines.join("\n");
     }
+  }
+  // Semantic links are author-declared disambiguation, not inferred aliases.
+  // Keep the mapping next to the scene text in L3 so the model knows exactly
+  // which Codex entry the selected span denotes. The enclosing L3 wrapper
+  // escapes reserved tags after trimming, together with the rest of scene data.
+  if (input.scene.semanticLinks && input.scene.semanticLinks.length > 0) {
+    const lines = [s.headers.semanticLinks];
+    const seen = new Set<string>();
+    for (const link of input.scene.semanticLinks) {
+      const linkedText = link.text.replace(/\s+/g, " ").trim();
+      const entryName = link.entryName.replace(/\s+/g, " ").trim();
+      const key = `${link.entryId}\u0000${linkedText}`;
+      if (!linkedText || !entryName || seen.has(key)) continue;
+      seen.add(key);
+      lines.push(
+        `- ${fsQuote(linkedText)} → ${entryName} (id: ${link.entryId})`,
+      );
+    }
+    if (lines.length > 1) l3Text += lines.join("\n");
   }
   if (input.scene.content) {
     l3Text += `${s.headers.sceneBody}\n${sanitizeSceneContent(input.scene.content)}`;

@@ -10,6 +10,8 @@ interface Props {
   entryId: string;
   entryName: string;
   source: CellSource | undefined;
+  /** Relation can coexist with a stronger visual source such as semantic. */
+  hasRelationPin?: boolean;
   onClose: () => void;
   onOpenScene: () => void;
   onPin: () => void;
@@ -24,6 +26,7 @@ export function SceneCellMenu({
   sceneName,
   entryName,
   source,
+  hasRelationPin,
   onClose,
   onOpenScene,
   onPin,
@@ -49,15 +52,17 @@ export function SceneCellMenu({
     };
   }, [onClose]);
 
+  // Only source='relation' represents a removable scene pin. A semantic link
+  // is owned by the editor mark and must never be routed through pin removal.
+  const isRelationPin = hasRelationPin ?? source === "relation";
+
   const items = [
     { label: `Open scene: ${sceneName}`, action: onOpenScene },
     { label: "Show in Grid", action: onShowInGrid },
-    source !== "relation"
+    !isRelationPin
       ? { label: `Pin to scene (@${entryName})`, action: onPin }
       : null,
-    source === "relation"
-      ? { label: "Remove association", action: onRemovePin }
-      : null,
+    isRelationPin ? { label: "Remove association", action: onRemovePin } : null,
     { label: `Add beat (with @${entryName})`, action: onAddBeat },
     source
       ? {

@@ -8,6 +8,8 @@ import { Toolbar } from "@/features/editor/Toolbar";
 import { FindReplaceBar } from "@/features/editor/FindReplaceBar";
 import { CodexPopover } from "@/features/editor/CodexPopover";
 import { EditorContextMenu } from "@/features/editor/EditorContextMenu";
+import { CodexSemanticLinkPopover } from "@/features/editor/CodexSemanticLinkPopover";
+import { isFileBackedNode } from "@/features/external-mount/externalRootStore";
 import { SceneMetaPanel } from "@/features/editor/SceneMetaPanel";
 import { MentionPopup } from "@/features/chat/components/MentionPopup";
 import { SlashCommandPopup } from "@/features/editor/inlineAi/SlashCommandPopup";
@@ -50,6 +52,7 @@ export function LinearEditorView() {
   const activeSceneId = useTreeStore((s) => s.activeSceneId);
 
   const focusedEditor = useLinearEditorStore((s) => s.focusedEditor);
+  const focusedSceneId = useLinearEditorStore((s) => s.focusedSceneId);
   const pendingScrollToId = useLinearEditorStore((s) => s.pendingScrollToId);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -125,6 +128,14 @@ export function LinearEditorView() {
       .sort((a, b) => cmpKeys(a.sortOrder, b.sortOrder));
     return orphans.length === 0 ? out : [...out, ...orphans];
   }, [nodes]);
+  const focusedScene = useMemo(
+    () => nodes.find((node) => node.id === focusedSceneId) ?? null,
+    [nodes, focusedSceneId],
+  );
+  const canEditCodexSemanticLink =
+    focusedScene?.nodeType === "scene" &&
+    !isFileBackedNode(focusedScene.sourceUri) &&
+    focusedEditor?.isEditable === true;
 
   // --- IntersectionObserver: mount/unmount ---
   useEffect(() => {
@@ -518,7 +529,14 @@ export function LinearEditorView() {
         )}
       </ResizablePanelGroup>
       <CodexPopover editor={focusedEditor} />
-      <EditorContextMenu editor={focusedEditor} containerRef={scrollRef} />
+      {canEditCodexSemanticLink && (
+        <CodexSemanticLinkPopover editor={focusedEditor} />
+      )}
+      <EditorContextMenu
+        editor={focusedEditor}
+        containerRef={scrollRef}
+        canEditCodexSemanticLink={canEditCodexSemanticLink}
+      />
       {/* / コマンドのサジェスト。グローバル store (useSlashCommandStore) を
           読む消費者なのでビュー全体で 1 個マウントすれば全ブロックに効く。
           これが無いと SlashCommandExtension は store.open するのに描画する

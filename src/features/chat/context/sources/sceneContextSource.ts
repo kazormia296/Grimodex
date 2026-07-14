@@ -30,6 +30,7 @@ import {
 } from "@/features/codex/childrenBudget";
 import { detailValueToPlainText } from "@/features/codex/detailCleanup";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
+import { extractCodexSemanticLinks } from "@/features/codex/semanticLinks";
 import {
   expandCodexRelationsBFS,
   collectIntraContextRelations,
@@ -440,6 +441,9 @@ export async function collectSceneContext(
     ...snapshot.scene,
     content: request.includeBodies ? snapshot.scene.content : "",
   };
+  const declaredSemanticLinks = request.includeBodies
+    ? extractCodexSemanticLinks(snapshot.scene.contentJson)
+    : [];
   const project = snapshot.project;
   const prefetchedEntries = snapshot.prefetchedCodexEntries
     ? [...snapshot.prefetchedCodexEntries]
@@ -637,6 +641,7 @@ export async function collectSceneContext(
   const structuredMentionIds = new Set([
     ...request.mentionedCodexIds,
     ...request.inputPinnedEntryIds,
+    ...declaredSemanticLinks.map((link) => link.entryId),
   ]);
   const mentionedAll = Array.from(
     new Map(
@@ -654,6 +659,25 @@ export async function collectSceneContext(
     .filter((entry) =>
       canIncludeResolvedCodexContext(entry.contextMode, "current-mention"),
     );
+  const eligibleSemanticLinks: NonNullable<
+    BuildSystemPromptInput["scene"]["semanticLinks"]
+  > = declaredSemanticLinks.flatMap((link) => {
+    const entry = effectiveIndexById.get(link.entryId);
+    if (
+      !entry ||
+      excludedAutoIds.has(entry.id) ||
+      !canIncludeResolvedCodexContext(entry.contextMode, "current-mention")
+    ) {
+      return [];
+    }
+    return [
+      {
+        entryId: entry.id,
+        entryName: entry.name,
+        text: link.text,
+      },
+    ];
+  });
   const mentionedNotes = mentionedAll.filter((entry) => entry.type === "note");
   const mentionedIds = new Set(mentionedIndex.map((entry) => entry.id));
   const alwaysNotMentionedIndex = alwaysCodexIndex.filter(
@@ -1378,9 +1402,14 @@ export async function collectSceneContext(
     request.projectId,
     scene.id,
   );
+  const sceneWithSemanticLinks = {
+    ...scene,
+    semanticLinks:
+      eligibleSemanticLinks.length > 0 ? eligibleSemanticLinks : undefined,
+  };
 
   const promptInput: BuildSystemPromptInput = {
-    scene,
+    scene: sceneWithSemanticLinks,
     contextTemporal,
     contextTemporalBySourceId,
     project: project ?? undefined,
@@ -1460,7 +1489,7 @@ export async function collectSceneContext(
     (message) => ({ messageId: message.messageId, text: message.text }),
   );
   return {
-    scene,
+    scene: sceneWithSemanticLinks,
     project,
     promptInput,
     detectedEntries,

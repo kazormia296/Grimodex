@@ -62,6 +62,18 @@ function countMentions(editor: Editor): number {
 }
 
 describe("editor schema parity (mention)", () => {
+  it("DB-native editor modes share the codexSemanticLink Mark schema", () => {
+    const editor = new Editor({
+      extensions: getEditorExtensions({ setMentionPopup: () => {} }),
+      content: "",
+    });
+    try {
+      expect(editor.schema.marks.codexSemanticLink).toBeDefined();
+    } finally {
+      editor.destroy();
+    }
+  });
+
   it("popup 無しスキーマ (LinearSceneBlock 等) でも mention 入り doc を失わず読める", () => {
     const editor = new Editor({
       extensions: getEditorExtensions(),

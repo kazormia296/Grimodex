@@ -13,6 +13,7 @@ import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
 import { RubyNode } from "@/features/editor/RubyNode";
 import { EmphasisDotsMark } from "@/features/editor/EmphasisDotsMark";
 import { TcyMark } from "@/features/editor/TcyMark";
+import { CodexSemanticLinkMark } from "@/features/editor/CodexSemanticLinkMark";
 import { AozoraInputRules } from "@/features/editor/AozoraInputRules";
 import { AutoPairBracketsExtension } from "@/features/editor/AutoPairBracketsExtension";
 import { SceneBreakNode } from "@/features/editor/SceneBreakNode";
@@ -216,6 +217,10 @@ export function getEditorExtensions(
     // Custom marks/nodes
     AuthorshipMark,
     EmphasisDotsMark,
+    // Keep persisted scene schemas static across EditorPane tab reuse. The
+    // picker remains scene-only, but every DB-native editor must round-trip a
+    // linked scene without losing or rejecting the Mark.
+    CodexSemanticLinkMark,
     // 縦中横（明示マーク・第一級の特殊表現）。自動変換(TateChuYokoPlugin)とは別系統。
     TcyMark,
     RubyNode,

@@ -3,7 +3,10 @@ import { db } from "@/db/client";
 import { projectSettings, treeNodes } from "@/db/schema";
 import { parseAliases, type CodexMatchTarget } from "./codexMatcher";
 
-const BODY_MENTION_INDEX_STATE_KEY = "internal.codex.bodyMentionIndex.v1";
+// v2 adds source='semantic' rows derived from ProseMirror marks. Using a new
+// marker key forces one complete backfill for projects indexed before the
+// feature existed, even when their scene revisions have not changed.
+const BODY_MENTION_INDEX_STATE_KEY = "internal.codex.bodyMentionIndex.v2";
 
 export interface BodyMentionSceneRevision {
   sceneId: string;

@@ -30,13 +30,27 @@ const INTENSITY_CLASS: Record<1 | 2 | 3, string> = {
   3: "bg-primary/25 text-primary",
 };
 
+const SEMANTIC_CELL_CLASS =
+  "bg-violet-500/20 text-violet-700 ring-1 ring-inset ring-violet-500/30 dark:text-violet-300";
+const SEMANTIC_HEATMAP_CLASS =
+  "bg-violet-500/25 text-violet-700 ring-1 ring-inset ring-violet-500/30 dark:text-violet-300";
+
 function renderDisplay(display: DisplayCell): React.ReactNode {
   if (!display) return null;
   switch (display.kind) {
     case "dot":
       return (
-        <span className={display.source === "relation" ? "opacity-50" : ""}>
-          {display.source === "relation" ? "◯" : "●"}
+        <span
+          className={display.source === "relation" ? "opacity-50" : ""}
+          aria-label={
+            display.source === "semantic" ? "Explicit Codex link" : undefined
+          }
+        >
+          {display.source === "semantic"
+            ? "◆"
+            : display.source === "relation"
+              ? "◯"
+              : "●"}
         </span>
       );
     case "count":
@@ -68,14 +82,18 @@ function cellBgClass(display: DisplayCell): string {
     case "dot":
     case "role-aware": {
       const src = display.source;
+      if (src === "semantic") return SEMANTIC_CELL_CLASS;
       if (src === "body") return "bg-primary/20 text-primary";
       if (src === "beat") return "bg-primary/10 text-primary/80";
       return "bg-primary/5 text-primary/60";
     }
     case "count":
+      if (display.source === "semantic") return SEMANTIC_CELL_CLASS;
+      return "bg-primary/20 text-primary";
     case "pov":
       return "bg-primary/20 text-primary";
     case "heatmap":
+      if (display.source === "semantic") return SEMANTIC_HEATMAP_CLASS;
       return INTENSITY_CLASS[display.intensity];
     default:
       return "";

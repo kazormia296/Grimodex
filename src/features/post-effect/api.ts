@@ -234,6 +234,8 @@ export async function onPostEffectError(
 // ---------------------------------------------------------------------------
 
 export interface PostEffectRunCallbacks {
+  /** Last async guard before the backend start request is dispatched. */
+  beforeStart?: () => void | Promise<void>;
   onProgress?: (e: PostEffectProgressEvent) => void;
   onPartial?: (e: PostEffectPartialEvent) => void;
   onDone?: (e: PostEffectDoneEvent) => void;
@@ -418,22 +420,36 @@ async function runPostEffectInternal(
       void dispatch(e);
     };
 
-  // progress は呼び出し側 callback が無くても runStore が読むので常時購読する。
-  const registered = await Promise.all([
-    onPostEffectProgress(
-      filtered((e) => ({ kind: "progress", e }), dispatchProgress),
-    ),
-    callbacks.onPartial
-      ? onPostEffectPartial(
-          filtered((e) => ({ kind: "partial", e }), dispatchPartial),
-        )
-      : Promise.resolve(() => {}),
-    onPostEffectDone(filtered((e) => ({ kind: "done", e }), dispatchDone)),
-    onPostEffectError(filtered((e) => ({ kind: "error", e }), dispatchError)),
-  ]);
-  unlisteners.push(...registered);
-
   try {
+    // Start registrations together (preserving the pre-start buffering
+    // timing) but inspect every result so partial success is still cleaned up
+    // when one channel fails to subscribe.
+    const registrations: Array<Promise<() => void>> = [
+      onPostEffectProgress(
+        filtered((e) => ({ kind: "progress", e }), dispatchProgress),
+      ),
+    ];
+    if (callbacks.onPartial) {
+      registrations.push(
+        onPostEffectPartial(
+          filtered((e) => ({ kind: "partial", e }), dispatchPartial),
+        ),
+      );
+    }
+    registrations.push(
+      onPostEffectDone(filtered((e) => ({ kind: "done", e }), dispatchDone)),
+      onPostEffectError(filtered((e) => ({ kind: "error", e }), dispatchError)),
+    );
+    const registered = await Promise.allSettled(registrations);
+    for (const result of registered) {
+      if (result.status === "fulfilled") unlisteners.push(result.value);
+    }
+    const registrationFailure = registered.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (registrationFailure) throw registrationFailure.reason;
+
+    await callbacks.beforeStart?.();
     const result = await starter();
     runId = result.run_id;
     const replay = (buffered ?? []).filter((b) => b.e.run_id === runId);

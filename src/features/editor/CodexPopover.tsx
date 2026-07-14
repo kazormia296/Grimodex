@@ -23,6 +23,7 @@ interface PopoverState {
   x: number;
   y: number;
   entryId: string | null;
+  entryLabel: string | null;
 }
 
 interface CodexPopoverProps {
@@ -31,14 +32,37 @@ interface CodexPopoverProps {
   containerEl?: HTMLElement | null;
 }
 
+function targetElement(target: EventTarget | null): Element | null {
+  if (target instanceof Element) return target;
+  if (target instanceof Node) return target.parentElement;
+  return null;
+}
+
+/** Explicit author links win when an automatic string-match decoration overlaps. */
+function resolveCodexTarget(target: EventTarget | null): Element | null {
+  const base = targetElement(target);
+  return (
+    base?.closest(".codex-semantic-link") ??
+    base?.closest(".codex-highlight") ??
+    null
+  );
+}
+
+function isInsideCodexTarget(target: EventTarget | null): boolean {
+  const base = targetElement(target);
+  return !!(base?.closest(".codex-popover") || resolveCodexTarget(target));
+}
+
 export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
   const entries = useCodexStore((s) => s.entries);
+  const completionTargets = useCodexStore((s) => s.completionTargets);
   const typeColorMap = useCodexHighlightStore((s) => s.typeColorMap);
   const [popover, setPopover] = useState<PopoverState>({
     visible: false,
     x: 0,
     y: 0,
     entryId: null,
+    entryLabel: null,
   });
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const popoverStateRef = useRef(popover);
@@ -49,6 +73,7 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
   const showForElement = useCallback((el: Element) => {
     const entryId = el.getAttribute("data-codex-entry-id");
     if (!entryId) return;
+    const entryLabel = el.getAttribute("data-codex-entry-label");
 
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
@@ -61,12 +86,13 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
       x: rect.left,
       y: rect.bottom + 4,
       entryId,
+      entryLabel,
     });
   }, []);
 
   const handleMouseOver = useCallback(
     (e: MouseEvent) => {
-      const target = (e.target as HTMLElement).closest?.(".codex-highlight");
+      const target = resolveCodexTarget(e.target);
       if (!target) return;
       showForElement(target);
     },
@@ -77,7 +103,7 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
   // キーボード経路（エディタ本文は selectionUpdate 側が担う）
   const handleFocusIn = useCallback(
     (e: FocusEvent) => {
-      const target = (e.target as HTMLElement).closest?.(".codex-highlight");
+      const target = resolveCodexTarget(e.target);
       if (!target) return;
       showForElement(target);
     },
@@ -85,12 +111,9 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
   );
 
   const handleFocusOut = useCallback((e: FocusEvent) => {
-    const target = (e.target as HTMLElement).closest?.(".codex-highlight");
+    const target = resolveCodexTarget(e.target);
     if (!target) return;
-    const related = (e.relatedTarget as HTMLElement | null)?.closest?.(
-      ".codex-popover, .codex-highlight",
-    );
-    if (!related) {
+    if (!isInsideCodexTarget(e.relatedTarget)) {
       hideTimerRef.current = setTimeout(() => {
         setPopover((s) => ({ ...s, visible: false }));
       }, 200);
@@ -107,8 +130,7 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
       if (selection.empty) {
         try {
           const { node } = ed.view.domAtPos(selection.from);
-          const base = node instanceof Element ? node : node.parentElement;
-          el = base?.closest?.(".codex-highlight") ?? null;
+          el = resolveCodexTarget(node);
         } catch {
           el = null;
         }
@@ -127,11 +149,8 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
   );
 
   const handleMouseOut = useCallback((e: MouseEvent) => {
-    const target = (e.target as HTMLElement).closest?.(".codex-highlight");
-    const relatedTarget = (e.relatedTarget as HTMLElement)?.closest?.(
-      ".codex-popover",
-    );
-    if (target && !relatedTarget) {
+    const target = resolveCodexTarget(e.target);
+    if (target && !isInsideCodexTarget(e.relatedTarget)) {
       hideTimerRef.current = setTimeout(() => {
         setPopover((s) => ({ ...s, visible: false }));
       }, 200);
@@ -207,22 +226,62 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
 
   // 共有フックで phase 解決と未開示伏線を取得（フック呼び出しは early return より前に配置必須）
   const { t } = useTranslation();
-  const activeIds = popover.entryId ? [popover.entryId] : [];
+  const fullEntry = entries.find((entry) => entry.id === popover.entryId);
+  const completionTarget = completionTargets.find(
+    (entry) => entry.id === popover.entryId,
+  );
+  const activeIds =
+    popover.entryId && (fullEntry || completionTarget) ? [popover.entryId] : [];
   const resolved = useResolvedCodexStates(activeIds);
   const spoilers = useUnrevealedSecretForeshadows(activeIds);
 
   if (!popover.visible || !popover.entryId) return null;
 
-  const entry = entries.find((e) => e.id === popover.entryId);
-  if (!entry) return null;
+  if (!fullEntry && !completionTarget) {
+    const fallbackLabel =
+      popover.entryLabel?.trim() ||
+      t("editor.semanticLink.deletedEntry", "削除済みのCodexエントリ");
+    return createPortal(
+      <div
+        role="dialog"
+        aria-label={fallbackLabel}
+        className="codex-popover fixed z-50 w-64 rounded-lg border border-border bg-popover p-3 shadow-md"
+        style={{ left: popover.x, top: popover.y }}
+        data-testid="codex-popover"
+        onMouseEnter={() => {
+          if (hideTimerRef.current) {
+            clearTimeout(hideTimerRef.current);
+            hideTimerRef.current = null;
+          }
+        }}
+        onMouseLeave={() => {
+          setPopover((state) => ({ ...state, visible: false }));
+        }}
+      >
+        <p className="text-sm font-semibold text-foreground">{fallbackLabel}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t(
+            "editor.semanticLink.danglingHelp",
+            "リンク先は削除されています。文字列を選択して再割り当てするか、リンクを解除してください。",
+          )}
+        </p>
+      </div>,
+      document.body,
+    );
+  }
+
+  const entry = fullEntry ?? {
+    name: completionTarget!.name,
+    summary: null,
+  };
+  const entryType = fullEntry?.type ?? completionTarget!.type;
+  const entryId = popover.entryId;
 
   const dotColor =
-    typeColorMap[entry.type]?.fg ??
-    FALLBACK_TYPE_COLORS[entry.type] ??
-    "#888888";
+    typeColorMap[entryType]?.fg ?? FALLBACK_TYPE_COLORS[entryType] ?? "#888888";
   function handleOpenInCodex() {
     setPopover((s) => ({ ...s, visible: false }));
-    void requestOpenInCodex(entry!.id);
+    void requestOpenInCodex(entryId);
   }
 
   return createPortal(
@@ -245,15 +304,15 @@ export function CodexPopover({ editor, containerEl }: CodexPopoverProps) {
       <CodexEntryPopoverContent
         entry={entry}
         dotColor={dotColor}
-        typeLabel={getTypeLabel(entry.type)}
+        typeLabel={getTypeLabel(entryType)}
         onOpenInCodex={handleOpenInCodex}
-        phaseLabel={resolved.get(entry.id)?.phaseLabel}
-        resolvedSummary={resolved.get(entry.id)?.resolvedSummary}
+        phaseLabel={resolved.get(entryId)?.phaseLabel}
+        resolvedSummary={resolved.get(entryId)?.resolvedSummary}
         spoilerNote={
-          (spoilers.get(entry.id)?.length ?? 0) > 0
+          (spoilers.get(entryId)?.length ?? 0) > 0
             ? t("codex.spoiler.unrevealedTooltip", {
                 titles: spoilers
-                  .get(entry.id)!
+                  .get(entryId)!
                   .map((f) => f.title)
                   .join(", "),
               })

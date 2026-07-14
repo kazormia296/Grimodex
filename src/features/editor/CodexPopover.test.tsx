@@ -160,9 +160,7 @@ describe("CodexPopover accessibility", () => {
 
     fireEvent.mouseOver(automatic);
 
-    expect(screen.getByRole("dialog").getAttribute("aria-label")).toBe(
-      "ボブ",
-    );
+    expect(screen.getByRole("dialog").getAttribute("aria-label")).toBe("ボブ");
   });
 
   it("opens when the caret enters a codex highlight (keyboard access)", () => {

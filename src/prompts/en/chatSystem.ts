@@ -14,6 +14,8 @@ export const EN_L1_TRIM_MARKERS: L1TrimMarkers = {
 
 export const EN_L3_TRIM_MARKERS: L3TrimMarkers = {
   bodyHeaderRegex: /([\s\S]*?### Scene Text\n)/,
+  semanticLinksBlockRegex:
+    /\n\n### Author-declared Codex Links[\s\S]*?(?=\n\n### Scene Text\n)/,
 };
 
 export const EN_TYPE_LABELS: Record<string, string> = {
@@ -97,6 +99,9 @@ export const EN_CHAT_SYSTEM = {
     previousScene: "\n## Previous Scene",
     currentScene: "\n## Current Scene",
     sceneBody: "\n\n### Scene Text",
+    /** L3: author-declared span → Codex mappings. Placed immediately before
+     * scene text as context-dependent references stronger than string matching. */
+    semanticLinks: "\n\n### Author-declared Codex Links",
     /** focus_subject: anchor of the Codex/Snippet scope (= the subject of this conversation).
      * Injected right after the L3 slot and before L4, making the conversation's focus explicit to the LLM. */
     focusSubject: "\n## Focus of This Conversation",

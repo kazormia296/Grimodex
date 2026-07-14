@@ -20,6 +20,7 @@ const HEATMAP_INTENSITY: Record<CellSource, 1 | 2 | 3> = {
   relation: 1,
   beat: 2,
   body: 3,
+  semantic: 3,
 };
 
 /**

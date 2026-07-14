@@ -10,7 +10,11 @@ import { rebuildMatcher, matchText } from "./rustMatcher";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { enqueueRescan } from "@/features/codex/mentionRescanQueue";
 import { isBodyMentionIndexReady } from "@/features/codex/bodyMentionIndexState";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  extractCodexSemanticLinks,
+  type CodexSemanticLink,
+} from "./semanticLinks";
 
 interface QueryResult {
   rows: Array<{ id: string; title: string; parent_id: string | null }>;
@@ -20,6 +24,10 @@ export interface SceneMention {
   sceneId: string;
   sceneTitle: string;
   count: number;
+  /** Exact surface name/alias matches in the body. */
+  automaticCount?: number;
+  /** Exact author-declared span links in the body. */
+  semanticCount?: number;
 }
 
 export interface CrossReferenceEntry {
@@ -33,6 +41,7 @@ export interface SceneCodexMentionRow {
   entryId: string;
   sceneId: string;
   sceneTitle: string;
+  source?: string;
 }
 
 /** Build the Galaxy cross-reference shape from the incremental mention index. */
@@ -77,7 +86,7 @@ async function buildCrossReferenceFromMentionIndex(
     .innerJoin(treeNodes, eq(sceneCodexMentions.sceneId, treeNodes.id))
     .where(
       and(
-        eq(sceneCodexMentions.source, "body"),
+        inArray(sceneCodexMentions.source, ["body", "semantic"]),
         eq(treeNodes.projectId, projectId),
         eq(treeNodes.nodeType, "scene"),
       ),
@@ -119,33 +128,51 @@ export async function buildCrossReferenceReportForProject(
     string,
     { entry: CodexMatchRow; scenes: Map<string, SceneMention> }
   >();
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
 
   for (const scene of scenes) {
     let content: string;
+    let semanticLinks: CodexSemanticLink[];
     try {
       const rawContent = await loadSceneContent(scene.id);
       content = prosemirrorToText(rawContent);
+      semanticLinks = extractCodexSemanticLinks(rawContent);
     } catch {
       continue;
     }
-    if (!content) continue;
 
-    const matches = await matchText(content, targets);
-    const countsByEntry = new Map<string, number>();
+    const matches = content ? await matchText(content, targets) : [];
+    const automaticCounts = new Map<string, number>();
     for (const m of matches) {
-      countsByEntry.set(m.entryId, (countsByEntry.get(m.entryId) ?? 0) + 1);
+      automaticCounts.set(m.entryId, (automaticCounts.get(m.entryId) ?? 0) + 1);
     }
+    const semanticCounts = new Map<string, number>();
+    for (const link of semanticLinks) {
+      if (!entriesById.has(link.entryId)) continue;
+      semanticCounts.set(
+        link.entryId,
+        (semanticCounts.get(link.entryId) ?? 0) + 1,
+      );
+    }
+    const mentionedEntryIds = new Set([
+      ...automaticCounts.keys(),
+      ...semanticCounts.keys(),
+    ]);
 
-    for (const [entryId, count] of countsByEntry) {
+    for (const entryId of mentionedEntryIds) {
       if (!mentionMap.has(entryId)) {
-        const entry = entries.find((e: CodexMatchRow) => e.id === entryId);
+        const entry = entriesById.get(entryId);
         if (!entry) continue;
         mentionMap.set(entryId, { entry, scenes: new Map() });
       }
+      const automaticCount = automaticCounts.get(entryId) ?? 0;
+      const semanticCount = semanticCounts.get(entryId) ?? 0;
       mentionMap.get(entryId)!.scenes.set(scene.id, {
         sceneId: scene.id,
         sceneTitle: scene.title,
-        count,
+        count: automaticCount + semanticCount,
+        automaticCount,
+        semanticCount,
       });
     }
   }
@@ -198,7 +225,12 @@ export async function buildGalaxyCrossReferenceForProject(
 /** Simpler version: accepts pre-loaded scene texts, for testing */
 export function buildCrossReferenceFromTexts(
   entries: Array<{ id: string; name: string; type: string }>,
-  sceneTexts: Array<{ id: string; title: string; content: string }>,
+  sceneTexts: Array<{
+    id: string;
+    title: string;
+    content: string;
+    semanticLinks?: CodexSemanticLink[];
+  }>,
 ): CrossReferenceEntry[] {
   if (entries.length === 0) return [];
 
@@ -210,24 +242,40 @@ export function buildCrossReferenceFromTexts(
       scenes: Map<string, SceneMention>;
     }
   >();
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
 
   for (const scene of sceneTexts) {
-    if (!scene.content) continue;
-    const matches = matcher(scene.content);
-    const countsByEntry = new Map<string, number>();
+    const matches = scene.content ? matcher(scene.content) : [];
+    const automaticCounts = new Map<string, number>();
     for (const m of matches) {
-      countsByEntry.set(m.entryId, (countsByEntry.get(m.entryId) ?? 0) + 1);
+      automaticCounts.set(m.entryId, (automaticCounts.get(m.entryId) ?? 0) + 1);
     }
-    for (const [entryId, count] of countsByEntry) {
+    const semanticCounts = new Map<string, number>();
+    for (const link of scene.semanticLinks ?? []) {
+      if (!entriesById.has(link.entryId)) continue;
+      semanticCounts.set(
+        link.entryId,
+        (semanticCounts.get(link.entryId) ?? 0) + 1,
+      );
+    }
+    const mentionedEntryIds = new Set([
+      ...automaticCounts.keys(),
+      ...semanticCounts.keys(),
+    ]);
+    for (const entryId of mentionedEntryIds) {
       if (!mentionMap.has(entryId)) {
-        const entry = entries.find((e) => e.id === entryId);
+        const entry = entriesById.get(entryId);
         if (!entry) continue;
         mentionMap.set(entryId, { entry, scenes: new Map() });
       }
+      const automaticCount = automaticCounts.get(entryId) ?? 0;
+      const semanticCount = semanticCounts.get(entryId) ?? 0;
       mentionMap.get(entryId)!.scenes.set(scene.id, {
         sceneId: scene.id,
         sceneTitle: scene.title,
-        count,
+        count: automaticCount + semanticCount,
+        automaticCount,
+        semanticCount,
       });
     }
   }

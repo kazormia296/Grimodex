@@ -38,10 +38,12 @@ function setSemanticLinkPickerOpen(open: boolean) {
 
 function isSemanticLinkPickerOpen(): boolean {
   return (
-    useCursorSettingsStore.getState() as unknown as {
-      semanticLinkPickerOpen?: boolean;
-    }
-  ).semanticLinkPickerOpen === true;
+    (
+      useCursorSettingsStore.getState() as unknown as {
+        semanticLinkPickerOpen?: boolean;
+      }
+    ).semanticLinkPickerOpen === true
+  );
 }
 
 describe("EditorBubbleMenu", () => {
@@ -149,12 +151,10 @@ describe("EditorBubbleMenu", () => {
     editor.destroy();
   });
 
-  it.each(
-    [
-      ["omitted", undefined],
-      ["false", false],
-    ] as const,
-  )(
+  it.each([
+    ["omitted", undefined],
+    ["false", false],
+  ] as const)(
     "hides the Codex semantic-link action when the capability is %s",
     (_label, canEditCodexSemanticLink) => {
       const editor = makeEditor("<p>hello world</p>");

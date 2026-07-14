@@ -64,6 +64,9 @@ export function ImpactCheckButton({ entryId }: ImpactCheckButtonProps) {
         case "no-candidates":
           toast.info(t("codex.impactCheck.noCandidates"));
           break;
+        case "source-changed":
+          toast.warning(t("codex.impactCheck.sourceChanged"));
+          break;
         case "started":
           toast.info(
             t("codex.impactCheck.started", {

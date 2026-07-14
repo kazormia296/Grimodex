@@ -170,6 +170,34 @@ function multiArgs(sceneIds, inputHash = "review-multi-hash-1") {
   };
 }
 
+function impactMultiArgs(sceneId, inputHash, sourceGuard) {
+  return {
+    project_id: "default-project",
+    effect_type: "impact_review",
+    scope_type: "project",
+    scope_target_id: null,
+    model: "mock-review-model",
+    prompt_version: "impact_review_v1.1",
+    input_hash: inputHash,
+    source_guard: sourceGuard,
+    scenes: [
+      {
+        scene_id: sceneId,
+        codex_payload_json: JSON.stringify({
+          change_id: "change-1",
+          entry_id: "entry-1",
+          entry_name: "アリス",
+          entry_type: "character",
+          change_summary: "年齢を変更",
+          changes: [],
+        }),
+        scene_text: "風が吹く。",
+      },
+    ],
+    system_prompt: "変更の影響を確認してください。",
+  };
+}
+
 async function insertScene(backend, sceneId) {
   await backend.dbExecute(
     "INSERT INTO tree_nodes (id, project_id, node_type, title, content) VALUES (?, 'default-project', 'scene', ?, ?)",
@@ -181,6 +209,24 @@ async function insertScene(backend, sceneId) {
 async function rows(backend, sql, params = []) {
   const result = JSON.parse(await backend.dbExecute(sql, params, "all"));
   return result.rows;
+}
+
+async function readSourceGuard(backend) {
+  const [revision] = await rows(
+    backend,
+    `SELECT meta.epoch AS connection_epoch,
+            CAST(total_changes() AS TEXT) AS total_changes,
+            CAST(version.data_version AS TEXT) AS data_version
+       FROM temp.grimodex_connection_meta AS meta
+       CROSS JOIN pragma_data_version AS version
+      WHERE meta.singleton = 1`,
+  );
+  return {
+    kind: "sqlite_revision_v1",
+    expected_connection_epoch: revision.connection_epoch,
+    expected_total_changes: revision.total_changes,
+    expected_data_version: revision.data_version,
+  };
 }
 
 async function waitForRunEvent(events, channel, runId, timeoutMs = 5000) {
@@ -197,6 +243,135 @@ async function waitForRunEvent(events, channel, runId, timeoutMs = 5000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test("Impact source guard は cache より先に同一connection revisionを原子的に検証する", async () => {
+  const { backend, workspace } = makeBackend();
+  await backend.openWorkspace(workspace);
+  await insertScene(backend, "impact-guard-scene");
+  await backend.dbExecute(
+    `INSERT INTO post_effect_runs
+       (id, project_id, effect_type, scope_type, scope_target_id,
+        model, prompt_version, input_hash, status, started_at, completed_at)
+     VALUES ('impact-guard-cache', 'default-project', 'impact_review',
+             'project', NULL, 'mock-review-model', 'impact_review_v1.1',
+             'impact-guard-cache-hash', 'completed', datetime('now'), datetime('now'))`,
+    [],
+    "run",
+  );
+  const matchingGuard = await readSourceGuard(backend);
+
+  const cached = JSON.parse(
+    await backend.startPostEffectRunMulti(
+      impactMultiArgs(
+        "impact-guard-scene",
+        "impact-guard-cache-hash",
+        matchingGuard,
+      ),
+      aiSettings("http://127.0.0.1:1"),
+      null,
+      "cache path must not resolve a secret",
+    ),
+  );
+  assert.deepEqual(cached, {
+    run_id: "impact-guard-cache",
+    from_cache: true,
+  });
+
+  const staleGuard = await readSourceGuard(backend);
+  await backend.dbExecute(
+    "UPDATE projects SET title = 'same-connection change' WHERE id = 'default-project'",
+    [],
+    "run",
+  );
+  await assert.rejects(
+    backend.startPostEffectRunMulti(
+      impactMultiArgs(
+        "impact-guard-scene",
+        "impact-guard-stale-hash",
+        staleGuard,
+      ),
+      aiSettings("http://127.0.0.1:1"),
+      null,
+      null,
+    ),
+    /IMPACT_SOURCE_CHANGED/,
+  );
+  const [staleRunCount] = await rows(
+    backend,
+    "SELECT COUNT(*) AS n FROM post_effect_runs WHERE input_hash = 'impact-guard-stale-hash'",
+  );
+  assert.equal(staleRunCount.n, 0, "stale guard never creates a run row");
+});
+
+test("Impact source guard は別Backendのcommitと不正wireをnative境界で拒否する", async () => {
+  const first = makeBackend();
+  await first.backend.openWorkspace(first.workspace);
+  await insertScene(first.backend, "impact-external-scene");
+  const staleGuard = await readSourceGuard(first.backend);
+
+  await assert.rejects(
+    first.backend.startPostEffectRun(
+      {
+        ...singleArgs("impact-external-scene", "impact-single-unguarded"),
+        effect_type: "impact_review",
+        prompt_version: "impact_review_v1.1",
+      },
+      aiSettings("http://127.0.0.1:1"),
+      null,
+      null,
+    ),
+    /impact_review requires start_post_effect_run_multi with source_guard/,
+  );
+
+  const second = makeBackend();
+  await second.backend.openWorkspace(first.workspace);
+  await second.backend.dbExecute(
+    "UPDATE projects SET title = 'external connection change' WHERE id = 'default-project'",
+    [],
+    "run",
+  );
+
+  await assert.rejects(
+    first.backend.startPostEffectRunMulti(
+      impactMultiArgs(
+        "impact-external-scene",
+        "impact-guard-missing-hash",
+        undefined,
+      ),
+      aiSettings("http://127.0.0.1:1"),
+      null,
+      null,
+    ),
+    /source_guard is required for impact_review/,
+  );
+
+  await assert.rejects(
+    first.backend.startPostEffectRunMulti(
+      impactMultiArgs(
+        "impact-external-scene",
+        "impact-guard-external-hash",
+        staleGuard,
+      ),
+      aiSettings("http://127.0.0.1:1"),
+      null,
+      null,
+    ),
+    /IMPACT_SOURCE_CHANGED/,
+  );
+
+  await assert.rejects(
+    first.backend.startPostEffectRunMulti(
+      impactMultiArgs("impact-external-scene", "impact-guard-wire-hash", {
+        ...staleGuard,
+        unexpected: true,
+      }),
+      aiSettings("http://127.0.0.1:1"),
+      null,
+      null,
+    ),
+    /unknown field `unexpected`/,
+  );
+});
 
 test("startPostEffectRun は即返却し4ch完走、cache hitはAI/key error/eventを再実行しない", async () => {
   const requestSeen = deferred();

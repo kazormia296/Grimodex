@@ -219,7 +219,7 @@ export interface CodexPayloadEntry {
 
 export interface StartPostEffectRunRequest {
   project_id: string;
-  effect_type: PostEffectType;
+  effect_type: Exclude<PostEffectType, "impact_review">;
   scope_type: PostEffectScopeType;
   scope_target_id?: string | null;
   model: string;
@@ -254,9 +254,21 @@ export interface StartPostEffectRunResult {
   from_cache: boolean;
 }
 
-export interface StartPostEffectRunMultiRequest {
+/**
+ * Snapshot revision captured from the workspace SQLite connection.
+ * `total_changes()` covers writes on this connection while `data_version`
+ * covers commits made through another connection (for example standalone MCP).
+ * Decimal strings avoid losing u64 precision at the JS boundary.
+ */
+export interface SqliteSourceRevisionGuard {
+  kind: "sqlite_revision_v1";
+  expected_connection_epoch: string;
+  expected_total_changes: string;
+  expected_data_version: string;
+}
+
+interface StartPostEffectRunMultiBase {
   project_id: string;
-  effect_type: PostEffectType;
   scope_type: PostEffectScopeType;
   scope_target_id?: string | null;
   model: string;
@@ -283,6 +295,18 @@ export interface StartPostEffectRunMultiRequest {
   /** System prompt 本文。FE catalog (`src/prompts/ja/postEffect.ts`) から取得して渡す。 */
   system_prompt: string;
 }
+
+export type StartPostEffectRunMultiRequest = StartPostEffectRunMultiBase &
+  (
+    | {
+        effect_type: "impact_review";
+        source_guard: SqliteSourceRevisionGuard;
+      }
+    | {
+        effect_type: Exclude<PostEffectType, "impact_review">;
+        source_guard?: never;
+      }
+  );
 
 // ---------------------------------------------------------------------------
 // Stream event payloads (post_effect:*)

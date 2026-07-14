@@ -115,13 +115,9 @@ describe("narrowCandidateScenes", () => {
   it("returns semantic-linked scenes even when dense and sparse both miss", async () => {
     h.dbWhere.mockResolvedValue([{ sceneId: "semantic-scene" }]);
 
-    const out = await narrowCandidateScenes(
-      "project-1",
-      "entry-1",
-      "",
-      [],
-      { limit: 1 },
-    );
+    const out = await narrowCandidateScenes("project-1", "entry-1", "", [], {
+      limit: 1,
+    });
 
     expect(out).toEqual([
       expect.objectContaining({

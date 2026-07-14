@@ -23,6 +23,34 @@ pub struct Database {
     conn: Mutex<Connection>,
 }
 
+/// Connection-local token used to prove that a renderer snapshot and a
+/// backend mutation were observed on the same SQLite connection state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteSourceRevision {
+    pub connection_epoch: String,
+    pub total_changes: u64,
+    pub data_version: u64,
+}
+
+/// Read all connection-local revision components in one SQLite statement.
+/// `total_changes` observes writes made through this connection, while
+/// `data_version` changes when another connection commits to the same DB.
+pub fn read_sqlite_source_revision(conn: &Connection) -> anyhow::Result<SqliteSourceRevision> {
+    let (connection_epoch, total_changes, data_version): (String, i64, i64) = conn.query_row(
+        "SELECT meta.epoch, total_changes(), version.data_version
+           FROM temp.grimodex_connection_meta AS meta
+           CROSS JOIN pragma_data_version AS version
+          WHERE meta.singleton = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    Ok(SqliteSourceRevision {
+        connection_epoch,
+        total_changes: u64::try_from(total_changes)?,
+        data_version: u64::try_from(data_version)?,
+    })
+}
+
 /// `<path><suffix>` を組む（拡張子付与 / temp 名生成用）。
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut os = path.as_os_str().to_owned();
@@ -143,6 +171,22 @@ impl Database {
              PRAGMA journal_size_limit=67108864;
              -- Cap the work `PRAGMA optimize` (run post-migrate / on close) does.
              PRAGMA analysis_limit=400;",
+        )?;
+        // TEMP metadata is deliberately connection-local: open/restore creates
+        // a fresh Database and therefore a fresh epoch, while schema contracts
+        // and backups remain untouched. Impact Review includes this token in
+        // its source guard so a workspace swap cannot accidentally compare two
+        // unrelated total_changes/data_version counters.
+        conn.execute_batch(
+            "CREATE TEMP TABLE grimodex_connection_meta (
+                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 epoch TEXT NOT NULL
+             );",
+        )?;
+        conn.execute(
+            "INSERT INTO temp.grimodex_connection_meta (singleton, epoch)
+             VALUES (1, ?1)",
+            rusqlite::params![uuid::Uuid::new_v4().to_string()],
         )?;
         Ok(Self {
             conn: Mutex::new(conn),

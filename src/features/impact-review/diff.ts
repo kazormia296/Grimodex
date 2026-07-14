@@ -52,6 +52,18 @@ export interface CodexSnapshot {
   contentPlain: string;
   details: Array<{ name: string; value: string }>;
   phases?: PhaseSnapshot[];
+  /** Writer-side visibility provenance format for safe Phase deletion diffs. */
+  visibilityProvenanceVersion?: 1;
+  /** Visibility bookkeeping only; excluded from the semantic diff. */
+  allPhaseIds?: string[];
+  /**
+   * Phase bodies that must never be reconstructed from a later deletion diff.
+   * Kept in the local baseline so hidden/suppressed data remains redacted even
+   * after the source phase row disappears.
+   */
+  restrictedPhaseIds?: string[];
+  /** Phase deletions observed by the write API while AI-visible. */
+  visibleDeletedPhaseIds?: string[];
 }
 
 const EMPTY_SNAPSHOT: CodexSnapshot = {

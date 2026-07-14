@@ -6,9 +6,12 @@ import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import type { CodexMatchTarget } from "@/features/codex/codexMatcher";
 import { bumpMatrixDataVersion } from "@/features/matrix/matrixDataVersion";
 import { markStart, markEnd } from "@/lib/perfLog";
+import { getCodexSemanticLinkEntryIds } from "@/features/codex/semanticLinks";
 
 /**
- * Scan the scene's body doc for Codex mentions and upsert source='body' rows.
+ * Scan the scene body for automatic mentions and explicit semantic links.
+ * ProseMirror is the semantic-link source of truth; scene_codex_mentions is a
+ * derived cache for Matrix/Galaxy and can always be rebuilt.
  *
  * Uses the same insert-then-prune ordering as upsertSceneBeatMentions to
  * avoid data loss when the prune step fails.
@@ -30,18 +33,30 @@ export async function upsertSceneBodyMentions(
   const matched = await findMentionedEntriesAsync(text, allEntries);
   markEnd("bodyMention.findMentionedEntriesAsync");
 
-  if (matched.length > 0) {
+  const validEntryIds = new Set(allEntries.map((entry) => entry.id));
+  const semanticIds = getCodexSemanticLinkEntryIds(docJsonStr).filter((id) =>
+    validEntryIds.has(id),
+  );
+  const rows = [
+    ...matched.map((entry) => ({
+      sceneId,
+      codexEntryId: entry.id,
+      source: "body",
+      role: "mentioned",
+    })),
+    ...semanticIds.map((entryId) => ({
+      sceneId,
+      codexEntryId: entryId,
+      source: "semantic",
+      role: "mentioned",
+    })),
+  ];
+
+  if (rows.length > 0) {
     markStart("bodyMention.dbInsert");
     await db
       .insert(sceneCodexMentions)
-      .values(
-        matched.map((e) => ({
-          sceneId,
-          codexEntryId: e.id,
-          source: "body",
-          role: "mentioned",
-        })),
-      )
+      .values(rows)
       .onConflictDoUpdate({
         target: [
           sceneCodexMentions.sceneId,
@@ -53,21 +68,24 @@ export async function upsertSceneBodyMentions(
     markEnd("bodyMention.dbInsert");
   }
 
-  const wantedIds = matched.map((e) => e.id);
-  const baseCondition = and(
-    eq(sceneCodexMentions.sceneId, sceneId),
-    eq(sceneCodexMentions.source, "body"),
-  );
-  const condition =
-    wantedIds.length === 0
-      ? baseCondition
-      : and(
-          baseCondition,
-          notInArray(sceneCodexMentions.codexEntryId, wantedIds),
-        );
+  const pruneSource = async (source: "body" | "semantic", ids: string[]) => {
+    const baseCondition = and(
+      eq(sceneCodexMentions.sceneId, sceneId),
+      eq(sceneCodexMentions.source, source),
+    );
+    const condition =
+      ids.length === 0
+        ? baseCondition
+        : and(baseCondition, notInArray(sceneCodexMentions.codexEntryId, ids));
+    await db.delete(sceneCodexMentions).where(condition);
+  };
 
   markStart("bodyMention.dbDelete");
-  await db.delete(sceneCodexMentions).where(condition);
+  await pruneSource(
+    "body",
+    matched.map((entry) => entry.id),
+  );
+  await pruneSource("semantic", semanticIds);
   markEnd("bodyMention.dbDelete");
 
   bumpMatrixDataVersion();

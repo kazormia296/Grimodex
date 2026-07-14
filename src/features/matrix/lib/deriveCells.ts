@@ -1,7 +1,8 @@
-export type CellSource = "body" | "beat" | "relation";
+export type CellSource = "semantic" | "body" | "beat" | "relation";
 export type MentionRole = "mentioned" | "actor" | "target";
 
 export const SOURCE_PRIORITY: Record<CellSource, number> = {
+  semantic: 3,
   body: 2,
   beat: 1,
   relation: 0,
@@ -16,7 +17,7 @@ export const ROLE_PRIORITY: Record<MentionRole, number> = {
 export interface CellInfo {
   /** All sources present for this (scene, codex) pair */
   sources: Set<CellSource>;
-  /** Strongest source: body > beat > relation */
+  /** Strongest source: semantic > body > beat > relation */
   topSource: CellSource;
   /** Best role from source='beat' row: actor > target > mentioned */
   role: MentionRole;
@@ -32,7 +33,7 @@ interface MentionRow {
 /**
  * Build a map of "sceneId::codexEntryId" → CellInfo.
  * Multiple rows for the same pair are collapsed:
- *   - topSource: body > beat > relation
+ *   - topSource: semantic > body > beat > relation
  *   - sources: union of all present source values
  *   - role: strongest role from source='beat' rows (actor > target > mentioned)
  */
