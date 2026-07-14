@@ -40,6 +40,13 @@ const SLOW_COMMANDS = new Set([
   "deactivate_license",
   "list_ai_models",
   "list_cli_models",
+  /** Codex App Serverのlazy起動・モデル一覧・Turn開始。 */
+  "codex_app_test_connection",
+  "codex_app_list_models",
+  "codex_app_start_turn",
+  "codex_app_interrupt_turn",
+  "codex_app_archive_session_thread",
+  "codex_app_set_thread_name",
   "start_post_effect_run",
   /** 全 scene の再インデックスは scene 数 × Embedder 推論時間で分単位になりうる */
   "semantic_reindex_all",

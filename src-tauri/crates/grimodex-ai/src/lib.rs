@@ -313,6 +313,12 @@ pub struct CliSettings {
     /// CLI に渡すモデル名 (--model 経由)。空なら CLI のデフォルトモデル。
     #[serde(default)]
     pub model: Option<String>,
+    /// Codex の実行方式。未指定は既存互換の単発 `exec`。
+    #[serde(default)]
+    pub codex_transport: Option<String>,
+    /// Codex App Server の承認付き workspace write を opt-in する。
+    #[serde(default)]
+    pub codex_allow_approvals: bool,
 }
 
 /// OpenRouter Fusion (マルチモデル合議) のカスタム構成。

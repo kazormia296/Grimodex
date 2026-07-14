@@ -81,4 +81,47 @@ describe("resolveChatTurnRoute", () => {
     });
     expect(Object.isFrozen(route)).toBe(true);
   });
+
+  it("keeps existing Codex CLI settings on the exec transport", () => {
+    const route = resolveChatTurnRoute({
+      surface: "chat",
+      activeSettings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "cli",
+        cli: { kind: "codex", model: "gpt-5" },
+      },
+      taskEffort: "medium",
+    });
+
+    expect(route.transport).toBe("cli-exec");
+  });
+
+  it("routes Codex app-server and auto modes through the resident transport", () => {
+    for (const codexTransport of ["app-server", "auto"] as const) {
+      const route = resolveChatTurnRoute({
+        surface: "chat",
+        activeSettings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          cli: { kind: "codex", codexTransport },
+        },
+        taskEffort: "medium",
+      });
+      expect(route.transport).toBe("codex-app-server");
+    }
+  });
+
+  it("fails closed to codex exec for an unknown persisted transport", () => {
+    const route = resolveChatTurnRoute({
+      surface: "chat",
+      activeSettings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "cli",
+        cli: { kind: "codex", codexTransport: "unexpected" as never },
+      },
+      taskEffort: "medium",
+    });
+
+    expect(route.transport).toBe("cli-exec");
+  });
 });

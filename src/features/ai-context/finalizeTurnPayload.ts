@@ -2,6 +2,7 @@ import type { AiProvider } from "@/features/chat/types";
 
 export type TurnSurface = "chat" | "agent";
 export type TurnToolProtocol = "native" | "hermes";
+export type ChatTransport = "http" | "cli-exec" | "codex-app-server";
 
 export interface ResolvedTurnRoute {
   surface: TurnSurface;
@@ -12,6 +13,8 @@ export interface ResolvedTurnRoute {
   contextWindow: number;
   /** Exact request limit placed on the provider wire for HTTP routes. */
   wireOutputTokens: number;
+  /** Internal transport selected for this turn. Legacy fixtures may omit it. */
+  transport?: ChatTransport;
 }
 
 export interface SystemPayloadCandidate {

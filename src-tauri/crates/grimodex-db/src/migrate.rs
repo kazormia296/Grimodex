@@ -246,6 +246,25 @@ impl Database {
             -- idx_chat_sessions_codex_anchor is created AFTER add_column_if_missing
             -- below (upgraded DBs lack codex_anchor_id until that ALTER runs).
 
+            -- External AI runtime thread bindings are kept separate from
+            -- chat_sessions so one local session can be resumed by more than
+            -- one runtime. The runtime + external id pair is globally unique
+            -- to prevent cross-session thread hijacking.
+            CREATE TABLE IF NOT EXISTS chat_runtime_threads (
+                session_id          TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                runtime             TEXT NOT NULL,
+                external_thread_id  TEXT NOT NULL,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                history_revision    TEXT,
+                last_turn_id        TEXT,
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL,
+                PRIMARY KEY (session_id, runtime),
+                UNIQUE (runtime, external_thread_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_runtime_threads_project
+                ON chat_runtime_threads(project_id, runtime);
+
             -- Normalized pin table: one row per pinned codex entry / snippet
             -- per session. Replaces the former chat_sessions.pinned_codex
             -- JSON blob so FK cascades remove stale refs automatically.

@@ -128,6 +128,11 @@ import {
   parseWebSearchControls,
 } from "./webSearchConfig";
 import * as cliApi from "./cliApi";
+import * as codexAppApi from "./codexAppApi";
+import {
+  buildCodexBootstrapHistory,
+  computeChatHistoryRevision,
+} from "./historyRevision";
 import { resolveSendApiVariant } from "./aiNovelist";
 import { createAgentTextBatcher } from "./agent/agentTextBatcher";
 
@@ -1839,6 +1844,7 @@ interface SendTurnControl {
   userMessageId: string;
   assistantMessageId: string;
   transportStarted: boolean;
+  transport: "http" | "cli-exec" | "codex-app-server";
 }
 let _activeSendControl: SendTurnControl | null = null;
 // Async session reads can finish after a scope/project transition. Only the
@@ -3172,6 +3178,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   deleteSession: async (sessionId: string) => {
     try {
+      const projectId = get().activeProjectId ?? getCurrentProjectId();
+      const session = get().sessions.find((item) => item.id === sessionId);
+      if (session?.projectId === projectId) {
+        // The local DB cascade removes the binding, but archive the external
+        // thread first so a later Codex process cannot retain an orphaned turn.
+        await codexAppApi
+          .archiveCodexSessionThread(projectId, sessionId)
+          .catch((error: unknown) =>
+            debugLog.warn(
+              "ChatStore",
+              "archive Codex session thread",
+              errorDetail(error),
+            ),
+          );
+      }
       await chatApi.deleteSession(sessionId);
       const { activeSessionId } = get();
       set((state) => ({
@@ -3623,6 +3644,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       userMessageId: userMsg.id,
       assistantMessageId: assistantMsg.id,
       transportStarted: false,
+      transport:
+        turnRoute?.transport ??
+        (turnRoute?.provider === "cli" ? "cli-exec" : "http"),
     };
     // A turn that starts without a persisted session is allowed to adopt the
     // session it creates below. Any other session transition invalidates it.
@@ -4952,11 +4976,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           m.role === "assistant" ? stripToolProtocol(m.content) : m.content,
       }));
       const chatContextPlanDigest = get().contextPlan?.digest ?? null;
+      const turnTransport =
+        turnRoute?.transport ??
+        (turnRoute?.provider === "cli" ? "cli-exec" : "http");
+      const isCodexAppServer = turnTransport === "codex-app-server";
       let estimatedChatInputTokens: number | null = null;
       let chatSafetyMarginTokens: number | null = null;
       if (turnRoute) {
         const finalized =
-          turnRoute.provider === "cli"
+          turnTransport === "cli-exec"
             ? finalizeTurnPayload(
                 {
                   route: turnRoute,
@@ -4985,7 +5013,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         estimatedChatInputTokens = finalized.usage.inputTokens;
         chatSafetyMarginTokens = finalized.usage.safetyMarginTokens;
         sentContextTokenCount = finalized.usage.inputTokens;
-        if (turnRoute.provider !== "cli") {
+        if (turnTransport !== "cli-exec") {
           sentSystemPrompt = materializeSystemDeliverySnapshot(finalized);
         }
         set({
@@ -5010,8 +5038,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       // 平坦化する。
       // 別プロバイダ override 中は HTTP 経路(別プロバイダは cli 非対象)に流すため、
       // active provider が cli でも cli subprocess 経路には落とさない。
-      const isCliProvider = turnRoute
-        ? turnRoute.provider === "cli"
+      const isCliExec = turnRoute
+        ? turnTransport === "cli-exec"
         : !xprov && aiSettings?.provider === "cli";
       const cliConfig = turnRoute?.effectiveSettings.cli ??
         aiSettings?.cli ?? {
@@ -5019,6 +5047,17 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           binaryPath: "",
           model: "",
         };
+      const codexTransport = cliConfig.codexTransport ?? "exec";
+      const codexHistoryRevision = isCodexAppServer
+        ? await computeChatHistoryRevision(currentMessages)
+        : null;
+      const codexBootstrapHistory = isCodexAppServer
+        ? buildCodexBootstrapHistory(currentMessages)
+        : undefined;
+      let codexThreadId: string | undefined;
+      let codexTurnId: string | undefined;
+      const codexItems = new Map<string, codexAppApi.CodexAppItem>();
+      const codexWarnings: string[] = [];
 
       // Start streaming — returns a Promise<cleanup_fn>
       await new Promise<void>((resolve, reject) => {
@@ -5155,6 +5194,26 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             if (thinkingAccumulator) {
               metadataObj.thinking_blocks = [{ thinking: thinkingAccumulator }];
             }
+            if (sendControl.transport === "codex-app-server") {
+              metadataObj.runtime = "codex-app-server";
+              metadataObj.usage_source = "app-server";
+              metadataObj.stop_reason = info.stopReason;
+              if (codexThreadId) metadataObj.codex_thread_id = codexThreadId;
+              if (codexTurnId) metadataObj.codex_turn_id = codexTurnId;
+              if (codexItems.size > 0) {
+                metadataObj.codex_item_ids = [...codexItems.keys()];
+                metadataObj.codex_items = [...codexItems.values()].map(
+                  (item) => {
+                    const safeItem = { ...item };
+                    delete safeItem.raw;
+                    return safeItem;
+                  },
+                );
+              }
+              if (codexWarnings.length > 0) {
+                metadataObj.codex_warnings = codexWarnings;
+              }
+            }
             if (info.stopReason === "stopped") {
               metadataObj.stopped = true;
             }
@@ -5251,6 +5310,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
                         sessionIdForPersist,
                         title,
                       );
+                      if (isCodexAppServer) {
+                        void codexAppApi
+                          .setCodexSessionThreadName(
+                            turnProjectId,
+                            sessionIdForPersist,
+                            title,
+                          )
+                          .catch((error: unknown) =>
+                            debugLog.warn(
+                              "ChatStore",
+                              "sync Codex thread title",
+                              errorDetail(error),
+                            ),
+                          );
+                      }
                       set((state) => ({
                         sessions: state.sessions.map((s) =>
                           s.id === sessionIdForPersist ? { ...s, title } : s,
@@ -5306,7 +5380,45 @@ export const useChatStore = create<ChatState>()((set, get) => ({
             if (_streamCleanup === turnStreamCleanup) {
               _streamCleanup = null;
             }
+            if (sendControl.transport === "codex-app-server") {
+              const runtimeMetadata = {
+                runtime: "codex-app-server",
+                runtime_error: message,
+                ...(codexThreadId ? { codex_thread_id: codexThreadId } : {}),
+                ...(codexTurnId ? { codex_turn_id: codexTurnId } : {}),
+              };
+              set((s) => ({
+                messages: s.messages.map((messageItem) =>
+                  messageItem.id === assistantMsg.id
+                    ? {
+                        ...messageItem,
+                        metadata: JSON.stringify(runtimeMetadata),
+                      }
+                    : messageItem,
+                ),
+              }));
+            }
             reject(new Error(message));
+          },
+        };
+
+        const codexCallbacks: codexAppApi.CodexAppStreamCallbacks = {
+          ...callbacks,
+          onTurnStarted: ({ threadId, turnId }) => {
+            if (threadId) codexThreadId = threadId;
+            if (turnId) codexTurnId = turnId;
+          },
+          onItemStarted: (item) => {
+            codexItems.set(item.id, item);
+          },
+          onItemCompleted: (item) => {
+            codexItems.set(item.id, item);
+          },
+          onWarning: (message) => {
+            if (codexWarnings.length < 32) codexWarnings.push(message);
+          },
+          onFallback: () => {
+            sendControl.transport = "cli-exec";
           },
         };
 
@@ -5317,45 +5429,75 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
         transportStarted = true;
         sendControl.transportStarted = true;
-        const streamPromise = isCliProvider
-          ? cliApi.sendCliChatStream(
+        const streamPromise = isCodexAppServer
+          ? codexAppApi.sendCodexAppTurn(
               {
-                cli: cliConfig.kind,
-                binaryPath: cliConfig.binaryPath || undefined,
-                model:
-                  (turnRoute?.provider === "cli"
-                    ? turnRoute.model
-                    : cliConfig.model) || undefined,
-                prompt: flattenMessagesForCli(apiPayload),
+                projectId: turnProjectId,
+                sessionId: sessionIdForPersist,
+                grimodexTurnId: sendTurnId,
+                clientUserMessageId: userMsg.id,
+                model: turnRoute?.model || cliConfig.model || undefined,
+                effort: turnRoute?.thinking.effort ?? undefined,
+                contextPacket:
+                  sentSystemPrompt ||
+                  systemCacheSegments?.join("\n\n") ||
+                  "No additional Grimodex context is available.",
+                bootstrapHistory: codexBootstrapHistory,
+                historyRevision: codexHistoryRevision ?? "empty",
+                userMessage: content,
+                transport: codexTransport === "auto" ? "auto" : "app-server",
+                ...(codexTransport === "auto"
+                  ? {
+                      fallbackCli: {
+                        cli: cliConfig.kind,
+                        binaryPath: cliConfig.binaryPath || undefined,
+                        model: turnRoute?.model || cliConfig.model || undefined,
+                        prompt: flattenMessagesForCli(apiPayload),
+                      },
+                    }
+                  : {}),
               },
-              callbacks,
+              codexCallbacks,
             )
-          : chatApi.sendChatMessageStream(
-              apiPayload,
-              chatThinkingParams,
-              callbacks,
-              systemCacheSegments,
-              chatApiVariant,
-              systemVolatileTail,
-              // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
-              // byte-identical(キャッシュ温存)。agent 経路と同契約。別プロバイダ override 最優先。
-              turnRoute?.model ??
-                (xprov
-                  ? xprov.model
-                  : (convRole?.model ?? chatModelOverride ?? null)),
-              // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
-              // role に横断割り当てがあればそれを送る。
-              turnRoute
-                ? turnRoute.providerOverride
-                : (xprov?.provider ?? convRole?.provider ?? null),
-              // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
-              turnRoute
-                ? turnRoute.endpointId
-                : (xprov?.endpointId ?? convRole?.endpointId ?? null),
-              turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
-              turnRoute?.provider ?? null,
-              turnRoute?.resolvedEndpointId ?? null,
-            );
+          : isCliExec
+            ? cliApi.sendCliChatStream(
+                {
+                  cli: cliConfig.kind,
+                  binaryPath: cliConfig.binaryPath || undefined,
+                  model:
+                    (turnRoute?.provider === "cli"
+                      ? turnRoute.model
+                      : cliConfig.model) || undefined,
+                  prompt: flattenMessagesForCli(apiPayload),
+                },
+                callbacks,
+              )
+            : chatApi.sendChatMessageStream(
+                apiPayload,
+                chatThinkingParams,
+                callbacks,
+                systemCacheSegments,
+                chatApiVariant,
+                systemVolatileTail,
+                // role 未設定なら一時モデル(あれば)を送る。両方無ければ null=既定で
+                // byte-identical(キャッシュ温存)。agent 経路と同契約。別プロバイダ override 最優先。
+                turnRoute?.model ??
+                  (xprov
+                    ? xprov.model
+                    : (convRole?.model ?? chatModelOverride ?? null)),
+                // 別プロバイダ override 時のみ provider を渡す(同一プロバイダは null=既定)。
+                // role に横断割り当てがあればそれを送る。
+                turnRoute
+                  ? turnRoute.providerOverride
+                  : (xprov?.provider ?? convRole?.provider ?? null),
+                // OpenAI 互換の別エンドポイント override（同一 provider でも送信先を切替）。
+                turnRoute
+                  ? turnRoute.endpointId
+                  : (xprov?.endpointId ?? convRole?.endpointId ?? null),
+                turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
+                turnRoute?.provider ?? null,
+                turnRoute?.resolvedEndpointId ?? null,
+              );
 
         streamPromise
           .then((cleanup) => {
@@ -5948,6 +6090,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     // tool_result を送らずに即 return する（stop が agent path を止められない
     // 問題への対処）。フラグ→resolve の順序が肝。
     const stoppedControl = _activeSendControl;
+    const stoppedTurnId = _activeSendTurnId;
+    const stoppedSessionId = get().activeSessionId;
+    const stoppedProjectId = get().activeProjectId ?? getCurrentProjectId();
     if (stoppedControl) {
       stoppedControl.aborted = true;
       if (!stoppedControl.transportStarted) {
@@ -5974,17 +6119,23 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       _activeSendTurnId = null;
       _activeSendControl = null;
     }
-    // CLI subprocess と HTTP ベースのストリームは別系統なので、
-    // 現在のプロバイダに合わせた abort を発火する。両方発火しても害は無いが、
-    // CLI 用フラグはアプリ全体で 1 つしかないため不要な reset を避ける。
-    // 別プロバイダ override 中は実送信が HTTP 経路(別プロバイダは cli 非対象)なので、
-    // active provider が cli でも HTTP 側を abort する(誤チャネル abort を防ぐ)。
-    const xprov = getCrossProviderChatOverride();
-    const provider =
-      _activeTurnRoute?.provider ??
-      xprov?.provider ??
-      useAiSettingsStore.getState().settings?.provider;
-    if (provider === "cli") {
+    // Stop は送信開始時に凍結した transport を使う。Codex App Server は
+    // subprocess 全体を終了せず、対象 Thread/Turn だけを interrupt する。
+    const stoppedTransport =
+      stoppedControl?.transport ?? _activeTurnRoute?.transport ?? "http";
+    if (
+      stoppedTransport === "codex-app-server" &&
+      stoppedTurnId &&
+      stoppedSessionId
+    ) {
+      void codexAppApi
+        .abortCodexAppTurn({
+          projectId: stoppedProjectId,
+          sessionId: stoppedSessionId,
+          grimodexTurnId: stoppedTurnId,
+        })
+        .catch(() => {});
+    } else if (stoppedTransport === "cli-exec") {
       void cliApi.abortCliChatStream().catch(() => {});
     } else {
       void chatApi.abortChatStream().catch(() => {});

@@ -162,6 +162,8 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
   // napi の TSFn end-to-end 実証チャネル（§7.1、FE 購読者なし）
   "backend:ready",
   "workspace:opened",
+  // Codex App Server main-only normalized event envelope.
+  "codex-app:event",
 ] as const;
 
 /** Electron main 専用のイベント。renderer / backend callback からは送れない。 */
@@ -252,6 +254,18 @@ export interface NapiBackendLike {
   getNativeBuildCapabilities?(): Promise<string>;
   /** Main-only bridge used to build standalone MCP sidecar config. */
   getActiveWorkspacePath?(): Promise<string>;
+  /** Main-only Codex App Server thread binding bridge. */
+  getChatRuntimeThreadBinding?(
+    projectId: string,
+    sessionId: string,
+    runtime: string,
+  ): Promise<string>;
+  upsertChatRuntimeThreadBinding?(binding: unknown): Promise<void>;
+  deleteChatRuntimeThreadBinding?(
+    projectId: string,
+    sessionId: string,
+    runtime: string,
+  ): Promise<void>;
   listBackups?(): Promise<string>;
   restoreBackup?(fileName: string): Promise<void>;
   getGlobalSettings(): Promise<string>;
@@ -2237,6 +2251,16 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   "list_cli_models",
   "send_cli_chat_stream",
   "abort_cli_chat_stream",
+  // Codex App Server high-level commands. Raw JSON-RPC methods/params never
+  // cross this boundary; the manager validates ownership and read-only policy.
+  "codex_app_get_status",
+  "codex_app_test_connection",
+  "codex_app_list_models",
+  "codex_app_start_turn",
+  "codex_app_interrupt_turn",
+  "codex_app_respond_to_request",
+  "codex_app_archive_session_thread",
+  "codex_app_set_thread_name",
   // Vivliostyle（Phase 3 バッチ5）: main常駐managerがbuild/preview child、
   // output token、native保存dialogをinvoke間で共有する。
   "vivliostyle_detect",

@@ -1,4 +1,7 @@
-import type { ResolvedTurnRoute } from "@/features/ai-context/finalizeTurnPayload";
+import type {
+  ChatTransport,
+  ResolvedTurnRoute,
+} from "@/features/ai-context/finalizeTurnPayload";
 import {
   resolveOutputBudgetPlan,
   type OutputBudgetPlan,
@@ -16,6 +19,7 @@ import { isAinoveristV1Model } from "../aiNovelist";
 import {
   getOpenaiCompatibleEndpoints,
   resolveActiveOpenaiCompatibleEndpoint,
+  type CliTransport,
   type AiProvider,
   type AiSettings,
 } from "../types";
@@ -56,6 +60,19 @@ export interface ResolvedChatTurnRoute extends ResolvedTurnRoute {
 function nonEmpty(value: string | null | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function resolveTransport(
+  provider: AiProvider,
+  settings: AiSettings,
+): ChatTransport {
+  if (provider !== "cli") return "http";
+  const cli = settings.cli;
+  if (cli?.kind !== "codex") return "cli-exec";
+  const selected: CliTransport = cli.codexTransport ?? "exec";
+  return selected === "app-server" || selected === "auto"
+    ? "codex-app-server"
+    : "cli-exec";
 }
 
 /**
@@ -153,6 +170,7 @@ export function resolveChatTurnRoute(
     surface: input.surface,
     provider,
     model,
+    transport: resolveTransport(provider, effectiveSettings),
     apiVariant,
     endpointId,
     capabilities,
