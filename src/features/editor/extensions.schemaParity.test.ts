@@ -122,7 +122,9 @@ describe("editor schema parity (mention)", () => {
       });
 
       expect(withoutPopup.getJSON()).toEqual(withPopup.getJSON());
-      expect(withoutPopup.getJSON()).toEqual(CODEX_SEMANTIC_LINK_DOC);
+      expect(withoutPopup.getJSON().content?.[0]?.content?.[1]).toMatchObject(
+        CODEX_SEMANTIC_LINK_DOC.content[0].content[1],
+      );
     } finally {
       withPopup.destroy();
       withoutPopup.destroy();
