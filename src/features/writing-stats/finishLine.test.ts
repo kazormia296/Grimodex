@@ -172,4 +172,21 @@ describe("computeFinishLineProgress", () => {
     expect(r.reached).toBe(true);
     expect(r.remaining).toBe(0);
   });
+
+  it.each(["2026-02-30", "not-a-date", "2026-2-3"])(
+    "不正な締切日 %s は未設定として扱う",
+    (deadlineKey) => {
+      const r = computeFinishLineProgress({
+        target: 1000,
+        current: 100,
+        pace: 100,
+        deadlineKey,
+        now: NOW,
+      });
+
+      expect(r.hasDeadline).toBe(false);
+      expect(r.daysUntilDeadline).toBeNull();
+      expect(r.requiredPace).toBeNull();
+    },
+  );
 });
