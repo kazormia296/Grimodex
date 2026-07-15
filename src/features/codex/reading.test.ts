@@ -10,6 +10,7 @@ import {
   serializeReadings,
   reconcileReadingKeys,
   resolveReadingForSurface,
+  resolveUnsetReadingTargetForSurface,
   type ReadingMap,
 } from "./reading";
 
@@ -325,5 +326,79 @@ describe("resolveReadingForSurface", () => {
     ];
     expect(resolveReadingForSurface("alice", entries)).toBeNull();
     expect(resolveReadingForSurface(" Alice ", entries)).toBeNull();
+  });
+});
+
+describe("resolveUnsetReadingTargetForSurface", () => {
+  it("読み未設定の一意な Codex 名を登録先として返す", () => {
+    const entry = {
+      id: "setsuna",
+      name: "刹那",
+      aliases: '["セツナ"]',
+      readings: null,
+    };
+
+    expect(resolveUnsetReadingTargetForSurface("刹那", [entry])).toBe(entry);
+  });
+
+  it("alias 自身の読みだけが未設定なら、その Codex を登録先として返す", () => {
+    const entry = {
+      id: "setsuna",
+      name: "刹那",
+      aliases: '["剣聖"]',
+      readings: '{"刹那":["せつな"]}',
+    };
+
+    expect(resolveUnsetReadingTargetForSurface("剣聖", [entry])).toBe(entry);
+  });
+
+  it("保存済み読みがある表記は AI 推定由来かを区別せず対象外にする", () => {
+    expect(
+      resolveUnsetReadingTargetForSurface("刹那", [
+        {
+          id: "setsuna",
+          name: "刹那",
+          readings: '{"刹那":["せつな"]}',
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("同じ表記に複数 Codex が一致する場合は登録先を決めない", () => {
+    expect(
+      resolveUnsetReadingTargetForSurface("霞", [
+        { id: "first", name: "霞", readings: null },
+        {
+          id: "second",
+          name: "霞姫",
+          aliases: '["霞"]',
+          readings: null,
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("除外 alias・破損 readings・不完全一致は登録先にしない", () => {
+    expect(
+      resolveUnsetReadingTargetForSurface("剣聖", [
+        {
+          id: "excluded",
+          name: "刹那",
+          aliases: '["剣聖"]',
+          excludedAliases: '["剣聖"]',
+          readings: null,
+        },
+      ]),
+    ).toBeNull();
+    expect(
+      resolveUnsetReadingTargetForSurface("刹那", [
+        { id: "broken", name: "刹那", readings: "{ broken" },
+      ]),
+    ).toBeNull();
+    expect(
+      resolveUnsetReadingTargetForSurface(" 刹那 ", [
+        { id: "setsuna", name: "刹那", readings: null },
+      ]),
+    ).toBeNull();
   });
 });
