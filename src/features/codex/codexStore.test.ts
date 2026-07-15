@@ -489,7 +489,10 @@ describe("codexStore", () => {
         "default-project",
         "codex-1",
         { readings: savedReadings },
-        { baseVersion: 7 },
+        {
+          baseVersion: 7,
+          baseReadings: '{"アリス":["ありす"]}',
+        },
       );
       expect(useCodexStore.getState().completionTargets[0].readings).toBe(
         savedReadings,
