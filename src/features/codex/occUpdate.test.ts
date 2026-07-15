@@ -86,7 +86,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
     expect(limitMock).not.toHaveBeenCalled();
   });
 
-  it("baseReadings 指定時は取得時の readings JSON も UPDATE 条件に含める", async () => {
+  it("baseSurface 指定時は取得時の readings JSON も UPDATE 条件に含める", async () => {
     returningMock.mockResolvedValueOnce([
       { id: "e1", projectId: "p", version: 3, readings: '{"A":["a"]}' },
     ]);
@@ -95,7 +95,15 @@ describe("updateCodexEntry OCC (base_version)", () => {
       "p",
       "e1",
       { readings: '{"A":["a"],"B":["b"]}' },
-      { baseVersion: 2, baseReadings: '{"A":["a"]}' },
+      {
+        baseVersion: 2,
+        baseSurface: {
+          name: "A",
+          aliases: null,
+          excludedAliases: null,
+          readings: '{"A":["a"]}',
+        },
+      },
     );
 
     const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
@@ -104,7 +112,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
     expect(query.params).toContain('{"A":["a"]}');
   });
 
-  it("baseReadings が null なら readings IS NULL を UPDATE 条件に含める", async () => {
+  it("baseSurface.readings が null なら readings IS NULL を UPDATE 条件に含める", async () => {
     returningMock.mockResolvedValueOnce([
       { id: "e1", projectId: "p", version: 1, readings: '{"A":["a"]}' },
     ]);
@@ -113,12 +121,49 @@ describe("updateCodexEntry OCC (base_version)", () => {
       "p",
       "e1",
       { readings: '{"A":["a"]}' },
-      { baseVersion: 0, baseReadings: null },
+      {
+        baseVersion: 0,
+        baseSurface: {
+          name: "A",
+          aliases: null,
+          excludedAliases: null,
+          readings: null,
+        },
+      },
     );
 
     const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
     const query = new SQLiteSyncDialect().sqlToQuery(condition);
     expect(query.sql).toMatch(/"readings"\s+is\s+null/i);
+  });
+
+  it("baseSurface は name / aliases / excludedAliases も同じ UPDATE 条件に含める", async () => {
+    returningMock.mockResolvedValueOnce([
+      { id: "e1", projectId: "p", version: 2, readings: '{"A":["a"]}' },
+    ]);
+
+    await updateCodexEntry(
+      "p",
+      "e1",
+      { readings: '{"A":["a"],"B":["b"]}' },
+      {
+        baseVersion: 1,
+        baseSurface: {
+          name: "A",
+          aliases: null,
+          excludedAliases: '["old"]',
+          readings: '{"A":["a"]}',
+        },
+      },
+    );
+
+    const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
+    const query = new SQLiteSyncDialect().sqlToQuery(condition);
+    expect(query.sql).toMatch(/"name"\s*=\s*\?/);
+    expect(query.sql).toMatch(/"aliases"\s+is\s+null/i);
+    expect(query.sql).toMatch(/"excluded_aliases"\s*=\s*\?/);
+    expect(query.params).toContain("A");
+    expect(query.params).toContain('["old"]');
   });
 });
 

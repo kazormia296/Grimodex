@@ -491,7 +491,12 @@ describe("codexStore", () => {
         { readings: savedReadings },
         {
           baseVersion: 7,
-          baseReadings: '{"アリス":["ありす"]}',
+          baseSurface: {
+            name: "アリス",
+            aliases: '["白兎"]',
+            excludedAliases: "[]",
+            readings: '{"アリス":["ありす"]}',
+          },
         },
       );
       expect(useCodexStore.getState().completionTargets[0].readings).toBe(
