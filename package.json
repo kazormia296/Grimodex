@@ -39,6 +39,8 @@
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
     "verify:frontend": "pnpm exec tsc --noEmit && pnpm lint && pnpm validate:architecture && pnpm test:node --run",
+    "test:scan": "pnpm --filter @grimodex/scan-contract test && pnpm --filter @grimodex/scan-core test && pnpm --filter @grimodex/scan-prompts test && pnpm --filter @grimodex/scan-web test",
+    "typecheck:scan": "pnpm --filter @grimodex/scan-contract typecheck && pnpm --filter @grimodex/scan-core typecheck && pnpm --filter @grimodex/scan-prompts typecheck && pnpm --filter @grimodex/scan-web typecheck",
     "tauri": "tauri",
     "electron:dev": "node electron/scripts/dev.mjs",
     "electron:build": "tsc -p electron/tsconfig.json --noEmit && node electron/scripts/build.mjs && pnpm build",

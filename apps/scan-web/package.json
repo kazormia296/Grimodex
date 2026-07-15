@@ -1,0 +1,18 @@
+{
+  "name": "@grimodex/scan-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@grimodex/scan-contract": "workspace:*",
+    "@grimodex/scan-core": "workspace:*",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  }
+}
