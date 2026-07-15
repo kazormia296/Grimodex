@@ -2,8 +2,11 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  parseEditorSeed,
   parseScanBundle,
+  validateChunkExtraction,
   validateScanBundle,
+  type EditorSeedV1,
   type ScanBundleV1,
 } from "../src/index.js";
 
@@ -98,5 +101,231 @@ describe("ScanBundleV1 contract", () => {
         true,
       );
     }
+  });
+
+  it("requires evidence for inferred summary items", async () => {
+    const fixture = (await readFixture()) as Record<string, unknown>;
+    const summary = fixture.summary as Record<string, unknown>;
+    const genres = summary.genreCandidates as Array<Record<string, unknown>>;
+    genres[0] = { ...genres[0], evidence: [] };
+
+    const result = validateScanBundle(fixture);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((error) => error.code === "evidence-required")).toBe(
+        true,
+      );
+    }
+  });
+
+  it("rejects confirmed findings unless an author action explicitly allows them", async () => {
+    const fixture = (await readFixture()) as Record<string, unknown>;
+    const findings = fixture.findings as Array<Record<string, unknown>>;
+    findings[0] = { ...findings[0], status: "confirmed" };
+
+    const fromModel = validateScanBundle(fixture);
+    expect(fromModel.ok).toBe(false);
+
+    const afterAuthorAction = validateScanBundle(fixture, {
+      allowConfirmedFindingStatus: true,
+    });
+    expect(afterAuthorAction.ok).toBe(true);
+  });
+
+  it("validates a private editor seed against the bundle paragraph set", async () => {
+    const bundle = (await readFixture()) as ScanBundleV1;
+    const seed: EditorSeedV1 = {
+      schemaVersion: "grimodex-scan/editor-seed/1",
+      bundle,
+      source: {
+        schemaVersion: "grimodex-scan/source-document/1",
+        title: bundle.source.title,
+        language: bundle.source.language,
+        fingerprint: bundle.source.fingerprint,
+        sections: bundle.sections.map((section) => ({
+          id: section.id,
+          ordinal: section.ordinal,
+          title: section.title,
+          paragraphIds: section.paragraphIds,
+        })),
+        paragraphs: [
+          {
+            id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
+            sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ordinal: 0,
+            text: "葵は灯台の窓を開けた。",
+          },
+          {
+            id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
+            sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ordinal: 1,
+            text: "白灯台には古い手紙が残っていた。",
+          },
+        ],
+      },
+    };
+
+    expect(parseEditorSeed(seed).ok).toBe(true);
+    expect(
+      parseEditorSeed({
+        ...seed,
+        source: { ...seed.source, fingerprint: "sha256:other" },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects a source paragraph mutation even when the old fingerprint is retained", async () => {
+    const bundle = (await readFixture()) as ScanBundleV1;
+    const source = {
+      schemaVersion: "grimodex-scan/source-document/1" as const,
+      title: bundle.source.title,
+      language: bundle.source.language,
+      fingerprint: bundle.source.fingerprint,
+      sections: bundle.sections.map((section) => ({ ...section })),
+      paragraphs: [
+        {
+          id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
+          sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          ordinal: 0,
+          text: "本文を書き換えた。",
+        },
+        {
+          id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
+          sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          ordinal: 1,
+          text: "白灯台には古い手紙が残っていた。",
+        },
+      ],
+    };
+
+    const result = parseEditorSeed({
+      schemaVersion: "grimodex-scan/editor-seed/1",
+      bundle,
+      source,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((item) => item.code === "fingerprint-content-mismatch")).toBe(true);
+    }
+  });
+
+  it("rejects source sections whose order or paragraph ownership differs", async () => {
+    const bundle = (await readFixture()) as ScanBundleV1;
+    const seed = {
+      schemaVersion: "grimodex-scan/editor-seed/1" as const,
+      bundle,
+      source: {
+        schemaVersion: "grimodex-scan/source-document/1" as const,
+        title: bundle.source.title,
+        language: bundle.source.language,
+        fingerprint: bundle.source.fingerprint,
+        sections: bundle.sections.map((section) => ({
+          ...section,
+          paragraphIds: [...section.paragraphIds].reverse(),
+        })),
+        paragraphs: [
+          {
+            id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
+            sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ordinal: 0,
+            text: "葵は灯台の窓を開けた。",
+          },
+          {
+            id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
+            sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ordinal: 1,
+            text: "白灯台には古い手紙が残っていた。",
+          },
+        ],
+      },
+    };
+
+    expect(parseEditorSeed(seed).ok).toBe(false);
+  });
+
+  it("rejects evidence excerpts and sentence indexes that do not match source text", async () => {
+    const bundle = (await readFixture()) as ScanBundleV1;
+    const findings = bundle.findings.map((finding) => ({
+      ...finding,
+      evidence: [
+        {
+          ...finding.evidence[0],
+          sentenceIndex: 99,
+          excerpt: "本文に存在しない抜粋",
+        },
+      ],
+    }));
+    const source = {
+      schemaVersion: "grimodex-scan/source-document/1" as const,
+      title: bundle.source.title,
+      language: bundle.source.language,
+      fingerprint: bundle.source.fingerprint,
+      sections: bundle.sections.map((section) => ({ ...section })),
+      paragraphs: [
+        {
+          id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
+          sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          ordinal: 0,
+          text: "葵は灯台の窓を開けた。",
+        },
+        {
+          id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
+          sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          ordinal: 1,
+          text: "白灯台には古い手紙が残っていた。",
+        },
+      ],
+    };
+
+    const result = parseEditorSeed({
+      schemaVersion: "grimodex-scan/editor-seed/1",
+      bundle: { ...bundle, findings },
+      source,
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("validates chunk extraction independently before merge", () => {
+    const result = validateChunkExtraction({
+      schemaVersion: "grimodex-scan/chunk-extraction/1",
+      chunkId: "chunk:fixture",
+      sourceFingerprint: "sha256:fixture-minimal-ja",
+      entities: [],
+      relations: [],
+      events: [],
+    }, {
+      expectedChunkId: "chunk:fixture",
+      expectedSourceFingerprint: "sha256:fixture-minimal-ja",
+      paragraphIds: [],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      validateChunkExtraction({
+        schemaVersion: "grimodex-scan/chunk-extraction/1",
+        chunkId: "chunk:fixture",
+        sourceFingerprint: "sha256:fixture-minimal-ja",
+        entities: [],
+        relations: [],
+        events: [],
+      }, {
+        expectedChunkId: "chunk:other",
+        expectedSourceFingerprint: "sha256:fixture-minimal-ja",
+        paragraphIds: [],
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects non-candidate statuses other than an explicitly confirmed finding", async () => {
+    const fixture = (await readFixture()) as ScanBundleV1;
+    const rejected = {
+      ...fixture,
+      findings: fixture.findings.map((finding) => ({ ...finding, status: "rejected" as const })),
+    };
+
+    expect(validateScanBundle(rejected, { allowConfirmedFindingStatus: true }).ok).toBe(false);
   });
 });

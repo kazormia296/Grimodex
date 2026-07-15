@@ -1,4 +1,7 @@
 export const SCAN_SCHEMA_VERSION = "grimodex-scan/1" as const;
+export const SOURCE_DOCUMENT_SCHEMA_VERSION = "grimodex-scan/source-document/1" as const;
+export const CHUNK_EXTRACTION_SCHEMA_VERSION = "grimodex-scan/chunk-extraction/1" as const;
+export const EDITOR_SEED_SCHEMA_VERSION = "grimodex-scan/editor-seed/1" as const;
 
 export type ScanSchemaVersion = typeof SCAN_SCHEMA_VERSION;
 export type ScanLanguage = "ja" | "en" | "other";
@@ -142,4 +145,70 @@ export interface ScanBundleV1 {
   findings: ScanFinding[];
   summary: ScanSummary;
   provenance: ScanProvenance;
+}
+
+export interface SourceParagraphV1 {
+  id: string;
+  sectionId: string;
+  ordinal: number;
+  text: string;
+}
+
+export interface SourceSectionV1 {
+  id: string;
+  ordinal: number;
+  title: string;
+  paragraphIds: string[];
+}
+
+export interface SourceDocumentV1 {
+  schemaVersion: typeof SOURCE_DOCUMENT_SCHEMA_VERSION;
+  title: string;
+  language: ScanLanguage;
+  fingerprint: string;
+  sections: SourceSectionV1[];
+  paragraphs: SourceParagraphV1[];
+}
+
+export interface EditorSeedV1 {
+  schemaVersion: typeof EDITOR_SEED_SCHEMA_VERSION;
+  bundle: ScanBundleV1;
+  source: SourceDocumentV1;
+}
+
+export interface ChunkEntityCandidate {
+  type: ScanEntityType;
+  name: string;
+  aliases: string[];
+  summary?: string;
+  evidence: EvidenceRef[];
+  confidence: number;
+}
+
+export interface ChunkRelationCandidate {
+  fromName: string;
+  toName: string;
+  type: string;
+  label?: string;
+  evidence: EvidenceRef[];
+  confidence: number;
+}
+
+export interface ChunkEventCandidate {
+  title: string;
+  summary?: string;
+  sectionId: string;
+  paragraphIds: string[];
+  entityNames: string[];
+  order: number;
+  evidence: EvidenceRef[];
+}
+
+export interface ChunkExtractionV1 {
+  schemaVersion: typeof CHUNK_EXTRACTION_SCHEMA_VERSION;
+  chunkId: string;
+  sourceFingerprint: string;
+  entities: ChunkEntityCandidate[];
+  relations: ChunkRelationCandidate[];
+  events: ChunkEventCandidate[];
 }
