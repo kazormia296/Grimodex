@@ -46,6 +46,16 @@ const mockEntry2: CodexEntry = {
   updatedAt: "2024-01-02T00:00:00Z",
 };
 
+const { mockBlockIfUnlicensed } = vi.hoisted(() => ({
+  mockBlockIfUnlicensed: vi.fn(() => false),
+}));
+
+vi.mock("@/features/license/gate", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/features/license/gate")>();
+  return { ...actual, blockIfUnlicensed: mockBlockIfUnlicensed };
+});
+
 vi.mock("./api", () => ({
   listCodexEntries: vi.fn(),
   listCodexMatchTargets: vi.fn(),
@@ -130,6 +140,7 @@ function findCodexUpdateEvent() {
 describe("codexStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockBlockIfUnlicensed.mockReturnValue(false);
     useCodexStore.setState({
       entries: [],
       completionTargets: [],
@@ -459,6 +470,29 @@ describe("codexStore", () => {
   });
 
   describe("registerRubyReading", () => {
+    it("ライセンス書き込み制限中は DB を読み書きしない", async () => {
+      mockBlockIfUnlicensed.mockReturnValue(true);
+      mockListCodexMatchTargets.mockResolvedValue([
+        completionTarget(mockEntry),
+      ]);
+      mockGetCodexEntry.mockResolvedValue(mockEntry);
+      mockUpdateCodexEntry.mockResolvedValue({
+        ...mockEntry,
+        readings: '{"アリス":["ありす"]}',
+      });
+
+      await expect(
+        useCodexStore
+          .getState()
+          .registerRubyReading("codex-1", "アリス", "ありす"),
+      ).resolves.toBe(false);
+
+      expect(mockBlockIfUnlicensed).toHaveBeenCalledTimes(1);
+      expect(mockListCodexMatchTargets).not.toHaveBeenCalled();
+      expect(mockGetCodexEntry).not.toHaveBeenCalled();
+      expect(mockUpdateCodexEntry).not.toHaveBeenCalled();
+    });
+
     it("DB の最新 readings にマージし、最新 version で OCC 更新する", async () => {
       const latest = {
         ...mockEntry,
