@@ -1,6 +1,7 @@
 import type { CodexEntry } from "./api";
 import type { CodexSortOrder } from "./codexStore";
 import type { CodexType } from "./typeApi";
+import { compareInstantValues } from "@/lib/time";
 
 /** Sort option descriptors — translate the `key` field with `t(opt.key)` in components. */
 export const CODEX_SORT_OPTIONS: { value: CodexSortOrder; key: string }[] = [
@@ -45,13 +46,11 @@ export function sortEntries(
       return sorted.sort((a, b) => b.name.localeCompare(a.name, "ja"));
     case "updated":
       return sorted.sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        (a, b) => compareInstantValues(a.updatedAt, b.updatedAt, "descending"),
       );
     case "created":
       return sorted.sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        (a, b) => compareInstantValues(a.createdAt, b.createdAt, "descending"),
       );
     case "most-referenced":
       return sorted.sort((a, b) => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalInstantString,
+  compareInstantValues,
   instantEpochMilliseconds,
   plainDateAtEpochMilliseconds,
   plainDateFromKey,
@@ -25,6 +26,21 @@ describe("time boundary", () => {
   it("returns null instead of accepting invalid instants", () => {
     expect(instantEpochMilliseconds("not-a-date")).toBeNull();
     expect(canonicalInstantString("")).toBeNull();
+  });
+
+  it("sorts mixed SQLite and RFC 3339 strings by their actual instant", () => {
+    const earlier = "2026-07-15 12:00:00";
+    const later = "2026-07-15T12:30:00.000Z";
+
+    expect(compareInstantValues(earlier, later)).toBe(-1);
+    expect(compareInstantValues(earlier, later, "descending")).toBe(1);
+  });
+
+  it("keeps invalid instant values after valid values in either direction", () => {
+    const valid = "2026-07-15T12:30:00.000Z";
+
+    expect(compareInstantValues("not-a-date", valid)).toBe(1);
+    expect(compareInstantValues("not-a-date", valid, "descending")).toBe(1);
   });
 
   it("parses strict ISO date keys without rollover", () => {

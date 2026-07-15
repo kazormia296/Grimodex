@@ -6,6 +6,10 @@
  * ロジックを決定的にテストできる。日付の丸めはローカルタイムゾーン基準
  * （`Math.floor(ts / 86400000)` の UTC 丸めではない）。
  */
+import {
+  plainDateAtEpochMilliseconds,
+  plainDateFromKey,
+} from "@/lib/time";
 
 /** 1 件の編集イベントを統計に必要な形へ縮約したもの。 */
 export interface WritingEvent {
@@ -68,24 +72,16 @@ export interface Heatmap {
 
 /** ローカルタイムゾーンの "YYYY-MM-DD"。 */
 export function localDayKey(ts: number): string {
-  return dayKeyFromDate(new Date(ts));
-}
-
-function dayKeyFromDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return plainDateAtEpochMilliseconds(ts).toString();
 }
 
 /**
- * 日付の前後移動はミリ秒演算ではなく `Date` のフィールド正規化で行う。
- * これで DST のある日でも「翌日 / 前日」が正しく出る（local midnight の差が
- * 86400000 にならない日があるため）。
+ * 日付の前後移動は `Temporal.PlainDate` の暦日演算で行う。
  */
 export function shiftDayKey(key: string, delta: number): string {
-  const [y, m, d] = key.split("-").map(Number);
-  return dayKeyFromDate(new Date(y, m - 1, d + delta));
+  const date = plainDateFromKey(key);
+  if (date === null) throw new RangeError(`Invalid day key: ${key}`);
+  return date.add({ days: delta }).toString();
 }
 
 /** イベント列から執筆統計を計算する。 */
@@ -194,10 +190,11 @@ export function buildHeatmap(
   weeks = 53,
 ): Heatmap {
   const metric: "chars" | "events" = stats.hasCharData ? "chars" : "events";
-  const todayKey = localDayKey(now);
+  const today = plainDateAtEpochMilliseconds(now);
+  const todayKey = today.toString();
 
   // 今日を含む週の土曜まで進めてグリッド末尾を確定（列が必ず 7 埋まる）。
-  const todayDow = new Date(now).getDay(); // 0=Sun .. 6=Sat
+  const todayDow = today.dayOfWeek % 7; // Temporal: Mon=1 .. Sun=7 → Sun=0
   const endKey = shiftDayKey(todayKey, 6 - todayDow);
   const totalDays = weeks * 7;
   const startKey = shiftDayKey(endKey, -(totalDays - 1));

@@ -9,6 +9,7 @@
  * いずれも本用途（構造化した RelativeTime を返し、文言化は UI 層の t() に
  * 委譲する）とは互換しないため新規実装とした。
  */
+import { instantFrom, Temporal } from "@/lib/time";
 
 export type RelativeTime =
   | { kind: "justNow" }
@@ -17,13 +18,8 @@ export type RelativeTime =
   | { kind: "yesterday" }
   | { kind: "date"; label: string /* M/D */ };
 
-/** ローカル日付の 0 時（日境界比較用）。 */
-function startOfLocalDay(d: Date): number {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-}
-
 /**
- * ISO 8601 文字列を now 起点の相対時刻表現へ変換する。
+ * RFC 3339 / legacy SQLite 時刻文字列を now 起点の相対時刻表現へ変換する。
  *
  * 規則（上から順に優先）:
  * 1. 60 秒未満          → justNow
@@ -32,7 +28,7 @@ function startOfLocalDay(d: Date): number {
  * 4. 前日（ローカル）   → yesterday
  * 5. それ以前           → date（"M/D" ゼロ埋めなし、ローカル日付）
  *
- * 不正な ISO 文字列は null を返す。i18n はしない（UI 層が kind ごとに
+ * 不正な時刻文字列は null を返す。i18n はしない（UI 層が kind ごとに
  * t() でレンダリングする）。未来時刻はクロックずれ耐性として規則 1 に
  * 丸め込まれる（diff が負 → justNow）。
  */
@@ -40,24 +36,30 @@ export function formatRelativeTime(
   iso: string,
   now: Date,
 ): RelativeTime | null {
-  const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) return null;
+  const targetInstant = instantFrom(iso);
+  const nowEpochMilliseconds = now.getTime();
+  if (targetInstant === null || !Number.isFinite(nowEpochMilliseconds)) {
+    return null;
+  }
 
-  const diffMs = now.getTime() - t.getTime();
+  const diffMs = nowEpochMilliseconds - targetInstant.epochMilliseconds;
   if (diffMs < 60_000) return { kind: "justNow" };
 
   const minutes = Math.floor(diffMs / 60_000);
   if (minutes < 60) return { kind: "minutesAgo", minutes };
 
-  // DST で 1 日が 23/25 時間になっても round で吸収する。
-  const dayDiff = Math.round(
-    (startOfLocalDay(now) - startOfLocalDay(t)) / 86_400_000,
-  );
+  const timeZone = Temporal.Now.timeZoneId();
+  const target = targetInstant.toZonedDateTimeISO(timeZone);
+  const current = Temporal.Instant.fromEpochMilliseconds(nowEpochMilliseconds)
+    .toZonedDateTimeISO(timeZone);
+  const dayDiff = target
+    .toPlainDate()
+    .until(current.toPlainDate(), { largestUnit: "day" }).days;
   if (dayDiff === 0) {
-    const hh = String(t.getHours()).padStart(2, "0");
-    const mm = String(t.getMinutes()).padStart(2, "0");
+    const hh = String(target.hour).padStart(2, "0");
+    const mm = String(target.minute).padStart(2, "0");
     return { kind: "timeOfDay", label: `${hh}:${mm}` };
   }
   if (dayDiff === 1) return { kind: "yesterday" };
-  return { kind: "date", label: `${t.getMonth() + 1}/${t.getDate()}` };
+  return { kind: "date", label: `${target.month}/${target.day}` };
 }

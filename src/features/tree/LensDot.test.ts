@@ -12,8 +12,8 @@ function lens(p: Partial<SceneLensRecord>): SceneLensRecord {
     metrics: {},
     finding: null,
     severity: "info",
-    createdAt: "2026-01-01T00:00:00",
-    runCompletedAt: "2026-01-01T00:00:00",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    runCompletedAt: "2026-01-01T00:00:00.000Z",
     ...p,
   };
 }
@@ -38,8 +38,8 @@ describe("computeLensDotState", () => {
 
   it("updatedAt が最新 runCompletedAt より後なら stale", () => {
     const { stale } = computeLensDotState(
-      [lens({ runCompletedAt: "2026-01-01T00:00:00" })],
-      "2026-01-02T00:00:00",
+      [lens({ runCompletedAt: "2026-01-01T00:00:00.000Z" })],
+      "2026-01-02T00:00:00.000Z",
     );
     expect(stale).toBe(true);
   });
@@ -49,18 +49,18 @@ describe("computeLensDotState", () => {
     // 最古と比較する旧実装なら stale=true になるが、最新比較では stale=false。
     const { stale } = computeLensDotState(
       [
-        lens({ runCompletedAt: "2026-01-01T00:00:00" }),
-        lens({ runCompletedAt: "2026-01-03T00:00:00" }),
+        lens({ runCompletedAt: "2026-01-01T00:00:00.000Z" }),
+        lens({ runCompletedAt: "2026-01-03T00:00:00.000Z" }),
       ],
-      "2026-01-02T00:00:00",
+      "2026-01-02T00:00:00.000Z",
     );
     expect(stale).toBe(false);
   });
 
   it("updatedAt == runCompletedAt は stale ではない (厳密に後のみ)", () => {
     const { stale } = computeLensDotState(
-      [lens({ runCompletedAt: "2026-01-01T00:00:00" })],
-      "2026-01-01T00:00:00",
+      [lens({ runCompletedAt: "2026-01-01T00:00:00.000Z" })],
+      "2026-01-01T00:00:00.000Z",
     );
     expect(stale).toBe(false);
   });
@@ -72,8 +72,20 @@ describe("computeLensDotState", () => {
   it("runCompletedAt が全て null なら stale ではない", () => {
     const { stale } = computeLensDotState(
       [lens({ runCompletedAt: null })],
-      "2026-01-02T00:00:00",
+      "2026-01-02T00:00:00.000Z",
     );
     expect(stale).toBe(false);
+  });
+
+  it("不正な runCompletedAt を無視して最新の有効な診断時刻と比較する", () => {
+    const { stale } = computeLensDotState(
+      [
+        lens({ runCompletedAt: "2026-01-01T00:00:00.000Z" }),
+        lens({ runCompletedAt: "not-a-date" }),
+      ],
+      "2026-01-02T00:00:00.000Z",
+    );
+
+    expect(stale).toBe(true);
   });
 });

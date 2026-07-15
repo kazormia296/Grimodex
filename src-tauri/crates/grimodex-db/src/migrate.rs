@@ -1361,7 +1361,7 @@ impl Database {
 
             -- Semantic search: 本文 prose の埋め込みチャンクを保存する。
             -- Drizzle schema (src/db/schema.ts) と完全一致させる。
-            -- created_at / updated_at は ms-since-epoch INTEGER。Drizzle の mode: 'timestamp'
+            -- created_at / updated_at は ms-since-epoch INTEGER。Drizzle の mode: 'timestamp_ms'
             -- は Date を ms-INTEGER で serialize するため SQL DEFAULT は付けない。
             -- 詳細: temp/semantic-prose-search-context.md §3.1。
             CREATE TABLE IF NOT EXISTS scene_chunks (

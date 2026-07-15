@@ -25,6 +25,7 @@ import { deriveColumns } from "./lib/deriveColumns";
 import { deriveCellMap } from "./lib/deriveCells";
 import { buildCsvString } from "./lib/exportCsv";
 import { saveTextFile } from "@/lib/exportFile";
+import { compareInstantValues } from "@/lib/time";
 import type { CellSource } from "./lib/deriveCells";
 import { MatrixHeader } from "./MatrixHeader";
 import { MatrixTable } from "./MatrixTable";
@@ -141,7 +142,7 @@ export function MatrixPanel() {
           (b.charCount ?? 0) - (a.charCount ?? 0);
       case "last-edited":
         return (a: TreeNodeData, b: TreeNodeData) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+          compareInstantValues(a.updatedAt, b.updatedAt, "descending");
       default:
         return (a: TreeNodeData, b: TreeNodeData) =>
           a.sortOrder.localeCompare(b.sortOrder);

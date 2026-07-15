@@ -1,5 +1,6 @@
 import type { CodexEntryPhase } from "@/db/schema";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
+import { compareInstantValues } from "@/lib/time";
 import {
   isAutoStoryReady,
   type PhaseResolutionMode,
@@ -82,7 +83,9 @@ interface RankedPhase {
 }
 
 function comparePhaseIdentity(a: CodexEntryPhase, b: CodexEntryPhase): number {
-  return a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  return (
+    compareInstantValues(a.createdAt, b.createdAt) || a.id.localeCompare(b.id)
+  );
 }
 
 function compareRankedPhases(

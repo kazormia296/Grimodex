@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { X, MoreVertical, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { formatInstant } from "@/lib/time";
 import { useChatStore } from "@/features/chat/chatStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { resolveScopeSessionKey } from "../chatScope";
@@ -76,7 +77,12 @@ function SessionItem({
     }
   };
 
-  const date = new Date(session.updatedAt).toLocaleDateString();
+  const date =
+    formatInstant(session.updatedAt, undefined, {
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+    }) ?? session.updatedAt;
 
   return (
     <div

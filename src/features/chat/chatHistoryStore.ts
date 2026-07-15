@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { compareInstantValues } from "@/lib/time";
 import { listSessionsWithStats, searchChatMessages } from "./chatHistoryApi";
 import type { SessionWithStats, MessageSearchHit } from "./chatHistoryApi";
 
@@ -45,9 +46,9 @@ export function filterAndSortSessions(
   result = [...result].sort((a, b) => {
     switch (sortMode) {
       case "recent":
-        return b.updatedAt.localeCompare(a.updatedAt);
+        return compareInstantValues(a.updatedAt, b.updatedAt, "descending");
       case "oldest":
-        return a.updatedAt.localeCompare(b.updatedAt);
+        return compareInstantValues(a.updatedAt, b.updatedAt);
       case "most_messages":
         return b.msgCount - a.msgCount;
       case "most_extractions":

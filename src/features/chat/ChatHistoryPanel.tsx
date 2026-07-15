@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useCallback, useMemo } from "react";
 import { Search, X, Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
+import { formatInstant } from "@/lib/time";
 import { useChatStore } from "./chatStore";
 import {
   useChatHistoryStore,
@@ -363,10 +364,10 @@ export function ChatHistoryPanel() {
                     >
                       <p className="text-[10px] text-muted-foreground">
                         {hit.role === "user" ? "You" : "AI"} ·{" "}
-                        {new Date(hit.createdAt).toLocaleTimeString("ja-JP", {
+                        {formatInstant(hit.createdAt, "ja-JP", {
                           hour: "2-digit",
                           minute: "2-digit",
-                        })}
+                        }) ?? hit.createdAt}
                       </p>
                       <p className="mt-0.5 line-clamp-2 text-xs text-foreground">
                         {renderHighlight(hit.highlightedContent)}

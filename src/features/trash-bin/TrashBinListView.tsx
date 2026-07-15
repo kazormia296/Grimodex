@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import i18next from "@/lib/i18n";
+import { instantEpochMilliseconds } from "@/lib/time";
 import { Trash2, Hand } from "lucide-react";
 import type { TrashItemData } from "./types";
 import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
@@ -13,8 +14,9 @@ interface ListViewProps {
 }
 
 function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  const diff = Date.now() - then;
+  const then = instantEpochMilliseconds(iso);
+  if (then === null) return "";
+  const diff = Math.max(0, Date.now() - then);
   const sec = Math.floor(diff / 1000);
   if (sec < 60)
     return i18next.t("trashBin.relativeTime.secondsAgo", { n: sec });

@@ -5,6 +5,7 @@ import {
   useSettingNumber,
   useSettingControl,
 } from "@/features/settings/useSettingControl";
+import { plainDateFromKey } from "@/lib/time";
 import { computeFinishLineProgress } from "./finishLine";
 
 interface FinishLinePacemakerProps {
@@ -20,8 +21,7 @@ interface FinishLinePacemakerProps {
 
 /** "YYYY-MM-DD" をロケール短縮日付に。 */
 function formatDayKey(key: string): string {
-  const [y, m, d] = key.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString();
+  return plainDateFromKey(key)?.toLocaleString() ?? key;
 }
 
 /**

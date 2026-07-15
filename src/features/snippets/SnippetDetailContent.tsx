@@ -49,6 +49,7 @@ import {
 import type { CodexTag } from "@/features/codex/tagApi";
 import { useFitsInline } from "@/hooks/useFitsInline";
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
+import { formatInstant } from "@/lib/time";
 
 interface SnippetDetailContentProps {
   snippet: Snippet;
@@ -426,7 +427,7 @@ export function SnippetDetailContent({
         <div className="space-y-1 text-xs text-muted-foreground">
           <div>
             {t("snippets.detail.createdAt", {
-              date: new Date(snippet.createdAt).toLocaleString(),
+              date: formatInstant(snippet.createdAt) ?? snippet.createdAt,
             })}
           </div>
           <div>
