@@ -9,6 +9,7 @@ import {
   parseReadings,
   serializeReadings,
   reconcileReadingKeys,
+  resolveReadingForSurface,
   type ReadingMap,
 } from "./reading";
 
@@ -208,5 +209,104 @@ describe("reconcileReadingKeys", () => {
     expect(
       reconcileReadingKeys({ 刹那: ["せつな"] }, ["刹那"], ["刹那", "剣士"]),
     ).toEqual({ 刹那: ["せつな"] });
+  });
+});
+
+describe("resolveReadingForSurface", () => {
+  it("Codex 名に設定された先頭の読みを代表読みとして返す", () => {
+    expect(
+      resolveReadingForSurface("刹那", [
+        {
+          name: "刹那",
+          aliases: '["セツナ"]',
+          readings: '{"刹那":["せつな","せちな"],"セツナ":["せつな"]}',
+        },
+      ]),
+    ).toBe("せつな");
+  });
+
+  it("alias には alias 自身へ設定された読みを返す", () => {
+    expect(
+      resolveReadingForSurface("剣聖", [
+        {
+          name: "刹那",
+          aliases: '["剣聖"]',
+          readings: '{"刹那":["せつな"],"剣聖":["けんせい"]}',
+        },
+      ]),
+    ).toBe("けんせい");
+  });
+
+  it("同じ表記に異なる代表読みがある場合は曖昧として返さない", () => {
+    expect(
+      resolveReadingForSurface("霞", [
+        {
+          name: "霞",
+          aliases: null,
+          readings: '{"霞":["かすみ"]}',
+        },
+        {
+          name: "霞姫",
+          aliases: '["霞"]',
+          readings: '{"霞":["かすみひめ"]}',
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("同じ表記の代表読みが一致する場合は一意な読みとして返す", () => {
+    expect(
+      resolveReadingForSurface("霞", [
+        {
+          name: "霞",
+          aliases: null,
+          readings: '{"霞":["かすみ"]}',
+        },
+        {
+          name: "霞姫",
+          aliases: '["霞"]',
+          readings: '{"霞":["かすみ"]}',
+        },
+      ]),
+    ).toBe("かすみ");
+  });
+
+  it("name/alias ではない孤児キーや破損 JSON、空表記を無視する", () => {
+    expect(
+      resolveReadingForSurface("孤児", [
+        {
+          name: "刹那",
+          aliases: '["剣聖", 1]',
+          readings: '{"孤児":["こじ"]}',
+        },
+        { name: "孤児", aliases: null, readings: "{ broken" },
+      ]),
+    ).toBeNull();
+    expect(resolveReadingForSurface("", [])).toBeNull();
+  });
+
+  it("除外表記として登録された alias は自動解決しない", () => {
+    expect(
+      resolveReadingForSurface("剣聖", [
+        {
+          name: "刹那",
+          aliases: '["剣聖"]',
+          excludedAliases: '["剣聖"]',
+          readings: '{"剣聖":["けんせい"]}',
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("表記は trim や大文字小文字変換をせず完全一致で照合する", () => {
+    const entries = [
+      {
+        name: "Alice",
+        aliases: null,
+        readings: '{"Alice":["ありす"]}',
+      },
+    ];
+    expect(resolveReadingForSurface("alice", entries)).toBeNull();
+    expect(resolveReadingForSurface(" Alice ", entries)).toBeNull();
   });
 });

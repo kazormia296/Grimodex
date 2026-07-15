@@ -111,6 +111,7 @@ function completionTarget(entry: CodexEntry): CodexMatchRow {
     type: entry.type,
     aliases: entry.aliases,
     excludedAliases: entry.excludedAliases,
+    readings: entry.readings,
   };
 }
 
@@ -385,6 +386,21 @@ describe("codexStore", () => {
         "アリス改",
       );
       expect(mockListCodexEntries).not.toHaveBeenCalled();
+    });
+
+    it("読みの更新を全プロジェクト用の照合 target に反映する", async () => {
+      useCodexStore.setState({
+        entries: [mockEntry],
+        completionTargets: [completionTarget(mockEntry)],
+      });
+      const readings = '{"アリス":["ありす"]}';
+      mockUpdateCodexEntry.mockResolvedValue({ ...mockEntry, readings });
+
+      await useCodexStore.getState().update("codex-1", { readings });
+
+      expect(useCodexStore.getState().completionTargets[0].readings).toBe(
+        readings,
+      );
     });
 
     it("updates contextMode via store", async () => {
