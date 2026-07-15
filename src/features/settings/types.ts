@@ -86,6 +86,7 @@ export const KEY_SCOPE: Record<string, "global" | "project"> = {
   "editor.aozoraInput": "global",
   "editor.showInvisibles": "global",
   "editor.codexCompletion": "global",
+  "editor.promptCodexReadingOnRuby": "global",
   "editor.autoPairBrackets": "global",
   "editor.codexPopoverOnCaret": "global",
   // Editor — work-specific (project)
@@ -288,6 +289,8 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   "editor.showInvisibles": "false",
   // Codex name/alias ghost completion. Local only; no AI or translation.
   "editor.codexCompletion": "true",
+  // 手動ルビを未設定の Codex 読みとして登録する確認。ユーザー設定で停止可能。
+  "editor.promptCodexReadingOnRuby": "true",
   // 約物ペア(「」『』（）等)の自動補完。既定ON。
   "editor.autoPairBrackets": "true",
   // キャレットが Codex ハイライトに入ったときのポップオーバー表示

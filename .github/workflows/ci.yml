@@ -93,13 +93,13 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
       - name: pnpm audit
-        run: pnpm audit --audit-level high
+        run: pnpm dlx pnpm@11.13.0 --pm-on-fail=ignore audit --audit-level high
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:

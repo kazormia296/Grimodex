@@ -67,3 +67,10 @@ describe("DEFAULT_SETTINGS / KEY_SCOPE — IME integration Phase 2", () => {
     expect(DEFAULT_SETTINGS["ime.includeProfile"]).toBe("true");
   });
 });
+
+describe("DEFAULT_SETTINGS / KEY_SCOPE — Codex 読み登録確認", () => {
+  it("確認トーストは既定 ON のグローバル設定", () => {
+    expect(KEY_SCOPE["editor.promptCodexReadingOnRuby"]).toBe("global");
+    expect(DEFAULT_SETTINGS["editor.promptCodexReadingOnRuby"]).toBe("true");
+  });
+});
