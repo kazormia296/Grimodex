@@ -46,9 +46,20 @@ const mockEntry2: CodexEntry = {
   updatedAt: "2024-01-02T00:00:00Z",
 };
 
+const { mockBlockIfUnlicensed } = vi.hoisted(() => ({
+  mockBlockIfUnlicensed: vi.fn(() => false),
+}));
+
+vi.mock("@/features/license/gate", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/features/license/gate")>();
+  return { ...actual, blockIfUnlicensed: mockBlockIfUnlicensed };
+});
+
 vi.mock("./api", () => ({
   listCodexEntries: vi.fn(),
   listCodexMatchTargets: vi.fn(),
+  getCodexEntry: vi.fn(),
   createCodexEntry: vi.fn(),
   updateCodexEntry: vi.fn(),
   deleteCodexEntry: vi.fn(),
@@ -80,6 +91,7 @@ vi.mock("@/features/chat/chatStore", () => ({
 import {
   listCodexEntries,
   listCodexMatchTargets,
+  getCodexEntry,
   createCodexEntry,
   updateCodexEntry,
   deleteCodexEntry,
@@ -90,6 +102,7 @@ import { announce } from "@/lib/a11y/announcer";
 
 const mockListCodexEntries = vi.mocked(listCodexEntries);
 const mockListCodexMatchTargets = vi.mocked(listCodexMatchTargets);
+const mockGetCodexEntry = vi.mocked(getCodexEntry);
 const mockCreateCodexEntry = vi.mocked(createCodexEntry);
 const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
 const mockDeleteCodexEntry = vi.mocked(deleteCodexEntry);
@@ -111,6 +124,7 @@ function completionTarget(entry: CodexEntry): CodexMatchRow {
     type: entry.type,
     aliases: entry.aliases,
     excludedAliases: entry.excludedAliases,
+    readings: entry.readings,
   };
 }
 
@@ -126,6 +140,7 @@ function findCodexUpdateEvent() {
 describe("codexStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockBlockIfUnlicensed.mockReturnValue(false);
     useCodexStore.setState({
       entries: [],
       completionTargets: [],
@@ -387,6 +402,21 @@ describe("codexStore", () => {
       expect(mockListCodexEntries).not.toHaveBeenCalled();
     });
 
+    it("読みの更新を全プロジェクト用の照合 target に反映する", async () => {
+      useCodexStore.setState({
+        entries: [mockEntry],
+        completionTargets: [completionTarget(mockEntry)],
+      });
+      const readings = '{"アリス":["ありす"]}';
+      mockUpdateCodexEntry.mockResolvedValue({ ...mockEntry, readings });
+
+      await useCodexStore.getState().update("codex-1", { readings });
+
+      expect(useCodexStore.getState().completionTargets[0].readings).toBe(
+        readings,
+      );
+    });
+
     it("updates contextMode via store", async () => {
       const updated = { ...mockEntry, contextMode: "always" };
       mockUpdateCodexEntry.mockResolvedValue(updated);
@@ -436,6 +466,116 @@ describe("codexStore", () => {
           aliases: '["エララ","the apprentice"]',
         },
       );
+    });
+  });
+
+  describe("registerRubyReading", () => {
+    it("ライセンス書き込み制限中は DB を読み書きしない", async () => {
+      mockBlockIfUnlicensed.mockReturnValue(true);
+      mockListCodexMatchTargets.mockResolvedValue([
+        completionTarget(mockEntry),
+      ]);
+      mockGetCodexEntry.mockResolvedValue(mockEntry);
+      mockUpdateCodexEntry.mockResolvedValue({
+        ...mockEntry,
+        readings: '{"アリス":["ありす"]}',
+      });
+
+      await expect(
+        useCodexStore
+          .getState()
+          .registerRubyReading("codex-1", "アリス", "ありす"),
+      ).resolves.toBe(false);
+
+      expect(mockBlockIfUnlicensed).toHaveBeenCalledTimes(1);
+      expect(mockListCodexMatchTargets).not.toHaveBeenCalled();
+      expect(mockGetCodexEntry).not.toHaveBeenCalled();
+      expect(mockUpdateCodexEntry).not.toHaveBeenCalled();
+    });
+
+    it("DB の最新 readings にマージし、最新 version で OCC 更新する", async () => {
+      const latest = {
+        ...mockEntry,
+        aliases: '["白兎"]',
+        readings: '{"アリス":["ありす"]}',
+        version: 7,
+      };
+      const savedReadings = '{"アリス":["ありす"],"白兎":["しろうさぎ"]}';
+      mockListCodexMatchTargets.mockResolvedValue([completionTarget(latest)]);
+      mockGetCodexEntry.mockResolvedValue(latest);
+      mockUpdateCodexEntry.mockResolvedValue({
+        ...latest,
+        readings: savedReadings,
+        version: 8,
+      });
+      useCodexStore.setState({
+        entries: [mockEntry],
+        completionTargets: [completionTarget(mockEntry)],
+      });
+
+      await expect(
+        useCodexStore
+          .getState()
+          .registerRubyReading("codex-1", "白兎", "しろうさぎ"),
+      ).resolves.toBe(true);
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        { readings: savedReadings },
+        {
+          baseVersion: 7,
+          baseSurface: {
+            name: "アリス",
+            aliases: '["白兎"]',
+            excludedAliases: "[]",
+            readings: '{"アリス":["ありす"]}',
+          },
+        },
+      );
+      expect(useCodexStore.getState().completionTargets[0].readings).toBe(
+        savedReadings,
+      );
+    });
+
+    it("外部更新で同じ表記に読みが保存済みなら上書きしない", async () => {
+      const latest = {
+        ...mockEntry,
+        readings: '{"アリス":["えーあいす"]}',
+        version: 4,
+      };
+      mockListCodexMatchTargets.mockResolvedValue([completionTarget(latest)]);
+      mockGetCodexEntry.mockResolvedValue(latest);
+
+      await expect(
+        useCodexStore
+          .getState()
+          .registerRubyReading("codex-1", "アリス", "ありす"),
+      ).resolves.toBe(false);
+
+      expect(mockUpdateCodexEntry).not.toHaveBeenCalled();
+    });
+
+    it("OCC 競合時は外部変更を壊さず conflict handler を呼ぶ", async () => {
+      const latest = { ...mockEntry, version: 5 };
+      mockListCodexMatchTargets.mockResolvedValue([completionTarget(latest)]);
+      mockGetCodexEntry.mockResolvedValue(latest);
+      const { CodexVersionConflictError } = await import("./occ");
+      mockUpdateCodexEntry.mockRejectedValue(
+        new CodexVersionConflictError("codex-1"),
+      );
+      const conflictHandler = vi.fn();
+      const { setCodexEditConflictHandler } = await import("./codexStore");
+      setCodexEditConflictHandler(conflictHandler);
+
+      await expect(
+        useCodexStore
+          .getState()
+          .registerRubyReading("codex-1", "アリス", "ありす"),
+      ).resolves.toBe(false);
+
+      expect(conflictHandler).toHaveBeenCalledWith("codex-1");
+      expect(useCodexStore.getState().completionTargets).toEqual([]);
     });
   });
 

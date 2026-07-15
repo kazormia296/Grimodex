@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { codexEntries, foreshadows, foreshadowCodexLinks } from "@/db/schema";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, isNull } from "drizzle-orm";
 import { enqueueRescan } from "./mentionRescanQueue";
 import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { CodexVersionConflictError } from "./occ";
@@ -79,11 +79,17 @@ export async function listCodexEntries(
 // codexStore（一覧/編集面/undo が全列に依存）は従来通り listCodexEntries を使う。
 // ---------------------------------------------------------------------------
 
-/** mention 検出 (CodexMatchTarget) に必要な 5 列だけの行。 */
+/**
+ * renderer のローカル照合に必要な軽量行。
+ *
+ * name / aliases は mention・入力補完、readings は選択表記への自動ルビ付与で
+ * 使う。本文・画像・ノートは全件キャッシュへ載せない。
+ */
 export type CodexMatchRow = Pick<
   CodexEntry,
   "id" | "name" | "type" | "aliases" | "excludedAliases"
->;
+> &
+  Partial<Pick<CodexEntry, "readings">>;
 
 /**
  * AI 文脈構築用: icon / notes / readings の 3 列を除いた行。content は L4 注入・
@@ -122,7 +128,7 @@ function codexContextEntrySelection() {
 }
 
 /**
- * mention 検出の match target 専用の軽量 projection。
+ * mention・入力補完・自動ルビ付与用の軽量 projection。
  * content / icon / notes を転送しない。
  */
 export async function listCodexMatchTargets(
@@ -137,6 +143,7 @@ export async function listCodexMatchTargets(
       type: codexEntries.type,
       aliases: codexEntries.aliases,
       excludedAliases: codexEntries.excludedAliases,
+      readings: codexEntries.readings,
     })
     .from(codexEntries)
     .where(type ? and(scope, eq(codexEntries.type, type)) : scope);
@@ -268,6 +275,14 @@ type CodexEntryUpdateData = Partial<
 
 interface CodexEntryUpdateOptions {
   baseVersion?: number;
+  /**
+   * 読み登録の read-modify-write で照合した取得時表記。指定された場合、version
+   * を増やさない legacy writer による改名・alias・除外・読み変更も比較検出する。
+   */
+  baseSurface?: Pick<
+    CodexEntry,
+    "name" | "aliases" | "excludedAliases" | "readings"
+  >;
 }
 
 export async function updateCodexEntry(
@@ -285,9 +300,13 @@ export async function updateCodexEntry(
     // before a hidden/suppressed/unknown mode can become observable.
     await markImpactBaselinePhasesRestricted(id);
   }
-  // OCC: baseVersion 指定時のみ条件付き UPDATE (version 照合 + インクリメント)。
-  // 省略時は従来通りの blind UPDATE で完全後方互換 (version 列は触らない)。
+  // OCC: baseVersion 指定時は version 照合 + インクリメント。
+  // baseSurface 指定時は取得時の表記関連列も比較し、version 非更新の既存 writer が
+  // 間に入った場合も read-modify-write で上書きしない。両方省略なら従来通り。
   const useOcc = opts?.baseVersion !== undefined;
+  const baseSurface = opts?.baseSurface;
+  const compareSurface = baseSurface !== undefined;
+  const useConditionalUpdate = useOcc || compareSurface;
   const baseVersion = opts?.baseVersion ?? 0;
   const rows = await db
     .update(codexEntries)
@@ -301,25 +320,40 @@ export async function updateCodexEntry(
         : { ...data, updatedAt: new Date().toISOString() },
     )
     .where(
-      useOcc
-        ? and(
-            eq(codexEntries.id, id),
-            eq(codexEntries.projectId, projectId),
-            eq(codexEntries.version, baseVersion),
-          )
-        : and(eq(codexEntries.id, id), eq(codexEntries.projectId, projectId)),
+      and(
+        eq(codexEntries.id, id),
+        eq(codexEntries.projectId, projectId),
+        useOcc ? eq(codexEntries.version, baseVersion) : undefined,
+        compareSurface ? eq(codexEntries.name, baseSurface.name) : undefined,
+        compareSurface
+          ? baseSurface.aliases === null
+            ? isNull(codexEntries.aliases)
+            : eq(codexEntries.aliases, baseSurface.aliases)
+          : undefined,
+        compareSurface
+          ? baseSurface.excludedAliases === null
+            ? isNull(codexEntries.excludedAliases)
+            : eq(codexEntries.excludedAliases, baseSurface.excludedAliases)
+          : undefined,
+        compareSurface
+          ? baseSurface.readings === null
+            ? isNull(codexEntries.readings)
+            : eq(codexEntries.readings, baseSurface.readings)
+          : undefined,
+      ),
     )
     .returning();
 
-  // 0 件マッチ。OCC 有効時は「行が存在するのに 0 件」= version 衝突として
-  // CodexVersionConflictError を投げ、呼び出し側に非破壊リロードを委ねる。
+  // 0 件マッチ。version / baseSurface の条件付き更新時は「行が存在するのに
+  // 0 件」= 競合として CodexVersionConflictError を投げ、呼び出し側に
+  // 非破壊リロードを委ねる。
   // 行が存在しないなら従来通り undefined (別プロジェクト等のスコープ miss)。
   // OCC 無効時は従来通り undefined。
   // どちらの 0 件でも後続の副作用 (rescan/index/伏線 dirty) は走らせない。
   // 特に markLinkedForeshadowsDirty は projectId 非依存なので、ここで
   // 早期 return しないと別プロジェクトの伏線を汚染しうる。
   if (!rows[0]) {
-    if (useOcc) {
+    if (useConditionalUpdate) {
       const exists = await db
         .select({ id: codexEntries.id })
         .from(codexEntries)

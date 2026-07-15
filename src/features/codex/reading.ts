@@ -9,9 +9,18 @@
  * IME 辞書のキー生成が主目的なので NFKC + カタカナ→ひらがなで畳む。両者を統一しない。
  */
 import { getCharClass } from "./charClassBoundary";
+import { parseAliases } from "./codexMatcher";
 
 /** 表記→読みの配列。空表記・空読みは serializeReadings で剪定される。 */
 export type ReadingMap = Record<string, string[]>;
+
+/** 表記の読み解決に必要な Codex 軽量行。DB 行・テスト用 parsed 配列の両方を許す。 */
+export interface ReadingSurfaceEntry {
+  name: string;
+  aliases?: string[] | string | null;
+  excludedAliases?: string[] | string | null;
+  readings?: string[] | string | null;
+}
 
 /** 印字可能 ASCII のみか (NFKC 済み前提で呼ぶ)。'Mr. X' 等の空白・記号を許す。 */
 function isAsciiOnly(s: string): boolean {
@@ -136,6 +145,93 @@ export function parseReadings(
     if (readings.length > 0) out[surface] = readings;
   }
   return out;
+}
+
+/** JSON 配列に混入した非文字列値を境界で落とし、安全な表記一覧にする。 */
+function parseSurfaceArray(
+  raw: string[] | string | null | undefined,
+): string[] {
+  return parseAliases(raw).filter(
+    (value): value is string => typeof value === "string",
+  );
+}
+
+function matchesReadingSurface(
+  surface: string,
+  entry: ReadingSurfaceEntry,
+): boolean {
+  const aliases = parseSurfaceArray(entry.aliases);
+  if (!surfacesForEntry(entry.name, aliases).includes(surface)) return false;
+  return !new Set(parseSurfaceArray(entry.excludedAliases)).has(surface);
+}
+
+/**
+ * 手動ルビを読みとして登録できる、一意な未設定 Codex 行を解決する。
+ *
+ * - name / alias の完全一致かつ excludedAliases でない表記だけを対象にする。
+ * - 同じ表記に複数行が一致する場合、登録先を推測せず null を返す。
+ * - 表記自身に読みがあれば、AI 推定・手入力などの出自を区別せず設定済みとする。
+ * - 破損 readings を空マップとして上書きしないよう、非空の不正 JSON は対象外にする。
+ */
+export function resolveUnsetReadingTargetForSurface<
+  T extends ReadingSurfaceEntry,
+>(surface: string, entries: readonly T[]): T | null {
+  if (!surface) return null;
+
+  const matches = entries.filter((entry) =>
+    matchesReadingSurface(surface, entry),
+  );
+  if (matches.length !== 1) return null;
+
+  const target = matches[0];
+  const raw = target.readings;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  } else if (raw != null && typeof raw !== "string") {
+    return null;
+  }
+
+  return parseReadings(raw)[surface]?.some((reading) => reading.trim())
+    ? null
+    : target;
+}
+
+/**
+ * 選択表記に設定済みの代表読みを解決する。
+ *
+ * - name / alias と完全一致した表記自身の readings[表記][0] だけを使う。
+ * - alias の読みを name へ、または name の読みを alias へフォールバックしない。
+ * - 同じ表記が複数 Codex に存在しても代表読みが一致すれば利用できるが、異なる
+ *   読みが競合した場合は誤付与を避けて null を返す。
+ * - excludedAliases、破損 JSON、孤児キー、空読みは対象外。
+ */
+export function resolveReadingForSurface(
+  surface: string,
+  entries: readonly ReadingSurfaceEntry[],
+): string | null {
+  if (!surface) return null;
+
+  const candidates = new Set<string>();
+  for (const entry of entries) {
+    if (!matchesReadingSurface(surface, entry)) continue;
+
+    const representative = parseReadings(entry.readings)[surface]?.[0]?.trim();
+    // 同じ表記に一致する Codex が 1 件でも読み未設定なら、どの項目を指すか
+    // 確定できない。設定済み側だけを採用せず fail-closed で手入力へ戻す。
+    if (!representative) return null;
+    candidates.add(representative);
+  }
+
+  return candidates.size === 1
+    ? (candidates.values().next().value ?? null)
+    : null;
 }
 
 /**

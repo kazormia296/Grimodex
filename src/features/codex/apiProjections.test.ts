@@ -45,6 +45,7 @@ beforeAll(async () => {
       name: "アリス",
       aliases: '["ありす"]',
       excludedAliases: '["蟻巣"]',
+      readings: '{"アリス":["ありす"]}',
       summary: "主人公",
       content: CONTENT_A,
       icon: ICON_A,
@@ -69,17 +70,18 @@ beforeAll(async () => {
 });
 
 describe("listCodexMatchTargets", () => {
-  it("match 用の 5 列だけを返す (icon/notes/content を含まない)", async () => {
+  it("ローカル照合用の軽量列だけを返す (icon/notes/content を含まない)", async () => {
     const rows = await listCodexMatchTargets(PROJECT_A);
     const alice = rows.find((r) => r.id === "m10-alice");
     expect(alice).toBeDefined();
     expect(Object.keys(alice!).sort()).toEqual(
-      ["aliases", "excludedAliases", "id", "name", "type"].sort(),
+      ["aliases", "excludedAliases", "id", "name", "readings", "type"].sort(),
     );
     expect(alice!.name).toBe("アリス");
     expect(alice!.type).toBe("character");
     expect(alice!.aliases).toBe('["ありす"]');
     expect(alice!.excludedAliases).toBe('["蟻巣"]');
+    expect(alice!.readings).toBe('{"アリス":["ありす"]}');
   });
 
   it("project / type スコープが効く", async () => {

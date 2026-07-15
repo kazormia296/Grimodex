@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { SQL } from "drizzle-orm";
+import { SQLiteSyncDialect } from "drizzle-orm/sqlite-core";
 
 // db をモック: 条件付き UPDATE の .returning() と、衝突判定用の存在チェック
 // (.select().from().where().limit()) を制御する。markLinkedForeshadowsDirty の
 // db.select は then で [] に解決させ「リンク無し→早期 return」にする。
 const returningMock = vi.fn();
 const limitMock = vi.fn();
+const updateWhereMock = vi.fn((_condition: unknown) => ({
+  returning: returningMock,
+}));
 const whereResult = {
   limit: limitMock,
   then: (resolve: (v: unknown) => void) => resolve([]),
@@ -12,7 +17,7 @@ const whereResult = {
 vi.mock("@/db/client", () => ({
   db: {
     update: () => ({
-      set: () => ({ where: () => ({ returning: returningMock }) }),
+      set: () => ({ where: updateWhereMock }),
     }),
     select: () => ({ from: () => ({ where: () => whereResult }) }),
   },
@@ -33,6 +38,7 @@ import { CodexVersionConflictError } from "./occ";
 beforeEach(() => {
   returningMock.mockReset();
   limitMock.mockReset();
+  updateWhereMock.mockClear();
   scheduleImeExportRefreshMock.mockReset();
 });
 
@@ -78,6 +84,86 @@ describe("updateCodexEntry OCC (base_version)", () => {
     expect(r?.id).toBe("e1");
     // OCC を使っていないので存在チェック (limit) は呼ばれない
     expect(limitMock).not.toHaveBeenCalled();
+  });
+
+  it("baseSurface 指定時は取得時の readings JSON も UPDATE 条件に含める", async () => {
+    returningMock.mockResolvedValueOnce([
+      { id: "e1", projectId: "p", version: 3, readings: '{"A":["a"]}' },
+    ]);
+
+    await updateCodexEntry(
+      "p",
+      "e1",
+      { readings: '{"A":["a"],"B":["b"]}' },
+      {
+        baseVersion: 2,
+        baseSurface: {
+          name: "A",
+          aliases: null,
+          excludedAliases: null,
+          readings: '{"A":["a"]}',
+        },
+      },
+    );
+
+    const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
+    const query = new SQLiteSyncDialect().sqlToQuery(condition);
+    expect(query.sql).toMatch(/"readings"\s*=\s*\?/);
+    expect(query.params).toContain('{"A":["a"]}');
+  });
+
+  it("baseSurface.readings が null なら readings IS NULL を UPDATE 条件に含める", async () => {
+    returningMock.mockResolvedValueOnce([
+      { id: "e1", projectId: "p", version: 1, readings: '{"A":["a"]}' },
+    ]);
+
+    await updateCodexEntry(
+      "p",
+      "e1",
+      { readings: '{"A":["a"]}' },
+      {
+        baseVersion: 0,
+        baseSurface: {
+          name: "A",
+          aliases: null,
+          excludedAliases: null,
+          readings: null,
+        },
+      },
+    );
+
+    const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
+    const query = new SQLiteSyncDialect().sqlToQuery(condition);
+    expect(query.sql).toMatch(/"readings"\s+is\s+null/i);
+  });
+
+  it("baseSurface は name / aliases / excludedAliases も同じ UPDATE 条件に含める", async () => {
+    returningMock.mockResolvedValueOnce([
+      { id: "e1", projectId: "p", version: 2, readings: '{"A":["a"]}' },
+    ]);
+
+    await updateCodexEntry(
+      "p",
+      "e1",
+      { readings: '{"A":["a"],"B":["b"]}' },
+      {
+        baseVersion: 1,
+        baseSurface: {
+          name: "A",
+          aliases: null,
+          excludedAliases: '["old"]',
+          readings: '{"A":["a"]}',
+        },
+      },
+    );
+
+    const condition = updateWhereMock.mock.calls[0]?.[0] as SQL;
+    const query = new SQLiteSyncDialect().sqlToQuery(condition);
+    expect(query.sql).toMatch(/"name"\s*=\s*\?/);
+    expect(query.sql).toMatch(/"aliases"\s+is\s+null/i);
+    expect(query.sql).toMatch(/"excluded_aliases"\s*=\s*\?/);
+    expect(query.params).toContain("A");
+    expect(query.params).toContain('["old"]');
   });
 });
 

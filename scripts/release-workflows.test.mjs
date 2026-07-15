@@ -125,8 +125,8 @@ describe("release workflow boundary", () => {
     );
     const auditStep = securitySteps.find((step) => step.name === "pnpm audit");
 
-    assert.equal(setupNode?.with?.["node-version"], 24);
-    assert.match(auditStep?.run ?? "", /corepack pnpm@11\.13\.0/);
+    assert.equal(setupNode?.with?.["node-version"], 22);
+    assert.match(auditStep?.run ?? "", /pnpm dlx pnpm@11\.13\.0/);
     assert.match(auditStep?.run ?? "", /--pm-on-fail=ignore/);
     assert.match(auditStep?.run ?? "", /audit --audit-level high/);
   });

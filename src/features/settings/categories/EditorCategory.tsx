@@ -234,6 +234,15 @@ export function EditorCategory() {
           />
         </SettingRow>
         <SettingRow
+          label={t("settings.editor.codexReadingPrompt")}
+          description={t("settings.editor.codexReadingPromptDesc")}
+        >
+          <SettingToggle
+            settingKey="editor.promptCodexReadingOnRuby"
+            defaultValue={true}
+          />
+        </SettingRow>
+        <SettingRow
           label={t("settings.editor.codexPopoverOnCaret")}
           description={t("settings.editor.codexPopoverOnCaretDesc")}
         >
