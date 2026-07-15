@@ -128,6 +128,33 @@ describe("Toolbar Codex reading ruby", () => {
     editor.destroy();
   });
 
+  it("hard break を跨ぐ見かけ上同じ表記は自動置換しない", () => {
+    const editor = new Editor({
+      extensions: [StarterKit, RubyNode],
+      content: "<p>刹<br>那</p>",
+    });
+    editor.commands.setTextSelection({ from: 1, to: 4 });
+    expect(editor.state.doc.textBetween(1, 4)).toBe("刹那");
+    vi.spyOn(editor.view, "coordsAtPos").mockReturnValue({
+      left: 10,
+      right: 10,
+      top: 10,
+      bottom: 20,
+    });
+
+    openRuby(editor, [target("刹那", null, '{"刹那":["せつな"]}')]);
+
+    expect(
+      screen.getByPlaceholderText("editor.toolbar.rubyAnnotation"),
+    ).toHaveValue("");
+    expect(editor.getJSON().content?.[0]?.content).toEqual([
+      { type: "text", text: "刹" },
+      { type: "hardBreak" },
+      { type: "text", text: "那" },
+    ]);
+    editor.destroy();
+  });
+
   it("既存ルビの編集では Codex 読みで上書きせず現在値をダイアログに表示する", () => {
     const editor = new Editor({
       extensions: [StarterKit, RubyNode],

@@ -271,6 +271,23 @@ describe("resolveReadingForSurface", () => {
     ).toBe("かすみ");
   });
 
+  it("同じ表記の一方だけに読みがある場合も曖昧として返さない", () => {
+    expect(
+      resolveReadingForSurface("霞", [
+        {
+          name: "霞",
+          aliases: null,
+          readings: '{"霞":["かすみ"]}',
+        },
+        {
+          name: "霞姫",
+          aliases: '["霞"]',
+          readings: null,
+        },
+      ]),
+    ).toBeNull();
+  });
+
   it("name/alias ではない孤児キーや破損 JSON、空表記を無視する", () => {
     expect(
       resolveReadingForSurface("孤児", [
