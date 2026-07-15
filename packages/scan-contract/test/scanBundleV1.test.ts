@@ -55,9 +55,43 @@ describe("ScanBundleV1 contract", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((error) => error.code === "missing-reference")).toBe(
-        true,
-      );
+      expect(
+        result.errors.some((error) => error.code === "missing-reference"),
+      ).toBe(true);
+    }
+  });
+
+  it("rejects chunk events whose paragraph belongs to another section", () => {
+    const result = validateChunkExtraction(
+      {
+        schemaVersion: "grimodex-scan/chunk-extraction/1",
+        chunkId: "chunk:test",
+        sourceFingerprint: "sha256:test",
+        entities: [],
+        relations: [],
+        events: [
+          {
+            title: "移動",
+            sectionId: "section:0",
+            paragraphIds: ["paragraph:0"],
+            entityNames: [],
+            order: 0,
+            evidence: [{ sectionId: "section:0", paragraphId: "paragraph:0" }],
+          },
+        ],
+      },
+      {
+        paragraphIds: ["paragraph:0"],
+        sectionIds: ["section:0", "section:1"],
+        paragraphSectionIds: { "paragraph:0": "section:1" },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(
+        result.errors.some((error) => error.code === "reference-ownership"),
+      ).toBe(true);
     }
   });
 
@@ -79,6 +113,15 @@ describe("ScanBundleV1 contract", () => {
     }
   });
 
+  it("does not throw when an editor seed contains a malformed source paragraph", async () => {
+    const fixture = (await readFixture()) as Record<string, unknown>;
+    const source = fixture.source as Record<string, unknown>;
+    source.paragraphs = [null];
+
+    expect(() => parseEditorSeed(fixture)).not.toThrow();
+    expect(parseEditorSeed(fixture).ok).toBe(false);
+  });
+
   it("rejects duplicate IDs and relation self-loops", async () => {
     const fixture = (await readFixture()) as Record<string, unknown>;
     const entities = fixture.entities as Array<Record<string, unknown>>;
@@ -97,9 +140,9 @@ describe("ScanBundleV1 contract", () => {
       expect(result.errors.some((error) => error.code === "duplicate-id")).toBe(
         true,
       );
-      expect(result.errors.some((error) => error.code === "relation-self-loop")).toBe(
-        true,
-      );
+      expect(
+        result.errors.some((error) => error.code === "relation-self-loop"),
+      ).toBe(true);
     }
   });
 
@@ -113,9 +156,9 @@ describe("ScanBundleV1 contract", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((error) => error.code === "evidence-required")).toBe(
-        true,
-      );
+      expect(
+        result.errors.some((error) => error.code === "evidence-required"),
+      ).toBe(true);
     }
   });
 
@@ -152,13 +195,15 @@ describe("ScanBundleV1 contract", () => {
         paragraphs: [
           {
             id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
-            sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            sectionId:
+              "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ordinal: 0,
             text: "葵は灯台の窓を開けた。",
           },
           {
             id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
-            sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            sectionId:
+              "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ordinal: 1,
             text: "白灯台には古い手紙が残っていた。",
           },
@@ -186,13 +231,15 @@ describe("ScanBundleV1 contract", () => {
       paragraphs: [
         {
           id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
-          sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          sectionId:
+            "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           ordinal: 0,
           text: "本文を書き換えた。",
         },
         {
           id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
-          sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          sectionId:
+            "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           ordinal: 1,
           text: "白灯台には古い手紙が残っていた。",
         },
@@ -207,7 +254,11 @@ describe("ScanBundleV1 contract", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.errors.some((item) => item.code === "fingerprint-content-mismatch")).toBe(true);
+      expect(
+        result.errors.some(
+          (item) => item.code === "fingerprint-content-mismatch",
+        ),
+      ).toBe(true);
     }
   });
 
@@ -228,13 +279,15 @@ describe("ScanBundleV1 contract", () => {
         paragraphs: [
           {
             id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
-            sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            sectionId:
+              "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ordinal: 0,
             text: "葵は灯台の窓を開けた。",
           },
           {
             id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
-            sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            sectionId:
+              "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ordinal: 1,
             text: "白灯台には古い手紙が残っていた。",
           },
@@ -266,13 +319,15 @@ describe("ScanBundleV1 contract", () => {
       paragraphs: [
         {
           id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
-          sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          sectionId:
+            "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           ordinal: 0,
           text: "葵は灯台の窓を開けた。",
         },
         {
           id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
-          sectionId: "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          sectionId:
+            "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           ordinal: 1,
           text: "白灯台には古い手紙が残っていた。",
         },
@@ -289,33 +344,39 @@ describe("ScanBundleV1 contract", () => {
   });
 
   it("validates chunk extraction independently before merge", () => {
-    const result = validateChunkExtraction({
-      schemaVersion: "grimodex-scan/chunk-extraction/1",
-      chunkId: "chunk:fixture",
-      sourceFingerprint: "sha256:fixture-minimal-ja",
-      entities: [],
-      relations: [],
-      events: [],
-    }, {
-      expectedChunkId: "chunk:fixture",
-      expectedSourceFingerprint: "sha256:fixture-minimal-ja",
-      paragraphIds: [],
-    });
-
-    expect(result.ok).toBe(true);
-    expect(
-      validateChunkExtraction({
+    const result = validateChunkExtraction(
+      {
         schemaVersion: "grimodex-scan/chunk-extraction/1",
         chunkId: "chunk:fixture",
         sourceFingerprint: "sha256:fixture-minimal-ja",
         entities: [],
         relations: [],
         events: [],
-      }, {
-        expectedChunkId: "chunk:other",
+      },
+      {
+        expectedChunkId: "chunk:fixture",
         expectedSourceFingerprint: "sha256:fixture-minimal-ja",
         paragraphIds: [],
-      }).ok,
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(
+      validateChunkExtraction(
+        {
+          schemaVersion: "grimodex-scan/chunk-extraction/1",
+          chunkId: "chunk:fixture",
+          sourceFingerprint: "sha256:fixture-minimal-ja",
+          entities: [],
+          relations: [],
+          events: [],
+        },
+        {
+          expectedChunkId: "chunk:other",
+          expectedSourceFingerprint: "sha256:fixture-minimal-ja",
+          paragraphIds: [],
+        },
+      ).ok,
     ).toBe(false);
   });
 
@@ -323,9 +384,14 @@ describe("ScanBundleV1 contract", () => {
     const fixture = (await readFixture()) as ScanBundleV1;
     const rejected = {
       ...fixture,
-      findings: fixture.findings.map((finding) => ({ ...finding, status: "rejected" as const })),
+      findings: fixture.findings.map((finding) => ({
+        ...finding,
+        status: "rejected" as const,
+      })),
     };
 
-    expect(validateScanBundle(rejected, { allowConfirmedFindingStatus: true }).ok).toBe(false);
+    expect(
+      validateScanBundle(rejected, { allowConfirmedFindingStatus: true }).ok,
+    ).toBe(false);
   });
 });

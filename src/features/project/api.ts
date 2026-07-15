@@ -1,6 +1,10 @@
 import { db } from "@/db/client";
-import { projects, lintTermDictionary } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { projects, lintTermDictionary, projectSettings } from "@/db/schema";
+import { and, eq, notExists } from "drizzle-orm";
+import {
+  SCAN_IMPORT_STATE_KEY,
+  SCAN_IMPORT_STAGING,
+} from "@/features/import/scan/scanImportState";
 import { invoke } from "@/lib/tauri";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
@@ -16,7 +20,17 @@ export type NewProject = typeof projects.$inferInsert;
 const IME_PROJECT_FIELDS = new Set(["title", "genre", "outline", "language"]);
 
 export async function listProjects(): Promise<Project[]> {
-  return db.select().from(projects);
+  const stagingProject = db
+    .select({ projectId: projectSettings.projectId })
+    .from(projectSettings)
+    .where(
+      and(
+        eq(projectSettings.projectId, projects.id),
+        eq(projectSettings.key, SCAN_IMPORT_STATE_KEY),
+        eq(projectSettings.value, SCAN_IMPORT_STAGING),
+      ),
+    );
+  return db.select().from(projects).where(notExists(stagingProject));
 }
 
 export async function getProject(id: string): Promise<Project | undefined> {

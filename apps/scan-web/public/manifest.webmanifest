@@ -1,0 +1,12 @@
+{
+  "name": "Grimodex Scan",
+  "short_name": "Grimodex",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f5f0e8",
+  "theme_color": "#514b76",
+  "description": "Private manuscript scanning and browser editing workspace.",
+  "icons": [
+    { "src": "/icons/grimodex-scan.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

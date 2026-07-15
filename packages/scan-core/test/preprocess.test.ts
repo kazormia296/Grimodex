@@ -1,12 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildChunks,
-  normalizeDocument,
-  normalizeText,
-} from "../src/index.js";
+import { buildChunks, normalizeDocument, normalizeText } from "../src/index.js";
 
 describe("scan-core deterministic preprocessing", () => {
-  const source = "\uFEFF# 第一章\r\n\r\n葵は灯台へ向かった。  \r\n\r\n白い波が窓を叩く。\r\n\r\n## 第二章\r\n\r\n手紙が届いた。";
+  const source =
+    "\uFEFF# 第一章\r\n\r\n葵は灯台へ向かった。  \r\n\r\n白い波が窓を叩く。\r\n\r\n## 第二章\r\n\r\n手紙が届いた。";
 
   it("normalizes BOM, line endings, and repeated horizontal whitespace", () => {
     expect(normalizeText(source)).toBe(
@@ -15,8 +12,16 @@ describe("scan-core deterministic preprocessing", () => {
   });
 
   it("detects headings and produces stable paragraph IDs", () => {
-    const first = normalizeDocument({ title: "灯台", text: source, language: "ja" });
-    const second = normalizeDocument({ title: "灯台", text: source, language: "ja" });
+    const first = normalizeDocument({
+      title: "灯台",
+      text: source,
+      language: "ja",
+    });
+    const second = normalizeDocument({
+      title: "灯台",
+      text: source,
+      language: "ja",
+    });
 
     expect(first.sections.map((section) => section.title)).toEqual([
       "第一章",
@@ -30,19 +35,43 @@ describe("scan-core deterministic preprocessing", () => {
   });
 
   it("keeps chunk boundaries on paragraph boundaries and records overlap", () => {
-    const document = normalizeDocument({ title: "灯台", text: source, language: "ja" });
-    const chunks = buildChunks(document, { maxCharacters: 12, overlapParagraphs: 1 });
+    const document = normalizeDocument({
+      title: "灯台",
+      text: source,
+      language: "ja",
+    });
+    const chunks = buildChunks(document, {
+      maxCharacters: 24,
+      overlapParagraphs: 1,
+    });
 
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.every((chunk) => chunk.paragraphIds.length > 0)).toBe(true);
     expect(chunks.every((chunk) => !chunk.text.includes("\n\n"))).toBe(true);
-    expect(chunks.slice(1).some((chunk) => chunk.overlapParagraphIds.length > 0)).toBe(
-      true,
-    );
+    expect(
+      chunks.slice(1).some((chunk) => chunk.overlapParagraphIds.length > 0),
+    ).toBe(true);
+  });
+
+  it("clips overlap so provider input never exceeds the configured limit", () => {
+    const document = normalizeDocument({
+      title: "Overlap",
+      language: "ja",
+      text: "# 第一章\n\n12345678\n\nabcdefgh\n\nijklmnop",
+    });
+    const chunks = buildChunks(document, {
+      maxCharacters: 10,
+      overlapParagraphs: 1,
+    });
+    expect(chunks.every((chunk) => chunk.text.length <= 10)).toBe(true);
   });
 
   it("rejects invalid chunk limits", () => {
-    const document = normalizeDocument({ title: "灯台", text: source, language: "ja" });
+    const document = normalizeDocument({
+      title: "灯台",
+      text: source,
+      language: "ja",
+    });
 
     expect(() => buildChunks(document, { maxCharacters: 0 })).toThrow(
       "maxCharacters",

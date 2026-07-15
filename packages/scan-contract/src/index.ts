@@ -5,6 +5,7 @@ export {
   computeSourceFingerprint,
   type SourceFingerprintInput,
 } from "./sourceFingerprint.js";
+export * from "./publicReportV1.js";
 export {
   chunkExtractionV1Schema,
   validateChunkExtraction,

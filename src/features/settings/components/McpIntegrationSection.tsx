@@ -7,6 +7,7 @@ import { getCurrentProjectId } from "@/features/project/projectStore";
 import { SettingSection } from "./SettingSection";
 import { SettingRow } from "./SettingRow";
 import { buildMcpConfigJson, type McpConfigInfo } from "../mcpConfig";
+import { CapabilityGate } from "@/runtime/runtimeCapabilitiesContext";
 
 /**
  * Settings affordance that copies a ready-to-paste `.mcp.json` snippet for
@@ -101,24 +102,26 @@ export function McpIntegrationSection() {
   );
 
   return (
-    <SettingSection title={t("settings.ai.mcp.title")}>
-      <p className="mb-3 text-xs text-muted-foreground">
-        {t("settings.ai.mcp.description")}
-      </p>
-      <SettingRow
-        label={t("settings.ai.mcp.scopeProject")}
-        description={t("settings.ai.mcp.scopeProjectDesc")}
-        disabled={!workspaceReady}
-      >
-        {copyButtons(false)}
-      </SettingRow>
-      <SettingRow
-        label={t("settings.ai.mcp.scopeAll")}
-        description={t("settings.ai.mcp.scopeAllDesc")}
-        disabled={!workspaceReady}
-      >
-        {copyButtons(true)}
-      </SettingRow>
-    </SettingSection>
+    <CapabilityGate capability="mcpServer">
+      <SettingSection title={t("settings.ai.mcp.title")}>
+        <p className="mb-3 text-xs text-muted-foreground">
+          {t("settings.ai.mcp.description")}
+        </p>
+        <SettingRow
+          label={t("settings.ai.mcp.scopeProject")}
+          description={t("settings.ai.mcp.scopeProjectDesc")}
+          disabled={!workspaceReady}
+        >
+          {copyButtons(false)}
+        </SettingRow>
+        <SettingRow
+          label={t("settings.ai.mcp.scopeAll")}
+          description={t("settings.ai.mcp.scopeAllDesc")}
+          disabled={!workspaceReady}
+        >
+          {copyButtons(true)}
+        </SettingRow>
+      </SettingSection>
+    </CapabilityGate>
   );
 }

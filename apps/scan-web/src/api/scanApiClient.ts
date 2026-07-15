@@ -1,0 +1,330 @@
+import type { EditorSeedV1, ScanBundleV1 } from "@grimodex/scan-contract";
+
+export type ScanMode = "quick" | "full";
+export type ScanStatus =
+  | "created"
+  | "uploading"
+  | "queued"
+  | "validating"
+  | "chunking"
+  | "extracting"
+  | "merging"
+  | "adjudicating"
+  | "reporting"
+  | "completed"
+  | "cancel_requested"
+  | "cancelled"
+  | "failed"
+  | "expired"
+  | "deleted";
+
+export interface ScanApiClientOptions {
+  baseUrl: string;
+  fetchImpl?: typeof fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+  /** Short-lived Turnstile token obtained from the visible widget. */
+  turnstileToken?: string;
+  /** Short-lived Full Scan entitlement supplied by the authenticated host. */
+  fullAccessToken?: string;
+}
+
+export interface UploadIntent {
+  uploadId: string;
+  uploadUrl: string;
+  uploadToken: string;
+  expiresAt: string;
+}
+
+export interface ScanHandle {
+  scanId: string;
+  scanToken: string;
+  mode: ScanMode;
+}
+
+export interface ScanStatusResponse {
+  scanId: string;
+  status: ScanStatus;
+  mode: ScanMode;
+  updatedAt: string;
+}
+
+interface ErrorBody {
+  error?: { code?: string; message?: string };
+}
+
+class ScanApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ScanApiError";
+  }
+}
+
+function trimBaseUrl(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+async function responseError(response: Response): Promise<ScanApiError> {
+  let message = `Scan request failed (${response.status})`;
+  try {
+    const body = (await response.json()) as ErrorBody;
+    if (body.error?.message) message = body.error.message;
+  } catch {
+    // Keep the status-only message for non-JSON proxy errors.
+  }
+  return new ScanApiError(response.status, message);
+}
+
+function isRetryablePollingError(cause: unknown): boolean {
+  if (!(cause instanceof ScanApiError)) return true;
+  return (
+    cause.status === 408 ||
+    cause.status === 425 ||
+    cause.status === 429 ||
+    cause.status >= 500
+  );
+}
+
+export class ScanApiClient {
+  private readonly baseUrl: string;
+  private readonly fetchImpl: typeof fetch;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly turnstileToken?: string;
+  private readonly fullAccessToken?: string;
+
+  constructor(options: ScanApiClientOptions) {
+    this.baseUrl = trimBaseUrl(options.baseUrl);
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.sleep =
+      options.sleep ??
+      ((milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    this.turnstileToken = options.turnstileToken;
+    this.fullAccessToken = options.fullAccessToken;
+  }
+
+  private url(path: string): string {
+    return `${this.baseUrl}${path}`;
+  }
+
+  private async json<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await this.fetchImpl(this.url(path), {
+      ...init,
+      headers: {
+        accept: "application/json",
+        ...(init?.body ? { "content-type": "application/json" } : {}),
+        ...init?.headers,
+      },
+    });
+    if (!response.ok) throw await responseError(response);
+    return (await response.json()) as T;
+  }
+
+  async createUploadIntent(input: {
+    filename: string;
+    contentType: string;
+    size: number;
+  }): Promise<UploadIntent> {
+    const body = {
+      ...input,
+      ...(this.turnstileToken ? { turnstileToken: this.turnstileToken } : {}),
+    };
+    return this.json<UploadIntent>("/api/v1/upload-intents", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async uploadSource(
+    file: Blob & { name?: string },
+    mode: ScanMode = "quick",
+  ): Promise<ScanHandle> {
+    const filename = file.name ?? "source.txt";
+    const contentType = file.type || "application/octet-stream";
+    const intent = await this.createUploadIntent({
+      filename,
+      contentType,
+      size: file.size,
+    });
+    const uploadResponse = await this.fetchImpl(intent.uploadUrl, {
+      method: "PUT",
+      headers: {
+        "content-type": contentType,
+        "x-upload-token": intent.uploadToken,
+      },
+      body: file,
+    });
+    if (!uploadResponse.ok) throw await responseError(uploadResponse);
+    await this.json(
+      `/api/v1/uploads/${encodeURIComponent(intent.uploadId)}/complete`,
+      {
+        method: "POST",
+        headers: { "x-upload-token": intent.uploadToken },
+      },
+    );
+    return this.json<ScanHandle>("/api/v1/scans", {
+      method: "POST",
+      body: JSON.stringify({ uploadId: intent.uploadId, mode }),
+      headers: {
+        "x-upload-token": intent.uploadToken,
+        ...(mode === "full" && this.fullAccessToken
+          ? { "x-scan-full-access": this.fullAccessToken }
+          : {}),
+      },
+    });
+  }
+
+  getStatus(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+  ): Promise<ScanStatusResponse> {
+    return this.json<ScanStatusResponse>(
+      `/api/v1/scans/${encodeURIComponent(handle.scanId)}`,
+      {
+        headers: { "x-scan-token": handle.scanToken },
+      },
+    );
+  }
+
+  async waitForCompletion(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+    options: { timeoutMs?: number } = {},
+  ): Promise<ScanStatusResponse> {
+    const timeoutMs = options.timeoutMs ?? 15 * 60 * 1000;
+    const startedAt = Date.now();
+    let delay = 2000;
+    let lastError: unknown;
+    while (Date.now() - startedAt <= timeoutMs) {
+      try {
+        const status = await this.getStatus(handle);
+        if (
+          status.status === "completed" ||
+          status.status === "failed" ||
+          status.status === "cancelled" ||
+          status.status === "expired"
+        ) {
+          return status;
+        }
+        lastError = undefined;
+      } catch (cause) {
+        if (!isRetryablePollingError(cause)) throw cause;
+        lastError = cause;
+      }
+      await this.sleep(delay);
+      delay = Math.min(5000, Math.round(delay * 1.25));
+    }
+    if (lastError instanceof Error) {
+      throw new Error(`Scan polling timed out: ${lastError.message}`, {
+        cause: lastError,
+      });
+    }
+    throw new Error("Scan polling timed out");
+  }
+
+  async getReport(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+  ): Promise<ScanBundleV1> {
+    return this.json<ScanBundleV1>(
+      `/api/v1/scans/${encodeURIComponent(handle.scanId)}/report`,
+      {
+        headers: { "x-scan-token": handle.scanToken },
+      },
+    );
+  }
+
+  async getEditorSeed(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+  ): Promise<EditorSeedV1> {
+    const token = await this.json<{ token: string }>(
+      `/api/v1/scans/${encodeURIComponent(handle.scanId)}/editor-tokens`,
+      { method: "POST", headers: { "x-scan-token": handle.scanToken } },
+    );
+    // The one-time token is sent in a header, never placed in a URL or query
+    // string, so browser history and reverse-proxy logs do not capture it.
+    return this.json<EditorSeedV1>("/api/v1/editor-seeds", {
+      headers: { authorization: `Bearer ${token.token}` },
+    });
+  }
+
+  async sendFindingFeedback(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+    findingId: string,
+    status: "intentional" | "rejected",
+  ): Promise<void> {
+    await this.json(
+      `/api/v1/scans/${encodeURIComponent(handle.scanId)}/feedback`,
+      {
+        method: "POST",
+        headers: { "x-scan-token": handle.scanToken },
+        body: JSON.stringify({ findingId, status }),
+      },
+    );
+  }
+
+  async publishPublicReport(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+    authorConfirmedAt = new Date().toISOString(),
+  ): Promise<{ publicReportId: string; status: "published" }> {
+    return this.json(
+      `/api/v1/scans/${encodeURIComponent(handle.scanId)}/public-report`,
+      {
+        method: "POST",
+        headers: { "x-scan-token": handle.scanToken },
+        body: JSON.stringify({ authorConfirmedAt }),
+      },
+    );
+  }
+
+  async unpublishPublicReport(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+  ): Promise<void> {
+    await this.json(
+      `/api/v1/scans/${encodeURIComponent(handle.scanId)}/public-report/unpublish`,
+      {
+        method: "POST",
+        headers: { "x-scan-token": handle.scanToken },
+      },
+    );
+  }
+
+  getPublicReport<T = unknown>(publicReportId: string): Promise<T> {
+    return this.json<T>(
+      `/api/v1/public-reports/${encodeURIComponent(publicReportId)}`,
+    );
+  }
+
+  async deletePublicReport(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+    publicReportId: string,
+  ): Promise<void> {
+    await this.json(
+      `/api/v1/public-reports/${encodeURIComponent(publicReportId)}`,
+      {
+        method: "DELETE",
+        headers: { "x-scan-token": handle.scanToken },
+      },
+    );
+  }
+
+  async cancel(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+  ): Promise<void> {
+    await this.json(
+      `/api/v1/scans/${encodeURIComponent(handle.scanId)}/cancel`,
+      {
+        method: "POST",
+        headers: { "x-scan-token": handle.scanToken },
+      },
+    );
+  }
+
+  async delete(
+    handle: Pick<ScanHandle, "scanId" | "scanToken">,
+  ): Promise<void> {
+    await this.json(`/api/v1/scans/${encodeURIComponent(handle.scanId)}`, {
+      method: "DELETE",
+      headers: { "x-scan-token": handle.scanToken },
+    });
+  }
+}

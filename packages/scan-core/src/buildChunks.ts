@@ -1,5 +1,10 @@
 import { stableHash8 } from "./hash.js";
-import type { BuildChunksOptions, NormalizedDocument, NormalizedParagraph, ScanChunk } from "./types.js";
+import type {
+  BuildChunksOptions,
+  NormalizedDocument,
+  NormalizedParagraph,
+  ScanChunk,
+} from "./types.js";
 
 function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
@@ -59,7 +64,16 @@ export function buildChunks(
 
   return primaryChunks.map((primary, index) => {
     const previous = primaryChunks[index - 1] ?? [];
-    const overlap = previous.slice(Math.max(0, previous.length - overlapParagraphs));
+    let overlap = previous.slice(
+      Math.max(0, previous.length - overlapParagraphs),
+    );
+    while (
+      overlap.length > 0 &&
+      [...overlap, ...primary].map((paragraph) => paragraph.text).join("\n")
+        .length > options.maxCharacters
+    ) {
+      overlap = overlap.slice(1);
+    }
     return chunkFromParagraphs(document, primary, overlap);
   });
 }

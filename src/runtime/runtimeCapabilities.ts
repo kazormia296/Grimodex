@@ -62,6 +62,15 @@ const PRESETS: Record<RuntimeTarget, RuntimeCapabilities> = {
   "mobile-native": MOBILE_NATIVE_CAPABILITIES,
 };
 
-export function resolveRuntimeCapabilities(target: RuntimeTarget): RuntimeCapabilities {
+export function resolveRuntimeCapabilities(
+  target: RuntimeTarget,
+): RuntimeCapabilities {
   return { ...PRESETS[target] };
+}
+
+export function supportsRuntimeCapability(
+  target: RuntimeTarget,
+  capability: keyof RuntimeCapabilities,
+): boolean {
+  return PRESETS[target][capability];
 }

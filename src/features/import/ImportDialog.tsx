@@ -8,6 +8,7 @@ import { NovelcrafterImportFlow } from "./flows/NovelcrafterImportFlow";
 import { KakuyomuImportFlow } from "./flows/KakuyomuImportFlow";
 import { MarkdownImportFlow } from "./flows/MarkdownImportFlow";
 import { NovelImportFlow } from "./flows/NovelImportFlow";
+import { ScanImportFlow } from "./flows/ScanImportFlow";
 
 interface Props {
   open: boolean;
@@ -19,6 +20,7 @@ const SOURCES: ImportSource[] = [
   "kakuyomu",
   "markdown",
   "novel",
+  "scan",
 ];
 
 const DIALOG_PANEL_CLASS =
@@ -73,6 +75,8 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
         return t("import.source.markdown");
       case "novel":
         return t("import.source.novel");
+      case "scan":
+        return t("import.source.scan");
     }
   };
 
@@ -110,10 +114,12 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
         ))}
       </div>
 
-      <ImportTargetPanel
-        importTarget={importTarget}
-        onImportTargetChange={setImportTarget}
-      />
+      {source !== "scan" && (
+        <ImportTargetPanel
+          importTarget={importTarget}
+          onImportTargetChange={setImportTarget}
+        />
+      )}
 
       <div
         key={flowKey}
@@ -142,6 +148,7 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
         {source === "novel" && (
           <NovelImportFlow importTarget={importTarget} onClose={handleClose} />
         )}
+        {source === "scan" && <ScanImportFlow onClose={handleClose} />}
       </div>
     </div>
   );

@@ -35,6 +35,12 @@ importers:
       '@fontsource/noto-serif-jp':
         specifier: ^5.2.8
         version: 5.2.8
+      '@grimodex/scan-contract':
+        specifier: workspace:*
+        version: link:packages/scan-contract
+      '@grimodex/scan-core':
+        specifier: workspace:*
+        version: link:packages/scan-core
       '@gsap/react':
         specifier: ^2.1.2
         version: 2.1.2(gsap@3.15.0)(react@19.2.6)
@@ -423,12 +429,24 @@ importers:
       '@grimodex/scan-core':
         specifier: workspace:*
         version: link:../../packages/scan-core
+      '@grimodex/scan-prompts':
+        specifier: workspace:*
+        version: link:../../packages/scan-prompts
+      '@tiptap/react':
+        specifier: 3.27.1
+        version: 3.27.1(@floating-ui/dom@1.7.6)(@tiptap/core@3.27.1(@tiptap/pm@3.27.1))(@tiptap/pm@3.27.1)(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      '@tiptap/starter-kit':
+        specifier: 3.27.1
+        version: 3.27.1
       react:
         specifier: 19.2.6
         version: 19.2.6
       react-dom:
         specifier: 19.2.6
         version: 19.2.6(react@19.2.6)
+      sql.js:
+        specifier: ^1.14.1
+        version: 1.14.1
 
   packages/scan-contract:
     dependencies:

@@ -5,8 +5,13 @@ export const VIEWPORT_BREAKPOINTS = {
   compactMaxExclusive: 1120,
 } as const;
 
-export function resolveViewportProfile(width: number): WorkspaceViewportProfile {
-  if (!Number.isFinite(width) || width < VIEWPORT_BREAKPOINTS.phoneMaxExclusive) {
+export function resolveViewportProfile(
+  width: number,
+): WorkspaceViewportProfile {
+  if (
+    !Number.isFinite(width) ||
+    width < VIEWPORT_BREAKPOINTS.phoneMaxExclusive
+  ) {
     return "phone";
   }
   if (width < VIEWPORT_BREAKPOINTS.compactMaxExclusive) return "compact";

@@ -7,12 +7,17 @@
     "build": "vite build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "worker:typecheck": "tsc -p worker/tsconfig.json --noEmit",
     "dev": "vite"
   },
   "dependencies": {
     "@grimodex/scan-contract": "workspace:*",
     "@grimodex/scan-core": "workspace:*",
+    "@grimodex/scan-prompts": "workspace:*",
+    "@tiptap/react": "3.27.1",
+    "@tiptap/starter-kit": "3.27.1",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "sql.js": "^1.14.1"
   }
 }

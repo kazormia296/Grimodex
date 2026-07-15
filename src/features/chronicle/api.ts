@@ -150,6 +150,7 @@ export async function getEvent(
 }
 
 export async function createEvent(data: {
+  id?: string;
   projectId: string;
   title?: string;
   note?: string | null;
@@ -169,7 +170,7 @@ export async function createEvent(data: {
   revealSceneId?: string | null;
 }): Promise<EventRow> {
   const now = new Date().toISOString();
-  const id = crypto.randomUUID();
+  const id = data.id ?? crypto.randomUUID();
   let ordinal = data.ordinal;
   if (ordinal === undefined) {
     // ordinal は base62 の fractional-index（nextEventOrdinal で JS 生成）なので

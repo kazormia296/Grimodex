@@ -93,6 +93,8 @@ import { useCodexSelectionSync } from "@/features/codex/multiwindow/codexSelecti
 import { startCodexLockListener } from "@/features/codex/multiwindow/codexEditLockStore";
 import { cn } from "@/lib/utils";
 import { useImeExportSync } from "@/features/ime/useImeExportSync";
+import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorkspaceShell";
+import { useConnectedMobileWorkspaceSurfaces } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
 
 const SettingsDialog = lazy(() =>
   import("@/features/settings/SettingsDialog").then((m) => ({
@@ -327,6 +329,9 @@ function App() {
 }
 
 function EditorScreen() {
+  const mobileSurfaces = useConnectedMobileWorkspaceSurfaces();
+  const adaptiveWorkspaceEnabled =
+    import.meta.env.VITE_ADAPTIVE_WORKSPACE !== "false";
   const { t } = useTranslation();
   // 更新が保留中か (⚙ ボタンの SR ラベル用。UpdateDot も同じ store を読む)。
   const updatePending = useUpdatePending();
@@ -848,10 +853,24 @@ function EditorScreen() {
         tabIndex={-1}
         className="flex min-h-0 flex-1 overflow-hidden outline-none"
       >
-        <LayoutShell
-          hidden={!!getScreenshotPanelId() || isPanelWindow()}
-          soloPanelId={getScreenshotPanelId() ?? getPanelWindowTarget()}
-        />
+        {adaptiveWorkspaceEnabled ? (
+          <AdaptiveWorkspaceShell
+            editor={
+              <LayoutShell
+                hidden={!!getScreenshotPanelId() || isPanelWindow()}
+                soloPanelId={getScreenshotPanelId() ?? getPanelWindowTarget()}
+              />
+            }
+            sceneTitle={t("app.title")}
+            saveState=""
+            mobileSurfaces={mobileSurfaces}
+          />
+        ) : (
+          <LayoutShell
+            hidden={!!getScreenshotPanelId() || isPanelWindow()}
+            soloPanelId={getScreenshotPanelId() ?? getPanelWindowTarget()}
+          />
+        )}
       </main>
     </div>
   );

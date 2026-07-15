@@ -361,6 +361,7 @@
       "import": "Import",
       "zip": "ZIP",
       "novel": "AI Novelist"
+      ,"scan": "Grimodex Scan"
     }
   },
   "import": {
@@ -402,6 +403,14 @@
     "invalidZip": "Please select a valid ZIP file",
     "invalidKakuyomu": "Please select a valid Kakuyomu backup ZIP",
     "invalidMarkdown": "Please select a valid Markdown file",
+    "scan": {
+      "description": "Load a private Scan editor seed (JSON) into a new project using staged apply. Existing projects are unchanged.",
+      "tooLarge": "The Scan seed is too large (maximum 32 MB).",
+      "preview": "{{sections}} sections / {{codex}} Codex / {{events}} events / {{findings}} findings",
+      "importButton": "Import Scan as new project",
+      "success": "Scan import complete: {{scenes}} scenes / {{codex}} Codex / {{findings}} findings",
+      "failed": "Scan import failed. The staging project was discarded."
+    },
     "tagMappingTitle": "Tag → CodexType Mapping",
     "tagMappingSubtitle": "Optionally map tags to CodexTypes. Tags without a mapping are kept as-is.",
     "tagMappingNone": "No mapping",
