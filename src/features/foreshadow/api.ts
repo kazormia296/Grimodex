@@ -378,8 +378,8 @@ function buildOpenForeshadowsForContext(
         createdAt: new Date(),
         updatedAt: new Date(
           r.updatedAt instanceof Date ||
-          typeof r.updatedAt === "string" ||
-          typeof r.updatedAt === "number"
+            typeof r.updatedAt === "string" ||
+            typeof r.updatedAt === "number"
             ? (instantEpochMilliseconds(r.updatedAt) ?? Date.now())
             : Date.now(),
         ),

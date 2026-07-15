@@ -50,8 +50,10 @@ export function formatRelativeTime(
 
   const timeZone = Temporal.Now.timeZoneId();
   const target = targetInstant.toZonedDateTimeISO(timeZone);
-  const current = Temporal.Instant.fromEpochMilliseconds(nowEpochMilliseconds)
-    .toZonedDateTimeISO(timeZone);
+  const current =
+    Temporal.Instant.fromEpochMilliseconds(
+      nowEpochMilliseconds,
+    ).toZonedDateTimeISO(timeZone);
   const dayDiff = target
     .toPlainDate()
     .until(current.toPlainDate(), { largestUnit: "day" }).days;

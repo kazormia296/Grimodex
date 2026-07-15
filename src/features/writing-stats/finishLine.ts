@@ -7,10 +7,7 @@
  * `Temporal.PlainDate` と "YYYY-MM-DD" 日キーで扱うため、DST を跨いでも
  * 24 時間単位の差分計算に引きずられない。
  */
-import {
-  plainDateAtEpochMilliseconds,
-  plainDateFromKey,
-} from "@/lib/time";
+import { plainDateAtEpochMilliseconds, plainDateFromKey } from "@/lib/time";
 
 export interface FinishLineInput {
   /** 目標総文字数（<= 0 は「目標未設定」）。 */

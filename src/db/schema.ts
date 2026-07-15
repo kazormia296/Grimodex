@@ -44,12 +44,8 @@ export const projects = sqliteTable("projects", {
     .default(
       '{"preset":"custom","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":false,"knowledgeWrite":false}}',
     ),
-  createdAt: text("created_at")
-    .notNull()
-    .$defaultFn(nowInstantString),
-  updatedAt: text("updated_at")
-    .notNull()
-    .$defaultFn(nowInstantString),
+  createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
 });
 
 export const treeNodes = sqliteTable(
@@ -126,12 +122,8 @@ export const treeNodes = sqliteTable(
     aliases: text("aliases").notNull().default("[]"),
     /** Note-only: aliases excluded from mention detection (JSON array). */
     excludedAliases: text("excluded_aliases").notNull().default("[]"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
     // OCC version. The column is created by src-tauri/src/database/migrate.rs
     // (add_column_if_missing on tree_nodes); Drizzle was unaware of it.
     // The AI/agent write path already uses it for optimistic locking; declaring
@@ -163,9 +155,7 @@ export const codexTypes = sqliteTable(
     icon: text("icon"),
     isBuiltin: integer("is_builtin").notNull().default(0),
     sortOrder: real("sort_order").notNull().default(0.0),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_types_project_slug").on(table.projectId, table.slug),
@@ -204,12 +194,8 @@ export const codexEntries = sqliteTable(
       { onDelete: "set null" },
     ),
     notes: text("notes"), // Private notes (ProseMirror JSON) – never injected into AI context
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
     // OCC version. The column is created by src-tauri/src/database/migrate.rs
     // (add_column_if_missing on codex_entries); Drizzle was unaware of it.
     // The AI/agent write path already uses it for optimistic locking; declaring
@@ -251,9 +237,7 @@ export const codexQuickPins = sqliteTable(
     entryId: text("entry_id")
       .primaryKey()
       .references(() => codexEntries.id, { onDelete: "cascade" }),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [index("idx_codex_quick_pins_created").on(table.createdAt)],
 );
@@ -268,9 +252,7 @@ export const codexTags = sqliteTable(
     name: text("name").notNull(),
     color: text("color"),
     typeFilter: text("type_filter"), // JSON string[] | null
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_tags_project_name").on(table.projectId, table.name),
@@ -304,9 +286,7 @@ export const codexDetailDefinitions = sqliteTable(
     fieldConfig: text("field_config"), // JSON
     sortOrder: real("sort_order").notNull().default(0.0),
     includeInContext: integer("include_in_context").notNull().default(0),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_codex_detail_defs_project_type_name").on(
@@ -370,12 +350,8 @@ export const snippets = sqliteTable(
       { onDelete: "set null" },
     ),
     usageCount: integer("usage_count").notNull().default(0),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
     // OCC version. The column is created by src-tauri/src/database/migrate.rs
     // (add_column_if_missing on snippets); Drizzle was unaware of it.
     // The AI/agent write path already uses it for optimistic locking; declaring
@@ -431,12 +407,8 @@ export const chatSessions = sqliteTable(
     model: text("model")
       .notNull()
       .default("openrouter/anthropic/claude-sonnet-4.6"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_chat_sessions_node").on(table.projectId, table.nodeId),
@@ -497,9 +469,7 @@ export const chatMessages = sqliteTable(
     metadata: text("metadata"), // JSON
     isStarred: integer("is_starred").notNull().default(0),
     isSummarized: integer("is_summarized").notNull().default(0),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_chat_messages_session").on(table.sessionId, table.createdAt),
@@ -525,9 +495,7 @@ export const chatMessagePrompts = sqliteTable("chat_message_prompts", {
   layers: text("layers"), // JSON LayerBreakdown[]
   totalTokens: integer("total_tokens"),
   model: text("model"),
-  createdAt: text("created_at")
-    .notNull()
-    .$defaultFn(nowInstantString),
+  createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
 });
 
 export const generationLogs = sqliteTable(
@@ -546,9 +514,7 @@ export const generationLogs = sqliteTable(
     promptFull: text("prompt_full"),
     model: text("model"),
     traceId: text("trace_id").notNull(),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_generation_logs_project_trace").on(
@@ -594,9 +560,7 @@ export const aiUsage = sqliteTable(
     traceId: text("trace_id"),
     refId: text("ref_id"),
     metadata: text("metadata"), // JSON
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_ai_usage_project_created").on(table.projectId, table.createdAt),
@@ -626,9 +590,7 @@ export const abComparisons = sqliteTable(
     responseA: text("response_a").notNull(),
     responseB: text("response_b").notNull(),
     chosen: text("chosen"), // "a" | "b" | null
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_ab_comparisons_project_created").on(
@@ -658,9 +620,7 @@ export const abComparisonRuns = sqliteTable(
     /** JSON TEXT: AbRunSlotRecord[] (slotId / provider / model / promptVariant / ok / response)。 */
     slots: text("slots").notNull(),
     chosen: text("chosen"), // 採用した slotId、未採用なら null
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_ab_comparison_runs_project_created").on(
@@ -684,9 +644,7 @@ export const chatSummaries = sqliteTable(
     lastMsgId: text("last_msg_id").references(() => chatMessages.id, {
       onDelete: "set null",
     }),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_chat_summaries_session").on(table.sessionId, table.createdAt),
@@ -739,9 +697,7 @@ export const chatSessionPinnedCodex = sqliteTable(
     pinSource: text("pin_source", { enum: ["manual", "chat_mention"] })
       .notNull()
       .default("manual"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_chat_pin_session").on(table.sessionId, table.createdAt),
@@ -807,9 +763,7 @@ export const contentVersions = sqliteTable(
     content: text("content").notNull(),
     versionNumber: integer("version_number").notNull(),
     snapshotType: text("snapshot_type").notNull().default("auto"), // 'auto' | 'manual'
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_content_versions_entity_version").on(
@@ -834,9 +788,7 @@ export const projectSnapshots = sqliteTable(
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_project_snapshots_project_name").on(
@@ -903,12 +855,8 @@ export const projectSnapshotTreeNodes = sqliteTable(
     ),
     unplacedBeatsDoc: text("unplaced_beats_doc").notNull().default("[]"),
     charCount: integer("char_count").notNull().default(0),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [primaryKey({ columns: [table.snapshotId, table.nodeId] })],
 );
@@ -936,12 +884,8 @@ export const projectSnapshotCodexEntries = sqliteTable(
         onDelete: "restrict",
       },
     ),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [primaryKey({ columns: [table.snapshotId, table.entryId] })],
 );
@@ -962,12 +906,8 @@ export const projectSnapshotSnippets = sqliteTable(
         onDelete: "restrict",
       },
     ),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [primaryKey({ columns: [table.snapshotId, table.snippetId] })],
 );
@@ -1001,12 +941,8 @@ export const codexEntryPhases = sqliteTable(
     summaryOverride: text("summary_override"),
     contentOverride: text("content_override"),
     contextModeOverride: text("context_mode_override"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_codex_phases_entry").on(table.entryId),
@@ -1063,9 +999,7 @@ export const sceneCodexPins = sqliteTable(
     entryId: text("entry_id")
       .notNull()
       .references(() => codexEntries.id, { onDelete: "cascade" }),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     primaryKey({ columns: [table.sceneId, table.entryId] }),
@@ -1093,12 +1027,8 @@ export const mapBoards = sqliteTable(
     viewportZoom: real("viewport_zoom").notNull().default(1.0),
     showConfig: text("show_config").notNull().default("{}"),
     colorBy: text("color_by").notNull().default("none"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [index("idx_map_boards_project").on(table.projectId)],
 );
@@ -1117,12 +1047,8 @@ export const mapAiBranches = sqliteTable(
     }),
     model: text("model"),
     tokenUsage: integer("token_usage"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [index("idx_map_ai_branches_board").on(table.boardId)],
 );
@@ -1150,12 +1076,8 @@ export const mapStickies = sqliteTable(
       () => chatMessages.id,
       { onDelete: "set null" },
     ),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_map_stickies_board").on(table.boardId),
@@ -1192,12 +1114,8 @@ export const mapNodePositions = sqliteTable(
     y: real("y").notNull(),
     pinned: integer("pinned").notNull().default(0),
     zIndex: integer("z_index").notNull().default(0),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [index("idx_map_pos_board").on(table.boardId)],
 );
@@ -1227,12 +1145,8 @@ export const mapEdges = sqliteTable(
     })
       .notNull()
       .default("none"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_map_edges_board").on(table.boardId),
@@ -1259,12 +1173,8 @@ export const codexRelations = sqliteTable(
     label: text("label"),
     depthHint: integer("depth_hint"),
     sourceMapEdgeId: text("source_map_edge_id"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_codex_relations_project").on(table.projectId),
@@ -1295,12 +1205,8 @@ export const plotThreads = sqliteTable(
     endNodeId: text("end_node_id").references(() => treeNodes.id, {
       onDelete: "set null",
     }),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [index("idx_plot_threads_project").on(table.projectId)],
 );
@@ -1320,12 +1226,8 @@ export const plotThreadSceneLinks = sqliteTable(
     phaseType: text("phase_type").notNull(),
     note: text("note"),
     sortOrder: text("sort_order"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_plot_thread_links_thread").on(table.threadId),
@@ -1368,12 +1270,8 @@ export const plotThreadBranches = sqliteTable(
       .references(() => treeNodes.id, { onDelete: "cascade" }),
     // 'branch' | 'merge'
     kind: text("kind").notNull(),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_plot_thread_branches_project").on(table.projectId),
@@ -1466,12 +1364,8 @@ export const events = sqliteTable(
     revealSceneId: text("reveal_scene_id").references(() => treeNodes.id, {
       onDelete: "set null",
     }),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_events_project").on(table.projectId),
@@ -1542,12 +1436,8 @@ export const projectCalendar = sqliteTable("project_calendar", {
   timezone: text("timezone").notNull().default("null"),
   // 旧暦の節気判定 UTC オフセット分。480=中国農暦(既定) / 540=日本。節気のみ再ビン。
   lunarTzMinutes: integer("lunar_tz_minutes").notNull().default(480),
-  createdAt: text("created_at")
-    .notNull()
-    .$defaultFn(nowInstantString),
-  updatedAt: text("updated_at")
-    .notNull()
-    .$defaultFn(nowInstantString),
+  createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
 });
 
 export type ChronicleEvent = typeof events.$inferSelect;
@@ -1594,12 +1484,8 @@ export const mapFrames = sqliteTable(
     background: text("background").notNull().default("#f5f5f5"),
     borderColor: text("border_color").notNull().default("#cccccc"),
     zIndex: integer("z_index").notNull().default(-1),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [index("idx_map_frames_board").on(table.boardId)],
 );
@@ -1828,9 +1714,7 @@ export const labels = sqliteTable(
     name: text("name").notNull(),
     color: text("color").notNull(), // palette slot name (e.g. 'red', 'blue')
     sortOrder: real("sort_order").notNull().default(0.0),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     uniqueIndex("uq_labels_project_name").on(table.projectId, table.name),
@@ -1883,9 +1767,7 @@ export const postEffectRuns = sqliteTable(
     status: text("status").notNull(),
     summary: text("summary"),
     errorMessage: text("error_message"),
-    startedAt: text("started_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    startedAt: text("started_at").notNull().$defaultFn(nowInstantString),
     completedAt: text("completed_at"),
   },
   (table) => [
@@ -1938,12 +1820,8 @@ export const postEffectAnnotations = sqliteTable(
     // 'open' | 'resolved' | 'dismissed'
     status: text("status").notNull().default("open"),
     metadata: text("metadata").notNull().default("{}"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_pea_scene").on(table.projectId, table.sceneId, table.status),
@@ -1976,9 +1854,7 @@ export const postEffectAnnotationRelations = sqliteTable(
     // 'open' | 'resolved' | 'dismissed'
     status: text("status").notNull().default("open"),
     metadata: text("metadata").notNull().default("{}"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_pear_a").on(table.annotationAId),
@@ -2007,9 +1883,7 @@ export const impactReviewBaselines = sqliteTable(
     snapshotJson: text("snapshot_json").notNull(),
     // snapshot の content hash（差分有無の高速判定用）
     contentHash: text("content_hash").notNull(),
-    reviewedAt: text("reviewed_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    reviewedAt: text("reviewed_at").notNull().$defaultFn(nowInstantString),
   },
   (t) => [index("idx_impact_baselines_project").on(t.projectId)],
 );
@@ -2035,9 +1909,7 @@ export const sceneLensData = sqliteTable(
     finding: text("finding"),
     // 'info' | 'suggestion' | 'warning' | 'error'
     severity: text("severity").notNull().default("info"),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_lens_run_target").on(table.runId, table.targetId),
@@ -2275,12 +2147,8 @@ export const promptTemplates = sqliteTable(
     title: text("title").notNull().default("Untitled"),
     content: text("content").notNull().default(""),
     usageCount: integer("usage_count").notNull().default(0),
-    createdAt: text("created_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
-    updatedAt: text("updated_at")
-      .notNull()
-      .$defaultFn(nowInstantString),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
   },
   (table) => [
     index("idx_prompt_templates_project").on(table.projectId, table.createdAt),

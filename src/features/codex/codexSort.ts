@@ -45,12 +45,12 @@ export function sortEntries(
     case "name-desc":
       return sorted.sort((a, b) => b.name.localeCompare(a.name, "ja"));
     case "updated":
-      return sorted.sort(
-        (a, b) => compareInstantValues(a.updatedAt, b.updatedAt, "descending"),
+      return sorted.sort((a, b) =>
+        compareInstantValues(a.updatedAt, b.updatedAt, "descending"),
       );
     case "created":
-      return sorted.sort(
-        (a, b) => compareInstantValues(a.createdAt, b.createdAt, "descending"),
+      return sorted.sort((a, b) =>
+        compareInstantValues(a.createdAt, b.createdAt, "descending"),
       );
     case "most-referenced":
       return sorted.sort((a, b) => {

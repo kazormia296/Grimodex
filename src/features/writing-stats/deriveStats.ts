@@ -6,10 +6,7 @@
  * ロジックを決定的にテストできる。日付の丸めはローカルタイムゾーン基準
  * （`Math.floor(ts / 86400000)` の UTC 丸めではない）。
  */
-import {
-  plainDateAtEpochMilliseconds,
-  plainDateFromKey,
-} from "@/lib/time";
+import { plainDateAtEpochMilliseconds, plainDateFromKey } from "@/lib/time";
 
 /** 1 件の編集イベントを統計に必要な形へ縮約したもの。 */
 export interface WritingEvent {

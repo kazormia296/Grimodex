@@ -54,8 +54,8 @@ describe("time boundary", () => {
     expect(plainDateAtEpochMilliseconds(instant, "UTC").toString()).toBe(
       "2026-07-15",
     );
-    expect(
-      plainDateAtEpochMilliseconds(instant, "Asia/Tokyo").toString(),
-    ).toBe("2026-07-16");
+    expect(plainDateAtEpochMilliseconds(instant, "Asia/Tokyo").toString()).toBe(
+      "2026-07-16",
+    );
   });
 });

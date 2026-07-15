@@ -44,9 +44,7 @@ export function computeLensDotState(
     if (epoch === null) return max;
     return max === null || epoch > max ? epoch : max;
   }, null);
-  const updatedEpoch = updatedAt
-    ? instantEpochMilliseconds(updatedAt)
-    : null;
+  const updatedEpoch = updatedAt ? instantEpochMilliseconds(updatedAt) : null;
   const stale =
     updatedEpoch !== null &&
     latestRunCompletedAt !== null &&

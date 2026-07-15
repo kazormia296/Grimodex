@@ -1,10 +1,7 @@
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { computeGlobalSceneOrder } from "@/features/codex/phaseResolver";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
-import {
-  compareInstantValues,
-  instantEpochMilliseconds,
-} from "@/lib/time";
+import { compareInstantValues, instantEpochMilliseconds } from "@/lib/time";
 import type { AxisMode, SpacingMode } from "./timelineStore";
 
 export interface TimelineSceneOrder {
