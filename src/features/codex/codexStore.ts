@@ -6,6 +6,7 @@ import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import {
   listCodexEntries,
   listCodexMatchTargets,
+  getCodexEntry,
   createCodexEntry,
   updateCodexEntry,
   deleteCodexEntry,
@@ -36,6 +37,11 @@ import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
+import {
+  parseReadings,
+  resolveUnsetReadingTargetForSurface,
+  serializeReadings,
+} from "./reading";
 
 export type CodexSortOrder =
   | "category"
@@ -163,6 +169,15 @@ interface CodexState {
    * Structural / deliberate user edits. Pushes a history entry.
    */
   update: (id: string, data: StructuralPatch) => Promise<void>;
+  /**
+   * 手動ルビを未設定の Codex 読みへ登録する。DB の最新行へ非破壊マージし、
+   * version OCC で別窓/MCPとの競合を弾く。
+   */
+  registerRubyReading: (
+    expectedEntryId: string,
+    surface: string,
+    reading: string,
+  ) => Promise<boolean>;
   /**
    * Auto-save path for TipTap-driven text fields. Does NOT push history;
    * TipTap's built-in undo handles text-level reversal.
@@ -493,6 +508,129 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         }
       },
     });
+  },
+
+  registerRubyReading: async (expectedEntryId, surface, rawReading) => {
+    if (blockIfUnlicensed()) return false;
+    const reading = rawReading.trim();
+    if (!expectedEntryId || !surface || !reading) return false;
+
+    const projectId = getCurrentProjectId();
+    try {
+      // renderer cache は別窓/MCP更新を即時反映しないため、クリック時に DB を再読込する。
+      const [freshTargets, before] = await Promise.all([
+        listCodexMatchTargets(projectId),
+        getCodexEntry(projectId, expectedEntryId),
+      ]);
+      if (!before) return false;
+
+      // 2本の SELECT 間に対象行が変わっても、対象自身は version を持つ full row を正とする。
+      const targets = freshTargets.map((target) =>
+        target.id === before.id ? toCompletionTarget(before) : target,
+      );
+      const target = resolveUnsetReadingTargetForSurface(surface, targets);
+      if (!target || target.id !== expectedEntryId) return false;
+
+      const readings = serializeReadings({
+        ...parseReadings(before.readings),
+        [surface]: [reading],
+      });
+      const patch: StructuralPatch = { readings };
+      const updated = await updateCodexEntry(
+        projectId,
+        expectedEntryId,
+        patch,
+        {
+          baseVersion: before.version,
+          baseSurface: {
+            name: before.name,
+            aliases: before.aliases,
+            excludedAliases: before.excludedAliases,
+            readings: before.readings,
+          },
+        },
+      );
+      if (!updated) return false;
+
+      set((state) => ({
+        entries: state.entries.map((entry) =>
+          entry.id === expectedEntryId ? updated : entry,
+        ),
+        completionTargets: upsertCompletionTarget(
+          state.completionTargets,
+          updated,
+        ),
+      }));
+
+      recordChangeEvent({
+        domain: "codex",
+        opType: "entry.update",
+        entityType: "codex_entry",
+        entityId: expectedEntryId,
+        payload: { fields: ["readings"] },
+      });
+
+      if (!useGlobalHistoryStore.getState().isReplaying) {
+        const beforeReadings = before.readings;
+        useGlobalHistoryStore.getState().push({
+          kind: "codex",
+          label: labelForPatch(patch),
+          entityId: expectedEntryId,
+          async undo() {
+            const restored = await updateCodexEntry(
+              projectId,
+              expectedEntryId,
+              {
+                readings: beforeReadings,
+              },
+            );
+            if (restored) {
+              set((state) => ({
+                entries: state.entries.map((entry) =>
+                  entry.id === expectedEntryId ? restored : entry,
+                ),
+                completionTargets: upsertCompletionTarget(
+                  state.completionTargets,
+                  restored,
+                ),
+              }));
+            }
+          },
+          async redo() {
+            const reapplied = await updateCodexEntry(
+              projectId,
+              expectedEntryId,
+              patch,
+            );
+            if (reapplied) {
+              set((state) => ({
+                entries: state.entries.map((entry) =>
+                  entry.id === expectedEntryId ? reapplied : entry,
+                ),
+                completionTargets: upsertCompletionTarget(
+                  state.completionTargets,
+                  reapplied,
+                ),
+              }));
+            }
+          },
+        });
+      }
+
+      return true;
+    } catch (error) {
+      if (error instanceof CodexVersionConflictError) {
+        codexEditConflictHandler(expectedEntryId);
+        return false;
+      }
+      toast.error(i18next.t("codex.store.updateFailed"));
+      debugLog.error(
+        "CodexStore",
+        `registerRubyReading: ${rootCause(error)}`,
+        errorDetail(error),
+      );
+      return false;
+    }
   },
 
   updateText: async (id, data) => {

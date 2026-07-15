@@ -47,6 +47,7 @@ import { useCurrentProject } from "@/features/project/projectStore";
 import { primaryCountUnit } from "@/features/editor/charCountStats";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { resolveReadingForSurface } from "@/features/codex/reading";
+import { useCodexReadingRegistrationPrompt } from "@/features/editor/useCodexReadingRegistrationPrompt";
 
 function ToolbarButton({
   active,
@@ -156,6 +157,7 @@ export function Toolbar({
   const [fontSizeOpen, setFontSizeOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const { t } = useTranslation();
+  const promptCodexReadingRegistration = useCodexReadingRegistrationPrompt();
   const overflowBtnRef = useRef<HTMLDivElement>(null);
   const overflowDropdownRef = useRef<HTMLDivElement>(null);
   const fontSizeBtnRef = useRef<HTMLDivElement>(null);
@@ -458,8 +460,13 @@ export function Toolbar({
 
   function applyRuby() {
     if (!rubyBase || !editor) return;
-    editor.chain().focus().setRuby(rubyBase, rubyAnnotation).run();
+    const applied = editor
+      .chain()
+      .focus()
+      .setRuby(rubyBase, rubyAnnotation)
+      .run();
     setRubyOpen(false);
+    if (applied) promptCodexReadingRegistration(rubyBase, rubyAnnotation);
   }
 
   function openLink() {

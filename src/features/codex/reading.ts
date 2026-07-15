@@ -156,6 +156,53 @@ function parseSurfaceArray(
   );
 }
 
+function matchesReadingSurface(
+  surface: string,
+  entry: ReadingSurfaceEntry,
+): boolean {
+  const aliases = parseSurfaceArray(entry.aliases);
+  if (!surfacesForEntry(entry.name, aliases).includes(surface)) return false;
+  return !new Set(parseSurfaceArray(entry.excludedAliases)).has(surface);
+}
+
+/**
+ * 手動ルビを読みとして登録できる、一意な未設定 Codex 行を解決する。
+ *
+ * - name / alias の完全一致かつ excludedAliases でない表記だけを対象にする。
+ * - 同じ表記に複数行が一致する場合、登録先を推測せず null を返す。
+ * - 表記自身に読みがあれば、AI 推定・手入力などの出自を区別せず設定済みとする。
+ * - 破損 readings を空マップとして上書きしないよう、非空の不正 JSON は対象外にする。
+ */
+export function resolveUnsetReadingTargetForSurface<
+  T extends ReadingSurfaceEntry,
+>(surface: string, entries: readonly T[]): T | null {
+  if (!surface) return null;
+
+  const matches = entries.filter((entry) =>
+    matchesReadingSurface(surface, entry),
+  );
+  if (matches.length !== 1) return null;
+
+  const target = matches[0];
+  const raw = target.readings;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  } else if (raw != null && typeof raw !== "string") {
+    return null;
+  }
+
+  return parseReadings(raw)[surface]?.some((reading) => reading.trim())
+    ? null
+    : target;
+}
+
 /**
  * 選択表記に設定済みの代表読みを解決する。
  *
@@ -173,11 +220,7 @@ export function resolveReadingForSurface(
 
   const candidates = new Set<string>();
   for (const entry of entries) {
-    const aliases = parseSurfaceArray(entry.aliases);
-    if (!surfacesForEntry(entry.name, aliases).includes(surface)) continue;
-
-    const excluded = new Set(parseSurfaceArray(entry.excludedAliases));
-    if (excluded.has(surface)) continue;
+    if (!matchesReadingSurface(surface, entry)) continue;
 
     const representative = parseReadings(entry.readings)[surface]?.[0]?.trim();
     // 同じ表記に一致する Codex が 1 件でも読み未設定なら、どの項目を指すか
