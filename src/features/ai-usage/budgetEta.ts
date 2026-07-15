@@ -11,8 +11,9 @@
  * - すべての境界 (0 除算 / NaN / 負値 / 予算未設定 / 月初) を安全側に倒し、
  *   出力は常に有限 (Number.isFinite) かつ非負になるよう正規化する。
  * - 「月」はローカルカレンダー月で切る (UI 表示と一致させるため。created_at は
- *   ISO だが Date でローカル解釈する)。
+ *   Instant 境界で絶対時刻へ正規化する)。
  */
+import { instantEpochMilliseconds } from "@/lib/time";
 
 /** ai_usage の 1 行から取り出したコスト点。createdAt は ISO 文字列。 */
 export interface CostPoint {
@@ -124,8 +125,8 @@ export function computeBudgetEta(inp: BudgetEtaInput): BudgetEtaResult {
   for (const p of points) {
     const cost = safeNonNeg(p.costUsd);
     if (cost === 0) continue;
-    const t = Date.parse(p.createdAt);
-    if (!Number.isFinite(t)) continue;
+    const t = instantEpochMilliseconds(p.createdAt);
+    if (t === null) continue;
     if (t >= startMs && t < endMs) {
       monthCostUsd += cost;
     }

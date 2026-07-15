@@ -37,6 +37,7 @@ import type {
 import { safeParseAiEvaluation } from "./types";
 import { deriveLabel } from "./deriveLabel";
 import { prosemirrorToText } from "@/lib/prosemirror";
+import { instantEpochMilliseconds } from "@/lib/time";
 
 /** Max chars of a scene-prefix excerpt used when `foreshadows.notes` is empty. */
 const SETUP_EXCERPT_FALLBACK_MAX_CHARS = 200;
@@ -375,10 +376,13 @@ function buildOpenForeshadowsForContext(
         loadBearing: r.loadBearing,
         codexLinkDirtyAt: null,
         createdAt: new Date(),
-        updatedAt:
-          r.updatedAt instanceof Date
-            ? r.updatedAt
-            : new Date(String(r.updatedAt ?? Date.now())),
+        updatedAt: new Date(
+          r.updatedAt instanceof Date ||
+            typeof r.updatedAt === "string" ||
+            typeof r.updatedAt === "number"
+            ? (instantEpochMilliseconds(r.updatedAt) ?? Date.now())
+            : Date.now(),
+        ),
       }),
     ),
     setups,
@@ -397,9 +401,9 @@ function buildOpenForeshadowsForContext(
     optional: 2,
   };
   const toMs = (v: unknown): number => {
-    if (v instanceof Date) return v.getTime();
-    if (typeof v === "string") return new Date(v).getTime();
-    if (typeof v === "number") return v;
+    if (v instanceof Date || typeof v === "string" || typeof v === "number") {
+      return instantEpochMilliseconds(v) ?? 0;
+    }
     return 0;
   };
   return rows

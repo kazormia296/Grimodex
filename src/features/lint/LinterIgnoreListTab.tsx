@@ -8,6 +8,7 @@ import { loadSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useTranslation } from "react-i18next";
 import { ListRowSkeletonList } from "@/components/ui/skeleton-patterns";
+import { formatInstant } from "@/lib/time";
 
 interface EntryRow extends LintIgnoreEntry {
   sceneTitle: string | null;
@@ -98,11 +99,13 @@ const STALENESS_CLASS: Record<StalenessStatus, string> = {
 };
 
 function formatDate(ts: number): string {
-  return new Date(ts).toLocaleDateString("ja-JP", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+  return (
+    formatInstant(ts, "ja-JP", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }) ?? ""
+  );
 }
 
 interface SceneGroupProps {

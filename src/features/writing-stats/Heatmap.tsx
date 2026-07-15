@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { plainDateFromKey } from "@/lib/time";
 import type { Heatmap as HeatmapData, HeatmapCell } from "./deriveStats";
 
 /**
@@ -102,14 +103,12 @@ function MonthLabels({
   return (
     <div className="flex gap-[2px]">
       {heatmap.weeks.map((col, w) => {
-        const [y, m, d] = col[0].key.split("-").map(Number);
-        const month = m - 1;
+        const date = plainDateFromKey(col[0].key);
+        const month = date?.month ?? -1;
         let label = "";
         if (month !== lastMonth) {
           lastMonth = month;
-          label = new Date(y, month, d).toLocaleDateString(locale, {
-            month: "short",
-          });
+          label = date?.toLocaleString(locale, { month: "short" }) ?? "";
         }
         return (
           <span

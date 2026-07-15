@@ -2,6 +2,7 @@ import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { compareInstantValues } from "@/lib/time";
 import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
 import { getProjectSetting, setProjectSetting } from "@/features/settings/api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
@@ -419,14 +420,16 @@ export async function buildDbByUriMap(
   for (const [uri, nodes] of grouped) {
     const active = nodes.filter((n) => !n.archivedAt);
     if (active.length > 1) {
-      active.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      active.sort((a, b) => compareInstantValues(a.createdAt, b.createdAt));
       for (const dup of active.slice(1)) {
         await softArchiveNode(dup.id);
       }
     }
     const preferred =
       active[0] ??
-      nodes.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+      nodes
+        .slice()
+        .sort((a, b) => compareInstantValues(a.createdAt, b.createdAt))[0];
     if (preferred) map.set(uri, preferred);
   }
   return map;

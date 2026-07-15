@@ -2207,7 +2207,7 @@ CREATE TABLE IF NOT EXISTS scene_chunks (
   model_id         TEXT NOT NULL,           -- 例: cl-nagoya/ruri-v3-30m@<rev>/model_int8.onnx/prefix-v1
   content_hash     TEXT NOT NULL,           -- 本文から安定算出。非同期 job race の回避用
   chunker_version  TEXT NOT NULL,           -- 例: semantic-prose-chunker-v1。仕様変更で stale 判定
-  created_at       INTEGER NOT NULL,        -- ms-since-epoch（Drizzle mode:'timestamp'）
+  created_at       INTEGER NOT NULL,        -- ms-since-epoch（Drizzle mode:'timestamp_ms'）
   updated_at       INTEGER NOT NULL
 );
 

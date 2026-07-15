@@ -22,6 +22,7 @@ import {
   handleCopyWithAttribution,
 } from "@/lib/clipboardAttribution";
 import { matchesMod } from "@/lib/platform";
+import { compareInstantValues } from "@/lib/time";
 import type { AuthorshipSource } from "@/features/attribution/AuthorshipMark";
 import type { Snippet } from "./api";
 import { GridCardSkeletonList } from "@/components/ui/skeleton-patterns";
@@ -149,11 +150,11 @@ export function SnippetPanel() {
     switch (sortOrder) {
       case "recent":
         return [...filtered].sort((a, b) =>
-          b.createdAt.localeCompare(a.createdAt),
+          compareInstantValues(a.createdAt, b.createdAt, "descending"),
         );
       case "oldest":
         return [...filtered].sort((a, b) =>
-          a.createdAt.localeCompare(b.createdAt),
+          compareInstantValues(a.createdAt, b.createdAt),
         );
       case "title-asc":
         return [...filtered].sort((a, b) => a.title.localeCompare(b.title));

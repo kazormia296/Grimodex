@@ -1,5 +1,6 @@
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import type { CodexEntryPhase, CodexPhaseDetailOverride } from "@/db/schema";
+import { compareInstantValues } from "@/lib/time";
 import {
   buildReadingOrder,
   buildSceneTimeIndex,
@@ -185,7 +186,7 @@ export function resolveCodexState(
         sceneOrder.get(a.anchorNodeId!)! - sceneOrder.get(b.anchorNodeId!)!;
       return (
         orderDiff ||
-        a.createdAt.localeCompare(b.createdAt) ||
+        compareInstantValues(a.createdAt, b.createdAt) ||
         a.id.localeCompare(b.id)
       );
     });

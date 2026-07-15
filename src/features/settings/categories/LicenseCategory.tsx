@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { openUrl } from "@/lib/opener";
 import { ExternalLink, KeyRound } from "lucide-react";
 import { useLicenseStore } from "@/features/license/store";
+import { formatInstant } from "@/lib/time";
 
 // Polar checkout link (Grimodex org, slug: grimodex)。2026-07-04 設定。
 const PURCHASE_URL =
@@ -128,7 +129,7 @@ export function LicenseCategory() {
         {activated && lastValidatedAt && (
           <p className="mt-1 text-xs text-muted-foreground">
             {t("license.settings.lastValidated", {
-              date: new Date(lastValidatedAt).toLocaleString(),
+              date: formatInstant(lastValidatedAt) ?? lastValidatedAt,
             })}
           </p>
         )}

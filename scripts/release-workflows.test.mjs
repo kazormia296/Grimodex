@@ -117,6 +117,20 @@ describe("release workflow boundary", () => {
     }
   });
 
+  it("runs npm dependency audits through the supported bulk advisory client", async () => {
+    const workflow = await readWorkflow("ci.yml");
+    const securitySteps = workflow.jobs.security.steps;
+    const setupNode = securitySteps.find((step) =>
+      step.uses?.startsWith("actions/setup-node@"),
+    );
+    const auditStep = securitySteps.find((step) => step.name === "pnpm audit");
+
+    assert.equal(setupNode?.with?.["node-version"], 22);
+    assert.match(auditStep?.run ?? "", /pnpm dlx pnpm@11\.13\.0/);
+    assert.match(auditStep?.run ?? "", /--pm-on-fail=ignore/);
+    assert.match(auditStep?.run ?? "", /audit --audit-level high/);
+  });
+
   it("runs Electron shell and native backend gates in reusable CI", async () => {
     const workflow = await readWorkflow("ci.yml");
     assert.ok(workflow.jobs.electron);

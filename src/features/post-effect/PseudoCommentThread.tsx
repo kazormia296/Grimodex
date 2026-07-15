@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CornerDownRight, MessageSquare, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { compareInstantValues } from "@/lib/time";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAnnotationStore } from "./annotationStore";
@@ -34,7 +35,7 @@ export function groupPseudoThreads(
     repliesByParent.set(a.parentId, arr);
   }
   const sortByCreated = (x: PostEffectAnnotation, y: PostEffectAnnotation) =>
-    (x.createdAt ?? "").localeCompare(y.createdAt ?? "");
+    compareInstantValues(x.createdAt, y.createdAt);
   return pseudo
     .filter((a) => a.parentId == null && a.status !== "dismissed")
     .sort(sortByCreated)

@@ -27,6 +27,7 @@ import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
 } from "@/features/project/projectStore";
+import { compareInstantValues } from "@/lib/time";
 
 const DIALOG_CODEX_SORT_OPTIONS = CODEX_SORT_OPTIONS.filter(
   (o) => o.value !== "most-referenced",
@@ -399,11 +400,11 @@ export function PinEntryDialog({
     switch (snippetSortOrder) {
       case "recent":
         return [...filtered].sort((a, b) =>
-          b.createdAt.localeCompare(a.createdAt),
+          compareInstantValues(a.createdAt, b.createdAt, "descending"),
         );
       case "oldest":
         return [...filtered].sort((a, b) =>
-          a.createdAt.localeCompare(b.createdAt),
+          compareInstantValues(a.createdAt, b.createdAt),
         );
       case "title-asc":
         return [...filtered].sort((a, b) => a.title.localeCompare(b.title));

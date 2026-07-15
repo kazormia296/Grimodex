@@ -132,7 +132,7 @@ Rust マイグレーション: `src-tauri/crates/grimodex-db/src/migrate.rs` の
 | `model_id` | TEXT | 例: `cl-nagoya/ruri-v3-30m@local/model_int8.onnx/prefix-v1` |
 | `content_hash` | TEXT | シーン本文の SHA-256 hex (race condition 検出) |
 | `chunker_version` | TEXT | 例: `semantic-prose-chunker-v1` |
-| `created_at` | INTEGER | ms-since-epoch（Drizzle `mode: "timestamp"` と一致） |
+| `created_at` | INTEGER | ms-since-epoch（Drizzle `mode: "timestamp_ms"` と一致） |
 | `updated_at` | INTEGER | 同上 |
 
 インデックス:
