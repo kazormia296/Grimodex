@@ -49,6 +49,7 @@ const mockEntry2: CodexEntry = {
 vi.mock("./api", () => ({
   listCodexEntries: vi.fn(),
   listCodexMatchTargets: vi.fn(),
+  getCodexEntry: vi.fn(),
   createCodexEntry: vi.fn(),
   updateCodexEntry: vi.fn(),
   deleteCodexEntry: vi.fn(),
@@ -80,6 +81,7 @@ vi.mock("@/features/chat/chatStore", () => ({
 import {
   listCodexEntries,
   listCodexMatchTargets,
+  getCodexEntry,
   createCodexEntry,
   updateCodexEntry,
   deleteCodexEntry,
@@ -90,6 +92,7 @@ import { announce } from "@/lib/a11y/announcer";
 
 const mockListCodexEntries = vi.mocked(listCodexEntries);
 const mockListCodexMatchTargets = vi.mocked(listCodexMatchTargets);
+const mockGetCodexEntry = vi.mocked(getCodexEntry);
 const mockCreateCodexEntry = vi.mocked(createCodexEntry);
 const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
 const mockDeleteCodexEntry = vi.mocked(deleteCodexEntry);
@@ -452,6 +455,85 @@ describe("codexStore", () => {
           aliases: '["エララ","the apprentice"]',
         },
       );
+    });
+  });
+
+  describe("registerRubyReading", () => {
+    it("DB の最新 readings にマージし、最新 version で OCC 更新する", async () => {
+      const latest = {
+        ...mockEntry,
+        aliases: '["白兎"]',
+        readings: '{"アリス":["ありす"]}',
+        version: 7,
+      };
+      const savedReadings = '{"アリス":["ありす"],"白兎":["しろうさぎ"]}';
+      mockListCodexMatchTargets.mockResolvedValue([completionTarget(latest)]);
+      mockGetCodexEntry.mockResolvedValue(latest);
+      mockUpdateCodexEntry.mockResolvedValue({
+        ...latest,
+        readings: savedReadings,
+        version: 8,
+      });
+      useCodexStore.setState({
+        entries: [mockEntry],
+        completionTargets: [completionTarget(mockEntry)],
+      });
+
+      await expect(
+        useCodexStore
+          .getState()
+          .registerRubyReading("codex-1", "白兎", "しろうさぎ"),
+      ).resolves.toBe(true);
+
+      expect(mockUpdateCodexEntry).toHaveBeenCalledWith(
+        "default-project",
+        "codex-1",
+        { readings: savedReadings },
+        { baseVersion: 7 },
+      );
+      expect(useCodexStore.getState().completionTargets[0].readings).toBe(
+        savedReadings,
+      );
+    });
+
+    it("外部更新で同じ表記に読みが保存済みなら上書きしない", async () => {
+      const latest = {
+        ...mockEntry,
+        readings: '{"アリス":["えーあいす"]}',
+        version: 4,
+      };
+      mockListCodexMatchTargets.mockResolvedValue([completionTarget(latest)]);
+      mockGetCodexEntry.mockResolvedValue(latest);
+
+      await expect(
+        useCodexStore
+          .getState()
+          .registerRubyReading("codex-1", "アリス", "ありす"),
+      ).resolves.toBe(false);
+
+      expect(mockUpdateCodexEntry).not.toHaveBeenCalled();
+    });
+
+    it("OCC 競合時は外部変更を壊さず conflict handler を呼ぶ", async () => {
+      const latest = { ...mockEntry, version: 5 };
+      mockListCodexMatchTargets.mockResolvedValue([completionTarget(latest)]);
+      mockGetCodexEntry.mockResolvedValue(latest);
+      const { CodexVersionConflictError } = await import("./occ");
+      mockUpdateCodexEntry.mockRejectedValue(
+        new CodexVersionConflictError("codex-1"),
+      );
+      const conflictHandler = vi.fn();
+      const { setCodexEditConflictHandler } = await import("./codexStore");
+      setCodexEditConflictHandler(conflictHandler);
+
+      await expect(
+        useCodexStore
+          .getState()
+          .registerRubyReading("codex-1", "アリス", "ありす"),
+      ).resolves.toBe(false);
+
+      expect(conflictHandler).toHaveBeenCalledWith("codex-1");
+      expect(useCodexStore.getState().completionTargets).toEqual([]);
     });
   });
 

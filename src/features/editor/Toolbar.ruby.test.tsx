@@ -45,6 +45,8 @@ type PromptToastOptions = {
 };
 
 const originalCodexUpdate = useCodexStore.getState().update;
+const originalRegisterRubyReading =
+  useCodexStore.getState().registerRubyReading;
 const PROMPT_SETTING_KEY = "editor.promptCodexReadingOnRuby";
 
 function target(
@@ -123,6 +125,7 @@ afterEach(() => {
   useCodexStore.setState({
     completionTargets: [],
     update: originalCodexUpdate,
+    registerRubyReading: originalRegisterRubyReading,
   });
   for (const timer of useSettingsStore.getState()._timers.values()) {
     clearTimeout(timer);
@@ -273,16 +276,8 @@ describe("Toolbar Codex reading ruby", () => {
 
   it("手動ルビを一意な Codex alias の未設定読みとして登録できる", async () => {
     const editor = createEditor("剣聖");
-    const update = vi.fn<typeof originalCodexUpdate>(async (id, data) => {
-      useCodexStore.setState((state) => ({
-        completionTargets: state.completionTargets.map((entry) =>
-          entry.id === id && data.readings !== undefined
-            ? { ...entry, readings: data.readings }
-            : entry,
-        ),
-      }));
-    });
-    useCodexStore.setState({ update });
+    const registerRubyReading = vi.fn().mockResolvedValue(true);
+    useCodexStore.setState({ registerRubyReading });
 
     openRuby(editor, [
       target("刹那", '["剣聖"]', '{"刹那":["せつな"]}', "setsuna"),
@@ -306,13 +301,11 @@ describe("Toolbar Codex reading ruby", () => {
       await options.action?.onClick();
     });
 
-    expect(update).toHaveBeenCalledTimes(1);
-    const [id, patch] = update.mock.calls[0];
-    expect(id).toBe("setsuna");
-    expect(JSON.parse(patch.readings ?? "{}")).toEqual({
-      刹那: ["せつな"],
-      剣聖: ["けんせい"],
-    });
+    expect(registerRubyReading).toHaveBeenCalledWith(
+      "setsuna",
+      "剣聖",
+      "けんせい",
+    );
     editor.destroy();
   });
 
@@ -361,8 +354,8 @@ describe("Toolbar Codex reading ruby", () => {
 
   it("確認後に別経路で読みが保存された場合は上書きしない", async () => {
     const editor = createEditor("刹那");
-    const update = vi.fn().mockResolvedValue(undefined);
-    useCodexStore.setState({ update });
+    const registerRubyReading = vi.fn().mockResolvedValue(true);
+    useCodexStore.setState({ registerRubyReading });
 
     openRuby(editor, [target("刹那", null, null, "setsuna")]);
     applyManualRuby("せつな");
@@ -377,7 +370,7 @@ describe("Toolbar Codex reading ruby", () => {
       await options.action?.onClick();
     });
 
-    expect(update).not.toHaveBeenCalled();
+    expect(registerRubyReading).not.toHaveBeenCalled();
     editor.destroy();
   });
 });
