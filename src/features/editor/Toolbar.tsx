@@ -45,6 +45,8 @@ import { useAnnotationStore } from "@/features/post-effect/annotationStore";
 import { useLayerAutoFollow } from "@/features/editor/useLayerAutoFollow";
 import { useCurrentProject } from "@/features/project/projectStore";
 import { primaryCountUnit } from "@/features/editor/charCountStats";
+import { useCodexStore } from "@/features/codex/codexStore";
+import { resolveReadingForSurface } from "@/features/codex/reading";
 
 function ToolbarButton({
   active,
@@ -107,6 +109,27 @@ interface ToolbarProps {
   reorderOpen?: boolean;
   onToggleReorder?: () => void;
   reorderDisabled?: boolean;
+}
+
+/**
+ * 自動ルビへ安全に渡せる単一 textblock 内の平文選択だけを返す。
+ * textBetween は hardBreak / ruby 等の leaf を省略するため、それだけで照合すると
+ * 見た目が異なる範囲を Codex 表記として即時置換してしまう。
+ */
+function getAutoRubySurface(editor: Editor): string | null {
+  const { from, to, empty, $from, $to } = editor.state.selection;
+  if (empty || !$from.sameParent($to) || !$from.parent.isTextblock) return null;
+
+  let hasNonTextInline = false;
+  editor.state.doc.nodesBetween(from, to, (node) => {
+    if (node.isInline && !node.isText) {
+      hasNonTextInline = true;
+      return false;
+    }
+  });
+  if (hasNonTextInline) return null;
+
+  return editor.state.doc.textBetween(from, to);
 }
 
 export function Toolbar({
@@ -410,6 +433,19 @@ export function Toolbar({
     } else {
       const { from, to } = editor.state.selection;
       const selected = editor.state.doc.textBetween(from, to);
+      const autoRubySurface = getAutoRubySurface(editor);
+      const codexReading = autoRubySurface
+        ? resolveReadingForSurface(
+            autoRubySurface,
+            useCodexStore.getState().completionTargets,
+          )
+        : null;
+      if (autoRubySurface && codexReading) {
+        editor.chain().focus().setRuby(autoRubySurface, codexReading).run();
+        setRubyOpen(false);
+        setLinkOpen(false);
+        return;
+      }
       setRubyBase(selected);
       setRubyAnnotation("");
       // When text is pre-selected, base is already filled → focus annotation field.

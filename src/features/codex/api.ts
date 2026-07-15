@@ -79,11 +79,17 @@ export async function listCodexEntries(
 // codexStore（一覧/編集面/undo が全列に依存）は従来通り listCodexEntries を使う。
 // ---------------------------------------------------------------------------
 
-/** mention 検出 (CodexMatchTarget) に必要な 5 列だけの行。 */
+/**
+ * renderer のローカル照合に必要な軽量行。
+ *
+ * name / aliases は mention・入力補完、readings は選択表記への自動ルビ付与で
+ * 使う。本文・画像・ノートは全件キャッシュへ載せない。
+ */
 export type CodexMatchRow = Pick<
   CodexEntry,
   "id" | "name" | "type" | "aliases" | "excludedAliases"
->;
+> &
+  Partial<Pick<CodexEntry, "readings">>;
 
 /**
  * AI 文脈構築用: icon / notes / readings の 3 列を除いた行。content は L4 注入・
@@ -122,7 +128,7 @@ function codexContextEntrySelection() {
 }
 
 /**
- * mention 検出の match target 専用の軽量 projection。
+ * mention・入力補完・自動ルビ付与用の軽量 projection。
  * content / icon / notes を転送しない。
  */
 export async function listCodexMatchTargets(
@@ -137,6 +143,7 @@ export async function listCodexMatchTargets(
       type: codexEntries.type,
       aliases: codexEntries.aliases,
       excludedAliases: codexEntries.excludedAliases,
+      readings: codexEntries.readings,
     })
     .from(codexEntries)
     .where(type ? and(scope, eq(codexEntries.type, type)) : scope);

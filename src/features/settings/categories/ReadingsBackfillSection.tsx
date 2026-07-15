@@ -140,7 +140,9 @@ export function ReadingsBackfillSection() {
       // オブジェクトへ張り替える。張り替えないと詳細ペインが stale な readings を
       // 表示し、続く手動読み編集が blind-write でバックフィル分を消す (レビュー指摘)。
       const store = useCodexStore.getState();
-      if (store.entries.length > 0) {
+      // entries はパネルの表示・検索状態により空/部分集合でも、completionTargets は
+      // 自動ルビが読む全件キャッシュ。実書き込み後は表示有無に関係なく再同期する。
+      if (written > 0) {
         await store.loadEntries();
         const s2 = useCodexStore.getState();
         const sel = s2.selectedEntry;

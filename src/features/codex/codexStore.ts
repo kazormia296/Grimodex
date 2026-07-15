@@ -189,6 +189,7 @@ function toCompletionTarget(entry: CodexEntry): CodexMatchRow {
     type: entry.type,
     aliases: entry.aliases,
     excludedAliases: entry.excludedAliases,
+    readings: entry.readings,
   };
 }
 
@@ -198,7 +199,8 @@ function sameCompletionTarget(a: CodexMatchRow, b: CodexMatchRow): boolean {
     a.name === b.name &&
     a.type === b.type &&
     a.aliases === b.aliases &&
-    a.excludedAliases === b.excludedAliases
+    a.excludedAliases === b.excludedAliases &&
+    a.readings === b.readings
   );
 }
 

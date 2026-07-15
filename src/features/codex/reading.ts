@@ -9,9 +9,18 @@
  * IME 辞書のキー生成が主目的なので NFKC + カタカナ→ひらがなで畳む。両者を統一しない。
  */
 import { getCharClass } from "./charClassBoundary";
+import { parseAliases } from "./codexMatcher";
 
 /** 表記→読みの配列。空表記・空読みは serializeReadings で剪定される。 */
 export type ReadingMap = Record<string, string[]>;
+
+/** 表記の読み解決に必要な Codex 軽量行。DB 行・テスト用 parsed 配列の両方を許す。 */
+export interface ReadingSurfaceEntry {
+  name: string;
+  aliases?: string[] | string | null;
+  excludedAliases?: string[] | string | null;
+  readings?: string[] | string | null;
+}
 
 /** 印字可能 ASCII のみか (NFKC 済み前提で呼ぶ)。'Mr. X' 等の空白・記号を許す。 */
 function isAsciiOnly(s: string): boolean {
@@ -136,6 +145,50 @@ export function parseReadings(
     if (readings.length > 0) out[surface] = readings;
   }
   return out;
+}
+
+/** JSON 配列に混入した非文字列値を境界で落とし、安全な表記一覧にする。 */
+function parseSurfaceArray(
+  raw: string[] | string | null | undefined,
+): string[] {
+  return parseAliases(raw).filter(
+    (value): value is string => typeof value === "string",
+  );
+}
+
+/**
+ * 選択表記に設定済みの代表読みを解決する。
+ *
+ * - name / alias と完全一致した表記自身の readings[表記][0] だけを使う。
+ * - alias の読みを name へ、または name の読みを alias へフォールバックしない。
+ * - 同じ表記が複数 Codex に存在しても代表読みが一致すれば利用できるが、異なる
+ *   読みが競合した場合は誤付与を避けて null を返す。
+ * - excludedAliases、破損 JSON、孤児キー、空読みは対象外。
+ */
+export function resolveReadingForSurface(
+  surface: string,
+  entries: readonly ReadingSurfaceEntry[],
+): string | null {
+  if (!surface) return null;
+
+  const candidates = new Set<string>();
+  for (const entry of entries) {
+    const aliases = parseSurfaceArray(entry.aliases);
+    if (!surfacesForEntry(entry.name, aliases).includes(surface)) continue;
+
+    const excluded = new Set(parseSurfaceArray(entry.excludedAliases));
+    if (excluded.has(surface)) continue;
+
+    const representative = parseReadings(entry.readings)[surface]?.[0]?.trim();
+    // 同じ表記に一致する Codex が 1 件でも読み未設定なら、どの項目を指すか
+    // 確定できない。設定済み側だけを採用せず fail-closed で手入力へ戻す。
+    if (!representative) return null;
+    candidates.add(representative);
+  }
+
+  return candidates.size === 1
+    ? (candidates.values().next().value ?? null)
+    : null;
 }
 
 /**
