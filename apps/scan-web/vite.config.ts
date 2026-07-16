@@ -4,7 +4,23 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   test: {
-    environment: "jsdom",
-    include: ["src/**/*.test.{ts,tsx}", "worker/**/*.test.ts"],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "scan-ui",
+          environment: "jsdom",
+          include: ["src/**/*.test.{ts,tsx}"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "scan-worker",
+          environment: "node",
+          include: ["worker/**/*.test.ts"],
+        },
+      },
+    ],
   },
 });
