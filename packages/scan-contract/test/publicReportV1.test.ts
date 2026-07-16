@@ -67,4 +67,55 @@ describe("toPublicReport", () => {
     expect(report.relations[0]?.type).not.toContain("secret@example.com");
     expect(report.relations[0]?.type.length).toBeLessThanOrEqual(80);
   });
+
+  it("bounds redaction work for adversarial public labels", async () => {
+    const bundle = JSON.parse(
+      await readFile(
+        fileURLToPath(new URL("./fixtures/minimal-ja.json", import.meta.url)),
+        "utf8",
+      ),
+    ) as ScanBundleV1;
+    bundle.source.title = "+".repeat(100_000);
+
+    const report = toPublicReport(bundle, {
+      authorConfirmedAt: "2026-07-16T00:00:00.000Z",
+    });
+
+    expect(report.title).toBe(`${"+".repeat(79)}…`);
+  });
+
+  it("redacts maximum-length PII that starts near the public label boundary", async () => {
+    const bundle = JSON.parse(
+      await readFile(
+        fileURLToPath(new URL("./fixtures/minimal-ja.json", import.meta.url)),
+        "utf8",
+      ),
+    ) as ScanBundleV1;
+    const prefix = "x".repeat(60);
+    const email = `${"a".repeat(64)}@${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+    const evidence = bundle.entities[0]?.evidence ?? [];
+    bundle.summary.genreCandidates = [
+      {
+        value: `${prefix} ${email} ${"+".repeat(1_000)}`,
+        confidence: 0.9,
+        evidence,
+      },
+    ];
+    bundle.summary.themes = [
+      {
+        value: `${prefix} +123 (456) 789-0123-45`,
+        confidence: 0.8,
+        evidence,
+      },
+    ];
+
+    const report = toPublicReport(bundle, {
+      authorConfirmedAt: "2026-07-16T00:00:00.000Z",
+    });
+
+    expect(report.summary.genreCandidates[0]).toContain("[redacted email]");
+    expect(report.summary.genreCandidates[0]).not.toContain("@b");
+    expect(report.summary.themes[0]).toContain("[redacted phone]");
+    expect(report.summary.themes[0]).not.toContain("789-0123");
+  });
 });

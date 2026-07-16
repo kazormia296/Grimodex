@@ -7,6 +7,11 @@ import type {
 export const PUBLIC_REPORT_SCHEMA_VERSION =
   "grimodex-scan/public-report/1" as const;
 
+// Public labels expose at most 80 characters. This leaves enough lookahead to
+// redact a maximum-length email or formatted phone that starts in that prefix,
+// while bounding backtracking work on hostile input.
+const PUBLIC_LABEL_REDACTION_LIMIT = 512;
+
 export interface PublicReportV1 {
   schemaVersion: typeof PUBLIC_REPORT_SCHEMA_VERSION;
   title: string;
@@ -51,7 +56,11 @@ function publicId(kind: string, index: number): string {
 }
 
 function redactPersonalData(value: string): string {
-  return value
+  const boundedValue =
+    value.length > PUBLIC_LABEL_REDACTION_LIMIT
+      ? value.slice(0, PUBLIC_LABEL_REDACTION_LIMIT)
+      : value;
+  return boundedValue
     .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[redacted email]")
     .replace(/(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)/g, "[redacted phone]");
 }
