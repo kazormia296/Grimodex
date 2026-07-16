@@ -1,0 +1,56 @@
+{
+  "name": "grimodex-scan-production",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "SCAN_ACCEPTING_NEW_JOBS": "true",
+    "SCAN_WORKERS_AI_ENABLED": "true",
+    "SCAN_FRONTIER_ENABLED": "true",
+    "SCAN_EDITOR_AI_ENABLED": "true",
+    "SCAN_DAILY_LIMIT_UNITS": "1000",
+    "SCAN_MONTHLY_LIMIT_UNITS": "20000",
+    "SCAN_MAX_ACTIVE_JOBS": "8",
+    "SCAN_AI_PROVIDER": "workers-ai",
+    "SCAN_FRONTIER_PROVIDER": "ai-gateway",
+    "SCAN_AI_GATEWAY_URL": "https://gateway.ai.cloudflare.com/v1/replace-with-account/replace-with-gateway/openai/chat/completions",
+    "SCAN_RETENTION_DAYS": "30",
+    "SCAN_SOURCE_RETENTION_DAYS": "1",
+    "SCAN_UPLOAD_RETENTION_MINUTES": "60",
+    "SCAN_TURNSTILE_REQUIRED": "true",
+    "SCAN_ENVIRONMENT": "production",
+    "SCAN_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct",
+    "SCAN_FRONTIER_MODEL": "gpt-4o-mini",
+    "ALLOWED_ORIGIN": "https://try.grimodex.app",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "grimodex-scan-production",
+      "database_id": "replace-with-production-d1-id",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SCAN_BUCKET",
+      "bucket_name": "grimodex-scan-production",
+    },
+  ],
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 120, "period": 60 },
+    },
+  ],
+  "ai": { "binding": "AI" },
+  "workflows": [
+    {
+      "name": "grimodex-scan-production-workflow",
+      "binding": "SCAN_WORKFLOW",
+      "class_name": "ScanWorkflow",
+    },
+  ],
+  "triggers": { "crons": ["0 * * * *"] },
+}

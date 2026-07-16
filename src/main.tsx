@@ -47,6 +47,7 @@ import { ensureTokenizer } from "./features/chat/contextBuilder";
 import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
 import { isElectron } from "./lib/tauri";
 import { installDefaultEditorNavigation } from "./features/editor/editorNavigationPorts";
+import { RuntimeCapabilitiesProvider } from "./runtime/runtimeCapabilitiesContext";
 
 performance.mark("grimodex:renderer-bootstrap");
 
@@ -63,33 +64,29 @@ window.addEventListener("unhandledrejection", (event) => {
   debugLog.error("Global", "unhandled rejection", errorDetail(event.reason));
 });
 
-// デフォルトのコンテキストメニューを無効化
-document.addEventListener("contextmenu", (e) => e.preventDefault());
-
-// ブラウザデフォルトショートカットを無効化
-// Ctrl+R: リロード, Ctrl+P: 印刷, Ctrl+F: ページ内検索
-// F5: リロード, F3: 検索
-// Shift/Alt 併用は自前ショートカット (Ctrl+Shift+F = CommandCenter バー等) に
-// 譲るため block 対象外。macOS では primary modifier が ⌘ なので matchesMod で
-// ⌘R/⌘P/⌘F も同様に block する。
-document.addEventListener("keydown", (e) => {
-  const blocked =
-    (matchesMod(e) &&
-      !e.shiftKey &&
-      !e.altKey &&
-      ["r", "p", "f"].includes(e.key.toLowerCase())) ||
-    e.key === "F5" ||
-    e.key === "F3";
-  if (blocked) e.preventDefault();
-});
-
-// Windows: Alt / Alt+Space でシステムメニューが出るのを、エディタ編集中は抑止。
-installSuppressSystemMenuOnAlt();
+if (isElectron()) {
+  // Desktop-only shell behavior. Browser/PWA keeps native context menus and
+  // reload/print/find shortcuts available.
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+  document.addEventListener("keydown", (e) => {
+    const blocked =
+      (matchesMod(e) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        ["r", "p", "f"].includes(e.key.toLowerCase())) ||
+      e.key === "F5" ||
+      e.key === "F3";
+    if (blocked) e.preventDefault();
+  });
+  installSuppressSystemMenuOnAlt();
+}
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      <RuntimeCapabilitiesProvider target={isElectron() ? "electron" : "web"}>
+        <App />
+      </RuntimeCapabilitiesProvider>
     </ErrorBoundary>
   </React.StrictMode>,
 );

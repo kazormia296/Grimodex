@@ -1,3 +1,4 @@
+import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Import,
@@ -33,11 +34,15 @@ const TABS: { id: TransferTab; labelKey: string; Icon: LucideIcon }[] = [
  */
 export function TransferDialog({ open, tab, onTabChange, onClose }: Props) {
   const { t } = useTranslation();
+  const [importBusy, setImportBusy] = useState(false);
+  const handleClose = useCallback(() => {
+    if (!(tab === "import" && importBusy)) onClose();
+  }, [importBusy, onClose, tab]);
 
   return (
     <AnimatedOverlay
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       className="flex h-[min(600px,85vh)] w-[760px] max-w-[92vw] overflow-hidden rounded-lg border border-border bg-background shadow-xl outline-none"
     >
       <nav
@@ -53,7 +58,10 @@ export function TransferDialog({ open, tab, onTabChange, onClose }: Props) {
             role="tab"
             aria-selected={tab === id}
             data-testid={`transfer-tab-${id}`}
-            onClick={() => onTabChange(id)}
+            onClick={() => {
+              if (!(tab === "import" && importBusy)) onTabChange(id);
+            }}
+            disabled={tab === "import" && importBusy}
             className={cn(
               "flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors",
               tab === id
@@ -75,7 +83,8 @@ export function TransferDialog({ open, tab, onTabChange, onClose }: Props) {
       >
         <button
           type="button"
-          onClick={onClose}
+          onClick={handleClose}
+          disabled={tab === "import" && importBusy}
           aria-label={t("common.close")}
           className="absolute right-3 top-3 z-10 rounded p-1 text-muted-foreground hover:bg-accent"
         >
@@ -83,7 +92,9 @@ export function TransferDialog({ open, tab, onTabChange, onClose }: Props) {
         </button>
 
         <div role="tabpanel" className="flex min-h-0 flex-1 flex-col">
-          {tab === "import" && <ImportDialogBody onClose={onClose} />}
+          {tab === "import" && (
+            <ImportDialogBody onClose={onClose} onBusyChange={setImportBusy} />
+          )}
           {tab === "zip" && <ZipExportBody onClose={onClose} />}
           {tab === "novel" && <NovelExportBody onClose={onClose} />}
         </div>

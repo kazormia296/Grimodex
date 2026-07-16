@@ -19,7 +19,20 @@ vi.mock("@/components/ui/animated-overlay", () => ({
 }));
 
 vi.mock("@/features/import/ImportDialog", () => ({
-  ImportDialogBody: () => <div data-testid="body-import" />,
+  ImportDialogBody: ({
+    onBusyChange,
+  }: {
+    onBusyChange?: (busy: boolean) => void;
+  }) => (
+    <div data-testid="body-import">
+      <button type="button" onClick={() => onBusyChange?.(true)}>
+        mark-import-busy
+      </button>
+      <button type="button" onClick={() => onBusyChange?.(false)}>
+        mark-import-idle
+      </button>
+    </div>
+  ),
 }));
 vi.mock("@/features/export/ZipExportDialog", () => ({
   ZipExportBody: () => <div data-testid="body-zip" />,
@@ -75,5 +88,18 @@ describe("TransferDialog", () => {
       "aria-selected",
       "false",
     );
+  });
+
+  it("blocks close and tab changes while the import body is busy", () => {
+    const { onClose, onTabChange } = setup("import");
+    fireEvent.click(screen.getByRole("button", { name: "mark-import-busy" }));
+    fireEvent.click(screen.getByRole("button", { name: "common.close" }));
+    fireEvent.click(screen.getByTestId("transfer-tab-novel"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onTabChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "mark-import-idle" }));
+    fireEvent.click(screen.getByRole("button", { name: "common.close" }));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

@@ -1,0 +1,28 @@
+{
+  "name": "@grimodex/scan-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:dependencies": "pnpm --workspace-root build:scan:dependencies",
+    "build": "pnpm build:dependencies && pnpm build:app",
+    "build:app": "vite build && node scripts/stamp-service-worker.mjs",
+    "test": "pnpm build:dependencies && pnpm test:app",
+    "test:app": "vitest run",
+    "typecheck": "pnpm build:dependencies && pnpm typecheck:app",
+    "typecheck:app": "tsc --noEmit",
+    "worker:typecheck": "pnpm build:dependencies && pnpm worker:typecheck:app",
+    "worker:typecheck:app": "tsc -p worker/tsconfig.json --noEmit",
+    "dev": "pnpm build:dependencies && vite"
+  },
+  "dependencies": {
+    "@grimodex/scan-contract": "workspace:*",
+    "@grimodex/scan-core": "workspace:*",
+    "@grimodex/scan-prompts": "workspace:*",
+    "@tiptap/react": "3.27.1",
+    "@tiptap/starter-kit": "3.27.1",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "sql.js": "^1.14.1"
+  }
+}

@@ -244,6 +244,27 @@ describe("recorder", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it("drops an explicitly scoped event for a different project", async () => {
+    const { rows } = setupAppendCommand();
+    await initRecorderForProject("active-project");
+    recordChangeEvent({
+      domain: "event",
+      opType: "event.create",
+      projectId: "staging-project",
+      payload: { eventId: "staged-event" },
+    });
+    recordChangeEvent({
+      domain: "event",
+      opType: "event.create",
+      projectId: "active-project",
+      payload: { eventId: "active-event" },
+    });
+    await flushNow();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toContain("active-event");
+  });
+
   it("resetRecorderChain lets the next append restart from genesis", async () => {
     const { rows, tail } = setupAppendCommand({
       sequence: 42,

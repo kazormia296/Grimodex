@@ -4,7 +4,7 @@ import { defaultImportTarget } from "./importTarget";
 
 /** Mirror ImportDialog top-level source tabs. */
 function topLevelSources(): ImportSource[] {
-  return ["novelcrafter", "kakuyomu", "markdown", "novel"];
+  return ["novelcrafter", "kakuyomu", "markdown", "novel", "scan"];
 }
 
 /** Mirror MarkdownImportFlow mode tab accept rules. */
@@ -13,12 +13,13 @@ function acceptForMarkdownMode(mode: MarkdownImportMode): string {
 }
 
 describe("ImportDialog source config", () => {
-  it("exposes four top-level source tabs including unified markdown", () => {
+  it("exposes Scan alongside the existing top-level import sources", () => {
     expect(topLevelSources()).toEqual([
       "novelcrafter",
       "kakuyomu",
       "markdown",
       "novel",
+      "scan",
     ]);
   });
 
@@ -33,5 +34,6 @@ describe("ImportDialog source config", () => {
     expect(defaultImportTarget("markdown", "single")).toBe("currentProject");
     expect(defaultImportTarget("markdown", "multi")).toBe("newProject");
     expect(defaultImportTarget("novel")).toBe("newProject");
+    expect(defaultImportTarget("scan")).toBe("newProject");
   });
 });

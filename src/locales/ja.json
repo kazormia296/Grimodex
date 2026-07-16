@@ -361,6 +361,7 @@
       "import": "インポート",
       "zip": "ZIP",
       "novel": "AIのべりすと"
+      ,"scan": "Grimodex Scan"
     }
   },
   "import": {
@@ -402,6 +403,14 @@
     "invalidZip": "有効なZIPファイルを選択してください",
     "invalidKakuyomu": "有効なカクヨムバックアップZIPを選択してください",
     "invalidMarkdown": "有効なMarkdownファイルを選択してください",
+    "scan": {
+      "description": "Scan のプライベート editor seed (JSON) を読み込み、新規プロジェクトへ段階適用します。既存プロジェクトは変更されません。",
+      "tooLarge": "Scan seed が大きすぎます（最大32MB）。",
+      "preview": "章 {{sections}} / Codex {{codex}} / 出来事 {{events}} / 指摘 {{findings}}",
+      "importButton": "Scanを新規プロジェクトへ取り込む",
+      "success": "Scan取り込み完了: シーン {{scenes}} / Codex {{codex}} / 指摘 {{findings}}",
+      "failed": "Scan取り込みに失敗しました。仮プロジェクトは破棄されました。"
+    },
     "tagMappingTitle": "タグ → CodexType マッピング",
     "tagMappingSubtitle": "タグをCodexTypeとして使用する場合は設定してください。設定しないタグはそのまま残ります。",
     "tagMappingNone": "使用しない",

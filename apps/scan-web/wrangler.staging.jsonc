@@ -1,0 +1,53 @@
+{
+  "name": "grimodex-scan-staging",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "SCAN_ACCEPTING_NEW_JOBS": "false",
+    "SCAN_WORKERS_AI_ENABLED": "false",
+    "SCAN_FRONTIER_ENABLED": "false",
+    "SCAN_EDITOR_AI_ENABLED": "false",
+    "SCAN_DAILY_LIMIT_UNITS": "20",
+    "SCAN_MONTHLY_LIMIT_UNITS": "200",
+    "SCAN_MAX_ACTIVE_JOBS": "2",
+    "SCAN_AI_PROVIDER": "workers-ai",
+    "SCAN_RETENTION_DAYS": "7",
+    "SCAN_SOURCE_RETENTION_DAYS": "1",
+    "SCAN_UPLOAD_RETENTION_MINUTES": "60",
+    "SCAN_TURNSTILE_REQUIRED": "false",
+    "SCAN_ENVIRONMENT": "staging",
+    "SCAN_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct",
+    "ALLOWED_ORIGIN": "https://staging-try.grimodex.app",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "grimodex-scan-staging",
+      "database_id": "replace-with-staging-d1-id",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SCAN_BUCKET",
+      "bucket_name": "grimodex-scan-staging",
+    },
+  ],
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 120, "period": 60 },
+    },
+  ],
+  "ai": { "binding": "AI" },
+  "workflows": [
+    {
+      "name": "grimodex-scan-staging-workflow",
+      "binding": "SCAN_WORKFLOW",
+      "class_name": "ScanWorkflow",
+    },
+  ],
+  "triggers": { "crons": ["0 * * * *"] },
+}

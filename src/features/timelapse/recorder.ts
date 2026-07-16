@@ -78,6 +78,12 @@ export interface RecordEventInput {
   domain: Domain;
   opType: string;
   /**
+   * Owning project when the mutation targets an explicit project. Events for
+   * a project other than the recorder's current binding are discarded rather
+   * than contaminating the active project's hash chain.
+   */
+  projectId?: string;
+  /**
    * Free-form payload — recorder JSON-stringifies it after sorting top-level
    * keys for canonical hashing. Caller should keep payloads small (< ~4 KB
    * typical) so the 100ms flush stays cheap.
@@ -445,6 +451,7 @@ export function _resetRecorderForTests(): void {
  * yet, the call is silently dropped.
  */
 export function recordChangeEvent(input: RecordEventInput): void {
+  if (input.projectId && input.projectId !== state.projectId) return;
   if (state.switchInProgress || state.bindingInvalidated) {
     // 束縛が無効 (切替中 or 正規 rebind 未完了): 誤った束縛で新 workspace の
     // hash chain へ混入させるより破棄が正しい。ただし無警告にしない —
@@ -463,6 +470,7 @@ export function recordChangeEvent(input: RecordEventInput): void {
     eventUid: crypto.randomUUID(),
     domain: input.domain,
     opType: input.opType,
+    projectId: state.projectId,
     payload: input.payload,
     sceneId: input.sceneId ?? null,
     entityType: input.entityType ?? null,

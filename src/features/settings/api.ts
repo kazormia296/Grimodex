@@ -80,6 +80,7 @@ export async function setProjectSetting(
     recordChangeEvent({
       domain: "settings",
       opType: "project.set",
+      projectId,
       entityType: "project_setting",
       entityId: key,
       payload: { key, value: shortSettingValue(value) },
@@ -103,6 +104,7 @@ export async function deleteProjectSetting(
     recordChangeEvent({
       domain: "settings",
       opType: "project.delete",
+      projectId,
       entityType: "project_setting",
       entityId: key,
       payload: { key },

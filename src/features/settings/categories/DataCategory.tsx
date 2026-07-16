@@ -20,6 +20,7 @@ import {
   useRescanStore,
 } from "@/features/codex/mentionRescanQueue";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { CapabilityGate } from "@/runtime/runtimeCapabilitiesContext";
 
 interface ProjectStats {
   sceneCount: number;
@@ -361,20 +362,22 @@ export function DataCategory() {
         </div>
       </SettingSection>
 
-      <SettingSection title={t("externalMount.title")}>
-        <SettingRow
-          label={t("externalMount.manage")}
-          description={t("externalMount.manageDesc")}
-        >
-          <button
-            type="button"
-            className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
-            onClick={() => setMountDialogOpen(true)}
+      <CapabilityGate capability="externalMount">
+        <SettingSection title={t("externalMount.title")}>
+          <SettingRow
+            label={t("externalMount.manage")}
+            description={t("externalMount.manageDesc")}
           >
-            {t("externalMount.open")}
-          </button>
-        </SettingRow>
-      </SettingSection>
+            <button
+              type="button"
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+              onClick={() => setMountDialogOpen(true)}
+            >
+              {t("externalMount.open")}
+            </button>
+          </SettingRow>
+        </SettingSection>
+      </CapabilityGate>
 
       {/* 意味検索インデックス（旧: AI タブ。FTS 再構築 / VACUUM と同族の索引保守）。 */}
       <SemanticIndexSection />
@@ -384,10 +387,12 @@ export function DataCategory() {
         <IntegrityCheckSection />
       </SettingSection>
 
-      <MountListDialog
-        open={mountDialogOpen}
-        onClose={() => setMountDialogOpen(false)}
-      />
+      <CapabilityGate capability="externalMount">
+        <MountListDialog
+          open={mountDialogOpen}
+          onClose={() => setMountDialogOpen(false)}
+        />
+      </CapabilityGate>
     </div>
   );
 }

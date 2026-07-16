@@ -35,6 +35,12 @@ importers:
       '@fontsource/noto-serif-jp':
         specifier: ^5.2.8
         version: 5.2.8
+      '@grimodex/scan-contract':
+        specifier: workspace:*
+        version: link:packages/scan-contract
+      '@grimodex/scan-core':
+        specifier: workspace:*
+        version: link:packages/scan-core
       '@gsap/react':
         specifier: ^2.1.2
         version: 2.1.2(gsap@3.15.0)(react@19.2.6)
@@ -414,6 +420,51 @@ importers:
       vitest-axe:
         specifier: ^0.1.0
         version: 0.1.0(vitest@4.1.9)
+
+  apps/scan-web:
+    dependencies:
+      '@grimodex/scan-contract':
+        specifier: workspace:*
+        version: link:../../packages/scan-contract
+      '@grimodex/scan-core':
+        specifier: workspace:*
+        version: link:../../packages/scan-core
+      '@grimodex/scan-prompts':
+        specifier: workspace:*
+        version: link:../../packages/scan-prompts
+      '@tiptap/react':
+        specifier: 3.27.1
+        version: 3.27.1(@floating-ui/dom@1.7.6)(@tiptap/core@3.27.1(@tiptap/pm@3.27.1))(@tiptap/pm@3.27.1)(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      '@tiptap/starter-kit':
+        specifier: 3.27.1
+        version: 3.27.1
+      react:
+        specifier: 19.2.6
+        version: 19.2.6
+      react-dom:
+        specifier: 19.2.6
+        version: 19.2.6(react@19.2.6)
+      sql.js:
+        specifier: ^1.14.1
+        version: 1.14.1
+
+  packages/scan-contract:
+    dependencies:
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
+
+  packages/scan-core:
+    dependencies:
+      '@grimodex/scan-contract':
+        specifier: workspace:*
+        version: link:../scan-contract
+
+  packages/scan-prompts:
+    dependencies:
+      '@grimodex/scan-contract':
+        specifier: workspace:*
+        version: link:../scan-contract
 
 packages:
 
@@ -2866,6 +2917,9 @@ packages:
 
   '@types/ms@2.1.0':
     resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
+
+  '@types/node@24.10.9':
+    resolution: {integrity: sha512-ne4A0IpG3+2ETuREInjPNhUGis1SFjv1d5asp8MzEAGtOZeTeHVDOYqOgqfhvseqg/iXty2hjBf1zAOb7RNiNw==}
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
@@ -5897,6 +5951,9 @@ packages:
     resolution: {integrity: sha512-nWJ91DjeOkej/TA8pXQ3myruKpKEYgqvpw9lz4OPHj/NWFNluYrjbz9j01CJ8yKQd2g4jFoOkINCTW2I5LEEyw==}
     engines: {node: '>= 0.4'}
 
+  undici-types@7.16.0:
+    resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
+
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
@@ -8363,7 +8420,7 @@ snapshots:
     dependencies:
       '@types/http-cache-semantics': 4.2.0
       '@types/keyv': 3.1.4
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
       '@types/responselike': 1.0.3
 
   '@types/canvas-confetti@1.9.0': {}
@@ -8418,7 +8475,7 @@ snapshots:
 
   '@types/fs-extra@9.0.13':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
 
   '@types/hast@3.0.4':
     dependencies:
@@ -8432,7 +8489,7 @@ snapshots:
 
   '@types/keyv@3.1.4':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
 
   '@types/linkify-it@3.0.5': {}
 
@@ -8460,6 +8517,10 @@ snapshots:
 
   '@types/ms@2.1.0': {}
 
+  '@types/node@24.10.9':
+    dependencies:
+      undici-types: 7.16.0
+
   '@types/node@24.13.3':
     dependencies:
       undici-types: 7.18.2
@@ -8476,12 +8537,12 @@ snapshots:
 
   '@types/responselike@1.0.3':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
 
   '@types/sql.js@1.4.11':
     dependencies:
       '@types/emscripten': 1.41.5
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
 
   '@types/stats.js@0.17.4': {}
 
@@ -8506,7 +8567,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
 
   '@typescript-eslint/eslint-plugin@8.59.4(@typescript-eslint/parser@8.59.4(eslint@10.4.1(jiti@2.7.0))(typescript@6.0.3))(eslint@10.4.1(jiti@2.7.0))(typescript@6.0.3)':
     dependencies:
@@ -8957,7 +9018,7 @@ snapshots:
 
   buffer-image-size@0.6.4:
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
 
   builder-util-runtime@9.7.0:
     dependencies:
@@ -9427,7 +9488,7 @@ snapshots:
     dependencies:
       '@electron-internal/extract-zip': 1.0.4
       '@electron/get': 5.0.0
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
     transitivePeerDependencies:
       - supports-color
 
@@ -9948,7 +10009,7 @@ snapshots:
 
   happy-dom@20.10.6:
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 24.10.9
       '@types/whatwg-mimetype': 3.0.2
       '@types/ws': 8.18.1
       buffer-image-size: 0.6.4
@@ -12058,6 +12119,8 @@ snapshots:
       has-bigints: 1.1.0
       has-symbols: 1.1.0
       which-boxed-primitive: 1.1.1
+
+  undici-types@7.16.0: {}
 
   undici-types@7.18.2: {}
 

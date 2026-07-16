@@ -25,6 +25,7 @@ import { recordChangeEvent } from "@/features/timelapse/recorder";
  * in the `sceneEvents` join table).
  */
 function recordEvent(
+  projectId: string,
   opType: string,
   entityId: string | null,
   payload: Record<string, unknown>,
@@ -32,6 +33,7 @@ function recordEvent(
   recordChangeEvent({
     domain: "event",
     opType,
+    projectId,
     entityType: "event",
     entityId,
     payload,
@@ -150,6 +152,7 @@ export async function getEvent(
 }
 
 export async function createEvent(data: {
+  id?: string;
   projectId: string;
   title?: string;
   note?: string | null;
@@ -169,7 +172,7 @@ export async function createEvent(data: {
   revealSceneId?: string | null;
 }): Promise<EventRow> {
   const now = new Date().toISOString();
-  const id = crypto.randomUUID();
+  const id = data.id ?? crypto.randomUUID();
   let ordinal = data.ordinal;
   if (ordinal === undefined) {
     // ordinal は base62 の fractional-index（nextEventOrdinal で JS 生成）なので
@@ -210,7 +213,7 @@ export async function createEvent(data: {
   });
   const [row] = await db.select().from(events).where(eq(events.id, id));
   bumpChronicleRevision();
-  recordEvent("event.create", id, {
+  recordEvent(data.projectId, "event.create", id, {
     eventId: id,
     title: row?.title ?? data.title ?? "",
     ordinal,
@@ -253,7 +256,10 @@ export async function updateEvent(
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(and(eq(events.id, id), eq(events.projectId, projectId)));
   bumpChronicleRevision();
-  recordEvent("event.update", id, { eventId: id, fields: Object.keys(patch) });
+  recordEvent(projectId, "event.update", id, {
+    eventId: id,
+    fields: Object.keys(patch),
+  });
   // 作中年表 RAG (Phase 3): 出来事更新をデバウンス付きで意味検索 index に反映。
   scheduleEventIndex(id);
 }
@@ -267,7 +273,7 @@ export async function deleteEvent(
     .delete(events)
     .where(and(eq(events.id, id), eq(events.projectId, projectId)));
   bumpChronicleRevision();
-  recordEvent("event.delete", id, { eventId: id });
+  recordEvent(projectId, "event.delete", id, { eventId: id });
 }
 
 // ───────── participants ─────────
@@ -330,7 +336,7 @@ export async function setEventParticipants(
   }
   await invoke("db_execute_batch", { statements });
   bumpChronicleRevision();
-  recordEvent("participants.set", eventId, {
+  recordEvent(projectId, "participants.set", eventId, {
     eventId,
     codexEntryIds,
   });
@@ -445,6 +451,7 @@ export async function linkSceneToEvent(
   recordChangeEvent({
     domain: "event",
     opType: "sceneLink.add",
+    projectId,
     entityType: "event",
     entityId: eventId,
     sceneId,
@@ -489,6 +496,7 @@ export async function linkScenesToEvent(
     recordChangeEvent({
       domain: "event",
       opType: "sceneLink.add",
+      projectId,
       entityType: "event",
       entityId: eventId,
       sceneId,
@@ -516,7 +524,7 @@ export async function unlinkSceneFromEvent(
       and(eq(sceneEvents.sceneId, sceneId), eq(sceneEvents.eventId, eventId)),
     );
   bumpChronicleRevision();
-  recordEvent("sceneLink.remove", eventId, { eventId, sceneId });
+  recordEvent(projectId, "sceneLink.remove", eventId, { eventId, sceneId });
 }
 
 // ───────── project_calendar ─────────
@@ -643,7 +651,7 @@ export async function upsertProjectCalendar(data: {
       },
     });
   bumpChronicleRevision();
-  recordEvent("calendar.update", null, {
+  recordEvent(data.projectId, "calendar.update", null, {
     projectId: data.projectId,
     daysPerYear: data.daysPerYear,
   });
@@ -697,7 +705,7 @@ export async function addEventRelation(
     })
     .onConflictDoNothing();
   bumpChronicleRevision();
-  recordEvent("edge.add", causeId, { causeId, effectId });
+  recordEvent(projectId, "edge.add", causeId, { causeId, effectId });
 }
 
 export async function removeEventRelation(
@@ -717,5 +725,5 @@ export async function removeEventRelation(
       ),
     );
   bumpChronicleRevision();
-  recordEvent("edge.remove", causeId, { causeId, effectId });
+  recordEvent(projectId, "edge.remove", causeId, { causeId, effectId });
 }

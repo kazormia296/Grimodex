@@ -1,0 +1,57 @@
+{
+  "name": "grimodex-scan-dev",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "SCAN_ACCEPTING_NEW_JOBS": "false",
+    "SCAN_WORKERS_AI_ENABLED": "false",
+    "SCAN_FRONTIER_ENABLED": "false",
+    "SCAN_EDITOR_AI_ENABLED": "false",
+    "SCAN_DAILY_LIMIT_UNITS": "0",
+    "SCAN_MONTHLY_LIMIT_UNITS": "0",
+    "SCAN_MAX_ACTIVE_JOBS": "2",
+    "SCAN_AI_PROVIDER": "workers-ai",
+    "SCAN_RETENTION_DAYS": "30",
+    "SCAN_SOURCE_RETENTION_DAYS": "1",
+    "SCAN_UPLOAD_RETENTION_MINUTES": "60",
+    "SCAN_TURNSTILE_REQUIRED": "false",
+    "SCAN_ENVIRONMENT": "development",
+    "SCAN_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct",
+    "ALLOWED_ORIGIN": "https://try.grimodex.app",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "grimodex-scan-dev",
+      "database_id": "local-dev-placeholder",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "SCAN_BUCKET",
+      "bucket_name": "grimodex-scan-dev",
+    },
+  ],
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 120, "period": 60 },
+    },
+  ],
+  "ai": {
+    "binding": "AI",
+  },
+  "workflows": [
+    {
+      "name": "grimodex-scan-workflow",
+      "binding": "SCAN_WORKFLOW",
+      "class_name": "ScanWorkflow",
+    },
+  ],
+  "triggers": {
+    "crons": ["0 * * * *"],
+  },
+}
