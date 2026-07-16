@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useRef, useState } from "react";
 import { parseEditorSeed, type EditorSeedV1 } from "@grimodex/scan-contract";
 import {
   createMinimalJaBundle,
@@ -6,13 +6,31 @@ import {
 } from "../fixtures/minimalJa";
 import { ScanReport } from "../report/ScanReport";
 import { ScanApiClient, type ScanHandle } from "../api/scanApiClient";
-import { BrowserScanEditor } from "./BrowserScanEditor";
 import { BrowserWorkspaceLauncher } from "./BrowserWorkspaceLauncher";
 import { TurnstileWidget } from "./TurnstileWidget";
+
+const BrowserScanEditor = lazy(() =>
+  import("./BrowserScanEditor").then((module) => ({
+    default: module.BrowserScanEditor,
+  })),
+);
 
 export interface ScanWebAppProps {
   /** Optional short-lived entitlement from the authenticated host. */
   fullAccessToken?: string;
+}
+
+export function rollbackFeedbackOverride(
+  current: Record<string, "intentional" | "rejected">,
+  findingId: string,
+  failedStatus: "intentional" | "rejected",
+  previousStatus: "intentional" | "rejected" | undefined,
+): Record<string, "intentional" | "rejected"> {
+  if (current[findingId] !== failedStatus) return current;
+  const next = { ...current };
+  if (previousStatus) next[findingId] = previousStatus;
+  else delete next[findingId];
+  return next;
 }
 
 export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
@@ -49,6 +67,7 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
   const [feedback, setFeedback] = useState<
     Record<string, "intentional" | "rejected">
   >({});
+  const remoteGenerationRef = useRef(0);
   const canUseFull = Boolean(fullAccessToken?.trim());
   const canUpload =
     Boolean(apiClient) && (!turnstileRequired || Boolean(turnstileToken));
@@ -71,19 +90,29 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
   }, []);
   if (seed) {
     return (
-      <BrowserScanEditor
-        seed={seed}
-        workspaceId={browserWorkspaceId}
-        onBack={() => {
-          setSeed(null);
-          setBrowserWorkspaceId(undefined);
-        }}
-      />
+      <Suspense
+        fallback={
+          <main className="scan-browser-workspace">
+            <p className="scan-muted">Browser workspace を読み込んでいます…</p>
+          </main>
+        }
+      >
+        <BrowserScanEditor
+          seed={seed}
+          workspaceId={browserWorkspaceId}
+          onBack={() => {
+            setSeed(null);
+            setBrowserWorkspaceId(undefined);
+          }}
+        />
+      </Suspense>
     );
   }
   const openEditor = async () => {
     if (apiClient && scanHandle) {
+      const generation = remoteGenerationRef.current;
       const editorSeed = await apiClient.getEditorSeed(scanHandle);
+      if (generation !== remoteGenerationRef.current) return;
       setBrowserWorkspaceId(undefined);
       setSeed(editorSeed);
       return;
@@ -98,7 +127,13 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
       setScanError("Bot verification is required before scanning.");
       return;
     }
+    const generation = remoteGenerationRef.current + 1;
+    remoteGenerationRef.current = generation;
     setFeedback({});
+    setScanHandle(null);
+    setLiveBundle(null);
+    setPublicReportId(undefined);
+    setPublicReportBusy(false);
     setTurnstileToken(undefined);
     setTurnstileResetKey((value) => value + 1);
     setScanState("running");
@@ -108,14 +143,21 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
         file,
         canUseFull ? scanMode : "quick",
       );
-      setScanHandle(handle);
-      setPublicReportId(undefined);
+      if (generation !== remoteGenerationRef.current) return;
       const status = await apiClient.waitForCompletion(handle);
+      if (generation !== remoteGenerationRef.current) return;
       if (status.status !== "completed")
         throw new Error(`Scan ended with ${status.status}`);
-      setLiveBundle(await apiClient.getReport(handle));
+      const nextBundle = await apiClient.getReport(handle);
+      if (generation !== remoteGenerationRef.current) return;
+      // Commit remote ownership as one render state only after every required
+      // artifact is available. A failed replacement scan must not mix its
+      // handle with the prior report (or the demo fixture).
+      setLiveBundle(nextBundle);
+      setScanHandle(handle);
       setScanState("idle");
     } catch (cause) {
+      if (generation !== remoteGenerationRef.current) return;
       setScanState("error");
       setScanError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -130,32 +172,45 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
     )
       return;
     setPublicReportBusy(true);
+    const generation = remoteGenerationRef.current;
     try {
       const published = await apiClient.publishPublicReport(scanHandle);
+      if (generation !== remoteGenerationRef.current) return;
       setPublicReportId(published.publicReportId);
     } catch (cause) {
+      if (generation !== remoteGenerationRef.current) return;
       setScanError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setPublicReportBusy(false);
+      if (generation === remoteGenerationRef.current)
+        setPublicReportBusy(false);
     }
   };
   const unpublishPublicReport = async () => {
     if (!apiClient || !scanHandle) return;
     setPublicReportBusy(true);
+    const generation = remoteGenerationRef.current;
     try {
       await apiClient.unpublishPublicReport(scanHandle);
+      if (generation !== remoteGenerationRef.current) return;
       setPublicReportId(undefined);
     } catch (cause) {
+      if (generation !== remoteGenerationRef.current) return;
       setScanError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setPublicReportBusy(false);
+      if (generation === remoteGenerationRef.current)
+        setPublicReportBusy(false);
     }
   };
   return (
     <>
       <BrowserWorkspaceLauncher
         onOpenSeed={(nextSeed, workspaceId) => {
+          remoteGenerationRef.current += 1;
+          setScanHandle(null);
           setLiveBundle(nextSeed.bundle);
+          setPublicReportId(undefined);
+          setPublicReportBusy(false);
+          setFeedback({});
           setBrowserWorkspaceId(workspaceId);
           setSeed(nextSeed);
         }}
@@ -192,7 +247,7 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
           <input
             type="file"
             accept=".txt,.md,.markdown,text/plain,text/markdown"
-            disabled={!canUpload || scanState === "running"}
+            disabled={!canUpload || scanState === "running" || publicReportBusy}
             onChange={(event) => {
               const file = event.currentTarget.files?.[0];
               if (file) void startScan(file);
@@ -210,7 +265,11 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
       </section>
       <ScanReport
         bundle={activeBundle}
-        onOpenEditor={() => void openEditor()}
+        onOpenEditor={
+          scanState === "running" || publicReportBusy
+            ? undefined
+            : () => void openEditor()
+        }
         onPublishPublicReport={
           apiClient && scanHandle ? () => void publishPublicReport() : undefined
         }
@@ -221,17 +280,32 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
         }
         publicReportId={publicReportId}
         publicReportBusy={publicReportBusy}
-        onFeedback={(findingId, status) => {
-          setFeedback((current) => ({ ...current, [findingId]: status }));
-          if (apiClient && scanHandle)
-            void apiClient
-              .sendFindingFeedback(scanHandle, findingId, status)
-              .catch((cause) => {
-                setScanError(
-                  cause instanceof Error ? cause.message : String(cause),
-                );
-              });
-        }}
+        onFeedback={
+          scanState === "running"
+            ? undefined
+            : (findingId, status) => {
+                const previousStatus = feedback[findingId];
+                const generation = remoteGenerationRef.current;
+                setFeedback((current) => ({ ...current, [findingId]: status }));
+                if (apiClient && scanHandle)
+                  void apiClient
+                    .sendFindingFeedback(scanHandle, findingId, status)
+                    .catch((cause) => {
+                      if (generation !== remoteGenerationRef.current) return;
+                      setFeedback((current) =>
+                        rollbackFeedbackOverride(
+                          current,
+                          findingId,
+                          status,
+                          previousStatus,
+                        ),
+                      );
+                      setScanError(
+                        cause instanceof Error ? cause.message : String(cause),
+                      );
+                    });
+              }
+        }
       />
     </>
   );

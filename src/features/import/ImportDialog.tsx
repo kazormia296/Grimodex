@@ -31,7 +31,13 @@ const DIALOG_PANEL_CLASS =
  * 単体ダイアログ（ImportDialog）と統合ダイアログ（TransferDialog）の
  * 両方から再利用する。閉じる制御は呼び出し側の onClose に委譲する。
  */
-export function ImportDialogBody({ onClose }: { onClose: () => void }) {
+export function ImportDialogBody({
+  onClose,
+  onBusyChange,
+}: {
+  onClose: () => void;
+  onBusyChange?: (busy: boolean) => void;
+}) {
   const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useState<ImportSource>("novelcrafter");
@@ -41,16 +47,34 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
     defaultImportTarget("novelcrafter"),
   );
   const [flowKey, setFlowKey] = useState(0);
+  const [flowBusy, setFlowBusy] = useState(false);
+
+  const handleBusyChange = useCallback(
+    (busy: boolean) => {
+      setFlowBusy(busy);
+      onBusyChange?.(busy);
+    },
+    [onBusyChange],
+  );
 
   const handleClose = useCallback(() => {
+    if (flowBusy) return;
+    setFlowKey((k) => k + 1);
+    onClose();
+  }, [flowBusy, onClose]);
+  const handleImportComplete = useCallback(() => {
     setFlowKey((k) => k + 1);
     onClose();
   }, [onClose]);
 
-  const handleSourceChange = useCallback((next: ImportSource) => {
-    setSource(next);
-    setFlowKey((k) => k + 1);
-  }, []);
+  const handleSourceChange = useCallback(
+    (next: ImportSource) => {
+      if (flowBusy) return;
+      setSource(next);
+      setFlowKey((k) => k + 1);
+    },
+    [flowBusy],
+  );
 
   useEffect(() => {
     setImportTarget(
@@ -103,6 +127,7 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
             aria-selected={source === s}
             data-testid={`import-source-${s}`}
             onClick={() => handleSourceChange(s)}
+            disabled={flowBusy}
             className={`rounded px-2 py-1 text-xs ${
               source === s
                 ? "bg-primary text-primary-foreground"
@@ -148,20 +173,30 @@ export function ImportDialogBody({ onClose }: { onClose: () => void }) {
         {source === "novel" && (
           <NovelImportFlow importTarget={importTarget} onClose={handleClose} />
         )}
-        {source === "scan" && <ScanImportFlow onClose={handleClose} />}
+        {source === "scan" && (
+          <ScanImportFlow
+            onClose={handleClose}
+            onComplete={handleImportComplete}
+            onBusyChange={handleBusyChange}
+          />
+        )}
       </div>
     </div>
   );
 }
 
 export function ImportDialog({ open, onClose }: Props) {
+  const [busy, setBusy] = useState(false);
+  const handleClose = useCallback(() => {
+    if (!busy) onClose();
+  }, [busy, onClose]);
   return (
     <AnimatedOverlay
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       className={`${DIALOG_PANEL_CLASS} rounded-lg border border-border bg-background shadow-xl outline-none`}
     >
-      <ImportDialogBody onClose={onClose} />
+      <ImportDialogBody onClose={onClose} onBusyChange={setBusy} />
     </AnimatedOverlay>
   );
 }

@@ -1,5 +1,10 @@
 import type { D1DatabaseLike } from "./env";
-import { assertTransition, type ScanStatus } from "./stateMachine";
+import {
+  assertTransition,
+  isTerminalStatus,
+  type ScanStatus,
+} from "./stateMachine";
+import { chunkD1Bindings } from "./d1Limits";
 
 export type ScanMode = "quick" | "full";
 export type ScanJobStage =
@@ -79,11 +84,31 @@ export interface ScanChunkRecord {
   updatedAt: string;
 }
 
+export interface ScanAdjudicationResultRecord {
+  scanId: string;
+  ambiguityId: string;
+  resultJson: string;
+  updatedAt: string;
+}
+
 export interface PublicAbuseReportRecord {
   id: string;
   publicReportId: string;
   reason: string;
   createdAt: string;
+}
+
+export interface AiUsageOperationRecord {
+  operationId: string;
+  scanId: string;
+  status: "reserved" | "completed" | "failed" | "refunded";
+  provider: string;
+  model: string;
+  requestHash: string | null;
+  reservationId: string | null;
+  units: number | null;
+  bucketKeys: string[];
+  updatedAt: string;
 }
 
 interface UploadIntentRow {
@@ -409,6 +434,7 @@ export class ScanRepository {
     scanId: string,
     chunkHash: string,
     pipelineVersion: string,
+    claimAttempt: number,
     extractionJson: string,
   ): Promise<void> {
     const result = await this.db
@@ -416,9 +442,16 @@ export class ScanRepository {
         `UPDATE scan_chunks
          SET extraction_json = ?, updated_at = ?
          WHERE scan_id = ? AND chunk_hash = ? AND pipeline_version = ?
-           AND status = 'running'`,
+           AND status = 'running' AND attempt = ?`,
       )
-      .bind(extractionJson, this.now(), scanId, chunkHash, pipelineVersion)
+      .bind(
+        extractionJson,
+        this.now(),
+        scanId,
+        chunkHash,
+        pipelineVersion,
+        claimAttempt,
+      )
       .run();
     const changes = result.meta?.changes;
     if (
@@ -429,10 +462,63 @@ export class ScanRepository {
     }
   }
 
+  async getAdjudicationResult(
+    scanId: string,
+    ambiguityId: string,
+  ): Promise<ScanAdjudicationResultRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT scan_id, ambiguity_id, result_json, updated_at
+         FROM scan_adjudication_results
+         WHERE scan_id = ? AND ambiguity_id = ?`,
+      )
+      .bind(scanId, ambiguityId)
+      .first<{
+        scan_id: string;
+        ambiguity_id: string;
+        result_json: string;
+        updated_at: string;
+      }>();
+    return row
+      ? {
+          scanId: row.scan_id,
+          ambiguityId: row.ambiguity_id,
+          resultJson: row.result_json,
+          updatedAt: row.updated_at,
+        }
+      : null;
+  }
+
+  async saveAdjudicationResult(
+    scanId: string,
+    ambiguityId: string,
+    resultJson: string,
+  ): Promise<ScanAdjudicationResultRecord> {
+    const now = this.now();
+    const result = await this.db
+      .prepare(
+        `INSERT INTO scan_adjudication_results
+           (scan_id, ambiguity_id, result_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(scan_id, ambiguity_id) DO NOTHING`,
+      )
+      .bind(scanId, ambiguityId, resultJson, now, now)
+      .run();
+    if (result.success === false) {
+      throw new Error("failed to persist adjudication result");
+    }
+    const persisted = await this.getAdjudicationResult(scanId, ambiguityId);
+    if (!persisted) {
+      throw new Error("persisted adjudication result could not be read back");
+    }
+    return persisted;
+  }
+
   async completeScanChunk(
     scanId: string,
     chunkHash: string,
     pipelineVersion: string,
+    claimAttempt: number,
     extractionKey: string,
   ): Promise<void> {
     const result = await this.db
@@ -440,9 +526,16 @@ export class ScanRepository {
         `UPDATE scan_chunks
          SET status = 'completed', extraction_key = ?, updated_at = ?
          WHERE scan_id = ? AND chunk_hash = ? AND pipeline_version = ?
-           AND status = 'running'`,
+           AND status = 'running' AND attempt = ?`,
       )
-      .bind(extractionKey, this.now(), scanId, chunkHash, pipelineVersion)
+      .bind(
+        extractionKey,
+        this.now(),
+        scanId,
+        chunkHash,
+        pipelineVersion,
+        claimAttempt,
+      )
       .run();
     const changes = result.meta?.changes;
     if (
@@ -457,15 +550,20 @@ export class ScanRepository {
     scanId: string,
     chunkHash: string,
     pipelineVersion: string,
-  ): Promise<void> {
-    await this.db
+    claimAttempt: number,
+  ): Promise<boolean> {
+    const result = await this.db
       .prepare(
         `UPDATE scan_chunks SET status = 'failed', updated_at = ?
          WHERE scan_id = ? AND chunk_hash = ? AND pipeline_version = ?
-           AND status = 'running'`,
+           AND status = 'running' AND attempt = ?`,
       )
-      .bind(this.now(), scanId, chunkHash, pipelineVersion)
+      .bind(this.now(), scanId, chunkHash, pipelineVersion, claimAttempt)
       .run();
+    if (result.success === false)
+      throw new Error("failed to release scan chunk claim");
+    const changes = result.meta?.changes;
+    return changes === undefined || Number(changes) === 1;
   }
 
   async saveArtifact(input: {
@@ -566,26 +664,281 @@ export class ScanRepository {
       .run();
   }
 
+  /** Atomically claim an editor request and reserve all of its quota buckets. */
+  async claimAndReserveAiUsage(input: {
+    operationId: string;
+    scanId: string;
+    provider: string;
+    model: string;
+    requestHash: string;
+    units: number;
+    buckets: ReadonlyArray<{ key: string; limit: number }>;
+  }): Promise<{
+    claimed: boolean;
+    operation: AiUsageOperationRecord | null;
+  }> {
+    const units = Math.max(0, Math.trunc(input.units));
+    const reservationId = crypto.randomUUID();
+    const now = this.now();
+    const bucketKeys = input.buckets.map((bucket) => bucket.key);
+    const bucketPlaceholders = bucketKeys.map(() => "?").join(", ");
+    const capacitySql =
+      bucketKeys.length === 0
+        ? ""
+        : `AND (SELECT COUNT(*) FROM usage_buckets WHERE bucket_key IN (${bucketPlaceholders})) = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM usage_buckets
+             WHERE bucket_key IN (${bucketPlaceholders})
+               AND reserved_units + actual_units + ? > limit_units
+           )`;
+    const capacityBindings =
+      bucketKeys.length === 0
+        ? []
+        : [...bucketKeys, bucketKeys.length, ...bucketKeys, units];
+    await this.db.batch([
+      ...input.buckets.map((bucket) =>
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO usage_buckets
+              (bucket_key, reserved_units, actual_units, limit_units, updated_at)
+             VALUES (?, 0, 0, ?, ?)`,
+          )
+          .bind(bucket.key, bucket.limit, now),
+      ),
+      this.db
+        .prepare(
+          `INSERT INTO ai_usage_ledger
+            (operation_id, scan_id, provider, model, status, request_hash,
+             reservation_id, reserved_units, bucket_keys_json, created_at, updated_at)
+           SELECT ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?
+           WHERE NOT EXISTS (
+             SELECT 1 FROM ai_usage_ledger WHERE operation_id = ?
+           )
+           AND EXISTS (
+             SELECT 1 FROM scan_sessions
+             WHERE id = ? AND status = 'completed'
+               AND private_report_key IS NOT NULL
+           )
+           ${capacitySql}
+           ON CONFLICT (operation_id) DO NOTHING`,
+        )
+        .bind(
+          input.operationId,
+          input.scanId,
+          input.provider,
+          input.model,
+          input.requestHash,
+          reservationId,
+          units,
+          JSON.stringify(bucketKeys),
+          now,
+          now,
+          input.operationId,
+          input.scanId,
+          ...capacityBindings,
+        ),
+      ...bucketKeys.map((bucketKey) =>
+        this.db
+          .prepare(
+            `UPDATE usage_buckets
+             SET reserved_units = reserved_units + ?, updated_at = ?
+             WHERE bucket_key = ?
+               AND EXISTS (
+                 SELECT 1 FROM ai_usage_ledger
+                 WHERE operation_id = ? AND reservation_id = ?
+               )`,
+          )
+          .bind(units, now, bucketKey, input.operationId, reservationId),
+      ),
+    ]);
+    const operation = await this.getAiUsageOperation(input.operationId);
+    return {
+      claimed: operation?.reservationId === reservationId,
+      operation,
+    };
+  }
+
+  async getAiUsageOperation(
+    operationId: string,
+  ): Promise<AiUsageOperationRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT operation_id, scan_id, status, provider, model, request_hash,
+                reservation_id, reserved_units, bucket_keys_json, updated_at
+         FROM ai_usage_ledger WHERE operation_id = ?`,
+      )
+      .bind(operationId)
+      .first<{
+        operation_id: string;
+        scan_id: string;
+        status: AiUsageOperationRecord["status"];
+        provider: string;
+        model: string;
+        request_hash: string | null;
+        reservation_id: string | null;
+        reserved_units: number | null;
+        bucket_keys_json: string | null;
+        updated_at: string;
+      }>();
+    if (!row) return null;
+    let bucketKeys: string[] = [];
+    try {
+      const value = JSON.parse(row.bucket_keys_json ?? "[]") as unknown;
+      if (Array.isArray(value) && value.every((key) => typeof key === "string"))
+        bucketKeys = value;
+    } catch {
+      // Legacy/non-editor ledger rows do not carry reservation metadata.
+    }
+    return {
+      operationId: row.operation_id,
+      scanId: row.scan_id,
+      status: row.status,
+      provider: row.provider,
+      model: row.model,
+      requestHash: row.request_hash,
+      reservationId: row.reservation_id,
+      units: row.reserved_units,
+      bucketKeys,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async listStaleReservedAiUsage(
+    staleBefore: string,
+    limit = 100,
+  ): Promise<AiUsageOperationRecord[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT operation_id FROM ai_usage_ledger
+         WHERE status = 'reserved' AND reservation_id IS NOT NULL
+           AND updated_at <= ?
+         ORDER BY updated_at ASC LIMIT ?`,
+      )
+      .bind(staleBefore, Math.max(1, Math.min(100, Math.trunc(limit))))
+      .all<{ operation_id: string }>();
+    const operations = await Promise.all(
+      rows.results.map((row) => this.getAiUsageOperation(row.operation_id)),
+    );
+    return operations.filter(
+      (operation): operation is AiUsageOperationRecord => operation !== null,
+    );
+  }
+
+  async listEditorAiOperationIds(
+    scanId: string,
+    limit = 100,
+  ): Promise<string[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT operation_id FROM ai_usage_ledger
+         WHERE scan_id = ? AND operation_id LIKE 'editor-ai:%'
+         ORDER BY created_at ASC, operation_id ASC LIMIT ?`,
+      )
+      .bind(scanId, Math.max(1, Math.min(100, Math.trunc(limit))))
+      .all<{ operation_id: string }>();
+    return rows.results.map((row) => row.operation_id);
+  }
+
+  /**
+   * Settle an editor-AI reservation once. The unique marker makes retries a
+   * no-op even if the client lost the first HTTP response.
+   */
+  async finalizeAiUsageOperation(input: {
+    operationId: string;
+    provider: string;
+    model: string;
+    status: "completed" | "failed";
+    staleBefore?: string;
+  }): Promise<void> {
+    const operation = await this.getAiUsageOperation(input.operationId);
+    if (
+      !operation ||
+      operation.status !== "reserved" ||
+      operation.units === null ||
+      (operation.bucketKeys.length === 0 && operation.units !== 0)
+    ) {
+      return;
+    }
+    const units = Math.max(0, Math.trunc(operation.units));
+    const settlementId = crypto.randomUUID();
+    const now = this.now();
+    const staleCondition = input.staleBefore ? " AND updated_at <= ?" : "";
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE ai_usage_ledger
+           SET provider = ?, model = ?, status = ?, settlement_id = ?, updated_at = ?
+           WHERE operation_id = ? AND status = 'reserved' AND settlement_id IS NULL${staleCondition}`,
+        )
+        .bind(
+          input.provider,
+          input.model,
+          input.status,
+          settlementId,
+          now,
+          input.operationId,
+          ...(input.staleBefore ? [input.staleBefore] : []),
+        ),
+      ...operation.bucketKeys.map((bucketKey) =>
+        this.db
+          .prepare(
+            `UPDATE usage_buckets
+             SET reserved_units = MAX(0, reserved_units - ?),
+                 actual_units = actual_units + ?, updated_at = ?
+             WHERE bucket_key = ?
+               AND EXISTS (
+                 SELECT 1 FROM ai_usage_ledger
+                 WHERE operation_id = ? AND settlement_id = ?
+               )`,
+          )
+          .bind(
+            units,
+            input.status === "completed" ? units : 0,
+            now,
+            bucketKey,
+            input.operationId,
+            settlementId,
+          ),
+      ),
+    ]);
+  }
+
   /** Settle the one-time reservation exactly once when a workflow reaches a terminal state. */
   async settleUsage(scanId: string, actualUnits: number): Promise<void> {
     const scan = await this.getScan(scanId);
     if (!scan) return;
     const job = await this.db
       .prepare(
-        "SELECT reserved_units, actual_units FROM scan_jobs WHERE scan_id = ?",
+        "SELECT reserved_units, actual_units, bucket_keys_json FROM scan_jobs WHERE scan_id = ?",
       )
       .bind(scanId)
-      .first<{ reserved_units: number; actual_units: number | null }>();
+      .first<{
+        reserved_units: number;
+        actual_units: number | null;
+        bucket_keys_json: string | null;
+      }>();
     if (!job || job.actual_units !== null) return;
     const requestedUnits = actualUnits < 0 ? job.reserved_units : actualUnits;
     const units = Math.min(
       job.reserved_units,
       Math.max(0, Math.trunc(requestedUnits)),
     );
-    const bucketKeys = [
-      `daily:${scan.createdAt.slice(0, 10)}`,
-      `monthly:${scan.createdAt.slice(0, 7)}`,
-    ];
+    let bucketKeys: string[];
+    try {
+      const parsed = JSON.parse(job.bucket_keys_json ?? "null") as unknown;
+      bucketKeys =
+        Array.isArray(parsed) && parsed.every((key) => typeof key === "string")
+          ? parsed
+          : [
+              `daily:${scan.createdAt.slice(0, 10)}`,
+              `monthly:${scan.createdAt.slice(0, 7)}`,
+            ];
+    } catch {
+      bucketKeys = [
+        `daily:${scan.createdAt.slice(0, 10)}`,
+        `monthly:${scan.createdAt.slice(0, 7)}`,
+      ];
+    }
     const now = this.now();
     const settlementId = crypto.randomUUID();
     // Both statements execute in one D1 transaction. The unique settlement
@@ -684,90 +1037,158 @@ export class ScanRepository {
     mode: ScanMode;
     reservedUnits: number;
     accessTokenHash: string;
+    buckets: ReadonlyArray<{ key: string; limit: number }>;
     maxActiveJobs?: number | null;
-  }): Promise<boolean> {
+  }): Promise<
+    | "created"
+    | "existing"
+    | "conflict"
+    | "budget-exhausted"
+    | "concurrency-exhausted"
+    | "upload-not-ready"
+  > {
+    const matchesRequest = (scan: ScanSessionRecord): boolean =>
+      scan.id === input.id &&
+      scan.uploadId === input.uploadId &&
+      scan.mode === input.mode &&
+      scan.accessTokenHash === input.accessTokenHash;
+    const existing = await this.getScan(input.id);
+    if (existing) return matchesRequest(existing) ? "existing" : "conflict";
+
     const now = this.now();
-    const consumed = await this.db
+    const bucketKeys = input.buckets.map((bucket) => bucket.key);
+    const placeholders = bucketKeys.map(() => "?").join(", ");
+    const capacitySql =
+      bucketKeys.length === 0
+        ? ""
+        : `AND (SELECT COUNT(*) FROM usage_buckets WHERE bucket_key IN (${placeholders})) = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM usage_buckets
+             WHERE bucket_key IN (${placeholders})
+               AND reserved_units + actual_units + ? > limit_units
+           )`;
+    const capacityBindings =
+      bucketKeys.length === 0
+        ? []
+        : [
+            ...bucketKeys,
+            bucketKeys.length,
+            ...bucketKeys,
+            input.reservedUnits,
+          ];
+    const concurrencySql =
+      input.maxActiveJobs === null || input.maxActiveJobs === undefined
+        ? ""
+        : `AND (
+             SELECT COUNT(*) FROM scan_sessions
+             WHERE status IN ('created', 'uploading', 'queued', 'validating', 'chunking',
+               'extracting', 'merging', 'adjudicating', 'reporting', 'cancel_requested')
+           ) < ?`;
+    const concurrencyBindings =
+      input.maxActiveJobs === null || input.maxActiveJobs === undefined
+        ? []
+        : [input.maxActiveJobs];
+    const sessionInsert = this.db
       .prepare(
-        `UPDATE upload_intents
-         SET status = 'consumed', updated_at = ?
-         WHERE id = ? AND status = 'uploaded' AND actual_size IS NOT NULL
-           AND source_hash IS NOT NULL AND expires_at > ?
-         RETURNING source_hash`,
+        `INSERT INTO scan_sessions
+          (id, upload_id, access_token_hash, mode, status, source_hash,
+           private_bundle_key, private_report_key, cancel_requested_at,
+           created_at, updated_at)
+         SELECT ?, u.id, ?, ?, 'queued', u.source_hash,
+                NULL, NULL, NULL, ?, ?
+         FROM upload_intents u
+         WHERE u.id = ? AND u.status = 'uploaded'
+           AND u.actual_size IS NOT NULL AND u.source_hash IS NOT NULL
+           AND u.expires_at > ?
+           ${capacitySql}
+           ${concurrencySql}`,
       )
-      .bind(now, input.uploadId, now)
-      .first<{ source_hash: string | null }>();
-    if (!consumed) throw new Error("upload is not ready for scan creation");
-    try {
-      const sessionInsert =
-        input.maxActiveJobs === null || input.maxActiveJobs === undefined
-          ? this.db
-              .prepare(
-                `INSERT INTO scan_sessions
-                (id, upload_id, access_token_hash, mode, status, source_hash, private_bundle_key, private_report_key,
-                 cancel_requested_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'queued', ?, NULL, NULL, NULL, ?, ?)`,
-              )
-              .bind(
-                input.id,
-                input.uploadId,
-                input.accessTokenHash,
-                input.mode,
-                consumed.source_hash,
-                now,
-                now,
-              )
-          : this.db
-              .prepare(
-                `INSERT INTO scan_sessions
-                (id, upload_id, access_token_hash, mode, status, source_hash, private_bundle_key, private_report_key,
-                 cancel_requested_at, created_at, updated_at)
-               SELECT ?, ?, ?, ?, 'queued', ?, NULL, NULL, NULL, ?, ?
-               WHERE (
-                 SELECT COUNT(*) FROM scan_sessions
-                 WHERE status IN ('created', 'uploading', 'queued', 'validating', 'chunking',
-                   'extracting', 'merging', 'adjudicating', 'reporting', 'cancel_requested')
-               ) < ?`,
-              )
-              .bind(
-                input.id,
-                input.uploadId,
-                input.accessTokenHash,
-                input.mode,
-                consumed.source_hash,
-                now,
-                now,
-                input.maxActiveJobs,
-              );
-      const jobInsert = this.db
+      .bind(
+        input.id,
+        input.accessTokenHash,
+        input.mode,
+        now,
+        now,
+        input.uploadId,
+        now,
+        ...capacityBindings,
+        ...concurrencyBindings,
+      );
+    const statements = [
+      ...input.buckets.map((bucket) =>
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO usage_buckets
+              (bucket_key, reserved_units, actual_units, limit_units, updated_at)
+             VALUES (?, 0, 0, ?, ?)`,
+          )
+          .bind(bucket.key, bucket.limit, now),
+      ),
+      sessionInsert,
+      this.db
         .prepare(
-          `INSERT INTO scan_jobs (scan_id, stage, attempt, reserved_units, created_at, updated_at)
-           SELECT ?, 'load-job', 0, ?, ?, ?
+          `INSERT INTO scan_jobs
+            (scan_id, stage, attempt, reserved_units, bucket_keys_json, created_at, updated_at)
+           SELECT ?, 'load-job', 0, ?, ?, ?, ?
            WHERE EXISTS (SELECT 1 FROM scan_sessions WHERE id = ?)`,
         )
-        .bind(input.id, input.reservedUnits, now, now, input.id);
-      await this.db.batch([sessionInsert, jobInsert]);
-      if (!(await this.getScan(input.id))) {
-        await this.db
+        .bind(
+          input.id,
+          input.reservedUnits,
+          JSON.stringify(bucketKeys),
+          now,
+          now,
+          input.id,
+        ),
+      ...bucketKeys.map((bucketKey) =>
+        this.db
           .prepare(
-            "UPDATE upload_intents SET status = 'uploaded', updated_at = ? WHERE id = ? AND status = 'consumed'",
+            `UPDATE usage_buckets
+             SET reserved_units = reserved_units + ?, updated_at = ?
+             WHERE bucket_key = ?
+               AND EXISTS (SELECT 1 FROM scan_sessions WHERE id = ?)`,
           )
-          .bind(this.now(), input.uploadId)
-          .run();
-        return false;
-      }
-      return true;
-    } catch (error) {
-      // If session/job insertion failed before a scan became visible, return the
-      // upload to uploaded so the client can retry without minting a new token.
-      await this.db
+          .bind(input.reservedUnits, now, bucketKey, input.id),
+      ),
+      this.db
         .prepare(
-          "UPDATE upload_intents SET status = 'uploaded', updated_at = ? WHERE id = ? AND status = 'consumed'",
+          `UPDATE upload_intents SET status = 'consumed', updated_at = ?
+           WHERE id = ?
+             AND EXISTS (SELECT 1 FROM scan_sessions WHERE id = ?)`,
         )
-        .bind(this.now(), input.uploadId)
-        .run();
+        .bind(now, input.uploadId, input.id),
+    ];
+    try {
+      await this.db.batch(statements);
+    } catch (error) {
+      const recovered = await this.getScan(input.id).catch(() => null);
+      if (recovered) return matchesRequest(recovered) ? "existing" : "conflict";
       throw error;
     }
+    const persisted = await this.getScan(input.id);
+    if (persisted) return matchesRequest(persisted) ? "created" : "conflict";
+    const upload = await this.getUploadIntent(input.uploadId);
+    if (!upload || upload.status !== "uploaded") return "upload-not-ready";
+    for (const bucket of input.buckets) {
+      const row = await this.db
+        .prepare(
+          `SELECT reserved_units, actual_units, limit_units
+           FROM usage_buckets WHERE bucket_key = ?`,
+        )
+        .bind(bucket.key)
+        .first<{
+          reserved_units: number;
+          actual_units: number;
+          limit_units: number;
+        }>();
+      if (
+        row &&
+        row.reserved_units + row.actual_units + input.reservedUnits >
+          row.limit_units
+      )
+        return "budget-exhausted";
+    }
+    return "concurrency-exhausted";
   }
 
   async getScan(id: string): Promise<ScanSessionRecord | null> {
@@ -782,12 +1203,21 @@ export class ScanRepository {
     return row ? this.scanFromRow(row) : null;
   }
 
-  async listScanArtifacts(scanId: string): Promise<ScanArtifactRecord[]> {
+  async listScanArtifacts(
+    scanId: string,
+    limit?: number,
+  ): Promise<ScanArtifactRecord[]> {
+    const boundedLimit =
+      limit === undefined
+        ? undefined
+        : Math.max(1, Math.min(100, Math.trunc(limit)));
     const rows = await this.db
       .prepare(
-        "SELECT object_key, artifact_kind FROM scan_artifacts WHERE scan_id = ?",
+        `SELECT object_key, artifact_kind FROM scan_artifacts
+         WHERE scan_id = ?
+         ORDER BY object_key ASC${boundedLimit === undefined ? "" : " LIMIT ?"}`,
       )
-      .bind(scanId)
+      .bind(...(boundedLimit === undefined ? [scanId] : [scanId, boundedLimit]))
       .all<{ object_key: string; artifact_kind: ScanArtifactKind }>();
     return rows.results.map((row) => ({
       objectKey: row.object_key,
@@ -798,9 +1228,12 @@ export class ScanRepository {
   async scrubDeletedScan(
     scanId: string,
     deletedKeys: readonly string[],
-    allPrivateKeysDeleted: boolean,
+    cleanupComplete: boolean,
   ): Promise<void> {
     const statements = [
+      this.db
+        .prepare("DELETE FROM scan_adjudication_results WHERE scan_id = ?")
+        .bind(scanId),
       this.db.prepare("DELETE FROM scan_chunks WHERE scan_id = ?").bind(scanId),
       this.db
         .prepare("DELETE FROM editor_tokens WHERE scan_id = ?")
@@ -812,23 +1245,39 @@ export class ScanRepository {
         .bind(this.now(), scanId),
     ];
     if (deletedKeys.length > 0) {
-      statements.push(
-        this.db
-          .prepare(
-            `DELETE FROM scan_artifacts WHERE scan_id = ? AND object_key IN (${deletedKeys
-              .map(() => "?")
-              .join(", ")})`,
-          )
-          .bind(scanId, ...deletedKeys),
-      );
+      for (const keyChunk of chunkD1Bindings(deletedKeys, 1)) {
+        statements.push(
+          this.db
+            .prepare(
+              `DELETE FROM scan_artifacts WHERE scan_id = ? AND object_key IN (${keyChunk
+                .map(() => "?")
+                .join(", ")})`,
+            )
+            .bind(scanId, ...keyChunk),
+        );
+      }
     }
-    if (allPrivateKeysDeleted) {
+    if (cleanupComplete) {
       statements.push(
         this.db
           .prepare(
-            "UPDATE scan_sessions SET private_bundle_key = NULL, private_report_key = NULL, updated_at = ? WHERE id = ?",
+            `DELETE FROM public_report_abuse_reports
+             WHERE public_report_id IN (
+               SELECT id FROM public_reports WHERE scan_id = ?
+             )`,
           )
-          .bind(this.now(), scanId),
+          .bind(scanId),
+        this.db
+          .prepare("DELETE FROM public_report_artifacts WHERE scan_id = ?")
+          .bind(scanId),
+        this.db
+          .prepare(
+            `UPDATE scan_sessions
+             SET private_bundle_key = NULL, private_report_key = NULL,
+                 cleanup_completed_at = ?, updated_at = ?
+             WHERE id = ? AND status = 'deleted'`,
+          )
+          .bind(this.now(), this.now(), scanId),
       );
     }
     await this.db.batch(statements);
@@ -874,59 +1323,106 @@ export class ScanRepository {
     return { ...current, status: nextStatus, updatedAt };
   }
 
+  /** Atomically preserve a cancellation that races with workflow failure. */
+  async markWorkflowTerminal(
+    id: string,
+    fallback: "failed" | "cancelled",
+  ): Promise<ScanSessionRecord | null> {
+    const updatedAt = this.now();
+    const row = await this.db
+      .prepare(
+        `UPDATE scan_sessions
+         SET status = CASE
+               WHEN status = 'cancel_requested' OR ? = 'cancelled' THEN 'cancelled'
+               ELSE 'failed'
+             END,
+             updated_at = ?
+         WHERE id = ?
+           AND status NOT IN ('completed', 'cancelled', 'failed', 'expired', 'deleted')
+         RETURNING id, upload_id, access_token_hash, mode, status, source_hash,
+                   private_bundle_key, private_report_key, cancel_requested_at,
+                   created_at, updated_at`,
+      )
+      .bind(fallback, updatedAt, id)
+      .first<ScanSessionRow>();
+    return row ? this.scanFromRow(row) : this.getScan(id);
+  }
+
+  /** Claim an old terminal scan before R2 cleanup so no new editor work starts. */
+  async claimScanForRetention(input: {
+    scanId: string;
+    status: ScanStatus;
+    updatedAt: string;
+  }): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `UPDATE scan_sessions SET status = 'expired'
+         WHERE id = ? AND status = ? AND updated_at = ?
+           AND status IN ('completed', 'cancelled', 'failed', 'expired')
+         RETURNING id`,
+      )
+      .bind(input.scanId, input.status, input.updatedAt)
+      .first<{ id: string }>();
+    return Boolean(row);
+  }
+
+  /** Fail a stale queued scan only if it has not advanced since selection. */
+  async claimStaleQueuedScan(
+    scanId: string,
+    staleBefore: string,
+  ): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `UPDATE scan_sessions
+         SET status = 'failed', updated_at = ?
+         WHERE id = ? AND status = 'queued' AND created_at <= ?
+         RETURNING id`,
+      )
+      .bind(this.now(), scanId, staleBefore)
+      .first<{ id: string }>();
+    return Boolean(row);
+  }
+
   async requestCancel(id: string): Promise<ScanSessionRecord | null> {
     const current = await this.getScan(id);
     if (!current) return null;
-    if (
-      current.status === "completed" ||
-      current.status === "cancelled" ||
-      current.status === "deleted"
-    ) {
-      return current;
-    }
-    assertTransition(current.status, "cancel_requested");
+    if (isTerminalStatus(current.status)) return current;
+    if (current.status === "cancel_requested") return current;
     const updatedAt = this.now();
-    const result = await this.db
+    const row = await this.db
       .prepare(
-        `UPDATE scan_sessions SET status = 'cancel_requested', cancel_requested_at = ?, updated_at = ?
-         WHERE id = ? AND status = ?`,
+        `UPDATE scan_sessions
+         SET status = 'cancel_requested', cancel_requested_at = ?, updated_at = ?
+         WHERE id = ?
+           AND status IN ('created', 'uploading', 'queued', 'validating', 'chunking',
+                          'extracting', 'merging', 'adjudicating', 'reporting')
+         RETURNING id, upload_id, access_token_hash, mode, status, source_hash,
+                   private_bundle_key, private_report_key, cancel_requested_at,
+                   created_at, updated_at`,
       )
-      .bind(updatedAt, updatedAt, id, current.status)
-      .run();
-    const changes = result.meta?.changes;
-    if (
-      result.success === false ||
-      (changes !== undefined && Number(changes) !== 1)
-    ) {
-      return this.getScan(id);
-    }
-    return {
-      ...current,
-      status: "cancel_requested",
-      cancelRequestedAt: updatedAt,
-      updatedAt,
-    };
+      .bind(updatedAt, updatedAt, id)
+      .first<ScanSessionRow>();
+    return row ? this.scanFromRow(row) : this.getScan(id);
   }
 
   async deleteScan(id: string): Promise<ScanSessionRecord | null> {
-    const current = await this.getScan(id);
-    if (!current || current.status === "deleted") return current;
-    assertTransition(current.status, "deleted");
     const updatedAt = this.now();
-    const result = await this.db
-      .prepare(
-        "UPDATE scan_sessions SET status = 'deleted', updated_at = ? WHERE id = ? AND status = ?",
-      )
-      .bind(updatedAt, id, current.status)
-      .run();
-    const changes = result.meta?.changes;
-    if (
-      result.success === false ||
-      (changes !== undefined && Number(changes) !== 1)
-    ) {
-      return this.getScan(id);
-    }
-    return { ...current, status: "deleted", updatedAt };
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE scan_sessions
+           SET status = 'deleted', cleanup_completed_at = NULL, updated_at = ?
+           WHERE id = ? AND status != 'deleted'`,
+        )
+        .bind(updatedAt, id),
+      this.db
+        .prepare(
+          `UPDATE public_reports SET status = 'unpublished', updated_at = ?
+           WHERE scan_id = ?`,
+        )
+        .bind(updatedAt, id),
+    ]);
+    return this.getScan(id);
   }
 
   async createEditorToken(record: {
@@ -1062,69 +1558,188 @@ export class ScanRepository {
     artifactKey: string;
     authorConfirmedAt: string;
   }): Promise<PublicReportRecord | null> {
-    const existing = await this.db
-      .prepare(
-        "SELECT id, scan_id, artifact_key, status, author_confirmed_at FROM public_reports WHERE scan_id = ?",
-      )
-      .bind(input.scanId)
-      .first<PublicReportRow>();
     const updatedAt = this.now();
-    if (existing) {
-      const result = await this.db
+    await this.db.batch([
+      this.db
         .prepare(
-          `UPDATE public_reports
-           SET artifact_key = ?, status = 'published', author_confirmed_at = ?, updated_at = ?
-           WHERE scan_id = ?
+          `UPDATE public_report_artifacts SET published_at = ?
+           WHERE scan_id = ? AND object_key = ?
+             AND cleanup_claimed_at IS NULL
              AND EXISTS (
                SELECT 1 FROM scan_sessions
-               WHERE scan_sessions.id = public_reports.scan_id
-                 AND scan_sessions.status = 'completed'
+               WHERE id = ? AND status = 'completed'
              )`,
         )
-        .bind(
-          input.artifactKey,
-          input.authorConfirmedAt,
-          updatedAt,
-          input.scanId,
-        )
-        .run();
-      const changes = result.meta?.changes;
-      if (
-        result.success === false ||
-        (changes !== undefined && Number(changes) !== 1)
-      ) {
-        return null;
-      }
-      return this.getPublicReportByScanId(input.scanId);
-    }
-    const result = await this.db
-      .prepare(
-        `INSERT INTO public_reports (id, scan_id, artifact_key, status, author_confirmed_at, created_at, updated_at)
+        .bind(updatedAt, input.scanId, input.artifactKey, input.scanId),
+      this.db
+        .prepare(
+          `INSERT INTO public_reports (id, scan_id, artifact_key, status, author_confirmed_at, created_at, updated_at)
          SELECT ?, ?, ?, 'published', ?, ?, ?
          WHERE EXISTS (
            SELECT 1 FROM scan_sessions
            WHERE scan_sessions.id = ?
              AND scan_sessions.status = 'completed'
+         )
+           AND EXISTS (
+             SELECT 1 FROM public_report_artifacts a
+             WHERE a.scan_id = ? AND a.object_key = ?
+               AND a.published_at = ?
+               AND a.cleanup_claimed_at IS NULL
+           )
+         ON CONFLICT (scan_id) DO UPDATE SET
+           artifact_key = excluded.artifact_key,
+           status = 'published',
+           author_confirmed_at = excluded.author_confirmed_at,
+           updated_at = excluded.updated_at
+         WHERE EXISTS (
+           SELECT 1 FROM scan_sessions
+           WHERE scan_sessions.id = excluded.scan_id
+             AND scan_sessions.status = 'completed'
          )`,
+        )
+        .bind(
+          input.id,
+          input.scanId,
+          input.artifactKey,
+          input.authorConfirmedAt,
+          updatedAt,
+          updatedAt,
+          input.scanId,
+          input.scanId,
+          input.artifactKey,
+          updatedAt,
+        ),
+    ]);
+    const registered = await this.db
+      .prepare(
+        `SELECT object_key FROM public_report_artifacts
+         WHERE scan_id = ? AND object_key = ? AND published_at IS NOT NULL`,
+      )
+      .bind(input.scanId, input.artifactKey)
+      .first<{ object_key: string }>();
+    return registered ? this.getPublicReportByScanId(input.scanId) : null;
+  }
+
+  async registerPublicReportArtifact(
+    scanId: string,
+    objectKey: string,
+  ): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `INSERT INTO public_report_artifacts
+          (scan_id, object_key, created_at, published_at)
+         SELECT ?, ?, ?, NULL
+         WHERE EXISTS (
+           SELECT 1 FROM scan_sessions
+           WHERE id = ? AND status = 'completed'
+         )
+         ON CONFLICT (scan_id, object_key) DO NOTHING
+         RETURNING object_key`,
+      )
+      .bind(scanId, objectKey, this.now(), scanId)
+      .first<{ object_key: string }>();
+    return Boolean(row);
+  }
+
+  async listPendingPublicReportArtifacts(
+    staleBefore: string,
+    limit = 100,
+  ): Promise<Array<{ scanId: string; objectKey: string }>> {
+    const rows = await this.db
+      .prepare(
+        `SELECT scan_id, object_key FROM public_report_artifacts
+         WHERE published_at IS NULL AND created_at <= ?
+           AND (cleanup_claimed_at IS NULL OR cleanup_claimed_at <= ?)
+         ORDER BY created_at ASC LIMIT ?`,
       )
       .bind(
-        input.id,
-        input.scanId,
-        input.artifactKey,
-        input.authorConfirmedAt,
-        updatedAt,
-        updatedAt,
-        input.scanId,
+        staleBefore,
+        staleBefore,
+        Math.max(1, Math.min(100, Math.trunc(limit))),
       )
+      .all<{ scan_id: string; object_key: string }>();
+    return rows.results.map((row) => ({
+      scanId: row.scan_id,
+      objectKey: row.object_key,
+    }));
+  }
+
+  async claimPendingPublicReportArtifact(
+    scanId: string,
+    objectKey: string,
+    staleBefore: string,
+  ): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `UPDATE public_report_artifacts SET cleanup_claimed_at = ?
+         WHERE scan_id = ? AND object_key = ? AND published_at IS NULL
+           AND created_at <= ?
+           AND (cleanup_claimed_at IS NULL OR cleanup_claimed_at <= ?)
+         RETURNING object_key`,
+      )
+      .bind(this.now(), scanId, objectKey, staleBefore, staleBefore)
+      .first<{ object_key: string }>();
+    return Boolean(row);
+  }
+
+  async listObsoletePublicReportArtifacts(scanId: string): Promise<string[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT a.object_key
+         FROM public_report_artifacts a
+         LEFT JOIN public_reports p ON p.scan_id = a.scan_id
+         WHERE a.scan_id = ?
+           AND a.published_at IS NOT NULL
+           AND (p.artifact_key IS NULL OR a.object_key != p.artifact_key)`,
+      )
+      .bind(scanId)
+      .all<{ object_key: string }>();
+    return rows.results.map((row) => row.object_key);
+  }
+
+  async listPublicReportArtifacts(scanId: string): Promise<string[]> {
+    const rows = await this.db
+      .prepare(
+        "SELECT object_key FROM public_report_artifacts WHERE scan_id = ?",
+      )
+      .bind(scanId)
+      .all<{ object_key: string }>();
+    return rows.results.map((row) => row.object_key);
+  }
+
+  async listUnpublishedPublicReportArtifacts(
+    scanId: string,
+  ): Promise<string[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT artifact_key AS object_key
+         FROM public_reports
+         WHERE scan_id = ? AND status = 'unpublished'
+         UNION
+         SELECT a.object_key
+         FROM public_report_artifacts a
+         WHERE a.scan_id = ?
+           AND a.published_at IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM public_reports p
+             WHERE p.scan_id = a.scan_id AND p.status = 'unpublished'
+           )`,
+      )
+      .bind(scanId, scanId)
+      .all<{ object_key: string }>();
+    return rows.results.map((row) => row.object_key);
+  }
+
+  async forgetPublicReportArtifact(
+    scanId: string,
+    objectKey: string,
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        "DELETE FROM public_report_artifacts WHERE scan_id = ? AND object_key = ?",
+      )
+      .bind(scanId, objectKey)
       .run();
-    const changes = result.meta?.changes;
-    if (
-      result.success === false ||
-      (changes !== undefined && Number(changes) !== 1)
-    ) {
-      return null;
-    }
-    return this.getPublicReportByScanId(input.scanId);
   }
 
   async unpublishPublicReport(scanId: string): Promise<void> {

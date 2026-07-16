@@ -1,5 +1,7 @@
 import type { ScanEnv } from "../env";
 
+const HOSTED_AI_TIMEOUT_MS = 2 * 60 * 1_000;
+
 export class HostedAiError extends Error {
   constructor(
     readonly status: number,
@@ -33,6 +35,21 @@ function responseText(value: unknown): string | null {
   return null;
 }
 
+async function withHostedAiTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new HostedAiError(504, "hosted AI provider timed out")),
+      HOSTED_AI_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([operation, expired]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 async function openAiCompatible(
   url: string,
   token: string,
@@ -41,31 +58,44 @@ async function openAiCompatible(
   context: string | undefined,
   extraHeaders: Record<string, string> = {},
 ): Promise<string> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-      ...extraHeaders,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are Grimodex Hosted AI. Give concise editor assistance. Do not claim to have written to the workspace.",
-        },
-        {
-          role: "user",
-          content: `${context ? `Context:\n${context}\n\n` : ""}${prompt}`,
-        },
-      ],
-      temperature: 0.2,
-      max_tokens: 2_000,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HOSTED_AI_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      redirect: "error",
+      signal: controller.signal,
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        ...extraHeaders,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are Grimodex Hosted AI. Give concise editor assistance. Do not claim to have written to the workspace.",
+          },
+          {
+            role: "user",
+            content: `${context ? `Context:\n${context}\n\n` : ""}${prompt}`,
+          },
+        ],
+        temperature: 0.2,
+        max_tokens: 2_000,
+      }),
+    });
+  } catch (cause) {
+    if (controller.signal.aborted)
+      throw new HostedAiError(504, "hosted AI provider timed out");
+    throw cause;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok)
     throw new HostedAiError(
       response.status,
@@ -86,19 +116,21 @@ export async function runHostedAi(
   const model = env.SCAN_AI_MODEL ?? "@cf/meta/llama-3.1-8b-instruct";
   if (provider === "workers-ai") {
     if (!env.AI) throw new HostedAiError(503, "Workers AI is not configured");
-    const raw = await env.AI.run(model, {
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are Grimodex Hosted AI. Give concise editor assistance. Do not claim to have written to the workspace.",
-        },
-        {
-          role: "user",
-          content: `${input.context ? `Context:\n${input.context}\n\n` : ""}${input.prompt}`,
-        },
-      ],
-    });
+    const raw = await withHostedAiTimeout(
+      env.AI.run(model, {
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are Grimodex Hosted AI. Give concise editor assistance. Do not claim to have written to the workspace.",
+          },
+          {
+            role: "user",
+            content: `${input.context ? `Context:\n${input.context}\n\n` : ""}${input.prompt}`,
+          },
+        ],
+      }),
+    );
     const text = responseText(raw);
     if (!text) throw new HostedAiError(502, "Workers AI returned no text");
     return { response: text, provider, model };

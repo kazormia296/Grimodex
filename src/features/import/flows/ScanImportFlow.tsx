@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { buildScanImportPlan } from "../scan/scanImportPlan";
 import {
   applyScanImportPlan,
@@ -10,17 +11,31 @@ import { createScanImportOperationsForPlan } from "../scan/scanImportOperations"
 
 interface Props {
   onClose: () => void;
+  onComplete?: () => void;
+  onBusyChange?: (busy: boolean) => void;
 }
 
 const MAX_SEED_BYTES = 32 * 1024 * 1024;
 
 /** Desktop-only staged import of a private Scan editor seed. */
-export function ScanImportFlow({ onClose }: Props) {
+export function ScanImportFlow({ onClose, onComplete, onBusyChange }: Props) {
   const { t } = useTranslation();
   const [plan, setPlan] = useState<ReturnType<typeof buildScanImportPlan>>();
   const [isReading, setIsReading] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [error, setError] = useState<string>();
+  const busy = isReading || isApplying;
+
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
+
+  useEffect(
+    () => () => {
+      onBusyChange?.(false);
+    },
+    [onBusyChange],
+  );
 
   async function readSeed(file: File): Promise<void> {
     setError(undefined);
@@ -42,6 +57,7 @@ export function ScanImportFlow({ onClose }: Props) {
 
   async function apply(): Promise<void> {
     if (!plan || isApplying) return;
+    if (blockIfUnlicensed()) return;
     setError(undefined);
     setIsApplying(true);
     try {
@@ -56,7 +72,7 @@ export function ScanImportFlow({ onClose }: Props) {
           findings: result.imported.findings,
         }),
       );
-      onClose();
+      (onComplete ?? onClose)();
     } catch (cause) {
       const message =
         cause instanceof ScanImportApplyError
@@ -113,13 +129,14 @@ export function ScanImportFlow({ onClose }: Props) {
           type="button"
           className="rounded border px-3 py-1.5 text-sm"
           onClick={onClose}
+          disabled={busy}
         >
           {t("import.cancel")}
         </button>
         <button
           type="button"
           className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-          disabled={!plan || isApplying || isReading}
+          disabled={!plan || busy}
           onClick={() => void apply()}
         >
           {isApplying ? t("import.importing") : t("import.scan.importButton")}

@@ -13,8 +13,8 @@ import {
 } from "@/features/chronicle/api";
 import { createNode, listNodes, saveSceneContent } from "@/features/tree/api";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import {
-  createProject,
   deleteProject,
   getProject,
   updateProject,
@@ -36,7 +36,8 @@ import type {
   ScanRelationImportPlan,
 } from "./scanImportPlan";
 import { deriveScanImportId } from "./scanImportPlan";
-import { SCAN_IMPORT_STATE_KEY, SCAN_IMPORT_STAGING } from "./scanImportState";
+import { SCAN_IMPORT_STATE_KEY } from "./scanImportState";
+import { createScanStagingProject } from "./scanStagingProject";
 import type {
   ScanImportApplyOperations,
   ScanImportStageResult,
@@ -190,21 +191,29 @@ async function importCodex(
   // Create all rows first, then attach parents. This makes parent order in an
   // AI-produced bundle irrelevant and keeps the whole stage rollbackable.
   for (const entry of entries) {
-    await createCodexEntry({
-      id: entry.id,
-      projectId,
-      type: entry.type,
-      name: entry.name,
-      aliases: JSON.stringify(entry.aliases),
-      summary: entry.summary,
-    });
+    await createCodexEntry(
+      {
+        id: entry.id,
+        projectId,
+        type: entry.type,
+        name: entry.name,
+        aliases: JSON.stringify(entry.aliases),
+        summary: entry.summary,
+      },
+      { suppressImeExport: true },
+    );
   }
   for (const entry of entries) {
-    await updateCodexEntry(projectId, entry.id, {
-      ...(entry.parentId ? { parentId: entry.parentId } : {}),
-      content: fieldValueToProseMirror(entry.summary ?? ""),
-      notes: provenanceNote(entry),
-    });
+    await updateCodexEntry(
+      projectId,
+      entry.id,
+      {
+        ...(entry.parentId ? { parentId: entry.parentId } : {}),
+        content: fieldValueToProseMirror(entry.summary ?? ""),
+        notes: provenanceNote(entry),
+      },
+      { suppressImeExport: true },
+    );
   }
   return result(entries.length);
 }
@@ -305,6 +314,7 @@ async function importFindings(
     plan.sourceFingerprint,
     "findings-note",
     "report",
+    plan.importInstanceId,
   );
   const body = findings
     .map((finding) => {
@@ -335,14 +345,9 @@ export function createScanImportOperations(): ScanImportApplyOperations {
     async createStagingProject({ title, language, sourceFingerprint }) {
       const projectId = crypto.randomUUID();
       try {
-        await createProject({ id: projectId, title, language });
+        await createScanStagingProject({ id: projectId, title, language });
         await ensureBuiltinTypes(projectId, language);
         await seedProjectSettingsFromDefaults(projectId);
-        await setProjectSetting(
-          projectId,
-          SCAN_IMPORT_STATE_KEY,
-          SCAN_IMPORT_STAGING,
-        );
         await setProjectSetting(
           projectId,
           SCAN_IMPORT_FINGERPRINT_KEY,
@@ -369,7 +374,11 @@ export function createScanImportOperations(): ScanImportApplyOperations {
         ),
       ),
     async updateProjectMetadata(projectId, metadata) {
-      await updateProject(projectId, { title: metadata.title });
+      await updateProject(
+        projectId,
+        { title: metadata.title },
+        { suppressImeExport: true },
+      );
       await setProjectSetting(
         projectId,
         SCAN_IMPORT_FINGERPRINT_KEY,
@@ -380,6 +389,7 @@ export function createScanImportOperations(): ScanImportApplyOperations {
       await deleteProjectSetting(projectId, SCAN_IMPORT_STATE_KEY);
       await useProjectStore.getState().refreshProjects();
       await useProjectStore.getState().loadProject(projectId);
+      scheduleImeExportRefresh(projectId);
     },
     async discardStagingProject(projectId) {
       await deleteProject(projectId);

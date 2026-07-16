@@ -22,6 +22,44 @@ export interface WorkersAiBindingLike {
   ): Promise<unknown>;
 }
 
+export interface ProviderCallHooks {
+  beforeCall?: () => Promise<void>;
+  afterCall?: () => Promise<void>;
+}
+
+export const PROVIDER_CALL_TIMEOUT_MS = 45_000;
+
+function providerTimeoutError(): Error {
+  const error = new Error("AI provider request timed out");
+  error.name = "AbortError";
+  return error;
+}
+
+/**
+ * Applies one wall-clock deadline to the provider request and response body.
+ * Workers AI does not currently accept an AbortSignal, so the signal also
+ * drives a rejecting race that releases the Workflow step at the deadline.
+ */
+export async function withProviderCallTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = PROVIDER_CALL_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  let rejectTimeout: ((cause: Error) => void) | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    rejectTimeout = reject;
+  });
+  const onAbort = () => rejectTimeout?.(providerTimeoutError());
+  controller.signal.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await Promise.race([operation(controller.signal), timeout]);
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener("abort", onAbort);
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -110,13 +148,41 @@ function validateAdjudicationResult(
 export function createWorkersAiProvider(
   binding: WorkersAiBindingLike,
   profile: ScanModelProfile,
+  hooks: ProviderCallHooks = {},
 ): ScanAiProvider {
+  const runProvider = async (
+    input: Parameters<WorkersAiBindingLike["run"]>[1],
+  ): Promise<unknown> => {
+    await hooks.beforeCall?.();
+    let result: unknown;
+    let providerFailed = false;
+    let providerFailure: unknown;
+    try {
+      result = await withProviderCallTimeout(() =>
+        binding.run(profile.model, input),
+      );
+    } catch (cause) {
+      providerFailed = true;
+      providerFailure = cause;
+    }
+    // A cancellation detected here must take precedence over a provider
+    // timeout/rate-limit so the pipeline cannot silently fall back and keep
+    // processing after the user has stopped the scan.
+    await hooks.afterCall?.();
+    if (providerFailed) throw providerErrorFromCause(providerFailure);
+    return result;
+  };
+
   const invoke = async (
     input: ChunkExtractionInput,
     repair: boolean,
     repairContext?: { previousOutput: string; errors: string[] },
   ): Promise<ChunkExtractionV1> => {
-    if (input.text.length > profile.maxInputCharacters) {
+    const inputCharacters = input.paragraphs.reduce(
+      (total, paragraph) => total + paragraph.text.length,
+      0,
+    );
+    if (inputCharacters > profile.maxInputCharacters) {
       throw invalidProviderError("chunk exceeds the model input limit");
     }
     const prompt = buildChunkExtractionPrompt(input);
@@ -132,17 +198,12 @@ export function createWorkersAiProvider(
           ),
         ].join("\n")
       : "";
-    let raw: unknown;
-    try {
-      raw = await binding.run(profile.model, {
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: `${prompt.user}\n${repairInstruction}` },
-        ],
-      });
-    } catch (cause) {
-      throw providerErrorFromCause(cause);
-    }
+    const raw = await runProvider({
+      messages: [
+        { role: "system", content: prompt.system },
+        { role: "user", content: `${prompt.user}\n${repairInstruction}` },
+      ],
+    });
     const text = responseText(raw);
     if (!text)
       throw invalidProviderError("Workers AI response did not contain text");
@@ -190,17 +251,12 @@ export function createWorkersAiProvider(
         candidateSummary: input.candidateSummary,
         evidence: input.evidenceParagraphs,
       });
-      let raw: unknown;
-      try {
-        raw = await binding.run(profile.model, {
-          messages: [
-            { role: "system", content: prompt.system },
-            { role: "user", content: prompt.user },
-          ],
-        });
-      } catch (cause) {
-        throw providerErrorFromCause(cause);
-      }
+      const raw = await runProvider({
+        messages: [
+          { role: "system", content: prompt.system },
+          { role: "user", content: prompt.user },
+        ],
+      });
       const text = responseText(raw);
       if (!text)
         throw invalidProviderError(

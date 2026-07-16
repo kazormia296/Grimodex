@@ -16,7 +16,11 @@ describe("HostedAiClient", () => {
     await expect(
       client.complete(
         { scanId: "scan/1", scanToken: "secret" },
-        { operation: "inline", prompt: "Rewrite this" },
+        {
+          operation: "inline",
+          prompt: "Rewrite this",
+          idempotencyKey: "request-12345678",
+        },
       ),
     ).resolves.toEqual({ response: "ok", costWeight: 2 });
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(
@@ -24,6 +28,11 @@ describe("HostedAiClient", () => {
     );
     expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
       "x-scan-token": "secret",
+      "x-idempotency-key": "request-12345678",
+    });
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({
+      operation: "inline",
+      prompt: "Rewrite this",
     });
     expect(HOSTED_AI_COST_WEIGHT).toEqual({ chat: 1, inline: 2, codex: 3 });
   });

@@ -10,6 +10,7 @@ import type {
   EvidenceRef,
   ScanBundleV1,
   ScanEntity,
+  ScanLanguage,
   ScanSection,
   SourceDocumentV1,
   SourceParagraphV1,
@@ -421,11 +422,17 @@ function checkSemantic(
       paragraphs,
       errors,
     );
-    let previousOrder = -1;
+    let previousOrder: { paragraph: number; sentence: number } | undefined;
     phase.anchors.forEach((anchor) => {
-      const order = paragraphOrder.get(anchor.paragraphId);
-      if (order === undefined) return;
-      if (order <= previousOrder) {
+      const paragraph = paragraphOrder.get(anchor.paragraphId);
+      if (paragraph === undefined) return;
+      const sentence = anchor.sentenceIndex ?? -1;
+      if (
+        previousOrder !== undefined &&
+        (paragraph < previousOrder.paragraph ||
+          (paragraph === previousOrder.paragraph &&
+            sentence <= previousOrder.sentence))
+      ) {
         errors.push(
           error(
             "phase-order",
@@ -434,7 +441,7 @@ function checkSemantic(
           ),
         );
       }
-      previousOrder = order;
+      previousOrder = { paragraph, sentence };
     });
   });
 
@@ -1028,9 +1035,24 @@ function validateSourceDocument(
   return true;
 }
 
-function sentenceCount(text: string): number {
-  const count = text.match(/[。！？!?]+/g)?.length ?? 0;
-  return Math.max(1, count);
+function sentenceCount(text: string, language: ScanLanguage): number {
+  try {
+    const locale = language === "other" ? undefined : language;
+    const segments = new Intl.Segmenter(locale, {
+      granularity: "sentence",
+    }).segment(text);
+    let count = 0;
+    for (const segment of segments) {
+      if (segment.segment.trim()) count += 1;
+    }
+    return Math.max(1, count);
+  } catch {
+    const count =
+      text
+        .match(/[^。！？.!?]+(?:[。！？.!?]+|$)/gu)
+        ?.filter((item) => item.trim()).length ?? 0;
+    return Math.max(1, count);
+  }
 }
 
 function checkSeedEvidenceAgainstSource(
@@ -1103,7 +1125,7 @@ function checkSeedEvidenceAgainstSource(
       }
       if (
         ref.sentenceIndex !== undefined &&
-        ref.sentenceIndex >= sentenceCount(text)
+        ref.sentenceIndex >= sentenceCount(text, source.language)
       ) {
         errors.push(
           error(

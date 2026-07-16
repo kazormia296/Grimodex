@@ -91,8 +91,12 @@ export function toPublicReport(
       // Premise and narrative summaries are derived from source paragraphs.
       // They are intentionally omitted from a public projection so a short
       // paragraph cannot become a verbatim public excerpt.
-      genreCandidates: bundle.summary.genreCandidates.map((item) => item.value),
-      themes: bundle.summary.themes.map((item) => item.value),
+      genreCandidates: bundle.summary.genreCandidates.map((item, index) =>
+        publicLabel(item.value, `Genre ${index + 1}`),
+      ),
+      themes: bundle.summary.themes.map((item, index) =>
+        publicLabel(item.value, `Theme ${index + 1}`),
+      ),
     },
     entities: bundle.entities.map((entity, index) => ({
       id: publicId("entity", index),
@@ -111,7 +115,7 @@ export function toPublicReport(
               id: publicId("relation", index),
               fromEntityId,
               toEntityId,
-              type: relation.type,
+              type: publicLabel(relation.type, "related"),
             },
           ]
         : [];

@@ -240,6 +240,7 @@ export async function createCodexEntry(
         | "sourceChatMessageId"
       >
     >,
+  opts?: { suppressImeExport?: boolean },
 ): Promise<CodexEntry> {
   const now = new Date().toISOString();
   const rows = await db
@@ -249,7 +250,7 @@ export async function createCodexEntry(
   // 段階3: 新規エントリを semantic index へ (debounce + Rust 側 hash 再検証で冪等)。
   if (rows[0]) {
     scheduleCodexIndex(rows[0].id);
-    scheduleImeExportRefresh(data.projectId);
+    if (!opts?.suppressImeExport) scheduleImeExportRefresh(data.projectId);
   }
   return rows[0];
 }
@@ -275,6 +276,7 @@ type CodexEntryUpdateData = Partial<
 
 interface CodexEntryUpdateOptions {
   baseVersion?: number;
+  suppressImeExport?: boolean;
   /**
    * 読み登録の read-modify-write で照合した取得時表記。指定された場合、version
    * を増やさない legacy writer による改名・alias・除外・読み変更も比較検出する。
@@ -393,7 +395,8 @@ export async function updateCodexEntry(
     }
   }
 
-  if (affectsImeExport(data)) scheduleImeExportRefresh(projectId);
+  if (affectsImeExport(data) && !opts?.suppressImeExport)
+    scheduleImeExportRefresh(projectId);
 
   return rows[0];
 }

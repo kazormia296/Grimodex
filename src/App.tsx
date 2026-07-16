@@ -94,7 +94,8 @@ import { startCodexLockListener } from "@/features/codex/multiwindow/codexEditLo
 import { cn } from "@/lib/utils";
 import { useImeExportSync } from "@/features/ime/useImeExportSync";
 import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorkspaceShell";
-import { useConnectedMobileWorkspaceSurfaces } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
+import { ConnectedMobileWorkspaceSurface } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
+import { shouldUseAdaptiveWorkspace } from "@/features/layout/adaptive/adaptiveWorkspacePolicy";
 
 const SettingsDialog = lazy(() =>
   import("@/features/settings/SettingsDialog").then((m) => ({
@@ -329,9 +330,13 @@ function App() {
 }
 
 function EditorScreen() {
-  const mobileSurfaces = useConnectedMobileWorkspaceSurfaces();
-  const adaptiveWorkspaceEnabled =
-    import.meta.env.VITE_ADAPTIVE_WORKSPACE !== "false";
+  const screenshotPanelId = getScreenshotPanelId();
+  const panelWindow = isPanelWindow();
+  const adaptiveWorkspaceEnabled = shouldUseAdaptiveWorkspace({
+    featureEnabled: import.meta.env.VITE_ADAPTIVE_WORKSPACE !== "false",
+    panelWindow,
+    screenshotPanelId,
+  });
   const { t } = useTranslation();
   // 更新が保留中か (⚙ ボタンの SR ラベル用。UpdateDot も同じ store を読む)。
   const updatePending = useUpdatePending();
@@ -855,20 +860,17 @@ function EditorScreen() {
       >
         {adaptiveWorkspaceEnabled ? (
           <AdaptiveWorkspaceShell
-            editor={
-              <LayoutShell
-                hidden={!!getScreenshotPanelId() || isPanelWindow()}
-                soloPanelId={getScreenshotPanelId() ?? getPanelWindowTarget()}
-              />
-            }
+            editor={<LayoutShell hidden={false} soloPanelId={null} />}
             sceneTitle={t("app.title")}
             saveState=""
-            mobileSurfaces={mobileSurfaces}
+            renderMobileSurface={(surface) => (
+              <ConnectedMobileWorkspaceSurface surface={surface} />
+            )}
           />
         ) : (
           <LayoutShell
-            hidden={!!getScreenshotPanelId() || isPanelWindow()}
-            soloPanelId={getScreenshotPanelId() ?? getPanelWindowTarget()}
+            hidden={Boolean(screenshotPanelId) || panelWindow}
+            soloPanelId={screenshotPanelId ?? getPanelWindowTarget()}
           />
         )}
       </main>

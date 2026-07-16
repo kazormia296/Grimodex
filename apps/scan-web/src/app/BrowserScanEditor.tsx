@@ -3,22 +3,21 @@ import type { JSONContent } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { parseEditorSeed, type EditorSeedV1 } from "@grimodex/scan-contract";
-import {
-  createIndexedDbWorkspaceStore,
-  createMemoryWorkspaceStore,
-  type BrowserWorkspaceStore,
-} from "../../../../src/lib/browser-db/indexedDbStore";
+import { BrowserWorkspaceError } from "../../../../src/lib/browser-db/indexedDbStore";
 import { createPersistenceController } from "../../../../src/lib/browser-db/persistenceController";
 import {
   buildScanImportPlan,
+  rebuildScanImportPlan,
   type ScanImportPlan,
 } from "../../../../src/features/import/scan/scanImportPlan";
 import {
   createBrowserScanWorkspace,
   type BrowserScanWorkspace,
 } from "./browserWorkspace";
-
-const fallbackStore = createMemoryWorkspaceStore();
+import {
+  createBrowserWorkspaceStore,
+  saveWorkspaceCopy,
+} from "./browserWorkspaceStore";
 
 interface BrowserScanWorkspaceSnapshot {
   schemaVersion: "grimodex-browser-scan-workspace/2";
@@ -28,14 +27,6 @@ interface BrowserScanWorkspaceSnapshot {
   databaseBase64: string;
   sceneEditors: Record<string, JSONContent>;
   activeSceneId: string | null;
-}
-
-function createBrowserWorkspaceStore(): BrowserWorkspaceStore {
-  try {
-    return createIndexedDbWorkspaceStore();
-  } catch {
-    return fallbackStore;
-  }
 }
 
 function initialEditorJson(seed: EditorSeedV1): JSONContent {
@@ -98,7 +89,7 @@ function decodeWorkspace(
     ) {
       return null;
     }
-    const plan = buildScanImportPlan(parsedSeed.value);
+    const plan = rebuildScanImportPlan(parsedSeed.value, value.importPlan);
     const sceneEditors = Object.fromEntries(
       Object.entries(value.sceneEditors).filter(([, editorJson]) =>
         isEditorJson(editorJson),
@@ -127,16 +118,21 @@ export function BrowserScanEditor({
   workspaceId?: string;
   onBack: () => void;
 }) {
-  const plan = useMemo(() => buildScanImportPlan(seed), [seed]);
+  const initialPlan = useMemo(() => buildScanImportPlan(seed), [seed]);
+  const [plan, setPlan] = useState(initialPlan);
   const [pane, setPane] = useState<EditorPane>("editor");
   const [workspace, setWorkspace] = useState<BrowserScanWorkspace | null>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
   const [persistenceState, setPersistenceState] = useState<
-    "restoring" | "ready" | "error"
+    "restoring" | "ready" | "conflict" | "error"
   >("restoring");
   const [characterCount, setCharacterCount] = useState(0);
+  const [conflictSaveBusy, setConflictSaveBusy] = useState(false);
+  const [conflictSaveError, setConflictSaveError] = useState<string>();
+  const [volatileStorage, setVolatileStorage] = useState(false);
   const readyRef = useRef(false);
   const workspaceRef = useRef<BrowserScanWorkspace | null>(null);
+  const planRef = useRef(initialPlan);
   const activeSceneRef = useRef<string | null>(null);
   const editorJsonRef = useRef<JSONContent>(initialEditorJson(seed));
   const editorDocumentsRef = useRef<Record<string, JSONContent>>({});
@@ -144,8 +140,8 @@ export function BrowserScanEditor({
     typeof createPersistenceController
   > | null>(null);
 
+  const store = useMemo(() => createBrowserWorkspaceStore(), []);
   const persistence = useMemo(() => {
-    const store = createBrowserWorkspaceStore();
     return createPersistenceController({
       store,
       workspaceId: workspaceId ?? `scan:${seed.source.fingerprint}`,
@@ -158,16 +154,21 @@ export function BrowserScanEditor({
           schemaVersion: "grimodex-browser-scan-workspace/2",
           sourceFingerprint: seed.source.fingerprint,
           seed,
-          importPlan: plan,
+          importPlan: planRef.current,
           databaseBase64: encodeBytes(currentWorkspace.exportDatabase()),
           sceneEditors: editorDocumentsRef.current,
           activeSceneId: activeSceneRef.current,
         };
         return new TextEncoder().encode(JSON.stringify(snapshot));
       },
-      onError: () => setPersistenceState("error"),
+      onError: (cause) =>
+        setPersistenceState(
+          cause instanceof BrowserWorkspaceError && cause.code === "stale-write"
+            ? "conflict"
+            : "error",
+        ),
     });
-  }, [plan, seed, workspaceId]);
+  }, [seed, store, workspaceId]);
   persistenceRef.current = persistence;
 
   const editor = useEditor({
@@ -202,44 +203,62 @@ export function BrowserScanEditor({
   }, [activeSceneId, editor, workspace]);
 
   useEffect(() => {
+    editor?.setEditable(persistenceState === "ready" && activeSceneId !== null);
+  }, [activeSceneId, editor, persistenceState]);
+
+  useEffect(() => {
+    if (
+      !volatileStorage &&
+      !(
+        workspace &&
+        (persistenceState === "error" || persistenceState === "conflict")
+      )
+    )
+      return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [persistenceState, volatileStorage, workspace]);
+
+  useEffect(() => {
     let cancelled = false;
+    let ownedWorkspace: BrowserScanWorkspace | undefined;
     const detach = persistence.attachLifecycle();
     void (async () => {
       const storedSnapshot = await persistence.restore();
+      setVolatileStorage(store.getDurability() === "memory");
       let nextWorkspace: BrowserScanWorkspace;
+      let nextPlan = initialPlan;
       let nextDocuments: Record<string, JSONContent>;
       let nextSceneId: string | null;
       let restoredSnapshot = false;
       const decoded = storedSnapshot
         ? decodeWorkspace(storedSnapshot.bytes, seed)
         : null;
-      if (decoded) {
-        try {
-          nextWorkspace = await createBrowserScanWorkspace(
-            decoded.plan,
-            decoded.databaseBytes,
-          );
-          nextDocuments = decoded.sceneEditors;
-          nextSceneId = decoded.activeSceneId;
-          restoredSnapshot = true;
-        } catch {
-          // A snapshot from an older/corrupt SQL.js schema is replaced by a
-          // fresh structured workspace for this source fingerprint.
-          nextWorkspace = await createBrowserScanWorkspace(plan);
-          nextDocuments = Object.fromEntries(
-            nextWorkspace.scenes.map((scene) => [scene.id, scene.content]),
-          );
-          nextSceneId = nextWorkspace.scenes[0]?.id ?? null;
-        }
+      if (storedSnapshot) {
+        if (!decoded) throw new Error("stored browser workspace is invalid");
+        nextPlan = decoded.plan;
+        nextWorkspace = await createBrowserScanWorkspace(
+          decoded.plan,
+          decoded.databaseBytes,
+        );
+        nextDocuments = decoded.sceneEditors;
+        nextSceneId = decoded.activeSceneId;
+        restoredSnapshot = true;
       } else {
-        nextWorkspace = await createBrowserScanWorkspace(plan);
+        nextWorkspace = await createBrowserScanWorkspace(initialPlan);
         nextDocuments = Object.fromEntries(
           nextWorkspace.scenes.map((scene) => [scene.id, scene.content]),
         );
         nextSceneId = nextWorkspace.scenes[0]?.id ?? null;
       }
+      ownedWorkspace = nextWorkspace;
       if (cancelled) {
         nextWorkspace.db.close();
+        ownedWorkspace = undefined;
         return;
       }
       const validSceneId = nextWorkspace.scenes.some(
@@ -248,9 +267,11 @@ export function BrowserScanEditor({
         ? nextSceneId
         : (nextWorkspace.scenes[0]?.id ?? null);
       editorDocumentsRef.current = nextDocuments;
+      planRef.current = nextPlan;
       workspaceRef.current = nextWorkspace;
       activeSceneRef.current = validSceneId;
       setWorkspace(nextWorkspace);
+      setPlan(nextPlan);
       setActiveSceneId(validSceneId);
       readyRef.current = true;
       setPersistenceState("ready");
@@ -263,11 +284,32 @@ export function BrowserScanEditor({
     return () => {
       cancelled = true;
       detach();
-      void persistence.flush().catch(() => undefined);
+      const workspaceToClose = ownedWorkspace;
+      ownedWorkspace = undefined;
+      void persistence
+        .flush()
+        .catch(() => undefined)
+        .finally(() => workspaceToClose?.db.close());
     };
-  }, [persistence, plan, seed]);
+  }, [initialPlan, persistence, seed, store]);
 
   if (!workspace) {
+    if (persistenceState === "error") {
+      return (
+        <main
+          className="scan-browser-workspace"
+          data-testid="scan-editor-workspace-error"
+        >
+          <p className="scan-error">
+            Browser workspace
+            を復元できませんでした。保存領域を確認して再度開いてください。
+          </p>
+          <button type="button" className="scan-secondary" onClick={onBack}>
+            レポートへ戻る
+          </button>
+        </main>
+      );
+    }
     return (
       <main
         className="scan-browser-workspace"
@@ -293,10 +335,64 @@ export function BrowserScanEditor({
     }
     activeSceneRef.current = sceneId;
     setActiveSceneId(sceneId);
+    if (readyRef.current) persistence.markDirty();
   };
   const activeScene = workspace.scenes.find(
     (scene) => scene.id === activeSceneId,
   );
+  const saveConflictCopy = async () => {
+    if (conflictSaveBusy) return;
+    const currentWorkspace = workspaceRef.current;
+    if (!currentWorkspace) return;
+    const currentId = workspaceId ?? `scan:${seed.source.fingerprint}`;
+    const nextId = window.prompt(
+      "競合中の編集を保存する新しいワークスペース名",
+      `${currentId}-copy-${Date.now()}`,
+    );
+    if (!nextId?.trim()) return;
+    setConflictSaveBusy(true);
+    setConflictSaveError(undefined);
+    try {
+      const snapshot: BrowserScanWorkspaceSnapshot = {
+        schemaVersion: "grimodex-browser-scan-workspace/2",
+        sourceFingerprint: seed.source.fingerprint,
+        seed,
+        importPlan: plan,
+        databaseBase64: encodeBytes(currentWorkspace.exportDatabase()),
+        sceneEditors: editorDocumentsRef.current,
+        activeSceneId: activeSceneRef.current,
+      };
+      await saveWorkspaceCopy(store, {
+        workspaceId: nextId.trim(),
+        schemaVersion: 2,
+        updatedAt: new Date().toISOString(),
+        bytes: new TextEncoder().encode(JSON.stringify(snapshot)),
+      });
+      onBack();
+    } catch (cause) {
+      setConflictSaveError(
+        cause instanceof BrowserWorkspaceError && cause.code === "stale-write"
+          ? "同じ名前のワークスペースが既にあります。"
+          : "競合中の編集を保存できませんでした。",
+      );
+    } finally {
+      setConflictSaveBusy(false);
+    }
+  };
+  const persistenceRisk =
+    volatileStorage ||
+    (workspace !== null &&
+      (persistenceState === "error" || persistenceState === "conflict"));
+  const handleBack = () => {
+    if (
+      persistenceRisk &&
+      !window.confirm(
+        "保存されていない編集が失われる可能性があります。レポートへ戻りますか？",
+      )
+    )
+      return;
+    onBack();
+  };
 
   return (
     <main
@@ -311,8 +407,23 @@ export function BrowserScanEditor({
             SQL.js workspace · ImportPlan {plan.schemaVersion} ·{" "}
             {characterCount.toLocaleString()}文字 · 保存状態: {persistenceState}
           </p>
+          {volatileStorage && (
+            <p className="scan-error" role="alert">
+              永続ストレージを利用できないため、このタブを閉じると編集内容が失われます。
+            </p>
+          )}
+          {persistenceState === "error" && (
+            <p className="scan-error" role="alert">
+              自動保存に失敗したため編集を停止しました。タブを閉じず、内容を退避してください。
+            </p>
+          )}
+          {!activeSceneId && (
+            <p className="scan-error" role="alert">
+              編集可能なシーンがないため、本文編集は無効です。
+            </p>
+          )}
         </div>
-        <button type="button" className="scan-secondary" onClick={onBack}>
+        <button type="button" className="scan-secondary" onClick={handleBack}>
           レポートへ戻る
         </button>
       </header>
@@ -338,6 +449,33 @@ export function BrowserScanEditor({
           </button>
         ))}
       </nav>
+
+      {persistenceState === "conflict" && (
+        <section className="scan-card" role="alert">
+          <strong>別のタブで新しい保存内容が作成されました。</strong>
+          <p className="scan-muted">
+            上書きを防ぐため、このタブでの編集を停止しました。最新の保存内容を読み直してください。
+          </p>
+          <button
+            type="button"
+            className="scan-secondary"
+            onClick={() => window.location.reload()}
+          >
+            最新の保存内容を読み直す
+          </button>
+          <button
+            type="button"
+            className="scan-secondary"
+            disabled={conflictSaveBusy}
+            onClick={() => void saveConflictCopy()}
+          >
+            {conflictSaveBusy ? "コピーを保存中…" : "この編集を別名で保存"}
+          </button>
+          {conflictSaveError && (
+            <p className="scan-error">{conflictSaveError}</p>
+          )}
+        </section>
+      )}
 
       <div className="scan-browser-workspace__grid">
         <aside className="scan-card scan-browser-workspace__outline">

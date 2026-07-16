@@ -27,12 +27,17 @@ describe("phone surfaces", () => {
     expect(screen.getByText("Climax")).toBeTruthy();
     expect(screen.queryByText("Opening")).toBeNull();
     fireEvent.click(screen.getByLabelText("Climax actions"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
-    expect(onAction).toHaveBeenCalledWith("s2", "duplicate");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move up" }));
+    expect(onAction).toHaveBeenCalledWith("s2", "move-up");
+    expect(screen.queryByRole("menuitem", { name: "Duplicate" })).toBeNull();
+    expect(
+      screen.queryByRole("menuitem", { name: "Move to chapter" }),
+    ).toBeNull();
   });
 
   it("navigates Codex detail and phase anchor", () => {
     const onOpenAnchor = vi.fn();
+    const onSelectEntry = vi.fn();
     render(
       <PhoneCodexNavigator
         entries={[
@@ -44,16 +49,23 @@ describe("phone surfaces", () => {
           },
         ]}
         onOpenAnchor={onOpenAnchor}
+        onSelectEntry={onSelectEntry}
       />,
     );
     fireEvent.click(screen.getByText("葵"));
+    expect(onSelectEntry).toHaveBeenCalledWith("e1");
     fireEvent.click(screen.getByRole("button", { name: "Open anchor scene" }));
     expect(onOpenAnchor).toHaveBeenCalledWith("s1");
   });
 
   it("keeps the composer visible and sends a trimmed message", () => {
     const onSend = vi.fn();
-    render(<PhoneChatSurface messages={[]} onSend={onSend} />);
+    const { container } = render(
+      <PhoneChatSurface messages={[]} onSend={onSend} />,
+    );
+    expect(container.querySelector("form")?.className).not.toContain(
+      "keyboard-inset",
+    );
     fireEvent.change(screen.getByLabelText("Message"), {
       target: { value: "  hello  " },
     });

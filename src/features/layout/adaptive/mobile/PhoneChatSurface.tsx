@@ -43,7 +43,7 @@ export function PhoneChatSurface({
         ))}
       </div>
       <form
-        className="sticky bottom-0 flex gap-2 border-t bg-background p-3 pb-[calc(12px+env(safe-area-inset-bottom)+var(--keyboard-inset,0px))]"
+        className="sticky bottom-0 flex gap-2 border-t bg-background p-3 pb-[calc(12px+env(safe-area-inset-bottom))]"
         onSubmit={(event) => {
           event.preventDefault();
           const text = draft.trim();

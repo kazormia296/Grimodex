@@ -18,9 +18,14 @@ export interface PhoneCodexEntry {
 interface Props {
   entries: readonly PhoneCodexEntry[];
   onOpenAnchor?: (sceneId: string) => void;
+  onSelectEntry?: (entryId: string) => void;
 }
 
-export function PhoneCodexNavigator({ entries, onOpenAnchor }: Props) {
+export function PhoneCodexNavigator({
+  entries,
+  onOpenAnchor,
+  onSelectEntry,
+}: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = entries.find((entry) => entry.id === selectedId) ?? null;
   return (
@@ -36,7 +41,10 @@ export function PhoneCodexNavigator({ entries, onOpenAnchor }: Props) {
               <button
                 type="button"
                 className="min-h-11 w-full rounded border px-3 text-left"
-                onClick={() => setSelectedId(entry.id)}
+                onClick={() => {
+                  setSelectedId(entry.id);
+                  onSelectEntry?.(entry.id);
+                }}
               >
                 <span className="block font-medium">{entry.name}</span>
                 <small className="text-muted-foreground">{entry.type}</small>

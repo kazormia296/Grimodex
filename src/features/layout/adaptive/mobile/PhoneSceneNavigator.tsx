@@ -6,12 +6,7 @@ export interface PhoneSceneItem {
   chapterTitle?: string;
 }
 
-export type PhoneSceneAction =
-  | "move-up"
-  | "move-down"
-  | "move-to-chapter"
-  | "duplicate"
-  | "delete";
+export type PhoneSceneAction = "move-up" | "move-down" | "delete";
 
 interface Props {
   scenes: readonly PhoneSceneItem[];
@@ -86,8 +81,6 @@ export function PhoneSceneNavigator({
                   [
                     ["move-up", "Move up"],
                     ["move-down", "Move down"],
-                    ["move-to-chapter", "Move to chapter"],
-                    ["duplicate", "Duplicate"],
                     ["delete", "Delete"],
                   ] as const
                 ).map(([action, label]) => (

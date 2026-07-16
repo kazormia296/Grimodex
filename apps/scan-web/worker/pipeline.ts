@@ -30,7 +30,10 @@ import {
   type ChunkExtractionInput,
 } from "@grimodex/scan-prompts";
 import type { ScanEnv } from "./env";
-import { createWorkersAiProvider } from "./ai/workersAiProvider";
+import {
+  createWorkersAiProvider,
+  type ProviderCallHooks,
+} from "./ai/workersAiProvider";
 import {
   createGatewayAiProvider,
   type GatewayProviderName,
@@ -42,7 +45,11 @@ const JSON_CONTENT_TYPE = "application/json";
 const MAX_SOURCE_TEXT_BYTES = 16 * 1024 * 1024;
 const QUICK_CHUNK_CHARACTERS = 6_000;
 const FULL_CHUNK_CHARACTERS = 4_000;
-export const MAX_SCAN_CHUNKS = 4_096;
+// The extraction Workflow step performs up to roughly 15 D1/R2/provider
+// operations per chunk (including one schema-repair request). Forty-eight
+// leaves substantial headroom below the paid Workers per-invocation external
+// operation budget for step setup, recovery reads and the final artifact.
+export const MAX_SCAN_CHUNKS = 48;
 
 export class ScanDeletedError extends Error {
   constructor() {
@@ -97,6 +104,36 @@ export interface AdjudicationOutput {
     | "openrouter"
     | "deterministic-fallback";
   model: string;
+}
+
+const ADJUDICATION_RESULT_SCHEMA_VERSION =
+  "grimodex-scan/adjudication-result/1";
+
+function adjudicationResultKey(scanId: string, ambiguityId: string): string {
+  return `artifacts/${scanId}/adjudication-results/${sha256Hex(ambiguityId)}.json`;
+}
+
+function isAdjudicationOutput(
+  value: unknown,
+  expectedAmbiguityId: string,
+): value is AdjudicationOutput {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.ambiguityId === expectedAmbiguityId &&
+    Array.isArray(record.entityIds) &&
+    record.entityIds.every((id) => typeof id === "string") &&
+    (record.decision === "merge" ||
+      record.decision === "keep-separate" ||
+      record.decision === "uncertain") &&
+    typeof record.rationale === "string" &&
+    (record.provider === "workers-ai" ||
+      record.provider === "ai-gateway" ||
+      record.provider === "openrouter" ||
+      record.provider === "deterministic-fallback") &&
+    typeof record.model === "string"
+  );
 }
 
 export interface AdjudicatedScanParts {
@@ -432,17 +469,61 @@ function parseStoredExtraction(value: string | null): StoredExtraction | null {
   }
 }
 
+async function recordExtractionUsage(
+  repository: ScanRepository,
+  scanId: string,
+  record: StoredExtraction,
+): Promise<void> {
+  await repository.recordAiUsage({
+    operationId: `${scanId}:${record.chunkId}:extract`,
+    scanId,
+    provider: record.provider,
+    model: record.model,
+    status:
+      record.provider === "deterministic-fallback" ? "failed" : "completed",
+  });
+}
+
 function createConfiguredProvider(
   env: ScanEnv,
   providerName: ConfiguredProvider,
   purpose: ProviderPurpose = "extraction",
+  hooks: ProviderCallHooks = {},
 ): ReturnType<typeof createWorkersAiProvider> | null {
   const profile = providerProfile(env, providerName, purpose);
   if (!profile.model) return null;
   if (providerName === "workers-ai") {
-    return env.AI ? createWorkersAiProvider(env.AI, profile) : null;
+    return env.AI ? createWorkersAiProvider(env.AI, profile, hooks) : null;
   }
-  return createGatewayAiProvider(env, providerName, profile);
+  return createGatewayAiProvider(env, providerName, profile, hooks);
+}
+
+async function ensureBillableProviderActive(
+  repository: ScanRepository,
+  scanId: string,
+): Promise<void> {
+  const scan = await repository.getScan(scanId);
+  if (!scan) throw new Error("scan session was not found");
+  if (scan.status === "deleted") throw new ScanDeletedError();
+  if (
+    scan.status === "cancel_requested" ||
+    scan.status === "cancelled" ||
+    scan.status === "failed" ||
+    scan.status === "expired" ||
+    scan.status === "completed"
+  ) {
+    throw new Error(`scan is not active for an AI request: ${scan.status}`);
+  }
+}
+
+function billableProviderHooks(
+  repository: ScanRepository,
+  scanId: string,
+): ProviderCallHooks {
+  return {
+    beforeCall: () => ensureBillableProviderActive(repository, scanId),
+    afterCall: () => ensureBillableProviderActive(repository, scanId),
+  };
 }
 
 async function readObjectText(
@@ -491,6 +572,89 @@ async function putJsonObject(
     await env.SCAN_BUCKET.delete(input.objectKey).catch(() => undefined);
     throw new ScanDeletedError();
   }
+}
+
+function parseAdjudicationResult(
+  serialized: string,
+  ambiguityId: string,
+  source: "D1" | "R2",
+): AdjudicationOutput {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch (cause) {
+    throw new Error(
+      `durable adjudication result in ${source} is invalid: ${String(cause)}`,
+    );
+  }
+  if (!isAdjudicationOutput(parsed, ambiguityId)) {
+    throw new Error(
+      `durable adjudication result in ${source} failed validation`,
+    );
+  }
+  return parsed;
+}
+
+async function readR2AdjudicationResult(
+  env: ScanEnv,
+  scanId: string,
+  ambiguityId: string,
+): Promise<AdjudicationOutput | null> {
+  const object = await env.SCAN_BUCKET.get(
+    adjudicationResultKey(scanId, ambiguityId),
+  );
+  if (!object) return null;
+  if (!object.body)
+    throw new Error("durable adjudication result has no readable body");
+  return parseAdjudicationResult(
+    await new Response(object.body).text(),
+    ambiguityId,
+    "R2",
+  );
+}
+
+async function writeAdjudicationResult(
+  env: ScanEnv,
+  repository: ScanRepository,
+  scanId: string,
+  result: AdjudicationOutput,
+): Promise<void> {
+  await putJsonObject(env, repository, {
+    scanId,
+    objectKey: adjudicationResultKey(scanId, result.ambiguityId),
+    schemaVersion: ADJUDICATION_RESULT_SCHEMA_VERSION,
+    serialized: JSON.stringify(result),
+  });
+}
+
+async function readDurableAdjudicationResult(
+  env: ScanEnv,
+  repository: ScanRepository,
+  scanId: string,
+  ambiguityId: string,
+): Promise<AdjudicationOutput | null> {
+  const persisted = await repository.getAdjudicationResult(scanId, ambiguityId);
+  if (persisted) {
+    const result = parseAdjudicationResult(
+      persisted.resultJson,
+      ambiguityId,
+      "D1",
+    );
+    // D1 is authoritative for paid-call idempotency. Re-create the R2 cache
+    // before continuing when a previous attempt failed during its PUT.
+    await writeAdjudicationResult(env, repository, scanId, result);
+    return result;
+  }
+
+  // Backfill results written by deployments that only used the R2 cache.
+  const legacyResult = await readR2AdjudicationResult(env, scanId, ambiguityId);
+  if (!legacyResult) return null;
+  const canonical = await repository.saveAdjudicationResult(
+    scanId,
+    ambiguityId,
+    JSON.stringify(legacyResult),
+  );
+  return parseAdjudicationResult(canonical.resultJson, ambiguityId, "D1");
 }
 
 async function writeJson(
@@ -612,10 +776,22 @@ export async function extractScanChunks(
       sectionIds: string[];
     }>;
   }>(env, `artifacts/${scanId}/chunks.json`);
+  // Re-check the durable artifact as well as the builder output. This keeps a
+  // legacy or tampered 4,096-chunk artifact from entering the paid step.
+  if (chunkData.chunks.length > MAX_SCAN_CHUNKS) {
+    throw new Error(
+      `scan produces too many chunks (maximum ${MAX_SCAN_CHUNKS})`,
+    );
+  }
   const providerName = configuredProvider(env);
   const provider =
     env.SCAN_WORKERS_AI_ENABLED === "true"
-      ? createConfiguredProvider(env, providerName)
+      ? createConfiguredProvider(
+          env,
+          providerName,
+          "extraction",
+          billableProviderHooks(repository, scanId),
+        )
       : null;
   const profile = providerProfile(env, providerName);
   let records: StoredExtraction[] = [];
@@ -631,6 +807,9 @@ export async function extractScanChunks(
   }
   const recordByChunk = new Map(
     records.map((record) => [record.chunkId, record]),
+  );
+  const paragraphById = new Map(
+    document.paragraphs.map((paragraph) => [paragraph.id, paragraph]),
   );
   const chunkPersistenceAvailable =
     typeof repository.ensureScanChunks === "function" &&
@@ -655,6 +834,7 @@ export async function extractScanChunks(
   for (const chunk of chunkData.chunks) {
     const previous = recordByChunk.get(chunk.id);
     let recoveringStaleClaim = false;
+    let claimAttempt: number | null = null;
     if (chunkPersistenceAvailable) {
       const current = await repository.getScanChunk(
         scanId,
@@ -683,6 +863,7 @@ export async function extractScanChunks(
           .filter((candidate): candidate is StoredExtraction =>
             Boolean(candidate),
           );
+        await recordExtractionUsage(repository, scanId, stored);
         continue;
       }
       const durableResult = parseStoredExtraction(
@@ -715,10 +896,16 @@ export async function extractScanChunks(
             scanId,
             chunk.id,
             PIPELINE_VERSION,
+            claimed.attempt,
             extractionKey,
           );
         } catch (cause) {
-          await repository.failScanChunk(scanId, chunk.id, PIPELINE_VERSION);
+          await repository.failScanChunk(
+            scanId,
+            chunk.id,
+            PIPELINE_VERSION,
+            claimed.attempt,
+          );
           throw cause;
         }
         recordByChunk.set(chunk.id, durableResult);
@@ -727,6 +914,7 @@ export async function extractScanChunks(
           .filter((candidate): candidate is StoredExtraction =>
             Boolean(candidate),
           );
+        await recordExtractionUsage(repository, scanId, durableResult);
         continue;
       }
       if (previous) {
@@ -753,6 +941,7 @@ export async function extractScanChunks(
             scanId,
             chunk.id,
             PIPELINE_VERSION,
+            claimed.attempt,
             serialized,
           );
           await putJsonObject(env, repository, {
@@ -765,12 +954,19 @@ export async function extractScanChunks(
             scanId,
             chunk.id,
             PIPELINE_VERSION,
+            claimed.attempt,
             extractionKey,
           );
         } catch (cause) {
-          await repository.failScanChunk(scanId, chunk.id, PIPELINE_VERSION);
+          await repository.failScanChunk(
+            scanId,
+            chunk.id,
+            PIPELINE_VERSION,
+            claimed.attempt,
+          );
           throw cause;
         }
+        await recordExtractionUsage(repository, scanId, previous);
         continue;
       }
       recoveringStaleClaim = current?.status === "running";
@@ -787,9 +983,23 @@ export async function extractScanChunks(
           true,
         );
       }
+      claimAttempt = claimed.attempt;
     } else if (previous) {
       continue;
     }
+    const paragraphs = chunk.paragraphIds.map((paragraphId) => {
+      const paragraph = paragraphById.get(paragraphId);
+      if (!paragraph) {
+        throw new Error(
+          `scan chunk references unknown paragraph ${paragraphId}`,
+        );
+      }
+      return {
+        paragraphId,
+        sectionId: paragraph.sectionId,
+        text: paragraph.text,
+      };
+    });
     const input: ChunkExtractionInput = {
       chunkId: chunk.id,
       sourceFingerprint: chunkData.sourceFingerprint,
@@ -797,13 +1007,12 @@ export async function extractScanChunks(
       sectionIds: chunk.sectionIds,
       paragraphIds: chunk.paragraphIds,
       paragraphSectionIds: Object.fromEntries(
-        chunk.paragraphIds.flatMap((paragraphId) => {
-          const paragraph = document.paragraphs.find(
-            (item) => item.id === paragraphId,
-          );
-          return paragraph ? [[paragraphId, paragraph.sectionId]] : [];
-        }),
+        paragraphs.map((paragraph) => [
+          paragraph.paragraphId,
+          paragraph.sectionId,
+        ]),
       ),
+      paragraphs,
     };
     let extraction: ChunkExtractionV1;
     let providerName: StoredExtraction["provider"] = "deterministic";
@@ -840,6 +1049,8 @@ export async function extractScanChunks(
     };
     const extractionKey = `artifacts/${scanId}/chunk-results/${encodeURIComponent(chunk.id)}.json`;
     if (chunkPersistenceAvailable) {
+      if (claimAttempt === null)
+        throw new Error("scan chunk claim is missing its fencing attempt");
       try {
         const serialized = JSON.stringify(record);
         // Commit the provider result to D1 before touching R2. If the object
@@ -850,6 +1061,7 @@ export async function extractScanChunks(
           scanId,
           chunk.id,
           PIPELINE_VERSION,
+          claimAttempt,
           serialized,
         );
         await putJsonObject(env, repository, {
@@ -862,10 +1074,16 @@ export async function extractScanChunks(
           scanId,
           chunk.id,
           PIPELINE_VERSION,
+          claimAttempt,
           extractionKey,
         );
       } catch (cause) {
-        await repository.failScanChunk(scanId, chunk.id, PIPELINE_VERSION);
+        await repository.failScanChunk(
+          scanId,
+          chunk.id,
+          PIPELINE_VERSION,
+          claimAttempt,
+        );
         throw cause;
       }
     }
@@ -873,26 +1091,22 @@ export async function extractScanChunks(
     records = chunkData.chunks
       .map((candidate) => recordByChunk.get(candidate.id))
       .filter((candidate): candidate is StoredExtraction => Boolean(candidate));
-    // Persist after every chunk so a Workflow retry can reuse completed AI
-    // outputs instead of calling and charging the provider again.
-    await writeJson(env, repository, {
-      scanId,
-      kind: "chunk-extraction",
-      objectKey: `artifacts/${scanId}/chunk-extractions.json`,
-      schemaVersion: CHUNK_EXTRACTION_SCHEMA_VERSION,
-      value: {
-        sourceFingerprint: chunkData.sourceFingerprint,
-        chunks: records,
-      },
-    });
-    await repository.recordAiUsage({
-      operationId: `${scanId}:${chunk.id}:extract`,
-      scanId,
-      provider: providerName,
-      model,
-      status:
-        providerName === "deterministic-fallback" ? "failed" : "completed",
-    });
+    // D1's fenced per-chunk result is the retry authority. Only legacy/test
+    // repositories without that ledger need an aggregate checkpoint after
+    // every chunk; the normal path writes the aggregate once after the loop.
+    if (!chunkPersistenceAvailable) {
+      await writeJson(env, repository, {
+        scanId,
+        kind: "chunk-extraction",
+        objectKey: `artifacts/${scanId}/chunk-extractions.json`,
+        schemaVersion: CHUNK_EXTRACTION_SCHEMA_VERSION,
+        value: {
+          sourceFingerprint: chunkData.sourceFingerprint,
+          chunks: records,
+        },
+      });
+    }
+    await recordExtractionUsage(repository, scanId, record);
   }
   const output: StoredExtractions = {
     sourceFingerprint: chunkData.sourceFingerprint,
@@ -1057,7 +1271,12 @@ export async function adjudicateScan(
   const providerName = configuredFrontierProvider(env);
   const provider =
     env.SCAN_FRONTIER_ENABLED === "true"
-      ? createConfiguredProvider(env, providerName, "frontier")
+      ? createConfiguredProvider(
+          env,
+          providerName,
+          "frontier",
+          billableProviderHooks(repository, scanId),
+        )
       : null;
   const profile = providerProfile(env, providerName, "frontier");
   const output: AdjudicationOutput[] = [];
@@ -1074,30 +1293,46 @@ export async function adjudicateScan(
       });
       continue;
     }
+    const operationId = `${scanId}:${input.ambiguityId}:adjudicate`;
+    const cached = await readDurableAdjudicationResult(
+      env,
+      repository,
+      scanId,
+      input.ambiguityId,
+    );
+    if (cached) {
+      output.push({
+        ...cached,
+        entityIds: merge.ambiguityEntityIds[input.ambiguityId] ?? [],
+      });
+      await repository.recordAiUsage({
+        operationId,
+        scanId,
+        provider: cached.provider,
+        model: cached.model,
+        status:
+          cached.provider === "deterministic-fallback" ? "failed" : "completed",
+      });
+      continue;
+    }
+    let result: AdjudicationOutput;
     try {
-      const result = await provider.adjudicate({
+      const providerResult = await provider.adjudicate({
         sourceFingerprint: merge.sourceFingerprint,
         ambiguityId: input.ambiguityId,
         evidenceParagraphs: input.evidenceParagraphs,
         candidateSummary: input.candidateSummary,
       });
-      output.push({
-        ...result,
+      result = {
+        ...providerResult,
         entityIds: merge.ambiguityEntityIds[input.ambiguityId] ?? [],
         provider: providerName,
         model: profile.model,
-      });
-      await repository.recordAiUsage({
-        operationId: `${scanId}:${input.ambiguityId}:adjudicate`,
-        scanId,
-        provider: providerName,
-        model: profile.model,
-        status: "completed",
-      });
+      };
     } catch (cause) {
       if (!(cause instanceof ScanProviderError) || !cause.retryable)
         throw cause;
-      output.push({
+      result = {
         ambiguityId: input.ambiguityId,
         entityIds: merge.ambiguityEntityIds[input.ambiguityId] ?? [],
         decision: "uncertain",
@@ -1105,15 +1340,31 @@ export async function adjudicateScan(
           "フロンティア判定を完了できなかったため、統合を保留しました。",
         provider: "deterministic-fallback",
         model: "deterministic-adjudicator/1",
-      });
-      await repository.recordAiUsage({
-        operationId: `${scanId}:${input.ambiguityId}:adjudicate`,
-        scanId,
-        provider: "deterministic-fallback",
-        model: "deterministic-adjudicator/1",
-        status: "failed",
-      });
+      };
     }
+    // Workflow step callbacks may be retried after any later await. D1 is
+    // committed before the R2 cache, ledger, or aggregate so an R2 PUT failure
+    // can be repaired without issuing the same billable request again.
+    const persisted = await repository.saveAdjudicationResult(
+      scanId,
+      input.ambiguityId,
+      JSON.stringify(result),
+    );
+    result = parseAdjudicationResult(
+      persisted.resultJson,
+      input.ambiguityId,
+      "D1",
+    );
+    await writeAdjudicationResult(env, repository, scanId, result);
+    output.push(result);
+    await repository.recordAiUsage({
+      operationId,
+      scanId,
+      provider: result.provider,
+      model: result.model,
+      status:
+        result.provider === "deterministic-fallback" ? "failed" : "completed",
+    });
   }
   const objectKey = `artifacts/${scanId}/adjudication.json`;
   await writeJson(env, repository, {

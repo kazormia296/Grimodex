@@ -11,6 +11,7 @@ import { useCompactNavigationStore } from "./compactNavigationStore";
 export type MobileWorkspaceSurfaces = Partial<
   Record<"scenes" | "codex" | "ai" | "more", ReactNode>
 >;
+export type MobileWorkspaceSurfaceId = keyof MobileWorkspaceSurfaces;
 
 interface Props {
   profile?: WorkspaceViewportProfile;
@@ -21,6 +22,7 @@ interface Props {
   saveState?: string;
   onBack?: () => void;
   mobileSurfaces?: MobileWorkspaceSurfaces;
+  renderMobileSurface?: (surface: MobileWorkspaceSurfaceId) => ReactNode;
 }
 
 export function AdaptiveWorkspaceShell({
@@ -32,16 +34,21 @@ export function AdaptiveWorkspaceShell({
   saveState,
   onBack,
   mobileSurfaces,
+  renderMobileSurface,
 }: Props) {
   const viewport = useViewportProfile();
   const activeSurface = useCompactNavigationStore(
     (state) => state.activeSurface,
   );
   const profile = requestedProfile ?? viewport.profile;
-  const mobileSurface =
+  const mobileSurfaceId =
     profile === "phone" && activeSurface !== "editor"
-      ? mobileSurfaces?.[activeSurface as keyof MobileWorkspaceSurfaces]
-      : undefined;
+      ? (activeSurface as MobileWorkspaceSurfaceId)
+      : null;
+  const mobileSurface = mobileSurfaceId
+    ? (mobileSurfaces?.[mobileSurfaceId] ??
+      renderMobileSurface?.(mobileSurfaceId))
+    : undefined;
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined")
       return undefined;

@@ -4,13 +4,17 @@ import {
   buildScanBundle,
   normalizeDocument,
 } from "@grimodex/scan-core";
-import type { EditorSeedV1 } from "@grimodex/scan-contract";
-import { buildScanImportPlan } from "./scanImportPlan";
+import type { EditorSeedV1, ScanLanguage } from "@grimodex/scan-contract";
+import {
+  buildScanImportPlan,
+  deriveScanImportId,
+  rebuildScanImportPlan,
+} from "./scanImportPlan";
 
-function makeSeed(): EditorSeedV1 {
+function makeSeed(language: ScanLanguage = "ja"): EditorSeedV1 {
   const document = normalizeDocument({
     title: "灯台の手紙",
-    language: "ja",
+    language,
     text: "# 第一章\n\n葵は灯台へ向かった。\n\n# 第二章\n\n手紙を見つけた。",
   });
   const first = document.paragraphs[0]!;
@@ -124,6 +128,107 @@ describe("buildScanImportPlan", () => {
     expect(() => buildScanImportPlan(invalid)).toThrow(
       "Scan editor seed is invalid",
     );
+  });
+
+  it("scopes every generated ID to one import instance while preserving internal references", () => {
+    const seed = makeSeed();
+    const sourceEntityId = seed.bundle.entities[0]!.id;
+    const sourceEventId = seed.bundle.events[0]!.id;
+    const sourceRelationId = "relation:55555555-5555-4555-8555-555555555555";
+    seed.bundle.relations.push({
+      id: sourceRelationId,
+      fromEntityId: sourceEntityId,
+      toEntityId: sourceEntityId,
+      type: "self",
+      evidence: seed.bundle.entities[0]!.evidence,
+      confidence: 0.7,
+    });
+    seed.bundle.findings[0]!.relatedEntityIds = [sourceEntityId];
+    seed.bundle.findings[0]!.relatedEventIds = [sourceEventId];
+
+    const first = buildScanImportPlan(seed, { importInstanceId: "import-a" });
+    const repeated = buildScanImportPlan(seed, {
+      importInstanceId: "import-a",
+    });
+    const second = buildScanImportPlan(seed, { importInstanceId: "import-b" });
+
+    expect(first.idMap).toEqual(repeated.idMap);
+    expect(
+      deriveScanImportId(
+        first.sourceFingerprint,
+        "findings-note",
+        "report",
+        first.importInstanceId,
+      ),
+    ).not.toBe(
+      deriveScanImportId(
+        second.sourceFingerprint,
+        "findings-note",
+        "report",
+        second.importInstanceId,
+      ),
+    );
+    for (const namespace of Object.keys(first.idMap) as Array<
+      keyof typeof first.idMap
+    >) {
+      for (const [sourceId, importedId] of Object.entries(
+        first.idMap[namespace],
+      )) {
+        expect(second.idMap[namespace][sourceId]).not.toBe(importedId);
+      }
+    }
+
+    const event = first.events[0]!;
+    const folder = first.nodes.find(
+      (node) => node.id === first.idMap.sections[event.sourceSectionId],
+    );
+    expect(folder?.kind).toBe("folder");
+    if (!folder || folder.kind !== "folder") {
+      throw new Error("expected event section folder");
+    }
+    const scene = folder.children[0];
+    expect(scene?.kind).toBe("scene");
+    expect(event.sceneId).toBe(scene?.id);
+    expect(event.paragraphIds).toEqual(
+      seed.bundle.events[0]!.paragraphIds.map(
+        (paragraphId) => first.idMap.paragraphs[paragraphId],
+      ),
+    );
+    expect(event.entityIds).toEqual([first.idMap.entities[sourceEntityId]]);
+    expect(first.relations[0]).toMatchObject({
+      id: first.idMap.relations[sourceRelationId],
+      fromCodexId: first.idMap.entities[sourceEntityId],
+      toCodexId: first.idMap.entities[sourceEntityId],
+    });
+    expect(first.phases[0]?.anchorNodeId).toBe(scene?.id);
+    expect(first.phases[0]?.anchorNodeIds).toContain(scene?.id);
+    expect(first.findings[0]?.relatedEntityIds).toEqual([
+      first.idMap.entities[sourceEntityId],
+    ]);
+    expect(first.findings[0]?.relatedEventIds).toEqual([
+      first.idMap.events[sourceEventId],
+    ]);
+  });
+
+  it("rejects unsupported source languages instead of silently importing them as Japanese", () => {
+    expect(() =>
+      buildScanImportPlan(makeSeed("other"), {
+        importInstanceId: "import-other",
+      }),
+    ).toThrow("unsupported language: other");
+  });
+
+  it("rebuilds a persisted plan with the original import instance IDs", () => {
+    const seed = makeSeed();
+    const persisted = buildScanImportPlan(seed, {
+      importInstanceId: "browser-workspace-1",
+    });
+
+    const restored = rebuildScanImportPlan(seed, persisted);
+
+    expect(restored.importInstanceId).toBe("browser-workspace-1");
+    expect(restored.idMap).toEqual(persisted.idMap);
+    expect(restored.nodes).toEqual(persisted.nodes);
   });
 });
 

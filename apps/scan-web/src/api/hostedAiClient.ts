@@ -24,8 +24,15 @@ export class HostedAiClient {
 
   async complete(
     handle: Pick<ScanHandle, "scanId" | "scanToken">,
-    input: { operation: HostedAiOperation; prompt: string; context?: string },
+    input: {
+      operation: HostedAiOperation;
+      prompt: string;
+      context?: string;
+      /** Reuse this value when retrying a request whose response was lost. */
+      idempotencyKey: string;
+    },
   ): Promise<{ response: string; costWeight: number }> {
+    const { idempotencyKey, ...body } = input;
     const response = await this.fetchImpl(
       `${this.baseUrl}/api/v1/scans/${encodeURIComponent(handle.scanId)}/editor-ai`,
       {
@@ -34,8 +41,9 @@ export class HostedAiClient {
           accept: "application/json",
           "content-type": "application/json",
           "x-scan-token": handle.scanToken,
+          "x-idempotency-key": idempotencyKey,
         },
-        body: JSON.stringify(input),
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok)

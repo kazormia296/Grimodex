@@ -286,6 +286,15 @@ function checkReferences(
     checkEvidence(candidate.evidence, `/relations/${index}/evidence`),
   );
   value.events.forEach((candidate, index) => {
+    if (knownSections && !knownSections.has(candidate.sectionId)) {
+      errors.push(
+        error(
+          "missing-reference",
+          `/events/${index}/sectionId`,
+          "event section is outside the chunk",
+        ),
+      );
+    }
     checkEvidence(candidate.evidence, `/events/${index}/evidence`);
     candidate.paragraphIds.forEach((paragraphId, paragraphIndex) => {
       if (knownParagraphs && !knownParagraphs.has(paragraphId)) {

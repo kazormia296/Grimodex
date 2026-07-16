@@ -95,6 +95,43 @@ describe("ScanBundleV1 contract", () => {
     }
   });
 
+  it("rejects a chunk event whose section is outside the chunk", () => {
+    const result = validateChunkExtraction(
+      {
+        schemaVersion: "grimodex-scan/chunk-extraction/1",
+        chunkId: "chunk:test",
+        sourceFingerprint: "sha256:test",
+        entities: [],
+        relations: [],
+        events: [
+          {
+            title: "移動",
+            sectionId: "section:outside",
+            paragraphIds: ["paragraph:0"],
+            entityNames: [],
+            order: 0,
+            evidence: [{ sectionId: "section:0", paragraphId: "paragraph:0" }],
+          },
+        ],
+      },
+      {
+        paragraphIds: ["paragraph:0"],
+        sectionIds: ["section:0"],
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(
+        result.errors.some(
+          (error) =>
+            error.code === "missing-reference" &&
+            error.path === "/events/0/sectionId",
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("rejects a phase whose anchors move backwards", async () => {
     const fixture = (await readFixture()) as Record<string, unknown>;
     const phases = fixture.phases as Array<Record<string, unknown>>;

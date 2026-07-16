@@ -52,6 +52,8 @@ interface ErrorBody {
   error?: { code?: string; message?: string };
 }
 
+const SCAN_CREATE_ATTEMPTS = 3;
+
 class ScanApiError extends Error {
   constructor(
     readonly status: number,
@@ -59,6 +61,13 @@ class ScanApiError extends Error {
   ) {
     super(message);
     this.name = "ScanApiError";
+  }
+}
+
+class InvalidScanCreateResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidScanCreateResponseError";
   }
 }
 
@@ -85,6 +94,41 @@ function isRetryablePollingError(cause: unknown): boolean {
     cause.status === 429 ||
     cause.status >= 500
   );
+}
+
+function isRetryableCreateError(cause: unknown): boolean {
+  if (cause instanceof InvalidScanCreateResponseError) return false;
+  return isRetryablePollingError(cause);
+}
+
+function randomScanToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function assertMatchingScanHandle(
+  response: unknown,
+  expected: ScanHandle,
+): void {
+  const candidate =
+    typeof response === "object" && response !== null
+      ? (response as Partial<ScanHandle>)
+      : null;
+  if (
+    candidate?.scanId !== expected.scanId ||
+    candidate.scanToken !== expected.scanToken ||
+    candidate.mode !== expected.mode
+  ) {
+    throw new InvalidScanCreateResponseError(
+      "Scan create response did not match the requested handle",
+    );
+  }
 }
 
 export class ScanApiClient {
@@ -164,16 +208,57 @@ export class ScanApiClient {
         headers: { "x-upload-token": intent.uploadToken },
       },
     );
-    return this.json<ScanHandle>("/api/v1/scans", {
-      method: "POST",
-      body: JSON.stringify({ uploadId: intent.uploadId, mode }),
-      headers: {
-        "x-upload-token": intent.uploadToken,
-        ...(mode === "full" && this.fullAccessToken
-          ? { "x-scan-full-access": this.fullAccessToken }
-          : {}),
-      },
-    });
+    return this.createScan(intent.uploadId, intent.uploadToken, mode);
+  }
+
+  private async createScan(
+    uploadId: string,
+    uploadToken: string,
+    mode: ScanMode,
+  ): Promise<ScanHandle> {
+    const handle: ScanHandle = {
+      scanId: crypto.randomUUID(),
+      scanToken: randomScanToken(),
+      mode,
+    };
+    const body = JSON.stringify({ uploadId, ...handle });
+    const headers = {
+      "x-upload-token": uploadToken,
+      ...(mode === "full" && this.fullAccessToken
+        ? { "x-scan-full-access": this.fullAccessToken }
+        : {}),
+    };
+    let lastFailure: unknown;
+    for (let attempt = 0; attempt < SCAN_CREATE_ATTEMPTS; attempt += 1) {
+      try {
+        const created = await this.json<unknown>("/api/v1/scans", {
+          method: "POST",
+          body,
+          headers,
+        });
+        assertMatchingScanHandle(created, handle);
+        return handle;
+      } catch (cause) {
+        if (!isRetryableCreateError(cause)) throw cause;
+        lastFailure = cause;
+        if (attempt + 1 < SCAN_CREATE_ATTEMPTS) {
+          await this.sleep(250 * 2 ** attempt);
+        }
+      }
+    }
+
+    try {
+      const status = await this.getStatus(handle);
+      if (status.scanId !== handle.scanId || status.mode !== handle.mode) {
+        throw new InvalidScanCreateResponseError(
+          "Scan status response did not match the requested handle",
+        );
+      }
+      return handle;
+    } catch (cause) {
+      if (cause instanceof InvalidScanCreateResponseError) throw cause;
+      throw lastFailure;
+    }
   }
 
   getStatus(

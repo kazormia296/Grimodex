@@ -79,6 +79,7 @@ export async function updateProject(
       | "aiPolicy"
     >
   >,
+  options?: { suppressImeExport?: boolean },
 ): Promise<Project | undefined> {
   const rows = await db
     .update(projects)
@@ -102,12 +103,14 @@ export async function updateProject(
   recordChangeEvent({
     domain: "project",
     opType: "meta.update",
+    projectId: id,
     entityType: "project",
     entityId: id,
     payload: { projectId: id, fields: Object.keys(data) },
   });
   if (
     rows[0] &&
+    !options?.suppressImeExport &&
     Object.keys(data).some((field) => IME_PROJECT_FIELDS.has(field))
   ) {
     scheduleImeExportRefresh(id);

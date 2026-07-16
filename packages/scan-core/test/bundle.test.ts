@@ -83,6 +83,43 @@ describe("ScanBundle construction", () => {
     expect(phases.unresolved).toHaveLength(0);
   });
 
+  it("keeps ordered sentence anchors in the same paragraph valid", () => {
+    const sentenceEvidence = [
+      { ...evidence, sentenceIndex: 0 },
+      { ...evidence, sentenceIndex: 1 },
+    ];
+    const entities = mergeEntities([
+      {
+        type: "character",
+        name: "葵",
+        aliases: [],
+        evidence: [sentenceEvidence[0]!],
+        confidence: 0.9,
+      },
+    ]);
+    const phases = buildPhases(
+      [
+        {
+          title: "発見",
+          entityNames: ["葵"],
+          anchors: sentenceEvidence,
+          confidence: 0.8,
+        },
+      ],
+      entities.entities,
+    );
+
+    expect(() =>
+      buildScanBundle({
+        document,
+        entities: entities.entities,
+        relations: [],
+        phases: phases.phases,
+        pipelineVersion: "test",
+      }),
+    ).not.toThrow();
+  });
+
   it("creates a private editor seed that validates against the source paragraphs", () => {
     const entity = {
       id: "entity:11111111-1111-4111-8111-111111111111",
@@ -104,5 +141,37 @@ describe("ScanBundle construction", () => {
     const seed = buildEditorSeed(bundle, document);
 
     expect(parseEditorSeed(seed).ok).toBe(true);
+  });
+
+  it("accepts evidence for the second period-delimited English sentence", () => {
+    const englishDocument = normalizeDocument({
+      title: "Letters",
+      language: "en",
+      text: "# Chapter One\n\nAlice walks. Bob stops.",
+    });
+    const paragraph = englishDocument.paragraphs[0]!;
+    const englishEvidence = {
+      sectionId: paragraph.sectionId,
+      paragraphId: paragraph.id,
+      sentenceIndex: 1,
+      excerpt: "Bob stops.",
+    };
+    const bundle = buildScanBundle({
+      document: englishDocument,
+      entities: [
+        {
+          id: "entity:11111111-1111-4111-8111-111111111111",
+          type: "character",
+          name: "Bob",
+          aliases: [],
+          evidence: [englishEvidence],
+          confidence: 0.9,
+        },
+      ],
+      relations: [],
+      pipelineVersion: "test",
+    });
+
+    expect(() => buildEditorSeed(bundle, englishDocument)).not.toThrow();
   });
 });

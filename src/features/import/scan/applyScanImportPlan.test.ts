@@ -8,6 +8,7 @@ import {
 function makePlan(): ScanImportPlan {
   return {
     schemaVersion: "grimodex-scan/import-plan/1",
+    importInstanceId: "import-test",
     projectTitle: "Scan import",
     language: "ja",
     sourceFingerprint: "a".repeat(64),

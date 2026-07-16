@@ -36,11 +36,45 @@ export interface WorkspaceSnapshot extends WorkspaceSnapshotMetadata {
 }
 
 export interface BrowserWorkspaceStore {
+  getDurability(): "persistent" | "memory" | "unknown";
   put(input: WorkspaceSnapshotInput): Promise<WorkspaceSnapshotMetadata>;
   get(workspaceId: string): Promise<WorkspaceSnapshot | undefined>;
+  getState(workspaceId: string): Promise<WorkspaceStorageState | undefined>;
   list(): Promise<WorkspaceSnapshotMetadata[]>;
   delete(workspaceId: string): Promise<void>;
   rename(workspaceId: string, nextWorkspaceId: string): Promise<void>;
+}
+
+export interface WorkspaceTombstone {
+  workspaceId: string;
+  revision: number;
+  schemaVersion: number;
+  updatedAt: string;
+  size: 0;
+  deleted: true;
+}
+
+type WorkspaceMemoryRecord = WorkspaceSnapshot | WorkspaceTombstone;
+export type WorkspaceStorageState = WorkspaceMemoryRecord;
+
+function isWorkspaceTombstone(
+  record: WorkspaceSnapshotMetadata | WorkspaceTombstone,
+): record is WorkspaceTombstone {
+  return "deleted" in record && record.deleted;
+}
+
+function tombstoneFor(
+  workspaceId: string,
+  current?: Pick<WorkspaceSnapshotMetadata, "revision" | "schemaVersion">,
+): WorkspaceTombstone {
+  return {
+    workspaceId,
+    revision: (current?.revision ?? 0) + 1,
+    schemaVersion: current?.schemaVersion ?? 1,
+    updatedAt: new Date().toISOString(),
+    size: 0,
+    deleted: true,
+  };
 }
 
 function copyBytes(bytes: Uint8Array): Uint8Array {
@@ -58,8 +92,16 @@ function metadataFor(input: WorkspaceSnapshotInput): WorkspaceSnapshotMetadata {
 }
 
 export function createMemoryWorkspaceStore(): BrowserWorkspaceStore {
-  const snapshots = new Map<string, WorkspaceSnapshot>();
+  const snapshots = new Map<string, WorkspaceMemoryRecord>();
+  const getState = (workspaceId: string): WorkspaceStorageState | undefined => {
+    const state = snapshots.get(workspaceId);
+    if (!state) return undefined;
+    return isWorkspaceTombstone(state)
+      ? { ...state }
+      : { ...state, bytes: copyBytes(state.bytes) };
+  };
   return {
+    getDurability: () => "memory",
     async put(input) {
       const current = snapshots.get(input.workspaceId);
       if (current && input.revision <= current.revision) {
@@ -76,40 +118,107 @@ export function createMemoryWorkspaceStore(): BrowserWorkspaceStore {
       return metadata;
     },
     async get(workspaceId) {
-      const snapshot = snapshots.get(workspaceId);
-      return snapshot
-        ? { ...snapshot, bytes: copyBytes(snapshot.bytes) }
-        : undefined;
+      const state = getState(workspaceId);
+      return state && !isWorkspaceTombstone(state) ? state : undefined;
+    },
+    async getState(workspaceId) {
+      return getState(workspaceId);
     },
     async list() {
       return [...snapshots.values()]
+        .filter(
+          (snapshot): snapshot is WorkspaceSnapshot =>
+            !isWorkspaceTombstone(snapshot),
+        )
         .map(({ bytes: _bytes, ...metadata }) => metadata)
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     },
     async delete(workspaceId) {
-      snapshots.delete(workspaceId);
+      const current = snapshots.get(workspaceId);
+      snapshots.set(workspaceId, tombstoneFor(workspaceId, current));
     },
     async rename(workspaceId, nextWorkspaceId) {
       const current = snapshots.get(workspaceId);
-      if (!current) return;
+      if (!current || isWorkspaceTombstone(current)) return;
       const existing = snapshots.get(nextWorkspaceId);
-      if (existing && existing.revision >= current.revision) {
+      if (existing && !isWorkspaceTombstone(existing)) {
         throw new BrowserWorkspaceError(
           "stale-write",
-          "The destination workspace is newer",
+          "The destination workspace already exists",
         );
       }
+      const nextRevision = existing
+        ? Math.max(current.revision, existing.revision + 1)
+        : current.revision;
       snapshots.set(nextWorkspaceId, {
         ...current,
         workspaceId: nextWorkspaceId,
+        revision: nextRevision,
         bytes: copyBytes(current.bytes),
       });
-      snapshots.delete(workspaceId);
+      snapshots.set(workspaceId, tombstoneFor(workspaceId, current));
     },
   };
 }
 
-type MetadataRecord = WorkspaceSnapshotMetadata;
+function canFailOverFromPrimary(cause: unknown): boolean {
+  return (
+    cause instanceof BrowserWorkspaceError &&
+    (cause.code === "unavailable" || cause.code === "storage-failed")
+  );
+}
+
+/**
+ * Fall back only when the primary store cannot complete its first operation.
+ * Once it has succeeded, switching stores would hide already-persisted data.
+ */
+export function createFailoverWorkspaceStore(
+  primary: BrowserWorkspaceStore,
+  fallback: BrowserWorkspaceStore,
+): BrowserWorkspaceStore {
+  let active: BrowserWorkspaceStore | null = null;
+  let selectionPromise: Promise<BrowserWorkspaceStore> | null = null;
+
+  const run = async <T>(
+    operation: (store: BrowserWorkspaceStore) => Promise<T>,
+  ): Promise<T> => {
+    if (active) return operation(active);
+    if (selectionPromise) return operation(await selectionPromise);
+
+    let selectStore: (store: BrowserWorkspaceStore) => void = () => undefined;
+    selectionPromise = new Promise((resolve) => {
+      selectStore = resolve;
+    });
+    try {
+      const result = await operation(primary);
+      active = primary;
+      selectStore(primary);
+      return result;
+    } catch (cause) {
+      if (!canFailOverFromPrimary(cause)) {
+        active = primary;
+        selectStore(primary);
+        throw cause;
+      }
+      active = fallback;
+      selectStore(fallback);
+      return operation(fallback);
+    }
+  };
+
+  return {
+    getDurability: () => active?.getDurability() ?? "unknown",
+    put: (input) => run((store) => store.put(input)),
+    get: (workspaceId) => run((store) => store.get(workspaceId)),
+    getState: (workspaceId) => run((store) => store.getState(workspaceId)),
+    list: () => run((store) => store.list()),
+    delete: (workspaceId) => run((store) => store.delete(workspaceId)),
+    rename: (workspaceId, nextWorkspaceId) =>
+      run((store) => store.rename(workspaceId, nextWorkspaceId)),
+  };
+}
+
+type MetadataRecord = WorkspaceSnapshotMetadata | WorkspaceTombstone;
 interface BlobRecord {
   workspaceId: string;
   revision: number;
@@ -181,7 +290,70 @@ export function createIndexedDbWorkspaceStore(
     return databasePromise;
   };
 
+  const getState = async (
+    workspaceId: string,
+  ): Promise<WorkspaceStorageState | undefined> => {
+    try {
+      const database = await open();
+      return await new Promise<WorkspaceStorageState | undefined>(
+        (resolve, reject) => {
+          const transaction = database.transaction(
+            [METADATA_STORE, BLOB_STORE],
+            "readonly",
+          );
+          const metadataRequest = transaction
+            .objectStore(METADATA_STORE)
+            .get(workspaceId);
+          let result: WorkspaceStorageState | undefined;
+          let failure: unknown;
+          metadataRequest.onerror = () => {
+            failure = metadataRequest.error;
+            transaction.abort();
+          };
+          metadataRequest.onsuccess = () => {
+            const metadata = metadataRequest.result as
+              | MetadataRecord
+              | undefined;
+            if (!metadata) return;
+            if (isWorkspaceTombstone(metadata)) {
+              result = metadata;
+              return;
+            }
+            const blobRequest = transaction
+              .objectStore(BLOB_STORE)
+              .get([workspaceId, metadata.revision]);
+            blobRequest.onerror = () => {
+              failure = blobRequest.error;
+              transaction.abort();
+            };
+            blobRequest.onsuccess = () => {
+              const blob = blobRequest.result as BlobRecord | undefined;
+              if (!blob) {
+                failure = new BrowserWorkspaceError(
+                  "storage-failed",
+                  "The workspace snapshot blob is missing",
+                );
+                transaction.abort();
+                return;
+              }
+              result = { ...metadata, bytes: new Uint8Array(blob.bytes) };
+            };
+          };
+          transaction.oncomplete = () => {
+            if (failure) reject(failure);
+            else resolve(result);
+          };
+          transaction.onerror = () => reject(failure ?? transaction.error);
+          transaction.onabort = () => reject(failure ?? transaction.error);
+        },
+      );
+    } catch (cause) {
+      throw toStorageError(cause);
+    }
+  };
+
   return {
+    getDurability: () => "persistent",
     async put(input) {
       try {
         const database = await open();
@@ -231,52 +403,11 @@ export function createIndexedDbWorkspaceStore(
       }
     },
     async get(workspaceId) {
-      try {
-        const database = await open();
-        return await new Promise<WorkspaceSnapshot | undefined>(
-          (resolve, reject) => {
-            const transaction = database.transaction(
-              [METADATA_STORE, BLOB_STORE],
-              "readonly",
-            );
-            const metadataRequest = transaction
-              .objectStore(METADATA_STORE)
-              .get(workspaceId);
-            let result: WorkspaceSnapshot | undefined;
-            let failure: unknown;
-            metadataRequest.onerror = () => {
-              failure = metadataRequest.error;
-              transaction.abort();
-            };
-            metadataRequest.onsuccess = () => {
-              const metadata = metadataRequest.result as
-                | MetadataRecord
-                | undefined;
-              if (!metadata) return;
-              const blobRequest = transaction
-                .objectStore(BLOB_STORE)
-                .get([workspaceId, metadata.revision]);
-              blobRequest.onerror = () => {
-                failure = blobRequest.error;
-                transaction.abort();
-              };
-              blobRequest.onsuccess = () => {
-                const blob = blobRequest.result as BlobRecord | undefined;
-                if (blob)
-                  result = { ...metadata, bytes: new Uint8Array(blob.bytes) };
-              };
-            };
-            transaction.oncomplete = () => {
-              if (failure) reject(failure);
-              else resolve(result);
-            };
-            transaction.onerror = () => reject(failure ?? transaction.error);
-            transaction.onabort = () => reject(failure ?? transaction.error);
-          },
-        );
-      } catch (cause) {
-        throw toStorageError(cause);
-      }
+      const state = await getState(workspaceId);
+      return state && !isWorkspaceTombstone(state) ? state : undefined;
+    },
+    async getState(workspaceId) {
+      return getState(workspaceId);
     },
     async list() {
       try {
@@ -285,9 +416,12 @@ export function createIndexedDbWorkspaceStore(
         const values = (await requestResult(
           transaction.objectStore(METADATA_STORE).getAll(),
         )) as MetadataRecord[];
-        return values.sort((left, right) =>
-          right.updatedAt.localeCompare(left.updatedAt),
-        );
+        return values
+          .filter(
+            (metadata): metadata is WorkspaceSnapshotMetadata =>
+              !isWorkspaceTombstone(metadata),
+          )
+          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
       } catch (cause) {
         throw toStorageError(cause);
       }
@@ -302,7 +436,11 @@ export function createIndexedDbWorkspaceStore(
           );
           const metadataStore = transaction.objectStore(METADATA_STORE);
           const blobStore = transaction.objectStore(BLOB_STORE);
-          metadataStore.delete(workspaceId);
+          const currentRequest = metadataStore.get(workspaceId);
+          currentRequest.onsuccess = () => {
+            const current = currentRequest.result as MetadataRecord | undefined;
+            metadataStore.put(tombstoneFor(workspaceId, current));
+          };
           const keysRequest = blobStore.getAllKeys();
           keysRequest.onsuccess = () => {
             for (const key of keysRequest.result) {
@@ -341,7 +479,7 @@ export function createIndexedDbWorkspaceStore(
             abortWith(toStorageError(currentRequest.error));
           currentRequest.onsuccess = () => {
             const current = currentRequest.result as MetadataRecord | undefined;
-            if (!current) return;
+            if (!current || isWorkspaceTombstone(current)) return;
             const destinationRequest = metadataStore.get(nextWorkspaceId);
             destinationRequest.onerror = () =>
               abortWith(toStorageError(destinationRequest.error));
@@ -349,15 +487,18 @@ export function createIndexedDbWorkspaceStore(
               const destination = destinationRequest.result as
                 | MetadataRecord
                 | undefined;
-              if (destination && destination.revision >= current.revision) {
+              if (destination && !isWorkspaceTombstone(destination)) {
                 abortWith(
                   new BrowserWorkspaceError(
                     "stale-write",
-                    "The destination workspace is newer",
+                    "The destination workspace already exists",
                   ),
                 );
                 return;
               }
+              const nextRevision = destination
+                ? Math.max(current.revision, destination.revision + 1)
+                : current.revision;
               const blobRequest = blobStore.get([
                 workspaceId,
                 current.revision,
@@ -375,15 +516,17 @@ export function createIndexedDbWorkspaceStore(
                   );
                   return;
                 }
-                if (destination)
-                  blobStore.delete([nextWorkspaceId, destination.revision]);
                 blobStore.put({
                   workspaceId: nextWorkspaceId,
-                  revision: current.revision,
+                  revision: nextRevision,
                   bytes: blob.bytes,
                 });
-                metadataStore.put({ ...current, workspaceId: nextWorkspaceId });
-                metadataStore.delete(workspaceId);
+                metadataStore.put({
+                  ...current,
+                  workspaceId: nextWorkspaceId,
+                  revision: nextRevision,
+                });
+                metadataStore.put(tombstoneFor(workspaceId, current));
                 blobStore.delete([workspaceId, current.revision]);
               };
             };

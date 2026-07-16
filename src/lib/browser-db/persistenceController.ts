@@ -20,6 +20,7 @@ export interface PersistenceController {
   whenIdle(): Promise<void>;
   restore(): Promise<WorkspaceSnapshot | undefined>;
   attachLifecycle(target?: Window): () => void;
+  isBlockedByConflict(): boolean;
 }
 
 export function createPersistenceController(
@@ -98,10 +99,10 @@ export function createPersistenceController(
     flush,
     whenIdle: () => queue,
     async restore() {
-      const snapshot = await options.store.get(options.workspaceId);
-      if (snapshot) revision = snapshot.revision;
+      const state = await options.store.getState(options.workspaceId);
+      if (state) revision = state.revision;
       blockedByConflict = false;
-      return snapshot;
+      return state && !("deleted" in state) ? state : undefined;
     },
     attachLifecycle(
       target = typeof window === "undefined" ? undefined : window,
@@ -123,5 +124,6 @@ export function createPersistenceController(
         );
       };
     },
+    isBlockedByConflict: () => blockedByConflict,
   };
 }

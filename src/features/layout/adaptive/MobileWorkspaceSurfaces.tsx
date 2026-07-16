@@ -15,7 +15,25 @@ import {
   PhoneSceneNavigator,
   type PhoneSceneAction,
 } from "./mobile/PhoneSceneNavigator";
-import type { MobileWorkspaceSurfaces } from "./AdaptiveWorkspaceShell";
+import type { MobileWorkspaceSurfaceId } from "./AdaptiveWorkspaceShell";
+
+const phaseLoadsInFlight = new Map<string, Promise<void>>();
+
+function requestPhaseLoadOnce(
+  projectId: string,
+  entryId: string,
+  loadPhasesForEntry: (entryId: string) => Promise<void>,
+): void {
+  const key = `${projectId}:${entryId}`;
+  if (phaseLoadsInFlight.has(key)) return;
+  const operation = loadPhasesForEntry(entryId)
+    .catch(() => undefined)
+    .finally(() => {
+      if (phaseLoadsInFlight.get(key) === operation)
+        phaseLoadsInFlight.delete(key);
+    });
+  phaseLoadsInFlight.set(key, operation);
+}
 
 function openScene(sceneId: string): void {
   requestOpenEditorDocument({
@@ -44,31 +62,11 @@ function MoreSurface() {
   );
 }
 
-export function useConnectedMobileWorkspaceSurfaces(): MobileWorkspaceSurfaces {
-  const projectId = useProjectStore((state) => state.currentProjectId);
+function ConnectedSceneSurface() {
   const nodes = useTreeStore((state) => state.nodes);
   const activeSceneId = useTreeStore((state) => state.activeSceneId);
-  const treeActions = useTreeStore();
-  const entries = useCodexStore((state) => state.entries);
-  const ensureEntriesLoaded = useCodexStore(
-    (state) => state.ensureEntriesLoaded,
-  );
-  const phasesByEntry = usePhaseStore((state) => state.phasesByEntry);
-  const loadPhasesForEntry = usePhaseStore((state) => state.loadPhasesForEntry);
-  const messages = useChatStore((state) => state.messages);
-  const isStreaming = useChatStore((state) => state.isStreaming);
-  const sendMessage = useChatStore((state) => state.sendMessage);
-
-  useEffect(() => {
-    if (projectId) void ensureEntriesLoaded();
-  }, [ensureEntriesLoaded, projectId]);
-
-  useEffect(() => {
-    for (const entry of entries.slice(0, 64)) {
-      if (!phasesByEntry[entry.id]) void loadPhasesForEntry(entry.id);
-    }
-  }, [entries, loadPhasesForEntry, phasesByEntry]);
-
+  const deleteNode = useTreeStore((state) => state.deleteNode);
+  const moveNode = useTreeStore((state) => state.moveNode);
   const scenes = useMemo(
     () =>
       getAllProjectScenesInOrder(nodes).map((scene) => ({
@@ -78,6 +76,51 @@ export function useConnectedMobileWorkspaceSurfaces(): MobileWorkspaceSurfaces {
       })),
     [nodes],
   );
+
+  const onSceneAction = (sceneId: string, action: PhoneSceneAction): void => {
+    const scene = nodes.find((node) => node.id === sceneId);
+    if (!scene) return;
+    const siblings = nodes
+      .filter(
+        (node) => node.parentId === scene.parentId && node.nodeType === "scene",
+      )
+      .sort((left, right) => left.sortOrder.localeCompare(right.sortOrder));
+    const index = siblings.findIndex((node) => node.id === sceneId);
+    if (action === "delete") {
+      void deleteNode(sceneId);
+      return;
+    }
+    if (action === "move-up" && index > 0) {
+      void moveNode(sceneId, scene.parentId, siblings[index - 2]?.id ?? null);
+      return;
+    }
+    if (action === "move-down" && index >= 0 && index < siblings.length - 1) {
+      void moveNode(sceneId, scene.parentId, siblings[index + 1]?.id);
+    }
+  };
+
+  return (
+    <PhoneSceneNavigator
+      scenes={scenes}
+      currentSceneId={activeSceneId}
+      onOpenScene={openScene}
+      onSceneAction={onSceneAction}
+    />
+  );
+}
+
+function ConnectedCodexSurface() {
+  const projectId = useProjectStore((state) => state.currentProjectId);
+  const entries = useCodexStore((state) => state.entries);
+  const ensureEntriesLoaded = useCodexStore(
+    (state) => state.ensureEntriesLoaded,
+  );
+  const phasesByEntry = usePhaseStore((state) => state.phasesByEntry);
+  const loadPhasesForEntry = usePhaseStore((state) => state.loadPhasesForEntry);
+
+  useEffect(() => {
+    if (projectId) void ensureEntriesLoaded();
+  }, [ensureEntriesLoaded, projectId]);
 
   const codex = useMemo(
     () =>
@@ -96,6 +139,22 @@ export function useConnectedMobileWorkspaceSurfaces(): MobileWorkspaceSurfaces {
     [entries, phasesByEntry],
   );
 
+  return (
+    <PhoneCodexNavigator
+      entries={codex}
+      onOpenAnchor={openScene}
+      onSelectEntry={(entryId) => {
+        if (!projectId || phasesByEntry[entryId]) return;
+        requestPhaseLoadOnce(projectId, entryId, loadPhasesForEntry);
+      }}
+    />
+  );
+}
+
+function ConnectedAiSurface() {
+  const messages = useChatStore((state) => state.messages);
+  const isStreaming = useChatStore((state) => state.isStreaming);
+  const sendMessage = useChatStore((state) => state.sendMessage);
   const chat = useMemo(
     () =>
       messages
@@ -114,69 +173,28 @@ export function useConnectedMobileWorkspaceSurfaces(): MobileWorkspaceSurfaces {
     [isStreaming, messages],
   );
 
-  const onSceneAction = (sceneId: string, action: PhoneSceneAction): void => {
-    const scene = nodes.find((node) => node.id === sceneId);
-    if (!scene) return;
-    const siblings = nodes
-      .filter(
-        (node) => node.parentId === scene.parentId && node.nodeType === "scene",
-      )
-      .sort((left, right) => left.sortOrder.localeCompare(right.sortOrder));
-    const index = siblings.findIndex((node) => node.id === sceneId);
-    if (action === "delete") {
-      void treeActions.deleteNode(sceneId);
-      return;
-    }
-    if (action === "duplicate") {
-      void treeActions.createNode({
-        nodeType: "scene",
-        parentId: scene.parentId,
-        afterId: sceneId,
-        title: `${scene.title} copy`,
-      });
-      return;
-    }
-    if (action === "move-up" && index > 0) {
-      void treeActions.moveNode(
-        sceneId,
-        scene.parentId,
-        siblings[index - 2]?.id ?? null,
-      );
-      return;
-    }
-    if (action === "move-down" && index >= 0 && index < siblings.length - 1) {
-      void treeActions.moveNode(
-        sceneId,
-        scene.parentId,
-        siblings[index + 1]?.id,
-      );
-      return;
-    }
-    if (action === "move-to-chapter") {
-      const chapter = nodes.find(
-        (node) => node.nodeType === "folder" && node.id !== scene.parentId,
-      );
-      if (chapter) void treeActions.moveNode(sceneId, chapter.id, null);
-    }
-  };
+  return (
+    <PhoneChatSurface
+      messages={chat}
+      disabled={isStreaming}
+      onSend={(text) => void sendMessage(text)}
+    />
+  );
+}
 
-  return {
-    scenes: (
-      <PhoneSceneNavigator
-        scenes={scenes}
-        currentSceneId={activeSceneId}
-        onOpenScene={openScene}
-        onSceneAction={onSceneAction}
-      />
-    ),
-    codex: <PhoneCodexNavigator entries={codex} onOpenAnchor={openScene} />,
-    ai: (
-      <PhoneChatSurface
-        messages={chat}
-        disabled={isStreaming}
-        onSend={(text) => void sendMessage(text)}
-      />
-    ),
-    more: <MoreSurface />,
-  };
+export function ConnectedMobileWorkspaceSurface({
+  surface,
+}: {
+  surface: MobileWorkspaceSurfaceId;
+}) {
+  switch (surface) {
+    case "scenes":
+      return <ConnectedSceneSurface />;
+    case "codex":
+      return <ConnectedCodexSurface />;
+    case "ai":
+      return <ConnectedAiSurface />;
+    case "more":
+      return <MoreSurface />;
+  }
 }

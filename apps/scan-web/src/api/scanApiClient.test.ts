@@ -17,12 +17,17 @@ describe("ScanApiClient", () => {
         requests.push({ url, init });
         if (url.includes("/uploads/") && url.endsWith("/complete"))
           return response({});
-        if (url.includes("/scans") && init?.method === "POST")
+        if (url.includes("/scans") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as {
+            scanId: string;
+            scanToken: string;
+          };
           return response({
-            scanId: "scan-1",
-            scanToken: "scan-token",
+            scanId: body.scanId,
+            scanToken: body.scanToken,
             mode: "full",
           });
+        }
         if (url.includes("/upload-intents"))
           return response({
             uploadId: "upload-1",
@@ -51,6 +56,178 @@ describe("ScanApiClient", () => {
       "x-upload-token": "upload-token",
       "x-scan-full-access": "full-entitlement",
     });
+  });
+
+  it("retries scan creation with an identical client-generated handle", async () => {
+    const createBodies: string[] = [];
+    let createAttempts = 0;
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/v1/upload-intents")) {
+          return response({
+            uploadId: "upload-1",
+            uploadUrl: "https://scan.example/upload-1",
+            uploadToken: "upload-token",
+            expiresAt: new Date().toISOString(),
+          });
+        }
+        if (url.endsWith("/api/v1/uploads/upload-1/complete")) {
+          return response({});
+        }
+        if (url.endsWith("/api/v1/scans") && init?.method === "POST") {
+          const serialized = String(init.body);
+          createBodies.push(serialized);
+          createAttempts += 1;
+          if (createAttempts === 1) {
+            return response({ error: { message: "gateway unavailable" } }, 503);
+          }
+          const body = JSON.parse(serialized) as {
+            scanId: string;
+            scanToken: string;
+          };
+          return response({ ...body, mode: "quick" }, 202);
+        }
+        return response({});
+      },
+    );
+    const sleep = vi.fn(async () => undefined);
+    const client = new ScanApiClient({
+      baseUrl: "https://scan.example",
+      fetchImpl,
+      sleep,
+    });
+
+    const handle = await client.uploadSource(
+      new File(["本文"], "novel.txt", { type: "text/plain" }),
+    );
+
+    expect(createBodies).toHaveLength(2);
+    expect(createBodies[1]).toBe(createBodies[0]);
+    const body = JSON.parse(createBodies[0]!) as {
+      uploadId: string;
+      mode: string;
+      scanId: string;
+      scanToken: string;
+    };
+    expect(body).toMatchObject({ uploadId: "upload-1", mode: "quick" });
+    expect(body.scanId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(body.scanToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const binaryToken = atob(
+      body.scanToken.replace(/-/g, "+").replace(/_/g, "/") + "=",
+    );
+    expect(binaryToken).toHaveLength(32);
+    expect(handle).toEqual({
+      scanId: body.scanId,
+      scanToken: body.scanToken,
+      mode: "quick",
+    });
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
+  it("recovers a totally lost create response by probing the locally known handle", async () => {
+    const createBodies: string[] = [];
+    const statusRequests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/v1/upload-intents")) {
+          return response({
+            uploadId: "upload-1",
+            uploadUrl: "https://scan.example/upload-1",
+            uploadToken: "upload-token",
+            expiresAt: new Date().toISOString(),
+          });
+        }
+        if (url.endsWith("/api/v1/uploads/upload-1/complete")) {
+          return response({});
+        }
+        if (url.endsWith("/api/v1/scans") && init?.method === "POST") {
+          createBodies.push(String(init.body));
+          throw new TypeError("create response was lost");
+        }
+        if (url.includes("/api/v1/scans/") && init?.method !== "POST") {
+          statusRequests.push({ url, init });
+          const body = JSON.parse(createBodies[0]!) as {
+            scanId: string;
+          };
+          return response({
+            scanId: body.scanId,
+            status: "queued",
+            mode: "quick",
+            updatedAt: new Date().toISOString(),
+          });
+        }
+        return response({});
+      },
+    );
+    const client = new ScanApiClient({
+      baseUrl: "https://scan.example",
+      fetchImpl,
+      sleep: async () => undefined,
+    });
+
+    const handle = await client.uploadSource(
+      new File(["本文"], "novel.txt", { type: "text/plain" }),
+    );
+
+    expect(createBodies).toHaveLength(3);
+    expect(new Set(createBodies)).toHaveLength(1);
+    const body = JSON.parse(createBodies[0]!) as {
+      scanId: string;
+      scanToken: string;
+    };
+    expect(handle).toEqual({
+      scanId: body.scanId,
+      scanToken: body.scanToken,
+      mode: "quick",
+    });
+    expect(statusRequests).toHaveLength(1);
+    expect(statusRequests[0]?.url).toContain(encodeURIComponent(body.scanId));
+    expect(statusRequests[0]?.init?.headers).toMatchObject({
+      "x-scan-token": body.scanToken,
+    });
+  });
+
+  it("rejects a create response that substitutes the client-generated handle", async () => {
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/api/v1/upload-intents")) {
+          return response({
+            uploadId: "upload-1",
+            uploadUrl: "https://scan.example/upload-1",
+            uploadToken: "upload-token",
+            expiresAt: new Date().toISOString(),
+          });
+        }
+        if (url.endsWith("/api/v1/uploads/upload-1/complete")) {
+          return response({});
+        }
+        if (url.endsWith("/api/v1/scans") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as { scanId: string };
+          return response({
+            scanId: body.scanId,
+            scanToken: "substituted-token",
+            mode: "quick",
+          });
+        }
+        return response({});
+      },
+    );
+    const client = new ScanApiClient({
+      baseUrl: "https://scan.example",
+      fetchImpl,
+      sleep: async () => undefined,
+    });
+
+    await expect(
+      client.uploadSource(
+        new File(["本文"], "novel.txt", { type: "text/plain" }),
+      ),
+    ).rejects.toThrow("did not match the requested handle");
   });
 
   it("keeps upload and scan tokens in headers and never in editor seed URLs", async () => {

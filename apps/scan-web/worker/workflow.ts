@@ -20,6 +20,7 @@ import {
   isTerminalStatus,
   type ScanStatus,
 } from "./stateMachine";
+import { isCancellationRequestedOrTerminal } from "./workflowState";
 
 export interface ScanWorkflowEvent {
   payload: { scanId: string };
@@ -115,7 +116,7 @@ async function ensureActive(
   }
 }
 
-async function markTerminal(
+export async function markTerminal(
   repository: ScanRepository,
   scanId: string,
   status: "failed" | "cancelled",
@@ -126,9 +127,10 @@ async function markTerminal(
     await repository.settleUsage(scanId, settlementUnits(scan.status));
     return;
   }
-  if (canTransition(scan.status, status))
-    await repository.transitionScan(scanId, status);
-  const latest = await repository.getScan(scanId);
+
+  // One SQL statement chooses cancelled when a cancel request has already won
+  // the row race; a stale read can therefore never overwrite it with failed.
+  const latest = await repository.markWorkflowTerminal(scanId, status);
   await repository.settleUsage(
     scanId,
     latest ? settlementUnits(latest.status) : 0,
@@ -159,6 +161,16 @@ export class ScanWorkflow extends WorkflowEntrypoint<
           await repository.settleUsage(scanId, settlementUnits(scan.status));
           return { scanId, status: scan.status };
         });
+        if (scan.status === "deleted") {
+          await step.do("purge-deleted-terminal", async () => {
+            const purge = await purgeDeletedScan(this.env, repository, scanId);
+            return {
+              scanId,
+              deletedObjects: String(purge.deletedObjects),
+              cleanupPending: String(purge.cleanupPending),
+            };
+          });
+        }
         return { scanId, status: scan.status };
       }
 
@@ -311,9 +323,11 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       });
       return { scanId, status: "completed" };
     } catch (cause) {
+      const failedScan = await repository.getScan(scanId);
       const cancelled =
         cause instanceof ScanCancelledError ||
-        cause instanceof ScanDeletedError;
+        cause instanceof ScanDeletedError ||
+        isCancellationRequestedOrTerminal(failedScan?.status ?? null);
       await step.do(cancelled ? "mark-cancelled" : "mark-failed", async () => {
         await markTerminal(
           repository,

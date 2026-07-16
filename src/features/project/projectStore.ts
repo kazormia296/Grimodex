@@ -202,6 +202,13 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
 
   initCurrentProject: async () => {
     try {
+      if (isRealBrowserRuntime()) {
+        const { cleanupStaleScanStagingProjects } =
+          await import("@/features/import/scan/scanStagingProject");
+        await cleanupStaleScanStagingProjects().catch((error) => {
+          console.warn("[scan-import] stale staging cleanup failed", error);
+        });
+      }
       const projectRows = await listProjects();
       const savedId = await readLastActiveProjectId();
       const projectId = resolveInitialProjectId(projectRows, savedId);

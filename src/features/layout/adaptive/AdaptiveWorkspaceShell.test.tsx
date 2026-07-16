@@ -1,9 +1,13 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdaptiveWorkspaceShell } from "./AdaptiveWorkspaceShell";
+import { useCompactNavigationStore } from "./compactNavigationStore";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useCompactNavigationStore.getState().reset();
+});
 
 describe("AdaptiveWorkspaceShell", () => {
   it("keeps the editor DOM node mounted across profile changes", () => {
@@ -59,5 +63,28 @@ describe("AdaptiveWorkspaceShell", () => {
     const scenesButton = container.querySelectorAll("nav button")[1];
     if (scenesButton) fireEvent.click(scenesButton);
     expect(container.querySelector("[data-mobile-surface]")).not.toBeNull();
+  });
+
+  it("does not connect mobile data surfaces outside the phone profile", () => {
+    const renderMobileSurface = vi.fn(() => <div>Scenes</div>);
+    useCompactNavigationStore.getState().openSurface("scenes");
+    const { rerender } = render(
+      <AdaptiveWorkspaceShell
+        profile="wide"
+        editor={<div>Editor</div>}
+        renderMobileSurface={renderMobileSurface}
+      />,
+    );
+    expect(renderMobileSurface).not.toHaveBeenCalled();
+
+    rerender(
+      <AdaptiveWorkspaceShell
+        profile="phone"
+        editor={<div>Editor</div>}
+        renderMobileSurface={renderMobileSurface}
+      />,
+    );
+    expect(renderMobileSurface).toHaveBeenCalledOnce();
+    expect(renderMobileSurface).toHaveBeenCalledWith("scenes");
   });
 });

@@ -90,6 +90,7 @@ export type ScanFindingImportPlan = Omit<
 
 export interface ScanImportPlan {
   schemaVersion: "grimodex-scan/import-plan/1";
+  importInstanceId: string;
   projectTitle: string;
   language: "ja" | "en";
   sourceFingerprint: string;
@@ -107,9 +108,10 @@ export function deriveScanImportId(
   fingerprint: string,
   namespace: string,
   sourceId: string,
+  importInstanceId: string,
 ): string {
   const hex = sha256Hex(
-    `grimodex-scan-import\u0000${fingerprint}\u0000${namespace}\u0000${sourceId}`,
+    `grimodex-scan-import\u0000${fingerprint}\u0000${importInstanceId}\u0000${namespace}\u0000${sourceId}`,
   )
     .slice(0, 32)
     .split("");
@@ -140,11 +142,15 @@ function mapRecord<T>(
   getId: (record: T) => string,
   fingerprint: string,
   namespace: string,
+  importInstanceId: string,
 ): Record<string, string> {
   return Object.fromEntries(
     records.map((record) => {
       const sourceId = getId(record);
-      return [sourceId, deriveScanImportId(fingerprint, namespace, sourceId)];
+      return [
+        sourceId,
+        deriveScanImportId(fingerprint, namespace, sourceId, importInstanceId),
+      ];
     }),
   );
 }
@@ -159,7 +165,11 @@ function sourceParagraphsForSection(
     .map((paragraph) => paragraph.text);
 }
 
-function buildNodes(seed: EditorSeedV1, idMap: ScanIdMap): ImportedNode[] {
+function buildNodes(
+  seed: EditorSeedV1,
+  idMap: ScanIdMap,
+  importInstanceId: string,
+): ImportedNode[] {
   return seed.source.sections.map((section) => {
     const paragraphTexts = sourceParagraphsForSection(seed, section.id);
     const children: ImportedNode[] =
@@ -171,6 +181,7 @@ function buildNodes(seed: EditorSeedV1, idMap: ScanIdMap): ImportedNode[] {
                 seed.source.fingerprint,
                 "scene",
                 section.id,
+                importInstanceId,
               ),
               title: section.title || "Untitled",
               body: paragraphTexts.join("\n\n"),
@@ -205,6 +216,7 @@ function mapRelations(
 function mapPhases(
   bundle: ScanBundleV1,
   idMap: ScanIdMap,
+  importInstanceId: string,
 ): ScanPhaseImportPlan[] {
   return bundle.phases.map((phase: ScanPhase) => ({
     id: idMap.phases[phase.id]!,
@@ -216,10 +228,16 @@ function mapPhases(
           bundle.source.fingerprint,
           "scene",
           phase.anchors[0].sectionId,
+          importInstanceId,
         )
       : undefined,
     anchorNodeIds: phase.anchors.map((anchor) =>
-      deriveScanImportId(bundle.source.fingerprint, "scene", anchor.sectionId),
+      deriveScanImportId(
+        bundle.source.fingerprint,
+        "scene",
+        anchor.sectionId,
+        importInstanceId,
+      ),
     ),
     anchors: phase.anchors,
     summary: phase.summary,
@@ -230,6 +248,7 @@ function mapPhases(
 function mapEvents(
   bundle: ScanBundleV1,
   idMap: ScanIdMap,
+  importInstanceId: string,
 ): ScanEventImportPlan[] {
   return bundle.events.map((event: ScanEvent) => ({
     id: idMap.events[event.id]!,
@@ -240,6 +259,7 @@ function mapEvents(
       bundle.source.fingerprint,
       "scene",
       event.sectionId,
+      importInstanceId,
     ),
     paragraphIds: event.paragraphIds.map(
       (paragraphId) => idMap.paragraphs[paragraphId]!,
@@ -269,7 +289,10 @@ function mapFindings(
   }));
 }
 
-export function buildScanImportPlan(input: unknown): ScanImportPlan {
+export function buildScanImportPlan(
+  input: unknown,
+  options: { importInstanceId?: string } = {},
+): ScanImportPlan {
   const validation = parseEditorSeed(input);
   if (!validation.ok) {
     throw new Error(
@@ -277,13 +300,23 @@ export function buildScanImportPlan(input: unknown): ScanImportPlan {
     );
   }
   const seed = validation.value;
+  if (seed.source.language === "other") {
+    throw new Error(
+      "Scan editor seed uses unsupported language: other (only ja and en can be imported)",
+    );
+  }
   const { bundle } = seed;
+  const importInstanceId = options.importInstanceId ?? crypto.randomUUID();
+  if (importInstanceId.trim().length === 0) {
+    throw new Error("Scan import instance ID must not be empty");
+  }
   const idMap: ScanIdMap = {
     sections: mapRecord(
       bundle.sections,
       (record) => record.id,
       seed.source.fingerprint,
       "section",
+      importInstanceId,
     ),
     paragraphs: Object.fromEntries(
       seed.source.paragraphs.map((paragraph) => [
@@ -292,6 +325,7 @@ export function buildScanImportPlan(input: unknown): ScanImportPlan {
           seed.source.fingerprint,
           "scene",
           paragraph.sectionId,
+          importInstanceId,
         ),
       ]),
     ),
@@ -300,39 +334,45 @@ export function buildScanImportPlan(input: unknown): ScanImportPlan {
       (record) => record.id,
       seed.source.fingerprint,
       "entity",
+      importInstanceId,
     ),
     relations: mapRecord(
       bundle.relations,
       (record) => record.id,
       seed.source.fingerprint,
       "relation",
+      importInstanceId,
     ),
     phases: mapRecord(
       bundle.phases,
       (record) => record.id,
       seed.source.fingerprint,
       "phase",
+      importInstanceId,
     ),
     events: mapRecord(
       bundle.events,
       (record) => record.id,
       seed.source.fingerprint,
       "event",
+      importInstanceId,
     ),
     findings: mapRecord(
       bundle.findings,
       (record) => record.id,
       seed.source.fingerprint,
       "finding",
+      importInstanceId,
     ),
   };
 
   return {
     schemaVersion: "grimodex-scan/import-plan/1",
+    importInstanceId,
     projectTitle: seed.source.title,
     language: seed.source.language === "en" ? "en" : "ja",
     sourceFingerprint: seed.source.fingerprint,
-    nodes: buildNodes(seed, idMap),
+    nodes: buildNodes(seed, idMap, importInstanceId),
     codexEntries: bundle.entities.map((entity) => ({
       id: idMap.entities[entity.id]!,
       sourceEntityId: entity.id,
@@ -345,8 +385,8 @@ export function buildScanImportPlan(input: unknown): ScanImportPlan {
       evidence: entity.evidence,
     })),
     relations: mapRelations(bundle, idMap),
-    phases: mapPhases(bundle, idMap),
-    events: mapEvents(bundle, idMap),
+    phases: mapPhases(bundle, idMap, importInstanceId),
+    events: mapEvents(bundle, idMap, importInstanceId),
     findings: mapFindings(bundle, idMap),
     idMap,
     warnings: seed.source.sections
@@ -356,4 +396,27 @@ export function buildScanImportPlan(input: unknown): ScanImportPlan {
           `section ${section.title} has no paragraphs and will be imported as an empty folder`,
       ),
   };
+}
+
+/** Rebuild a persisted plan without changing any imported database IDs. */
+export function rebuildScanImportPlan(
+  input: unknown,
+  persistedPlan: unknown,
+): ScanImportPlan {
+  if (
+    typeof persistedPlan !== "object" ||
+    persistedPlan === null ||
+    Array.isArray(persistedPlan) ||
+    (persistedPlan as Record<string, unknown>).schemaVersion !==
+      "grimodex-scan/import-plan/1" ||
+    typeof (persistedPlan as Record<string, unknown>).importInstanceId !==
+      "string" ||
+    !(persistedPlan as Record<string, unknown>).importInstanceId
+  ) {
+    throw new Error("Persisted Scan import plan is invalid");
+  }
+  return buildScanImportPlan(input, {
+    importInstanceId: (persistedPlan as { importInstanceId: string })
+      .importInstanceId,
+  });
 }

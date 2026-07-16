@@ -1,21 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseEditorSeed, type EditorSeedV1 } from "@grimodex/scan-contract";
-import {
-  createIndexedDbWorkspaceStore,
-  createMemoryWorkspaceStore,
-  type BrowserWorkspaceStore,
-} from "../../../../src/lib/browser-db/indexedDbStore";
 import { createBrowserWorkspaceLifecycle } from "../../../../src/lib/browser-db/workspaceLifecycle";
-
-const fallbackStore = createMemoryWorkspaceStore();
-
-function createStore(): BrowserWorkspaceStore {
-  try {
-    return createIndexedDbWorkspaceStore();
-  } catch {
-    return fallbackStore;
-  }
-}
+import { createBrowserWorkspaceStore } from "./browserWorkspaceStore";
 
 function decodeSeed(bytes: Uint8Array): EditorSeedV1 {
   const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
@@ -31,9 +17,10 @@ export function BrowserWorkspaceLauncher({
 }: {
   onOpenSeed: (seed: EditorSeedV1, workspaceId: string) => void;
 }) {
+  const store = useMemo(() => createBrowserWorkspaceStore(), []);
   const lifecycle = useMemo(
-    () => createBrowserWorkspaceLifecycle(createStore()),
-    [],
+    () => createBrowserWorkspaceLifecycle(store),
+    [store],
   );
   const [workspaces, setWorkspaces] = useState<
     Awaited<ReturnType<typeof lifecycle.list>>
@@ -41,13 +28,22 @@ export function BrowserWorkspaceLauncher({
   const [message, setMessage] = useState<string>();
 
   const refresh = useCallback(async () => {
-    setWorkspaces(await lifecycle.list());
-  }, [lifecycle]);
+    try {
+      setWorkspaces(await lifecycle.list());
+      setMessage(
+        store.getDurability() === "memory"
+          ? "一時保存モードです。タブを閉じると編集内容が失われます"
+          : undefined,
+      );
+    } catch {
+      setMessage("保存済みワークスペースを読み込めませんでした");
+    }
+  }, [lifecycle, store]);
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  if (workspaces.length === 0) return null;
+  if (workspaces.length === 0 && !message) return null;
   return (
     <section
       className="scan-workspace-launcher"
@@ -76,7 +72,8 @@ export function BrowserWorkspaceLauncher({
                           : "ワークスペースが見つかりません",
                       );
                     }
-                  });
+                  })
+                  .catch(() => setMessage("ワークスペースを開けませんでした"));
               }}
             >
               {workspace.workspaceId}

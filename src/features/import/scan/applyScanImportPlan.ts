@@ -108,6 +108,13 @@ function assertPlanShape(plan: ScanImportPlan): void {
       new Error("Scan import project title is empty"),
     );
   }
+  if (!plan.importInstanceId.trim()) {
+    throw new ScanImportApplyError(
+      "create",
+      undefined,
+      new Error("Scan import instance ID is empty"),
+    );
+  }
   if (
     !/^sha256:[a-f0-9]{64}$/.test(plan.sourceFingerprint) &&
     !/^[a-f0-9]{64}$/.test(plan.sourceFingerprint)

@@ -1,6 +1,8 @@
 import type { ScanEnv, WorkerExecutionContextLike } from "./env";
 import { ScanRepository, type ScanMode } from "./repository";
 import {
+  ID_PATTERNS,
+  SCAN_LIMITS,
   parseScanBundle,
   toPublicReport,
   type ScanBundleV1,
@@ -16,13 +18,22 @@ import { parseMaxUploadBytes, validateUploadIntent } from "./validation";
 import { HostedAiError, runHostedAi } from "./ai/hostedAi";
 import { emitContentFreeObservation } from "./observability";
 import { purgeDeletedScan } from "./retention";
+import { publicReportArtifactKey } from "./publicReportPublication";
 import type { ScanFunnelStep } from "./observability";
+import {
+  editorAiArtifactKey,
+  readEditorAiArtifact,
+  type EditorAiOperationArtifact,
+} from "./editorAiArtifact";
 
 const JSON_LIMIT_BYTES = 64 * 1024;
 const UPLOAD_TTL_MS = 15 * 60 * 1000;
 const EDITOR_TOKEN_TTL_MS = 10 * 60 * 1000;
 const QUICK_CHUNK_CHARACTERS = 6_000;
 const FULL_CHUNK_CHARACTERS = 4_000;
+const CLIENT_SCAN_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CLIENT_SCAN_TOKEN_PATTERN = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 
 async function emitFunnel(
   context: WorkerExecutionContextLike | undefined,
@@ -95,7 +106,7 @@ function responseHeaders(origin: string | null, env: ScanEnv): Headers {
     headers.set("access-control-allow-origin", allowed);
     headers.set(
       "access-control-allow-headers",
-      "content-type, authorization, x-upload-token, x-scan-token, x-scan-full-access",
+      "content-type, authorization, x-upload-token, x-scan-token, x-scan-full-access, x-idempotency-key",
     );
     headers.set(
       "access-control-allow-methods",
@@ -152,6 +163,79 @@ function applyFindingFeedback(
       status: feedback.get(finding.id) ?? finding.status,
     })),
   };
+}
+
+async function readPrivateScanBundle(
+  env: ScanEnv,
+  artifactKey: string,
+): Promise<ScanBundleV1> {
+  const object = await env.SCAN_BUCKET.get(artifactKey);
+  if (!object?.body)
+    throw new HttpError(
+      404,
+      "report_not_found",
+      "report artifact was not found",
+    );
+  let value: unknown;
+  try {
+    value = JSON.parse(await new Response(object.body).text()) as unknown;
+  } catch {
+    throw new HttpError(
+      500,
+      "report_invalid",
+      "private report artifact is invalid",
+    );
+  }
+  const parsed = parseScanBundle(value);
+  if (!parsed.ok)
+    throw new HttpError(
+      500,
+      "report_invalid",
+      "private report failed contract validation",
+    );
+  return parsed.value;
+}
+
+function editorAiIdempotencyKey(request: Request): string {
+  const key = request.headers.get("x-idempotency-key")?.trim() ?? "";
+  if (key.length < 16 || key.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(key)) {
+    throw new HttpError(
+      400,
+      "invalid_idempotency_key",
+      "a valid editor AI idempotency key is required",
+    );
+  }
+  return key;
+}
+
+async function writeEditorAiArtifact(
+  env: ScanEnv,
+  repository: ScanRepository,
+  scanId: string,
+  objectKey: string,
+  artifact: EditorAiOperationArtifact,
+): Promise<void> {
+  const beforeWrite = await repository.getScan(scanId);
+  if (
+    !beforeWrite ||
+    beforeWrite.status !== "completed" ||
+    !beforeWrite.privateReportKey
+  ) {
+    throw new HttpError(404, "scan_not_found", "scan was not found");
+  }
+  await env.SCAN_BUCKET.put(objectKey, JSON.stringify(artifact), {
+    httpMetadata: { contentType: "application/json" },
+    customMetadata: { schemaVersion: artifact.schemaVersion },
+  });
+  const afterWrite = await repository.getScan(scanId);
+  if (
+    !afterWrite ||
+    afterWrite.status !== "completed" ||
+    !afterWrite.privateReportKey
+  ) {
+    await env.SCAN_BUCKET.delete(objectKey).catch(() => undefined);
+    throw new HttpError(404, "scan_not_found", "scan was not found");
+  }
 }
 
 function tokenFromRequest(request: Request): string | null {
@@ -569,6 +653,22 @@ async function createScan(
   const body = value as Record<string, unknown>;
   const uploadId = typeof body.uploadId === "string" ? body.uploadId : "";
   const mode = modeOf(body.mode);
+  const scanId = typeof body.scanId === "string" ? body.scanId : "";
+  if (!CLIENT_SCAN_ID_PATTERN.test(scanId)) {
+    throw new HttpError(
+      400,
+      "invalid_scan_id",
+      "scanId must be a client-generated UUID",
+    );
+  }
+  const scanToken = typeof body.scanToken === "string" ? body.scanToken : "";
+  if (!CLIENT_SCAN_TOKEN_PATTERN.test(scanToken)) {
+    throw new HttpError(
+      400,
+      "invalid_scan_token",
+      "scanToken must be a 32-byte base64url token",
+    );
+  }
   if (
     mode === "full" &&
     env.SCAN_ENVIRONMENT === "production" &&
@@ -617,7 +717,7 @@ async function createScan(
   const upload = await repository.getUploadIntent(uploadId);
   if (
     !upload ||
-    upload.status !== "uploaded" ||
+    (upload.status !== "uploaded" && upload.status !== "consumed") ||
     upload.actualSize !== upload.expectedSize ||
     !upload.sourceHash
   )
@@ -632,88 +732,95 @@ async function createScan(
     throw new HttpError(404, "upload_not_found", "upload intent is invalid");
   }
   const activeLimit = maxActiveJobs(env);
-  const scanId = crypto.randomUUID();
-  const scanToken = randomToken(32);
   const reservedUnits = estimatedScanUnits(mode, upload.expectedSize);
   const buckets = usageBuckets(env);
-  const reservedBucketKeys: string[] = [];
-  for (const bucket of buckets) {
-    if (
-      !(await repository.reserveUsage(bucket.key, bucket.limit, reservedUnits))
-    ) {
-      await repository.releaseReservedUsageBuckets(
-        reservedBucketKeys,
-        reservedUnits,
-      );
-      throw new HttpError(
-        429,
-        "scan_budget_exhausted",
-        "Scan capacity is exhausted",
-      );
-    }
-    reservedBucketKeys.push(bucket.key);
-  }
-  try {
-    const created = await repository.createScan({
-      id: scanId,
-      uploadId,
-      mode,
-      reservedUnits,
-      accessTokenHash: await tokenHash(scanToken, env),
-      maxActiveJobs: activeLimit,
-    });
-    if (!created) {
-      throw new HttpError(
-        429,
-        "scan_concurrency_exhausted",
-        "scan concurrency is exhausted",
-      );
-    }
-  } catch (cause) {
-    await repository.releaseReservedUsageBuckets(
-      reservedBucketKeys,
-      reservedUnits,
+  const created = await repository.createScan({
+    id: scanId,
+    uploadId,
+    mode,
+    reservedUnits,
+    accessTokenHash: await tokenHash(scanToken, env),
+    buckets,
+    maxActiveJobs: activeLimit,
+  });
+  if (created === "budget-exhausted") {
+    throw new HttpError(
+      429,
+      "scan_budget_exhausted",
+      "Scan capacity is exhausted",
     );
-    throw cause;
   }
-  if (!env.SCAN_WORKFLOW) {
-    await repository.transitionScan(scanId, "failed");
-    await repository.releaseReservedUsageBuckets(
-      reservedBucketKeys,
-      reservedUnits,
+  if (created === "concurrency-exhausted") {
+    throw new HttpError(
+      429,
+      "scan_concurrency_exhausted",
+      "scan concurrency is exhausted",
     );
+  }
+  if (created === "upload-not-ready") {
+    throw new HttpError(
+      409,
+      "upload_not_ready",
+      "upload must be completed before scan creation",
+    );
+  }
+  if (created === "conflict") {
+    throw new HttpError(
+      409,
+      "scan_id_conflict",
+      "scanId is already associated with another request",
+    );
+  }
+
+  const existingScan =
+    created === "existing" ? await repository.getScan(scanId) : null;
+  if (created === "existing" && !existingScan) {
     throw new HttpError(
       503,
-      "workflow_unavailable",
-      "scan workflow is not configured",
+      "scan_state_unavailable",
+      "existing scan state is unavailable",
     );
   }
-  try {
-    await env.SCAN_WORKFLOW.create({ id: scanId, params: { scanId } });
-    await emitFunnel(context, "scan_queued", scanId);
-    emitContentFreeObservation(context, {
-      event: "workflow_started",
-      scanIdHash: await sha256Hex(scanId),
-    });
-  } catch {
-    emitContentFreeObservation(context, {
-      event: "workflow_failed",
-      code: "start_failed",
-      scanIdHash: await sha256Hex(scanId),
-    });
-    await repository.transitionScan(scanId, "failed");
-    await repository.releaseReservedUsageBuckets(
-      reservedBucketKeys,
-      reservedUnits,
-    );
-    throw new HttpError(
-      503,
-      "workflow_unavailable",
-      "scan workflow could not be started",
-    );
+  const shouldDispatch =
+    created === "created" || existingScan?.status === "queued";
+  if (shouldDispatch) {
+    if (!env.SCAN_WORKFLOW) {
+      if (created === "created") {
+        await repository.transitionScan(scanId, "failed");
+        await repository.settleUsage(scanId, 0);
+      }
+      throw new HttpError(
+        503,
+        "workflow_unavailable",
+        "scan workflow is not configured",
+      );
+    }
+    try {
+      await env.SCAN_WORKFLOW.create({ id: scanId, params: { scanId } });
+      await emitFunnel(context, "scan_queued", scanId);
+      emitContentFreeObservation(context, {
+        event: "workflow_started",
+        scanIdHash: await sha256Hex(scanId),
+      });
+    } catch {
+      emitContentFreeObservation(context, {
+        event: "workflow_failed",
+        code: "start_failed",
+        scanIdHash: await sha256Hex(scanId),
+      });
+      if (created === "created") {
+        await repository.transitionScan(scanId, "failed");
+        await repository.settleUsage(scanId, 0);
+      }
+      throw new HttpError(
+        503,
+        "workflow_unavailable",
+        "scan workflow could not be started",
+      );
+    }
   }
   return success(
-    { scanId, status: "queued", mode, scanToken },
+    { scanId, status: existingScan?.status ?? "queued", mode, scanToken },
     request,
     env,
     202,
@@ -728,7 +835,7 @@ async function editorAi(
 ): Promise<Response> {
   await enforceRateLimit(request, env, `editor-ai:${scanId}`);
   const scan = await authorizedScan(request, env, repository, scanId);
-  if (scan.status !== "completed")
+  if (scan.status !== "completed" || !scan.privateReportKey)
     throw new HttpError(
       409,
       "editor_ai_not_ready",
@@ -773,75 +880,282 @@ async function editorAi(
   ) {
     throw new HttpError(400, "invalid_context", "editor AI context is invalid");
   }
+  const idempotencyKey = editorAiIdempotencyKey(request);
   const costWeight = operation === "chat" ? 1 : operation === "inline" ? 2 : 3;
-  const buckets = usageBuckets(env);
-  const reservedBucketKeys: string[] = [];
-  for (const bucket of buckets) {
+  const requestHash = await sha256Hex(
+    JSON.stringify({
+      operation,
+      prompt,
+      context: typeof context === "string" ? context : null,
+    }),
+  );
+  const operationId = `editor-ai:${await sha256Hex(
+    `${scanId}\u0000${idempotencyKey}`,
+  )}`;
+  const artifactKey = editorAiArtifactKey(scanId, operationId);
+  const configuredProvider =
+    env.SCAN_AI_PROVIDER ?? (env.AI ? "workers-ai" : "ai-gateway");
+  const configuredModel = env.SCAN_AI_MODEL ?? "@cf/meta/llama-3.1-8b-instruct";
+
+  const deliverArtifact = async (
+    artifact: EditorAiOperationArtifact,
+  ): Promise<Response> => {
     if (
-      !(await repository.reserveUsage(bucket.key, bucket.limit, costWeight))
+      artifact.operationId !== operationId ||
+      artifact.requestHash !== requestHash ||
+      artifact.costWeight !== costWeight
     ) {
-      await repository.releaseReservedUsageBuckets(
-        reservedBucketKeys,
-        costWeight,
+      throw new HttpError(
+        artifact.operationId === operationId ? 409 : 500,
+        artifact.operationId === operationId
+          ? "idempotency_key_conflict"
+          : "editor_ai_result_invalid",
+        artifact.operationId === operationId
+          ? "the idempotency key was already used for another request"
+          : "hosted editor AI result is invalid",
       );
+    }
+    try {
+      await repository.finalizeAiUsageOperation({
+        operationId,
+        provider: artifact.provider,
+        model: artifact.model,
+        status: artifact.status,
+      });
+    } catch {
+      throw new HttpError(
+        503,
+        "editor_ai_accounting_unavailable",
+        "hosted editor AI accounting is unavailable",
+      );
+    }
+    if (artifact.status === "completed") {
+      return success(
+        { response: artifact.response ?? "", costWeight },
+        request,
+        env,
+      );
+    }
+    throw new HttpError(
+      artifact.httpStatus ??
+        (artifact.errorCode === "editor_ai_rate_limited" ? 429 : 503),
+      artifact.errorCode ?? "editor_ai_unavailable",
+      artifact.errorCode === "editor_ai_rate_limited"
+        ? "hosted editor AI is rate limited"
+        : "hosted editor AI failed",
+    );
+  };
+
+  try {
+    const persisted = await readEditorAiArtifact(env.SCAN_BUCKET, artifactKey);
+    if (persisted) return await deliverArtifact(persisted);
+  } catch (cause) {
+    if (cause instanceof HttpError) throw cause;
+    throw new HttpError(
+      500,
+      "editor_ai_result_invalid",
+      "hosted editor AI result is invalid",
+    );
+  }
+  const existingOperation = await repository.getAiUsageOperation(operationId);
+  if (existingOperation) {
+    if (existingOperation.requestHash !== requestHash) {
+      throw new HttpError(
+        409,
+        "idempotency_key_conflict",
+        "the idempotency key was already used for another request",
+      );
+    }
+    throw new HttpError(
+      existingOperation.status === "reserved" ? 409 : 503,
+      existingOperation.status === "reserved"
+        ? "editor_ai_in_progress"
+        : "editor_ai_result_unavailable",
+      existingOperation.status === "reserved"
+        ? "hosted editor AI request is still in progress"
+        : "hosted editor AI result is unavailable",
+    );
+  }
+
+  let claim;
+  try {
+    claim = await repository.claimAndReserveAiUsage({
+      operationId,
+      scanId,
+      provider: configuredProvider,
+      model: configuredModel,
+      requestHash,
+      units: costWeight,
+      buckets: usageBuckets(env),
+    });
+  } catch {
+    throw new HttpError(
+      503,
+      "editor_ai_accounting_unavailable",
+      "hosted editor AI accounting is unavailable",
+    );
+  }
+  if (!claim.claimed) {
+    const persisted = await readEditorAiArtifact(
+      env.SCAN_BUCKET,
+      artifactKey,
+    ).catch(() => null);
+    if (persisted) return deliverArtifact(persisted);
+    const existing = claim.operation;
+    if (!existing) {
       throw new HttpError(
         429,
         "scan_budget_exhausted",
         "Scan capacity is exhausted",
       );
     }
-    reservedBucketKeys.push(bucket.key);
-  }
-  const operationId = crypto.randomUUID();
-  const configuredProvider =
-    env.SCAN_AI_PROVIDER ?? (env.AI ? "workers-ai" : "ai-gateway");
-  const configuredModel = env.SCAN_AI_MODEL ?? "@cf/meta/llama-3.1-8b-instruct";
-  await repository.recordAiUsage({
-    operationId,
-    scanId,
-    provider: configuredProvider,
-    model: configuredModel,
-    status: "reserved",
-  });
-  try {
-    const result = await runHostedAi(env, {
-      prompt,
-      context: typeof context === "string" ? context : undefined,
-    });
-    await repository.recordAiUsage({
-      operationId,
-      scanId,
-      provider: result.provider,
-      model: result.model,
-      status: "completed",
-    });
-    await repository.settleReservedUsageBuckets(reservedBucketKeys, costWeight);
-    return success({ response: result.response, costWeight }, request, env);
-  } catch (cause) {
-    await repository.recordAiUsage({
-      operationId,
-      scanId,
-      provider: configuredProvider,
-      model: configuredModel,
-      status: "failed",
-    });
-    await repository.releaseReservedUsageBuckets(
-      reservedBucketKeys,
-      costWeight,
-    );
-    if (cause instanceof HostedAiError && cause.status === 429) {
+    if (existing.requestHash !== requestHash) {
       throw new HttpError(
-        429,
-        "editor_ai_rate_limited",
-        "hosted editor AI is rate limited",
+        409,
+        "idempotency_key_conflict",
+        "the idempotency key was already used for another request",
       );
     }
     throw new HttpError(
-      503,
-      "editor_ai_unavailable",
-      "hosted editor AI failed",
+      existing?.status === "reserved" ? 409 : 503,
+      existing?.status === "reserved"
+        ? "editor_ai_in_progress"
+        : "editor_ai_result_unavailable",
+      existing?.status === "reserved"
+        ? "hosted editor AI request is still in progress"
+        : "hosted editor AI result is unavailable",
     );
   }
+
+  let result: Awaited<ReturnType<typeof runHostedAi>>;
+  try {
+    result = await runHostedAi(env, {
+      prompt,
+      context: typeof context === "string" ? context : undefined,
+    });
+  } catch (cause) {
+    const rateLimited = cause instanceof HostedAiError && cause.status === 429;
+    const artifact: EditorAiOperationArtifact = {
+      schemaVersion: "grimodex-scan/editor-ai-operation/1",
+      operationId,
+      requestHash,
+      status: "failed",
+      provider: configuredProvider,
+      model: configuredModel,
+      costWeight,
+      httpStatus: rateLimited ? 429 : 503,
+      errorCode: rateLimited
+        ? "editor_ai_rate_limited"
+        : "editor_ai_unavailable",
+    };
+    try {
+      await writeEditorAiArtifact(
+        env,
+        repository,
+        scanId,
+        artifactKey,
+        artifact,
+      );
+    } catch (artifactCause) {
+      if (artifactCause instanceof HttpError) {
+        await repository
+          .finalizeAiUsageOperation({
+            operationId,
+            provider: configuredProvider,
+            model: configuredModel,
+            status: "failed",
+          })
+          .catch(() => undefined);
+        throw artifactCause;
+      }
+      emitContentFreeObservation(undefined, {
+        event: "request_failed",
+        route: "/api/v1/scans/editor-ai-artifact",
+        status: 503,
+        code: "failure_artifact_write_failed",
+      });
+      throw new HttpError(
+        503,
+        "editor_ai_result_persistence_failed",
+        "hosted editor AI result could not be persisted",
+      );
+    }
+    await repository
+      .finalizeAiUsageOperation({
+        operationId,
+        provider: configuredProvider,
+        model: configuredModel,
+        status: "failed",
+      })
+      .catch(() => {
+        emitContentFreeObservation(undefined, {
+          event: "request_failed",
+          route: "/api/v1/scans/editor-ai-accounting",
+          status: 503,
+          code: "provider_failure_cleanup_failed",
+        });
+      });
+    throw new HttpError(
+      artifact.httpStatus ?? 503,
+      artifact.errorCode ?? "editor_ai_unavailable",
+      rateLimited
+        ? "hosted editor AI is rate limited"
+        : "hosted editor AI failed",
+    );
+  }
+
+  const artifact: EditorAiOperationArtifact = {
+    schemaVersion: "grimodex-scan/editor-ai-operation/1",
+    operationId,
+    requestHash,
+    status: "completed",
+    provider: result.provider,
+    model: result.model,
+    costWeight,
+    response: result.response,
+  };
+  try {
+    await writeEditorAiArtifact(env, repository, scanId, artifactKey, artifact);
+  } catch (artifactCause) {
+    if (artifactCause instanceof HttpError) {
+      await repository
+        .finalizeAiUsageOperation({
+          operationId,
+          provider: result.provider,
+          model: result.model,
+          status: "failed",
+        })
+        .catch(() => undefined);
+      throw artifactCause;
+    }
+    emitContentFreeObservation(undefined, {
+      event: "request_failed",
+      route: "/api/v1/scans/editor-ai-artifact",
+      status: 503,
+      code: "completion_artifact_write_failed",
+    });
+    throw new HttpError(
+      503,
+      "editor_ai_result_persistence_failed",
+      "hosted editor AI result could not be persisted",
+    );
+  }
+  await repository
+    .finalizeAiUsageOperation({
+      operationId,
+      provider: result.provider,
+      model: result.model,
+      status: "completed",
+    })
+    .catch(() => {
+      emitContentFreeObservation(undefined, {
+        event: "request_failed",
+        route: "/api/v1/scans/editor-ai-accounting",
+        status: 503,
+        code: "completion_accounting_failed",
+      });
+    });
+  return success({ response: result.response, costWeight }, request, env);
 }
 
 async function authorizedScan(
@@ -849,6 +1163,7 @@ async function authorizedScan(
   env: ScanEnv,
   repository: ScanRepository,
   scanId: string,
+  allowDeleted = false,
 ) {
   const rawToken = scanTokenFromRequest(request);
   if (!rawToken)
@@ -857,7 +1172,7 @@ async function authorizedScan(
     scanId,
     await tokenHash(rawToken, env),
   );
-  if (!scan || scan.status === "deleted")
+  if (!scan || (scan.status === "deleted" && !allowDeleted))
     throw new HttpError(404, "scan_not_found", "scan was not found");
   return scan;
 }
@@ -977,6 +1292,7 @@ async function publishPublicReport(
   scanId: string,
   context?: WorkerExecutionContextLike,
 ): Promise<Response> {
+  await enforceRateLimit(request, env, `public-report-publish:${scanId}`);
   const scan = await authorizedScan(request, env, repository, scanId);
   if (scan.status !== "completed" || !scan.privateReportKey) {
     throw new HttpError(409, "report_not_ready", "report is not ready");
@@ -1032,25 +1348,76 @@ async function publishPublicReport(
     applyFindingFeedback(parsed.value, feedback),
     { authorConfirmedAt },
   );
-  const artifactKey = `public/${scanId}/report.json`;
-  await env.SCAN_BUCKET.put(artifactKey, JSON.stringify(publicReport), {
-    httpMetadata: { contentType: "application/json" },
-    customMetadata: { schemaVersion: publicReport.schemaVersion },
-  });
+  const previous = await repository.getPublicReportByScanId(scanId);
+  const publicationId = crypto.randomUUID();
+  const artifactKey = publicReportArtifactKey(scanId, publicationId);
+  const deleteRegisteredArtifact = async (): Promise<boolean> => {
+    try {
+      await env.SCAN_BUCKET.delete(artifactKey);
+      await repository.forgetPublicReportArtifact(scanId, artifactKey);
+      return true;
+    } catch {
+      // Keep the registry row whenever R2 deletion is uncertain. The bounded
+      // scheduled reaper can then retry without losing track of the object.
+      return false;
+    }
+  };
+  if (!(await repository.registerPublicReportArtifact(scanId, artifactKey))) {
+    throw new HttpError(409, "report_not_ready", "report is not ready");
+  }
+  try {
+    await env.SCAN_BUCKET.put(artifactKey, JSON.stringify(publicReport), {
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: { schemaVersion: publicReport.schemaVersion },
+    });
+  } catch (cause) {
+    await deleteRegisteredArtifact();
+    throw cause;
+  }
   const latest = await repository.getScan(scanId);
   if (!latest || latest.status === "deleted") {
-    await env.SCAN_BUCKET.delete(artifactKey).catch(() => undefined);
+    await deleteRegisteredArtifact();
     throw new HttpError(404, "scan_not_found", "scan was not found");
   }
-  const published = await repository.publishPublicReport({
-    id: crypto.randomUUID(),
-    scanId,
-    artifactKey,
-    authorConfirmedAt,
-  });
+  let published: Awaited<ReturnType<ScanRepository["publishPublicReport"]>>;
+  try {
+    published = await repository.publishPublicReport({
+      id: publicationId,
+      scanId,
+      artifactKey,
+      authorConfirmedAt,
+    });
+  } catch (cause) {
+    const recovered = await repository
+      .getPublicReportByScanId(scanId)
+      .catch(() => undefined);
+    if (recovered?.artifactKey === artifactKey) published = recovered;
+    else {
+      // When recovery itself is unavailable, keep the immutable object: the
+      // D1 transaction may have committed before its response was lost.
+      if (recovered !== undefined) await deleteRegisteredArtifact();
+      throw cause;
+    }
+  }
   if (!published) {
-    await env.SCAN_BUCKET.delete(artifactKey).catch(() => undefined);
+    await deleteRegisteredArtifact();
     throw new HttpError(404, "scan_not_found", "scan was not found");
+  }
+  const obsoleteKeys = new Set(
+    await repository.listObsoletePublicReportArtifacts(scanId).catch(() => []),
+  );
+  if (previous?.artifactKey && previous.artifactKey !== published.artifactKey) {
+    obsoleteKeys.add(previous.artifactKey);
+  }
+  if (published.artifactKey !== artifactKey) obsoleteKeys.add(artifactKey);
+  for (const obsoleteKey of obsoleteKeys) {
+    if (obsoleteKey === published.artifactKey) continue;
+    try {
+      await env.SCAN_BUCKET.delete(obsoleteKey);
+      await repository.forgetPublicReportArtifact(scanId, obsoleteKey);
+    } catch {
+      // The next publish or scheduled prefix cleanup retries orphan removal.
+    }
   }
   await emitFunnel(context, "public_report_published", scanId);
   return success(
@@ -1069,10 +1436,17 @@ async function unpublishPublicReport(
   context?: WorkerExecutionContextLike,
 ): Promise<Response> {
   await authorizedScan(request, env, repository, scanId);
-  const existing = await repository.getPublicReportByScanId(scanId);
   await repository.unpublishPublicReport(scanId);
-  if (existing)
-    await env.SCAN_BUCKET.delete(existing.artifactKey).catch(() => undefined);
+  const objectKeys =
+    await repository.listUnpublishedPublicReportArtifacts(scanId);
+  for (const objectKey of objectKeys) {
+    try {
+      await env.SCAN_BUCKET.delete(objectKey);
+      await repository.forgetPublicReportArtifact(scanId, objectKey);
+    } catch {
+      // Scheduled retention retries objects that remain registered/in-prefix.
+    }
+  }
   await emitFunnel(context, "public_report_unpublished", scanId);
   return success({ scanId, status: "unpublished" }, request, env);
 }
@@ -1125,10 +1499,22 @@ async function deletePublicReport(
     );
   await authorizedScan(request, env, repository, existing.scanId);
   const unpublished = await repository.unpublishPublicReportById(reportId);
-  if (unpublished)
-    await env.SCAN_BUCKET.delete(unpublished.artifactKey).catch(
-      () => undefined,
+  if (unpublished) {
+    const objectKeys = await repository.listUnpublishedPublicReportArtifacts(
+      unpublished.scanId,
     );
+    for (const objectKey of objectKeys) {
+      try {
+        await env.SCAN_BUCKET.delete(objectKey);
+        await repository.forgetPublicReportArtifact(
+          unpublished.scanId,
+          objectKey,
+        );
+      } catch {
+        // Scheduled retention retries objects that remain registered/in-prefix.
+      }
+    }
+  }
   return success(
     { publicReportId: reportId, status: "unpublished" },
     request,
@@ -1142,6 +1528,26 @@ async function createAbuseReport(
   repository: ScanRepository,
   reportId: string,
 ): Promise<Response> {
+  const origin = request.headers.get("origin");
+  const allowedOrigin = env.ALLOWED_ORIGIN ?? "https://try.grimodex.app";
+  if (origin && origin !== allowedOrigin) {
+    throw new HttpError(
+      403,
+      "origin_not_allowed",
+      "request origin is not allowed",
+    );
+  }
+  const contentType = (request.headers.get("content-type") ?? "")
+    .split(";", 1)[0]!
+    .trim()
+    .toLowerCase();
+  if (contentType !== "application/json") {
+    throw new HttpError(
+      415,
+      "json_content_type_required",
+      "abuse reports require application/json",
+    );
+  }
   await enforceRateLimit(request, env, `public-abuse:${reportId}`);
   const report = await repository.getPublicReportById(reportId);
   if (!report || report.status !== "published") {
@@ -1273,10 +1679,17 @@ export async function handleRequest(
         return success({ scanId: scan.id, status: scan.status }, request, env);
       }
       if (request.method === "DELETE" && segments.length === 4) {
-        await authorizedScan(request, env, repository, scanId);
+        await authorizedScan(request, env, repository, scanId, true);
         const scan = await repository.deleteScan(scanId);
         if (!scan)
           throw new HttpError(404, "scan_not_found", "scan was not found");
+        if (scan.status !== "deleted") {
+          throw new HttpError(
+            409,
+            "scan_delete_conflict",
+            "scan deletion did not reach a terminal state",
+          );
+        }
         const purge = await purgeDeletedScan(env, repository, scanId);
         await emitFunnel(ctx, "scan_deleted", scanId);
         return success(
@@ -1316,7 +1729,14 @@ export async function handleRequest(
         );
       }
       if (request.method === "POST" && segments[4] === "feedback") {
-        await authorizedScan(request, env, repository, scanId);
+        await enforceRateLimit(request, env, `scan-feedback:${scanId}`);
+        const scan = await authorizedScan(request, env, repository, scanId);
+        if (scan.status !== "completed" || !scan.privateReportKey)
+          throw new HttpError(
+            409,
+            "report_not_ready",
+            "feedback requires a completed report",
+          );
         const value = await parseJson(request);
         if (typeof value !== "object" || value === null || Array.isArray(value))
           throw new HttpError(
@@ -1327,12 +1747,21 @@ export async function handleRequest(
         const body = value as Record<string, unknown>;
         if (
           typeof body.findingId !== "string" ||
+          body.findingId.length > SCAN_LIMITS.maxIdLength ||
+          !ID_PATTERNS.finding.test(body.findingId) ||
           (body.status !== "intentional" && body.status !== "rejected")
         )
           throw new HttpError(
             400,
             "invalid_feedback",
             "findingId and status are required",
+          );
+        const bundle = await readPrivateScanBundle(env, scan.privateReportKey);
+        if (!bundle.findings.some((finding) => finding.id === body.findingId))
+          throw new HttpError(
+            404,
+            "finding_not_found",
+            "finding was not found in this scan",
           );
         await repository.saveFindingFeedback({
           scanId,

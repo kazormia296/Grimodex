@@ -1,5 +1,11 @@
 import type { ChunkExtractionV1, ScanBundleV1 } from "@grimodex/scan-contract";
 
+export interface ChunkParagraphInput {
+  paragraphId: string;
+  sectionId: string;
+  text: string;
+}
+
 export interface ChunkExtractionInput {
   chunkId: string;
   sourceFingerprint: string;
@@ -7,6 +13,7 @@ export interface ChunkExtractionInput {
   sectionIds: string[];
   paragraphIds: string[];
   paragraphSectionIds?: Record<string, string>;
+  paragraphs: ChunkParagraphInput[];
 }
 
 export interface AdjudicationInput {

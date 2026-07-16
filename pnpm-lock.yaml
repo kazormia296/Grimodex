@@ -460,7 +460,11 @@ importers:
         specifier: workspace:*
         version: link:../scan-contract
 
-  packages/scan-prompts: {}
+  packages/scan-prompts:
+    dependencies:
+      '@grimodex/scan-contract':
+        specifier: workspace:*
+        version: link:../scan-contract
 
 packages:
 
