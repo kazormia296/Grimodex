@@ -31,6 +31,7 @@
 - [第2比較matrix（36/36 jobs success）](https://github.com/kazormia296/Grimodex/actions/runs/29596606317)
 - [split CI 第1回](https://github.com/kazormia296/Grimodex/actions/runs/29595806683)
 - [split CI 第2回](https://github.com/kazormia296/Grimodex/actions/runs/29596608665)
+- [split CI 第3回](https://github.com/kazormia296/Grimodex/actions/runs/29597486428)
 
 ## 分割前baseline
 
@@ -70,7 +71,7 @@ Storybookはauto 13.48 s、1 worker 13.51 s、2 workers 13.93 sで、worker固�
 - Storybook jobを加えた3 job構成はcritical path 81 s、runner時間合計約218 s。
 - paired shard failureは0/6。
 
-2 job構成の実測critical path 84-86 sに対し、3 job化で得られる改善は約5秒だけで、runner時間は約66秒増える。setup重複とflake surfaceの増加に見合わないため不採用とした。
+2 job構成の実測critical path 84-89 sに対し、3 job化で得られる改善は約5秒だけで、runner時間は約66秒増える。setup重複とflake surfaceの増加に見合わないため不採用とした。
 
 ## combined jobと2 job分割
 
@@ -82,8 +83,9 @@ split CIは次の結果だった。
 | ------------- | ----------: | ------------: | ------------: | ---------: | ------: |
 | `29595806683` |        84 s |          68 s |          84 s |      152 s |     0/2 |
 | `29596608665` |        86 s |          66 s |          86 s |      152 s |     0/2 |
+| `29597486428` |        89 s |          55 s |          89 s |      144 s |     0/2 |
 
-現時点のsplit中央値は85 s。過去baseline中央値91 sに対して6.6%短縮し、同一commitのcombined実験中央値109 sに対して22.0%短縮した。一方、runner合計はcombined中央値109 sから152 sへ39.4%増える。
+split中央値は86 s。過去baseline中央値91 sに対して5.5%短縮し、同一commitのcombined実験中央値109 sに対して21.1%短縮した。一方、runner合計中央値はcombined中央値109 sから152 sへ39.4%増える。
 
 この変更ではPR feedbackのcritical path短縮を優先し、runner消費増を明記したうえで2 job分割を採用する。BrowserとStorybookの責務・失敗箇所も別checkとして明確になる。
 
@@ -92,7 +94,7 @@ split CIは次の結果だった。
 - 2つの比較matrixは合計66/66 jobs成功。
 - combined jobが2 commandsを含むため、test commandは合計69/69成功。
 - 共通候補は各6回、追加したfile-parallelism-offは3回、retry 0で成功。
-- selected auto構成の標準split CIはBrowser 2/2、Storybook 2/2成功。
+- selected auto構成の標準split CIはBrowser 3/3、Storybook 3/3成功。
 
 試行内で同一commit/configの成功・失敗が混在した候補はなく、観測flaky率は0%。将来のCIでも各jobのJSON artifactに失敗とresource値を残す。
 
