@@ -7,6 +7,7 @@ import { parseAliases } from "@/features/codex/codexMatcher";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { getTypeLabel } from "@/features/chat/utils/typeLabels";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
+import { ensureEditorOverlayVisible } from "@/features/editor/ensureOverlayVisible";
 
 interface SavedRange {
   from: number;
@@ -169,6 +170,7 @@ export function CodexSemanticLinkPopover({
       .setTextSelection(savedRange)
       .setMark("codexSemanticLink", { entryId, label: target.name })
       .run();
+    ensureEditorOverlayVisible("codex", editor);
     close();
   };
 

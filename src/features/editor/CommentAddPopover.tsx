@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { COMMENT_REBUILD_META } from "./CommentDecorationPlugin";
+import { ensureEditorOverlayVisible } from "./ensureOverlayVisible";
 
 interface Props {
   editor: Editor | null;
@@ -69,11 +70,7 @@ export function CommentAddPopover({ editor }: Props) {
       })
       .run();
 
-    // Ensure comments are visible after adding one
-    if (!useCursorSettingsStore.getState().showComments) {
-      useCursorSettingsStore.getState().toggleShowComments();
-      editor.view.dispatch(editor.state.tr.setMeta(COMMENT_REBUILD_META, true));
-    }
+    ensureEditorOverlayVisible("comment", editor);
 
     close();
   };

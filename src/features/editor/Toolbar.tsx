@@ -6,6 +6,7 @@ import {
   Check,
   EllipsisVertical,
   Focus,
+  Maximize2,
   Hash,
   Italic,
   Keyboard,
@@ -234,12 +235,27 @@ export function Toolbar({
     toggleFocusMode,
     typewriterMode,
     toggleTypewriterMode,
+    zenMode,
+    toggleZenMode,
+    fullscreenMode,
+    setFullscreenMode,
+    toggleFullscreenMode,
     showComments,
     showForeshadowMarks,
     showLint,
   } = useCursorSettingsStore();
   const showAnnotations = useAnnotationStore((s) => s.showAnnotations);
   const showReaderComments = useAnnotationStore((s) => s.showReaderComments);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setFullscreenMode(Boolean(document.fullscreenElement));
+    };
+    onFullscreenChange();
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, [setFullscreenMode]);
 
   // パネル連動 (Auto) モード: layerAutoFollow ON の間、パネル可視状態に
   // レイヤー表示を追従させる。Toolbar はエディタごとに1つなので、split view
@@ -702,6 +718,20 @@ export function Toolbar({
           </div>
           {/* 表示モードセグメント: 集中 / タイプライター / 縦書き */}
           <div className="flex items-center gap-px rounded-md border border-border bg-muted/30 p-0.5">
+            <ToolbarButton
+              label={t("editor.toolbar.zenMode")}
+              active={zenMode}
+              onClick={toggleZenMode}
+            >
+              Zen
+            </ToolbarButton>
+            <ToolbarButton
+              label={t("editor.toolbar.fullscreenMode")}
+              active={fullscreenMode}
+              onClick={toggleFullscreenMode}
+            >
+              <Maximize2 size={13} />
+            </ToolbarButton>
             <ToolbarButton
               label={t("editor.toolbar.focusMode")}
               active={focusMode}

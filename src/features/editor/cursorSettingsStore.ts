@@ -12,6 +12,11 @@ interface CursorSettingsState {
   toggleFocusMode: () => void;
   typewriterMode: boolean;
   toggleTypewriterMode: () => void;
+  zenMode: boolean;
+  toggleZenMode: () => void;
+  fullscreenMode: boolean;
+  setFullscreenMode: (active: boolean) => void;
+  toggleFullscreenMode: () => void;
   showComments: boolean;
   setShowComments: (visible: boolean, opts?: LayerSetOptions) => void;
   toggleShowComments: () => void;
@@ -76,7 +81,10 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
       set((s) => {
         const next = !s.focusMode;
         useSettingsStore.getState().set("editor.focusMode", String(next));
-        return { focusMode: next };
+        if (s.zenMode) {
+          useSettingsStore.getState().set("editor.zenMode", "false");
+        }
+        return { focusMode: next, zenMode: false };
       }),
 
     typewriterMode: false,
@@ -84,8 +92,48 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
       set((s) => {
         const next = !s.typewriterMode;
         useSettingsStore.getState().set("editor.typewriterMode", String(next));
-        return { typewriterMode: next };
+        if (s.zenMode) {
+          useSettingsStore.getState().set("editor.zenMode", "false");
+        }
+        return { typewriterMode: next, zenMode: false };
       }),
+
+    zenMode: false,
+    toggleZenMode: () =>
+      set((s) => {
+        const next = !s.zenMode;
+        const settings = useSettingsStore.getState();
+        settings.set("editor.zenMode", String(next));
+        settings.set("editor.focusMode", String(next));
+        settings.set("editor.typewriterMode", String(next));
+        return {
+          zenMode: next,
+          focusMode: next,
+          typewriterMode: next,
+        };
+      }),
+
+    fullscreenMode: false,
+    setFullscreenMode: (active) => set({ fullscreenMode: active }),
+    toggleFullscreenMode: () => {
+      if (typeof document === "undefined") return;
+      const doc = document;
+      const syncFromDocument = () => {
+        set({ fullscreenMode: Boolean(doc.fullscreenElement) });
+      };
+      try {
+        const transition = doc.fullscreenElement
+          ? doc.exitFullscreen?.()
+          : doc.documentElement.requestFullscreen?.();
+        if (transition) {
+          void transition.catch(syncFromDocument);
+        } else {
+          syncFromDocument();
+        }
+      } catch {
+        syncFromDocument();
+      }
+    },
 
     showComments: false,
     setShowComments: (visible, opts) => {
@@ -156,11 +204,17 @@ export const useCursorSettingsStore = create<CursorSettingsState>()(
 
     initFromSettings: () => {
       const s = useSettingsStore.getState();
+      const zenMode = s.getBoolean("editor.zenMode", false);
       set({
         cursorAnimation: s.getBoolean("editor.smoothCaret", true),
         cursorBlink: s.getBoolean("editor.cursorBlink", true),
-        focusMode: s.getBoolean("editor.focusMode", false),
-        typewriterMode: s.getBoolean("editor.typewriterMode", false),
+        focusMode: zenMode || s.getBoolean("editor.focusMode", false),
+        typewriterMode: zenMode || s.getBoolean("editor.typewriterMode", false),
+        zenMode,
+        fullscreenMode:
+          typeof document === "undefined"
+            ? false
+            : Boolean(document.fullscreenElement),
         showComments: s.getBoolean("display.layerComments", false),
         showForeshadowMarks: s.getBoolean("display.layerForeshadow", false),
         showLint: s.getBoolean("display.layerLint", true),
