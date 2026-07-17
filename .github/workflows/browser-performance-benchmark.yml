@@ -27,11 +27,13 @@ jobs:
           - browser-workers-2
           - browser-workers-3
           - browser-workers-4
+          - browser-file-parallelism-off
           - browser-shard-1-2
           - browser-shard-2-2
           - storybook-auto
           - storybook-workers-1
           - storybook-workers-2
+          - combined-auto
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -84,6 +86,10 @@ jobs:
         if: matrix.case == 'browser-workers-4'
         run: pnpm benchmark:browser-ci -- --suite browser --runs 1 --candidate browser-workers-4 --max-workers 4 --output .artifacts/browser-ci/benchmark.json
 
+      - name: Measure Browser with file parallelism disabled
+        if: matrix.case == 'browser-file-parallelism-off'
+        run: pnpm benchmark:browser-ci -- --suite browser --runs 1 --candidate browser-file-parallelism-off --file-parallelism false --output .artifacts/browser-ci/benchmark.json
+
       - name: Measure Browser shard one of two
         if: matrix.case == 'browser-shard-1-2'
         run: pnpm benchmark:browser-ci -- --suite browser --runs 1 --candidate browser-shard-1-2 --shard 1/2 --output .artifacts/browser-ci/benchmark.json
@@ -104,11 +110,17 @@ jobs:
         if: matrix.case == 'storybook-workers-2'
         run: pnpm benchmark:browser-ci -- --suite storybook --runs 1 --candidate storybook-workers-2 --max-workers 2 --output .artifacts/browser-ci/benchmark.json
 
+      - name: Measure the combined Browser and Storybook lane
+        if: matrix.case == 'combined-auto'
+        run: |
+          pnpm benchmark:browser-ci -- --suite browser --runs 1 --candidate combined-browser-auto --output .artifacts/browser-ci/browser.json
+          pnpm benchmark:browser-ci -- --suite storybook --runs 1 --candidate combined-storybook-auto --output .artifacts/browser-ci/storybook.json
+
       - name: Upload benchmark evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: browser-benchmark-${{ matrix.case }}-${{ matrix.repeat }}
-          path: .artifacts/browser-ci/benchmark.json
+          path: .artifacts/browser-ci/*.json
           if-no-files-found: error
           retention-days: 14

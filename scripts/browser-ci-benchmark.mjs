@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -135,6 +143,16 @@ async function readProcRecords() {
   return records.filter(Boolean);
 }
 
+async function readPssBytes(pid) {
+  try {
+    const rollup = await readFile(`/proc/${pid}/smaps_rollup`, "utf8");
+    const match = /^Pss:\s+(\d+)\s+kB$/m.exec(rollup);
+    return match ? Number(match[1]) * 1_024 : null;
+  } catch {
+    return null;
+  }
+}
+
 function sysconf(name, fallback) {
   try {
     return positiveInteger(
@@ -143,6 +161,59 @@ function sysconf(name, fallback) {
     );
   } catch {
     return fallback;
+  }
+}
+
+async function commandInvocation(executable, args) {
+  const gnuTime = "/usr/bin/time";
+  if (process.platform !== "linux") {
+    return { executable, args, timeOutput: null, temporaryDirectory: null };
+  }
+
+  try {
+    await access(gnuTime);
+  } catch {
+    return { executable, args, timeOutput: null, temporaryDirectory: null };
+  }
+
+  const temporaryDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-browser-time-"),
+  );
+  const timeOutput = path.join(temporaryDirectory, "resource-usage.txt");
+  return {
+    executable: gnuTime,
+    args: [
+      "-f",
+      "user_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M",
+      "-o",
+      timeOutput,
+      "--",
+      executable,
+      ...args,
+    ],
+    timeOutput,
+    temporaryDirectory,
+  };
+}
+
+async function readGnuTimeMetrics(timeOutput) {
+  if (timeOutput === null) return null;
+  try {
+    const values = Object.fromEntries(
+      (await readFile(timeOutput, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=", 2)),
+    );
+    const userCpuMs = Number(values.user_seconds) * 1_000;
+    const systemCpuMs = Number(values.system_seconds) * 1_000;
+    const maxRssBytes = Number(values.max_rss_kib) * 1_024;
+    if (![userCpuMs, systemCpuMs, maxRssBytes].every(Number.isFinite)) {
+      return null;
+    }
+    return { userCpuMs, systemCpuMs, maxRssBytes };
+  } catch {
+    return null;
   }
 }
 
@@ -161,7 +232,8 @@ export async function measureCommand(
   const startedNs = process.hrtime.bigint();
   const pageSize = sysconf("PAGESIZE", 4096);
   const clockTicks = sysconf("CLK_TCK", 100);
-  const child = spawn(executable, args, {
+  const invocation = await commandInvocation(executable, args);
+  const child = spawn(invocation.executable, invocation.args, {
     cwd,
     env,
     stdio,
@@ -169,19 +241,29 @@ export async function measureCommand(
   });
 
   let peakRssBytes = 0;
+  let peakPssBytes = 0;
   let peakProcessCount = 0;
+  let peakPssProcessCount = 0;
   const cpuByPid = new Map();
-  let sampling = false;
+  let sampleInFlight;
 
-  const sample = async () => {
-    if (sampling || child.pid === undefined) return;
-    sampling = true;
-    try {
+  const sample = () => {
+    if (sampleInFlight !== undefined) return sampleInFlight;
+    if (child.pid === undefined) return Promise.resolve();
+    const currentSample = (async () => {
       const records = await readProcRecords();
       const selected = selectProcessTree(records, child.pid);
       const aggregate = aggregateProcessTree(records, child.pid, pageSize);
       peakRssBytes = Math.max(peakRssBytes, aggregate.rssBytes);
       peakProcessCount = Math.max(peakProcessCount, aggregate.processCount);
+      const pssValues = (
+        await Promise.all(selected.map((record) => readPssBytes(record.pid)))
+      ).filter((value) => value !== null);
+      peakPssBytes = Math.max(
+        peakPssBytes,
+        pssValues.reduce((total, value) => total + value, 0),
+      );
+      peakPssProcessCount = Math.max(peakPssProcessCount, pssValues.length);
       for (const record of selected) {
         const previous = cpuByPid.get(record.pid) ?? {
           userTicks: 0,
@@ -192,15 +274,40 @@ export async function measureCommand(
           systemTicks: Math.max(previous.systemTicks, record.systemTicks),
         });
       }
-    } finally {
-      sampling = false;
-    }
+    })();
+    const trackedSample = currentSample.finally(() => {
+      if (sampleInFlight === trackedSample) sampleInFlight = undefined;
+    });
+    sampleInFlight = trackedSample;
+    return sampleInFlight;
+  };
+
+  const finalSample = async () => {
+    if (sampleInFlight !== undefined) await sampleInFlight;
+    await sample();
   };
 
   await sample();
   const interval = setInterval(() => {
     void sample();
   }, sampleIntervalMs);
+  let forwardedSignal = null;
+  const forwardSignal = (signal) => {
+    forwardedSignal = signal;
+    try {
+      if (process.platform === "linux" && child.pid !== undefined) {
+        process.kill(-child.pid, signal);
+      } else {
+        child.kill(signal);
+      }
+    } catch {
+      // The measured process may have exited between signal delivery and here.
+    }
+  };
+  const forwardInterrupt = () => forwardSignal("SIGINT");
+  const forwardTermination = () => forwardSignal("SIGTERM");
+  process.once("SIGINT", forwardInterrupt);
+  process.once("SIGTERM", forwardTermination);
 
   let completion;
   try {
@@ -208,9 +315,16 @@ export async function measureCommand(
       child.once("error", reject);
       child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
     });
+  } catch (error) {
+    if (invocation.temporaryDirectory !== null) {
+      await rm(invocation.temporaryDirectory, { recursive: true, force: true });
+    }
+    throw error;
   } finally {
     clearInterval(interval);
-    await sample();
+    await finalSample();
+    process.off("SIGINT", forwardInterrupt);
+    process.off("SIGTERM", forwardTermination);
   }
 
   const endedNs = process.hrtime.bigint();
@@ -221,6 +335,13 @@ export async function measureCommand(
     systemTicks += cpu.systemTicks;
   }
 
+  const sampledUserCpuMs = (userTicks / clockTicks) * 1_000;
+  const sampledSystemCpuMs = (systemTicks / clockTicks) * 1_000;
+  const gnuTime = await readGnuTimeMetrics(invocation.timeOutput);
+  if (invocation.temporaryDirectory !== null) {
+    await rm(invocation.temporaryDirectory, { recursive: true, force: true });
+  }
+
   return {
     executable,
     args,
@@ -229,11 +350,18 @@ export async function measureCommand(
     startedAt: startedAt.toISOString(),
     endedAt: new Date().toISOString(),
     wallMs: Number(endedNs - startedNs) / 1_000_000,
-    userCpuMs: (userTicks / clockTicks) * 1_000,
-    systemCpuMs: (systemTicks / clockTicks) * 1_000,
+    userCpuMs: gnuTime?.userCpuMs ?? sampledUserCpuMs,
+    systemCpuMs: gnuTime?.systemCpuMs ?? sampledSystemCpuMs,
+    cpuMetricSource: gnuTime === null ? "proc-sampling" : "gnu-time",
     peakRssBytes,
+    peakPssBytes,
+    singleProcessMaxRssBytes: gnuTime?.maxRssBytes ?? null,
     peakProcessCount,
+    peakPssProcessCount,
     resourceMetricsAvailable: process.platform === "linux",
+    memoryMetricDefinition:
+      "peakRssBytes sums sampled process RSS and may double-count shared pages; peakPssBytes sums sampled process PSS",
+    forwardedSignal,
     sampleIntervalMs,
   };
 }
@@ -548,21 +676,38 @@ async function main() {
     console.log(
       `[browser-ci-benchmark] suite=${options.suite} candidate=${candidate} run=${run}/${options.runs}`,
     );
-    const measured = await measureCommand(
-      command.executable,
-      [
-        ...command.args,
-        "--reporter=default",
-        "--reporter=json",
-        `--outputFile.json=${vitestReportPath}`,
-      ],
-      { sampleIntervalMs: options.sampleIntervalMs },
-    );
-    report.runs.push({
-      run,
-      ...measured,
-      vitest: await readVitestEvidence(vitestReportPath),
-    });
+    const measuredArgs = [
+      ...command.args,
+      "--reporter=default",
+      "--reporter=json",
+      `--outputFile.json=${vitestReportPath}`,
+    ];
+    try {
+      const measured = await measureCommand(command.executable, measuredArgs, {
+        sampleIntervalMs: options.sampleIntervalMs,
+      });
+      report.runs.push({
+        run,
+        ...measured,
+        vitest: await readVitestEvidence(vitestReportPath),
+      });
+    } catch (error) {
+      report.runs.push({
+        run,
+        executable: command.executable,
+        args: measuredArgs,
+        exitCode: 1,
+        signal: null,
+        error: {
+          name: error instanceof Error ? error.name : "Error",
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : null,
+        },
+        vitest: await readVitestEvidence(vitestReportPath),
+      });
+      await writeBenchmark(output, report);
+      break;
+    }
     await writeBenchmark(output, report);
   }
 
