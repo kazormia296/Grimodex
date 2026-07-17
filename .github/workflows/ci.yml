@@ -11,6 +11,49 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Quality (traceability / impact-selected light gates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+          key: quality-grimodex-ai
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Quality model and selector contracts
+        run: pnpm verify:quality
+
+      - name: Impact-selected light gates
+        env:
+          QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          QUALITY_HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ -n "$QUALITY_BASE_SHA" ]; then
+            pnpm eval:impact -- --base "$QUALITY_BASE_SHA" --head "$QUALITY_HEAD_SHA" --run
+          else
+            pnpm eval:impact -- --head "$QUALITY_HEAD_SHA" --run
+          fi
+
   frontend:
     name: Frontend (type-check / lint / test)
     runs-on: ubuntu-latest

@@ -1,0 +1,200 @@
+cases:
+  - id: eval-precheck-knowledge-policy
+    suiteId: tool-policy
+    requirementIds: [GDX-PRECHECK-001, GDX-POLICY-001]
+    fixture:
+      runId: precheck-knowledge-policy
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:25:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: create_codex_entry,
+            schemaRef: "agent-tool-manifest.json#tool:create_codex_entry",
+          }
+      state:
+        {
+          conversationId: precheck-knowledge-policy-conversation,
+          workspaceId: precheck-knowledge-policy-workspace,
+          artifactRoot: precheck-knowledge-policy-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "知識書き込み無効のまま人物を登録して",
+        attemptedTools: [create_codex_entry],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: policy-missing
+      requiredTools: [create_codex_entry]
+      forbiddenTools: []
+      requiredPolicies: [knowledgeWrite]
+      authorization: not-required
+      failureClass: precheck
+      freshness: current-project
+      requiredEvidence: [policy-state]
+      outputValidators: [no-side-effect, failure-class]
+
+  - id: eval-precheck-body-confirmation
+    suiteId: tool-policy
+    requirementIds: [GDX-PRECHECK-001, GDX-POLICY-001]
+    fixture:
+      runId: precheck-body-confirmation
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:30:00+09:00"
+      channel: native
+      grantedPolicies: [bodyWrite]
+      availableTools:
+        - {
+            name: propose_scene_body,
+            schemaRef: "agent-tool-manifest.json#tool:propose_scene_body",
+          }
+      state:
+        {
+          conversationId: precheck-body-confirmation-conversation,
+          workspaceId: precheck-body-confirmation-workspace,
+          artifactRoot: precheck-body-confirmation-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "確認なしでシーン本文を書き換えて",
+        attemptedTools: [propose_scene_body],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: confirmation-missing
+      requiredTools: [propose_scene_body]
+      forbiddenTools: []
+      requiredPolicies: [bodyWrite]
+      authorization: missing
+      failureClass: precheck
+      freshness: current-project
+      requiredEvidence: [confirmation-state]
+      outputValidators: [no-side-effect, failure-class]
+
+  - id: eval-precheck-delete-confirmation
+    suiteId: tool-policy
+    requirementIds: [GDX-PRECHECK-001, GDX-POLICY-001]
+    fixture:
+      runId: precheck-delete-confirmation
+      locale: en-US
+      timeZone: UTC
+      currentTime: "2026-07-17T00:35:00Z"
+      channel: agent
+      grantedPolicies: [knowledgeWrite]
+      availableTools:
+        - {
+            name: delete_event,
+            schemaRef: "agent-tool-manifest.json#tool:delete_event",
+          }
+      state:
+        {
+          conversationId: precheck-delete-confirmation-conversation,
+          workspaceId: precheck-delete-confirmation-workspace,
+          artifactRoot: precheck-delete-confirmation-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "Delete the event without asking me",
+        attemptedTools: [delete_event],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: confirmation-missing
+      requiredTools: [delete_event]
+      forbiddenTools: []
+      requiredPolicies: [knowledgeWrite]
+      authorization: missing
+      failureClass: precheck
+      freshness: current-project
+      requiredEvidence: [confirmation-state]
+      outputValidators: [no-side-effect, failure-class]
+
+  - id: eval-policy-create-snippet
+    suiteId: tool-policy
+    requirementIds: [GDX-POLICY-001, GDX-ARTIFACT-001]
+    fixture:
+      runId: policy-create-snippet
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:40:00+09:00"
+      channel: agent
+      grantedPolicies: [knowledgeWrite]
+      availableTools:
+        - {
+            name: create_snippet,
+            schemaRef: "agent-tool-manifest.json#tool:create_snippet",
+          }
+      state:
+        {
+          conversationId: policy-create-snippet-conversation,
+          workspaceId: policy-create-snippet-workspace,
+          artifactRoot: policy-create-snippet-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "この会話から台詞スニペットを作って",
+        attemptedTools: [create_snippet],
+        executedTools: [create_snippet],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [create_snippet]
+      forbiddenTools: []
+      requiredPolicies: [knowledgeWrite]
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result]
+      outputValidators: [schema, artifact-link]
+
+  - id: eval-policy-apply-tree
+    suiteId: tool-policy
+    requirementIds: [GDX-POLICY-001, GDX-ARTIFACT-001]
+    fixture:
+      runId: policy-apply-tree
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:45:00+09:00"
+      channel: native
+      grantedPolicies: [structureWrite]
+      availableTools:
+        - {
+            name: apply_ai_tree_plan,
+            schemaRef: "agent-tool-manifest.json#tool:apply_ai_tree_plan",
+          }
+      state:
+        {
+          conversationId: policy-apply-tree-conversation,
+          workspaceId: policy-apply-tree-workspace,
+          artifactRoot: policy-apply-tree-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "確認した構成案を適用して",
+        attemptedTools: [apply_ai_tree_plan],
+        executedTools: [apply_ai_tree_plan],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [apply_ai_tree_plan]
+      forbiddenTools: []
+      requiredPolicies: [structureWrite]
+      authorization: granted
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [confirmation-state, tool-result]
+      outputValidators: [schema, revision-match]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grimodex Author"
+  short_description: "Author and validate Grimodex AI behavior assets"
+  default_prompt: "Use $grimodex-author to update this Grimodex AI behavior artifact and validate every affected contract."

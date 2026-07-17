@@ -62,6 +62,10 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 - Rust のドメイン実装は `src-tauri/crates/` に置き、Electron 用 binding は `electron/native/grimodex-node/` に置く
 - 既存経路の責務・型・契約・データフローを renderer／Electron IPC／N-API／shared Rust／MCP、
   または複数 AI provider 経路のうち2つ以上で協調変更する場合は、`/refactor-cross-boundaries` を使用し、実装前に影響マトリクスを作る
+- AI指示、system prompt、Codex skill、AI policy、AI経路レジストリ、評価fixtureなどの
+  AI behavior asset を作成・変更する場合は `/grimodex-author` を使用し、実在する正本と評価証跡を一緒に更新する
+- AI behavior asset の変更後、および commit／PR 前の差分評価では `/grimodex-impact-gate` を使用し、
+  canonical quality workflow が選択した Light suite を読み取り専用で実行する
 - 新機能は `/implement-feature`、新規 Electron IPC command は `/add-electron-command` を優先する
 - バグ修正は `/debug-issue` を主フローとし、上記の横断条件を満たす場合は影響マトリクスも併用する
 - version 更新を含むリリース作業は `/bump-version` を主フローとし、release commit 後の push／PR／merge だけを `/ship-branch` へ渡す
@@ -72,15 +76,17 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 
 ## スキル発火条件
 
-| トリガーワード                                                 | 発動スキル                 | 動作                                   |
-| -------------------------------------------------------------- | -------------------------- | -------------------------------------- |
-| 「調べて」「調査」                                             | /explore-codebase          | コード探索                             |
-| 「実装して」「作って」                                         | /implement-feature         | 実装フロー                             |
-| 「レビュー」                                                   | /review-code               | コードレビュー                         |
-| 「テスト」                                                     | /test-feature              | テスト作成・実行                       |
-| 「デバッグ」「修正」                                           | /debug-issue               | デバッグフロー                         |
-| 「Electronコマンド」「IPC」「invoke」                          | /add-electron-command      | IPC一括追加                            |
-| 「アニメ」「トランジション」「動き」「磨いて」                 | /polish-motion             | UIモーション規律                       |
-| 「横断リファクタ」「境界整理」「責務移動」「パイプライン再編」 | /refactor-cross-boundaries | 影響マトリクス→段階レビュー→CI相当検証 |
-| 「バージョン上げて」「リリースタグ」「リリース準備」           | /bump-version              | version→PR→注釈付きtag                 |
-| 「PR出して」「プルリク作って」「pushしてマージ」「shipして」   | /ship-branch               | push→PR→CI・レビュー→squash merge      |
+| トリガーワード                                                    | 発動スキル                 | 動作                                   |
+| ----------------------------------------------------------------- | -------------------------- | -------------------------------------- |
+| 「調べて」「調査」                                                | /explore-codebase          | コード探索                             |
+| 「AI指示」「システムプロンプト」「Codexスキル」「AI評価fixture」  | /grimodex-author           | 正本→評価証跡→差分品質ゲート           |
+| 「差分評価」「品質ゲート」「impact gate」「コミット前／PR前評価」 | /grimodex-impact-gate      | 差分→関連Light suite選択・実行         |
+| 「実装して」「作って」                                            | /implement-feature         | 実装フロー                             |
+| 「レビュー」                                                      | /review-code               | コードレビュー                         |
+| 「テスト」                                                        | /test-feature              | テスト作成・実行                       |
+| 「デバッグ」「修正」                                              | /debug-issue               | デバッグフロー                         |
+| 「Electronコマンド」「IPC」「invoke」                             | /add-electron-command      | IPC一括追加                            |
+| 「アニメ」「トランジション」「動き」「磨いて」                    | /polish-motion             | UIモーション規律                       |
+| 「横断リファクタ」「境界整理」「責務移動」「パイプライン再編」    | /refactor-cross-boundaries | 影響マトリクス→段階レビュー→CI相当検証 |
+| 「バージョン上げて」「リリースタグ」「リリース準備」              | /bump-version              | version→PR→注釈付きtag                 |
+| 「PR出して」「プルリク作って」「pushしてマージ」「shipして」      | /ship-branch               | push→PR→CI・レビュー→squash merge      |
