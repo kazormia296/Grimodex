@@ -119,7 +119,7 @@
     "@types/canvas-confetti": "^1.9.0",
     "@types/d3-force": "^3.0.10",
     "@xyflow/react": "^12.10.2",
-    "ai": "^7.0.15",
+    "ai": "^7.0.31",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
