@@ -225,9 +225,13 @@ export async function measureCommand(
     env = process.env,
     sampleIntervalMs = DEFAULT_SAMPLE_INTERVAL_MS,
     stdio = "inherit",
+    collectPss = false,
   } = {},
 ) {
   positiveInteger(sampleIntervalMs, "sampleIntervalMs");
+  if (typeof collectPss !== "boolean") {
+    throw new Error("collectPss must be a boolean");
+  }
   const startedAt = new Date();
   const startedNs = process.hrtime.bigint();
   const pageSize = sysconf("PAGESIZE", 4096);
@@ -256,14 +260,16 @@ export async function measureCommand(
       const aggregate = aggregateProcessTree(records, child.pid, pageSize);
       peakRssBytes = Math.max(peakRssBytes, aggregate.rssBytes);
       peakProcessCount = Math.max(peakProcessCount, aggregate.processCount);
-      const pssValues = (
-        await Promise.all(selected.map((record) => readPssBytes(record.pid)))
-      ).filter((value) => value !== null);
-      peakPssBytes = Math.max(
-        peakPssBytes,
-        pssValues.reduce((total, value) => total + value, 0),
-      );
-      peakPssProcessCount = Math.max(peakPssProcessCount, pssValues.length);
+      if (collectPss) {
+        const pssValues = (
+          await Promise.all(selected.map((record) => readPssBytes(record.pid)))
+        ).filter((value) => value !== null);
+        peakPssBytes = Math.max(
+          peakPssBytes,
+          pssValues.reduce((total, value) => total + value, 0),
+        );
+        peakPssProcessCount = Math.max(peakPssProcessCount, pssValues.length);
+      }
       for (const record of selected) {
         const previous = cpuByPid.get(record.pid) ?? {
           userTicks: 0,
@@ -354,13 +360,14 @@ export async function measureCommand(
     systemCpuMs: gnuTime?.systemCpuMs ?? sampledSystemCpuMs,
     cpuMetricSource: gnuTime === null ? "proc-sampling" : "gnu-time",
     peakRssBytes,
-    peakPssBytes,
+    peakPssBytes: collectPss ? peakPssBytes : null,
     singleProcessMaxRssBytes: gnuTime?.maxRssBytes ?? null,
     peakProcessCount,
-    peakPssProcessCount,
+    peakPssProcessCount: collectPss ? peakPssProcessCount : null,
     resourceMetricsAvailable: process.platform === "linux",
-    memoryMetricDefinition:
-      "peakRssBytes sums sampled process RSS and may double-count shared pages; peakPssBytes sums sampled process PSS",
+    memoryMetricDefinition: collectPss
+      ? "peakRssBytes sums sampled process RSS and may double-count shared pages; peakPssBytes sums sampled process PSS"
+      : "peakRssBytes sums sampled process RSS and may double-count shared pages; pass --collect-pss for sampled PSS",
     forwardedSignal,
     sampleIntervalMs,
   };
@@ -507,6 +514,9 @@ function parseCli(argv) {
         );
         index += 1;
         break;
+      case "--collect-pss":
+        options.collectPss = true;
+        break;
       case "--help":
         options.help = true;
         break;
@@ -636,6 +646,7 @@ function usage() {
     "  --shard <index/count>",
     "  --candidate <label>",
     "  --sample-interval-ms <n>",
+    "  --collect-pss",
   ].join("\n");
 }
 
@@ -661,6 +672,7 @@ async function main() {
       maxWorkers: options.maxWorkers ?? "auto",
       shard: options.shard ?? null,
       retry: 0,
+      collectPss: options.collectPss ?? false,
     },
     environment: environmentMetadata(),
     runs: [],
@@ -685,6 +697,7 @@ async function main() {
     try {
       const measured = await measureCommand(command.executable, measuredArgs, {
         sampleIntervalMs: options.sampleIntervalMs,
+        collectPss: options.collectPss ?? false,
       });
       report.runs.push({
         run,
