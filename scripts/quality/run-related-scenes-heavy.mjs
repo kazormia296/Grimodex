@@ -22,14 +22,7 @@ function requiredEnvironment(name) {
 
 async function runCommand(command, args, env = process.env) {
   await new Promise((resolve, reject) => {
-    const usesWindowsCommandShell =
-      process.platform === "win32" && command === "pnpm";
-    const executable = usesWindowsCommandShell
-      ? (process.env.ComSpec ?? "cmd.exe")
-      : command;
-    const commandArgs = usesWindowsCommandShell
-      ? ["/d", "/s", "/c", command, ...args]
-      : args;
+    const { executable, commandArgs } = buildCommandInvocation(command, args);
     const child = spawn(executable, commandArgs, {
       cwd: REPO_ROOT,
       env,
@@ -48,6 +41,20 @@ async function runCommand(command, args, env = process.env) {
       }
     });
   });
+}
+
+export function buildCommandInvocation(
+  command,
+  args,
+  platform = process.platform,
+) {
+  if (platform === "win32" && command === "pnpm") {
+    return {
+      executable: "cmd.exe",
+      commandArgs: ["/d", "/s", "/c", command, ...args],
+    };
+  }
+  return { executable: command, commandArgs: args };
 }
 
 async function verifyGeneratedEmbeddings() {

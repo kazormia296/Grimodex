@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 
 const repoRoot = path.resolve(
@@ -39,7 +39,7 @@ test("package scripts expose one canonical quality workflow", async () => {
 test("CI runs the diff gate with full history and selected light suites", async () => {
   const workflow = await read(".github/workflows/ci.yml");
 
-  assert.match(workflow, /^  quality:\s*$/m);
+  assert.match(workflow, /^ {2}quality:\s*$/m);
   assert.match(workflow, /fetch-depth:\s*0/);
   assert.match(workflow, /pnpm eval:impact/);
   assert.match(workflow, /--run/);
@@ -93,4 +93,20 @@ test("the Iron Laws carry stable IDs used by the machine-readable manifest", asy
     assert.match(policy, new RegExp(requirementId));
     assert.match(manifest, new RegExp(requirementId));
   }
+});
+
+test("the Heavy runner never selects a Windows command shell from the environment", async () => {
+  const runnerUrl = pathToFileURL(
+    path.join(repoRoot, "scripts/quality/run-related-scenes-heavy.mjs"),
+  );
+  const { buildCommandInvocation } = await import(runnerUrl.href);
+
+  assert.deepEqual(buildCommandInvocation("pnpm", ["test:node"], "win32"), {
+    executable: "cmd.exe",
+    commandArgs: ["/d", "/s", "/c", "pnpm", "test:node"],
+  });
+  assert.deepEqual(buildCommandInvocation("pnpm", ["test:node"], "linux"), {
+    executable: "pnpm",
+    commandArgs: ["test:node"],
+  });
 });
