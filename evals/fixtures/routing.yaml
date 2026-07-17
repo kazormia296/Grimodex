@@ -1,0 +1,201 @@
+cases:
+  - id: eval-route-search-codex
+    suiteId: ai-routing
+    requirementIds: [GDX-ROUTE-001, GDX-TOOL-001, GDX-ISOLATION-001]
+    fixture:
+      runId: route-search-codex
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:00:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: search_codex,
+            schemaRef: "agent-tool-manifest.json#tool:search_codex",
+          }
+      state:
+        {
+          conversationId: route-search-codex-conversation,
+          workspaceId: route-search-codex-workspace,
+          artifactRoot: route-search-codex-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "灯台守アオイの設定を探して",
+        attemptedTools: [search_codex],
+        executedTools: [search_codex],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [search_codex]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result]
+      outputValidators: [tool-result-linked]
+
+  - id: eval-route-search-scenes
+    suiteId: ai-routing
+    requirementIds: [GDX-ROUTE-001, GDX-TRACE-001]
+    fixture:
+      runId: route-search-scenes
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:05:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: search_scenes,
+            schemaRef: "agent-tool-manifest.json#tool:search_scenes",
+          }
+      state:
+        {
+          conversationId: route-search-scenes-conversation,
+          workspaceId: route-search-scenes-workspace,
+          artifactRoot: route-search-scenes-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "赤い鍵が出るシーンを検索して",
+        attemptedTools: [search_scenes],
+        executedTools: [search_scenes],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [search_scenes]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result]
+      outputValidators: [tool-result-linked]
+
+  - id: eval-route-list-chapters
+    suiteId: ai-routing
+    requirementIds: [GDX-ROUTE-001]
+    fixture:
+      runId: route-list-chapters
+      locale: en-US
+      timeZone: UTC
+      currentTime: "2026-07-17T00:10:00Z"
+      channel: hermes
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: list_chapters,
+            schemaRef: "agent-tool-manifest.json#tool:list_chapters",
+          }
+      state:
+        {
+          conversationId: route-list-chapters-conversation,
+          workspaceId: route-list-chapters-workspace,
+          artifactRoot: route-list-chapters-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "List the current chapter order",
+        attemptedTools: [list_chapters],
+        executedTools: [list_chapters],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: [list_chapters]
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence: [tool-result]
+      outputValidators: [ordered-list]
+
+  - id: eval-route-character-timeline
+    suiteId: ai-routing
+    requirementIds: [GDX-ROUTE-001, GDX-PRECHECK-001]
+    fixture:
+      runId: route-character-timeline
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:15:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: get_character_timeline,
+            schemaRef: "agent-tool-manifest.json#tool:get_character_timeline",
+          }
+      state:
+        {
+          conversationId: route-character-timeline-conversation,
+          workspaceId: route-character-timeline-workspace,
+          artifactRoot: route-character-timeline-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "無効化されたモデル経路でアオイの時系列を取得して",
+        routeAvailable: false,
+        attemptedTools: [],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: route-disabled
+      requiredTools: []
+      forbiddenTools: [get_character_timeline]
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: routing
+      freshness: current-project
+      requiredEvidence: [route-precheck]
+      outputValidators: [failure-class]
+
+  - id: eval-tool-unknown
+    suiteId: tool-policy
+    requirementIds: [GDX-TOOL-001, GDX-PRECHECK-001]
+    fixture:
+      runId: tool-unknown
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-07-17T09:20:00+09:00"
+      channel: agent
+      grantedPolicies: []
+      availableTools:
+        - {
+            name: search_codex,
+            schemaRef: "agent-tool-manifest.json#tool:search_codex",
+          }
+      state:
+        {
+          conversationId: tool-unknown-conversation,
+          workspaceId: tool-unknown-workspace,
+          artifactRoot: tool-unknown-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "存在しない横断検索ツールを呼んで",
+        attemptedTools: [search_everything],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: unknown-tool
+      requiredTools: []
+      forbiddenTools: [search_everything]
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: tool
+      freshness: stable
+      requiredEvidence: [manifest-miss]
+      outputValidators: [failure-class]

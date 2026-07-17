@@ -1,0 +1,204 @@
+version: 1
+failureClasses:
+  - routing
+  - precheck
+  - tool
+  - policy
+  - quality
+  - artifact
+lightSuites:
+  - quality-workflow
+  - ai-routing
+  - tool-policy
+  - prompt-contract
+  - retrieval-grounding
+  - scan-contract
+requirements:
+  - id: GDX-ROUTE-001
+    title: Every production AI route is registered, routed, and assigned a verifier.
+    definedIn: policies/quality/iron-laws.md#GDX-ROUTE-001
+    implementedBy:
+      - src/features/ai-verification/aiPathRegistry.ts
+      - src/features/chat/modelRouting.ts
+      - src/features/chat/turn/resolveTurnRoute.ts
+    lightTests:
+      - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/chat/modelRouting.test.ts
+      - src/features/chat/turn/resolveTurnRoute.test.ts
+    heavyTests:
+      - src/features/ai-verification/singleShot.live.test.ts
+      - src-tauri/src/commands/post_effect.rs
+    evaluatedBy:
+      - eval-prompt-post-effect-json
+      - eval-route-search-codex
+      - eval-route-search-scenes
+      - eval-route-list-chapters
+      - eval-route-character-timeline
+  - id: GDX-PRECHECK-001
+    title: Missing inputs, policies, confirmation, or tools stop before mutation.
+    definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
+    implementedBy:
+      - src/features/chat/turn/resolveTurnRoute.ts
+      - src/features/chat/context/chatContextPlanner.ts
+      - src/features/ai-policy/policyGuard.ts
+    lightTests:
+      - src/features/chat/turn/resolveTurnRoute.test.ts
+      - src/features/chat/context/chatContextPlanner.test.ts
+      - src/features/ai-policy/policyGuard.test.ts
+    heavyTests:
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-precheck-knowledge-policy
+      - eval-precheck-body-confirmation
+      - eval-precheck-delete-confirmation
+      - eval-route-character-timeline
+      - eval-tool-unknown
+      - eval-isolation-ask-user
+  - id: GDX-TOOL-001
+    title: Agent tool calls must resolve to the canonical manifest and channel.
+    definedIn: policies/quality/iron-laws.md#GDX-TOOL-001
+    implementedBy:
+      - agent-tool-manifest.json
+      - src/features/chat/agent/toolManifest.ts
+      - src/features/chat/agent/toolDefinitions.ts
+      - src-tauri/crates/grimodex-ai/build.rs
+    lightTests:
+      - src/features/chat/agent/toolDefinitions.test.ts
+      - src/features/chat/agent/toolExecutors.test.ts
+      - scripts/quality/impact-map.mjs
+    heavyTests:
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-route-search-codex
+      - eval-tool-unknown
+      - eval-tool-research
+      - eval-tool-hermes-write
+  - id: GDX-POLICY-001
+    title: Mutating and destructive tools enforce policy and confirmation without silent retry.
+    definedIn: policies/quality/iron-laws.md#GDX-POLICY-001
+    implementedBy:
+      - src/features/ai-policy/policyGuard.ts
+      - src/features/chat/agent/toolExecutors.ts
+      - agent-tool-manifest.json
+    lightTests:
+      - src/features/ai-policy/policyGuard.test.ts
+      - src/features/chat/agent/toolExecutors.test.ts
+    heavyTests:
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-artifact-create-event
+      - eval-artifact-update-codex
+      - eval-precheck-knowledge-policy
+      - eval-precheck-body-confirmation
+      - eval-precheck-delete-confirmation
+      - eval-policy-create-snippet
+      - eval-policy-apply-tree
+      - eval-tool-hermes-write
+      - eval-policy-propose-body
+      - eval-policy-delete-relation
+  - id: GDX-GROUND-001
+    title: Answers and prompts preserve current, attributable grounding.
+    definedIn: policies/quality/iron-laws.md#GDX-GROUND-001
+    implementedBy:
+      - src/features/chat/citationVerify.ts
+      - src/features/chat/chatRecall.ts
+      - src/features/chat/context/chatContextPlanner.ts
+      - scripts/quality/validate-retrieval-fixtures.mjs
+    lightTests:
+      - src/features/chat/citationVerify.test.ts
+      - src/features/chat/chatRecall.test.ts
+      - src/features/chat/context/chatContextPlanner.test.ts
+      - scripts/quality/validate-retrieval-fixtures.mjs
+    heavyTests:
+      - src/features/related-scenes/liveEval/relatedScenesLive.eval.test.ts
+      - scripts/quality/run-related-scenes-heavy.mjs
+    evaluatedBy:
+      - eval-ground-search-events
+      - eval-ground-get-scene
+      - eval-ground-foreshadow
+      - eval-tool-research
+  - id: GDX-ARTIFACT-001
+    title: Structured and generated outputs pass schema and provenance validation.
+    definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
+    implementedBy:
+      - packages/scan-contract/src/publicReportV1.ts
+      - packages/scan-prompts/src/evaluation.ts
+      - src/features/chat/agent/toolExecutors.ts
+      - src/features/chat/agent/chronicleWriteTools.ts
+      - src/features/post-effect/api.ts
+      - src/features/post-effect/canonicalize.ts
+    lightTests:
+      - packages/scan-contract/test/publicReportV1.test.ts
+      - packages/scan-prompts/test/evaluation.test.ts
+      - apps/scan-web/worker/pipeline.test.ts
+      - src/features/chat/agent/toolExecutors.test.ts
+      - src/features/chat/agent/chronicleWriteTools.test.ts
+      - src/features/post-effect/api.test.ts
+      - src/features/post-effect/canonicalize.test.ts
+    heavyTests:
+      - src-tauri/src/commands/post_effect.rs
+      - src/features/codex/candidateJudgment.live.test.ts
+      - src/features/codex/codexYomi.live.test.ts
+    evaluatedBy:
+      - eval-artifact-create-event
+      - eval-artifact-update-codex
+      - eval-policy-create-snippet
+      - eval-policy-apply-tree
+      - eval-prompt-post-effect-json
+  - id: GDX-ISOLATION-001
+    title: Evaluation cases own independent context, state, artifacts, and teardown.
+    definedIn: policies/quality/iron-laws.md#GDX-ISOLATION-001
+    implementedBy:
+      - scripts/quality/eval-fixtures.mjs
+      - evals/fixtures/routing.yaml
+    lightTests:
+      - scripts/quality/eval-fixtures.test.mjs
+    heavyTests:
+      - src/features/chat/agent/agentToolCall.live.test.ts
+    evaluatedBy:
+      - eval-ground-search-events
+      - eval-route-search-codex
+      - eval-isolation-ask-user
+  - id: GDX-TRACE-001
+    title: Requirements, changes, suites, results, failures, and deferred work remain linked.
+    definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
+    implementedBy:
+      - scripts/quality/impact-map.mjs
+      - evals/impact-map.yaml
+      - src/features/ai-verification/aiPathRegistry.ts
+    lightTests:
+      - scripts/quality/impact-map.test.mjs
+      - src/features/ai-verification/aiPathRegistry.test.ts
+    heavyTests:
+      - src/features/ai-verification/singleShot.live.test.ts
+    evaluatedBy:
+      - eval-ground-foreshadow
+      - eval-artifact-create-event
+      - eval-prompt-post-effect-json
+      - eval-route-search-scenes
+heavyEvaluations:
+  - id: heavy-agent-tool-loop
+    suiteId: tool-policy
+    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts
+    reason: Requires billed model access and an isolated workspace.
+  - id: heavy-single-shot-surfaces
+    suiteId: ai-routing
+    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/ai-verification/singleShot.live.test.ts
+    reason: Requires billed model access; missing credentials must not become a pass.
+  - id: heavy-related-scenes
+    suiteId: retrieval-grounding
+    command: EMBED_NODE_MODULES=... EMBED_RES_DIR=... node scripts/quality/run-related-scenes-heavy.mjs
+    reason: Requires local ONNX runtime dependencies and model resources; the runner generates verified embeddings, executes the eval, and restores prior artifacts.
+  - id: heavy-rust-post-effect-live
+    suiteId: prompt-contract
+    command: OPENROUTER_API_KEY=... cargo test --manifest-path src-tauri/Cargo.toml --no-default-features post_effect_live -- --nocapture
+    reason: Requires a billed live model and isolated credentials for the Rust post-effect path.
+  - id: heavy-codex-prompt-surfaces
+    suiteId: prompt-contract
+    command: OPENROUTER_API_KEY=... pnpm test:node --run src/features/codex/candidateJudgment.live.test.ts src/features/codex/codexYomi.live.test.ts
+    reason: Requires a billed live model; wording checks alone are Light evidence.
+blockedEvaluations:
+  - id: blocked-scan-hosted
+    suiteId: scan-contract
+    reason: No isolated hosted Scan evaluation runner exists in the repository, so this cannot be represented as runnable Heavy evidence.
+    requiredAction: Add a teardown-capable runner and isolated test-account contract before promoting this gap to heavyEvaluations.

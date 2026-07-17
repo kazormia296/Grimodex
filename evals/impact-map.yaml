@@ -1,0 +1,129 @@
+version: 1
+allSuites:
+  - quality-workflow
+  - ai-routing
+  - tool-policy
+  - prompt-contract
+  - retrieval-grounding
+  - scan-contract
+rules:
+  - id: quality-foundation
+    reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
+    paths:
+      - AGENTS.md
+      - .agents/skills/**
+      - policies/quality/**
+      - evals/**
+      - scripts/quality/**
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-PRECHECK-001
+      - GDX-TOOL-001
+      - GDX-POLICY-001
+      - GDX-GROUND-001
+      - GDX-ARTIFACT-001
+      - GDX-ISOLATION-001
+      - GDX-TRACE-001
+    suites:
+      - all
+  - id: workflow-runtime
+    reason: Dependency and CI workflow changes can alter every validation lane.
+    paths:
+      - package.json
+      - pnpm-lock.yaml
+      - .github/workflows/**
+    requirements:
+      - GDX-TRACE-001
+    suites:
+      - all
+  - id: ai-routing
+    reason: AI path, role, route, or provider changes must preserve complete routing coverage.
+    paths:
+      - src/features/ai-verification/**
+      - src/features/chat/modelRouting.ts
+      - src/features/chat/modelRouting.test.ts
+      - src/features/chat/turn/**
+      - src/features/chat/types.ts
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-PRECHECK-001
+      - GDX-TRACE-001
+    suites:
+      - ai-routing
+  - id: tool-policy
+    reason: Tool schemas, policy gates, privacy, and execution adapters share one safety contract.
+    paths:
+      - agent-tool-manifest.json
+      - src/features/ai-policy/**
+      - src/features/chat/agent/**
+      - src/features/chat/toolProtocolParse.ts
+      - src-tauri/crates/grimodex-ai/build.rs
+    requirements:
+      - GDX-PRECHECK-001
+      - GDX-TOOL-001
+      - GDX-POLICY-001
+    suites:
+      - tool-policy
+  - id: localized-prompts
+    reason: Localized prompts and shared output contracts require prompt validation.
+    paths:
+      - src/prompts/**
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-GROUND-001
+      - GDX-ARTIFACT-001
+    suites:
+      - prompt-contract
+  - id: post-effect-contracts
+    reason: Post-effect payload builders, parsers, and UI contracts must remain aligned with their prompt output schema.
+    paths:
+      - src/features/post-effect/**
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-ARTIFACT-001
+      - GDX-TRACE-001
+    suites:
+      - prompt-contract
+  - id: retrieval-grounding
+    reason: Recall, context planning, citation, and related-scene changes affect grounding.
+    paths:
+      - src/features/chat/chatRecall.ts
+      - src/features/chat/chatRecall.test.ts
+      - src/features/chat/chatRecallPromote.ts
+      - src/features/chat/chatRecallPromote.test.ts
+      - src/features/chat/citationVerify.ts
+      - src/features/chat/citationVerify.test.ts
+      - src/features/chat/context/**
+      - src/features/chat/contextBuilder.chatRecall.test.ts
+      - src/features/related-scenes/**
+      - scripts/fixtures/**
+    requirements:
+      - GDX-GROUND-001
+      - GDX-ISOLATION-001
+    suites:
+      - retrieval-grounding
+  - id: scan-workspace
+    reason: Scan contracts, prompts, processing, and hosted output form one artifact lane.
+    paths:
+      - packages/scan-contract/**
+      - packages/scan-core/**
+      - packages/scan-prompts/**
+      - apps/scan-web/**
+    requirements:
+      - GDX-GROUND-001
+      - GDX-ARTIFACT-001
+      - GDX-TRACE-001
+    suites:
+      - scan-contract
+  - id: scan-prompts
+    reason: Scan prompt changes require both prompt and artifact contracts.
+    paths:
+      - packages/scan-prompts/**
+    requirements:
+      - GDX-ROUTE-001
+      - GDX-GROUND-001
+      - GDX-ARTIFACT-001
+    suites:
+      - prompt-contract
+      - scan-contract
+default: all

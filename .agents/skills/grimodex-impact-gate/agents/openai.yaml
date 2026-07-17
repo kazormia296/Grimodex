@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grimodex Impact Gate"
+  short_description: "Select and run validation gates from the current diff"
+  default_prompt: "Use $grimodex-impact-gate to select and run every validation gate affected by the current diff."
