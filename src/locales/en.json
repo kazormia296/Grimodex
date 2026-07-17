@@ -360,8 +360,8 @@
     "tab": {
       "import": "Import",
       "zip": "ZIP",
-      "novel": "AI Novelist"
-      ,"scan": "Grimodex Scan"
+      "novel": "AI Novelist",
+      "scan": "Grimodex Scan"
     }
   },
   "import": {
@@ -3580,7 +3580,9 @@
       "codexReadingPromptRegister": "Save as reading",
       "codexReadingPromptDisable": "Don't ask again",
       "urlPlaceholder": "https://...",
-      "label": "Editor toolbar"
+      "label": "Editor toolbar",
+      "zenMode": "Zen mode (Focus + Typewriter)",
+      "fullscreenMode": "Fullscreen"
     },
     "reorder": {
       "title": "Reorder — within paragraph",
@@ -5602,7 +5604,10 @@
     "participants": "Lanes (multi-membership)",
     "addParticipant": "+ Lane",
     "removeParticipant": "Remove",
-    "precisionShort": { "approx": "~", "unknown": "?" },
+    "precisionShort": {
+      "approx": "~",
+      "unknown": "?"
+    },
     "legendCausal": "Causal",
     "exactHint": "The date is fixed",
     "approxHint": "Order is certain but the date is approximate",

@@ -360,8 +360,8 @@
     "tab": {
       "import": "インポート",
       "zip": "ZIP",
-      "novel": "AIのべりすと"
-      ,"scan": "Grimodex Scan"
+      "novel": "AIのべりすと",
+      "scan": "Grimodex Scan"
     }
   },
   "import": {
@@ -3575,7 +3575,9 @@
       "codexReadingPromptRegister": "読みとして登録",
       "codexReadingPromptDisable": "今後は確認しない",
       "urlPlaceholder": "https://...",
-      "label": "エディタツールバー"
+      "label": "エディタツールバー",
+      "zenMode": "Zenモード（集中+タイプライター）",
+      "fullscreenMode": "フルスクリーン"
     },
     "reorder": {
       "title": "推敲 — 段落内並べ替え",
@@ -5588,7 +5590,10 @@
     "participants": "参加レーン（複数所属）",
     "addParticipant": "＋参加レーン",
     "removeParticipant": "外す",
-    "precisionShort": { "approx": "約", "unknown": "?" },
+    "precisionShort": {
+      "approx": "約",
+      "unknown": "?"
+    },
     "legendCausal": "因果",
     "exactHint": "日付が確定している",
     "approxHint": "順序は確実だが日付は概算",

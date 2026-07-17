@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Editor } from "@tiptap/react";
 import { useCursorSettingsStore } from "@/features/editor/cursorSettingsStore";
 import { getCurrentProjectId } from "@/features/project/projectStore";
+import { ensureEditorOverlayVisible } from "@/features/editor/ensureOverlayVisible";
 import { useForeshadowStore } from "./foreshadowStore";
 
 type MarkMode = "setup" | "payoff" | "payoff-unanchored";
@@ -92,6 +93,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
       .setTextSelection(savedRange)
       .setMark("foreshadowSetup", { setupId, foreshadowId })
       .run();
+    ensureEditorOverlayVisible("foreshadow", editor);
     close();
   };
 
@@ -102,6 +104,7 @@ export function ForeshadowMarkPopover({ editor }: Props) {
       .setTextSelection(savedRange)
       .setMark("foreshadowPayoff", { foreshadowId })
       .run();
+    ensureEditorOverlayVisible("foreshadow", editor);
     close();
   };
 
