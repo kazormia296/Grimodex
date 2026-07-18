@@ -60,10 +60,12 @@ describe("seedScreenshotWorkspace via createBrowserMock", () => {
         expect(await count(mock, "tree_nodes")).toBe(4);
         const scene1 = await scalar(
           mock,
-          "SELECT title, char_count FROM tree_nodes WHERE id = 'scene-1'",
+          "SELECT title, char_count, chronicle_start_time, chronicle_start_granularity FROM tree_nodes WHERE id = 'scene-1'",
         );
         expect(scene1?.title).toBe(c.scenes.scene1.title);
         expect(scene1?.char_count).toBe(c.scenes.scene1.charCount);
+        expect(scene1?.chronicle_start_time).toBe(150);
+        expect(scene1?.chronicle_start_granularity).toBe("day");
 
         // codex 5 件、name は言語追従
         expect(await count(mock, "codex_entries")).toBe(5);
@@ -81,6 +83,19 @@ describe("seedScreenshotWorkspace via createBrowserMock", () => {
         expect(await count(mock, "chat_messages")).toBe(2);
         expect(await count(mock, "authorship_spans")).toBe(5);
         expect(await count(mock, "map_edges")).toBe(2);
+
+        // 新しい撮影対象（作中年表・執筆統計）が空状態にならない。
+        expect(await count(mock, "events")).toBe(4);
+        expect(await count(mock, "event_participants")).toBe(5);
+        expect(await count(mock, "scene_events")).toBe(2);
+        expect(await count(mock, "event_relations")).toBe(3);
+        expect(await count(mock, "change_events")).toBe(14);
+
+        const chronicleReturn = await scalar(
+          mock,
+          "SELECT title FROM events WHERE id = 'shot-event-return'",
+        );
+        expect(chronicleReturn?.title).toBe(c.chronicle.returnHome.title);
 
         const setup = await scalar(
           mock,
