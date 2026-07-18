@@ -170,8 +170,8 @@ describe("createBrowserMock", () => {
     });
   });
 
-  describe("API key persistence", () => {
-    it("persists API key in localStorage across mock instances", async () => {
+  describe("API key browser lifetime", () => {
+    it("keeps an API key only in the active mock and never persists it", async () => {
       await mock.invoke("save_api_key", {
         provider: "openai",
         key: "sk-test-123",
@@ -183,15 +183,17 @@ describe("createBrowserMock", () => {
       });
       expect(present).toBe(true);
 
-      // Create a new mock instance — presence should survive
+      expect(localStorage.getItem("grimodex:api-key:openai")).toBeNull();
+
+      // A new runtime represents a reload and must require the key again.
       const mock2 = await createBrowserMock();
       const present2 = await mock2.invoke<boolean>("has_api_key", {
         provider: "openai",
       });
-      expect(present2).toBe(true);
+      expect(present2).toBe(false);
     });
 
-    it("deletes API key from localStorage", async () => {
+    it("deletes an API key from the active in-memory store", async () => {
       await mock.invoke("save_api_key", {
         provider: "anthropic",
         key: "sk-ant",
@@ -222,14 +224,15 @@ describe("createBrowserMock", () => {
   });
 
   describe("send_chat_message", () => {
-    it("returns fallback message when no API key is set", async () => {
+    it("fails explicitly instead of returning a fake assistant response", async () => {
       // Ensure no key is stored
       await mock.invoke("delete_api_key", { provider: "openrouter" });
 
-      const result = await mock.invoke<string>("send_chat_message", {
-        messages: [{ role: "user", content: "Hello" }],
-      });
-      expect(result).toContain("AIは未接続です");
+      await expect(
+        mock.invoke("send_chat_message", {
+          messages: [{ role: "user", content: "Hello" }],
+        }),
+      ).rejects.toThrow("未接続");
     });
   });
 

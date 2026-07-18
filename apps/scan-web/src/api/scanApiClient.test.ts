@@ -230,16 +230,17 @@ describe("ScanApiClient", () => {
     ).rejects.toThrow("did not match the requested handle");
   });
 
-  it("keeps upload and scan tokens in headers and never in editor seed URLs", async () => {
+  it("issues an editor token without consuming the editor seed in Scan", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         requests.push({ url, init });
         if (url.includes("/editor-tokens"))
-          return response({ token: "one-time" });
-        if (url.endsWith("/api/v1/editor-seeds"))
-          return response({ schemaVersion: "seed" });
+          return response({
+            token: "one-time",
+            expiresAt: "2026-07-19T00:05:00.000Z",
+          });
         return response({});
       },
     );
@@ -248,19 +249,26 @@ describe("ScanApiClient", () => {
       fetchImpl,
     });
 
-    await client.getEditorSeed({ scanId: "scan/1", scanToken: "scan-secret" });
+    await expect(
+      client.createEditorToken({
+        scanId: "scan/1",
+        scanToken: "scan-secret",
+      }),
+    ).resolves.toEqual({
+      token: "one-time",
+      expiresAt: "2026-07-19T00:05:00.000Z",
+    });
 
+    expect(requests).toHaveLength(1);
     expect(requests[0]?.url).toBe(
       "https://scan.example/api/v1/scans/scan%2F1/editor-tokens",
     );
     expect(requests[0]?.init?.headers).toMatchObject({
       "x-scan-token": "scan-secret",
     });
-    expect(requests[1]?.url).toBe("https://scan.example/api/v1/editor-seeds");
-    expect(requests[1]?.url).not.toContain("one-time");
-    expect(requests[1]?.init?.headers).toMatchObject({
-      authorization: "Bearer one-time",
-    });
+    expect(requests.some(({ url }) => url.includes("/editor-seeds"))).toBe(
+      false,
+    );
   });
 
   it("polls at two seconds then backs off to at most five seconds", async () => {

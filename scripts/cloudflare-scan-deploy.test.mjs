@@ -304,7 +304,7 @@ describe("Cloudflare Scan deploy CLI", () => {
             "deploy",
             "apps/scan-web/dist",
             "--project-name",
-            "grimodex-try-staging",
+            "grimodex-scan-staging",
             "--branch",
             "master",
           ],

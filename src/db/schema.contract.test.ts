@@ -68,62 +68,6 @@ const RUST_ONLY_COLUMNS: Record<string, Set<string>> = {
   projects: new Set(["is_sample"]),
 };
 
-const BROWSER_SCHEMA_TABLES = [
-  "app_settings",
-  "authorship_spans",
-  "change_events",
-  "chat_messages",
-  "chat_session_pinned_codex",
-  "chat_sessions",
-  "chat_summaries",
-  "chat_summary_messages",
-  "codex_detail_definitions",
-  "codex_detail_values",
-  "codex_dismissed_relations",
-  "codex_entries",
-  "codex_entry_phases",
-  "codex_entry_tags",
-  "codex_phase_detail_overrides",
-  "codex_quick_pins",
-  "codex_relations",
-  "codex_tags",
-  "codex_types",
-  "content_versions",
-  "event_participants",
-  "event_relations",
-  "events",
-  "foreshadow_setups",
-  "foreshadows",
-  "generation_logs",
-  "impact_review_baselines",
-  "labels",
-  "lint_term_dictionary",
-  "map_ai_branches",
-  "map_boards",
-  "map_edges",
-  "map_frames",
-  "map_node_positions",
-  "map_stickies",
-  "plot_thread_branches",
-  "plot_thread_scene_links",
-  "plot_threads",
-  "project_calendar",
-  "project_settings",
-  "project_snapshot_aux",
-  "project_snapshot_codex_entries",
-  "project_snapshot_entries",
-  "project_snapshot_snippets",
-  "project_snapshot_tree_nodes",
-  "project_snapshots",
-  "projects",
-  "scene_beat_pov_cache",
-  "scene_codex_mentions",
-  "scene_events",
-  "snippets",
-  "tree_node_labels",
-  "tree_nodes",
-].sort();
-
 // browser mock は時刻と一部 UUID を呼び出し側から決定論的に注入する。
 // production default の省略を許す列はここへ明示し、暗黙の default 欠落は失敗させる。
 const BROWSER_DEFAULT_OMISSIONS = new Set([
@@ -490,7 +434,7 @@ describe("schema contract", () => {
     }
   });
 
-  it("keeps the browser mock as an explicit physical-schema subset", async () => {
+  it("keeps every renderer table available in the browser database", async () => {
     const schemaContract: SchemaContract = contract;
     const browser = await createBrowserMock();
     const tableRows = queryRows(
@@ -501,7 +445,11 @@ describe("schema contract", () => {
       }),
     );
     const tableNames = tableRows.map((row) => String(row.name)).sort();
-    expect(tableNames).toEqual(BROWSER_SCHEMA_TABLES);
+    expect(tableNames).toEqual(
+      Object.keys(schemaContract.tables)
+        .filter((name) => !RUST_ONLY_TABLES.has(name))
+        .sort(),
+    );
 
     for (const row of tableRows) {
       const tableName = String(row.name);
