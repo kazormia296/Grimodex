@@ -46,7 +46,7 @@ LP は **日本語 / 英語** の 2 言語に対応しています。実装は�
 
 - **言語の決定**：`?lang=ja|en` クエリ → `localStorage`（キー `grimodex-lp-lang`）→ `navigator.language`（`en*` なら英語、他は日本語）の優先順で初期言語を判定。ナビ右上の `JA | EN` トグルで即時切替でき、選択は `localStorage` と URL（`?lang=`）に保存されます。切替時に `<html lang>` / `document.title` / `meta[name=description]` も更新します。
 - **本文の翻訳**：読者向け文言は `{ ja, en }` 形式で持ち、`lpText(value, lang)` で取り出します。`WORKSPACE` などの装飾モノラベル（Swiss/Zine の意匠）は共通で両言語とも英語のまま。日本語モードは従来どおり日英併記、英語モードは英語主に統一します。
-- **スクリーンショット**：日英で別カットを出し分けます。ソースは `scripts/capture-screenshots.ts`（`pnpm screenshot -- --theme light --color-theme simple` と `--lang en` を追加）が生成する `docs/screenshots/generated/<id>-light.png`（ja）と `<id>-light-en.png`（en）。これを LP の `assets/<id>.png`（ja）/ `assets/<id>-en.png`（en）へコピーし、`lp-variant-h.jsx` が `?as=picture` で両方 import → 言語で選択します。スクショを撮り直したら同じファイル名で再コピーして `node build-lp.mjs` してください。
+- **スクリーンショット**：日英で別カットを出し分けます。撮影レシピの正本は `docs/screenshots/generated/memo.txt` です。`pnpm screenshot -- --scale 2 --ui-scale 100 --theme light` と、末尾に `--lang en` を付けた英語版を実行すると、`docs/screenshots/generated/<id>-light.png`（ja）と `<id>-light-en.png`（en）が生成されます。これを LP の `assets/<id>.png`（ja）/ `assets/<id>-en.png`（en）へコピーし、`lp-variant-h.jsx` が `?as=picture` で両方 import → 言語で選択します。スクショを撮り直したら同じファイル名で再コピーして `node build-lp.mjs` してください。
 - **SEO 注意**：本文は完全クライアントレンダリングのため、`index.html` の OGP/`<html lang>` 静的値（既定 ja）はクローラ向けのまま。言語別の事前レンダリングはしていません（必要になれば Astro 等への移行で対応）。
 
 ## アクセントカラーの変更
