@@ -12,6 +12,7 @@ import {
 } from "./CodexHighlightPlugin";
 import { resolveCodexColor } from "@/lib/resolveCodexColors";
 import { rebuildAndSchedule, scheduleMatch } from "./codexMatchOrchestrator";
+import { isEditorViewReady } from "./isEditorViewReady";
 
 interface CodexHighlightOptions {
   excludeEntryIds?: string[];
@@ -90,7 +91,7 @@ export function useCodexHighlight(
       setTypeColorMap(map);
       // Re-run the async matcher so codexHighlightResult rebuilds decorations
       // with the updated typeColorMap (fixes stale colors after theme toggle).
-      if (editor && !editor.isDestroyed && editor.state) {
+      if (isEditorViewReady(editor) && editor.state) {
         const targets = targetsRef.current;
         if (targets.length > 0) {
           scheduleMatch(
@@ -131,15 +132,18 @@ export function useCodexHighlight(
 
   // Register plugin
   useEffect(() => {
-    if (!editor || editor.isDestroyed || !editor.view?.state) return;
-    const existing = editor.view.state.plugins.find(
+    if (!isEditorViewReady(editor)) return;
+    const view = editor.view;
+    const existing = view.state.plugins.find(
       (p) => p.spec.key === codexHighlightKey,
     );
     if (!existing) {
       editor.registerPlugin(createCodexHighlightPlugin());
     }
     return () => {
-      if (!editor.isDestroyed) editor.unregisterPlugin(codexHighlightKey);
+      if (isEditorViewReady(editor)) {
+        editor.unregisterPlugin(codexHighlightKey);
+      }
       if (!skipMatchedIdsRef.current) setMatchedEntryIds([]);
     };
   }, [editor, setMatchedEntryIds]);
@@ -149,13 +153,14 @@ export function useCodexHighlight(
   // 有効化」トグルの ON/OFF が即座に反映されない (装飾の clear/rebuild dispatch が
   // 走らない)。opacity/style も同経路で装飾の再構築を促す。
   useEffect(() => {
-    if (!editor || editor.isDestroyed || !editor.state) return;
+    if (!isEditorViewReady(editor) || !editor.state) return;
+    const view = editor.view;
     const targets = targetsRef.current;
 
     if (targets.length === 0) {
       if (!skipMatchedIdsRef.current) setMatchedEntryIds([]);
       const tr = editor.state.tr.setMeta("codexHighlightResult", []);
-      editor.view.dispatch(tr);
+      view.dispatch(tr);
       return;
     }
 
@@ -166,7 +171,7 @@ export function useCodexHighlight(
       skipMatchedIdsRef.current,
     );
     const tr = editor.state.tr.setMeta("codexHighlightUpdate", true);
-    editor.view.dispatch(tr);
+    view.dispatch(tr);
   }, [
     editor,
     entries,
@@ -188,7 +193,7 @@ export function useCodexHighlight(
       // Skip non-doc-change transactions (e.g. decoration updates from our own dispatch)
       // to avoid the codexHighlightResult dispatch re-triggering another match cycle.
       if (!transaction.docChanged) return;
-      if (editor.isDestroyed || !editor.state) return;
+      if (!isEditorViewReady(editor) || !editor.state) return;
       const targets = targetsRef.current;
       if (targets.length === 0) return;
       // 全文テキスト抽出は scheduleMatch が debounce 発火時に行う。ここで

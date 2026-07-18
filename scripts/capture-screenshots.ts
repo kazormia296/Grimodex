@@ -379,7 +379,53 @@ async function performCaptureActions(
       case "fit-map":
         await clickIfVisible(page, ".react-flow__controls-fitview");
         break;
+      case "search-command-center": {
+        const query = Array.from(content.codex.akane.name.trim())[0];
+        if (!query) break;
+        const input = page
+          .locator(
+            '[data-slot-panel="command-center-results"] input[type="text"]',
+          )
+          .first();
+        await input.fill(query);
+        await page
+          .getByText(content.codex.akane.name, { exact: false })
+          .first()
+          .waitFor({ state: "visible", timeout: 5_000 });
+        break;
+      }
     }
+  }
+}
+
+async function waitForCaptureContent(
+  page: Page,
+  capture: ScreenshotCapture,
+  language: ScreenshotLanguage,
+) {
+  const panelId = capture.panelId;
+  if (!panelId) return;
+
+  const panelSelector =
+    panelId === "editor"
+      ? "[data-editor-area]"
+      : `[data-slot-panel="${panelId}"]`;
+  await page.waitForSelector(panelSelector, {
+    state: "visible",
+    timeout: 10_000,
+  });
+
+  if (panelId === "chronicle") {
+    await page
+      .getByText(SCREENSHOT_SEED_CONTENT[language].chronicle.returnHome.title, {
+        exact: false,
+      })
+      .first()
+      .waitFor({ state: "visible", timeout: 5_000 });
+  } else if (panelId === "writing-stats") {
+    await page
+      .locator('[data-testid="writing-stats-heatmap"]')
+      .waitFor({ state: "visible", timeout: 5_000 });
   }
 }
 
@@ -530,6 +576,9 @@ async function captureOne(
         .no-screenshot {
           display: none !important;
         }
+        [data-sonner-toaster] {
+          display: none !important;
+        }
       `,
     });
     await page.waitForSelector(".app-shell", {
@@ -544,6 +593,7 @@ async function captureOne(
       .catch(() => {
         /* fallback: stale builds without marker */
       });
+    await waitForCaptureContent(page, capture, language);
     await page.waitForTimeout(1_200);
     await performCaptureActions(page, capture, language);
     await page.waitForTimeout(300);

@@ -106,6 +106,7 @@ function makeEditor(): Editor {
       plugins: [],
     },
     view: {
+      dom: document.createElement("div"),
       dispatch: vi.fn(),
       state: { plugins: [] },
     },
@@ -197,5 +198,19 @@ describe("useCodexHighlight — skipMatchedIds dependency", () => {
 
     // No dependency changed → no extra rebuild
     expect(mockRebuildAndSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not access a TipTap view detached before passive effects", () => {
+    const editor = makeEditor();
+    Object.defineProperty(editor, "view", {
+      get() {
+        throw new Error("The editor view is not available");
+      },
+    });
+
+    expect(() =>
+      renderHook(() => useCodexHighlight(editor, { skipMatchedIds: true })),
+    ).not.toThrow();
+    expect(mockRebuildAndSchedule).not.toHaveBeenCalled();
   });
 });

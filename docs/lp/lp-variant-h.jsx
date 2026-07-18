@@ -18,12 +18,15 @@ import pSnippets from "/assets/panel-snippets.png?w=1100;1700;2400&format=avif;w
 import pChat from "/assets/panel-chat.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pKouetsu from "/assets/panel-kouetsu.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pTimeline from "/assets/panel-timeline.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pChronicle from "/assets/panel-chronicle.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pMap from "/assets/panel-map.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pMatrix from "/assets/panel-matrix.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pTrashBin from "/assets/panel-trash-bin.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pChatHistory from "/assets/panel-chat-history.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pCodexQuick from "/assets/panel-codex-quick.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pCommandCenter from "/assets/panel-command-center-results.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pAttribution from "/assets/panel-attribution.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pWritingStats from "/assets/panel-writing-stats.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pForeshadow from "/assets/panel-foreshadow.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import psDefault from "/assets/preset-default.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
 import psPlan from "/assets/preset-plan.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
@@ -41,12 +44,15 @@ import pSnippetsEn from "/assets/panel-snippets-en.png?w=1100;1700;2400&format=a
 import pChatEn from "/assets/panel-chat-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pKouetsuEn from "/assets/panel-kouetsu-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pTimelineEn from "/assets/panel-timeline-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pChronicleEn from "/assets/panel-chronicle-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pMapEn from "/assets/panel-map-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pMatrixEn from "/assets/panel-matrix-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pTrashBinEn from "/assets/panel-trash-bin-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pChatHistoryEn from "/assets/panel-chat-history-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pCodexQuickEn from "/assets/panel-codex-quick-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pCommandCenterEn from "/assets/panel-command-center-results-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pAttributionEn from "/assets/panel-attribution-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
+import pWritingStatsEn from "/assets/panel-writing-stats-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import pForeshadowEn from "/assets/panel-foreshadow-en.png?w=1100;1700;2400&format=avif;webp;png&as=picture";
 import psDefaultEn from "/assets/preset-default-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
 import psPlanEn from "/assets/preset-plan-en.png?w=1400;2200;3000&format=avif;webp;png&as=picture";
@@ -444,6 +450,18 @@ const WS_PANELS = {
     },
     img: { ja: pTimeline, en: pTimelineEn },
   },
+  Chronicle: {
+    jp: "Chronicle",
+    cat: {
+      ja: "作中時間を、レーンと因果で見渡す。",
+      en: "See story time through lanes and causality.",
+    },
+    desc: {
+      ja: "出来事を作中時間・レーン・因果関係で並べ、参照シーンや人物の動きを追う作中年表。回想や並行進行、季節・年齢・同時刻の矛盾も見つけやすくする。",
+      en: "A story chronicle that arranges events by story time, lane, and cause-and-effect, tying them back to scenes and character movement. Flashbacks, parallel threads, and time conflicts become easier to spot.",
+    },
+    img: { ja: pChronicle, en: pChronicleEn },
+  },
   Map: {
     jp: "Map",
     cat: {
@@ -516,6 +534,18 @@ const WS_PANELS = {
     },
     img: { ja: pAttribution, en: pAttributionEn },
   },
+  WritingStats: {
+    jp: "Writing Stats",
+    cat: {
+      ja: "書いた量とペースを、次の一日に繋ぐ。",
+      en: "Turn output and pace into tomorrow's plan.",
+    },
+    desc: {
+      ja: "今日・直近7日・30日の文字数、連続執筆、ヒートマップ、Human / AI の内訳を一望する統計パネル。日次目標と完走ペースメーカーで、締切までの進み方も組み立てられる。",
+      en: "See today's output, the last 7 and 30 days, streaks, a heatmap, and the Human / AI breakdown at a glance. Daily goals and a finish-line pacemaker turn the numbers into a route to your deadline.",
+    },
+    img: { ja: pWritingStats, en: pWritingStatsEn },
+  },
   Foreshadow: {
     jp: "Foreshadow",
     cat: {
@@ -528,6 +558,18 @@ const WS_PANELS = {
     },
     img: { ja: pForeshadow, en: pForeshadowEn },
   },
+  CommandCenter: {
+    jp: "Command Center",
+    cat: {
+      ja: "探す、開く、動くを、一箇所から。",
+      en: "Search, open, and act from one place.",
+    },
+    desc: {
+      ja: "Scene・Codex・Snippet を字句検索し、Scene 本文には意味検索も重ねて、その場で目的地へジャンプする検索パネル。コマンドモードへ切り替えれば、設定やパネル操作も同じ入口から実行できる。",
+      en: "Search Scenes, Codex, and Snippets lexically, with semantic search layered over scene prose, then jump straight to the result. Switch to command mode to run settings and panel actions from the same entry point.",
+    },
+    img: { ja: pCommandCenter, en: pCommandCenterEn },
+  },
 };
 
 const WS_ALL_PANEL_KEYS = [
@@ -536,14 +578,17 @@ const WS_ALL_PANEL_KEYS = [
   "Grid",
   "Codex",
   "CodexQuick",
+  "CommandCenter",
   "Snippets",
   "Chat",
   "ChatHistory",
   "Review",
   "Timeline",
+  "Chronicle",
   "Map",
   "Matrix",
   "Attribution",
+  "WritingStats",
   "Foreshadow",
   "TrashBin",
 ];
@@ -1121,7 +1166,7 @@ function HWorkspaceSection() {
             pointerEvents: "none",
           }}
         >
-          15 PANELS · ONE DESK
+          18 PANELS · ONE DESK
         </div>
 
         <div
@@ -1157,7 +1202,7 @@ function HWorkspaceSection() {
                 lineHeight: 0.95,
               }}
             >
-              15 PANELS.
+              18 PANELS.
             </span>
             <br />
             ONE DESK.
@@ -1286,7 +1331,7 @@ function HWorkspaceSection() {
                 letterSpacing: ".06em",
               }}
             >
-              {lang === "en" ? "↓ OPEN FROM 15 PANELS" : "↓ 15 PANELS から開く"}
+              {lang === "en" ? "↓ OPEN FROM 18 PANELS" : "↓ 18 PANELS から開く"}
             </span>
           </div>
 
@@ -1316,7 +1361,7 @@ function HWorkspaceSection() {
                 marginRight: 4,
               }}
             >
-              ALL 15 PANELS ↓
+              ALL 18 PANELS ↓
             </span>
             {WS_ALL_PANEL_KEYS.map((k) => (
               <button

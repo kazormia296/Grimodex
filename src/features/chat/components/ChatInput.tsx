@@ -26,6 +26,8 @@ import { resolveAinoveristApiVariant } from "../aiNovelist";
 import { getChatInputExtensions } from "../extensions/chatInputExtensions";
 import { useCodexHighlight } from "@/features/editor/useCodexHighlight";
 import { CodexPopover } from "@/features/editor/CodexPopover";
+import { isEditorViewReady } from "@/features/editor/isEditorViewReady";
+import { useEditorViewReady } from "@/features/editor/useEditorViewReady";
 import type { MentionPopupState } from "../extensions/ChatMentionExtension";
 import type { CommandPopupState } from "../extensions/ChatSlashCommandExtension";
 import {
@@ -87,6 +89,34 @@ interface ChatInputProps {
   onDetectedEntries?: (entryIds: string[]) => void;
   /** 入力欄にテキストがあるかどうかを親に通知（QuickActionStrip の表示制御用） */
   onHasTextChange?: (hasText: boolean) => void;
+}
+
+interface ChatInputEditorState {
+  hasText: boolean;
+  text: string;
+  hasMentions: boolean;
+}
+
+const EMPTY_CHAT_INPUT_EDITOR_STATE: ChatInputEditorState = {
+  hasText: false,
+  text: "",
+  hasMentions: false,
+};
+
+/** Read editor state without touching a TipTap view that is being detached. */
+export function readChatInputEditorState(editor: Editor): ChatInputEditorState {
+  if (!isEditorViewReady(editor)) return EMPTY_CHAT_INPUT_EDITOR_STATE;
+  try {
+    const text = editor.getText().trim();
+    let hasMentions = false;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "mention") hasMentions = true;
+    });
+    return { hasText: text.length > 0, text, hasMentions };
+  } catch {
+    // useEditorState may run once more while TipTap tears down its schema.
+    return EMPTY_CHAT_INPUT_EDITOR_STATE;
+  }
 }
 
 /**
@@ -337,6 +367,9 @@ export function ChatInput({
       },
     },
   });
+  const editorViewReady = useEditorViewReady(editor);
+  const mountedEditor =
+    editorViewReady && isEditorViewReady(editor) ? editor : null;
 
   // editorRef を親に公開
   useEffect(() => {
@@ -347,8 +380,10 @@ export function ChatInput({
   // editorProps.attributes は生成時固定のため、開閉・選択の変化は
   // contenteditable の DOM 属性を直接同期する（aria 属性のみ、挙動不変）。
   useEffect(() => {
-    const dom = editor?.view.dom;
-    if (!dom) return;
+    // React may reconnect passive effects after TipTap has detached a view.
+    // Re-probe here instead of trusting the render-time readiness snapshot.
+    if (!isEditorViewReady(mountedEditor)) return;
+    const dom = mountedEditor.view.dom;
     // popup オブジェクトは extension の onUpdate 毎に新規参照になるため、
     // 実際に値が変わったときだけ DOM を書き換える
     const sync = (name: string, value: string | null) => {
@@ -384,7 +419,7 @@ export function ChatInput({
       sync("aria-controls", null);
       sync("aria-activedescendant", null);
     }
-  }, [editor, mentionPopup, mentionIndex, commandPopup, commandIndex]);
+  }, [mountedEditor, mentionPopup, mentionIndex, commandPopup, commandIndex]);
 
   // G18: editLastFnRef を最新の messages/editor に合わせて更新
   useEffect(() => {
@@ -417,7 +452,7 @@ export function ChatInput({
   }, [editor, pendingLookupText, setPendingLookupText]);
 
   // Codexハイライト有効化（チャット入力はCodexQuickに影響させない）
-  useCodexHighlight(editor, { skipMatchedIds: true });
+  useCodexHighlight(mountedEditor, { skipMatchedIds: true });
 
   // codexHighlightResult トランザクションを監視して検出エントリIDを通知
   useEffect(() => {
@@ -444,14 +479,7 @@ export function ChatInput({
   // エディタのテキスト有無 + @メンション有無をリアクティブに購読
   const editorState = useEditorState({
     editor,
-    selector: (ctx) => {
-      const text = ctx.editor.getText().trim();
-      let hasMentions = false;
-      ctx.editor.state.doc.descendants((node) => {
-        if (node.type.name === "mention") hasMentions = true;
-      });
-      return { hasText: text.length > 0, text, hasMentions };
-    },
+    selector: (ctx) => readChatInputEditorState(ctx.editor),
   });
   const hasText = editorState?.hasText ?? false;
 
@@ -481,9 +509,9 @@ export function ChatInput({
 
   // ストリーミング中は編集不可
   useEffect(() => {
-    if (!editor) return;
-    editor.setEditable(!isStreaming);
-  }, [editor, isStreaming]);
+    if (!isEditorViewReady(mountedEditor)) return;
+    mountedEditor.setEditable(!isStreaming);
+  }, [mountedEditor, isStreaming]);
 
   const modelLabel = (() => {
     if (!currentModel) {
@@ -829,7 +857,7 @@ export function ChatInput({
       )}
 
       {/* Codex ハイライトポップオーバー（入力エリア用） */}
-      <CodexPopover editor={editor} />
+      <CodexPopover editor={mountedEditor} />
 
       {/* Agent mode サジェストチップ (探索系の問いを検出した時のみ) */}
       {suggestAgent &&
