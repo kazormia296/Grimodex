@@ -4,12 +4,12 @@
   "compatibility_date": "2026-07-16",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "SCAN_ACCEPTING_NEW_JOBS": "false",
+    "SCAN_ACCEPTING_NEW_JOBS": "true",
     "SCAN_WORKERS_AI_ENABLED": "false",
     "SCAN_FRONTIER_ENABLED": "false",
     "SCAN_EDITOR_AI_ENABLED": "false",
-    "SCAN_DAILY_LIMIT_UNITS": "0",
-    "SCAN_MONTHLY_LIMIT_UNITS": "0",
+    "SCAN_DAILY_LIMIT_UNITS": "1000",
+    "SCAN_MONTHLY_LIMIT_UNITS": "10000",
     "SCAN_MAX_ACTIVE_JOBS": "2",
     "SCAN_AI_PROVIDER": "workers-ai",
     "SCAN_RETENTION_DAYS": "30",
@@ -18,13 +18,14 @@
     "SCAN_TURNSTILE_REQUIRED": "false",
     "SCAN_ENVIRONMENT": "development",
     "SCAN_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct",
-    "ALLOWED_ORIGIN": "https://try.grimodex.app",
+    "ALLOWED_ORIGIN": "http://127.0.0.1:4173",
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "grimodex-scan-dev",
       "database_id": "local-dev-placeholder",
+      "preview_database_id": "scan-local",
       "migrations_dir": "migrations",
     },
   ],
@@ -41,9 +42,6 @@
       "simple": { "limit": 120, "period": 60 },
     },
   ],
-  "ai": {
-    "binding": "AI",
-  },
   "workflows": [
     {
       "name": "grimodex-scan-workflow",

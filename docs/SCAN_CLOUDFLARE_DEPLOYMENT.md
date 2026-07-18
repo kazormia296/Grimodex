@@ -13,6 +13,41 @@ The deployment CLI deliberately refuses `SCAN_ACCEPTING_NEW_JOBS=true` in
 staging. Use a separate reviewed activation workflow if staging traffic is
 needed later.
 
+## Local pre-deploy verification
+
+Run the complete production-built web app and Worker stack locally before
+creating or changing any Cloudflare resource:
+
+```bash
+pnpm scan:local
+```
+
+The command builds and stamps the PWA, applies all D1 migrations to a local
+database, then starts the following fixed origins:
+
+- web/PWA preview: `http://127.0.0.1:4173`
+- Worker API: `http://127.0.0.1:8787`
+
+Open the web URL and upload a disposable `.txt` or `.md` file. Quick Scan runs
+through locally simulated D1, R2, Rate Limiting, and Workflow bindings. The
+local configuration disables Turnstile and every hosted AI path, so extraction
+uses the deterministic fallback and does not require a Cloudflare account,
+credentials, deployment, or billable inference. Stop both processes with
+`Ctrl+C`. Local state is preserved under `.wrangler/scan-local` for the next
+manual run.
+
+For a fresh, non-interactive preflight, run:
+
+```bash
+pnpm scan:local:smoke
+```
+
+This uses temporary state, reapplies every migration, starts both origins,
+uploads a disposable Japanese fixture, waits for the local Workflow to finish,
+validates the `grimodex-scan/1` report, deletes the scan, and exits. It covers
+the credentials-free Quick Scan path; Turnstile, Full Scan, Workers AI, and
+external AI providers still require a separate staging check.
+
 ## One-time account bootstrap
 
 Authenticate and create isolated staging resources first:
