@@ -2,6 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { D1DatabaseLike, D1PreparedStatementLike } from "./env";
 import { ScanRepository } from "./repository";
 
+const SCAN_AI_CONSENT = {
+  consentId: `consent_${"a".repeat(64)}`,
+  policyVersion: "2026-07-19.4",
+  provider: "workers-ai",
+  route: "scan" as const,
+};
+
 describe("scan repository", () => {
   it("returns existing only when every client-owned scan handle field matches", async () => {
     const db = {
@@ -23,6 +30,7 @@ describe("scan repository", () => {
       createdAt: "2026-07-16T00:00:00.000Z",
       updatedAt: "2026-07-16T00:00:00.000Z",
       accessTokenHash: "scan-token-hash",
+      aiConsent: SCAN_AI_CONSENT,
     });
     const input = {
       id: "11111111-1111-4111-8111-111111111111",
@@ -30,6 +38,7 @@ describe("scan repository", () => {
       mode: "quick" as const,
       reservedUnits: 1,
       accessTokenHash: "scan-token-hash",
+      aiConsent: SCAN_AI_CONSENT,
       buckets: [],
     };
 
@@ -80,6 +89,7 @@ describe("scan repository", () => {
           createdAt: "2026-07-16T00:00:00.000Z",
           updatedAt: "2026-07-16T00:00:00.000Z",
           accessTokenHash: persistedTokenHash,
+          aiConsent: SCAN_AI_CONSENT,
         });
 
       await expect(
@@ -89,11 +99,123 @@ describe("scan repository", () => {
           mode: "quick",
           reservedUnits: 1,
           accessTokenHash: "scan-token-hash",
+          aiConsent: SCAN_AI_CONSENT,
           buckets: [],
         }),
       ).resolves.toBe(expected);
     },
   );
+
+  it("persists the server-derived AI consent identity with an upload intent", async () => {
+    const prepared: Array<{ query: string; values: unknown[] }> = [];
+    const db = {
+      prepare(query: string) {
+        const recorded = { query, values: [] as unknown[] };
+        prepared.push(recorded);
+        let statement: D1PreparedStatementLike;
+        statement = {
+          bind: (...values: unknown[]) => {
+            recorded.values = values;
+            return statement;
+          },
+          first: async <T>() => null as T | null,
+          all: async <T>() => ({ results: [] as T[] }),
+          run: async () => ({ success: true }),
+        };
+        return statement;
+      },
+      batch: async () => [],
+    } satisfies D1DatabaseLike;
+    const repository = new ScanRepository(db, () => "2026-07-19T00:00:00.000Z");
+
+    await repository.createUploadIntent({
+      id: "upload-consent",
+      tokenHash: "token-hash",
+      filename: "novel.txt",
+      contentType: "text/plain",
+      expectedSize: 12,
+      sourceKey: "incoming/upload-consent/source.txt",
+      status: "issued",
+      expiresAt: "2026-07-19T00:15:00.000Z",
+      actualSize: null,
+      sourceHash: null,
+      aiConsent: SCAN_AI_CONSENT,
+    });
+
+    expect(prepared[0]?.query).toContain("ai_consent_id");
+    expect(prepared[0]?.query).toContain("ai_consent_policy_version");
+    expect(prepared[0]?.query).toContain("ai_consent_provider");
+    expect(prepared[0]?.query).toContain("ai_consent_route");
+    expect(prepared[0]?.values).toEqual(
+      expect.arrayContaining([
+        SCAN_AI_CONSENT.consentId,
+        SCAN_AI_CONSENT.policyVersion,
+        SCAN_AI_CONSENT.provider,
+        SCAN_AI_CONSENT.route,
+      ]),
+    );
+  });
+
+  it("copies the upload AI consent identity into the queued scan atomically", async () => {
+    const prepared: Array<{ query: string; values: unknown[] }> = [];
+    const db = {
+      prepare(query: string) {
+        const recorded = { query, values: [] as unknown[] };
+        prepared.push(recorded);
+        let statement: D1PreparedStatementLike;
+        statement = {
+          bind: (...values: unknown[]) => {
+            recorded.values = values;
+            return statement;
+          },
+          first: async <T>() => null as T | null,
+          all: async <T>() => ({ results: [] as T[] }),
+          run: async () => ({ success: true }),
+        };
+        return statement;
+      },
+      batch: async () => [],
+    } satisfies D1DatabaseLike;
+    const repository = new ScanRepository(db);
+    const persisted = {
+      id: "11111111-1111-4111-8111-111111111111",
+      uploadId: "upload-consent",
+      mode: "quick" as const,
+      status: "queued" as const,
+      sourceHash: "source-hash",
+      privateBundleKey: null,
+      privateReportKey: null,
+      cancelRequestedAt: null,
+      createdAt: "2026-07-19T00:00:00.000Z",
+      updatedAt: "2026-07-19T00:00:00.000Z",
+      accessTokenHash: "scan-token-hash",
+      aiConsent: SCAN_AI_CONSENT,
+    };
+    vi.spyOn(repository, "getScan")
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(persisted);
+
+    await expect(
+      repository.createScan({
+        id: persisted.id,
+        uploadId: persisted.uploadId,
+        mode: persisted.mode,
+        reservedUnits: 1,
+        accessTokenHash: persisted.accessTokenHash,
+        buckets: [],
+        aiConsent: SCAN_AI_CONSENT,
+      }),
+    ).resolves.toBe("created");
+
+    const insert = prepared.find((statement) =>
+      statement.query.includes("INSERT INTO scan_sessions"),
+    );
+    expect(insert?.query).toContain("ai_consent_id");
+    expect(insert?.query).toContain("u.ai_consent_id");
+    expect(insert?.query).toContain("u.ai_consent_policy_version");
+    expect(insert?.query).toContain("u.ai_consent_provider");
+    expect(insert?.query).toContain("u.ai_consent_route");
+  });
 
   it("fences stale chunk owners from saving, completing, or failing a newer claim", async () => {
     type RecordedStatement = D1PreparedStatementLike & {
@@ -885,4 +1007,91 @@ describe("scan repository", () => {
       await expect(repository.requestCancel("scan-1")).resolves.toBe(scan);
     },
   );
+
+  it("stores only the scoped Editor session hash and expiry", async () => {
+    const prepared: Array<{ query: string; values: unknown[] }> = [];
+    const db = {
+      prepare(query: string) {
+        const record = { query, values: [] as unknown[] };
+        prepared.push(record);
+        let statement: D1PreparedStatementLike;
+        statement = {
+          bind: (...values: unknown[]) => {
+            record.values = values;
+            return statement;
+          },
+          first: async <T>() => null as T | null,
+          all: async <T>() => ({ results: [] as T[] }),
+          run: async () => ({ success: true }),
+        };
+        return statement;
+      },
+      batch: async () => [],
+    } satisfies D1DatabaseLike;
+    const repository = new ScanRepository(db, () => "2026-07-19T00:00:00.000Z");
+
+    await repository.createEditorSession({
+      tokenHash: "session-token-hash",
+      scanId: "scan-1",
+      expiresAt: "2026-07-20T00:00:00.000Z",
+    });
+
+    expect(prepared[0]?.query).toContain("INSERT INTO editor_sessions");
+    expect(prepared[0]?.values).toEqual([
+      "session-token-hash",
+      "scan-1",
+      "2026-07-20T00:00:00.000Z",
+      "2026-07-19T00:00:00.000Z",
+    ]);
+  });
+
+  it("authorizes only an unexpired unrevoked session for its completed scan", async () => {
+    let query = "";
+    let values: unknown[] = [];
+    const db = {
+      prepare(nextQuery: string) {
+        query = nextQuery;
+        let statement: D1PreparedStatementLike;
+        statement = {
+          bind: (...nextValues: unknown[]) => {
+            values = nextValues;
+            return statement;
+          },
+          first: async <T>() =>
+            ({
+              id: "scan-1",
+              upload_id: "upload-1",
+              access_token_hash: "scan-token-hash",
+              mode: "quick",
+              status: "completed",
+              source_hash: "source-hash",
+              private_bundle_key: "artifacts/scan-1/bundle.json",
+              private_report_key: "artifacts/scan-1/report.json",
+              cancel_requested_at: null,
+              created_at: "2026-07-18T00:00:00.000Z",
+              updated_at: "2026-07-18T00:10:00.000Z",
+            }) as T,
+          all: async <T>() => ({ results: [] as T[] }),
+          run: async () => ({ success: true }),
+        };
+        return statement;
+      },
+      batch: async () => [],
+    } satisfies D1DatabaseLike;
+    const repository = new ScanRepository(db, () => "2026-07-19T00:00:00.000Z");
+
+    await expect(
+      repository.authorizeEditorSession("scan-1", "session-token-hash"),
+    ).resolves.toMatchObject({ id: "scan-1", status: "completed" });
+
+    expect(query).toContain("FROM editor_sessions");
+    expect(query).toContain("editor_sessions.revoked_at IS NULL");
+    expect(query).toContain("editor_sessions.expires_at > ?");
+    expect(query).toContain("scan_sessions.status = 'completed'");
+    expect(values).toEqual([
+      "session-token-hash",
+      "scan-1",
+      "2026-07-19T00:00:00.000Z",
+    ]);
+  });
 });

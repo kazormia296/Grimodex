@@ -10,6 +10,7 @@
     "SCAN_WORKERS_AI_ENABLED": "true",
     "SCAN_FRONTIER_ENABLED": "true",
     "SCAN_EDITOR_AI_ENABLED": "true",
+    "SCAN_EDITOR_SESSION_TTL_HOURS": "24",
     "SCAN_DAILY_LIMIT_UNITS": "1000",
     "SCAN_MONTHLY_LIMIT_UNITS": "20000",
     "SCAN_MAX_ACTIVE_JOBS": "8",
@@ -21,9 +22,9 @@
     "SCAN_UPLOAD_RETENTION_MINUTES": "60",
     "SCAN_TURNSTILE_REQUIRED": "true",
     "SCAN_ENVIRONMENT": "production",
-    "SCAN_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct",
+    "SCAN_AI_MODEL": "@cf/zai-org/glm-4.7-flash",
     "SCAN_FRONTIER_MODEL": "gpt-4o-mini",
-    "ALLOWED_ORIGIN": "https://try.grimodex.app",
+    "ALLOWED_ORIGINS": "https://scan.grimodex.app,https://try.grimodex.app",
   },
   "d1_databases": [
     {

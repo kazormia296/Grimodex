@@ -18,6 +18,7 @@ rules:
     requirements:
       - GDX-ROUTE-001
       - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
       - GDX-TOOL-001
       - GDX-POLICY-001
       - GDX-GROUND-001
@@ -47,6 +48,7 @@ rules:
     requirements:
       - GDX-ROUTE-001
       - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
       - GDX-TRACE-001
     suites:
       - ai-routing
@@ -60,6 +62,7 @@ rules:
       - src-tauri/crates/grimodex-ai/build.rs
     requirements:
       - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
       - GDX-TOOL-001
       - GDX-POLICY-001
     suites:
@@ -112,6 +115,7 @@ rules:
     requirements:
       - GDX-GROUND-001
       - GDX-ARTIFACT-001
+      - GDX-AI-CONSENT-001
       - GDX-TRACE-001
     suites:
       - scan-contract
@@ -125,5 +129,19 @@ rules:
       - GDX-ARTIFACT-001
     suites:
       - prompt-contract
+      - scan-contract
+  - id: ai-data-legal-notices
+    reason: Terms, privacy notices, and EULA versioning must remain aligned with the runtime AI disclosure and consent boundary.
+    paths:
+      - public/TERMS_*.md
+      - public/PRIVACY_*.md
+      - src/features/legal/constants.ts
+      - src/features/legal/constants.test.ts
+    requirements:
+      - GDX-AI-CONSENT-001
+      - GDX-TRACE-001
+    suites:
+      - ai-routing
+      - tool-policy
       - scan-contract
 default: all

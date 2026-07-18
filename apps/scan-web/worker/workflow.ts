@@ -21,6 +21,10 @@ import {
   type ScanStatus,
 } from "./stateMachine";
 import { isCancellationRequestedOrTerminal } from "./workflowState";
+import {
+  ensureWorkflowScanActive,
+  WorkflowScanCancelledError,
+} from "./workflowConsent";
 
 export interface ScanWorkflowEvent {
   payload: { scanId: string };
@@ -32,13 +36,6 @@ export interface ScanWorkflowStep {
 
 export interface ScanWorkflowParams {
   scanId: string;
-}
-
-class ScanCancelledError extends Error {
-  constructor() {
-    super("scan was cancelled");
-    this.name = "ScanCancelledError";
-  }
 }
 
 function progressStatus(status: ScanStatus): number {
@@ -67,6 +64,7 @@ async function advanceTo(
   repository: ScanRepository,
   scanId: string,
   nextStatus: ScanStatus,
+  env: ScanEnv,
 ): Promise<void> {
   const current = await repository.getScan(scanId);
   if (
@@ -82,7 +80,7 @@ async function advanceTo(
       // Another worker or the cancel endpoint won the CAS race. Re-read the
       // state before entering an expensive step; in particular, do not keep
       // calling an AI provider after cancellation has been requested.
-      await ensureActive(repository, scanId);
+      await ensureWorkflowScanActive(repository, scanId, env);
       if ((await repository.getScan(scanId))?.status === nextStatus) return;
       throw new Error(
         `scan transition was superseded before ${nextStatus} could start`,
@@ -93,27 +91,6 @@ async function advanceTo(
   throw new Error(
     `scan cannot progress from ${current.status} to ${nextStatus}`,
   );
-}
-
-async function ensureActive(
-  repository: ScanRepository,
-  scanId: string,
-): Promise<void> {
-  const scan = await repository.getScan(scanId);
-  if (!scan) throw new Error("scan session was not found");
-  if (scan.status === "cancel_requested") {
-    await repository.transitionScan(scanId, "cancelled");
-    throw new ScanCancelledError();
-  }
-  if (scan.status === "cancelled" || scan.status === "deleted")
-    throw new ScanCancelledError();
-  if (
-    scan.status === "completed" ||
-    scan.status === "failed" ||
-    scan.status === "expired"
-  ) {
-    throw new Error(`scan is already terminal: ${scan.status}`);
-  }
 }
 
 export async function markTerminal(
@@ -175,14 +152,14 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       }
 
       await step.do("load-job", async () => {
-        await ensureActive(repository, scanId);
-        await advanceTo(repository, scanId, "validating");
+        await ensureWorkflowScanActive(repository, scanId, this.env);
+        await advanceTo(repository, scanId, "validating", this.env);
         await repository.updateJobStage(scanId, "load-job");
         return { scanId, status: "validating" };
       });
 
       await step.do("validate-source", async () => {
-        await ensureActive(repository, scanId);
+        await ensureWorkflowScanActive(repository, scanId, this.env);
         const current = await repository.getScan(scanId);
         const upload = current
           ? await repository.getUploadIntent(current.uploadId)
@@ -202,7 +179,7 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       });
 
       await step.do("normalize-document", async () => {
-        await ensureActive(repository, scanId);
+        await ensureWorkflowScanActive(repository, scanId, this.env);
         const normalized = await normalizeScanSource(
           this.env,
           repository,
@@ -213,8 +190,8 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       });
 
       await step.do("build-chunks", async () => {
-        await ensureActive(repository, scanId);
-        await advanceTo(repository, scanId, "chunking");
+        await ensureWorkflowScanActive(repository, scanId, this.env);
+        await advanceTo(repository, scanId, "chunking", this.env);
         const current = await repository.getScan(scanId);
         if (!current) throw new Error("scan session was not found");
         const chunks = await buildScanChunks(
@@ -228,8 +205,8 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       });
 
       await step.do("extract-chunks", async () => {
-        await ensureActive(repository, scanId);
-        await advanceTo(repository, scanId, "extracting");
+        await ensureWorkflowScanActive(repository, scanId, this.env);
+        await advanceTo(repository, scanId, "extracting", this.env);
         const extraction = await extractScanChunks(
           this.env,
           repository,
@@ -244,8 +221,8 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       });
 
       await step.do("merge-extractions", async () => {
-        await ensureActive(repository, scanId);
-        await advanceTo(repository, scanId, "merging");
+        await ensureWorkflowScanActive(repository, scanId, this.env);
+        await advanceTo(repository, scanId, "merging", this.env);
         const merged = await mergeScanExtractions(this.env, repository, scanId);
         await repository.updateJobStage(scanId, "merge-extractions");
         return {
@@ -259,8 +236,8 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       if (!current) throw new Error("scan session was not found");
       if (current.mode === "full") {
         await step.do("adjudicate", async () => {
-          await ensureActive(repository, scanId);
-          await advanceTo(repository, scanId, "adjudicating");
+          await ensureWorkflowScanActive(repository, scanId, this.env);
+          await advanceTo(repository, scanId, "adjudicating", this.env);
           const adjudication = await adjudicateScan(
             this.env,
             repository,
@@ -275,8 +252,8 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       }
 
       await step.do("build-bundle", async () => {
-        await ensureActive(repository, scanId);
-        await advanceTo(repository, scanId, "reporting");
+        await ensureWorkflowScanActive(repository, scanId, this.env);
+        await advanceTo(repository, scanId, "reporting", this.env);
         const artifacts = await buildScanArtifacts(
           this.env,
           repository,
@@ -292,13 +269,13 @@ export class ScanWorkflow extends WorkflowEntrypoint<
       });
 
       await step.do("build-report", async () => {
-        await ensureActive(repository, scanId);
+        await ensureWorkflowScanActive(repository, scanId, this.env);
         await repository.updateJobStage(scanId, "build-report");
         return { scanId, status: "reporting" };
       });
 
       await step.do("finalize", async () => {
-        await ensureActive(repository, scanId);
+        await ensureWorkflowScanActive(repository, scanId, this.env);
         await repository.updateJobStage(scanId, "finalize");
         const latest = await repository.getScan(scanId);
         if (!latest) throw new Error("scan session was not found");
@@ -308,14 +285,14 @@ export class ScanWorkflow extends WorkflowEntrypoint<
             "completed",
           );
           if (!transitioned || transitioned.status !== "completed") {
-            await ensureActive(repository, scanId);
+            await ensureWorkflowScanActive(repository, scanId, this.env);
             throw new Error("scan finalization was superseded");
           }
         }
         const finalized = await repository.getScan(scanId);
         if (!finalized) throw new Error("scan session was not found");
         if (finalized.status !== "completed") {
-          await ensureActive(repository, scanId);
+          await ensureWorkflowScanActive(repository, scanId, this.env);
           throw new Error("scan finalization did not reach completed");
         }
         await repository.settleUsage(scanId, settlementUnits(finalized.status));
@@ -325,7 +302,7 @@ export class ScanWorkflow extends WorkflowEntrypoint<
     } catch (cause) {
       const failedScan = await repository.getScan(scanId);
       const cancelled =
-        cause instanceof ScanCancelledError ||
+        cause instanceof WorkflowScanCancelledError ||
         cause instanceof ScanDeletedError ||
         isCancellationRequestedOrTerminal(failedScan?.status ?? null);
       await step.do(cancelled ? "mark-cancelled" : "mark-failed", async () => {

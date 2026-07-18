@@ -16,6 +16,65 @@ function uploadIntentResponse(): Response {
 }
 
 describe("ScanApiClient AI data consent", () => {
+  it("loads and validates the current public disclosure before any upload", async () => {
+    const disclosure = {
+      schemaVersion: "grimodex/ai-data-disclosure/1",
+      policyVersion: "2026-07-19.1",
+      route: "scan",
+      provider: "workers-ai",
+      consentId: "consent_scan_workers_ai_2026_07_19_abcdef",
+      usagePolicy: {
+        summary: "Explicit consent is required.",
+        policyUrl: "https://example.com/policy",
+      },
+      sentData: [{ category: "source", description: "Manuscript" }],
+      processingDestinations: [
+        {
+          processor: "Cloudflare Workers AI",
+          purpose: "Scan",
+          location: "Cloudflare managed infrastructure",
+          privacyPolicyUrl: "https://example.com/privacy",
+        },
+      ],
+      storage: {
+        application: {
+          storesPrompt: true,
+          storesResponse: true,
+          location: "Cloudflare R2 and D1",
+        },
+        provider: {
+          summary: "Provider policy applies.",
+          policyUrl: "https://example.com/provider",
+        },
+      },
+      retention: {
+        application: { uploadMinutes: 60, sourceDays: 1, artifactDays: 30 },
+        provider: {
+          summary: "Provider retention applies.",
+          policyUrl: "https://example.com/provider",
+        },
+      },
+      trainingUse: {
+        status: "not-used",
+        summary: "Not used for training.",
+        policyUrl: "https://example.com/training",
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json(disclosure),
+    );
+    const client = new ScanApiClient({
+      baseUrl: "https://scan.example",
+      fetchImpl,
+    });
+
+    await expect(client.getAiDisclosure("scan")).resolves.toEqual(disclosure);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://scan.example/api/v1/ai-disclosures/scan",
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
+  });
+
   it("authorizes an upload with the opaque consent header without copying it into JSON", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => uploadIntentResponse());
     const client = new ScanApiClient({

@@ -114,6 +114,11 @@ const SLOW_COMMANDS = new Set([
 let browserMock: BrowserMock | null = null;
 let browserMockReady: Promise<BrowserMock> | null = null;
 
+export function installBrowserMock(mock: BrowserMock): void {
+  browserMock = mock;
+  browserMockReady = Promise.resolve(mock);
+}
+
 function getBrowserMock(): Promise<BrowserMock> {
   if (browserMock) return Promise.resolve(browserMock);
   if (!browserMockReady) {

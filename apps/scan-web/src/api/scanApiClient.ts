@@ -1,4 +1,9 @@
-import type { EditorSeedV1, ScanBundleV1 } from "@grimodex/scan-contract";
+import {
+  parseAiDataDisclosure,
+  type AiDataDisclosureRoute,
+  type AiDataDisclosureV1,
+  type ScanBundleV1,
+} from "@grimodex/scan-contract";
 
 export type ScanMode = "quick" | "full";
 export type ScanStatus =
@@ -32,6 +37,18 @@ export interface UploadIntent {
   uploadId: string;
   uploadUrl: string;
   uploadToken: string;
+  expiresAt: string;
+}
+
+export interface UploadIntentInput {
+  filename: string;
+  contentType: string;
+  size: number;
+  consentId: string;
+}
+
+export interface EditorToken {
+  token: string;
   expiresAt: string;
 }
 
@@ -73,6 +90,12 @@ class InvalidScanCreateResponseError extends Error {
 
 function trimBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function assertConsentId(consentId: unknown): asserts consentId is string {
+  if (typeof consentId !== "string" || consentId.trim().length === 0) {
+    throw new Error("AI data consent is required before uploading a source");
+  }
 }
 
 async function responseError(response: Response): Promise<ScanApiError> {
@@ -166,24 +189,38 @@ export class ScanApiClient {
     return (await response.json()) as T;
   }
 
-  async createUploadIntent(input: {
-    filename: string;
-    contentType: string;
-    size: number;
-  }): Promise<UploadIntent> {
+  async createUploadIntent(input: UploadIntentInput): Promise<UploadIntent> {
+    assertConsentId(input.consentId);
+    const { consentId, ...upload } = input;
     const body = {
-      ...input,
+      ...upload,
       ...(this.turnstileToken ? { turnstileToken: this.turnstileToken } : {}),
     };
     return this.json<UploadIntent>("/api/v1/upload-intents", {
       method: "POST",
+      headers: { "x-ai-consent-id": consentId },
       body: JSON.stringify(body),
     });
   }
 
+  async getAiDisclosure(
+    route: AiDataDisclosureRoute,
+  ): Promise<AiDataDisclosureV1> {
+    const disclosure = await this.json<unknown>(
+      `/api/v1/ai-disclosures/${encodeURIComponent(route)}`,
+      { cache: "no-store" },
+    );
+    const parsed = parseAiDataDisclosure(disclosure);
+    if (!parsed.ok) {
+      throw new Error("AI data disclosure response is invalid");
+    }
+    return parsed.value;
+  }
+
   async uploadSource(
     file: Blob & { name?: string },
-    mode: ScanMode = "quick",
+    mode: ScanMode,
+    consentId: string,
   ): Promise<ScanHandle> {
     const filename = file.name ?? "source.txt";
     const contentType = file.type || "application/octet-stream";
@@ -191,6 +228,7 @@ export class ScanApiClient {
       filename,
       contentType,
       size: file.size,
+      consentId,
     });
     const uploadResponse = await this.fetchImpl(intent.uploadUrl, {
       method: "PUT",
@@ -318,18 +356,13 @@ export class ScanApiClient {
     );
   }
 
-  async getEditorSeed(
+  async createEditorToken(
     handle: Pick<ScanHandle, "scanId" | "scanToken">,
-  ): Promise<EditorSeedV1> {
-    const token = await this.json<{ token: string }>(
+  ): Promise<EditorToken> {
+    return this.json<EditorToken>(
       `/api/v1/scans/${encodeURIComponent(handle.scanId)}/editor-tokens`,
       { method: "POST", headers: { "x-scan-token": handle.scanToken } },
     );
-    // The one-time token is sent in a header, never placed in a URL or query
-    // string, so browser history and reverse-proxy logs do not capture it.
-    return this.json<EditorSeedV1>("/api/v1/editor-seeds", {
-      headers: { authorization: `Bearer ${token.token}` },
-    });
   }
 
   async sendFindingFeedback(

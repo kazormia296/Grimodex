@@ -5,6 +5,7 @@ import {
   type ScanStatus,
 } from "./stateMachine";
 import { chunkD1Bindings } from "./d1Limits";
+import type { AiDataConsentIdentity } from "./ai/aiDataDisclosure";
 
 export type ScanMode = "quick" | "full";
 export type ScanJobStage =
@@ -37,6 +38,7 @@ export interface UploadIntentRecord {
   expiresAt: string;
   actualSize: number | null;
   sourceHash: string | null;
+  aiConsent?: AiDataConsentIdentity | null;
 }
 
 export interface ScanSessionRecord {
@@ -51,6 +53,7 @@ export interface ScanSessionRecord {
   createdAt: string;
   updatedAt: string;
   accessTokenHash: string;
+  aiConsent?: AiDataConsentIdentity | null;
 }
 
 export interface EditorTokenRecord {
@@ -122,6 +125,10 @@ interface UploadIntentRow {
   expires_at: string;
   actual_size: number | null;
   source_hash: string | null;
+  ai_consent_id: string | null;
+  ai_consent_policy_version: string | null;
+  ai_consent_provider: string | null;
+  ai_consent_route: string | null;
 }
 
 interface ScanSessionRow {
@@ -136,6 +143,10 @@ interface ScanSessionRow {
   cancel_requested_at: string | null;
   created_at: string;
   updated_at: string;
+  ai_consent_id: string | null;
+  ai_consent_policy_version: string | null;
+  ai_consent_provider: string | null;
+  ai_consent_route: string | null;
 }
 
 interface EditorTokenRow {
@@ -158,12 +169,15 @@ export class ScanRepository {
     private readonly now: () => string = () => new Date().toISOString(),
   ) {}
 
-  async createUploadIntent(record: UploadIntentRecord): Promise<void> {
+  async createUploadIntent(
+    record: UploadIntentRecord & { aiConsent: AiDataConsentIdentity },
+  ): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO upload_intents
-          (id, token_hash, filename, content_type, expected_size, source_key, status, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, token_hash, filename, content_type, expected_size, source_key, status, expires_at,
+           ai_consent_id, ai_consent_policy_version, ai_consent_provider, ai_consent_route, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         record.id,
@@ -174,6 +188,10 @@ export class ScanRepository {
         record.sourceKey,
         record.status,
         record.expiresAt,
+        record.aiConsent.consentId,
+        record.aiConsent.policyVersion,
+        record.aiConsent.provider,
+        record.aiConsent.route,
         this.now(),
       )
       .run();
@@ -979,7 +997,8 @@ export class ScanRepository {
     const row = await this.db
       .prepare(
         `SELECT id, token_hash, filename, content_type, expected_size, source_key, status, expires_at,
-                actual_size, source_hash
+                actual_size, source_hash, ai_consent_id, ai_consent_policy_version,
+                ai_consent_provider, ai_consent_route
          FROM upload_intents WHERE id = ?`,
       )
       .bind(id)
@@ -1038,6 +1057,7 @@ export class ScanRepository {
     reservedUnits: number;
     accessTokenHash: string;
     buckets: ReadonlyArray<{ key: string; limit: number }>;
+    aiConsent: AiDataConsentIdentity;
     maxActiveJobs?: number | null;
   }): Promise<
     | "created"
@@ -1046,12 +1066,24 @@ export class ScanRepository {
     | "budget-exhausted"
     | "concurrency-exhausted"
     | "upload-not-ready"
+    | "consent-mismatch"
   > {
+    const matchesConsent = (
+      identity: AiDataConsentIdentity | null | undefined,
+    ): boolean =>
+      Boolean(
+        identity &&
+        identity.consentId === input.aiConsent.consentId &&
+        identity.policyVersion === input.aiConsent.policyVersion &&
+        identity.provider === input.aiConsent.provider &&
+        identity.route === input.aiConsent.route,
+      );
     const matchesRequest = (scan: ScanSessionRecord): boolean =>
       scan.id === input.id &&
       scan.uploadId === input.uploadId &&
       scan.mode === input.mode &&
-      scan.accessTokenHash === input.accessTokenHash;
+      scan.accessTokenHash === input.accessTokenHash &&
+      matchesConsent(scan.aiConsent);
     const existing = await this.getScan(input.id);
     if (existing) return matchesRequest(existing) ? "existing" : "conflict";
 
@@ -1093,13 +1125,19 @@ export class ScanRepository {
         `INSERT INTO scan_sessions
           (id, upload_id, access_token_hash, mode, status, source_hash,
            private_bundle_key, private_report_key, cancel_requested_at,
+           ai_consent_id, ai_consent_policy_version, ai_consent_provider, ai_consent_route,
            created_at, updated_at)
          SELECT ?, u.id, ?, ?, 'queued', u.source_hash,
-                NULL, NULL, NULL, ?, ?
+                NULL, NULL, NULL, u.ai_consent_id, u.ai_consent_policy_version,
+                u.ai_consent_provider, u.ai_consent_route, ?, ?
          FROM upload_intents u
          WHERE u.id = ? AND u.status = 'uploaded'
            AND u.actual_size IS NOT NULL AND u.source_hash IS NOT NULL
            AND u.expires_at > ?
+           AND u.ai_consent_id = ?
+           AND u.ai_consent_policy_version = ?
+           AND u.ai_consent_provider = ?
+           AND u.ai_consent_route = ?
            ${capacitySql}
            ${concurrencySql}`,
       )
@@ -1111,6 +1149,10 @@ export class ScanRepository {
         now,
         input.uploadId,
         now,
+        input.aiConsent.consentId,
+        input.aiConsent.policyVersion,
+        input.aiConsent.provider,
+        input.aiConsent.route,
         ...capacityBindings,
         ...concurrencyBindings,
       );
@@ -1169,6 +1211,7 @@ export class ScanRepository {
     if (persisted) return matchesRequest(persisted) ? "created" : "conflict";
     const upload = await this.getUploadIntent(input.uploadId);
     if (!upload || upload.status !== "uploaded") return "upload-not-ready";
+    if (!matchesConsent(upload.aiConsent)) return "consent-mismatch";
     for (const bucket of input.buckets) {
       const row = await this.db
         .prepare(
@@ -1195,7 +1238,8 @@ export class ScanRepository {
     const row = await this.db
       .prepare(
         `SELECT id, upload_id, access_token_hash, mode, status, source_hash, private_bundle_key, private_report_key,
-                cancel_requested_at, created_at, updated_at
+                cancel_requested_at, ai_consent_id, ai_consent_policy_version,
+                ai_consent_provider, ai_consent_route, created_at, updated_at
          FROM scan_sessions WHERE id = ?`,
       )
       .bind(id)
@@ -1290,7 +1334,8 @@ export class ScanRepository {
     const row = await this.db
       .prepare(
         `SELECT id, upload_id, access_token_hash, mode, status, source_hash, private_bundle_key, private_report_key,
-                cancel_requested_at, created_at, updated_at
+                cancel_requested_at, ai_consent_id, ai_consent_policy_version,
+                ai_consent_provider, ai_consent_route, created_at, updated_at
          FROM scan_sessions WHERE id = ? AND access_token_hash = ?`,
       )
       .bind(id, accessTokenHash)
@@ -1341,7 +1386,8 @@ export class ScanRepository {
            AND status NOT IN ('completed', 'cancelled', 'failed', 'expired', 'deleted')
          RETURNING id, upload_id, access_token_hash, mode, status, source_hash,
                    private_bundle_key, private_report_key, cancel_requested_at,
-                   created_at, updated_at`,
+                   ai_consent_id, ai_consent_policy_version, ai_consent_provider,
+                   ai_consent_route, created_at, updated_at`,
       )
       .bind(fallback, updatedAt, id)
       .first<ScanSessionRow>();
@@ -1398,7 +1444,8 @@ export class ScanRepository {
                           'extracting', 'merging', 'adjudicating', 'reporting')
          RETURNING id, upload_id, access_token_hash, mode, status, source_hash,
                    private_bundle_key, private_report_key, cancel_requested_at,
-                   created_at, updated_at`,
+                   ai_consent_id, ai_consent_policy_version, ai_consent_provider,
+                   ai_consent_route, created_at, updated_at`,
       )
       .bind(updatedAt, updatedAt, id)
       .first<ScanSessionRow>();
@@ -1418,6 +1465,13 @@ export class ScanRepository {
       this.db
         .prepare(
           `UPDATE public_reports SET status = 'unpublished', updated_at = ?
+           WHERE scan_id = ?`,
+        )
+        .bind(updatedAt, id),
+      this.db
+        .prepare(
+          `UPDATE editor_sessions
+           SET revoked_at = COALESCE(revoked_at, ?)
            WHERE scan_id = ?`,
         )
         .bind(updatedAt, id),
@@ -1492,6 +1546,63 @@ export class ScanRepository {
           expiresAt: row.expires_at,
         }
       : null;
+  }
+
+  async createEditorSession(record: {
+    tokenHash: string;
+    scanId: string;
+    expiresAt: string;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO editor_sessions
+          (token_hash, scan_id, expires_at, revoked_at, created_at)
+         VALUES (?, ?, ?, NULL, ?)`,
+      )
+      .bind(record.tokenHash, record.scanId, record.expiresAt, this.now())
+      .run();
+  }
+
+  async authorizeEditorSession(
+    scanId: string,
+    tokenHash: string,
+  ): Promise<ScanSessionRecord | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT scan_sessions.id, scan_sessions.upload_id,
+                scan_sessions.access_token_hash, scan_sessions.mode,
+                scan_sessions.status, scan_sessions.source_hash,
+                scan_sessions.private_bundle_key,
+                scan_sessions.private_report_key,
+                scan_sessions.cancel_requested_at,
+                scan_sessions.ai_consent_id,
+                scan_sessions.ai_consent_policy_version,
+                scan_sessions.ai_consent_provider,
+                scan_sessions.ai_consent_route,
+                scan_sessions.created_at, scan_sessions.updated_at
+         FROM editor_sessions
+         INNER JOIN scan_sessions
+           ON scan_sessions.id = editor_sessions.scan_id
+         WHERE editor_sessions.token_hash = ?
+           AND editor_sessions.scan_id = ?
+           AND editor_sessions.revoked_at IS NULL
+           AND editor_sessions.expires_at > ?
+           AND scan_sessions.status = 'completed'`,
+      )
+      .bind(tokenHash, scanId, this.now())
+      .first<ScanSessionRow>();
+    return row ? this.scanFromRow(row) : null;
+  }
+
+  async revokeEditorSession(tokenHash: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE editor_sessions
+         SET revoked_at = COALESCE(revoked_at, ?)
+         WHERE token_hash = ?`,
+      )
+      .bind(this.now(), tokenHash)
+      .run();
   }
 
   async saveFindingFeedback(input: {
@@ -1798,6 +1909,7 @@ export class ScanRepository {
       expiresAt: row.expires_at,
       actualSize: row.actual_size,
       sourceHash: row.source_hash,
+      aiConsent: this.aiConsentFromRow(row),
     };
   }
 
@@ -1814,6 +1926,32 @@ export class ScanRepository {
       cancelRequestedAt: row.cancel_requested_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      aiConsent: this.aiConsentFromRow(row),
+    };
+  }
+
+  private aiConsentFromRow(row: {
+    ai_consent_id: string | null;
+    ai_consent_policy_version: string | null;
+    ai_consent_provider: string | null;
+    ai_consent_route: string | null;
+  }): AiDataConsentIdentity | null {
+    if (
+      typeof row.ai_consent_id !== "string" ||
+      !/^consent_[0-9a-f]{64}$/.test(row.ai_consent_id) ||
+      typeof row.ai_consent_policy_version !== "string" ||
+      row.ai_consent_policy_version.length === 0 ||
+      typeof row.ai_consent_provider !== "string" ||
+      row.ai_consent_provider.length === 0 ||
+      row.ai_consent_route !== "scan"
+    ) {
+      return null;
+    }
+    return {
+      consentId: row.ai_consent_id,
+      policyVersion: row.ai_consent_policy_version,
+      provider: row.ai_consent_provider,
+      route: row.ai_consent_route,
     };
   }
 

@@ -30,9 +30,15 @@ export class HostedAiClient {
       context?: string;
       /** Reuse this value when retrying a request whose response was lost. */
       idempotencyKey: string;
+      /** Opaque identity returned by the current hosted-editor disclosure. */
+      consentId: string;
     },
   ): Promise<{ response: string; costWeight: number }> {
-    const { idempotencyKey, ...body } = input;
+    const { idempotencyKey, consentId, ...body } = input;
+    const normalizedConsentId = consentId?.trim() ?? "";
+    if (!/^consent_[A-Za-z0-9_-]{16,248}$/.test(normalizedConsentId)) {
+      throw new Error("AI data consent is required");
+    }
     const response = await this.fetchImpl(
       `${this.baseUrl}/api/v1/scans/${encodeURIComponent(handle.scanId)}/editor-ai`,
       {
@@ -42,6 +48,7 @@ export class HostedAiClient {
           "content-type": "application/json",
           "x-scan-token": handle.scanToken,
           "x-idempotency-key": idempotencyKey,
+          "x-ai-consent-id": normalizedConsentId,
         },
         body: JSON.stringify(body),
       },

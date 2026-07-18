@@ -438,21 +438,12 @@ importers:
       '@grimodex/scan-prompts':
         specifier: workspace:*
         version: link:../../packages/scan-prompts
-      '@tiptap/react':
-        specifier: 3.28.0
-        version: 3.28.0(@floating-ui/dom@1.8.0)(@tiptap/core@3.28.0(@tiptap/pm@3.28.0))(@tiptap/pm@3.28.0)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@tiptap/starter-kit':
-        specifier: 3.28.0
-        version: 3.28.0
       react:
         specifier: 19.2.7
         version: 19.2.7
       react-dom:
         specifier: 19.2.7
         version: 19.2.7(react@19.2.7)
-      sql.js:
-        specifier: ^1.14.1
-        version: 1.14.1
 
   packages/scan-contract:
     dependencies:

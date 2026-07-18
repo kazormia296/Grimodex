@@ -1,8 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+import { createMinimalJaSeed } from "../../../../apps/scan-web/src/fixtures/minimalJa";
 import { consumeEditorSeedHandoff } from "./webEditorHandoff";
 
 describe("consumeEditorSeedHandoff", () => {
   it("removes the one-time fragment before consuming the seed via Authorization", async () => {
+    const seed = createMinimalJaSeed();
+    const envelope = {
+      schemaVersion: "grimodex/editor-handoff/1" as const,
+      seed,
+      hostedAiSession: {
+        scanId: "11111111-1111-4111-8111-111111111111",
+        token: "a".repeat(64),
+        expiresAt: "2026-07-20T00:00:00.000Z",
+      },
+    };
     const events: string[] = [];
     const replaceHistory = vi.fn((href: string) => {
       events.push("replace-history");
@@ -19,7 +30,7 @@ describe("consumeEditorSeedHandoff", () => {
         expect(new Headers(init?.headers).get("authorization")).toBe(
           "Bearer one-time/token=",
         );
-        return Response.json({ schemaVersion: "test-editor-seed" });
+        return Response.json(envelope);
       },
     );
 
@@ -30,7 +41,7 @@ describe("consumeEditorSeedHandoff", () => {
         fetchImpl,
         replaceHistory,
       }),
-    ).resolves.toEqual({ schemaVersion: "test-editor-seed" });
+    ).resolves.toEqual(envelope);
 
     expect(events).toEqual(["replace-history", "fetch-seed"]);
     expect(replaceHistory).toHaveBeenCalledOnce();
@@ -52,5 +63,23 @@ describe("consumeEditorSeedHandoff", () => {
 
     expect(replaceHistory).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the Worker returns an unvalidated handoff", async () => {
+    const replaceHistory = vi.fn();
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ schemaVersion: "grimodex-scan/editor-seed/1" }),
+    );
+
+    await expect(
+      consumeEditorSeedHandoff({
+        href: "https://try.grimodex.app/editor#scan-import=one-time",
+        apiBaseUrl: "https://scan.example",
+        fetchImpl,
+        replaceHistory,
+      }),
+    ).rejects.toThrow("Editor handoff response is invalid");
+
+    expect(replaceHistory).toHaveBeenCalledOnce();
   });
 });

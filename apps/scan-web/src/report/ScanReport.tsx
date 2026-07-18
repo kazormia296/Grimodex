@@ -7,6 +7,7 @@ import type {
 
 interface Props {
   bundle: ScanBundleV1;
+  reportMode?: "private" | "demo";
   onOpenEditor?: () => void;
   onFeedback?: (
     findingId: string,
@@ -16,6 +17,7 @@ interface Props {
   onUnpublishPublicReport?: () => void;
   publicReportId?: string;
   publicReportBusy?: boolean;
+  editorBusy?: boolean;
 }
 
 function statusLabel(status: FindingStatus): string {
@@ -49,20 +51,30 @@ function EvidenceList({ finding }: { finding: ScanFinding }) {
 
 export function ScanReport({
   bundle,
+  reportMode = "private",
   onOpenEditor,
   onFeedback,
   onPublishPublicReport,
   onUnpublishPublicReport,
   publicReportId,
   publicReportBusy,
+  editorBusy,
 }: Props) {
   const [activeFinding, setActiveFinding] = useState<string | null>(null);
   return (
     <main className="scan-report" data-testid="scan-report">
       <header className="scan-report__header">
         <div>
-          <p className="scan-eyebrow">Grimodex Scan · Private report</p>
+          <p className="scan-eyebrow">
+            Grimodex Scan ·{" "}
+            {reportMode === "demo" ? "デモレポート" : "Private report"}
+          </p>
           <h1>{bundle.source.title}</h1>
+          {reportMode === "demo" && (
+            <p className="scan-muted">
+              操作確認用のサンプルです。実際の原稿を解析した結果ではありません。
+            </p>
+          )}
           <p className="scan-muted">
             {bundle.source.characterCount.toLocaleString()}文字 ·{" "}
             {bundle.source.sectionCount}章 · {bundle.source.paragraphCount}段落
@@ -74,8 +86,9 @@ export function ScanReport({
               type="button"
               className="scan-primary"
               onClick={onOpenEditor}
+              disabled={editorBusy}
             >
-              この作品を編集する
+              {editorBusy ? "Editorを準備中…" : "この作品を編集する"}
             </button>
           )}
           {onPublishPublicReport && !publicReportId && (

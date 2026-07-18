@@ -33,8 +33,8 @@ const disclosure = {
       location: "Cloudflare R2",
     },
     provider: {
-      summary: "Provider policy applies.",
-      policyUrl: "https://www.cloudflare.com/privacypolicy/",
+      summary: "Provider retains abuse-monitoring logs for up to 30 days.",
+      policyUrl: "https://example.com/provider-retention",
     },
   },
   retention: {
@@ -72,6 +72,18 @@ describe("AiDataConsentDialog", () => {
     expect(screen.getByText("Cloudflare R2")).toBeInTheDocument();
     expect(screen.getByText(/1日/)).toBeInTheDocument();
     expect(screen.getByText(/30日/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/abuse-monitoring logs for up to 30 days/i),
+    ).toBeInTheDocument();
+    expect(
+      screen
+        .getAllByRole("link", { name: "ポリシーを開く" })
+        .some(
+          (link) =>
+            link.getAttribute("href") ===
+            "https://example.com/provider-retention",
+        ),
+    ).toBe(true);
     expect(
       screen.getByText("入出力はモデル学習に使用されません。"),
     ).toBeInTheDocument();

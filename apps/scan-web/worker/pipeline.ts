@@ -29,7 +29,7 @@ import {
   ScanProviderError,
   type ChunkExtractionInput,
 } from "@grimodex/scan-prompts";
-import type { ScanEnv } from "./env";
+import { DEFAULT_SCAN_AI_MODEL, type ScanEnv } from "./env";
 import {
   createWorkersAiProvider,
   type ProviderCallHooks,
@@ -39,6 +39,7 @@ import {
   type GatewayProviderName,
 } from "./ai/gatewayAiProvider";
 import type { ScanRepository } from "./repository";
+import { assertCurrentAiDataConsentIdentity } from "./ai/aiDataDisclosure";
 
 export const PIPELINE_VERSION = "scan-pipeline/2026-07-16.1";
 const JSON_CONTENT_TYPE = "application/json";
@@ -439,9 +440,9 @@ function providerProfile(
     purpose === "frontier"
       ? env.SCAN_FRONTIER_MODEL?.trim() ||
         (provider === "workers-ai"
-          ? (env.SCAN_AI_MODEL ?? "@cf/meta/llama-3.1-8b-instruct")
+          ? (env.SCAN_AI_MODEL ?? DEFAULT_SCAN_AI_MODEL)
           : "")
-      : (env.SCAN_AI_MODEL ?? "@cf/meta/llama-3.1-8b-instruct");
+      : (env.SCAN_AI_MODEL ?? DEFAULT_SCAN_AI_MODEL);
   return {
     provider,
     model,
@@ -499,6 +500,7 @@ function createConfiguredProvider(
 }
 
 async function ensureBillableProviderActive(
+  env: ScanEnv,
   repository: ScanRepository,
   scanId: string,
 ): Promise<void> {
@@ -514,15 +516,17 @@ async function ensureBillableProviderActive(
   ) {
     throw new Error(`scan is not active for an AI request: ${scan.status}`);
   }
+  await assertCurrentAiDataConsentIdentity(env, scan.aiConsent, "scan");
 }
 
 function billableProviderHooks(
+  env: ScanEnv,
   repository: ScanRepository,
   scanId: string,
 ): ProviderCallHooks {
   return {
-    beforeCall: () => ensureBillableProviderActive(repository, scanId),
-    afterCall: () => ensureBillableProviderActive(repository, scanId),
+    beforeCall: () => ensureBillableProviderActive(env, repository, scanId),
+    afterCall: () => ensureBillableProviderActive(env, repository, scanId),
   };
 }
 
@@ -790,7 +794,7 @@ export async function extractScanChunks(
           env,
           providerName,
           "extraction",
-          billableProviderHooks(repository, scanId),
+          billableProviderHooks(env, repository, scanId),
         )
       : null;
   const profile = providerProfile(env, providerName);
@@ -1275,7 +1279,7 @@ export async function adjudicateScan(
           env,
           providerName,
           "frontier",
-          billableProviderHooks(repository, scanId),
+          billableProviderHooks(env, repository, scanId),
         )
       : null;
   const profile = providerProfile(env, providerName, "frontier");

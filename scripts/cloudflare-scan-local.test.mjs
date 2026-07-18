@@ -34,11 +34,13 @@ describe("Cloudflare Scan local runner", () => {
     assert.deepEqual(
       {
         persistDirectory: plan.persistDirectory,
+        editorOrigin: plan.editorOrigin,
         webOrigin: plan.webOrigin,
         workerOrigin: plan.workerOrigin,
       },
       {
         persistDirectory: ".wrangler/scan-local",
+        editorOrigin: "http://localhost:1430",
         webOrigin: "http://127.0.0.1:4173",
         workerOrigin: "http://127.0.0.1:8787",
       },
@@ -50,6 +52,7 @@ describe("Cloudflare Scan local runner", () => {
         env: {
           VITE_SCAN_API_BASE_URL: "http://127.0.0.1:8787",
           VITE_SCAN_TURNSTILE_REQUIRED: "false",
+          VITE_EDITOR_BASE_URL: "http://localhost:1430/editor",
         },
       },
       {
@@ -130,7 +133,10 @@ describe("Cloudflare Scan local runner", () => {
     assert.equal(config.vars.SCAN_WORKERS_AI_ENABLED, "false");
     assert.equal(config.vars.SCAN_FRONTIER_ENABLED, "false");
     assert.equal(config.vars.SCAN_EDITOR_AI_ENABLED, "false");
-    assert.equal(config.vars.ALLOWED_ORIGIN, "http://127.0.0.1:4173");
+    assert.equal(
+      config.vars.ALLOWED_ORIGINS,
+      "http://127.0.0.1:4173,http://localhost:1430",
+    );
     assert.equal(config.d1_databases[0].preview_database_id, "scan-local");
     assert.equal("ai" in config, false);
     assert.equal(config.d1_databases[0].remote, undefined);
@@ -182,6 +188,12 @@ describe("Cloudflare Scan local runner", () => {
           },
         );
       }
+      if (requestUrl.pathname === "/api/v1/ai-disclosures/scan") {
+        return Response.json({
+          route: "scan",
+          consentId: "consent_local_scan_smoke_1234567890",
+        });
+      }
       if (
         requestUrl.pathname === "/api/v1/upload-intents" &&
         method === "POST"
@@ -230,6 +242,67 @@ describe("Cloudflare Scan local runner", () => {
         return Response.json(minimalScanBundle);
       }
       if (
+        requestUrl.pathname === `/api/v1/scans/${scanId}/editor-tokens` &&
+        method === "POST"
+      ) {
+        return Response.json(
+          {
+            token: "editor-token",
+            expiresAt: "2026-07-19T01:00:00.000Z",
+          },
+          { status: 201 },
+        );
+      }
+      if (requestUrl.pathname === "/api/v1/editor-seeds") {
+        return Response.json(
+          {
+            schemaVersion: "grimodex/editor-handoff/1",
+            seed: {
+              schemaVersion: "grimodex-scan/editor-seed/1",
+              bundle: minimalScanBundle,
+              source: {
+                schemaVersion: "grimodex-scan/source-document/1",
+                title: minimalScanBundle.source.title,
+                language: minimalScanBundle.source.language,
+                fingerprint: minimalScanBundle.source.fingerprint,
+                sections: minimalScanBundle.sections.map((section) => ({
+                  id: section.id,
+                  ordinal: section.ordinal,
+                  title: section.title,
+                  paragraphIds: section.paragraphIds,
+                })),
+                paragraphs: [
+                  {
+                    id: "paragraph:0:0:1111111111111111111111111111111111111111111111111111111111111111",
+                    sectionId:
+                      "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ordinal: 0,
+                    text: "葵は灯台の窓を開けた。",
+                  },
+                  {
+                    id: "paragraph:0:1:2222222222222222222222222222222222222222222222222222222222222222",
+                    sectionId:
+                      "section:0:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ordinal: 1,
+                    text: "白灯台には古い手紙が残っていた。",
+                  },
+                ],
+              },
+            },
+            hostedAiSession: {
+              scanId,
+              token: "a".repeat(64),
+              expiresAt: "2026-07-20T00:00:00.000Z",
+            },
+          },
+          {
+            headers: {
+              "access-control-allow-origin": "http://localhost:1430",
+            },
+          },
+        );
+      }
+      if (
         requestUrl.pathname === `/api/v1/scans/${scanId}` &&
         method === "DELETE"
       ) {
@@ -246,6 +319,7 @@ describe("Cloudflare Scan local runner", () => {
         sleep: async () => undefined,
       });
       assert.deepEqual(result, {
+        editorHandoff: "validated",
         entityCount: 2,
         eventCount: 1,
         findingCount: 1,
@@ -258,6 +332,7 @@ describe("Cloudflare Scan local runner", () => {
       [
         "GET /api/v1/health",
         "GET /",
+        "GET /api/v1/ai-disclosures/scan",
         "POST /api/v1/upload-intents",
         "PUT /api/v1/uploads/upload-1",
         "POST /api/v1/uploads/upload-1/complete",
@@ -265,8 +340,18 @@ describe("Cloudflare Scan local runner", () => {
         `GET /api/v1/scans/${scanId}`,
         `GET /api/v1/scans/${scanId}`,
         `GET /api/v1/scans/${scanId}/report`,
+        `POST /api/v1/scans/${scanId}/editor-tokens`,
+        "GET /api/v1/editor-seeds",
         `DELETE /api/v1/scans/${scanId}`,
       ],
+    );
+    const uploadIntentRequest = requests.find(
+      ({ method, pathname }) =>
+        method === "POST" && pathname === "/api/v1/upload-intents",
+    );
+    assert.equal(
+      uploadIntentRequest.init.headers["x-ai-consent-id"],
+      "consent_local_scan_smoke_1234567890",
     );
   });
 

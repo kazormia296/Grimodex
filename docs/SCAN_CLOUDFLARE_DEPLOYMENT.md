@@ -1,9 +1,26 @@
-# Grimodex Scan Cloudflare deployment
+# Grimodex Scan / hosted Editor Cloudflare deployment
 
-Grimodex Scan is deployed as two independently reversible targets:
+Grimodex Scan and the hosted Editor are deployed as three independently
+reversible targets. Scan and Editor must never share a Pages project or build
+output.
 
-- `grimodex-scan-<environment>`: Worker, Workflow, D1, R2, Workers AI
-- `grimodex-try-<environment>`: Vite/PWA output on Cloudflare Pages
+| Target                         | Staging                 | Production                 | Canonical origin                                                        |
+| ------------------------------ | ----------------------- | -------------------------- | ----------------------------------------------------------------------- |
+| Scan API, Workflow, D1, R2, AI | `grimodex-scan-staging` | `grimodex-scan-production` | Worker route                                                            |
+| Scan Pages                     | `grimodex-scan-staging` | `grimodex-scan`            | `https://grimodex-scan-staging.pages.dev` / `https://scan.grimodex.app` |
+| Editor Pages                   | `grimodex-try-staging`  | `grimodex-try`             | `https://grimodex-try-staging.pages.dev` / `https://try.grimodex.app`   |
+
+The Worker CORS allowlist is an exact, ordered, comma-separated pair. Wildcards,
+extra preview origins, duplicates, and reversed order fail deployment
+validation:
+
+```text
+# staging
+https://grimodex-scan-staging.pages.dev,https://grimodex-try-staging.pages.dev
+
+# production
+https://scan.grimodex.app,https://try.grimodex.app
+```
 
 Production is always prepared from a paused Worker. Do not enable
 `SCAN_ACCEPTING_NEW_JOBS` until staging migration, health, CORS, upload, and AI
@@ -48,12 +65,28 @@ validates the `grimodex-scan/1` report, deletes the scan, and exits. It covers
 the credentials-free Quick Scan path; Turnstile, Full Scan, Workers AI, and
 external AI providers still require a separate staging check.
 
+The hosted Editor is the root Grimodex application, not the Scan web bundle.
+Run it independently with:
+
+```bash
+pnpm dev
+```
+
+Then open `http://localhost:1430/editor`. The local Scan handoff and standalone
+Editor entry point both use that same Editor implementation. The local Scan
+build points its CTA at this URL, the development Editor defaults its handoff
+API to `http://127.0.0.1:8787`, and the local Worker allowlist includes both
+the Scan preview and Editor origins. Start `pnpm dev` before consuming a local
+one-time Editor token.
+
 ## One-time account bootstrap
 
 Authenticate and create isolated staging resources first:
 
 ```bash
 pnpm exec wrangler login
+pnpm exec wrangler pages project create grimodex-scan-staging \
+  --production-branch master
 pnpm exec wrangler pages project create grimodex-try-staging \
   --production-branch master
 pnpm exec wrangler d1 create grimodex-scan-staging
@@ -122,14 +155,29 @@ pnpm scan:cloudflare -- migrate staging
 pnpm scan:cloudflare -- worker-deploy staging
 ```
 
-Wrangler prints the `workers.dev` URL. Build and deploy the PWA with that URL:
+Wrangler prints the `workers.dev` URL. Build and deploy the Scan PWA with that
+URL. The Scan build receives both `VITE_SCAN_API_BASE_URL` and the canonical
+`VITE_EDITOR_BASE_URL=https://grimodex-try-staging.pages.dev/editor`:
 
 ```bash
 pnpm scan:cloudflare -- web-deploy staging \
   --api-base-url https://<staging-worker>.workers.dev
 ```
 
-The Pages origin must exactly match `ALLOWED_ORIGIN` in the Worker config.
+Deploy the hosted Editor independently from the root `dist` output. Staging
+uses the canonical staging Worker URL by default:
+
+```bash
+pnpm editor:cloudflare -- web-deploy staging
+```
+
+This second command targets `grimodex-try-staging`; it never uploads the Scan
+bundle. The Editor build receives `VITE_SCAN_API_BASE_URL` so a Scan handoff can
+use its scoped hosted-AI session. Opening `/editor` without a handoff remains a
+standalone Editor session.
+
+The Worker `ALLOWED_ORIGINS` value must exactly match both canonical Pages
+origins shown above.
 
 ## Smoke checks
 
@@ -142,24 +190,44 @@ The smoke command asserts all of the following instead of only checking that
 URLs return a response:
 
 - health reports `acceptingNewJobs: false`
-- the canonical Pages origin receives the exact CORS header
+- both canonical Scan and Editor origins receive their own exact CORS header
 - a hostile origin receives no CORS grant
 - an upload intent fails with `503 scan_paused`
-- the Pages shell, manifest, and stamped service worker are available from the
-  production branch of the staging Pages project
+- the Scan shell, manifest, and stamped service worker are available from the
+  production branch of the staging Scan Pages project
+
+The deploy-contract tests also verify that the hosted Editor uses the root
+application build, the `grimodex-try[-staging]` projects, the `/editor` SPA
+fallback, and a service worker that does not cache private API or handoff data:
+
+```bash
+pnpm test:cloudflare-scan-deploy
+pnpm test:cloudflare-editor-deploy
+```
 
 This paused smoke does not exercise AI inference. Keep all staging AI feature
 flags disabled until credentials, payload logging, and a disposable-text AI
 smoke are reviewed separately.
 
-Production mutation commands require `--allow-production`. This flag is an
+Production Scan mutation commands require `--allow-production`. This flag is an
 operator acknowledgement, not approval to enable traffic. A production Worker
 whose config accepts new jobs additionally requires the separate
 `--allow-production-traffic` flag.
 
 Production HTTP deployment is currently blocked even with those flags because
 `wrangler.production.jsonc` has `workers_dev: false` and no custom Worker route.
-Before unblocking `worker-deploy`, `web-build`, or `web-deploy`, configure and
-test the production route, replace every production placeholder, and update the
-CLI contract tests. Production D1 migration and Worker dry-run remain available
-behind their existing safeguards.
+Before unblocking `worker-deploy`, configure and test the production route and
+replace every production placeholder. The Editor `web-build` and `web-deploy`
+actions are also hard-blocked until that exact reviewed Worker origin is
+recorded as canonical repository configuration and the CLI contract tests are
+updated. There is currently no production Editor build or deploy command.
+
+The only hosted Editor deployment path currently supported by this repository
+is staging. Its API origin must exactly match
+`https://grimodex-scan-staging.kazormia296.workers.dev`; arbitrary HTTPS,
+third-party, and alternate staging origins are rejected.
+
+Production D1 migration and Worker dry-run remain available behind their
+existing safeguards. Do not use an Editor deployment as a workaround for the
+blocked production Worker/Scan rollout; its API origin must resolve to the
+reviewed production Worker route first.

@@ -48,10 +48,14 @@ describe("ScanApiClient", () => {
     await client.uploadSource(
       new File(["本文"], "novel.txt", { type: "text/plain" }),
       "full",
+      "consent_test_scan_upload_123456",
     );
 
     const intentBody = JSON.parse(String(requests[0]?.init?.body));
     expect(intentBody.turnstileToken).toBe("turnstile-token");
+    expect(requests[0]?.init?.headers).toMatchObject({
+      "x-ai-consent-id": "consent_test_scan_upload_123456",
+    });
     expect(requests.at(-1)?.init?.headers).toMatchObject({
       "x-upload-token": "upload-token",
       "x-scan-full-access": "full-entitlement",
@@ -100,6 +104,8 @@ describe("ScanApiClient", () => {
 
     const handle = await client.uploadSource(
       new File(["本文"], "novel.txt", { type: "text/plain" }),
+      "quick",
+      "consent_test_scan_upload_123456",
     );
 
     expect(createBodies).toHaveLength(2);
@@ -171,6 +177,8 @@ describe("ScanApiClient", () => {
 
     const handle = await client.uploadSource(
       new File(["本文"], "novel.txt", { type: "text/plain" }),
+      "quick",
+      "consent_test_scan_upload_123456",
     );
 
     expect(createBodies).toHaveLength(3);
@@ -226,6 +234,8 @@ describe("ScanApiClient", () => {
     await expect(
       client.uploadSource(
         new File(["本文"], "novel.txt", { type: "text/plain" }),
+        "quick",
+        "consent_test_scan_upload_123456",
       ),
     ).rejects.toThrow("did not match the requested handle");
   });

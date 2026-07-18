@@ -1,10 +1,20 @@
-import type { ScanEnv, WorkerExecutionContextLike } from "./env";
+import {
+  DEFAULT_SCAN_AI_MODEL,
+  type ScanEnv,
+  type WorkerExecutionContextLike,
+} from "./env";
 import { ScanRepository, type ScanMode } from "./repository";
 import {
+  EDITOR_HANDOFF_SCHEMA_VERSION,
+  HOSTED_EDITOR_AI_LIMITS,
   ID_PATTERNS,
   SCAN_LIMITS,
+  parseHostedEditorAiAgentRequest,
+  parseHostedEditorAiToolCalls,
+  parseEditorSeed,
   parseScanBundle,
   toPublicReport,
+  type HostedEditorAiAgentRequest,
   type ScanBundleV1,
 } from "@grimodex/scan-contract";
 import {
@@ -25,10 +35,21 @@ import {
   readEditorAiArtifact,
   type EditorAiOperationArtifact,
 } from "./editorAiArtifact";
+import {
+  AiDataConsentMismatchError,
+  AiDataDisclosureUnavailableError,
+  assertCurrentAiDataConsentIdentity,
+  createAiDataDisclosure,
+  currentAiDataConsentIdentity,
+  type AiDataConsentIdentity,
+} from "./ai/aiDataDisclosure";
+import type { AiDataDisclosureRoute } from "@grimodex/scan-contract";
 
 const JSON_LIMIT_BYTES = 64 * 1024;
 const UPLOAD_TTL_MS = 15 * 60 * 1000;
 const EDITOR_TOKEN_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_EDITOR_SESSION_TTL_HOURS = 24;
+const MAX_EDITOR_SESSION_TTL_HOURS = 24 * 7;
 const QUICK_CHUNK_CHARACTERS = 6_000;
 const FULL_CHUNK_CHARACTERS = 4_000;
 const CLIENT_SCAN_ID_PATTERN =
@@ -96,17 +117,43 @@ class HttpError extends Error {
   }
 }
 
+function configuredAllowedOrigins(env: ScanEnv): ReadonlySet<string> {
+  const configured =
+    env.ALLOWED_ORIGINS !== undefined
+      ? env.ALLOWED_ORIGINS
+      : (env.ALLOWED_ORIGIN ?? "https://try.grimodex.app");
+  const origins = new Set<string>();
+  for (const candidate of configured.split(",").map((value) => value.trim())) {
+    if (!candidate || candidate === "*") continue;
+    try {
+      const url = new URL(candidate);
+      if (
+        (url.protocol === "https:" || url.protocol === "http:") &&
+        url.origin === candidate
+      ) {
+        origins.add(candidate);
+      }
+    } catch {
+      // Invalid configuration entries fail closed without widening CORS.
+    }
+  }
+  return origins;
+}
+
+function isAllowedOrigin(origin: string, env: ScanEnv): boolean {
+  return configuredAllowedOrigins(env).has(origin);
+}
+
 function responseHeaders(origin: string | null, env: ScanEnv): Headers {
   const headers = new Headers({
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
   });
-  const allowed = env.ALLOWED_ORIGIN ?? "https://try.grimodex.app";
-  if (origin === allowed) {
-    headers.set("access-control-allow-origin", allowed);
+  if (origin && isAllowedOrigin(origin, env)) {
+    headers.set("access-control-allow-origin", origin);
     headers.set(
       "access-control-allow-headers",
-      "content-type, authorization, x-upload-token, x-scan-token, x-scan-full-access, x-idempotency-key",
+      "content-type, authorization, x-upload-token, x-scan-token, x-editor-session-token, x-scan-full-access, x-idempotency-key, x-ai-consent-id",
     );
     headers.set(
       "access-control-allow-methods",
@@ -136,6 +183,80 @@ function success(
   status = 200,
 ): Response {
   return json(data, status, request, env);
+}
+
+async function aiDisclosure(
+  request: Request,
+  env: ScanEnv,
+  route: AiDataDisclosureRoute,
+): Promise<Response> {
+  try {
+    return success(await createAiDataDisclosure(env, route), request, env);
+  } catch (cause) {
+    if (cause instanceof AiDataDisclosureUnavailableError) {
+      throw new HttpError(
+        503,
+        "ai_disclosure_unavailable",
+        "AI data disclosure is unavailable",
+      );
+    }
+    throw cause;
+  }
+}
+
+async function requireAiDataConsent(
+  request: Request,
+  env: ScanEnv,
+  route: AiDataDisclosureRoute,
+): Promise<AiDataConsentIdentity> {
+  let current: AiDataConsentIdentity;
+  try {
+    current = await currentAiDataConsentIdentity(env, route);
+  } catch (cause) {
+    if (cause instanceof AiDataDisclosureUnavailableError) {
+      throw new HttpError(
+        503,
+        "ai_disclosure_unavailable",
+        "AI data disclosure is unavailable",
+      );
+    }
+    throw cause;
+  }
+  const consentId = request.headers.get("x-ai-consent-id")?.trim() ?? "";
+  if (!consentId || !constantTimeEqual(consentId, current.consentId)) {
+    throw new HttpError(
+      428,
+      "ai_consent_required",
+      "current AI data consent is required",
+    );
+  }
+  return current;
+}
+
+async function requireStoredAiDataConsent(
+  env: ScanEnv,
+  identity: AiDataConsentIdentity | null | undefined,
+  route: AiDataDisclosureRoute,
+): Promise<AiDataConsentIdentity> {
+  try {
+    return await assertCurrentAiDataConsentIdentity(env, identity, route);
+  } catch (cause) {
+    if (cause instanceof AiDataDisclosureUnavailableError) {
+      throw new HttpError(
+        503,
+        "ai_disclosure_unavailable",
+        "AI data disclosure is unavailable",
+      );
+    }
+    if (cause instanceof AiDataConsentMismatchError) {
+      throw new HttpError(
+        428,
+        "ai_consent_required",
+        "current AI data consent is required",
+      );
+    }
+    throw cause;
+  }
 }
 
 function artifactResponse(
@@ -215,6 +336,17 @@ async function writeEditorAiArtifact(
   objectKey: string,
   artifact: EditorAiOperationArtifact,
 ): Promise<void> {
+  const serialized = JSON.stringify(artifact);
+  if (
+    new TextEncoder().encode(serialized).byteLength >
+    HOSTED_EDITOR_AI_LIMITS.maxArtifactBytes
+  ) {
+    throw new HttpError(
+      502,
+      "editor_ai_result_invalid",
+      "hosted editor AI result is too large",
+    );
+  }
   const beforeWrite = await repository.getScan(scanId);
   if (
     !beforeWrite ||
@@ -223,7 +355,7 @@ async function writeEditorAiArtifact(
   ) {
     throw new HttpError(404, "scan_not_found", "scan was not found");
   }
-  await env.SCAN_BUCKET.put(objectKey, JSON.stringify(artifact), {
+  await env.SCAN_BUCKET.put(objectKey, serialized, {
     httpMetadata: { contentType: "application/json" },
     customMetadata: { schemaVersion: artifact.schemaVersion },
   });
@@ -252,6 +384,25 @@ function scanTokenFromRequest(request: Request): string | null {
   const authorization = request.headers.get("authorization");
   if (!authorization?.startsWith("Bearer ")) return null;
   return authorization.slice("Bearer ".length).trim() || null;
+}
+
+function editorSessionTtlMs(env: ScanEnv): number {
+  if (env.SCAN_EDITOR_SESSION_TTL_HOURS === undefined) {
+    return DEFAULT_EDITOR_SESSION_TTL_HOURS * 60 * 60 * 1000;
+  }
+  const hours = Number(env.SCAN_EDITOR_SESSION_TTL_HOURS);
+  if (
+    !Number.isSafeInteger(hours) ||
+    hours < 1 ||
+    hours > MAX_EDITOR_SESSION_TTL_HOURS
+  ) {
+    throw new HttpError(
+      503,
+      "editor_session_configuration_invalid",
+      "hosted Editor session configuration is invalid",
+    );
+  }
+  return hours * 60 * 60 * 1000;
 }
 
 async function parseJson(request: Request): Promise<unknown> {
@@ -439,6 +590,7 @@ async function uploadIntent(
       "new scans are temporarily unavailable",
     );
   }
+  const aiConsent = await requireAiDataConsent(request, env, "scan");
   const body = await parseJson(request);
   await verifyTurnstile(request, env, body);
   let input;
@@ -468,6 +620,7 @@ async function uploadIntent(
     expiresAt,
     actualSize: null,
     sourceHash: null,
+    aiConsent,
   });
   const uploadUrl = new URL(
     `/api/v1/uploads/${uploadId}`,
@@ -509,6 +662,7 @@ async function uploadSource(
     );
   let uploadCompleted = false;
   try {
+    await requireStoredAiDataConsent(env, record.aiConsent, "scan");
     const requestContentType = (request.headers.get("content-type") ?? "")
       .split(";", 1)[0]!
       .trim()
@@ -731,6 +885,11 @@ async function createScan(
   ) {
     throw new HttpError(404, "upload_not_found", "upload intent is invalid");
   }
+  const aiConsent = await requireStoredAiDataConsent(
+    env,
+    upload.aiConsent,
+    "scan",
+  );
   const activeLimit = maxActiveJobs(env);
   const reservedUnits = estimatedScanUnits(mode, upload.expectedSize);
   const buckets = usageBuckets(env);
@@ -741,6 +900,7 @@ async function createScan(
     reservedUnits,
     accessTokenHash: await tokenHash(scanToken, env),
     buckets,
+    aiConsent,
     maxActiveJobs: activeLimit,
   });
   if (created === "budget-exhausted") {
@@ -762,6 +922,13 @@ async function createScan(
       409,
       "upload_not_ready",
       "upload must be completed before scan creation",
+    );
+  }
+  if (created === "consent-mismatch") {
+    throw new HttpError(
+      428,
+      "ai_consent_required",
+      "current AI data consent is required",
     );
   }
   if (created === "conflict") {
@@ -834,7 +1001,7 @@ async function editorAi(
   scanId: string,
 ): Promise<Response> {
   await enforceRateLimit(request, env, `editor-ai:${scanId}`);
-  const scan = await authorizedScan(request, env, repository, scanId);
+  const scan = await authorizedEditorAiScan(request, env, repository, scanId);
   if (scan.status !== "completed" || !scan.privateReportKey)
     throw new HttpError(
       409,
@@ -848,6 +1015,7 @@ async function editorAi(
       "hosted editor AI is temporarily unavailable",
     );
   }
+  await requireAiDataConsent(request, env, "hosted-editor");
   const body = await parseJson(request);
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw new HttpError(
@@ -880,6 +1048,38 @@ async function editorAi(
   ) {
     throw new HttpError(400, "invalid_context", "editor AI context is invalid");
   }
+  const hasAgentMessages = value.messages !== undefined;
+  const hasAgentTools = value.tools !== undefined;
+  let agent: HostedEditorAiAgentRequest | undefined;
+  if (hasAgentMessages || hasAgentTools) {
+    if (
+      operation !== "codex" ||
+      context !== undefined ||
+      !hasAgentMessages ||
+      !hasAgentTools
+    ) {
+      throw new HttpError(
+        400,
+        "invalid_agent_contract",
+        "editor AI agent contract is invalid",
+      );
+    }
+    const parsedAgent = parseHostedEditorAiAgentRequest(
+      { messages: value.messages, tools: value.tools },
+      prompt,
+    );
+    if (!parsedAgent.ok) {
+      throw new HttpError(
+        400,
+        "invalid_agent_contract",
+        "editor AI agent contract is invalid",
+      );
+    }
+    agent = parsedAgent.value;
+  }
+  const declaredToolNames = new Set(
+    agent?.tools.map((tool) => tool.name) ?? [],
+  );
   const idempotencyKey = editorAiIdempotencyKey(request);
   const costWeight = operation === "chat" ? 1 : operation === "inline" ? 2 : 3;
   const requestHash = await sha256Hex(
@@ -887,6 +1087,7 @@ async function editorAi(
       operation,
       prompt,
       context: typeof context === "string" ? context : null,
+      agent: agent ?? null,
     }),
   );
   const operationId = `editor-ai:${await sha256Hex(
@@ -895,7 +1096,7 @@ async function editorAi(
   const artifactKey = editorAiArtifactKey(scanId, operationId);
   const configuredProvider =
     env.SCAN_AI_PROVIDER ?? (env.AI ? "workers-ai" : "ai-gateway");
-  const configuredModel = env.SCAN_AI_MODEL ?? "@cf/meta/llama-3.1-8b-instruct";
+  const configuredModel = env.SCAN_AI_MODEL ?? DEFAULT_SCAN_AI_MODEL;
 
   const deliverArtifact = async (
     artifact: EditorAiOperationArtifact,
@@ -915,6 +1116,19 @@ async function editorAi(
           : "hosted editor AI result is invalid",
       );
     }
+    if (artifact.toolCalls) {
+      const parsedToolCalls = parseHostedEditorAiToolCalls(
+        artifact.toolCalls,
+        declaredToolNames,
+      );
+      if (!parsedToolCalls.ok || parsedToolCalls.value.length === 0) {
+        throw new HttpError(
+          500,
+          "editor_ai_result_invalid",
+          "hosted editor AI result is invalid",
+        );
+      }
+    }
     try {
       await repository.finalizeAiUsageOperation({
         operationId,
@@ -931,7 +1145,11 @@ async function editorAi(
     }
     if (artifact.status === "completed") {
       return success(
-        { response: artifact.response ?? "", costWeight },
+        {
+          response: artifact.response ?? "",
+          costWeight,
+          ...(artifact.toolCalls ? { toolCalls: artifact.toolCalls } : {}),
+        },
         request,
         env,
       );
@@ -947,7 +1165,11 @@ async function editorAi(
   };
 
   try {
-    const persisted = await readEditorAiArtifact(env.SCAN_BUCKET, artifactKey);
+    const persisted = await readEditorAiArtifact(
+      env.SCAN_BUCKET,
+      artifactKey,
+      declaredToolNames,
+    );
     if (persisted) return await deliverArtifact(persisted);
   } catch (cause) {
     if (cause instanceof HttpError) throw cause;
@@ -999,6 +1221,7 @@ async function editorAi(
     const persisted = await readEditorAiArtifact(
       env.SCAN_BUCKET,
       artifactKey,
+      declaredToolNames,
     ).catch(() => null);
     if (persisted) return deliverArtifact(persisted);
     const existing = claim.operation;
@@ -1032,6 +1255,7 @@ async function editorAi(
     result = await runHostedAi(env, {
       prompt,
       context: typeof context === "string" ? context : undefined,
+      ...(agent ? { agent } : {}),
     });
   } catch (cause) {
     const rateLimited = cause instanceof HostedAiError && cause.status === 429;
@@ -1113,6 +1337,7 @@ async function editorAi(
     model: result.model,
     costWeight,
     response: result.response,
+    ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
   };
   try {
     await writeEditorAiArtifact(env, repository, scanId, artifactKey, artifact);
@@ -1155,7 +1380,15 @@ async function editorAi(
         code: "completion_accounting_failed",
       });
     });
-  return success({ response: result.response, costWeight }, request, env);
+  return success(
+    {
+      response: result.response,
+      costWeight,
+      ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}),
+    },
+    request,
+    env,
+  );
 }
 
 async function authorizedScan(
@@ -1174,6 +1407,34 @@ async function authorizedScan(
   );
   if (!scan || (scan.status === "deleted" && !allowDeleted))
     throw new HttpError(404, "scan_not_found", "scan was not found");
+  return scan;
+}
+
+async function authorizedEditorAiScan(
+  request: Request,
+  env: ScanEnv,
+  repository: ScanRepository,
+  scanId: string,
+) {
+  const sessionHeader = request.headers.get("x-editor-session-token");
+  if (sessionHeader === null) {
+    return authorizedScan(request, env, repository, scanId);
+  }
+  const rawToken = sessionHeader.trim();
+  if (!rawToken) {
+    throw new HttpError(
+      401,
+      "editor_session_token_required",
+      "Editor session token is required",
+    );
+  }
+  const scan = await repository.authorizeEditorSession(
+    scanId,
+    await tokenHash(rawToken, env),
+  );
+  if (!scan) {
+    throw new HttpError(404, "scan_not_found", "scan was not found");
+  }
   return scan;
 }
 
@@ -1269,19 +1530,53 @@ async function consumeEditorToken(
       "seed_not_found",
       "editor seed artifact was not found",
     );
+  let seedValue: unknown;
+  try {
+    seedValue = JSON.parse(await new Response(object.body).text()) as unknown;
+  } catch {
+    throw new HttpError(500, "seed_invalid", "editor seed artifact is invalid");
+  }
+  const seed = parseEditorSeed(seedValue);
+  if (!seed.ok) {
+    throw new HttpError(
+      500,
+      "seed_invalid",
+      "editor seed artifact failed contract validation",
+    );
+  }
+  const sessionToken = randomToken(32);
+  const sessionTokenHash = await tokenHash(sessionToken, env);
+  const sessionExpiresAt = new Date(
+    Date.now() + editorSessionTtlMs(env),
+  ).toISOString();
+  await repository.createEditorSession({
+    tokenHash: sessionTokenHash,
+    scanId: record.scanId,
+    expiresAt: sessionExpiresAt,
+  });
   const consumed = await repository.consumeEditorToken(hashedToken);
-  if (!consumed)
+  if (!consumed) {
+    await repository
+      .revokeEditorSession(sessionTokenHash)
+      .catch(() => undefined);
     throw new HttpError(
       404,
       "editor_token_invalid",
       "editor token is invalid or already used",
     );
-  return artifactResponse(
-    object.body,
+  }
+  return success(
+    {
+      schemaVersion: EDITOR_HANDOFF_SCHEMA_VERSION,
+      seed: seed.value,
+      hostedAiSession: {
+        scanId: consumed.scanId,
+        token: sessionToken,
+        expiresAt: sessionExpiresAt,
+      },
+    },
     request,
     env,
-    object.httpMetadata?.contentType ?? "application/json",
-    "no-store",
   );
 }
 
@@ -1529,8 +1824,7 @@ async function createAbuseReport(
   reportId: string,
 ): Promise<Response> {
   const origin = request.headers.get("origin");
-  const allowedOrigin = env.ALLOWED_ORIGIN ?? "https://try.grimodex.app";
-  if (origin && origin !== allowedOrigin) {
+  if (origin && !isAllowedOrigin(origin, env)) {
     throw new HttpError(
       403,
       "origin_not_allowed",
@@ -1627,6 +1921,16 @@ export async function handleRequest(
         request,
         env,
       );
+    }
+    if (
+      request.method === "GET" &&
+      segments[0] === "api" &&
+      segments[1] === "v1" &&
+      segments[2] === "ai-disclosures" &&
+      segments.length === 4 &&
+      (segments[3] === "scan" || segments[3] === "hosted-editor")
+    ) {
+      return await aiDisclosure(request, env, segments[3]);
     }
     if (
       request.method === "POST" &&

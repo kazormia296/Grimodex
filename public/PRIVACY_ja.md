@@ -1,0 +1,87 @@
+# Grimodex プライバシー通知
+
+最終更新日: 2026-07-19
+バージョン: v1.0
+
+本通知は、Grimodex の各サーフェスでデータをどこに保存し、AI 利用時に何を送信するかを説明します。利用規約と矛盾する場合は利用規約が優先します。AI の処理先、保持期間または学習利用は構成により変わるため、実際の送信前に表示される経路別の開示も確認してください。
+
+## 1. 保存先
+
+| サーフェス          | 主なデータ                                                     | 保存先                                 | 標準保持                                                                   |
+| ------------------- | -------------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------- |
+| Electron 版         | 本文、設定、チャット履歴、編集メタデータ                       | ユーザー端末の SQLite                  | ユーザーが削除するまで                                                     |
+| Hosted Editor       | ワークスペース、本文、設定、チャット履歴、AI 応答              | 現在のブラウザプロファイルの IndexedDB | ワークスペースまたはサイトデータを削除するまで                             |
+| Scan／Hosted AI     | 原稿ソース、非公開レポート、Editor seed、AI 応答等             | Cloudflare R2                          | 本番標準: 未完了アップロード 60 分、原稿 1 日、非公開成果物／AI 応答 30 日 |
+| Scan 運用メタデータ | ジョブ状態、トークンのハッシュ、利用量、保持期限、冪等性情報等 | Cloudflare D1                          | Scan セッションの保持・削除処理および適用される運用／法的要件に従う        |
+
+Hosted Editor の IndexedDB はクラウドバックアップではありません。ブラウザのサイトデータやプロファイルを削除すると復元できない場合があります。R2／D1 の特定の保存国または処理国は保証しません。
+
+Scan から Editor へ移る際の短期セッショントークンは、そのタブの Session Storage に有効期限まで保持され、タブを閉じると消えます。サーバー側の D1 にはトークンそのものではなく、照合用のハッシュだけを保存します。
+
+ユーザーが明示的に公開した Scan レポートは、非公開成果物とは異なり、公開レポートまたは元の Scan を削除するまでアクセス可能になる場合があります。ステージング、セキュリティ記録、不正利用防止、バックアップおよび法的保存義務には、上表と異なる期間が適用される場合があります。
+
+## 2. AI へ送信するデータ
+
+AI 機能は、要求に応じて次の一部または全部を送信します。
+
+- Scan: アップロードされた原稿全体、ファイル情報、および解析に必要なメタデータ
+- チャット／Inline AI: ユーザーの指示、会話履歴、システム指示、選択本文
+- コンテキスト付き機能: 選択されたシーン、Codex、設定、構成、関連本文
+- BYOK: 上記に加え、選択したプロバイダを認証する API キー
+
+送信される項目はリクエスト直前の開示画面に列挙します。ユーザーが同意しない場合、対象の AI リクエストは送信しません。
+
+## 3. 処理先、保持およびモデル学習
+
+### Hosted Scan／Hosted Editor
+
+標準経路では Cloudflare Workers、Workers AI、R2 および D1 を使用します。選択した Scan モードや運用構成により、Cloudflare AI Gateway と、開示画面に表示される上流 AI プロバイダを使用する場合があります。Cloudflare は、明示的な同意なしに Workers AI の Customer Content をモデル学習またはサービス改善へ使用しない旨を公表しています。
+
+- [Cloudflare Workers AI のデータ利用](https://developers.cloudflare.com/workers-ai/platform/data-usage/)
+- [Cloudflare R2 の仕組み](https://developers.cloudflare.com/r2/how-r2-works/)
+- [Cloudflare D1 API](https://developers.cloudflare.com/api/resources/d1/)
+- [Cloudflare プライバシーポリシー](https://www.cloudflare.com/privacypolicy/)
+
+上流 AI プロバイダを利用する経路では、そのプロバイダの保持および学習方針も適用されます。開示できない処理先がある場合、Grimodex は送信を開始せず、利用不可として扱うべきものとします。
+
+### ブラウザ版 BYOK
+
+本番のブラウザ版 Editor は、ユーザーが選択した AI プロバイダへリクエストを送ります。API キーは現在のページの実行メモリにだけ保持し、IndexedDB、Local Storage、R2 または D1 へ保存しません。ページの再読み込みまたは終了後は再入力が必要です。
+
+プロバイダ側の保持および学習利用は、アカウント、契約、設定、モデルおよびルーティングによって変わります。Grimodex が判定できない経路では「プロバイダに依存」と表示します。代表的な参照先は次のとおりです。
+
+- [OpenAI API のデータ管理](https://platform.openai.com/docs/models/default-usage-policies-by-endpoint)
+- [OpenAI のモデル改善におけるデータ利用](https://openai.com/policies/how-your-data-is-used-to-improve-model-performance/)
+- [Anthropic のモデル学習方針](https://privacy.anthropic.com/en/articles/7996868-is-my-data-used-for-model-training)
+- [Anthropic の保持期間](https://privacy.anthropic.com/en/articles/7996866-how-long-do-you-store-my-organization-s-data)
+- [OpenRouter のデータ収集](https://openrouter.ai/docs/guides/privacy/data-collection)
+- [OpenRouter Zero Data Retention](https://openrouter.ai/docs/guides/features/zdr)
+
+## 4. 明示的な同意
+
+品質要件 `GDX-AI-CONSENT-001` に基づき、Grimodex は外部 AI へ送信する前に、次の情報を表示します。
+
+1. 送信されるデータ
+2. AI プロバイダ、処理目的および処理先
+3. アプリ側とプロバイダ側の保存先および保持期間
+4. モデル学習への利用状況
+5. 関連する利用・プライバシーポリシーへのリンク
+
+同意は、ポリシーバージョン、経路（Scan、Hosted Editor、BYOK）およびプロバイダの組合せに結び付けます。いずれかが変更された場合は再確認を求めます。未同意または開示を取得できない場合、プロバイダ呼び出しの前に失敗させます。
+
+ブラウザは、同意記録としてポリシーバージョン、経路、プロバイダおよび同意日時だけを Local Storage に保存する場合があります。この記録に原稿、プロンプト、AI 応答または API キーは含まれません。Scan API には、現在の開示に対応する不透明な同意識別子を送信します。
+
+## 5. AI 以外の通信
+
+Electron 版は、ライセンス検証、更新確認、および意味検索モデルのダウンロードのために外部サービスへ接続する場合があります。これらの通信では著作物本文を送信しませんが、接続先に IP アドレス、時刻、User-Agent 等が記録される場合があります。
+
+## 6. ユーザーの選択と削除
+
+- AI 同意画面で拒否すると、その経路の AI は使用されません。
+- Hosted Editor のデータはワークスペースまたはブラウザのサイトデータを削除して消去できます。
+- Scan に削除機能が表示されている場合、アクセス資格情報を用いて非公開 Scan を削除できます。
+- 公開レポート、バックアップ、セキュリティ／不正利用防止記録または法的義務に基づくデータには別の手続または保持期間が適用される場合があります。
+
+## 7. お問い合わせ
+
+本通知に関する問い合わせは、[Grimodex GitHub リポジトリ](https://github.com/kazormia296/Grimodex)の Issue を利用してください。原稿、API キーまたはアクセストークンを Issue に貼り付けないでください。

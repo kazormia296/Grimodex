@@ -5810,6 +5810,22 @@
     "deleteConfirmDesc": "{{count}} 件のシーン・章から外されます。",
     "reorder": "並べ替え"
   },
+  "aiDataConsent": {
+    "title": "AIへ送信する前に確認",
+    "sentData": "送信されるデータ",
+    "destination": "処理先と地域",
+    "storage": "保存先と保持期間",
+    "sourceRetention": "原稿 {{days}}日",
+    "artifactRetention": "解析結果・AI応答 {{days}}日",
+    "browserRetention": "自動削除なし。ワークスペースを削除するまで保存",
+    "providerStorage": "AIプロバイダ側の保存",
+    "providerRetention": "AIプロバイダ側の保持期間",
+    "training": "モデル学習への利用",
+    "openPolicy": "ポリシーを開く",
+    "confirm": "上記の送信・保存・学習利用方針を確認しました",
+    "decline": "今は使わない",
+    "accept": "同意してAIを使う"
+  },
   "promptLibrary": {
     "section": {
       "title": "プロンプトライブラリ",

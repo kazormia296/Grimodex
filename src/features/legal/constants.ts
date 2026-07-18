@@ -5,4 +5,4 @@
  * メジャーまたはマイナーバージョンの更新時、ユーザーに再同意を求める
  * （規約 §7.3 に基づく）。
  */
-export const EULA_VERSION = "1.2";
+export const EULA_VERSION = "1.3";

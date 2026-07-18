@@ -3,10 +3,19 @@ import { handleRequest } from "./router";
 import type { ScanEnv } from "./env";
 import { ScanRepository } from "./repository";
 import { sha256Hex } from "./security";
-import { createMinimalJaBundle } from "../src/fixtures/minimalJa";
+import {
+  createMinimalJaBundle,
+  createMinimalJaSeed,
+} from "../src/fixtures/minimalJa";
+import {
+  currentAiDataConsentIdentity,
+  expectedAiDataConsentId,
+} from "./ai/aiDataDisclosure";
+import { parseEditorHandoffEnvelope } from "@grimodex/scan-contract";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function env(overrides: Partial<ScanEnv> = {}): ScanEnv {
@@ -27,6 +36,18 @@ function env(overrides: Partial<ScanEnv> = {}): ScanEnv {
   };
 }
 
+function workersAiEnv(overrides: Partial<ScanEnv> = {}): ScanEnv {
+  return env({
+    AI: { run: async () => ({ response: "unused" }) },
+    SCAN_AI_PROVIDER: "workers-ai",
+    ...overrides,
+  });
+}
+
+async function workersAiConsent() {
+  return currentAiDataConsentIdentity(workersAiEnv(), "scan");
+}
+
 describe("scan worker router", () => {
   it("serves a content-free health response and limits CORS to the configured origin", async () => {
     const request = new Request("https://scan.example/api/v1/health", {
@@ -41,6 +62,51 @@ describe("scan worker router", () => {
       ok: true,
       acceptingNewJobs: false,
     });
+  });
+
+  it.each(["https://scan.grimodex.app", "https://try.grimodex.app"])(
+    "allows configured Scan and Editor origin %s exactly",
+    async (origin) => {
+      const response = await handleRequest(
+        new Request("https://api.grimodex.app/api/v1/health", {
+          headers: { origin },
+        }),
+        env({
+          ALLOWED_ORIGINS:
+            "https://scan.grimodex.app, https://try.grimodex.app",
+        }),
+      );
+
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(response.headers.get("vary")).toBe("Origin");
+    },
+  );
+
+  it("rejects unlisted and wildcard origins and exposes the scoped session header only to exact origins", async () => {
+    const configured = env({
+      ALLOWED_ORIGINS: "*,https://scan.grimodex.app,https://try.grimodex.app",
+    });
+    const hostile = await handleRequest(
+      new Request("https://api.grimodex.app/api/v1/health", {
+        headers: { origin: "https://attacker.example" },
+      }),
+      configured,
+    );
+    const preflight = await handleRequest(
+      new Request("https://api.grimodex.app/api/v1/scans/scan-1/editor-ai", {
+        method: "OPTIONS",
+        headers: { origin: "https://try.grimodex.app" },
+      }),
+      configured,
+    );
+
+    expect(hostile.headers.get("access-control-allow-origin")).toBeNull();
+    expect(preflight.headers.get("access-control-allow-origin")).toBe(
+      "https://try.grimodex.app",
+    );
+    expect(preflight.headers.get("access-control-allow-headers")).toContain(
+      "x-editor-session-token",
+    );
   });
 
   it("does not issue upload intents while the kill switch is off", async () => {
@@ -112,6 +178,7 @@ describe("scan worker router", () => {
       const scanId = "11111111-1111-4111-8111-111111111111";
       const scanToken = "A".repeat(43);
       const secret = "test-secret";
+      const aiConsent = await workersAiConsent();
       const scan = {
         id: scanId,
         uploadId: "upload-1",
@@ -124,6 +191,7 @@ describe("scan worker router", () => {
         createdAt: "2026-07-16T00:00:00.000Z",
         updatedAt: "2026-07-16T00:00:00.000Z",
         accessTokenHash: "scan-token-hash",
+        aiConsent,
       };
       vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
         id: "upload-1",
@@ -136,6 +204,7 @@ describe("scan worker router", () => {
         expiresAt: "2026-07-17T00:00:00.000Z",
         actualSize: 12,
         sourceHash: "source-hash",
+        aiConsent,
       });
       vi.spyOn(ScanRepository.prototype, "reserveUsage").mockResolvedValue(
         true,
@@ -169,7 +238,7 @@ describe("scan worker router", () => {
             scanToken,
           }),
         }),
-        env({
+        workersAiEnv({
           SCAN_ACCEPTING_NEW_JOBS: "true",
           SCAN_DAILY_LIMIT_UNITS: "100",
           SCAN_MONTHLY_LIMIT_UNITS: "1000",
@@ -232,6 +301,7 @@ describe("scan worker router", () => {
     const scanId = "11111111-1111-4111-8111-111111111111";
     const scanToken = "A".repeat(43);
     const secret = "test-secret";
+    const aiConsent = await workersAiConsent();
     vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
       id: "upload-1",
       tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
@@ -243,6 +313,7 @@ describe("scan worker router", () => {
       expiresAt: "2026-07-17T00:00:00.000Z",
       actualSize: 12,
       sourceHash: "source-hash",
+      aiConsent,
     });
     const createScan = vi
       .spyOn(ScanRepository.prototype, "createScan")
@@ -259,6 +330,7 @@ describe("scan worker router", () => {
       createdAt: "2026-07-16T00:00:00.000Z",
       updatedAt: "2026-07-16T00:00:00.000Z",
       accessTokenHash: await sha256Hex(`${secret}\u0000${scanToken}`),
+      aiConsent,
     });
     const transitionScan = vi.spyOn(ScanRepository.prototype, "transitionScan");
     const settleUsage = vi.spyOn(ScanRepository.prototype, "settleUsage");
@@ -280,7 +352,7 @@ describe("scan worker router", () => {
           scanToken,
         }),
       }),
-      env({
+      workersAiEnv({
         SCAN_ACCEPTING_NEW_JOBS: "true",
         UPLOAD_TOKEN_SECRET: secret,
         SCAN_WORKFLOW: { create: workflowCreate },
@@ -309,6 +381,7 @@ describe("scan worker router", () => {
     const scanId = "11111111-1111-4111-8111-111111111111";
     const scanToken = "A".repeat(43);
     const secret = "test-secret";
+    const aiConsent = await workersAiConsent();
     vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
       id: "upload-1",
       tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
@@ -320,6 +393,7 @@ describe("scan worker router", () => {
       expiresAt: "2026-07-17T00:00:00.000Z",
       actualSize: 12,
       sourceHash: "source-hash",
+      aiConsent,
     });
     vi.spyOn(ScanRepository.prototype, "createScan").mockResolvedValue(
       "existing",
@@ -336,6 +410,7 @@ describe("scan worker router", () => {
       createdAt: "2026-07-16T00:00:00.000Z",
       updatedAt: "2026-07-16T00:01:00.000Z",
       accessTokenHash: await sha256Hex(`${secret}\u0000${scanToken}`),
+      aiConsent,
     });
     const workflowCreate = vi.fn(async () => undefined);
 
@@ -353,7 +428,7 @@ describe("scan worker router", () => {
           scanToken,
         }),
       }),
-      env({
+      workersAiEnv({
         SCAN_ACCEPTING_NEW_JOBS: "true",
         UPLOAD_TOKEN_SECRET: secret,
         SCAN_WORKFLOW: { create: workflowCreate },
@@ -375,6 +450,7 @@ describe("scan worker router", () => {
     const scanId = "11111111-1111-4111-8111-111111111111";
     const scanToken = "A".repeat(43);
     const secret = "test-secret";
+    const aiConsent = await workersAiConsent();
     vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
       id: "upload-1",
       tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
@@ -386,6 +462,7 @@ describe("scan worker router", () => {
       expiresAt: "2026-07-17T00:00:00.000Z",
       actualSize: 12,
       sourceHash: "source-hash",
+      aiConsent,
     });
     vi.spyOn(ScanRepository.prototype, "createScan").mockResolvedValue(
       "conflict",
@@ -406,7 +483,7 @@ describe("scan worker router", () => {
           scanToken,
         }),
       }),
-      env({
+      workersAiEnv({
         SCAN_ACCEPTING_NEW_JOBS: "true",
         UPLOAD_TOKEN_SECRET: secret,
         SCAN_WORKFLOW: { create: workflowCreate },
@@ -516,6 +593,13 @@ describe("scan worker router", () => {
       "claimAndReserveAiUsage",
     ).mockRejectedValue(new Error("D1 ledger unavailable"));
     const aiRun = vi.fn(async () => ({ response: "must not run" }));
+    const testEnv = env({
+      SCAN_EDITOR_AI_ENABLED: "true",
+      SCAN_DAILY_LIMIT_UNITS: "100",
+      SCAN_MONTHLY_LIMIT_UNITS: "1000",
+      AI: { run: aiRun },
+    });
+    const consentId = await expectedAiDataConsentId(testEnv, "hosted-editor");
 
     const response = await handleRequest(
       new Request("https://scan.example/api/v1/scans/scan-1/editor-ai", {
@@ -524,15 +608,11 @@ describe("scan worker router", () => {
           authorization: "Bearer scan-token",
           "content-type": "application/json",
           "x-idempotency-key": "request-accounting-failure",
+          "x-ai-consent-id": consentId,
         },
         body: JSON.stringify({ operation: "chat", prompt: "help" }),
       }),
-      env({
-        SCAN_EDITOR_AI_ENABLED: "true",
-        SCAN_DAILY_LIMIT_UNITS: "100",
-        SCAN_MONTHLY_LIMIT_UNITS: "1000",
-        AI: { run: aiRun },
-      }),
+      testEnv,
     );
 
     expect(response.status).toBe(503);
@@ -580,6 +660,13 @@ describe("scan worker router", () => {
       .spyOn(ScanRepository.prototype, "finalizeAiUsageOperation")
       .mockRejectedValue(new Error("D1 completion write failed"));
     const aiRun = vi.fn(async () => ({ response: "gateway-ok" }));
+    const testEnv = env({
+      SCAN_EDITOR_AI_ENABLED: "true",
+      SCAN_DAILY_LIMIT_UNITS: "100",
+      SCAN_MONTHLY_LIMIT_UNITS: "1000",
+      AI: { run: aiRun },
+    });
+    const consentId = await expectedAiDataConsentId(testEnv, "hosted-editor");
 
     const response = await handleRequest(
       new Request("https://scan.example/api/v1/scans/scan-1/editor-ai", {
@@ -588,15 +675,11 @@ describe("scan worker router", () => {
           authorization: "Bearer scan-token",
           "content-type": "application/json",
           "x-idempotency-key": "request-completion-failure",
+          "x-ai-consent-id": consentId,
         },
         body: JSON.stringify({ operation: "chat", prompt: "help" }),
       }),
-      env({
-        SCAN_EDITOR_AI_ENABLED: "true",
-        SCAN_DAILY_LIMIT_UNITS: "100",
-        SCAN_MONTHLY_LIMIT_UNITS: "1000",
-        AI: { run: aiRun },
-      }),
+      testEnv,
     );
 
     expect(response.status).toBe(200);
@@ -646,7 +729,10 @@ describe("scan worker router", () => {
     const finalize = vi
       .spyOn(ScanRepository.prototype, "finalizeAiUsageOperation")
       .mockResolvedValue(undefined);
-    const aiRun = vi.fn(async () => ({ response: "one paid response" }));
+    const aiRun = vi.fn(async () => ({
+      response: "設定を確認します",
+      tool_calls: [{ name: "search_codex", arguments: { query: "星の設定" } }],
+    }));
     const objects = new Map<string, string>();
     const testEnv = env({
       SCAN_EDITOR_AI_ENABLED: "true",
@@ -671,6 +757,7 @@ describe("scan worker router", () => {
         delete: async () => undefined,
       },
     });
+    const consentId = await expectedAiDataConsentId(testEnv, "hosted-editor");
     const request = () =>
       new Request("https://scan.example/api/v1/scans/scan-1/editor-ai", {
         method: "POST",
@@ -678,8 +765,24 @@ describe("scan worker router", () => {
           authorization: "Bearer scan-token",
           "content-type": "application/json",
           "x-idempotency-key": "request-retry-123456",
+          "x-ai-consent-id": consentId,
         },
-        body: JSON.stringify({ operation: "chat", prompt: "help" }),
+        body: JSON.stringify({
+          operation: "codex",
+          prompt: "help",
+          messages: [{ role: "user", content: "help" }],
+          tools: [
+            {
+              name: "search_codex",
+              description: "Search",
+              inputSchema: {
+                type: "object",
+                properties: { query: { type: "string" } },
+                required: ["query"],
+              },
+            },
+          ],
+        }),
       });
 
     const first = await handleRequest(request(), testEnv);
@@ -688,7 +791,30 @@ describe("scan worker router", () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     await expect(second.json()).resolves.toMatchObject({
-      response: "one paid response",
+      response: "設定を確認します",
+      costWeight: 3,
+      toolCalls: [
+        {
+          name: "search_codex",
+          input: { query: "星の設定" },
+        },
+      ],
+    });
+    for (const [key, serialized] of objects) {
+      const artifact = JSON.parse(serialized) as {
+        status?: string;
+        toolCalls?: Array<{ name: string }>;
+      };
+      if (artifact.status === "completed" && artifact.toolCalls?.[0]) {
+        artifact.toolCalls[0].name = "delete_workspace";
+        objects.set(key, JSON.stringify(artifact));
+      }
+    }
+    const corruptedReplay = await handleRequest(request(), testEnv);
+
+    expect(corruptedReplay.status).toBe(500);
+    await expect(corruptedReplay.json()).resolves.toMatchObject({
+      error: { code: "editor_ai_result_invalid" },
     });
     expect(aiRun).toHaveBeenCalledOnce();
     expect(claim).toHaveBeenCalledOnce();
@@ -763,6 +889,213 @@ describe("scan worker router", () => {
     expect(response.status).toBe(500);
     expect(remove).toHaveBeenCalledOnce();
     expect(forget).not.toHaveBeenCalled();
+  });
+
+  it("exchanges a one-time seed token for a validated seed and a 24-hour scoped Editor session", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T00:00:00.000Z"));
+    const scanId = "11111111-1111-4111-8111-111111111111";
+    const oneTimeRecord = {
+      scanId,
+      artifactKey: `artifacts/${scanId}/editor-seed.json`,
+      expiresAt: "2026-07-19T00:10:00.000Z",
+    };
+    vi.spyOn(ScanRepository.prototype, "getEditorToken").mockResolvedValue(
+      oneTimeRecord,
+    );
+    vi.spyOn(ScanRepository.prototype, "consumeEditorToken").mockResolvedValue(
+      oneTimeRecord,
+    );
+    const createSession = vi
+      .spyOn(ScanRepository.prototype, "createEditorSession")
+      .mockResolvedValue(undefined);
+    const seed = createMinimalJaSeed();
+    const serialized = JSON.stringify(seed);
+    const testEnv = env({
+      UPLOAD_TOKEN_SECRET: "worker-secret",
+      SCAN_BUCKET: {
+        put: async () => undefined,
+        get: async () => ({
+          body: new Response(serialized).body,
+          size: serialized.length,
+          httpMetadata: { contentType: "application/json" },
+        }),
+        head: async () => null,
+        delete: async () => undefined,
+      },
+    });
+
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/editor-seeds", {
+        headers: { authorization: "Bearer one-time-token" },
+      }),
+      testEnv,
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+    const parsed = parseEditorHandoffEnvelope(body);
+
+    expect(response.status).toBe(200);
+    expect(parsed.ok).toBe(true);
+    expect(body).toMatchObject({
+      schemaVersion: "grimodex/editor-handoff/1",
+      seed,
+      hostedAiSession: {
+        scanId,
+        expiresAt: "2026-07-20T00:00:00.000Z",
+      },
+    });
+    const rawSessionToken = (body.hostedAiSession as { token: string }).token;
+    expect(rawSessionToken).toMatch(/^[a-f0-9]{64}$/);
+    expect(createSession).toHaveBeenCalledWith({
+      scanId,
+      tokenHash: await sha256Hex(`worker-secret\u0000${rawSessionToken}`),
+      expiresAt: "2026-07-20T00:00:00.000Z",
+    });
+    expect(createSession.mock.calls[0]?.[0].tokenHash).not.toBe(
+      rawSessionToken,
+    );
+  });
+
+  it("uses an active scoped Editor session for hosted AI without exposing scan mutation authority", async () => {
+    const scanId = "11111111-1111-4111-8111-111111111111";
+    const completedScan = {
+      id: scanId,
+      uploadId: "upload-1",
+      mode: "quick" as const,
+      status: "completed" as const,
+      sourceHash: "source-hash",
+      privateBundleKey: `artifacts/${scanId}/bundle.json`,
+      privateReportKey: `artifacts/${scanId}/report.json`,
+      cancelRequestedAt: null,
+      createdAt: "2026-07-18T00:00:00.000Z",
+      updatedAt: "2026-07-18T00:10:00.000Z",
+      accessTokenHash: "scan-token-hash",
+    };
+    const authorizeEditor = vi
+      .spyOn(ScanRepository.prototype, "authorizeEditorSession")
+      .mockResolvedValue(completedScan);
+    const authorizeScan = vi.spyOn(ScanRepository.prototype, "authorizeScan");
+    vi.spyOn(ScanRepository.prototype, "getScan").mockResolvedValue(
+      completedScan,
+    );
+    vi.spyOn(ScanRepository.prototype, "getAiUsageOperation").mockResolvedValue(
+      null,
+    );
+    vi.spyOn(
+      ScanRepository.prototype,
+      "claimAndReserveAiUsage",
+    ).mockResolvedValue({ claimed: true, operation: null });
+    vi.spyOn(
+      ScanRepository.prototype,
+      "finalizeAiUsageOperation",
+    ).mockResolvedValue(undefined);
+    const aiRun = vi.fn(async () => ({ response: "scoped response" }));
+    const testEnv = env({
+      UPLOAD_TOKEN_SECRET: "worker-secret",
+      SCAN_EDITOR_AI_ENABLED: "true",
+      SCAN_DAILY_LIMIT_UNITS: "100",
+      SCAN_MONTHLY_LIMIT_UNITS: "1000",
+      AI: { run: aiRun },
+    });
+    const consentId = await expectedAiDataConsentId(testEnv, "hosted-editor");
+
+    const response = await handleRequest(
+      new Request(`https://scan.example/api/v1/scans/${scanId}/editor-ai`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-editor-session-token": "scoped-token",
+          "x-idempotency-key": "scoped-request-123456",
+          "x-ai-consent-id": consentId,
+        },
+        body: JSON.stringify({ operation: "chat", prompt: "help" }),
+      }),
+      testEnv,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      response: "scoped response",
+    });
+    expect(authorizeEditor).toHaveBeenCalledWith(
+      scanId,
+      await sha256Hex("worker-secret\u0000scoped-token"),
+    );
+    expect(authorizeScan).not.toHaveBeenCalled();
+    expect(aiRun).toHaveBeenCalledOnce();
+  });
+
+  it.each(["expired", "revoked", "different-scan"])(
+    "rejects a %s scoped Editor session before hosted AI runs",
+    async () => {
+      vi.spyOn(
+        ScanRepository.prototype,
+        "authorizeEditorSession",
+      ).mockResolvedValue(null);
+      const aiRun = vi.fn(async () => ({ response: "must not run" }));
+      const testEnv = env({
+        SCAN_EDITOR_AI_ENABLED: "true",
+        AI: { run: aiRun },
+      });
+      const response = await handleRequest(
+        new Request("https://scan.example/api/v1/scans/scan-1/editor-ai", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-editor-session-token": "invalid-session",
+            "x-idempotency-key": "invalid-scoped-request",
+            "x-ai-consent-id": "irrelevant-before-auth",
+          },
+          body: JSON.stringify({ operation: "chat", prompt: "help" }),
+        }),
+        testEnv,
+      );
+
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "scan_not_found" },
+      });
+      expect(aiRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      label: "scan deletion",
+      method: "DELETE",
+      path: "/api/v1/scans/scan-1",
+      body: undefined,
+    },
+    {
+      label: "public report publication",
+      method: "POST",
+      path: "/api/v1/scans/scan-1/public-report",
+      body: JSON.stringify({
+        authorConfirmedAt: "2026-07-19T00:00:00.000Z",
+      }),
+    },
+  ])("does not accept a scoped Editor session for $label", async (variant) => {
+    const authorizeEditor = vi.spyOn(
+      ScanRepository.prototype,
+      "authorizeEditorSession",
+    );
+    const response = await handleRequest(
+      new Request(`https://scan.example${variant.path}`, {
+        method: variant.method,
+        headers: {
+          "content-type": "application/json",
+          "x-editor-session-token": "scoped-token",
+        },
+        body: variant.body,
+      }),
+      env(),
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "scan_token_required" },
+    });
+    expect(authorizeEditor).not.toHaveBeenCalled();
   });
 
   it("rejects cross-origin simple requests before recording public abuse", async () => {

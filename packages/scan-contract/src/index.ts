@@ -1,11 +1,14 @@
 export * from "./limits.js";
 export * from "./scanBundleV1.js";
+export * from "./editorHandoff.js";
 export { sha256Hex } from "./hash.js";
 export {
   computeSourceFingerprint,
   type SourceFingerprintInput,
 } from "./sourceFingerprint.js";
 export * from "./publicReportV1.js";
+export * from "./aiDataDisclosureV1.js";
+export * from "./hostedEditorAi.js";
 export {
   chunkExtractionV1Schema,
   validateChunkExtraction,

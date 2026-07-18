@@ -17,6 +17,7 @@ const repositoryRoot = path.resolve(
 const localHost = "127.0.0.1";
 const localWebPort = 4173;
 const localWorkerPort = 8787;
+const localEditorOrigin = "http://localhost:1430";
 const localConfig = "apps/scan-web/wrangler.jsonc";
 const localEnvironmentFile = "apps/scan-web/local-only.env";
 const defaultPersistDirectory = ".wrangler/scan-local";
@@ -49,8 +50,10 @@ export function createScanLocalPlan({
   const webBuildEnvironment = {
     VITE_SCAN_API_BASE_URL: workerOrigin,
     VITE_SCAN_TURNSTILE_REQUIRED: "false",
+    VITE_EDITOR_BASE_URL: `${localEditorOrigin}/editor`,
   };
   return {
+    editorOrigin: localEditorOrigin,
     persistDirectory,
     webOrigin,
     workerOrigin,
@@ -253,6 +256,7 @@ export async function runLocalQuickScanSmoke({
   timeoutMs = 60_000,
   webOrigin = `http://${localHost}:${localWebPort}`,
   workerOrigin = `http://${localHost}:${localWorkerPort}`,
+  editorOrigin = localEditorOrigin,
 } = {}) {
   throwIfAborted(signal);
   const originHeaders = { origin: webOrigin };
@@ -296,6 +300,23 @@ export async function runLocalQuickScanSmoke({
     throw new Error("local web app is not the built Grimodex Scan shell");
   }
 
+  const { body: disclosureBody } = await expectJson(
+    fetchImpl,
+    `${workerOrigin}/api/v1/ai-disclosures/scan`,
+    { headers: originHeaders, signal },
+    200,
+    "local Scan AI disclosure",
+    requestTimeoutMs,
+  );
+  const disclosure = assertObject(disclosureBody, "local Scan AI disclosure");
+  if (
+    disclosure.route !== "scan" ||
+    typeof disclosure.consentId !== "string" ||
+    !/^consent_[A-Za-z0-9_-]{16,248}$/.test(disclosure.consentId)
+  ) {
+    throw new Error("local Scan AI disclosure is missing current consent");
+  }
+
   const source = new TextEncoder().encode(
     "ユキは夜明け前に北の塔へ向かった。塔の番人レンは古い鍵を手渡した。",
   );
@@ -308,6 +329,7 @@ export async function runLocalQuickScanSmoke({
       headers: {
         ...originHeaders,
         "content-type": "application/json",
+        "x-ai-consent-id": disclosure.consentId,
       },
       body: JSON.stringify({
         filename: "local-smoke.txt",
@@ -437,7 +459,51 @@ export async function runLocalQuickScanSmoke({
       requestTimeoutMs,
     );
     const report = await validateLocalScanReport(reportBody);
+
+    const { body: editorTokenBody } = await expectJson(
+      fetchImpl,
+      `${workerOrigin}/api/v1/scans/${encodeURIComponent(scanId)}/editor-tokens`,
+      {
+        method: "POST",
+        signal,
+        headers: { ...originHeaders, "x-scan-token": scanToken },
+      },
+      201,
+      "local Editor token",
+      requestTimeoutMs,
+    );
+    const editorToken = assertObject(editorTokenBody, "local Editor token");
+    if (typeof editorToken.token !== "string" || !editorToken.token) {
+      throw new Error("local Editor token is missing its credential");
+    }
+    const { body: handoffBody, response: handoffResponse } = await expectJson(
+      fetchImpl,
+      `${workerOrigin}/api/v1/editor-seeds`,
+      {
+        signal,
+        headers: {
+          authorization: `Bearer ${editorToken.token}`,
+          origin: editorOrigin,
+        },
+      },
+      200,
+      "local Editor handoff",
+      requestTimeoutMs,
+    );
+    if (
+      handoffResponse.headers.get("access-control-allow-origin") !==
+      editorOrigin
+    ) {
+      throw new Error("local Worker does not allow the local Editor origin");
+    }
+    const { parseEditorHandoffEnvelope } =
+      await import("@grimodex/scan-contract");
+    const handoff = parseEditorHandoffEnvelope(handoffBody);
+    if (!handoff.ok || handoff.value.hostedAiSession.scanId !== scanId) {
+      throw new Error("local Editor handoff failed its scoped contract");
+    }
     return {
+      editorHandoff: "validated",
       entityCount: report.entities.length,
       eventCount: report.events.length,
       findingCount: report.findings.length,

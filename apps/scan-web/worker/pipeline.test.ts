@@ -15,6 +15,10 @@ import {
   MAX_SCAN_CHUNKS,
   normalizeScanSource,
 } from "./pipeline";
+import {
+  currentAiDataConsentIdentity,
+  type AiDataConsentIdentity,
+} from "./ai/aiDataDisclosure";
 
 class MemoryBucket implements R2BucketLike {
   private readonly values = new Map<
@@ -104,6 +108,7 @@ function createFixture() {
     createdAt: "2026-07-16T00:00:00.000Z",
     updatedAt: "2026-07-16T00:00:00.000Z",
     accessTokenHash: "token-hash",
+    aiConsent: null as AiDataConsentIdentity | null,
   };
   const upload = {
     id: "upload-pipeline",
@@ -163,6 +168,9 @@ function createFixture() {
     setScanStatus: (status: ScanSessionRecord["status"]) => {
       scanStatus = status;
     },
+    setAiConsent: (identity: AiDataConsentIdentity | null) => {
+      scan.aiConsent = identity;
+    },
     sourceKey,
   };
 }
@@ -209,6 +217,7 @@ async function prepareFrontierAdjudication(
     SCAN_FRONTIER_PROVIDER: "workers-ai",
     SCAN_FRONTIER_MODEL: "frontier-test",
   });
+  fixture.setAiConsent(await currentAiDataConsentIdentity(fixture.env, "scan"));
   return run;
 }
 
@@ -516,6 +525,9 @@ describe("scan pipeline", () => {
       SCAN_AI_PROVIDER: "workers-ai",
       SCAN_AI_MODEL: "test-model",
     });
+    fixture.setAiConsent(
+      await currentAiDataConsentIdentity(fixture.env, "scan"),
+    );
     await fixture.bucket.put(
       `artifacts/${fixture.scanId}/chunks.json`,
       JSON.stringify({
@@ -556,6 +568,9 @@ describe("scan pipeline", () => {
       SCAN_AI_PROVIDER: "workers-ai",
       SCAN_AI_MODEL: "test-model",
     });
+    fixture.setAiConsent(
+      await currentAiDataConsentIdentity(fixture.env, "scan"),
+    );
 
     await expect(
       extractScanChunks(fixture.env, fixture.repository, fixture.scanId),
@@ -564,6 +579,44 @@ describe("scan pipeline", () => {
     expect(
       fixture.bucket.keys().some((key) => key.includes("chunk-extractions")),
     ).toBe(false);
+  });
+
+  it("fails closed before a retried provider call when the accepted Scan provider changes", async () => {
+    const fixture = createFixture();
+    await fixture.bucket.put(fixture.sourceKey, "葵は灯台へ向かった。", {
+      httpMetadata: { contentType: "text/plain" },
+    });
+    await normalizeScanSource(fixture.env, fixture.repository, fixture.scanId);
+    await buildScanChunks(
+      fixture.env,
+      fixture.repository,
+      fixture.scanId,
+      "quick",
+    );
+    Object.assign(fixture.env, {
+      AI: { run: vi.fn(async () => ({ response: "unused" })) },
+      SCAN_WORKERS_AI_ENABLED: "true",
+      SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_AI_MODEL: "test-model",
+    });
+    fixture.setAiConsent(
+      await currentAiDataConsentIdentity(fixture.env, "scan"),
+    );
+    Object.assign(fixture.env, {
+      SCAN_AI_PROVIDER: "openrouter",
+      OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
+      OPENROUTER_API_KEY: "server-only",
+    });
+    const providerFetch = vi.fn();
+    vi.stubGlobal("fetch", providerFetch);
+    try {
+      await expect(
+        extractScanChunks(fixture.env, fixture.repository, fixture.scanId),
+      ).rejects.toThrow(/AI data consent/i);
+      expect(providerFetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("does not issue a billable extraction after cancellation was requested", async () => {

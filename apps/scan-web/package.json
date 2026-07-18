@@ -19,10 +19,7 @@
     "@grimodex/scan-contract": "workspace:*",
     "@grimodex/scan-core": "workspace:*",
     "@grimodex/scan-prompts": "workspace:*",
-    "@tiptap/react": "3.28.0",
-    "@tiptap/starter-kit": "3.28.0",
     "react": "19.2.7",
-    "react-dom": "19.2.7",
-    "sql.js": "^1.14.1"
+    "react-dom": "19.2.7"
   }
 }

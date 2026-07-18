@@ -96,6 +96,7 @@ import { useImeExportSync } from "@/features/ime/useImeExportSync";
 import { AdaptiveWorkspaceShell } from "@/features/layout/adaptive/AdaptiveWorkspaceShell";
 import { ConnectedMobileWorkspaceSurface } from "@/features/layout/adaptive/MobileWorkspaceSurfaces";
 import { shouldUseAdaptiveWorkspace } from "@/features/layout/adaptive/adaptiveWorkspacePolicy";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 const SettingsDialog = lazy(() =>
   import("@/features/settings/SettingsDialog").then((m) => ({
@@ -160,6 +161,7 @@ function applyTheme(theme: string, colorTheme?: string) {
 }
 
 function App() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const view = useWorkspaceStore((s) => s.view);
   const activeWorkspacePath = useWorkspaceStore((s) => s.activeWorkspacePath);
   const workspaceOpenRevision = useWorkspaceStore(
@@ -194,6 +196,7 @@ function App() {
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   useEffect(() => {
     if (
+      runtimeCapabilities.localAi &&
       workspaceHydrated &&
       !workspaceSwitchInProgress &&
       currentProjectId &&
@@ -207,6 +210,7 @@ function App() {
     workspaceHydrated,
     workspaceOpenRevision,
     workspaceSwitchInProgress,
+    runtimeCapabilities.localAi,
   ]);
 
   // Sync uiLanguage setting → i18next
@@ -330,6 +334,7 @@ function App() {
 }
 
 function EditorScreen() {
+  const runtimeCapabilities = useRuntimeCapabilities();
   const screenshotPanelId = getScreenshotPanelId();
   const panelWindow = isPanelWindow();
   const adaptiveWorkspaceEnabled = shouldUseAdaptiveWorkspace({
@@ -404,14 +409,16 @@ function EditorScreen() {
   }, []);
 
   useEffect(() => {
+    if (!runtimeCapabilities.externalMount) return;
     void initializeExternalMounts().catch(() => {});
-  }, []);
+  }, [runtimeCapabilities.externalMount]);
 
   // ライセンス状態の初期化（refresh は内部 catch 済みで reject しない）。
   // 取得まで・失敗時はゲートが fail-open なので執筆は止まらない。
   useEffect(() => {
+    if (!runtimeCapabilities.secureSecretStore) return;
     void useLicenseStore.getState().refresh();
-  }, []);
+  }, [runtimeCapabilities.secureSecretStore]);
 
   useEffect(() => {
     const html = document.documentElement;

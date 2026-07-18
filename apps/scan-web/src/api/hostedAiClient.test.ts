@@ -20,6 +20,7 @@ describe("HostedAiClient", () => {
           operation: "inline",
           prompt: "Rewrite this",
           idempotencyKey: "request-12345678",
+          consentId: "consent_current_hosted_editor_policy_123456",
         },
       ),
     ).resolves.toEqual({ response: "ok", costWeight: 2 });
@@ -29,6 +30,7 @@ describe("HostedAiClient", () => {
     expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
       "x-scan-token": "secret",
       "x-idempotency-key": "request-12345678",
+      "x-ai-consent-id": "consent_current_hosted_editor_policy_123456",
     });
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({
       operation: "inline",

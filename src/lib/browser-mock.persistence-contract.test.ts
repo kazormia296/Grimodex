@@ -115,6 +115,28 @@ describe("BrowserMock persistence contract", () => {
     expect(onDatabaseDirty).toHaveBeenCalledTimes(1);
   });
 
+  it("marks a successful returning write dirty and persists its result", async () => {
+    const onDatabaseDirty = vi.fn();
+    const mock = await createMock({ onDatabaseDirty });
+
+    await expect(
+      mock.invoke("db_execute", {
+        sql: "insert into app_settings (key, value) values (?, ?) returning value",
+        params: ["contract.returning", "saved"],
+        method: "all",
+      }),
+    ).resolves.toEqual({ rows: [{ value: "saved" }] });
+
+    expect(onDatabaseDirty).toHaveBeenCalledTimes(1);
+
+    const restored = await createMock({ databaseBytes: mock.exportDatabase() });
+    await expect(
+      queryRows(restored, "select value from app_settings where key = ?", [
+        "contract.returning",
+      ]),
+    ).resolves.toEqual([{ value: "saved" }]);
+  });
+
   it("marks a committed batch dirty once, not once per statement", async () => {
     const onDatabaseDirty = vi.fn();
     const mock = await createMock({ onDatabaseDirty });
@@ -130,6 +152,23 @@ describe("BrowserMock persistence contract", () => {
           sql: "insert into app_settings (key, value) values (?, ?)",
           params: ["contract.batch.b", "B"],
           method: "run",
+        },
+      ],
+    });
+
+    expect(onDatabaseDirty).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a committed batch with returning writes dirty exactly once", async () => {
+    const onDatabaseDirty = vi.fn();
+    const mock = await createMock({ onDatabaseDirty });
+
+    await mock.invoke("db_execute_batch", {
+      statements: [
+        {
+          sql: "insert into app_settings (key, value) values (?, ?) returning value",
+          params: ["contract.batch.returning", "saved"],
+          method: "all",
         },
       ],
     });

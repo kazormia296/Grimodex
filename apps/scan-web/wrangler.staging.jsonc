@@ -10,6 +10,7 @@
     "SCAN_WORKERS_AI_ENABLED": "false",
     "SCAN_FRONTIER_ENABLED": "false",
     "SCAN_EDITOR_AI_ENABLED": "false",
+    "SCAN_EDITOR_SESSION_TTL_HOURS": "24",
     "SCAN_DAILY_LIMIT_UNITS": "20",
     "SCAN_MONTHLY_LIMIT_UNITS": "200",
     "SCAN_MAX_ACTIVE_JOBS": "2",
@@ -19,8 +20,8 @@
     "SCAN_UPLOAD_RETENTION_MINUTES": "60",
     "SCAN_TURNSTILE_REQUIRED": "false",
     "SCAN_ENVIRONMENT": "staging",
-    "SCAN_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct",
-    "ALLOWED_ORIGIN": "https://grimodex-try-staging.pages.dev",
+    "SCAN_AI_MODEL": "@cf/zai-org/glm-4.7-flash",
+    "ALLOWED_ORIGINS": "https://grimodex-scan-staging.pages.dev,https://grimodex-try-staging.pages.dev",
   },
   "d1_databases": [
     {

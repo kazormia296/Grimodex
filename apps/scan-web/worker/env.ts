@@ -45,10 +45,20 @@ export interface RateLimiterBindingLike {
   limit(input: { key: string }): Promise<{ success: boolean }>;
 }
 
+// Cloudflare deprecated the former Llama 3.1 default on 2026-05-30. Keep the
+// runtime fallback on an active, function-calling model while still allowing
+// every environment to override it explicitly.
+export const DEFAULT_SCAN_AI_MODEL = "@cf/zai-org/glm-4.7-flash";
+
 export interface WorkersAiBindingLike {
   run(
     model: string,
-    input: { messages: Array<{ role: "system" | "user"; content: string }> },
+    input: {
+      messages: unknown[];
+      tools?: Array<Record<string, unknown>>;
+      tool_choice?: "auto";
+      max_completion_tokens?: number;
+    },
   ): Promise<unknown>;
 }
 
@@ -63,6 +73,7 @@ export interface ScanEnv {
   SCAN_WORKERS_AI_ENABLED?: string;
   SCAN_FRONTIER_ENABLED?: string;
   SCAN_EDITOR_AI_ENABLED?: string;
+  SCAN_EDITOR_SESSION_TTL_HOURS?: string;
   SCAN_DAILY_LIMIT_UNITS?: string;
   SCAN_MONTHLY_LIMIT_UNITS?: string;
   SCAN_MAX_ACTIVE_JOBS?: string;
@@ -79,6 +90,7 @@ export interface ScanEnv {
   TURNSTILE_SECRET_KEY?: string;
   RATE_LIMITER?: RateLimiterBindingLike;
   ALLOWED_ORIGIN?: string;
+  ALLOWED_ORIGINS?: string;
   SCAN_ENVIRONMENT?: "development" | "staging" | "production";
   SCAN_FULL_ACCESS_SECRET?: string;
   MAX_UPLOAD_BYTES?: string;

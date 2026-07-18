@@ -19,10 +19,11 @@ const environments = {
     bucketName: "grimodex-scan-staging",
     config: "apps/scan-web/wrangler.staging.jsonc",
     databaseName: "grimodex-scan-staging",
+    editorOrigin: "https://grimodex-try-staging.pages.dev",
     expectedApiOrigin: "https://grimodex-scan-staging.kazormia296.workers.dev",
-    expectedOrigin: "https://grimodex-try-staging.pages.dev",
     pagesBranch: "master",
-    pagesProject: "grimodex-try-staging",
+    pagesOrigin: "https://grimodex-scan-staging.pages.dev",
+    pagesProject: "grimodex-scan-staging",
     turnstileRequired: false,
     workerName: "grimodex-scan-staging",
     workflowName: "grimodex-scan-staging-workflow",
@@ -31,9 +32,10 @@ const environments = {
     bucketName: "grimodex-scan-production",
     config: "apps/scan-web/wrangler.production.jsonc",
     databaseName: "grimodex-scan-production",
-    expectedOrigin: "https://try.grimodex.app",
+    editorOrigin: "https://try.grimodex.app",
     pagesBranch: "master",
-    pagesProject: "grimodex-try",
+    pagesOrigin: "https://scan.grimodex.app",
+    pagesProject: "grimodex-scan",
     turnstileRequired: true,
     workerName: "grimodex-scan-production",
     workflowName: "grimodex-scan-production-workflow",
@@ -163,7 +165,12 @@ export function validateScanDeployConfig({
   const databaseId = requiredString(database.database_id, "database_id");
   const bucketName = requiredString(bucket.bucket_name, "bucket_name");
   const workflowName = requiredString(workflow.name, "workflows.name");
-  const allowedOrigin = requiredString(vars.ALLOWED_ORIGIN, "ALLOWED_ORIGIN");
+  const allowedOriginsValue = requiredString(
+    vars.ALLOWED_ORIGINS,
+    "ALLOWED_ORIGINS",
+  );
+  const allowedOrigins = allowedOriginsValue.split(",");
+  const expectedAllowedOrigins = [spec.pagesOrigin, spec.editorOrigin];
   const acceptingNewJobsValue = requiredString(
     vars.SCAN_ACCEPTING_NEW_JOBS,
     "SCAN_ACCEPTING_NEW_JOBS",
@@ -209,9 +216,14 @@ export function validateScanDeployConfig({
       `${environment} workflow name must be ${spec.workflowName}`,
     );
   }
-  if (allowedOrigin !== spec.expectedOrigin) {
+  if (
+    allowedOrigins.length !== expectedAllowedOrigins.length ||
+    allowedOrigins.some(
+      (origin, index) => origin !== expectedAllowedOrigins[index],
+    )
+  ) {
     throw new Error(
-      `${environment} ALLOWED_ORIGIN must be ${spec.expectedOrigin}`,
+      `${environment} ALLOWED_ORIGINS must be ${expectedAllowedOrigins.join(",")}`,
     );
   }
   if (environment === "staging" && acceptingNewJobs) {
@@ -231,7 +243,7 @@ export function validateScanDeployConfig({
 
   return {
     acceptingNewJobs,
-    allowedOrigin,
+    allowedOrigins,
     bucketName,
     databaseId,
     databaseName,
@@ -371,6 +383,7 @@ export function createScanDeployPlan({
       throw new Error("production web deploy requires a Turnstile site key");
     }
     const buildEnvironment = {
+      VITE_EDITOR_BASE_URL: `${spec.editorOrigin}/editor`,
       VITE_SCAN_API_BASE_URL: normalizedApiBaseUrl,
       VITE_SCAN_TURNSTILE_REQUIRED: String(spec.turnstileRequired),
       ...(turnstileSiteKey?.trim()
@@ -539,13 +552,11 @@ export async function runScanSmokeChecks({
   const health = await fetchImpl(
     `${api}/api/v1/health`,
     requestOptions({
-      headers: { origin: spec.expectedOrigin },
+      headers: { origin: spec.pagesOrigin },
     }),
   );
   expectStatus(health, 200, "health check");
-  if (
-    health.headers.get("access-control-allow-origin") !== spec.expectedOrigin
-  ) {
+  if (health.headers.get("access-control-allow-origin") !== spec.pagesOrigin) {
     throw new Error(
       "health check did not return the exact allowed CORS origin",
     );
@@ -562,7 +573,7 @@ export async function runScanSmokeChecks({
   }
 
   const preflightHeaders = {
-    origin: spec.expectedOrigin,
+    origin: spec.pagesOrigin,
     "access-control-request-method": "POST",
     "access-control-request-headers": "content-type",
   };
@@ -576,9 +587,24 @@ export async function runScanSmokeChecks({
   expectStatus(allowedPreflight, 204, "allowed CORS preflight");
   if (
     allowedPreflight.headers.get("access-control-allow-origin") !==
-    spec.expectedOrigin
+    spec.pagesOrigin
   ) {
     throw new Error("allowed CORS preflight did not return the exact origin");
+  }
+
+  const editorPreflight = await fetchImpl(
+    `${api}/api/v1/editor-ai`,
+    requestOptions({
+      method: "OPTIONS",
+      headers: { ...preflightHeaders, origin: spec.editorOrigin },
+    }),
+  );
+  expectStatus(editorPreflight, 204, "Editor CORS preflight");
+  if (
+    editorPreflight.headers.get("access-control-allow-origin") !==
+    spec.editorOrigin
+  ) {
+    throw new Error("Editor CORS preflight did not return the exact origin");
   }
 
   const hostilePreflight = await fetchImpl(
@@ -599,7 +625,7 @@ export async function runScanSmokeChecks({
       method: "POST",
       headers: {
         "content-type": "application/json",
-        origin: spec.expectedOrigin,
+        origin: spec.pagesOrigin,
       },
       body: JSON.stringify({
         filename: "smoke-test.txt",
@@ -610,8 +636,7 @@ export async function runScanSmokeChecks({
   );
   expectStatus(pausedUpload, 503, "paused upload check");
   if (
-    pausedUpload.headers.get("access-control-allow-origin") !==
-    spec.expectedOrigin
+    pausedUpload.headers.get("access-control-allow-origin") !== spec.pagesOrigin
   ) {
     throw new Error("paused upload check did not return the exact CORS origin");
   }
@@ -620,7 +645,7 @@ export async function runScanSmokeChecks({
     throw new Error("paused upload check did not return scan_paused");
   }
 
-  const index = await fetchImpl(`${spec.expectedOrigin}/`, requestOptions());
+  const index = await fetchImpl(`${spec.pagesOrigin}/`, requestOptions());
   expectStatus(index, 200, "Pages index");
   expectContentType(index, ["text/html"], "Pages index");
   const indexHtml = await index.text();
@@ -632,7 +657,7 @@ export async function runScanSmokeChecks({
   }
 
   const manifest = await fetchImpl(
-    `${spec.expectedOrigin}/manifest.webmanifest`,
+    `${spec.pagesOrigin}/manifest.webmanifest`,
     requestOptions(),
   );
   expectStatus(manifest, 200, "Pages manifest");
@@ -657,7 +682,7 @@ export async function runScanSmokeChecks({
   }
 
   const serviceWorkerResponse = await fetchImpl(
-    `${spec.expectedOrigin}/sw.js`,
+    `${spec.pagesOrigin}/sw.js`,
     requestOptions(),
   );
   expectStatus(serviceWorkerResponse, 200, "Pages service worker");
@@ -678,7 +703,8 @@ export async function runScanSmokeChecks({
   return {
     acceptingNewJobs: false,
     apiBaseUrl: api,
-    pagesOrigin: spec.expectedOrigin,
+    editorOrigin: spec.editorOrigin,
+    pagesOrigin: spec.pagesOrigin,
   };
 }
 

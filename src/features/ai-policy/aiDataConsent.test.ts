@@ -46,7 +46,7 @@ describe("BYOK-local AI data consent", () => {
       const record = createAiDataConsentRecord(
         byokDisclosureIdentity,
         "2026-07-19T01:02:03.000Z",
-      ) as Record<string, unknown>;
+      ) as unknown as Record<string, unknown>;
       delete record[field];
 
       expect(isAiDataConsentCurrent(record, byokDisclosureIdentity)).toBe(

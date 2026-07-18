@@ -45,9 +45,10 @@ import "@fontsource/literata/latin-400-italic.css";
 import "@fontsource/literata/latin-700-italic.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
 import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
-import { isElectron } from "./lib/tauri";
+import { isElectron, isTauri } from "./lib/tauri";
 import { installDefaultEditorNavigation } from "./features/editor/editorNavigationPorts";
 import { RuntimeCapabilitiesProvider } from "./runtime/runtimeCapabilitiesContext";
+import { AiDataConsentGate } from "./features/ai-policy/AiDataConsentGate";
 
 performance.mark("grimodex:renderer-bootstrap");
 
@@ -81,19 +82,121 @@ if (isElectron()) {
   installSuppressSystemMenuOnAlt();
 }
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <RuntimeCapabilitiesProvider target={isElectron() ? "electron" : "web"}>
-        <App />
-      </RuntimeCapabilitiesProvider>
-    </ErrorBoundary>
-  </React.StrictMode>,
-);
+const rootElement = document.getElementById("root") as HTMLElement;
 
-requestAnimationFrame(() => {
-  performance.mark("grimodex:renderer-first-frame");
-});
+function renderApplication(): void {
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <RuntimeCapabilitiesProvider target={isElectron() ? "electron" : "web"}>
+          <App />
+          <AiDataConsentGate />
+        </RuntimeCapabilitiesProvider>
+      </ErrorBoundary>
+    </React.StrictMode>,
+  );
+
+  requestAnimationFrame(() => {
+    performance.mark("grimodex:renderer-first-frame");
+  });
+
+  if (
+    import.meta.env.PROD &&
+    !isElectron() &&
+    !isTauri() &&
+    "serviceWorker" in navigator
+  ) {
+    void navigator.serviceWorker.register("/editor-sw.js");
+  }
+}
+
+function renderBrowserBootstrapFailure(error: unknown): void {
+  debugLog.error("BrowserRuntime", "bootstrap failed", errorDetail(error));
+  const container = document.createElement("main");
+  container.setAttribute("role", "alert");
+  container.style.padding = "2rem";
+  container.style.fontFamily = "var(--ui-font, sans-serif)";
+  const heading = document.createElement("h1");
+  heading.textContent = "Grimodex Editor を起動できませんでした";
+  const detail = document.createElement("p");
+  detail.textContent =
+    error instanceof Error ? error.message : "ブラウザーの初期化に失敗しました";
+  container.append(heading, detail);
+  rootElement.replaceChildren(container);
+}
+
+function renderBrowserPersistenceFailure(
+  message: string,
+  error: unknown,
+): void {
+  debugLog.error("BrowserRuntime", "persistence failed", errorDetail(error));
+  if (document.getElementById("grimodex-browser-persistence-error")) return;
+
+  const container = document.createElement("aside");
+  container.id = "grimodex-browser-persistence-error";
+  container.setAttribute("role", "alert");
+  container.setAttribute("aria-live", "assertive");
+  Object.assign(container.style, {
+    position: "fixed",
+    inset: "0",
+    zIndex: "2147483647",
+    display: "grid",
+    placeContent: "center",
+    gap: "0.75rem",
+    padding: "2rem",
+    background: "rgba(15, 12, 20, 0.96)",
+    color: "#f8f7fa",
+    fontFamily: "var(--ui-font, sans-serif)",
+  });
+  const heading = document.createElement("h1");
+  heading.textContent = "Grimodex Editor の保存を停止しました";
+  const detail = document.createElement("p");
+  detail.style.maxWidth = "42rem";
+  detail.textContent = message;
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.textContent = "ページを再読み込み";
+  Object.assign(reload.style, {
+    justifySelf: "start",
+    padding: "0.625rem 1rem",
+    border: "1px solid #7c3aed",
+    borderRadius: "0.5rem",
+    background: "#7c3aed",
+    color: "white",
+    cursor: "pointer",
+  });
+  reload.addEventListener("click", () => window.location.reload());
+  container.append(heading, detail, reload);
+  document.body.append(container);
+}
+
+async function bootstrapRenderer(): Promise<void> {
+  // Native shells keep their existing synchronous bootstrap. Hosted Editor
+  // must restore and install BrowserMock before App can make its first invoke.
+  if (!isElectron() && !isTauri()) {
+    const {
+      assertHostedEditorDurability,
+      initializeBrowserRuntime,
+      browserPersistenceFailureMessage,
+    } = await import("./lib/browserRuntime");
+    const browserRuntime = await initializeBrowserRuntime({
+      onPersistenceError: (error) =>
+        renderBrowserPersistenceFailure(
+          browserPersistenceFailureMessage(error),
+          error,
+        ),
+    });
+    try {
+      assertHostedEditorDurability(browserRuntime.durability);
+    } catch (error) {
+      await browserRuntime.dispose();
+      throw error;
+    }
+  }
+  renderApplication();
+}
+
+void bootstrapRenderer().catch(renderBrowserBootstrapFailure);
 
 // Warm up tiktoken WASM during idle so the first chat-flow `await
 // ensureTokenizer()` returns immediately instead of paying ~30ms init cost

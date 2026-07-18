@@ -507,7 +507,7 @@
   "legal": {
     "eula": {
       "title": "Agreement to the Terms of Use",
-      "description": "Using Grimodex requires acceptance of the Terms of Use (v{{version}}). The terms are written in Japanese only.",
+      "description": "Using Grimodex requires acceptance of the Terms of Use (v{{version}}). The English text is a reference translation; the Japanese text is authoritative.",
       "agreeCheckbox": "I have read the Terms of Use and agree to them",
       "acceptButton": "Accept and continue",
       "showDeveloperMessage": "Read the message from the developer (optional)",
@@ -1168,7 +1168,7 @@
       "docLoadError": "Failed to load document: {{message}}",
       "terms": {
         "title": "Terms of Use",
-        "description": "Grimodex usage terms and disclaimer (Japanese only)"
+        "description": "Grimodex usage terms and disclaimer (English reference translation available)"
       },
       "developerMessage": {
         "title": "Message from the developer",
@@ -5824,6 +5824,22 @@
     "deleteConfirmDesc_one": "It will be removed from {{count}} scene or chapter.",
     "deleteConfirmDesc_other": "It will be removed from {{count}} scenes and chapters.",
     "reorder": "Reorder"
+  },
+  "aiDataConsent": {
+    "title": "Review before sending data to AI",
+    "sentData": "Data sent",
+    "destination": "Processor and location",
+    "storage": "Storage and retention",
+    "sourceRetention": "Source {{days}} days",
+    "artifactRetention": "Analysis and AI responses {{days}} days",
+    "browserRetention": "No automatic deletion; retained until you delete the workspace",
+    "providerStorage": "Storage by the AI provider",
+    "providerRetention": "Retention by the AI provider",
+    "training": "Use for model training",
+    "openPolicy": "Open policy",
+    "confirm": "I reviewed the data transfer, storage, and training-use policies",
+    "decline": "Not now",
+    "accept": "Accept and use AI"
   },
   "promptLibrary": {
     "section": {

@@ -54,6 +54,33 @@ requirements:
       - eval-route-character-timeline
       - eval-tool-unknown
       - eval-isolation-ask-user
+  - id: GDX-AI-CONSENT-001
+    title: External AI data use is fully disclosed and explicitly consented before dispatch.
+    definedIn: policies/quality/iron-laws.md#GDX-AI-CONSENT-001
+    implementedBy:
+      - packages/scan-contract/src/aiDataDisclosureV1.ts
+      - apps/scan-web/worker/ai/aiDataDisclosure.ts
+      - apps/scan-web/worker/router.ts
+      - apps/scan-web/src/api/scanApiClient.ts
+      - apps/scan-web/src/api/hostedAiClient.ts
+      - src/features/ai-policy/aiDataConsentBroker.ts
+      - src/features/ai-policy/browserAiDisclosure.ts
+      - src/lib/browser-mock.ts
+      - public/PRIVACY_ja.md
+      - public/PRIVACY_en.md
+    lightTests:
+      - packages/scan-contract/test/aiDataDisclosure.test.ts
+      - apps/scan-web/worker/aiDisclosure.router.test.ts
+      - apps/scan-web/src/api/scanApiClient.consent.test.ts
+      - apps/scan-web/src/api/hostedAiClient.consent.test.ts
+      - src/features/ai-policy/aiDataConsent.test.ts
+      - src/features/ai-policy/aiDataConsentBroker.test.ts
+      - src/lib/browser-mock.ai-runtime.test.ts
+      - src/features/ai-verification/aiPathRegistry.test.ts
+    heavyTests:
+      - apps/scan-web/worker/ai/hostedAi.test.ts
+    evaluatedBy:
+      - eval-ai-data-consent-precheck
   - id: GDX-TOOL-001
     title: Agent tool calls must resolve to the canonical manifest and channel.
     definedIn: policies/quality/iron-laws.md#GDX-TOOL-001
@@ -202,3 +229,7 @@ blockedEvaluations:
     suiteId: scan-contract
     reason: No isolated hosted Scan evaluation runner exists in the repository, so this cannot be represented as runnable Heavy evidence.
     requiredAction: Add a teardown-capable runner and isolated test-account contract before promoting this gap to heavyEvaluations.
+  - id: blocked-web-ai-consent-live
+    suiteId: tool-policy
+    reason: No isolated deployed-browser runner proves the consent dialog, refusal-before-provider behavior, processor disclosure, and teardown against a real Hosted or BYOK provider.
+    requiredAction: Add disposable provider credentials and storage, a deployed browser runner, refusal and re-consent assertions, and deterministic teardown before promoting this gap to heavyEvaluations.

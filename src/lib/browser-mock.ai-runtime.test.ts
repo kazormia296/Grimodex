@@ -66,6 +66,38 @@ describe("BrowserMock web AI runtime contract", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
+  it("authorizes credentialed model discovery before contacting a provider", async () => {
+    const order: string[] = [];
+    const authorizeAiRequest = vi.fn(async () => {
+      order.push("authorize");
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        order.push("provider");
+        return Response.json({ data: [] });
+      }),
+    );
+    const mock = await createBrowserMock({ authorizeAiRequest });
+    await mock.invoke("save_api_key", {
+      provider: "openai",
+      key: "disposable-test-key",
+    });
+
+    await expect(
+      mock.invoke("list_ai_models", { provider: "openai" }),
+    ).resolves.toEqual([]);
+    expect(order).toEqual(["authorize", "provider"]);
+    expect(authorizeAiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: "connection",
+        provider: "openai",
+        hasApiKey: true,
+      }),
+    );
+    vi.unstubAllGlobals();
+  });
+
   it("emits the existing chat stream wire and can abort it", async () => {
     let releaseStream: (() => void) | undefined;
     const stream = vi.fn(
@@ -155,5 +187,49 @@ describe("BrowserMock web AI runtime contract", () => {
         output_tokens: null,
       },
     ]);
+  });
+
+  it("keeps agent requests on a scoped transport when one is installed", async () => {
+    const completeAgent = vi.fn().mockResolvedValue({
+      blocks: [{ type: "text", content: "hosted agent response" }],
+      stopReason: "end_turn",
+    });
+    const mock = await createBrowserMock({
+      aiSettingsOverride: {
+        provider: "openrouter",
+        model: "grimodex-hosted",
+      },
+      authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      aiTransport: {
+        complete: vi.fn(),
+        completeAgent,
+      },
+    });
+    const messages = [{ role: "user", content: "相談" }];
+    const tools = [
+      {
+        name: "lookup",
+        description: "Lookup",
+        inputSchema: { type: "object", properties: {}, required: [] },
+      },
+    ];
+
+    const result = await mock.invoke("send_agent_message", {
+      messages,
+      tools,
+    });
+
+    expect(completeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openrouter",
+        model: "grimodex-hosted",
+      }),
+      messages,
+      tools,
+    );
+    expect(result).toEqual({
+      blocks: [{ type: "text", content: "hosted agent response" }],
+      stopReason: "end_turn",
+    });
   });
 });

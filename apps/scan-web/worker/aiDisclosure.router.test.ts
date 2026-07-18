@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScanEnv } from "./env";
 import { ScanRepository } from "./repository";
 import { handleRequest } from "./router";
+import { currentAiDataConsentIdentity } from "./ai/aiDataDisclosure";
+import { sha256Hex } from "./security";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -121,9 +123,190 @@ describe("public AI data disclosures", () => {
 
     expect(response.status).toBe(404);
   });
+
+  it.each(["scan", "hosted-editor"] as const)(
+    "discloses R2 content storage, D1 non-content hashes, and the %s retention caveat",
+    async (route) => {
+      const response = await handleRequest(
+        new Request(`https://scan.example/api/v1/ai-disclosures/${route}`),
+        env({
+          AI: { run: vi.fn(async () => ({ response: "unused" })) },
+          SCAN_AI_PROVIDER: "workers-ai",
+        }),
+      );
+      const body = (await response.json()) as {
+        storage: { application: { location: string } };
+      };
+      const location = body.storage.application.location;
+
+      expect(response.status).toBe(200);
+      expect(location).toContain("R2");
+      expect(location).toContain("D1");
+      expect(location).toMatch(/non-content operational metadata/i);
+      expect(location).toMatch(/token hashes/i);
+      expect(location).toMatch(/request and idempotency hashes/i);
+      expect(location).toMatch(/operational or legal retention requirements/i);
+    },
+  );
+
+  it("discloses the complete Workers AI -> AI Gateway -> OpenAI chain when Full Scan frontier processing is enabled", async () => {
+    const fullEnv = env({
+      AI: { run: vi.fn(async () => ({ response: "unused" })) },
+      SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_FRONTIER_ENABLED: "true",
+      SCAN_FRONTIER_PROVIDER: "ai-gateway",
+      SCAN_AI_GATEWAY_URL:
+        "https://gateway.ai.cloudflare.com/v1/account/gateway/openai/chat/completions",
+      AI_GATEWAY_TOKEN: "server-only",
+    });
+    const quickEnv = env({
+      AI: { run: vi.fn(async () => ({ response: "unused" })) },
+      SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_FRONTIER_ENABLED: "false",
+    });
+
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/ai-disclosures/scan"),
+      fullEnv,
+    );
+    const quickResponse = await handleRequest(
+      new Request("https://scan.example/api/v1/ai-disclosures/scan"),
+      quickEnv,
+    );
+    const body = (await response.json()) as {
+      policyVersion: string;
+      provider: string;
+      consentId: string;
+      processingDestinations: Array<{ processor: string }>;
+      retention: { provider: { summary: string } };
+      trainingUse: { status: string; summary: string };
+    };
+    const quickBody = (await quickResponse.json()) as { consentId: string };
+
+    expect(response.status).toBe(200);
+    expect(body.provider).toBe("workers-ai+ai-gateway:openai");
+    expect(
+      body.processingDestinations.map(({ processor }) => processor),
+    ).toEqual(["Cloudflare Workers AI", "Cloudflare AI Gateway", "OpenAI API"]);
+    expect(body.retention.provider.summary).toContain("30 days");
+    expect(body.trainingUse).toMatchObject({ status: "depends" });
+    expect(body.trainingUse.summary).toContain("OpenAI API");
+    expect(body.consentId).not.toBe(quickBody.consentId);
+  });
+
+  it("keeps hosted Editor disclosure scoped to its primary provider when the Scan frontier is enabled", async () => {
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/ai-disclosures/hosted-editor"),
+      env({
+        AI: { run: vi.fn(async () => ({ response: "unused" })) },
+        SCAN_AI_PROVIDER: "workers-ai",
+        SCAN_FRONTIER_ENABLED: "true",
+        SCAN_FRONTIER_PROVIDER: "ai-gateway",
+        SCAN_AI_GATEWAY_URL:
+          "https://gateway.ai.cloudflare.com/v1/account/gateway/openai/chat/completions",
+      }),
+    );
+    const body = (await response.json()) as {
+      policyVersion: string;
+      provider: string;
+      sentData: Array<{ category: string; description: string }>;
+      processingDestinations: Array<{ processor: string }>;
+      storage: {
+        application: {
+          storesPrompt: boolean;
+          storesResponse: boolean;
+          location: string;
+        };
+      };
+      trainingUse: { status: string };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.policyVersion).toBe("2026-07-19.4");
+    expect(body.provider).toBe("workers-ai");
+    expect(body.processingDestinations).toHaveLength(1);
+    expect(body.processingDestinations[0]?.processor).toBe(
+      "Cloudflare Workers AI",
+    );
+    expect(body.sentData.map(({ category }) => category)).toEqual([
+      "prompt",
+      "system-instructions",
+      "conversation-history",
+      "tool-definitions",
+      "selected-context",
+    ]);
+    expect(
+      body.sentData.find(({ category }) => category === "conversation-history")
+        ?.description,
+    ).toContain("tool-result");
+    expect(
+      body.sentData.find(({ category }) => category === "tool-definitions")
+        ?.description,
+    ).toContain("input JSON schemas");
+    expect(body.storage.application).toMatchObject({
+      storesPrompt: true,
+      storesResponse: true,
+    });
+    expect(body.storage.application.location).toContain("IndexedDB");
+    expect(body.storage.application.location).toContain("R2");
+    expect(body.trainingUse.status).toBe("not-used");
+  });
+
+  it("fails closed instead of claiming no training when an AI Gateway upstream is unknown", async () => {
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/ai-disclosures/scan"),
+      env({
+        AI: { run: vi.fn(async () => ({ response: "unused" })) },
+        SCAN_AI_PROVIDER: "workers-ai",
+        SCAN_FRONTIER_ENABLED: "true",
+        SCAN_FRONTIER_PROVIDER: "ai-gateway",
+        SCAN_AI_GATEWAY_URL:
+          "https://gateway.ai.cloudflare.com/v1/account/gateway/custom/chat/completions",
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "ai_disclosure_unavailable" },
+    });
+  });
 });
 
 describe("AI data consent enforcement", () => {
+  it("persists only the current server-derived identity when issuing an upload intent", async () => {
+    const configured = env({
+      AI: { run: vi.fn(async () => ({ response: "unused" })) },
+      SCAN_ACCEPTING_NEW_JOBS: "true",
+      SCAN_AI_PROVIDER: "workers-ai",
+    });
+    const identity = await currentAiDataConsentIdentity(configured, "scan");
+    const createUploadIntent = vi
+      .spyOn(ScanRepository.prototype, "createUploadIntent")
+      .mockResolvedValue(undefined);
+
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/upload-intents", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-ai-consent-id": identity.consentId,
+        },
+        body: JSON.stringify({
+          filename: "private-manuscript.txt",
+          contentType: "text/plain",
+          size: 128,
+          aiConsentProvider: "attacker-controlled",
+        }),
+      }),
+      configured,
+    );
+
+    expect(response.status).toBe(201);
+    expect(createUploadIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ aiConsent: identity }),
+    );
+  });
+
   it.each([
     ["missing", undefined],
     ["non-matching", "consent_wrong_policy_route_or_provider_123456"],
@@ -209,4 +392,106 @@ describe("AI data consent enforcement", () => {
       expect(aiRun).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects source bytes when the accepted provider identity is no longer current", async () => {
+    const acceptedEnv = env({
+      AI: { run: vi.fn(async () => ({ response: "unused" })) },
+      SCAN_AI_PROVIDER: "workers-ai",
+    });
+    const accepted = await currentAiDataConsentIdentity(acceptedEnv, "scan");
+    const put = vi.fn(async () => undefined);
+    const releaseUploadClaim = vi
+      .spyOn(ScanRepository.prototype, "releaseUploadClaim")
+      .mockResolvedValue(undefined);
+    vi.spyOn(ScanRepository.prototype, "authorizeUpload").mockResolvedValue({
+      id: "upload-1",
+      tokenHash: "token-hash",
+      filename: "private.txt",
+      contentType: "text/plain",
+      expectedSize: 7,
+      sourceKey: "incoming/upload-1/source.txt",
+      status: "uploaded",
+      expiresAt: "2026-07-19T00:15:00.000Z",
+      actualSize: null,
+      sourceHash: null,
+      aiConsent: accepted,
+    });
+
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/uploads/upload-1", {
+        method: "PUT",
+        headers: {
+          "content-type": "text/plain",
+          "x-upload-token": "upload-token",
+        },
+        body: "private",
+      }),
+      env({
+        SCAN_AI_PROVIDER: "openrouter",
+        OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
+        SCAN_BUCKET: {
+          put,
+          get: async () => null,
+          head: async () => null,
+          delete: async () => undefined,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(428);
+    expect(put).not.toHaveBeenCalled();
+    expect(releaseUploadClaim).toHaveBeenCalledWith("upload-1");
+  });
+
+  it("does not queue a scan after the accepted provider identity changes", async () => {
+    const uploadToken = "upload-token";
+    const secret = "test-secret";
+    const acceptedEnv = env({
+      AI: { run: vi.fn(async () => ({ response: "unused" })) },
+      SCAN_AI_PROVIDER: "workers-ai",
+    });
+    const accepted = await currentAiDataConsentIdentity(acceptedEnv, "scan");
+    vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
+      id: "upload-1",
+      tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
+      filename: "private.txt",
+      contentType: "text/plain",
+      expectedSize: 7,
+      sourceKey: "incoming/upload-1/source.txt",
+      status: "uploaded",
+      expiresAt: "2026-07-19T00:15:00.000Z",
+      actualSize: 7,
+      sourceHash: "source-hash",
+      aiConsent: accepted,
+    });
+    const createScan = vi.spyOn(ScanRepository.prototype, "createScan");
+    const workflowCreate = vi.fn(async () => undefined);
+
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/scans", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-upload-token": uploadToken,
+        },
+        body: JSON.stringify({
+          uploadId: "upload-1",
+          mode: "quick",
+          scanId: "11111111-1111-4111-8111-111111111111",
+          scanToken: "A".repeat(43),
+        }),
+      }),
+      env({
+        SCAN_ACCEPTING_NEW_JOBS: "true",
+        SCAN_AI_PROVIDER: "openrouter",
+        OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
+        UPLOAD_TOKEN_SECRET: secret,
+        SCAN_WORKFLOW: { create: workflowCreate },
+      }),
+    );
+
+    expect(response.status).toBe(428);
+    expect(createScan).not.toHaveBeenCalled();
+    expect(workflowCreate).not.toHaveBeenCalled();
+  });
 });

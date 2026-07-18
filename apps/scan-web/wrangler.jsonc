@@ -17,8 +17,8 @@
     "SCAN_UPLOAD_RETENTION_MINUTES": "60",
     "SCAN_TURNSTILE_REQUIRED": "false",
     "SCAN_ENVIRONMENT": "development",
-    "SCAN_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct",
-    "ALLOWED_ORIGIN": "http://127.0.0.1:4173",
+    "SCAN_AI_MODEL": "@cf/zai-org/glm-4.7-flash",
+    "ALLOWED_ORIGINS": "http://127.0.0.1:4173,http://localhost:1430",
   },
   "d1_databases": [
     {

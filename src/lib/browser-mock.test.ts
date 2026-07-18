@@ -13,6 +13,10 @@ describe("createBrowserMock", () => {
     mock = await createBrowserMock();
   });
 
+  afterEach(() => {
+    mock.close();
+  });
+
   describe("db_execute", () => {
     it("inserts and selects a project", async () => {
       const now = new Date().toISOString();
@@ -171,6 +175,18 @@ describe("createBrowserMock", () => {
   });
 
   describe("API key browser lifetime", () => {
+    it("purges keys persisted by older browser-mock builds", async () => {
+      localStorage.setItem("grimodex:api-key:openai", "legacy-secret");
+
+      const migratedMock = await createBrowserMock();
+
+      expect(localStorage.getItem("grimodex:api-key:openai")).toBeNull();
+      await expect(
+        migratedMock.invoke<boolean>("has_api_key", { provider: "openai" }),
+      ).resolves.toBe(false);
+      migratedMock.close();
+    });
+
     it("keeps an API key only in the active mock and never persists it", async () => {
       await mock.invoke("save_api_key", {
         provider: "openai",
@@ -191,6 +207,7 @@ describe("createBrowserMock", () => {
         provider: "openai",
       });
       expect(present2).toBe(false);
+      mock2.close();
     });
 
     it("deletes an API key from the active in-memory store", async () => {
@@ -205,20 +222,48 @@ describe("createBrowserMock", () => {
       });
       expect(present).toBe(false);
     });
+
+    it("treats only the active provider of an authenticated hosted transport as available", async () => {
+      const hostedMock = await createBrowserMock({
+        aiSettingsOverride: {
+          provider: "openrouter",
+          model: "grimodex-hosted",
+        },
+        aiTransport: { complete: vi.fn() },
+        aiTransportProvidesProviderAccess: true,
+      });
+
+      await expect(
+        hostedMock.invoke<boolean>("has_api_key", {
+          provider: "openrouter",
+        }),
+      ).resolves.toBe(true);
+      await expect(
+        hostedMock.invoke<boolean>("has_api_key", { provider: "openai" }),
+      ).resolves.toBe(false);
+      expect(localStorage.getItem("grimodex:api-key:openrouter")).toBeNull();
+
+      hostedMock.close();
+    });
   });
 
   describe("list_ai_models", () => {
-    it("falls back to static list when fetch fails", async () => {
-      // fetch will fail because there's no real server — exercises the fallback
+    it("surfaces provider failure instead of presenting a mocked model list", async () => {
       const mockFetch = vi.fn().mockRejectedValue(new Error("Network error"));
       vi.stubGlobal("fetch", mockFetch);
+      const authorizedMock = await createBrowserMock({
+        authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
+      });
+      await authorizedMock.invoke("save_api_key", {
+        provider: "openrouter",
+        key: "disposable-test-key",
+      });
 
-      const models = await mock.invoke<Array<{ id: string; name: string }>>(
-        "list_ai_models",
-        {},
+      await expect(authorizedMock.invoke("list_ai_models", {})).rejects.toThrow(
+        "Network error",
       );
-      expect(models.length).toBeGreaterThan(0);
 
+      authorizedMock.close();
       vi.unstubAllGlobals();
     });
   });
@@ -233,6 +278,62 @@ describe("createBrowserMock", () => {
           messages: [{ role: "user", content: "Hello" }],
         }),
       ).rejects.toThrow("未接続");
+    });
+  });
+
+  describe("native-only optional panels", () => {
+    it("returns an empty scene lens instead of logging a browser command error", async () => {
+      await expect(
+        mock.invoke("list_scene_lens_for_project", {
+          projectId: "default-project",
+        }),
+      ).resolves.toEqual([]);
+    });
+
+    it("keeps dense semantic commands as explicit no-ops in Hosted Editor", async () => {
+      await expect(
+        mock.invoke("semantic_index_scene", { sceneId: "scene-1" }),
+      ).resolves.toBe(0);
+      await expect(
+        mock.invoke("semantic_search", {
+          projectId: "default-project",
+          query: "冒頭",
+          limit: 5,
+        }),
+      ).resolves.toEqual([]);
+    });
+
+    it("keeps the sparse related-scene arm available through browser SQL", async () => {
+      const now = new Date().toISOString();
+      await mock.invoke("db_execute", {
+        sql: "insert into tree_nodes (id, project_id, node_type, title, synopsis, content, sort_order, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params: [
+          "scene-browser-search",
+          "default-project",
+          "scene",
+          "雨の再会",
+          "駅で再会する",
+          "{}",
+          "a0",
+          now,
+          now,
+        ],
+        method: "run",
+      });
+
+      await expect(
+        mock.invoke("fts_search", {
+          projectId: "default-project",
+          query: "再会",
+          limit: 5,
+        }),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          sourceType: "scene",
+          id: "scene-browser-search",
+          title: "雨の再会",
+        }),
+      ]);
     });
   });
 
@@ -286,6 +387,7 @@ describe("createBrowserMock", () => {
         {},
       );
       expect(settings.model).toBeTruthy();
+      stagingMock.close();
     });
 
     it("leaves the AI model unset outside staging mode", async () => {

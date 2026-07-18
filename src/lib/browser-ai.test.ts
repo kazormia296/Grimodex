@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { sendChat, fetchModels, testConnection } from "./browser-ai";
+import {
+  completeBrowserAiRequest,
+  createBrowserAiTransport,
+  fetchModels,
+  resolveBrowserAiEndpoint,
+  sendChat,
+  testConnection,
+} from "./browser-ai";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -35,6 +42,9 @@ describe("sendChat", () => {
     expect(url).toBe("/api/anthropic/messages");
     expect(opts.headers["x-api-key"]).toBe("sk-test");
     expect(opts.headers["anthropic-version"]).toBe("2023-06-01");
+    expect(opts.headers["anthropic-dangerous-direct-browser-access"]).toBe(
+      "true",
+    );
 
     const body = JSON.parse(opts.body);
     expect(body.system).toBe("You are helpful.");
@@ -102,6 +112,98 @@ describe("sendChat", () => {
         { role: "user", content: "Hi" },
       ]),
     ).rejects.toThrow("AI request failed (401): Invalid API key");
+  });
+});
+
+describe("browser production endpoints", () => {
+  it("uses provider HTTPS APIs in production while keeping Vite dev proxies", () => {
+    expect(
+      resolveBrowserAiEndpoint("openai", "chat", { development: false }),
+    ).toBe("https://api.openai.com/v1/chat/completions");
+    expect(
+      resolveBrowserAiEndpoint("openrouter", "models", {
+        development: false,
+      }),
+    ).toBe("https://openrouter.ai/api/v1/models");
+    expect(
+      resolveBrowserAiEndpoint("anthropic", "chat", {
+        development: false,
+      }),
+    ).toBe("https://api.anthropic.com/v1/messages");
+    expect(
+      resolveBrowserAiEndpoint("openai", "chat", { development: true }),
+    ).toBe("/api/openai/chat/completions");
+  });
+
+  it("fails explicitly for native-only providers", () => {
+    expect(() =>
+      resolveBrowserAiEndpoint("cli", "chat", { development: false }),
+    ).toThrow("not supported in browser mode");
+  });
+});
+
+describe("structured browser AI transport", () => {
+  it("normalizes provider text, stop reason, and usage", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        choices: [
+          { message: { content: "Actual response" }, finish_reason: "stop" },
+        ],
+        usage: { prompt_tokens: 7, completion_tokens: 3 },
+      }),
+    );
+
+    await expect(
+      completeBrowserAiRequest({
+        operation: "chat",
+        provider: "openai",
+        model: "gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "Hello" }],
+      }),
+    ).resolves.toEqual({
+      blocks: [{ type: "text", content: "Actual response" }],
+      stopReason: "end_turn",
+      inputTokens: 7,
+      outputTokens: 3,
+    });
+  });
+
+  it("parses OpenAI-compatible SSE into the shared stream sink", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        [
+          'data: {"choices":[{"delta":{"content":"本"}}]}',
+          'data: {"choices":[{"delta":{"content":"物"},"finish_reason":"stop"}]}',
+          'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    const transport = createBrowserAiTransport();
+    const text: string[] = [];
+    const done: unknown[] = [];
+
+    await transport.stream?.(
+      {
+        operation: "chat",
+        provider: "openrouter",
+        model: "openai/gpt-4o-mini",
+        apiKey: "sk-test",
+        messages: [{ role: "user", content: "Hello" }],
+      },
+      {
+        text: (delta) => text.push(delta),
+        done: (payload) => done.push(payload),
+      },
+    );
+
+    expect(text).toEqual(["本", "物"]);
+    expect(done).toEqual([
+      { stopReason: "end_turn", inputTokens: 5, outputTokens: 2 },
+    ]);
   });
 });
 

@@ -19,7 +19,7 @@ const stagingConfig = `{
     "SCAN_ACCEPTING_NEW_JOBS": "false",
     "SCAN_TURNSTILE_REQUIRED": "false",
     "SCAN_ENVIRONMENT": "staging",
-    "ALLOWED_ORIGIN": "https://grimodex-try-staging.pages.dev"
+    "ALLOWED_ORIGINS": "https://grimodex-scan-staging.pages.dev,https://grimodex-try-staging.pages.dev"
   },
   "d1_databases": [{
     "binding": "DB",
@@ -37,9 +37,12 @@ const stagingConfig = `{
 }`;
 
 const productionAcceptingConfig = stagingConfig
+  .replace(
+    "https://grimodex-scan-staging.pages.dev,https://grimodex-try-staging.pages.dev",
+    "https://scan.grimodex.app,https://try.grimodex.app",
+  )
   .replaceAll("grimodex-scan-staging", "grimodex-scan-production")
   .replace('"SCAN_ENVIRONMENT": "staging"', '"SCAN_ENVIRONMENT": "production"')
-  .replace("https://grimodex-try-staging.pages.dev", "https://try.grimodex.app")
   .replace(
     '"SCAN_ACCEPTING_NEW_JOBS": "false"',
     '"SCAN_ACCEPTING_NEW_JOBS": "true"',
@@ -60,6 +63,14 @@ function createSmokeFetch({ fallbackAssets = false } = {}) {
     '<!doctype html><title>Grimodex Scan</title><div id="root"></div>';
   const fetchImpl = async (url, init = {}) => {
     requests.push({ url, init });
+    const requestOrigin = init.headers?.origin;
+    const allowedOrigins = new Set([
+      "https://grimodex-scan-staging.pages.dev",
+      "https://grimodex-try-staging.pages.dev",
+    ]);
+    const corsHeaders = allowedOrigins.has(requestOrigin)
+      ? { "access-control-allow-origin": requestOrigin }
+      : {};
     if (url.endsWith("/api/v1/health")) {
       return Response.json(
         {
@@ -68,23 +79,14 @@ function createSmokeFetch({ fallbackAssets = false } = {}) {
           acceptingNewJobs: false,
         },
         {
-          headers: {
-            "access-control-allow-origin":
-              "https://grimodex-try-staging.pages.dev",
-          },
+          headers: corsHeaders,
         },
       );
     }
     if (init.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
-        headers:
-          init.headers.origin === "https://hostile.invalid"
-            ? {}
-            : {
-                "access-control-allow-origin":
-                  "https://grimodex-try-staging.pages.dev",
-              },
+        headers: corsHeaders,
       });
     }
     if (url.endsWith("/api/v1/upload-intents")) {
@@ -92,10 +94,7 @@ function createSmokeFetch({ fallbackAssets = false } = {}) {
         { error: { code: "scan_paused" } },
         {
           status: 503,
-          headers: {
-            "access-control-allow-origin":
-              "https://grimodex-try-staging.pages.dev",
-          },
+          headers: corsHeaders,
         },
       );
     }
@@ -137,7 +136,10 @@ describe("Cloudflare Scan deploy CLI", () => {
       }),
       {
         acceptingNewJobs: false,
-        allowedOrigin: "https://grimodex-try-staging.pages.dev",
+        allowedOrigins: [
+          "https://grimodex-scan-staging.pages.dev",
+          "https://grimodex-try-staging.pages.dev",
+        ],
         bucketName: "grimodex-scan-staging",
         databaseId: "12345678-1234-1234-1234-123456789abc",
         databaseName: "grimodex-scan-staging",
@@ -148,7 +150,7 @@ describe("Cloudflare Scan deploy CLI", () => {
     );
   });
 
-  it("rejects placeholders, origin drift, and active staging traffic", () => {
+  it("rejects placeholders, allowlist drift, and active staging traffic", () => {
     assert.throws(
       () =>
         validateScanDeployConfig({
@@ -165,12 +167,30 @@ describe("Cloudflare Scan deploy CLI", () => {
         validateScanDeployConfig({
           environment: "staging",
           configText: stagingConfig.replace(
-            "https://grimodex-try-staging.pages.dev",
-            "https://unexpected.example",
+            "https://grimodex-scan-staging.pages.dev,https://grimodex-try-staging.pages.dev",
+            "https://grimodex-scan-staging.pages.dev,https://unexpected.example",
           ),
         }),
-      /ALLOWED_ORIGIN/,
+      /ALLOWED_ORIGINS/,
     );
+    for (const invalidAllowlist of [
+      "https://grimodex-scan-staging.pages.dev",
+      "https://grimodex-scan-staging.pages.dev,https://grimodex-try-staging.pages.dev,https://unexpected.example",
+      "https://grimodex-scan-staging.pages.dev,https://grimodex-scan-staging.pages.dev",
+      "https://grimodex-try-staging.pages.dev,https://grimodex-scan-staging.pages.dev",
+    ]) {
+      assert.throws(
+        () =>
+          validateScanDeployConfig({
+            environment: "staging",
+            configText: stagingConfig.replace(
+              "https://grimodex-scan-staging.pages.dev,https://grimodex-try-staging.pages.dev",
+              invalidAllowlist,
+            ),
+          }),
+        /ALLOWED_ORIGINS/,
+      );
+    }
     assert.throws(
       () =>
         validateScanDeployConfig({
@@ -292,6 +312,8 @@ describe("Cloudflare Scan deploy CLI", () => {
           env: {
             VITE_SCAN_API_BASE_URL:
               "https://grimodex-scan-staging.kazormia296.workers.dev",
+            VITE_EDITOR_BASE_URL:
+              "https://grimodex-try-staging.pages.dev/editor",
             VITE_SCAN_TURNSTILE_REQUIRED: "false",
           },
         },
@@ -369,14 +391,16 @@ describe("Cloudflare Scan deploy CLI", () => {
         }),
       /production traffic/,
     );
-    assert.equal(
-      validateScanDeployConfig({
-        environment: "production",
-        configText: productionAcceptingConfig,
-        allowProductionTraffic: true,
-      }).acceptingNewJobs,
-      true,
-    );
+    const productionConfig = validateScanDeployConfig({
+      environment: "production",
+      configText: productionAcceptingConfig,
+      allowProductionTraffic: true,
+    });
+    assert.equal(productionConfig.acceptingNewJobs, true);
+    assert.deepEqual(productionConfig.allowedOrigins, [
+      "https://scan.grimodex.app",
+      "https://try.grimodex.app",
+    ]);
   });
 
   it("matches configured bindings to remote D1 and R2 resources", () => {
@@ -427,10 +451,11 @@ describe("Cloudflare Scan deploy CLI", () => {
       {
         acceptingNewJobs: false,
         apiBaseUrl: "https://grimodex-scan-staging.kazormia296.workers.dev",
-        pagesOrigin: "https://grimodex-try-staging.pages.dev",
+        pagesOrigin: "https://grimodex-scan-staging.pages.dev",
+        editorOrigin: "https://grimodex-try-staging.pages.dev",
       },
     );
-    assert.equal(requests.length, 7);
+    assert.equal(requests.length, 8);
   });
 
   it("rejects arbitrary staging API origins and Pages SPA fallbacks", async () => {

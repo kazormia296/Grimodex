@@ -43,8 +43,10 @@ type SchemaContract = {
       unique: boolean;
       partial: boolean;
       columns: { column: string | null }[];
+      createSql: string;
     }
   >;
+  triggers: Record<string, string>;
 };
 
 const RUST_ONLY_TABLES = new Set([
@@ -464,5 +466,45 @@ describe("schema contract", () => {
     }
 
     assertBrowserTableSubset(tableRows, schemaContract);
+
+    const indexRows = queryRows(
+      await browser.invoke("db_execute", {
+        sql: "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name",
+        params: [],
+        method: "all",
+      }),
+    );
+    expect(indexRows).toEqual(
+      Object.entries(schemaContract.indexes)
+        .filter(([, index]) => !RUST_ONLY_TABLES.has(index.table))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, index]) => ({
+          name,
+          tbl_name: index.table,
+          sql: index.createSql,
+        })),
+    );
+
+    const triggerRows = queryRows(
+      await browser.invoke("db_execute", {
+        sql: "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+        params: [],
+        method: "all",
+      }),
+    );
+    expect(triggerRows).toEqual(
+      Object.entries(schemaContract.triggers)
+        .filter(([, createSql]) =>
+          [...RUST_ONLY_TABLES].every(
+            (tableName) =>
+              !new RegExp(
+                `\\b${tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+                "u",
+              ).test(createSql),
+          ),
+        )
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, sql]) => ({ name, sql })),
+    );
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { db } from "@/db/client";
-import { projects, codexTypes, codexEntries, snippets } from "@/db/schema";
+import { projects, codexEntries, snippets } from "@/db/schema";
 import { listCodexEntries } from "@/features/codex/api";
 import { listSnippets } from "@/features/snippets/api";
 
@@ -18,14 +18,8 @@ beforeAll(async () => {
     await db
       .insert(projects)
       .values({ id, title: id, createdAt: now, updatedAt: now });
-    // codex_entries.type is a composite FK → codex_types(project_id, slug),
-    // so each Project needs a matching type row before entries can be added.
-    await db.insert(codexTypes).values({
-      id: `${id}-type`,
-      projectId: id,
-      slug: "character",
-      label: "Character",
-    });
+    // The canonical project trigger seeds the character type before entries
+    // are inserted, satisfying the composite foreign key.
   }
   await db.insert(codexEntries).values([
     {

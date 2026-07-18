@@ -7,6 +7,12 @@
 [`aiPathRegistry.test.ts`](../src/features/ai-verification/aiPathRegistry.test.ts)
 が機械チェックする（経路を足して検証手段を割り当て忘れると CI が落ちる）。
 
+同ファイルでは、論理 AI サーフェスと model role を `AI_PATHS`、デプロイ先ごとの
+実行トランスポートを `AI_RUNTIME_ROUTES` として分離する。後者には Scan upload、
+Hosted Editor、ブラウザ BYOK を登録し、provider の決定主体、capability gate、通常の
+transport contract、および送信前の同意 contract を必須にする。ランタイム経路を
+追加しても論理サーフェスの model role を重複定義しない。
+
 ## 設計の核心 — 「JS 経路か Rust 経路か」で検証手段が決まる
 
 ライブハーネス [`aiLiveHarness.ts`](../src/features/chat/agent/aiLiveHarness.ts) は
@@ -18,13 +24,33 @@ usage 台帳 / session_id routing）ではない。
 
 この境界から、経路は次の層に分かれる:
 
-| 層 | 例 | 検証手段 |
-| --- | --- | --- |
-| **① agent loop** (JS が全オーケストレーション) | Chat Agent 本体・run_research サブエージェント・Context Creator | `runLiveAgent` で忠実再現（ループは JS、`sendToLLM` のみ差し替え）|
-| **② 単発** (JS でプロンプト構築→Rust で 1 往復) | synopsis / セッションタイトル / 要約 / 伏線監査ほか / beat role / map / tree | `runLiveSingleShot` ＋**本番のプロンプトビルダーと本番パーサ**|
-| **③ post-effect** (Rust が全オーケストレーション) | 校閲 graders（intent drift / review / consistency / timeline / pseudo_comment / impact review）| **Rust 側ライブテスト**（`call_post_effect_api` を実プロバイダに直接）|
-| **④ CLI** | claude/codex/opencode サブプロセス | 自動検証不可（stub・実機 smoke のみ）|
-| **➖ 埋め込み/検索** | semantic_search / fts_search | LLM 生成でない（n/a・決定的 eval で別途）|
+| 層                                                | 例                                                                                              | 検証手段                                                               |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **① agent loop** (JS が全オーケストレーション)    | Chat Agent 本体・run_research サブエージェント・Context Creator                                 | `runLiveAgent` で忠実再現（ループは JS、`sendToLLM` のみ差し替え）     |
+| **② 単発** (JS でプロンプト構築→Rust で 1 往復)   | synopsis / セッションタイトル / 要約 / 伏線監査ほか / beat role / map / tree                    | `runLiveSingleShot` ＋**本番のプロンプトビルダーと本番パーサ**         |
+| **③ post-effect** (Rust が全オーケストレーション) | 校閲 graders（intent drift / review / consistency / timeline / pseudo_comment / impact review） | **Rust 側ライブテスト**（`call_post_effect_api` を実プロバイダに直接） |
+| **④ CLI**                                         | claude/codex/opencode サブプロセス                                                              | 自動検証不可（stub・実機 smoke のみ）                                  |
+| **➖ 埋め込み/検索**                              | semantic_search / fts_search                                                                    | LLM 生成でない（n/a・決定的 eval で別途）                              |
+
+## Web／Hosted AI の同意境界
+
+`GDX-AI-CONSENT-001` により、次の 3 経路は外部へデータを送信する前に、現在の
+policy version・route・provider に一致する明示同意を必要とする。
+
+| runtime route | provider 決定  | Light verifier                                                       | Heavy 境界                                                      |
+| ------------- | -------------- | -------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Scan upload   | server runtime | upload→workflow contract + consent 無しの upload 拒否                | 実 Cloudflare storage/provider と確実な teardown が必要         |
+| Hosted Editor | server runtime | HostedAiClient wire contract + consent 無しの network 拒否           | デプロイ済み Editor/Worker、実 provider、保存物 teardown が必要 |
+| Browser BYOK  | user selection | production endpoint/auth contract + provider 呼出し前の consent 拒否 | 使い捨て provider key とアカウント設定の隔離が必要              |
+
+開示には送信データ、全 processor、処理目的、アプリ／provider の保存と保持、学習利用、
+現在の policy link を含める。処理先を完全に開示できない場合や、provider／policy version
+が変わった場合は fail closed とし、過去の同意を流用しない。BYOK の API key は現在の
+ページの実行メモリだけに置き、IndexedDB、Local Storage、R2、D1 へ永続化しない。
+
+これらの contract test は実 provider の成功を証明しない。現在、資格情報付きかつ
+teardown 可能なデプロイ済み runner は存在しないため、manifest の
+`blocked-scan-hosted` / `blocked-web-ai-consent-live` を `passed` と読み替えてはならない。
 
 ドリフト防止: ②③ は**本番のビルダー/パーサを import して使う**（プロンプト文字列を
 テストに再構築しない）。② のビルダー（map/tree の `buildSystemPrompt`/`buildUserPrompt`、
@@ -70,7 +96,8 @@ pnpm test --run src/features/ai-verification/aiPathRegistry.test.ts
 ```
 
 レジストリの全生成経路に検証手段が割り当たっていること、`js-live`/`rust-live`/
-`covered-by-agent-loop` の参照テストが**実在**することを assert する。
+`covered-by-agent-loop` の参照テストが**実在**することに加え、3 つの Web runtime route
+それぞれについて通常 contract と consent contract のテスト名まで assert する。
 
 ## 範囲外（意図的な gap）
 
@@ -94,3 +121,8 @@ pnpm test --run src/features/ai-verification/aiPathRegistry.test.ts
    - `covered-by-agent-loop` → agent ループの構成違いなら testRef を既存 E2E に。
    - `stub` → 自動検証不可の理由を note に明示。
 4. `aiPathRegistry.test.ts` が green であることを確認（穴・参照切れを検出）。
+
+Web／Hosted の実行トランスポートを追加または変更する場合は、上記に加えて
+`AI_RUNTIME_ROUTES` の `transport`、`providerAuthority`、`capabilityGate`、通常の
+`testRef/testName`、および `consentTestRef/consentTestName` を同時に更新する。新しい
+provider が一つでもデータを処理するなら、実行時開示へ含めるまでその route は有効化しない。
