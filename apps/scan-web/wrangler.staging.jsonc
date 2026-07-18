@@ -1,6 +1,8 @@
 {
   "name": "grimodex-scan-staging",
   "main": "worker/index.ts",
+  "workers_dev": true,
+  "preview_urls": false,
   "compatibility_date": "2026-07-16",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
@@ -18,13 +20,13 @@
     "SCAN_TURNSTILE_REQUIRED": "false",
     "SCAN_ENVIRONMENT": "staging",
     "SCAN_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct",
-    "ALLOWED_ORIGIN": "https://staging-try.grimodex.app",
+    "ALLOWED_ORIGIN": "https://grimodex-try-staging.pages.dev",
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "grimodex-scan-staging",
-      "database_id": "replace-with-staging-d1-id",
+      "database_id": "d63e7287-157c-465a-93af-a2135f881db3",
       "migrations_dir": "migrations",
     },
   ],

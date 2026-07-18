@@ -1,7 +1,8 @@
 -- Rebuild scan_jobs for databases that applied 0001 before the explicit
 -- adjudication stage was added. SQLite cannot alter a CHECK constraint in
 -- place, so preserve the durable job state while replacing the constraint.
-PRAGMA foreign_keys = OFF;
+-- scan_jobs has no incoming foreign keys. Keep D1's mandatory foreign-key
+-- enforcement enabled throughout this table rebuild.
 
 CREATE TABLE scan_jobs_next (
   scan_id TEXT PRIMARY KEY REFERENCES scan_sessions(id),
@@ -31,5 +32,3 @@ DROP TABLE scan_jobs;
 ALTER TABLE scan_jobs_next RENAME TO scan_jobs;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_jobs_settlement_id
   ON scan_jobs(settlement_id);
-
-PRAGMA foreign_keys = ON;
