@@ -4,7 +4,13 @@
  * Usage: npx tsx scripts/generate-licenses.ts
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { formatLicensesMarkdown } from "../src/features/licenses/formatter";
@@ -16,20 +22,38 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 /*  npm 依存のライセンス収集                                            */
 /* ------------------------------------------------------------------ */
 
+function compareStrings(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 function findLicenseFile(pkgDir: string): string | undefined {
   try {
     const files = readdirSync(pkgDir);
+    const licenseFiles = files.filter((file) => /^licen[cs]e/i.test(file));
     // 通常は LICENSE/LICENCE を優先。無ければ OFL.txt / COPYING にフォールバック
     // する（一部のフォントは LICENSE を置かず SIL OFL を OFL.txt で配布する。例:
     // gen-interface-jp）。これが無いと同梱フォントのライセンス本文と上流の帰属
     // (Inter / Source Han Sans 等) が脱落し、OFL-1.1 §2 に違反する。
-    const licenseFile =
-      files.find((f) => /^licen[cs]e/i.test(f)) ??
-      files.find((f) => /^(ofl|copying)/i.test(f));
-    if (licenseFile) {
-      return normalizeLicenseText(
-        readFileSync(join(pkgDir, licenseFile), "utf-8"),
+    const candidates = (
+      licenseFiles.length > 0
+        ? licenseFiles
+        : files.filter((file) => /^(ofl|copying)/i.test(file))
+    ).sort(compareStrings);
+    const uniqueTexts = new Map<string, string>();
+    for (const filename of candidates) {
+      const text = normalizeLicenseText(
+        readFileSync(join(pkgDir, filename), "utf-8"),
       );
+      if (!uniqueTexts.has(text)) uniqueTexts.set(text, filename);
+    }
+
+    if (uniqueTexts.size === 1) return uniqueTexts.keys().next().value;
+    if (uniqueTexts.size > 1) {
+      return [...uniqueTexts.entries()]
+        .map(([text, filename]) => `----- ${filename} -----\n\n${text}`)
+        .join("\n\n");
     }
   } catch {
     // directory not readable
@@ -43,39 +67,195 @@ export function normalizeLicenseText(text: string): string {
 
 function normalizeRepository(repo: unknown): string | undefined {
   if (!repo) return undefined;
-  if (typeof repo === "string") return repo;
+  let url: unknown = repo;
   if (typeof repo === "object" && repo !== null && "url" in repo) {
-    const url = (repo as { url: string }).url;
-    return url
-      .replace(/^git\+/, "")
-      .replace(/\.git$/, "")
-      .replace(/^ssh:\/\/git@github\.com/, "https://github.com");
+    url = (repo as { url: unknown }).url;
   }
-  return undefined;
+  if (typeof url !== "string") return undefined;
+  return url
+    .replace(/^git\+/, "")
+    .replace(/\.git$/, "")
+    .replace(/^ssh:\/\/git@github\.com/, "https://github.com");
 }
 
-function gatherNpmLicenses(): LicenseEntry[] {
-  const pkgJsonPath = join(ROOT, "package.json");
-  const pkgJson = JSON.parse(readFileSync(pkgJsonPath, "utf-8"));
-  const depNames = Object.keys(pkgJson.dependencies ?? {});
+interface PnpmLicensePackage {
+  name: string;
+  versions: string[];
+  paths: string[];
+  homepage?: string;
+}
 
-  const entries: LicenseEntry[] = [];
-  for (const name of depNames) {
-    // Handle scoped packages: @scope/pkg → node_modules/@scope/pkg
-    const pkgDir = join(ROOT, "node_modules", ...name.split("/"));
-    const depPkgPath = join(pkgDir, "package.json");
-    if (!existsSync(depPkgPath)) continue;
+type PnpmLicenseReport = Record<string, PnpmLicensePackage[]>;
 
-    const depPkg = JSON.parse(readFileSync(depPkgPath, "utf-8"));
-    entries.push({
-      name,
-      version: depPkg.version ?? "unknown",
-      license: depPkg.license ?? "UNKNOWN",
-      repository: normalizeRepository(depPkg.repository),
-      licenseText: findLicenseFile(pkgDir),
-    });
+interface NpmPackageJson {
+  name?: unknown;
+  version?: unknown;
+  license?: unknown;
+  repository?: unknown;
+  homepage?: unknown;
+}
+
+export const PNPM_LICENSE_LIST_ARGS = [
+  "licenses",
+  "list",
+  "--prod",
+  "--json",
+] as const;
+
+type PnpmLicenseRunner = (args: readonly string[]) => string;
+
+interface PnpmInvocationRuntime {
+  platform: NodeJS.Platform;
+  nodeExecutable: string;
+  npmExecPath: string | undefined;
+  commandShell: string | undefined;
+}
+
+interface PnpmInvocation {
+  command: string;
+  args: string[];
+}
+
+function isThirdPartyInstallPath(pkgDir: string): boolean {
+  const hasNodeModulesSegment = (path: string) =>
+    path.split(/[\\/]+/).includes("node_modules");
+
+  if (!hasNodeModulesSegment(pkgDir)) return false;
+  return hasNodeModulesSegment(realpathSync(pkgDir));
+}
+
+function compareLicenseEntries(a: LicenseEntry, b: LicenseEntry): number {
+  return compareStrings(a.name, b.name) || compareStrings(a.version, b.version);
+}
+
+/** Resolve pnpm without relying on direct `.cmd` execution on Windows. */
+export function resolvePnpmInvocation(
+  args: readonly string[],
+  runtime: PnpmInvocationRuntime = {
+    platform: process.platform,
+    nodeExecutable: process.execPath,
+    npmExecPath: process.env.npm_execpath,
+    commandShell: process.env.ComSpec,
+  },
+): PnpmInvocation {
+  if (
+    runtime.npmExecPath &&
+    /(?:^|[\\/])pnpm\.(?:cjs|mjs|js)$/i.test(runtime.npmExecPath)
+  ) {
+    return {
+      command: runtime.nodeExecutable,
+      args: [runtime.npmExecPath, ...args],
+    };
   }
-  return entries;
+
+  if (runtime.platform === "win32") {
+    if (args.some((arg) => !/^[A-Za-z0-9:_-]+$/.test(arg))) {
+      throw new Error("Unsafe pnpm argument for Windows command shell");
+    }
+    return {
+      command: runtime.commandShell ?? "cmd.exe",
+      args: ["/d", "/s", "/c", `pnpm ${args.join(" ")}`],
+    };
+  }
+
+  return { command: "pnpm", args: [...args] };
+}
+
+/**
+ * pnpm が解決した全 workspace の production graph を npm ライセンス一覧へ変換する。
+ * peer context だけが異なる同一 name@version は1件へ統合し、複数versionは保持する。
+ */
+export function buildNpmLicenseEntries(
+  report: PnpmLicenseReport,
+): LicenseEntry[] {
+  const entries = new Map<string, LicenseEntry>();
+
+  for (const [reportedLicense, packages] of Object.entries(report)) {
+    if (!Array.isArray(packages)) {
+      throw new Error(`Invalid pnpm license group: ${reportedLicense}`);
+    }
+
+    for (const pkg of packages) {
+      if (!Array.isArray(pkg.versions) || !Array.isArray(pkg.paths)) {
+        throw new Error(`Invalid pnpm license record: ${pkg.name}`);
+      }
+      if (pkg.versions.length !== pkg.paths.length) {
+        throw new Error(
+          `Mismatched pnpm license paths for ${pkg.name}: ` +
+            `${pkg.versions.length} versions, ${pkg.paths.length} paths`,
+        );
+      }
+
+      const installations = pkg.paths
+        .map((pkgDir, index) => ({
+          pkgDir,
+          reportedVersion: pkg.versions[index],
+        }))
+        .sort((a, b) => compareStrings(a.pkgDir, b.pkgDir));
+
+      for (const { pkgDir, reportedVersion } of installations) {
+        // pnpm currently omits workspace members from this report. Resolve the
+        // path as an additional guard so linked first-party packages stay out.
+        if (!isThirdPartyInstallPath(pkgDir)) continue;
+
+        const depPkgPath = join(pkgDir, "package.json");
+        if (!existsSync(depPkgPath)) {
+          throw new Error(`Missing package metadata: ${depPkgPath}`);
+        }
+        const depPkg = JSON.parse(
+          readFileSync(depPkgPath, "utf-8"),
+        ) as NpmPackageJson;
+        if (depPkg.name !== pkg.name || depPkg.version !== reportedVersion) {
+          throw new Error(
+            `pnpm license identity mismatch at ${pkgDir}: expected ` +
+              `${pkg.name}@${reportedVersion}, found ` +
+              `${String(depPkg.name)}@${String(depPkg.version)}`,
+          );
+        }
+
+        const name = depPkg.name;
+        const version = depPkg.version;
+        const key = `${name}@${version}`;
+        if (entries.has(key)) continue;
+
+        entries.set(key, {
+          name,
+          version,
+          license:
+            typeof depPkg.license === "string"
+              ? depPkg.license
+              : reportedLicense || "UNKNOWN",
+          repository:
+            normalizeRepository(depPkg.repository) ??
+            (typeof depPkg.homepage === "string"
+              ? depPkg.homepage
+              : pkg.homepage),
+          licenseText: findLicenseFile(pkgDir),
+        });
+      }
+    }
+  }
+
+  return [...entries.values()].sort(compareLicenseEntries);
+}
+
+function runPnpmLicenseList(args: readonly string[]): string {
+  const invocation = resolvePnpmInvocation(args);
+  return execFileSync(invocation.command, invocation.args, {
+    cwd: ROOT,
+    encoding: "utf-8",
+    maxBuffer: 50 * 1024 * 1024,
+  });
+}
+
+export function gatherNpmLicenses(
+  runPnpm: PnpmLicenseRunner = runPnpmLicenseList,
+): LicenseEntry[] {
+  const parsed = JSON.parse(runPnpm(PNPM_LICENSE_LIST_ARGS)) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Invalid pnpm license report");
+  }
+  return buildNpmLicenseEntries(parsed as PnpmLicenseReport);
 }
 
 /* ------------------------------------------------------------------ */
