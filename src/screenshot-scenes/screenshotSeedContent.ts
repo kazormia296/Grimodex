@@ -108,6 +108,12 @@ export interface ScreenshotSeedContent {
     setupWarmth: { fromPos: number; toPos: number; aiReasoning: string };
     setupLock: { fromPos: number; toPos: number; aiReasoning: string };
   };
+  chronicle: {
+    fire: { title: string; note: string };
+    departure: { title: string; note: string };
+    returnHome: { title: string; note: string };
+    awakening: { title: string; note: string };
+  };
   chat: { sessionTitle: string; userMsg: string; assistantMsg: string };
   authorship: {
     scene1: { humanTo: number; aiTo: number; unknownTo: number };
@@ -266,6 +272,24 @@ const ja: ScreenshotSeedContent = {
       fromPos: 18,
       toPos: 29,
       aiReasoning: "証拠としては弱いため後続で補強が必要。",
+    },
+  },
+  chronicle: {
+    fire: {
+      title: "廃社炎上",
+      note: "十年前の夏、廃社の本殿が内側から燃えた。",
+    },
+    departure: {
+      title: "朱音、桐野を離れる",
+      note: "朱紐を祭壇に残し、朱音は都へ向かった。",
+    },
+    returnHome: {
+      title: "十年ぶりの帰還",
+      note: "雨の夜、朱音は桐野の廃社へ戻った。",
+    },
+    awakening: {
+      title: "朱紐の記憶が目覚める",
+      note: "朱紐に触れた瞬間、朱音に他者の記憶が流れ込む。",
     },
   },
   chat: {
@@ -483,6 +507,24 @@ const en: ScreenshotSeedContent = {
       fromPos: 314,
       toPos: 341,
       aiReasoning: "Weak as evidence on its own; needs reinforcing later.",
+    },
+  },
+  chronicle: {
+    fire: {
+      title: "The Burning of Ashveil Hall",
+      note: "Ten summers ago, the fire began inside the east wing.",
+    },
+    departure: {
+      title: "Eleanor Leaves Greymoor",
+      note: "She left the compass on the hearthstone and went to Ironhaven.",
+    },
+    returnHome: {
+      title: "The Return After Ten Years",
+      note: "On a night of rain, Eleanor came home to Ashveil Hall.",
+    },
+    awakening: {
+      title: "The Compass Wakes",
+      note: "At Eleanor's touch, another person's memory entered her mind.",
     },
   },
   chat: {

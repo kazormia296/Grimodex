@@ -704,7 +704,7 @@ export async function createBrowserMock(): Promise<BrowserMock> {
 
   seedBuiltinCodexTypes(db, now);
   if (isScreenshotStagingActive()) {
-    seedScreenshotWorkspace(db, now);
+    await seedScreenshotWorkspace(db, now);
   }
 
   const AI_SETTINGS_KEY = "grimodex:ai-settings";
@@ -867,6 +867,73 @@ export async function createBrowserMock(): Promise<BrowserMock> {
     stmt.free();
 
     return { rows };
+  }
+
+  function handleFtsSearch(args: Record<string, unknown>): Array<{
+    sourceType: "scene" | "codex" | "snippet";
+    id: string;
+    title: string;
+    excerpt: string;
+  }> {
+    if (!isScreenshotStagingActive()) {
+      throw new Error("[browser-mock] Unknown Tauri command: fts_search");
+    }
+    const projectId = String(args.projectId ?? "default-project");
+    const query = String(args.query ?? "").trim();
+    const limit = Math.max(1, Number(args.limit ?? 50));
+    if (!query) return [];
+
+    const like = `%${query}%`;
+    const result = handleDbExecute({
+      sql: `SELECT 'scene' AS source_type, id, title,
+                   COALESCE(synopsis, '') AS excerpt
+              FROM tree_nodes
+             WHERE project_id = ? AND node_type = 'scene'
+               AND (title LIKE ? OR COALESCE(synopsis, '') LIKE ? OR content LIKE ?)
+            UNION ALL
+            SELECT 'codex' AS source_type, id, name AS title,
+                   COALESCE(summary, '') AS excerpt
+              FROM codex_entries
+             WHERE project_id = ?
+               AND (name LIKE ? OR COALESCE(summary, '') LIKE ? OR content LIKE ?)
+            UNION ALL
+            SELECT 'snippet' AS source_type, id, title,
+                   content AS excerpt
+              FROM snippets
+             WHERE project_id = ?
+               AND (title LIKE ? OR content LIKE ?)
+            LIMIT ?`,
+      params: [
+        projectId,
+        like,
+        like,
+        like,
+        projectId,
+        like,
+        like,
+        like,
+        projectId,
+        like,
+        like,
+        limit,
+      ],
+    });
+
+    return result.rows.map((row) => {
+      const sourceType = String(row.source_type) as
+        | "scene"
+        | "codex"
+        | "snippet";
+      return {
+        sourceType,
+        id: String(row.id),
+        title: String(row.title),
+        excerpt:
+          sourceType === "snippet"
+            ? proseDocText(row.excerpt)
+            : String(row.excerpt),
+      };
+    });
   }
 
   function handleDbExecuteBatch(args: Record<string, unknown>): {
@@ -1131,6 +1198,8 @@ export async function createBrowserMock(): Promise<BrowserMock> {
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "fts_search":
+        return handleFtsSearch(args) as T;
       case "timelapse_append_batch":
         return (await handleTimelapseAppendBatch(args)) as T;
       case "ime_export_get_status":
@@ -1249,6 +1318,22 @@ function proseDoc(lines: string[]): string {
       content: [{ type: "text", text }],
     })),
   });
+}
+
+function proseDocText(raw: unknown): string {
+  try {
+    const parts: string[] = [];
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const value = node as { text?: unknown; content?: unknown };
+      if (typeof value.text === "string") parts.push(value.text);
+      if (Array.isArray(value.content)) value.content.forEach(visit);
+    };
+    visit(JSON.parse(String(raw)));
+    return parts.join(" ");
+  } catch {
+    return String(raw ?? "");
+  }
 }
 
 function getScreenshotAnnotations(now: string) {
@@ -1406,7 +1491,10 @@ function seedBuiltinCodexTypes(db: Database, now: string): void {
   stmt.free();
 }
 
-function seedScreenshotWorkspace(db: Database, now: string): void {
+async function seedScreenshotWorkspace(
+  db: Database,
+  now: string,
+): Promise<void> {
   const lang = getScreenshotLanguage();
   const c = SCREENSHOT_SEED_CONTENT[lang];
   db.run(
@@ -1444,6 +1532,13 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "a0",
       null,
       null,
+      null,
+      null,
+      "none",
+      null,
+      null,
+      "none",
+      "exact",
       "outline",
       "{}",
       0,
@@ -1457,6 +1552,13 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "a0",
       "a0",
       c.scenes.scene1.storyTimeLabel,
+      150,
+      null,
+      "day",
+      null,
+      null,
+      "none",
+      "exact",
       "draft",
       sceneContent,
       c.scenes.scene1.charCount,
@@ -1470,6 +1572,13 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "a1",
       "a1",
       c.scenes.scene2.storyTimeLabel,
+      151,
+      null,
+      "day",
+      null,
+      null,
+      "none",
+      "exact",
       "outline",
       proseDoc(c.scenes.scene2.body),
       c.scenes.scene2.charCount,
@@ -1483,6 +1592,13 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       "a2",
       "a2",
       c.scenes.scene3.storyTimeLabel,
+      100,
+      null,
+      "day",
+      null,
+      null,
+      "none",
+      "approx",
       "outline",
       proseDoc(c.scenes.scene3.body),
       c.scenes.scene3.charCount,
@@ -1492,9 +1608,12 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
   const nodeStmt = db.prepare(
     `INSERT OR IGNORE INTO tree_nodes
       (id, project_id, parent_id, node_type, title, synopsis, sort_order,
-       story_time_order, story_time_label, status, content, char_count,
+       story_time_order, story_time_label, chronicle_start_time,
+       chronicle_start_minute, chronicle_start_granularity,
+       chronicle_end_time, chronicle_end_minute, chronicle_end_granularity,
+       chronicle_precision, status, content, char_count,
        unplaced_beats_doc, created_at, updated_at)
-     VALUES (?, 'default-project', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
+     VALUES (?, 'default-project', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`,
   );
   nodes.forEach((row) => nodeStmt.run([...row, now, now]));
   nodeStmt.free();
@@ -1555,6 +1674,95 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
     ]);
   });
   codexStmt.free();
+
+  const chronicleRows = [
+    [
+      "shot-event-fire",
+      c.chronicle.fire.title,
+      c.chronicle.fire.note,
+      "a0",
+      "codex-akane",
+      "codex-haisha",
+      100,
+      null,
+      "day",
+      "none",
+      "approx",
+    ],
+    [
+      "shot-event-departure",
+      c.chronicle.departure.title,
+      c.chronicle.departure.note,
+      "a1",
+      "codex-akane",
+      "codex-haisha",
+      102,
+      null,
+      "day",
+      "none",
+      "exact",
+    ],
+    [
+      "shot-event-return",
+      c.chronicle.returnHome.title,
+      c.chronicle.returnHome.note,
+      "a2",
+      "codex-akane",
+      "codex-haisha",
+      150,
+      null,
+      "day",
+      "none",
+      "exact",
+    ],
+    [
+      "shot-event-awakening",
+      c.chronicle.awakening.title,
+      c.chronicle.awakening.note,
+      "a3",
+      "codex-akahimo",
+      "codex-haisha",
+      151,
+      153,
+      "day",
+      "day",
+      "unknown",
+    ],
+  ];
+  const chronicleStmt = db.prepare(
+    `INSERT OR IGNORE INTO events
+      (id, project_id, title, note, ordinal, primary_codex_id,
+       location_codex_id, start_time, end_time, start_granularity,
+       end_granularity, precision, kind, secret, created_at, updated_at)
+     VALUES (?, 'default-project', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+       'generic', 0, ?, ?)`,
+  );
+  chronicleRows.forEach((row) => chronicleStmt.run([...row, now, now]));
+  chronicleStmt.free();
+
+  db.run(
+    `INSERT OR IGNORE INTO event_participants (event_id, codex_entry_id, role)
+     VALUES
+      ('shot-event-fire', 'codex-akane', 'witness'),
+      ('shot-event-departure', 'codex-akane', 'subject'),
+      ('shot-event-return', 'codex-akane', 'subject'),
+      ('shot-event-return', 'codex-otowa', 'witness'),
+      ('shot-event-awakening', 'codex-akahimo', 'source')`,
+  );
+  db.run(
+    `INSERT OR IGNORE INTO scene_events (scene_id, event_id)
+     VALUES
+      ('scene-1', 'shot-event-return'),
+      ('scene-2', 'shot-event-awakening')`,
+  );
+  db.run(
+    `INSERT OR IGNORE INTO event_relations
+      (project_id, cause_event_id, effect_event_id)
+     VALUES
+      ('default-project', 'shot-event-fire', 'shot-event-departure'),
+      ('default-project', 'shot-event-departure', 'shot-event-return'),
+      ('default-project', 'shot-event-return', 'shot-event-awakening')`,
+  );
 
   db.run(
     `UPDATE tree_nodes SET pov_character_id = ?, location_id = ? WHERE id = 'scene-1'`,
@@ -1826,4 +2034,62 @@ function seedScreenshotWorkspace(db: Database, now: string): void {
       now,
     ],
   );
+
+  // 執筆統計パネル用。直近5日の連続執筆と疎な過去日の両方を作り、
+  // streak・集計カード・ヒートマップが一枚で確認できるようにする。
+  const writingDayOffsets = [0, 1, 2, 3, 4, 6, 7, 9, 12, 16, 24, 35, 52, 84];
+  const nowMs = new Date(now).getTime();
+  const dayMs = 86_400_000;
+  const writingEventStmt = db.prepare(
+    `INSERT OR IGNORE INTO change_events
+      (event_uid, project_id, scene_id, domain, op_type, entity_type,
+       entity_id, payload, session_id, sequence, timestamp, prev_hash, hash)
+     VALUES (?, 'default-project', ?, 'editor', 'doc.change', 'scene', ?, ?,
+       'shot-writing-session', ?, ?, ?, ?)`,
+  );
+  let prevHash = bytesToHex(GENESIS_HASH);
+  for (const [index, dayOffset] of writingDayOffsets.entries()) {
+    const sceneId = `scene-${(index % 3) + 1}`;
+    const source = c.scenes.scene1.body[index % c.scenes.scene1.body.length];
+    const insertedText = source.repeat((index % 3) + 1);
+    const sequence = index + 1;
+    const timestamp = nowMs - dayOffset * dayMs;
+    const payload = JSON.stringify({
+      steps: [
+        {
+          stepType: "replace",
+          from: 1,
+          to: 1,
+          slice: { content: [{ type: "text", text: insertedText }] },
+        },
+      ],
+    });
+    const hash = bytesToHex(
+      await computeEventHash({
+        projectId: "default-project",
+        sceneId,
+        domain: "editor",
+        opType: "doc.change",
+        entityType: "scene",
+        entityId: sceneId,
+        payload,
+        sessionId: "shot-writing-session",
+        sequence,
+        timestamp,
+        prevHash: hexToBytes(prevHash),
+      }),
+    );
+    writingEventStmt.run([
+      `shot-writing-${sequence}`,
+      sceneId,
+      sceneId,
+      payload,
+      sequence,
+      timestamp,
+      prevHash,
+      hash,
+    ]);
+    prevHash = hash;
+  }
+  writingEventStmt.free();
 }

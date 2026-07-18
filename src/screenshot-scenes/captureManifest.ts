@@ -1,4 +1,5 @@
 import { COLOR_THEMES, DEFAULT_COLOR_THEME } from "../lib/colorThemes";
+import type { PanelId } from "../features/layout/panelIds";
 import {
   DEFAULT_SCREENSHOT_LANGUAGE,
   type ScreenshotLanguage,
@@ -15,28 +16,15 @@ export type ScreenshotPresetId =
   | "builtin:review"
   | "builtin:codex-main";
 
-export type ScreenshotPanelId =
-  | "scenes"
-  | "editor"
-  | "chat"
-  | "chat-history"
-  | "codex"
-  | "codex-quick"
-  | "snippets"
-  | "attribution"
-  | "timeline"
-  | "map"
-  | "kouetsu"
-  | "foreshadow"
-  | "grid"
-  | "matrix"
-  | "trash-bin";
+/** 撮影対象はアプリのパネル正本と同一。独自 union を持つと追加時にドリフトする。 */
+export type ScreenshotPanelId = PanelId;
 
 export type ScreenshotAction =
   | "select-scene"
   | "select-codex"
   | "select-snippet"
-  | "fit-map";
+  | "fit-map"
+  | "search-command-center";
 
 export interface ScreenshotCapture {
   id: string;
@@ -191,6 +179,12 @@ const PANEL_CAPTURES: readonly Omit<
     height: 200,
   },
   {
+    id: "panel-chronicle-1080x890",
+    panelId: "chronicle",
+    width: 1080,
+    height: 890,
+  },
+  {
     id: "panel-grid-1080x890",
     panelId: "grid",
     width: 1080,
@@ -211,6 +205,12 @@ const PANEL_CAPTURES: readonly Omit<
     actions: ["select-scene"],
   },
   {
+    id: "panel-writing-stats-850x650",
+    panelId: "writing-stats",
+    width: 850,
+    height: 650,
+  },
+  {
     id: "panel-editor-1080x890",
     panelId: "editor",
     width: 1080,
@@ -222,6 +222,13 @@ const PANEL_CAPTURES: readonly Omit<
     panelId: "trash-bin",
     width: 850,
     height: 650,
+  },
+  {
+    id: "panel-command-center-results-460x650",
+    panelId: "command-center-results",
+    width: 460,
+    height: 650,
+    actions: ["search-command-center"],
   },
 ] as const;
 
