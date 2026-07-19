@@ -515,6 +515,38 @@
       "saveFailed": "同意の保存に失敗しました: {{message}}"
     }
   },
+  "hostedEditor": {
+    "trial": {
+      "title": "Web Editor 試用版",
+      "scanDescription": "Scanで読み込んだ文書を編集しています。",
+      "standaloneDescription": "Web Editorを単体で試しています。",
+      "storageNotice": "データはこのブラウザに保存され、ローカル版Grimodexへ自動同期されません。",
+      "aiNotice": "AI利用時は送信前に、送信内容・保存先・保持期間・学習利用を確認します。",
+      "continueInGrimodex": "Grimodexで続きを書く"
+    },
+    "handoff": {
+      "title": "Grimodexで続きを書く",
+      "scanDescription": "Scanで読み込んだ文書をローカル版Grimodexへ引き継ぎます。",
+      "standaloneDescription": "Web Editorで作成した文書をローカル版Grimodexへ引き継ぎます。",
+      "downloadInstruction": "最初に、編集内容を保持した引き継ぎファイルをダウンロードしてください。",
+      "download": "引き継ぎファイルをダウンロード",
+      "downloading": "引き継ぎファイルを作成中…",
+      "downloaded": "ダウンロード完了: {{filename}}",
+      "downloadFailed": "引き継ぎファイルを作成できませんでした。Web Editorの編集内容は保持されています。もう一度お試しください。",
+      "openGrimodex": "Grimodexを開く",
+      "launchFallback": "Grimodexが開かない場合は、ローカル版を手動で開き、「Web Editorから続ける」からダウンロード済みファイルを選択してください。"
+    },
+    "desktopImport": {
+      "action": "Web Editorから続ける",
+      "title": "Web Editorから続きを開く",
+      "description": "Web Editorでダウンロードした引き継ぎファイルから、編集内容をローカル版Grimodexへ取り込みます。",
+      "fileNotice": "ダウンロード済みの .grimodex-handoff ファイルを選択してください。元のファイルは変更されません。",
+      "selectFile": "引き継ぎファイルを選択",
+      "importing": "取り込み中…",
+      "unknownError": "不明なエラー",
+      "failed": "引き継ぎファイルを取り込めませんでした: {{error}}"
+    }
+  },
   "app": {
     "loading": "読み込み中…",
     "invalidLayout": "保存済みレイアウトが不正なため、デフォルトに戻しました。（{{reason}}）",

@@ -5,6 +5,8 @@ import { useWorkspaceStore } from "./store";
 import { TitleBar } from "@/components/TitleBar";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
 import { PreflightCard } from "@/features/onboarding/PreflightCard";
+import { requestWebEditorHandoffImport } from "@/features/import/webEditorHandoffRequest";
+import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
 
 const LANGUAGE_OPTIONS = [
   { value: "ja", label: "日本語" },
@@ -12,13 +14,28 @@ const LANGUAGE_OPTIONS = [
 ];
 
 export function WelcomeScreen() {
+  const { t } = useTranslation();
+  const runtimeCapabilities = useRuntimeCapabilities();
   const hasSeenWelcome = useWorkspaceStore(
     (s) => s.globalSettings?.hasSeenWelcome,
   );
 
   // First-run: show interactive preflight instead of the folder-picker
   if (!hasSeenWelcome) {
-    return <PreflightCard />;
+    return (
+      <>
+        <PreflightCard />
+        {runtimeCapabilities.genericProjectTransfer && (
+          <button
+            type="button"
+            onClick={requestWebEditorHandoffImport}
+            className="fixed bottom-6 left-1/2 z-10 -translate-x-1/2 text-sm font-medium text-primary underline-offset-4 hover:underline"
+          >
+            {t("hostedEditor.desktopImport.action")}
+          </button>
+        )}
+      </>
+    );
   }
 
   return <ReturningUserScreen />;
@@ -26,6 +43,7 @@ export function WelcomeScreen() {
 
 function ReturningUserScreen() {
   const { t } = useTranslation();
+  const runtimeCapabilities = useRuntimeCapabilities();
   const requestOpenWorkspace = useWorkspaceStore((s) => s.requestOpenWorkspace);
   const error = useWorkspaceStore((s) => s.error);
   const clearError = useWorkspaceStore((s) => s.clearError);
@@ -69,6 +87,16 @@ function ReturningUserScreen() {
         >
           {t("welcome.selectFolder")}
         </button>
+
+        {runtimeCapabilities.genericProjectTransfer && (
+          <button
+            type="button"
+            onClick={requestWebEditorHandoffImport}
+            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+          >
+            {t("hostedEditor.desktopImport.action")}
+          </button>
+        )}
 
         {selectedPath && (
           <p className="max-w-full truncate text-xs text-muted-foreground">

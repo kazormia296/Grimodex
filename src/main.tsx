@@ -45,10 +45,11 @@ import "@fontsource/literata/latin-400-italic.css";
 import "@fontsource/literata/latin-700-italic.css";
 import { ensureTokenizer } from "./features/chat/contextBuilder";
 import { installSuppressSystemMenuOnAlt } from "./lib/suppressSystemMenuOnAlt";
-import { isElectron, isTauri } from "./lib/tauri";
+import { isElectron, isTauri, listen } from "./lib/tauri";
 import { installDefaultEditorNavigation } from "./features/editor/editorNavigationPorts";
 import { RuntimeCapabilitiesProvider } from "./runtime/runtimeCapabilitiesContext";
 import { AiDataConsentGate } from "./features/ai-policy/AiDataConsentGate";
+import { requestWebEditorHandoffImport } from "./features/import/webEditorHandoffRequest";
 
 performance.mark("grimodex:renderer-bootstrap");
 
@@ -59,6 +60,26 @@ installDefaultEditorNavigation();
 // data-tauri-drag-region → -webkit-app-region を有効化する。
 if (isElectron()) {
   document.documentElement.dataset.shell = "electron";
+}
+document.documentElement.dataset.runtimeTarget = isElectron()
+  ? "electron"
+  : "web";
+
+// Install this listener during module evaluation, before Electron's
+// did-finish-load signal. App may mount a little later; the request module
+// retains one pending UI request until the root subscribes.
+if (isElectron()) {
+  void listen<{ kind: string }>("web-editor-handoff:requested", (payload) => {
+    if (payload?.kind === "web-editor-handoff") {
+      requestWebEditorHandoffImport();
+    }
+  }).catch((error) => {
+    debugLog.error(
+      "WebEditorHandoff",
+      "failed to install desktop handoff listener",
+      errorDetail(error),
+    );
+  });
 }
 
 window.addEventListener("unhandledrejection", (event) => {
@@ -192,6 +213,9 @@ async function bootstrapRenderer(): Promise<void> {
       await browserRuntime.dispose();
       throw error;
     }
+    const { installHostedEditorRuntime } =
+      await import("./features/hosted-editor/hostedEditorRuntime");
+    installHostedEditorRuntime(browserRuntime);
   }
   renderApplication();
 }

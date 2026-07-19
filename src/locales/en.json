@@ -515,6 +515,38 @@
       "saveFailed": "Failed to save consent: {{message}}"
     }
   },
+  "hostedEditor": {
+    "trial": {
+      "title": "Web Editor Trial",
+      "scanDescription": "You are editing a document imported through Scan.",
+      "standaloneDescription": "You are trying the Web Editor on its own.",
+      "storageNotice": "Data is stored in this browser and is not automatically synced to the local Grimodex app.",
+      "aiNotice": "Before AI use, we confirm what is sent, storage location, retention, and training use.",
+      "continueInGrimodex": "Continue writing in Grimodex"
+    },
+    "handoff": {
+      "title": "Continue writing in Grimodex",
+      "scanDescription": "Move the document imported through Scan to the local Grimodex app.",
+      "standaloneDescription": "Move the document created in the Web Editor to the local Grimodex app.",
+      "downloadInstruction": "First, download the handoff file that preserves your edits.",
+      "download": "Download handoff file",
+      "downloading": "Creating handoff file…",
+      "downloaded": "Download complete: {{filename}}",
+      "downloadFailed": "Could not create the handoff file. Your edits remain in the Web Editor. Please try again.",
+      "openGrimodex": "Open Grimodex",
+      "launchFallback": "If Grimodex does not open, launch the local app manually, choose Continue from Web Editor, and select the downloaded file."
+    },
+    "desktopImport": {
+      "action": "Continue from Web Editor",
+      "title": "Continue from the Web Editor",
+      "description": "Import your edits into the local Grimodex app from the handoff file downloaded in the Web Editor.",
+      "fileNotice": "Select the downloaded .grimodex-handoff file. The original file will not be modified.",
+      "selectFile": "Select handoff file",
+      "importing": "Importing…",
+      "unknownError": "Unknown error",
+      "failed": "Could not import the handoff file: {{error}}"
+    }
+  },
   "app": {
     "loading": "Loading…",
     "invalidLayout": "Saved layout was invalid and has been reset to default. ({{reason}})",

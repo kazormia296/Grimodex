@@ -22,7 +22,9 @@ describe("HostedEditorHandoffDialog", () => {
       />,
     );
 
-    expect(screen.getByRole("dialog")).toHaveTextContent("Grimodexで続きを書く");
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "Grimodexで続きを書く",
+    );
     expect(screen.getByRole("dialog")).toHaveTextContent("Scan");
     expect(screen.queryByRole("link", { name: /Grimodexを開く/ })).toBeNull();
 

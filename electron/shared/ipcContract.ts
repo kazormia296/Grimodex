@@ -102,6 +102,8 @@ export const IPC = {
   closeHandlerChanged: "grim:close-handler-changed",
   dialogOpenFolder: "grim:dialog-open-folder",
   dialogOpenFile: "grim:dialog-open-file",
+  /** User-picked Web Editor handoffをmain側の固定上限内で読み込む。 */
+  dialogOpenWebEditorHandoff: "grim:dialog-open-web-editor-handoff",
   fsReadTextFile: "grim:fs-read-text-file",
   fsReadDir: "grim:fs-read-dir",
   openExternal: "grim:open-external",
@@ -170,6 +172,8 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
 export const MAIN_EVENT_CHANNEL_ALLOWLIST = [
   // electron-updater の byte progress（Phase 4）
   "updater:download-progress",
+  // Web Editor handoff deep link: UIを開く合図のみ。path/contentは含めない。
+  "web-editor-handoff:requested",
 ] as const;
 
 /** listen 用の全イベント一覧。送信元別 allowlist の union。 */
@@ -288,6 +292,7 @@ export interface NapiBackendLike {
   getGlobalSettings(): Promise<string>;
   saveGlobalSettings(settings: unknown): Promise<void>;
   seedSampleWorkspace?(language: string, aiPolicy: string): Promise<string>;
+  importWebEditorWorkspace?(handoffJson: string): Promise<string>;
   timelapseAppendBatch(
     projectId: string,
     sessionId: string,
@@ -1011,6 +1016,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireString(a, "language", "seed_sample_workspace"),
           requireString(a, "aiPolicy", "seed_sample_workspace"),
         ),
+      ),
+  },
+  import_web_editor_workspace: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.importWebEditorWorkspace,
+          "importWebEditorWorkspace",
+        )(requireString(a, "handoffJson", "import_web_editor_workspace")),
       ),
   },
   timelapse_append_batch: {

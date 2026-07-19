@@ -1,5 +1,6 @@
 import i18next from "i18next";
 import { useLayoutStore, type PanelId } from "@/features/layout/layoutStore";
+import { supportsDocumentRuntimeCapability } from "@/runtime/runtimeDocumentTarget";
 import type {
   CommandCenterItem,
   CommandCenterProvider,
@@ -76,15 +77,18 @@ function buildCommands(): CommandDef[] {
           new CustomEvent("open-settings", { detail: { category: "project" } }),
         ),
     },
-    {
+  ];
+
+  if (supportsDocumentRuntimeCapability("genericProjectTransfer")) {
+    list.push({
       id: "open-export",
       label: i18next.t("commandCenter.command.export", {
         defaultValue: "エクスポート",
       }),
       keywords: "export download",
       run: () => window.dispatchEvent(new CustomEvent("open-export-dialog")),
-    },
-    {
+    });
+    list.push({
       id: "open-vivliostyle",
       label: i18next.t("commandCenter.command.vivliostyle", {
         defaultValue: "本の書き出し（Vivliostyle）",
@@ -92,16 +96,17 @@ function buildCommands(): CommandDef[] {
       keywords: "vivliostyle book pdf epub print 組版",
       run: () =>
         window.dispatchEvent(new CustomEvent("open-vivliostyle-dialog")),
-    },
-    {
-      id: "restart-sample-tour",
-      label: i18next.t("commandCenter.command.restartTour", {
-        defaultValue: "ツアー再開",
-      }),
-      keywords: "tour tutorial onboarding",
-      run: () => window.dispatchEvent(new CustomEvent("restart-sample-tour")),
-    },
-  ];
+    });
+  }
+
+  list.push({
+    id: "restart-sample-tour",
+    label: i18next.t("commandCenter.command.restartTour", {
+      defaultValue: "ツアー再開",
+    }),
+    keywords: "tour tutorial onboarding",
+    run: () => window.dispatchEvent(new CustomEvent("restart-sample-tour")),
+  });
 
   for (const p of PANEL_COMMANDS) {
     list.push({

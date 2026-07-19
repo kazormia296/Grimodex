@@ -102,6 +102,7 @@ const SLOW_COMMANDS = new Set([
   "fts_optimize",
   "repair_integrity",
   "seed_sample_workspace",
+  "import_web_editor_workspace",
   "open_workspace",
   "extract_codex_candidates",
   /** バックアップ復元は 復元前の安全退避 (VACUUM INTO) + 接続クローズ待ち +

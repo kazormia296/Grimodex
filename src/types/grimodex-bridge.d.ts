@@ -28,6 +28,11 @@ export interface GrimodexDirEntry {
   isSymlink: boolean;
 }
 
+export interface GrimodexOpenTextResult {
+  name: string;
+  content: string;
+}
+
 export interface GrimodexBridge {
   readonly shell: "electron";
   invoke<T = unknown>(
@@ -53,6 +58,8 @@ export interface GrimodexBridge {
       name: string;
       extensions: string[];
     }): Promise<string | null>;
+    /** main側の固定上限内で選択・読込を完結するhandoff専用ピッカ。 */
+    openWebEditorHandoff(): Promise<GrimodexOpenTextResult | null>;
   };
   fs: {
     readTextFile(path: string): Promise<string>;

@@ -41,9 +41,7 @@ describe("HostedEditorTrialBar", () => {
     render(<HostedEditorTrialBar entryMode="scan" />);
 
     expect(screen.getByText(/Web Editor Trial/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/document imported.*Scan/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/document imported.*Scan/i)).toBeInTheDocument();
     expect(screen.getByText(/stored in this browser/i)).toBeInTheDocument();
     expect(
       screen.getByText(/not automatically synced.*local Grimodex/i),

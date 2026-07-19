@@ -8,6 +8,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const RUST_ONLY_BROWSER_TABLES: &[&str] = &[
+    "chat_message_chunks",
+    "event_chunks",
+    "fts_meta",
+    "codex_fts",
+    "codex_fts_en",
+    "snippets_fts",
+    "snippets_fts_en",
+    "chat_messages_fts",
+    "chat_messages_fts_en",
+    "tree_nodes_fts",
+    "tree_nodes_fts_en",
+    "post_effect_annotations_fts",
+    "post_effect_annotations_fts_en",
+    "undo_journal",
+];
+
 fn temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -20,8 +37,7 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let a = chunk[0];
@@ -43,7 +59,7 @@ fn encode_base64(bytes: &[u8]) -> String {
     output
 }
 
-fn browser_database(root: &Path, project_id: &str, title: &str) -> Vec<u8> {
+fn malformed_database(root: &Path, project_id: &str, title: &str) -> Vec<u8> {
     std::fs::create_dir_all(root).expect("source dir");
     let path = root.join("browser.db");
     let conn = Connection::open(&path).expect("source sqlite");
@@ -64,6 +80,36 @@ fn browser_database(root: &Path, project_id: &str, title: &str) -> Vec<u8> {
     )
     .expect("source project");
     drop(conn);
+    std::fs::read(path).expect("source bytes")
+}
+
+fn browser_database(root: &Path, project_id: &str, title: &str) -> Vec<u8> {
+    std::fs::create_dir_all(root).expect("source dir");
+    let path = root.join("browser.db");
+    let db = Database::new(&path).expect("source sqlite");
+    db.migrate().expect("source schema");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects (id, title, language, created_at, updated_at)
+             VALUES (?1, ?2, 'ja', '2026-07-19T00:00:00Z', '2026-07-19T00:00:00Z')",
+            rusqlite::params![project_id, title],
+        )?;
+        Ok(())
+    })
+    .expect("source project");
+    db.with_conn(|conn| {
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+        for table in RUST_ONLY_BROWSER_TABLES {
+            conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{table}\";"))?;
+        }
+        // BrowserMock creates the renderer table subset directly and does not
+        // stamp Rust's user_version. Import must add the native-only schema.
+        conn.pragma_update(None, "user_version", 0)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Ok(())
+    })
+    .expect("shape browser schema");
+    drop(db);
     std::fs::read(path).expect("source bytes")
 }
 
@@ -140,6 +186,43 @@ fn rejects_non_sqlite_and_manifest_project_mismatches_without_publishing() {
     .expect_err("manifest mismatch must fail");
     assert!(mismatch.to_string().contains("project"));
 
+    let malformed = malformed_database(
+        &root.join("malformed-source"),
+        "web-project",
+        "White Lighthouse",
+    );
+    let malformed_schema = import_web_editor_workspace(
+        &settings,
+        &handoff_json(&malformed, "web-project", "White Lighthouse"),
+    )
+    .expect_err("incomplete canonical tables must fail");
+    assert!(malformed_schema.to_string().contains("schema"));
+
+    let published = std::fs::read_dir(&root)
+        .expect("root entries")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("web-editor-workspace-")
+        })
+        .count();
+    assert_eq!(published, 0);
+
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn rejects_unicode_control_characters_at_the_native_boundary() {
+    let root = temp_dir("control-title");
+    let source = browser_database(&root.join("source"), "web-project", "White Lighthouse");
+    let handoff = handoff_json(&source, "web-project", "White\u{0085}Lighthouse");
+
+    let error = import_web_editor_workspace(&settings_path(&root), &handoff)
+        .expect_err("Unicode control characters must be rejected");
+
+    assert!(error.to_string().contains("title"));
     let published = std::fs::read_dir(&root)
         .expect("root entries")
         .filter_map(Result::ok)

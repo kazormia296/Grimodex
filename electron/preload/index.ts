@@ -186,6 +186,10 @@ const bridge = {
       name: string;
       extensions: string[];
     }): Promise<string | null> => call(IPC.dialogOpenFile, filter),
+    openWebEditorHandoff: (): Promise<{
+      name: string;
+      content: string;
+    } | null> => call(IPC.dialogOpenWebEditorHandoff),
   },
 
   fs: {

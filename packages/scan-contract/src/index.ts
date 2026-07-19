@@ -1,6 +1,7 @@
 export * from "./limits.js";
 export * from "./scanBundleV1.js";
 export * from "./editorHandoff.js";
+export * from "./webEditorWorkspaceHandoff.js";
 export { sha256Hex } from "./hash.js";
 export {
   computeSourceFingerprint,

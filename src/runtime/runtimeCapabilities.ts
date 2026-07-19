@@ -3,6 +3,7 @@ import type { RuntimeTarget } from "./runtimeTarget";
 export interface RuntimeCapabilities {
   nativeFilesystem: boolean;
   documentPicker: boolean;
+  genericProjectTransfer: boolean;
   shareSheet: boolean;
   secureSecretStore: boolean;
   localDatabase: boolean;
@@ -17,6 +18,7 @@ export interface RuntimeCapabilities {
 const ELECTRON_CAPABILITIES: RuntimeCapabilities = {
   nativeFilesystem: true,
   documentPicker: true,
+  genericProjectTransfer: true,
   shareSheet: true,
   secureSecretStore: true,
   localDatabase: true,
@@ -31,6 +33,7 @@ const ELECTRON_CAPABILITIES: RuntimeCapabilities = {
 const WEB_CAPABILITIES: RuntimeCapabilities = {
   nativeFilesystem: false,
   documentPicker: true,
+  genericProjectTransfer: false,
   shareSheet: true,
   secureSecretStore: false,
   localDatabase: true,
@@ -45,6 +48,7 @@ const WEB_CAPABILITIES: RuntimeCapabilities = {
 const MOBILE_NATIVE_CAPABILITIES: RuntimeCapabilities = {
   nativeFilesystem: false,
   documentPicker: true,
+  genericProjectTransfer: false,
   shareSheet: true,
   secureSecretStore: true,
   localDatabase: true,

@@ -29,6 +29,8 @@ import { installBrowserMock } from "./tauri";
 
 export const HOSTED_EDITOR_WORKSPACE_ID = "grimodex-hosted-editor";
 export const HOSTED_AI_SESSION_STORAGE_KEY = "grimodex:hosted-ai-session/v1";
+export const HOSTED_EDITOR_ENTRY_MODE_STORAGE_KEY =
+  "grimodex:hosted-editor-entry-mode/v1";
 const BROWSER_WORKSPACE_LOCK_PREFIX = "grimodex:browser-workspace:";
 const DEFAULT_SCAN_API_BASE_URL =
   "https://grimodex-scan-production.kazormia296.workers.dev";
@@ -188,8 +190,35 @@ export interface HostedBrowserRuntime {
   workspaceId: string;
   durability: ReturnType<BrowserWorkspaceStore["getDurability"]>;
   persistence: PersistenceController;
+  entryMode: HostedEditorEntryMode;
   importedProjectId?: string;
+  exportWorkspace(): Promise<Uint8Array>;
   dispose(): Promise<void>;
+}
+
+export type HostedEditorEntryMode = "scan" | "standalone";
+
+function readHostedEditorEntryMode(
+  storage: BrowserSessionStorage | null,
+): HostedEditorEntryMode | undefined {
+  try {
+    const value = storage?.getItem(HOSTED_EDITOR_ENTRY_MODE_STORAGE_KEY);
+    return value === "scan" || value === "standalone" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function persistHostedEditorEntryMode(
+  storage: BrowserSessionStorage | null,
+  entryMode: HostedEditorEntryMode,
+): void {
+  try {
+    storage?.setItem(HOSTED_EDITOR_ENTRY_MODE_STORAGE_KEY, entryMode);
+  } catch {
+    // A restricted tab can still run safely; only the explanatory label falls
+    // back to standalone after a reload.
+  }
 }
 
 export function assertHostedEditorDurability(
@@ -463,6 +492,10 @@ export async function initializeBrowserRuntime(
       options.sessionStorage === undefined
         ? browserSessionStorage()
         : options.sessionStorage;
+    const entryMode: HostedEditorEntryMode = handoff
+      ? "scan"
+      : (readHostedEditorEntryMode(sessionStorage) ?? "standalone");
+    persistHostedEditorEntryMode(sessionStorage, entryMode);
     const storedHostedAiSession = readHostedAiSession(sessionStorage);
     const hostedAiSession = handoff?.hostedAiSession ?? storedHostedAiSession;
     const hostedAiLocale = handoff?.hostedAiSession
@@ -531,13 +564,22 @@ export async function initializeBrowserRuntime(
       workspaceId,
       durability: store.getDurability(),
       persistence,
+      entryMode,
       importedProjectId,
+      async exportWorkspace() {
+        await persistence.flush();
+        if (!database) {
+          throw new Error("Browser database is not ready");
+        }
+        return new Uint8Array(database.exportDatabase());
+      },
       async dispose() {
         detachLifecycle();
         try {
           await persistence.flush();
         } finally {
           database?.close();
+          database = null;
           await workspaceLock.release();
         }
       },

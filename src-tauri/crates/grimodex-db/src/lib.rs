@@ -321,6 +321,7 @@ pub mod error;
 pub mod events;
 pub mod open;
 pub mod state;
+pub mod web_editor_handoff;
 pub mod workspace;
 
 // 旧 `commands/mod.rs` から移動した state / 契約型はクレートルートでも公開する

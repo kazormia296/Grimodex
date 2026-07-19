@@ -49,6 +49,7 @@ const {
   broadcastMainEvent,
   registerEventBus,
   sendBackendEventToWindow,
+  sendMainEventToWindow,
 } = await import("./events.js");
 
 function makeBackend(): NapiBackendLike & {
@@ -311,6 +312,34 @@ describe("trusted event broadcast", () => {
       "updater:download-progress",
       { downloaded: 1 },
     );
+  });
+
+  it("targeted main event は指定した main window だけへ配信する", () => {
+    const main = makeWindow(21);
+    const detachedPanel = makeWindow(22);
+    allWindows.push(main, detachedPanel);
+
+    sendMainEventToWindow(21, "web-editor-handoff:requested", {
+      kind: "web-editor-handoff",
+    });
+
+    expect(main.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "web-editor-handoff:requested",
+      { kind: "web-editor-handoff" },
+    );
+    expect(detachedPanel.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("targeted main event は main allowlist 外を配信しない", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const main = makeWindow(21);
+    allWindows.push(main);
+
+    sendMainEventToWindow(21, "backend:ready", { fake: true });
+
+    expect(main.webContents.send).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("backend:ready"));
   });
 
   it("authority-bearing backend event は指定した窓だけへ配信する", () => {

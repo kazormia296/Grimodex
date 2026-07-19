@@ -22,6 +22,7 @@ import {
   broadcastMainEvent,
   registerEventBus,
   sendBackendEventToWindow,
+  sendMainEventToWindow,
 } from "./events.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerImeShutdown } from "./imeShutdown.js";
@@ -50,6 +51,41 @@ import {
   applySessionPermissionPolicy,
   registerSecurityHandlers,
 } from "./security.js";
+import { parseWebEditorHandoffProtocolRequest } from "./webEditorHandoffProtocol.js";
+
+const WEB_EDITOR_HANDOFF_EVENT = "web-editor-handoff:requested";
+const WEB_EDITOR_HANDOFF_PAYLOAD = {
+  kind: "web-editor-handoff",
+} as const;
+
+// A deep link is only an instruction to display the desktop handoff importer.
+// It deliberately carries neither a path nor manuscript data. Startup links can
+// arrive before BrowserWindow exists (including macOS open-url), so retain one
+// pending request until the main renderer has completed its first load.
+let pendingWebEditorHandoff =
+  parseWebEditorHandoffProtocolRequest(process.argv) !== null;
+let mainRendererReady = false;
+
+function flushPendingWebEditorHandoff(): void {
+  if (!pendingWebEditorHandoff || !mainRendererReady) return;
+  const main = getWindow("main");
+  if (!main || main.isDestroyed()) return;
+  pendingWebEditorHandoff = false;
+  sendMainEventToWindow(
+    main.webContents.id,
+    WEB_EDITOR_HANDOFF_EVENT,
+    WEB_EDITOR_HANDOFF_PAYLOAD,
+  );
+}
+
+function acceptWebEditorHandoffProtocolRequest(
+  argvOrUrl: string | readonly string[],
+): boolean {
+  if (!parseWebEditorHandoffProtocolRequest(argvOrUrl)) return false;
+  pendingWebEditorHandoff = true;
+  flushPendingWebEditorHandoff();
+  return true;
+}
 
 // Phase 4: packaged版は既存Tauriのdata_dirをそのまま正本にし、dev版は
 // GrimodexElectronDevへ隔離する。スモークの絶対overrideもここで処理する。
@@ -66,13 +102,28 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  // electron-builder writes the packaged OS metadata; this runtime registration
+  // also repairs the association when an installed package is launched directly.
+  if (app.isPackaged && !app.setAsDefaultProtocolClient("grimodex")) {
+    console.warn(
+      "[grimodex-electron] failed to register the grimodex protocol handler",
+    );
+  }
+
   registerImeShutdown(app, getBackend);
 
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    acceptWebEditorHandoffProtocolRequest(argv);
     const main = getWindow("main");
     if (!main) return;
     if (main.isMinimized()) main.restore();
     main.focus();
+  });
+
+  app.on("open-url", (event, url) => {
+    if (acceptWebEditorHandoffProtocolRequest(url)) {
+      event.preventDefault();
+    }
   });
 
   registerSecurityHandlers(app);
@@ -327,6 +378,8 @@ if (!gotSingleInstanceLock) {
     const mainWindow = createMainWindow();
     mainWindow.webContents.once("did-finish-load", () => {
       performance.mark("grimodex:renderer-finished-load");
+      mainRendererReady = true;
+      flushPendingWebEditorHandoff();
     });
     if (app.isPackaged && process.platform === "linux") {
       scheduleMcpSidecarWarmup(mainWindow, resolveMcpSidecar, (error) => {

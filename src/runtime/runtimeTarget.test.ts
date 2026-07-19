@@ -33,8 +33,8 @@ describe("runtime target contract", () => {
     expect(resolveRuntimeCapabilities("web").genericProjectTransfer).toBe(
       false,
     );
-    expect(
-      resolveRuntimeCapabilities("electron").genericProjectTransfer,
-    ).toBe(true);
+    expect(resolveRuntimeCapabilities("electron").genericProjectTransfer).toBe(
+      true,
+    );
   });
 });
