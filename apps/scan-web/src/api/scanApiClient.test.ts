@@ -319,6 +319,37 @@ describe("ScanApiClient", () => {
     );
   });
 
+  it("deletes the owned Scan and preserves the cleanup outcome", async () => {
+    const fetchImpl = vi.fn(async () =>
+      response({
+        scanId: "scan/1",
+        status: "deleted",
+        cleanup: "pending",
+      }),
+    );
+    const client = new ScanApiClient({
+      baseUrl: "https://scan.example/",
+      fetchImpl,
+    });
+
+    await expect(
+      client.delete({ scanId: "scan/1", scanToken: "scan-secret" }),
+    ).resolves.toEqual({
+      scanId: "scan/1",
+      status: "deleted",
+      cleanup: "pending",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://scan.example/api/v1/scans/scan%2F1",
+      expect.objectContaining({
+        method: "DELETE",
+        headers: expect.objectContaining({
+          "x-scan-token": "scan-secret",
+        }),
+      }),
+    );
+  });
+
   it("polls at two seconds then backs off to at most five seconds", async () => {
     const delays: number[] = [];
     let calls = 0;

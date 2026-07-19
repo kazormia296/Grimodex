@@ -25,6 +25,21 @@ describe("ScanReport", () => {
     expect(onOpenEditor).toHaveBeenCalledOnce();
   });
 
+  it("exposes the destructive Scan deletion action only when it is provided", () => {
+    const onDelete = vi.fn();
+    const { getByRole, queryByRole, rerender } = render(
+      <ScanReport bundle={createMinimalJaBundle()} onDelete={onDelete} />,
+    );
+
+    fireEvent.click(getByRole("button", { name: "原稿とScanデータを削除" }));
+    expect(onDelete).toHaveBeenCalledOnce();
+
+    rerender(<ScanReport bundle={createMinimalJaBundle()} />);
+    expect(
+      queryByRole("button", { name: "原稿とScanデータを削除" }),
+    ).toBeNull();
+  });
+
   it("reveals evidence and records explicit finding feedback", () => {
     const onFeedback = vi.fn();
     const { getByRole, getByText } = render(

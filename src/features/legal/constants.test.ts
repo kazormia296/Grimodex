@@ -18,12 +18,27 @@ describe("EULA_VERSION", () => {
   });
 
   it("ships a localized privacy notice referenced by the AI consent disclosures", () => {
-    for (const locale of ["ja", "en"]) {
+    const expectedDeletionCopy = {
+      ja: [
+        "バージョン: v1.1",
+        "原稿と Scan データを削除",
+        "すでに Hosted Editor またはローカル版 Grimodex へ取り込んだコピーは削除されません",
+      ],
+      en: [
+        "Version: v1.1",
+        "Delete manuscript and Scan data",
+        "Copies already imported into Hosted Editor or the local Grimodex application are not deleted",
+      ],
+    } as const;
+    for (const locale of ["ja", "en"] as const) {
       const privacy = readFileSync(
         resolve(REPO_ROOT, `public/PRIVACY_${locale}.md`),
         "utf8",
       );
       expect(privacy).toContain("GDX-AI-CONSENT-001");
+      for (const expected of expectedDeletionCopy[locale]) {
+        expect(privacy).toContain(expected);
+      }
     }
   });
 });

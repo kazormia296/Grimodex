@@ -154,16 +154,24 @@ describe("public AI data disclosures", () => {
     expect(japanese.usagePolicy.summary).toMatch(/[ぁ-んァ-ヶ一-龯]/u);
     expect(japanese.sentData[0]?.description).toMatch(/[ぁ-んァ-ヶ一-龯]/u);
     expect(japanese.storage.application.location).toMatch(/[ぁ-んァ-ヶ一-龯]/u);
+    expect(japanese.storage.application.location).toContain(
+      "アクセスを直ちに停止し、GrimodexがR2に保存した原稿と成果物の削除を開始します",
+    );
     expect(japanese.trainingUse.summary).toMatch(/[ぁ-んァ-ヶ一-龯]/u);
     expect(english.usagePolicy.summary).toMatch(/explicit consent/i);
     expect(english.sentData[0]?.category).toBe("manuscript");
+    expect(english.storage.application.location).toContain(
+      "immediately revokes access and starts removing the manuscript and artifacts stored by Grimodex in R2",
+    );
   });
 
   it.each([undefined, "false"])(
     "states that Scan with the AI flag %s is deterministic and sends no manuscript data to an external AI model",
     async (workersAiEnabled) => {
       const response = await handleRequest(
-        new Request("https://scan.example/api/v1/ai-disclosures/scan?locale=en"),
+        new Request(
+          "https://scan.example/api/v1/ai-disclosures/scan?locale=en",
+        ),
         env({
           SCAN_ENVIRONMENT: "development",
           SCAN_AI_PROVIDER: "workers-ai",
@@ -308,7 +316,7 @@ describe("public AI data disclosures", () => {
     };
 
     expect(response.status).toBe(200);
-    expect(body.policyVersion).toBe("2026-07-19.5");
+    expect(body.policyVersion).toBe("2026-07-19.6");
     expect(body.provider).toBe("workers-ai");
     expect(body.processingDestinations).toHaveLength(1);
     expect(body.processingDestinations[0]?.processor).toBe(
