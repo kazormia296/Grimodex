@@ -45,6 +45,22 @@ function workersAiEnv(overrides: Partial<ScanEnv> = {}): ScanEnv {
   });
 }
 
+function deletedScanRecord() {
+  return {
+    id: "scan-1",
+    uploadId: "upload-1",
+    mode: "quick" as const,
+    status: "deleted" as const,
+    sourceHash: "source-hash",
+    privateBundleKey: "artifacts/scan-1/bundle.json",
+    privateReportKey: "artifacts/scan-1/report.json",
+    cancelRequestedAt: null,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    updatedAt: "2026-07-19T00:01:00.000Z",
+    accessTokenHash: "scan-token-hash",
+  };
+}
+
 async function workersAiConsent() {
   return currentAiDataConsentIdentity(workersAiEnv(), "scan");
 }
@@ -1166,6 +1182,179 @@ describe("scan worker router", () => {
       expect(aiRun).not.toHaveBeenCalled();
     },
   );
+
+  it("returns completed only after the owned scan and all known R2 artifacts are deleted", async () => {
+    const scan = deletedScanRecord();
+    vi.spyOn(ScanRepository.prototype, "authorizeScan").mockResolvedValue(scan);
+    const deleteScan = vi
+      .spyOn(ScanRepository.prototype, "deleteScan")
+      .mockResolvedValue(scan);
+    const getScan = vi
+      .spyOn(ScanRepository.prototype, "getScan")
+      .mockResolvedValue(scan);
+    vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
+      id: "upload-1",
+      tokenHash: "upload-token-hash",
+      filename: "novel.txt",
+      contentType: "text/plain",
+      expectedSize: 10,
+      sourceKey: "incoming/upload-1/source.txt",
+      status: "consumed",
+      expiresAt: "2026-07-20T00:00:00.000Z",
+      actualSize: 10,
+      sourceHash: "source-hash",
+    });
+    vi.spyOn(
+      ScanRepository.prototype,
+      "getPublicReportByScanId",
+    ).mockResolvedValue({
+      id: "public-1",
+      scanId: "scan-1",
+      artifactKey: "public/scan-1/report.json",
+      status: "unpublished",
+      authorConfirmedAt: "2026-07-19T00:00:30.000Z",
+    });
+    vi.spyOn(ScanRepository.prototype, "listScanArtifacts").mockResolvedValue([
+      {
+        objectKey: "artifacts/scan-1/chunk-1.json",
+        kind: "chunk-extraction",
+      },
+    ]);
+    const scrubDeletedScan = vi
+      .spyOn(ScanRepository.prototype, "scrubDeletedScan")
+      .mockResolvedValue(undefined);
+    const deleteObject = vi.fn(async (_key: string) => undefined);
+
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/scans/scan-1", {
+        method: "DELETE",
+        headers: { "x-scan-token": "owner-token" },
+      }),
+      env({
+        SCAN_BUCKET: {
+          put: async () => undefined,
+          get: async () => null,
+          head: async () => null,
+          delete: deleteObject,
+          list: async () => ({ objects: [], truncated: false }),
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      scanId: "scan-1",
+      status: "deleted",
+      cleanup: "completed",
+    });
+    expect(deleteScan.mock.invocationCallOrder[0]).toBeLessThan(
+      getScan.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(new Set(deleteObject.mock.calls.map(([key]) => key))).toEqual(
+      new Set([
+        "incoming/upload-1/source.txt",
+        "artifacts/scan-1/bundle.json",
+        "artifacts/scan-1/report.json",
+        "public/scan-1/report.json",
+        "artifacts/scan-1/chunk-1.json",
+      ]),
+    );
+    expect(scrubDeletedScan).toHaveBeenCalledWith(
+      "scan-1",
+      expect.arrayContaining([
+        "incoming/upload-1/source.txt",
+        "artifacts/scan-1/bundle.json",
+        "artifacts/scan-1/report.json",
+        "public/scan-1/report.json",
+        "artifacts/scan-1/chunk-1.json",
+      ]),
+      true,
+    );
+  });
+
+  it("keeps cleanup pending while access is deleted and lets the same owner retry", async () => {
+    const scan = {
+      ...deletedScanRecord(),
+      privateBundleKey: null,
+      privateReportKey: null,
+    };
+    const authorizeScan = vi
+      .spyOn(ScanRepository.prototype, "authorizeScan")
+      .mockResolvedValue(scan);
+    const deleteScan = vi
+      .spyOn(ScanRepository.prototype, "deleteScan")
+      .mockResolvedValue(scan);
+    vi.spyOn(ScanRepository.prototype, "getScan").mockResolvedValue(scan);
+    vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
+      id: "upload-1",
+      tokenHash: "upload-token-hash",
+      filename: "novel.txt",
+      contentType: "text/plain",
+      expectedSize: 10,
+      sourceKey: "incoming/upload-1/source.txt",
+      status: "consumed",
+      expiresAt: "2026-07-20T00:00:00.000Z",
+      actualSize: 10,
+      sourceHash: "source-hash",
+    });
+    vi.spyOn(
+      ScanRepository.prototype,
+      "getPublicReportByScanId",
+    ).mockResolvedValue(null);
+    vi.spyOn(ScanRepository.prototype, "listScanArtifacts").mockResolvedValue(
+      [],
+    );
+    const scrubDeletedScan = vi
+      .spyOn(ScanRepository.prototype, "scrubDeletedScan")
+      .mockResolvedValue(undefined);
+    let listingAvailable = false;
+    const testEnv = env({
+      SCAN_BUCKET: {
+        put: async () => undefined,
+        get: async () => null,
+        head: async () => null,
+        delete: async () => undefined,
+        list: async () => {
+          if (!listingAvailable) throw new Error("R2 list unavailable");
+          return { objects: [], truncated: false };
+        },
+      },
+    });
+    const request = () =>
+      new Request("https://scan.example/api/v1/scans/scan-1", {
+        method: "DELETE",
+        headers: { "x-scan-token": "owner-token" },
+      });
+
+    const pendingResponse = await handleRequest(request(), testEnv);
+    listingAvailable = true;
+    const completedResponse = await handleRequest(request(), testEnv);
+
+    expect(pendingResponse.status).toBe(200);
+    await expect(pendingResponse.json()).resolves.toMatchObject({
+      status: "deleted",
+      cleanup: "pending",
+    });
+    expect(completedResponse.status).toBe(200);
+    await expect(completedResponse.json()).resolves.toMatchObject({
+      status: "deleted",
+      cleanup: "completed",
+    });
+    expect(authorizeScan).toHaveBeenCalledTimes(2);
+    expect(deleteScan).toHaveBeenCalledTimes(2);
+    expect(scrubDeletedScan).toHaveBeenNthCalledWith(
+      1,
+      "scan-1",
+      ["incoming/upload-1/source.txt"],
+      false,
+    );
+    expect(scrubDeletedScan).toHaveBeenNthCalledWith(
+      2,
+      "scan-1",
+      ["incoming/upload-1/source.txt"],
+      true,
+    );
+  });
 
   it.each([
     {

@@ -22,6 +22,8 @@ interface Props {
   publicReportId?: string;
   publicReportBusy?: boolean;
   editorBusy?: boolean;
+  onDelete?: () => void;
+  deleteBusy?: boolean;
 }
 
 function EvidenceList({
@@ -78,9 +80,12 @@ export function ScanReport({
   publicReportId,
   publicReportBusy,
   editorBusy,
+  onDelete,
+  deleteBusy,
 }: Props) {
   const [activeFinding, setActiveFinding] = useState<string | null>(null);
-  const copy = scanMessages(locale).report;
+  const messages = scanMessages(locale);
+  const copy = messages.report;
   const writingLanguage =
     bundle.source.language === "ja"
       ? copy.japanese
@@ -135,6 +140,18 @@ export function ScanReport({
               disabled={publicReportBusy}
             >
               {publicReportBusy ? copy.updating : copy.unpublish}
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              className="scan-danger"
+              onClick={onDelete}
+              disabled={deleteBusy}
+            >
+              {deleteBusy
+                ? messages.deletion.deleting
+                : messages.deletion.action}
             </button>
           )}
         </div>

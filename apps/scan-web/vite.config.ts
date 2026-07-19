@@ -10,6 +10,7 @@ export default defineConfig({
         test: {
           name: "scan-ui",
           environment: "jsdom",
+          setupFiles: ["./src/test-setup.ts"],
           include: ["src/**/*.test.{ts,tsx}"],
         },
       },

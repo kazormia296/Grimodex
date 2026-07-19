@@ -306,7 +306,8 @@ h3 {
 }
 
 .scan-primary,
-.scan-secondary {
+.scan-secondary,
+.scan-danger {
   min-height: 40px;
   padding: 8px 14px;
   border-radius: 9px;
@@ -324,6 +325,20 @@ h3 {
   border: 1px solid var(--border);
   color: var(--foreground);
   background: color-mix(in oklch, var(--background) 75%, transparent);
+}
+
+.scan-danger {
+  border: 1px solid var(--destructive);
+  color: white;
+  background: var(--destructive);
+}
+
+.scan-success {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklch, var(--accent) 36%, var(--border));
+  border-radius: 9px;
+  color: var(--foreground);
+  background: var(--accent-weak);
 }
 
 .scan-chip-row {
@@ -480,6 +495,15 @@ h3 {
   font-size: 13px;
 }
 
+.scan-delete-dialog {
+  width: min(620px, 100%);
+}
+
+.scan-delete-dialog__body {
+  margin-top: 18px;
+  font-size: 13px;
+}
+
 .scan-consent-sections {
   display: grid;
   gap: 16px;
@@ -543,7 +567,8 @@ h3 {
 
   .scan-report__actions,
   .scan-primary,
-  .scan-secondary {
+  .scan-secondary,
+  .scan-danger {
     width: 100%;
   }
 

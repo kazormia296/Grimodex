@@ -7,7 +7,7 @@ import {
 import type { ScanEnv } from "../env";
 import { constantTimeEqual, sha256Hex } from "../security";
 
-export const AI_DATA_POLICY_VERSION = "2026-07-19.5";
+export const AI_DATA_POLICY_VERSION = "2026-07-19.6";
 export const WORKERS_AI_DATA_POLICY_URL =
   "https://developers.cloudflare.com/workers-ai/platform/data-usage/";
 export const AI_GATEWAY_LOGGING_POLICY_URL =
@@ -613,8 +613,8 @@ export async function createAiDataDisclosure(
           route === "scan"
             ? localized(
                 locale,
-                "Cloudflare R2 stores the uploaded manuscript and Scan artifacts for the source and artifact retention periods shown below. Cloudflare D1 stores non-content operational metadata, consent identity, token hashes, provider/model details, request and idempotency hashes, usage records, and retention deadlines; those records follow Scan deletion plus applicable operational or legal retention requirements.",
-                "Cloudflare R2は、アップロードした原稿とScan成果物を、以下に示す原稿／成果物の保持期間中保存します。Cloudflare D1は、本文を含まない運用メタデータ、同意識別子、トークンのハッシュ、プロバイダ／モデル情報、リクエスト／冪等性のハッシュ、利用記録、保持期限を保存します。これらの記録は、Scan削除後も適用される運用上または法的な保持要件に従います。",
+                "Cloudflare R2 stores the uploaded manuscript and Scan artifacts for the source and artifact retention periods shown below. Cloudflare D1 stores non-content operational metadata, consent identity, token hashes, provider/model details, request and idempotency hashes, usage records, and retention deadlines; those records follow Scan deletion plus applicable operational or legal retention requirements. The deletion control on the results screen immediately revokes access and starts removing the manuscript and artifacts stored by Grimodex in R2.",
+                "Cloudflare R2は、アップロードした原稿とScan成果物を、以下に示す原稿／成果物の保持期間中保存します。Cloudflare D1は、本文を含まない運用メタデータ、同意識別子、トークンのハッシュ、プロバイダ／モデル情報、リクエスト／冪等性のハッシュ、利用記録、保持期限を保存します。これらの記録は、Scan削除後も適用される運用上または法的な保持要件に従います。結果画面の削除操作では、アクセスを直ちに停止し、GrimodexがR2に保存した原稿と成果物の削除を開始します。",
               )
             : localized(
                 locale,

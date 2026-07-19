@@ -1,7 +1,7 @@
 # Grimodex Privacy Notice
 
 Last updated: 2026-07-19
-Version: v1.0
+Version: v1.1
 
 This notice explains where each Grimodex surface stores data and what is transmitted when AI is used. The Terms of Use control if this notice conflicts with them. Because the processor, retention, and training status can vary by configuration, also review the route-specific disclosure shown immediately before an actual request.
 
@@ -17,6 +17,8 @@ This notice explains where each Grimodex surface stores data and what is transmi
 Hosted Editor's IndexedDB is not a cloud backup. Deleting browser site data or a browser profile may make the data unrecoverable. Grimodex does not guarantee a particular country of storage or processing for R2 or D1.
 
 The short-lived session token used when moving from Scan to Editor remains in that tab's Session Storage until it expires and is removed when the tab closes. D1 stores only a verification hash, not the token itself.
+
+The Scan deletion capability (Scan ID, access token, and mode) is stored in that tab's Session Storage so the User can still delete the Scan after reloading the same tab. The record contains no manuscript text or analysis result. It is removed when deletion completes or the tab closes. The server stores only a verification hash of the access token, not the token itself.
 
 A Scan report that the User expressly publishes may remain accessible until the public report or its source Scan is deleted and is not governed in the same way as private artifacts. Staging environments, security records, abuse prevention, backups, and legal preservation obligations may use different periods.
 
@@ -79,8 +81,9 @@ The Electron application may connect to external services for license validation
 
 - Declining an AI disclosure prevents use of that AI route.
 - Hosted Editor data can be removed by deleting the workspace or browser site data.
-- Where Scan exposes a deletion control, the User can delete a private Scan with the applicable access credential.
-- Published reports, backups, security or abuse-prevention records, and data subject to legal obligations may require a separate procedure or retention period.
+- Selecting “Delete manuscript and Scan data” on the Scan results screen stops an in-progress Scan and immediately revokes access. Grimodex starts removing the manuscript, private analysis results, and Editor handoff data stored in R2 and unpublishes any public report. Even if stored-file cleanup continues in the background, the Scan, public report, and new Editor handoffs are inaccessible after the deletion request is accepted.
+- Content-free file and operational metadata, consent and usage records, hashes, backups, security or abuse-prevention records, and data subject to legal obligations may remain under applicable retention requirements. Data already sent to an AI processing provider remains subject to that provider's retention policy.
+- Copies already imported into Hosted Editor or the local Grimodex application are not deleted. Remove those copies separately from each storage location.
 
 ## 7. Contact
 

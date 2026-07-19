@@ -81,7 +81,9 @@ describe("Workers AI structured provider", () => {
       ],
     });
     const binding = {
-      run: vi.fn(async () => ({ response: invalidExcerpt })),
+      run: vi
+        .fn<WorkersAiBindingLike["run"]>()
+        .mockResolvedValue({ response: invalidExcerpt }),
     };
 
     await expect(provider(binding).extractChunk(input)).rejects.toMatchObject({

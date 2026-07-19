@@ -473,6 +473,7 @@ describe("scan repository", () => {
 
   it("deletes with one stage-independent update before any purge can run", async () => {
     const queries: string[] = [];
+    const batch = vi.fn(async (_statements: D1PreparedStatementLike[]) => []);
     const db = {
       prepare(query: string) {
         queries.push(query);
@@ -498,7 +499,7 @@ describe("scan repository", () => {
         };
         return statement;
       },
-      batch: async () => [],
+      batch,
     } satisfies D1DatabaseLike;
     const repository = new ScanRepository(db);
 
@@ -510,6 +511,13 @@ describe("scan repository", () => {
     );
     expect(updateQuery).toContain("status != 'deleted'");
     expect(updateQuery).not.toContain("AND status = ?");
+    expect(batch).toHaveBeenCalledOnce();
+    expect(batch.mock.calls[0]?.[0]).toHaveLength(3);
+    expect(queries[1]).toContain(
+      "UPDATE public_reports SET status = 'unpublished'",
+    );
+    expect(queries[2]).toContain("UPDATE editor_sessions");
+    expect(queries[2]).toContain("SET revoked_at = COALESCE(revoked_at, ?)");
   });
 
   it("atomically preserves a cancel request that races with terminal failure", async () => {

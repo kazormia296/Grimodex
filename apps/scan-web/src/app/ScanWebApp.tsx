@@ -7,6 +7,13 @@ import { createMinimalJaBundle } from "../fixtures/minimalJa";
 import { ScanReport } from "../report/ScanReport";
 import { ScanApiClient, type ScanHandle } from "../api/scanApiClient";
 import { ScanAiConsentDialog } from "./ScanAiConsentDialog";
+import { ScanDeleteDialog } from "./ScanDeleteDialog";
+import {
+  clearScanOwnership,
+  currentScanOwnershipStorage,
+  readScanOwnership,
+  writeScanOwnership,
+} from "./scanOwnershipStorage";
 import { TurnstileWidget } from "./TurnstileWidget";
 import { scanMessages } from "../i18n/scanMessages";
 import {
@@ -109,7 +116,15 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
     [fullAccessToken, turnstileToken],
   );
   const [liveBundle, setLiveBundle] = useState<typeof demoBundle | null>(null);
-  const [scanHandle, setScanHandle] = useState<ScanHandle | null>(null);
+  const [scanHandle, setScanHandleState] = useState<ScanHandle | null>(() =>
+    readScanOwnership(currentScanOwnershipStorage()),
+  );
+  const setScanHandle = useCallback((handle: ScanHandle | null) => {
+    setScanHandleState(handle);
+    const storage = currentScanOwnershipStorage();
+    if (handle) writeScanOwnership(storage, handle);
+    else clearScanOwnership(storage);
+  }, []);
   const [scanMode, setScanMode] = useState<"quick" | "full">("quick");
   const [scanState, setScanState] = useState<"idle" | "running" | "error">(
     "idle",
@@ -123,6 +138,10 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
   const [pendingUpload, setPendingUpload] = useState<File>();
   const [scanDisclosure, setScanDisclosure] = useState<AiDataDisclosureV1>();
   const [disclosureBusy, setDisclosureBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ScanHandle | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string>();
+  const [deleteNotice, setDeleteNotice] = useState<"completed" | "pending">();
   const [feedback, setFeedback] = useState<
     Record<string, "intentional" | "rejected">
   >({});
@@ -132,7 +151,10 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
   const canUpload =
     Boolean(apiClient) &&
     (!turnstileRequired || Boolean(turnstileToken)) &&
-    !disclosureBusy;
+    !disclosureBusy &&
+    !scanHandle &&
+    !deleteTarget &&
+    !deleteBusy;
   const scanErrorMessage = scanError
     ? scanError === "botVerification"
       ? copy.botVerificationRequired
@@ -177,7 +199,7 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
     }
   };
   const requestScanConsent = (file: File) => {
-    if (!apiClient) return;
+    if (!apiClient || scanHandle || deleteTarget || deleteBusy) return;
     if (turnstileRequired && !turnstileToken) {
       setScanState("error");
       setScanError("botVerification");
@@ -213,12 +235,16 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
     };
   }, [apiClient, locale, pendingUpload]);
   const startScan = async (file: File, consentId: string) => {
-    if (!apiClient) return;
+    if (!apiClient || scanHandle) return;
     const generation = remoteGenerationRef.current + 1;
     remoteGenerationRef.current = generation;
     setFeedback({});
     setScanHandle(null);
     setLiveBundle(null);
+    setDeleteTarget(null);
+    setDeleteBusy(false);
+    setDeleteError(undefined);
+    setDeleteNotice(undefined);
     setPublicReportId(undefined);
     setPublicReportBusy(false);
     setTurnstileToken(undefined);
@@ -233,6 +259,9 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
         writingLanguage,
       );
       if (generation !== remoteGenerationRef.current) return;
+      // Retain ownership as soon as the Scan exists so users can delete an
+      // in-progress or failed job instead of waiting for a report artifact.
+      setScanHandle(handle);
       const status = await apiClient.waitForCompletion(handle);
       if (generation !== remoteGenerationRef.current) return;
       if (status.status !== "completed")
@@ -243,11 +272,8 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
         );
       const nextBundle = await apiClient.getReport(handle);
       if (generation !== remoteGenerationRef.current) return;
-      // Commit remote ownership as one render state only after every required
-      // artifact is available. A failed replacement scan must not mix its
-      // handle with the prior report (or the demo fixture).
+      // Commit the report only after every required artifact is available.
       setLiveBundle(nextBundle);
-      setScanHandle(handle);
       setReportWritingLanguageSource(
         writingLanguage === "auto" ? "detected" : "selected",
       );
@@ -256,6 +282,48 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
       if (generation !== remoteGenerationRef.current) return;
       setScanState("error");
       setScanError(classifyScanError(cause));
+    }
+  };
+  const requestDelete = () => {
+    if (!apiClient || !scanHandle || editorLaunchBusy || deleteBusy) return;
+    setPendingUpload(undefined);
+    setScanDisclosure(undefined);
+    setDisclosureBusy(false);
+    setDeleteError(undefined);
+    setDeleteTarget(scanHandle);
+  };
+  const confirmDelete = async () => {
+    if (!apiClient || !deleteTarget || deleteBusy) return;
+    const target = deleteTarget;
+    const generation = remoteGenerationRef.current;
+    setDeleteBusy(true);
+    setDeleteError(undefined);
+    try {
+      const result = await apiClient.delete(target);
+      if (generation !== remoteGenerationRef.current) return;
+
+      // Invalidate polling, report fetches, publishing, Editor handoff, and
+      // feedback work that still belongs to the deleted Scan.
+      remoteGenerationRef.current = generation + 1;
+      setFeedback({});
+      setScanHandle(null);
+      setLiveBundle(null);
+      setPublicReportId(undefined);
+      setPublicReportBusy(false);
+      setEditorLaunchBusy(false);
+      setPendingUpload(undefined);
+      setScanDisclosure(undefined);
+      setDisclosureBusy(false);
+      setScanState("idle");
+      setScanError(undefined);
+      setDeleteTarget(null);
+      setDeleteError(undefined);
+      setDeleteNotice(result.cleanup);
+    } catch {
+      if (generation !== remoteGenerationRef.current) return;
+      setDeleteError(copy.deletion.error);
+    } finally {
+      setDeleteBusy(false);
     }
   };
   const publishPublicReport = async () => {
@@ -376,6 +444,9 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
         {!apiClient && <span className="scan-muted">{copy.demoFixture}</span>}
         {scanState === "running" && <span>{copy.running}</span>}
         {disclosureBusy && <span>{copy.policyLoading}</span>}
+        {scanHandle && scanState !== "running" && (
+          <span className="scan-muted">{copy.ownershipRetained}</span>
+        )}
         {scanErrorMessage && (
           <span className="scan-error">{scanErrorMessage}</span>
         )}
@@ -387,25 +458,37 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
           writingLanguageSource={reportWritingLanguageSource}
           reportMode={demoMode ? "demo" : "private"}
           onOpenEditor={
-            scanState === "running" || publicReportBusy
+            scanState === "running" ||
+            publicReportBusy ||
+            deleteTarget ||
+            deleteBusy
               ? undefined
               : () => void openEditor()
           }
           editorBusy={editorLaunchBusy}
           onPublishPublicReport={
-            apiClient && scanHandle
+            apiClient && scanHandle && !deleteTarget && !deleteBusy
               ? () => void publishPublicReport()
               : undefined
           }
           onUnpublishPublicReport={
-            apiClient && scanHandle
+            apiClient && scanHandle && !deleteTarget && !deleteBusy
               ? () => void unpublishPublicReport()
               : undefined
           }
           publicReportId={publicReportId}
           publicReportBusy={publicReportBusy}
+          onDelete={
+            apiClient &&
+            scanHandle &&
+            !editorLaunchBusy &&
+            !deleteTarget
+              ? requestDelete
+              : undefined
+          }
+          deleteBusy={deleteBusy}
           onFeedback={
-            scanState === "running"
+            scanState === "running" || Boolean(deleteTarget) || deleteBusy
               ? undefined
               : (findingId, status) => {
                   const previousStatus = feedback[findingId];
@@ -437,6 +520,11 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
           state={scanState}
           error={scanErrorMessage}
           locale={locale}
+          notice={deleteNotice}
+          onDelete={
+            apiClient && scanHandle && !deleteTarget ? requestDelete : undefined
+          }
+          deleteBusy={deleteBusy}
         />
       )}
       {scanDisclosure && pendingUpload && (
@@ -455,6 +543,19 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
           }}
         />
       )}
+      {deleteTarget && (
+        <ScanDeleteDialog
+          locale={locale}
+          busy={deleteBusy}
+          error={deleteError}
+          onCancel={() => {
+            if (deleteBusy) return;
+            setDeleteTarget(null);
+            setDeleteError(undefined);
+          }}
+          onConfirm={() => void confirmDelete()}
+        />
+      )}
     </>
   );
 }
@@ -463,10 +564,16 @@ function ScanReportState({
   state,
   error,
   locale,
+  notice,
+  onDelete,
+  deleteBusy,
 }: {
   state: "idle" | "running" | "error";
   error?: string;
   locale: "ja" | "en";
+  notice?: "completed" | "pending";
+  onDelete?: () => void;
+  deleteBusy?: boolean;
 }) {
   const copy = scanMessages(locale);
   const content =
@@ -477,7 +584,9 @@ function ScanReportState({
             ...copy.state.error,
             description: error ?? copy.state.error.description,
           }
-        : copy.state.idle;
+        : onDelete
+          ? copy.state.owned
+          : copy.state.idle;
 
   return (
     <main
@@ -491,6 +600,23 @@ function ScanReportState({
         <p className={state === "error" ? "scan-error" : "scan-muted"}>
           {content.description}
         </p>
+        {notice && (
+          <p className="scan-success" role="status">
+            {notice === "completed"
+              ? copy.deletion.successCompleted
+              : copy.deletion.successPending}
+          </p>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            className="scan-danger"
+            disabled={deleteBusy}
+            onClick={onDelete}
+          >
+            {deleteBusy ? copy.deletion.deleting : copy.deletion.action}
+          </button>
+        )}
       </section>
     </main>
   );

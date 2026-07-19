@@ -67,6 +67,12 @@ export interface ScanStatusResponse {
   updatedAt: string;
 }
 
+export interface ScanDeleteResponse {
+  scanId: string;
+  status: "deleted";
+  cleanup: "completed" | "pending";
+}
+
 interface ErrorBody {
   error?: { code?: string; message?: string };
 }
@@ -99,6 +105,24 @@ function assertConsentId(consentId: unknown): asserts consentId is string {
   if (typeof consentId !== "string" || consentId.trim().length === 0) {
     throw new Error("AI data consent is required before uploading a source");
   }
+}
+
+function parseScanDeleteResponse(
+  value: unknown,
+  expectedScanId: string,
+): ScanDeleteResponse {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).scanId === expectedScanId &&
+    (value as Record<string, unknown>).status === "deleted" &&
+    ((value as Record<string, unknown>).cleanup === "completed" ||
+      (value as Record<string, unknown>).cleanup === "pending")
+  ) {
+    return value as ScanDeleteResponse;
+  }
+  throw new Error("Scan deletion response is invalid");
 }
 
 async function responseError(response: Response): Promise<ScanApiError> {
@@ -450,10 +474,14 @@ export class ScanApiClient {
 
   async delete(
     handle: Pick<ScanHandle, "scanId" | "scanToken">,
-  ): Promise<void> {
-    await this.json(`/api/v1/scans/${encodeURIComponent(handle.scanId)}`, {
-      method: "DELETE",
-      headers: { "x-scan-token": handle.scanToken },
-    });
+  ): Promise<ScanDeleteResponse> {
+    const result = await this.json<unknown>(
+      `/api/v1/scans/${encodeURIComponent(handle.scanId)}`,
+      {
+        method: "DELETE",
+        headers: { "x-scan-token": handle.scanToken },
+      },
+    );
+    return parseScanDeleteResponse(result, handle.scanId);
   }
 }

@@ -42,10 +42,18 @@ requirements:
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/features/chat/context/chatContextPlanner.ts
       - src/features/ai-policy/policyGuard.ts
+      - apps/scan-web/src/app/ScanWebApp.tsx
+      - apps/scan-web/src/app/ScanDeleteDialog.tsx
+      - apps/scan-web/src/app/scanOwnershipStorage.ts
     lightTests:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
       - src/features/ai-policy/policyGuard.test.ts
+      - apps/scan-web/src/app/ScanWebApp.render.test.tsx
+      - apps/scan-web/src/app/ScanDeleteDialog.test.tsx
+      - apps/scan-web/src/app/scanOwnershipStorage.test.ts
+      - apps/scan-web/worker/router.test.ts
+      - apps/scan-web/worker/repository.test.ts
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -108,9 +116,17 @@ requirements:
       - src/features/ai-policy/policyGuard.ts
       - src/features/chat/agent/toolExecutors.ts
       - agent-tool-manifest.json
+      - apps/scan-web/src/app/ScanWebApp.tsx
+      - apps/scan-web/src/app/ScanDeleteDialog.tsx
+      - apps/scan-web/src/app/scanOwnershipStorage.ts
     lightTests:
       - src/features/ai-policy/policyGuard.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
+      - apps/scan-web/src/app/ScanWebApp.render.test.tsx
+      - apps/scan-web/src/app/ScanDeleteDialog.test.tsx
+      - apps/scan-web/src/app/scanOwnershipStorage.test.ts
+      - apps/scan-web/worker/router.test.ts
+      - apps/scan-web/worker/repository.test.ts
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:

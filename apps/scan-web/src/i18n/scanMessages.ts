@@ -20,6 +20,7 @@ export interface ScanMessages {
   demoFixture: string;
   running: string;
   policyLoading: string;
+  ownershipRetained: string;
   botVerificationRequired: string;
   turnstileMissing: string;
   publishConfirmation: string;
@@ -34,6 +35,7 @@ export interface ScanMessages {
   state: {
     running: { label: string; title: string; description: string };
     error: { label: string; title: string; description: string };
+    owned: { label: string; title: string; description: string };
     idle: { label: string; title: string; description: string };
   };
   report: {
@@ -68,6 +70,17 @@ export interface ScanMessages {
       string
     >;
     entityTypes: Record<ScanEntityType, string>;
+  };
+  deletion: {
+    action: string;
+    title: string;
+    body: string;
+    caveat: string;
+    cancel: string;
+    deleting: string;
+    successCompleted: string;
+    successPending: string;
+    error: string;
   };
   consent: {
     eyebrow: string;
@@ -114,6 +127,8 @@ const ja: ScanMessages = {
   demoFixture: "デモデータ（Scan API未設定）",
   running: "Scan実行中…",
   policyLoading: "データ利用ポリシーを確認中…",
+  ownershipRetained:
+    "別の原稿をScanするには、先に現在の原稿とScanデータを削除してください。",
   botVerificationRequired: "Scanの前にBot確認が必要です。",
   turnstileMissing: "Turnstileのサイトキーが設定されていません。",
   publishConfirmation:
@@ -143,6 +158,12 @@ const ja: ScanMessages = {
       title: "Scanを完了できませんでした",
       description:
         "解析結果は作成されていません。内容を確認して、もう一度お試しください。",
+    },
+    owned: {
+      label: "データ管理",
+      title: "前回のScanデータが残っています",
+      description:
+        "このタブに保持した削除資格情報を使って、原稿とScanデータを削除できます。",
     },
     idle: {
       label: "準備完了",
@@ -194,6 +215,21 @@ const ja: ScanMessages = {
       unknown: "未分類",
     },
   },
+  deletion: {
+    action: "原稿とScanデータを削除",
+    title: "原稿とScanデータを削除しますか？",
+    body: "実行中のScanを停止し、Grimodexに保存された原稿、非公開の解析結果、Editor引き継ぎ用データを削除します。公開レポートは非公開になります。この操作は取り消せません。",
+    caveat:
+      "本文を含まないファイル情報・運用メタデータ、同意・利用記録、ハッシュ、セキュリティ／不正利用防止記録は、運用上または法的な保持要件に従って残る場合があります。AI処理基盤へ送信済みのデータには各プロバイダの保持方針が適用されます。すでにWeb EditorやローカルGrimodexへ取り込んだコピーは削除されません。",
+    cancel: "キャンセル",
+    deleting: "削除中…",
+    successCompleted:
+      "原稿とScanデータを削除しました。公開レポートと今後のEditor引き継ぎも利用できません。",
+    successPending:
+      "削除を受け付けました。アクセスは停止済みです。保存ファイルの削除はバックグラウンドで継続します。",
+    error:
+      "削除結果を確認できませんでした。アクセスが停止していない可能性があります。接続を確認して、もう一度お試しください。",
+  },
   consent: {
     eyebrow: "Grimodex Scan · データポリシー",
     title: "原稿をアップロードする前に確認",
@@ -236,6 +272,8 @@ const en: ScanMessages = {
   demoFixture: "Demo data (Scan API not configured)",
   running: "Scan in progress…",
   policyLoading: "Loading the data policy…",
+  ownershipRetained:
+    "Delete the current manuscript and Scan data before scanning another manuscript.",
   botVerificationRequired: "Bot verification is required before scanning.",
   turnstileMissing: "The Turnstile site key is not configured.",
   publishConfirmation:
@@ -264,6 +302,12 @@ const en: ScanMessages = {
       label: "Error",
       title: "Scan could not be completed",
       description: "No report was created. Check the details and try again.",
+    },
+    owned: {
+      label: "Data management",
+      title: "Data from your previous Scan remains",
+      description:
+        "Use the deletion capability retained in this tab to delete the manuscript and Scan data.",
     },
     idle: {
       label: "Ready",
@@ -314,6 +358,21 @@ const en: ScanMessages = {
       alias: "Alias",
       unknown: "Unclassified",
     },
+  },
+  deletion: {
+    action: "Delete manuscript and Scan data",
+    title: "Delete the manuscript and Scan data?",
+    body: "This stops any in-progress Scan, deletes the manuscript, private analysis results, and Editor handoff data stored by Grimodex, and unpublishes any public report. This cannot be undone.",
+    caveat:
+      "Content-free file and operational metadata, consent and usage records, hashes, and security or abuse-prevention records may remain subject to operational or legal retention requirements. Data already sent to a processing provider remains subject to that provider’s retention policy. Copies already imported into Web Editor or local Grimodex are not deleted.",
+    cancel: "Cancel",
+    deleting: "Deleting…",
+    successCompleted:
+      "The manuscript and Scan data were deleted. The public report and future Editor handoff are no longer available.",
+    successPending:
+      "The deletion request was accepted. Access has been revoked, and stored files will continue to be removed in the background.",
+    error:
+      "Scan could not confirm the deletion result. Access may still be active. Check your connection and try again.",
   },
   consent: {
     eyebrow: "Grimodex Scan · Data policy",
