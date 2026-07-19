@@ -73,6 +73,23 @@ describe("buildEditorHandoffUrl", () => {
       "https://try.grimodex.app/editor#scan-import=fresh-token",
     );
   });
+
+  it("carries a concrete Scan UI language beside the token in the scrubbed fragment", () => {
+    const href = buildEditorHandoffUrl(
+      "https://try.grimodex.app/editor?old=value#stale",
+      "fresh-token",
+      "en",
+    );
+    const url = new URL(href);
+
+    expect(url.search).toBe("");
+    expect(new URLSearchParams(url.hash.slice(1)).get("scan-import")).toBe(
+      "fresh-token",
+    );
+    expect(new URLSearchParams(url.hash.slice(1)).get("ui-language")).toBe(
+      "en",
+    );
+  });
 });
 
 describe("parseEditorHandoffEnvelope", () => {

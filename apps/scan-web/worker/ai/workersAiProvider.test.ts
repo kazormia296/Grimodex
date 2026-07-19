@@ -10,6 +10,7 @@ afterEach(() => {
 });
 
 const input = {
+  language: "ja" as const,
   chunkId: "chunk:test",
   sourceFingerprint: "sha256:test",
   text: "葵は灯台へ向かった。",
@@ -171,6 +172,7 @@ describe("Workers AI structured provider", () => {
     };
     await expect(
       provider(binding).adjudicate({
+        language: "ja",
         sourceFingerprint: "sha256:test",
         ambiguityId: "ambiguity:test",
         candidateSummary: "character:葵 / character:アオイ",

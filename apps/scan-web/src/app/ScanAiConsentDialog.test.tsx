@@ -55,6 +55,7 @@ describe("ScanAiConsentDialog", () => {
     render(
       <ScanAiConsentDialog
         disclosure={disclosure}
+        locale="ja"
         onAccept={vi.fn()}
         onDecline={vi.fn()}
       />,
@@ -70,13 +71,37 @@ describe("ScanAiConsentDialog", () => {
     ).toBeTruthy();
     expect(screen.getByText(/not used for model training/i)).toBeTruthy();
     expect(
-      screen
-        .getAllByRole("link", { name: "ポリシーを開く" })
-        .some(
-          (link) =>
-            link.getAttribute("href") === "https://example.com/retention",
-        ),
-    ).toBe(true);
+      screen.getByRole("link", { name: "Grimodex プライバシー通知" }),
+    ).toHaveAttribute("href", "https://example.com/policy");
+    expect(
+      screen.getByRole("link", {
+        name: "Cloudflare Workers AI のデータ利用ポリシー",
+      }),
+    ).toHaveAttribute("href", "https://example.com/privacy");
+  });
+
+  it("renders the complete dialog chrome and named policy links in English", () => {
+    render(
+      <ScanAiConsentDialog
+        disclosure={disclosure}
+        locale="en"
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Review before uploading" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Data sent for processing")).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Grimodex Privacy Notice" }),
+    ).toHaveAttribute("href", "https://example.com/policy");
+    expect(
+      screen.getByRole("link", {
+        name: "Cloudflare Workers AI data usage policy",
+      }),
+    ).toHaveAttribute("href", "https://example.com/privacy");
   });
 
   it("requires an explicit checkbox before returning the opaque consent id", () => {
@@ -84,6 +109,7 @@ describe("ScanAiConsentDialog", () => {
     render(
       <ScanAiConsentDialog
         disclosure={disclosure}
+        locale="ja"
         onAccept={onAccept}
         onDecline={vi.fn()}
       />,

@@ -50,6 +50,7 @@ describe("public AI data disclosures", () => {
         env({
           AI: { run: vi.fn(async () => ({ response: "unused" })) },
           SCAN_AI_PROVIDER: "workers-ai",
+          SCAN_WORKERS_AI_ENABLED: "true",
           SCAN_UPLOAD_RETENTION_MINUTES: "37",
           SCAN_SOURCE_RETENTION_DAYS: "2",
           SCAN_RETENTION_DAYS: "45",
@@ -112,12 +113,90 @@ describe("public AI data disclosures", () => {
     },
   );
 
+  it("localizes disclosure text and the Grimodex privacy notice without changing consent identity", async () => {
+    const configured = env({
+      AI: { run: vi.fn(async () => ({ response: "unused" })) },
+      SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_WORKERS_AI_ENABLED: "true",
+    });
+    const [japaneseResponse, englishResponse] = await Promise.all([
+      handleRequest(
+        new Request(
+          "https://scan.example/api/v1/ai-disclosures/scan?locale=ja",
+        ),
+        configured,
+      ),
+      handleRequest(
+        new Request(
+          "https://scan.example/api/v1/ai-disclosures/scan?locale=en",
+        ),
+        configured,
+      ),
+    ]);
+    const japanese = (await japaneseResponse.json()) as {
+      consentId: string;
+      usagePolicy: { summary: string; policyUrl: string };
+      sentData: Array<{ category: string; description: string }>;
+      storage: { application: { location: string } };
+      trainingUse: { summary: string };
+    };
+    const english = (await englishResponse.json()) as typeof japanese;
+
+    expect(japaneseResponse.status).toBe(200);
+    expect(englishResponse.status).toBe(200);
+    expect(japanese.consentId).toBe(english.consentId);
+    expect(japanese.usagePolicy.policyUrl).toBe(
+      "https://try.grimodex.app/PRIVACY_ja.md",
+    );
+    expect(english.usagePolicy.policyUrl).toBe(
+      "https://try.grimodex.app/PRIVACY_en.md",
+    );
+    expect(japanese.usagePolicy.summary).toMatch(/[ぁ-んァ-ヶ一-龯]/u);
+    expect(japanese.sentData[0]?.description).toMatch(/[ぁ-んァ-ヶ一-龯]/u);
+    expect(japanese.storage.application.location).toMatch(/[ぁ-んァ-ヶ一-龯]/u);
+    expect(japanese.trainingUse.summary).toMatch(/[ぁ-んァ-ヶ一-龯]/u);
+    expect(english.usagePolicy.summary).toMatch(/explicit consent/i);
+    expect(english.sentData[0]?.category).toBe("manuscript");
+  });
+
+  it("states that AI-disabled Scan is deterministic and sends no manuscript data to an external AI model", async () => {
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/ai-disclosures/scan?locale=en"),
+      env({
+        SCAN_ENVIRONMENT: "development",
+        SCAN_AI_PROVIDER: "workers-ai",
+        SCAN_WORKERS_AI_ENABLED: "false",
+        SCAN_FRONTIER_ENABLED: "false",
+      }),
+    );
+    const body = (await response.json()) as {
+      provider: string;
+      usagePolicy: { summary: string };
+      processingDestinations: Array<{ processor: string; purpose: string }>;
+      trainingUse: { status: string; summary: string };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.provider).toMatch(/deterministic/i);
+    expect(body.usagePolicy.summary).toMatch(/no external AI model/i);
+    expect(body.processingDestinations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ processor: expect.stringMatching(/AI/i) }),
+      ]),
+    );
+    expect(body.trainingUse).toMatchObject({ status: "not-used" });
+    expect(body.trainingUse.summary).toMatch(
+      /not sent to an external AI model/i,
+    );
+  });
+
   it("does not invent disclosures for unknown processing routes", async () => {
     const response = await handleRequest(
       new Request("https://scan.example/api/v1/ai-disclosures/desktop"),
       env({
         AI: { run: vi.fn(async () => ({ response: "unused" })) },
         SCAN_AI_PROVIDER: "workers-ai",
+        SCAN_WORKERS_AI_ENABLED: "true",
       }),
     );
 
@@ -132,6 +211,7 @@ describe("public AI data disclosures", () => {
         env({
           AI: { run: vi.fn(async () => ({ response: "unused" })) },
           SCAN_AI_PROVIDER: "workers-ai",
+          SCAN_WORKERS_AI_ENABLED: "true",
         }),
       );
       const body = (await response.json()) as {
@@ -153,6 +233,7 @@ describe("public AI data disclosures", () => {
     const fullEnv = env({
       AI: { run: vi.fn(async () => ({ response: "unused" })) },
       SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_WORKERS_AI_ENABLED: "true",
       SCAN_FRONTIER_ENABLED: "true",
       SCAN_FRONTIER_PROVIDER: "ai-gateway",
       SCAN_AI_GATEWAY_URL:
@@ -162,6 +243,7 @@ describe("public AI data disclosures", () => {
     const quickEnv = env({
       AI: { run: vi.fn(async () => ({ response: "unused" })) },
       SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_WORKERS_AI_ENABLED: "true",
       SCAN_FRONTIER_ENABLED: "false",
     });
 
@@ -200,6 +282,7 @@ describe("public AI data disclosures", () => {
       env({
         AI: { run: vi.fn(async () => ({ response: "unused" })) },
         SCAN_AI_PROVIDER: "workers-ai",
+        SCAN_WORKERS_AI_ENABLED: "true",
         SCAN_FRONTIER_ENABLED: "true",
         SCAN_FRONTIER_PROVIDER: "ai-gateway",
         SCAN_AI_GATEWAY_URL:
@@ -222,7 +305,7 @@ describe("public AI data disclosures", () => {
     };
 
     expect(response.status).toBe(200);
-    expect(body.policyVersion).toBe("2026-07-19.4");
+    expect(body.policyVersion).toBe("2026-07-19.5");
     expect(body.provider).toBe("workers-ai");
     expect(body.processingDestinations).toHaveLength(1);
     expect(body.processingDestinations[0]?.processor).toBe(
@@ -258,6 +341,7 @@ describe("public AI data disclosures", () => {
       env({
         AI: { run: vi.fn(async () => ({ response: "unused" })) },
         SCAN_AI_PROVIDER: "workers-ai",
+        SCAN_WORKERS_AI_ENABLED: "true",
         SCAN_FRONTIER_ENABLED: "true",
         SCAN_FRONTIER_PROVIDER: "ai-gateway",
         SCAN_AI_GATEWAY_URL:
@@ -278,6 +362,7 @@ describe("AI data consent enforcement", () => {
       AI: { run: vi.fn(async () => ({ response: "unused" })) },
       SCAN_ACCEPTING_NEW_JOBS: "true",
       SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_WORKERS_AI_ENABLED: "true",
     });
     const identity = await currentAiDataConsentIdentity(configured, "scan");
     const createUploadIntent = vi
@@ -330,6 +415,7 @@ describe("AI data consent enforcement", () => {
           AI: { run: vi.fn(async () => ({ response: "unused" })) },
           SCAN_ACCEPTING_NEW_JOBS: "true",
           SCAN_AI_PROVIDER: "workers-ai",
+          SCAN_WORKERS_AI_ENABLED: "true",
         }),
       );
 
@@ -381,6 +467,7 @@ describe("AI data consent enforcement", () => {
         env({
           AI: { run: aiRun },
           SCAN_AI_PROVIDER: "workers-ai",
+          SCAN_WORKERS_AI_ENABLED: "true",
           SCAN_EDITOR_AI_ENABLED: "true",
         }),
       );
@@ -397,6 +484,7 @@ describe("AI data consent enforcement", () => {
     const acceptedEnv = env({
       AI: { run: vi.fn(async () => ({ response: "unused" })) },
       SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_WORKERS_AI_ENABLED: "true",
     });
     const accepted = await currentAiDataConsentIdentity(acceptedEnv, "scan");
     const put = vi.fn(async () => undefined);
@@ -449,6 +537,7 @@ describe("AI data consent enforcement", () => {
     const acceptedEnv = env({
       AI: { run: vi.fn(async () => ({ response: "unused" })) },
       SCAN_AI_PROVIDER: "workers-ai",
+      SCAN_WORKERS_AI_ENABLED: "true",
     });
     const accepted = await currentAiDataConsentIdentity(acceptedEnv, "scan");
     vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({

@@ -65,6 +65,54 @@ describe("consumeEditorSeedHandoff", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("returns a valid UI language from the scrubbed Scan fragment", async () => {
+    const seed = createMinimalJaSeed();
+    const envelope = {
+      schemaVersion: "grimodex/editor-handoff/1" as const,
+      seed,
+      hostedAiSession: {
+        scanId: "11111111-1111-4111-8111-111111111111",
+        token: "a".repeat(64),
+        expiresAt: "2026-07-20T00:00:00.000Z",
+      },
+    };
+    const replaceHistory = vi.fn();
+
+    await expect(
+      consumeEditorSeedHandoff({
+        href: "https://try.grimodex.app/editor#scan-import=one-time&ui-language=en",
+        apiBaseUrl: "https://scan.example",
+        fetchImpl: vi.fn(async () => Response.json(envelope)),
+        replaceHistory,
+      }),
+    ).resolves.toEqual({ ...envelope, uiLanguage: "en" });
+    expect(replaceHistory).toHaveBeenCalledWith(
+      "https://try.grimodex.app/editor",
+    );
+  });
+
+  it("ignores an invalid UI language without rejecting a valid legacy handoff", async () => {
+    const seed = createMinimalJaSeed();
+    const envelope = {
+      schemaVersion: "grimodex/editor-handoff/1" as const,
+      seed,
+      hostedAiSession: {
+        scanId: "11111111-1111-4111-8111-111111111111",
+        token: "a".repeat(64),
+        expiresAt: "2026-07-20T00:00:00.000Z",
+      },
+    };
+
+    await expect(
+      consumeEditorSeedHandoff({
+        href: "https://try.grimodex.app/editor#scan-import=one-time&ui-language=fr",
+        apiBaseUrl: "https://scan.example",
+        fetchImpl: vi.fn(async () => Response.json(envelope)),
+        replaceHistory: vi.fn(),
+      }),
+    ).resolves.toEqual(envelope);
+  });
+
   it("fails closed when the Worker returns an unvalidated handoff", async () => {
     const replaceHistory = vi.fn();
     const fetchImpl = vi.fn(async () =>

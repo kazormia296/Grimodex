@@ -39,4 +39,16 @@ describe("ScanReport", () => {
       "intentional",
     );
   });
+
+  it("renders report navigation, counts, and actions in English", () => {
+    const { getByRole, getByText } = render(
+      <ScanReport bundle={createMinimalJaBundle()} locale="en" />,
+    );
+
+    expect(getByRole("heading", { name: "Overview" })).toBeTruthy();
+    expect(getByRole("heading", { name: "Characters & places" })).toBeTruthy();
+    expect(getByRole("heading", { name: "Story phases" })).toBeTruthy();
+    expect(getByText(/characters · 1 section · 2 paragraphs/)).toBeTruthy();
+    expect(getByText("Writing language: Japanese (detected)")).toBeTruthy();
+  });
 });

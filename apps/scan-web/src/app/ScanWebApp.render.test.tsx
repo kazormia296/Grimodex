@@ -3,6 +3,7 @@ import type { AiDataDisclosureV1 } from "@grimodex/scan-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScanApiClient } from "../api/scanApiClient";
 import { ScanWebApp } from "./ScanWebApp";
+import { SCAN_LOCALE_STORAGE_KEY } from "../i18n/scanLocale";
 
 const disclosure: AiDataDisclosureV1 = {
   schemaVersion: "grimodex/ai-data-disclosure/1",
@@ -62,7 +63,7 @@ async function acceptUploadConsent(): Promise<void> {
     },
   });
   await screen.findByRole("dialog", {
-    name: "原稿をAIへ送信する前に確認",
+    name: "原稿をアップロードする前に確認",
   });
   fireEvent.click(
     screen.getByRole("checkbox", { name: /送信・保存・学習利用方針/ }),
@@ -74,10 +75,16 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  localStorage.clear();
 });
+
+function forceJapaneseUi(): void {
+  localStorage.setItem(SCAN_LOCALE_STORAGE_KEY, "ja");
+}
 
 describe("ScanWebApp report ownership", () => {
   it("shows a ready state without presenting the fixture when an API is configured", () => {
+    forceJapaneseUi();
     configureHostedApi();
 
     render(<ScanWebApp />);
@@ -90,6 +97,7 @@ describe("ScanWebApp report ownership", () => {
   });
 
   it("labels the fixture as a demo inside the report when no API is configured", () => {
+    forceJapaneseUi();
     vi.stubEnv("VITE_SCAN_API_BASE_URL", "");
 
     render(<ScanWebApp />);
@@ -100,6 +108,7 @@ describe("ScanWebApp report ownership", () => {
   });
 
   it("replaces the ready state with an explicit running state", async () => {
+    forceJapaneseUi();
     configureHostedApi();
     vi.spyOn(ScanApiClient.prototype, "getAiDisclosure").mockResolvedValue(
       disclosure,
@@ -119,6 +128,7 @@ describe("ScanWebApp report ownership", () => {
   });
 
   it("shows an error state instead of the fixture when a replacement scan fails", async () => {
+    forceJapaneseUi();
     configureHostedApi();
     vi.spyOn(ScanApiClient.prototype, "getAiDisclosure").mockResolvedValue(
       disclosure,
@@ -137,5 +147,48 @@ describe("ScanWebApp report ownership", () => {
     ).toBeTruthy();
     expect(screen.queryByTestId("scan-report")).toBeNull();
     expect(screen.queryByText("灯台の手紙")).toBeNull();
+  });
+
+  it("switches the complete Scan interface to English and persists the choice", () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    render(<ScanWebApp />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "表示言語" }), {
+      target: { value: "en" },
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "Upload your manuscript" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: "Interface language" }),
+    ).toBeTruthy();
+    expect(localStorage.getItem(SCAN_LOCALE_STORAGE_KEY)).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
+  });
+
+  it("passes a manual manuscript language override into the upload boundary", async () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    vi.spyOn(ScanApiClient.prototype, "getAiDisclosure").mockResolvedValue(
+      disclosure,
+    );
+    const upload = vi
+      .spyOn(ScanApiClient.prototype, "uploadSource")
+      .mockImplementation(() => new Promise(() => undefined));
+    render(<ScanWebApp />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "執筆言語" }), {
+      target: { value: "en" },
+    });
+    await acceptUploadConsent();
+
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "story.txt" }),
+      "quick",
+      disclosure.consentId,
+      "en",
+    );
   });
 });

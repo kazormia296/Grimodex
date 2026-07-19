@@ -83,6 +83,7 @@ describe("ScanApiClient", () => {
       new File(["本文"], "novel.txt", { type: "text/plain" }),
       "full",
       "consent_test_scan_upload_123456",
+      "en",
     );
 
     const intentBody = JSON.parse(String(requests[0]?.init?.body));
@@ -93,6 +94,9 @@ describe("ScanApiClient", () => {
     expect(requests.at(-1)?.init?.headers).toMatchObject({
       "x-upload-token": "upload-token",
       "x-scan-full-access": "full-entitlement",
+    });
+    expect(requests[1]?.init?.headers).toMatchObject({
+      "x-scan-source-language": "en",
     });
   });
 

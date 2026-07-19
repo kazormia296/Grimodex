@@ -68,9 +68,11 @@ describe("ScanApiClient AI data consent", () => {
       fetchImpl,
     });
 
-    await expect(client.getAiDisclosure("scan")).resolves.toEqual(disclosure);
+    await expect(client.getAiDisclosure("scan", "ja")).resolves.toEqual(
+      disclosure,
+    );
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://scan.example/api/v1/ai-disclosures/scan",
+      "https://scan.example/api/v1/ai-disclosures/scan?locale=ja",
       expect.objectContaining({ headers: expect.any(Object) }),
     );
   });

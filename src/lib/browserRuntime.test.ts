@@ -78,6 +78,7 @@ function createDependencies(
     buildScanImportPlan: vi.fn(),
     createScanImportOperationsForPlan: vi.fn(),
     applyScanImportPlan: vi.fn(),
+    applyUiLanguage: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -220,6 +221,7 @@ describe("hosted Editor browser runtime", () => {
       schemaVersion: "grimodex/editor-handoff/1",
       seed: rawSeed,
       hostedAiSession,
+      uiLanguage: "en" as const,
     };
     const parsedSeed = { schemaVersion: "parsed" };
     const plan = { schemaVersion: "plan" };
@@ -258,6 +260,9 @@ describe("hosted Editor browser runtime", () => {
         callOrder.push("apply");
         return applyResult as never;
       }),
+      applyUiLanguage: vi.fn(async () => {
+        callOrder.push("language");
+      }),
     });
     const locks = createExclusiveLockManager();
 
@@ -287,6 +292,7 @@ describe("hosted Editor browser runtime", () => {
       plan,
       operations,
     );
+    expect(dependencies.applyUiLanguage).toHaveBeenCalledWith("en");
     expect(callOrder).toEqual([
       "consume",
       "parse",
@@ -295,12 +301,29 @@ describe("hosted Editor browser runtime", () => {
       "plan",
       "operations",
       "apply",
+      "language",
     ]);
     expect(runtime.importedProjectId).toBe("scan-project");
     await expect(store.get(HOSTED_EDITOR_WORKSPACE_ID)).resolves.toMatchObject({
       revision: 1,
       bytes: new Uint8Array([7, 8]),
     });
+    await runtime.dispose();
+  });
+
+  it("does not replace the saved Editor UI language for a standalone launch", async () => {
+    const dependencies = createDependencies();
+    const locks = createExclusiveLockManager();
+
+    const runtime = await initializeBrowserRuntime({
+      store: createMemoryWorkspaceStore(),
+      lifecycleTarget: null,
+      href: "https://try.grimodex.app/editor",
+      lockManager: locks.lockManager,
+      dependencies,
+    });
+
+    expect(dependencies.applyUiLanguage).not.toHaveBeenCalled();
     await runtime.dispose();
   });
 

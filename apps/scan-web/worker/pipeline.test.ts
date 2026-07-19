@@ -90,6 +90,12 @@ class MemoryBucket implements R2BucketLike {
   async delete(key: string): Promise<void> {
     this.values.delete(key);
   }
+
+  readJson<T>(key: string): T {
+    const value = this.values.get(key);
+    if (!value) throw new Error(`missing object: ${key}`);
+    return JSON.parse(value.value) as T;
+  }
 }
 
 function createFixture() {
@@ -347,6 +353,112 @@ describe("scan pipeline", () => {
     );
     expect(await fixture.bucket.get(artifacts.bundleKey)).not.toBeNull();
     expect(await fixture.bucket.get(artifacts.reportKey)).not.toBeNull();
+  });
+
+  it("keeps long deterministic evidence as exact source substrings through Quick artifact generation", async () => {
+    const fixture = createFixture();
+    const paragraph = "Alice walks across the harbor while the storm gathers. "
+      .repeat(6)
+      .trim();
+    const source = `# Chapter One\n\n${paragraph}`;
+    await fixture.bucket.put(fixture.sourceKey, source, {
+      httpMetadata: { contentType: "text/markdown" },
+    });
+
+    await normalizeScanSource(fixture.env, fixture.repository, fixture.scanId);
+    await buildScanChunks(
+      fixture.env,
+      fixture.repository,
+      fixture.scanId,
+      "quick",
+    );
+    await extractScanChunks(fixture.env, fixture.repository, fixture.scanId);
+    await mergeScanExtractions(fixture.env, fixture.repository, fixture.scanId);
+
+    const artifacts = await buildScanArtifacts(
+      fixture.env,
+      fixture.repository,
+      fixture.scanId,
+      "quick",
+    );
+    const evidenceExcerpts: string[] = [];
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      if (typeof value !== "object" || value === null) return;
+      const record = value as Record<string, unknown>;
+      if (
+        typeof record.paragraphId === "string" &&
+        typeof record.excerpt === "string"
+      ) {
+        evidenceExcerpts.push(record.excerpt);
+      }
+      Object.values(record).forEach(visit);
+    };
+    visit(artifacts.bundle);
+
+    expect(evidenceExcerpts.length).toBeGreaterThan(0);
+    expect(
+      evidenceExcerpts.every(
+        (excerpt) => paragraph.includes(excerpt) && !excerpt.endsWith("…"),
+      ),
+    ).toBe(true);
+    expect(artifacts.editorSeed.bundle.source.language).toBe("en");
+  });
+
+  it("uses the validated R2 source-language override during normalization", async () => {
+    const fixture = createFixture();
+    await fixture.bucket.put(
+      fixture.sourceKey,
+      "# 第一章\n\n葵は灯台へ向かった。",
+      {
+        httpMetadata: { contentType: "text/markdown" },
+        customMetadata: { sourceLanguage: "en" },
+      },
+    );
+
+    await normalizeScanSource(fixture.env, fixture.repository, fixture.scanId);
+
+    const document = fixture.bucket.readJson<{
+      source: { language: string };
+    }>(`artifacts/${fixture.scanId}/source-document.json`);
+    expect(document.source.language).toBe("en");
+  });
+
+  it("builds deterministic English artifacts without fixed Japanese report text", async () => {
+    const fixture = createFixture();
+    await fixture.bucket.put(
+      fixture.sourceKey,
+      "# Chapter One\n\nAlice crossed the harbor before dawn.",
+      { httpMetadata: { contentType: "text/markdown" } },
+    );
+
+    await normalizeScanSource(fixture.env, fixture.repository, fixture.scanId);
+    await buildScanChunks(
+      fixture.env,
+      fixture.repository,
+      fixture.scanId,
+      "quick",
+    );
+    await extractScanChunks(fixture.env, fixture.repository, fixture.scanId);
+    await mergeScanExtractions(fixture.env, fixture.repository, fixture.scanId);
+    const artifacts = await buildScanArtifacts(
+      fixture.env,
+      fixture.repository,
+      fixture.scanId,
+      "quick",
+    );
+
+    expect(artifacts.bundle.source.language).toBe("en");
+    expect(artifacts.bundle.summary?.strengths[0]).toMatchObject({
+      title: "Structured manuscript",
+      summary: "Detected 1 section.",
+    });
+    expect(JSON.stringify(artifacts.bundle)).not.toMatch(
+      /[\u3040-\u30ff\u3400-\u9fff]/u,
+    );
   });
 
   it("uses fenced D1 results as checkpoints and repairs a missing usage ledger on recovery", async () => {

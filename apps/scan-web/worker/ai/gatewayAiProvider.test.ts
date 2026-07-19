@@ -47,6 +47,7 @@ describe("gateway AI provider", () => {
     if (!provider) throw new Error("test provider was not configured");
 
     await provider.extractChunk({
+      language: "ja",
       chunkId: "chunk:test",
       sourceFingerprint: "sha256:test",
       text: "本文",
@@ -95,6 +96,7 @@ describe("gateway AI provider", () => {
     if (!provider) throw new Error("test provider was not configured");
 
     const pending = provider.extractChunk({
+      language: "ja",
       chunkId: "chunk:test",
       sourceFingerprint: "sha256:test",
       text: "本文",

@@ -40,6 +40,7 @@ function workersAiEnv(overrides: Partial<ScanEnv> = {}): ScanEnv {
   return env({
     AI: { run: async () => ({ response: "unused" }) },
     SCAN_AI_PROVIDER: "workers-ai",
+    SCAN_WORKERS_AI_ENABLED: "true",
     ...overrides,
   });
 }
@@ -107,6 +108,113 @@ describe("scan worker router", () => {
     expect(preflight.headers.get("access-control-allow-headers")).toContain(
       "x-editor-session-token",
     );
+    expect(preflight.headers.get("access-control-allow-headers")).toContain(
+      "x-scan-source-language",
+    );
+  });
+
+  it("stores the validated writing-language choice in source object metadata", async () => {
+    const aiConsent = await workersAiConsent();
+    vi.spyOn(ScanRepository.prototype, "authorizeUpload").mockResolvedValue({
+      id: "upload-1",
+      tokenHash: "token-hash",
+      filename: "private.txt",
+      contentType: "text/plain",
+      expectedSize: 7,
+      sourceKey: "incoming/upload-1/source.txt",
+      status: "uploaded",
+      expiresAt: "2026-07-19T00:15:00.000Z",
+      actualSize: null,
+      sourceHash: null,
+      aiConsent,
+    });
+    vi.spyOn(ScanRepository.prototype, "markUploadComplete").mockResolvedValue(
+      undefined,
+    );
+    const put = vi.fn(async () => undefined);
+
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/uploads/upload-1", {
+        method: "PUT",
+        headers: {
+          "content-type": "text/plain",
+          "x-upload-token": "upload-token",
+          "x-scan-source-language": "en",
+        },
+        body: "private",
+      }),
+      workersAiEnv({
+        SCAN_BUCKET: {
+          put,
+          get: async () => null,
+          head: async () => null,
+          delete: async () => undefined,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(put).toHaveBeenCalledWith(
+      "incoming/upload-1/source.txt",
+      expect.any(Uint8Array),
+      {
+        httpMetadata: { contentType: "text/plain" },
+        customMetadata: expect.objectContaining({
+          schemaVersion: "source-text/1",
+          sourceLanguage: "en",
+        }),
+      },
+    );
+  });
+
+  it("rejects an invalid source-language header before storing manuscript bytes", async () => {
+    const aiConsent = await workersAiConsent();
+    vi.spyOn(ScanRepository.prototype, "authorizeUpload").mockResolvedValue({
+      id: "upload-1",
+      tokenHash: "token-hash",
+      filename: "private.txt",
+      contentType: "text/plain",
+      expectedSize: 7,
+      sourceKey: "incoming/upload-1/source.txt",
+      status: "uploaded",
+      expiresAt: "2026-07-19T00:15:00.000Z",
+      actualSize: null,
+      sourceHash: null,
+      aiConsent,
+    });
+    vi.spyOn(ScanRepository.prototype, "markUploadComplete").mockResolvedValue(
+      undefined,
+    );
+    vi.spyOn(ScanRepository.prototype, "releaseUploadClaim").mockResolvedValue(
+      undefined,
+    );
+    const put = vi.fn(async () => undefined);
+
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/uploads/upload-1", {
+        method: "PUT",
+        headers: {
+          "content-type": "text/plain",
+          "x-upload-token": "upload-token",
+          "x-scan-source-language": "fr",
+        },
+        body: "private",
+      }),
+      workersAiEnv({
+        SCAN_BUCKET: {
+          put,
+          get: async () => null,
+          head: async () => null,
+          delete: async () => undefined,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid_source_language" },
+    });
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("does not issue upload intents while the kill switch is off", async () => {
