@@ -53,7 +53,7 @@ export async function consumeEditorSeedHandoff({
     {
       method: "GET",
       cache: "no-store",
-      credentials: "omit",
+      credentials: "include",
       headers: {
         accept: "application/json",
         authorization: `Bearer ${editorToken}`,

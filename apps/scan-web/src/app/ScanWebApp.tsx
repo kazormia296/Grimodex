@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildEditorHandoffUrl,
+  type AccessSessionV1,
   type AiDataDisclosureV1,
 } from "@grimodex/scan-contract";
 import { GrimodexLogo } from "../../../../src/components/GrimodexLogo";
@@ -118,6 +119,9 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
   const turnstileRequired =
     (import.meta.env.VITE_SCAN_TURNSTILE_REQUIRED ??
       (import.meta.env.PROD ? "true" : "false")) === "true";
+  const apiBaseUrl = import.meta.env.VITE_SCAN_API_BASE_URL?.trim() ?? "";
+  const authRequired =
+    import.meta.env.VITE_SCAN_AUTH_REQUIRED === "true" && apiBaseUrl.length > 0;
   const editorBaseUrl =
     import.meta.env.VITE_EDITOR_BASE_URL?.trim() ||
     (import.meta.env.DEV
@@ -125,27 +129,70 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
       : "https://try.grimodex.app/editor");
   const [turnstileToken, setTurnstileToken] = useState<string>();
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
+  const accountClient = useMemo(
+    () => (apiBaseUrl ? new ScanApiClient({ baseUrl: apiBaseUrl }) : null),
+    [apiBaseUrl],
+  );
   const apiClient = useMemo(
     () =>
-      import.meta.env.VITE_SCAN_API_BASE_URL
+      apiBaseUrl
         ? new ScanApiClient({
-            baseUrl: import.meta.env.VITE_SCAN_API_BASE_URL,
+            baseUrl: apiBaseUrl,
             turnstileToken,
             fullAccessToken,
           })
         : null,
-    [fullAccessToken, turnstileToken],
+    [apiBaseUrl, fullAccessToken, turnstileToken],
   );
+  const [accountSession, setAccountSession] = useState<AccessSessionV1>();
+  const [accountState, setAccountState] = useState<
+    "disabled" | "checking" | "authenticated" | "unauthenticated"
+  >(() => (authRequired ? "checking" : "disabled"));
+  useEffect(() => {
+    if (!authRequired || !accountClient || publicReportIdFromUrl) {
+      setAccountSession(undefined);
+      setAccountState("disabled");
+      return;
+    }
+    let active = true;
+    setAccountSession(undefined);
+    setAccountState("checking");
+    void accountClient
+      .getAccountSession()
+      .then((session) => {
+        if (!active) return;
+        setAccountSession(session);
+        setAccountState("authenticated");
+      })
+      .catch(() => {
+        if (!active) return;
+        setAccountSession(undefined);
+        setAccountState("unauthenticated");
+      });
+    return () => {
+      active = false;
+    };
+  }, [accountClient, authRequired, publicReportIdFromUrl]);
   const [liveBundle, setLiveBundle] = useState<typeof demoBundle | null>(null);
   const [scanHandle, setScanHandleState] = useState<ScanHandle | null>(() =>
-    readScanOwnership(currentScanOwnershipStorage()),
+    authRequired
+      ? null
+      : readScanOwnership(currentScanOwnershipStorage(), null),
   );
-  const setScanHandle = useCallback((handle: ScanHandle | null) => {
-    setScanHandleState(handle);
-    const storage = currentScanOwnershipStorage();
-    if (handle) writeScanOwnership(storage, handle);
-    else clearScanOwnership(storage);
-  }, []);
+  const ownershipSubject = authRequired ? accountSession?.subject : null;
+  const setScanHandle = useCallback(
+    (handle: ScanHandle | null) => {
+      // A cloud capability must never be persisted before its authenticated
+      // Access subject is known.
+      if (handle && authRequired && !ownershipSubject) return;
+      setScanHandleState(handle);
+      const storage = currentScanOwnershipStorage();
+      const subject = ownershipSubject ?? null;
+      if (handle) writeScanOwnership(storage, handle, subject);
+      else clearScanOwnership(storage, subject);
+    },
+    [authRequired, ownershipSubject],
+  );
   const [scanMode, setScanMode] = useState<"quick" | "full">("quick");
   const [scanState, setScanState] = useState<"idle" | "running" | "error">(
     "idle",
@@ -167,10 +214,46 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
     Record<string, "intentional" | "rejected">
   >({});
   const remoteGenerationRef = useRef(0);
+  const restoredOwnershipSubjectRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!authRequired) return;
+    const nextSubject =
+      accountState === "authenticated" ? accountSession?.subject : undefined;
+    if (restoredOwnershipSubjectRef.current === nextSubject) return;
+    restoredOwnershipSubjectRef.current = nextSubject;
+
+    // Invalidate any asynchronous work that started under another account,
+    // then restore only the capability explicitly scoped to this subject.
+    remoteGenerationRef.current += 1;
+    setScanHandleState(
+      nextSubject
+        ? readScanOwnership(currentScanOwnershipStorage(), nextSubject)
+        : null,
+    );
+    setLiveBundle(null);
+    setFeedback({});
+    setPendingUpload(undefined);
+    setScanDisclosure(undefined);
+    setDisclosureBusy(false);
+    setDeleteTarget(null);
+    setDeleteBusy(false);
+    setDeleteError(undefined);
+    setDeleteNotice(undefined);
+    setPublicReportId(undefined);
+    setPublicReportBusy(false);
+    setEditorLaunchBusy(false);
+    setScanState("idle");
+    setScanError(undefined);
+  }, [accountSession?.subject, accountState, authRequired]);
   const demoMode = apiClient === null;
-  const canUseFull = Boolean(fullAccessToken?.trim());
+  const accountAccessGranted =
+    !authRequired || accountState === "authenticated";
+  const canUseFull = authRequired
+    ? Boolean(accountSession?.fullScanEnabled)
+    : Boolean(fullAccessToken?.trim());
   const canUpload =
     Boolean(apiClient) &&
+    accountAccessGranted &&
     (!turnstileRequired || Boolean(turnstileToken)) &&
     !disclosureBusy &&
     !scanHandle &&
@@ -396,10 +479,27 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
           <GrimodexLogo height={24} className="scan-brand__logo" />
           <span className="scan-brand__product">Scan</span>
         </a>
-        <nav aria-label={copy.productsNavigation}>
+        <nav
+          className="scan-header-actions"
+          aria-label={copy.productsNavigation}
+        >
           <a className="scan-editor-link" href={editorBaseUrl}>
             {copy.openStandaloneEditor}
           </a>
+          {authRequired && accountClient && (
+            <a
+              className="scan-editor-link"
+              href={
+                accountState === "authenticated"
+                  ? accountClient.accountLogoutUrl()
+                  : accountClient.accountLoginUrl(window.location.href)
+              }
+            >
+              {accountState === "authenticated"
+                ? copy.account.logout
+                : copy.account.login}
+            </a>
+          )}
         </nav>
       </header>
       <section className="scan-toolbar" aria-label={copy.workflow}>
@@ -471,6 +571,12 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
           />
         </label>
         {!apiClient && <span className="scan-muted">{copy.demoFixture}</span>}
+        {authRequired && accountState === "checking" && (
+          <span className="scan-muted">{copy.account.checking}</span>
+        )}
+        {authRequired && accountState === "unauthenticated" && (
+          <span className="scan-muted">{copy.account.required}</span>
+        )}
         {scanState === "running" && <span>{copy.running}</span>}
         {disclosureBusy && <span>{copy.policyLoading}</span>}
         {scanHandle && scanState !== "running" && (

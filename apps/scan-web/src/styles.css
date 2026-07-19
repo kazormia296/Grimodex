@@ -129,6 +129,12 @@ select:disabled {
   font-weight: 600;
 }
 
+.scan-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .scan-editor-link {
   display: inline-flex;
   align-items: center;

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HOSTED_EDITOR_AI_LIMITS } from "@grimodex/scan-contract";
 import { runHostedAi } from "./hostedAi";
+import { OPENROUTER_ACCOUNT_POLICY_ATTESTATION } from "./openRouterPolicy";
 import { DEFAULT_SCAN_AI_MODEL, type ScanEnv } from "../env";
 
 afterEach(() => {
@@ -128,6 +129,7 @@ describe("hosted AI provider routing", () => {
         SCAN_AI_PROVIDER: "openrouter",
         OPENROUTER_URL: "https://router.example/v1/chat/completions",
         OPENROUTER_API_KEY: "server-only",
+        OPENROUTER_ACCOUNT_POLICY_ATTESTATION,
         SCAN_AI_MODEL: "router-model",
       } as unknown as ScanEnv,
       { prompt: "help" },
@@ -212,6 +214,7 @@ describe("hosted AI provider routing", () => {
         SCAN_AI_PROVIDER: "openrouter",
         OPENROUTER_URL: "https://router.example/v1/chat/completions",
         OPENROUTER_API_KEY: "server-only",
+        OPENROUTER_ACCOUNT_POLICY_ATTESTATION,
         SCAN_AI_MODEL: "router-model",
       } as unknown as ScanEnv,
       {

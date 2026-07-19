@@ -19,6 +19,7 @@ import {
   currentAiDataConsentIdentity,
   type AiDataConsentIdentity,
 } from "./ai/aiDataDisclosure";
+import { OPENROUTER_ACCOUNT_POLICY_ATTESTATION } from "./ai/openRouterPolicy";
 
 class MemoryBucket implements R2BucketLike {
   private readonly values = new Map<
@@ -718,6 +719,7 @@ describe("scan pipeline", () => {
       SCAN_AI_PROVIDER: "openrouter",
       OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
       OPENROUTER_API_KEY: "server-only",
+      OPENROUTER_ACCOUNT_POLICY_ATTESTATION,
     });
     const providerFetch = vi.fn();
     vi.stubGlobal("fetch", providerFetch);

@@ -30,6 +30,10 @@ describe("Cloudflare Scan OpenRouter deployment contract", () => {
     assert.ok(config.vars.CF_ACCESS_AUD.length > 0);
     assert.ok(config.secrets.required.includes("OPENROUTER_API_KEY"));
     assert.equal("OPENROUTER_API_KEY" in config.vars, false);
+    assert.equal(
+      config.vars.OPENROUTER_ACCOUNT_POLICY_ATTESTATION,
+      "replace-with-reviewed-openrouter-policy-attestation",
+    );
   });
 
   it("documents deployed and explicit local secret locations without tracking a key", async () => {
@@ -44,6 +48,11 @@ describe("Cloudflare Scan OpenRouter deployment contract", () => {
     );
     assert.match(docs, /apps\/scan-web\/\.dev\.vars\.openrouter/u);
     assert.match(docs, /OPENROUTER_API_KEY=sk-or-/u);
+    assert.match(
+      docs,
+      /2026-07-19\.9:logging-off:inputs-outputs-use-off:broadcast-off-or-key-excluded/u,
+    );
+    assert.match(docs, /\*\*Broadcast\*\* is disabled/u);
     assert.match(gitignore, /\.dev\.vars\.openrouter/u);
   });
 });

@@ -26,6 +26,47 @@ Production is always prepared from a paused Worker. Do not enable
 `SCAN_ACCEPTING_NEW_JOBS` until staging migration, health, CORS, upload, and AI
 smoke checks have passed.
 
+The hosted AI routes are intentionally split in production:
+
+| Surface                   | Server route                        | Model                       |
+| ------------------------- | ----------------------------------- | --------------------------- |
+| Quick Scan extraction     | Cloudflare Workers AI               | `@cf/zai-org/glm-4.7-flash` |
+| Full Scan frontier review | OpenRouter, Microsoft Azure AI only | `openai/gpt-5.6-terra`      |
+| Hosted Editor AI          | OpenRouter, Microsoft Azure AI only | `openai/gpt-5.6-luna`       |
+
+OpenRouter requests set both provider `order` and `only` to Microsoft Azure AI,
+deny provider fallback, require Zero Data Retention, deny data-collection
+routing, and request usage accounting. A route is unavailable
+when those constraints or its exact processor disclosure cannot be satisfied.
+The API key is a Worker-only secret and is never shipped in a Pages bundle.
+
+Before enabling hosted OpenRouter traffic, use a dedicated OpenRouter workspace
+and API key for this Worker, then verify all of the following account controls:
+
+- **Private Input & Output Logging** is disabled. If enabled, OpenRouter stores
+  full prompts and responses for at least three months and may retain them
+  longer until deletion is requested.
+- **OpenRouter Use of Inputs/Outputs** is disabled.
+- **Broadcast** is disabled, or this dedicated API key is explicitly excluded
+  from every Broadcast destination. A destination without an API-key filter
+  receives requests from every key in the account.
+
+Record the review. These account controls are independent of the per-request
+provider-routing controls and cannot be inspected by the Worker. After the
+review, replace the production
+`OPENROUTER_ACCOUNT_POLICY_ATTESTATION` placeholder with this exact non-secret
+value:
+
+```text
+2026-07-19.9:logging-off:inputs-outputs-use-off:broadcast-off-or-key-excluded
+```
+
+The Worker fails closed when this value is absent or stale. Do not set the
+attestation unless every condition above is true, and repeat the review before
+updating it after a future policy-version change. The in-product disclosure
+still reports downstream use as dependent on the account settings because the
+attestation is an operator control, not a live OpenRouter settings check.
+
 The deployment CLI deliberately refuses `SCAN_ACCEPTING_NEW_JOBS=true` in
 staging. Use a separate reviewed activation workflow if staging traffic is
 needed later.
@@ -52,6 +93,21 @@ uses the deterministic fallback and does not require a Cloudflare account,
 credentials, deployment, or billable inference. Stop both processes with
 `Ctrl+C`. Local state is preserved under `.wrangler/scan-local` for the next
 manual run.
+
+For an explicit billed-provider experiment, create the ignored file
+`apps/scan-web/.dev.vars.openrouter`:
+
+```dotenv
+OPENROUTER_API_KEY=sk-or-...
+SCAN_FRONTIER_ENABLED=true
+SCAN_EDITOR_AI_ENABLED=true
+OPENROUTER_ACCOUNT_POLICY_ATTESTATION=2026-07-19.9:logging-off:inputs-outputs-use-off:broadcast-off-or-key-excluded
+```
+
+The safe `pnpm scan:local` command deliberately does not load this file. Load it
+only in a separately reviewed Wrangler invocation with
+`--env-file apps/scan-web/.dev.vars.openrouter`; never rename it to a tracked
+config, put the key in `VITE_*`, or paste it into browser storage.
 
 For a fresh, non-interactive preflight, run:
 
@@ -98,6 +154,26 @@ enabled once in the Cloudflare Dashboard before Wrangler can create a bucket.
 The account also needs a `workers.dev` subdomain before the first Worker can be
 published; complete the one-time Workers & Pages onboarding if Wrangler asks.
 
+Production cloud mutations require a Cloudflare Access account. Before enabling
+traffic, create a custom Worker API origin (for example
+`https://api.grimodex.app`) and self-hosted Access applications for the protected
+API paths. Keep health, AI-disclosure, public-report, and abuse-report routes
+anonymous. Configure Access CORS to allow unauthenticated `OPTIONS` requests and
+credentialed requests from the exact Scan and Editor origins.
+
+Replace these two production config sentinels with the Access application
+values before deployment:
+
+- `CF_ACCESS_TEAM_DOMAIN`: the complete `https://<team>.cloudflareaccess.com`
+  team domain.
+- `CF_ACCESS_AUD`: the Access application audience (`aud`) tag for the protected
+  API application.
+
+The Worker validates the `Cf-Access-Jwt-Assertion` signature, issuer, audience,
+expiry, token type, and subject. The browser must not manufacture an account
+subject header. Local development uses the fixed loopback-only
+`local-development` account instead.
+
 Apply staging-only retention guardrails after creating the bucket:
 
 ```bash
@@ -114,21 +190,35 @@ These rules irreversibly delete staging objects after the stated retention
 period. They are defense in depth for the Worker's hourly retention job, not
 production retention policy.
 
-Set secrets interactively; never put their values in a Wrangler config or a
-`VITE_` variable:
+Set secrets interactively; never put their values in a Wrangler config, Pages
+environment variable, `VITE_` variable, or browser storage:
 
 ```bash
 pnpm exec wrangler secret put UPLOAD_TOKEN_SECRET \
   --config apps/scan-web/wrangler.staging.jsonc
+pnpm exec wrangler secret put OPENROUTER_API_KEY --config apps/scan-web/wrangler.staging.jsonc
 ```
 
-Production additionally requires `TURNSTILE_SECRET_KEY`,
-`SCAN_FULL_ACCESS_SECRET`, and the configured upstream AI credential. The
-current provider adapter sends `AI_GATEWAY_TOKEN` as the upstream
-`Authorization` bearer token. Authenticated AI Gateway needs separate
-`cf-aig-authorization` support before it is enabled.
+Production requires `UPLOAD_TOKEN_SECRET`, `TURNSTILE_SECRET_KEY`, and the
+OpenRouter key. Set the OpenRouter secret on the Worker with:
 
-Disable AI Gateway payload logging before any manuscript is submitted.
+```bash
+pnpm exec wrangler secret put OPENROUTER_API_KEY --config apps/scan-web/wrangler.production.jsonc
+```
+
+Dashboard alternative: open **Workers & Pages >
+grimodex-scan-production > Settings > Variables and Secrets**, add
+`OPENROUTER_API_KEY`, select **Secret**, and deploy the new Worker version.
+Do not add this key to either Pages project; browser code must never receive it.
+
+Use an OpenRouter key scoped to this service with a conservative credit or
+spending limit. Before setting the key, complete the dedicated-workspace,
+logging, content-use, and Broadcast review above. The attestation is a
+non-secret Wrangler `var`; the API key is a Worker Secret.
+`SCAN_FULL_ACCESS_SECRET`, `AI_GATEWAY_TOKEN`, and
+`SCAN_AI_GATEWAY_URL` are not part of the new Access + OpenRouter production
+route. The model route and endpoint remain non-secret `vars`; only
+`OPENROUTER_API_KEY` belongs in Worker Secrets.
 
 ## Cost guardrails
 
@@ -221,6 +311,9 @@ replace every production placeholder. The Editor `web-build` and `web-deploy`
 actions are also hard-blocked until that exact reviewed Worker origin is
 recorded as canonical repository configuration and the CLI contract tests are
 updated. There is currently no production Editor build or deploy command.
+Once the route is reviewed and this block is lifted, the production Scan build
+injects `VITE_SCAN_AUTH_REQUIRED=true`; staging remains paused and does not
+pretend to prove the Access login flow.
 
 The only hosted Editor deployment path currently supported by this repository
 is staging. Its API origin must exactly match

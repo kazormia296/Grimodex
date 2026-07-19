@@ -42,6 +42,7 @@ rules:
     reason: AI path, role, route, or provider changes must preserve complete routing coverage.
     paths:
       - src/features/ai-verification/**
+      - docs/AI経路検証.md
       - src/features/chat/modelRouting.ts
       - src/features/chat/modelRouting.test.ts
       - src/features/chat/turn/**
@@ -114,6 +115,10 @@ rules:
       - packages/scan-core/**
       - packages/scan-prompts/**
       - apps/scan-web/**
+      - scripts/cloudflare-scan-deploy.mjs
+      - scripts/cloudflare-scan-deploy.test.mjs
+      - scripts/cloudflare-scan-openrouter.test.mjs
+      - docs/SCAN_CLOUDFLARE_DEPLOYMENT.md
     requirements:
       - GDX-GROUND-001
       - GDX-ARTIFACT-001

@@ -219,6 +219,57 @@ cases:
         ]
       outputValidators: [no-side-effect, failure-class]
 
+  - id: eval-hosted-openrouter-reconsent
+    suiteId: tool-policy
+    requirementIds: [GDX-ROUTE-001, GDX-AI-CONSENT-001, GDX-TRACE-001]
+    fixture:
+      runId: hosted-openrouter-reconsent
+      locale: en-US
+      timeZone: UTC
+      currentTime: "2026-07-19T08:00:00Z"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        {
+          conversationId: hosted-openrouter-reconsent-conversation,
+          workspaceId: hosted-openrouter-reconsent-workspace,
+          artifactRoot: hosted-openrouter-reconsent-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "Use my old Hosted Editor consent after changing the server provider and model.",
+        route: hosted-editor,
+        previousProvider: workers-ai,
+        provider: openrouter-global-openai-gpt-5.6-luna-azure-zdr,
+        policyVersion: 2026-07-19.9,
+        disclosureAvailable: true,
+        consent: missing,
+        providerCalls: 0,
+        attemptedTools: [],
+        executedTools: [],
+      }
+    expected:
+      outcome: blocked
+      blockedBy: consent-missing
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: [aiDataConsent]
+      authorization: missing
+      failureClass: precheck
+      freshness: volatile
+      requiredEvidence:
+        [
+          ai-data-disclosure,
+          consent-state,
+          route-provider-policy-version,
+          processor-routing-constraints,
+          live-verification,
+          citation,
+        ]
+      outputValidators: [no-side-effect, failure-class]
+
   - id: eval-policy-create-snippet
     suiteId: tool-policy
     requirementIds: [GDX-POLICY-001, GDX-ARTIFACT-001]

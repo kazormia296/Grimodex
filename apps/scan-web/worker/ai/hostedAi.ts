@@ -8,6 +8,14 @@ import {
   type HostedEditorAiToolDefinition,
 } from "@grimodex/scan-contract";
 import { DEFAULT_SCAN_AI_MODEL, type ScanEnv } from "../env";
+import { hostedEditorAiRoute } from "./providerConfig";
+import {
+  openRouterAccountPolicyAttested,
+  openRouterHeaders,
+  openRouterRequestFields,
+  parseOpenRouterUsage,
+  type OpenRouterUsage,
+} from "./openRouterPolicy";
 
 const HOSTED_AI_TIMEOUT_MS = 2 * 60 * 1_000;
 const HOSTED_AI_SYSTEM_PROMPT =
@@ -34,6 +42,7 @@ export interface HostedAiResult {
   provider: string;
   model: string;
   toolCalls?: HostedEditorAiToolCall[];
+  usage?: OpenRouterUsage;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -288,8 +297,12 @@ async function openAiCompatible(
   token: string,
   model: string,
   input: HostedAiInput,
-  extraHeaders: Record<string, string> = {},
-): Promise<Pick<HostedAiResult, "response" | "toolCalls">> {
+  options: {
+    extraHeaders?: Record<string, string>;
+    requestFields?: Record<string, unknown>;
+    includeUsage?: boolean;
+  } = {},
+): Promise<Pick<HostedAiResult, "response" | "toolCalls" | "usage">> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), HOSTED_AI_TIMEOUT_MS);
   let response: Response;
@@ -302,7 +315,7 @@ async function openAiCompatible(
         accept: "application/json",
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
-        ...extraHeaders,
+        ...options.extraHeaders,
       },
       body: JSON.stringify({
         model,
@@ -310,8 +323,10 @@ async function openAiCompatible(
         ...(input.agent && input.agent.tools.length > 0
           ? { tools: openAiTools(input.agent.tools), tool_choice: "auto" }
           : {}),
-        temperature: 0.2,
-        max_tokens: HOSTED_EDITOR_AI_LIMITS.maxProviderCompletionTokens,
+        ...(options.requestFields ?? {
+          temperature: 0.2,
+          max_tokens: HOSTED_EDITOR_AI_LIMITS.maxProviderCompletionTokens,
+        }),
       }),
     });
   } catch (cause) {
@@ -326,10 +341,10 @@ async function openAiCompatible(
       response.status,
       "hosted AI provider request failed",
     );
-  return providerCompletion(
-    await readBoundedProviderJson(response),
-    input.agent?.tools ?? [],
-  );
+  const raw = await readBoundedProviderJson(response);
+  const completion = providerCompletion(raw, input.agent?.tools ?? []);
+  const usage = options.includeUsage ? parseOpenRouterUsage(raw) : undefined;
+  return { ...completion, ...(usage ? { usage } : {}) };
 }
 
 export async function runHostedAi(
@@ -344,9 +359,9 @@ export async function runHostedAi(
     input = { ...input, agent: parsed.value };
   }
 
-  const provider =
-    env.SCAN_AI_PROVIDER ?? (env.AI ? "workers-ai" : "ai-gateway");
-  const model = env.SCAN_AI_MODEL ?? DEFAULT_SCAN_AI_MODEL;
+  const configuredRoute = hostedEditorAiRoute(env);
+  const provider = configuredRoute.provider;
+  const model = configuredRoute.model || DEFAULT_SCAN_AI_MODEL;
   if (provider === "workers-ai") {
     if (!env.AI) throw new HostedAiError(503, "Workers AI is not configured");
     const raw = await withHostedAiTimeout(
@@ -381,7 +396,13 @@ export async function runHostedAi(
     };
   }
   if (provider === "openrouter") {
-    if (!env.OPENROUTER_URL || !env.OPENROUTER_API_KEY) {
+    if (
+      !env.OPENROUTER_URL ||
+      !env.OPENROUTER_API_KEY ||
+      !openRouterAccountPolicyAttested(
+        env.OPENROUTER_ACCOUNT_POLICY_ATTESTATION,
+      )
+    ) {
       throw new HostedAiError(503, "OpenRouter is not configured");
     }
     return {
@@ -390,7 +411,13 @@ export async function runHostedAi(
         env.OPENROUTER_API_KEY,
         model,
         input,
-        { "x-title": "Grimodex Hosted AI" },
+        {
+          extraHeaders: openRouterHeaders("Grimodex Hosted Editor"),
+          requestFields: openRouterRequestFields(
+            HOSTED_EDITOR_AI_LIMITS.maxProviderCompletionTokens,
+          ),
+          includeUsage: true,
+        },
       )),
       provider,
       model,

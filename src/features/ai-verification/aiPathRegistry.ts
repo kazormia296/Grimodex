@@ -444,11 +444,11 @@ export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
     surface:
       "ScanWebApp → ScanApiClient upload intent → Cloudflare Scan Workflow",
     transport:
-      "Cloudflare Worker/Workflow → configured Workers AI or fully disclosed upstream provider",
+      "Cloudflare Worker/Workflow → Workers AI extraction (GLM) → OpenRouter Terra frontier (Microsoft Azure AI only, ZDR required)",
     consentRoute: "scan",
     providerAuthority: "server-runtime",
     capabilityGate:
-      "current public disclosure + matching consent identity + accepting-jobs/provider capability",
+      "Cloudflare Access account + current public disclosure + matching consent identity + accepting-jobs/provider capability",
     verifier: "contract",
     testRef: SCAN_PIPELINE_CONTRACT_TEST,
     testName:
@@ -456,18 +456,18 @@ export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
     consentTestRef: SCAN_CONSENT_CONTRACT_TEST,
     consentTestName:
       "fails closed before the network when an upload has no consent identity",
-    note: "The contract covers upload-to-provider orchestration and refusal before upload. A credentialed, teardown-capable deployed runner is still blocked and must not be reported as live evidence.",
+    note: "Quick Scan stops after Workers AI extraction. Full Scan adds the server-owned OpenRouter Terra route, pinned to Microsoft Azure AI without provider fallback and requiring ZDR. The contract covers upload-to-provider orchestration and refusal before upload; a credentialed, teardown-capable deployed runner remains blocked Heavy evidence.",
   },
   {
     id: "hosted_editor_web",
     label: "Hosted Editor AI",
     surface: "browser Editor → createHostedBrowserAi → Scan editor-ai route",
     transport:
-      "HTTPS scoped Editor session → Cloudflare Worker → configured hosted provider",
+      "HTTPS scoped Editor session → Cloudflare Worker → OpenRouter Luna (Microsoft Azure AI only, ZDR required)",
     consentRoute: "hosted-editor",
     providerAuthority: "server-runtime",
     capabilityGate:
-      "hosted-editor capability/session credential + current disclosure + matching consent identity",
+      "Cloudflare Access account + hosted-editor capability/session credential + current disclosure + matching consent identity",
     verifier: "contract",
     testRef: HOSTED_EDITOR_CONTRACT_TEST,
     testName:
@@ -475,7 +475,7 @@ export const AI_RUNTIME_ROUTES: AiRuntimeRouteEntry[] = [
     consentTestRef: HOSTED_EDITOR_CONTRACT_TEST,
     consentTestName:
       "requires the current server disclosure before sending manuscript data",
-    note: "The client wire, operation contract, and no-consent network denial are Light evidence. Real provider behavior and deployed storage teardown remain blocked Heavy evidence.",
+    note: "The server-owned OpenRouter Luna route is pinned to Microsoft Azure AI without provider fallback and requires ZDR. The client wire, operation contract, and no-consent network denial are Light evidence; real provider behavior and deployed storage teardown remain blocked Heavy evidence.",
   },
   {
     id: "browser_byok_web",

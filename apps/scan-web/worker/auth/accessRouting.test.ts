@@ -13,6 +13,13 @@ describe("Scan account route boundary", () => {
     ["POST", "/api/v1/scans/scan-1/editor-ai"],
     ["DELETE", "/api/v1/public-reports/public-1"],
     ["GET", "/api/v1/editor-seeds"],
+    ["GET", "/api/v1//scans/scan-1"],
+    ["PUT", "/api//v1/uploads/upload-1"],
+    ["POST", "/api/v1//scans/scan-1/editor-ai"],
+    ["GET", "//api/v1/scans/scan-1"],
+    ["DELETE", "/api/v1/public-reports/public-1/"],
+    ["GET", "/api/v1//public-reports/public-1"],
+    ["GET", "/api/v1/future-private-route"],
   ])("requires an account for %s %s", (method, pathname) => {
     expect(routeRequiresAccount(method, pathname)).toBe(true);
   });
@@ -23,6 +30,7 @@ describe("Scan account route boundary", () => {
     ["GET", "/api/v1/ai-disclosures/scan"],
     ["GET", "/api/v1/public-reports/public-1"],
     ["POST", "/api/v1/public-reports/public-1/abuse-reports"],
+    ["GET", "/not-an-api-route"],
   ])("keeps %s %s anonymous", (method, pathname) => {
     expect(routeRequiresAccount(method, pathname)).toBe(false);
   });

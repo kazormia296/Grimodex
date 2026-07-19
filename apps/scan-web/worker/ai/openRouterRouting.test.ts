@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScanEnv } from "../env";
 import { createGatewayAiProvider } from "./gatewayAiProvider";
+import { OPENROUTER_ACCOUNT_POLICY_ATTESTATION } from "./openRouterPolicy";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -30,6 +31,7 @@ describe("OpenRouter frontier contract", () => {
       {
         OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
         OPENROUTER_API_KEY: "server-only",
+        OPENROUTER_ACCOUNT_POLICY_ATTESTATION,
       } as unknown as ScanEnv,
       "openrouter",
       {
@@ -65,6 +67,7 @@ describe("OpenRouter frontier contract", () => {
       model: "openai/gpt-5.6-terra",
       max_completion_tokens: 4_000,
       provider: {
+        order: ["azure"],
         only: ["azure"],
         allow_fallbacks: false,
         data_collection: "deny",
@@ -85,5 +88,24 @@ describe("OpenRouter frontier contract", () => {
       "Grimodex Scan",
     );
     expect(String(init?.body)).not.toContain("server-only");
+  });
+
+  it("does not configure a provider without the current account-policy attestation", () => {
+    const provider = createGatewayAiProvider(
+      {
+        OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY: "server-only",
+      } as unknown as ScanEnv,
+      "openrouter",
+      {
+        provider: "openrouter",
+        model: "openai/gpt-5.6-terra",
+        maxInputCharacters: 1_000,
+        maxOutputCharacters: 1_000,
+        allowFallback: false,
+      },
+    );
+
+    expect(provider).toBeNull();
   });
 });

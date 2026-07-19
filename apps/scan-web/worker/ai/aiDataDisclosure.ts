@@ -8,11 +8,24 @@ import {
 } from "@grimodex/scan-contract";
 import type { ScanEnv } from "../env";
 import { constantTimeEqual, sha256Hex } from "../security";
+import {
+  frontierScanAiRoute,
+  hostedEditorAiRoute,
+  primaryScanAiRoute,
+  type ConfiguredAiProvider,
+} from "./providerConfig";
+import {
+  openRouterAccountPolicyAttested,
+  openRouterEndpointClass,
+  openRouterProviderIdentity,
+} from "./openRouterPolicy";
 
 // Scan and Hosted Editor use one opaque consent identity for the complete
-// pre-dispatch gate. A hosted-content policy revision must therefore renew the
-// disclosed data-policy version as well as the rights confirmation UI.
-export const AI_DATA_POLICY_VERSION = CLOUD_CONTENT_POLICY_VERSION;
+// pre-dispatch gate. Keep the AI data-policy version independent so a
+// processor/account-policy correction renews consent even when the hosted
+// content-rights wording has not changed. The consent digest below includes
+// both versions so either policy revision invalidates prior consent.
+export const AI_DATA_POLICY_VERSION = "2026-07-19.9";
 export const WORKERS_AI_DATA_POLICY_URL =
   "https://developers.cloudflare.com/workers-ai/platform/data-usage/";
 export const AI_GATEWAY_LOGGING_POLICY_URL =
@@ -21,20 +34,25 @@ export const OPENAI_API_DATA_POLICY_URL =
   "https://platform.openai.com/docs/models/default-usage-policies-by-endpoint";
 export const OPENROUTER_DATA_POLICY_URL =
   "https://openrouter.ai/docs/guides/privacy/data-collection";
-export const OPENROUTER_PROVIDER_POLICY_URL =
-  "https://openrouter.ai/docs/guides/privacy/provider-logging/";
+export const OPENROUTER_LOGGING_POLICY_URL =
+  "https://openrouter.ai/docs/guides/features/input-output-logging";
+export const OPENROUTER_BROADCAST_POLICY_URL =
+  "https://openrouter.ai/docs/guides/features/broadcast/overview";
+export const MICROSOFT_AZURE_AI_DATA_POLICY_URL =
+  "https://learn.microsoft.com/azure/foundry/responsible-ai/openai/data-privacy";
 export const GRIMODEX_AI_DATA_POLICY_URL =
   "https://try.grimodex.app/PRIVACY_ja.md";
 export const GRIMODEX_AI_DATA_POLICY_URL_EN =
   "https://try.grimodex.app/PRIVACY_en.md";
 
-type ConfiguredProvider = "workers-ai" | "ai-gateway" | "openrouter";
 export type AiDataDisclosureLocale = "ja" | "en";
 
 interface ProviderDisclosure {
   id: string;
   processingDestinations: AiDataDisclosureV1["processingDestinations"];
   policyUrl: string;
+  storagePolicyUrl?: string;
+  retentionPolicyUrl?: string;
   providerStorageSummary: string;
   providerRetentionSummary: string;
   trainingUse: AiDataDisclosureV1["trainingUse"];
@@ -44,6 +62,8 @@ interface DisclosureProfile {
   provider: string;
   processingDestinations: AiDataDisclosureV1["processingDestinations"];
   policyUrl: string;
+  storagePolicyUrl: string;
+  retentionPolicyUrl: string;
   providerStorageSummary: string;
   providerRetentionSummary: string;
   trainingUse: AiDataDisclosureV1["trainingUse"];
@@ -87,28 +107,6 @@ function grimodexPolicyUrl(locale: AiDataDisclosureLocale): string {
   return locale === "ja"
     ? GRIMODEX_AI_DATA_POLICY_URL
     : GRIMODEX_AI_DATA_POLICY_URL_EN;
-}
-
-function configuredProvider(env: ScanEnv): ConfiguredProvider {
-  if (
-    env.SCAN_AI_PROVIDER === "workers-ai" ||
-    env.SCAN_AI_PROVIDER === "ai-gateway" ||
-    env.SCAN_AI_PROVIDER === "openrouter"
-  ) {
-    return env.SCAN_AI_PROVIDER;
-  }
-  return env.AI ? "workers-ai" : "ai-gateway";
-}
-
-function configuredFrontierProvider(env: ScanEnv): ConfiguredProvider {
-  if (
-    env.SCAN_FRONTIER_PROVIDER === "workers-ai" ||
-    env.SCAN_FRONTIER_PROVIDER === "ai-gateway" ||
-    env.SCAN_FRONTIER_PROVIDER === "openrouter"
-  ) {
-    return env.SCAN_FRONTIER_PROVIDER;
-  }
-  return configuredProvider(env);
 }
 
 function workersAiDisclosure(
@@ -313,26 +311,33 @@ function openRouterDisclosure(
   env: ScanEnv,
   route: AiDataDisclosureRoute,
   locale: AiDataDisclosureLocale,
+  model: string,
 ): ProviderDisclosure {
-  let endpoint: URL;
+  if (
+    !openRouterAccountPolicyAttested(env.OPENROUTER_ACCOUNT_POLICY_ATTESTATION)
+  ) {
+    throw new AiDataDisclosureUnavailableError(
+      "OpenRouter disclosure requires a current account-policy attestation",
+    );
+  }
+  let endpointClass: "global" | "eu";
   try {
-    endpoint = new URL(env.OPENROUTER_URL ?? "");
+    endpointClass = openRouterEndpointClass(env.OPENROUTER_URL);
   } catch {
     throw new AiDataDisclosureUnavailableError(
       "OpenRouter disclosure requires a recognized endpoint",
     );
   }
-  if (
-    endpoint.protocol !== "https:" ||
-    (endpoint.hostname !== "openrouter.ai" &&
-      endpoint.hostname !== "eu.openrouter.ai")
-  ) {
+  let identity: string;
+  try {
+    identity = openRouterProviderIdentity(env.OPENROUTER_URL, model);
+  } catch {
     throw new AiDataDisclosureUnavailableError(
-      "OpenRouter disclosure requires a recognized endpoint",
+      "OpenRouter disclosure requires a recognized privacy profile",
     );
   }
   return {
-    id: "openrouter:provider-dependent",
+    id: identity,
     processingDestinations: [
       {
         processor: "OpenRouter",
@@ -356,7 +361,7 @@ function openRouterDisclosure(
         privacyPolicyUrl: OPENROUTER_DATA_POLICY_URL,
       },
       {
-        processor: "OpenRouter-selected model provider",
+        processor: "Microsoft Azure AI",
         purpose: localized(
           locale,
           "Generate the requested AI result.",
@@ -364,31 +369,37 @@ function openRouterDisclosure(
         ),
         location: localized(
           locale,
-          "The selected model provider's infrastructure; geography depends on OpenRouter routing and account controls.",
-          "選択されたモデルプロバイダの基盤で処理されます。地域はOpenRouterのルーティングとアカウント設定に依存します。",
+          endpointClass === "eu"
+            ? "Microsoft Azure AI infrastructure selected through OpenRouter's EU endpoint. EU in-region routing requires the corresponding OpenRouter enterprise account configuration."
+            : "Microsoft Azure AI infrastructure selected through OpenRouter; no specific processing geography is asserted.",
+          endpointClass === "eu"
+            ? "OpenRouterのEUエンドポイントから選択されたMicrosoft Azure AI基盤で処理されます。EU域内ルーティングには対応するOpenRouter Enterpriseアカウント設定が必要です。"
+            : "OpenRouterから選択されたMicrosoft Azure AI基盤で処理されます。特定の処理地域は保証しません。",
         ),
-        privacyPolicyUrl: OPENROUTER_PROVIDER_POLICY_URL,
+        privacyPolicyUrl: MICROSOFT_AZURE_AI_DATA_POLICY_URL,
       },
     ],
-    policyUrl: OPENROUTER_DATA_POLICY_URL,
+    policyUrl: OPENROUTER_LOGGING_POLICY_URL,
+    storagePolicyUrl: OPENROUTER_BROADCAST_POLICY_URL,
+    retentionPolicyUrl: OPENROUTER_LOGGING_POLICY_URL,
     providerStorageSummary: localized(
       locale,
-      "OpenRouter prompt logging is account-controlled, while the selected model provider has its own storage policy.",
-      "OpenRouterのプロンプトログはアカウント設定で管理され、選択されたモデルプロバイダには独自の保存ポリシーがあります。",
+      "The Azure inference endpoint is restricted to zero data retention, but OpenRouter account features are separate. Private Input & Output Logging can store full prompts and responses in OpenRouter-controlled Google Cloud Storage; Use of Inputs/Outputs can permit OpenRouter to use the content; and Broadcast can forward full traces to configured external destinations. OpenRouter also retains content-free request metadata. Production calls require an operator attestation that logging and content use are off and Broadcast is disabled or this API key is excluded from every destination, but Grimodex cannot inspect those settings per request.",
+      "Azureの推論エンドポイントはゼロデータ保持に限定しますが、OpenRouterのアカウント機能は別に適用されます。Private Input & Output Loggingはプロンプト／応答全文をOpenRouter管理のGoogle Cloud Storageへ保存でき、Use of Inputs/OutputsはOpenRouterによる本文利用を許可でき、Broadcastは設定済みの外部処理先へ全文を含むtraceを転送できます。OpenRouterは本文を含まないリクエストメタデータも保持します。本番呼出しには、ログと本文利用が無効で、Broadcastが無効または全処理先からこのAPIキーが除外されているという運用確認を必須にしますが、Grimodexは各リクエスト時にその設定を検査できません。",
     ),
     providerRetentionSummary: localized(
       locale,
-      "OpenRouter and the selected model provider apply account-, endpoint-, and provider-specific retention controls; no single duration is asserted.",
-      "OpenRouterと選択されたモデルプロバイダでは、アカウント、エンドポイント、プロバイダごとの保持管理が適用されます。単一の保持期間は保証しません。",
+      "The selected Azure inference endpoint retains no prompt or response content. OpenRouter request metadata is retained under its policy. If Private Input & Output Logging is enabled despite the required attestation, full content is retained for at least three months and may be retained longer at OpenRouter's discretion until deletion is requested. Use of Inputs/Outputs and Broadcast may create additional OpenRouter or third-party retention governed by their settings and policies.",
+      "選択するAzure推論エンドポイントはプロンプト／応答本文を保持しません。OpenRouterのリクエストメタデータは同社方針に従い保持されます。必須の運用確認に反してPrivate Input & Output Loggingが有効な場合、全文は最低3か月保持され、削除を依頼するまでOpenRouterの裁量でそれ以上保持される場合があります。Use of Inputs/OutputsやBroadcastにより、各設定・方針に従うOpenRouterまたは第三者での追加保持が生じる場合もあります。",
     ),
     trainingUse: {
       status: "depends",
       summary: localized(
         locale,
-        "Training use depends on OpenRouter privacy controls and the selected model provider; providers without an established policy must not be represented as no-training.",
-        "モデル学習への利用はOpenRouterのプライバシー設定と選択されたモデルプロバイダに依存します。方針を確認できないプロバイダを「学習に利用しない」とは表示しません。",
+        "The request denies data-collecting providers and requires a zero-data-retention Azure endpoint. Provider-side training is blocked by those request controls, but OpenRouter's separate Input/Output Logging, Use of Inputs/Outputs, and Broadcast settings also apply. Production requires an operator attestation that content logging and use are off and Broadcast is disabled or excludes this API key. Grimodex cannot inspect those settings at request time, so training or downstream use still depends on the attestation remaining accurate.",
+        "リクエストではデータ収集を行うプロバイダを除外し、ゼロデータ保持のAzureエンドポイントを必須にします。この送信先制御ではプロバイダ側の学習利用を防ぎますが、OpenRouterのInput/Output Logging、Use of Inputs/Outputs、Broadcastという別設定も適用されます。本番では本文のログ・利用が無効で、Broadcastが無効またはこのAPIキーを除外しているという運用確認を必須にします。Grimodexは送信時にその設定を検査できないため、学習または下流利用の有無は運用確認が正確に維持されているかに依存します。",
       ),
-      policyUrl: OPENROUTER_PROVIDER_POLICY_URL,
+      policyUrl: OPENROUTER_DATA_POLICY_URL,
     },
   };
 }
@@ -396,12 +407,13 @@ function openRouterDisclosure(
 function disclosureForProvider(
   env: ScanEnv,
   route: AiDataDisclosureRoute,
-  provider: ConfiguredProvider,
+  provider: ConfiguredAiProvider,
   locale: AiDataDisclosureLocale,
+  model: string,
 ): ProviderDisclosure {
   if (provider === "workers-ai") return workersAiDisclosure(route, locale);
   if (provider === "ai-gateway") return aiGatewayDisclosure(env, route, locale);
-  return openRouterDisclosure(env, route, locale);
+  return openRouterDisclosure(env, route, locale, model);
 }
 
 function disclosureProfile(
@@ -409,16 +421,28 @@ function disclosureProfile(
   route: AiDataDisclosureRoute,
   locale: AiDataDisclosureLocale = "en",
 ): DisclosureProfile {
+  const primaryRoute =
+    route === "scan" ? primaryScanAiRoute(env) : hostedEditorAiRoute(env);
   const providers =
     route === "scan" && env.SCAN_WORKERS_AI_ENABLED !== "true"
       ? [deterministicScanDisclosure(locale)]
-      : [disclosureForProvider(env, route, configuredProvider(env), locale)];
+      : [
+          disclosureForProvider(
+            env,
+            route,
+            primaryRoute.provider,
+            locale,
+            primaryRoute.model,
+          ),
+        ];
   if (route === "scan" && env.SCAN_FRONTIER_ENABLED === "true") {
+    const frontierRoute = frontierScanAiRoute(env);
     const frontier = disclosureForProvider(
       env,
       route,
-      configuredFrontierProvider(env),
+      frontierRoute.provider,
       locale,
+      frontierRoute.model,
     );
     if (!providers.some((provider) => provider.id === frontier.id)) {
       providers.push(frontier);
@@ -458,6 +482,10 @@ function disclosureProfile(
     provider,
     processingDestinations,
     policyUrl: providers.at(-1)!.policyUrl,
+    storagePolicyUrl:
+      providers.at(-1)!.storagePolicyUrl ?? providers.at(-1)!.policyUrl,
+    retentionPolicyUrl:
+      providers.at(-1)!.retentionPolicyUrl ?? providers.at(-1)!.policyUrl,
     providerStorageSummary,
     providerRetentionSummary,
     trainingUse,
@@ -470,7 +498,7 @@ export async function expectedAiDataConsentId(
 ): Promise<string> {
   const profile = disclosureProfile(env, route);
   const digest = await sha256Hex(
-    `${AI_DATA_POLICY_VERSION}\u0000${route}\u0000${profile.provider}`,
+    `${AI_DATA_POLICY_VERSION}\u0000${CLOUD_CONTENT_POLICY_VERSION}\u0000${route}\u0000${profile.provider}`,
   );
   return `consent_${digest}`;
 }
@@ -633,7 +661,7 @@ export async function createAiDataDisclosure(
       },
       provider: {
         summary: profile.providerStorageSummary,
-        policyUrl: profile.policyUrl,
+        policyUrl: profile.storagePolicyUrl,
       },
     },
     retention: {
@@ -644,7 +672,7 @@ export async function createAiDataDisclosure(
       },
       provider: {
         summary: profile.providerRetentionSummary,
-        policyUrl: profile.policyUrl,
+        policyUrl: profile.retentionPolicyUrl,
       },
     },
     trainingUse: profile.trainingUse,

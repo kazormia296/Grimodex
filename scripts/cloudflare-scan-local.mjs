@@ -21,6 +21,7 @@ const localEditorOrigin = "http://localhost:1430";
 const localConfig = "apps/scan-web/wrangler.jsonc";
 const localEnvironmentFile = "apps/scan-web/local-only.env";
 const defaultPersistDirectory = ".wrangler/scan-local";
+const localWorkflowStartupMs = 12_000;
 const isolatedWranglerEnvironment = {
   CLOUDFLARE_INCLUDE_PROCESS_ENV: "false",
 };
@@ -422,6 +423,10 @@ export async function runLocalQuickScanSmoke({
     }
     scanCreated = true;
 
+    // Workerd runs the local Workflow on the same development runtime. An
+    // immediate status request can occupy that runtime until the request
+    // deadline instead of allowing the deterministic Workflow to advance.
+    await sleepWithSignal(localWorkflowStartupMs, signal, sleep);
     const deadline = Date.now() + timeoutMs;
     let completed = false;
     while (Date.now() <= deadline) {

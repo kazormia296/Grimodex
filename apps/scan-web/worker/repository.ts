@@ -38,6 +38,7 @@ export interface UploadIntentRecord {
   expiresAt: string;
   actualSize: number | null;
   sourceHash: string | null;
+  ownerSubject?: string | null;
   aiConsent?: AiDataConsentIdentity | null;
 }
 
@@ -53,6 +54,7 @@ export interface ScanSessionRecord {
   createdAt: string;
   updatedAt: string;
   accessTokenHash: string;
+  ownerSubject?: string | null;
   aiConsent?: AiDataConsentIdentity | null;
 }
 
@@ -125,6 +127,7 @@ interface UploadIntentRow {
   expires_at: string;
   actual_size: number | null;
   source_hash: string | null;
+  owner_subject?: string | null;
   ai_consent_id: string | null;
   ai_consent_policy_version: string | null;
   ai_consent_provider: string | null;
@@ -143,6 +146,7 @@ interface ScanSessionRow {
   cancel_requested_at: string | null;
   created_at: string;
   updated_at: string;
+  owner_subject?: string | null;
   ai_consent_id: string | null;
   ai_consent_policy_version: string | null;
   ai_consent_provider: string | null;
@@ -167,6 +171,7 @@ export class ScanRepository {
   constructor(
     private readonly db: D1DatabaseLike,
     private readonly now: () => string = () => new Date().toISOString(),
+    readonly ownerSubject: string | null = null,
   ) {}
 
   async createUploadIntent(
@@ -176,8 +181,9 @@ export class ScanRepository {
       .prepare(
         `INSERT INTO upload_intents
           (id, token_hash, filename, content_type, expected_size, source_key, status, expires_at,
-           ai_consent_id, ai_consent_policy_version, ai_consent_provider, ai_consent_route, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           owner_subject, ai_consent_id, ai_consent_policy_version, ai_consent_provider,
+           ai_consent_route, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         record.id,
@@ -188,6 +194,7 @@ export class ScanRepository {
         record.sourceKey,
         record.status,
         record.expiresAt,
+        this.ownerSubject,
         record.aiConsent.consentId,
         record.aiConsent.policyVersion,
         record.aiConsent.provider,
@@ -866,6 +873,9 @@ export class ScanRepository {
     provider: string;
     model: string;
     status: "completed" | "failed";
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    estimatedCostUsd?: number | null;
     staleBefore?: string;
   }): Promise<void> {
     const operation = await this.getAiUsageOperation(input.operationId);
@@ -885,7 +895,10 @@ export class ScanRepository {
       this.db
         .prepare(
           `UPDATE ai_usage_ledger
-           SET provider = ?, model = ?, status = ?, settlement_id = ?, updated_at = ?
+           SET provider = ?, model = ?, status = ?, settlement_id = ?, updated_at = ?,
+               input_tokens = COALESCE(?, input_tokens),
+               output_tokens = COALESCE(?, output_tokens),
+               estimated_cost_usd = COALESCE(?, estimated_cost_usd)
            WHERE operation_id = ? AND status = 'reserved' AND settlement_id IS NULL${staleCondition}`,
         )
         .bind(
@@ -894,6 +907,9 @@ export class ScanRepository {
           input.status,
           settlementId,
           now,
+          input.inputTokens ?? null,
+          input.outputTokens ?? null,
+          input.estimatedCostUsd ?? null,
           input.operationId,
           ...(input.staleBefore ? [input.staleBefore] : []),
         ),
@@ -994,14 +1010,100 @@ export class ScanRepository {
   }
 
   async getUploadIntent(id: string): Promise<UploadIntentRecord | null> {
+    const ownerPredicate =
+      this.ownerSubject === null ? "" : " AND owner_subject = ?";
     const row = await this.db
       .prepare(
         `SELECT id, token_hash, filename, content_type, expected_size, source_key, status, expires_at,
-                actual_size, source_hash, ai_consent_id, ai_consent_policy_version,
+                actual_size, source_hash, owner_subject, ai_consent_id, ai_consent_policy_version,
                 ai_consent_provider, ai_consent_route
-         FROM upload_intents WHERE id = ?`,
+         FROM upload_intents WHERE id = ?${ownerPredicate}`,
       )
-      .bind(id)
+      .bind(...(this.ownerSubject === null ? [id] : [id, this.ownerSubject]))
+      .first<UploadIntentRow>();
+    return row ? this.uploadFromRow(row) : null;
+  }
+
+  /**
+   * Authorize a completed upload capability and atomically migrate an
+   * ownerless pre-Access intent to the first authenticated account that
+   * presents the matching token.
+   */
+  async authorizeCompletedUpload(
+    id: string,
+    tokenHash: string,
+  ): Promise<UploadIntentRecord | null> {
+    const columns = `id, token_hash, filename, content_type, expected_size, source_key, status,
+                     expires_at, actual_size, source_hash, owner_subject, ai_consent_id,
+                     ai_consent_policy_version, ai_consent_provider, ai_consent_route`;
+    const now = this.now();
+    if (this.ownerSubject !== null) {
+      const owned = await this.db
+        .prepare(
+          `SELECT ${columns}
+           FROM upload_intents
+           WHERE id = ? AND token_hash = ?
+             AND status = 'uploaded' AND expires_at > ?
+             AND owner_subject = ?`,
+        )
+        .bind(id, tokenHash, now, this.ownerSubject)
+        .first<UploadIntentRow>();
+      if (owned) return this.uploadFromRow(owned);
+
+      const claimed = await this.db
+        .prepare(
+          `UPDATE upload_intents
+           SET owner_subject = ?
+           WHERE id = ? AND token_hash = ?
+             AND status = 'uploaded' AND expires_at > ?
+             AND owner_subject IS NULL
+           RETURNING ${columns}`,
+        )
+        .bind(this.ownerSubject, id, tokenHash, now)
+        .first<UploadIntentRow>();
+      return claimed ? this.uploadFromRow(claimed) : null;
+    }
+
+    const row = await this.db
+      .prepare(
+        `SELECT ${columns}
+         FROM upload_intents
+         WHERE id = ? AND token_hash = ?
+           AND status = 'uploaded' AND expires_at > ?`,
+      )
+      .bind(id, tokenHash, now)
+      .first<UploadIntentRow>();
+    return row ? this.uploadFromRow(row) : null;
+  }
+
+  /**
+   * Read a completed upload capability for Scan creation without changing its
+   * account owner. Existing consumed uploads are resolved this way so a wrong
+   * Scan capability cannot claim the parent before the Scan token is checked.
+   */
+  async inspectUploadForScanCreation(
+    id: string,
+    tokenHash: string,
+  ): Promise<UploadIntentRecord | null> {
+    const ownerPredicate =
+      this.ownerSubject === null
+        ? ""
+        : " AND (owner_subject = ? OR owner_subject IS NULL)";
+    const row = await this.db
+      .prepare(
+        `SELECT id, token_hash, filename, content_type, expected_size, source_key, status,
+                expires_at, actual_size, source_hash, owner_subject, ai_consent_id,
+                ai_consent_policy_version, ai_consent_provider, ai_consent_route
+         FROM upload_intents
+         WHERE id = ? AND token_hash = ?
+           AND status IN ('uploaded', 'consumed') AND expires_at > ?
+           ${ownerPredicate}`,
+      )
+      .bind(
+        ...(this.ownerSubject === null
+          ? [id, tokenHash, this.now()]
+          : [id, tokenHash, this.now(), this.ownerSubject]),
+      )
       .first<UploadIntentRow>();
     return row ? this.uploadFromRow(row) : null;
   }
@@ -1010,14 +1112,27 @@ export class ScanRepository {
     id: string,
     tokenHash: string,
   ): Promise<UploadIntentRecord | null> {
+    const now = this.now();
+    const claimOwner = this.ownerSubject !== null;
     const claimed = await this.db
       .prepare(
         `UPDATE upload_intents
-         SET status = 'uploaded', updated_at = ?
+         SET status = 'uploaded', updated_at = ?${
+           claimOwner ? ", owner_subject = COALESCE(owner_subject, ?)" : ""
+         }
          WHERE id = ? AND token_hash = ? AND status = 'issued' AND expires_at > ?
+           ${
+             claimOwner
+               ? "AND (owner_subject = ? OR owner_subject IS NULL)"
+               : ""
+           }
          RETURNING id`,
       )
-      .bind(this.now(), id, tokenHash, this.now())
+      .bind(
+        ...(claimOwner
+          ? [now, this.ownerSubject, id, tokenHash, now, this.ownerSubject]
+          : [now, id, tokenHash, now]),
+      )
       .first<{ id: string }>();
     return claimed ? this.getUploadIntent(claimed.id) : null;
   }
@@ -1027,27 +1142,165 @@ export class ScanRepository {
     size: number,
     sourceHash: string,
   ): Promise<void> {
+    const ownerPredicate =
+      this.ownerSubject === null ? "" : " AND owner_subject = ?";
     const row = await this.db
       .prepare(
         `UPDATE upload_intents
          SET status = 'uploaded', actual_size = ?, source_hash = ?, updated_at = ?
          WHERE id = ? AND status = 'uploaded' AND actual_size IS NULL AND expected_size = ?
+           ${ownerPredicate}
          RETURNING id`,
       )
-      .bind(size, sourceHash, this.now(), id, size)
+      .bind(
+        ...(this.ownerSubject === null
+          ? [size, sourceHash, this.now(), id, size]
+          : [size, sourceHash, this.now(), id, size, this.ownerSubject]),
+      )
       .first<{ id: string }>();
     if (!row) throw new Error("upload intent is no longer writable");
   }
 
   async releaseUploadClaim(id: string): Promise<void> {
+    const ownerPredicate =
+      this.ownerSubject === null ? "" : " AND owner_subject = ?";
     await this.db
       .prepare(
         `UPDATE upload_intents
          SET status = 'issued', updated_at = ?
-         WHERE id = ? AND status = 'uploaded' AND actual_size IS NULL`,
+         WHERE id = ? AND status = 'uploaded' AND actual_size IS NULL
+           ${ownerPredicate}`,
       )
-      .bind(this.now(), id)
+      .bind(
+        ...(this.ownerSubject === null
+          ? [this.now(), id]
+          : [this.now(), id, this.ownerSubject]),
+      )
       .run();
+  }
+
+  private async claimScanAndParentUploadOwner(input: {
+    id: string;
+    accessTokenHash: string;
+    expectedRequest?: {
+      uploadId: string;
+      uploadTokenHash: string;
+      mode: ScanMode;
+      aiConsent: AiDataConsentIdentity;
+    };
+  }): Promise<ScanSessionRecord | null> {
+    if (this.ownerSubject === null) return null;
+    const expectedSql = input.expectedRequest
+      ? `AND scan_sessions.upload_id = ?
+         AND scan_sessions.mode = ?
+         AND scan_sessions.ai_consent_id = ?
+         AND scan_sessions.ai_consent_policy_version = ?
+         AND scan_sessions.ai_consent_provider = ?
+         AND scan_sessions.ai_consent_route = ?`
+      : "";
+    const expectedBindings = input.expectedRequest
+      ? [
+          input.expectedRequest.uploadId,
+          input.expectedRequest.mode,
+          input.expectedRequest.aiConsent.consentId,
+          input.expectedRequest.aiConsent.policyVersion,
+          input.expectedRequest.aiConsent.provider,
+          input.expectedRequest.aiConsent.route,
+        ]
+      : [];
+    const expectedUploadSql = input.expectedRequest
+      ? "AND upload_intents.token_hash = ?"
+      : "";
+    const expectedUploadBindings = input.expectedRequest
+      ? [input.expectedRequest.uploadTokenHash]
+      : [];
+
+    // D1 batches are transactional. The Scan claim is fenced by both the
+    // capability and its parent Upload owner; the second statement can then
+    // assign that same owner only to the parent of the winning Scan row.
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE scan_sessions
+           SET owner_subject = COALESCE(owner_subject, ?)
+           WHERE scan_sessions.id = ?
+             AND scan_sessions.access_token_hash = ?
+             ${expectedSql}
+             AND (owner_subject = ? OR owner_subject IS NULL)
+             AND EXISTS (
+               SELECT 1 FROM upload_intents
+               WHERE upload_intents.id = scan_sessions.upload_id
+                 ${expectedUploadSql}
+                 AND (upload_intents.owner_subject = ? OR upload_intents.owner_subject IS NULL)
+             )`,
+        )
+        .bind(
+          this.ownerSubject,
+          input.id,
+          input.accessTokenHash,
+          ...expectedBindings,
+          this.ownerSubject,
+          ...expectedUploadBindings,
+          this.ownerSubject,
+        ),
+      this.db
+        .prepare(
+          `UPDATE upload_intents
+           SET owner_subject = COALESCE(owner_subject, ?)
+           WHERE (upload_intents.owner_subject = ? OR upload_intents.owner_subject IS NULL)
+             ${expectedUploadSql}
+             AND EXISTS (
+               SELECT 1 FROM scan_sessions
+               WHERE scan_sessions.upload_id = upload_intents.id
+                 AND scan_sessions.id = ?
+                 AND scan_sessions.access_token_hash = ?
+                 ${expectedSql}
+                 AND scan_sessions.owner_subject = ?
+             )`,
+        )
+        .bind(
+          this.ownerSubject,
+          this.ownerSubject,
+          ...expectedUploadBindings,
+          input.id,
+          input.accessTokenHash,
+          ...expectedBindings,
+          this.ownerSubject,
+        ),
+    ]);
+
+    const row = await this.db
+      .prepare(
+        `SELECT scan_sessions.id, scan_sessions.upload_id,
+                scan_sessions.access_token_hash, scan_sessions.mode,
+                scan_sessions.status, scan_sessions.source_hash,
+                scan_sessions.private_bundle_key, scan_sessions.private_report_key,
+                scan_sessions.cancel_requested_at, scan_sessions.owner_subject,
+                scan_sessions.ai_consent_id, scan_sessions.ai_consent_policy_version,
+                scan_sessions.ai_consent_provider, scan_sessions.ai_consent_route,
+                scan_sessions.created_at, scan_sessions.updated_at
+         FROM scan_sessions
+         WHERE scan_sessions.id = ?
+           AND scan_sessions.access_token_hash = ?
+           ${expectedSql}
+           AND scan_sessions.owner_subject = ?
+           AND EXISTS (
+             SELECT 1 FROM upload_intents
+             WHERE upload_intents.id = scan_sessions.upload_id
+               ${expectedUploadSql}
+               AND upload_intents.owner_subject = ?
+           )`,
+      )
+      .bind(
+        input.id,
+        input.accessTokenHash,
+        ...expectedBindings,
+        this.ownerSubject,
+        ...expectedUploadBindings,
+        this.ownerSubject,
+      )
+      .first<ScanSessionRow>();
+    return row ? this.scanFromRow(row) : null;
   }
 
   async createScan(input: {
@@ -1056,6 +1309,7 @@ export class ScanRepository {
     mode: ScanMode;
     reservedUnits: number;
     accessTokenHash: string;
+    uploadTokenHash: string;
     buckets: ReadonlyArray<{ key: string; limit: number }>;
     aiConsent: AiDataConsentIdentity;
     maxActiveJobs?: number | null;
@@ -1078,14 +1332,34 @@ export class ScanRepository {
         identity.provider === input.aiConsent.provider &&
         identity.route === input.aiConsent.route,
       );
-    const matchesRequest = (scan: ScanSessionRecord): boolean =>
+    const matchesIdentity = (scan: ScanSessionRecord): boolean =>
       scan.id === input.id &&
       scan.uploadId === input.uploadId &&
       scan.mode === input.mode &&
       scan.accessTokenHash === input.accessTokenHash &&
       matchesConsent(scan.aiConsent);
+    const matchesRequest = (scan: ScanSessionRecord): boolean =>
+      matchesIdentity(scan) &&
+      (this.ownerSubject === null || scan.ownerSubject === this.ownerSubject);
+    const adoptExisting = async (
+      scan: ScanSessionRecord,
+    ): Promise<"existing" | "conflict"> => {
+      if (!matchesIdentity(scan)) return "conflict";
+      if (this.ownerSubject === null) return "existing";
+      const claimed = await this.claimScanAndParentUploadOwner({
+        id: input.id,
+        accessTokenHash: input.accessTokenHash,
+        expectedRequest: {
+          uploadId: input.uploadId,
+          uploadTokenHash: input.uploadTokenHash,
+          mode: input.mode,
+          aiConsent: input.aiConsent,
+        },
+      });
+      return claimed && matchesRequest(claimed) ? "existing" : "conflict";
+    };
     const existing = await this.getScan(input.id);
-    if (existing) return matchesRequest(existing) ? "existing" : "conflict";
+    if (existing) return adoptExisting(existing);
 
     const now = this.now();
     const bucketKeys = input.buckets.map((bucket) => bucket.key);
@@ -1120,24 +1394,37 @@ export class ScanRepository {
       input.maxActiveJobs === null || input.maxActiveJobs === undefined
         ? []
         : [input.maxActiveJobs];
+    const ownerSql =
+      this.ownerSubject === null
+        ? ""
+        : "AND (u.owner_subject = ? OR u.owner_subject IS NULL)";
+    const ownerBindings = this.ownerSubject === null ? [] : [this.ownerSubject];
+    const scanOwnerSelect =
+      this.ownerSubject === null ? "u.owner_subject" : "?";
+    const scanOwnerSelectBindings =
+      this.ownerSubject === null ? [] : [this.ownerSubject];
+    const scanOwnerSql =
+      this.ownerSubject === null ? "" : " AND owner_subject = ?";
     const sessionInsert = this.db
       .prepare(
         `INSERT INTO scan_sessions
           (id, upload_id, access_token_hash, mode, status, source_hash,
            private_bundle_key, private_report_key, cancel_requested_at,
+           owner_subject,
            ai_consent_id, ai_consent_policy_version, ai_consent_provider, ai_consent_route,
            created_at, updated_at)
          SELECT ?, u.id, ?, ?, 'queued', u.source_hash,
-                NULL, NULL, NULL, u.ai_consent_id, u.ai_consent_policy_version,
+                NULL, NULL, NULL, ${scanOwnerSelect}, u.ai_consent_id, u.ai_consent_policy_version,
                 u.ai_consent_provider, u.ai_consent_route, ?, ?
          FROM upload_intents u
-         WHERE u.id = ? AND u.status = 'uploaded'
+         WHERE u.id = ? AND u.token_hash = ? AND u.status = 'uploaded'
            AND u.actual_size IS NOT NULL AND u.source_hash IS NOT NULL
            AND u.expires_at > ?
            AND u.ai_consent_id = ?
            AND u.ai_consent_policy_version = ?
            AND u.ai_consent_provider = ?
            AND u.ai_consent_route = ?
+           ${ownerSql}
            ${capacitySql}
            ${concurrencySql}`,
       )
@@ -1145,17 +1432,60 @@ export class ScanRepository {
         input.id,
         input.accessTokenHash,
         input.mode,
+        ...scanOwnerSelectBindings,
         now,
         now,
         input.uploadId,
+        input.uploadTokenHash,
         now,
         input.aiConsent.consentId,
         input.aiConsent.policyVersion,
         input.aiConsent.provider,
         input.aiConsent.route,
+        ...ownerBindings,
         ...capacityBindings,
         ...concurrencyBindings,
       );
+    const uploadOwnerClaim =
+      this.ownerSubject === null
+        ? []
+        : [
+            this.db
+              .prepare(
+                `UPDATE upload_intents
+                 SET owner_subject = COALESCE(owner_subject, ?)
+                 WHERE id = ? AND token_hash = ? AND status = 'uploaded'
+                   AND expires_at > ?
+                   AND (owner_subject = ? OR owner_subject IS NULL)
+                   AND EXISTS (
+                     SELECT 1 FROM scan_sessions
+                     WHERE scan_sessions.id = ?
+                       AND scan_sessions.upload_id = upload_intents.id
+                       AND scan_sessions.access_token_hash = ?
+                       AND scan_sessions.mode = ?
+                       AND scan_sessions.owner_subject = ?
+                       AND scan_sessions.ai_consent_id = ?
+                       AND scan_sessions.ai_consent_policy_version = ?
+                       AND scan_sessions.ai_consent_provider = ?
+                       AND scan_sessions.ai_consent_route = ?
+                   )`,
+              )
+              .bind(
+                this.ownerSubject,
+                input.uploadId,
+                input.uploadTokenHash,
+                now,
+                this.ownerSubject,
+                input.id,
+                input.accessTokenHash,
+                input.mode,
+                this.ownerSubject,
+                input.aiConsent.consentId,
+                input.aiConsent.policyVersion,
+                input.aiConsent.provider,
+                input.aiConsent.route,
+              ),
+          ];
     const statements = [
       ...input.buckets.map((bucket) =>
         this.db
@@ -1167,12 +1497,15 @@ export class ScanRepository {
           .bind(bucket.key, bucket.limit, now),
       ),
       sessionInsert,
+      ...uploadOwnerClaim,
       this.db
         .prepare(
           `INSERT INTO scan_jobs
             (scan_id, stage, attempt, reserved_units, bucket_keys_json, created_at, updated_at)
            SELECT ?, 'load-job', 0, ?, ?, ?, ?
-           WHERE EXISTS (SELECT 1 FROM scan_sessions WHERE id = ?)`,
+           WHERE EXISTS (
+             SELECT 1 FROM scan_sessions WHERE id = ?${scanOwnerSql}
+           )`,
         )
         .bind(
           input.id,
@@ -1181,6 +1514,7 @@ export class ScanRepository {
           now,
           now,
           input.id,
+          ...ownerBindings,
         ),
       ...bucketKeys.map((bucketKey) =>
         this.db
@@ -1188,28 +1522,47 @@ export class ScanRepository {
             `UPDATE usage_buckets
              SET reserved_units = reserved_units + ?, updated_at = ?
              WHERE bucket_key = ?
-               AND EXISTS (SELECT 1 FROM scan_sessions WHERE id = ?)`,
+               AND EXISTS (
+                 SELECT 1 FROM scan_sessions WHERE id = ?${scanOwnerSql}
+               )`,
           )
-          .bind(input.reservedUnits, now, bucketKey, input.id),
+          .bind(
+            input.reservedUnits,
+            now,
+            bucketKey,
+            input.id,
+            ...ownerBindings,
+          ),
       ),
       this.db
         .prepare(
           `UPDATE upload_intents SET status = 'consumed', updated_at = ?
-           WHERE id = ?
-             AND EXISTS (SELECT 1 FROM scan_sessions WHERE id = ?)`,
+           WHERE id = ?${scanOwnerSql}
+             AND EXISTS (
+               SELECT 1 FROM scan_sessions WHERE id = ?${scanOwnerSql}
+             )`,
         )
-        .bind(now, input.uploadId, input.id),
+        .bind(
+          now,
+          input.uploadId,
+          ...ownerBindings,
+          input.id,
+          ...ownerBindings,
+        ),
     ];
     try {
       await this.db.batch(statements);
     } catch (error) {
       const recovered = await this.getScan(input.id).catch(() => null);
-      if (recovered) return matchesRequest(recovered) ? "existing" : "conflict";
+      if (recovered) return adoptExisting(recovered);
       throw error;
     }
     const persisted = await this.getScan(input.id);
     if (persisted) return matchesRequest(persisted) ? "created" : "conflict";
-    const upload = await this.getUploadIntent(input.uploadId);
+    const upload = await this.inspectUploadForScanCreation(
+      input.uploadId,
+      input.uploadTokenHash,
+    );
     if (!upload || upload.status !== "uploaded") return "upload-not-ready";
     if (!matchesConsent(upload.aiConsent)) return "consent-mismatch";
     for (const bucket of input.buckets) {
@@ -1235,14 +1588,18 @@ export class ScanRepository {
   }
 
   async getScan(id: string): Promise<ScanSessionRecord | null> {
+    const ownerPredicate =
+      this.ownerSubject === null
+        ? ""
+        : " AND (owner_subject = ? OR owner_subject IS NULL)";
     const row = await this.db
       .prepare(
         `SELECT id, upload_id, access_token_hash, mode, status, source_hash, private_bundle_key, private_report_key,
-                cancel_requested_at, ai_consent_id, ai_consent_policy_version,
+                cancel_requested_at, owner_subject, ai_consent_id, ai_consent_policy_version,
                 ai_consent_provider, ai_consent_route, created_at, updated_at
-         FROM scan_sessions WHERE id = ?`,
+         FROM scan_sessions WHERE id = ?${ownerPredicate}`,
       )
-      .bind(id)
+      .bind(...(this.ownerSubject === null ? [id] : [id, this.ownerSubject]))
       .first<ScanSessionRow>();
     return row ? this.scanFromRow(row) : null;
   }
@@ -1331,10 +1688,34 @@ export class ScanRepository {
     id: string,
     accessTokenHash: string,
   ): Promise<ScanSessionRecord | null> {
+    if (this.ownerSubject !== null) {
+      const owned = await this.db
+        .prepare(
+          `SELECT id, upload_id, access_token_hash, mode, status, source_hash,
+                  private_bundle_key, private_report_key, cancel_requested_at,
+                  owner_subject, ai_consent_id, ai_consent_policy_version,
+                  ai_consent_provider, ai_consent_route, created_at, updated_at
+           FROM scan_sessions
+           WHERE id = ? AND access_token_hash = ? AND owner_subject = ?
+             AND EXISTS (
+               SELECT 1 FROM upload_intents
+               WHERE upload_intents.id = scan_sessions.upload_id
+                 AND upload_intents.owner_subject = ?
+             )`,
+        )
+        .bind(id, accessTokenHash, this.ownerSubject, this.ownerSubject)
+        .first<ScanSessionRow>();
+      if (owned) return this.scanFromRow(owned);
+
+      // Only legacy or partially claimed rows reach the write path. Claim the
+      // Scan and its parent Upload together so owner-scoped cleanup can always
+      // recover the immutable source object key.
+      return this.claimScanAndParentUploadOwner({ id, accessTokenHash });
+    }
     const row = await this.db
       .prepare(
         `SELECT id, upload_id, access_token_hash, mode, status, source_hash, private_bundle_key, private_report_key,
-                cancel_requested_at, ai_consent_id, ai_consent_policy_version,
+                cancel_requested_at, owner_subject, ai_consent_id, ai_consent_policy_version,
                 ai_consent_provider, ai_consent_route, created_at, updated_at
          FROM scan_sessions WHERE id = ? AND access_token_hash = ?`,
       )
@@ -1386,7 +1767,7 @@ export class ScanRepository {
            AND status NOT IN ('completed', 'cancelled', 'failed', 'expired', 'deleted')
          RETURNING id, upload_id, access_token_hash, mode, status, source_hash,
                    private_bundle_key, private_report_key, cancel_requested_at,
-                   ai_consent_id, ai_consent_policy_version, ai_consent_provider,
+                   owner_subject, ai_consent_id, ai_consent_policy_version, ai_consent_provider,
                    ai_consent_route, created_at, updated_at`,
       )
       .bind(fallback, updatedAt, id)
@@ -1444,7 +1825,7 @@ export class ScanRepository {
                           'extracting', 'merging', 'adjudicating', 'reporting')
          RETURNING id, upload_id, access_token_hash, mode, status, source_hash,
                    private_bundle_key, private_report_key, cancel_requested_at,
-                   ai_consent_id, ai_consent_policy_version, ai_consent_provider,
+                   owner_subject, ai_consent_id, ai_consent_policy_version, ai_consent_provider,
                    ai_consent_route, created_at, updated_at`,
       )
       .bind(updatedAt, updatedAt, id)
@@ -1479,12 +1860,221 @@ export class ScanRepository {
     return this.getScan(id);
   }
 
+  private async claimEditorTokenOwner(tokenHash: string): Promise<void> {
+    if (this.ownerSubject === null) return;
+    const now = this.now();
+
+    // D1 batches are transactional. Claim the bearer capability, its Scan,
+    // and the immutable parent Upload as one ownership graph.
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE editor_tokens
+           SET owner_subject = COALESCE(owner_subject, ?)
+           WHERE editor_tokens.token_hash = ?
+             AND editor_tokens.consumed_at IS NULL
+             AND editor_tokens.expires_at > ?
+             AND (owner_subject = ? OR owner_subject IS NULL)
+             AND EXISTS (
+               SELECT 1 FROM scan_sessions
+               INNER JOIN upload_intents
+                 ON upload_intents.id = scan_sessions.upload_id
+               WHERE scan_sessions.id = editor_tokens.scan_id
+                 AND scan_sessions.status NOT IN ('expired', 'deleted')
+                 AND (scan_sessions.owner_subject = ? OR scan_sessions.owner_subject IS NULL)
+                 AND (upload_intents.owner_subject = ? OR upload_intents.owner_subject IS NULL)
+             )`,
+        )
+        .bind(
+          this.ownerSubject,
+          tokenHash,
+          now,
+          this.ownerSubject,
+          this.ownerSubject,
+          this.ownerSubject,
+        ),
+      this.db
+        .prepare(
+          `UPDATE scan_sessions
+           SET owner_subject = COALESCE(owner_subject, ?)
+           WHERE (owner_subject = ? OR owner_subject IS NULL)
+             AND EXISTS (
+               SELECT 1 FROM editor_tokens
+               WHERE editor_tokens.scan_id = scan_sessions.id
+                 AND editor_tokens.token_hash = ?
+                 AND editor_tokens.consumed_at IS NULL
+                 AND editor_tokens.expires_at > ?
+                 AND editor_tokens.owner_subject = ?
+             )
+             AND EXISTS (
+               SELECT 1 FROM upload_intents
+               WHERE upload_intents.id = scan_sessions.upload_id
+                 AND (upload_intents.owner_subject = ? OR upload_intents.owner_subject IS NULL)
+             )`,
+        )
+        .bind(
+          this.ownerSubject,
+          this.ownerSubject,
+          tokenHash,
+          now,
+          this.ownerSubject,
+          this.ownerSubject,
+        ),
+      this.db
+        .prepare(
+          `UPDATE upload_intents
+           SET owner_subject = COALESCE(owner_subject, ?)
+           WHERE (owner_subject = ? OR owner_subject IS NULL)
+             AND EXISTS (
+               SELECT 1 FROM scan_sessions
+               WHERE scan_sessions.upload_id = upload_intents.id
+                 AND scan_sessions.status NOT IN ('expired', 'deleted')
+                 AND scan_sessions.owner_subject = ?
+                 AND EXISTS (
+                   SELECT 1 FROM editor_tokens
+                   WHERE editor_tokens.scan_id = scan_sessions.id
+                     AND editor_tokens.token_hash = ?
+                     AND editor_tokens.consumed_at IS NULL
+                     AND editor_tokens.expires_at > ?
+                     AND editor_tokens.owner_subject = ?
+                 )
+             )`,
+        )
+        .bind(
+          this.ownerSubject,
+          this.ownerSubject,
+          this.ownerSubject,
+          tokenHash,
+          now,
+          this.ownerSubject,
+        ),
+    ]);
+  }
+
+  private async claimEditorSessionOwner(
+    scanId: string,
+    tokenHash: string,
+  ): Promise<void> {
+    if (this.ownerSubject === null) return;
+    const now = this.now();
+
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE editor_sessions
+           SET owner_subject = COALESCE(owner_subject, ?)
+           WHERE editor_sessions.token_hash = ?
+             AND editor_sessions.scan_id = ?
+             AND editor_sessions.revoked_at IS NULL
+             AND editor_sessions.expires_at > ?
+             AND (owner_subject = ? OR owner_subject IS NULL)
+             AND EXISTS (
+               SELECT 1 FROM scan_sessions
+               INNER JOIN upload_intents
+                 ON upload_intents.id = scan_sessions.upload_id
+               WHERE scan_sessions.id = editor_sessions.scan_id
+                 AND scan_sessions.status = 'completed'
+                 AND (scan_sessions.owner_subject = ? OR scan_sessions.owner_subject IS NULL)
+                 AND (upload_intents.owner_subject = ? OR upload_intents.owner_subject IS NULL)
+             )`,
+        )
+        .bind(
+          this.ownerSubject,
+          tokenHash,
+          scanId,
+          now,
+          this.ownerSubject,
+          this.ownerSubject,
+          this.ownerSubject,
+        ),
+      this.db
+        .prepare(
+          `UPDATE scan_sessions
+           SET owner_subject = COALESCE(owner_subject, ?)
+           WHERE id = ?
+             AND (owner_subject = ? OR owner_subject IS NULL)
+             AND EXISTS (
+               SELECT 1 FROM editor_sessions
+               WHERE editor_sessions.scan_id = scan_sessions.id
+                 AND editor_sessions.token_hash = ?
+                 AND editor_sessions.revoked_at IS NULL
+                 AND editor_sessions.expires_at > ?
+                 AND editor_sessions.owner_subject = ?
+             )
+             AND EXISTS (
+               SELECT 1 FROM upload_intents
+               WHERE upload_intents.id = scan_sessions.upload_id
+                 AND (upload_intents.owner_subject = ? OR upload_intents.owner_subject IS NULL)
+             )`,
+        )
+        .bind(
+          this.ownerSubject,
+          scanId,
+          this.ownerSubject,
+          tokenHash,
+          now,
+          this.ownerSubject,
+          this.ownerSubject,
+        ),
+      this.db
+        .prepare(
+          `UPDATE upload_intents
+           SET owner_subject = COALESCE(owner_subject, ?)
+           WHERE (owner_subject = ? OR owner_subject IS NULL)
+             AND EXISTS (
+               SELECT 1 FROM scan_sessions
+               WHERE scan_sessions.upload_id = upload_intents.id
+                 AND scan_sessions.id = ?
+                 AND scan_sessions.status = 'completed'
+                 AND scan_sessions.owner_subject = ?
+                 AND EXISTS (
+                   SELECT 1 FROM editor_sessions
+                   WHERE editor_sessions.scan_id = scan_sessions.id
+                     AND editor_sessions.token_hash = ?
+                     AND editor_sessions.revoked_at IS NULL
+                     AND editor_sessions.expires_at > ?
+                     AND editor_sessions.owner_subject = ?
+                 )
+             )`,
+        )
+        .bind(
+          this.ownerSubject,
+          this.ownerSubject,
+          scanId,
+          this.ownerSubject,
+          tokenHash,
+          now,
+          this.ownerSubject,
+        ),
+    ]);
+  }
+
   async createEditorToken(record: {
     tokenHash: string;
     scanId: string;
     artifactKey: string;
     expiresAt: string;
   }): Promise<void> {
+    if (this.ownerSubject !== null) {
+      await this.db
+        .prepare(
+          `INSERT INTO editor_tokens
+            (token_hash, scan_id, artifact_key, expires_at, consumed_at, owner_subject, created_at)
+           SELECT ?, scan_sessions.id, ?, ?, NULL, scan_sessions.owner_subject, ?
+           FROM scan_sessions
+           WHERE scan_sessions.id = ? AND scan_sessions.owner_subject = ?`,
+        )
+        .bind(
+          record.tokenHash,
+          record.artifactKey,
+          record.expiresAt,
+          this.now(),
+          record.scanId,
+          this.ownerSubject,
+        )
+        .run();
+      return;
+    }
     await this.db
       .prepare(
         `INSERT INTO editor_tokens (token_hash, scan_id, artifact_key, expires_at, consumed_at, created_at)
@@ -1503,18 +2093,39 @@ export class ScanRepository {
   async consumeEditorToken(
     tokenHash: string,
   ): Promise<EditorTokenRecord | null> {
+    await this.claimEditorTokenOwner(tokenHash);
+    const ownerPredicate =
+      this.ownerSubject === null
+        ? ""
+        : ` AND editor_tokens.owner_subject = ?
+            AND scan_sessions.owner_subject = ?
+            AND upload_intents.owner_subject = ?`;
     const row = await this.db
       .prepare(
         `UPDATE editor_tokens SET consumed_at = ?
          WHERE token_hash = ? AND consumed_at IS NULL AND expires_at > ?
            AND EXISTS (
              SELECT 1 FROM scan_sessions
+             INNER JOIN upload_intents
+               ON upload_intents.id = scan_sessions.upload_id
              WHERE scan_sessions.id = editor_tokens.scan_id
                AND scan_sessions.status NOT IN ('expired', 'deleted')
+               ${ownerPredicate}
            )
          RETURNING scan_id, artifact_key, expires_at`,
       )
-      .bind(this.now(), tokenHash, this.now())
+      .bind(
+        ...(this.ownerSubject === null
+          ? [this.now(), tokenHash, this.now()]
+          : [
+              this.now(),
+              tokenHash,
+              this.now(),
+              this.ownerSubject,
+              this.ownerSubject,
+              this.ownerSubject,
+            ]),
+      )
       .first<EditorTokenRow>();
     return row
       ? {
@@ -1526,6 +2137,13 @@ export class ScanRepository {
   }
 
   async getEditorToken(tokenHash: string): Promise<EditorTokenRecord | null> {
+    await this.claimEditorTokenOwner(tokenHash);
+    const ownerPredicate =
+      this.ownerSubject === null
+        ? ""
+        : ` AND editor_tokens.owner_subject = ?
+            AND scan_sessions.owner_subject = ?
+            AND upload_intents.owner_subject = ?`;
     const row = await this.db
       .prepare(
         `SELECT scan_id, artifact_key, expires_at
@@ -1533,11 +2151,24 @@ export class ScanRepository {
          WHERE token_hash = ? AND consumed_at IS NULL AND expires_at > ?
            AND EXISTS (
              SELECT 1 FROM scan_sessions
+             INNER JOIN upload_intents
+               ON upload_intents.id = scan_sessions.upload_id
              WHERE scan_sessions.id = editor_tokens.scan_id
                AND scan_sessions.status NOT IN ('expired', 'deleted')
+               ${ownerPredicate}
            )`,
       )
-      .bind(tokenHash, this.now())
+      .bind(
+        ...(this.ownerSubject === null
+          ? [tokenHash, this.now()]
+          : [
+              tokenHash,
+              this.now(),
+              this.ownerSubject,
+              this.ownerSubject,
+              this.ownerSubject,
+            ]),
+      )
       .first<EditorTokenRow>();
     return row
       ? {
@@ -1553,6 +2184,25 @@ export class ScanRepository {
     scanId: string;
     expiresAt: string;
   }): Promise<void> {
+    if (this.ownerSubject !== null) {
+      await this.db
+        .prepare(
+          `INSERT INTO editor_sessions
+            (token_hash, scan_id, expires_at, revoked_at, owner_subject, created_at)
+           SELECT ?, scan_sessions.id, ?, NULL, scan_sessions.owner_subject, ?
+           FROM scan_sessions
+           WHERE scan_sessions.id = ? AND scan_sessions.owner_subject = ?`,
+        )
+        .bind(
+          record.tokenHash,
+          record.expiresAt,
+          this.now(),
+          record.scanId,
+          this.ownerSubject,
+        )
+        .run();
+      return;
+    }
     await this.db
       .prepare(
         `INSERT INTO editor_sessions
@@ -1567,6 +2217,7 @@ export class ScanRepository {
     scanId: string,
     tokenHash: string,
   ): Promise<ScanSessionRecord | null> {
+    await this.claimEditorSessionOwner(scanId, tokenHash);
     const row = await this.db
       .prepare(
         `SELECT scan_sessions.id, scan_sessions.upload_id,
@@ -1575,6 +2226,7 @@ export class ScanRepository {
                 scan_sessions.private_bundle_key,
                 scan_sessions.private_report_key,
                 scan_sessions.cancel_requested_at,
+                scan_sessions.owner_subject,
                 scan_sessions.ai_consent_id,
                 scan_sessions.ai_consent_policy_version,
                 scan_sessions.ai_consent_provider,
@@ -1583,25 +2235,67 @@ export class ScanRepository {
          FROM editor_sessions
          INNER JOIN scan_sessions
            ON scan_sessions.id = editor_sessions.scan_id
+         INNER JOIN upload_intents
+           ON upload_intents.id = scan_sessions.upload_id
          WHERE editor_sessions.token_hash = ?
            AND editor_sessions.scan_id = ?
            AND editor_sessions.revoked_at IS NULL
            AND editor_sessions.expires_at > ?
-           AND scan_sessions.status = 'completed'`,
+           AND scan_sessions.status = 'completed'
+           ${
+             this.ownerSubject === null
+               ? ""
+               : `AND editor_sessions.owner_subject = ?
+                  AND scan_sessions.owner_subject = ?
+                  AND upload_intents.owner_subject = ?`
+           }`,
       )
-      .bind(tokenHash, scanId, this.now())
+      .bind(
+        ...(this.ownerSubject === null
+          ? [tokenHash, scanId, this.now()]
+          : [
+              tokenHash,
+              scanId,
+              this.now(),
+              this.ownerSubject,
+              this.ownerSubject,
+              this.ownerSubject,
+            ]),
+      )
       .first<ScanSessionRow>();
     return row ? this.scanFromRow(row) : null;
   }
 
   async revokeEditorSession(tokenHash: string): Promise<void> {
+    const ownerPredicate =
+      this.ownerSubject === null
+        ? ""
+        : ` AND editor_sessions.owner_subject = ?
+            AND EXISTS (
+              SELECT 1 FROM scan_sessions
+              INNER JOIN upload_intents
+                ON upload_intents.id = scan_sessions.upload_id
+              WHERE scan_sessions.id = editor_sessions.scan_id
+                AND scan_sessions.owner_subject = ?
+                AND upload_intents.owner_subject = ?
+            )`;
     await this.db
       .prepare(
         `UPDATE editor_sessions
          SET revoked_at = COALESCE(revoked_at, ?)
-         WHERE token_hash = ?`,
+         WHERE token_hash = ?${ownerPredicate}`,
       )
-      .bind(this.now(), tokenHash)
+      .bind(
+        ...(this.ownerSubject === null
+          ? [this.now(), tokenHash]
+          : [
+              this.now(),
+              tokenHash,
+              this.ownerSubject,
+              this.ownerSubject,
+              this.ownerSubject,
+            ]),
+      )
       .run();
   }
 
@@ -1909,6 +2603,7 @@ export class ScanRepository {
       expiresAt: row.expires_at,
       actualSize: row.actual_size,
       sourceHash: row.source_hash,
+      ownerSubject: row.owner_subject ?? null,
       aiConsent: this.aiConsentFromRow(row),
     };
   }
@@ -1926,6 +2621,7 @@ export class ScanRepository {
       cancelRequestedAt: row.cancel_requested_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      ownerSubject: row.owner_subject ?? null,
       aiConsent: this.aiConsentFromRow(row),
     };
   }

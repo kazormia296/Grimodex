@@ -38,6 +38,7 @@ describe("scan repository", () => {
       mode: "quick" as const,
       reservedUnits: 1,
       accessTokenHash: "scan-token-hash",
+      uploadTokenHash: "upload-token-hash",
       aiConsent: SCAN_AI_CONSENT,
       buckets: [],
     };
@@ -99,6 +100,7 @@ describe("scan repository", () => {
           mode: "quick",
           reservedUnits: 1,
           accessTokenHash: "scan-token-hash",
+          uploadTokenHash: "upload-token-hash",
           aiConsent: SCAN_AI_CONSENT,
           buckets: [],
         }),
@@ -202,6 +204,7 @@ describe("scan repository", () => {
         mode: persisted.mode,
         reservedUnits: 1,
         accessTokenHash: persisted.accessTokenHash,
+        uploadTokenHash: "upload-token-hash",
         buckets: [],
         aiConsent: SCAN_AI_CONSENT,
       }),

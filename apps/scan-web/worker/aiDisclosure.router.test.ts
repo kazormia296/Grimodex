@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScanEnv } from "./env";
 import { ScanRepository } from "./repository";
 import { handleRequest } from "./router";
-import { currentAiDataConsentIdentity } from "./ai/aiDataDisclosure";
+import {
+  AI_DATA_POLICY_VERSION,
+  currentAiDataConsentIdentity,
+} from "./ai/aiDataDisclosure";
 import { sha256Hex } from "./security";
 import {
   CLOUD_CONTENT_POLICY_ACK_HEADER,
@@ -324,7 +327,7 @@ describe("public AI data disclosures", () => {
     };
 
     expect(response.status).toBe(200);
-    expect(body.policyVersion).toBe("2026-07-19.7");
+    expect(body.policyVersion).toBe(AI_DATA_POLICY_VERSION);
     expect(body.provider).toBe("workers-ai");
     expect(body.processingDestinations).toHaveLength(1);
     expect(body.processingDestinations[0]?.processor).toBe(
@@ -656,7 +659,10 @@ describe("AI data consent enforcement", () => {
       SCAN_WORKERS_AI_ENABLED: "true",
     });
     const accepted = await currentAiDataConsentIdentity(acceptedEnv, "scan");
-    vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
+    vi.spyOn(
+      ScanRepository.prototype,
+      "inspectUploadForScanCreation",
+    ).mockResolvedValue({
       id: "upload-1",
       tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
       filename: "private.txt",

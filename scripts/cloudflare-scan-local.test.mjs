@@ -163,6 +163,7 @@ describe("Cloudflare Scan local runner", () => {
 
   it("exercises a complete deterministic Quick Scan and cleans it up", async () => {
     const requests = [];
+    const sleeps = [];
     let statusReads = 0;
     const fetchImpl = async (url, init = {}) => {
       const requestUrl = new URL(url);
@@ -316,7 +317,9 @@ describe("Cloudflare Scan local runner", () => {
         fetchImpl,
         scanId,
         scanToken,
-        sleep: async () => undefined,
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+        },
       });
       assert.deepEqual(result, {
         editorHandoff: "validated",
@@ -353,6 +356,7 @@ describe("Cloudflare Scan local runner", () => {
       uploadIntentRequest.init.headers["x-ai-consent-id"],
       "consent_local_scan_smoke_1234567890",
     );
+    assert.deepEqual(sleeps, [12_000, 250]);
   });
 
   it("rejects a local Worker that is still paused", async () => {

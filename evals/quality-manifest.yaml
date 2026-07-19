@@ -21,10 +21,16 @@ requirements:
       - src/features/ai-verification/aiPathRegistry.ts
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
+      - apps/scan-web/worker/ai/providerConfig.ts
+      - apps/scan-web/worker/ai/openRouterPolicy.ts
     lightTests:
       - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.openRouter.test.ts
       - src/features/chat/modelRouting.test.ts
       - src/features/chat/turn/resolveTurnRoute.test.ts
+      - apps/scan-web/worker/ai/openRouterRouting.test.ts
+      - apps/scan-web/worker/ai/hostedOpenRouter.test.ts
+      - scripts/cloudflare-scan-openrouter.test.mjs
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
       - src-tauri/src/commands/post_effect.rs
@@ -35,6 +41,7 @@ requirements:
       - eval-route-search-scenes
       - eval-route-list-chapters
       - eval-route-character-timeline
+      - eval-hosted-openrouter-reconsent
   - id: GDX-PRECHECK-001
     title: Missing inputs, policies, confirmation, or tools stop before mutation.
     definedIn: policies/quality/iron-laws.md#GDX-PRECHECK-001
@@ -45,6 +52,9 @@ requirements:
       - apps/scan-web/src/app/ScanWebApp.tsx
       - apps/scan-web/src/app/ScanDeleteDialog.tsx
       - apps/scan-web/src/app/scanOwnershipStorage.ts
+      - apps/scan-web/worker/auth/accessAuth.ts
+      - apps/scan-web/worker/auth/accessRouting.ts
+      - apps/scan-web/src/api/scanApiClient.ts
     lightTests:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
@@ -54,6 +64,12 @@ requirements:
       - apps/scan-web/src/app/scanOwnershipStorage.test.ts
       - apps/scan-web/worker/router.test.ts
       - apps/scan-web/worker/repository.test.ts
+      - packages/scan-contract/test/accessSession.test.ts
+      - apps/scan-web/worker/auth/accessAuth.test.ts
+      - apps/scan-web/worker/auth/accessRouting.test.ts
+      - apps/scan-web/worker/repositoryOwnership.test.ts
+      - apps/scan-web/src/api/scanAccountClient.test.ts
+      - apps/scan-web/src/app/ScanAccountGate.test.tsx
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -69,6 +85,7 @@ requirements:
     implementedBy:
       - packages/scan-contract/src/aiDataDisclosureV1.ts
       - apps/scan-web/worker/ai/aiDataDisclosure.ts
+      - apps/scan-web/worker/ai/openRouterPolicy.ts
       - apps/scan-web/worker/router.ts
       - apps/scan-web/src/api/scanApiClient.ts
       - apps/scan-web/src/api/hostedAiClient.ts
@@ -83,6 +100,9 @@ requirements:
     lightTests:
       - packages/scan-contract/test/aiDataDisclosure.test.ts
       - apps/scan-web/worker/aiDisclosure.router.test.ts
+      - apps/scan-web/worker/aiDisclosure.openRouter.test.ts
+      - apps/scan-web/worker/ai/openRouterRouting.test.ts
+      - apps/scan-web/worker/ai/hostedOpenRouter.test.ts
       - apps/scan-web/src/api/scanApiClient.consent.test.ts
       - apps/scan-web/src/api/hostedAiClient.consent.test.ts
       - apps/scan-web/src/app/ScanAiConsentDialog.test.tsx
@@ -91,10 +111,12 @@ requirements:
       - src/features/ai-policy/AiDataConsentDialog.test.tsx
       - src/lib/browser-mock.ai-runtime.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.openRouter.test.ts
     heavyTests:
       - apps/scan-web/worker/ai/hostedAi.test.ts
     evaluatedBy:
       - eval-ai-data-consent-precheck
+      - eval-hosted-openrouter-reconsent
   - id: GDX-HOSTED-CONTENT-001
     title: Hosted Scan and Editor routes confirm content rights and expose safe reporting controls.
     definedIn: policies/quality/iron-laws.md#GDX-HOSTED-CONTENT-001
@@ -261,6 +283,8 @@ requirements:
     lightTests:
       - scripts/quality/impact-map.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
+      - src/features/ai-verification/aiPathRegistry.openRouter.test.ts
+      - scripts/cloudflare-scan-openrouter.test.mjs
     heavyTests:
       - src/features/ai-verification/singleShot.live.test.ts
     evaluatedBy:
@@ -268,6 +292,7 @@ requirements:
       - eval-artifact-create-event
       - eval-prompt-post-effect-json
       - eval-route-search-scenes
+      - eval-hosted-openrouter-reconsent
 heavyEvaluations:
   - id: heavy-agent-tool-loop
     suiteId: tool-policy

@@ -37,16 +37,33 @@ usage 台帳 / session_id routing）ではない。
 `GDX-AI-CONSENT-001` により、次の 3 経路は外部へデータを送信する前に、現在の
 policy version・route・provider に一致する明示同意を必要とする。
 
-| runtime route | provider 決定  | Light verifier                                                       | Heavy 境界                                                      |
-| ------------- | -------------- | -------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Scan upload   | server runtime | upload→workflow contract + consent 無しの upload 拒否                | 実 Cloudflare storage/provider と確実な teardown が必要         |
-| Hosted Editor | server runtime | HostedAiClient wire contract + consent 無しの network 拒否           | デプロイ済み Editor/Worker、実 provider、保存物 teardown が必要 |
-| Browser BYOK  | user selection | production endpoint/auth contract + provider 呼出し前の consent 拒否 | 使い捨て provider key とアカウント設定の隔離が必要              |
+| runtime route         | provider / model                                       | capability gate                            | Light verifier                                                       | Heavy 境界                                                      |
+| --------------------- | ------------------------------------------------------ | ------------------------------------------ | -------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Quick Scan extraction | Workers AI / `@cf/zai-org/glm-4.7-flash`               | Cloudflare Access account + consent        | upload→workflow contract + consent 無しの upload 拒否                | 実 Cloudflare storage/provider と確実な teardown が必要         |
+| Full Scan frontier    | OpenRouter→Microsoft Azure AI / `openai/gpt-5.6-terra` | Access account + Full capability + consent | OpenRouter routing/privacy body contract                             | 実 provider、課金、保存物 teardown が必要                       |
+| Hosted Editor         | OpenRouter→Microsoft Azure AI / `openai/gpt-5.6-luna`  | Access account + Editor session + consent  | HostedAiClient wire contract + consent 無しの network 拒否           | デプロイ済み Editor/Worker、実 provider、保存物 teardown が必要 |
+| Browser BYOK          | user selection                                         | provider credential + consent              | production endpoint/auth contract + provider 呼出し前の consent 拒否 | 使い捨て provider key とアカウント設定の隔離が必要              |
+
+Hosted OpenRouter 経路は `provider.order=["azure"]`、
+`provider.only=["azure"]`、
+`allow_fallbacks=false`、`data_collection="deny"`、`zdr=true`、
+`require_parameters=true` を同時に送る。そのため OpenRouter の別 provider
+へフォールバックする経路は production route に含めない。
+Scan・Hosted Editor はサーバー所有の `OPENROUTER_API_KEY` を使い、
+キーを Pages bundle、`VITE_*`、ブラウザ保存領域へ渡さない。
+さらに専用 OpenRouter workspace／key で Input & Output Logging と
+Use of Inputs/Outputs を無効にし、Broadcast を無効化またはすべての
+destination からその key を除外したことを運用確認する。
+現行の `OPENROUTER_ACCOUNT_POLICY_ATTESTATION` がない、または古い場合は
+開示と AI 呼出しの両方を fail closed にする。
 
 開示には送信データ、全 processor、処理目的、アプリ／provider の保存と保持、学習利用、
 現在の policy link を含める。処理先を完全に開示できない場合や、provider／policy version
 が変わった場合は fail closed とし、過去の同意を流用しない。BYOK の API key は現在の
 ページの実行メモリだけに置き、IndexedDB、Local Storage、R2、D1 へ永続化しない。
+ここでの provider identity は OpenRouter だけでなく、endpoint class、
+モデル、ピン済み Microsoft Azure AI、ZDR 要件まで含む。いずれかの
+変更時は過去の同意 identity を再利用せず、再同意を要求する。
 
 これらの contract test は実 provider の成功を証明しない。現在、資格情報付きかつ
 teardown 可能なデプロイ済み runner は存在しないため、manifest の
@@ -56,8 +73,9 @@ teardown 可能なデプロイ済み runner は存在しないため、manifest 
 cloud AI で内容・権利の確認を要求する。正本は
 `packages/scan-contract/src/cloudContentPolicy.ts` で、合法な成人のみの架空作品を
 一律禁止しない一方、処理を保証しないこと、禁止内容、権利・許諾、二次創作ガイドラインを
-日英で提示する。サーバーの `AI_DATA_POLICY_VERSION` はこの正本の version から派生し、
-内容ポリシー更新時にも過去の Scan／Hosted Editor 同意を再利用しない。ローカルの
+日英で提示する。`AI_DATA_POLICY_VERSION` と内容ポリシーの version は別々に管理し、
+処理先／アカウント方針の開示または内容ポリシーのいずれを更新した場合でも、
+過去の Scan／Hosted Editor 同意を再利用しない。ローカルの
 desktop editor と browser BYOK にはこの hosted 固有確認を追加しない。開示契約では
 `contentPolicy.version` と `contentPolicy.acknowledgementHeader` を必須にし、hosted の
 upload／AI dispatch は開示されたヘッダー名で同一 version を返す。旧 parser は追加

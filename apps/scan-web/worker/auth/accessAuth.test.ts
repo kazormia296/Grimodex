@@ -1,15 +1,7 @@
-import {
-  SignJWT,
-  createLocalJWKSet,
-  exportJWK,
-  generateKeyPair,
-} from "jose";
+import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from "jose";
 import { describe, expect, it } from "vitest";
 import type { ScanEnv } from "../env";
-import {
-  AccessAuthError,
-  authenticateScanAccount,
-} from "./accessAuth";
+import { AccessAuthError, authenticateScanAccount } from "./accessAuth";
 
 const issuer = "https://grimodex.cloudflareaccess.com";
 const audience = "access-audience-tag";
@@ -82,10 +74,10 @@ describe("Cloudflare Access authentication", () => {
 
     await expect(
       authenticateScanAccount(request, accessEnv(), { keySet }),
-    ).rejects.toMatchObject<Partial<AccessAuthError>>({
+    ).rejects.toMatchObject({
       status: 401,
       code: "account_auth_required",
-    });
+    } satisfies Partial<AccessAuthError>);
   });
 
   it("provides a fixed account only for an explicit loopback development mode", async () => {

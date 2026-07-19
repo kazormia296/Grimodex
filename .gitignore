@@ -6,6 +6,8 @@ dist/
 !.env.example
 .dev.vars
 .dev.vars.*
+# Explicit local opt-in file for billed Scan / Hosted Editor OpenRouter tests.
+apps/scan-web/.dev.vars.openrouter
 .wrangler/
 *.local
 .claude/settings.local.json

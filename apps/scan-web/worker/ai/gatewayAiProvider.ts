@@ -6,6 +6,11 @@ import {
 } from "./workersAiProvider";
 import type { ScanAiProvider, ScanModelProfile } from "@grimodex/scan-prompts";
 import type { ProviderCallHooks } from "./workersAiProvider";
+import {
+  openRouterAccountPolicyAttested,
+  openRouterHeaders,
+  openRouterRequestFields,
+} from "./openRouterPolicy";
 
 export type GatewayProviderName = "ai-gateway" | "openrouter";
 
@@ -17,7 +22,13 @@ function endpointFor(
     if (!env.SCAN_AI_GATEWAY_URL || !env.AI_GATEWAY_TOKEN) return null;
     return { url: env.SCAN_AI_GATEWAY_URL, token: env.AI_GATEWAY_TOKEN };
   }
-  if (!env.OPENROUTER_URL || !env.OPENROUTER_API_KEY) return null;
+  if (
+    !env.OPENROUTER_URL ||
+    !env.OPENROUTER_API_KEY ||
+    !openRouterAccountPolicyAttested(env.OPENROUTER_ACCOUNT_POLICY_ATTESTATION)
+  ) {
+    return null;
+  }
   return { url: env.OPENROUTER_URL, token: env.OPENROUTER_API_KEY };
 }
 
@@ -46,14 +57,15 @@ export function createGatewayAiProvider(
             "content-type": "application/json",
             authorization: `Bearer ${endpoint.token}`,
             ...(provider === "openrouter"
-              ? { "x-title": "Grimodex Scan" }
+              ? openRouterHeaders("Grimodex Scan")
               : {}),
           },
           body: JSON.stringify({
             model,
             messages: input.messages,
-            temperature: 0,
-            max_tokens: 4_000,
+            ...(provider === "openrouter"
+              ? openRouterRequestFields(4_000)
+              : { temperature: 0, max_tokens: 4_000 }),
           }),
         });
         if (!response.ok) {

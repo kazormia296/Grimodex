@@ -1,24 +1,26 @@
 # Grimodex Privacy Notice
 
 Last updated: 2026-07-19
-Version: v1.1
+Version: v1.3
 
 This notice explains where each Grimodex surface stores data and what is transmitted when AI is used. The Terms of Use control if this notice conflicts with them. Because the processor, retention, and training status can vary by configuration, also review the route-specific disclosure shown immediately before an actual request.
 
 ## 1. Storage locations
 
-| Surface                   | Principal data                                                                             | Storage                                  | Standard retention                                                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Electron application      | Text, settings, chat history, editing metadata                                             | SQLite on the User's device              | Until the User deletes it                                                                                                     |
-| Hosted Editor             | Workspace, text, settings, chat history, AI responses                                      | IndexedDB in the current browser profile | Until the workspace or site data is deleted                                                                                   |
-| Scan / Hosted AI          | Manuscript source, private reports, Editor seed, AI responses, and related artifacts       | Cloudflare R2                            | Production defaults: 60 minutes for incomplete uploads, one day for sources, and 30 days for private artifacts / AI responses |
-| Scan operational metadata | Job state, token hashes, usage, retention deadlines, idempotency data, and similar records | Cloudflare D1                            | Subject to Scan session retention and deletion processing and applicable operational or legal requirements                    |
+| Surface                   | Principal data                                                                                                     | Storage                                  | Standard retention                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Electron application      | Text, settings, chat history, editing metadata                                                                     | SQLite on the User's device              | Until the User deletes it                                                                                                     |
+| Hosted Editor             | Workspace, text, settings, chat history, AI responses                                                              | IndexedDB in the current browser profile | Until the workspace or site data is deleted                                                                                   |
+| Scan / Hosted AI          | Manuscript source, private reports, Editor seed, AI responses, and related artifacts                               | Cloudflare R2                            | Production defaults: 60 minutes for incomplete uploads, one day for sources, and 30 days for private artifacts / AI responses |
+| Scan operational metadata | Access account subject, job state, token hashes, usage, retention deadlines, idempotency data, and similar records | Cloudflare D1                            | Subject to Scan session retention and deletion processing and applicable operational or legal requirements                    |
 
 Hosted Editor's IndexedDB is not a cloud backup. Deleting browser site data or a browser profile may make the data unrecoverable. Grimodex does not guarantee a particular country of storage or processing for R2 or D1.
 
+Production Scan uploads, Full Scan, and Hosted Editor AI require a Cloudflare Access account. Cloudflare Access manages the authentication session, and Grimodex uses the stable subject in the signed token for ownership and per-account limits. Public-report viewing, abuse reporting, health checks, and AI-disclosure retrieval may remain anonymous as separately described.
+
 The short-lived session token used when moving from Scan to Editor remains in that tab's Session Storage until it expires and is removed when the tab closes. D1 stores only a verification hash, not the token itself.
 
-The Scan deletion capability (Scan ID, access token, and mode) is stored in that tab's Session Storage so the User can still delete the Scan after reloading the same tab. The record contains no manuscript text or analysis result. It is removed when deletion completes or the tab closes. The server stores only a verification hash of the access token, not the token itself.
+The Scan deletion capability (Scan ID, access token, and mode) is stored in that tab's Session Storage so the User can still delete the Scan after reloading the same tab. The same record includes the stable Access subject solely to keep capabilities separated for up to eight accounts used in that tab. It contains no manuscript text or analysis result. An account's record is removed when its deletion completes, and all records disappear when the tab closes. The server stores only a verification hash of the access token, not the token itself.
 
 A Scan report that the User expressly publishes may remain accessible until the public report or its source Scan is deleted and is not governed in the same way as private artifacts. Staging environments, security records, abuse prevention, backups, and legal preservation obligations may use different periods.
 
@@ -37,12 +39,24 @@ The pre-request disclosure enumerates the categories that will be sent. If the U
 
 ### Hosted Scan / Hosted Editor
 
-The standard route uses Cloudflare Workers, Workers AI, R2, and D1. Depending on the selected Scan mode and runtime configuration, the route may also use Cloudflare AI Gateway and the upstream AI provider identified in the disclosure. Cloudflare states that Workers AI Customer Content is not used to train AI models or improve its services without explicit consent.
+The standard route uses Cloudflare Workers, R2, and D1. Quick Scan extraction uses Workers AI `@cf/zai-org/glm-4.7-flash`; Full Scan frontier review uses `openai/gpt-5.6-terra` through OpenRouter; and Hosted Editor AI uses `openai/gpt-5.6-luna` through OpenRouter. Cloudflare states that Workers AI Customer Content is not used to train AI models or improve its services without explicit consent.
+
+Hosted OpenRouter routes are pinned to Microsoft Azure AI, disable fallback to other providers, and require both `data_collection: deny` and Zero Data Retention. If no processing endpoint satisfies those constraints, Grimodex does not send the request and treats the route as unavailable. The disclosed processors are OpenRouter and Microsoft Azure AI. OpenRouter may retain operational usage or billing metadata, while this route requires an endpoint that does not retain request or response content. Microsoft states that Azure OpenAI prompts and completions are not made available to OpenAI and are not used to improve Microsoft or OpenAI models.
+
+OpenRouter separately offers account-level **Private Input & Output Logging**, **OpenRouter Use of Inputs/Outputs**, and **Broadcast**. If Logging is enabled, full content is stored in OpenRouter-controlled Google Cloud Storage for at least three months and may be retained longer until deletion is requested. Use of Inputs/Outputs can permit OpenRouter to use content, while Broadcast can forward prompts and responses to configured external destinations.
+
+The service operator sets the corresponding Worker attestation only after confirming that Logging and Use of Inputs/Outputs are disabled for a dedicated API key, and that Broadcast is disabled or that key is excluded from every destination. Grimodex cannot verify the current account settings when making a request, so the in-product disclosure reports training or downstream use as **dependent on account settings**. The per-request ZDR and data-collection controls do not replace this operational review.
 
 - [Cloudflare Workers AI data usage](https://developers.cloudflare.com/workers-ai/platform/data-usage/)
 - [How Cloudflare R2 works](https://developers.cloudflare.com/r2/how-r2-works/)
 - [Cloudflare D1 API](https://developers.cloudflare.com/api/resources/d1/)
 - [Cloudflare Privacy Policy](https://www.cloudflare.com/privacypolicy/)
+- [OpenRouter provider routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+- [OpenRouter data collection and account settings](https://openrouter.ai/docs/guides/privacy/data-collection)
+- [OpenRouter Zero Data Retention](https://openrouter.ai/docs/guides/features/zdr)
+- [OpenRouter Input & Output Logging](https://openrouter.ai/docs/guides/features/input-output-logging)
+- [OpenRouter Broadcast](https://openrouter.ai/docs/guides/features/broadcast/overview)
+- [Microsoft Azure OpenAI data privacy](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy)
 
 If an upstream AI provider is used, that provider's retention and training policies also apply. If Grimodex cannot disclose every processor used by a route, it should fail closed and treat that route as unavailable.
 

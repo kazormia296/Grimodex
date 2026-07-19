@@ -241,7 +241,7 @@ export function createHostedBrowserAi(
       {
         method: "GET",
         cache: "no-store",
-        credentials: "omit",
+        credentials: "include",
         headers: { accept: "application/json" },
         referrerPolicy: "no-referrer",
       },
@@ -285,7 +285,7 @@ export function createHostedBrowserAi(
         {
           method: "POST",
           cache: "no-store",
-          credentials: "omit",
+          credentials: "include",
           headers: {
             accept: "application/json",
             "content-type": "application/json",

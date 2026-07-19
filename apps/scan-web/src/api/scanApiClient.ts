@@ -1,7 +1,9 @@
 import {
   CLOUD_CONTENT_POLICY_ACK_HEADER,
   CLOUD_CONTENT_POLICY_VERSION,
+  parseAccessSession,
   parseAiDataDisclosure,
+  type AccessSessionV1,
   type AiDataDisclosureRoute,
   type AiDataDisclosureV1,
   type ScanBundleV1,
@@ -89,6 +91,13 @@ export class ScanApiError extends Error {
   ) {
     super(message);
     this.name = "ScanApiError";
+  }
+}
+
+export class ScanAuthenticationRequiredError extends Error {
+  constructor(message = "A Grimodex Scan account session is required") {
+    super(message);
+    this.name = "ScanAuthenticationRequiredError";
   }
 }
 
@@ -210,6 +219,7 @@ export class ScanApiClient {
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await this.fetchImpl(this.url(path), {
       ...init,
+      credentials: "include",
       headers: {
         accept: "application/json",
         ...(init?.body ? { "content-type": "application/json" } : {}),
@@ -218,6 +228,45 @@ export class ScanApiClient {
     });
     if (!response.ok) throw await responseError(response);
     return (await response.json()) as T;
+  }
+
+  async getAccountSession(): Promise<AccessSessionV1> {
+    const response = await this.fetchImpl(this.url("/api/v1/session"), {
+      method: "GET",
+      cache: "no-store",
+      credentials: "include",
+      headers: { accept: "application/json" },
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw new ScanAuthenticationRequiredError();
+    }
+    if (!response.ok) throw await responseError(response);
+    if (
+      !response.headers
+        .get("content-type")
+        ?.toLowerCase()
+        .includes("application/json")
+    ) {
+      throw new ScanAuthenticationRequiredError();
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new ScanAuthenticationRequiredError();
+    }
+    const parsed = parseAccessSession(payload);
+    if (!parsed.ok) throw new ScanAuthenticationRequiredError();
+    return parsed.value;
+  }
+
+  accountLoginUrl(returnTo: string): string {
+    const query = new URLSearchParams({ return_to: returnTo }).toString();
+    return this.url(`/api/v1/session?${query}`);
+  }
+
+  accountLogoutUrl(): string {
+    return this.url("/cdn-cgi/access/logout");
   }
 
   async createUploadIntent(input: UploadIntentInput): Promise<UploadIntent> {
@@ -271,6 +320,7 @@ export class ScanApiClient {
     });
     const uploadResponse = await this.fetchImpl(intent.uploadUrl, {
       method: "PUT",
+      credentials: "include",
       headers: {
         "content-type": contentType,
         "x-upload-token": intent.uploadToken,

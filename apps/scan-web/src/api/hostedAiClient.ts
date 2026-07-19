@@ -47,6 +47,7 @@ export class HostedAiClient {
       `${this.baseUrl}/api/v1/scans/${encodeURIComponent(handle.scanId)}/editor-ai`,
       {
         method: "POST",
+        credentials: "include",
         headers: {
           accept: "application/json",
           "content-type": "application/json",

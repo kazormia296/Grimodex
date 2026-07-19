@@ -1,12 +1,9 @@
-import {
-  DEFAULT_SCAN_AI_MODEL,
-  type ScanEnv,
-  type WorkerExecutionContextLike,
-} from "./env";
+import type { ScanEnv, WorkerExecutionContextLike } from "./env";
 import { ScanRepository, type ScanMode } from "./repository";
 import {
   CLOUD_CONTENT_POLICY_ACK_HEADER,
   CLOUD_CONTENT_POLICY_VERSION,
+  ACCESS_SESSION_SCHEMA_VERSION,
   EDITOR_HANDOFF_SCHEMA_VERSION,
   HOSTED_EDITOR_AI_LIMITS,
   ID_PATTERNS,
@@ -49,6 +46,19 @@ import {
   type AiDataConsentIdentity,
 } from "./ai/aiDataDisclosure";
 import type { AiDataDisclosureRoute } from "@grimodex/scan-contract";
+import {
+  AccessAuthError,
+  authenticateScanAccount,
+  type ScanAccount,
+} from "./auth/accessAuth";
+import { routeRequiresAccount } from "./auth/accessRouting";
+import {
+  frontierScanAiRoute,
+  hostedEditorAiRoute,
+  primaryScanAiRoute,
+  type ConfiguredAiRoute,
+} from "./ai/providerConfig";
+import { openRouterAccountPolicyAttested } from "./ai/openRouterPolicy";
 
 const JSON_LIMIT_BYTES = 64 * 1024;
 const UPLOAD_TTL_MS = 15 * 60 * 1000;
@@ -85,8 +95,21 @@ function monthlyLimit(env: ScanEnv): number | null {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
+function accountDailyLimit(env: ScanEnv): number | null {
+  if (env.SCAN_ACCOUNT_DAILY_LIMIT_UNITS === undefined) return null;
+  const value = Number(env.SCAN_ACCOUNT_DAILY_LIMIT_UNITS);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function accountMonthlyLimit(env: ScanEnv): number | null {
+  if (env.SCAN_ACCOUNT_MONTHLY_LIMIT_UNITS === undefined) return null;
+  const value = Number(env.SCAN_ACCOUNT_MONTHLY_LIMIT_UNITS);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 function usageBuckets(
   env: ScanEnv,
+  ownerSubject: string | null = null,
   now = new Date(),
 ): Array<{ key: string; limit: number }> {
   const buckets: Array<{ key: string; limit: number }> = [];
@@ -102,6 +125,22 @@ function usageBuckets(
       key: `monthly:${now.toISOString().slice(0, 7)}`,
       limit: monthly,
     });
+  if (ownerSubject) {
+    const accountDaily = accountDailyLimit(env);
+    if (accountDaily !== null) {
+      buckets.push({
+        key: `account:${ownerSubject}:daily:${now.toISOString().slice(0, 10)}`,
+        limit: accountDaily,
+      });
+    }
+    const accountMonthly = accountMonthlyLimit(env);
+    if (accountMonthly !== null) {
+      buckets.push({
+        key: `account:${ownerSubject}:monthly:${now.toISOString().slice(0, 7)}`,
+        limit: accountMonthly,
+      });
+    }
+  }
   return buckets;
 }
 
@@ -164,6 +203,7 @@ function responseHeaders(origin: string | null, env: ScanEnv): Headers {
       "access-control-allow-methods",
       "GET, POST, PUT, DELETE, OPTIONS",
     );
+    headers.set("access-control-allow-credentials", "true");
     headers.set("vary", "Origin");
   }
   return headers;
@@ -561,24 +601,28 @@ function maxActiveJobs(env: ScanEnv): number | null {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-function fullScanProviderConfigured(env: ScanEnv): boolean {
-  const provider =
-    env.SCAN_AI_PROVIDER ?? (env.AI ? "workers-ai" : "ai-gateway");
-  const frontierProvider = env.SCAN_FRONTIER_PROVIDER ?? provider;
-  const frontierModel =
-    env.SCAN_FRONTIER_MODEL?.trim() ||
-    (frontierProvider === "workers-ai" ? env.SCAN_AI_MODEL?.trim() : "");
-  const configured = (name: typeof provider): boolean => {
-    if (name === "workers-ai") return Boolean(env.AI);
-    if (name === "ai-gateway")
-      return Boolean(env.SCAN_AI_GATEWAY_URL && env.AI_GATEWAY_TOKEN);
-    return Boolean(env.OPENROUTER_URL && env.OPENROUTER_API_KEY);
-  };
-  return (
-    configured(provider) &&
-    configured(frontierProvider) &&
-    Boolean(frontierModel)
+function aiRouteConfigured(env: ScanEnv, route: ConfiguredAiRoute): boolean {
+  if (!route.model.trim()) return false;
+  if (route.provider === "workers-ai") return Boolean(env.AI);
+  if (route.provider === "ai-gateway") {
+    return Boolean(env.SCAN_AI_GATEWAY_URL && env.AI_GATEWAY_TOKEN);
+  }
+  return Boolean(
+    env.OPENROUTER_URL &&
+    env.OPENROUTER_API_KEY &&
+    openRouterAccountPolicyAttested(env.OPENROUTER_ACCOUNT_POLICY_ATTESTATION),
   );
+}
+
+function fullScanProviderConfigured(env: ScanEnv): boolean {
+  return (
+    aiRouteConfigured(env, primaryScanAiRoute(env)) &&
+    aiRouteConfigured(env, frontierScanAiRoute(env))
+  );
+}
+
+function hostedEditorAiProviderConfigured(env: ScanEnv): boolean {
+  return aiRouteConfigured(env, hostedEditorAiRoute(env));
 }
 
 async function enforceRateLimit(
@@ -836,13 +880,12 @@ async function completeUpload(
       "upload_token_required",
       "upload token is required",
     );
-  const record = await repository.getUploadIntent(uploadId);
   const expectedTokenHash = await tokenHash(rawToken, env);
-  if (
-    !record ||
-    record.status !== "uploaded" ||
-    !constantTimeEqual(record.tokenHash, expectedTokenHash)
-  ) {
+  const record = await repository.authorizeCompletedUpload(
+    uploadId,
+    expectedTokenHash,
+  );
+  if (!record || record.status !== "uploaded") {
     throw new HttpError(404, "upload_not_found", "upload is not ready");
   }
   const head = await env.SCAN_BUCKET.head(record.sourceKey);
@@ -903,17 +946,6 @@ async function createScan(
       "scanToken must be a 32-byte base64url token",
     );
   }
-  if (
-    mode === "full" &&
-    env.SCAN_ENVIRONMENT === "production" &&
-    !env.SCAN_FULL_ACCESS_SECRET
-  ) {
-    throw new HttpError(
-      503,
-      "full_scan_not_configured",
-      "Full Scan access is not configured",
-    );
-  }
   if (mode === "full" && env.SCAN_FULL_ACCESS_SECRET) {
     const fullToken = request.headers.get("x-scan-full-access")?.trim();
     if (
@@ -948,7 +980,11 @@ async function createScan(
       "upload_token_required",
       "upload token is required",
     );
-  const upload = await repository.getUploadIntent(uploadId);
+  const uploadTokenHash = await tokenHash(rawUploadToken, env);
+  const upload = await repository.inspectUploadForScanCreation(
+    uploadId,
+    uploadTokenHash,
+  );
   if (
     !upload ||
     (upload.status !== "uploaded" && upload.status !== "consumed") ||
@@ -960,11 +996,6 @@ async function createScan(
       "upload_not_ready",
       "upload must be completed before scan creation",
     );
-  if (
-    !constantTimeEqual(upload.tokenHash, await tokenHash(rawUploadToken, env))
-  ) {
-    throw new HttpError(404, "upload_not_found", "upload intent is invalid");
-  }
   const aiConsent = await requireStoredAiDataConsent(
     env,
     upload.aiConsent,
@@ -972,13 +1003,14 @@ async function createScan(
   );
   const activeLimit = maxActiveJobs(env);
   const reservedUnits = estimatedScanUnits(mode, upload.expectedSize);
-  const buckets = usageBuckets(env);
+  const buckets = usageBuckets(env, repository.ownerSubject);
   const created = await repository.createScan({
     id: scanId,
     uploadId,
     mode,
     reservedUnits,
     accessTokenHash: await tokenHash(scanToken, env),
+    uploadTokenHash,
     buckets,
     aiConsent,
     maxActiveJobs: activeLimit,
@@ -1174,9 +1206,9 @@ async function editorAi(
     `${scanId}\u0000${idempotencyKey}`,
   )}`;
   const artifactKey = editorAiArtifactKey(scanId, operationId);
-  const configuredProvider =
-    env.SCAN_AI_PROVIDER ?? (env.AI ? "workers-ai" : "ai-gateway");
-  const configuredModel = env.SCAN_AI_MODEL ?? DEFAULT_SCAN_AI_MODEL;
+  const editorRoute = hostedEditorAiRoute(env);
+  const configuredProvider = editorRoute.provider;
+  const configuredModel = editorRoute.model;
 
   const deliverArtifact = async (
     artifact: EditorAiOperationArtifact,
@@ -1288,7 +1320,7 @@ async function editorAi(
       model: configuredModel,
       requestHash,
       units: costWeight,
-      buckets: usageBuckets(env),
+      buckets: usageBuckets(env, repository.ownerSubject),
     });
   } catch {
     throw new HttpError(
@@ -1451,6 +1483,7 @@ async function editorAi(
       provider: result.provider,
       model: result.model,
       status: "completed",
+      ...result.usage,
     })
     .catch(() => {
       emitContentFreeObservation(undefined, {
@@ -1991,6 +2024,51 @@ async function createAbuseReport(
   return success({ accepted: true }, request, env, 202);
 }
 
+function accountSession(
+  request: Request,
+  env: ScanEnv,
+  account: Exclude<ScanAccount, { mode: "disabled" }>,
+): Response {
+  const returnTo = new URL(request.url).searchParams.get("return_to");
+  if (returnTo) {
+    let destination: URL;
+    try {
+      destination = new URL(returnTo);
+    } catch {
+      throw new HttpError(
+        400,
+        "invalid_return_url",
+        "the account return URL is invalid",
+      );
+    }
+    if (!configuredAllowedOrigins(env).has(destination.origin)) {
+      throw new HttpError(
+        400,
+        "invalid_return_url",
+        "the account return URL is not allowed",
+      );
+    }
+    const headers = responseHeaders(request.headers.get("origin"), env);
+    headers.set("location", destination.href);
+    return new Response(null, { status: 303, headers });
+  }
+  return success(
+    {
+      schemaVersion: ACCESS_SESSION_SCHEMA_VERSION,
+      subject: account.subject,
+      expiresAt: account.expiresAt,
+      fullScanEnabled:
+        isFeatureEnabled(env.SCAN_FRONTIER_ENABLED, false) &&
+        fullScanProviderConfigured(env),
+      hostedEditorAiEnabled:
+        isFeatureEnabled(env.SCAN_EDITOR_AI_ENABLED, false) &&
+        hostedEditorAiProviderConfigured(env),
+    },
+    request,
+    env,
+  );
+}
+
 export async function handleRequest(
   request: Request,
   env: ScanEnv,
@@ -2006,8 +2084,25 @@ export async function handleRequest(
   }
   const url = new URL(request.url);
   const segments = idSegments(url.pathname);
-  const repository = new ScanRepository(env.DB);
   try {
+    const account = routeRequiresAccount(request.method, url.pathname)
+      ? await authenticateScanAccount(request, env)
+      : ({
+          mode: "disabled",
+          subject: null,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+        } satisfies ScanAccount);
+    const repository = new ScanRepository(env.DB, undefined, account.subject);
+    if (request.method === "GET" && url.pathname === "/api/v1/session") {
+      if (account.mode === "disabled") {
+        throw new HttpError(
+          401,
+          "account_auth_required",
+          "an account is required",
+        );
+      }
+      return accountSession(request, env, account);
+    }
     if (request.method === "GET" && url.pathname === "/api/v1/health") {
       return success(
         {
@@ -2210,7 +2305,7 @@ export async function handleRequest(
     }
     throw new HttpError(404, "not_found", "route was not found");
   } catch (cause) {
-    if (cause instanceof HttpError) {
+    if (cause instanceof HttpError || cause instanceof AccessAuthError) {
       emitContentFreeObservation(ctx, {
         event: "request_rejected",
         route: routeFamily(url.pathname),

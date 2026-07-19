@@ -79,10 +79,18 @@ export interface ScanEnv {
   SCAN_MAX_ACTIVE_JOBS?: string;
   SCAN_AI_PROVIDER?: "workers-ai" | "ai-gateway" | "openrouter";
   SCAN_FRONTIER_PROVIDER?: "workers-ai" | "ai-gateway" | "openrouter";
+  SCAN_EDITOR_AI_PROVIDER?: "workers-ai" | "ai-gateway" | "openrouter";
+  SCAN_EDITOR_AI_MODEL?: string;
   SCAN_AI_GATEWAY_URL?: string;
   AI_GATEWAY_TOKEN?: string;
   OPENROUTER_URL?: string;
   OPENROUTER_API_KEY?: string;
+  OPENROUTER_ACCOUNT_POLICY_ATTESTATION?: string;
+  SCAN_AUTH_MODE?: "access" | "local" | "disabled";
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
+  SCAN_ACCOUNT_DAILY_LIMIT_UNITS?: string;
+  SCAN_ACCOUNT_MONTHLY_LIMIT_UNITS?: string;
   SCAN_RETENTION_DAYS?: string;
   SCAN_SOURCE_RETENTION_DAYS?: string;
   SCAN_UPLOAD_RETENTION_MINUTES?: string;

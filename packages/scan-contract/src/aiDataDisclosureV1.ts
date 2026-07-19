@@ -135,8 +135,8 @@ export const aiDataDisclosureV1Schema: AnySchema = {
     provider: {
       type: "string",
       minLength: 1,
-      maxLength: 128,
-      pattern: "^[A-Za-z0-9._:+-]+$",
+      maxLength: 256,
+      pattern: "^[A-Za-z0-9._:/+-]+$",
     },
     consentId: {
       type: "string",

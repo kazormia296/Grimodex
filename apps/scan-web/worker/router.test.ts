@@ -365,7 +365,10 @@ describe("scan worker router", () => {
         accessTokenHash: "scan-token-hash",
         aiConsent,
       };
-      vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
+      vi.spyOn(
+        ScanRepository.prototype,
+        "inspectUploadForScanCreation",
+      ).mockResolvedValue({
         id: "upload-1",
         tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
         filename: "novel.txt",
@@ -443,7 +446,10 @@ describe("scan worker router", () => {
       code: "invalid_scan_token",
     },
   ])("rejects an invalid client scan handle with $code", async (body) => {
-    const getUpload = vi.spyOn(ScanRepository.prototype, "getUploadIntent");
+    const getUpload = vi.spyOn(
+      ScanRepository.prototype,
+      "inspectUploadForScanCreation",
+    );
     const response = await handleRequest(
       new Request("https://scan.example/api/v1/scans", {
         method: "POST",
@@ -474,7 +480,10 @@ describe("scan worker router", () => {
     const scanToken = "A".repeat(43);
     const secret = "test-secret";
     const aiConsent = await workersAiConsent();
-    vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
+    vi.spyOn(
+      ScanRepository.prototype,
+      "inspectUploadForScanCreation",
+    ).mockResolvedValue({
       id: "upload-1",
       tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
       filename: "novel.txt",
@@ -554,7 +563,10 @@ describe("scan worker router", () => {
     const scanToken = "A".repeat(43);
     const secret = "test-secret";
     const aiConsent = await workersAiConsent();
-    vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
+    vi.spyOn(
+      ScanRepository.prototype,
+      "inspectUploadForScanCreation",
+    ).mockResolvedValue({
       id: "upload-1",
       tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
       filename: "novel.txt",
@@ -623,7 +635,10 @@ describe("scan worker router", () => {
     const scanToken = "A".repeat(43);
     const secret = "test-secret";
     const aiConsent = await workersAiConsent();
-    vi.spyOn(ScanRepository.prototype, "getUploadIntent").mockResolvedValue({
+    vi.spyOn(
+      ScanRepository.prototype,
+      "inspectUploadForScanCreation",
+    ).mockResolvedValue({
       id: "upload-1",
       tokenHash: await sha256Hex(`${secret}\u0000${uploadToken}`),
       filename: "novel.txt",

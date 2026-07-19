@@ -1,4 +1,8 @@
-import { assertCurrentAiDataConsentIdentity } from "./ai/aiDataDisclosure";
+import {
+  AiDataConsentMismatchError,
+  AiDataDisclosureUnavailableError,
+  assertCurrentAiDataConsentIdentity,
+} from "./ai/aiDataDisclosure";
 import type { ScanEnv } from "./env";
 import type { ScanRepository } from "./repository";
 
@@ -31,5 +35,15 @@ export async function ensureWorkflowScanActive(
   ) {
     throw new Error(`scan is already terminal: ${scan.status}`);
   }
-  await assertCurrentAiDataConsentIdentity(env, scan.aiConsent, "scan");
+  try {
+    await assertCurrentAiDataConsentIdentity(env, scan.aiConsent, "scan");
+  } catch (cause) {
+    // A retry must never continue with a now-invalid provider configuration.
+    // Classify that state as a consent mismatch at the workflow boundary while
+    // public disclosure endpoints continue to report configuration failures.
+    if (cause instanceof AiDataDisclosureUnavailableError) {
+      throw new AiDataConsentMismatchError();
+    }
+    throw cause;
+  }
 }

@@ -11,6 +11,7 @@ export * from "./publicReportV1.js";
 export * from "./aiDataDisclosureV1.js";
 export * from "./hostedEditorAi.js";
 export * from "./cloudContentPolicy.js";
+export * from "./accessSession.js";
 export {
   chunkExtractionV1Schema,
   validateChunkExtraction,

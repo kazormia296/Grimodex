@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { ScanApiClient, ScanAuthenticationRequiredError } from "./scanApiClient";
+import {
+  ScanApiClient,
+  ScanAuthenticationRequiredError,
+} from "./scanApiClient";
 
 describe("Scan account client", () => {
   it("loads an Access session with cross-origin credentials enabled", async () => {
@@ -30,10 +33,11 @@ describe("Scan account client", () => {
   it("treats an Access login HTML response as authentication-required", async () => {
     const client = new ScanApiClient({
       baseUrl: "https://api.grimodex.app",
-      fetchImpl: vi.fn(async () =>
-        new Response("<!doctype html><title>Cloudflare Access</title>", {
-          headers: { "content-type": "text/html" },
-        }),
+      fetchImpl: vi.fn(
+        async () =>
+          new Response("<!doctype html><title>Cloudflare Access</title>", {
+            headers: { "content-type": "text/html" },
+          }),
       ),
     });
 

@@ -386,6 +386,9 @@ export function createScanDeployPlan({
       VITE_EDITOR_BASE_URL: `${spec.editorOrigin}/editor`,
       VITE_SCAN_API_BASE_URL: normalizedApiBaseUrl,
       VITE_SCAN_TURNSTILE_REQUIRED: String(spec.turnstileRequired),
+      ...(environment === "production"
+        ? { VITE_SCAN_AUTH_REQUIRED: "true" }
+        : {}),
       ...(turnstileSiteKey?.trim()
         ? { VITE_SCAN_TURNSTILE_SITE_KEY: turnstileSiteKey.trim() }
         : {}),

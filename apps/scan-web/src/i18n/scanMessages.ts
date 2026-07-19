@@ -17,6 +17,12 @@ export interface ScanMessages {
   quickMode: string;
   fullMode: string;
   upload: string;
+  account: {
+    login: string;
+    logout: string;
+    checking: string;
+    required: string;
+  };
   demoFixture: string;
   running: string;
   policyLoading: string;
@@ -163,6 +169,12 @@ const ja: ScanMessages = {
   quickMode: "Quick",
   fullMode: "Full",
   upload: ".txt / .md をアップロード",
+  account: {
+    login: "ログイン",
+    logout: "ログアウト",
+    checking: "アカウントを確認中…",
+    required: "原稿のアップロードにはログインが必要です。",
+  },
   demoFixture: "デモデータ（Scan API未設定）",
   running: "Scan実行中…",
   policyLoading: "データ利用ポリシーを確認中…",
@@ -350,6 +362,12 @@ const en: ScanMessages = {
   quickMode: "Quick",
   fullMode: "Full",
   upload: "Upload .txt / .md",
+  account: {
+    login: "Log in",
+    logout: "Log out",
+    checking: "Checking your account…",
+    required: "Log in to upload a manuscript.",
+  },
   demoFixture: "Demo data (Scan API not configured)",
   running: "Scan in progress…",
   policyLoading: "Loading the data policy…",

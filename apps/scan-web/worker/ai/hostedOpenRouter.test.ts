@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScanEnv } from "../env";
 import { runHostedAi } from "./hostedAi";
+import { OPENROUTER_ACCOUNT_POLICY_ATTESTATION } from "./openRouterPolicy";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -29,6 +30,7 @@ describe("Hosted Editor OpenRouter contract", () => {
         SCAN_EDITOR_AI_MODEL: "openai/gpt-5.6-luna",
         OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
         OPENROUTER_API_KEY: "server-only",
+        OPENROUTER_ACCOUNT_POLICY_ATTESTATION,
       } as unknown as ScanEnv,
       { prompt: "この段落を整えて" },
     );
@@ -50,6 +52,7 @@ describe("Hosted Editor OpenRouter contract", () => {
       model: "openai/gpt-5.6-luna",
       max_completion_tokens: 2_000,
       provider: {
+        order: ["azure"],
         only: ["azure"],
         allow_fallbacks: false,
         data_collection: "deny",
