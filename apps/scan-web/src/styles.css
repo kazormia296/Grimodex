@@ -6,51 +6,42 @@
   --card-foreground: oklch(0.145 0 0);
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.965 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.965 0 0);
   --muted-foreground: oklch(0.54 0 0);
+  --accent: oklch(0.965 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --accent: #534ab7;
-  --accent-weak: #eeecf6;
-  --destructive: #b43c3c;
+  --ring: oklch(0.708 0 0);
   --radius: 0.625rem;
-  --canvas: color-mix(in oklch, var(--background) 97%, black);
-  --panel-top: color-mix(in oklch, var(--card) 92%, white);
-  --panel-bottom: color-mix(in oklch, var(--card) 96%, black);
-  --panel-shadow:
-    0 24px 48px rgb(20 18 14 / 0.08), 0 8px 18px rgb(20 18 14 / 0.06),
-    inset 0 1px 0 rgb(255 255 255 / 0.7);
+  --gx-panel-radius: 18px;
+  --gx-panel-bg-top: color-mix(in oklch, var(--card) 92%, white);
+  --gx-panel-bg-mid: var(--card);
+  --gx-panel-bg-bottom: color-mix(in oklch, var(--card) 96%, black);
+  --gx-panel-bg: linear-gradient(
+    180deg,
+    var(--gx-panel-bg-top) 0%,
+    var(--gx-panel-bg-mid) 55%,
+    var(--gx-panel-bg-bottom) 100%
+  );
+  --gx-panel-rim: rgba(0, 0, 0, 0.06);
+  --gx-panel-border: 1px solid var(--gx-panel-rim);
+  --gx-canvas-bg: color-mix(in oklch, var(--background) 97%, black);
+  --gx-panel-shadow:
+    0 24px 48px rgba(20, 18, 14, 0.1), 0 8px 18px rgba(20, 18, 14, 0.08),
+    0 2px 5px rgba(20, 18, 14, 0.06), inset 0 2px 0 rgba(255, 255, 255, 0.7),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.04);
   color: var(--foreground);
-  background: var(--canvas);
+  background: var(--gx-canvas-bg);
   font-family:
-    "M PLUS 1", "Hiragino Sans", "Yu Gothic UI", system-ui, sans-serif;
+    var(--ui-font, "M PLUS 1"), ui-sans-serif, system-ui, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   line-height: 1.5;
   font-synthesis: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.19 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.985 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --border: oklch(0.269 0 0);
-    --input: oklch(0.269 0 0);
-    --accent: #8d84e0;
-    --accent-weak: #2e2a4a;
-    --destructive: #e07070;
-    --canvas: color-mix(in oklch, var(--background) 55%, black);
-    --panel-top: color-mix(in oklch, var(--card) 90%, white);
-    --panel-bottom: color-mix(in oklch, var(--card) 90%, black);
-    --panel-shadow:
-      0 32px 64px rgb(0 0 0 / 0.45), 0 12px 24px rgb(0 0 0 / 0.32),
-      inset 0 1px 0 rgb(255 255 255 / 0.08);
-  }
 }
 
 * {
@@ -60,7 +51,7 @@
 html {
   min-width: 320px;
   min-height: 100%;
-  background: var(--canvas);
+  background: var(--gx-canvas-bg);
 }
 
 body {
@@ -68,13 +59,7 @@ body {
   min-height: 100vh;
   margin: 0;
   color: var(--foreground);
-  background:
-    radial-gradient(
-      circle at 12% -10%,
-      color-mix(in oklch, var(--accent) 9%, transparent),
-      transparent 36rem
-    ),
-    var(--canvas);
+  background: var(--gx-canvas-bg);
 }
 
 button,
@@ -94,7 +79,7 @@ button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
 
@@ -114,10 +99,8 @@ select:disabled {
   justify-content: space-between;
   min-height: 56px;
   padding: 0 20px;
-  border-bottom: 1px solid color-mix(in oklch, var(--border) 82%, transparent);
-  background: color-mix(in oklch, var(--background) 82%, transparent);
-  box-shadow: 0 1px 10px rgb(0 0 0 / 0.04);
-  backdrop-filter: blur(10px) saturate(1.08);
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
 }
 
 .scan-brand {
@@ -128,16 +111,8 @@ select:disabled {
   text-decoration: none;
 }
 
-.scan-brand img {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-}
-
-.scan-brand__wordmark {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.035em;
+.scan-brand__logo {
+  flex: 0 0 auto;
 }
 
 .scan-brand__product {
@@ -171,11 +146,11 @@ select:disabled {
   width: min(1160px, calc(100% - 28px));
   margin: 18px auto 0;
   padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  border: var(--gx-panel-border);
+  border-radius: var(--gx-panel-radius);
   color: var(--card-foreground);
-  background: color-mix(in oklch, var(--card) 92%, transparent);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 0.04);
+  background: var(--gx-panel-bg);
+  box-shadow: var(--gx-panel-shadow);
 }
 
 .scan-toolbar label {
@@ -251,7 +226,7 @@ select:disabled {
 
 .scan-eyebrow {
   margin: 0 0 7px;
-  color: var(--accent);
+  color: var(--accent-foreground);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.09em;
@@ -287,16 +262,11 @@ h3 {
 .scan-card {
   margin-bottom: 16px;
   padding: 20px;
-  border: 1px solid color-mix(in oklch, var(--border) 82%, transparent);
-  border-radius: 18px;
+  border: var(--gx-panel-border);
+  border-radius: var(--gx-panel-radius);
   color: var(--card-foreground);
-  background: linear-gradient(
-    180deg,
-    var(--panel-top),
-    var(--card) 55%,
-    var(--panel-bottom)
-  );
-  box-shadow: var(--panel-shadow);
+  background: var(--gx-panel-bg);
+  box-shadow: var(--gx-panel-shadow);
 }
 
 .scan-report__grid {
@@ -323,22 +293,23 @@ h3 {
 
 .scan-secondary {
   border: 1px solid var(--border);
-  color: var(--foreground);
-  background: color-mix(in oklch, var(--background) 75%, transparent);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
 }
 
 .scan-danger {
   border: 1px solid var(--destructive);
-  color: white;
+  color: var(--destructive-foreground);
   background: var(--destructive);
 }
 
 .scan-success {
   padding: 10px 12px;
-  border: 1px solid color-mix(in oklch, var(--accent) 36%, var(--border));
+  border: 1px solid
+    color-mix(in oklch, var(--accent-foreground) 18%, var(--border));
   border-radius: 9px;
-  color: var(--foreground);
-  background: var(--accent-weak);
+  color: var(--accent-foreground);
+  background: var(--accent);
 }
 
 .scan-chip-row {
@@ -350,8 +321,8 @@ h3 {
 .scan-chip {
   padding: 4px 9px;
   border-radius: 999px;
-  color: var(--accent);
-  background: var(--accent-weak);
+  color: var(--accent-foreground);
+  background: var(--accent);
   font-size: 12px;
   font-weight: 600;
 }
@@ -431,7 +402,7 @@ h3 {
 }
 
 .scan-finding__status {
-  color: var(--accent);
+  color: var(--accent-foreground);
   font-size: 11px;
   font-weight: 700;
 }
@@ -457,7 +428,7 @@ h3 {
 }
 
 .scan-evidence {
-  color: var(--accent);
+  color: var(--accent-foreground);
   font-size: 13px;
 }
 
@@ -516,7 +487,7 @@ h3 {
 }
 
 .scan-policy-links a {
-  color: var(--accent);
+  color: var(--accent-foreground);
   font-size: 12px;
   font-weight: 600;
 }

@@ -16,6 +16,7 @@
     "dev": "pnpm build:dependencies && vite"
   },
   "dependencies": {
+    "@fontsource/m-plus-1": "^5.2.9",
     "@grimodex/scan-contract": "workspace:*",
     "@grimodex/scan-core": "workspace:*",
     "@grimodex/scan-prompts": "workspace:*",

@@ -429,6 +429,9 @@ importers:
 
   apps/scan-web:
     dependencies:
+      '@fontsource/m-plus-1':
+        specifier: ^5.2.9
+        version: 5.2.9
       '@grimodex/scan-contract':
         specifier: workspace:*
         version: link:../../packages/scan-contract

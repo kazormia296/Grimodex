@@ -4,7 +4,7 @@
   "start_url": ".",
   "display": "standalone",
   "background_color": "#f7f7f7",
-  "theme_color": "#171717",
+  "theme_color": "#ffffff",
   "description": "Private manuscript scanning with handoff to the full Grimodex Editor.",
   "icons": [
     {

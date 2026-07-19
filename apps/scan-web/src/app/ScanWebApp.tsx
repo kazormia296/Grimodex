@@ -3,6 +3,7 @@ import {
   buildEditorHandoffUrl,
   type AiDataDisclosureV1,
 } from "@grimodex/scan-contract";
+import { GrimodexLogo } from "../../../../src/components/GrimodexLogo";
 import { createMinimalJaBundle } from "../fixtures/minimalJa";
 import { ScanReport } from "../report/ScanReport";
 import { ScanApiClient, type ScanHandle } from "../api/scanApiClient";
@@ -363,8 +364,7 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
     <>
       <header className="scan-app-header">
         <a className="scan-brand" href="/" aria-label="Grimodex Scan">
-          <img src="/icons/grimodex-scan.svg" alt="" />
-          <span className="scan-brand__wordmark">Grimodex</span>
+          <GrimodexLogo height={24} className="scan-brand__logo" />
           <span className="scan-brand__product">Scan</span>
         </a>
         <nav aria-label={copy.productsNavigation}>
@@ -479,10 +479,7 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
           publicReportId={publicReportId}
           publicReportBusy={publicReportBusy}
           onDelete={
-            apiClient &&
-            scanHandle &&
-            !editorLaunchBusy &&
-            !deleteTarget
+            apiClient && scanHandle && !editorLaunchBusy && !deleteTarget
               ? requestDelete
               : undefined
           }

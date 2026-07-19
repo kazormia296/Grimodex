@@ -17,14 +17,42 @@ function discoverBuildAssets(html) {
   return [...assets];
 }
 
+async function discoverStylesheetFonts(buildAssets) {
+  const fonts = new Set();
+  const urlPattern = /url\(\s*(?:["']([^"']+)["']|([^)'"\s]+))\s*\)/giu;
+  for (const asset of buildAssets) {
+    const stylesheetUrl = new URL(asset, self.location.origin);
+    if (!stylesheetUrl.pathname.endsWith(".css") || stylesheetUrl.search)
+      continue;
+    const response = await fetch(asset, { cache: "reload" });
+    if (!response.ok) throw new Error("Unable to inspect the app stylesheet");
+    const css = await response.text();
+    for (const match of css.matchAll(urlPattern)) {
+      const value = match[1] ?? match[2];
+      if (!value) continue;
+      const url = new URL(value, stylesheetUrl);
+      if (
+        url.origin !== self.location.origin ||
+        !url.pathname.startsWith("/assets/") ||
+        url.search !== "" ||
+        !/\.(?:woff2?|ttf|otf)$/iu.test(url.pathname)
+      )
+        continue;
+      fonts.add(url.pathname);
+    }
+  }
+  return [...fonts];
+}
+
 async function precacheShell() {
   const cache = await caches.open(CACHE_NAME);
   const indexResponse = await fetch(INDEX_URL, { cache: "reload" });
   if (!indexResponse.ok) throw new Error("Unable to precache the app shell");
   const html = await indexResponse.clone().text();
   const buildAssets = discoverBuildAssets(html);
+  const fontAssets = await discoverStylesheetFonts(buildAssets);
   await cache.put(INDEX_URL, indexResponse);
-  await cache.addAll([...STATIC_SHELL, ...buildAssets]);
+  await cache.addAll([...STATIC_SHELL, ...buildAssets, ...fontAssets]);
 }
 
 self.addEventListener("install", (event) => {
@@ -78,7 +106,7 @@ self.addEventListener("fetch", (event) => {
         const isStaticBuildAsset =
           url.pathname.startsWith("/assets/") &&
           url.search === "" &&
-          /\.(?:css|js|mjs)$/iu.test(url.pathname);
+          /\.(?:css|js|mjs|woff2?|ttf|otf)$/iu.test(url.pathname);
         if (
           isStaticBuildAsset &&
           !response.headers.get("cache-control")?.includes("no-store")
