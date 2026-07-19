@@ -350,6 +350,29 @@ describe("ScanApiClient", () => {
     );
   });
 
+  it("rejects a deletion response that does not match the owned Scan contract", async () => {
+    const invalidResponses = [
+      {
+        scanId: "another-scan",
+        status: "deleted",
+        cleanup: "completed",
+      },
+      { scanId: "scan-1", status: "completed", cleanup: "completed" },
+      { scanId: "scan-1", status: "deleted", cleanup: "unknown" },
+    ];
+
+    for (const body of invalidResponses) {
+      const client = new ScanApiClient({
+        baseUrl: "https://scan.example",
+        fetchImpl: vi.fn(async () => response(body)),
+      });
+
+      await expect(
+        client.delete({ scanId: "scan-1", scanToken: "scan-secret" }),
+      ).rejects.toThrow("Scan deletion response is invalid");
+    }
+  });
+
   it("polls at two seconds then backs off to at most five seconds", async () => {
     const delays: number[] = [];
     let calls = 0;
