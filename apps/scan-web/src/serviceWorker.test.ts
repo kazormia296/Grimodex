@@ -54,12 +54,19 @@ describe("scan service worker", () => {
 
   it("discovers and precaches Vite hashed JavaScript and CSS assets", async () => {
     const worker = await loadWorker();
-    worker.fetchMock.mockResolvedValueOnce(
-      new Response(
-        '<link rel="stylesheet" href="/assets/app-def.css"><script type="module" src="/assets/app-abc.js"></script>',
-        { status: 200 },
-      ),
-    );
+    worker.fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          '<link rel="stylesheet" href="/assets/app-def.css"><script type="module" src="/assets/app-abc.js"></script>',
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          '@font-face{font-family:"M PLUS 1";src:url("/assets/m-plus-1-japanese.woff2") format("woff2")}',
+          { status: 200 },
+        ),
+      );
     let pending: Promise<unknown> | undefined;
     worker.listeners.get("install")?.({
       waitUntil(value: Promise<unknown>) {
@@ -74,7 +81,34 @@ describe("scan service worker", () => {
         "/manifest.webmanifest",
         "/assets/app-abc.js",
         "/assets/app-def.css",
+        "/assets/m-plus-1-japanese.woff2",
       ]),
+    );
+  });
+
+  it("stores immutable font assets for later offline loads", async () => {
+    const worker = await loadWorker();
+    worker.fetchMock.mockResolvedValue(new Response("font", { status: 200 }));
+    const request = {
+      url: "https://try.grimodex.app/assets/m-plus-1-japanese.woff2",
+      method: "GET",
+      mode: "same-origin",
+      cache: "default",
+      headers: new Headers(),
+    };
+    let response: Promise<Response> | undefined;
+    worker.listeners.get("fetch")?.({
+      request,
+      respondWith(value: Promise<Response>) {
+        response = value;
+      },
+    });
+
+    await expect(response).resolves.toHaveProperty("status", 200);
+    await vi.waitFor(() => expect(worker.cache.put).toHaveBeenCalled());
+    expect(worker.cache.put).toHaveBeenCalledWith(
+      request,
+      expect.any(Response),
     );
   });
 
