@@ -69,23 +69,13 @@ describe("sendChat", () => {
     expect(opts.headers["Authorization"]).toBe("Bearer sk-openai");
   });
 
-  it("sends OpenRouter request with extra headers", async () => {
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({
-        choices: [{ message: { content: "Response" } }],
-      }),
-    );
-
-    await sendChat("openrouter", "auto", "sk-or", [
-      { role: "user", content: "Test" },
-    ]);
-
-    const [url, opts] = mockFetch.mock.calls[0];
-    expect(url).toBe("/api/openrouter/chat/completions");
-    expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/kazormia296/Grimodex",
-    );
-    expect(opts.headers["X-Title"]).toBe("Grimodex");
+  it("rejects OpenRouter before making a browser request", async () => {
+    await expect(
+      sendChat("openrouter", "auto", "sk-or", [
+        { role: "user", content: "Test" },
+      ]),
+    ).rejects.toThrow("not supported in browser mode");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("sends Ollama request without auth", async () => {
@@ -120,11 +110,11 @@ describe("browser production endpoints", () => {
     expect(
       resolveBrowserAiEndpoint("openai", "chat", { development: false }),
     ).toBe("https://api.openai.com/v1/chat/completions");
-    expect(
+    expect(() =>
       resolveBrowserAiEndpoint("openrouter", "models", {
         development: false,
       }),
-    ).toBe("https://openrouter.ai/api/v1/models");
+    ).toThrow("not supported in browser mode");
     expect(
       resolveBrowserAiEndpoint("anthropic", "chat", {
         development: false,
@@ -189,8 +179,8 @@ describe("structured browser AI transport", () => {
     await transport.stream?.(
       {
         operation: "chat",
-        provider: "openrouter",
-        model: "openai/gpt-4o-mini",
+        provider: "openai",
+        model: "gpt-4o-mini",
         apiKey: "sk-test",
         messages: [{ role: "user", content: "Hello" }],
       },
@@ -246,16 +236,11 @@ describe("fetchModels", () => {
     expect(mockFetch.mock.calls[0][0]).toBe("/api/ollama/api/tags");
   });
 
-  it("fetches OpenRouter models with extra headers", async () => {
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({ data: [{ id: "auto", name: "Auto" }] }),
+  it("rejects OpenRouter model discovery before making a request", async () => {
+    await expect(fetchModels("openrouter", "sk-or")).rejects.toThrow(
+      "not supported in browser mode",
     );
-
-    await fetchModels("openrouter", "sk-or");
-    const [, opts] = mockFetch.mock.calls[0];
-    expect(opts.headers["HTTP-Referer"]).toBe(
-      "https://github.com/kazormia296/Grimodex",
-    );
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
 

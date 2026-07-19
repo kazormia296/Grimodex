@@ -223,27 +223,14 @@ describe("createBrowserMock", () => {
       expect(present).toBe(false);
     });
 
-    it("treats only the active provider of an authenticated hosted transport as available", async () => {
-      const hostedMock = await createBrowserMock({
-        aiSettingsOverride: {
-          provider: "openrouter",
-          model: "grimodex-hosted",
-        },
-        aiTransport: { complete: vi.fn() },
-        aiTransportProvidesProviderAccess: true,
-      });
-
+    it("rejects Web OpenRouter credentials before storing them", async () => {
       await expect(
-        hostedMock.invoke<boolean>("has_api_key", {
+        mock.invoke("save_api_key", {
           provider: "openrouter",
+          key: "sk-or-test",
         }),
-      ).resolves.toBe(true);
-      await expect(
-        hostedMock.invoke<boolean>("has_api_key", { provider: "openai" }),
-      ).resolves.toBe(false);
+      ).rejects.toThrow(/not supported in browser mode/i);
       expect(localStorage.getItem("grimodex:api-key:openrouter")).toBeNull();
-
-      hostedMock.close();
     });
   });
 
@@ -255,7 +242,7 @@ describe("createBrowserMock", () => {
         authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       });
       await authorizedMock.invoke("save_api_key", {
-        provider: "openrouter",
+        provider: "openai",
         key: "disposable-test-key",
       });
 
@@ -271,13 +258,13 @@ describe("createBrowserMock", () => {
   describe("send_chat_message", () => {
     it("fails explicitly instead of returning a fake assistant response", async () => {
       // Ensure no key is stored
-      await mock.invoke("delete_api_key", { provider: "openrouter" });
+      await mock.invoke("delete_api_key", { provider: "ollama" });
 
       await expect(
         mock.invoke("send_chat_message", {
           messages: [{ role: "user", content: "Hello" }],
         }),
-      ).rejects.toThrow("未接続");
+      ).rejects.toThrow(/model.*設定|モデル.*設定/i);
     });
   });
 
@@ -376,17 +363,14 @@ describe("createBrowserMock", () => {
       localStorage.removeItem("grimodex:ai-settings");
     });
 
-    // Regression: nothing seeds grimodex:ai-settings in the screenshot path, so
-    // the chat panel rendered "モデル未設定". In staging mode the mock now
-    // returns a default model matching the seeded chat-scene-1 session.
-    it("returns a default AI model in screenshot staging mode", async () => {
+    it("does not imply bundled AI in screenshot staging mode", async () => {
       localStorage.setItem("grimodex:screenshot-mode", "true");
       const stagingMock = await createBrowserMock();
       const settings = await stagingMock.invoke<Record<string, unknown>>(
         "get_ai_settings",
         {},
       );
-      expect(settings.model).toBeTruthy();
+      expect(settings).toMatchObject({ provider: "ollama", model: "" });
       stagingMock.close();
     });
 
@@ -395,7 +379,22 @@ describe("createBrowserMock", () => {
         "get_ai_settings",
         {},
       );
-      expect(settings.model).toBe("");
+      expect(settings).toMatchObject({ provider: "ollama", model: "" });
+    });
+
+    it("migrates a legacy Web OpenRouter setting to disconnected Ollama", async () => {
+      localStorage.setItem(
+        "grimodex:ai-settings",
+        JSON.stringify({ provider: "openrouter", model: "vendor/model" }),
+      );
+      const migratedMock = await createBrowserMock();
+
+      await expect(
+        migratedMock.invoke("get_ai_settings", {}),
+      ).resolves.toMatchObject({ provider: "ollama", model: "" });
+      expect(JSON.parse(localStorage.getItem("grimodex:ai-settings") ?? "{}"))
+        .toMatchObject({ provider: "ollama", model: "" });
+      migratedMock.close();
     });
   });
 

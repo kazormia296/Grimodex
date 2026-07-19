@@ -43,7 +43,6 @@ function createHarness(
       calls.push("await-scene-writes");
     }),
     getHostedEditorRuntime: () => ({
-      entryMode: "standalone",
       exportWorkspace,
     }),
     getCurrentProjectId: () => "project-1",

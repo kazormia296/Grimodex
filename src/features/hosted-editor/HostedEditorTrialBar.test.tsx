@@ -8,80 +8,30 @@ afterEach(async () => {
   await i18n.changeLanguage("ja");
 });
 
-describe("HostedEditorTrialBar", () => {
-  it("explains the Scan entry in Japanese", async () => {
+describe("Web Editor trial notice", () => {
+  it("states in Japanese that AI is not included and requires Local LLM or BYOK", async () => {
     await i18n.changeLanguage("ja");
 
-    render(<HostedEditorTrialBar entryMode="scan" />);
+    const { container } = render(<HostedEditorTrialBar />);
 
     expect(screen.getByText(/Web Editor.*試用版/)).toBeInTheDocument();
-    expect(screen.getByText(/Scan.*文書.*編集/)).toBeInTheDocument();
+    expect(screen.getByText(/本体.*エディター.*試/)).toBeInTheDocument();
     expect(screen.getByText(/このブラウザに保存/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/ローカル版Grimodex.*自動同期されません/),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/必要な権利.*成人向け・R18/u)).toBeInTheDocument();
-    expect(screen.getByText(/AI.*拒否/u)).toBeInTheDocument();
-    expect(
-      screen
-        .getByRole("link", { name: "Cloudflareのホスティング方針" })
-        .getAttribute("href"),
-    ).toBe(
-      "https://blog.cloudflare.com/cloudflares-abuse-policies-and-approach/",
-    );
+    expect(screen.getByText(/AI.*付属していません/)).toBeInTheDocument();
+    expect(screen.getByText(/Local LLM.*APIキー/)).toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/Scan|アップロード|Hosted AI|OpenRouter|Cloudflare/i);
   });
 
-  it("explains the standalone trial in Japanese", async () => {
-    await i18n.changeLanguage("ja");
-
-    render(<HostedEditorTrialBar entryMode="standalone" />);
-
-    expect(screen.getByText(/Web Editor.*試用版/)).toBeInTheDocument();
-    expect(screen.getByText(/Web Editor.*単体.*試/)).toBeInTheDocument();
-    expect(screen.getByText(/このブラウザに保存/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/ローカル版Grimodex.*自動同期されません/),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/必要な権利.*成人向け・R18/u)).toBeInTheDocument();
-    expect(screen.getByText(/AI.*拒否/u)).toBeInTheDocument();
-  });
-
-  it("explains the Scan entry in English", async () => {
+  it("states the same editor-only contract in English", async () => {
     await i18n.changeLanguage("en");
 
-    render(<HostedEditorTrialBar entryMode="scan" />);
+    const { container } = render(<HostedEditorTrialBar />);
 
     expect(screen.getByText(/Web Editor Trial/i)).toBeInTheDocument();
-    expect(screen.getByText(/document imported.*Scan/i)).toBeInTheDocument();
+    expect(screen.getByText(/real Grimodex editor/i)).toBeInTheDocument();
     expect(screen.getByText(/stored in this browser/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/not automatically synced.*local Grimodex/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/required rights.*adult.*R18.*AI.*refuse/i),
-    ).toBeInTheDocument();
-    expect(
-      screen
-        .getByRole("link", { name: "Cloudflare hosting policy" })
-        .getAttribute("href"),
-    ).toBe(
-      "https://blog.cloudflare.com/cloudflares-abuse-policies-and-approach/",
-    );
-  });
-
-  it("explains the standalone trial in English", async () => {
-    await i18n.changeLanguage("en");
-
-    render(<HostedEditorTrialBar entryMode="standalone" />);
-
-    expect(screen.getByText(/Web Editor Trial/i)).toBeInTheDocument();
-    expect(screen.getByText(/Web Editor.*on its own/i)).toBeInTheDocument();
-    expect(screen.getByText(/stored in this browser/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/not automatically synced.*local Grimodex/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/required rights.*adult.*R18.*AI.*refuse/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/AI is not included/i)).toBeInTheDocument();
+    expect(screen.getByText(/Local LLM.*own API key/i)).toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/Scan|upload|Hosted AI|OpenRouter|Cloudflare/i);
   });
 });

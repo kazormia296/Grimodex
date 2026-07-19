@@ -204,11 +204,11 @@ describe("AI path registry — completeness", () => {
   }, 30_000); // testRef ファイル読み込みのため既定 5s を引き上げる
 });
 
-describe("AI runtime route registry — web and hosted transports", () => {
-  it("registers Scan upload, Hosted Editor, and standalone browser BYOK exactly once", () => {
-    expect(AI_RUNTIME_ROUTES.map((route) => route.consentRoute).sort()).toEqual(
-      ["byok", "hosted-editor", "scan"],
-    );
+describe("AI runtime route registry — Web Editor direct transports", () => {
+  it("registers browser BYOK exactly once", () => {
+    expect(AI_RUNTIME_ROUTES.map((route) => route.consentRoute)).toEqual([
+      "byok",
+    ]);
     const ids = AI_RUNTIME_ROUTES.map((route) => route.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -247,11 +247,9 @@ describe("AI runtime route registry — web and hosted transports", () => {
     }
   });
 
-  it("keeps provider authority explicit for hosted and BYOK paths", () => {
+  it("keeps provider authority under user selection", () => {
     for (const route of AI_RUNTIME_ROUTES) {
-      expect(route.providerAuthority).toBe(
-        route.consentRoute === "byok" ? "user-selection" : "server-runtime",
-      );
+      expect(route.providerAuthority).toBe("user-selection");
     }
   });
 });

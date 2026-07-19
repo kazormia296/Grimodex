@@ -189,21 +189,28 @@ describe("BrowserMock web AI runtime contract", () => {
     ]);
   });
 
-  it("keeps agent requests on a scoped transport when one is installed", async () => {
+  it("keeps BYOK agent requests on the selected direct transport", async () => {
     const completeAgent = vi.fn().mockResolvedValue({
-      blocks: [{ type: "text", content: "hosted agent response" }],
+      blocks: [{ type: "text", content: "BYOK agent response" }],
       stopReason: "end_turn",
     });
     const mock = await createBrowserMock({
-      aiSettingsOverride: {
-        provider: "openrouter",
-        model: "grimodex-hosted",
-      },
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: {
         complete: vi.fn(),
         completeAgent,
       },
+    });
+    await mock.invoke("save_ai_settings", {
+      settings: {
+        provider: "openai",
+        model: "gpt-5-mini",
+        ollamaEndpoint: "http://localhost:11434",
+      },
+    });
+    await mock.invoke("save_api_key", {
+      provider: "openai",
+      key: "sk-user-owned",
     });
     const messages = [{ role: "user", content: "相談" }];
     const tools = [
@@ -221,14 +228,14 @@ describe("BrowserMock web AI runtime contract", () => {
 
     expect(completeAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        provider: "openrouter",
-        model: "grimodex-hosted",
+        provider: "openai",
+        model: "gpt-5-mini",
       }),
       messages,
       tools,
     );
     expect(result).toEqual({
-      blocks: [{ type: "text", content: "hosted agent response" }],
+      blocks: [{ type: "text", content: "BYOK agent response" }],
       stopReason: "end_turn",
     });
   });

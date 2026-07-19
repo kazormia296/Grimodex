@@ -12,7 +12,7 @@ describe("runtime target contract", () => {
 
   it.each<[RuntimeTarget, keyof RuntimeCapabilities]>([
     ["electron", "nativeFilesystem"],
-    ["web", "hostedAi"],
+    ["web", "browserDirectAi"],
     ["mobile-native", "shareSheet"],
   ])("resolves a capability preset for %s", (target, capability) => {
     expect(resolveRuntimeCapabilities(target)[capability]).toBe(true);
@@ -24,6 +24,8 @@ describe("runtime target contract", () => {
     expect(capabilities.nativeFilesystem).toBe(false);
     expect(capabilities.externalMount).toBe(false);
     expect(capabilities.localAi).toBe(false);
+    expect(capabilities.hostedAi).toBe(false);
+    expect(capabilities.browserDirectAi).toBe(true);
     expect(capabilities.mcpServer).toBe(false);
     expect(capabilities.multiWindow).toBe(false);
     expect(capabilities.customIme).toBe(false);

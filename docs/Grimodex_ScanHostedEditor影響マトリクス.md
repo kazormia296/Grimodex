@@ -1,95 +1,73 @@
-# Grimodex Scan / Hosted Editor 影響マトリクス
+# Grimodex Web Editor only 影響マトリクス
 
 ## 目的
 
-Scan の結果から開く編集画面を簡易 TipTap ではなく Grimodex 本体の
-Editor へ切り替え、`/editor` から単体でも起動できるようにする。同時に、
-Web の DB 永続化、Hosted AI / BYOK の実経路、AI 送信前の版付き開示と
-明示同意、Scan / Editor の分離配信を一つの契約として固定する。
+公開 Web 版を「Grimodex 本体エディターの試用」に限定する。Scan、原稿アップロード、
+Hosted AI、Web 版 OpenRouter を撤去し、AI はユーザーが明示的に設定した Local LLM
+または BYOK（OpenAI / Anthropic）だけを利用できる契約にする。
 
 ## 変更契約
 
 ### 保持する振る舞い
 
-- Desktop Electron は従来どおり typed preload IPC、N-API、OS の secure secret
-  store を使う。Web 向け実装を Desktop の fallback にしない。
-- Editor の表示と保存は `App -> LayoutShell -> EditorPane` の本体経路を使う。
-- Scan seed は `@grimodex/scan-contract` で検証し、既存の staged import plan を使う。
-- AI のプロジェクト機能許可 (`AiPolicy`) と、外部送信への同意証跡は
-  別契約とする。
+- Web Editor は `App -> LayoutShell -> EditorPane` の本体経路を使う。
+- Web の原稿と設定はブラウザーの IndexedDB にだけ保存する。
+- `.grimodex-handoff` によるローカル Grimodex への引き継ぎを提供する。
+- BYOK の API key はページの実行メモリにだけ保持し、再読込後は再入力を求める。
+- Desktop Electron の typed preload IPC、secure secret store、既存 AI provider 経路は変更しない。
+- AI のプロジェクト機能許可 (`AiPolicy`) と外部送信への同意証跡は別契約とする。
 
 ### 変更する振る舞い
 
-- Scan Pages は Scan だけ、Hosted Editor Pages は本体 Editor だけを配信する。
-- Scan CTA は one-time seed token を URL fragment で Editor へ渡し、Editor が fragment
-  を即時消去した後に Authorization header で一度だけ consume する。
-- BrowserMock は新規 DB bytes と復元 DB bytes の両方から初期化でき、commit
-  完了後だけ dirty を通知する。
-- AI は Hosted / BYOK の型付き transport を通し、chat / agent / inline / codex
-  の契約、cancel、error を保存する。
-- Scan upload 前と AI 初回送信前に、実際の経路から解決した開示文を
-  表示する。provider、policy version、送信範囲、処理/保存先、保持期間、
-  学習利用、削除方法のいずれかが未確定な場合は fail closed とする。
+- 公開配信物は root の Web Editor だけとし、Scan Pages / Worker / R2 / D1 / Workflow
+  および Scan 専用デプロイ経路を廃止する。
+- Web Editor は Scan token、seed、Hosted AI session を読まず、ネットワーク bootstrap
+  なしで IndexedDB workspace を復元する。
+- Web の既定 AI 設定は未接続の Ollama とし、endpoint / model または BYOK key を
+  ユーザーが明示設定するまで AI request を発行しない。
+- Web の provider 選択肢は Ollama、OpenAI、Anthropic に限定する。OpenRouter は
+  Web 版から撤去し、Desktop のユーザー管理経路には影響させない。
+- 試用 UI と利用規約・プライバシー文書で、AI サブスクリプションや付属 AI ではなく
+  Local LLM / BYOK が必要であることを明記する。
 
 ### 禁止動作
 
-- 未同意、古い同意版、または別 provider への同意で upload / AI 送信しない。
-- scan token を URL query、localStorage、永続 workspace に保存しない。Editor には
-  Editor AI だけを許可する scope token を渡す。
-- Hosted secret を client bundle へ含めない。BYOK key を未同意で保存しない。
-- Authorization 付き request、seed endpoint、AI endpoint、private report を
-  Service Worker / Cache API に保存しない。
-- Browser で native-only コマンドを利用可能と表示しない。
+- 原稿、Scan seed、AI key、AI session を Grimodex の Web backend へ送信・保存しない。
+- Hosted credential、共用 OpenRouter key、provider access override を client bundle へ含めない。
+- AI provider、送信範囲、保存・学習方針への版付き同意なしに AI request を発行しない。
+- Browser で native-only command、Hosted AI、Scan upload を利用可能と表示しない。
+- legacy Scan fragment や sessionStorage 値を復元・consume しない。
 
 ## 実行経路マトリクス
 
-| ID            | 入口 / producer               | 変換・検証・権限境界                                       | consumer / sink           | 不変条件                                      | fallback / migration              | 検証                                |
-| ------------- | ----------------------------- | ---------------------------------------------------------- | ------------------------- | --------------------------------------------- | --------------------------------- | ----------------------------------- |
-| WEB-EDITOR-01 | `GET /editor`                 | browser runtime を App mount 前に復元                      | 本体 `App` / `EditorPane` | Scan 不要、簡易 editor 不可                   | 保存なしは新規 workspace          | route + DOM identity test           |
-| WEB-EDITOR-02 | IndexedDB snapshot v3         | revision / checksum / schema version                       | SQL.js BrowserMock        | bytes は commit 後だけ保存                    | v2 seed snapshot を staged import | round-trip / reload / conflict test |
-| WEB-EDITOR-03 | Scan CTA                      | one-time token 発行、fragment 除去、atomic consume         | Editor import bootstrap   | token はログ・query・SW cache に残さない      | 期限/replayは report へ戻す       | token + E2E test                    |
-| WEB-DB-01     | `createBrowserMock(options)`  | DDL は新規時のみ、renderer schema parity                   | SQL.js                    | restore bytes を seed で汚さない              | screenshot seed は新規時のみ      | schema / bytes tests                |
-| WEB-DB-02     | DB `run` / batch / timelapse  | transaction 成功後に dirty を1回                           | persistence controller    | SELECT / rollback は dirty にしない           | export 中再 dirty は次 flush      | mutation tests                      |
-| AI-CONSENT-01 | Scan upload intent            | Workerが版付き disclosure と同意証跡を検証                 | R2 upload / Scan workflow | 同意前は原稿 bytes 送信ゼロ                   | policy 更新時は再同意             | client + router + repository tests  |
-| AI-CONSENT-02 | Hosted Editor AI              | editor scope token + server consent record                 | Scan Worker AI provider   | scan delete/publication 権限は付与しない      | 失効後は再認証または BYOK         | scope / consent / denial tests      |
-| AI-CONSENT-03 | Standalone BYOK               | route + provider + policy version をローカル同意証跡と照合 | 選択 provider API         | 未同意は fetch ゼロ、key は Hosted へ送らない | 非安全な永続保存は選択させない    | transport spy / revision test       |
-| AI-ROUTE-01   | chat / agent / inline / codex | typed web AI adapter、request id、AbortSignal              | Hosted Worker または BYOK | UI の event payload 契約を維持                | Hosted 無効時は明示 error         | stream / cancel / error tests       |
-| AI-ROUTE-02   | Hosted Worker                 | provider 設定と開示 metadata を同じ env から解決           | Workers AI / ZDR provider | 学習/保持を推測で表示しない                   | metadata 不足は 503               | policy endpoint + provider tests    |
-| DEPLOY-01     | Scan build                    | `apps/scan-web/dist` だけを Scan project へ                | `grimodex-scan[-staging]` | Editor project を上書きしない                 | 既存 Scan SW は Scan origin のみ  | deploy plan test                    |
-| DEPLOY-02     | root Editor build             | `dist` + Editor Pages config                               | `grimodex-try[-staging]`  | `/editor` SPA fallback、Scan asset なし       | deploy 前 local verify            | deploy / SW tests                   |
-| CORS-01       | Scan / Editor origins         | route-aware exact allowlist                                | Scan Worker               | wildcard 不可、credentials/header 最小化      | dev origins は別 env              | preflight / denial tests            |
-| UI-01         | Scan upload / report          | 本体 token、font、logo、surface に同期                     | Scan Pages                | 本体と同一ブランド、Scan固有導線は保持        | reduced motion / 390px            | visual / a11y tests                 |
+| ID | 入口 / producer | 変換・検証・権限境界 | consumer / sink | 不変条件 | fallback / migration | 検証 | 状態 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| WEB-EDITOR-01 | `GET /editor` / SPA fallback | App mount 前に IndexedDB を復元 | 本体 `App` / `EditorPane` | Scan 不要、簡易 editor 不可、network bootstrap なし | 保存なしは新規 workspace | runtime + DOM identity test | planned |
+| WEB-EDITOR-02 | IndexedDB snapshot | revision / checksum / schema version | SQL.js BrowserMock | commit 後だけ保存 | 破損時は明示 recovery | round-trip / reload / conflict test | planned |
+| WEB-HANDOFF-01 | 試用 Editor の CTA | workspace bytes を handoff schema へ変換 | local Grimodex import | 原稿を app backend へ送らない | ユーザーが明示 download | handoff unit test | planned |
+| WEB-AI-01 | Web Editor 起動 | 既定 Ollama、空 model、provider allowlist | request なし | AI は付属・自動有効でない | legacy OpenRouter 設定は未接続 Ollama へ移行 | settings / unsupported-provider test | planned |
+| WEB-AI-02 | OpenAI / Anthropic BYOK | key は page-memory、版付き同意、typed transport | 選択 provider API | reload 後 key 消失、同意前 fetch ゼロ | error を UI に明示 | transport spy / revision test | planned |
+| WEB-AI-03 | Local Ollama | user endpoint / model、版付き同意 | user Local LLM endpoint | Grimodex backend を経由しない | 未接続は設定案内 | route / consent test | planned |
+| DEPLOY-01 | root Vite build | static Pages artifact のみ | `grimodex-try[-staging]` | Worker/API env 不要、Scan asset なし | deploy 前 local verify | deploy plan / build test | planned |
+| RETIRE-01 | 旧 Scan UI / API | package・migrations・R2/D1/Workflow・deploy scripts を削除 | なし | 新規 upload/scan を作れない | remote resource 廃止は別の明示作業 | workspace/search audit | planned |
+| RETIRE-02 | legacy Scan URL / session | 値を無視し、consume/fetch しない | standalone workspace | URL token を永続化しない | 通常の試用 Editor 起動 | fetch spy / runtime test | planned |
+| DESKTOP-01 | Electron | typed preload IPC / secure key store | native AI runtime | Desktop provider・保存挙動を維持 | なし | existing Electron / frontend tests | planned |
 
 ## AI 開示の出力契約
 
-Worker または provider registry が返す開示は、少なくとも次を含む。
+Web Editor の外部 AI 送信は `route: "byok"` に限定する。UI は少なくとも provider、
+送信範囲、処理先、アプリ内保存、provider の保持・学習方針、削除方法、policy URL、
+policy version を表示し、`policyVersion + route + providerId` への明示同意を保存する。
+必須値が未確定の場合は `[precheck]` として request を発行しない。
 
-```ts
-interface AiDataDisclosure {
-  policyVersion: string;
-  route: "scan" | "hosted-editor" | "byok";
-  providerId: string;
-  providerName: string;
-  sentData: string[];
-  processors: string[];
-  processingLocations: string[];
-  appStorage: Array<{ location: string; retention: string }>;
-  providerRetention: string;
-  trainingUse: "no" | "yes" | "depends";
-  deletion: string;
-  policyUrls: string[];
-}
-```
-
-UI はこの全項目を表示し、`policyVersion + route + providerId`
-への同意を保存する。開示が取得できない、または必須値が空の場合は
-`[precheck]` として upload / AI request を発行しない。
+Local Ollama はローカル endpoint を利用すること、OpenAI / Anthropic はユーザー自身の
+契約と key で各 provider へ直接送信することを区別して表示する。
 
 ## 品質追跡
 
-- 新規 requirement: `GDX-AI-CONSENT-001`
-- 関連 Iron Laws: `GDX-PRECHECK-001`, `GDX-POLICY-001`, `GDX-ROUTE-001`,
-  `GDX-TRACE-001`
-- Light: consent contract、AI routing、Scan Worker router/repository、BrowserMock DB、deploy plan、SW
-- Heavy: 実 Hosted provider、Scan -> Editor -> reload、Hosted/BYOK stream/cancel
-- Hosted の資格情報と隔離された test account がない環境で Heavy を passed にしない。
+- 関連 requirement: `GDX-AI-CONSENT-001`, `GDX-PRECHECK-001`,
+  `GDX-POLICY-001`, `GDX-ROUTE-001`, `GDX-TRACE-001`
+- Light: browser runtime、BrowserMock AI allowlist、BYOK consent、trial UI、
+  AI path registry、Editor Pages deploy plan、workspace/build
+- Heavy: 実 BYOK provider / Local Ollama、Web Editor reload、Desktop 回帰
+- 実 provider credential または隔離された Local LLM がない環境で Heavy を passed にしない。

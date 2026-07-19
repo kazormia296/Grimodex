@@ -8,15 +8,14 @@ afterEach(async () => {
   await i18n.changeLanguage("ja");
 });
 
-describe("HostedEditorHandoffDialog", () => {
+describe("Web Editor handoff dialog", () => {
   it("downloads the lossless handoff before offering the payload-free desktop launch", async () => {
     await i18n.changeLanguage("ja");
     const download = vi.fn(async () => "白い灯台.grimodex-handoff");
 
-    render(
+    const { container } = render(
       <HostedEditorHandoffDialog
         open
-        entryMode="scan"
         onClose={vi.fn()}
         downloadHandoff={download}
       />,
@@ -25,7 +24,7 @@ describe("HostedEditorHandoffDialog", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent(
       "Grimodexで続きを書く",
     );
-    expect(screen.getByRole("dialog")).toHaveTextContent("Scan");
+    expect(container).not.toHaveTextContent(/Scan|アップロード|Hosted AI/i);
     expect(screen.queryByRole("link", { name: /Grimodexを開く/ })).toBeNull();
 
     fireEvent.click(
@@ -39,9 +38,6 @@ describe("HostedEditorHandoffDialog", () => {
     expect(
       screen.getByRole("link", { name: /Grimodexを開く/ }),
     ).toHaveAttribute("href", "grimodex://handoff");
-    expect(screen.getByRole("dialog")).toHaveTextContent(
-      /開かない場合.*Web Editorから続ける/,
-    );
   });
 
   it("keeps the dialog recoverable when handoff generation fails", async () => {
@@ -53,7 +49,6 @@ describe("HostedEditorHandoffDialog", () => {
     render(
       <HostedEditorHandoffDialog
         open
-        entryMode="standalone"
         onClose={vi.fn()}
         downloadHandoff={download}
       />,
