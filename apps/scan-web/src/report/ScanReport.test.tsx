@@ -40,6 +40,24 @@ describe("ScanReport", () => {
     ).toBeNull();
   });
 
+  it("links the owner to the redacted public view and keeps immediate unpublish available", () => {
+    const onUnpublish = vi.fn();
+    const { getByRole, getByText } = render(
+      <ScanReport
+        bundle={createMinimalJaBundle()}
+        publicReportId="public-1"
+        onUnpublishPublicReport={onUnpublish}
+      />,
+    );
+
+    expect(
+      getByRole("link", { name: "公開レポートを表示" }).getAttribute("href"),
+    ).toBe("/?publicReport=public-1");
+    expect(getByText(/本文と根拠は公開されません.*通報/u)).toBeTruthy();
+    fireEvent.click(getByRole("button", { name: "公開を停止" }));
+    expect(onUnpublish).toHaveBeenCalledOnce();
+  });
+
   it("reveals evidence and records explicit finding feedback", () => {
     const onFeedback = vi.fn();
     const { getByRole, getByText } = render(

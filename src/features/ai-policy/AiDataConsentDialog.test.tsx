@@ -87,9 +87,27 @@ describe("AiDataConsentDialog", () => {
     expect(
       screen.getByText("入出力はモデル学習に使用されません。"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: "クラウド利用時の原稿内容と権利",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/成人向け・R18.*一律.*禁止/u)).toBeInTheDocument();
+    expect(screen.getByText(/AI.*拒否/u)).toBeInTheDocument();
+    expect(screen.getByText(/権利.*許諾.*二次創作/u)).toBeInTheDocument();
+    expect(screen.getByText(/児童.*未成年/u)).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("link", {
+          name: "Cloudflare ホスティング／Abuse方針",
+        })
+        .getAttribute("href"),
+    ).toBe(
+      "https://blog.cloudflare.com/cloudflares-abuse-policies-and-approach/",
+    );
   });
 
-  it("全項目の確認を選ぶまで同意を確定しない", () => {
+  it("Hosted Editorではデータと内容・権利の両方を確認するまで同意を確定しない", () => {
     const onAccept = vi.fn();
     render(
       <AiDataConsentDialog
@@ -107,9 +125,50 @@ describe("AiDataConsentDialog", () => {
         name: "上記の送信・保存・学習利用方針を確認しました",
       }),
     );
+    expect(accept).toBeDisabled();
+    fireEvent.click(accept);
+    expect(onAccept).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /必要な権利・許諾/ }),
+    );
+    expect(accept).not.toBeDisabled();
     fireEvent.click(accept);
 
     expect(onAccept).toHaveBeenCalledWith(disclosure.consentId);
+  });
+
+  it("デスクトップBYOK経路にはクラウド固有の内容確認を追加しない", () => {
+    const onAccept = vi.fn();
+    render(
+      <AiDataConsentDialog
+        open
+        disclosure={{
+          ...disclosure,
+          route: "byok",
+          provider: "openai",
+          consentId: "consent_byok_openai_2026_07_19_abcdef",
+        }}
+        onAccept={onAccept}
+        onDecline={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("heading", {
+        name: "クラウド利用時の原稿内容と権利",
+      }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "上記の送信・保存・学習利用方針を確認しました",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "同意してAIを使う" }));
+
+    expect(onAccept).toHaveBeenCalledWith(
+      "consent_byok_openai_2026_07_19_abcdef",
+    );
   });
 
   it("拒否時はAI送信を進めない", () => {

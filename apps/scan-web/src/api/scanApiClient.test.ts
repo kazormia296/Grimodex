@@ -373,6 +373,30 @@ describe("ScanApiClient", () => {
     }
   });
 
+  it("submits a bounded public abuse report without owner credentials", async () => {
+    const fetchImpl = vi.fn(async () => response({ accepted: true }, 202));
+    const client = new ScanApiClient({
+      baseUrl: "https://scan.example/",
+      fetchImpl,
+    });
+
+    await client.reportPublicAbuse(
+      "public/1",
+      "Possible copyright infringement",
+    );
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://scan.example/api/v1/public-reports/public%2F1/abuse-reports",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "content-type": "application/json",
+        }),
+        body: JSON.stringify({ reason: "Possible copyright infringement" }),
+      }),
+    );
+  });
+
   it("polls at two seconds then backs off to at most five seconds", async () => {
     const delays: number[] = [];
     let calls = 0;

@@ -316,7 +316,7 @@ describe("public AI data disclosures", () => {
     };
 
     expect(response.status).toBe(200);
-    expect(body.policyVersion).toBe("2026-07-19.6");
+    expect(body.policyVersion).toBe("2026-07-19.7");
     expect(body.provider).toBe("workers-ai");
     expect(body.processingDestinations).toHaveLength(1);
     expect(body.processingDestinations[0]?.processor).toBe(

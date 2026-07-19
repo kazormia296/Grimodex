@@ -20,6 +20,15 @@ describe("HostedEditorTrialBar", () => {
     expect(
       screen.getByText(/ローカル版Grimodex.*自動同期されません/),
     ).toBeInTheDocument();
+    expect(screen.getByText(/必要な権利.*成人向け・R18/u)).toBeInTheDocument();
+    expect(screen.getByText(/AI.*拒否/u)).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("link", { name: "Cloudflareのホスティング方針" })
+        .getAttribute("href"),
+    ).toBe(
+      "https://blog.cloudflare.com/cloudflares-abuse-policies-and-approach/",
+    );
   });
 
   it("explains the standalone trial in Japanese", async () => {
@@ -33,6 +42,8 @@ describe("HostedEditorTrialBar", () => {
     expect(
       screen.getByText(/ローカル版Grimodex.*自動同期されません/),
     ).toBeInTheDocument();
+    expect(screen.getByText(/必要な権利.*成人向け・R18/u)).toBeInTheDocument();
+    expect(screen.getByText(/AI.*拒否/u)).toBeInTheDocument();
   });
 
   it("explains the Scan entry in English", async () => {
@@ -46,6 +57,16 @@ describe("HostedEditorTrialBar", () => {
     expect(
       screen.getByText(/not automatically synced.*local Grimodex/i),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/required rights.*adult.*R18.*AI.*refuse/i),
+    ).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("link", { name: "Cloudflare hosting policy" })
+        .getAttribute("href"),
+    ).toBe(
+      "https://blog.cloudflare.com/cloudflares-abuse-policies-and-approach/",
+    );
   });
 
   it("explains the standalone trial in English", async () => {
@@ -58,6 +79,9 @@ describe("HostedEditorTrialBar", () => {
     expect(screen.getByText(/stored in this browser/i)).toBeInTheDocument();
     expect(
       screen.getByText(/not automatically synced.*local Grimodex/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/required rights.*adult.*R18.*AI.*refuse/i),
     ).toBeInTheDocument();
   });
 });

@@ -122,6 +122,24 @@ test("AI data consent blocks are proven only by missing consent and zero provide
   );
 });
 
+test("hosted content rights are confirmed separately before cloud dispatch", async () => {
+  const model = await loadQualityModel({ repoRoot });
+  const target = model.cases.find(
+    (evaluationCase) =>
+      evaluationCase.id === "eval-hosted-content-rights-precheck",
+  );
+
+  assert.ok(target);
+  assert.equal(target.input.aiDataConsent, "accepted");
+  assert.equal(target.input.contentRightsConfirmation, "missing");
+  assert.equal(target.input.consent, "missing");
+  assert.equal(target.input.providerCalls, 0);
+  assert.deepEqual(target.expected.requiredPolicies, ["hostedContentRights"]);
+  assert.ok(
+    target.expected.requiredEvidence.includes("cloud-content-policy"),
+  );
+});
+
 test("heavy evaluations are explicit deferred evidence, never implicit passes", async () => {
   const model = await loadQualityModel({ repoRoot });
   const heavy = buildHeavyEvaluationReport(model);

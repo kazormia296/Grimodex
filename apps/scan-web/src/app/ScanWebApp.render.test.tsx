@@ -7,7 +7,10 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import type { AiDataDisclosureV1 } from "@grimodex/scan-contract";
+import {
+  toPublicReport,
+  type AiDataDisclosureV1,
+} from "@grimodex/scan-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ScanApiClient,
@@ -95,7 +98,7 @@ function configureHostedApi(): void {
   vi.stubEnv("VITE_SCAN_TURNSTILE_REQUIRED", "false");
 }
 
-async function acceptUploadConsent(): Promise<void> {
+async function openUploadConsent(): Promise<void> {
   const input = document.querySelector<HTMLInputElement>('input[type="file"]');
   expect(input).not.toBeNull();
   fireEvent.change(input as HTMLInputElement, {
@@ -106,8 +109,15 @@ async function acceptUploadConsent(): Promise<void> {
   await screen.findByRole("dialog", {
     name: "原稿をアップロードする前に確認",
   });
+}
+
+async function acceptUploadConsent(): Promise<void> {
+  await openUploadConsent();
   fireEvent.click(
     screen.getByRole("checkbox", { name: /送信・保存・学習利用方針/ }),
+  );
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: /必要な権利・許諾/ }),
   );
   fireEvent.click(screen.getByRole("button", { name: "同意してScanを開始" }));
 }
@@ -118,6 +128,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   localStorage.clear();
   sessionStorage.clear();
+  window.history.replaceState({}, "", "/");
 });
 
 function forceJapaneseUi(): void {
@@ -154,6 +165,27 @@ describe("ScanWebApp report ownership", () => {
     expect(screen.queryByText("灯台の手紙")).toBeNull();
   });
 
+  it("opens the redacted public report and abuse route from a share URL", async () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    window.history.replaceState({}, "", "/?publicReport=public-1");
+    vi.spyOn(ScanApiClient.prototype, "getPublicReport").mockResolvedValue(
+      toPublicReport(createMinimalJaBundle(), {
+        authorConfirmedAt: "2026-07-19T00:00:00.000Z",
+      }),
+    );
+
+    render(<ScanWebApp />);
+
+    expect(
+      await screen.findByRole("heading", { name: "灯台の手紙" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "この公開レポートを通報" }),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText(".txt / .md をアップロード")).toBeNull();
+  });
+
   it("labels the fixture as a demo inside the report when no API is configured", () => {
     forceJapaneseUi();
     vi.stubEnv("VITE_SCAN_API_BASE_URL", "");
@@ -183,6 +215,36 @@ describe("ScanWebApp report ownership", () => {
     ).toBeTruthy();
     expect(screen.queryByTestId("scan-report")).toBeNull();
     expect(screen.queryByText("灯台の手紙")).toBeNull();
+  });
+
+  it("does not upload until the separate content-rights confirmation is selected", async () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    vi.spyOn(ScanApiClient.prototype, "getAiDisclosure").mockResolvedValue(
+      disclosure,
+    );
+    const upload = vi
+      .spyOn(ScanApiClient.prototype, "uploadSource")
+      .mockImplementation(() => new Promise(() => undefined));
+
+    render(<ScanWebApp />);
+    await openUploadConsent();
+
+    const accept = screen.getByRole("button", {
+      name: "同意してScanを開始",
+    });
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /送信・保存・学習利用方針/ }),
+    );
+    expect(accept).toBeDisabled();
+    fireEvent.click(accept);
+    expect(upload).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /必要な権利・許諾/ }),
+    );
+    fireEvent.click(accept);
+    await waitFor(() => expect(upload).toHaveBeenCalledOnce());
   });
 
   it("shows an error state instead of the fixture when a replacement scan fails", async () => {
@@ -352,6 +414,34 @@ describe("ScanWebApp report ownership", () => {
       "quick",
       disclosure.consentId,
       "en",
+    );
+  });
+
+  it("warns about rights, personal data, redaction, and reporting before publication", async () => {
+    forceJapaneseUi();
+    configureHostedApi();
+    vi.spyOn(ScanApiClient.prototype, "getAiDisclosure").mockResolvedValue(
+      disclosure,
+    );
+    vi.spyOn(ScanApiClient.prototype, "uploadSource").mockResolvedValue(
+      ownedScanHandle,
+    );
+    vi.spyOn(ScanApiClient.prototype, "waitForCompletion").mockResolvedValue(
+      completedStatus,
+    );
+    vi.spyOn(ScanApiClient.prototype, "getReport").mockResolvedValue(
+      createMinimalJaBundle(),
+    );
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(<ScanWebApp />);
+    await acceptUploadConsent();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "公開レポートを作成" }),
+    );
+
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringMatching(/必要な権利.*個人情報.*本文.*通報/u),
     );
   });
 

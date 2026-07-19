@@ -73,6 +73,18 @@ describe("ScanAiConsentDialog", () => {
     ).toBeTruthy();
     expect(screen.getByText(/not used for model training/i)).toBeTruthy();
     expect(
+      screen.getByRole("heading", {
+        name: "クラウド利用時の原稿内容と権利",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText(/成人向け・R18.*一律.*禁止/u)).toBeTruthy();
+    expect(screen.getByText(/AI.*拒否/u)).toBeTruthy();
+    expect(screen.getByText(/権利.*許諾.*二次創作/u)).toBeTruthy();
+    expect(screen.getByText(/児童.*未成年/u)).toBeTruthy();
+    expect(screen.getByText(/人身取引/u)).toBeTruthy();
+    expect(screen.getByText(/著作権/u)).toBeTruthy();
+    expect(screen.getByText(/個人情報/u)).toBeTruthy();
+    expect(
       screen
         .getByRole("link", { name: "Grimodex プライバシー通知" })
         .getAttribute("href"),
@@ -84,6 +96,15 @@ describe("ScanAiConsentDialog", () => {
         })
         .getAttribute("href"),
     ).toBe("https://example.com/privacy");
+    expect(
+      screen
+        .getByRole("link", {
+          name: "Cloudflare ホスティング／Abuse方針",
+        })
+        .getAttribute("href"),
+    ).toBe(
+      "https://blog.cloudflare.com/cloudflares-abuse-policies-and-approach/",
+    );
   });
 
   it("renders the complete dialog chrome and named policy links in English", () => {
@@ -112,9 +133,21 @@ describe("ScanAiConsentDialog", () => {
         })
         .getAttribute("href"),
     ).toBe("https://example.com/privacy");
+    expect(
+      screen.getByRole("heading", {
+        name: "Manuscript content and rights for cloud use",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/adult-only fictional works.*R18.*not categorically prohibited/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/AI provider may refuse/i)).toBeTruthy();
+    expect(
+      screen.getByText(/rights or permission.*derivative-work guidelines/i),
+    ).toBeTruthy();
   });
 
-  it("requires an explicit checkbox before returning the opaque consent id", () => {
+  it("requires separate data and content-rights confirmations before returning the opaque consent id", () => {
     const onAccept = vi.fn();
     render(
       <ScanAiConsentDialog
@@ -130,6 +163,14 @@ describe("ScanAiConsentDialog", () => {
     fireEvent.click(
       screen.getByRole("checkbox", { name: /送信・保存・学習利用方針/ }),
     );
+    expect((accept as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(accept);
+    expect(onAccept).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /必要な権利・許諾/ }),
+    );
+    expect((accept as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(accept);
 
     expect(onAccept).toHaveBeenCalledWith(disclosure.consentId);
