@@ -522,6 +522,7 @@
       "standaloneDescription": "You are trying the Web Editor on its own.",
       "storageNotice": "Data is stored in this browser and is not automatically synced to the local Grimodex app.",
       "aiNotice": "Before AI use, we confirm what is sent, storage location, retention, and training use.",
+      "contentPolicyLink": "Cloudflare hosting policy",
       "continueInGrimodex": "Continue writing in Grimodex"
     },
     "handoff": {

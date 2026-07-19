@@ -1,5 +1,10 @@
 import { useState, type ReactNode } from "react";
-import type { AiDataDisclosureV1 } from "@grimodex/scan-contract";
+import {
+  CLOUDFLARE_ABUSE_POLICY_URL,
+  CLOUDFLARE_WORKERS_AI_DATA_POLICY_URL,
+  cloudContentPolicy,
+  type AiDataDisclosureV1,
+} from "@grimodex/scan-contract";
 import { scanMessages, type ScanMessages } from "../i18n/scanMessages";
 import type { ScanLocale } from "../i18n/scanLocale";
 
@@ -18,6 +23,7 @@ interface PolicyLink {
 function buildPolicyLinks(
   disclosure: AiDataDisclosureV1,
   copy: ScanMessages["consent"],
+  contentPolicy: ReturnType<typeof cloudContentPolicy>,
 ): PolicyLink[] {
   const links: PolicyLink[] = [];
   const seen = new Set<string>();
@@ -37,6 +43,11 @@ function buildPolicyLinks(
   add(disclosure.storage.provider.policyUrl, copy.storagePolicy);
   add(disclosure.retention.provider.policyUrl, copy.retentionPolicy);
   add(disclosure.trainingUse.policyUrl, copy.trainingPolicy);
+  add(CLOUDFLARE_ABUSE_POLICY_URL, contentPolicy.hostingPolicyLabel);
+  add(
+    CLOUDFLARE_WORKERS_AI_DATA_POLICY_URL,
+    contentPolicy.workersAiPolicyLabel,
+  );
   return links;
 }
 
@@ -46,10 +57,12 @@ export function ScanAiConsentDialog({
   onAccept,
   onDecline,
 }: ScanAiConsentDialogProps) {
-  const [confirmed, setConfirmed] = useState(false);
+  const [dataConfirmed, setDataConfirmed] = useState(false);
+  const [contentConfirmed, setContentConfirmed] = useState(false);
   const retention = disclosure.retention.application;
   const copy = scanMessages(locale).consent;
-  const policyLinks = buildPolicyLinks(disclosure, copy);
+  const contentPolicy = cloudContentPolicy(locale);
+  const policyLinks = buildPolicyLinks(disclosure, copy, contentPolicy);
 
   return (
     <div className="scan-consent-backdrop" role="presentation">
@@ -108,6 +121,19 @@ export function ScanAiConsentDialog({
             <p>{disclosure.trainingUse.summary}</p>
           </DisclosureSection>
 
+          <DisclosureSection title={contentPolicy.heading}>
+            <p>
+              {contentPolicy.adultContentNotice} {contentPolicy.aiRefusalNotice}
+            </p>
+            <p>{contentPolicy.rightsNotice}</p>
+            <strong>{contentPolicy.prohibitedHeading}</strong>
+            <ul>
+              {contentPolicy.prohibitedItems.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </DisclosureSection>
+
           <div className="scan-policy-links">
             {policyLinks.map(({ url, label }) => (
               <a key={url} href={url} target="_blank" rel="noreferrer">
@@ -117,14 +143,28 @@ export function ScanAiConsentDialog({
           </div>
         </div>
 
-        <label className="scan-consent-confirm">
-          <input
-            type="checkbox"
-            checked={confirmed}
-            onChange={(event) => setConfirmed(event.currentTarget.checked)}
-          />
-          <span>{copy.confirm}</span>
-        </label>
+        <div className="scan-consent-confirmations">
+          <label className="scan-consent-confirm">
+            <input
+              type="checkbox"
+              checked={dataConfirmed}
+              onChange={(event) =>
+                setDataConfirmed(event.currentTarget.checked)
+              }
+            />
+            <span>{copy.confirm}</span>
+          </label>
+          <label className="scan-consent-confirm">
+            <input
+              type="checkbox"
+              checked={contentConfirmed}
+              onChange={(event) =>
+                setContentConfirmed(event.currentTarget.checked)
+              }
+            />
+            <span>{contentPolicy.confirmation}</span>
+          </label>
+        </div>
 
         <footer className="scan-consent-actions">
           <button type="button" className="scan-secondary" onClick={onDecline}>
@@ -133,7 +173,7 @@ export function ScanAiConsentDialog({
           <button
             type="button"
             className="scan-primary"
-            disabled={!confirmed}
+            disabled={!dataConfirmed || !contentConfirmed}
             onClick={() => onAccept(disclosure.consentId)}
           >
             {copy.accept}

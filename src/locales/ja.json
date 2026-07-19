@@ -522,6 +522,7 @@
       "standaloneDescription": "Web Editorを単体で試しています。",
       "storageNotice": "データはこのブラウザに保存され、ローカル版Grimodexへ自動同期されません。",
       "aiNotice": "AI利用時は送信前に、送信内容・保存先・保持期間・学習利用を確認します。",
+      "contentPolicyLink": "Cloudflareのホスティング方針",
       "continueInGrimodex": "Grimodexで続きを書く"
     },
     "handoff": {

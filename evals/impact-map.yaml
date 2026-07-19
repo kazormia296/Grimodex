@@ -19,6 +19,7 @@ rules:
       - GDX-ROUTE-001
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001
+      - GDX-HOSTED-CONTENT-001
       - GDX-TOOL-001
       - GDX-POLICY-001
       - GDX-GROUND-001
@@ -63,6 +64,7 @@ rules:
     requirements:
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001
+      - GDX-HOSTED-CONTENT-001
       - GDX-TOOL-001
       - GDX-POLICY-001
     suites:
@@ -116,8 +118,46 @@ rules:
       - GDX-GROUND-001
       - GDX-ARTIFACT-001
       - GDX-AI-CONSENT-001
+      - GDX-HOSTED-CONTENT-001
       - GDX-TRACE-001
     suites:
+      - scan-contract
+  - id: hosted-cloud-content
+    reason: Hosted content warnings, rights confirmation, policy versioning, and public abuse controls share one fail-closed boundary.
+    paths:
+      - packages/scan-contract/src/cloudContentPolicy.ts
+      - packages/scan-contract/test/cloudContentPolicy.test.ts
+      - packages/scan-contract/src/aiDataDisclosureV1.ts
+      - packages/scan-contract/test/aiDataDisclosure.test.ts
+      - packages/scan-contract/src/publicReportV1.ts
+      - packages/scan-contract/test/publicReportV1.test.ts
+      - src/features/ai-policy/AiDataConsentDialog.tsx
+      - src/features/ai-policy/AiDataConsentDialog.test.tsx
+      - src/features/hosted-editor/**
+      - apps/scan-web/src/app/ScanAiConsentDialog.tsx
+      - apps/scan-web/src/app/ScanAiConsentDialog.test.tsx
+      - apps/scan-web/src/api/scanApiClient.ts
+      - apps/scan-web/src/api/scanApiClient.consent.test.ts
+      - apps/scan-web/src/api/hostedAiClient.ts
+      - apps/scan-web/src/api/hostedAiClient.consent.test.ts
+      - apps/scan-web/src/public/**
+      - apps/scan-web/src/report/ScanReport.tsx
+      - apps/scan-web/src/report/ScanReport.test.tsx
+      - apps/scan-web/worker/ai/aiDataDisclosure.ts
+      - apps/scan-web/worker/aiDisclosure.router.test.ts
+      - apps/scan-web/worker/router.ts
+      - apps/scan-web/worker/router.test.ts
+      - src/lib/hostedBrowserAi.ts
+      - src/lib/hostedBrowserAi.test.ts
+    requirements:
+      - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
+      - GDX-HOSTED-CONTENT-001
+      - GDX-ARTIFACT-001
+      - GDX-TRACE-001
+    suites:
+      - ai-routing
+      - tool-policy
       - scan-contract
   - id: scan-prompts
     reason: Scan prompt changes require both prompt and artifact contracts.

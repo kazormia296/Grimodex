@@ -5,13 +5,17 @@ import {
 } from "./env";
 import { ScanRepository, type ScanMode } from "./repository";
 import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
   EDITOR_HANDOFF_SCHEMA_VERSION,
   HOSTED_EDITOR_AI_LIMITS,
   ID_PATTERNS,
+  PUBLIC_REPORT_AUTHOR_CONFIRMATION_MAX_LENGTH,
   SCAN_LIMITS,
   parseHostedEditorAiAgentRequest,
   parseHostedEditorAiToolCalls,
   parseEditorSeed,
+  parsePublicReport,
   parseScanBundle,
   toPublicReport,
   type HostedEditorAiAgentRequest,
@@ -154,7 +158,7 @@ function responseHeaders(origin: string | null, env: ScanEnv): Headers {
     headers.set("access-control-allow-origin", origin);
     headers.set(
       "access-control-allow-headers",
-      "content-type, authorization, x-upload-token, x-scan-token, x-editor-session-token, x-scan-full-access, x-scan-source-language, x-idempotency-key, x-ai-consent-id",
+      `content-type, authorization, x-upload-token, x-scan-token, x-editor-session-token, x-scan-full-access, x-scan-source-language, x-idempotency-key, x-ai-consent-id, ${CLOUD_CONTENT_POLICY_ACK_HEADER}`,
     );
     headers.set(
       "access-control-allow-methods",
@@ -280,6 +284,15 @@ async function requireAiDataConsent(
       428,
       "ai_consent_required",
       "current AI data consent is required",
+    );
+  }
+  const contentPolicyVersion =
+    request.headers.get(CLOUD_CONTENT_POLICY_ACK_HEADER)?.trim() ?? "";
+  if (contentPolicyVersion !== CLOUD_CONTENT_POLICY_VERSION) {
+    throw new HttpError(
+      428,
+      "hosted_content_confirmation_required",
+      "current hosted-content confirmation is required",
     );
   }
   return current;
@@ -1671,6 +1684,7 @@ async function publishPublicReport(
   if (
     typeof authorConfirmedAt !== "string" ||
     !authorConfirmedAt.trim() ||
+    authorConfirmedAt.length > PUBLIC_REPORT_AUTHOR_CONFIRMATION_MAX_LENGTH ||
     !Number.isFinite(Date.parse(authorConfirmedAt))
   ) {
     throw new HttpError(
@@ -1836,14 +1850,33 @@ async function publicReport(
       "public_report_not_found",
       "public report artifact was not found",
     );
+  if (object.size > SCAN_LIMITS.maxBundleSerializedLength) {
+    throw new HttpError(
+      500,
+      "public_report_invalid",
+      "public report artifact exceeds the contract limit",
+    );
+  }
+  let publicValue: unknown;
+  try {
+    publicValue = JSON.parse(await new Response(object.body).text()) as unknown;
+  } catch {
+    throw new HttpError(
+      500,
+      "public_report_invalid",
+      "public report artifact is invalid",
+    );
+  }
+  const parsed = parsePublicReport(publicValue);
+  if (!parsed.ok) {
+    throw new HttpError(
+      500,
+      "public_report_invalid",
+      "public report failed contract validation",
+    );
+  }
   await emitFunnel(context, "public_report_viewed", reportId);
-  return artifactResponse(
-    object.body,
-    request,
-    env,
-    object.httpMetadata?.contentType ?? "application/json",
-    "no-store",
-  );
+  return success(parsed.value, request, env);
 }
 
 async function deletePublicReport(

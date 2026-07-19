@@ -290,6 +290,8 @@ export function createHostedBrowserAi(
             accept: "application/json",
             "content-type": "application/json",
             "x-ai-consent-id": disclosure.consentId,
+            [disclosure.contentPolicy.acknowledgementHeader]:
+              disclosure.contentPolicy.version,
             "x-editor-session-token": options.session.token,
             "x-idempotency-key": crypto.randomUUID(),
           },

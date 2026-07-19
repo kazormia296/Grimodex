@@ -6,6 +6,10 @@ import {
 import { GrimodexLogo } from "../../../../src/components/GrimodexLogo";
 import { createMinimalJaBundle } from "../fixtures/minimalJa";
 import { ScanReport } from "../report/ScanReport";
+import {
+  PublicReportPage,
+  type PublicReportApi,
+} from "../public/PublicReportPage";
 import { ScanApiClient, type ScanHandle } from "../api/scanApiClient";
 import { ScanAiConsentDialog } from "./ScanAiConsentDialog";
 import { ScanDeleteDialog } from "./ScanDeleteDialog";
@@ -36,6 +40,15 @@ export interface ScanWebAppProps {
   fullAccessToken?: string;
 }
 
+const unavailablePublicReportApi: PublicReportApi = {
+  getPublicReport: async () => {
+    throw new Error("public report API is not configured");
+  },
+  reportPublicAbuse: async () => {
+    throw new Error("public report API is not configured");
+  },
+};
+
 export function rollbackFeedbackOverride(
   current: Record<string, "intentional" | "rejected">,
   findingId: string,
@@ -64,6 +77,13 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
     () => resolveScanLocale(localePreference, browserLanguages),
     [browserLanguages, localePreference],
   );
+  const publicReportIdFromUrl = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const value = new URLSearchParams(window.location.search)
+      .get("publicReport")
+      ?.trim();
+    return value && value.length <= 128 ? value : null;
+  }, []);
   const copy = scanMessages(locale);
   const [writingLanguage, setWritingLanguage] =
     useState<ScanWritingLanguagePreference>("auto");
@@ -360,6 +380,15 @@ export function ScanWebApp({ fullAccessToken }: ScanWebAppProps = {}) {
         setPublicReportBusy(false);
     }
   };
+  if (publicReportIdFromUrl) {
+    return (
+      <PublicReportPage
+        publicReportId={publicReportIdFromUrl}
+        locale={locale}
+        api={apiClient ?? unavailablePublicReportApi}
+      />
+    );
+  }
   return (
     <>
       <header className="scan-app-header">

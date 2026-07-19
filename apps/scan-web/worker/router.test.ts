@@ -11,7 +11,12 @@ import {
   currentAiDataConsentIdentity,
   expectedAiDataConsentId,
 } from "./ai/aiDataDisclosure";
-import { parseEditorHandoffEnvelope } from "@grimodex/scan-contract";
+import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
+  parseEditorHandoffEnvelope,
+  toPublicReport,
+} from "@grimodex/scan-contract";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -250,7 +255,7 @@ describe("scan worker router", () => {
     });
   });
 
-  it("serves published reports without a cache window so unpublish is immediate", async () => {
+  it("validates and reserializes published reports without a cache window", async () => {
     const database = {
       prepare: (query: string) => {
         const statement = {
@@ -272,27 +277,70 @@ describe("scan worker router", () => {
       },
       batch: async () => [],
     };
-    const body = JSON.stringify({
-      schemaVersion: "grimodex-scan/public-report/1",
+    const publicProjection = toPublicReport(createMinimalJaBundle(), {
+      authorConfirmedAt: "2026-07-16T00:00:00.000Z",
+    });
+    let body = JSON.stringify(publicProjection);
+    const testEnv = env({
+      DB: database,
+      SCAN_BUCKET: {
+        put: async () => undefined,
+        get: async () => ({
+          body: new Response(body).body,
+          size: body.length,
+          httpMetadata: { contentType: "application/json" },
+        }),
+        head: async () => null,
+        delete: async () => undefined,
+      },
     });
     const response = await handleRequest(
       new Request("https://scan.example/api/v1/public-reports/public-1"),
-      env({
-        DB: database,
-        SCAN_BUCKET: {
-          put: async () => undefined,
-          get: async () => ({
-            body: new Response(body).body,
-            size: body.length,
-            httpMetadata: { contentType: "application/json" },
-          }),
-          head: async () => null,
-          delete: async () => undefined,
-        },
-      }),
+      testEnv,
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual(publicProjection);
+
+    body = JSON.stringify({
+      ...publicProjection,
+      schemaVersion: "grimodex-scan/public-report/1",
+      phases: publicProjection.phases.map((phase, index) => ({
+        ...phase,
+        title: `Phase ${index + 1}`,
+      })),
+      events: publicProjection.events.map((event, index) => ({
+        ...event,
+        title: `Event ${index + 1}`,
+      })),
+      findings: publicProjection.findings.map((finding, index) => ({
+        ...finding,
+        title: `Finding ${index + 1}`,
+        summary: "Details are available in the private report.",
+      })),
+    });
+    const legacyResponse = await handleRequest(
+      new Request("https://scan.example/api/v1/public-reports/public-1"),
+      testEnv,
+    );
+    expect(legacyResponse.status).toBe(200);
+    await expect(legacyResponse.json()).resolves.toEqual(publicProjection);
+
+    body = JSON.stringify({
+      ...publicProjection,
+      summary: {
+        ...publicProjection.summary,
+        premise: "private manuscript excerpt",
+      },
+    });
+    const rejected = await handleRequest(
+      new Request("https://scan.example/api/v1/public-reports/public-1"),
+      testEnv,
+    );
+    expect(rejected.status).toBe(500);
+    await expect(rejected.json()).resolves.toMatchObject({
+      error: { code: "public_report_invalid" },
+    });
   });
 
   it.each(["missing", "create-failed"] as const)(
@@ -733,6 +781,7 @@ describe("scan worker router", () => {
           "content-type": "application/json",
           "x-idempotency-key": "request-accounting-failure",
           "x-ai-consent-id": consentId,
+          [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
         },
         body: JSON.stringify({ operation: "chat", prompt: "help" }),
       }),
@@ -800,6 +849,7 @@ describe("scan worker router", () => {
           "content-type": "application/json",
           "x-idempotency-key": "request-completion-failure",
           "x-ai-consent-id": consentId,
+          [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
         },
         body: JSON.stringify({ operation: "chat", prompt: "help" }),
       }),
@@ -890,6 +940,7 @@ describe("scan worker router", () => {
           "content-type": "application/json",
           "x-idempotency-key": "request-retry-123456",
           "x-ai-consent-id": consentId,
+          [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
         },
         body: JSON.stringify({
           operation: "codex",
@@ -943,6 +994,53 @@ describe("scan worker router", () => {
     expect(aiRun).toHaveBeenCalledOnce();
     expect(claim).toHaveBeenCalledOnce();
     expect(finalize).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an overlong parseable publication timestamp at the API boundary", async () => {
+    const completedScan = {
+      id: "scan-1",
+      uploadId: "upload-1",
+      mode: "quick" as const,
+      status: "completed" as const,
+      sourceHash: "source-hash",
+      privateBundleKey: "artifacts/scan-1/bundle.json",
+      privateReportKey: "artifacts/scan-1/report.json",
+      cancelRequestedAt: null,
+      createdAt: "2026-07-16T00:00:00.000Z",
+      updatedAt: "2026-07-16T00:00:00.000Z",
+      accessTokenHash: "scan-token-hash",
+    };
+    vi.spyOn(ScanRepository.prototype, "authorizeScan").mockResolvedValue(
+      completedScan,
+    );
+    const get = vi.fn(async () => null);
+    const response = await handleRequest(
+      new Request("https://scan.example/api/v1/scans/scan-1/public-report", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer scan-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          authorConfirmedAt:
+            "Thursday, July 16, 2026 00:00:00 GMT+0000 (Coordinated Universal Time)",
+        }),
+      }),
+      env({
+        SCAN_BUCKET: {
+          put: async () => undefined,
+          get,
+          head: async () => null,
+          delete: async () => undefined,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "author_confirmation_required" },
+    });
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("keeps a publication registry row when an ambiguous R2 put cannot be cleaned up", async () => {
@@ -1131,6 +1229,7 @@ describe("scan worker router", () => {
           "x-editor-session-token": "scoped-token",
           "x-idempotency-key": "scoped-request-123456",
           "x-ai-consent-id": consentId,
+          [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
         },
         body: JSON.stringify({ operation: "chat", prompt: "help" }),
       }),
@@ -1415,5 +1514,124 @@ describe("scan worker router", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "origin_not_allowed" },
     });
+  });
+
+  it("records a bounded public abuse report from an allowed origin", async () => {
+    vi.spyOn(ScanRepository.prototype, "getPublicReportById").mockResolvedValue(
+      {
+        id: "public-1",
+        scanId: "scan-1",
+        artifactKey: "public/scan-1/report.json",
+        status: "published",
+        authorConfirmedAt: "2026-07-19T00:00:00.000Z",
+      },
+    );
+    vi.spyOn(
+      ScanRepository.prototype,
+      "consumeAbuseRateLimit",
+    ).mockResolvedValue(true);
+    const createAbuseReport = vi
+      .spyOn(ScanRepository.prototype, "createPublicAbuseReport")
+      .mockImplementation(async (input) => ({
+        ...input,
+        createdAt: "2026-07-19T00:01:00.000Z",
+      }));
+
+    const response = await handleRequest(
+      new Request(
+        "https://scan.example/api/v1/public-reports/public-1/abuse-reports",
+        {
+          method: "POST",
+          headers: {
+            origin: "https://scan.grimodex.app",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ reason: "  Possible infringement  " }),
+        },
+      ),
+      env({ ALLOWED_ORIGINS: "https://scan.grimodex.app" }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(createAbuseReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publicReportId: "public-1",
+        reason: "Possible infringement",
+      }),
+    );
+  });
+
+  it.each(["", "x".repeat(1_001)])(
+    "rejects an invalid public abuse reason without recording it",
+    async (reason) => {
+      vi.spyOn(
+        ScanRepository.prototype,
+        "getPublicReportById",
+      ).mockResolvedValue({
+        id: "public-1",
+        scanId: "scan-1",
+        artifactKey: "public/scan-1/report.json",
+        status: "published",
+        authorConfirmedAt: "2026-07-19T00:00:00.000Z",
+      });
+      vi.spyOn(
+        ScanRepository.prototype,
+        "consumeAbuseRateLimit",
+      ).mockResolvedValue(true);
+      const createAbuseReport = vi.spyOn(
+        ScanRepository.prototype,
+        "createPublicAbuseReport",
+      );
+
+      const response = await handleRequest(
+        new Request(
+          "https://scan.example/api/v1/public-reports/public-1/abuse-reports",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ reason }),
+          },
+        ),
+        env(),
+      );
+
+      expect(response.status).toBe(400);
+      expect(createAbuseReport).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rate-limits public abuse reports before storing them", async () => {
+    vi.spyOn(ScanRepository.prototype, "getPublicReportById").mockResolvedValue(
+      {
+        id: "public-1",
+        scanId: "scan-1",
+        artifactKey: "public/scan-1/report.json",
+        status: "published",
+        authorConfirmedAt: "2026-07-19T00:00:00.000Z",
+      },
+    );
+    vi.spyOn(
+      ScanRepository.prototype,
+      "consumeAbuseRateLimit",
+    ).mockResolvedValue(false);
+    const createAbuseReport = vi.spyOn(
+      ScanRepository.prototype,
+      "createPublicAbuseReport",
+    );
+
+    const response = await handleRequest(
+      new Request(
+        "https://scan.example/api/v1/public-reports/public-1/abuse-reports",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: "Repeated report" }),
+        },
+      ),
+      env(),
+    );
+
+    expect(response.status).toBe(429);
+    expect(createAbuseReport).not.toHaveBeenCalled();
   });
 });

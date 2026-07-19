@@ -10,6 +10,7 @@ export {
 export * from "./publicReportV1.js";
 export * from "./aiDataDisclosureV1.js";
 export * from "./hostedEditorAi.js";
+export * from "./cloudContentPolicy.js";
 export {
   chunkExtractionV1Schema,
   validateChunkExtraction,

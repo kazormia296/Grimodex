@@ -83,6 +83,11 @@ select:focus-visible {
   outline-offset: 2px;
 }
 
+textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 button:disabled,
 input:disabled,
 select:disabled {
@@ -195,6 +200,19 @@ select:disabled {
   width: min(1160px, 100%);
   margin: 0 auto;
   padding: 34px 20px 72px;
+}
+
+.scan-public-report {
+  width: min(960px, 100%);
+  margin: 0 auto;
+  padding: 34px 20px 72px;
+}
+
+.scan-publication-notice a,
+.scan-abuse-report a {
+  color: var(--accent-foreground);
+  font-weight: 650;
+  text-underline-offset: 2px;
 }
 
 .scan-report__header {
@@ -504,6 +522,16 @@ h3 {
   font-size: 13px;
 }
 
+.scan-consent-confirmations {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.scan-consent-confirmations .scan-consent-confirm {
+  margin-top: 0;
+}
+
 .scan-consent-confirm input {
   width: 16px;
   height: 16px;
@@ -513,6 +541,38 @@ h3 {
 .scan-consent-actions {
   justify-content: flex-end;
   margin-top: 18px;
+}
+
+.scan-public-disclosure {
+  border-left: 4px solid var(--primary);
+}
+
+.scan-public-disclosure p:last-child {
+  margin-bottom: 0;
+}
+
+.scan-abuse-report form,
+.scan-abuse-report label {
+  display: grid;
+  gap: 8px;
+}
+
+.scan-abuse-report textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--input);
+  border-radius: 9px;
+  color: var(--foreground);
+  background: var(--background);
+}
+
+.scan-abuse-report__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
 }
 
 @media (max-width: 720px) {
@@ -529,6 +589,10 @@ h3 {
   }
 
   .scan-report {
+    padding: 24px 14px 52px;
+  }
+
+  .scan-public-report {
     padding: 24px 14px 52px;
   }
 

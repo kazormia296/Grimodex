@@ -1,6 +1,10 @@
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import {
+  CLOUDFLARE_ABUSE_POLICY_URL,
+  cloudContentPolicy,
+} from "@grimodex/scan-contract";
 
 export type HostedEditorEntryMode = "scan" | "standalone";
 
@@ -13,8 +17,11 @@ export function HostedEditorTrialBar({
   entryMode,
   onContinue,
 }: HostedEditorTrialBarProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const titleId = useId();
+  const contentPolicy = cloudContentPolicy(
+    (i18n.resolvedLanguage ?? i18n.language).startsWith("ja") ? "ja" : "en",
+  );
   const entryDescription =
     entryMode === "scan"
       ? t("hostedEditor.trial.scanDescription")
@@ -39,6 +46,17 @@ export function HostedEditorTrialBar({
         <span className="text-muted-foreground">
           {t("hostedEditor.trial.aiNotice")}
         </span>
+        <span className="text-muted-foreground">
+          {contentPolicy.bannerNotice}
+        </span>
+        <a
+          href={CLOUDFLARE_ABUSE_POLICY_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="font-medium text-primary underline underline-offset-2"
+        >
+          {t("hostedEditor.trial.contentPolicyLink")}
+        </a>
       </div>
 
       {onContinue && (

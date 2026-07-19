@@ -61,6 +61,8 @@ export interface ScanMessages {
     unpublish: string;
     updating: string;
     publicReportId: string;
+    viewPublicReport: string;
+    publicReportNotice: string;
     evidence: string;
     evidenceParagraphs: string;
     intentional: string;
@@ -70,6 +72,43 @@ export interface ScanMessages {
       string
     >;
     entityTypes: Record<ScanEntityType, string>;
+  };
+  publicReport: {
+    eyebrow: string;
+    loading: string;
+    unavailable: string;
+    projectionNotice: string;
+    derivedLabelNotice: string;
+    sourceCounts: (
+      sections: number,
+      paragraphs: number,
+      characters: number,
+    ) => string;
+    genres: string;
+    themes: string;
+    entities: string;
+    relations: string;
+    phases: string;
+    events: string;
+    findings: string;
+    untitledReport: string;
+    genreLabel: (ordinal: number) => string;
+    themeLabel: (ordinal: number) => string;
+    entityLabel: (ordinal: number) => string;
+    relationLabel: string;
+    phaseLabel: (ordinal: number) => string;
+    eventLabel: (ordinal: number) => string;
+    findingLabel: (ordinal: number) => string;
+    abuseTitle: string;
+    abuseReason: string;
+    abusePlaceholder: string;
+    abuseCaveat: string;
+    abuseSubmit: string;
+    abuseSubmitting: string;
+    abuseSuccess: string;
+    abuseError: string;
+    cloudflareAbuse: string;
+    backToScan: string;
   };
   deletion: {
     action: string;
@@ -132,7 +171,7 @@ const ja: ScanMessages = {
   botVerificationRequired: "Scanの前にBot確認が必要です。",
   turnstileMissing: "Turnstileのサイトキーが設定されていません。",
   publishConfirmation:
-    "本文の根拠と非公開メタデータを除いたレポートを公開しますか？",
+    "公開に必要な権利があり、個人情報の暴露や権利侵害がないことを確認しましたか？原稿本文と根拠、非公開メタデータは公開しませんが、作品名や短い原稿由来ラベルは表示されます。閲覧者は問題を通報できます。このレポートを公開しますか？",
   errors: {
     network:
       "Scanサービスと通信できませんでした。接続を確認して、もう一度お試しください。",
@@ -196,6 +235,9 @@ const ja: ScanMessages = {
     unpublish: "公開を停止",
     updating: "更新中…",
     publicReportId: "公開レポートID",
+    viewPublicReport: "公開レポートを表示",
+    publicReportNotice:
+      "本文と根拠は公開されません。作品名や短い原稿由来ラベルは表示され、閲覧者は問題を通報できます。",
     evidence: "根拠",
     evidenceParagraphs: "根拠段落",
     intentional: "意図的として扱う",
@@ -214,6 +256,45 @@ const ja: ScanMessages = {
       alias: "別名",
       unknown: "未分類",
     },
+  },
+  publicReport: {
+    eyebrow: "Grimodex Scan · 公開レポート",
+    loading: "公開レポートを読み込んでいます…",
+    unavailable:
+      "この公開レポートを取得できません。公開が停止されたか、URLが正しくない可能性があります。",
+    projectionNotice: "原稿本文・根拠・非公開メタデータは表示されません。",
+    derivedLabelNotice:
+      "作品名、登場要素などの短い派生ラベルには原稿由来情報が含まれる場合があります。",
+    sourceCounts: (sections, paragraphs, characters) =>
+      `${characters.toLocaleString("ja-JP")}文字 · ${sections}章 · ${paragraphs}段落`,
+    genres: "ジャンル候補",
+    themes: "テーマ",
+    entities: "登場要素",
+    relations: "関係",
+    phases: "物語Phase",
+    events: "イベント",
+    findings: "指摘",
+    untitledReport: "無題のScanレポート",
+    genreLabel: (ordinal) => `ジャンル ${ordinal}`,
+    themeLabel: (ordinal) => `テーマ ${ordinal}`,
+    entityLabel: (ordinal) => `登場要素 ${ordinal}`,
+    relationLabel: "関係",
+    phaseLabel: (ordinal) => `フェーズ ${ordinal}`,
+    eventLabel: (ordinal) => `イベント ${ordinal}`,
+    findingLabel: (ordinal) => `指摘 ${ordinal}`,
+    abuseTitle: "この公開レポートを通報",
+    abuseReason: "通報理由",
+    abusePlaceholder:
+      "権利侵害、個人情報、違法・有害な内容などを具体的に記載してください",
+    abuseCaveat:
+      "通報理由には原稿本文や不要な個人情報を貼り付けないでください。送信内容は運営者の確認対象として記録されます。",
+    abuseSubmit: "通報を送信",
+    abuseSubmitting: "送信中…",
+    abuseSuccess: "通報を受け付けました。運営者の確認対象として記録しました。",
+    abuseError:
+      "通報を送信できませんでした。時間をおいて、もう一度お試しください。",
+    cloudflareAbuse: "Cloudflareへ正式に報告",
+    backToScan: "Scanへ戻る",
   },
   deletion: {
     action: "原稿とScanデータを削除",
@@ -277,7 +358,7 @@ const en: ScanMessages = {
   botVerificationRequired: "Bot verification is required before scanning.",
   turnstileMissing: "The Turnstile site key is not configured.",
   publishConfirmation:
-    "Publish a report with manuscript evidence and private metadata removed?",
+    "Do you have the rights required to publish, and have you checked that the report does not expose personal data or infringe others’ rights? Manuscript text, evidence, and private metadata are omitted, but the title and short manuscript-derived labels are shown. Viewers can report problems. Publish this report?",
   errors: {
     network:
       "Scan could not connect to the service. Check your connection and try again.",
@@ -340,6 +421,9 @@ const en: ScanMessages = {
     unpublish: "Stop publishing",
     updating: "Updating…",
     publicReportId: "Public report ID",
+    viewPublicReport: "View public report",
+    publicReportNotice:
+      "Manuscript text and evidence are not published. The title and short manuscript-derived labels are shown, and viewers can report problems.",
     evidence: "Evidence",
     evidenceParagraphs: "Evidence paragraphs",
     intentional: "Mark as intentional",
@@ -358,6 +442,46 @@ const en: ScanMessages = {
       alias: "Alias",
       unknown: "Unclassified",
     },
+  },
+  publicReport: {
+    eyebrow: "Grimodex Scan · Public report",
+    loading: "Loading the public report…",
+    unavailable:
+      "This public report could not be retrieved. Publishing may have stopped, or the URL may be invalid.",
+    projectionNotice:
+      "Manuscript text, evidence, and private metadata are not shown.",
+    derivedLabelNotice:
+      "The title and short derived labels such as entity names may still contain manuscript-derived information.",
+    sourceCounts: (sections, paragraphs, characters) =>
+      `${characters.toLocaleString("en-US")} characters · ${sections} sections · ${paragraphs} paragraphs`,
+    genres: "Genre candidates",
+    themes: "Themes",
+    entities: "Entities",
+    relations: "Relationships",
+    phases: "Story phases",
+    events: "Events",
+    findings: "Findings",
+    untitledReport: "Untitled Scan report",
+    genreLabel: (ordinal) => `Genre ${ordinal}`,
+    themeLabel: (ordinal) => `Theme ${ordinal}`,
+    entityLabel: (ordinal) => `Entity ${ordinal}`,
+    relationLabel: "related",
+    phaseLabel: (ordinal) => `Phase ${ordinal}`,
+    eventLabel: (ordinal) => `Event ${ordinal}`,
+    findingLabel: (ordinal) => `Finding ${ordinal}`,
+    abuseTitle: "Report this public report",
+    abuseReason: "Reason for report",
+    abusePlaceholder:
+      "Describe possible infringement, personal data exposure, or unlawful or harmful content",
+    abuseCaveat:
+      "Do not paste manuscript text or unnecessary personal data into the reason. Your submission is recorded for operator review.",
+    abuseSubmit: "Submit report",
+    abuseSubmitting: "Submitting…",
+    abuseSuccess: "Your report was accepted and recorded for operator review.",
+    abuseError:
+      "The report could not be submitted. Wait a moment and try again.",
+    cloudflareAbuse: "Report formally to Cloudflare",
+    backToScan: "Back to Scan",
   },
   deletion: {
     action: "Delete manuscript and Scan data",

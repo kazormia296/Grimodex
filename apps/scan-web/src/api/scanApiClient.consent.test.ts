@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
+} from "@grimodex/scan-contract";
 import { ScanApiClient } from "./scanApiClient";
 
 type UploadIntentInput = Parameters<ScanApiClient["createUploadIntent"]>[0];
@@ -20,6 +24,10 @@ describe("ScanApiClient AI data consent", () => {
     const disclosure = {
       schemaVersion: "grimodex/ai-data-disclosure/1",
       policyVersion: "2026-07-19.1",
+      contentPolicy: {
+        version: CLOUD_CONTENT_POLICY_VERSION,
+        acknowledgementHeader: CLOUD_CONTENT_POLICY_ACK_HEADER,
+      },
       route: "scan",
       provider: "workers-ai",
       consentId: "consent_scan_workers_ai_2026_07_19_abcdef",
@@ -94,6 +102,7 @@ describe("ScanApiClient AI data consent", () => {
 
     expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
       "x-ai-consent-id": "consent_opaque_policy_route_provider_123456",
+      [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
     });
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({
       filename: "private-manuscript.txt",

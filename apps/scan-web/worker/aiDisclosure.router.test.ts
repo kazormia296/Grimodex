@@ -4,6 +4,10 @@ import { ScanRepository } from "./repository";
 import { handleRequest } from "./router";
 import { currentAiDataConsentIdentity } from "./ai/aiDataDisclosure";
 import { sha256Hex } from "./security";
+import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
+} from "@grimodex/scan-contract";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -62,6 +66,10 @@ describe("public AI data disclosures", () => {
       await expect(response.json()).resolves.toMatchObject({
         schemaVersion: "grimodex/ai-data-disclosure/1",
         policyVersion: expect.any(String),
+        contentPolicy: {
+          version: CLOUD_CONTENT_POLICY_VERSION,
+          acknowledgementHeader: CLOUD_CONTENT_POLICY_ACK_HEADER,
+        },
         route,
         provider: "workers-ai",
         consentId: expect.stringMatching(/^consent_[A-Za-z0-9_-]{16,}$/),
@@ -386,6 +394,7 @@ describe("AI data consent enforcement", () => {
         headers: {
           "content-type": "application/json",
           "x-ai-consent-id": identity.consentId,
+          [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
         },
         body: JSON.stringify({
           filename: "private-manuscript.txt",
@@ -439,6 +448,52 @@ describe("AI data consent enforcement", () => {
 
   it.each([
     ["missing", undefined],
+    ["outdated", "2026-07-19.6"],
+  ] as const)(
+    "rejects an upload intent with current AI consent but %s hosted-content confirmation",
+    async (_label, policyVersion) => {
+      const configured = env({
+        AI: { run: vi.fn(async () => ({ response: "unused" })) },
+        SCAN_ACCEPTING_NEW_JOBS: "true",
+        SCAN_AI_PROVIDER: "workers-ai",
+        SCAN_WORKERS_AI_ENABLED: "true",
+      });
+      const identity = await currentAiDataConsentIdentity(configured, "scan");
+      const createUploadIntent = vi.spyOn(
+        ScanRepository.prototype,
+        "createUploadIntent",
+      );
+      const headers = new Headers({
+        "content-type": "application/json",
+        "x-ai-consent-id": identity.consentId,
+      });
+      if (policyVersion) {
+        headers.set(CLOUD_CONTENT_POLICY_ACK_HEADER, policyVersion);
+      }
+
+      const response = await handleRequest(
+        new Request("https://scan.example/api/v1/upload-intents", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            filename: "private-manuscript.txt",
+            contentType: "text/plain",
+            size: 128,
+          }),
+        }),
+        configured,
+      );
+
+      expect(response.status).toBe(428);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "hosted_content_confirmation_required" },
+      });
+      expect(createUploadIntent).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["missing", undefined],
     ["non-matching", "consent_wrong_policy_route_or_provider_123456"],
   ] as const)(
     "rejects hosted editor AI with %s consent before calling the provider",
@@ -486,6 +541,56 @@ describe("AI data consent enforcement", () => {
       expect(response.status).toBe(428);
       await expect(response.json()).resolves.toMatchObject({
         error: { code: "ai_consent_required" },
+      });
+      expect(aiRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["missing", undefined],
+    ["outdated", "2026-07-19.6"],
+  ] as const)(
+    "rejects hosted editor AI with current AI consent but %s hosted-content confirmation",
+    async (_label, policyVersion) => {
+      const aiRun = vi.fn(async () => ({ response: "must not run" }));
+      const configured = env({
+        AI: { run: aiRun },
+        SCAN_AI_PROVIDER: "workers-ai",
+        SCAN_WORKERS_AI_ENABLED: "true",
+        SCAN_EDITOR_AI_ENABLED: "true",
+      });
+      const identity = await currentAiDataConsentIdentity(
+        configured,
+        "hosted-editor",
+      );
+      vi.spyOn(ScanRepository.prototype, "authorizeScan").mockResolvedValue(
+        completedScan,
+      );
+      vi.spyOn(ScanRepository.prototype, "getScan").mockResolvedValue(
+        completedScan,
+      );
+      const headers = new Headers({
+        "content-type": "application/json",
+        "x-ai-consent-id": identity.consentId,
+        "x-idempotency-key": "content-policy-gate-request-123456",
+        "x-scan-token": "scan-token",
+      });
+      if (policyVersion) {
+        headers.set(CLOUD_CONTENT_POLICY_ACK_HEADER, policyVersion);
+      }
+
+      const response = await handleRequest(
+        new Request("https://scan.example/api/v1/scans/scan-1/editor-ai", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ operation: "chat", prompt: "Private text" }),
+        }),
+        configured,
+      );
+
+      expect(response.status).toBe(428);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "hosted_content_confirmation_required" },
       });
       expect(aiRun).not.toHaveBeenCalled();
     },

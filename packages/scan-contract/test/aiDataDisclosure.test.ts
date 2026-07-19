@@ -15,6 +15,10 @@ function validDisclosure(): Record<string, unknown> {
   return {
     schemaVersion: "grimodex/ai-data-disclosure/1",
     policyVersion: "2026-07-19.1",
+    contentPolicy: {
+      version: scanContract.CLOUD_CONTENT_POLICY_VERSION,
+      acknowledgementHeader: scanContract.CLOUD_CONTENT_POLICY_ACK_HEADER,
+    },
     route: "hosted-editor",
     provider: "workers-ai",
     consentId: "consent_opaque_server_value_0123456789",
@@ -86,6 +90,10 @@ describe("AiDataDisclosureV1 contract", () => {
     if (result.ok) {
       expect(result.value).toMatchObject({
         policyVersion: "2026-07-19.1",
+        contentPolicy: {
+          version: scanContract.CLOUD_CONTENT_POLICY_VERSION,
+          acknowledgementHeader: scanContract.CLOUD_CONTENT_POLICY_ACK_HEADER,
+        },
         route: "hosted-editor",
         provider: "workers-ai",
       });
@@ -101,6 +109,7 @@ describe("AiDataDisclosureV1 contract", () => {
 
   it.each([
     "policyVersion",
+    "contentPolicy",
     "route",
     "provider",
     "consentId",
@@ -125,6 +134,26 @@ describe("AiDataDisclosureV1 contract", () => {
 
     expect(parse(invalidRoute).ok).toBe(false);
     expect(parse(invalidConsent).ok).toBe(false);
+  });
+
+  it("rejects stale or incomplete hosted-content policy acknowledgements", () => {
+    expect(
+      parse({
+        ...validDisclosure(),
+        contentPolicy: {
+          version: "2026-07-19.6",
+          acknowledgementHeader: scanContract.CLOUD_CONTENT_POLICY_ACK_HEADER,
+        },
+      }).ok,
+    ).toBe(false);
+    expect(
+      parse({
+        ...validDisclosure(),
+        contentPolicy: {
+          version: scanContract.CLOUD_CONTENT_POLICY_VERSION,
+        },
+      }).ok,
+    ).toBe(false);
   });
 
   it("rejects disclosure text that omits every concrete data category", () => {

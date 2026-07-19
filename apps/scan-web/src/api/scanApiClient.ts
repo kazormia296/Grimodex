@@ -1,4 +1,6 @@
 import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
   parseAiDataDisclosure,
   type AiDataDisclosureRoute,
   type AiDataDisclosureV1,
@@ -227,7 +229,10 @@ export class ScanApiClient {
     };
     return this.json<UploadIntent>("/api/v1/upload-intents", {
       method: "POST",
-      headers: { "x-ai-consent-id": consentId },
+      headers: {
+        "x-ai-consent-id": consentId,
+        [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
+      },
       body: JSON.stringify(body),
     });
   }
@@ -444,6 +449,26 @@ export class ScanApiClient {
   getPublicReport<T = unknown>(publicReportId: string): Promise<T> {
     return this.json<T>(
       `/api/v1/public-reports/${encodeURIComponent(publicReportId)}`,
+      { cache: "no-store" },
+    );
+  }
+
+  async reportPublicAbuse(
+    publicReportId: string,
+    reason: string,
+  ): Promise<void> {
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length === 0 || normalizedReason.length > 1_000) {
+      throw new Error(
+        "Public abuse report reason must be 1 to 1000 characters",
+      );
+    }
+    await this.json(
+      `/api/v1/public-reports/${encodeURIComponent(publicReportId)}/abuse-reports`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: normalizedReason }),
+      },
     );
   }
 

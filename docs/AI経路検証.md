@@ -52,6 +52,26 @@ policy version・route・provider に一致する明示同意を必要とする�
 teardown 可能なデプロイ済み runner は存在しないため、manifest の
 `blocked-scan-hosted` / `blocked-web-ai-consent-live` を `passed` と読み替えてはならない。
 
+`GDX-HOSTED-CONTENT-001` は、このデータ同意とは別に Scan upload と Hosted Editor の
+cloud AI で内容・権利の確認を要求する。正本は
+`packages/scan-contract/src/cloudContentPolicy.ts` で、合法な成人のみの架空作品を
+一律禁止しない一方、処理を保証しないこと、禁止内容、権利・許諾、二次創作ガイドラインを
+日英で提示する。サーバーの `AI_DATA_POLICY_VERSION` はこの正本の version から派生し、
+内容ポリシー更新時にも過去の Scan／Hosted Editor 同意を再利用しない。ローカルの
+desktop editor と browser BYOK にはこの hosted 固有確認を追加しない。開示契約では
+`contentPolicy.version` と `contentPolicy.acknowledgementHeader` を必須にし、hosted の
+upload／AI dispatch は開示されたヘッダー名で同一 version を返す。旧 parser は追加
+フィールドを、新 parser は欠落フィールドを拒否し、Worker もヘッダー欠落・旧 version を
+428 で拒否するため、混在 bundle でも確認を迂回できない。
+
+公開レポートは current `PublicReportV2` の専用投影だけを表示し、原稿本文・根拠・private
+provenance を再表示しない。所有者の公開停止／削除と、閲覧者の bounded abuse report
+経路を Light contract で検証する。Worker は公開 GET のたびに R2 artifact を
+`parsePublicReport` で検証し、配列上限、ID種別・一意性、relation参照を確認した投影だけを
+再serializeする。既存 `PublicReportV1` は旧publisherが生成したexactなevidence-free形状
+だけを受理し、本文由来のoptional fieldを許さずV2へ正規化する。外部へ保存されたコピーまで
+回収できることや、通報後の対応結果を自動保証するものではない。
+
 ドリフト防止: ②③ は**本番のビルダー/パーサを import して使う**（プロンプト文字列を
 テストに再構築しない）。② のビルダー（map/tree の `buildSystemPrompt`/`buildUserPrompt`、
 `parseCards`）は本検証のため production で `export` 済み。

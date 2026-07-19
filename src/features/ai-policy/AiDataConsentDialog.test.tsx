@@ -129,9 +129,7 @@ describe("AiDataConsentDialog", () => {
     fireEvent.click(accept);
     expect(onAccept).not.toHaveBeenCalled();
 
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: /必要な権利・許諾/ }),
-    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /必要な権利・許諾/ }));
     expect(accept).not.toBeDisabled();
     fireEvent.click(accept);
 

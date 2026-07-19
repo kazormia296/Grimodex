@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AiDataDisclosureV1 } from "@grimodex/scan-contract";
+import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
+  type AiDataDisclosureV1,
+} from "@grimodex/scan-contract";
 import { ScanAiConsentDialog } from "./ScanAiConsentDialog";
 
 afterEach(cleanup);
@@ -8,6 +12,10 @@ afterEach(cleanup);
 const disclosure: AiDataDisclosureV1 = {
   schemaVersion: "grimodex/ai-data-disclosure/1",
   policyVersion: "2026-07-19.1",
+  contentPolicy: {
+    version: CLOUD_CONTENT_POLICY_VERSION,
+    acknowledgementHeader: CLOUD_CONTENT_POLICY_ACK_HEADER,
+  },
   route: "scan",
   provider: "workers-ai",
   consentId: "consent_scan_workers_ai_2026_07_19_abcdef",
@@ -139,7 +147,9 @@ describe("ScanAiConsentDialog", () => {
       }),
     ).toBeTruthy();
     expect(
-      screen.getByText(/adult-only fictional works.*R18.*not categorically prohibited/i),
+      screen.getByText(
+        /adult-only fictional works.*R18.*not categorically prohibited/i,
+      ),
     ).toBeTruthy();
     expect(screen.getByText(/AI provider may refuse/i)).toBeTruthy();
     expect(
@@ -167,9 +177,7 @@ describe("ScanAiConsentDialog", () => {
     fireEvent.click(accept);
     expect(onAccept).not.toHaveBeenCalled();
 
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: /必要な権利・許諾/ }),
-    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /必要な権利・許諾/ }));
     expect((accept as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(accept);
 

@@ -2,6 +2,10 @@ import type {
   AiDataDisclosureV1,
   HostedAiSessionV1,
 } from "@grimodex/scan-contract";
+import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
+} from "@grimodex/scan-contract";
 import { snapshotAgentTools } from "@/features/chat/agent/toolDefinitions";
 import { describe, expect, it, vi } from "vitest";
 import { createHostedBrowserAi } from "./hostedBrowserAi";
@@ -15,6 +19,10 @@ const session: HostedAiSessionV1 = {
 const disclosure: AiDataDisclosureV1 = {
   schemaVersion: "grimodex/ai-data-disclosure/1",
   policyVersion: "2026-07-19.1",
+  contentPolicy: {
+    version: CLOUD_CONTENT_POLICY_VERSION,
+    acknowledgementHeader: CLOUD_CONTENT_POLICY_ACK_HEADER,
+  },
   route: "hosted-editor",
   provider: "workers-ai",
   consentId: "consent_hosted_editor_2026_07_19_v1",
@@ -120,6 +128,7 @@ describe("hosted browser AI", () => {
       expect.objectContaining({
         "x-editor-session-token": session.token,
         "x-ai-consent-id": disclosure.consentId,
+        [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
       }),
     );
     expect(postInit.body).toBe(

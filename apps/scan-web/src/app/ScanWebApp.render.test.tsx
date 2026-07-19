@@ -8,6 +8,8 @@ import {
   within,
 } from "@testing-library/react";
 import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
   toPublicReport,
   type AiDataDisclosureV1,
 } from "@grimodex/scan-contract";
@@ -25,6 +27,10 @@ import { readScanOwnership, writeScanOwnership } from "./scanOwnershipStorage";
 const disclosure: AiDataDisclosureV1 = {
   schemaVersion: "grimodex/ai-data-disclosure/1",
   policyVersion: "2026-07-19.1",
+  contentPolicy: {
+    version: CLOUD_CONTENT_POLICY_VERSION,
+    acknowledgementHeader: CLOUD_CONTENT_POLICY_ACK_HEADER,
+  },
   route: "scan",
   provider: "workers-ai",
   consentId: "consent_scan_workers_ai_2026_07_19_abcdef",
@@ -116,9 +122,7 @@ async function acceptUploadConsent(): Promise<void> {
   fireEvent.click(
     screen.getByRole("checkbox", { name: /送信・保存・学習利用方針/ }),
   );
-  fireEvent.click(
-    screen.getByRole("checkbox", { name: /必要な権利・許諾/ }),
-  );
+  fireEvent.click(screen.getByRole("checkbox", { name: /必要な権利・許諾/ }));
   fireEvent.click(screen.getByRole("button", { name: "同意してScanを開始" }));
 }
 
@@ -240,9 +244,7 @@ describe("ScanWebApp report ownership", () => {
     fireEvent.click(accept);
     expect(upload).not.toHaveBeenCalled();
 
-    fireEvent.click(
-      screen.getByRole("checkbox", { name: /必要な権利・許諾/ }),
-    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /必要な権利・許諾/ }));
     fireEvent.click(accept);
     await waitFor(() => expect(upload).toHaveBeenCalledOnce());
   });

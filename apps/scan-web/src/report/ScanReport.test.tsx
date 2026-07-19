@@ -50,9 +50,10 @@ describe("ScanReport", () => {
       />,
     );
 
-    expect(
-      getByRole("link", { name: "公開レポートを表示" }).getAttribute("href"),
-    ).toBe("/?publicReport=public-1");
+    const publicLink = getByRole("link", { name: "公開レポートを表示" });
+    expect(publicLink.getAttribute("href")).toBe("/?publicReport=public-1");
+    expect(publicLink.getAttribute("target")).toBe("_blank");
+    expect(publicLink.getAttribute("rel")).toContain("noreferrer");
     expect(getByText(/本文と根拠は公開されません.*通報/u)).toBeTruthy();
     fireEvent.click(getByRole("button", { name: "公開を停止" }));
     expect(onUnpublish).toHaveBeenCalledOnce();

@@ -94,6 +94,9 @@ export function ScanReport({
         : copy.other;
   const writingLanguageMethod =
     writingLanguageSource === "selected" ? copy.selected : copy.detected;
+  const publicReportHref = publicReportId
+    ? `/?${new URLSearchParams({ publicReport: publicReportId }).toString()}`
+    : undefined;
 
   return (
     <main className="scan-report" data-testid="scan-report">
@@ -157,9 +160,15 @@ export function ScanReport({
         </div>
       </header>
       {publicReportId && (
-        <p className="scan-muted">
-          {copy.publicReportId}: <code>{publicReportId}</code>
-        </p>
+        <div className="scan-publication-notice">
+          <p className="scan-muted">
+            {copy.publicReportId}: <code>{publicReportId}</code>{" "}
+            <a href={publicReportHref} target="_blank" rel="noreferrer">
+              {copy.viewPublicReport}
+            </a>
+          </p>
+          <p className="scan-muted">{copy.publicReportNotice}</p>
+        </div>
       )}
 
       <section

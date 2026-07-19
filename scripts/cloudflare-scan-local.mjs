@@ -316,6 +316,8 @@ export async function runLocalQuickScanSmoke({
   ) {
     throw new Error("local Scan AI disclosure is missing current consent");
   }
+  const { CLOUD_CONTENT_POLICY_ACK_HEADER, CLOUD_CONTENT_POLICY_VERSION } =
+    await import("@grimodex/scan-contract");
 
   const source = new TextEncoder().encode(
     "ユキは夜明け前に北の塔へ向かった。塔の番人レンは古い鍵を手渡した。",
@@ -330,6 +332,7 @@ export async function runLocalQuickScanSmoke({
         ...originHeaders,
         "content-type": "application/json",
         "x-ai-consent-id": disclosure.consentId,
+        [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
       },
       body: JSON.stringify({
         filename: "local-smoke.txt",

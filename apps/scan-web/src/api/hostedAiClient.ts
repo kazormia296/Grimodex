@@ -1,4 +1,8 @@
 import type { ScanHandle } from "./scanApiClient";
+import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
+} from "@grimodex/scan-contract";
 
 export type HostedAiOperation = "chat" | "inline" | "codex";
 
@@ -49,6 +53,7 @@ export class HostedAiClient {
           "x-scan-token": handle.scanToken,
           "x-idempotency-key": idempotencyKey,
           "x-ai-consent-id": normalizedConsentId,
+          [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
         },
         body: JSON.stringify(body),
       },

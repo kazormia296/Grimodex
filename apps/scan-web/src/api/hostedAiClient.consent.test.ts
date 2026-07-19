@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
+} from "@grimodex/scan-contract";
 import { HostedAiClient } from "./hostedAiClient";
 
 type CompleteInput = Parameters<HostedAiClient["complete"]>[1];
@@ -27,6 +31,7 @@ describe("HostedAiClient AI data consent", () => {
 
     expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
       "x-ai-consent-id": "consent_opaque_policy_route_provider_123456",
+      [CLOUD_CONTENT_POLICY_ACK_HEADER]: CLOUD_CONTENT_POLICY_VERSION,
     });
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({
       operation: "chat",

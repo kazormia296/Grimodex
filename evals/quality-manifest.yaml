@@ -72,7 +72,10 @@ requirements:
       - apps/scan-web/worker/router.ts
       - apps/scan-web/src/api/scanApiClient.ts
       - apps/scan-web/src/api/hostedAiClient.ts
+      - apps/scan-web/src/app/ScanAiConsentDialog.tsx
       - src/features/ai-policy/aiDataConsentBroker.ts
+      - src/features/ai-policy/AiDataConsentDialog.tsx
+      - src/features/ai-policy/AiDataConsentDetails.tsx
       - src/features/ai-policy/browserAiDisclosure.ts
       - src/lib/browser-mock.ts
       - public/PRIVACY_ja.md
@@ -82,14 +85,57 @@ requirements:
       - apps/scan-web/worker/aiDisclosure.router.test.ts
       - apps/scan-web/src/api/scanApiClient.consent.test.ts
       - apps/scan-web/src/api/hostedAiClient.consent.test.ts
+      - apps/scan-web/src/app/ScanAiConsentDialog.test.tsx
       - src/features/ai-policy/aiDataConsent.test.ts
       - src/features/ai-policy/aiDataConsentBroker.test.ts
+      - src/features/ai-policy/AiDataConsentDialog.test.tsx
       - src/lib/browser-mock.ai-runtime.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts
     heavyTests:
       - apps/scan-web/worker/ai/hostedAi.test.ts
     evaluatedBy:
       - eval-ai-data-consent-precheck
+  - id: GDX-HOSTED-CONTENT-001
+    title: Hosted Scan and Editor routes confirm content rights and expose safe reporting controls.
+    definedIn: policies/quality/iron-laws.md#GDX-HOSTED-CONTENT-001
+    implementedBy:
+      - packages/scan-contract/src/cloudContentPolicy.ts
+      - packages/scan-contract/src/aiDataDisclosureV1.ts
+      - packages/scan-contract/src/publicReportV1.ts
+      - apps/scan-web/worker/ai/aiDataDisclosure.ts
+      - apps/scan-web/worker/router.ts
+      - apps/scan-web/src/app/ScanAiConsentDialog.tsx
+      - apps/scan-web/src/app/ScanWebApp.tsx
+      - apps/scan-web/src/api/scanApiClient.ts
+      - apps/scan-web/src/api/hostedAiClient.ts
+      - apps/scan-web/src/public/PublicReportPage.tsx
+      - apps/scan-web/src/public/PublicReportContent.tsx
+      - apps/scan-web/src/public/PublicReportAbuseForm.tsx
+      - apps/scan-web/src/report/ScanReport.tsx
+      - src/features/ai-policy/AiDataConsentDialog.tsx
+      - src/features/ai-policy/AiDataConsentDetails.tsx
+      - src/features/hosted-editor/HostedEditorTrialBar.tsx
+      - src/lib/hostedBrowserAi.ts
+    lightTests:
+      - packages/scan-contract/test/cloudContentPolicy.test.ts
+      - packages/scan-contract/test/aiDataDisclosure.test.ts
+      - packages/scan-contract/test/publicReportV1.test.ts
+      - apps/scan-web/worker/aiDisclosure.router.test.ts
+      - apps/scan-web/worker/router.test.ts
+      - apps/scan-web/src/app/ScanAiConsentDialog.test.tsx
+      - apps/scan-web/src/app/ScanWebApp.render.test.tsx
+      - apps/scan-web/src/api/scanApiClient.test.ts
+      - apps/scan-web/src/api/scanApiClient.consent.test.ts
+      - apps/scan-web/src/api/hostedAiClient.consent.test.ts
+      - apps/scan-web/src/public/PublicReportPage.test.tsx
+      - apps/scan-web/src/report/ScanReport.test.tsx
+      - src/features/ai-policy/AiDataConsentDialog.test.tsx
+      - src/features/hosted-editor/HostedEditorTrialBar.test.tsx
+      - src/lib/hostedBrowserAi.test.ts
+    heavyTests:
+      - apps/scan-web/worker/ai/hostedAi.test.ts
+    evaluatedBy:
+      - eval-hosted-content-rights-precheck
   - id: GDX-TOOL-001
     title: Agent tool calls must resolve to the canonical manifest and channel.
     definedIn: policies/quality/iron-laws.md#GDX-TOOL-001

@@ -1,4 +1,8 @@
 import { Ajv, type AnySchema, type ErrorObject } from "ajv";
+import {
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
+} from "./cloudContentPolicy.js";
 
 export const AI_DATA_DISCLOSURE_SCHEMA_VERSION =
   "grimodex/ai-data-disclosure/1" as const;
@@ -9,6 +13,10 @@ export type AiTrainingUseStatus = "not-used" | "used" | "depends";
 export interface AiDataDisclosureV1 {
   schemaVersion: typeof AI_DATA_DISCLOSURE_SCHEMA_VERSION;
   policyVersion: string;
+  contentPolicy: {
+    version: typeof CLOUD_CONTENT_POLICY_VERSION;
+    acknowledgementHeader: typeof CLOUD_CONTENT_POLICY_ACK_HEADER;
+  };
   route: AiDataDisclosureRoute;
   provider: string;
   consentId: string;
@@ -95,6 +103,7 @@ export const aiDataDisclosureV1Schema: AnySchema = {
   required: [
     "schemaVersion",
     "policyVersion",
+    "contentPolicy",
     "route",
     "provider",
     "consentId",
@@ -112,6 +121,15 @@ export const aiDataDisclosureV1Schema: AnySchema = {
       minLength: 1,
       maxLength: 128,
       pattern: "\\S",
+    },
+    contentPolicy: {
+      type: "object",
+      required: ["version", "acknowledgementHeader"],
+      properties: {
+        version: { const: CLOUD_CONTENT_POLICY_VERSION },
+        acknowledgementHeader: { const: CLOUD_CONTENT_POLICY_ACK_HEADER },
+      },
+      additionalProperties: false,
     },
     route: { enum: ["scan", "hosted-editor"] },
     provider: {

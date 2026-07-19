@@ -397,6 +397,22 @@ describe("ScanApiClient", () => {
     );
   });
 
+  it.each(["   ", "x".repeat(1_001)])(
+    "rejects an invalid public abuse reason before the network",
+    async (reason) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      const client = new ScanApiClient({
+        baseUrl: "https://scan.example",
+        fetchImpl,
+      });
+
+      await expect(
+        client.reportPublicAbuse("public-1", reason),
+      ).rejects.toThrow(/1 to 1000/);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
   it("polls at two seconds then backs off to at most five seconds", async () => {
     const delays: number[] = [];
     let calls = 0;

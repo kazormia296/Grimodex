@@ -1,5 +1,7 @@
 import {
   AI_DATA_DISCLOSURE_SCHEMA_VERSION,
+  CLOUD_CONTENT_POLICY_ACK_HEADER,
+  CLOUD_CONTENT_POLICY_VERSION,
   parseAiDataDisclosure,
   type AiDataDisclosureRoute,
   type AiDataDisclosureV1,
@@ -7,7 +9,10 @@ import {
 import type { ScanEnv } from "../env";
 import { constantTimeEqual, sha256Hex } from "../security";
 
-export const AI_DATA_POLICY_VERSION = "2026-07-19.6";
+// Scan and Hosted Editor use one opaque consent identity for the complete
+// pre-dispatch gate. A hosted-content policy revision must therefore renew the
+// disclosed data-policy version as well as the rights confirmation UI.
+export const AI_DATA_POLICY_VERSION = CLOUD_CONTENT_POLICY_VERSION;
 export const WORKERS_AI_DATA_POLICY_URL =
   "https://developers.cloudflare.com/workers-ai/platform/data-usage/";
 export const AI_GATEWAY_LOGGING_POLICY_URL =
@@ -580,6 +585,10 @@ export async function createAiDataDisclosure(
   const candidate: AiDataDisclosureV1 = {
     schemaVersion: AI_DATA_DISCLOSURE_SCHEMA_VERSION,
     policyVersion: AI_DATA_POLICY_VERSION,
+    contentPolicy: {
+      version: CLOUD_CONTENT_POLICY_VERSION,
+      acknowledgementHeader: CLOUD_CONTENT_POLICY_ACK_HEADER,
+    },
     route,
     provider: profile.provider,
     consentId: await expectedAiDataConsentId(env, route),
